@@ -1,0 +1,89 @@
+{
+  "name": "amazon-fba-os",
+  "version": "0.1.0",
+  "description": "A private, local-first Amazon FBA operations console for macOS.",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "author": "JSPUSA",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jspusa/Amazon-FBA-OS.git"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "icons": "node scripts/generate-icons.mjs",
+    "prebuild": "npm run icons",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "dist:dir": "npm run build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1103.0",
+    "electron-updater": "6.8.9",
+    "fflate": "0.8.2",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@electron/fuses": "1.8.0",
+    "@resvg/resvg-js": "2.6.2",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.3.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.0.18"
+  },
+  "build": {
+    "appId": "com.jspusa.amazon-fba-os",
+    "productName": "Amazon FBA OS",
+    "asar": true,
+    "npmRebuild": false,
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "afterPack": "scripts/after-pack.mjs",
+    "protocols": [
+      {
+        "name": "Amazon FBA OS Launcher",
+        "schemes": ["amazon-fba-os"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.business",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "target": ["dmg", "zip"],
+      "artifactName": "Amazon-FBA-OS-${version}-${arch}.${ext}",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "sign": false,
+      "title": "Amazon FBA OS ${version}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "jspusa",
+      "repo": "Amazon-FBA-OS",
+      "releaseType": "release"
+    }
+  }
+}

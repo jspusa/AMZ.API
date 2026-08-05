@@ -1,0 +1,12 @@
+node_modules/
+out/
+release/
+coverage/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+credentials.enc
+product-master.json
+operation-ledger.json

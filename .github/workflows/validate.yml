@@ -1,0 +1,38 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+      - name: Typecheck, test and build
+        run: npm run check
+      - name: Confirm renderer has no plaintext secret fixtures
+        run: |
+          if grep -RIE "(refresh[_ -]?token|client[_ -]?secret).{0,20}(=|:)['\"]?[A-Za-z0-9]" out/renderer; then
+            echo "::error::Possible secret material found in renderer bundle"
+            exit 1
+          fi

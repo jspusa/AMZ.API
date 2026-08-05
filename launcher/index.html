@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="description" content="Amazon FBA OS 的安全啟動與下載頁。API 憑證只保存在你的 Mac。" />
+    <title>Amazon FBA OS — Mac 安全啟動器</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <nav>
+      <a class="brand" href="#top"><img src="icon.svg" alt="" /><span><strong>Amazon FBA OS</strong><small>by JSPUSA</small></span></a>
+      <a class="source-link" href="https://github.com/jspusa/Amazon-FBA-OS">GitHub 原始碼 ↗</a>
+    </nav>
+
+    <main id="top">
+      <section class="hero">
+        <div class="eyebrow"><span></span>FBA ONLY · LOCAL FIRST</div>
+        <h1>Amazon 營運，<br /><em>只留下必要步驟。</em></h1>
+        <p>策劃、產品、價格集中在一個極簡 Mac App。GitHub 不保存 API 金鑰，也看不到你的 Amazon 資料。</p>
+        <div class="hero-actions">
+          <a id="open-app" class="primary" href="amazon-fba-os://launch">開啟 Mac App <span>↗</span></a>
+          <a class="secondary" href="https://github.com/jspusa/Amazon-FBA-OS/releases/latest">下載最新版 <span>↓</span></a>
+        </div>
+        <div id="launch-status" class="launch-status" aria-live="polite"><i></i><span>已安裝 App 才能開啟真正控制台</span></div>
+      </section>
+
+      <section class="app-preview" aria-label="產品架構預覽">
+        <div class="window-bar"><span></span><span></span><span></span><b>Amazon FBA OS</b></div>
+        <div class="preview-body">
+          <aside><img src="icon.svg" alt="" /><div></div><div></div><div></div></aside>
+          <div class="preview-content">
+            <header><span>輸入 SKU，所有工具共用</span><b>Mac 安全連線 ✓</b></header>
+            <h2>今天要處理什麼？</h2>
+            <div class="automation-row"><span class="auto">自動</span><span class="click">一鍵</span><span class="manual">需人工</span></div>
+            <div class="zone-grid">
+              <article><small>01 · 策劃區</small><strong>廣告</strong><strong>補貨</strong></article>
+              <article><small>02 · 產品區</small><strong>文案</strong><strong>圖片</strong></article>
+              <article><small>03 · 價格區</small><strong>定價與訂閱</strong><strong>促銷</strong></article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="three-core">
+        <div class="section-title"><p>THREE OPERATING CORES</p><h2>三區，一個 SKU。</h2><span>能自動就自動，能一鍵就一鍵。</span></div>
+        <div class="core-grid">
+          <article><b>01</b><span>◎</span><h3>策劃區</h3><p>SB／SD 授權狀態、FBA 庫存、在途與補貨建議。SP 繼續交給 Helium 10。</p></article>
+          <article><b>02</b><span>Aa</span><h3>產品區</h3><p>查改標題、五大賣點、成分；拖拉圖片；一鍵匯出全商品 Excel。</p></article>
+          <article><b>03</b><span>$</span><h3>價格區</h3><p>依 SKU 查價、預檢、Touch ID 調價；限時售價、訂閱與 Coupon 入口集中。</p></article>
+        </div>
+      </section>
+
+      <section class="security-story">
+        <div><p>SECURITY MODEL</p><h2>GitHub 是門口。<br />Mac App 才是控制室。</h2></div>
+        <ol>
+          <li><span>1</span><div><strong>從這裡啟動</strong><p>這一頁只負責下載與喚醒 App，沒有 Amazon 操作能力。</p></div></li>
+          <li><span>2</span><div><strong>Keychain 保存金鑰</strong><p>Client Secret 與 Refresh Token 以加密密文留在你的 Mac。</p></div></li>
+          <li><span>3</span><div><strong>本機執行 SP-API</strong><p>Amazon 請求由 App 主程序送出，GitHub JavaScript 不會接觸回傳資料。</p></div></li>
+          <li><span>4</span><div><strong>寫入前再次確認</strong><p>預檢、舊值衝突、完整 SKU、Touch ID 與防重送帳本一起守門。</p></div></li>
+        </ol>
+      </section>
+
+      <section class="download-card">
+        <img src="icon.svg" alt="" />
+        <div><p>AMAZON FBA OS FOR MAC</p><h2>第一次下載，之後 App 內更新。</h2><span>正式簽章版會使用 GitHub Releases 安全更新；不需每次重新下載。</span></div>
+        <a href="https://github.com/jspusa/Amazon-FBA-OS/releases/latest">查看最新版本 <span>↗</span></a>
+      </section>
+    </main>
+
+    <footer><span>Amazon FBA OS · FBA only · No FBM</span><span>Amazon 與 Seller Central 為 Amazon.com, Inc. 的商標；本工具為 JSPUSA 私人營運軟體。</span></footer>
+    <script src="script.js" defer></script>
+  </body>
+</html>
