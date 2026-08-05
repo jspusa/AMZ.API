@@ -302,7 +302,7 @@ async function createWindow(): Promise<void> {
     backgroundColor: "#f4f6f8",
     trafficLightPosition: { x: 20, y: 18 },
     webPreferences: {
-      preload: fileURLToPath(new URL("../preload/index.mjs", import.meta.url)),
+      preload: fileURLToPath(new URL("../preload/index.cjs", import.meta.url)),
       partition: "fba-os-memory",
       nodeIntegration: false,
       nodeIntegrationInWorker: false,
@@ -336,10 +336,12 @@ async function createWindow(): Promise<void> {
   const devUrl = developmentRendererUrl();
   if (devUrl) {
     await createdWindow.loadURL(devUrl);
+    await verifyRendererBridge(createdWindow);
   } else {
     for (;;) {
       try {
         await createdWindow.loadURL(REMOTE_CONSOLE_URL);
+        await verifyRendererBridge(createdWindow);
         break;
       } catch {
         const result = await dialog.showMessageBox(createdWindow, {
@@ -360,6 +362,17 @@ async function createWindow(): Promise<void> {
       }
     }
   }
+}
+
+async function verifyRendererBridge(window: BrowserWindow): Promise<void> {
+  const ready = await window.webContents.executeJavaScript(
+    "Boolean(globalThis.fbaOS?.api?.request && globalThis.fbaOS?.credentials?.status)",
+    true,
+  );
+  if (ready !== true) {
+    throw new Error("LOCAL_BRIDGE_UNAVAILABLE");
+  }
+  console.info("AMZ_API_BRIDGE_READY");
 }
 
 function registerIpc(): void {

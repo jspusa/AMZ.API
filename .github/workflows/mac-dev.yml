@@ -63,10 +63,24 @@ jobs:
           smoke_log="$(mktemp)"
           "$app_path/Contents/MacOS/$executable" >"$smoke_log" 2>&1 &
           app_pid="$!"
-          sleep 10
-          if ! kill -0 "$app_pid" 2>/dev/null; then
+          bridge_ready=false
+          for _ in {1..30}; do
+            if grep -q 'AMZ_API_BRIDGE_READY' "$smoke_log"; then
+              bridge_ready=true
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              cat "$smoke_log"
+              wait "$app_pid"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "$bridge_ready" != true ]]; then
             cat "$smoke_log"
-            wait "$app_pid"
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" || true
+            echo "Mac Bridge did not become ready within 30 seconds."
             exit 1
           fi
           kill "$app_pid"
