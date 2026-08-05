@@ -32,6 +32,7 @@ import {
   updateListingPrice,
   updateListingSalePrice,
   usesDemoMode,
+  verifyListingsAccess,
   type ListingContentSnapshot,
   type ListingImageSnapshot,
   type ListingPriceSnapshot,
@@ -333,15 +334,20 @@ export class ApiRouter {
           fulfilledBy: "AMAZON",
           maxResultsPerPage: 1,
         });
+        const listings = await verifyListingsAccess(representatives[region]);
         result.regions[region] = {
           ok: snapshot.mode === "live",
-          message: snapshot.mode === "live" ? "Amazon SP-API 連線成功。" : "目前仍是展示模式。",
-          requestId: snapshot.requestId,
+          message: snapshot.mode === "live"
+            ? "Orders 與 Listings 連線成功。"
+            : "目前仍是展示模式。",
+          requestId: listings.requestId ?? snapshot.requestId,
         };
       } catch (error) {
         result.regions[region] = {
           ok: false,
-          message: error instanceof SpApiError ? error.message : "連線測試失敗。",
+          message: error instanceof SpApiError
+            ? `Listings 驗證失敗：${error.message} 請核對 Seller ID 與 Product Listing 權限。`
+            : "連線測試失敗。",
           requestId: error instanceof SpApiError ? error.requestId : null,
         };
       }
