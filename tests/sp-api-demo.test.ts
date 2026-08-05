@@ -6,6 +6,7 @@ import {
   listingIncludedData,
   previewListingPriceUpdate,
   searchOrders,
+  shouldFallbackListingsExport,
   updateListingPrice,
 } from "../src/main/amazon/sp-api";
 
@@ -94,5 +95,12 @@ describe("SP-API demo safety boundary", () => {
       "fulfillmentAvailability",
     ]);
     expect(listingIncludedData("search").split(",")).toContain("productTypes");
+  });
+
+  it("falls back to single-item reads only for invalid batch parameters", () => {
+    expect(shouldFallbackListingsExport(400)).toBe(true);
+    expect(shouldFallbackListingsExport(401)).toBe(false);
+    expect(shouldFallbackListingsExport(403)).toBe(false);
+    expect(shouldFallbackListingsExport(429)).toBe(false);
   });
 });

@@ -472,6 +472,10 @@ export function listingIncludedData(
     : LISTING_SEARCH_INCLUDED_DATA;
 }
 
+export function shouldFallbackListingsExport(status: number): boolean {
+  return status === 400;
+}
+
 const VALID_STATUSES = new Set([
   "PENDING_AVAILABILITY",
   "PENDING",
@@ -1950,6 +1954,7 @@ async function callListingsSearchApi(
   marketplaceId: MarketplaceId,
   sellerSkus: string[],
   forceTokenRefresh = false,
+  accessProbe = false,
 ): Promise<Response> {
   const marketplace = MARKETPLACES[marketplaceId];
   const region = marketplace.region;
@@ -1966,11 +1971,13 @@ async function callListingsSearchApi(
   const query = new URLSearchParams({
     marketplaceIds: marketplaceId,
     issueLocale: marketplace.issueLocale,
-    includedData: listingIncludedData("search"),
-    identifiers: sellerSkus.join(","),
-    identifiersType: "SKU",
-    pageSize: String(sellerSkus.length),
+    includedData: accessProbe ? "summaries" : listingIncludedData("search"),
+    pageSize: accessProbe ? "1" : String(sellerSkus.length),
   });
+  if (!accessProbe) {
+    query.set("identifiers", sellerSkus.join(","));
+    query.set("identifiersType", "SKU");
+  }
   const url = `${REGION_ENDPOINTS[region]}/listings/2021-08-01/items/${encodeURIComponent(
     sellerId,
   )}?${query}`;
@@ -2021,6 +2028,25 @@ async function executeListingsSearchRequest(
     response = await callListingsSearchApi(marketplaceId, sellerSkus);
   }
   return response;
+}
+
+/**
+ * Verify the part of the SP-API connection that actually uses Seller ID and
+ * Product Listing permissions. Orders API calls do not use the configured
+ * Seller ID, so an Orders-only connection test can otherwise produce a false
+ * green status while every Listings request fails.
+ */
+export async function verifyListingsAccess(
+  marketplaceId: MarketplaceId,
+): Promise<{ requestId: string | null }> {
+  if (shouldUseDemoMode(marketplaceId)) return { requestId: null };
+  let response = await callListingsSearchApi(marketplaceId, [], false, true);
+  if (response.status === 401) {
+    tokenCache.delete(MARKETPLACES[marketplaceId].region);
+    response = await callListingsSearchApi(marketplaceId, [], true, true);
+  }
+  if (!response.ok) return throwListingsError(response, "read");
+  return { requestId: response.headers.get("x-amzn-requestid") };
 }
 
 async function fetchLiveListingBatch(
@@ -4576,6 +4602,20 @@ async function fetchExportRows(
   const bySku = new Map<string, ListingExportRow>();
   const excludedNonFbaSkus = new Set<string>();
   const errors: ListingExportError[] = [];
+  const recordListing = (listing: AmazonListingItem): void => {
+    const sellerSku = safeText(listing.sku, "—");
+    if (!payloadHasFbaAvailability(listing)) {
+      excludedNonFbaSkus.add(sellerSku);
+      errors.push({
+        sellerSku,
+        kind: "非 FBA，已略過",
+        message: "即時 Listing 資料無法確認為 FBA，因此沒有加入匯出。",
+      });
+      return;
+    }
+    const item = exportRowFromListing(listing, marketplaceId);
+    bySku.set(item.sellerSku, item);
+  };
   const batches: string[][] = [];
   let batch: string[] = [];
   for (const seed of seeds) {
@@ -4600,22 +4640,34 @@ async function fetchExportRows(
           marketplaceId,
           sellerSkus[0],
         );
-        if (!payloadHasFbaAvailability(payload)) {
-          excludedNonFbaSkus.add(sellerSkus[0]);
-          errors.push({
-            sellerSku: sellerSkus[0],
-            kind: "非 FBA，已略過",
-            message: "即時 Listing 資料無法確認為 FBA，因此沒有加入匯出。",
-          });
-          continue;
-        }
-        const item = exportRowFromListing(payload, marketplaceId);
-        bySku.set(item.sellerSku, item);
+        recordListing(payload);
       } else {
         const response = await executeListingsSearchRequest(
           marketplaceId,
           sellerSkus,
         );
+        // Some seller accounts reject otherwise-valid multi-SKU search
+        // parameters with HTTP 400. Export is read-only, so safely fall back
+        // to Amazon's documented getListingsItem endpoint one SKU at a time.
+        if (shouldFallbackListingsExport(response.status)) {
+          for (const sellerSku of sellerSkus) {
+            try {
+              const { payload } = await fetchLiveListingItem(
+                marketplaceId,
+                sellerSku,
+              );
+              recordListing(payload);
+            } catch (error) {
+              errors.push({
+                sellerSku,
+                kind: "查詢失敗",
+                message: error instanceof Error ? error.message : "商品內容查詢失敗。",
+              });
+            }
+            await wait(220);
+          }
+          continue;
+        }
         if (!response.ok) return throwListingsError(response, "read");
         const payload = await parseResponseJson<AmazonListingSearchResponse>(
           response,
@@ -4627,18 +4679,7 @@ async function fetchExportRows(
           });
         }
         for (const listing of payload.items) {
-          const sellerSku = safeText(listing.sku, "—");
-          if (!payloadHasFbaAvailability(listing)) {
-            excludedNonFbaSkus.add(sellerSku);
-            errors.push({
-              sellerSku,
-              kind: "非 FBA，已略過",
-              message: "即時 Listing 資料無法確認為 FBA，因此沒有加入匯出。",
-            });
-            continue;
-          }
-          const item = exportRowFromListing(listing, marketplaceId);
-          bySku.set(item.sellerSku, item);
+          recordListing(listing);
         }
       }
     } catch (error) {
