@@ -245,7 +245,7 @@ export default function ConnectionPanel({
               <div className="connection-sop-body">
                 <ol>
                   <li><span>1</span><div><strong>進入開發者頁面</strong><p>Seller Central → <b>Apps and Services</b> → <b>Develop Apps</b>。第一次使用時選擇 <b>Private Developer</b>，因為 AMZ.API 只供自己公司使用。</p></div></li>
-                  <li><span>2</span><div><strong>建立 Private SP-API App</strong><p>建立或編輯 App，加入目前需要的角色：<b>Product Listing、Pricing、Amazon Fulfillment、Orders</b>。不需要買家 PII／Restricted Roles。</p></div></li>
+                  <li><span>2</span><div><strong>建立 Private SP-API App</strong><p>建立或編輯 App，加入目前需要的角色：<b>Product Listing、Pricing、Amazon Fulfillment、Inventory and Order Tracking</b>。不需要買家 PII／Restricted Roles。</p></div></li>
                   <li><span>3</span><div><strong>複製 LWA 兩個欄位</strong><p>在該 App 選 <b>Edit App</b>，於 <b>LWA credentials</b> 按 View，取得 Client ID 與 Client Secret。</p></div></li>
                   <li><span>4</span><div><strong>授權各區域</strong><p>App 右側選單 → <b>Authorize</b> → <b>Authorize app</b>，複製 Refresh Token。Seller ID 在 Settings → Account Info → Business Information → Your Merchant Token。</p></div></li>
                 </ol>
