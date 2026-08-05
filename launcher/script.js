@@ -9,7 +9,7 @@
   button.addEventListener("click", () => {
     window.clearTimeout(timer);
     status.className = "launch-status trying";
-    if (label) label.textContent = "正在喚醒 Amazon FBA OS…";
+    if (label) label.textContent = "正在喚醒 AMZ.API…";
     timer = window.setTimeout(() => {
       status.className = "launch-status fallback";
       if (label) label.textContent = "沒有開啟？請先下載 App，或從「應用程式」手動啟動。";

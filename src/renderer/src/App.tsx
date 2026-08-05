@@ -52,7 +52,7 @@ export default function App() {
     return (
       <main className="desktop-boot" aria-live="polite">
         <span>A</span>
-        <strong>Amazon FBA OS</strong>
+        <strong>AMZ.API</strong>
         <small>正在啟動 Mac 安全橋接…</small>
       </main>
     );

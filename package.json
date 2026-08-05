@@ -1,5 +1,5 @@
 {
-  "name": "amazon-fba-os",
+  "name": "amz-api",
   "version": "0.1.0",
   "description": "A private, local-first Amazon FBA operations console for macOS.",
   "private": true,
@@ -9,7 +9,7 @@
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jspusa/Amazon-FBA-OS.git"
+    "url": "https://github.com/jspusa/AMZ.API.git"
   },
   "engines": {
     "node": ">=22.13.0"
@@ -47,8 +47,8 @@
     "vitest": "4.0.18"
   },
   "build": {
-    "appId": "com.jspusa.amazon-fba-os",
-    "productName": "Amazon FBA OS",
+    "appId": "com.jspusa.amz-api",
+    "productName": "AMZ.API",
     "asar": true,
     "npmRebuild": false,
     "files": [
@@ -62,8 +62,8 @@
     "afterPack": "scripts/after-pack.mjs",
     "protocols": [
       {
-        "name": "Amazon FBA OS Launcher",
-        "schemes": ["amazon-fba-os"]
+        "name": "AMZ.API Launcher",
+        "schemes": ["amz-api"]
       }
     ],
     "mac": {
@@ -71,18 +71,18 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "target": ["dmg", "zip"],
-      "artifactName": "Amazon-FBA-OS-${version}-${arch}.${ext}",
+      "artifactName": "AMZ.API-${version}-${arch}.${ext}",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "dmg": {
       "sign": false,
-      "title": "Amazon FBA OS ${version}"
+      "title": "AMZ.API ${version}"
     },
     "publish": {
       "provider": "github",
       "owner": "jspusa",
-      "repo": "Amazon-FBA-OS",
+      "repo": "AMZ.API",
       "releaseType": "release"
     }
   }

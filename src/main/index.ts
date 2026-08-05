@@ -60,7 +60,7 @@ const EXTERNAL_DESTINATIONS: Record<ExternalDestination, string> = {
   coupons: "https://sellercentral.amazon.com/",
   "subscribe-save": "https://sellercentral.amazon.com/sns/manage",
   advertising: "https://advertising.amazon.com/",
-  github: "https://github.com/jspusa/Amazon-FBA-OS",
+  github: "https://github.com/jspusa/AMZ.API",
 };
 
 const ALLOWED_EXTERNAL_URLS = new Set([
@@ -306,7 +306,7 @@ async function createWindow(): Promise<void> {
     minWidth: 1040,
     minHeight: 720,
     show: false,
-    title: "Amazon FBA OS",
+    title: "AMZ.API",
     backgroundColor: "#f4f6f8",
     trafficLightPosition: { x: 20, y: 18 },
     webPreferences: {
@@ -480,7 +480,7 @@ function isValidLaunchUrl(raw: string): boolean {
   try {
     const url = new URL(raw);
     return (
-      url.protocol === "amazon-fba-os:" &&
+      url.protocol === "amz-api:" &&
       url.hostname === "launch" &&
       (url.pathname === "" || url.pathname === "/") &&
       !url.username &&
@@ -575,7 +575,7 @@ if (!hasSingleInstanceLock) {
 
   initializationPromise = app.whenReady().then(async () => {
     if (process.platform === "darwin" || app.isPackaged) {
-      app.setAsDefaultProtocolClient("amazon-fba-os");
+      app.setAsDefaultProtocolClient("amz-api");
     }
     const userData = app.getPath("userData");
     credentialVault = new CredentialVault(resolve(userData, "credentials.enc"));
@@ -598,7 +598,7 @@ if (!hasSingleInstanceLock) {
     appInitialized = false;
     await dialog.showMessageBox({
       type: "error",
-      title: "Amazon FBA OS 無法啟動",
+      title: "AMZ.API 無法啟動",
       message: "本機安全資料尚未準備完成，App 已停止啟動。",
       detail: "Amazon 沒有收到任何變更。重新開啟 App 後可以再次重試或選擇修復。",
       buttons: ["關閉"],

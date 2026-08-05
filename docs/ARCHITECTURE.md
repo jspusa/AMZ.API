@@ -2,7 +2,7 @@
 
 ```text
 GitHub Pages launcher
-        │ amazon-fba-os://launch（只喚醒）
+        │ amz-api://launch（只喚醒）
         ▼
 Signed macOS App
   ├─ renderer: bundled React UI, connect-src none

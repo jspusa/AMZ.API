@@ -1,4 +1,4 @@
-# Amazon FBA OS
+# AMZ.API
 
 JSPUSA 的 macOS 本機優先 Amazon 營運控制台。只處理 FBA，不提供任何 FBM 入口。
 
@@ -7,7 +7,7 @@ JSPUSA 的 macOS 本機優先 Amazon 營運控制台。只處理 FBA，不提供
 1. `launcher/`：GitHub Pages 上的下載／啟動頁。
 2. `src/`：真正執行 Amazon SP-API 的 macOS App。
 
-GitHub Pages 不會連線 Amazon，也不會檢查或接收 API 憑證。按「開啟 Mac App」只會呼叫 `amazon-fba-os://launch`；真正控制台和 Amazon 資料都在 App 內。
+GitHub Pages 不會連線 Amazon，也不會檢查或接收 API 憑證。按「開啟 Mac App」只會呼叫 `amz-api://launch`；真正控制台和 Amazon 資料都在 App 內。
 
 ## 已整合功能
 
@@ -104,8 +104,8 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 
 第一次到 `Settings → Pages`，將 Source 選為 **GitHub Actions**。之後 `launcher/` 的更新會自動部署。
 
-## Repository 改名
+## Repository
 
-本專案預定名稱是 `jspusa/Amazon-FBA-OS`。如果是從空的 `jspusa/Test` 發布，先在 repository 的 `Settings → General → Repository name` 改成 `Amazon-FBA-OS`。GitHub 會保留舊網址 redirect，commit 歷史不會消失。
+正式 repository 為 [`jspusa/AMZ.API`](https://github.com/jspusa/AMZ.API)。GitHub Pages 請在 `Settings → Pages` 將 Source 設為 **GitHub Actions**。
 
 更多安全邊界請看 [SECURITY.md](SECURITY.md) 與 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

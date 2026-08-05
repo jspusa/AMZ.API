@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Amazon FBA OS">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="AMZ.API">
   <defs><linearGradient id="g" x1="18" y1="8" x2="110" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#2b3a53"/><stop offset="1" stop-color="#101827"/></linearGradient></defs>
   <rect x="6" y="6" width="116" height="116" rx="30" fill="url(#g)"/>
   <path d="M41 84 60.5 34h8.7L89 84H77.5l-4.4-12.5H56.5L52.2 84H41Zm18.6-21.4H70L64.8 47l-5.2 15.6Z" fill="#fff"/>
