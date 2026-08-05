@@ -39,10 +39,10 @@ jobs:
         run: npm ci
       - name: Validate
         run: npm run check
-      - name: Package unsigned universal test build
+      - name: Package universal test app
         run: >
           npx --no-install electron-builder
-          --mac dmg zip
+          --mac dir
           --universal
           --publish never
           -c.mac.identity=null
@@ -50,6 +50,25 @@ jobs:
           -c.mac.notarize=false
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Ad-hoc sign and verify test app
+        run: |
+          set -euo pipefail
+          app_path="$(find release -type d -name 'AMZ.API.app' -print -quit)"
+          test -n "$app_path"
+          codesign --force --deep --sign - "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
+          "$app_path/Contents/MacOS/$executable" --version
+      - name: Create test DMG and ZIP
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          app_path="$(find release -type d -name 'AMZ.API.app' -print -quit)"
+          stage="$(mktemp -d)"
+          cp -R "$app_path" "$stage/AMZ.API.app"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -volname "AMZ.API $version" -srcfolder "$stage" -ov -format UDZO "release/AMZ.API-$version-universal.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "release/AMZ.API-$version-universal.zip"
       - name: Record checksums
         run: shasum -a 256 release/*.dmg release/*.zip > release/SHA256SUMS.txt
       - name: Upload internal test installer
