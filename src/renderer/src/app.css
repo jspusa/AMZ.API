@@ -5378,6 +5378,7 @@ body:has(.commerce-os .drawer-backdrop) {
   border-radius: 16px;
   background: #fff;
 }
+.vault-status-grid.compact { grid-template-columns: repeat(2, 1fr); }
 .vault-status-grid article { min-width: 0; padding: 12px; border-right: 1px solid #eceef1; }
 .vault-status-grid article:last-child { border-right: 0; }
 .vault-status-grid span,
@@ -5404,6 +5405,52 @@ body:has(.commerce-os .drawer-backdrop) {
 .connection-explainer > span { background: #dceafb; color: #2e65a1; }
 .connection-explainer p,
 .connection-feedback p { margin: 1px 0 0; font-size: 9px; line-height: 1.55; }
+
+.connection-sop {
+  overflow: hidden;
+  margin-bottom: 14px;
+  border: 1px solid #dce6f2;
+  border-radius: 16px;
+  background: #f6f9fd;
+}
+.connection-sop > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 14px;
+  list-style: none;
+  cursor: pointer;
+}
+.connection-sop > summary::-webkit-details-marker { display: none; }
+.connection-sop > summary > div { display: flex; align-items: center; gap: 10px; }
+.connection-sop > summary > div > span {
+  display: grid;
+  width: 29px;
+  height: 29px;
+  place-items: center;
+  border-radius: 9px;
+  background: #dfeafb;
+  color: #2f659e;
+  font-size: 11px;
+  font-weight: 850;
+}
+.connection-sop > summary strong,
+.connection-sop > summary small { display: block; }
+.connection-sop > summary strong { font-size: 10px; }
+.connection-sop > summary small { margin-top: 2px; color: #75859a; font-size: 7px; }
+.connection-sop > summary > i { color: #78879b; font-size: 14px; font-style: normal; transition: transform 160ms ease; }
+.connection-sop[open] > summary > i { transform: rotate(45deg); }
+.connection-sop-body { padding: 2px 14px 14px; border-top: 1px solid #e5edf6; }
+.connection-sop-body ol { display: grid; gap: 0; margin: 0; padding: 5px 0 0; list-style: none; }
+.connection-sop-body li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; padding: 10px 0; border-bottom: 1px solid #e6edf5; }
+.connection-sop-body li:last-child { border-bottom: 0; }
+.connection-sop-body li > span { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: #fff; color: #3d658f; font-size: 8px; font-weight: 850; box-shadow: inset 0 0 0 1px #d7e3ef; }
+.connection-sop-body li strong { font-size: 9px; }
+.connection-sop-body li p { margin: 3px 0 0; color: #647386; font-size: 8px; line-height: 1.65; }
+.connection-sop-body li b { color: #334e6c; font-weight: 800; }
+.connection-sop-actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 10px; }
+.connection-sop-actions button { min-height: 36px; border: 1px solid #d3dfec; border-radius: 10px; background: #fff; color: #395c80; cursor: pointer; font-size: 8px; font-weight: 800; }
+.connection-sop-note { margin: 10px 0 0; padding: 9px 10px; border-radius: 10px; background: #fff8e8; color: #795d23; font-size: 7px; line-height: 1.6; }
 
 .credential-section,
 .optional-credential-section {
@@ -5492,6 +5539,14 @@ body:has(.commerce-os .drawer-backdrop) {
 .optional-credential-section > summary small { margin-top: 2px; color: #9299a4; font-size: 7px; }
 .optional-credential-section > summary > div > span { grid-row: 1 / 3; }
 
+.advanced-credential-block { padding: 0 15px 15px; }
+.advanced-credential-block + .advanced-credential-block { padding-top: 14px; border-top: 1px solid #eceef1; }
+.advanced-credential-heading { margin-bottom: 10px; }
+.advanced-credential-heading strong,
+.advanced-credential-heading small { display: block; }
+.advanced-credential-heading strong { font-size: 9px; }
+.advanced-credential-heading small { margin-top: 2px; color: #9299a4; font-size: 7px; }
+
 .connection-feedback { margin-top: 12px; }
 .connection-feedback.error { background: #fff0f1; color: #9b3641; }
 .connection-feedback.error > span { background: #f9dfe2; }
@@ -5528,6 +5583,7 @@ body:has(.commerce-os .drawer-backdrop) {
   .credential-grid.two { grid-template-columns: 1fr; }
   .credential-grid label.full { grid-column: auto; }
   .connection-actions { grid-template-columns: 1fr; }
+  .connection-sop-actions { grid-template-columns: 1fr; }
   .mac-bridge-button { right: 14px; bottom: 74px; min-width: auto; }
   .mac-bridge-button > div { display: none; }
   .connection-panel > footer { align-items: stretch; flex-wrap: wrap; }

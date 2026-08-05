@@ -26,14 +26,6 @@ export default function WebGate() {
           >
             {launching ? "正在開啟 AMZ.API…" : "開啟 Mac 鑰匙"}<span>↗</span>
           </a>
-          <a
-            className="web-gate-secondary"
-            href="https://github.com/jspusa/AMZ.API/actions/workflows/mac-dev.yml"
-            target="_blank"
-            rel="noreferrer"
-          >
-            下載 Mac App
-          </a>
         </div>
         {launching && <p className="web-gate-hint">控制台會在 AMZ.API App 視窗中開啟；這個瀏覽器分頁維持鎖定是正常的。</p>}
       </section>

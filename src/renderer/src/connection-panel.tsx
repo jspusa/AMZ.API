@@ -83,6 +83,7 @@ export default function ConnectionPanel({
   onConnectionChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [sopOpen, setSopOpen] = useState(true);
   const [summary, setSummary] = useState<CredentialSummary | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [busy, setBusy] = useState<"save" | "test" | "clear" | "update" | null>(null);
@@ -234,17 +235,29 @@ export default function ConnectionPanel({
               <button type="button" onClick={() => setOpen(false)} disabled={Boolean(busy)} aria-label="關閉">×</button>
             </header>
 
-            <section className="vault-status-grid">
-              <article className={summary?.encryptionAvailable ? "ready" : "attention"}><span>KEYCHAIN</span><strong>{summary?.encryptionAvailable ? "可用" : "不可用"}</strong><small>無明文 fallback</small></article>
-              <article className={configuredCount ? "ready" : "attention"}><span>SP-API</span><strong>{configuredCount} / 3</strong><small>已設定區域</small></article>
-              <article className={summary?.imageStorageConfigured ? "ready" : "neutral"}><span>IMAGES</span><strong>{summary?.imageStorageConfigured ? "R2 就緒" : "本機預檢"}</strong><small>公開來源選配</small></article>
-              <article className="neutral"><span>UPDATED</span><strong>{formatTime(summary?.updatedAt ?? null)}</strong><small>App v{version}</small></article>
+            <section className="vault-status-grid compact">
+              <article className={summary?.encryptionAvailable ? "ready" : "attention"}><span>MAC KEYCHAIN</span><strong>{summary?.encryptionAvailable ? "安全儲存可用" : "目前不可用"}</strong><small>Secret 不會傳到 GitHub</small></article>
+              <article className={configuredCount ? "ready" : "attention"}><span>AMAZON SP-API</span><strong>{configuredCount ? `${configuredCount} 個區域已設定` : "等待連線"}</strong><small>{configuredCount ? formatTime(summary?.updatedAt ?? null) : "完成下方 4 項資料即可"}</small></article>
             </section>
 
-            <div className="connection-explainer"><span>i</span><p>Amazon SP-API 不是單一 API Key。最少需要同一個 Private Seller App 的 <strong>LWA Client ID、Client Secret、各區 Refresh Token 與 Seller ID</strong>。</p></div>
+            <details className="connection-sop" open={sopOpen} onToggle={(event) => setSopOpen(event.currentTarget.open)}>
+              <summary><div><span>?</span><div><strong>第一次串接 SOP</strong><small>照 1 → 4 找到需要的資料</small></div></div><i>＋</i></summary>
+              <div className="connection-sop-body">
+                <ol>
+                  <li><span>1</span><div><strong>進入開發者頁面</strong><p>Seller Central → <b>Apps and Services</b> → <b>Develop Apps</b>。第一次使用時選擇 <b>Private Developer</b>，因為 AMZ.API 只供自己公司使用。</p></div></li>
+                  <li><span>2</span><div><strong>建立 Private SP-API App</strong><p>建立或編輯 App，加入目前需要的角色：<b>Product Listing、Pricing、Amazon Fulfillment、Orders</b>。不需要買家 PII／Restricted Roles。</p></div></li>
+                  <li><span>3</span><div><strong>複製 LWA 兩個欄位</strong><p>在該 App 選 <b>Edit App</b>，於 <b>LWA credentials</b> 按 View，取得 Client ID 與 Client Secret。</p></div></li>
+                  <li><span>4</span><div><strong>授權各區域</strong><p>App 右側選單 → <b>Authorize</b> → <b>Authorize app</b>，複製 Refresh Token。Seller ID 在 Settings → Account Info → Business Information → Your Merchant Token。</p></div></li>
+                </ol>
+                <div className="connection-sop-actions">
+                  <button type="button" onClick={() => void window.fbaOS.app.openExternal("seller-central")}>開啟 Seller Central ↗</button>
+                </div>
+                <p className="connection-sop-note">只做美國／加拿大先填 NA；日本填 FE。每次按 Authorize 顯示的 Refresh Token 請立即貼入，不要放在 GitHub、訊息或試算表。</p>
+              </div>
+            </details>
 
             <section className="credential-section">
-              <div className="credential-heading"><span>01</span><div><strong>LWA 應用程式</strong><small>三個區域可共用同一組 Client</small></div><b className={summary?.lwaConfigured ? "saved" : ""}>{summary?.lwaConfigured ? "已保存" : "必填"}</b></div>
+              <div className="credential-heading"><span>1</span><div><strong>App 身分</strong><small>從 LWA credentials 的 View 複製；所有區域共用</small></div><b className={summary?.lwaConfigured ? "saved" : ""}>{summary?.lwaConfigured ? "已保存" : "必填"}</b></div>
               <div className="credential-grid two">
                 <label><span>LWA Client ID</span><input type="password" value={form.lwaClientId} onChange={(event) => updateField("lwaClientId", event.target.value)} placeholder={summary?.lwaConfigured ? "已保存；留白不變" : "amzn1.application-oa2-client…"} autoComplete="new-password" spellCheck={false} /></label>
                 <label><span>LWA Client Secret</span><input type="password" value={form.lwaClientSecret} onChange={(event) => updateField("lwaClientSecret", event.target.value)} placeholder={summary?.lwaConfigured ? "已保存；留白不變" : "輸入 Client Secret"} autoComplete="new-password" spellCheck={false} /></label>
@@ -252,7 +265,7 @@ export default function ConnectionPanel({
             </section>
 
             <section className="credential-section">
-              <div className="credential-heading"><span>02</span><div><strong>銷售區域</strong><small>只填公司真正使用的區域</small></div></div>
+              <div className="credential-heading"><span>2</span><div><strong>要連線的銷售區域</strong><small>每區貼入 Authorize 產生的 Token 與該帳號 Seller ID</small></div></div>
               <div className="region-credential-list">
                 {REGION_META.map((item) => {
                   const status = summary?.regions[item.region];
@@ -272,27 +285,29 @@ export default function ConnectionPanel({
             </section>
 
             <details className="optional-credential-section">
-              <summary><div><span>03</span><strong>圖片一鍵上傳（Cloudflare R2）</strong><small>{summary?.imageStorageConfigured ? `已連線 · ${summary.imagePublicBaseUrl}` : "選配；未設定仍可拖拉預覽與貼公開 URL"}</small></div><i>＋</i></summary>
-              <div className="credential-grid two padded">
-                <label><span>R2 Account ID</span><input type="password" value={form.r2AccountId} onChange={(event) => updateField("r2AccountId", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
-                <label><span>Bucket</span><input value={form.r2Bucket} onChange={(event) => updateField("r2Bucket", event.target.value)} placeholder="amazon-listing-images" /></label>
-                <label><span>Access Key ID</span><input type="password" value={form.r2AccessKeyId} onChange={(event) => updateField("r2AccessKeyId", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
-                <label><span>Secret Access Key</span><input type="password" value={form.r2SecretAccessKey} onChange={(event) => updateField("r2SecretAccessKey", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
-                <label className="full"><span>公開圖片網址</span><input value={form.r2PublicBaseUrl} onChange={(event) => updateField("r2PublicBaseUrl", event.target.value)} placeholder="https://images.example.com" inputMode="url" /></label>
+              <summary><div><span>•••</span><strong>進階選配</strong><small>R2 圖片上傳與補貨 Skill；串 Amazon 時不用填</small></div><i>＋</i></summary>
+              <div className="advanced-credential-block">
+                <div className="advanced-credential-heading"><strong>Cloudflare R2 圖片上傳</strong><small>{summary?.imageStorageConfigured ? `已連線 · ${summary.imagePublicBaseUrl}` : "未設定仍可拖拉預覽與貼公開 URL"}</small></div>
+                <div className="credential-grid two">
+                  <label><span>R2 Account ID</span><input type="password" value={form.r2AccountId} onChange={(event) => updateField("r2AccountId", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
+                  <label><span>Bucket</span><input value={form.r2Bucket} onChange={(event) => updateField("r2Bucket", event.target.value)} placeholder="amazon-listing-images" /></label>
+                  <label><span>Access Key ID</span><input type="password" value={form.r2AccessKeyId} onChange={(event) => updateField("r2AccessKeyId", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
+                  <label><span>Secret Access Key</span><input type="password" value={form.r2SecretAccessKey} onChange={(event) => updateField("r2SecretAccessKey", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
+                  <label className="full"><span>公開圖片網址</span><input value={form.r2PublicBaseUrl} onChange={(event) => updateField("r2PublicBaseUrl", event.target.value)} placeholder="https://images.example.com" inputMode="url" /></label>
+                </div>
               </div>
-            </details>
-
-            <details className="optional-credential-section">
-              <summary><div><span>04</span><strong>補貨 Skill 接點</strong><small>{summary?.replenishmentSkillConfigured ? "已保存" : "選配；內建補貨計算已可使用"}</small></div><i>＋</i></summary>
-              <div className="credential-grid padded"><label><span>HTTPS Skill URL</span><input value={form.replenishmentSkillUrl} onChange={(event) => updateField("replenishmentSkillUrl", event.target.value)} placeholder="https://…" inputMode="url" /></label></div>
+              <div className="advanced-credential-block">
+                <div className="advanced-credential-heading"><strong>補貨 Skill 接點</strong><small>{summary?.replenishmentSkillConfigured ? "已保存" : "內建補貨計算已可直接使用"}</small></div>
+                <div className="credential-grid"><label><span>HTTPS Skill URL</span><input value={form.replenishmentSkillUrl} onChange={(event) => updateField("replenishmentSkillUrl", event.target.value)} placeholder="https://…" inputMode="url" /></label></div>
+              </div>
             </details>
 
             {error && <div className="connection-feedback error" role="alert"><span>!</span><p>{error}</p></div>}
             {message && <div className="connection-feedback success" role="status"><span>✓</span><p>{message}</p></div>}
 
             <div className="connection-actions">
-              <button type="button" className="secondary" onClick={() => void testConnection()} disabled={Boolean(busy) || !configuredCount}>{busy === "test" ? "測試中…" : "測試已保存連線"}</button>
-              <button type="button" className="primary" onClick={() => void save()} disabled={Boolean(busy) || !summary?.encryptionAvailable}>{busy === "save" ? "加密保存中…" : "以 Touch ID 保存並測試"}</button>
+              <button type="button" className="secondary" onClick={() => void testConnection()} disabled={Boolean(busy) || !configuredCount}>{busy === "test" ? "測試中…" : "重新測試"}</button>
+              <button type="button" className="primary" onClick={() => void save()} disabled={Boolean(busy) || !summary?.encryptionAvailable}>{busy === "save" ? "加密保存中…" : "Touch ID 保存並連線"}</button>
             </div>
 
             <footer>
