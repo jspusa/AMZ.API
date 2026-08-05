@@ -21,7 +21,10 @@ export default async function afterPack(context) {
     [FuseV1Options.EnableNodeCliInspectArguments]: false,
     [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
     [FuseV1Options.OnlyLoadAppFromAsar]: true,
-    [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: true,
+    // The stock Electron distribution ships one shared V8 snapshot. Enabling
+    // browser-process-specific snapshots without supplying matching assets
+    // terminates the app before main executes.
+    [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: false,
     [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
   });
 }
