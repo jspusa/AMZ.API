@@ -459,6 +459,19 @@ const REGION_ENDPOINTS: Record<SpApiRegion, string> = {
   fe: "https://sellingpartnerapi-fe.amazon.com",
 };
 
+const LISTING_ITEM_INCLUDED_DATA =
+  "summaries,attributes,offers,issues,fulfillmentAvailability";
+const LISTING_SEARCH_INCLUDED_DATA =
+  `${LISTING_ITEM_INCLUDED_DATA},productTypes`;
+
+export function listingIncludedData(
+  operation: "item" | "search",
+): string {
+  return operation === "item"
+    ? LISTING_ITEM_INCLUDED_DATA
+    : LISTING_SEARCH_INCLUDED_DATA;
+}
+
 const VALID_STATUSES = new Set([
   "PENDING_AVAILABILITY",
   "PENDING",
@@ -1161,10 +1174,10 @@ async function callListingsApi(
     issueLocale: marketplace.issueLocale,
   });
   if ((input.method ?? "GET") === "GET") {
-    query.set(
-      "includedData",
-      "summaries,attributes,offers,issues,fulfillmentAvailability,productTypes",
-    );
+    // getListingsItem and searchListingsItems expose different IncludedData
+    // enums. `productTypes` is valid for search, but Amazon rejects it on the
+    // single-item endpoint with HTTP 400 "Invalid parameters provided".
+    query.set("includedData", listingIncludedData("item"));
   } else {
     query.set("includedData", "issues");
   }
@@ -1953,8 +1966,7 @@ async function callListingsSearchApi(
   const query = new URLSearchParams({
     marketplaceIds: marketplaceId,
     issueLocale: marketplace.issueLocale,
-    includedData:
-      "summaries,attributes,offers,issues,fulfillmentAvailability,productTypes",
+    includedData: listingIncludedData("search"),
     identifiers: sellerSkus.join(","),
     identifiersType: "SKU",
     pageSize: String(sellerSkus.length),

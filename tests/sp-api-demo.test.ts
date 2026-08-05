@@ -3,6 +3,7 @@ import {
   getListingContent,
   getListingImages,
   getListingPrice,
+  listingIncludedData,
   previewListingPriceUpdate,
   searchOrders,
   updateListingPrice,
@@ -82,5 +83,16 @@ describe("SP-API demo safety boundary", () => {
     expect(content.bulletPoints.length).toBeLessThanOrEqual(5);
     expect(images.images).toHaveLength(9);
     expect(images.images[0].attributeName).toBe("main_product_image_locator");
+  });
+
+  it("keeps search-only productTypes off single-item listing requests", () => {
+    expect(listingIncludedData("item").split(",")).toEqual([
+      "summaries",
+      "attributes",
+      "offers",
+      "issues",
+      "fulfillmentAvailability",
+    ]);
+    expect(listingIncludedData("search").split(",")).toContain("productTypes");
   });
 });
