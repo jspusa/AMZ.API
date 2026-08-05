@@ -21,6 +21,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve("src/renderer"),
+    base: "./",
     plugins: [react()],
     server: {
       host: "127.0.0.1",

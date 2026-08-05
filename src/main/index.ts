@@ -25,6 +25,11 @@ import { ApiRouter } from "./api-router";
 import { invalidateSpApiCredentialCaches } from "./amazon/sp-api";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
+import {
+  DEV_RENDERER_ORIGIN,
+  REMOTE_CONSOLE_URL,
+  isTrustedRendererDocument,
+} from "./renderer-trust";
 
 const { autoUpdater } = electronUpdater;
 
@@ -36,9 +41,6 @@ protocol.registerSchemesAsPrivileged([
 ]);
 app.enableSandbox();
 
-const APP_ORIGIN = "fba-app://bundle";
-const APP_ENTRY = `${APP_ORIGIN}/index.html`;
-const DEV_RENDERER_ORIGIN = "http://127.0.0.1:5173";
 const CSP = [
   "default-src 'none'",
   "script-src 'self'",
@@ -160,18 +162,8 @@ function isTrustedFrame(event: IpcMainInvokeEvent | IpcMainEvent): boolean {
     return false;
   }
   try {
-    const frameUrl = new URL(event.senderFrame.url);
     const devUrl = developmentRendererUrl();
-    if (devUrl) {
-      return frameUrl.origin === DEV_RENDERER_ORIGIN;
-    }
-    return (
-      frameUrl.protocol === "fba-app:" &&
-      frameUrl.hostname === "bundle" &&
-      (frameUrl.pathname === "/index.html" || frameUrl.pathname === "/") &&
-      !frameUrl.search &&
-      !frameUrl.hash
-    );
+    return isTrustedRendererDocument(event.senderFrame.url, devUrl);
   } catch {
     return false;
   }
@@ -345,7 +337,28 @@ async function createWindow(): Promise<void> {
   if (devUrl) {
     await createdWindow.loadURL(devUrl);
   } else {
-    await createdWindow.loadURL(APP_ENTRY);
+    for (;;) {
+      try {
+        await createdWindow.loadURL(REMOTE_CONSOLE_URL);
+        break;
+      } catch {
+        const result = await dialog.showMessageBox(createdWindow, {
+          type: "warning",
+          title: "無法載入 GitHub 控制台",
+          message: "AMZ.API Mac 鑰匙已啟動，但目前無法取得 GitHub 上的最新控制台。",
+          detail: "請確認網路連線後重試。API 憑證仍只保存在這台 Mac，Amazon 沒有收到任何操作。",
+          buttons: ["退出", "重新載入"],
+          defaultId: 1,
+          cancelId: 0,
+          noLink: true,
+        });
+        if (result.response !== 1) {
+          createdWindow.destroy();
+          app.quit();
+          throw new Error("REMOTE_CONSOLE_UNAVAILABLE");
+        }
+      }
+    }
   }
 }
 

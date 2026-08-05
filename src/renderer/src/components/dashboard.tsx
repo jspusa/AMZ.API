@@ -368,7 +368,7 @@ export default function Dashboard({
   return (
     <div className="commerce-os">
       <aside className="workspace-sidebar">
-        <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="FBA OS 首頁"><span className="os-brand-mark">A</span><span><strong>FBA OS</strong><small>Amazon operations</small></span></a>
+        <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁"><span className="os-brand-mark">A</span><span><strong>AMZ.API</strong><small>Amazon operations</small></span></a>
         <nav className="workspace-nav" aria-label="三大營運核心">
           {[
             { label: "策劃區", group: "planning", tools: ["ads", "restock"] as Tool[] },
@@ -384,7 +384,7 @@ export default function Dashboard({
 
       <div className="workspace-surface">
         <header className="workspace-topbar">
-          <a className="mobile-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }}><span>A</span><strong>FBA OS</strong></a>
+          <a className="mobile-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }}><span>A</span><strong>AMZ.API</strong></a>
           <label className="global-sku"><span>⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" /></label>
           <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)}><span>✦</span>總覽</button>
           <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => setMarketplaceId(event.target.value)} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.flag} · {item.label}</option>)}</select></label>
@@ -469,7 +469,7 @@ export default function Dashboard({
             <div className="connection-grid"><article><span>1</span><div><strong>SP-API Private Seller App</strong><p>加入 Orders、Product Listing、Amazon Fulfillment 角色，並為各區域 self-authorize。</p></div></article><article><span>2</span><div><strong>Mac Keychain Secrets</strong><p>LWA client、refresh token 與 Seller ID 只以加密密文保存在這台 Mac。</p></div></article><article><span>3</span><div><strong>圖片公開來源</strong><p>拖拉檔案先在 Mac 驗證；要一鍵送圖可連自己的 R2 公開 HTTPS 網域。</p></div></article><article><span>4</span><div><strong>Amazon Ads 獨立授權</strong><p>Ads 必須另外申請 Direct Advertiser、建立 LWA client 與每站 Profile ID，不能沿用 SP-API。</p></div></article></div>
           </details>
         </main>
-        <footer className="os-footer"><span>FBA OS · Private workspace</span><span>FBA only · No FBM · No buyer PII</span></footer>
+        <footer className="os-footer"><span>AMZ.API · GitHub UI / Local Key</span><span>FBA only · No FBM · No buyer PII</span></footer>
       </div>
 
       <nav className="mobile-core-nav" aria-label="核心區域"><button type="button" onClick={() => scrollTo("planning-zone")}><span>◎</span>策劃</button><button type="button" onClick={() => scrollTo("product-zone")}><span>Aa</span>產品</button><button type="button" onClick={() => scrollTo("pricing-zone")}><span>$</span>價格</button></nav>

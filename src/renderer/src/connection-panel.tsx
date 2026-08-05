@@ -296,8 +296,8 @@ export default function ConnectionPanel({
             </div>
 
             <footer>
-              <div><strong>版本與更新</strong><small>{update.state === "downloaded" ? `v${update.version} 已下載` : update.message ?? `目前 v${version}`}</small></div>
-              {update.state === "downloaded" ? <button type="button" onClick={() => void window.fbaOS.updates.install()}>更新並重啟</button> : <button type="button" onClick={() => void checkUpdate()} disabled={busy === "update"}>{busy === "update" ? "檢查中…" : "檢查更新"}</button>}
+              <div><strong>Mac 鑰匙版本</strong><small>{update.state === "downloaded" ? `安全更新 v${update.version} 已下載` : update.message ?? `v${version} · GitHub 控制台自動保持最新`}</small></div>
+              {update.state === "downloaded" ? <button type="button" onClick={() => void window.fbaOS.updates.install()}>更新並重啟</button> : <button type="button" onClick={() => void checkUpdate()} disabled={busy === "update"}>{busy === "update" ? "檢查中…" : "檢查鑰匙更新"}</button>}
               {summary?.hasVault && <button type="button" className="danger-link" onClick={() => void clearCredentials()} disabled={Boolean(busy)}>清除本機憑證</button>}
             </footer>
           </aside>

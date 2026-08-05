@@ -1,13 +1,13 @@
 # AMZ.API
 
-JSPUSA 的 macOS 本機優先 Amazon 營運控制台。只處理 FBA，不提供任何 FBM 入口。
+JSPUSA 的 GitHub 控制台＋macOS 本機金鑰 Amazon 營運系統。只處理 FBA，不提供任何 FBM 入口。
 
 這個 repository 會產生兩個成品：
 
-1. `launcher/`：GitHub Pages 上的下載／啟動頁。
-2. `src/`：真正執行 Amazon SP-API 的 macOS App。
+1. `src/renderer/`：由 GitHub Actions 部署到 GitHub Pages 的主控制台。
+2. `src/main/`、`src/preload/`：保存憑證並執行 Amazon SP-API 的 macOS Key Bridge。
 
-GitHub Pages 不會連線 Amazon，也不會檢查或接收 API 憑證。按「開啟 Mac App」只會呼叫 `amz-api://launch`；真正控制台和 Amazon 資料都在 App 內。
+一般瀏覽器開啟 GitHub Pages 時只顯示鎖定頁；按「開啟 Mac 鑰匙」會呼叫 `amz-api://launch`。Mac App 以自己的安全視窗載入同一套 GitHub 最新介面，並只對精確的 `https://jspusa.github.io/AMZ.API/` 文件提供本機 Bridge。API Secret 永遠不傳到 GitHub。
 
 ## 已整合功能
 
@@ -87,7 +87,7 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 
 ## 發布與更新
 
-- 推送 `main`：驗證程式、部署 launcher、建立未簽章內部測試 artifact。
+- 推送 `main`：驗證程式、自動部署 GitHub 控制台、建立內部測試 App artifact。
 - 建立和 `package.json` 完全相同的 tag（例如 `v0.1.0`）：簽章、公證、驗證後發布 GitHub Release。
 - 正式更新同時發布 `.zip`、`latest-mac.yml` 與 `.dmg`；App 內可檢查、下載，最後由使用者按「更新並重啟」。
 - 未簽章測試版只供內部測試，Gatekeeper 會警告，也不能當正式自動更新來源。
@@ -102,7 +102,7 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 
 ## GitHub Pages
 
-第一次到 `Settings → Pages`，將 Source 選為 **GitHub Actions**。之後 `launcher/` 的更新會自動部署。
+第一次到 `Settings → Pages`，將 Source 選為 **GitHub Actions**。之後 `src/renderer/` 的更新會自動建置與部署，不需要重新下載 Mac App。
 
 ## Repository
 

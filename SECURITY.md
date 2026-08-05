@@ -2,11 +2,12 @@
 
 ## 核心邊界
 
-- GitHub Pages 是 launcher，不是 Amazon 控制台。
-- Electron renderer 只載入 App 內建 `fba-app://bundle` 資產。
+- GitHub Pages 是主控制台；一般瀏覽器只顯示鎖定 gate，沒有本機 Bridge。
+- Electron renderer 只信任精確的 `https://jspusa.github.io/AMZ.API/` 或開發用固定 loopback 文件。
 - Renderer 沒有 Node.js、raw IPC、`fetch`／XHR 外連或任意開啟網址能力。
 - LWA、SP-API、R2 與未來 Ads API 請求只從 main process 發出；renderer 僅能以 `<img>` 顯示 HTTPS 商品圖片，不會附帶 Amazon 憑證或自訂 headers。
 - Custom URL 只能顯示／聚焦 App，永遠不能直接執行 Amazon 寫入。
+- GitHub UI 是受信任控制面；repository／Pages 若被入侵，remote UI 可能看到 Bridge 回傳的非 Secret 營運資料，因此寫入路徑、payload、native 摘要、Touch ID 與防重送全部由 main process 強制執行。
 
 ## 已套用保護
 
@@ -15,7 +16,7 @@
 - `nodeIntegration: false`
 - 預設拒絕所有 Chromium permissions
 - CSP、navigation、window-open、webview 白名單
-- IPC sender、main-frame、protocol、host 與 path 核對
+- IPC sender、main-frame、HTTPS protocol、GitHub hostname 與精確 repository path 核對
 - Keychain-backed `safeStorage`，不可用時 fail closed
 - Amazon preview、舊值衝突、完整 SKU、幅度檢查、Touch ID／native confirmation
 - 本機持久 idempotency ledger；未知結果不重送

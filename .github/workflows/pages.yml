@@ -1,10 +1,14 @@
-name: Deploy launcher
+name: Deploy AMZ.API control console
 
 on:
   push:
     branches: [main]
     paths:
-      - "launcher/**"
+      - "src/renderer/**"
+      - "src/shared/**"
+      - "electron.vite.config.ts"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -30,10 +34,19 @@ jobs:
           persist-credentials: false
       - name: Configure Pages
         uses: actions/configure-pages@v5
-      - name: Upload launcher
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build GitHub control console
+        run: npm run build
+      - name: Upload control console
         uses: actions/upload-pages-artifact@v4
         with:
-          path: launcher
+          path: out/renderer
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
