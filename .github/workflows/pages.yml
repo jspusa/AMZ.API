@@ -19,7 +19,7 @@ permissions:
 
 concurrency:
   group: github-pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -44,9 +44,107 @@ jobs:
       - name: Build GitHub control console
         run: npm run build
       - name: Upload control console
+        id: pages-artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: out/renderer
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/github-script@v9
+        timeout-minutes: 50
+        env:
+          PAGES_ARTIFACT_ID: ${{ steps.pages-artifact.outputs.artifact_id }}
+          PAGES_BUILD_VERSION: ${{ github.sha }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const artifactId = Number(process.env.PAGES_ARTIFACT_ID)
+            const buildVersion = process.env.PAGES_BUILD_VERSION
+
+            if (!Number.isSafeInteger(artifactId) || artifactId <= 0) {
+              throw new Error('GitHub Pages artifact ID is missing or invalid.')
+            }
+            if (!buildVersion) {
+              throw new Error('GitHub Pages build version is missing.')
+            }
+
+            const { owner, repo } = context.repo
+            const apiHeaders = { 'X-GitHub-Api-Version': '2026-03-10' }
+            const idToken = await core.getIDToken()
+            const created = await github.request(
+              'POST /repos/{owner}/{repo}/pages/deployments',
+              {
+                owner,
+                repo,
+                artifact_id: artifactId,
+                pages_build_version: buildVersion,
+                oidc_token: idToken,
+                headers: apiHeaders
+              }
+            )
+
+            const statusUrlId = created.data.status_url?.split('/').pop()
+            const deploymentId = created.data.id || statusUrlId || buildVersion
+            const rawPageUrl = created.data.page_url || `${owner}.github.io/${repo}/`
+            const pageUrl = rawPageUrl.startsWith('http') ? rawPageUrl : `https://${rawPageUrl}`
+            const cancelDeployment = () => github.request(
+              'POST /repos/{owner}/{repo}/pages/deployments/{deploymentId}/cancel',
+              { owner, repo, deploymentId, headers: apiHeaders }
+            )
+            core.setOutput('page_url', pageUrl)
+            core.info(`Created Pages deployment ${deploymentId} for ${buildVersion}.`)
+
+            const finalErrors = new Map([
+              ['deployment_failed', 'GitHub Pages deployment failed.'],
+              ['deployment_content_failed', 'GitHub Pages rejected the uploaded artifact.'],
+              ['deployment_cancelled', 'GitHub Pages deployment was cancelled.'],
+              ['deployment_lost', 'GitHub Pages deployment stopped reporting status.']
+            ])
+            const pollIntervalMs = 15000
+            const deadlineMs = 45 * 60 * 1000
+            const startedAt = Date.now()
+            let consecutiveErrors = 0
+            let lastStatus = ''
+
+            while (Date.now() - startedAt < deadlineMs) {
+              await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+
+              try {
+                const response = await github.request(
+                  'GET /repos/{owner}/{repo}/pages/deployments/{deploymentId}',
+                  { owner, repo, deploymentId, headers: apiHeaders }
+                )
+                const status = response.data.status
+                consecutiveErrors = 0
+
+                if (status !== lastStatus) {
+                  core.info(`Pages deployment status: ${status}`)
+                  lastStatus = status
+                }
+                if (status === 'succeed') {
+                  core.info(`Published ${pageUrl}`)
+                  return
+                }
+                if (finalErrors.has(status)) {
+                  throw new Error(finalErrors.get(status))
+                }
+              } catch (error) {
+                if (error instanceof Error && [...finalErrors.values()].includes(error.message)) {
+                  throw error
+                }
+                consecutiveErrors += 1
+                core.warning(`Unable to read Pages status (${consecutiveErrors}/12).`)
+                if (consecutiveErrors >= 12) {
+                  try {
+                    await cancelDeployment()
+                  } catch {
+                    core.warning('Unable to cancel the Pages deployment after repeated status API errors.')
+                  }
+                  throw new Error('GitHub Pages status API remained unavailable for three minutes.')
+                }
+              }
+            }
+
+            core.warning('Pages deployment exceeded the 45-minute workflow deadline; cancelling it.')
+            await cancelDeployment()
+            throw new Error('GitHub Pages deployment timed out after 45 minutes.')
