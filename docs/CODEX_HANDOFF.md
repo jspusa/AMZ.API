@@ -3,7 +3,7 @@
 最後更新：2026-08-06
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前版本：`v0.1.7` 候選開發中；GitHub `main` 與 `/Applications/AMZ.API.app` 仍為已驗證的 `v0.1.6`
+目前版本：`v0.1.7`；GitHub `main`、GitHub Pages 與 `/Applications/AMZ.API.app` 均已更新，本機 vault 未清除
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -187,7 +187,7 @@ Amazon App：
 - v0.1.6 已安裝為 `/Applications/AMZ.API.app`，原 v0.1.5 原封不動備份為 `/Applications/AMZ.API-v0.1.5-backup.app`；安裝前後均確認 bundle ID `com.jspusa.amz-api`、`arm64`／`x86_64` 與 `codesign --verify --deep --strict`。
 - 真實 Mac／Amazon 唯讀驗證已通過：App 正常啟動未閃退；US 站 7／14／30／90 天與自訂 90 天均載入本期及去年同期；每日提示同時顯示兩期金額；頁面底部沒有可見訂單明細區；回傳 notice 明確標示 AFN/FBA。
 - 此次沒有讀取、修改或輸出 LWA Client Secret、Refresh Token 或完整 Seller ID，也沒有執行任何 Amazon 寫入。
-- v0.1.7 候選版已完成但尚未合併／部署／安裝：
+- v0.1.7 已完成、合併、部署並安裝：
   - 商品內容更新移除重輸完整 SKU；支援 Touch ID 時直接顯示系統驗證，不先顯示額外確認對話框。Validation Preview、短效票證、舊值衝突、idempotency、單次寫入與送出後回查仍保留；無 Touch ID 時仍有原生確認 fallback。
   - Sale Price 明確對應 Seller Central「產品 → 管理所有庫存 → 編輯 SKU → Offer／商品報價 → Sale Price」，並說明不是廣告選單的價格折扣、管理促銷、Deals 或 Coupon；只更新 `discounted_price`。
   - Subscribe & Save 數字改稱「目前有效訂閱」：它是 Replenishment `listOffers` 查詢當下的 active subscriptions 快照，不是單月新增、歷史累計、配送次數或唯一顧客數。
@@ -195,13 +195,17 @@ Amazon App：
   - 內容健檢採 fail closed：Listings 讀取失敗列為「讀取失敗／未完成」且不計入缺值或拼字統計；只有可確認為 `PET_FOOD` 的空成分算「缺成分」，其他商品類型列為「成分未驗證／需人工確認 PTD」。
   - 新增 Variation Family 唯讀地圖與拖拉規劃，只接受可證明為 FBA 的 child；跨站、product type、theme、缺維度、重複維度或 family 不完整會阻擋。Parent 只作唯讀容器，沒有 PUT／PATCH／DELETE，也沒有 FBM。
   - Electron 操作驗證曾抓到 variation lookup 一啟動就自行取消；根因是 Escape 鍵 effect 在 `busy` 變更時執行 cleanup 並誤 abort 目前 GET。現已把鍵盤 listener cleanup 與僅限卸載的 request abort 拆開，來源、目標與唯讀規劃均已在 Electron 展示模式通過。
-  - 本機驗證：103/103 tests、TypeScript、main／preload／renderer production build、`git diff --check`、Electron 展示模式四項互動與 `npm audit --omit=dev` 0 vulnerabilities。
+  - 最終安全審查另補四項 fail-closed 防護：Reports 已證明為 FBA 的 SKU 不會因 Listings 缺 fulfillment 而消失；2xx 缺 attributes 會列為讀取未完成；renderer 遇到壞列、缺 SKU 或總數不一致會停止顯示；parent 宣告但搜尋漏回的 child 會讓 family 標為不完整。
+  - 本機驗證：111/111 tests、TypeScript、main／preload／renderer production build、`git diff --check`、Electron 展示模式四項互動與 `npm audit --omit=dev` 0 vulnerabilities。
+  - v0.1.7 PR #8 已 squash merge：`https://github.com/jspusa/AMZ.API/pull/8`；main merge commit：`a9a9468cdfb42ae4d1e0e1b268027bf9ca7220a0`。
+  - PR Validate run `31098052301`、main Validate run `31098122975` 與 main macOS universal run `31098122782` 均成功。原 main Pages run `31098122375` 的 deploy 步驟在 GitHub 端逾時；全新 workflow dispatch run `31098952558` 已成功，Pages deployment `5778814747` 已發布 `https://jspusa.github.io/AMZ.API/`，且 live HTML 已核對為本次 renderer 資產。
+  - main artifact 已核對 checksum、版本 `0.1.7`、bundle ID `com.jspusa.amz-api`、`arm64`／`x86_64` 與 `codesign --verify --deep --strict`；v0.1.7 已安裝為 `/Applications/AMZ.API.app`，原 v0.1.6 保留為 `/Applications/AMZ.API-v0.1.6-backup.app`。安裝後主程序可持續執行、未啟動即崩潰；真實 UI／Amazon 唯讀功能驗證仍待 Mac 解鎖。
 
 ### 已完成與仍待真實 Mac／Amazon 驗證
 
-Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出，以及 7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢均已完成。現在仍待：
+Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出、7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢，以及 v0.1.7 發布／安裝均已完成。現在仍待：
 
-1. v0.1.7 仍需建立 PR、通過 Actions、合併、部署 Pages、建置 universal App、備份 v0.1.6 後安裝，再確認版本、雙架構、簽章、啟動與既有本機 vault 正常。
+1. Mac 解鎖後確認安裝中的 v0.1.7 視窗、既有 vault 與 Orders／Listings probe 正常；目前只完成安裝後主程序未崩潰的程序層 smoke test。
 2. 在真實 US 帳號執行全站 FBA 內容健檢，確認 Mac 字典、讀取失敗排除與「缺成分／成分未驗證」分類；唯讀核對至少一個 variation family 的 parent、children、theme 與維度並做一次不送出的拖拉規劃。
 3. 唯讀確認 Sale Price 說明與目前排程，以及「目前有效訂閱」標籤；Touch ID 可用 demo 或取消流程驗證，未獲使用者另行明確授權不得送出真實商品內容或變體寫入。
 4. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的本期與去年同期逐日數字和 Seller Central 報表逐列比較；App 端 7／14／30／90／自訂載入與切換已驗證。
@@ -221,8 +225,9 @@ Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 
 
 ## 6. 目前安裝檔
 
-- 目前 `/Applications/AMZ.API.app`：v0.1.6 universal、ad-hoc 簽章；已完成真實 7／14／30／90／自訂與去年同期 AFN 銷售趨勢唯讀驗證。
-- 可回復備份：`/Applications/AMZ.API-v0.1.5-backup.app`、`/Applications/AMZ.API-v0.1.4-backup.app` 與 `/Applications/AMZ.API-v0.1.3-backup.app`。
+- 目前 `/Applications/AMZ.API.app`：v0.1.7 universal、ad-hoc 簽章；已通過版本、bundle ID、雙架構、簽章與主程序啟動驗證，真實 UI／Amazon 唯讀功能驗證待 Mac 解鎖。
+- 可回復備份：`/Applications/AMZ.API-v0.1.6-backup.app`、`/Applications/AMZ.API-v0.1.5-backup.app`、`/Applications/AMZ.API-v0.1.4-backup.app` 與 `/Applications/AMZ.API-v0.1.3-backup.app`。
+- v0.1.7 main macOS workflow run：`31098122782`；artifact：`8966405377`，名稱 `AMZ.API-unsigned-a9a9468cdfb42ae4d1e0e1b268027bf9ca7220a0`；GitHub artifact digest：`sha256:bf5c4a9cf79a59a8abc11ce25cf0db31bbe9c8c846316f7fc268969f49b370cf`（短期保存至 2026-08-20）。DMG SHA-256：`550cc0ed24f69f8661aed372f22ca22ac6f88ed9d8acb79d2af5573cc9ba2de3`；ZIP SHA-256：`c6ebda5b1631ee2d80058734667ef1a5a7b2ab6128edb463a883098198156609`；均與 artifact 內的 `SHA256SUMS.txt` 一致。
 - 實際安裝來源：分支 workflow run `31085746949`、artifact `8961382972`，名稱 `AMZ.API-unsigned-6091ff0b9fd649d816c07c8ca7d1504724a5093f`；GitHub artifact digest：`sha256:a365a0d997abd53839ff64086ded2edd8479e11aafcafae380b4653fc7b782c4`。
 - v0.1.6 分支 DMG SHA-256：`c9a20a9638088f43b690a762746efd034c8c8a05836f1d740c149a138c9c53ec`；ZIP SHA-256：`b369dba980de343527c6a602090e0a06c37d508870a690478dfac7bc45375a9c`；均與 artifact 內的 `SHA256SUMS.txt` 一致。
 - main macOS workflow run：`31086616734`；artifact：`8961800029`，名稱 `AMZ.API-unsigned-d288ac40640c92e42e11474068a879625ed7212a`；GitHub artifact digest：`sha256:1ad52cb1ca34decec9f76805b129916725dcacac0588bc96f1be0a911f757c5e`（短期保存至 2026-08-20）。main DMG SHA-256：`0c45bf2720365d08f588c40b2c4f1e9e63a02bb1e950f66af80b43a078fbcff9`；ZIP SHA-256：`43faaf83c53ceebb031169874454bb36f78eaf108d5da415f18e7df809134ae3`；均與 main artifact 內的 `SHA256SUMS.txt` 一致。
@@ -295,26 +300,20 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-先完成 v0.1.7 的發布與真實唯讀驗證，不要再擴充功能：
+v0.1.7 已完成發布與安裝；先完成真實唯讀驗證，不要再擴充功能：
 
-### A. 發布與安裝
-
-1. 確認 branch 與 `main` 沒有分歧，建立 PR，等待 Validate 與 macOS universal workflow 成功後才合併。
-2. 等 Pages 與 main macOS workflow 成功；下載 artifact，核對 `SHA256SUMS.txt`、版本、bundle ID、`arm64`／`x86_64` 與 `codesign --verify --deep --strict`。
-3. 原封不動備份 `/Applications/AMZ.API.app` 的 v0.1.6，再覆蓋安裝 v0.1.7；不得清除或輸出 Keychain vault。
-
-### B. 真實唯讀驗證
+### A. 真實唯讀驗證
 
 1. 用至少一個 US FBA variation family 核對 parent、children、theme、維度與排除項目；完成一次拖拉規劃並確認沒有 Amazon mutation。
 2. 執行全站 FBA 內容健檢；核對 Mac 字典、讀取未完成列、賣點不足，以及「缺成分／成分未驗證」分類。
 3. 唯讀查詢 Sale Price 與 Subscribe & Save，確認 UI 的 Seller Central 對應與「目前有效訂閱」定義；不得為驗證而建立折扣。
 
-### C. Touch ID 負向驗證
+### B. Touch ID 負向驗證
 
 1. 商品內容預檢後應直接出現 Touch ID，不再要求重輸 SKU 或先顯示額外對話框。
 2. 只做取消／拒絕的負向驗證，確認沒有 Amazon 寫入與 idempotency commit；真實文案寫入需使用者另行明確授權。
 
-### D. 若某一 endpoint 失敗
+### C. 若某一 endpoint 失敗
 
 依 endpoint 分開診斷，不把所有失敗歸因於「API 沒串好」：文案／圖片／Sale Price 看 Listings Items 與 PTD；FBA 庫存看 FBA Inventory；訂閱省看 Replenishment；Excel／健檢看 Reports 與 Listings enrichment。保留錯誤 code、Amazon message、Request ID、App version 與 marketplace，但不得記錄或輸出 Secret、Refresh Token 或完整 Seller ID。
 
