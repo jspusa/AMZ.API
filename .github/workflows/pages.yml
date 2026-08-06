@@ -49,6 +49,4 @@ jobs:
           path: out/renderer
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
-        with:
-          timeout: 900000
+        uses: actions/deploy-pages@v5
