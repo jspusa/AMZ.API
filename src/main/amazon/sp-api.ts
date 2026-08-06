@@ -43,6 +43,36 @@ export type OrdersSnapshot = {
   notice: string | null;
 };
 
+export type SalesTrendDays = 7 | 14 | 30;
+
+export type SalesTrendPoint = {
+  date: string;
+  interval: string;
+  totalSales: Money;
+  unitCount: number;
+  orderItemCount: number;
+  orderCount: number;
+  partial: boolean;
+};
+
+export type SalesTrendSnapshot = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  days: SalesTrendDays;
+  timeZone: string;
+  points: SalesTrendPoint[];
+  totals: {
+    totalSales: Money;
+    unitCount: number;
+    orderItemCount: number;
+    orderCount: number;
+  };
+  fetchedAt: string;
+  requestId: string | null;
+  rateLimit: string | null;
+  notice: string;
+};
+
 export type ListingIssue = {
   code: string | null;
   severity: string;
@@ -400,6 +430,7 @@ export const MARKETPLACES = {
     currency: "USD",
     region: "na" as const,
     issueLocale: "en_US",
+    timeZone: "America/Los_Angeles",
   },
   A1VC38T7YXB528: {
     label: "日本",
@@ -408,6 +439,7 @@ export const MARKETPLACES = {
     currency: "JPY",
     region: "fe" as const,
     issueLocale: "ja_JP",
+    timeZone: "Asia/Tokyo",
   },
   A2EUQ1WTGCTBG2: {
     label: "加拿大",
@@ -416,6 +448,7 @@ export const MARKETPLACES = {
     currency: "CAD",
     region: "na" as const,
     issueLocale: "en_CA",
+    timeZone: "America/Vancouver",
   },
   A19VAU5U5O7RUS: {
     label: "新加坡",
@@ -424,6 +457,7 @@ export const MARKETPLACES = {
     currency: "SGD",
     region: "fe" as const,
     issueLocale: "en_SG",
+    timeZone: "Asia/Singapore",
   },
   A39IBJ37TRP1C6: {
     label: "澳洲",
@@ -432,6 +466,7 @@ export const MARKETPLACES = {
     currency: "AUD",
     region: "fe" as const,
     issueLocale: "en_AU",
+    timeZone: "Australia/Sydney",
   },
   A1F83G8C2ARO7P: {
     label: "英國",
@@ -440,6 +475,7 @@ export const MARKETPLACES = {
     currency: "GBP",
     region: "eu" as const,
     issueLocale: "en_GB",
+    timeZone: "Europe/London",
   },
   A1PA6795UKMFR9: {
     label: "德國",
@@ -448,6 +484,7 @@ export const MARKETPLACES = {
     currency: "EUR",
     region: "eu" as const,
     issueLocale: "de_DE",
+    timeZone: "Europe/Berlin",
   },
 } as const;
 
@@ -689,8 +726,96 @@ type AmazonInventorySummary = {
 };
 
 type AmazonInventorySummariesResponse = {
-  inventorySummaries?: AmazonInventorySummary[];
+  payload?: {
+    inventorySummaries?: AmazonInventorySummary[];
+  };
   pagination?: { nextToken?: string };
+  errors?: Array<{ code?: string; message?: string; details?: string }>;
+};
+
+function hasValidOptionalInventoryQuantity(
+  record: Record<string, unknown>,
+  key: string,
+): boolean {
+  return record[key] === undefined || finiteNonNegativeInteger(record[key]) !== null;
+}
+
+function hasValidOptionalInventoryGroup(
+  record: Record<string, unknown>,
+  key: string,
+  totalKey: string,
+): boolean {
+  const group = record[key];
+  return (
+    group === undefined ||
+    (isRecord(group) && hasValidOptionalInventoryQuantity(group, totalKey))
+  );
+}
+
+function isAmazonInventorySummary(value: unknown): value is AmazonInventorySummary {
+  if (!isRecord(value) || typeof value.sellerSku !== "string" || !value.sellerSku) {
+    return false;
+  }
+  const details = value.inventoryDetails;
+  return (
+    isRecord(details) &&
+    [
+      "fulfillableQuantity",
+      "inboundWorkingQuantity",
+      "inboundShippedQuantity",
+      "inboundReceivingQuantity",
+    ].every((key) => hasValidOptionalInventoryQuantity(details, key)) &&
+    hasValidOptionalInventoryGroup(
+      details,
+      "reservedQuantity",
+      "totalReservedQuantity",
+    ) &&
+    hasValidOptionalInventoryGroup(
+      details,
+      "unfulfillableQuantity",
+      "totalUnfulfillableQuantity",
+    ) &&
+    hasValidOptionalInventoryGroup(
+      details,
+      "researchingQuantity",
+      "totalResearchingQuantity",
+    )
+  );
+}
+
+export function inventorySummariesFromResponse(
+  response: unknown,
+): AmazonInventorySummary[] | null {
+  if (!isRecord(response)) {
+    return null;
+  }
+  if (Array.isArray(response.errors) && response.errors.length) return null;
+  const payload = response.payload;
+  if (!isRecord(payload)) return null;
+  const summaries = payload.inventorySummaries;
+  return Array.isArray(summaries) && summaries.every(isAmazonInventorySummary)
+    ? summaries
+    : null;
+}
+
+export function findExactInventorySummary(
+  summaries: AmazonInventorySummary[],
+  sellerSku: string,
+): AmazonInventorySummary | null {
+  return summaries.find((item) => item.sellerSku === sellerSku) ?? null;
+}
+
+type AmazonSalesMetric = {
+  interval?: string;
+  unitCount?: number;
+  orderItemCount?: number;
+  orderCount?: number;
+  totalSales?: AmazonMoney;
+};
+
+type AmazonSalesMetricsResponse = {
+  payload?: AmazonSalesMetric[];
+  errors?: Array<{ code?: string; message?: string; details?: string }>;
 };
 
 type ListingsRequestInput = {
@@ -2594,6 +2719,408 @@ async function fetchLiveOrders(input: SearchOrdersInput): Promise<OrdersSnapshot
   };
 }
 
+type SalesTrendWindow = {
+  timeZone: string;
+  startAt: string;
+  endAt: string;
+  dateKeys: string[];
+  intervals: string[];
+};
+
+type ZonedDateParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+};
+
+const zonedFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function zonedDateParts(date: Date, timeZone: string): ZonedDateParts {
+  let formatter = zonedFormatterCache.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA-u-hc-h23", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    zonedFormatterCache.set(timeZone, formatter);
+  }
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour,
+    minute: parts.minute,
+    second: parts.second,
+  };
+}
+
+function timeZoneOffsetMinutes(date: Date, timeZone: string): number {
+  const instant = new Date(Math.floor(date.getTime() / 1_000) * 1_000);
+  const parts = zonedDateParts(instant, timeZone);
+  const representedAsUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+  return Math.round((representedAsUtc - instant.getTime()) / 60_000);
+}
+
+function offsetText(minutes: number): string {
+  const sign = minutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(minutes);
+  return `${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(
+    absolute % 60,
+  ).padStart(2, "0")}`;
+}
+
+function zonedIso(date: Date, timeZone: string): string {
+  const parts = zonedDateParts(date, timeZone);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(
+    parts.minute,
+  )}:${pad(parts.second)}${offsetText(timeZoneOffsetMinutes(date, timeZone))}`;
+}
+
+function dateKey(year: number, month: number, day: number): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${year}-${pad(month)}-${pad(day)}`;
+}
+
+function shiftDateKey(value: string, days: number): string {
+  const [year, month, day] = value.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + days));
+  return dateKey(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth() + 1,
+    shifted.getUTCDate(),
+  );
+}
+
+function zonedMidnight(value: string, timeZone: string): Date {
+  const [year, month, day] = value.split("-").map(Number);
+  const localMidnightAsUtc = Date.UTC(year, month - 1, day);
+  let instant = localMidnightAsUtc;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const next =
+      localMidnightAsUtc -
+      timeZoneOffsetMinutes(new Date(instant), timeZone) * 60_000;
+    if (next === instant) break;
+    instant = next;
+  }
+  return new Date(instant);
+}
+
+export function buildSalesTrendWindow(
+  marketplaceId: MarketplaceId,
+  days: SalesTrendDays,
+  now = new Date(),
+): SalesTrendWindow {
+  if (![7, 14, 30].includes(days) || Number.isNaN(now.getTime())) {
+    throw new TypeError("銷售趨勢日期範圍無效。");
+  }
+  const timeZone = MARKETPLACES[marketplaceId].timeZone;
+  const today = zonedDateParts(now, timeZone);
+  const todayKey = dateKey(today.year, today.month, today.day);
+  const firstKey = shiftDateKey(todayKey, -(days - 1));
+  const dateKeys = Array.from({ length: days }, (_, index) =>
+    shiftDateKey(firstKey, index),
+  );
+  const endAt = zonedIso(now, timeZone);
+  const intervals = dateKeys.map((key, index) => {
+    const start = zonedIso(zonedMidnight(key, timeZone), timeZone);
+    const end =
+      index === dateKeys.length - 1
+        ? endAt
+        : zonedIso(zonedMidnight(dateKeys[index + 1], timeZone), timeZone);
+    return `${start}--${end}`;
+  });
+  return {
+    timeZone,
+    startAt: intervals[0].slice(0, intervals[0].indexOf("--", 10)),
+    endAt,
+    dateKeys,
+    intervals,
+  };
+}
+
+export function buildSalesTrendQuery(
+  marketplaceId: MarketplaceId,
+  window: SalesTrendWindow,
+): URLSearchParams {
+  return new URLSearchParams({
+    marketplaceIds: marketplaceId,
+    interval: `${window.startAt}--${window.endAt}`,
+    granularityTimeZone: window.timeZone,
+    granularity: "Day",
+    buyerType: "All",
+    fulfillmentNetwork: "AFN",
+  });
+}
+
+function salesMetricDate(value: unknown, timeZone: string): string | null {
+  if (typeof value !== "string") return null;
+  const delimiter = value.indexOf("--", 10);
+  if (delimiter < 0) return null;
+  const start = value.slice(0, delimiter);
+  const end = value.slice(delimiter + 2);
+  const startInstant = new Date(start);
+  const endInstant = new Date(end);
+  if (
+    Number.isNaN(startInstant.getTime()) ||
+    Number.isNaN(endInstant.getTime()) ||
+    startInstant.getTime() >= endInstant.getTime()
+  ) {
+    return null;
+  }
+  const localStart = zonedDateParts(startInstant, timeZone);
+  if (localStart.hour !== 0 || localStart.minute !== 0 || localStart.second !== 0) {
+    return null;
+  }
+  return dateKey(localStart.year, localStart.month, localStart.day);
+}
+
+function salesTrendTotals(
+  points: SalesTrendPoint[],
+  currencyCode: string,
+): SalesTrendSnapshot["totals"] {
+  const totals = points.reduce(
+    (result, point) => ({
+      amount: result.amount + point.totalSales.amount,
+      unitCount: result.unitCount + point.unitCount,
+      orderItemCount: result.orderItemCount + point.orderItemCount,
+      orderCount: result.orderCount + point.orderCount,
+    }),
+    { amount: 0, unitCount: 0, orderItemCount: 0, orderCount: 0 },
+  );
+  const precision = currencyCode === "JPY" ? 0 : 2;
+  return {
+    totalSales: {
+      amount: Number(totals.amount.toFixed(precision)),
+      currencyCode,
+    },
+    unitCount: totals.unitCount,
+    orderItemCount: totals.orderItemCount,
+    orderCount: totals.orderCount,
+  };
+}
+
+export function normalizeSalesTrendResponse(input: {
+  response: unknown;
+  marketplaceId: MarketplaceId;
+  days: SalesTrendDays;
+  window: SalesTrendWindow;
+}): { points: SalesTrendPoint[]; totals: SalesTrendSnapshot["totals"] } {
+  if (!input.response || typeof input.response !== "object" || Array.isArray(input.response)) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+    });
+  }
+  const response = input.response as JsonRecord;
+  if (response.errors !== undefined && !Array.isArray(response.errors)) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+    });
+  }
+  if (Array.isArray(response.errors) && response.errors.length) {
+    const upstreamMessage = response.errors.find(
+      (error) =>
+        isRecord(error) &&
+        typeof error.message === "string" &&
+        error.message.trim(),
+    );
+    throw new SpApiError(
+      (isRecord(upstreamMessage) && typeof upstreamMessage.message === "string"
+        ? upstreamMessage.message.trim()
+        : "") ||
+        "Amazon 無法完成 FBA 銷售趨勢查詢。",
+      { status: 502, code: "UPSTREAM_UNAVAILABLE" },
+    );
+  }
+  if (!Array.isArray(response.payload)) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+    });
+  }
+
+  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
+  const expectedDates = new Set(input.window.dateKeys);
+  const byDate = new Map<string, SalesTrendPoint>();
+  for (const rawMetric of response.payload) {
+    if (!isRecord(rawMetric)) {
+      throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
+        status: 502,
+        code: "UPSTREAM_UNAVAILABLE",
+      });
+    }
+    const metric = rawMetric as AmazonSalesMetric;
+    const metricDate = salesMetricDate(metric.interval, input.window.timeZone);
+    const amount = finiteNumericValue(metric.totalSales?.amount);
+    const unitCount = finiteNonNegativeInteger(metric.unitCount);
+    const orderItemCount = finiteNonNegativeInteger(metric.orderItemCount);
+    const orderCount = finiteNonNegativeInteger(metric.orderCount);
+    if (
+      !metricDate ||
+      !expectedDates.has(metricDate) ||
+      byDate.has(metricDate) ||
+      amount === null ||
+      amount < 0 ||
+      metric.totalSales?.currencyCode !== currencyCode ||
+      unitCount === null ||
+      orderItemCount === null ||
+      orderCount === null
+    ) {
+      throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
+        status: 502,
+        code: "UPSTREAM_UNAVAILABLE",
+      });
+    }
+    byDate.set(metricDate, {
+      date: metricDate,
+      interval: metric.interval!,
+      totalSales: { amount, currencyCode },
+      unitCount,
+      orderItemCount,
+      orderCount,
+      partial: metricDate === input.window.dateKeys.at(-1),
+    });
+  }
+
+  const points = input.window.dateKeys.map((key, index) =>
+    byDate.get(key) ?? {
+      date: key,
+      interval: input.window.intervals[index],
+      totalSales: { amount: 0, currencyCode },
+      unitCount: 0,
+      orderItemCount: 0,
+      orderCount: 0,
+      partial: index === input.window.dateKeys.length - 1,
+    },
+  );
+  return { points, totals: salesTrendTotals(points, currencyCode) };
+}
+
+async function callSalesTrendApi(
+  marketplaceId: MarketplaceId,
+  window: SalesTrendWindow,
+  forceTokenRefresh = false,
+): Promise<Response> {
+  const marketplace = MARKETPLACES[marketplaceId];
+  const token = await requestAccessToken(marketplace.region, forceTokenRefresh);
+  const query = buildSalesTrendQuery(marketplaceId, window);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    return await fetch(
+      `${REGION_ENDPOINTS[marketplace.region]}/sales/v1/orderMetrics?${query}`,
+      {
+        headers: {
+          accept: "application/json",
+          "x-amz-access-token": token,
+          "x-amz-date": toAmzDate(),
+          "user-agent":
+            process.env.SP_API_USER_AGENT ||
+            "AmazonFBAOS/0.1 (Language=TypeScript; Platform=macOS)",
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      },
+    );
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new SpApiError("Amazon FBA 銷售趨勢查詢逾時，請稍後再試。", {
+        status: 504,
+        code: "UPSTREAM_UNAVAILABLE",
+      });
+    }
+    throw new SpApiError("目前無法連線至 Amazon Sales API。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchLiveSalesTrend(input: {
+  marketplaceId: MarketplaceId;
+  days: SalesTrendDays;
+}): Promise<SalesTrendSnapshot> {
+  const window = buildSalesTrendWindow(input.marketplaceId, input.days);
+  let response = await callSalesTrendApi(input.marketplaceId, window);
+  if (response.status === 401) {
+    tokenCache.delete(MARKETPLACES[input.marketplaceId].region);
+    response = await callSalesTrendApi(input.marketplaceId, window, true);
+  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (![429, 500, 503].includes(response.status)) break;
+    await wait(retryDelayMs(response, attempt));
+    response = await callSalesTrendApi(input.marketplaceId, window);
+  }
+  const requestId = response.headers.get("x-amzn-requestid");
+  if (!response.ok) {
+    const payload = await parseResponseJson<AmazonSalesMetricsResponse>(response);
+    const upstreamMessage = payload?.errors?.find(
+      (error) => typeof error?.message === "string" && error.message.trim(),
+    )?.message;
+    const message =
+      response.status === 401 || response.status === 403
+        ? "Amazon 拒絕 FBA 銷售趨勢查詢。請確認 Private SP-API App 具有 Inventory and Order Tracking（或 Product Listing）角色並重新授權。"
+        : response.status === 429
+          ? "Amazon Sales API 正在限流，請稍後再試。"
+          : upstreamMessage || "Amazon 暫時無法完成 FBA 銷售趨勢查詢。";
+    throw new SpApiError(message, {
+      status: response.status,
+      code:
+        response.status === 401 || response.status === 403
+          ? "SALES_METRICS_UNAUTHORIZED"
+          : response.status === 429
+            ? "RATE_LIMITED"
+            : "UPSTREAM_UNAVAILABLE",
+      requestId,
+      retryAfter: response.headers.get("retry-after"),
+    });
+  }
+  const payload = await parseResponseJson<AmazonSalesMetricsResponse>(response);
+  const normalized = normalizeSalesTrendResponse({
+    response: payload,
+    marketplaceId: input.marketplaceId,
+    days: input.days,
+    window,
+  });
+  return {
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    days: input.days,
+    timeZone: window.timeZone,
+    ...normalized,
+    fetchedAt: new Date().toISOString(),
+    requestId,
+    rateLimit: response.headers.get("x-amzn-ratelimit-limit"),
+    notice: "Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA），今日數字仍會變動。",
+  };
+}
+
 async function callFbaInventoryApi(
   marketplaceId: MarketplaceId,
   sellerSku: string,
@@ -2688,9 +3215,15 @@ async function fetchLiveFbaInventorySummary(
   const payload = await parseResponseJson<AmazonInventorySummariesResponse>(
     response,
   );
-  const summary = payload?.inventorySummaries?.find(
-    (item) => item.sellerSku === sellerSku,
-  );
+  const summaries = inventorySummariesFromResponse(payload);
+  if (!summaries) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 庫存資料。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+      requestId,
+    });
+  }
+  const summary = findExactInventorySummary(summaries, sellerSku);
   if (!summary) {
     throw new SpApiError("Amazon FBA 庫存中找不到這個 SKU。", {
       status: 404,
@@ -5068,6 +5601,50 @@ export async function searchOrders(
   }
 
   return fetchLiveOrders(fbaInput);
+}
+
+export async function getSalesTrend(input: {
+  marketplaceId: MarketplaceId;
+  days: SalesTrendDays;
+}): Promise<SalesTrendSnapshot> {
+  if (!shouldUseDemoMode(input.marketplaceId)) {
+    return fetchLiveSalesTrend(input);
+  }
+
+  const window = buildSalesTrendWindow(input.marketplaceId, input.days);
+  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
+  const base = currencyCode === "JPY" ? 18_000 : 180;
+  const points = window.dateKeys.map((date, index): SalesTrendPoint => {
+    const unitCount = 8 + ((index * 7 + input.days) % 13);
+    const amount = Number(
+      (base * (0.72 + ((index * 11 + input.days) % 9) / 10)).toFixed(
+        currencyCode === "JPY" ? 0 : 2,
+      ),
+    );
+    return {
+      date,
+      interval: window.intervals[index],
+      totalSales: { amount, currencyCode },
+      unitCount,
+      orderItemCount: Math.max(1, unitCount - (index % 3)),
+      orderCount: Math.max(1, unitCount - 2 - (index % 4)),
+      partial: index === window.dateKeys.length - 1,
+    };
+  });
+  return {
+    mode: "demo",
+    marketplaceId: input.marketplaceId,
+    days: input.days,
+    timeZone: window.timeZone,
+    points,
+    totals: salesTrendTotals(points, currencyCode),
+    fetchedAt: new Date().toISOString(),
+    requestId: null,
+    rateLimit: null,
+    notice: isConfiguredForMarketplace(input.marketplaceId)
+      ? "目前由 SP_API_MODE 強制使用展示資料；趨勢只供版面測試。"
+      : `${MARKETPLACES[input.marketplaceId].label}站尚未在 Mac Keychain 加入 refresh token，因此顯示展示趨勢。`,
+  };
 }
 
 type RestockPlanInput = {

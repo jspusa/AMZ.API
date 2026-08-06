@@ -17,6 +17,7 @@ import {
   getListingImages,
   getListingPrice,
   getRestockPlan,
+  getSalesTrend,
   getSubscribeAndSaveOffer,
   isFulfillmentStatus,
   isMarketplaceId,
@@ -38,6 +39,7 @@ import {
   type ListingPriceSnapshot,
   type MarketplaceId,
   type RestockPlanSnapshot,
+  type SalesTrendDays,
   type SubscribeAndSaveOfferSnapshot,
   type UpdateListingSalePriceInput,
 } from "./amazon/sp-api";
@@ -377,6 +379,8 @@ export class ApiRouter {
     switch (key) {
       case "GET /api/sp-api/orders":
         return this.orders(request);
+      case "GET /api/sp-api/sales-trend":
+        return this.salesTrend(request);
       case "GET /api/sp-api/listings":
         return this.listingPrice(request);
       case "POST /api/sp-api/listings":
@@ -451,6 +455,25 @@ export class ApiRouter {
       return json({ ...snapshot, marketplace: MARKETPLACES[marketplaceId] });
     } catch (error) {
       return apiError(error, "載入訂單時發生未預期的錯誤。");
+    }
+  }
+
+  private async salesTrend(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId ?? "ATVPDKIKX0DER");
+    const days = integer(request.query.days, 7, 7, 30);
+    if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
+    if (days === null || ![7, 14, 30].includes(days)) {
+      return invalid("銷售趨勢只支援最近 7、14 或 30 天。");
+    }
+    try {
+      return json(
+        await getSalesTrend({
+          marketplaceId,
+          days: days as SalesTrendDays,
+        }),
+      );
+    } catch (error) {
+      return apiError(error, "載入 FBA 銷售趨勢時發生未預期的錯誤。");
     }
   }
 
