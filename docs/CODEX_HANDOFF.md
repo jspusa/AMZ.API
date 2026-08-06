@@ -3,7 +3,7 @@
 最後更新：2026-08-06
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前開發版本：`v0.1.5` 候選版；最近正式安裝檔仍為 `v0.1.3`
+目前版本：`v0.1.5` 內部測試版；已合併、部署並完成真實 Mac 唯讀驗證
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -156,7 +156,7 @@ Amazon App：
   - 最終確認 UI hotfix 已由 PR #3 合併至 `main` 並成功部署 GitHub Pages；真實 Mac App 已確認欄位保持空白、placeholder 改為通用指示、空白狀態有明確說明，正式更新按鈕保持停用。
   - hotfix 上線後重新唯讀查詢時，Amazon Listing attributes 只回傳一項 `Lean & Clean` 賣點；已依使用者先前提供內容在本機重建五項賣點並再次通過 Validation Preview，但未輸入最終確認 SKU、未執行真實寫入。
   - 已將驗證通過的 v0.1.4 安裝為 `/Applications/AMZ.API.app`，安裝後再次通過「Orders 與 Listings 連線成功」與 `AFA12AM` 商品內容回讀；原 v0.1.3 保留為 `/Applications/AMZ.API-v0.1.3-backup.app`。
-- v0.1.5 候選修正已完成：
+- v0.1.5 修正已完成：
   - 整合尚未正式發布的 v0.1.4 Listings 核心修正，避免與已安裝的較早 v0.1.4 候選 build 混淆。
   - 修正 FBA Inventory v1 成功回應的 envelope：庫存摘要位於 `payload.inventorySummaries`，不再錯讀頂層欄位並誤報 `FBA_SKU_NOT_FOUND`；畸形 2xx 與合法空清單已分開處理。
   - 「近期營運」不再以單一 Orders 分頁計算「本頁銷售」；新增 Sales API `getOrderMetrics` 每日折線圖，預設 7 天並可切換 14／30 天。
@@ -167,18 +167,20 @@ Amazon App：
 - 合併 commit：`c03514c53c537c4a44cf367b4783a62c45f06e08`。
 - GitHub Actions：Validate、Pages、macOS universal build 均成功。
 - 本機驗證：40/40 tests、TypeScript、main/preload/renderer build、`npm audit --omit=dev` 0 vulnerabilities。
-- v0.1.5 整合分支已推送，Draft PR #4：`https://github.com/jspusa/AMZ.API/pull/4`；PR Validate 已通過。
+- v0.1.5 PR #4 已 squash merge 到 `main`：`https://github.com/jspusa/AMZ.API/pull/4`；合併 commit：`41cbb5ffc0b1098450a562dc973262ec27c44846`。
 - 分支上的 unsigned universal Mac workflow run `31079166726` 已完整通過打包、ad-hoc 簽章、Bridge 啟動 smoke test、DMG／ZIP 與 artifact 上傳。
+- main 的 Validate run `31080698675`、Pages run `31080698660` 與 macOS universal run `31080698700` 均成功。
+- v0.1.5 universal App 已安裝至 `/Applications/AMZ.API.app`；舊 v0.1.4 原封不動保留為 `/Applications/AMZ.API-v0.1.4-backup.app`。
+- 真實 US 帳號唯讀驗證已通過：`AFA12AM` 的 SKU 指揮中心恢復 5/5 資料源，顯示非零 FBA 可售庫存與補貨結果，不再出現 `FBA_SKU_NOT_FOUND`。
+- 真實 US Sales API 的 7／14／30 天 AFN/FBA 每日折線圖均完整載入，今日正確標示為即時／未完成資料；下方 Orders 日期範圍保持獨立。
 
-### 仍待真實 Mac／Amazon 帳號驗證
+### 已完成與仍待真實 Mac／Amazon 驗證
 
-Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出均已完成；最新整合版現在仍待：
+Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出，以及 7／14／30 天 AFN 銷售趨勢均已完成。現在仍待：
 
-1. 由最新整合 commit 建立／安裝 v0.1.5 universal App；目前 `/Applications/AMZ.API.app` 是較早的 v0.1.4 候選 build，尚未包含 FBA Inventory envelope 與 Sales 折線圖修正。
-2. 在真實 Mac 以唯讀方式查詢 `AFA12AM`，確認 SKU 指揮中心補貨資料能讀到 FBA 可售、預留與入庫數量，不再出現「Amazon FBA 庫存中找不到這個 SKU」。
-3. 在 US 站唯讀驗證 7／14／30 天 AFN 銷售折線圖，並與 Seller Central 同一站點／當地日界口徑核對；Sales API 失敗不得影響下方 Orders。
-4. 若使用者決定完成商品內容更新，仍必須由使用者手動輸入完整 SKU、確認差異並通過本機 Touch ID；寫入後再由系統回查 Amazon 結果。
-5. PR #4 仍為 Draft；合併後需確認 Pages 與 main macOS workflow，再決定是否建立正式簽章／公證的 v0.1.5 GitHub Release。
+1. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的 7／14／30 天逐日數字與 Seller Central 報表逐列比較；App 端載入與切換已驗證。
+2. 商品內容真實寫入仍未執行；任何寫入都必須保留 Amazon Validation Preview、舊值衝突檢查、Touch ID、idempotency 與送出後回查。
+3. v0.1.5 目前仍是 ad-hoc 內部測試 build；是否建立 Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。
 
 ### 最近的真實錯誤
 
@@ -193,15 +195,13 @@ Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出
 
 ## 6. 目前安裝檔
 
-- 目前 `/Applications/AMZ.API.app`：較早的 v0.1.4 universal、ad-hoc 簽章；live Listings／`AFA12AM` 回讀成功，但尚未包含本次 FBA Inventory 與 Sales 折線圖修正。
-- 可回復備份：`/Applications/AMZ.API-v0.1.3-backup.app`。
-- 最新分支測試檔：`/Users/jasper/Desktop/AMZ.API-0.1.5-universal.dmg`（尚未安裝）。
+- 目前 `/Applications/AMZ.API.app`：v0.1.5 universal、ad-hoc 簽章；已完成真實 `AFA12AM` FBA 庫存與 7／14／30 天 AFN 銷售趨勢唯讀驗證。
+- 可回復備份：`/Applications/AMZ.API-v0.1.4-backup.app` 與 `/Applications/AMZ.API-v0.1.3-backup.app`。
+- 已安裝測試檔：`/Users/jasper/Desktop/AMZ.API-0.1.5-universal.dmg`。
 - v0.1.5 DMG SHA-256：`3f37a6a0fd520839ecb73d8344b3a048265e8e345289d4693fdd75a1a5b6ef38`。
 - v0.1.5 分支 artifact workflow run：`31079166726`；artifact 僅供內部 ad-hoc 測試，保留 14 天。
-- Library 最新檔名：`AMZ.API-0.1.3-universal.dmg`
-- GitHub Actions workflow run：`31005573903`
-- Artifact：`8930318161`（短期保存，可能到期）
-- DMG SHA-256：`12c709019558d2060e88a9f8af33d121040af3ae80a56748a1cc41c5769ea232`
+- main macOS workflow run：`31080698700`；artifact：`8959432048`（短期保存）。
+- 舊 v0.1.3 Library 檔名：`AMZ.API-0.1.3-universal.dmg`；舊 DMG SHA-256：`12c709019558d2060e88a9f8af33d121040af3ae80a56748a1cc41c5769ea232`。
 - 同一 bundle ID／Keychain vault，覆蓋安裝時應保留本機憑證。
 - 目前為內部測試版／ad-hoc 驗證流程，不可宣稱已完成 Apple Developer ID 公證正式發布。
 
@@ -269,19 +269,18 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-先安裝最新整合 v0.1.5 候選版，再接續唯讀驗證：
+v0.1.5 安裝與核心唯讀驗證已完成。下一步接續使用者最新要求：
 
-### A. FBA 庫存與銷售趨勢
+### A. 促銷能力名稱與邊界
 
-1. 在 SKU 指揮中心查詢 `AFA12AM`，確認補貨來源由 4/5 恢復為 5/5，並顯示 FBA 庫存與補貨結果。
-2. 在近期營運確認預設 7 天完整 AFN 銷售折線圖，再切換 14／30 天；今日應標示即時／未完成。
-3. 圖表查詢只讀且固定 AFN；不得移除 `fulfillmentNetwork=AFN`，也不得以 Orders 當頁資料回填假總額。
+1. 現有 `discounted_price` 寫入對應 SKU 層級 Amazon Sale Price 排程，不是 Seller Central「廣告」選單中的優惠券、價格折扣、Deals 或管理促銷活動。
+2. 介面應明確顯示 Seller Central 對應路徑與可能的折扣疊加警告，不可用模糊的「促銷活動」名稱造成誤解。
 
-### B. Orders 與 Listings 皆成功（包含相容唯讀參數）
+### B. 商品內容 Touch ID 流程
 
-1. `AFA12AM` 文案、價格／促銷與 Excel 均已成功；不要重做已完成的根因排查。
-2. 若要驗證寫入前流程，需先取得使用者明確同意，再選低風險 SKU 測一次 Validation Preview。
-3. 未經使用者再次確認，不執行真實價格、文案或圖片寫入。
+1. 使用者要求商品內容更新不再重輸完整 SKU；按下最終更新後，在支援 Touch ID 的 Mac 直接顯示系統 Touch ID，不再先顯示「是否使用 Touch ID」對話框。
+2. 只移除商品內容的重輸 SKU 步驟；不得移除差異確認、Validation Preview、舊值衝突、票證、防重送、單次 PATCH 與送出後回查。
+3. 沒有 Touch ID 的 Mac 仍需保留原生本機確認 fallback；未經使用者再次確認，不執行真實 Amazon 寫入。
 
 ### C. Listings 再次回 400
 
