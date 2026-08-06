@@ -17,6 +17,7 @@ import {
   getListingImages,
   getListingPrice,
   getRestockPlan,
+  getSalesTrend,
   getSubscribeAndSaveOffer,
   isFulfillmentStatus,
   isMarketplaceId,
@@ -38,6 +39,7 @@ import {
   type ListingPriceSnapshot,
   type MarketplaceId,
   type RestockPlanSnapshot,
+  type SalesTrendDays,
   type SubscribeAndSaveOfferSnapshot,
   type UpdateListingSalePriceInput,
 } from "./amazon/sp-api";
@@ -113,6 +115,8 @@ function apiError(error: unknown, fallback: string): ApiResponse {
         message: error.message,
         requestId: error.requestId,
         issues: error.issues,
+        operation: error.operation,
+        upstreamCode: error.upstreamCode,
       },
       status,
       error.retryAfter ? { "retry-after": error.retryAfter } : {},
@@ -273,7 +277,13 @@ function sourceResult<T>(result: PromiseSettledResult<T>) {
     data: null,
     error:
       error instanceof SpApiError
-        ? { code: error.code, message: error.message, requestId: error.requestId }
+        ? {
+            code: error.code,
+            message: error.message,
+            requestId: error.requestId,
+            operation: error.operation,
+            upstreamCode: error.upstreamCode,
+          }
         : {
             code: "UPSTREAM_UNAVAILABLE",
             message: "這項 Amazon 資料暫時無法讀取，其他結果仍可使用。",
@@ -338,7 +348,9 @@ export class ApiRouter {
         result.regions[region] = {
           ok: snapshot.mode === "live",
           message: snapshot.mode === "live"
-            ? "Orders 與 Listings 連線成功。"
+            ? listings.compatibilityFallback
+              ? "Orders 與 Listings 連線成功；Listings 使用唯讀相容參數。"
+              : "Orders 與 Listings 連線成功。"
             : "目前仍是展示模式。",
           requestId: listings.requestId ?? snapshot.requestId,
         };
@@ -346,7 +358,11 @@ export class ApiRouter {
         result.regions[region] = {
           ok: false,
           message: error instanceof SpApiError
-            ? `Listings 驗證失敗：${error.message} 請核對 Seller ID 與 Product Listing 權限。`
+            ? error.status === 400
+              ? `Listings 驗證失敗：${error.message} 請核對 Merchant Token 是否與目前 Refresh Token 屬於同一 Seller 帳號。`
+              : error.status === 401 || error.status === 403
+                ? `Listings 驗證失敗：${error.message} 請確認 Product Listing 角色後重新授權 App。`
+                : `Listings 驗證失敗：${error.message}`
             : "連線測試失敗。",
           requestId: error instanceof SpApiError ? error.requestId : null,
         };
@@ -377,6 +393,8 @@ export class ApiRouter {
     switch (key) {
       case "GET /api/sp-api/orders":
         return this.orders(request);
+      case "GET /api/sp-api/sales-trend":
+        return this.salesTrend(request);
       case "GET /api/sp-api/listings":
         return this.listingPrice(request);
       case "POST /api/sp-api/listings":
@@ -451,6 +469,25 @@ export class ApiRouter {
       return json({ ...snapshot, marketplace: MARKETPLACES[marketplaceId] });
     } catch (error) {
       return apiError(error, "載入訂單時發生未預期的錯誤。");
+    }
+  }
+
+  private async salesTrend(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId ?? "ATVPDKIKX0DER");
+    const days = integer(request.query.days, 7, 7, 30);
+    if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
+    if (days === null || ![7, 14, 30].includes(days)) {
+      return invalid("銷售趨勢只支援最近 7、14 或 30 天。");
+    }
+    try {
+      return json(
+        await getSalesTrend({
+          marketplaceId,
+          days: days as SalesTrendDays,
+        }),
+      );
+    } catch (error) {
+      return apiError(error, "載入 FBA 銷售趨勢時發生未預期的錯誤。");
     }
   }
 

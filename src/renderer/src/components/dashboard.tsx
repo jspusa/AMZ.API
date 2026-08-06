@@ -6,6 +6,10 @@ import ImageWorkspaceDrawer from "./image-workspace-drawer";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
+import SalesTrendChart, {
+  salesTrendFailureMessage,
+  type SalesTrendSnapshot,
+} from "./sales-trend-chart";
 import SkuCommandCenter from "./sku-command-center";
 import SkuOperationsDrawer from "./sku-operations-drawer";
 import SystemHealthControl from "./system-health-control";
@@ -208,7 +212,8 @@ export default function Dashboard({
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [marketplaceId, setMarketplaceId] = useState(initialSnapshot.marketplaceId);
   const [globalSku, setGlobalSku] = useState("");
-  const [days, setDays] = useState("14");
+  const [orderDays, setOrderDays] = useState("14");
+  const [trendDays, setTrendDays] = useState<7 | 14 | 30>(7);
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
@@ -220,7 +225,11 @@ export default function Dashboard({
   const [pageHistory, setPageHistory] = useState<Array<string | null>>([]);
   const [pageNumber, setPageNumber] = useState(1);
   const [autoSync, setAutoSync] = useState(true);
+  const [salesTrend, setSalesTrend] = useState<SalesTrendSnapshot | null>(null);
+  const [salesTrendLoading, setSalesTrendLoading] = useState(false);
+  const [salesTrendError, setSalesTrendError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const salesTrendAbortRef = useRef<AbortController | null>(null);
   const didMount = useRef(false);
 
   const loadSnapshot = useCallback(async (paginationToken: string | null = null) => {
@@ -229,7 +238,7 @@ export default function Dashboard({
     abortRef.current = controller;
     setLoading(true);
     setError(null);
-    const params = new URLSearchParams({ marketplaceId, days });
+    const params = new URLSearchParams({ marketplaceId, days: orderDays });
     if (status) params.set("status", status);
     if (paginationToken) params.set("paginationToken", paginationToken);
     try {
@@ -255,7 +264,57 @@ export default function Dashboard({
     } finally {
       if (abortRef.current === controller) setLoading(false);
     }
-  }, [days, marketplaceId, status]);
+  }, [marketplaceId, orderDays, status]);
+
+  const loadSalesTrend = useCallback(async () => {
+    salesTrendAbortRef.current?.abort();
+    const controller = new AbortController();
+    salesTrendAbortRef.current = controller;
+    setSalesTrendLoading(true);
+    setSalesTrendError(null);
+    setSalesTrend((current) =>
+      current?.marketplaceId === marketplaceId && current.days === trendDays
+        ? current
+        : null,
+    );
+    const params = new URLSearchParams({ marketplaceId, days: String(trendDays) });
+    try {
+      const response = await fetch(`/api/sp-api/sales-trend?${params}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const payload = (await response.json()) as
+        | SalesTrendSnapshot
+        | { code?: string; message?: string; requestId?: string | null };
+      if (!response.ok) {
+        const problem = payload as {
+          code?: string;
+          message?: string;
+          requestId?: string | null;
+        };
+        const message = salesTrendFailureMessage(response.status, problem);
+        throw new Error(
+          `${message}${problem.requestId ? `（Request ID: ${problem.requestId}）` : ""}`,
+        );
+      }
+      const next = payload as SalesTrendSnapshot;
+      if (next.marketplaceId !== marketplaceId || next.days !== trendDays) {
+        throw new Error("銷售趨勢回應與目前站點或日期範圍不一致，已停止顯示。");
+      }
+      if (salesTrendAbortRef.current === controller) setSalesTrend(next);
+    } catch (requestError) {
+      if (requestError instanceof Error && requestError.name === "AbortError") return;
+      if (salesTrendAbortRef.current === controller) {
+        setSalesTrendError(
+          requestError instanceof Error
+            ? requestError.message
+            : "目前無法載入 FBA 銷售趨勢。",
+        );
+      }
+    } finally {
+      if (salesTrendAbortRef.current === controller) setSalesTrendLoading(false);
+    }
+  }, [marketplaceId, trendDays]);
 
   useEffect(() => {
     if (!didMount.current) {
@@ -267,7 +326,12 @@ export default function Dashboard({
     setPageNumber(1);
     void loadSnapshot(null);
     return () => abortRef.current?.abort();
-  }, [days, marketplaceId, status, loadSnapshot]);
+  }, [marketplaceId, orderDays, status, loadSnapshot]);
+
+  useEffect(() => {
+    void loadSalesTrend();
+    return () => salesTrendAbortRef.current?.abort();
+  }, [loadSalesTrend]);
 
   useEffect(() => {
     if (!selectedOrder) return;
@@ -298,13 +362,15 @@ export default function Dashboard({
         !openTool &&
         !commandOpen &&
         !selectedOrder &&
-        !loading
+        !loading &&
+        !salesTrendLoading
       ) {
         void loadSnapshot(currentPageToken);
+        void loadSalesTrend();
       }
     }, 5 * 60 * 1_000);
     return () => window.clearInterval(interval);
-  }, [autoSync, commandOpen, currentPageToken, loadSnapshot, loading, openTool, selectedOrder]);
+  }, [autoSync, commandOpen, currentPageToken, loadSalesTrend, loadSnapshot, loading, openTool, salesTrendLoading, selectedOrder]);
 
   const filteredOrders = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -316,14 +382,6 @@ export default function Dashboard({
         .includes(needle),
     );
   }, [search, snapshot.orders]);
-
-  const metrics = useMemo(() => {
-    const currencyCode = snapshot.orders.find((order) => order.total)?.total?.currencyCode ?? snapshot.marketplace.currency;
-    const gross = snapshot.orders.reduce((sum, order) => sum + (order.total?.amount ?? 0), 0);
-    const units = snapshot.orders.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
-    const actionable = snapshot.orders.filter((order) => ["UNSHIPPED", "PARTIALLY_SHIPPED"].includes(order.fulfillmentStatus)).length;
-    return { gross: { amount: gross, currencyCode }, units, actionable };
-  }, [snapshot]);
 
   const launch = (tool: Tool) => {
     setSelectedOrder(null);
@@ -450,10 +508,10 @@ export default function Dashboard({
           </div>
 
           <section className="operations-pulse">
-            <div className="pulse-heading"><div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2><p>訂單留在這裡，需要時再看，不搶三大核心的注意力。</p></div><button type="button" className="pulse-refresh" onClick={() => void loadSnapshot(currentPageToken)} disabled={loading}><span className={loading ? "spin" : ""}>↻</span>{loading ? "同步中" : "同步"}</button></div>
-            <div className="pulse-metrics"><article><span>本頁銷售</span><strong>{formatMoney(metrics.gross)}</strong></article><article><span>訂單</span><strong>{snapshot.orders.length}</strong></article><article><span>件數</span><strong>{metrics.units}</strong></article><article className={metrics.actionable ? "attention" : ""}><span>需留意</span><strong>{metrics.actionable}</strong></article></div>
+            <div className="pulse-heading"><div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2><p>先看完整 FBA 銷售趨勢；需要時再往下查看訂單。</p></div><button type="button" className="pulse-refresh" onClick={() => { void loadSnapshot(currentPageToken); void loadSalesTrend(); }} disabled={loading || salesTrendLoading}><span className={loading || salesTrendLoading ? "spin" : ""}>↻</span>{loading || salesTrendLoading ? "同步中" : "同步"}</button></div>
+            <SalesTrendChart snapshot={salesTrend} days={trendDays} loading={salesTrendLoading} error={salesTrendError} onDaysChange={setTrendDays} onRetry={() => void loadSalesTrend()} />
             <div className="pulse-toolbar">
-              <select value={days} onChange={(event) => setDays(event.target.value)} aria-label="更新範圍"><option value="7">最近 7 天</option><option value="14">最近 14 天</option><option value="30">最近 30 天</option><option value="60">最近 60 天</option><option value="90">最近 90 天</option></select>
+              <select value={orderDays} onChange={(event) => setOrderDays(event.target.value)} aria-label="訂單日期範圍"><option value="7">最近 7 天訂單</option><option value="14">最近 14 天訂單</option><option value="30">最近 30 天訂單</option><option value="60">最近 60 天訂單</option><option value="90">最近 90 天訂單</option></select>
               <select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="訂單狀態"><option value="">所有狀態</option><option value="UNSHIPPED">待出貨</option><option value="PARTIALLY_SHIPPED">部分出貨</option><option value="SHIPPED">已出貨</option><option value="PENDING">處理中</option><option value="CANCELLED">已取消</option></select>
               <label><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜尋訂單、SKU 或 ASIN" /></label>
             </div>
