@@ -43,7 +43,16 @@ export type OrdersSnapshot = {
   notice: string | null;
 };
 
-export type SalesTrendDays = 7 | 14 | 30;
+export type SalesTrendPresetDays = 7 | 14 | 30 | 90;
+export type SalesTrendDays = SalesTrendPresetDays;
+export type SalesTrendComparisonMode = "none" | "previous-year";
+
+export type SalesTrendRange = {
+  startDate: string;
+  endDate: string;
+  dayCount: number;
+  presetDays: SalesTrendPresetDays | null;
+};
 
 export type SalesTrendPoint = {
   date: string;
@@ -55,21 +64,33 @@ export type SalesTrendPoint = {
   partial: boolean;
 };
 
+export type SalesTrendTotals = {
+  totalSales: Money;
+  unitCount: number;
+  orderItemCount: number;
+  orderCount: number;
+};
+
 export type SalesTrendSnapshot = {
+  schemaVersion: 2;
   mode: "live" | "demo";
   marketplaceId: MarketplaceId;
-  days: SalesTrendDays;
+  days: number;
+  range: SalesTrendRange;
   timeZone: string;
   points: SalesTrendPoint[];
-  totals: {
-    totalSales: Money;
-    unitCount: number;
-    orderItemCount: number;
-    orderCount: number;
-  };
+  totals: SalesTrendTotals;
   fetchedAt: string;
   requestId: string | null;
   rateLimit: string | null;
+  comparison: null | {
+    kind: "previous-year";
+    range: SalesTrendRange;
+    points: SalesTrendPoint[];
+    totals: SalesTrendTotals;
+    requestId: string | null;
+    rateLimit: string | null;
+  };
   notice: string;
 };
 
@@ -2924,12 +2945,14 @@ async function fetchLiveOrders(input: SearchOrdersInput): Promise<OrdersSnapshot
   };
 }
 
-type SalesTrendWindow = {
+export type SalesTrendWindow = {
   timeZone: string;
+  range: SalesTrendRange;
   startAt: string;
   endAt: string;
   dateKeys: string[];
   intervals: string[];
+  partialDateKey: string | null;
 };
 
 type ZonedDateParts = {
@@ -3019,13 +3042,28 @@ function shiftDateKey(value: string, days: number): string {
   );
 }
 
-function zonedMidnight(value: string, timeZone: string): Date {
+function zonedLocalInstant(
+  value: string,
+  timeZone: string,
+  time: Pick<ZonedDateParts, "hour" | "minute" | "second"> = {
+    hour: 0,
+    minute: 0,
+    second: 0,
+  },
+): Date {
   const [year, month, day] = value.split("-").map(Number);
-  const localMidnightAsUtc = Date.UTC(year, month - 1, day);
-  let instant = localMidnightAsUtc;
+  const localAsUtc = Date.UTC(
+    year,
+    month - 1,
+    day,
+    time.hour,
+    time.minute,
+    time.second,
+  );
+  let instant = localAsUtc;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const next =
-      localMidnightAsUtc -
+      localAsUtc -
       timeZoneOffsetMinutes(new Date(instant), timeZone) * 60_000;
     if (next === instant) break;
     instant = next;
@@ -3033,22 +3071,135 @@ function zonedMidnight(value: string, timeZone: string): Date {
   return new Date(instant);
 }
 
-export function buildSalesTrendWindow(
-  marketplaceId: MarketplaceId,
-  days: SalesTrendDays,
-  now = new Date(),
-): SalesTrendWindow {
-  if (![7, 14, 30].includes(days) || Number.isNaN(now.getTime())) {
-    throw new TypeError("銷售趨勢日期範圍無效。");
+function zonedMidnight(value: string, timeZone: string): Date {
+  return zonedLocalInstant(value, timeZone);
+}
+
+function calendarDayCount(startDate: string, endDate: string): number {
+  const [startYear, startMonth, startDay] = startDate.split("-").map(Number);
+  const [endYear, endMonth, endDay] = endDate.split("-").map(Number);
+  return (
+    Math.round(
+      (Date.UTC(endYear, endMonth - 1, endDay) -
+        Date.UTC(startYear, startMonth - 1, startDay)) /
+        86_400_000,
+    ) + 1
+  );
+}
+
+function exactYearShift(value: string, years: number): string | null {
+  const [year, month, day] = value.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year + years, month - 1, day));
+  return shifted.getUTCMonth() === month - 1 && shifted.getUTCDate() === day
+    ? dateKey(shifted.getUTCFullYear(), month, day)
+    : null;
+}
+
+function clampedYearShift(value: string, years: number): string {
+  const exact = exactYearShift(value, years);
+  if (exact) return exact;
+  const [year, month] = value.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year + years, month, 0)).getUTCDate();
+  return dateKey(year + years, month, lastDay);
+}
+
+function invalidSalesTrendRange(message: string): never {
+  throw new SpApiError(message, {
+    status: 400,
+    code: "INVALID_SALES_TREND_RANGE",
+  });
+}
+
+function assertSalesTrendApiHorizon(
+  range: SalesTrendRange,
+  todayKey: string,
+): void {
+  const firstConservativeDate = shiftDateKey(
+    clampedYearShift(todayKey, -2),
+    1,
+  );
+  if (range.startDate < firstConservativeDate) {
+    invalidSalesTrendRange(
+      "Sales API 每日資料的開始日必須晚於距今兩年的同一站點日期；請將開始日往後調整至少一天。",
+    );
   }
-  const timeZone = MARKETPLACES[marketplaceId].timeZone;
+}
+
+export function resolveSalesTrendRange(
+  input: {
+    marketplaceId: MarketplaceId;
+    days?: number | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  },
+  now = new Date(),
+): SalesTrendRange {
+  if (Number.isNaN(now.getTime())) {
+    invalidSalesTrendRange("銷售趨勢日期範圍無效。");
+  }
+  const hasDays = input.days !== null && input.days !== undefined;
+  const hasStart = input.startDate !== null && input.startDate !== undefined;
+  const hasEnd = input.endDate !== null && input.endDate !== undefined;
+  if (hasDays && (hasStart || hasEnd)) {
+    invalidSalesTrendRange("預設天數與自訂日期不可同時使用。");
+  }
+  if (hasStart !== hasEnd) {
+    invalidSalesTrendRange("自訂日期必須同時提供開始日與結束日。");
+  }
+
+  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
   const today = zonedDateParts(now, timeZone);
   const todayKey = dateKey(today.year, today.month, today.day);
-  const firstKey = shiftDateKey(todayKey, -(days - 1));
-  const dateKeys = Array.from({ length: days }, (_, index) =>
-    shiftDateKey(firstKey, index),
+  if (!hasStart) {
+    const days = hasDays ? input.days! : 7;
+    if (![7, 14, 30, 90].includes(days)) {
+      invalidSalesTrendRange("銷售趨勢只支援最近 7、14、30 或 90 天。");
+    }
+    const presetDays = days as SalesTrendPresetDays;
+    const range = {
+      startDate: shiftDateKey(todayKey, -(presetDays - 1)),
+      endDate: todayKey,
+      dayCount: presetDays,
+      presetDays,
+    } satisfies SalesTrendRange;
+    assertSalesTrendApiHorizon(range, todayKey);
+    return range;
+  }
+
+  const startDate = input.startDate!;
+  const endDate = input.endDate!;
+  if (!isDateOnly(startDate) || !isDateOnly(endDate)) {
+    invalidSalesTrendRange("自訂日期必須使用 YYYY-MM-DD 格式。");
+  }
+  const dayCount = calendarDayCount(startDate, endDate);
+  if (dayCount < 1 || dayCount > 90) {
+    invalidSalesTrendRange("自訂日期範圍必須介於 1 到 90 天。");
+  }
+  if (endDate > todayKey) {
+    invalidSalesTrendRange("自訂日期不可包含未來日期。");
+  }
+  const range = {
+    startDate,
+    endDate,
+    dayCount,
+    presetDays: null,
+  } satisfies SalesTrendRange;
+  assertSalesTrendApiHorizon(range, todayKey);
+  return range;
+}
+
+function buildSalesTrendRangeWindow(
+  marketplaceId: MarketplaceId,
+  range: SalesTrendRange,
+  partialEnd: Date | null,
+): SalesTrendWindow {
+  const timeZone = MARKETPLACES[marketplaceId].timeZone;
+  const dateKeys = Array.from({ length: range.dayCount }, (_, index) =>
+    shiftDateKey(range.startDate, index),
   );
-  const endAt = zonedIso(now, timeZone);
+  const endAt = partialEnd
+    ? zonedIso(partialEnd, timeZone)
+    : zonedIso(zonedMidnight(shiftDateKey(range.endDate, 1), timeZone), timeZone);
   const intervals = dateKeys.map((key, index) => {
     const start = zonedIso(zonedMidnight(key, timeZone), timeZone);
     const end =
@@ -3059,11 +3210,64 @@ export function buildSalesTrendWindow(
   });
   return {
     timeZone,
-    startAt: intervals[0].slice(0, intervals[0].indexOf("--", 10)),
+    range,
+    startAt: zonedIso(zonedMidnight(range.startDate, timeZone), timeZone),
     endAt,
     dateKeys,
     intervals,
+    partialDateKey: partialEnd ? range.endDate : null,
   };
+}
+
+export function buildSalesTrendWindow(
+  marketplaceId: MarketplaceId,
+  days: SalesTrendPresetDays,
+  now = new Date(),
+): SalesTrendWindow {
+  const range = resolveSalesTrendRange({ marketplaceId, days }, now);
+  return buildSalesTrendRangeWindow(marketplaceId, range, now);
+}
+
+export function buildCustomSalesTrendWindow(
+  marketplaceId: MarketplaceId,
+  startDate: string,
+  endDate: string,
+  now = new Date(),
+): SalesTrendWindow {
+  const range = resolveSalesTrendRange(
+    { marketplaceId, startDate, endDate },
+    now,
+  );
+  const timeZone = MARKETPLACES[marketplaceId].timeZone;
+  const today = zonedDateParts(now, timeZone);
+  const todayKey = dateKey(today.year, today.month, today.day);
+  return buildSalesTrendRangeWindow(
+    marketplaceId,
+    range,
+    range.endDate === todayKey ? now : null,
+  );
+}
+
+export function buildPreviousYearSalesTrendWindow(
+  marketplaceId: MarketplaceId,
+  current: SalesTrendWindow,
+): SalesTrendWindow {
+  const range = {
+    startDate: clampedYearShift(current.range.startDate, -1),
+    endDate: clampedYearShift(current.range.endDate, -1),
+    dayCount: 0,
+    presetDays: null,
+  } satisfies SalesTrendRange;
+  range.dayCount = calendarDayCount(range.startDate, range.endDate);
+
+  let partialEnd: Date | null = null;
+  const exactEndDate = exactYearShift(current.range.endDate, -1);
+  if (current.partialDateKey && exactEndDate) {
+    const currentEnd = new Date(current.endAt);
+    const time = zonedDateParts(currentEnd, current.timeZone);
+    partialEnd = zonedLocalInstant(exactEndDate, current.timeZone, time);
+  }
+  return buildSalesTrendRangeWindow(marketplaceId, range, partialEnd);
 }
 
 export function buildSalesTrendQuery(
@@ -3130,7 +3334,6 @@ function salesTrendTotals(
 export function normalizeSalesTrendResponse(input: {
   response: unknown;
   marketplaceId: MarketplaceId;
-  days: SalesTrendDays;
   window: SalesTrendWindow;
 }): { points: SalesTrendPoint[]; totals: SalesTrendSnapshot["totals"] } {
   if (!input.response || typeof input.response !== "object" || Array.isArray(input.response)) {
@@ -3207,7 +3410,7 @@ export function normalizeSalesTrendResponse(input: {
       unitCount,
       orderItemCount,
       orderCount,
-      partial: metricDate === input.window.dateKeys.at(-1),
+      partial: metricDate === input.window.partialDateKey,
     });
   }
 
@@ -3219,7 +3422,7 @@ export function normalizeSalesTrendResponse(input: {
       unitCount: 0,
       orderItemCount: 0,
       orderCount: 0,
-      partial: index === input.window.dateKeys.length - 1,
+      partial: key === input.window.partialDateKey,
     },
   );
   return { points, totals: salesTrendTotals(points, currencyCode) };
@@ -3267,20 +3470,105 @@ async function callSalesTrendApi(
   }
 }
 
-async function fetchLiveSalesTrend(input: {
-  marketplaceId: MarketplaceId;
-  days: SalesTrendDays;
-}): Promise<SalesTrendSnapshot> {
-  const window = buildSalesTrendWindow(input.marketplaceId, input.days);
-  let response = await callSalesTrendApi(input.marketplaceId, window);
+export function salesTrendRetryDelayMs(
+  response: Pick<Response, "headers">,
+  attempt: number,
+  now = Date.now(),
+): number {
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  let requestedDelay: number | null = null;
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      requestedDelay = seconds * 1_000;
+    } else {
+      const retryAt = Date.parse(retryAfter);
+      if (Number.isFinite(retryAt) && retryAt > now) {
+        requestedDelay = retryAt - now;
+      }
+    }
+  }
+  if (requestedDelay !== null) {
+    return Math.min(Math.max(Math.ceil(requestedDelay), 2_000), 60_000);
+  }
+  return Math.min(
+    2_000 * 2 ** Math.max(0, attempt) + Math.random() * 250,
+    10_000,
+  );
+}
+
+type SalesTrendSeriesResult = {
+  points: SalesTrendPoint[];
+  totals: SalesTrendSnapshot["totals"];
+  requestId: string | null;
+  rateLimit: string | null;
+};
+
+type SalesTrendComparisonResult = SalesTrendSeriesResult & {
+  range: SalesTrendRange;
+};
+
+function comparablePreviousYearSeries(
+  currentWindow: SalesTrendWindow,
+  comparisonWindow: SalesTrendWindow,
+  rawSeries: SalesTrendSeriesResult,
+): SalesTrendComparisonResult {
+  const comparableDates = new Set(
+    currentWindow.dateKeys
+      .map((value) => exactYearShift(value, -1))
+      .filter((value): value is string => value !== null),
+  );
+  const points = rawSeries.points.filter((point) => comparableDates.has(point.date));
+  return {
+    ...rawSeries,
+    range: {
+      startDate: points[0]?.date ?? comparisonWindow.range.startDate,
+      endDate: points.at(-1)?.date ?? comparisonWindow.range.endDate,
+      dayCount: points.length,
+      presetDays: null,
+    },
+    points,
+    totals: salesTrendTotals(
+      points,
+      rawSeries.totals.totalSales.currencyCode,
+    ),
+  };
+}
+
+function salesTrendComparisonNotice(
+  currentWindow: SalesTrendWindow,
+  hasComparison: boolean,
+): string | null {
+  if (!hasComparison) return null;
+  if (
+    currentWindow.partialDateKey &&
+    !exactYearShift(currentWindow.partialDateKey, -1)
+  ) {
+    return "今天是 2 月 29 日，去年沒有相同月日；該日的去年同期會留空，不套用相同時分的 cutoff。";
+  }
+  if (currentWindow.partialDateKey) {
+    return "本期包含今天時，去年同期也只計到相同站點當地時間；無法按相同月日對應的閏日會留空。";
+  }
+  return "去年同期只保留可按相同月日精確對應的日期；無法對應的閏日會留空。";
+}
+
+async function fetchLiveSalesTrendSeries(
+  marketplaceId: MarketplaceId,
+  window: SalesTrendWindow,
+): Promise<SalesTrendSeriesResult> {
+  let response = await callSalesTrendApi(marketplaceId, window);
   if (response.status === 401) {
-    tokenCache.delete(MARKETPLACES[input.marketplaceId].region);
-    response = await callSalesTrendApi(input.marketplaceId, window, true);
+    tokenCache.delete(MARKETPLACES[marketplaceId].region);
+    response = await callSalesTrendApi(marketplaceId, window, true);
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (![429, 500, 503].includes(response.status)) break;
-    await wait(retryDelayMs(response, attempt));
-    response = await callSalesTrendApi(input.marketplaceId, window);
+    await wait(
+      response.status === 429
+        ? salesTrendRetryDelayMs(response, attempt)
+        : retryDelayMs(response, attempt),
+    );
+    response = await callSalesTrendApi(marketplaceId, window);
   }
   const requestId = response.headers.get("x-amzn-requestid");
   if (!response.ok) {
@@ -3290,7 +3578,7 @@ async function fetchLiveSalesTrend(input: {
     )?.message;
     const message =
       response.status === 401 || response.status === 403
-        ? "Amazon 拒絕 FBA 銷售趨勢查詢。請確認 Private SP-API App 具有 Inventory and Order Tracking（或 Product Listing）角色並重新授權。"
+        ? "Amazon 拒絕 FBA 銷售趨勢查詢。請確認 Private SP-API App 已具備 Pricing、Inventory and Order Tracking 或 Product Listing 角色，並重新授權。"
         : response.status === 429
           ? "Amazon Sales API 正在限流，請稍後再試。"
           : upstreamMessage || "Amazon 暫時無法完成 FBA 銷售趨勢查詢。";
@@ -3309,20 +3597,67 @@ async function fetchLiveSalesTrend(input: {
   const payload = await parseResponseJson<AmazonSalesMetricsResponse>(response);
   const normalized = normalizeSalesTrendResponse({
     response: payload,
-    marketplaceId: input.marketplaceId,
-    days: input.days,
+    marketplaceId,
     window,
   });
   return {
-    mode: "live",
-    marketplaceId: input.marketplaceId,
-    days: input.days,
-    timeZone: window.timeZone,
     ...normalized,
-    fetchedAt: new Date().toISOString(),
     requestId,
     rateLimit: response.headers.get("x-amzn-ratelimit-limit"),
-    notice: "Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA），今日數字仍會變動。",
+  };
+}
+
+async function fetchLiveSalesTrend(input: {
+  marketplaceId: MarketplaceId;
+  range: SalesTrendRange;
+  window: SalesTrendWindow;
+  comparisonWindow: SalesTrendWindow | null;
+}): Promise<SalesTrendSnapshot> {
+  const current = await fetchLiveSalesTrendSeries(
+    input.marketplaceId,
+    input.window,
+  );
+  const rawPrevious = input.comparisonWindow
+    ? await fetchLiveSalesTrendSeries(input.marketplaceId, input.comparisonWindow)
+    : null;
+  const previous =
+    rawPrevious && input.comparisonWindow
+      ? comparablePreviousYearSeries(
+          input.window,
+          input.comparisonWindow,
+          rawPrevious,
+        )
+      : null;
+  const comparisonNotice = salesTrendComparisonNotice(
+    input.window,
+    Boolean(input.comparisonWindow),
+  );
+  return {
+    schemaVersion: 2,
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    days: input.range.dayCount,
+    range: input.range,
+    timeZone: input.window.timeZone,
+    points: current.points,
+    totals: current.totals,
+    fetchedAt: new Date().toISOString(),
+    requestId: current.requestId,
+    rateLimit: current.rateLimit,
+    comparison:
+      previous && input.comparisonWindow
+        ? {
+            kind: "previous-year",
+            range: previous.range,
+            points: previous.points,
+            totals: previous.totals,
+            requestId: previous.requestId,
+            rateLimit: previous.rateLimit,
+          }
+        : null,
+    notice: comparisonNotice
+      ? `Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA）。${comparisonNotice}`
+      : "Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA），今日數字仍會變動。",
   };
 }
 
@@ -5825,21 +6160,17 @@ export async function searchOrders(
   return fetchLiveOrders(fbaInput);
 }
 
-export async function getSalesTrend(input: {
-  marketplaceId: MarketplaceId;
-  days: SalesTrendDays;
-}): Promise<SalesTrendSnapshot> {
-  if (!shouldUseDemoMode(input.marketplaceId)) {
-    return fetchLiveSalesTrend(input);
-  }
-
-  const window = buildSalesTrendWindow(input.marketplaceId, input.days);
-  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
+function buildDemoSalesTrendSeries(
+  marketplaceId: MarketplaceId,
+  window: SalesTrendWindow,
+  seed: number,
+): Pick<SalesTrendSeriesResult, "points" | "totals"> {
+  const currencyCode = MARKETPLACES[marketplaceId].currency;
   const base = currencyCode === "JPY" ? 18_000 : 180;
   const points = window.dateKeys.map((date, index): SalesTrendPoint => {
-    const unitCount = 8 + ((index * 7 + input.days) % 13);
+    const unitCount = 8 + ((index * 7 + seed) % 13);
     const amount = Number(
-      (base * (0.72 + ((index * 11 + input.days) % 9) / 10)).toFixed(
+      (base * (0.72 + ((index * 11 + seed) % 9) / 10)).toFixed(
         currencyCode === "JPY" ? 0 : 2,
       ),
     );
@@ -5850,22 +6181,102 @@ export async function getSalesTrend(input: {
       unitCount,
       orderItemCount: Math.max(1, unitCount - (index % 3)),
       orderCount: Math.max(1, unitCount - 2 - (index % 4)),
-      partial: index === window.dateKeys.length - 1,
+      partial: date === window.partialDateKey,
     };
   });
+  return { points, totals: salesTrendTotals(points, currencyCode) };
+}
+
+export async function getSalesTrend(input: {
+  marketplaceId: MarketplaceId;
+  days?: SalesTrendPresetDays | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  comparison?: SalesTrendComparisonMode;
+}): Promise<SalesTrendSnapshot> {
+  const now = new Date();
+  const comparisonMode = input.comparison ?? "none";
+  if (!(["none", "previous-year"] as string[]).includes(comparisonMode)) {
+    invalidSalesTrendRange("不支援這個銷售趨勢比較方式。");
+  }
+  const range = resolveSalesTrendRange(input, now);
+  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
+  const today = zonedDateParts(now, timeZone);
+  const todayKey = dateKey(today.year, today.month, today.day);
+  const window = buildSalesTrendRangeWindow(
+    input.marketplaceId,
+    range,
+    range.endDate === todayKey ? now : null,
+  );
+  const comparisonWindow =
+    comparisonMode === "previous-year"
+      ? buildPreviousYearSalesTrendWindow(input.marketplaceId, window)
+      : null;
+  if (comparisonWindow) {
+    assertSalesTrendApiHorizon(comparisonWindow.range, todayKey);
+  }
+
+  if (!shouldUseDemoMode(input.marketplaceId)) {
+    return fetchLiveSalesTrend({
+      marketplaceId: input.marketplaceId,
+      range,
+      window,
+      comparisonWindow,
+    });
+  }
+
+  const current = buildDemoSalesTrendSeries(
+    input.marketplaceId,
+    window,
+    range.dayCount,
+  );
+  const rawPrevious = comparisonWindow
+    ? buildDemoSalesTrendSeries(
+        input.marketplaceId,
+        comparisonWindow,
+        range.dayCount + 5,
+      )
+    : null;
+  const previous =
+    rawPrevious && comparisonWindow
+      ? comparablePreviousYearSeries(window, comparisonWindow, {
+          ...rawPrevious,
+          requestId: null,
+          rateLimit: null,
+        })
+      : null;
+  const comparisonNotice = salesTrendComparisonNotice(
+    window,
+    Boolean(comparisonWindow),
+  );
   return {
+    schemaVersion: 2,
     mode: "demo",
     marketplaceId: input.marketplaceId,
-    days: input.days,
+    days: range.dayCount,
+    range,
     timeZone: window.timeZone,
-    points,
-    totals: salesTrendTotals(points, currencyCode),
+    points: current.points,
+    totals: current.totals,
     fetchedAt: new Date().toISOString(),
     requestId: null,
     rateLimit: null,
-    notice: isConfiguredForMarketplace(input.marketplaceId)
-      ? "目前由 SP_API_MODE 強制使用展示資料；趨勢只供版面測試。"
-      : `${MARKETPLACES[input.marketplaceId].label}站尚未在 Mac Keychain 加入 refresh token，因此顯示展示趨勢。`,
+    comparison:
+      previous && comparisonWindow
+        ? {
+            kind: "previous-year",
+            range: previous.range,
+            points: previous.points,
+            totals: previous.totals,
+            requestId: null,
+            rateLimit: null,
+          }
+        : null,
+    notice: `${
+      isConfiguredForMarketplace(input.marketplaceId)
+        ? "目前由 SP_API_MODE 強制使用展示資料；趨勢只供版面測試。"
+        : `${MARKETPLACES[input.marketplaceId].label}站尚未在 Mac Keychain 加入 refresh token，因此顯示展示趨勢。`
+    }${comparisonNotice ? ` ${comparisonNotice}` : ""}`,
   };
 }
 
