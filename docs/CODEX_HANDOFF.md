@@ -207,13 +207,19 @@ Amazon App：
   - PR 與 main Validate 均成功。首次 Pages run `31101756336` 的 build／artifact 上傳成功但 GitHub `deploy-pages` 逾時；同一 main SHA 的 workflow dispatch runs `31102544468`、`31102720169`、`31103081735` 隨後被 Pages 服務取消，官方 Pages API 對該 `pages_build_version` 回傳 `deployment_cancelled`。不得為此重建專案或改用非既定部署架構；應以新的文件／程式 commit 產生新 main SHA 後再從 `pages.yml` 乾淨部署，並以 live HTML 資產核對實際上線結果。
   - 新 main SHA `83ee7a91f993f5bf082cf3c1805e26ca45b67b3b` 的 run `31103608648` 已證明可正常建立並排入新 Pages deployment，但 GitHub 後端排隊超過 `actions/deploy-pages` 的 600,000ms 硬上限後再次逾時。run `31104818870` 也確認較大的 `timeout` 會被官方 action 強制封頂，因此不得把無效的 900,000ms 當成解法；`pages.yml` 改用官方 Node 24 的 `actions/deploy-pages@v5` 並保留預設上限。同 SHA 的 run `31105865973` 會直接讀到既有的 `deployment_cancelled`，不可反覆 dispatch；必須確認前次已取消，再以有意義的新 main commit 產生新的 `pages_build_version`。沒有更換環境、artifact、權限或部署架構。
   - 新 SHA `8863f052d898511f66646d8202cdbd487a77281f` 的 v5 run `31106153276` 仍因相同硬上限取消。最終部署步驟因此改成官方 `actions/github-script@v9` 直接呼叫同一組 GitHub Pages Create／Get／Cancel REST endpoints：沿用 `upload-pages-artifact@v4` 的 `artifact_id`、`github.sha`、既有 OIDC 與 `github-pages` environment，不新增 PAT／secret，也不輸出 OIDC token；每 15 秒輪詢，45 分鐘才取消，step 上限 50 分鐘。`cancel-in-progress` 同時改為 `false`，避免下一次 main push 中斷仍在 Pages queue 的 deployment。
+- v0.1.7 全站內容健檢工作流 refinement 已完成：
+  - 首頁在 SKU 指揮中心下方新增顯眼的「全站內容健檢」入口；完成後顯示待確認項目數，能直接繼續上次結果。
+  - 健檢結果依站點保存在 Dashboard 記憶體，只在這次 App 使用期間存在；關閉 drawer、切到特定 SKU 編輯再返回，都不必重新掃描，且保留原篩選與搜尋文字。沒有把商品文案寫入 `localStorage`，App 重新啟動後仍需重掃。
+  - 新增「匯出全部待確認項目 Excel」：只匯出疑似錯字、賣點不足、缺成分、成分未驗證或讀取未完成的 SKU，工作簿包含商品內容與逐項說明；純 renderer 本機產生，不新增 Bridge API、不需重裝 Mac App，也不執行 Amazon 寫入。
+  - `GooToE` 已加入 Mac 拼字檢查白名單；即使本機字典回傳 `Goatee` 建議，也不會建立疑似錯字項目。
+  - 本機驗證：117/117 tests、TypeScript、main／preload／renderer production build、`git diff --check` 與 `npm audit --omit=dev` 0 vulnerabilities；Playwright 已確認桌面流程、有效 `.xlsx` 下載、編輯後返回、drawer 關閉後重開保留結果，以及 390px 無整頁水平溢出。
 
 ### 已完成與仍待真實 Mac／Amazon 驗證
 
 Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出、7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢，以及 v0.1.7 發布／安裝均已完成。現在仍待：
 
 1. Mac 解鎖後確認安裝中的 v0.1.7 視窗、既有 vault 與 Orders／Listings probe 正常；目前只完成安裝後主程序未崩潰的程序層 smoke test。
-2. 在真實 US 帳號執行全站 FBA 內容健檢，確認 Mac 字典、讀取失敗排除與「缺成分／成分未驗證」分類；唯讀核對至少一個 variation family 的 parent、children、theme 與維度並做一次不送出的拖拉規劃。
+2. 在真實 US 帳號執行全站 FBA 內容健檢，確認 Mac 字典、`GooToE` 白名單、讀取失敗排除、「缺成分／成分未驗證」分類、問題 Excel、編輯後返回與 drawer 重開保留結果；唯讀核對至少一個 variation family 的 parent、children、theme 與維度並做一次不送出的拖拉規劃。
 3. 唯讀確認 Sale Price 說明與目前排程，以及「目前有效訂閱」標籤；Touch ID 可用 demo 或取消流程驗證，未獲使用者另行明確授權不得送出真實商品內容或變體寫入。
 4. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的本期與去年同期逐日數字和 Seller Central 報表逐列比較；App 端 7／14／30／90／自訂載入與切換已驗證。
 5. 商品內容真實寫入仍未執行；任何寫入都必須保留 Amazon Validation Preview、舊值衝突檢查、Touch ID、idempotency 與送出後回查。

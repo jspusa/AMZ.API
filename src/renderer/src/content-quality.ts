@@ -70,6 +70,7 @@ const LOCAL_SPELLCHECK_ALLOWLIST = new Set([
   "glycerin",
   "glucosamine",
   "chondroitin",
+  "gootoe",
 ]);
 
 function candidateWords(value: string): string[] {
@@ -137,6 +138,7 @@ export function addLocalSpellcheckIssues(
       for (const token of candidateWords(value)) {
         if (localIssueCount >= 12 || fieldIssueCount >= 6) break;
         const key = token.toLocaleLowerCase("en-US");
+        if (LOCAL_SPELLCHECK_ALLOWLIST.has(key)) continue;
         const result = byWord.get(key);
         if (!result || seen.has(key)) continue;
         seen.add(key);

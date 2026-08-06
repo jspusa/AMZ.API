@@ -40,6 +40,65 @@ describe("global FBA content audit panel", () => {
     expect(source).toContain("LOCAL_SPELLCHECK_WORD_LIMIT");
   });
 
+  it("restores a completed in-memory result and exposes the problem-only Excel", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [
+        {
+          sellerSku: "AFA12AM",
+          asin: "B09S5VY2JS",
+          productType: "PET_FOOD",
+          title: "Turkey Tendons",
+          bulletPoints: ["One"],
+          ingredients: "Turkey",
+          readStatus: "complete",
+          readErrors: [],
+          issues: [
+            {
+              kind: "MISSING_BULLETS",
+              field: "bulletPoints",
+              message: "目前只有 1 個非空白賣點，少於 5 個。",
+            },
+          ],
+        },
+      ],
+      summary: { total: 1 },
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        cachedResult={{
+          snapshot,
+          filter: "all",
+          query: "",
+          spellcheckNote: "本機檢查已完成。",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("完成讀取");
+    expect(markup).toContain("匯出全部 1 個待確認項目 Excel");
+    expect(markup).toContain("重新掃描");
+    expect(markup).not.toContain("掃描 US 全部 FBA 文案");
+  });
+
+  it("keeps a return path from an audit result into SKU editing", async () => {
+    const drawerSource = await readFile(
+      new URL(
+        "../src/renderer/src/components/sku-operations-drawer.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(drawerSource).toContain("setReturnToAudit(true)");
+    expect(drawerSource).toContain("← 返回全站健檢結果");
+    expect(drawerSource).toContain("auditCacheByMarketplace[marketplaceId]");
+  });
+
   it("fails closed when a row lacks an explicit complete read marker", () => {
     const snapshot = parseContentAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",

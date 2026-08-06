@@ -9,7 +9,11 @@ import {
   useState,
 } from "react";
 import { ContentConfirmationControls } from "./content-confirmation-controls";
-import ContentAuditPanel from "./content-audit-panel";
+import ContentAuditPanel, {
+  type ContentAuditCache,
+} from "./content-audit-panel";
+
+export type ContentWorkspaceTab = "single" | "audit" | "export";
 
 type ListingIssue = {
   code: string | null;
@@ -358,15 +362,22 @@ function safeFilename(response: Response, fallback: string): string {
 export default function SkuOperationsDrawer({
   initialMarketplaceId,
   initialSellerSku = "",
+  initialTab = "single",
+  auditCacheByMarketplace = {},
+  onAuditCacheChange,
   onContextResolved,
   onClose,
 }: {
   initialMarketplaceId: string;
   initialSellerSku?: string;
+  initialTab?: ContentWorkspaceTab;
+  auditCacheByMarketplace?: Readonly<Record<string, ContentAuditCache>>;
+  onAuditCacheChange?: (cache: ContentAuditCache) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"single" | "audit" | "export">("single");
+  const [tab, setTab] = useState<ContentWorkspaceTab>(initialTab);
+  const [returnToAudit, setReturnToAudit] = useState(false);
   const [marketplaceId, setMarketplaceId] = useState(
     MARKETPLACES.some((item) => item.id === initialMarketplaceId)
       ? initialMarketplaceId
@@ -570,20 +581,23 @@ export default function SkuOperationsDrawer({
     }
     resetSingle();
     resetExport();
+    setReturnToAudit(false);
     setMarketplaceId(value);
   };
 
-  const changeTab = (nextTab: "single" | "audit" | "export") => {
-    if (nextTab === tab) return;
+  const changeTab = (nextTab: ContentWorkspaceTab): boolean => {
+    if (nextTab === tab) return true;
     if (
       tab === "single" &&
       phase !== "result" &&
       hasChanges &&
       !window.confirm("尚有未送出的商品內容變更，確定切換嗎？")
     ) {
-      return;
+      return false;
     }
     setTab(nextTab);
+    setReturnToAudit(false);
+    return true;
   };
 
   const fetchListing = useCallback(
@@ -641,15 +655,20 @@ export default function SkuOperationsDrawer({
   }, [fetchListing, marketplaceId, onContextResolved, skuInput]);
 
   const openAuditSku = useCallback((sellerSku: string) => {
+    setReturnToAudit(true);
     setTab("single");
     void lookupSingle(undefined, sellerSku);
   }, [lookupSingle]);
 
   useEffect(() => {
-    if (autoLookupRef.current || !initialSellerSku.trim()) return;
+    if (
+      initialTab !== "single" ||
+      autoLookupRef.current ||
+      !initialSellerSku.trim()
+    ) return;
     autoLookupRef.current = true;
     void lookupSingle();
-  }, [initialSellerSku, lookupSingle]);
+  }, [initialSellerSku, initialTab, lookupSingle]);
 
   const mutationBody = (
     key = idempotencyKey,
@@ -1006,6 +1025,16 @@ export default function SkuOperationsDrawer({
             role="tabpanel"
             aria-labelledby="content-single-tab"
           >
+            {returnToAudit && (
+              <button
+                className="back-link content-audit-return-button"
+                type="button"
+                onClick={() => changeTab("audit")}
+                disabled={busy}
+              >
+                ← 返回全站健檢結果
+              </button>
+            )}
             {phase === "edit" && (
               <>
                 <form className="ops-single-search" onSubmit={lookupSingle}>
@@ -1278,6 +1307,8 @@ export default function SkuOperationsDrawer({
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.short}
               onOpenSku={openAuditSku}
+              cachedResult={auditCacheByMarketplace[marketplaceId] ?? null}
+              onCachedResultChange={onAuditCacheChange}
             />
           </div>
         )}

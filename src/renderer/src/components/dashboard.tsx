@@ -13,7 +13,10 @@ import SalesTrendChart, {
   type TrendRangeSelection,
 } from "./sales-trend-chart";
 import SkuCommandCenter from "./sku-command-center";
-import SkuOperationsDrawer from "./sku-operations-drawer";
+import SkuOperationsDrawer, {
+  type ContentWorkspaceTab,
+} from "./sku-operations-drawer";
+import type { ContentAuditCache } from "./content-audit-panel";
 import SystemHealthControl from "./system-health-control";
 import VariationPlannerDrawer from "./variation-planner-drawer";
 
@@ -411,6 +414,11 @@ export default function Dashboard({
   const [trendSelection, setTrendSelection] =
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
+  const [contentWorkspaceTab, setContentWorkspaceTab] =
+    useState<ContentWorkspaceTab>("single");
+  const [contentAuditCache, setContentAuditCache] = useState<
+    Record<string, ContentAuditCache>
+  >({});
   const [commandOpen, setCommandOpen] = useState(false);
   const [autoSync, setAutoSync] = useState(true);
   const [salesTrend, setSalesTrend] =
@@ -524,8 +532,22 @@ export default function Dashboard({
 
   const launch = (tool: Tool) => {
     setCommandOpen(false);
+    if (tool === "copy") setContentWorkspaceTab("single");
     setOpenTool(tool);
   };
+
+  const launchContentAudit = () => {
+    setCommandOpen(false);
+    setContentWorkspaceTab("audit");
+    setOpenTool("copy");
+  };
+
+  const cacheContentAudit = useCallback((cache: ContentAuditCache) => {
+    setContentAuditCache((current) => ({
+      ...current,
+      [cache.snapshot.marketplaceId]: cache,
+    }));
+  }, []);
 
   const setAutoSyncPreference = (enabled: boolean) => {
     setAutoSync(enabled);
@@ -551,6 +573,12 @@ export default function Dashboard({
       : null;
   const visibleSalesTrend = salesTrendError ? null : matchingSalesTrend;
   const mode = visibleSalesTrend?.mode ?? null;
+  const currentContentAudit = contentAuditCache[marketplaceId] ?? null;
+  const currentAuditAttentionCount = currentContentAudit
+    ? currentContentAudit.snapshot.rows.filter(
+        (row) => row.readStatus === "incomplete" || row.issues.length > 0,
+      ).length
+    : 0;
 
   const changeMarketplace = (nextMarketplaceId: string) => {
     if (!MARKETPLACES.has(nextMarketplaceId) || salesTrendLoading) return;
@@ -646,6 +674,25 @@ export default function Dashboard({
             <button type="button" onClick={() => setCommandOpen(true)}>{globalSku.trim() ? `掃描 ${globalSku.trim()}` : "開啟 SKU 總覽"}<i>›</i></button>
           </section>
 
+          <section className="content-audit-home-card" aria-label="全站內容健檢捷徑">
+            <span className="content-audit-home-icon" aria-hidden="true">Aa✓</span>
+            <div>
+              <p className="eyebrow">FBA CONTENT HEALTH</p>
+              <h2>全站內容健檢</h2>
+              <p>一次找出全部 FBA SKU 的疑似錯字、賣點不足與缺成分；結果在這次 App 使用期間會保留。</p>
+            </div>
+            {currentContentAudit && (
+              <span className="content-audit-home-status">
+                <strong>{currentAuditAttentionCount.toLocaleString()}</strong>
+                <small>個待確認項目</small>
+              </span>
+            )}
+            <button type="button" onClick={launchContentAudit}>
+              {currentContentAudit ? "繼續上次健檢" : "開始全站健檢"}
+              <i aria-hidden="true">›</i>
+            </button>
+          </section>
+
           {mode === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在 Mac 安全連線加入 LWA 憑證後即可切換真實 Amazon 資料。"}</p></div><a href="#connection" onClick={(event) => { event.preventDefault(); scrollTo("connection"); }}>串接說明</a></section>}
 
           <div className="core-zones">
@@ -690,7 +737,7 @@ export default function Dashboard({
 
       {openTool === "ads" && <AdsDrawer initialMarketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCache} onAuditCacheChange={cacheContentAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "variations" && <VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
