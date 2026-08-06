@@ -1,54 +1,90 @@
-import { useCallback, useEffect, useState } from "react";
-import Dashboard, { type DashboardSnapshot } from "./components/dashboard";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Dashboard, {
+  DEFAULT_MARKETPLACE_ID,
+  isSalesTrendSnapshotForSelection,
+  salesTrendQuery,
+} from "./components/dashboard";
+import type {
+  SalesTrendSnapshot,
+  TrendRangeSelection,
+} from "./components/sales-trend-chart";
 import ConnectionPanel from "./connection-panel";
 
-const DEFAULT_MARKETPLACE = "ATVPDKIKX0DER";
-
-function fallbackSnapshot(): DashboardSnapshot {
-  return {
-    mode: "demo",
-    orders: [],
-    marketplaceId: DEFAULT_MARKETPLACE,
-    marketplace: {
-      label: "美國",
-      shortLabel: "US",
-      name: "Amazon.com",
-      currency: "USD",
-      region: "na",
-    },
-    fetchedAt: new Date().toISOString(),
-    nextToken: null,
-    lastUpdatedBefore: null,
-    requestId: null,
-    rateLimit: null,
-    notice: "開啟右上角「Mac 安全連線」輸入 SP-API 憑證，即可切換真實資料。",
-  };
-}
+const INITIAL_RANGE: TrendRangeSelection = { kind: "preset", days: 7 };
 
 export default function App() {
-  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [initialSalesTrend, setInitialSalesTrend] =
+    useState<SalesTrendSnapshot | null>(null);
+  const [initialError, setInitialError] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const requestedReloadKey = useRef<number | null>(null);
 
   const load = useCallback(async () => {
-    setError(null);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setInitialError(null);
     try {
-      const params = new URLSearchParams({ marketplaceId: DEFAULT_MARKETPLACE, days: "14" });
-      const response = await fetch(`/api/sp-api/orders?${params}`, { cache: "no-store" });
-      const payload = (await response.json()) as DashboardSnapshot | { message?: string };
-      if (!response.ok) throw new Error((payload as { message?: string }).message || "目前無法讀取 Amazon 訂單。");
-      setSnapshot(payload as DashboardSnapshot);
+      const query = salesTrendQuery(DEFAULT_MARKETPLACE_ID, INITIAL_RANGE);
+      const response = await fetch(`/api/sp-api/sales-trend?${query}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const payload = (await response.json()) as unknown;
+      if (!response.ok) {
+        const problem = payload as { message?: string; requestId?: string | null };
+        throw new Error(
+          `${problem.message || "目前無法讀取 FBA 銷售趨勢。"}${
+            problem.requestId ? `（Request ID: ${problem.requestId}）` : ""
+          }`,
+        );
+      }
+      if (
+        !isSalesTrendSnapshotForSelection(
+          payload,
+          DEFAULT_MARKETPLACE_ID,
+          INITIAL_RANGE,
+        )
+      ) {
+        throw new Error(
+          "這台 Mac App Bridge 尚未支援新版銷售趨勢，請安裝新版後再同步。",
+        );
+      }
+      if (abortRef.current === controller) setInitialSalesTrend(payload);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "目前無法讀取 Amazon 訂單。");
-      setSnapshot(fallbackSnapshot());
+      if (requestError instanceof Error && requestError.name === "AbortError") return;
+      if (abortRef.current !== controller) return;
+      setInitialSalesTrend(null);
+      setInitialError(
+        requestError instanceof Error
+          ? requestError.message
+          : "目前無法讀取 FBA 銷售趨勢。",
+      );
+    } finally {
+      if (abortRef.current === controller) setReady(true);
     }
   }, []);
 
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    },
+    [],
+  );
+
   useEffect(() => {
-    void load();
+    const timeout = window.setTimeout(() => {
+      if (requestedReloadKey.current === reloadKey) return;
+      requestedReloadKey.current = reloadKey;
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [load, reloadKey]);
 
-  if (!snapshot) {
+  if (!ready) {
     return (
       <main className="desktop-boot" aria-live="polite">
         <span>A</span>
@@ -61,10 +97,13 @@ export default function App() {
   return (
     <>
       <Dashboard
-        key={`${snapshot.mode}-${snapshot.fetchedAt}-${reloadKey}`}
-        initialSnapshot={snapshot}
+        key={`${initialSalesTrend?.mode ?? "unavailable"}-${
+          initialSalesTrend?.fetchedAt ?? "not-synced"
+        }-${reloadKey}`}
+        initialSalesTrend={initialSalesTrend}
+        initialMarketplaceId={DEFAULT_MARKETPLACE_ID}
         viewerName="Jayden"
-        initialError={error}
+        initialError={initialError}
       />
       <ConnectionPanel onConnectionChanged={() => setReloadKey((key) => key + 1)} />
     </>

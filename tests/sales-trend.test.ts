@@ -1,13 +1,35 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   SpApiError,
+  buildCustomSalesTrendWindow,
+  buildPreviousYearSalesTrendWindow,
   buildSalesTrendQuery,
   buildSalesTrendWindow,
+  getSalesTrend,
   normalizeSalesTrendResponse,
+  resolveSalesTrendRange,
+  salesTrendRetryDelayMs,
 } from "../src/main/amazon/sp-api";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const NOW = new Date("2026-03-10T12:00:00.000Z");
+
+async function demoSalesTrendAt(
+  now: Date,
+  input: Parameters<typeof getSalesTrend>[0],
+) {
+  const savedMode = process.env.SP_API_MODE;
+  process.env.SP_API_MODE = "demo";
+  vi.useFakeTimers();
+  vi.setSystemTime(now);
+  try {
+    return await getSalesTrend(input);
+  } finally {
+    vi.useRealTimers();
+    if (savedMode === undefined) delete process.env.SP_API_MODE;
+    else process.env.SP_API_MODE = savedMode;
+  }
+}
 
 describe("FBA sales trend contract", () => {
   it("builds one AFN-only daily Sales API request", () => {
@@ -54,7 +76,6 @@ describe("FBA sales trend contract", () => {
     const interval = `${new Date(start).toISOString()}--${new Date(end).toISOString()}`;
     const normalized = normalizeSalesTrendResponse({
       marketplaceId,
-      days: 7,
       window,
       response: {
         payload: [
@@ -79,7 +100,6 @@ describe("FBA sales trend contract", () => {
     const window = buildSalesTrendWindow(MARKETPLACE_ID, 7, NOW);
     const normalized = normalizeSalesTrendResponse({
       marketplaceId: MARKETPLACE_ID,
-      days: 7,
       window,
       response: {
         payload: [
@@ -117,7 +137,6 @@ describe("FBA sales trend contract", () => {
     expect(() =>
       normalizeSalesTrendResponse({
         marketplaceId: MARKETPLACE_ID,
-        days: 7,
         window,
         response: { errors: [{ code: "InvalidInput", message: "Invalid metrics" }], payload: [] },
       }),
@@ -126,7 +145,6 @@ describe("FBA sales trend contract", () => {
     expect(() =>
       normalizeSalesTrendResponse({
         marketplaceId: MARKETPLACE_ID,
-        days: 7,
         window,
         response: {
           payload: [
@@ -148,7 +166,6 @@ describe("FBA sales trend contract", () => {
     expect(() =>
       normalizeSalesTrendResponse({
         marketplaceId: MARKETPLACE_ID,
-        days: 7,
         window,
         response: { payload: [null] },
       }),
@@ -156,18 +173,245 @@ describe("FBA sales trend contract", () => {
     expect(() =>
       normalizeSalesTrendResponse({
         marketplaceId: MARKETPLACE_ID,
-        days: 7,
         window,
         response: { errors: [null], payload: [] },
       }),
     ).toThrow("Amazon 無法完成 FBA 銷售趨勢查詢");
   });
 
-  it("only accepts the supported 7, 14, and 30 day ranges", () => {
+  it("accepts the supported 7, 14, 30, and 90 day presets", () => {
     expect(buildSalesTrendWindow(MARKETPLACE_ID, 14, NOW).dateKeys).toHaveLength(14);
     expect(buildSalesTrendWindow(MARKETPLACE_ID, 30, NOW).dateKeys).toHaveLength(30);
+    expect(buildSalesTrendWindow(MARKETPLACE_ID, 90, NOW).dateKeys).toHaveLength(90);
     expect(() => buildSalesTrendWindow(MARKETPLACE_ID, 10 as 7, NOW)).toThrow(
-      "銷售趨勢日期範圍無效",
+      "銷售趨勢只支援最近 7、14、30 或 90 天",
     );
+  });
+
+  it("builds inclusive custom ranges and does not mark historical tails partial", () => {
+    const window = buildCustomSalesTrendWindow(
+      MARKETPLACE_ID,
+      "2026-02-01",
+      "2026-02-03",
+      NOW,
+    );
+
+    expect(window.range).toEqual({
+      startDate: "2026-02-01",
+      endDate: "2026-02-03",
+      dayCount: 3,
+      presetDays: null,
+    });
+    expect(window.dateKeys).toEqual(["2026-02-01", "2026-02-02", "2026-02-03"]);
+    expect(window.startAt).toBe("2026-02-01T00:00:00-08:00");
+    expect(window.endAt).toBe("2026-02-04T00:00:00-08:00");
+    expect(window.partialDateKey).toBeNull();
+
+    const normalized = normalizeSalesTrendResponse({
+      marketplaceId: MARKETPLACE_ID,
+      window,
+      response: { payload: [] },
+    });
+    expect(normalized.points.every((point) => point.partial === false)).toBe(true);
+  });
+
+  it("validates custom range length, mixed modes, strict dates, and future dates", () => {
+    expect(() =>
+      resolveSalesTrendRange(
+        {
+          marketplaceId: MARKETPLACE_ID,
+          startDate: "2025-12-10",
+          endDate: "2026-03-10",
+        },
+        NOW,
+      ),
+    ).toThrow("自訂日期範圍必須介於 1 到 90 天");
+
+    expect(() =>
+      resolveSalesTrendRange(
+        {
+          marketplaceId: MARKETPLACE_ID,
+          days: 7,
+          startDate: "2026-03-01",
+          endDate: "2026-03-10",
+        },
+        NOW,
+      ),
+    ).toThrow("預設天數與自訂日期不可同時使用");
+
+    expect(() =>
+      resolveSalesTrendRange(
+        {
+          marketplaceId: MARKETPLACE_ID,
+          startDate: "2026-3-01",
+          endDate: "2026-03-10",
+        },
+        NOW,
+      ),
+    ).toThrow("自訂日期必須使用 YYYY-MM-DD 格式");
+
+    expect(() =>
+      resolveSalesTrendRange(
+        {
+          marketplaceId: MARKETPLACE_ID,
+          startDate: "2026-03-10",
+          endDate: "2026-03-11",
+        },
+        NOW,
+      ),
+    ).toThrow("自訂日期不可包含未來日期");
+
+    expect(() =>
+      resolveSalesTrendRange(
+        {
+          marketplaceId: MARKETPLACE_ID,
+          startDate: "2024-03-10",
+          endDate: "2024-03-10",
+        },
+        NOW,
+      ),
+    ).toThrow("開始日必須晚於距今兩年的同一站點日期");
+    expect(
+      resolveSalesTrendRange(
+        {
+          marketplaceId: MARKETPLACE_ID,
+          startDate: "2024-03-11",
+          endDate: "2024-03-11",
+        },
+        NOW,
+      ).dayCount,
+    ).toBe(1);
+  });
+
+  it("uses the same marketplace-local cutoff for the previous-year series", () => {
+    const current = buildSalesTrendWindow(MARKETPLACE_ID, 7, NOW);
+    const previous = buildPreviousYearSalesTrendWindow(MARKETPLACE_ID, current);
+    const query = buildSalesTrendQuery(MARKETPLACE_ID, previous);
+
+    expect(previous.range).toEqual({
+      startDate: "2025-03-04",
+      endDate: "2025-03-10",
+      dayCount: 7,
+      presetDays: null,
+    });
+    expect(previous.endAt).toBe("2025-03-10T05:00:00-07:00");
+    expect(previous.partialDateKey).toBe("2025-03-10");
+    expect(query.get("fulfillmentNetwork")).toBe("AFN");
+    expect(query.get("granularity")).toBe("Day");
+  });
+
+  it("keeps leap-day comparison dates unique instead of mapping Feb 29 onto Feb 28", () => {
+    const leapNow = new Date("2024-03-02T20:00:00.000Z");
+    const current = buildCustomSalesTrendWindow(
+      MARKETPLACE_ID,
+      "2024-02-28",
+      "2024-03-01",
+      leapNow,
+    );
+    const previous = buildPreviousYearSalesTrendWindow(MARKETPLACE_ID, current);
+
+    expect(current.dateKeys).toEqual(["2024-02-28", "2024-02-29", "2024-03-01"]);
+    expect(previous.dateKeys).toEqual(["2023-02-28", "2023-03-01"]);
+    expect(new Set(previous.dateKeys).size).toBe(previous.dateKeys.length);
+    expect(previous.dateKeys.filter((date) => date === "2023-02-28")).toHaveLength(1);
+  });
+
+  it("filters a raw 91-day leap-year query to the 90 exactly comparable dates", async () => {
+    const now = new Date("2025-03-31T19:00:00.000Z");
+    const current = buildCustomSalesTrendWindow(
+      MARKETPLACE_ID,
+      "2025-01-01",
+      "2025-03-31",
+      now,
+    );
+    const rawPrevious = buildPreviousYearSalesTrendWindow(MARKETPLACE_ID, current);
+    expect(current.dateKeys).toHaveLength(90);
+    expect(rawPrevious.dateKeys).toHaveLength(91);
+    expect(rawPrevious.dateKeys).toContain("2024-02-29");
+
+    const snapshot = await demoSalesTrendAt(now, {
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2025-01-01",
+      endDate: "2025-03-31",
+      comparison: "previous-year",
+    });
+    const comparison = snapshot.comparison!;
+    expect(comparison.points).toHaveLength(90);
+    expect(comparison.points.map((point) => point.date)).not.toContain("2024-02-29");
+    expect(comparison.range).toEqual({
+      startDate: "2024-01-01",
+      endDate: "2024-03-31",
+      dayCount: 90,
+      presetDays: null,
+    });
+    expect(comparison.totals.unitCount).toBe(
+      comparison.points.reduce((total, point) => total + point.unitCount, 0),
+    );
+    expect(comparison.totals.totalSales.amount).toBe(
+      Number(
+        comparison.points
+          .reduce((total, point) => total + point.totalSales.amount, 0)
+          .toFixed(2),
+      ),
+    );
+  });
+
+  it("leaves today's Feb 29 comparison empty instead of inventing a prior date", async () => {
+    const snapshot = await demoSalesTrendAt(
+      new Date("2024-02-29T20:00:00.000Z"),
+      {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2024-02-29",
+        endDate: "2024-02-29",
+        comparison: "previous-year",
+      },
+    );
+
+    expect(snapshot.comparison?.points).toEqual([]);
+    expect(snapshot.comparison?.range).toEqual({
+      startDate: "2023-02-28",
+      endDate: "2023-02-28",
+      dayCount: 0,
+      presetDays: null,
+    });
+    expect(snapshot.comparison?.totals).toEqual({
+      totalSales: { amount: 0, currencyCode: "USD" },
+      unitCount: 0,
+      orderItemCount: 0,
+      orderCount: 0,
+    });
+    expect(snapshot.notice).toContain("今天是 2 月 29 日");
+    expect(snapshot.notice).toContain("去年同期會留空");
+    expect(snapshot.notice).not.toContain("去年同期也只計到相同站點當地時間");
+  });
+
+  it("uses a Sales-specific two-second throttle floor and honors Retry-After", () => {
+    const fallback = salesTrendRetryDelayMs(
+      new Response(null, { status: 429 }),
+      0,
+      NOW.getTime(),
+    );
+    expect(fallback).toBeGreaterThanOrEqual(2_000);
+    expect(fallback).toBeLessThanOrEqual(2_250);
+
+    expect(
+      salesTrendRetryDelayMs(
+        new Response(null, { status: 429, headers: { "retry-after": "7" } }),
+        0,
+        NOW.getTime(),
+      ),
+    ).toBe(7_000);
+    expect(
+      salesTrendRetryDelayMs(
+        new Response(null, {
+          status: 429,
+          headers: {
+            "retry-after": new Date(NOW.getTime() + 5_000).toUTCString(),
+          },
+        }),
+        0,
+        NOW.getTime(),
+      ),
+    ).toBe(5_000);
   });
 });

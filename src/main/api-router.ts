@@ -39,7 +39,8 @@ import {
   type ListingPriceSnapshot,
   type MarketplaceId,
   type RestockPlanSnapshot,
-  type SalesTrendDays,
+  type SalesTrendComparisonMode,
+  type SalesTrendPresetDays,
   type SubscribeAndSaveOfferSnapshot,
   type UpdateListingSalePriceInput,
 } from "./amazon/sp-api";
@@ -474,16 +475,52 @@ export class ApiRouter {
 
   private async salesTrend(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId ?? "ATVPDKIKX0DER");
-    const days = integer(request.query.days, 7, 7, 30);
     if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
-    if (days === null || ![7, 14, 30].includes(days)) {
-      return invalid("銷售趨勢只支援最近 7、14 或 30 天。");
+
+    const supplied = (name: string) =>
+      Object.prototype.hasOwnProperty.call(request.query, name);
+    const hasDays = supplied("days");
+    const hasStartDate = supplied("startDate");
+    const hasEndDate = supplied("endDate");
+    if (hasDays && (hasStartDate || hasEndDate)) {
+      return invalid("預設天數與自訂日期不可同時使用。");
+    }
+    if (hasStartDate !== hasEndDate) {
+      return invalid("自訂日期必須同時提供開始日與結束日。");
+    }
+
+    let days: SalesTrendPresetDays | null = null;
+    let startDate: string | null = null;
+    let endDate: string | null = null;
+    if (hasDays) {
+      if (!/^(?:7|14|30|90)$/.test(request.query.days)) {
+        return invalid("銷售趨勢只支援最近 7、14、30 或 90 天。");
+      }
+      days = Number(request.query.days) as SalesTrendPresetDays;
+    } else if (hasStartDate && hasEndDate) {
+      const parsedStart = optionalDate(request.query.startDate);
+      const parsedEnd = optionalDate(request.query.endDate);
+      if (typeof parsedStart !== "string" || typeof parsedEnd !== "string") {
+        return invalid("自訂日期必須使用 YYYY-MM-DD 格式。");
+      }
+      startDate = parsedStart;
+      endDate = parsedEnd;
+    } else {
+      days = 7;
+    }
+
+    const comparison = request.query.comparison ?? "none";
+    if (comparison !== "none" && comparison !== "previous-year") {
+      return invalid("不支援這個銷售趨勢比較方式。");
     }
     try {
       return json(
         await getSalesTrend({
           marketplaceId,
-          days: days as SalesTrendDays,
+          days,
+          startDate,
+          endDate,
+          comparison: comparison as SalesTrendComparisonMode,
         }),
       );
     } catch (error) {

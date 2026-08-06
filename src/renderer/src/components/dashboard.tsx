@@ -1,43 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AdsDrawer from "./ads-drawer";
 import ImageWorkspaceDrawer from "./image-workspace-drawer";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
 import SalesTrendChart, {
+  previousYearDateKey,
   salesTrendFailureMessage,
   type SalesTrendSnapshot,
+  type TrendRangeSelection,
 } from "./sales-trend-chart";
 import SkuCommandCenter from "./sku-command-center";
 import SkuOperationsDrawer from "./sku-operations-drawer";
 import SystemHealthControl from "./system-health-control";
 
-type Money = { amount: number; currencyCode: string };
-type OrderItem = {
-  orderItemId: string;
-  asin: string;
-  sellerSku: string;
-  title: string;
-  quantity: number;
-  unitPrice: Money | null;
-  lineTotal: Money | null;
-};
-type Order = {
-  orderId: string;
-  createdTime: string;
-  lastUpdatedTime: string;
-  marketplaceId: string;
-  marketplaceName: string;
-  programs: string[];
-  fulfillmentStatus: string;
-  shipBy: string | null;
-  deliverBy: string | null;
-  total: Money | null;
-  items: OrderItem[];
-};
 type Marketplace = {
+  id: string;
+  flag: string;
   label: string;
   shortLabel: string;
   name: string;
@@ -45,21 +26,9 @@ type Marketplace = {
   region: "na" | "eu" | "fe";
 };
 
-export type DashboardSnapshot = {
-  mode: "live" | "demo";
-  orders: Order[];
-  marketplaceId: string;
-  marketplace: Marketplace;
-  fetchedAt: string;
-  nextToken: string | null;
-  lastUpdatedBefore: string | null;
-  requestId: string | null;
-  rateLimit: string | null;
-  notice: string | null;
-};
-
 type DashboardProps = {
-  initialSnapshot: DashboardSnapshot;
+  initialSalesTrend: SalesTrendSnapshot | null;
+  initialMarketplaceId: string;
   viewerName?: string | null;
   initialError?: string | null;
 };
@@ -67,26 +36,272 @@ type DashboardProps = {
 type Tool = "ads" | "restock" | "copy" | "images" | "price" | "promotion";
 type AutomationLevel = "automatic" | "one_click" | "manual";
 
-const MARKETPLACE_OPTIONS = [
-  { id: "ATVPDKIKX0DER", label: "美國站", flag: "US" },
-  { id: "A1VC38T7YXB528", label: "日本站", flag: "JP" },
-  { id: "A2EUQ1WTGCTBG2", label: "加拿大站", flag: "CA" },
-  { id: "A19VAU5U5O7RUS", label: "新加坡站", flag: "SG" },
-  { id: "A39IBJ37TRP1C6", label: "澳洲站", flag: "AU" },
-  { id: "A1F83G8C2ARO7P", label: "英國站", flag: "UK" },
-  { id: "A1PA6795UKMFR9", label: "德國站", flag: "DE" },
+export const DEFAULT_MARKETPLACE_ID = "ATVPDKIKX0DER";
+
+const MARKETPLACE_OPTIONS: Marketplace[] = [
+  { id: DEFAULT_MARKETPLACE_ID, label: "美國站", flag: "US", shortLabel: "US", name: "Amazon.com", currency: "USD", region: "na" },
+  { id: "A1VC38T7YXB528", label: "日本站", flag: "JP", shortLabel: "JP", name: "Amazon.co.jp", currency: "JPY", region: "fe" },
+  { id: "A2EUQ1WTGCTBG2", label: "加拿大站", flag: "CA", shortLabel: "CA", name: "Amazon.ca", currency: "CAD", region: "na" },
+  { id: "A19VAU5U5O7RUS", label: "新加坡站", flag: "SG", shortLabel: "SG", name: "Amazon.sg", currency: "SGD", region: "fe" },
+  { id: "A39IBJ37TRP1C6", label: "澳洲站", flag: "AU", shortLabel: "AU", name: "Amazon.com.au", currency: "AUD", region: "fe" },
+  { id: "A1F83G8C2ARO7P", label: "英國站", flag: "UK", shortLabel: "UK", name: "Amazon.co.uk", currency: "GBP", region: "eu" },
+  { id: "A1PA6795UKMFR9", label: "德國站", flag: "DE", shortLabel: "DE", name: "Amazon.de", currency: "EUR", region: "eu" },
 ];
 
-const STATUS_LABELS: Record<string, string> = {
-  PENDING_AVAILABILITY: "預購待確認",
-  PENDING: "處理中",
-  UNSHIPPED: "待出貨",
-  PARTIALLY_SHIPPED: "部分出貨",
-  SHIPPED: "已出貨",
-  CANCELLED: "已取消",
-  UNFULFILLABLE: "無法履約",
-  UNKNOWN: "未知",
-};
+const MARKETPLACES = new Map(
+  MARKETPLACE_OPTIONS.map((marketplace) => [marketplace.id, marketplace]),
+);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isDateKey(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function calendarDayCount(startDate: string, endDate: string): number {
+  return (
+    Math.round(
+      (new Date(`${endDate}T00:00:00.000Z`).getTime() -
+        new Date(`${startDate}T00:00:00.000Z`).getTime()) /
+        86_400_000,
+    ) + 1
+  );
+}
+
+function isTrendRange(value: unknown): value is SalesTrendSnapshot["range"] {
+  if (!isRecord(value)) return false;
+  if (!isDateKey(value.startDate) || !isDateKey(value.endDate)) return false;
+  const dayCount = calendarDayCount(value.startDate, value.endDate);
+  const presetDays = value.presetDays;
+  if (
+    typeof value.dayCount !== "number" ||
+    !Number.isInteger(value.dayCount) ||
+    value.startDate > value.endDate
+  ) {
+    return false;
+  }
+  return (
+    value.dayCount >= 1 &&
+    value.dayCount <= 90 &&
+    value.dayCount === dayCount &&
+    (presetDays === null ||
+      (typeof presetDays === "number" &&
+        [7, 14, 30, 90].includes(presetDays) &&
+        presetDays === value.dayCount))
+  );
+}
+
+function isMoney(
+  value: unknown,
+): value is SalesTrendSnapshot["totals"]["totalSales"] {
+  return (
+    isRecord(value) &&
+    typeof value.amount === "number" &&
+    Number.isFinite(value.amount) &&
+    value.amount >= 0 &&
+    typeof value.currencyCode === "string" &&
+    /^[A-Z]{3}$/.test(value.currencyCode)
+  );
+}
+
+function isTotals(value: unknown): value is SalesTrendSnapshot["totals"] {
+  return (
+    isRecord(value) &&
+    isMoney(value.totalSales) &&
+    [value.unitCount, value.orderItemCount, value.orderCount].every(
+      (count) =>
+        typeof count === "number" && Number.isSafeInteger(count) && count >= 0,
+    )
+  );
+}
+
+function isPoint(
+  value: unknown,
+): value is SalesTrendSnapshot["points"][number] {
+  return (
+    isRecord(value) &&
+    isDateKey(value.date) &&
+    typeof value.interval === "string" &&
+    isMoney(value.totalSales) &&
+    [value.unitCount, value.orderItemCount, value.orderCount].every(
+      (count) =>
+        typeof count === "number" && Number.isSafeInteger(count) && count >= 0,
+    ) &&
+    typeof value.partial === "boolean"
+  );
+}
+
+function pointsMatchRange(
+  points: unknown,
+  range: SalesTrendSnapshot["range"],
+): points is SalesTrendSnapshot["points"] {
+  if (!Array.isArray(points)) return false;
+  if (points.length !== range.dayCount) return false;
+  const start = new Date(`${range.startDate}T00:00:00.000Z`);
+  return points.every((point, index) => {
+    const expected = new Date(start);
+    expected.setUTCDate(expected.getUTCDate() + index);
+    return isPoint(point) && point.date === expected.toISOString().slice(0, 10);
+  });
+}
+
+function comparisonPointsMatchCurrent(
+  comparisonPoints: unknown,
+  currentPoints: SalesTrendSnapshot["points"],
+): comparisonPoints is SalesTrendSnapshot["points"] {
+  if (!Array.isArray(comparisonPoints)) return false;
+  const expectedDates = currentPoints
+    .map((point) => previousYearDateKey(point.date))
+    .filter((date): date is string => date !== null);
+  return (
+    comparisonPoints.length === expectedDates.length &&
+    comparisonPoints.every(
+      (point, index) => isPoint(point) && point.date === expectedDates[index],
+    )
+  );
+}
+
+function comparisonRangeMatchesPoints(
+  range: unknown,
+  points: SalesTrendSnapshot["points"],
+): range is SalesTrendSnapshot["range"] {
+  if (
+    !isRecord(range) ||
+    !isDateKey(range.startDate) ||
+    !isDateKey(range.endDate) ||
+    range.startDate > range.endDate ||
+    range.presetDays !== null ||
+    typeof range.dayCount !== "number" ||
+    !Number.isSafeInteger(range.dayCount) ||
+    range.dayCount < 0 ||
+    range.dayCount > 90 ||
+    range.dayCount !== points.length
+  ) {
+    return false;
+  }
+  if (!points.length) return true;
+  return (
+    range.startDate === points[0].date &&
+    range.endDate === points.at(-1)!.date
+  );
+}
+
+function totalsMatchPoints(
+  totals: unknown,
+  points: SalesTrendSnapshot["points"],
+  currencyCode: string,
+): boolean {
+  if (!isTotals(totals) || totals.totalSales.currencyCode !== currencyCode) {
+    return false;
+  }
+  if (points.some((point) => point.totalSales.currencyCode !== currencyCode)) {
+    return false;
+  }
+  const expected = points.reduce(
+    (result, point) => ({
+      amount: result.amount + point.totalSales.amount,
+      unitCount: result.unitCount + point.unitCount,
+      orderItemCount: result.orderItemCount + point.orderItemCount,
+      orderCount: result.orderCount + point.orderCount,
+    }),
+    { amount: 0, unitCount: 0, orderItemCount: 0, orderCount: 0 },
+  );
+  const precision = currencyCode === "JPY" ? 0 : 2;
+  return (
+    totals.totalSales.amount === Number(expected.amount.toFixed(precision)) &&
+    totals.unitCount === expected.unitCount &&
+    totals.orderItemCount === expected.orderItemCount &&
+    totals.orderCount === expected.orderCount
+  );
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function rangeMatchesSelection(
+  range: SalesTrendSnapshot["range"],
+  selection: TrendRangeSelection,
+): boolean {
+  return selection.kind === "preset"
+    ? range.presetDays === selection.days && range.dayCount === selection.days
+    : range.presetDays === null &&
+        range.startDate === selection.startDate &&
+        range.endDate === selection.endDate;
+}
+
+export function isSalesTrendSnapshotForSelection(
+  value: unknown,
+  marketplaceId: string,
+  selection: TrendRangeSelection,
+): value is SalesTrendSnapshot {
+  if (!isRecord(value) || value.schemaVersion !== 2) return false;
+  const marketplace = MARKETPLACES.get(marketplaceId);
+  if (!marketplace) return false;
+  if (
+    value.marketplaceId !== marketplaceId ||
+    (value.mode !== "live" && value.mode !== "demo") ||
+    typeof value.timeZone !== "string" ||
+    !value.timeZone ||
+    typeof value.days !== "number" ||
+    !Number.isSafeInteger(value.days) ||
+    !isTrendRange(value.range) ||
+    value.days !== value.range.dayCount ||
+    !rangeMatchesSelection(value.range, selection) ||
+    !pointsMatchRange(value.points, value.range) ||
+    !totalsMatchPoints(value.totals, value.points, marketplace.currency) ||
+    !isRecord(value.comparison) ||
+    value.comparison.kind !== "previous-year" ||
+    !comparisonPointsMatchCurrent(value.comparison.points, value.points) ||
+    !comparisonRangeMatchesPoints(
+      value.comparison.range,
+      value.comparison.points,
+    ) ||
+    !totalsMatchPoints(
+      value.comparison.totals,
+      value.comparison.points,
+      marketplace.currency,
+    ) ||
+    typeof value.fetchedAt !== "string" ||
+    Number.isNaN(Date.parse(value.fetchedAt)) ||
+    !isNullableString(value.requestId) ||
+    !isNullableString(value.rateLimit) ||
+    !isNullableString(value.comparison.requestId) ||
+    !isNullableString(value.comparison.rateLimit) ||
+    typeof value.notice !== "string"
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function salesTrendQuery(
+  marketplaceId: string,
+  selection: TrendRangeSelection,
+): URLSearchParams {
+  const params = new URLSearchParams({ marketplaceId });
+  if (selection.kind === "preset") {
+    params.set("days", String(selection.days));
+  } else {
+    params.set("startDate", selection.startDate);
+    params.set("endDate", selection.endDate);
+  }
+  params.set("comparison", "previous-year");
+  return params;
+}
+
+function salesTrendRequestKey(
+  marketplaceId: string,
+  selection: TrendRangeSelection,
+): string {
+  return selection.kind === "preset"
+    ? `${marketplaceId}:preset:${selection.days}`
+    : `${marketplaceId}:custom:${selection.startDate}:${selection.endDate}`;
+}
 
 const TOOL_META: Record<Tool, { label: string; symbol: string; group: string }> = {
   ads: { label: "廣告", symbol: "◎", group: "planning" },
@@ -142,37 +357,6 @@ function ToolCapabilities({ tool }: { tool: Tool }) {
   );
 }
 
-function retryableRead(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
-function waitForRetry(signal: AbortSignal, milliseconds: number) {
-  return new Promise<void>((resolve, reject) => {
-    const timeout = window.setTimeout(resolve, milliseconds);
-    signal.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timeout);
-        reject(new DOMException("Aborted", "AbortError"));
-      },
-      { once: true },
-    );
-  });
-}
-
-function formatMoney(money: Money | null): string {
-  if (!money) return "—";
-  try {
-    return new Intl.NumberFormat("zh-TW", {
-      style: "currency",
-      currency: money.currencyCode,
-      maximumFractionDigits: money.currencyCode === "JPY" ? 0 : 2,
-    }).format(money.amount);
-  } catch {
-    return `${money.currencyCode} ${money.amount.toLocaleString()}`;
-  }
-}
-
 function formatDateTime(value: string | null, compact = false) {
   if (!value) return "—";
   const date = new Date(value);
@@ -188,83 +372,39 @@ function formatDateTime(value: string | null, compact = false) {
     : `${taipei.getUTCFullYear()}/${monthDay} ${time}`;
 }
 
-function statusTone(status: string) {
-  if (status === "SHIPPED") return "success";
-  if (status === "UNSHIPPED" || status === "PARTIALLY_SHIPPED") return "warning";
-  if (status === "CANCELLED" || status === "UNFULFILLABLE") return "danger";
-  return "neutral";
-}
-
-function productSummary(order: Order) {
-  const first = order.items[0];
-  if (!first) return { title: "未提供商品", subtitle: "—" };
-  return {
-    title: first.title,
-    subtitle: order.items.length > 1 ? `${first.sellerSku} · 另有 ${order.items.length - 1} 項` : first.sellerSku,
-  };
-}
-
 export default function Dashboard({
-  initialSnapshot,
+  initialSalesTrend,
+  initialMarketplaceId,
   viewerName,
   initialError = null,
 }: DashboardProps) {
-  const [snapshot, setSnapshot] = useState(initialSnapshot);
-  const [marketplaceId, setMarketplaceId] = useState(initialSnapshot.marketplaceId);
+  const startingMarketplaceId = MARKETPLACES.has(initialMarketplaceId)
+    ? initialMarketplaceId
+    : DEFAULT_MARKETPLACE_ID;
+  const startingSelection: TrendRangeSelection = initialSalesTrend?.range.presetDays
+    ? { kind: "preset", days: initialSalesTrend.range.presetDays }
+    : initialSalesTrend
+      ? {
+          kind: "custom",
+          startDate: initialSalesTrend.range.startDate,
+          endDate: initialSalesTrend.range.endDate,
+        }
+      : { kind: "preset", days: 7 };
+  const [marketplaceId, setMarketplaceId] = useState(startingMarketplaceId);
   const [globalSku, setGlobalSku] = useState("");
-  const [orderDays, setOrderDays] = useState("14");
-  const [trendDays, setTrendDays] = useState<7 | 14 | 30>(7);
-  const [status, setStatus] = useState("");
-  const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(initialError);
-  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [trendSelection, setTrendSelection] =
+    useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
-  const [currentPageToken, setCurrentPageToken] = useState<string | null>(null);
-  const [pageHistory, setPageHistory] = useState<Array<string | null>>([]);
-  const [pageNumber, setPageNumber] = useState(1);
   const [autoSync, setAutoSync] = useState(true);
-  const [salesTrend, setSalesTrend] = useState<SalesTrendSnapshot | null>(null);
+  const [salesTrend, setSalesTrend] =
+    useState<SalesTrendSnapshot | null>(initialSalesTrend);
   const [salesTrendLoading, setSalesTrendLoading] = useState(false);
-  const [salesTrendError, setSalesTrendError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const [salesTrendError, setSalesTrendError] = useState<string | null>(initialError);
   const salesTrendAbortRef = useRef<AbortController | null>(null);
-  const didMount = useRef(false);
-
-  const loadSnapshot = useCallback(async (paginationToken: string | null = null) => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoading(true);
-    setError(null);
-    const params = new URLSearchParams({ marketplaceId, days: orderDays });
-    if (status) params.set("status", status);
-    if (paginationToken) params.set("paginationToken", paginationToken);
-    try {
-      let response: Response | null = null;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        response = await fetch(`/api/sp-api/orders?${params}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!retryableRead(response.status) || attempt === 1) break;
-        await waitForRetry(controller.signal, 650);
-      }
-      if (!response) throw new Error("目前無法載入訂單。");
-      const payload = (await response.json()) as DashboardSnapshot | { message?: string; requestId?: string | null };
-      if (!response.ok) {
-        const problem = payload as { message?: string; requestId?: string | null };
-        throw new Error(`${problem.message || "目前無法載入訂單。"}${problem.requestId ? `（Request ID: ${problem.requestId}）` : ""}`);
-      }
-      setSnapshot(payload as DashboardSnapshot);
-    } catch (requestError) {
-      if (requestError instanceof Error && requestError.name === "AbortError") return;
-      setError(requestError instanceof Error ? requestError.message : "目前無法載入訂單。");
-    } finally {
-      if (abortRef.current === controller) setLoading(false);
-    }
-  }, [marketplaceId, orderDays, status]);
+  const lastAutomaticRequestKey = useRef(
+    salesTrendRequestKey(startingMarketplaceId, startingSelection),
+  );
 
   const loadSalesTrend = useCallback(async () => {
     salesTrendAbortRef.current?.abort();
@@ -273,19 +413,18 @@ export default function Dashboard({
     setSalesTrendLoading(true);
     setSalesTrendError(null);
     setSalesTrend((current) =>
-      current?.marketplaceId === marketplaceId && current.days === trendDays
+      current?.marketplaceId === marketplaceId &&
+      rangeMatchesSelection(current.range, trendSelection)
         ? current
         : null,
     );
-    const params = new URLSearchParams({ marketplaceId, days: String(trendDays) });
+    const params = salesTrendQuery(marketplaceId, trendSelection);
     try {
       const response = await fetch(`/api/sp-api/sales-trend?${params}`, {
         cache: "no-store",
         signal: controller.signal,
       });
-      const payload = (await response.json()) as
-        | SalesTrendSnapshot
-        | { code?: string; message?: string; requestId?: string | null };
+      const payload = (await response.json()) as unknown;
       if (!response.ok) {
         const problem = payload as {
           code?: string;
@@ -297,14 +436,22 @@ export default function Dashboard({
           `${message}${problem.requestId ? `（Request ID: ${problem.requestId}）` : ""}`,
         );
       }
-      const next = payload as SalesTrendSnapshot;
-      if (next.marketplaceId !== marketplaceId || next.days !== trendDays) {
-        throw new Error("銷售趨勢回應與目前站點或日期範圍不一致，已停止顯示。");
+      if (
+        !isSalesTrendSnapshotForSelection(
+          payload,
+          marketplaceId,
+          trendSelection,
+        )
+      ) {
+        throw new Error(
+          "這台 Mac App Bridge 尚未支援新版銷售趨勢，請安裝新版後再同步。",
+        );
       }
-      if (salesTrendAbortRef.current === controller) setSalesTrend(next);
+      if (salesTrendAbortRef.current === controller) setSalesTrend(payload);
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       if (salesTrendAbortRef.current === controller) {
+        setSalesTrend(null);
         setSalesTrendError(
           requestError instanceof Error
             ? requestError.message
@@ -314,33 +461,23 @@ export default function Dashboard({
     } finally {
       if (salesTrendAbortRef.current === controller) setSalesTrendLoading(false);
     }
-  }, [marketplaceId, trendDays]);
+  }, [marketplaceId, trendSelection]);
+
+  useEffect(
+    () => () => {
+      salesTrendAbortRef.current?.abort();
+      salesTrendAbortRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!didMount.current) {
-      didMount.current = true;
-      return;
-    }
-    setCurrentPageToken(null);
-    setPageHistory([]);
-    setPageNumber(1);
-    void loadSnapshot(null);
-    return () => abortRef.current?.abort();
-  }, [marketplaceId, orderDays, status, loadSnapshot]);
-
-  useEffect(() => {
+    const requestKey = salesTrendRequestKey(marketplaceId, trendSelection);
+    if (lastAutomaticRequestKey.current === requestKey) return;
+    lastAutomaticRequestKey.current = requestKey;
     void loadSalesTrend();
     return () => salesTrendAbortRef.current?.abort();
-  }, [loadSalesTrend]);
-
-  useEffect(() => {
-    if (!selectedOrder) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelectedOrder(null);
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [selectedOrder]);
+  }, [loadSalesTrend, marketplaceId, trendSelection]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -361,30 +498,15 @@ export default function Dashboard({
         document.visibilityState === "visible" &&
         !openTool &&
         !commandOpen &&
-        !selectedOrder &&
-        !loading &&
         !salesTrendLoading
       ) {
-        void loadSnapshot(currentPageToken);
         void loadSalesTrend();
       }
     }, 5 * 60 * 1_000);
     return () => window.clearInterval(interval);
-  }, [autoSync, commandOpen, currentPageToken, loadSalesTrend, loadSnapshot, loading, openTool, salesTrendLoading, selectedOrder]);
-
-  const filteredOrders = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    if (!needle) return snapshot.orders;
-    return snapshot.orders.filter((order) =>
-      [order.orderId, order.marketplaceName, ...order.items.flatMap((item) => [item.title, item.sellerSku, item.asin])]
-        .join(" ")
-        .toLowerCase()
-        .includes(needle),
-    );
-  }, [search, snapshot.orders]);
+  }, [autoSync, commandOpen, loadSalesTrend, openTool, salesTrendLoading]);
 
   const launch = (tool: Tool) => {
-    setSelectedOrder(null);
     setCommandOpen(false);
     setOpenTool(tool);
   };
@@ -405,20 +527,27 @@ export default function Dashboard({
     setGlobalSku(sellerSku);
   };
 
-  const goNext = () => {
-    if (!snapshot.nextToken || loading) return;
-    setPageHistory((history) => [...history, currentPageToken]);
-    setCurrentPageToken(snapshot.nextToken);
-    setPageNumber((page) => page + 1);
-    void loadSnapshot(snapshot.nextToken);
+  const marketplace = MARKETPLACES.get(marketplaceId) ?? MARKETPLACE_OPTIONS[0];
+  const matchingSalesTrend =
+    salesTrend?.marketplaceId === marketplaceId &&
+    rangeMatchesSelection(salesTrend.range, trendSelection)
+      ? salesTrend
+      : null;
+  const visibleSalesTrend = salesTrendError ? null : matchingSalesTrend;
+  const mode = visibleSalesTrend?.mode ?? null;
+
+  const changeMarketplace = (nextMarketplaceId: string) => {
+    if (!MARKETPLACES.has(nextMarketplaceId) || salesTrendLoading) return;
+    setSalesTrend(null);
+    setSalesTrendError(null);
+    setMarketplaceId(nextMarketplaceId);
   };
-  const goPrevious = () => {
-    if (!pageHistory.length || loading) return;
-    const previousToken = pageHistory.at(-1) ?? null;
-    setPageHistory((history) => history.slice(0, -1));
-    setCurrentPageToken(previousToken);
-    setPageNumber((page) => Math.max(1, page - 1));
-    void loadSnapshot(previousToken);
+
+  const changeTrendSelection = (selection: TrendRangeSelection) => {
+    if (salesTrendLoading) return;
+    setSalesTrend(null);
+    setSalesTrendError(null);
+    setTrendSelection(selection);
   };
 
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -436,7 +565,7 @@ export default function Dashboard({
             <div key={section.group}><span>{section.label}</span>{section.tools.map((tool) => <button key={tool} type="button" className={openTool === tool ? "active" : ""} onClick={() => launch(tool)}><i>{TOOL_META[tool].symbol}</i>{TOOL_META[tool].label}<b>›</b></button>)}</div>
           ))}
         </nav>
-        <div className="sidebar-status"><div><span className={`connection-light ${snapshot.mode === "live" ? "connected" : ""}`} /><strong>{snapshot.mode === "live" ? "Amazon 已連線" : "展示模式"}</strong></div><p>FBA only · 不含 FBM</p></div>
+        <div className="sidebar-status"><div><span className={`connection-light ${mode === "live" ? "connected" : ""}`} /><strong>{mode === "live" ? "Amazon 已連線" : mode === "demo" ? "展示模式" : "尚未同步"}</strong></div><p>FBA only · 不含 FBM</p></div>
         <div className="sidebar-profile"><span>{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</span><div><strong>{viewerName ?? "Jayden"}</strong><small>Private workspace</small></div></div>
       </aside>
 
@@ -445,8 +574,8 @@ export default function Dashboard({
           <a className="mobile-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }}><span>A</span><strong>AMZ.API</strong></a>
           <label className="global-sku"><span>⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" /></label>
           <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)}><span>✦</span>總覽</button>
-          <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => setMarketplaceId(event.target.value)} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.flag} · {item.label}</option>)}</select></label>
-          <span className={`mode-badge ${snapshot.mode}`}><i />{snapshot.mode === "live" ? "Live" : "Demo"}</span>
+          <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.flag} · {item.label}</option>)}</select></label>
+          <span className={`mode-badge ${mode ?? "unavailable"}`}><i />{mode === "live" ? "Live" : mode === "demo" ? "Demo" : "未連線"}</span>
           <SystemHealthControl marketplaceId={marketplaceId} />
           <div className="avatar">{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</div>
         </header>
@@ -454,7 +583,7 @@ export default function Dashboard({
         <main id="workspace-top" className="workspace-content">
           <section className="os-hero">
             <div><p className="eyebrow">FBA OPERATING SYSTEM</p><h1>{viewerName ? `${viewerName.split(" ")[0]}，` : ""}今天要處理什麼？</h1><p>策劃、產品、價格各自一區。選好站點與 SKU，剩下只保留必要步驟。</p></div>
-            <div className="hero-sync"><span>訂單最後同步</span><strong>{formatDateTime(snapshot.fetchedAt)}</strong><small>{snapshot.marketplace.name}</small></div>
+            <div className="hero-sync"><span>銷售趨勢最後同步</span><strong>{formatDateTime(visibleSalesTrend?.fetchedAt ?? null)}</strong><small>{marketplace.name}</small></div>
           </section>
 
           <section className="automation-overview" aria-label="自動化分級">
@@ -467,7 +596,7 @@ export default function Dashboard({
             <label className="auto-sync-switch">
               <input type="checkbox" checked={autoSync} onChange={(event) => setAutoSyncPreference(event.target.checked)} />
               <span aria-hidden="true" />
-              <div><strong>訂單自動同步</strong><small>{autoSync ? "每 5 分鐘 · 已開啟" : "已暫停"}</small></div>
+              <div><strong>銷售趨勢自動同步</strong><small>{autoSync ? "每 5 分鐘 · 已開啟" : "已暫停"}</small></div>
             </label>
           </section>
 
@@ -478,8 +607,7 @@ export default function Dashboard({
             <button type="button" onClick={() => setCommandOpen(true)}>{globalSku.trim() ? `掃描 ${globalSku.trim()}` : "開啟 SKU 總覽"}<i>›</i></button>
           </section>
 
-          {snapshot.mode === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{snapshot.notice || "在 Mac 安全連線加入 LWA 憑證後即可切換真實 Amazon 資料。"}</p></div><a href="#connection" onClick={(event) => { event.preventDefault(); scrollTo("connection"); }}>串接說明</a></section>}
-          {error && <section className="error-card" role="alert"><div><strong>同步未完成</strong><p>{error}</p></div><button type="button" onClick={() => void loadSnapshot(currentPageToken)}>再試一次</button></section>}
+          {mode === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在 Mac 安全連線加入 LWA 憑證後即可切換真實 Amazon 資料。"}</p></div><a href="#connection" onClick={(event) => { event.preventDefault(); scrollTo("connection"); }}>串接說明</a></section>}
 
           <div className="core-zones">
             <section id="planning-zone" className="core-zone planning-zone">
@@ -508,18 +636,8 @@ export default function Dashboard({
           </div>
 
           <section className="operations-pulse">
-            <div className="pulse-heading"><div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2><p>先看完整 FBA 銷售趨勢；需要時再往下查看訂單。</p></div><button type="button" className="pulse-refresh" onClick={() => { void loadSnapshot(currentPageToken); void loadSalesTrend(); }} disabled={loading || salesTrendLoading}><span className={loading || salesTrendLoading ? "spin" : ""}>↻</span>{loading || salesTrendLoading ? "同步中" : "同步"}</button></div>
-            <SalesTrendChart snapshot={salesTrend} days={trendDays} loading={salesTrendLoading} error={salesTrendError} onDaysChange={setTrendDays} onRetry={() => void loadSalesTrend()} />
-            <div className="pulse-toolbar">
-              <select value={orderDays} onChange={(event) => setOrderDays(event.target.value)} aria-label="訂單日期範圍"><option value="7">最近 7 天訂單</option><option value="14">最近 14 天訂單</option><option value="30">最近 30 天訂單</option><option value="60">最近 60 天訂單</option><option value="90">最近 90 天訂單</option></select>
-              <select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="訂單狀態"><option value="">所有狀態</option><option value="UNSHIPPED">待出貨</option><option value="PARTIALLY_SHIPPED">部分出貨</option><option value="SHIPPED">已出貨</option><option value="PENDING">處理中</option><option value="CANCELLED">已取消</option></select>
-              <label><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜尋訂單、SKU 或 ASIN" /></label>
-            </div>
-            <div className={`table-wrap pulse-table ${loading ? "is-loading" : ""}`}>
-              <table><thead><tr><th>訂單</th><th>商品</th><th>狀態</th><th className="align-right">金額</th></tr></thead><tbody>{filteredOrders.map((order) => { const product = productSummary(order); return <tr key={order.orderId}><td><button className="order-link" type="button" onClick={() => setSelectedOrder(order)}>{order.orderId}</button><small>{formatDateTime(order.createdTime, true)}</small></td><td className="product-cell"><strong>{product.title}</strong><small>{product.subtitle}</small></td><td><span className={`status-pill ${statusTone(order.fulfillmentStatus)}`}>{STATUS_LABELS[order.fulfillmentStatus] || order.fulfillmentStatus}</span></td><td className="align-right amount-cell"><strong>{formatMoney(order.total)}</strong><small>{order.items.reduce((sum, item) => sum + item.quantity, 0)} 件</small></td></tr>; })}</tbody></table>
-              {!filteredOrders.length && <div className="empty-state"><span>⌕</span><strong>找不到符合條件的訂單</strong><p>請調整日期、狀態或搜尋關鍵字。</p></div>}
-            </div>
-            <div className="pagination-row"><span>第 {pageNumber} 頁 · 本頁 {filteredOrders.length} 筆</span><div><button type="button" onClick={goPrevious} disabled={!pageHistory.length || loading}>上一頁</button><button type="button" onClick={goNext} disabled={!snapshot.nextToken || loading}>下一頁</button></div></div>
+            <div className="pulse-heading"><div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2><p>用完整 FBA 銷售趨勢掌握近期變化，並與去年同期直接比較。</p></div><button type="button" className="pulse-refresh" onClick={() => void loadSalesTrend()} disabled={salesTrendLoading}><span className={salesTrendLoading ? "spin" : ""}>↻</span>{salesTrendLoading ? "同步中" : "同步"}</button></div>
+            <SalesTrendChart snapshot={visibleSalesTrend} selection={trendSelection} loading={salesTrendLoading} error={salesTrendError} onSelectionChange={changeTrendSelection} onRetry={() => void loadSalesTrend()} />
           </section>
 
           <details id="connection" className="connection-details">
@@ -531,8 +649,6 @@ export default function Dashboard({
       </div>
 
       <nav className="mobile-core-nav" aria-label="核心區域"><button type="button" onClick={() => scrollTo("planning-zone")}><span>◎</span>策劃</button><button type="button" onClick={() => scrollTo("product-zone")}><span>Aa</span>產品</button><button type="button" onClick={() => scrollTo("pricing-zone")}><span>$</span>價格</button></nav>
-
-      {selectedOrder && <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedOrder(null); }}><aside className="order-drawer" role="dialog" aria-modal="true" aria-labelledby="order-drawer-title"><div className="drawer-header"><div><p className="eyebrow">ORDER DETAIL</p><h2 id="order-drawer-title">{selectedOrder.orderId}</h2></div><button type="button" onClick={() => setSelectedOrder(null)} autoFocus aria-label="關閉訂單明細">×</button></div><div className="drawer-summary"><div><span>總金額</span><strong>{formatMoney(selectedOrder.total)}</strong></div><span className={`status-pill ${statusTone(selectedOrder.fulfillmentStatus)}`}>{STATUS_LABELS[selectedOrder.fulfillmentStatus] || selectedOrder.fulfillmentStatus}</span></div><dl className="order-facts"><div><dt>建立時間</dt><dd>{formatDateTime(selectedOrder.createdTime)}</dd></div><div><dt>最後更新</dt><dd>{formatDateTime(selectedOrder.lastUpdatedTime)}</dd></div><div><dt>最晚出貨</dt><dd>{formatDateTime(selectedOrder.shipBy)}</dd></div></dl><div className="drawer-items"><h3>商品明細</h3>{selectedOrder.items.map((item) => <article key={item.orderItemId}><div className="item-image" aria-hidden="true">{item.title.slice(0, 1)}</div><div><strong>{item.title}</strong><p>{item.sellerSku} · {item.asin}</p><small>{formatMoney(item.unitPrice)} × {item.quantity}</small></div><strong>{formatMoney(item.lineTotal)}</strong></article>)}</div><div className="privacy-footnote">只顯示營運欄位，不顯示姓名、Email、電話或地址。</div></aside></div>}
 
       {openTool === "ads" && <AdsDrawer initialMarketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
