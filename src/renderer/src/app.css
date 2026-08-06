@@ -1357,6 +1357,27 @@ footer {
   font-size: 9px;
 }
 
+.confirmation-input .confirmation-guidance {
+  margin-top: 0;
+  line-height: 1.5;
+}
+
+.confirmation-input .confirmation-guidance.is-empty {
+  color: #815811;
+}
+
+.confirmation-input .confirmation-guidance.is-ready {
+  color: #28734d;
+}
+
+.confirmation-submit:disabled {
+  cursor: not-allowed;
+}
+
+.confirmation-submit[data-loading="true"]:disabled {
+  cursor: wait;
+}
+
 .price-difference {
   display: flex;
   align-items: center;

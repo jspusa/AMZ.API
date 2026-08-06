@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ContentConfirmationControls } from "./content-confirmation-controls";
 
 type ListingIssue = {
   code: string | null;
@@ -1193,33 +1194,15 @@ export default function SkuOperationsDrawer({
                     ))}
                   </div>
                 )}
-                <label className="confirmation-input" htmlFor="content-confirmation-sku">
-                  <span>重新輸入完整 SKU 以確認</span>
-                  <input
-                    id="content-confirmation-sku"
-                    value={confirmationSku}
-                    onChange={(event) => setConfirmationSku(event.target.value)}
-                    placeholder={listing.sellerSku}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  {confirmationSku && confirmationSku !== listing.sellerSku && (
-                    <small>SKU 尚未完全一致</small>
-                  )}
-                </label>
-                {error && <div className="price-error" role="alert">{error}</div>}
-                <button
-                  className="price-primary-button danger-button"
-                  type="button"
-                  onClick={commitContent}
-                  disabled={actionLoading || confirmationSku !== listing.sellerSku}
-                >
-                  {actionLoading
-                    ? "送交 Amazon 中…"
-                    : validation.mode === "demo"
-                      ? `模擬更新 ${listing.sellerSku}`
-                      : `確認更新 ${listing.sellerSku}`}
-                </button>
+                <ContentConfirmationControls
+                  sellerSku={listing.sellerSku}
+                  mode={validation.mode}
+                  confirmationSku={confirmationSku}
+                  actionLoading={actionLoading}
+                  error={error}
+                  onConfirmationSkuChange={setConfirmationSku}
+                  onCommit={commitContent}
+                />
                 <p className="submission-note">
                   送出前 Mac App 會重新讀取舊內容並再次預檢；若內容已被其他系統修改，這次更新會停止。
                 </p>
