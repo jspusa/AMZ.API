@@ -167,6 +167,8 @@ Amazon App：
 - 合併 commit：`c03514c53c537c4a44cf367b4783a62c45f06e08`。
 - GitHub Actions：Validate、Pages、macOS universal build 均成功。
 - 本機驗證：40/40 tests、TypeScript、main/preload/renderer build、`npm audit --omit=dev` 0 vulnerabilities。
+- v0.1.5 整合分支已推送，Draft PR #4：`https://github.com/jspusa/AMZ.API/pull/4`；PR Validate 已通過。
+- 分支上的 unsigned universal Mac workflow run `31079166726` 已完整通過打包、ad-hoc 簽章、Bridge 啟動 smoke test、DMG／ZIP 與 artifact 上傳。
 
 ### 仍待真實 Mac／Amazon 帳號驗證
 
@@ -176,7 +178,7 @@ Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出
 2. 在真實 Mac 以唯讀方式查詢 `AFA12AM`，確認 SKU 指揮中心補貨資料能讀到 FBA 可售、預留與入庫數量，不再出現「Amazon FBA 庫存中找不到這個 SKU」。
 3. 在 US 站唯讀驗證 7／14／30 天 AFN 銷售折線圖，並與 Seller Central 同一站點／當地日界口徑核對；Sales API 失敗不得影響下方 Orders。
 4. 若使用者決定完成商品內容更新，仍必須由使用者手動輸入完整 SKU、確認差異並通過本機 Touch ID；寫入後再由系統回查 Amazon 結果。
-5. 推送目前整合分支並等待 GitHub Actions 產生正式 v0.1.5 universal DMG／ZIP；目前尚未發布 GitHub Release。
+5. PR #4 仍為 Draft；合併後需確認 Pages 與 main macOS workflow，再決定是否建立正式簽章／公證的 v0.1.5 GitHub Release。
 
 ### 最近的真實錯誤
 
@@ -193,6 +195,9 @@ Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出
 
 - 目前 `/Applications/AMZ.API.app`：較早的 v0.1.4 universal、ad-hoc 簽章；live Listings／`AFA12AM` 回讀成功，但尚未包含本次 FBA Inventory 與 Sales 折線圖修正。
 - 可回復備份：`/Applications/AMZ.API-v0.1.3-backup.app`。
+- 最新分支測試檔：`/Users/jasper/Desktop/AMZ.API-0.1.5-universal.dmg`（尚未安裝）。
+- v0.1.5 DMG SHA-256：`3f37a6a0fd520839ecb73d8344b3a048265e8e345289d4693fdd75a1a5b6ef38`。
+- v0.1.5 分支 artifact workflow run：`31079166726`；artifact 僅供內部 ad-hoc 測試，保留 14 天。
 - Library 最新檔名：`AMZ.API-0.1.3-universal.dmg`
 - GitHub Actions workflow run：`31005573903`
 - Artifact：`8930318161`（短期保存，可能到期）
