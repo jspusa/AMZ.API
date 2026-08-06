@@ -2036,6 +2036,12 @@ footer {
   font-size: 9px;
 }
 
+.content-audit-result-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .content-audit-result-heading button {
   border: 0;
   background: transparent;
@@ -2043,6 +2049,29 @@ footer {
   cursor: pointer;
   font-size: 8px;
   font-weight: 750;
+}
+
+.content-audit-result-heading .content-audit-excel-button {
+  min-height: 31px;
+  padding: 0 11px;
+  border: 1px solid #d7e3ef;
+  border-radius: 9px;
+  background: #f3f8fd;
+  color: #245b87;
+}
+
+.content-audit-result-heading .content-audit-excel-button:hover {
+  border-color: #b9d0e5;
+  background: #eaf3fb;
+}
+
+.content-audit-result-heading .content-audit-excel-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.content-audit-return-button {
+  margin: 0 0 13px;
 }
 
 .content-audit-list {
@@ -3263,6 +3292,20 @@ footer {
   .content-audit-controls > div {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .content-audit-result-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .content-audit-result-heading > div {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .content-audit-result-heading .content-audit-excel-button {
+    flex: 1;
   }
 
   .content-audit-product {
@@ -5663,6 +5706,98 @@ body:has(.commerce-os .drawer-backdrop) {
 
 .command-strip > button i { font-style: normal; font-size: 14px; }
 
+.content-audit-home-card {
+  display: grid;
+  grid-template-columns: auto minmax(280px, 1fr) auto auto;
+  align-items: center;
+  gap: 17px;
+  margin: -10px 0 24px;
+  padding: 18px 19px;
+  overflow: hidden;
+  border: 1px solid #eadfc9;
+  border-radius: 21px;
+  background:
+    radial-gradient(circle at 87% -15%, rgba(246, 178, 61, 0.18), transparent 34%),
+    linear-gradient(120deg, #fffdf9 0%, #fff 68%);
+  box-shadow: 0 10px 32px rgba(94, 63, 18, 0.055);
+}
+
+.content-audit-home-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 15px;
+  background: #fff1d6;
+  color: #98620c;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: -0.04em;
+}
+
+.content-audit-home-card .eyebrow {
+  margin-bottom: 4px;
+  color: #9a7a43;
+  font-size: 7px;
+}
+
+.content-audit-home-card h2 {
+  margin: 0;
+  color: #27211a;
+  font-size: 14px;
+  letter-spacing: -0.025em;
+}
+
+.content-audit-home-card p:not(.eyebrow) {
+  margin: 5px 0 0;
+  color: #756b5d;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.content-audit-home-status {
+  min-width: 83px;
+  padding-right: 16px;
+  border-right: 1px solid #eadfcf;
+  text-align: right;
+}
+
+.content-audit-home-status strong,
+.content-audit-home-status small {
+  display: block;
+}
+
+.content-audit-home-status strong {
+  color: #8a590e;
+  font-size: 17px;
+}
+
+.content-audit-home-status small {
+  margin-top: 2px;
+  color: #8c8172;
+  font-size: 7px;
+}
+
+.content-audit-home-card > button {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 12px;
+  background: #1d1d1f;
+  color: #fff;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.content-audit-home-card > button:hover { background: #353538; }
+.content-audit-home-card > button i { font-style: normal; font-size: 15px; }
+
 .command-drawer {
   width: min(860px, 100%);
   padding: 27px 30px 34px !important;
@@ -5839,11 +5974,15 @@ body:has(.commerce-os .drawer-backdrop) {
 @media (max-width: 1100px) {
   .command-strip { grid-template-columns: auto minmax(220px, 1fr) auto; }
   .command-strip-levels { display: none; }
+  .content-audit-home-card { grid-template-columns: auto minmax(220px, 1fr) auto; }
+  .content-audit-home-status { display: none; }
 }
 
 @media (max-width: 760px) {
   .command-strip { grid-template-columns: auto minmax(0, 1fr); }
   .command-strip > button { grid-column: 1 / -1; }
+  .content-audit-home-card { grid-template-columns: auto minmax(0, 1fr); }
+  .content-audit-home-card > button { grid-column: 1 / -1; }
   .command-drawer { width: 100%; padding: 22px 18px calc(30px + env(safe-area-inset-bottom)) !important; }
   .command-search { grid-template-columns: 1fr auto; }
   .command-search select { grid-column: 1 / -1; }
@@ -5869,6 +6008,8 @@ body:has(.commerce-os .drawer-backdrop) {
   .command-strip { grid-template-columns: 1fr; text-align: center; }
   .command-strip-orb { margin: 0 auto; }
   .command-strip-levels { display: none; }
+  .content-audit-home-card { grid-template-columns: 1fr; text-align: center; }
+  .content-audit-home-icon { margin: 0 auto; }
   .command-search { grid-template-columns: 1fr; }
   .command-search select { grid-column: auto; }
   .command-hero { grid-template-columns: 42px minmax(0, 1fr); }

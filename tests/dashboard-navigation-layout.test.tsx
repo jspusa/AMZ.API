@@ -41,6 +41,9 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain("workspace-sidebar");
     expect(markup).not.toContain("mobile-core-nav");
     expect(markup).not.toContain("<aside");
+    expect(markup).toContain('class="content-audit-home-card"');
+    expect(markup).toContain("全站內容健檢");
+    expect(markup).toContain("開始全站健檢");
   });
 
   it("keeps the header centered and makes the tool row horizontally reachable", async () => {

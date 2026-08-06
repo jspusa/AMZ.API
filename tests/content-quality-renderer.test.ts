@@ -37,6 +37,25 @@ describe("renderer content quality helpers", () => {
     expect(words).not.toContain("FBA");
   });
 
+  it("always treats GooToE as an approved product term", () => {
+    const brandedRows = [{
+      ...rows[0],
+      title: "GooToE dog treats",
+      bulletPoints: ["GooToE training reward"],
+    }];
+
+    expect(wordsForLocalSpellcheck(brandedRows)).not.toContain("GooToE");
+    expect(
+      addLocalSpellcheckIssues(brandedRows, [
+        { word: "GooToE", suggestions: ["Goatee"] },
+      ])[0].issues,
+    ).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ token: "GooToE" }),
+      ]),
+    );
+  });
+
   it("adds Mac-local spelling suggestions without changing content", () => {
     const checked = addLocalSpellcheckIssues(rows, [
       { word: "Naturall", suggestions: ["Natural"] },

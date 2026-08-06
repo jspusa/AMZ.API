@@ -12,6 +12,10 @@ import {
   type ContentAuditRow,
   type ContentAuditSnapshot,
 } from "../content-quality";
+import {
+  contentAuditAttentionRows,
+  downloadContentAuditWorkbook,
+} from "../content-audit-excel";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 
@@ -25,7 +29,14 @@ type ReportReply = {
 };
 
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
-type AuditFilter = "all" | "READ_INCOMPLETE" | ContentAuditIssueKind;
+export type AuditFilter = "all" | "READ_INCOMPLETE" | ContentAuditIssueKind;
+
+export type ContentAuditCache = {
+  snapshot: ContentAuditSnapshot;
+  filter: AuditFilter;
+  query: string;
+  spellcheckNote: string | null;
+};
 
 const FILTERS: Array<{ value: AuditFilter; label: string }> = [
   { value: "all", label: "全部問題" },
@@ -185,38 +196,55 @@ export default function ContentAuditPanel({
   marketplaceId,
   marketplaceShort,
   onOpenSku,
+  cachedResult = null,
+  onCachedResultChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
   onOpenSku: (sellerSku: string) => void;
+  cachedResult?: ContentAuditCache | null;
+  onCachedResultChange?: (cache: ContentAuditCache) => void;
 }) {
-  const [state, setState] = useState<AuditState>("idle");
+  const initialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
+    ? cachedResult
+    : null;
+  const [state, setState] = useState<AuditState>(initialCache ? "done" : "idle");
   const [reply, setReply] = useState<ReportReply | null>(null);
-  const [snapshot, setSnapshot] = useState<ContentAuditSnapshot | null>(null);
-  const [filter, setFilter] = useState<AuditFilter>("all");
-  const [query, setQuery] = useState("");
+  const [snapshot, setSnapshot] = useState<ContentAuditSnapshot | null>(
+    initialCache?.snapshot ?? null,
+  );
+  const [filter, setFilter] = useState<AuditFilter>(initialCache?.filter ?? "all");
+  const [query, setQuery] = useState(initialCache?.query ?? "");
   const [error, setError] = useState<string | null>(null);
-  const [spellcheckNote, setSpellcheckNote] = useState<string | null>(null);
+  const [spellcheckNote, setSpellcheckNote] = useState<string | null>(
+    initialCache?.spellcheckNote ?? null,
+  );
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
     abortRef.current?.abort();
-    setState("idle");
     setReply(null);
+    setError(null);
+    if (cachedResult?.snapshot.marketplaceId === marketplaceId) {
+      setState("done");
+      setSnapshot(cachedResult.snapshot);
+      setFilter(cachedResult.filter);
+      setQuery(cachedResult.query);
+      setSpellcheckNote(cachedResult.spellcheckNote);
+      return;
+    }
+    setState("idle");
     setSnapshot(null);
     setFilter("all");
     setQuery("");
-    setError(null);
     setSpellcheckNote(null);
-  }, [marketplaceId]);
+  }, [cachedResult, marketplaceId]);
 
   const attentionRows = useMemo(
     () =>
-      snapshot?.rows.filter(
-        (row) => row.readStatus === "incomplete" || row.issues.length > 0,
-      ) ?? [],
+      snapshot ? contentAuditAttentionRows(snapshot) : [],
     [snapshot],
   );
   const visibleRows = useMemo(() => {
@@ -259,17 +287,15 @@ export default function ContentAuditPanel({
     }
     const base = parseContentAuditSnapshot(raw);
     let rows = base.rows;
+    let nextSpellcheckNote: string;
     try {
       const words = wordsForLocalSpellcheck(rows);
       const misspellings = window.fbaOS.spellcheck.check(words);
       rows = addLocalSpellcheckIssues(rows, misspellings);
-      setSpellcheckNote(
-        `Mac 本機字典已檢查 ${words.length.toLocaleString()} 個不重複英文單字（每次最多 ${LOCAL_SPELLCHECK_WORD_LIMIT.toLocaleString()} 個）；只提示，不會自動改字。大型 catalog 超過上限後的後續單字未做 Mac 字典檢查。`,
-      );
+      nextSpellcheckNote = `Mac 本機字典已檢查 ${words.length.toLocaleString()} 個不重複英文單字（每次最多 ${LOCAL_SPELLCHECK_WORD_LIMIT.toLocaleString()} 個）；只提示，不會自動改字。大型 catalog 超過上限後的後續單字未做 Mac 字典檢查。`;
     } catch {
-      setSpellcheckNote(
-        "Mac 本機字典目前不可用；已完成缺值、明確常見錯字、重複詞與不可見字元檢查。",
-      );
+      nextSpellcheckNote =
+        "Mac 本機字典目前不可用；已完成缺值、明確常見錯字、重複詞與不可見字元檢查。";
     }
     const completed = {
       ...base,
@@ -277,7 +303,16 @@ export default function ContentAuditPanel({
       summary: summarizeContentAudit(rows, base.summary.total),
     };
     setSnapshot(completed);
+    setFilter("all");
+    setQuery("");
+    setSpellcheckNote(nextSpellcheckNote);
     setState("done");
+    onCachedResultChange?.({
+      snapshot: completed,
+      filter: "all",
+      query: "",
+      spellcheckNote: nextSpellcheckNote,
+    });
   };
 
   const startAudit = async () => {
@@ -286,9 +321,7 @@ export default function ContentAuditPanel({
     abortRef.current = controller;
     setState("starting");
     setReply(null);
-    setSnapshot(null);
     setError(null);
-    setSpellcheckNote(null);
     try {
       const startResponse = await fetch("/api/sp-api/listing-content/export", {
         method: "POST",
@@ -335,7 +368,7 @@ export default function ContentAuditPanel({
       throw new Error("內容健檢超過三分鐘，請稍後再試。");
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
-      setState("idle");
+      setState(snapshot ? "done" : "idle");
       setError(
         requestError instanceof Error ? requestError.message : "目前無法完成內容健檢。",
       );
@@ -344,6 +377,40 @@ export default function ContentAuditPanel({
 
   const statusText = scanStatusText(state, reply);
   const summary = snapshot?.summary;
+
+  const changeFilter = (nextFilter: AuditFilter) => {
+    setFilter(nextFilter);
+    if (snapshot) {
+      onCachedResultChange?.({
+        snapshot,
+        filter: nextFilter,
+        query,
+        spellcheckNote,
+      });
+    }
+  };
+
+  const changeQuery = (nextQuery: string) => {
+    setQuery(nextQuery);
+    if (snapshot) {
+      onCachedResultChange?.({
+        snapshot,
+        filter,
+        query: nextQuery,
+        spellcheckNote,
+      });
+    }
+  };
+
+  const exportAttentionRows = () => {
+    if (!snapshot || attentionRows.length === 0) return;
+    try {
+      downloadContentAuditWorkbook(snapshot, marketplaceShort);
+      setError(null);
+    } catch {
+      setError("目前無法建立健檢 Excel，請重新掃描後再試。");
+    }
+  };
 
   return (
     <section className="content-audit-panel" aria-label="全站 FBA 內容健檢">
@@ -393,7 +460,7 @@ export default function ContentAuditPanel({
                   key={item.value}
                   type="button"
                   className={filter === item.value ? "active" : ""}
-                  onClick={() => setFilter(item.value)}
+                  onClick={() => changeFilter(item.value)}
                 >
                   {item.label}
                 </button>
@@ -403,7 +470,7 @@ export default function ContentAuditPanel({
               <span>⌕</span>
               <input
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => changeQuery(event.target.value)}
                 placeholder="搜尋 SKU、ASIN 或商品名稱"
                 aria-label="搜尋內容健檢結果"
               />
@@ -411,7 +478,17 @@ export default function ContentAuditPanel({
           </div>
           <div className="content-audit-result-heading">
             <strong>{visibleRows.length.toLocaleString()} 個符合條件的 SKU</strong>
-            <button type="button" onClick={() => void startAudit()}>重新掃描</button>
+            <div>
+              <button
+                className="content-audit-excel-button"
+                type="button"
+                onClick={exportAttentionRows}
+                disabled={attentionRows.length === 0}
+              >
+                匯出全部 {attentionRows.length.toLocaleString()} 個待確認項目 Excel
+              </button>
+              <button type="button" onClick={() => void startAudit()}>重新掃描</button>
+            </div>
           </div>
           {visibleRows.length ? (
             <div className="content-audit-list">
