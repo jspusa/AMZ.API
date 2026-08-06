@@ -314,6 +314,16 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: string }> 
   promotion: { label: "促銷", symbol: "%", group: "pricing" },
 };
 
+const TOOL_SECTIONS: ReadonlyArray<{
+  label: string;
+  group: "planning" | "product" | "pricing";
+  tools: readonly Tool[];
+}> = [
+  { label: "策劃", group: "planning", tools: ["ads", "restock"] },
+  { label: "產品", group: "product", tools: ["copy", "images", "variations"] },
+  { label: "價格", group: "pricing", tools: ["price", "promotion"] },
+];
+
 const TOOL_CAPABILITIES: Record<
   Tool,
   Array<{ level: AutomationLevel; label: string }>
@@ -560,35 +570,58 @@ export default function Dashboard({
 
   return (
     <div className="commerce-os">
-      <aside className="workspace-sidebar">
-        <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁"><span className="os-brand-mark">A</span><span><strong>AMZ.API</strong><small>Amazon operations</small></span></a>
-        <nav className="workspace-nav" aria-label="三大營運核心">
-          {[
-            { label: "策劃區", group: "planning", tools: ["ads", "restock"] as Tool[] },
-            { label: "產品區", group: "product", tools: ["copy", "images", "variations"] as Tool[] },
-            { label: "價格區", group: "pricing", tools: ["price", "promotion"] as Tool[] },
-          ].map((section) => (
-            <div key={section.group}><span>{section.label}</span>{section.tools.map((tool) => <button key={tool} type="button" className={openTool === tool ? "active" : ""} onClick={() => launch(tool)}><i>{TOOL_META[tool].symbol}</i>{TOOL_META[tool].label}<b>›</b></button>)}</div>
-          ))}
-        </nav>
-        <div className="sidebar-status"><div><span className={`connection-light ${mode === "live" ? "connected" : ""}`} /><strong>{mode === "live" ? "Amazon 已連線" : mode === "demo" ? "展示模式" : "尚未同步"}</strong></div><p>FBA only · 不含 FBM</p></div>
-        <div className="sidebar-profile"><span>{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</span><div><strong>{viewerName ?? "Jayden"}</strong><small>Private workspace</small></div></div>
-      </aside>
+      <a className="workspace-skip-link" href="#workspace-top">跳到主要內容</a>
 
       <div className="workspace-surface">
-        <header className="workspace-topbar">
-          <a className="mobile-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }}><span>A</span><strong>AMZ.API</strong></a>
-          <label className="global-sku"><span>⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" /></label>
-          <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)}><span>✦</span>總覽</button>
-          <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.flag} · {item.label}</option>)}</select></label>
-          <span className={`mode-badge ${mode ?? "unavailable"}`}><i />{mode === "live" ? "Live" : mode === "demo" ? "Demo" : "未連線"}</span>
-          <SystemHealthControl marketplaceId={marketplaceId} />
-          <div className="avatar">{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</div>
+        <header className="workspace-header">
+          <div className="workspace-header-main">
+            <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁">
+              <span className="os-brand-mark">A</span>
+              <span className="os-brand-copy"><strong>AMZ.API</strong><small>FBA workspace</small></span>
+            </a>
+
+            <nav className="workspace-primary-nav" aria-label="主要功能">
+              {TOOL_SECTIONS.map((section) => (
+                <div className="workspace-primary-group" role="group" aria-label={section.label} key={section.group}>
+                  {section.tools.map((tool) => (
+                    <button
+                      key={tool}
+                      type="button"
+                      className={openTool === tool ? "active" : ""}
+                      aria-haspopup="dialog"
+                      aria-pressed={openTool === tool}
+                      onClick={() => launch(tool)}
+                    >
+                      <span aria-hidden="true">{TOOL_META[tool].symbol}</span>
+                      {TOOL_META[tool].label}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </nav>
+
+            <div className="workspace-header-status">
+              <span className={`mode-badge workspace-connection-status ${mode ?? "unavailable"}`} aria-live="polite">
+                <i />
+                <span><strong>{mode === "live" ? "Amazon 已連線" : mode === "demo" ? "展示資料" : "尚未同步"}</strong><small>{mode === "live" ? "Live" : mode === "demo" ? "Demo" : "未連線"}</small></span>
+              </span>
+              <span className="workspace-avatar" role="img" aria-label={`${viewerName ?? "Jasper"} 的私人工作區`}>{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</span>
+            </div>
+          </div>
+
+          <div className="workspace-context-shell">
+            <div className="workspace-contextbar">
+              <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" /></label>
+              <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)}><span aria-hidden="true">✦</span>SKU 總覽</button>
+              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.flag} · {item.label}</option>)}</select></label>
+              <SystemHealthControl marketplaceId={marketplaceId} />
+            </div>
+          </div>
         </header>
 
-        <main id="workspace-top" className="workspace-content">
+        <main id="workspace-top" className="workspace-content" tabIndex={-1}>
           <section className="os-hero">
-            <div><p className="eyebrow">FBA OPERATING SYSTEM</p><h1>{viewerName ? `${viewerName.split(" ")[0]}，` : ""}今天要處理什麼？</h1><p>策劃、產品、價格各自一區。選好站點與 SKU，剩下只保留必要步驟。</p></div>
+            <div><p className="eyebrow">FBA OPERATING SYSTEM</p><h1>{viewerName ? `${viewerName.split(" ")[0]}，` : ""}今天想從哪裡開始？</h1><p>從上方選一個功能；站點與 SKU 會一路跟著你，畫面只留下當下真正需要的資訊。</p></div>
             <div className="hero-sync"><span>銷售趨勢最後同步</span><strong>{formatDateTime(visibleSalesTrend?.fetchedAt ?? null)}</strong><small>{marketplace.name}</small></div>
           </section>
 
@@ -654,8 +687,6 @@ export default function Dashboard({
         </main>
         <footer className="os-footer"><span>AMZ.API · GitHub UI / Local Key</span><span>FBA only · No FBM · No buyer PII</span></footer>
       </div>
-
-      <nav className="mobile-core-nav" aria-label="核心區域"><button type="button" onClick={() => scrollTo("planning-zone")}><span>◎</span>策劃</button><button type="button" onClick={() => scrollTo("product-zone")}><span>Aa</span>產品</button><button type="button" onClick={() => scrollTo("pricing-zone")}><span>$</span>價格</button></nav>
 
       {openTool === "ads" && <AdsDrawer initialMarketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
