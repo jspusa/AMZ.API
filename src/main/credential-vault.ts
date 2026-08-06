@@ -27,6 +27,15 @@ type StoredCredentials = {
 };
 
 const EMPTY_REGION = Object.freeze({ refreshToken: "", sellerId: "" });
+const KNOWN_MARKETPLACE_IDS = new Set([
+  "ATVPDKIKX0DER",
+  "A2EUQ1WTGCTBG2",
+  "A1VC38T7YXB528",
+  "A19VAU5U5O7RUS",
+  "A39IBJ37TRP1C6",
+  "A1F83G8C2ARO7P",
+  "A1PA6795UKMFR9",
+]);
 const ENVIRONMENT_KEYS = [
   "SP_API_LWA_CLIENT_ID",
   "SP_API_LWA_CLIENT_SECRET",
@@ -63,6 +72,20 @@ function cleanText(value: unknown, maximum: number): string {
   const result = value.trim();
   if (result.length > maximum || /[\u0000-\u001f\u007f]/.test(result)) {
     throw new Error("輸入內容包含無效字元或超過長度上限。");
+  }
+  return result;
+}
+
+function cleanSellerId(value: unknown): string {
+  const result = cleanText(value, 128);
+  if (!result) return "";
+  if (KNOWN_MARKETPLACE_IDS.has(result)) {
+    throw new Error(
+      "Seller ID 不可填 Marketplace ID；請使用 Seller Central 顯示的 Merchant Token。",
+    );
+  }
+  if (/\s|[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(result)) {
+    throw new Error("Seller ID 含有空白或不可見字元，請重新複製 Merchant Token。");
   }
   return result;
 }
@@ -300,7 +323,16 @@ export class CredentialVault {
       const incoming = input.regions?.[region];
       if (!incoming) continue;
       const refreshToken = cleanText(incoming.refreshToken, 8_192);
-      const sellerId = cleanText(incoming.sellerId, 128);
+      const sellerId = cleanSellerId(incoming.sellerId);
+      if (
+        refreshToken &&
+        refreshToken !== current.regions[region].refreshToken &&
+        !sellerId
+      ) {
+        throw new Error(
+          `${region.toUpperCase()} 更新 Refresh Token 時必須一併填入同一帳號的 Seller ID。`,
+        );
+      }
       if (refreshToken) next.regions[region].refreshToken = refreshToken;
       if (sellerId) next.regions[region].sellerId = sellerId;
     }

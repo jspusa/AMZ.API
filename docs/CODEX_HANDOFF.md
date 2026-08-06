@@ -1,9 +1,9 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-08-05  
+最後更新：2026-08-06
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前版本：`v0.1.3`  
+目前開發版本：`v0.1.4` 候選版；最近正式安裝檔仍為 `v0.1.3`
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -131,32 +131,58 @@ Amazon App：
   - Excel 批次 Listings 查詢回 400 時，自動安全降級為逐 SKU `getListingsItem` 只讀查詢。
   - App 內 SOP 角色名稱改為 `Inventory and Order Tracking`。
   - 版本升至 `0.1.3`。
+- v0.1.3 已在真實 Mac／Amazon 帳號重現：Orders 成功，但 Listings probe 與 SKU `AFA12AM` 的 `getListingsItem` 均回 HTTP 400 `Invalid parameters`。
+- v0.1.4 候選修正已完成：
+  - Listings 單品查詢在完整官方參數回 400 時，只對唯讀 GET 依序測必要資料集與真正最小必填參數；任何寫入都不走降級路徑。
+  - 連線 probe 可由標準參數降級為最小唯讀參數，並保留實際 operation、Amazon error code 與 Request ID。
+  - Seller ID 輸入會拒絕 Marketplace ID、空白及不可見字元；更換 Refresh Token 時必須同時提供同帳號 Seller ID，避免跨帳號殘留。
+  - Product Type Definitions 無法使用時，文案／圖片仍可唯讀，但所有編輯與 PATCH 明確停用。
+  - 商品內容最終確認欄位不再用目標 SKU 當作假預填 placeholder；空白、字元不符、完全一致與送出中都有明確狀態，仍要求使用者手動輸入完整 SKU，不放寬寫入確認。
+  - 沒有改動既定架構、沒有新增 FBM，也沒有放寬寫入安全邊界。
+- v0.1.4 候選版已在同一台真實 Mac／同一加密 vault 重測：
+  - Orders 仍可正常讀取。
+  - 只帶 `marketplaceIds` 的最小 Listings probe 仍回 HTTP 400。
+  - SKU `AFA12AM` 的完整、必要資料集，以及只含必填 `marketplaceIds` 的真正最小 `getListingsItem` 均回 HTTP 400；最後一次最小請求的 Request ID 已保留於本機診斷紀錄。
+  - 同一 Refresh Token 的 Orders 可讀且包含 `AFA12AM`，US marketplace 也正確，因此將根因收斂為本機 Merchant Token／Refresh Token 的 Seller 帳號一致性。
+  - Amazon Sellers API 在 NA 沒有可由 token 回傳 Seller ID 的 operation，程式不能安全自動猜測 Merchant Token；不得再盲目改參數或輪替 Secret。
+  - 已在登入中的 Seller Central 本機核對，確認原先保存的 NA Merchant Token 與該帳號的官方 Merchant Token 不同；完整值未寫入 GitHub、文件或回覆。
+  - 只在 Mac App 加密 vault 更新為正確 Merchant Token 後，「Orders 與 Listings 連線成功」與「Amazon SP-API 連線成功」均已通過。
+  - SKU `AFA12AM` 的真實商品內容已成功載入：ASIN、FBA 履約、`PET_FOOD` 商品類型、標題、五大賣點與成分均有回傳；PTD 字數／欄位能力也正常顯示，不再回 HTTP 400。
+  - SKU `AFA12AM` 的價格／訂閱唯讀查詢成功：LIVE／可購買狀態、標準價、有效價、最低價限制、S&S 資格、折扣與訂閱數均有回傳。
+  - SKU `AFA12AM` 的促銷唯讀查詢成功：LIVE 狀態、標準價與目前無限時折扣均正確顯示；未填新折扣時建立按鈕保持停用。
+  - US 全部商品 Excel 已由 Amazon Reports 建立並自動下載：商品內容表含 265 筆資料，`AFA12AM` 存在；兩筆無法確認為 FBA 的系列被排除並列於「錯誤與缺值」，另有 6 筆缺少成分提示。
+  - Excel 未包含 Seller ID、Token、買家或訂單資料，且沒有公式錯誤。
+  - SKU `AFA12AM` 的五大賣點 Amazon Validation Preview 已通過；最終確認欄位實際仍為空白，確認按鈕未啟用，因此沒有送出非預檢的真實 Amazon 寫入，商品內容未變更。
+  - 最終確認 UI hotfix 已由 PR #3 合併至 `main` 並成功部署 GitHub Pages；真實 Mac App 已確認欄位保持空白、placeholder 改為通用指示、空白狀態有明確說明，正式更新按鈕保持停用。
+  - hotfix 上線後重新唯讀查詢時，Amazon Listing attributes 只回傳一項 `Lean & Clean` 賣點；已依使用者先前提供內容在本機重建五項賣點並再次通過 Validation Preview，但未輸入最終確認 SKU、未執行真實寫入。
+  - 已將驗證通過的 v0.1.4 安裝為 `/Applications/AMZ.API.app`，安裝後再次通過「Orders 與 Listings 連線成功」與 `AFA12AM` 商品內容回讀；原 v0.1.3 保留為 `/Applications/AMZ.API-v0.1.3-backup.app`。
 - PR #1 已 squash merge 到 `main`。
 - 合併 commit：`c03514c53c537c4a44cf367b4783a62c45f06e08`。
 - GitHub Actions：Validate、Pages、macOS universal build 均成功。
-- 本機驗證：14/14 tests、TypeScript、main/preload/renderer build、`npm audit --omit=dev` 0 vulnerabilities。
+- 本機驗證：25/25 tests、TypeScript、main/preload/renderer build、`npm audit --omit=dev` 0 vulnerabilities。
 
-### 仍待使用者在真實 Mac／Amazon 帳號驗證
+### 仍待真實 Mac／Amazon 帳號驗證
 
-使用者尚未回報 v0.1.3 的新連線測試結果。下一步不是再改程式，而是：
+Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出均已完成；現在仍待：
 
-1. 安裝 v0.1.3，完全關閉舊 App 後取代。
-2. 打開「Mac 安全連線」，確認 footer 顯示 v0.1.3。
-3. 按「重新測試」。
-4. 若顯示 `Orders 與 Listings 連線成功`：先測單一 SKU `AFA12AM` 的文案只讀查詢，再測 Excel。
-5. 若顯示 `Listings 驗證失敗`：優先核對 NA Seller ID 與 Product Listing role／重新 self-authorize；不要叫使用者重填或公開 Secret。
+1. 商品內容最終確認 UI hotfix 上線後，在真實 Mac 完全退出並重開 App，確認空白欄位、逐字一致狀態與停用按鈕都清楚顯示；不得代替使用者輸入 SKU 或觸發真實寫入。
+2. 若使用者決定完成更新，必須由使用者手動輸入完整 SKU、確認差異並通過本機 Touch ID；寫入後再由系統回查 Amazon 結果。
+3. 將其餘本機已驗證的 Listings 核心變更另行提交、推送，等待 GitHub Actions 產生正式 v0.1.4 universal DMG／ZIP；目前已安裝版為本機 ad-hoc 簽章，尚未發布 GitHub Release。
 
 ### 最近的真實錯誤
 
 - 症狀：Orders 可讀，但文案、價格、促銷與 Excel 曾回 `Invalid parameters provided.`
 - 最近 Excel Request ID：`c8907d99-12e1-4d62-8766-e6c31e0df848`
-- 判斷：可能是先前單一／批次 Listings 參數，也可能是 Seller ID／Listing 授權不匹配。v0.1.3 的 Listings probe 用來把這兩類問題與 Orders 成功分開。
-- 不應在未取得 v0.1.3 probe 結果前，武斷要求重建整個 Amazon App。
+- v0.1.3 與修正 Merchant Token 前的 v0.1.4 候選版，真實 Listings probe／單一 SKU 均回 HTTP 400；Amazon Request ID 已保留於本機診斷紀錄。
+- 已對照 Amazon 官方文件，完整與最小 `getListingsItem` 參數組合均合法；更新成同一授權帳號的正確 Merchant Token 後，probe 與 `AFA12AM` 商品內容皆成功，故此次 400 根因已確認為帳號識別值不一致。
+- 不應重建整個 Amazon App，也不應要求使用者輪替或公開 Secret。
 
 ---
 
 ## 6. 目前安裝檔
 
+- 目前 `/Applications/AMZ.API.app`：本機已驗證 v0.1.4 universal、ad-hoc 簽章；安裝後 live Listings／`AFA12AM` 回讀成功。
+- 可回復備份：`/Applications/AMZ.API-v0.1.3-backup.app`。
 - Library 最新檔名：`AMZ.API-0.1.3-universal.dmg`
 - GitHub Actions workflow run：`31005573903`
 - Artifact：`8930318161`（短期保存，可能到期）
@@ -228,19 +254,18 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-等待使用者貼上 v0.1.3「重新測試」結果：
+以已通過真實 Listings／文案讀取的 v0.1.4 候選版接續其餘唯讀驗證：
 
-### A. Orders 與 Listings 皆成功
+### A. Orders 與 Listings 皆成功（包含相容唯讀參數）
 
-1. 查 `AFA12AM` 文案。
-2. 查價格／促銷。
-3. 測 Excel 匯出。
-4. 若只讀均通過，再選低風險 SKU 測一次 Validation Preview；未經使用者明確確認，不執行真實價格或文案寫入。
+1. `AFA12AM` 文案、價格／促銷與 Excel 均已成功；不要重做已完成的根因排查。
+2. 若要驗證寫入前流程，需先取得使用者明確同意，再選低風險 SKU 測一次 Validation Preview。
+3. 未經使用者再次確認，不執行真實價格、文案或圖片寫入。
 
-### B. Listings probe 仍回 400
+### B. Listings 再次回 400
 
 1. 記錄錯誤 code、Amazon message、Request ID、App version、marketplace；不得記錄 Secret。
-2. 檢查使用者填的是正確 NA Seller ID／Merchant Token，而不是 Marketplace ID、Application ID 或不同帳戶 ID。
+2. 先確認 App 使用的是已在 2026-08-06 本機校正的 NA Merchant Token；不得輸出或要求完整值。
 3. 確認 Product Listing role 同時存在於 Developer Profile 與 App，角色更新後重新 self-authorize。
 4. 若 Seller ID 與 role 均確認正確，使用 Request ID 向 Amazon Developer Support 查詢；不要繼續猜測或輪替所有金鑰。
 
@@ -267,4 +292,3 @@ npm audit --omit=dev
 - 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID。
 - 寫入後回查；結果不確定時阻止盲目重送。
 - Secret 仍只存在使用者 Mac 的加密 vault。
-
