@@ -18,8 +18,10 @@
 - CSP、navigation、window-open、webview 白名單
 - IPC sender、main-frame、HTTPS protocol、GitHub hostname 與精確 repository path 核對
 - Keychain-backed `safeStorage`，不可用時 fail closed
-- Amazon preview、舊值衝突、完整 SKU、幅度檢查、Touch ID／native confirmation
+- Amazon preview、舊值衝突、必要路徑的完整 SKU／幅度檢查、Touch ID／native confirmation
 - 本機持久 idempotency ledger；未知結果不重送
+- 全站文案只用 Mac 內建 spellchecker，不傳送到外部拼字服務
+- Variation family 只開放唯讀 GET；拖拉規劃沒有 Amazon mutation route
 - Lock screen／suspend 清除所有短效預檢票證
 - Electron fuses：停用 RunAsNode、Node options／inspect，啟用 ASAR integrity 與 cookie encryption
 - Hardened Runtime、Developer ID、notarization 與 stapling release workflow

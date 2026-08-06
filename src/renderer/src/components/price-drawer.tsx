@@ -110,6 +110,13 @@ function formatMoney(money: Money | null): string {
   }
 }
 
+function formatCount(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value < 0) return "—";
+  return new Intl.NumberFormat("zh-TW", {
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -635,8 +642,9 @@ export default function PriceDrawer({
                         <div><dt>資格／狀態</dt><dd>{subscribeSave.eligibility ?? "—"}</dd></div>
                         <div><dt>賣家 Base</dt><dd>{subscribeSave.sellerFundedBaseDiscount ?? 0}%</dd></div>
                         <div><dt>賣家 Tiered</dt><dd>{subscribeSave.sellerFundedTieredDiscount ?? 0}%</dd></div>
-                        <div><dt>訂閱數</dt><dd>{subscribeSave.subscriptions ?? "—"}</dd></div>
+                        <div><dt>目前有效訂閱</dt><dd>{formatCount(subscribeSave.subscriptions)}</dd></div>
                       </dl>
+                      <p>「目前有效訂閱」是 Amazon listOffers 的查詢快照，不是期間新增、歷史累計、配送次數或唯一顧客數。</p>
                       <p>{subscribeSave.notice}</p>
                     </>
                   )}

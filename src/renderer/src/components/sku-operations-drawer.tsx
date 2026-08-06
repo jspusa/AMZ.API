@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { ContentConfirmationControls } from "./content-confirmation-controls";
+import ContentAuditPanel from "./content-audit-panel";
 
 type ListingIssue = {
   code: string | null;
@@ -365,7 +366,7 @@ export default function SkuOperationsDrawer({
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"single" | "export">("single");
+  const [tab, setTab] = useState<"single" | "audit" | "export">("single");
   const [marketplaceId, setMarketplaceId] = useState(
     MARKETPLACES.some((item) => item.id === initialMarketplaceId)
       ? initialMarketplaceId
@@ -377,7 +378,6 @@ export default function SkuOperationsDrawer({
   const [phase, setPhase] = useState<"edit" | "confirm" | "result">("edit");
   const [validation, setValidation] = useState<MutationReply | null>(null);
   const [result, setResult] = useState<MutationReply | null>(null);
-  const [confirmationSku, setConfirmationSku] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [resultConfirmed, setResultConfirmed] = useState(false);
   const [submittedContent, setSubmittedContent] = useState<SubmittedContent | null>(
@@ -524,7 +524,6 @@ export default function SkuOperationsDrawer({
       if (phase === "confirm") {
         setPhase("edit");
         setValidation(null);
-        setConfirmationSku("");
         return;
       }
       closeDrawer();
@@ -549,7 +548,6 @@ export default function SkuOperationsDrawer({
     setPhase("edit");
     setValidation(null);
     setResult(null);
-    setConfirmationSku("");
     setIdempotencyKey("");
     setResultConfirmed(false);
     setSubmittedContent(null);
@@ -575,7 +573,7 @@ export default function SkuOperationsDrawer({
     setMarketplaceId(value);
   };
 
-  const changeTab = (nextTab: "single" | "export") => {
+  const changeTab = (nextTab: "single" | "audit" | "export") => {
     if (nextTab === tab) return;
     if (
       tab === "single" &&
@@ -606,13 +604,14 @@ export default function SkuOperationsDrawer({
     [marketplaceId],
   );
 
-  const lookupSingle = useCallback(async (event?: FormEvent) => {
+  const lookupSingle = useCallback(async (event?: FormEvent, sellerSkuOverride?: string) => {
     event?.preventDefault();
-    const sellerSku = skuInput.trim();
+    const sellerSku = (sellerSkuOverride ?? skuInput).trim();
     if (!sellerSku) {
       setError("請輸入完整 Seller SKU。");
       return;
     }
+    setSkuInput(sellerSku);
     lookupAbortRef.current?.abort();
     const controller = new AbortController();
     lookupAbortRef.current = controller;
@@ -623,7 +622,6 @@ export default function SkuOperationsDrawer({
     setPhase("edit");
     setValidation(null);
     setResult(null);
-    setConfirmationSku("");
     setIdempotencyKey("");
     setResultConfirmed(false);
     setSubmittedContent(null);
@@ -641,6 +639,11 @@ export default function SkuOperationsDrawer({
       if (lookupAbortRef.current === controller) setLookupLoading(false);
     }
   }, [fetchListing, marketplaceId, onContextResolved, skuInput]);
+
+  const openAuditSku = useCallback((sellerSku: string) => {
+    setTab("single");
+    void lookupSingle(undefined, sellerSku);
+  }, [lookupSingle]);
 
   useEffect(() => {
     if (autoLookupRef.current || !initialSellerSku.trim()) return;
@@ -660,7 +663,9 @@ export default function SkuOperationsDrawer({
     title: content?.title ?? "",
     bulletPoints: content ? [...content.bulletPoints] : [],
     ingredients: content?.ingredients ?? "",
-    confirmationSku,
+    // Keep Pages compatible with an older installed bridge during rollout;
+    // the current bridge no longer treats this legacy field as an approval.
+    confirmationSku: listing?.sellerSku ?? "",
     idempotencyKey: key,
   });
 
@@ -684,7 +689,6 @@ export default function SkuOperationsDrawer({
       }
       setValidation(normalizeMutationReply(payload as Partial<MutationReply>));
       setIdempotencyKey(key);
-      setConfirmationSku("");
       setPhase("confirm");
     } catch (requestError) {
       setError(
@@ -702,8 +706,7 @@ export default function SkuOperationsDrawer({
       !listing ||
       !requestedContent ||
       !validation ||
-      !idempotencyKey ||
-      confirmationSku !== listing.sellerSku
+      !idempotencyKey
     ) {
       return;
     }
@@ -793,7 +796,6 @@ export default function SkuOperationsDrawer({
     setDraft(nextDraft);
     setValidation(null);
     setResult(null);
-    setConfirmationSku("");
     setIdempotencyKey("");
     setResultConfirmed(false);
     setSubmittedContent(null);
@@ -944,7 +946,7 @@ export default function SkuOperationsDrawer({
           </button>
         </div>
 
-        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全域 SKU 開啟即載入；PTD、字數、五點上限、舊值衝突與送出後回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>Excel 會自動建立、輪詢並下載；商品內容通過防呆確認後才送出。</p><span className="automation-badge manual">需人工</span><p>標題、五大賣點與成分內容由你決定。</p></div>
+        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p><span className="automation-badge one_click">一鍵</span><p>健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Touch ID。</p><span className="automation-badge manual">需人工</span><p>疑似錯字、標題、五大賣點與成分內容由你決定。</p></div>
 
         <div className="sku-ops-tabs" role="tablist" aria-label="商品內容工具">
           <button
@@ -957,6 +959,17 @@ export default function SkuOperationsDrawer({
             onClick={() => changeTab("single")}
           >
             單一 SKU 編輯
+          </button>
+          <button
+            id="content-audit-tab"
+            type="button"
+            role="tab"
+            aria-selected={tab === "audit"}
+            aria-controls="content-audit-panel"
+            className={tab === "audit" ? "active" : ""}
+            onClick={() => changeTab("audit")}
+          >
+            全站內容健檢
           </button>
           <button
             id="content-export-tab"
@@ -1162,7 +1175,6 @@ export default function SkuOperationsDrawer({
                   onClick={() => {
                     setPhase("edit");
                     setValidation(null);
-                    setConfirmationSku("");
                     setError(null);
                   }}
                   disabled={actionLoading}
@@ -1196,11 +1208,8 @@ export default function SkuOperationsDrawer({
                 )}
                 <ContentConfirmationControls
                   sellerSku={listing.sellerSku}
-                  mode={validation.mode}
-                  confirmationSku={confirmationSku}
                   actionLoading={actionLoading}
                   error={error}
-                  onConfirmationSkuChange={setConfirmationSku}
                   onCommit={commitContent}
                 />
                 <p className="submission-note">
@@ -1245,7 +1254,6 @@ export default function SkuOperationsDrawer({
                     setPhase("edit");
                     setValidation(null);
                     setResult(null);
-                    setConfirmationSku("");
                     setIdempotencyKey("");
                     setResultConfirmed(false);
                     setSubmittedContent(null);
@@ -1257,6 +1265,20 @@ export default function SkuOperationsDrawer({
                 </button>
               </section>
             )}
+          </div>
+        )}
+
+        {tab === "audit" && (
+          <div
+            id="content-audit-panel"
+            role="tabpanel"
+            aria-labelledby="content-audit-tab"
+          >
+            <ContentAuditPanel
+              marketplaceId={marketplaceId}
+              marketplaceShort={marketplace.short}
+              onOpenSku={openAuditSku}
+            />
           </div>
         )}
 
@@ -1341,7 +1363,7 @@ export default function SkuOperationsDrawer({
         )}
 
         <div className="privacy-footnote price-footnote">
-          這個工具只處理 FBA 商品內容。所有憑證留在這台 Mac；寫入前會先跑 Amazon 預檢、完整 SKU 與本機確認。
+          這個工具只處理 FBA 商品內容。所有憑證留在這台 Mac；寫入前會先跑 Amazon 預檢、舊值衝突檢查與 Touch ID／系統確認。
         </div>
       </aside>
     </div>

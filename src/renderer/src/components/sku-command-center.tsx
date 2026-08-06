@@ -164,6 +164,15 @@ function formatMoney(money: Money | null): string {
   }
 }
 
+function formatCount(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return "—";
+  }
+  return new Intl.NumberFormat("zh-TW", {
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
   const date = new Date(value);
@@ -492,7 +501,7 @@ export default function SkuCommandCenter({
               <article><span>FBA 可售天數</span><strong>{snapshot.restock.data?.daysOfCover === null || snapshot.restock.data?.daysOfCover === undefined ? "—" : snapshot.restock.data.daysOfCover.toFixed(1)}</strong><small>可售 {snapshot.restock.data?.inventory.fulfillable ?? "—"} 件</small></article>
               <article className={snapshot.restock.data?.recommendedUnits ? "attention" : ""}><span>建議補貨</span><strong>{snapshot.restock.data?.recommendedUnits.toLocaleString() ?? "—"}</strong><small>{snapshot.restock.data?.forecastStockoutAt ? `預估缺貨 ${formatDate(snapshot.restock.data.forecastStockoutAt)}` : "尚無缺貨日"}</small></article>
               <article><span>內容完整度</span><strong>{bulletCount === null ? "—" : `${bulletCount}/5`}</strong><small>{snapshot.content.data?.ingredients ? "成分已填" : "成分待確認"} · 圖片 {imageCount ?? "—"} 張</small></article>
-              <article><span>Subscribe &amp; Save</span><strong>{snapshot.subscribeSave.data?.found ? `${snapshot.subscribeSave.data.sellerFundedBaseDiscount ?? 0}%` : "—"}</strong><small>{snapshot.subscribeSave.data?.found ? `Tiered ${snapshot.subscribeSave.data.sellerFundedTieredDiscount ?? 0}% · ${snapshot.subscribeSave.data.subscriptions ?? "—"} 訂閱` : "Amazon 未回傳 offer"}</small></article>
+              <article title="「目前有效訂閱」是 Amazon listOffers 的查詢快照，不是期間新增、歷史累計、配送次數或唯一顧客數。"><span>Subscribe &amp; Save</span><strong>{snapshot.subscribeSave.data?.found ? `${snapshot.subscribeSave.data.sellerFundedBaseDiscount ?? 0}%` : "—"}</strong><small>{snapshot.subscribeSave.data?.found ? `Tiered ${snapshot.subscribeSave.data.sellerFundedTieredDiscount ?? 0}% · 目前有效訂閱 ${formatCount(snapshot.subscribeSave.data.subscriptions)}` : "Amazon 未回傳 offer"}</small></article>
             </section>
 
             <section className="command-actions">

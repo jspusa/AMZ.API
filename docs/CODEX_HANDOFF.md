@@ -3,7 +3,7 @@
 最後更新：2026-08-06
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前版本：`v0.1.6` 內部測試版；已合併、部署、安裝並完成真實 Mac／Amazon 唯讀驗證
+目前版本：`v0.1.7` 候選開發中；GitHub `main` 與 `/Applications/AMZ.API.app` 仍為已驗證的 `v0.1.6`
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -187,14 +187,26 @@ Amazon App：
 - v0.1.6 已安裝為 `/Applications/AMZ.API.app`，原 v0.1.5 原封不動備份為 `/Applications/AMZ.API-v0.1.5-backup.app`；安裝前後均確認 bundle ID `com.jspusa.amz-api`、`arm64`／`x86_64` 與 `codesign --verify --deep --strict`。
 - 真實 Mac／Amazon 唯讀驗證已通過：App 正常啟動未閃退；US 站 7／14／30／90 天與自訂 90 天均載入本期及去年同期；每日提示同時顯示兩期金額；頁面底部沒有可見訂單明細區；回傳 notice 明確標示 AFN/FBA。
 - 此次沒有讀取、修改或輸出 LWA Client Secret、Refresh Token 或完整 Seller ID，也沒有執行任何 Amazon 寫入。
+- v0.1.7 候選版已完成但尚未合併／部署／安裝：
+  - 商品內容更新移除重輸完整 SKU；支援 Touch ID 時直接顯示系統驗證，不先顯示額外確認對話框。Validation Preview、短效票證、舊值衝突、idempotency、單次寫入與送出後回查仍保留；無 Touch ID 時仍有原生確認 fallback。
+  - Sale Price 明確對應 Seller Central「產品 → 管理所有庫存 → 編輯 SKU → Offer／商品報價 → Sale Price」，並說明不是廣告選單的價格折扣、管理促銷、Deals 或 Coupon；只更新 `discounted_price`。
+  - Subscribe & Save 數字改稱「目前有效訂閱」：它是 Replenishment `listOffers` 查詢當下的 active subscriptions 快照，不是單月新增、歷史累計、配送次數或唯一顧客數。
+  - 新增全站 FBA 內容健檢：Reports 清單搭配 Listings enrichment，檢查疑似錯字、少於五個賣點與成分狀態；Mac 內建字典每次最多檢查 5,000 個不重複英文單字，文案不送第三方也不自動改字。
+  - 內容健檢採 fail closed：Listings 讀取失敗列為「讀取失敗／未完成」且不計入缺值或拼字統計；只有可確認為 `PET_FOOD` 的空成分算「缺成分」，其他商品類型列為「成分未驗證／需人工確認 PTD」。
+  - 新增 Variation Family 唯讀地圖與拖拉規劃，只接受可證明為 FBA 的 child；跨站、product type、theme、缺維度、重複維度或 family 不完整會阻擋。Parent 只作唯讀容器，沒有 PUT／PATCH／DELETE，也沒有 FBM。
+  - Electron 操作驗證曾抓到 variation lookup 一啟動就自行取消；根因是 Escape 鍵 effect 在 `busy` 變更時執行 cleanup 並誤 abort 目前 GET。現已把鍵盤 listener cleanup 與僅限卸載的 request abort 拆開，來源、目標與唯讀規劃均已在 Electron 展示模式通過。
+  - 本機驗證：103/103 tests、TypeScript、main／preload／renderer production build、`git diff --check`、Electron 展示模式四項互動與 `npm audit --omit=dev` 0 vulnerabilities。
 
 ### 已完成與仍待真實 Mac／Amazon 驗證
 
 Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出，以及 7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢均已完成。現在仍待：
 
-1. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的本期與去年同期逐日數字和 Seller Central 報表逐列比較；App 端 7／14／30／90／自訂載入與切換已驗證。
-2. 商品內容真實寫入仍未執行；任何寫入都必須保留 Amazon Validation Preview、舊值衝突檢查、Touch ID、idempotency 與送出後回查。
-3. v0.1.6 目前仍是 ad-hoc 內部測試 build；是否建立 Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。
+1. v0.1.7 仍需建立 PR、通過 Actions、合併、部署 Pages、建置 universal App、備份 v0.1.6 後安裝，再確認版本、雙架構、簽章、啟動與既有本機 vault 正常。
+2. 在真實 US 帳號執行全站 FBA 內容健檢，確認 Mac 字典、讀取失敗排除與「缺成分／成分未驗證」分類；唯讀核對至少一個 variation family 的 parent、children、theme 與維度並做一次不送出的拖拉規劃。
+3. 唯讀確認 Sale Price 說明與目前排程，以及「目前有效訂閱」標籤；Touch ID 可用 demo 或取消流程驗證，未獲使用者另行明確授權不得送出真實商品內容或變體寫入。
+4. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的本期與去年同期逐日數字和 Seller Central 報表逐列比較；App 端 7／14／30／90／自訂載入與切換已驗證。
+5. 商品內容真實寫入仍未執行；任何寫入都必須保留 Amazon Validation Preview、舊值衝突檢查、Touch ID、idempotency 與送出後回查。
+6. 目前仍是 ad-hoc 內部測試 build；是否建立 Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。
 
 ### 最近的真實錯誤
 
@@ -283,35 +295,28 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-v0.1.6 安裝、Pages 部署與核心唯讀驗證已完成。下一步接續尚未合併的使用者要求：
+先完成 v0.1.7 的發布與真實唯讀驗證，不要再擴充功能：
 
-### A. 促銷能力名稱與邊界
+### A. 發布與安裝
 
-1. 現有 `discounted_price` 寫入對應 SKU 層級 Amazon Sale Price 排程，不是 Seller Central「廣告」選單中的優惠券、價格折扣、Deals 或管理促銷活動。
-2. 介面應明確顯示 Seller Central 對應路徑與可能的折扣疊加警告，不可用模糊的「促銷活動」名稱造成誤解。
+1. 確認 branch 與 `main` 沒有分歧，建立 PR，等待 Validate 與 macOS universal workflow 成功後才合併。
+2. 等 Pages 與 main macOS workflow 成功；下載 artifact，核對 `SHA256SUMS.txt`、版本、bundle ID、`arm64`／`x86_64` 與 `codesign --verify --deep --strict`。
+3. 原封不動備份 `/Applications/AMZ.API.app` 的 v0.1.6，再覆蓋安裝 v0.1.7；不得清除或輸出 Keychain vault。
 
-### B. 商品內容 Touch ID 流程
+### B. 真實唯讀驗證
 
-1. 使用者要求商品內容更新不再重輸完整 SKU；按下最終更新後，在支援 Touch ID 的 Mac 直接顯示系統 Touch ID，不再先顯示「是否使用 Touch ID」對話框。
-2. 只移除商品內容的重輸 SKU 步驟；不得移除差異確認、Validation Preview、舊值衝突、票證、防重送、單次 PATCH 與送出後回查。
-3. 沒有 Touch ID 的 Mac 仍需保留原生本機確認 fallback；未經使用者再次確認，不執行真實 Amazon 寫入。
+1. 用至少一個 US FBA variation family 核對 parent、children、theme、維度與排除項目；完成一次拖拉規劃並確認沒有 Amazon mutation。
+2. 執行全站 FBA 內容健檢；核對 Mac 字典、讀取未完成列、賣點不足，以及「缺成分／成分未驗證」分類。
+3. 唯讀查詢 Sale Price 與 Subscribe & Save，確認 UI 的 Seller Central 對應與「目前有效訂閱」定義；不得為驗證而建立折扣。
 
-### C. Listings 再次回 400
+### C. Touch ID 負向驗證
 
-1. 記錄錯誤 code、Amazon message、Request ID、App version、marketplace；不得記錄 Secret。
-2. 先確認 App 使用的是已在 2026-08-06 本機校正的 NA Merchant Token；不得輸出或要求完整值。
-3. 確認 Product Listing role 同時存在於 Developer Profile 與 App，角色更新後重新 self-authorize。
-4. 若 Seller ID 與 role 均確認正確，使用 Request ID 向 Amazon Developer Support 查詢；不要繼續猜測或輪替所有金鑰。
+1. 商品內容預檢後應直接出現 Touch ID，不再要求重輸 SKU 或先顯示額外對話框。
+2. 只做取消／拒絕的負向驗證，確認沒有 Amazon 寫入與 idempotency commit；真實文案寫入需使用者另行明確授權。
 
-### D. Listings probe 成功但某一功能失敗
+### D. 若某一 endpoint 失敗
 
-依 endpoint 分開診斷，不再把所有失敗歸因於「API 沒串好」：
-
-- 文案／圖片／價促：Listings Items API 與 Product Type Definitions。
-- FBA 庫存：FBA Inventory API。
-- 訂閱省：Replenishment API，能力可能只讀。
-- Excel：Reports API → report document → Listings enrichment。
-- 廣告：Amazon Ads API，與 SP-API 是不同授權。
+依 endpoint 分開診斷，不把所有失敗歸因於「API 沒串好」：文案／圖片／Sale Price 看 Listings Items 與 PTD；FBA 庫存看 FBA Inventory；訂閱省看 Replenishment；Excel／健檢看 Reports 與 Listings enrichment。保留錯誤 code、Amazon message、Request ID、App version 與 marketplace，但不得記錄或輸出 Secret、Refresh Token 或完整 Seller ID。
 
 ---
 

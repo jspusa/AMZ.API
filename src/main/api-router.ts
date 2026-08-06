@@ -8,6 +8,7 @@ import type {
 } from "../shared/contracts";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore, type ProductMasterState } from "./local-store";
+import { auditListingContentRows } from "./amazon/content-quality";
 import {
   MARKETPLACES,
   SpApiError,
@@ -19,6 +20,7 @@ import {
   getRestockPlan,
   getSalesTrend,
   getSubscribeAndSaveOffer,
+  getVariationFamilyPlanner,
   isFulfillmentStatus,
   isMarketplaceId,
   previewListingContentUpdate,
@@ -424,6 +426,8 @@ export class ApiRouter {
         return this.subscribeSave(request);
       case "GET /api/sp-api/replenishment-plan":
         return this.replenishment(request);
+      case "GET /api/sp-api/variation-family":
+        return this.variationFamily(request);
       case "GET /api/sp-api/sku-command":
         return this.skuCommand(request);
       case "GET /api/product-master":
@@ -545,6 +549,16 @@ export class ApiRouter {
       return json(await getListingPrice(identity));
     } catch (error) {
       return apiError(error, "查詢 SKU 價格時發生未預期的錯誤。");
+    }
+  }
+
+  private async variationFamily(request: ApiRequest): Promise<ApiResponse> {
+    const identity = this.listingIdentity(request);
+    if ("status" in identity) return identity;
+    try {
+      return json(await getVariationFamilyPlanner(identity));
+    } catch (error) {
+      return apiError(error, "查詢變體 family 時發生未預期的錯誤。");
     }
   }
 
@@ -686,7 +700,6 @@ export class ApiRouter {
         expectedBulletPoints: string[];
         ingredients: string;
         expectedIngredients: string;
-        confirmationSku: string;
         idempotencyKey: string;
       }
     | ApiResponse {
@@ -721,7 +734,6 @@ export class ApiRouter {
       expectedBulletPoints,
       ingredients,
       expectedIngredients,
-      confirmationSku: typeof body.confirmationSku === "string" ? body.confirmationSku : "",
       idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
     };
   }
@@ -757,9 +769,6 @@ export class ApiRouter {
     if ("status" in input) return input;
     const key = idempotencyKey(input.idempotencyKey);
     if (!key) return invalid("這次預檢已失效，請重新預檢。");
-    if (input.confirmationSku !== input.sellerSku) {
-      return invalid("送出商品內容前，請重新輸入完整 SKU。", 400, "CONFIRMATION_REQUIRED");
-    }
     const scoped = await this.scopedFingerprint(
       input.marketplaceId,
       this.contentFingerprint(input),
@@ -1624,7 +1633,8 @@ export class ApiRouter {
     if (!marketplaceId || !reportId) {
       return invalid("報表查詢資訊無效，請重新匯出。");
     }
-    if (request.query.download !== "1") {
+    const auditRequested = request.query.audit === "1";
+    if (request.query.download !== "1" && !auditRequested) {
       try {
         const status = await getAllListingsReportStatus({ marketplaceId, reportId });
         return json({ ...status, message: status.notice });
@@ -1636,6 +1646,15 @@ export class ApiRouter {
     if (!documentId) return invalid("報表文件資訊無效，請重新匯出。");
     try {
       const data = await getAllListingsExportData({ marketplaceId, reportId, documentId });
+      if (auditRequested) {
+        return json(
+          auditListingContentRows({
+            marketplaceId,
+            fetchedAt: data.fetchedAt,
+            rows: data.rows,
+          }),
+        );
+      }
       const marketplace = MARKETPLACES[marketplaceId];
       const workbook = createListingsWorkbook({
         marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
