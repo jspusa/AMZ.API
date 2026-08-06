@@ -25,6 +25,7 @@ import { ApiRouter } from "./api-router";
 import { invalidateSpApiCredentialCaches } from "./amazon/sp-api";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
+import { requestNativeConfirmation } from "./native-confirmation";
 import {
   DEV_RENDERER_ORIGIN,
   REMOTE_CONSOLE_URL,
@@ -174,32 +175,28 @@ function assertTrustedFrame(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 async function confirmSensitiveAction(reason: string): Promise<void> {
-  const touchIdAvailable =
-    process.platform === "darwin" && systemPreferences.canPromptTouchID();
-  const options: Electron.MessageBoxOptions = {
-    type: "warning",
-    title: "確認敏感操作",
-    message: reason,
-    detail:
-      "這份摘要由 Mac 主程序依已驗證的操作內容產生。系統仍會核對舊值、預檢票證與防重送確認碼。",
-    buttons: ["取消", touchIdAvailable ? "使用 Touch ID 確認" : "確認執行"],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-  };
-  const result = mainWindow
-    ? await dialog.showMessageBox(mainWindow, options)
-    : await dialog.showMessageBox(options);
-  if (result.response !== 1) {
-    throw new Error("操作已取消；Amazon 沒有收到任何變更。");
-  }
-  if (touchIdAvailable) {
-    try {
-      await systemPreferences.promptTouchID(reason.slice(0, 120));
-    } catch {
-      throw new Error("操作已取消；Amazon 沒有收到任何變更。");
-    }
-  }
+  await requestNativeConfirmation(reason, {
+    canPromptTouchID: () =>
+      process.platform === "darwin" && systemPreferences.canPromptTouchID(),
+    promptTouchID: (prompt) => systemPreferences.promptTouchID(prompt),
+    showMessageFallback: async (message) => {
+      const options: Electron.MessageBoxOptions = {
+        type: "warning",
+        title: "確認敏感操作",
+        message,
+        detail:
+          "這份摘要由 Mac 主程序依已驗證的操作內容產生。系統仍會核對舊值、預檢票證與防重送確認碼。",
+        buttons: ["取消", "確認執行"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      };
+      const result = mainWindow
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 1;
+    },
+  });
 }
 
 function setUpdateStatus(status: UpdateStatus): UpdateStatus {
@@ -241,6 +238,7 @@ function configureUpdater(): void {
 
 async function registerAppProtocol(): Promise<void> {
   const appSession = session.fromPartition("fba-os-memory");
+  appSession.setSpellCheckerEnabled(true);
   appSession.setPermissionCheckHandler(() => false);
   appSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
     callback(false),

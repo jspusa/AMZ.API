@@ -94,6 +94,11 @@ export type UpdateStatus = {
   message?: string;
 };
 
+export type SpellcheckWordResult = {
+  word: string;
+  suggestions: string[];
+};
+
 export type ExternalDestination =
   | "seller-central"
   | "coupons"
@@ -116,6 +121,9 @@ export type DesktopBridge = {
     version(): Promise<string>;
     platform(): Promise<string>;
     openExternal(destination: ExternalDestination): Promise<void>;
+  };
+  spellcheck: {
+    check(words: string[]): SpellcheckWordResult[];
   };
   updates: {
     check(): Promise<UpdateStatus>;

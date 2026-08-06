@@ -15,6 +15,7 @@ import SalesTrendChart, {
 import SkuCommandCenter from "./sku-command-center";
 import SkuOperationsDrawer from "./sku-operations-drawer";
 import SystemHealthControl from "./system-health-control";
+import VariationPlannerDrawer from "./variation-planner-drawer";
 
 type Marketplace = {
   id: string;
@@ -33,7 +34,7 @@ type DashboardProps = {
   initialError?: string | null;
 };
 
-type Tool = "ads" | "restock" | "copy" | "images" | "price" | "promotion";
+type Tool = "ads" | "restock" | "copy" | "images" | "variations" | "price" | "promotion";
 type AutomationLevel = "automatic" | "one_click" | "manual";
 
 export const DEFAULT_MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -308,6 +309,7 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: string }> 
   restock: { label: "補貨", symbol: "↗", group: "planning" },
   copy: { label: "文案", symbol: "Aa", group: "product" },
   images: { label: "圖片", symbol: "▧", group: "product" },
+  variations: { label: "變體規劃", symbol: "◇", group: "product" },
   price: { label: "定價", symbol: "$", group: "pricing" },
   promotion: { label: "促銷", symbol: "%", group: "pricing" },
 };
@@ -333,6 +335,10 @@ const TOOL_CAPABILITIES: Record<
     { level: "automatic", label: "檔案自動檢查" },
     { level: "one_click", label: "安全一鍵送出" },
     { level: "manual", label: "選圖排序人工" },
+  ],
+  variations: [
+    { level: "automatic", label: "Family 自動讀取" },
+    { level: "manual", label: "唯讀人工規劃" },
   ],
   price: [
     { level: "automatic", label: "價差自動驗證" },
@@ -559,7 +565,7 @@ export default function Dashboard({
         <nav className="workspace-nav" aria-label="三大營運核心">
           {[
             { label: "策劃區", group: "planning", tools: ["ads", "restock"] as Tool[] },
-            { label: "產品區", group: "product", tools: ["copy", "images"] as Tool[] },
+            { label: "產品區", group: "product", tools: ["copy", "images", "variations"] as Tool[] },
             { label: "價格區", group: "pricing", tools: ["price", "promotion"] as Tool[] },
           ].map((section) => (
             <div key={section.group}><span>{section.label}</span>{section.tools.map((tool) => <button key={tool} type="button" className={openTool === tool ? "active" : ""} onClick={() => launch(tool)}><i>{TOOL_META[tool].symbol}</i>{TOOL_META[tool].label}<b>›</b></button>)}</div>
@@ -623,6 +629,7 @@ export default function Dashboard({
               <div className="zone-tools">
                 <button className="tool-tile" type="button" onClick={() => launch("copy")}><span className="tool-symbol copy">Aa</span><div><h3>文案</h3><p>自動載入 SKU、檢查 PTD 與字數；你只決定內容，再安全更新或一鍵匯出 Excel。</p><ToolCapabilities tool="copy" /></div><i>›</i></button>
                 <button className="tool-tile" type="button" onClick={() => launch("images")}><span className="tool-symbol images">▧</span><div><h3>圖片</h3><p>拖拉、排序與選主圖由你決定；格式、像素、公開來源與 Amazon 預檢自動完成。</p><ToolCapabilities tool="images" /></div><i>›</i></button>
+                <button className="tool-tile" type="button" onClick={() => launch("variations")}><span className="tool-symbol variations">◇</span><div><h3>變體規劃</h3><p>唯讀整理 parent、FBA children、theme 與維度；拖拉只產生改掛規劃，不會寫入 Amazon。</p><ToolCapabilities tool="variations" /></div><i>›</i></button>
               </div>
             </section>
 
@@ -630,7 +637,7 @@ export default function Dashboard({
               <div className="zone-heading"><div><span>03</span><p className="eyebrow">PRICING</p><h2>價格區</h2></div><p>價格、訂閱與促銷放在一起。</p></div>
               <div className="zone-tools">
                 <button className="tool-tile" type="button" onClick={() => launch("price")}><span className="tool-symbol price">$</span><div><h3>定價與訂閱</h3><p>自動查現價、S&amp;S、上下限與價差；一般調價一鍵處理，大幅變動才要求再確認。</p><ToolCapabilities tool="price" /></div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("promotion")}><span className="tool-symbol promotion">%</span><div><h3>促銷</h3><p>限時售價可安全一鍵建立；Coupon 會整理設定並開啟 Amazon 官方頁完成。</p><ToolCapabilities tool="promotion" /></div><i>›</i></button>
+                <button className="tool-tile" type="button" onClick={() => launch("promotion")}><span className="tool-symbol promotion">%</span><div><h3>Sale Price 與 Coupon</h3><p>Sale Price 對應單一 SKU 的限時售價，不是廣告選單的價格折扣或管理促銷；Coupon 仍在 Amazon 官方頁完成。</p><ToolCapabilities tool="promotion" /></div><i>›</i></button>
               </div>
             </section>
           </div>
@@ -654,6 +661,7 @@ export default function Dashboard({
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "variations" && <VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "promotion" && <PromotionCenterDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}

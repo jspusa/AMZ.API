@@ -20,7 +20,7 @@ Signed macOS Key Bridge
 
 HTTPS GitHub 網頁直接呼叫 `http://127.0.0.1` 會受到 Local Network Access、mixed-content 與 CORS 的瀏覽器差異影響，因此一般 Safari／Chrome 分頁不連 localhost，也不會取得 Bridge。Mac App 自己載入精確的 GitHub Pages 文件，再透過 preload 提供最小 IPC。GitHub 改版會自動生效，但 Amazon API Secret、LWA token 交換與所有 upstream request 仍只存在 main process。
 
-GitHub renderer 是受信任的操作介面：若 repository、GitHub 帳號或 Pages 供應鏈被入侵，惡意介面可能讀到 App 回傳的非 Secret Amazon 營運資料或誘導操作。因此所有寫入仍由 main process 依固定 route 重建、顯示 native 摘要並要求 Touch ID；remote renderer 永遠拿不到解密後的 API Secret。
+GitHub renderer 是受信任的操作介面：若 repository、GitHub 帳號或 Pages 供應鏈被入侵，惡意介面可能讀到 App 回傳的非 Secret Amazon 營運資料或誘導操作。因此所有寫入仍由 main process 依固定 route 重建 native Touch ID 理由並要求本機確認；remote renderer 永遠拿不到解密後的 API Secret。
 
 ## API 相容層
 
@@ -30,8 +30,9 @@ GitHub renderer 是受信任的操作介面：若 repository、GitHub 帳號或 
 
 - Orders
 - Listings price / batch
-- Listing content / export
+- Listing content / export / FBA-only quality audit
 - Listing images / upload
+- Variation family read-only planner
 - Sale price
 - Subscribe & Save read
 - Replenishment plan
@@ -40,6 +41,8 @@ GitHub renderer 是受信任的操作介面：若 repository、GitHub 帳號或 
 - Health / Ads status
 
 其他 path／method 回 `404`；renderer 無法指定 Amazon host 或任意 upstream URL。
+
+全站文案健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料；英文拼字再由 sandboxed preload 呼叫 Mac 內建 spellchecker，文案不會送往第三方。Variation planner 只允許 GET，拖拉狀態只存在 renderer 記憶體，不提供 PUT／PATCH／DELETE route。
 
 ## 儲存
 

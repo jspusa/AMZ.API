@@ -15,15 +15,17 @@ JSPUSA 的 GitHub 控制台＋macOS 本機金鑰 Amazon 營運系統。只處理
 |---|---|---|
 | 策劃 | FBA 銷售趨勢（7／14／30／90 天、自訂區間、去年同期）、SB／SD 授權狀態、FBA 補貨計算 | 自動／人工授權 |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID |
+| 產品 | 全站 FBA 內容健檢（疑似錯字、賣點不足、可證明適用的缺成分／成分未驗證） | Amazon 唯讀＋Mac 本機檢查 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全商品標題、五大賣點、成分匯出 Excel | 一鍵 |
+| 產品 | Variation Family 地圖與拖拉規劃 | 唯讀規劃，不寫入 Amazon |
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋Touch ID |
-| 價格 | 限時售價建立／取消 | 一鍵＋Touch ID |
-| 價格 | Subscribe & Save 資格與折扣讀取 | 自動讀取 |
+| 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋Touch ID |
+| 價格 | Subscribe & Save 資格、折扣與目前有效訂閱快照 | 自動讀取 |
 | 促銷 | Coupon、S&S 管理與 Amazon Ads 官方入口 | 一鍵開啟、Amazon 內完成 |
 | 系統 | Keychain 密文、防重送帳本、預檢票證、自我檢查、更新 | 自動 |
 
-能力邊界：目前 Amazon SP-API 可安全寫入 Listing 價格、限時售價、文案與圖片；S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。介面會把它們集中成一鍵官方入口，不會假裝 API 已完成 Amazon 不開放的動作。
+能力邊界：目前 Amazon SP-API 可安全寫入 Listing 價格、Sale Price、文案與圖片；S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。既有 child SKU 改掛新 variation parent 需要非原子的移除與重建，本版只讀取 family 並建立拖拉規劃，不會 DELETE 或改寫 Amazon 關係。介面不會假裝 API 已完成 Amazon 不開放或無法安全原子完成的動作。
 
 ## 第一次使用
 
@@ -58,7 +60,9 @@ SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、�
 
 Amazon 寫入固定經過：
 
-`讀取舊值 → Amazon Validation Preview → 兩分鐘本機預檢票證 → SKU／幅度防呆 → Touch ID → 再核對舊值 → Idempotency 帳本 → 單次寫入 → 只讀回查`
+`讀取舊值 → Amazon Validation Preview → 兩分鐘本機預檢票證 → 必要的 SKU／幅度防呆 → Touch ID → 再核對舊值 → Idempotency 帳本 → 單次寫入 → 只讀回查`
+
+文案更新在 Validation Preview 後直接跳 Touch ID，不再要求重打 SKU；價格、圖片與 Sale Price 仍保留各自既定的額外防呆。
 
 寫入不會因為 `429`、逾時或 `5xx` 自動重送。結果不確定時帳本會標記 `unknown` 並阻止同一確認碼重送。
 

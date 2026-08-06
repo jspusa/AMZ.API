@@ -200,6 +200,13 @@ function formatMoney(money: Money | null) {
   }
 }
 
+function formatCount(value: number | null) {
+  if (value === null || !Number.isFinite(value) || value < 0) return "—";
+  return new Intl.NumberFormat("zh-TW", {
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 function apiPrice(money: Money) {
   return money.currencyCode === "JPY"
     ? Math.round(money.amount).toString()
@@ -664,17 +671,17 @@ export default function PromotionCenterDrawer({
       >
         <div className="drawer-header">
           <div>
-            <p className="eyebrow">PROMOTION CENTER</p>
-            <h2 id="promotion-drawer-title">促銷中心</h2>
+            <p className="eyebrow">SALE PRICE · COUPON</p>
+            <h2 id="promotion-drawer-title">Sale Price 與 Coupon</h2>
           </div>
-          <button type="button" onClick={closeDrawer} aria-label="關閉促銷中心">
+          <button type="button" onClick={closeDrawer} aria-label="關閉 Sale Price 與 Coupon">
             ×
           </button>
         </div>
         <p className="price-intro promotion-intro">
-          限時折扣價可直接寫入 Amazon；Coupon 會整理設定並開啟官方頁完成。訂閱省已整合到「定價與訂閱」。
+          Sale Price（SKU 限時售價）可直接寫入 Amazon；Coupon 只整理設定並開啟官方頁完成。訂閱省已整合到「定價與訂閱」。
         </p>
-        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全域 SKU 開啟即查；折扣幅度、日期、價格上下限與送出後回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>一般限時售價會自動預檢、建立並回查；達 20% 或 Amazon 有提醒才停下確認。</p><span className="automation-badge manual">需人工</span><p>取消折扣、Coupon 資格／費用與最終 Coupon 建立需由你確認。</p></div>
+        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全域 SKU 開啟即查；折扣幅度、日期、價格上下限與送出後回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>一般 Sale Price 會自動預檢、建立並回查；達 20% 或 Amazon 有提醒才停下確認。</p><span className="automation-badge manual">需人工</span><p>取消 Sale Price、Coupon 資格／費用與最終 Coupon 建立需由你確認。</p></div>
 
         <nav className="promotion-tabs" aria-label="促銷工具">
           <button
@@ -682,7 +689,7 @@ export default function PromotionCenterDrawer({
             type="button"
             onClick={() => setTab("sale")}
           >
-            限時折扣 <small>API 可建立</small>
+            Sale Price <small>SKU 限時售價 · API 可建立</small>
           </button>
           <button
             className={tab === "coupon" ? "active" : ""}
@@ -709,15 +716,19 @@ export default function PromotionCenterDrawer({
         </label>
 
         {tab === "sale" && (
-          <section className="promotion-panel" aria-label="限時折扣價">
+          <section className="promotion-panel" aria-label="Sale Price SKU 限時售價">
             {salePhase === "edit" && (
               <>
                 <div className="capability-banner success">
                   <span>✓</span>
                   <div>
-                    <strong>真正由 Listings Items API 建立</strong>
-                    <p>只更新 discounted_price，不改標準價、B2B、最低價或自動調價規則。</p>
+                    <strong>Seller Central 對應：Sale Price（SKU 限時售價）</strong>
+                    <p>產品 → 管理所有庫存 → 編輯此 SKU → Offer／商品報價 → Sale Price。只更新 discounted_price，不改標準價、B2B、最低價或自動調價規則。</p>
                   </div>
+                </div>
+                <div className="price-warning compact">
+                  <strong>不是「廣告」選單中的促銷</strong>
+                  <p>這不是價格折扣、管理促銷、Deals 或 Coupon，也不會自動關閉同時存在的其他優惠；送出前請確認是否可能疊加。</p>
                 </div>
                 <form className="promotion-search" onSubmit={lookupSale}>
                   <label>
@@ -762,7 +773,7 @@ export default function PromotionCenterDrawer({
                         <dd>{formatMoney(listing.standardPrice)}</dd>
                       </div>
                       <div>
-                        <dt>目前限時折扣</dt>
+                        <dt>目前 Sale Price</dt>
                         <dd>{formatMoney(listing.discountedPrice?.price ?? null)}</dd>
                         {listing.discountedPrice && (
                           <small>{listing.discountedPrice.startAt ?? "—"} ～ {listing.discountedPrice.endAt ?? "—"}</small>
@@ -805,7 +816,7 @@ export default function PromotionCenterDrawer({
                         onClick={() => void previewSale("set")}
                         disabled={Boolean(saleFieldError) || parsedSalePrice === null || saleLoading}
                       >
-                        {saleLoading ? "安全處理中…" : "安全一鍵建立限時售價"}
+                        {saleLoading ? "安全處理中…" : "安全一鍵建立 Sale Price"}
                       </button>
                       {listing.discountedPrice && (
                         <button
@@ -814,7 +825,7 @@ export default function PromotionCenterDrawer({
                           onClick={() => void previewSale("cancel")}
                           disabled={saleLoading}
                         >
-                          預檢取消目前折扣
+                          預檢取消目前 Sale Price
                         </button>
                       )}
                     </div>
@@ -837,7 +848,7 @@ export default function PromotionCenterDrawer({
                   ← 返回修改
                 </button>
                 <p className="eyebrow">FINAL CONFIRMATION</p>
-                <h3>{saleAction === "cancel" ? "確認取消限時折扣" : "確認建立限時折扣"}</h3>
+                <h3>{saleAction === "cancel" ? "確認取消 Sale Price" : "確認建立 Sale Price"}</h3>
                 <p className="confirmation-product">{listing.sellerSku} · {marketplace.label}</p>
                 <div className="sale-confirm-card">
                   <div>
@@ -846,7 +857,7 @@ export default function PromotionCenterDrawer({
                   </div>
                   <i>→</i>
                   <div>
-                    <span>{saleAction === "cancel" ? "取消後" : "限時折扣"}</span>
+                    <span>{saleAction === "cancel" ? "取消後" : "Sale Price"}</span>
                     <strong>{formatMoney(validation.requestedDiscountedPrice?.price ?? validation.standardPrice)}</strong>
                   </div>
                 </div>
@@ -888,8 +899,8 @@ export default function PromotionCenterDrawer({
                   {saleLoading
                     ? "送出中…"
                     : saleAction === "cancel"
-                      ? "確認取消折扣"
-                      : "確認建立限時折扣"}
+                      ? "確認取消 Sale Price"
+                      : "確認建立 Sale Price"}
                 </button>
                 <p className="submission-note">送出後 Amazon 會非同步處理；看到重新查詢確認才代表生效。</p>
               </div>
@@ -904,8 +915,8 @@ export default function PromotionCenterDrawer({
                 <h3>
                   {recheckState === "effective"
                     ? saleResult.action === "cancel"
-                      ? "折扣已取消"
-                      : "限時折扣已確認"
+                      ? "Sale Price 已取消"
+                      : "Sale Price 已確認"
                     : "Amazon 已接受，等待生效"}
                 </h3>
                 <p>{saleResult.notice}</p>
@@ -989,7 +1000,7 @@ export default function PromotionCenterDrawer({
               <span>i</span>
               <div>
                 <strong>Replenishment API 可直接查狀態，但不能啟用或改折扣</strong>
-                <p>查到資格、訂閱數與庫存風險後，再由 Amazon 官方頁完成管理。</p>
+                <p>「目前有效訂閱」是 Amazon listOffers 的查詢快照，不是期間新增、歷史累計、配送次數或唯一顧客數。</p>
               </div>
             </div>
             <form className="promotion-search" onSubmit={lookupSns}>
@@ -1026,8 +1037,8 @@ export default function PromotionCenterDrawer({
                   </span>
                 </div>
                 <dl className="sns-facts">
-                  <div><dt>有效訂閱</dt><dd>{snsResult.subscriptions ?? "—"}</dd></div>
-                  <div><dt>可售庫存</dt><dd>{snsResult.inventory ?? "—"}</dd></div>
+                  <div><dt>目前有效訂閱</dt><dd>{formatCount(snsResult.subscriptions)}</dd></div>
+                  <div><dt>可售庫存</dt><dd>{formatCount(snsResult.inventory)}</dd></div>
                   <div><dt>目前售價</dt><dd>{formatMoney(snsResult.price)}</dd></div>
                   <div><dt>缺貨風險</dt><dd>{snsResult.stockRisk ?? "—"}</dd></div>
                 </dl>
@@ -1064,7 +1075,7 @@ export default function PromotionCenterDrawer({
 
         <div className="promotion-source-note">
           <strong>能力邊界</strong>
-          <span>Listings Items v2021-08-01 · Coupon 無公開寫入 API · 不使用 Seller Central 私有接口</span>
+          <span>Listings Items v2021-08-01 discounted_price（Sale Price）· Coupon 無公開寫入 API · 不使用 Seller Central 私有接口</span>
         </div>
       </aside>
     </div>

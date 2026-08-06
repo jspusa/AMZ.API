@@ -1,3 +1,19 @@
+import {
+  applyVariationDimensionNames,
+  normalizeVariationMember,
+  variationSearchIncludesDeclaredChildren,
+  type VariationFamilyMember,
+  type VariationFamilySnapshot,
+  type VariationListingPayload,
+} from "./variation-family";
+
+export type {
+  VariationDimension,
+  VariationFamilyMember,
+  VariationFamilySnapshot,
+  VariationRole,
+} from "./variation-family";
+
 export type SpApiRegion = "na" | "eu" | "fe";
 
 export type Money = {
@@ -296,6 +312,13 @@ export type ListingExportRow = {
   ingredients: string;
   status: string;
   updatedAt: string;
+  readStatus: "complete" | "incomplete";
+  readErrors: ListingExportReadError[];
+};
+
+export type ListingExportReadError = {
+  code: "LISTING_QUERY_FAILED" | "LISTING_CONTENT_NOT_RETURNED";
+  message: string;
 };
 
 export type ListingExportError = {
@@ -652,6 +675,18 @@ type AmazonListingItem = {
     price?: { currency?: string; amount?: string | number };
   }>;
   issues?: AmazonListingIssue[];
+  relationships?: Array<{
+    marketplaceId?: string;
+    relationships?: Array<{
+      type?: string;
+      childSkus?: string[];
+      parentSkus?: string[];
+      variationTheme?: {
+        attributes?: string[];
+        theme?: string;
+      };
+    }>;
+  }>;
   fulfillmentAvailability?: Array<{
     fulfillmentChannelCode?: string;
     quantity?: number;
@@ -1590,6 +1625,26 @@ function payloadHasFbaAvailability(payload: AmazonListingItem): boolean {
   );
 }
 
+function payloadFulfillmentEvidence(
+  payload: AmazonListingItem,
+): "FBA" | "OTHER" | "MISSING" {
+  const channelCodes = (payload.fulfillmentAvailability ?? [])
+    .map((availability) =>
+      typeof availability.fulfillmentChannelCode === "string"
+        ? availability.fulfillmentChannelCode.trim()
+        : "",
+    )
+    .filter(Boolean);
+  if (
+    channelCodes.some((channelCode) =>
+      /^(AMAZON|AFN)(?:_|$)/i.test(channelCode),
+    )
+  ) {
+    return "FBA";
+  }
+  return channelCodes.length ? "OTHER" : "MISSING";
+}
+
 function assertFbaListingPayload(payload: AmazonListingItem): void {
   if (payloadHasFbaAvailability(payload)) return;
   throw new SpApiError(
@@ -2435,6 +2490,371 @@ async function fetchLiveListingBatch(
     requestId: response.headers.get("x-amzn-requestid"),
     rateLimit: response.headers.get("x-amzn-ratelimit-limit"),
     notice: null,
+  };
+}
+
+type VariationReadProfile = "relationships" | "attributes";
+
+type VariationReadInput = {
+  marketplaceId: MarketplaceId;
+  sellerSku?: string;
+  variationParentSku?: string;
+  pageToken?: string | null;
+};
+
+async function callVariationReadApi(
+  input: VariationReadInput,
+  forceTokenRefresh = false,
+  profile: VariationReadProfile = "relationships",
+): Promise<Response> {
+  const marketplace = MARKETPLACES[input.marketplaceId];
+  const region = marketplace.region;
+  const sellerId = getSellerId(region);
+  if (!sellerId) {
+    throw new SpApiError(
+      `${marketplace.label}站尚未設定 Seller ID，變體規劃查詢仍未啟用。`,
+      { status: 503, code: "LISTINGS_NOT_CONFIGURED" },
+    );
+  }
+
+  const token = await requestAccessToken(region, forceTokenRefresh);
+  const singleSku = input.sellerSku?.trim() || null;
+  const parentSku = input.variationParentSku?.trim() || null;
+  if (!singleSku && !parentSku) {
+    throw new SpApiError("變體查詢缺少 Seller SKU。", {
+      status: 400,
+      code: "INVALID_INPUT",
+    });
+  }
+  const isSingleItem = Boolean(singleSku);
+  const includedData = isSingleItem
+    ? profile === "relationships"
+      ? "summaries,attributes,issues,fulfillmentAvailability,relationships"
+      : "summaries,attributes,issues,fulfillmentAvailability"
+    : profile === "relationships"
+      ? "summaries,attributes,issues,fulfillmentAvailability,relationships,productTypes"
+      : "summaries,attributes,issues,fulfillmentAvailability,productTypes";
+  const query = new URLSearchParams({
+    marketplaceIds: input.marketplaceId,
+    issueLocale: marketplace.issueLocale,
+    includedData,
+  });
+  if (parentSku) {
+    query.set("variationParentSku", parentSku);
+    query.set("pageSize", "20");
+    if (input.pageToken) query.set("pageToken", input.pageToken);
+  }
+  const itemPath = singleSku
+    ? `/${encodeURIComponent(singleSku)}`
+    : "";
+  const url = `${REGION_ENDPOINTS[region]}/listings/2021-08-01/items/${encodeURIComponent(
+    sellerId,
+  )}${itemPath}?${query}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    return await fetch(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "x-amz-access-token": token,
+        "x-amz-date": toAmzDate(),
+        "user-agent":
+          process.env.SP_API_USER_AGENT ||
+          "AmazonFBAOS/0.1 (Language=TypeScript; Platform=macOS)",
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new SpApiError("Amazon 變體關係查詢逾時，請稍後再試。", {
+        status: 504,
+        code: "UPSTREAM_UNAVAILABLE",
+      });
+    }
+    throw new SpApiError("目前無法連線至 Amazon Listings API。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function executeVariationRead(
+  input: VariationReadInput,
+): Promise<{ response: Response; profile: VariationReadProfile }> {
+  let profile: VariationReadProfile = "relationships";
+  let response = await callVariationReadApi(input, false, profile);
+  if (response.status === 401) {
+    tokenCache.delete(MARKETPLACES[input.marketplaceId].region);
+    response = await callVariationReadApi(input, true, profile);
+  }
+  if (response.status === 400) {
+    // Some established seller accounts reject the optional relationships
+    // dataset. The documented attributes and variationParentSku lookup remain
+    // read-only fallbacks; the UI reports the reduced evidence explicitly.
+    profile = "attributes";
+    response = await callVariationReadApi(input, false, profile);
+  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (![429, 500, 503].includes(response.status)) break;
+    await wait(retryDelayMs(response, attempt));
+    response = await callVariationReadApi(input, false, profile);
+  }
+  return { response, profile };
+}
+
+function normalizeVariationPayload(
+  payload: AmazonListingItem,
+  marketplaceId: MarketplaceId,
+  fallbackSku: string,
+  source: "relationships" | "attributes" | "variationParentSku",
+): VariationFamilyMember {
+  const member = normalizeVariationMember(
+    payload as VariationListingPayload,
+    marketplaceId,
+    source,
+  );
+  return { ...member, sellerSku: member.sellerSku || fallbackSku };
+}
+
+async function fetchVariationItem(
+  marketplaceId: MarketplaceId,
+  sellerSku: string,
+): Promise<{
+  payload: AmazonListingItem;
+  member: VariationFamilyMember;
+  requestId: string | null;
+  profile: VariationReadProfile;
+}> {
+  const { response, profile } = await executeVariationRead({
+    marketplaceId,
+    sellerSku,
+  });
+  if (!response.ok) {
+    return throwListingsError(response, "read", "getListingsItem");
+  }
+  const payload = await parseResponseJson<AmazonListingItem>(response);
+  if (!payload) {
+    throw new SpApiError("Amazon 回傳了無法辨識的變體 Listing 資料。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  return {
+    payload,
+    member: normalizeVariationPayload(
+      payload,
+      marketplaceId,
+      sellerSku,
+      profile === "relationships" ? "relationships" : "attributes",
+    ),
+    requestId: response.headers.get("x-amzn-requestid"),
+    profile,
+  };
+}
+
+async function fetchVariationChildren(
+  marketplaceId: MarketplaceId,
+  parentSku: string,
+): Promise<{
+  rows: Array<{ payload: AmazonListingItem; member: VariationFamilyMember }>;
+  requestIds: string[];
+  familyComplete: boolean;
+  usedCompatibilityFallback: boolean;
+}> {
+  const rows: Array<{
+    payload: AmazonListingItem;
+    member: VariationFamilyMember;
+  }> = [];
+  const requestIds: string[] = [];
+  let pageToken: string | null = null;
+  let page = 0;
+  let usedCompatibilityFallback = false;
+  do {
+    const { response, profile } = await executeVariationRead({
+      marketplaceId,
+      variationParentSku: parentSku,
+      pageToken,
+    });
+    usedCompatibilityFallback ||= profile === "attributes";
+    if (!response.ok) {
+      return throwListingsError(response, "read", "searchListingsItems");
+    }
+    const requestId = response.headers.get("x-amzn-requestid");
+    if (requestId) requestIds.push(requestId);
+    const payload = await parseResponseJson<AmazonListingSearchResponse>(response);
+    if (!payload || !Array.isArray(payload.items)) {
+      throw new SpApiError("Amazon 回傳了無法辨識的變體子商品清單。", {
+        status: 502,
+        code: "UPSTREAM_UNAVAILABLE",
+        requestId,
+      });
+    }
+    for (const item of payload.items) {
+      const fallbackSku = item.sku?.trim() ?? "";
+      rows.push({
+        payload: item,
+        member: normalizeVariationPayload(
+          item,
+          marketplaceId,
+          fallbackSku,
+          "variationParentSku",
+        ),
+      });
+    }
+    pageToken = payload.pagination?.nextToken?.trim() || null;
+    page += 1;
+  } while (pageToken && page < 10);
+
+  return {
+    rows,
+    requestIds,
+    familyComplete: !pageToken,
+    usedCompatibilityFallback,
+  };
+}
+
+async function fetchLiveVariationFamily(
+  marketplaceId: MarketplaceId,
+  sellerSku: string,
+): Promise<VariationFamilySnapshot> {
+  const queriedResult = await fetchVariationItem(marketplaceId, sellerSku);
+  let queried = queriedResult.member;
+  if (queried.role !== "parent" && !queried.fba) {
+    throw new SpApiError(
+      "此 SKU 無法確認為 FBA 子商品；變體規劃不會讀取 FBM 商品。",
+      { status: 422, code: "FBA_ONLY", requestId: queriedResult.requestId },
+    );
+  }
+
+  let parentResult: Awaited<ReturnType<typeof fetchVariationItem>> | null = null;
+  let parent: VariationFamilyMember | null = null;
+  let childrenResult: Awaited<ReturnType<typeof fetchVariationChildren>> | null = null;
+  const parentSku = queried.role === "parent" ? queried.sellerSku : queried.parentSku;
+  if (queried.role === "child" && parentSku) {
+    parentResult = await fetchVariationItem(marketplaceId, parentSku);
+    parent = { ...parentResult.member, role: "parent" };
+  } else if (queried.role === "parent") {
+    parent = queried;
+  }
+  if (parentSku) {
+    childrenResult = await fetchVariationChildren(marketplaceId, parentSku);
+  }
+
+  const rawChildren = childrenResult?.rows ?? [];
+  const dimensionContext = [
+    ...(parent?.dimensions ?? []),
+    ...queried.dimensions,
+    ...rawChildren.flatMap((row) => row.member.dimensions),
+  ];
+  const dimensionNames = [
+    ...new Set(dimensionContext.map((dimension) => dimension.name)),
+  ];
+  const variationTheme =
+    parent?.variationTheme ??
+    queried.variationTheme ??
+    rawChildren.map((row) => row.member.variationTheme).find(Boolean) ??
+    null;
+  queried = applyVariationDimensionNames(
+    queriedResult.payload as VariationListingPayload,
+    marketplaceId,
+    queried,
+    variationTheme,
+    dimensionNames,
+  );
+  if (parentResult && parent) {
+    parent = applyVariationDimensionNames(
+      parentResult.payload as VariationListingPayload,
+      marketplaceId,
+      parent,
+      variationTheme,
+      dimensionNames,
+    );
+  } else if (parent?.sellerSku === queried.sellerSku) {
+    parent = queried;
+  }
+
+  const excludedChildren: VariationFamilySnapshot["excludedChildren"] = [];
+  const childMap = new Map<string, VariationFamilyMember>();
+  for (const row of rawChildren) {
+    const member = applyVariationDimensionNames(
+      row.payload as VariationListingPayload,
+      marketplaceId,
+      {
+        ...row.member,
+        role: row.member.role === "parent" ? "parent" : "child",
+        parentSku: row.member.parentSku ?? parentSku,
+      },
+      variationTheme,
+      dimensionNames,
+    );
+    if (!member.sellerSku) {
+      excludedChildren.push({
+        sellerSku: "（Amazon 未回傳 SKU）",
+        reason: "Amazon 子商品資料缺少 Seller SKU，已停止加入規劃。",
+      });
+    } else if (member.role === "parent") {
+      excludedChildren.push({
+        sellerSku: member.sellerSku,
+        reason: "Amazon 搜尋結果把此項標記為 parent，不能當作子商品拖移。",
+      });
+    } else if (!member.fba) {
+      excludedChildren.push({
+        sellerSku: member.sellerSku,
+        reason: "無法確認為 FBA 子商品，純 FBA 規劃已排除。",
+      });
+    } else {
+      childMap.set(member.sellerSku, member);
+    }
+  }
+  if (queried.role === "child" && queried.fba) {
+    childMap.set(queried.sellerSku, queried);
+  }
+
+  const requestIds = [
+    queriedResult.requestId,
+    parentResult?.requestId,
+    ...(childrenResult?.requestIds ?? []),
+  ].filter((value): value is string => Boolean(value));
+  const compatibilityFallback =
+    queriedResult.profile === "attributes" ||
+    parentResult?.profile === "attributes" ||
+    childrenResult?.usedCompatibilityFallback;
+  return {
+    mode: "live",
+    marketplaceId,
+    queriedSku: sellerSku,
+    queriedRole: queried.role,
+    queried,
+    parent,
+    children: [...childMap.values()].sort((left, right) =>
+      left.sellerSku.localeCompare(right.sellerSku),
+    ),
+    excludedChildren,
+    variationTheme,
+    dimensionNames,
+    familyComplete:
+      (childrenResult?.familyComplete ?? true) &&
+      variationSearchIncludesDeclaredChildren(
+        parent,
+        rawChildren.map((row) => row.member),
+      ),
+    fetchedAt: new Date().toISOString(),
+    requestIds: [...new Set(requestIds)],
+    writable: false,
+    boundaries: [
+      "此版本只讀取與規劃變體，不會送出 PUT、PATCH 或 DELETE。",
+      "既有子商品改掛另一個 parent 需要先移除舊關係再重建，屬於非原子流程。",
+      "第一版不執行移除、重建或任何 Amazon 寫入。",
+      "Parent 僅作為不可售的唯讀容器例外；所有可拖移 child 都必須可確認為 FBA。",
+    ],
+    notice: compatibilityFallback
+      ? "Amazon 拒絕 relationships 資料集；目前以 Listing attributes 與 variationParentSku 唯讀結果交叉整理。"
+      : "關係取自 Listings Items relationships、attributes 與 variationParentSku 唯讀查詢。",
   };
 }
 
@@ -4184,6 +4604,166 @@ function getDemoListingPrice(
   };
 }
 
+function demoVariationFamilies(marketplaceId: MarketplaceId): Array<{
+  parentSku: string;
+  theme: string;
+  dimensionName: string;
+  children: Array<{ sellerSku: string; value: string }>;
+}> {
+  return marketplaceId === "A1VC38T7YXB528"
+    ? [
+        {
+          parentSku: "DEMO-JP-TURKEY-PARENT",
+          theme: "SIZE_NAME",
+          dimensionName: "size_name",
+          children: [
+            { sellerSku: "AFA100-JP", value: "100 g" },
+            { sellerSku: "AFA285-JP", value: "285 g" },
+          ],
+        },
+        {
+          parentSku: "DEMO-JP-CHICKEN-PARENT",
+          theme: "SIZE_NAME",
+          dimensionName: "size_name",
+          children: [{ sellerSku: "GTC454-JP", value: "454 g" }],
+        },
+      ]
+    : [
+        {
+          parentSku: "DEMO-US-TURKEY-PARENT",
+          theme: "SIZE_NAME",
+          dimensionName: "size_name",
+          children: [
+            { sellerSku: "AFA-TRKY-4OZ", value: "4 oz" },
+            { sellerSku: "AFA-TRKY-285G", value: "10 oz" },
+          ],
+        },
+        {
+          parentSku: "DEMO-US-CHICKEN-PARENT",
+          theme: "SIZE_NAME",
+          dimensionName: "size_name",
+          children: [{ sellerSku: "GTC-CHKN-1LB", value: "1 lb" }],
+        },
+      ];
+}
+
+function demoVariationChild(
+  marketplaceId: MarketplaceId,
+  family: ReturnType<typeof demoVariationFamilies>[number],
+  child: { sellerSku: string; value: string },
+): VariationFamilyMember {
+  const listing = getDemoListingPrice(marketplaceId, child.sellerSku);
+  return {
+    sellerSku: child.sellerSku,
+    asin: listing.asin,
+    title: listing.title,
+    productType: listing.productType,
+    status: listing.status,
+    role: "child",
+    parentSku: family.parentSku,
+    childSkus: [],
+    variationTheme: family.theme,
+    dimensions: [
+      {
+        name: family.dimensionName,
+        label: "Size Name",
+        values: [child.value],
+      },
+    ],
+    fba: true,
+    issues: listing.issues,
+    relationshipSources: ["relationships", "attributes", "variationParentSku"],
+  };
+}
+
+function demoVariationParent(
+  marketplaceId: MarketplaceId,
+  family: ReturnType<typeof demoVariationFamilies>[number],
+): VariationFamilyMember {
+  return {
+    sellerSku: family.parentSku,
+    asin: null,
+    title: `${MARKETPLACES[marketplaceId].shortLabel} 展示 Parent 容器`,
+    productType: "PET_SUPPLIES",
+    status: [],
+    role: "parent",
+    parentSku: null,
+    childSkus: family.children.map((child) => child.sellerSku),
+    variationTheme: family.theme,
+    dimensions: [
+      { name: family.dimensionName, label: "Size Name", values: [] },
+    ],
+    fba: false,
+    issues: [],
+    relationshipSources: ["relationships", "attributes"],
+  };
+}
+
+function getDemoVariationFamily(
+  marketplaceId: MarketplaceId,
+  sellerSku: string,
+): VariationFamilySnapshot {
+  const families = demoVariationFamilies(marketplaceId);
+  const family = families.find(
+    (candidate) =>
+      candidate.parentSku === sellerSku ||
+      candidate.children.some((child) => child.sellerSku === sellerSku),
+  );
+  let queried: VariationFamilyMember;
+  let parent: VariationFamilyMember | null = null;
+  let children: VariationFamilyMember[] = [];
+  if (family) {
+    parent = demoVariationParent(marketplaceId, family);
+    children = family.children.map((child) =>
+      demoVariationChild(marketplaceId, family, child),
+    );
+    queried =
+      sellerSku === family.parentSku
+        ? parent
+        : children.find((child) => child.sellerSku === sellerSku) ?? children[0];
+  } else {
+    const listing = getDemoListingPrice(marketplaceId, sellerSku);
+    queried = {
+      sellerSku,
+      asin: listing.asin,
+      title: listing.title,
+      productType: listing.productType,
+      status: listing.status,
+      role: "standalone",
+      parentSku: null,
+      childSkus: [],
+      variationTheme: null,
+      dimensions: [],
+      fba: true,
+      issues: listing.issues,
+      relationshipSources: [],
+    };
+  }
+  return {
+    mode: "demo",
+    marketplaceId,
+    queriedSku: sellerSku,
+    queriedRole: queried.role,
+    queried,
+    parent,
+    children,
+    excludedChildren: [],
+    variationTheme: family?.theme ?? null,
+    dimensionNames: family ? [family.dimensionName] : [],
+    familyComplete: true,
+    fetchedAt: new Date().toISOString(),
+    requestIds: [],
+    writable: false,
+    boundaries: [
+      "此版本只讀取與規劃變體，不會送出 PUT、PATCH 或 DELETE。",
+      "既有子商品改掛另一個 parent 需要先移除舊關係再重建，屬於非原子流程。",
+      "第一版不執行移除、重建或任何 Amazon 寫入。",
+      "Parent 僅作為不可售的唯讀容器例外；所有可拖移 child 都必須可確認為 FBA。",
+    ],
+    notice: "展示 family 只供拖拉規劃測試；Amazon 不會收到任何變更。",
+  };
+}
+
 function demoCapability(
   options: Partial<ListingContentFieldCapability> = {},
 ): ListingContentFieldCapability {
@@ -4366,6 +4946,16 @@ export async function getListingPrice(input: {
     return getDemoListingPrice(input.marketplaceId, input.sellerSku);
   }
   return fetchLiveListingPrice(input.marketplaceId, input.sellerSku);
+}
+
+export async function getVariationFamilyPlanner(input: {
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+}): Promise<VariationFamilySnapshot> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    return getDemoVariationFamily(input.marketplaceId, input.sellerSku);
+  }
+  return fetchLiveVariationFamily(input.marketplaceId, input.sellerSku);
 }
 
 export async function searchListingsBySku(input: {
@@ -5676,6 +6266,8 @@ function exportRowFromListing(
       )[0] ?? "",
     status: Array.isArray(summary?.status) ? summary.status.join(", ") : "",
     updatedAt: summary?.lastUpdatedDate ?? "",
+    readStatus: "complete",
+    readErrors: [],
   };
 }
 
@@ -5686,9 +6278,22 @@ async function fetchExportRows(
   const bySku = new Map<string, ListingExportRow>();
   const excludedNonFbaSkus = new Set<string>();
   const errors: ListingExportError[] = [];
+  const readErrorsBySku = new Map<string, ListingExportReadError[]>();
+  const recordReadError = (
+    sellerSku: string,
+    message: string,
+    code: ListingExportReadError["code"] = "LISTING_QUERY_FAILED",
+  ): void => {
+    const current = readErrorsBySku.get(sellerSku) ?? [];
+    if (!current.some((error) => error.code === code && error.message === message)) {
+      current.push({ code, message });
+      readErrorsBySku.set(sellerSku, current);
+    }
+  };
   const recordListing = (listing: AmazonListingItem): void => {
     const sellerSku = safeText(listing.sku, "—");
-    if (!payloadHasFbaAvailability(listing)) {
+    const fulfillmentEvidence = payloadFulfillmentEvidence(listing);
+    if (fulfillmentEvidence === "OTHER") {
       excludedNonFbaSkus.add(sellerSku);
       errors.push({
         sellerSku,
@@ -5698,6 +6303,39 @@ async function fetchExportRows(
       return;
     }
     const item = exportRowFromListing(listing, marketplaceId);
+    if (fulfillmentEvidence === "MISSING") {
+      const message =
+        "報表已確認此 SKU 為 FBA，但 Listings Items API 未回傳可核對的 fulfillmentAvailability。";
+      errors.push({
+        sellerSku,
+        kind: "履約資料未回傳",
+        message,
+      });
+      recordReadError(
+        sellerSku,
+        message,
+        "LISTING_CONTENT_NOT_RETURNED",
+      );
+    }
+    if (!isRecord(listing.attributes)) {
+      const message =
+        "Listings Items API 回應成功，但未回傳 attributes，無法確認商品內容完整性。";
+      errors.push({
+        sellerSku,
+        kind: "內容未回傳",
+        message,
+      });
+      recordReadError(
+        sellerSku,
+        message,
+        "LISTING_CONTENT_NOT_RETURNED",
+      );
+    }
+    const readErrors = readErrorsBySku.get(sellerSku) ?? [];
+    if (readErrors.length) {
+      item.readStatus = "incomplete";
+      item.readErrors = [...readErrors];
+    }
     bySku.set(item.sellerSku, item);
   };
   const batches: string[][] = [];
@@ -5742,11 +6380,14 @@ async function fetchExportRows(
               );
               recordListing(payload);
             } catch (error) {
+              const message =
+                error instanceof Error ? error.message : "商品內容查詢失敗。";
               errors.push({
                 sellerSku,
                 kind: "查詢失敗",
-                message: error instanceof Error ? error.message : "商品內容查詢失敗。",
+                message,
               });
+              recordReadError(sellerSku, message);
             }
             await wait(220);
           }
@@ -5771,8 +6412,10 @@ async function fetchExportRows(
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "商品內容查詢失敗。";
-      sellerSkus.forEach((sellerSku) =>
-        errors.push({ sellerSku, kind: "查詢失敗", message }));
+      sellerSkus.forEach((sellerSku) => {
+        errors.push({ sellerSku, kind: "查詢失敗", message });
+        recordReadError(sellerSku, message);
+      });
     }
     await wait(220);
   }
@@ -5781,7 +6424,7 @@ async function fetchExportRows(
     if (excludedNonFbaSkus.has(seed.sellerSku)) return [];
     const found = bySku.get(seed.sellerSku);
     if (found) {
-      if (!found.ingredients) {
+      if (found.readStatus === "complete" && !found.ingredients) {
         errors.push({
           sellerSku: seed.sellerSku,
           kind: "缺少成分",
@@ -5790,11 +6433,18 @@ async function fetchExportRows(
       }
       return [found];
     }
+    const incompleteMessage =
+      "報表中有此 FBA SKU，但 Listings Items API 未回傳完整 attributes。";
     errors.push({
       sellerSku: seed.sellerSku,
       kind: "內容未回傳",
-      message: "報表中有此 FBA SKU，但 Listings Items API 未回傳完整 attributes。",
+      message: incompleteMessage,
     });
+    recordReadError(
+      seed.sellerSku,
+      incompleteMessage,
+      "LISTING_CONTENT_NOT_RETURNED",
+    );
     return [{
       marketplace: MARKETPLACES[marketplaceId].name,
       sellerSku: seed.sellerSku,
@@ -5805,6 +6455,8 @@ async function fetchExportRows(
       ingredients: "",
       status: "",
       updatedAt: "",
+      readStatus: "incomplete" as const,
+      readErrors: [...(readErrorsBySku.get(seed.sellerSku) ?? [])],
     }];
   });
   return { rows, errors };
@@ -5839,6 +6491,8 @@ export async function getAllListingsExportData(input: {
         ingredients: listing.ingredients,
         status: listing.status.join(", "),
         updatedAt: listing.updatedAt ?? "",
+        readStatus: "complete" as const,
+        readErrors: [],
       };
     });
     return { rows, errors: [], fetchedAt: new Date().toISOString() };

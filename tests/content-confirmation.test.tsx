@@ -10,111 +10,72 @@ import { ContentConfirmationControls } from "../src/renderer/src/components/cont
 
 const SELLER_SKU = "AFA12AM";
 
-function renderConfirmation(confirmationSku: string, actionLoading = false) {
+function renderConfirmation(actionLoading = false, error: string | null = null) {
   return renderToStaticMarkup(
     <ContentConfirmationControls
       sellerSku={SELLER_SKU}
-      mode="live"
-      confirmationSku={confirmationSku}
       actionLoading={actionLoading}
-      error={null}
-      onConfirmationSkuChange={vi.fn()}
+      error={error}
       onCommit={vi.fn()}
     />,
   );
 }
 
 function confirmationElements(input: {
-  confirmationSku: string;
   actionLoading?: boolean;
-  onConfirmationSkuChange?: (value: string) => void;
   onCommit?: () => void;
 }) {
   const tree = ContentConfirmationControls({
     sellerSku: SELLER_SKU,
-    mode: "live",
-    confirmationSku: input.confirmationSku,
     actionLoading: input.actionLoading ?? false,
     error: null,
-    onConfirmationSkuChange: input.onConfirmationSkuChange ?? vi.fn(),
     onCommit: input.onCommit ?? vi.fn(),
   }) as ReactElement<{ children: ReactNode }>;
   const rootChildren = Children.toArray(tree.props.children);
-  const label = rootChildren.find(
-    (child): child is ReactElement<{ children: ReactNode }> =>
-      isValidElement(child) && child.type === "label",
-  );
   const button = rootChildren.find(
     (child): child is ReactElement<Record<string, unknown>> =>
       isValidElement(child) && child.type === "button",
   );
-  if (!label || !button) throw new Error("confirmation controls are incomplete");
-  const field = Children.toArray(label.props.children).find(
-    (child): child is ReactElement<Record<string, unknown>> =>
-      isValidElement(child) && child.type === "input",
-  );
-  if (!field) throw new Error("confirmation field is missing");
-  return { field, button };
+  if (!button) throw new Error("confirmation controls are incomplete");
+  return { rootChildren, button };
 }
 
 describe("listing content final confirmation", () => {
-  it("does not make an empty confirmation field look prefilled", () => {
-    const markup = renderConfirmation("");
+  it("shows one Touch ID action without asking the user to retype the SKU", () => {
+    const markup = renderConfirmation();
 
-    expect(markup).toContain('placeholder="請手動輸入完整 SKU"');
-    expect(markup).not.toContain(`placeholder="${SELLER_SKU}"`);
-    expect(markup).toContain("欄位目前是空白");
-    expect(markup).toContain("請先輸入完整 SKU");
-    expect(markup).toContain("disabled");
-    expect(markup).toContain('aria-live="polite"');
-    expect(markup).not.toContain("autofocus");
-  });
-
-  it("keeps the final action disabled until the SKU matches exactly", () => {
-    const mismatch = renderConfirmation("afa12am");
-    const ready = renderConfirmation(SELLER_SKU);
-
-    expect(mismatch).toContain("SKU 尚未完全一致");
-    expect(mismatch).toContain("disabled");
-    expect(ready).toContain("SKU 完全一致，可以進行最後確認");
-    expect(ready).toContain(`確認更新 ${SELLER_SKU}`);
-    expect(ready).not.toContain("disabled");
+    expect(markup).toContain(`使用 Touch ID 確認更新 ${SELLER_SKU}`);
+    expect(markup).not.toContain("重新輸入完整 SKU");
+    expect(markup).not.toContain("<input");
+    expect(markup).not.toContain("disabled");
   });
 
   it("shows an explicit sending state", () => {
-    const markup = renderConfirmation(SELLER_SKU, true);
+    const markup = renderConfirmation(true);
 
     expect(markup).toContain("送交 Amazon 中…");
     expect(markup).toContain('data-loading="true"');
     expect(markup).toContain("disabled");
   });
 
-  it("wires input and commit callbacks while blocking loading submissions", () => {
-    const onConfirmationSkuChange = vi.fn();
+  it("wires the commit callback while blocking loading submissions", () => {
     const onCommit = vi.fn();
-    const empty = confirmationElements({
-      confirmationSku: "",
-      onConfirmationSkuChange,
-      onCommit,
-    });
-
-    expect(empty.button.props.disabled).toBe(true);
-    (empty.field.props.onChange as (event: { target: { value: string } }) => void)({
-      target: { value: SELLER_SKU },
-    });
-    expect(onConfirmationSkuChange).toHaveBeenCalledOnce();
-    expect(onConfirmationSkuChange).toHaveBeenCalledWith(SELLER_SKU);
-
-    const ready = confirmationElements({ confirmationSku: SELLER_SKU, onCommit });
+    const ready = confirmationElements({ onCommit });
     expect(ready.button.props.disabled).toBe(false);
     (ready.button.props.onClick as () => void)();
     expect(onCommit).toHaveBeenCalledOnce();
 
     const loading = confirmationElements({
-      confirmationSku: SELLER_SKU,
       actionLoading: true,
       onCommit,
     });
     expect(loading.button.props.disabled).toBe(true);
+  });
+
+  it("keeps a failed native approval message visible", () => {
+    const markup = renderConfirmation(false, "操作已取消；Amazon 沒有收到任何變更。");
+
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("操作已取消；Amazon 沒有收到任何變更。");
   });
 });
