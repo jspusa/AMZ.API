@@ -3,7 +3,7 @@
 最後更新：2026-08-06
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前版本：`v0.1.5` 內部測試版；已合併、部署並完成真實 Mac 唯讀驗證
+目前版本：`v0.1.6` 內部測試版；已合併、部署、安裝並完成真實 Mac／Amazon 唯讀驗證
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -173,14 +173,28 @@ Amazon App：
 - v0.1.5 universal App 已安裝至 `/Applications/AMZ.API.app`；舊 v0.1.4 原封不動保留為 `/Applications/AMZ.API-v0.1.4-backup.app`。
 - 真實 US 帳號唯讀驗證已通過：`AFA12AM` 的 SKU 指揮中心恢復 5/5 資料源，顯示非零 FBA 可售庫存與補貨結果，不再出現 `FBA_SKU_NOT_FOUND`。
 - 真實 US Sales API 的 7／14／30 天 AFN/FBA 每日折線圖均完整載入，今日正確標示為即時／未完成資料；下方 Orders 日期範圍保持獨立。
+- v0.1.6 銷售趨勢更新已完成：
+  - 「近期營運」只保留 FBA 銷售折線圖，不再啟動 `/api/sp-api/orders`，也不再顯示訂單搜尋、訂單列表、分頁或單筆詳情。
+  - 新增 90 天與自訂 1–90 天；自訂日期會在 renderer 與 main 雙重驗證，不可超過目前資料日，也不可超出 Sales API 去年同期可查範圍。
+  - 每次查詢固定讀取本期與同月同日的去年同期，兩次都使用 Sales API `getOrderMetrics`、`granularity=Day`、站點 IANA 時區與 `fulfillmentNetwork=AFN`；沒有 FBM 或 Amazon 寫入。
+  - 本期使用橘黃色實線與面積、去年同期使用灰色虛線；滑鼠／觸控／鍵盤可逐日顯示兩期金額，手機圖區在內部橫向捲動而不撐寬頁面。
+  - 去年閏年的額外 2 月 29 日會排除；本期 2 月 29 日若去年沒有相同月日則明確留空，不會拿 2 月 28 日冒充。
+  - 回傳 schema、日期、range、幣別與 totals 會 fail closed；同步或格式失敗會清除舊圖與舊 Live 狀態，不把過期數字顯示成即時。
+- v0.1.6 PR #6 已 squash merge：`https://github.com/jspusa/AMZ.API/pull/6`；feature head：`6091ff0b9fd649d816c07c8ca7d1504724a5093f`；main merge commit：`d288ac40640c92e42e11474068a879625ed7212a`。
+- feature 與 main tree SHA 均為 `51acbe37a642b8bf5e5537d91d6832bc6d004c39`，已確認安裝前 build 與部署後 main 的 source tree 完全相同。
+- v0.1.6 分支 Mac build run `31085746949`、main Validate run `31086616683`、Pages run `31086617355`、main Mac build run `31086616734` 均成功；Pages deployment `5776424283` 已成功發布 `https://jspusa.github.io/AMZ.API/`。
+- 本機驗證：62/62 tests、TypeScript、main/preload/renderer production build、`git diff --check` 與 `npm audit --omit=dev` 0 vulnerabilities；另完成 Playwright 桌面／390px 行動版、hover、鍵盤、90 天、自訂與錯誤邊界測試。
+- v0.1.6 已安裝為 `/Applications/AMZ.API.app`，原 v0.1.5 原封不動備份為 `/Applications/AMZ.API-v0.1.5-backup.app`；安裝前後均確認 bundle ID `com.jspusa.amz-api`、`arm64`／`x86_64` 與 `codesign --verify --deep --strict`。
+- 真實 Mac／Amazon 唯讀驗證已通過：App 正常啟動未閃退；US 站 7／14／30／90 天與自訂 90 天均載入本期及去年同期；每日提示同時顯示兩期金額；頁面底部沒有可見訂單明細區；回傳 notice 明確標示 AFN/FBA。
+- 此次沒有讀取、修改或輸出 LWA Client Secret、Refresh Token 或完整 Seller ID，也沒有執行任何 Amazon 寫入。
 
 ### 已完成與仍待真實 Mac／Amazon 驗證
 
-Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出，以及 7／14／30 天 AFN 銷售趨勢均已完成。現在仍待：
+Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出，以及 7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢均已完成。現在仍待：
 
-1. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的 7／14／30 天逐日數字與 Seller Central 報表逐列比較；App 端載入與切換已驗證。
+1. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的本期與去年同期逐日數字和 Seller Central 報表逐列比較；App 端 7／14／30／90／自訂載入與切換已驗證。
 2. 商品內容真實寫入仍未執行；任何寫入都必須保留 Amazon Validation Preview、舊值衝突檢查、Touch ID、idempotency 與送出後回查。
-3. v0.1.5 目前仍是 ad-hoc 內部測試 build；是否建立 Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。
+3. v0.1.6 目前仍是 ad-hoc 內部測試 build；是否建立 Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。
 
 ### 最近的真實錯誤
 
@@ -195,12 +209,12 @@ Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 
 
 ## 6. 目前安裝檔
 
-- 目前 `/Applications/AMZ.API.app`：v0.1.5 universal、ad-hoc 簽章；已完成真實 `AFA12AM` FBA 庫存與 7／14／30 天 AFN 銷售趨勢唯讀驗證。
-- 可回復備份：`/Applications/AMZ.API-v0.1.4-backup.app` 與 `/Applications/AMZ.API-v0.1.3-backup.app`。
-- 已安裝測試檔：`/Users/jasper/Desktop/AMZ.API-0.1.5-universal.dmg`。
-- v0.1.5 DMG SHA-256：`3f37a6a0fd520839ecb73d8344b3a048265e8e345289d4693fdd75a1a5b6ef38`。
-- v0.1.5 分支 artifact workflow run：`31079166726`；artifact 僅供內部 ad-hoc 測試，保留 14 天。
-- main macOS workflow run：`31080698700`；artifact：`8959432048`（短期保存）。
+- 目前 `/Applications/AMZ.API.app`：v0.1.6 universal、ad-hoc 簽章；已完成真實 7／14／30／90／自訂與去年同期 AFN 銷售趨勢唯讀驗證。
+- 可回復備份：`/Applications/AMZ.API-v0.1.5-backup.app`、`/Applications/AMZ.API-v0.1.4-backup.app` 與 `/Applications/AMZ.API-v0.1.3-backup.app`。
+- 實際安裝來源：分支 workflow run `31085746949`、artifact `8961382972`，名稱 `AMZ.API-unsigned-6091ff0b9fd649d816c07c8ca7d1504724a5093f`；GitHub artifact digest：`sha256:a365a0d997abd53839ff64086ded2edd8479e11aafcafae380b4653fc7b782c4`。
+- v0.1.6 分支 DMG SHA-256：`c9a20a9638088f43b690a762746efd034c8c8a05836f1d740c149a138c9c53ec`；ZIP SHA-256：`b369dba980de343527c6a602090e0a06c37d508870a690478dfac7bc45375a9c`；均與 artifact 內的 `SHA256SUMS.txt` 一致。
+- main macOS workflow run：`31086616734`；artifact：`8961800029`，名稱 `AMZ.API-unsigned-d288ac40640c92e42e11474068a879625ed7212a`；GitHub artifact digest：`sha256:1ad52cb1ca34decec9f76805b129916725dcacac0588bc96f1be0a911f757c5e`（短期保存至 2026-08-20）。main DMG SHA-256：`0c45bf2720365d08f588c40b2c4f1e9e63a02bb1e950f66af80b43a078fbcff9`；ZIP SHA-256：`43faaf83c53ceebb031169874454bb36f78eaf108d5da415f18e7df809134ae3`；均與 main artifact 內的 `SHA256SUMS.txt` 一致。
+- v0.1.5 桌面 DMG 若仍保留，其 SHA-256 為 `3f37a6a0fd520839ecb73d8344b3a048265e8e345289d4693fdd75a1a5b6ef38`。
 - 舊 v0.1.3 Library 檔名：`AMZ.API-0.1.3-universal.dmg`；舊 DMG SHA-256：`12c709019558d2060e88a9f8af33d121040af3ae80a56748a1cc41c5769ea232`。
 - 同一 bundle ID／Keychain vault，覆蓋安裝時應保留本機憑證。
 - 目前為內部測試版／ad-hoc 驗證流程，不可宣稱已完成 Apple Developer ID 公證正式發布。
@@ -245,7 +259,7 @@ npm audit --omit=dev
 
 注意：
 
-- 先確認遠端 `main` 是否仍以 `c03514c...` 或更新 commit 為首；不要用舊本機分支覆蓋遠端。
+- 先確認遠端 `main` 是否仍以 `d288ac4...` 或更新 commit 為首；不要用舊本機分支覆蓋遠端。
 - 工作區可能存在使用者或其他 agent 的變更；不得 `git reset --hard`、`git checkout --` 或直接覆蓋。
 - 修改後應建立修復分支／PR，通過 Actions 再合併。
 - 真實 Amazon 驗證只能由使用者在自己的 Mac Keychain 憑證環境執行；Linux／CI 不得假裝已測過 SP-API live。
@@ -269,7 +283,7 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-v0.1.5 安裝與核心唯讀驗證已完成。下一步接續使用者最新要求：
+v0.1.6 安裝、Pages 部署與核心唯讀驗證已完成。下一步接續尚未合併的使用者要求：
 
 ### A. 促銷能力名稱與邊界
 
@@ -308,7 +322,7 @@ v0.1.5 安裝與核心唯讀驗證已完成。下一步接續使用者最新要�
 - Mac App 顯示正確新版本。
 - Orders 與 Listings probe 均 live success。
 - US Seller SKU 文案、價格、促銷狀態能只讀查詢。
-- US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30 天 AFN 銷售趨勢完整載入。
+- US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂與去年同期 AFN 銷售趨勢完整載入。
 - Excel 可下載，且只含 FBA 商品；錯誤／缺欄位有清楚工作表或提示。
 - 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID。
 - 寫入後回查；結果不確定時阻止盲目重送。
