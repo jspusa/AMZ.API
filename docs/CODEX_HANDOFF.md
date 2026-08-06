@@ -138,6 +138,10 @@ Amazon App：
   - Seller ID 輸入會拒絕 Marketplace ID、空白及不可見字元；更換 Refresh Token 時必須同時提供同帳號 Seller ID，避免跨帳號殘留。
   - Product Type Definitions 無法使用時，文案／圖片仍可唯讀，但所有編輯與 PATCH 明確停用。
   - 商品內容最終確認欄位不再用目標 SKU 當作假預填 placeholder；空白、字元不符、完全一致與送出中都有明確狀態，仍要求使用者手動輸入完整 SKU，不放寬寫入確認。
+  - 修正 FBA Inventory v1 成功回應的 envelope：庫存摘要位於 `payload.inventorySummaries`，不再錯讀頂層欄位並誤報 `FBA_SKU_NOT_FOUND`；畸形 2xx 與合法空清單已分開處理。
+  - 「近期營運」不再以單一 Orders 分頁計算「本頁銷售」；新增 Sales API `getOrderMetrics` 每日折線圖，預設 7 天並可切換 14／30 天。
+  - 銷售趨勢固定 `fulfillmentNetwork=AFN`，以各站 IANA 時區處理日界與 DST，缺日補零且今日標示為未完成日；沒有加入 FBM。
+  - 圖表日期與原有訂單查詢日期互相獨立；下方訂單仍保留 7／14／30／60／90 天範圍。
   - 沒有改動既定架構、沒有新增 FBM，也沒有放寬寫入安全邊界。
 - v0.1.4 候選版已在同一台真實 Mac／同一加密 vault 重測：
   - Orders 仍可正常讀取。
@@ -159,15 +163,17 @@ Amazon App：
 - PR #1 已 squash merge 到 `main`。
 - 合併 commit：`c03514c53c537c4a44cf367b4783a62c45f06e08`。
 - GitHub Actions：Validate、Pages、macOS universal build 均成功。
-- 本機驗證：25/25 tests、TypeScript、main/preload/renderer build、`npm audit --omit=dev` 0 vulnerabilities。
+- 本機驗證：40/40 tests、TypeScript、main/preload/renderer build、`npm audit --omit=dev` 0 vulnerabilities。
 
 ### 仍待真實 Mac／Amazon 帳號驗證
 
-Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出均已完成；現在仍待：
+Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出均已完成；最新整合版現在仍待：
 
-1. 商品內容最終確認 UI hotfix 上線後，在真實 Mac 完全退出並重開 App，確認空白欄位、逐字一致狀態與停用按鈕都清楚顯示；不得代替使用者輸入 SKU 或觸發真實寫入。
-2. 若使用者決定完成更新，必須由使用者手動輸入完整 SKU、確認差異並通過本機 Touch ID；寫入後再由系統回查 Amazon 結果。
-3. 將其餘本機已驗證的 Listings 核心變更另行提交、推送，等待 GitHub Actions 產生正式 v0.1.4 universal DMG／ZIP；目前已安裝版為本機 ad-hoc 簽章，尚未發布 GitHub Release。
+1. 由最新整合 commit 建立／安裝 v0.1.4 universal App；目前 `/Applications/AMZ.API.app` 是較早的 v0.1.4 候選 build，尚未包含 FBA Inventory envelope 與 Sales 折線圖修正。
+2. 在真實 Mac 以唯讀方式查詢 `AFA12AM`，確認 SKU 指揮中心補貨資料能讀到 FBA 可售、預留與入庫數量，不再出現「Amazon FBA 庫存中找不到這個 SKU」。
+3. 在 US 站唯讀驗證 7／14／30 天 AFN 銷售折線圖，並與 Seller Central 同一站點／當地日界口徑核對；Sales API 失敗不得影響下方 Orders。
+4. 若使用者決定完成商品內容更新，仍必須由使用者手動輸入完整 SKU、確認差異並通過本機 Touch ID；寫入後再由系統回查 Amazon 結果。
+5. 推送目前整合分支並等待 GitHub Actions 產生正式 v0.1.4 universal DMG／ZIP；目前尚未發布 GitHub Release。
 
 ### 最近的真實錯誤
 
@@ -175,13 +181,14 @@ Listings 根因、`AFA12AM` 文案／價格／促銷唯讀，以及 Excel 匯出
 - 最近 Excel Request ID：`c8907d99-12e1-4d62-8766-e6c31e0df848`
 - v0.1.3 與修正 Merchant Token 前的 v0.1.4 候選版，真實 Listings probe／單一 SKU 均回 HTTP 400；Amazon Request ID 已保留於本機診斷紀錄。
 - 已對照 Amazon 官方文件，完整與最小 `getListingsItem` 參數組合均合法；更新成同一授權帳號的正確 Merchant Token 後，probe 與 `AFA12AM` 商品內容皆成功，故此次 400 根因已確認為帳號識別值不一致。
+- SKU 指揮中心曾在 Seller Central 明確有 FBA 庫存時誤報找不到 SKU；根因已確認是程式把官方 `payload.inventorySummaries` 錯讀成頂層 `inventorySummaries`，不是 LWA、Merchant Token 或 SKU 錯誤。
 - 不應重建整個 Amazon App，也不應要求使用者輪替或公開 Secret。
 
 ---
 
 ## 6. 目前安裝檔
 
-- 目前 `/Applications/AMZ.API.app`：本機已驗證 v0.1.4 universal、ad-hoc 簽章；安裝後 live Listings／`AFA12AM` 回讀成功。
+- 目前 `/Applications/AMZ.API.app`：較早的 v0.1.4 universal、ad-hoc 簽章；live Listings／`AFA12AM` 回讀成功，但尚未包含本次 FBA Inventory 與 Sales 折線圖修正。
 - 可回復備份：`/Applications/AMZ.API-v0.1.3-backup.app`。
 - Library 最新檔名：`AMZ.API-0.1.3-universal.dmg`
 - GitHub Actions workflow run：`31005573903`
@@ -254,22 +261,28 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-以已通過真實 Listings／文案讀取的 v0.1.4 候選版接續其餘唯讀驗證：
+先安裝最新整合 v0.1.4 候選版，再接續唯讀驗證：
 
-### A. Orders 與 Listings 皆成功（包含相容唯讀參數）
+### A. FBA 庫存與銷售趨勢
+
+1. 在 SKU 指揮中心查詢 `AFA12AM`，確認補貨來源由 4/5 恢復為 5/5，並顯示 FBA 庫存與補貨結果。
+2. 在近期營運確認預設 7 天完整 AFN 銷售折線圖，再切換 14／30 天；今日應標示即時／未完成。
+3. 圖表查詢只讀且固定 AFN；不得移除 `fulfillmentNetwork=AFN`，也不得以 Orders 當頁資料回填假總額。
+
+### B. Orders 與 Listings 皆成功（包含相容唯讀參數）
 
 1. `AFA12AM` 文案、價格／促銷與 Excel 均已成功；不要重做已完成的根因排查。
 2. 若要驗證寫入前流程，需先取得使用者明確同意，再選低風險 SKU 測一次 Validation Preview。
 3. 未經使用者再次確認，不執行真實價格、文案或圖片寫入。
 
-### B. Listings 再次回 400
+### C. Listings 再次回 400
 
 1. 記錄錯誤 code、Amazon message、Request ID、App version、marketplace；不得記錄 Secret。
 2. 先確認 App 使用的是已在 2026-08-06 本機校正的 NA Merchant Token；不得輸出或要求完整值。
 3. 確認 Product Listing role 同時存在於 Developer Profile 與 App，角色更新後重新 self-authorize。
 4. 若 Seller ID 與 role 均確認正確，使用 Request ID 向 Amazon Developer Support 查詢；不要繼續猜測或輪替所有金鑰。
 
-### C. Listings probe 成功但某一功能失敗
+### D. Listings probe 成功但某一功能失敗
 
 依 endpoint 分開診斷，不再把所有失敗歸因於「API 沒串好」：
 
@@ -288,6 +301,7 @@ npm audit --omit=dev
 - Mac App 顯示正確新版本。
 - Orders 與 Listings probe 均 live success。
 - US Seller SKU 文案、價格、促銷狀態能只讀查詢。
+- US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30 天 AFN 銷售趨勢完整載入。
 - Excel 可下載，且只含 FBA 商品；錯誤／缺欄位有清楚工作表或提示。
 - 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID。
 - 寫入後回查；結果不確定時阻止盲目重送。
