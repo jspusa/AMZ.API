@@ -11,10 +11,17 @@ const savedEnvironment = new Map(
     .map((key) => [key, process.env[key]]),
 );
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(
+  status: number,
+  body: unknown,
+  requestId?: string,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(requestId ? { "x-amzn-requestid": requestId } : {}),
+    },
   });
 }
 
@@ -182,5 +189,75 @@ describe("FBA brand sales fixed report window", () => {
       code: "INVALID_DATE_RANGE",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a valid-looking persisted window that does not match the exact selected dates", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      getFbaShipmentSalesReportStatus({
+        marketplaceId: MARKETPLACE_ID,
+        reportId: "FAKE_BRAND_REPORT_ID",
+        startDate: "2026-08-02",
+        endDate: "2026-08-08",
+        dataStartTime: "2026-08-01T00:00:00-07:00",
+        dataEndTime: "2026-08-09T00:00:00-07:00",
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "INVALID_DATE_RANGE",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes CANCELLED from FATAL, preserves request IDs, and never auto-reposts", async () => {
+    for (const processingStatus of ["CANCELLED", "FATAL"] as const) {
+      invalidateSpApiCredentialCaches();
+      const methods: string[] = [];
+      const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.origin === "https://api.amazon.com") {
+          return jsonResponse(200, {
+            access_token: "FAKE_ACCESS_TOKEN",
+            expires_in: 3_600,
+          });
+        }
+        methods.push(init?.method ?? "GET");
+        return jsonResponse(200, {
+          reportId: "FAKE_BRAND_REPORT_ID",
+          reportType: "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          dataStartTime: "2026-08-02T07:00:00Z",
+          dataEndTime: "2026-08-09T07:00:00Z",
+          processingStatus,
+        }, `REQUEST-${processingStatus}`);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const error = await getFbaShipmentSalesReportStatus({
+        marketplaceId: MARKETPLACE_ID,
+        reportId: "FAKE_BRAND_REPORT_ID",
+        startDate: "2026-08-02",
+        endDate: "2026-08-08",
+        dataStartTime: "2026-08-02T00:00:00-07:00",
+        dataEndTime: "2026-08-09T00:00:00-07:00",
+      }).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+      expect(error).toMatchObject({
+        status: 422,
+        code: processingStatus === "CANCELLED"
+          ? "REPORT_CANCELLED"
+          : "REPORT_FATAL",
+        requestId: `REQUEST-${processingStatus}`,
+      });
+      expect((error as Error).message).toContain(
+        processingStatus === "CANCELLED" ? "30 分鐘" : "處理",
+      );
+      expect(methods).toEqual(["GET"]);
+    }
   });
 });

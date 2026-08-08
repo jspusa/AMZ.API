@@ -7,7 +7,13 @@ import type {
   CredentialSummary,
 } from "../shared/contracts";
 import { CredentialVault } from "./credential-vault";
-import { LocalStore, type ProductMasterState } from "./local-store";
+import {
+  LocalStore,
+  type BrandSalesJobRecord,
+  type BrandSalesReportLeg,
+  type ProductMasterState,
+  type SharedAllListingsReportLease,
+} from "./local-store";
 import {
   PUBLIC_ACCOUNTING_CAPABILITIES,
   buildAccountingAccessPlan,
@@ -15,6 +21,23 @@ import {
   type AccountingCapability,
   type AccountingCapabilityId,
 } from "./amazon/accounting-capabilities";
+import {
+  CURRENT_APP_EXPORTS,
+  PUBLIC_REPORT_CATALOG,
+  REPORT_LIBRARY_NOTICE,
+  REPORT_LIBRARY_UNAVAILABLE_DOCUMENTS,
+  buildReportAccessPlan,
+} from "./amazon/report-library";
+import {
+  REVIEW_AUDIT_CAPABILITY,
+  buildReviewAuditSnapshot,
+  customerFeedbackMarketplaceSupported,
+  type DedupedFbaReviewCandidate,
+  type ReviewAuditCandidateCoverage,
+  type ReviewAuditFetchResult,
+  type ReviewAuditRelationshipIncompleteRow,
+  type ReviewAuditSnapshot,
+} from "./amazon/review-audit";
 import { auditListingContentRows } from "./amazon/content-quality";
 import { auditListingImageRows } from "./amazon/image-audit";
 import {
@@ -29,6 +52,7 @@ import {
   getAllListingsExportData,
   getAllListingsReportStatus,
   getBrandSalesData,
+  getBrandSalesReportWindow,
   getFbaShipmentSalesReportStatus,
   getListingContent,
   getListingImages,
@@ -36,6 +60,8 @@ import {
   getRestockPlan,
   getSalesTrend,
   getFbaSubscriptionAudit,
+  getCustomerFeedbackReviewTopics,
+  getFbaReviewAuditCandidates,
   getSubscribeAndSaveOffer,
   getUnboundVariationAuditData,
   getVariationFamilyPlanner,
@@ -78,6 +104,7 @@ import {
   subscriptionAuditDiscountBucket,
 } from "./amazon/replenishment-audit";
 import { createSubscriptionAuditWorkbook } from "./amazon/subscription-audit-xlsx";
+import { createReviewAuditWorkbook } from "./amazon/review-audit-xlsx";
 import {
   createAgedInventoryWorkbook,
   createImageAuditWorkbook,
@@ -103,6 +130,37 @@ type CommandTask = {
   tool: "restock" | "copy" | "images" | "price" | "promotion" | null;
 };
 
+type ReviewAuditJob = {
+  marketplaceId: MarketplaceId;
+  accountScope: string;
+  expiresAt: number;
+  mode: "live" | "demo";
+  listingReportId: string;
+  listingDocumentId: string | null;
+  listingStatus: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
+  candidates: DedupedFbaReviewCandidate[] | null;
+  sourceCandidateCount: number;
+  candidateCoverage: ReviewAuditCandidateCoverage | null;
+  relationshipIncompleteRows: ReviewAuditRelationshipIncompleteRow[];
+  results: ReviewAuditFetchResult[];
+  nextCandidateIndex: number;
+  nextQueryAt: number;
+  snapshot: ReviewAuditSnapshot | null;
+};
+
+type BrandSalesRuntimeJob = BrandSalesJobRecord & {
+  snapshot: BrandSalesSnapshot | null;
+};
+
+type BrandSalesReportGateway = {
+  startListing: typeof startAllListingsReport;
+  startShipment: typeof startFbaShipmentSalesReport;
+  getListingStatus: typeof getAllListingsReportStatus;
+  getShipmentStatus: typeof getFbaShipmentSalesReportStatus;
+  getData: typeof getBrandSalesData;
+  reportWindow: typeof getBrandSalesReportWindow;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 const JSON_HEADERS = {
@@ -124,7 +182,16 @@ const MARKETPLACE_CODES: Record<MarketplaceId, string> = {
 const SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
 const UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
 const IMAGE_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
-const BRAND_SALES_JOB_TTL_MS = 30 * 60 * 1_000;
+const BRAND_SALES_REUSE_WINDOW_MS = 30 * 60 * 1_000;
+const BRAND_SALES_NEAR_REUSE_BOUNDARY_MS = 2 * 60 * 1_000;
+const BRAND_SALES_JOB_RETENTION_MS = 60 * 60 * 1_000;
+const REVIEW_AUDIT_JOB_TTL_MS = 30 * 60 * 1_000;
+const REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS = 1_050;
+
+async function waitMilliseconds(milliseconds: number): Promise<void> {
+  if (milliseconds <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
 type ImageAuditSnapshot = ReturnType<typeof auditListingImageRows>;
 
@@ -270,6 +337,12 @@ export function parseSellerSku(value: unknown): string | null {
     return null;
   }
   return sellerSku;
+}
+
+export function parseAsin(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Z0-9]{10}$/u.test(value)
+    ? value
+    : null;
 }
 
 function parsePrice(value: unknown, currencyCode: string): number | null {
@@ -471,6 +544,7 @@ export class ApiRouter {
   private readonly store: LocalStore;
   private readonly vault: CredentialVault;
   private readonly approveWrite: WriteApproval;
+  private readonly brandSalesReports: BrandSalesReportGateway;
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly subscriptionAuditSnapshots = new Map<
     string,
@@ -499,35 +573,44 @@ export class ApiRouter {
       snapshot: ImageAuditSnapshot;
     }
   >();
-  private readonly brandSalesJobs = new Map<
+  private readonly brandSalesJobs = new Map<string, BrandSalesRuntimeJob>();
+  private readonly brandSalesStartFlights = new Map<string, Promise<ApiResponse>>();
+  private readonly allListingsReportFlights = new Map<
     string,
-    {
-      marketplaceId: MarketplaceId;
-      accountScope: string;
-      expiresAt: number;
-      startDate: string;
-      endDate: string;
-      mode: "live" | "demo";
-      listingReportId: string;
-      listingDocumentId: string | null;
-      listingStatus: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
-      shipmentReportId: string;
-      shipmentDocumentId: string | null;
-      shipmentStatus: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
-      shipmentDataStartTime: string;
-      shipmentDataEndTime: string;
-      snapshot: BrandSalesSnapshot | null;
-    }
+    Promise<SharedAllListingsReportLease>
   >();
+  private readonly allListingsReportStatusFlights = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof getAllListingsReportStatus>>>
+  >();
+  private readonly brandSalesPollFlights = new Map<
+    string,
+    Promise<ApiResponse | null>
+  >();
+  private readonly brandSalesDataFlights = new Map<string, Promise<ApiResponse>>();
+  private readonly reviewAuditJobs = new Map<string, ReviewAuditJob>();
+  private readonly reviewAuditPollFlights = new Map<string, Promise<ApiResponse>>();
+  private reviewAuditFeedbackQueue: Promise<void> = Promise.resolve();
+  private reviewAuditFeedbackNextStartAt = 0;
 
   constructor(input: {
     store: LocalStore;
     vault: CredentialVault;
     approveWrite: WriteApproval;
+    brandSalesReports?: Partial<BrandSalesReportGateway>;
   }) {
     this.store = input.store;
     this.vault = input.vault;
     this.approveWrite = input.approveWrite;
+    this.brandSalesReports = {
+      startListing: startAllListingsReport,
+      startShipment: startFbaShipmentSalesReport,
+      getListingStatus: getAllListingsReportStatus,
+      getShipmentStatus: getFbaShipmentSalesReportStatus,
+      getData: getBrandSalesData,
+      reportWindow: getBrandSalesReportWindow,
+      ...input.brandSalesReports,
+    };
   }
 
   clearPreviews(): void {
@@ -536,6 +619,16 @@ export class ApiRouter {
     this.unboundVariationAuditSnapshots.clear();
     this.imageAuditSnapshots.clear();
     this.brandSalesJobs.clear();
+    this.brandSalesStartFlights.clear();
+    this.allListingsReportFlights.clear();
+    this.allListingsReportStatusFlights.clear();
+    this.brandSalesPollFlights.clear();
+    this.brandSalesDataFlights.clear();
+    this.reviewAuditJobs.clear();
+    this.reviewAuditPollFlights.clear();
+    // Do not reset the Customer Feedback queue or its next slot. A credential
+    // change must not let a new account overtake an already-started request or
+    // bypass the App-session-wide one-request-per-second boundary.
   }
 
   async handle(request: ApiRequest): Promise<ApiResponse> {
@@ -659,6 +752,16 @@ export class ApiRouter {
         return this.accountingCapabilities(request);
       case "POST /api/sp-api/accounting/access-plan":
         return this.accountingAccessPlan(request);
+      case "GET /api/sp-api/report-library":
+        return this.reportLibrary(request);
+      case "POST /api/sp-api/report-library/access-plan":
+        return this.reportLibraryAccessPlan(request);
+      case "POST /api/sp-api/review-audit":
+        return this.startReviewAudit(request);
+      case "GET /api/sp-api/review-audit":
+        return this.reviewAuditStatusOrData(request);
+      case "GET /api/sp-api/review-audit/export":
+        return this.reviewAuditExport(request);
       case "GET /api/sp-api/replenishment-plan":
         return this.replenishment(request);
       case "POST /api/sp-api/aged-inventory":
@@ -789,23 +892,53 @@ export class ApiRouter {
     }
   }
 
-  private brandSalesJobReply(
-    jobId: string,
-    job: (typeof this.brandSalesJobs extends Map<string, infer Entry> ? Entry : never),
-  ): ApiResponse {
-    const ready =
-      job.listingStatus === "DONE" &&
-      Boolean(job.listingDocumentId) &&
-      job.shipmentStatus === "DONE" &&
-      Boolean(job.shipmentDocumentId);
+  private brandSalesRuntimeJob(record: BrandSalesJobRecord): BrandSalesRuntimeJob {
+    const current = this.brandSalesJobs.get(record.jobId);
+    if (current) {
+      const snapshot = current.snapshot;
+      Object.assign(current, structuredClone(record));
+      current.snapshot = snapshot;
+      return current;
+    }
+    const job: BrandSalesRuntimeJob = {
+      ...structuredClone(record),
+      snapshot: null,
+    };
+    this.brandSalesJobs.set(job.jobId, job);
+    return job;
+  }
+
+  private brandSalesLegReusable(leg: BrandSalesReportLeg): boolean {
+    return (
+      Boolean(leg.reportId) &&
+      leg.terminal === null &&
+      (leg.status === "IN_QUEUE" ||
+        leg.status === "IN_PROGRESS" ||
+        (leg.status === "DONE" && Boolean(leg.documentId)))
+    );
+  }
+
+  private brandSalesJobReady(job: BrandSalesRuntimeJob): boolean {
+    return (
+      job.listing.status === "DONE" &&
+      Boolean(job.listing.reportId) &&
+      Boolean(job.listing.documentId) &&
+      job.shipment.status === "DONE" &&
+      Boolean(job.shipment.reportId) &&
+      Boolean(job.shipment.documentId)
+    );
+  }
+
+  private brandSalesJobReply(job: BrandSalesRuntimeJob): ApiResponse {
+    const ready = this.brandSalesJobReady(job);
     const status = ready
       ? "DONE"
-      : job.listingStatus === "IN_PROGRESS" || job.shipmentStatus === "IN_PROGRESS"
+      : job.listing.status === "IN_PROGRESS" || job.shipment.status === "IN_PROGRESS"
         ? "IN_PROGRESS"
         : "IN_QUEUE";
     return json(
       {
-        jobId,
+        jobId: job.jobId,
         mode: job.mode,
         marketplaceId: job.marketplaceId,
         startDate: job.startDate,
@@ -820,6 +953,739 @@ export class ApiRouter {
     );
   }
 
+  private brandSalesRetryWait(leg: BrandSalesReportLeg, now: number): number {
+    if (
+      leg.status !== "CREATING" &&
+      leg.status !== "CREATION_UNKNOWN" &&
+      leg.status !== "CANCELLED" &&
+      leg.status !== "FATAL"
+    ) {
+      return 0;
+    }
+    return Math.max(
+      0,
+      (leg.createdAt ?? now) + BRAND_SALES_REUSE_WINDOW_MS - now,
+    );
+  }
+
+  private brandSalesWaitReply(milliseconds: number): ApiResponse {
+    const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
+    return json(
+      {
+        code: "REPORT_RETRY_WAIT",
+        message: `Amazon 報表建立仍在 30 分鐘安全間隔內；請約 ${Math.ceil(seconds / 60)} 分鐘後再重試，系統不會重複建立。`,
+      },
+      409,
+      { "retry-after": String(seconds) },
+    );
+  }
+
+  private async saveBrandSalesLeg(
+    job: BrandSalesRuntimeJob,
+    leg: "listing" | "shipment",
+    value: BrandSalesReportLeg,
+    now = Date.now(),
+    extendRetention = false,
+  ): Promise<void> {
+    const snapshot = job.snapshot;
+    const persisted = await this.store.updateBrandSalesJobLeg({
+      jobId: job.jobId,
+      leg,
+      value,
+      updatedAt: now,
+      ...(extendRetention
+        ? { expiresAt: Math.max(job.expiresAt, now + BRAND_SALES_JOB_RETENTION_MS) }
+        : {}),
+    });
+    Object.assign(job, persisted);
+    job.snapshot = snapshot;
+  }
+
+  private brandSalesCreationFailure(error: unknown, createdAt: number): BrandSalesReportLeg {
+    const unknown =
+      !(error instanceof SpApiError) ||
+      error.status >= 500 ||
+      error.code === "UPSTREAM_UNAVAILABLE";
+    const status = unknown ? "CREATION_UNKNOWN" : "CREATE_FAILED";
+    return {
+      reportId: null,
+      documentId: null,
+      status,
+      createdAt,
+      terminal: status,
+      terminalAt: Date.now(),
+    };
+  }
+
+  private async createBrandSalesLeg(
+    job: BrandSalesRuntimeJob,
+    leg: "listing" | "shipment",
+  ): Promise<unknown | null> {
+    const createdAt = Date.now();
+    await this.saveBrandSalesLeg(
+      job,
+      leg,
+      {
+        reportId: null,
+        documentId: null,
+        status: "CREATING",
+        createdAt,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt,
+      true,
+    );
+    let returnedStatus:
+      | Awaited<ReturnType<BrandSalesReportGateway["startListing"]>>
+      | Awaited<ReturnType<BrandSalesReportGateway["startShipment"]>>
+      | null = null;
+    try {
+      const status = leg === "listing"
+        ? await this.brandSalesReports.startListing({ marketplaceId: job.marketplaceId as MarketplaceId })
+        : await this.brandSalesReports.startShipment({
+            marketplaceId: job.marketplaceId as MarketplaceId,
+            startDate: job.startDate,
+            endDate: job.endDate,
+          });
+      returnedStatus = status;
+      if (
+        status.mode !== job.mode ||
+        (status.status !== "IN_QUEUE" &&
+          status.status !== "IN_PROGRESS" &&
+          status.status !== "DONE") ||
+        !status.reportId ||
+        (status.status === "DONE" && !status.documentId)
+      ) {
+        throw new SpApiError("品牌營收報表建立回應不完整，已停止重試。", {
+          status: 409,
+          code: "REPORT_MISMATCH",
+        });
+      }
+      if (
+        leg === "shipment" &&
+        (!("dataStartTime" in status) ||
+          !("dataEndTime" in status) ||
+          status.dataStartTime !== job.shipmentDataStartTime ||
+          status.dataEndTime !== job.shipmentDataEndTime)
+      ) {
+        throw new SpApiError("品牌營收報表的固定日期邊界不一致。", {
+          status: 409,
+          code: "REPORT_MISMATCH",
+        });
+      }
+      await this.saveBrandSalesLeg(job, leg, {
+        reportId: status.reportId,
+        documentId: status.documentId,
+        status: status.status,
+        createdAt,
+        terminal: null,
+        terminalAt: null,
+      });
+      return null;
+    } catch (error) {
+      await this.saveBrandSalesLeg(
+        job,
+        leg,
+        returnedStatus?.reportId
+          ? {
+              reportId: returnedStatus.reportId,
+              documentId: null,
+              status: "CREATION_UNKNOWN",
+              createdAt,
+              terminal: "CREATION_UNKNOWN",
+              terminalAt: Date.now(),
+            }
+          : this.brandSalesCreationFailure(error, createdAt),
+      );
+      return error;
+    }
+  }
+
+  private brandSalesRetryWaitError(milliseconds: number): SpApiError {
+    const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
+    return new SpApiError(
+      `Amazon 報表建立仍在 30 分鐘安全間隔內；請約 ${Math.ceil(seconds / 60)} 分鐘後再重試，系統不會重複建立。`,
+      {
+        status: 409,
+        code: "REPORT_RETRY_WAIT",
+        retryAfter: String(seconds),
+      },
+    );
+  }
+
+  private sharedAllListingsStatus(
+    lease: SharedAllListingsReportLease,
+  ): Awaited<ReturnType<typeof startAllListingsReport>> {
+    return {
+      mode: lease.mode,
+      ready:
+        lease.report.status === "DONE" && Boolean(lease.report.documentId),
+      reportId: lease.report.reportId!,
+      documentId: lease.report.documentId,
+      status: lease.report.status as "IN_QUEUE" | "IN_PROGRESS" | "DONE",
+      notice:
+        lease.report.status === "DONE"
+          ? "Amazon 全商品清單已就緒。"
+          : "Amazon 正在準備全商品清單。",
+    };
+  }
+
+  private sharedReportExpiringError(milliseconds: number): SpApiError {
+    const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
+    return new SpApiError(
+      "既有 Amazon 全商品報表已接近本機安全保留期；系統不會重用或提前重建，請稍後再試。",
+      {
+        status: 409,
+        code: "REPORT_JOB_EXPIRING",
+        retryAfter: String(seconds),
+      },
+    );
+  }
+
+  private async createSharedAllListingsLease(input: {
+    accountScope: string;
+    marketplaceId: MarketplaceId;
+    explicitRetry: boolean;
+  }): Promise<SharedAllListingsReportLease> {
+    const now = Date.now();
+    const mode = usesDemoMode(input.marketplaceId) ? "demo" : "live";
+    let lease = await this.store.getSharedAllListingsReport(input);
+    if (lease && lease.mode !== mode) {
+      // Demo IDs are synthetic and safe to discard before entering live mode.
+      // A live unresolved lease must remain durable when configuration falls
+      // back to demo, otherwise restoring credentials could duplicate a POST.
+      if (lease.mode === "demo" && mode === "live") {
+        await this.store.deleteSharedAllListingsReport(lease.leaseId);
+        lease = null;
+      } else {
+        throw new SpApiError("尚有真實 Amazon 全商品報表紀錄；展示模式不會覆蓋它。", {
+          status: 409,
+          code: "REPORT_MODE_CHANGED",
+        });
+      }
+    }
+    if (
+      lease &&
+      lease.expiresAt <= now &&
+      (lease.report.status === "DONE" || lease.report.status === "NOT_STARTED")
+    ) {
+      // A fully completed document (or a claim that never began creating) can
+      // be refreshed safely. Active/unknown/terminal leases remain durable so
+      // an automatic mount cannot turn a local TTL into a duplicate POST.
+      await this.store.deleteSharedAllListingsReport(lease.leaseId);
+      lease = null;
+    }
+    let newlyClaimed = false;
+    if (!lease) {
+      const candidate: SharedAllListingsReportLease = {
+        leaseId: randomUUID(),
+        accountScope: input.accountScope,
+        marketplaceId: input.marketplaceId,
+        reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+        optionsKey: "preferredReportDocumentLocale=en_US",
+        mode,
+        report: {
+          reportId: null,
+          documentId: null,
+          status: "NOT_STARTED",
+          createdAt: null,
+          terminal: null,
+          terminalAt: null,
+        },
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: now + BRAND_SALES_JOB_RETENTION_MS,
+      };
+      const claim = await this.store.createSharedAllListingsReportIfAbsent(
+        candidate,
+        now,
+      );
+      lease = claim.lease;
+      newlyClaimed = claim.created;
+    }
+
+    if (lease.mode !== mode) {
+      throw new SpApiError("全商品報表模式與目前 App 設定不一致。", {
+        status: 409,
+        code: "REPORT_MODE_CHANGED",
+      });
+    }
+
+    if (!newlyClaimed && this.brandSalesLegReusable(lease.report)) {
+      const retentionRemaining = lease.expiresAt - now;
+      if (
+        lease.report.status === "IN_QUEUE" ||
+        lease.report.status === "IN_PROGRESS"
+      ) {
+        if (retentionRemaining <= BRAND_SALES_NEAR_REUSE_BOUNDARY_MS) {
+          return this.store.updateSharedAllListingsReport({
+            leaseId: lease.leaseId,
+            report: lease.report,
+            updatedAt: now,
+            expiresAt: now + BRAND_SALES_JOB_RETENTION_MS,
+          });
+        }
+        return lease;
+      }
+      if (retentionRemaining > BRAND_SALES_NEAR_REUSE_BOUNDARY_MS) return lease;
+      throw this.sharedReportExpiringError(retentionRemaining);
+    }
+    if (!newlyClaimed && lease.report.status !== "NOT_STARTED") {
+      const wait = this.brandSalesRetryWait(lease.report, now);
+      if (!input.explicitRetry) {
+        const code = lease.report.terminal === "CANCELLED"
+          ? "REPORT_CANCELLED"
+          : lease.report.terminal === "FATAL"
+            ? "REPORT_FATAL"
+            : "SHARED_REPORT_RETRY_REQUIRED";
+        throw new SpApiError(
+          code === "REPORT_CANCELLED"
+            ? "Amazon 已取消上次全商品報表；系統不會自動重建。"
+            : code === "REPORT_FATAL"
+              ? "Amazon 無法完成上次全商品報表；請明確重試。"
+              : "上次全商品報表建立結果不完整；系統不會自動重送。",
+          { status: 409, code },
+        );
+      }
+      if (wait > 0) throw this.brandSalesRetryWaitError(wait);
+    }
+
+    const createdAt = Date.now();
+    lease = await this.store.updateSharedAllListingsReport({
+      leaseId: lease.leaseId,
+      report: {
+        reportId: null,
+        documentId: null,
+        status: "CREATING",
+        createdAt,
+        terminal: null,
+        terminalAt: null,
+      },
+      updatedAt: createdAt,
+      expiresAt: createdAt + BRAND_SALES_JOB_RETENTION_MS,
+    });
+    let returnedStatus: Awaited<ReturnType<typeof startAllListingsReport>> | null = null;
+    try {
+      const status = await this.brandSalesReports.startListing({
+        marketplaceId: input.marketplaceId,
+      });
+      returnedStatus = status;
+      if (
+        status.mode !== lease.mode ||
+        (status.status !== "IN_QUEUE" &&
+          status.status !== "IN_PROGRESS" &&
+          status.status !== "DONE") ||
+        !status.reportId ||
+        (status.status === "DONE" && !status.documentId)
+      ) {
+        throw new SpApiError("全商品報表建立回應不完整，已停止重送。", {
+          status: 409,
+          code: "REPORT_MISMATCH",
+        });
+      }
+      return await this.store.updateSharedAllListingsReport({
+        leaseId: lease.leaseId,
+        report: {
+          reportId: status.reportId,
+          documentId: status.documentId,
+          status: status.status,
+          createdAt,
+          terminal: null,
+          terminalAt: null,
+        },
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      await this.store.updateSharedAllListingsReport({
+        leaseId: lease.leaseId,
+        report: returnedStatus?.reportId
+          ? {
+              reportId: returnedStatus.reportId,
+              documentId: null,
+              status: "CREATION_UNKNOWN",
+              createdAt,
+              terminal: "CREATION_UNKNOWN",
+              terminalAt: Date.now(),
+            }
+          : this.brandSalesCreationFailure(error, createdAt),
+        updatedAt: Date.now(),
+      });
+      throw error;
+    }
+  }
+
+  private async startSharedAllListingsReport(
+    marketplaceId: MarketplaceId,
+    explicitRetry: boolean,
+  ): Promise<Awaited<ReturnType<typeof startAllListingsReport>>> {
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[marketplaceId].region,
+    );
+    const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+    // Retry is authorization for this caller, not part of report identity.
+    // Keeping it out of the key prevents an automatic brand load and an
+    // explicit audit/export click from racing two createReport POSTs.
+    const flightKey = `${accountScope}:${marketplaceId}:${mode}:GET_MERCHANT_LISTINGS_ALL_DATA:preferredReportDocumentLocale=en_US`;
+    let flight = this.allListingsReportFlights.get(flightKey);
+    if (!flight) {
+      flight = this.createSharedAllListingsLease({
+        accountScope,
+        marketplaceId,
+        explicitRetry,
+      }).finally(() => {
+        if (this.allListingsReportFlights.get(flightKey) === flight) {
+          this.allListingsReportFlights.delete(flightKey);
+        }
+      });
+      this.allListingsReportFlights.set(flightKey, flight);
+    }
+    return this.sharedAllListingsStatus(await flight);
+  }
+
+  private sharedAllListingsStatusRank(status: BrandSalesReportLeg["status"]): number {
+    return status === "DONE"
+      ? 3
+      : status === "IN_PROGRESS"
+        ? 2
+        : status === "IN_QUEUE"
+          ? 1
+          : 0;
+  }
+
+  private sharedAllListingsTerminalError(
+    report: BrandSalesReportLeg,
+  ): SpApiError | null {
+    if (report.status !== "CANCELLED" && report.status !== "FATAL") return null;
+    return new SpApiError("Amazon 未能產生這份全商品報表，請明確重試。", {
+      status: 422,
+      code: report.status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
+    });
+  }
+
+  private async pollSharedAllListingsReportStatus(input: {
+    marketplaceId: MarketplaceId;
+    reportId: string;
+    accountScope: string;
+    mode: "live" | "demo";
+  }): Promise<Awaited<ReturnType<typeof getAllListingsReportStatus>>> {
+    let lease = await this.store.getSharedAllListingsReportById({
+      accountScope: input.accountScope,
+      marketplaceId: input.marketplaceId,
+      reportId: input.reportId,
+    });
+    if (lease && lease.mode !== input.mode) {
+      throw new SpApiError("全商品報表模式與目前 App 設定不一致。", {
+        status: 409,
+        code: "REPORT_MODE_CHANGED",
+      });
+    }
+    const existingTerminal = lease
+      ? this.sharedAllListingsTerminalError(lease.report)
+      : null;
+    if (existingTerminal) throw existingTerminal;
+    try {
+      const status = await this.brandSalesReports.getListingStatus(input);
+      if (status.mode !== input.mode || (lease && status.mode !== lease.mode)) {
+        throw new SpApiError("全商品報表模式與本機紀錄不一致。", {
+          status: 409,
+          code: "REPORT_MODE_CHANGED",
+        });
+      }
+      lease = await this.store.getSharedAllListingsReportById({
+        accountScope: input.accountScope,
+        marketplaceId: input.marketplaceId,
+        reportId: input.reportId,
+      });
+      if (!lease) return status;
+      if (lease.mode !== input.mode) {
+        throw new SpApiError("全商品報表模式與目前 App 設定不一致。", {
+          status: 409,
+          code: "REPORT_MODE_CHANGED",
+        });
+      }
+      const terminal = this.sharedAllListingsTerminalError(lease.report);
+      if (terminal) throw terminal;
+
+      // Amazon status is monotonic. A delayed IN_QUEUE/IN_PROGRESS response
+      // must not replace a DONE document persisted by another concurrent poll.
+      if (
+        this.sharedAllListingsStatusRank(lease.report.status) >
+        this.sharedAllListingsStatusRank(status.status)
+      ) {
+        return this.sharedAllListingsStatus(lease);
+      }
+      if (
+        lease.report.status === "DONE" &&
+        status.status === "DONE" &&
+        lease.report.documentId
+      ) {
+        return this.sharedAllListingsStatus(lease);
+      }
+
+      const now = Date.now();
+      if (
+        lease.report.status !== status.status ||
+        lease.report.documentId !== status.documentId ||
+        lease.expiresAt - now <= BRAND_SALES_NEAR_REUSE_BOUNDARY_MS
+      ) {
+        const persisted = await this.store.updateSharedAllListingsReport({
+          leaseId: lease.leaseId,
+          report: {
+            ...lease.report,
+            status: status.status,
+            documentId: status.documentId,
+          },
+          updatedAt: now,
+          expectedUpdatedAt: lease.updatedAt,
+          ...(lease.expiresAt - now <= BRAND_SALES_NEAR_REUSE_BOUNDARY_MS
+            ? { expiresAt: now + BRAND_SALES_JOB_RETENTION_MS }
+            : {}),
+        });
+        const persistedTerminal = this.sharedAllListingsTerminalError(persisted.report);
+        if (persistedTerminal) throw persistedTerminal;
+        if (
+          this.sharedAllListingsStatusRank(persisted.report.status) >=
+          this.sharedAllListingsStatusRank(status.status)
+        ) {
+          return this.sharedAllListingsStatus(persisted);
+        }
+      }
+      return status;
+    } catch (error) {
+      if (
+        error instanceof SpApiError &&
+        (error.code === "REPORT_CANCELLED" || error.code === "REPORT_FATAL")
+      ) {
+        const terminal = error.code === "REPORT_CANCELLED" ? "CANCELLED" : "FATAL";
+        const latest = await this.store.getSharedAllListingsReportById({
+          accountScope: input.accountScope,
+          marketplaceId: input.marketplaceId,
+          reportId: input.reportId,
+        });
+        if (
+          latest &&
+          latest.mode === input.mode &&
+          latest.report.status !== "DONE" &&
+          latest.report.status !== "CANCELLED" &&
+          latest.report.status !== "FATAL"
+        ) {
+          const now = Date.now();
+          const persisted = await this.store.updateSharedAllListingsReport({
+            leaseId: latest.leaseId,
+            report: {
+              ...latest.report,
+              documentId: null,
+              status: terminal,
+              terminal,
+              terminalAt: now,
+            },
+            updatedAt: now,
+            expectedUpdatedAt: latest.updatedAt,
+            expiresAt: Math.max(
+              latest.expiresAt,
+              now + BRAND_SALES_JOB_RETENTION_MS,
+            ),
+          });
+          if (persisted.report.status === "DONE") {
+            return this.sharedAllListingsStatus(persisted);
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async getSharedAllListingsReportStatus(input: {
+    marketplaceId: MarketplaceId;
+    reportId: string;
+  }): Promise<Awaited<ReturnType<typeof getAllListingsReportStatus>>> {
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[input.marketplaceId].region,
+    );
+    const mode = usesDemoMode(input.marketplaceId) ? "demo" : "live";
+    const flightKey = `${accountScope}:${input.marketplaceId}:${mode}:${input.reportId}`;
+    let flight = this.allListingsReportStatusFlights.get(flightKey);
+    if (!flight) {
+      flight = this.pollSharedAllListingsReportStatus({
+        ...input,
+        accountScope,
+        mode,
+      }).finally(() => {
+        if (this.allListingsReportStatusFlights.get(flightKey) === flight) {
+          this.allListingsReportStatusFlights.delete(flightKey);
+        }
+      });
+      this.allListingsReportStatusFlights.set(flightKey, flight);
+    }
+    return flight;
+  }
+
+  private async ensureBrandSalesListingLeg(
+    job: BrandSalesRuntimeJob,
+    explicitRetry: boolean,
+  ): Promise<unknown | null> {
+    if (this.brandSalesLegReusable(job.listing)) return null;
+    try {
+      await this.startSharedAllListingsReport(
+        job.marketplaceId as MarketplaceId,
+        explicitRetry,
+      );
+      const lease = await this.store.getSharedAllListingsReport({
+        accountScope: job.accountScope,
+        marketplaceId: job.marketplaceId,
+      });
+      if (!lease || !this.brandSalesLegReusable(lease.report)) {
+        throw new SpApiError("全商品報表共用紀錄不完整。", {
+          status: 409,
+          code: "REPORT_MISMATCH",
+        });
+      }
+      await this.saveBrandSalesLeg(job, "listing", lease.report);
+      return null;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  private async startBrandSalesSelection(input: {
+    accountScope: string;
+    marketplaceId: MarketplaceId;
+    startDate: string;
+    endDate: string;
+    retry: boolean;
+  }): Promise<ApiResponse> {
+    const now = Date.now();
+    const mode = usesDemoMode(input.marketplaceId) ? "demo" : "live";
+    this.pruneBrandSalesJobs(now);
+    let stored = await this.store.getBrandSalesJob(input);
+    if (stored && stored.mode !== mode) {
+      if (stored.mode === "demo" && mode === "live") {
+        await this.store.deleteBrandSalesJob(stored.jobId);
+        this.brandSalesJobs.delete(stored.jobId);
+        stored = null;
+      } else {
+        return invalid(
+          "尚有真實 Amazon 品牌營收工作紀錄；展示模式不會覆蓋或重送它。",
+          409,
+          "REPORT_MODE_CHANGED",
+        );
+      }
+    }
+    if (
+      stored &&
+      stored.expiresAt <= now &&
+      stored.listing.status === "DONE" &&
+      stored.shipment.status === "DONE" &&
+      this.brandSalesLegReusable(stored.listing) &&
+      this.brandSalesLegReusable(stored.shipment)
+    ) {
+      // Completed documents may be refreshed after the local reuse window.
+      // Unresolved/active records remain durable tombstones instead.
+      await this.store.deleteBrandSalesJob(stored.jobId);
+      this.brandSalesJobs.delete(stored.jobId);
+      stored = null;
+    }
+    let job = stored ? this.brandSalesRuntimeJob(stored) : null;
+
+    if (job) {
+      const bothReusable =
+        this.brandSalesLegReusable(job.listing) &&
+        this.brandSalesLegReusable(job.shipment);
+      if (bothReusable) {
+        const retentionRemaining = job.expiresAt - now;
+        const activeLeg = (["listing", "shipment"] as const).find((leg) =>
+          job![leg].status === "IN_QUEUE" || job![leg].status === "IN_PROGRESS"
+        );
+        if (
+          activeLeg &&
+          retentionRemaining <= BRAND_SALES_NEAR_REUSE_BOUNDARY_MS
+        ) {
+          await this.saveBrandSalesLeg(
+            job,
+            activeLeg,
+            job[activeLeg],
+            now,
+            true,
+          );
+          return this.brandSalesJobReply(job);
+        }
+        if (retentionRemaining > BRAND_SALES_NEAR_REUSE_BOUNDARY_MS) {
+          return this.brandSalesJobReply(job);
+        }
+        if (retentionRemaining > 0) {
+          return this.brandSalesWaitReply(retentionRemaining);
+        }
+      } else if (!input.retry) {
+        const terminal = [job.shipment, job.listing].find((leg) => leg.terminal);
+        const code = terminal?.terminal === "CANCELLED"
+          ? "REPORT_CANCELLED"
+          : terminal?.terminal === "FATAL"
+            ? "REPORT_FATAL"
+            : "BRAND_REPORT_RETRY_REQUIRED";
+        return invalid(
+          code === "REPORT_CANCELLED"
+            ? "Amazon 已取消上次 FBA 品牌出貨報表；系統不會自動重建，請稍後明確重試。"
+            : code === "REPORT_FATAL"
+              ? "Amazon 無法完成上次 FBA 品牌出貨報表；系統不會自動重建。"
+              : "上次品牌營收工作只完成一部分；已保留成功報表，請按重試只補齊缺少的一側。",
+          409,
+          code,
+        );
+      } else {
+        const wait = Math.max(
+          this.brandSalesRetryWait(job.listing, now),
+          this.brandSalesRetryWait(job.shipment, now),
+        );
+        if (wait > 0) return this.brandSalesWaitReply(wait);
+      }
+    }
+
+    if (!job) {
+      const window = this.brandSalesReports.reportWindow(input);
+      const emptyLeg = (): BrandSalesReportLeg => ({
+        reportId: null,
+        documentId: null,
+        status: "NOT_STARTED",
+        createdAt: null,
+        terminal: null,
+        terminalAt: null,
+      });
+      const candidate: BrandSalesJobRecord = {
+        jobId: randomUUID(),
+        accountScope: input.accountScope,
+        marketplaceId: input.marketplaceId,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        mode,
+        shipmentDataStartTime: window.dataStartTime,
+        shipmentDataEndTime: window.dataEndTime,
+        listing: emptyLeg(),
+        shipment: emptyLeg(),
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: now + BRAND_SALES_JOB_RETENTION_MS,
+      };
+      const claimed = await this.store.createBrandSalesJobIfAbsent(candidate, now);
+      job = this.brandSalesRuntimeJob(claimed.job);
+      if (!claimed.created) {
+        return this.startBrandSalesSelection(input);
+      }
+    }
+
+    const results = await Promise.all([
+      this.ensureBrandSalesListingLeg(job, input.retry),
+      this.brandSalesLegReusable(job.shipment)
+        ? Promise.resolve(null)
+        : this.createBrandSalesLeg(job, "shipment"),
+    ]);
+    const failure = results.find((value) => value !== null);
+    if (failure) {
+      return apiError(failure, "開始整理 FBA 品牌營收時發生未預期的錯誤。");
+    }
+    return this.brandSalesJobReply(job);
+  }
+
   private async startBrandSales(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
@@ -829,7 +1695,8 @@ export class ApiRouter {
       !body ||
       !marketplaceId ||
       typeof startDate !== "string" ||
-      typeof endDate !== "string"
+      typeof endDate !== "string" ||
+      (body.retry !== undefined && body.retry !== true)
     ) {
       return invalid("品牌營收需要有效站點與完整 YYYY-MM-DD 日期範圍。");
     }
@@ -837,50 +1704,215 @@ export class ApiRouter {
       const accountScope = await this.vault.getAccountScope(
         MARKETPLACES[marketplaceId].region,
       );
-      const [listing, shipment] = await Promise.all([
-        startAllListingsReport({ marketplaceId }),
-        startFbaShipmentSalesReport({ marketplaceId, startDate, endDate }),
-      ]);
-      if (listing.mode !== shipment.mode) {
-        return invalid(
-          "品牌營收的 FBA 商品與出貨報表模式不一致，已停止合併。",
-          409,
-          "REPORT_MISMATCH",
-        );
-      }
-      if (
-        (listing.status !== "IN_QUEUE" &&
-          listing.status !== "IN_PROGRESS" &&
-          listing.status !== "DONE") ||
-        (shipment.status !== "IN_QUEUE" &&
-          shipment.status !== "IN_PROGRESS" &&
-          shipment.status !== "DONE")
-      ) {
-        return invalid("Amazon 未能開始建立品牌營收報表。", 422, "REPORT_FAILED");
-      }
-      const jobId = randomUUID();
-      this.pruneBrandSalesJobs();
-      const job = {
-        marketplaceId,
+      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+      // The exact account/market/mode/date selection has one creation flight.
+      // A concurrent explicit retry must never bypass an automatic start that
+      // is already claiming the same durable job.
+      const flightKey = `${accountScope}:${marketplaceId}:${mode}:${startDate}:${endDate}`;
+      const existing = this.brandSalesStartFlights.get(flightKey);
+      if (existing) return existing;
+      const flight = this.startBrandSalesSelection({
         accountScope,
-        expiresAt: Date.now() + BRAND_SALES_JOB_TTL_MS,
+        marketplaceId,
         startDate,
         endDate,
-        mode: shipment.mode,
-        listingReportId: listing.reportId,
-        listingDocumentId: listing.documentId,
-        listingStatus: listing.status,
-        shipmentReportId: shipment.reportId,
-        shipmentDocumentId: shipment.documentId,
-        shipmentStatus: shipment.status,
-        shipmentDataStartTime: shipment.dataStartTime,
-        shipmentDataEndTime: shipment.dataEndTime,
-        snapshot: null,
-      };
-      this.brandSalesJobs.set(jobId, job);
-      return this.brandSalesJobReply(jobId, job);
+        retry: body.retry === true,
+      }).finally(() => {
+        if (this.brandSalesStartFlights.get(flightKey) === flight) {
+          this.brandSalesStartFlights.delete(flightKey);
+        }
+      });
+      this.brandSalesStartFlights.set(flightKey, flight);
+      return flight;
     } catch (error) {
       return apiError(error, "開始整理 FBA 品牌營收時發生未預期的錯誤。");
+    }
+  }
+
+  private async loadBrandSalesJob(jobId: string): Promise<BrandSalesRuntimeJob | null> {
+    const cached = this.brandSalesJobs.get(jobId);
+    if (cached) return cached;
+    const stored = await this.store.getBrandSalesJobById(jobId);
+    return stored ? this.brandSalesRuntimeJob(stored) : null;
+  }
+
+  private async markBrandSalesPollFailure(
+    job: BrandSalesRuntimeJob,
+    leg: "listing" | "shipment",
+    error: unknown,
+  ): Promise<void> {
+    if (
+      !(error instanceof SpApiError) ||
+      (error.code !== "REPORT_CANCELLED" &&
+        error.code !== "REPORT_FATAL")
+    ) {
+      return;
+    }
+    const terminal = error.code === "REPORT_CANCELLED" ? "CANCELLED" : "FATAL";
+    await this.saveBrandSalesLeg(job, leg, {
+      reportId: job[leg].reportId,
+      documentId: null,
+      status: terminal,
+      createdAt: job[leg].createdAt,
+      terminal,
+      terminalAt: Date.now(),
+    });
+  }
+
+  private async pollBrandSalesJobState(
+    job: BrandSalesRuntimeJob,
+  ): Promise<ApiResponse | null> {
+    const marketplaceId = job.marketplaceId as MarketplaceId;
+    try {
+      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+      if (job.mode !== mode) {
+        throw new SpApiError("App 展示／真實模式已改變，已停止讀取舊報表。", {
+          status: 409,
+          code: "REPORT_MODE_CHANGED",
+        });
+      }
+      if (
+        (job.listing.status === "IN_QUEUE" || job.listing.status === "IN_PROGRESS") &&
+        job.listing.reportId
+      ) {
+        try {
+          const listing = await this.getSharedAllListingsReportStatus({
+            marketplaceId,
+            reportId: job.listing.reportId,
+          });
+          if (
+            listing.status !== "IN_QUEUE" &&
+            listing.status !== "IN_PROGRESS" &&
+            listing.status !== "DONE"
+          ) {
+            throw new SpApiError("Amazon 未能產生目前 FBA 商品清單。", {
+              status: 422,
+              code: listing.status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
+            });
+          }
+          if (listing.status === "DONE" && !listing.documentId) {
+            throw new SpApiError("Amazon FBA 商品清單已完成但缺少文件編號。", {
+              status: 502,
+              code: "REPORT_FAILED",
+            });
+          }
+          if (
+            job.listing.status !== listing.status ||
+            job.listing.documentId !== listing.documentId
+          ) {
+            await this.saveBrandSalesLeg(job, "listing", {
+              ...job.listing,
+              documentId: listing.documentId,
+              status: listing.status,
+            });
+          }
+        } catch (error) {
+          await this.markBrandSalesPollFailure(job, "listing", error);
+          throw error;
+        }
+      }
+      if (
+        (job.shipment.status === "IN_QUEUE" || job.shipment.status === "IN_PROGRESS") &&
+        job.shipment.reportId
+      ) {
+        try {
+          const shipment = await this.brandSalesReports.getShipmentStatus({
+            marketplaceId,
+            reportId: job.shipment.reportId,
+            startDate: job.startDate,
+            endDate: job.endDate,
+            dataStartTime: job.shipmentDataStartTime,
+            dataEndTime: job.shipmentDataEndTime,
+          });
+          if (shipment.mode !== job.mode) {
+            throw new SpApiError("品牌營收報表模式與本機紀錄不一致。", {
+              status: 409,
+              code: "REPORT_MODE_CHANGED",
+            });
+          }
+          if (
+            shipment.status !== "IN_QUEUE" &&
+            shipment.status !== "IN_PROGRESS" &&
+            shipment.status !== "DONE"
+          ) {
+            throw new SpApiError("Amazon 未能產生 FBA 品牌出貨報表。", {
+              status: 422,
+              code: shipment.status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
+            });
+          }
+          if (
+            shipment.dataStartTime !== job.shipmentDataStartTime ||
+            shipment.dataEndTime !== job.shipmentDataEndTime
+          ) {
+            throw new SpApiError("品牌營收報表日期邊界已改變，已停止讀取。", {
+              status: 409,
+              code: "REPORT_MISMATCH",
+            });
+          }
+          if (shipment.status === "DONE" && !shipment.documentId) {
+            throw new SpApiError("Amazon FBA 品牌出貨報表已完成但缺少文件編號。", {
+              status: 502,
+              code: "REPORT_FAILED",
+            });
+          }
+          if (
+            job.shipment.status !== shipment.status ||
+            job.shipment.documentId !== shipment.documentId
+          ) {
+            await this.saveBrandSalesLeg(job, "shipment", {
+              ...job.shipment,
+              documentId: shipment.documentId,
+              status: shipment.status,
+            });
+          }
+        } catch (error) {
+          await this.markBrandSalesPollFailure(job, "shipment", error);
+          throw error;
+        }
+      }
+      return null;
+    } catch (error) {
+      return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
+    }
+  }
+
+  private async loadBrandSalesData(
+    job: BrandSalesRuntimeJob,
+  ): Promise<ApiResponse> {
+    const marketplaceId = job.marketplaceId as MarketplaceId;
+    try {
+      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+      if (job.mode !== mode) {
+        throw new SpApiError("App 展示／真實模式已改變，已停止讀取舊報表。", {
+          status: 409,
+          code: "REPORT_MODE_CHANGED",
+        });
+      }
+      if (
+        !this.brandSalesJobReady(job) ||
+        !job.listing.reportId ||
+        !job.listing.documentId ||
+        !job.shipment.reportId ||
+        !job.shipment.documentId
+      ) {
+        return invalid("Amazon 品牌營收報表尚未完成。", 409, "REPORT_NOT_READY");
+      }
+      if (!job.snapshot) {
+        job.snapshot = await this.brandSalesReports.getData({
+          marketplaceId,
+          startDate: job.startDate,
+          endDate: job.endDate,
+          listingReportId: job.listing.reportId,
+          listingDocumentId: job.listing.documentId,
+          shipmentReportId: job.shipment.reportId,
+          shipmentDocumentId: job.shipment.documentId,
+          shipmentDataStartTime: job.shipmentDataStartTime,
+          shipmentDataEndTime: job.shipmentDataEndTime,
+        });
+      }
+      return json(structuredClone(job.snapshot));
+    } catch (error) {
+      return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
     }
   }
 
@@ -891,12 +1923,24 @@ export class ApiRouter {
       return invalid("品牌營收工作資訊無效，請重新同步。");
     }
     this.pruneBrandSalesJobs();
-    const job = this.brandSalesJobs.get(jobId);
+    const job = await this.loadBrandSalesJob(jobId);
     if (!job || job.marketplaceId !== marketplaceId) {
       return invalid(
         "品牌營收工作已過期或站點不符，請重新同步。",
         410,
         "SNAPSHOT_EXPIRED",
+      );
+    }
+    const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+    if (job.mode !== mode) {
+      if (job.mode === "demo" && mode === "live") {
+        await this.store.deleteBrandSalesJob(job.jobId);
+        this.brandSalesJobs.delete(job.jobId);
+      }
+      return invalid(
+        "App 展示／真實模式已改變，舊品牌營收工作不可繼續。",
+        409,
+        "REPORT_MODE_CHANGED",
       );
     }
     const accountScope = await this.vault.getAccountScope(
@@ -910,67 +1954,69 @@ export class ApiRouter {
         "ACCOUNT_SCOPE_CHANGED",
       );
     }
-    try {
-      if (job.listingStatus !== "DONE" || !job.listingDocumentId) {
-        const listing = await getAllListingsReportStatus({
-          marketplaceId,
-          reportId: job.listingReportId,
-        });
-        if (
-          listing.status !== "IN_QUEUE" &&
-          listing.status !== "IN_PROGRESS" &&
-          listing.status !== "DONE"
-        ) {
-          return invalid("Amazon 未能產生目前 FBA 商品清單。", 422, "REPORT_FAILED");
-        }
-        job.listingStatus = listing.status;
-        job.listingDocumentId = listing.documentId;
-      }
-      if (job.shipmentStatus !== "DONE" || !job.shipmentDocumentId) {
-        const shipment = await getFbaShipmentSalesReportStatus({
-          marketplaceId,
-          reportId: job.shipmentReportId,
-          startDate: job.startDate,
-          endDate: job.endDate,
-          dataStartTime: job.shipmentDataStartTime,
-          dataEndTime: job.shipmentDataEndTime,
-        });
-        if (
-          shipment.status !== "IN_QUEUE" &&
-          shipment.status !== "IN_PROGRESS" &&
-          shipment.status !== "DONE"
-        ) {
-          return invalid("Amazon 未能產生 FBA 品牌出貨報表。", 422, "REPORT_FAILED");
-        }
-        job.shipmentStatus = shipment.status;
-        job.shipmentDocumentId = shipment.documentId;
-      }
-      const ready =
-        job.listingStatus === "DONE" &&
-        Boolean(job.listingDocumentId) &&
-        job.shipmentStatus === "DONE" &&
-        Boolean(job.shipmentDocumentId);
-      if (request.query.data !== "1") return this.brandSalesJobReply(jobId, job);
-      if (!ready || !job.listingDocumentId || !job.shipmentDocumentId) {
-        return invalid("Amazon 品牌營收報表尚未完成。", 409, "REPORT_NOT_READY");
-      }
-      if (!job.snapshot) {
-        job.snapshot = await getBrandSalesData({
-          marketplaceId,
-          startDate: job.startDate,
-          endDate: job.endDate,
-          listingReportId: job.listingReportId,
-          listingDocumentId: job.listingDocumentId,
-          shipmentReportId: job.shipmentReportId,
-          shipmentDocumentId: job.shipmentDocumentId,
-          shipmentDataStartTime: job.shipmentDataStartTime,
-          shipmentDataEndTime: job.shipmentDataEndTime,
-        });
-      }
-      return json(structuredClone(job.snapshot));
-    } catch (error) {
-      return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
+    const now = Date.now();
+    if (job.expiresAt <= now && this.brandSalesJobReady(job)) {
+      await this.store.deleteBrandSalesJob(job.jobId);
+      this.brandSalesJobs.delete(job.jobId);
+      return invalid(
+        "品牌營收快照已過期，請重新同步。",
+        410,
+        "SNAPSHOT_EXPIRED",
+      );
     }
+    if (job.expiresAt <= now) {
+      const activeLeg = (["listing", "shipment"] as const).find((leg) =>
+        job[leg].status === "IN_QUEUE" || job[leg].status === "IN_PROGRESS"
+      );
+      if (activeLeg) {
+        await this.saveBrandSalesLeg(
+          job,
+          activeLeg,
+          job[activeLeg],
+          now,
+          true,
+        );
+      } else if (!job.listing.terminal && !job.shipment.terminal) {
+        return invalid(
+          "上次品牌營收工作狀態未完成；系統已禁止自動重送，請回到品牌區明確重試。",
+          409,
+          "BRAND_REPORT_RETRY_REQUIRED",
+        );
+      }
+    }
+    if (job.listing.terminal || job.shipment.terminal) {
+      const terminal = job.shipment.terminal ?? job.listing.terminal;
+      return invalid(
+        terminal === "CANCELLED"
+          ? "Amazon 已取消 FBA 品牌出貨報表；已保留另一側成功結果，不會自動重建。"
+          : "Amazon 品牌營收報表工作未完成；已保留成功的一側，請明確重試。",
+        409,
+        terminal === "CANCELLED" ? "REPORT_CANCELLED" : terminal === "FATAL" ? "REPORT_FATAL" : "BRAND_REPORT_RETRY_REQUIRED",
+      );
+    }
+    let pollFlight = this.brandSalesPollFlights.get(jobId);
+    if (!pollFlight) {
+      pollFlight = this.pollBrandSalesJobState(job).finally(() => {
+        if (this.brandSalesPollFlights.get(jobId) === pollFlight) {
+          this.brandSalesPollFlights.delete(jobId);
+        }
+      });
+      this.brandSalesPollFlights.set(jobId, pollFlight);
+    }
+    const pollError = await pollFlight;
+    if (pollError) return pollError;
+
+    if (request.query.data !== "1") return this.brandSalesJobReply(job);
+    let dataFlight = this.brandSalesDataFlights.get(jobId);
+    if (!dataFlight) {
+      dataFlight = this.loadBrandSalesData(job).finally(() => {
+        if (this.brandSalesDataFlights.get(jobId) === dataFlight) {
+          this.brandSalesDataFlights.delete(jobId);
+        }
+      });
+      this.brandSalesDataFlights.set(jobId, dataFlight);
+    }
+    return dataFlight;
   }
 
   private listingIdentity(request: ApiRequest):
@@ -994,10 +2040,26 @@ export class ApiRouter {
   }
 
   private async variationFamily(request: ApiRequest): Promise<ApiResponse> {
-    const identity = this.listingIdentity(request);
-    if ("status" in identity) return identity;
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const hasSku = request.query.sku !== undefined;
+    const hasAsin = request.query.asin !== undefined;
+    const sellerSku = hasSku ? parseSellerSku(request.query.sku) : null;
+    const asin = hasAsin ? parseAsin(request.query.asin) : null;
+    if (
+      !marketplaceId ||
+      hasSku === hasAsin ||
+      (hasSku && !sellerSku) ||
+      (hasAsin && !asin)
+    ) {
+      return invalid(
+        "請選擇站點，並且只提供完整 Seller SKU 或原樣 10 碼 ASIN 其中一項。",
+      );
+    }
     try {
-      return json(await getVariationFamilyPlanner(identity));
+      return json(await getVariationFamilyPlanner({
+        marketplaceId,
+        ...(sellerSku ? { sellerSku } : { asin: asin! }),
+      }));
     } catch (error) {
       return apiError(error, "查詢變體 family 時發生未預期的錯誤。");
     }
@@ -1016,7 +2078,7 @@ export class ApiRouter {
       return invalid("請選擇要健檢未綁變體的 Amazon 站點。");
     }
     try {
-      const status = await startAllListingsReport({ marketplaceId });
+      const status = await this.startSharedAllListingsReport(marketplaceId, true);
       return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
     } catch (error) {
       return apiError(error, "開始建立未綁變體健檢報表時發生未預期的錯誤。");
@@ -1082,7 +2144,7 @@ export class ApiRouter {
     if (!reportId) return invalid("未綁變體報表資訊無效，請重新掃描。");
     if (request.query.data !== "1") {
       try {
-        const status = await getAllListingsReportStatus({ marketplaceId, reportId });
+        const status = await this.getSharedAllListingsReportStatus({ marketplaceId, reportId });
         return json({ ...status, message: status.notice });
       } catch (error) {
         return apiError(error, "查詢未綁變體報表狀態時發生未預期的錯誤。");
@@ -2002,6 +3064,428 @@ export class ApiRouter {
     }
   }
 
+  private reportLibrary(request: ApiRequest): ApiResponse {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    if (!marketplaceId) return invalid("文件庫站點無效。");
+    return json({
+      schemaVersion: 1,
+      marketplaceId,
+      fetchedAt: new Date().toISOString(),
+      officialCatalog: {
+        uniqueReportTypeCount: PUBLIC_REPORT_CATALOG.length,
+        verifiedAt: "2026-08-09",
+        officialPageUpdatedLabel: "Amazon 官方頁面於驗證時標示 Updated 5 days ago",
+        source: "https://developer-docs.amazon.com/sp-api/docs/report-type-values",
+        changeNotice: "Amazon 官方 report type 清單可能隨時更新；此版本依 2026-08-09 驗證的 109 個唯一類型。",
+      },
+      currentAppExports: CURRENT_APP_EXPORTS.map((item) => ({ ...item })),
+      reports: PUBLIC_REPORT_CATALOG.map((report) => {
+        const plan = buildReportAccessPlan({
+          marketplaceId,
+          reportType: report.reportType,
+        });
+        return {
+          ...report,
+          categories: [...report.categories],
+          roles: [...report.roles],
+          supportedConfiguredMarketplaces:
+            report.supportedConfiguredMarketplaces === null
+              ? null
+              : [...report.supportedConfiguredMarketplaces],
+          prerequisites: [...report.prerequisites],
+          state: plan.state,
+          amazonPublicArtifactAvailable: plan.amazonPublicArtifactAvailable,
+          appDownloadImplemented: plan.appDownloadImplemented,
+          stateNotice: plan.notice,
+        };
+      }),
+      unavailableDocuments: REPORT_LIBRARY_UNAVAILABLE_DOCUMENTS.map((item) => ({ ...item })),
+      reviewAuditCapability: {
+        ...REVIEW_AUDIT_CAPABILITY,
+        roles: [...REVIEW_AUDIT_CAPABILITY.roles],
+        supportedConfiguredMarketplaces: [
+          ...REVIEW_AUDIT_CAPABILITY.supportedConfiguredMarketplaces,
+        ],
+        supportedForMarketplace: customerFeedbackMarketplaceSupported(marketplaceId),
+      },
+      notice: REPORT_LIBRARY_NOTICE,
+    });
+  }
+
+  private reportLibraryAccessPlan(request: ApiRequest): ApiResponse {
+    const body = bodyRecord(request);
+    const marketplaceId = parseMarketplace(body?.marketplaceId);
+    const reportType = typeof body?.reportType === "string" &&
+      /^[A-Z0-9_]{3,120}$/u.test(body.reportType)
+      ? body.reportType
+      : null;
+    if (!body || !marketplaceId || !reportType) {
+      return invalid(
+        "請提供有效站點與 Amazon 公開 reportType。",
+        400,
+        "INVALID_REPORT_PLAN",
+      );
+    }
+    try {
+      return json(buildReportAccessPlan({ marketplaceId, reportType }));
+    } catch (error) {
+      return error instanceof TypeError
+        ? invalid(error.message, 400, "INVALID_REPORT_PLAN")
+        : apiError(error, "建立文件庫能力規劃時發生未預期的錯誤。");
+    }
+  }
+
+  private pruneReviewAuditJobs(now = Date.now()): void {
+    for (const [jobId, job] of this.reviewAuditJobs) {
+      if (job.expiresAt <= now) this.reviewAuditJobs.delete(jobId);
+    }
+  }
+
+  private async runReviewAuditFeedbackRequest(input: {
+    mode: ReviewAuditJob["mode"];
+    marketplaceId: MarketplaceId;
+    candidate: DedupedFbaReviewCandidate;
+  }): Promise<ReviewAuditFetchResult> {
+    if (input.mode === "demo") {
+      return getCustomerFeedbackReviewTopics({
+        marketplaceId: input.marketplaceId,
+        candidate: input.candidate,
+        expectedMode: input.mode,
+      });
+    }
+
+    let releaseTurn: () => void = () => {};
+    const turn = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const previous = this.reviewAuditFeedbackQueue;
+    this.reviewAuditFeedbackQueue = previous
+      .catch(() => undefined)
+      .then(() => turn);
+    await previous.catch(() => undefined);
+
+    try {
+      await waitMilliseconds(this.reviewAuditFeedbackNextStartAt - Date.now());
+      return await getCustomerFeedbackReviewTopics({
+        marketplaceId: input.marketplaceId,
+        candidate: input.candidate,
+        expectedMode: input.mode,
+      });
+    } finally {
+      // Measure from completion rather than initial dispatch. This remains safe
+      // when the gateway performs its single 401 token-refresh retry.
+      this.reviewAuditFeedbackNextStartAt =
+        Date.now() + REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS;
+      releaseTurn();
+    }
+  }
+
+  private reviewAuditJobReply(jobId: string, job: ReviewAuditJob): ApiResponse {
+    const total = job.candidates?.length ?? null;
+    const completed = job.nextCandidateIndex;
+    const ready = Boolean(job.snapshot);
+    return json({
+      jobId,
+      exportId: ready ? jobId : null,
+      mode: job.mode,
+      marketplaceId: job.marketplaceId,
+      ready,
+      status: ready
+        ? "DONE"
+        : job.candidates
+          ? "READING_NON_PARENT_TOPICS"
+          : job.listingStatus,
+      progress: {
+        completed,
+        total,
+        percent: total === null || total === 0
+          ? ready ? 100 : 0
+          : Math.round((completed / total) * 100),
+      },
+      message: ready
+        ? "FBA 非 parent ASIN 評論主題健檢已完成。"
+        : job.candidates
+          ? `正在依 Amazon 官方 1 request/second 限制讀取已驗證的非 parent ASIN 主題（${completed} / ${total}）。`
+          : "Amazon 正在準備目前 FBA 商品清單。",
+      capabilityNotice:
+        "資料每週更新且僅英文；前／後五名是「非 parent ASIN 主題星等影響」，不是商品總星等。",
+    }, ready ? 200 : 202);
+  }
+
+  private reviewAuditModeFence(
+    jobId: string,
+    job: ReviewAuditJob,
+  ): ApiResponse | null {
+    const mode = usesDemoMode(job.marketplaceId) ? "demo" : "live";
+    if (mode === job.mode) return null;
+    this.reviewAuditJobs.delete(jobId);
+    return invalid(
+      "App 展示／真實模式已改變，舊評論健檢不可繼續或匯出。",
+      409,
+      "REPORT_MODE_CHANGED",
+    );
+  }
+
+  private async startReviewAudit(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    const marketplaceId = parseMarketplace(body?.marketplaceId);
+    if (!body || !marketplaceId) {
+      return invalid("請選擇要健檢評論主題的 Amazon 站點。");
+    }
+    if (!customerFeedbackMarketplaceSupported(marketplaceId)) {
+      return invalid(
+        "Amazon Customer Feedback API 僅支援本 App 的 US、JP、UK 與 DE 站；未改用父變體或私有 Seller Central 資料。",
+        422,
+        "MARKETPLACE_UNSUPPORTED",
+      );
+    }
+    try {
+      const [accountScope, status] = await Promise.all([
+        this.vault.getAccountScope(MARKETPLACES[marketplaceId].region),
+        this.startSharedAllListingsReport(marketplaceId, true),
+      ]);
+      if (
+        status.status !== "IN_QUEUE" &&
+        status.status !== "IN_PROGRESS" &&
+        status.status !== "DONE"
+      ) {
+        return invalid("Amazon 未能開始建立 FBA 商品清單。", 422, "REPORT_FAILED");
+      }
+      const jobId = randomUUID();
+      const job: ReviewAuditJob = {
+        marketplaceId,
+        accountScope,
+        expiresAt: Date.now() + REVIEW_AUDIT_JOB_TTL_MS,
+        mode: status.mode,
+        listingReportId: status.reportId,
+        listingDocumentId: status.documentId,
+        listingStatus: status.status,
+        candidates: null,
+        sourceCandidateCount: 0,
+        candidateCoverage: null,
+        relationshipIncompleteRows: [],
+        results: [],
+        nextCandidateIndex: 0,
+        nextQueryAt: 0,
+        snapshot: null,
+      };
+      this.pruneReviewAuditJobs();
+      this.reviewAuditJobs.set(jobId, job);
+      return this.reviewAuditJobReply(jobId, job);
+    } catch (error) {
+      return apiError(error, "開始 FBA 評論主題健檢時發生未預期的錯誤。");
+    }
+  }
+
+  private async reviewAuditStatusOrData(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const jobId = this.reportIdentifier(request.query.jobId);
+    if (!marketplaceId || !jobId) {
+      return invalid("評論主題健檢工作資訊無效。");
+    }
+    this.pruneReviewAuditJobs();
+    const job = this.reviewAuditJobs.get(jobId);
+    if (!job || job.marketplaceId !== marketplaceId) {
+      return invalid(
+        "評論主題健檢已過期或站點不符，請重新掃描。",
+        410,
+        "SNAPSHOT_EXPIRED",
+      );
+    }
+    const modeError = this.reviewAuditModeFence(jobId, job);
+    if (modeError) return modeError;
+    let flight = this.reviewAuditPollFlights.get(jobId);
+    if (!flight) {
+      flight = this.advanceReviewAuditJob(jobId, job).finally(() => {
+        if (this.reviewAuditPollFlights.get(jobId) === flight) {
+          this.reviewAuditPollFlights.delete(jobId);
+        }
+      });
+      this.reviewAuditPollFlights.set(jobId, flight);
+    }
+    return flight;
+  }
+
+  private async advanceReviewAuditJob(
+    jobId: string,
+    job: ReviewAuditJob,
+  ): Promise<ApiResponse> {
+    const marketplaceId = job.marketplaceId;
+    const initialModeError = this.reviewAuditModeFence(jobId, job);
+    if (initialModeError) return initialModeError;
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[marketplaceId].region,
+    );
+    if (accountScope !== job.accountScope) {
+      this.reviewAuditJobs.delete(jobId);
+      return invalid(
+        "Amazon 帳號範圍已改變，舊評論健檢不可繼續。",
+        409,
+        "ACCOUNT_SCOPE_CHANGED",
+      );
+    }
+    const accountModeError = this.reviewAuditModeFence(jobId, job);
+    if (accountModeError) return accountModeError;
+    if (job.snapshot) {
+      return json({ ...structuredClone(job.snapshot), exportId: jobId });
+    }
+    try {
+      if (job.listingStatus !== "DONE" || !job.listingDocumentId) {
+        const status = await this.getSharedAllListingsReportStatus({
+          marketplaceId,
+          reportId: job.listingReportId,
+        });
+        if (
+          status.status !== "IN_QUEUE" &&
+          status.status !== "IN_PROGRESS" &&
+          status.status !== "DONE"
+        ) {
+          return invalid("Amazon 未能產生 FBA 商品清單。", 422, "REPORT_FAILED");
+        }
+        job.listingStatus = status.status;
+        job.listingDocumentId = status.documentId;
+        const listingModeError = this.reviewAuditModeFence(jobId, job);
+        if (listingModeError) return listingModeError;
+        if (!status.ready || !status.documentId) {
+          return this.reviewAuditJobReply(jobId, job);
+        }
+      }
+      if (!job.candidates) {
+        const candidateSnapshot = await getFbaReviewAuditCandidates({
+          marketplaceId,
+          reportId: job.listingReportId,
+          documentId: job.listingDocumentId!,
+        });
+        if (candidateSnapshot.mode !== job.mode) {
+          return invalid(
+            "FBA 商品清單與評論健檢模式不一致，已停止。",
+            409,
+            "REPORT_MISMATCH",
+          );
+        }
+        job.candidates = candidateSnapshot.candidates;
+        job.sourceCandidateCount = candidateSnapshot.sourceCandidateCount;
+        job.candidateCoverage = candidateSnapshot.coverage;
+        job.relationshipIncompleteRows = candidateSnapshot.relationshipIncompleteRows;
+        const candidateModeError = this.reviewAuditModeFence(jobId, job);
+        if (candidateModeError) return candidateModeError;
+      }
+      const candidates = job.candidates;
+      if (
+        job.mode === "live" &&
+        job.nextCandidateIndex < candidates.length &&
+        Date.now() < job.nextQueryAt
+      ) {
+        return this.reviewAuditJobReply(jobId, job);
+      }
+      const quota = job.mode === "demo"
+        ? candidates.length - job.nextCandidateIndex
+        : Math.min(1, candidates.length - job.nextCandidateIndex);
+      for (let count = 0; count < quota; count += 1) {
+        const candidate = candidates[job.nextCandidateIndex];
+        if (!candidate) break;
+        const queryModeError = this.reviewAuditModeFence(jobId, job);
+        if (queryModeError) return queryModeError;
+        const result = await this.runReviewAuditFeedbackRequest({
+          mode: job.mode,
+          marketplaceId,
+          candidate,
+        });
+        const resultModeError = this.reviewAuditModeFence(jobId, job);
+        if (resultModeError) return resultModeError;
+        if (result.error?.code === "RATE_LIMITED") {
+          job.nextQueryAt = Date.now() + 2_000;
+          return this.reviewAuditJobReply(jobId, job);
+        }
+        job.results.push(result);
+        job.nextCandidateIndex += 1;
+        if (result.error?.code === "UNAUTHORIZED") {
+          while (job.nextCandidateIndex < candidates.length) {
+            const remaining = candidates[job.nextCandidateIndex]!;
+            job.results.push({
+              candidate: remaining,
+              response: null,
+              error: {
+                code: "UNAUTHORIZED",
+                message: result.error.message,
+                requestId: result.error.requestId ?? null,
+              },
+            });
+            job.nextCandidateIndex += 1;
+          }
+          break;
+        }
+      }
+      job.nextQueryAt = Date.now() + REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS;
+      if (job.nextCandidateIndex >= candidates.length) {
+        job.snapshot = buildReviewAuditSnapshot({
+          mode: job.mode,
+          marketplaceId,
+          fetchedAt: new Date(),
+          results: job.results,
+          relationshipIncompleteRows: job.relationshipIncompleteRows,
+          candidateCoverage: job.candidateCoverage ?? undefined,
+          sourceCandidateCount: job.sourceCandidateCount,
+        });
+        return json({ ...structuredClone(job.snapshot), exportId: jobId });
+      }
+      return this.reviewAuditJobReply(jobId, job);
+    } catch (error) {
+      return apiError(error, "整理 FBA 評論主題時發生未預期的錯誤。");
+    }
+  }
+
+  private async reviewAuditExport(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const exportId = this.reportIdentifier(request.query.exportId);
+    if (!marketplaceId || !exportId) {
+      return invalid("評論主題 Excel 快照資訊無效。");
+    }
+    this.pruneReviewAuditJobs();
+    const job = this.reviewAuditJobs.get(exportId);
+    if (!job || job.marketplaceId !== marketplaceId || !job.snapshot) {
+      return invalid(
+        "評論主題健檢尚未完成、已過期或站點不符。",
+        410,
+        "SNAPSHOT_EXPIRED",
+      );
+    }
+    const modeError = this.reviewAuditModeFence(exportId, job);
+    if (modeError) return modeError;
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[marketplaceId].region,
+    );
+    if (accountScope !== job.accountScope) {
+      this.reviewAuditJobs.delete(exportId);
+      return invalid(
+        "Amazon 帳號範圍已改變，舊評論健檢不可匯出。",
+        409,
+        "ACCOUNT_SCOPE_CHANGED",
+      );
+    }
+    const accountModeError = this.reviewAuditModeFence(exportId, job);
+    if (accountModeError) return accountModeError;
+    try {
+      const marketplace = MARKETPLACES[marketplaceId];
+      const workbook = createReviewAuditWorkbook({
+        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
+        snapshot: job.snapshot,
+      });
+      const filename = `amazon-fba-review-topic-audit-${marketplace.shortLabel.toLowerCase()}-${job.snapshot.fetchedAt.slice(0, 10)}.xlsx`;
+      return bytes(
+        workbook,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        {
+          "content-disposition": `attachment; filename="${filename}"`,
+          "x-exported-fba-non-parent-asin-count": String(job.snapshot.rows.length),
+          "x-review-topic-incomplete-count": String(job.snapshot.summary.incomplete),
+        },
+      );
+    } catch (error) {
+      return apiError(error, "建立 FBA 評論主題 Excel 時發生未預期的錯誤。");
+    }
+  }
+
   private async replenishment(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     const sellerSku = parseSellerSku(request.query.sku);
@@ -2536,7 +4020,7 @@ export class ApiRouter {
     const marketplaceId = parseMarketplace(body?.marketplaceId);
     if (!body || !marketplaceId) return invalid("請選擇要匯出的 Amazon 站點。");
     try {
-      const status = await startAllListingsReport({ marketplaceId });
+      const status = await this.startSharedAllListingsReport(marketplaceId, true);
       return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
     } catch (error) {
       return apiError(error, "開始建立全商品 Excel 時發生未預期的錯誤。");
@@ -2690,7 +4174,7 @@ export class ApiRouter {
     if (!reportId) return invalid("報表查詢資訊無效，請重新匯出。");
     if (request.query.download !== "1" && !auditRequested && !imageAuditRequested) {
       try {
-        const status = await getAllListingsReportStatus({ marketplaceId, reportId });
+        const status = await this.getSharedAllListingsReportStatus({ marketplaceId, reportId });
         return json({ ...status, message: status.notice });
       } catch (error) {
         return apiError(error, "查詢全商品報表狀態時發生未預期的錯誤。");

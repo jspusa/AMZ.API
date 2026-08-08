@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseBrandSalesSnapshot, type BrandSalesSnapshot } from "../brand-sales";
 import BrandSalesChart from "./brand-sales-chart";
 
@@ -14,6 +14,24 @@ type BrandSalesJob = {
   status: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
   message: string;
 };
+
+export type BrandSalesFailure = {
+  code: string | null;
+  message: string;
+  requestId: string | null;
+};
+
+class BrandSalesResponseError extends Error {
+  readonly code: string | null;
+  readonly requestId: string | null;
+
+  constructor(failure: BrandSalesFailure) {
+    super(failure.message);
+    this.name = "BrandSalesResponseError";
+    this.code = failure.code;
+    this.requestId = failure.requestId;
+  }
+}
 
 function parseJob(
   value: unknown,
@@ -44,13 +62,22 @@ async function json(response: Response): Promise<unknown> {
   const value = await response.json() as unknown;
   if (!response.ok) {
     const problem = value && typeof value === "object" && !Array.isArray(value)
-      ? value as { message?: unknown }
+      ? value as { code?: unknown; message?: unknown; requestId?: unknown }
       : null;
-    throw new Error(
-      typeof problem?.message === "string"
+    const code = typeof problem?.code === "string" ? problem.code : null;
+    const requestId = typeof problem?.requestId === "string" ? problem.requestId : null;
+    const fallback = code === "REPORT_CANCELLED"
+      ? "Amazon 已取消這次 FBA 出貨報表；沒有資料被修改。"
+      : code === "REPORT_FATAL"
+        ? "Amazon 無法完成這次 FBA 出貨報表；請稍後再試。"
+        : "目前無法整理品牌營收。";
+    throw new BrandSalesResponseError({
+      code,
+      requestId,
+      message: typeof problem?.message === "string" && problem.message
         ? problem.message
-        : "目前無法整理品牌營收。",
-    );
+        : fallback,
+    });
   }
   return value;
 }
@@ -76,23 +103,15 @@ export default function BrandSalesCard({
 }) {
   const [snapshot, setSnapshot] = useState<BrandSalesSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<BrandSalesFailure | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const automaticSelectionRef = useRef<string | null>(null);
   const selection = useMemo(
     () => ({ marketplaceId, startDate, endDate }),
     [endDate, marketplaceId, startDate],
   );
 
-  useEffect(() => {
-    controllerRef.current?.abort();
-    controllerRef.current = null;
-    setSnapshot(null);
-    setLoading(false);
-    setError(null);
-    return () => controllerRef.current?.abort();
-  }, [marketplaceId, startDate, endDate]);
-
-  async function sync(): Promise<void> {
+  const sync = useCallback(async (explicitRetry = false): Promise<void> => {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -105,7 +124,10 @@ export default function BrandSalesCard({
           method: "POST",
           cache: "no-store",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(selection),
+          body: JSON.stringify({
+            ...selection,
+            ...(explicitRetry ? { retry: true } : {}),
+          }),
           signal: controller.signal,
         })),
         selection,
@@ -140,14 +162,33 @@ export default function BrandSalesCard({
     } catch (syncError) {
       if (syncError instanceof Error && syncError.name === "AbortError") return;
       if (controllerRef.current !== controller) return;
-      setError(syncError instanceof Error ? syncError.message : "目前無法整理品牌營收。");
+      setError({
+        code: syncError instanceof BrandSalesResponseError ? syncError.code : null,
+        requestId: syncError instanceof BrandSalesResponseError ? syncError.requestId : null,
+        message: syncError instanceof Error ? syncError.message : "目前無法整理品牌營收。",
+      });
     } finally {
       if (controllerRef.current === controller) {
         controllerRef.current = null;
         setLoading(false);
       }
     }
-  }
+  }, [marketplaceId, selection]);
+
+  useEffect(() => {
+    const selectionKey = `${marketplaceId}:${startDate}:${endDate}`;
+    if (automaticSelectionRef.current === selectionKey) return;
+    const timeout = window.setTimeout(() => {
+      if (automaticSelectionRef.current === selectionKey) return;
+      automaticSelectionRef.current = selectionKey;
+      void sync(false);
+    }, 0);
+    return () => {
+      window.clearTimeout(timeout);
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+    };
+  }, [endDate, marketplaceId, startDate, sync]);
 
   return (
     <BrandSalesChart
@@ -155,7 +196,7 @@ export default function BrandSalesCard({
       loading={loading}
       error={error}
       rangeLabel={`${startDate} – ${endDate}`}
-      onSync={() => void sync()}
+      onRetry={() => void sync(true)}
     />
   );
 }

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
-import type { LocalStore } from "../src/main/local-store";
+import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const previousMode = process.env.SP_API_MODE;
@@ -27,11 +30,14 @@ describe("FBA brand sales report route", () => {
   let accountScope: string;
   let router: ApiRouter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
     accountScope = "demo-account-scope";
+    const directory = await mkdtemp(join(tmpdir(), "brand-sales-router-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
     router = new ApiRouter({
-      store: {} as LocalStore,
+      store,
       vault: {
         getAccountScope: async () => accountScope,
       } as unknown as CredentialVault,

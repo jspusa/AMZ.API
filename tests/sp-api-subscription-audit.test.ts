@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { collectCurrentFbaSkuSet } from "../src/main/amazon/sp-api";
+import {
+  collectCurrentFbaSkuEvidence,
+  collectCurrentFbaSkuSet,
+} from "../src/main/amazon/sp-api";
 
 function summary(sellerSku: string) {
   return {
@@ -35,6 +38,28 @@ describe("Subscribe & Save current FBA evidence", () => {
     });
     expect(requestedTokens).toEqual([null, "page-2"]);
     expect([...result]).toEqual(["FBA-ZERO", "FBA-TWO"]);
+  });
+
+  it("keeps exact valid SKUs while counting unrecognizable raw inventory rows as partial coverage", async () => {
+    const altered = [
+      summary("VALID-ONE"),
+      summary(" NEEDS-TRIM"),
+      summary("ZERO\u200bWIDTH"),
+      { ...summary("MISSING"), sellerSku: undefined },
+      summary("VALID-TWO"),
+    ];
+    const result = await collectCurrentFbaSkuEvidence(async () => ({
+      payload: { inventorySummaries: altered },
+      pagination: {},
+    }));
+
+    expect([...result.knownFbaSkus]).toEqual(["VALID-ONE", "VALID-TWO"]);
+    expect(result).toMatchObject({
+      returnedInventoryRows: 5,
+      unrecognizedSellerSkuRows: 3,
+    });
+    expect([...result.knownFbaSkus]).not.toContain("NEEDS-TRIM");
+    expect([...result.knownFbaSkus]).not.toContain("ZERO\u200bWIDTH");
   });
 
   it("fails closed when pagination repeats a SKU or token", async () => {

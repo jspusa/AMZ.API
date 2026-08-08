@@ -29,13 +29,17 @@ function jsonResponse(
   });
 }
 
-function childPayload(sku: string, channel = "AMAZON_NA") {
+function childPayload(
+  sku: string,
+  channel = "AMAZON_NA",
+  asin = `ASIN-${sku}`,
+) {
   return {
     sku,
     summaries: [
       {
         marketplaceId: MARKETPLACE_ID,
-        asin: `ASIN-${sku}`,
+        asin,
         productType: "PET_FOOD",
         status: ["BUYABLE"],
         itemName: `Listing ${sku}`,
@@ -123,6 +127,97 @@ describe("SP-API variation family wire contract", () => {
     }
     for (const [key, value] of savedEnvironment) {
       if (value !== undefined) process.env[key] = value;
+    }
+  });
+
+  it("resolves one exact ASIN through official searchListingsItems before reading the family", async () => {
+    const asin = "B000000001";
+    const listingRequests: URL[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(
+          200,
+          { access_token: "FAKE_ACCESS", expires_in: 3_600 },
+          "TOKEN-REQUEST",
+        );
+      }
+      listingRequests.push(url);
+      if (url.searchParams.get("identifiersType") === "ASIN") {
+        return jsonResponse(200, {
+          numberOfResults: 1,
+          items: [childPayload(SOURCE_SKU, "AMAZON_NA", asin)],
+          pagination: {},
+        }, "ASIN-SEARCH");
+      }
+      if (url.searchParams.has("variationParentSku")) {
+        return jsonResponse(200, {
+          items: [childPayload(SOURCE_SKU, "AMAZON_NA", asin)],
+          pagination: {},
+        }, "CHILDREN-SEARCH");
+      }
+      if (decodeURIComponent(url.pathname).endsWith(`/${PARENT_SKU}`)) {
+        return jsonResponse(200, parentPayload(), "PARENT-REQUEST");
+      }
+      return jsonResponse(
+        200,
+        childPayload(SOURCE_SKU, "AMAZON_NA", asin),
+        "SOURCE-REQUEST",
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getVariationFamilyPlanner({
+      marketplaceId: MARKETPLACE_ID,
+      asin,
+    });
+
+    expect(result.queriedSku).toBe(SOURCE_SKU);
+    expect(result.queried.asin).toBe(asin);
+    const asinRequest = listingRequests[0]!;
+    expect(asinRequest.searchParams.get("identifiers")).toBe(asin);
+    expect(asinRequest.searchParams.get("identifiersType")).toBe("ASIN");
+    expect(asinRequest.searchParams.get("pageSize")).toBe("20");
+    expect(asinRequest.searchParams.get("includedData")).toBe(
+      "relationships,summaries,fulfillmentAvailability,productTypes",
+    );
+    expect(listingRequests).toHaveLength(4);
+  });
+
+  it("fails closed when an ASIN has zero or multiple exact Seller SKU results", async () => {
+    const asin = "B000000001";
+    for (const items of [
+      [],
+      [
+        childPayload(SOURCE_SKU, "AMAZON_NA", asin),
+        childPayload("SECOND-SKU", "AMAZON_NA", asin),
+      ],
+    ]) {
+      invalidateSpApiCredentialCaches();
+      const fetchMock = vi.fn<typeof fetch>(async (input) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.origin === "https://api.amazon.com") {
+          return jsonResponse(
+            200,
+            { access_token: "FAKE_ACCESS", expires_in: 3_600 },
+            "TOKEN-REQUEST",
+          );
+        }
+        return jsonResponse(200, {
+          numberOfResults: items.length,
+          items,
+          pagination: {},
+        }, "ASIN-SEARCH");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(getVariationFamilyPlanner({
+        marketplaceId: MARKETPLACE_ID,
+        asin,
+      })).rejects.toMatchObject({
+        status: items.length === 0 ? 404 : 409,
+        code: items.length === 0 ? "ASIN_NOT_FOUND" : "ASIN_AMBIGUOUS",
+      });
     }
   });
 

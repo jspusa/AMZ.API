@@ -45,11 +45,18 @@ function point(month: string, revenue: number | null) {
 function inventoryEvidence(
   verifiableReplenishmentOfferCount: number,
   unverifiedFbaSkuCount = 0,
+  unrecognizedSellerSkuRows = 0,
 ) {
+  const provenSkuCount =
+    verifiableReplenishmentOfferCount + unverifiedFbaSkuCount;
   return {
     source: "FBA_INVENTORY_API_COMPLETE_PAGINATION" as const,
-    provenSkuCount:
-      verifiableReplenishmentOfferCount + unverifiedFbaSkuCount,
+    coverage: unrecognizedSellerSkuRows === 0
+      ? "complete" as const
+      : "partial" as const,
+    returnedInventoryRows: provenSkuCount + unrecognizedSellerSkuRows,
+    provenSkuCount,
+    unrecognizedSellerSkuRows,
     verifiableReplenishmentOfferCount,
     unverifiedFbaSkuCount,
   };
@@ -172,6 +179,30 @@ describe("Subscribe & Save problem Excel", () => {
     expect(sheet).toContain("已證明 FBA 2 個；可核對 offer 1 個；未回傳可核對 offer 1 個");
     expect(sheet).toContain("已核對資料（1 / 1 個 SKU 月份）");
     expect(sheet).toContain("不能據此判定資格或 0 訂閱");
+    expect(sheet).toContain("未輸出全站總額");
+  });
+
+  it("exports unrecognizable Inventory Seller SKU rows as incomplete without assigning zero", () => {
+    const bytes = createSubscriptionAuditWorkbook({
+      marketplaceLabel: "US",
+      generatedAt: "2026-08-08T12:00:00Z",
+      metricMonths: ["2026-07"],
+      currentActiveSubscriptions: 12,
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 1,
+        reportedOfferMonths: 1,
+      },
+      inventoryEvidence: inventoryEvidence(1, 0, 1),
+      problems: [problem(10, "SNS-MATCHED", [point("2026-07", 25)])],
+    });
+    const archive = unzipSync(bytes);
+    const sheet = strFromU8(archive["xl/worksheets/sheet3.xml"]);
+    expect(sheet).toContain("Inventory 共回傳 2 列");
+    expect(sheet).toContain("Seller SKU 無法原樣辨識 1 列");
+    expect(sheet).toContain("不能 trim、改名、判定資格或計為 0");
     expect(sheet).toContain("未輸出全站總額");
   });
 

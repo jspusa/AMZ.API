@@ -1167,10 +1167,23 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
   metricIntervals: readonly OfficialMonthlyInterval[];
   transport: ReplenishmentPageTransport;
   knownFbaSkus: ReadonlySet<string>;
+  knownFbaSkuCoverage?: "complete" | "partial";
   now?: Date;
 }): Promise<FbaSubscriptionAuditHistorySnapshot> {
   const supported = marketplaceCurrency(input.marketplaceId);
   validateKnownFbaSkus(input.knownFbaSkus);
+  if (
+    input.knownFbaSkuCoverage !== undefined &&
+    input.knownFbaSkuCoverage !== "complete" &&
+    input.knownFbaSkuCoverage !== "partial"
+  ) {
+    throw new ReplenishmentAuditError(
+      "REQUEST_INVALID",
+      "FBA Inventory Seller SKU 覆蓋狀態無法辨識。",
+    );
+  }
+  const inventoryCoverageIncomplete =
+    input.knownFbaSkuCoverage === "partial";
   if (
     !Array.isArray(input.metricIntervals) ||
     input.metricIntervals.length < 1 ||
@@ -1314,7 +1327,8 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
     const revenueCoverage = subscriptionRevenueCoverage(
       offers.length,
       revenue.length,
-      currentPages.rejectedSellerSkuRows > 0 ||
+      inventoryCoverageIncomplete ||
+        currentPages.rejectedSellerSkuRows > 0 ||
         (rejectedMetricsByMonth.get(interval.month) ?? 0) > 0 ||
         offers.length !== input.knownFbaSkus.size,
     );
@@ -1338,7 +1352,8 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
       (sum, month) => sum + month.revenueCoverage.reportedOfferMonths,
       0,
     ),
-    sourceCoverage.status === "partial" ||
+    inventoryCoverageIncomplete ||
+      sourceCoverage.status === "partial" ||
       offers.length !== input.knownFbaSkus.size,
   );
   return {

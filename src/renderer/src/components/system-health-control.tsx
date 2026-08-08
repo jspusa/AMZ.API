@@ -37,6 +37,37 @@ type HealthSnapshot = {
 
 type ApiProblem = { message?: string };
 
+export type AuditPreference =
+  | "content"
+  | "images"
+  | "inventory"
+  | "variations"
+  | "subscriptions"
+  | null;
+
+const FEATURE_IDEAS: Record<Exclude<AuditPreference, null>, { label: string; idea: string }> = {
+  content: {
+    label: "文案健檢",
+    idea: "下一步可加入「待人工確認字詞」跨次保留，讓你只重看仍未決定的項目。",
+  },
+  images: {
+    label: "圖片健檢",
+    idea: "下一步可加入圖片補齊優先順序，先看少於五張且仍在售的 FBA SKU。",
+  },
+  inventory: {
+    label: "冗餘庫存健檢",
+    idea: "下一步可加入處理清單，把 Amazon estimated excess 與庫齡分欄比較。",
+  },
+  variations: {
+    label: "變體健檢",
+    idea: "下一步可加入 Parent／child 關係差異預覽，寫入前更快看懂移動結果。",
+  },
+  subscriptions: {
+    label: "訂閱價格健檢",
+    idea: "下一步可加入本機價格變動標記，優先顯示需要人工核對的 S&S SKU。",
+  },
+};
+
 const LEVEL_LABELS: Record<AutomationLevel, string> = {
   automatic: "自動",
   one_click: "一鍵",
@@ -58,10 +89,12 @@ function retryable(status: number): boolean {
 export default function SystemHealthControl({
   marketplaceId,
   autoSync = true,
+  auditPreference = null,
   onAutoSyncChange,
 }: {
   marketplaceId: string;
   autoSync?: boolean;
+  auditPreference?: AuditPreference;
   onAutoSyncChange?: (enabled: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -69,11 +102,28 @@ export default function SystemHealthControl({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState<UiFontSize>(() => readUiFontSize());
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     applyUiFontSize(fontSize);
   }, [fontSize]);
+
+  useEffect(() => {
+    let active = true;
+    void window.fbaOS.app.version()
+      .then((version) => {
+        if (active && typeof version === "string" && version.length <= 40) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => {
+        // Version advice remains useful even if the desktop bridge is unavailable.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const runCheck = useCallback(async () => {
     abortRef.current?.abort();
@@ -159,6 +209,7 @@ export default function SystemHealthControl({
         }),
     [health],
   );
+  const featureIdea = auditPreference ? FEATURE_IDEAS[auditPreference] : null;
 
   return (
     <>
@@ -197,6 +248,29 @@ export default function SystemHealthControl({
               <span aria-hidden="true">✓</span>
               <div><strong>安全守門在背景運作</strong><p>系統會在真正需要決策的功能內直接提示，不把工程設定當成員工待辦。</p></div>
             </section>
+
+            <div className="system-recommendation-grid">
+              <section className="api-version-recommendation" aria-labelledby="api-version-recommendation-title">
+                <span aria-hidden="true">API</span>
+                <div>
+                  <p className="eyebrow">VERSION GUIDANCE</p>
+                  <h3 id="api-version-recommendation-title">API 版本更新建議</h3>
+                  <strong>{appVersion ? `目前 Mac App ${appVersion}` : "正在確認本機 App 版本"}</strong>
+                  <p>GitHub Release 出現新版時，先更新 Mac App／Bridge，再重跑唯讀健檢；網頁不會自行替換 Amazon API 能力。</p>
+                </div>
+              </section>
+
+              <section className="feature-idea-recommendation" aria-labelledby="feature-idea-title">
+                <span aria-hidden="true">✦</span>
+                <div>
+                  <p className="eyebrow">NEXT IDEA</p>
+                  <h3 id="feature-idea-title">下次功能靈感</h3>
+                  <strong>{featureIdea ? `依本次開啟的${featureIdea.label}` : "先從常用健檢開始"}</strong>
+                  <p>{featureIdea?.idea ?? "開啟任一首頁健檢後，這裡會提供對應的下一步功能靈感。"}</p>
+                  <small>只依本次 App 內你開啟的健檢入口顯示；不會讀取或分析 SKU、銷售、憑證等私密資料。</small>
+                </div>
+              </section>
+            </div>
 
             <section className="font-size-preference" aria-labelledby="font-size-preference-title">
               <div>

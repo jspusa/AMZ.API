@@ -73,7 +73,10 @@ export type CreateSubscriptionAuditWorkbookInput = {
   revenueCoverage: SubscriptionAuditRevenueCoverage;
   inventoryEvidence: {
     source: "FBA_INVENTORY_API_COMPLETE_PAGINATION";
+    coverage: "complete" | "partial";
+    returnedInventoryRows: number;
     provenSkuCount: number;
+    unrecognizedSellerSkuRows: number;
     verifiableReplenishmentOfferCount: number;
     unverifiedFbaSkuCount: number;
   };
@@ -142,6 +145,7 @@ export function createSubscriptionAuditWorkbook(
     rows,
     metricMonths,
     upstreamCoverage.status === "partial" ||
+      inventoryEvidence.coverage === "partial" ||
       inventoryEvidence.unverifiedFbaSkuCount > 0,
   );
   if (coverage.status === "complete") {
@@ -266,6 +270,7 @@ function worksheetXml(input: {
     [
       textCell(
         input.upstreamCoverage.status === "complete" &&
+          input.inventoryEvidence.coverage === "complete" &&
           input.inventoryEvidence.unverifiedFbaSkuCount === 0
           ? "全站目前有效訂閱"
           : "已核對目前有效訂閱（範圍不完整）",
@@ -275,7 +280,7 @@ function worksheetXml(input: {
     [
       textCell("同次 FBA／Replenishment offer 核對範圍"),
       textCell(
-        `已證明 FBA ${input.inventoryEvidence.provenSkuCount} 個；可核對 offer ${input.inventoryEvidence.verifiableReplenishmentOfferCount} 個；未回傳可核對 offer ${input.inventoryEvidence.unverifiedFbaSkuCount} 個。未回傳不代表不符合資格，也不代表 0 訂閱。`,
+        `已證明 FBA ${input.inventoryEvidence.provenSkuCount} 個；可核對 offer ${input.inventoryEvidence.verifiableReplenishmentOfferCount} 個；未回傳可核對 offer ${input.inventoryEvidence.unverifiedFbaSkuCount} 個。Inventory 共回傳 ${input.inventoryEvidence.returnedInventoryRows} 列；Seller SKU 無法原樣辨識 ${input.inventoryEvidence.unrecognizedSellerSkuRows} 列。未回傳不代表不符合資格，也不代表 0 訂閱；無法原樣辨識的列也沒有被 trim、改名、判定資格或計為 0。`,
       ),
     ],
     [
@@ -385,6 +390,14 @@ function validateInventoryEvidence(
     input.provenSkuCount,
     "inventoryEvidence.provenSkuCount",
   );
+  const returnedInventoryRows = safeInteger(
+    input.returnedInventoryRows,
+    "inventoryEvidence.returnedInventoryRows",
+  );
+  const unrecognizedSellerSkuRows = safeInteger(
+    input.unrecognizedSellerSkuRows,
+    "inventoryEvidence.unrecognizedSellerSkuRows",
+  );
   const verifiableReplenishmentOfferCount = safeInteger(
     input.verifiableReplenishmentOfferCount,
     "inventoryEvidence.verifiableReplenishmentOfferCount",
@@ -395,6 +408,10 @@ function validateInventoryEvidence(
   );
   if (
     input.source !== "FBA_INVENTORY_API_COMPLETE_PAGINATION" ||
+    (input.coverage !== "complete" && input.coverage !== "partial") ||
+    returnedInventoryRows !== provenSkuCount + unrecognizedSellerSkuRows ||
+    input.coverage !==
+      (unrecognizedSellerSkuRows === 0 ? "complete" : "partial") ||
     verifiableReplenishmentOfferCount !== verifiableOfferCount ||
     provenSkuCount !==
       verifiableReplenishmentOfferCount + unverifiedFbaSkuCount
@@ -405,7 +422,10 @@ function validateInventoryEvidence(
   }
   return {
     source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+    coverage: input.coverage,
+    returnedInventoryRows,
     provenSkuCount,
+    unrecognizedSellerSkuRows,
     verifiableReplenishmentOfferCount,
     unverifiedFbaSkuCount,
   };
@@ -520,6 +540,9 @@ function coverageLabel(
 ): string {
   const count = `${coverage.reportedOfferMonths} / ${coverage.expectedOfferMonths} 個 SKU 月份`;
   const gaps: string[] = [];
+  if (inventoryEvidence.unrecognizedSellerSkuRows > 0) {
+    gaps.push(`另有 ${inventoryEvidence.unrecognizedSellerSkuRows} 列 FBA Inventory Seller SKU 無法原樣辨識，不能 trim、改名、判定資格或計為 0`);
+  }
   if (inventoryEvidence.unverifiedFbaSkuCount > 0) {
     gaps.push(`另有 ${inventoryEvidence.unverifiedFbaSkuCount} 個已證明 FBA SKU 未回傳可核對 offer，不能據此判定資格或 0 訂閱`);
   }

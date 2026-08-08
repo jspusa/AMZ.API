@@ -81,6 +81,8 @@ describe("variation planner", () => {
     expect(markup).toContain("變體規劃");
     expect(markup).toContain("兩階段安全寫入 · 不會盲目重送");
     expect(markup).toContain("解除變體存放區");
+    expect(markup).toContain("SKU 或 ASIN 查詢");
+    expect(markup).toContain('value="asin"');
     expect(markup).toContain("Validation Preview、Touch ID、送出與唯讀回查");
     expect(markup).toContain("FBA child only");
     expect(markup).toContain("不使用 Seller Central 私有接口");
@@ -112,6 +114,29 @@ describe("variation planner", () => {
       parseVariationFamilyResponse(
         { ...snapshot, dimensionNames: [""] },
         { marketplaceId: MARKETPLACE_ID, sellerSku: "CHILD-4OZ" },
+      ),
+    ).toThrow(/停止規劃/);
+  });
+
+  it("accepts an ASIN lookup only when the resolved family returns the exact ASIN and Seller SKU", () => {
+    const source = member("CHILD-4OZ", { asin: "B09S5VY2JS" });
+    const snapshot = family(source);
+    expect(
+      parseVariationFamilyResponse(snapshot, {
+        marketplaceId: MARKETPLACE_ID,
+        asin: "B09S5VY2JS",
+      }),
+    ).toEqual(snapshot);
+    expect(() =>
+      parseVariationFamilyResponse(snapshot, {
+        marketplaceId: MARKETPLACE_ID,
+        asin: "B000000000",
+      }),
+    ).toThrow(/停止規劃/);
+    expect(() =>
+      parseVariationFamilyResponse(
+        { ...snapshot, queriedSku: "OTHER-SKU" },
+        { marketplaceId: MARKETPLACE_ID, asin: "B09S5VY2JS" },
       ),
     ).toThrow(/停止規劃/);
   });

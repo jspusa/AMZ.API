@@ -34,7 +34,10 @@ function response(overrides: Record<string, unknown> = {}): Record<string, unkno
     intervals: INTERVALS,
     inventoryEvidence: {
       source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+      coverage: "complete",
+      returnedInventoryRows: 1,
       provenSkuCount: 1,
+      unrecognizedSellerSkuRows: 0,
       verifiableReplenishmentOfferCount: 1,
       unverifiedFbaSkuCount: 0,
     },
@@ -242,7 +245,10 @@ describe("FBA subscription audit renderer", () => {
     const raw = response({
       inventoryEvidence: {
         source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+        coverage: "complete",
+        returnedInventoryRows: 2,
         provenSkuCount: 2,
+        unrecognizedSellerSkuRows: 0,
         verifiableReplenishmentOfferCount: 1,
         unverifiedFbaSkuCount: 1,
       },
@@ -269,7 +275,10 @@ describe("FBA subscription audit renderer", () => {
     const snapshot = parseSubscriptionAuditSnapshot(raw);
     expect(snapshot.inventoryEvidence).toEqual({
       source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+      coverage: "complete",
+      returnedInventoryRows: 2,
       provenSkuCount: 2,
+      unrecognizedSellerSkuRows: 0,
       verifiableReplenishmentOfferCount: 1,
       unverifiedFbaSkuCount: 1,
     });
@@ -295,6 +304,64 @@ describe("FBA subscription audit renderer", () => {
     const evidence = raw.inventoryEvidence as Record<string, unknown>;
     evidence.verifiableReplenishmentOfferCount = 2;
     evidence.unverifiedFbaSkuCount = 0;
+    expect(() => parseSubscriptionAuditSnapshot(raw)).toThrow(
+      /FBA Inventory 證據與 S&S offer 範圍不一致/u,
+    );
+  });
+
+  it("requires partial totals when an Inventory row Seller SKU cannot be recognized unchanged", () => {
+    const raw = response({
+      inventoryEvidence: {
+        source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+        coverage: "partial",
+        returnedInventoryRows: 2,
+        provenSkuCount: 1,
+        unrecognizedSellerSkuRows: 1,
+        verifiableReplenishmentOfferCount: 1,
+        unverifiedFbaSkuCount: 0,
+      },
+      summary: {
+        currentActiveSubscriptions: 42,
+        provenSubscriptionRevenue: null,
+        revenueCurrencyCode: null,
+        revenueCoverage: {
+          status: "partial",
+          expectedOfferMonths: 6,
+          reportedOfferMonths: 6,
+        },
+      },
+    });
+    const rawOffer = (raw.offers as Array<Record<string, unknown>>)[0];
+    rawOffer.monthlySeries = INTERVALS.map(({ month }) => ({
+      month,
+      subscriptionRevenue: 10,
+      shippedSubscriptionUnits: 1,
+      activeSubscriptionsAtPeriodEnd: 40,
+      currencyCode: "USD",
+    }));
+
+    const snapshot = parseSubscriptionAuditSnapshot(raw);
+    expect(snapshot.inventoryEvidence).toMatchObject({
+      coverage: "partial",
+      returnedInventoryRows: 2,
+      provenSkuCount: 1,
+      unrecognizedSellerSkuRows: 1,
+    });
+    expect(subscriptionRevenueSummary(snapshot).value).toBe("資料不完整");
+    expect(subscriptionRevenueSummary(snapshot).note).toContain(
+      "有 1 列 Seller SKU 無法原樣辨識，其他有效 SKU 已繼續核對",
+    );
+
+    const markup = renderToStaticMarkup(
+      createElement(SubscriptionInventoryCoverageNotice, {
+        evidence: snapshot.inventoryEvidence,
+      }),
+    );
+    expect(markup).toContain("有 1 列 Seller SKU 無法原樣辨識，其他有效 SKU 已繼續核對");
+    expect(markup).toContain("不會顯示全站完整總額");
+
+    const evidence = raw.inventoryEvidence as Record<string, unknown>;
+    evidence.coverage = "complete";
     expect(() => parseSubscriptionAuditSnapshot(raw)).toThrow(
       /FBA Inventory 證據與 S&S offer 範圍不一致/u,
     );

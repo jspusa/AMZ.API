@@ -72,6 +72,39 @@ describe("variation family read-only route", () => {
     expect(boundaries).not.toContain("第一版不執行");
   });
 
+  it("resolves one exact demo ASIN to its own Seller SKU", async () => {
+    const response = await router.handle(request("GET", {
+      marketplaceId: "ATVPDKIKX0DER",
+      asin: "B0USAFA004",
+    }));
+
+    expect(response.status).toBe(200);
+    expect(response.body.kind).toBe("json");
+    if (response.body.kind !== "json") throw new Error("Expected JSON response");
+    expect(response.body.value).toMatchObject({
+      queriedSku: "AFA-TRKY-4OZ",
+      queried: { asin: "B0USAFA004" },
+    });
+  });
+
+  it("rejects a non-exact ASIN or supplying ASIN and SKU together", async () => {
+    const queries: Array<Record<string, string>> = [
+      { marketplaceId: "ATVPDKIKX0DER", asin: " B0USAFA004" },
+      {
+        marketplaceId: "ATVPDKIKX0DER",
+        asin: "B0USAFA004",
+        sku: "AFA-TRKY-4OZ",
+      },
+    ];
+    for (const query of queries) {
+      const response = await router.handle(request("GET", query));
+      expect(response.status).toBe(400);
+      expect(response.body.kind).toBe("json");
+      if (response.body.kind !== "json") throw new Error("Expected JSON response");
+      expect(response.body.value).toMatchObject({ code: "INVALID_INPUT" });
+    }
+  });
+
   it("fails closed when marketplace or Seller SKU is missing", async () => {
     const response = await router.handle(
       request("GET", { marketplaceId: "ATVPDKIKX0DER" }),

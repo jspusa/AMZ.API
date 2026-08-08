@@ -47,12 +47,7 @@ function isRelationshipEntry(value: unknown): value is Record<string, unknown> {
 
 function isRelationshipGroup(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
-  if (
-    value.marketplaceId !== undefined &&
-    !isExactIdentifier(value.marketplaceId)
-  ) {
-    return false;
-  }
+  if (!isExactIdentifier(value.marketplaceId)) return false;
   return (
     Array.isArray(value.relationships) &&
     value.relationships.every(isRelationshipEntry)
@@ -102,15 +97,16 @@ export function classifyUnboundVariationEvidence(
   if (!input.relationships.every(isRelationshipGroup)) {
     return invalidRelationshipResponse();
   }
-  const relevantGroups = input.relationships.filter((group) => {
-    const marketplaceId = group.marketplaceId;
-    return marketplaceId === undefined || marketplaceId === input.marketplaceId;
-  });
-  if (input.relationships.length > 0 && relevantGroups.length === 0) {
+  const relevantGroups = input.relationships.filter(
+    (group) => group.marketplaceId === input.marketplaceId,
+  );
+  if (input.relationships.length > 0 && relevantGroups.length !== 1) {
     return {
       kind: "incomplete",
       code: "RELATIONSHIP_RESPONSE_INVALID",
-      message: "Amazon 只回傳其他站點的 relationships，無法判定目前站點。",
+      message: relevantGroups.length === 0
+        ? "Amazon 只回傳其他站點的 relationships，無法判定目前站點。"
+        : "Amazon 同時回傳多個目前站點的 relationships 群組，無法唯一判定。",
     };
   }
   if (input.role === "parent") return { kind: "parent-container" };

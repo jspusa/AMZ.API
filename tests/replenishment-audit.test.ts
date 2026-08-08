@@ -483,6 +483,43 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
     });
   });
 
+  it("keeps complete matched metrics partial when Inventory contains an unrecognizable Seller SKU row", async () => {
+    const intervals = officialCompleteMonthlyIntervals(2, NOW);
+    const snapshot = await fetchFbaSubscriptionAuditHistory({
+      marketplaceId: US,
+      metricIntervals: intervals,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1)]),
+      knownFbaSkuCoverage: "partial",
+      transport: async (request) => {
+        if (request.operation === "listOffers") return page([offer(1)]);
+        const timeInterval = (request.body.filters as Record<string, unknown>)
+          .timeInterval as Record<string, unknown>;
+        return page([metric(1, {
+          timeInterval: {
+            startDate: timeInterval.startDate,
+            endDate: timeInterval.endDate,
+          },
+        })]);
+      },
+    });
+
+    expect(snapshot.offers).toHaveLength(1);
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 2,
+        reportedOfferMonths: 2,
+      },
+      monthly: [
+        { revenueCoverage: { status: "partial" } },
+        { revenueCoverage: { status: "partial" } },
+      ],
+    });
+  });
+
   it("does not treat a historical AMAZON metric as proof of current FBA", async () => {
     const snapshot = await fetchFbaSubscriptionAudit({
       marketplaceId: US,

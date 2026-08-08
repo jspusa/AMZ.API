@@ -11,6 +11,7 @@ import {
   wordsForLocalSpellcheck,
   type ContentAuditIssue,
   type ContentAuditIssueKind,
+  type ContentAuditField,
   type ContentAuditReadError,
   type ContentAuditRow,
   type ContentAuditSnapshot,
@@ -39,6 +40,51 @@ export type ContentAuditCache = {
   filter: AuditFilter;
   query: string;
   spellcheckNote: string | null;
+};
+
+export type ContentAuditQuickEditEvidence = {
+  issueKind: ContentAuditIssueKind;
+  field: ContentAuditField;
+  token: string | null;
+  originalValue: string;
+  originalValueFingerprint: string;
+  originalBulletIndex: number | null;
+};
+
+export type ContentAuditQuickEditFocus = {
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  fields: ContentAuditField[];
+  bulletIndices: number[];
+  evidence: ContentAuditQuickEditEvidence[];
+};
+
+export type ResolvedContentAuditQuickEditFocus = {
+  fields: ContentAuditField[];
+  bulletIndices: number[];
+  relocationNote: string | null;
+};
+
+export type ContentAuditQuickEditResolution =
+  | {
+      status: "focused";
+      focus: ResolvedContentAuditQuickEditFocus;
+    }
+  | {
+      status: "stale";
+      message: string;
+    };
+
+type FreshListingForQuickEdit = {
+  sellerSku: string;
+  asin: string | null;
+  productType: string;
+  content: {
+    title: string;
+    bulletPoints: readonly string[];
+    ingredients: string;
+  };
 };
 
 const FILTERS: Array<{ value: AuditFilter; label: string }> = [
@@ -254,6 +300,290 @@ function invisibleIssueIsExplained(
   );
 }
 
+function contentValueFingerprint(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `v1:${value.length}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function quickEditEvidence(
+  issue: ContentAuditIssue,
+  originalValue: string,
+  originalBulletIndex: number | null,
+): ContentAuditQuickEditEvidence {
+  return {
+    issueKind: issue.kind,
+    field: issue.field,
+    token: issue.token ?? null,
+    originalValue,
+    originalValueFingerprint: contentValueFingerprint(originalValue),
+    originalBulletIndex,
+  };
+}
+
+function staleQuickEditResolution(detail: string): ContentAuditQuickEditResolution {
+  return {
+    status: "stale",
+    message: `${detail}為避免隱藏其他仍需確認的欄位，已切換為完整編輯；尚未送出任何修改。`,
+  };
+}
+
+function fieldLabel(field: ContentAuditField): string {
+  if (field === "title") return "商品標題";
+  if (field === "ingredients") return "成分";
+  return "賣點";
+}
+
+export function quickEditFocusForRow(
+  row: ContentAuditRow,
+): ContentAuditQuickEditFocus | null {
+  if (row.readStatus !== "complete" || row.issues.length === 0) return null;
+  const evidence: ContentAuditQuickEditEvidence[] = [];
+  const bulletIndices = new Set<number>();
+
+  for (const issue of row.issues) {
+    if (issue.kind === "SUSPECTED_TYPO") {
+      if (!issue.token) return null;
+      if (issue.field === "bulletPoints") {
+        const matches = row.bulletPoints
+          .map((value, index) => ({ value, index }))
+          .filter(({ value }) => hasHighlightedContent(value, [issue]));
+        if (matches.length === 0) return null;
+        for (const match of matches) {
+          evidence.push(quickEditEvidence(issue, match.value, match.index));
+          bulletIndices.add(match.index);
+        }
+        continue;
+      }
+      if (issue.field !== "title" && issue.field !== "ingredients") return null;
+      const value = issue.field === "title" ? row.title : row.ingredients;
+      if (!hasHighlightedContent(value, [issue])) return null;
+      evidence.push(quickEditEvidence(issue, value, null));
+      continue;
+    }
+
+    if (issue.kind === "MISSING_BULLETS") {
+      if (issue.field !== "bulletPoints") return null;
+      const originalValue = JSON.stringify(row.bulletPoints);
+      evidence.push(quickEditEvidence(issue, originalValue, null));
+      for (let index = 0; index < 5; index += 1) {
+        if (!row.bulletPoints[index]?.trim()) bulletIndices.add(index);
+      }
+      if (bulletIndices.size === 0) return null;
+      continue;
+    }
+
+    if (
+      issue.kind === "MISSING_INGREDIENTS" ||
+      issue.kind === "INGREDIENTS_UNVERIFIED"
+    ) {
+      if (issue.field !== "ingredients") return null;
+      if (issue.kind === "MISSING_INGREDIENTS" && row.ingredients.trim()) return null;
+      evidence.push(quickEditEvidence(issue, row.ingredients, null));
+      continue;
+    }
+
+    return null;
+  }
+
+  if (evidence.length === 0) return null;
+  const fields = [...new Set(evidence.map((item) => item.field))];
+  return {
+    sellerSku: row.sellerSku,
+    asin: row.asin,
+    productType: row.productType,
+    fields,
+    bulletIndices: [...bulletIndices].sort((left, right) => left - right),
+    evidence,
+  };
+}
+
+export function resolveContentAuditQuickEditFocus(
+  focus: ContentAuditQuickEditFocus,
+  listing: FreshListingForQuickEdit,
+): ContentAuditQuickEditResolution {
+  if (focus.sellerSku !== listing.sellerSku) {
+    return staleQuickEditResolution(
+      "Amazon 回傳的 Seller SKU 與健檢項目不一致。",
+    );
+  }
+  if (focus.asin && focus.asin !== listing.asin) {
+    return staleQuickEditResolution(
+      "這個 Seller SKU 對應的 ASIN 已和健檢時不同。",
+    );
+  }
+  if (
+    focus.productType &&
+    listing.productType &&
+    listing.productType !== "—" &&
+    focus.productType !== listing.productType
+  ) {
+    return staleQuickEditResolution("這個商品的 Product Type 已和健檢時不同。");
+  }
+  if (!Array.isArray(focus.evidence) || focus.evidence.length === 0) {
+    return staleQuickEditResolution("這筆健檢結果沒有足夠的原文定位證據。");
+  }
+
+  const declaredFields = new Set(focus.fields);
+  const evidenceFields = new Set(focus.evidence.map((item) => item.field));
+  if (
+    declaredFields.size !== evidenceFields.size ||
+    [...declaredFields].some((field) => !evidenceFields.has(field))
+  ) {
+    return staleQuickEditResolution("這筆健檢結果的欄位定位證據不完整。");
+  }
+
+  const fields = new Set<ContentAuditField>();
+  const bulletIndices = new Set<number>();
+  const relocations = new Set<string>();
+
+  for (const evidence of focus.evidence) {
+    if (
+      contentValueFingerprint(evidence.originalValue) !==
+      evidence.originalValueFingerprint
+    ) {
+      return staleQuickEditResolution("這筆健檢結果的原文指紋已失效。");
+    }
+
+    if (evidence.issueKind === "SUSPECTED_TYPO") {
+      if (!evidence.token) {
+        return staleQuickEditResolution("這筆疑似錯字沒有可核對的字詞證據。");
+      }
+      const issue: ContentAuditIssue = {
+        kind: "SUSPECTED_TYPO",
+        field: evidence.field,
+        token: evidence.token,
+        message: "",
+      };
+      if (!hasHighlightedContent(evidence.originalValue, [issue])) {
+        return staleQuickEditResolution("這筆疑似錯字的原文與字詞證據不一致。");
+      }
+
+      if (evidence.field === "bulletPoints") {
+        if (
+          evidence.originalBulletIndex === null ||
+          !Number.isInteger(evidence.originalBulletIndex) ||
+          evidence.originalBulletIndex < 0
+        ) {
+          return staleQuickEditResolution("這筆賣點錯字缺少原始位置證據。");
+        }
+        const candidates = listing.content.bulletPoints.flatMap((value, index) =>
+          value === evidence.originalValue &&
+          contentValueFingerprint(value) === evidence.originalValueFingerprint &&
+          hasHighlightedContent(value, [issue])
+            ? [index]
+            : [],
+        );
+        if (candidates.length === 0) {
+          return staleQuickEditResolution(
+            "健檢標示的賣點原文已不存在，可能已被修正或改寫。",
+          );
+        }
+        if (candidates.length !== 1) {
+          return staleQuickEditResolution(
+            "健檢標示的賣點目前有多個相同候選，無法唯一定位。",
+          );
+        }
+        const [candidate] = candidates;
+        bulletIndices.add(candidate);
+        fields.add("bulletPoints");
+        if (candidate !== evidence.originalBulletIndex) {
+          relocations.add(`${evidence.originalBulletIndex}:${candidate}`);
+        }
+        continue;
+      }
+
+      if (evidence.field !== "title" && evidence.field !== "ingredients") {
+        return staleQuickEditResolution("這筆錯字對應的欄位無法安全定位。");
+      }
+      const currentValue = evidence.field === "title"
+        ? listing.content.title
+        : listing.content.ingredients;
+      if (
+        currentValue !== evidence.originalValue ||
+        contentValueFingerprint(currentValue) !== evidence.originalValueFingerprint ||
+        !hasHighlightedContent(currentValue, [issue])
+      ) {
+        return staleQuickEditResolution(
+          `健檢標示的${fieldLabel(evidence.field)}已變動，原問題可能已被修正或改寫。`,
+        );
+      }
+      fields.add(evidence.field);
+      continue;
+    }
+
+    if (evidence.issueKind === "MISSING_BULLETS") {
+      if (evidence.field !== "bulletPoints" || evidence.token !== null) {
+        return staleQuickEditResolution("缺少賣點的健檢證據格式無效。");
+      }
+      const missingIndices = Array.from({ length: 5 }, (_value, index) => index)
+        .filter((index) => !listing.content.bulletPoints[index]?.trim());
+      if (missingIndices.length === 0) {
+        return staleQuickEditResolution(
+          "Amazon 目前已有五個賣點，原本的賣點不足已變動或解決。",
+        );
+      }
+      missingIndices.forEach((index) => bulletIndices.add(index));
+      fields.add("bulletPoints");
+      continue;
+    }
+
+    if (evidence.issueKind === "MISSING_INGREDIENTS") {
+      if (evidence.field !== "ingredients" || listing.content.ingredients.trim()) {
+        return staleQuickEditResolution(
+          "Amazon 目前已有成分內容，原本的缺成分問題已變動或解決。",
+        );
+      }
+      fields.add("ingredients");
+      continue;
+    }
+
+    if (evidence.issueKind === "INGREDIENTS_UNVERIFIED") {
+      if (
+        evidence.field !== "ingredients" ||
+        listing.content.ingredients !== evidence.originalValue ||
+        contentValueFingerprint(listing.content.ingredients) !==
+          evidence.originalValueFingerprint
+      ) {
+        return staleQuickEditResolution(
+          "成分內容已和健檢時不同，無法沿用原本的未驗證定位。",
+        );
+      }
+      fields.add("ingredients");
+      continue;
+    }
+
+    return staleQuickEditResolution("這筆健檢問題類型無法安全處理。");
+  }
+
+  if (fields.size === 0) {
+    return staleQuickEditResolution("重新讀取 Amazon 後已沒有可唯一定位的待修欄位。");
+  }
+  if (fields.has("bulletPoints") && bulletIndices.size === 0) {
+    return staleQuickEditResolution("重新讀取 Amazon 後無法唯一定位待修賣點。");
+  }
+
+  const relocatedTargets = [...relocations]
+    .map((value) => Number(value.split(":")[1]) + 1)
+    .filter((value) => Number.isInteger(value))
+    .sort((left, right) => left - right);
+  return {
+    status: "focused",
+    focus: {
+      fields: [...fields],
+      bulletIndices: [...bulletIndices].sort((left, right) => left - right),
+      relocationNote: relocatedTargets.length
+        ? `Amazon 賣點順序已變動；系統依健檢時的完整原文，重新定位到賣點 ${[
+            ...new Set(relocatedTargets),
+          ].join("、")}。`
+        : null,
+    },
+  };
+}
+
 function scanStatusText(state: AuditState, reply: ReportReply | null): string {
   if (state === "starting") return "正在請 Amazon 建立全站 FBA 商品報表…";
   if (state === "polling") return reply?.message || "Amazon 正在整理商品清單…";
@@ -270,7 +600,10 @@ export default function ContentAuditPanel({
 }: {
   marketplaceId: string;
   marketplaceShort: string;
-  onOpenSku: (sellerSku: string) => void;
+  onOpenSku: (
+    sellerSku: string,
+    quickEditFocus?: ContentAuditQuickEditFocus,
+  ) => void;
   cachedResult?: ContentAuditCache | null;
   onCachedResultChange?: (cache: ContentAuditCache) => void;
 }) {
@@ -632,6 +965,7 @@ export default function ContentAuditPanel({
                 const affectedBullets = row.bulletPoints
                   .map((value, index) => ({ value, index }))
                   .filter(({ value }) => hasHighlightedContent(value, bulletIssues));
+                const quickEditFocus = quickEditFocusForRow(row);
                 return (
                   <article key={row.sellerSku}>
                     <div className="content-audit-product">
@@ -644,7 +978,20 @@ export default function ContentAuditPanel({
                         </strong>
                         <small>{row.sellerSku}{row.asin ? ` · ${row.asin}` : ""}</small>
                       </div>
-                      <button type="button" onClick={() => onOpenSku(row.sellerSku)}>開啟編輯</button>
+                      <div className="content-audit-edit-actions">
+                        {quickEditFocus && (
+                          <button
+                            type="button"
+                            className="content-audit-fix-now"
+                            onClick={() => onOpenSku(row.sellerSku, quickEditFocus)}
+                          >
+                            立刻修改
+                          </button>
+                        )}
+                        <button type="button" onClick={() => onOpenSku(row.sellerSku)}>
+                          完整編輯
+                        </button>
+                      </div>
                     </div>
                     {(affectedBullets.length > 0 ||
                       hasHighlightedContent(row.ingredients, ingredientsIssues)) && (
