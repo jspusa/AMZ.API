@@ -24,6 +24,23 @@ const MAIN_HEADERS = [
 
 const ERROR_HEADERS = ["SKU", "類型", "說明"] as const;
 
+const CONTENT_AUDIT_SHEET_NAME = "內容健檢";
+const CONTENT_AUDIT_HEADERS = [
+  "站點",
+  "SKU",
+  "ASIN",
+  "Product Type",
+  "商品標題",
+  "賣點 1",
+  "賣點 2",
+  "賣點 3",
+  "賣點 4",
+  "賣點 5",
+  "成分",
+  "類型",
+  "說明",
+] as const;
+
 export interface ListingsWorkbookRow {
   sku: string;
   asin?: string | null;
@@ -34,6 +51,8 @@ export interface ListingsWorkbookRow {
   status?: string | null;
   lastUpdated?: string | Date | null;
   marketplaceLabel?: string | null;
+  auditType?: string | null;
+  auditDescription?: string | null;
 }
 
 export interface ListingsWorkbookError {
@@ -47,6 +66,7 @@ export interface CreateListingsWorkbookInput {
   fetchedAt: string | Date;
   rows: readonly ListingsWorkbookRow[];
   errors?: readonly ListingsWorkbookError[];
+  layout?: "listings" | "content-audit";
 }
 
 type Cell =
@@ -70,14 +90,15 @@ export function createListingsWorkbook({
   fetchedAt,
   rows,
   errors = [],
+  layout = "listings",
 }: CreateListingsWorkbookInput): Uint8Array {
   const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
-  const includeErrorSheet = errors.length > 0;
+  const includeErrorSheet = layout === "listings" && errors.length > 0;
 
   const mainRows = rows.map((row): readonly Cell[] => {
     const bulletPoints = row.bulletPoints ?? [];
 
-    return [
+    const baseCells: readonly Cell[] = [
       textCell(row.marketplaceLabel ?? marketplaceLabel),
       textCell(row.sku, 2),
       textCell(row.asin ?? "", 2),
@@ -89,9 +110,18 @@ export function createListingsWorkbook({
       textCell(bulletPoints[3] ?? ""),
       textCell(bulletPoints[4] ?? ""),
       textCell(row.ingredients ?? ""),
-      textCell(row.status ?? ""),
-      dateCell(row.lastUpdated),
     ];
+    return layout === "content-audit"
+      ? [
+          ...baseCells,
+          textCell(row.auditType ?? ""),
+          textCell(row.auditDescription ?? ""),
+        ]
+      : [
+          ...baseCells,
+          textCell(row.status ?? ""),
+          dateCell(row.lastUpdated),
+        ];
   });
 
   const errorRows = errors.map(
@@ -104,11 +134,13 @@ export function createListingsWorkbook({
 
   const sheetDefinitions = [
     {
-      name: MAIN_SHEET_NAME,
+      name: layout === "content-audit" ? CONTENT_AUDIT_SHEET_NAME : MAIN_SHEET_NAME,
       xml: buildWorksheet({
-        headers: MAIN_HEADERS,
+        headers: layout === "content-audit" ? CONTENT_AUDIT_HEADERS : MAIN_HEADERS,
         rows: mainRows,
-        widths: [16, 24, 16, 24, 52, 44, 44, 44, 44, 44, 42, 16, 21],
+        widths: layout === "content-audit"
+          ? [16, 24, 16, 24, 52, 44, 44, 44, 44, 44, 42, 26, 72]
+          : [16, 24, 16, 24, 52, 44, 44, 44, 44, 44, 42, 16, 21],
         dataRowHeight: 54,
       }),
     },

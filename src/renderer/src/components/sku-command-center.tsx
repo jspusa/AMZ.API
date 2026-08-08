@@ -56,6 +56,12 @@ type CommandTask = {
   tool: Tool | null;
 };
 
+export function employeeVisibleCommandTasks<T extends { id: string }>(
+  tasks: readonly T[],
+): T[] {
+  return tasks.filter((task) => task.id !== "profile-settings");
+}
+
 type CommandSnapshot = {
   mode: "live" | "demo";
   marketplaceId: string;
@@ -410,6 +416,9 @@ export default function SkuCommandCenter({
     "Amazon FBA 商品";
   const imageCount = snapshot?.images.data?.images.filter((item) => item.url).length ?? null;
   const bulletCount = snapshot?.content.data?.bulletPoints.filter(Boolean).length ?? null;
+  const visibleTasks = snapshot
+    ? employeeVisibleCommandTasks(snapshot.tasks)
+    : [];
   const casePack = draft ? Number(draft.casePack) || 0 : 0;
   const cartonsPerPallet = draft ? Number(draft.cartonsPerPallet) || 0 : 0;
   const unitsPerPallet = casePack * cartonsPerPallet;
@@ -435,7 +444,7 @@ export default function SkuCommandCenter({
           </div>
           <button type="button" onClick={onClose} disabled={loading || saving} aria-label="關閉 SKU 指揮中心">×</button>
         </div>
-        <p className="price-intro">一次整合商品主檔、FBA 庫存、補貨、文案、圖片、價格、促銷與訂閱；各區不必重複查詢。</p>
+        <p className="price-intro">一次整合 FBA 庫存、補貨、文案、圖片、價格、促銷與訂閱；各區不必重複查詢。</p>
 
         <form className="command-search" onSubmit={lookup}>
           <select
@@ -484,7 +493,7 @@ export default function SkuCommandCenter({
           </section>
         )}
         {!snapshot && !loading && !recent.length && !error && (
-          <section className="command-empty"><span>✦</span><strong>{recentLoading ? "正在讀取商品主檔…" : "輸入一個 SKU 開始"}</strong><p>首次掃描會自動建立中央商品身分；補貨規格由你儲存一次，之後全部共用。</p></section>
+          <section className="command-empty"><span>✦</span><strong>{recentLoading ? "正在讀取最近商品…" : "輸入一個 SKU 開始"}</strong><p>掃描後會把 FBA 庫存、補貨、內容、圖片、價格與訂閱狀態整理在同一頁。</p></section>
         )}
         {error && <div className="price-error" role="alert">{error}</div>}
 
@@ -504,16 +513,16 @@ export default function SkuCommandCenter({
               <article title="「目前有效訂閱」是 Amazon listOffers 的查詢快照，不是期間新增、歷史累計、配送次數或唯一顧客數。"><span>Subscribe &amp; Save</span><strong>{snapshot.subscribeSave.data?.found ? `${snapshot.subscribeSave.data.sellerFundedBaseDiscount ?? 0}%` : "—"}</strong><small>{snapshot.subscribeSave.data?.found ? `Tiered ${snapshot.subscribeSave.data.sellerFundedTieredDiscount ?? 0}% · 目前有效訂閱 ${formatCount(snapshot.subscribeSave.data.subscriptions)}` : "Amazon 未回傳 offer"}</small></article>
             </section>
 
-            <section className="command-actions">
+            {visibleTasks.length > 0 && <section className="command-actions">
               <div className="command-section-heading"><div><p className="eyebrow">PRIORITY QUEUE</p><h3>現在要處理的事</h3></div><span>{snapshot.summary.critical ? `${snapshot.summary.critical} 緊急` : snapshot.summary.warning ? `${snapshot.summary.warning} 注意` : "已掃描"}</span></div>
-              <div className="command-task-list">{snapshot.tasks.map((task) => (
+              <div className="command-task-list">{visibleTasks.map((task) => (
                 <article key={task.id} className={`command-task severity-${task.severity} automation-${task.automation}`}>
                   <span className="command-task-icon">{task.severity === "critical" ? "!" : task.severity === "warning" ? "•" : "✓"}</span>
                   <div><div><strong>{task.title}</strong><span className={`automation-badge ${task.automation}`}>{AUTOMATION_LABELS[task.automation]}</span></div><p>{task.detail}</p></div>
-                  {task.tool ? <button type="button" onClick={() => launchTool(task.tool!)}>處理 <i>›</i></button> : task.id === "profile-settings" ? <button type="button" onClick={openProfile}>設定 <i>›</i></button> : null}
+                  {task.tool ? <button type="button" onClick={() => launchTool(task.tool!)}>處理 <i>›</i></button> : null}
                 </article>
               ))}</div>
-            </section>
+            </section>}
 
             <section className="command-tool-grid" aria-label="快速開啟 SKU 工具">
               {(Object.keys(TOOL_LABELS) as Tool[]).map((tool) => (
@@ -521,34 +530,6 @@ export default function SkuCommandCenter({
               ))}
             </section>
 
-            {draft && (
-              <details className="command-profile" ref={profileRef} open={!snapshot.profile.profile.settingsConfigured || Boolean(saveMessage)}>
-                <summary><div><p className="eyebrow">PRODUCT MASTER</p><strong>商品主檔與補貨預設</strong><small>{snapshot.profile.profile.settingsConfigured ? "已保存 · 所有補貨工具共用" : "首次設定後自動套用"}</small></div><span>{snapshot.profile.persistence === "durable" ? "Mac 已保存" : snapshot.profile.persistence === "demo" ? "Demo" : "未連線"}</span><i>＋</i></summary>
-                <div className="command-profile-body">
-                  <div className="automation-summary compact"><span className="automation-badge automatic">自動</span><p>SKU、ASIN、FNSKU 與商品名稱由 Amazon 同步。</p><span className="automation-badge one_click">一鍵</span><p>箱規與交期只需儲存一次。</p><span className="automation-badge manual">需人工</span><p>效期、工廠與實體箱板仍由你確認。</p></div>
-                  <div className="profile-route-selector">
-                    <button type="button" className={draft.supplyRoute === "DIRECT_FBA" ? "active" : ""} onClick={() => setDraft({ ...draft, supplyRoute: "DIRECT_FBA" })}><span>Direct</span><strong>直接送 FBA</strong><small>不加 AWD 轉倉緩衝</small></button>
-                    <button type="button" className={draft.supplyRoute === "AWD_TO_FBA" ? "active" : ""} onClick={() => setDraft({ ...draft, supplyRoute: "AWD_TO_FBA" })} disabled={marketplaceId !== "ATVPDKIKX0DER"}><span>AWD</span><strong>AWD → FBA</strong><small>自動把轉倉延遲納入交期</small></button>
-                  </div>
-                  <div className="profile-field-grid">
-                    <label><span>每箱入數</span><div><input value={draft.casePack} onChange={(event) => setDraft({ ...draft, casePack: event.target.value })} inputMode="numeric" /><b>件</b></div></label>
-                    <label><span>每板箱數</span><div><input value={draft.cartonsPerPallet} onChange={(event) => setDraft({ ...draft, cartonsPerPallet: event.target.value })} inputMode="numeric" /><b>箱</b></div></label>
-                    <label><span>基本交期</span><div><input value={draft.leadTimeDays} onChange={(event) => setDraft({ ...draft, leadTimeDays: event.target.value })} inputMode="numeric" /><b>天</b></div></label>
-                    <label><span>安全庫存</span><div><input value={draft.safetyDays} onChange={(event) => setDraft({ ...draft, safetyDays: event.target.value })} inputMode="numeric" /><b>天</b></div></label>
-                    <label><span>目標庫存</span><div><input value={draft.targetDays} onChange={(event) => setDraft({ ...draft, targetDays: event.target.value })} inputMode="numeric" /><b>天</b></div></label>
-                    <label className={draft.supplyRoute === "AWD_TO_FBA" ? "" : "muted-field"}><span>AWD 轉倉緩衝</span><div><input value={draft.awdBufferDays} onChange={(event) => setDraft({ ...draft, awdBufferDays: event.target.value })} inputMode="numeric" disabled={draft.supplyRoute !== "AWD_TO_FBA"} /><b>天</b></div></label>
-                    <label><span>商品總效期</span><div><input value={draft.shelfLifeDays} onChange={(event) => setDraft({ ...draft, shelfLifeDays: event.target.value })} inputMode="numeric" placeholder="選填" /><b>天</b></div></label>
-                    <label><span>到倉最低剩餘</span><div><input value={draft.minimumRemainingDays} onChange={(event) => setDraft({ ...draft, minimumRemainingDays: event.target.value })} inputMode="numeric" placeholder="選填" /><b>天</b></div></label>
-                  </div>
-                  <div className="profile-derived"><span>整板自動換算</span><strong>{unitsPerPallet > 0 ? `${unitsPerPallet.toLocaleString()} 件／板` : "—"}</strong><small>{casePack || "—"} 件 × {cartonsPerPallet || "—"} 箱</small></div>
-                  <div className="profile-text-grid"><label><span>工廠／來源</span><input value={draft.factory} onChange={(event) => setDraft({ ...draft, factory: event.target.value })} placeholder="例如 Taiwan、Vietnam" maxLength={80} /></label><label><span>內部備註</span><textarea value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} placeholder="只保存在公司商品主檔，不送 Amazon" maxLength={500} /></label></div>
-                  {draft.supplyRoute === "AWD_TO_FBA" && Number(draft.awdBufferDays) < 13 && <div className="price-warning compact"><strong>AWD 緩衝可能偏短</strong><p>依你過去碰到的 13–20+ 天轉倉延遲，建議至少保留 20 天，再依實際資料調整。</p></div>}
-                  {profileError && <small className="field-error command-profile-error">{profileError}</small>}
-                  {saveMessage && <div className="command-save-success">✓ {saveMessage}</div>}
-                  <button className="price-primary-button" type="button" onClick={saveProfile} disabled={saving || Boolean(profileError)}>{saving ? "儲存並重算中…" : "一鍵儲存並重算補貨"}</button>
-                </div>
-              </details>
-            )}
             <p className="command-footnote">最後掃描 {formatDate(snapshot.fetchedAt)} · {snapshot.notice}</p>
           </>
         )}

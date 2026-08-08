@@ -1,9 +1,9 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-08-06
+最後更新：2026-08-08
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前版本：`v0.1.7`；GitHub `main`、GitHub Pages 與 `/Applications/AMZ.API.app` 均已更新，本機 vault 未清除
+開發中版本：`v0.1.8`；本分支完成後仍須合併、部署 Pages、建立 universal 內部測試 App 並覆蓋安裝，既有本機 vault 不得清除
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -213,15 +213,23 @@ Amazon App：
   - 新增「匯出全部待確認項目 Excel」：只匯出疑似錯字、賣點不足、缺成分、成分未驗證或讀取未完成的 SKU，工作簿包含商品內容與逐項說明；純 renderer 本機產生，不新增 Bridge API、不需重裝 Mac App，也不執行 Amazon 寫入。
   - `GooToE` 已加入 Mac 拼字檢查白名單；即使本機字典回傳 `Goatee` 建議，也不會建立疑似錯字項目。
   - 本機驗證：117/117 tests、TypeScript、main／preload／renderer production build、`git diff --check` 與 `npm audit --omit=dev` 0 vulnerabilities；Playwright 已確認桌面流程、有效 `.xlsx` 下載、編輯後返回、drawer 關閉後重開保留結果，以及 390px 無整頁水平溢出。
+- v0.1.8 experience／inventory refinement 已在開發分支完成，尚待 PR 合併與安裝：
+  - 全站內容健檢白名單新增 `Decapterus`、`Gluconate`、`Niacinamide`、`Reishi`、`purr-fectly`；疑似錯字在標題、賣點與成分原文中紅字定位。`U+200B` 等不可見字元集中在單一說明區，列出 SKU、欄位、前後詞與可讀上下文，不會自動修改文案。
+  - 健檢 Excel 改成唯一「內容健檢」工作表，最後兩欄為「類型／說明」；既有全商品 Excel 仍維持原格式。
+  - 銷售自訂日期擴為 1–365 天，renderer 與 main 雙重拒絕 366 天；去年同期仍受 Sales API 兩年 horizon 保護。補貨的 SKU 銷速改用 Sales API exact `sku`＋`AFN`，不再因 Orders 前五頁掃描上限漏掉高銷量 SKU。
+  - 主頁新增唯讀「180 天以上庫存」：請求 `GET_FBA_INVENTORY_PLANNING_DATA`，分開顯示官方庫齡、`estimated-excess-quantity` 與 `days-of-supply`。解析器依報表實際欄位選擇區域 366–455／456+ 尾段或非區域 `365-plus` 尾段，缺少完整區間即 fail closed；沒有推測、促銷、移除或 FBM 寫入。
+  - 首頁與頂部導覽依「產品 → 價格 → 策劃」重排；七個工具順序固定為文案、圖片、變體規劃、定價、促銷、補貨、廣告。大段自動化／系統資訊預設收合，Product Master UI 暫時隱藏，所有 drawer 與 Mac ConnectionPanel 改為中央 Modal。
+  - 促銷主要頁只保留 Listings Items `discounted_price` 對應的 Sale Price；Coupon、Subscribe & Save、Deals 與 Ads 的官方入口集中在「Amazon 官方完成」，沒有假 Coupon 設定表單。
+  - App 圖示保留原藍色背景，白色 `A` 改為 `J`，底部箭頭改為紅色；Touch ID、Validation Preview、idempotency、Keychain、FBA-only 與 no-FBM 邊界未放寬。
 
 ### 已完成與仍待真實 Mac／Amazon 驗證
 
-Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出、7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢，以及 v0.1.7 發布／安裝均已完成。現在仍待：
+Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出、7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢，以及 v0.1.7 發布／安裝均已完成。v0.1.8 目前仍是本機候選分支，現在仍待：
 
 1. Mac 解鎖後確認安裝中的 v0.1.7 視窗、既有 vault 與 Orders／Listings probe 正常；目前只完成安裝後主程序未崩潰的程序層 smoke test。
-2. 在真實 US 帳號執行全站 FBA 內容健檢，確認 Mac 字典、`GooToE` 白名單、讀取失敗排除、「缺成分／成分未驗證」分類、問題 Excel、編輯後返回與 drawer 重開保留結果；唯讀核對至少一個 variation family 的 parent、children、theme 與維度並做一次不送出的拖拉規劃。
+2. 合併 v0.1.8、確認 Pages live 資產並安裝 universal 內部測試 App；在真實 US 帳號重測全站內容健檢的新白名單、紅字／不可見字元定位與單表 Excel，再唯讀核對至少一個 variation family。
 3. 唯讀確認 Sale Price 說明與目前排程，以及「目前有效訂閱」標籤；Touch ID 可用 demo 或取消流程驗證，未獲使用者另行明確授權不得送出真實商品內容或變體寫入。
-4. 如需帳務級核對，仍可把同一 US 站／Amazon 當地日界的本期與去年同期逐日數字和 Seller Central 報表逐列比較；App 端 7／14／30／90／自訂載入與切換已驗證。
+4. 唯讀重測 AFA12AM 的 Sales exact-SKU 近 30 個完整日銷速與可售天數；首次請求 US FBA Inventory Planning report，核對 180 天以上庫齡、Amazon 預估冗餘與 days-of-supply。365 天自訂銷售與非 US `365-plus` 解析目前只完成自動測試，不能宣稱真實 Amazon 已驗證。
 5. 商品內容真實寫入仍未執行；任何寫入都必須保留 Amazon Validation Preview、舊值衝突檢查、Touch ID、idempotency 與送出後回查。
 6. 目前仍是 ad-hoc 內部測試 build；是否建立 Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。
 
@@ -313,13 +321,14 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-v0.1.7 已完成發布與安裝；先完成真實唯讀驗證，不要再擴充功能：
+先完成 v0.1.8 PR、Pages 與 universal 內部測試 App，再做真實唯讀驗證；在下列項目通過前不要繼續擴充功能：
 
 ### A. 真實唯讀驗證
 
-1. 用至少一個 US FBA variation family 核對 parent、children、theme、維度與排除項目；完成一次拖拉規劃並確認沒有 Amazon mutation。
-2. 執行全站 FBA 內容健檢；核對 Mac 字典、讀取未完成列、賣點不足，以及「缺成分／成分未驗證」分類。
-3. 唯讀查詢 Sale Price 與 Subscribe & Save，確認 UI 的 Seller Central 對應與「目前有效訂閱」定義；不得為驗證而建立折扣。
+1. 用 AFA12AM 核對 FBA 可售、Sales exact-SKU 近 30 個完整日銷速、可售天數、補貨量與缺貨日；不得用 marketplace totals 冒充 SKU 銷速。
+2. 執行 US 全站 FBA 內容健檢；核對新白名單、紅字錯字位置、`U+200B` 上下文、讀取未完成、賣點／成分分類與唯一單表 Excel。
+3. 請求 FBA Inventory Planning report，核對 180 天以上庫齡、Amazon 預估冗餘與 days-of-supply；報表建立、狀態與資料下載都只能唯讀。
+4. 唯讀查詢 Sale Price 與 Subscribe & Save，確認 UI 的 Seller Central 對應與「目前有效訂閱」定義；不得為驗證而建立折扣。
 
 ### B. Touch ID 負向驗證
 
@@ -339,8 +348,9 @@ v0.1.7 已完成發布與安裝；先完成真實唯讀驗證，不要再擴充�
 - Mac App 顯示正確新版本。
 - Orders 與 Listings probe 均 live success。
 - US Seller SKU 文案、價格、促銷狀態能只讀查詢。
-- US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂與去年同期 AFN 銷售趨勢完整載入。
-- Excel 可下載，且只含 FBA 商品；錯誤／缺欄位有清楚工作表或提示。
+- US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂 1–365 天與去年同期 AFN 銷售趨勢完整載入。
+- 180 天以上 FBA 庫齡報表能唯讀載入，庫齡與 Amazon 預估冗餘不混為同一指標。
+- Excel 可下載，且只含 FBA 商品；全商品工作簿維持既有格式，內容健檢工作簿只有一張「內容健檢」表並含「類型／說明」。
 - 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID。
 - 寫入後回查；結果不確定時阻止盲目重送。
 - Secret 仍只存在使用者 Mac 的加密 vault。

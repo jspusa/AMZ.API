@@ -5,6 +5,10 @@ import type {
   ContentAuditRow,
   ContentAuditSnapshot,
 } from "./content-quality";
+import {
+  isInvisibleCharacterIssue,
+  locateInvisibleCharacters,
+} from "./content-quality";
 
 const XLSX_CONTENT_TYPE =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -30,6 +34,44 @@ export function contentAuditAttentionRows(
   );
 }
 
+function auditFindings(row: ContentAuditRow): Array<{
+  type: string;
+  description: string;
+}> {
+  const invisibleLocations = locateInvisibleCharacters([row]);
+  const locatedInvisibleIssues = new Set(
+    invisibleLocations.map(
+      (location) => `${location.field}:${location.codePoint}`,
+    ),
+  );
+  return [
+    ...row.readErrors.map((readError) => ({
+      type: "讀取未完成",
+      description: readError.message,
+    })),
+    ...row.issues
+      .filter(
+        (issue) =>
+          !isInvisibleCharacterIssue(issue) ||
+          !locatedInvisibleIssues.has(
+            `${issue.field}:${issue.token?.toUpperCase() ?? ""}`,
+          ),
+      )
+      .map((issue) => ({
+        type: `${issueLabel(issue.kind)} · ${fieldLabel(issue.field)}`,
+        description: `${issue.message}${
+          issue.suggestion && !issue.message.includes(issue.suggestion)
+            ? ` 建議檢查：${issue.suggestion}`
+            : ""
+        }`,
+      })),
+    ...invisibleLocations.map((location) => ({
+      type: `不可見字元 · ${location.fieldLabel}`,
+      description: `${location.codePoint}（${location.name}）位於「${location.before}」與「${location.after}」之間：${location.context}。應手動修改此段。`,
+    })),
+  ];
+}
+
 export function createContentAuditWorkbook(
   snapshot: ContentAuditSnapshot,
   marketplaceLabel: string,
@@ -38,30 +80,23 @@ export function createContentAuditWorkbook(
   return createListingsWorkbook({
     marketplaceLabel,
     fetchedAt: snapshot.fetchedAt,
-    rows: rows.map((row) => ({
-      marketplaceLabel,
-      sku: row.sellerSku,
-      asin: row.asin,
-      productType: row.productType,
-      title: row.title,
-      bulletPoints: row.bulletPoints,
-      ingredients: row.ingredients,
-      status: row.readStatus === "complete" ? "待人工確認" : "讀取未完成",
-    })),
-    errors: rows.flatMap((row) => [
-      ...row.readErrors.map((readError) => ({
+    layout: "content-audit",
+    rows: rows.map((row) => {
+      const findings = auditFindings(row);
+      return {
+        marketplaceLabel,
         sku: row.sellerSku,
-        type: "讀取未完成",
-        description: readError.message,
-      })),
-      ...row.issues.map((issue) => ({
-        sku: row.sellerSku,
-        type: `${issueLabel(issue.kind)} · ${fieldLabel(issue.field)}`,
-        description: `${issue.message}${
-          issue.suggestion ? ` 建議檢查：${issue.suggestion}` : ""
-        }`,
-      })),
-    ]),
+        asin: row.asin,
+        productType: row.productType,
+        title: row.title,
+        bulletPoints: row.bulletPoints,
+        ingredients: row.ingredients,
+        auditType: [...new Set(findings.map((finding) => finding.type))].join("、"),
+        auditDescription: findings
+          .map((finding) => `[${finding.type}] ${finding.description}`)
+          .join("\n"),
+      };
+    }),
   });
 }
 

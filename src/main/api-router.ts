@@ -12,6 +12,8 @@ import { auditListingContentRows } from "./amazon/content-quality";
 import {
   MARKETPLACES,
   SpApiError,
+  getAgedInventoryData,
+  getAgedInventoryReportStatus,
   getAllListingsExportData,
   getAllListingsReportStatus,
   getListingContent,
@@ -29,6 +31,7 @@ import {
   previewListingSalePriceUpdate,
   searchListingsBySku,
   searchOrders,
+  startAgedInventoryReport,
   startAllListingsReport,
   updateListingContent,
   updateListingImages,
@@ -426,6 +429,10 @@ export class ApiRouter {
         return this.subscribeSave(request);
       case "GET /api/sp-api/replenishment-plan":
         return this.replenishment(request);
+      case "POST /api/sp-api/aged-inventory":
+        return this.startAgedInventory(request);
+      case "GET /api/sp-api/aged-inventory":
+        return this.agedInventoryStatusOrData(request);
       case "GET /api/sp-api/variation-family":
         return this.variationFamily(request);
       case "GET /api/sp-api/sku-command":
@@ -1624,6 +1631,52 @@ export class ApiRouter {
       return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
     } catch (error) {
       return apiError(error, "開始建立全商品 Excel 時發生未預期的錯誤。");
+    }
+  }
+
+  private async startAgedInventory(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    const marketplaceId = parseMarketplace(body?.marketplaceId);
+    if (!body || !marketplaceId) {
+      return invalid("請選擇要查詢庫齡的 Amazon 站點。");
+    }
+    try {
+      const status = await startAgedInventoryReport({ marketplaceId });
+      return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
+    } catch (error) {
+      return apiError(error, "開始建立 FBA 庫齡報表時發生未預期的錯誤。");
+    }
+  }
+
+  private async agedInventoryStatusOrData(
+    request: ApiRequest,
+  ): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const reportId = this.reportIdentifier(request.query.reportId);
+    if (!marketplaceId || !reportId) {
+      return invalid("FBA 庫齡報表查詢資訊無效，請重新同步。");
+    }
+    if (request.query.data !== "1") {
+      try {
+        const status = await getAgedInventoryReportStatus({
+          marketplaceId,
+          reportId,
+        });
+        return json({ ...status, message: status.notice });
+      } catch (error) {
+        return apiError(error, "查詢 FBA 庫齡報表狀態時發生未預期的錯誤。");
+      }
+    }
+    const documentId = this.reportIdentifier(request.query.documentId);
+    if (!documentId) {
+      return invalid("FBA 庫齡報表文件資訊無效，請重新同步。");
+    }
+    try {
+      return json(
+        await getAgedInventoryData({ marketplaceId, reportId, documentId }),
+      );
+    } catch (error) {
+      return apiError(error, "整理 180 天以上 FBA 庫存時發生未預期的錯誤。");
     }
   }
 

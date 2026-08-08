@@ -6,7 +6,7 @@ export default function WebGate() {
   return (
     <main className="web-gate">
       <nav className="web-gate-nav">
-        <div className="web-gate-brand"><span>A</span><div><strong>AMZ.API</strong><small>GitHub Control Console</small></div></div>
+        <div className="web-gate-brand"><span>J</span><div><strong>AMZ.API</strong><small>GitHub Control Console</small></div></div>
         <div className="web-gate-state"><i />Mac 鑰匙未連線</div>
       </nav>
 

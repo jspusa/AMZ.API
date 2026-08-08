@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdsDrawer from "./ads-drawer";
+import AgedInventoryPanel from "./aged-inventory-panel";
 import ImageWorkspaceDrawer from "./image-workspace-drawer";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
 import SalesTrendChart, {
+  MAX_CUSTOM_SALES_TREND_DAYS,
   previousYearDateKey,
   salesTrendFailureMessage,
   type SalesTrendSnapshot,
@@ -90,7 +92,7 @@ function isTrendRange(value: unknown): value is SalesTrendSnapshot["range"] {
   }
   return (
     value.dayCount >= 1 &&
-    value.dayCount <= 90 &&
+    value.dayCount <= MAX_CUSTOM_SALES_TREND_DAYS &&
     value.dayCount === dayCount &&
     (presetDays === null ||
       (typeof presetDays === "number" &&
@@ -182,7 +184,7 @@ function comparisonRangeMatchesPoints(
     typeof range.dayCount !== "number" ||
     !Number.isSafeInteger(range.dayCount) ||
     range.dayCount < 0 ||
-    range.dayCount > 90 ||
+    range.dayCount > MAX_CUSTOM_SALES_TREND_DAYS ||
     range.dayCount !== points.length
   ) {
     return false;
@@ -322,9 +324,9 @@ const TOOL_SECTIONS: ReadonlyArray<{
   group: "planning" | "product" | "pricing";
   tools: readonly Tool[];
 }> = [
-  { label: "策劃", group: "planning", tools: ["ads", "restock"] },
   { label: "產品", group: "product", tools: ["copy", "images", "variations"] },
   { label: "價格", group: "pricing", tools: ["price", "promotion"] },
+  { label: "策劃", group: "planning", tools: ["restock", "ads"] },
 ];
 
 const TOOL_CAPABILITIES: Record<
@@ -360,7 +362,7 @@ const TOOL_CAPABILITIES: Record<
   ],
   promotion: [
     { level: "one_click", label: "限時售價一鍵" },
-    { level: "manual", label: "Coupon 人工" },
+    { level: "manual", label: "取消折扣需確認" },
   ],
 };
 
@@ -604,7 +606,7 @@ export default function Dashboard({
         <header className="workspace-header">
           <div className="workspace-header-main">
             <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁">
-              <span className="os-brand-mark">A</span>
+              <span className="os-brand-mark">J</span>
               <span className="os-brand-copy"><strong>AMZ.API</strong><small>FBA workspace</small></span>
             </a>
 
@@ -653,27 +655,6 @@ export default function Dashboard({
             <div className="hero-sync"><span>銷售趨勢最後同步</span><strong>{formatDateTime(visibleSalesTrend?.fetchedAt ?? null)}</strong><small>{marketplace.name}</small></div>
           </section>
 
-          <section className="automation-overview" aria-label="自動化分級">
-            <div className="automation-overview-copy"><span className="automation-spark">✦</span><div><strong>能自動的，系統自己完成</strong><p>只有需要你做決策、外部授權或實體確認時才會停下來。</p></div></div>
-            <div className="automation-legend" aria-label="顏色說明">
-              <span className="automation-badge automatic"><i />自動</span>
-              <span className="automation-badge one_click"><i />一鍵</span>
-              <span className="automation-badge manual"><i />需人工</span>
-            </div>
-            <label className="auto-sync-switch">
-              <input type="checkbox" checked={autoSync} onChange={(event) => setAutoSyncPreference(event.target.checked)} />
-              <span aria-hidden="true" />
-              <div><strong>銷售趨勢自動同步</strong><small>{autoSync ? "每 5 分鐘 · 已開啟" : "已暫停"}</small></div>
-            </label>
-          </section>
-
-          <section className="command-strip" aria-label="SKU 指揮中心">
-            <span className="command-strip-orb">✦</span>
-            <div><p className="eyebrow">SKU COMMAND CENTER</p><strong>不用再到每一區重複查 SKU</strong><small>一次整合商品主檔、FBA 庫存、補貨、文案、圖片、價格、促銷與訂閱。</small></div>
-            <div className="command-strip-levels"><span className="automation-badge automatic">自動掃描</span><span className="automation-badge one_click">一鍵處理</span><span className="automation-badge manual">只留下人工判斷</span></div>
-            <button type="button" onClick={() => setCommandOpen(true)}>{globalSku.trim() ? `掃描 ${globalSku.trim()}` : "開啟 SKU 總覽"}<i>›</i></button>
-          </section>
-
           <section className="content-audit-home-card" aria-label="全站內容健檢捷徑">
             <span className="content-audit-home-icon" aria-hidden="true">Aa✓</span>
             <div>
@@ -696,16 +677,8 @@ export default function Dashboard({
           {mode === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在 Mac 安全連線加入 LWA 憑證後即可切換真實 Amazon 資料。"}</p></div><a href="#connection" onClick={(event) => { event.preventDefault(); scrollTo("connection"); }}>串接說明</a></section>}
 
           <div className="core-zones">
-            <section id="planning-zone" className="core-zone planning-zone">
-              <div className="zone-heading"><div><span>01</span><p className="eyebrow">PLANNING</p><h2>策劃區</h2></div><p>先決定資源往哪裡走。</p></div>
-              <div className="zone-tools">
-                <button className="tool-tile" type="button" onClick={() => launch("ads")}><span className="tool-symbol ads">◎</span><div><h3>廣告</h3><p>SP 留在 Helium 10；SB、SD 自動檢查設定，素材、預算與正式啟用由你確認。</p><ToolCapabilities tool="ads" /></div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("restock")}><span className="tool-symbol restock">↗</span><div><h3>補貨</h3><p>有全域 SKU 時開啟即算 FBA 可售、在途、銷速、補貨量與缺貨日。</p><ToolCapabilities tool="restock" /></div><i>›</i></button>
-              </div>
-            </section>
-
             <section id="product-zone" className="core-zone product-zone">
-              <div className="zone-heading"><div><span>02</span><p className="eyebrow">PRODUCT</p><h2>產品區</h2></div><p>讓商品內容簡單而可控。</p></div>
+              <div className="zone-heading"><div><span>01</span><p className="eyebrow">PRODUCT</p><h2>產品區</h2></div><p>商品內容是工作區的第一順位。</p></div>
               <div className="zone-tools">
                 <button className="tool-tile" type="button" onClick={() => launch("copy")}><span className="tool-symbol copy">Aa</span><div><h3>文案</h3><p>自動載入 SKU、檢查 PTD 與字數；你只決定內容，再安全更新或一鍵匯出 Excel。</p><ToolCapabilities tool="copy" /></div><i>›</i></button>
                 <button className="tool-tile" type="button" onClick={() => launch("images")}><span className="tool-symbol images">▧</span><div><h3>圖片</h3><p>拖拉、排序與選主圖由你決定；格式、像素、公開來源與 Amazon 預檢自動完成。</p><ToolCapabilities tool="images" /></div><i>›</i></button>
@@ -714,13 +687,23 @@ export default function Dashboard({
             </section>
 
             <section id="pricing-zone" className="core-zone pricing-zone">
-              <div className="zone-heading"><div><span>03</span><p className="eyebrow">PRICING</p><h2>價格區</h2></div><p>價格、訂閱與促銷放在一起。</p></div>
+              <div className="zone-heading"><div><span>02</span><p className="eyebrow">PRICING</p><h2>價格區</h2></div><p>定價與限時售價集中處理。</p></div>
               <div className="zone-tools">
                 <button className="tool-tile" type="button" onClick={() => launch("price")}><span className="tool-symbol price">$</span><div><h3>定價與訂閱</h3><p>自動查現價、S&amp;S、上下限與價差；一般調價一鍵處理，大幅變動才要求再確認。</p><ToolCapabilities tool="price" /></div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("promotion")}><span className="tool-symbol promotion">%</span><div><h3>Sale Price 與 Coupon</h3><p>Sale Price 對應單一 SKU 的限時售價，不是廣告選單的價格折扣或管理促銷；Coupon 仍在 Amazon 官方頁完成。</p><ToolCapabilities tool="promotion" /></div><i>›</i></button>
+                <button className="tool-tile" type="button" onClick={() => launch("promotion")}><span className="tool-symbol promotion">%</span><div><h3>Sale Price</h3><p>直接處理單一 SKU 的限時售價；Amazon API 無法完成的促銷另集中在官方完成功能。</p><ToolCapabilities tool="promotion" /></div><i>›</i></button>
+              </div>
+            </section>
+
+            <section id="planning-zone" className="core-zone planning-zone">
+              <div className="zone-heading"><div><span>03</span><p className="eyebrow">PLANNING</p><h2>策劃區</h2></div><p>需要時再進入補貨與廣告。</p></div>
+              <div className="zone-tools">
+                <button className="tool-tile" type="button" onClick={() => launch("restock")}><span className="tool-symbol restock">↗</span><div><h3>補貨</h3><p>有全域 SKU 時開啟即算 FBA 可售、在途、銷速、補貨量與缺貨日。</p><ToolCapabilities tool="restock" /></div><i>›</i></button>
+                <button className="tool-tile" type="button" onClick={() => launch("ads")}><span className="tool-symbol ads">◎</span><div><h3>廣告</h3><p>SP 留在 Helium 10；SB、SD 自動檢查設定，素材、預算與正式啟用由你確認。</p><ToolCapabilities tool="ads" /></div><i>›</i></button>
               </div>
             </section>
           </div>
+
+          <AgedInventoryPanel marketplaceId={marketplaceId} />
 
           <section className="operations-pulse">
             <div className="pulse-heading"><div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2><p>用完整 FBA 銷售趨勢掌握近期變化，並與去年同期直接比較。</p></div><button type="button" className="pulse-refresh" onClick={() => void loadSalesTrend()} disabled={salesTrendLoading}><span className={salesTrendLoading ? "spin" : ""}>↻</span>{salesTrendLoading ? "同步中" : "同步"}</button></div>
@@ -728,7 +711,20 @@ export default function Dashboard({
           </section>
 
           <details id="connection" className="connection-details">
-            <summary><span><strong>Amazon API 串接與能力邊界</strong><small>SP-API、Ads API、圖片公開來源與安全設定</small></span><i>＋</i></summary>
+            <summary><span><strong>進階功能與系統說明</strong><small>自動同步、能力邊界與連線設定</small></span><i>＋</i></summary>
+            <div className="advanced-workspace-options">
+              <label className="auto-sync-switch">
+                <input type="checkbox" checked={autoSync} onChange={(event) => setAutoSyncPreference(event.target.checked)} />
+                <span aria-hidden="true" />
+                <div><strong>銷售趨勢自動同步</strong><small>{autoSync ? "每 5 分鐘 · 已開啟" : "已暫停"}</small></div>
+              </label>
+              <div className="automation-legend" aria-label="自動化顏色說明">
+                <span className="automation-badge automatic"><i />自動</span>
+                <span className="automation-badge one_click"><i />一鍵</span>
+                <span className="automation-badge manual"><i />需人工</span>
+              </div>
+              <p>SKU 總覽固定在上方搜尋列旁；只有需要跨工具查看同一 SKU 時才需開啟。</p>
+            </div>
             <div className="connection-grid"><article><span>1</span><div><strong>SP-API Private Seller App</strong><p>加入 Orders、Product Listing、Amazon Fulfillment 角色，並為各區域 self-authorize。</p></div></article><article><span>2</span><div><strong>Mac Keychain Secrets</strong><p>LWA client、refresh token 與 Seller ID 只以加密密文保存在這台 Mac。</p></div></article><article><span>3</span><div><strong>圖片公開來源</strong><p>拖拉檔案先在 Mac 驗證；要一鍵送圖可連自己的 R2 公開 HTTPS 網域。</p></div></article><article><span>4</span><div><strong>Amazon Ads 獨立授權</strong><p>Ads 必須另外申請 Direct Advertiser、建立 LWA client 與每站 Profile ID，不能沿用 SP-API。</p></div></article></div>
           </details>
         </main>

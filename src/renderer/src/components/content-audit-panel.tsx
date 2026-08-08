@@ -3,7 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addLocalSpellcheckIssues,
+  contentHighlightSegments,
+  isInvisibleCharacterIssue,
   LOCAL_SPELLCHECK_WORD_LIMIT,
+  locateInvisibleCharacters,
   summarizeContentAudit,
   wordsForLocalSpellcheck,
   type ContentAuditIssue,
@@ -185,6 +188,63 @@ function issueLabel(kind: ContentAuditIssueKind): string {
   return "疑似錯字";
 }
 
+function typoIssuesForField(
+  row: ContentAuditRow,
+  field: ContentAuditIssue["field"],
+): ContentAuditIssue[] {
+  return row.issues.filter(
+    (issue) => issue.kind === "SUSPECTED_TYPO" && issue.field === field,
+  );
+}
+
+function highlightedContent(
+  value: string,
+  issues: readonly ContentAuditIssue[],
+) {
+  return contentHighlightSegments(value, issues).map((segment, index) =>
+    segment.highlighted ? (
+      <mark
+        key={`${segment.token ?? "typo"}-${index}`}
+        className="content-audit-typo-highlight"
+        title={`疑似錯字：${segment.token ?? segment.text}`}
+        style={{
+          color: "#b42318",
+          backgroundColor: "#fee4e2",
+          borderRadius: "0.22em",
+          fontWeight: 700,
+          padding: "0 0.08em",
+        }}
+      >
+        {segment.text}
+      </mark>
+    ) : (
+      segment.text
+    ),
+  );
+}
+
+function hasHighlightedContent(
+  value: string,
+  issues: readonly ContentAuditIssue[],
+): boolean {
+  return contentHighlightSegments(value, issues).some(
+    (segment) => segment.highlighted,
+  );
+}
+
+function invisibleIssueIsExplained(
+  row: ContentAuditRow,
+  issue: ContentAuditIssue,
+  locations: ReturnType<typeof locateInvisibleCharacters>,
+): boolean {
+  return isInvisibleCharacterIssue(issue) && locations.some(
+    (location) =>
+      location.sellerSku === row.sellerSku &&
+      location.field === issue.field &&
+      location.codePoint === issue.token?.toUpperCase(),
+  );
+}
+
 function scanStatusText(state: AuditState, reply: ReportReply | null): string {
   if (state === "starting") return "正在請 Amazon 建立全站 FBA 商品報表…";
   if (state === "polling") return reply?.message || "Amazon 正在整理商品清單…";
@@ -265,6 +325,13 @@ export default function ContentAuditPanel({
         .includes(normalizedQuery);
     });
   }, [attentionRows, filter, query]);
+  const invisibleLocations = useMemo(
+    () =>
+      filter === "all" || filter === "SUSPECTED_TYPO"
+        ? locateInvisibleCharacters(visibleRows)
+        : [],
+    [filter, visibleRows],
+  );
 
   const loadAudit = async (ready: ReportReply, signal: AbortSignal) => {
     if (!ready.reportId || !ready.documentId) {
@@ -453,6 +520,35 @@ export default function ContentAuditPanel({
             <article><span>成分未驗證</span><strong>{summary.ingredientsUnverified.toLocaleString()}</strong><small>需人工確認 PTD</small></article>
           </div>
           {spellcheckNote && <p className="content-audit-note">{spellcheckNote}</p>}
+          {invisibleLocations.length > 0 && (
+            <aside
+              className="content-export-note content-audit-invisible-guide"
+              aria-label="不可見字元統一說明與位置"
+            >
+              <strong>不可見字元統一說明</strong>
+              <p>
+                代碼會完整寫成 U+200B；U+200B 是「零寬空格」，不是 U+200。
+                下方紅色括號只是定位標記，不會修改原文；請手動修改標示段落。
+              </p>
+              <ul>
+                {invisibleLocations.map((location, index) => (
+                  <li
+                    key={`${location.sellerSku}-${location.fieldLabel}-${location.codePoint}-${index}`}
+                  >
+                    <strong>
+                      {location.sellerSku} · {location.fieldLabel} · {location.codePoint}（{location.name}）
+                    </strong>
+                    <code style={{ color: "#b42318", fontWeight: 700 }}>
+                      {location.context}
+                    </code>
+                    <small>
+                      位於「{location.before}」與「{location.after}」之間；應手動修改此段。
+                    </small>
+                  </li>
+                ))}
+              </ul>
+            </aside>
+          )}
           <div className="content-audit-controls">
             <div role="tablist" aria-label="健檢問題篩選">
               {FILTERS.map((item) => (
@@ -492,39 +588,79 @@ export default function ContentAuditPanel({
           </div>
           {visibleRows.length ? (
             <div className="content-audit-list">
-              {visibleRows.map((row) => (
-                <article key={row.sellerSku}>
-                  <div className="content-audit-product">
-                    <span>{(row.title || row.sellerSku).slice(0, 1)}</span>
-                    <div><strong>{row.title || "尚無商品標題"}</strong><small>{row.sellerSku}{row.asin ? ` · ${row.asin}` : ""}</small></div>
-                    <button type="button" onClick={() => onOpenSku(row.sellerSku)}>開啟編輯</button>
-                  </div>
-                  <div className="content-audit-issues">
-                    {row.readStatus === "incomplete" &&
-                      (filter === "all" || filter === "READ_INCOMPLETE") &&
-                      row.readErrors.map((readError, index) => (
-                        <div key={`${readError.code}-${index}`}>
-                          <span className="kind-read_incomplete">讀取失敗／未完成</span>
-                          <p>{readError.message}</p>
-                          <small>本列未計入缺賣點、缺成分或 Mac 拼字統計</small>
-                        </div>
-                      ))}
-                    {row.issues
-                      .filter(
-                        (issue) =>
-                          filter === "all" ||
-                          (filter !== "READ_INCOMPLETE" && issue.kind === filter),
-                      )
-                      .map((issue, index) => (
-                        <div key={`${issue.kind}-${issue.field}-${issue.token ?? index}`}>
-                          <span className={`kind-${issue.kind.toLocaleLowerCase()}`}>{issueLabel(issue.kind)}</span>
-                          <p>{issue.message}</p>
-                          {issue.suggestion && <small>建議檢查：{issue.suggestion}</small>}
-                        </div>
-                      ))}
-                  </div>
-                </article>
-              ))}
+              {visibleRows.map((row) => {
+                const titleIssues = typoIssuesForField(row, "title");
+                const bulletIssues = typoIssuesForField(row, "bulletPoints");
+                const ingredientsIssues = typoIssuesForField(row, "ingredients");
+                const affectedBullets = row.bulletPoints
+                  .map((value, index) => ({ value, index }))
+                  .filter(({ value }) => hasHighlightedContent(value, bulletIssues));
+                return (
+                  <article key={row.sellerSku}>
+                    <div className="content-audit-product">
+                      <span>{(row.title || row.sellerSku).slice(0, 1)}</span>
+                      <div>
+                        <strong>
+                          {row.title
+                            ? highlightedContent(row.title, titleIssues)
+                            : "尚無商品標題"}
+                        </strong>
+                        <small>{row.sellerSku}{row.asin ? ` · ${row.asin}` : ""}</small>
+                      </div>
+                      <button type="button" onClick={() => onOpenSku(row.sellerSku)}>開啟編輯</button>
+                    </div>
+                    {(affectedBullets.length > 0 ||
+                      hasHighlightedContent(row.ingredients, ingredientsIssues)) && (
+                      <div
+                        className="content-audit-original-copy"
+                        aria-label={`${row.sellerSku} 疑似錯字原文`}
+                      >
+                        {affectedBullets.map(({ value, index }) => (
+                          <p key={`bullet-${index}`}>
+                            <strong>賣點 {index + 1}</strong>
+                            <span>{highlightedContent(value, bulletIssues)}</span>
+                          </p>
+                        ))}
+                        {hasHighlightedContent(row.ingredients, ingredientsIssues) && (
+                          <p>
+                            <strong>成分</strong>
+                            <span>{highlightedContent(row.ingredients, ingredientsIssues)}</span>
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    <div className="content-audit-issues">
+                      {row.readStatus === "incomplete" &&
+                        (filter === "all" || filter === "READ_INCOMPLETE") &&
+                        row.readErrors.map((readError, index) => (
+                          <div key={`${readError.code}-${index}`}>
+                            <span className="kind-read_incomplete">讀取失敗／未完成</span>
+                            <p>{readError.message}</p>
+                            <small>本列未計入缺賣點、缺成分或 Mac 拼字統計</small>
+                          </div>
+                        ))}
+                      {row.issues
+                        .filter(
+                          (issue) =>
+                            !invisibleIssueIsExplained(
+                              row,
+                              issue,
+                              invisibleLocations,
+                            ) &&
+                            (filter === "all" ||
+                              (filter !== "READ_INCOMPLETE" && issue.kind === filter)),
+                        )
+                        .map((issue, index) => (
+                          <div key={`${issue.kind}-${issue.field}-${issue.token ?? index}`}>
+                            <span className={`kind-${issue.kind.toLocaleLowerCase()}`}>{issueLabel(issue.kind)}</span>
+                            <p>{issue.message}</p>
+                            {issue.suggestion && <small>建議檢查：{issue.suggestion}</small>}
+                          </div>
+                        ))}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           ) : (
             <div className="content-audit-empty">

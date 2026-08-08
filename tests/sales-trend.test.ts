@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  MAX_SALES_TREND_DAY_COUNT,
   SpApiError,
   buildCustomSalesTrendWindow,
   buildPreviousYearSalesTrendWindow,
@@ -32,15 +33,21 @@ async function demoSalesTrendAt(
 }
 
 describe("FBA sales trend contract", () => {
-  it("builds one AFN-only daily Sales API request", () => {
+  it("builds one AFN-only daily Sales API request with an optional exact SKU", () => {
     const window = buildSalesTrendWindow(MARKETPLACE_ID, 7, NOW);
     const query = buildSalesTrendQuery(MARKETPLACE_ID, window);
+    const skuQuery = buildSalesTrendQuery(MARKETPLACE_ID, window, {
+      sellerSku: "AFA12AM",
+    });
 
     expect(query.getAll("marketplaceIds")).toEqual([MARKETPLACE_ID]);
     expect(query.get("granularity")).toBe("Day");
     expect(query.get("buyerType")).toBe("All");
     expect(query.get("fulfillmentNetwork")).toBe("AFN");
     expect(query.get("granularityTimeZone")).toBe("America/Los_Angeles");
+    expect(query.has("sku")).toBe(false);
+    expect(skuQuery.get("sku")).toBe("AFA12AM");
+    expect(skuQuery.get("fulfillmentNetwork")).toBe("AFN");
   });
 
   it("uses marketplace calendar days and preserves DST offsets", () => {
@@ -215,17 +222,50 @@ describe("FBA sales trend contract", () => {
     expect(normalized.points.every((point) => point.partial === false)).toBe(true);
   });
 
-  it("validates custom range length, mixed modes, strict dates, and future dates", () => {
-    expect(() =>
+  it("accepts 365 custom days but rejects 366 before issuing a Sales API request", () => {
+    expect(MAX_SALES_TREND_DAY_COUNT).toBe(365);
+    expect(
       resolveSalesTrendRange(
         {
           marketplaceId: MARKETPLACE_ID,
-          startDate: "2025-12-10",
+          startDate: "2025-03-11",
           endDate: "2026-03-10",
         },
         NOW,
       ),
-    ).toThrow("自訂日期範圍必須介於 1 到 90 天");
+    ).toEqual({
+      startDate: "2025-03-11",
+      endDate: "2026-03-10",
+      dayCount: 365,
+      presetDays: null,
+    });
+    expect(() =>
+      resolveSalesTrendRange(
+        {
+          marketplaceId: MARKETPLACE_ID,
+          startDate: "2025-03-10",
+          endDate: "2026-03-10",
+        },
+        NOW,
+      ),
+    ).toThrow("自訂日期範圍必須介於 1 到 365 天");
+  });
+
+  it("keeps the paired 365-day previous-year request inside the Sales API two-year horizon", async () => {
+    const snapshot = await demoSalesTrendAt(NOW, {
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2025-03-11",
+      endDate: "2026-03-10",
+      comparison: "previous-year",
+    });
+
+    expect(snapshot.range.dayCount).toBe(365);
+    expect(snapshot.comparison?.range.startDate).toBe("2024-03-11");
+    expect(snapshot.comparison?.range.endDate).toBe("2025-03-10");
+    expect(snapshot.comparison?.points).toHaveLength(365);
+  });
+
+  it("validates mixed modes, strict dates, future dates, and the Sales API horizon", () => {
 
     expect(() =>
       resolveSalesTrendRange(

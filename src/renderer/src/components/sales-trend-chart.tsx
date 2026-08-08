@@ -80,6 +80,7 @@ const HEIGHT = 250;
 const PLOT = { left: 66, right: 18, top: 20, bottom: 42 };
 const RANGE_OPTIONS = [7, 14, 30, 90] as const;
 const DAY_MILLISECONDS = 86_400_000;
+export const MAX_CUSTOM_SALES_TREND_DAYS = 365;
 
 export function salesTrendFailureMessage(
   status: number,
@@ -193,7 +194,9 @@ export function trendCustomRangeError(
   if (latestAvailableDate && endDate > latestAvailableDate) {
     return `目前僅有截至 ${latestAvailableDate} 的資料；之後日期尚未有資料，請調整結束日。`;
   }
-  if (dayCount > 90) return "自訂範圍最多 90 天（包含開始日與結束日）。";
+  if (dayCount > MAX_CUSTOM_SALES_TREND_DAYS) {
+    return `自訂範圍最多 ${MAX_CUSTOM_SALES_TREND_DAYS} 天（包含開始日與結束日）。`;
+  }
   if (earliestStartDate && startDate < earliestStartDate) {
     return `為了同時查詢去年同期，開始日最早可選 ${earliestStartDate}。`;
   }
@@ -607,7 +610,7 @@ export default function SalesTrendChart({
             {loading ? "載入中…" : "套用"}
           </button>
           <small>
-            包含開始日與結束日，最多 90 天；
+            可超過 90 天；包含開始日與結束日，並保留去年同期比較。
             {latestAvailableDate
               ? `目前資料截至 ${latestAvailableDate}。`
               : "Amazon 仍會在 Mac 端再次驗證可查日期。"}

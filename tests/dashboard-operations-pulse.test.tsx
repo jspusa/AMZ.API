@@ -368,6 +368,85 @@ describe("dashboard operations pulse data flow", () => {
     ).toBe(false);
   });
 
+  it("accepts a complete 365-day paired snapshot but rejects a 366-day bridge payload", () => {
+    const currentPoints = dateRangePoints("2025-03-11", 365);
+    const comparisonPoints = dateRangePoints("2024-03-11", 365);
+    const selection: TrendRangeSelection = {
+      kind: "custom",
+      startDate: "2025-03-11",
+      endDate: "2026-03-10",
+    };
+    const annualSnapshot: SalesTrendSnapshot = {
+      ...snapshot(),
+      days: 365,
+      range: {
+        startDate: "2025-03-11",
+        endDate: "2026-03-10",
+        dayCount: 365,
+        presetDays: null,
+      },
+      points: currentPoints,
+      totals: pointTotals(currentPoints),
+      comparison: {
+        kind: "previous-year",
+        range: {
+          startDate: "2024-03-11",
+          endDate: "2025-03-10",
+          dayCount: 365,
+          presetDays: null,
+        },
+        points: comparisonPoints,
+        totals: pointTotals(comparisonPoints),
+        requestId: null,
+        rateLimit: null,
+      },
+    };
+
+    expect(
+      isSalesTrendSnapshotForSelection(
+        annualSnapshot,
+        DEFAULT_MARKETPLACE_ID,
+        selection,
+      ),
+    ).toBe(true);
+
+    const tooLongPoints = dateRangePoints("2025-03-10", 366);
+    const tooLongComparisonPoints = dateRangePoints("2024-03-10", 366);
+    expect(
+      isSalesTrendSnapshotForSelection(
+        {
+          ...annualSnapshot,
+          days: 366,
+          range: {
+            startDate: "2025-03-10",
+            endDate: "2026-03-10",
+            dayCount: 366,
+            presetDays: null,
+          },
+          points: tooLongPoints,
+          totals: pointTotals(tooLongPoints),
+          comparison: {
+            ...annualSnapshot.comparison!,
+            range: {
+              startDate: "2024-03-10",
+              endDate: "2025-03-10",
+              dayCount: 366,
+              presetDays: null,
+            },
+            points: tooLongComparisonPoints,
+            totals: pointTotals(tooLongComparisonPoints),
+          },
+        },
+        DEFAULT_MARKETPLACE_ID,
+        {
+          kind: "custom",
+          startDate: "2025-03-10",
+          endDate: "2026-03-10",
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("does not mislabel a failed initial Sales request as live or demo", () => {
     const markup = renderToStaticMarkup(
       <Dashboard

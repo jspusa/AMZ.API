@@ -16,8 +16,10 @@ describe("renderer commerce terminology", () => {
       />,
     );
 
-    expect(markup).toContain("Sale Price 與 Coupon");
+    expect(markup).toContain("<h2");
+    expect(markup).toContain("促銷");
     expect(markup).toContain("Sale Price（SKU 限時售價）");
+    expect(markup).toContain("Amazon 官方完成");
     expect(markup).toContain(
       "產品 → 管理所有庫存 → 編輯此 SKU → Offer／商品報價 → Sale Price",
     );
@@ -62,14 +64,28 @@ describe("renderer commerce terminology", () => {
   });
 
   it("names the dashboard tile without implying an Advertising promotion", async () => {
-    const dashboardSource = await readFile(
-      new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
-      "utf8",
-    );
+    const [dashboardSource, promotionSource] = await Promise.all([
+      readFile(
+        new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL(
+          "../src/renderer/src/components/promotion-center-drawer.tsx",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
 
-    expect(dashboardSource).toContain("<h3>Sale Price 與 Coupon</h3>");
+    expect(dashboardSource).toContain("<h3>Sale Price</h3>");
     expect(dashboardSource).toContain(
-      "Sale Price 對應單一 SKU 的限時售價，不是廣告選單的價格折扣或管理促銷",
+      "Amazon API 無法完成的促銷另集中在官方完成功能",
     );
+    expect(promotionSource).toContain("目前 API 無法完成的功能");
+    expect(promotionSource).toContain("前往 Amazon 建立 Coupon ↗");
+    expect(promotionSource).not.toContain('className="coupon-grid');
+    expect(promotionSource).not.toContain("Coupon 設定摘要");
+    expect(promotionSource).not.toContain("couponBudget");
   });
 });
