@@ -7640,6 +7640,27 @@ function exactBrandSalesWindow(input: {
   );
 }
 
+function parseFixedBrandSalesTime(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/u.exec(
+    value,
+  );
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() + 1 !== month ||
+    calendarDate.getUTCDate() !== day ||
+    (match[4] !== "Z" && match[4].slice(1, 3) === "14" && match[4].slice(4) !== "00")
+  ) {
+    return null;
+  }
+  const instant = Date.parse(value);
+  return Number.isFinite(instant) ? instant : null;
+}
+
 export async function startFbaShipmentSalesReport(input: {
   marketplaceId: MarketplaceId;
   startDate: string;
@@ -7700,13 +7721,11 @@ export async function getFbaShipmentSalesReportStatus(input: {
   dataEndTime: string;
 }): Promise<BrandSalesReportStatus> {
   exactBrandSalesWindow(input);
-  const expectedStartTime = Date.parse(input.dataStartTime);
-  const expectedEndTime = Date.parse(input.dataEndTime);
+  const expectedStartTime = parseFixedBrandSalesTime(input.dataStartTime);
+  const expectedEndTime = parseFixedBrandSalesTime(input.dataEndTime);
   if (
-    !Number.isFinite(expectedStartTime) ||
-    !Number.isFinite(expectedEndTime) ||
-    new Date(expectedStartTime).toISOString() !== input.dataStartTime ||
-    new Date(expectedEndTime).toISOString() !== input.dataEndTime ||
+    expectedStartTime === null ||
+    expectedEndTime === null ||
     expectedEndTime <= expectedStartTime
   ) {
     throw new SpApiError("FBA 品牌出貨報表的固定查詢時間無效。", {
@@ -7739,15 +7758,15 @@ export async function getFbaShipmentSalesReportStatus(input: {
   });
   if (!response.ok) return throwReportsError(response, "brand-sales");
   const payload = await parseResponseJson<AmazonReport>(response);
-  const startTime = Date.parse(payload?.dataStartTime ?? "");
-  const endTime = Date.parse(payload?.dataEndTime ?? "");
+  const startTime = parseFixedBrandSalesTime(payload?.dataStartTime ?? "");
+  const endTime = parseFixedBrandSalesTime(payload?.dataEndTime ?? "");
   if (
     payload?.reportType !== FBA_SHIPMENT_SALES_REPORT_TYPE ||
     !Array.isArray(payload.marketplaceIds) ||
     payload.marketplaceIds.length !== 1 ||
     payload.marketplaceIds[0] !== input.marketplaceId ||
-    !Number.isFinite(startTime) ||
-    !Number.isFinite(endTime) ||
+    startTime === null ||
+    endTime === null ||
     startTime !== expectedStartTime ||
     endTime !== expectedEndTime
   ) {
