@@ -79,10 +79,21 @@ function regionTestLabel(test: ConnectionTestResult | null, region: SpApiRegion)
 
 export default function ConnectionPanel({
   onConnectionChanged,
+  open: controlledOpen,
+  onOpenChange,
+  showTrigger = true,
 }: {
   onConnectionChanged: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
   const [sopOpen, setSopOpen] = useState(true);
   const [summary, setSummary] = useState<CredentialSummary | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -214,15 +225,17 @@ export default function ConnectionPanel({
 
   return (
     <>
-      <button
-        type="button"
-        className={`mac-bridge-button ${configuredCount ? "connected" : ""}`}
-        onClick={() => setOpen(true)}
-        aria-label="開啟 Mac 安全連線設定"
-      >
-        <span>{configuredCount ? "✓" : "⌁"}</span>
-        <div><strong>Mac 安全連線</strong><small>{configuredCount ? `${configuredCount} 區域已連線` : "輸入 API 憑證"}</small></div>
-      </button>
+      {showTrigger && (
+        <button
+          type="button"
+          className={`mac-bridge-button ${configuredCount ? "connected" : ""}`}
+          onClick={() => setOpen(true)}
+          aria-label="開啟 Mac 安全連線設定"
+        >
+          <span>{configuredCount ? "✓" : "⌁"}</span>
+          <div><strong>Mac 安全連線</strong><small>{configuredCount ? `${configuredCount} 區域已連線` : "輸入 API 憑證"}</small></div>
+        </button>
+      )}
 
       {open && (
         <div className="connection-panel-backdrop" role="presentation" onMouseDown={(event) => {

@@ -42,12 +42,10 @@ function detachBody() {
     marketplaceId: MARKETPLACE_ID,
     sellerSku: SELLER_SKU,
     expectedSourceParentSku: SOURCE_PARENT,
-    targetParentSku: TARGET_PARENT,
-    variationTheme: "SIZE_NAME",
-    dimensionNames: ["size_name"],
-    dimensionValues: {
-      size_name: [{ value: "4 oz", marketplace_id: MARKETPLACE_ID }],
-    },
+    targetParentSku: null,
+    variationTheme: null,
+    dimensionNames: [],
+    dimensionValues: {},
     idempotencyKey: "variation-detach-test-001",
   };
 }
@@ -119,21 +117,21 @@ describe("variation move preview and Touch ID routes", () => {
     });
   });
 
-  it("rejects target or dimension tampering before native approval", async () => {
+  it("rejects target data smuggled into the detach stage before native approval", async () => {
     const body = detachBody();
     expect((await router.handle(writeRequest("POST", body))).status).toBe(200);
 
     const commit = await router.handle(writeRequest("PATCH", {
       ...body,
-      dimensionValues: {
-        size_name: [{ value: "10 oz", marketplace_id: MARKETPLACE_ID }],
-      },
+      targetParentSku: TARGET_PARENT,
+      variationTheme: "SIZE_NAME",
+      dimensionNames: ["size_name"],
+      dimensionValues: { size_name: [{ value: "10 oz" }] },
     }));
 
-    expect(commit.status).toBe(409);
+    expect(commit.status).toBe(400);
     expect(commit.body.kind).toBe("json");
     if (commit.body.kind !== "json") throw new Error("Expected JSON response");
-    expect(commit.body.value).toMatchObject({ code: "PREVIEW_CHANGED" });
     expect(approveWrite).not.toHaveBeenCalled();
     expect(runIdempotentOperation).not.toHaveBeenCalled();
   });

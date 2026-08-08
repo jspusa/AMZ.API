@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   LatestAccountingRequest,
   accountingDateRequirement,
@@ -26,7 +27,12 @@ function canPlan(capability: AccountingCapabilityView): boolean {
   return ["READY_PUBLIC_API", "READY_CREATE_REPORT", "READY_LIST_GENERATED"].includes(capability.state);
 }
 
-export default function AccountingCenterPanel({ marketplaceId }: { marketplaceId: string }) {
+const HIDDEN_ACCOUNTING_CAPABILITIES = new Set([
+  "SETTLEMENT_V2",
+  "BRAZIL_FBA_INVOICES",
+]);
+
+export function AccountingCenterPanel({ marketplaceId }: { marketplaceId: string }) {
   const [snapshot, setSnapshot] = useState<ReturnType<typeof parseAccountingCapabilitySnapshot> | null>(null);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -49,7 +55,7 @@ export default function AccountingCenterPanel({ marketplaceId }: { marketplaceId
       signal: ticket.controller.signal,
     }).then(async (response) => {
       const raw = await response.json() as unknown;
-      if (!response.ok) throw new Error(message(raw, "帳務中心能力清單載入失敗。"));
+      if (!response.ok) throw new Error(message(raw, "帳務能力清單載入失敗。"));
       const parsed = parseAccountingCapabilitySnapshot(raw);
       if (parsed.marketplaceId !== marketplaceId) throw new Error("帳務能力清單與目前站點不一致。");
       if (!catalogRequests.current.isCurrent(ticket)) return;
@@ -59,7 +65,7 @@ export default function AccountingCenterPanel({ marketplaceId }: { marketplaceId
         !catalogRequests.current.isCurrent(ticket) ||
         (loadError instanceof Error && loadError.name === "AbortError")
       ) return;
-      setError(loadError instanceof Error ? loadError.message : "目前無法載入帳務中心。");
+      setError(loadError instanceof Error ? loadError.message : "目前無法載入帳務。");
     }).finally(() => {
       if (!catalogRequests.current.isCurrent(ticket)) return;
       catalogRequests.current.complete(ticket);
@@ -77,7 +83,9 @@ export default function AccountingCenterPanel({ marketplaceId }: { marketplaceId
 
   const visibleSnapshot = snapshot?.marketplaceId === marketplaceId ? snapshot : null;
   const groups = useMemo(() => {
-    const capabilities = visibleSnapshot?.capabilities ?? [];
+    const capabilities = (visibleSnapshot?.capabilities ?? []).filter(
+      (item) => !HIDDEN_ACCOUNTING_CAPABILITIES.has(item.id),
+    );
     return {
       ready: capabilities.filter((item) => accountingStateKind(item.state) === "ready"),
       manual: capabilities.filter((item) => accountingStateKind(item.state) === "manual"),
@@ -177,14 +185,10 @@ export default function AccountingCenterPanel({ marketplaceId }: { marketplaceId
   };
 
   return (
-    <section className="accounting-center-panel" aria-label="FBA 帳務中心">
+    <section className="accounting-center-panel" aria-label="FBA 帳務">
       <p className="eyebrow">PUBLIC API ACCOUNTING</p>
-      <h3>FBA 帳務中心</h3>
-      <p className="price-intro">先把 Amazon 公開 API 真正能取得的 FBA 報表與能力邊界整理清楚；這裡建立下載規劃，不會把 JSON、估算或 Seller Central 私有頁面假裝成發票。</p>
-      <div className="content-export-note">
-        <strong>一般 Amazon 發票／賣家帳單沒有公開下載 API</strong>
-        <p>Invoices API 目前只涵蓋巴西 FBA 發票；本 App 的 US／CA／JP／SG／AU／UK／DE 不會顯示假的發票下載按鈕。</p>
-      </div>
+      <h3>帳務</h3>
+      <p className="price-intro">集中查看目前工作區真正會用到的 FBA 公開報表規劃；不使用 Seller Central 私有接口，也不把估算資料稱為發票。</p>
       <div className="accounting-date-range">
         <label><span>開始日（需要日期的規劃）</span><input type="date" value={startDate} onChange={(event) => changeDate("start", event.target.value)} /></label>
         <label><span>結束日（Finances／庫齡附加費）</span><input type="date" value={endDate} onChange={(event) => changeDate("end", event.target.value)} /></label>
@@ -212,3 +216,45 @@ export default function AccountingCenterPanel({ marketplaceId }: { marketplaceId
     </section>
   );
 }
+
+export function AccountingCenterDrawer({
+  marketplaceId,
+  onClose,
+}: {
+  marketplaceId: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="drawer-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <aside
+        className="order-drawer accounting-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="accounting-drawer-title"
+      >
+        <div className="drawer-header">
+          <div><p className="eyebrow">FBA · PUBLIC API</p><h2 id="accounting-drawer-title">帳務</h2></div>
+          <button type="button" onClick={onClose} autoFocus aria-label="關閉帳務">×</button>
+        </div>
+        <AccountingCenterPanel marketplaceId={marketplaceId} />
+      </aside>
+    </div>,
+    document.body,
+  );
+}
+
+export default AccountingCenterPanel;

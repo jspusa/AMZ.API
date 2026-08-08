@@ -427,6 +427,95 @@ describe("official FBA 180+ day inventory report", () => {
     ]);
   });
 
+  it("treats blank official fees as zero only when the same row has a zero charge basis", () => {
+    const aisKeys = [...COMMON_AIS_KEYS, "365-plus"] as const;
+    const headers = [
+      "sku",
+      "inv-age-0-to-90-days",
+      "inv-age-91-to-180-days",
+      "inv-age-181-to-270-days",
+      "inv-age-271-to-365-days",
+      "inv-age-365-plus-days",
+      "storage-volume",
+      "estimated-storage-cost-next-month",
+      ...aisKeys.flatMap((key) => [
+        `quantity-to-be-charged-ais-${key}-days`,
+        `estimated-ais-${key}-days`,
+      ]),
+    ];
+    const record: Record<string, string | number> = {
+      sku: "ZERO-BASIS-FBA",
+      "inv-age-0-to-90-days": 8,
+      "inv-age-91-to-180-days": 0,
+      "inv-age-181-to-270-days": 0,
+      "inv-age-271-to-365-days": 0,
+      "inv-age-365-plus-days": 0,
+      "storage-volume": 0,
+    };
+    for (const key of aisKeys) {
+      record[`quantity-to-be-charged-ais-${key}-days`] = 0;
+    }
+
+    const parsed = parseAgedInventoryReportData(reportText(headers, [record]));
+    expect(parsed.storageCostAvailability).toBe("complete");
+    expect(parsed.agedSurchargeAvailability).toBe("complete");
+    expect(parsed.rows[0]).toMatchObject({
+      estimatedStorageCostNextMonth: 0,
+      estimatedAgedSurcharge: 0,
+      currencyCode: null,
+    });
+    expect(parsed.rows[0]!.agedSurchargeBuckets).toEqual(
+      aisKeys.map((key) =>
+        expect.objectContaining({ key, quantity: 0, estimatedCharge: 0 }),
+      ),
+    );
+  });
+
+  it("does not infer storage or AIS rates when the charge basis is positive or missing", () => {
+    const aisKeys = [...COMMON_AIS_KEYS, "365-plus"] as const;
+    const headers = [
+      "sku",
+      "inv-age-0-to-90-days",
+      "inv-age-91-to-180-days",
+      "inv-age-181-to-270-days",
+      "inv-age-271-to-365-days",
+      "inv-age-365-plus-days",
+      "currency",
+      "storage-volume",
+      "estimated-storage-cost-next-month",
+      ...aisKeys.flatMap((key) => [
+        `quantity-to-be-charged-ais-${key}-days`,
+        `estimated-ais-${key}-days`,
+      ]),
+    ];
+    const record: Record<string, string | number> = {
+      sku: "UNKNOWN-RATE-FBA",
+      "inv-age-0-to-90-days": 0,
+      "inv-age-91-to-180-days": 0,
+      "inv-age-181-to-270-days": 1,
+      "inv-age-271-to-365-days": 0,
+      "inv-age-365-plus-days": 0,
+      currency: "USD",
+      "storage-volume": 1.25,
+      "quantity-to-be-charged-ais-181-210-days": 1,
+    };
+    for (const key of aisKeys.slice(1)) {
+      record[`quantity-to-be-charged-ais-${key}-days`] = 0;
+    }
+
+    const parsed = parseAgedInventoryReportData(reportText(headers, [record]));
+    expect(parsed.storageCostAvailability).toBe("partial");
+    expect(parsed.agedSurchargeAvailability).toBe("partial");
+    expect(parsed.rows[0]).toMatchObject({
+      estimatedStorageCostNextMonth: null,
+      estimatedAgedSurcharge: null,
+    });
+    expect(parsed.rows[0]!.agedSurchargeBuckets[0]).toMatchObject({
+      quantity: 1,
+      estimatedCharge: null,
+    });
+  });
+
   it("fails closed when an Amazon report omits every complete long-age tail", () => {
     expect(() =>
       parseAgedInventoryReportDocument(

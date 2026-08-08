@@ -71,6 +71,22 @@ export type CreateSubscriptionAuditWorkbookInput = {
   provenSubscriptionRevenue: number | null;
   revenueCurrencyCode: string | null;
   revenueCoverage: SubscriptionAuditRevenueCoverage;
+  inventoryEvidence: {
+    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION";
+    provenSkuCount: number;
+    verifiableReplenishmentOfferCount: number;
+    unverifiedFbaSkuCount: number;
+  };
+  upstreamCoverage?: {
+    status: "complete" | "partial";
+    returnedOfferRows: number;
+    acceptedOfferRows: number;
+    returnedMetricRows: number;
+    acceptedMetricRows: number;
+    rejectedSellerSkuRows: number;
+    minimumUnresolvedOfferMonths: number;
+    notice: string;
+  };
   problems: readonly SubscriptionAuditProblemWorkbookRow[];
 };
 
@@ -113,7 +129,21 @@ export function createSubscriptionAuditWorkbook(
     seen.add(problem.sellerSku);
     return problem;
   });
-  const coverage = validateCoverage(input.revenueCoverage, rows, metricMonths);
+  const upstreamCoverage = validateUpstreamCoverage(
+    input.upstreamCoverage,
+    metricMonths.length,
+  );
+  const inventoryEvidence = validateInventoryEvidence(
+    input.inventoryEvidence,
+    rows.length,
+  );
+  const coverage = validateCoverage(
+    input.revenueCoverage,
+    rows,
+    metricMonths,
+    upstreamCoverage.status === "partial" ||
+      inventoryEvidence.unverifiedFbaSkuCount > 0,
+  );
   if (coverage.status === "complete") {
     if (totalRevenue === null || revenueCurrency === null) {
       throw new TypeError(
@@ -146,6 +176,8 @@ export function createSubscriptionAuditWorkbook(
       totalRevenue,
       revenueCurrency,
       revenueCoverage: coverage,
+      inventoryEvidence,
+      upstreamCoverage,
       rows: rows.filter((row) => row.bucket === bucket),
     }),
   }));
@@ -223,13 +255,29 @@ function worksheetXml(input: {
   totalRevenue: number | null;
   revenueCurrency: string | null;
   revenueCoverage: SubscriptionAuditRevenueCoverage;
+  inventoryEvidence: CreateSubscriptionAuditWorkbookInput["inventoryEvidence"];
+  upstreamCoverage: NonNullable<CreateSubscriptionAuditWorkbookInput["upstreamCoverage"]>;
   rows: readonly SubscriptionAuditProblemWorkbookRow[];
 }): string {
   const firstMonth = input.metricMonths[0]!;
   const lastMonth = input.metricMonths.at(-1)!;
   const metaRows: Cell[][] = [
     [textCell("站點"), textCell(input.marketplaceLabel)],
-    [textCell("全站目前有效訂閱"), numberCell(input.totalSubscriptions)],
+    [
+      textCell(
+        input.upstreamCoverage.status === "complete" &&
+          input.inventoryEvidence.unverifiedFbaSkuCount === 0
+          ? "全站目前有效訂閱"
+          : "已核對目前有效訂閱（範圍不完整）",
+      ),
+      numberCell(input.totalSubscriptions),
+    ],
+    [
+      textCell("同次 FBA／Replenishment offer 核對範圍"),
+      textCell(
+        `已證明 FBA ${input.inventoryEvidence.provenSkuCount} 個；可核對 offer ${input.inventoryEvidence.verifiableReplenishmentOfferCount} 個；未回傳可核對 offer ${input.inventoryEvidence.unverifiedFbaSkuCount} 個。未回傳不代表不符合資格，也不代表 0 訂閱。`,
+      ),
+    ],
     [
       textCell("所選完整月份"),
       textCell(
@@ -249,7 +297,19 @@ function worksheetXml(input: {
     ],
     [
       textCell("營收資料涵蓋"),
-      textCell(coverageLabel(input.revenueCoverage)),
+      textCell(coverageLabel(
+        input.revenueCoverage,
+        input.upstreamCoverage,
+        input.inventoryEvidence,
+      )),
+    ],
+    [
+      textCell("Amazon 回應完整度"),
+      textCell(
+        input.upstreamCoverage.status === "complete"
+          ? "完整；所有 Replenishment Seller SKU 均可原樣核對。"
+          : `不完整；排除 ${input.upstreamCoverage.rejectedSellerSkuRows} 列，至少 ${input.upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對；offer 與月度缺列可能不重疊，實際缺口無法精確計算。${input.upstreamCoverage.notice}`,
+      ),
     ],
   ];
   const dataRows = input.rows.flatMap((row): Cell[][] => {
@@ -314,10 +374,112 @@ function validateMetricMonths(input: readonly string[]): string[] {
   return months;
 }
 
+function validateInventoryEvidence(
+  input: CreateSubscriptionAuditWorkbookInput["inventoryEvidence"],
+  verifiableOfferCount: number,
+): CreateSubscriptionAuditWorkbookInput["inventoryEvidence"] {
+  if (!input || typeof input !== "object") {
+    throw new TypeError("inventoryEvidence is invalid.");
+  }
+  const provenSkuCount = safeInteger(
+    input.provenSkuCount,
+    "inventoryEvidence.provenSkuCount",
+  );
+  const verifiableReplenishmentOfferCount = safeInteger(
+    input.verifiableReplenishmentOfferCount,
+    "inventoryEvidence.verifiableReplenishmentOfferCount",
+  );
+  const unverifiedFbaSkuCount = safeInteger(
+    input.unverifiedFbaSkuCount,
+    "inventoryEvidence.unverifiedFbaSkuCount",
+  );
+  if (
+    input.source !== "FBA_INVENTORY_API_COMPLETE_PAGINATION" ||
+    verifiableReplenishmentOfferCount !== verifiableOfferCount ||
+    provenSkuCount !==
+      verifiableReplenishmentOfferCount + unverifiedFbaSkuCount
+  ) {
+    throw new TypeError(
+      "inventoryEvidence does not match the exported FBA offer scope.",
+    );
+  }
+  return {
+    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+    provenSkuCount,
+    verifiableReplenishmentOfferCount,
+    unverifiedFbaSkuCount,
+  };
+}
+
+function validateUpstreamCoverage(
+  input: CreateSubscriptionAuditWorkbookInput["upstreamCoverage"],
+  metricMonthCount: number,
+): NonNullable<CreateSubscriptionAuditWorkbookInput["upstreamCoverage"]> {
+  if (input === undefined) {
+    return {
+      status: "complete",
+      returnedOfferRows: 0,
+      acceptedOfferRows: 0,
+      returnedMetricRows: 0,
+      acceptedMetricRows: 0,
+      rejectedSellerSkuRows: 0,
+      minimumUnresolvedOfferMonths: 0,
+      notice: "所有 Replenishment Seller SKU 均可原樣核對。",
+    };
+  }
+  const returnedOfferRows = safeInteger(
+    input.returnedOfferRows,
+    "upstreamCoverage.returnedOfferRows",
+  );
+  const acceptedOfferRows = safeInteger(
+    input.acceptedOfferRows,
+    "upstreamCoverage.acceptedOfferRows",
+  );
+  const returnedMetricRows = safeInteger(
+    input.returnedMetricRows,
+    "upstreamCoverage.returnedMetricRows",
+  );
+  const acceptedMetricRows = safeInteger(
+    input.acceptedMetricRows,
+    "upstreamCoverage.acceptedMetricRows",
+  );
+  const rejectedSellerSkuRows = safeInteger(
+    input.rejectedSellerSkuRows,
+    "upstreamCoverage.rejectedSellerSkuRows",
+  );
+  const minimumUnresolvedOfferMonths = safeInteger(
+    input.minimumUnresolvedOfferMonths,
+    "upstreamCoverage.minimumUnresolvedOfferMonths",
+  );
+  const rejectedOfferRows = returnedOfferRows - acceptedOfferRows;
+  const rejectedMetricRows = returnedMetricRows - acceptedMetricRows;
+  if (
+    rejectedOfferRows < 0 ||
+    rejectedMetricRows < 0 ||
+    rejectedSellerSkuRows !== rejectedOfferRows + rejectedMetricRows ||
+    minimumUnresolvedOfferMonths !==
+      Math.max(rejectedOfferRows * metricMonthCount, rejectedMetricRows) ||
+    input.status !== (rejectedSellerSkuRows === 0 ? "complete" : "partial")
+  ) {
+    throw new TypeError("upstreamCoverage does not match the source row counts.");
+  }
+  return {
+    status: input.status,
+    returnedOfferRows,
+    acceptedOfferRows,
+    returnedMetricRows,
+    acceptedMetricRows,
+    rejectedSellerSkuRows,
+    minimumUnresolvedOfferMonths,
+    notice: safeRequiredText(input.notice, "upstreamCoverage.notice"),
+  };
+}
+
 function validateCoverage(
   input: SubscriptionAuditRevenueCoverage,
   rows: readonly SubscriptionAuditProblemWorkbookRow[],
   metricMonths: readonly string[],
+  sourceIncomplete = false,
 ): SubscriptionAuditRevenueCoverage {
   if (!input || typeof input !== "object") {
     throw new TypeError("revenueCoverage is invalid.");
@@ -340,7 +502,7 @@ function validateCoverage(
   if (expected !== expectedFromRows || reported !== reportedFromRows) {
     throw new TypeError("revenueCoverage does not match the exported offer-month series.");
   }
-  const expectedStatus = expected === reported
+  const expectedStatus = !sourceIncomplete && expected === reported
     ? "complete"
     : reported === 0
       ? "unavailable"
@@ -351,8 +513,22 @@ function validateCoverage(
   return { status: input.status, expectedOfferMonths: expected, reportedOfferMonths: reported };
 }
 
-function coverageLabel(coverage: SubscriptionAuditRevenueCoverage): string {
+function coverageLabel(
+  coverage: SubscriptionAuditRevenueCoverage,
+  upstreamCoverage: NonNullable<CreateSubscriptionAuditWorkbookInput["upstreamCoverage"]>,
+  inventoryEvidence: CreateSubscriptionAuditWorkbookInput["inventoryEvidence"],
+): string {
   const count = `${coverage.reportedOfferMonths} / ${coverage.expectedOfferMonths} 個 SKU 月份`;
+  const gaps: string[] = [];
+  if (inventoryEvidence.unverifiedFbaSkuCount > 0) {
+    gaps.push(`另有 ${inventoryEvidence.unverifiedFbaSkuCount} 個已證明 FBA SKU 未回傳可核對 offer，不能據此判定資格或 0 訂閱`);
+  }
+  if (upstreamCoverage.status === "partial") {
+    gaps.push(`另至少 ${upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對，實際缺口未知`);
+  }
+  if (gaps.length > 0) {
+    return `已核對資料（${count}）；${gaps.join("；")}；未輸出全站總額`;
+  }
   if (coverage.status === "complete") return `完整（${count}）`;
   if (coverage.status === "partial") {
     return `不完整（${count}）；空白維持缺值，未補 0`;

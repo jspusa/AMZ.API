@@ -2,7 +2,9 @@ import { unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import {
   createAgedInventoryWorkbook,
+  createImageAuditWorkbook,
   createListingsWorkbook,
+  createUnboundVariationWorkbook,
 } from "../src/main/amazon/xlsx";
 
 describe("listing content Excel export", () => {
@@ -113,5 +115,98 @@ describe("FBA aged inventory Excel export", () => {
       "Amazon 公開 API 不提供目前 FC 批次的逐 SKU 到期日。",
     );
     expect(notesSheet).toContain("不猜費率");
+  });
+});
+
+describe("FBA image audit Excel export", () => {
+  it("keeps complete, under-minimum and incomplete rows honest in one snapshot", () => {
+    const workbook = createImageAuditWorkbook({
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceLabel: "US · Amazon.com",
+      fetchedAt: "2026-08-08T08:00:00.000Z",
+      minimumImages: 5,
+      rows: [
+        {
+          sellerSku: "FOUR-IMAGES",
+          asin: "B000000001",
+          productType: "PET_FOOD",
+          title: "Four images",
+          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg"],
+          imageCount: 4,
+          readStatus: "complete",
+          readErrors: [],
+        },
+        {
+          sellerSku: "UNKNOWN-IMAGES",
+          asin: "B000000002",
+          productType: "PET_FOOD",
+          title: "Unknown images",
+          imageUrls: [],
+          imageCount: 0,
+          readStatus: "incomplete",
+          readErrors: [{
+            code: "LISTING_CONTENT_NOT_RETURNED",
+            message: "attributes missing",
+          }],
+        },
+      ],
+    });
+
+    expect(Array.from(workbook.slice(0, 2))).toEqual([0x50, 0x4b]);
+    const archive = unzipSync(workbook);
+    const workbookXml = new TextDecoder().decode(archive["xl/workbook.xml"]);
+    const auditSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet1.xml"],
+    );
+    const notesSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet2.xml"],
+    );
+    expect(workbookXml).toContain("圖片健檢");
+    expect(auditSheet).toContain("FOUR-IMAGES");
+    expect(auditSheet).toContain("UNKNOWN-IMAGES");
+    expect(auditSheet).toContain("圖片不足");
+    expect(auditSheet).toContain("讀取未完成");
+    expect(auditSheet).toContain("LISTING_CONTENT_NOT_RETURNED: attributes missing");
+    expect(auditSheet).toContain("https://a/4.jpg");
+    expect(notesSheet).toContain("不含 FBM");
+    expect(notesSheet).toContain("不把無法完整讀取的 Listing 冒充為零張圖片");
+  });
+});
+
+describe("FBA unbound variation audit Excel export", () => {
+  it("keeps proven unbound and incomplete relationship evidence in separate sheets", () => {
+    const workbook = createUnboundVariationWorkbook({
+      marketplaceLabel: "US · Amazon.com",
+      fetchedAt: "2026-08-09T02:00:00.000Z",
+      rows: [{
+        sellerSku: "UNBOUND-01",
+        asin: "B000000001",
+        title: "Unbound FBA product",
+        productType: "PET_FOOD",
+        notice: "Amazon relationships 已完整回傳，且沒有 parent 關係。",
+      }],
+      incompleteRows: [{
+        sellerSku: "UNKNOWN-02",
+        asin: "B000000002",
+        title: "Unknown relationship product",
+        code: "RELATIONSHIPS_NOT_RETURNED",
+        message: "缺資料不會被誤列為未綁變體。",
+      }],
+    });
+
+    const archive = unzipSync(workbook);
+    const workbookXml = new TextDecoder().decode(archive["xl/workbook.xml"]);
+    const unboundSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet1.xml"],
+    );
+    const incompleteSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet2.xml"],
+    );
+    expect(workbookXml).toContain("未綁變體");
+    expect(workbookXml).toContain("讀取未完成");
+    expect(unboundSheet).toContain("UNBOUND-01");
+    expect(unboundSheet).not.toContain("UNKNOWN-02");
+    expect(incompleteSheet).toContain("UNKNOWN-02");
+    expect(incompleteSheet).toContain("RELATIONSHIPS_NOT_RETURNED");
   });
 });

@@ -63,7 +63,7 @@ describe("renderer commerce terminology", () => {
     }
   });
 
-  it("names the dashboard tile without implying an Advertising promotion", async () => {
+  it("names the pricing dropdown without implying an Advertising promotion", async () => {
     const [dashboardSource, promotionSource] = await Promise.all([
       readFile(
         new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
@@ -78,10 +78,11 @@ describe("renderer commerce terminology", () => {
       ),
     ]);
 
-    expect(dashboardSource).toContain("<h3>Sale Price</h3>");
-    expect(dashboardSource).toContain(
-      "Amazon API 無法完成的促銷另集中在官方完成功能",
-    );
+    expect(dashboardSource).toContain('label: "價格區"');
+    expect(dashboardSource).toContain('promotion: { label: "促銷"');
+    expect(dashboardSource).toContain("Sale Price 限時售價");
+    expect(dashboardSource).not.toContain("<h3>Sale Price</h3>");
+    expect(dashboardSource).not.toContain('className="tool-tile"');
     expect(promotionSource).toContain("目前 API 無法完成的功能");
     expect(promotionSource).toContain("前往 Amazon 建立 Coupon ↗");
     expect(promotionSource).not.toContain('className="coupon-grid');

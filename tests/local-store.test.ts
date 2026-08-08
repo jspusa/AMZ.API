@@ -239,6 +239,51 @@ describe("local durable safety store", () => {
     ).resolves.toEqual({ stage: "attached" });
   });
 
+  it("re-executes a newly previewed variation cycle instead of replaying a different key", async () => {
+    const store = await testStore();
+    let detachExecutions = 0;
+    const base = {
+      operationType: "variation_detach" as const,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-REPEATED-CYCLE",
+      accountScope: "account-a",
+      fingerprint: "detach-parent-a",
+    };
+    await expect(
+      store.runIdempotentOperation({
+        ...base,
+        idempotencyKey: "variation-cycle-one-detach",
+        execute: async () => ({ execution: ++detachExecutions }),
+      }),
+    ).resolves.toEqual({ execution: 1 });
+    await store.runIdempotentOperation({
+      operationType: "variation_attach",
+      marketplaceId: base.marketplaceId,
+      sellerSku: base.sellerSku,
+      accountScope: base.accountScope,
+      fingerprint: "attach-parent-b",
+      idempotencyKey: "variation-cycle-one-attach",
+      execute: async () => ({ attached: true }),
+    });
+    await expect(
+      store.runIdempotentOperation({
+        ...base,
+        idempotencyKey: "variation-cycle-two-detach",
+        execute: async () => ({ execution: ++detachExecutions }),
+      }),
+    ).resolves.toEqual({ execution: 2 });
+    expect(detachExecutions).toBe(2);
+
+    await expect(
+      store.runIdempotentOperation({
+        ...base,
+        idempotencyKey: "variation-cycle-two-detach",
+        execute: async () => ({ execution: ++detachExecutions }),
+      }),
+    ).resolves.toEqual({ execution: 2 });
+    expect(detachExecutions).toBe(2);
+  });
+
   it("releases a variation claim when a classified pre-commit check fails", async () => {
     const store = await testStore();
     const operation = {

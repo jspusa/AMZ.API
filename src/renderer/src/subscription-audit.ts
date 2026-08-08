@@ -34,6 +34,24 @@ export type SubscriptionRevenueCoverage = {
   reportedOfferMonths: number;
 };
 
+export type SubscriptionUpstreamCoverage = {
+  status: "complete" | "partial";
+  returnedOfferRows: number;
+  acceptedOfferRows: number;
+  returnedMetricRows: number;
+  acceptedMetricRows: number;
+  rejectedSellerSkuRows: number;
+  minimumUnresolvedOfferMonths: number;
+  notice: string;
+};
+
+export type SubscriptionInventoryEvidence = {
+  source: "FBA_INVENTORY_API_COMPLETE_PAGINATION";
+  provenSkuCount: number;
+  verifiableReplenishmentOfferCount: number;
+  unverifiedFbaSkuCount: number;
+};
+
 export type SubscriptionAuditOffer = {
   sellerSku: string;
   asin: string;
@@ -54,6 +72,8 @@ export type SubscriptionAuditSnapshot = {
   exportId: string | null;
   intervals: SubscriptionAuditInterval[];
   offers: SubscriptionAuditOffer[];
+  inventoryEvidence: SubscriptionInventoryEvidence;
+  upstreamCoverage: SubscriptionUpstreamCoverage;
   summary: {
     currentActiveSubscriptions: number;
     provenSubscriptionRevenue: number | null;
@@ -132,8 +152,11 @@ function optionalPercentage(value: unknown, label: string): number | null {
 function expectedCoverageStatus(
   expectedOfferMonths: number,
   reportedOfferMonths: number,
+  sourceIncomplete = false,
 ): SubscriptionRevenueCoverage["status"] {
-  if (reportedOfferMonths === expectedOfferMonths) return "complete";
+  if (!sourceIncomplete && reportedOfferMonths === expectedOfferMonths) {
+    return "complete";
+  }
   return reportedOfferMonths === 0 ? "unavailable" : "partial";
 }
 
@@ -141,6 +164,7 @@ function parseRevenueCoverage(
   value: unknown,
   expectedOfferMonths: number,
   reportedOfferMonths: number,
+  sourceIncomplete = false,
 ): SubscriptionRevenueCoverage {
   const raw = record(value, "S&S 營收完整度");
   const parsedExpected = integer(raw.expectedOfferMonths, "S&S 預期 SKU 月份數");
@@ -151,7 +175,11 @@ function parseRevenueCoverage(
     parsedExpected !== expectedOfferMonths ||
     parsedReported !== reportedOfferMonths ||
     parsedReported > parsedExpected ||
-    status !== expectedCoverageStatus(parsedExpected, parsedReported)
+    status !== expectedCoverageStatus(
+      parsedExpected,
+      parsedReported,
+      sourceIncomplete,
+    )
   ) {
     throw new Error("S&S 營收完整度與 SKU 月度明細不一致。");
   }
@@ -159,6 +187,86 @@ function parseRevenueCoverage(
     status,
     expectedOfferMonths: parsedExpected,
     reportedOfferMonths: parsedReported,
+  };
+}
+
+function parseUpstreamCoverage(
+  value: unknown,
+  requestedMonths: number,
+): SubscriptionUpstreamCoverage {
+  const raw = record(value, "Amazon Replenishment 回應完整度");
+  const returnedOfferRows = integer(raw.returnedOfferRows, "Replenishment offer 回傳列數");
+  const acceptedOfferRows = integer(raw.acceptedOfferRows, "Replenishment offer 可核對列數");
+  const returnedMetricRows = integer(raw.returnedMetricRows, "Replenishment metric 回傳列數");
+  const acceptedMetricRows = integer(raw.acceptedMetricRows, "Replenishment metric 可核對列數");
+  const rejectedSellerSkuRows = integer(
+    raw.rejectedSellerSkuRows,
+    "Replenishment 缺少可核對 SKU 列數",
+  );
+  const minimumUnresolvedOfferMonths = integer(
+    raw.minimumUnresolvedOfferMonths,
+    "Replenishment 至少無法核對的 SKU 月份數",
+  );
+  const rejectedOfferRows = returnedOfferRows - acceptedOfferRows;
+  const rejectedMetricRows = returnedMetricRows - acceptedMetricRows;
+  const expectedRejectedRows = rejectedOfferRows + rejectedMetricRows;
+  const expectedMinimumUnresolved = Math.max(
+    rejectedOfferRows * requestedMonths,
+    rejectedMetricRows,
+  );
+  const status = raw.status;
+  if (
+    acceptedOfferRows > returnedOfferRows ||
+    acceptedMetricRows > returnedMetricRows ||
+    expectedRejectedRows !== rejectedSellerSkuRows ||
+    expectedMinimumUnresolved !== minimumUnresolvedOfferMonths ||
+    (status !== "complete" && status !== "partial") ||
+    status !== (rejectedSellerSkuRows === 0 ? "complete" : "partial")
+  ) {
+    throw new Error("Amazon Replenishment 回應完整度與原始列數不一致。");
+  }
+  return {
+    status,
+    returnedOfferRows,
+    acceptedOfferRows,
+    returnedMetricRows,
+    acceptedMetricRows,
+    rejectedSellerSkuRows,
+    minimumUnresolvedOfferMonths,
+    notice: text(raw.notice, "Replenishment 回應完整度說明", 2_000),
+  };
+}
+
+function parseInventoryEvidence(
+  value: unknown,
+  verifiableOfferCount: number,
+): SubscriptionInventoryEvidence {
+  const raw = record(value, "同次 FBA Inventory 證據");
+  const provenSkuCount = integer(
+    raw.provenSkuCount,
+    "同次已證明 FBA SKU 數",
+  );
+  const verifiableReplenishmentOfferCount = integer(
+    raw.verifiableReplenishmentOfferCount,
+    "可核對 Replenishment offer 數",
+  );
+  const unverifiedFbaSkuCount = integer(
+    raw.unverifiedFbaSkuCount,
+    "未回傳可核對 offer 的 FBA SKU 數",
+  );
+  if (
+    raw.source !== "FBA_INVENTORY_API_COMPLETE_PAGINATION" ||
+    verifiableReplenishmentOfferCount !== verifiableOfferCount ||
+    provenSkuCount !==
+      verifiableReplenishmentOfferCount + unverifiedFbaSkuCount
+  ) {
+    throw new Error("同次 FBA Inventory 證據與 S&S offer 範圍不一致。");
+  }
+  return {
+    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+    provenSkuCount,
+    verifiableReplenishmentOfferCount,
+    unverifiedFbaSkuCount,
   };
 }
 
@@ -300,6 +408,14 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
   }
   if (!Array.isArray(raw.offers)) throw new Error("全站訂閱健檢缺少 offer 清單。");
   const offers = raw.offers.map((offer, index) => parseOffer(offer, index, intervals));
+  const inventoryEvidence = parseInventoryEvidence(
+    raw.inventoryEvidence,
+    offers.length,
+  );
+  const upstreamCoverage = parseUpstreamCoverage(
+    raw.upstreamCoverage,
+    requestedMonths,
+  );
   const skus = offers.map(({ sellerSku }) => sellerSku);
   if (new Set(skus).size !== skus.length) throw new Error("全站訂閱健檢含有重複 SKU。");
   const summary = record(raw.summary, "訂閱健檢摘要");
@@ -324,6 +440,8 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
     summary.revenueCoverage,
     offers.length * intervals.length,
     reportedOfferMonths,
+    upstreamCoverage.status === "partial" ||
+      inventoryEvidence.unverifiedFbaSkuCount > 0,
   );
   if (revenueCoverage.status === "complete") {
     if (provenSubscriptionRevenue === null || revenueCurrencyCode === null) {
@@ -360,6 +478,8 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
     exportId: optionalText(raw.exportId ?? raw.snapshotId, "訂閱健檢匯出 ID", 200),
     intervals,
     offers,
+    inventoryEvidence,
+    upstreamCoverage,
     summary: {
       currentActiveSubscriptions,
       provenSubscriptionRevenue,

@@ -410,7 +410,8 @@ function feeText(
   currencyCode: string | null,
 ): string {
   if (availability === "unavailable") return "報表未提供";
-  if (availability === "partial") return "欄位不完整";
+  if (availability === "partial") return "部分 SKU 未提供";
+  if (value === 0 && currencyCode === null) return "0";
   return money(value, currencyCode);
 }
 
@@ -419,7 +420,7 @@ function quantityText(
   value: number | null,
 ): string {
   if (availability === "unavailable") return "報表未提供";
-  if (availability === "partial") return "欄位不完整";
+  if (availability === "partial") return "部分 SKU 未提供";
   return count(value);
 }
 
@@ -438,6 +439,7 @@ export default function AgedInventoryPanel({
   const [status, setStatus] = useState("尚未同步");
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [view, setView] = useState<"excess" | "all">("excess");
   const [error, setError] = useState<string | null>(null);
   const [reportReference, setReportReference] = useState<{
     reportId: string;
@@ -451,6 +453,7 @@ export default function AgedInventoryPanel({
     setStatus("尚未同步");
     setLoading(false);
     setExporting(false);
+    setView("excess");
     setReportReference(null);
     setError(null);
   }, [marketplaceId]);
@@ -601,6 +604,18 @@ export default function AgedInventoryPanel({
     }
   };
 
+  const confirmedExcessRows = snapshot?.rows.filter(
+    (row) => row.estimatedExcessQuantity !== null && row.estimatedExcessQuantity > 0,
+  ) ?? [];
+  const unresolvedExcessRows = snapshot?.rows.filter(
+    (row) => row.estimatedExcessQuantity === null,
+  ) ?? [];
+  const visibleRows = snapshot
+    ? view === "excess"
+      ? [...confirmedExcessRows, ...unresolvedExcessRows]
+      : snapshot.rows
+    : [];
+
   return (
     <section className="aged-inventory-panel" aria-busy={loading}>
       <header>
@@ -621,7 +636,7 @@ export default function AgedInventoryPanel({
         </div>
       </header>
       <p className="aged-inventory-explainer">
-        直接讀取 Amazon FBA Manage Inventory Health report，顯示報表可證明的全部非重疊庫齡桶；費用缺欄或缺值時不套費率、不推算。
+        冗餘健檢只依 Amazon FBA Manage Inventory Health report 的 estimated excess quantity；不會因庫齡高就判定冗餘。另顯示全部非重疊庫齡桶；費用缺欄或缺值時不套費率、不推算。
       </p>
       {error && <div className="price-error" role="alert">{error}</div>}
       {snapshot && (
@@ -633,13 +648,23 @@ export default function AgedInventoryPanel({
             <article><span>下月預估倉儲成本</span><strong>{feeText(snapshot.summary.storageCostAvailability, snapshot.summary.estimatedStorageCostNextMonth, snapshot.summary.currencyCode)}</strong></article>
             <article><span>AIS 預估附加費</span><strong>{feeText(snapshot.summary.agedSurchargeAvailability, snapshot.summary.estimatedAgedSurcharge, snapshot.summary.currencyCode)}</strong></article>
           </div>
+          <div className="aged-inventory-view-switch" role="group" aria-label="FBA 庫存健檢顯示範圍">
+            <button type="button" className={view === "excess" ? "active" : ""} onClick={() => setView("excess")}>
+              Amazon 預估冗餘
+              <small>{confirmedExcessRows.length.toLocaleString()} SKU{unresolvedExcessRows.length ? ` · ${unresolvedExcessRows.length.toLocaleString()} 未核對` : ""}</small>
+            </button>
+            <button type="button" className={view === "all" ? "active" : ""} onClick={() => setView("all")}>
+              全部 FBA 庫齡
+              <small>{snapshot.rows.length.toLocaleString()} SKU</small>
+            </button>
+          </div>
           <aside className="aged-inventory-expiration-boundary">
             <strong>到期日／近效期：Amazon 現有 FBA 公開 API 無法提供目前庫存批次</strong>
             <p>{snapshot.expiration.notice}</p>
           </aside>
-          {snapshot.rows.length ? (
+          {visibleRows.length ? (
             <div className="aged-inventory-list">
-              {snapshot.rows.map((row) => (
+              {visibleRows.map((row) => (
                 <article key={row.sellerSku}>
                   <div className="aged-inventory-product">
                     <strong>{row.title || row.sellerSku}</strong>
@@ -670,7 +695,11 @@ export default function AgedInventoryPanel({
               ))}
             </div>
           ) : (
-            <div className="aged-inventory-empty">目前報表沒有可顯示的 FBA 庫齡商品。</div>
+            <div className="aged-inventory-empty">
+              {view === "excess"
+                ? "Amazon 目前沒有回傳 estimated excess quantity 大於 0 的 FBA SKU。"
+                : "目前報表沒有可顯示的 FBA 庫齡商品。"}
+            </div>
           )}
           <p className="aged-inventory-notice">{snapshot.notice}</p>
         </>

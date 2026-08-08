@@ -60,6 +60,13 @@ describe("FBA Subscribe & Save audit routes", () => {
       inventoryEvidence: {
         source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
         provenSkuCount: 5,
+        verifiableReplenishmentOfferCount: 5,
+        unverifiedFbaSkuCount: 0,
+      },
+      upstreamCoverage: {
+        status: "complete",
+        rejectedSellerSkuRows: 0,
+        minimumUnresolvedOfferMonths: 0,
       },
     });
     const intervals = value.intervals as Array<{ month: string }>;
@@ -129,6 +136,7 @@ describe("FBA Subscribe & Save audit routes", () => {
       expect(twentyPercent).toContain(interval.month);
     }
     expect(twentyPercent).toContain("資料涵蓋不完整；未將部分加總冒充完整總額");
+    expect(twentyPercent).toContain("已證明 FBA 5 個；可核對 offer 5 個；未回傳可核對 offer 0 個");
     expect(twentyPercent).toContain("Amazon 未回傳此 SKU 月度列");
   });
 
@@ -165,7 +173,7 @@ describe("FBA Subscribe & Save audit routes", () => {
       "Amazon 未回傳 Seller 基礎折扣；為保留資料暫列 0% 工作表，並非 0%。",
     );
     expect(zeroPercent).toContain(
-      '<c r="F7" s="0" t="inlineStr"><is><t xml:space="preserve"></t></is></c>',
+      '<c r="F9" s="0" t="inlineStr"><is><t xml:space="preserve"></t></is></c>',
     );
   });
 

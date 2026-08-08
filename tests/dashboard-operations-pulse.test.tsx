@@ -3,6 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
+  connectionEvidenceFromHealth,
+  connectionEvidenceFromSales,
+  dashboardConnectionBadgeCopy,
   isSalesTrendSnapshotForSelection,
   salesTrendQuery,
 } from "../src/renderer/src/components/dashboard";
@@ -456,14 +459,51 @@ describe("dashboard operations pulse data flow", () => {
       />,
     );
 
-    expect(markup).toContain("尚未同步");
-    expect(markup).toContain("未連線");
+    expect(markup).toContain("連線狀態待確認");
+    expect(markup).toContain("狀態未知");
     expect(markup).toContain("Sales API 暫時無法同步");
     expect(markup).not.toContain('mode-badge live');
     expect(markup).not.toContain('mode-badge demo');
   });
 
-  it("does not retain a previous live badge when a refresh fails", () => {
+  it("reserves the connected badge for a successful live Amazon read", () => {
+    const configured = connectionEvidenceFromHealth(null, "live");
+    expect(configured).toBe("configured-live");
+    expect(dashboardConnectionBadgeCopy(configured, false)).toEqual({
+      title: "Live 憑證已設定",
+      detail: "尚未驗證 · Mac 安全連線",
+      ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
+      className: "configured",
+    });
+
+    const verified = connectionEvidenceFromSales("live");
+    expect(verified).toBe("verified-live");
+    expect(connectionEvidenceFromHealth(verified, "live")).toBe("verified-live");
+    expect(dashboardConnectionBadgeCopy(verified, false).title).toBe(
+      "Amazon 已連線",
+    );
+
+    expect(connectionEvidenceFromSales("demo")).toBe("demo");
+    expect(connectionEvidenceFromHealth(null, "demo")).toBe("demo");
+    expect(dashboardConnectionBadgeCopy("demo", false).title).toBe("展示資料");
+  });
+
+  it("places the FBA brand mix beside sales and binds it to the visible range", () => {
+    const markup = renderToStaticMarkup(
+      <Dashboard
+        initialSalesTrend={snapshot()}
+        initialMarketplaceId={DEFAULT_MARKETPLACE_ID}
+      />,
+    );
+
+    expect(markup).toContain("品牌營收占比");
+    expect(markup).toContain("2026-08-01 – 2026-08-07");
+    expect(markup).toContain("同步品牌");
+    expect(markup).toContain('class="operations-overview-grid has-companion"');
+    expect(markup).toContain('aria-label="近期營運延伸資訊"');
+  });
+
+  it("keeps connection truth separate from a failed Sales refresh", () => {
     const markup = renderToStaticMarkup(
       <Dashboard
         initialSalesTrend={snapshot()}
@@ -472,22 +512,29 @@ describe("dashboard operations pulse data flow", () => {
       />,
     );
 
-    expect(markup).toContain("尚未同步");
-    expect(markup).toContain("未連線");
+    expect(markup).toContain("Amazon 已連線");
+    expect(markup).toContain("Live · Mac 安全連線");
     expect(markup).toContain("Sales API 重新同步失敗");
-    expect(markup).not.toContain('mode-badge live');
+    expect(markup).toContain('mode-badge workspace-connection-status live');
     expect(markup).not.toContain('mode-badge demo');
   });
 
   it("contains no dashboard Orders fetch, filters, pagination, table, or detail drawer", async () => {
-    const [appSource, dashboardSource] = await Promise.all([
+    const [appSource, dashboardSource, systemSource] = await Promise.all([
       readFile(new URL("../src/renderer/src/App.tsx", import.meta.url), "utf8"),
       readFile(
         new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
         "utf8",
       ),
+      readFile(
+        new URL(
+          "../src/renderer/src/components/system-health-control.tsx",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
     ]);
-    const source = `${appSource}\n${dashboardSource}`;
+    const source = `${appSource}\n${dashboardSource}\n${systemSource}`;
 
     expect(source).not.toContain("/api/sp-api/orders");
     expect(source).not.toContain("loadSnapshot");

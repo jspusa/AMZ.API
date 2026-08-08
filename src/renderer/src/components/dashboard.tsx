@@ -1,8 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
+import { AccountingCenterDrawer } from "./accounting-center-panel";
 import AdsDrawer from "./ads-drawer";
 import AgedInventoryPanel from "./aged-inventory-panel";
+import BrandSalesCard from "./brand-sales-card";
 import BrandGlyph from "./brand-glyph";
 import ImageWorkspaceDrawer, {
   type ImageWorkspaceTab,
@@ -25,6 +34,9 @@ import SkuOperationsDrawer, {
 import type { ContentAuditCache } from "./content-audit-panel";
 import SystemHealthControl from "./system-health-control";
 import SubscriptionAuditDrawer from "./subscription-audit-drawer";
+import UnboundVariationAuditPanel, {
+  type UnboundVariationAuditCache,
+} from "./unbound-variation-audit-panel";
 import VariationPlannerDrawer from "./variation-planner-drawer";
 import { isSubscriptionAuditMarketplaceSupported } from "../subscription-audit";
 
@@ -43,12 +55,84 @@ type DashboardProps = {
   initialMarketplaceId: string;
   viewerName?: string | null;
   initialError?: string | null;
+  onOpenConnection?: () => void;
+  additionalAuditCards?: ReactNode;
+  performanceCompanion?: ReactNode;
 };
 
-type Tool = "ads" | "restock" | "copy" | "images" | "variations" | "price" | "promotion" | "subscriptions";
-type AutomationLevel = "automatic" | "one_click" | "manual";
+type Tool =
+  | "ads"
+  | "restock"
+  | "copy"
+  | "images"
+  | "variations"
+  | "price"
+  | "promotion"
+  | "subscriptions"
+  | "accounting";
+type ToolGroup = "product" | "pricing" | "operations";
 
 export const DEFAULT_MARKETPLACE_ID = "ATVPDKIKX0DER";
+
+export type DashboardConnectionEvidence =
+  | "verified-live"
+  | "configured-live"
+  | "demo";
+
+export function connectionEvidenceFromHealth(
+  current: DashboardConnectionEvidence | null,
+  mode: "live" | "demo",
+): DashboardConnectionEvidence {
+  if (mode === "demo") return "demo";
+  return current === "verified-live" ? current : "configured-live";
+}
+
+export function connectionEvidenceFromSales(
+  mode: "live" | "demo",
+): DashboardConnectionEvidence {
+  return mode === "live" ? "verified-live" : "demo";
+}
+
+export function dashboardConnectionBadgeCopy(
+  evidence: DashboardConnectionEvidence | null,
+  checking: boolean,
+): {
+  title: string;
+  detail: string;
+  ariaLabel: string;
+  className: "live" | "configured" | "demo" | "unavailable";
+} {
+  if (evidence === "verified-live") {
+    return {
+      title: "Amazon 已連線",
+      detail: "Live · Mac 安全連線",
+      ariaLabel: "Amazon 已連線",
+      className: "live",
+    };
+  }
+  if (evidence === "configured-live") {
+    return {
+      title: "Live 憑證已設定",
+      detail: "尚未驗證 · Mac 安全連線",
+      ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
+      className: "configured",
+    };
+  }
+  if (evidence === "demo") {
+    return {
+      title: "展示資料",
+      detail: "Demo · Mac 安全連線",
+      ariaLabel: "展示資料",
+      className: "demo",
+    };
+  }
+  return {
+    title: checking ? "檢查連線中" : "連線狀態待確認",
+    detail: "狀態未知 · Mac 安全連線",
+    ariaLabel: checking ? "正在檢查 Amazon 連線" : "Amazon 連線狀態尚未確認",
+    className: "unavailable",
+  };
+}
 
 const MARKETPLACE_OPTIONS: Marketplace[] = [
   { id: DEFAULT_MARKETPLACE_ID, label: "美國站", flag: "US", shortLabel: "US", name: "Amazon.com", currency: "USD", region: "na" },
@@ -315,81 +399,43 @@ function salesTrendRequestKey(
     : `${marketplaceId}:custom:${selection.startDate}:${selection.endDate}`;
 }
 
-const TOOL_META: Record<Tool, { label: string; symbol: string; group: string }> = {
-  ads: { label: "廣告", symbol: "◎", group: "planning" },
-  restock: { label: "補貨", symbol: "↗", group: "planning" },
+const TOOL_META: Record<Tool, { label: string; symbol: string; group: ToolGroup }> = {
+  ads: { label: "廣告", symbol: "◎", group: "operations" },
+  restock: { label: "補貨", symbol: "↗", group: "operations" },
   copy: { label: "文案", symbol: "Aa", group: "product" },
   images: { label: "圖片", symbol: "▧", group: "product" },
-  variations: { label: "變體改掛", symbol: "◇", group: "product" },
+  variations: { label: "變體", symbol: "◇", group: "product" },
   price: { label: "定價", symbol: "$", group: "pricing" },
   promotion: { label: "促銷", symbol: "%", group: "pricing" },
   subscriptions: { label: "訂閱價格健檢", symbol: "S", group: "pricing" },
+  accounting: { label: "帳務", symbol: "▤", group: "operations" },
 };
 
 const TOOL_SECTIONS: ReadonlyArray<{
   label: string;
-  group: "planning" | "product" | "pricing";
+  symbol: string;
+  group: ToolGroup;
   tools: readonly Tool[];
 }> = [
-  { label: "產品", group: "product", tools: ["copy", "images", "variations"] },
-  { label: "價格", group: "pricing", tools: ["price", "promotion", "subscriptions"] },
-  { label: "策劃", group: "planning", tools: ["restock", "ads"] },
+  {
+    label: "產品區",
+    symbol: "◇",
+    group: "product",
+    tools: ["copy", "images", "variations"],
+  },
+  {
+    label: "價格區",
+    symbol: "$",
+    group: "pricing",
+    tools: ["price", "promotion", "subscriptions"],
+  },
+  {
+    label: "營運區",
+    symbol: "◎",
+    group: "operations",
+    tools: ["restock", "ads", "accounting"],
+  },
 ];
-
-const TOOL_CAPABILITIES: Record<
-  Tool,
-  Array<{ level: AutomationLevel; label: string }>
-> = {
-  ads: [
-    { level: "automatic", label: "授權自動檢查" },
-    { level: "manual", label: "廣告啟用人工" },
-  ],
-  restock: [
-    { level: "automatic", label: "自動算補貨" },
-    { level: "manual", label: "實體入庫人工" },
-  ],
-  copy: [
-    { level: "automatic", label: "欄位自動防呆" },
-    { level: "one_click", label: "安全一鍵更新" },
-    { level: "manual", label: "內容人工決定" },
-  ],
-  images: [
-    { level: "automatic", label: "檔案自動檢查" },
-    { level: "one_click", label: "安全一鍵送出" },
-    { level: "manual", label: "選圖排序人工" },
-  ],
-  variations: [
-    { level: "automatic", label: "Family 自動讀取" },
-    { level: "one_click", label: "分階段 Touch ID" },
-    { level: "manual", label: "目標維度人工確認" },
-  ],
-  price: [
-    { level: "automatic", label: "價差自動驗證" },
-    { level: "one_click", label: "安全一鍵調價" },
-    { level: "manual", label: "訂閱設定人工" },
-  ],
-  promotion: [
-    { level: "one_click", label: "限時售價一鍵" },
-    { level: "manual", label: "取消折扣需確認" },
-  ],
-  subscriptions: [
-    { level: "automatic", label: "全站 FBA 自動核對" },
-    { level: "one_click", label: "五分頁 Excel" },
-    { level: "manual", label: "折扣設定人工" },
-  ],
-};
-
-function ToolCapabilities({ tool }: { tool: Tool }) {
-  return (
-    <small className="tool-capabilities">
-      {TOOL_CAPABILITIES[tool].map((item) => (
-        <b key={`${item.level}-${item.label}`} className={`automation-badge ${item.level}`}>
-          {item.label}
-        </b>
-      ))}
-    </small>
-  );
-}
 
 function formatDateTime(value: string | null, compact = false) {
   if (!value) return "—";
@@ -411,6 +457,9 @@ export default function Dashboard({
   initialMarketplaceId,
   viewerName,
   initialError = null,
+  onOpenConnection,
+  additionalAuditCards = null,
+  performanceCompanion = null,
 }: DashboardProps) {
   const startingMarketplaceId = MARKETPLACES.has(initialMarketplaceId)
     ? initialMarketplaceId
@@ -429,6 +478,7 @@ export default function Dashboard({
   const [trendSelection, setTrendSelection] =
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
+  const [openToolMenu, setOpenToolMenu] = useState<ToolGroup | null>(null);
   const [contentWorkspaceTab, setContentWorkspaceTab] =
     useState<ContentWorkspaceTab>("single");
   const [contentAuditCache, setContentAuditCache] = useState<
@@ -439,13 +489,34 @@ export default function Dashboard({
   const [imageAuditCache, setImageAuditCache] = useState<
     Record<string, ImageAuditCache>
   >({});
+  const [unboundVariationAuditCache, setUnboundVariationAuditCache] = useState<
+    Record<string, UnboundVariationAuditCache>
+  >({});
+  const [unboundVariationAuditOpen, setUnboundVariationAuditOpen] = useState(false);
+  const [agedInventoryOpen, setAgedInventoryOpen] = useState(false);
+  const [returnToUnboundVariationAudit, setReturnToUnboundVariationAudit] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [autoSync, setAutoSync] = useState(true);
   const [salesTrend, setSalesTrend] =
     useState<SalesTrendSnapshot | null>(initialSalesTrend);
   const [salesTrendLoading, setSalesTrendLoading] = useState(false);
   const [salesTrendError, setSalesTrendError] = useState<string | null>(initialError);
+  const [connectionEvidence, setConnectionEvidence] = useState<
+    Record<string, DashboardConnectionEvidence>
+  >(
+    initialSalesTrend
+      ? {
+          [initialSalesTrend.marketplaceId]: connectionEvidenceFromSales(
+            initialSalesTrend.mode,
+          ),
+        }
+      : {},
+  );
+  const [connectionChecking, setConnectionChecking] = useState(false);
   const salesTrendAbortRef = useRef<AbortController | null>(null);
+  const connectionAbortRef = useRef<AbortController | null>(null);
+  const primaryNavRef = useRef<HTMLElement | null>(null);
+  const menuTriggerRefs = useRef<Partial<Record<ToolGroup, HTMLButtonElement>>>({});
   const lastAutomaticRequestKey = useRef(
     salesTrendRequestKey(startingMarketplaceId, startingSelection),
   );
@@ -491,7 +562,13 @@ export default function Dashboard({
           "這台 Mac App Bridge 尚未支援新版銷售趨勢，請安裝新版後再同步。",
         );
       }
-      if (salesTrendAbortRef.current === controller) setSalesTrend(payload);
+      if (salesTrendAbortRef.current === controller) {
+        setSalesTrend(payload);
+        setConnectionEvidence((current) => ({
+          ...current,
+          [marketplaceId]: connectionEvidenceFromSales(payload.mode),
+        }));
+      }
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       if (salesTrendAbortRef.current === controller) {
@@ -511,9 +588,51 @@ export default function Dashboard({
     () => () => {
       salesTrendAbortRef.current?.abort();
       salesTrendAbortRef.current = null;
+      connectionAbortRef.current?.abort();
+      connectionAbortRef.current = null;
     },
     [],
   );
+
+  useEffect(() => {
+    connectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    connectionAbortRef.current = controller;
+    setConnectionChecking(true);
+    const params = new URLSearchParams({ marketplaceId });
+    void fetch(`/api/system/health?${params}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as unknown;
+        if (
+          !response.ok ||
+          !isRecord(payload) ||
+          payload.marketplaceId !== marketplaceId ||
+          (payload.mode !== "live" && payload.mode !== "demo")
+        ) {
+          throw new Error("Amazon 連線狀態回應無法辨識。");
+        }
+        if (connectionAbortRef.current === controller) {
+          setConnectionEvidence((current) => ({
+            ...current,
+            [marketplaceId]: connectionEvidenceFromHealth(
+              current[marketplaceId] ?? null,
+              payload.mode as "live" | "demo",
+            ),
+          }));
+        }
+      })
+      .catch((error) => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        // A failed status check is unknown, not proof that credentials are absent.
+      })
+      .finally(() => {
+        if (connectionAbortRef.current === controller) setConnectionChecking(false);
+      });
+    return () => controller.abort();
+  }, [marketplaceId]);
 
   useEffect(() => {
     const requestKey = salesTrendRequestKey(marketplaceId, trendSelection);
@@ -550,11 +669,99 @@ export default function Dashboard({
     return () => window.clearInterval(interval);
   }, [autoSync, commandOpen, loadSalesTrend, openTool, salesTrendLoading]);
 
+  useEffect(() => {
+    if (!openToolMenu) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!primaryNavRef.current?.contains(event.target as Node)) {
+        setOpenToolMenu(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      const group = openToolMenu;
+      setOpenToolMenu(null);
+      window.setTimeout(() => menuTriggerRefs.current[group]?.focus(), 0);
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openToolMenu]);
+
+  useEffect(() => {
+    if (!unboundVariationAuditOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setUnboundVariationAuditOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [unboundVariationAuditOpen]);
+
+  useEffect(() => {
+    if (!agedInventoryOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAgedInventoryOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [agedInventoryOpen]);
+
   const launch = (tool: Tool) => {
+    setOpenToolMenu(null);
     setCommandOpen(false);
     if (tool === "copy") setContentWorkspaceTab("single");
     if (tool === "images") setImageWorkspaceTab("single");
+    if (tool === "variations") setReturnToUnboundVariationAudit(false);
     setOpenTool(tool);
+  };
+
+  const openMenu = (group: ToolGroup, focus: "first" | "last" = "first") => {
+    setOpenToolMenu(group);
+    window.setTimeout(() => {
+      const items = primaryNavRef.current?.querySelectorAll<HTMLButtonElement>(
+        `[data-tool-menu="${group}"] [role="menuitem"]`,
+      );
+      if (!items?.length) return;
+      items[focus === "first" ? 0 : items.length - 1]?.focus();
+    }, 0);
+  };
+
+  const handleMenuItemKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    section: (typeof TOOL_SECTIONS)[number],
+    index: number,
+  ) => {
+    const menu = event.currentTarget.parentElement;
+    const items = Array.from(
+      menu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [],
+    );
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + direction + items.length) % items.length]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      items[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      items.at(-1)?.focus();
+    } else if (event.key === "Tab") {
+      setOpenToolMenu(null);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const sectionIndex = TOOL_SECTIONS.findIndex(
+        ({ group }) => group === section.group,
+      );
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const next = TOOL_SECTIONS[
+        (sectionIndex + direction + TOOL_SECTIONS.length) % TOOL_SECTIONS.length
+      ];
+      setOpenToolMenu(null);
+      menuTriggerRefs.current[next.group]?.focus();
+    }
   };
 
   const launchContentAudit = () => {
@@ -583,6 +790,23 @@ export default function Dashboard({
     }));
   }, []);
 
+  const cacheUnboundVariationAudit = useCallback(
+    (cache: UnboundVariationAuditCache) => {
+      setUnboundVariationAuditCache((current) => ({
+        ...current,
+        [cache.snapshot.marketplaceId]: cache,
+      }));
+    },
+    [],
+  );
+
+  const openUnboundVariationSku = (sellerSku: string) => {
+    setGlobalSku(sellerSku);
+    setUnboundVariationAuditOpen(false);
+    setReturnToUnboundVariationAudit(true);
+    setOpenTool("variations");
+  };
+
   const setAutoSyncPreference = (enabled: boolean) => {
     setAutoSync(enabled);
     try {
@@ -607,7 +831,20 @@ export default function Dashboard({
       ? salesTrend
       : null;
   const visibleSalesTrend = salesTrendError ? null : matchingSalesTrend;
-  const mode = visibleSalesTrend?.mode ?? null;
+  const resolvedPerformanceCompanion = performanceCompanion ?? (
+    visibleSalesTrend ? (
+      <BrandSalesCard
+        marketplaceId={marketplaceId}
+        startDate={visibleSalesTrend.range.startDate}
+        endDate={visibleSalesTrend.range.endDate}
+      />
+    ) : null
+  );
+  const currentConnectionEvidence = connectionEvidence[marketplaceId] ?? null;
+  const connectionBadge = dashboardConnectionBadgeCopy(
+    currentConnectionEvidence,
+    connectionChecking,
+  );
   const currentContentAudit = contentAuditCache[marketplaceId] ?? null;
   const currentAuditAttentionCount = currentContentAudit
     ? currentContentAudit.snapshot.rows.filter(
@@ -619,6 +856,7 @@ export default function Dashboard({
     ? currentImageAudit.snapshot.summary.underMinimum +
       currentImageAudit.snapshot.summary.incomplete
     : 0;
+  const currentUnboundVariationAudit = unboundVariationAuditCache[marketplaceId] ?? null;
 
   const changeMarketplace = (nextMarketplaceId: string) => {
     if (!MARKETPLACES.has(nextMarketplaceId) || salesTrendLoading) return;
@@ -645,36 +883,102 @@ export default function Dashboard({
           <div className="workspace-header-main">
             <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁">
               <BrandGlyph className="os-brand-mark" />
-              <span className="os-brand-copy"><strong>AMZ.API</strong><small>FBA workspace</small></span>
+              <span className="os-brand-copy"><strong>AMZ.API</strong><small>FBA only</small></span>
             </a>
 
-            <nav className="workspace-primary-nav" aria-label="主要功能">
+            <nav ref={primaryNavRef} className="workspace-primary-nav" aria-label="主要功能">
               {TOOL_SECTIONS.map((section) => (
-                <div className="workspace-primary-group" role="group" aria-label={section.label} key={section.group}>
-                  {section.tools.map((tool) => (
-                    <button
-                      key={tool}
-                      type="button"
-                      className={openTool === tool ? "active" : ""}
-                      aria-haspopup="dialog"
-                      aria-pressed={openTool === tool}
-                      onClick={() => launch(tool)}
-                    >
-                      <span aria-hidden="true">{TOOL_META[tool].symbol}</span>
-                      {tool === "subscriptions" && !subscriptionAuditSupported
-                        ? "S&S 能力說明"
-                        : TOOL_META[tool].label}
-                    </button>
-                  ))}
+                <div
+                  className="workspace-primary-group"
+                  data-tool-menu={section.group}
+                  key={section.group}
+                >
+                  <button
+                    ref={(element) => {
+                      if (element) menuTriggerRefs.current[section.group] = element;
+                    }}
+                    type="button"
+                    className={
+                      openToolMenu === section.group ||
+                      (openTool && TOOL_META[openTool].group === section.group)
+                        ? "workspace-primary-menu-trigger active"
+                        : "workspace-primary-menu-trigger"
+                    }
+                    aria-haspopup="menu"
+                    aria-expanded={openToolMenu === section.group}
+                    aria-label={section.label}
+                    onClick={() => setOpenToolMenu((current) =>
+                      current === section.group ? null : section.group,
+                    )}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        openMenu(
+                          section.group,
+                          event.key === "ArrowDown" ? "first" : "last",
+                        );
+                      }
+                    }}
+                  >
+                    <span aria-hidden="true">{section.symbol}</span>
+                    <strong>{section.label}</strong>
+                    <i aria-hidden="true">⌄</i>
+                  </button>
+                  {openToolMenu === section.group && (
+                    <div className="workspace-primary-menu" role="menu" aria-label={section.label}>
+                      {section.tools.map((tool, index) => (
+                        <button
+                          key={tool}
+                          type="button"
+                          role="menuitem"
+                          className={openTool === tool ? "active" : ""}
+                          onClick={() => launch(tool)}
+                          onKeyDown={(event) => handleMenuItemKeyDown(event, section, index)}
+                        >
+                          <span aria-hidden="true">{TOOL_META[tool].symbol}</span>
+                          <span className="workspace-primary-menu-copy">
+                            <strong>{tool === "subscriptions" && !subscriptionAuditSupported
+                              ? "S&S 能力說明"
+                              : TOOL_META[tool].label}</strong>
+                            <small>{tool === "copy"
+                              ? "文案編輯與全站健檢"
+                              : tool === "images"
+                                ? "圖片工作台與全站健檢"
+                                : tool === "variations"
+                                  ? "Family 查詢與安全改掛"
+                                  : tool === "price"
+                                    ? "標準價與訂閱資訊"
+                                    : tool === "promotion"
+                                      ? "Sale Price 限時售價"
+                                      : tool === "subscriptions"
+                                        ? "FBA S&S 價格與趨勢"
+                                        : tool === "restock"
+                                          ? "FBA 庫存與補貨規劃"
+                                          : tool === "ads"
+                                            ? "廣告授權與官方入口"
+                                            : "公開 FBA 報表規劃"}</small>
+                          </span>
+                          <i aria-hidden="true">›</i>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </nav>
 
             <div className="workspace-header-status">
-              <span className={`mode-badge workspace-connection-status ${mode ?? "unavailable"}`} aria-live="polite">
+              <button
+                type="button"
+                className={`mode-badge workspace-connection-status ${connectionBadge.className}`}
+                onClick={onOpenConnection}
+                aria-label={`${connectionBadge.ariaLabel}；開啟 Mac 安全連線設定`}
+                aria-haspopup="dialog"
+              >
                 <i />
-                <span><strong>{mode === "live" ? "Amazon 已連線" : mode === "demo" ? "展示資料" : "尚未同步"}</strong><small>{mode === "live" ? "Live" : mode === "demo" ? "Demo" : "未連線"}</small></span>
-              </span>
+                <span><strong>{connectionBadge.title}</strong><small>{connectionBadge.detail}</small></span>
+                <b aria-hidden="true">⌄</b>
+              </button>
               <span className="workspace-avatar" role="img" aria-label={`${viewerName ?? "Jasper"} 的私人工作區`}>{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</span>
             </div>
           </div>
@@ -684,16 +988,44 @@ export default function Dashboard({
               <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" /></label>
               <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)}><span aria-hidden="true">✦</span>SKU 總覽</button>
               <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.flag} · {item.label}</option>)}</select></label>
-              <SystemHealthControl marketplaceId={marketplaceId} />
+              <SystemHealthControl
+                marketplaceId={marketplaceId}
+                autoSync={autoSync}
+                onAutoSyncChange={setAutoSyncPreference}
+              />
             </div>
           </div>
         </header>
 
         <main id="workspace-top" className="workspace-content" tabIndex={-1}>
-          <section className="os-hero">
-            <div><p className="eyebrow">FBA OPERATING SYSTEM</p><h1>{viewerName ? `${viewerName.split(" ")[0]}，` : ""}今天想從哪裡開始？</h1><p>從上方選一個功能；站點與 SKU 會一路跟著你，畫面只留下當下真正需要的資訊。</p></div>
-            <div className="hero-sync"><span>銷售趨勢最後同步</span><strong>{formatDateTime(visibleSalesTrend?.fetchedAt ?? null)}</strong><small>{marketplace.name}</small></div>
-          </section>
+          <h1 className="visually-hidden">AMZ.API FBA 營運首頁</h1>
+
+          {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角 Mac 安全連線加入本機憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟 Mac 安全連線</button></section>}
+
+          <div className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
+            <section className="operations-pulse">
+              <div className="pulse-heading">
+                <div>
+                  <p className="eyebrow">OPERATIONS PULSE</p>
+                  <h2>近期營運</h2>
+                  <p>用完整 FBA 銷售趨勢掌握近期變化，並與去年同期直接比較。</p>
+                  <small className="operations-last-sync">銷售趨勢最後同步 {formatDateTime(visibleSalesTrend?.fetchedAt ?? null, true)} · {marketplace.name}</small>
+                </div>
+                <button type="button" className="pulse-refresh" onClick={() => void loadSalesTrend()} disabled={salesTrendLoading}><span className={salesTrendLoading ? "spin" : ""}>↻</span>{salesTrendLoading ? "同步中" : "同步"}</button>
+              </div>
+              <SalesTrendChart snapshot={visibleSalesTrend} selection={trendSelection} loading={salesTrendLoading} error={salesTrendError} onSelectionChange={changeTrendSelection} onRetry={() => void loadSalesTrend()} />
+            </section>
+            {resolvedPerformanceCompanion && (
+              <aside className="operations-companion" aria-label="近期營運延伸資訊">
+                {resolvedPerformanceCompanion}
+              </aside>
+            )}
+          </div>
+
+          <div className="home-section-heading">
+            <div><p className="eyebrow">ONE-CLICK CHECKS</p><h2>一鍵健檢</h2></div>
+            <p>只在需要時掃描；同次 App 使用期間會保留結果。</p>
+          </div>
 
           <div className="health-audit-home-grid">
             <section className="content-audit-home-card" aria-label="全站文案健檢捷徑">
@@ -733,62 +1065,51 @@ export default function Dashboard({
                 <i aria-hidden="true">›</i>
               </button>
             </section>
+            <section className="content-audit-home-card" aria-label="FBA 冗餘庫存健檢捷徑">
+              <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
+              <div>
+                <p className="eyebrow">AMAZON ESTIMATED EXCESS</p>
+                <h2>FBA 冗餘庫存健檢</h2>
+                <p>使用 Amazon 官方 estimated excess quantity 核對冗餘庫存；庫齡會另外顯示，不會被當成冗餘。</p>
+              </div>
+              <button type="button" onClick={() => setAgedInventoryOpen(true)}>
+                查看 FBA 冗餘庫存
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
+            <section className="content-audit-home-card" aria-label="未綁變體健檢捷徑">
+              <span className="content-audit-home-icon" aria-hidden="true">◇?</span>
+              <div>
+                <p className="eyebrow">VARIATION RELATIONSHIPS</p>
+                <h2>未綁變體健檢</h2>
+                <p>一次核對全部 FBA SKU；只有 Amazon relationships 明確完整且沒有 parent，才列為未綁變體。</p>
+              </div>
+              {currentUnboundVariationAudit && (
+                <span className="content-audit-home-status">
+                  <strong>{currentUnboundVariationAudit.snapshot.summary.unbound.toLocaleString()}</strong>
+                  <small>個確定未綁</small>
+                </span>
+              )}
+              <button type="button" onClick={() => setUnboundVariationAuditOpen(true)}>
+                {currentUnboundVariationAudit ? "繼續上次未綁變體健檢" : "開始未綁變體健檢"}
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
+            <section className="content-audit-home-card audit-card-pending" aria-label="廣告覆蓋健檢與 Ads API 連線">
+              <span className="content-audit-home-icon" aria-hidden="true">◎</span>
+              <div>
+                <p className="eyebrow">ADS COVERAGE</p>
+                <h2>廣告覆蓋健檢</h2>
+                <p>將依 SKU 優先、ASIN 補充比對 SP 活動；Amazon Ads API 尚未連線前不顯示推測結果。</p>
+              </div>
+              <button type="button" onClick={() => launch("ads")}>
+                查看健檢能力與連線
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
+            {additionalAuditCards}
           </div>
 
-          {mode === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在 Mac 安全連線加入 LWA 憑證後即可切換真實 Amazon 資料。"}</p></div><a href="#connection" onClick={(event) => { event.preventDefault(); scrollTo("connection"); }}>串接說明</a></section>}
-
-          <div className="core-zones">
-            <section id="product-zone" className="core-zone product-zone">
-              <div className="zone-heading"><div><span>01</span><p className="eyebrow">PRODUCT</p><h2>產品區</h2></div><p>商品內容是工作區的第一順位。</p></div>
-              <div className="zone-tools">
-                <button className="tool-tile" type="button" onClick={() => launch("copy")}><span className="tool-symbol copy">Aa</span><div><h3>文案</h3><p>自動載入 SKU、檢查 PTD 與字數；你只決定內容，再安全更新或一鍵匯出 Excel。</p><ToolCapabilities tool="copy" /></div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("images")}><span className="tool-symbol images">▧</span><div><h3>圖片</h3><p>拖拉、排序與選主圖由你決定；格式、像素、公開來源與 Amazon 預檢自動完成。</p><ToolCapabilities tool="images" /></div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("variations")}><span className="tool-symbol variations">◇</span><div><h3>變體改掛</h3><p>並排核對兩個 family；先暫存 FBA child，再依 CHILD PTD 分兩階段預檢、Touch ID、單次寫入與回查。</p><ToolCapabilities tool="variations" /></div><i>›</i></button>
-              </div>
-            </section>
-
-            <section id="pricing-zone" className="core-zone pricing-zone">
-              <div className="zone-heading"><div><span>02</span><p className="eyebrow">PRICING</p><h2>價格區</h2></div><p>定價與限時售價集中處理。</p></div>
-              <div className="zone-tools">
-                <button className="tool-tile" type="button" onClick={() => launch("price")}><span className="tool-symbol price">$</span><div><h3>定價與訂閱</h3><p>自動查現價、S&amp;S、上下限與價差；一般調價一鍵處理，大幅變動才要求再確認。</p><ToolCapabilities tool="price" /></div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("subscriptions")}><span className="tool-symbol subscriptions">S</span><div><h3>{subscriptionAuditSupported ? "全站訂閱價格健檢" : "Subscribe & Save 能力說明"}</h3><p>{subscriptionAuditSupported ? "核對全部 FBA S&S 的目前價格、折扣與有效訂閱；可看 6／12／23 個完整月並匯出五張工作表。" : `${marketplace.shortLabel} 站不在 Amazon 官方 Seller Replenishment API 支援清單；可開啟查看能力邊界，不會送出全站掃描。`}</p>{subscriptionAuditSupported ? <ToolCapabilities tool="subscriptions" /> : <small className="tool-capabilities"><b className="automation-badge manual">官方 API 未支援</b></small>}</div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("promotion")}><span className="tool-symbol promotion">%</span><div><h3>Sale Price</h3><p>直接處理單一 SKU 的限時售價；Amazon API 無法完成的促銷另集中在官方完成功能。</p><ToolCapabilities tool="promotion" /></div><i>›</i></button>
-              </div>
-            </section>
-
-            <section id="planning-zone" className="core-zone planning-zone">
-              <div className="zone-heading"><div><span>03</span><p className="eyebrow">PLANNING</p><h2>策劃區</h2></div><p>需要時再進入補貨與廣告。</p></div>
-              <div className="zone-tools">
-                <button className="tool-tile" type="button" onClick={() => launch("restock")}><span className="tool-symbol restock">↗</span><div><h3>補貨</h3><p>有全域 SKU 時開啟即算 FBA 可售、在途、銷速、補貨量與缺貨日。</p><ToolCapabilities tool="restock" /></div><i>›</i></button>
-                <button className="tool-tile" type="button" onClick={() => launch("ads")}><span className="tool-symbol ads">◎</span><div><h3>廣告</h3><p>SP 留在 Helium 10；SB、SD 自動檢查設定，素材、預算與正式啟用由你確認。</p><ToolCapabilities tool="ads" /></div><i>›</i></button>
-              </div>
-            </section>
-          </div>
-
-          <AgedInventoryPanel marketplaceId={marketplaceId} />
-
-          <section className="operations-pulse">
-            <div className="pulse-heading"><div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2><p>用完整 FBA 銷售趨勢掌握近期變化，並與去年同期直接比較。</p></div><button type="button" className="pulse-refresh" onClick={() => void loadSalesTrend()} disabled={salesTrendLoading}><span className={salesTrendLoading ? "spin" : ""}>↻</span>{salesTrendLoading ? "同步中" : "同步"}</button></div>
-            <SalesTrendChart snapshot={visibleSalesTrend} selection={trendSelection} loading={salesTrendLoading} error={salesTrendError} onSelectionChange={changeTrendSelection} onRetry={() => void loadSalesTrend()} />
-          </section>
-
-          <details id="connection" className="connection-details">
-            <summary><span><strong>進階功能與系統說明</strong><small>自動同步、能力邊界與連線設定</small></span><i>＋</i></summary>
-            <div className="advanced-workspace-options">
-              <label className="auto-sync-switch">
-                <input type="checkbox" checked={autoSync} onChange={(event) => setAutoSyncPreference(event.target.checked)} />
-                <span aria-hidden="true" />
-                <div><strong>銷售趨勢自動同步</strong><small>{autoSync ? "每 5 分鐘 · 已開啟" : "已暫停"}</small></div>
-              </label>
-              <div className="automation-legend" aria-label="自動化顏色說明">
-                <span className="automation-badge automatic"><i />自動</span>
-                <span className="automation-badge one_click"><i />一鍵</span>
-                <span className="automation-badge manual"><i />需人工</span>
-              </div>
-              <p>SKU 總覽固定在上方搜尋列旁；只有需要跨工具查看同一 SKU 時才需開啟。</p>
-            </div>
-            <div className="connection-grid"><article><span>1</span><div><strong>SP-API Private Seller App</strong><p>加入 Orders、Product Listing、Amazon Fulfillment 角色，並為各區域 self-authorize。</p></div></article><article><span>2</span><div><strong>Mac Keychain Secrets</strong><p>LWA client、refresh token 與 Seller ID 只以加密密文保存在這台 Mac。</p></div></article><article><span>3</span><div><strong>圖片公開來源</strong><p>拖拉檔案先在 Mac 驗證；要一鍵送圖可連自己的 R2 公開 HTTPS 網域。</p></div></article><article><span>4</span><div><strong>Amazon Ads 獨立授權</strong><p>Ads 必須另外申請 Direct Advertiser、建立 LWA client 與每站 Profile ID，不能沿用 SP-API。</p></div></article></div>
-          </details>
         </main>
         <footer className="os-footer"><span>AMZ.API · GitHub UI / Local Key</span><span>FBA only · No FBM · No buyer PII</span></footer>
       </div>
@@ -797,11 +1118,70 @@ export default function Dashboard({
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCache} onAuditCacheChange={cacheContentAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCache} onAuditCacheChange={cacheImageAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "variations" && <VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "variations" && <VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => {
+        setOpenTool(null);
+        if (returnToUnboundVariationAudit) {
+          setReturnToUnboundVariationAudit(false);
+          setUnboundVariationAuditOpen(true);
+        }
+      }} />}
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "promotion" && <PromotionCenterDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "subscriptions" && <SubscriptionAuditDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} onClose={() => setOpenTool(null)} />}
+      {openTool === "accounting" && <AccountingCenterDrawer marketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
       {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}
+      {unboundVariationAuditOpen && createPortal(
+        <div
+          className="drawer-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setUnboundVariationAuditOpen(false);
+          }}
+        >
+          <aside
+            className="order-drawer unbound-variation-audit-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unbound-variation-audit-title"
+          >
+            <div className="drawer-header">
+              <div><p className="eyebrow">FBA · READ ONLY</p><h2 id="unbound-variation-audit-title">未綁變體健檢</h2></div>
+              <button type="button" onClick={() => setUnboundVariationAuditOpen(false)} autoFocus aria-label="關閉未綁變體健檢">×</button>
+            </div>
+            <UnboundVariationAuditPanel
+              marketplaceId={marketplaceId}
+              marketplaceShort={marketplace.shortLabel}
+              onOpenSku={openUnboundVariationSku}
+              cachedResult={currentUnboundVariationAudit}
+              onCachedResultChange={cacheUnboundVariationAudit}
+            />
+          </aside>
+        </div>,
+        document.body,
+      )}
+      {agedInventoryOpen && createPortal(
+        <div
+          className="drawer-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setAgedInventoryOpen(false);
+          }}
+        >
+          <aside
+            className="order-drawer aged-inventory-audit-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="aged-inventory-audit-title"
+          >
+            <div className="drawer-header">
+              <div><p className="eyebrow">FBA · AMAZON ESTIMATED EXCESS</p><h2 id="aged-inventory-audit-title">冗餘庫存健檢</h2></div>
+              <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 冗餘庫存健檢">×</button>
+            </div>
+            <AgedInventoryPanel marketplaceId={marketplaceId} />
+          </aside>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
