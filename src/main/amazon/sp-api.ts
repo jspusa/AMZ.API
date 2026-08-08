@@ -63,6 +63,12 @@ export type SalesTrendPresetDays = 7 | 14 | 30 | 90;
 export type SalesTrendDays = SalesTrendPresetDays;
 export type SalesTrendComparisonMode = "none" | "previous-year";
 
+// Amazon Sales API permits non-hour intervals that begin within the last two
+// years. This app keeps a one-year daily cap so the paired previous-year query
+// remains inside that horizon and the renderer stays responsive. The exact
+// comparison horizon is still checked again in getSalesTrend.
+export const MAX_SALES_TREND_DAY_COUNT = 365;
+
 export type SalesTrendRange = {
   startDate: string;
   endDate: string;
@@ -333,6 +339,40 @@ export type ListingReportStatus = {
   reportId: string;
   documentId: string | null;
   status: "IN_QUEUE" | "IN_PROGRESS" | "DONE" | "CANCELLED" | "FATAL";
+  notice: string;
+};
+
+export type AgedInventoryBucket = {
+  label: string;
+  units: number;
+};
+
+export type AgedInventoryRow = {
+  sellerSku: string;
+  fnSku: string;
+  asin: string;
+  title: string;
+  condition: string;
+  available: number;
+  agedOver180: number;
+  ageBuckets: AgedInventoryBucket[];
+  estimatedExcessQuantity: number | null;
+  recommendedRemovalQuantity: number | null;
+  daysOfSupply: number | null;
+  recommendedAction: string;
+  snapshotDate: string | null;
+};
+
+export type AgedInventorySnapshot = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  fetchedAt: string;
+  rows: AgedInventoryRow[];
+  summary: {
+    skuCount: number;
+    agedOver180: number;
+    estimatedExcessQuantity: number | null;
+  };
   notice: string;
 };
 
@@ -3592,8 +3632,10 @@ export function resolveSalesTrendRange(
     invalidSalesTrendRange("自訂日期必須使用 YYYY-MM-DD 格式。");
   }
   const dayCount = calendarDayCount(startDate, endDate);
-  if (dayCount < 1 || dayCount > 90) {
-    invalidSalesTrendRange("自訂日期範圍必須介於 1 到 90 天。");
+  if (dayCount < 1 || dayCount > MAX_SALES_TREND_DAY_COUNT) {
+    invalidSalesTrendRange(
+      `自訂日期範圍必須介於 1 到 ${MAX_SALES_TREND_DAY_COUNT} 天。`,
+    );
   }
   if (endDate > todayKey) {
     invalidSalesTrendRange("自訂日期不可包含未來日期。");
@@ -3693,8 +3735,9 @@ export function buildPreviousYearSalesTrendWindow(
 export function buildSalesTrendQuery(
   marketplaceId: MarketplaceId,
   window: SalesTrendWindow,
+  options: { sellerSku?: string } = {},
 ): URLSearchParams {
-  return new URLSearchParams({
+  const query = new URLSearchParams({
     marketplaceIds: marketplaceId,
     interval: `${window.startAt}--${window.endAt}`,
     granularityTimeZone: window.timeZone,
@@ -3702,6 +3745,8 @@ export function buildSalesTrendQuery(
     buyerType: "All",
     fulfillmentNetwork: "AFN",
   });
+  if (options.sellerSku) query.set("sku", options.sellerSku);
+  return query;
 }
 
 function salesMetricDate(value: unknown, timeZone: string): string | null {
@@ -3852,12 +3897,20 @@ async function callSalesTrendApi(
   marketplaceId: MarketplaceId,
   window: SalesTrendWindow,
   forceTokenRefresh = false,
+  sellerSku?: string,
 ): Promise<Response> {
   const marketplace = MARKETPLACES[marketplaceId];
   const token = await requestAccessToken(marketplace.region, forceTokenRefresh);
-  const query = buildSalesTrendQuery(marketplaceId, window);
+  const query = buildSalesTrendQuery(marketplaceId, window, { sellerSku });
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
+  // Long custom daily ranges return substantially more buckets. Keep one
+  // Sales API request per series (rather than multiplying rate-limited calls),
+  // but give Amazon a bounded amount of extra response time.
+  const timeoutMilliseconds = Math.min(
+    30_000,
+    12_000 + window.range.dayCount * 40,
+  );
+  const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
   try {
     return await fetch(
       `${REGION_ENDPOINTS[marketplace.region]}/sales/v1/orderMetrics?${query}`,
@@ -3975,11 +4028,22 @@ function salesTrendComparisonNotice(
 async function fetchLiveSalesTrendSeries(
   marketplaceId: MarketplaceId,
   window: SalesTrendWindow,
+  sellerSku?: string,
 ): Promise<SalesTrendSeriesResult> {
-  let response = await callSalesTrendApi(marketplaceId, window);
+  let response = await callSalesTrendApi(
+    marketplaceId,
+    window,
+    false,
+    sellerSku,
+  );
   if (response.status === 401) {
     tokenCache.delete(MARKETPLACES[marketplaceId].region);
-    response = await callSalesTrendApi(marketplaceId, window, true);
+    response = await callSalesTrendApi(
+      marketplaceId,
+      window,
+      true,
+      sellerSku,
+    );
   }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (![429, 500, 503].includes(response.status)) break;
@@ -3988,7 +4052,12 @@ async function fetchLiveSalesTrendSeries(
         ? salesTrendRetryDelayMs(response, attempt)
         : retryDelayMs(response, attempt),
     );
-    response = await callSalesTrendApi(marketplaceId, window);
+    response = await callSalesTrendApi(
+      marketplaceId,
+      window,
+      false,
+      sellerSku,
+    );
   }
   const requestId = response.headers.get("x-amzn-requestid");
   if (!response.ok) {
@@ -5847,19 +5916,25 @@ async function executeReportsRequest(
   return response;
 }
 
-async function throwReportsError(response: Response): Promise<never> {
+async function throwReportsError(
+  response: Response,
+  purpose: "listings" | "aged-inventory" = "listings",
+): Promise<never> {
   const payload = await parseResponseJson<{
     errors?: Array<{ code?: string; message?: string }>;
   }>(response);
   const upstreamMessage = payload?.errors?.find(
     (error) => typeof error.message === "string" && error.message.trim(),
   )?.message;
+  const subject = purpose === "aged-inventory" ? "FBA 庫齡報表" : "全商品報表";
   const message =
     response.status === 429
-      ? "Amazon 正在限制報表請求頻率，請稍後再試。"
+      ? `Amazon 正在限制${subject}請求頻率，請稍後再試。`
       : response.status === 401 || response.status === 403
-        ? "Amazon 拒絕報表查詢，請確認 app 已有 Product Listing 權限並重新授權。"
-        : "Amazon 無法完成全商品報表。";
+        ? purpose === "aged-inventory"
+          ? "Amazon 拒絕 FBA 庫齡報表查詢，請確認 app 已有 Amazon Fulfillment 角色並重新授權。"
+          : "Amazon 拒絕報表查詢，請確認 app 已有 Product Listing 權限並重新授權。"
+        : `Amazon 無法完成${subject}。`;
   throw new SpApiError(
     upstreamMessage ? `${message}（${upstreamMessage}）` : message,
     {
@@ -5975,6 +6050,119 @@ export async function getAllListingsReportStatus(input: {
     notice: ready
       ? "Amazon 全商品清單已就緒，正在整理 Excel。"
       : "Amazon 正在準備全商品清單，完成後會自動下載。",
+  };
+}
+
+const AGED_INVENTORY_REPORT_TYPE = "GET_FBA_INVENTORY_PLANNING_DATA";
+
+export async function startAgedInventoryReport(input: {
+  marketplaceId: MarketplaceId;
+}): Promise<ListingReportStatus> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: `demo-aged-${input.marketplaceId}`,
+      documentId: `demo-aged-${input.marketplaceId}`,
+      status: "DONE",
+      notice: "展示用 FBA 庫齡報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: "/reports",
+    method: "POST",
+    body: {
+      reportType: AGED_INVENTORY_REPORT_TYPE,
+      marketplaceIds: [input.marketplaceId],
+    },
+  });
+  if (!response.ok) return throwReportsError(response, "aged-inventory");
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (!payload?.reportId) {
+    throw new SpApiError("Amazon 沒有回傳有效的 FBA 庫齡報表編號。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  return {
+    mode: "live",
+    ready: false,
+    reportId: payload.reportId,
+    documentId: null,
+    status: "IN_QUEUE",
+    notice: "Amazon 正在準備 FBA 庫齡資料；完成後會自動顯示。",
+  };
+}
+
+export async function getAgedInventoryReportStatus(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+}): Promise<ListingReportStatus> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const expected = `demo-aged-${input.marketplaceId}`;
+    if (input.reportId !== expected) {
+      throw new SpApiError("這份展示報表不屬於目前選擇的站點。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: input.reportId,
+      documentId: expected,
+      status: "DONE",
+      notice: "展示用 FBA 庫齡報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: `/reports/${encodeURIComponent(input.reportId)}`,
+  });
+  if (!response.ok) return throwReportsError(response, "aged-inventory");
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (
+    payload?.reportType !== AGED_INVENTORY_REPORT_TYPE ||
+    !Array.isArray(payload.marketplaceIds) ||
+    payload.marketplaceIds.length !== 1 ||
+    payload.marketplaceIds[0] !== input.marketplaceId
+  ) {
+    throw new SpApiError(
+      "這份 Amazon 報表不屬於目前站點或不是 FBA 庫齡報表，已停止讀取。",
+      {
+        status: 409,
+        code: "REPORT_MISMATCH",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  const status = payload.processingStatus;
+  if (!status) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 庫齡報表狀態。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  if (status === "CANCELLED" || status === "FATAL") {
+    throw new SpApiError("Amazon 未能產生 FBA 庫齡報表，請重新同步。", {
+      status: 422,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  const ready = status === "DONE" && Boolean(payload.reportDocumentId);
+  return {
+    mode: "live",
+    ready,
+    reportId: input.reportId,
+    documentId: payload.reportDocumentId ?? null,
+    status,
+    notice: ready
+      ? "Amazon FBA 庫齡資料已就緒，正在整理 180 天以上庫存。"
+      : "Amazon 正在準備 FBA 庫齡資料；完成後會自動顯示。",
   };
 }
 
@@ -6162,6 +6350,269 @@ function reportColumn(headers: string[], candidates: string[]): number {
   return candidates
     .map((candidate) => normalized.indexOf(candidate))
     .find((index) => index >= 0) ?? -1;
+}
+
+function reportIntegerCell(
+  row: string[],
+  index: number,
+  label: string,
+): number | null {
+  if (index < 0) return null;
+  const raw = row[index]?.trim() ?? "";
+  if (!raw) return null;
+  const normalized = raw.replace(/,/g, "");
+  if (!/^\d+$/.test(normalized)) {
+    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」不是有效數量。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  const value = Number(normalized);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  return value;
+}
+
+function reportDecimalCell(row: string[], index: number): number | null {
+  if (index < 0) return null;
+  const raw = row[index]?.trim() ?? "";
+  if (!raw) return null;
+  const value = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function parseAgedInventoryReportDocument(
+  text: string,
+): AgedInventoryRow[] {
+  const rows = parseTsv(text);
+  const headers = rows[0] ?? [];
+  const skuIndex = reportColumn(headers, ["sku", "seller-sku", "merchant-sku"]);
+  if (skuIndex < 0) {
+    throw new SpApiError("Amazon FBA 庫齡報表找不到 Seller SKU 欄位。", {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+
+  const standardBaseAgeColumns = [
+    { header: "inv-age-181-to-270-days", label: "181–270 天" },
+    { header: "inv-age-271-to-365-days", label: "271–365 天" },
+  ].map((item) => ({ ...item, index: reportColumn(headers, [item.header]) }));
+  const regionalTailAgeColumns = [
+    { header: "inv-age-366-to-455-days", label: "366–455 天" },
+    { header: "inv-age-456-plus-days", label: "456 天以上" },
+  ].map((item) => ({ ...item, index: reportColumn(headers, [item.header]) }));
+  const alternateBaseAgeColumns = [
+    { header: "inv-age-181-to-330-days", label: "181–330 天" },
+    { header: "inv-age-331-to-365-days", label: "331–365 天" },
+  ].map((item) => ({ ...item, index: reportColumn(headers, [item.header]) }));
+  const globalTailAgeColumn = {
+    header: "inv-age-365-plus-days",
+    label: "365 天以上",
+    index: reportColumn(headers, ["inv-age-365-plus-days"]),
+  };
+  const hasStandardBase = standardBaseAgeColumns.every(
+    (item) => item.index >= 0,
+  );
+  const hasAlternateBase =
+    alternateBaseAgeColumns.every((item) => item.index >= 0);
+  const hasRegionalTail = regionalTailAgeColumns.every(
+    (item) => item.index >= 0,
+  );
+  const hasGlobalTail = globalTailAgeColumn.index >= 0;
+  // Amazon publishes two complete tail layouts: US/DE/UK/FR/IT/ES use
+  // 366–455 plus 456+, while other supported stores expose one 365+ column.
+  // Choose exactly one base and one complete tail so neither generation is
+  // double-counted and long-aged units are never silently dropped.
+  const selectedBaseAgeColumns = hasStandardBase
+    ? standardBaseAgeColumns
+    : hasAlternateBase
+      ? alternateBaseAgeColumns
+      : [];
+  const selectedTailAgeColumns = hasRegionalTail
+    ? regionalTailAgeColumns
+    : hasGlobalTail
+      ? [globalTailAgeColumn]
+      : [];
+  if (!selectedBaseAgeColumns.length || !selectedTailAgeColumns.length) {
+    throw new SpApiError(
+      "Amazon FBA 庫齡報表缺少完整的 181 天以上庫齡區間，已停止顯示。",
+      { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
+    );
+  }
+  const selectedAgeColumns = [
+    ...selectedBaseAgeColumns,
+    ...selectedTailAgeColumns,
+  ];
+
+  const fnSkuIndex = reportColumn(headers, ["fnsku", "fulfillment-channel-sku"]);
+  const asinIndex = reportColumn(headers, ["asin"]);
+  const titleIndex = reportColumn(headers, ["product-name", "item-name", "title"]);
+  const conditionIndex = reportColumn(headers, ["condition"]);
+  const availableIndex = reportColumn(headers, ["available"]);
+  const excessIndex = reportColumn(headers, ["estimated-excess-quantity"]);
+  const removalIndex = reportColumn(headers, ["recommended-removal-quantity"]);
+  const daysOfSupplyIndex = reportColumn(headers, [
+    "days-of-supply",
+    "total-days-of-supply-(including-units-from-open-shipments)",
+  ]);
+  const recommendedActionIndex = reportColumn(headers, ["recommended-action"]);
+  const snapshotDateIndex = reportColumn(headers, [
+    "inventory-age-snapshot-date",
+    "snapshot-date",
+  ]);
+
+  const result: AgedInventoryRow[] = [];
+  const seen = new Set<string>();
+  for (const row of rows.slice(1)) {
+    const sellerSku = row[skuIndex]?.trim() ?? "";
+    if (!sellerSku || seen.has(sellerSku)) continue;
+    const ageBuckets = selectedAgeColumns
+      .filter((item) => item.index >= 0)
+      .map((item) => ({
+        label: item.label,
+        units: reportIntegerCell(row, item.index, item.label) ?? 0,
+      }));
+    const agedOver180 = ageBuckets.reduce((sum, item) => sum + item.units, 0);
+    if (agedOver180 <= 0) continue;
+    seen.add(sellerSku);
+    result.push({
+      sellerSku,
+      fnSku: fnSkuIndex >= 0 ? row[fnSkuIndex]?.trim() ?? "" : "",
+      asin: asinIndex >= 0 ? row[asinIndex]?.trim() ?? "" : "",
+      title: titleIndex >= 0 ? row[titleIndex]?.trim() ?? "" : "",
+      condition: conditionIndex >= 0 ? row[conditionIndex]?.trim() ?? "" : "",
+      available: reportIntegerCell(row, availableIndex, "可售庫存") ?? 0,
+      agedOver180,
+      ageBuckets,
+      estimatedExcessQuantity: reportIntegerCell(
+        row,
+        excessIndex,
+        "Amazon 預估冗餘",
+      ),
+      recommendedRemovalQuantity: reportIntegerCell(
+        row,
+        removalIndex,
+        "建議移除數量",
+      ),
+      daysOfSupply: reportDecimalCell(row, daysOfSupplyIndex),
+      recommendedAction:
+        recommendedActionIndex >= 0
+          ? row[recommendedActionIndex]?.trim() ?? ""
+          : "",
+      snapshotDate:
+        snapshotDateIndex >= 0
+          ? row[snapshotDateIndex]?.trim() || null
+          : null,
+    });
+  }
+  return result.sort((left, right) => {
+    const excessDifference =
+      (right.estimatedExcessQuantity ?? -1) -
+      (left.estimatedExcessQuantity ?? -1);
+    return (
+      excessDifference ||
+      right.agedOver180 - left.agedOver180 ||
+      left.sellerSku.localeCompare(right.sellerSku)
+    );
+  });
+}
+
+function demoAgedInventorySnapshot(
+  marketplaceId: MarketplaceId,
+): AgedInventorySnapshot {
+  const rows: AgedInventoryRow[] = [
+    {
+      sellerSku: "DEMO-FBA-AGED-01",
+      fnSku: "DEMO-FNSKU-AGED-01",
+      asin: "B0DEMOAGED1",
+      title: "展示用 FBA 庫齡商品",
+      condition: "New",
+      available: 240,
+      agedOver180: 108,
+      ageBuckets: [
+        { label: "181–270 天", units: 60 },
+        { label: "271–365 天", units: 36 },
+        { label: "366–455 天", units: 12 },
+        { label: "456 天以上", units: 0 },
+      ],
+      estimatedExcessQuantity: 82,
+      recommendedRemovalQuantity: 18,
+      daysOfSupply: 216,
+      recommendedAction: "Create sale",
+      snapshotDate: new Date().toISOString().slice(0, 10),
+    },
+  ];
+  return {
+    mode: "demo",
+    marketplaceId,
+    fetchedAt: new Date().toISOString(),
+    rows,
+    summary: {
+      skuCount: rows.length,
+      agedOver180: rows.reduce((sum, row) => sum + row.agedOver180, 0),
+      estimatedExcessQuantity: rows.reduce(
+        (sum, row) => sum + (row.estimatedExcessQuantity ?? 0),
+        0,
+      ),
+    },
+    notice:
+      "展示資料只供版面測試。庫齡數量與 Amazon 預估冗餘是不同指標，不會自動建立促銷或移除訂單。",
+  };
+}
+
+export async function getAgedInventoryData(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  documentId: string;
+}): Promise<AgedInventorySnapshot> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const expected = `demo-aged-${input.marketplaceId}`;
+    if (input.reportId !== expected || input.documentId !== expected) {
+      throw new SpApiError("展示 FBA 庫齡報表資訊不相符。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    return demoAgedInventorySnapshot(input.marketplaceId);
+  }
+  const status = await getAgedInventoryReportStatus({
+    marketplaceId: input.marketplaceId,
+    reportId: input.reportId,
+  });
+  if (!status.ready || status.documentId !== input.documentId) {
+    throw new SpApiError("FBA 庫齡報表尚未完成，或文件資訊已失效。", {
+      status: 409,
+      code: "REPORT_NOT_READY",
+    });
+  }
+  const document = await downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+  );
+  const rows = parseAgedInventoryReportDocument(document);
+  const excessValues = rows
+    .map((row) => row.estimatedExcessQuantity)
+    .filter((value): value is number => value !== null);
+  return {
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    fetchedAt: new Date().toISOString(),
+    rows,
+    summary: {
+      skuCount: rows.length,
+      agedOver180: rows.reduce((sum, row) => sum + row.agedOver180, 0),
+      estimatedExcessQuantity: excessValues.length
+        ? excessValues.reduce((sum, value) => sum + value, 0)
+        : null,
+    },
+    notice:
+      "資料取自 Amazon FBA Manage Inventory Health report。180 天以上庫齡與 estimated excess quantity 是兩個獨立官方指標；本頁唯讀，不會建立促銷或移除訂單。",
+  };
 }
 
 type ListingReportSeed = {
@@ -7016,11 +7467,11 @@ function createRestockPlan(
       context.mode === "demo"
         ? "展示建議只供操作測試，不會建立 FBA 入庫。"
         : context.demand.partial
-          ? "訂單量超過本次安全掃描上限，銷速可能被低估；大量 SKU 建議改接 Restock report。"
-          : "建議量已扣除 FBA 可售與 working／shipped／receiving 在途庫存。",
+          ? "Sales API 沒有提供完整的近 30 個站點日，銷速可能被低估，請人工複核。"
+          : "近 30 個完整站點日的銷速取自 Sales API 精確 SKU 查詢；建議量已扣除 FBA 可售與 working／shipped／receiving 在途庫存。",
       skillConnected
         ? "已偵測到補貨 Skill 接點；正式送出仍應先人工審核。"
-        : "工作區未找到既有補貨 Skill，目前直接使用 FBA Inventory 與 FBA 訂單資料。",
+        : "工作區未找到既有補貨 Skill，目前直接使用 FBA Inventory 與 Sales API AFN/FBA 資料。",
     ].join(" "),
     skillConnected,
   };
@@ -7031,40 +7482,33 @@ async function fetchLiveSalesVelocity(
   sellerSku: string,
   lookbackDays = 30,
 ): Promise<RestockPlanSnapshot["demand"]> {
-  const cutoff = Date.now() - lookbackDays * 86_400_000;
-  let token: string | null = null;
-  let units = 0;
-  let ordersScanned = 0;
-  let page = 0;
-  do {
-    const snapshot = await fetchLiveOrders({
-      marketplaceId,
-      lastUpdatedAfter: new Date(cutoff).toISOString(),
-      fulfilledBy: "AMAZON",
-      paginationToken: token,
-      maxResultsPerPage: 50,
-    });
-    ordersScanned += snapshot.orders.length;
-    for (const order of snapshot.orders) {
-      if (
-        order.fulfillmentStatus === "CANCELLED" ||
-        new Date(order.createdTime).getTime() < cutoff
-      ) {
-        continue;
-      }
-      units += order.items
-        .filter((item) => item.sellerSku === sellerSku)
-        .reduce((sum, item) => sum + item.quantity, 0);
-    }
-    token = snapshot.nextToken;
-    page += 1;
-  } while (token && page < 5);
+  const now = new Date();
+  const timeZone = MARKETPLACES[marketplaceId].timeZone;
+  const today = zonedDateParts(now, timeZone);
+  const todayKey = dateKey(today.year, today.month, today.day);
+  // Use complete marketplace-local days so a partial current day does not
+  // artificially depress average daily demand. Sales API's exact SKU filter
+  // avoids the previous five-page Orders scan, which could miss a valid SKU in
+  // a high-volume account and incorrectly leave days of cover blank.
+  const endDate = shiftDateKey(todayKey, -1);
+  const startDate = shiftDateKey(endDate, -(lookbackDays - 1));
+  const range = resolveSalesTrendRange(
+    { marketplaceId, startDate, endDate },
+    now,
+  );
+  const window = buildSalesTrendRangeWindow(marketplaceId, range, null);
+  const series = await fetchLiveSalesTrendSeries(
+    marketplaceId,
+    window,
+    sellerSku,
+  );
+  const units = series.totals.unitCount;
   return {
     lookbackDays,
     units,
     averageDailyUnits: units / lookbackDays,
-    ordersScanned,
-    partial: Boolean(token),
+    ordersScanned: series.totals.orderCount,
+    partial: false,
   };
 }
 

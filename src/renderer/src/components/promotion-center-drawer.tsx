@@ -254,7 +254,7 @@ export default function PromotionCenterDrawer({
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"sale" | "coupon" | "sns">("sale");
+  const [tab, setTab] = useState<"sale" | "official" | "sns">("sale");
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
   const [saleSku, setSaleSku] = useState(initialSellerSku);
   const [listing, setListing] = useState<ListingSnapshot | null>(null);
@@ -279,17 +279,6 @@ export default function PromotionCenterDrawer({
     useState<SubscribeSaveSnapshot | null>(null);
   const [snsLoading, setSnsLoading] = useState(false);
   const [snsError, setSnsError] = useState<string | null>(null);
-  const [couponSku, setCouponSku] = useState(initialSellerSku);
-  const [couponType, setCouponType] = useState<"percent" | "amount">(
-    "percent",
-  );
-  const [couponValue, setCouponValue] = useState("10");
-  const [couponBudget, setCouponBudget] = useState("500");
-  const [couponStart, setCouponStart] = useState(dateFromNow(2));
-  const [couponEnd, setCouponEnd] = useState(dateFromNow(16));
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
-    "idle",
-  );
   const autoLookupRef = useRef(false);
   const autoRecheckRef = useRef("");
   const saleRequestSequence = useRef(0);
@@ -377,7 +366,6 @@ export default function PromotionCenterDrawer({
     setSnsSku("");
     setSnsResult(null);
     setSnsError(null);
-    setCopyState("idle");
   };
 
   const fetchListing = useCallback(
@@ -637,24 +625,6 @@ export default function PromotionCenterDrawer({
     }
   };
 
-  const copyCouponPlan = async () => {
-    const summary = [
-      `Amazon Coupon 設定摘要`,
-      `站點：${marketplace.label}`,
-      `SKU：${couponSku.trim() || "尚未填寫"}`,
-      `折扣：${couponValue || "—"}${couponType === "percent" ? "%" : ` ${marketplace.currency}`}`,
-      `預算：${couponBudget || "—"} ${marketplace.currency}`,
-      `期間：${couponStart} ～ ${couponEnd}`,
-      `提醒：此摘要尚未送出，需在 Seller Central 完成資格與費用確認。`,
-    ].join("\n");
-    try {
-      await navigator.clipboard.writeText(summary);
-      setCopyState("copied");
-    } catch {
-      setCopyState("error");
-    }
-  };
-
   return (
     <div
       className="drawer-backdrop"
@@ -671,17 +641,17 @@ export default function PromotionCenterDrawer({
       >
         <div className="drawer-header">
           <div>
-            <p className="eyebrow">SALE PRICE · COUPON</p>
-            <h2 id="promotion-drawer-title">Sale Price 與 Coupon</h2>
+            <p className="eyebrow">SALE PRICE</p>
+            <h2 id="promotion-drawer-title">促銷</h2>
           </div>
-          <button type="button" onClick={closeDrawer} aria-label="關閉 Sale Price 與 Coupon">
+          <button type="button" onClick={closeDrawer} aria-label="關閉促銷">
             ×
           </button>
         </div>
         <p className="price-intro promotion-intro">
-          Sale Price（SKU 限時售價）可直接寫入 Amazon；Coupon 只整理設定並開啟官方頁完成。訂閱省已整合到「定價與訂閱」。
+          Sale Price（SKU 限時售價）可直接寫入 Amazon；API 無法安全完成的促銷工作集中放在「Amazon 官方完成」。
         </p>
-        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全域 SKU 開啟即查；折扣幅度、日期、價格上下限與送出後回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>一般 Sale Price 會自動預檢、建立並回查；達 20% 或 Amazon 有提醒才停下確認。</p><span className="automation-badge manual">需人工</span><p>取消 Sale Price、Coupon 資格／費用與最終 Coupon 建立需由你確認。</p></div>
+        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全域 SKU 開啟即查；折扣幅度、日期、價格上下限與送出後回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>一般 Sale Price 會自動預檢、建立並回查；達 20% 或 Amazon 有提醒才停下確認。</p><span className="automation-badge manual">需人工</span><p>取消 Sale Price 仍需再次確認。</p></div>
 
         <nav className="promotion-tabs" aria-label="促銷工具">
           <button
@@ -692,11 +662,11 @@ export default function PromotionCenterDrawer({
             Sale Price <small>SKU 限時售價 · API 可建立</small>
           </button>
           <button
-            className={tab === "coupon" ? "active" : ""}
+            className={tab === "official" ? "active" : ""}
             type="button"
-            onClick={() => setTab("coupon")}
+            onClick={() => setTab("official")}
           >
-            Coupon <small>官方頁完成</small>
+            Amazon 官方完成 <small>目前 API 無法完成</small>
           </button>
         </nav>
 
@@ -935,61 +905,28 @@ export default function PromotionCenterDrawer({
           </section>
         )}
 
-        {tab === "coupon" && (
-          <section className="promotion-panel" aria-label="Coupon 設定接手">
-            <div className="capability-banner boundary">
-              <span>!</span>
+        {tab === "official" && (
+          <section className="promotion-panel" aria-label="Amazon 官方完成功能">
+            <div className="capability-banner info">
+              <span>↗</span>
               <div>
-                <strong>Amazon 尚未提供 Coupon 建立 API</strong>
-                <p>此頁幫你備妥設定並開啟正確站點，不會使用未公開的 Seller Central 內部接口。</p>
+                <strong>目前 API 無法完成的功能</strong>
+                <p>這裡只集中官方入口與能力邊界，不收集設定、不模擬建立，也不使用 Seller Central 私有接口。</p>
               </div>
             </div>
-            <div className="coupon-planner">
-              <div className="coupon-grid two">
-                <label>
-                  <span>Seller SKU</span>
-                  <input value={couponSku} onChange={(event) => setCouponSku(event.target.value)} placeholder={marketplace.sample} />
-                </label>
-                <label>
-                  <span>折扣類型</span>
-                  <select value={couponType} onChange={(event) => setCouponType(event.target.value as "percent" | "amount")}>
-                    <option value="percent">百分比折扣</option>
-                    <option value="amount">固定金額折扣</option>
-                  </select>
-                </label>
-              </div>
-              <div className="coupon-grid two">
-                <label>
-                  <span>{couponType === "percent" ? "折扣百分比" : `折扣金額（${marketplace.currency}）`}</span>
-                  <input inputMode="decimal" value={couponValue} onChange={(event) => setCouponValue(event.target.value)} />
-                </label>
-                <label>
-                  <span>活動預算（{marketplace.currency}）</span>
-                  <input inputMode="decimal" value={couponBudget} onChange={(event) => setCouponBudget(event.target.value)} />
-                </label>
-              </div>
-              <div className="coupon-grid two">
-                <label>
-                  <span>開始日</span>
-                  <input type="date" value={couponStart} onChange={(event) => setCouponStart(event.target.value)} />
-                </label>
-                <label>
-                  <span>結束日</span>
-                  <input type="date" value={couponEnd} onChange={(event) => setCouponEnd(event.target.value)} />
-                </label>
-              </div>
-              <button className="secondary-wide-button" type="button" onClick={() => void copyCouponPlan()}>
-                {copyState === "copied" ? "✓ 已複製設定摘要" : "複製 Coupon 設定摘要"}
-              </button>
-              {copyState === "error" && <div className="price-error" role="alert">瀏覽器無法複製；請手動記下上方設定。</div>}
-              <a className="promotion-external-button" href={marketplace.sellerCentral} target="_blank" rel="noreferrer">
-                前往 Amazon 建立 Coupon ↗
-              </a>
-              <ol className="handoff-steps">
-                <li><span>1</span><p>在 Seller Central 進入 Advertising / Coupons。</p></li>
-                <li><span>2</span><p>貼上 SKU，依上方摘要輸入折扣、預算與期間。</p></li>
-                <li><span>3</span><p>再次確認資格、Coupon 費用與 Amazon 顯示預覽後送出。</p></li>
-              </ol>
+            <div className="official-handoff-grid">
+              <article>
+                <div><span>COUPON</span><strong>建立與管理 Coupon</strong><p>資格、費用、預算、期間與最終建立都必須在 Amazon 官方頁確認。</p></div>
+                <a className="promotion-external-button" href={marketplace.sellerCentral} target="_blank" rel="noreferrer">前往 Amazon 建立 Coupon ↗</a>
+              </article>
+              <article>
+                <div><span>SUBSCRIBE &amp; SAVE</span><strong>啟用與調整訂閱折扣</strong><p>AMZ.API 可讀取目前狀態；資格申請、啟用與折扣設定仍由 Amazon 完成。</p></div>
+                <a className="promotion-external-button" href={marketplace.snsManage} target="_blank" rel="noreferrer">前往 Amazon 管理訂閱省 ↗</a>
+              </article>
+              <article>
+                <div><span>DEALS &amp; ADS</span><strong>Deals、SB 與 SD 正式啟用</strong><p>活動資格、素材、預算與正式送出需要各自的 Amazon 官方頁或獨立 Ads 授權。</p></div>
+                <a className="promotion-external-button" href={marketplace.sellerCentral} target="_blank" rel="noreferrer">前往 Amazon 官方工具 ↗</a>
+              </article>
             </div>
           </section>
         )}
@@ -1075,7 +1012,7 @@ export default function PromotionCenterDrawer({
 
         <div className="promotion-source-note">
           <strong>能力邊界</strong>
-          <span>Listings Items v2021-08-01 discounted_price（Sale Price）· Coupon 無公開寫入 API · 不使用 Seller Central 私有接口</span>
+          <span>Listings Items v2021-08-01 discounted_price（Sale Price）· 其他促銷集中導向 Amazon 官方頁 · 不使用 Seller Central 私有接口</span>
         </div>
       </aside>
     </div>

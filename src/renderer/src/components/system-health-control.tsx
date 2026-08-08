@@ -129,41 +129,31 @@ export default function SystemHealthControl({
     return () => window.removeEventListener("keydown", close);
   }, [loading, open]);
 
-  const label = loading
-    ? "檢查中"
-    : error
-      ? "需要檢查"
-      : health?.overall === "ready"
-        ? "系統正常"
-        : "有待處理";
-  const tone = loading
-    ? "checking"
-    : error || health?.overall === "attention"
-      ? "attention"
-      : "ready";
   const orderedChecks = useMemo(
     () =>
-      [...(health?.checks ?? [])].sort((left, right) => {
+      [...(health?.checks ?? [])]
+        .filter((item) => item.id !== "product-master")
+        .sort((left, right) => {
         const rank: Record<CheckState, number> = {
           attention: 0,
           manual: 1,
           ready: 2,
         };
         return rank[left.state] - rank[right.state];
-      }),
+        }),
     [health],
   );
 
   return (
     <>
       <button
-        className={`system-health-trigger ${tone}`}
+        className="system-health-trigger neutral"
         type="button"
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
       >
-        <span className="health-orb" aria-hidden="true">{loading ? "↻" : health?.overall === "ready" ? "✓" : "!"}</span>
-        <span><strong>{label}</strong><small>{health ? `${health.score}% · 自我檢查` : "自我檢查"}</small></span>
+        <span className="health-orb" aria-hidden="true">{loading ? "↻" : "•••"}</span>
+        <span><strong>系統資訊</strong><small>進階</small></span>
       </button>
 
       {open && createPortal(
@@ -181,45 +171,58 @@ export default function SystemHealthControl({
             aria-labelledby="system-health-title"
           >
             <div className="drawer-header">
-              <div><p className="eyebrow">SAFE AUTOMATION · READ ONLY</p><h2 id="system-health-title">系統自檢與除錯</h2></div>
-              <button type="button" onClick={() => setOpen(false)} disabled={loading} autoFocus aria-label="關閉系統自檢">×</button>
+              <div><p className="eyebrow">ADVANCED · READ ONLY</p><h2 id="system-health-title">進階與系統資訊</h2></div>
+              <button type="button" onClick={() => setOpen(false)} disabled={loading} autoFocus aria-label="關閉進階與系統資訊">×</button>
             </div>
-            <p className="price-intro">系統會自行找出能修復的暫時性連線問題；缺少授權或必須人工判斷時，才會停下來告訴你。</p>
+            <p className="price-intro">一般工作不需要處理這裡。連線、授權與防呆細節集中收在下方，需要除錯時再展開。</p>
 
-            {error && (
-              <div className="health-error" role="alert">
-                <span>!</span><div><strong>自我檢查暫時失敗</strong><p>{error}</p></div>
+            <section className="health-quiet-summary" aria-live="polite">
+              <span aria-hidden="true">✓</span>
+              <div><strong>安全守門在背景運作</strong><p>系統會在真正需要決策的功能內直接提示，不把工程設定當成員工待辦。</p></div>
+            </section>
+
+            <details className="health-advanced-details">
+              <summary>
+                <span><strong>查看連線、授權與防呆細節</strong><small>{loading ? "正在更新" : health ? `最後檢查 ${formatCheckedAt(health.checkedAt)}` : "需要時再檢查"}</small></span>
+                <i>＋</i>
+              </summary>
+              <div className="health-advanced-body">
+                {error && (
+                  <div className="health-error" role="alert">
+                    <span>!</span><div><strong>進階檢查暫時未完成</strong><p>{error}</p></div>
+                  </div>
+                )}
+
+                {health && (
+                  <>
+                    <section className={`health-summary ${health.overall}`}>
+                      <div className="health-score"><strong>{health.score}</strong><span>%</span></div>
+                      <div><p className="eyebrow">{health.marketplaceLabel} · {health.mode === "live" ? "LIVE" : "DEMO"}</p><h3>{health.overall === "ready" ? "進階整合已就緒" : "部分進階整合尚未設定"}</h3><small>最後檢查 {formatCheckedAt(health.checkedAt)} · 不會修改 Amazon</small></div>
+                    </section>
+
+                    <section className="health-check-list" aria-label="進階系統項目">
+                      {orderedChecks.map((item) => (
+                        <article key={item.id} className={`health-check automation-${item.automation} state-${item.state}`}>
+                          <span className="health-check-icon" aria-hidden="true">{item.state === "ready" ? "✓" : item.state === "manual" ? "↗" : "!"}</span>
+                          <div><div className="health-check-title"><strong>{item.label}</strong><span className={`automation-badge ${item.automation}`}>{LEVEL_LABELS[item.automation]}</span></div><p>{item.detail}</p>{item.action && <small><b>處理路徑</b>{item.action}</small>}</div>
+                        </article>
+                      ))}
+                    </section>
+
+                    <section className="safety-guard-card">
+                      <div><p className="eyebrow">GUARDRAILS</p><h3>防呆守門已開啟</h3><span>所有寫入先檢查，錯誤時停止；不會因重試而重複送出。</span></div>
+                      <ul>{health.safeguards.map((item) => <li key={item}>✓ {item}</li>)}</ul>
+                    </section>
+                    <p className="health-notice">{health.notice}</p>
+                  </>
+                )}
+
+                <button className="price-primary-button health-refresh" type="button" onClick={() => void runCheck()} disabled={loading}>
+                  {loading ? "正在更新…" : "重新檢查進階狀態"}
+                </button>
+                <p className="submission-note">只對安全的讀取失敗自動重試一次；任何 Amazon 寫入都不會自動重送。</p>
               </div>
-            )}
-
-            {health && (
-              <>
-                <section className={`health-summary ${health.overall}`} aria-live="polite">
-                  <div className="health-score"><strong>{health.score}</strong><span>%</span></div>
-                  <div><p className="eyebrow">{health.marketplaceLabel} · {health.mode === "live" ? "LIVE" : "DEMO"}</p><h3>{health.overall === "ready" ? "所有可執行項目已就緒" : "系統已攔住尚未就緒的項目"}</h3><small>最後自檢 {formatCheckedAt(health.checkedAt)} · 不會修改 Amazon</small></div>
-                </section>
-
-                <section className="health-check-list" aria-label="系統自檢項目">
-                  {orderedChecks.map((item) => (
-                    <article key={item.id} className={`health-check automation-${item.automation} state-${item.state}`}>
-                      <span className="health-check-icon" aria-hidden="true">{item.state === "ready" ? "✓" : item.state === "manual" ? "↗" : "!"}</span>
-                      <div><div className="health-check-title"><strong>{item.label}</strong><span className={`automation-badge ${item.automation}`}>{LEVEL_LABELS[item.automation]}</span></div><p>{item.detail}</p>{item.action && <small><b>處理路徑</b>{item.action}</small>}</div>
-                    </article>
-                  ))}
-                </section>
-
-                <section className="safety-guard-card">
-                  <div><p className="eyebrow">GUARDRAILS</p><h3>防呆守門已開啟</h3><span>所有寫入先檢查，錯誤時停止；不會因重試而重複送出。</span></div>
-                  <ul>{health.safeguards.map((item) => <li key={item}>✓ {item}</li>)}</ul>
-                </section>
-                <p className="health-notice">{health.notice}</p>
-              </>
-            )}
-
-            <button className="price-primary-button health-refresh" type="button" onClick={() => void runCheck()} disabled={loading}>
-              {loading ? "正在自動檢查…" : "一鍵重新檢查"}
-            </button>
-            <p className="submission-note">只對安全的讀取失敗自動重試一次；價格、文案、圖片、促銷與入庫寫入永遠不會自動重送。</p>
+            </details>
           </aside>
         </div>,
         document.body,

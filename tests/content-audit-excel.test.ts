@@ -4,7 +4,7 @@ import { createContentAuditWorkbook } from "../src/renderer/src/content-audit-ex
 import type { ContentAuditSnapshot } from "../src/renderer/src/content-quality";
 
 describe("content audit Excel", () => {
-  it("exports only rows requiring attention with a readable issue sheet", () => {
+  it("exports attention rows in one concise sheet with type and description columns", () => {
     const snapshot: ContentAuditSnapshot = {
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-06T08:00:00.000Z",
@@ -14,7 +14,7 @@ describe("content audit Excel", () => {
           asin: "B000000001",
           productType: "PET_FOOD",
           title: "GooToE Turkey Tendons",
-          bulletPoints: ["Only one point"],
+          bulletPoints: ["Natural & Gentle\u200b : Only one point"],
           ingredients: "Turkey",
           readStatus: "complete",
           readErrors: [],
@@ -23,6 +23,13 @@ describe("content audit Excel", () => {
               kind: "MISSING_BULLETS",
               field: "bulletPoints",
               message: "目前只有 1 個非空白賣點，少於 5 個。",
+            },
+            {
+              kind: "SUSPECTED_TYPO",
+              field: "bulletPoints",
+              token: "U+200B",
+              suggestion: "移除不可見字元",
+              message: "發現不可見字元 U+200B。",
             },
           ],
         },
@@ -52,12 +59,21 @@ describe("content audit Excel", () => {
     };
 
     const archive = unzipSync(createContentAuditWorkbook(snapshot, "US"));
+    const workbook = strFromU8(archive["xl/workbook.xml"]);
     const productSheet = strFromU8(archive["xl/worksheets/sheet1.xml"]);
-    const issueSheet = strFromU8(archive["xl/worksheets/sheet2.xml"]);
 
+    expect(workbook).toContain('sheet name="內容健檢"');
+    expect(archive["xl/worksheets/sheet2.xml"]).toBeUndefined();
     expect(productSheet).toContain("NEEDS-EDIT");
     expect(productSheet).not.toContain("CLEAN-SKU");
-    expect(issueSheet).toContain("賣點不足");
-    expect(issueSheet).toContain("目前只有 1 個非空白賣點");
+    expect(productSheet).toContain("類型");
+    expect(productSheet).toContain("說明");
+    expect(productSheet).not.toContain(">狀態<");
+    expect(productSheet).not.toContain(">最後更新<");
+    expect(productSheet).toContain("賣點不足");
+    expect(productSheet).toContain("目前只有 1 個非空白賣點");
+    expect(productSheet).toContain("U+200B（零寬空格）位於");
+    expect(productSheet).toContain("Gentle");
+    expect(productSheet).toContain("應手動修改此段");
   });
 });

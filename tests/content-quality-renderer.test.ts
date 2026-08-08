@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   addLocalSpellcheckIssues,
+  contentHighlightSegments,
   LOCAL_SPELLCHECK_WORD_LIMIT,
+  locateInvisibleCharacters,
   summarizeContentAudit,
   wordsForLocalSpellcheck,
   type ContentAuditRow,
@@ -54,6 +56,113 @@ describe("renderer content quality helpers", () => {
         expect.objectContaining({ token: "GooToE" }),
       ]),
     );
+  });
+
+  it("keeps approved scientific, ingredient and brand terms out of typo results", () => {
+    const approvedTerms = [
+      "Decapterus",
+      "Gluconate",
+      "Niacinamide",
+      "Reishi",
+      "purr-fectly",
+    ];
+    const approvedRows = [{
+      ...rows[0],
+      title: approvedTerms.join(" "),
+      bulletPoints: ["A purr-fectly balanced reward"],
+      ingredients: "Zinc Gluconate, Niacinamide, Reishi",
+      issues: [],
+    }];
+
+    expect(wordsForLocalSpellcheck(approvedRows)).not.toEqual(
+      expect.arrayContaining(approvedTerms),
+    );
+    expect(
+      addLocalSpellcheckIssues(
+        approvedRows,
+        approvedTerms.map((word) => ({ word, suggestions: ["different"] })),
+      )[0].issues,
+    ).toEqual([]);
+  });
+
+  it("locates U+200B with readable context and highlights it without changing content", () => {
+    const original = "Natural & Gentle\u200b : clean nutrition";
+    const invisibleRows: ContentAuditRow[] = [{
+      ...rows[0],
+      bulletPoints: [original],
+      issues: [{
+        kind: "SUSPECTED_TYPO",
+        field: "bulletPoints",
+        token: "U+200B",
+        suggestion: "移除不可見字元",
+        message: "發現不可見字元 U+200B。",
+      }],
+    }];
+
+    expect(locateInvisibleCharacters(invisibleRows)).toEqual([
+      expect.objectContaining({
+        sellerSku: "AFA12AM",
+        fieldLabel: "賣點 1",
+        codePoint: "U+200B",
+        name: "零寬空格",
+        context: "Natural & Gentle⟦U+200B 零寬空格⟧ : clean nutrition",
+        before: "Gentle",
+        after: ":",
+      }),
+    ]);
+    expect(contentHighlightSegments(original, invisibleRows[0].issues)).toEqual([
+      { text: "Natural & Gentle", highlighted: false },
+      { text: "⟦U+200B 零寬空格⟧", highlighted: true, token: "U+200B" },
+      { text: " : clean nutrition", highlighted: false },
+    ]);
+    expect(invisibleRows[0].bulletPoints[0]).toBe(original);
+  });
+
+  it("marks typo tokens in the original copy without replacing them", () => {
+    const original = "Naturall treats with Cocount Glycerin";
+    const segments = contentHighlightSegments(original, [
+      {
+        kind: "SUSPECTED_TYPO",
+        field: "bulletPoints",
+        token: "Naturall",
+        suggestion: "Natural",
+        message: "疑似錯字",
+      },
+      {
+        kind: "SUSPECTED_TYPO",
+        field: "bulletPoints",
+        token: "Cocount",
+        suggestion: "Coconut",
+        message: "疑似錯字",
+      },
+    ]);
+
+    expect(segments.filter((segment) => segment.highlighted).map((segment) => segment.text))
+      .toEqual(["Naturall", "Cocount"]);
+    expect(segments.map((segment) => segment.text).join("")).toBe(original);
+  });
+
+  it("only highlights complete typo-token boundaries", () => {
+    const original = "Naturall treats can be naturally tasty";
+    const segments = contentHighlightSegments(original, [
+      {
+        kind: "SUSPECTED_TYPO",
+        field: "bulletPoints",
+        token: "Naturall",
+        suggestion: "Natural",
+        message: "疑似錯字",
+      },
+    ]);
+
+    expect(
+      segments.filter((segment) => segment.highlighted).map((segment) => segment.text),
+    ).toEqual(["Naturall"]);
+    expect(segments.map((segment) => segment.text).join("")).toBe(original);
+    expect(
+      segments.some(
+        (segment) => segment.highlighted && segment.text === "naturall",
+      ),
+    ).toBe(false);
   });
 
   it("adds Mac-local spelling suggestions without changing content", () => {

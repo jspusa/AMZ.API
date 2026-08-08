@@ -20,16 +20,22 @@ describe("dashboard top navigation layout", () => {
 
     expect(navigation).toBeDefined();
     expect(navigation?.match(/aria-haspopup="dialog"/g)).toHaveLength(7);
-    for (const label of [
-      "廣告",
-      "補貨",
+    const orderedLabels = [
       "文案",
       "圖片",
       "變體規劃",
       "定價",
       "促銷",
-    ]) {
+      "補貨",
+      "廣告",
+    ];
+    for (const label of orderedLabels) {
       expect(navigation).toContain(label);
+    }
+    for (let index = 1; index < orderedLabels.length; index += 1) {
+      expect(navigation!.indexOf(orderedLabels[index - 1])).toBeLessThan(
+        navigation!.indexOf(orderedLabels[index]),
+      );
     }
 
     expect(markup).toContain('class="workspace-header"');
@@ -44,6 +50,15 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain('class="content-audit-home-card"');
     expect(markup).toContain("全站內容健檢");
     expect(markup).toContain("開始全站健檢");
+    expect(markup.indexOf('id="product-zone"')).toBeLessThan(
+      markup.indexOf('id="pricing-zone"'),
+    );
+    expect(markup.indexOf('id="pricing-zone"')).toBeLessThan(
+      markup.indexOf('id="planning-zone"'),
+    );
+    expect(markup).not.toContain('class="automation-overview"');
+    expect(markup).not.toContain('class="command-strip"');
+    expect(markup).toContain("進階功能與系統說明");
   });
 
   it("keeps the header centered and makes the tool row horizontally reachable", async () => {
@@ -67,5 +82,11 @@ describe("dashboard top navigation layout", () => {
     expect(css).not.toContain(".workspace-sidebar");
     expect(css).not.toContain(".mobile-core-nav");
     expect(css).not.toContain("margin-left: 244px");
+    expect(css).toMatch(
+      /\.drawer-backdrop\s*\{[\s\S]*?align-items:\s*center;[\s\S]*?justify-content:\s*center;/,
+    );
+    expect(css).toMatch(
+      /\.connection-panel-backdrop\s*\{[\s\S]*?align-items:\s*center;[\s\S]*?justify-content:\s*center;/,
+    );
   });
 });

@@ -178,11 +178,13 @@ describe("sales trend comparison chart", () => {
     expect(markup).toContain('value="2026-07-01"');
     expect(markup).toContain('value="2026-07-03"');
     expect(markup).toContain(">套用</button>");
-    expect(markup).toContain("包含開始日與結束日，最多 90 天");
+    expect(markup).toContain("可超過 90 天");
     expect(markup).toMatch(/aria-pressed="true"[^>]*>自訂/);
     expect(trendCustomRangeError("2026-07-01", "2026-07-03")).toBeNull();
     expect(trendCustomRangeError("2026-07-03", "2026-07-01")).toContain("不可早於");
-    expect(trendCustomRangeError("2026-01-01", "2026-04-01")).toContain("最多 90 天");
+    expect(trendCustomRangeError("2026-01-01", "2026-04-01")).toBeNull();
+    expect(trendCustomRangeError("2025-03-11", "2026-03-10")).toBeNull();
+    expect(trendCustomRangeError("2025-03-10", "2026-03-10")).toContain("最多 365 天");
   });
 
   it("keeps a preset-derived earliest date for a queryable previous-year comparison", () => {

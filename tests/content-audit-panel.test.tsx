@@ -85,6 +85,70 @@ describe("global FBA content audit panel", () => {
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
   });
 
+  it("shows typo text in red and explains invisible characters in one located guide", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [
+        {
+          sellerSku: "AFA12AM",
+          asin: "B09S5VY2JS",
+          productType: "PET_FOOD",
+          title: "Cocount Turkey Tendons",
+          bulletPoints: [
+            "One",
+            "Two",
+            "Three",
+            "Natural & Gentle\u200b : clean nutrition",
+            "Five",
+          ],
+          ingredients: "Turkey Tendon",
+          readStatus: "complete",
+          readErrors: [],
+          issues: [
+            {
+              kind: "SUSPECTED_TYPO",
+              field: "title",
+              token: "Cocount",
+              suggestion: "Coconut",
+              message: "發現明確的常見拼字。",
+            },
+            {
+              kind: "SUSPECTED_TYPO",
+              field: "bulletPoints",
+              token: "U+200B",
+              suggestion: "移除不可見字元",
+              message: "發現不可見字元 U+200B。",
+            },
+          ],
+        },
+      ],
+      summary: { total: 1 },
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        cachedResult={{
+          snapshot,
+          filter: "all",
+          query: "",
+          spellcheckNote: "本機檢查已完成。",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("content-audit-typo-highlight");
+    expect(markup).toContain("color:#b42318");
+    expect(markup).toContain(">Cocount</mark>");
+    expect(markup).toContain("不可見字元統一說明");
+    expect(markup).toContain("U+200B 是「零寬空格」，不是 U+200");
+    expect(markup).toContain("Natural &amp; Gentle⟦U+200B 零寬空格⟧ : clean nutrition");
+    expect(markup).toContain("位於「Gentle」與「:」之間；應手動修改此段");
+    expect(markup.match(/發現不可見字元 U\+200B/g)).toBeNull();
+  });
+
   it("keeps a return path from an audit result into SKU editing", async () => {
     const drawerSource = await readFile(
       new URL(

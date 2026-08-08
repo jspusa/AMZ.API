@@ -358,7 +358,6 @@ export default function ReplenishmentDrawer({
           <label className="restock-sku"><span>Seller SKU</span><div className="sku-search-row"><input value={sku} onChange={(event) => { setSku(event.target.value); invalidatePlan(); setProfileState(null); setProfileMessage(null); loadedProfileKeyRef.current = ""; }} placeholder={`例如 ${marketplace.sample}`} autoFocus autoComplete="off" spellCheck={false} disabled={loading || profileLoading} /><button type="submit" disabled={loading || profileLoading || !sku.trim()}>{loading || profileLoading ? "自動載入與計算中…" : "一鍵計算"}</button></div></label>
           <div className="restock-route-row">
             <label><span>補貨路徑</span><select value={supplyRoute} onChange={(event) => { setSupplyRoute(event.target.value as SupplyRoute); invalidatePlan(); }} disabled={loading}><option value="DIRECT_FBA">直接送 FBA</option><option value="AWD_TO_FBA" disabled={marketplaceId !== "ATVPDKIKX0DER"}>AWD → FBA（US）</option></select></label>
-            <div className={`restock-profile-state ${profileState?.profile.settingsConfigured ? "saved" : ""}`}><span>{profileState?.profile.settingsConfigured ? "✓" : "✦"}</span><div><strong>{profileState?.profile.settingsConfigured ? "已套用商品主檔" : "可儲存為商品預設"}</strong><small>{profileState?.persistence === "durable" ? "Mac 本機保存" : profileState?.persistence === "demo" ? "Demo 工作階段" : "首次設定後自動套用"}</small></div></div>
           </div>
           <div className="restock-assumptions">
             <label><span>目標庫存</span><div><input value={targetDays} onChange={(event) => { setTargetDays(event.target.value); invalidatePlan(); }} inputMode="numeric" /><b>天</b></div></label>
@@ -369,8 +368,6 @@ export default function ReplenishmentDrawer({
             <label className={supplyRoute === "AWD_TO_FBA" ? "" : "muted-field"}><span>AWD 緩衝</span><div><input value={awdBufferDays} onChange={(event) => { setAwdBufferDays(event.target.value); invalidatePlan(); }} inputMode="numeric" disabled={supplyRoute !== "AWD_TO_FBA"} /><b>天</b></div></label>
           </div>
           {assumptionsError && <small className="field-error restock-field-error">{assumptionsError}</small>}
-          {profileMessage && <small className="restock-profile-message">✓ {profileMessage}</small>}
-          <button className="restock-save-profile" type="button" onClick={saveProfile} disabled={profileSaving || loading || !sku.trim() || Boolean(assumptionsError)}>{profileSaving ? "儲存中…" : "儲存為此 SKU 預設"}</button>
         </form>
 
         {error && <div className="price-error" role="alert">{error}</div>}
@@ -408,7 +405,7 @@ export default function ReplenishmentDrawer({
 
             <section className="restock-formula"><strong>計算方式</strong><p>目標 {plan.targetDays} 天 × 日銷 {plan.demand.averageDailyUnits.toFixed(2)} − 庫存位置 {plan.inventory.inventoryPosition}，再依每箱 {plan.casePack} 件、每板 {cartonsPerPallet || "—"} 箱向上換算。{supplyRoute === "AWD_TO_FBA" ? `交期已加上 AWD ${awdBufferDays} 天緩衝。` : ""}</p></section>
 
-            {plan.demand.partial && <div className="price-warning compact"><strong>銷速資料不完整，必須人工複核</strong><p>Amazon 訂單掃描達到安全頁數上限；系統會保留建議，但不會把它當成可直接建立入庫的完整資料。</p></div>}
+            {plan.demand.partial && <div className="price-warning compact"><strong>銷速資料不完整，必須人工複核</strong><p>Amazon Sales API 沒有提供完整的近 30 個站點日；系統會保留建議，但不會把它當成可直接建立入庫的完整資料。</p></div>}
 
             <div className={`skill-connection ${plan.skillConnected ? "connected" : ""}`}><span>{plan.skillConnected ? "✓" : "↗"}</span><div><strong>{plan.skillConnected ? "補貨 Skill 接點已設定，尚未驗證" : "使用內建 FBA 補貨引擎"}</strong><p>{plan.notice}</p></div></div>
 
@@ -418,7 +415,7 @@ export default function ReplenishmentDrawer({
           </>
         )}
 
-        <div className="drawer-api-footnote">FBA Inventory v1 · Orders v2026-01-01 · FBA only · 建議不等於入庫確認</div>
+        <div className="drawer-api-footnote">FBA Inventory v1 · Sales v1 · Reports v2021-06-30 · FBA only · 建議不等於入庫確認</div>
       </aside>
     </div>
   );

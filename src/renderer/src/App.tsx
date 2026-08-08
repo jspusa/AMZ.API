@@ -87,7 +87,7 @@ export default function App() {
   if (!ready) {
     return (
       <main className="desktop-boot" aria-live="polite">
-        <span>A</span>
+        <span>J</span>
         <strong>AMZ.API</strong>
         <small>正在啟動 Mac 安全橋接…</small>
       </main>
