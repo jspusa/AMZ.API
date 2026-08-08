@@ -14,19 +14,22 @@ JSPUSA 的 GitHub 控制台＋macOS 本機金鑰 Amazon 營運系統。只處理
 | 區域 | 功能 | 自動化程度 |
 |---|---|---|
 | 策劃 | FBA 銷售趨勢（7／14／30／90 天、自訂 1–365 天、去年同期）、SB／SD 授權狀態、FBA 補貨計算 | 自動／人工授權 |
-| 策劃 | 180 天以上 FBA 庫齡、Amazon 預估冗餘與官方 days-of-supply | Amazon 報表唯讀 |
+| 策劃 | 全部 FBA 非重疊庫齡桶、Amazon 預估冗餘、下月倉儲成本與 AIS 預估附加費、Excel | Amazon 報表唯讀 |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID |
-| 產品 | 全站 FBA 內容健檢（疑似錯字紅字定位、不可見字元位置、賣點不足、可證明適用的缺成分／成分未驗證、單表 Excel） | Amazon 唯讀＋Mac 本機檢查 |
+| 產品 | 全站 FBA 文案健檢（疑似錯字紅字定位、不可見字元位置、賣點不足、可證明適用的缺成分／成分未驗證、單表 Excel） | Amazon 唯讀＋Mac 本機檢查 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
+| 產品 | 全站 FBA 圖片健檢（少於五張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
 | 產品 | 全商品標題、五大賣點、成分匯出 Excel | 一鍵 |
-| 產品 | Variation Family 地圖與拖拉規劃 | 唯讀規劃，不寫入 Amazon |
+| 產品 | 雙 Family 並排、FBA child 拖拉改掛、CHILD PTD 動態欄位 | 兩階段預檢＋Touch ID＋回查 |
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋Touch ID |
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋Touch ID |
-| 價格 | Subscribe & Save 資格、折扣與目前有效訂閱快照 | 自動讀取 |
+| 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel | 自動讀取；SG／AU 顯示不支援邊界 |
 | 促銷 | Coupon、S&S 管理與 Amazon Ads 集中於「Amazon 官方完成」 | 一鍵開啟、Amazon 內完成 |
-| 系統 | Keychain 密文、防重送帳本、預檢票證、自我檢查、更新 | 自動 |
+| 系統 | Keychain 密文、防重送帳本、預檢票證、自我檢查、字級、公開會計 API 能力與安全下載規劃 | 自動／能力邊界 |
 
-能力邊界：目前 Amazon SP-API 可安全寫入 Listing 價格、Sale Price、文案與圖片；S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。既有 child SKU 改掛新 variation parent 需要非原子的移除與重建，本版只讀取 family 並建立拖拉規劃，不會 DELETE 或改寫 Amazon 關係。介面不會假裝 API 已完成 Amazon 不開放或無法安全原子完成的動作。
+能力邊界：目前 Amazon SP-API 可安全寫入 Listing 價格、Sale Price、文案、圖片，以及既有 FBA child 的 variation 關係。變體改掛不是原子操作，固定拆成「解除舊 parent」與「加入新 parent」兩階段；每階段都重新讀取、Amazon Validation Preview、Touch ID、持久化防重送、單次 PATCH 與唯讀回查，任何不確定狀態都禁止直接重送。S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。
+
+Amazon 公開 API 目前不提供現有 FBA FC 庫存的逐 SKU／批次效期，因此 App 不會拿庫齡冒充近效期或已過期清單。一般 US／CA／JP／SG／AU／UK／DE 發票與 Seller Central 帳單也沒有通用公開下載 API；會計中心只啟用可證明為 FBA 的公開報表，Finances JSON、結算報表、人工前置與不可用能力會分開標示，不使用 Seller Central 私有接口。
 
 ## 第一次使用
 
@@ -65,7 +68,7 @@ Amazon 寫入固定經過：
 
 文案更新在 Validation Preview 後直接跳 Touch ID，不再要求重打 SKU；價格、圖片與 Sale Price 仍保留各自既定的額外防呆。
 
-寫入不會因為 `429`、逾時或 `5xx` 自動重送。結果不確定時帳本會標記 `unknown` 並阻止同一確認碼重送。
+寫入不會因為 `429`、逾時或 `5xx` 自動重送。真正 PATCH 前的重新讀取／PTD／Validation Preview 若失敗，會明示尚未送出並安全釋放 claim；真正 PATCH 已送或 Amazon 已接受後結果不確定時，帳本才會標記 `unknown` 並阻止同一確認碼重送。
 
 ## 開發與驗證
 

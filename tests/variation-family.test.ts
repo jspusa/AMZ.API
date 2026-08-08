@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeVariationMember,
+  variationRelationshipEvidenceConflict,
   variationSearchIncludesDeclaredChildren,
   variationPayloadHasFba,
   type VariationListingPayload,
@@ -168,5 +169,42 @@ describe("variation family normalization", () => {
     );
 
     expect(variationSearchIncludesDeclaredChildren(parent, [])).toBe(true);
+  });
+
+  it("detects relationship and attribute parent or theme conflicts", () => {
+    expect(
+      variationRelationshipEvidenceConflict(
+        {
+          sku: "CONFLICTING-CHILD",
+          attributes: {
+            parentage_level: [{ value: "child" }],
+            child_parent_sku_relationship: [{ parent_sku: "PARENT-ATTR" }],
+            variation_theme: [{ name: "SIZE_NAME" }],
+          },
+          relationships: [{
+            marketplaceId: MARKETPLACE_ID,
+            relationships: [{
+              parentSkus: ["PARENT-REL"],
+              variationTheme: { theme: "COLOR_NAME", attributes: ["color_name"] },
+            }],
+          }],
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toMatch(/parent SKU/u);
+
+    expect(
+      variationRelationshipEvidenceConflict(
+        {
+          sku: "CONFLICTING-ROLE",
+          attributes: { parentage_level: [{ value: "parent" }] },
+          relationships: [{
+            marketplaceId: MARKETPLACE_ID,
+            relationships: [{ parentSkus: ["PARENT-01"] }],
+          }],
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toMatch(/角色/u);
   });
 });

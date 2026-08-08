@@ -31,18 +31,24 @@ GitHub renderer 是受信任的操作介面：若 repository、GitHub 帳號或 
 - Orders
 - Listings price / batch
 - Listing content / export / FBA-only quality audit
-- Listing images / upload
-- Variation family read-only planner
+- Listing images / upload / FBA-only whole-catalog image audit
+- Variation family read + dedicated two-stage child move
 - Sale price
-- Subscribe & Save read
+- Subscribe & Save single-SKU read + FBA-only whole-catalog audit/export
 - Replenishment plan
+- FBA inventory age report/export
+- Public accounting capability and report-access planning
 - SKU command center
 - Product master
 - Health / Ads status
 
 其他 path／method 回 `404`；renderer 無法指定 Amazon host 或任意 upstream URL。
 
-全站文案健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料；英文拼字再由 sandboxed preload 呼叫 Mac 內建 spellchecker，文案不會送往第三方。Variation planner 只允許 GET，拖拉狀態只存在 renderer 記憶體，不提供 PUT／PATCH／DELETE route。
+全站文案與圖片健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料，renderer 仍會核對回應站點後才顯示或快取；英文拼字再由 sandboxed preload 呼叫 Mac 內建 spellchecker，文案不會送往第三方。Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
+
+Variation family 本身仍是唯讀查詢。唯一 mutation 是固定的 `/api/sp-api/variation-move` PATCH：只接受可證明為 FBA 的 child，依目標 CHILD PTD 建立 allowlisted relationship／dimension patches，並拆成解除與加入兩筆獨立 operation。每一筆都先 Validation Preview，再由 main 產生 native Touch ID 理由，寫入持久 idempotency ledger，送一次 Listings Items PATCH 並唯讀回查；claim 後、正式 PATCH 前的重新讀取／PTD／preview 失敗會安全釋放 claim，真正 PATCH 或已接受後的 timeout、連線中斷或回查不明才留下 unknown 狀態並禁止重送。
+
+會計中心不把 Finances JSON、Amazon-generated settlement、人工前置報表或不存在的發票／帳單 API 混為一談。Renderer 只取得 allowlisted capability 與安全工作狀態；一般站點發票、Seller Central 帳單及未完成 FBA 逐列過濾的 account-wide 文件保持停用，不使用私有接口。
 
 ## 儲存
 

@@ -8,7 +8,15 @@ import type {
 } from "../shared/contracts";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore, type ProductMasterState } from "./local-store";
+import {
+  PUBLIC_ACCOUNTING_CAPABILITIES,
+  buildAccountingAccessPlan,
+  type AccountingAccessPlan,
+  type AccountingCapability,
+  type AccountingCapabilityId,
+} from "./amazon/accounting-capabilities";
 import { auditListingContentRows } from "./amazon/content-quality";
+import { auditListingImageRows } from "./amazon/image-audit";
 import {
   MARKETPLACES,
   SpApiError,
@@ -21,14 +29,17 @@ import {
   getListingPrice,
   getRestockPlan,
   getSalesTrend,
+  getFbaSubscriptionAudit,
   getSubscribeAndSaveOffer,
   getVariationFamilyPlanner,
+  getVariationMovePreparation,
   isFulfillmentStatus,
   isMarketplaceId,
   previewListingContentUpdate,
   previewListingImageUpdate,
   previewListingPriceUpdate,
   previewListingSalePriceUpdate,
+  previewVariationMove,
   searchListingsBySku,
   searchOrders,
   startAgedInventoryReport,
@@ -37,6 +48,7 @@ import {
   updateListingImages,
   updateListingPrice,
   updateListingSalePrice,
+  updateVariationMove,
   usesDemoMode,
   verifyListingsAccess,
   type ListingContentSnapshot,
@@ -47,9 +59,19 @@ import {
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
   type SubscribeAndSaveOfferSnapshot,
+  type SubscriptionAuditSnapshot,
   type UpdateListingSalePriceInput,
+  type VariationMoveInput,
 } from "./amazon/sp-api";
-import { createListingsWorkbook } from "./amazon/xlsx";
+import {
+  ReplenishmentAuditError,
+  subscriptionAuditDiscountBucket,
+} from "./amazon/replenishment-audit";
+import { createSubscriptionAuditWorkbook } from "./amazon/subscription-audit-xlsx";
+import {
+  createAgedInventoryWorkbook,
+  createListingsWorkbook,
+} from "./amazon/xlsx";
 
 type WriteApproval = (reason: string) => Promise<void>;
 
@@ -86,6 +108,8 @@ const MARKETPLACE_CODES: Record<MarketplaceId, string> = {
   A1F83G8C2ARO7P: "GB",
   A1PA6795UKMFR9: "DE",
 };
+
+const SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): ApiResponse {
   return {
@@ -128,6 +152,14 @@ function apiError(error: unknown, fallback: string): ApiResponse {
       error.retryAfter ? { "retry-after": error.retryAfter } : {},
     );
   }
+  if (error instanceof ReplenishmentAuditError) {
+    const status = error.code === "MARKETPLACE_UNSUPPORTED" || error.code === "REQUEST_INVALID"
+      ? 422
+      : error.code === "PAGINATION_CHANGED" || error.code === "DUPLICATE_SKU"
+        ? 409
+        : 502;
+    return json({ code: `REPLENISHMENT_${error.code}`, message: error.message }, status);
+  }
   return json({ code: "INTERNAL_ERROR", message: fallback }, 500);
 }
 
@@ -149,6 +181,69 @@ function bodyRecord(request: ApiRequest): JsonRecord | null {
 
 export function parseMarketplace(value: unknown): MarketplaceId | null {
   return typeof value === "string" && isMarketplaceId(value) ? value : null;
+}
+
+function parseAccountingCapabilityId(value: unknown): AccountingCapabilityId | null {
+  if (typeof value !== "string") return null;
+  return PUBLIC_ACCOUNTING_CAPABILITIES.some((capability) => capability.id === value)
+    ? value as AccountingCapabilityId
+    : null;
+}
+
+function canonicalIsoTimestamp(value: unknown): string | null {
+  if (typeof value !== "string" || !value || value !== value.trim()) return null;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value
+    ? value
+    : null;
+}
+
+function accountingCatalogState(
+  capability: AccountingCapability,
+): AccountingAccessPlan["state"] {
+  if (capability.availability !== "CONFIGURED_FBA_MARKETPLACES") {
+    return "UNAVAILABLE";
+  }
+  if (capability.id === "FINANCES_TRANSACTIONS") {
+    return "MAIN_FBA_FILTER_REQUIRED";
+  }
+  if (capability.access === "SELLER_CENTRAL_PREREQUISITE") {
+    return "MANUAL_PREREQUISITE";
+  }
+  if (
+    capability.access === "LIST_AMAZON_GENERATED_REPORT" &&
+    capability.fbaSafety === "ACCOUNT_WIDE_NOT_FBA_SAFE"
+  ) {
+    return "FBA_FILTER_NOT_IMPLEMENTED";
+  }
+  if (capability.access === "LIST_AMAZON_GENERATED_REPORT") {
+    return "READY_LIST_GENERATED";
+  }
+  if (capability.access === "CREATE_PUBLIC_REPORT") {
+    return "READY_CREATE_REPORT";
+  }
+  return capability.access === "DIRECT_PUBLIC_API"
+    ? "READY_PUBLIC_API"
+    : "UNAVAILABLE";
+}
+
+function accountingPlanNextStep(state: AccountingAccessPlan["state"]): string | null {
+  switch (state) {
+    case "READY_PUBLIC_API":
+      return "這裡只完成公開 API 與日期規則的安全規劃；尚未讀取交易，也不會輸出未證明為 FBA 的金額。";
+    case "READY_CREATE_REPORT":
+      return "這裡只完成公開 Reports API、日期與 FBA allowlist 驗證；尚未建立、輪詢或下載 Amazon 報表。";
+    case "READY_LIST_GENERATED":
+      return "這裡只完成列出 Amazon 已產生報表的安全規劃；尚未查詢或下載文件。";
+    case "MAIN_FBA_FILTER_REQUIRED":
+      return "必須先在 main process 完成逐項 AFN 證據過濾；目前不讀取，也不會把帳戶總額送到畫面。";
+    case "FBA_FILTER_NOT_IMPLEMENTED":
+      return "文件可能混有非 FBA 資料；在逐列 FBA 過濾完成前維持禁止下載。";
+    case "MANUAL_PREREQUISITE":
+      return "必須先由你在 Amazon 官方介面產生文件；AMZ.API 不會使用 Seller Central 私有接口。";
+    case "UNAVAILABLE":
+      return "目前沒有符合此站點與 FBA-only 邊界的 Amazon 公開下載 API。";
+  }
 }
 
 export function parseSellerSku(value: unknown): string | null {
@@ -266,6 +361,63 @@ function parseUrls(value: unknown): Array<string | null> | null {
   return urls;
 }
 
+function parseVariationDimensionNames(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 6) return null;
+  const names: string[] = [];
+  for (const item of value) {
+    if (
+      typeof item !== "string" ||
+      !/^[a-z][a-z0-9_]{0,79}$/.test(item) ||
+      names.includes(item)
+    ) {
+      return null;
+    }
+    names.push(item);
+  }
+  return names;
+}
+
+function variationJsonSafe(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return typeof value !== "string" ||
+      (value.length <= 5_000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value));
+  }
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    return value.length <= 30 && value.every((item) => variationJsonSafe(item, depth + 1));
+  }
+  if (!isPlainRecord(value) || Object.keys(value).length > 30) return false;
+  return Object.entries(value).every(
+    ([key, child]) =>
+      /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(key) &&
+      !["__proto__", "constructor", "prototype"].includes(key) &&
+      variationJsonSafe(child, depth + 1),
+  );
+}
+
+function parseVariationDimensionValues(
+  value: unknown,
+  dimensionNames: string[],
+): Record<string, unknown> | null {
+  if (!isPlainRecord(value)) return null;
+  const keys = Object.keys(value).sort();
+  const expected = [...dimensionNames].sort();
+  if (
+    keys.length !== expected.length ||
+    !keys.every((key, index) => key === expected[index]) ||
+    !variationJsonSafe(value)
+  ) {
+    return null;
+  }
+  const serialized = JSON.stringify(value);
+  return serialized.length <= 64_000 ? structuredClone(value) : null;
+}
+
 function idempotencyKey(value: unknown): string | null {
   return typeof value === "string" && /^[A-Za-z0-9-]{8,80}$/.test(value)
     ? value
@@ -303,6 +455,15 @@ export class ApiRouter {
   private readonly vault: CredentialVault;
   private readonly approveWrite: WriteApproval;
   private readonly previews = new Map<string, PreviewTicket>();
+  private readonly subscriptionAuditSnapshots = new Map<
+    string,
+    {
+      marketplaceId: MarketplaceId;
+      accountScope: string;
+      expiresAt: number;
+      snapshot: SubscriptionAuditSnapshot;
+    }
+  >();
 
   constructor(input: {
     store: LocalStore;
@@ -316,6 +477,7 @@ export class ApiRouter {
 
   clearPreviews(): void {
     this.previews.clear();
+    this.subscriptionAuditSnapshots.clear();
   }
 
   async handle(request: ApiRequest): Promise<ApiResponse> {
@@ -427,6 +589,14 @@ export class ApiRouter {
         return this.commitSalePrice(request);
       case "GET /api/sp-api/subscribe-save":
         return this.subscribeSave(request);
+      case "GET /api/sp-api/subscription-audit":
+        return this.subscriptionAudit(request);
+      case "GET /api/sp-api/subscription-audit/export":
+        return this.subscriptionAuditExport(request);
+      case "GET /api/sp-api/accounting/capabilities":
+        return this.accountingCapabilities(request);
+      case "POST /api/sp-api/accounting/access-plan":
+        return this.accountingAccessPlan(request);
       case "GET /api/sp-api/replenishment-plan":
         return this.replenishment(request);
       case "POST /api/sp-api/aged-inventory":
@@ -435,6 +605,12 @@ export class ApiRouter {
         return this.agedInventoryStatusOrData(request);
       case "GET /api/sp-api/variation-family":
         return this.variationFamily(request);
+      case "GET /api/sp-api/variation-move":
+        return this.variationMovePreparation(request);
+      case "POST /api/sp-api/variation-move":
+        return this.previewVariationMove(request);
+      case "PATCH /api/sp-api/variation-move":
+        return this.commitVariationMove(request);
       case "GET /api/sp-api/sku-command":
         return this.skuCommand(request);
       case "GET /api/product-master":
@@ -566,6 +742,146 @@ export class ApiRouter {
       return json(await getVariationFamilyPlanner(identity));
     } catch (error) {
       return apiError(error, "查詢變體 family 時發生未預期的錯誤。");
+    }
+  }
+
+  private async variationMovePreparation(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const sellerSku = parseSellerSku(request.query.sku);
+    const targetParentSku = parseSellerSku(request.query.targetSku);
+    if (!marketplaceId || !sellerSku || !targetParentSku) {
+      return invalid("請選擇站點並提供來源 SKU 與目標 parent SKU。");
+    }
+    if (sellerSku === targetParentSku) {
+      return invalid("來源 SKU 與目標 parent 不能相同。");
+    }
+    try {
+      return json(await getVariationMovePreparation({
+        marketplaceId,
+        sellerSku,
+        targetParentSku,
+      }));
+    } catch (error) {
+      return apiError(error, "準備變體必要欄位時發生未預期的錯誤。");
+    }
+  }
+
+  private variationMoveInput(request: ApiRequest):
+    | (VariationMoveInput & { idempotencyKey: string })
+    | ApiResponse {
+    const body = bodyRecord(request);
+    if (!body) {
+      return invalid("變體請求必須使用 JSON。", 415, "UNSUPPORTED_MEDIA_TYPE");
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    const sellerSku = parseSellerSku(body.sellerSku);
+    const targetParentSku = parseSellerSku(body.targetParentSku);
+    const expectedSourceParentSku = body.expectedSourceParentSku === null
+      ? null
+      : parseSellerSku(body.expectedSourceParentSku);
+    const action = body.action === "detach" || body.action === "attach"
+      ? body.action
+      : null;
+    const variationTheme = typeof body.variationTheme === "string" &&
+      body.variationTheme.trim().length > 0 &&
+      body.variationTheme.trim().length <= 120 &&
+      !/[\u0000-\u001f\u007f]/.test(body.variationTheme)
+      ? body.variationTheme.trim()
+      : null;
+    const dimensionNames = parseVariationDimensionNames(body.dimensionNames);
+    const dimensionValues = dimensionNames
+      ? parseVariationDimensionValues(body.dimensionValues, dimensionNames)
+      : null;
+    if (
+      !marketplaceId ||
+      !sellerSku ||
+      !targetParentSku ||
+      !action ||
+      !variationTheme ||
+      !dimensionNames ||
+      !dimensionValues ||
+      sellerSku === targetParentSku
+    ) {
+      return invalid("變體請求缺少有效的來源、目標、theme 或必要維度資料。");
+    }
+    if (action === "detach" && !expectedSourceParentSku) {
+      return invalid("解除變體前必須提供查詢時核對的舊 parent SKU。");
+    }
+    const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : "";
+    return {
+      action,
+      marketplaceId,
+      sellerSku,
+      expectedSourceParentSku,
+      targetParentSku,
+      variationTheme,
+      dimensionNames,
+      dimensionValues,
+      idempotencyKey: key,
+    };
+  }
+
+  private variationMoveFingerprint(input: VariationMoveInput): string {
+    return stableFingerprint([
+      input.action,
+      input.marketplaceId,
+      input.sellerSku,
+      input.expectedSourceParentSku,
+      input.targetParentSku,
+      input.variationTheme,
+      [...input.dimensionNames].sort(),
+      input.dimensionValues,
+    ]);
+  }
+
+  private async previewVariationMove(request: ApiRequest): Promise<ApiResponse> {
+    const input = this.variationMoveInput(request);
+    if ("status" in input) return input;
+    try {
+      const result = await previewVariationMove(input);
+      const scoped = await this.scopedFingerprint(
+        input.marketplaceId,
+        this.variationMoveFingerprint(input),
+      );
+      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      return json(result);
+    } catch (error) {
+      return apiError(error, "Amazon 變體預檢時發生未預期的錯誤。");
+    }
+  }
+
+  private async commitVariationMove(request: ApiRequest): Promise<ApiResponse> {
+    const input = this.variationMoveInput(request);
+    if ("status" in input) return input;
+    const key = idempotencyKey(input.idempotencyKey);
+    if (!key) return invalid("這次變體預檢確認資訊已失效，請重新執行。");
+    const scoped = await this.scopedFingerprint(
+      input.marketplaceId,
+      this.variationMoveFingerprint(input),
+    );
+    const reason = input.action === "detach"
+      ? `確認解除變體｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜原 parent ${input.expectedSourceParentSku}`
+      : `確認加入變體｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku} → ${input.targetParentSku}｜${input.variationTheme}`;
+    const ticketError = await this.approveReservedPreview(
+      request.path,
+      key,
+      scoped.fingerprint,
+      reason,
+    );
+    if (ticketError) return ticketError;
+    try {
+      const result = await this.store.runIdempotentOperation({
+        idempotencyKey: key,
+        operationType: input.action === "detach" ? "variation_detach" : "variation_attach",
+        marketplaceId: input.marketplaceId,
+        sellerSku: input.sellerSku,
+        accountScope: scoped.accountScope,
+        fingerprint: scoped.fingerprint,
+        execute: () => updateVariationMove(input),
+      });
+      return json(result);
+    } catch (error) {
+      return apiError(error, "Amazon 變體寫入或回查時發生未預期的錯誤。");
     }
   }
 
@@ -1090,6 +1406,206 @@ export class ApiRouter {
       return json(await getSubscribeAndSaveOffer(identity));
     } catch (error) {
       return apiError(error, "查詢 Subscribe & Save 時發生未預期的錯誤。");
+    }
+  }
+
+  private pruneSubscriptionAuditSnapshots(now = Date.now()): void {
+    for (const [id, entry] of this.subscriptionAuditSnapshots) {
+      if (entry.expiresAt <= now) this.subscriptionAuditSnapshots.delete(id);
+    }
+  }
+
+  private async subscriptionAudit(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const months = integer(request.query.months, 6, 1, 23);
+    if (!marketplaceId || months === null) {
+      return invalid("請選擇支援的站點；月度歷史只能選 1 到 23 個完整月份。");
+    }
+    try {
+      const snapshot = await getFbaSubscriptionAudit({ marketplaceId, months });
+      const exportId = randomUUID();
+      const accountScope = await this.vault.getAccountScope(
+        MARKETPLACES[marketplaceId].region,
+      );
+      this.pruneSubscriptionAuditSnapshots();
+      this.subscriptionAuditSnapshots.set(exportId, {
+        marketplaceId,
+        accountScope,
+        expiresAt: Date.now() + SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS,
+        snapshot: structuredClone(snapshot),
+      });
+      return json({
+        ...snapshot,
+        offers: snapshot.offers.map((offer) => ({
+          ...offer,
+          monthlySeries: offer.monthlySeries.map((metric) => ({
+            month: metric.interval.month,
+            subscriptionRevenue: metric.subscriptionRevenue,
+            shippedSubscriptionUnits: metric.shippedSubscriptionUnits,
+            activeSubscriptionsAtPeriodEnd: metric.activeSubscriptionsAtPeriodEnd,
+            currencyCode: metric.currencyCode,
+          })),
+        })),
+        exportId,
+      });
+    } catch (error) {
+      return apiError(error, "載入全站 FBA Subscribe & Save 健檢時發生未預期的錯誤。");
+    }
+  }
+
+  private async subscriptionAuditExport(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const snapshotId = this.reportIdentifier(
+      request.query.exportId ?? request.query.snapshotId,
+    );
+    if (!marketplaceId || !snapshotId) {
+      return invalid("Subscribe & Save 匯出資訊無效，請重新執行健檢。");
+    }
+    this.pruneSubscriptionAuditSnapshots();
+    const stored = this.subscriptionAuditSnapshots.get(snapshotId);
+    if (!stored || stored.marketplaceId !== marketplaceId) {
+      return invalid(
+        "Subscribe & Save 健檢快照已過期或站點不符，請重新同步。",
+        410,
+        "SNAPSHOT_EXPIRED",
+      );
+    }
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[marketplaceId].region,
+    );
+    if (stored.accountScope !== accountScope) {
+      this.subscriptionAuditSnapshots.delete(snapshotId);
+      return invalid(
+        "Amazon 帳號範圍已改變，舊健檢快照不可匯出。",
+        409,
+        "ACCOUNT_SCOPE_CHANGED",
+      );
+    }
+    const snapshot = stored.snapshot;
+    const metricMonths = snapshot.intervals.map((interval) => interval.month);
+    if (!metricMonths.length) {
+      return invalid("健檢快照缺少官方完整月份，請重新同步。", 409, "SNAPSHOT_INVALID");
+    }
+    const problems = snapshot.offers.map((offer) => {
+      const rawDiscount = offer.sellerFundedBaseDiscount;
+      const exactBucket = subscriptionAuditDiscountBucket(rawDiscount);
+      const bucket = exactBucket ?? 0;
+      return {
+        bucket,
+        problem: rawDiscount === null
+          ? "Amazon 未回傳 Seller 基礎折扣；為保留資料暫列 0% 工作表，並非 0%。"
+          : exactBucket === null
+            ? `Amazon 回傳非標準 Seller 基礎折扣 ${rawDiscount}%；為保留資料暫列 0% 工作表，並非 0%。`
+            : `${bucket}% Seller 基礎折扣組`,
+        sellerSku: offer.sellerSku,
+        asin: offer.asin,
+        currentPrice: offer.price.amount,
+        currencyCode: offer.price.currencyCode,
+        sellerFundedBaseDiscount: offer.sellerFundedBaseDiscount,
+        sellerFundedTieredDiscount: offer.sellerFundedTieredDiscount,
+        currentActiveSubscriptions: offer.currentActiveSubscriptions,
+        monthlySeries: offer.monthlySeries.map((metric) => ({
+          month: metric.interval.month,
+          revenueCurrencyCode: metric.currencyCode,
+          subscriptionRevenue: metric.subscriptionRevenue,
+          shippedSubscriptionUnits: metric.shippedSubscriptionUnits,
+          activeSubscriptionsAtPeriodEnd: metric.activeSubscriptionsAtPeriodEnd,
+        })),
+        forecastDeliveries: offer.forecastDeliveries,
+        fbaEvidence: offer.fbaEvidence,
+      };
+    });
+    try {
+      const marketplace = MARKETPLACES[marketplaceId];
+      const workbook = createSubscriptionAuditWorkbook({
+        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
+        generatedAt: snapshot.fetchedAt,
+        metricMonths,
+        currentActiveSubscriptions: snapshot.summary.currentActiveSubscriptions,
+        provenSubscriptionRevenue: snapshot.summary.provenSubscriptionRevenue,
+        revenueCurrencyCode: snapshot.summary.revenueCurrencyCode,
+        revenueCoverage: snapshot.summary.revenueCoverage,
+        problems,
+      });
+      const filename = `amazon-fba-subscribe-save-audit-${marketplace.shortLabel.toLowerCase()}-${snapshot.fetchedAt.slice(0, 10)}.xlsx`;
+      return bytes(
+        workbook,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        {
+          "content-disposition": `attachment; filename="${filename}"`,
+          "x-exported-fba-offer-count": String(snapshot.offers.length),
+          "x-subscription-audit-months": String(snapshot.requestedMonths),
+        },
+      );
+    } catch (error) {
+      return apiError(error, "建立 Subscribe & Save 健檢 Excel 時發生未預期的錯誤。");
+    }
+  }
+
+  private accountingCapabilities(request: ApiRequest): ApiResponse {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
+    return json({
+      marketplaceId,
+      fetchedAt: new Date().toISOString(),
+      capabilities: PUBLIC_ACCOUNTING_CAPABILITIES.map((capability) => ({
+        ...capability,
+        roles: [...capability.roles],
+        state: accountingCatalogState(capability),
+      })),
+      notice:
+        "這裡只列出 Amazon 公開 SP-API 的 FBA 帳務能力與安全規劃狀態；尚未建立、輪詢或下載報表，也不使用 Seller Central 私有接口。",
+    });
+  }
+
+  private accountingAccessPlan(request: ApiRequest): ApiResponse {
+    const body = bodyRecord(request);
+    if (!body) {
+      return invalid("帳務規劃必須使用 JSON。", 400, "INVALID_ACCOUNTING_PLAN");
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    const capabilityId = parseAccountingCapabilityId(body.capabilityId);
+    if (!marketplaceId || !capabilityId) {
+      return invalid(
+        "請提供有效的站點與公開 API 帳務能力。",
+        400,
+        "INVALID_ACCOUNTING_PLAN",
+      );
+    }
+    const startPresent = body.dataStartTime !== undefined;
+    const endPresent = body.dataEndTime !== undefined;
+    const dataStartTime = startPresent
+      ? canonicalIsoTimestamp(body.dataStartTime)
+      : undefined;
+    const dataEndTime = endPresent
+      ? canonicalIsoTimestamp(body.dataEndTime)
+      : undefined;
+    if ((startPresent && !dataStartTime) || (endPresent && !dataEndTime)) {
+      return invalid(
+        "帳務日期必須是完整、標準的 ISO 時間。",
+        400,
+        "INVALID_ACCOUNTING_DATE",
+      );
+    }
+    try {
+      const plan = buildAccountingAccessPlan({
+        capabilityId,
+        marketplaceId,
+        ...(dataStartTime ? { dataStartTime } : {}),
+        ...(dataEndTime ? { dataEndTime } : {}),
+      });
+      return json({
+        capabilityId,
+        marketplaceId,
+        state: plan.state,
+        notice: plan.capability.notice,
+        nextStep: accountingPlanNextStep(plan.state),
+      });
+    } catch (error) {
+      if (error instanceof TypeError) {
+        return invalid(error.message, 400, "INVALID_ACCOUNTING_PLAN");
+      }
+      return apiError(error, "建立公開 API 帳務規劃時發生未預期的錯誤。");
     }
   }
 
@@ -1656,7 +2172,9 @@ export class ApiRouter {
     if (!marketplaceId || !reportId) {
       return invalid("FBA 庫齡報表查詢資訊無效，請重新同步。");
     }
-    if (request.query.data !== "1") {
+    const dataRequested = request.query.data === "1";
+    const downloadRequested = request.query.download === "1";
+    if (!dataRequested && !downloadRequested) {
       try {
         const status = await getAgedInventoryReportStatus({
           marketplaceId,
@@ -1672,11 +2190,34 @@ export class ApiRouter {
       return invalid("FBA 庫齡報表文件資訊無效，請重新同步。");
     }
     try {
-      return json(
-        await getAgedInventoryData({ marketplaceId, reportId, documentId }),
+      const snapshot = await getAgedInventoryData({
+        marketplaceId,
+        reportId,
+        documentId,
+      });
+      if (!downloadRequested) return json(snapshot);
+      const marketplace = MARKETPLACES[marketplaceId];
+      const workbook = createAgedInventoryWorkbook({
+        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
+        fetchedAt: snapshot.fetchedAt,
+        rows: snapshot.rows,
+        excessAvailability: snapshot.summary.excessAvailability,
+        storageCostAvailability: snapshot.summary.storageCostAvailability,
+        agedSurchargeAvailability: snapshot.summary.agedSurchargeAvailability,
+        expirationNotice: snapshot.expiration.notice,
+      });
+      const date = snapshot.fetchedAt.slice(0, 10);
+      const filename = `amazon-fba-inventory-age-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
+      return bytes(
+        workbook,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        {
+          "content-disposition": `attachment; filename="${filename}"`,
+          "x-exported-fba-sku-count": String(snapshot.rows.length),
+        },
       );
     } catch (error) {
-      return apiError(error, "整理 180 天以上 FBA 庫存時發生未預期的錯誤。");
+      return apiError(error, "整理或匯出 FBA 庫齡資料時發生未預期的錯誤。");
     }
   }
 
@@ -1687,7 +2228,11 @@ export class ApiRouter {
       return invalid("報表查詢資訊無效，請重新匯出。");
     }
     const auditRequested = request.query.audit === "1";
-    if (request.query.download !== "1" && !auditRequested) {
+    const imageAuditRequested = request.query.imageAudit === "1";
+    if (auditRequested && imageAuditRequested) {
+      return invalid("一次只能執行一種全站健檢。");
+    }
+    if (request.query.download !== "1" && !auditRequested && !imageAuditRequested) {
       try {
         const status = await getAllListingsReportStatus({ marketplaceId, reportId });
         return json({ ...status, message: status.notice });
@@ -1705,6 +2250,24 @@ export class ApiRouter {
             marketplaceId,
             fetchedAt: data.fetchedAt,
             rows: data.rows,
+          }),
+        );
+      }
+      if (imageAuditRequested) {
+        return json(
+          auditListingImageRows({
+            marketplaceId,
+            fetchedAt: data.fetchedAt,
+            rows: data.rows.map((row) => ({
+              sellerSku: row.sellerSku,
+              asin: row.asin,
+              productType: row.productType,
+              title: row.title,
+              imageUrls: row.imageUrls,
+              readStatus: row.readStatus,
+              readErrors: row.readErrors,
+            })),
+            minimumImages: 5,
           }),
         );
       }

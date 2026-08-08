@@ -9,6 +9,7 @@ import type {
   TrendRangeSelection,
 } from "./components/sales-trend-chart";
 import ConnectionPanel from "./connection-panel";
+import BrandGlyph from "./components/brand-glyph";
 
 const INITIAL_RANGE: TrendRangeSelection = { kind: "preset", days: 7 };
 
@@ -87,7 +88,7 @@ export default function App() {
   if (!ready) {
     return (
       <main className="desktop-boot" aria-live="polite">
-        <span>J</span>
+        <BrandGlyph className="desktop-boot-mark" />
         <strong>AMZ.API</strong>
         <small>正在啟動 Mac 安全橋接…</small>
       </main>

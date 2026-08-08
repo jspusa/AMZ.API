@@ -19,13 +19,14 @@ describe("dashboard top navigation layout", () => {
     )?.[0];
 
     expect(navigation).toBeDefined();
-    expect(navigation?.match(/aria-haspopup="dialog"/g)).toHaveLength(7);
+    expect(navigation?.match(/aria-haspopup="dialog"/g)).toHaveLength(8);
     const orderedLabels = [
       "文案",
       "圖片",
-      "變體規劃",
+      "變體改掛",
       "定價",
       "促銷",
+      "訂閱價格健檢",
       "補貨",
       "廣告",
     ];
@@ -48,8 +49,15 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain("mobile-core-nav");
     expect(markup).not.toContain("<aside");
     expect(markup).toContain('class="content-audit-home-card"');
-    expect(markup).toContain("全站內容健檢");
-    expect(markup).toContain("開始全站健檢");
+    expect(markup).toContain("全站文案健檢");
+    expect(markup).toContain("開始全站文案健檢");
+    expect(markup).toContain('class="health-audit-home-grid"');
+    expect(markup).toContain('class="content-audit-home-card image-audit-home-card"');
+    expect(markup).toContain("全站圖片健檢");
+    expect(markup).toContain("開始全站圖片健檢");
+    expect(markup).toContain("全站訂閱價格健檢");
+    expect(markup).toContain("6／12／23 個完整月");
+    expect(markup).not.toContain("全站內容健檢");
     expect(markup.indexOf('id="product-zone"')).toBeLessThan(
       markup.indexOf('id="pricing-zone"'),
     );
@@ -88,5 +96,45 @@ describe("dashboard top navigation layout", () => {
     expect(css).toMatch(
       /\.connection-panel-backdrop\s*\{[\s\S]*?align-items:\s*center;[\s\S]*?justify-content:\s*center;/,
     );
+    expect(css).toMatch(
+      /\.pricing-zone \.zone-tools,\s*\.planning-zone \.zone-tools\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(css).toMatch(
+      /@media \(min-width: 861px\)[\s\S]*?\.pricing-zone \.zone-tools\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/,
+    );
+    expect(css).toMatch(
+      /\.health-audit-home-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 820px\)[\s\S]*?\.health-audit-home-grid\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
+    );
+    expect(css).toMatch(
+      /\.image-audit-row\s*\{[\s\S]*?grid-template-columns:\s*64px minmax\(0, 1fr\) auto;/,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 680px\)[\s\S]*?\.image-audit-row\s*\{[\s\S]*?grid-template-columns:\s*56px minmax\(0, 1fr\);/,
+    );
+  });
+
+  it("does not advertise an SG subscription scan that Amazon's official API cannot run", () => {
+    const markup = renderToStaticMarkup(
+      <Dashboard
+        initialSalesTrend={null}
+        initialMarketplaceId="A19VAU5U5O7RUS"
+        initialError="Sales API 暫時無法同步。"
+      />,
+    );
+    const navigation = markup.match(
+      /<nav class="workspace-primary-nav"[\s\S]*?<\/nav>/,
+    )?.[0];
+
+    expect(navigation).toContain("S&amp;S 能力說明");
+    expect(navigation).not.toContain("訂閱價格健檢");
+    expect(markup).toContain("Subscribe &amp; Save 能力說明");
+    expect(markup).toContain("SG 站不在 Amazon 官方 Seller Replenishment API 支援清單");
+    expect(markup).toContain("不會送出全站掃描");
+    expect(markup).toContain("官方 API 未支援");
+    expect(markup).not.toContain("核對全部 FBA S&amp;S");
+    expect(markup).not.toContain("全站 FBA 自動核對");
   });
 });

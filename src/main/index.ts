@@ -387,6 +387,7 @@ function registerIpc(): void {
         "/api/sp-api/listing-content",
         "/api/sp-api/listing-images",
         "/api/sp-api/sale-price",
+        "/api/sp-api/variation-move",
       ].includes(input.path);
     apiRequestsInFlight += 1;
     if (isAmazonWrite) amazonWritesInFlight += 1;

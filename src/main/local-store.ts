@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import { SpApiError } from "./amazon/sp-api";
+import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api";
 
 export type SupplyRoute = "DIRECT_FBA" | "AWD_TO_FBA";
 
@@ -37,7 +37,13 @@ export type ProductMasterState = {
 type LedgerState = "pending" | "completed" | "unknown";
 
 type LedgerEntry = {
-  operationType: "price" | "content" | "images" | "sale_price";
+  operationType:
+    | "price"
+    | "content"
+    | "images"
+    | "sale_price"
+    | "variation_detach"
+    | "variation_attach";
   marketplaceId: string;
   sellerSku: string;
   accountScope: string;
@@ -82,6 +88,10 @@ type OperationInput<T> = {
 };
 
 const OPERATION_TTL_MS = 24 * 60 * 60 * 1_000;
+const VARIATION_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([
+  "variation_detach",
+  "variation_attach",
+]);
 
 function emptyStore(): StoreData {
   return { version: 2, profiles: {}, ledger: {} };
@@ -132,6 +142,7 @@ function operationError(state: LedgerState): SpApiError {
 }
 
 function resultMayBeUnknown(error: unknown): boolean {
+  if (error instanceof SpApiPreCommitError) return false;
   if (!(error instanceof SpApiError)) return true;
   return (
     error.status >= 500 ||
@@ -303,6 +314,20 @@ export class LocalStore {
           return;
         }
         throw operationError(existing.state);
+      }
+      if (VARIATION_OPERATION_TYPES.has(input.operationType)) {
+        const activeVariationForSku = Object.values(data.ledger).find(
+          (entry) =>
+            VARIATION_OPERATION_TYPES.has(entry.operationType) &&
+            entry.marketplaceId === input.marketplaceId &&
+            entry.sellerSku === input.sellerSku &&
+            entry.state !== "completed" &&
+            (entry.accountScope === input.accountScope ||
+              entry.accountScope === "legacy-unknown"),
+        );
+        if (activeVariationForSku) {
+          throw operationError(activeVariationForSku.state);
+        }
       }
       const equivalent = Object.values(data.ledger).find(
         (entry) =>

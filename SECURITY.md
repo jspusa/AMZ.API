@@ -21,7 +21,9 @@
 - Amazon preview、舊值衝突、必要路徑的完整 SKU／幅度檢查、Touch ID／native confirmation
 - 本機持久 idempotency ledger；未知結果不重送
 - 全站文案只用 Mac 內建 spellchecker，不傳送到外部拼字服務
-- Variation family 只開放唯讀 GET；拖拉規劃沒有 Amazon mutation route
+- Variation family 查詢保持唯讀；唯一改掛 route 只允許 FBA child，固定兩階段 Amazon Validation Preview → native Touch ID → 持久 idempotency → 單次 PATCH → 唯讀回查。真正 PATCH 前失敗會安全釋放 claim；已送出或已接受後的未知狀態不得重送
+- 全站文案／圖片／訂閱健檢只接收 main process 證明的 FBA SKU；訂閱 Excel 只能由 main 保存的短效快照建立
+- 會計能力使用固定公開 SP-API allowlist；未完成 FBA 過濾、人工前置、Brazil-only 與不存在的通用發票／帳單接口保持停用
 - Lock screen／suspend 清除所有短效預檢票證
 - Electron fuses：停用 RunAsNode、Node options／inspect，啟用 ASAR integrity 與 cookie encryption
 - Hardened Runtime、Developer ID、notarization 與 stapling release workflow

@@ -965,7 +965,7 @@ export default function SkuOperationsDrawer({
           </button>
         </div>
 
-        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p><span className="automation-badge one_click">一鍵</span><p>健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Touch ID。</p><span className="automation-badge manual">需人工</span><p>疑似錯字、標題、五大賣點與成分內容由你決定。</p></div>
+        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p><span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Touch ID。</p><span className="automation-badge manual">需人工</span><p>疑似錯字、標題、五大賣點與成分內容由你決定。</p></div>
 
         <div className="sku-ops-tabs" role="tablist" aria-label="商品內容工具">
           <button
@@ -988,7 +988,7 @@ export default function SkuOperationsDrawer({
             className={tab === "audit" ? "active" : ""}
             onClick={() => changeTab("audit")}
           >
-            全站內容健檢
+            全站文案健檢
           </button>
           <button
             id="content-export-tab"
@@ -1032,7 +1032,7 @@ export default function SkuOperationsDrawer({
                 onClick={() => changeTab("audit")}
                 disabled={busy}
               >
-                ← 返回全站健檢結果
+                ← 返回全站文案健檢結果
               </button>
             )}
             {phase === "edit" && (

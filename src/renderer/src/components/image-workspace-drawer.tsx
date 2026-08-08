@@ -11,6 +11,9 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
 } from "react";
+import ImageAuditPanel, { type ImageAuditCache } from "./image-audit-panel";
+
+export type ImageWorkspaceTab = "single" | "audit";
 
 type ImageCapability = {
   attributeName: string;
@@ -107,16 +110,24 @@ function inspectRemoteImage(url: string): Promise<{ width: number; height: numbe
 export default function ImageWorkspaceDrawer({
   initialMarketplaceId,
   initialSellerSku = "",
+  initialTab = "single",
+  auditCacheByMarketplace = {},
+  onAuditCacheChange,
   onContextResolved,
   onClose,
 }: {
   initialMarketplaceId: string;
   initialSellerSku?: string;
+  initialTab?: ImageWorkspaceTab;
+  auditCacheByMarketplace?: Readonly<Record<string, ImageAuditCache>>;
+  onAuditCacheChange?: (cache: ImageAuditCache) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
 }) {
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
   const [skuInput, setSkuInput] = useState(initialSellerSku);
+  const [tab, setTab] = useState<ImageWorkspaceTab>(initialTab);
+  const [returnToAudit, setReturnToAudit] = useState(initialTab === "audit");
   const [snapshot, setSnapshot] = useState<ImageSnapshot | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -193,10 +204,10 @@ export default function ImageWorkspaceDrawer({
     setResult(null);
   };
 
-  const lookup = useCallback(async (event?: FormEvent) => {
-    event?.preventDefault();
-    const sellerSku = skuInput.trim();
+  const loadSku = useCallback(async (requestedSku: string) => {
+    const sellerSku = requestedSku.trim();
     if (!sellerSku) return setError("請輸入完整 Seller SKU。");
+    setSkuInput(sellerSku);
     setLoading(true);
     setError(null);
     try {
@@ -216,19 +227,51 @@ export default function ImageWorkspaceDrawer({
       setPreview(null);
       setResult(null);
       setVerified(false);
+      setSkuInput(next.sellerSku);
       onContextResolved?.(marketplaceId, next.sellerSku);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "目前無法查詢商品圖片。");
     } finally {
       setLoading(false);
     }
-  }, [marketplaceId, onContextResolved, skuInput]);
+  }, [marketplaceId, onContextResolved]);
+
+  const lookup = useCallback(async (event?: FormEvent) => {
+    event?.preventDefault();
+    await loadSku(skuInput);
+  }, [loadSku, skuInput]);
+
+  const changeTab = (nextTab: ImageWorkspaceTab): boolean => {
+    if (nextTab === tab) return true;
+    if (
+      nextTab === "audit" &&
+      hasChanges &&
+      phase !== "result" &&
+      !window.confirm("圖片排序尚未送出，確定要返回全站圖片健檢嗎？")
+    ) {
+      return false;
+    }
+    if (tab === "audit" && nextTab === "single") setReturnToAudit(true);
+    setTab(nextTab);
+    return true;
+  };
+
+  const openAuditSku = (sellerSku: string) => {
+    setReturnToAudit(true);
+    setTab("single");
+    setPhase("edit");
+    void loadSku(sellerSku);
+  };
 
   useEffect(() => {
-    if (autoLookupRef.current || !initialSellerSku.trim()) return;
+    if (
+      autoLookupRef.current ||
+      initialTab !== "single" ||
+      !initialSellerSku.trim()
+    ) return;
     autoLookupRef.current = true;
-    void lookup();
-  }, [initialSellerSku, lookup]);
+    void loadSku(initialSellerSku);
+  }, [initialSellerSku, initialTab, loadSku]);
 
   const uploadFile = async (file: File, index: number) => {
     if (!snapshot || !snapshot.images[index]?.capability.editable) return;
@@ -486,8 +529,52 @@ export default function ImageWorkspaceDrawer({
 
         {phase === "edit" && (
           <>
+            <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站圖片健檢會找出少於五張圖片與讀取未完成的 FBA SKU；單一 SKU 的格式、像素、PTD 與回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>健檢會自動建立及輪詢報表；圖片排序完成後可安全預檢並送出。</p><span className="automation-badge manual">需人工</span><p>選圖、排序與主圖位置必須由你判斷。</p></div>
+            <div className="sku-ops-tabs image-workspace-tabs" role="tablist" aria-label="商品圖片工具">
+              <button
+                id="image-single-tab"
+                type="button"
+                role="tab"
+                aria-selected={tab === "single"}
+                aria-controls="image-single-panel"
+                className={tab === "single" ? "active" : ""}
+                onClick={() => changeTab("single")}
+              >
+                單一 SKU 圖片工作台
+              </button>
+              <button
+                id="image-audit-tab"
+                type="button"
+                role="tab"
+                aria-selected={tab === "audit"}
+                aria-controls="image-audit-panel"
+                className={tab === "audit" ? "active" : ""}
+                onClick={() => changeTab("audit")}
+              >
+                全站圖片健檢
+              </button>
+            </div>
+          </>
+        )}
+
+        {phase === "edit" && tab === "single" && (
+          <>
+            {returnToAudit && (
+              <button
+                className="back-link image-audit-return-button"
+                type="button"
+                onClick={() => changeTab("audit")}
+                disabled={loading || actionLoading}
+              >
+                ← 返回全站圖片健檢結果
+              </button>
+            )}
             <p className="price-intro">拖進來、排好順序、預檢後送出。主圖放第一格，最多八張副圖。</p>
-            <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全域 SKU 開啟即載入；格式、大小、像素、重複網址、PTD 與送出後回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>排序完成後，通過完整 SKU 防呆即可安全送出。</p><span className="automation-badge manual">需人工</span><p>選圖、排序與主圖位置必須由你判斷。</p></div>
+            <div
+              id="image-single-panel"
+              role="tabpanel"
+              aria-labelledby="image-single-tab"
+            >
             <form className="price-search image-search" onSubmit={lookup}>
               <label>
                 <span>Amazon 站點</span>
@@ -572,7 +659,37 @@ export default function ImageWorkspaceDrawer({
                 </div>
               </>
             )}
+            </div>
           </>
+        )}
+
+        {phase === "edit" && tab === "audit" && (
+          <div
+            id="image-audit-panel"
+            role="tabpanel"
+            aria-labelledby="image-audit-tab"
+          >
+            <label className="ops-marketplace" htmlFor="image-audit-marketplace">
+              <span>Amazon 站點</span>
+              <select
+                id="image-audit-marketplace"
+                value={marketplaceId}
+                onChange={(event) => reset(event.target.value)}
+                disabled={loading || actionLoading}
+              >
+                {MARKETPLACES.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <ImageAuditPanel
+              marketplaceId={marketplaceId}
+              marketplaceShort={marketplace.label.split(" · ")[0]}
+              onOpenSku={openAuditSku}
+              cachedResult={auditCacheByMarketplace[marketplaceId] ?? null}
+              onCachedResultChange={onAuditCacheChange}
+            />
+          </div>
         )}
 
         {phase === "confirm" && snapshot && preview && (
