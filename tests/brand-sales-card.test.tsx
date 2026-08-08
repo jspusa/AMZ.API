@@ -33,6 +33,14 @@ describe("brand sales report job", () => {
     );
     expect(source).not.toContain("const cache = new Map");
     expect(source).toContain("setSnapshot(null)");
-    expect(source).toContain("[marketplaceId, startDate, endDate]");
+    expect(source).toContain("[endDate, marketplaceId, startDate]");
+    expect(source).toContain("automaticSelectionRef");
+    expect(source).toContain("automaticSelectionRef.current === selectionKey");
+    expect(source).toContain("void sync(false)");
+    expect(source).toContain("onRetry={() => void sync(true)}");
+    expect(source).toContain("...(explicitRetry ? { retry: true } : {})");
+    expect(source).toContain('code === "REPORT_CANCELLED"');
+    expect(source).toContain('code === "REPORT_FATAL"');
+    expect(source).not.toContain("for (let postAttempt");
   });
 });

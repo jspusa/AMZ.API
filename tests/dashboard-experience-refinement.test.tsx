@@ -18,6 +18,7 @@ describe("dashboard experience refinement", () => {
     expect(markup).toContain("進階");
     expect(markup).not.toContain("有待處理");
     expect(markup).not.toContain("系統自檢與除錯");
+    expect(markup).not.toContain("自動分析私密資料");
   });
 
   it("moves display and advanced workspace preferences into system information", async () => {
@@ -39,6 +40,10 @@ describe("dashboard experience refinement", () => {
     expect(source).toContain("操作偏好與系統說明");
     expect(source).toContain("銷售趨勢自動同步");
     expect(source).toContain("Mac Keychain Secrets");
+    expect(source).toContain("API 版本更新建議");
+    expect(source).toContain("下次功能靈感");
+    expect(source).toContain("不會讀取或分析 SKU、銷售、憑證等私密資料");
+    expect(source).toContain("FEATURE_IDEAS");
     expect(source).not.toContain("AccountingCenterPanel");
     expect(markup).not.toContain("FBA 帳務中心");
   });

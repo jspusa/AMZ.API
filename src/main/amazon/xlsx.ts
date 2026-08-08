@@ -58,6 +58,14 @@ export interface ListingsWorkbookRow {
   marketplaceLabel?: string | null;
   auditType?: string | null;
   auditDescription?: string | null;
+  auditTitleRuns?: readonly WorkbookRichTextRun[];
+  auditBulletPointRuns?: readonly (readonly WorkbookRichTextRun[] | null | undefined)[];
+  auditIngredientsRuns?: readonly WorkbookRichTextRun[];
+}
+
+export interface WorkbookRichTextRun {
+  text: string;
+  alert?: boolean;
 }
 
 export interface ListingsWorkbookError {
@@ -155,6 +163,7 @@ export interface CreateUnboundVariationWorkbookInput {
 
 type Cell =
   | { kind: "text"; value: unknown; style: number }
+  | { kind: "rich-text"; runs: readonly WorkbookRichTextRun[]; style: number }
   | { kind: "date"; value: string | Date | null | undefined; style: number }
   | { kind: "number"; value: number | null; style: number };
 
@@ -182,19 +191,24 @@ export function createListingsWorkbook({
 
   const mainRows = rows.map((row): readonly Cell[] => {
     const bulletPoints = row.bulletPoints ?? [];
+    const auditBulletPointRuns = row.auditBulletPointRuns ?? [];
 
     const baseCells: readonly Cell[] = [
       textCell(row.marketplaceLabel ?? marketplaceLabel),
       textCell(row.sku, 2),
       textCell(row.asin ?? "", 2),
       textCell(row.productType ?? ""),
-      textCell(row.title ?? ""),
-      textCell(bulletPoints[0] ?? ""),
-      textCell(bulletPoints[1] ?? ""),
-      textCell(bulletPoints[2] ?? ""),
-      textCell(bulletPoints[3] ?? ""),
-      textCell(bulletPoints[4] ?? ""),
-      textCell(row.ingredients ?? ""),
+      layout === "content-audit" && row.auditTitleRuns?.length
+        ? richTextCell(row.auditTitleRuns)
+        : textCell(row.title ?? ""),
+      ...Array.from({ length: 5 }, (_, index) =>
+        layout === "content-audit" && auditBulletPointRuns[index]?.length
+          ? richTextCell(auditBulletPointRuns[index]!)
+          : textCell(bulletPoints[index] ?? ""),
+      ),
+      layout === "content-audit" && row.auditIngredientsRuns?.length
+        ? richTextCell(row.auditIngredientsRuns)
+        : textCell(row.ingredients ?? ""),
     ];
     return layout === "content-audit"
       ? [
@@ -642,6 +656,10 @@ function textCell(value: unknown, style = 3): Cell {
   return { kind: "text", value, style };
 }
 
+function richTextCell(runs: readonly WorkbookRichTextRun[], style = 3): Cell {
+  return { kind: "rich-text", runs, style };
+}
+
 function dateCell(value: string | Date | null | undefined): Cell {
   return { kind: "date", value, style: 4 };
 }
@@ -727,9 +745,54 @@ function renderCell(reference: string, cell: Cell): string {
     }
   }
 
+  if (cell.kind === "rich-text") {
+    return inlineRichTextCell(reference, cell.runs, cell.style);
+  }
   const value = cell.kind === "text" ? cell.value : cell.value ?? "";
   const style = cell.kind === "date" ? 3 : cell.style;
   return inlineStringCell(reference, value, style);
+}
+
+function inlineRichTextCell(
+  reference: string,
+  rawRuns: readonly WorkbookRichTextRun[],
+  style: number,
+): string {
+  const normalizedRuns = safeRichTextRuns(rawRuns);
+  const runs = normalizedRuns
+    .map((run) => {
+      const properties = run.alert
+        ? '<rPr><b/><color rgb="FFC62828"/><sz val="11"/><rFont val="Aptos"/><family val="2"/></rPr>'
+        : '<rPr><color rgb="FF17202A"/><sz val="11"/><rFont val="Aptos"/><family val="2"/></rPr>';
+      return `<r>${properties}<t xml:space="preserve">${escapeXml(run.text)}</t></r>`;
+    })
+    .join("");
+  return `<c r="${reference}" s="${style}" t="inlineStr"><is>${runs}</is></c>`;
+}
+
+function safeRichTextRuns(
+  rawRuns: readonly WorkbookRichTextRun[],
+): WorkbookRichTextRun[] {
+  const sanitized = rawRuns
+    .map((run) => ({
+      text: sanitizeXmlText(String(run.text ?? "")),
+      alert: Boolean(run.alert),
+    }))
+    .filter((run) => run.text.length > 0);
+  if (!sanitized.length) return [{ text: "", alert: false }];
+  if (/^[=+\-@]/u.test(sanitized[0].text)) {
+    sanitized[0] = { ...sanitized[0], text: `'${sanitized[0].text}` };
+  }
+  let remaining = MAX_EXCEL_CELL_CHARACTERS;
+  const truncated: WorkbookRichTextRun[] = [];
+  for (const run of sanitized) {
+    if (remaining <= 0) break;
+    const characters = Array.from(run.text);
+    const text = characters.slice(0, remaining).join("");
+    if (text) truncated.push({ text, alert: run.alert });
+    remaining -= Array.from(text).length;
+  }
+  return truncated.length ? truncated : [{ text: "", alert: false }];
 }
 
 function inlineStringCell(reference: string, value: unknown, style: number): string {

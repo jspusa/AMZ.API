@@ -2,6 +2,7 @@
 
 import { useId, useState } from "react";
 import type { BrandSalesSegment, BrandSalesSnapshot } from "../brand-sales";
+import type { BrandSalesFailure } from "./brand-sales-card";
 
 function formatMoney(amount: number, currencyCode: string): string {
   try {
@@ -20,13 +21,13 @@ export default function BrandSalesChart({
   loading,
   error,
   rangeLabel,
-  onSync,
+  onRetry,
 }: {
   snapshot: BrandSalesSnapshot | null;
   loading: boolean;
-  error: string | null;
+  error: BrandSalesFailure | null;
   rangeLabel: string;
-  onSync: () => void;
+  onRetry: () => void;
 }) {
   const titleId = useId();
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -43,17 +44,30 @@ export default function BrandSalesChart({
           <h3 id={titleId}>品牌營收占比</h3>
           <p>{rangeLabel}</p>
         </div>
-        <button type="button" onClick={onSync} disabled={loading}>
-          <span className={loading ? "spin" : ""}>↻</span>
-          {loading ? "整理中" : snapshot ? "重新同步" : "同步品牌"}
-        </button>
+        <span className="brand-sales-auto-status" aria-live="polite">
+          <i className={loading ? "spin" : ""} aria-hidden="true">↻</i>
+          {loading ? "隨區間整理中" : snapshot ? "已隨區間自動更新" : "等待自動更新"}
+        </span>
       </header>
 
-      {error && <div className="brand-sales-error" role="alert">{error}</div>}
+      {error && (
+        <div className="brand-sales-error" role="alert">
+          <div>
+            <strong>{error.code === "REPORT_CANCELLED"
+              ? "Amazon 已取消這次報表"
+              : error.code === "REPORT_FATAL"
+                ? "Amazon 無法完成這次報表"
+                : "品牌占比暫時未完成"}</strong>
+            <p>{error.message}</p>
+            {error.requestId && <small>Request ID: {error.requestId}</small>}
+          </div>
+          <button type="button" onClick={onRetry} disabled={loading}>再試一次</button>
+        </div>
+      )}
       {!snapshot && !error && (
         <div className="brand-sales-empty">
-          <strong>{loading ? "Amazon 正在準備 FBA 出貨報表…" : "尚未整理品牌占比"}</strong>
-          <p>同步後只計 Amazon FBA Customer Shipment Sales report 的出貨列；目前找不到商品名稱或品牌不明的 SKU 會保留為灰色「未分類」。</p>
+          <strong>{loading ? "Amazon 正在準備 FBA 出貨報表…" : "等待銷售區間"}</strong>
+          <p>只計 FBA Customer Shipment Sales report；無法可靠歸類的 SKU 會保留為灰色「未分類」。</p>
         </div>
       )}
 
@@ -113,7 +127,10 @@ export default function BrandSalesChart({
               ))}
             </div>
           </div>
-          <p className="brand-sales-notice">{snapshot.notice}</p>
+          <details className="brand-sales-notice">
+            <summary>資料怎麼算</summary>
+            <p>{snapshot.notice}</p>
+          </details>
         </>
       )}
     </section>

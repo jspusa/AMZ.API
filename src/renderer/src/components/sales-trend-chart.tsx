@@ -76,8 +76,8 @@ type Coordinate = {
 };
 
 const WIDTH = 760;
-const HEIGHT = 250;
-const PLOT = { left: 66, right: 18, top: 20, bottom: 42 };
+const HEIGHT = 112;
+const PLOT = { left: 66, right: 18, top: 8, bottom: 22 };
 const RANGE_OPTIONS = [7, 14, 30, 90] as const;
 const DAY_MILLISECONDS = 86_400_000;
 export const MAX_CUSTOM_SALES_TREND_DAYS = 365;
@@ -291,6 +291,18 @@ export function nearestTrendPointIndex(
   return Math.round(ratio * (pointCount - 1));
 }
 
+export function nextSkaterIndex(
+  currentIndex: number,
+  direction: -1 | 1,
+  pointCount: number,
+): number {
+  if (!Number.isSafeInteger(pointCount) || pointCount <= 0) return 0;
+  const safeCurrent = Number.isSafeInteger(currentIndex)
+    ? Math.min(pointCount - 1, Math.max(0, currentIndex))
+    : 0;
+  return Math.min(pointCount - 1, Math.max(0, safeCurrent + direction));
+}
+
 function linePath(coordinates: Array<{ x: number; y: number | null }>): string {
   let drawing = false;
   return coordinates
@@ -344,7 +356,11 @@ export default function SalesTrendChart({
   const plotScrollRef = useRef<HTMLDivElement | null>(null);
   const plotRef = useRef<HTMLDivElement | null>(null);
   const keyboardNavigationRef = useRef(false);
+  const jumpTimeoutRef = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [skaterEnabled, setSkaterEnabled] = useState(false);
+  const [skaterIndex, setSkaterIndex] = useState(0);
+  const [skaterJumping, setSkaterJumping] = useState(false);
   const [customOpen, setCustomOpen] = useState(selection.kind === "custom");
   const [customStartDate, setCustomStartDate] = useState(
     selection.kind === "custom" ? selection.startDate : snapshot?.range.startDate ?? "",
@@ -385,7 +401,14 @@ export default function SalesTrendChart({
 
   useEffect(() => {
     setActiveIndex(null);
+    setSkaterIndex(0);
   }, [snapshot]);
+
+  useEffect(() => () => {
+    if (jumpTimeoutRef.current !== null) {
+      window.clearTimeout(jumpTimeoutRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!snapshot?.range.presetDays) return;
@@ -449,6 +472,9 @@ export default function SalesTrendChart({
   const yTicks = [0, 0.25, 0.5, 0.75, 1];
   const allZero = Boolean(points.length) && maxAmount === 0;
   const active = activeIndex === null ? null : coordinates[activeIndex] ?? null;
+  const skaterCoordinate = skaterEnabled
+    ? coordinates[Math.min(skaterIndex, Math.max(0, coordinates.length - 1))] ?? null
+    : null;
   const earliestStartDate = useMemo(
     () =>
       latestAvailableDate
@@ -491,6 +517,45 @@ export default function SalesTrendChart({
     event.preventDefault();
     keyboardNavigationRef.current = true;
     setActiveIndex(nextIndex);
+  };
+
+  const moveSkater = (direction: -1 | 1) => {
+    if (!points.length) return;
+    keyboardNavigationRef.current = true;
+    setSkaterIndex((currentIndex) => {
+      const nextIndex = nextSkaterIndex(currentIndex, direction, points.length);
+      setActiveIndex(nextIndex);
+      return nextIndex;
+    });
+  };
+
+  const jumpSkater = () => {
+    if (!skaterEnabled || !points.length) return;
+    if (jumpTimeoutRef.current !== null) {
+      window.clearTimeout(jumpTimeoutRef.current);
+    }
+    setSkaterJumping(false);
+    window.requestAnimationFrame(() => setSkaterJumping(true));
+    jumpTimeoutRef.current = window.setTimeout(() => {
+      setSkaterJumping(false);
+      jumpTimeoutRef.current = null;
+    }, 430);
+  };
+
+  const handleSkaterKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      moveSkater(event.key === "ArrowLeft" ? -1 : 1);
+      return;
+    }
+    if (
+      event.key === "ArrowUp" ||
+      event.key.toLocaleLowerCase("en-US") === "j" ||
+      (event.key === " " && event.target === event.currentTarget)
+    ) {
+      event.preventDefault();
+      jumpSkater();
+    }
   };
 
   useEffect(() => {
@@ -701,11 +766,52 @@ export default function SalesTrendChart({
       )}
 
       {snapshot && (
-        <div className="sales-trend-legend" aria-label="折線圖圖例">
-          <span><i className="is-current" aria-hidden="true" />本期 {currentYears}</span>
-          {snapshot.comparison && (
-            <span><i className="is-comparison" aria-hidden="true" />去年同期 {comparisonYears}</span>
-          )}
+        <div className="sales-trend-toolbar">
+          <div className="sales-trend-legend" aria-label="折線圖圖例">
+            <span><i className="is-current" aria-hidden="true" />本期 {currentYears}</span>
+            {snapshot.comparison && (
+              <span><i className="is-comparison" aria-hidden="true" />去年同期 {comparisonYears}</span>
+            )}
+          </div>
+          <div className="sales-skater-mode">
+            <button
+              type="button"
+              className="sales-skater-toggle"
+              aria-pressed={skaterEnabled}
+              onClick={() => {
+                const nextEnabled = !skaterEnabled;
+                setSkaterEnabled(nextEnabled);
+                if (nextEnabled) {
+                  const nextIndex = activeIndex ?? 0;
+                  setSkaterIndex(nextIndex);
+                  setActiveIndex(nextIndex);
+                } else {
+                  if (jumpTimeoutRef.current !== null) {
+                    window.clearTimeout(jumpTimeoutRef.current);
+                    jumpTimeoutRef.current = null;
+                  }
+                  setSkaterJumping(false);
+                  setActiveIndex(null);
+                }
+              }}
+            >
+              <span aria-hidden="true">●━</span>
+              迷你滑板
+            </button>
+            {skaterEnabled && (
+              <div
+                className="sales-skater-controls"
+                role="group"
+                aria-label="迷你滑板控制；左右方向鍵移動，上方向鍵或 J 跳躍"
+                tabIndex={0}
+                onKeyDown={handleSkaterKeyDown}
+              >
+                <button type="button" onClick={() => moveSkater(-1)} disabled={skaterIndex <= 0} aria-label="滑板向左">←</button>
+                <button type="button" onClick={jumpSkater} aria-label="滑板跳躍">↑</button>
+                <button type="button" onClick={() => moveSkater(1)} disabled={skaterIndex >= points.length - 1} aria-label="滑板向右">→</button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -834,6 +940,24 @@ export default function SalesTrendChart({
                   <span><i className="is-current" aria-hidden="true" />本期 {formatMoney(active.point.totalSales)}</span>
                   <span><i className="is-comparison" aria-hidden="true" />{active.comparisonPoint ? `${active.comparisonPoint.date} ${formatMoney(active.comparisonPoint.totalSales)}` : "去年同期無對應日期"}</span>
                 </div>
+              )}
+              {skaterCoordinate && (
+                <span
+                  className={`sales-skater ${skaterJumping ? "is-jumping" : ""}`}
+                  style={{
+                    left: `${(skaterCoordinate.x / WIDTH) * 100}%`,
+                    top: `${(skaterCoordinate.y / HEIGHT) * 100}%`,
+                  }}
+                  aria-hidden="true"
+                >
+                  <i className="sales-skater-person" />
+                  <i className="sales-skater-board" />
+                </span>
+              )}
+              {skaterEnabled && skaterCoordinate && (
+                <span className="visually-hidden" role="status" aria-live="polite">
+                  迷你滑板位於 {skaterCoordinate.point.date}，本期銷售 {formatMoney(skaterCoordinate.point.totalSales)}
+                </span>
               )}
               {allZero && (
                 <div className="sales-trend-zero">

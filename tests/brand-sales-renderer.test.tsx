@@ -52,7 +52,7 @@ describe("brand sales renderer", () => {
   it("renders the five requested colors, gray unclassified and accessible hover targets", () => {
     const parsed = parseBrandSalesSnapshot(snapshot(), expected);
     const html = renderToStaticMarkup(
-      <BrandSalesChart snapshot={parsed} loading={false} error={null} rangeLabel="08/01–08/07" onSync={() => undefined} />,
+      <BrandSalesChart snapshot={parsed} loading={false} error={null} rangeLabel="08/01–08/07" onRetry={() => undefined} />,
     );
     expect(html).toContain("品牌營收占比");
     expect(html).toContain("Afreschi");
@@ -63,5 +63,31 @@ describe("brand sales renderer", () => {
     }
     expect(html).toContain("tabindex=\"0\"");
     expect(html).toContain("50%");
+    expect(html).toContain("已隨區間自動更新");
+    expect(html).toContain("<details class=\"brand-sales-notice\">");
+    expect(html).toContain("<summary>資料怎麼算</summary>");
+    expect(html).toContain("只含 FBA 已出貨商品。");
+    expect(html).not.toContain("同步品牌");
+    expect(html).not.toContain("重新同步");
+  });
+
+  it("shows cancelled reports honestly and exposes only an explicit quiet retry", () => {
+    const html = renderToStaticMarkup(
+      <BrandSalesChart
+        snapshot={null}
+        loading={false}
+        error={{
+          code: "REPORT_CANCELLED",
+          message: "Amazon 已取消這次 FBA 出貨報表；沒有資料被修改。",
+          requestId: "request-brand-1234",
+        }}
+        rangeLabel="08/01–08/07"
+        onRetry={() => undefined}
+      />,
+    );
+    expect(html).toContain("Amazon 已取消這次報表");
+    expect(html).toContain("沒有資料被修改");
+    expect(html).toContain("Request ID: request-brand-1234");
+    expect(html).toContain(">再試一次</button>");
   });
 });

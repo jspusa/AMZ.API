@@ -10,7 +10,9 @@ import {
 } from "react";
 import { ContentConfirmationControls } from "./content-confirmation-controls";
 import ContentAuditPanel, {
+  resolveContentAuditQuickEditFocus,
   type ContentAuditCache,
+  type ContentAuditQuickEditFocus,
 } from "./content-audit-panel";
 
 export type ContentWorkspaceTab = "single" | "audit" | "export";
@@ -378,6 +380,9 @@ export default function SkuOperationsDrawer({
 }) {
   const [tab, setTab] = useState<ContentWorkspaceTab>(initialTab);
   const [returnToAudit, setReturnToAudit] = useState(false);
+  const [quickEditFocus, setQuickEditFocus] = useState<
+    ContentAuditQuickEditFocus | null
+  >(null);
   const [marketplaceId, setMarketplaceId] = useState(
     MARKETPLACES.some((item) => item.id === initialMarketplaceId)
       ? initialMarketplaceId
@@ -420,6 +425,21 @@ export default function SkuOperationsDrawer({
   const hasChanges = Boolean(
     listing && requestedContent && !contentMatches(listing.content, requestedContent),
   );
+  const quickEditResolution = useMemo(
+    () =>
+      listing && quickEditFocus
+        ? resolveContentAuditQuickEditFocus(quickEditFocus, listing)
+        : null,
+    [listing, quickEditFocus],
+  );
+  const activeQuickEditFocus =
+    quickEditResolution?.status === "focused"
+      ? quickEditResolution.focus
+      : null;
+  const staleQuickEditNotice =
+    quickEditResolution?.status === "stale"
+      ? quickEditResolution.message
+      : null;
   const changedFields = useMemo(() => {
     if (!listing || !requestedContent) return [];
     const fields: string[] = [];
@@ -562,6 +582,7 @@ export default function SkuOperationsDrawer({
     setIdempotencyKey("");
     setResultConfirmed(false);
     setSubmittedContent(null);
+    setQuickEditFocus(null);
     setError(null);
   }, []);
 
@@ -620,6 +641,7 @@ export default function SkuOperationsDrawer({
 
   const lookupSingle = useCallback(async (event?: FormEvent, sellerSkuOverride?: string) => {
     event?.preventDefault();
+    if (event) setQuickEditFocus(null);
     const sellerSku = (sellerSkuOverride ?? skuInput).trim();
     if (!sellerSku) {
       setError("請輸入完整 Seller SKU。");
@@ -654,7 +676,11 @@ export default function SkuOperationsDrawer({
     }
   }, [fetchListing, marketplaceId, onContextResolved, skuInput]);
 
-  const openAuditSku = useCallback((sellerSku: string) => {
+  const openAuditSku = useCallback((
+    sellerSku: string,
+    focus?: ContentAuditQuickEditFocus,
+  ) => {
+    setQuickEditFocus(focus ?? null);
     setReturnToAudit(true);
     setTab("single");
     void lookupSingle(undefined, sellerSku);
@@ -1078,9 +1104,32 @@ export default function SkuOperationsDrawer({
                     </dl>
 
                     <div className="ops-section-heading">
-                      <div><span>EDIT CONTENT</span><h3>直接修改商品內容</h3></div>
+                      <div>
+                        <span>{activeQuickEditFocus ? "FIX FLAGGED CONTENT" : "EDIT CONTENT"}</span>
+                        <h3>{activeQuickEditFocus ? "只修改健檢指出的欄位" : "直接修改商品內容"}</h3>
+                      </div>
                       <small>{changedFields.length ? `已變更 ${changedFields.length} 個欄位` : "尚未變更"}</small>
                     </div>
+
+                    {activeQuickEditFocus && (
+                      <div className="content-audit-quick-edit-notice" role="note">
+                        <strong>立刻修改模式</strong>
+                        <p>只顯示這次健檢有問題的內容；其他 Amazon 原值仍會原樣帶入預檢，不會被清空。</p>
+                        {activeQuickEditFocus.relocationNote && (
+                          <p>{activeQuickEditFocus.relocationNote}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {staleQuickEditNotice && (
+                      <div
+                        className="validation-status demo content-audit-stale-notice"
+                        role="alert"
+                      >
+                        <strong>健檢定位已失效，已顯示完整編輯</strong>
+                        <p>{staleQuickEditNotice}</p>
+                      </div>
+                    )}
 
                     <section
                       className="batch-panel"
@@ -1092,6 +1141,8 @@ export default function SkuOperationsDrawer({
                         background: "#fff",
                       }}
                     >
+                      {(!activeQuickEditFocus ||
+                        activeQuickEditFocus.fields.includes("title")) && (
                       <label htmlFor="content-title">
                         <span>商品標題</span>
                         <textarea
@@ -1109,12 +1160,22 @@ export default function SkuOperationsDrawer({
                             : titleCapability?.reason || "此商品類型不支援在這裡編輯標題。"}
                         </small>
                       </label>
+                      )}
 
+                      {(!activeQuickEditFocus ||
+                        activeQuickEditFocus.fields.includes("bulletPoints")) && (
+                      <>
                       <div className="ops-section-heading" style={{ marginTop: 22 }}>
                         <div><span>BULLET POINTS</span><h3>五大賣點</h3></div>
-                        <small>最多 {bulletMaxItems} 項</small>
+                        <small>{activeQuickEditFocus ? "只顯示需處理項目" : `最多 ${bulletMaxItems} 項`}</small>
                       </div>
                       {draft.bulletPoints.map((bullet, index) => {
+                        if (
+                          activeQuickEditFocus &&
+                          !activeQuickEditFocus.bulletIndices.includes(index)
+                        ) {
+                          return null;
+                        }
                         const enabled = Boolean(
                           bulletCapability?.supported &&
                           bulletCapability.editable &&
@@ -1151,7 +1212,11 @@ export default function SkuOperationsDrawer({
                           </label>
                         );
                       })}
+                      </>
+                      )}
 
+                      {(!activeQuickEditFocus ||
+                        activeQuickEditFocus.fields.includes("ingredients")) && (
                       <label htmlFor="content-ingredients" style={{ marginTop: 22 }}>
                         <span>成分</span>
                         <textarea
@@ -1173,6 +1238,7 @@ export default function SkuOperationsDrawer({
                             : ingredientCapability?.reason || "此商品類型不支援在這裡編輯成分。"}
                         </small>
                       </label>
+                      )}
 
                       {fieldErrors.length > 0 && (
                         <div className="price-error" role="alert">
@@ -1185,7 +1251,11 @@ export default function SkuOperationsDrawer({
                         onClick={previewContent}
                         disabled={actionLoading || !hasChanges || fieldErrors.length > 0}
                       >
-                        {actionLoading ? "Amazon 預檢中…" : "檢查這次內容變更"}
+                        {actionLoading
+                          ? "Amazon 預檢中…"
+                          : activeQuickEditFocus
+                            ? "確認並預檢這次修正"
+                            : "檢查這次內容變更"}
                       </button>
                     </section>
                     {listing.notice && (

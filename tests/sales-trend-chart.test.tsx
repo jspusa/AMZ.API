@@ -5,6 +5,7 @@ import SalesTrendChart, {
   customDayCountError,
   earliestComparableStartDate,
   nearestTrendPointIndex,
+  nextSkaterIndex,
   previousYearDateKey,
   salesTrendFailureMessage,
   startDateForDayCount,
@@ -141,8 +142,19 @@ describe("sales trend comparison chart", () => {
     expect(markup).toContain("本期銷售額");
     expect(markup).toContain("去年同期銷售額");
     expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain("迷你滑板");
+    expect(markup).toContain('aria-pressed="false"');
+    expect(markup).not.toContain("sales-skater-controls");
     expect(markup).not.toContain("本頁銷售");
     expect(markup).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("clamps the optional skater to valid chart points", () => {
+    expect(nextSkaterIndex(0, -1, 7)).toBe(0);
+    expect(nextSkaterIndex(0, 1, 7)).toBe(1);
+    expect(nextSkaterIndex(6, 1, 7)).toBe(6);
+    expect(nextSkaterIndex(99, -1, 7)).toBe(5);
+    expect(nextSkaterIndex(0, 1, 0)).toBe(0);
   });
 
   it("offers 7, 14, 30, and 90 day presets and marks the selected 90-day range", () => {

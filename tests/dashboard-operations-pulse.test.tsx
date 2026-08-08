@@ -498,7 +498,8 @@ describe("dashboard operations pulse data flow", () => {
 
     expect(markup).toContain("品牌營收占比");
     expect(markup).toContain("2026-08-01 – 2026-08-07");
-    expect(markup).toContain("同步品牌");
+    expect(markup).toContain("等待自動更新");
+    expect(markup).not.toContain("同步品牌");
     expect(markup).toContain('class="operations-overview-grid has-companion"');
     expect(markup).toContain('aria-label="近期營運延伸資訊"');
   });

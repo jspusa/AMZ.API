@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -332,5 +332,91 @@ describe("local durable safety store", () => {
     });
     const raw = await readFile(store.filePath, "utf8");
     expect(raw).not.toMatch(/refresh.?token|client.?secret|lwaClientSecret/i);
+  });
+
+  it("drops malformed optional report-cache entries without blocking profiles or ledger", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fba-os-store-cache-"));
+    const filePath = join(directory, "data.json");
+    await writeFile(filePath, JSON.stringify({
+      version: 2,
+      profiles: {},
+      ledger: {},
+      brandSalesJobs: {
+        malformed: {
+          jobId: "malformed-job",
+          listing: {
+            status: "DONE",
+            reportId: null,
+            documentId: null,
+          },
+        },
+      },
+      sharedAllListingsReports: {
+        malformed: {
+          leaseId: "malformed-lease",
+          report: {
+            status: "DONE",
+            reportId: null,
+            documentId: null,
+          },
+        },
+      },
+    }));
+    const store = new LocalStore(filePath);
+    await expect(store.initialize()).resolves.toBeUndefined();
+    await expect(
+      store.getBrandSalesJob({
+        accountScope: "account-a",
+        marketplaceId: "ATVPDKIKX0DER",
+        startDate: "2026-08-01",
+        endDate: "2026-08-07",
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      store.syncProductIdentity({
+        accountScope: "account-a",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "SAFE-SKU-CACHE",
+      }),
+    ).resolves.toMatchObject({ found: true });
+    const rewritten = JSON.parse(await readFile(filePath, "utf8")) as {
+      version: number;
+      brandSalesJobs: Record<string, unknown>;
+      sharedAllListingsReports: Record<string, unknown>;
+    };
+    expect(rewritten.version).toBe(2);
+    expect(rewritten.brandSalesJobs).toEqual({});
+    expect(rewritten.sharedAllListingsReports).toEqual({});
+  });
+
+  it("keeps the optional durable report ledger rollback-compatible at store version 2", async () => {
+    const store = await testStore();
+    const now = Date.now();
+    await store.createSharedAllListingsReportIfAbsent({
+      leaseId: "shared-listings-lease-1",
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+      mode: "live",
+      report: {
+        reportId: "all-listings-report-1",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: now,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    }, now);
+    const raw = JSON.parse(await readFile(store.filePath, "utf8")) as {
+      version: number;
+      sharedAllListingsReports: Record<string, unknown>;
+    };
+    expect(raw.version).toBe(2);
+    expect(Object.keys(raw.sharedAllListingsReports)).toHaveLength(1);
+    expect(JSON.stringify(raw)).not.toMatch(/refresh.?token|client.?secret|lwaClientSecret/i);
   });
 });

@@ -130,7 +130,9 @@ function isMember(value: unknown): value is VariationMemberView {
 
 export function parseVariationFamilyResponse(
   value: unknown,
-  expected: { marketplaceId: string; sellerSku: string },
+  expected:
+    | { marketplaceId: string; sellerSku: string; asin?: never }
+    | { marketplaceId: string; asin: string; sellerSku?: never },
 ): VariationFamilyView {
   if (!isRecord(value)) {
     throw new Error("Mac App Bridge 回傳的變體資料格式不正確。");
@@ -138,13 +140,18 @@ export function parseVariationFamilyResponse(
   const parent = value.parent;
   const children = value.children;
   const excluded = value.excludedChildren;
+  const expectedSellerSku = "sellerSku" in expected
+    ? expected.sellerSku
+    : null;
+  const expectedAsin = "asin" in expected ? expected.asin : null;
   if (
     (value.mode !== "live" && value.mode !== "demo") ||
     value.marketplaceId !== expected.marketplaceId ||
-    value.queriedSku !== expected.sellerSku ||
+    (expectedSellerSku !== null && value.queriedSku !== expectedSellerSku) ||
     !isRole(value.queriedRole) ||
     !isMember(value.queried) ||
-    value.queried.sellerSku !== expected.sellerSku ||
+    value.queried.sellerSku !== value.queriedSku ||
+    (expectedAsin !== null && value.queried.asin !== expectedAsin) ||
     value.queried.role !== value.queriedRole ||
     (parent !== null && (!isMember(parent) || parent.role !== "parent")) ||
     !Array.isArray(children) ||

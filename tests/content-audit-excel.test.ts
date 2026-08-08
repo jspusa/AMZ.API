@@ -75,5 +75,10 @@ describe("content audit Excel", () => {
     expect(productSheet).toContain("U+200B（零寬空格）位於");
     expect(productSheet).toContain("Gentle");
     expect(productSheet).toContain("應手動修改此段");
+    expect(productSheet).toContain('<color rgb="FFC62828"/>');
+    expect(productSheet).toContain("⟦U+200B 零寬空格⟧");
+    expect(productSheet).toMatch(
+      /<r><rPr><b\/><color rgb="FFC62828"\/>.*?<t xml:space="preserve">⟦U\+200B 零寬空格⟧<\/t><\/r>/u,
+    );
   });
 });

@@ -47,6 +47,7 @@ type ApiProblem = {
 };
 
 type StagedState = "planned" | "detached" | "attached";
+type VariationIdentifierType = "sku" | "asin";
 
 const MARKETPLACES = [
   { id: "ATVPDKIKX0DER", label: "US · 美國站", sample: "AFA-TRKY-4OZ" },
@@ -110,6 +111,10 @@ export default function VariationPlannerDrawer({
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplace);
   const [sourceInput, setSourceInput] = useState(initialSellerSku);
   const [targetInput, setTargetInput] = useState("");
+  const [sourceIdentifierType, setSourceIdentifierType] =
+    useState<VariationIdentifierType>("sku");
+  const [targetIdentifierType, setTargetIdentifierType] =
+    useState<VariationIdentifierType>("sku");
   const [sourceFamily, setSourceFamily] = useState<VariationFamilyView | null>(null);
   const [targetFamily, setTargetFamily] = useState<VariationFamilyView | null>(null);
   const [stagedMember, setStagedMember] = useState<VariationMemberView | null>(null);
@@ -174,21 +179,43 @@ export default function VariationPlannerDrawer({
     preparationAbortRef.current?.abort();
   }, []);
 
-  const fetchFamily = useCallback(async (sellerSku: string, signal: AbortSignal) => {
-    const params = new URLSearchParams({ marketplaceId, sku: sellerSku });
+  const fetchFamily = useCallback(async (
+    identifier: string,
+    identifierType: VariationIdentifierType,
+    signal: AbortSignal,
+  ) => {
+    const params = new URLSearchParams({ marketplaceId });
+    params.set(identifierType, identifier);
     const response = await fetch(`/api/sp-api/variation-family?${params}`, {
       cache: "no-store",
       signal,
     });
     const payload = (await response.json()) as unknown;
     if (!response.ok) throw new Error(requestErrorMessage(response.status, payload as ApiProblem));
-    return parseVariationFamilyResponse(payload, { marketplaceId, sellerSku });
+    return parseVariationFamilyResponse(
+      payload,
+      identifierType === "asin"
+        ? { marketplaceId, asin: identifier }
+        : { marketplaceId, sellerSku: identifier },
+    );
   }, [marketplaceId]);
 
-  const lookupSource = useCallback(async (sellerSku: string) => {
-    const normalizedSku = sellerSku.trim();
-    if (!normalizedSku) {
-      setSourceError("請輸入完整 Seller SKU。");
+  const lookupSource = useCallback(async (
+    identifier: string,
+    identifierType: VariationIdentifierType = sourceIdentifierType,
+  ) => {
+    const normalizedIdentifier = identifierType === "asin"
+      ? identifier.trim().toUpperCase()
+      : identifier.trim();
+    if (
+      !normalizedIdentifier ||
+      (identifierType === "asin" && !/^[A-Z0-9]{10}$/u.test(normalizedIdentifier))
+    ) {
+      setSourceError(
+        identifierType === "asin"
+          ? "請輸入完整 10 碼 ASIN。"
+          : "請輸入完整 Seller SKU。",
+      );
       return;
     }
     sourceAbortRef.current?.abort();
@@ -199,10 +226,15 @@ export default function VariationPlannerDrawer({
     setSourceFamily(null);
     clearWorkflow();
     try {
-      const family = await fetchFamily(normalizedSku, controller.signal);
+      const family = await fetchFamily(
+        normalizedIdentifier,
+        identifierType,
+        controller.signal,
+      );
       if (sourceAbortRef.current !== controller) return;
       setSourceFamily(family);
       setSourceInput(family.queriedSku);
+      setSourceIdentifierType("sku");
       onContextResolved?.(marketplaceId, family.queriedSku);
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
@@ -212,12 +244,24 @@ export default function VariationPlannerDrawer({
     } finally {
       if (sourceAbortRef.current === controller) setSourceLoading(false);
     }
-  }, [clearWorkflow, fetchFamily, marketplaceId, onContextResolved]);
+  }, [clearWorkflow, fetchFamily, marketplaceId, onContextResolved, sourceIdentifierType]);
 
-  const lookupTarget = useCallback(async (sellerSku: string) => {
-    const normalizedSku = sellerSku.trim();
-    if (!normalizedSku) {
-      setTargetError("請輸入目標 parent 或其 child SKU。");
+  const lookupTarget = useCallback(async (
+    identifier: string,
+    identifierType: VariationIdentifierType = targetIdentifierType,
+  ) => {
+    const normalizedIdentifier = identifierType === "asin"
+      ? identifier.trim().toUpperCase()
+      : identifier.trim();
+    if (
+      !normalizedIdentifier ||
+      (identifierType === "asin" && !/^[A-Z0-9]{10}$/u.test(normalizedIdentifier))
+    ) {
+      setTargetError(
+        identifierType === "asin"
+          ? "請輸入完整 10 碼 ASIN。"
+          : "請輸入目標 parent 或其 child SKU。",
+      );
       return;
     }
     targetAbortRef.current?.abort();
@@ -231,12 +275,17 @@ export default function VariationPlannerDrawer({
     setLastResult(null);
     setWorkflowError(null);
     try {
-      const family = await fetchFamily(normalizedSku, controller.signal);
+      const family = await fetchFamily(
+        normalizedIdentifier,
+        identifierType,
+        controller.signal,
+      );
       if (targetAbortRef.current !== controller) return;
       const parent = targetParent(family);
       if (!parent) throw new Error("這個 SKU 沒有可確認的目標 parent 容器。");
       setTargetFamily(family);
       setTargetInput(parent.sellerSku);
+      setTargetIdentifierType("sku");
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
       if (targetAbortRef.current === controller) {
@@ -245,10 +294,16 @@ export default function VariationPlannerDrawer({
     } finally {
       if (targetAbortRef.current === controller) setTargetLoading(false);
     }
-  }, [fetchFamily]);
+  }, [fetchFamily, targetIdentifierType]);
 
-  const runSourceLookup = useCallback(() => void lookupSource(sourceInput), [lookupSource, sourceInput]);
-  const runTargetLookup = useCallback(() => void lookupTarget(targetInput), [lookupTarget, targetInput]);
+  const runSourceLookup = useCallback(
+    () => void lookupSource(sourceInput, sourceIdentifierType),
+    [lookupSource, sourceIdentifierType, sourceInput],
+  );
+  const runTargetLookup = useCallback(
+    () => void lookupTarget(targetInput, targetIdentifierType),
+    [lookupTarget, targetIdentifierType, targetInput],
+  );
 
   const handleSourceKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
     const action = variationLookupKeyAction(event.key, event.nativeEvent.isComposing);
@@ -267,7 +322,7 @@ export default function VariationPlannerDrawer({
   useEffect(() => {
     if (autoLookupRef.current || !initialSellerSku.trim()) return;
     autoLookupRef.current = true;
-    void lookupSource(initialSellerSku);
+    void lookupSource(initialSellerSku, "sku");
   }, [initialSellerSku, lookupSource]);
 
   const changeMarketplace = (nextMarketplaceId: string) => {
@@ -277,6 +332,8 @@ export default function VariationPlannerDrawer({
     setMarketplaceId(nextMarketplaceId);
     setSourceInput("");
     setTargetInput("");
+    setSourceIdentifierType("sku");
+    setTargetIdentifierType("sku");
     setSourceFamily(null);
     setTargetFamily(null);
     setSourceError(null);
@@ -393,8 +450,10 @@ export default function VariationPlannerDrawer({
         ? targetParent(targetFamily)?.sellerSku ?? targetFamily.queriedSku
         : null;
       const [nextSource, nextTarget] = await Promise.all([
-        fetchFamily(sourceSku, controller.signal),
-        targetSku ? fetchFamily(targetSku, controller.signal) : Promise.resolve(null),
+        fetchFamily(sourceSku, "sku", controller.signal),
+        targetSku
+          ? fetchFamily(targetSku, "sku", controller.signal)
+          : Promise.resolve(null),
       ]);
       setSourceFamily(nextSource);
       if (nextTarget) setTargetFamily(nextTarget);
@@ -526,9 +585,22 @@ export default function VariationPlannerDrawer({
 
         <div className="variation-planner-columns">
           <section className="variation-family-panel" aria-labelledby="variation-source-title">
-            <div className="variation-section-heading"><span>01</span><div><strong id="variation-source-title">來源 family</strong><small>查詢來源 SKU；只顯示可確認的 FBA child</small></div></div>
+            <div className="variation-section-heading"><span>01</span><div><strong id="variation-source-title">來源 family</strong><small>可用 SKU 或 ASIN 查詢；結果一定顯示 Seller SKU</small></div></div>
             <div className="variation-search-row">
-              <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} onKeyDown={handleSourceKeyDown} placeholder={`例如 ${marketplace.sample}`} maxLength={40} autoComplete="off" spellCheck={false} disabled={busy} aria-label="來源 Seller SKU" />
+              <select
+                value={sourceIdentifierType}
+                onChange={(event) => {
+                  setSourceIdentifierType(event.target.value as VariationIdentifierType);
+                  setSourceInput("");
+                  setSourceError(null);
+                }}
+                disabled={busy}
+                aria-label="來源查詢識別類型"
+              >
+                <option value="sku">SKU</option>
+                <option value="asin">ASIN</option>
+              </select>
+              <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} onKeyDown={handleSourceKeyDown} placeholder={sourceIdentifierType === "asin" ? "例如 B09S5VY2JS" : `例如 ${marketplace.sample}`} maxLength={sourceIdentifierType === "asin" ? 10 : 40} autoComplete="off" spellCheck={false} disabled={busy} aria-label={sourceIdentifierType === "asin" ? "來源 ASIN" : "來源 Seller SKU"} />
               <button type="button" data-variation-lookup="source" onClick={runSourceLookup} disabled={busy || !sourceInput.trim()}>{sourceLoading ? "讀取中" : "讀取"}</button>
             </div>
             {sourceError && <div className="price-error" role="alert">{sourceError}</div>}
@@ -537,9 +609,22 @@ export default function VariationPlannerDrawer({
           </section>
 
           <section className="variation-family-panel target" aria-labelledby="variation-target-title">
-            <div className="variation-section-heading"><span>02</span><div><strong id="variation-target-title">目標 family</strong><small>可輸入 parent 或其中任一 child</small></div></div>
+            <div className="variation-section-heading"><span>02</span><div><strong id="variation-target-title">目標 family</strong><small>可輸入 parent／child 的 SKU 或 ASIN</small></div></div>
             <div className="variation-search-row">
-              <input value={targetInput} onChange={(event) => setTargetInput(event.target.value)} onKeyDown={handleTargetKeyDown} placeholder="目標 parent SKU" maxLength={40} autoComplete="off" spellCheck={false} disabled={busy} aria-label="目標 Parent SKU" />
+              <select
+                value={targetIdentifierType}
+                onChange={(event) => {
+                  setTargetIdentifierType(event.target.value as VariationIdentifierType);
+                  setTargetInput("");
+                  setTargetError(null);
+                }}
+                disabled={busy}
+                aria-label="目標查詢識別類型"
+              >
+                <option value="sku">SKU</option>
+                <option value="asin">ASIN</option>
+              </select>
+              <input value={targetInput} onChange={(event) => setTargetInput(event.target.value)} onKeyDown={handleTargetKeyDown} placeholder={targetIdentifierType === "asin" ? "目標 ASIN" : "目標 parent SKU"} maxLength={targetIdentifierType === "asin" ? 10 : 40} autoComplete="off" spellCheck={false} disabled={busy} aria-label={targetIdentifierType === "asin" ? "目標 ASIN" : "目標 Parent SKU"} />
               <button type="button" data-variation-lookup="target" onClick={runTargetLookup} disabled={busy || !targetInput.trim()}>{targetLoading ? "讀取中" : "讀取"}</button>
             </div>
             {targetError && <div className="price-error" role="alert">{targetError}</div>}
@@ -737,6 +822,7 @@ function FamilySummary({ family }: { family: VariationFamilyView }) {
   return (
     <div className="variation-family-summary">
       <dl>
+        <div><dt>查詢 SKU</dt><dd>{family.queriedSku}</dd></div>
         <div><dt>Parent</dt><dd>{parent?.sellerSku ?? "無 parent"}</dd></div>
         <div><dt>Theme</dt><dd>{family.variationTheme ?? "未確認"}</dd></div>
         <div><dt>Children</dt><dd>{family.children.length} FBA</dd></div>

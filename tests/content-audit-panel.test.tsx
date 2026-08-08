@@ -3,7 +3,66 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
   parseContentAuditSnapshot,
+  quickEditFocusForRow,
+  resolveContentAuditQuickEditFocus,
 } from "../src/renderer/src/components/content-audit-panel";
+import type { ContentAuditRow } from "../src/renderer/src/content-quality";
+
+function quickEditRow(
+  overrides: Partial<ContentAuditRow> = {},
+): ContentAuditRow {
+  return {
+    sellerSku: "QUICK-FIX",
+    asin: "B000000123",
+    productType: "PET_FOOD",
+    title: "Clean title",
+    bulletPoints: [
+      "Naturall nutrition",
+      "Second point",
+      "Third point",
+      "Fourth point",
+      "Fifth point",
+    ],
+    ingredients: "Turkey",
+    readStatus: "complete",
+    readErrors: [],
+    issues: [
+      {
+        kind: "SUSPECTED_TYPO",
+        field: "bulletPoints",
+        token: "Naturall",
+        suggestion: "Natural",
+        message: "疑似錯字。",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function freshListing(
+  content: {
+    title?: string;
+    bulletPoints?: readonly string[];
+    ingredients?: string;
+  } = {},
+) {
+  return {
+    sellerSku: "QUICK-FIX",
+    asin: "B000000123",
+    productType: "PET_FOOD",
+    content: {
+      title: content.title ?? "Clean title",
+      bulletPoints: content.bulletPoints ?? [
+        "Naturall nutrition",
+        "Second point",
+        "Third point",
+        "Fourth point",
+        "Fifth point",
+      ],
+      ingredients: content.ingredients ?? "Turkey",
+    },
+  };
+}
 
 describe("global FBA content audit panel", () => {
   it("explains the one-click scope and starts from a read-only state", () => {
@@ -85,12 +144,239 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("重新掃描");
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("content-audit-export-primary");
+    expect(markup).toContain("立刻修改");
+    expect(markup).toContain("完整編輯");
     expect(markup.indexOf("Amazon 唯讀＋Mac 本機拼字檢查")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
     );
     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
       markup.indexOf("content-audit-summary"),
     );
+  });
+
+  it("opens a focused edit containing only flagged fields and missing bullet slots", async () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [{
+        sellerSku: "QUICK-FIX",
+        asin: "B000000123",
+        productType: "PET_FOOD",
+        title: "Clean title",
+        bulletPoints: ["Naturall nutrition"],
+        ingredients: "Turkey",
+        readStatus: "complete",
+        readErrors: [],
+        issues: [
+          {
+            kind: "SUSPECTED_TYPO",
+            field: "bulletPoints",
+            token: "Naturall",
+            suggestion: "Natural",
+            message: "疑似錯字。",
+          },
+          {
+            kind: "MISSING_BULLETS",
+            field: "bulletPoints",
+            message: "少於五個賣點。",
+          },
+        ],
+      }],
+      summary: { total: 1 },
+    });
+    const focus = quickEditFocusForRow(snapshot.rows[0]);
+    expect(focus).toMatchObject({
+      sellerSku: "QUICK-FIX",
+      asin: "B000000123",
+      productType: "PET_FOOD",
+      fields: ["bulletPoints"],
+      bulletIndices: [0, 1, 2, 3, 4],
+    });
+    expect(focus?.evidence).toEqual([
+      expect.objectContaining({
+        issueKind: "SUSPECTED_TYPO",
+        field: "bulletPoints",
+        token: "Naturall",
+        originalValue: "Naturall nutrition",
+        originalBulletIndex: 0,
+        originalValueFingerprint: expect.stringMatching(/^v1:/u),
+      }),
+      expect.objectContaining({
+        issueKind: "MISSING_BULLETS",
+        field: "bulletPoints",
+        token: null,
+        originalBulletIndex: null,
+        originalValueFingerprint: expect.stringMatching(/^v1:/u),
+      }),
+    ]);
+    expect(focus && resolveContentAuditQuickEditFocus(focus, freshListing({
+      bulletPoints: ["Naturall nutrition"],
+    }))).toMatchObject({
+      status: "focused",
+      focus: { bulletIndices: [0, 1, 2, 3, 4] },
+    });
+
+    const drawerSource = await readFile(
+      new URL(
+        "../src/renderer/src/components/sku-operations-drawer.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(drawerSource).toContain("只修改健檢指出的欄位");
+    expect(drawerSource).toContain("其他 Amazon 原值仍會原樣帶入預檢");
+    expect(drawerSource).toContain("確認並預檢這次修正");
+    expect(drawerSource).toContain("健檢定位已失效，已顯示完整編輯");
+  });
+
+  it("relocates one exact flagged bullet after Amazon changes its position", () => {
+    const focus = quickEditFocusForRow(quickEditRow());
+    expect(focus).not.toBeNull();
+    const resolution = resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        bulletPoints: [
+          "Second point",
+          "Third point",
+          "Naturall nutrition",
+          "Fourth point",
+          "Fifth point",
+        ],
+      }),
+    );
+
+    expect(resolution).toEqual({
+      status: "focused",
+      focus: {
+        fields: ["bulletPoints"],
+        bulletIndices: [2],
+        relocationNote:
+          "Amazon 賣點順序已變動；系統依健檢時的完整原文，重新定位到賣點 3。",
+      },
+    });
+  });
+
+  it("falls back to full editing when the flagged bullet drifted despite retaining the token", () => {
+    const focus = quickEditFocusForRow(quickEditRow());
+    const resolution = resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        bulletPoints: [
+          "Updated Naturall nutrition",
+          "Second point",
+          "Third point",
+          "Fourth point",
+          "Fifth point",
+        ],
+      }),
+    );
+
+    expect(resolution).toMatchObject({ status: "stale" });
+    if (resolution.status === "stale") {
+      expect(resolution.message).toContain("原文已不存在");
+      expect(resolution.message).toContain("已切換為完整編輯");
+      expect(resolution.message).toContain("尚未送出任何修改");
+    }
+  });
+
+  it("falls back to full editing when another system already fixed the typo", () => {
+    const focus = quickEditFocusForRow(quickEditRow());
+    const resolution = resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        bulletPoints: [
+          "Natural nutrition",
+          "Second point",
+          "Third point",
+          "Fourth point",
+          "Fifth point",
+        ],
+      }),
+    );
+
+    expect(resolution).toMatchObject({ status: "stale" });
+  });
+
+  it("falls back to full editing when exact bullet evidence is ambiguous", () => {
+    const focus = quickEditFocusForRow(quickEditRow());
+    const resolution = resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        bulletPoints: [
+          "Naturall nutrition",
+          "Second point",
+          "Naturall nutrition",
+          "Fourth point",
+          "Fifth point",
+        ],
+      }),
+    );
+
+    expect(resolution).toMatchObject({ status: "stale" });
+    if (resolution.status === "stale") {
+      expect(resolution.message).toContain("多個相同候選");
+    }
+  });
+
+  it("rechecks missing bullets and ingredients against the fresh listing", () => {
+    const missingBullets = quickEditFocusForRow(quickEditRow({
+      bulletPoints: ["One", "Two", "Three", "Four"],
+      issues: [{
+        kind: "MISSING_BULLETS",
+        field: "bulletPoints",
+        message: "少於五個賣點。",
+      }],
+    }));
+    expect(resolveContentAuditQuickEditFocus(
+      missingBullets!,
+      freshListing({ bulletPoints: ["One", "Two", "Three"] }),
+    )).toMatchObject({
+      status: "focused",
+      focus: { fields: ["bulletPoints"], bulletIndices: [3, 4] },
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      missingBullets!,
+      freshListing({ bulletPoints: ["One", "Two", "Three", "Four", "Five"] }),
+    )).toMatchObject({ status: "stale" });
+
+    const missingIngredients = quickEditFocusForRow(quickEditRow({
+      ingredients: "",
+      issues: [{
+        kind: "MISSING_INGREDIENTS",
+        field: "ingredients",
+        message: "缺成分。",
+      }],
+    }));
+    expect(resolveContentAuditQuickEditFocus(
+      missingIngredients!,
+      freshListing({ ingredients: "" }),
+    )).toMatchObject({
+      status: "focused",
+      focus: { fields: ["ingredients"], bulletIndices: [] },
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      missingIngredients!,
+      freshListing({ ingredients: "Turkey" }),
+    )).toMatchObject({ status: "stale" });
+  });
+
+  it("keeps ingredients-unverified focused only while its exact value is current", () => {
+    const focus = quickEditFocusForRow(quickEditRow({
+      ingredients: "Turkey Tendon",
+      issues: [{
+        kind: "INGREDIENTS_UNVERIFIED",
+        field: "ingredients",
+        message: "需人工確認 PTD。",
+      }],
+    }));
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ ingredients: "Turkey Tendon" }),
+    )).toMatchObject({ status: "focused" });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ ingredients: "Turkey" }),
+    )).toMatchObject({ status: "stale" });
   });
 
   it("shows typo text in red and explains invisible characters in one located guide", () => {

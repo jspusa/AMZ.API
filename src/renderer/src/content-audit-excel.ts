@@ -6,6 +6,7 @@ import type {
   ContentAuditSnapshot,
 } from "./content-quality";
 import {
+  contentHighlightSegments,
   isInvisibleCharacterIssue,
   locateInvisibleCharacters,
 } from "./content-quality";
@@ -72,6 +73,20 @@ function auditFindings(row: ContentAuditRow): Array<{
   ];
 }
 
+function auditRichTextRuns(
+  value: string,
+  row: ContentAuditRow,
+  field: ContentAuditField,
+) {
+  const issues = row.issues.filter(
+    (issue) => issue.kind === "SUSPECTED_TYPO" && issue.field === field,
+  );
+  return contentHighlightSegments(value, issues).map((segment) => ({
+    text: segment.text,
+    alert: segment.highlighted,
+  }));
+}
+
 export function createContentAuditWorkbook(
   snapshot: ContentAuditSnapshot,
   marketplaceLabel: string,
@@ -91,6 +106,15 @@ export function createContentAuditWorkbook(
         title: row.title,
         bulletPoints: row.bulletPoints,
         ingredients: row.ingredients,
+        auditTitleRuns: auditRichTextRuns(row.title, row, "title"),
+        auditBulletPointRuns: row.bulletPoints.map((bulletPoint) =>
+          auditRichTextRuns(bulletPoint, row, "bulletPoints"),
+        ),
+        auditIngredientsRuns: auditRichTextRuns(
+          row.ingredients,
+          row,
+          "ingredients",
+        ),
         auditType: [...new Set(findings.map((finding) => finding.type))].join("、"),
         auditDescription: findings
           .map((finding) => `[${finding.type}] ${finding.description}`)

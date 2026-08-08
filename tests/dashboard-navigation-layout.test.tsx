@@ -6,7 +6,7 @@ import Dashboard, {
 } from "../src/renderer/src/components/dashboard";
 
 describe("dashboard top navigation layout", () => {
-  it("groups every workspace tool into three centered dropdowns and removes home tool tiles", async () => {
+  it("groups workspaces and injectable reports into four centered dropdowns and removes home tool tiles", async () => {
     const markup = renderToStaticMarkup(
       <Dashboard
         initialSalesTrend={null}
@@ -19,11 +19,12 @@ describe("dashboard top navigation layout", () => {
     )?.[0];
 
     expect(navigation).toBeDefined();
-    expect(navigation?.match(/aria-haspopup="menu"/g)).toHaveLength(3);
+    expect(navigation?.match(/aria-haspopup="menu"/g)).toHaveLength(4);
     const orderedLabels = [
       "產品區",
       "價格區",
       "營運區",
+      "報表區",
     ];
     for (const label of orderedLabels) {
       expect(navigation).toContain(label);
@@ -61,6 +62,11 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain("開始未綁變體健檢");
     expect(markup).toContain("查看健檢能力與連線");
     expect(markup).toContain("Amazon Ads API 尚未連線前不顯示推測結果");
+    expect(markup).toContain("全站訂閱價格健檢");
+    expect(markup).toContain("開始全站訂閱價格健檢");
+    expect(markup).toContain("評論健檢");
+    expect(markup).toContain("Listings relationships 已證明的 child 與 standalone ASIN");
+    expect(markup).toContain("開始全站評論健檢");
     expect(markup).not.toContain("全站內容健檢");
     expect(markup).not.toContain('id="product-zone"');
     expect(markup).not.toContain('id="pricing-zone"');
@@ -88,6 +94,35 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("setUnboundVariationAuditOpen(true)");
     expect(source).toContain("setAgedInventoryOpen(true)");
     expect(source).toContain("agedInventoryOpen && createPortal");
+    expect(source).toContain("reportMenuEntries");
+    expect(source).toContain('label: "Amazon API 文件庫"');
+    expect(source).toContain('label: "FBA 評論健檢"');
+    expect(source).toContain("<ReportLibraryPanel");
+    expect(source).toContain("<ReviewAuditPanel");
+    expect(source).toContain("openReportExport");
+    expect(source).toContain('label: "報表區"');
+  });
+
+  it("renders injected report entries without coupling them to a renderer tool", () => {
+    const markup = renderToStaticMarkup(
+      <Dashboard
+        initialSalesTrend={null}
+        initialMarketplaceId={DEFAULT_MARKETPLACE_ID}
+        initialError="Sales API 暫時無法同步。"
+        reportMenuEntries={[{
+          id: "report-library",
+          label: "營運報表庫",
+          detail: "依站點開啟唯讀報表",
+          symbol: "R",
+          onSelect: () => undefined,
+        }]}
+      />,
+    );
+    const source = markup;
+    expect(source).toContain("報表區");
+    // The menu is interaction-rendered; the injectable contract itself is
+    // exercised by TypeScript, while the placeholder keeps the closed SSR tidy.
+    expect(source).not.toContain("營運報表庫");
   });
 
   it("keeps the header centered and makes the tool row horizontally reachable", async () => {
@@ -125,6 +160,12 @@ describe("dashboard top navigation layout", () => {
     );
     expect(css).toMatch(
       /@media \(max-width: 680px\)[\s\S]*?\.image-audit-row\s*\{[\s\S]*?grid-template-columns:\s*56px minmax\(0, 1fr\);/,
+    );
+    expect(css).toMatch(
+      /\.report-library-report-list\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 680px\)[\s\S]*?\.report-library-export-grid,[\s\S]*?\.report-library-report-list,[\s\S]*?\.review-audit-rankings\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
     );
   });
 

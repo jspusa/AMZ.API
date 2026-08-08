@@ -47,7 +47,10 @@ export type SubscriptionUpstreamCoverage = {
 
 export type SubscriptionInventoryEvidence = {
   source: "FBA_INVENTORY_API_COMPLETE_PAGINATION";
+  coverage: "complete" | "partial";
+  returnedInventoryRows: number;
   provenSkuCount: number;
+  unrecognizedSellerSkuRows: number;
   verifiableReplenishmentOfferCount: number;
   unverifiedFbaSkuCount: number;
 };
@@ -246,6 +249,14 @@ function parseInventoryEvidence(
     raw.provenSkuCount,
     "同次已證明 FBA SKU 數",
   );
+  const returnedInventoryRows = integer(
+    raw.returnedInventoryRows,
+    "同次 FBA Inventory 回傳列數",
+  );
+  const unrecognizedSellerSkuRows = integer(
+    raw.unrecognizedSellerSkuRows,
+    "無法原樣辨識 Seller SKU 的 FBA Inventory 列數",
+  );
   const verifiableReplenishmentOfferCount = integer(
     raw.verifiableReplenishmentOfferCount,
     "可核對 Replenishment offer 數",
@@ -256,6 +267,10 @@ function parseInventoryEvidence(
   );
   if (
     raw.source !== "FBA_INVENTORY_API_COMPLETE_PAGINATION" ||
+    (raw.coverage !== "complete" && raw.coverage !== "partial") ||
+    returnedInventoryRows !== provenSkuCount + unrecognizedSellerSkuRows ||
+    raw.coverage !==
+      (unrecognizedSellerSkuRows === 0 ? "complete" : "partial") ||
     verifiableReplenishmentOfferCount !== verifiableOfferCount ||
     provenSkuCount !==
       verifiableReplenishmentOfferCount + unverifiedFbaSkuCount
@@ -264,7 +279,10 @@ function parseInventoryEvidence(
   }
   return {
     source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+    coverage: raw.coverage,
+    returnedInventoryRows,
     provenSkuCount,
+    unrecognizedSellerSkuRows,
     verifiableReplenishmentOfferCount,
     unverifiedFbaSkuCount,
   };
@@ -441,6 +459,7 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
     offers.length * intervals.length,
     reportedOfferMonths,
     upstreamCoverage.status === "partial" ||
+      inventoryEvidence.coverage === "partial" ||
       inventoryEvidence.unverifiedFbaSkuCount > 0,
   );
   if (revenueCoverage.status === "complete") {

@@ -1,9 +1,12 @@
 import { unzipSync } from "fflate";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import { invalidateSpApiCredentialCaches } from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
-import type { LocalStore } from "../src/main/local-store";
+import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -25,18 +28,21 @@ function request(input: {
 }
 
 describe("unbound variation audit router", () => {
-  const router = new ApiRouter({
-    store: {} as LocalStore,
-    vault: {
-      getAccountScope: async () => "unbound-variation-test-scope",
-    } as unknown as CredentialVault,
-    approveWrite: async () => undefined,
-  });
+  let router: ApiRouter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
     invalidateSpApiCredentialCaches();
-    router.clearPreviews();
+    const directory = await mkdtemp(join(tmpdir(), "unbound-router-store-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "unbound-variation-test-scope",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
   });
 
   afterEach(() => {

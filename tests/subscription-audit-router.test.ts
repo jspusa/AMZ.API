@@ -59,7 +59,10 @@ describe("FBA Subscribe & Save audit routes", () => {
       },
       inventoryEvidence: {
         source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+        coverage: "complete",
+        returnedInventoryRows: 5,
         provenSkuCount: 5,
+        unrecognizedSellerSkuRows: 0,
         verifiableReplenishmentOfferCount: 5,
         unverifiedFbaSkuCount: 0,
       },

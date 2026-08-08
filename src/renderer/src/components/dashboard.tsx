@@ -20,6 +20,10 @@ import type { ImageAuditCache } from "./image-audit-panel";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
+import ReportLibraryPanel from "./report-library-panel";
+import ReviewAuditPanel, {
+  type ReviewAuditCache,
+} from "./review-audit-panel";
 import SalesTrendChart, {
   MAX_CUSTOM_SALES_TREND_DAYS,
   previousYearDateKey,
@@ -32,7 +36,9 @@ import SkuOperationsDrawer, {
   type ContentWorkspaceTab,
 } from "./sku-operations-drawer";
 import type { ContentAuditCache } from "./content-audit-panel";
-import SystemHealthControl from "./system-health-control";
+import SystemHealthControl, {
+  type AuditPreference,
+} from "./system-health-control";
 import SubscriptionAuditDrawer from "./subscription-audit-drawer";
 import UnboundVariationAuditPanel, {
   type UnboundVariationAuditCache,
@@ -50,6 +56,15 @@ type Marketplace = {
   region: "na" | "eu" | "fe";
 };
 
+export type DashboardReportMenuEntry = {
+  id: string;
+  label: string;
+  detail: string;
+  symbol?: string;
+  disabled?: boolean;
+  onSelect?: () => void;
+};
+
 type DashboardProps = {
   initialSalesTrend: SalesTrendSnapshot | null;
   initialMarketplaceId: string;
@@ -58,6 +73,7 @@ type DashboardProps = {
   onOpenConnection?: () => void;
   additionalAuditCards?: ReactNode;
   performanceCompanion?: ReactNode;
+  reportMenuEntries?: readonly DashboardReportMenuEntry[];
 };
 
 type Tool =
@@ -71,6 +87,7 @@ type Tool =
   | "subscriptions"
   | "accounting";
 type ToolGroup = "product" | "pricing" | "operations";
+type NavigationGroup = ToolGroup | "reports";
 
 export const DEFAULT_MARKETPLACE_ID = "ATVPDKIKX0DER";
 
@@ -414,7 +431,7 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: ToolGroup 
 const TOOL_SECTIONS: ReadonlyArray<{
   label: string;
   symbol: string;
-  group: ToolGroup;
+  group: NavigationGroup;
   tools: readonly Tool[];
 }> = [
   {
@@ -434,6 +451,12 @@ const TOOL_SECTIONS: ReadonlyArray<{
     symbol: "◎",
     group: "operations",
     tools: ["restock", "ads", "accounting"],
+  },
+  {
+    label: "報表區",
+    symbol: "▤",
+    group: "reports",
+    tools: [],
   },
 ];
 
@@ -460,6 +483,7 @@ export default function Dashboard({
   onOpenConnection,
   additionalAuditCards = null,
   performanceCompanion = null,
+  reportMenuEntries,
 }: DashboardProps) {
   const startingMarketplaceId = MARKETPLACES.has(initialMarketplaceId)
     ? initialMarketplaceId
@@ -478,7 +502,7 @@ export default function Dashboard({
   const [trendSelection, setTrendSelection] =
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
-  const [openToolMenu, setOpenToolMenu] = useState<ToolGroup | null>(null);
+  const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
   const [contentWorkspaceTab, setContentWorkspaceTab] =
     useState<ContentWorkspaceTab>("single");
   const [contentAuditCache, setContentAuditCache] = useState<
@@ -494,6 +518,12 @@ export default function Dashboard({
   >({});
   const [unboundVariationAuditOpen, setUnboundVariationAuditOpen] = useState(false);
   const [agedInventoryOpen, setAgedInventoryOpen] = useState(false);
+  const [reportLibraryOpen, setReportLibraryOpen] = useState(false);
+  const [reviewAuditOpen, setReviewAuditOpen] = useState(false);
+  const [reviewAuditCache, setReviewAuditCache] = useState<
+    Record<string, ReviewAuditCache>
+  >({});
+  const [auditPreference, setAuditPreference] = useState<AuditPreference>(null);
   const [returnToUnboundVariationAudit, setReturnToUnboundVariationAudit] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [autoSync, setAutoSync] = useState(true);
@@ -516,7 +546,7 @@ export default function Dashboard({
   const salesTrendAbortRef = useRef<AbortController | null>(null);
   const connectionAbortRef = useRef<AbortController | null>(null);
   const primaryNavRef = useRef<HTMLElement | null>(null);
-  const menuTriggerRefs = useRef<Partial<Record<ToolGroup, HTMLButtonElement>>>({});
+  const menuTriggerRefs = useRef<Partial<Record<NavigationGroup, HTMLButtonElement>>>({});
   const lastAutomaticRequestKey = useRef(
     salesTrendRequestKey(startingMarketplaceId, startingSelection),
   );
@@ -709,16 +739,28 @@ export default function Dashboard({
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [agedInventoryOpen]);
 
+  useEffect(() => {
+    if (!reportLibraryOpen && !reviewAuditOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setReportLibraryOpen(false);
+      setReviewAuditOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [reportLibraryOpen, reviewAuditOpen]);
+
   const launch = (tool: Tool) => {
     setOpenToolMenu(null);
     setCommandOpen(false);
     if (tool === "copy") setContentWorkspaceTab("single");
     if (tool === "images") setImageWorkspaceTab("single");
     if (tool === "variations") setReturnToUnboundVariationAudit(false);
+    if (tool === "subscriptions") setAuditPreference("subscriptions");
     setOpenTool(tool);
   };
 
-  const openMenu = (group: ToolGroup, focus: "first" | "last" = "first") => {
+  const openMenu = (group: NavigationGroup, focus: "first" | "last" = "first") => {
     setOpenToolMenu(group);
     window.setTimeout(() => {
       const items = primaryNavRef.current?.querySelectorAll<HTMLButtonElement>(
@@ -766,6 +808,7 @@ export default function Dashboard({
 
   const launchContentAudit = () => {
     setCommandOpen(false);
+    setAuditPreference("content");
     setContentWorkspaceTab("audit");
     setOpenTool("copy");
   };
@@ -779,6 +822,7 @@ export default function Dashboard({
 
   const launchImageAudit = () => {
     setCommandOpen(false);
+    setAuditPreference("images");
     setImageWorkspaceTab("audit");
     setOpenTool("images");
   };
@@ -799,6 +843,15 @@ export default function Dashboard({
     },
     [],
   );
+
+  const cacheReviewAudit = useCallback((cache: ReviewAuditCache) => {
+    const cacheMarketplaceId = cache.snapshot?.marketplaceId ?? cache.job?.marketplaceId;
+    if (!cacheMarketplaceId) return;
+    setReviewAuditCache((current) => ({
+      ...current,
+      [cacheMarketplaceId]: cache,
+    }));
+  }, []);
 
   const openUnboundVariationSku = (sellerSku: string) => {
     setGlobalSku(sellerSku);
@@ -856,6 +909,50 @@ export default function Dashboard({
     ? currentImageAudit.snapshot.summary.underMinimum +
       currentImageAudit.snapshot.summary.incomplete
     : 0;
+  const currentReviewAudit = reviewAuditCache[marketplaceId] ?? null;
+  const effectiveReportMenuEntries: readonly DashboardReportMenuEntry[] =
+    reportMenuEntries ?? [
+      {
+        id: "report-library",
+        label: "Amazon API 文件庫",
+        detail: "109 種公開 report types 與接線條件",
+        symbol: "▤",
+        onSelect: () => setReportLibraryOpen(true),
+      },
+      {
+        id: "review-audit",
+        label: "FBA 評論健檢",
+        detail: "非父變體 ASIN 主題前五／後五與 Excel",
+        symbol: "☆",
+        onSelect: () => setReviewAuditOpen(true),
+      },
+    ];
+
+  const openReportExport = (exportId: string) => {
+    setReportLibraryOpen(false);
+    switch (exportId) {
+      case "CONTENT_AUDIT_XLSX":
+        launchContentAudit();
+        break;
+      case "IMAGE_AUDIT_XLSX":
+        launchImageAudit();
+        break;
+      case "AGED_INVENTORY_XLSX":
+        setAuditPreference("inventory");
+        setAgedInventoryOpen(true);
+        break;
+      case "SUBSCRIPTION_AUDIT_XLSX":
+        launch("subscriptions");
+        break;
+      case "UNBOUND_VARIATION_AUDIT_XLSX":
+        setAuditPreference("variations");
+        setUnboundVariationAuditOpen(true);
+        break;
+      case "REVIEW_TOPIC_AUDIT_XLSX":
+        setReviewAuditOpen(true);
+        break;
+    }
+  };
   const currentUnboundVariationAudit = unboundVariationAuditCache[marketplaceId] ?? null;
 
   const changeMarketplace = (nextMarketplaceId: string) => {
@@ -961,6 +1058,27 @@ export default function Dashboard({
                           <i aria-hidden="true">›</i>
                         </button>
                       ))}
+                      {section.group === "reports" && effectiveReportMenuEntries.map((entry, index) => (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          role="menuitem"
+                          aria-disabled={entry.disabled || undefined}
+                          onClick={() => {
+                            if (entry.disabled) return;
+                            setOpenToolMenu(null);
+                            entry.onSelect?.();
+                          }}
+                          onKeyDown={(event) => handleMenuItemKeyDown(event, section, index)}
+                        >
+                          <span aria-hidden="true">{entry.symbol ?? "▤"}</span>
+                          <span className="workspace-primary-menu-copy">
+                            <strong>{entry.label}</strong>
+                            <small>{entry.detail}</small>
+                          </span>
+                          <i aria-hidden="true">{entry.disabled ? "…" : "›"}</i>
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -991,6 +1109,7 @@ export default function Dashboard({
               <SystemHealthControl
                 marketplaceId={marketplaceId}
                 autoSync={autoSync}
+                auditPreference={auditPreference}
                 onAutoSyncChange={setAutoSyncPreference}
               />
             </div>
@@ -1005,10 +1124,8 @@ export default function Dashboard({
           <div className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
             <section className="operations-pulse">
               <div className="pulse-heading">
-                <div>
-                  <p className="eyebrow">OPERATIONS PULSE</p>
-                  <h2>近期營運</h2>
-                  <p>用完整 FBA 銷售趨勢掌握近期變化，並與去年同期直接比較。</p>
+                <div className="pulse-title-compact">
+                  <div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2></div>
                   <small className="operations-last-sync">銷售趨勢最後同步 {formatDateTime(visibleSalesTrend?.fetchedAt ?? null, true)} · {marketplace.name}</small>
                 </div>
                 <button type="button" className="pulse-refresh" onClick={() => void loadSalesTrend()} disabled={salesTrendLoading}><span className={salesTrendLoading ? "spin" : ""}>↻</span>{salesTrendLoading ? "同步中" : "同步"}</button>
@@ -1072,7 +1189,10 @@ export default function Dashboard({
                 <h2>FBA 冗餘庫存健檢</h2>
                 <p>使用 Amazon 官方 estimated excess quantity 核對冗餘庫存；庫齡會另外顯示，不會被當成冗餘。</p>
               </div>
-              <button type="button" onClick={() => setAgedInventoryOpen(true)}>
+              <button type="button" onClick={() => {
+                setAuditPreference("inventory");
+                setAgedInventoryOpen(true);
+              }}>
                 查看 FBA 冗餘庫存
                 <i aria-hidden="true">›</i>
               </button>
@@ -1090,7 +1210,10 @@ export default function Dashboard({
                   <small>個確定未綁</small>
                 </span>
               )}
-              <button type="button" onClick={() => setUnboundVariationAuditOpen(true)}>
+              <button type="button" onClick={() => {
+                setAuditPreference("variations");
+                setUnboundVariationAuditOpen(true);
+              }}>
                 {currentUnboundVariationAudit ? "繼續上次未綁變體健檢" : "開始未綁變體健檢"}
                 <i aria-hidden="true">›</i>
               </button>
@@ -1104,6 +1227,44 @@ export default function Dashboard({
               </div>
               <button type="button" onClick={() => launch("ads")}>
                 查看健檢能力與連線
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
+            <section className="content-audit-home-card" aria-label="全站訂閱價格健檢捷徑">
+              <span className="content-audit-home-icon" aria-hidden="true">S&amp;S</span>
+              <div>
+                <p className="eyebrow">FBA SUBSCRIBE &amp; SAVE</p>
+                <h2>全站訂閱價格健檢</h2>
+                <p>{subscriptionAuditSupported
+                  ? "一次核對全部 FBA Subscribe & Save SKU 的目前訂閱折扣與價格趨勢；不會自動修改 Amazon。"
+                  : `${marketplace.shortLabel} 目前先顯示能力邊界；不會用其他站點資料代替。`}</p>
+              </div>
+              <button type="button" onClick={() => launch("subscriptions")}>
+                {subscriptionAuditSupported ? "開始全站訂閱價格健檢" : "查看 S&S 能力說明"}
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
+            <section className="content-audit-home-card review-audit-home-card" aria-label="FBA 評論主題健檢捷徑">
+              <span className="content-audit-home-icon" aria-hidden="true">☆5</span>
+              <div>
+                <p className="eyebrow">CUSTOMER FEEDBACK · NON-PARENT ASIN</p>
+                <h2>評論健檢</h2>
+                <p>依 Listings relationships 已證明的 child 與 standalone ASIN 列出評論主題前五與後五；排除 parent，也不冒充商品總星等。</p>
+              </div>
+              {currentReviewAudit && (
+                <span className="content-audit-home-status">
+                  <strong>{currentReviewAudit.snapshot
+                    ? currentReviewAudit.snapshot.summary.uniqueFbaNonParentAsins.toLocaleString()
+                    : currentReviewAudit.job?.progress.percent ?? 0}</strong>
+                  <small>{currentReviewAudit.snapshot ? "個 FBA 非 parent ASIN" : "% 已完成"}</small>
+                </span>
+              )}
+              <button type="button" onClick={() => setReviewAuditOpen(true)}>
+                {currentReviewAudit?.snapshot
+                  ? "繼續查看評論健檢"
+                  : currentReviewAudit?.job
+                    ? "繼續上次評論健檢"
+                    : "開始全站評論健檢"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1178,6 +1339,60 @@ export default function Dashboard({
               <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 冗餘庫存健檢">×</button>
             </div>
             <AgedInventoryPanel marketplaceId={marketplaceId} />
+          </aside>
+        </div>,
+        document.body,
+      )}
+      {reportLibraryOpen && createPortal(
+        <div
+          className="drawer-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setReportLibraryOpen(false);
+          }}
+        >
+          <aside
+            className="order-drawer report-library-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-library-drawer-title"
+          >
+            <div className="drawer-header">
+              <div><p className="eyebrow">AMAZON PUBLIC API · FBA BOUNDARY</p><h2 id="report-library-drawer-title">報表區</h2></div>
+              <button type="button" onClick={() => setReportLibraryOpen(false)} autoFocus aria-label="關閉 Amazon API 文件庫">×</button>
+            </div>
+            <ReportLibraryPanel
+              marketplaceId={marketplaceId}
+              onOpenExport={openReportExport}
+            />
+          </aside>
+        </div>,
+        document.body,
+      )}
+      {reviewAuditOpen && createPortal(
+        <div
+          className="drawer-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setReviewAuditOpen(false);
+          }}
+        >
+          <aside
+            className="order-drawer review-audit-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-audit-drawer-title"
+          >
+            <div className="drawer-header">
+              <div><p className="eyebrow">FBA · NON-PARENT ASIN · READ ONLY</p><h2 id="review-audit-drawer-title">評論健檢</h2></div>
+              <button type="button" onClick={() => setReviewAuditOpen(false)} autoFocus aria-label="關閉 FBA 評論健檢">×</button>
+            </div>
+            <ReviewAuditPanel
+              marketplaceId={marketplaceId}
+              marketplaceShort={marketplace.shortLabel}
+              cachedResult={currentReviewAudit}
+              onCachedResultChange={cacheReviewAudit}
+            />
           </aside>
         </div>,
         document.body,
