@@ -3,7 +3,7 @@
 最後更新：2026-08-08
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-開發中版本：`v0.1.8`；本分支完成後仍須合併、部署 Pages、建立 universal 內部測試 App 並覆蓋安裝，既有本機 vault 不得清除
+目前版本：`v0.1.8`；PR #16 已合併為 `dcb57dfd20f240a3c1bb0f0dfffa5f2324aa0b91`，Pages 與 universal 內部測試 App 已完成並安裝，既有本機 vault 未清除
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -213,7 +213,7 @@ Amazon App：
   - 新增「匯出全部待確認項目 Excel」：只匯出疑似錯字、賣點不足、缺成分、成分未驗證或讀取未完成的 SKU，工作簿包含商品內容與逐項說明；純 renderer 本機產生，不新增 Bridge API、不需重裝 Mac App，也不執行 Amazon 寫入。
   - `GooToE` 已加入 Mac 拼字檢查白名單；即使本機字典回傳 `Goatee` 建議，也不會建立疑似錯字項目。
   - 本機驗證：117/117 tests、TypeScript、main／preload／renderer production build、`git diff --check` 與 `npm audit --omit=dev` 0 vulnerabilities；Playwright 已確認桌面流程、有效 `.xlsx` 下載、編輯後返回、drawer 關閉後重開保留結果，以及 390px 無整頁水平溢出。
-- v0.1.8 experience／inventory refinement 已在開發分支完成，尚待 PR 合併與安裝：
+- v0.1.8 experience／inventory refinement 已發布並安裝：
   - 全站內容健檢白名單新增 `Decapterus`、`Gluconate`、`Niacinamide`、`Reishi`、`purr-fectly`；疑似錯字在標題、賣點與成分原文中紅字定位。`U+200B` 等不可見字元集中在單一說明區，列出 SKU、欄位、前後詞與可讀上下文，不會自動修改文案。
   - 健檢 Excel 改成唯一「內容健檢」工作表，最後兩欄為「類型／說明」；既有全商品 Excel 仍維持原格式。
   - 銷售自訂日期擴為 1–365 天，renderer 與 main 雙重拒絕 366 天；去年同期仍受 Sales API 兩年 horizon 保護。補貨的 SKU 銷速改用 Sales API exact `sku`＋`AFN`，不再因 Orders 前五頁掃描上限漏掉高銷量 SKU。
@@ -221,13 +221,16 @@ Amazon App：
   - 首頁與頂部導覽依「產品 → 價格 → 策劃」重排；七個工具順序固定為文案、圖片、變體規劃、定價、促銷、補貨、廣告。大段自動化／系統資訊預設收合，Product Master UI 暫時隱藏，所有 drawer 與 Mac ConnectionPanel 改為中央 Modal。
   - 促銷主要頁只保留 Listings Items `discounted_price` 對應的 Sale Price；Coupon、Subscribe & Save、Deals 與 Ads 的官方入口集中在「Amazon 官方完成」，沒有假 Coupon 設定表單。
   - App 圖示保留原藍色背景，白色 `A` 改為 `J`，底部箭頭改為紅色；Touch ID、Validation Preview、idempotency、Keychain、FBA-only 與 no-FBM 邊界未放寬。
+  - PR #16 已 squash merge 到 `main`；合併 commit 為 `dcb57dfd20f240a3c1bb0f0dfffa5f2324aa0b91`。main Validate run `31242263937`、Pages run `31242263943` 與 macOS universal run `31242263938` 均成功；live Pages 已核對 `index-D0omFruY.js`／`index-CppLgiXq.css` 與 v0.1.8 功能字串。
+  - main artifact 的 DMG／ZIP SHA-256 與 workflow 清單一致；App 版本為 `0.1.8`、bundle ID 為 `com.jspusa.amz-api`、包含 `arm64`／`x86_64`，deep ad-hoc codesign 驗證通過。v0.1.8 已安裝為 `/Applications/AMZ.API.app`，v0.1.7 原封不動保留為 `/Applications/AMZ.API-v0.1.7-backup.app`；啟動後主程序與 helper 持續執行，未重現未預期結束。
+  - 本機與 CI 驗證：137/137 tests、TypeScript、main／preload／renderer production build、`git diff --check`、敏感資料差異掃描與 `npm audit --omit=dev` 0 vulnerabilities；Playwright 已確認中央 Modal、產品優先層級與 390px 無整頁水平溢出。
 
 ### 已完成與仍待真實 Mac／Amazon 驗證
 
-Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出、7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢，以及 v0.1.7 發布／安裝均已完成。v0.1.8 目前仍是本機候選分支，現在仍待：
+Listings 根因、`AFA12AM` 文案／價格／促銷／FBA 庫存唯讀、Excel 匯出、7／14／30／90 天、自訂區間與去年同期 AFN 銷售趨勢，以及 v0.1.8 程式、Pages 與 Mac 安裝均已完成。現在仍待真實唯讀／負向驗證：
 
-1. Mac 解鎖後確認安裝中的 v0.1.7 視窗、既有 vault 與 Orders／Listings probe 正常；目前只完成安裝後主程序未崩潰的程序層 smoke test。
-2. 合併 v0.1.8、確認 Pages live 資產並安裝 universal 內部測試 App；在真實 US 帳號重測全站內容健檢的新白名單、紅字／不可見字元定位與單表 Excel，再唯讀核對至少一個 variation family。
+1. Mac 解鎖後確認 v0.1.8 視窗載入、既有 vault 與 Orders／Listings probe 正常；目前已完成版本、雙架構、簽章與主程序未崩潰的程序層 smoke test。
+2. 在真實 US 帳號重測全站內容健檢的新白名單、紅字／不可見字元定位與唯一單表 Excel，再唯讀核對至少一個 variation family。
 3. 唯讀確認 Sale Price 說明與目前排程，以及「目前有效訂閱」標籤；Touch ID 可用 demo 或取消流程驗證，未獲使用者另行明確授權不得送出真實商品內容或變體寫入。
 4. 唯讀重測 AFA12AM 的 Sales exact-SKU 近 30 個完整日銷速與可售天數；首次請求 US FBA Inventory Planning report，核對 180 天以上庫齡、Amazon 預估冗餘與 days-of-supply。365 天自訂銷售與非 US `365-plus` 解析目前只完成自動測試，不能宣稱真實 Amazon 已驗證。
 5. 商品內容真實寫入仍未執行；任何寫入都必須保留 Amazon Validation Preview、舊值衝突檢查、Touch ID、idempotency 與送出後回查。
@@ -321,7 +324,7 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-先完成 v0.1.8 PR、Pages 與 universal 內部測試 App，再做真實唯讀驗證；在下列項目通過前不要繼續擴充功能：
+v0.1.8 PR、Pages 與 universal 內部測試 App 已完成；下一步只做真實唯讀與 Touch ID 取消／拒絕的負向驗證，在下列項目通過前不要繼續擴充功能：
 
 ### A. 真實唯讀驗證
 
