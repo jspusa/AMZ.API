@@ -25,6 +25,15 @@ import {
   type FbaSubscriptionAuditHistorySnapshot,
   type ReplenishmentPageRequest,
 } from "./replenishment-audit";
+import {
+  buildBrandSalesSnapshot,
+  parseCurrentFbaListingTitles,
+  parseFbaShipmentSalesReport,
+  type BrandSalesSnapshot,
+} from "./brand-sales";
+
+export type { BrandSalesSnapshot } from "./brand-sales";
+import { classifyUnboundVariationEvidence } from "./unbound-variation-audit";
 
 export type {
   VariationDimension,
@@ -146,6 +155,8 @@ export type SubscriptionAuditSnapshot = Omit<
   inventoryEvidence: {
     source: "FBA_INVENTORY_API_COMPLETE_PAGINATION";
     provenSkuCount: number;
+    verifiableReplenishmentOfferCount: number;
+    unverifiedFbaSkuCount: number;
   };
   notice: string;
 };
@@ -370,16 +381,29 @@ export type ListingExportError = {
 
 export type VariationMoveAction = "detach" | "attach";
 
-export type VariationMoveInput = {
-  action: VariationMoveAction;
+export type VariationDetachInput = {
+  action: "detach";
   marketplaceId: MarketplaceId;
   sellerSku: string;
-  expectedSourceParentSku: string | null;
+  expectedSourceParentSku: string;
+  targetParentSku: null;
+  variationTheme: null;
+  dimensionNames: [];
+  dimensionValues: Record<string, never>;
+};
+
+export type VariationAttachInput = {
+  action: "attach";
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  expectedSourceParentSku: null;
   targetParentSku: string;
   variationTheme: string;
   dimensionNames: string[];
   dimensionValues: Record<string, unknown>;
 };
+
+export type VariationMoveInput = VariationDetachInput | VariationAttachInput;
 
 export type VariationMovePreparation = {
   mode: "live" | "demo";
@@ -436,6 +460,51 @@ export type ListingReportStatus = {
   reportId: string;
   documentId: string | null;
   status: "IN_QUEUE" | "IN_PROGRESS" | "DONE" | "CANCELLED" | "FATAL";
+  notice: string;
+};
+
+export type BrandSalesReportStatus = ListingReportStatus & {
+  dataStartTime: string;
+  dataEndTime: string;
+};
+
+export type UnboundVariationAuditRow = {
+  sellerSku: string;
+  asin: string;
+  title: string;
+  productType: string;
+  relationshipEvidence: "relationships";
+  notice: string;
+};
+
+export type UnboundVariationAuditIncompleteRow = {
+  sellerSku: string;
+  asin: string;
+  title: string;
+  code:
+    | "RELATIONSHIPS_NOT_RETURNED"
+    | "RELATIONSHIPS_COMPATIBILITY_FALLBACK"
+    | "RELATIONSHIP_QUERY_FAILED"
+    | "RELATIONSHIP_RESPONSE_INVALID"
+    | "FULFILLMENT_EVIDENCE_CONFLICT";
+  message: string;
+  requestId: string | null;
+};
+
+export type UnboundVariationAuditSnapshot = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  fetchedAt: string;
+  rows: UnboundVariationAuditRow[];
+  incompleteRows: UnboundVariationAuditIncompleteRow[];
+  summary: {
+    totalFbaListings: number;
+    completed: number;
+    unbound: number;
+    boundChildren: number;
+    parentContainers: number;
+    incomplete: number;
+  };
   notice: string;
 };
 
@@ -891,6 +960,8 @@ type AmazonReport = {
   reportId?: string;
   reportType?: string;
   marketplaceIds?: string[];
+  dataStartTime?: string;
+  dataEndTime?: string;
   processingStatus?: "IN_QUEUE" | "IN_PROGRESS" | "DONE" | "CANCELLED" | "FATAL";
   reportDocumentId?: string;
 };
@@ -2960,6 +3031,33 @@ async function fetchVariationItem(
   };
 }
 
+function assertExplicitStandaloneVariationSource(
+  sourceResult: Awaited<ReturnType<typeof fetchVariationItem>>,
+  marketplaceId: MarketplaceId,
+): void {
+  const evidence = classifyUnboundVariationEvidence({
+    marketplaceId,
+    profile: sourceResult.profile,
+    relationships: sourceResult.payload.relationships,
+    role: sourceResult.member.role,
+    listingFulfillmentEvidence: sourceResult.member.fba ? "FBA" : "OTHER",
+  });
+  if (
+    evidence.kind !== "unbound" ||
+    sourceResult.member.role !== "standalone" ||
+    sourceResult.member.parentSku !== null
+  ) {
+    throw new SpApiError(
+      "Amazon relationships 尚未同時證明來源 SKU 為 standalone 且 parentSku 為空；已停止加入新 parent。",
+      {
+        status: 409,
+        code: "VARIATION_NOT_DETACHED",
+        requestId: sourceResult.requestId,
+      },
+    );
+  }
+}
+
 async function fetchVariationChildren(
   marketplaceId: MarketplaceId,
   parentSku: string,
@@ -3197,7 +3295,7 @@ async function prepareLiveVariationContext(input: {
   marketplaceId: MarketplaceId;
   sellerSku: string;
   targetParentSku: string;
-}): Promise<{
+}, options: { requireStandaloneSource?: boolean } = {}): Promise<{
   sourceResult: Awaited<ReturnType<typeof fetchVariationItem>>;
   sourceFamily: VariationFamilySnapshot;
   targetFamily: VariationFamilySnapshot;
@@ -3227,6 +3325,9 @@ async function prepareLiveVariationContext(input: {
       code: "FBA_ONLY",
       requestId: sourceResult.requestId,
     });
+  }
+  if (options.requireStandaloneSource) {
+    assertExplicitStandaloneVariationSource(sourceResult, input.marketplaceId);
   }
   if (!sourceFamily.familyComplete || !targetFamily.familyComplete) {
     throw new SpApiError("來源或目標 family 清單不完整，已停止變體寫入準備。", {
@@ -3406,6 +3507,7 @@ function valuesForDimensions(
 }
 
 async function assertNoDuplicateTargetDimensions(input: VariationMoveInput): Promise<void> {
+  if (input.action !== "attach") return;
   const children = await fetchVariationChildren(
     input.marketplaceId,
     input.targetParentSku,
@@ -3454,6 +3556,106 @@ async function assertNoDuplicateTargetDimensions(input: VariationMoveInput): Pro
   }
 }
 
+async function prepareLiveVariationDetach(input: VariationDetachInput): Promise<{
+  body: VariationPatchBody;
+  issues: ListingIssue[];
+  sourceParentSku: string;
+  targetParentSku: null;
+  variationTheme: null;
+}> {
+  const [sourceResult, sourceFamily] = await Promise.all([
+    fetchVariationItem(input.marketplaceId, input.sellerSku),
+    fetchLiveVariationFamily(input.marketplaceId, input.sellerSku),
+  ]);
+  const source = sourceResult.member;
+  if (source.role === "parent") {
+    throw new SpApiError("Parent 是不可售容器，不能移入解除變體存放區。", {
+      status: 422,
+      code: "VARIATION_PARENT_NOT_MOVABLE",
+    });
+  }
+  if (!source.fba) {
+    throw new SpApiError("來源 SKU 無法確認為 FBA；變體工具不會加入 FBM。", {
+      status: 422,
+      code: "FBA_ONLY",
+      requestId: sourceResult.requestId,
+    });
+  }
+  if (!sourceFamily.familyComplete) {
+    throw new SpApiError("來源 family 清單不完整，已停止解除變體。", {
+      status: 409,
+      code: "VARIATION_FAMILY_INCOMPLETE",
+    });
+  }
+  if (
+    source.role !== "child" ||
+    !source.parentSku ||
+    source.parentSku !== input.expectedSourceParentSku
+  ) {
+    throw new SpApiError("來源 child 的 parent 已在查詢後變更，請重新讀取。", {
+      status: 409,
+      code: "VARIATION_RELATIONSHIP_CHANGED",
+      requestId: sourceResult.requestId,
+    });
+  }
+  if (!source.productType || source.productType === "PRODUCT") {
+    throw new SpApiError("來源 child 的 Amazon product type 無法確認，已停止解除變體。", {
+      status: 422,
+      code: "VARIATION_PRODUCT_TYPE_UNKNOWN",
+      requestId: sourceResult.requestId,
+    });
+  }
+  let body: VariationPatchBody;
+  try {
+    body = buildVariationDetachBody({
+      productType: source.productType,
+      marketplaceId: input.marketplaceId,
+      expectedParentSku: input.expectedSourceParentSku,
+      attributes: sourceResult.payload.attributes,
+    });
+  } catch (error) {
+    return throwVariationValidation(error);
+  }
+  const response = await executeListingsRequest({
+    marketplaceId: input.marketplaceId,
+    sellerSku: input.sellerSku,
+    method: "PATCH",
+    body,
+    validationPreview: true,
+  });
+  if (!response.ok) {
+    return throwListingsError(response, "read", "patchListingsItemPreview");
+  }
+  const payload = await parseResponseJson<AmazonListingSubmission>(response);
+  if (!payload) {
+    throw new SpApiError("Amazon 變體預檢回應無法辨識，已停止送出。", {
+      status: 502,
+      code: "VALIDATION_STATUS_UNKNOWN",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  const issues = normalizeListingIssues(payload.issues);
+  if (payload.status !== "VALID" || issues.some((issue) => issue.severity === "ERROR")) {
+    throw new SpApiError(
+      issues.find((issue) => issue.severity === "ERROR")?.message ||
+        "Amazon 解除變體 Validation Preview 未通過，尚未寫入任何關係。",
+      {
+        status: 422,
+        code: "VALIDATION_FAILED",
+        requestId: response.headers.get("x-amzn-requestid"),
+        issues,
+      },
+    );
+  }
+  return {
+    body,
+    issues,
+    sourceParentSku: input.expectedSourceParentSku,
+    targetParentSku: null,
+    variationTheme: null,
+  };
+}
+
 async function prepareLiveVariationAction(input: VariationMoveInput): Promise<{
   body: VariationPatchBody;
   issues: ListingIssue[];
@@ -3461,7 +3663,12 @@ async function prepareLiveVariationAction(input: VariationMoveInput): Promise<{
   targetParentSku: string | null;
   variationTheme: string | null;
 }> {
-  const context = await prepareLiveVariationContext(input);
+  if (input.action === "detach") {
+    return prepareLiveVariationDetach(input);
+  }
+  const context = await prepareLiveVariationContext(input, {
+    requireStandaloneSource: true,
+  });
   if (
     context.targetParent.sellerSku !== input.targetParentSku ||
     context.variationTheme !== input.variationTheme ||
@@ -3473,54 +3680,32 @@ async function prepareLiveVariationAction(input: VariationMoveInput): Promise<{
     });
   }
   let body: VariationPatchBody;
-  if (input.action === "detach") {
-    if (
-      !input.expectedSourceParentSku ||
-      context.sourceResult.member.parentSku !== input.expectedSourceParentSku
-    ) {
-      throw new SpApiError("來源 child 的 parent 已在查詢後變更，請重新讀取。", {
-        status: 409,
-        code: "VARIATION_RELATIONSHIP_CHANGED",
-      });
-    }
-    try {
-      body = buildVariationDetachBody({
-        productType: context.sourceResult.member.productType,
-        marketplaceId: input.marketplaceId,
-        expectedParentSku: input.expectedSourceParentSku,
-        attributes: context.sourceResult.payload.attributes,
-      });
-    } catch (error) {
-      return throwVariationValidation(error);
-    }
-  } else {
-    try {
-      assertVariationDetached({
-        marketplaceId: input.marketplaceId,
-        attributes: context.sourceResult.payload.attributes,
-      });
-      variationFieldDescriptors({
-        productTypeDefinition: (await fetchVariationChildSchema(
-          input.marketplaceId,
-          context.sourceResult.member.productType,
-        )).schema,
-        dimensionNames: input.dimensionNames,
-        attributes: context.sourceResult.payload.attributes,
-        marketplaceId: input.marketplaceId,
-      });
-      await assertNoDuplicateTargetDimensions(input);
-      body = buildVariationAttachBody({
-        productType: context.sourceResult.member.productType,
-        marketplaceId: input.marketplaceId,
-        targetParentSku: input.targetParentSku,
-        variationTheme: input.variationTheme,
-        dimensionNames: input.dimensionNames,
-        dimensionValues: input.dimensionValues,
-        existingAttributes: context.sourceResult.payload.attributes,
-      });
-    } catch (error) {
-      return throwVariationValidation(error);
-    }
+  try {
+    assertVariationDetached({
+      marketplaceId: input.marketplaceId,
+      attributes: context.sourceResult.payload.attributes,
+    });
+    variationFieldDescriptors({
+      productTypeDefinition: (await fetchVariationChildSchema(
+        input.marketplaceId,
+        context.sourceResult.member.productType,
+      )).schema,
+      dimensionNames: input.dimensionNames,
+      attributes: context.sourceResult.payload.attributes,
+      marketplaceId: input.marketplaceId,
+    });
+    await assertNoDuplicateTargetDimensions(input);
+    body = buildVariationAttachBody({
+      productType: context.sourceResult.member.productType,
+      marketplaceId: input.marketplaceId,
+      targetParentSku: input.targetParentSku,
+      variationTheme: input.variationTheme,
+      dimensionNames: input.dimensionNames,
+      dimensionValues: input.dimensionValues,
+      existingAttributes: context.sourceResult.payload.attributes,
+    });
+  } catch (error) {
+    return throwVariationValidation(error);
   }
   const response = await executeListingsRequest({
     marketplaceId: input.marketplaceId,
@@ -3557,8 +3742,8 @@ async function prepareLiveVariationAction(input: VariationMoveInput): Promise<{
     body,
     issues,
     sourceParentSku: input.expectedSourceParentSku,
-    targetParentSku: input.action === "attach" ? input.targetParentSku : null,
-    variationTheme: input.action === "attach" ? input.variationTheme : null,
+    targetParentSku: input.targetParentSku,
+    variationTheme: input.variationTheme,
   };
 }
 
@@ -3577,11 +3762,29 @@ export async function previewVariationMove(
   input: VariationMoveInput,
 ): Promise<VariationMovePreview> {
   if (shouldUseDemoMode(input.marketplaceId)) {
-    await getVariationMovePreparation({
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      targetParentSku: input.targetParentSku,
-    });
+    if (input.action === "detach") {
+      const source = getDemoVariationFamily(
+        input.marketplaceId,
+        input.sellerSku,
+      ).queried;
+      if (
+        source.role !== "child" ||
+        !source.parentSku ||
+        source.parentSku !== input.expectedSourceParentSku ||
+        !source.fba
+      ) {
+        throw new SpApiError("展示 child 的來源 parent 已變更，請重新讀取。", {
+          status: 409,
+          code: "VARIATION_RELATIONSHIP_CHANGED",
+        });
+      }
+    } else {
+      await getVariationMovePreparation({
+        marketplaceId: input.marketplaceId,
+        sellerSku: input.sellerSku,
+        targetParentSku: input.targetParentSku,
+      });
+    }
     return {
       mode: "demo",
       action: input.action,
@@ -3633,6 +3836,7 @@ async function verifyVariationMoveReadback(input: VariationMoveInput): Promise<v
     }
     try {
       if (input.action === "detach") {
+        assertExplicitStandaloneVariationSource(latest, input.marketplaceId);
         assertVariationDetached({
           marketplaceId: input.marketplaceId,
           attributes: latest.payload.attributes,
@@ -6122,6 +6326,29 @@ function demoSubscriptionAuditOffer(
   };
 }
 
+function subscriptionInventoryEvidence(
+  knownFbaSkus: ReadonlySet<string>,
+  verifiableReplenishmentOfferCount: number,
+): SubscriptionAuditSnapshot["inventoryEvidence"] {
+  if (
+    !Number.isSafeInteger(verifiableReplenishmentOfferCount) ||
+    verifiableReplenishmentOfferCount < 0 ||
+    verifiableReplenishmentOfferCount > knownFbaSkus.size
+  ) {
+    throw new SpApiError(
+      "Subscribe & Save offer 範圍與同次 FBA Inventory 證據不一致。",
+      { status: 502, code: "UPSTREAM_UNAVAILABLE" },
+    );
+  }
+  return {
+    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+    provenSkuCount: knownFbaSkus.size,
+    verifiableReplenishmentOfferCount,
+    unverifiedFbaSkuCount:
+      knownFbaSkus.size - verifiableReplenishmentOfferCount,
+  };
+}
+
 async function getDemoSubscriptionAudit(
   marketplaceId: MarketplaceId,
   months: number,
@@ -6176,12 +6403,12 @@ async function getDemoSubscriptionAudit(
     marketplaceId,
     requestedMonths: months,
     fetchedAt: now.toISOString(),
-    inventoryEvidence: {
-      source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
-      provenSkuCount: knownFbaSkus.size,
-    },
+    inventoryEvidence: subscriptionInventoryEvidence(
+      knownFbaSkus,
+      audit.offers.length,
+    ),
     notice:
-      "展示資料只用來驗證全站 FBA Subscribe & Save 健檢、缺月與 Excel 流程；不會連線或寫入 Amazon。",
+      "展示資料只用來驗證全站 FBA Subscribe & Save 健檢、FBA／offer 覆蓋、缺月與 Excel 流程；未回傳可核對 offer 不代表不符合資格或 0 訂閱，也不會連線或寫入 Amazon。",
   };
 }
 
@@ -6218,12 +6445,12 @@ export async function getFbaSubscriptionAudit(input: {
     marketplaceId: input.marketplaceId,
     requestedMonths: input.months,
     fetchedAt: now.toISOString(),
-    inventoryEvidence: {
-      source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
-      provenSkuCount: knownFbaSkus.size,
-    },
+    inventoryEvidence: subscriptionInventoryEvidence(
+      knownFbaSkus,
+      audit.offers.length,
+    ),
     notice:
-      "本頁只包含同次完整分頁 FBA Inventory API 證明的目前 FBA SKU。Replenishment offers 全站只抓一次；月度 PERFORMANCE 缺值維持缺值，不補 0。",
+      "本頁以同次完整分頁 FBA Inventory API 作為總範圍，分開顯示可核對 Replenishment offer 與未回傳可核對 offer 的 FBA SKU；後者不代表不符合資格或 0 訂閱。Replenishment offers 全站只抓一次；月度 PERFORMANCE 缺值維持缺值，不補 0。",
   };
 }
 
@@ -7138,7 +7365,7 @@ async function executeReportsRequest(
 
 async function throwReportsError(
   response: Response,
-  purpose: "listings" | "aged-inventory" = "listings",
+  purpose: "listings" | "aged-inventory" | "brand-sales" = "listings",
 ): Promise<never> {
   const payload = await parseResponseJson<{
     errors?: Array<{ code?: string; message?: string }>;
@@ -7146,14 +7373,18 @@ async function throwReportsError(
   const upstreamMessage = payload?.errors?.find(
     (error) => typeof error.message === "string" && error.message.trim(),
   )?.message;
-  const subject = purpose === "aged-inventory" ? "FBA 庫齡報表" : "全商品報表";
+  const subject = purpose === "aged-inventory"
+    ? "FBA 庫齡報表"
+    : purpose === "brand-sales"
+      ? "FBA 品牌出貨報表"
+      : "全商品報表";
   const message =
     response.status === 429
       ? `Amazon 正在限制${subject}請求頻率，請稍後再試。`
       : response.status === 401 || response.status === 403
-        ? purpose === "aged-inventory"
-          ? "Amazon 拒絕 FBA 庫齡報表查詢，請確認 app 已有 Amazon Fulfillment 角色並重新授權。"
-          : "Amazon 拒絕報表查詢，請確認 app 已有 Product Listing 權限並重新授權。"
+        ? purpose === "listings"
+          ? "Amazon 拒絕報表查詢，請確認 app 已有 Product Listing 權限並重新授權。"
+          : `Amazon 拒絕${subject}查詢，請確認 app 已有 Amazon Fulfillment 角色並重新授權。`
         : `Amazon 無法完成${subject}。`;
   throw new SpApiError(
     upstreamMessage ? `${message}（${upstreamMessage}）` : message,
@@ -7384,6 +7615,286 @@ export async function getAgedInventoryReportStatus(input: {
       ? "Amazon FBA 庫齡資料已就緒，正在整理 180 天以上庫存。"
       : "Amazon 正在準備 FBA 庫齡資料；完成後會自動顯示。",
   };
+}
+
+const FBA_SHIPMENT_SALES_REPORT_TYPE =
+  "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA";
+
+function demoBrandSalesReference(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+}): string {
+  return `demo-brand-${input.marketplaceId}-${input.startDate}-${input.endDate}`;
+}
+
+function exactBrandSalesWindow(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+}): SalesTrendWindow {
+  return buildCustomSalesTrendWindow(
+    input.marketplaceId,
+    input.startDate,
+    input.endDate,
+  );
+}
+
+export async function startFbaShipmentSalesReport(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+}): Promise<BrandSalesReportStatus> {
+  const window = exactBrandSalesWindow(input);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const reference = demoBrandSalesReference(input);
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: reference,
+      documentId: reference,
+      status: "DONE",
+      dataStartTime: window.startAt,
+      dataEndTime: window.endAt,
+      notice: "展示用 FBA 品牌出貨報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: "/reports",
+    method: "POST",
+    body: {
+      reportType: FBA_SHIPMENT_SALES_REPORT_TYPE,
+      marketplaceIds: [input.marketplaceId],
+      dataStartTime: window.startAt,
+      dataEndTime: window.endAt,
+    },
+  });
+  if (!response.ok) return throwReportsError(response, "brand-sales");
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (!payload?.reportId) {
+    throw new SpApiError("Amazon 沒有回傳有效的 FBA 品牌出貨報表編號。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  return {
+    mode: "live",
+    ready: false,
+    reportId: payload.reportId,
+    documentId: null,
+    status: "IN_QUEUE",
+    dataStartTime: window.startAt,
+    dataEndTime: window.endAt,
+    notice: "Amazon 正在準備 FBA 已出貨商品資料。",
+  };
+}
+
+export async function getFbaShipmentSalesReportStatus(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  startDate: string;
+  endDate: string;
+  dataStartTime: string;
+  dataEndTime: string;
+}): Promise<BrandSalesReportStatus> {
+  exactBrandSalesWindow(input);
+  const expectedStartTime = Date.parse(input.dataStartTime);
+  const expectedEndTime = Date.parse(input.dataEndTime);
+  if (
+    !Number.isFinite(expectedStartTime) ||
+    !Number.isFinite(expectedEndTime) ||
+    new Date(expectedStartTime).toISOString() !== input.dataStartTime ||
+    new Date(expectedEndTime).toISOString() !== input.dataEndTime ||
+    expectedEndTime <= expectedStartTime
+  ) {
+    throw new SpApiError("FBA 品牌出貨報表的固定查詢時間無效。", {
+      status: 400,
+      code: "INVALID_DATE_RANGE",
+    });
+  }
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const expected = demoBrandSalesReference(input);
+    if (input.reportId !== expected) {
+      throw new SpApiError("展示 FBA 品牌出貨報表與目前站點或日期不一致。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: expected,
+      documentId: expected,
+      status: "DONE",
+      dataStartTime: input.dataStartTime,
+      dataEndTime: input.dataEndTime,
+      notice: "展示用 FBA 品牌出貨報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: `/reports/${encodeURIComponent(input.reportId)}`,
+  });
+  if (!response.ok) return throwReportsError(response, "brand-sales");
+  const payload = await parseResponseJson<AmazonReport>(response);
+  const startTime = Date.parse(payload?.dataStartTime ?? "");
+  const endTime = Date.parse(payload?.dataEndTime ?? "");
+  if (
+    payload?.reportType !== FBA_SHIPMENT_SALES_REPORT_TYPE ||
+    !Array.isArray(payload.marketplaceIds) ||
+    payload.marketplaceIds.length !== 1 ||
+    payload.marketplaceIds[0] !== input.marketplaceId ||
+    !Number.isFinite(startTime) ||
+    !Number.isFinite(endTime) ||
+    startTime !== expectedStartTime ||
+    endTime !== expectedEndTime
+  ) {
+    throw new SpApiError(
+      "這份 Amazon 報表不屬於目前站點、日期或 FBA 出貨銷售類型。",
+      {
+        status: 409,
+        code: "REPORT_MISMATCH",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  const status = payload.processingStatus;
+  if (!status) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 品牌出貨報表狀態。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  if (status === "CANCELLED" || status === "FATAL") {
+    throw new SpApiError("Amazon 未能產生 FBA 品牌出貨報表，請重新同步。", {
+      status: 422,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  const ready = status === "DONE" && Boolean(payload.reportDocumentId);
+  return {
+    mode: "live",
+    ready,
+    reportId: input.reportId,
+    documentId: payload.reportDocumentId ?? null,
+    status,
+    dataStartTime: input.dataStartTime,
+    dataEndTime: input.dataEndTime,
+    notice: ready
+      ? "Amazon FBA 已出貨商品資料已就緒。"
+      : "Amazon 正在準備 FBA 已出貨商品資料。",
+  };
+}
+
+function shipmentDateKey(value: string, timeZone: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) return value;
+  const instant = new Date(value);
+  const local = zonedDateParts(instant, timeZone);
+  return dateKey(local.year, local.month, local.day);
+}
+
+export async function getBrandSalesData(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  listingReportId: string;
+  listingDocumentId: string;
+  shipmentReportId: string;
+  shipmentDocumentId: string;
+  shipmentDataStartTime: string;
+  shipmentDataEndTime: string;
+}): Promise<BrandSalesSnapshot> {
+  exactBrandSalesWindow(input);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const listingReference = `demo-${input.marketplaceId}`;
+    const shipmentReference = demoBrandSalesReference(input);
+    if (
+      input.listingReportId !== listingReference ||
+      input.listingDocumentId !== listingReference ||
+      input.shipmentReportId !== shipmentReference ||
+      input.shipmentDocumentId !== shipmentReference
+    ) {
+      throw new SpApiError("展示品牌營收報表與目前站點或日期不一致。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    const listingData = await getAllListingsExportData({
+      marketplaceId: input.marketplaceId,
+      reportId: listingReference,
+      documentId: listingReference,
+    });
+    const listings = listingData.rows.map((row) => ({
+      sellerSku: row.sellerSku,
+      title: row.title,
+    }));
+    const currencyCode = MARKETPLACES[input.marketplaceId].currency;
+    const sales = listings.map((listing, index) => ({
+      shipmentDate: `${input.startDate}T12:00:00.000Z`,
+      sellerSku: listing.sellerSku,
+      quantity: index + 1,
+      unitPrice: currencyCode === "JPY" ? 1_280 + index * 300 : 12.99 + index * 2.5,
+      currencyCode,
+    }));
+    return buildBrandSalesSnapshot({
+      mode: "demo",
+      marketplaceId: input.marketplaceId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      currencyCode,
+      listings,
+      sales,
+    });
+  }
+
+  const [listingStatus, shipmentStatus] = await Promise.all([
+    getAllListingsReportStatus({
+      marketplaceId: input.marketplaceId,
+      reportId: input.listingReportId,
+    }),
+    getFbaShipmentSalesReportStatus({
+      marketplaceId: input.marketplaceId,
+      reportId: input.shipmentReportId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      dataStartTime: input.shipmentDataStartTime,
+      dataEndTime: input.shipmentDataEndTime,
+    }),
+  ]);
+  if (
+    !listingStatus.ready ||
+    listingStatus.documentId !== input.listingDocumentId ||
+    !shipmentStatus.ready ||
+    shipmentStatus.documentId !== input.shipmentDocumentId
+  ) {
+    throw new SpApiError("品牌營收報表尚未完成，或文件資訊已失效。", {
+      status: 409,
+      code: "REPORT_NOT_READY",
+    });
+  }
+  const [listingReport, shipmentReport] = await Promise.all([
+    downloadReportDocument(input.marketplaceId, input.listingDocumentId),
+    downloadReportDocument(input.marketplaceId, input.shipmentDocumentId),
+  ]);
+  const listings = parseCurrentFbaListingTitles(listingReport);
+  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
+  const sales = parseFbaShipmentSalesReport(shipmentReport).filter((sale) => {
+    const key = shipmentDateKey(sale.shipmentDate, timeZone);
+    return key >= input.startDate && key <= input.endDate;
+  });
+  return buildBrandSalesSnapshot({
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    currencyCode: MARKETPLACES[input.marketplaceId].currency,
+    listings,
+    sales,
+  });
 }
 
 async function downloadReportDocument(
@@ -7877,6 +8388,7 @@ export function parseAgedInventoryReportData(
   const storageCostIndex = reportColumn(headers, [
     "estimated-storage-cost-next-month",
   ]);
+  const storageVolumeIndex = reportColumn(headers, ["storage-volume"]);
   const alertIndex = reportColumn(headers, ["alert"]);
   const recommendedActionIndex = reportColumn(headers, ["recommended-action"]);
   const snapshotDateIndex = reportColumn(headers, [
@@ -7912,23 +8424,43 @@ export function parseAgedInventoryReportData(
       .filter((item) => item.over180)
       .reduce((sum, item) => sum + item.units, 0);
     const currencyCode = reportCurrencyCell(row, currencyIndex);
-    const estimatedStorageCostNextMonth = reportDecimalCell(
+    const storageVolume = reportDecimalCell(
+      row,
+      storageVolumeIndex,
+      "Amazon storage volume",
+    );
+    const reportedStorageCostNextMonth = reportDecimalCell(
       row,
       storageCostIndex,
       "下月預估倉儲成本",
     );
-    const agedSurchargeBuckets = selectedSurchargeColumns.map((item) => ({
-      key: item.key,
-      label: item.label,
-      quantity: reportIntegerCell(row, item.quantityIndex, `${item.label}計費數量`),
-      estimatedCharge: reportDecimalCell(
+    // The report documents both the charge basis and estimate as optional per
+    // row. A blank estimate is safely zero only when Amazon explicitly reports
+    // a zero basis; a positive or missing basis remains unknown and partial.
+    const estimatedStorageCostNextMonth =
+      reportedStorageCostNextMonth ?? (storageVolume === 0 ? 0 : null);
+    const agedSurchargeBuckets = selectedSurchargeColumns.map((item) => {
+      const quantity = reportIntegerCell(
+        row,
+        item.quantityIndex,
+        `${item.label}計費數量`,
+      );
+      const reportedCharge = reportDecimalCell(
         row,
         item.estimatedIndex,
         `${item.label}預估附加費`,
-      ),
-    }));
+      );
+      return {
+        key: item.key,
+        label: item.label,
+        quantity,
+        estimatedCharge: reportedCharge ?? (quantity === 0 ? 0 : null),
+      };
+    });
     const estimatedAgedSurcharge = agedSurchargeBuckets.length > 0 &&
-      agedSurchargeBuckets.every((item) => item.estimatedCharge !== null)
+      agedSurchargeBuckets.every(
+        (item) => item.quantity !== null && item.estimatedCharge !== null,
+      )
       ? Number(
           agedSurchargeBuckets
             .reduce((sum, item) => sum + item.estimatedCharge!, 0)
@@ -7936,8 +8468,8 @@ export function parseAgedInventoryReportData(
         )
       : null;
     if (
-      (estimatedStorageCostNextMonth !== null ||
-        agedSurchargeBuckets.some((item) => item.estimatedCharge !== null)) &&
+      ((estimatedStorageCostNextMonth ?? 0) > 0 ||
+        agedSurchargeBuckets.some((item) => (item.estimatedCharge ?? 0) > 0)) &&
       !currencyCode
     ) {
       throw new SpApiError("Amazon FBA 庫齡報表有費用但缺少幣別，已停止加總。", {
@@ -8203,7 +8735,7 @@ export async function getAgedInventoryData(input: {
     },
     expiration: agedInventoryExpirationBoundary(),
     notice:
-      "資料取自 Amazon FBA Manage Inventory Health report。所有庫齡桶、estimated excess、下月預估倉儲成本與 AIS 預估附加費只顯示報表原值；缺欄或缺值不推算。本頁唯讀，不會建立促銷或移除訂單。",
+      "資料取自 Amazon FBA Manage Inventory Health report。庫齡桶與 estimated excess 顯示報表原值；費用空白只有在同列官方 storage volume／AIS 計費數量明確為 0 時才安全呈現 0，其餘缺欄或缺值不推算。本頁唯讀，不會建立促銷或移除訂單。",
   };
 }
 
@@ -8213,7 +8745,7 @@ type ListingReportSeed = {
   title: string;
 };
 
-function reportSeeds(text: string): ListingReportSeed[] {
+export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
   const rows = parseTsv(text);
   const headers = rows[0] ?? [];
   let skuIndex = reportColumn(headers, ["seller-sku", "sku"]);
@@ -8259,11 +8791,22 @@ function reportSeeds(text: string): ListingReportSeed[] {
   const seen = new Set<string>();
   const seeds: ListingReportSeed[] = [];
   for (const row of rows.slice(1)) {
-    const sellerSku = row[skuIndex]?.trim();
-    if (!sellerSku || seen.has(sellerSku)) continue;
     const fulfillment = row[fulfillmentIndex]?.trim() ?? "";
     if (!/^(AMAZON|AFN)(?:_|$)/i.test(fulfillment)) {
       continue;
+    }
+    const sellerSku = row[skuIndex] ?? "";
+    if (
+      !sellerSku ||
+      sellerSku.length > 40 ||
+      sellerSku !== sellerSku.trim() ||
+      /[\u0000-\u001f\u007f]/u.test(sellerSku) ||
+      seen.has(sellerSku)
+    ) {
+      throw new SpApiError(
+        "Amazon 全商品報表含有缺少、重複或無法精確辨識的 FBA Seller SKU；為避免改寫識別或少算商品，已停止讀取。",
+        { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
+      );
     }
     seen.add(sellerSku);
     seeds.push({
@@ -8519,6 +9062,16 @@ export async function getAllListingsExportData(input: {
   fetchedAt: string;
 }> {
   if (shouldUseDemoMode(input.marketplaceId)) {
+    const expectedReference = `demo-${input.marketplaceId}`;
+    if (
+      input.reportId !== expectedReference ||
+      input.documentId !== expectedReference
+    ) {
+      throw new SpApiError("展示全商品報表與目前站點快照不一致。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
     const sellerSkus = [
       ...new Set(
         buildDemoOrders(input.marketplaceId)
@@ -8564,7 +9117,7 @@ export async function getAllListingsExportData(input: {
     input.marketplaceId,
     input.documentId,
   );
-  const seeds = reportSeeds(report);
+  const seeds = parseFbaListingReportSeeds(report);
   if (!seeds.length) {
     return {
       rows: [],
@@ -8580,6 +9133,160 @@ export async function getAllListingsExportData(input: {
   }
   const result = await fetchExportRows(input.marketplaceId, seeds);
   return { ...result, fetchedAt: new Date().toISOString() };
+}
+
+export async function getUnboundVariationAuditData(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  documentId: string;
+}): Promise<UnboundVariationAuditSnapshot> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const sellerSkus = [
+      ...new Set(
+        buildDemoOrders(input.marketplaceId)
+          .flatMap((order) => order.items)
+          .map((item) => item.sellerSku),
+      ),
+    ];
+    const rows: UnboundVariationAuditRow[] = [];
+    let boundChildren = 0;
+    let parentContainers = 0;
+    for (const sellerSku of sellerSkus) {
+      const family = getDemoVariationFamily(input.marketplaceId, sellerSku);
+      if (family.queried.role === "standalone") {
+        rows.push({
+          sellerSku,
+          asin: family.queried.asin ?? "",
+          title: family.queried.title,
+          productType: family.queried.productType,
+          relationshipEvidence: "relationships",
+          notice: "展示 relationships 明確沒有 parent；不會寫入 Amazon。",
+        });
+      } else if (family.queried.role === "child") {
+        boundChildren += 1;
+      } else {
+        parentContainers += 1;
+      }
+    }
+    return {
+      mode: "demo",
+      marketplaceId: input.marketplaceId,
+      fetchedAt: new Date().toISOString(),
+      rows,
+      incompleteRows: [],
+      summary: {
+        totalFbaListings: sellerSkus.length,
+        completed: sellerSkus.length,
+        unbound: rows.length,
+        boundChildren,
+        parentContainers,
+        incomplete: 0,
+      },
+      notice: "展示結果只驗證流程；正式模式會逐一要求 Amazon relationships 證據。",
+    };
+  }
+
+  const status = await getAllListingsReportStatus({
+    marketplaceId: input.marketplaceId,
+    reportId: input.reportId,
+  });
+  if (!status.ready || status.documentId !== input.documentId) {
+    throw new SpApiError("報表尚未完成，或未綁變體健檢文件資訊已失效。", {
+      status: 409,
+      code: "REPORT_NOT_READY",
+    });
+  }
+  const report = await downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+  );
+  const seeds = parseFbaListingReportSeeds(report);
+  const rows: UnboundVariationAuditRow[] = [];
+  const incompleteRows: UnboundVariationAuditIncompleteRow[] = [];
+  let boundChildren = 0;
+  let parentContainers = 0;
+
+  for (const seed of seeds) {
+    try {
+      const result = await fetchVariationItem(
+        input.marketplaceId,
+        seed.sellerSku,
+      );
+      if (!result.member.sellerSku || result.member.sellerSku !== seed.sellerSku) {
+        incompleteRows.push({
+          sellerSku: seed.sellerSku,
+          asin: seed.asin,
+          title: seed.title,
+          code: "RELATIONSHIP_RESPONSE_INVALID",
+          message: "Amazon relationships 回應的 Seller SKU 與報表不一致。",
+          requestId: result.requestId,
+        });
+        continue;
+      }
+      const classification = classifyUnboundVariationEvidence({
+        marketplaceId: input.marketplaceId,
+        profile: result.profile,
+        relationships: result.payload.relationships,
+        role: result.member.role,
+        listingFulfillmentEvidence: payloadFulfillmentEvidence(result.payload),
+      });
+      if (classification.kind === "unbound") {
+        rows.push({
+          sellerSku: seed.sellerSku,
+          asin: result.member.asin ?? seed.asin,
+          title: result.member.title || seed.title,
+          productType: result.member.productType,
+          relationshipEvidence: "relationships",
+          notice: "Amazon relationships 已完整回傳，且沒有 parent 關係。",
+        });
+      } else if (classification.kind === "bound-child") {
+        boundChildren += 1;
+      } else if (classification.kind === "parent-container") {
+        parentContainers += 1;
+      } else {
+        incompleteRows.push({
+          sellerSku: seed.sellerSku,
+          asin: result.member.asin ?? seed.asin,
+          title: result.member.title || seed.title,
+          code: classification.code,
+          message: classification.message,
+          requestId: result.requestId,
+        });
+      }
+    } catch (error) {
+      incompleteRows.push({
+        sellerSku: seed.sellerSku,
+        asin: seed.asin,
+        title: seed.title,
+        code: "RELATIONSHIP_QUERY_FAILED",
+        message: error instanceof Error
+          ? error.message
+          : "Amazon relationships 查詢失敗。",
+        requestId: error instanceof SpApiError ? error.requestId : null,
+      });
+    }
+    await wait(220);
+  }
+
+  return {
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    fetchedAt: new Date().toISOString(),
+    rows: rows.sort((left, right) => left.sellerSku.localeCompare(right.sellerSku)),
+    incompleteRows: incompleteRows.sort((left, right) =>
+      left.sellerSku.localeCompare(right.sellerSku),
+    ),
+    summary: {
+      totalFbaListings: seeds.length,
+      completed: seeds.length - incompleteRows.length,
+      unbound: rows.length,
+      boundChildren,
+      parentContainers,
+      incomplete: incompleteRows.length,
+    },
+    notice:
+      "FBA 範圍取自同次 Amazon 全商品報表；只有 relationships 明確完整且沒有 parent 的 SKU 才列為未綁變體，缺資料另列未完成。",
+  };
 }
 
 export async function previewListingSalePriceUpdate(

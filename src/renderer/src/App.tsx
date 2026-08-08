@@ -19,6 +19,7 @@ export default function App() {
   const [initialError, setInitialError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [connectionOpen, setConnectionOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const requestedReloadKey = useRef<number | null>(null);
 
@@ -105,8 +106,14 @@ export default function App() {
         initialMarketplaceId={DEFAULT_MARKETPLACE_ID}
         viewerName="Jayden"
         initialError={initialError}
+        onOpenConnection={() => setConnectionOpen(true)}
       />
-      <ConnectionPanel onConnectionChanged={() => setReloadKey((key) => key + 1)} />
+      <ConnectionPanel
+        open={connectionOpen}
+        onOpenChange={setConnectionOpen}
+        showTrigger={false}
+        onConnectionChanged={() => setReloadKey((key) => key + 1)}
+      />
     </>
   );
 }

@@ -113,6 +113,7 @@ export default function VariationPlannerDrawer({
   const [sourceFamily, setSourceFamily] = useState<VariationFamilyView | null>(null);
   const [targetFamily, setTargetFamily] = useState<VariationFamilyView | null>(null);
   const [stagedMember, setStagedMember] = useState<VariationMemberView | null>(null);
+  const [stagedOriginalParentSku, setStagedOriginalParentSku] = useState<string | null>(null);
   const [stagedState, setStagedState] = useState<StagedState>("planned");
   const [plan, setPlan] = useState<VariationMovePlan | null>(null);
   const [preparation, setPreparation] = useState<VariationMovePreparation | null>(null);
@@ -138,7 +139,10 @@ export default function VariationPlannerDrawer({
 
   const clearWorkflow = useCallback((keepStaged = false) => {
     preparationAbortRef.current?.abort();
-    if (!keepStaged) setStagedMember(null);
+    if (!keepStaged) {
+      setStagedMember(null);
+      setStagedOriginalParentSku(null);
+    }
     setStagedState("planned");
     setPlan(null);
     setPreparation(null);
@@ -290,6 +294,7 @@ export default function VariationPlannerDrawer({
 
   const stageMember = (member: VariationMemberView) => {
     setStagedMember(member);
+    setStagedOriginalParentSku(member.parentSku);
     setStagedState(member.parentSku ? "planned" : "detached");
     setPlan(null);
     setPreparation(null);
@@ -348,6 +353,10 @@ export default function VariationPlannerDrawer({
 
   const moveStagedToTarget = () => {
     if (!sourceFamily || !targetFamily || !stagedMember) return;
+    if (stagedState !== "detached") {
+      setWorkflowError("請先按「確認解除變體」並完成 Amazon 唯讀回查，再拖往目標 family。");
+      return;
+    }
     const nextPlan = buildVariationMovePlan(sourceFamily, stagedMember, targetFamily);
     setPlan(nextPlan);
     setLastResult(null);
@@ -365,7 +374,9 @@ export default function VariationPlannerDrawer({
   const targetDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const sellerSku = event.dataTransfer.getData("text/plain");
-    if (stagedMember?.sellerSku === sellerSku) moveStagedToTarget();
+    if (stagedMember?.sellerSku === sellerSku && stagedState === "detached") {
+      moveStagedToTarget();
+    }
   };
 
   const missingFields = useMemo(
@@ -374,17 +385,19 @@ export default function VariationPlannerDrawer({
   );
 
   const refreshFamilies = useCallback(async () => {
-    if (!sourceFamily || !targetFamily) return;
+    if (!sourceFamily) return;
     const sourceSku = sourceFamily.queriedSku;
-    const targetSku = targetParent(targetFamily)?.sellerSku ?? targetFamily.queriedSku;
     const controller = new AbortController();
     try {
+      const targetSku = targetFamily
+        ? targetParent(targetFamily)?.sellerSku ?? targetFamily.queriedSku
+        : null;
       const [nextSource, nextTarget] = await Promise.all([
         fetchFamily(sourceSku, controller.signal),
-        fetchFamily(targetSku, controller.signal),
+        targetSku ? fetchFamily(targetSku, controller.signal) : Promise.resolve(null),
       ]);
       setSourceFamily(nextSource);
-      setTargetFamily(nextTarget);
+      if (nextTarget) setTargetFamily(nextTarget);
     } catch {
       // The write result already contains a verified single-SKU readback. A
       // family refresh failure is shown as a non-destructive warning only.
@@ -393,8 +406,13 @@ export default function VariationPlannerDrawer({
   }, [fetchFamily, sourceFamily, targetFamily]);
 
   const runWrite = async (action: VariationMoveAction) => {
-    if (!stagedMember || !preparation) return;
-    if (preparation.blockers.length) {
+    if (!stagedMember) return;
+    if (action === "detach" && !stagedMember.parentSku) {
+      setWorkflowError("Amazon 目前沒有可解除的來源 parent；請重新讀取來源 SKU。");
+      return;
+    }
+    if (action === "attach" && !preparation) return;
+    if (preparation?.blockers.length) {
       setWorkflowError(preparation.blockers.join(" "));
       return;
     }
@@ -403,17 +421,29 @@ export default function VariationPlannerDrawer({
       return;
     }
     const idempotencyKey = crypto.randomUUID();
-    const body = {
-      action,
-      marketplaceId,
-      sellerSku: stagedMember.sellerSku,
-      expectedSourceParentSku: preparation.sourceParentSku,
-      targetParentSku: preparation.targetParentSku,
-      variationTheme: preparation.variationTheme,
-      dimensionNames: preparation.dimensionNames,
-      dimensionValues,
-      idempotencyKey,
-    };
+    const body = action === "detach"
+      ? {
+          action,
+          marketplaceId,
+          sellerSku: stagedMember.sellerSku,
+          expectedSourceParentSku: stagedMember.parentSku,
+          targetParentSku: null,
+          variationTheme: null,
+          dimensionNames: [],
+          dimensionValues: {},
+          idempotencyKey,
+        }
+      : {
+          action,
+          marketplaceId,
+          sellerSku: stagedMember.sellerSku,
+          expectedSourceParentSku: null,
+          targetParentSku: preparation!.targetParentSku,
+          variationTheme: preparation!.variationTheme,
+          dimensionNames: preparation!.dimensionNames,
+          dimensionValues,
+          idempotencyKey,
+        };
     setWriteAction(action);
     setWorkflowError(null);
     setLastResult(null);
@@ -447,6 +477,11 @@ export default function VariationPlannerDrawer({
       });
       setLastResult(result);
       setStagedState(action === "detach" ? "detached" : "attached");
+      if (action === "detach") {
+        setStagedMember((current) => current
+          ? { ...current, role: "standalone", parentSku: null }
+          : current);
+      }
       await refreshFamilies();
     } catch (error) {
       setWorkflowError(error instanceof Error ? error.message : "變體操作沒有完成。");
@@ -498,30 +533,7 @@ export default function VariationPlannerDrawer({
             </div>
             {sourceError && <div className="price-error" role="alert">{sourceError}</div>}
             {sourceLoading && <p className="variation-loading" role="status">正在整理來源 parent、children、theme 與維度…</p>}
-            {sourceFamily && (
-              <>
-                <FamilySummary family={sourceFamily} />
-                <div className="variation-child-list">
-                  {sourceMembers.map((member) => (
-                    <article
-                      key={member.sellerSku}
-                      className={`variation-child-card ${stagedMember?.sellerSku === member.sellerSku ? "selected" : ""}`}
-                      draggable={!busy}
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "copy";
-                        event.dataTransfer.setData("text/plain", member.sellerSku);
-                      }}
-                    >
-                      <div><strong>{member.sellerSku}</strong><span>FBA {member.role}</span></div>
-                      <p>{member.title}</p>
-                      <small>{memberDimensions(member)}</small>
-                      <button type="button" disabled={busy} onClick={() => stageMember(member)}>放入解除變體區</button>
-                    </article>
-                  ))}
-                  {!sourceMembers.length && <p className="variation-empty">這個 family 沒有可移動的 FBA child。</p>}
-                </div>
-              </>
-            )}
+            {sourceFamily && <FamilySummary family={sourceFamily} />}
           </section>
 
           <section className="variation-family-panel target" aria-labelledby="variation-target-title">
@@ -533,33 +545,11 @@ export default function VariationPlannerDrawer({
             {targetError && <div className="price-error" role="alert">{targetError}</div>}
             {targetLoading && <p className="variation-loading" role="status">正在確認目標 parent 與既有 child…</p>}
             {targetFamily && <TargetFamilyDetails family={targetFamily} />}
-            <div
-              className={`variation-drop-zone ${targetFamily && stagedMember ? "ready" : ""}`}
-              onDragOver={(event) => { if (targetFamily && stagedMember) event.preventDefault(); }}
-              onDrop={targetDrop}
-              aria-label="把解除變體暫存的 FBA child 拖到目標 parent"
-            >
-              {targetFamily ? (
-                <>
-                  <span>加入目標 parent</span>
-                  <strong>{targetParent(targetFamily)?.sellerSku ?? "Parent 未確認"}</strong>
-                  <p>{targetFamily.variationTheme ?? "Theme 未確認"} · {targetFamily.children.length} 個 FBA child</p>
-                  <small>{stagedMember ? "把中間暫存卡拖到這裡" : "請先把來源 child 放進解除變體暫存區"}</small>
-                </>
-              ) : (
-                <><span>先讀取目標 family</span><p>目標 parent 的標題、theme 與維度會在這裡核對。</p></>
-              )}
-            </div>
-            {targetFamily && stagedMember && (
-              <button className="variation-target-action" type="button" onClick={moveStagedToTarget} disabled={busy}>
-                使用暫存的 {stagedMember.sellerSku}
-              </button>
-            )}
           </section>
         </div>
 
-        <section className={`variation-detach-stage ${stagedMember ? "occupied" : ""}`} aria-label="解除變體暫存區">
-          <div className="variation-section-heading"><span>03</span><div><strong>解除變體暫存區</strong><small>拖入後來源卡仍保留；Amazon 尚未改變，直到您直接使用 Touch ID</small></div></div>
+        <section className={`variation-detach-stage ${stagedMember ? "occupied" : ""}`} aria-label="解除變體存放區">
+          <div className="variation-section-heading"><span>解除</span><div><strong>解除變體存放區</strong><small>固定在兩個 family 摘要後；解除成功後卡片仍保留，可再拖往目標</small></div></div>
           <div
             className="variation-detach-drop"
             onDragOver={(event) => { if (sourceFamily) event.preventDefault(); }}
@@ -568,7 +558,7 @@ export default function VariationPlannerDrawer({
             {stagedMember ? (
               <article
                 className={`variation-staged-card ${stagedState}`}
-                draggable={!busy && stagedState !== "attached"}
+                draggable={!busy && stagedState === "detached"}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = "copy";
                   event.dataTransfer.setData("text/plain", stagedMember.sellerSku);
@@ -576,14 +566,85 @@ export default function VariationPlannerDrawer({
               >
                 <div><strong>{stagedMember.sellerSku}</strong><span>{stagedState === "planned" ? "尚未解除" : stagedState === "detached" ? "已回查為獨立 SKU" : "已加入新 family"}</span></div>
                 <p>{stagedMember.title}</p>
-                <small>{stagedMember.parentSku ? `原 Parent：${stagedMember.parentSku}` : "原本沒有 parent"} · {memberDimensions(stagedMember)}</small>
-                {stagedState !== "attached" && <em>可把這張卡拖到右側目標 family</em>}
+                <small>{stagedOriginalParentSku ? `原 Parent：${stagedOriginalParentSku}` : "原本沒有 parent"} · {memberDimensions(stagedMember)}</small>
+                {stagedState === "planned" && <em>按下方「確認解除變體」後會先 Amazon 預檢，再直接顯示 Touch ID。</em>}
+                {stagedState === "detached" && <em>解除已回查完成；現在可把這張卡拖到下方目標 family。</em>}
               </article>
             ) : (
-              <p>把左側 FBA child 拖到這裡，或按「放入解除變體區」。</p>
+              <p>把下方 FBA child 拖到這裡，或按「放入解除變體區」。</p>
             )}
           </div>
+          {stagedMember && stagedState === "planned" && (
+            <button
+              className="price-primary-button danger-button"
+              type="button"
+              disabled={busy || !sourceFamily?.familyComplete || sourceFamily.mode !== "live" || !stagedMember.parentSku}
+              onClick={() => void runWrite("detach")}
+            >
+              {writeAction === "detach" ? "等待 Touch ID／解除回查中…" : "確認解除變體"}
+            </button>
+          )}
+          {stagedMember && stagedState === "detached" && (
+            <strong className="variation-success">✓ 已確認解除；存放卡仍保留，可拖往目標 family</strong>
+          )}
+          {sourceFamily?.mode === "demo" && stagedMember && (
+            <p className="variation-warning">目前為展示模式；按鈕保持停用，Amazon 不會收到解除寫入。</p>
+          )}
         </section>
+
+        <div className="variation-planner-columns">
+          <section className="variation-family-panel" aria-labelledby="variation-source-children-title">
+            <div className="variation-section-heading"><span>選</span><div><strong id="variation-source-children-title">可解除的 FBA child</strong><small>來源卡會保留；放入上方存放區不會立即修改 Amazon</small></div></div>
+            <div className="variation-child-list">
+              {sourceMembers.map((member) => (
+                <article
+                  key={member.sellerSku}
+                  className={`variation-child-card ${stagedMember?.sellerSku === member.sellerSku ? "selected" : ""}`}
+                  draggable={!busy}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "copy";
+                    event.dataTransfer.setData("text/plain", member.sellerSku);
+                  }}
+                >
+                  <div><strong>{member.sellerSku}</strong><span>FBA {member.role}</span></div>
+                  <p>{member.title}</p>
+                  <small>{memberDimensions(member)}</small>
+                  <button type="button" disabled={busy} onClick={() => stageMember(member)}>放入解除變體存放區</button>
+                </article>
+              ))}
+              {sourceFamily && !sourceMembers.length && <p className="variation-empty">這個 family 沒有可解除的 FBA child。</p>}
+              {!sourceFamily && <p className="variation-empty">先在上方讀取來源 family。</p>}
+            </div>
+          </section>
+
+          <section className="variation-family-panel target" aria-labelledby="variation-target-drop-title">
+            <div className="variation-section-heading"><span>綁</span><div><strong id="variation-target-drop-title">拖往目標 family</strong><small>只接受已完成解除並唯讀回查的存放卡</small></div></div>
+            <div
+              className={`variation-drop-zone ${targetFamily && stagedMember && stagedState === "detached" ? "ready" : ""}`}
+              onDragOver={(event) => {
+                if (targetFamily && stagedMember && stagedState === "detached") event.preventDefault();
+              }}
+              onDrop={targetDrop}
+              aria-label="把已解除並回查的 FBA child 拖到目標 parent"
+            >
+              {targetFamily ? (
+                <>
+                  <span>加入目標 parent</span>
+                  <strong>{targetParent(targetFamily)?.sellerSku ?? "Parent 未確認"}</strong>
+                  <p>{targetFamily.variationTheme ?? "Theme 未確認"} · {targetFamily.children.length} 個 FBA child</p>
+                  <small>{stagedState === "detached" ? "把上方存放卡拖到這裡" : "請先完成解除變體與唯讀回查"}</small>
+                </>
+              ) : (
+                <><span>先讀取目標 family</span><p>目標 parent 的標題、theme 與維度會在上方核對。</p></>
+              )}
+            </div>
+            {targetFamily && stagedMember && (
+              <button className="variation-target-action" type="button" onClick={moveStagedToTarget} disabled={busy || stagedState !== "detached"}>
+                使用已解除的 {stagedMember.sellerSku}
+              </button>
+            )}
+          </section>
+        </div>
 
         {plan && <PlanReview plan={plan} />}
         {preparing && <div className="validation-status demo" role="status"><strong>正在讀取 Amazon CHILD PTD 與必要變體欄位…</strong></div>}
@@ -639,16 +700,6 @@ export default function VariationPlannerDrawer({
             {preparation.warnings.map((warning) => <p className="variation-warning" key={warning}>{warning}</p>)}
 
             <div className="variation-write-actions">
-              {stagedState === "planned" && (
-                <button
-                  className="price-primary-button danger-button"
-                  type="button"
-                  disabled={busy || !preparation.writable || preparation.blockers.length > 0}
-                  onClick={() => void runWrite("detach")}
-                >
-                  {writeAction === "detach" ? "等待 Touch ID／回查中…" : `直接使用 Touch ID 解除 ${preparation.sourceParentSku ?? "舊 parent"} 並回查`}
-                </button>
-              )}
               {stagedState === "detached" && (
                 <button
                   className="price-primary-button"
@@ -656,7 +707,7 @@ export default function VariationPlannerDrawer({
                   disabled={busy || !preparation.writable || preparation.blockers.length > 0 || missingFields.length > 0 || Object.values(fieldErrors).some(Boolean)}
                   onClick={() => void runWrite("attach")}
                 >
-                  {writeAction === "attach" ? "等待 Touch ID／回查中…" : `直接使用 Touch ID 加入 ${preparation.targetParentSku} 並回查`}
+                  {writeAction === "attach" ? "等待 Touch ID／綁定回查中…" : "確認綁定變體"}
                 </button>
               )}
               {stagedState === "attached" && <strong className="variation-success">✓ 已回查屬於 {preparation.targetParentSku}</strong>}

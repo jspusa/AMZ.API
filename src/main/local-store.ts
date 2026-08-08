@@ -334,6 +334,8 @@ export class LocalStore {
           entry.operationType === input.operationType &&
           entry.marketplaceId === input.marketplaceId &&
           entry.sellerSku === input.sellerSku &&
+          (!VARIATION_OPERATION_TYPES.has(input.operationType) ||
+            entry.state !== "completed") &&
           ((entry.accountScope === input.accountScope &&
             entry.fingerprint === fingerprint) ||
             (entry.accountScope === "legacy-unknown" &&

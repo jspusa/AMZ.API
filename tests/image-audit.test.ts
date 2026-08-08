@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import ImageAuditPanel from "../src/renderer/src/components/image-audit-panel";
+import ImageAuditPanel, {
+  parseImageAuditExportId,
+} from "../src/renderer/src/components/image-audit-panel";
 import ImageWorkspaceDrawer from "../src/renderer/src/components/image-workspace-drawer";
 import { readFile } from "node:fs/promises";
 import {
@@ -10,6 +12,18 @@ import {
 } from "../src/renderer/src/image-audit";
 
 describe("FBA image audit parsing", () => {
+  it("requires the short-lived main-process export snapshot id", () => {
+    expect(parseImageAuditExportId({ exportId: "audit-export-1234" })).toBe(
+      "audit-export-1234",
+    );
+    expect(() => parseImageAuditExportId({ reportId: "demo-report" })).toThrow(
+      /同次快照/u,
+    );
+    expect(() => parseImageAuditExportId({ exportId: "../unsafe" })).toThrow(
+      /同次快照/u,
+    );
+  });
+
   it("lists only complete rows below five images plus fail-visible reads", () => {
     const snapshot = parseImageAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
@@ -133,13 +147,20 @@ describe("FBA image audit parsing", () => {
         marketplaceId: "ATVPDKIKX0DER",
         marketplaceShort: "US",
         onOpenSku: () => undefined,
-        cachedResult: { snapshot, query: "" },
+        cachedResult: {
+          snapshot,
+          query: "",
+          reportId: "demo-ATVPDKIKX0DER",
+          documentId: "demo-ATVPDKIKX0DER",
+          exportId: "demo-export-1234",
+        },
       }),
     );
 
     expect(markup).toContain("全站 FBA 圖片健檢");
     expect(markup).toContain("少於 5 張");
     expect(markup).toContain("目前 4 張 · 還差 1 張達到 5 張");
+    expect(markup).toContain("匯出 Excel");
     expect(markup).toContain("開啟圖片工作台");
   });
 
@@ -164,7 +185,13 @@ describe("FBA image audit parsing", () => {
         initialMarketplaceId: "ATVPDKIKX0DER",
         initialTab: "audit",
         auditCacheByMarketplace: {
-          ATVPDKIKX0DER: { snapshot, query: "FOUR" },
+          ATVPDKIKX0DER: {
+            snapshot,
+            query: "FOUR",
+            reportId: "demo-ATVPDKIKX0DER",
+            documentId: "demo-ATVPDKIKX0DER",
+            exportId: "demo-export-1234",
+          },
         },
         onClose: () => undefined,
       }),

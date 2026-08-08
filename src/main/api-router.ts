@@ -18,12 +18,18 @@ import {
 import { auditListingContentRows } from "./amazon/content-quality";
 import { auditListingImageRows } from "./amazon/image-audit";
 import {
+  auditAdvertisingCoverage,
+  type AdvertisingCoverageCampaign,
+} from "./amazon/advertising-coverage";
+import {
   MARKETPLACES,
   SpApiError,
   getAgedInventoryData,
   getAgedInventoryReportStatus,
   getAllListingsExportData,
   getAllListingsReportStatus,
+  getBrandSalesData,
+  getFbaShipmentSalesReportStatus,
   getListingContent,
   getListingImages,
   getListingPrice,
@@ -31,6 +37,7 @@ import {
   getSalesTrend,
   getFbaSubscriptionAudit,
   getSubscribeAndSaveOffer,
+  getUnboundVariationAuditData,
   getVariationFamilyPlanner,
   getVariationMovePreparation,
   isFulfillmentStatus,
@@ -44,6 +51,7 @@ import {
   searchOrders,
   startAgedInventoryReport,
   startAllListingsReport,
+  startFbaShipmentSalesReport,
   updateListingContent,
   updateListingImages,
   updateListingPrice,
@@ -55,12 +63,14 @@ import {
   type ListingImageSnapshot,
   type ListingPriceSnapshot,
   type MarketplaceId,
+  type BrandSalesSnapshot,
   type RestockPlanSnapshot,
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
   type SubscribeAndSaveOfferSnapshot,
   type SubscriptionAuditSnapshot,
   type UpdateListingSalePriceInput,
+  type UnboundVariationAuditSnapshot,
   type VariationMoveInput,
 } from "./amazon/sp-api";
 import {
@@ -70,7 +80,9 @@ import {
 import { createSubscriptionAuditWorkbook } from "./amazon/subscription-audit-xlsx";
 import {
   createAgedInventoryWorkbook,
+  createImageAuditWorkbook,
   createListingsWorkbook,
+  createUnboundVariationWorkbook,
 } from "./amazon/xlsx";
 
 type WriteApproval = (reason: string) => Promise<void>;
@@ -110,6 +122,11 @@ const MARKETPLACE_CODES: Record<MarketplaceId, string> = {
 };
 
 const SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
+const UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
+const IMAGE_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
+const BRAND_SALES_JOB_TTL_MS = 30 * 60 * 1_000;
+
+type ImageAuditSnapshot = ReturnType<typeof auditListingImageRows>;
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): ApiResponse {
   return {
@@ -464,6 +481,44 @@ export class ApiRouter {
       snapshot: SubscriptionAuditSnapshot;
     }
   >();
+  private readonly unboundVariationAuditSnapshots = new Map<
+    string,
+    {
+      marketplaceId: MarketplaceId;
+      accountScope: string;
+      expiresAt: number;
+      snapshot: UnboundVariationAuditSnapshot;
+    }
+  >();
+  private readonly imageAuditSnapshots = new Map<
+    string,
+    {
+      marketplaceId: MarketplaceId;
+      accountScope: string;
+      expiresAt: number;
+      snapshot: ImageAuditSnapshot;
+    }
+  >();
+  private readonly brandSalesJobs = new Map<
+    string,
+    {
+      marketplaceId: MarketplaceId;
+      accountScope: string;
+      expiresAt: number;
+      startDate: string;
+      endDate: string;
+      mode: "live" | "demo";
+      listingReportId: string;
+      listingDocumentId: string | null;
+      listingStatus: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
+      shipmentReportId: string;
+      shipmentDocumentId: string | null;
+      shipmentStatus: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
+      shipmentDataStartTime: string;
+      shipmentDataEndTime: string;
+      snapshot: BrandSalesSnapshot | null;
+    }
+  >();
 
   constructor(input: {
     store: LocalStore;
@@ -478,6 +533,9 @@ export class ApiRouter {
   clearPreviews(): void {
     this.previews.clear();
     this.subscriptionAuditSnapshots.clear();
+    this.unboundVariationAuditSnapshots.clear();
+    this.imageAuditSnapshots.clear();
+    this.brandSalesJobs.clear();
   }
 
   async handle(request: ApiRequest): Promise<ApiResponse> {
@@ -563,6 +621,10 @@ export class ApiRouter {
         return this.orders(request);
       case "GET /api/sp-api/sales-trend":
         return this.salesTrend(request);
+      case "POST /api/sp-api/brand-sales":
+        return this.startBrandSales(request);
+      case "GET /api/sp-api/brand-sales":
+        return this.brandSalesStatusOrData(request);
       case "GET /api/sp-api/listings":
         return this.listingPrice(request);
       case "POST /api/sp-api/listings":
@@ -605,6 +667,10 @@ export class ApiRouter {
         return this.agedInventoryStatusOrData(request);
       case "GET /api/sp-api/variation-family":
         return this.variationFamily(request);
+      case "POST /api/sp-api/variation-audit":
+        return this.startUnboundVariationAudit(request);
+      case "GET /api/sp-api/variation-audit":
+        return this.unboundVariationAuditStatusDataOrDownload(request);
       case "GET /api/sp-api/variation-move":
         return this.variationMovePreparation(request);
       case "POST /api/sp-api/variation-move":
@@ -627,6 +693,8 @@ export class ApiRouter {
         return this.systemHealth(request);
       case "GET /api/amazon-ads/status":
         return this.adsStatus(request);
+      case "GET /api/amazon-ads/coverage":
+        return this.adsCoverage(request);
       default:
         return invalid("此 App 版本不支援這個操作。", 404, "NOT_FOUND");
     }
@@ -715,6 +783,196 @@ export class ApiRouter {
     }
   }
 
+  private pruneBrandSalesJobs(now = Date.now()): void {
+    for (const [jobId, job] of this.brandSalesJobs) {
+      if (job.expiresAt <= now) this.brandSalesJobs.delete(jobId);
+    }
+  }
+
+  private brandSalesJobReply(
+    jobId: string,
+    job: (typeof this.brandSalesJobs extends Map<string, infer Entry> ? Entry : never),
+  ): ApiResponse {
+    const ready =
+      job.listingStatus === "DONE" &&
+      Boolean(job.listingDocumentId) &&
+      job.shipmentStatus === "DONE" &&
+      Boolean(job.shipmentDocumentId);
+    const status = ready
+      ? "DONE"
+      : job.listingStatus === "IN_PROGRESS" || job.shipmentStatus === "IN_PROGRESS"
+        ? "IN_PROGRESS"
+        : "IN_QUEUE";
+    return json(
+      {
+        jobId,
+        mode: job.mode,
+        marketplaceId: job.marketplaceId,
+        startDate: job.startDate,
+        endDate: job.endDate,
+        ready,
+        status,
+        message: ready
+          ? "Amazon FBA 品牌出貨資料已就緒。"
+          : "Amazon 正在準備 FBA 品牌出貨與目前商品清單。",
+      },
+      ready ? 200 : 202,
+    );
+  }
+
+  private async startBrandSales(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    const marketplaceId = parseMarketplace(body?.marketplaceId);
+    const startDate = optionalDate(body?.startDate);
+    const endDate = optionalDate(body?.endDate);
+    if (
+      !body ||
+      !marketplaceId ||
+      typeof startDate !== "string" ||
+      typeof endDate !== "string"
+    ) {
+      return invalid("品牌營收需要有效站點與完整 YYYY-MM-DD 日期範圍。");
+    }
+    try {
+      const accountScope = await this.vault.getAccountScope(
+        MARKETPLACES[marketplaceId].region,
+      );
+      const [listing, shipment] = await Promise.all([
+        startAllListingsReport({ marketplaceId }),
+        startFbaShipmentSalesReport({ marketplaceId, startDate, endDate }),
+      ]);
+      if (listing.mode !== shipment.mode) {
+        return invalid(
+          "品牌營收的 FBA 商品與出貨報表模式不一致，已停止合併。",
+          409,
+          "REPORT_MISMATCH",
+        );
+      }
+      if (
+        (listing.status !== "IN_QUEUE" &&
+          listing.status !== "IN_PROGRESS" &&
+          listing.status !== "DONE") ||
+        (shipment.status !== "IN_QUEUE" &&
+          shipment.status !== "IN_PROGRESS" &&
+          shipment.status !== "DONE")
+      ) {
+        return invalid("Amazon 未能開始建立品牌營收報表。", 422, "REPORT_FAILED");
+      }
+      const jobId = randomUUID();
+      this.pruneBrandSalesJobs();
+      const job = {
+        marketplaceId,
+        accountScope,
+        expiresAt: Date.now() + BRAND_SALES_JOB_TTL_MS,
+        startDate,
+        endDate,
+        mode: shipment.mode,
+        listingReportId: listing.reportId,
+        listingDocumentId: listing.documentId,
+        listingStatus: listing.status,
+        shipmentReportId: shipment.reportId,
+        shipmentDocumentId: shipment.documentId,
+        shipmentStatus: shipment.status,
+        shipmentDataStartTime: shipment.dataStartTime,
+        shipmentDataEndTime: shipment.dataEndTime,
+        snapshot: null,
+      };
+      this.brandSalesJobs.set(jobId, job);
+      return this.brandSalesJobReply(jobId, job);
+    } catch (error) {
+      return apiError(error, "開始整理 FBA 品牌營收時發生未預期的錯誤。");
+    }
+  }
+
+  private async brandSalesStatusOrData(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const jobId = this.reportIdentifier(request.query.jobId);
+    if (!marketplaceId || !jobId) {
+      return invalid("品牌營收工作資訊無效，請重新同步。");
+    }
+    this.pruneBrandSalesJobs();
+    const job = this.brandSalesJobs.get(jobId);
+    if (!job || job.marketplaceId !== marketplaceId) {
+      return invalid(
+        "品牌營收工作已過期或站點不符，請重新同步。",
+        410,
+        "SNAPSHOT_EXPIRED",
+      );
+    }
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[marketplaceId].region,
+    );
+    if (job.accountScope !== accountScope) {
+      this.brandSalesJobs.delete(jobId);
+      return invalid(
+        "Amazon 帳號範圍已改變，舊品牌營收工作不可繼續。",
+        409,
+        "ACCOUNT_SCOPE_CHANGED",
+      );
+    }
+    try {
+      if (job.listingStatus !== "DONE" || !job.listingDocumentId) {
+        const listing = await getAllListingsReportStatus({
+          marketplaceId,
+          reportId: job.listingReportId,
+        });
+        if (
+          listing.status !== "IN_QUEUE" &&
+          listing.status !== "IN_PROGRESS" &&
+          listing.status !== "DONE"
+        ) {
+          return invalid("Amazon 未能產生目前 FBA 商品清單。", 422, "REPORT_FAILED");
+        }
+        job.listingStatus = listing.status;
+        job.listingDocumentId = listing.documentId;
+      }
+      if (job.shipmentStatus !== "DONE" || !job.shipmentDocumentId) {
+        const shipment = await getFbaShipmentSalesReportStatus({
+          marketplaceId,
+          reportId: job.shipmentReportId,
+          startDate: job.startDate,
+          endDate: job.endDate,
+          dataStartTime: job.shipmentDataStartTime,
+          dataEndTime: job.shipmentDataEndTime,
+        });
+        if (
+          shipment.status !== "IN_QUEUE" &&
+          shipment.status !== "IN_PROGRESS" &&
+          shipment.status !== "DONE"
+        ) {
+          return invalid("Amazon 未能產生 FBA 品牌出貨報表。", 422, "REPORT_FAILED");
+        }
+        job.shipmentStatus = shipment.status;
+        job.shipmentDocumentId = shipment.documentId;
+      }
+      const ready =
+        job.listingStatus === "DONE" &&
+        Boolean(job.listingDocumentId) &&
+        job.shipmentStatus === "DONE" &&
+        Boolean(job.shipmentDocumentId);
+      if (request.query.data !== "1") return this.brandSalesJobReply(jobId, job);
+      if (!ready || !job.listingDocumentId || !job.shipmentDocumentId) {
+        return invalid("Amazon 品牌營收報表尚未完成。", 409, "REPORT_NOT_READY");
+      }
+      if (!job.snapshot) {
+        job.snapshot = await getBrandSalesData({
+          marketplaceId,
+          startDate: job.startDate,
+          endDate: job.endDate,
+          listingReportId: job.listingReportId,
+          listingDocumentId: job.listingDocumentId,
+          shipmentReportId: job.shipmentReportId,
+          shipmentDocumentId: job.shipmentDocumentId,
+          shipmentDataStartTime: job.shipmentDataStartTime,
+          shipmentDataEndTime: job.shipmentDataEndTime,
+        });
+      }
+      return json(structuredClone(job.snapshot));
+    } catch (error) {
+      return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
+    }
+  }
+
   private listingIdentity(request: ApiRequest):
     | { marketplaceId: MarketplaceId; sellerSku: string }
     | ApiResponse {
@@ -742,6 +1000,116 @@ export class ApiRouter {
       return json(await getVariationFamilyPlanner(identity));
     } catch (error) {
       return apiError(error, "查詢變體 family 時發生未預期的錯誤。");
+    }
+  }
+
+  private pruneUnboundVariationAuditSnapshots(now = Date.now()): void {
+    for (const [id, entry] of this.unboundVariationAuditSnapshots) {
+      if (entry.expiresAt <= now) this.unboundVariationAuditSnapshots.delete(id);
+    }
+  }
+
+  private async startUnboundVariationAudit(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    const marketplaceId = parseMarketplace(body?.marketplaceId);
+    if (!body || !marketplaceId) {
+      return invalid("請選擇要健檢未綁變體的 Amazon 站點。");
+    }
+    try {
+      const status = await startAllListingsReport({ marketplaceId });
+      return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
+    } catch (error) {
+      return apiError(error, "開始建立未綁變體健檢報表時發生未預期的錯誤。");
+    }
+  }
+
+  private async unboundVariationAuditStatusDataOrDownload(
+    request: ApiRequest,
+  ): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    if (!marketplaceId) return invalid("未綁變體健檢站點無效，請重新掃描。");
+    if (request.query.download === "1") {
+      const exportId = this.reportIdentifier(request.query.exportId);
+      if (!exportId) {
+        return invalid("未綁變體 Excel 快照資訊無效，請重新掃描。");
+      }
+      this.pruneUnboundVariationAuditSnapshots();
+      const stored = this.unboundVariationAuditSnapshots.get(exportId);
+      if (!stored || stored.marketplaceId !== marketplaceId) {
+        return invalid(
+          "未綁變體健檢快照已過期或站點不符，請重新掃描。",
+          410,
+          "SNAPSHOT_EXPIRED",
+        );
+      }
+      const accountScope = await this.vault.getAccountScope(
+        MARKETPLACES[marketplaceId].region,
+      );
+      if (stored.accountScope !== accountScope) {
+        this.unboundVariationAuditSnapshots.delete(exportId);
+        return invalid(
+          "Amazon 帳號範圍已改變，舊未綁變體快照不可匯出。",
+          409,
+          "ACCOUNT_SCOPE_CHANGED",
+        );
+      }
+      try {
+        const marketplace = MARKETPLACES[marketplaceId];
+        const workbook = createUnboundVariationWorkbook({
+          marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
+          fetchedAt: stored.snapshot.fetchedAt,
+          rows: stored.snapshot.rows,
+          incompleteRows: stored.snapshot.incompleteRows,
+        });
+        const filename = `amazon-fba-unbound-variation-audit-${marketplace.shortLabel.toLowerCase()}-${stored.snapshot.fetchedAt.slice(0, 10)}.xlsx`;
+        return bytes(
+          workbook,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          {
+            "content-disposition": `attachment; filename="${filename}"`,
+            "x-exported-unbound-fba-sku-count": String(stored.snapshot.rows.length),
+            "x-exported-incomplete-sku-count": String(
+              stored.snapshot.incompleteRows.length,
+            ),
+          },
+        );
+      } catch (error) {
+        return apiError(error, "建立未綁變體健檢 Excel 時發生未預期的錯誤。");
+      }
+    }
+
+    const reportId = this.reportIdentifier(request.query.reportId);
+    if (!reportId) return invalid("未綁變體報表資訊無效，請重新掃描。");
+    if (request.query.data !== "1") {
+      try {
+        const status = await getAllListingsReportStatus({ marketplaceId, reportId });
+        return json({ ...status, message: status.notice });
+      } catch (error) {
+        return apiError(error, "查詢未綁變體報表狀態時發生未預期的錯誤。");
+      }
+    }
+    const documentId = this.reportIdentifier(request.query.documentId);
+    if (!documentId) return invalid("未綁變體報表文件資訊無效，請重新掃描。");
+    try {
+      const snapshot = await getUnboundVariationAuditData({
+        marketplaceId,
+        reportId,
+        documentId,
+      });
+      const exportId = randomUUID();
+      const accountScope = await this.vault.getAccountScope(
+        MARKETPLACES[marketplaceId].region,
+      );
+      this.pruneUnboundVariationAuditSnapshots();
+      this.unboundVariationAuditSnapshots.set(exportId, {
+        marketplaceId,
+        accountScope,
+        expiresAt: Date.now() + UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS,
+        snapshot: structuredClone(snapshot),
+      });
+      return json({ ...snapshot, exportId });
+    } catch (error) {
+      return apiError(error, "整理未綁變體健檢資料時發生未預期的錯誤。");
     }
   }
 
@@ -775,13 +1143,42 @@ export class ApiRouter {
     }
     const marketplaceId = parseMarketplace(body.marketplaceId);
     const sellerSku = parseSellerSku(body.sellerSku);
-    const targetParentSku = parseSellerSku(body.targetParentSku);
-    const expectedSourceParentSku = body.expectedSourceParentSku === null
-      ? null
-      : parseSellerSku(body.expectedSourceParentSku);
     const action = body.action === "detach" || body.action === "attach"
       ? body.action
       : null;
+    if (!marketplaceId || !sellerSku || !action) {
+      return invalid("變體請求缺少有效的站點、Seller SKU 或操作階段。");
+    }
+    const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : "";
+    if (action === "detach") {
+      const expectedSourceParentSku = parseSellerSku(body.expectedSourceParentSku);
+      if (
+        !expectedSourceParentSku ||
+        sellerSku === expectedSourceParentSku ||
+        body.targetParentSku !== null ||
+        body.variationTheme !== null ||
+        !Array.isArray(body.dimensionNames) ||
+        body.dimensionNames.length !== 0 ||
+        !isPlainRecord(body.dimensionValues) ||
+        Object.keys(body.dimensionValues).length !== 0
+      ) {
+        return invalid(
+          "解除變體請求必須只包含查詢時核對的舊 parent，不可夾帶目標 family 資料。",
+        );
+      }
+      return {
+        action,
+        marketplaceId,
+        sellerSku,
+        expectedSourceParentSku,
+        targetParentSku: null,
+        variationTheme: null,
+        dimensionNames: [],
+        dimensionValues: {},
+        idempotencyKey: key,
+      };
+    }
+    const targetParentSku = parseSellerSku(body.targetParentSku);
     const variationTheme = typeof body.variationTheme === "string" &&
       body.variationTheme.trim().length > 0 &&
       body.variationTheme.trim().length <= 120 &&
@@ -793,26 +1190,20 @@ export class ApiRouter {
       ? parseVariationDimensionValues(body.dimensionValues, dimensionNames)
       : null;
     if (
-      !marketplaceId ||
-      !sellerSku ||
       !targetParentSku ||
-      !action ||
       !variationTheme ||
       !dimensionNames ||
       !dimensionValues ||
-      sellerSku === targetParentSku
+      sellerSku === targetParentSku ||
+      body.expectedSourceParentSku !== null
     ) {
-      return invalid("變體請求缺少有效的來源、目標、theme 或必要維度資料。");
+      return invalid("綁定變體請求缺少有效的目標 parent、theme 或必要維度資料。");
     }
-    if (action === "detach" && !expectedSourceParentSku) {
-      return invalid("解除變體前必須提供查詢時核對的舊 parent SKU。");
-    }
-    const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : "";
     return {
       action,
       marketplaceId,
       sellerSku,
-      expectedSourceParentSku,
+      expectedSourceParentSku: null,
       targetParentSku,
       variationTheme,
       dimensionNames,
@@ -1525,6 +1916,8 @@ export class ApiRouter {
         provenSubscriptionRevenue: snapshot.summary.provenSubscriptionRevenue,
         revenueCurrencyCode: snapshot.summary.revenueCurrencyCode,
         revenueCoverage: snapshot.summary.revenueCoverage,
+        inventoryEvidence: snapshot.inventoryEvidence,
+        upstreamCoverage: snapshot.upstreamCoverage,
         problems,
       });
       const filename = `amazon-fba-subscribe-save-audit-${marketplace.shortLabel.toLowerCase()}-${snapshot.fetchedAt.slice(0, 10)}.xlsx`;
@@ -2221,17 +2614,80 @@ export class ApiRouter {
     }
   }
 
+  private pruneImageAuditSnapshots(now = Date.now()): void {
+    for (const [exportId, entry] of this.imageAuditSnapshots) {
+      if (entry.expiresAt <= now) this.imageAuditSnapshots.delete(exportId);
+    }
+  }
+
+  private async downloadImageAuditSnapshot(
+    marketplaceId: MarketplaceId,
+    exportId: string,
+  ): Promise<ApiResponse> {
+    this.pruneImageAuditSnapshots();
+    const stored = this.imageAuditSnapshots.get(exportId);
+    if (!stored || stored.marketplaceId !== marketplaceId) {
+      return invalid(
+        "圖片健檢 Excel 快照已過期或站點不符，請重新掃描。",
+        410,
+        "SNAPSHOT_EXPIRED",
+      );
+    }
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[marketplaceId].region,
+    );
+    if (stored.accountScope !== accountScope) {
+      this.imageAuditSnapshots.delete(exportId);
+      return invalid(
+        "Amazon 帳號範圍已改變，舊圖片健檢快照不可匯出。",
+        409,
+        "ACCOUNT_SCOPE_CHANGED",
+      );
+    }
+    const marketplace = MARKETPLACES[marketplaceId];
+    const snapshot = stored.snapshot;
+    const workbook = createImageAuditWorkbook({
+      marketplaceId,
+      marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
+      fetchedAt: snapshot.fetchedAt,
+      minimumImages: snapshot.minimumImages,
+      rows: snapshot.rows,
+    });
+    const date = snapshot.fetchedAt.slice(0, 10);
+    const filename = `amazon-fba-image-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
+    return bytes(
+      workbook,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      {
+        "content-disposition": `attachment; filename="${filename}"`,
+        "x-exported-fba-sku-count": String(snapshot.summary.total),
+        "x-image-audit-under-minimum-count": String(snapshot.summary.underMinimum),
+        "x-image-audit-incomplete-count": String(snapshot.summary.incomplete),
+      },
+    );
+  }
+
   private async exportStatusOrDownload(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const reportId = this.reportIdentifier(request.query.reportId);
-    if (!marketplaceId || !reportId) {
-      return invalid("報表查詢資訊無效，請重新匯出。");
-    }
     const auditRequested = request.query.audit === "1";
     const imageAuditRequested = request.query.imageAudit === "1";
+    if (!marketplaceId) return invalid("報表站點資訊無效，請重新匯出。");
     if (auditRequested && imageAuditRequested) {
       return invalid("一次只能執行一種全站健檢。");
     }
+    if (imageAuditRequested && request.query.download === "1") {
+      const exportId = this.reportIdentifier(request.query.exportId);
+      if (!exportId) {
+        return invalid("圖片健檢 Excel 快照資訊無效，請重新掃描。");
+      }
+      try {
+        return await this.downloadImageAuditSnapshot(marketplaceId, exportId);
+      } catch (error) {
+        return apiError(error, "建立圖片健檢 Excel 時發生未預期的錯誤。");
+      }
+    }
+    const reportId = this.reportIdentifier(request.query.reportId);
+    if (!reportId) return invalid("報表查詢資訊無效，請重新匯出。");
     if (request.query.download !== "1" && !auditRequested && !imageAuditRequested) {
       try {
         const status = await getAllListingsReportStatus({ marketplaceId, reportId });
@@ -2254,22 +2710,32 @@ export class ApiRouter {
         );
       }
       if (imageAuditRequested) {
-        return json(
-          auditListingImageRows({
-            marketplaceId,
-            fetchedAt: data.fetchedAt,
-            rows: data.rows.map((row) => ({
-              sellerSku: row.sellerSku,
-              asin: row.asin,
-              productType: row.productType,
-              title: row.title,
-              imageUrls: row.imageUrls,
-              readStatus: row.readStatus,
-              readErrors: row.readErrors,
-            })),
-            minimumImages: 5,
-          }),
+        const snapshot = auditListingImageRows({
+          marketplaceId,
+          fetchedAt: data.fetchedAt,
+          rows: data.rows.map((row) => ({
+            sellerSku: row.sellerSku,
+            asin: row.asin,
+            productType: row.productType,
+            title: row.title,
+            imageUrls: row.imageUrls,
+            readStatus: row.readStatus,
+            readErrors: row.readErrors,
+          })),
+          minimumImages: 5,
+        });
+        const exportId = randomUUID();
+        const accountScope = await this.vault.getAccountScope(
+          MARKETPLACES[marketplaceId].region,
         );
+        this.pruneImageAuditSnapshots();
+        this.imageAuditSnapshots.set(exportId, {
+          marketplaceId,
+          accountScope,
+          expiresAt: Date.now() + IMAGE_AUDIT_SNAPSHOT_TTL_MS,
+          snapshot: structuredClone(snapshot),
+        });
+        return json({ ...snapshot, exportId });
       }
       const marketplace = MARKETPLACES[marketplaceId];
       const workbook = createListingsWorkbook({
@@ -2349,11 +2815,11 @@ export class ApiRouter {
       ),
       check(
         "sp-api",
-        "Amazon SP-API 連線",
+        "Amazon SP-API 憑證設定",
         live ? "ready" : "attention",
         "automatic",
         live
-          ? `${marketplace.label}已使用 macOS Keychain 中的 ${region.toUpperCase()} 憑證。`
+          ? `${marketplace.label}已設定 macOS Keychain 中的 ${region.toUpperCase()} 憑證；本項只核對本機設定，未代表即時驗證 Amazon 連線。`
           : "尚未輸入此區域的 LWA、Refresh Token 與 Seller ID，目前使用展示資料。",
         live ? null : "開啟右上角 Mac 安全連線，輸入 SP-API 憑證",
       ),
@@ -2436,13 +2902,15 @@ export class ApiRouter {
         "Touch ID／系統確認",
         "送出後只讀回查，不自動重送",
       ],
-      notice: "自我檢查只讀取本機設定狀態，不會修改 Amazon、廣告或實體入庫。",
+      notice: "自我檢查只讀取本機設定狀態，未代表即時驗證 Amazon 連線；不會修改 Amazon、廣告或實體入庫。",
     });
   }
 
   private async adsStatus(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
+    const coverageAuditAvailable =
+      process.env.SP_API_MODE?.toLowerCase() === "demo";
     return json({
       marketplaceId,
       marketplaceCode: MARKETPLACE_CODES[marketplaceId],
@@ -2454,9 +2922,59 @@ export class ApiRouter {
       scope: "advertising::campaign_management",
       supportedProducts: ["SPONSORED_BRANDS", "SPONSORED_DISPLAY"],
       separateFromSpApi: true,
+      coverageAuditAvailable,
+      coverageAuditNotice: coverageAuditAvailable
+        ? "目前是展示模式，可驗證 ProductAI 命名與同 ASIN 覆蓋規則；結果不是你的真實 Amazon Ads 資料。"
+        : "廣告覆蓋引擎已完成，但 Amazon Ads API 尚未連線；目前不會用展示結果冒充真實覆蓋。",
       notice:
         "Amazon Ads 需要獨立申請與授權，不能沿用 SP-API。這個極簡版保留狀態檢查與一鍵開啟官方 Ads Console；SP 繼續由 Helium 10 管理。",
     });
+  }
+
+  private async adsCoverage(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
+    if (process.env.SP_API_MODE?.toLowerCase() !== "demo") {
+      return invalid(
+        "Amazon Ads API 尚未連線；廣告覆蓋健檢已備妥，但不會用展示活動冒充真實資料。",
+        422,
+        "ADS_API_NOT_CONNECTED",
+      );
+    }
+    try {
+      const reference = `demo-${marketplaceId}`;
+      const data = await getAllListingsExportData({
+        marketplaceId,
+        reportId: reference,
+        documentId: reference,
+      });
+      const listings = data.rows
+        .filter((row) => /^[A-Z0-9]{10}$/u.test(row.asin))
+        .map((row) => ({
+          sellerSku: row.sellerSku,
+          asin: row.asin,
+          title: row.title,
+        }));
+      const campaigns: AdvertisingCoverageCampaign[] = listings
+        .filter((_, index) => index % 2 === 0)
+        .map((listing, index) => ({
+          campaignId: `demo-productai-${index + 1}`,
+          name: `[ProductAI] ${MARKETPLACE_CODES[marketplaceId]}-${listing.asin}-${listing.sellerSku}-SP-PAT-Aug92026`,
+          state: "ENABLED",
+          adProduct: "SPONSORED_PRODUCTS",
+        }));
+      return json(
+        auditAdvertisingCoverage({
+          mode: "demo",
+          marketplaceId,
+          marketplaceCode: MARKETPLACE_CODES[marketplaceId],
+          listings,
+          campaigns,
+        }),
+      );
+    } catch (error) {
+      return apiError(error, "執行展示廣告覆蓋健檢時發生未預期的錯誤。");
+    }
   }
 
   private async scopedFingerprint(

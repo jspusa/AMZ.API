@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -100,15 +101,27 @@ describe("FBA accounting center renderer", () => {
     });
   });
 
-  it("renders honest invoice and bill boundaries before the catalog loads", () => {
+  it("renders the compact accounting workspace and hides rarely used settlement/invoice cards", async () => {
     const markup = renderToStaticMarkup(createElement(AccountingCenterPanel, {
       marketplaceId: "ATVPDKIKX0DER",
     }));
-    expect(markup).toContain("FBA 帳務中心");
-    expect(markup).toContain("一般 Amazon 發票／賣家帳單沒有公開下載 API");
-    expect(markup).toContain("只涵蓋巴西 FBA 發票");
+    expect(markup).toContain(">帳務<");
+    expect(markup).toContain("真正會用到的 FBA 公開報表規劃");
     expect(markup).toContain("固定使用送出當下 NOW");
     expect(markup).not.toContain("下載發票");
+    expect(markup).not.toContain("巴西 FBA 發票");
+    expect(markup).not.toContain("V2 結算報表");
+
+    const source = await readFile(
+      new URL(
+        "../src/renderer/src/components/accounting-center-panel.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(source).toContain('"SETTLEMENT_V2"');
+    expect(source).toContain('"BRAZIL_FBA_INVOICES"');
+    expect(source).toContain("HIDDEN_ACCOUNTING_CAPABILITIES.has(item.id)");
   });
 
   it("submits only a start date for fee preview so main can pin the end to NOW", () => {

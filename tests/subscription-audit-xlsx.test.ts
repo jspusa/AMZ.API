@@ -42,6 +42,19 @@ function point(month: string, revenue: number | null) {
   };
 }
 
+function inventoryEvidence(
+  verifiableReplenishmentOfferCount: number,
+  unverifiedFbaSkuCount = 0,
+) {
+  return {
+    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION" as const,
+    provenSkuCount:
+      verifiableReplenishmentOfferCount + unverifiedFbaSkuCount,
+    verifiableReplenishmentOfferCount,
+    unverifiedFbaSkuCount,
+  };
+}
+
 describe("Subscribe & Save problem Excel", () => {
   it("creates exactly the five requested discount sheets with official summaries", () => {
     const bytes = createSubscriptionAuditWorkbook({
@@ -56,6 +69,7 @@ describe("Subscribe & Save problem Excel", () => {
         expectedOfferMonths: 4,
         reportedOfferMonths: 4,
       },
+      inventoryEvidence: inventoryEvidence(2),
       problems: [
         problem(0, "SNS-ZERO", [point("2026-06", 25), point("2026-07", 50)]),
         problem(5, "SNS-FIVE", [point("2026-06", 100), point("2026-07", 50)]),
@@ -99,6 +113,7 @@ describe("Subscribe & Save problem Excel", () => {
         expectedOfferMonths: 1,
         reportedOfferMonths: 0,
       },
+      inventoryEvidence: inventoryEvidence(1),
       problems: [row],
     });
     const archive = unzipSync(bytes);
@@ -121,6 +136,7 @@ describe("Subscribe & Save problem Excel", () => {
         expectedOfferMonths: 2,
         reportedOfferMonths: 1,
       },
+      inventoryEvidence: inventoryEvidence(1),
       problems: [problem(10, "SNS-PARTIAL", [point("2026-07", 25)])],
     });
     const archive = unzipSync(bytes);
@@ -131,6 +147,77 @@ describe("Subscribe & Save problem Excel", () => {
     expect(sheet).toContain("<v>25</v>");
     expect(sheet).toContain("2026-06");
     expect(sheet).toContain("2026-07");
+  });
+
+  it("does not call matched offers full-site data when another proven FBA SKU has no verifiable offer", () => {
+    const bytes = createSubscriptionAuditWorkbook({
+      marketplaceLabel: "US",
+      generatedAt: "2026-08-08T12:00:00Z",
+      metricMonths: ["2026-07"],
+      currentActiveSubscriptions: 12,
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 1,
+        reportedOfferMonths: 1,
+      },
+      inventoryEvidence: inventoryEvidence(1, 1),
+      problems: [problem(10, "SNS-MATCHED", [point("2026-07", 25)])],
+    });
+    const archive = unzipSync(bytes);
+    const sheet = strFromU8(archive["xl/worksheets/sheet3.xml"]);
+    expect(sheet).toContain("已核對目前有效訂閱（範圍不完整）");
+    expect(sheet).not.toContain("全站目前有效訂閱");
+    expect(sheet).toContain("已證明 FBA 2 個；可核對 offer 1 個；未回傳可核對 offer 1 個");
+    expect(sheet).toContain("已核對資料（1 / 1 個 SKU 月份）");
+    expect(sheet).toContain("不能據此判定資格或 0 訂閱");
+    expect(sheet).toContain("未輸出全站總額");
+  });
+
+  it("writes missing upstream Seller SKU coverage into every workbook sheet", () => {
+    const bytes = createSubscriptionAuditWorkbook({
+      marketplaceLabel: "US",
+      generatedAt: "2026-08-08T12:00:00Z",
+      metricMonths: ["2026-06", "2026-07"],
+      currentActiveSubscriptions: 12,
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 2,
+        reportedOfferMonths: 2,
+      },
+      inventoryEvidence: inventoryEvidence(1, 1),
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 2,
+        acceptedOfferRows: 1,
+        returnedMetricRows: 3,
+        acceptedMetricRows: 2,
+        rejectedSellerSkuRows: 2,
+        minimumUnresolvedOfferMonths: 2,
+        notice: "Amazon 有 2 列未提供可原樣核對的 Seller SKU。",
+      },
+      problems: [problem(10, "SNS-PARTIAL-SOURCE", [
+        point("2026-06", 20),
+        point("2026-07", 25),
+      ])],
+    });
+    const archive = unzipSync(bytes);
+    const sheet = strFromU8(archive["xl/worksheets/sheet3.xml"]);
+    expect(sheet).toContain("Amazon 回應完整度");
+    expect(sheet).toContain("不完整；排除 2 列");
+    expect(sheet).toContain("未提供可原樣核對的 Seller SKU");
+    expect(sheet).toContain("已核對目前有效訂閱（範圍不完整）");
+    expect(sheet).not.toContain("全站目前有效訂閱");
+    expect(sheet).toContain("已證明 FBA 2 個；可核對 offer 1 個；未回傳可核對 offer 1 個");
+    expect(sheet).toContain("未回傳不代表不符合資格，也不代表 0 訂閱");
+    expect(sheet).toContain("已核對資料（2 / 2 個 SKU 月份）");
+    expect(sheet).toContain("另有 1 個已證明 FBA SKU 未回傳可核對 offer");
+    expect(sheet).toContain("另至少 2 個 SKU 月份無法核對，實際缺口未知");
+    expect(sheet).toContain("offer 與月度缺列可能不重疊");
+    expect(sheet).not.toContain("2 / 4 個 SKU 月份");
   });
 
   it("keeps an unknown Seller base discount blank instead of manufacturing zero", () => {
@@ -154,13 +241,14 @@ describe("Subscribe & Save problem Excel", () => {
         expectedOfferMonths: 1,
         reportedOfferMonths: 1,
       },
+      inventoryEvidence: inventoryEvidence(1),
       problems: [unknown],
     });
     const archive = unzipSync(bytes);
     const sheet = strFromU8(archive["xl/worksheets/sheet1.xml"]);
     expect(sheet).toContain(unknown.problem);
     expect(sheet).toContain(
-      '<c r="F7" s="0" t="inlineStr"><is><t xml:space="preserve"></t></is></c>',
+      '<c r="F9" s="0" t="inlineStr"><is><t xml:space="preserve"></t></is></c>',
     );
   });
 
@@ -210,6 +298,7 @@ describe("Subscribe & Save problem Excel", () => {
         expectedOfferMonths: problems.length * metricMonths.length,
         reportedOfferMonths: problems.length * metricMonths.length,
       },
+      inventoryEvidence: inventoryEvidence(problems.length),
       problems,
     })).not.toThrow();
   });
@@ -227,6 +316,7 @@ describe("Subscribe & Save problem Excel", () => {
         expectedOfferMonths: 1,
         reportedOfferMonths: 1,
       },
+      inventoryEvidence: inventoryEvidence(1),
       problems: [problem(5, "SNS-CENT", [point("2026-07", 10)])],
     })).toThrow(/does not match the complete series/u);
   });
@@ -245,6 +335,7 @@ describe("Subscribe & Save problem Excel", () => {
           expectedOfferMonths: 2,
           reportedOfferMonths: 2,
         },
+        inventoryEvidence: inventoryEvidence(2),
         problems: [
           problem(0, "DUPLICATE", [point("2026-07", 0)]),
           problem(5, "DUPLICATE", [point("2026-07", 0)]),

@@ -80,7 +80,7 @@ describe("variation planner", () => {
 
     expect(markup).toContain("變體規劃");
     expect(markup).toContain("兩階段安全寫入 · 不會盲目重送");
-    expect(markup).toContain("解除變體暫存區");
+    expect(markup).toContain("解除變體存放區");
     expect(markup).toContain("Validation Preview、Touch ID、送出與唯讀回查");
     expect(markup).toContain("FBA child only");
     expect(markup).toContain("不使用 Seller Central 私有接口");
@@ -285,6 +285,11 @@ describe("variation planner", () => {
     expect(source).toContain('method: "PATCH"');
     expect(source).not.toMatch(/method:\s*["'](?:PUT|DELETE)["']/);
     expect(source).toContain("No blind retry · No FBM");
+    expect(source).toContain("確認解除變體");
+    expect(source).toContain("確認綁定變體");
+    expect(source.indexOf("解除變體存放區")).toBeLessThan(
+      source.indexOf("可解除的 FBA child"),
+    );
     expect(source).not.toContain("localStorage");
   });
 

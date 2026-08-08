@@ -43,6 +43,8 @@ const CONTENT_AUDIT_HEADERS = [
 
 const AGED_INVENTORY_SHEET_NAME = "FBA 庫齡";
 const AGED_INVENTORY_NOTES_SHEET_NAME = "欄位與能力邊界";
+const IMAGE_AUDIT_SHEET_NAME = "圖片健檢";
+const IMAGE_AUDIT_NOTES_SHEET_NAME = "範圍與狀態說明";
 
 export interface ListingsWorkbookRow {
   sku: string;
@@ -107,6 +109,48 @@ export interface CreateAgedInventoryWorkbookInput {
   storageCostAvailability: "complete" | "partial" | "unavailable";
   agedSurchargeAvailability: "complete" | "partial" | "unavailable";
   expirationNotice: string;
+}
+
+export interface ImageAuditWorkbookRow {
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  title: string;
+  imageUrls: readonly string[];
+  imageCount: number;
+  readStatus: "complete" | "incomplete";
+  readErrors: readonly { code: string; message: string }[];
+}
+
+export interface CreateImageAuditWorkbookInput {
+  marketplaceId: string;
+  marketplaceLabel: string;
+  fetchedAt: string | Date;
+  minimumImages: number;
+  rows: readonly ImageAuditWorkbookRow[];
+}
+
+export interface UnboundVariationWorkbookRow {
+  sellerSku: string;
+  asin: string;
+  title: string;
+  productType: string;
+  notice: string;
+}
+
+export interface UnboundVariationWorkbookIncompleteRow {
+  sellerSku: string;
+  asin: string;
+  title: string;
+  code: string;
+  message: string;
+}
+
+export interface CreateUnboundVariationWorkbookInput {
+  marketplaceLabel: string;
+  fetchedAt: string | Date;
+  rows: readonly UnboundVariationWorkbookRow[];
+  incompleteRows: readonly UnboundVariationWorkbookIncompleteRow[];
 }
 
 type Cell =
@@ -225,6 +269,140 @@ export function createListingsWorkbook({
   return zipSync(archive, { level: 6 });
 }
 
+export function createImageAuditWorkbook({
+  marketplaceId,
+  marketplaceLabel,
+  fetchedAt,
+  minimumImages,
+  rows,
+}: CreateImageAuditWorkbookInput): Uint8Array {
+  const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
+  if (
+    !marketplaceId ||
+    !Number.isInteger(minimumImages) ||
+    minimumImages < 1 ||
+    minimumImages > 9
+  ) {
+    throw new Error("Image audit workbook snapshot metadata is invalid.");
+  }
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (!row.sellerSku || seen.has(row.sellerSku)) {
+      throw new Error("Image audit workbook rows must use unique Seller SKUs.");
+    }
+    seen.add(row.sellerSku);
+    if (
+      row.imageUrls.length > 9 ||
+      (row.readStatus === "complete" && row.imageCount !== row.imageUrls.length) ||
+      (row.readStatus === "incomplete" && row.imageCount !== 0)
+    ) {
+      throw new Error("Image audit workbook row status is contradictory.");
+    }
+  }
+
+  const headers = [
+    "站點",
+    "站點 ID",
+    "報表快照時間",
+    "SKU",
+    "ASIN",
+    "Product Type",
+    "商品標題",
+    "讀取狀態",
+    "健檢結果",
+    "圖片張數",
+    `距離 ${minimumImages} 張門檻`,
+    "讀取錯誤",
+    ...Array.from({ length: 9 }, (_, index) => `圖片 URL ${index + 1}`),
+  ];
+  const workbookRows = rows.map((row): readonly Cell[] => {
+    const completed = row.readStatus === "complete";
+    const underMinimum = completed && row.imageCount < minimumImages;
+    return [
+      textCell(marketplaceLabel),
+      textCell(marketplaceId, 2),
+      dateCell(generatedAt),
+      textCell(row.sellerSku, 2),
+      textCell(row.asin, 2),
+      textCell(row.productType),
+      textCell(row.title),
+      textCell(completed ? "完整" : "讀取未完成"),
+      textCell(
+        completed ? (underMinimum ? "圖片不足" : "通過") : "讀取未完成",
+      ),
+      numberCell(completed ? row.imageCount : null),
+      numberCell(completed ? Math.max(0, minimumImages - row.imageCount) : null),
+      textCell(
+        completed
+          ? ""
+          : row.readErrors
+              .map((error) => `${error.code}: ${error.message}`)
+              .join("；"),
+      ),
+      ...Array.from({ length: 9 }, (_, index) =>
+        textCell(row.imageUrls[index] ?? ""),
+      ),
+    ];
+  });
+  const notesRows: readonly (readonly Cell[])[] = [
+    [textCell("資料範圍"), textCell("同一份 Amazon 全商品報表快照中可證明為 FBA 的 SKU；不含 FBM。")],
+    [textCell("站點快照"), textCell(`${marketplaceLabel} (${marketplaceId}) · ${generatedAt.toISOString()}`)],
+    [textCell("圖片門檻"), textCell(`每個完整讀取的 Listing 至少 ${minimumImages} 張圖片。`)],
+    [
+      textCell("讀取未完成"),
+      textCell("圖片張數與距離門檻保持空白；不把無法完整讀取的 Listing 冒充為零張圖片。"),
+    ],
+    [
+      textCell("匯出內容"),
+      textCell("保留全部 FBA 列，並明確區分通過、圖片不足與讀取未完成，方便 Excel 篩選。"),
+    ],
+    [textCell("安全邊界"), textCell("唯讀健檢；不下載原圖、不修改 Amazon。")],
+  ];
+  const sheetDefinitions = [
+    {
+      name: IMAGE_AUDIT_SHEET_NAME,
+      xml: buildWorksheet({
+        headers,
+        rows: workbookRows,
+        widths: headers.map((header, index) =>
+          index === 6 ? 48 : index === 11 ? 64 : header.startsWith("圖片 URL") ? 44 : 18,
+        ),
+        dataRowHeight: 42,
+      }),
+    },
+    {
+      name: IMAGE_AUDIT_NOTES_SHEET_NAME,
+      xml: buildWorksheet({
+        headers: ["欄位", "說明"],
+        rows: notesRows,
+        widths: [24, 100],
+        dataRowHeight: 42,
+      }),
+    },
+  ];
+  const archive: Record<string, Uint8Array> = {
+    "[Content_Types].xml": strToU8(buildContentTypes(sheetDefinitions.length)),
+    "_rels/.rels": strToU8(buildPackageRelationships()),
+    "docProps/app.xml": strToU8(
+      buildAppProperties(sheetDefinitions.map((sheet) => sheet.name)),
+    ),
+    "docProps/core.xml": strToU8(
+      buildCoreProperties(marketplaceLabel, generatedAt, "Amazon FBA 圖片健檢"),
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      buildWorkbookRelationships(sheetDefinitions.length),
+    ),
+    "xl/styles.xml": strToU8(buildStyles()),
+    "xl/workbook.xml": strToU8(
+      buildWorkbook(sheetDefinitions.map((sheet) => sheet.name)),
+    ),
+  };
+  sheetDefinitions.forEach((sheet, index) => {
+    archive[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(sheet.xml);
+  });
+  return zipSync(archive, { level: 6 });
+}
+
 export function createAgedInventoryWorkbook({
   marketplaceLabel,
   fetchedAt,
@@ -321,7 +499,7 @@ export function createAgedInventoryWorkbook({
       textCell("下月預估倉儲成本"),
       textCell(
         storageCostAvailability === "complete"
-          ? "Amazon 報表欄位完整；顯示原值，不猜費率。"
+          ? "Amazon 報表欄位完整；顯示原值。若同列官方 storage-volume 明確為 0 而費用留白，僅將該列安全呈現為 0；不猜費率。"
           : storageCostAvailability === "partial"
             ? "Amazon 有回傳欄位，但部分商品缺值；不加總、不猜費率。"
             : "Amazon 本次報表未提供欄位；不猜費率。",
@@ -331,7 +509,7 @@ export function createAgedInventoryWorkbook({
       textCell("AIS 預估附加費"),
       textCell(
         agedSurchargeAvailability === "complete"
-          ? "Amazon 報表區間完整；顯示原值，不猜費率。"
+          ? "Amazon 報表區間完整；顯示原值。若同列官方計費數量明確為 0 而費用留白，僅將該區間安全呈現為 0；不猜費率。"
           : agedSurchargeAvailability === "partial"
             ? "Amazon 有回傳區間欄位，但部分商品缺值；不加總、不猜費率。"
             : "Amazon 本次報表未提供完整 AIS 區間；不猜費率。",
@@ -387,6 +565,74 @@ export function createAgedInventoryWorkbook({
     ),
   };
   sheetDefinitions.forEach((sheet, index) => {
+    archive[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(sheet.xml);
+  });
+  return zipSync(archive, { level: 6 });
+}
+
+export function createUnboundVariationWorkbook({
+  marketplaceLabel,
+  fetchedAt,
+  rows,
+  incompleteRows,
+}: CreateUnboundVariationWorkbookInput): Uint8Array {
+  const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
+  const sheets = [
+    {
+      name: "未綁變體",
+      xml: buildWorksheet({
+        headers: ["站點", "SKU", "ASIN", "Product Type", "商品標題", "判定依據"],
+        rows: rows.map((row): readonly Cell[] => [
+          textCell(marketplaceLabel),
+          textCell(row.sellerSku, 2),
+          textCell(row.asin, 2),
+          textCell(row.productType),
+          textCell(row.title),
+          textCell(row.notice),
+        ]),
+        widths: [16, 26, 18, 24, 58, 72],
+        dataRowHeight: 42,
+      }),
+    },
+    {
+      name: "讀取未完成",
+      xml: buildWorksheet({
+        headers: ["站點", "SKU", "ASIN", "商品標題", "狀態碼", "未完成原因"],
+        rows: incompleteRows.map((row): readonly Cell[] => [
+          textCell(marketplaceLabel),
+          textCell(row.sellerSku, 2),
+          textCell(row.asin, 2),
+          textCell(row.title),
+          textCell(row.code),
+          textCell(row.message),
+        ]),
+        widths: [16, 26, 18, 58, 34, 78],
+        dataRowHeight: 42,
+      }),
+    },
+  ];
+  const archive: Record<string, Uint8Array> = {
+    "[Content_Types].xml": strToU8(buildContentTypes(sheets.length)),
+    "_rels/.rels": strToU8(buildPackageRelationships()),
+    "docProps/app.xml": strToU8(
+      buildAppProperties(sheets.map((sheet) => sheet.name)),
+    ),
+    "docProps/core.xml": strToU8(
+      buildCoreProperties(
+        marketplaceLabel,
+        generatedAt,
+        "Amazon FBA 未綁變體健檢",
+      ),
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      buildWorkbookRelationships(sheets.length),
+    ),
+    "xl/styles.xml": strToU8(buildStyles()),
+    "xl/workbook.xml": strToU8(
+      buildWorkbook(sheets.map((sheet) => sheet.name)),
+    ),
+  };
+  sheets.forEach((sheet, index) => {
     archive[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(sheet.xml);
   });
   return zipSync(archive, { level: 6 });

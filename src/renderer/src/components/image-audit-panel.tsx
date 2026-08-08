@@ -23,7 +23,19 @@ type ReportReply = {
 export type ImageAuditCache = {
   snapshot: ImageAuditSnapshot;
   query: string;
+  reportId: string;
+  documentId: string;
+  exportId: string;
 };
+
+function safeFilename(response: Response): string {
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^";]+)"?/iu.exec(disposition);
+  const candidate = match?.[1]?.trim() ?? "amazon-fba-image-audit.xlsx";
+  return /^[A-Za-z0-9._-]{1,180}$/u.test(candidate)
+    ? candidate
+    : "amazon-fba-image-audit.xlsx";
+}
 
 function reportReply(raw: Record<string, unknown>): ReportReply {
   const reportId = raw.reportId ?? raw.report_id;
@@ -43,6 +55,16 @@ function reportReply(raw: Record<string, unknown>): ReportReply {
 function problemMessage(payload: ApiProblem, fallback: string): string {
   const requestId = payload.requestId ? `（Request ID: ${payload.requestId}）` : "";
   return `${payload.message || fallback}${requestId}`;
+}
+
+export function parseImageAuditExportId(raw: unknown): string {
+  const exportId = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as { exportId?: unknown }).exportId
+    : null;
+  if (typeof exportId !== "string" || !/^[A-Za-z0-9-]{8,120}$/u.test(exportId)) {
+    throw new Error("圖片健檢缺少可安全匯出的同次快照，請重新掃描。");
+  }
+  return exportId;
 }
 
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -80,8 +102,22 @@ export default function ImageAuditPanel({
   const [snapshot, setSnapshot] = useState<ImageAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
   );
+  const [reportReference, setReportReference] = useState<{
+    reportId: string;
+    documentId: string;
+    exportId: string;
+  } | null>(
+    initialCache
+      ? {
+          reportId: initialCache.reportId,
+          documentId: initialCache.documentId,
+          exportId: initialCache.exportId,
+        }
+      : null,
+  );
   const [query, setQuery] = useState(initialCache?.query ?? "");
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const marketplaceIdRef = useRef(marketplaceId);
   marketplaceIdRef.current = marketplaceId;
@@ -91,14 +127,21 @@ export default function ImageAuditPanel({
     abortRef.current?.abort();
     setReply(null);
     setError(null);
+    setExporting(false);
     if (cachedResult?.snapshot.marketplaceId === marketplaceId) {
       setState("done");
       setSnapshot(cachedResult.snapshot);
       setQuery(cachedResult.query);
+      setReportReference({
+        reportId: cachedResult.reportId,
+        documentId: cachedResult.documentId,
+        exportId: cachedResult.exportId,
+      });
     } else {
       setState("idle");
       setSnapshot(null);
       setQuery("");
+      setReportReference(null);
     }
   }, [cachedResult, marketplaceId]);
 
@@ -136,11 +179,65 @@ export default function ImageAuditPanel({
     if (!response.ok) {
       throw new Error(problemMessage(raw as ApiProblem, "全站圖片健檢失敗。"));
     }
+    const exportId = parseImageAuditExportId(raw);
     const completed = parseImageAuditSnapshot(raw, marketplaceIdRef.current);
+    const reference = {
+      reportId: ready.reportId,
+      documentId: ready.documentId,
+      exportId,
+    };
     setSnapshot(completed);
+    setReportReference(reference);
     setQuery("");
     setState("done");
-    onCachedResultChange?.({ snapshot: completed, query: "" });
+    onCachedResultChange?.({ snapshot: completed, query: "", ...reference });
+  };
+
+  const downloadExcel = async () => {
+    if (!reportReference || exporting) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        marketplaceId,
+        exportId: reportReference.exportId,
+        imageAudit: "1",
+        download: "1",
+      });
+      const response = await fetch(
+        `/api/sp-api/listing-content/export?${params}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) {
+        let message = "圖片健檢 Excel 下載失敗，請重新掃描。";
+        try {
+          message = problemMessage(
+            (await response.json()) as ApiProblem,
+            message,
+          );
+        } catch {
+          // A failed binary response is not guaranteed to contain JSON.
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = safeFilename(response);
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch (downloadError) {
+      setError(
+        downloadError instanceof Error
+          ? downloadError.message
+          : "圖片健檢 Excel 下載失敗，請重新掃描。",
+      );
+    } finally {
+      setExporting(false);
+    }
   };
 
   const startAudit = async () => {
@@ -251,11 +348,24 @@ export default function ImageAuditPanel({
               onChange={(event) => {
                 const next = event.target.value;
                 setQuery(next);
-                onCachedResultChange?.({ snapshot, query: next });
+                if (reportReference) {
+                  onCachedResultChange?.({
+                    snapshot,
+                    query: next,
+                    ...reportReference,
+                  });
+                }
               }}
               placeholder="搜尋 SKU、ASIN 或商品名稱"
               aria-label="搜尋圖片健檢結果"
             />
+            <button
+              type="button"
+              onClick={() => void downloadExcel()}
+              disabled={!reportReference || exporting}
+            >
+              {exporting ? "匯出中…" : "匯出 Excel"}
+            </button>
             <button type="button" onClick={() => void startAudit()}>重新掃描</button>
           </div>
           <div className="image-audit-results">

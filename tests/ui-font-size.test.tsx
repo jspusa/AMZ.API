@@ -31,6 +31,16 @@ describe("local UI font-size preference", () => {
     expect(source).toContain("不保存商品、銷售或其他營運資料");
     expect(source).toContain('role="radiogroup"');
     expect(source).toContain('aria-checked={fontSize === option.value}');
+
+    const css = await readFile(
+      new URL("../src/renderer/src/app.css", import.meta.url),
+      "utf8",
+    );
+    expect(css).not.toContain("zoom: var(--ui-font-zoom)");
+    expect(css).toContain('--ui-font-size-adjust: 0.62');
+    expect(css).toContain('--ui-font-size-adjust: 0.69');
+    expect(css).toContain('--ui-font-size-adjust: 0.77');
+    expect(css).toContain("font-size-adjust: var(--ui-font-size-adjust)");
   });
 
   it("stores only the allowlisted display value and applies it to the root", () => {

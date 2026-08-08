@@ -8,6 +8,8 @@ import {
   type SubscriptionAuditMonthCount,
   type SubscriptionAuditOffer,
   type SubscriptionAuditSnapshot,
+  type SubscriptionInventoryEvidence,
+  type SubscriptionUpstreamCoverage,
 } from "../subscription-audit";
 
 type ApiProblem = { message?: string; requestId?: string | null };
@@ -38,6 +40,22 @@ function discount(value: number | null): string {
 
 function revenueCoverageNote(snapshot: SubscriptionAuditSnapshot): string {
   const coverage = snapshot.summary.revenueCoverage;
+  const inventoryGap = snapshot.inventoryEvidence.unverifiedFbaSkuCount;
+  if (snapshot.upstreamCoverage.status === "partial" || inventoryGap > 0) {
+    const verifiedScope = coverage.expectedOfferMonths === 0
+      ? "目前沒有可核對 S&S offer 的 SKU 月份"
+      : coverage.reportedOfferMonths === coverage.expectedOfferMonths
+      ? `可核對的 ${coverage.expectedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份均有營收資料`
+      : `已核對資料為 ${coverage.reportedOfferMonths.toLocaleString("zh-TW")}／${coverage.expectedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份`;
+    const gaps: string[] = [];
+    if (inventoryGap > 0) {
+      gaps.push(`同次已證明 FBA 的 SKU 中，另有 ${inventoryGap.toLocaleString("zh-TW")} 個未回傳可核對的 Replenishment offer；不能據此判定不符合資格或 0 訂閱`);
+    }
+    if (snapshot.upstreamCoverage.status === "partial") {
+      gaps.push(`另至少 ${snapshot.upstreamCoverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，offer 與月度缺列可能不重疊，實際缺口無法精確計算`);
+    }
+    return `${verifiedScope}；${gaps.join("；")}；不以部分資料冒充全站總額。`;
+  }
   if (coverage.expectedOfferMonths === 0) {
     return "目前沒有可證明為 FBA 的 S&S SKU；完整總額為 0。";
   }
@@ -76,6 +94,44 @@ function filenameFrom(response: Response): string {
   return /^[A-Za-z0-9._-]{1,180}$/u.test(candidate)
     ? candidate
     : "amazon-fba-subscription-audit.xlsx";
+}
+
+export function SubscriptionUpstreamCoverageWarning({
+  coverage,
+}: {
+  coverage: SubscriptionUpstreamCoverage;
+}) {
+  if (coverage.status === "complete") return null;
+  return (
+    <div className="variation-warning" role="status">
+      <strong>Amazon 回應資料不完整</strong>
+      <p>{coverage.notice}</p>
+      <small>
+        至少 {coverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，且實際缺口無法精確計算。已排除 {coverage.rejectedSellerSkuRows.toLocaleString("zh-TW")} 列；
+        offer 可核對 {coverage.acceptedOfferRows.toLocaleString("zh-TW")}／{coverage.returnedOfferRows.toLocaleString("zh-TW")}，
+        月度列可核對 {coverage.acceptedMetricRows.toLocaleString("zh-TW")}／{coverage.returnedMetricRows.toLocaleString("zh-TW")}。
+      </small>
+    </div>
+  );
+}
+
+export function SubscriptionInventoryCoverageNotice({
+  evidence,
+}: {
+  evidence: SubscriptionInventoryEvidence;
+}) {
+  const gap = evidence.unverifiedFbaSkuCount;
+  return (
+    <div className="content-export-note" role={gap > 0 ? "status" : undefined}>
+      <strong>同次 FBA Inventory 已證明 {evidence.provenSkuCount.toLocaleString("zh-TW")} 個 SKU</strong>
+      <p>
+        Replenishment API 回傳可核對 offer {evidence.verifiableReplenishmentOfferCount.toLocaleString("zh-TW")} 個；
+        {gap > 0
+          ? `另有 ${gap.toLocaleString("zh-TW")} 個 FBA SKU 未回傳可核對 offer。這不代表不符合資格，也不代表 0 訂閱。`
+          : "所有已證明 FBA SKU 都有可核對的 offer。"}
+      </p>
+    </div>
+  );
 }
 
 export function SubscriberHistoryChart({
@@ -281,9 +337,17 @@ export default function SubscriptionAuditPanel({
       {error && <div className="price-error" role="alert">{error}</div>}
       {snapshot && (
         <>
+          <SubscriptionInventoryCoverageNotice
+            evidence={snapshot.inventoryEvidence}
+          />
+          <SubscriptionUpstreamCoverageWarning
+            coverage={snapshot.upstreamCoverage}
+          />
           <div className="subscription-audit-summary">
-            <article><span>FBA S&S SKU</span><strong>{snapshot.offers.length.toLocaleString("zh-TW")}</strong></article>
-            <article><span>目前有效訂閱</span><strong>{snapshot.summary.currentActiveSubscriptions.toLocaleString("zh-TW")}</strong></article>
+            <article><span>同次已證明 FBA SKU</span><strong>{snapshot.inventoryEvidence.provenSkuCount.toLocaleString("zh-TW")}</strong></article>
+            <article><span>可核對 S&S offer</span><strong>{snapshot.inventoryEvidence.verifiableReplenishmentOfferCount.toLocaleString("zh-TW")}</strong></article>
+            <article><span>未回傳可核對 offer</span><strong>{snapshot.inventoryEvidence.unverifiedFbaSkuCount.toLocaleString("zh-TW")}</strong></article>
+            <article><span>可核對 offer 有效訂閱</span><strong>{snapshot.summary.currentActiveSubscriptions.toLocaleString("zh-TW")}</strong></article>
             {revenueSummary && (
               <article>
                 <span>{revenueSummary.label}</span>
@@ -306,7 +370,7 @@ export default function SubscriptionAuditPanel({
                 <span><strong>{offer.currentActiveSubscriptions.toLocaleString("zh-TW")}</strong><small>目前有效訂閱</small></span>
               </button>
             ))}
-            {!snapshot.offers.length && <p className="variation-empty">Amazon 沒有回傳可由目前 FBA 證據確認的 Subscribe & Save offer。</p>}
+            {!snapshot.offers.length && <p className="variation-empty">Amazon 沒有回傳可由目前 FBA 證據確認的 Subscribe & Save offer；無法據此判定不符合資格或 0 訂閱。</p>}
           </div>
           {selectedOffer && <SubscriberHistoryChart offer={selectedOffer} snapshot={snapshot} />}
           <p className="subscription-capability-notice">{snapshot.historyCapability.notice}</p>

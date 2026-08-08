@@ -9,7 +9,6 @@ import {
   UI_FONT_SIZE_OPTIONS,
   type UiFontSize,
 } from "../ui-font-size";
-import AccountingCenterPanel from "./accounting-center-panel";
 
 type AutomationLevel = "automatic" | "one_click" | "manual";
 type CheckState = "ready" | "attention" | "manual";
@@ -58,8 +57,12 @@ function retryable(status: number): boolean {
 
 export default function SystemHealthControl({
   marketplaceId,
+  autoSync = true,
+  onAutoSyncChange,
 }: {
   marketplaceId: string;
+  autoSync?: boolean;
+  onAutoSyncChange?: (enabled: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
@@ -164,6 +167,7 @@ export default function SystemHealthControl({
         type="button"
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
+        aria-label="開啟系統資訊"
       >
         <span className="health-orb" aria-hidden="true">{loading ? "↻" : "•••"}</span>
         <span><strong>系統資訊</strong><small>進階</small></span>
@@ -218,15 +222,33 @@ export default function SystemHealthControl({
               </div>
             </section>
 
-            <details className="accounting-center-details">
+            <details className="health-advanced-details system-preferences-details">
               <summary>
-                <span>
-                  <strong>FBA 帳務中心</strong>
-                  <small>公開 API 報表、人工前置與不可用邊界</small>
-                </span>
+                <span><strong>操作偏好與系統說明</strong><small>自動同步、能力邊界與連線架構</small></span>
                 <i>＋</i>
               </summary>
-              <AccountingCenterPanel marketplaceId={marketplaceId} />
+              <div className="health-advanced-body">
+                <label className="auto-sync-switch system-auto-sync-switch">
+                  <input
+                    type="checkbox"
+                    checked={autoSync}
+                    onChange={(event) => onAutoSyncChange?.(event.target.checked)}
+                  />
+                  <span aria-hidden="true" />
+                  <div><strong>銷售趨勢自動同步</strong><small>{autoSync ? "每 5 分鐘 · 已開啟" : "已暫停"}</small></div>
+                </label>
+                <div className="automation-legend" aria-label="自動化顏色說明">
+                  <span className="automation-badge automatic"><i />自動</span>
+                  <span className="automation-badge one_click"><i />一鍵</span>
+                  <span className="automation-badge manual"><i />需人工</span>
+                </div>
+                <div className="connection-grid system-info-grid">
+                  <article><span>1</span><div><strong>SP-API Private Seller App</strong><p>Amazon 資料由 Mac Bridge 依固定白名單讀取。</p></div></article>
+                  <article><span>2</span><div><strong>Mac Keychain Secrets</strong><p>本機憑證只以加密密文留在這台 Mac。</p></div></article>
+                  <article><span>3</span><div><strong>FBA only</strong><p>健檢、庫存與營運資料都保留 FBA 證據邊界。</p></div></article>
+                  <article><span>4</span><div><strong>寫入防呆</strong><p>預檢、Touch ID、單次送出與唯讀回查不可略過。</p></div></article>
+                </div>
+              </div>
             </details>
 
             <details className="health-advanced-details">
@@ -245,7 +267,7 @@ export default function SystemHealthControl({
                   <>
                     <section className={`health-summary ${health.overall}`}>
                       <div className="health-score"><strong>{health.score}</strong><span>%</span></div>
-                      <div><p className="eyebrow">{health.marketplaceLabel} · {health.mode === "live" ? "LIVE" : "DEMO"}</p><h3>{health.overall === "ready" ? "進階整合已就緒" : "部分進階整合尚未設定"}</h3><small>最後檢查 {formatCheckedAt(health.checkedAt)} · 不會修改 Amazon</small></div>
+                      <div><p className="eyebrow">{health.marketplaceLabel} · {health.mode === "live" ? "LIVE CREDENTIALS" : "DEMO"}</p><h3>{health.mode === "live" ? "Live 憑證已設定（未代表即時驗證）" : health.overall === "ready" ? "展示設定已就緒" : "部分進階整合尚未設定"}</h3><small>最後檢查 {formatCheckedAt(health.checkedAt)} · 只核對本機設定 · 不會修改 Amazon</small></div>
                     </section>
 
                     <section className="health-check-list" aria-label="進階系統項目">

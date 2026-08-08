@@ -150,8 +150,121 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
     ).toThrow(/整數/u);
   });
 
+  it("reports only a lower-bound gap when optional-SKU offer and metric rows may not overlap", async () => {
+    const offerWithoutSellerSku = {
+      marketplaceId: US,
+      programType: "SUBSCRIBE_AND_SAVE",
+      asin: asin(2),
+      eligibility: "ELIGIBLE",
+      offerProgramConfiguration: {
+        enrollmentMethod: "AUTOMATIC",
+        preferences: { autoEnrollment: "OPTED_IN" },
+      },
+    };
+    const metricWithoutSellerSku = {
+      asin: asin(2),
+      fulfillmentChannelType: "AMAZON",
+      timeInterval: {
+        startDate: MONTH.startDate,
+        endDate: MONTH.endDate,
+      },
+      currencyCode: "USD",
+      totalSubscriptionsRevenue: 10,
+    };
+    const parsedOffers = parseReplenishmentOffersPage(
+      page([offer(1), offerWithoutSellerSku]),
+      US,
+    );
+    expect(parsedOffers).toMatchObject({
+      sourceItemCount: 2,
+      rejectedSellerSkuRows: 1,
+      items: [expect.objectContaining({ sellerSku: sku(1) })],
+    });
+
+    const snapshot = await fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1)]),
+      transport: async (request) =>
+        request.operation === "listOffers"
+          ? page([offer(1), offerWithoutSellerSku])
+          : page([metric(1), metricWithoutSellerSku]),
+    });
+    expect(snapshot.offers).toHaveLength(1);
+    expect(snapshot.offers[0]).toMatchObject({
+      sellerSku: sku(1),
+      fbaEvidence: "CURRENT_FBA_SKU_SET",
+    });
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedOfferRows: 2,
+      acceptedOfferRows: 1,
+      returnedMetricRows: 2,
+      acceptedMetricRows: 1,
+      rejectedSellerSkuRows: 2,
+      minimumUnresolvedOfferMonths: 1,
+    });
+    expect(snapshot.upstreamCoverage.notice).toContain("未提供可原樣核對的 Seller SKU");
+    expect(snapshot.upstreamCoverage.notice).toContain("至少 1 個 SKU 月份");
+    expect(snapshot.upstreamCoverage.notice).toContain("實際缺口無法精確計算");
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 1,
+        reportedOfferMonths: 1,
+      },
+    });
+  });
+
+  it("keeps malformed FBA evidence separate from optional upstream SKU rows", async () => {
+    await expect(
+      fetchFbaSubscriptionAudit({
+        marketplaceId: US,
+        metricInterval: MONTH,
+        now: NOW,
+        knownFbaSkus: new Set([`BAD\u200bSKU`]),
+        transport: async () => page([]),
+      }),
+    ).rejects.toThrow(/FBA Inventory Seller SKU/u);
+  });
+
+  it("does not call matched S&S offers a complete total when another proven FBA SKU has no verifiable offer", async () => {
+    const snapshot = await fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1), sku(2)]),
+      transport: async (request) =>
+        request.operation === "listOffers" ? page([offer(1)]) : page([metric(1)]),
+    });
+
+    expect(snapshot.offers.map(({ sellerSku }) => sellerSku)).toEqual([sku(1)]);
+    expect(snapshot.upstreamCoverage.status).toBe("complete");
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 1,
+        reportedOfferMonths: 1,
+      },
+    });
+  });
+
   it("accepts only exact complete-month AMAZON performance rows", () => {
-    const parsed = parseReplenishmentOfferMetricsPage(page([metric(1)]), US, MONTH);
+    const {
+      marketplaceId: _marketplaceId,
+      programType: _programType,
+      ...officialMetricShape
+    } = metric(1);
+    const parsed = parseReplenishmentOfferMetricsPage(
+      page([officialMetricShape]),
+      US,
+      MONTH,
+    );
     expect(parsed.items[0]).toMatchObject({
       fulfillmentChannelType: "AMAZON",
       subscriptionRevenue: 1.5,
@@ -314,6 +427,59 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
         expectedOfferMonths: 1,
         reportedOfferMonths: 0,
       },
+    });
+  });
+
+  it("keeps history totals incomplete when a proven FBA SKU has no verifiable current offer", async () => {
+    const intervals = officialCompleteMonthlyIntervals(2, NOW);
+    const snapshot = await fetchFbaSubscriptionAuditHistory({
+      marketplaceId: US,
+      metricIntervals: intervals,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1), sku(2)]),
+      transport: async (request) => {
+        if (request.operation === "listOffers") return page([offer(1)]);
+        const timeInterval = (request.body.filters as Record<string, unknown>)
+          .timeInterval as Record<string, unknown>;
+        return page([
+          metric(1, {
+            timeInterval: {
+              startDate: timeInterval.startDate,
+              endDate: timeInterval.endDate,
+            },
+          }),
+        ]);
+      },
+    });
+
+    expect(snapshot.offers.map(({ sellerSku }) => sellerSku)).toEqual([sku(1)]);
+    expect(snapshot.upstreamCoverage.status).toBe("complete");
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 2,
+        reportedOfferMonths: 2,
+      },
+      monthly: [
+        {
+          provenSubscriptionRevenue: null,
+          revenueCoverage: {
+            status: "partial",
+            expectedOfferMonths: 1,
+            reportedOfferMonths: 1,
+          },
+        },
+        {
+          provenSubscriptionRevenue: null,
+          revenueCoverage: {
+            status: "partial",
+            expectedOfferMonths: 1,
+            reportedOfferMonths: 1,
+          },
+        },
+      ],
     });
   });
 

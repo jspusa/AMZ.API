@@ -108,12 +108,26 @@ function parentPayload(parentSku: string, children: string[]) {
   };
 }
 
+function input(action: "detach"): Extract<VariationMoveInput, { action: "detach" }>;
+function input(action: "attach"): Extract<VariationMoveInput, { action: "attach" }>;
 function input(action: "detach" | "attach"): VariationMoveInput {
+  if (action === "detach") {
+    return {
+      action,
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SOURCE_SKU,
+      expectedSourceParentSku: OLD_PARENT,
+      targetParentSku: null,
+      variationTheme: null,
+      dimensionNames: [],
+      dimensionValues: {},
+    };
+  }
   return {
     action,
     marketplaceId: MARKETPLACE_ID,
     sellerSku: SOURCE_SKU,
-    expectedSourceParentSku: OLD_PARENT,
+    expectedSourceParentSku: null,
     targetParentSku: TARGET_PARENT,
     variationTheme: "SIZE_NAME",
     dimensionNames: ["size_name"],
@@ -130,14 +144,18 @@ function input(action: "detach" | "attach"): VariationMoveInput {
 type SafetyWireOptions = {
   commitStatus?: 200 | 401 | 429;
   readbackFailure?: "forbidden" | "rate_limited" | "transport";
+  readbackFailureAfterDetachedReads?: number;
   conflictingSourceParent?: boolean;
   preCommitPreviewFailureStatus?: 429 | 500;
+  initialState?: RelationshipState;
+  relationshipOnlyOldParentWhenDetached?: boolean;
 };
 
 function installDetachSafetyWire(options: SafetyWireOptions = {}) {
-  let state: RelationshipState = "old";
+  let state: RelationshipState = options.initialState ?? "old";
   let commitPatches = 0;
   let previewPatches = 0;
+  let detachedReads = 0;
   const fetchMock = vi.fn<typeof fetch>(async (rawInput, init) => {
     const url = new URL(rawInput instanceof Request ? rawInput.url : String(rawInput));
     const method = init?.method ?? "GET";
@@ -208,13 +226,17 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
     }
     const decodedPath = decodeURIComponent(url.pathname);
     if (decodedPath.endsWith(`/${SOURCE_SKU}`)) {
-      if (state === "detached" && options.readbackFailure === "transport") {
+      if (state === "detached") detachedReads += 1;
+      const failDetachedRead =
+        state === "detached" &&
+        detachedReads >= (options.readbackFailureAfterDetachedReads ?? 1);
+      if (failDetachedRead && options.readbackFailure === "transport") {
         throw new TypeError("socket closed after accepted commit");
       }
-      if (state === "detached" && options.readbackFailure === "forbidden") {
+      if (failDetachedRead && options.readbackFailure === "forbidden") {
         return jsonResponse(403, { errors: [{ code: "Forbidden" }] }, "READBACK-403");
       }
-      if (state === "detached" && options.readbackFailure === "rate_limited") {
+      if (failDetachedRead && options.readbackFailure === "rate_limited") {
         return jsonResponse(
           429,
           { errors: [{ code: "QuotaExceeded" }] },
@@ -227,6 +249,21 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
         state === "old" ? OLD_PARENT : null,
         "4 oz",
       );
+      if (
+        state === "detached" &&
+        options.relationshipOnlyOldParentWhenDetached
+      ) {
+        payload.relationships = [{
+          marketplaceId: MARKETPLACE_ID,
+          relationships: [{
+            parentSkus: [OLD_PARENT],
+            variationTheme: {
+              theme: "SIZE_NAME",
+              attributes: ["size_name"],
+            },
+          }],
+        }];
+      }
       if (options.conflictingSourceParent) {
         payload.attributes.child_parent_sku_relationship = [{
           parent_sku: "PARENT-ATTR-CONFLICT",
@@ -515,6 +552,35 @@ describe("live variation detach and attach wire safety", () => {
       expect(wire.commitPatchCount()).toBe(1);
     },
   );
+
+  it("blocks attach before preview when relationships still name the old parent", async () => {
+    const wire = installDetachSafetyWire({
+      initialState: "detached",
+      relationshipOnlyOldParentWhenDetached: true,
+    });
+
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      status: 409,
+      code: "VARIATION_NOT_DETACHED",
+    });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("does not verify detach from empty attributes while normalized relationships remain bound", async () => {
+    const wire = installDetachSafetyWire({
+      relationshipOnlyOldParentWhenDetached: true,
+      readbackFailure: "transport",
+      readbackFailureAfterDetachedReads: 2,
+    });
+
+    await expect(updateVariationMove(input("detach"))).rejects.toMatchObject({
+      status: 503,
+      code: "UPDATE_STATUS_UNKNOWN",
+      operation: "getListingsItem",
+    });
+    expect(wire.commitPatchCount()).toBe(1);
+  });
 
   it("fails closed before preview when relationships and attributes name different parents", async () => {
     const wire = installDetachSafetyWire({ conflictingSourceParent: true });

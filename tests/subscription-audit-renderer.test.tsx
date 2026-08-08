@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import SubscriptionAuditPanel, {
   SubscriberHistoryChart,
+  SubscriptionInventoryCoverageNotice,
+  SubscriptionUpstreamCoverageWarning,
   subscriptionRevenueSummary,
 } from "../src/renderer/src/components/subscription-audit-panel";
 import {
@@ -30,6 +32,22 @@ function response(overrides: Record<string, unknown> = {}): Record<string, unkno
     requestedMonths: 6,
     exportId: "audit-12345678",
     intervals: INTERVALS,
+    inventoryEvidence: {
+      source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+      provenSkuCount: 1,
+      verifiableReplenishmentOfferCount: 1,
+      unverifiedFbaSkuCount: 0,
+    },
+    upstreamCoverage: {
+      status: "complete",
+      returnedOfferRows: 1,
+      acceptedOfferRows: 1,
+      returnedMetricRows: 3,
+      acceptedMetricRows: 3,
+      rejectedSellerSkuRows: 0,
+      minimumUnresolvedOfferMonths: 0,
+      notice: "Amazon Replenishment 回應中的 Seller SKU 均可原樣核對。",
+    },
     offers: [
       {
         sellerSku: "AFA12AM",
@@ -218,6 +236,129 @@ describe("FBA subscription audit renderer", () => {
     expect(display.label).toBe("所選期間完整 S&S 營收");
     expect(display.value).toContain("60");
     expect(display.note).toContain("全部 6 個 SKU 月份");
+  });
+
+  it("keeps proven FBA SKUs without a verifiable offer visible and out of full totals", () => {
+    const raw = response({
+      inventoryEvidence: {
+        source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+        provenSkuCount: 2,
+        verifiableReplenishmentOfferCount: 1,
+        unverifiedFbaSkuCount: 1,
+      },
+      summary: {
+        currentActiveSubscriptions: 42,
+        provenSubscriptionRevenue: null,
+        revenueCurrencyCode: null,
+        revenueCoverage: {
+          status: "partial",
+          expectedOfferMonths: 6,
+          reportedOfferMonths: 6,
+        },
+      },
+    });
+    const rawOffer = (raw.offers as Array<Record<string, unknown>>)[0];
+    rawOffer.monthlySeries = INTERVALS.map(({ month }) => ({
+      month,
+      subscriptionRevenue: 10,
+      shippedSubscriptionUnits: 1,
+      activeSubscriptionsAtPeriodEnd: 40,
+      currencyCode: "USD",
+    }));
+
+    const snapshot = parseSubscriptionAuditSnapshot(raw);
+    expect(snapshot.inventoryEvidence).toEqual({
+      source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
+      provenSkuCount: 2,
+      verifiableReplenishmentOfferCount: 1,
+      unverifiedFbaSkuCount: 1,
+    });
+    expect(subscriptionRevenueSummary(snapshot)).toMatchObject({
+      value: "資料不完整",
+    });
+    expect(subscriptionRevenueSummary(snapshot).note).toContain(
+      "另有 1 個未回傳可核對的 Replenishment offer",
+    );
+    expect(subscriptionRevenueSummary(snapshot).note).toContain(
+      "不能據此判定不符合資格或 0 訂閱",
+    );
+    const markup = renderToStaticMarkup(
+      createElement(SubscriptionInventoryCoverageNotice, {
+        evidence: snapshot.inventoryEvidence,
+      }),
+    );
+    expect(markup).toContain("已證明 2 個 SKU");
+    expect(markup).toContain("可核對 offer 1 個");
+    expect(markup).toContain("另有 1 個 FBA SKU 未回傳可核對 offer");
+    expect(markup).toContain("不代表不符合資格，也不代表 0 訂閱");
+
+    const evidence = raw.inventoryEvidence as Record<string, unknown>;
+    evidence.verifiableReplenishmentOfferCount = 2;
+    evidence.unverifiedFbaSkuCount = 0;
+    expect(() => parseSubscriptionAuditSnapshot(raw)).toThrow(
+      /FBA Inventory 證據與 S&S offer 範圍不一致/u,
+    );
+  });
+
+  it("shows rejected optional-SKU rows as incomplete instead of hiding them", () => {
+    const raw = response({
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 2,
+        acceptedOfferRows: 1,
+        returnedMetricRows: 7,
+        acceptedMetricRows: 6,
+        rejectedSellerSkuRows: 2,
+        minimumUnresolvedOfferMonths: 6,
+        notice: "Amazon Replenishment 有 2 列未提供可原樣核對的 Seller SKU。",
+      },
+      summary: {
+        currentActiveSubscriptions: 42,
+        provenSubscriptionRevenue: null,
+        revenueCurrencyCode: null,
+        revenueCoverage: {
+          status: "partial",
+          expectedOfferMonths: 6,
+          reportedOfferMonths: 6,
+        },
+      },
+    });
+    const rawOffer = (raw.offers as Array<Record<string, unknown>>)[0];
+    rawOffer.monthlySeries = INTERVALS.map(({ month }) => ({
+      month,
+      subscriptionRevenue: 10,
+      shippedSubscriptionUnits: 1,
+      activeSubscriptionsAtPeriodEnd: 40,
+      currencyCode: "USD",
+    }));
+    const snapshot = parseSubscriptionAuditSnapshot(raw);
+    expect(snapshot.offers).toHaveLength(1);
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      rejectedSellerSkuRows: 2,
+      minimumUnresolvedOfferMonths: 6,
+    });
+    expect(subscriptionRevenueSummary(snapshot).note).toContain(
+      "可核對的 6 個 SKU 月份均有營收資料",
+    );
+    expect(subscriptionRevenueSummary(snapshot).note).toContain("另至少 6 個 SKU 月份");
+    expect(subscriptionRevenueSummary(snapshot).note).toContain("實際缺口無法精確計算");
+    const markup = renderToStaticMarkup(
+      createElement(SubscriptionUpstreamCoverageWarning, {
+        coverage: snapshot.upstreamCoverage,
+      }),
+    );
+    expect(markup).toContain("Amazon 回應資料不完整");
+    expect(markup).toContain("已排除 2 列");
+    expect(markup).toContain("至少 6 個 SKU 月份無法核對");
+    expect(markup).toContain("offer 可核對 1／2");
+    expect(markup).toContain("月度列可核對 6／7");
+
+    const summary = raw.summary as Record<string, unknown>;
+    (summary.revenueCoverage as Record<string, unknown>).status = "complete";
+    expect(() => parseSubscriptionAuditSnapshot(raw)).toThrow(
+      /營收完整度與 SKU 月度明細不一致/u,
+    );
   });
 
   it("explains the snapshot meaning, 23-month limit and main-owned Excel export", () => {

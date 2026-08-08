@@ -20,6 +20,49 @@ describe("dashboard experience refinement", () => {
     expect(markup).not.toContain("系統自檢與除錯");
   });
 
+  it("moves display and advanced workspace preferences into system information", async () => {
+    const markup = renderToStaticMarkup(
+      <SystemHealthControl
+        marketplaceId="ATVPDKIKX0DER"
+        autoSync={false}
+        onAutoSyncChange={() => undefined}
+      />,
+    );
+    const source = await readFile(
+      new URL(
+        "../src/renderer/src/components/system-health-control.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(source).toContain("操作偏好與系統說明");
+    expect(source).toContain("銷售趨勢自動同步");
+    expect(source).toContain("Mac Keychain Secrets");
+    expect(source).not.toContain("AccountingCenterPanel");
+    expect(markup).not.toContain("FBA 帳務中心");
+  });
+
+  it("uses the top Amazon status as the only Mac connection entry", async () => {
+    const [appSource, connectionSource, dashboardSource] = await Promise.all([
+      readFile(new URL("../src/renderer/src/App.tsx", import.meta.url), "utf8"),
+      readFile(
+        new URL("../src/renderer/src/connection-panel.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
+        "utf8",
+      ),
+    ]);
+
+    expect(appSource).toContain("showTrigger={false}");
+    expect(appSource).toContain("onOpenConnection={() => setConnectionOpen(true)}");
+    expect(connectionSource).toContain("{showTrigger && (");
+    expect(dashboardSource).toContain("開啟 Mac 安全連線設定");
+    expect(dashboardSource).toContain("aria-haspopup=\"dialog\"");
+  });
+
   it("keeps Product Master controls out of employee-facing drawers", async () => {
     const replenishment = renderToStaticMarkup(
       <ReplenishmentDrawer

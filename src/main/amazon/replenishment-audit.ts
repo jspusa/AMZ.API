@@ -169,11 +169,27 @@ export type ReplenishmentAuditExclusion = {
     | "ASIN_MISMATCH";
 };
 
+export type ReplenishmentUpstreamCoverage = {
+  status: "complete" | "partial";
+  returnedOfferRows: number;
+  acceptedOfferRows: number;
+  returnedMetricRows: number;
+  acceptedMetricRows: number;
+  rejectedSellerSkuRows: number;
+  /**
+   * Lower bound only. Offer rows and metric rows without an exact Seller SKU
+   * cannot be joined, so their unresolved SKU-month sets may not overlap.
+   */
+  minimumUnresolvedOfferMonths: number;
+  notice: string;
+};
+
 export type FbaSubscriptionAuditSnapshot = {
   marketplaceId: SellerReplenishmentMarketplaceId;
   metricInterval: OfficialMonthlyInterval;
   offers: FbaSubscriptionAuditRow[];
   excluded: ReplenishmentAuditExclusion[];
+  upstreamCoverage: ReplenishmentUpstreamCoverage;
   summary: {
     currentActiveSubscriptions: number;
     provenSubscriptionRevenue: number | null;
@@ -199,6 +215,7 @@ export type FbaSubscriptionAuditHistorySnapshot = {
   intervals: OfficialMonthlyInterval[];
   offers: FbaSubscriptionAuditHistoryRow[];
   excluded: ReplenishmentAuditExclusion[];
+  upstreamCoverage: ReplenishmentUpstreamCoverage;
   summary: {
     currentActiveSubscriptions: number;
     provenSubscriptionRevenue: number | null;
@@ -239,6 +256,14 @@ export const REPLENISHMENT_PUBLIC_CAPABILITY = Object.freeze({
 type ParsedPage<T> = {
   items: T[];
   totalResults: number;
+  sourceItemCount: number;
+  rejectedSellerSkuRows: number;
+};
+
+type FetchedPages<T> = {
+  items: T[];
+  sourceRows: number;
+  rejectedSellerSkuRows: number;
 };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -378,6 +403,15 @@ function sellerSku(value: unknown): string {
   return text(value, "Seller SKU", 256);
 }
 
+function upstreamSellerSku(value: unknown): string | null {
+  try {
+    return sellerSku(value);
+  } catch (error) {
+    if (error instanceof ReplenishmentAuditError) return null;
+    throw error;
+  }
+}
+
 function asin(value: unknown): string {
   const parsed = text(value, "ASIN", 10);
   if (!/^[A-Z0-9]{10}$/u.test(parsed)) {
@@ -439,8 +473,9 @@ function exactCurrency(
 function subscriptionRevenueCoverage(
   expectedOfferMonths: number,
   reportedOfferMonths: number,
+  sourceIncomplete = false,
 ): SubscriptionRevenueCoverage {
-  if (reportedOfferMonths === expectedOfferMonths) {
+  if (!sourceIncomplete && reportedOfferMonths === expectedOfferMonths) {
     return { status: "complete", expectedOfferMonths, reportedOfferMonths };
   }
   return {
@@ -464,6 +499,7 @@ function parseCurrentOffer(
   value: unknown,
   expectedMarketplace: SellerReplenishmentMarketplaceId,
   expectedCurrency: string,
+  validatedSellerSku: string,
 ): CurrentSubscriptionOffer {
   const raw = record(value, "Subscribe & Save offer");
   exactMarketplace(raw.marketplaceId, expectedMarketplace);
@@ -498,7 +534,7 @@ function parseCurrentOffer(
   }
   return {
     marketplaceId: expectedMarketplace,
-    sellerSku: sellerSku(raw.sku),
+    sellerSku: validatedSellerSku,
     asin: asin(raw.asin),
     eligibility: enumText(raw.eligibility, ELIGIBILITIES, "eligibility"),
     enrollmentMethod: optionalEnumText(
@@ -602,15 +638,36 @@ export function parseReplenishmentOffersPage(
       "listOffers.offers 格式或頁面大小無效。",
     );
   }
-  return {
-    items: raw.offers.map((offer) =>
+  const items: CurrentSubscriptionOffer[] = [];
+  let rejectedSellerSkuRows = 0;
+  for (const offer of raw.offers) {
+    const candidate = record(offer, "Subscribe & Save offer");
+    exactMarketplace(candidate.marketplaceId, supported.marketplaceId);
+    if (candidate.programType !== "SUBSCRIBE_AND_SAVE") {
+      throw new ReplenishmentAuditError(
+        "RESPONSE_INVALID",
+        "Replenishment offer 不是 Subscribe & Save。",
+      );
+    }
+    const sku = upstreamSellerSku(candidate.sku);
+    if (sku === null) {
+      rejectedSellerSkuRows += 1;
+      continue;
+    }
+    items.push(
       parseCurrentOffer(
-        offer,
+        candidate,
         supported.marketplaceId,
         supported.currencyCode,
+        sku,
       ),
-    ),
+    );
+  }
+  return {
+    items,
     totalResults: parsePagination(raw.pagination, MAX_OFFER_RESULTS),
+    sourceItemCount: raw.offers.length,
+    rejectedSellerSkuRows,
   };
 }
 
@@ -663,10 +720,19 @@ function parseMetric(
   expectedMarketplace: SellerReplenishmentMarketplaceId,
   expectedCurrency: string,
   interval: OfficialMonthlyInterval,
+  validatedSellerSku: string,
 ): OfficialMonthlyOfferMetric {
   const raw = record(value, "Subscribe & Save offer metric");
-  exactMarketplace(raw.marketplaceId, expectedMarketplace);
-  if (raw.programType !== "SUBSCRIBE_AND_SAVE") {
+  // The official ListOfferMetricsResponseOffer model does not define
+  // marketplaceId or programType on each row. The POST request fixes both
+  // scopes; if Amazon does echo either field, it still has to match exactly.
+  if (raw.marketplaceId !== undefined) {
+    exactMarketplace(raw.marketplaceId, expectedMarketplace);
+  }
+  if (
+    raw.programType !== undefined &&
+    raw.programType !== "SUBSCRIBE_AND_SAVE"
+  ) {
     throw new ReplenishmentAuditError(
       "RESPONSE_INVALID",
       "Replenishment metric 不是 Subscribe & Save。",
@@ -698,7 +764,7 @@ function parseMetric(
   }
   return {
     marketplaceId: expectedMarketplace,
-    sellerSku: sellerSku(raw.sku),
+    sellerSku: validatedSellerSku,
     asin: asin(raw.asin),
     fulfillmentChannelType: "AMAZON",
     interval: exactMetricInterval(raw.timeInterval, interval),
@@ -746,16 +812,49 @@ export function parseReplenishmentOfferMetricsPage(
       "listOfferMetrics.offers 格式或頁面大小無效。",
     );
   }
-  return {
-    items: raw.offers.map((metric) =>
+  const items: OfficialMonthlyOfferMetric[] = [];
+  let rejectedSellerSkuRows = 0;
+  for (const metric of raw.offers) {
+    const candidate = record(metric, "Subscribe & Save offer metric");
+    if (candidate.marketplaceId !== undefined) {
+      exactMarketplace(candidate.marketplaceId, supported.marketplaceId);
+    }
+    if (
+      candidate.programType !== undefined &&
+      candidate.programType !== "SUBSCRIBE_AND_SAVE"
+    ) {
+      throw new ReplenishmentAuditError(
+        "RESPONSE_INVALID",
+        "Replenishment metric 不是 Subscribe & Save。",
+      );
+    }
+    if (candidate.fulfillmentChannelType !== "AMAZON") {
+      throw new ReplenishmentAuditError(
+        "RESPONSE_INVALID",
+        "listOfferMetrics 回應含有非 Amazon fulfillment 資料。",
+      );
+    }
+    exactMetricInterval(candidate.timeInterval, interval);
+    const sku = upstreamSellerSku(candidate.sku);
+    if (sku === null) {
+      rejectedSellerSkuRows += 1;
+      continue;
+    }
+    items.push(
       parseMetric(
-        metric,
+        candidate,
         supported.marketplaceId,
         supported.currencyCode,
         interval,
+        sku,
       ),
-    ),
+    );
+  }
+  return {
+    items,
     totalResults: parsePagination(raw.pagination, MAX_METRIC_RESULTS),
+    sourceItemCount: raw.offers.length,
+    rejectedSellerSkuRows,
   };
 }
 
@@ -851,10 +950,12 @@ async function fetchAllPages<T>(input: {
   parse: (value: unknown) => ParsedPage<T>;
   key: (item: T) => string;
   transport: ReplenishmentPageTransport;
-}): Promise<T[]> {
+}): Promise<FetchedPages<T>> {
   const result: T[] = [];
   const seen = new Set<string>();
   let expectedTotal: number | null = null;
+  let sourceRows = 0;
+  let rejectedSellerSkuRows = 0;
   for (let offset = 0; ; offset += input.pageSize) {
     if (offset > MAX_PAGE_OFFSET) {
       throw new ReplenishmentAuditError(
@@ -871,7 +972,14 @@ async function fetchAllPages<T>(input: {
         "Amazon Replenishment 的 totalResults 在掃描期間改變，請重新同步。",
       );
     }
-    assertPageShape(page.items.length, offset, input.pageSize, expectedTotal);
+    assertPageShape(
+      page.sourceItemCount,
+      offset,
+      input.pageSize,
+      expectedTotal,
+    );
+    sourceRows += page.sourceItemCount;
+    rejectedSellerSkuRows += page.rejectedSellerSkuRows;
     for (const item of page.items) {
       const key = input.key(item);
       if (seen.has(key)) {
@@ -883,13 +991,40 @@ async function fetchAllPages<T>(input: {
       seen.add(key);
       result.push(item);
     }
-    if (result.length === expectedTotal) return result;
+    if (sourceRows === expectedTotal) {
+      return { items: result, sourceRows, rejectedSellerSkuRows };
+    }
   }
 }
 
 function validateKnownFbaSkus(value: ReadonlySet<string> | undefined): void {
   if (!value) return;
-  for (const sku of value) sellerSku(sku);
+  for (const sku of value) text(sku, "FBA Inventory Seller SKU", 256);
+}
+
+function upstreamCoverage(
+  offers: FetchedPages<CurrentSubscriptionOffer>,
+  metrics: { sourceRows: number; rejectedSellerSkuRows: number; acceptedRows: number },
+  intervalCount: number,
+): ReplenishmentUpstreamCoverage {
+  const rejectedSellerSkuRows =
+    offers.rejectedSellerSkuRows + metrics.rejectedSellerSkuRows;
+  const minimumUnresolvedOfferMonths = Math.max(
+    offers.rejectedSellerSkuRows * intervalCount,
+    metrics.rejectedSellerSkuRows,
+  );
+  return {
+    status: rejectedSellerSkuRows === 0 ? "complete" : "partial",
+    returnedOfferRows: offers.sourceRows,
+    acceptedOfferRows: offers.items.length,
+    returnedMetricRows: metrics.sourceRows,
+    acceptedMetricRows: metrics.acceptedRows,
+    rejectedSellerSkuRows,
+    minimumUnresolvedOfferMonths,
+    notice: rejectedSellerSkuRows === 0
+      ? "Amazon Replenishment 回應中的 Seller SKU 均可原樣核對。"
+      : `Amazon Replenishment 有 ${rejectedSellerSkuRows} 列未提供可原樣核對的 Seller SKU；至少 ${minimumUnresolvedOfferMonths} 個 SKU 月份無法核對。offer 與月度缺列可能不屬於同一 SKU，實際缺口無法精確計算；已排除這些列並將整體資料標為不完整，未接受別名、trim 或改寫 identifier。`,
+  };
 }
 
 export async function fetchFbaSubscriptionAudit(input: {
@@ -903,7 +1038,7 @@ export async function fetchFbaSubscriptionAudit(input: {
   const metricInterval = validateOfficialMonth(input.metricInterval);
   assertOfficialMonthlyIntervalAvailable(metricInterval, input.now);
   validateKnownFbaSkus(input.knownFbaSkus);
-  const [currentOffers, metrics] = await Promise.all([
+  const [currentPages, metricPages] = await Promise.all([
     fetchAllPages({
       pageSize: OFFER_PAGE_SIZE,
       maximumResults: MAX_OFFER_RESULTS,
@@ -933,6 +1068,17 @@ export async function fetchFbaSubscriptionAudit(input: {
       transport: input.transport,
     }),
   ]);
+  const currentOffers = currentPages.items;
+  const metrics = metricPages.items;
+  const sourceCoverage = upstreamCoverage(
+    currentPages,
+    {
+      sourceRows: metricPages.sourceRows,
+      rejectedSellerSkuRows: metricPages.rejectedSellerSkuRows,
+      acceptedRows: metricPages.items.length,
+    },
+    1,
+  );
   const metricBySku = new Map(metrics.map((metric) => [metric.sellerSku, metric]));
   const offerBySku = new Map(
     currentOffers.map((offer) => [offer.sellerSku, offer]),
@@ -973,6 +1119,8 @@ export async function fetchFbaSubscriptionAudit(input: {
   const revenueCoverage = subscriptionRevenueCoverage(
     offers.length,
     revenueRows.length,
+    sourceCoverage.status === "partial" ||
+      (input.knownFbaSkus !== undefined && offers.length !== input.knownFbaSkus.size),
   );
   return {
     marketplaceId: supported.marketplaceId,
@@ -983,6 +1131,7 @@ export async function fetchFbaSubscriptionAudit(input: {
     excluded: excluded.sort((left, right) =>
       left.sellerSku.localeCompare(right.sellerSku),
     ),
+    upstreamCoverage: sourceCoverage,
     summary: {
       currentActiveSubscriptions: offers.reduce(
         (sum, offer) => sum + offer.currentActiveSubscriptions,
@@ -1049,7 +1198,7 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
     );
   }
 
-  const currentOffers = await fetchAllPages({
+  const currentPages = await fetchAllPages({
     pageSize: OFFER_PAGE_SIZE,
     maximumResults: MAX_OFFER_RESULTS,
     request: (offset) =>
@@ -1059,12 +1208,17 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
     key: (offer) => offer.sellerSku,
     transport: input.transport,
   });
+  const currentOffers = currentPages.items;
   const metricsByMonth = new Map<string, OfficialMonthlyOfferMetric[]>();
+  const rejectedMetricsByMonth = new Map<string, number>();
+  let metricSourceRows = 0;
+  let metricRejectedSellerSkuRows = 0;
+  let metricAcceptedRows = 0;
   // Deliberately sequential: the public API rate is low and this read path has
   // no automatic retry. A failed month fails the snapshot rather than silently
   // displaying a partial result as a complete requested period.
   for (const interval of intervals) {
-    const metrics = await fetchAllPages({
+    const metricPages = await fetchAllPages({
       pageSize: METRIC_PAGE_SIZE,
       maximumResults: MAX_METRIC_RESULTS,
       request: (offset) =>
@@ -1082,8 +1236,24 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
       key: (metric) => metric.sellerSku,
       transport: input.transport,
     });
-    metricsByMonth.set(interval.month, metrics);
+    metricsByMonth.set(interval.month, metricPages.items);
+    rejectedMetricsByMonth.set(
+      interval.month,
+      metricPages.rejectedSellerSkuRows,
+    );
+    metricSourceRows += metricPages.sourceRows;
+    metricRejectedSellerSkuRows += metricPages.rejectedSellerSkuRows;
+    metricAcceptedRows += metricPages.items.length;
   }
+  const sourceCoverage = upstreamCoverage(
+    currentPages,
+    {
+      sourceRows: metricSourceRows,
+      rejectedSellerSkuRows: metricRejectedSellerSkuRows,
+      acceptedRows: metricAcceptedRows,
+    },
+    intervals.length,
+  );
 
   const offerBySku = new Map(currentOffers.map((offer) => [offer.sellerSku, offer]));
   const excluded: ReplenishmentAuditExclusion[] = [];
@@ -1144,6 +1314,9 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
     const revenueCoverage = subscriptionRevenueCoverage(
       offers.length,
       revenue.length,
+      currentPages.rejectedSellerSkuRows > 0 ||
+        (rejectedMetricsByMonth.get(interval.month) ?? 0) > 0 ||
+        offers.length !== input.knownFbaSkus.size,
     );
     return {
       month: interval.month,
@@ -1165,12 +1338,15 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
       (sum, month) => sum + month.revenueCoverage.reportedOfferMonths,
       0,
     ),
+    sourceCoverage.status === "partial" ||
+      offers.length !== input.knownFbaSkus.size,
   );
   return {
     marketplaceId: supported.marketplaceId,
     intervals: intervals.map((interval) => ({ ...interval })),
     offers,
     excluded,
+    upstreamCoverage: sourceCoverage,
     summary: {
       currentActiveSubscriptions: offers.reduce(
         (sum, offer) => sum + offer.currentActiveSubscriptions,
