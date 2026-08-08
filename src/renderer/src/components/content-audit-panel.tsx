@@ -85,23 +85,32 @@ function reportReply(raw: Record<string, unknown>): ReportReply {
   };
 }
 
-export function parseContentAuditSnapshot(raw: unknown): ContentAuditSnapshot {
-  if (!raw || typeof raw !== "object") throw new Error("內容健檢回應格式無效。");
+export function parseContentAuditSnapshot(
+  raw: unknown,
+  expectedMarketplaceId?: string,
+): ContentAuditSnapshot {
+  if (!raw || typeof raw !== "object") throw new Error("文案健檢回應格式無效。");
   const value = raw as Partial<ContentAuditSnapshot>;
   if (
     typeof value.marketplaceId !== "string" ||
     typeof value.fetchedAt !== "string" ||
     !Array.isArray(value.rows)
   ) {
-    throw new Error("內容健檢缺少可核對的站點或商品資料。");
+    throw new Error("文案健檢缺少可核對的站點或商品資料。");
+  }
+  if (
+    expectedMarketplaceId !== undefined &&
+    value.marketplaceId !== expectedMarketplaceId
+  ) {
+    throw new Error("文案健檢回應與目前選擇的站點不一致；已停止顯示與快取。");
   }
   const rows = value.rows.map((candidate, index): ContentAuditRow => {
     if (!candidate || typeof candidate !== "object") {
-      throw new Error(`內容健檢第 ${index + 1} 筆商品資料格式無效；已停止顯示不完整結果。`);
+      throw new Error(`文案健檢第 ${index + 1} 筆商品資料格式無效；已停止顯示不完整結果。`);
     }
     const row = candidate as Partial<ContentAuditRow>;
     if (typeof row.sellerSku !== "string" || !row.sellerSku.trim()) {
-      throw new Error(`內容健檢第 ${index + 1} 筆商品缺少 SKU；已停止顯示不完整結果。`);
+      throw new Error(`文案健檢第 ${index + 1} 筆商品缺少 SKU；已停止顯示不完整結果。`);
     }
     const parsedReadErrors = Array.isArray(row.readErrors)
       ? row.readErrors.filter((error): error is ContentAuditReadError =>
@@ -164,7 +173,7 @@ export function parseContentAuditSnapshot(raw: unknown): ContentAuditSnapshot {
       value.summary.total !== rows.length
     )
   ) {
-    throw new Error("內容健檢商品總數與回傳列數不一致；已停止顯示不完整結果。");
+    throw new Error("文案健檢商品總數與回傳列數不一致；已停止顯示不完整結果。");
   }
   const declaredTotal = rows.length;
   return {
@@ -280,6 +289,8 @@ export default function ContentAuditPanel({
     initialCache?.spellcheckNote ?? null,
   );
   const abortRef = useRef<AbortController | null>(null);
+  const marketplaceIdRef = useRef(marketplaceId);
+  marketplaceIdRef.current = marketplaceId;
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -350,9 +361,9 @@ export default function ContentAuditPanel({
     });
     const raw = (await response.json()) as unknown;
     if (!response.ok) {
-      throw new Error(problemMessage(raw as ApiProblem, "全站內容健檢失敗。"));
+      throw new Error(problemMessage(raw as ApiProblem, "全站文案健檢失敗。"));
     }
-    const base = parseContentAuditSnapshot(raw);
+    const base = parseContentAuditSnapshot(raw, marketplaceIdRef.current);
     let rows = base.rows;
     let nextSpellcheckNote: string;
     try {
@@ -398,7 +409,7 @@ export default function ContentAuditPanel({
       });
       const startRaw = (await startResponse.json()) as Record<string, unknown>;
       if (!startResponse.ok) {
-        throw new Error(problemMessage(startRaw as ApiProblem, "無法開始內容健檢。"));
+        throw new Error(problemMessage(startRaw as ApiProblem, "無法開始文案健檢。"));
       }
       let current = reportReply(startRaw);
       setReply(current);
@@ -432,12 +443,12 @@ export default function ContentAuditPanel({
           return;
         }
       }
-      throw new Error("內容健檢超過三分鐘，請稍後再試。");
+      throw new Error("文案健檢超過三分鐘，請稍後再試。");
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       setState(snapshot ? "done" : "idle");
       setError(
-        requestError instanceof Error ? requestError.message : "目前無法完成內容健檢。",
+        requestError instanceof Error ? requestError.message : "目前無法完成文案健檢。",
       );
     }
   };
@@ -475,12 +486,12 @@ export default function ContentAuditPanel({
       downloadContentAuditWorkbook(snapshot, marketplaceShort);
       setError(null);
     } catch {
-      setError("目前無法建立健檢 Excel，請重新掃描後再試。");
+        setError("目前無法建立文案健檢 Excel，請重新掃描後再試。");
     }
   };
 
   return (
-    <section className="content-audit-panel" aria-label="全站 FBA 內容健檢">
+    <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
       <p className="price-intro">
         一次掃描所選站點全部 FBA SKU，直接列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品；不用逐一輸入 SKU。
       </p>
@@ -488,6 +499,18 @@ export default function ContentAuditPanel({
         <strong>Amazon 唯讀＋Mac 本機拼字檢查</strong>
         <p>文案不會送到第三方，也不會自動修改 Amazon；疑似錯字仍由你判斷。</p>
       </div>
+      {state === "done" && snapshot && summary && (
+        <button
+          className="content-audit-export-primary"
+          type="button"
+          onClick={exportAttentionRows}
+          disabled={attentionRows.length === 0}
+        >
+          <span aria-hidden="true">↓</span>
+          <strong>匯出全部 {attentionRows.length.toLocaleString()} 個待確認項目 Excel</strong>
+          <small>只在這台 Mac 建立，不會上傳商品文案</small>
+        </button>
+      )}
       {error && <div className="price-error" role="alert">{error}</div>}
       {statusText && (
         <div className="validation-status demo" role="status" aria-live="polite">
@@ -504,13 +527,13 @@ export default function ContentAuditPanel({
           onClick={() => void startAudit()}
           disabled={state !== "idle"}
         >
-          {state === "idle" ? `掃描 ${marketplaceShort} 全部 FBA 文案` : "內容健檢進行中…"}
+          {state === "idle" ? `掃描 ${marketplaceShort} 全部 FBA 文案` : "文案健檢進行中…"}
         </button>
       )}
 
       {state === "done" && snapshot && summary && (
         <>
-          <div className="content-audit-summary" aria-label="內容健檢摘要">
+          <div className="content-audit-summary" aria-label="文案健檢摘要">
             <article><span>完成讀取</span><strong>{summary.completed.toLocaleString()}</strong><small>共 {summary.total.toLocaleString()} 個 FBA SKU</small></article>
             <article><span>讀取未完成</span><strong>{summary.incomplete.toLocaleString()}</strong><small>不列入缺值統計</small></article>
             <article><span>有待確認</span><strong>{summary.withIssues.toLocaleString()}</strong><small>SKU</small></article>
@@ -531,7 +554,7 @@ export default function ContentAuditPanel({
                 下方紅色括號只是定位標記，不會修改原文；請手動修改標示段落。
               </p>
               <ul>
-                {invisibleLocations.map((location, index) => (
+                {invisibleLocations.slice(0, 1).map((location, index) => (
                   <li
                     key={`${location.sellerSku}-${location.fieldLabel}-${location.codePoint}-${index}`}
                   >
@@ -547,6 +570,28 @@ export default function ContentAuditPanel({
                   </li>
                 ))}
               </ul>
+              {invisibleLocations.length > 1 && (
+                <details className="content-audit-invisible-more">
+                  <summary>…另有 {invisibleLocations.length - 1} 筆</summary>
+                  <ul>
+                    {invisibleLocations.slice(1).map((location, index) => (
+                      <li
+                        key={`${location.sellerSku}-${location.fieldLabel}-${location.codePoint}-${index + 1}`}
+                      >
+                        <strong>
+                          {location.sellerSku} · {location.fieldLabel} · {location.codePoint}（{location.name}）
+                        </strong>
+                        <code style={{ color: "#b42318", fontWeight: 700 }}>
+                          {location.context}
+                        </code>
+                        <small>
+                          位於「{location.before}」與「{location.after}」之間；應手動修改此段。
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </aside>
           )}
           <div className="content-audit-controls">
@@ -568,21 +613,13 @@ export default function ContentAuditPanel({
                 value={query}
                 onChange={(event) => changeQuery(event.target.value)}
                 placeholder="搜尋 SKU、ASIN 或商品名稱"
-                aria-label="搜尋內容健檢結果"
+                aria-label="搜尋文案健檢結果"
               />
             </label>
           </div>
           <div className="content-audit-result-heading">
             <strong>{visibleRows.length.toLocaleString()} 個符合條件的 SKU</strong>
             <div>
-              <button
-                className="content-audit-excel-button"
-                type="button"
-                onClick={exportAttentionRows}
-                disabled={attentionRows.length === 0}
-              >
-                匯出全部 {attentionRows.length.toLocaleString()} 個待確認項目 Excel
-              </button>
               <button type="button" onClick={() => void startAudit()}>重新掃描</button>
             </div>
           </div>

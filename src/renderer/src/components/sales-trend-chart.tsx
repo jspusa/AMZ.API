@@ -181,6 +181,42 @@ function inclusiveDayCount(startDate: string, endDate: string): number | null {
   return Math.floor((endTime - startTime) / DAY_MILLISECONDS) + 1;
 }
 
+export function customDayCountError(value: string): string | null {
+  if (!/^\d+$/.test(value)) return "請輸入 1 到 365 天的整數。";
+  const dayCount = Number(value);
+  if (
+    !Number.isSafeInteger(dayCount) ||
+    dayCount < 1 ||
+    dayCount > MAX_CUSTOM_SALES_TREND_DAYS
+  ) {
+    return `天數必須介於 1 到 ${MAX_CUSTOM_SALES_TREND_DAYS} 天。`;
+  }
+  return null;
+}
+
+export function startDateForDayCount(
+  endDate: string,
+  dayCount: number,
+): string | null {
+  const end = dateParts(endDate);
+  if (
+    !end ||
+    !Number.isSafeInteger(dayCount) ||
+    dayCount < 1 ||
+    dayCount > MAX_CUSTOM_SALES_TREND_DAYS
+  ) {
+    return null;
+  }
+  const start = new Date(
+    Date.UTC(end.year, end.month - 1, end.day - (dayCount - 1)),
+  );
+  return dateKey(
+    start.getUTCFullYear(),
+    start.getUTCMonth() + 1,
+    start.getUTCDate(),
+  );
+}
+
 export function trendCustomRangeError(
   startDate: string,
   endDate: string,
@@ -316,6 +352,12 @@ export default function SalesTrendChart({
   const [customEndDate, setCustomEndDate] = useState(
     selection.kind === "custom" ? selection.endDate : snapshot?.range.endDate ?? "",
   );
+  const [customDayCount, setCustomDayCount] = useState(() => {
+    const startDate = selection.kind === "custom" ? selection.startDate : snapshot?.range.startDate ?? "";
+    const endDate = selection.kind === "custom" ? selection.endDate : snapshot?.range.endDate ?? "";
+    const days = inclusiveDayCount(startDate, endDate);
+    return days && days <= MAX_CUSTOM_SALES_TREND_DAYS ? String(days) : "";
+  });
   const [customTouched, setCustomTouched] = useState(false);
   const [latestAvailableDate, setLatestAvailableDate] = useState<string | null>(
     snapshot?.range.presetDays ? snapshot.range.endDate : null,
@@ -329,6 +371,7 @@ export default function SalesTrendChart({
     setCustomOpen(true);
     setCustomStartDate(selection.startDate);
     setCustomEndDate(selection.endDate);
+    setCustomDayCount(String(inclusiveDayCount(selection.startDate, selection.endDate) ?? ""));
     setCustomTouched(false);
   }, [selection]);
 
@@ -336,6 +379,7 @@ export default function SalesTrendChart({
     if (selection.kind !== "preset" || customOpen || !snapshot) return;
     setCustomStartDate(snapshot.range.startDate);
     setCustomEndDate(snapshot.range.endDate);
+    setCustomDayCount(String(snapshot.range.dayCount));
     setCustomTouched(false);
   }, [customOpen, selection, snapshot]);
 
@@ -417,7 +461,7 @@ export default function SalesTrendChart({
     customEndDate,
     earliestStartDate,
     latestAvailableDate,
-  );
+  ) ?? customDayCountError(customDayCount);
   const currentYears = snapshot ? rangeYears(snapshot.range) : "本期";
   const comparisonYears = snapshot?.comparison
     ? rangeYears(snapshot.comparison.range)
@@ -559,6 +603,7 @@ export default function SalesTrendChart({
               setCustomOpen(true);
               if (!customStartDate && snapshot) setCustomStartDate(snapshot.range.startDate);
               if (!customEndDate && snapshot) setCustomEndDate(snapshot.range.endDate);
+              if (!customDayCount && snapshot) setCustomDayCount(String(snapshot.range.dayCount));
             }}
             disabled={loading}
           >
@@ -569,6 +614,31 @@ export default function SalesTrendChart({
 
       {customOpen && (
         <div id={customPanelId} className="sales-trend-custom-range">
+          <label className="sales-trend-day-count">
+            <span>最近天數</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1"
+              max={MAX_CUSTOM_SALES_TREND_DAYS}
+              step="1"
+              value={customDayCount}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setCustomDayCount(nextValue);
+                setCustomTouched(true);
+                if (customDayCountError(nextValue)) return;
+                const endDate = customEndDate || latestAvailableDate || snapshot?.range.endDate || "";
+                const startDate = startDateForDayCount(endDate, Number(nextValue));
+                if (!startDate || !endDate) return;
+                setCustomStartDate(startDate);
+                setCustomEndDate(endDate);
+              }}
+              aria-invalid={customTouched && Boolean(customDayCountError(customDayCount))}
+              aria-describedby={customTouched && customError ? customErrorId : undefined}
+              disabled={loading}
+            />
+          </label>
           <label>
             <span>開始日</span>
             <input
@@ -577,7 +647,10 @@ export default function SalesTrendChart({
               min={earliestStartDate ?? undefined}
               max={latestAvailableDate ?? undefined}
               onChange={(event) => {
-                setCustomStartDate(event.target.value);
+                const nextStartDate = event.target.value;
+                setCustomStartDate(nextStartDate);
+                const days = inclusiveDayCount(nextStartDate, customEndDate);
+                setCustomDayCount(days && days <= MAX_CUSTOM_SALES_TREND_DAYS ? String(days) : "");
                 setCustomTouched(true);
               }}
               aria-invalid={customTouched && Boolean(customError)}
@@ -594,7 +667,10 @@ export default function SalesTrendChart({
               min={earliestStartDate ?? undefined}
               max={latestAvailableDate ?? undefined}
               onChange={(event) => {
-                setCustomEndDate(event.target.value);
+                const nextEndDate = event.target.value;
+                setCustomEndDate(nextEndDate);
+                const days = inclusiveDayCount(customStartDate, nextEndDate);
+                setCustomDayCount(days && days <= MAX_CUSTOM_SALES_TREND_DAYS ? String(days) : "");
                 setCustomTouched(true);
               }}
               aria-invalid={customTouched && Boolean(customError)}
@@ -610,7 +686,7 @@ export default function SalesTrendChart({
             {loading ? "載入中…" : "套用"}
           </button>
           <small>
-            可超過 90 天；包含開始日與結束日，並保留去年同期比較。
+            可直接輸入 1–365 天，系統會換算日期；也可手動選開始日與結束日，並保留去年同期比較。
             {latestAvailableDate
               ? `目前資料截至 ${latestAvailableDate}。`
               : "Amazon 仍會在 Mac 端再次驗證可查日期。"}

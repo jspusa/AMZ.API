@@ -4,6 +4,7 @@ import { ApiRouter } from "../src/main/api-router";
 import {
   getAgedInventoryReportStatus,
   invalidateSpApiCredentialCaches,
+  parseAgedInventoryReportData,
   parseAgedInventoryReportDocument,
   startAgedInventoryReport,
 } from "../src/main/amazon/sp-api";
@@ -54,6 +55,39 @@ function request(input: {
   };
 }
 
+const DETAILED_AGE_HEADERS = [
+  "inv-age-0-to-30-days",
+  "inv-age-31-to-60-days",
+  "inv-age-61-to-90-days",
+  "inv-age-91-to-180-days",
+  "inv-age-181-to-270-days",
+  "inv-age-271-to-365-days",
+  "inv-age-366-to-455-days",
+  "inv-age-456-plus-days",
+] as const;
+
+const COMMON_AIS_KEYS = [
+  "181-210",
+  "211-240",
+  "241-270",
+  "271-300",
+  "301-330",
+  "331-365",
+] as const;
+const REGIONAL_AIS_KEYS = [...COMMON_AIS_KEYS, "366-455", "456-plus"] as const;
+
+function reportText(
+  headers: readonly string[],
+  records: Array<Record<string, string | number>>,
+): string {
+  return [
+    headers.join("\t"),
+    ...records.map((record) =>
+      headers.map((header) => String(record[header] ?? "")).join("\t"),
+    ),
+  ].join("\n");
+}
+
 describe("official FBA 180+ day inventory report", () => {
   beforeEach(() => {
     clearSpEnvironment();
@@ -69,83 +103,151 @@ describe("official FBA 180+ day inventory report", () => {
     invalidateSpApiCredentialCaches();
   });
 
-  it("parses the official non-overlapping 180+ buckets and excludes fresh FBA rows", () => {
-    const report = [
-      [
-        "seller-sku",
-        "fnsku",
-        "asin",
-        "product-name",
-        "condition",
-        "available",
-        "inv-age-181-to-270-days",
-        "inv-age-271-to-365-days",
-        "inv-age-366-to-455-days",
-        "inv-age-456-plus-days",
-        "estimated-excess-quantity",
-        "recommended-removal-quantity",
-        "days-of-supply",
-        "recommended-action",
-        "snapshot-date",
-      ].join("\t"),
-      [
-        "AGED-FBA-01",
-        "X001AGED01",
-        "B0AGED0001",
-        "Aged FBA product",
-        "New",
-        "240",
-        "12",
-        "10",
-        "7",
-        "2",
-        "25",
-        "5",
-        "220.5",
-        "Create sale",
-        "2026-08-07",
-      ].join("\t"),
-      [
-        "FRESH-FBA-01",
-        "X001FRESH1",
-        "B0FRESH001",
-        "Fresh FBA product",
-        "New",
-        "80",
-        "0",
-        "0",
-        "0",
-        "0",
-        "0",
-        "0",
-        "35",
-        "",
-        "2026-08-07",
-      ].join("\t"),
-    ].join("\n");
+  it("parses every non-overlapping age bucket and official fee field without dropping fresh FBA rows", () => {
+    const headers = [
+      "seller-sku",
+      "fnsku",
+      "asin",
+      "product-name",
+      "condition",
+      "available",
+      "inv-age-0-to-90-days",
+      ...DETAILED_AGE_HEADERS,
+      "inv-age-181-to-330-days",
+      "inv-age-331-to-365-days",
+      "inv-age-365-plus-days",
+      "estimated-excess-quantity",
+      "recommended-removal-quantity",
+      "days-of-supply",
+      "currency",
+      "estimated-storage-cost-next-month",
+      ...REGIONAL_AIS_KEYS.flatMap((key) => [
+        `quantity-to-be-charged-ais-${key}-days`,
+        `estimated-ais-${key}-days`,
+      ]),
+      "alert",
+      "recommended-action",
+      "snapshot-date",
+    ];
+    const aged: Record<string, string | number> = {
+      "seller-sku": "AGED-FBA-01",
+      fnsku: "X001AGED01",
+      asin: "B0AGED0001",
+      "product-name": "Aged FBA product",
+      condition: "New",
+      available: 240,
+      "inv-age-0-to-90-days": 999,
+      "inv-age-0-to-30-days": 80,
+      "inv-age-31-to-60-days": 30,
+      "inv-age-61-to-90-days": 22,
+      "inv-age-91-to-180-days": 9,
+      "inv-age-181-to-270-days": 12,
+      "inv-age-271-to-365-days": 10,
+      "inv-age-366-to-455-days": 7,
+      "inv-age-456-plus-days": 2,
+      "inv-age-181-to-330-days": 999,
+      "inv-age-331-to-365-days": 999,
+      "inv-age-365-plus-days": 999,
+      "estimated-excess-quantity": 25,
+      "recommended-removal-quantity": 5,
+      "days-of-supply": 220.5,
+      currency: "USD",
+      "estimated-storage-cost-next-month": 15.25,
+      alert: "Amazon raw alert",
+      "recommended-action": "Create sale",
+      "snapshot-date": "2026-08-07",
+    };
+    const fresh: Record<string, string | number> = {
+      "seller-sku": "FRESH-FBA-01",
+      fnsku: "X001FRESH1",
+      asin: "B0FRESH001",
+      "product-name": "Fresh FBA product",
+      condition: "New",
+      available: 80,
+      "inv-age-0-to-90-days": 999,
+      "inv-age-0-to-30-days": 80,
+      "inv-age-31-to-60-days": 0,
+      "inv-age-61-to-90-days": 0,
+      "inv-age-91-to-180-days": 0,
+      "inv-age-181-to-270-days": 0,
+      "inv-age-271-to-365-days": 0,
+      "inv-age-366-to-455-days": 0,
+      "inv-age-456-plus-days": 0,
+      "inv-age-181-to-330-days": 999,
+      "inv-age-331-to-365-days": 999,
+      "inv-age-365-plus-days": 999,
+      "estimated-excess-quantity": 0,
+      "recommended-removal-quantity": 0,
+      "days-of-supply": 35,
+      currency: "USD",
+      "estimated-storage-cost-next-month": 5,
+      alert: "",
+      "recommended-action": "",
+      "snapshot-date": "2026-08-07",
+    };
+    REGIONAL_AIS_KEYS.forEach((key, index) => {
+      aged[`quantity-to-be-charged-ais-${key}-days`] = index + 1;
+      aged[`estimated-ais-${key}-days`] = (index + 1) / 10;
+      fresh[`quantity-to-be-charged-ais-${key}-days`] = 0;
+      fresh[`estimated-ais-${key}-days`] = 0;
+    });
 
-    expect(parseAgedInventoryReportDocument(report)).toEqual([
-      expect.objectContaining({
-        sellerSku: "AGED-FBA-01",
-        available: 240,
-        agedOver180: 31,
-        estimatedExcessQuantity: 25,
-        recommendedRemovalQuantity: 5,
-        daysOfSupply: 220.5,
-        ageBuckets: [
-          { label: "181–270 天", units: 12 },
-          { label: "271–365 天", units: 10 },
-          { label: "366–455 天", units: 7 },
-          { label: "456 天以上", units: 2 },
-        ],
-      }),
+    const parsed = parseAgedInventoryReportData(
+      reportText(headers, [aged, fresh]),
+    );
+
+    expect(parsed).toMatchObject({
+      ageBucketKeys: [
+        "0-30",
+        "31-60",
+        "61-90",
+        "91-180",
+        "181-270",
+        "271-365",
+        "366-455",
+        "456-plus",
+      ],
+      agedSurchargeBucketKeys: REGIONAL_AIS_KEYS,
+      excessAvailability: "complete",
+      storageCostAvailability: "complete",
+      agedSurchargeAvailability: "complete",
+      currencyCode: "USD",
+    });
+    expect(parsed.rows).toHaveLength(2);
+    expect(parsed.rows[0]).toMatchObject({
+      sellerSku: "AGED-FBA-01",
+      available: 240,
+      totalAgedUnits: 172,
+      agedOver180: 31,
+      estimatedExcessQuantity: 25,
+      recommendedRemovalQuantity: 5,
+      daysOfSupply: 220.5,
+      estimatedStorageCostNextMonth: 15.25,
+      estimatedAgedSurcharge: 3.6,
+      alert: "Amazon raw alert",
+    });
+    expect(parsed.rows[0].ageBuckets).toEqual([
+      { key: "0-30", label: "0–30 天", units: 80, over180: false },
+      { key: "31-60", label: "31–60 天", units: 30, over180: false },
+      { key: "61-90", label: "61–90 天", units: 22, over180: false },
+      { key: "91-180", label: "91–180 天", units: 9, over180: false },
+      { key: "181-270", label: "181–270 天", units: 12, over180: true },
+      { key: "271-365", label: "271–365 天", units: 10, over180: true },
+      { key: "366-455", label: "366–455 天", units: 7, over180: true },
+      { key: "456-plus", label: "456 天以上", units: 2, over180: true },
     ]);
+    expect(parsed.rows[1]).toMatchObject({
+      sellerSku: "FRESH-FBA-01",
+      totalAgedUnits: 80,
+      agedOver180: 0,
+    });
   });
 
   it("selects one complete Amazon column generation instead of double-counting overlaps", () => {
-    const report = [
-      [
+    const headers = [
         "sku",
+        "inv-age-0-to-90-days",
+        "inv-age-91-to-180-days",
         "inv-age-181-to-270-days",
         "inv-age-271-to-365-days",
         "inv-age-366-to-455-days",
@@ -153,37 +255,83 @@ describe("official FBA 180+ day inventory report", () => {
         "inv-age-181-to-330-days",
         "inv-age-331-to-365-days",
         "inv-age-365-plus-days",
-      ].join("\t"),
-      ["AGED-FBA-02", "4", "3", "2", "1", "999", "999", "999"].join("\t"),
-    ].join("\n");
+      ];
+    const report = reportText(headers, [
+      {
+        sku: "AGED-FBA-02",
+        "inv-age-0-to-90-days": 5,
+        "inv-age-91-to-180-days": 6,
+        "inv-age-181-to-270-days": 4,
+        "inv-age-271-to-365-days": 3,
+        "inv-age-366-to-455-days": 2,
+        "inv-age-456-plus-days": 1,
+        "inv-age-181-to-330-days": 999,
+        "inv-age-331-to-365-days": 999,
+        "inv-age-365-plus-days": 999,
+      },
+    ]);
 
     expect(parseAgedInventoryReportDocument(report)[0]).toMatchObject({
+      totalAgedUnits: 21,
       agedOver180: 10,
       ageBuckets: [
-        { label: "181–270 天", units: 4 },
-        { label: "271–365 天", units: 3 },
-        { label: "366–455 天", units: 2 },
-        { label: "456 天以上", units: 1 },
+        { key: "0-90", label: "0–90 天", units: 5, over180: false },
+        { key: "91-180", label: "91–180 天", units: 6, over180: false },
+        { key: "181-270", label: "181–270 天", units: 4, over180: true },
+        { key: "271-365", label: "271–365 天", units: 3, over180: true },
+        { key: "366-455", label: "366–455 天", units: 2, over180: true },
+        { key: "456-plus", label: "456 天以上", units: 1, over180: true },
       ],
     });
     expect(() =>
       parseAgedInventoryReportDocument(
-        "sku\tinv-age-181-to-270-days\tinv-age-271-to-365-days\tinv-age-365-plus-days\nBAD\t-1\t0\t0",
+        reportText(
+          [
+            "sku",
+            "inv-age-0-to-90-days",
+            "inv-age-91-to-180-days",
+            "inv-age-181-to-270-days",
+            "inv-age-271-to-365-days",
+            "inv-age-365-plus-days",
+          ],
+          [
+            {
+              sku: "BAD",
+              "inv-age-0-to-90-days": 0,
+              "inv-age-91-to-180-days": 0,
+              "inv-age-181-to-270-days": -1,
+              "inv-age-271-to-365-days": 0,
+              "inv-age-365-plus-days": 0,
+            },
+          ],
+        ),
       ),
     ).toThrow("不是有效數量");
   });
 
   it("keeps non-US 365-plus units when the regional tail columns are unavailable", () => {
-    const report = [
+    const report = reportText(
       [
         "sku",
+        "inv-age-0-to-90-days",
+        "inv-age-91-to-180-days",
         "inv-age-181-to-270-days",
         "inv-age-271-to-365-days",
         "inv-age-365-plus-days",
         "estimated-excess-quantity",
-      ].join("\t"),
-      ["NON-US-AGED-01", "0", "0", "11", "7"].join("\t"),
-    ].join("\n");
+      ],
+      [
+        {
+          sku: "NON-US-AGED-01",
+          "inv-age-0-to-90-days": 4,
+          "inv-age-91-to-180-days": 3,
+          "inv-age-181-to-270-days": 0,
+          "inv-age-271-to-365-days": 0,
+          "inv-age-365-plus-days": 11,
+          "estimated-excess-quantity": 7,
+        },
+      ],
+    );
 
     expect(parseAgedInventoryReportDocument(report)).toEqual([
       expect.objectContaining({
@@ -191,11 +339,91 @@ describe("official FBA 180+ day inventory report", () => {
         agedOver180: 11,
         estimatedExcessQuantity: 7,
         ageBuckets: [
-          { label: "181–270 天", units: 0 },
-          { label: "271–365 天", units: 0 },
-          { label: "365 天以上", units: 11 },
+          { key: "0-90", label: "0–90 天", units: 4, over180: false },
+          { key: "91-180", label: "91–180 天", units: 3, over180: false },
+          { key: "181-270", label: "181–270 天", units: 0, over180: true },
+          { key: "271-365", label: "271–365 天", units: 0, over180: true },
+          {
+            key: "365-plus",
+            label: "365 天以上（Amazon 欄位）",
+            units: 11,
+            over180: true,
+          },
         ],
       }),
+    ]);
+    expect(
+      parseAgedInventoryReportDocument(report, "A1VC38T7YXB528"),
+    ).toHaveLength(1);
+    expect(() =>
+      parseAgedInventoryReportDocument(report, MARKETPLACE_ID),
+    ).toThrow("區域庫齡欄位與目前站點不一致");
+  });
+
+  it("fails closed when a selected age bucket is blank instead of assuming zero", () => {
+    expect(() =>
+      parseAgedInventoryReportDocument(
+        reportText(
+          [
+            "sku",
+            "inv-age-0-to-90-days",
+            "inv-age-91-to-180-days",
+            "inv-age-181-to-270-days",
+            "inv-age-271-to-365-days",
+            "inv-age-365-plus-days",
+          ],
+          [
+            {
+              sku: "MISSING-BUCKET-01",
+              "inv-age-0-to-90-days": 1,
+              "inv-age-91-to-180-days": 0,
+              "inv-age-181-to-270-days": 0,
+              "inv-age-271-to-365-days": 0,
+            },
+          ],
+        ),
+      ),
+    ).toThrow("「365 天以上（Amazon 欄位）」缺值");
+  });
+
+  it("marks estimated excess partial when Amazon leaves any SKU blank", () => {
+    const parsed = parseAgedInventoryReportData(
+      reportText(
+        [
+          "sku",
+          "inv-age-0-to-90-days",
+          "inv-age-91-to-180-days",
+          "inv-age-181-to-270-days",
+          "inv-age-271-to-365-days",
+          "inv-age-365-plus-days",
+          "estimated-excess-quantity",
+        ],
+        [
+          {
+            sku: "EXCESS-KNOWN",
+            "inv-age-0-to-90-days": 1,
+            "inv-age-91-to-180-days": 0,
+            "inv-age-181-to-270-days": 0,
+            "inv-age-271-to-365-days": 0,
+            "inv-age-365-plus-days": 0,
+            "estimated-excess-quantity": 7,
+          },
+          {
+            sku: "EXCESS-UNKNOWN",
+            "inv-age-0-to-90-days": 1,
+            "inv-age-91-to-180-days": 0,
+            "inv-age-181-to-270-days": 0,
+            "inv-age-271-to-365-days": 0,
+            "inv-age-365-plus-days": 0,
+          },
+        ],
+      ),
+    );
+
+    expect(parsed.excessAvailability).toBe("partial");
+    expect(parsed.rows.map((row) => row.estimatedExcessQuantity)).toEqual([
+      7,
+      null,
     ]);
   });
 
@@ -203,11 +431,79 @@ describe("official FBA 180+ day inventory report", () => {
     expect(() =>
       parseAgedInventoryReportDocument(
         [
-          "sku\tinv-age-181-to-270-days\tinv-age-271-to-365-days",
-          "INCOMPLETE-AGED-01\t2\t3",
+          "sku\tinv-age-0-to-90-days\tinv-age-91-to-180-days\tinv-age-181-to-270-days\tinv-age-271-to-365-days",
+          "INCOMPLETE-AGED-01\t0\t0\t2\t3",
         ].join("\n"),
       ),
-    ).toThrow("缺少完整的 181 天以上庫齡區間");
+    ).toThrow("缺少完整且不重疊的庫齡區間");
+  });
+
+  it("fails closed instead of summing an incomplete AIS column generation", () => {
+    expect(() =>
+      parseAgedInventoryReportDocument(
+        reportText(
+          [
+            "sku",
+            "inv-age-0-to-90-days",
+            "inv-age-91-to-180-days",
+            "inv-age-181-to-270-days",
+            "inv-age-271-to-365-days",
+            "inv-age-365-plus-days",
+            "quantity-to-be-charged-ais-181-210-days",
+          ],
+          [
+            {
+              sku: "INCOMPLETE-AIS-01",
+              "inv-age-0-to-90-days": 0,
+              "inv-age-91-to-180-days": 0,
+              "inv-age-181-to-270-days": 2,
+              "inv-age-271-to-365-days": 3,
+              "inv-age-365-plus-days": 4,
+              "quantity-to-be-charged-ais-181-210-days": 1,
+            },
+          ],
+        ),
+      ),
+    ).toThrow("AIS 預估附加費欄位不完整");
+  });
+
+  it("fails closed when official fee rows mix currencies", () => {
+    const headers = [
+      "sku",
+      "inv-age-0-to-90-days",
+      "inv-age-91-to-180-days",
+      "inv-age-181-to-270-days",
+      "inv-age-271-to-365-days",
+      "inv-age-365-plus-days",
+      "currency",
+      "estimated-storage-cost-next-month",
+    ];
+    expect(() =>
+      parseAgedInventoryReportDocument(
+        reportText(headers, [
+          {
+            sku: "USD-FBA-01",
+            "inv-age-0-to-90-days": 1,
+            "inv-age-91-to-180-days": 0,
+            "inv-age-181-to-270-days": 0,
+            "inv-age-271-to-365-days": 0,
+            "inv-age-365-plus-days": 0,
+            currency: "USD",
+            "estimated-storage-cost-next-month": 1,
+          },
+          {
+            sku: "CAD-FBA-01",
+            "inv-age-0-to-90-days": 1,
+            "inv-age-91-to-180-days": 0,
+            "inv-age-181-to-270-days": 0,
+            "inv-age-271-to-365-days": 0,
+            "inv-age-365-plus-days": 0,
+            currency: "CAD",
+            "estimated-storage-cost-next-month": 1,
+          },
+        ]),
+      ),
+    ).toThrow("包含多種幣別");
   });
 
   it("requests GET_FBA_INVENTORY_PLANNING_DATA for exactly one marketplace", async () => {
@@ -308,15 +604,15 @@ describe("FBA aged inventory renderer and read-only route", () => {
     invalidateSpApiCredentialCaches();
   });
 
-  it("shows a visible compact main-page entry and explains the independent excess metric", () => {
+  it("shows a visible compact main-page entry for every age bucket, official fees, and Excel", () => {
     const markup = renderToStaticMarkup(
       <AgedInventoryPanel marketplaceId={MARKETPLACE_ID} />,
     );
 
-    expect(markup).toContain("180 天以上庫存");
+    expect(markup).toContain("FBA 庫齡、冗餘與官方預估費用");
     expect(markup).toContain("查看全部");
-    expect(markup).toContain("Amazon 預估冗餘");
-    expect(markup).toContain("不會自動促銷或移除");
+    expect(markup).toContain("全部非重疊庫齡桶");
+    expect(markup).toContain("費用缺欄或缺值時不套費率、不推算");
   });
 
   it("validates every row and the server summary before displaying it", () => {
@@ -332,34 +628,129 @@ describe("FBA aged inventory renderer and read-only route", () => {
           title: "Aged FBA product",
           condition: "New",
           available: 240,
+          totalAgedUnits: 50,
           agedOver180: 31,
           ageBuckets: [
-            { label: "181–270 天", units: 12 },
-            { label: "271–365 天", units: 10 },
-            { label: "366–455 天", units: 7 },
-            { label: "456 天以上", units: 2 },
+            { key: "0-90", label: "0–90 天", units: 10, over180: false },
+            { key: "91-180", label: "91–180 天", units: 9, over180: false },
+            { key: "181-270", label: "181–270 天", units: 12, over180: true },
+            { key: "271-365", label: "271–365 天", units: 10, over180: true },
+            { key: "366-455", label: "366–455 天", units: 7, over180: true },
+            { key: "456-plus", label: "456 天以上", units: 2, over180: true },
           ],
           estimatedExcessQuantity: 25,
           recommendedRemovalQuantity: 5,
           daysOfSupply: 220.5,
+          currencyCode: "USD",
+          estimatedStorageCostNextMonth: 15.25,
+          estimatedAgedSurcharge: 3.6,
+          agedSurchargeBuckets: [
+            {
+              key: "181-210",
+              label: "AIS 181–210 天",
+              quantity: 3,
+              estimatedCharge: 1.2,
+            },
+            {
+              key: "211-240",
+              label: "AIS 211–240 天",
+              quantity: 4,
+              estimatedCharge: 2.4,
+            },
+          ],
+          alert: "Amazon raw alert",
           recommendedAction: "Create sale",
           snapshotDate: "2026-08-07",
         },
       ],
       summary: {
         skuCount: 1,
+        agedOver180SkuCount: 1,
+        totalAgedUnits: 50,
         agedOver180: 31,
+        excessAvailability: "complete",
         estimatedExcessQuantity: 25,
+        currencyCode: "USD",
+        storageCostAvailability: "complete",
+        estimatedStorageCostNextMonth: 15.25,
+        agedSurchargeAvailability: "complete",
+        estimatedAgedSurcharge: 3.6,
+      },
+      expiration: {
+        currentFbaExpirationDatesAvailable: false,
+        nearExpiryUnits: null,
+        expiredUnits: null,
+        inboundPlanExpirationDatesAvailable: true,
+        notice: "Inbound dates cannot prove current FC batches.",
       },
       notice: "FBA only",
     };
 
     expect(parseAgedInventorySnapshot(raw, MARKETPLACE_ID)).toMatchObject({
-      summary: { skuCount: 1, agedOver180: 31, estimatedExcessQuantity: 25 },
+      summary: {
+        skuCount: 1,
+        totalAgedUnits: 50,
+        agedOver180: 31,
+        estimatedExcessQuantity: 25,
+        estimatedStorageCostNextMonth: 15.25,
+        estimatedAgedSurcharge: 3.6,
+      },
     });
     expect(() =>
       parseAgedInventorySnapshot(
         { ...raw, summary: { ...raw.summary, agedOver180: 30 } },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...raw,
+          rows: [{ ...raw.rows[0], estimatedAgedSurcharge: 3.5 }],
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("AIS 預估附加費分層與合計不一致");
+
+    const partialExcess = {
+      ...raw,
+      rows: [
+        raw.rows[0],
+        {
+          ...raw.rows[0],
+          sellerSku: "AGED-FBA-UNKNOWN",
+          fnSku: "X001UNKNOWN",
+          asin: "B0UNKNOWN01",
+          estimatedExcessQuantity: null,
+        },
+      ],
+      summary: {
+        ...raw.summary,
+        skuCount: 2,
+        agedOver180SkuCount: 2,
+        totalAgedUnits: 100,
+        agedOver180: 62,
+        excessAvailability: "partial",
+        estimatedExcessQuantity: null,
+        estimatedStorageCostNextMonth: 30.5,
+        estimatedAgedSurcharge: 7.2,
+      },
+    };
+    expect(parseAgedInventorySnapshot(partialExcess, MARKETPLACE_ID)).toMatchObject({
+      summary: {
+        excessAvailability: "partial",
+        estimatedExcessQuantity: null,
+      },
+    });
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          summary: {
+            ...partialExcess.summary,
+            estimatedExcessQuantity: 25,
+          },
+        },
         MARKETPLACE_ID,
       ),
     ).toThrow("摘要與商品列不一致");
@@ -391,9 +782,41 @@ describe("FBA aged inventory renderer and read-only route", () => {
     expect(loaded.body.value).toMatchObject({
       mode: "demo",
       marketplaceId: MARKETPLACE_ID,
-      summary: { skuCount: 1, agedOver180: 108 },
+      summary: {
+        skuCount: 1,
+        totalAgedUnits: 240,
+        agedOver180: 108,
+        excessAvailability: "complete",
+        storageCostAvailability: "unavailable",
+        agedSurchargeAvailability: "unavailable",
+      },
+      expiration: {
+        currentFbaExpirationDatesAvailable: false,
+        nearExpiryUnits: null,
+        expiredUnits: null,
+      },
       notice: expect.stringContaining("不會自動建立促銷或移除訂單"),
     });
+
+    const exported = await router.handle(
+      request({
+        method: "GET",
+        query: {
+          marketplaceId: MARKETPLACE_ID,
+          reportId: report.reportId,
+          documentId: report.documentId,
+          download: "1",
+        },
+      }),
+    );
+    expect(exported.status).toBe(200);
+    expect(exported.body.kind).toBe("bytes");
+    if (exported.body.kind !== "bytes") throw new Error("Expected XLSX bytes");
+    expect(Array.from(exported.body.value.slice(0, 2))).toEqual([0x50, 0x4b]);
+    expect(exported.headers?.["content-disposition"]).toContain(
+      "amazon-fba-inventory-age-us-",
+    );
+    expect(exported.headers?.["x-exported-fba-sku-count"]).toBe("1");
 
     const mutation = await router.handle(request({ method: "PATCH" }));
     expect(mutation.status).toBe(404);

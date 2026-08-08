@@ -41,6 +41,9 @@ const CONTENT_AUDIT_HEADERS = [
   "說明",
 ] as const;
 
+const AGED_INVENTORY_SHEET_NAME = "FBA 庫齡";
+const AGED_INVENTORY_NOTES_SHEET_NAME = "欄位與能力邊界";
+
 export interface ListingsWorkbookRow {
   sku: string;
   asin?: string | null;
@@ -69,9 +72,47 @@ export interface CreateListingsWorkbookInput {
   layout?: "listings" | "content-audit";
 }
 
+export interface AgedInventoryWorkbookRow {
+  sellerSku: string;
+  fnSku: string;
+  asin: string;
+  title: string;
+  condition: string;
+  available: number;
+  totalAgedUnits: number;
+  agedOver180: number;
+  ageBuckets: readonly { key: string; label: string; units: number }[];
+  estimatedExcessQuantity: number | null;
+  recommendedRemovalQuantity: number | null;
+  daysOfSupply: number | null;
+  currencyCode: string | null;
+  estimatedStorageCostNextMonth: number | null;
+  estimatedAgedSurcharge: number | null;
+  agedSurchargeBuckets: readonly {
+    key: string;
+    label: string;
+    quantity: number | null;
+    estimatedCharge: number | null;
+  }[];
+  alert: string;
+  recommendedAction: string;
+  snapshotDate: string | null;
+}
+
+export interface CreateAgedInventoryWorkbookInput {
+  marketplaceLabel: string;
+  fetchedAt: string | Date;
+  rows: readonly AgedInventoryWorkbookRow[];
+  excessAvailability: "complete" | "partial" | "unavailable";
+  storageCostAvailability: "complete" | "partial" | "unavailable";
+  agedSurchargeAvailability: "complete" | "partial" | "unavailable";
+  expirationNotice: string;
+}
+
 type Cell =
   | { kind: "text"; value: unknown; style: number }
-  | { kind: "date"; value: string | Date | null | undefined; style: number };
+  | { kind: "date"; value: string | Date | null | undefined; style: number }
+  | { kind: "number"; value: number | null; style: number };
 
 interface WorksheetOptions {
   headers: readonly string[];
@@ -184,12 +225,183 @@ export function createListingsWorkbook({
   return zipSync(archive, { level: 6 });
 }
 
+export function createAgedInventoryWorkbook({
+  marketplaceLabel,
+  fetchedAt,
+  rows,
+  excessAvailability,
+  storageCostAvailability,
+  agedSurchargeAvailability,
+  expirationNotice,
+}: CreateAgedInventoryWorkbookInput): Uint8Array {
+  const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
+  const ageBuckets = rows[0]?.ageBuckets ?? [];
+  const surchargeBuckets = rows[0]?.agedSurchargeBuckets ?? [];
+  const ageKeys = ageBuckets.map((bucket) => bucket.key).join("|");
+  const surchargeKeys = surchargeBuckets.map((bucket) => bucket.key).join("|");
+  for (const row of rows) {
+    if (
+      row.ageBuckets.map((bucket) => bucket.key).join("|") !== ageKeys ||
+      row.agedSurchargeBuckets.map((bucket) => bucket.key).join("|") !==
+        surchargeKeys
+    ) {
+      throw new Error("Aged inventory workbook rows must use one bucket schema.");
+    }
+  }
+
+  const headers = [
+    "站點",
+    "庫存快照日",
+    "SKU",
+    "FNSKU",
+    "ASIN",
+    "商品",
+    "狀態",
+    "目前可售",
+    ...ageBuckets.map((bucket) => bucket.label),
+    "庫齡桶總數",
+    "180 天以上",
+    "Amazon 預估冗餘",
+    "可售天數",
+    "下月預估倉儲成本",
+    "幣別",
+    "AIS 預估附加費合計",
+    ...surchargeBuckets.flatMap((bucket) => [
+      `${bucket.label}計費數量`,
+      `${bucket.label}預估附加費`,
+    ]),
+    "Amazon 建議移除數量",
+    "Amazon alert 原文",
+    "Amazon 建議原文",
+  ];
+  const workbookRows = rows.map((row): readonly Cell[] => [
+    textCell(marketplaceLabel),
+    textCell(row.snapshotDate ?? ""),
+    textCell(row.sellerSku, 2),
+    textCell(row.fnSku, 2),
+    textCell(row.asin, 2),
+    textCell(row.title),
+    textCell(row.condition),
+    numberCell(row.available),
+    ...row.ageBuckets.map((bucket) => numberCell(bucket.units)),
+    numberCell(row.totalAgedUnits),
+    numberCell(row.agedOver180),
+    numberCell(row.estimatedExcessQuantity),
+    numberCell(row.daysOfSupply),
+    numberCell(row.estimatedStorageCostNextMonth),
+    textCell(row.currencyCode ?? ""),
+    numberCell(row.estimatedAgedSurcharge),
+    ...row.agedSurchargeBuckets.flatMap((bucket) => [
+      numberCell(bucket.quantity),
+      numberCell(bucket.estimatedCharge),
+    ]),
+    numberCell(row.recommendedRemovalQuantity),
+    textCell(row.alert),
+    textCell(row.recommendedAction),
+  ]);
+  const notesRows: readonly (readonly Cell[])[] = [
+    [textCell("資料來源"), textCell("GET_FBA_INVENTORY_PLANNING_DATA；FBA only；唯讀。")],
+    [
+      textCell("官方欄位文件"),
+      textCell(
+        "https://developer-docs.amazon.com/sp-api/lang-en_EN/docs/report-type-values-fba",
+      ),
+    ],
+    [
+      textCell("Amazon 預估冗餘"),
+      textCell(
+        excessAvailability === "complete"
+          ? "Amazon 報表欄位對全部商品都有值；全站合計才可成立。"
+          : excessAvailability === "partial"
+            ? "Amazon 有回傳欄位，但部分商品缺值；不顯示全站合計，逐列空白仍保留。"
+            : "Amazon 本次報表未提供欄位；不推算全站合計。",
+      ),
+    ],
+    [
+      textCell("下月預估倉儲成本"),
+      textCell(
+        storageCostAvailability === "complete"
+          ? "Amazon 報表欄位完整；顯示原值，不猜費率。"
+          : storageCostAvailability === "partial"
+            ? "Amazon 有回傳欄位，但部分商品缺值；不加總、不猜費率。"
+            : "Amazon 本次報表未提供欄位；不猜費率。",
+      ),
+    ],
+    [
+      textCell("AIS 預估附加費"),
+      textCell(
+        agedSurchargeAvailability === "complete"
+          ? "Amazon 報表區間完整；顯示原值，不猜費率。"
+          : agedSurchargeAvailability === "partial"
+            ? "Amazon 有回傳區間欄位，但部分商品缺值；不加總、不猜費率。"
+            : "Amazon 本次報表未提供完整 AIS 區間；不猜費率。",
+      ),
+    ],
+    [textCell("到期日／近效期"), textCell(expirationNotice)],
+    [
+      textCell("安全邊界"),
+      textCell("庫齡、estimated excess 與 Amazon alert 都不等於商品到期日；不會建立促銷或移除訂單。"),
+    ],
+  ];
+  const sheetDefinitions = [
+    {
+      name: AGED_INVENTORY_SHEET_NAME,
+      xml: buildWorksheet({
+        headers,
+        rows: workbookRows,
+        widths: headers.map((header, index) =>
+          index === 5 ? 48 : header.includes("原文") ? 34 : Math.max(12, Math.min(25, header.length * 2)),
+        ),
+        dataRowHeight: 36,
+      }),
+    },
+    {
+      name: AGED_INVENTORY_NOTES_SHEET_NAME,
+      xml: buildWorksheet({
+        headers: ["欄位", "說明"],
+        rows: notesRows,
+        widths: [26, 100],
+        dataRowHeight: 48,
+      }),
+    },
+  ];
+  const archive: Record<string, Uint8Array> = {
+    "[Content_Types].xml": strToU8(buildContentTypes(sheetDefinitions.length)),
+    "_rels/.rels": strToU8(buildPackageRelationships()),
+    "docProps/app.xml": strToU8(
+      buildAppProperties(sheetDefinitions.map((sheet) => sheet.name)),
+    ),
+    "docProps/core.xml": strToU8(
+      buildCoreProperties(
+        marketplaceLabel,
+        generatedAt,
+        "Amazon FBA 庫齡與冗餘匯出",
+      ),
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      buildWorkbookRelationships(sheetDefinitions.length),
+    ),
+    "xl/styles.xml": strToU8(buildStyles()),
+    "xl/workbook.xml": strToU8(
+      buildWorkbook(sheetDefinitions.map((sheet) => sheet.name)),
+    ),
+  };
+  sheetDefinitions.forEach((sheet, index) => {
+    archive[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(sheet.xml);
+  });
+  return zipSync(archive, { level: 6 });
+}
+
 function textCell(value: unknown, style = 3): Cell {
   return { kind: "text", value, style };
 }
 
 function dateCell(value: string | Date | null | undefined): Cell {
   return { kind: "date", value, style: 4 };
+}
+
+function numberCell(value: number | null): Cell {
+  return { kind: "number", value, style: 3 };
 }
 
 function buildWorksheet({
@@ -256,6 +468,12 @@ function buildWorksheet({
 }
 
 function renderCell(reference: string, cell: Cell): string {
+  if (cell.kind === "number" && cell.value !== null) {
+    if (!Number.isFinite(cell.value)) {
+      throw new TypeError(`Worksheet cell ${reference} must be a finite number.`);
+    }
+    return `<c r="${reference}" s="${cell.style}"><v>${cell.value}</v></c>`;
+  }
   if (cell.kind === "date" && cell.value !== null && cell.value !== undefined) {
     const parsed = parseDate(cell.value);
     if (parsed) {
@@ -454,10 +672,14 @@ function buildStyles(): string {
 </styleSheet>`;
 }
 
-function buildCoreProperties(marketplaceLabel: string, generatedAt: Date): string {
+function buildCoreProperties(
+  marketplaceLabel: string,
+  generatedAt: Date,
+  exportTitle = "Amazon 商品內容匯出",
+): string {
   const timestamp = generatedAt.toISOString();
   const title = escapeXml(
-    sanitizeXmlText(`Amazon 商品內容匯出 - ${marketplaceLabel}`),
+    sanitizeXmlText(`${exportTitle} - ${marketplaceLabel}`),
   );
 
   return `${XML_DECLARATION}

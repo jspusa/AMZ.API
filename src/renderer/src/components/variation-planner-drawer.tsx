@@ -18,6 +18,20 @@ import {
   type VariationMemberView,
   type VariationMovePlan,
 } from "../variation-planner";
+import {
+  initialVariationDimensionValues,
+  missingVariationFields,
+  parseVariationJsonValues,
+  parseVariationMovePreparation,
+  parseVariationMovePreview,
+  parseVariationMoveResult,
+  updateVariationLeaf,
+  type VariationFieldLeafView,
+  type VariationFieldView,
+  type VariationMoveAction,
+  type VariationMovePreparation,
+  type VariationMoveResult,
+} from "../variation-move";
 
 type VariationPlannerDrawerProps = {
   initialMarketplaceId: string;
@@ -31,6 +45,8 @@ type ApiProblem = {
   message?: string;
   requestId?: string | null;
 };
+
+type StagedState = "planned" | "detached" | "attached";
 
 const MARKETPLACES = [
   { id: "ATVPDKIKX0DER", label: "US · 美國站", sample: "AFA-TRKY-4OZ" },
@@ -49,12 +65,35 @@ function memberDimensions(member: VariationMemberView): string {
   return values.length ? values.join(" · ") : "Amazon 未回傳維度值";
 }
 
-function requestErrorMessage(
-  status: number,
-  problem: ApiProblem,
-): string {
+function requestErrorMessage(status: number, problem: ApiProblem): string {
   const message = variationFamilyErrorMessage(status, problem);
   return `${message}${problem.requestId ? `（Request ID: ${problem.requestId}）` : ""}`;
+}
+
+async function responseProblem(response: Response, fallback: string): Promise<Error> {
+  let payload: ApiProblem = {};
+  try {
+    payload = (await response.json()) as ApiProblem;
+  } catch {
+    // The fallback is intentionally local and contains no credential details.
+  }
+  const message = payload.message?.trim() || fallback;
+  return new Error(`${message}${payload.requestId ? `（Request ID: ${payload.requestId}）` : ""}`);
+}
+
+function targetParent(family: VariationFamilyView): VariationMemberView | null {
+  return family.queried.role === "parent" ? family.queried : family.parent;
+}
+
+function nestedValue(root: unknown, path: string[]): unknown {
+  return path.reduce<unknown>((current, key) => {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, root);
+}
+
+function displayValue(value: unknown): string | number | readonly string[] | undefined {
+  return typeof value === "string" || typeof value === "number" ? value : "";
 }
 
 export default function VariationPlannerDrawer({
@@ -73,21 +112,47 @@ export default function VariationPlannerDrawer({
   const [targetInput, setTargetInput] = useState("");
   const [sourceFamily, setSourceFamily] = useState<VariationFamilyView | null>(null);
   const [targetFamily, setTargetFamily] = useState<VariationFamilyView | null>(null);
+  const [stagedMember, setStagedMember] = useState<VariationMemberView | null>(null);
+  const [stagedState, setStagedState] = useState<StagedState>("planned");
   const [plan, setPlan] = useState<VariationMovePlan | null>(null);
+  const [preparation, setPreparation] = useState<VariationMovePreparation | null>(null);
+  const [dimensionValues, setDimensionValues] = useState<
+    Record<string, Array<Record<string, unknown>>>
+  >({});
+  const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [lastResult, setLastResult] = useState<VariationMoveResult | null>(null);
   const [sourceLoading, setSourceLoading] = useState(false);
   const [targetLoading, setTargetLoading] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [writeAction, setWriteAction] = useState<VariationMoveAction | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
   const sourceAbortRef = useRef<AbortController | null>(null);
   const targetAbortRef = useRef<AbortController | null>(null);
+  const preparationAbortRef = useRef<AbortController | null>(null);
   const autoLookupRef = useRef(false);
-  const marketplace =
-    MARKETPLACES.find((option) => option.id === marketplaceId) ?? MARKETPLACES[0];
-  const busy = sourceLoading || targetLoading;
+  const marketplace = MARKETPLACES.find((option) => option.id === marketplaceId) ?? MARKETPLACES[0];
+  const busy = sourceLoading || targetLoading || preparing || Boolean(writeAction);
+
+  const clearWorkflow = useCallback((keepStaged = false) => {
+    preparationAbortRef.current?.abort();
+    if (!keepStaged) setStagedMember(null);
+    setStagedState("planned");
+    setPlan(null);
+    setPreparation(null);
+    setDimensionValues({});
+    setJsonDrafts({});
+    setFieldErrors({});
+    setLastResult(null);
+    setWorkflowError(null);
+  }, []);
 
   const closeDrawer = useCallback(() => {
     sourceAbortRef.current?.abort();
     targetAbortRef.current?.abort();
+    preparationAbortRef.current?.abort();
     onClose();
   }, [onClose]);
 
@@ -96,137 +161,104 @@ export default function VariationPlannerDrawer({
       if (event.key === "Escape" && !busy) closeDrawer();
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-    };
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, closeDrawer]);
 
   useEffect(() => () => {
     sourceAbortRef.current?.abort();
     targetAbortRef.current?.abort();
+    preparationAbortRef.current?.abort();
   }, []);
 
-  const fetchFamily = useCallback(
-    async (sellerSku: string, signal: AbortSignal) => {
-      const params = new URLSearchParams({ marketplaceId, sku: sellerSku });
-      const response = await fetch(`/api/sp-api/variation-family?${params}`, {
-        cache: "no-store",
-        signal,
-      });
-      const payload = (await response.json()) as unknown;
-      if (!response.ok) {
-        throw new Error(
-          requestErrorMessage(response.status, payload as ApiProblem),
-        );
+  const fetchFamily = useCallback(async (sellerSku: string, signal: AbortSignal) => {
+    const params = new URLSearchParams({ marketplaceId, sku: sellerSku });
+    const response = await fetch(`/api/sp-api/variation-family?${params}`, {
+      cache: "no-store",
+      signal,
+    });
+    const payload = (await response.json()) as unknown;
+    if (!response.ok) throw new Error(requestErrorMessage(response.status, payload as ApiProblem));
+    return parseVariationFamilyResponse(payload, { marketplaceId, sellerSku });
+  }, [marketplaceId]);
+
+  const lookupSource = useCallback(async (sellerSku: string) => {
+    const normalizedSku = sellerSku.trim();
+    if (!normalizedSku) {
+      setSourceError("請輸入完整 Seller SKU。");
+      return;
+    }
+    sourceAbortRef.current?.abort();
+    const controller = new AbortController();
+    sourceAbortRef.current = controller;
+    setSourceLoading(true);
+    setSourceError(null);
+    setSourceFamily(null);
+    clearWorkflow();
+    try {
+      const family = await fetchFamily(normalizedSku, controller.signal);
+      if (sourceAbortRef.current !== controller) return;
+      setSourceFamily(family);
+      setSourceInput(family.queriedSku);
+      onContextResolved?.(marketplaceId, family.queriedSku);
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
+      if (sourceAbortRef.current === controller) {
+        setSourceError(error instanceof Error ? error.message : "目前無法載入來源 family。");
       }
-      return parseVariationFamilyResponse(payload, { marketplaceId, sellerSku });
-    },
-    [marketplaceId],
-  );
+    } finally {
+      if (sourceAbortRef.current === controller) setSourceLoading(false);
+    }
+  }, [clearWorkflow, fetchFamily, marketplaceId, onContextResolved]);
 
-  const lookupSource = useCallback(
-    async (sellerSku: string) => {
-      const normalizedSku = sellerSku.trim();
-      if (!normalizedSku) {
-        setSourceError("請輸入完整 Seller SKU。");
-        return;
+  const lookupTarget = useCallback(async (sellerSku: string) => {
+    const normalizedSku = sellerSku.trim();
+    if (!normalizedSku) {
+      setTargetError("請輸入目標 parent 或其 child SKU。");
+      return;
+    }
+    targetAbortRef.current?.abort();
+    const controller = new AbortController();
+    targetAbortRef.current = controller;
+    setTargetLoading(true);
+    setTargetError(null);
+    setTargetFamily(null);
+    setPlan(null);
+    setPreparation(null);
+    setLastResult(null);
+    setWorkflowError(null);
+    try {
+      const family = await fetchFamily(normalizedSku, controller.signal);
+      if (targetAbortRef.current !== controller) return;
+      const parent = targetParent(family);
+      if (!parent) throw new Error("這個 SKU 沒有可確認的目標 parent 容器。");
+      setTargetFamily(family);
+      setTargetInput(parent.sellerSku);
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
+      if (targetAbortRef.current === controller) {
+        setTargetError(error instanceof Error ? error.message : "目前無法載入目標 family。");
       }
-      sourceAbortRef.current?.abort();
-      const controller = new AbortController();
-      sourceAbortRef.current = controller;
-      setSourceLoading(true);
-      setSourceError(null);
-      setSourceFamily(null);
-      setPlan(null);
-      try {
-        const family = await fetchFamily(normalizedSku, controller.signal);
-        if (sourceAbortRef.current !== controller) return;
-        setSourceFamily(family);
-        setSourceInput(family.queriedSku);
-        onContextResolved?.(marketplaceId, family.queriedSku);
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") return;
-        if (sourceAbortRef.current === controller) {
-          setSourceError(
-            error instanceof Error ? error.message : "目前無法載入來源 family。",
-          );
-        }
-      } finally {
-        if (sourceAbortRef.current === controller) setSourceLoading(false);
-      }
-    },
-    [fetchFamily, marketplaceId, onContextResolved],
-  );
+    } finally {
+      if (targetAbortRef.current === controller) setTargetLoading(false);
+    }
+  }, [fetchFamily]);
 
-  const lookupTarget = useCallback(
-    async (sellerSku: string) => {
-      const normalizedSku = sellerSku.trim();
-      if (!normalizedSku) {
-        setTargetError("請輸入目標 parent 或其 child SKU。");
-        return;
-      }
-      targetAbortRef.current?.abort();
-      const controller = new AbortController();
-      targetAbortRef.current = controller;
-      setTargetLoading(true);
-      setTargetError(null);
-      setTargetFamily(null);
-      setPlan(null);
-      try {
-        const family = await fetchFamily(normalizedSku, controller.signal);
-        if (targetAbortRef.current !== controller) return;
-        if (!family.parent && family.queriedRole !== "parent") {
-          throw new Error("這個 SKU 沒有可確認的目標 parent 容器。");
-        }
-        setTargetFamily(family);
-        setTargetInput(family.parent?.sellerSku ?? family.queriedSku);
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") return;
-        if (targetAbortRef.current === controller) {
-          setTargetError(
-            error instanceof Error ? error.message : "目前無法載入目標 family。",
-          );
-        }
-      } finally {
-        if (targetAbortRef.current === controller) setTargetLoading(false);
-      }
-    },
-    [fetchFamily],
-  );
+  const runSourceLookup = useCallback(() => void lookupSource(sourceInput), [lookupSource, sourceInput]);
+  const runTargetLookup = useCallback(() => void lookupTarget(targetInput), [lookupTarget, targetInput]);
 
-  const runSourceLookup = useCallback(() => {
-    void lookupSource(sourceInput);
-  }, [lookupSource, sourceInput]);
+  const handleSourceKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
+    const action = variationLookupKeyAction(event.key, event.nativeEvent.isComposing);
+    if (action === "ignore") return;
+    event.preventDefault();
+    if (action === "lookup") runSourceLookup();
+  }, [runSourceLookup]);
 
-  const runTargetLookup = useCallback(() => {
-    void lookupTarget(targetInput);
-  }, [lookupTarget, targetInput]);
-
-  const handleSourceKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLInputElement>) => {
-      const action = variationLookupKeyAction(
-        event.key,
-        event.nativeEvent.isComposing,
-      );
-      if (action === "ignore") return;
-      event.preventDefault();
-      if (action === "lookup") runSourceLookup();
-    },
-    [runSourceLookup],
-  );
-
-  const handleTargetKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLInputElement>) => {
-      const action = variationLookupKeyAction(
-        event.key,
-        event.nativeEvent.isComposing,
-      );
-      if (action === "ignore") return;
-      event.preventDefault();
-      if (action === "lookup") runTargetLookup();
-    },
-    [runTargetLookup],
-  );
+  const handleTargetKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
+    const action = variationLookupKeyAction(event.key, event.nativeEvent.isComposing);
+    if (action === "ignore") return;
+    event.preventDefault();
+    if (action === "lookup") runTargetLookup();
+  }, [runTargetLookup]);
 
   useEffect(() => {
     if (autoLookupRef.current || !initialSellerSku.trim()) return;
@@ -237,14 +269,15 @@ export default function VariationPlannerDrawer({
   const changeMarketplace = (nextMarketplaceId: string) => {
     sourceAbortRef.current?.abort();
     targetAbortRef.current?.abort();
+    preparationAbortRef.current?.abort();
     setMarketplaceId(nextMarketplaceId);
     setSourceInput("");
     setTargetInput("");
     setSourceFamily(null);
     setTargetFamily(null);
-    setPlan(null);
     setSourceError(null);
     setTargetError(null);
+    clearWorkflow();
   };
 
   const sourceMembers = useMemo(() => {
@@ -255,16 +288,171 @@ export default function VariationPlannerDrawer({
       : [];
   }, [sourceFamily]);
 
-  const planMember = (member: VariationMemberView) => {
-    if (!sourceFamily || !targetFamily) return;
-    setPlan(buildVariationMovePlan(sourceFamily, member, targetFamily));
+  const stageMember = (member: VariationMemberView) => {
+    setStagedMember(member);
+    setStagedState(member.parentSku ? "planned" : "detached");
+    setPlan(null);
+    setPreparation(null);
+    setDimensionValues({});
+    setJsonDrafts({});
+    setFieldErrors({});
+    setLastResult(null);
+    setWorkflowError(null);
   };
 
-  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+  const loadPreparation = useCallback(async (
+    member: VariationMemberView,
+    family: VariationFamilyView,
+  ) => {
+    const parent = targetParent(family);
+    if (!parent) return;
+    preparationAbortRef.current?.abort();
+    const controller = new AbortController();
+    preparationAbortRef.current = controller;
+    setPreparing(true);
+    setPreparation(null);
+    setWorkflowError(null);
+    try {
+      const params = new URLSearchParams({
+        marketplaceId,
+        sku: member.sellerSku,
+        targetSku: parent.sellerSku,
+      });
+      const response = await fetch(`/api/sp-api/variation-move?${params}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw await responseProblem(response, "無法準備變體必要欄位。");
+      const raw = (await response.json()) as unknown;
+      const next = parseVariationMovePreparation(raw, {
+        marketplaceId,
+        sellerSku: member.sellerSku,
+        targetParentSku: parent.sellerSku,
+      });
+      setPreparation(next);
+      const values = initialVariationDimensionValues(next);
+      setDimensionValues(values);
+      setJsonDrafts(Object.fromEntries(
+        next.fields.filter((field) => field.jsonFallback).map((field) => [
+          field.name,
+          JSON.stringify(values[field.name] ?? [], null, 2),
+        ]),
+      ));
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
+      setWorkflowError(error instanceof Error ? error.message : "目前無法準備變體欄位。");
+    } finally {
+      if (preparationAbortRef.current === controller) setPreparing(false);
+    }
+  }, [marketplaceId]);
+
+  const moveStagedToTarget = () => {
+    if (!sourceFamily || !targetFamily || !stagedMember) return;
+    const nextPlan = buildVariationMovePlan(sourceFamily, stagedMember, targetFamily);
+    setPlan(nextPlan);
+    setLastResult(null);
+    setWorkflowError(null);
+    if (nextPlan.status !== "blocked") void loadPreparation(stagedMember, targetFamily);
+  };
+
+  const sourceDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const sellerSku = event.dataTransfer.getData("text/plain");
     const member = sourceMembers.find((candidate) => candidate.sellerSku === sellerSku);
-    if (member) planMember(member);
+    if (member) stageMember(member);
+  };
+
+  const targetDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const sellerSku = event.dataTransfer.getData("text/plain");
+    if (stagedMember?.sellerSku === sellerSku) moveStagedToTarget();
+  };
+
+  const missingFields = useMemo(
+    () => preparation ? missingVariationFields(preparation, dimensionValues) : [],
+    [dimensionValues, preparation],
+  );
+
+  const refreshFamilies = useCallback(async () => {
+    if (!sourceFamily || !targetFamily) return;
+    const sourceSku = sourceFamily.queriedSku;
+    const targetSku = targetParent(targetFamily)?.sellerSku ?? targetFamily.queriedSku;
+    const controller = new AbortController();
+    try {
+      const [nextSource, nextTarget] = await Promise.all([
+        fetchFamily(sourceSku, controller.signal),
+        fetchFamily(targetSku, controller.signal),
+      ]);
+      setSourceFamily(nextSource);
+      setTargetFamily(nextTarget);
+    } catch {
+      // The write result already contains a verified single-SKU readback. A
+      // family refresh failure is shown as a non-destructive warning only.
+      setWorkflowError("變體寫入已回查完成，但 family 清單重新整理失敗；請稍後重新讀取兩側 SKU。");
+    }
+  }, [fetchFamily, sourceFamily, targetFamily]);
+
+  const runWrite = async (action: VariationMoveAction) => {
+    if (!stagedMember || !preparation) return;
+    if (preparation.blockers.length) {
+      setWorkflowError(preparation.blockers.join(" "));
+      return;
+    }
+    if (action === "attach" && missingFields.length) {
+      setWorkflowError(`請先填完目標變體必填欄位：${missingFields.join("、")}。`);
+      return;
+    }
+    const idempotencyKey = crypto.randomUUID();
+    const body = {
+      action,
+      marketplaceId,
+      sellerSku: stagedMember.sellerSku,
+      expectedSourceParentSku: preparation.sourceParentSku,
+      targetParentSku: preparation.targetParentSku,
+      variationTheme: preparation.variationTheme,
+      dimensionNames: preparation.dimensionNames,
+      dimensionValues,
+      idempotencyKey,
+    };
+    setWriteAction(action);
+    setWorkflowError(null);
+    setLastResult(null);
+    try {
+      const previewResponse = await fetch("/api/sp-api/variation-move", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!previewResponse.ok) {
+        throw await responseProblem(previewResponse, "Amazon 變體預檢失敗。");
+      }
+      const previewRaw = (await previewResponse.json()) as unknown;
+      parseVariationMovePreview(previewRaw, { action, marketplaceId, sellerSku: stagedMember.sellerSku });
+
+      // No extra browser confirmation: the PATCH immediately invokes the
+      // trusted Mac Bridge Touch ID/system prompt with a Main-generated reason.
+      const commitResponse = await fetch("/api/sp-api/variation-move", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!commitResponse.ok) {
+        throw await responseProblem(commitResponse, "Amazon 變體寫入或回查失敗。");
+      }
+      const resultRaw = (await commitResponse.json()) as unknown;
+      const result = parseVariationMoveResult(resultRaw, {
+        action,
+        marketplaceId,
+        sellerSku: stagedMember.sellerSku,
+      });
+      setLastResult(result);
+      setStagedState(action === "detach" ? "detached" : "attached");
+      await refreshFamilies();
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "變體操作沒有完成。");
+    } finally {
+      setWriteAction(null);
+    }
   };
 
   return (
@@ -283,15 +471,15 @@ export default function VariationPlannerDrawer({
       >
         <div className="drawer-header">
           <div>
-            <p className="eyebrow">READ-ONLY VARIATION FAMILY</p>
-            <h2 id="variation-planner-title">變體規劃</h2>
+            <p className="eyebrow">SAFE VARIATION FAMILY MOVE</p>
+            <h2 id="variation-planner-title">變體規劃與改掛</h2>
           </div>
           <button type="button" onClick={closeDrawer} disabled={busy} aria-label="關閉變體規劃">×</button>
         </div>
 
-        <div className="variation-readonly-banner">
-          <strong>唯讀規劃 · Amazon 不會收到變更</strong>
-          <p>既有 child 改掛新 parent 必須先移除舊關係再重建，是非原子流程；v0.1.7 第一版不寫入。</p>
+        <div className="variation-readonly-banner writable">
+          <strong>兩階段安全寫入 · 不會盲目重送</strong>
+          <p>先把 FBA child 放進「解除變體」暫存區，再拖到另一個已查詢的 parent。Mac 會依 CHILD PTD 要求欄位，逐階段 Validation Preview、Touch ID、送出與唯讀回查。</p>
         </div>
 
         <label className="variation-marketplace">
@@ -303,13 +491,13 @@ export default function VariationPlannerDrawer({
 
         <div className="variation-planner-columns">
           <section className="variation-family-panel" aria-labelledby="variation-source-title">
-            <div className="variation-section-heading"><span>01</span><div><strong id="variation-source-title">來源 family</strong><small>只顯示可確認的 FBA child</small></div></div>
+            <div className="variation-section-heading"><span>01</span><div><strong id="variation-source-title">來源 family</strong><small>查詢來源 SKU；只顯示可確認的 FBA child</small></div></div>
             <div className="variation-search-row">
               <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} onKeyDown={handleSourceKeyDown} placeholder={`例如 ${marketplace.sample}`} maxLength={40} autoComplete="off" spellCheck={false} disabled={busy} aria-label="來源 Seller SKU" />
               <button type="button" data-variation-lookup="source" onClick={runSourceLookup} disabled={busy || !sourceInput.trim()}>{sourceLoading ? "讀取中" : "讀取"}</button>
             </div>
             {sourceError && <div className="price-error" role="alert">{sourceError}</div>}
-            {sourceLoading && <p className="variation-loading" role="status">正在唯讀整理 parent、children、theme 與維度…</p>}
+            {sourceLoading && <p className="variation-loading" role="status">正在整理來源 parent、children、theme 與維度…</p>}
             {sourceFamily && (
               <>
                 <FamilySummary family={sourceFamily} />
@@ -317,75 +505,192 @@ export default function VariationPlannerDrawer({
                   {sourceMembers.map((member) => (
                     <article
                       key={member.sellerSku}
-                      className="variation-child-card"
-                      draggable
+                      className={`variation-child-card ${stagedMember?.sellerSku === member.sellerSku ? "selected" : ""}`}
+                      draggable={!busy}
                       onDragStart={(event) => {
                         event.dataTransfer.effectAllowed = "copy";
                         event.dataTransfer.setData("text/plain", member.sellerSku);
                       }}
                     >
-                      <div><strong>{member.sellerSku}</strong><span>FBA child</span></div>
+                      <div><strong>{member.sellerSku}</strong><span>FBA {member.role}</span></div>
                       <p>{member.title}</p>
                       <small>{memberDimensions(member)}</small>
-                      <button type="button" disabled={!targetFamily} onClick={() => planMember(member)}>加入唯讀規劃</button>
+                      <button type="button" disabled={busy} onClick={() => stageMember(member)}>放入解除變體區</button>
                     </article>
                   ))}
-                  {!sourceMembers.length && <p className="variation-empty">這個 family 沒有可拖移的 FBA child。</p>}
+                  {!sourceMembers.length && <p className="variation-empty">這個 family 沒有可移動的 FBA child。</p>}
                 </div>
               </>
             )}
           </section>
 
           <section className="variation-family-panel target" aria-labelledby="variation-target-title">
-            <div className="variation-section-heading"><span>02</span><div><strong id="variation-target-title">目標 parent</strong><small>可輸入 parent 或其中任一 child</small></div></div>
+            <div className="variation-section-heading"><span>02</span><div><strong id="variation-target-title">目標 family</strong><small>可輸入 parent 或其中任一 child</small></div></div>
             <div className="variation-search-row">
               <input value={targetInput} onChange={(event) => setTargetInput(event.target.value)} onKeyDown={handleTargetKeyDown} placeholder="目標 parent SKU" maxLength={40} autoComplete="off" spellCheck={false} disabled={busy} aria-label="目標 Parent SKU" />
               <button type="button" data-variation-lookup="target" onClick={runTargetLookup} disabled={busy || !targetInput.trim()}>{targetLoading ? "讀取中" : "讀取"}</button>
             </div>
             {targetError && <div className="price-error" role="alert">{targetError}</div>}
-            {targetLoading && <p className="variation-loading" role="status">正在唯讀確認目標 parent…</p>}
+            {targetLoading && <p className="variation-loading" role="status">正在確認目標 parent 與既有 child…</p>}
+            {targetFamily && <TargetFamilyDetails family={targetFamily} />}
             <div
-              className={`variation-drop-zone ${targetFamily ? "ready" : ""}`}
-              onDragOver={(event) => { if (targetFamily) event.preventDefault(); }}
-              onDrop={onDrop}
-              aria-label="拖放 FBA child 到目標 parent 規劃區"
+              className={`variation-drop-zone ${targetFamily && stagedMember ? "ready" : ""}`}
+              onDragOver={(event) => { if (targetFamily && stagedMember) event.preventDefault(); }}
+              onDrop={targetDrop}
+              aria-label="把解除變體暫存的 FBA child 拖到目標 parent"
             >
               {targetFamily ? (
                 <>
-                  <span>唯讀目標</span>
-                  <strong>{targetFamily.parent?.sellerSku ?? targetFamily.queried.sellerSku}</strong>
+                  <span>加入目標 parent</span>
+                  <strong>{targetParent(targetFamily)?.sellerSku ?? "Parent 未確認"}</strong>
                   <p>{targetFamily.variationTheme ?? "Theme 未確認"} · {targetFamily.children.length} 個 FBA child</p>
-                  <small>將左側 child 拖到這裡，或按「加入唯讀規劃」</small>
+                  <small>{stagedMember ? "把中間暫存卡拖到這裡" : "請先把來源 child 放進解除變體暫存區"}</small>
                 </>
               ) : (
-                <><span>先讀取目標 parent</span><p>這裡只產生記憶體中的規劃，不會送出 Amazon 請求。</p></>
+                <><span>先讀取目標 family</span><p>目標 parent 的標題、theme 與維度會在這裡核對。</p></>
               )}
             </div>
-            {targetFamily && <FamilySummary family={targetFamily} compact />}
+            {targetFamily && stagedMember && (
+              <button className="variation-target-action" type="button" onClick={moveStagedToTarget} disabled={busy}>
+                使用暫存的 {stagedMember.sellerSku}
+              </button>
+            )}
           </section>
         </div>
 
-        {plan && <PlanReview plan={plan} onClear={() => setPlan(null)} />}
+        <section className={`variation-detach-stage ${stagedMember ? "occupied" : ""}`} aria-label="解除變體暫存區">
+          <div className="variation-section-heading"><span>03</span><div><strong>解除變體暫存區</strong><small>拖入後來源卡仍保留；Amazon 尚未改變，直到您直接使用 Touch ID</small></div></div>
+          <div
+            className="variation-detach-drop"
+            onDragOver={(event) => { if (sourceFamily) event.preventDefault(); }}
+            onDrop={sourceDrop}
+          >
+            {stagedMember ? (
+              <article
+                className={`variation-staged-card ${stagedState}`}
+                draggable={!busy && stagedState !== "attached"}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "copy";
+                  event.dataTransfer.setData("text/plain", stagedMember.sellerSku);
+                }}
+              >
+                <div><strong>{stagedMember.sellerSku}</strong><span>{stagedState === "planned" ? "尚未解除" : stagedState === "detached" ? "已回查為獨立 SKU" : "已加入新 family"}</span></div>
+                <p>{stagedMember.title}</p>
+                <small>{stagedMember.parentSku ? `原 Parent：${stagedMember.parentSku}` : "原本沒有 parent"} · {memberDimensions(stagedMember)}</small>
+                {stagedState !== "attached" && <em>可把這張卡拖到右側目標 family</em>}
+              </article>
+            ) : (
+              <p>把左側 FBA child 拖到這裡，或按「放入解除變體區」。</p>
+            )}
+          </div>
+        </section>
+
+        {plan && <PlanReview plan={plan} />}
+        {preparing && <div className="validation-status demo" role="status"><strong>正在讀取 Amazon CHILD PTD 與必要變體欄位…</strong></div>}
+        {workflowError && <div className="price-error" role="alert">{workflowError}</div>}
+
+        {preparation && plan && plan.status !== "blocked" && (
+          <section className="variation-write-review" aria-labelledby="variation-write-title">
+            <div className="variation-plan-heading">
+              <div><span>AMAZON CHILD PTD</span><h3 id="variation-write-title">完成目標 family 必要欄位</h3></div>
+              <small>{preparation.productType} · {preparation.variationTheme}</small>
+            </div>
+            {preparation.blockers.length > 0 && (
+              <div className="variation-plan-blockers"><strong>Amazon 安全檢查未通過</strong><ul>{preparation.blockers.map((item) => <li key={item}>{item}</li>)}</ul></div>
+            )}
+            <div className="variation-field-grid">
+              {preparation.fields.map((field) => (
+                <VariationFieldEditor
+                  key={field.name}
+                  field={field}
+                  values={dimensionValues[field.name] ?? []}
+                  jsonDraft={jsonDrafts[field.name] ?? ""}
+                  error={fieldErrors[field.name] ?? null}
+                  disabled={busy || stagedState === "attached" || !field.editable}
+                  onLeafChange={(leaf, value) => {
+                    setDimensionValues((current) => updateVariationLeaf({
+                      values: current,
+                      fieldName: field.name,
+                      path: leaf.path,
+                      value,
+                    }));
+                    setFieldErrors((current) => ({ ...current, [field.name]: "" }));
+                  }}
+                  onJsonDraftChange={(text) => setJsonDrafts((current) => ({ ...current, [field.name]: text }))}
+                  onJsonCommit={() => {
+                    try {
+                      const values = parseVariationJsonValues({
+                        text: jsonDrafts[field.name] ?? "",
+                        marketplaceId,
+                      });
+                      setDimensionValues((current) => ({ ...current, [field.name]: values }));
+                      setFieldErrors((current) => ({ ...current, [field.name]: "" }));
+                    } catch (error) {
+                      setFieldErrors((current) => ({
+                        ...current,
+                        [field.name]: error instanceof Error ? error.message : "JSON 格式不正確。",
+                      }));
+                    }
+                  }}
+                />
+              ))}
+            </div>
+            {missingFields.length > 0 && <p className="variation-warning">尚待填寫：{missingFields.join("、")}</p>}
+            {preparation.warnings.map((warning) => <p className="variation-warning" key={warning}>{warning}</p>)}
+
+            <div className="variation-write-actions">
+              {stagedState === "planned" && (
+                <button
+                  className="price-primary-button danger-button"
+                  type="button"
+                  disabled={busy || !preparation.writable || preparation.blockers.length > 0}
+                  onClick={() => void runWrite("detach")}
+                >
+                  {writeAction === "detach" ? "等待 Touch ID／回查中…" : `直接使用 Touch ID 解除 ${preparation.sourceParentSku ?? "舊 parent"} 並回查`}
+                </button>
+              )}
+              {stagedState === "detached" && (
+                <button
+                  className="price-primary-button"
+                  type="button"
+                  disabled={busy || !preparation.writable || preparation.blockers.length > 0 || missingFields.length > 0 || Object.values(fieldErrors).some(Boolean)}
+                  onClick={() => void runWrite("attach")}
+                >
+                  {writeAction === "attach" ? "等待 Touch ID／回查中…" : `直接使用 Touch ID 加入 ${preparation.targetParentSku} 並回查`}
+                </button>
+              )}
+              {stagedState === "attached" && <strong className="variation-success">✓ 已回查屬於 {preparation.targetParentSku}</strong>}
+              {!preparation.writable && <small>目前為展示或唯讀模式，Amazon 不會收到寫入。</small>}
+            </div>
+            {lastResult && (
+              <div className="validation-status live">
+                <strong>{lastResult.notice}</strong>
+                <p>{lastResult.action === "detach" ? "解除" : "加入"}已由 Amazon 回查確認；沒有自動重送。</p>
+              </div>
+            )}
+          </section>
+        )}
 
         <div className="variation-safety-boundary">
           <strong>能力邊界</strong>
-          <p>Listings Items v2021-08-01 唯讀 · relationships／attributes／variationParentSku · FBA child only · Parent 僅限唯讀容器</p>
+          <p>Listings Items v2021-08-01 · CHILD Product Type Definition · FBA child only · Validation Preview · Touch ID · 持久 Idempotency · 送出後唯讀回查 · 不使用 Seller Central 私有接口</p>
         </div>
-        <div className="drawer-api-footnote">Read-only planner · No PUT · No PATCH · No DELETE · No FBM</div>
+        <div className="drawer-api-footnote">Two explicit non-atomic stages · No blind retry · No FBM</div>
       </aside>
     </div>
   );
 }
 
-function FamilySummary({ family, compact = false }: { family: VariationFamilyView; compact?: boolean }) {
-  const parentSku = family.parent?.sellerSku ?? (family.queried.role === "parent" ? family.queried.sellerSku : null);
+function FamilySummary({ family }: { family: VariationFamilyView }) {
+  const parent = targetParent(family);
   return (
-    <div className={`variation-family-summary ${compact ? "compact" : ""}`}>
+    <div className="variation-family-summary">
       <dl>
-        <div><dt>Parent</dt><dd>{parentSku ?? "無 parent"}</dd></div>
+        <div><dt>Parent</dt><dd>{parent?.sellerSku ?? "無 parent"}</dd></div>
         <div><dt>Theme</dt><dd>{family.variationTheme ?? "未確認"}</dd></div>
         <div><dt>Children</dt><dd>{family.children.length} FBA</dd></div>
       </dl>
+      {parent && <p className="variation-parent-title">{parent.title}</p>}
       {!family.familyComplete && <p className="variation-warning">Family 清單不完整（分頁超限或 parent 宣告的 child 未全數回傳），請勿據此執行。</p>}
       {family.excludedChildren.map((item) => <p className="variation-warning" key={`${item.sellerSku}-${item.reason}`}>{item.sellerSku}：{item.reason}</p>)}
       <small>{family.notice}</small>
@@ -393,14 +698,105 @@ function FamilySummary({ family, compact = false }: { family: VariationFamilyVie
   );
 }
 
-function PlanReview({ plan, onClear }: { plan: VariationMovePlan; onClear: () => void }) {
+function TargetFamilyDetails({ family }: { family: VariationFamilyView }) {
+  const parent = targetParent(family);
+  const dimensions = family.children.flatMap((child) => child.dimensions.flatMap((dimension) =>
+    dimension.values.map((value) => `${dimension.label}: ${value}`),
+  ));
+  return (
+    <div className="variation-target-details">
+      <span>目標商品</span>
+      <strong>{parent?.title ?? "Amazon 未回傳 parent 標題"}</strong>
+      <p>{parent?.productType ?? family.queried.productType} · Theme: {family.variationTheme ?? "未確認"}</p>
+      <small>必要維度：{family.dimensionNames.length ? family.dimensionNames.join("、") : "Amazon 未回傳"}</small>
+      {dimensions.length > 0 && <div className="variation-dimension-chips">{[...new Set(dimensions)].slice(0, 12).map((value) => <i key={value}>{value}</i>)}</div>}
+    </div>
+  );
+}
+
+function PlanReview({ plan }: { plan: VariationMovePlan }) {
   return (
     <section className={`variation-plan-review ${plan.status}`} aria-labelledby="variation-plan-review-title">
-      <div className="variation-plan-heading"><div><span>READ-ONLY PLAN</span><h3 id="variation-plan-review-title">{plan.source.sellerSku} → {plan.targetParent.sellerSku}</h3></div><button type="button" onClick={onClear}>清除規劃</button></div>
-      {plan.blockers.length > 0 && <div className="variation-plan-blockers"><strong>目前不可安全規劃</strong><ul>{plan.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></div>}
-      <div className="variation-plan-warnings"><strong>必要警告</strong><ul>{plan.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>
-      <div className="variation-plan-steps"><strong>未執行的流程草案</strong><ol>{plan.proposedSteps.map((step) => <li key={step}>{step}</li>)}</ol></div>
-      <p className="variation-no-write">這不是送出按鈕；Amazon 目前完全沒有變更。</p>
+      <div className="variation-plan-heading"><div><span>MOVE REVIEW</span><h3 id="variation-plan-review-title">{plan.source.sellerSku} → {plan.targetParent.sellerSku}</h3></div></div>
+      {plan.blockers.length > 0 && <div className="variation-plan-blockers"><strong>目前不可安全移動</strong><ul>{plan.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></div>}
+      <div className="variation-plan-warnings"><strong>非原子流程提醒</strong><ul>{plan.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>
+      <div className="variation-plan-steps"><strong>實際執行順序</strong><ol><li>Amazon 預檢解除舊 parent 關係</li><li>Touch ID 後送出解除並回查</li><li>依 CHILD PTD 補齊所有變體維度</li><li>Amazon 預檢加入新 parent</li><li>Touch ID 後送出加入並回查</li></ol></div>
     </section>
+  );
+}
+
+function VariationFieldEditor({
+  field,
+  values,
+  jsonDraft,
+  error,
+  disabled,
+  onLeafChange,
+  onJsonDraftChange,
+  onJsonCommit,
+}: {
+  field: VariationFieldView;
+  values: Array<Record<string, unknown>>;
+  jsonDraft: string;
+  error: string | null;
+  disabled: boolean;
+  onLeafChange: (leaf: VariationFieldLeafView, value: string | number | boolean) => void;
+  onJsonDraftChange: (value: string) => void;
+  onJsonCommit: () => void;
+}) {
+  const row = values[0] ?? {};
+  return (
+    <fieldset className="variation-field-card" disabled={disabled}>
+      <legend>{field.label}<code>{field.name}</code></legend>
+      {!field.editable && <p className="variation-warning">Amazon CHILD PTD 將此欄位標示為唯讀。</p>}
+      {field.jsonFallback ? (
+        <label>
+          <span>Amazon attribute JSON</span>
+          <textarea value={jsonDraft} onChange={(event) => onJsonDraftChange(event.target.value)} onBlur={onJsonCommit} rows={5} spellCheck={false} />
+        </label>
+      ) : field.leaves.map((leaf) => {
+        const value = nestedValue(row, leaf.path);
+        const id = `variation-${field.name}-${leaf.path.join("-")}`;
+        return (
+          <label key={leaf.path.join(".")} htmlFor={id}>
+            <span>{leaf.label}{leaf.required ? " *" : ""}</span>
+            {leaf.enumValues.length ? (
+              <select
+                id={id}
+                value={String(value ?? "")}
+                onChange={(event) => {
+                  const option = leaf.enumValues.find((candidate) => String(candidate) === event.target.value);
+                  if (option !== undefined) onLeafChange(leaf, option);
+                }}
+              >
+                <option value="">請選擇</option>
+                {leaf.enumValues.map((option) => <option key={String(option)} value={String(option)}>{String(option)}</option>)}
+              </select>
+            ) : leaf.type === "boolean" ? (
+              <select id={id} value={String(value ?? "")} onChange={(event) => onLeafChange(leaf, event.target.value === "true")}>
+                <option value="">請選擇</option><option value="true">Yes</option><option value="false">No</option>
+              </select>
+            ) : (
+              <input
+                id={id}
+                type={leaf.type === "number" || leaf.type === "integer" ? "number" : "text"}
+                step={leaf.type === "integer" ? "1" : leaf.type === "number" ? "any" : undefined}
+                value={displayValue(value)}
+                onChange={(event) => {
+                  if (leaf.type === "number" || leaf.type === "integer") {
+                    const number = Number(event.target.value);
+                    if (Number.isFinite(number)) onLeafChange(leaf, number);
+                  } else {
+                    onLeafChange(leaf, event.target.value);
+                  }
+                }}
+                autoComplete="off"
+              />
+            )}
+          </label>
+        );
+      })}
+      {error && <small className="price-error">{error}</small>}
+    </fieldset>
   );
 }

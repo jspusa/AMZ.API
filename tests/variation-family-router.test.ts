@@ -65,8 +65,11 @@ describe("variation family read-only route", () => {
         expect.objectContaining({ role: "child", fba: true }),
       ]),
     );
-    expect((value.boundaries as string[]).join(" ")).toContain("非原子");
-    expect((value.boundaries as string[]).join(" ")).toContain("不執行");
+    const boundaries = (value.boundaries as string[]).join(" ");
+    expect(boundaries).toContain("非原子");
+    expect(boundaries).toContain("展示 family 快照與預檢不會送出");
+    expect(boundaries).toContain("正式模式只允許固定的兩階段");
+    expect(boundaries).not.toContain("第一版不執行");
   });
 
   it("fails closed when marketplace or Seller SKU is missing", async () => {

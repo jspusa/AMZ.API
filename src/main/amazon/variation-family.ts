@@ -198,6 +198,78 @@ function attributeVariationTheme(
   return null;
 }
 
+export function variationRelationshipEvidenceConflict(
+  payload: VariationListingPayload,
+  marketplaceId: string,
+): string | null {
+  const relations = relationshipsForMarketplace(payload, marketplaceId);
+  const relationshipParents = unique(
+    relations
+      .flatMap((relationship) => relationship.parentSkus ?? [])
+      .map(cleanText),
+  );
+  const relationshipChildren = unique(
+    relations
+      .flatMap((relationship) => relationship.childSkus ?? [])
+      .map(cleanText),
+  );
+  const attributeParents = attributeParentSkus(payload, marketplaceId);
+  const parentageValues = unique(
+    attributeItems(payload, "parentage_level", marketplaceId)
+      .flatMap((item) => scalarValues(item.value))
+      .map((value) => value.toLowerCase())
+      .filter((value) => value === "parent" || value === "child"),
+  );
+  const relationshipThemes = unique(
+    relations.map((relationship) => {
+      const theme = cleanText(relationship.variationTheme?.theme);
+      return theme?.toUpperCase() ?? null;
+    }),
+  );
+  const attributeThemes = unique(
+    attributeItems(payload, "variation_theme", marketplaceId).flatMap((item) => [
+      ...scalarValues(item.name),
+      ...scalarValues(item.value),
+      ...(isRecord(item.value) ? scalarValues(item.value.name) : []),
+    ]).map((value) => value.toUpperCase()),
+  );
+
+  if (relationshipParents.length > 1 || attributeParents.length > 1) {
+    return "Amazon 同時回傳多個互相衝突的 parent SKU，已停止變體操作。";
+  }
+  if (
+    relationshipParents.length === 1 &&
+    attributeParents.length === 1 &&
+    relationshipParents[0] !== attributeParents[0]
+  ) {
+    return "Amazon relationships 與 Listing attributes 的 parent SKU 不一致，已停止變體操作。";
+  }
+  if (parentageValues.length > 1) {
+    return "Amazon Listing attributes 同時把此 SKU 標示為 parent 與 child，已停止變體操作。";
+  }
+  const parentage = parentageValues[0] ?? null;
+  const claimsChild = relationshipParents.length > 0 || attributeParents.length > 0;
+  const claimsParent = relationshipChildren.length > 0;
+  if (
+    (claimsChild && claimsParent) ||
+    (parentage === "parent" && claimsChild) ||
+    (parentage === "child" && claimsParent)
+  ) {
+    return "Amazon relationships 與 Listing attributes 的 parent／child 角色互相衝突，已停止變體操作。";
+  }
+  if (relationshipThemes.length > 1 || attributeThemes.length > 1) {
+    return "Amazon 同時回傳多個互相衝突的 variation theme，已停止變體操作。";
+  }
+  if (
+    relationshipThemes.length === 1 &&
+    attributeThemes.length === 1 &&
+    relationshipThemes[0] !== attributeThemes[0]
+  ) {
+    return "Amazon relationships 與 Listing attributes 的 variation theme 不一致，已停止變體操作。";
+  }
+  return null;
+}
+
 function dimensionLabel(name: string): string {
   return name
     .split("_")

@@ -2,6 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  applyUiFontSize,
+  readUiFontSize,
+  saveUiFontSize,
+  UI_FONT_SIZE_OPTIONS,
+  type UiFontSize,
+} from "../ui-font-size";
+import AccountingCenterPanel from "./accounting-center-panel";
 
 type AutomationLevel = "automatic" | "one_click" | "manual";
 type CheckState = "ready" | "attention" | "manual";
@@ -57,7 +65,12 @@ export default function SystemHealthControl({
   const [health, setHealth] = useState<HealthSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [fontSize, setFontSize] = useState<UiFontSize>(() => readUiFontSize());
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    applyUiFontSize(fontSize);
+  }, [fontSize]);
 
   const runCheck = useCallback(async () => {
     abortRef.current?.abort();
@@ -180,6 +193,41 @@ export default function SystemHealthControl({
               <span aria-hidden="true">✓</span>
               <div><strong>安全守門在背景運作</strong><p>系統會在真正需要決策的功能內直接提示，不把工程設定當成員工待辦。</p></div>
             </section>
+
+            <section className="font-size-preference" aria-labelledby="font-size-preference-title">
+              <div>
+                <p className="eyebrow">LOCAL DISPLAY</p>
+                <h3 id="font-size-preference-title">介面字級</h3>
+                <small>只在這台 Mac 保存顯示偏好，不保存商品、銷售或其他營運資料。</small>
+              </div>
+              <div role="radiogroup" aria-label="介面字級">
+                {UI_FONT_SIZE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={fontSize === option.value}
+                    onClick={() => {
+                      setFontSize(option.value);
+                      saveUiFontSize(option.value);
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <details className="accounting-center-details">
+              <summary>
+                <span>
+                  <strong>FBA 帳務中心</strong>
+                  <small>公開 API 報表、人工前置與不可用邊界</small>
+                </span>
+                <i>＋</i>
+              </summary>
+              <AccountingCenterPanel marketplaceId={marketplaceId} />
+            </details>
 
             <details className="health-advanced-details">
               <summary>

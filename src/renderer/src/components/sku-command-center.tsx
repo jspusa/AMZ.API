@@ -513,7 +513,7 @@ export default function SkuCommandCenter({
               <article title="「目前有效訂閱」是 Amazon listOffers 的查詢快照，不是期間新增、歷史累計、配送次數或唯一顧客數。"><span>Subscribe &amp; Save</span><strong>{snapshot.subscribeSave.data?.found ? `${snapshot.subscribeSave.data.sellerFundedBaseDiscount ?? 0}%` : "—"}</strong><small>{snapshot.subscribeSave.data?.found ? `Tiered ${snapshot.subscribeSave.data.sellerFundedTieredDiscount ?? 0}% · 目前有效訂閱 ${formatCount(snapshot.subscribeSave.data.subscriptions)}` : "Amazon 未回傳 offer"}</small></article>
             </section>
 
-            {visibleTasks.length > 0 && <section className="command-actions">
+            {visibleTasks.length > 0 ? <section className="command-actions">
               <div className="command-section-heading"><div><p className="eyebrow">PRIORITY QUEUE</p><h3>現在要處理的事</h3></div><span>{snapshot.summary.critical ? `${snapshot.summary.critical} 緊急` : snapshot.summary.warning ? `${snapshot.summary.warning} 注意` : "已掃描"}</span></div>
               <div className="command-task-list">{visibleTasks.map((task) => (
                 <article key={task.id} className={`command-task severity-${task.severity} automation-${task.automation}`}>
@@ -522,6 +522,9 @@ export default function SkuCommandCenter({
                   {task.tool ? <button type="button" onClick={() => launchTool(task.tool!)}>處理 <i>›</i></button> : null}
                 </article>
               ))}</div>
+            </section> : <section className="command-actions command-actions-clear" aria-label="SKU 掃描結果">
+              <div className="command-section-heading"><div><p className="eyebrow">PRIORITY QUEUE</p><h3>目前沒有明顯異常</h3></div><span>已掃描</span></div>
+              <p>員工可處理的文案、庫存、價格與促銷項目目前沒有需要優先處理的提醒。</p>
             </section>}
 
             <section className="command-tool-grid" aria-label="快速開啟 SKU 工具">

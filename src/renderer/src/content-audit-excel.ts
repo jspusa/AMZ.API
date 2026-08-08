@@ -112,7 +112,7 @@ export function downloadContentAuditWorkbook(
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = `FBA-內容健檢-${marketplaceLabel}-${snapshot.fetchedAt.slice(0, 10)}.xlsx`
+  link.download = `FBA-文案健檢-${marketplaceLabel}-${snapshot.fetchedAt.slice(0, 10)}.xlsx`
     .replace(/[\\/:*?"<>|]/g, "-");
   document.body.append(link);
   link.click();

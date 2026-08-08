@@ -70,7 +70,7 @@ function family(
 }
 
 describe("variation planner", () => {
-  it("renders a read-only FBA-only boundary before any lookup", () => {
+  it("renders the staged FBA-only two-step safety boundary before any lookup", () => {
     const markup = renderToStaticMarkup(
       <VariationPlannerDrawer
         initialMarketplaceId={MARKETPLACE_ID}
@@ -79,11 +79,11 @@ describe("variation planner", () => {
     );
 
     expect(markup).toContain("變體規劃");
-    expect(markup).toContain("唯讀規劃 · Amazon 不會收到變更");
-    expect(markup).toContain("先移除舊關係再重建");
-    expect(markup).toContain("非原子流程");
+    expect(markup).toContain("兩階段安全寫入 · 不會盲目重送");
+    expect(markup).toContain("解除變體暫存區");
+    expect(markup).toContain("Validation Preview、Touch ID、送出與唯讀回查");
     expect(markup).toContain("FBA child only");
-    expect(markup).not.toContain("確認更新");
+    expect(markup).toContain("不使用 Seller Central 私有接口");
   });
 
   it("accepts only an exact, explicitly non-writable family response", () => {
@@ -116,7 +116,7 @@ describe("variation planner", () => {
     ).toThrow(/停止規劃/);
   });
 
-  it("builds a non-atomic delete-and-recreate review without claiming a write", () => {
+  it("builds an explicit non-atomic detach-and-attach review", () => {
     const source = member("CHILD-4OZ");
     const sourceFamily = family(source);
     const targetParent = member("TARGET-PARENT", {
@@ -134,12 +134,12 @@ describe("variation planner", () => {
 
     const plan = buildVariationMovePlan(sourceFamily, source, targetFamily);
 
-    expect(plan.status).toBe("read_only_review");
+    expect(plan.status).toBe("ready_to_prepare");
     expect(plan.blockers).toEqual([]);
     expect(plan.warnings.join(" ")).toContain("先移除舊關係再重建");
     expect(plan.warnings.join(" ")).toContain("非原子");
-    expect(plan.warnings.join(" ")).toContain("不會寫入");
-    expect(plan.proposedSteps).toHaveLength(3);
+    expect(plan.warnings.join(" ")).toContain("唯讀回查");
+    expect(plan.proposedSteps).toHaveLength(4);
   });
 
   it("blocks planning whenever the source or target family is incomplete", () => {
@@ -166,7 +166,7 @@ describe("variation planner", () => {
     expect(plan.blockers.join(" ")).toContain("目標 family 清單不完整");
   });
 
-  it("requires a non-empty source value for every target dimension", () => {
+  it("opens the CHILD PTD editor when the source is missing a target dimension", () => {
     const source = member("CHILD-4OZ", {
       variationTheme: "SIZE_COLOR",
       dimensions: [
@@ -199,12 +199,14 @@ describe("variation planner", () => {
 
     const plan = buildVariationMovePlan(sourceFamily, source, targetFamily);
 
-    expect(plan.status).toBe("blocked");
-    expect(plan.blockers.join(" ")).toContain("必要變體維度值：color_name");
-    expect(plan.blockers.join(" ")).not.toContain("必要變體維度值：size_name");
+    expect(plan.status).toBe("ready_to_prepare");
+    expect(plan.blockers).toEqual([]);
+    expect(plan.warnings.join(" ")).toContain("目前缺少目標 parent 維度：color_name");
+    expect(plan.warnings.join(" ")).toContain("CHILD PTD");
+    expect(plan.warnings.join(" ")).not.toContain("目標 parent 維度：size_name");
   });
 
-  it("blocks cross-marketplace, theme mismatch and duplicate dimensions", () => {
+  it("blocks cross-marketplace while allowing target PTD to replace an old theme or missing target value", () => {
     const source = member("CHILD-4OZ");
     const sourceFamily = family(source);
     const targetParent = member("TARGET-PARENT", {
@@ -230,11 +232,46 @@ describe("variation planner", () => {
 
     expect(plan.status).toBe("blocked");
     expect(plan.blockers.join(" ")).toContain("跨站");
-    expect(plan.blockers.join(" ")).toContain("theme 不一致");
-    expect(plan.blockers.join(" ")).toContain("相同變體維度值");
+    expect(plan.blockers.join(" ")).not.toContain("theme 不一致");
+    expect(plan.blockers.join(" ")).not.toContain("相同變體維度值");
+    expect(plan.warnings.join(" ")).toContain("CHILD PTD");
   });
 
-  it("uses only the allowlisted GET-style family fetch in the drawer", () => {
+  it("lets the CHILD PTD editor resolve a provisional duplicate before main-process validation", () => {
+    const source = member("CHILD-RED", {
+      dimensions: [{ name: "color_name", label: "Color Name", values: ["Red"] }],
+    });
+    const sourceFamily = family(source);
+    const targetParent = member("TARGET-PARENT", {
+      role: "parent",
+      parentSku: null,
+      asin: null,
+      fba: false,
+      childSkus: ["TARGET-RED"],
+      variationTheme: "COLOR_NAME",
+      dimensions: [{ name: "color_name", label: "Color Name", values: [] }],
+    });
+    const duplicate = member("TARGET-RED", {
+      parentSku: "TARGET-PARENT",
+      variationTheme: "COLOR_NAME",
+      dimensions: [{ name: "color_name", label: "Color Name", values: ["Red"] }],
+    });
+    const targetFamily = family(targetParent, {
+      parent: targetParent,
+      children: [duplicate],
+      variationTheme: "COLOR_NAME",
+      dimensionNames: ["color_name"],
+    });
+
+    const plan = buildVariationMovePlan(sourceFamily, source, targetFamily);
+
+    expect(plan.status).toBe("ready_to_prepare");
+    expect(plan.blockers).toEqual([]);
+    expect(plan.warnings.join(" ")).toContain("既有 child 重複");
+    expect(plan.warnings.join(" ")).toContain("正式預檢仍會重新檢查並阻擋重複");
+  });
+
+  it("keeps family reads GET-only and limits writes to the dedicated preview/commit route", () => {
     const source = readFileSync(
       new URL(
         "../src/renderer/src/components/variation-planner-drawer.tsx",
@@ -243,7 +280,11 @@ describe("variation planner", () => {
       "utf8",
     );
     expect(source).toContain("/api/sp-api/variation-family?");
-    expect(source).not.toMatch(/method:\s*["'](?:POST|PUT|PATCH|DELETE)["']/);
+    expect(source).toContain("/api/sp-api/variation-move?");
+    expect(source).toContain('method: "POST"');
+    expect(source).toContain('method: "PATCH"');
+    expect(source).not.toMatch(/method:\s*["'](?:PUT|DELETE)["']/);
+    expect(source).toContain("No blind retry · No FBM");
     expect(source).not.toContain("localStorage");
   });
 
@@ -269,11 +310,7 @@ describe("variation planner", () => {
     expect(source).toContain("onKeyDown={handleTargetKeyDown}");
     expect(source).not.toContain("<form");
     expect(source).not.toContain("onSubmit=");
-    expect(source).toMatch(
-      /window\.removeEventListener\("keydown", onKeyDown\);\s*}\;\s*}, \[busy, closeDrawer\]\);/,
-    );
-    expect(source).toMatch(
-      /useEffect\(\(\) => \(\) => \{\s*sourceAbortRef\.current\?\.abort\(\);\s*targetAbortRef\.current\?\.abort\(\);\s*}, \[\]\);/,
-    );
+    expect(source).toContain('return () => window.removeEventListener("keydown", onKeyDown);');
+    expect(source).toContain("preparationAbortRef.current?.abort();");
   });
 });

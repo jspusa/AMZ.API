@@ -49,7 +49,7 @@ export type VariationFamilyView = {
 export type VariationMovePlan = {
   source: VariationMemberView;
   targetParent: VariationMemberView;
-  status: "blocked" | "read_only_review";
+  status: "blocked" | "ready_to_prepare";
   blockers: string[];
   warnings: string[];
   proposedSteps: string[];
@@ -178,22 +178,25 @@ export function parseVariationFamilyResponse(
   return value as VariationFamilyView;
 }
 
-function dimensionSignature(member: VariationMemberView): string | null {
-  if (!member.dimensions.length) return null;
-  const entries = member.dimensions
-    .map(
-      (dimension) =>
-        [
-          dimension.name,
-          dimension.values
-            .map((value) => value.trim())
-            .filter(Boolean)
-            .sort(),
-        ] as const,
-    )
-    .filter(([, values]) => values.length)
-    .sort(([left], [right]) => left.localeCompare(right));
-  return entries.length ? JSON.stringify(entries) : null;
+function dimensionSignature(
+  member: VariationMemberView,
+  requiredNames: string[],
+): string | null {
+  const names = [...new Set(requiredNames.map((name) => name.trim()))]
+    .filter(Boolean)
+    .sort();
+  if (!names.length) return null;
+  const entries = names.map((name) => {
+    const values = member.dimensions
+      .find((dimension) => dimension.name === name)
+      ?.values.map((value) => value.trim())
+      .filter(Boolean)
+      .sort() ?? [];
+    return [name, values] as const;
+  });
+  return entries.every(([, values]) => values.length)
+    ? JSON.stringify(entries)
+    : null;
 }
 
 function missingRequiredDimensions(
@@ -254,34 +257,38 @@ export function buildVariationMovePlan(
     ) {
       blockers.push("來源與目標的 Amazon product type 不一致。");
     }
-    const sourceTheme = source.variationTheme ?? sourceFamily.variationTheme;
     const targetTheme =
       targetParent.variationTheme ?? targetFamily.variationTheme;
     if (!targetTheme) {
       blockers.push("目標 parent 缺少可確認的 variation theme。");
-    } else if (sourceTheme && sourceTheme !== targetTheme) {
-      blockers.push("來源與目標的 variation theme 不一致。");
     }
     const missingDimensions = missingRequiredDimensions(
       source,
       targetFamily.dimensionNames,
     );
     if (missingDimensions.length) {
-      blockers.push(
-        `來源 child 缺少目標 parent 必要變體維度值：${missingDimensions.join("、")}。`,
+      warnings.push(
+        `來源 child 目前缺少目標 parent 維度：${missingDimensions.join("、")}；下一步會開啟 Amazon CHILD PTD 欄位，補齊前不能預檢或寫入。`,
       );
     }
-    const sourceSignature = dimensionSignature(source);
+    const sourceSignature = dimensionSignature(
+      source,
+      targetFamily.dimensionNames,
+    );
     if (!sourceSignature) {
-      blockers.push("來源 child 缺少可確認的變體維度值。");
+      if (!missingDimensions.length) {
+        warnings.push("來源 child 的目標維度值要在 Amazon CHILD PTD 編輯器重新確認。");
+      }
     } else if (
       targetFamily.children.some(
         (child) =>
           child.sellerSku !== source.sellerSku &&
-          dimensionSignature(child) === sourceSignature,
+          dimensionSignature(child, targetFamily.dimensionNames) === sourceSignature,
       )
     ) {
-      blockers.push("目標 family 已有相同變體維度值，可能形成重複 child。");
+      warnings.push(
+        "來源目前的目標維度與既有 child 重複；請先在 CHILD PTD 編輯器改成唯一值，正式預檢仍會重新檢查並阻擋重複。",
+      );
     }
   }
 
@@ -293,23 +300,26 @@ export function buildVariationMovePlan(
   } else {
     warnings.push("此 SKU 目前沒有 parent；正式建立關係仍需另外設計安全寫入流程。");
   }
-  warnings.push("v0.1.7 第一版只產生規劃，不會寫入或宣稱 Amazon 已變更。");
+  warnings.push(
+    "只有 Amazon Validation Preview、Touch ID 與送出後唯讀回查全部完成，介面才會標示該階段成功。",
+  );
 
   return {
     source,
     targetParent: safeTarget,
-    status: blockers.length ? "blocked" : "read_only_review",
+    status: blockers.length ? "blocked" : "ready_to_prepare",
     blockers,
     warnings,
     proposedSteps: source.parentSku
       ? [
-          `另行移除 ${source.sellerSku} 與 ${source.parentSku} 的舊關係`,
-          `另行以 ${safeTarget.sellerSku} 重建 child 關係`,
-          "完成後重新唯讀查詢整個 family，逐一確認 child 與維度",
+          `預檢並解除 ${source.sellerSku} 與 ${source.parentSku} 的舊關係`,
+          "Touch ID 後送出解除，並唯讀回查為獨立 SKU",
+          `補齊 CHILD PTD 欄位後，預檢並加入 ${safeTarget.sellerSku}`,
+          "Touch ID 後送出加入，並唯讀回查 parent、theme 與維度",
         ]
       : [
-          `另行以 ${safeTarget.sellerSku} 建立 child 關係`,
-          "完成後重新唯讀查詢整個 family，逐一確認 child 與維度",
+          `補齊 CHILD PTD 欄位後，預檢並加入 ${safeTarget.sellerSku}`,
+          "Touch ID 後送出加入，並唯讀回查 parent、theme 與維度",
         ],
   };
 }

@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import SalesTrendChart, {
+  customDayCountError,
   earliestComparableStartDate,
   nearestTrendPointIndex,
   previousYearDateKey,
   salesTrendFailureMessage,
+  startDateForDayCount,
   submitTrendCustomRange,
   trendCustomRangeError,
   type SalesTrendPoint,
@@ -174,17 +176,30 @@ describe("sales trend comparison chart", () => {
 
     expect(markup).toContain("開始日");
     expect(markup).toContain("結束日");
+    expect(markup).toContain("最近天數");
+    expect(markup).toContain('type="number"');
+    expect(markup).toContain('min="1"');
+    expect(markup).toContain('max="365"');
+    expect(markup).toContain('value="3"');
     expect(markup).toContain('type="date"');
     expect(markup).toContain('value="2026-07-01"');
     expect(markup).toContain('value="2026-07-03"');
     expect(markup).toContain(">套用</button>");
-    expect(markup).toContain("可超過 90 天");
+    expect(markup).toContain("可直接輸入 1–365 天");
     expect(markup).toMatch(/aria-pressed="true"[^>]*>自訂/);
     expect(trendCustomRangeError("2026-07-01", "2026-07-03")).toBeNull();
     expect(trendCustomRangeError("2026-07-03", "2026-07-01")).toContain("不可早於");
     expect(trendCustomRangeError("2026-01-01", "2026-04-01")).toBeNull();
     expect(trendCustomRangeError("2025-03-11", "2026-03-10")).toBeNull();
     expect(trendCustomRangeError("2025-03-10", "2026-03-10")).toContain("最多 365 天");
+    expect(customDayCountError("1")).toBeNull();
+    expect(customDayCountError("365")).toBeNull();
+    expect(customDayCountError("0")).toContain("1 到 365");
+    expect(customDayCountError("366")).toContain("1 到 365");
+    expect(customDayCountError("1.5")).toContain("整數");
+    expect(startDateForDayCount("2026-08-07", 1)).toBe("2026-08-07");
+    expect(startDateForDayCount("2026-08-07", 365)).toBe("2025-08-08");
+    expect(startDateForDayCount("2026-08-07", 366)).toBeNull();
   });
 
   it("keeps a preset-derived earliest date for a queryable previous-year comparison", () => {

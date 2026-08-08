@@ -2,6 +2,10 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
+import {
+  SpApiError,
+  SpApiPreCommitError,
+} from "../src/main/amazon/sp-api";
 import { LocalStore } from "../src/main/local-store";
 
 async function testStore(): Promise<LocalStore> {
@@ -136,6 +140,140 @@ describe("local durable safety store", () => {
         execute: async () => ({ ok: false }),
       }),
     ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
+  });
+
+  it("locks a pending variation SKU across different fingerprints and targets", async () => {
+    const store = await testStore();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const didStart = new Promise<void>((resolve) => { started = resolve; });
+    const first = store.runIdempotentOperation({
+      idempotencyKey: "variation-pending-first",
+      operationType: "variation_detach",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-LOCKED",
+      accountScope: "account-a",
+      fingerprint: "detach-from-parent-a",
+      execute: async () => {
+        started();
+        await gate;
+        return { ok: true };
+      },
+    });
+    await didStart;
+
+    await expect(
+      store.runIdempotentOperation({
+        idempotencyKey: "variation-pending-second",
+        operationType: "variation_attach",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "CHILD-LOCKED",
+        accountScope: "account-a",
+        fingerprint: "attach-to-parent-b",
+        execute: async () => ({ shouldNotRun: true }),
+      }),
+    ).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS", status: 409 });
+
+    release();
+    await expect(first).resolves.toEqual({ ok: true });
+  });
+
+  it("keeps a variation SKU locked after an unknown 429 commit result", async () => {
+    const store = await testStore();
+    await expect(
+      store.runIdempotentOperation({
+        idempotencyKey: "variation-unknown-first",
+        operationType: "variation_detach",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "CHILD-UNKNOWN",
+        accountScope: "account-a",
+        fingerprint: "detach-parent-a",
+        execute: async () => {
+          throw new SpApiError("Amazon commit returned 429", {
+            status: 429,
+            code: "UPDATE_STATUS_UNKNOWN",
+          });
+        },
+      }),
+    ).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 429 });
+
+    await expect(
+      store.runIdempotentOperation({
+        idempotencyKey: "variation-unknown-second",
+        operationType: "variation_attach",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "CHILD-UNKNOWN",
+        accountScope: "account-a",
+        fingerprint: "attach-parent-b",
+        execute: async () => ({ shouldNotRun: true }),
+      }),
+    ).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 409 });
+  });
+
+  it("allows the attach stage after the detach stage is durably completed", async () => {
+    const store = await testStore();
+    const base = {
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-TWO-STAGE",
+      accountScope: "account-a",
+    };
+    await expect(
+      store.runIdempotentOperation({
+        ...base,
+        idempotencyKey: "variation-detach-completed",
+        operationType: "variation_detach",
+        fingerprint: "detach-parent-a",
+        execute: async () => ({ stage: "detached" }),
+      }),
+    ).resolves.toEqual({ stage: "detached" });
+
+    await expect(
+      store.runIdempotentOperation({
+        ...base,
+        idempotencyKey: "variation-attach-after-completed",
+        operationType: "variation_attach",
+        fingerprint: "attach-parent-b",
+        execute: async () => ({ stage: "attached" }),
+      }),
+    ).resolves.toEqual({ stage: "attached" });
+  });
+
+  it("releases a variation claim when a classified pre-commit check fails", async () => {
+    const store = await testStore();
+    const operation = {
+      idempotencyKey: "variation-precommit-reusable",
+      operationType: "variation_detach" as const,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-PRECOMMIT",
+      accountScope: "account-a",
+      fingerprint: "detach-parent-a",
+    };
+    await expect(
+      store.runIdempotentOperation({
+        ...operation,
+        execute: async () => {
+          throw new SpApiPreCommitError(
+            new SpApiError("Amazon Validation Preview 暫時無法使用。", {
+              status: 503,
+              code: "UPSTREAM_UNAVAILABLE",
+              operation: "patchListingsItemPreview",
+            }),
+          );
+        },
+      }),
+    ).rejects.toMatchObject({
+      status: 503,
+      code: "UPSTREAM_UNAVAILABLE",
+      commitPatchSent: false,
+    });
+
+    await expect(
+      store.runIdempotentOperation({
+        ...operation,
+        execute: async () => ({ safeRetry: true }),
+      }),
+    ).resolves.toEqual({ safeRetry: true });
   });
 
   it("writes no Amazon credential fields into the operational data file", async () => {

@@ -22,6 +22,7 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("Amazon 唯讀＋Mac 本機拼字檢查");
     expect(markup).toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("FBM 不會加入");
+    expect(markup).not.toContain("全站內容健檢");
   });
 
   it("discloses fail-closed reads, PTD uncertainty and the local dictionary cap", async () => {
@@ -83,6 +84,13 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("匯出全部 1 個待確認項目 Excel");
     expect(markup).toContain("重新掃描");
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
+    expect(markup).toContain("content-audit-export-primary");
+    expect(markup.indexOf("Amazon 唯讀＋Mac 本機拼字檢查")).toBeLessThan(
+      markup.indexOf("content-audit-export-primary"),
+    );
+    expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
+      markup.indexOf("content-audit-summary"),
+    );
   });
 
   it("shows typo text in red and explains invisible characters in one located guide", () => {
@@ -102,7 +110,7 @@ describe("global FBA content audit panel", () => {
             "Natural & Gentle\u200b : clean nutrition",
             "Five",
           ],
-          ingredients: "Turkey Tendon",
+          ingredients: "Turkey\u200b Tendon",
           readStatus: "complete",
           readErrors: [],
           issues: [
@@ -146,6 +154,14 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("U+200B 是「零寬空格」，不是 U+200");
     expect(markup).toContain("Natural &amp; Gentle⟦U+200B 零寬空格⟧ : clean nutrition");
     expect(markup).toContain("位於「Gentle」與「:」之間；應手動修改此段");
+    expect(markup).toContain("content-audit-invisible-more");
+    expect(markup).toContain("…另有 1 筆");
+    expect(markup.indexOf("賣點 4 · U+200B")).toBeLessThan(
+      markup.indexOf("content-audit-invisible-more"),
+    );
+    expect(markup.indexOf("content-audit-invisible-more")).toBeLessThan(
+      markup.indexOf("成分 · U+200B"),
+    );
     expect(markup.match(/發現不可見字元 U\+200B/g)).toBeNull();
   });
 
@@ -159,7 +175,7 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(drawerSource).toContain("setReturnToAudit(true)");
-    expect(drawerSource).toContain("← 返回全站健檢結果");
+    expect(drawerSource).toContain("← 返回全站文案健檢結果");
     expect(drawerSource).toContain("auditCacheByMarketplace[marketplaceId]");
   });
 
@@ -201,6 +217,20 @@ describe("global FBA content audit panel", () => {
       missingBullets: 0,
       missingIngredients: 0,
     });
+  });
+
+  it("rejects a completed snapshot from a different marketplace before display or cache", () => {
+    expect(() =>
+      parseContentAuditSnapshot(
+        {
+          marketplaceId: "A1VC38T7YXB528",
+          fetchedAt: "2026-08-06T08:00:00.000Z",
+          rows: [],
+          summary: { total: 0 },
+        },
+        "ATVPDKIKX0DER",
+      ),
+    ).toThrow(/目前選擇的站點不一致；已停止顯示與快取/u);
   });
 
   it.each([

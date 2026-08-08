@@ -6,6 +6,7 @@ import SkuCommandCenter, {
   employeeVisibleCommandTasks,
 } from "../src/renderer/src/components/sku-command-center";
 import SystemHealthControl from "../src/renderer/src/components/system-health-control";
+import BrandGlyph from "../src/renderer/src/components/brand-glyph";
 
 describe("dashboard experience refinement", () => {
   it("presents system health as neutral advanced information", () => {
@@ -57,6 +58,16 @@ describe("dashboard experience refinement", () => {
         { id: "content-missing" },
       ]),
     ).toEqual([{ id: "content-missing" }]);
+
+    const commandSource = await readFile(
+      new URL(
+        "../src/renderer/src/components/sku-command-center.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(commandSource).toContain("const visibleTasks = snapshot");
+    expect(commandSource).toContain("目前沒有明顯異常");
   });
 
   it("uses the blue J icon with a red bottom arrow", async () => {
@@ -70,5 +81,12 @@ describe("dashboard experience refinement", () => {
     expect(appIcon).toContain('M76 34h13');
     expect(appIcon).not.toContain('stroke="#ff9d19"');
     expect(appIcon).not.toContain('M41 84 60.5 34');
+
+    const rendererMark = renderToStaticMarkup(
+      <BrandGlyph className="test-brand-mark" />,
+    );
+    expect(rendererMark).toContain('viewBox="28 23 76 84"');
+    expect(rendererMark).toContain('transform="translate(-3 -3)"');
+    expect(rendererMark.match(/stroke="#e32636"/g)).toHaveLength(2);
   });
 });
