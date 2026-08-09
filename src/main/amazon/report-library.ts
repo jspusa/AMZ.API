@@ -575,7 +575,7 @@ export const CURRENT_APP_EXPORTS = Object.freeze([
     id: "REVIEW_TOPIC_AUDIT_XLSX",
     label: "FBA 非 parent ASIN 評論主題健檢 Excel",
     source: "GET_MERCHANT_LISTINGS_ALL_DATA + Listings Items relationships + Customer Feedback API getItemReviewTopics",
-    scope: "只查詢 relationships 已證明為 child 或 standalone 的 FBA ASIN；parent 與關係未完成列不查詢。僅英文主題、評論短句與主題星等影響；不含完整 review 全文、商品總星等或總評論數。",
+    scope: "只查詢 relationships 已證明為 child 或 standalone 的 FBA ASIN；parent 與關係未完成列不查詢。僅英文主題、評論短句與評論主題影響值；負數是負向主題對星等下降方向的影響值，不是商品負星等，也不會轉成 0 或絕對值。不含完整 review 全文、商品總星等或總評論數。",
     availability: "AVAILABLE_AFTER_SUCCESSFUL_AUDIT",
   },
 ] as const);

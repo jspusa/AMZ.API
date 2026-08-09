@@ -149,7 +149,7 @@ describe("review audit renderer contracts", () => {
       status: "READING_NON_PARENT_TOPICS",
       progress: { completed: 1, total: 10, percent: 10 },
       message: "正在讀取非 parent ASIN 主題。",
-      capabilityNotice: "僅英文；主題星等影響。",
+      capabilityNotice: "僅英文；評論主題影響值。",
     }, US)).toMatchObject({ progress: { completed: 1, total: 10 } });
 
     const snapshot = parseReviewAuditSnapshot({
@@ -187,23 +187,37 @@ describe("review audit renderer contracts", () => {
         incomplete: 0,
         duplicateSkuAsinsCollapsed: 0,
       },
-      notice: "這是主題星等影響，不是商品總星等。",
+      notice: "這是評論主題影響值；負數不是商品負星等。",
     }, US);
     expect(snapshot).toMatchObject({
       rows: [{ averageProductRating: null, totalReviewCount: null, fullReviewTextAvailable: false }],
       topFivePositive: [{ metricLabel: "NON_PARENT_ASIN_TOPIC_STAR_RATING_IMPACT" }],
     });
+    const html = renderToStaticMarkup(
+      <ReviewAuditPanel
+        marketplaceId={US}
+        marketplaceShort="US"
+        cachedResult={{ snapshot, job: null }}
+      />,
+    );
+    expect(html).toContain("前五：正向主題影響值");
+    expect(html).toContain("後五：負向主題影響值");
+    expect(html).toContain("正向影響值 4.5");
+    expect(html).toContain("負向影響值 −1.2");
+    expect(html).toContain("負數是此負向主題對星等下降方向的影響值");
+    expect(html).toContain("不是商品出現「負的星星」");
+    expect(html).toContain("不轉成 0、不裁切，也不改成絕對值");
   });
 
   it("renders explicit API boundaries and disables unsupported stores", () => {
     const html = renderToStaticMarkup(<ReviewAuditPanel marketplaceId="A2EUQ1WTGCTBG2" marketplaceShort="CA" />);
-    expect(html).toContain("不是商品總星等排名");
+    expect(html).toContain("影響值不是商品星等，也不是 1–5 星制");
     expect(html).toContain("不提供完整 review 全文");
     expect(html).toContain("US、JP、UK 與 DE");
     expect(html).toContain("disabled");
   });
 
-  it("keeps an unfinished non-parent-ASIN job resumable after the drawer closes", () => {
+  it("labels an unfinished main-owned job as viewable rather than needing a resume click", () => {
     const job = parseReviewAuditJob({
       jobId: "job-resume-1234",
       marketplaceId: US,
@@ -212,7 +226,7 @@ describe("review audit renderer contracts", () => {
       status: "READING_NON_PARENT_TOPICS",
       progress: { completed: 37, total: 100, percent: 37 },
       message: "正在讀取非 parent ASIN 主題。",
-      capabilityNotice: "僅英文；主題星等影響。",
+      capabilityNotice: "僅英文；評論主題影響值。",
     }, US);
     const html = renderToStaticMarkup(
       <ReviewAuditPanel
@@ -221,7 +235,9 @@ describe("review audit renderer contracts", () => {
         cachedResult={{ snapshot: null, job }}
       />,
     );
-    expect(html).toContain("繼續上次評論健檢");
+    expect(html).toContain("查看進行中的評論健檢");
+    expect(html).toContain("Mac main process 仍會在背景繼續");
+    expect(html).toContain("不必回來按按鈕");
     expect(html).toContain("value=\"37\"");
     expect(html).not.toContain("重新掃描全站評論主題");
   });
@@ -233,6 +249,10 @@ describe("review audit renderer contracts", () => {
     );
     expect(source).toContain("const cachedResultRef = useRef(cachedResult)");
     expect(source).toContain("cachedResultRef.current = cachedResult");
+    expect(source).toContain("const autoObservedJobRef = useRef<string | null>(null)");
+    expect(source).toContain("useEffect(() => () => abortRef.current?.abort(), [])");
+    expect(source).toContain("renderer unmount only stops local polling");
+    expect(source).not.toContain("/api/sp-api/review-audit/cancel");
     expect(source).toContain("}, [marketplaceId]);");
     expect(source).not.toContain("}, [cachedResult, marketplaceId]);");
   });

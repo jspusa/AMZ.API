@@ -194,7 +194,8 @@ function summarySheet(marketplaceLabel: string, snapshot: ReviewAuditSnapshot): 
     [text("站點"), text(marketplaceLabel)],
     [text("產生時間"), text(snapshot.fetchedAt)],
     [text("資料範圍"), warning("僅限全商品報表證明 FBA，且 Listings relationships 證明為 child 或 standalone 的非 parent ASIN。")],
-    [text("排名指標"), text("非 parent ASIN 評論主題對星等的影響（starRatingImpact），不是商品總星等。")],
+    [text("排名指標"), text("非 parent ASIN 評論主題影響值（starRatingImpact），不是商品總星等或 1–5 星制。")],
+    [text("負值含義"), warning("負數是此負向主題對星等下降方向的影響值，不是商品負星等；工作簿保留 Amazon 原始正負號與數值，不轉成 0 或絕對值。")],
     [text("公開 API 不提供"), warning("完整 review 全文、商品平均星等、總評論數。")],
     [text("官方來源"), text(snapshot.availability.officialSource)],
     [],
@@ -216,10 +217,10 @@ function allNonParentAsinsSheet(rows: readonly ReviewAuditRow[]): Sheet {
     header("資料開始"),
     header("資料結束"),
     header("最強正向主題"),
-    header("正向星等影響"),
+    header("正向主題影響值"),
     header("正向提及數"),
     header("最強負向主題"),
-    header("負向星等影響"),
+    header("負向主題影響值"),
     header("負向提及數"),
     header("完整 review 全文"),
     header("商品總星等"),
@@ -261,7 +262,7 @@ function rankingSheet(
   positive: readonly ReviewAuditRankedItem[],
   negative: readonly ReviewAuditRankedItem[],
 ): Sheet {
-  const columns = ["排名", "Seller SKU", "非 parent ASIN", "商品名稱", "主題", "星等影響", "提及數", "出現比例", "指標"];
+  const columns = ["排名", "Seller SKU", "非 parent ASIN", "商品名稱", "主題", "主題影響值", "提及數", "出現比例", "指標"];
   const rows: Cell[][] = [
     [title("前五名：最強正向主題")],
     columns.map(header),
@@ -271,7 +272,7 @@ function rankingSheet(
     columns.map(header),
     ...negative.map((item, index) => rankingRow(index + 1, item, 3)),
     [],
-    [warning("「前／後」依非 parent ASIN 主題 starRatingImpact 排序，不是商品平均星等或評論數。")],
+    [warning("「前／後」依非 parent ASIN 主題 starRatingImpact 原始值排序，不是商品平均星等、1–5 星制或評論數；負數是星等下降方向的影響值，不是商品負星等。")],
   ];
   return { name: "前後五名", rows, widths: [10, 26, 15, 55, 28, 18, 14, 16, 34] };
 }
@@ -286,7 +287,7 @@ function rankingRow(rank: number, item: ReviewAuditRankedItem, style: 2 | 3): Ce
     number(item.starRatingImpact, style),
     number(item.numberOfMentions),
     number(item.occurrencePercentage),
-    text("非 parent ASIN 主題對星等影響"),
+    text("非 parent ASIN 主題影響值"),
   ];
 }
 
@@ -303,7 +304,7 @@ function topicSheet(
     header("主題"),
     header("提及數"),
     header("出現比例 %"),
-    header("對星等影響"),
+    header("主題影響值"),
     header("官方評論短句證據"),
   ]];
   for (const row of rows) {

@@ -26,7 +26,7 @@ JSPUSA 的 GitHub 控制台＋macOS 本機金鑰 Amazon 營運系統。只處理
 | 產品 | 非 parent FBA ASIN 評論主題健檢（child＋standalone、排除 parent、前五／後五與全量 Excel） | Amazon Customer Feedback 唯讀 |
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋Touch ID |
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋Touch ID |
-| 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel | 自動讀取；SG／AU 顯示不支援邊界 |
+| 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel；具同次 current-FBA 證據的無效／重複 offer 或月度 SKU 獨立列為未完成，不拖垮其餘正常 SKU；未證明識別值只保留聚合計數 | 自動讀取；來源不完整時只顯示已核對範圍；SG／AU 顯示不支援邊界 |
 | 促銷 | Coupon、S&S 管理與 Amazon Ads 集中於「Amazon 官方完成」 | 一鍵開啟、Amazon 內完成 |
 | 營運 | Amazon Ads Profile 自動發現、Sponsored Products 活動唯讀查詢與全站 FBA 廣告覆蓋健檢；任何 Listing 身分缺口都整次停止 | 獨立 Ads LWA＋唯讀；無 Ads 寫入 route |
 | 報表 | 文件庫列出 Amazon 官方 109 個唯一公開 report types、用途、角色、FBA 邊界與 App 接線狀態；Vendor 類型不顯示，並可依可用性快速篩選 | 公開文件＋唯讀規劃 |
@@ -37,7 +37,7 @@ JSPUSA 的 GitHub 控制台＋macOS 本機金鑰 Amazon 營運系統。只處理
 
 Amazon 公開 API 目前不提供現有 FBA FC 庫存的逐 SKU／批次效期，因此 App 不會拿庫齡冒充近效期或已過期清單。一般 US／CA／JP／SG／AU／UK／DE 發票與 Seller Central 帳單也沒有通用公開下載 API；會計中心只啟用可證明為 FBA 的公開報表，Finances JSON、結算報表、人工前置與不可用能力會分開標示，不使用 Seller Central 私有接口。
 
-Customer Feedback API 提供的是每週更新的正／負「評論主題星等影響」，不是商品總星等、總評論數或完整 review 全文。因此評論健檢只對 Listings relationships 已證明為 child 或 standalone 的 FBA ASIN 排序主題；不會拿 parent 容器或推測值冒充商品評論排名。
+Customer Feedback API 提供的是每週更新的正／負「評論主題影響值」（`starRatingImpact`），不是商品總星等、1–5 星制、總評論數或完整 review 全文。負值表示負向主題對星等下降方向的影響，不是「商品負星等」；App 保留 Amazon 原始正負號，不改成 0 或絕對值。評論健檢只對 Listings relationships 已證明為 child 或 standalone 的 FBA ASIN 排序主題；不會拿 parent 容器或推測值冒充商品評論排名。
 
 ## 第一次使用
 

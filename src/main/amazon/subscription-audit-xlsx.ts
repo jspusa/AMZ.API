@@ -87,6 +87,20 @@ export type CreateSubscriptionAuditWorkbookInput = {
     returnedMetricRows: number;
     acceptedMetricRows: number;
     invalidOfferRows: readonly { sellerSku: string; problem: string }[];
+    problemSkuRows?: readonly {
+      sellerSku: string;
+      fbaEvidence: "CURRENT_FBA_SKU_SET";
+      affectedOfferRows: number;
+      affectedMetricRows: number;
+      metricMonths: readonly string[];
+      problem: string;
+    }[];
+    unprovenExactSkuProblems?: {
+      exactSkuCount: number;
+      affectedOfferRows: number;
+      affectedMetricRows: number;
+      minimumUnresolvedOfferMonths: number;
+    };
     rejectedSellerSkuRows: number;
     minimumUnresolvedOfferMonths: number;
     notice: string;
@@ -95,6 +109,18 @@ export type CreateSubscriptionAuditWorkbookInput = {
 };
 
 type Cell = { kind: "text" | "number"; value: string | number | null };
+type SubscriptionAuditUpstreamCoverageInput = NonNullable<
+  CreateSubscriptionAuditWorkbookInput["upstreamCoverage"]
+>;
+type ValidatedSubscriptionAuditUpstreamCoverage =
+  SubscriptionAuditUpstreamCoverageInput & {
+    problemSkuRows: NonNullable<
+      SubscriptionAuditUpstreamCoverageInput["problemSkuRows"]
+    >;
+    unprovenExactSkuProblems: NonNullable<
+      SubscriptionAuditUpstreamCoverageInput["unprovenExactSkuProblems"]
+    >;
+  };
 
 /**
  * Generates a local-only, problem-only workbook. The five sheets are fixed to
@@ -135,7 +161,7 @@ export function createSubscriptionAuditWorkbook(
   });
   const upstreamCoverage = validateUpstreamCoverage(
     input.upstreamCoverage,
-    metricMonths.length,
+    metricMonths,
   );
   const inventoryEvidence = validateInventoryEvidence(
     input.inventoryEvidence,
@@ -261,7 +287,7 @@ function worksheetXml(input: {
   revenueCurrency: string | null;
   revenueCoverage: SubscriptionAuditRevenueCoverage;
   inventoryEvidence: CreateSubscriptionAuditWorkbookInput["inventoryEvidence"];
-  upstreamCoverage: NonNullable<CreateSubscriptionAuditWorkbookInput["upstreamCoverage"]>;
+  upstreamCoverage: ValidatedSubscriptionAuditUpstreamCoverage;
   rows: readonly SubscriptionAuditProblemWorkbookRow[];
 }): string {
   const firstMonth = input.metricMonths[0]!;
@@ -314,14 +340,21 @@ function worksheetXml(input: {
       textCell(
         input.upstreamCoverage.status === "complete"
           ? "完整；所有 Replenishment Seller SKU 均可原樣核對。"
-          : `不完整；排除 ${input.upstreamCoverage.returnedOfferRows - input.upstreamCoverage.acceptedOfferRows + input.upstreamCoverage.returnedMetricRows - input.upstreamCoverage.acceptedMetricRows} 列，其中 ${input.upstreamCoverage.rejectedSellerSkuRows} 列缺少可原樣核對的 Seller SKU、${input.upstreamCoverage.invalidOfferRows.length} 列有精確 SKU 但 offer 資料值無法安全解析；至少 ${input.upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對。offer 與月度缺列可能不重疊，實際缺口無法精確計算。${input.upstreamCoverage.notice}`,
+          : `不完整；排除 ${input.upstreamCoverage.returnedOfferRows - input.upstreamCoverage.acceptedOfferRows + input.upstreamCoverage.returnedMetricRows - input.upstreamCoverage.acceptedMetricRows} 列，其中 ${input.upstreamCoverage.rejectedSellerSkuRows} 列缺少可原樣核對的 Seller SKU、${input.upstreamCoverage.problemSkuRows.length} 個具同次 CURRENT_FBA 證據的精確問題 SKU 已單獨隔離${input.upstreamCoverage.invalidOfferRows.length > 0 ? `（${input.upstreamCoverage.invalidOfferRows.length} 列有精確 SKU 但 offer 資料值無法安全解析）` : ""}；另有 ${input.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount} 個精確上游問題 SKU 缺少同次 CURRENT_FBA 證據，只計數、不輸出 identifier。至少 ${input.upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對。offer 與月度缺列可能不重疊，實際缺口無法精確計算。其他商品仍已完成，未補 0 或重複加總。${input.upstreamCoverage.notice}`,
       ),
     ],
-    ...input.upstreamCoverage.invalidOfferRows.map((row): Cell[] => [
-      textCell("未完成 offer"),
+    ...input.upstreamCoverage.problemSkuRows.map((row): Cell[] => [
+      textCell("問題 SKU（其他商品仍已完成）／未完成 offer"),
       textCell(row.sellerSku),
       textCell(row.problem),
     ]),
+    ...(input.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount > 0
+      ? [[
+          textCell("未輸出 identifier 的上游問題"),
+          textCell(`${input.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount} 個精確 SKU`),
+          textCell("缺少同次 CURRENT_FBA 證據；只保留聚合計數，沒有推論為 FBM。"),
+        ]]
+      : []),
   ];
   const dataRows = input.rows.flatMap((row): Cell[][] => {
     const metricByMonth = new Map(row.monthlySeries.map((point) => [point.month, point]));
@@ -439,8 +472,10 @@ function validateInventoryEvidence(
 
 function validateUpstreamCoverage(
   input: CreateSubscriptionAuditWorkbookInput["upstreamCoverage"],
-  metricMonthCount: number,
-): NonNullable<CreateSubscriptionAuditWorkbookInput["upstreamCoverage"]> {
+  metricMonths: readonly string[],
+): ValidatedSubscriptionAuditUpstreamCoverage {
+  const metricMonthCount = metricMonths.length;
+  const allowedMetricMonths = new Set(metricMonths);
   if (input === undefined) {
     return {
       status: "complete",
@@ -449,6 +484,13 @@ function validateUpstreamCoverage(
       returnedMetricRows: 0,
       acceptedMetricRows: 0,
       invalidOfferRows: [],
+      problemSkuRows: [],
+      unprovenExactSkuProblems: {
+        exactSkuCount: 0,
+        affectedOfferRows: 0,
+        affectedMetricRows: 0,
+        minimumUnresolvedOfferMonths: 0,
+      },
       rejectedSellerSkuRows: 0,
       minimumUnresolvedOfferMonths: 0,
       notice: "所有 Replenishment Seller SKU 均可原樣核對。",
@@ -491,6 +533,117 @@ function validateUpstreamCoverage(
   if (new Set(invalidOfferRows.map(({ sellerSku }) => sellerSku)).size !== invalidOfferRows.length) {
     throw new TypeError("upstreamCoverage.invalidOfferRows contains duplicate SKUs.");
   }
+  const legacyCoverage = input.problemSkuRows === undefined;
+  const sourceProblemSkuRows = input.problemSkuRows ?? [];
+  if (!Array.isArray(sourceProblemSkuRows)) {
+    throw new TypeError("upstreamCoverage.problemSkuRows is invalid.");
+  }
+  const problemSkuRows = sourceProblemSkuRows.map((row, index) => {
+    if (!row || typeof row !== "object" || !Array.isArray(row.metricMonths)) {
+      throw new TypeError(`upstreamCoverage.problemSkuRows[${index}] is invalid.`);
+    }
+    const parsedMetricMonths = row.metricMonths.map(
+      (month: unknown, monthIndex: number) => {
+        const parsed = validMonth(
+          month,
+          `upstreamCoverage.problemSkuRows[${index}].metricMonths[${monthIndex}]`,
+        );
+        if (!allowedMetricMonths.has(parsed)) {
+          throw new TypeError("upstreamCoverage.problemSkuRows contains a month outside the export.");
+        }
+        return parsed;
+      },
+    );
+    const affectedOfferRows = safeInteger(
+      row.affectedOfferRows,
+      `upstreamCoverage.problemSkuRows[${index}].affectedOfferRows`,
+    );
+    const affectedMetricRows = safeInteger(
+      row.affectedMetricRows,
+      `upstreamCoverage.problemSkuRows[${index}].affectedMetricRows`,
+    );
+    if (
+      affectedOfferRows + affectedMetricRows < 1 ||
+      new Set(parsedMetricMonths).size !== parsedMetricMonths.length ||
+      !parsedMetricMonths.every((month: string, monthIndex: number) =>
+        month === [...parsedMetricMonths].sort()[monthIndex]) ||
+      (affectedMetricRows === 0) !== (parsedMetricMonths.length === 0) ||
+      affectedMetricRows < parsedMetricMonths.length
+    ) {
+      throw new TypeError("upstreamCoverage.problemSkuRows has contradictory scope.");
+    }
+    return {
+      sellerSku: safeRequiredText(
+        row.sellerSku,
+        `upstreamCoverage.problemSkuRows[${index}].sellerSku`,
+      ),
+      fbaEvidence: row.fbaEvidence === "CURRENT_FBA_SKU_SET"
+        ? "CURRENT_FBA_SKU_SET" as const
+        : (() => { throw new TypeError("upstreamCoverage.problemSkuRows lacks current FBA evidence."); })(),
+      affectedOfferRows,
+      affectedMetricRows,
+      metricMonths: parsedMetricMonths,
+      problem: safeRequiredText(
+        row.problem,
+        `upstreamCoverage.problemSkuRows[${index}].problem`,
+        2_000,
+      ),
+    };
+  });
+  if (
+    new Set(problemSkuRows.map(({ sellerSku }) => sellerSku)).size !==
+      problemSkuRows.length ||
+    (!legacyCoverage && invalidOfferRows.some((invalid) => {
+      const problem = problemSkuRows.find(
+        ({ sellerSku }) => sellerSku === invalid.sellerSku,
+      );
+      return !problem || problem.affectedOfferRows < 1;
+    }))
+  ) {
+    throw new TypeError("upstreamCoverage.problemSkuRows is inconsistent.");
+  }
+  const sourceUnproven = legacyCoverage
+    ? {
+        exactSkuCount: invalidOfferRows.length,
+        affectedOfferRows: invalidOfferRows.length,
+        affectedMetricRows: 0,
+        minimumUnresolvedOfferMonths: invalidOfferRows.length * metricMonthCount,
+      }
+    : input.unprovenExactSkuProblems;
+  if (!sourceUnproven || typeof sourceUnproven !== "object") {
+    throw new TypeError("upstreamCoverage.unprovenExactSkuProblems is invalid.");
+  }
+  const unprovenExactSkuProblems = {
+    exactSkuCount: safeInteger(
+      sourceUnproven.exactSkuCount,
+      "upstreamCoverage.unprovenExactSkuProblems.exactSkuCount",
+    ),
+    affectedOfferRows: safeInteger(
+      sourceUnproven.affectedOfferRows,
+      "upstreamCoverage.unprovenExactSkuProblems.affectedOfferRows",
+    ),
+    affectedMetricRows: safeInteger(
+      sourceUnproven.affectedMetricRows,
+      "upstreamCoverage.unprovenExactSkuProblems.affectedMetricRows",
+    ),
+    minimumUnresolvedOfferMonths: safeInteger(
+      sourceUnproven.minimumUnresolvedOfferMonths,
+      "upstreamCoverage.unprovenExactSkuProblems.minimumUnresolvedOfferMonths",
+    ),
+  };
+  if (
+    (unprovenExactSkuProblems.exactSkuCount === 0) !==
+      (unprovenExactSkuProblems.affectedOfferRows === 0 &&
+        unprovenExactSkuProblems.affectedMetricRows === 0 &&
+        unprovenExactSkuProblems.minimumUnresolvedOfferMonths === 0) ||
+    unprovenExactSkuProblems.affectedOfferRows +
+      unprovenExactSkuProblems.affectedMetricRows <
+      unprovenExactSkuProblems.exactSkuCount ||
+    unprovenExactSkuProblems.minimumUnresolvedOfferMonths <
+      unprovenExactSkuProblems.exactSkuCount
+  ) {
+    throw new TypeError("upstreamCoverage.unprovenExactSkuProblems is contradictory.");
+  }
   const rejectedSellerSkuRows = safeInteger(
     input.rejectedSellerSkuRows,
     "upstreamCoverage.rejectedSellerSkuRows",
@@ -501,14 +654,37 @@ function validateUpstreamCoverage(
   );
   const rejectedOfferRows = returnedOfferRows - acceptedOfferRows;
   const rejectedMetricRows = returnedMetricRows - acceptedMetricRows;
-  const missingSellerSkuOfferRows = rejectedOfferRows - invalidOfferRows.length;
+  const problemOfferRows = problemSkuRows.reduce(
+    (sum, row) => sum + row.affectedOfferRows,
+    0,
+  );
+  const problemMetricRows = problemSkuRows.reduce(
+    (sum, row) => sum + row.affectedMetricRows,
+    0,
+  );
+  const missingSellerSkuOfferRows = rejectedOfferRows - problemOfferRows -
+    unprovenExactSkuProblems.affectedOfferRows;
+  const missingSellerSkuMetricRows = rejectedMetricRows - problemMetricRows -
+    unprovenExactSkuProblems.affectedMetricRows;
+  const knownProblemOfferMonths = problemSkuRows.reduce(
+    (sum, row) => sum + (row.affectedOfferRows > 0
+      ? metricMonthCount
+      : row.metricMonths.length),
+    0,
+  ) + unprovenExactSkuProblems.minimumUnresolvedOfferMonths;
   if (
     rejectedOfferRows < 0 ||
     rejectedMetricRows < 0 ||
     missingSellerSkuOfferRows < 0 ||
-    rejectedSellerSkuRows !== missingSellerSkuOfferRows + rejectedMetricRows ||
+    missingSellerSkuMetricRows < 0 ||
+    rejectedSellerSkuRows !==
+      missingSellerSkuOfferRows + missingSellerSkuMetricRows ||
     minimumUnresolvedOfferMonths !==
-      Math.max(rejectedOfferRows * metricMonthCount, rejectedMetricRows) ||
+      Math.max(
+        knownProblemOfferMonths,
+        missingSellerSkuOfferRows * metricMonthCount,
+        missingSellerSkuMetricRows,
+      ) ||
     input.status !==
       (rejectedOfferRows === 0 && rejectedMetricRows === 0 ? "complete" : "partial")
   ) {
@@ -520,7 +696,9 @@ function validateUpstreamCoverage(
     acceptedOfferRows,
     returnedMetricRows,
     acceptedMetricRows,
-    invalidOfferRows,
+    invalidOfferRows: legacyCoverage ? [] : invalidOfferRows,
+    problemSkuRows,
+    unprovenExactSkuProblems,
     rejectedSellerSkuRows,
     minimumUnresolvedOfferMonths,
     notice: safeRequiredText(input.notice, "upstreamCoverage.notice"),
@@ -567,7 +745,7 @@ function validateCoverage(
 
 function coverageLabel(
   coverage: SubscriptionAuditRevenueCoverage,
-  upstreamCoverage: NonNullable<CreateSubscriptionAuditWorkbookInput["upstreamCoverage"]>,
+  upstreamCoverage: ValidatedSubscriptionAuditUpstreamCoverage,
   inventoryEvidence: CreateSubscriptionAuditWorkbookInput["inventoryEvidence"],
 ): string {
   const count = `${coverage.reportedOfferMonths} / ${coverage.expectedOfferMonths} 個 SKU 月份`;
@@ -580,8 +758,11 @@ function coverageLabel(
   }
   if (upstreamCoverage.status === "partial") {
     gaps.push(`另至少 ${upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對，實際缺口未知`);
-    if (upstreamCoverage.invalidOfferRows.length > 0) {
-      gaps.push(`其中 ${upstreamCoverage.invalidOfferRows.length} 列有精確 SKU 但 offer 資料值無法安全解析，未改寫或補 0`);
+    if (upstreamCoverage.problemSkuRows.length > 0) {
+      gaps.push(`其中 ${upstreamCoverage.problemSkuRows.length} 個具同次 CURRENT_FBA 證據的精確問題 SKU 已單獨隔離，其他商品仍已完成，未補 0 或重複加總`);
+    }
+    if (upstreamCoverage.unprovenExactSkuProblems.exactSkuCount > 0) {
+      gaps.push(`另有 ${upstreamCoverage.unprovenExactSkuProblems.exactSkuCount} 個精確上游問題 SKU 缺少同次 CURRENT_FBA 證據，只計數、不輸出 identifier`);
     }
   }
   if (gaps.length > 0) {
@@ -651,8 +832,13 @@ function spreadsheetText(value: string): string {
   return safe;
 }
 
-function safeRequiredText(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim() || value !== value.trim() || value.length > 512) {
+function safeRequiredText(value: unknown, field: string, maximum = 512): string {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value !== value.trim() ||
+    value.length > maximum
+  ) {
     throw new TypeError(`${field} is invalid.`);
   }
   spreadsheetText(value);

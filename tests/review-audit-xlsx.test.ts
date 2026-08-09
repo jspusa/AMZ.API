@@ -109,7 +109,10 @@ describe("review topic audit Excel", () => {
     expect(workbook).toContain("localSheetId=\"4\">'負向主題'!$1:$1");
     expect(workbook).toContain("localSheetId=\"5\">'未完成'!$1:$1");
     expect(summary).toContain("完整 review 全文、商品平均星等、總評論數");
-    expect(summary).toContain("非 parent ASIN 評論主題對星等的影響");
+    expect(summary).toContain("非 parent ASIN 評論主題影響值");
+    expect(summary).toContain("不是商品總星等或 1–5 星制");
+    expect(summary).toContain("負數是此負向主題對星等下降方向的影響值，不是商品負星等");
+    expect(summary).toContain("不轉成 0 或絕對值");
     expect(summary).toContain("已排除 parent");
     expect(all).toContain("AFA12AM");
     expect(all).toContain("B000000002");
@@ -118,6 +121,8 @@ describe("review topic audit Excel", () => {
     expect(positive).toContain("Texture");
     expect(positive).toContain("Dogs love it");
     expect(negative).toContain("Smell");
+    expect(negative).toContain("主題影響值");
+    expect(negative).toContain("<v>-2.4</v>");
     expect(incomplete).toContain("Role unavailable");
     expect(incomplete).toContain("req-403");
     expect(incomplete).toContain("REL-MISSING");

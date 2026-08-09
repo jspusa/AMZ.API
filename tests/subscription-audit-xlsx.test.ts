@@ -276,6 +276,20 @@ describe("Subscribe & Save problem Excel", () => {
           sellerSku: "SNS-BAD-PRICE",
           problem: "offer price 不是安全的非負數。",
         }],
+        problemSkuRows: [{
+          sellerSku: "SNS-BAD-PRICE",
+          fbaEvidence: "CURRENT_FBA_SKU_SET",
+          affectedOfferRows: 1,
+          affectedMetricRows: 0,
+          metricMonths: [],
+          problem: "Amazon Replenishment offer 資料無法安全解析：offer price 不是安全的非負數。其他商品仍已完成。",
+        }],
+        unprovenExactSkuProblems: {
+          exactSkuCount: 0,
+          affectedOfferRows: 0,
+          affectedMetricRows: 0,
+          minimumUnresolvedOfferMonths: 0,
+        },
         rejectedSellerSkuRows: 0,
         minimumUnresolvedOfferMonths: 2,
         notice: "一列 offer 資料值無法安全解析。",
@@ -290,6 +304,80 @@ describe("Subscribe & Save problem Excel", () => {
     expect(sheet).toContain("SNS-BAD-PRICE");
     expect(sheet).toContain("offer price 不是安全的非負數");
     expect(sheet).toContain("1 列有精確 SKU 但 offer 資料值無法安全解析");
+    expect(sheet).toContain("問題 SKU（其他商品仍已完成）");
+  });
+
+  it.each([
+    {
+      kind: "duplicated",
+      sellerSku: "SNS-METRIC-DUPLICATE",
+      affectedMetricRows: 2,
+      returnedMetricRows: 3,
+      problem: "2026-06 月度指標重複；該月保持缺值，其他商品仍已完成。",
+    },
+    {
+      kind: "invalid",
+      sellerSku: "SNS-METRIC-INVALID",
+      affectedMetricRows: 1,
+      returnedMetricRows: 2,
+      problem: "2026-06 月度指標資料無法安全解析；該月保持缺值，其他商品仍已完成。",
+    },
+  ])("lists a $kind metric SKU on every sheet while keeping valid revenue partial", ({
+    sellerSku,
+    affectedMetricRows,
+    returnedMetricRows,
+    problem: metricProblem,
+  }) => {
+    const bytes = createSubscriptionAuditWorkbook({
+      marketplaceLabel: "US",
+      generatedAt: "2026-08-08T12:00:00Z",
+      metricMonths: ["2026-06", "2026-07"],
+      currentActiveSubscriptions: 12,
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 2,
+        reportedOfferMonths: 1,
+      },
+      inventoryEvidence: inventoryEvidence(1),
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 1,
+        acceptedOfferRows: 1,
+        returnedMetricRows,
+        acceptedMetricRows: 1,
+        invalidOfferRows: [],
+        problemSkuRows: [{
+          sellerSku,
+          fbaEvidence: "CURRENT_FBA_SKU_SET",
+          affectedOfferRows: 0,
+          affectedMetricRows,
+          metricMonths: ["2026-06"],
+          problem: metricProblem,
+        }],
+        unprovenExactSkuProblems: {
+          exactSkuCount: 0,
+          affectedOfferRows: 0,
+          affectedMetricRows: 0,
+          minimumUnresolvedOfferMonths: 0,
+        },
+        rejectedSellerSkuRows: 0,
+        minimumUnresolvedOfferMonths: 1,
+        notice: "一個問題 SKU 已單獨隔離。",
+      },
+      problems: [problem(10, sellerSku, [
+        point("2026-07", 25),
+      ])],
+    });
+    const archive = unzipSync(bytes);
+    for (let index = 1; index <= 5; index += 1) {
+      const sheet = strFromU8(archive[`xl/worksheets/sheet${index}.xml`]);
+      expect(sheet).toContain("問題 SKU（其他商品仍已完成）");
+      expect(sheet).toContain(sellerSku);
+      expect(sheet).toContain(metricProblem.split("；")[0]);
+      expect(sheet).toContain("未將部分加總冒充完整總額");
+    }
   });
 
   it("keeps an unknown Seller base discount blank instead of manufacturing zero", () => {

@@ -620,7 +620,7 @@ export function buildReviewAuditSnapshot(input: {
       totalReviewCountAvailable: false,
       officialSource: CUSTOMER_FEEDBACK_SOURCE,
     },
-    notice: "排序只使用經 Listings relationships 證明為 child 或 standalone 的非 parent FBA ASIN 主題星等影響，不是商品總星等或評論數排名。Amazon 公開 Customer Feedback API 資料每週更新且主題僅提供英文；不提供完整 review 全文、商品平均星等或總評論數。Parent 容器會明確排除，關係證據不完整的 SKU 會單獨列為未完成，不會查詢評論主題。",
+    notice: "排序只使用經 Listings relationships 證明為 child 或 standalone 的非 parent FBA ASIN 主題影響值（starRatingImpact），不是商品總星等、1–5 星制或評論數排名。負數保留 Amazon 原始值，表示此負向主題對星等下降方向的影響值，不是商品負星等；不會轉成 0 或絕對值。Amazon 公開 Customer Feedback API 資料每週更新且主題僅提供英文；不提供完整 review 全文、商品平均星等或總評論數。Parent 容器會明確排除，關係證據不完整的 SKU 會單獨列為未完成，不會查詢評論主題。",
   };
 }
 

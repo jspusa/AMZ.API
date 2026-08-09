@@ -4,6 +4,54 @@ import { useId, useState } from "react";
 import type { BrandSalesSegment, BrandSalesSnapshot } from "../brand-sales";
 import type { BrandSalesFailure } from "./brand-sales-card";
 
+const PIE_CENTER = 60;
+const PIE_RADIUS = 52;
+
+function coordinate(value: number): string {
+  const rounded = Math.abs(value) < 0.00005 ? 0 : Number(value.toFixed(4));
+  return String(rounded);
+}
+
+function pointAt(fraction: number): { x: number; y: number } {
+  const radians = (-90 + fraction * 360) * (Math.PI / 180);
+  return {
+    x: PIE_CENTER + PIE_RADIUS * Math.cos(radians),
+    y: PIE_CENTER + PIE_RADIUS * Math.sin(radians),
+  };
+}
+
+export function brandSalesPiePath(start: number, share: number): string {
+  if (!Number.isFinite(start) || !Number.isFinite(share) || share <= 0) return "";
+  if (share >= 1 - Number.EPSILON) {
+    return [
+      `M ${PIE_CENTER} ${PIE_CENTER}`,
+      `L ${PIE_CENTER} ${PIE_CENTER - PIE_RADIUS}`,
+      `A ${PIE_RADIUS} ${PIE_RADIUS} 0 1 1 ${PIE_CENTER} ${PIE_CENTER + PIE_RADIUS}`,
+      `A ${PIE_RADIUS} ${PIE_RADIUS} 0 1 1 ${PIE_CENTER} ${PIE_CENTER - PIE_RADIUS}`,
+      "Z",
+    ].join(" ");
+  }
+  const startPoint = pointAt(start);
+  const endPoint = pointAt(start + share);
+  return [
+    `M ${PIE_CENTER} ${PIE_CENTER}`,
+    `L ${coordinate(startPoint.x)} ${coordinate(startPoint.y)}`,
+    `A ${PIE_RADIUS} ${PIE_RADIUS} 0 ${share > 0.5 ? 1 : 0} 1 ${coordinate(endPoint.x)} ${coordinate(endPoint.y)}`,
+    "Z",
+  ].join(" ");
+}
+
+export function sortBrandSalesSegments(
+  segments: readonly BrandSalesSegment[],
+): BrandSalesSegment[] {
+  return segments
+    .map((segment, index) => ({ segment, index }))
+    .sort((left, right) =>
+      right.segment.amount - left.segment.amount || left.index - right.index,
+    )
+    .map(({ segment }) => segment);
+}
+
 function formatMoney(amount: number, currencyCode: string): string {
   try {
     return new Intl.NumberFormat("zh-TW", {
@@ -31,9 +79,10 @@ export default function BrandSalesChart({
 }) {
   const titleId = useId();
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  const positive = snapshot?.segments.filter((segment) => segment.amount > 0) ?? [];
+  const sortedSegments = snapshot ? sortBrandSalesSegments(snapshot.segments) : [];
+  const positive = sortedSegments.filter((segment) => segment.amount > 0);
   const total = snapshot?.summary.amount ?? 0;
-  const active = snapshot?.segments.find((segment) => segment.key === activeKey) ?? null;
+  const active = sortedSegments.find((segment) => segment.key === activeKey) ?? null;
   let offset = 0;
 
   return (
@@ -74,43 +123,45 @@ export default function BrandSalesChart({
       {snapshot && (
         <>
           <div className="brand-sales-visual">
-            <div className="brand-sales-donut-wrap">
-              <svg className="brand-sales-donut" viewBox="0 0 120 120" role="img" aria-label={`FBA 已出貨商品銷售 ${formatMoney(total, snapshot.currencyCode)}`}>
-                <circle className="brand-sales-track" cx="60" cy="60" r="43" pathLength="100" />
+            <div className="brand-sales-pie-stage">
+              <div className="brand-sales-pie-wrap">
+                <svg className="brand-sales-pie" viewBox="0 0 120 120" role="img" aria-label={`FBA 已出貨商品銷售 ${formatMoney(total, snapshot.currencyCode)}`}>
+                  <circle className="brand-sales-pie-track" cx="60" cy="60" r="52" />
                 {positive.map((segment) => {
-                  const exactPercentage = total > 0 ? (segment.amount / total) * 100 : 0;
+                  const share = total > 0 ? segment.amount / total : 0;
                   const currentOffset = offset;
-                  offset += exactPercentage;
+                  offset += share;
+                  const label = `${segment.label} ${formatMoney(segment.amount, snapshot.currencyCode)}，${segment.percentage}%`;
                   return (
-                    <circle
+                    <path
                       key={segment.key}
-                      className={`brand-sales-arc ${activeKey === segment.key ? "is-active" : ""}`}
-                      cx="60"
-                      cy="60"
-                      r="43"
-                      pathLength="100"
-                      stroke={segment.color}
-                      strokeDasharray={`${exactPercentage} ${100 - exactPercentage}`}
-                      strokeDashoffset={-currentOffset}
+                      className={`brand-sales-pie-slice ${activeKey === segment.key ? "is-active" : ""}`}
+                      d={brandSalesPiePath(currentOffset, share)}
+                      fill={segment.color}
                       tabIndex={0}
                       role="button"
-                      aria-label={`${segment.label} ${formatMoney(segment.amount, snapshot.currencyCode)}，${segment.percentage}%`}
+                      aria-label={label}
                       onPointerEnter={() => setActiveKey(segment.key)}
                       onPointerLeave={() => setActiveKey(null)}
                       onFocus={() => setActiveKey(segment.key)}
                       onBlur={() => setActiveKey(null)}
-                    />
+                    >
+                      <title>{label}</title>
+                    </path>
                   );
                 })}
-              </svg>
-              <div className="brand-sales-center">
+                </svg>
+              </div>
+              <div className="brand-sales-selection" aria-live="polite">
                 <small>{active ? active.label : "FBA 已出貨"}</small>
                 <strong>{formatMoney(active?.amount ?? total, snapshot.currencyCode)}</strong>
-                <span>{active ? `${active.percentage}%` : `${snapshot.summary.unitCount.toLocaleString()} 件`}</span>
+                <span>{active
+                  ? `${active.percentage}% · ${active.unitCount.toLocaleString()} 件`
+                  : `${snapshot.summary.unitCount.toLocaleString()} 件`}</span>
               </div>
             </div>
             <div className="brand-sales-legend" role="list" aria-label="品牌營收明細">
-              {snapshot.segments.map((segment: BrandSalesSegment) => (
+              {sortedSegments.map((segment: BrandSalesSegment) => (
                 <button
                   key={segment.key}
                   type="button"

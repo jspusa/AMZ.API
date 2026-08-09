@@ -217,6 +217,9 @@ describe("FBA non-parent ASIN review topic audit", () => {
       duplicateSkuAsinsCollapsed: 1,
     });
     expect(snapshot.notice).toMatch(/不是商品總星等/u);
+    expect(snapshot.notice).toMatch(/不是商品總星等、1–5 星制/u);
+    expect(snapshot.notice).toMatch(/負數保留 Amazon 原始值.*星等下降方向的影響值.*不是商品負星等.*不會轉成 0 或絕對值/u);
+    expect(snapshot.bottomFiveNegative[0]?.starRatingImpact).toBe(-4.1);
   });
 
   it("documents role alternatives, supported stores, weekly English-only data and no review corpus", () => {

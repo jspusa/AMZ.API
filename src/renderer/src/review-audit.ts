@@ -110,7 +110,7 @@ function topic(value: unknown) {
     topic: text(raw.topic, "主題", 300),
     numberOfMentions: integer(raw.numberOfMentions, "提及數"),
     occurrencePercentage: finite(raw.occurrencePercentage, "出現比例"),
-    starRatingImpact: finite(raw.starRatingImpact, "主題星等影響"),
+    starRatingImpact: finite(raw.starRatingImpact, "評論主題影響值"),
     reviewSnippets: raw.reviewSnippets.map((snippet) => text(snippet, "評論短句", 1_000)),
   };
 }
@@ -125,7 +125,7 @@ function ranked(value: unknown): ReviewAuditRankedItemView {
     topic: text(raw.topic, "主題", 300),
     numberOfMentions: integer(raw.numberOfMentions, "提及數"),
     occurrencePercentage: finite(raw.occurrencePercentage, "出現比例"),
-    starRatingImpact: finite(raw.starRatingImpact, "主題星等影響"),
+    starRatingImpact: finite(raw.starRatingImpact, "評論主題影響值"),
     metricLabel: "NON_PARENT_ASIN_TOPIC_STAR_RATING_IMPACT",
   };
 }
