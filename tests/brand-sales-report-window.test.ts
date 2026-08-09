@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getBrandSalesReportWindow,
   getFbaShipmentSalesReportStatus,
   invalidateSpApiCredentialCaches,
+  startFbaShipmentSalesReport,
 } from "../src/main/amazon/sp-api";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
+const WINDOW_CREATED_AT = Date.parse("2026-08-09T12:00:00.000Z");
 const savedEnvironment = new Map(
   Object.keys(process.env)
     .filter((key) => key.startsWith("SP_API_"))
@@ -51,6 +54,77 @@ describe("FBA brand sales fixed report window", () => {
     }
   });
 
+  it("keeps an ending-today window immutable after the clock advances", async () => {
+    const fixed = getBrandSalesReportWindow({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-02",
+      endDate: "2026-08-09",
+      now: new Date(WINDOW_CREATED_AT),
+    });
+    expect(fixed).toEqual({
+      dataStartTime: "2026-08-02T00:00:00-07:00",
+      dataEndTime: "2026-08-09T05:00:00-07:00",
+    });
+    vi.setSystemTime(new Date(WINDOW_CREATED_AT + 60_000));
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "FAKE_ACCESS_TOKEN", expires_in: 3_600 });
+      }
+      return jsonResponse(200, {
+        reportId: "FAKE_TODAY_REPORT_ID",
+        reportType: "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA",
+        marketplaceIds: [MARKETPLACE_ID],
+        dataStartTime: "2026-08-02T07:00:00Z",
+        dataEndTime: "2026-08-09T12:00:00Z",
+        processingStatus: "DONE",
+        reportDocumentId: "FAKE_TODAY_DOCUMENT_ID",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getFbaShipmentSalesReportStatus({
+      marketplaceId: MARKETPLACE_ID,
+      reportId: "FAKE_TODAY_REPORT_ID",
+      startDate: "2026-08-02",
+      endDate: "2026-08-09",
+      ...fixed,
+      windowCreatedAt: WINDOW_CREATED_AT,
+    })).resolves.toMatchObject({ ready: true, ...fixed });
+  });
+
+  it("posts the persisted window instead of recomputing a later current time", async () => {
+    const fixed = getBrandSalesReportWindow({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-02",
+      endDate: "2026-08-09",
+      now: new Date(WINDOW_CREATED_AT),
+    });
+    vi.setSystemTime(new Date(WINDOW_CREATED_AT + 60_000));
+    let reportsBody: Record<string, unknown> | null = null;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "FAKE_ACCESS_TOKEN", expires_in: 3_600 });
+      }
+      reportsBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse(202, { reportId: "FAKE_TODAY_REPORT_ID" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(startFbaShipmentSalesReport({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-02",
+      endDate: "2026-08-09",
+      ...fixed,
+      windowCreatedAt: WINDOW_CREATED_AT,
+    })).resolves.toMatchObject({ status: "IN_QUEUE", ...fixed });
+    expect(reportsBody).toMatchObject({
+      dataStartTime: fixed.dataStartTime,
+      dataEndTime: fixed.dataEndTime,
+    });
+  });
+
   it("accepts the app-generated US zoned window and matches Amazon UTC metadata by instant", async () => {
     const urls: URL[] = [];
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
@@ -84,6 +158,7 @@ describe("FBA brand sales fixed report window", () => {
       endDate: "2026-08-08",
       dataStartTime: "2026-08-02T00:00:00-07:00",
       dataEndTime: "2026-08-09T00:00:00-07:00",
+      windowCreatedAt: WINDOW_CREATED_AT,
     });
 
     expect(result).toMatchObject({
@@ -126,6 +201,7 @@ describe("FBA brand sales fixed report window", () => {
       endDate: "2026-03-09",
       dataStartTime: "2026-03-07T00:00:00-08:00",
       dataEndTime: "2026-03-10T00:00:00-07:00",
+      windowCreatedAt: WINDOW_CREATED_AT,
     });
 
     expect(result).toMatchObject({
@@ -164,6 +240,7 @@ describe("FBA brand sales fixed report window", () => {
         endDate: "2026-08-08",
         dataStartTime: "2026-08-02T00:00:00-07:00",
         dataEndTime: "2026-08-09T00:00:00-07:00",
+        windowCreatedAt: WINDOW_CREATED_AT,
       }),
     ).rejects.toMatchObject({
       status: 409,
@@ -183,6 +260,7 @@ describe("FBA brand sales fixed report window", () => {
         endDate: "2026-08-08",
         dataStartTime: "2026-08-02 00:00:00-07:00",
         dataEndTime: "2026-08-09T00:00:00-07:00",
+        windowCreatedAt: WINDOW_CREATED_AT,
       }),
     ).rejects.toMatchObject({
       status: 400,
@@ -203,6 +281,7 @@ describe("FBA brand sales fixed report window", () => {
         endDate: "2026-08-08",
         dataStartTime: "2026-08-01T00:00:00-07:00",
         dataEndTime: "2026-08-09T00:00:00-07:00",
+        windowCreatedAt: WINDOW_CREATED_AT,
       }),
     ).rejects.toMatchObject({
       status: 400,
@@ -242,6 +321,7 @@ describe("FBA brand sales fixed report window", () => {
         endDate: "2026-08-08",
         dataStartTime: "2026-08-02T00:00:00-07:00",
         dataEndTime: "2026-08-09T00:00:00-07:00",
+        windowCreatedAt: WINDOW_CREATED_AT,
       }).then(
         () => null,
         (reason: unknown) => reason,

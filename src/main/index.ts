@@ -16,13 +16,25 @@ import { readFile } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdvertisingCredentialInput,
   ApiRequest,
   CredentialInput,
   ExternalDestination,
   UpdateStatus,
 } from "../shared/contracts";
 import { ApiRouter } from "./api-router";
+import { AdvertisingApiClient } from "./amazon/ads-api";
 import { invalidateSpApiCredentialCaches } from "./amazon/sp-api";
+import { isMarketplaceId, usesDemoMode } from "./amazon/sp-api";
+import { AdvertisingCredentialVault } from "./advertising-credential-vault";
+import {
+  advertisingCredentialEditorDataUrl,
+  isAdvertisingCredentialEditorFrame,
+} from "./ads-credential-editor";
+import {
+  credentialEditorDataUrl,
+  isCredentialEditorFrame,
+} from "./credential-editor";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
 import { requestNativeConfirmation } from "./native-confirmation";
@@ -104,8 +116,12 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 let mainWindow: BrowserWindow | null = null;
+let credentialEditorWindow: BrowserWindow | null = null;
+let advertisingCredentialEditorWindow: BrowserWindow | null = null;
 let apiRouter: ApiRouter | null = null;
 let credentialVault: CredentialVault | null = null;
+let advertisingCredentialVault: AdvertisingCredentialVault | null = null;
+let advertisingApi: AdvertisingApiClient | null = null;
 let updateStatus: UpdateStatus = { state: "idle" };
 let amazonWritesInFlight = 0;
 let apiRequestsInFlight = 0;
@@ -362,9 +378,145 @@ async function createWindow(): Promise<void> {
   }
 }
 
+async function openCredentialEditor(): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error("APP_NOT_READY");
+  if (credentialEditorWindow && !credentialEditorWindow.isDestroyed()) {
+    credentialEditorWindow.show();
+    credentialEditorWindow.focus();
+    await new Promise<void>((resolve) =>
+      credentialEditorWindow?.once("closed", () => resolve()),
+    );
+    return;
+  }
+  const partition = `fba-sp-credential-editor-${crypto.randomUUID()}`;
+  const editorSession = session.fromPartition(partition);
+  editorSession.setPermissionCheckHandler(() => false);
+  editorSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  const editor = new BrowserWindow({
+    parent: mainWindow,
+    modal: true,
+    show: false,
+    width: 760,
+    height: 900,
+    minWidth: 660,
+    minHeight: 700,
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    title: "SP-API 本機安全輸入",
+    backgroundColor: "#f4f5f7",
+    webPreferences: {
+      preload: fileURLToPath(new URL("../preload/credentialEditor.cjs", import.meta.url)),
+      partition,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
+      webviewTag: false,
+      navigateOnDragDrop: false,
+      devTools: false,
+    },
+  });
+  credentialEditorWindow = editor;
+  editor.webContents.on("will-navigate", (event) => event.preventDefault());
+  editor.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  editor.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  editor.once("ready-to-show", () => editor.show());
+  editor.on("closed", () => {
+    if (credentialEditorWindow === editor) credentialEditorWindow = null;
+  });
+  try {
+    await editor.loadURL(credentialEditorDataUrl());
+    await new Promise<void>((resolve) => editor.once("closed", () => resolve()));
+  } catch (error) {
+    if (!editor.isDestroyed()) editor.destroy();
+    throw error;
+  }
+}
+
+function closeCredentialEditor(): void {
+  if (credentialEditorWindow && !credentialEditorWindow.isDestroyed()) {
+    credentialEditorWindow.destroy();
+  }
+  credentialEditorWindow = null;
+}
+
+async function openAdvertisingCredentialEditor(): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error("APP_NOT_READY");
+  if (advertisingCredentialEditorWindow && !advertisingCredentialEditorWindow.isDestroyed()) {
+    advertisingCredentialEditorWindow.show();
+    advertisingCredentialEditorWindow.focus();
+    await new Promise<void>((resolve) =>
+      advertisingCredentialEditorWindow?.once("closed", () => resolve()),
+    );
+    return;
+  }
+  const partition = `fba-ads-credential-editor-${crypto.randomUUID()}`;
+  const editorSession = session.fromPartition(partition);
+  editorSession.setPermissionCheckHandler(() => false);
+  editorSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  const editor = new BrowserWindow({
+    parent: mainWindow,
+    modal: true,
+    show: false,
+    width: 560,
+    height: 700,
+    minWidth: 520,
+    minHeight: 640,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    title: "Amazon Ads 本機安全輸入",
+    backgroundColor: "#f4f5f7",
+    webPreferences: {
+      preload: fileURLToPath(new URL("../preload/credentialEditor.cjs", import.meta.url)),
+      partition,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
+      webviewTag: false,
+      navigateOnDragDrop: false,
+      devTools: false,
+    },
+  });
+  advertisingCredentialEditorWindow = editor;
+  editor.webContents.on("will-navigate", (event) => event.preventDefault());
+  editor.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  editor.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  editor.once("ready-to-show", () => editor.show());
+  editor.on("closed", () => {
+    if (advertisingCredentialEditorWindow === editor) {
+      advertisingCredentialEditorWindow = null;
+    }
+  });
+  try {
+    await editor.loadURL(advertisingCredentialEditorDataUrl());
+    await new Promise<void>((resolve) => editor.once("closed", () => resolve()));
+  } catch (error) {
+    if (!editor.isDestroyed()) editor.destroy();
+    throw error;
+  }
+}
+
+function closeAdvertisingCredentialEditor(): void {
+  if (advertisingCredentialEditorWindow && !advertisingCredentialEditorWindow.isDestroyed()) {
+    advertisingCredentialEditorWindow.destroy();
+  }
+  advertisingCredentialEditorWindow = null;
+}
+
 async function verifyRendererBridge(window: BrowserWindow): Promise<void> {
   const ready = await window.webContents.executeJavaScript(
-    "Boolean(globalThis.fbaOS?.api?.request && globalThis.fbaOS?.credentials?.status)",
+    "Boolean(globalThis.fbaOS?.api?.request && globalThis.fbaOS?.credentials?.status && globalThis.fbaOS?.advertisingCredentials?.status)",
     true,
   );
   if (ready !== true) {
@@ -409,8 +561,15 @@ function registerIpc(): void {
     if (!credentialVault) throw new Error("APP_NOT_READY");
     return credentialVault.getSummary();
   });
-  ipcMain.handle("fba:credentials-save", async (event, input: CredentialInput) => {
+  ipcMain.handle("fba:credentials-open-editor", async (event) => {
     assertTrustedFrame(event);
+    if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
+    await openCredentialEditor();
+  });
+  ipcMain.handle("fba:credentials-save", async (event, input: CredentialInput) => {
+    if (!isCredentialEditorFrame(event, credentialEditorWindow)) {
+      throw new Error("UNTRUSTED_CREDENTIAL_EDITOR");
+    }
     if (!credentialVault) throw new Error("APP_NOT_READY");
     if (apiRequestsInFlight > 0) {
       throw new Error("Amazon 查詢或寫入仍在處理；完成後再更新憑證。");
@@ -421,11 +580,18 @@ function registerIpc(): void {
       await confirmSensitiveAction("確認保存 Amazon API 憑證到這台 Mac 的 Keychain");
       const summary = await credentialVault.save(input);
       invalidateSpApiCredentialCaches();
+      advertisingApi?.invalidate();
       apiRouter?.clearPreviews();
       return summary;
     } finally {
       credentialsChangeInFlight = false;
     }
+  });
+  ipcMain.handle("fba:credentials-editor-close", async (event) => {
+    if (!isCredentialEditorFrame(event, credentialEditorWindow)) {
+      throw new Error("UNTRUSTED_CREDENTIAL_EDITOR");
+    }
+    closeCredentialEditor();
   });
   ipcMain.handle("fba:credentials-clear", async (event) => {
     assertTrustedFrame(event);
@@ -440,6 +606,7 @@ function registerIpc(): void {
       apiRouter?.clearPreviews();
       const summary = await credentialVault.clear();
       invalidateSpApiCredentialCaches();
+      advertisingApi?.invalidate();
       return summary;
     } finally {
       credentialsChangeInFlight = false;
@@ -452,6 +619,87 @@ function registerIpc(): void {
     apiRequestsInFlight += 1;
     try {
       return await apiRouter.testConnections();
+    } finally {
+      apiRequestsInFlight -= 1;
+    }
+  });
+  ipcMain.handle("fba:ads-credentials-status", async (event) => {
+    assertTrustedFrame(event);
+    if (!advertisingCredentialVault) throw new Error("APP_NOT_READY");
+    return advertisingCredentialVault.getSummary();
+  });
+  ipcMain.handle("fba:ads-credentials-open-editor", async (event) => {
+    assertTrustedFrame(event);
+    if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
+    await openAdvertisingCredentialEditor();
+  });
+  ipcMain.handle(
+    "fba:ads-credentials-save",
+    async (event, input: AdvertisingCredentialInput) => {
+      if (!isAdvertisingCredentialEditorFrame(event, advertisingCredentialEditorWindow)) {
+        throw new Error("UNTRUSTED_ADS_CREDENTIAL_EDITOR");
+      }
+      if (!advertisingCredentialVault || !advertisingApi) throw new Error("APP_NOT_READY");
+      if (apiRequestsInFlight > 0) {
+        throw new Error("Amazon 查詢或寫入仍在處理；完成後再更新 Ads 憑證。");
+      }
+      if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
+      credentialsChangeInFlight = true;
+      try {
+        await confirmSensitiveAction("確認保存 Amazon Ads API 憑證到這台 Mac 的 Keychain");
+        const summary = await advertisingCredentialVault.save(input);
+        advertisingApi.invalidate();
+        apiRouter?.clearPreviews();
+        return summary;
+      } finally {
+        credentialsChangeInFlight = false;
+      }
+    },
+  );
+  ipcMain.handle("fba:ads-credentials-editor-close", async (event) => {
+    if (!isAdvertisingCredentialEditorFrame(event, advertisingCredentialEditorWindow)) {
+      throw new Error("UNTRUSTED_ADS_CREDENTIAL_EDITOR");
+    }
+    closeAdvertisingCredentialEditor();
+  });
+  ipcMain.handle("fba:ads-credentials-clear", async (event) => {
+    assertTrustedFrame(event);
+    if (!advertisingCredentialVault || !advertisingApi) throw new Error("APP_NOT_READY");
+    if (apiRequestsInFlight > 0) {
+      throw new Error("Amazon 查詢或寫入仍在處理；完成後再清除 Ads 憑證。");
+    }
+    if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
+    credentialsChangeInFlight = true;
+    try {
+      await confirmSensitiveAction("確認清除這台 Mac 上獨立的 Amazon Ads API 憑證");
+      const summary = await advertisingCredentialVault.clear();
+      advertisingApi.invalidate();
+      apiRouter?.clearPreviews();
+      return summary;
+    } finally {
+      credentialsChangeInFlight = false;
+    }
+  });
+  ipcMain.handle("fba:ads-credentials-test", async (event, marketplaceId: string) => {
+    assertTrustedFrame(event);
+    if (!advertisingApi || !isMarketplaceId(marketplaceId)) {
+      throw new Error("Amazon Ads 站點無效。");
+    }
+    if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
+    if (usesDemoMode(marketplaceId)) {
+      return {
+        ok: false,
+        testedAt: new Date().toISOString(),
+        marketplaceId,
+        marketplaceCode: "DEMO",
+        accountType: null,
+        message: "展示模式不會呼叫真實 Amazon Ads。",
+        requestId: null,
+      };
+    }
+    apiRequestsInFlight += 1;
+    try {
+      return await advertisingApi.probeMarketplace(marketplaceId);
     } finally {
       apiRequestsInFlight -= 1;
     }
@@ -586,6 +834,32 @@ async function initializeStoreWithRecovery(store: LocalStore): Promise<void> {
   }
 }
 
+async function initializeAdvertisingVaultWithRecovery(
+  vault: AdvertisingCredentialVault,
+): Promise<void> {
+  for (;;) {
+    try {
+      await vault.getSummary();
+      return;
+    } catch {
+      const result = await dialog.showMessageBox({
+        type: "error",
+        title: "無法開啟 Amazon Ads 憑證",
+        message: "macOS Keychain 目前鎖定，或獨立 Ads 憑證檔已損壞。",
+        detail: "清除 Ads 憑證不會影響現有 SP-API 憑證或本機操作資料。",
+        buttons: ["退出 App", "重試", "只清除 Ads 憑證"],
+        defaultId: 1,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (result.response === 0) throw new Error("ADS_CREDENTIAL_VAULT_UNAVAILABLE");
+      if (result.response === 1) continue;
+      await vault.clear();
+      return;
+    }
+  }
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -604,19 +878,42 @@ if (!hasSingleInstanceLock) {
     }
     const userData = app.getPath("userData");
     credentialVault = new CredentialVault(resolve(userData, "credentials.enc"));
+    advertisingCredentialVault = new AdvertisingCredentialVault(
+      resolve(userData, "ads-credentials.enc"),
+    );
+    advertisingApi = new AdvertisingApiClient(
+      advertisingCredentialVault,
+      fetch,
+      async (region) => ({
+        accountScope: await credentialVault!.getAccountScope(region),
+        sellerId: (await credentialVault!.load()).regions[region].sellerId,
+      }),
+    );
     const localStore = new LocalStore(resolve(userData, "fba-os-data.json"));
     await initializeVaultWithRecovery(credentialVault);
+    await initializeAdvertisingVaultWithRecovery(advertisingCredentialVault);
     await initializeStoreWithRecovery(localStore);
     apiRouter = new ApiRouter({
       store: localStore,
       vault: credentialVault,
       approveWrite: confirmSensitiveAction,
+      advertising: advertisingApi,
     });
     await registerAppProtocol();
     registerIpc();
     configureUpdater();
-    powerMonitor.on("lock-screen", () => apiRouter?.clearPreviews());
-    powerMonitor.on("suspend", () => apiRouter?.clearPreviews());
+    powerMonitor.on("lock-screen", () => {
+      closeCredentialEditor();
+      closeAdvertisingCredentialEditor();
+      apiRouter?.clearPreviews();
+      advertisingApi?.invalidate();
+    });
+    powerMonitor.on("suspend", () => {
+      closeCredentialEditor();
+      closeAdvertisingCredentialEditor();
+      apiRouter?.clearPreviews();
+      advertisingApi?.invalidate();
+    });
     await createWindow();
     appInitialized = true;
   }).catch(async () => {

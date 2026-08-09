@@ -3,10 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
   parseContentAuditSnapshot,
+  quickEditAvailabilityForRow,
   quickEditFocusForRow,
   resolveContentAuditQuickEditFocus,
 } from "../src/renderer/src/components/content-audit-panel";
 import type { ContentAuditRow } from "../src/renderer/src/content-quality";
+import { contentLookupErrorMessage } from "../src/renderer/src/components/sku-operations-drawer";
 
 function quickEditRow(
   overrides: Partial<ContentAuditRow> = {},
@@ -145,6 +147,8 @@ describe("global FBA content audit panel", () => {
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("content-audit-export-primary");
     expect(markup).toContain("立刻修改");
+    expect(markup).toContain("本次錯誤原因");
+    expect(markup).toContain("賣點不足（賣點）");
     expect(markup).toContain("完整編輯");
     expect(markup.indexOf("Amazon 唯讀＋Mac 本機拼字檢查")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
@@ -227,6 +231,57 @@ describe("global FBA content audit panel", () => {
     expect(drawerSource).toContain("其他 Amazon 原值仍會原樣帶入預檢");
     expect(drawerSource).toContain("確認並預檢這次修正");
     expect(drawerSource).toContain("健檢定位已失效，已顯示完整編輯");
+    expect(drawerSource).toContain("本次錯誤原因：{activeQuickEditFocus.reason}");
+    expect(drawerSource).toContain("立刻修改未開始：");
+  });
+
+  it("keeps an unavailable quick-edit action visible and explains why it is disabled", () => {
+    const row = quickEditRow({
+      issues: [{
+        kind: "SUSPECTED_TYPO",
+        field: "bulletPoints",
+        message: "疑似錯字但缺少可核對字詞。",
+      }],
+    });
+    const availability = quickEditAvailabilityForRow(row);
+    expect(availability).toMatchObject({
+      status: "unavailable",
+      reason: expect.stringContaining("疑似錯字（賣點）"),
+      unavailableReason: expect.stringContaining("無法安全定位"),
+    });
+
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [row],
+      summary: { total: 1 },
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        cachedResult={{
+          snapshot,
+          filter: "all",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+    expect(markup).toMatch(/class="content-audit-fix-now"[^>]*disabled=""/u);
+    expect(markup).toContain("本次錯誤原因");
+    expect(markup).toContain("立刻修改不可用");
+    expect(markup).toContain("無法安全定位待修內容");
+  });
+
+  it("labels a failed fresh lookup as a quick edit that never started", () => {
+    expect(contentLookupErrorMessage("Amazon 暫時無法查詢。", true)).toBe(
+      "立刻修改未開始：Amazon 暫時無法查詢。",
+    );
+    expect(contentLookupErrorMessage("Amazon 暫時無法查詢。", false)).toBe(
+      "Amazon 暫時無法查詢。",
+    );
   });
 
   it("relocates one exact flagged bullet after Amazon changes its position", () => {
@@ -248,6 +303,7 @@ describe("global FBA content audit panel", () => {
     expect(resolution).toEqual({
       status: "focused",
       focus: {
+        reason: "疑似錯字（賣點「Naturall」）：疑似錯字。",
         fields: ["bulletPoints"],
         bulletIndices: [2],
         relocationNote:

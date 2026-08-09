@@ -28,7 +28,9 @@ JSPUSA 的 GitHub 控制台＋macOS 本機金鑰 Amazon 營運系統。只處理
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋Touch ID |
 | 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel | 自動讀取；SG／AU 顯示不支援邊界 |
 | 促銷 | Coupon、S&S 管理與 Amazon Ads 集中於「Amazon 官方完成」 | 一鍵開啟、Amazon 內完成 |
-| 報表 | 文件庫列出 Amazon 官方 109 個唯一公開 report types、用途、角色、FBA 邊界與 App 接線狀態；目前六項健檢 Excel 可直接匯出 | 公開文件＋唯讀規劃 |
+| 營運 | Amazon Ads Profile 自動發現、Sponsored Products 活動唯讀查詢與全站 FBA 廣告覆蓋健檢；任何 Listing 身分缺口都整次停止 | 獨立 Ads LWA＋唯讀；無 Ads 寫入 route |
+| 報表 | 文件庫列出 Amazon 官方 109 個唯一公開 report types、用途、角色、FBA 邊界與 App 接線狀態；Vendor 類型不顯示，並可依可用性快速篩選 | 公開文件＋唯讀規劃 |
+| 健檢 | 首頁一鍵在 Mac main process 背景執行訂閱、180+ 庫齡／預估冗餘、內容結構、圖片、未綁變體、評論主題與廣告覆蓋七項健檢；完成／部分完成可匯出十張工作表的同次快照 | 全部唯讀；各項失敗互不冒充成功 |
 | 系統 | Keychain 密文、防重送帳本、預檢票證、自我檢查、字級、API 版本更新建議、公開會計 API 能力與安全下載規劃 | 自動／能力邊界 |
 
 能力邊界：目前 Amazon SP-API 可安全寫入 Listing 價格、Sale Price、文案、圖片，以及既有 FBA child 的 variation 關係。變體改掛不是原子操作，固定拆成「解除舊 parent」與「加入新 parent」兩階段；每階段都重新讀取、Amazon Validation Preview、Touch ID、持久化防重送、單次 PATCH 與唯讀回查，任何不確定狀態都禁止直接重送。S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。
@@ -40,8 +42,8 @@ Customer Feedback API 提供的是每週更新的正／負「評論主題星等�
 ## 第一次使用
 
 1. 從 GitHub Releases 下載已簽章的 `.dmg`，拖進「應用程式」。
-2. 開啟 App，按右下角「Mac 安全連線」。
-3. 輸入 Private Seller App 的：
+2. 開啟 App，按右上角「Mac 安全連線」，再選「開啟 Mac 本機 SP-API 安全輸入」。敏感欄位會在 main process 建立的本機 sheet 中開啟，不會進入 GitHub Pages renderer。
+3. 在本機 sheet 輸入 Private Seller App 的：
    - LWA Client ID
    - LWA Client Secret
    - 各使用區域的 Refresh Token
@@ -61,6 +63,7 @@ SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、�
 ## 憑證保存位置
 
 - Secret 經 Electron `safeStorage`／macOS Keychain 加密後，才寫入 App 的 `userData/credentials.enc`。
+- Amazon Ads 使用獨立 `ads-credentials.enc`；兩種憑證都只在 main process 的無網路本機 sheet 輸入，Pages 只能開啟 sheet、讀取遮罩狀態、測試或清除。
 - 完整 Secret 永不回傳 renderer、永不寫入 GitHub、`.env`、URL、localStorage 或日誌。
 - Amazon Access Token 只在主程序記憶體中短暫快取。
 - Keychain 不可用時保存會直接失敗，沒有明文 fallback。

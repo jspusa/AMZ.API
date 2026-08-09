@@ -88,7 +88,7 @@ export interface AgedInventoryWorkbookRow {
   asin: string;
   title: string;
   condition: string;
-  available: number;
+  available: number | null;
   totalAgedUnits: number;
   agedOver180: number;
   ageBuckets: readonly { key: string; label: string; units: number }[];
@@ -114,8 +114,11 @@ export interface CreateAgedInventoryWorkbookInput {
   fetchedAt: string | Date;
   rows: readonly AgedInventoryWorkbookRow[];
   excessAvailability: "complete" | "partial" | "unavailable";
+  excessReportedSkuCount: number;
   storageCostAvailability: "complete" | "partial" | "unavailable";
+  storageCostReportedSkuCount: number;
   agedSurchargeAvailability: "complete" | "partial" | "unavailable";
+  agedSurchargeReportedSkuCount: number;
   expirationNotice: string;
 }
 
@@ -199,15 +202,15 @@ export function createListingsWorkbook({
       textCell(row.asin ?? "", 2),
       textCell(row.productType ?? ""),
       layout === "content-audit" && row.auditTitleRuns?.length
-        ? richTextCell(row.auditTitleRuns)
+        ? auditRichTextCell(row.auditTitleRuns)
         : textCell(row.title ?? ""),
       ...Array.from({ length: 5 }, (_, index) =>
         layout === "content-audit" && auditBulletPointRuns[index]?.length
-          ? richTextCell(auditBulletPointRuns[index]!)
+          ? auditRichTextCell(auditBulletPointRuns[index]!)
           : textCell(bulletPoints[index] ?? ""),
       ),
       layout === "content-audit" && row.auditIngredientsRuns?.length
-        ? richTextCell(row.auditIngredientsRuns)
+        ? auditRichTextCell(row.auditIngredientsRuns)
         : textCell(row.ingredients ?? ""),
     ];
     return layout === "content-audit"
@@ -422,8 +425,11 @@ export function createAgedInventoryWorkbook({
   fetchedAt,
   rows,
   excessAvailability,
+  excessReportedSkuCount,
   storageCostAvailability,
+  storageCostReportedSkuCount,
   agedSurchargeAvailability,
+  agedSurchargeReportedSkuCount,
   expirationNotice,
 }: CreateAgedInventoryWorkbookInput): Uint8Array {
   const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
@@ -505,7 +511,7 @@ export function createAgedInventoryWorkbook({
         excessAvailability === "complete"
           ? "Amazon 報表欄位對全部商品都有值；全站合計才可成立。"
           : excessAvailability === "partial"
-            ? "Amazon 有回傳欄位，但部分商品缺值；不顯示全站合計，逐列空白仍保留。"
+            ? `Amazon 有回傳欄位，但部分商品缺值；已回傳 ${excessReportedSkuCount}/${rows.length} SKU。可加總已回傳值，但不得冒充全站合計；逐列空白仍保留。`
             : "Amazon 本次報表未提供欄位；不推算全站合計。",
       ),
     ],
@@ -515,7 +521,7 @@ export function createAgedInventoryWorkbook({
         storageCostAvailability === "complete"
           ? "Amazon 報表欄位完整；顯示原值。若同列官方 storage-volume 明確為 0 而費用留白，僅將該列安全呈現為 0；不猜費率。"
           : storageCostAvailability === "partial"
-            ? "Amazon 有回傳欄位，但部分商品缺值；不加總、不猜費率。"
+            ? `Amazon 有回傳欄位，但部分商品缺值；已回傳 ${storageCostReportedSkuCount}/${rows.length} SKU。可加總已回傳原值，不得冒充全站費用，也不猜費率。`
             : "Amazon 本次報表未提供欄位；不猜費率。",
       ),
     ],
@@ -525,7 +531,7 @@ export function createAgedInventoryWorkbook({
         agedSurchargeAvailability === "complete"
           ? "Amazon 報表區間完整；顯示原值。若同列官方計費數量明確為 0 而費用留白，僅將該區間安全呈現為 0；不猜費率。"
           : agedSurchargeAvailability === "partial"
-            ? "Amazon 有回傳區間欄位，但部分商品缺值；不加總、不猜費率。"
+            ? `Amazon 有回傳區間欄位，但部分商品缺值；已回傳 ${agedSurchargeReportedSkuCount}/${rows.length} SKU。可加總已回傳原值，不得冒充全站費用，也不猜費率。`
             : "Amazon 本次報表未提供完整 AIS 區間；不猜費率。",
       ),
     ],
@@ -595,32 +601,32 @@ export function createUnboundVariationWorkbook({
     {
       name: "未綁變體",
       xml: buildWorksheet({
-        headers: ["站點", "SKU", "ASIN", "Product Type", "商品標題", "判定依據"],
+        headers: ["SKU", "商品標題", "ASIN", "站點", "商品類型", "判定依據"],
         rows: rows.map((row): readonly Cell[] => [
-          textCell(marketplaceLabel),
           textCell(row.sellerSku, 2),
-          textCell(row.asin, 2),
-          textCell(row.productType),
           textCell(row.title),
+          textCell(row.asin, 2),
+          textCell(marketplaceLabel),
+          textCell(row.productType),
           textCell(row.notice),
         ]),
-        widths: [16, 26, 18, 24, 58, 72],
+        widths: [26, 58, 18, 16, 24, 72],
         dataRowHeight: 42,
       }),
     },
     {
       name: "讀取未完成",
       xml: buildWorksheet({
-        headers: ["站點", "SKU", "ASIN", "商品標題", "狀態碼", "未完成原因"],
+        headers: ["SKU", "商品標題", "ASIN", "站點", "狀態碼", "未完成原因"],
         rows: incompleteRows.map((row): readonly Cell[] => [
-          textCell(marketplaceLabel),
           textCell(row.sellerSku, 2),
-          textCell(row.asin, 2),
           textCell(row.title),
+          textCell(row.asin, 2),
+          textCell(marketplaceLabel),
           textCell(row.code),
           textCell(row.message),
         ]),
-        widths: [16, 26, 18, 58, 34, 78],
+        widths: [26, 58, 18, 16, 34, 78],
         dataRowHeight: 42,
       }),
     },
@@ -658,6 +664,10 @@ function textCell(value: unknown, style = 3): Cell {
 
 function richTextCell(runs: readonly WorkbookRichTextRun[], style = 3): Cell {
   return { kind: "rich-text", runs, style };
+}
+
+function auditRichTextCell(runs: readonly WorkbookRichTextRun[]): Cell {
+  return richTextCell(runs, runs.some((run) => run.alert) ? 5 : 3);
 }
 
 function dateCell(value: string | Date | null | undefined): Cell {
@@ -948,10 +958,11 @@ function buildStyles(): string {
     <font><sz val="11"/><color rgb="FF17202A"/><name val="Aptos"/><family val="2"/></font>
     <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/><family val="2"/></font>
   </fonts>
-  <fills count="3">
+  <fills count="4">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FF17324D"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
   <borders count="2">
     <border><left/><right/><top/><bottom/><diagonal/></border>
@@ -966,12 +977,13 @@ function buildStyles(): string {
   <cellStyleXfs count="1">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
   </cellStyleXfs>
-  <cellXfs count="5">
+  <cellXfs count="6">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
     <xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="top"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
   </cellXfs>
   <cellStyles count="1">
     <cellStyle name="Normal" xfId="0" builtinId="0"/>

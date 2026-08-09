@@ -176,7 +176,7 @@ describe("Subscribe & Save problem Excel", () => {
     const sheet = strFromU8(archive["xl/worksheets/sheet3.xml"]);
     expect(sheet).toContain("已核對目前有效訂閱（範圍不完整）");
     expect(sheet).not.toContain("全站目前有效訂閱");
-    expect(sheet).toContain("已證明 FBA 2 個；可核對 offer 1 個；未回傳可核對 offer 1 個");
+    expect(sheet).toContain("已證明 FBA 2 個；可核對 offer 1 個；未取得可核對 offer 1 個");
     expect(sheet).toContain("已核對資料（1 / 1 個 SKU 月份）");
     expect(sheet).toContain("不能據此判定資格或 0 訂閱");
     expect(sheet).toContain("未輸出全站總額");
@@ -226,6 +226,7 @@ describe("Subscribe & Save problem Excel", () => {
         acceptedOfferRows: 1,
         returnedMetricRows: 3,
         acceptedMetricRows: 2,
+        invalidOfferRows: [],
         rejectedSellerSkuRows: 2,
         minimumUnresolvedOfferMonths: 2,
         notice: "Amazon 有 2 列未提供可原樣核對的 Seller SKU。",
@@ -242,13 +243,53 @@ describe("Subscribe & Save problem Excel", () => {
     expect(sheet).toContain("未提供可原樣核對的 Seller SKU");
     expect(sheet).toContain("已核對目前有效訂閱（範圍不完整）");
     expect(sheet).not.toContain("全站目前有效訂閱");
-    expect(sheet).toContain("已證明 FBA 2 個；可核對 offer 1 個；未回傳可核對 offer 1 個");
-    expect(sheet).toContain("未回傳不代表不符合資格，也不代表 0 訂閱");
+    expect(sheet).toContain("已證明 FBA 2 個；可核對 offer 1 個；未取得可核對 offer 1 個");
+    expect(sheet).toContain("未取得可核對 offer 不代表不符合資格，也不代表 0 訂閱");
     expect(sheet).toContain("已核對資料（2 / 2 個 SKU 月份）");
-    expect(sheet).toContain("另有 1 個已證明 FBA SKU 未回傳可核對 offer");
+    expect(sheet).toContain("另有 1 個已證明 FBA SKU 未取得可核對 offer");
     expect(sheet).toContain("另至少 2 個 SKU 月份無法核對，實際缺口未知");
     expect(sheet).toContain("offer 與月度缺列可能不重疊");
     expect(sheet).not.toContain("2 / 4 個 SKU 月份");
+  });
+
+  it("lists exact-SKU offer value failures without replacing them with zero", () => {
+    const bytes = createSubscriptionAuditWorkbook({
+      marketplaceLabel: "US",
+      generatedAt: "2026-08-08T12:00:00Z",
+      metricMonths: ["2026-06", "2026-07"],
+      currentActiveSubscriptions: 12,
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 2,
+        reportedOfferMonths: 2,
+      },
+      inventoryEvidence: inventoryEvidence(1, 1),
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 2,
+        acceptedOfferRows: 1,
+        returnedMetricRows: 2,
+        acceptedMetricRows: 2,
+        invalidOfferRows: [{
+          sellerSku: "SNS-BAD-PRICE",
+          problem: "offer price 不是安全的非負數。",
+        }],
+        rejectedSellerSkuRows: 0,
+        minimumUnresolvedOfferMonths: 2,
+        notice: "一列 offer 資料值無法安全解析。",
+      },
+      problems: [problem(10, "SNS-GOOD", [
+        point("2026-06", 20),
+        point("2026-07", 25),
+      ])],
+    });
+    const sheet = strFromU8(unzipSync(bytes)["xl/worksheets/sheet3.xml"]);
+    expect(sheet).toContain("未完成 offer");
+    expect(sheet).toContain("SNS-BAD-PRICE");
+    expect(sheet).toContain("offer price 不是安全的非負數");
+    expect(sheet).toContain("1 列有精確 SKU 但 offer 資料值無法安全解析");
   });
 
   it("keeps an unknown Seller base discount blank instead of manufacturing zero", () => {

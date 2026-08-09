@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import ReportLibraryPanel from "../src/renderer/src/components/report-library-panel";
 import ReviewAuditPanel from "../src/renderer/src/components/review-audit-panel";
@@ -16,7 +17,7 @@ function libraryFixture() {
     marketplaceId: US,
     fetchedAt: "2026-08-09T00:00:00.000Z",
     officialCatalog: {
-      uniqueReportTypeCount: 1,
+      uniqueReportTypeCount: 2,
       verifiedAt: "2026-08-09",
       officialPageUpdatedLabel: "Updated 5 days ago",
       source: "https://developer-docs.amazon.com/sp-api/docs/report-type-values",
@@ -48,6 +49,25 @@ function libraryFixture() {
       amazonPublicArtifactAvailable: true,
       appDownloadImplemented: false,
       stateNotice: "Amazon 有此文件，App 尚未接線。",
+    }, {
+      reportType: "GET_VENDOR_INVENTORY_REPORT",
+      label: "Vendor 庫存",
+      description: "僅 Vendor Central。",
+      categories: ["INVENTORY"],
+      party: "VENDOR",
+      fbaScope: "OUT_OF_FBA_SCOPE",
+      lifecycle: "REQUEST",
+      output: "TAB_DELIMITED",
+      restrictedData: "NONE",
+      roles: ["Vendor"],
+      marketplaceAvailability: "Vendor only",
+      prerequisites: ["Vendor role"],
+      deprecated: false,
+      officialSource: "https://developer-docs.amazon.com/sp-api/docs/report-type-values",
+      state: "EXTRA_ROLE_REQUIRED",
+      amazonPublicArtifactAvailable: true,
+      appDownloadImplemented: false,
+      stateNotice: "需要 Vendor Central。",
     }],
     unavailableDocuments: [{
       id: "PRODUCT_REVIEW_TEXT",
@@ -73,10 +93,10 @@ function libraryFixture() {
 
 describe("report library renderer contracts", () => {
   it("keeps current exports separate and rejects a falsely wired generic download", () => {
-    expect(parseReportLibrarySnapshot(libraryFixture())).toMatchObject({
-      currentAppExports: [{ id: "REVIEW_TOPIC_AUDIT_XLSX" }],
-      reports: [{ reportType: "GET_AFN_INVENTORY_DATA", appDownloadImplemented: false }],
-    });
+    const parsed = parseReportLibrarySnapshot(libraryFixture());
+    expect(parsed.currentAppExports).toMatchObject([{ id: "REVIEW_TOPIC_AUDIT_XLSX" }]);
+    expect(parsed.reports.find(({ reportType }) => reportType === "GET_AFN_INVENTORY_DATA"))
+      .toMatchObject({ reportType: "GET_AFN_INVENTORY_DATA", appDownloadImplemented: false });
     const unsafe = libraryFixture();
     unsafe.reports[0].appDownloadImplemented = true as false;
     expect(() => parseReportLibrarySnapshot(unsafe)).toThrow(/App 已接線/u);
@@ -87,6 +107,18 @@ describe("report library renderer contracts", () => {
     expect(html).toContain("文件庫");
     expect(html).toContain("PUBLIC API");
     expect(html).toContain("正在整理 Amazon 公開文件能力");
+  });
+
+  it("keeps Vendor-only reports hidden and exposes the access-state filter", async () => {
+    const source = await readFile(
+      new URL("../src/renderer/src/components/report-library-panel.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain('report.party !== "VENDOR"');
+    expect(source).toContain("需額外角色／資格");
+    expect(source).toContain("目前站點不支援");
+    expect(source).toContain("目前站點可規劃");
+    expect(source).toContain('item.id !== "REVIEW_TOPIC_AUDIT_XLSX"');
   });
 
   it("rejects a stale access plan from another marketplace", () => {
@@ -192,5 +224,16 @@ describe("review audit renderer contracts", () => {
     expect(html).toContain("繼續上次評論健檢");
     expect(html).toContain("value=\"37\"");
     expect(html).not.toContain("重新掃描全站評論主題");
+  });
+
+  it("does not abort polling when the parent echoes the panel cache update", async () => {
+    const source = await readFile(
+      new URL("../src/renderer/src/components/review-audit-panel.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("const cachedResultRef = useRef(cachedResult)");
+    expect(source).toContain("cachedResultRef.current = cachedResult");
+    expect(source).toContain("}, [marketplaceId]);");
+    expect(source).not.toContain("}, [cachedResult, marketplaceId]);");
   });
 });

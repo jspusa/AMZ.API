@@ -40,8 +40,11 @@ describe("FBA aged inventory Excel export", () => {
       marketplaceLabel: "US · Amazon.com",
       fetchedAt: "2026-08-08T00:00:00.000Z",
       excessAvailability: "complete",
+      excessReportedSkuCount: 1,
       storageCostAvailability: "complete",
+      storageCostReportedSkuCount: 1,
       agedSurchargeAvailability: "complete",
+      agedSurchargeReportedSkuCount: 1,
       expirationNotice:
         "Amazon 公開 API 不提供目前 FC 批次的逐 SKU 到期日。",
       rows: [
@@ -204,8 +207,27 @@ describe("FBA unbound variation audit Excel export", () => {
     );
     expect(workbookXml).toContain("未綁變體");
     expect(workbookXml).toContain("讀取未完成");
+    expect(unboundSheet).not.toContain("Product Type");
+    expect(unboundSheet.indexOf(">SKU<")).toBeLessThan(
+      unboundSheet.indexOf(">商品標題<"),
+    );
+    expect(unboundSheet.indexOf(">商品標題<")).toBeLessThan(
+      unboundSheet.indexOf(">ASIN<"),
+    );
+    expect(unboundSheet).toMatch(
+      /<c r="A2" s="2"[^>]*>.*?UNBOUND-01.*?<c r="B2" s="3"[^>]*>.*?Unbound FBA product.*?<c r="C2" s="2"[^>]*>.*?B000000001/su,
+    );
     expect(unboundSheet).toContain("UNBOUND-01");
     expect(unboundSheet).not.toContain("UNKNOWN-02");
+    expect(incompleteSheet.indexOf(">SKU<")).toBeLessThan(
+      incompleteSheet.indexOf(">商品標題<"),
+    );
+    expect(incompleteSheet.indexOf(">商品標題<")).toBeLessThan(
+      incompleteSheet.indexOf(">ASIN<"),
+    );
+    expect(incompleteSheet).toMatch(
+      /<c r="A2" s="2"[^>]*>.*?UNKNOWN-02.*?<c r="B2" s="3"[^>]*>.*?Unknown relationship product.*?<c r="C2" s="2"[^>]*>.*?B000000002/su,
+    );
     expect(incompleteSheet).toContain("UNKNOWN-02");
     expect(incompleteSheet).toContain("RELATIONSHIPS_NOT_RETURNED");
   });

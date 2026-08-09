@@ -136,18 +136,95 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
       sellerFundedTieredDiscount: 10,
       forecastDeliveries: { next90Days: 4 },
     });
-    expect(() =>
-      parseReplenishmentOffersPage(
-        page([offer(1, { priceCurrencyCode: "CAD" })]),
-        US,
-      ),
-    ).toThrow(/currency/u);
-    expect(() =>
-      parseReplenishmentOffersPage(
-        page([offer(1, { subscriptions: 1.2 })]),
-        US,
-      ),
-    ).toThrow(/整數/u);
+    expect(parseReplenishmentOffersPage(
+      page([offer(1, { priceCurrencyCode: "CAD" })]),
+      US,
+    )).toMatchObject({
+      items: [],
+      invalidOfferRows: [{ sellerSku: sku(1), problem: expect.stringMatching(/currency/u) }],
+    });
+    expect(parseReplenishmentOffersPage(
+      page([offer(1, { subscriptions: 1.2 })]),
+      US,
+    )).toMatchObject({
+      items: [],
+      invalidOfferRows: [{ sellerSku: sku(1), problem: expect.stringMatching(/整數/u) }],
+    });
+  });
+
+  it("isolates exact-SKU offer value failures while keeping scope violations global", async () => {
+    const parsed = parseReplenishmentOffersPage(
+      page([offer(1), offer(2, { price: "17.99" })]),
+      US,
+    );
+    expect(parsed).toMatchObject({
+      sourceItemCount: 2,
+      rejectedSellerSkuRows: 0,
+      items: [expect.objectContaining({ sellerSku: sku(1) })],
+      invalidOfferRows: [{
+        sellerSku: sku(2),
+        problem: expect.stringContaining("offer price"),
+      }],
+    });
+    expect(() => parseReplenishmentOffersPage(
+      page([offer(2, { marketplaceId: "A2EUQ1WTGCTBG2", price: "17.99" })]),
+      US,
+    )).toThrow(/其他站點/u);
+    expect(() => parseReplenishmentOffersPage(
+      page([offer(2, { programType: "OTHER", price: "17.99" })]),
+      US,
+    )).toThrow(/不是 Subscribe & Save/u);
+
+    const intervals = officialCompleteMonthlyIntervals(2, NOW);
+    const snapshot = await fetchFbaSubscriptionAuditHistory({
+      marketplaceId: US,
+      metricIntervals: intervals,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1), sku(2)]),
+      transport: async (request) => {
+        if (request.operation === "listOffers") {
+          return page([offer(1), offer(2, { price: "17.99" })]);
+        }
+        const timeInterval = (request.body.filters as Record<string, unknown>)
+          .timeInterval as Record<string, unknown>;
+        return page([1, 2].map((index) => metric(index, {
+          timeInterval: {
+            startDate: timeInterval.startDate,
+            endDate: timeInterval.endDate,
+          },
+        })));
+      },
+    });
+    expect(snapshot.offers.map(({ sellerSku }) => sellerSku)).toEqual([sku(1)]);
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedOfferRows: 2,
+      acceptedOfferRows: 1,
+      rejectedSellerSkuRows: 0,
+      minimumUnresolvedOfferMonths: 2,
+      invalidOfferRows: [{ sellerSku: sku(2) }],
+    });
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: { status: "partial" },
+      monthly: [
+        { provenSubscriptionRevenue: null, revenueCoverage: { status: "partial" } },
+        { provenSubscriptionRevenue: null, revenueCoverage: { status: "partial" } },
+      ],
+    });
+  });
+
+  it("still rejects duplicate exact SKUs when one duplicate row has invalid values", async () => {
+    await expect(fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1)]),
+      transport: async (request) => request.operation === "listOffers"
+        ? page([offer(1), offer(1, { price: "17.99" })])
+        : page([metric(1)]),
+    })).rejects.toMatchObject({ code: "DUPLICATE_SKU" });
   });
 
   it("reports only a lower-bound gap when optional-SKU offer and metric rows may not overlap", async () => {

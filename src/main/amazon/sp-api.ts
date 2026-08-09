@@ -566,7 +566,7 @@ export type AgedInventoryRow = {
   asin: string;
   title: string;
   condition: string;
-  available: number;
+  available: number | null;
   totalAgedUnits: number;
   agedOver180: number;
   ageBuckets: AgedInventoryBucket[];
@@ -594,11 +594,14 @@ export type AgedInventorySnapshot = {
     agedOver180: number;
     excessAvailability: AgedInventoryFeeAvailability;
     estimatedExcessQuantity: number | null;
+    excessReportedSkuCount: number;
     currencyCode: string | null;
     storageCostAvailability: AgedInventoryFeeAvailability;
     estimatedStorageCostNextMonth: number | null;
+    storageCostReportedSkuCount: number;
     agedSurchargeAvailability: AgedInventoryFeeAvailability;
     estimatedAgedSurcharge: number | null;
+    agedSurchargeReportedSkuCount: number;
   };
   expiration: {
     currentFbaExpirationDatesAvailable: false;
@@ -6584,7 +6587,7 @@ async function getDemoSubscriptionAudit(
       audit.offers.length,
     ),
     notice:
-      "展示資料只用來驗證全站 FBA Subscribe & Save 健檢、FBA／offer 覆蓋、缺月與 Excel 流程；未回傳可核對 offer 不代表不符合資格或 0 訂閱，也不會連線或寫入 Amazon。",
+      "展示資料只用來驗證全站 FBA Subscribe & Save 健檢、FBA／offer 覆蓋、缺月與 Excel 流程；未取得可核對 offer（未回傳或資料值無法安全解析）不代表不符合資格或 0 訂閱，也不會連線或寫入 Amazon。",
   };
 }
 
@@ -6629,7 +6632,7 @@ export async function getFbaSubscriptionAudit(input: {
     ),
     notice: currentFba.unrecognizedSellerSkuRows > 0
       ? `本頁已完整讀取同次 FBA Inventory 分頁；其中 ${currentFba.unrecognizedSellerSkuRows} 列 Seller SKU 無法原樣辨識，已保留為覆蓋不完整，未 trim、改名、推定不符合資格或計為 0。其餘可原樣核對的 FBA SKU 照常比對；月度 PERFORMANCE 缺值維持缺值。`
-      : "本頁以同次完整分頁 FBA Inventory API 作為總範圍，分開顯示可核對 Replenishment offer 與未回傳可核對 offer 的 FBA SKU；後者不代表不符合資格或 0 訂閱。Replenishment offers 全站只抓一次；月度 PERFORMANCE 缺值維持缺值，不補 0。",
+      : "本頁以同次完整分頁 FBA Inventory API 作為總範圍，分開顯示可核對 Replenishment offer 與未取得可核對 offer（未回傳或資料值無法安全解析）的 FBA SKU；後者不代表不符合資格或 0 訂閱。Replenishment offers 全站只抓一次；月度 PERFORMANCE 缺值維持缺值，不補 0。",
   };
 }
 
@@ -8329,11 +8332,13 @@ function exactBrandSalesWindow(input: {
   marketplaceId: MarketplaceId;
   startDate: string;
   endDate: string;
+  now?: Date;
 }): SalesTrendWindow {
   return buildCustomSalesTrendWindow(
     input.marketplaceId,
     input.startDate,
     input.endDate,
+    input.now,
   );
 }
 
@@ -8341,6 +8346,7 @@ export function getBrandSalesReportWindow(input: {
   marketplaceId: MarketplaceId;
   startDate: string;
   endDate: string;
+  now?: Date;
 }): { dataStartTime: string; dataEndTime: string } {
   const window = exactBrandSalesWindow(input);
   return {
@@ -8370,12 +8376,66 @@ function parseFixedBrandSalesTime(value: string): number | null {
   return Number.isFinite(instant) ? instant : null;
 }
 
+function validateFixedBrandSalesWindow(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  dataStartTime: string;
+  dataEndTime: string;
+  windowCreatedAt: number;
+}): { startTime: number; endTime: number } {
+  const startTime = parseFixedBrandSalesTime(input.dataStartTime);
+  const endTime = parseFixedBrandSalesTime(input.dataEndTime);
+  if (
+    startTime === null ||
+    endTime === null ||
+    !Number.isSafeInteger(input.windowCreatedAt) ||
+    input.windowCreatedAt < 0 ||
+    input.windowCreatedAt > Date.now() + 1_000
+  ) {
+    throw new SpApiError("FBA 品牌出貨報表的固定查詢時間無效。", {
+      status: 400,
+      code: "INVALID_DATE_RANGE",
+    });
+  }
+  const createdAt = new Date(input.windowCreatedAt);
+  resolveSalesTrendRange(
+    {
+      marketplaceId: input.marketplaceId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+    },
+    createdAt,
+  );
+  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
+  const createdParts = zonedDateParts(createdAt, timeZone);
+  const createdDate = dateKey(createdParts.year, createdParts.month, createdParts.day);
+  const expectedStart = zonedMidnight(input.startDate, timeZone).getTime();
+  const expectedEnd = input.endDate === createdDate
+    ? Math.floor(input.windowCreatedAt / 1_000) * 1_000
+    : zonedMidnight(shiftDateKey(input.endDate, 1), timeZone).getTime();
+  if (
+    startTime !== expectedStart ||
+    endTime !== expectedEnd ||
+    endTime <= startTime
+  ) {
+    throw new SpApiError("FBA 品牌出貨報表的固定查詢時間無效。", {
+      status: 400,
+      code: "INVALID_DATE_RANGE",
+    });
+  }
+  return { startTime, endTime };
+}
+
 export async function startFbaShipmentSalesReport(input: {
   marketplaceId: MarketplaceId;
   startDate: string;
   endDate: string;
+  dataStartTime: string;
+  dataEndTime: string;
+  windowCreatedAt: number;
 }): Promise<BrandSalesReportStatus> {
-  const window = exactBrandSalesWindow(input);
+  validateFixedBrandSalesWindow(input);
   if (shouldUseDemoMode(input.marketplaceId)) {
     const reference = demoBrandSalesReference(input);
     return {
@@ -8384,8 +8444,8 @@ export async function startFbaShipmentSalesReport(input: {
       reportId: reference,
       documentId: reference,
       status: "DONE",
-      dataStartTime: window.startAt,
-      dataEndTime: window.endAt,
+      dataStartTime: input.dataStartTime,
+      dataEndTime: input.dataEndTime,
       notice: "展示用 FBA 品牌出貨報表已準備完成。",
     };
   }
@@ -8396,8 +8456,8 @@ export async function startFbaShipmentSalesReport(input: {
     body: {
       reportType: FBA_SHIPMENT_SALES_REPORT_TYPE,
       marketplaceIds: [input.marketplaceId],
-      dataStartTime: window.startAt,
-      dataEndTime: window.endAt,
+      dataStartTime: input.dataStartTime,
+      dataEndTime: input.dataEndTime,
     },
   });
   if (!response.ok) return throwReportsError(response, "brand-sales");
@@ -8415,8 +8475,8 @@ export async function startFbaShipmentSalesReport(input: {
     reportId: payload.reportId,
     documentId: null,
     status: "IN_QUEUE",
-    dataStartTime: window.startAt,
-    dataEndTime: window.endAt,
+    dataStartTime: input.dataStartTime,
+    dataEndTime: input.dataEndTime,
     notice: "Amazon 正在準備 FBA 已出貨商品資料。",
   };
 }
@@ -8428,26 +8488,12 @@ export async function getFbaShipmentSalesReportStatus(input: {
   endDate: string;
   dataStartTime: string;
   dataEndTime: string;
+  windowCreatedAt: number;
 }): Promise<BrandSalesReportStatus> {
-  const exactWindow = exactBrandSalesWindow(input);
-  const expectedStartTime = parseFixedBrandSalesTime(input.dataStartTime);
-  const expectedEndTime = parseFixedBrandSalesTime(input.dataEndTime);
-  const exactStartTime = parseFixedBrandSalesTime(exactWindow.startAt);
-  const exactEndTime = parseFixedBrandSalesTime(exactWindow.endAt);
-  if (
-    expectedStartTime === null ||
-    expectedEndTime === null ||
-    exactStartTime === null ||
-    exactEndTime === null ||
-    expectedEndTime <= expectedStartTime ||
-    expectedStartTime !== exactStartTime ||
-    expectedEndTime !== exactEndTime
-  ) {
-    throw new SpApiError("FBA 品牌出貨報表的固定查詢時間無效。", {
-      status: 400,
-      code: "INVALID_DATE_RANGE",
-    });
-  }
+  const {
+    startTime: expectedStartTime,
+    endTime: expectedEndTime,
+  } = validateFixedBrandSalesWindow(input);
   if (shouldUseDemoMode(input.marketplaceId)) {
     const expected = demoBrandSalesReference(input);
     if (input.reportId !== expected) {
@@ -8551,8 +8597,16 @@ export async function getBrandSalesData(input: {
   shipmentDocumentId: string;
   shipmentDataStartTime: string;
   shipmentDataEndTime: string;
+  windowCreatedAt: number;
 }): Promise<BrandSalesSnapshot> {
-  exactBrandSalesWindow(input);
+  validateFixedBrandSalesWindow({
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    dataStartTime: input.shipmentDataStartTime,
+    dataEndTime: input.shipmentDataEndTime,
+    windowCreatedAt: input.windowCreatedAt,
+  });
   if (shouldUseDemoMode(input.marketplaceId)) {
     const listingReference = `demo-${input.marketplaceId}`;
     const shipmentReference = demoBrandSalesReference(input);
@@ -8607,6 +8661,7 @@ export async function getBrandSalesData(input: {
       endDate: input.endDate,
       dataStartTime: input.shipmentDataStartTime,
       dataEndTime: input.shipmentDataEndTime,
+      windowCreatedAt: input.windowCreatedAt,
     }),
   ]);
   if (
@@ -9143,12 +9198,22 @@ export function parseAgedInventoryReportData(
   const result: AgedInventoryRow[] = [];
   const seen = new Set<string>();
   for (const row of rows.slice(1)) {
-    const sellerSku = row[skuIndex]?.trim() ?? "";
-    if (!sellerSku) {
-      throw new SpApiError("Amazon FBA 庫齡報表有商品列缺少 Seller SKU。", {
+    const sellerSku = row[skuIndex] ?? "";
+    if (
+      !sellerSku ||
+      sellerSku.length > 40 ||
+      sellerSku !== sellerSku.trim() ||
+      /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(
+        sellerSku,
+      )
+    ) {
+      throw new SpApiError(
+        "Amazon FBA 庫齡報表有商品列缺少或無法原樣辨識 Seller SKU。",
+        {
         status: 502,
         code: "REPORT_FORMAT_UNSUPPORTED",
-      });
+        },
+      );
     }
     if (seen.has(sellerSku)) {
       throw new SpApiError("Amazon FBA 庫齡報表含有重複 Seller SKU，已停止顯示。", {
@@ -9228,7 +9293,7 @@ export function parseAgedInventoryReportData(
       asin: asinIndex >= 0 ? row[asinIndex]?.trim() ?? "" : "",
       title: titleIndex >= 0 ? row[titleIndex]?.trim() ?? "" : "",
       condition: conditionIndex >= 0 ? row[conditionIndex]?.trim() ?? "" : "",
-      available: reportIntegerCell(row, availableIndex, "可售庫存") ?? 0,
+      available: reportIntegerCell(row, availableIndex, "可售庫存"),
       totalAgedUnits,
       agedOver180,
       ageBuckets,
@@ -9373,11 +9438,14 @@ function demoAgedInventorySnapshot(
         (sum, row) => sum + (row.estimatedExcessQuantity ?? 0),
         0,
       ),
+      excessReportedSkuCount: rows.length,
       currencyCode: null,
       storageCostAvailability: "unavailable",
       estimatedStorageCostNextMonth: null,
+      storageCostReportedSkuCount: 0,
       agedSurchargeAvailability: "unavailable",
       estimatedAgedSurcharge: null,
+      agedSurchargeReportedSkuCount: 0,
     },
     expiration: agedInventoryExpirationBoundary(),
     notice:
@@ -9447,35 +9515,47 @@ export async function getAgedInventoryData(input: {
       totalAgedUnits: rows.reduce((sum, row) => sum + row.totalAgedUnits, 0),
       agedOver180: rows.reduce((sum, row) => sum + row.agedOver180, 0),
       excessAvailability: parsed.excessAvailability,
-      estimatedExcessQuantity:
-        parsed.excessAvailability === "complete"
+      estimatedExcessQuantity: parsed.excessAvailability === "unavailable"
+        ? null
+        : rows.some((row) => row.estimatedExcessQuantity !== null)
           ? rows.reduce(
-              (sum, row) => sum + row.estimatedExcessQuantity!,
+              (sum, row) => sum + (row.estimatedExcessQuantity ?? 0),
               0,
             )
           : null,
+      excessReportedSkuCount: rows.filter(
+        (row) => row.estimatedExcessQuantity !== null,
+      ).length,
       currencyCode: parsed.currencyCode,
       storageCostAvailability: parsed.storageCostAvailability,
-      estimatedStorageCostNextMonth:
-        parsed.storageCostAvailability === "complete"
+      estimatedStorageCostNextMonth: parsed.storageCostAvailability === "unavailable"
+        ? null
+        : rows.some((row) => row.estimatedStorageCostNextMonth !== null)
           ? Number(
               rows
                 .reduce(
-                  (sum, row) => sum + row.estimatedStorageCostNextMonth!,
+                  (sum, row) => sum + (row.estimatedStorageCostNextMonth ?? 0),
                   0,
                 )
                 .toFixed(2),
             )
           : null,
+      storageCostReportedSkuCount: rows.filter(
+        (row) => row.estimatedStorageCostNextMonth !== null,
+      ).length,
       agedSurchargeAvailability: parsed.agedSurchargeAvailability,
-      estimatedAgedSurcharge:
-        parsed.agedSurchargeAvailability === "complete"
+      estimatedAgedSurcharge: parsed.agedSurchargeAvailability === "unavailable"
+        ? null
+        : rows.some((row) => row.estimatedAgedSurcharge !== null)
           ? Number(
               rows
-                .reduce((sum, row) => sum + row.estimatedAgedSurcharge!, 0)
+                .reduce((sum, row) => sum + (row.estimatedAgedSurcharge ?? 0), 0)
                 .toFixed(2),
             )
           : null,
+      agedSurchargeReportedSkuCount: rows.filter(
+        (row) => row.estimatedAgedSurcharge !== null,
+      ).length,
     },
     expiration: agedInventoryExpirationBoundary(),
     notice:

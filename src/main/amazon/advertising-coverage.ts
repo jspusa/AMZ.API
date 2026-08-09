@@ -45,6 +45,15 @@ export type AdvertisingCoverageSnapshot = {
   notice: string;
 };
 
+export class AdvertisingCoverageInputError extends Error {
+  readonly code = "ADS_LISTING_COVERAGE_INCOMPLETE";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "AdvertisingCoverageInputError";
+  }
+}
+
 type ParsedCampaignName = {
   marketplaceCode: string;
   asin: string;
@@ -78,6 +87,28 @@ function validSellerSku(value: string): boolean {
 
 function validAsin(value: string): boolean {
   return /^[A-Z0-9]{10}$/u.test(value);
+}
+
+export function prepareAdvertisingCoverageListings(input: {
+  rows: ReadonlyArray<{ sellerSku: string; asin: string; title: string }>;
+  errors: readonly unknown[];
+}): AdvertisingCoverageListing[] {
+  if (input.errors.length) {
+    throw new AdvertisingCoverageInputError(
+      "FBA 全商品清單仍有讀取未完成，已停止 Ads 覆蓋健檢，不會把部分資料稱為全站。",
+    );
+  }
+  const listings = input.rows.map((row) => ({
+    sellerSku: row.sellerSku,
+    asin: row.asin,
+    title: row.title,
+  }));
+  if (listings.some((row) => !validSellerSku(row.sellerSku) || !validAsin(row.asin))) {
+    throw new AdvertisingCoverageInputError(
+      "FBA 全商品清單含缺失或無效的 Seller SKU／ASIN，已停止 Ads 覆蓋健檢。",
+    );
+  }
+  return listings;
 }
 
 function validCampaignDate(month: string, dayText: string, yearText: string): boolean {

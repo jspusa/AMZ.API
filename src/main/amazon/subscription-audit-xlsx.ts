@@ -86,6 +86,7 @@ export type CreateSubscriptionAuditWorkbookInput = {
     acceptedOfferRows: number;
     returnedMetricRows: number;
     acceptedMetricRows: number;
+    invalidOfferRows: readonly { sellerSku: string; problem: string }[];
     rejectedSellerSkuRows: number;
     minimumUnresolvedOfferMonths: number;
     notice: string;
@@ -280,7 +281,7 @@ function worksheetXml(input: {
     [
       textCell("同次 FBA／Replenishment offer 核對範圍"),
       textCell(
-        `已證明 FBA ${input.inventoryEvidence.provenSkuCount} 個；可核對 offer ${input.inventoryEvidence.verifiableReplenishmentOfferCount} 個；未回傳可核對 offer ${input.inventoryEvidence.unverifiedFbaSkuCount} 個。Inventory 共回傳 ${input.inventoryEvidence.returnedInventoryRows} 列；Seller SKU 無法原樣辨識 ${input.inventoryEvidence.unrecognizedSellerSkuRows} 列。未回傳不代表不符合資格，也不代表 0 訂閱；無法原樣辨識的列也沒有被 trim、改名、判定資格或計為 0。`,
+        `已證明 FBA ${input.inventoryEvidence.provenSkuCount} 個；可核對 offer ${input.inventoryEvidence.verifiableReplenishmentOfferCount} 個；未取得可核對 offer ${input.inventoryEvidence.unverifiedFbaSkuCount} 個（未回傳或資料值無法安全解析）。Inventory 共回傳 ${input.inventoryEvidence.returnedInventoryRows} 列；Seller SKU 無法原樣辨識 ${input.inventoryEvidence.unrecognizedSellerSkuRows} 列。未取得可核對 offer 不代表不符合資格，也不代表 0 訂閱；無法原樣辨識的列也沒有被 trim、改名、判定資格或計為 0。`,
       ),
     ],
     [
@@ -313,9 +314,14 @@ function worksheetXml(input: {
       textCell(
         input.upstreamCoverage.status === "complete"
           ? "完整；所有 Replenishment Seller SKU 均可原樣核對。"
-          : `不完整；排除 ${input.upstreamCoverage.rejectedSellerSkuRows} 列，至少 ${input.upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對；offer 與月度缺列可能不重疊，實際缺口無法精確計算。${input.upstreamCoverage.notice}`,
+          : `不完整；排除 ${input.upstreamCoverage.returnedOfferRows - input.upstreamCoverage.acceptedOfferRows + input.upstreamCoverage.returnedMetricRows - input.upstreamCoverage.acceptedMetricRows} 列，其中 ${input.upstreamCoverage.rejectedSellerSkuRows} 列缺少可原樣核對的 Seller SKU、${input.upstreamCoverage.invalidOfferRows.length} 列有精確 SKU 但 offer 資料值無法安全解析；至少 ${input.upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對。offer 與月度缺列可能不重疊，實際缺口無法精確計算。${input.upstreamCoverage.notice}`,
       ),
     ],
+    ...input.upstreamCoverage.invalidOfferRows.map((row): Cell[] => [
+      textCell("未完成 offer"),
+      textCell(row.sellerSku),
+      textCell(row.problem),
+    ]),
   ];
   const dataRows = input.rows.flatMap((row): Cell[][] => {
     const metricByMonth = new Map(row.monthlySeries.map((point) => [point.month, point]));
@@ -442,6 +448,7 @@ function validateUpstreamCoverage(
       acceptedOfferRows: 0,
       returnedMetricRows: 0,
       acceptedMetricRows: 0,
+      invalidOfferRows: [],
       rejectedSellerSkuRows: 0,
       minimumUnresolvedOfferMonths: 0,
       notice: "所有 Replenishment Seller SKU 均可原樣核對。",
@@ -463,6 +470,27 @@ function validateUpstreamCoverage(
     input.acceptedMetricRows,
     "upstreamCoverage.acceptedMetricRows",
   );
+  if (!Array.isArray(input.invalidOfferRows)) {
+    throw new TypeError("upstreamCoverage.invalidOfferRows is invalid.");
+  }
+  const invalidOfferRows = input.invalidOfferRows.map((row, index) => {
+    if (!row || typeof row !== "object") {
+      throw new TypeError(`upstreamCoverage.invalidOfferRows[${index}] is invalid.`);
+    }
+    return {
+      sellerSku: safeRequiredText(
+        row.sellerSku,
+        `upstreamCoverage.invalidOfferRows[${index}].sellerSku`,
+      ),
+      problem: safeRequiredText(
+        row.problem,
+        `upstreamCoverage.invalidOfferRows[${index}].problem`,
+      ),
+    };
+  });
+  if (new Set(invalidOfferRows.map(({ sellerSku }) => sellerSku)).size !== invalidOfferRows.length) {
+    throw new TypeError("upstreamCoverage.invalidOfferRows contains duplicate SKUs.");
+  }
   const rejectedSellerSkuRows = safeInteger(
     input.rejectedSellerSkuRows,
     "upstreamCoverage.rejectedSellerSkuRows",
@@ -473,13 +501,16 @@ function validateUpstreamCoverage(
   );
   const rejectedOfferRows = returnedOfferRows - acceptedOfferRows;
   const rejectedMetricRows = returnedMetricRows - acceptedMetricRows;
+  const missingSellerSkuOfferRows = rejectedOfferRows - invalidOfferRows.length;
   if (
     rejectedOfferRows < 0 ||
     rejectedMetricRows < 0 ||
-    rejectedSellerSkuRows !== rejectedOfferRows + rejectedMetricRows ||
+    missingSellerSkuOfferRows < 0 ||
+    rejectedSellerSkuRows !== missingSellerSkuOfferRows + rejectedMetricRows ||
     minimumUnresolvedOfferMonths !==
       Math.max(rejectedOfferRows * metricMonthCount, rejectedMetricRows) ||
-    input.status !== (rejectedSellerSkuRows === 0 ? "complete" : "partial")
+    input.status !==
+      (rejectedOfferRows === 0 && rejectedMetricRows === 0 ? "complete" : "partial")
   ) {
     throw new TypeError("upstreamCoverage does not match the source row counts.");
   }
@@ -489,6 +520,7 @@ function validateUpstreamCoverage(
     acceptedOfferRows,
     returnedMetricRows,
     acceptedMetricRows,
+    invalidOfferRows,
     rejectedSellerSkuRows,
     minimumUnresolvedOfferMonths,
     notice: safeRequiredText(input.notice, "upstreamCoverage.notice"),
@@ -544,10 +576,13 @@ function coverageLabel(
     gaps.push(`另有 ${inventoryEvidence.unrecognizedSellerSkuRows} 列 FBA Inventory Seller SKU 無法原樣辨識，不能 trim、改名、判定資格或計為 0`);
   }
   if (inventoryEvidence.unverifiedFbaSkuCount > 0) {
-    gaps.push(`另有 ${inventoryEvidence.unverifiedFbaSkuCount} 個已證明 FBA SKU 未回傳可核對 offer，不能據此判定資格或 0 訂閱`);
+    gaps.push(`另有 ${inventoryEvidence.unverifiedFbaSkuCount} 個已證明 FBA SKU 未取得可核對 offer（未回傳或資料值無法安全解析），不能據此判定資格或 0 訂閱`);
   }
   if (upstreamCoverage.status === "partial") {
     gaps.push(`另至少 ${upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對，實際缺口未知`);
+    if (upstreamCoverage.invalidOfferRows.length > 0) {
+      gaps.push(`其中 ${upstreamCoverage.invalidOfferRows.length} 列有精確 SKU 但 offer 資料值無法安全解析，未改寫或補 0`);
+    }
   }
   if (gaps.length > 0) {
     return `已核對資料（${count}）；${gaps.join("；")}；未輸出全站總額`;

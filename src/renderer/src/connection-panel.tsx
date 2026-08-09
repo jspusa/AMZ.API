@@ -1,56 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  AdvertisingConnectionTestResult,
+  AdvertisingCredentialSummary,
   ConnectionTestResult,
-  CredentialInput,
   CredentialSummary,
   SpApiRegion,
   UpdateStatus,
 } from "../../shared/contracts";
 
-type FormState = {
-  lwaClientId: string;
-  lwaClientSecret: string;
-  naRefreshToken: string;
-  naSellerId: string;
-  feRefreshToken: string;
-  feSellerId: string;
-  euRefreshToken: string;
-  euSellerId: string;
-  r2AccountId: string;
-  r2AccessKeyId: string;
-  r2SecretAccessKey: string;
-  r2Bucket: string;
-  r2PublicBaseUrl: string;
-  replenishmentSkillUrl: string;
-};
-
-const EMPTY_FORM: FormState = {
-  lwaClientId: "",
-  lwaClientSecret: "",
-  naRefreshToken: "",
-  naSellerId: "",
-  feRefreshToken: "",
-  feSellerId: "",
-  euRefreshToken: "",
-  euSellerId: "",
-  r2AccountId: "",
-  r2AccessKeyId: "",
-  r2SecretAccessKey: "",
-  r2Bucket: "",
-  r2PublicBaseUrl: "",
-  replenishmentSkillUrl: "",
-};
-
 const REGION_META: Array<{
   region: SpApiRegion;
   label: string;
   sites: string;
-  token: keyof FormState;
-  seller: keyof FormState;
 }> = [
-  { region: "na", label: "北美 NA", sites: "US · CA", token: "naRefreshToken", seller: "naSellerId" },
-  { region: "fe", label: "遠東 FE", sites: "JP · SG · AU", token: "feRefreshToken", seller: "feSellerId" },
-  { region: "eu", label: "歐洲 EU", sites: "UK · DE", token: "euRefreshToken", seller: "euSellerId" },
+  { region: "na", label: "北美 NA", sites: "US · CA" },
+  { region: "fe", label: "遠東 FE", sites: "JP · SG · AU" },
+  { region: "eu", label: "歐洲 EU", sites: "UK · DE" },
 ];
 
 function cleanError(error: unknown): string {
@@ -96,20 +61,23 @@ export default function ConnectionPanel({
   };
   const [sopOpen, setSopOpen] = useState(true);
   const [summary, setSummary] = useState<CredentialSummary | null>(null);
-  const [form, setForm] = useState<FormState>(EMPTY_FORM);
-  const [busy, setBusy] = useState<"save" | "test" | "clear" | "update" | null>(null);
+  const [adsSummary, setAdsSummary] = useState<AdvertisingCredentialSummary | null>(null);
+  const [busy, setBusy] = useState<"sp-open" | "test" | "clear" | "ads-open" | "ads-test" | "ads-clear" | "update" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [test, setTest] = useState<ConnectionTestResult | null>(null);
+  const [adsTest, setAdsTest] = useState<AdvertisingConnectionTestResult | null>(null);
   const [version, setVersion] = useState<string>("—");
   const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
 
   const refreshSummary = useCallback(async () => {
-    const [nextSummary, nextVersion] = await Promise.all([
+    const [nextSummary, nextAdsSummary, nextVersion] = await Promise.all([
       window.fbaOS.credentials.status(),
+      window.fbaOS.advertisingCredentials.status(),
       window.fbaOS.app.version(),
     ]);
     setSummary(nextSummary);
+    setAdsSummary(nextAdsSummary);
     setVersion(nextVersion);
   }, []);
 
@@ -135,45 +103,18 @@ export default function ConnectionPanel({
     [summary],
   );
 
-  const updateField = (field: keyof FormState, value: string) => {
-    setForm((current) => ({ ...current, [field]: value }));
-    setMessage(null);
-    setError(null);
-  };
-
-  const save = async () => {
-    setBusy("save");
+  const openCredentialEditor = async () => {
+    setBusy("sp-open");
     setError(null);
     setMessage(null);
     setTest(null);
-    const input: CredentialInput = {
-      lwaClientId: form.lwaClientId,
-      lwaClientSecret: form.lwaClientSecret,
-      regions: {
-        na: { refreshToken: form.naRefreshToken, sellerId: form.naSellerId },
-        fe: { refreshToken: form.feRefreshToken, sellerId: form.feSellerId },
-        eu: { refreshToken: form.euRefreshToken, sellerId: form.euSellerId },
-      },
-      imageStorage: {
-        accountId: form.r2AccountId,
-        accessKeyId: form.r2AccessKeyId,
-        secretAccessKey: form.r2SecretAccessKey,
-        bucket: form.r2Bucket,
-        publicBaseUrl: form.r2PublicBaseUrl,
-      },
-      replenishmentSkillUrl: form.replenishmentSkillUrl,
-    };
     try {
-      const nextSummary = await window.fbaOS.credentials.save(input);
-      setSummary(nextSummary);
-      setForm(EMPTY_FORM);
-      setMessage("已加密保存到這台 Mac；畫面不會回傳或顯示完整 Secret。正在測試連線…");
-      const nextTest = await window.fbaOS.credentials.test();
-      setTest(nextTest);
-      setMessage(nextTest.ok ? "Amazon SP-API 連線成功，控制台已切換為真實資料。" : "憑證已保存；部分區域尚未通過連線測試。" );
+      await window.fbaOS.credentials.openEditor();
+      await refreshSummary();
+      setMessage("Mac 本機 SP-API 安全輸入視窗已關閉，狀態已重新讀取。");
       onConnectionChanged();
-    } catch (saveError) {
-      setError(cleanError(saveError));
+    } catch (openError) {
+      setError(cleanError(openError));
     } finally {
       setBusy(null);
     }
@@ -189,6 +130,62 @@ export default function ConnectionPanel({
       setMessage(result.ok ? "所有已設定區域均連線成功。" : "有區域尚未連線；請依下方結果檢查。" );
     } catch (testError) {
       setError(cleanError(testError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openAdvertisingCredentialEditor = async () => {
+    setBusy("ads-open");
+    setError(null);
+    setMessage(null);
+    setAdsTest(null);
+    try {
+      await window.fbaOS.advertisingCredentials.openEditor();
+      await refreshSummary();
+      setMessage("Mac 本機 Ads 安全輸入視窗已關閉，狀態已重新讀取。");
+      onConnectionChanged();
+    } catch (openError) {
+      setError(cleanError(openError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const testAdvertisingConnection = async () => {
+    setBusy("ads-test");
+    setError(null);
+    setMessage(null);
+    try {
+      const region = adsSummary?.oauthRegion ?? "na";
+      const marketplaceId = region === "fe"
+        ? "A1VC38T7YXB528"
+        : region === "eu"
+          ? "A1F83G8C2ARO7P"
+          : "ATVPDKIKX0DER";
+      const result = await window.fbaOS.advertisingCredentials.test(marketplaceId);
+      setAdsTest(result);
+      setMessage(result.message);
+      onConnectionChanged();
+    } catch (testError) {
+      setError(cleanError(testError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const clearAdvertisingCredentials = async () => {
+    setBusy("ads-clear");
+    setError(null);
+    setMessage(null);
+    try {
+      const nextSummary = await window.fbaOS.advertisingCredentials.clear();
+      setAdsSummary(nextSummary);
+      setAdsTest(null);
+      setMessage("這台 Mac 上的 Amazon Ads 憑證已清除；SP-API 憑證不受影響。");
+      onConnectionChanged();
+    } catch (clearError) {
+      setError(cleanError(clearError));
     } finally {
       setBusy(null);
     }
@@ -270,27 +267,42 @@ export default function ConnectionPanel({
             </details>
 
             <section className="credential-section">
-              <div className="credential-heading"><span>1</span><div><strong>App 身分</strong><small>從 LWA credentials 的 View 複製；所有區域共用</small></div><b className={summary?.lwaConfigured ? "saved" : ""}>{summary?.lwaConfigured ? "已保存" : "必填"}</b></div>
-              <div className="credential-grid two">
-                <label><span>LWA Client ID</span><input type="password" value={form.lwaClientId} onChange={(event) => updateField("lwaClientId", event.target.value)} placeholder={summary?.lwaConfigured ? "已保存；留白不變" : "amzn1.application-oa2-client…"} autoComplete="new-password" spellCheck={false} /></label>
-                <label><span>LWA Client Secret</span><input type="password" value={form.lwaClientSecret} onChange={(event) => updateField("lwaClientSecret", event.target.value)} placeholder={summary?.lwaConfigured ? "已保存；留白不變" : "輸入 Client Secret"} autoComplete="new-password" spellCheck={false} /></label>
+              <div className="credential-heading"><span>SP</span><div><strong>SP-API／R2／Skill 本機安全輸入</strong><small>所有敏感欄位只存在 main process 建立的本機 modal</small></div><b className={summary?.lwaConfigured ? "saved" : ""}>{summary?.lwaConfigured ? "已保存" : "必填"}</b></div>
+              <div className="connection-explainer"><span>i</span><p>GitHub Pages 只讀取遮罩摘要，不能建立或送出憑證 save payload。已保存欄位不會回填；本機視窗留白會沿用 Keychain 既有值。</p></div>
+              <div className="connection-actions">
+                <button type="button" className="primary" onClick={() => void openCredentialEditor()} disabled={Boolean(busy) || !summary?.encryptionAvailable}>{busy === "sp-open" ? "開啟中…" : "開啟 Mac 本機 SP-API 安全輸入"}</button>
               </div>
             </section>
 
             <section className="credential-section">
-              <div className="credential-heading"><span>2</span><div><strong>要連線的銷售區域</strong><small>每區貼入 Authorize 產生的 Token 與該帳號 Seller ID</small></div></div>
+              <div className="credential-heading"><span>ADS</span><div><strong>Amazon Ads 唯讀連線</strong><small>獨立 Ads LWA App；Profile ID 由主程式自動發現</small></div><b className={adsSummary?.configured ? "saved" : ""}>{adsSummary?.configured ? "已保存" : "選配"}</b></div>
+              <div className="connection-explainer"><span>i</span><p>Amazon 官方的 OAuth scope 為 <b>advertising::campaign_management</b>，不是 read-only scope。請在 Campaign manager 只授予使用者 <b>Viewer</b>；AMZ.API 只啟用 Profiles 與 Campaign query，寫入永遠關閉。</p></div>
+              <div className="connection-sop-body">
+                <ol>
+                  <li><span>1</span><div><strong>建立獨立 Ads LWA security profile</strong><p>不沿用 SP-API LWA；申請 Ads API access 後，依官方流程完成 authorization grant。</p></div></li>
+                  <li><span>2</span><div><strong>設定 Viewer 權限</strong><p>在 Amazon Ads Campaign manager 把專用使用者設為 Viewer；OAuth scope 名稱雖含 campaign_management，本 App 仍無任何 campaign write route。</p></div></li>
+                  <li><span>3</span><div><strong>開啟 Mac 本機安全輸入</strong><p>OAuth 區域與三個憑證欄位只存在本機 modal sheet；GitHub Pages 不持有這些 input state。Profile ID 不需要複製或貼上。</p></div></li>
+                </ol>
+              </div>
+              <div className="connection-actions">
+                <button type="button" className="secondary" onClick={() => void testAdvertisingConnection()} disabled={Boolean(busy) || !adsSummary?.configured}>{busy === "ads-test" ? "Ads 測試中…" : "測試 Ads 唯讀連線"}</button>
+                <button type="button" className="primary" onClick={() => void openAdvertisingCredentialEditor()} disabled={Boolean(busy) || !adsSummary?.encryptionAvailable}>{busy === "ads-open" ? "開啟中…" : "開啟 Mac 本機 Ads 安全輸入"}</button>
+                {adsSummary?.hasVault && <button type="button" className="danger-link" onClick={() => void clearAdvertisingCredentials()} disabled={Boolean(busy)}>{busy === "ads-clear" ? "清除中…" : "Touch ID 清除 Ads 憑證"}</button>}
+              </div>
+              {adsTest && <p className="connection-sop-note">{adsTest.ok ? "已驗證 Seller Profile 與 Campaign 唯讀查詢。" : adsTest.message}</p>}
+              <p className="connection-sop-note">安全邊界：GitHub Pages 只能開啟本機 sheet、讀取 redacted status、測試與清除；無法送出 Ads save payload。請勿將憑證貼入訊息、GitHub、URL 或試算表。</p>
+            </section>
+
+            <section className="credential-section">
+              <div className="credential-heading"><span>2</span><div><strong>銷售區域狀態</strong><small>只顯示遮罩提示與連線測試結果；完整 Seller ID 不會進 renderer</small></div></div>
               <div className="region-credential-list">
                 {REGION_META.map((item) => {
                   const status = summary?.regions[item.region];
                   const testLabel = regionTestLabel(test, item.region);
                   return (
-                    <details key={item.region} open={item.region === "na"}>
-                      <summary><div><strong>{item.label}</strong><small>{item.sites}</small></div><span className={status?.configured ? "saved" : ""}>{testLabel ?? (status?.configured ? `已保存 ${status.sellerIdHint ?? ""}` : "未設定")}</span><i>＋</i></summary>
-                      <div className="credential-grid two">
-                        <label><span>Refresh Token</span><input type="password" value={form[item.token]} onChange={(event) => updateField(item.token, event.target.value)} placeholder={status?.refreshTokenHint ?? "Atzr|IwEB…"} autoComplete="new-password" spellCheck={false} /></label>
-                        <label><span>Seller ID / Merchant Token</span><input type="password" value={form[item.seller]} onChange={(event) => updateField(item.seller, event.target.value)} placeholder={status?.sellerIdHint ?? "A1XXXXXXXXXXXX"} autoComplete="new-password" spellCheck={false} /></label>
-                      </div>
-                    </details>
+                    <div className="advanced-credential-block" key={item.region}>
+                      <div className="advanced-credential-heading"><strong>{item.label} · {item.sites}</strong><small className={status?.configured ? "saved" : ""}>{testLabel ?? (status?.configured ? `已保存 · Token ${status.refreshTokenHint ?? "已遮罩"} · Seller ${status.sellerIdHint ?? "已遮罩"}` : "未設定")}</small></div>
+                    </div>
                   );
                 })}
               </div>
@@ -298,20 +310,12 @@ export default function ConnectionPanel({
             </section>
 
             <details className="optional-credential-section">
-              <summary><div><span>•••</span><strong>進階選配</strong><small>R2 圖片上傳與補貨 Skill；串 Amazon 時不用填</small></div><i>＋</i></summary>
+              <summary><div><span>•••</span><strong>進階選配狀態</strong><small>R2 與補貨 Skill 也只能在 Mac 本機安全輸入</small></div><i>＋</i></summary>
               <div className="advanced-credential-block">
                 <div className="advanced-credential-heading"><strong>Cloudflare R2 圖片上傳</strong><small>{summary?.imageStorageConfigured ? `已連線 · ${summary.imagePublicBaseUrl}` : "未設定仍可拖拉預覽與貼公開 URL"}</small></div>
-                <div className="credential-grid two">
-                  <label><span>R2 Account ID</span><input type="password" value={form.r2AccountId} onChange={(event) => updateField("r2AccountId", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
-                  <label><span>Bucket</span><input value={form.r2Bucket} onChange={(event) => updateField("r2Bucket", event.target.value)} placeholder="amazon-listing-images" /></label>
-                  <label><span>Access Key ID</span><input type="password" value={form.r2AccessKeyId} onChange={(event) => updateField("r2AccessKeyId", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
-                  <label><span>Secret Access Key</span><input type="password" value={form.r2SecretAccessKey} onChange={(event) => updateField("r2SecretAccessKey", event.target.value)} placeholder="留白不變" autoComplete="new-password" /></label>
-                  <label className="full"><span>公開圖片網址</span><input value={form.r2PublicBaseUrl} onChange={(event) => updateField("r2PublicBaseUrl", event.target.value)} placeholder="https://images.example.com" inputMode="url" /></label>
-                </div>
               </div>
               <div className="advanced-credential-block">
                 <div className="advanced-credential-heading"><strong>補貨 Skill 接點</strong><small>{summary?.replenishmentSkillConfigured ? "已保存" : "內建補貨計算已可直接使用"}</small></div>
-                <div className="credential-grid"><label><span>HTTPS Skill URL</span><input value={form.replenishmentSkillUrl} onChange={(event) => updateField("replenishmentSkillUrl", event.target.value)} placeholder="https://…" inputMode="url" /></label></div>
               </div>
             </details>
 
@@ -320,7 +324,6 @@ export default function ConnectionPanel({
 
             <div className="connection-actions">
               <button type="button" className="secondary" onClick={() => void testConnection()} disabled={Boolean(busy) || !configuredCount}>{busy === "test" ? "測試中…" : "重新測試"}</button>
-              <button type="button" className="primary" onClick={() => void save()} disabled={Boolean(busy) || !summary?.encryptionAvailable}>{busy === "save" ? "加密保存中…" : "Touch ID 保存並連線"}</button>
             </div>
 
             <footer>

@@ -139,7 +139,7 @@ describe("FBA Subscribe & Save audit routes", () => {
       expect(twentyPercent).toContain(interval.month);
     }
     expect(twentyPercent).toContain("資料涵蓋不完整；未將部分加總冒充完整總額");
-    expect(twentyPercent).toContain("已證明 FBA 5 個；可核對 offer 5 個；未回傳可核對 offer 0 個");
+    expect(twentyPercent).toContain("已證明 FBA 5 個；可核對 offer 5 個；未取得可核對 offer 0 個");
     expect(twentyPercent).toContain("Amazon 未回傳此 SKU 月度列");
   });
 

@@ -5,7 +5,8 @@
 - GitHub Pages 是主控制台；一般瀏覽器只顯示鎖定 gate，沒有本機 Bridge。
 - Electron renderer 只信任精確的 `https://jspusa.github.io/AMZ.API/` 或開發用固定 loopback 文件。
 - Renderer 沒有 Node.js、raw IPC、`fetch`／XHR 外連或任意開啟網址能力。
-- LWA、SP-API、R2 與未來 Ads API 請求只從 main process 發出；renderer 僅能以 `<img>` 顯示 HTTPS 商品圖片，不會附帶 Amazon 憑證或自訂 headers。
+- LWA、SP-API、R2 與 Amazon Ads API 請求只從 main process 發出；renderer 僅能以 `<img>` 顯示 HTTPS 商品圖片，不會附帶 Amazon 憑證或自訂 headers。
+- SP-API／R2／Skill 與 Ads 敏感欄位只在 main process 建立的 packaged data-URL 本機 sheet 輸入。Sheet 使用 memory-only partition、無網路 CSP、sandbox 與 context isolation；save IPC 只接受 exact editor BrowserWindow 的 main frame。GitHub Pages 沒有 secret input state，也不能直接呼叫 save。
 - Custom URL 只能顯示／聚焦 App，永遠不能直接執行 Amazon 寫入。
 - GitHub UI 是受信任控制面；repository／Pages 若被入侵，remote UI 可能看到 Bridge 回傳的非 Secret 營運資料，因此寫入路徑、payload、native 摘要、Touch ID 與防重送全部由 main process 強制執行。
 
@@ -23,6 +24,8 @@
 - 全站文案只用 Mac 內建 spellchecker，不傳送到外部拼字服務
 - Variation family 查詢保持唯讀；唯一改掛 route 只允許 FBA child，固定兩階段 Amazon Validation Preview → native Touch ID → 持久 idempotency → 單次 PATCH → 唯讀回查。真正 PATCH 前失敗會安全釋放 claim；已送出或已接受後的未知狀態不得重送
 - 全站文案／圖片／訂閱健檢只接收 main process 證明的 FBA SKU；訂閱 Excel 只能由 main 保存的短效快照建立
+- 一鍵全部健檢由 main process 綁定 account scope、mode、marketplace 與短效 context；七個 section 各自 fail honest，renderer 不能上傳整份 snapshot 或 account scope，Excel 只由同一 main job 的已驗證結果建立
+- Amazon Ads 使用獨立 Keychain-backed vault；只允許官方固定 token／Profiles／Campaign query endpoint、精確 Seller Profile 與 Sponsored Products 唯讀查詢。App 沒有 Ads write route，Listing 身分或來源不完整時不輸出全站覆蓋結論
 - 會計能力使用固定公開 SP-API allowlist；未完成 FBA 過濾、人工前置、Brazil-only 與不存在的通用發票／帳單接口保持停用
 - Lock screen／suspend 清除所有短效預檢票證
 - Electron fuses：停用 RunAsNode、Node options／inspect，啟用 ASAR integrity 與 cookie encryption
@@ -35,6 +38,8 @@
 - SP-API Access Token
 - Seller ID 完整值
 - R2 Secret Access Key
+- Ads LWA Client Secret
+- Ads Refresh Token、Access Token、Profile ID 與完整 Ads／Seller account identifier
 - Amazon response payload 或 buyer PII
 
 ## 正式發布前必要驗收

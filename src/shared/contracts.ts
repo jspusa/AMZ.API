@@ -33,6 +33,35 @@ export type ApiResponse = {
 
 export type SpApiRegion = "na" | "fe" | "eu";
 
+export type AdvertisingApiRegion = SpApiRegion;
+
+export type AdvertisingCredentialInput = {
+  lwaClientId?: string;
+  lwaClientSecret?: string;
+  refreshToken?: string;
+  oauthRegion?: AdvertisingApiRegion;
+};
+
+export type AdvertisingCredentialSummary = {
+  encryptionAvailable: boolean;
+  hasVault: boolean;
+  configured: boolean;
+  lwaConfigured: boolean;
+  refreshTokenConfigured: boolean;
+  oauthRegion: AdvertisingApiRegion;
+  updatedAt: string | null;
+};
+
+export type AdvertisingConnectionTestResult = {
+  ok: boolean;
+  testedAt: string;
+  marketplaceId: string;
+  marketplaceCode: string;
+  accountType: "seller" | null;
+  message: string;
+  requestId: string | null;
+};
+
 export type RegionCredentialInput = {
   refreshToken?: string;
   sellerId?: string;
@@ -113,9 +142,15 @@ export type DesktopBridge = {
   };
   credentials: {
     status(): Promise<CredentialSummary>;
-    save(input: CredentialInput): Promise<CredentialSummary>;
+    openEditor(): Promise<void>;
     clear(): Promise<CredentialSummary>;
     test(): Promise<ConnectionTestResult>;
+  };
+  advertisingCredentials: {
+    status(): Promise<AdvertisingCredentialSummary>;
+    openEditor(): Promise<void>;
+    clear(): Promise<AdvertisingCredentialSummary>;
+    test(marketplaceId: string): Promise<AdvertisingConnectionTestResult>;
   };
   app: {
     version(): Promise<string>;
@@ -131,3 +166,13 @@ export type DesktopBridge = {
     onStatus(listener: (status: UpdateStatus) => void): () => void;
   };
 };
+
+export type CredentialEditorBridge = Readonly<{
+  save(input: CredentialInput): Promise<CredentialSummary>;
+  close(): Promise<void>;
+}>;
+
+export type AdvertisingCredentialEditorBridge = Readonly<{
+  save(input: AdvertisingCredentialInput): Promise<AdvertisingCredentialSummary>;
+  close(): Promise<void>;
+}>;

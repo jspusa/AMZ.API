@@ -55,16 +55,30 @@ export type ContentAuditQuickEditFocus = {
   sellerSku: string;
   asin: string;
   productType: string;
+  reason: string;
   fields: ContentAuditField[];
   bulletIndices: number[];
   evidence: ContentAuditQuickEditEvidence[];
 };
 
 export type ResolvedContentAuditQuickEditFocus = {
+  reason: string;
   fields: ContentAuditField[];
   bulletIndices: number[];
   relocationNote: string | null;
 };
+
+export type ContentAuditQuickEditAvailability =
+  | {
+      status: "ready";
+      reason: string;
+      focus: ContentAuditQuickEditFocus;
+    }
+  | {
+      status: "unavailable";
+      reason: string;
+      unavailableReason: string;
+    };
 
 export type ContentAuditQuickEditResolution =
   | {
@@ -337,6 +351,23 @@ function fieldLabel(field: ContentAuditField): string {
   return "賣點";
 }
 
+function quickEditReasonForRow(row: ContentAuditRow): string {
+  if (row.readStatus !== "complete") {
+    const details = row.readErrors.map((error) => error.message).filter(Boolean);
+    return `讀取未完成${details.length ? `：${details.join("；")}` : ""}`;
+  }
+  const reasons = row.issues.map((issue) => {
+    const token = issue.kind === "SUSPECTED_TYPO" && issue.token
+      ? `「${issue.token}」`
+      : "";
+    if (isInvisibleCharacterIssue(issue)) {
+      return `不可見字元（${fieldLabel(issue.field)}${token}）：已定位到需手動移除的不可見字元。`;
+    }
+    return `${issueLabel(issue.kind)}（${fieldLabel(issue.field)}${token}）：${issue.message}`;
+  });
+  return reasons.length ? reasons.join("；") : "這筆健檢目前沒有可修改的問題。";
+}
+
 export function quickEditFocusForRow(
   row: ContentAuditRow,
 ): ContentAuditQuickEditFocus | null {
@@ -395,9 +426,25 @@ export function quickEditFocusForRow(
     sellerSku: row.sellerSku,
     asin: row.asin,
     productType: row.productType,
+    reason: quickEditReasonForRow(row),
     fields,
     bulletIndices: [...bulletIndices].sort((left, right) => left - right),
     evidence,
+  };
+}
+
+export function quickEditAvailabilityForRow(
+  row: ContentAuditRow,
+): ContentAuditQuickEditAvailability {
+  const reason = quickEditReasonForRow(row);
+  const focus = quickEditFocusForRow(row);
+  if (focus) return { status: "ready", reason, focus };
+  return {
+    status: "unavailable",
+    reason,
+    unavailableReason: row.readStatus !== "complete"
+      ? "Amazon 原文尚未完整讀取，無法建立安全定位證據。"
+      : "健檢時的原文、字詞或欄位證據不足，無法安全定位待修內容。",
   };
 }
 
@@ -573,6 +620,7 @@ export function resolveContentAuditQuickEditFocus(
   return {
     status: "focused",
     focus: {
+      reason: focus.reason,
       fields: [...fields],
       bulletIndices: [...bulletIndices].sort((left, right) => left - right),
       relocationNote: relocatedTargets.length
@@ -965,7 +1013,10 @@ export default function ContentAuditPanel({
                 const affectedBullets = row.bulletPoints
                   .map((value, index) => ({ value, index }))
                   .filter(({ value }) => hasHighlightedContent(value, bulletIssues));
-                const quickEditFocus = quickEditFocusForRow(row);
+                const quickEditAvailability = quickEditAvailabilityForRow(row);
+                const quickEditFocus = quickEditAvailability.status === "ready"
+                  ? quickEditAvailability.focus
+                  : null;
                 return (
                   <article key={row.sellerSku}>
                     <div className="content-audit-product">
@@ -979,19 +1030,30 @@ export default function ContentAuditPanel({
                         <small>{row.sellerSku}{row.asin ? ` · ${row.asin}` : ""}</small>
                       </div>
                       <div className="content-audit-edit-actions">
-                        {quickEditFocus && (
-                          <button
-                            type="button"
-                            className="content-audit-fix-now"
-                            onClick={() => onOpenSku(row.sellerSku, quickEditFocus)}
-                          >
-                            立刻修改
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          className="content-audit-fix-now"
+                          onClick={() => {
+                            if (quickEditFocus) onOpenSku(row.sellerSku, quickEditFocus);
+                          }}
+                          disabled={!quickEditFocus}
+                          title={quickEditAvailability.status === "unavailable"
+                            ? quickEditAvailability.unavailableReason
+                            : quickEditAvailability.reason}
+                        >
+                          立刻修改
+                        </button>
                         <button type="button" onClick={() => onOpenSku(row.sellerSku)}>
                           完整編輯
                         </button>
                       </div>
+                    </div>
+                    <div className="content-audit-quick-edit-reason" role="note">
+                      <strong>本次錯誤原因</strong>
+                      <p>{quickEditAvailability.reason}</p>
+                      {quickEditAvailability.status === "unavailable" && (
+                        <small>立刻修改不可用：{quickEditAvailability.unavailableReason}</small>
+                      )}
                     </div>
                     {(affectedBullets.length > 0 ||
                       hasHighlightedContent(row.ingredients, ingredientsIssues)) && (

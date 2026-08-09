@@ -92,6 +92,40 @@ export type BrandSalesJobRecord = {
   expiresAt: number;
 };
 
+const BRAND_SALES_MISSING_WINDOW_SENTINEL =
+  "legacy-missing-immutable-window" as const;
+
+/**
+ * Durable fail-closed marker for a pre-window-contract brand report job.
+ *
+ * Older App builds could persist the account/selection and Amazon report IDs
+ * without the immutable shipment timestamps required by the current status
+ * contract. Dropping that otherwise coherent record would make an automatic
+ * dashboard mount create a second report. Keep only the non-secret identity,
+ * report legs and timing evidence until an explicit guarded retry replaces it.
+ */
+export type BrandSalesIncompatibleJobRecord = Omit<
+  BrandSalesJobRecord,
+  "shipmentDataStartTime" | "shipmentDataEndTime" | "expiresAt"
+> & {
+  windowCompatibility: "MISSING_IMMUTABLE_WINDOW";
+  shipmentDataStartTime: typeof BRAND_SALES_MISSING_WINDOW_SENTINEL;
+  shipmentDataEndTime: typeof BRAND_SALES_MISSING_WINDOW_SENTINEL;
+  originalExpiresAt: number;
+  expiresAt: typeof Number.MAX_SAFE_INTEGER;
+};
+
+export type StoredBrandSalesJobRecord =
+  | BrandSalesJobRecord
+  | BrandSalesIncompatibleJobRecord;
+
+export function isBrandSalesIncompatibleJob(
+  value: StoredBrandSalesJobRecord,
+): value is BrandSalesIncompatibleJobRecord {
+  return value.shipmentDataStartTime === BRAND_SALES_MISSING_WINDOW_SENTINEL ||
+    value.shipmentDataEndTime === BRAND_SALES_MISSING_WINDOW_SENTINEL;
+}
+
 export type SharedAllListingsReportLease = {
   leaseId: string;
   accountScope: string;
@@ -109,7 +143,7 @@ type StoreData = {
   version: 2;
   profiles: Record<string, ProductMasterProfile>;
   ledger: Record<string, LedgerEntry>;
-  brandSalesJobs: Record<string, BrandSalesJobRecord>;
+  brandSalesJobs: Record<string, StoredBrandSalesJobRecord>;
   sharedAllListingsReports: Record<string, SharedAllListingsReportLease>;
 };
 
@@ -249,7 +283,12 @@ function parseBrandSalesLeg(value: unknown): BrandSalesReportLeg {
   };
 }
 
-function parseBrandSalesJob(value: unknown): BrandSalesJobRecord {
+function parseBrandSalesJobBase(
+  value: unknown,
+): {
+  base: Omit<BrandSalesJobRecord, "shipmentDataStartTime" | "shipmentDataEndTime">;
+  raw: Record<string, unknown>;
+} {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Invalid persisted brand-sales job");
   }
@@ -261,8 +300,6 @@ function parseBrandSalesJob(value: unknown): BrandSalesJobRecord {
     !/^\d{4}-\d{2}-\d{2}$/u.test(String(raw.startDate)) ||
     !/^\d{4}-\d{2}-\d{2}$/u.test(String(raw.endDate)) ||
     (raw.mode !== "live" && raw.mode !== "demo") ||
-    !isSafeIdentifier(raw.shipmentDataStartTime, 64) ||
-    !isSafeIdentifier(raw.shipmentDataEndTime, 64) ||
     !Number.isSafeInteger(raw.createdAt) ||
     !Number.isSafeInteger(raw.updatedAt) ||
     !Number.isSafeInteger(raw.expiresAt) ||
@@ -273,19 +310,70 @@ function parseBrandSalesJob(value: unknown): BrandSalesJobRecord {
     throw new Error("Invalid persisted brand-sales job");
   }
   return {
-    jobId: raw.jobId,
-    accountScope: raw.accountScope,
-    marketplaceId: raw.marketplaceId,
-    startDate: raw.startDate as string,
-    endDate: raw.endDate as string,
-    mode: raw.mode,
+    raw,
+    base: {
+      jobId: raw.jobId,
+      accountScope: raw.accountScope,
+      marketplaceId: raw.marketplaceId,
+      startDate: raw.startDate as string,
+      endDate: raw.endDate as string,
+      mode: raw.mode,
+      listing: parseBrandSalesLeg(raw.listing),
+      shipment: parseBrandSalesLeg(raw.shipment),
+      createdAt: Number(raw.createdAt),
+      updatedAt: Number(raw.updatedAt),
+      expiresAt: Number(raw.expiresAt),
+    },
+  };
+}
+
+function parseBrandSalesJob(value: unknown): BrandSalesJobRecord {
+  const { base, raw } = parseBrandSalesJobBase(value);
+  if (
+    !isSafeIdentifier(raw.shipmentDataStartTime, 64) ||
+    !isSafeIdentifier(raw.shipmentDataEndTime, 64) ||
+    raw.shipmentDataStartTime === BRAND_SALES_MISSING_WINDOW_SENTINEL ||
+    raw.shipmentDataEndTime === BRAND_SALES_MISSING_WINDOW_SENTINEL
+  ) {
+    throw new Error("Persisted brand-sales job is missing its immutable window");
+  }
+  return {
+    ...base,
     shipmentDataStartTime: raw.shipmentDataStartTime,
     shipmentDataEndTime: raw.shipmentDataEndTime,
-    listing: parseBrandSalesLeg(raw.listing),
-    shipment: parseBrandSalesLeg(raw.shipment),
-    createdAt: Number(raw.createdAt),
-    updatedAt: Number(raw.updatedAt),
-    expiresAt: Number(raw.expiresAt),
+  };
+}
+
+function parseStoredBrandSalesJob(value: unknown): StoredBrandSalesJobRecord {
+  const { base, raw } = parseBrandSalesJobBase(value);
+  if (
+    raw.windowCompatibility === "MISSING_IMMUTABLE_WINDOW" ||
+    raw.shipmentDataStartTime === BRAND_SALES_MISSING_WINDOW_SENTINEL ||
+    raw.shipmentDataEndTime === BRAND_SALES_MISSING_WINDOW_SENTINEL ||
+    !isSafeIdentifier(raw.shipmentDataStartTime, 64) ||
+    !isSafeIdentifier(raw.shipmentDataEndTime, 64)
+  ) {
+    const originalExpiresAt = Number.isSafeInteger(raw.originalExpiresAt) &&
+        Number(raw.originalExpiresAt) > base.createdAt
+      ? Number(raw.originalExpiresAt)
+      : base.expiresAt;
+    return {
+      ...base,
+      windowCompatibility: "MISSING_IMMUTABLE_WINDOW",
+      shipmentDataStartTime: BRAND_SALES_MISSING_WINDOW_SENTINEL,
+      shipmentDataEndTime: BRAND_SALES_MISSING_WINDOW_SENTINEL,
+      originalExpiresAt,
+      // Keep the tombstone readable by v0.1.11's version-2 parser. Its normal
+      // expiry path may otherwise delete a completed legacy job and POST a new
+      // report automatically after rollback. The current App ignores this
+      // retention value and only replaces the marker after a guarded retry.
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    };
+  }
+  return {
+    ...base,
+    shipmentDataStartTime: raw.shipmentDataStartTime,
+    shipmentDataEndTime: raw.shipmentDataEndTime,
   };
 }
 
@@ -385,7 +473,13 @@ export class LocalStore {
   }
 
   async initialize(): Promise<void> {
-    await this.read();
+    const data = await this.read();
+    if (Object.values(data.brandSalesJobs).some(isBrandSalesIncompatibleJob)) {
+      // Persist the rollback-readable sentinel immediately. Waiting for an
+      // unrelated later mutation would leave the original missing-window row
+      // vulnerable to being dropped if the user launches an older App build.
+      await this.mutate(() => undefined);
+    }
   }
 
   async isolateCorruptedFile(): Promise<string | null> {
@@ -519,13 +613,13 @@ export class LocalStore {
     marketplaceId: string;
     startDate: string;
     endDate: string;
-  }): Promise<BrandSalesJobRecord | null> {
+  }): Promise<StoredBrandSalesJobRecord | null> {
     const data = await this.read();
     const value = data.brandSalesJobs[brandSalesSelectionKey(input)];
     return value ? structuredClone(value) : null;
   }
 
-  async getBrandSalesJobById(jobId: string): Promise<BrandSalesJobRecord | null> {
+  async getBrandSalesJobById(jobId: string): Promise<StoredBrandSalesJobRecord | null> {
     const data = await this.read();
     const value = Object.values(data.brandSalesJobs).find(
       (candidate) => candidate.jobId === jobId,
@@ -541,6 +635,10 @@ export class LocalStore {
     const now = input.now ?? Date.now();
     const data = await this.read();
     const value = Object.values(data.brandSalesJobs)
+      .filter(
+        (candidate): candidate is BrandSalesJobRecord =>
+          !isBrandSalesIncompatibleJob(candidate),
+      )
       .filter(
         (candidate) =>
           candidate.accountScope === input.accountScope &&
@@ -655,10 +753,39 @@ export class LocalStore {
       const key = brandSalesSelectionKey(input);
       const existing = data.brandSalesJobs[key];
       if (existing) {
+        if (isBrandSalesIncompatibleJob(existing)) {
+          throw new Error("Persisted brand-sales job requires an explicit guarded retry");
+        }
         selected = existing;
         return;
       }
       selected = parseBrandSalesJob(input);
+      data.brandSalesJobs[key] = selected;
+      created = true;
+    });
+    return { created, job: structuredClone(selected) };
+  }
+
+  async replaceIncompatibleBrandSalesJob(input: {
+    expectedJobId: string;
+    replacement: BrandSalesJobRecord;
+  }): Promise<{ created: boolean; job: BrandSalesJobRecord }> {
+    let created = false;
+    let selected!: BrandSalesJobRecord;
+    await this.mutate((data) => {
+      const key = brandSalesSelectionKey(input.replacement);
+      const existing = data.brandSalesJobs[key];
+      if (!existing) {
+        throw new Error("Persisted incompatible brand-sales job disappeared");
+      }
+      if (!isBrandSalesIncompatibleJob(existing)) {
+        selected = existing;
+        return;
+      }
+      if (existing.jobId !== input.expectedJobId) {
+        throw new Error("Persisted incompatible brand-sales job changed");
+      }
+      selected = parseBrandSalesJob(input.replacement);
       data.brandSalesJobs[key] = selected;
       created = true;
     });
@@ -675,7 +802,8 @@ export class LocalStore {
     let updated!: BrandSalesJobRecord;
     await this.mutate((data) => {
       const entry = Object.values(data.brandSalesJobs).find(
-        (candidate) => candidate.jobId === input.jobId,
+        (candidate): candidate is BrandSalesJobRecord =>
+          candidate.jobId === input.jobId && !isBrandSalesIncompatibleJob(candidate),
       );
       if (!entry) throw new Error("Persisted brand-sales job not found");
       entry[input.leg] = parseBrandSalesLeg(input.value);
@@ -852,7 +980,7 @@ export class LocalStore {
         brandSalesJobs: Object.fromEntries(
           Object.entries(raw.brandSalesJobs ?? {}).flatMap(([key, job]) => {
             try {
-              const parsed = parseBrandSalesJob(job);
+              const parsed = parseStoredBrandSalesJob(job);
               return brandSalesSelectionKey(parsed) === key
                 ? [[key, parsed]]
                 : [];

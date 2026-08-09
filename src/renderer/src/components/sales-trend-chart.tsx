@@ -76,8 +76,8 @@ type Coordinate = {
 };
 
 const WIDTH = 760;
-const HEIGHT = 112;
-const PLOT = { left: 66, right: 18, top: 8, bottom: 22 };
+const HEIGHT = 170;
+const PLOT = { left: 66, right: 18, top: 12, bottom: 27 };
 const RANGE_OPTIONS = [7, 14, 30, 90] as const;
 const DAY_MILLISECONDS = 86_400_000;
 export const MAX_CUSTOM_SALES_TREND_DAYS = 365;
@@ -361,6 +361,7 @@ export default function SalesTrendChart({
   const [skaterEnabled, setSkaterEnabled] = useState(false);
   const [skaterIndex, setSkaterIndex] = useState(0);
   const [skaterJumping, setSkaterJumping] = useState(false);
+  const [skaterCrouching, setSkaterCrouching] = useState(false);
   const [customOpen, setCustomOpen] = useState(selection.kind === "custom");
   const [customStartDate, setCustomStartDate] = useState(
     selection.kind === "custom" ? selection.startDate : snapshot?.range.startDate ?? "",
@@ -543,20 +544,66 @@ export default function SalesTrendChart({
   };
 
   const handleSkaterKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    const key = event.key.toLocaleLowerCase("en-US");
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight" || key === "a" || key === "d") {
       event.preventDefault();
-      moveSkater(event.key === "ArrowLeft" ? -1 : 1);
+      moveSkater(event.key === "ArrowLeft" || key === "a" ? -1 : 1);
       return;
     }
     if (
       event.key === "ArrowUp" ||
-      event.key.toLocaleLowerCase("en-US") === "j" ||
+      key === "w" ||
+      key === "j" ||
       (event.key === " " && event.target === event.currentTarget)
     ) {
       event.preventDefault();
       jumpSkater();
+      return;
+    }
+    if (key === "s") {
+      event.preventDefault();
+      setSkaterCrouching(true);
     }
   };
+
+  useEffect(() => {
+    if (!skaterEnabled || !points.length) return;
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.repeat ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        isEditableTarget(event.target)
+      ) return;
+      const key = event.key.toLocaleLowerCase("en-US");
+      if (key === "a" || key === "d") {
+        event.preventDefault();
+        moveSkater(key === "a" ? -1 : 1);
+      } else if (key === "w") {
+        event.preventDefault();
+        jumpSkater();
+      } else if (key === "s") {
+        event.preventDefault();
+        setSkaterCrouching(true);
+      }
+    };
+    const onKeyUp = (event: globalThis.KeyboardEvent) => {
+      if (event.key.toLocaleLowerCase("en-US") === "s") setSkaterCrouching(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      setSkaterCrouching(false);
+    };
+  }, [points.length, skaterEnabled]);
 
   useEffect(() => {
     if (
@@ -802,13 +849,13 @@ export default function SalesTrendChart({
               <div
                 className="sales-skater-controls"
                 role="group"
-                aria-label="迷你滑板控制；左右方向鍵移動，上方向鍵或 J 跳躍"
+                aria-label="迷你滑板控制；A D 或左右鍵移動，W 或上鍵跳躍，S 蹲下"
                 tabIndex={0}
                 onKeyDown={handleSkaterKeyDown}
               >
-                <button type="button" onClick={() => moveSkater(-1)} disabled={skaterIndex <= 0} aria-label="滑板向左">←</button>
-                <button type="button" onClick={jumpSkater} aria-label="滑板跳躍">↑</button>
-                <button type="button" onClick={() => moveSkater(1)} disabled={skaterIndex >= points.length - 1} aria-label="滑板向右">→</button>
+                <button type="button" onClick={() => moveSkater(-1)} disabled={skaterIndex <= 0} aria-label="滑板向左（A）">A</button>
+                <button type="button" onClick={jumpSkater} aria-label="滑板跳躍（W）">W</button>
+                <button type="button" onClick={() => moveSkater(1)} disabled={skaterIndex >= points.length - 1} aria-label="滑板向右（D）">D</button>
               </div>
             )}
           </div>
@@ -943,7 +990,7 @@ export default function SalesTrendChart({
               )}
               {skaterCoordinate && (
                 <span
-                  className={`sales-skater ${skaterJumping ? "is-jumping" : ""}`}
+                  className={`sales-skater ${skaterJumping ? "is-jumping" : ""} ${skaterCrouching ? "is-crouching" : ""}`}
                   style={{
                     left: `${(skaterCoordinate.x / WIDTH) * 100}%`,
                     top: `${(skaterCoordinate.y / HEIGHT) * 100}%`,

@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import { AccountingCenterDrawer } from "./accounting-center-panel";
 import AdsDrawer from "./ads-drawer";
 import AgedInventoryPanel from "./aged-inventory-panel";
+import AuditSuiteHomeCard from "./audit-suite-home-card";
 import BrandSalesCard from "./brand-sales-card";
 import BrandGlyph from "./brand-glyph";
 import ImageWorkspaceDrawer, {
@@ -444,7 +445,7 @@ const TOOL_SECTIONS: ReadonlyArray<{
     label: "價格區",
     symbol: "$",
     group: "pricing",
-    tools: ["price", "promotion", "subscriptions"],
+    tools: ["price", "promotion"],
   },
   {
     label: "營運區",
@@ -915,7 +916,7 @@ export default function Dashboard({
       {
         id: "report-library",
         label: "Amazon API 文件庫",
-        detail: "109 種公開 report types 與接線條件",
+        detail: "Seller 公開 report types、篩選與接線條件",
         symbol: "▤",
         onSelect: () => setReportLibraryOpen(true),
       },
@@ -1058,7 +1059,9 @@ export default function Dashboard({
                           <i aria-hidden="true">›</i>
                         </button>
                       ))}
-                      {section.group === "reports" && effectiveReportMenuEntries.map((entry, index) => (
+                      {section.group === "reports" && effectiveReportMenuEntries
+                        .filter((entry) => entry.id !== "review-audit")
+                        .map((entry, index) => (
                         <button
                           key={entry.id}
                           type="button"
@@ -1139,6 +1142,8 @@ export default function Dashboard({
             )}
           </div>
 
+          <AuditSuiteHomeCard marketplaceId={marketplaceId} />
+
           <div className="home-section-heading">
             <div><p className="eyebrow">ONE-CLICK CHECKS</p><h2>一鍵健檢</h2></div>
             <p>只在需要時掃描；同次 App 使用期間會保留結果。</p>
@@ -1182,18 +1187,18 @@ export default function Dashboard({
                 <i aria-hidden="true">›</i>
               </button>
             </section>
-            <section className="content-audit-home-card" aria-label="FBA 冗餘庫存健檢捷徑">
+            <section className="content-audit-home-card" aria-label="FBA 180 天以上庫齡健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
               <div>
-                <p className="eyebrow">AMAZON ESTIMATED EXCESS</p>
-                <h2>FBA 冗餘庫存健檢</h2>
-                <p>使用 Amazon 官方 estimated excess quantity 核對冗餘庫存；庫齡會另外顯示，不會被當成冗餘。</p>
+                <p className="eyebrow">FBA AGED INVENTORY · 180+ DAYS</p>
+                <h2>FBA 180 天以上庫齡健檢</h2>
+                <p>主清單只列已經超過 180 天的 FBA 庫存；Amazon estimated excess 預估與費用放在獨立分頁。</p>
               </div>
               <button type="button" onClick={() => {
                 setAuditPreference("inventory");
                 setAgedInventoryOpen(true);
               }}>
-                查看 FBA 冗餘庫存
+                開始 FBA 180 天以上庫齡健檢
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1335,8 +1340,8 @@ export default function Dashboard({
             aria-labelledby="aged-inventory-audit-title"
           >
             <div className="drawer-header">
-              <div><p className="eyebrow">FBA · AMAZON ESTIMATED EXCESS</p><h2 id="aged-inventory-audit-title">冗餘庫存健檢</h2></div>
-              <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 冗餘庫存健檢">×</button>
+              <div><p className="eyebrow">FBA · 180+ DAYS · ESTIMATED EXCESS</p><h2 id="aged-inventory-audit-title">FBA 庫齡與預估冗餘健檢</h2></div>
+              <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 庫齡與預估冗餘健檢">×</button>
             </div>
             <AgedInventoryPanel marketplaceId={marketplaceId} />
           </aside>

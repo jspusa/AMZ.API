@@ -15,10 +15,13 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: resolve("src/preload/index.ts"),
+        input: {
+          index: resolve("src/preload/index.ts"),
+          credentialEditor: resolve("src/preload/credential-editor.ts"),
+        },
         output: {
           format: "cjs",
-          entryFileNames: "index.cjs",
+          entryFileNames: "[name].cjs",
         },
       },
     },

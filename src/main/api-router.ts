@@ -1,14 +1,21 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type {
+  AdvertisingConnectionTestResult,
   ApiRequest,
   ApiResponse,
   ConnectionTestResult,
   CredentialSummary,
 } from "../shared/contracts";
+import {
+  AdvertisingApiError,
+  type AdvertisingGateway,
+} from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import {
+  isBrandSalesIncompatibleJob,
   LocalStore,
+  type BrandSalesIncompatibleJobRecord,
   type BrandSalesJobRecord,
   type BrandSalesReportLeg,
   type ProductMasterState,
@@ -42,6 +49,8 @@ import { auditListingContentRows } from "./amazon/content-quality";
 import { auditListingImageRows } from "./amazon/image-audit";
 import {
   auditAdvertisingCoverage,
+  AdvertisingCoverageInputError,
+  prepareAdvertisingCoverageListings,
   type AdvertisingCoverageCampaign,
 } from "./amazon/advertising-coverage";
 import {
@@ -111,6 +120,17 @@ import {
   createListingsWorkbook,
   createUnboundVariationWorkbook,
 } from "./amazon/xlsx";
+import {
+  createAuditSuiteWorkbook,
+  type AdvertisingCoverageAuditRow,
+  type AuditSuiteWorkbookInput,
+  type ValidatedAuditSuiteSnapshot,
+} from "./amazon/audit-suite-xlsx";
+import {
+  AuditSuiteCoordinator,
+  AuditSuiteCoordinatorError,
+} from "./amazon/audit-suite-coordinator";
+import type { AuditSuiteContext } from "../shared/audit-suite";
 
 type WriteApproval = (reason: string) => Promise<void>;
 
@@ -194,6 +214,7 @@ async function waitMilliseconds(milliseconds: number): Promise<void> {
 }
 
 type ImageAuditSnapshot = ReturnType<typeof auditListingImageRows>;
+type AuditSuiteListingsData = Awaited<ReturnType<typeof getAllListingsExportData>>;
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): ApiResponse {
   return {
@@ -221,6 +242,9 @@ function bytes(
 }
 
 function apiError(error: unknown, fallback: string): ApiResponse {
+  if (error instanceof AuditSuiteCoordinatorError) {
+    return json({ code: error.code, message: error.message }, error.status);
+  }
   if (error instanceof SpApiError) {
     const status = error.status >= 400 && error.status < 600 ? error.status : 500;
     return json(
@@ -244,11 +268,136 @@ function apiError(error: unknown, fallback: string): ApiResponse {
         : 502;
     return json({ code: `REPLENISHMENT_${error.code}`, message: error.message }, status);
   }
+  if (error instanceof AdvertisingApiError) {
+    return json(
+      { code: error.code, message: error.message, requestId: error.requestId },
+      error.status >= 400 && error.status < 600 ? error.status : 502,
+    );
+  }
+  if (error instanceof AdvertisingCoverageInputError) {
+    return json({ code: error.code, message: error.message }, 422);
+  }
   return json({ code: "INTERNAL_ERROR", message: fallback }, 500);
 }
 
 function invalid(message: string, status = 400, code = "INVALID_INPUT"): ApiResponse {
   return json({ code, message }, status);
+}
+
+function suiteSnapshot<TPayload>(input: {
+  context: AuditSuiteContext;
+  status: "completed" | "partial";
+  fetchedAt: string;
+  notice: string;
+  payload: TPayload;
+}): ValidatedAuditSuiteSnapshot<TPayload> {
+  return {
+    ...input.context,
+    status: input.status,
+    fetchedAt: input.fetchedAt,
+    notice: input.notice,
+    payload: input.payload,
+  };
+}
+
+type AdvertisingAuditSuiteSource = Readonly<{
+  fetchedAt: string;
+  rows: readonly Readonly<{
+    sellerSku: string;
+    asin: string;
+    title: string;
+    readStatus: "complete" | "incomplete";
+    readErrors: readonly Readonly<{ message: string }>[];
+  }>[];
+  errors: readonly Readonly<{
+    sellerSku: string;
+    kind: string;
+    message: string;
+  }>[];
+}>;
+
+export function buildAdvertisingAuditSuiteResult(input: {
+  marketplaceId: MarketplaceId;
+  marketplaceCode: string;
+  source: AdvertisingAuditSuiteSource;
+  campaigns: AdvertisingCoverageCampaign[];
+}): Readonly<{
+  status: "completed" | "partial";
+  fetchedAt: string;
+  notice: string;
+  payload: readonly AdvertisingCoverageAuditRow[];
+}> {
+  const errorsBySku = new Map<string, string[]>();
+  for (const error of input.source.errors) {
+    if (!parseSellerSku(error.sellerSku)) {
+      throw new Error("廣告覆蓋的 FBA 商品錯誤缺少可核對 Seller SKU；此 section 已停止。");
+    }
+    const messages = errorsBySku.get(error.sellerSku) ?? [];
+    messages.push(`${error.kind}：${error.message}`);
+    errorsBySku.set(error.sellerSku, messages);
+  }
+  const verifiableRows = input.source.rows.filter((row) =>
+    /^[A-Z0-9]{10}$/u.test(row.asin) &&
+    row.readStatus === "complete" &&
+    !errorsBySku.has(row.sellerSku),
+  );
+  const incompleteBySku = new Map<string, AdvertisingCoverageAuditRow>(input.source.rows
+    .filter((row) => !verifiableRows.includes(row))
+    .map((row) => [row.sellerSku, {
+      sellerSku: row.sellerSku,
+      title: row.title,
+      asin: row.asin,
+      finding: "未完成",
+      evidence: [
+        ...row.readErrors.map((error) => error.message),
+        ...(errorsBySku.get(row.sellerSku) ?? []),
+      ].join("；") || "FBA 商品 ASIN／內容證據未完整。",
+      notice: "FBA 商品證據未完整，不判定為未覆蓋。",
+    }] as const));
+  for (const [sellerSku, messages] of errorsBySku) {
+    if (incompleteBySku.has(sellerSku)) continue;
+    incompleteBySku.set(sellerSku, {
+      sellerSku,
+      title: "",
+      asin: "",
+      finding: "未完成",
+      evidence: messages.join("；"),
+      notice: "FBA 商品資料錯誤未能對應完整 listing；不判定為未覆蓋。",
+    });
+  }
+  const audit = auditAdvertisingCoverage({
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    marketplaceCode: input.marketplaceCode,
+    listings: verifiableRows.map((row) => ({
+      sellerSku: row.sellerSku,
+      asin: row.asin,
+      title: row.title,
+    })),
+    campaigns: input.campaigns,
+    fetchedAt: input.source.fetchedAt,
+  });
+  const incompleteRows = [...incompleteBySku.values()];
+  return {
+    status: incompleteRows.length ? "partial" : "completed",
+    fetchedAt: audit.fetchedAt,
+    notice: incompleteRows.length
+      ? `${incompleteRows.length} 個 FBA SKU 無法安全判定廣告覆蓋；未當成 0。${audit.notice}`
+      : audit.notice,
+    payload: [
+      ...audit.rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        finding: row.covered ? "已有廣告覆蓋" : "未找到廣告覆蓋",
+        evidence: row.evidence
+          ? `${row.evidence.kind === "seller-sku" ? "同 SKU" : "同 ASIN"}：${row.evidence.campaignName}`
+          : "沒有符合 ProductAI 命名與站點規則的 ENABLED SP 活動",
+        notice: audit.rule,
+      })),
+      ...incompleteRows,
+    ],
+  };
 }
 
 function isPlainRecord(value: unknown): value is JsonRecord {
@@ -545,6 +694,12 @@ export class ApiRouter {
   private readonly vault: CredentialVault;
   private readonly approveWrite: WriteApproval;
   private readonly brandSalesReports: BrandSalesReportGateway;
+  private readonly advertising: AdvertisingGateway | null;
+  private readonly auditSuite: AuditSuiteCoordinator;
+  private readonly auditSuiteListingsFlights = new Map<
+    string,
+    Promise<{ reportId: string; documentId: string; data: AuditSuiteListingsData }>
+  >();
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly subscriptionAuditSnapshots = new Map<
     string,
@@ -590,6 +745,10 @@ export class ApiRouter {
   private readonly brandSalesDataFlights = new Map<string, Promise<ApiResponse>>();
   private readonly reviewAuditJobs = new Map<string, ReviewAuditJob>();
   private readonly reviewAuditPollFlights = new Map<string, Promise<ApiResponse>>();
+  private readonly reviewAuditRunnerTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private reviewAuditFeedbackQueue: Promise<void> = Promise.resolve();
   private reviewAuditFeedbackNextStartAt = 0;
 
@@ -598,10 +757,12 @@ export class ApiRouter {
     vault: CredentialVault;
     approveWrite: WriteApproval;
     brandSalesReports?: Partial<BrandSalesReportGateway>;
+    advertising?: AdvertisingGateway;
   }) {
     this.store = input.store;
     this.vault = input.vault;
     this.approveWrite = input.approveWrite;
+    this.advertising = input.advertising ?? null;
     this.brandSalesReports = {
       startListing: startAllListingsReport,
       startShipment: startFbaShipmentSalesReport,
@@ -611,6 +772,17 @@ export class ApiRouter {
       reportWindow: getBrandSalesReportWindow,
       ...input.brandSalesReports,
     };
+    this.auditSuite = new AuditSuiteCoordinator({
+      runners: {
+        subscription: (context) => this.runAuditSuiteSubscription(context),
+        inventory: (context) => this.runAuditSuiteInventory(context),
+        content: (context) => this.runAuditSuiteContent(context),
+        image: (context) => this.runAuditSuiteImage(context),
+        variation: (context) => this.runAuditSuiteVariation(context),
+        review: (context) => this.runAuditSuiteReview(context),
+        advertising: (context) => this.runAuditSuiteAdvertising(context),
+      },
+    });
   }
 
   clearPreviews(): void {
@@ -624,8 +796,12 @@ export class ApiRouter {
     this.allListingsReportStatusFlights.clear();
     this.brandSalesPollFlights.clear();
     this.brandSalesDataFlights.clear();
+    for (const timer of this.reviewAuditRunnerTimers.values()) clearTimeout(timer);
+    this.reviewAuditRunnerTimers.clear();
     this.reviewAuditJobs.clear();
     this.reviewAuditPollFlights.clear();
+    this.auditSuite.clear();
+    this.auditSuiteListingsFlights.clear();
     // Do not reset the Customer Feedback queue or its next slot. A credential
     // change must not let a new account overtake an already-started request or
     // bypass the App-session-wide one-request-per-second boundary.
@@ -798,6 +974,12 @@ export class ApiRouter {
         return this.adsStatus(request);
       case "GET /api/amazon-ads/coverage":
         return this.adsCoverage(request);
+      case "POST /api/sp-api/audit-suite":
+        return this.startAuditSuite(request);
+      case "GET /api/sp-api/audit-suite":
+        return this.auditSuiteStatus(request);
+      case "GET /api/sp-api/audit-suite/export":
+        return this.auditSuiteExport(request);
       default:
         return invalid("此 App 版本不支援這個操作。", 404, "NOT_FOUND");
     }
@@ -968,6 +1150,21 @@ export class ApiRouter {
     );
   }
 
+  private incompatibleBrandSalesRetryWait(
+    job: BrandSalesIncompatibleJobRecord,
+    now: number,
+  ): number {
+    const lastPossibleCreateAt = Math.max(
+      job.createdAt,
+      job.listing.createdAt ?? 0,
+      job.shipment.createdAt ?? 0,
+    );
+    return Math.max(
+      0,
+      lastPossibleCreateAt + BRAND_SALES_REUSE_WINDOW_MS - now,
+    );
+  }
+
   private brandSalesWaitReply(milliseconds: number): ApiResponse {
     const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
     return json(
@@ -1047,6 +1244,9 @@ export class ApiRouter {
             marketplaceId: job.marketplaceId as MarketplaceId,
             startDate: job.startDate,
             endDate: job.endDate,
+            dataStartTime: job.shipmentDataStartTime,
+            dataEndTime: job.shipmentDataEndTime,
+            windowCreatedAt: job.createdAt,
           });
       returnedStatus = status;
       if (
@@ -1559,6 +1759,7 @@ export class ApiRouter {
     const mode = usesDemoMode(input.marketplaceId) ? "demo" : "live";
     this.pruneBrandSalesJobs(now);
     let stored = await this.store.getBrandSalesJob(input);
+    let incompatibleToReplace: BrandSalesIncompatibleJobRecord | null = null;
     if (stored && stored.mode !== mode) {
       if (stored.mode === "demo" && mode === "live") {
         await this.store.deleteBrandSalesJob(stored.jobId);
@@ -1571,6 +1772,19 @@ export class ApiRouter {
           "REPORT_MODE_CHANGED",
         );
       }
+    }
+    if (stored && isBrandSalesIncompatibleJob(stored)) {
+      if (!input.retry) {
+        return invalid(
+          "上次品牌營收工作缺少新版不可變時間窗；已保留 Amazon 報表識別，不會自動重建。請明確重試。",
+          409,
+          "BRAND_REPORT_WINDOW_INCOMPATIBLE",
+        );
+      }
+      const wait = this.incompatibleBrandSalesRetryWait(stored, now);
+      if (wait > 0) return this.brandSalesWaitReply(wait);
+      incompatibleToReplace = stored;
+      stored = null;
     }
     if (
       stored &&
@@ -1642,7 +1856,12 @@ export class ApiRouter {
     }
 
     if (!job) {
-      const window = this.brandSalesReports.reportWindow(input);
+      const window = this.brandSalesReports.reportWindow({
+        marketplaceId: input.marketplaceId,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        now: new Date(now),
+      });
       const emptyLeg = (): BrandSalesReportLeg => ({
         reportId: null,
         documentId: null,
@@ -1666,7 +1885,12 @@ export class ApiRouter {
         updatedAt: now,
         expiresAt: now + BRAND_SALES_JOB_RETENTION_MS,
       };
-      const claimed = await this.store.createBrandSalesJobIfAbsent(candidate, now);
+      const claimed = incompatibleToReplace
+        ? await this.store.replaceIncompatibleBrandSalesJob({
+            expectedJobId: incompatibleToReplace.jobId,
+            replacement: candidate,
+          })
+        : await this.store.createBrandSalesJobIfAbsent(candidate, now);
       job = this.brandSalesRuntimeJob(claimed.job);
       if (!claimed.created) {
         return this.startBrandSalesSelection(input);
@@ -1733,7 +1957,9 @@ export class ApiRouter {
     const cached = this.brandSalesJobs.get(jobId);
     if (cached) return cached;
     const stored = await this.store.getBrandSalesJobById(jobId);
-    return stored ? this.brandSalesRuntimeJob(stored) : null;
+    return stored && !isBrandSalesIncompatibleJob(stored)
+      ? this.brandSalesRuntimeJob(stored)
+      : null;
   }
 
   private async markBrandSalesPollFailure(
@@ -1823,6 +2049,7 @@ export class ApiRouter {
             endDate: job.endDate,
             dataStartTime: job.shipmentDataStartTime,
             dataEndTime: job.shipmentDataEndTime,
+            windowCreatedAt: job.createdAt,
           });
           if (shipment.mode !== job.mode) {
             throw new SpApiError("品牌營收報表模式與本機紀錄不一致。", {
@@ -1908,6 +2135,7 @@ export class ApiRouter {
           shipmentDocumentId: job.shipment.documentId,
           shipmentDataStartTime: job.shipmentDataStartTime,
           shipmentDataEndTime: job.shipmentDataEndTime,
+          windowCreatedAt: job.createdAt,
         });
       }
       return json(structuredClone(job.snapshot));
@@ -2123,12 +2351,14 @@ export class ApiRouter {
           rows: stored.snapshot.rows,
           incompleteRows: stored.snapshot.incompleteRows,
         });
-        const filename = `amazon-fba-unbound-variation-audit-${marketplace.shortLabel.toLowerCase()}-${stored.snapshot.fetchedAt.slice(0, 10)}.xlsx`;
+        const date = stored.snapshot.fetchedAt.slice(0, 10);
+        const filename = `amazon-fba-unbound-variation-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
+        const localizedFilename = `FBA-未綁變體健檢-${marketplace.shortLabel}-${date}.xlsx`;
         return bytes(
           workbook,
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           {
-            "content-disposition": `attachment; filename="${filename}"`,
+            "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(localizedFilename)}`,
             "x-exported-unbound-fba-sku-count": String(stored.snapshot.rows.length),
             "x-exported-incomplete-sku-count": String(
               stored.snapshot.incompleteRows.length,
@@ -3137,7 +3367,68 @@ export class ApiRouter {
 
   private pruneReviewAuditJobs(now = Date.now()): void {
     for (const [jobId, job] of this.reviewAuditJobs) {
-      if (job.expiresAt <= now) this.reviewAuditJobs.delete(jobId);
+      if (job.expiresAt <= now) this.deleteReviewAuditJob(jobId);
+    }
+  }
+
+  private deleteReviewAuditJob(jobId: string): void {
+    const timer = this.reviewAuditRunnerTimers.get(jobId);
+    if (timer) clearTimeout(timer);
+    this.reviewAuditRunnerTimers.delete(jobId);
+    this.reviewAuditJobs.delete(jobId);
+  }
+
+  private reviewAuditFlight(
+    jobId: string,
+    job: ReviewAuditJob,
+  ): Promise<ApiResponse> {
+    let flight = this.reviewAuditPollFlights.get(jobId);
+    if (!flight) {
+      flight = this.advanceReviewAuditJob(jobId, job).finally(() => {
+        if (this.reviewAuditPollFlights.get(jobId) === flight) {
+          this.reviewAuditPollFlights.delete(jobId);
+        }
+      });
+      this.reviewAuditPollFlights.set(jobId, flight);
+    }
+    return flight;
+  }
+
+  private scheduleReviewAuditRunner(jobId: string, delay = 25): void {
+    if (
+      this.reviewAuditRunnerTimers.has(jobId) ||
+      !this.reviewAuditJobs.has(jobId)
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.reviewAuditRunnerTimers.delete(jobId);
+      void this.runReviewAuditBackground(jobId);
+    }, Math.max(0, delay));
+    timer.unref?.();
+    this.reviewAuditRunnerTimers.set(jobId, timer);
+  }
+
+  private async runReviewAuditBackground(jobId: string): Promise<void> {
+    this.pruneReviewAuditJobs();
+    const job = this.reviewAuditJobs.get(jobId);
+    if (!job || job.snapshot) return;
+    try {
+      const response = await this.reviewAuditFlight(jobId, job);
+      if (
+        response.status >= 400 ||
+        job.snapshot ||
+        this.reviewAuditJobs.get(jobId) !== job
+      ) {
+        return;
+      }
+      const paceDelay = job.candidates
+        ? Math.max(25, job.nextQueryAt - Date.now())
+        : 1_150;
+      this.scheduleReviewAuditRunner(jobId, paceDelay);
+    } catch {
+      // A later explicit status read can surface the same fail-closed error.
+      // Do not auto-restart reports or retry a failed Customer Feedback call.
     }
   }
 
@@ -3218,7 +3509,7 @@ export class ApiRouter {
   ): ApiResponse | null {
     const mode = usesDemoMode(job.marketplaceId) ? "demo" : "live";
     if (mode === job.mode) return null;
-    this.reviewAuditJobs.delete(jobId);
+    this.deleteReviewAuditJob(jobId);
     return invalid(
       "App 展示／真實模式已改變，舊評論健檢不可繼續或匯出。",
       409,
@@ -3271,6 +3562,7 @@ export class ApiRouter {
       };
       this.pruneReviewAuditJobs();
       this.reviewAuditJobs.set(jobId, job);
+      this.scheduleReviewAuditRunner(jobId);
       return this.reviewAuditJobReply(jobId, job);
     } catch (error) {
       return apiError(error, "開始 FBA 評論主題健檢時發生未預期的錯誤。");
@@ -3294,16 +3586,7 @@ export class ApiRouter {
     }
     const modeError = this.reviewAuditModeFence(jobId, job);
     if (modeError) return modeError;
-    let flight = this.reviewAuditPollFlights.get(jobId);
-    if (!flight) {
-      flight = this.advanceReviewAuditJob(jobId, job).finally(() => {
-        if (this.reviewAuditPollFlights.get(jobId) === flight) {
-          this.reviewAuditPollFlights.delete(jobId);
-        }
-      });
-      this.reviewAuditPollFlights.set(jobId, flight);
-    }
-    return flight;
+    return this.reviewAuditFlight(jobId, job);
   }
 
   private async advanceReviewAuditJob(
@@ -3317,7 +3600,7 @@ export class ApiRouter {
       MARKETPLACES[marketplaceId].region,
     );
     if (accountScope !== job.accountScope) {
-      this.reviewAuditJobs.delete(jobId);
+      this.deleteReviewAuditJob(jobId);
       return invalid(
         "Amazon 帳號範圍已改變，舊評論健檢不可繼續。",
         409,
@@ -3456,7 +3739,7 @@ export class ApiRouter {
       MARKETPLACES[marketplaceId].region,
     );
     if (accountScope !== job.accountScope) {
-      this.reviewAuditJobs.delete(exportId);
+      this.deleteReviewAuditJob(exportId);
       return invalid(
         "Amazon 帳號範圍已改變，舊評論健檢不可匯出。",
         409,
@@ -4079,8 +4362,11 @@ export class ApiRouter {
         fetchedAt: snapshot.fetchedAt,
         rows: snapshot.rows,
         excessAvailability: snapshot.summary.excessAvailability,
+        excessReportedSkuCount: snapshot.summary.excessReportedSkuCount,
         storageCostAvailability: snapshot.summary.storageCostAvailability,
+        storageCostReportedSkuCount: snapshot.summary.storageCostReportedSkuCount,
         agedSurchargeAvailability: snapshot.summary.agedSurchargeAvailability,
+        agedSurchargeReportedSkuCount: snapshot.summary.agedSurchargeReportedSkuCount,
         expirationNotice: snapshot.expiration.notice,
       });
       const date = snapshot.fetchedAt.slice(0, 10);
@@ -4390,35 +4676,490 @@ export class ApiRouter {
     });
   }
 
+  private auditSuiteRequestIdentity(request: ApiRequest): {
+    marketplaceId: MarketplaceId;
+    runId: string;
+    contextId: string;
+  } | null {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const runId = this.reportIdentifier(request.query.runId);
+    const contextId = this.reportIdentifier(request.query.contextId);
+    return marketplaceId && runId && contextId
+      ? { marketplaceId, runId, contextId }
+      : null;
+  }
+
+  private async currentAuditSuiteContext(marketplaceId: MarketplaceId): Promise<{
+    accountScope: string;
+    mode: "live" | "demo";
+  }> {
+    return {
+      accountScope: await this.vault.getAccountScope(MARKETPLACES[marketplaceId].region),
+      mode: usesDemoMode(marketplaceId) ? "demo" : "live",
+    };
+  }
+
+  private async startAuditSuite(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (!body || Object.keys(body).length !== 1 || !("marketplaceId" in body)) {
+      return invalid("綜合健檢只接受 marketplaceId；帳號、模式與快照由 main process 綁定。");
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    if (!marketplaceId) return invalid("請選擇支援的 Amazon 站點。");
+    const context = await this.currentAuditSuiteContext(marketplaceId);
+    const started = this.auditSuite.start({ marketplaceId, ...context });
+    return json(started.run, 202, { "retry-after": "1" });
+  }
+
+  private async auditSuiteStatus(request: ApiRequest): Promise<ApiResponse> {
+    const identity = this.auditSuiteRequestIdentity(request);
+    if (!identity) return invalid("綜合健檢工作資訊無效。");
+    const context = await this.currentAuditSuiteContext(identity.marketplaceId);
+    return json(this.auditSuite.get({ ...identity, ...context }));
+  }
+
+  private async auditSuiteExport(request: ApiRequest): Promise<ApiResponse> {
+    const identity = this.auditSuiteRequestIdentity(request);
+    if (!identity) return invalid("綜合健檢 Excel 工作資訊無效。");
+    const context = await this.currentAuditSuiteContext(identity.marketplaceId);
+    const marketplace = MARKETPLACES[identity.marketplaceId];
+    const input = this.auditSuite.workbookInput({
+      ...identity,
+      ...context,
+      marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
+    });
+    const workbook = createAuditSuiteWorkbook(input);
+    const filename = `amazon-fba-audit-suite-${marketplace.shortLabel.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    return bytes(
+      workbook,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      { "content-disposition": `attachment; filename="${filename}"` },
+    );
+  }
+
+  private async assertAuditSuiteContext(context: AuditSuiteContext): Promise<void> {
+    const current = await this.currentAuditSuiteContext(context.marketplaceId as MarketplaceId);
+    if (current.accountScope !== context.accountScope) {
+      throw new Error("Amazon 帳號範圍已改變，本次綜合健檢已停止。");
+    }
+    if (current.mode !== context.mode) {
+      throw new Error("App 展示／真實模式已改變，本次綜合健檢已停止。");
+    }
+  }
+
+  private auditSuiteListings(context: AuditSuiteContext): Promise<{
+    reportId: string;
+    documentId: string;
+    data: AuditSuiteListingsData;
+  }> {
+    let flight = this.auditSuiteListingsFlights.get(context.runId);
+    if (flight) return flight;
+    flight = (async () => {
+      const marketplaceId = context.marketplaceId as MarketplaceId;
+      await this.assertAuditSuiteContext(context);
+      let status = await this.startSharedAllListingsReport(marketplaceId, true);
+      for (let attempt = 0; !status.ready && attempt < 180; attempt += 1) {
+        if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
+          throw new Error("Amazon 未能產生本次共用 FBA 全商品報表。");
+        }
+        await waitMilliseconds(1_000);
+        status = await this.getSharedAllListingsReportStatus({
+          marketplaceId,
+          reportId: status.reportId,
+        });
+      }
+      if (!status.ready || !status.reportId || !status.documentId) {
+        throw new Error("Amazon FBA 全商品報表等待逾時；未建立假快照。");
+      }
+      if (status.mode !== context.mode) {
+        throw new Error("FBA 全商品報表與綜合健檢模式不一致。");
+      }
+      const data = await getAllListingsExportData({
+        marketplaceId,
+        reportId: status.reportId,
+        documentId: status.documentId,
+      });
+      await this.assertAuditSuiteContext(context);
+      return { reportId: status.reportId, documentId: status.documentId, data };
+    })().finally(() => {
+      // Keep the verified result promise for every listing-derived section in
+      // this run. clearPreviews removes it on credentials/lifecycle changes.
+    });
+    this.auditSuiteListingsFlights.set(context.runId, flight);
+    return flight;
+  }
+
+  private async runAuditSuiteSubscription(context: AuditSuiteContext) {
+    const marketplaceId = context.marketplaceId as MarketplaceId;
+    await this.assertAuditSuiteContext(context);
+    const snapshot = await getFbaSubscriptionAudit({ marketplaceId, months: 6 });
+    await this.assertAuditSuiteContext(context);
+    if (snapshot.mode !== context.mode || snapshot.marketplaceId !== marketplaceId) {
+      throw new Error("訂閱健檢快照與本次綜合健檢 context 不一致。");
+    }
+    const rows: NonNullable<AuditSuiteWorkbookInput["sections"]["subscription"]>["payload"] = [
+      ...snapshot.offers.map((offer) => {
+        const bucket = subscriptionAuditDiscountBucket(offer.sellerFundedBaseDiscount);
+        const anomaly = offer.sellerFundedBaseDiscount === null
+          ? "Amazon 未回傳 Seller 基礎折扣"
+          : bucket === null
+            ? `非標準 Seller 基礎折扣 ${offer.sellerFundedBaseDiscount}%`
+            : `${bucket}% Seller 基礎折扣組`;
+        return {
+          sellerSku: offer.sellerSku,
+          title: "",
+          asin: offer.asin,
+          anomaly,
+          sellerFundedBaseDiscountPercent: offer.sellerFundedBaseDiscount,
+          currentActiveSubscriptions: offer.currentActiveSubscriptions,
+          currentPrice: offer.price.amount,
+          notice: snapshot.notice,
+        };
+      }),
+      ...snapshot.excluded.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: "",
+        asin: "",
+        anomaly: `未納入：${row.reason}`,
+        sellerFundedBaseDiscountPercent: null,
+        currentActiveSubscriptions: null,
+        currentPrice: null,
+        notice: "此 Seller SKU 未取得同次完整 FBA 證據，未冒充訂閱健檢結果。",
+      })),
+    ];
+    const partial = snapshot.inventoryEvidence.coverage !== "complete" ||
+      snapshot.upstreamCoverage.status !== "complete" ||
+      snapshot.summary.revenueCoverage.status !== "complete";
+    return suiteSnapshot({
+      context,
+      status: partial ? "partial" : "completed",
+      fetchedAt: snapshot.fetchedAt,
+      notice: partial ? `訂閱資料範圍未完整。${snapshot.notice}` : snapshot.notice,
+      payload: rows,
+    });
+  }
+
+  private async runAuditSuiteInventory(context: AuditSuiteContext) {
+    const marketplaceId = context.marketplaceId as MarketplaceId;
+    await this.assertAuditSuiteContext(context);
+    let report = await startAgedInventoryReport({ marketplaceId });
+    for (let attempt = 0; !report.ready && attempt < 180; attempt += 1) {
+      if (report.status !== "IN_QUEUE" && report.status !== "IN_PROGRESS") {
+        throw new Error("Amazon 未能產生 FBA 庫齡報表。");
+      }
+      await waitMilliseconds(1_000);
+      report = await getAgedInventoryReportStatus({ marketplaceId, reportId: report.reportId });
+    }
+    if (!report.ready || !report.documentId || report.mode !== context.mode) {
+      throw new Error("FBA 庫齡報表尚未完成或模式不一致。");
+    }
+    const snapshot = await getAgedInventoryData({
+      marketplaceId,
+      reportId: report.reportId,
+      documentId: report.documentId,
+    });
+    await this.assertAuditSuiteContext(context);
+    if (snapshot.mode !== context.mode || snapshot.marketplaceId !== marketplaceId) {
+      throw new Error("庫齡快照與本次綜合健檢 context 不一致。");
+    }
+    const over180Rows = snapshot.rows.flatMap((row) => row.ageBuckets
+      .filter((bucket) => bucket.over180 && bucket.units > 0)
+      .map((bucket) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        ageBucket: bucket.label,
+        quantity: bucket.units,
+        notice: row.alert || snapshot.notice,
+      })));
+    const estimatedExcessRows = snapshot.rows
+      .filter((row) => row.estimatedExcessQuantity !== null && row.estimatedExcessQuantity > 0)
+      .map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        estimatedExcessQuantity: row.estimatedExcessQuantity,
+        daysOfSupply: row.daysOfSupply,
+        recommendedAction: row.recommendedAction,
+        notice: row.alert || snapshot.notice,
+      }));
+    const partial = snapshot.summary.excessAvailability !== "complete";
+    return suiteSnapshot({
+      context,
+      status: partial ? "partial" : "completed",
+      fetchedAt: snapshot.fetchedAt,
+      notice: partial
+        ? `Amazon 預估冗餘欄位覆蓋為 ${snapshot.summary.excessAvailability}；未知未補 0。${snapshot.notice}`
+        : snapshot.notice,
+      payload: { over180Rows, estimatedExcessRows },
+    });
+  }
+
+  private async runAuditSuiteContent(context: AuditSuiteContext) {
+    const { data } = await this.auditSuiteListings(context);
+    const audit = auditListingContentRows({
+      marketplaceId: context.marketplaceId,
+      fetchedAt: data.fetchedAt,
+      rows: data.rows,
+    });
+    const fieldLabel = { title: "商品標題", bulletPoints: "賣點", ingredients: "成分" } as const;
+    const rows = audit.rows.flatMap((row) => row.issues.map((issue) => ({
+      sellerSku: row.sellerSku,
+      title: row.title,
+      asin: row.asin,
+      problemType: issue.kind === "SUSPECTED_TYPO" ? "疑似錯字" : issue.message,
+      field: fieldLabel[issue.field],
+      originalText: issue.field === "title"
+        ? row.title
+        : issue.field === "bulletPoints"
+          ? row.bulletPoints.join("\n")
+          : row.ingredients,
+      description: issue.suggestion ? `${issue.message} 建議：${issue.suggestion}` : issue.message,
+    })));
+    const scopeNotice = audit.summary.incomplete
+      ? `另有 ${audit.summary.incomplete} 個 SKU 文案讀取未完成；未知不視為無問題。`
+      : "Amazon 基礎文案欄位已完成讀取。";
+    return suiteSnapshot({
+      context,
+      status: "partial",
+      fetchedAt: audit.fetchedAt,
+      notice: `${scopeNotice} Mac 字典錯字結果需個別文案健檢補充`,
+      payload: rows,
+    });
+  }
+
+  private async runAuditSuiteImage(context: AuditSuiteContext) {
+    const { data } = await this.auditSuiteListings(context);
+    const audit = auditListingImageRows({
+      marketplaceId: context.marketplaceId,
+      fetchedAt: data.fetchedAt,
+      rows: data.rows,
+      minimumImages: 5,
+    });
+    const rows = audit.rows
+      .filter((row) => row.readStatus === "incomplete" || row.imageCount < audit.minimumImages)
+      .map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        imageCount: row.readStatus === "complete" ? row.imageCount : null,
+        finding: row.readStatus === "complete" ? `少於 ${audit.minimumImages} 張` : "讀取未完成",
+        notice: row.readErrors.map((error) => error.message).join("；") ||
+          `已核對圖片 ${row.imageCount} 張。`,
+      }));
+    return suiteSnapshot({
+      context,
+      status: audit.summary.incomplete ? "partial" : "completed",
+      fetchedAt: audit.fetchedAt,
+      notice: audit.summary.incomplete
+        ? `${audit.summary.incomplete} 個 SKU 圖片讀取未完成；圖片數保持未知。`
+        : `已核對 ${audit.summary.total} 個 FBA SKU 的圖片數。`,
+      payload: rows,
+    });
+  }
+
+  private async runAuditSuiteVariation(context: AuditSuiteContext) {
+    const marketplaceId = context.marketplaceId as MarketplaceId;
+    const listing = await this.auditSuiteListings(context);
+    const snapshot = await getUnboundVariationAuditData({
+      marketplaceId,
+      reportId: listing.reportId,
+      documentId: listing.documentId,
+    });
+    await this.assertAuditSuiteContext(context);
+    if (snapshot.mode !== context.mode || snapshot.marketplaceId !== marketplaceId) {
+      throw new Error("未綁變體快照與本次綜合健檢 context 不一致。");
+    }
+    return suiteSnapshot({
+      context,
+      status: snapshot.incompleteRows.length ? "partial" : "completed",
+      fetchedAt: snapshot.fetchedAt,
+      notice: snapshot.incompleteRows.length
+        ? `${snapshot.incompleteRows.length} 個 SKU relationships 無法安全判定；只列已驗證未綁變體。${snapshot.notice}`
+        : snapshot.notice,
+      payload: snapshot.rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        productType: row.productType,
+        notice: row.notice,
+      })),
+    });
+  }
+
+  private async runAuditSuiteReview(context: AuditSuiteContext) {
+    const marketplaceId = context.marketplaceId as MarketplaceId;
+    if (!customerFeedbackMarketplaceSupported(marketplaceId)) {
+      throw new Error("Amazon Customer Feedback API 不支援此站點；未改用 parent 或私有資料。");
+    }
+    const listing = await this.auditSuiteListings(context);
+    const reviewJobId = `suite-review-${context.runId}`;
+    const job: ReviewAuditJob = {
+      marketplaceId,
+      accountScope: context.accountScope,
+      expiresAt: Date.now() + REVIEW_AUDIT_JOB_TTL_MS,
+      mode: context.mode,
+      listingReportId: listing.reportId,
+      listingDocumentId: listing.documentId,
+      listingStatus: "DONE",
+      candidates: null,
+      sourceCandidateCount: 0,
+      candidateCoverage: null,
+      relationshipIncompleteRows: [],
+      results: [],
+      nextCandidateIndex: 0,
+      nextQueryAt: 0,
+      snapshot: null,
+    };
+    this.reviewAuditJobs.set(reviewJobId, job);
+    try {
+      for (let attempt = 0; !job.snapshot && attempt < 2_000; attempt += 1) {
+        const response = await this.reviewAuditFlight(reviewJobId, job);
+        if (response.status >= 400) {
+          const value = response.body.kind === "json" && isPlainRecord(response.body.value)
+            ? response.body.value
+            : null;
+          throw new Error(typeof value?.message === "string"
+            ? value.message
+            : "評論主題健檢未完成。");
+        }
+        if (!job.snapshot) {
+          await waitMilliseconds(Math.max(25, job.nextQueryAt - Date.now()));
+        }
+      }
+      if (!job.snapshot) throw new Error("評論主題健檢等待逾時；未建立假快照。");
+      const snapshot = job.snapshot;
+      const resultRows = snapshot.rows.flatMap((row) => row.sellerSkus.flatMap((sellerSku) => [
+        ...row.positiveTopics.map((topic) => ({
+          sellerSku,
+          title: row.title,
+          asin: row.asin,
+          topic: topic.topic,
+          sentiment: "正向" as const,
+          starRatingImpact: topic.starRatingImpact,
+          mentions: topic.numberOfMentions,
+          occurrencePercent: topic.occurrencePercentage,
+          notice: "Amazon Customer Feedback 非 parent ASIN 主題證據。",
+        })),
+        ...row.negativeTopics.map((topic) => ({
+          sellerSku,
+          title: row.title,
+          asin: row.asin,
+          topic: topic.topic,
+          sentiment: "負向" as const,
+          starRatingImpact: topic.starRatingImpact,
+          mentions: topic.numberOfMentions,
+          occurrencePercent: topic.occurrencePercentage,
+          notice: "Amazon Customer Feedback 非 parent ASIN 主題證據。",
+        })),
+      ]));
+      const incompleteRows = [
+        ...snapshot.relationshipIncompleteRows.map((row) => ({
+          sellerSku: row.sellerSku,
+          title: row.title,
+          asin: row.asin,
+          code: row.code,
+          message: row.message,
+        })),
+        ...snapshot.rows.flatMap((row) => row.status === "INCOMPLETE" && row.incompleteReason
+          ? row.sellerSkus.map((sellerSku) => ({
+              sellerSku,
+              title: row.title,
+              asin: row.asin,
+              code: row.incompleteReason!.code,
+              message: row.incompleteReason!.message,
+            }))
+          : []),
+      ];
+      return suiteSnapshot({
+        context,
+        status: snapshot.summary.totalIncomplete ? "partial" : "completed",
+        fetchedAt: snapshot.fetchedAt,
+        notice: snapshot.summary.totalIncomplete
+          ? `${snapshot.summary.totalIncomplete} 個非 parent FBA 項目未完成；其餘結果可核對。`
+          : snapshot.notice,
+        payload: { resultRows, incompleteRows },
+      });
+    } finally {
+      this.deleteReviewAuditJob(reviewJobId);
+    }
+  }
+
+  private async runAuditSuiteAdvertising(context: AuditSuiteContext) {
+    const marketplaceId = context.marketplaceId as MarketplaceId;
+    if (context.mode !== "live") {
+      throw new Error("廣告覆蓋需已驗證的真實 Amazon Ads 連線；綜合健檢不以 demo 活動冒充結果。");
+    }
+    if (!this.advertising) {
+      throw new Error("Amazon Ads API 尚未連線；未用 demo 或 0 冒充廣告覆蓋。");
+    }
+    const summary = await this.advertising.getCredentialSummary();
+    if (!summary.configured) {
+      throw new Error("Amazon Ads 憑證尚未完整設定；廣告覆蓋未執行。");
+    }
+    const verification = await this.advertising.probeMarketplace(marketplaceId);
+    if (!verification.ok) {
+      throw new Error(verification.message || "Amazon Ads 站點無法完成唯讀驗證。");
+    }
+    const listing = await this.auditSuiteListings(context);
+    const campaigns = await this.advertising.listEnabledSponsoredProductCampaigns(marketplaceId);
+    await this.assertAuditSuiteContext(context);
+    const result = buildAdvertisingAuditSuiteResult({
+      marketplaceId,
+      marketplaceCode: MARKETPLACE_CODES[marketplaceId],
+      source: listing.data,
+      campaigns,
+    });
+    return suiteSnapshot({
+      context,
+      ...result,
+    });
+  }
+
   private async adsStatus(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
-    const coverageAuditAvailable =
-      process.env.SP_API_MODE?.toLowerCase() === "demo";
+    const demo = usesDemoMode(marketplaceId);
+    const summary = demo || !this.advertising
+      ? null
+      : await this.advertising.getCredentialSummary();
+    let verification: AdvertisingConnectionTestResult | null = null;
+    if (!demo && summary?.configured && this.advertising) {
+      verification = await this.advertising.probeMarketplace(marketplaceId);
+    }
+    const coverageAuditAvailable = demo || Boolean(verification?.ok);
     return json({
       marketplaceId,
       marketplaceCode: MARKETPLACE_CODES[marketplaceId],
-      configured: false,
-      verified: false,
-      lwaConfigured: false,
-      profileConfigured: false,
+      configured: Boolean(summary?.configured),
+      verified: Boolean(verification?.ok),
+      lwaConfigured: Boolean(summary?.lwaConfigured),
+      profileConfigured: Boolean(verification?.ok),
       writeEnabled: false,
       scope: "advertising::campaign_management",
-      supportedProducts: ["SPONSORED_BRANDS", "SPONSORED_DISPLAY"],
+      requiredPermission: "Campaign manager Viewer",
+      permissionVerified: false,
+      supportedProducts: ["SPONSORED_PRODUCTS"],
       separateFromSpApi: true,
+      testedAt: verification?.testedAt ?? null,
+      requestId: verification?.requestId ?? null,
       coverageAuditAvailable,
       coverageAuditNotice: coverageAuditAvailable
-        ? "目前是展示模式，可驗證 ProductAI 命名與同 ASIN 覆蓋規則；結果不是你的真實 Amazon Ads 資料。"
-        : "廣告覆蓋引擎已完成，但 Amazon Ads API 尚未連線；目前不會用展示結果冒充真實覆蓋。",
-      notice:
-        "Amazon Ads 需要獨立申請與授權，不能沿用 SP-API。這個極簡版保留狀態檢查與一鍵開啟官方 Ads Console；SP 繼續由 Helium 10 管理。",
+        ? demo
+          ? "目前是展示模式，可驗證 ProductAI 命名與同 ASIN 覆蓋規則；結果不是你的真實 Amazon Ads 資料。"
+          : "已用這個站點自動找到的 Seller Profile 驗證唯讀 Campaign 查詢。"
+        : verification?.message ?? "Amazon Ads API 尚未完成獨立授權；不會用展示結果冒充真實覆蓋。",
+      notice: demo
+        ? "展示模式不會呼叫 Amazon Ads。"
+        : verification?.message ?? "Amazon Ads 需要獨立 LWA App；Profile ID 由主程式自動發現，不需要輸入。",
     });
   }
 
   private async adsCoverage(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
-    if (process.env.SP_API_MODE?.toLowerCase() !== "demo") {
+    const demo = usesDemoMode(marketplaceId);
+    if (!demo && !this.advertising) {
       return invalid(
         "Amazon Ads API 尚未連線；廣告覆蓋健檢已備妥，但不會用展示活動冒充真實資料。",
         422,
@@ -4426,30 +5167,70 @@ export class ApiRouter {
       );
     }
     try {
-      const reference = `demo-${marketplaceId}`;
+      let reportId: string;
+      let documentId: string;
+      if (demo) {
+        reportId = `demo-${marketplaceId}`;
+        documentId = reportId;
+      } else {
+        const summary = await this.advertising!.getCredentialSummary();
+        if (!summary.configured) {
+          return invalid(
+            "Amazon Ads 憑證尚未完整設定。",
+            422,
+            "ADS_API_NOT_CONNECTED",
+          );
+        }
+        let status = await this.startSharedAllListingsReport(marketplaceId, true);
+        if (!status.ready && status.reportId) {
+          status = await this.getSharedAllListingsReportStatus({
+            marketplaceId,
+            reportId: status.reportId,
+          });
+        }
+        if (status.mode !== "live") {
+          return invalid(
+            "全商品報表模式與 Ads 真實健檢不一致。",
+            409,
+            "REPORT_MODE_CHANGED",
+          );
+        }
+        if (!status.ready || !status.reportId || !status.documentId) {
+          return json(
+            {
+              state: "processing",
+              marketplaceId,
+              message: "Amazon 正在準備 FBA 全商品清單，稍後會自動繼續。",
+            },
+            202,
+            { "retry-after": "2" },
+          );
+        }
+        reportId = status.reportId;
+        documentId = status.documentId;
+      }
       const data = await getAllListingsExportData({
         marketplaceId,
-        reportId: reference,
-        documentId: reference,
+        reportId,
+        documentId,
       });
-      const listings = data.rows
-        .filter((row) => /^[A-Z0-9]{10}$/u.test(row.asin))
-        .map((row) => ({
-          sellerSku: row.sellerSku,
-          asin: row.asin,
-          title: row.title,
-        }));
-      const campaigns: AdvertisingCoverageCampaign[] = listings
-        .filter((_, index) => index % 2 === 0)
-        .map((listing, index) => ({
-          campaignId: `demo-productai-${index + 1}`,
-          name: `[ProductAI] ${MARKETPLACE_CODES[marketplaceId]}-${listing.asin}-${listing.sellerSku}-SP-PAT-Aug92026`,
-          state: "ENABLED",
-          adProduct: "SPONSORED_PRODUCTS",
-        }));
+      const listings = prepareAdvertisingCoverageListings({
+        rows: data.rows,
+        errors: data.errors,
+      });
+      const campaigns: AdvertisingCoverageCampaign[] = demo
+        ? listings
+            .filter((_, index) => index % 2 === 0)
+            .map((listing, index) => ({
+              campaignId: `demo-productai-${index + 1}`,
+              name: `[ProductAI] ${MARKETPLACE_CODES[marketplaceId]}-${listing.asin}-${listing.sellerSku}-SP-PAT-Aug92026`,
+              state: "ENABLED",
+              adProduct: "SPONSORED_PRODUCTS",
+            }))
+        : await this.advertising!.listEnabledSponsoredProductCampaigns(marketplaceId);
       return json(
         auditAdvertisingCoverage({
-          mode: "demo",
+          mode: demo ? "demo" : "live",
           marketplaceId,
           marketplaceCode: MARKETPLACE_CODES[marketplaceId],
           listings,
@@ -4457,7 +5238,7 @@ export class ApiRouter {
         }),
       );
     } catch (error) {
-      return apiError(error, "執行展示廣告覆蓋健檢時發生未預期的錯誤。");
+      return apiError(error, "執行 Amazon Ads 覆蓋健檢時發生未預期錯誤。");
     }
   }
 
