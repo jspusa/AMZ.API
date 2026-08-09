@@ -1,7 +1,10 @@
 "use client";
 
 import { useId, useState } from "react";
-import type { BrandSalesSegment, BrandSalesSnapshot } from "../brand-sales";
+import type {
+  BrandSalesSnapshot,
+  RevenueShareSegment,
+} from "../brand-sales";
 import type { BrandSalesFailure } from "./brand-sales-card";
 
 const PIE_CENTER = 60;
@@ -41,9 +44,9 @@ export function brandSalesPiePath(start: number, share: number): string {
   ].join(" ");
 }
 
-export function sortBrandSalesSegments(
-  segments: readonly BrandSalesSegment[],
-): BrandSalesSegment[] {
+export function sortBrandSalesSegments<T extends RevenueShareSegment>(
+  segments: readonly T[],
+): T[] {
   return segments
     .map((segment, index) => ({ segment, index }))
     .sort((left, right) =>
@@ -70,16 +73,23 @@ export default function BrandSalesChart({
   error,
   rangeLabel,
   onRetry,
+  initialView = "brand",
 }: {
   snapshot: BrandSalesSnapshot | null;
   loading: boolean;
   error: BrandSalesFailure | null;
   rangeLabel: string;
   onRetry: () => void;
+  initialView?: "brand" | "category";
 }) {
   const titleId = useId();
+  const [view, setView] = useState<"brand" | "category">(initialView);
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  const sortedSegments = snapshot ? sortBrandSalesSegments(snapshot.segments) : [];
+  const sortedSegments = snapshot
+    ? sortBrandSalesSegments<RevenueShareSegment>(
+        view === "brand" ? snapshot.segments : snapshot.categorySegments,
+      )
+    : [];
   const positive = sortedSegments.filter((segment) => segment.amount > 0);
   const total = snapshot?.summary.amount ?? 0;
   const active = sortedSegments.find((segment) => segment.key === activeKey) ?? null;
@@ -89,13 +99,34 @@ export default function BrandSalesChart({
     <section className="brand-sales-card" aria-busy={loading} aria-labelledby={titleId}>
       <header className="brand-sales-heading">
         <div>
-          <p className="eyebrow">FBA SHIPPED SALES</p>
-          <h3 id={titleId}>品牌營收占比</h3>
+          <p className="eyebrow">FBA SHIPPED SALES · ONE SNAPSHOT</p>
+          <h3 id={titleId}>{view === "brand" ? "品牌營收占比" : "品類營收占比"}</h3>
           <p>{rangeLabel}</p>
+          <div className="sales-trend-range" role="group" aria-label="營收占比分類方式">
+            {(["brand", "category"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={view === option}
+                onClick={() => {
+                  setView(option);
+                  setActiveKey(null);
+                }}
+              >
+                {option === "brand" ? "品牌" : "品類"}
+              </button>
+            ))}
+          </div>
         </div>
         <span className="brand-sales-auto-status" aria-live="polite">
           <i className={loading ? "spin" : ""} aria-hidden="true">↻</i>
-          {loading ? "隨區間整理中" : snapshot ? "已隨區間自動更新" : "等待自動更新"}
+          {loading
+            ? "隨區間整理中"
+            : snapshot
+              ? snapshot.rangeFreshness === "includes-current-day"
+                ? "已隨區間自動更新 · 含今天快照"
+                : "已隨區間自動更新"
+              : "等待自動更新"}
         </span>
       </header>
 
@@ -106,7 +137,7 @@ export default function BrandSalesChart({
               ? "Amazon 已取消這次報表"
               : error.code === "REPORT_FATAL"
                 ? "Amazon 無法完成這次報表"
-                : "品牌占比暫時未完成"}</strong>
+                : "營收占比暫時未完成"}</strong>
             <p>{error.message}</p>
             {error.requestId && <small>Request ID: {error.requestId}</small>}
           </div>
@@ -116,7 +147,7 @@ export default function BrandSalesChart({
       {!snapshot && !error && (
         <div className="brand-sales-empty">
           <strong>{loading ? "Amazon 正在準備 FBA 出貨報表…" : "等待銷售區間"}</strong>
-          <p>只計 FBA Customer Shipment Sales report；無法可靠歸類的 SKU 會保留為灰色「未分類」。</p>
+          <p>品牌與品類共用同一份 FBA Customer Shipment Sales report；不會為切換品類另外建立報表。</p>
         </div>
       )}
 
@@ -125,7 +156,7 @@ export default function BrandSalesChart({
           <div className="brand-sales-visual">
             <div className="brand-sales-pie-stage">
               <div className="brand-sales-pie-wrap">
-                <svg className="brand-sales-pie" viewBox="0 0 120 120" role="img" aria-label={`FBA 已出貨商品銷售 ${formatMoney(total, snapshot.currencyCode)}`}>
+                <svg className="brand-sales-pie" viewBox="0 0 120 120" role="img" aria-label={`FBA 已出貨商品${view === "brand" ? "品牌" : "品類"}占比 ${formatMoney(total, snapshot.currencyCode)}`}>
                   <circle className="brand-sales-pie-track" cx="60" cy="60" r="52" />
                 {positive.map((segment) => {
                   const share = total > 0 ? segment.amount / total : 0;
@@ -160,8 +191,8 @@ export default function BrandSalesChart({
                   : `${snapshot.summary.unitCount.toLocaleString()} 件`}</span>
               </div>
             </div>
-            <div className="brand-sales-legend" role="list" aria-label="品牌營收明細">
-              {sortedSegments.map((segment: BrandSalesSegment) => (
+            <div className="brand-sales-legend" role="list" aria-label={`${view === "brand" ? "品牌" : "品類"}營收明細`}>
+              {sortedSegments.map((segment) => (
                 <button
                   key={segment.key}
                   type="button"
@@ -172,7 +203,7 @@ export default function BrandSalesChart({
                   onBlur={() => setActiveKey(null)}
                 >
                   <i style={{ backgroundColor: segment.color }} />
-                  <span><strong>{segment.label}</strong><small>{segment.skuCount} SKU · {segment.unitCount.toLocaleString()} 件</small></span>
+                  <span><strong>{segment.label}</strong><small>{formatMoney(segment.amount, snapshot.currencyCode)} · {segment.skuCount} SKU · {segment.unitCount.toLocaleString()} 件</small></span>
                   <b>{segment.percentage}%</b>
                 </button>
               ))}
@@ -181,6 +212,7 @@ export default function BrandSalesChart({
           <details className="brand-sales-notice">
             <summary>資料怎麼算</summary>
             <p>{snapshot.notice}</p>
+            <p>App 讀取時間：{snapshot.fetchedAt}；Amazon 報表資料截至：{snapshot.dataThrough}。</p>
           </details>
         </>
       )}

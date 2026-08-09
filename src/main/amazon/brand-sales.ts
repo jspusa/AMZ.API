@@ -12,6 +12,22 @@ export type BrandSalesDefinition = {
   color: string;
 };
 
+export type CategorySalesKey =
+  | "turkey-tendon"
+  | "turkey"
+  | "chicken"
+  | "salmon"
+  | "buffalo"
+  | "fish"
+  | "air-dried"
+  | "other";
+
+export type CategorySalesDefinition = {
+  key: CategorySalesKey;
+  label: string;
+  color: string;
+};
+
 export const BRAND_SALES_DEFINITIONS: readonly BrandSalesDefinition[] = [
   { key: "afreschi", label: "Afreschi", color: "#2F855A" },
   { key: "gootoe", label: "GooToE", color: "#ED8936" },
@@ -19,6 +35,21 @@ export const BRAND_SALES_DEFINITIONS: readonly BrandSalesDefinition[] = [
   { key: "vitaday", label: "Vitaday", color: "#ECC94B" },
   { key: "healthy-moment", label: "Healthy Moment", color: "#E53E3E" },
   { key: "unclassified", label: "未分類", color: "#A0A7B1" },
+] as const;
+
+// Source: https://github.com/jspusa/Supply/blob/main/index.html
+// Keep this order and wording aligned with its public BUSINESS REPORT
+// classifier. The first keyword by character position wins; this definition
+// order is used only when two patterns start at the same position.
+export const CATEGORY_SALES_DEFINITIONS: readonly CategorySalesDefinition[] = [
+  { key: "turkey-tendon", label: "Turkey Tendons/Tendon", color: "#b45309" },
+  { key: "turkey", label: "Turkey", color: "#f59e0b" },
+  { key: "chicken", label: "Chicken", color: "#ef4444" },
+  { key: "salmon", label: "Salmon", color: "#f97316" },
+  { key: "buffalo", label: "Buffalo", color: "#7c3aed" },
+  { key: "fish", label: "Fish", color: "#0284c7" },
+  { key: "air-dried", label: "Air Dried", color: "#10b981" },
+  { key: "other", label: "其他", color: "#94a3b8" },
 ] as const;
 
 export type BrandSalesListing = {
@@ -35,14 +66,22 @@ export type BrandShipmentSale = {
 };
 
 export type BrandSalesSnapshot = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   mode: "live" | "demo";
   marketplaceId: string;
   startDate: string;
   endDate: string;
   fetchedAt: string;
+  dataThrough: string;
+  rangeFreshness: "complete-days" | "includes-current-day";
   currencyCode: string;
   segments: Array<BrandSalesDefinition & {
+    amount: number;
+    percentage: number;
+    skuCount: number;
+    unitCount: number;
+  }>;
+  categorySegments: Array<CategorySalesDefinition & {
     amount: number;
     percentage: number;
     skuCount: number;
@@ -224,6 +263,35 @@ export function classifyListingBrand(title: string): BrandSalesKey {
   return matches.length === 1 ? matches[0][0] : "unclassified";
 }
 
+const CATEGORY_PATTERNS: Readonly<Record<Exclude<CategorySalesKey, "other">, readonly RegExp[]>> = {
+  "turkey-tendon": [/\bturkey[\s-]+tendons?\b/iu, /\btendons?\b/iu],
+  turkey: [/\bturkey\b/iu],
+  chicken: [/\bchicken\b/iu],
+  salmon: [/\bsalmon\b/iu],
+  buffalo: [/\bbuffalo\b/iu],
+  fish: [/\bfish\b/iu],
+  "air-dried": [/\bair[\s-]*dried\b/iu],
+};
+
+export function classifyListingCategory(title: string): CategorySalesKey {
+  const text = String(title ?? "");
+  let winner: { key: Exclude<CategorySalesKey, "other">; index: number; priority: number } | null = null;
+  for (let priority = 0; priority < CATEGORY_SALES_DEFINITIONS.length - 1; priority += 1) {
+    const definition = CATEGORY_SALES_DEFINITIONS[priority];
+    const key = definition.key as Exclude<CategorySalesKey, "other">;
+    for (const pattern of CATEGORY_PATTERNS[key]) {
+      const index = text.search(pattern);
+      if (
+        index >= 0 &&
+        (!winner || index < winner.index || (index === winner.index && priority < winner.priority))
+      ) {
+        winner = { key, index, priority };
+      }
+    }
+  }
+  return winner?.key ?? "other";
+}
+
 function currencyScale(currencyCode: string): number {
   return currencyCode === "JPY" ? 1 : 100;
 }
@@ -236,12 +304,24 @@ export function buildBrandSalesSnapshot(input: {
   currencyCode: string;
   listings: BrandSalesListing[];
   sales: BrandShipmentSale[];
+  dataThrough: string;
+  rangeFreshness: "complete-days" | "includes-current-day";
   fetchedAt?: string;
 }): BrandSalesSnapshot {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(input.startDate) || !/^\d{4}-\d{2}-\d{2}$/u.test(input.endDate)) {
     throw new Error("品牌營收日期範圍無效。");
   }
   if (!/^[A-Z]{3}$/u.test(input.currencyCode)) throw new Error("品牌營收幣別無效。");
+  const fetchedAt = input.fetchedAt ?? new Date().toISOString();
+  if (
+    !Number.isFinite(Date.parse(input.dataThrough)) ||
+    !Number.isFinite(Date.parse(fetchedAt)) ||
+    Date.parse(input.dataThrough) > Date.parse(fetchedAt) ||
+    (input.rangeFreshness !== "complete-days" &&
+      input.rangeFreshness !== "includes-current-day")
+  ) {
+    throw new Error("品牌營收資料截止時間無效。");
+  }
   const listingBySku = new Map<string, BrandSalesListing>();
   for (const listing of input.listings) {
     if (
@@ -258,6 +338,9 @@ export function buildBrandSalesSnapshot(input: {
   const centsByBrand = new Map<BrandSalesKey, number>();
   const unitsByBrand = new Map<BrandSalesKey, number>();
   const skusByBrand = new Map<BrandSalesKey, Set<string>>();
+  const centsByCategory = new Map<CategorySalesKey, number>();
+  const unitsByCategory = new Map<CategorySalesKey, number>();
+  const skusByCategory = new Map<CategorySalesKey, Set<string>>();
   let unmatchedCurrentFbaRowCount = 0;
   const soldFbaSkus = new Set<string>();
   const soldCurrentFbaSkus = new Set<string>();
@@ -269,6 +352,7 @@ export function buildBrandSalesSnapshot(input: {
     if (!listing) unmatchedCurrentFbaRowCount += 1;
     else soldCurrentFbaSkus.add(sale.sellerSku);
     const brand = listing ? classifyListingBrand(listing.title) : "unclassified";
+    const category = listing ? classifyListingCategory(listing.title) : "other";
     const minorUnits = Math.round(sale.unitPrice * sale.quantity * scale);
     if (!Number.isSafeInteger(minorUnits)) throw new Error("品牌營收金額超出安全範圍。");
     centsByBrand.set(brand, (centsByBrand.get(brand) ?? 0) + minorUnits);
@@ -276,6 +360,11 @@ export function buildBrandSalesSnapshot(input: {
     const skus = skusByBrand.get(brand) ?? new Set<string>();
     skus.add(sale.sellerSku);
     skusByBrand.set(brand, skus);
+    centsByCategory.set(category, (centsByCategory.get(category) ?? 0) + minorUnits);
+    unitsByCategory.set(category, (unitsByCategory.get(category) ?? 0) + sale.quantity);
+    const categorySkus = skusByCategory.get(category) ?? new Set<string>();
+    categorySkus.add(sale.sellerSku);
+    skusByCategory.set(category, categorySkus);
     soldFbaSkus.add(sale.sellerSku);
   }
 
@@ -293,16 +382,32 @@ export function buildBrandSalesSnapshot(input: {
       unitCount: unitsByBrand.get(definition.key) ?? 0,
     };
   });
+  const categorySegments = CATEGORY_SALES_DEFINITIONS.map((definition) => {
+    const amountMinorUnits = centsByCategory.get(definition.key) ?? 0;
+    return {
+      ...definition,
+      amount: amountMinorUnits / scale,
+      percentage:
+        totalMinorUnits > 0
+          ? Number(((amountMinorUnits / totalMinorUnits) * 100).toFixed(1))
+          : 0,
+      skuCount: skusByCategory.get(definition.key)?.size ?? 0,
+      unitCount: unitsByCategory.get(definition.key) ?? 0,
+    };
+  });
   const unclassifiedMinorUnits = centsByBrand.get("unclassified") ?? 0;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: input.mode,
     marketplaceId: input.marketplaceId,
     startDate: input.startDate,
     endDate: input.endDate,
-    fetchedAt: input.fetchedAt ?? new Date().toISOString(),
+    fetchedAt,
+    dataThrough: input.dataThrough,
+    rangeFreshness: input.rangeFreshness,
     currencyCode: input.currencyCode,
     segments,
+    categorySegments,
     summary: {
       amount: totalMinorUnits / scale,
       unitCount: [...unitsByBrand.values()].reduce((sum, value) => sum + value, 0),
@@ -315,6 +420,6 @@ export function buildBrandSalesSnapshot(input: {
     },
     source: "FBA_CUSTOMER_SHIPMENT_SALES_REPORT",
     notice:
-      "品牌金額取自 Amazon FBA Customer Shipment Sales report 的已出貨商品單價 × 數量，因此不含 FBM。以同次目前 FBA 商品名稱辨識品牌；找不到目前商品名稱或品牌不明的已出貨 FBA SKU 仍計入灰色「未分類」。報表通常延遲 1–3 小時，且不是上方 Sales API 的下單即時總額。",
+      `品牌與品類共用同一份 Amazon FBA Customer Shipment Sales report 快照，以已出貨商品單價 × 數量計算，因此不含 FBM，也不會為品類另外建立報表。品牌以同次目前 FBA 商品名稱辨識；品類依 Supply BUSINESS REPORT 規則，採商品名中最早出現的 Turkey Tendons/Tendon、Turkey、Chicken、Salmon、Buffalo、Fish、Air Dried 關鍵字，未命中歸入「其他」。找不到目前商品名稱或品牌不明的已出貨 FBA SKU 仍分別計入「未分類」與「其他」。${input.rangeFreshness === "includes-current-day" ? `範圍含站點今天，這次報表只涵蓋至 ${input.dataThrough}，不是完整日。` : "這次範圍只含已完成的站點日期。"} 報表通常延遲 1–3 小時，且不是上方 Sales API 的下單即時總額。`,
   };
 }

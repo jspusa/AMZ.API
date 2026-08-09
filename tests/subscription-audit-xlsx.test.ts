@@ -62,8 +62,8 @@ function inventoryEvidence(
   };
 }
 
-describe("Subscribe & Save problem Excel", () => {
-  it("creates exactly the five requested discount sheets with official summaries", () => {
+describe("Subscribe & Save audit Excel", () => {
+  it("creates five normal discount sheets plus one isolated problem sheet with official summaries", () => {
     const bytes = createSubscriptionAuditWorkbook({
       marketplaceLabel: "US · Amazon.com",
       generatedAt: "2026-08-08T12:00:00Z",
@@ -85,10 +85,11 @@ describe("Subscribe & Save problem Excel", () => {
     expect(Array.from(bytes.slice(0, 2))).toEqual([0x50, 0x4b]);
     const archive = unzipSync(bytes);
     const workbook = strFromU8(archive["xl/workbook.xml"]);
-    expect(workbook.match(/<sheet /gu)).toHaveLength(5);
+    expect(workbook.match(/<sheet /gu)).toHaveLength(6);
     for (const name of ["0%", "5%", "10%", "15%", "20%"] as const) {
       expect(workbook).toContain(`name="${name}"`);
     }
+    expect(workbook).toContain('name="問題 SKU"');
     const zero = strFromU8(archive["xl/worksheets/sheet1.xml"]);
     const five = strFromU8(archive["xl/worksheets/sheet2.xml"]);
     const ten = strFromU8(archive["xl/worksheets/sheet3.xml"]);
@@ -299,12 +300,15 @@ describe("Subscribe & Save problem Excel", () => {
         point("2026-07", 25),
       ])],
     });
-    const sheet = strFromU8(unzipSync(bytes)["xl/worksheets/sheet3.xml"]);
-    expect(sheet).toContain("未完成 offer");
-    expect(sheet).toContain("SNS-BAD-PRICE");
-    expect(sheet).toContain("offer price 不是安全的非負數");
-    expect(sheet).toContain("1 列有精確 SKU 但 offer 資料值無法安全解析");
-    expect(sheet).toContain("問題 SKU（其他商品仍已完成）");
+    const archive = unzipSync(bytes);
+    const normal = strFromU8(archive["xl/worksheets/sheet3.xml"]);
+    const issue = strFromU8(archive["xl/worksheets/sheet6.xml"]);
+    expect(normal).toContain("SNS-GOOD");
+    expect(normal).not.toContain("SNS-BAD-PRICE");
+    expect(issue).toContain("offer 資料問題");
+    expect(issue).toContain("SNS-BAD-PRICE");
+    expect(issue).toContain("offer price 不是安全的非負數");
+    expect(issue.match(/SNS-BAD-PRICE/gu)).toHaveLength(1);
   });
 
   it.each([
@@ -322,7 +326,7 @@ describe("Subscribe & Save problem Excel", () => {
       returnedMetricRows: 2,
       problem: "2026-06 月度指標資料無法安全解析；該月保持缺值，其他商品仍已完成。",
     },
-  ])("lists a $kind metric SKU on every sheet while keeping valid revenue partial", ({
+  ])("lists a $kind metric SKU once on the problem sheet and nowhere in the five normal tables", ({
     sellerSku,
     affectedMetricRows,
     returnedMetricRows,
@@ -373,22 +377,24 @@ describe("Subscribe & Save problem Excel", () => {
     const archive = unzipSync(bytes);
     for (let index = 1; index <= 5; index += 1) {
       const sheet = strFromU8(archive[`xl/worksheets/sheet${index}.xml`]);
-      expect(sheet).toContain("問題 SKU（其他商品仍已完成）");
-      expect(sheet).toContain(sellerSku);
-      expect(sheet).toContain(metricProblem.split("；")[0]);
+      expect(sheet).not.toContain(sellerSku);
       expect(sheet).toContain("未將部分加總冒充完整總額");
     }
+    const issue = strFromU8(archive["xl/worksheets/sheet6.xml"]);
+    expect(issue).toContain("月度指標問題");
+    expect(issue).toContain(sellerSku);
+    expect(issue).toContain(metricProblem.split("；")[0]);
+    expect(issue.match(new RegExp(sellerSku, "gu"))).toHaveLength(1);
   });
 
   it("keeps an unknown Seller base discount blank instead of manufacturing zero", () => {
     const unknown = problem(
-      0,
+      null,
       "SNS-UNKNOWN",
       [point("2026-07", 10)],
       null,
     );
-    unknown.problem =
-      "Amazon 未回傳 Seller 基礎折扣；為保留資料暫列 0% 工作表，並非 0%。";
+    unknown.problem = "Amazon 未回傳 Seller 基礎折扣。";
     const bytes = createSubscriptionAuditWorkbook({
       marketplaceLabel: "US",
       generatedAt: "2026-08-08T12:00:00Z",
@@ -405,10 +411,13 @@ describe("Subscribe & Save problem Excel", () => {
       problems: [unknown],
     });
     const archive = unzipSync(bytes);
-    const sheet = strFromU8(archive["xl/worksheets/sheet1.xml"]);
-    expect(sheet).toContain(unknown.problem);
-    expect(sheet).toContain(
-      '<c r="F9" s="0" t="inlineStr"><is><t xml:space="preserve"></t></is></c>',
+    const zero = strFromU8(archive["xl/worksheets/sheet1.xml"]);
+    const issue = strFromU8(archive["xl/worksheets/sheet6.xml"]);
+    expect(zero).not.toContain("SNS-UNKNOWN");
+    expect(issue).toContain("SNS-UNKNOWN");
+    expect(issue).toContain("不歸入 0% 工作表，也不代表 0%");
+    expect(issue).toContain(
+      '<c r="D7" s="0" t="inlineStr"><is><t xml:space="preserve"></t></is></c>',
     );
   });
 

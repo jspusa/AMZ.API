@@ -14,10 +14,12 @@ const expected = {
 
 function snapshot() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: "demo",
     ...expected,
-    fetchedAt: "2026-08-08T00:00:00.000Z",
+    fetchedAt: "2026-08-08T08:00:00.000Z",
+    dataThrough: "2026-08-08T00:00:00-07:00",
+    rangeFreshness: "complete-days",
     currencyCode: "USD",
     segments: [
       { key: "afreschi", label: "Afreschi", color: "#2F855A", amount: 50, percentage: 50, skuCount: 2, unitCount: 5 },
@@ -26,6 +28,16 @@ function snapshot() {
       { key: "vitaday", label: "Vitaday", color: "#ECC94B", amount: 5, percentage: 5, skuCount: 1, unitCount: 1 },
       { key: "healthy-moment", label: "Healthy Moment", color: "#E53E3E", amount: 5, percentage: 5, skuCount: 1, unitCount: 1 },
       { key: "unclassified", label: "未分類", color: "#A0A7B1", amount: 5, percentage: 5, skuCount: 1, unitCount: 1 },
+    ],
+    categorySegments: [
+      { key: "turkey-tendon", label: "Turkey Tendons/Tendon", color: "#b45309", amount: 40, percentage: 40, skuCount: 2, unitCount: 4 },
+      { key: "turkey", label: "Turkey", color: "#f59e0b", amount: 20, percentage: 20, skuCount: 1, unitCount: 2 },
+      { key: "chicken", label: "Chicken", color: "#ef4444", amount: 15, percentage: 15, skuCount: 1, unitCount: 1 },
+      { key: "salmon", label: "Salmon", color: "#f97316", amount: 10, percentage: 10, skuCount: 1, unitCount: 1 },
+      { key: "buffalo", label: "Buffalo", color: "#7c3aed", amount: 5, percentage: 5, skuCount: 1, unitCount: 1 },
+      { key: "fish", label: "Fish", color: "#0284c7", amount: 5, percentage: 5, skuCount: 1, unitCount: 1 },
+      { key: "air-dried", label: "Air Dried", color: "#10b981", amount: 5, percentage: 5, skuCount: 0, unitCount: 1 },
+      { key: "other", label: "其他", color: "#94a3b8", amount: 0, percentage: 0, skuCount: 0, unitCount: 0 },
     ],
     summary: {
       amount: 100,
@@ -49,6 +61,8 @@ describe("brand sales renderer", () => {
     expect(() => parseBrandSalesSnapshot({ ...snapshot(), summary: { ...snapshot().summary, amount: 99 } }, expected)).toThrow(/加總/u);
     expect(() => parseBrandSalesSnapshot({ ...snapshot(), segments: snapshot().segments.map((segment, index) => index === 0 ? { ...segment, color: "#000000" } : segment) }, expected)).toThrow(/安全辨識/u);
     expect(() => parseBrandSalesSnapshot({ ...snapshot(), segments: snapshot().segments.map((segment, index) => index === 0 ? { ...segment, percentage: 99 } : segment) }, expected)).toThrow(/加總/u);
+    expect(() => parseBrandSalesSnapshot({ ...snapshot(), categorySegments: snapshot().categorySegments.map((segment, index) => index === 0 ? { ...segment, color: "#000000" } : segment) }, expected)).toThrow(/安全辨識/u);
+    expect(() => parseBrandSalesSnapshot({ ...snapshot(), categorySegments: snapshot().categorySegments.map((segment, index) => index === 0 ? { ...segment, amount: 39 } : segment) }, expected)).toThrow(/加總/u);
     expect(() => parseBrandSalesSnapshot({ ...snapshot(), summary: { ...snapshot().summary, soldFbaSkuCount: 8 } }, expected)).toThrow(/加總/u);
   });
 
@@ -58,6 +72,9 @@ describe("brand sales renderer", () => {
       <BrandSalesChart snapshot={parsed} loading={false} error={null} rangeLabel="08/01–08/07" onRetry={() => undefined} />,
     );
     expect(html).toContain("品牌營收占比");
+    expect(html).toContain("營收占比分類方式");
+    expect(html).toContain('aria-pressed="true">品牌');
+    expect(html).toContain('aria-pressed="false">品類');
     expect(html).toContain("Afreschi");
     expect(html).toContain("GooToE");
     expect(html).toContain("Healthy Moment");
@@ -75,8 +92,60 @@ describe("brand sales renderer", () => {
     expect(html).toContain("<details class=\"brand-sales-notice\">");
     expect(html).toContain("<summary>資料怎麼算</summary>");
     expect(html).toContain("只含 FBA 已出貨商品。");
+    expect(html).toContain("Amazon 報表資料截至：2026-08-08T00:00:00-07:00");
     expect(html).not.toContain("同步品牌");
     expect(html).not.toContain("重新同步");
+  });
+
+  it("renders all eight Supply categories with amount and percentage from the same snapshot", () => {
+    const parsed = parseBrandSalesSnapshot(snapshot(), expected);
+    const html = renderToStaticMarkup(
+      <BrandSalesChart
+        snapshot={parsed}
+        loading={false}
+        error={null}
+        rangeLabel="08/01–08/07"
+        onRetry={() => undefined}
+        initialView="category"
+      />,
+    );
+    for (const label of [
+      "Turkey Tendons/Tendon",
+      "Turkey",
+      "Chicken",
+      "Salmon",
+      "Buffalo",
+      "Fish",
+      "Air Dried",
+      "其他",
+    ]) {
+      expect(html).toContain(label);
+    }
+    expect(html).toContain("US$40.00");
+    expect(html).toContain("40%");
+    expect(html).toContain('aria-label="品類營收明細"');
+    expect(html).toContain("品類營收占比");
+  });
+
+  it("labels a range containing the marketplace current day as a cutoff snapshot", () => {
+    const currentDay = {
+      ...snapshot(),
+      rangeFreshness: "includes-current-day",
+      dataThrough: "2026-08-07T15:45:00-07:00",
+      notice: "範圍含站點今天，這次報表不是完整日。",
+    };
+    const html = renderToStaticMarkup(
+      <BrandSalesChart
+        snapshot={parseBrandSalesSnapshot(currentDay, expected)}
+        loading={false}
+        error={null}
+        rangeLabel="08/01–08/07"
+        onRetry={() => undefined}
+      />,
+    );
+    expect(html).toContain("含今天快照");
+    expect(html).toContain("不是完整日");
+    expect(html).toContain("Amazon 報表資料截至：2026-08-07T15:45:00-07:00");
   });
 
   it("builds wedges from the center and closes a full solid circle", () => {
@@ -121,6 +190,13 @@ describe("brand sales renderer", () => {
         percentage: percentages[index],
         skuCount: amounts[index] > 0 ? 1 : 0,
         unitCount: units[index],
+      })),
+      categorySegments: snapshot().categorySegments.map((segment, index) => ({
+        ...segment,
+        amount: [50, 30, 10, 10, 0, 0, 0, 0][index],
+        percentage: [50, 30, 10, 10, 0, 0, 0, 0][index],
+        skuCount: index < 4 ? 1 : 0,
+        unitCount: [5, 3, 1, 1, 0, 0, 0, 0][index],
       })),
       summary: {
         ...snapshot().summary,

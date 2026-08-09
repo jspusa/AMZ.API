@@ -14,6 +14,7 @@ import {
   type AuditSuiteRun,
   type AuditSuiteRunDto,
   type AuditSuiteSectionId,
+  type AuditSuiteSectionStatus,
 } from "../../../shared/audit-suite";
 
 const SECTION_LABELS: Readonly<Record<AuditSuiteSectionId, string>> = {
@@ -67,6 +68,96 @@ export function auditSuiteCompletedSections(run: AuditSuiteRun | null): number {
   return AUDIT_SUITE_SECTION_IDS.filter((id) =>
     ["completed", "partial", "failed"].includes(run.sections[id].status)
   ).length;
+}
+
+export type AuditSuiteVisualState =
+  | "waiting"
+  | "running"
+  | "completed"
+  | "partial"
+  | "failed";
+
+type AuditSuiteStatusPresentation = Readonly<{
+  state: AuditSuiteVisualState;
+  label: string;
+  icon: string;
+  progressText: string;
+  completedSections: number;
+  progressPercent: number;
+}>;
+
+export function auditSuiteStatusPresentation(
+  run: AuditSuiteRun | null,
+): AuditSuiteStatusPresentation {
+  const completedSections = auditSuiteCompletedSections(run);
+  const progressPercent = Math.round(
+    (completedSections / AUDIT_SUITE_SECTION_IDS.length) * 100,
+  );
+  if (!run) {
+    return {
+      state: "waiting",
+      label: "等待開始",
+      icon: "○",
+      progressText: "尚未執行",
+      completedSections,
+      progressPercent,
+    };
+  }
+  if (run.status === "completed") {
+    return {
+      state: "completed",
+      label: "全部完成",
+      icon: "✓",
+      progressText: "7 項全部完成",
+      completedSections,
+      progressPercent,
+    };
+  }
+  if (run.status === "partial") {
+    return {
+      state: "partial",
+      label: "部分完成",
+      icon: "!",
+      progressText: "已完成，但有項目僅能部分核對",
+      completedSections,
+      progressPercent,
+    };
+  }
+  if (run.status === "failed") {
+    return {
+      state: "failed",
+      label: "未完成",
+      icon: "×",
+      progressText: "7 項都未建立可核對快照",
+      completedSections,
+      progressPercent,
+    };
+  }
+  return {
+    state: "running",
+    label: run.status === "queued" ? "準備中" : "背景執行中",
+    icon: run.status === "queued" ? "…" : "↻",
+    progressText: `${completedSections}／7 項已收斂，main process 仍在背景處理`,
+    completedSections,
+    progressPercent,
+  };
+}
+
+type AuditSuiteSectionPresentation = Readonly<{
+  state: AuditSuiteVisualState;
+  label: string;
+  icon: string;
+}>;
+
+export function auditSuiteSectionPresentation(
+  status: AuditSuiteSectionStatus | null,
+): AuditSuiteSectionPresentation {
+  if (status === "completed") return { state: "completed", label: "完成", icon: "✓" };
+  if (status === "partial") return { state: "partial", label: "部分完成", icon: "!" };
+  if (status === "failed") return { state: "failed", label: "未完成", icon: "×" };
+  if (status === "queued") return { state: "running", label: "排隊中", icon: "…" };
+  if (status === "running") return { state: "running", label: "執行中", icon: "↻" };
+  return { state: "waiting", label: "等待", icon: "○" };
 }
 
 function terminal(run: AuditSuiteRun | null): boolean {
@@ -155,7 +246,10 @@ export default function AuditSuiteHomeCard({
   const [stoppedRunId, setStoppedRunId] = useState<string | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const run = auditSuiteRunForMarketplace(state, marketplaceId);
-  const completedSections = auditSuiteCompletedSections(run);
+  const statusPresentation = useMemo(
+    () => auditSuiteStatusPresentation(run),
+    [run],
+  );
 
   useEffect(() => {
     pollAbortRef.current?.abort();
@@ -217,14 +311,6 @@ export default function AuditSuiteHomeCard({
   }, [marketplaceId, run?.contextId, run?.mode, run?.runId, run?.status, stoppedRunId]);
 
   useEffect(() => () => pollAbortRef.current?.abort(), []);
-
-  const progressText = useMemo(() => {
-    if (!run) return "尚未執行";
-    if (run.status === "completed") return "7 項全部完成";
-    if (run.status === "partial") return "已完成，但有項目僅能部分核對";
-    if (run.status === "failed") return "7 項都未建立可核對快照";
-    return `${completedSections}／7 項已收斂，main process 仍在背景處理`;
-  }, [completedSections, run]);
 
   const start = async () => {
     setStarting(true);
@@ -291,7 +377,11 @@ export default function AuditSuiteHomeCard({
   };
 
   return (
-    <section className="audit-suite-home-card" aria-busy={starting || Boolean(run && !terminal(run))}>
+    <section
+      className={`audit-suite-home-card is-${statusPresentation.state}`}
+      data-state={statusPresentation.state}
+      aria-busy={starting || Boolean(run && !terminal(run))}
+    >
       <div className="audit-suite-home-heading">
         <span className="audit-suite-home-icon" aria-hidden="true">✓✓</span>
         <div>
@@ -300,20 +390,67 @@ export default function AuditSuiteHomeCard({
           <p>七項唯讀健檢由 Mac main process 在背景繼續；你可以關閉視窗或先使用其他功能。</p>
         </div>
       </div>
-      <div className="audit-suite-home-status" aria-live="polite">
-        <strong>{progressText}</strong>
+      <div
+        className={`audit-suite-home-status is-${statusPresentation.state}`}
+        data-state={statusPresentation.state}
+        aria-live="polite"
+      >
+        <div className="audit-suite-home-status-copy">
+          <span className="audit-suite-status-pill">
+            <b aria-hidden="true">{statusPresentation.icon}</b>
+            {statusPresentation.label}
+          </span>
+          <strong>{statusPresentation.progressText}</strong>
+        </div>
+        <div className="audit-suite-overall-progress">
+          <div>
+            <span>狀態收斂進度</span>
+            <strong>{statusPresentation.completedSections}／{AUDIT_SUITE_SECTION_IDS.length}</strong>
+          </div>
+          <progress
+            max={AUDIT_SUITE_SECTION_IDS.length}
+            value={statusPresentation.completedSections}
+            aria-label={`綜合 FBA 健檢狀態收斂進度 ${statusPresentation.progressPercent}%`}
+          />
+        </div>
         <small>本機拼字紅字標示仍由「單項文案健檢」完成；綜合健檢不會上傳文案或自動改 Amazon。</small>
       </div>
       <div className="audit-suite-section-grid">
         {AUDIT_SUITE_SECTION_IDS.map((id) => {
           const section = run?.sections[id] ?? null;
+          const sectionPresentation = auditSuiteSectionPresentation(
+            section?.status ?? null,
+          );
+          const hasMeasuredProgress = Boolean(
+            section &&
+            section.completedUnits !== null &&
+            section.totalUnits !== null &&
+            section.totalUnits > 0,
+          );
           return (
-            <article key={id} className={section ? `is-${section.status}` : "is-idle"}>
-              <span aria-hidden="true" />
-              <div>
+            <article
+              key={id}
+              className={`is-${sectionPresentation.state}`}
+              data-state={sectionPresentation.state}
+            >
+              <header>
                 <strong>{SECTION_LABELS[id]}</strong>
-                <small>{section?.message ?? "等待你開始。"}</small>
-              </div>
+                <span className="audit-suite-section-pill">
+                  <b aria-hidden="true">{sectionPresentation.icon}</b>
+                  {sectionPresentation.label}
+                </span>
+              </header>
+              <small>{section?.message ?? "等待你開始。"}</small>
+              {hasMeasuredProgress && section && (
+                <div className="audit-suite-section-progress">
+                  <progress
+                    max={section.totalUnits!}
+                    value={Math.min(section.totalUnits!, section.completedUnits!)}
+                    aria-label={`${SECTION_LABELS[id]} ${section.completedUnits!.toLocaleString()}／${section.totalUnits!.toLocaleString()}`}
+                  />
+                  <span>{section.completedUnits!.toLocaleString()}／{section.totalUnits!.toLocaleString()}</span>
+                </div>
+              )}
             </article>
           );
         })}

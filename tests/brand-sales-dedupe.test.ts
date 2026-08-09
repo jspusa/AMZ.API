@@ -283,6 +283,41 @@ describe("durable brand-sales report dedupe", () => {
     expect(shipmentStarts).toBe(1);
   });
 
+  it("reuses the account-scoped exact range when switching A to B and back to A", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const app = router(localStore, {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async ({ startDate }) => ({
+        ...queuedShipment(++shipmentStarts),
+        reportId: `shipment-${startDate}`,
+        dataStartTime: startDate === "2026-07-01"
+          ? "2026-07-01T00:00:00-07:00"
+          : "2026-08-01T00:00:00-07:00",
+        dataEndTime: startDate === "2026-07-01"
+          ? "2026-07-08T00:00:00-07:00"
+          : "2026-08-08T00:00:00-07:00",
+      }),
+      reportWindow: ({ startDate }) => ({
+        dataStartTime: startDate === "2026-07-01"
+          ? "2026-07-01T00:00:00-07:00"
+          : "2026-08-01T00:00:00-07:00",
+        dataEndTime: startDate === "2026-07-01"
+          ? "2026-07-08T00:00:00-07:00"
+          : "2026-08-08T00:00:00-07:00",
+      }),
+    });
+
+    const rangeA = await brandStart(app);
+    await brandStart(app, { startDate: "2026-07-01", endDate: "2026-07-07" });
+    const rangeAAgain = await brandStart(app);
+
+    expect(body(rangeAAgain).jobId).toBe(body(rangeA).jobId);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(2);
+  });
+
   it("single-flights the same brand selection across automatic and explicit retry callers", async () => {
     const localStore = await store();
     let listingStarts = 0;

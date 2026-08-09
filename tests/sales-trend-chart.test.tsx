@@ -175,6 +175,28 @@ describe("sales trend comparison chart", () => {
     expect(source).toContain("top: 88");
   });
 
+  it("moves performance details below the plot while skater mode is enabled", async () => {
+    const [source, css] = await Promise.all([
+      readFile(
+        new URL("../src/renderer/src/components/sales-trend-chart.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../src/renderer/src/app.css", import.meta.url), "utf8"),
+    ]);
+
+    expect(source).toContain("active ?? skaterCoordinate");
+    expect(source).toContain("active && !skaterEnabled && tooltipPlacement");
+    expect(source).toContain('className="sales-trend-detail-strip"');
+    expect(source).toContain("滑板業績資訊");
+    expect(source).toContain("detailCoordinate.comparisonPoint");
+    expect(css).toMatch(
+      /\.sales-trend-detail-strip\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:/s,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 680px\)[\s\S]*?\.sales-trend-detail-strip\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/,
+    );
+  });
+
   it("offers 7, 14, 30, and 90 day presets and marks the selected 90-day range", () => {
     const amounts = Array.from({ length: 90 }, (_, index) => 100 + index);
     const markup = render({
