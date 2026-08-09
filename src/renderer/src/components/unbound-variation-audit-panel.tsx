@@ -56,9 +56,19 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function downloadName(response: Response, fallback: string): string {
+export function downloadName(response: Response, fallback: string): string {
   const disposition = response.headers.get("content-disposition") ?? "";
-  return disposition.match(/filename="([^"]+)"/i)?.[1] ?? fallback;
+  const utf8Match = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  const plainMatch = disposition.match(/filename\s*=\s*"?([^";]+)"?/i);
+  let candidate = fallback;
+  try {
+    candidate = utf8Match?.[1]
+      ? decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/g, ""))
+      : plainMatch?.[1]?.trim() ?? fallback;
+  } catch {
+    candidate = fallback;
+  }
+  return candidate.replace(/[\\/:*?"<>|]/g, "-");
 }
 
 export default function UnboundVariationAuditPanel({
@@ -241,7 +251,7 @@ export default function UnboundVariationAuditPanel({
       anchor.href = url;
       anchor.download = downloadName(
         response,
-        `amazon-fba-unbound-variation-audit-${marketplaceShort.toLowerCase()}.xlsx`,
+        `FBA-未綁變體健檢-${marketplaceShort}.xlsx`,
       );
       document.body.append(anchor);
       anchor.click();

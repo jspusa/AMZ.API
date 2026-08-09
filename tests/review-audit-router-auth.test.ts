@@ -139,6 +139,53 @@ describe("review audit role failure fan-out", () => {
     });
   });
 
+  it("continues the main-process job without renderer status polling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-09T00:00:00.000Z"));
+    process.env.SP_API_MODE = "live";
+    mocks.mode = "live";
+    mocks.candidateCount = 3;
+    mocks.feedback.mockReset();
+    const callTimes: number[] = [];
+    mocks.feedback.mockImplementation(async ({ candidate }) => {
+      callTimes.push(Date.now());
+      return {
+        candidate,
+        response: null,
+        noContent: true,
+      };
+    });
+    const directory = await mkdtemp(join(tmpdir(), "review-router-background-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const router = new ApiRouter({
+      store,
+      vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
+    const started = await router.handle(request(
+      "POST",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US },
+    ));
+    const jobId = jsonValue(started).jobId as string;
+
+    await vi.advanceTimersByTimeAsync(2_125);
+    expect(mocks.feedback).toHaveBeenCalledTimes(3);
+    expect(callTimes[1]! - callTimes[0]!).toBeGreaterThanOrEqual(1_050);
+    expect(callTimes[2]! - callTimes[1]!).toBeGreaterThanOrEqual(1_050);
+    const completed = await router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId },
+    ));
+    expect(completed.status).toBe(200);
+    expect(jsonValue(completed)).toMatchObject({
+      summary: { uniqueFbaNonParentAsins: 3, noTopics: 3 },
+    });
+    router.clearPreviews();
+  });
+
   it("single-flights concurrent status polls for the same job", async () => {
     process.env.SP_API_MODE = "live";
     mocks.mode = "live";

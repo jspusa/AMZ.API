@@ -72,15 +72,20 @@ export default function ReviewAuditPanel({
   const [busy, setBusy] = useState<"scan" | "export" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const cachedResultRef = useRef(cachedResult);
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
+    cachedResultRef.current = cachedResult;
+  }, [cachedResult]);
+  useEffect(() => {
     abortRef.current?.abort();
-    setSnapshot(cachedResult?.snapshot?.marketplaceId === marketplaceId ? cachedResult.snapshot : null);
-    setJob(cachedResult?.job?.marketplaceId === marketplaceId ? cachedResult.job : null);
+    const cached = cachedResultRef.current;
+    setSnapshot(cached?.snapshot?.marketplaceId === marketplaceId ? cached.snapshot : null);
+    setJob(cached?.job?.marketplaceId === marketplaceId ? cached.job : null);
     setBusy(null);
     setError(null);
-  }, [cachedResult, marketplaceId]);
+  }, [marketplaceId]);
 
   const scan = async () => {
     abortRef.current?.abort();

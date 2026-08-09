@@ -47,6 +47,7 @@ function response(overrides: Record<string, unknown> = {}): Record<string, unkno
       acceptedOfferRows: 1,
       returnedMetricRows: 3,
       acceptedMetricRows: 3,
+      invalidOfferRows: [],
       rejectedSellerSkuRows: 0,
       minimumUnresolvedOfferMonths: 0,
       notice: "Amazon Replenishment 回應中的 Seller SKU 均可原樣核對。",
@@ -286,7 +287,7 @@ describe("FBA subscription audit renderer", () => {
       value: "資料不完整",
     });
     expect(subscriptionRevenueSummary(snapshot).note).toContain(
-      "另有 1 個未回傳可核對的 Replenishment offer",
+      "另有 1 個未取得可核對的 Replenishment offer",
     );
     expect(subscriptionRevenueSummary(snapshot).note).toContain(
       "不能據此判定不符合資格或 0 訂閱",
@@ -298,7 +299,7 @@ describe("FBA subscription audit renderer", () => {
     );
     expect(markup).toContain("已證明 2 個 SKU");
     expect(markup).toContain("可核對 offer 1 個");
-    expect(markup).toContain("另有 1 個 FBA SKU 未回傳可核對 offer");
+    expect(markup).toContain("另有 1 個 FBA SKU 未取得可核對 offer");
     expect(markup).toContain("不代表不符合資格，也不代表 0 訂閱");
 
     const evidence = raw.inventoryEvidence as Record<string, unknown>;
@@ -375,6 +376,7 @@ describe("FBA subscription audit renderer", () => {
         acceptedOfferRows: 1,
         returnedMetricRows: 7,
         acceptedMetricRows: 6,
+        invalidOfferRows: [],
         rejectedSellerSkuRows: 2,
         minimumUnresolvedOfferMonths: 6,
         notice: "Amazon Replenishment 有 2 列未提供可原樣核對的 Seller SKU。",
@@ -426,6 +428,37 @@ describe("FBA subscription audit renderer", () => {
     expect(() => parseSubscriptionAuditSnapshot(raw)).toThrow(
       /營收完整度與 SKU 月度明細不一致/u,
     );
+  });
+
+  it("shows exact-SKU offer value failures as an explicit incomplete list", () => {
+    const snapshot = parseSubscriptionAuditSnapshot(response({
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 2,
+        acceptedOfferRows: 1,
+        returnedMetricRows: 3,
+        acceptedMetricRows: 3,
+        invalidOfferRows: [{
+          sellerSku: "SNS-BAD-PRICE",
+          problem: "offer price 不是安全的非負數。",
+        }],
+        rejectedSellerSkuRows: 0,
+        minimumUnresolvedOfferMonths: 6,
+        notice: "一列 offer 資料值無法安全解析。",
+      },
+    }));
+    expect(snapshot.upstreamCoverage.invalidOfferRows).toEqual([{
+      sellerSku: "SNS-BAD-PRICE",
+      problem: "offer price 不是安全的非負數。",
+    }]);
+    const markup = renderToStaticMarkup(createElement(
+      SubscriptionUpstreamCoverageWarning,
+      { coverage: snapshot.upstreamCoverage },
+    ));
+    expect(markup).toContain("已排除 1 列");
+    expect(markup).toContain("0 列缺少可原樣核對的 Seller SKU");
+    expect(markup).toContain("SNS-BAD-PRICE");
+    expect(markup).toContain("offer price 不是安全的非負數");
   });
 
   it("explains the snapshot meaning, 23-month limit and main-owned Excel export", () => {

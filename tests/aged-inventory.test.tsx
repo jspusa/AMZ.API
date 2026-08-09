@@ -11,6 +11,7 @@ import {
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import AgedInventoryPanel, {
+  formatAgedInventoryMoney,
   parseAgedInventorySnapshot,
 } from "../src/renderer/src/components/aged-inventory-panel";
 import type { ApiRequest } from "../src/shared/contracts";
@@ -469,6 +470,62 @@ describe("official FBA 180+ day inventory report", () => {
         expect.objectContaining({ key, quantity: 0, estimatedCharge: 0 }),
       ),
     );
+    expect(formatAgedInventoryMoney(0, null)).toBe("0");
+  });
+
+  it("preserves a missing available quantity instead of inventing zero", () => {
+    const parsed = parseAgedInventoryReportData(
+      reportText(
+        [
+          "sku",
+          "available",
+          "inv-age-0-to-90-days",
+          "inv-age-91-to-180-days",
+          "inv-age-181-to-270-days",
+          "inv-age-271-to-365-days",
+          "inv-age-365-plus-days",
+        ],
+        [
+          {
+            sku: "MISSING-AVAILABLE",
+            "inv-age-0-to-90-days": 1,
+            "inv-age-91-to-180-days": 0,
+            "inv-age-181-to-270-days": 0,
+            "inv-age-271-to-365-days": 0,
+            "inv-age-365-plus-days": 0,
+          },
+        ],
+      ),
+    );
+
+    expect(parsed.rows[0]?.available).toBeNull();
+  });
+
+  it("rejects Seller SKU whitespace instead of rewriting report identity", () => {
+    expect(() =>
+      parseAgedInventoryReportData(
+        reportText(
+          [
+            "sku",
+            "inv-age-0-to-90-days",
+            "inv-age-91-to-180-days",
+            "inv-age-181-to-270-days",
+            "inv-age-271-to-365-days",
+            "inv-age-365-plus-days",
+          ],
+          [
+            {
+              sku: " PADDED-SKU",
+              "inv-age-0-to-90-days": 1,
+              "inv-age-91-to-180-days": 0,
+              "inv-age-181-to-270-days": 0,
+              "inv-age-271-to-365-days": 0,
+              "inv-age-365-plus-days": 0,
+            },
+          ],
+        ),
+      ),
+    ).toThrow("無法原樣辨識 Seller SKU");
   });
 
   it("does not infer storage or AIS rates when the charge basis is positive or missing", () => {
@@ -699,7 +756,7 @@ describe("FBA aged inventory renderer and read-only route", () => {
     );
 
     expect(markup).toContain("FBA 庫齡、冗餘與官方預估費用");
-    expect(markup).toContain("查看全部");
+    expect(markup).toContain("開始 FBA 180 天以上庫齡健檢");
     expect(markup).toContain("全部非重疊庫齡桶");
     expect(markup).toContain("費用缺欄或缺值時不套費率、不推算");
   });
@@ -759,11 +816,14 @@ describe("FBA aged inventory renderer and read-only route", () => {
         agedOver180: 31,
         excessAvailability: "complete",
         estimatedExcessQuantity: 25,
+        excessReportedSkuCount: 1,
         currencyCode: "USD",
         storageCostAvailability: "complete",
         estimatedStorageCostNextMonth: 15.25,
+        storageCostReportedSkuCount: 1,
         agedSurchargeAvailability: "complete",
         estimatedAgedSurcharge: 3.6,
+        agedSurchargeReportedSkuCount: 1,
       },
       expiration: {
         currentFbaExpirationDatesAvailable: false,
@@ -820,15 +880,18 @@ describe("FBA aged inventory renderer and read-only route", () => {
         totalAgedUnits: 100,
         agedOver180: 62,
         excessAvailability: "partial",
-        estimatedExcessQuantity: null,
+        estimatedExcessQuantity: 25,
+        excessReportedSkuCount: 1,
         estimatedStorageCostNextMonth: 30.5,
+        storageCostReportedSkuCount: 2,
         estimatedAgedSurcharge: 7.2,
+        agedSurchargeReportedSkuCount: 2,
       },
     };
     expect(parseAgedInventorySnapshot(partialExcess, MARKETPLACE_ID)).toMatchObject({
       summary: {
         excessAvailability: "partial",
-        estimatedExcessQuantity: null,
+        estimatedExcessQuantity: 25,
       },
     });
     expect(() =>
@@ -837,7 +900,7 @@ describe("FBA aged inventory renderer and read-only route", () => {
           ...partialExcess,
           summary: {
             ...partialExcess.summary,
-            estimatedExcessQuantity: 25,
+            estimatedExcessQuantity: 24,
           },
         },
         MARKETPLACE_ID,

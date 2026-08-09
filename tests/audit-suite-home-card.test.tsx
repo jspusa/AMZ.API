@@ -1,0 +1,116 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import AuditSuiteHomeCard, {
+  auditSuiteCompletedSections,
+  parseAuditSuiteStart,
+  runAuditSuitePollLoop,
+} from "../src/renderer/src/components/audit-suite-home-card";
+import { AUDIT_SUITE_SECTION_IDS } from "../src/shared/audit-suite";
+
+const MARKETPLACE_ID = "ATVPDKIKX0DER";
+
+function run(status: "queued" | "running" | "completed" = "queued") {
+  return {
+    schemaVersion: 1 as const,
+    runId: "suite-run-0001",
+    contextId: "context-run-0001-abcdef",
+    marketplaceId: MARKETPLACE_ID,
+    mode: "live" as const,
+    status,
+    startedAt: "2026-08-09T04:00:00.000Z",
+    updatedAt: "2026-08-09T04:00:00.000Z",
+    sections: Object.fromEntries(AUDIT_SUITE_SECTION_IDS.map((id) => [id, {
+      id,
+      status,
+      message: `${id} 狀態可核對。`,
+      completedUnits: status === "completed" ? 1 : 0,
+      totalUnits: 1,
+      updatedAt: "2026-08-09T04:00:00.000Z",
+    }])),
+  };
+}
+
+describe("audit suite home card", () => {
+  it("keeps all seven individual audit labels and an honest local-spellcheck boundary", () => {
+    const markup = renderToStaticMarkup(
+      <AuditSuiteHomeCard marketplaceId={MARKETPLACE_ID} />,
+    );
+    expect(markup).toContain("一鍵執行全部 FBA 健檢");
+    expect(markup).toContain("訂閱價格");
+    expect(markup).toContain("180+ 庫齡與預估冗餘");
+    expect(markup).toContain("評論主題");
+    expect(markup).toContain("廣告覆蓋");
+    expect(markup).toContain("本機拼字紅字標示仍由「單項文案健檢」完成");
+    expect(markup).toContain("開始全部 FBA 健檢");
+  });
+
+  it("accepts only the requested marketplace and never exposes accountScope", () => {
+    const parsed = parseAuditSuiteStart(run(), MARKETPLACE_ID);
+    expect(parsed.marketplaceId).toBe(MARKETPLACE_ID);
+    expect("accountScope" in parsed).toBe(false);
+    expect(() => parseAuditSuiteStart(run(), "A2EUQ1WTGCTBG2")).toThrow(/context/u);
+  });
+
+  it("counts terminal section progress", () => {
+    const completed = parseAuditSuiteStart(run("completed"), MARKETPLACE_ID);
+    expect(auditSuiteCompletedSections(completed)).toBe(7);
+    expect(auditSuiteCompletedSections(null)).toBe(0);
+  });
+
+  it("allows an explicit second run to use a fresh main-issued context", async () => {
+    const source = await import("../src/renderer/src/audit-suite");
+    const first = parseAuditSuiteStart(run("completed"), MARKETPLACE_ID);
+    const second = parseAuditSuiteStart({
+      ...run(),
+      runId: "suite-run-0002",
+      contextId: "context-run-0002-abcdef",
+    }, MARKETPLACE_ID);
+    const state = source.replaceAuditSuiteRun(
+      source.createAuditSuiteState(first),
+      second,
+    );
+    expect(source.auditSuiteRunForMarketplace(state, MARKETPLACE_ID)).toMatchObject({
+      runId: "suite-run-0002",
+      contextId: "context-run-0002-abcdef",
+    });
+  });
+
+  it("continues polling across identical running snapshots and one retryable failure", async () => {
+    const running = parseAuditSuiteStart(run("running"), MARKETPLACE_ID);
+    const completed = parseAuditSuiteStart(run("completed"), MARKETPLACE_ID);
+    let calls = 0;
+    const seen: string[] = [];
+    await runAuditSuitePollLoop({
+      signal: new AbortController().signal,
+      wait: async () => undefined,
+      load: async () => {
+        calls += 1;
+        if (calls === 2) throw new Error("temporary 500");
+        return { kind: "run", run: calls < 4 ? running : completed };
+      },
+      onRun: (next) => seen.push(next.status),
+      onRetryableError: (error) => seen.push((error as Error).message),
+      onStopped: (message) => seen.push(message),
+    });
+    expect(calls).toBe(4);
+    expect(seen).toEqual(["running", "temporary 500", "running", "completed"]);
+  });
+
+  it("stops polling after unmount abort", async () => {
+    const controller = new AbortController();
+    const running = parseAuditSuiteStart(run("running"), MARKETPLACE_ID);
+    let calls = 0;
+    await runAuditSuitePollLoop({
+      signal: controller.signal,
+      wait: async () => undefined,
+      load: async () => {
+        calls += 1;
+        return { kind: "run", run: running };
+      },
+      onRun: () => controller.abort(),
+      onRetryableError: () => undefined,
+      onStopped: () => undefined,
+    });
+    expect(calls).toBe(1);
+  });
+});

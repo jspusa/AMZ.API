@@ -40,6 +40,7 @@ export type SubscriptionUpstreamCoverage = {
   acceptedOfferRows: number;
   returnedMetricRows: number;
   acceptedMetricRows: number;
+  invalidOfferRows: Array<{ sellerSku: string; problem: string }>;
   rejectedSellerSkuRows: number;
   minimumUnresolvedOfferMonths: number;
   notice: string;
@@ -202,6 +203,20 @@ function parseUpstreamCoverage(
   const acceptedOfferRows = integer(raw.acceptedOfferRows, "Replenishment offer 可核對列數");
   const returnedMetricRows = integer(raw.returnedMetricRows, "Replenishment metric 回傳列數");
   const acceptedMetricRows = integer(raw.acceptedMetricRows, "Replenishment metric 可核對列數");
+  if (!Array.isArray(raw.invalidOfferRows)) {
+    throw new Error("Replenishment offer 資料值問題清單格式無效。");
+  }
+  const invalidOfferRows = raw.invalidOfferRows.map((value, index) => {
+    const row = record(value, `第 ${index + 1} 個 Replenishment offer 資料值問題`);
+    return {
+      sellerSku: text(row.sellerSku, `第 ${index + 1} 個問題 SKU`, 256),
+      problem: text(row.problem, `第 ${index + 1} 個 offer 問題`, 1_000),
+    };
+  });
+  const invalidOfferSkus = invalidOfferRows.map(({ sellerSku }) => sellerSku);
+  if (new Set(invalidOfferSkus).size !== invalidOfferSkus.length) {
+    throw new Error("Replenishment offer 資料值問題清單含有重複 SKU。");
+  }
   const rejectedSellerSkuRows = integer(
     raw.rejectedSellerSkuRows,
     "Replenishment 缺少可核對 SKU 列數",
@@ -212,7 +227,9 @@ function parseUpstreamCoverage(
   );
   const rejectedOfferRows = returnedOfferRows - acceptedOfferRows;
   const rejectedMetricRows = returnedMetricRows - acceptedMetricRows;
-  const expectedRejectedRows = rejectedOfferRows + rejectedMetricRows;
+  const missingSellerSkuOfferRows = rejectedOfferRows - invalidOfferRows.length;
+  const expectedRejectedSellerSkuRows =
+    missingSellerSkuOfferRows + rejectedMetricRows;
   const expectedMinimumUnresolved = Math.max(
     rejectedOfferRows * requestedMonths,
     rejectedMetricRows,
@@ -221,10 +238,12 @@ function parseUpstreamCoverage(
   if (
     acceptedOfferRows > returnedOfferRows ||
     acceptedMetricRows > returnedMetricRows ||
-    expectedRejectedRows !== rejectedSellerSkuRows ||
+    missingSellerSkuOfferRows < 0 ||
+    expectedRejectedSellerSkuRows !== rejectedSellerSkuRows ||
     expectedMinimumUnresolved !== minimumUnresolvedOfferMonths ||
     (status !== "complete" && status !== "partial") ||
-    status !== (rejectedSellerSkuRows === 0 ? "complete" : "partial")
+    status !==
+      (rejectedOfferRows === 0 && rejectedMetricRows === 0 ? "complete" : "partial")
   ) {
     throw new Error("Amazon Replenishment 回應完整度與原始列數不一致。");
   }
@@ -234,6 +253,7 @@ function parseUpstreamCoverage(
     acceptedOfferRows,
     returnedMetricRows,
     acceptedMetricRows,
+    invalidOfferRows,
     rejectedSellerSkuRows,
     minimumUnresolvedOfferMonths,
     notice: text(raw.notice, "Replenishment 回應完整度說明", 2_000),
@@ -436,6 +456,9 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
   );
   const skus = offers.map(({ sellerSku }) => sellerSku);
   if (new Set(skus).size !== skus.length) throw new Error("全站訂閱健檢含有重複 SKU。");
+  if (upstreamCoverage.invalidOfferRows.some(({ sellerSku }) => skus.includes(sellerSku))) {
+    throw new Error("offer 資料值問題 SKU 不可同時出現在可核對 offer 清單。");
+  }
   const summary = record(raw.summary, "訂閱健檢摘要");
   const currentActiveSubscriptions = integer(
     summary.currentActiveSubscriptions,

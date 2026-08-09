@@ -28,6 +28,31 @@ const CATEGORY_LABELS: Record<string, string> = {
   TAX: "稅務",
 };
 
+const ACCESS_FILTERS = [
+  { value: "ALL", label: "全部可見報表" },
+  { value: "READY", label: "目前站點可規劃" },
+  { value: "EXTRA", label: "需額外角色／資格" },
+  { value: "MARKETPLACE_UNAVAILABLE", label: "目前站點不支援" },
+  { value: "FBA_FILTER_REQUIRED", label: "需 FBA 篩選證據" },
+  { value: "OUT_OF_FBA_SCOPE", label: "非 FBA 範圍" },
+] as const;
+
+type AccessFilter = (typeof ACCESS_FILTERS)[number]["value"];
+
+function matchesAccessFilter(report: ReportCatalogView, filter: AccessFilter): boolean {
+  if (filter === "ALL") return true;
+  if (filter === "READY") return report.state === "READY_TO_PLAN";
+  if (filter === "EXTRA") {
+    return [
+      "EXTRA_ROLE_REQUIRED",
+      "RDT_REQUIRED",
+      "MANUAL_PREREQUISITE",
+      "AMAZON_GENERATED_ONLY",
+    ].includes(report.state);
+  }
+  return report.state === filter;
+}
+
 function errorMessage(value: unknown, fallback: string): string {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const message = (value as { message?: unknown }).message;
@@ -46,6 +71,7 @@ export default function ReportLibraryPanel({
   const [snapshot, setSnapshot] = useState<ReportLibrarySnapshot | null>(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("ALL");
+  const [accessFilter, setAccessFilter] = useState<AccessFilter>("ALL");
   const [busy, setBusy] = useState<string | null>("catalog");
   const [error, setError] = useState<string | null>(null);
   const [plans, setPlans] = useState<Record<string, ReportAccessPlanView>>({});
@@ -84,14 +110,28 @@ export default function ReportLibraryPanel({
   }, [marketplaceId]);
 
   const categories = useMemo(() => {
-    const values = new Set(snapshot?.reports.flatMap((report) => report.categories) ?? []);
+    const values = new Set(
+      snapshot?.reports
+        .filter((report) => report.party !== "VENDOR")
+        .flatMap((report) => report.categories) ?? [],
+    );
     return ["ALL", ...Object.keys(CATEGORY_LABELS).filter((key) => values.has(key))];
   }, [snapshot]);
 
+  const sellerReports = useMemo(
+    () => snapshot?.reports.filter((report) => report.party !== "VENDOR") ?? [],
+    [snapshot],
+  );
+  const visibleAppExports = useMemo(
+    () => snapshot?.currentAppExports.filter((item) => item.id !== "REVIEW_TOPIC_AUDIT_XLSX") ?? [],
+    [snapshot],
+  );
+
   const visibleReports = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("en-US");
-    return (snapshot?.reports ?? []).filter((report) =>
+    return sellerReports.filter((report) =>
       (category === "ALL" || report.categories.includes(category)) &&
+      matchesAccessFilter(report, accessFilter) &&
       (!normalized || [
         report.reportType,
         report.label,
@@ -99,7 +139,7 @@ export default function ReportLibraryPanel({
         report.roles.join(" "),
       ].join(" ").toLocaleLowerCase("en-US").includes(normalized)),
     );
-  }, [snapshot, category, query]);
+  }, [accessFilter, category, query, sellerReports]);
 
   const requestPlan = async (report: ReportCatalogView) => {
     planControllerRef.current?.abort();
@@ -164,10 +204,10 @@ export default function ReportLibraryPanel({
           <section className="report-library-ready" aria-labelledby="report-library-ready-title">
             <div className="report-library-section-heading">
               <div><p className="eyebrow">READY IN AMZ.API</p><h3 id="report-library-ready-title">目前 App 已可匯出</h3></div>
-              <span>{snapshot.currentAppExports.length} 項 Excel 能力</span>
+              <span>{visibleAppExports.length} 項 Excel 能力</span>
             </div>
             <div className="report-library-export-grid">
-              {snapshot.currentAppExports.map((item) => (
+              {visibleAppExports.map((item) => (
                 <article className="report-library-export-card" key={item.id}>
                   <strong>{item.label}</strong>
                   <p>{item.scope}</p>
@@ -186,7 +226,7 @@ export default function ReportLibraryPanel({
                 <p className="eyebrow">AMAZON PUBLIC REPORTS API</p>
                 <h3 id="report-library-catalog-title">Amazon 有的報表類型</h3>
               </div>
-              <span>{snapshot.officialCatalog.uniqueReportTypeCount} 個唯一 report types</span>
+              <span>{sellerReports.length} 個 Seller 可見 report types</span>
             </div>
             <div className="report-library-catalog-notice" role="note">
               <strong>Amazon 有此文件 ≠ 本 App 已可直接下載</strong>
@@ -195,6 +235,12 @@ export default function ReportLibraryPanel({
             </div>
             <div className="report-library-toolbar">
               <label><span className="sr-only">搜尋 report type</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋名稱、reportType 或角色" /></label>
+              <label className="report-library-access-filter">
+                <span className="sr-only">依存取條件篩選</span>
+                <select value={accessFilter} onChange={(event) => setAccessFilter(event.target.value as AccessFilter)}>
+                  {ACCESS_FILTERS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
               <nav aria-label="報表分類">
                 {categories.map((key) => (
                   <button type="button" key={key} className={category === key ? "active" : ""} onClick={() => setCategory(key)}>
@@ -225,6 +271,9 @@ export default function ReportLibraryPanel({
                   </article>
                 );
               })}
+              {!visibleReports.length && (
+                <p className="variation-empty">目前篩選條件沒有符合的 Seller report type。</p>
+              )}
             </div>
           </section>
 

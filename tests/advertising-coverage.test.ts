@@ -2,9 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   auditAdvertisingCoverage,
   parseProductAiCampaignName,
+  prepareAdvertisingCoverageListings,
 } from "../src/main/amazon/advertising-coverage";
 
 describe("FBA advertising coverage audit", () => {
+  it("fails closed for listing errors, invalid ASIN, and missing SKU", () => {
+    expect(() => prepareAdvertisingCoverageListings({
+      rows: [{ sellerSku: "SKU-1", asin: "B092384873", title: "Safe" }],
+      errors: [{ sellerSku: "SKU-2", message: "Listings read failed" }],
+    })).toThrow("不會把部分資料稱為全站");
+    expect(() => prepareAdvertisingCoverageListings({
+      rows: [{ sellerSku: "SKU-1", asin: "", title: "Missing ASIN" }],
+      errors: [],
+    })).toThrow("Seller SKU／ASIN");
+    expect(() => prepareAdvertisingCoverageListings({
+      rows: [{ sellerSku: "", asin: "B092384873", title: "Missing SKU" }],
+      errors: [],
+    })).toThrow("Seller SKU／ASIN");
+  });
   it("parses only the documented ProductAI SP-PAT campaign name", () => {
     expect(
       parseProductAiCampaignName(

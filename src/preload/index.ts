@@ -1,9 +1,10 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 import type {
+  AdvertisingConnectionTestResult,
+  AdvertisingCredentialSummary,
   ApiRequest,
   ApiResponse,
   ConnectionTestResult,
-  CredentialInput,
   CredentialSummary,
   DesktopBridge,
   ExternalDestination,
@@ -73,12 +74,20 @@ const bridge: DesktopBridge = Object.freeze({
   credentials: Object.freeze({
     status: () =>
       ipcRenderer.invoke("fba:credentials-status") as Promise<CredentialSummary>,
-    save: (input: CredentialInput) =>
-      ipcRenderer.invoke("fba:credentials-save", input) as Promise<CredentialSummary>,
+    openEditor: () => ipcRenderer.invoke("fba:credentials-open-editor") as Promise<void>,
     clear: () =>
       ipcRenderer.invoke("fba:credentials-clear") as Promise<CredentialSummary>,
     test: () =>
       ipcRenderer.invoke("fba:credentials-test") as Promise<ConnectionTestResult>,
+  }),
+  advertisingCredentials: Object.freeze({
+    status: () =>
+      ipcRenderer.invoke("fba:ads-credentials-status") as Promise<AdvertisingCredentialSummary>,
+    openEditor: () => ipcRenderer.invoke("fba:ads-credentials-open-editor") as Promise<void>,
+    clear: () =>
+      ipcRenderer.invoke("fba:ads-credentials-clear") as Promise<AdvertisingCredentialSummary>,
+    test: (marketplaceId: string) =>
+      ipcRenderer.invoke("fba:ads-credentials-test", marketplaceId) as Promise<AdvertisingConnectionTestResult>,
   }),
   app: Object.freeze({
     version: () => ipcRenderer.invoke("fba:app-version") as Promise<string>,

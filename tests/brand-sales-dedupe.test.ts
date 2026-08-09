@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +44,47 @@ function body(response: ApiResponse): Record<string, unknown> {
 async function store(): Promise<LocalStore> {
   const directory = await mkdtemp(join(tmpdir(), "brand-sales-dedupe-"));
   const value = new LocalStore(join(directory, "data.json"));
+  await value.initialize();
+  return value;
+}
+
+async function legacyWindowStore(
+  status: "IN_QUEUE" | "DONE" | "CREATION_UNKNOWN",
+): Promise<LocalStore> {
+  const directory = await mkdtemp(join(tmpdir(), "brand-sales-legacy-window-"));
+  const filePath = join(directory, "data.json");
+  const createdAt = new Date("2026-08-09T00:00:00.000Z").getTime();
+  const leg = (name: "listing" | "shipment") => ({
+    reportId: `${name}-legacy-report`,
+    documentId: status === "DONE" ? `${name}-legacy-document` : null,
+    status,
+    createdAt,
+    terminal: status === "CREATION_UNKNOWN" ? "CREATION_UNKNOWN" : null,
+    terminalAt: status === "CREATION_UNKNOWN" ? createdAt + 1 : null,
+  });
+  const key = `${ACCOUNT_SCOPE}:${MARKETPLACE_ID}:2026-08-01:2026-08-07`;
+  await writeFile(filePath, JSON.stringify({
+    version: 2,
+    profiles: {},
+    ledger: {},
+    brandSalesJobs: {
+      [key]: {
+        jobId: `legacy-window-${status.toLowerCase()}`,
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-07",
+        mode: "demo",
+        listing: leg("listing"),
+        shipment: leg("shipment"),
+        createdAt,
+        updatedAt: createdAt + 2,
+        expiresAt: createdAt + 60 * 60 * 1_000,
+      },
+    },
+    sharedAllListingsReports: {},
+  }));
+  const value = new LocalStore(filePath);
   await value.initialize();
   return value;
 }
@@ -122,6 +163,106 @@ describe("durable brand-sales report dedupe", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  });
+
+  it("keeps legacy missing-window active, done, and unknown jobs as fail-closed tombstones", async () => {
+    for (const status of ["IN_QUEUE", "DONE", "CREATION_UNKNOWN"] as const) {
+      const localStore = await legacyWindowStore(status);
+      let listingStarts = 0;
+      let shipmentStarts = 0;
+      const app = router(localStore, {
+        startListing: async () => queuedListing(++listingStarts),
+        startShipment: async () => queuedShipment(++shipmentStarts),
+      });
+
+      const automatic = await brandStart(app);
+      expect(automatic.status).toBe(409);
+      expect(body(automatic).code).toBe("BRAND_REPORT_WINDOW_INCOMPATIBLE");
+      const guardedRetry = await brandStart(app, { retry: true });
+      expect(guardedRetry.status).toBe(409);
+      expect(body(guardedRetry).code).toBe("REPORT_RETRY_WAIT");
+      expect(listingStarts).toBe(0);
+      expect(shipmentStarts).toBe(0);
+
+      const persisted = await localStore.getBrandSalesJob({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-07",
+      });
+      expect(persisted).toMatchObject({
+        windowCompatibility: "MISSING_IMMUTABLE_WINDOW",
+        shipmentDataStartTime: "legacy-missing-immutable-window",
+        shipmentDataEndTime: "legacy-missing-immutable-window",
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      });
+      await localStore.syncProductIdentity({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: `SAFE-${status}`,
+      });
+      const raw = await readFile(localStore.filePath, "utf8");
+      expect(raw).toContain("MISSING_IMMUTABLE_WINDOW");
+      expect(raw).toContain("legacy-missing-immutable-window");
+      expect(raw).not.toMatch(/refresh.?token|client.?secret|lwaClientSecret/iu);
+    }
+  });
+
+  it("replaces every legacy missing-window state only after an explicit guarded retry", async () => {
+    for (const status of ["IN_QUEUE", "DONE", "CREATION_UNKNOWN"] as const) {
+      const localStore = await legacyWindowStore(status);
+      let listingStarts = 0;
+      let shipmentStarts = 0;
+      const app = router(localStore, {
+        startListing: async () => queuedListing(++listingStarts),
+        startShipment: async () => queuedShipment(++shipmentStarts),
+      });
+      const deleteSpy = vi.spyOn(localStore, "deleteBrandSalesJob");
+
+      vi.setSystemTime(new Date("2026-08-09T00:30:01.000Z"));
+      const automatic = await brandStart(app);
+      expect(automatic.status).toBe(409);
+      expect(body(automatic).code).toBe("BRAND_REPORT_WINDOW_INCOMPATIBLE");
+      expect(listingStarts).toBe(0);
+      expect(shipmentStarts).toBe(0);
+
+      const explicit = await brandStart(app, { retry: true });
+      expect(explicit.status).toBe(202);
+      expect(listingStarts).toBe(1);
+      expect(shipmentStarts).toBe(1);
+      const reused = await brandStart(app, { retry: true });
+      expect(reused.status).toBe(202);
+      expect(body(reused).jobId).toBe(body(explicit).jobId);
+      expect(listingStarts).toBe(1);
+      expect(shipmentStarts).toBe(1);
+      expect(deleteSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it("redetects the rollback-safe sentinel when an older v2 writer strips the marker", async () => {
+    const originalStore = await legacyWindowStore("DONE");
+    const raw = JSON.parse(await readFile(originalStore.filePath, "utf8")) as {
+      brandSalesJobs: Record<string, Record<string, unknown>>;
+    };
+    const [job] = Object.values(raw.brandSalesJobs);
+    delete job.windowCompatibility;
+    delete job.originalExpiresAt;
+    await writeFile(originalStore.filePath, JSON.stringify(raw));
+
+    const reopened = new LocalStore(originalStore.filePath);
+    await reopened.initialize();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const app = router(reopened, {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+    });
+
+    const automatic = await brandStart(app);
+    expect(automatic.status).toBe(409);
+    expect(body(automatic).code).toBe("BRAND_REPORT_WINDOW_INCOMPATIBLE");
+    expect(listingStarts).toBe(0);
+    expect(shipmentStarts).toBe(0);
   });
 
   it("single-flights concurrent starts and reuses the exact selection sequentially", async () => {

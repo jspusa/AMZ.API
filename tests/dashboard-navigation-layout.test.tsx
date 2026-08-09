@@ -53,9 +53,9 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain('class="content-audit-home-card image-audit-home-card"');
     expect(markup).toContain("全站圖片健檢");
     expect(markup).toContain("開始全站圖片健檢");
-    expect(markup).toContain("FBA 冗餘庫存健檢");
-    expect(markup).toContain("Amazon 官方 estimated excess quantity");
-    expect(markup).toContain("庫齡會另外顯示，不會被當成冗餘");
+    expect(markup).toContain("FBA 180 天以上庫齡健檢");
+    expect(markup).toContain("主清單只列已經超過 180 天的 FBA 庫存");
+    expect(markup).toContain("estimated excess 預估與費用放在獨立分頁");
     expect(markup).not.toContain("FBA 庫齡、冗餘與官方預估費用");
     expect(markup).toContain("廣告覆蓋健檢");
     expect(markup).toContain("未綁變體健檢");
@@ -101,6 +101,8 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("<ReviewAuditPanel");
     expect(source).toContain("openReportExport");
     expect(source).toContain('label: "報表區"');
+    expect(source).toContain('tools: ["price", "promotion"]');
+    expect(source).toContain('.filter((entry) => entry.id !== "review-audit")');
   });
 
   it("renders injected report entries without coupling them to a renderer tool", () => {

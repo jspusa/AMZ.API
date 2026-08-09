@@ -361,6 +361,13 @@ function safeFilename(response: Response, fallback: string): string {
   return candidate.replace(/[\\/:*?"<>|]/g, "-");
 }
 
+export function contentLookupErrorMessage(
+  message: string,
+  quickEditAttempt: boolean,
+): string {
+  return quickEditAttempt ? `立刻修改未開始：${message}` : message;
+}
+
 export default function SkuOperationsDrawer({
   initialMarketplaceId,
   initialSellerSku = "",
@@ -639,7 +646,11 @@ export default function SkuOperationsDrawer({
     [marketplaceId],
   );
 
-  const lookupSingle = useCallback(async (event?: FormEvent, sellerSkuOverride?: string) => {
+  const lookupSingle = useCallback(async (
+    event?: FormEvent,
+    sellerSkuOverride?: string,
+    quickEditAttempt = false,
+  ) => {
     event?.preventDefault();
     if (event) setQuickEditFocus(null);
     const sellerSku = (sellerSkuOverride ?? skuInput).trim();
@@ -668,9 +679,10 @@ export default function SkuOperationsDrawer({
       onContextResolved?.(marketplaceId, snapshot.sellerSku);
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
-      setError(
-        requestError instanceof Error ? requestError.message : "目前無法查詢這個 SKU。",
-      );
+      const message = requestError instanceof Error
+        ? requestError.message
+        : "目前無法查詢這個 SKU。";
+      setError(contentLookupErrorMessage(message, quickEditAttempt));
     } finally {
       if (lookupAbortRef.current === controller) setLookupLoading(false);
     }
@@ -683,7 +695,7 @@ export default function SkuOperationsDrawer({
     setQuickEditFocus(focus ?? null);
     setReturnToAudit(true);
     setTab("single");
-    void lookupSingle(undefined, sellerSku);
+    void lookupSingle(undefined, sellerSku, Boolean(focus));
   }, [lookupSingle]);
 
   useEffect(() => {
@@ -1103,17 +1115,10 @@ export default function SkuOperationsDrawer({
                       <div><dt>本次查詢</dt><dd>{formatDateTime(listing.fetchedAt)}</dd></div>
                     </dl>
 
-                    <div className="ops-section-heading">
-                      <div>
-                        <span>{activeQuickEditFocus ? "FIX FLAGGED CONTENT" : "EDIT CONTENT"}</span>
-                        <h3>{activeQuickEditFocus ? "只修改健檢指出的欄位" : "直接修改商品內容"}</h3>
-                      </div>
-                      <small>{changedFields.length ? `已變更 ${changedFields.length} 個欄位` : "尚未變更"}</small>
-                    </div>
-
                     {activeQuickEditFocus && (
                       <div className="content-audit-quick-edit-notice" role="note">
                         <strong>立刻修改模式</strong>
+                        <p>本次錯誤原因：{activeQuickEditFocus.reason}</p>
                         <p>只顯示這次健檢有問題的內容；其他 Amazon 原值仍會原樣帶入預檢，不會被清空。</p>
                         {activeQuickEditFocus.relocationNote && (
                           <p>{activeQuickEditFocus.relocationNote}</p>
@@ -1127,9 +1132,20 @@ export default function SkuOperationsDrawer({
                         role="alert"
                       >
                         <strong>健檢定位已失效，已顯示完整編輯</strong>
-                        <p>{staleQuickEditNotice}</p>
+                        {quickEditFocus && (
+                          <p>本次錯誤原因：{quickEditFocus.reason}</p>
+                        )}
+                        <p>無法定位原因：{staleQuickEditNotice}</p>
                       </div>
                     )}
+
+                    <div className="ops-section-heading">
+                      <div>
+                        <span>{activeQuickEditFocus ? "FIX FLAGGED CONTENT" : "EDIT CONTENT"}</span>
+                        <h3>{activeQuickEditFocus ? "只修改健檢指出的欄位" : "直接修改商品內容"}</h3>
+                      </div>
+                      <small>{changedFields.length ? `已變更 ${changedFields.length} 個欄位` : "尚未變更"}</small>
+                    </div>
 
                     <section
                       className="batch-panel"

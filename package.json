@@ -1,6 +1,6 @@
 {
   "name": "amz-api",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "A private, local-first Amazon FBA operations console for macOS.",
   "private": true,
   "type": "module",

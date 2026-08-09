@@ -10,8 +10,10 @@ Signed macOS Key Bridge
   ├─ preload: frozen, typed, allowlisted bridge（只在 App 視窗存在）
   └─ main
       ├─ credential vault → macOS Keychain / safeStorage
+      ├─ Ads credential vault → 獨立 `ads-credentials.enc`
       ├─ API router → strict route and payload validation
       ├─ Amazon SP-API client → fixed regional endpoints
+      ├─ Amazon Ads client → fixed token / profiles / query endpoints
       ├─ local store → product master + idempotency ledger + report leases
       └─ optional R2 client → user's own public image bucket
 ```
@@ -20,7 +22,7 @@ Signed macOS Key Bridge
 
 HTTPS GitHub 網頁直接呼叫 `http://127.0.0.1` 會受到 Local Network Access、mixed-content 與 CORS 的瀏覽器差異影響，因此一般 Safari／Chrome 分頁不連 localhost，也不會取得 Bridge。Mac App 自己載入精確的 GitHub Pages 文件，再透過 preload 提供最小 IPC。GitHub 改版會自動生效，但 Amazon API Secret、LWA token 交換與所有 upstream request 仍只存在 main process。
 
-GitHub renderer 是受信任的操作介面：若 repository、GitHub 帳號或 Pages 供應鏈被入侵，惡意介面可能讀到 App 回傳的非 Secret Amazon 營運資料或誘導操作。因此所有寫入仍由 main process 依固定 route 重建 native Touch ID 理由並要求本機確認；remote renderer 永遠拿不到解密後的 API Secret。
+GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸入邊界。SP-API／R2／Skill 與 Ads 的敏感欄位只能在 main process 建立的 modal child BrowserWindow 輸入；本機 sheet 載入 packaged static data HTML、使用獨立非持久 session，CSP 禁止所有 network，各 save IPC 只接受對應 sheet 的 exact main frame。Pages 只能開啟 sheet、讀取 redacted status、測試或清除，直接呼叫 save 會被 main 拒絕。保存後 input 立即清空並關閉 sheet；Secret、access token、Profile ID 與完整帳號識別碼永遠不回傳 Pages renderer。
 
 ## API 相容層
 
@@ -43,13 +45,15 @@ GitHub renderer 是受信任的操作介面：若 repository、GitHub 帳號或 
 - Public accounting capability and report-access planning
 - SKU command center
 - Product master
-- Health / Ads status
+- Health / Ads status + FBA-only Ads coverage
 
 其他 path／method 回 `404`；renderer 無法指定 Amazon host 或任意 upstream URL。
 
 全站文案與圖片健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料，renderer 仍會核對回應站點後才顯示或快取；英文拼字再由 sandboxed preload 呼叫 Mac 內建 spellchecker，文案不會送往第三方。Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
 
 Reports 建立由 main process 的 account-scoped broker 協調。相同 account、marketplace、mode、report type 與 options 的 all-listings report 可由品牌、未綁變體、評論與內容／圖片匯出共用；日期型 shipment report 另外綁 exact window。Local store 只保存不含憑證的短效 report ID／狀態 tombstone，程序內用 single-flight 與單調狀態更新防止重複建立或完成狀態回退。`CANCELLED`、`FATAL` 或建立結果不明都不會由自動載入盲目重建；明確使用者再試仍受安全等待與 mode/account 驗證。
+
+Amazon Ads 使用與 SP-API 分離的 LWA App 與 vault。main process 只允許官方固定的 NA／EU／FE token、`/v2/profiles` 與 `/adsApi/v1/query/campaigns` endpoint；access token 保存在程序記憶體且用 single-flight 更新，Seller Profile 依 exact marketplace 自動發現並只留在 main。Profile 與 verified cache 同時綁 Ads vault scope 與目前 SP account scope；SP 憑證儲存或清除會立即失效 Ads cache，query 前後也會重新核對。OAuth scope 必須依 Amazon 官方使用 `advertising::campaign_management`，但實際使用者權限應為 Campaign manager Viewer；App 沒有 Ads write router 或 client method，`writeEnabled` 永遠為 false。覆蓋健檢只對已驗證且身分完整的 FBA all-listings 與 ENABLED Sponsored Products 進行比對；任何 listing error、缺 SKU 或無效 ASIN 都停止整次健檢，不會輸出偽裝成全站的部分 snapshot。
 
 評論健檢先以 FBA all-listings report 建立 seed，再以 Listings `searchListingsItems` 每批最多 20 SKU 驗證 exact current-marketplace relationships。只有 child 與 standalone 會進 Customer Feedback；parent 明確排除，缺站點、ASIN 衝突、relationships 歧義或批次失敗都列為未完成。Customer Feedback 呼叫跨工作共用 1 request/second 節流；結果只稱為正／負主題星等影響，不冒充總星等、評論數或全文。
 
@@ -60,6 +64,7 @@ Variation family 本身仍是唯讀查詢。唯一 mutation 是固定的 `/api/s
 ## 儲存
 
 - `credentials.enc`：Keychain-backed encrypted vault，只含密文。
+- `ads-credentials.enc`：獨立的 Ads Keychain-backed encrypted vault；不改寫 `credentials.enc`，也不改變既有 LocalStore 格式。
 - `fba-os-data.json`：商品補貨主檔、idempotency ledger 與不含憑證的短效 report lease/tombstone；維持可由上一版忽略的相容格式。
 - Renderer session 使用非持久 partition；偏好資料不應承載秘密。
 

@@ -175,6 +175,8 @@ export type ReplenishmentUpstreamCoverage = {
   acceptedOfferRows: number;
   returnedMetricRows: number;
   acceptedMetricRows: number;
+  /** Rows with an exact Seller SKU whose offer values could not be parsed safely. */
+  invalidOfferRows: ReplenishmentInvalidOfferRow[];
   rejectedSellerSkuRows: number;
   /**
    * Lower bound only. Offer rows and metric rows without an exact Seller SKU
@@ -182,6 +184,11 @@ export type ReplenishmentUpstreamCoverage = {
    */
   minimumUnresolvedOfferMonths: number;
   notice: string;
+};
+
+export type ReplenishmentInvalidOfferRow = {
+  sellerSku: string;
+  problem: string;
 };
 
 export type FbaSubscriptionAuditSnapshot = {
@@ -258,12 +265,14 @@ type ParsedPage<T> = {
   totalResults: number;
   sourceItemCount: number;
   rejectedSellerSkuRows: number;
+  invalidOfferRows: ReplenishmentInvalidOfferRow[];
 };
 
 type FetchedPages<T> = {
   items: T[];
   sourceRows: number;
   rejectedSellerSkuRows: number;
+  invalidOfferRows: ReplenishmentInvalidOfferRow[];
 };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -639,6 +648,7 @@ export function parseReplenishmentOffersPage(
     );
   }
   const items: CurrentSubscriptionOffer[] = [];
+  const invalidOfferRows: ReplenishmentInvalidOfferRow[] = [];
   let rejectedSellerSkuRows = 0;
   for (const offer of raw.offers) {
     const candidate = record(offer, "Subscribe & Save offer");
@@ -654,20 +664,28 @@ export function parseReplenishmentOffersPage(
       rejectedSellerSkuRows += 1;
       continue;
     }
-    items.push(
-      parseCurrentOffer(
-        candidate,
-        supported.marketplaceId,
-        supported.currencyCode,
-        sku,
-      ),
-    );
+    try {
+      items.push(
+        parseCurrentOffer(
+          candidate,
+          supported.marketplaceId,
+          supported.currencyCode,
+          sku,
+        ),
+      );
+    } catch (error) {
+      if (!(error instanceof ReplenishmentAuditError) || error.code !== "RESPONSE_INVALID") {
+        throw error;
+      }
+      invalidOfferRows.push({ sellerSku: sku, problem: error.message });
+    }
   }
   return {
     items,
     totalResults: parsePagination(raw.pagination, MAX_OFFER_RESULTS),
     sourceItemCount: raw.offers.length,
     rejectedSellerSkuRows,
+    invalidOfferRows,
   };
 }
 
@@ -855,6 +873,7 @@ export function parseReplenishmentOfferMetricsPage(
     totalResults: parsePagination(raw.pagination, MAX_METRIC_RESULTS),
     sourceItemCount: raw.offers.length,
     rejectedSellerSkuRows,
+    invalidOfferRows: [],
   };
 }
 
@@ -956,6 +975,7 @@ async function fetchAllPages<T>(input: {
   let expectedTotal: number | null = null;
   let sourceRows = 0;
   let rejectedSellerSkuRows = 0;
+  const invalidOfferRows: ReplenishmentInvalidOfferRow[] = [];
   for (let offset = 0; ; offset += input.pageSize) {
     if (offset > MAX_PAGE_OFFSET) {
       throw new ReplenishmentAuditError(
@@ -980,6 +1000,16 @@ async function fetchAllPages<T>(input: {
     );
     sourceRows += page.sourceItemCount;
     rejectedSellerSkuRows += page.rejectedSellerSkuRows;
+    for (const invalid of page.invalidOfferRows) {
+      if (seen.has(invalid.sellerSku)) {
+        throw new ReplenishmentAuditError(
+          "DUPLICATE_SKU",
+          `Amazon Replenishment 分頁重複回傳 SKU ${invalid.sellerSku}，已停止合併。`,
+        );
+      }
+      seen.add(invalid.sellerSku);
+      invalidOfferRows.push(invalid);
+    }
     for (const item of page.items) {
       const key = input.key(item);
       if (seen.has(key)) {
@@ -992,7 +1022,7 @@ async function fetchAllPages<T>(input: {
       result.push(item);
     }
     if (sourceRows === expectedTotal) {
-      return { items: result, sourceRows, rejectedSellerSkuRows };
+      return { items: result, sourceRows, rejectedSellerSkuRows, invalidOfferRows };
     }
   }
 }
@@ -1009,21 +1039,25 @@ function upstreamCoverage(
 ): ReplenishmentUpstreamCoverage {
   const rejectedSellerSkuRows =
     offers.rejectedSellerSkuRows + metrics.rejectedSellerSkuRows;
+  const invalidOfferRows = [...offers.invalidOfferRows].sort((left, right) =>
+    left.sellerSku.localeCompare(right.sellerSku));
   const minimumUnresolvedOfferMonths = Math.max(
-    offers.rejectedSellerSkuRows * intervalCount,
+    (offers.rejectedSellerSkuRows + invalidOfferRows.length) * intervalCount,
     metrics.rejectedSellerSkuRows,
   );
+  const incompleteRows = rejectedSellerSkuRows + invalidOfferRows.length;
   return {
-    status: rejectedSellerSkuRows === 0 ? "complete" : "partial",
+    status: incompleteRows === 0 ? "complete" : "partial",
     returnedOfferRows: offers.sourceRows,
     acceptedOfferRows: offers.items.length,
     returnedMetricRows: metrics.sourceRows,
     acceptedMetricRows: metrics.acceptedRows,
+    invalidOfferRows,
     rejectedSellerSkuRows,
     minimumUnresolvedOfferMonths,
-    notice: rejectedSellerSkuRows === 0
+    notice: incompleteRows === 0
       ? "Amazon Replenishment 回應中的 Seller SKU 均可原樣核對。"
-      : `Amazon Replenishment 有 ${rejectedSellerSkuRows} 列未提供可原樣核對的 Seller SKU；至少 ${minimumUnresolvedOfferMonths} 個 SKU 月份無法核對。offer 與月度缺列可能不屬於同一 SKU，實際缺口無法精確計算；已排除這些列並將整體資料標為不完整，未接受別名、trim 或改寫 identifier。`,
+      : `Amazon Replenishment 有 ${rejectedSellerSkuRows} 列未提供可原樣核對的 Seller SKU，另有 ${invalidOfferRows.length} 列雖有精確 Seller SKU、但 offer 資料值無法安全解析；至少 ${minimumUnresolvedOfferMonths} 個 SKU 月份無法核對。offer 與月度缺列可能不屬於同一 SKU，實際缺口無法精確計算；已排除這些列並將整體資料標為不完整，未接受別名、trim、改寫 identifier 或用 0 代替錯誤值。`,
   };
 }
 
@@ -1329,6 +1363,7 @@ export async function fetchFbaSubscriptionAuditHistory(input: {
       revenue.length,
       inventoryCoverageIncomplete ||
         currentPages.rejectedSellerSkuRows > 0 ||
+        currentPages.invalidOfferRows.length > 0 ||
         (rejectedMetricsByMonth.get(interval.month) ?? 0) > 0 ||
         offers.length !== input.knownFbaSkus.size,
     );

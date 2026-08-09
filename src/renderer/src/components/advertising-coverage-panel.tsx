@@ -31,10 +31,19 @@ export default function AdvertisingCoveragePanel({
     setError(null);
     try {
       const params = new URLSearchParams({ marketplaceId });
-      const response = await fetch(`/api/amazon-ads/coverage?${params}`, {
-        cache: "no-store",
-      });
-      const payload = await response.json() as unknown;
+      let response: Response | null = null;
+      let payload: unknown = null;
+      for (let attempt = 0; attempt < 90; attempt += 1) {
+        response = await fetch(`/api/amazon-ads/coverage?${params}`, {
+          cache: "no-store",
+        });
+        payload = await response.json() as unknown;
+        if (response.status !== 202) break;
+        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+      }
+      if (!response || response.status === 202) {
+        throw new Error("Amazon 全商品報表仍在準備；請稍後再重新掃描。");
+      }
       if (!response.ok) {
         const problem = payload && typeof payload === "object"
           ? payload as { message?: unknown }

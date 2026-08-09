@@ -1,10 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AdvertisingGateway } from "../src/main/amazon/ads-api";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const previousMode = process.env.SP_API_MODE;
+const previousClientId = process.env.SP_API_LWA_CLIENT_ID;
+const previousClientSecret = process.env.SP_API_LWA_CLIENT_SECRET;
+const previousRefreshToken = process.env.SP_API_REFRESH_TOKEN_NA;
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
 function request(path: string): ApiRequest {
@@ -15,6 +19,13 @@ function request(path: string): ApiRequest {
     query: { marketplaceId: MARKETPLACE_ID },
     headers: {},
   };
+}
+
+function useLiveSpMode(): void {
+  process.env.SP_API_MODE = "live";
+  process.env.SP_API_LWA_CLIENT_ID = "test-client";
+  process.env.SP_API_LWA_CLIENT_SECRET = "test-secret";
+  process.env.SP_API_REFRESH_TOKEN_NA = "test-refresh";
 }
 
 describe("advertising coverage route boundary", () => {
@@ -31,6 +42,12 @@ describe("advertising coverage route boundary", () => {
   afterEach(() => {
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
+    if (previousClientId === undefined) delete process.env.SP_API_LWA_CLIENT_ID;
+    else process.env.SP_API_LWA_CLIENT_ID = previousClientId;
+    if (previousClientSecret === undefined) delete process.env.SP_API_LWA_CLIENT_SECRET;
+    else process.env.SP_API_LWA_CLIENT_SECRET = previousClientSecret;
+    if (previousRefreshToken === undefined) delete process.env.SP_API_REFRESH_TOKEN_NA;
+    else process.env.SP_API_REFRESH_TOKEN_NA = previousRefreshToken;
   });
 
   it("runs the naming and same-ASIN engine only in explicit demo mode", async () => {
@@ -55,7 +72,7 @@ describe("advertising coverage route boundary", () => {
   });
 
   it("never substitutes demo campaigns when Ads API is not connected", async () => {
-    delete process.env.SP_API_MODE;
+    useLiveSpMode();
     const status = await router.handle(request("/api/amazon-ads/status"));
     if (status.body.kind !== "json") throw new Error("Expected status JSON");
     expect(status.body.value).toMatchObject({ coverageAuditAvailable: false });
@@ -65,5 +82,72 @@ describe("advertising coverage route boundary", () => {
     expect(coverage.body.kind).toBe("json");
     if (coverage.body.kind !== "json") throw new Error("Expected problem JSON");
     expect(coverage.body.value).toMatchObject({ code: "ADS_API_NOT_CONNECTED" });
+  });
+
+  it("never calls a live Ads gateway while the marketplace is in demo mode", async () => {
+    process.env.SP_API_MODE = "demo";
+    const advertising: AdvertisingGateway = {
+      getCredentialSummary: vi.fn(),
+      probeMarketplace: vi.fn(),
+      listEnabledSponsoredProductCampaigns: vi.fn(),
+      invalidate: vi.fn(),
+    };
+    const demoRouter = new ApiRouter({
+      store: {} as LocalStore,
+      vault: {} as CredentialVault,
+      approveWrite: async () => undefined,
+      advertising,
+    });
+
+    const status = await demoRouter.handle(request("/api/amazon-ads/status"));
+    expect(status.status).toBe(200);
+    expect(advertising.getCredentialSummary).not.toHaveBeenCalled();
+    expect(advertising.probeMarketplace).not.toHaveBeenCalled();
+    expect(advertising.listEnabledSponsoredProductCampaigns).not.toHaveBeenCalled();
+  });
+
+  it("reports a verified live Viewer connection without enabling campaign writes", async () => {
+    useLiveSpMode();
+    const advertising: AdvertisingGateway = {
+      getCredentialSummary: vi.fn(async () => ({
+        encryptionAvailable: true,
+        hasVault: true,
+        configured: true,
+        lwaConfigured: true,
+        refreshTokenConfigured: true,
+        oauthRegion: "na" as const,
+        updatedAt: "2026-08-09T00:00:00.000Z",
+      })),
+      probeMarketplace: vi.fn(async () => ({
+        ok: true,
+        testedAt: "2026-08-09T00:00:01.000Z",
+        marketplaceId: MARKETPLACE_ID,
+        marketplaceCode: "US",
+        accountType: "seller" as const,
+        message: "Amazon Ads US 唯讀連線成功。",
+        requestId: null,
+      })),
+      listEnabledSponsoredProductCampaigns: vi.fn(async () => []),
+      invalidate: vi.fn(),
+    };
+    const liveRouter = new ApiRouter({
+      store: {} as LocalStore,
+      vault: {} as CredentialVault,
+      approveWrite: async () => undefined,
+      advertising,
+    });
+
+    const status = await liveRouter.handle(request("/api/amazon-ads/status"));
+    expect(status.body.kind).toBe("json");
+    if (status.body.kind !== "json") throw new Error("Expected status JSON");
+    expect(status.body.value).toMatchObject({
+      configured: true,
+      verified: true,
+      profileConfigured: true,
+      requiredPermission: "Campaign manager Viewer",
+      permissionVerified: false,
+      writeEnabled: false,
+      coverageAuditAvailable: true,
+    });
   });
 });

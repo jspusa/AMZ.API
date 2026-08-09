@@ -58,10 +58,13 @@ function revenueCoverageNote(snapshot: SubscriptionAuditSnapshot): string {
       gaps.push(`有 ${inventoryRowsUnrecognized.toLocaleString("zh-TW")} 列 Seller SKU 無法原樣辨識，其他有效 SKU 已繼續核對`);
     }
     if (inventoryGap > 0) {
-      gaps.push(`同次已證明 FBA 的 SKU 中，另有 ${inventoryGap.toLocaleString("zh-TW")} 個未回傳可核對的 Replenishment offer；不能據此判定不符合資格或 0 訂閱`);
+      gaps.push(`同次已證明 FBA 的 SKU 中，另有 ${inventoryGap.toLocaleString("zh-TW")} 個未取得可核對的 Replenishment offer（未回傳或資料值無法安全解析）；不能據此判定不符合資格或 0 訂閱`);
     }
     if (snapshot.upstreamCoverage.status === "partial") {
       gaps.push(`另至少 ${snapshot.upstreamCoverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，offer 與月度缺列可能不重疊，實際缺口無法精確計算`);
+      if (snapshot.upstreamCoverage.invalidOfferRows.length > 0) {
+        gaps.push(`其中 ${snapshot.upstreamCoverage.invalidOfferRows.length.toLocaleString("zh-TW")} 列有精確 Seller SKU，但 offer 資料值無法安全解析；未改寫或補 0`);
+      }
     }
     return `${verifiedScope}；${gaps.join("；")}；不以部分資料冒充全站總額。`;
   }
@@ -111,15 +114,25 @@ export function SubscriptionUpstreamCoverageWarning({
   coverage: SubscriptionUpstreamCoverage;
 }) {
   if (coverage.status === "complete") return null;
+  const rejectedRows =
+    coverage.returnedOfferRows - coverage.acceptedOfferRows +
+    coverage.returnedMetricRows - coverage.acceptedMetricRows;
   return (
     <div className="variation-warning" role="status">
       <strong>Amazon 回應資料不完整</strong>
       <p>{coverage.notice}</p>
       <small>
-        至少 {coverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，且實際缺口無法精確計算。已排除 {coverage.rejectedSellerSkuRows.toLocaleString("zh-TW")} 列；
+        至少 {coverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，且實際缺口無法精確計算。已排除 {rejectedRows.toLocaleString("zh-TW")} 列；其中 {coverage.rejectedSellerSkuRows.toLocaleString("zh-TW")} 列缺少可原樣核對的 Seller SKU、{coverage.invalidOfferRows.length.toLocaleString("zh-TW")} 列有精確 SKU 但資料值無法安全解析。
         offer 可核對 {coverage.acceptedOfferRows.toLocaleString("zh-TW")}／{coverage.returnedOfferRows.toLocaleString("zh-TW")}，
         月度列可核對 {coverage.acceptedMetricRows.toLocaleString("zh-TW")}／{coverage.returnedMetricRows.toLocaleString("zh-TW")}。
       </small>
+      {coverage.invalidOfferRows.length > 0 && (
+        <ul aria-label="Replenishment offer 資料值未完成清單">
+          {coverage.invalidOfferRows.map((row) => (
+            <li key={row.sellerSku}><strong>{row.sellerSku}</strong>：{row.problem}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -142,7 +155,7 @@ export function SubscriptionInventoryCoverageNotice({
           : ""}
         Replenishment API 回傳可核對 offer {evidence.verifiableReplenishmentOfferCount.toLocaleString("zh-TW")} 個；
         {gap > 0
-          ? `另有 ${gap.toLocaleString("zh-TW")} 個 FBA SKU 未回傳可核對 offer。這不代表不符合資格，也不代表 0 訂閱。`
+          ? `另有 ${gap.toLocaleString("zh-TW")} 個 FBA SKU 未取得可核對 offer（未回傳或資料值無法安全解析）。這不代表不符合資格，也不代表 0 訂閱。`
           : "所有已證明 FBA SKU 都有可核對的 offer。"}
       </p>
     </div>
@@ -361,7 +374,7 @@ export default function SubscriptionAuditPanel({
           <div className="subscription-audit-summary">
             <article><span>{snapshot.inventoryEvidence.coverage === "partial" ? "可原樣辨識 FBA SKU" : "同次已證明 FBA SKU"}</span><strong>{snapshot.inventoryEvidence.provenSkuCount.toLocaleString("zh-TW")}</strong></article>
             <article><span>可核對 S&S offer</span><strong>{snapshot.inventoryEvidence.verifiableReplenishmentOfferCount.toLocaleString("zh-TW")}</strong></article>
-            <article><span>未回傳可核對 offer</span><strong>{snapshot.inventoryEvidence.unverifiedFbaSkuCount.toLocaleString("zh-TW")}</strong></article>
+            <article><span>未取得可核對 offer</span><strong>{snapshot.inventoryEvidence.unverifiedFbaSkuCount.toLocaleString("zh-TW")}</strong></article>
             <article><span>可核對 offer 有效訂閱</span><strong>{snapshot.summary.currentActiveSubscriptions.toLocaleString("zh-TW")}</strong></article>
             {revenueSummary && (
               <article>

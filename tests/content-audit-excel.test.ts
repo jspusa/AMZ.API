@@ -61,6 +61,7 @@ describe("content audit Excel", () => {
     const archive = unzipSync(createContentAuditWorkbook(snapshot, "US"));
     const workbook = strFromU8(archive["xl/workbook.xml"]);
     const productSheet = strFromU8(archive["xl/worksheets/sheet1.xml"]);
+    const styles = strFromU8(archive["xl/styles.xml"]);
 
     expect(workbook).toContain('sheet name="內容健檢"');
     expect(archive["xl/worksheets/sheet2.xml"]).toBeUndefined();
@@ -76,6 +77,11 @@ describe("content audit Excel", () => {
     expect(productSheet).toContain("Gentle");
     expect(productSheet).toContain("應手動修改此段");
     expect(productSheet).toContain('<color rgb="FFC62828"/>');
+    expect(styles).toContain('<fgColor rgb="FFFFF2CC"/>');
+    expect(styles).toContain('fillId="3"');
+    expect(productSheet).toMatch(/<c r="F2" s="5" t="inlineStr">/u);
+    expect(productSheet).toMatch(/<c r="E2" s="3" t="inlineStr">/u);
+    expect(productSheet).toMatch(/<c r="K2" s="3" t="inlineStr">/u);
     expect(productSheet).toContain("⟦U+200B 零寬空格⟧");
     expect(productSheet).toMatch(
       /<r><rPr><b\/><color rgb="FFC62828"\/>.*?<t xml:space="preserve">⟦U\+200B 零寬空格⟧<\/t><\/r>/u,

@@ -157,6 +157,20 @@ describe("sales trend comparison chart", () => {
     expect(nextSkaterIndex(0, 1, 0)).toBe(0);
   });
 
+  it("enables WASD controls across the chart without hijacking text fields", async () => {
+    const source = await readFile(
+      new URL("../src/renderer/src/components/sales-trend-chart.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain('key === "a" || key === "d"');
+    expect(source).toContain('key === "w"');
+    expect(source).toContain('key === "s"');
+    expect(source).toContain('["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)');
+    expect(source).toContain('window.addEventListener("keydown", onKeyDown)');
+    expect(source).toContain("event.defaultPrevented");
+    expect(source).toContain("A D 或左右鍵移動");
+  });
+
   it("offers 7, 14, 30, and 90 day presets and marks the selected 90-day range", () => {
     const amounts = Array.from({ length: 90 }, (_, index) => 100 + index);
     const markup = render({

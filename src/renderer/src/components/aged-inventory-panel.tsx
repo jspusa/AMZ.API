@@ -16,7 +16,7 @@ type AgedInventoryRow = {
   asin: string;
   title: string;
   condition: string;
-  available: number;
+  available: number | null;
   totalAgedUnits: number;
   agedOver180: number;
   ageBuckets: Array<{
@@ -56,11 +56,14 @@ type AgedInventorySnapshot = {
     agedOver180: number;
     excessAvailability: FeeAvailability;
     estimatedExcessQuantity: number | null;
+    excessReportedSkuCount: number;
     currencyCode: string | null;
     storageCostAvailability: FeeAvailability;
     estimatedStorageCostNextMonth: number | null;
+    storageCostReportedSkuCount: number;
     agedSurchargeAvailability: FeeAvailability;
     estimatedAgedSurcharge: number | null;
+    agedSurchargeReportedSkuCount: number;
   };
   expiration: {
     currentFbaExpirationDatesAvailable: false;
@@ -149,7 +152,7 @@ export function parseAgedInventorySnapshot(
       typeof raw.asin !== "string" ||
       typeof raw.title !== "string" ||
       typeof raw.condition !== "string" ||
-      !nonNegativeInteger(raw.available) ||
+      !nullableNonNegativeInteger(raw.available) ||
       !nonNegativeInteger(raw.totalAgedUnits) ||
       !nonNegativeInteger(raw.agedOver180) ||
       !Array.isArray(raw.ageBuckets) ||
@@ -255,9 +258,11 @@ export function parseAgedInventorySnapshot(
     }
     surchargeBucketSignature = nextSurchargeSignature;
     if (
-      (raw.estimatedStorageCostNextMonth !== null ||
-        raw.estimatedAgedSurcharge !== null ||
-        agedSurchargeBuckets.some((bucket) => bucket.estimatedCharge !== null)) &&
+      ((raw.estimatedStorageCostNextMonth ?? 0) > 0 ||
+        (raw.estimatedAgedSurcharge ?? 0) > 0 ||
+        agedSurchargeBuckets.some(
+          (bucket) => (bucket.estimatedCharge ?? 0) > 0,
+        )) &&
       raw.currencyCode === null
     ) {
       throw new Error("FBA 庫齡費用缺少幣別，已停止顯示。");
@@ -310,26 +315,29 @@ export function parseAgedInventorySnapshot(
   }
   const storageValues = rows.map((row) => row.estimatedStorageCostNextMonth);
   const surchargeValues = rows.map((row) => row.estimatedAgedSurcharge);
-  const expectedExcess = excessAvailability === "complete" &&
-    excessValues.every((item) => item !== null)
-    ? excessValues.reduce((sum, item) => sum + item!, 0)
+  const excessReportedSkuCount = excessValues.filter((item) => item !== null).length;
+  const storageCostReportedSkuCount = storageValues.filter((item) => item !== null).length;
+  const agedSurchargeReportedSkuCount = surchargeValues.filter((item) => item !== null).length;
+  const expectedExcess = excessAvailability !== "unavailable" && excessReportedSkuCount > 0
+    ? excessValues.reduce<number>((sum, item) => sum + (item ?? 0), 0)
     : null;
-  const expectedStorageCost = storageCostAvailability === "complete" &&
-    storageValues.every((item) => item !== null)
-    ? Number(storageValues.reduce((sum, item) => sum + item!, 0).toFixed(2))
+  const expectedStorageCost = storageCostAvailability !== "unavailable" && storageCostReportedSkuCount > 0
+    ? Number(storageValues.reduce<number>((sum, item) => sum + (item ?? 0), 0).toFixed(2))
     : null;
-  const expectedAgedSurcharge = agedSurchargeAvailability === "complete" &&
-    surchargeValues.every((item) => item !== null)
-    ? Number(surchargeValues.reduce((sum, item) => sum + item!, 0).toFixed(2))
+  const expectedAgedSurcharge = agedSurchargeAvailability !== "unavailable" && agedSurchargeReportedSkuCount > 0
+    ? Number(surchargeValues.reduce<number>((sum, item) => sum + (item ?? 0), 0).toFixed(2))
     : null;
   const statusesConsistent =
-    (excessAvailability !== "complete" || expectedExcess !== null) &&
-    (excessAvailability !== "unavailable" || excessValues.every((item) => item === null)) &&
-    (storageCostAvailability !== "complete" || expectedStorageCost !== null) &&
-    (storageCostAvailability !== "unavailable" || storageValues.every((item) => item === null)) &&
-    (agedSurchargeAvailability !== "complete" || expectedAgedSurcharge !== null) &&
+    (excessAvailability !== "complete" || excessReportedSkuCount === rows.length) &&
+    (excessAvailability !== "partial" || excessReportedSkuCount < rows.length) &&
+    (excessAvailability !== "unavailable" || excessReportedSkuCount === 0) &&
+    (storageCostAvailability !== "complete" || storageCostReportedSkuCount === rows.length) &&
+    (storageCostAvailability !== "partial" || storageCostReportedSkuCount < rows.length) &&
+    (storageCostAvailability !== "unavailable" || storageCostReportedSkuCount === 0) &&
+    (agedSurchargeAvailability !== "complete" || agedSurchargeReportedSkuCount === rows.length) &&
+    (agedSurchargeAvailability !== "partial" || agedSurchargeReportedSkuCount < rows.length) &&
     (agedSurchargeAvailability !== "unavailable" ||
-      (surchargeValues.every((item) => item === null) &&
+      (agedSurchargeReportedSkuCount === 0 &&
         rows.every((row) => row.agedSurchargeBuckets.length === 0)));
   if (
     value.summary.skuCount !== rows.length ||
@@ -337,9 +345,12 @@ export function parseAgedInventorySnapshot(
     value.summary.totalAgedUnits !== totalAgedUnits ||
     value.summary.agedOver180 !== agedOver180 ||
     value.summary.estimatedExcessQuantity !== expectedExcess ||
+    value.summary.excessReportedSkuCount !== excessReportedSkuCount ||
     value.summary.currencyCode !== currencyCode ||
     value.summary.estimatedStorageCostNextMonth !== expectedStorageCost ||
+    value.summary.storageCostReportedSkuCount !== storageCostReportedSkuCount ||
     value.summary.estimatedAgedSurcharge !== expectedAgedSurcharge ||
+    value.summary.agedSurchargeReportedSkuCount !== agedSurchargeReportedSkuCount ||
     !statusesConsistent
   ) {
     throw new Error("FBA 庫齡摘要與商品列不一致，已停止顯示。");
@@ -356,11 +367,14 @@ export function parseAgedInventorySnapshot(
       agedOver180,
       excessAvailability,
       estimatedExcessQuantity: expectedExcess,
+      excessReportedSkuCount,
       currencyCode,
       storageCostAvailability,
       estimatedStorageCostNextMonth: expectedStorageCost,
+      storageCostReportedSkuCount,
       agedSurchargeAvailability,
       estimatedAgedSurcharge: expectedAgedSurcharge,
+      agedSurchargeReportedSkuCount,
     },
     expiration: {
       currentFbaExpirationDatesAvailable: false,
@@ -391,8 +405,13 @@ function count(value: number | null): string {
   return value === null ? "—" : value.toLocaleString("zh-TW");
 }
 
-function money(value: number | null, currencyCode: string | null): string {
-  if (value === null || currencyCode === null) return "—";
+export function formatAgedInventoryMoney(
+  value: number | null,
+  currencyCode: string | null,
+): string {
+  if (value === null) return "—";
+  if (value === 0 && currencyCode === null) return "0";
+  if (currencyCode === null) return "—";
   try {
     return new Intl.NumberFormat("zh-TW", {
       style: "currency",
@@ -404,24 +423,8 @@ function money(value: number | null, currencyCode: string | null): string {
   }
 }
 
-function feeText(
-  availability: FeeAvailability,
-  value: number | null,
-  currencyCode: string | null,
-): string {
-  if (availability === "unavailable") return "報表未提供";
-  if (availability === "partial") return "部分 SKU 未提供";
-  if (value === 0 && currencyCode === null) return "0";
-  return money(value, currencyCode);
-}
-
-function quantityText(
-  availability: FeeAvailability,
-  value: number | null,
-): string {
-  if (availability === "unavailable") return "報表未提供";
-  if (availability === "partial") return "部分 SKU 未提供";
-  return count(value);
+function coverageText(reported: number, total: number): string {
+  return `已回傳 ${reported.toLocaleString("zh-TW")}／${total.toLocaleString("zh-TW")} SKU`;
 }
 
 function safeFilename(response: Response, fallback: string): string {
@@ -439,7 +442,7 @@ export default function AgedInventoryPanel({
   const [status, setStatus] = useState("尚未同步");
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [view, setView] = useState<"excess" | "all">("excess");
+  const [view, setView] = useState<"aged" | "excess" | "all">("aged");
   const [error, setError] = useState<string | null>(null);
   const [reportReference, setReportReference] = useState<{
     reportId: string;
@@ -453,7 +456,7 @@ export default function AgedInventoryPanel({
     setStatus("尚未同步");
     setLoading(false);
     setExporting(false);
-    setView("excess");
+    setView("aged");
     setReportReference(null);
     setError(null);
   }, [marketplaceId]);
@@ -610,10 +613,15 @@ export default function AgedInventoryPanel({
   const unresolvedExcessRows = snapshot?.rows.filter(
     (row) => row.estimatedExcessQuantity === null,
   ) ?? [];
+  const agedOver180Rows = snapshot?.rows.filter(
+    (row) => row.agedOver180 > 0,
+  ) ?? [];
   const visibleRows = snapshot
-    ? view === "excess"
-      ? [...confirmedExcessRows, ...unresolvedExcessRows]
-      : snapshot.rows
+    ? view === "aged"
+      ? agedOver180Rows
+      : view === "excess"
+        ? [...confirmedExcessRows, ...unresolvedExcessRows]
+        : snapshot.rows
     : [];
 
   return (
@@ -630,27 +638,43 @@ export default function AgedInventoryPanel({
               {exporting ? "匯出中…" : "匯出 Excel"}
             </button>
           )}
-          <button type="button" onClick={() => void synchronize()} disabled={loading || exporting}>
-            {loading ? "同步中…" : snapshot ? "重新同步" : "查看全部"}
-          </button>
+          {snapshot && <button type="button" onClick={() => void synchronize()} disabled={loading || exporting}>
+            {loading ? "同步中…" : "重新同步"}
+          </button>}
         </div>
       </header>
       <p className="aged-inventory-explainer">
         冗餘健檢只依 Amazon FBA Manage Inventory Health report 的 estimated excess quantity；不會因庫齡高就判定冗餘。另顯示全部非重疊庫齡桶；費用缺欄或缺值時不套費率、不推算。
       </p>
       {error && <div className="price-error" role="alert">{error}</div>}
+      {!snapshot && (
+        <button
+          type="button"
+          className="content-audit-export-primary aged-inventory-start"
+          onClick={() => void synchronize()}
+          disabled={loading || exporting}
+        >
+          <span aria-hidden="true">⌛</span>
+          <strong>{loading ? "Amazon 正在整理…" : "開始 FBA 180 天以上庫齡健檢"}</strong>
+          <small>已逾 180 天、Amazon 預估冗餘與費用會分開顯示；不會修改庫存或建立促銷。</small>
+        </button>
+      )}
       {snapshot && (
         <>
           <div className="aged-inventory-summary">
             <article><span>全部 FBA SKU</span><strong>{snapshot.summary.skuCount.toLocaleString()}</strong></article>
             <article><span>180 天以上</span><strong>{snapshot.summary.agedOver180.toLocaleString()}</strong><small>件 · {snapshot.summary.agedOver180SkuCount.toLocaleString()} SKU</small></article>
-            <article><span>Amazon 預估冗餘</span><strong>{quantityText(snapshot.summary.excessAvailability, snapshot.summary.estimatedExcessQuantity)}</strong>{snapshot.summary.excessAvailability === "complete" && <small>件</small>}</article>
-            <article><span>下月預估倉儲成本</span><strong>{feeText(snapshot.summary.storageCostAvailability, snapshot.summary.estimatedStorageCostNextMonth, snapshot.summary.currencyCode)}</strong></article>
-            <article><span>AIS 預估附加費</span><strong>{feeText(snapshot.summary.agedSurchargeAvailability, snapshot.summary.estimatedAgedSurcharge, snapshot.summary.currencyCode)}</strong></article>
+            <article><span>Amazon 預估冗餘</span><strong>{snapshot.summary.excessAvailability === "unavailable" ? "報表未提供" : count(snapshot.summary.estimatedExcessQuantity)}</strong><small>{snapshot.summary.excessAvailability === "unavailable" ? "不推算" : `件 · ${coverageText(snapshot.summary.excessReportedSkuCount, snapshot.summary.skuCount)}`}</small></article>
+            <article><span>下月預估倉儲成本</span><strong>{snapshot.summary.storageCostAvailability === "unavailable" ? "報表未提供" : formatAgedInventoryMoney(snapshot.summary.estimatedStorageCostNextMonth, snapshot.summary.currencyCode)}</strong><small>{snapshot.summary.storageCostAvailability === "unavailable" ? "不猜費率" : coverageText(snapshot.summary.storageCostReportedSkuCount, snapshot.summary.skuCount)}</small></article>
+            <article><span>AIS 預估附加費</span><strong>{snapshot.summary.agedSurchargeAvailability === "unavailable" ? "報表未提供" : formatAgedInventoryMoney(snapshot.summary.estimatedAgedSurcharge, snapshot.summary.currencyCode)}</strong><small>{snapshot.summary.agedSurchargeAvailability === "unavailable" ? "不猜費率" : coverageText(snapshot.summary.agedSurchargeReportedSkuCount, snapshot.summary.skuCount)}</small></article>
           </div>
           <div className="aged-inventory-view-switch" role="group" aria-label="FBA 庫存健檢顯示範圍">
+            <button type="button" className={view === "aged" ? "active" : ""} onClick={() => setView("aged")}>
+              已逾 180 天
+              <small>{agedOver180Rows.length.toLocaleString()} SKU · {snapshot.summary.agedOver180.toLocaleString()} 件</small>
+            </button>
             <button type="button" className={view === "excess" ? "active" : ""} onClick={() => setView("excess")}>
-              Amazon 預估冗餘
+              Amazon 預估冗餘（獨立）
               <small>{confirmedExcessRows.length.toLocaleString()} SKU{unresolvedExcessRows.length ? ` · ${unresolvedExcessRows.length.toLocaleString()} 未核對` : ""}</small>
             </button>
             <button type="button" className={view === "all" ? "active" : ""} onClick={() => setView("all")}>
@@ -679,13 +703,13 @@ export default function AgedInventoryPanel({
                       {row.ageBuckets.map((bucket) => (
                         <div key={bucket.key}><dt>{bucket.label}</dt><dd>{bucket.units.toLocaleString()} 件</dd></div>
                       ))}
-                      <div><dt>目前可售</dt><dd>{row.available.toLocaleString()} 件</dd></div>
+                      <div><dt>目前可售</dt><dd>{row.available === null ? "—" : `${row.available.toLocaleString()} 件`}</dd></div>
                       <div><dt>庫齡桶總數</dt><dd>{row.totalAgedUnits.toLocaleString()} 件</dd></div>
-                      <div><dt>下月預估倉儲成本</dt><dd>{money(row.estimatedStorageCostNextMonth, row.currencyCode)}</dd></div>
-                      <div><dt>AIS 預估附加費</dt><dd>{money(row.estimatedAgedSurcharge, row.currencyCode)}</dd></div>
+                      <div><dt>下月預估倉儲成本</dt><dd>{formatAgedInventoryMoney(row.estimatedStorageCostNextMonth, row.currencyCode)}</dd></div>
+                      <div><dt>AIS 預估附加費</dt><dd>{formatAgedInventoryMoney(row.estimatedAgedSurcharge, row.currencyCode)}</dd></div>
                       <div><dt>建議移除</dt><dd>{count(row.recommendedRemovalQuantity)} 件</dd></div>
                       {row.agedSurchargeBuckets.map((bucket) => (
-                        <div key={`ais-${bucket.key}`}><dt>{bucket.label}</dt><dd>{count(bucket.quantity)} 件 · {money(bucket.estimatedCharge, row.currencyCode)}</dd></div>
+                        <div key={`ais-${bucket.key}`}><dt>{bucket.label}</dt><dd>{count(bucket.quantity)} 件 · {formatAgedInventoryMoney(bucket.estimatedCharge, row.currencyCode)}</dd></div>
                       ))}
                     </dl>
                     {row.alert && <p>Amazon alert：{row.alert}</p>}
@@ -698,7 +722,9 @@ export default function AgedInventoryPanel({
             <div className="aged-inventory-empty">
               {view === "excess"
                 ? "Amazon 目前沒有回傳 estimated excess quantity 大於 0 的 FBA SKU。"
-                : "目前報表沒有可顯示的 FBA 庫齡商品。"}
+                : view === "aged"
+                  ? "目前報表沒有已逾 180 天的 FBA 庫存。"
+                  : "目前報表沒有可顯示的 FBA 庫齡商品。"}
             </div>
           )}
           <p className="aged-inventory-notice">{snapshot.notice}</p>

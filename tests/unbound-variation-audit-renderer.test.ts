@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseUnboundVariationAuditSnapshot } from "../src/renderer/src/unbound-variation-audit";
+import { downloadName } from "../src/renderer/src/components/unbound-variation-audit-panel";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
@@ -89,5 +90,29 @@ describe("unbound variation audit renderer parser", () => {
     expect(source).toContain("匯出未綁變體＋讀取未完成 Excel");
     expect(source).not.toMatch(/method:\s*["'](?:PATCH|PUT|DELETE)["']/);
     expect(source).not.toContain("localStorage");
+  });
+
+  it("prefers and decodes an RFC 5987 Chinese download filename", () => {
+    const response = new Response(null, {
+      headers: {
+        "content-disposition":
+          "attachment; filename=unbound-variation.xlsx; filename*=UTF-8''FBA-%E6%9C%AA%E7%B6%81%E8%AE%8A%E9%AB%94%E5%81%A5%E6%AA%A2-US-2026-08-09.xlsx",
+      },
+    });
+    expect(downloadName(response, "fallback.xlsx")).toBe(
+      "FBA-未綁變體健檢-US-2026-08-09.xlsx",
+    );
+  });
+
+  it("falls back safely when filename-star encoding is malformed", () => {
+    const response = new Response(null, {
+      headers: {
+        "content-disposition":
+          "attachment; filename=unbound-variation.xlsx; filename*=UTF-8''%E6%ZZ",
+      },
+    });
+    expect(downloadName(response, "FBA-未綁變體健檢-US.xlsx")).toBe(
+      "FBA-未綁變體健檢-US.xlsx",
+    );
   });
 });
