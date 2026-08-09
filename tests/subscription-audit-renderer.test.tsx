@@ -20,7 +20,7 @@ const INTERVALS = ["2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-
   return {
     month,
     startDate: `${month}-01T00:00:00Z`,
-    endDate: `${month}-${String(lastDay).padStart(2, "0")}T23:59:59Z`,
+    endDate: `${month}-${String(lastDay).padStart(2, "0")}T00:00:00Z`,
   };
 });
 
@@ -131,6 +131,18 @@ describe("FBA subscription audit renderer", () => {
       supportsSinceEnrollmentMonthlySeries: false,
       maximumOfficialLookbackMonths: 23,
     });
+  });
+
+  it("accepts Amazon's canonical MONTH end at midnight and rejects the old last-second shape", () => {
+    expect(() => parseSubscriptionAuditSnapshot(response())).not.toThrow();
+    const legacy = response({
+      intervals: INTERVALS.map((interval) => ({ ...interval })),
+    });
+    const intervals = legacy.intervals as Array<Record<string, unknown>>;
+    intervals[0]!.endDate = "2026-02-28T23:59:59Z";
+    expect(() => parseSubscriptionAuditSnapshot(legacy)).toThrow(
+      /2026-02 不是可核對的完整月區間/u,
+    );
   });
 
   it("preserves a missing revenue point when Amazon still returns its currency", () => {

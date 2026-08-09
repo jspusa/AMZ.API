@@ -76,8 +76,8 @@ type Coordinate = {
 };
 
 const WIDTH = 760;
-const HEIGHT = 170;
-const PLOT = { left: 66, right: 18, top: 12, bottom: 27 };
+const HEIGHT = 250;
+const PLOT = { left: 66, right: 18, top: 88, bottom: 28 };
 const RANGE_OPTIONS = [7, 14, 30, 90] as const;
 const DAY_MILLISECONDS = 86_400_000;
 export const MAX_CUSTOM_SALES_TREND_DAYS = 365;
@@ -357,11 +357,13 @@ export default function SalesTrendChart({
   const plotRef = useRef<HTMLDivElement | null>(null);
   const keyboardNavigationRef = useRef(false);
   const jumpTimeoutRef = useRef<number | null>(null);
+  const rollTimeoutRef = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [skaterEnabled, setSkaterEnabled] = useState(false);
   const [skaterIndex, setSkaterIndex] = useState(0);
   const [skaterJumping, setSkaterJumping] = useState(false);
   const [skaterCrouching, setSkaterCrouching] = useState(false);
+  const [skaterMotion, setSkaterMotion] = useState<"idle" | "left" | "right">("idle");
   const [customOpen, setCustomOpen] = useState(selection.kind === "custom");
   const [customStartDate, setCustomStartDate] = useState(
     selection.kind === "custom" ? selection.startDate : snapshot?.range.startDate ?? "",
@@ -408,6 +410,9 @@ export default function SalesTrendChart({
   useEffect(() => () => {
     if (jumpTimeoutRef.current !== null) {
       window.clearTimeout(jumpTimeoutRef.current);
+    }
+    if (rollTimeoutRef.current !== null) {
+      window.clearTimeout(rollTimeoutRef.current);
     }
   }, []);
 
@@ -522,6 +527,14 @@ export default function SalesTrendChart({
 
   const moveSkater = (direction: -1 | 1) => {
     if (!points.length) return;
+    if (rollTimeoutRef.current !== null) {
+      window.clearTimeout(rollTimeoutRef.current);
+    }
+    setSkaterMotion(direction < 0 ? "left" : "right");
+    rollTimeoutRef.current = window.setTimeout(() => {
+      setSkaterMotion("idle");
+      rollTimeoutRef.current = null;
+    }, 460);
     keyboardNavigationRef.current = true;
     setSkaterIndex((currentIndex) => {
       const nextIndex = nextSkaterIndex(currentIndex, direction, points.length);
@@ -575,7 +588,6 @@ export default function SalesTrendChart({
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (
         event.defaultPrevented ||
-        event.repeat ||
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
@@ -586,6 +598,7 @@ export default function SalesTrendChart({
         event.preventDefault();
         moveSkater(key === "a" ? -1 : 1);
       } else if (key === "w") {
+        if (event.repeat) return;
         event.preventDefault();
         jumpSkater();
       } else if (key === "s") {
@@ -837,7 +850,12 @@ export default function SalesTrendChart({
                     window.clearTimeout(jumpTimeoutRef.current);
                     jumpTimeoutRef.current = null;
                   }
+                  if (rollTimeoutRef.current !== null) {
+                    window.clearTimeout(rollTimeoutRef.current);
+                    rollTimeoutRef.current = null;
+                  }
                   setSkaterJumping(false);
+                  setSkaterMotion("idle");
                   setActiveIndex(null);
                 }
               }}
@@ -990,7 +1008,7 @@ export default function SalesTrendChart({
               )}
               {skaterCoordinate && (
                 <span
-                  className={`sales-skater ${skaterJumping ? "is-jumping" : ""} ${skaterCrouching ? "is-crouching" : ""}`}
+                  className={`sales-skater ${skaterJumping ? "is-jumping" : ""} ${skaterCrouching ? "is-crouching" : ""} ${skaterMotion !== "idle" ? `is-rolling is-${skaterMotion}` : ""}`}
                   style={{
                     left: `${(skaterCoordinate.x / WIDTH) * 100}%`,
                     top: `${(skaterCoordinate.y / HEIGHT) * 100}%`,

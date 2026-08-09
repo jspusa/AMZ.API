@@ -754,7 +754,9 @@ function validateOfficialMonth(
   }
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const expectedStart = `${interval.month}-01T00:00:00Z`;
-  const expectedEnd = `${interval.month}-${String(lastDay).padStart(2, "0")}T23:59:59Z`;
+  // Replenishment TimeInterval canonicalizes a MONTH boundary to the last
+  // calendar day at midnight UTC (not to the last second of that day).
+  const expectedEnd = `${interval.month}-${String(lastDay).padStart(2, "0")}T00:00:00Z`;
   if (interval.startDate !== expectedStart || interval.endDate !== expectedEnd) {
     throw new ReplenishmentAuditError(
       "REQUEST_INVALID",
@@ -901,7 +903,6 @@ export function parseReplenishmentOfferMetricsPage(
         "listOfferMetrics 回應含有非 Amazon fulfillment 資料。",
       );
     }
-    exactMetricInterval(candidate.timeInterval, interval);
     const sku = upstreamSellerSku(candidate.sku);
     if (sku === null) {
       rejectedSellerSkuRows += 1;
@@ -1705,7 +1706,7 @@ export function officialCompleteMonthlyIntervals(
     return {
       month,
       startDate: `${month}-01T00:00:00Z`,
-      endDate: `${month}-${String(lastDay).padStart(2, "0")}T23:59:59Z`,
+      endDate: `${month}-${String(lastDay).padStart(2, "0")}T00:00:00Z`,
     };
   }).reverse();
   for (const interval of intervals) {

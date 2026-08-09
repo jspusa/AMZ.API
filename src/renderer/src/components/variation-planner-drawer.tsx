@@ -584,7 +584,7 @@ export default function VariationPlannerDrawer({
         </label>
 
         <div className="variation-planner-columns">
-          <section className="variation-family-panel" aria-labelledby="variation-source-title">
+          <section className="variation-family-panel source" aria-labelledby="variation-source-title">
             <div className="variation-section-heading"><span>01</span><div><strong id="variation-source-title">來源 family</strong><small>可用 SKU 或 ASIN 查詢；結果一定顯示 Seller SKU</small></div></div>
             <div className="variation-search-row">
               <select
@@ -633,6 +633,7 @@ export default function VariationPlannerDrawer({
           </section>
         </div>
 
+        <div className="variation-move-board">
         <section className={`variation-detach-stage ${stagedMember ? "occupied" : ""}`} aria-label="解除變體存放區">
           <div className="variation-section-heading"><span>解除</span><div><strong>解除變體存放區</strong><small>固定在兩個 family 摘要後；解除成功後卡片仍保留，可再拖往目標</small></div></div>
           <div
@@ -678,8 +679,9 @@ export default function VariationPlannerDrawer({
         </section>
 
         <div className="variation-planner-columns">
-          <section className="variation-family-panel" aria-labelledby="variation-source-children-title">
+          <section className="variation-family-panel source source-children" aria-labelledby="variation-source-children-title">
             <div className="variation-section-heading"><span>選</span><div><strong id="variation-source-children-title">可解除的 FBA child</strong><small>來源卡會保留；放入上方存放區不會立即修改 Amazon</small></div></div>
+            <p className="variation-scroll-hint">清單會在這張藍色來源卡內捲動；紅色解除區會固定在上方，不必把整頁拖回頂端。</p>
             <div className="variation-child-list">
               {sourceMembers.map((member) => (
                 <article
@@ -729,6 +731,7 @@ export default function VariationPlannerDrawer({
               </button>
             )}
           </section>
+        </div>
         </div>
 
         {plan && <PlanReview plan={plan} />}

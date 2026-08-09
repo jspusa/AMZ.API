@@ -478,7 +478,7 @@ function parseInterval(value: unknown, index: number): SubscriptionAuditInterval
   const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
   if (
     startDate !== `${month}-01T00:00:00Z` ||
-    endDate !== `${month}-${String(lastDay).padStart(2, "0")}T23:59:59Z`
+    endDate !== `${month}-${String(lastDay).padStart(2, "0")}T00:00:00Z`
   ) {
     throw new Error(`${month} 不是可核對的完整月區間。`);
   }
