@@ -337,7 +337,7 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
     "資料狀態", "SKU", "商品標題", "ASIN", "商品類型", "判定依據",
   ];
   const reviewResultHeaders = [
-    "資料狀態", "SKU", "商品標題", "ASIN", "主題", "正負向", "主題星等影響",
+    "資料狀態", "SKU", "商品標題", "ASIN", "主題", "正負向", "評論主題影響值",
     "提及數", "出現比例（%）", "說明",
   ];
   const reviewIncompleteHeaders = [
@@ -493,10 +493,13 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
           textCell(safeText(row.asin, "評論 ASIN", 20), 2),
           textCell(safeText(row.topic, "評論主題")),
           textCell(row.sentiment),
-          numberCell(finiteNumber(row.starRatingImpact, "主題星等影響", -5, 5)),
+          numberCell(finiteNumber(row.starRatingImpact, "評論主題影響值", -5, 5)),
           numberCell(finiteNumber(row.mentions, "評論提及數")),
           numberCell(finiteNumber(row.occurrencePercent, "評論出現比例", 0, 100)),
-          textCell(safeText(row.notice, "評論結果說明")),
+          textCell(safeText(
+            `評論主題影響值不是商品星等；負數是負向主題對星等下降方向的影響值，不是商品負星等，原始值不轉成 0 或絕對值。${row.notice}`,
+            "評論結果說明",
+          )),
         ])),
       }),
     },

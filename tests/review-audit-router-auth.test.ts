@@ -139,7 +139,7 @@ describe("review audit role failure fan-out", () => {
     });
   });
 
-  it("continues the main-process job without renderer status polling", async () => {
+  it("continues the main-process job after renderer close/unmount without status polling", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-09T00:00:00.000Z"));
     process.env.SP_API_MODE = "live";
@@ -169,7 +169,12 @@ describe("review audit role failure fan-out", () => {
       { marketplaceId: US },
     ));
     const jobId = jsonValue(started).jobId as string;
+    expect(jsonValue(started)).toMatchObject({
+      capabilityNotice: expect.stringMatching(/星等下降方向的影響值.*不是商品負星等.*不會轉成 0 或絕對值.*背景繼續/u),
+    });
 
+    // No renderer GET is issued here: aborting local polling on unmount does
+    // not cancel or pause the main-process runner.
     await vi.advanceTimersByTimeAsync(2_125);
     expect(mocks.feedback).toHaveBeenCalledTimes(3);
     expect(callTimes[1]! - callTimes[0]!).toBeGreaterThanOrEqual(1_050);

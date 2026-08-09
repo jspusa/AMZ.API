@@ -41,6 +41,20 @@ export type SubscriptionUpstreamCoverage = {
   returnedMetricRows: number;
   acceptedMetricRows: number;
   invalidOfferRows: Array<{ sellerSku: string; problem: string }>;
+  problemSkuRows: Array<{
+    sellerSku: string;
+    fbaEvidence: "CURRENT_FBA_SKU_SET";
+    affectedOfferRows: number;
+    affectedMetricRows: number;
+    metricMonths: string[];
+    problem: string;
+  }>;
+  unprovenExactSkuProblems: {
+    exactSkuCount: number;
+    affectedOfferRows: number;
+    affectedMetricRows: number;
+    minimumUnresolvedOfferMonths: number;
+  };
   rejectedSellerSkuRows: number;
   minimumUnresolvedOfferMonths: number;
   notice: string;
@@ -196,8 +210,10 @@ function parseRevenueCoverage(
 
 function parseUpstreamCoverage(
   value: unknown,
-  requestedMonths: number,
+  requestedMonthValues: readonly string[],
 ): SubscriptionUpstreamCoverage {
+  const requestedMonths = requestedMonthValues.length;
+  const requestedMonthSet = new Set(requestedMonthValues);
   const raw = record(value, "Amazon Replenishment 回應完整度");
   const returnedOfferRows = integer(raw.returnedOfferRows, "Replenishment offer 回傳列數");
   const acceptedOfferRows = integer(raw.acceptedOfferRows, "Replenishment offer 可核對列數");
@@ -217,6 +233,109 @@ function parseUpstreamCoverage(
   if (new Set(invalidOfferSkus).size !== invalidOfferSkus.length) {
     throw new Error("Replenishment offer 資料值問題清單含有重複 SKU。");
   }
+  const legacyCoverage = raw.problemSkuRows === undefined;
+  const rawProblemSkuRows = legacyCoverage ? [] : raw.problemSkuRows;
+  if (!Array.isArray(rawProblemSkuRows)) {
+    throw new Error("Replenishment 問題 SKU 清單格式無效。");
+  }
+  const problemSkuRows = rawProblemSkuRows.map((value, index) => {
+    const row = record(value, `第 ${index + 1} 個 Replenishment 問題 SKU`);
+    if (!Array.isArray(row.metricMonths)) {
+      throw new Error(`第 ${index + 1} 個問題 SKU 月份格式無效。`);
+    }
+    const metricMonths = row.metricMonths.map((month, monthIndex) => {
+      const parsed = validMonth(
+        month,
+        `第 ${index + 1} 個問題 SKU 的第 ${monthIndex + 1} 個月份`,
+      );
+      if (!requestedMonthSet.has(parsed)) {
+        throw new Error(`問題 SKU 月份 ${parsed} 不在本次所選範圍。`);
+      }
+      return parsed;
+    });
+    const affectedOfferRows = integer(
+      row.affectedOfferRows,
+      `第 ${index + 1} 個問題 SKU 的 offer 列數`,
+    );
+    const affectedMetricRows = integer(
+      row.affectedMetricRows,
+      `第 ${index + 1} 個問題 SKU 的 metric 列數`,
+    );
+    if (
+      affectedOfferRows + affectedMetricRows < 1 ||
+      new Set(metricMonths).size !== metricMonths.length ||
+      !metricMonths.every((month, monthIndex) =>
+        month === [...metricMonths].sort()[monthIndex]) ||
+      (affectedMetricRows === 0) !== (metricMonths.length === 0) ||
+      affectedMetricRows < metricMonths.length
+    ) {
+      throw new Error(`第 ${index + 1} 個問題 SKU 的影響範圍無法核對。`);
+    }
+    return {
+      sellerSku: text(row.sellerSku, `第 ${index + 1} 個問題 SKU`, 256),
+      fbaEvidence: row.fbaEvidence === "CURRENT_FBA_SKU_SET"
+        ? "CURRENT_FBA_SKU_SET" as const
+        : (() => { throw new Error(`第 ${index + 1} 個問題 SKU 缺少同次 FBA 證據。`); })(),
+      affectedOfferRows,
+      affectedMetricRows,
+      metricMonths,
+      problem: text(row.problem, `第 ${index + 1} 個問題 SKU 說明`, 2_000),
+    };
+  });
+  if (
+    new Set(problemSkuRows.map(({ sellerSku }) => sellerSku)).size !==
+      problemSkuRows.length ||
+    (!legacyCoverage && invalidOfferRows.some((invalid) => {
+      const problem = problemSkuRows.find(
+        ({ sellerSku }) => sellerSku === invalid.sellerSku,
+      );
+      return !problem || problem.affectedOfferRows < 1;
+    }))
+  ) {
+    throw new Error("Replenishment 問題 SKU 清單與 offer 問題不一致。");
+  }
+  const rawUnproven = legacyCoverage
+    ? {
+        exactSkuCount: invalidOfferRows.length,
+        affectedOfferRows: invalidOfferRows.length,
+        affectedMetricRows: 0,
+        minimumUnresolvedOfferMonths: invalidOfferRows.length * requestedMonths,
+      }
+    : record(
+        raw.unprovenExactSkuProblems,
+        "缺少同次 FBA 證據的 Replenishment 問題摘要",
+      );
+  const unprovenExactSkuProblems = {
+    exactSkuCount: integer(
+      rawUnproven.exactSkuCount,
+      "缺少同次 FBA 證據的精確問題 SKU 數",
+    ),
+    affectedOfferRows: integer(
+      rawUnproven.affectedOfferRows,
+      "缺少同次 FBA 證據的問題 offer 列數",
+    ),
+    affectedMetricRows: integer(
+      rawUnproven.affectedMetricRows,
+      "缺少同次 FBA 證據的問題 metric 列數",
+    ),
+    minimumUnresolvedOfferMonths: integer(
+      rawUnproven.minimumUnresolvedOfferMonths,
+      "缺少同次 FBA 證據的問題 SKU 月份數",
+    ),
+  };
+  if (
+    (unprovenExactSkuProblems.exactSkuCount === 0) !==
+      (unprovenExactSkuProblems.affectedOfferRows === 0 &&
+        unprovenExactSkuProblems.affectedMetricRows === 0 &&
+        unprovenExactSkuProblems.minimumUnresolvedOfferMonths === 0) ||
+    unprovenExactSkuProblems.affectedOfferRows +
+      unprovenExactSkuProblems.affectedMetricRows <
+      unprovenExactSkuProblems.exactSkuCount ||
+    unprovenExactSkuProblems.minimumUnresolvedOfferMonths <
+      unprovenExactSkuProblems.exactSkuCount
+  ) {
+    throw new Error("缺少同次 FBA 證據的 Replenishment 問題摘要互相矛盾。");
+  }
   const rejectedSellerSkuRows = integer(
     raw.rejectedSellerSkuRows,
     "Replenishment 缺少可核對 SKU 列數",
@@ -227,18 +346,37 @@ function parseUpstreamCoverage(
   );
   const rejectedOfferRows = returnedOfferRows - acceptedOfferRows;
   const rejectedMetricRows = returnedMetricRows - acceptedMetricRows;
-  const missingSellerSkuOfferRows = rejectedOfferRows - invalidOfferRows.length;
+  const problemOfferRows = problemSkuRows.reduce(
+    (sum, row) => sum + row.affectedOfferRows,
+    0,
+  );
+  const problemMetricRows = problemSkuRows.reduce(
+    (sum, row) => sum + row.affectedMetricRows,
+    0,
+  );
+  const missingSellerSkuOfferRows = rejectedOfferRows - problemOfferRows -
+    unprovenExactSkuProblems.affectedOfferRows;
+  const missingSellerSkuMetricRows = rejectedMetricRows - problemMetricRows -
+    unprovenExactSkuProblems.affectedMetricRows;
   const expectedRejectedSellerSkuRows =
-    missingSellerSkuOfferRows + rejectedMetricRows;
+    missingSellerSkuOfferRows + missingSellerSkuMetricRows;
+  const knownProblemOfferMonths = problemSkuRows.reduce(
+    (sum, row) => sum + (row.affectedOfferRows > 0
+      ? requestedMonths
+      : row.metricMonths.length),
+    0,
+  ) + unprovenExactSkuProblems.minimumUnresolvedOfferMonths;
   const expectedMinimumUnresolved = Math.max(
-    rejectedOfferRows * requestedMonths,
-    rejectedMetricRows,
+    knownProblemOfferMonths,
+    missingSellerSkuOfferRows * requestedMonths,
+    missingSellerSkuMetricRows,
   );
   const status = raw.status;
   if (
     acceptedOfferRows > returnedOfferRows ||
     acceptedMetricRows > returnedMetricRows ||
     missingSellerSkuOfferRows < 0 ||
+    missingSellerSkuMetricRows < 0 ||
     expectedRejectedSellerSkuRows !== rejectedSellerSkuRows ||
     expectedMinimumUnresolved !== minimumUnresolvedOfferMonths ||
     (status !== "complete" && status !== "partial") ||
@@ -253,7 +391,9 @@ function parseUpstreamCoverage(
     acceptedOfferRows,
     returnedMetricRows,
     acceptedMetricRows,
-    invalidOfferRows,
+    invalidOfferRows: legacyCoverage ? [] : invalidOfferRows,
+    problemSkuRows,
+    unprovenExactSkuProblems,
     rejectedSellerSkuRows,
     minimumUnresolvedOfferMonths,
     notice: text(raw.notice, "Replenishment 回應完整度說明", 2_000),
@@ -452,12 +592,15 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
   );
   const upstreamCoverage = parseUpstreamCoverage(
     raw.upstreamCoverage,
-    requestedMonths,
+    months,
   );
   const skus = offers.map(({ sellerSku }) => sellerSku);
   if (new Set(skus).size !== skus.length) throw new Error("全站訂閱健檢含有重複 SKU。");
-  if (upstreamCoverage.invalidOfferRows.some(({ sellerSku }) => skus.includes(sellerSku))) {
-    throw new Error("offer 資料值問題 SKU 不可同時出現在可核對 offer 清單。");
+  if (upstreamCoverage.problemSkuRows.some(
+    ({ sellerSku, affectedOfferRows }) =>
+      affectedOfferRows > 0 && skus.includes(sellerSku),
+  )) {
+    throw new Error("offer 問題 SKU 不可同時出現在可核對 offer 清單。");
   }
   const summary = record(raw.summary, "訂閱健檢摘要");
   const currentActiveSubscriptions = integer(

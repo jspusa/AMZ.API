@@ -3,7 +3,7 @@
 最後更新：2026-08-09
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前狀態：`v0.1.11` 已由 PR #22 squash merge 至 `main` commit `ec1e971db25cbbb4db9a25386a8c1e2fdc46b021`。main Validate、Pages 與 macOS universal workflows 均成功；live Pages hashed assets 已與同 commit 的本機 production build 核對一致，universal artifact 也已核對 checksum、版本、架構與簽章後安裝為 `/Applications/AMZ.API.app`，舊 v0.1.10 保留於 `/Applications/AMZ.API-v0.1.10-backup.app`。App 程序已啟動且沒有立即崩潰，但 Mac 目前鎖定，v0.1.11 的真實 UI／Amazon 唯讀結果仍待解鎖後驗證。任何真實 Amazon 寫入仍未執行，也未獲授權。
+目前狀態：`v0.1.12` 已由 PR #24 squash merge 至 `main` commit `e5b6a12b967613da9bbd0c8817225fbf2c9bfab1`，main Validate、Pages 與 macOS universal workflows 均成功；artifact 已核對 GitHub digest、DMG／ZIP checksum、版本、架構與 ad-hoc 簽章後安裝為 `/Applications/AMZ.API.app`，舊 v0.1.11 保留於 `/Applications/AMZ.API-v0.1.11-backup.app`。v0.1.12 已取得真實 US 唯讀證據：Sales 與品牌營收成功、評論主題背景工作完成；同時也發現 Subscribe & Save 遇單一重複 SKU 時會整站停止，以及品牌圖例／首頁導覽排版與評論負值語意需要修正。這些修正目前位於 `agent/v0113-ui-data-refinement`，版本已升至 `0.1.13`，本機完整檢查已通過，但尚未建立／合併 PR、部署 Pages、產生 main artifact 或覆蓋目前 v0.1.12 App。任何真實 Amazon 寫入仍未執行，也未獲授權。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -270,21 +270,32 @@ Amazon App：
   - live Pages 已核對為 `index-BipfoazU.js`／`index-CxJSY15F.css`；SHA-256 分別為 `3a80fbfb817a2e2fe3b25ceada876ff81f7e1ae7dd52f6a50c36c6a699e52811`／`ce45944a74eddccdc45a1b8ddcc2a0944b8bb5ff27612e30ddfb5b84317cf9d4`，與 release commit 本機 production build 完全一致。
   - main artifact `9027927355`（`AMZ.API-unsigned-ec1e971db25cbbb4db9a25386a8c1e2fdc46b021`）已核對 GitHub digest、DMG／ZIP checksum、版本 `0.1.11`、bundle ID `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign；短期保存至 2026-08-22。
   - v0.1.11 已安裝為 `/Applications/AMZ.API.app`，原 v0.1.10 已可回復地保留為 `/Applications/AMZ.API-v0.1.10-backup.app`。安裝後主程序與 helpers 持續執行、沒有立即崩潰；Mac 因鎖定無法完成 UI 與真實 Amazon 唯讀驗證。
+- v0.1.12 已發布、部署並安裝：
+  - 將 SP-API／R2／Skill 與 Ads 敏感資料輸入全部移入 packaged main-owned local editor；remote Pages renderer 只取得 redacted status、開啟本機 editor、測試與清除能力，不再接收或保存 Secret／Refresh Token。
+  - 首頁加入「一鍵執行全部 FBA 健檢」背景 coordinator、Amazon Ads 唯讀連線／覆蓋能力、評論主題、未綁變體、庫齡、文案、圖片與 Subscribe & Save 的 fail-honest 範圍；報表建立由 durable lease／single-flight 共用，terminal／建立不明不會因首頁自動載入而盲目重建。
+  - PR #24 已 squash merge：`https://github.com/jspusa/AMZ.API/pull/24`；release main commit 為 `e5b6a12b967613da9bbd0c8817225fbf2c9bfab1`。PR Validate run `31297884608`、main Validate run `31298271175`、Pages run `31298271176` 與 macOS universal run `31298271179` 均成功。
+  - live Pages HTML／JS／CSS 已取得 200 並核對 production output；main artifact `9033689855`（`AMZ.API-unsigned-e5b6a12b967613da9bbd0c8817225fbf2c9bfab1`）的 GitHub digest為 `sha256:be8c76a607f78a575ab9cbe0c85d76221e638e0e1f13ecfb04fc46070886b09c`。DMG SHA-256 為 `0f4bf46669180fbb6086aba2d9358ee4da09ad6e57f7a3872c83fced65185038`；ZIP SHA-256 為 `c4d4db8c139bef6d0be755f8df033ec2202eb1c8595dbc1c3e4c126460fa853c`。App 版本、bundle ID、universal 架構與 deep strict ad-hoc codesign 均通過。
+  - v0.1.12 已安裝為 `/Applications/AMZ.API.app`，舊 v0.1.11 保留為 `/Applications/AMZ.API-v0.1.11-backup.app`；啟動後沒有 Apple crash dialog。真實 US 唯讀載入取得 7 天 Sales 與品牌營收，品牌區顯示 23,765 件 FBA 已出貨；評論背景 job 完成 257 個 non-parent candidates，其中 8 個列為未完成。這些是 2026-08-09 當次快照，不得當作恆定現值。
+  - 真實 Subscribe & Save 掃描發現 Amazon Replenishment 分頁對 exact SKU `ADT03AM` 重複回傳；v0.1.12 會因此整站停止。品牌圖例未依占比排序且文字受壓縮、頂部導覽箭頭重複、評論負向 impact 容易被誤解成商品負星等，均已轉為 v0.1.13 修正項目。
+- v0.1.13 目前是本機發布候選，尚未發布或安裝：
+  - 品牌占比依金額由高到低，改為上方大型實心圓餅與下方兩欄完整圖例；零值仍保留於圖例。產品／價格／營運／報表四個頂部選單各只保留一個置中 chevron。
+  - 首頁健檢順序改為文案、圖片、未綁變體、FBA 180+ 庫齡、Subscribe & Save、Ads、評論，讓互相關聯的兩組入口相鄰。
+  - Subscribe & Save 對 exact SKU 的 offer／單月份 metric 重複、衝突或資料值無效採 row-level 隔離：該 SKU／月份列入「問題 SKU」，其他正常 FBA SKU 繼續；整體與營收 coverage 降為 partial，總額保持缺值，不補 0、不重複加總。Marketplace、program、Amazon fulfillment、月份區間、pagination 與 root 契約錯誤仍整體 fail closed。
+  - 評論負值改稱「負向影響值」，明示是 Amazon 負向主題對星等下降方向的原始 impact，不是商品負星等或 1–5 星制；關閉 drawer 後 main process 會保持官方 1 request/second 節流在背景續跑，重開只接回既有 job。
+  - 發布候選已通過 `npm ci`、`npm run check`（71 個測試檔／474 tests、TypeScript 與 production build）、`npm audit --omit=dev` 0 vulnerabilities、targeted regression、`git diff --check` 與 1280px／390px 假 Bridge 視覺驗收。此證據只代表本機候選；PR、main Actions、live Pages、artifact、安裝與 v0.1.13 真實 Amazon 唯讀重測仍待完成。
 
 ### 已完成與仍待真實 Mac／Amazon 驗證
 
-v0.1.11 的 PR、main Actions、Pages、artifact、備份與 Mac 安裝均已完成；但 Mac 在啟動後仍處於鎖定狀態，因此新的 UI／Amazon live 結果尚未取得。下列範圍必須分開理解：
+v0.1.12 的 PR、main Actions、Pages、artifact、備份與 Mac 安裝均已完成，且已取得部分真實 US 唯讀結果；v0.1.13 目前仍只是本機發布候選。下列範圍必須分開理解：
 
-1. 可追溯發布鏈已完成：PR #22、release main commit `ec1e971db25cbbb4db9a25386a8c1e2fdc46b021`、成功的 Validate／Pages／macOS workflows、live hashed assets、universal artifact、v0.1.10 備份與 v0.1.11 安裝均已核對；不得改用本機 `out/` 冒充已發布成品。
-2. v0.1.11 App 程序與 helpers 已從 `/Applications/AMZ.API.app` 啟動並持續執行，沒有立即閃退；因 Mac 鎖定，尚未目視確認新首頁、文件庫、評論健檢或任何 Amazon live read。解鎖後不需重裝，也不得要求重新輸入、清除或輸出敏感憑證。
-3. v0.1.10 的歷史真實唯讀證據仍有效：US Sales 7 天與去年同期、`AFA12AM` 的 Listings／Inventory／價格／文案／圖片／Subscribe & Save，以及 266 個 FBA SKU 的文案／圖片掃描曾成功。這些只是當時快照，不代表 v0.1.11 的新流程已 live 通過。
-4. 品牌營收須在解鎖後確認會隨營業額日期自動載入，只建立安全必要的 Reports，並核對同日期 FBA Customer Shipment Sales report 的總額、品牌分類與未分類列；也要實測 `CANCELLED` 不會盲目自動重送。完成前不得宣稱時區／live 報表問題已由真實帳號驗證。
-5. 未綁變體須完成真實全站批次掃描與 Excel，確認每批最多 20、parent／child／standalone、站點／ASIN 衝突與 relationships 缺失都按設計 fail closed。Variation Family 的 ASIN 查詢只做唯讀驗證；detach／attach 仍只有 mock/demo 證據，未獲特定操作授權不得送出 PATCH。
-6. Subscribe & Save 須真實核對全站 6／12／23 個月、缺 offer／缺月份、無法原樣辨識 Seller SKU 的 partial coverage，以及 0／5／10／15／20% 五張 Excel；未知列不得推論為 0 訂閱或不符合資格，也不得顯示假的全站營收總額。
-7. FBA 評論主題健檢須在真實帳號核對 relationships 證明、parent 排除、child＋standalone 非 parent 範圍、正向前五／負向後五與六張 Excel。公開 Customer Feedback API 不提供商品總星等、總評論數或完整 review 全文，畫面與交接均不得宣稱有這些資料。
-8. 文案健檢的 Excel rich-text 紅字、同次 cache 與「立刻修改」需用真實 fresh read 核對重新定位／stale fallback；驗證到 preview 即停止。商品內容、圖片、價格、Sale Price 與 Variation 的任何真實寫入都未執行且未獲授權。
-9. 報表文件庫列的是 109 個官方公開 report types 與能力說明，不代表 App 已建立 109 種通用下載器；只有畫面明示已接線的匯出可直接下載。廣告覆蓋 Live Ads API 與 FBA 帳務中心的未接線能力仍須誠實保持 unavailable／plan-only。
-10. 目前仍是 ad-hoc 內部測試 App，Apple Developer ID 簽章／公證與 GitHub Release 尚未決定；解鎖後所有新增驗證都必須保持 FBA-only、唯讀，且不得使用 Seller Central 私有接口。
+1. v0.1.12 的可追溯發布鏈已完成；不得用目前 v0.1.13 分支的 `out/` 冒充已發布成品。v0.1.13 必須完成 PR、main Actions、live hashed assets、universal artifact、備份、安裝與啟動後才可宣稱已發布。
+2. v0.1.13 安裝後應先唯讀確認品牌圖例順序／完整文字、實心圓餅、四個單一 chevron 與首頁卡片順序；不得因 UI 驗證觸發任何 Listing／價格／圖片／變體寫入。
+3. Subscribe & Save 應以同一真實資料重測：`ADT03AM` 或其他 exact SKU 問題須只出現在「問題 SKU」，正常商品仍載入；coverage 必須 partial、營收總額不得冒充完整。全域站點／program／fulfillment／月份／pagination 衝突仍應停止整次掃描。
+4. 評論可接回既有 snapshot 或新開唯讀 job，關閉 drawer 後等待 main 背景進度增加再重開；負向數值必須顯示為 impact 並保留原始負號。公開 API 仍不提供商品總星等、總評論數或完整 review 全文。
+5. v0.1.12 的 23,765 件品牌出貨與 257 個 non-parent review candidates 只是歷史快照；不得用這些固定數值宣稱 v0.1.13 當下資料已驗證。
+6. 文案健檢 Excel rich-text 紅字、同次 cache 與「立刻修改」的 fresh read／stale fallback 仍只允許驗證到 Amazon Validation Preview；商品內容、圖片、價格、Sale Price 與 Variation 真實寫入均未授權。
+7. 報表文件庫列的是 109 個官方公開 report types 與能力說明，不代表 App 已建立 109 種通用下載器；廣告覆蓋 Live Ads API 與 FBA 帳務中心未接線能力須保持 unavailable／plan-only。
+8. 目前仍是 ad-hoc 內部測試 App；Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。所有新增驗證必須保持 FBA-only、唯讀，且不得使用 Seller Central 私有接口。
 
 ### 最近的真實錯誤
 
@@ -299,8 +310,9 @@ v0.1.11 的 PR、main Actions、Pages、artifact、備份與 Mac 安裝均已完
 
 ## 6. 目前安裝檔
 
-- 目前 `/Applications/AMZ.API.app` 是已發布的 v0.1.11 universal 內部測試 App；版本 `0.1.11`、bundle ID `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均已在安裝後再次核對。App 主程序與 helpers 已啟動且沒有立即崩潰；Mac 鎖定使 UI／Amazon live 唯讀驗證尚未完成。
-- 安裝前的 v0.1.10 原封不動保留為 `/Applications/AMZ.API-v0.1.10-backup.app`；v0.1.9 與更舊備份若仍存在，也不得在未核對版本前覆蓋。
+- 目前 `/Applications/AMZ.API.app` 是已發布的 v0.1.12 universal 內部測試 App；版本 `0.1.12`、bundle ID `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均已在安裝後再次核對。App 已啟動且沒有 Apple crash dialog，US Sales／品牌與評論取得真實唯讀證據；v0.1.13 尚未安裝。
+- 安裝前的 v0.1.11 原封不動保留為 `/Applications/AMZ.API-v0.1.11-backup.app`；更舊備份若仍存在，也不得在未核對版本前覆蓋。
+- v0.1.12 main macOS workflow run：`31298271179`；artifact：`9033689855`，名稱 `AMZ.API-unsigned-e5b6a12b967613da9bbd0c8817225fbf2c9bfab1`；GitHub artifact digest：`sha256:be8c76a607f78a575ab9cbe0c85d76221e638e0e1f13ecfb04fc46070886b09c`。DMG SHA-256：`0f4bf46669180fbb6086aba2d9358ee4da09ad6e57f7a3872c83fced65185038`；ZIP SHA-256：`c4d4db8c139bef6d0be755f8df033ec2202eb1c8595dbc1c3e4c126460fa853c`；兩者均與 artifact 內 `SHA256SUMS.txt` 一致。
 - v0.1.11 main macOS workflow run：`31279106105`；artifact：`9027927355`，名稱 `AMZ.API-unsigned-ec1e971db25cbbb4db9a25386a8c1e2fdc46b021`；GitHub artifact digest：`sha256:abdabd850ffa4a68a1034c3a61495944206dfb86dc80c437e20a764cb609e3e4`，短期保存至 `2026-08-22T21:25:18Z`。DMG SHA-256：`7aa7001adc5a867740527a8d1788abc2cd6ab0d888c0557561ed1882b4d47fe3`；ZIP SHA-256：`e6a3f18fa3b880edbbce98722137fba50d85e1d2f4cfa32b9c8439ed51529753`；兩者均與 artifact 內的 `SHA256SUMS.txt` 一致。
 - v0.1.10 main macOS workflow run：`31271753671`；artifact：`9025861198`，名稱 `AMZ.API-unsigned-5949f605da420f7664bcaf9507f9fc9cde16dcf1`；GitHub artifact digest：`sha256:39bdc11f1bc78d4c680a93c1c204c65f2e8e82a4475e379bd21b3f81772051ed`。DMG SHA-256：`c02dccc1fdb3de253ced71a82e7d01fc885f0662b6ddf1f16d0cc0f7ac37643c`；ZIP SHA-256：`578e96dd7b5b465c9b9e44648de6fa1f9a7db3ee18f2e2c65de120a7644f6891`；兩者均與 artifact 內的 `SHA256SUMS.txt` 一致。
 - v0.1.9 main macOS workflow run：`31249715993`；artifact：`9019652910`，名稱 `AMZ.API-unsigned-3fa27e165a42a441be67abb44e5fcfcc37d264bc`；GitHub artifact digest：`sha256:d66863e149c0ab6a1c65394bb9dbcd93ebe58051bdff7c802613272e38fa0ce9`（短期保存至 2026-08-22）。DMG SHA-256：`7e74d7ba0dd31ce2a7ea7a795cb1a6b4f88ee922f847383a962fdae51f5d052c`；ZIP SHA-256：`d543b790527b13cc6b4836757bf9297405d37a24d961571be3e45cac931a9cbc`；均與 artifact 內的 `SHA256SUMS.txt` 一致。
@@ -353,7 +365,7 @@ npm audit --omit=dev
 
 注意：
 
-- v0.1.11 發布 main commit 為 `ec1e971db25cbbb4db9a25386a8c1e2fdc46b021`，對應 PR #22、Pages 與 macOS artifact；功能 release 已完成。目前 `agent/v0111-release-handoff` 只用來回填本文件的實際發布／安裝狀態。開始新工作前仍須 `git fetch origin` 並核對 merge base，不得把文件 commit 誤認成 v0.1.11 App artifact 的來源 commit。
+- v0.1.12 發布 main commit 為 `e5b6a12b967613da9bbd0c8817225fbf2c9bfab1`，對應 PR #24、Pages 與 macOS artifact；v0.1.13 目前位於 `agent/v0113-ui-data-refinement`，尚未發布。開始新工作前仍須 `git fetch origin` 並核對 merge base，不得把本機 candidate 或 `out/` 誤認成已發布 App artifact。
 - 工作區可能存在使用者或其他 agent 的變更；不得 `git reset --hard`、`git checkout --` 或直接覆蓋。
 - 修改後應建立修復分支／PR，通過 Actions 再合併。
 - 真實 Amazon 驗證只能由使用者在自己的 Mac Keychain 憑證環境執行；Linux／CI 不得假裝已測過 SP-API live。
@@ -377,19 +389,19 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-解鎖 Mac 後完成 v0.1.11 真實唯讀驗證；發布、Pages、artifact、備份與安裝已完成，不需要重新下載或重裝，也不要做任何真實 Amazon 寫入：
+完成 v0.1.13 發布與真實唯讀重測；目前安裝仍是 v0.1.12，不要做任何真實 Amazon 寫入：
 
 ### A. 先確認安裝與首頁
 
-1. 解鎖後直接使用 `/Applications/AMZ.API.app`，確認畫面版本為 `0.1.11`、首頁精簡銷售／品牌區、第四個「報表區」、六個一鍵健檢入口、版本更新建議與迷你滑板均可見；不要清除 Keychain vault。
-2. 先做 US 7 天 Sales 唯讀載入，確認同站點成功 API read 後才顯示「Amazon 已連線」。本機只設定憑證時仍應顯示「尚未驗證」，不得把設定存在誤報為即時連線成功。
-3. 品牌應隨同一日期自動載入，核對 report 日期邊界、總額、分類、未分類列與 terminal 訊息；不要連點或用重開 App 盲目重建 Amazon report。
+1. 先將 v0.1.13 candidate 建 PR，等待 Validate 全綠後 squash merge；再等待 main Validate、Pages 與 macOS universal workflows，核對 live hashed assets 與 artifact checksum／版本／bundle／universal 架構／deep strict ad-hoc codesign。備份 v0.1.12 後才覆蓋安裝。
+2. 啟動 v0.1.13，先做 US 7 天 Sales 唯讀載入，確認同站點成功 API read 後才顯示「Amazon 已連線」。不要清除或重新輸入 Keychain vault。
+3. 品牌應隨同一日期自動載入；核對大型實心圓餅在上、品牌按金額由高到低完整顯示於下方、四個頂部選單各一個箭頭，以及首頁健檢排序。不要按 terminal retry 或重複建立 Amazon report。
 
 ### B. 依序完成新增健檢的真實唯讀證據
 
-1. 未綁變體：完成批次掃描與 Excel，確認缺 relationships／站點或 ASIN 衝突列為未完成；再以 Seller SKU 與 ASIN 各做一次 family 唯讀查詢，結果都要顯示 exact Seller SKU。
-2. Subscribe & Save：核對異常 Seller SKU 只讓來源 partial、不使整站死亡；驗證 6／12／23 個月、缺 offer／缺月份與五張 Excel，不得把未知補成 0。
-3. 評論主題：核對 parent 不會進 Customer Feedback、child＋standalone 才列為 non-parent，並驗證前五／後五、全部與六張 Excel；不得把主題影響冒充商品總星等、評論數或 review 全文。
+1. Subscribe & Save：用真實 US 6 個月先驗證 `ADT03AM` 重複或其他單一 exact SKU 問題會獨立列出，其餘正常 SKU 仍完成；coverage 必須 partial、總營收保持缺值。再驗證 12／23 個月與五張 Excel，不得把未知補成 0。
+2. 評論主題：啟動或接回既有 job 後關閉 drawer，等待背景進度增加再重開；負數必須顯示為「負向影響值」且明示不是商品負星等。核對 parent 排除、child＋standalone non-parent 與六張 Excel。
+3. 未綁變體：完成批次掃描與 Excel，確認缺 relationships／站點或 ASIN 衝突列為未完成；Seller SKU／ASIN family 查詢只做唯讀，結果都要顯示 exact Seller SKU。
 4. 文案：核對 Excel 疑似錯字片段為紅字；以一個有問題欄位測「立刻修改」fresh read 與 stale fallback，只能走到 Amazon Validation Preview，未獲另行授權不得 commit。
 5. 報表文件庫：核對 109 個官方 report types 的分類、說明與「已接線／尚未接線／不適用」狀態。文件列出不等於 App 已能下載全部 109 種。
 

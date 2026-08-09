@@ -215,8 +215,8 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
     });
   });
 
-  it("still rejects duplicate exact SKUs when one duplicate row has invalid values", async () => {
-    await expect(fetchFbaSubscriptionAudit({
+  it("isolates one exact SKU when a duplicate row has invalid values", async () => {
+    const snapshot = await fetchFbaSubscriptionAudit({
       marketplaceId: US,
       metricInterval: MONTH,
       now: NOW,
@@ -224,7 +224,113 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
       transport: async (request) => request.operation === "listOffers"
         ? page([offer(1), offer(1, { price: "17.99" })])
         : page([metric(1)]),
-    })).rejects.toMatchObject({ code: "DUPLICATE_SKU" });
+    });
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedOfferRows: 2,
+      acceptedOfferRows: 0,
+      problemSkuRows: [{
+        sellerSku: sku(1),
+        affectedOfferRows: 2,
+        affectedMetricRows: 0,
+      }],
+    });
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: { status: "unavailable" },
+    });
+  });
+
+  it.each([
+    ["identical", offer(1)],
+    ["conflicting", offer(1, { price: 18.99 })],
+  ])("isolates a cross-page %s duplicate offer without stopping valid SKUs", async (_kind, duplicate) => {
+    const offerRows = [
+      ...Array.from({ length: 100 }, (_, index) => offer(index + 1)),
+      duplicate,
+    ];
+    const metricRows = Array.from({ length: 100 }, (_, index) => metric(index + 1));
+    const snapshot = await fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set(metricRows.map((row) => String(row.sku))),
+      transport: async (request) => request.operation === "listOffers"
+        ? page(
+            offerRows.slice(request.offset, request.offset + request.limit),
+            offerRows.length,
+          )
+        : page(metricRows),
+    });
+
+    expect(snapshot.offers).toHaveLength(99);
+    expect(snapshot.offers.some(({ sellerSku }) => sellerSku === sku(1))).toBe(false);
+    expect(snapshot.offers.some(({ sellerSku }) => sellerSku === sku(2))).toBe(true);
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedOfferRows: 101,
+      acceptedOfferRows: 99,
+      problemSkuRows: [{
+        sellerSku: sku(1),
+        affectedOfferRows: 2,
+        affectedMetricRows: 0,
+        metricMonths: [],
+      }],
+    });
+    expect(snapshot.upstreamCoverage.problemSkuRows).toHaveLength(1);
+    expect(snapshot.upstreamCoverage.problemSkuRows[0]!.problem).toContain(
+      "其他商品仍已繼續完成",
+    );
+    expect(snapshot.summary.provenSubscriptionRevenue).toBeNull();
+    expect(snapshot.summary.revenueCoverage.status).toBe("partial");
+  });
+
+  it.each([
+    ["identical", metric(1)],
+    ["conflicting", metric(1, { totalSubscriptionsRevenue: 999 })],
+  ])("keeps a %s duplicated metric month blank without double counting other SKUs", async (_kind, duplicate) => {
+    const snapshot = await fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1), sku(2)]),
+      transport: async (request) => request.operation === "listOffers"
+        ? page([offer(1), offer(2)])
+        : page([
+            metric(1),
+            duplicate,
+            metric(2),
+          ]),
+    });
+
+    expect(snapshot.offers).toHaveLength(2);
+    expect(snapshot.offers.find(({ sellerSku }) => sellerSku === sku(1)))
+      .toMatchObject({ monthlyPerformance: null });
+    expect(snapshot.offers.find(({ sellerSku }) => sellerSku === sku(2)))
+      .toMatchObject({ monthlyPerformance: { subscriptionRevenue: 2.5 } });
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedMetricRows: 3,
+      acceptedMetricRows: 1,
+      problemSkuRows: [{
+        sellerSku: sku(1),
+        affectedOfferRows: 0,
+        affectedMetricRows: 2,
+        metricMonths: [MONTH.month],
+      }],
+    });
+    expect(snapshot.upstreamCoverage.problemSkuRows).toHaveLength(1);
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 2,
+        reportedOfferMonths: 1,
+      },
+    });
   });
 
   it("reports only a lower-bound gap when optional-SKU offer and metric rows may not overlap", async () => {
@@ -386,6 +492,81 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
     ).toThrow(/不是 Subscribe & Save/u);
   });
 
+  it.each([
+    ["ASIN", { asin: "NOT-AN-ASIN" }, /ASIN/u],
+    ["revenue", { totalSubscriptionsRevenue: "17.99" }, /subscription revenue/u],
+    ["count", { shippedSubscriptionUnits: 1.2 }, /整數/u],
+  ])("isolates an exact-SKU invalid metric %s value without rejecting valid rows", (
+    _field,
+    overrides,
+    expectedProblem,
+  ) => {
+    const parsed = parseReplenishmentOfferMetricsPage(
+      page([metric(1), metric(2, overrides)]),
+      US,
+      MONTH,
+    );
+    expect(parsed).toMatchObject({
+      sourceItemCount: 2,
+      rejectedSellerSkuRows: 0,
+      items: [expect.objectContaining({ sellerSku: sku(1) })],
+      invalidMetricRows: [{
+        sellerSku: sku(2),
+        problem: expect.stringMatching(expectedProblem),
+      }],
+    });
+  });
+
+  it("keeps other current offers when one exact-SKU metric row is invalid", async () => {
+    const snapshot = await fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1), sku(2)]),
+      transport: async (request) => request.operation === "listOffers"
+        ? page([offer(1), offer(2)])
+        : page([
+            metric(1),
+            metric(2, { activeSubscriptions: 1.2 }),
+          ]),
+    });
+
+    expect(snapshot.offers.map(({ sellerSku }) => sellerSku)).toEqual([
+      sku(1),
+      sku(2),
+    ]);
+    expect(snapshot.offers[1]).toMatchObject({
+      sellerSku: sku(2),
+      monthlyPerformance: null,
+    });
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedOfferRows: 2,
+      acceptedOfferRows: 2,
+      returnedMetricRows: 2,
+      acceptedMetricRows: 1,
+      rejectedSellerSkuRows: 0,
+      minimumUnresolvedOfferMonths: 1,
+      problemSkuRows: [{
+        sellerSku: sku(2),
+        affectedOfferRows: 0,
+        affectedMetricRows: 1,
+        metricMonths: [MONTH.month],
+        problem: expect.stringContaining("月度指標"),
+      }],
+    });
+    expect(snapshot.upstreamCoverage.problemSkuRows).toHaveLength(1);
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 2,
+        reportedOfferMonths: 1,
+      },
+    });
+  });
+
   it("paginates all offers and refuses to call an unproven offer FBA", async () => {
     const offerRows = Array.from({ length: 101 }, (_, index) => offer(index + 1));
     const metricRows = Array.from({ length: 100 }, (_, index) => metric(index + 1));
@@ -415,10 +596,8 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
         .map((request) => request.offset),
     ).toEqual([0, 100]);
     expect(snapshot.offers).toHaveLength(100);
-    expect(snapshot.excluded).toContainEqual({
-      sellerSku: "SNS-0101",
-      reason: "FBA_NOT_PROVEN",
-    });
+    expect(snapshot.excluded).toEqual([]);
+    expect(JSON.stringify(snapshot)).not.toContain("SNS-0101");
     expect(snapshot.summary).toEqual({
       currentActiveSubscriptions: 5_050,
       provenSubscriptionRevenue: 5_100,
@@ -606,10 +785,26 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
         request.operation === "listOffers" ? page([offer(1)]) : page([metric(1)]),
     });
     expect(snapshot.offers).toEqual([]);
-    expect(snapshot.excluded).toContainEqual({
-      sellerSku: sku(1),
-      reason: "FBA_NOT_PROVEN",
+    expect(snapshot.excluded).toEqual([]);
+    expect(JSON.stringify(snapshot)).not.toContain(sku(1));
+  });
+
+  it("does not surface an unproven metric-only Seller SKU inside the FBA audit", async () => {
+    const snapshot = await fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1)]),
+      transport: async (request) =>
+        request.operation === "listOffers"
+          ? page([offer(1)])
+          : page([metric(1), metric(2)]),
     });
+
+    expect(snapshot.offers.map(({ sellerSku }) => sellerSku)).toEqual([sku(1)]);
+    expect(snapshot.excluded).toEqual([]);
+    expect(JSON.stringify(snapshot)).not.toContain(sku(2));
+    expect(snapshot.summary.revenueCoverage.status).toBe("complete");
   });
 
   it("uses only completed months inside the exact trailing-two-year horizon", () => {

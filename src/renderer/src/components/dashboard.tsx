@@ -1020,7 +1020,7 @@ export default function Dashboard({
                   >
                     <span aria-hidden="true">{section.symbol}</span>
                     <strong>{section.label}</strong>
-                    <i aria-hidden="true">⌄</i>
+                    <i className="workspace-primary-menu-chevron" aria-hidden="true" />
                   </button>
                   {openToolMenu === section.group && (
                     <div className="workspace-primary-menu" role="menu" aria-label={section.label}>
@@ -1098,7 +1098,7 @@ export default function Dashboard({
               >
                 <i />
                 <span><strong>{connectionBadge.title}</strong><small>{connectionBadge.detail}</small></span>
-                <b aria-hidden="true">⌄</b>
+                <b aria-hidden="true" />
               </button>
               <span className="workspace-avatar" role="img" aria-label={`${viewerName ?? "Jasper"} 的私人工作區`}>{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</span>
             </div>
@@ -1187,21 +1187,6 @@ export default function Dashboard({
                 <i aria-hidden="true">›</i>
               </button>
             </section>
-            <section className="content-audit-home-card" aria-label="FBA 180 天以上庫齡健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
-              <div>
-                <p className="eyebrow">FBA AGED INVENTORY · 180+ DAYS</p>
-                <h2>FBA 180 天以上庫齡健檢</h2>
-                <p>主清單只列已經超過 180 天的 FBA 庫存；Amazon estimated excess 預估與費用放在獨立分頁。</p>
-              </div>
-              <button type="button" onClick={() => {
-                setAuditPreference("inventory");
-                setAgedInventoryOpen(true);
-              }}>
-                開始 FBA 180 天以上庫齡健檢
-                <i aria-hidden="true">›</i>
-              </button>
-            </section>
             <section className="content-audit-home-card" aria-label="未綁變體健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true">◇?</span>
               <div>
@@ -1223,15 +1208,18 @@ export default function Dashboard({
                 <i aria-hidden="true">›</i>
               </button>
             </section>
-            <section className="content-audit-home-card audit-card-pending" aria-label="廣告覆蓋健檢與 Ads API 連線">
-              <span className="content-audit-home-icon" aria-hidden="true">◎</span>
+            <section className="content-audit-home-card" aria-label="FBA 180 天以上庫齡健檢捷徑">
+              <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
               <div>
-                <p className="eyebrow">ADS COVERAGE</p>
-                <h2>廣告覆蓋健檢</h2>
-                <p>將依 SKU 優先、ASIN 補充比對 SP 活動；Amazon Ads API 尚未連線前不顯示推測結果。</p>
+                <p className="eyebrow">FBA AGED INVENTORY · 180+ DAYS</p>
+                <h2>FBA 180 天以上庫齡健檢</h2>
+                <p>主清單只列已經超過 180 天的 FBA 庫存；Amazon estimated excess 預估與費用放在獨立分頁。</p>
               </div>
-              <button type="button" onClick={() => launch("ads")}>
-                查看健檢能力與連線
+              <button type="button" onClick={() => {
+                setAuditPreference("inventory");
+                setAgedInventoryOpen(true);
+              }}>
+                開始 FBA 180 天以上庫齡健檢
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1246,6 +1234,18 @@ export default function Dashboard({
               </div>
               <button type="button" onClick={() => launch("subscriptions")}>
                 {subscriptionAuditSupported ? "開始全站訂閱價格健檢" : "查看 S&S 能力說明"}
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
+            <section className="content-audit-home-card audit-card-pending" aria-label="廣告覆蓋健檢與 Ads API 連線">
+              <span className="content-audit-home-icon" aria-hidden="true">◎</span>
+              <div>
+                <p className="eyebrow">ADS COVERAGE</p>
+                <h2>廣告覆蓋健檢</h2>
+                <p>將依 SKU 優先、ASIN 補充比對 SP 活動；Amazon Ads API 尚未連線前不顯示推測結果。</p>
+              </div>
+              <button type="button" onClick={() => launch("ads")}>
+                查看健檢能力與連線
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1266,9 +1266,9 @@ export default function Dashboard({
               )}
               <button type="button" onClick={() => setReviewAuditOpen(true)}>
                 {currentReviewAudit?.snapshot
-                  ? "繼續查看評論健檢"
+                  ? "查看上次評論健檢"
                   : currentReviewAudit?.job
-                    ? "繼續上次評論健檢"
+                    ? "查看進行中的評論健檢"
                     : "開始全站評論健檢"}
                 <i aria-hidden="true">›</i>
               </button>

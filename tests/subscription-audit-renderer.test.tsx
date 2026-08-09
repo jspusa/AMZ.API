@@ -48,6 +48,13 @@ function response(overrides: Record<string, unknown> = {}): Record<string, unkno
       returnedMetricRows: 3,
       acceptedMetricRows: 3,
       invalidOfferRows: [],
+      problemSkuRows: [],
+      unprovenExactSkuProblems: {
+        exactSkuCount: 0,
+        affectedOfferRows: 0,
+        affectedMetricRows: 0,
+        minimumUnresolvedOfferMonths: 0,
+      },
       rejectedSellerSkuRows: 0,
       minimumUnresolvedOfferMonths: 0,
       notice: "Amazon Replenishment 回應中的 Seller SKU 均可原樣核對。",
@@ -442,6 +449,20 @@ describe("FBA subscription audit renderer", () => {
           sellerSku: "SNS-BAD-PRICE",
           problem: "offer price 不是安全的非負數。",
         }],
+        problemSkuRows: [{
+          sellerSku: "SNS-BAD-PRICE",
+          fbaEvidence: "CURRENT_FBA_SKU_SET",
+          affectedOfferRows: 1,
+          affectedMetricRows: 0,
+          metricMonths: [],
+          problem: "Amazon Replenishment offer 資料無法安全解析：offer price 不是安全的非負數。其他商品仍已完成。",
+        }],
+        unprovenExactSkuProblems: {
+          exactSkuCount: 0,
+          affectedOfferRows: 0,
+          affectedMetricRows: 0,
+          minimumUnresolvedOfferMonths: 0,
+        },
         rejectedSellerSkuRows: 0,
         minimumUnresolvedOfferMonths: 6,
         notice: "一列 offer 資料值無法安全解析。",
@@ -459,6 +480,134 @@ describe("FBA subscription audit renderer", () => {
     expect(markup).toContain("0 列缺少可原樣核對的 Seller SKU");
     expect(markup).toContain("SNS-BAD-PRICE");
     expect(markup).toContain("offer price 不是安全的非負數");
+  });
+
+  it("keeps an exact upstream problem without current FBA proof count-only", () => {
+    const snapshot = parseSubscriptionAuditSnapshot(response({
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 2,
+        acceptedOfferRows: 1,
+        returnedMetricRows: 3,
+        acceptedMetricRows: 3,
+        invalidOfferRows: [],
+        problemSkuRows: [],
+        unprovenExactSkuProblems: {
+          exactSkuCount: 1,
+          affectedOfferRows: 1,
+          affectedMetricRows: 0,
+          minimumUnresolvedOfferMonths: 6,
+        },
+        rejectedSellerSkuRows: 0,
+        minimumUnresolvedOfferMonths: 6,
+        notice: "一個精確上游問題 SKU 缺少同次 CURRENT_FBA 證據，只保留計數。",
+      },
+    }));
+    expect(snapshot.upstreamCoverage.problemSkuRows).toEqual([]);
+    expect(snapshot.upstreamCoverage.unprovenExactSkuProblems).toEqual({
+      exactSkuCount: 1,
+      affectedOfferRows: 1,
+      affectedMetricRows: 0,
+      minimumUnresolvedOfferMonths: 6,
+    });
+    const markup = renderToStaticMarkup(createElement(
+      SubscriptionUpstreamCoverageWarning,
+      { coverage: snapshot.upstreamCoverage },
+    ));
+    expect(markup).toContain("只保留計數、不顯示 identifier");
+    expect(markup).not.toContain("FBM-UNPROVEN");
+  });
+
+  it("keeps valid offers visible while listing a duplicated metric SKU as partial", () => {
+    const snapshot = parseSubscriptionAuditSnapshot(response({
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 1,
+        acceptedOfferRows: 1,
+        returnedMetricRows: 5,
+        acceptedMetricRows: 3,
+        invalidOfferRows: [],
+        problemSkuRows: [{
+          sellerSku: "AFA12AM",
+          fbaEvidence: "CURRENT_FBA_SKU_SET",
+          affectedOfferRows: 0,
+          affectedMetricRows: 2,
+          metricMonths: ["2026-03"],
+          problem: "Amazon Replenishment 月度指標重複；該月保持缺值，其他商品仍已完成。",
+        }],
+        unprovenExactSkuProblems: {
+          exactSkuCount: 0,
+          affectedOfferRows: 0,
+          affectedMetricRows: 0,
+          minimumUnresolvedOfferMonths: 0,
+        },
+        rejectedSellerSkuRows: 0,
+        minimumUnresolvedOfferMonths: 1,
+        notice: "一個精確問題 SKU 已單獨隔離，其他商品仍已完成。",
+      },
+    }));
+
+    expect(snapshot.offers).toHaveLength(1);
+    expect(snapshot.upstreamCoverage.problemSkuRows).toEqual([
+      expect.objectContaining({
+        sellerSku: "AFA12AM",
+        affectedMetricRows: 2,
+        metricMonths: ["2026-03"],
+      }),
+    ]);
+    expect(subscriptionRevenueSummary(snapshot).value).toBe("資料不完整");
+    const markup = renderToStaticMarkup(createElement(
+      SubscriptionUpstreamCoverageWarning,
+      { coverage: snapshot.upstreamCoverage },
+    ));
+    expect(markup).toContain("問題 SKU（其他商品仍已完成）");
+    expect(markup).toContain("AFA12AM");
+    expect(markup).toContain("該月保持缺值");
+  });
+
+  it("accepts one invalid exact-SKU metric row as a visible partial problem", () => {
+    const snapshot = parseSubscriptionAuditSnapshot(response({
+      upstreamCoverage: {
+        status: "partial",
+        returnedOfferRows: 1,
+        acceptedOfferRows: 1,
+        returnedMetricRows: 4,
+        acceptedMetricRows: 3,
+        invalidOfferRows: [],
+        problemSkuRows: [{
+          sellerSku: "AFA12AM",
+          fbaEvidence: "CURRENT_FBA_SKU_SET",
+          affectedOfferRows: 0,
+          affectedMetricRows: 1,
+          metricMonths: ["2026-03"],
+          problem: "Amazon Replenishment 月度指標於 2026-03 資料無法安全解析；其他商品仍已完成。",
+        }],
+        unprovenExactSkuProblems: {
+          exactSkuCount: 0,
+          affectedOfferRows: 0,
+          affectedMetricRows: 0,
+          minimumUnresolvedOfferMonths: 0,
+        },
+        rejectedSellerSkuRows: 0,
+        minimumUnresolvedOfferMonths: 1,
+        notice: "一個精確問題 SKU 已單獨隔離。",
+      },
+    }));
+
+    expect(snapshot.offers).toHaveLength(1);
+    expect(snapshot.upstreamCoverage.problemSkuRows).toEqual([
+      expect.objectContaining({
+        sellerSku: "AFA12AM",
+        affectedMetricRows: 1,
+        metricMonths: ["2026-03"],
+      }),
+    ]);
+    const markup = renderToStaticMarkup(createElement(
+      SubscriptionUpstreamCoverageWarning,
+      { coverage: snapshot.upstreamCoverage },
+    ));
+    expect(markup).toContain("問題 SKU（其他商品仍已完成）");
+    expect(markup).toContain("資料無法安全解析");
   });
 
   it("explains the snapshot meaning, 23-month limit and main-owned Excel export", () => {

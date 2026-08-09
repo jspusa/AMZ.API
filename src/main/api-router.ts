@@ -400,6 +400,81 @@ export function buildAdvertisingAuditSuiteResult(input: {
   };
 }
 
+export function buildSubscriptionAuditSuiteRows(
+  snapshot: SubscriptionAuditSnapshot,
+): NonNullable<
+  NonNullable<AuditSuiteWorkbookInput["sections"]["subscription"]>["payload"]
+> {
+  const problemsBySku = new Map(
+    snapshot.upstreamCoverage.problemSkuRows.map((problem) => {
+      if (problem.fbaEvidence !== "CURRENT_FBA_SKU_SET") {
+        throw new Error("訂閱問題 SKU 缺少同次 CURRENT_FBA 證據。");
+      }
+      return [problem.sellerSku, problem] as const;
+    }),
+  );
+  const emittedSkus = new Set<string>();
+  const offerRows = snapshot.offers.map((offer) => {
+    emittedSkus.add(offer.sellerSku);
+    const problem = problemsBySku.get(offer.sellerSku);
+    const bucket = subscriptionAuditDiscountBucket(offer.sellerFundedBaseDiscount);
+    const anomaly = problem
+      ? `上游問題：${problem.problem}`
+      : offer.sellerFundedBaseDiscount === null
+        ? "Amazon 未回傳 Seller 基礎折扣"
+        : bucket === null
+          ? `非標準 Seller 基礎折扣 ${offer.sellerFundedBaseDiscount}%`
+          : `${bucket}% Seller 基礎折扣組`;
+    return {
+      sellerSku: offer.sellerSku,
+      title: "",
+      asin: offer.asin,
+      anomaly,
+      sellerFundedBaseDiscountPercent: offer.sellerFundedBaseDiscount,
+      currentActiveSubscriptions: offer.currentActiveSubscriptions,
+      currentPrice: offer.price.amount,
+      notice: problem
+        ? "此 exact SKU 具同次 CURRENT_FBA 證據；問題列已隔離，對應月份未補 0 或重複加總。"
+        : snapshot.notice,
+    };
+  });
+  const excludedRows = snapshot.excluded.flatMap((row) => {
+    if (row.reason === "FBA_NOT_PROVEN") {
+      return [];
+    }
+    if (row.fbaEvidence !== "CURRENT_FBA_SKU_SET") {
+      throw new Error("訂閱未納入 SKU 缺少同次 CURRENT_FBA 證據。");
+    }
+    if (problemsBySku.has(row.sellerSku) || emittedSkus.has(row.sellerSku)) return [];
+    emittedSkus.add(row.sellerSku);
+    return [{
+      sellerSku: row.sellerSku,
+      title: "",
+      asin: "",
+      anomaly: `未納入：${row.reason}`,
+      sellerFundedBaseDiscountPercent: null,
+      currentActiveSubscriptions: null,
+      currentPrice: null,
+      notice: "此 exact SKU 具同次 CURRENT_FBA 證據，但訂閱 offer／metric identity 無法安全合併。",
+    }];
+  });
+  const problemOnlyRows = snapshot.upstreamCoverage.problemSkuRows.flatMap((problem) => {
+    if (emittedSkus.has(problem.sellerSku)) return [];
+    emittedSkus.add(problem.sellerSku);
+    return [{
+      sellerSku: problem.sellerSku,
+      title: "",
+      asin: "",
+      anomaly: `上游問題：${problem.problem}`,
+      sellerFundedBaseDiscountPercent: null,
+      currentActiveSubscriptions: null,
+      currentPrice: null,
+      notice: "此 exact SKU 具同次 CURRENT_FBA 證據；問題 offer 已排除，其他商品仍已完成。",
+    }];
+  });
+  return [...offerRows, ...excludedRows, ...problemOnlyRows];
+}
+
 function isPlainRecord(value: unknown): value is JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -3499,7 +3574,7 @@ export class ApiRouter {
           ? `正在依 Amazon 官方 1 request/second 限制讀取已驗證的非 parent ASIN 主題（${completed} / ${total}）。`
           : "Amazon 正在準備目前 FBA 商品清單。",
       capabilityNotice:
-        "資料每週更新且僅英文；前／後五名是「非 parent ASIN 主題星等影響」，不是商品總星等。",
+        "資料每週更新且僅英文；前／後五名使用 Amazon 主題影響值。它不是商品總星等或 1–5 星制；負數是此負向主題對星等下降方向的影響值，不是商品負星等，也不會轉成 0 或絕對值。關閉健檢小視窗後，Mac main process 仍會在背景繼續。",
     }, ready ? 200 : 202);
   }
 
@@ -4797,36 +4872,7 @@ export class ApiRouter {
     if (snapshot.mode !== context.mode || snapshot.marketplaceId !== marketplaceId) {
       throw new Error("訂閱健檢快照與本次綜合健檢 context 不一致。");
     }
-    const rows: NonNullable<AuditSuiteWorkbookInput["sections"]["subscription"]>["payload"] = [
-      ...snapshot.offers.map((offer) => {
-        const bucket = subscriptionAuditDiscountBucket(offer.sellerFundedBaseDiscount);
-        const anomaly = offer.sellerFundedBaseDiscount === null
-          ? "Amazon 未回傳 Seller 基礎折扣"
-          : bucket === null
-            ? `非標準 Seller 基礎折扣 ${offer.sellerFundedBaseDiscount}%`
-            : `${bucket}% Seller 基礎折扣組`;
-        return {
-          sellerSku: offer.sellerSku,
-          title: "",
-          asin: offer.asin,
-          anomaly,
-          sellerFundedBaseDiscountPercent: offer.sellerFundedBaseDiscount,
-          currentActiveSubscriptions: offer.currentActiveSubscriptions,
-          currentPrice: offer.price.amount,
-          notice: snapshot.notice,
-        };
-      }),
-      ...snapshot.excluded.map((row) => ({
-        sellerSku: row.sellerSku,
-        title: "",
-        asin: "",
-        anomaly: `未納入：${row.reason}`,
-        sellerFundedBaseDiscountPercent: null,
-        currentActiveSubscriptions: null,
-        currentPrice: null,
-        notice: "此 Seller SKU 未取得同次完整 FBA 證據，未冒充訂閱健檢結果。",
-      })),
-    ];
+    const rows = buildSubscriptionAuditSuiteRows(snapshot);
     const partial = snapshot.inventoryEvidence.coverage !== "complete" ||
       snapshot.upstreamCoverage.status !== "complete" ||
       snapshot.summary.revenueCoverage.status !== "complete";

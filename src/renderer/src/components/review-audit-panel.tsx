@@ -45,6 +45,11 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function impactLabel(value: number, polarity: "positive" | "negative"): string {
+  const formatted = value.toFixed(1).replace(/^-/, "−");
+  return `${polarity === "positive" ? "正向" : "負向"}影響值 ${formatted}`;
+}
+
 export type ReviewAuditCache = {
   snapshot: ReviewAuditSnapshotView | null;
   job: ReviewAuditJobView | null;
@@ -72,6 +77,7 @@ export default function ReviewAuditPanel({
   const [busy, setBusy] = useState<"scan" | "export" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const autoObservedJobRef = useRef<string | null>(null);
   const cachedResultRef = useRef(cachedResult);
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -140,6 +146,22 @@ export default function ReviewAuditPanel({
     }
   };
 
+  useEffect(() => {
+    const activeJob = cachedResultRef.current?.job;
+    if (
+      !activeJob ||
+      activeJob.marketplaceId !== marketplaceId ||
+      autoObservedJobRef.current === activeJob.jobId
+    ) {
+      return;
+    }
+    autoObservedJobRef.current = activeJob.jobId;
+    void scan();
+    // Re-opening the modal creates a new panel instance. Its cached main-owned
+    // job is observed automatically; renderer unmount only stops local polling.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketplaceId]);
+
   const exportExcel = async () => {
     if (!snapshot || busy) return;
     setBusy("export");
@@ -178,8 +200,8 @@ export default function ReviewAuditPanel({
         先用 Amazon Listings relationships 證明 FBA SKU 為 child 或 standalone，排除 parent 容器後，再讀取正／負評論主題與前五、後五。
       </p>
       <div className="review-audit-boundary" role="note">
-        <strong>不是商品總星等排名</strong>
-        <p>Amazon 公開 API 資料每週更新且僅英文；不提供完整 review 全文、商品平均星等或總評論數。Parent 容器不查詢；relationships 缺少、歧義或衝突會單獨列為未完成。</p>
+        <strong>影響值不是商品星等，也不是 1–5 星制</strong>
+        <p>starRatingImpact 是 Amazon 回傳的評論主題影響指標；負數是此負向主題對星等下降方向的影響值，不是商品出現「負的星星」。畫面保留 Amazon 原始正負號與數值，不轉成 0、不裁切，也不改成絕對值。公開 API 資料每週更新且僅英文，不提供完整 review 全文、商品平均星等或總評論數。Parent 容器不查詢；relationships 缺少、歧義或衝突會單獨列為未完成。</p>
       </div>
       {!supported && <div className="review-audit-unavailable" role="status">Customer Feedback API 在本 App 僅支援 US、JP、UK 與 DE 站。</div>}
       {error && <div className="review-audit-error" role="alert">{error}</div>}
@@ -188,14 +210,15 @@ export default function ReviewAuditPanel({
           <strong>{job.message}</strong>
           <progress value={job.progress.percent} max={100}>{job.progress.percent}%</progress>
           <small>{job.capabilityNotice}</small>
+          <small>關閉這個健檢小視窗後，Mac main process 仍會在背景繼續；不必回來按按鈕，重新開啟即可查看最新進度。</small>
         </div>
       )}
       <div className="review-audit-actions">
         <button type="button" onClick={() => void scan()} disabled={!supported || Boolean(busy)}>
           {busy === "scan"
-            ? "正在掃描…"
+            ? "正在更新進度…"
             : job
-              ? "繼續上次評論健檢"
+              ? "查看進行中的評論健檢"
               : snapshot
                 ? "重新掃描全站評論主題"
                 : "掃描全站 FBA 評論主題"}
@@ -225,8 +248,8 @@ export default function ReviewAuditPanel({
             </div>
           )}
           <div className="review-audit-rankings">
-            <section aria-labelledby="review-positive-title"><h4 id="review-positive-title">前五：正向主題星等影響</h4>{snapshot.topFivePositive.map((item, index) => <article key={item.asin}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.sellerSkus.join(" · ")} · {item.asin}</small><p>{item.topic}</p></div><b>{item.starRatingImpact.toFixed(1)}</b></article>)}</section>
-            <section aria-labelledby="review-negative-title"><h4 id="review-negative-title">後五：負向主題星等影響</h4>{snapshot.bottomFiveNegative.map((item, index) => <article key={item.asin}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.sellerSkus.join(" · ")} · {item.asin}</small><p>{item.topic}</p></div><b>{item.starRatingImpact.toFixed(1)}</b></article>)}</section>
+            <section aria-labelledby="review-positive-title"><h4 id="review-positive-title">前五：正向主題影響值</h4>{snapshot.topFivePositive.map((item, index) => <article key={item.asin}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.sellerSkus.join(" · ")} · {item.asin}</small><p>{item.topic}</p></div><b>{impactLabel(item.starRatingImpact, "positive")}</b></article>)}</section>
+            <section aria-labelledby="review-negative-title"><h4 id="review-negative-title">後五：負向主題影響值</h4>{snapshot.bottomFiveNegative.map((item, index) => <article key={item.asin}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.sellerSkus.join(" · ")} · {item.asin}</small><p>{item.topic}</p></div><b>{impactLabel(item.starRatingImpact, "negative")}</b></article>)}</section>
           </div>
           <p className="review-audit-notice">{snapshot.notice}</p>
         </>

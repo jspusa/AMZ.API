@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { parseBrandSalesSnapshot } from "../src/renderer/src/brand-sales";
-import BrandSalesChart from "../src/renderer/src/components/brand-sales-chart";
+import BrandSalesChart, {
+  brandSalesPiePath,
+  sortBrandSalesSegments,
+} from "../src/renderer/src/components/brand-sales-chart";
 
 const expected = {
   marketplaceId: "ATVPDKIKX0DER",
@@ -49,7 +52,7 @@ describe("brand sales renderer", () => {
     expect(() => parseBrandSalesSnapshot({ ...snapshot(), summary: { ...snapshot().summary, soldFbaSkuCount: 8 } }, expected)).toThrow(/加總/u);
   });
 
-  it("renders the five requested colors, gray unclassified and accessible hover targets", () => {
+  it("renders a keyboard-accessible solid pie with no inner cover", () => {
     const parsed = parseBrandSalesSnapshot(snapshot(), expected);
     const html = renderToStaticMarkup(
       <BrandSalesChart snapshot={parsed} loading={false} error={null} rangeLabel="08/01–08/07" onRetry={() => undefined} />,
@@ -62,6 +65,11 @@ describe("brand sales renderer", () => {
       expect(html).toContain(color);
     }
     expect(html).toContain("tabindex=\"0\"");
+    expect(html.match(/class="brand-sales-pie-slice/g)).toHaveLength(6);
+    expect(html.match(/d="M 60 60 L/g)).toHaveLength(6);
+    expect(html).toContain("<title>Afreschi");
+    expect(html).not.toContain("brand-sales-center");
+    expect(html).not.toContain("brand-sales-donut");
     expect(html).toContain("50%");
     expect(html).toContain("已隨區間自動更新");
     expect(html).toContain("<details class=\"brand-sales-notice\">");
@@ -69,6 +77,75 @@ describe("brand sales renderer", () => {
     expect(html).toContain("只含 FBA 已出貨商品。");
     expect(html).not.toContain("同步品牌");
     expect(html).not.toContain("重新同步");
+  });
+
+  it("builds wedges from the center and closes a full solid circle", () => {
+    expect(brandSalesPiePath(0, 0.25)).toBe(
+      "M 60 60 L 60 8 A 52 52 0 0 1 112 60 Z",
+    );
+    const full = brandSalesPiePath(0, 1);
+    expect(full).toMatch(/^M 60 60 L 60 8 /u);
+    expect(full.match(/A 52 52 0 1 1/g)).toHaveLength(2);
+    expect(full.endsWith(" Z")).toBe(true);
+    expect(brandSalesPiePath(0, 0)).toBe("");
+  });
+
+  it("orders revenue high to low and keeps equal and zero rows stable", () => {
+    const parsed = parseBrandSalesSnapshot(snapshot(), expected);
+    const [afreschi, gootoe, herz, vitaday, healthyMoment, unclassified] = parsed.segments;
+    const ordered = sortBrandSalesSegments([
+      { ...afreschi, amount: 0 },
+      { ...gootoe, amount: 25 },
+      { ...herz, amount: 5 },
+      { ...vitaday, amount: 20 },
+      { ...healthyMoment, amount: 5 },
+      { ...unclassified, amount: 0 },
+    ]);
+    expect(ordered.map(({ key }) => key)).toEqual([
+      "gootoe",
+      "vitaday",
+      "herz",
+      "healthy-moment",
+      "afreschi",
+      "unclassified",
+    ]);
+
+    const amounts = [10, 50, 0, 30, 10, 0];
+    const percentages = [10, 50, 0, 30, 10, 0];
+    const units = [1, 5, 0, 3, 1, 0];
+    const validUnsorted = {
+      ...snapshot(),
+      segments: snapshot().segments.map((segment, index) => ({
+        ...segment,
+        amount: amounts[index],
+        percentage: percentages[index],
+        skuCount: amounts[index] > 0 ? 1 : 0,
+        unitCount: units[index],
+      })),
+      summary: {
+        ...snapshot().summary,
+        amount: 100,
+        unitCount: 10,
+        classifiedAmount: 100,
+        unclassifiedAmount: 0,
+        soldFbaSkuCount: 4,
+        soldCurrentFbaSkuCount: 4,
+      },
+    };
+    const html = renderToStaticMarkup(
+      <BrandSalesChart
+        snapshot={parseBrandSalesSnapshot(validUnsorted, expected)}
+        loading={false}
+        error={null}
+        rangeLabel="08/01–08/07"
+        onRetry={() => undefined}
+      />,
+    );
+    const legend = html.slice(html.indexOf('class="brand-sales-legend"'));
+    const labels = ["GooToE", "Vitaday", "Afreschi", "Healthy Moment", "Herz", "未分類"];
+    for (let index = 1; index < labels.length; index += 1) {
+      expect(legend.indexOf(labels[index - 1])).toBeLessThan(legend.indexOf(labels[index]));
+    }
   });
 
   it("shows cancelled reports honestly and exposes only an explicit quiet retry", () => {

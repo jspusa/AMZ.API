@@ -84,9 +84,9 @@ describe("combined FBA audit suite Excel", () => {
             sellerSku: "REVIEW-01",
             title: "Review product",
             asin: "B000000003",
-            topic: "Easy to use",
-            sentiment: "正向",
-            starRatingImpact: 1.2,
+            topic: "Indigestion",
+            sentiment: "負向",
+            starRatingImpact: -0.9,
             mentions: null,
             occurrencePercent: null,
             notice: "公開 API 未回傳的數值保持空白。",
@@ -128,6 +128,10 @@ describe("combined FBA audit suite Excel", () => {
     expect(allXml).toContain("範圍未完整");
     expect(allXml).toContain("圖片健檢未完成；沒有建立結果快照");
     expect(allXml).toContain("數量未知，未補 0");
+    expect(allXml).toContain("評論主題影響值");
+    expect(allXml).toContain("負數是負向主題對星等下降方向的影響值，不是商品負星等");
+    expect(allXml).toContain("原始值不轉成 0 或絕對值");
+    expect(allXml).toContain("<v>-0.9</v>");
     expect(allXml).not.toContain("<v>0</v>");
     expect(allXml).not.toContain("<f>");
     expect(allXml).not.toContain("<f ");

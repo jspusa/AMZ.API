@@ -62,8 +62,11 @@ function revenueCoverageNote(snapshot: SubscriptionAuditSnapshot): string {
     }
     if (snapshot.upstreamCoverage.status === "partial") {
       gaps.push(`另至少 ${snapshot.upstreamCoverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，offer 與月度缺列可能不重疊，實際缺口無法精確計算`);
-      if (snapshot.upstreamCoverage.invalidOfferRows.length > 0) {
-        gaps.push(`其中 ${snapshot.upstreamCoverage.invalidOfferRows.length.toLocaleString("zh-TW")} 列有精確 Seller SKU，但 offer 資料值無法安全解析；未改寫或補 0`);
+      if (snapshot.upstreamCoverage.problemSkuRows.length > 0) {
+        gaps.push(`其中 ${snapshot.upstreamCoverage.problemSkuRows.length.toLocaleString("zh-TW")} 個具同次 CURRENT_FBA 證據的精確問題 SKU 已單獨隔離；其他商品仍已完成，未改寫、補 0 或重複加總`);
+      }
+      if (snapshot.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount > 0) {
+        gaps.push(`另有 ${snapshot.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount.toLocaleString("zh-TW")} 個精確上游問題 SKU 缺少同次 CURRENT_FBA 證據，因此只計數、不顯示 identifier`);
       }
     }
     return `${verifiedScope}；${gaps.join("；")}；不以部分資料冒充全站總額。`;
@@ -119,16 +122,19 @@ export function SubscriptionUpstreamCoverageWarning({
     coverage.returnedMetricRows - coverage.acceptedMetricRows;
   return (
     <div className="variation-warning" role="status">
-      <strong>Amazon 回應資料不完整</strong>
+      <strong>{coverage.problemSkuRows.length > 0
+        ? "問題 SKU（其他商品仍已完成）"
+        : "Amazon 回應資料不完整"}</strong>
       <p>{coverage.notice}</p>
       <small>
-        至少 {coverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，且實際缺口無法精確計算。已排除 {rejectedRows.toLocaleString("zh-TW")} 列；其中 {coverage.rejectedSellerSkuRows.toLocaleString("zh-TW")} 列缺少可原樣核對的 Seller SKU、{coverage.invalidOfferRows.length.toLocaleString("zh-TW")} 列有精確 SKU 但資料值無法安全解析。
+        至少 {coverage.minimumUnresolvedOfferMonths.toLocaleString("zh-TW")} 個 SKU 月份無法核對，且實際缺口無法精確計算。已排除 {rejectedRows.toLocaleString("zh-TW")} 列；其中 {coverage.rejectedSellerSkuRows.toLocaleString("zh-TW")} 列缺少可原樣核對的 Seller SKU，{coverage.problemSkuRows.length.toLocaleString("zh-TW")} 個具同次 CURRENT_FBA 證據的精確問題 SKU 已逐項隔離。
+        另有 {coverage.unprovenExactSkuProblems.exactSkuCount.toLocaleString("zh-TW")} 個精確上游問題 SKU 缺少同次 CURRENT_FBA 證據，只保留計數、不顯示 identifier。
         offer 可核對 {coverage.acceptedOfferRows.toLocaleString("zh-TW")}／{coverage.returnedOfferRows.toLocaleString("zh-TW")}，
         月度列可核對 {coverage.acceptedMetricRows.toLocaleString("zh-TW")}／{coverage.returnedMetricRows.toLocaleString("zh-TW")}。
       </small>
-      {coverage.invalidOfferRows.length > 0 && (
-        <ul aria-label="Replenishment offer 資料值未完成清單">
-          {coverage.invalidOfferRows.map((row) => (
+      {coverage.problemSkuRows.length > 0 && (
+        <ul aria-label="Replenishment 問題 SKU 清單">
+          {coverage.problemSkuRows.map((row) => (
             <li key={row.sellerSku}><strong>{row.sellerSku}</strong>：{row.problem}</li>
           ))}
         </ul>

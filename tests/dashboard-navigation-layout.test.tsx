@@ -20,6 +20,8 @@ describe("dashboard top navigation layout", () => {
 
     expect(navigation).toBeDefined();
     expect(navigation?.match(/aria-haspopup="menu"/g)).toHaveLength(4);
+    expect(navigation?.match(/workspace-primary-menu-chevron/g)).toHaveLength(4);
+    expect(navigation).not.toContain("⌄");
     const orderedLabels = [
       "產品區",
       "價格區",
@@ -79,6 +81,25 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain("Amazon 已連線");
     expect(markup).toContain("Mac 安全連線");
 
+    const auditGrid = markup.slice(
+      markup.indexOf('class="health-audit-home-grid"'),
+      markup.indexOf("</main>"),
+    );
+    const orderedAuditCards = [
+      "全站文案健檢",
+      "全站圖片健檢",
+      "未綁變體健檢",
+      "FBA 180 天以上庫齡健檢",
+      "全站訂閱價格健檢",
+      "廣告覆蓋健檢",
+      "評論健檢",
+    ];
+    for (let index = 1; index < orderedAuditCards.length; index += 1) {
+      expect(auditGrid.indexOf(orderedAuditCards[index - 1])).toBeLessThan(
+        auditGrid.indexOf(orderedAuditCards[index]),
+      );
+    }
+
     const source = await readFile(
       new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
       "utf8",
@@ -103,6 +124,11 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain('label: "報表區"');
     expect(source).toContain('tools: ["price", "promotion"]');
     expect(source).toContain('.filter((entry) => entry.id !== "review-audit")');
+    expect(source).toContain("查看進行中的評論健檢");
+    expect(source).toContain("查看上次評論健檢");
+    expect(source).not.toContain("繼續上次評論健檢");
+    expect(source).not.toContain("繼續查看評論健檢");
+    expect(source).not.toContain(">⌄</i>");
   });
 
   it("renders injected report entries without coupling them to a renderer tool", () => {
@@ -168,6 +194,27 @@ describe("dashboard top navigation layout", () => {
     );
     expect(css).toMatch(
       /@media \(max-width: 680px\)[\s\S]*?\.report-library-export-grid,[\s\S]*?\.report-library-report-list,[\s\S]*?\.review-audit-rankings\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
+    );
+    expect(css).toMatch(
+      /\.brand-sales-visual\s*\{[\s\S]*?flex-direction:\s*column;/,
+    );
+    expect(css).toMatch(
+      /\.brand-sales-pie-wrap\s*\{[\s\S]*?width:\s*min\(100%, 184px\);/,
+    );
+    expect(css).toMatch(
+      /\.brand-sales-legend\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(css).toMatch(
+      /\.brand-sales-legend strong,[\s\S]*?\.brand-sales-legend small\s*\{[\s\S]*?white-space:\s*normal;[\s\S]*?overflow-wrap:\s*anywhere;/,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 430px\)[\s\S]*?\.brand-sales-card\s*\{[\s\S]*?max-width:\s*100%;/,
+    );
+    expect(css).toMatch(
+      /\.workspace-primary-menu-chevron::after\s*\{[\s\S]*?content:\s*none;/,
+    );
+    expect(css).toMatch(
+      /\.workspace-primary-menu-chevron::before\s*\{[\s\S]*?transform:\s*rotate\(45deg\);/,
     );
   });
 

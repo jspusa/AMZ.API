@@ -23,7 +23,7 @@
 - 本機持久 idempotency ledger；未知結果不重送
 - 全站文案只用 Mac 內建 spellchecker，不傳送到外部拼字服務
 - Variation family 查詢保持唯讀；唯一改掛 route 只允許 FBA child，固定兩階段 Amazon Validation Preview → native Touch ID → 持久 idempotency → 單次 PATCH → 唯讀回查。真正 PATCH 前失敗會安全釋放 claim；已送出或已接受後的未知狀態不得重送
-- 全站文案／圖片／訂閱健檢只接收 main process 證明的 FBA SKU；訂閱 Excel 只能由 main 保存的短效快照建立
+- 全站文案／圖片／訂閱健檢只接收 main process 證明的 FBA SKU；訂閱的 exact-SKU offer／月度問題列只有帶同次 `CURRENT_FBA` 證據才可顯示／匯出，未證明識別值只保留聚合計數；問題列只能單列隔離並將範圍降為 partial，站點、program、FBA fulfillment、月份或分頁衝突仍整次 fail closed；訂閱 Excel 只能由 main 保存的短效快照建立
 - 一鍵全部健檢由 main process 綁定 account scope、mode、marketplace 與短效 context；七個 section 各自 fail honest，renderer 不能上傳整份 snapshot 或 account scope，Excel 只由同一 main job 的已驗證結果建立
 - Amazon Ads 使用獨立 Keychain-backed vault；只允許官方固定 token／Profiles／Campaign query endpoint、精確 Seller Profile 與 Sponsored Products 唯讀查詢。App 沒有 Ads write route，Listing 身分或來源不完整時不輸出全站覆蓋結論
 - 會計能力使用固定公開 SP-API allowlist；未完成 FBA 過濾、人工前置、Brazil-only 與不存在的通用發票／帳單接口保持停用

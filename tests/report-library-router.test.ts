@@ -191,7 +191,7 @@ describe("review topic audit routes", () => {
         averageProductRatingAvailable: false,
         totalReviewCountAvailable: false,
       },
-      notice: expect.stringMatching(/主題星等影響/u),
+      notice: expect.stringMatching(/主題影響值.*星等下降方向的影響值.*不是商品負星等/u),
     });
     expect(snapshot.topFivePositive).toHaveLength(5);
     expect(snapshot.bottomFiveNegative).toHaveLength(5);

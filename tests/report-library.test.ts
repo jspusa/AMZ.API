@@ -197,7 +197,7 @@ describe("public Reports API document library", () => {
     ]);
     expect(CURRENT_APP_EXPORTS.at(-1)).toMatchObject({
       availability: "AVAILABLE_AFTER_SUCCESSFUL_AUDIT",
-      scope: expect.stringMatching(/不含完整 review/u),
+      scope: expect.stringMatching(/評論主題影響值.*星等下降方向的影響值.*不是商品負星等.*不會轉成 0 或絕對值.*不含完整 review/u),
     });
   });
 
