@@ -3,11 +3,16 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import SubscriptionAuditPanel, {
+  SubscriptionAggregateHistoryChart,
   SubscriberHistoryChart,
   SubscriptionInventoryCoverageNotice,
   SubscriptionUpstreamCoverageWarning,
+  aggregateSubscriptionAuditHistory,
+  subscriptionAuditDisplayRows,
+  subscriptionAuditRowMatchesFilter,
   subscriptionRevenueSummary,
 } from "../src/renderer/src/components/subscription-audit-panel";
+import SubscriptionAuditDrawer from "../src/renderer/src/components/subscription-audit-drawer";
 import {
   isSubscriptionAuditMarketplaceSupported,
   parseSubscriptionAuditSnapshot,
@@ -94,6 +99,7 @@ function response(overrides: Record<string, unknown> = {}): Record<string, unkno
         ],
       },
     ],
+    excluded: [],
     summary: {
       currentActiveSubscriptions: 42,
       provenSubscriptionRevenue: null,
@@ -224,6 +230,72 @@ describe("FBA subscription audit renderer", () => {
     expect(markup.match(/<polyline/g)).toHaveLength(2);
     expect(markup).toContain("2026年2月月底有效訂閱 35");
     expect(markup).toContain("S&amp;S 營收");
+    expect(markup).toContain("subscription-chart-tooltip");
+    expect(markup).toContain('tabindex="0"');
+  });
+
+  it("keeps unknown discounts out of 0% and isolates upstream problems in the problem filter", () => {
+    const snapshot = parseSubscriptionAuditSnapshot(response());
+    const source = snapshot.offers[0]!;
+    snapshot.offers.push(
+      {
+        ...source,
+        sellerSku: "SNS-ZERO",
+        asin: "B000000002",
+        sellerFundedBaseDiscount: 0,
+      },
+      {
+        ...source,
+        sellerSku: "SNS-UNKNOWN",
+        asin: "B000000003",
+        sellerFundedBaseDiscount: null,
+      },
+    );
+    snapshot.upstreamCoverage.problemSkuRows = [{
+      sellerSku: "AFA12AM",
+      fbaEvidence: "CURRENT_FBA_SKU_SET",
+      affectedOfferRows: 0,
+      affectedMetricRows: 1,
+      metricMonths: ["2026-03"],
+      problem: "2026-03 指標無法安全核對。",
+    }];
+    snapshot.excluded = [{
+      sellerSku: "SNS-NO-OFFER",
+      fbaEvidence: "CURRENT_FBA_SKU_SET",
+      reason: "METRIC_WITHOUT_CURRENT_OFFER",
+    }, {
+      sellerSku: "AFA12AM",
+      fbaEvidence: "CURRENT_FBA_SKU_SET",
+      reason: "ASIN_MISMATCH",
+    }];
+    const rows = subscriptionAuditDisplayRows(snapshot);
+    expect(rows.filter((row) => subscriptionAuditRowMatchesFilter(row, 0)).map(({ sellerSku }) => sellerSku)).toEqual(["SNS-ZERO"]);
+    expect(rows.filter((row) => subscriptionAuditRowMatchesFilter(row, "problem")).map(({ sellerSku }) => sellerSku)).toEqual([
+      "AFA12AM",
+      "SNS-NO-OFFER",
+      "SNS-UNKNOWN",
+    ]);
+    expect(rows.filter(({ sellerSku }) => sellerSku === "AFA12AM")).toHaveLength(1);
+    expect(rows.find(({ sellerSku }) => sellerSku === "SNS-UNKNOWN")?.problem).toContain("不會當成 0%");
+  });
+
+  it("plots the verified full-site subtotal with per-month coverage instead of filling gaps with zero", () => {
+    const snapshot = parseSubscriptionAuditSnapshot(response());
+    const points = aggregateSubscriptionAuditHistory(snapshot);
+    expect(points.map(({ value }) => value)).toEqual([35, null, 38, 40, null, null]);
+    expect(points[0]).toMatchObject({
+      reportedOfferCount: 1,
+      expectedOfferCount: 1,
+      complete: true,
+    });
+    expect(points[1]).toMatchObject({ value: null, complete: false });
+    const markup = renderToStaticMarkup(createElement(
+      SubscriptionAggregateHistoryChart,
+      { snapshot },
+    ));
+    expect(markup).toContain("全站總月底有效訂閱（已核對部分）");
+    expect(markup).toContain("2026年2月 · 35");
+    expect(markup).toContain("滑鼠指向或鍵盤對焦");
   });
 
   it("shows coverage instead of turning partial monthly revenue into a total", () => {
@@ -490,8 +562,7 @@ describe("FBA subscription audit renderer", () => {
     ));
     expect(markup).toContain("已排除 1 列");
     expect(markup).toContain("0 列缺少可原樣核對的 Seller SKU");
-    expect(markup).toContain("SNS-BAD-PRICE");
-    expect(markup).toContain("offer price 不是安全的非負數");
+    expect(markup).toContain("請用結果上方的「有問題」篩選");
   });
 
   it("keeps an exact upstream problem without current FBA proof count-only", () => {
@@ -573,8 +644,7 @@ describe("FBA subscription audit renderer", () => {
       { coverage: snapshot.upstreamCoverage },
     ));
     expect(markup).toContain("問題 SKU（其他商品仍已完成）");
-    expect(markup).toContain("AFA12AM");
-    expect(markup).toContain("該月保持缺值");
+    expect(markup).toContain("請用結果上方的「有問題」篩選");
   });
 
   it("accepts one invalid exact-SKU metric row as a visible partial problem", () => {
@@ -619,7 +689,7 @@ describe("FBA subscription audit renderer", () => {
       { coverage: snapshot.upstreamCoverage },
     ));
     expect(markup).toContain("問題 SKU（其他商品仍已完成）");
-    expect(markup).toContain("資料無法安全解析");
+    expect(markup).toContain("請用結果上方的「有問題」篩選");
   });
 
   it("explains the snapshot meaning, 23-month limit and main-owned Excel export", () => {
@@ -627,10 +697,19 @@ describe("FBA subscription audit renderer", () => {
       marketplaceId: "ATVPDKIKX0DER",
       marketplaceShort: "US",
     }));
-    expect(markup).toContain("全站訂閱價格健檢");
+    expect(markup).not.toContain("全站訂閱價格健檢");
     expect(markup).toContain("目前有效訂閱」是查詢當下快照");
     expect(markup).toContain("最多提供 23 個完整月");
     expect(markup).toContain("同步 US 全部 FBA S&amp;S");
+  });
+
+  it("renders the audit name once in the drawer instead of repeating it in the inner panel", () => {
+    const markup = renderToStaticMarkup(createElement(SubscriptionAuditDrawer, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      onClose: () => undefined,
+    }));
+    expect(markup.match(/全站訂閱價格健檢/gu)).toHaveLength(1);
   });
 
   it("shows SG and AU as unsupported before a request and disables every scan control", () => {
@@ -642,7 +721,7 @@ describe("FBA subscription audit renderer", () => {
       marketplaceId: "A19VAU5U5O7RUS",
       marketplaceShort: "SG",
     }));
-    expect(markup).toContain("Subscribe &amp; Save 能力說明");
+    expect(markup).not.toContain("Subscribe &amp; Save 能力說明");
     expect(markup).toContain("SG 站不在 Amazon 官方 Seller Replenishment API 支援清單");
     expect(markup).toContain("Amazon 官方 API 不支援 SG");
     expect(markup).toContain("不會改用 Seller Central 私有接口");
@@ -660,6 +739,9 @@ describe("FBA subscription audit renderer", () => {
     );
     expect(source).toMatch(
       /useEffect\(\(\) => \{[\s\S]*?abortRef\.current\?\.abort\(\);[\s\S]*?setBusy\(null\);[\s\S]*?\}, \[marketplaceId\]\);/u,
+    );
+    expect(source).toMatch(
+      /setSelectedSku\(\(current\) =>\s*current === offer\.sellerSku \? null : offer\.sellerSku\)/u,
     );
   });
 });

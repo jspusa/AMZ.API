@@ -8587,6 +8587,18 @@ function shipmentDateKey(value: string, timeZone: string): string {
   return dateKey(local.year, local.month, local.day);
 }
 
+function brandSalesRangeFreshness(input: {
+  marketplaceId: MarketplaceId;
+  endDate: string;
+  windowCreatedAt: number;
+}): "complete-days" | "includes-current-day" {
+  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
+  const created = zonedDateParts(new Date(input.windowCreatedAt), timeZone);
+  return input.endDate === dateKey(created.year, created.month, created.day)
+    ? "includes-current-day"
+    : "complete-days";
+}
+
 export async function getBrandSalesData(input: {
   marketplaceId: MarketplaceId;
   startDate: string;
@@ -8646,6 +8658,8 @@ export async function getBrandSalesData(input: {
       currencyCode,
       listings,
       sales,
+      dataThrough: input.shipmentDataEndTime,
+      rangeFreshness: brandSalesRangeFreshness(input),
     });
   }
 
@@ -8693,6 +8707,8 @@ export async function getBrandSalesData(input: {
     currencyCode: MARKETPLACES[input.marketplaceId].currency,
     listings,
     sales,
+    dataThrough: input.shipmentDataEndTime,
+    rangeFreshness: brandSalesRangeFreshness(input),
   });
 }
 

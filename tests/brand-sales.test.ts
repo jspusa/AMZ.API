@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildBrandSalesSnapshot,
   classifyListingBrand,
+  classifyListingCategory,
   parseCurrentFbaListingTitles,
   parseFbaShipmentSalesReport,
 } from "../src/main/amazon/brand-sales";
@@ -83,6 +84,16 @@ describe("FBA brand sales", () => {
     expect(classifyListingBrand("Herzlich natural treats")).toBe("unclassified");
   });
 
+  it("matches Supply BUSINESS REPORT's earliest-keyword category rule", () => {
+    expect(classifyListingCategory("Turkey Tendon dog treats")).toBe("turkey-tendon");
+    expect(classifyListingCategory("Chicken with Salmon bites")).toBe("chicken");
+    expect(classifyListingCategory("Salmon with Chicken bites")).toBe("salmon");
+    expect(classifyListingCategory("Air-Dried Dog Food - Turkey Recipe")).toBe("air-dried");
+    expect(classifyListingCategory("Buffalo & Fish strips")).toBe("buffalo");
+    expect(classifyListingCategory("White Fish bites")).toBe("fish");
+    expect(classifyListingCategory("No matching ingredient")).toBe("other");
+  });
+
   it("groups proven current-FBA shipped sales in integer minor units", () => {
     const snapshot = buildBrandSalesSnapshot({
       mode: "demo",
@@ -90,7 +101,9 @@ describe("FBA brand sales", () => {
       startDate: "2026-08-01",
       endDate: "2026-08-08",
       currencyCode: "USD",
-      fetchedAt: "2026-08-09T00:00:00.000Z",
+      fetchedAt: "2026-08-09T08:00:00.000Z",
+      dataThrough: "2026-08-09T00:00:00-07:00",
+      rangeFreshness: "complete-days",
       listings: [
         { sellerSku: "AFA01", title: "Afreschi Treats" },
         { sellerSku: "AFA02", title: "A Freschi srl Tendons" },
@@ -133,6 +146,18 @@ describe("FBA brand sales", () => {
       "#E53E3E",
       "#A0A7B1",
     ]);
+    expect(snapshot.categorySegments.find((segment) => segment.key === "turkey-tendon")).toMatchObject({
+      amount: 17.99,
+      skuCount: 1,
+      unitCount: 1,
+    });
+    expect(snapshot.categorySegments.find((segment) => segment.key === "other")).toMatchObject({
+      amount: 9826.3,
+      skuCount: 4,
+      unitCount: 105,
+    });
+    expect(snapshot.notice).toContain("不會為品類另外建立報表");
+    expect(snapshot.notice).toContain("最早出現");
   });
 
   it("refuses mixed marketplace currencies", () => {
@@ -143,6 +168,8 @@ describe("FBA brand sales", () => {
         startDate: "2026-08-01",
         endDate: "2026-08-08",
         currencyCode: "USD",
+        dataThrough: "2026-08-09T00:00:00-07:00",
+        rangeFreshness: "complete-days",
         listings: [{ sellerSku: "AFA01", title: "Afreschi" }],
         sales: [{ shipmentDate: "2026-08-02", sellerSku: "AFA01", quantity: 1, unitPrice: 10, currencyCode: "CAD" }],
       }),

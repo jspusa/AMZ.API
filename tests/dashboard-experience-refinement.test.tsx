@@ -68,6 +68,33 @@ describe("dashboard experience refinement", () => {
     expect(dashboardSource).toContain("aria-haspopup=\"dialog\"");
   });
 
+  it("keeps every centered workspace close control square and top-aligned", async () => {
+    const [css, imageSource, healthSource, connectionSource] = await Promise.all([
+      readFile(new URL("../src/renderer/src/app.css", import.meta.url), "utf8"),
+      readFile(
+        new URL("../src/renderer/src/components/image-workspace-drawer.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../src/renderer/src/components/system-health-control.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../src/renderer/src/connection-panel.tsx", import.meta.url), "utf8"),
+    ]);
+
+    expect(imageSource).toContain('className="drawer-header"');
+    expect(imageSource).toContain('aria-label="關閉圖片工作區"');
+    expect(healthSource).toContain('className="drawer-header"');
+    expect(healthSource).toContain('aria-label="關閉進階與系統資訊"');
+    expect(connectionSource).toContain('className="connection-panel"');
+    expect(css).toMatch(
+      /\.drawer-header > button,\s*\.connection-panel > header > button\s*\{[^}]*width:\s*36px;[^}]*min-width:\s*36px;[^}]*height:\s*36px;[^}]*min-height:\s*36px;[^}]*flex:\s*0 0 36px;[^}]*align-self:\s*flex-start;[^}]*place-items:\s*center;[^}]*padding:\s*0;[^}]*border-radius:\s*11px;[^}]*line-height:\s*1;/s,
+    );
+    expect(css).toMatch(
+      /\.connection-panel > header\s*\{[^}]*grid-template-columns:\s*48px minmax\(0, 1fr\) 36px;[^}]*align-items:\s*start;/s,
+    );
+  });
+
   it("keeps Product Master controls out of employee-facing drawers", async () => {
     const replenishment = renderToStaticMarkup(
       <ReplenishmentDrawer

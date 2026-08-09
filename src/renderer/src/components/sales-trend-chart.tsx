@@ -481,6 +481,9 @@ export default function SalesTrendChart({
   const skaterCoordinate = skaterEnabled
     ? coordinates[Math.min(skaterIndex, Math.max(0, coordinates.length - 1))] ?? null
     : null;
+  const detailCoordinate = skaterEnabled
+    ? active ?? skaterCoordinate
+    : active;
   const earliestStartDate = useMemo(
     () =>
       latestAvailableDate
@@ -905,7 +908,7 @@ export default function SalesTrendChart({
                 role="img"
                 tabIndex={0}
                 aria-labelledby={titleId}
-                aria-describedby={`${descriptionId}${active ? ` ${tooltipId}` : ""}`}
+                aria-describedby={`${descriptionId}${detailCoordinate ? ` ${tooltipId}` : ""}`}
                 onFocus={() => {
                   keyboardNavigationRef.current = true;
                   if (points.length && activeIndex === null) setActiveIndex(points.length - 1);
@@ -992,7 +995,7 @@ export default function SalesTrendChart({
                   height={plotHeight}
                 />
               </svg>
-              {active && tooltipPlacement && (
+              {active && !skaterEnabled && tooltipPlacement && (
                 <div
                   id={tooltipId}
                   className={tooltipClasses}
@@ -1019,11 +1022,6 @@ export default function SalesTrendChart({
                   <i className="sales-skater-board" />
                 </span>
               )}
-              {skaterEnabled && skaterCoordinate && (
-                <span className="visually-hidden" role="status" aria-live="polite">
-                  迷你滑板位於 {skaterCoordinate.point.date}，本期銷售 {formatMoney(skaterCoordinate.point.totalSales)}
-                </span>
-              )}
               {allZero && (
                 <div className="sales-trend-zero">
                   <strong>{snapshot.comparison ? "這兩段期間尚無 FBA 銷售" : "這段期間尚無 FBA 銷售"}</strong>
@@ -1032,6 +1030,35 @@ export default function SalesTrendChart({
               )}
             </div>
           </div>
+          {skaterEnabled && detailCoordinate && (
+            <div
+              id={tooltipId}
+              className="sales-trend-detail-strip"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <div className="sales-trend-detail-date">
+                <small>滑板業績資訊</small>
+                <strong>
+                  {detailCoordinate.point.date}
+                  {detailCoordinate.point.partial ? "（即時）" : ""}
+                </strong>
+              </div>
+              <div className="sales-trend-detail-period is-current">
+                <span><i className="is-current" aria-hidden="true" />本期</span>
+                <strong>{formatMoney(detailCoordinate.point.totalSales)}</strong>
+              </div>
+              <div className="sales-trend-detail-period is-comparison">
+                <span><i className="is-comparison" aria-hidden="true" />去年同期</span>
+                <strong>
+                  {detailCoordinate.comparisonPoint
+                    ? formatMoney(detailCoordinate.comparisonPoint.totalSales)
+                    : "無對應日期"}
+                </strong>
+              </div>
+            </div>
+          )}
           <figcaption>
             {snapshot.notice}
           </figcaption>

@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import AuditSuiteHomeCard, {
   auditSuiteCompletedSections,
+  auditSuiteSectionPresentation,
+  auditSuiteStatusPresentation,
   parseAuditSuiteStart,
   runAuditSuitePollLoop,
 } from "../src/renderer/src/components/audit-suite-home-card";
@@ -9,7 +11,9 @@ import { AUDIT_SUITE_SECTION_IDS } from "../src/shared/audit-suite";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
-function run(status: "queued" | "running" | "completed" = "queued") {
+function run(
+  status: "queued" | "running" | "completed" | "partial" | "failed" = "queued",
+) {
   return {
     schemaVersion: 1 as const,
     runId: "suite-run-0001",
@@ -42,6 +46,56 @@ describe("audit suite home card", () => {
     expect(markup).toContain("廣告覆蓋");
     expect(markup).toContain("本機拼字紅字標示仍由「單項文案健檢」完成");
     expect(markup).toContain("開始全部 FBA 健檢");
+    expect(markup).toContain('data-state="waiting"');
+    expect(markup).toContain("等待開始");
+    expect(markup).toContain("狀態收斂進度");
+    expect(markup).toContain("綜合 FBA 健檢狀態收斂進度 0%");
+    expect(markup).toContain("audit-suite-section-pill");
+    expect(markup).toContain("等待</span>");
+  });
+
+  it("uses explicit text, icons, and progress for every overall and section state", () => {
+    expect(auditSuiteStatusPresentation(null)).toMatchObject({
+      state: "waiting",
+      label: "等待開始",
+      completedSections: 0,
+      progressPercent: 0,
+    });
+    expect(auditSuiteStatusPresentation(run("running"))).toMatchObject({
+      state: "running",
+      label: "背景執行中",
+      completedSections: 0,
+      progressPercent: 0,
+    });
+    expect(auditSuiteStatusPresentation(run("completed"))).toMatchObject({
+      state: "completed",
+      label: "全部完成",
+      completedSections: 7,
+      progressPercent: 100,
+    });
+    expect(auditSuiteStatusPresentation(run("partial"))).toMatchObject({
+      state: "partial",
+      label: "部分完成",
+      completedSections: 7,
+      progressPercent: 100,
+    });
+    expect(auditSuiteStatusPresentation(run("failed"))).toMatchObject({
+      state: "failed",
+      label: "未完成",
+      completedSections: 7,
+      progressPercent: 100,
+    });
+
+    expect(auditSuiteSectionPresentation(null)).toEqual({
+      state: "waiting",
+      label: "等待",
+      icon: "○",
+    });
+    expect(auditSuiteSectionPresentation("queued").label).toBe("排隊中");
+    expect(auditSuiteSectionPresentation("running").label).toBe("執行中");
+    expect(auditSuiteSectionPresentation("completed").label).toBe("完成");
+    expect(auditSuiteSectionPresentation("partial").label).toBe("部分完成");
+    expect(auditSuiteSectionPresentation("failed").label).toBe("未完成");
   });
 
   it("accepts only the requested marketplace and never exposes accountScope", () => {

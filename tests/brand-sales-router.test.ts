@@ -72,6 +72,7 @@ describe("FBA brand sales report route", () => {
       marketplaceId: string;
       startDate: string;
       endDate: string;
+      expiresAt: string;
       listingReportId?: unknown;
     };
     expect(job).toMatchObject({
@@ -81,6 +82,7 @@ describe("FBA brand sales report route", () => {
       startDate: "2026-08-01",
       endDate: "2026-08-07",
     });
+    expect(Date.parse(job.expiresAt)).toBeGreaterThan(0);
     expect(job.listingReportId).toBeUndefined();
 
     const data = await router.handle(
@@ -94,13 +96,14 @@ describe("FBA brand sales report route", () => {
     expect(data.body.kind).toBe("json");
     if (data.body.kind !== "json") throw new Error("Expected snapshot JSON");
     expect(data.body.value).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       mode: "demo",
       marketplaceId: MARKETPLACE_ID,
       startDate: "2026-08-01",
       endDate: "2026-08-07",
       source: "FBA_CUSTOMER_SHIPMENT_SALES_REPORT",
     });
+    expect((data.body.value as { categorySegments: unknown[] }).categorySegments).toHaveLength(8);
   });
 
   it("rejects a different marketplace or account scope for the same job", async () => {

@@ -82,6 +82,12 @@ export type SubscriptionAuditOffer = {
   monthlySeries: SubscriptionAuditMonthlyPoint[];
 };
 
+export type SubscriptionAuditExcludedRow = {
+  sellerSku: string;
+  fbaEvidence: "CURRENT_FBA_SKU_SET";
+  reason: "METRIC_WITHOUT_CURRENT_OFFER" | "ASIN_MISMATCH";
+};
+
 export type SubscriptionAuditSnapshot = {
   mode: "live" | "demo";
   marketplaceId: string;
@@ -90,6 +96,7 @@ export type SubscriptionAuditSnapshot = {
   exportId: string | null;
   intervals: SubscriptionAuditInterval[];
   offers: SubscriptionAuditOffer[];
+  excluded: SubscriptionAuditExcludedRow[];
   inventoryEvidence: SubscriptionInventoryEvidence;
   upstreamCoverage: SubscriptionUpstreamCoverage;
   summary: {
@@ -573,6 +580,39 @@ function parseOffer(
   };
 }
 
+function parseExcludedRows(value: unknown): SubscriptionAuditExcludedRow[] {
+  if (!Array.isArray(value)) {
+    throw new Error("全站訂閱健檢缺少可核對的未納入清單。");
+  }
+  const rows = value.map((item, index): SubscriptionAuditExcludedRow => {
+    const row = record(item, `第 ${index + 1} 個未納入訂閱 SKU`);
+    const sellerSku = text(
+      row.sellerSku,
+      `第 ${index + 1} 個未納入訂閱 SKU`,
+      256,
+    );
+    if (row.fbaEvidence !== "CURRENT_FBA_SKU_SET") {
+      throw new Error(`${sellerSku} 缺少同次 CURRENT_FBA 證據。`);
+    }
+    if (
+      row.reason !== "METRIC_WITHOUT_CURRENT_OFFER" &&
+      row.reason !== "ASIN_MISMATCH"
+    ) {
+      throw new Error(`${sellerSku} 的未納入原因不在 FBA 安全邊界內。`);
+    }
+    return {
+      sellerSku,
+      fbaEvidence: "CURRENT_FBA_SKU_SET",
+      reason: row.reason,
+    };
+  });
+  const keys = rows.map((row) => `${row.sellerSku}\0${row.reason}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("全站訂閱健檢的未納入清單含有重複列。");
+  }
+  return rows;
+}
+
 export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionAuditSnapshot {
   const raw = record(rawValue, "全站訂閱健檢回應");
   const requestedMonths = monthCount(raw.requestedMonths);
@@ -586,6 +626,7 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
   }
   if (!Array.isArray(raw.offers)) throw new Error("全站訂閱健檢缺少 offer 清單。");
   const offers = raw.offers.map((offer, index) => parseOffer(offer, index, intervals));
+  const excluded = parseExcludedRows(raw.excluded);
   const inventoryEvidence = parseInventoryEvidence(
     raw.inventoryEvidence,
     offers.length,
@@ -663,6 +704,7 @@ export function parseSubscriptionAuditSnapshot(rawValue: unknown): SubscriptionA
     exportId: optionalText(raw.exportId ?? raw.snapshotId, "訂閱健檢匯出 ID", 200),
     intervals,
     offers,
+    excluded,
     inventoryEvidence,
     upstreamCoverage,
     summary: {

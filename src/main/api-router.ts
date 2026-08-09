@@ -1200,6 +1200,7 @@ export class ApiRouter {
         marketplaceId: job.marketplaceId,
         startDate: job.startDate,
         endDate: job.endDate,
+        expiresAt: new Date(job.expiresAt).toISOString(),
         ready,
         status,
         message: ready
@@ -3175,9 +3176,12 @@ export class ApiRouter {
 
   private async subscriptionAudit(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const months = integer(request.query.months, 6, 1, 23);
+    const requestedMonths = integer(request.query.months, 6, 1, 23);
+    const months = requestedMonths !== null && [6, 12, 23].includes(requestedMonths)
+      ? requestedMonths
+      : null;
     if (!marketplaceId || months === null) {
-      return invalid("請選擇支援的站點；月度歷史只能選 1 到 23 個完整月份。");
+      return invalid("請選擇支援的站點；月度歷史只能選最近 6、12 或 23 個完整月份。");
     }
     try {
       const snapshot = await getFbaSubscriptionAudit({ marketplaceId, months });
@@ -3247,14 +3251,13 @@ export class ApiRouter {
     const problems = snapshot.offers.map((offer) => {
       const rawDiscount = offer.sellerFundedBaseDiscount;
       const exactBucket = subscriptionAuditDiscountBucket(rawDiscount);
-      const bucket = exactBucket ?? 0;
       return {
-        bucket,
+        bucket: exactBucket,
         problem: rawDiscount === null
-          ? "Amazon 未回傳 Seller 基礎折扣；為保留資料暫列 0% 工作表，並非 0%。"
+          ? "Amazon 未回傳 Seller 基礎折扣；只列入問題 SKU，並非 0%。"
           : exactBucket === null
-            ? `Amazon 回傳非標準 Seller 基礎折扣 ${rawDiscount}%；為保留資料暫列 0% 工作表，並非 0%。`
-            : `${bucket}% Seller 基礎折扣組`,
+            ? `Amazon 回傳非標準 Seller 基礎折扣 ${rawDiscount}%；只列入問題 SKU。`
+            : `${exactBucket}% Seller 基礎折扣組`,
         sellerSku: offer.sellerSku,
         asin: offer.asin,
         currentPrice: offer.price.amount,
@@ -3285,6 +3288,12 @@ export class ApiRouter {
         revenueCoverage: snapshot.summary.revenueCoverage,
         inventoryEvidence: snapshot.inventoryEvidence,
         upstreamCoverage: snapshot.upstreamCoverage,
+        excluded: snapshot.excluded.flatMap((row) =>
+          row.reason === "FBA_NOT_PROVEN" ? [] : [{
+            sellerSku: row.sellerSku,
+            fbaEvidence: row.fbaEvidence,
+            reason: row.reason,
+          }]),
         problems,
       });
       const filename = `amazon-fba-subscribe-save-audit-${marketplace.shortLabel.toLowerCase()}-${snapshot.fetchedAt.slice(0, 10)}.xlsx`;

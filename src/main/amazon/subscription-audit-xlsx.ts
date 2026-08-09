@@ -1,13 +1,13 @@
 import { strToU8, zipSync } from "fflate";
 import {
   SUBSCRIPTION_AUDIT_DISCOUNT_BUCKETS,
+  subscriptionAuditDiscountBucket,
   type SubscriptionAuditDiscountBucket,
 } from "./replenishment-audit";
 
 const XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
 const MAX_CELL_CHARACTERS = 32_767;
-const HEADERS = [
-  "問題",
+const DISCOUNT_SHEET_HEADERS = [
   "SKU",
   "ASIN",
   "目前價格",
@@ -28,6 +28,19 @@ const HEADERS = [
   "FBA 證據",
 ] as const;
 
+const PROBLEM_SHEET_HEADERS = [
+  "問題類型",
+  "SKU",
+  "ASIN",
+  "Seller 基礎折扣",
+  "目前價格",
+  "幣別",
+  "目前有效訂閱",
+  "受影響月份",
+  "說明",
+  "FBA 證據",
+] as const;
+
 export type SubscriptionAuditRevenueCoverage = {
   status: "complete" | "partial" | "unavailable";
   expectedOfferMonths: number;
@@ -43,7 +56,8 @@ export type SubscriptionAuditWorkbookMonthlyPoint = {
 };
 
 export type SubscriptionAuditProblemWorkbookRow = {
-  bucket: SubscriptionAuditDiscountBucket;
+  /** Null means the discount is unknown or outside the five supported buckets. */
+  bucket: SubscriptionAuditDiscountBucket | null;
   problem: string;
   sellerSku: string;
   asin: string;
@@ -105,6 +119,11 @@ export type CreateSubscriptionAuditWorkbookInput = {
     minimumUnresolvedOfferMonths: number;
     notice: string;
   };
+  excluded?: readonly {
+    sellerSku: string;
+    fbaEvidence: "CURRENT_FBA_SKU_SET";
+    reason: "METRIC_WITHOUT_CURRENT_OFFER" | "ASIN_MISMATCH";
+  }[];
   problems: readonly SubscriptionAuditProblemWorkbookRow[];
 };
 
@@ -121,11 +140,27 @@ type ValidatedSubscriptionAuditUpstreamCoverage =
       SubscriptionAuditUpstreamCoverageInput["unprovenExactSkuProblems"]
     >;
   };
+type ValidatedSubscriptionAuditExcludedRow = NonNullable<
+  CreateSubscriptionAuditWorkbookInput["excluded"]
+>[number];
+type SubscriptionAuditProblemSheetRow = {
+  kinds: string[];
+  sellerSku: string | null;
+  asin: string | null;
+  sellerFundedBaseDiscount: number | null;
+  currentPrice: number | null;
+  currencyCode: string | null;
+  currentActiveSubscriptions: number | null;
+  affectedMonths: string;
+  problems: string[];
+  fbaEvidence: string;
+};
 
 /**
- * Generates a local-only, problem-only workbook. The five sheets are fixed to
- * the seller-funded discount buckets requested by the product; summary values
- * are computed before export and never use spreadsheet formulas.
+ * Generates a local-only workbook. The first five sheets contain only normal
+ * rows in the exact seller-funded discount bucket. Unknown/non-standard
+ * discounts and CURRENT_FBA problem rows appear once in the dedicated problem
+ * sheet. Summary values are computed before export and never use formulas.
  */
 export function createSubscriptionAuditWorkbook(
   input: CreateSubscriptionAuditWorkbookInput,
@@ -198,6 +233,18 @@ export function createSubscriptionAuditWorkbook(
     );
   }
 
+  const excluded = validateExcluded(input.excluded ?? []);
+  const problemSheetRows = buildProblemSheetRows({
+    rows,
+    metricMonths,
+    upstreamCoverage,
+    inventoryEvidence,
+    excluded,
+  });
+  const problemSkus = new Set(
+    problemSheetRows.flatMap((row) => row.sellerSku ? [row.sellerSku] : []),
+  );
+
   const sheets = SUBSCRIPTION_AUDIT_DISCOUNT_BUCKETS.map((bucket) => ({
     name: `${bucket}%`,
     xml: worksheetXml({
@@ -209,9 +256,22 @@ export function createSubscriptionAuditWorkbook(
       revenueCoverage: coverage,
       inventoryEvidence,
       upstreamCoverage,
-      rows: rows.filter((row) => row.bucket === bucket),
+      rows: rows.filter(
+        (row) => row.bucket === bucket && !problemSkus.has(row.sellerSku),
+      ),
     }),
   }));
+  sheets.push({
+    name: "問題 SKU",
+    xml: problemWorksheetXml({
+      marketplaceLabel,
+      metricMonths,
+      revenueCoverage: coverage,
+      inventoryEvidence,
+      upstreamCoverage,
+      rows: problemSheetRows,
+    }),
+  });
   const archive: Record<string, Uint8Array> = {
     "[Content_Types].xml": strToU8(contentTypes(sheets.length)),
     "_rels/.rels": strToU8(packageRelationships()),
@@ -231,8 +291,13 @@ function validateProblem(
   row: SubscriptionAuditProblemWorkbookRow,
   index: number,
 ): void {
-  if (!SUBSCRIPTION_AUDIT_DISCOUNT_BUCKETS.includes(row.bucket)) {
-    throw new TypeError(`problems[${index}].bucket must be 0, 5, 10, 15 or 20.`);
+  const expectedBucket = subscriptionAuditDiscountBucket(
+    row.sellerFundedBaseDiscount,
+  );
+  if (row.bucket !== expectedBucket) {
+    throw new TypeError(
+      `problems[${index}].bucket must exactly match its Seller base discount; unknown and non-standard discounts must use null.`,
+    );
   }
   safeRequiredText(row.problem, `problems[${index}].problem`);
   safeRequiredText(row.sellerSku, `problems[${index}].sellerSku`);
@@ -277,6 +342,246 @@ function validateProblem(
   for (const [key, value] of Object.entries(row.forecastDeliveries ?? {})) {
     optionalInteger(value, `problems[${index}].forecastDeliveries.${key}`);
   }
+}
+
+function validateExcluded(
+  input: readonly ValidatedSubscriptionAuditExcludedRow[],
+): ValidatedSubscriptionAuditExcludedRow[] {
+  if (!Array.isArray(input)) throw new TypeError("excluded is invalid.");
+  return input.map((row, index) => {
+    if (!row || typeof row !== "object") {
+      throw new TypeError(`excluded[${index}] is invalid.`);
+    }
+    const sellerSku = safeRequiredText(
+      row.sellerSku,
+      `excluded[${index}].sellerSku`,
+    );
+    if (row.fbaEvidence !== "CURRENT_FBA_SKU_SET") {
+      throw new TypeError(`excluded[${index}] lacks current FBA evidence.`);
+    }
+    if (
+      row.reason !== "METRIC_WITHOUT_CURRENT_OFFER" &&
+      row.reason !== "ASIN_MISMATCH"
+    ) {
+      throw new TypeError(`excluded[${index}].reason is invalid.`);
+    }
+    return {
+      sellerSku,
+      fbaEvidence: "CURRENT_FBA_SKU_SET",
+      reason: row.reason,
+    };
+  });
+}
+
+function buildProblemSheetRows(input: {
+  rows: readonly SubscriptionAuditProblemWorkbookRow[];
+  metricMonths: readonly string[];
+  upstreamCoverage: ValidatedSubscriptionAuditUpstreamCoverage;
+  inventoryEvidence: CreateSubscriptionAuditWorkbookInput["inventoryEvidence"];
+  excluded: readonly ValidatedSubscriptionAuditExcludedRow[];
+}): SubscriptionAuditProblemSheetRow[] {
+  const rowsBySku = new Map(input.rows.map((row) => [row.sellerSku, row]));
+  const bySku = new Map<string, SubscriptionAuditProblemSheetRow>();
+  const entirePeriod = `${input.metricMonths[0]} ～ ${input.metricMonths.at(-1)}（${input.metricMonths.length} 個完整月）`;
+  const addExact = (
+    sellerSku: string,
+    kind: string,
+    problem: string,
+    affectedMonths: string,
+  ) => {
+    const offer = rowsBySku.get(sellerSku);
+    const existing = bySku.get(sellerSku) ?? {
+      kinds: [],
+      sellerSku,
+      asin: offer?.asin ?? null,
+      sellerFundedBaseDiscount: offer?.sellerFundedBaseDiscount ?? null,
+      currentPrice: offer?.currentPrice ?? null,
+      currencyCode: offer?.currencyCode ?? null,
+      currentActiveSubscriptions: offer?.currentActiveSubscriptions ?? null,
+      affectedMonths,
+      problems: [],
+      fbaEvidence: "CURRENT_FBA_SKU_SET",
+    };
+    if (!existing.kinds.includes(kind)) existing.kinds.push(kind);
+    if (!existing.problems.includes(problem)) existing.problems.push(problem);
+    if (
+      existing.affectedMonths !== affectedMonths &&
+      !existing.affectedMonths.includes(affectedMonths)
+    ) {
+      existing.affectedMonths = `${existing.affectedMonths}；${affectedMonths}`;
+    }
+    bySku.set(sellerSku, existing);
+  };
+
+  for (const row of input.rows) {
+    if (row.bucket !== null) continue;
+    addExact(
+      row.sellerSku,
+      row.sellerFundedBaseDiscount === null ? "折扣未回傳" : "非標準折扣",
+      row.sellerFundedBaseDiscount === null
+        ? "Amazon 未回傳 Seller 基礎折扣；不歸入 0% 工作表，也不代表 0%。"
+        : `Amazon 回傳 ${row.sellerFundedBaseDiscount}% Seller 基礎折扣；不屬於 0／5／10／15／20% 任一標準組。`,
+      entirePeriod,
+    );
+  }
+
+  for (const row of input.upstreamCoverage.problemSkuRows) {
+    addExact(
+      row.sellerSku,
+      row.affectedOfferRows > 0 ? "offer 資料問題" : "月度指標問題",
+      row.problem,
+      row.affectedOfferRows > 0
+        ? entirePeriod
+        : row.metricMonths.length > 0
+          ? row.metricMonths.join("、")
+          : "Amazon 未指定月份",
+    );
+  }
+
+  for (const row of input.excluded) {
+    addExact(
+      row.sellerSku,
+      "offer／metric 無法合併",
+      row.reason === "ASIN_MISMATCH"
+        ? "Amazon 回傳的 offer 與月度指標 ASIN 不一致；未強行合併。"
+        : "Amazon 回傳月度指標，但沒有同次可核對的目前 offer；未推定折扣或訂閱數。",
+      entirePeriod,
+    );
+  }
+
+  const exactMissingOfferSkus = new Set([
+    ...input.upstreamCoverage.problemSkuRows
+      .filter((row) => row.affectedOfferRows > 0 && !rowsBySku.has(row.sellerSku))
+      .map((row) => row.sellerSku),
+    ...input.excluded
+      .filter((row) => !rowsBySku.has(row.sellerSku))
+      .map((row) => row.sellerSku),
+  ]);
+  const unidentifiedOfferCount =
+    input.inventoryEvidence.unverifiedFbaSkuCount - exactMissingOfferSkus.size;
+  if (unidentifiedOfferCount < 0) {
+    throw new TypeError(
+      "Problem SKU identifiers exceed the aggregate unverified FBA offer count.",
+    );
+  }
+
+  const aggregateRows: SubscriptionAuditProblemSheetRow[] = [];
+  const addAggregate = (kind: string, problem: string, evidence: string) => {
+    aggregateRows.push({
+      kinds: [kind],
+      sellerSku: null,
+      asin: null,
+      sellerFundedBaseDiscount: null,
+      currentPrice: null,
+      currencyCode: null,
+      currentActiveSubscriptions: null,
+      affectedMonths: entirePeriod,
+      problems: [problem],
+      fbaEvidence: evidence,
+    });
+  };
+  if (unidentifiedOfferCount > 0) {
+    addAggregate(
+      "未取得可核對 offer",
+      `${unidentifiedOfferCount} 個同次已證明為 FBA 的 SKU 未取得可安全核對的 Replenishment offer；快照只保留聚合計數，不輸出未來自可核對 offer 的 identifier。這不代表 0% 折扣或 0 訂閱。`,
+      "CURRENT_FBA_SKU_SET（聚合計數）",
+    );
+  }
+  if (input.inventoryEvidence.unrecognizedSellerSkuRows > 0) {
+    addAggregate(
+      "FBA Inventory identifier 未完成",
+      `${input.inventoryEvidence.unrecognizedSellerSkuRows} 列 FBA Inventory Seller SKU 無法原樣辨識；未 trim、改名、推定折扣或訂閱數。`,
+      "未輸出 identifier",
+    );
+  }
+  if (input.upstreamCoverage.rejectedSellerSkuRows > 0) {
+    addAggregate(
+      "Replenishment identifier 未完成",
+      `${input.upstreamCoverage.rejectedSellerSkuRows} 列 Amazon Replenishment 資料缺少可原樣核對的 Seller SKU；只保留計數。`,
+      "未輸出 identifier",
+    );
+  }
+  const unproven = input.upstreamCoverage.unprovenExactSkuProblems;
+  if (unproven.exactSkuCount > 0) {
+    addAggregate(
+      "缺少同次 CURRENT_FBA 證據",
+      `${unproven.exactSkuCount} 個精確上游問題 SKU 缺少同次 CURRENT_FBA 證據；只輸出聚合計數，不顯示 identifier，也不推論為 FBM。`,
+      "缺少同次 CURRENT_FBA；未輸出 identifier",
+    );
+  }
+
+  return [
+    ...[...bySku.values()].sort((left, right) =>
+      left.sellerSku!.localeCompare(right.sellerSku!)),
+    ...aggregateRows,
+  ];
+}
+
+function problemWorksheetXml(input: {
+  marketplaceLabel: string;
+  metricMonths: readonly string[];
+  revenueCoverage: SubscriptionAuditRevenueCoverage;
+  inventoryEvidence: CreateSubscriptionAuditWorkbookInput["inventoryEvidence"];
+  upstreamCoverage: ValidatedSubscriptionAuditUpstreamCoverage;
+  rows: readonly SubscriptionAuditProblemSheetRow[];
+}): string {
+  const firstMonth = input.metricMonths[0]!;
+  const lastMonth = input.metricMonths.at(-1)!;
+  const exactProblemCount = input.rows.filter((row) => row.sellerSku !== null).length;
+  const aggregateProblemCount = input.rows.length - exactProblemCount;
+  const metaRows: Cell[][] = [
+    [textCell("站點"), textCell(input.marketplaceLabel)],
+    [textCell("所選完整月份"), textCell(`${firstMonth} ～ ${lastMonth}（${input.metricMonths.length} 個完整月）`)],
+    [
+      textCell("本表用途"),
+      textCell("未知／非標準折扣、CURRENT_FBA 上游問題與無法安全輸出 identifier 的聚合問題只在這裡出現一次；不會被塞進 0% 或重複到五張折扣表。"),
+    ],
+    [
+      textCell("問題範圍"),
+      textCell(`${exactProblemCount} 個可原樣核對的 CURRENT_FBA 問題 SKU；${aggregateProblemCount} 個只能安全輸出計數的問題摘要。五張折扣表只保留標準折扣且沒有問題的逐月資料。`),
+    ],
+    [
+      textCell("整體 coverage"),
+      textCell(coverageLabel(
+        input.revenueCoverage,
+        input.upstreamCoverage,
+        input.inventoryEvidence,
+      )),
+    ],
+  ];
+  const dataRows = input.rows.map((row): Cell[] => [
+    textCell(row.kinds.join("；")),
+    textCell(row.sellerSku ?? ""),
+    textCell(row.asin ?? ""),
+    numberCell(row.sellerFundedBaseDiscount),
+    numberCell(row.currentPrice),
+    textCell(row.currencyCode ?? ""),
+    numberCell(row.currentActiveSubscriptions),
+    textCell(row.affectedMonths),
+    textCell(row.problems.join("；")),
+    textCell(row.fbaEvidence),
+  ]);
+  const headerRow = metaRows.length + 1;
+  const dataStartRow = headerRow + 1;
+  const finalRow = Math.max(headerRow, headerRow + dataRows.length);
+  const summary = metaRows
+    .map((row, index) => xmlRow(index + 1, row, index === 0 ? 2 : 0))
+    .join("");
+  const headers = xmlRow(headerRow, PROBLEM_SHEET_HEADERS.map(textCell), 1);
+  const data = dataRows
+    .map((row, index) => xmlRow(index + dataStartRow, row, 0))
+    .join("");
+  const lastColumn = column(PROBLEM_SHEET_HEADERS.length);
+  return `${XML}
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:${lastColumn}${finalRow}"/>
+  <sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="${headerRow}" topLeftCell="A${dataStartRow}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>${[24, 24, 16, 18, 15, 12, 18, 28, 70, 34].map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("")}</cols>
+  <sheetData>${summary}${headers}${data}</sheetData>
+  <autoFilter ref="A${headerRow}:${lastColumn}${finalRow}"/>
+  <pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>
+</worksheet>`;
 }
 
 function worksheetXml(input: {
@@ -343,25 +648,12 @@ function worksheetXml(input: {
           : `不完整；排除 ${input.upstreamCoverage.returnedOfferRows - input.upstreamCoverage.acceptedOfferRows + input.upstreamCoverage.returnedMetricRows - input.upstreamCoverage.acceptedMetricRows} 列，其中 ${input.upstreamCoverage.rejectedSellerSkuRows} 列缺少可原樣核對的 Seller SKU、${input.upstreamCoverage.problemSkuRows.length} 個具同次 CURRENT_FBA 證據的精確問題 SKU 已單獨隔離${input.upstreamCoverage.invalidOfferRows.length > 0 ? `（${input.upstreamCoverage.invalidOfferRows.length} 列有精確 SKU 但 offer 資料值無法安全解析）` : ""}；另有 ${input.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount} 個精確上游問題 SKU 缺少同次 CURRENT_FBA 證據，只計數、不輸出 identifier。至少 ${input.upstreamCoverage.minimumUnresolvedOfferMonths} 個 SKU 月份無法核對。offer 與月度缺列可能不重疊，實際缺口無法精確計算。其他商品仍已完成，未補 0 或重複加總。${input.upstreamCoverage.notice}`,
       ),
     ],
-    ...input.upstreamCoverage.problemSkuRows.map((row): Cell[] => [
-      textCell("問題 SKU（其他商品仍已完成）／未完成 offer"),
-      textCell(row.sellerSku),
-      textCell(row.problem),
-    ]),
-    ...(input.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount > 0
-      ? [[
-          textCell("未輸出 identifier 的上游問題"),
-          textCell(`${input.upstreamCoverage.unprovenExactSkuProblems.exactSkuCount} 個精確 SKU`),
-          textCell("缺少同次 CURRENT_FBA 證據；只保留聚合計數，沒有推論為 FBM。"),
-        ]]
-      : []),
   ];
   const dataRows = input.rows.flatMap((row): Cell[][] => {
     const metricByMonth = new Map(row.monthlySeries.map((point) => [point.month, point]));
     return input.metricMonths.map((month): Cell[] => {
       const point = metricByMonth.get(month) ?? null;
       return [
-        textCell(row.problem),
         textCell(row.sellerSku),
         textCell(row.asin),
         numberCell(row.currentPrice),
@@ -389,15 +681,15 @@ function worksheetXml(input: {
   const summary = metaRows
     .map((row, index) => xmlRow(index + 1, row, index === 0 ? 2 : 0))
     .join("");
-  const headers = xmlRow(headerRow, HEADERS.map(textCell), 1);
+  const headers = xmlRow(headerRow, DISCOUNT_SHEET_HEADERS.map(textCell), 1);
   const data = dataRows.map((row, index) => xmlRow(index + dataStartRow, row, 0)).join("");
-  const lastColumn = column(HEADERS.length);
+  const lastColumn = column(DISCOUNT_SHEET_HEADERS.length);
   return `${XML}
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <dimension ref="A1:${lastColumn}${finalRow}"/>
   <sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="${headerRow}" topLeftCell="A${dataStartRow}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
   <sheetFormatPr defaultRowHeight="18"/>
-  <cols>${[42, 24, 16, 15, 12, 17, 17, 17, 18, 30, 22, 16, 17, 20, 17, 17, 17, 17, 26].map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("")}</cols>
+  <cols>${[24, 16, 15, 12, 17, 17, 17, 18, 30, 22, 16, 17, 20, 17, 17, 17, 17, 26].map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("")}</cols>
   <sheetData>${summary}${headers}${data}</sheetData>
   <autoFilter ref="A${headerRow}:${lastColumn}${finalRow}"/>
   <pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>

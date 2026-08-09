@@ -105,7 +105,7 @@ describe("FBA Subscribe & Save audit routes", () => {
     });
   });
 
-  it("downloads exactly five server-generated discount sheets by exportId", async () => {
+  it("downloads five normal discount sheets plus an isolated problem sheet by exportId", async () => {
     const audit = await router.handle(
       get("/api/sp-api/subscription-audit", {
         marketplaceId: "ATVPDKIKX0DER",
@@ -128,10 +128,11 @@ describe("FBA Subscribe & Save audit routes", () => {
     if (response.body.kind !== "bytes") throw new Error("Expected XLSX bytes");
     const archive = unzipSync(response.body.value);
     const workbook = strFromU8(archive["xl/workbook.xml"]!);
-    expect(workbook.match(/<sheet /gu)).toHaveLength(5);
+    expect(workbook.match(/<sheet /gu)).toHaveLength(6);
     for (const sheet of ["0%", "5%", "10%", "15%", "20%"] as const) {
       expect(workbook).toContain(`name="${sheet}"`);
     }
+    expect(workbook).toContain('name="問題 SKU"');
     const intervals = (audit.body.value as { intervals: Array<{ month: string }> }).intervals;
     const twentyPercent = strFromU8(archive["xl/worksheets/sheet5.xml"]!);
     expect(twentyPercent.match(/DEMO-SNS-5/gu)).toHaveLength(12);
@@ -143,11 +144,11 @@ describe("FBA Subscribe & Save audit routes", () => {
     expect(twentyPercent).toContain("Amazon 未回傳此 SKU 月度列");
   });
 
-  it("keeps a null Seller base discount visibly unknown in the 0% sheet", async () => {
+  it("keeps a null Seller base discount out of 0% and visible once in the problem sheet", async () => {
     const audit = await router.handle(
       get("/api/sp-api/subscription-audit", {
         marketplaceId: "ATVPDKIKX0DER",
-        months: "1",
+        months: "6",
       }),
     );
     if (audit.body.kind !== "json") throw new Error("Expected JSON");
@@ -172,12 +173,11 @@ describe("FBA Subscribe & Save audit routes", () => {
     if (response.body.kind !== "bytes") throw new Error("Expected XLSX bytes");
     const archive = unzipSync(response.body.value);
     const zeroPercent = strFromU8(archive["xl/worksheets/sheet1.xml"]!);
-    expect(zeroPercent).toContain(
-      "Amazon 未回傳 Seller 基礎折扣；為保留資料暫列 0% 工作表，並非 0%。",
-    );
-    expect(zeroPercent).toContain(
-      '<c r="F9" s="0" t="inlineStr"><is><t xml:space="preserve"></t></is></c>',
-    );
+    const issue = strFromU8(archive["xl/worksheets/sheet6.xml"]!);
+    expect(zeroPercent).not.toContain("DEMO-SNS-1");
+    expect(issue).toContain("DEMO-SNS-1");
+    expect(issue).toContain("不歸入 0% 工作表，也不代表 0%");
+    expect(issue.match(/DEMO-SNS-1/gu)).toHaveLength(1);
   });
 
   it("rejects invalid months and unknown export IDs", async () => {
@@ -188,6 +188,13 @@ describe("FBA Subscribe & Save audit routes", () => {
       }),
     );
     expect(invalidMonths.status).toBe(400);
+    const nonContractMonths = await router.handle(
+      get("/api/sp-api/subscription-audit", {
+        marketplaceId: "ATVPDKIKX0DER",
+        months: "1",
+      }),
+    );
+    expect(nonContractMonths.status).toBe(400);
     const missing = await router.handle(
       get("/api/sp-api/subscription-audit/export", {
         marketplaceId: "ATVPDKIKX0DER",

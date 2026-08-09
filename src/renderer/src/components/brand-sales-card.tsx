@@ -10,6 +10,7 @@ type BrandSalesJob = {
   marketplaceId: string;
   startDate: string;
   endDate: string;
+  expiresAt: string;
   ready: boolean;
   status: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
   message: string;
@@ -48,6 +49,8 @@ function parseJob(
     job.marketplaceId !== expected.marketplaceId ||
     job.startDate !== expected.startDate ||
     job.endDate !== expected.endDate ||
+    typeof job.expiresAt !== "string" ||
+    Number.isNaN(Date.parse(job.expiresAt)) ||
     typeof job.ready !== "boolean" ||
     (job.status !== "IN_QUEUE" && job.status !== "IN_PROGRESS" && job.status !== "DONE") ||
     job.ready !== (job.status === "DONE") ||
@@ -56,6 +59,83 @@ function parseJob(
     throw new Error("品牌營收工作狀態無法辨識。");
   }
   return job as unknown as BrandSalesJob;
+}
+
+type BrandSalesSnapshotCacheEntry = {
+  jobId: string;
+  mode: BrandSalesJob["mode"];
+  marketplaceId: string;
+  startDate: string;
+  endDate: string;
+  expiresAt: number;
+  snapshot: BrandSalesSnapshot;
+};
+
+const brandSalesSnapshotCache = new Map<string, BrandSalesSnapshotCacheEntry>();
+const BRAND_SALES_SNAPSHOT_CACHE_LIMIT = 24;
+
+function snapshotCacheKey(job: BrandSalesJob): string {
+  // jobId is minted and account-scoped by trusted main. Including mode,
+  // marketplace and exact range prevents a cached aggregate from being used
+  // for another renderer selection even if an invalid bridge reuses an ID.
+  return [job.jobId, job.mode, job.marketplaceId, job.startDate, job.endDate].join(":");
+}
+
+export function clearBrandSalesSnapshotCache(): void {
+  brandSalesSnapshotCache.clear();
+}
+
+export function readBrandSalesSnapshotCache(
+  job: BrandSalesJob,
+  now = Date.now(),
+): BrandSalesSnapshot | null {
+  const key = snapshotCacheKey(job);
+  const entry = brandSalesSnapshotCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= now || entry.expiresAt !== Date.parse(job.expiresAt)) {
+    brandSalesSnapshotCache.delete(key);
+    return null;
+  }
+  brandSalesSnapshotCache.delete(key);
+  brandSalesSnapshotCache.set(key, entry);
+  return entry.snapshot;
+}
+
+export function storeBrandSalesSnapshotCache(
+  job: BrandSalesJob,
+  snapshot: BrandSalesSnapshot,
+  now = Date.now(),
+): void {
+  const expiresAt = Date.parse(job.expiresAt);
+  if (
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= now ||
+    snapshot.mode !== job.mode ||
+    snapshot.marketplaceId !== job.marketplaceId ||
+    snapshot.startDate !== job.startDate ||
+    snapshot.endDate !== job.endDate
+  ) {
+    return;
+  }
+  for (const [key, entry] of brandSalesSnapshotCache) {
+    if (entry.expiresAt <= now) brandSalesSnapshotCache.delete(key);
+  }
+  const key = snapshotCacheKey(job);
+  brandSalesSnapshotCache.delete(key);
+  brandSalesSnapshotCache.set(key, {
+    jobId: job.jobId,
+    mode: job.mode,
+    marketplaceId: job.marketplaceId,
+    startDate: job.startDate,
+    endDate: job.endDate,
+    expiresAt,
+    snapshot,
+  });
+  while (brandSalesSnapshotCache.size > BRAND_SALES_SNAPSHOT_CACHE_LIMIT) {
+    const oldestKey = brandSalesSnapshotCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    brandSalesSnapshotCache.delete(oldestKey);
+  }
 }
 
 async function json(response: Response): Promise<unknown> {
@@ -117,7 +197,13 @@ export default function BrandSalesCard({
     controllerRef.current = controller;
     setLoading(true);
     setError(null);
-    setSnapshot(null);
+    setSnapshot((current) =>
+      current?.marketplaceId === selection.marketplaceId &&
+        current.startDate === selection.startDate &&
+        current.endDate === selection.endDate
+        ? current
+        : null,
+    );
     try {
       const started = parseJob(
         await json(await fetch("/api/sp-api/brand-sales", {
@@ -133,6 +219,13 @@ export default function BrandSalesCard({
         selection,
       );
       let job = started;
+      if (job.ready && !explicitRetry) {
+        const cached = readBrandSalesSnapshotCache(job);
+        if (cached) {
+          if (controllerRef.current === controller) setSnapshot(cached);
+          return;
+        }
+      }
       for (let attempt = 0; !job.ready && attempt < 200; attempt += 1) {
         await delay(1_500, controller.signal);
         const params = new URLSearchParams({ marketplaceId, jobId: job.jobId });
@@ -158,10 +251,12 @@ export default function BrandSalesCard({
         selection,
       );
       if (controllerRef.current !== controller) return;
+      storeBrandSalesSnapshotCache(job, parsed);
       setSnapshot(parsed);
     } catch (syncError) {
       if (syncError instanceof Error && syncError.name === "AbortError") return;
       if (controllerRef.current !== controller) return;
+      setSnapshot(null);
       setError({
         code: syncError instanceof BrandSalesResponseError ? syncError.code : null,
         requestId: syncError instanceof BrandSalesResponseError ? syncError.requestId : null,
@@ -189,6 +284,14 @@ export default function BrandSalesCard({
       controllerRef.current = null;
     };
   }, [endDate, marketplaceId, startDate, sync]);
+
+  useEffect(() => {
+    if (snapshot?.rangeFreshness !== "includes-current-day") return;
+    const interval = window.setInterval(() => {
+      void sync(false);
+    }, 5 * 60 * 1_000);
+    return () => window.clearInterval(interval);
+  }, [snapshot?.dataThrough, snapshot?.rangeFreshness, sync]);
 
   return (
     <BrandSalesChart
