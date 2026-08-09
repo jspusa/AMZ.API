@@ -11,6 +11,9 @@ import {
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import AgedInventoryPanel, {
+  AgedInventoryTierOverview,
+  aggregateAgeBuckets,
+  aggregateAgedSurchargeBuckets,
   formatAgedInventoryMoney,
   parseAgedInventorySnapshot,
 } from "../src/renderer/src/components/aged-inventory-panel";
@@ -759,6 +762,99 @@ describe("FBA aged inventory renderer and read-only route", () => {
     expect(markup).toContain("開始 FBA 180 天以上庫齡健檢");
     expect(markup).toContain("全部非重疊庫齡桶");
     expect(markup).toContain("費用缺欄或缺值時不套費率、不推算");
+  });
+
+  it("aggregates every US age and AIS tier while preserving partial quantity and fee coverage", () => {
+    const ageDefinitions = [
+      ["0-30", "0–30 天", false],
+      ["31-60", "31–60 天", false],
+      ["61-90", "61–90 天", false],
+      ["91-180", "91–180 天", false],
+      ["181-270", "181–270 天", true],
+      ["271-365", "271–365 天", true],
+      ["366-455", "366–455 天", true],
+      ["456-plus", "456 天以上", true],
+    ] as const;
+    const surchargeDefinitions = [
+      ["181-210", "AIS 181–210 天"],
+      ["211-240", "AIS 211–240 天"],
+      ["241-270", "AIS 241–270 天"],
+      ["271-300", "AIS 271–300 天"],
+      ["301-330", "AIS 301–330 天"],
+      ["331-365", "AIS 331–365 天"],
+      ["366-455", "AIS 366–455 天"],
+      ["456-plus", "AIS 456 天以上"],
+    ] as const;
+    const rows = [
+      {
+        ageBuckets: ageDefinitions.map(([key, label, over180], index) => ({
+          key,
+          label,
+          over180,
+          units: 8 - index,
+        })),
+        agedSurchargeBuckets: surchargeDefinitions.map(([key, label], index) => ({
+          key,
+          label,
+          quantity: index === 0 ? 3 : index === 1 ? null : 0,
+          estimatedCharge: index === 0 ? 1.2 : index === 1 ? null : 0,
+        })),
+      },
+      {
+        ageBuckets: ageDefinitions.map(([key, label, over180], index) => ({
+          key,
+          label,
+          over180,
+          units: index + 2,
+        })),
+        agedSurchargeBuckets: surchargeDefinitions.map(([key, label], index) => ({
+          key,
+          label,
+          quantity: index === 0 ? 2 : index === 1 ? 1 : null,
+          estimatedCharge: index === 0 ? 0.8 : null,
+        })),
+      },
+    ];
+
+    expect(aggregateAgeBuckets(rows)).toEqual(
+      ageDefinitions.map(([key, label, over180]) => ({
+        key,
+        label,
+        over180,
+        units: 10,
+        reportedSkuCount: 2,
+        totalSkuCount: 2,
+      })),
+    );
+    const surchargeOverview = aggregateAgedSurchargeBuckets(rows);
+    expect(surchargeOverview).toHaveLength(8);
+    expect(surchargeOverview[0]).toEqual({
+      key: "181-210",
+      label: "AIS 181–210 天",
+      quantity: 5,
+      quantityReportedSkuCount: 2,
+      estimatedCharge: 2,
+      chargeReportedSkuCount: 2,
+      totalSkuCount: 2,
+    });
+    expect(surchargeOverview[1]).toEqual({
+      key: "211-240",
+      label: "AIS 211–240 天",
+      quantity: 1,
+      quantityReportedSkuCount: 1,
+      estimatedCharge: null,
+      chargeReportedSkuCount: 0,
+      totalSkuCount: 2,
+    });
+
+    const markup = renderToStaticMarkup(
+      <AgedInventoryTierOverview rows={rows} currencyCode="USD" />,
+    );
+    expect(markup).toContain("全部 FBA 庫齡分層");
+    expect(markup).toContain("AIS 官方預估計費分層");
+    expect(markup).toContain("已回傳 1／2 SKU");
+    expect(markup).toContain("不反推或猜測每件費率");
+    expect(markup).toContain("US$2.00");
   });
 
   it("validates every row and the server summary before displaying it", () => {

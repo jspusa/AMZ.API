@@ -46,6 +46,10 @@ import UnboundVariationAuditPanel, {
 } from "./unbound-variation-audit-panel";
 import VariationPlannerDrawer from "./variation-planner-drawer";
 import { isSubscriptionAuditMarketplaceSupported } from "../subscription-audit";
+import {
+  pollExistingReviewAuditJob,
+  reviewAuditHomeProgress,
+} from "../review-audit";
 
 type Marketplace = {
   id: string;
@@ -854,6 +858,54 @@ export default function Dashboard({
     }));
   }, []);
 
+  const clearReviewAudit = useCallback((targetMarketplaceId: string) => {
+    setReviewAuditCache((current) => {
+      const next = { ...current };
+      delete next[targetMarketplaceId];
+      return next;
+    });
+  }, []);
+
+  const backgroundReviewAuditJob =
+    reviewAuditCache[marketplaceId]?.snapshot
+      ? null
+      : reviewAuditCache[marketplaceId]?.job ?? null;
+  const backgroundReviewAuditJobId = backgroundReviewAuditJob?.jobId ?? null;
+
+  useEffect(() => {
+    if (reviewAuditOpen || !backgroundReviewAuditJob) return;
+    const controller = new AbortController();
+    void pollExistingReviewAuditJob({
+      marketplaceId,
+      initialJob: backgroundReviewAuditJob,
+      signal: controller.signal,
+      request: ({ method, url, signal }) => fetch(url, {
+        method,
+        cache: "no-store",
+        signal,
+      }),
+      onJob: (job) => {
+        if (!controller.signal.aborted) {
+          cacheReviewAudit({ snapshot: null, job });
+        }
+      },
+      onSnapshot: (snapshot) => {
+        if (!controller.signal.aborted) {
+          cacheReviewAudit({ snapshot, job: null });
+        }
+      },
+      onStopped: () => {
+        if (!controller.signal.aborted) clearReviewAudit(marketplaceId);
+      },
+    });
+    // Opening the drawer hands observation back to ReviewAuditPanel. Changing
+    // marketplace or unmounting Dashboard aborts only this renderer GET loop;
+    // the main-process review runner remains independent.
+    return () => controller.abort();
+    // Progress updates retain the same job ID and must not restart this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backgroundReviewAuditJobId, cacheReviewAudit, clearReviewAudit, marketplaceId, reviewAuditOpen]);
+
   const openUnboundVariationSku = (sellerSku: string) => {
     setGlobalSku(sellerSku);
     setUnboundVariationAuditOpen(false);
@@ -911,6 +963,7 @@ export default function Dashboard({
       currentImageAudit.snapshot.summary.incomplete
     : 0;
   const currentReviewAudit = reviewAuditCache[marketplaceId] ?? null;
+  const currentReviewAuditProgress = reviewAuditHomeProgress(currentReviewAudit);
   const effectiveReportMenuEntries: readonly DashboardReportMenuEntry[] =
     reportMenuEntries ?? [
       {
@@ -1256,12 +1309,21 @@ export default function Dashboard({
                 <h2>評論健檢</h2>
                 <p>依 Listings relationships 已證明的 child 與 standalone ASIN 列出評論主題前五與後五；排除 parent，也不冒充商品總星等。</p>
               </div>
-              {currentReviewAudit && (
-                <span className="content-audit-home-status">
-                  <strong>{currentReviewAudit.snapshot
-                    ? currentReviewAudit.snapshot.summary.uniqueFbaNonParentAsins.toLocaleString()
-                    : currentReviewAudit.job?.progress.percent ?? 0}</strong>
-                  <small>{currentReviewAudit.snapshot ? "個 FBA 非 parent ASIN" : "% 已完成"}</small>
+              {currentReviewAuditProgress && (
+                <span
+                  className="content-audit-home-status"
+                  aria-label={currentReviewAuditProgress.ariaLabel}
+                >
+                  <strong>{currentReviewAuditProgress.primary}</strong>
+                  <small>{currentReviewAuditProgress.detail}</small>
+                  {currentReviewAudit?.job && (
+                    <progress
+                      className="review-audit-home-progress"
+                      value={currentReviewAudit.job.progress.percent}
+                      max={100}
+                      aria-hidden="true"
+                    />
+                  )}
                 </span>
               )}
               <button type="button" onClick={() => setReviewAuditOpen(true)}>

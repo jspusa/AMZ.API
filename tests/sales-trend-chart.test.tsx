@@ -169,6 +169,10 @@ describe("sales trend comparison chart", () => {
     expect(source).toContain('window.addEventListener("keydown", onKeyDown)');
     expect(source).toContain("event.defaultPrevented");
     expect(source).toContain("A D 或左右鍵移動");
+    expect(source).toContain('setSkaterMotion(direction < 0 ? "left" : "right")');
+    expect(source).toContain("is-rolling");
+    expect(source).toContain("const HEIGHT = 250");
+    expect(source).toContain("top: 88");
   });
 
   it("offers 7, 14, 30, and 90 day presets and marks the selected 90-day range", () => {

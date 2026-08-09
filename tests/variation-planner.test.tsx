@@ -315,6 +315,16 @@ describe("variation planner", () => {
     expect(source.indexOf("解除變體存放區")).toBeLessThan(
       source.indexOf("可解除的 FBA child"),
     );
+    expect(source).toContain('className="variation-family-panel source source-children"');
+    expect(source).toContain("紅色解除區會固定在上方");
+    const css = readFileSync(
+      new URL("../src/renderer/src/app.css", import.meta.url),
+      "utf8",
+    );
+    expect(css).toMatch(/\.variation-child-list\s*\{[^}]*max-height:\s*clamp\(/s);
+    expect(css).toMatch(/\.variation-detach-stage\s*\{[^}]*position:\s*sticky/s);
+    expect(css).toContain("#fff7f7");
+    expect(css).toContain("#f5fbf7");
     expect(source).not.toContain("localStorage");
   });
 

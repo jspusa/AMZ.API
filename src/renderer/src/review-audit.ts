@@ -77,6 +77,205 @@ export type ReviewAuditJobView = {
   capabilityNotice: string;
 };
 
+export type ReviewAuditHomeProgress = {
+  primary: string;
+  detail: string;
+  ariaLabel: string;
+};
+
+export const REVIEW_AUDIT_DASHBOARD_POLL_INTERVAL_MS = 1_500;
+export const REVIEW_AUDIT_DASHBOARD_NETWORK_RETRY_MS = 1_500;
+export const REVIEW_AUDIT_DASHBOARD_MAX_RETRY_MS = 30_000;
+
+type ReviewAuditStatusResponse = {
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+};
+
+export type ReviewAuditStatusRequest = {
+  method: "GET";
+  url: string;
+  signal: AbortSignal;
+};
+
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      const error = new Error("Aborted");
+      error.name = "AbortError";
+      reject(error);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timeout);
+      const error = new Error("Aborted");
+      error.name = "AbortError";
+      reject(error);
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function pollingError(message: string): Error {
+  return new Error(message);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+export function reviewAuditHomeProgress(
+  cache: {
+    snapshot: ReviewAuditSnapshotView | null;
+    job: ReviewAuditJobView | null;
+  } | null,
+): ReviewAuditHomeProgress | null {
+  if (cache?.snapshot) {
+    const count = cache.snapshot.summary.uniqueFbaNonParentAsins;
+    return {
+      primary: count.toLocaleString("en-US"),
+      detail: "個 FBA 非 parent ASIN",
+      ariaLabel: `評論健檢已完成，共 ${count.toLocaleString("en-US")} 個 FBA 非 parent ASIN`,
+    };
+  }
+  if (!cache?.job) return null;
+  const { completed, total, percent } = cache.job.progress;
+  const completedLabel = completed.toLocaleString("en-US");
+  const totalLabel = total === null ? "—" : total.toLocaleString("en-US");
+  return {
+    primary: `${percent}%`,
+    detail: `${completedLabel} / ${totalLabel} 個 ASIN`,
+    ariaLabel: `評論健檢 ${percent}% 已完成，${completedLabel} / ${totalLabel} 個 ASIN`,
+  };
+}
+
+/**
+ * Observes an already-created main-process review job from the closed
+ * Dashboard card. It can only issue status GETs: creating a report/job remains
+ * an explicit action inside ReviewAuditPanel.
+ */
+export async function pollExistingReviewAuditJob(input: {
+  marketplaceId: string;
+  initialJob: ReviewAuditJobView;
+  signal: AbortSignal;
+  request: (request: ReviewAuditStatusRequest) => Promise<ReviewAuditStatusResponse>;
+  onJob: (job: ReviewAuditJobView) => void;
+  onSnapshot: (snapshot: ReviewAuditSnapshotView) => void;
+  onError?: (error: Error) => void;
+  onStopped?: (status: number) => void;
+}): Promise<void> {
+  const { initialJob, marketplaceId, signal } = input;
+  if (
+    initialJob.marketplaceId !== marketplaceId ||
+    !initialJob.jobId ||
+    initialJob.ready !== false
+  ) {
+    input.onError?.(pollingError("評論健檢背景工作與目前站點不一致。"));
+    return;
+  }
+  const expectedJobId = initialJob.jobId;
+  const expectedMode = initialJob.mode;
+  const params = new URLSearchParams({ marketplaceId, jobId: expectedJobId });
+  const url = `/api/sp-api/review-audit?${params}`;
+  let consecutiveTransientFailures = 0;
+
+  const waitAfterTransientFailure = async (): Promise<boolean> => {
+    consecutiveTransientFailures += 1;
+    const delay = Math.min(
+      REVIEW_AUDIT_DASHBOARD_MAX_RETRY_MS,
+      REVIEW_AUDIT_DASHBOARD_NETWORK_RETRY_MS *
+        (2 ** Math.min(5, consecutiveTransientFailures - 1)),
+    );
+    try {
+      await abortableDelay(delay, signal);
+      return true;
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) return false;
+      input.onError?.(pollingError("評論健檢背景進度暫停。"));
+      return false;
+    }
+  };
+
+  while (!signal.aborted) {
+    let response: ReviewAuditStatusResponse;
+    try {
+      response = await input.request({ method: "GET", url, signal });
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) return;
+      if (!(await waitAfterTransientFailure())) return;
+      continue;
+    }
+
+    if (!response.ok && (response.status === 429 || response.status >= 500)) {
+      if (!(await waitAfterTransientFailure())) return;
+      continue;
+    }
+    consecutiveTransientFailures = 0;
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      input.onError?.(pollingError("評論健檢背景進度回應不是可驗證的 JSON。"));
+      return;
+    }
+    if (signal.aborted) return;
+
+    if (response.ok && response.status === 200) {
+      try {
+        const snapshot = parseReviewAuditSnapshot(payload, marketplaceId);
+        if (snapshot.exportId !== expectedJobId || snapshot.mode !== expectedMode) {
+          throw pollingError("評論健檢背景結果識別或模式已改變。");
+        }
+        if (!signal.aborted) input.onSnapshot(snapshot);
+      } catch (error) {
+        input.onError?.(
+          error instanceof Error
+            ? error
+            : pollingError("評論健檢背景結果無法驗證。"),
+        );
+      }
+      return;
+    }
+
+    if (!response.ok || response.status !== 202) {
+      if (response.status === 409 || response.status === 410) {
+        input.onStopped?.(response.status);
+      }
+      input.onError?.(pollingError("評論健檢背景工作已停止或不可繼續。"));
+      return;
+    }
+
+    try {
+      const nextJob = parseReviewAuditJob(payload, marketplaceId);
+      if (nextJob.jobId !== expectedJobId || nextJob.mode !== expectedMode) {
+        throw pollingError("評論健檢背景工作識別或模式已改變。");
+      }
+      if (!signal.aborted) input.onJob(nextJob);
+    } catch (error) {
+      input.onError?.(
+        error instanceof Error
+          ? error
+          : pollingError("評論健檢背景進度無法驗證。"),
+      );
+      return;
+    }
+
+    try {
+      await abortableDelay(REVIEW_AUDIT_DASHBOARD_POLL_INTERVAL_MS, signal);
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) return;
+      input.onError?.(pollingError("評論健檢背景進度暫停。"));
+      return;
+    }
+  }
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}格式無效。`);
   return value as Record<string, unknown>;
@@ -263,6 +462,21 @@ export function parseReviewAuditJob(value: unknown, expectedMarketplaceId: strin
   if (raw.ready !== false || raw.marketplaceId !== expectedMarketplaceId) throw new Error("評論健檢工作與目前站點不一致。");
   const progress = record(raw.progress, "評論健檢進度");
   const total = progress.total === null ? null : integer(progress.total, "評論總數");
+  const completed = integer(progress.completed, "已完成數");
+  const percent = integer(progress.percent, "完成比例");
+  const expectedPercent = total === null
+    ? 0
+    : total === 0
+      ? 0
+      : Math.round((completed / total) * 100);
+  if (
+    percent > 100 ||
+    (total === null && completed !== 0) ||
+    (total !== null && completed > total) ||
+    percent !== expectedPercent
+  ) {
+    throw new Error("評論健檢進度超出可驗證範圍。");
+  }
   return {
     jobId: identifier(raw.jobId, "評論健檢工作 ID"),
     marketplaceId: expectedMarketplaceId,
@@ -270,9 +484,9 @@ export function parseReviewAuditJob(value: unknown, expectedMarketplaceId: strin
     ready: false,
     status: text(raw.status, "評論健檢狀態", 120),
     progress: {
-      completed: integer(progress.completed, "已完成數"),
+      completed,
       total,
-      percent: integer(progress.percent, "完成比例"),
+      percent,
     },
     message: text(raw.message, "評論健檢說明"),
     capabilityNotice: text(raw.capabilityNotice, "評論 API 邊界"),

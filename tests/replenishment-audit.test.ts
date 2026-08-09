@@ -20,7 +20,7 @@ const US = "ATVPDKIKX0DER";
 const MONTH: OfficialMonthlyInterval = {
   month: "2026-07",
   startDate: "2026-07-01T00:00:00Z",
-  endDate: "2026-07-31T23:59:59Z",
+  endDate: "2026-07-31T00:00:00Z",
 };
 const NOW = new Date("2026-08-08T12:00:00Z");
 
@@ -116,6 +116,10 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
         fulfillmentChannelTypes: ["AMAZON"],
         aggregationFrequency: "MONTH",
         timePeriodType: "PERFORMANCE",
+        timeInterval: {
+          startDate: "2026-07-01T00:00:00Z",
+          endDate: "2026-07-31T00:00:00Z",
+        },
       },
     });
     expect(() => assertReplenishmentRequestBody(current)).not.toThrow();
@@ -462,20 +466,26 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
         MONTH,
       ),
     ).toThrow(/非 Amazon fulfillment/u);
-    expect(() =>
-      parseReplenishmentOfferMetricsPage(
-        page([
-          metric(1, {
-            timeInterval: {
-              startDate: MONTH.startDate,
-              endDate: "2026-07-30T23:59:59Z",
-            },
-          }),
-        ]),
-        US,
-        MONTH,
-      ),
-    ).toThrow(/完整月份/u);
+    expect(parseReplenishmentOfferMetricsPage(
+      page([
+        metric(1),
+        metric(2, {
+          timeInterval: {
+            startDate: MONTH.startDate,
+            endDate: "2026-07-30T00:00:00Z",
+          },
+        }),
+      ]),
+      US,
+      MONTH,
+    )).toMatchObject({
+      sourceItemCount: 2,
+      items: [expect.objectContaining({ sellerSku: sku(1) })],
+      invalidMetricRows: [{
+        sellerSku: sku(2),
+        problem: expect.stringMatching(/調整或混入/u),
+      }],
+    });
     expect(() =>
       parseReplenishmentOfferMetricsPage(
         page([metric(1, { marketplaceId: "A2EUQ1WTGCTBG2" })]),
@@ -562,6 +572,137 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
       revenueCoverage: {
         status: "partial",
         expectedOfferMonths: 2,
+        reportedOfferMonths: 1,
+      },
+    });
+  });
+
+  it("isolates one Amazon-adjusted interval in history while keeping valid SKU-months", async () => {
+    const intervals = officialCompleteMonthlyIntervals(2, NOW);
+    const snapshot = await fetchFbaSubscriptionAuditHistory({
+      marketplaceId: US,
+      metricIntervals: intervals,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1), sku(2)]),
+      transport: async (request) => {
+        if (request.operation === "listOffers") {
+          return page([offer(1), offer(2)]);
+        }
+        const timeInterval = (request.body.filters as Record<string, unknown>)
+          .timeInterval as Record<string, unknown>;
+        const month = String(timeInterval.startDate).slice(0, 7);
+        return page([
+          metric(1, {
+            timeInterval: {
+              startDate: timeInterval.startDate,
+              endDate: timeInterval.endDate,
+            },
+          }),
+          metric(2, {
+            timeInterval: {
+              startDate: timeInterval.startDate,
+              endDate: month === intervals[0]!.month
+                ? `${month}-15T00:00:00Z`
+                : timeInterval.endDate,
+            },
+          }),
+        ]);
+      },
+    });
+
+    expect(snapshot.offers.map(({ sellerSku }) => sellerSku)).toEqual([
+      sku(1),
+      sku(2),
+    ]);
+    expect(snapshot.offers.find(({ sellerSku }) => sellerSku === sku(1))!
+      .monthlySeries).toHaveLength(2);
+    expect(snapshot.offers.find(({ sellerSku }) => sellerSku === sku(2))!
+      .monthlySeries.map(({ interval }) => interval.month)).toEqual([
+        intervals[1]!.month,
+      ]);
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedMetricRows: 4,
+      acceptedMetricRows: 3,
+      problemSkuRows: [{
+        sellerSku: sku(2),
+        fbaEvidence: "CURRENT_FBA_SKU_SET",
+        affectedOfferRows: 0,
+        affectedMetricRows: 1,
+        metricMonths: [intervals[0]!.month],
+        problem: expect.stringContaining("調整或混入"),
+      }],
+    });
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 4,
+        reportedOfferMonths: 3,
+      },
+      monthly: [
+        {
+          month: intervals[0]!.month,
+          provenSubscriptionRevenue: null,
+          revenueCoverage: {
+            status: "partial",
+            expectedOfferMonths: 2,
+            reportedOfferMonths: 1,
+          },
+        },
+        {
+          month: intervals[1]!.month,
+          provenSubscriptionRevenue: 4,
+          revenueCoverage: {
+            status: "complete",
+            expectedOfferMonths: 2,
+            reportedOfferMonths: 2,
+          },
+        },
+      ],
+    });
+  });
+
+  it("keeps an interval problem SKU count-only without same-run CURRENT_FBA evidence", async () => {
+    const snapshot = await fetchFbaSubscriptionAudit({
+      marketplaceId: US,
+      metricInterval: MONTH,
+      now: NOW,
+      knownFbaSkus: new Set([sku(1)]),
+      transport: async (request) => request.operation === "listOffers"
+        ? page([offer(1)])
+        : page([
+            metric(1),
+            metric(2, {
+              timeInterval: {
+                startDate: MONTH.startDate,
+                endDate: "2026-07-15T00:00:00Z",
+              },
+            }),
+          ]),
+    });
+
+    expect(snapshot.offers.map(({ sellerSku }) => sellerSku)).toEqual([sku(1)]);
+    expect(snapshot.upstreamCoverage).toMatchObject({
+      status: "partial",
+      returnedMetricRows: 2,
+      acceptedMetricRows: 1,
+      problemSkuRows: [],
+      unprovenExactSkuProblems: {
+        exactSkuCount: 1,
+        affectedOfferRows: 0,
+        affectedMetricRows: 1,
+        minimumUnresolvedOfferMonths: 1,
+      },
+    });
+    expect(JSON.stringify(snapshot)).not.toContain(sku(2));
+    expect(snapshot.summary).toMatchObject({
+      provenSubscriptionRevenue: null,
+      revenueCurrencyCode: null,
+      revenueCoverage: {
+        status: "partial",
+        expectedOfferMonths: 1,
         reportedOfferMonths: 1,
       },
     });
@@ -808,18 +949,24 @@ describe("official Replenishment FBA Subscribe & Save audit", () => {
   });
 
   it("uses only completed months inside the exact trailing-two-year horizon", () => {
-    expect(officialCompleteMonthlyIntervals(3, NOW).map(({ month }) => month)).toEqual([
+    const intervals = officialCompleteMonthlyIntervals(3, NOW);
+    expect(intervals.map(({ month }) => month)).toEqual([
       "2026-05",
       "2026-06",
       "2026-07",
     ]);
+    expect(intervals.at(-1)).toEqual({
+      month: "2026-07",
+      startDate: "2026-07-01T00:00:00Z",
+      endDate: "2026-07-31T00:00:00Z",
+    });
     expect(() => officialCompleteMonthlyIntervals(24, NOW)).toThrow(/近兩年/u);
     expect(() =>
       assertOfficialMonthlyIntervalAvailable(
         {
           month: "2024-08",
           startDate: "2024-08-01T00:00:00Z",
-          endDate: "2024-08-31T23:59:59Z",
+          endDate: "2024-08-31T00:00:00Z",
         },
         NOW,
       ),

@@ -42,6 +42,25 @@ type AgedInventoryRow = {
   snapshotDate: string | null;
 };
 
+export type AgedInventoryAgeBucketOverview = {
+  key: string;
+  label: string;
+  over180: boolean;
+  units: number;
+  reportedSkuCount: number;
+  totalSkuCount: number;
+};
+
+export type AgedInventorySurchargeBucketOverview = {
+  key: string;
+  label: string;
+  quantity: number | null;
+  quantityReportedSkuCount: number;
+  estimatedCharge: number | null;
+  chargeReportedSkuCount: number;
+  totalSkuCount: number;
+};
+
 type FeeAvailability = "complete" | "partial" | "unavailable";
 
 type AgedInventorySnapshot = {
@@ -98,6 +117,79 @@ function nullableNonNegativeNumber(value: unknown): value is number | null {
 
 function feeAvailabilityValue(value: unknown): value is FeeAvailability {
   return value === "complete" || value === "partial" || value === "unavailable";
+}
+
+export function aggregateAgeBuckets(
+  rows: ReadonlyArray<Pick<AgedInventoryRow, "ageBuckets">>,
+): AgedInventoryAgeBucketOverview[] {
+  const template = rows[0]?.ageBuckets ?? [];
+  return template.map((bucket, index) => {
+    let units = 0;
+    for (const row of rows) {
+      const candidate = row.ageBuckets[index];
+      if (
+        row.ageBuckets.length !== template.length ||
+        !candidate ||
+        candidate.key !== bucket.key ||
+        candidate.label !== bucket.label ||
+        candidate.over180 !== bucket.over180
+      ) {
+        throw new Error("FBA 庫齡彙總使用不同區域欄位，已停止顯示。");
+      }
+      units += candidate.units;
+    }
+    return {
+      key: bucket.key,
+      label: bucket.label,
+      over180: bucket.over180,
+      units,
+      reportedSkuCount: rows.length,
+      totalSkuCount: rows.length,
+    };
+  });
+}
+
+export function aggregateAgedSurchargeBuckets(
+  rows: ReadonlyArray<Pick<AgedInventoryRow, "agedSurchargeBuckets">>,
+): AgedInventorySurchargeBucketOverview[] {
+  const template = rows[0]?.agedSurchargeBuckets ?? [];
+  return template.map((bucket, index) => {
+    let quantity = 0;
+    let quantityReportedSkuCount = 0;
+    let estimatedCharge = 0;
+    let chargeReportedSkuCount = 0;
+    for (const row of rows) {
+      const candidate = row.agedSurchargeBuckets[index];
+      if (
+        row.agedSurchargeBuckets.length !== template.length ||
+        !candidate ||
+        candidate.key !== bucket.key ||
+        candidate.label !== bucket.label
+      ) {
+        throw new Error("FBA AIS 預估計費彙總使用不同區域欄位，已停止顯示。");
+      }
+      if (candidate.quantity !== null) {
+        quantity += candidate.quantity;
+        quantityReportedSkuCount += 1;
+      }
+      if (candidate.estimatedCharge !== null) {
+        estimatedCharge += candidate.estimatedCharge;
+        chargeReportedSkuCount += 1;
+      }
+    }
+    return {
+      key: bucket.key,
+      label: bucket.label,
+      quantity: quantityReportedSkuCount > 0 ? quantity : null,
+      quantityReportedSkuCount,
+      estimatedCharge:
+        chargeReportedSkuCount > 0
+          ? Number(estimatedCharge.toFixed(2))
+          : null,
+      chargeReportedSkuCount,
+      totalSkuCount: rows.length,
+    };
+  });
 }
 
 function reportReply(value: unknown): ReportReply {
@@ -427,6 +519,117 @@ function coverageText(reported: number, total: number): string {
   return `已回傳 ${reported.toLocaleString("zh-TW")}／${total.toLocaleString("zh-TW")} SKU`;
 }
 
+export function AgedInventoryTierOverview({
+  rows,
+  currencyCode,
+}: {
+  rows: ReadonlyArray<
+    Pick<AgedInventoryRow, "ageBuckets" | "agedSurchargeBuckets">
+  >;
+  currencyCode: string | null;
+}) {
+  const ageBuckets = aggregateAgeBuckets(rows);
+  const surchargeBuckets = aggregateAgedSurchargeBuckets(rows);
+  return (
+    <div className="aged-inventory-tier-overview">
+      <section className="aged-inventory-tier-section aged-inventory-age-layer">
+        <header>
+          <div>
+            <p className="eyebrow">ALL FBA INVENTORY AGE</p>
+            <h4>全部 FBA 庫齡分層</h4>
+            <p>
+              這是 Amazon 報表依進倉庫齡回傳的非重疊庫存數量；181 天以上會另外標記，但不等於冗餘或附加費計費量。
+            </p>
+          </div>
+          <small>{coverageText(rows.length, rows.length)}</small>
+        </header>
+        {ageBuckets.length > 0 ? (
+          <div className="aged-inventory-tier-grid age-buckets">
+            {ageBuckets.map((bucket) => (
+              <article
+                key={bucket.key}
+                className={bucket.over180 ? "is-over-180" : undefined}
+              >
+                <span>{bucket.label}</span>
+                <strong>{bucket.units.toLocaleString("zh-TW")} 件</strong>
+                <small>
+                  {coverageText(
+                    bucket.reportedSkuCount,
+                    bucket.totalSkuCount,
+                  )}
+                </small>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="aged-inventory-tier-empty">
+            Amazon 報表目前沒有可彙總的 FBA 庫齡商品。
+          </p>
+        )}
+      </section>
+
+      <section className="aged-inventory-tier-section aged-inventory-ais-layer">
+        <header>
+          <div>
+            <p className="eyebrow">AMAZON AIS ESTIMATE</p>
+            <h4>AIS 官方預估計費分層</h4>
+            <p>
+              這是 Amazon 另列的預估計費數量與附加費；不拿上方庫齡數量代填，也不反推或猜測每件費率。尾段會依站點實際報表顯示。
+            </p>
+          </div>
+          <small>
+            {surchargeBuckets.length > 0
+              ? `${surchargeBuckets.length.toLocaleString("zh-TW")} 個官方區間`
+              : "報表未提供完整分層"}
+          </small>
+        </header>
+        {surchargeBuckets.length > 0 ? (
+          <div className="aged-inventory-tier-grid surcharge-buckets">
+            {surchargeBuckets.map((bucket) => (
+              <article key={bucket.key}>
+                <span>{bucket.label}</span>
+                <div>
+                  <small>預估計費數量</small>
+                  <strong>
+                    {bucket.quantity === null
+                      ? "—"
+                      : `${bucket.quantity.toLocaleString("zh-TW")} 件`}
+                  </strong>
+                  <small>
+                    {coverageText(
+                      bucket.quantityReportedSkuCount,
+                      bucket.totalSkuCount,
+                    )}
+                  </small>
+                </div>
+                <div>
+                  <small>預估附加費</small>
+                  <strong>
+                    {formatAgedInventoryMoney(
+                      bucket.estimatedCharge,
+                      currencyCode,
+                    )}
+                  </strong>
+                  <small>
+                    {coverageText(
+                      bucket.chargeReportedSkuCount,
+                      bucket.totalSkuCount,
+                    )}
+                  </small>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="aged-inventory-tier-empty">
+            Amazon 此站點報表沒有完整 AIS 預估分層欄位；數量與費用維持缺值，不猜費率。
+          </p>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function safeFilename(response: Response, fallback: string): string {
   const disposition = response.headers.get("content-disposition") ?? "";
   const match = disposition.match(/filename="?([^";]+)"?/i);
@@ -644,7 +847,7 @@ export default function AgedInventoryPanel({
         </div>
       </header>
       <p className="aged-inventory-explainer">
-        冗餘健檢只依 Amazon FBA Manage Inventory Health report 的 estimated excess quantity；不會因庫齡高就判定冗餘。另顯示全部非重疊庫齡桶；費用缺欄或缺值時不套費率、不推算。
+        冗餘健檢只依 Amazon FBA Manage Inventory Health report 的 estimated excess quantity；不會因庫齡高就判定冗餘。另彙總全部非重疊庫齡桶與 AIS 181 天起的官方預估計費層；費用缺欄或缺值時不套費率、不推算。
       </p>
       {error && <div className="price-error" role="alert">{error}</div>}
       {!snapshot && (
@@ -656,7 +859,7 @@ export default function AgedInventoryPanel({
         >
           <span aria-hidden="true">⌛</span>
           <strong>{loading ? "Amazon 正在整理…" : "開始 FBA 180 天以上庫齡健檢"}</strong>
-          <small>已逾 180 天、Amazon 預估冗餘與費用會分開顯示；不會修改庫存或建立促銷。</small>
+          <small>主清單只列已逾 180 天；上方另顯示全部庫齡與 AIS 官方計費區間。冗餘與費用分開，不會修改庫存或建立促銷。</small>
         </button>
       )}
       {snapshot && (
@@ -668,6 +871,10 @@ export default function AgedInventoryPanel({
             <article><span>下月預估倉儲成本</span><strong>{snapshot.summary.storageCostAvailability === "unavailable" ? "報表未提供" : formatAgedInventoryMoney(snapshot.summary.estimatedStorageCostNextMonth, snapshot.summary.currencyCode)}</strong><small>{snapshot.summary.storageCostAvailability === "unavailable" ? "不猜費率" : coverageText(snapshot.summary.storageCostReportedSkuCount, snapshot.summary.skuCount)}</small></article>
             <article><span>AIS 預估附加費</span><strong>{snapshot.summary.agedSurchargeAvailability === "unavailable" ? "報表未提供" : formatAgedInventoryMoney(snapshot.summary.estimatedAgedSurcharge, snapshot.summary.currencyCode)}</strong><small>{snapshot.summary.agedSurchargeAvailability === "unavailable" ? "不猜費率" : coverageText(snapshot.summary.agedSurchargeReportedSkuCount, snapshot.summary.skuCount)}</small></article>
           </div>
+          <AgedInventoryTierOverview
+            rows={snapshot.rows}
+            currencyCode={snapshot.summary.currencyCode}
+          />
           <div className="aged-inventory-view-switch" role="group" aria-label="FBA 庫存健檢顯示範圍">
             <button type="button" className={view === "aged" ? "active" : ""} onClick={() => setView("aged")}>
               已逾 180 天
