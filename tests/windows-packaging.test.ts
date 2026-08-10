@@ -105,6 +105,7 @@ describe("Windows x64 Notebook Key packaging", () => {
     expect(verifier).toContain("amz-api-extract-manifest-");
     expect(verifier).toContain('node_modules\\@electron\\asar');
     expect(verifier).toContain("[System.IO.File]::WriteAllText(");
+    expect(verifier).toContain('split("/").join(path.sep)');
     expect(verifier).toContain(
       "& $nodePath $extractScriptPath $asarModulePath $asarPath $manifestEntry",
     );

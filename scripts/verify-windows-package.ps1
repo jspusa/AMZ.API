@@ -122,7 +122,7 @@ if (-not (Test-Path -LiteralPath $asarModulePath -PathType Container)) {
 $extractScriptPath = Join-Path `
   ([System.IO.Path]::GetTempPath()) `
   "amz-api-extract-manifest-$([Guid]::NewGuid().ToString('N')).cjs"
-$extractScript = 'const asar=require(process.argv[2]);process.stdout.write(asar.extractFile(process.argv[3],process.argv[4]));'
+$extractScript = 'const path=require("path");const asar=require(process.argv[2]);const entry=process.argv[4].split("/").join(path.sep);process.stdout.write(asar.extractFile(process.argv[3],entry));'
 [System.IO.File]::WriteAllText(
   $extractScriptPath,
   $extractScript,
