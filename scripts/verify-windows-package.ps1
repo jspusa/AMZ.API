@@ -185,7 +185,7 @@ $dumpbinText = $dumpbinOutput -join [Environment]::NewLine
 if ($dumpbinText -notmatch "(?im)^\s*8664 machine \(x64\)\s*$") {
   throw "Windows Hello addon is not an AMD64 PE module."
 }
-if ($dumpbinText -notmatch "(?m)^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+napi_register_module_v1\s*$") {
+if ($dumpbinText -notmatch "(?m)^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+napi_register_module_v1(?:\s+=\s+.+)?\s*$") {
   throw "Windows Hello addon does not export napi_register_module_v1."
 }
 

@@ -122,6 +122,7 @@ describe("Windows x64 Notebook Key packaging", () => {
     expect(verifier).toContain("must exist only at its exact app.asar.unpacked path");
     expect(verifier).toContain("8664 machine \\(x64\\)");
     expect(verifier).toContain("napi_register_module_v1");
+    expect(verifier).toContain("(?:\\s+=\\s+.+)?");
     expect(verifier).toContain("AMZ_API_WINDOWS_HELLO_ADDON_READY");
     expect(verifier).toContain(
       'Invoke-PackagedSmoke -Executable $appExecutable -Name "win-unpacked"',
