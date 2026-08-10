@@ -33,11 +33,42 @@ const rows: ContentAuditRow[] = [
   },
 ];
 
+const REQUESTED_APPROVED_TERMS = [
+  "Freschi",
+  "Polyphosphate",
+  "Choline",
+  "Bitartrate",
+  "Monopotassium",
+  "Pyrophosphate",
+  "Vietnam",
+  "Croaker",
+  "palatability",
+  "Basa",
+  "Pantothenate",
+  "intolerances",
+  "KCAL",
+  "Taiwan",
+  "taurine",
+  "Flaxseed",
+  "Botanicals",
+  "Pawprint",
+] as const;
+
+function alternatingCase(value: string): string {
+  return [...value]
+    .map((character, index) =>
+      index % 2 === 0
+        ? character.toLocaleUpperCase("en-US")
+        : character.toLocaleLowerCase("en-US"),
+    )
+    .join("");
+}
+
 describe("renderer content quality helpers", () => {
   it("uses one versioned general Pages dictionary on every platform", () => {
     expect(CONTENT_SPELLING_DICTIONARY_VERSION).toContain("dictionary-en@4.0.0");
     expect(CONTENT_SPELLING_DICTIONARY_LANGUAGE).toContain("en_US");
-    expect(CONTENT_SPELLING_ALLOWLIST_COUNT).toBeGreaterThan(10);
+    expect(CONTENT_SPELLING_ALLOWLIST_COUNT).toBeGreaterThanOrEqual(37);
     const checked = addPagesDictionarySpellingIssues([{
       ...rows[0],
       title: "Trukey Tendons",
@@ -108,6 +139,25 @@ describe("renderer content quality helpers", () => {
       ]),
     );
   });
+
+  it.each(REQUESTED_APPROVED_TERMS)(
+    "keeps the requested approved term %s unchanged in mixed case",
+    (approvedTerm) => {
+      const mixedCase = alternatingCase(approvedTerm);
+      const checked = addPagesDictionarySpellingIssues([{
+        ...rows[0],
+        title: mixedCase,
+        bulletPoints: [],
+        ingredients: "",
+        issues: [],
+      }]);
+
+      expect(sharedContentSpellingMatch(approvedTerm.toLocaleLowerCase("en-US")))
+        .toBeNull();
+      expect(checked[0].title).toBe(mixedCase);
+      expect(checked[0].issues).toEqual([]);
+    },
+  );
 
   it("keeps approved scientific, ingredient and brand terms out of typo results", () => {
     const approvedTerms = [
