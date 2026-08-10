@@ -115,10 +115,23 @@ if ($nativeCopies.Count -ne 1 -or $nativeCopies[0].FullName -ne $addonPath) {
 }
 
 $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
-$extractManifest = 'const asar=require("@electron/asar");process.stdout.write(asar.extractFile(process.argv[1],process.argv[2]));'
-$manifestRaw = @(& $nodePath -e $extractManifest $asarPath $manifestEntry) -join ""
-if ($LASTEXITCODE -ne 0) {
-  throw "Unable to extract the Windows Hello manifest from app.asar."
+$extractScriptPath = Join-Path `
+  ([System.IO.Path]::GetTempPath()) `
+  "amz-api-extract-manifest-$([Guid]::NewGuid().ToString('N')).cjs"
+$extractScript = 'const asar=require("@electron/asar");process.stdout.write(asar.extractFile(process.argv[2],process.argv[3]));'
+[System.IO.File]::WriteAllText(
+  $extractScriptPath,
+  $extractScript,
+  (New-Object System.Text.UTF8Encoding($false))
+)
+try {
+  $manifestRaw = @(& $nodePath $extractScriptPath $asarPath $manifestEntry) -join ""
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to extract the Windows Hello manifest from app.asar."
+  }
+}
+finally {
+  Remove-Item -LiteralPath $extractScriptPath -Force -ErrorAction SilentlyContinue
 }
 $manifest = $manifestRaw | ConvertFrom-Json
 $manifestProperties = @($manifest.PSObject.Properties.Name)

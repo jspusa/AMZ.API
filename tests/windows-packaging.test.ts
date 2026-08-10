@@ -102,6 +102,15 @@ describe("Windows x64 Notebook Key packaging", () => {
     expect(verifier).toContain("[System.Security.Cryptography.SHA256]::Create()");
     expect(verifier).toContain("Get-Sha256Hex -Path $addonPath");
     expect(verifier).not.toContain("Get-FileHash");
+    expect(verifier).toContain("amz-api-extract-manifest-");
+    expect(verifier).toContain("[System.IO.File]::WriteAllText(");
+    expect(verifier).toContain(
+      "& $nodePath $extractScriptPath $asarPath $manifestEntry",
+    );
+    expect(verifier).toContain(
+      "Remove-Item -LiteralPath $extractScriptPath -Force",
+    );
+    expect(verifier).not.toContain("& $nodePath -e $extractManifest");
     expect(verifier).toContain("electron-fuses.cmd");
     expect(verifier).toContain("RunAsNode is Disabled");
     expect(verifier).toContain("EnableCookieEncryption is Enabled");
