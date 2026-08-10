@@ -14,14 +14,14 @@ export const ADS_CREDENTIAL_EDITOR_HTML = String.raw`<!doctype html>
 </head>
 <body>
   <main>
-    <header><div class="tag">LOCAL MAC SHEET</div><h1>Amazon Ads 本機安全輸入</h1><p>憑證只送往 Mac main process 與 Keychain，不經過 GitHub Pages。Profile ID 由系統自動發現。</p></header>
+    <header><div class="tag">LOCAL NOTEBOOK SHEET</div><h1>Amazon Ads 本機安全輸入</h1><p>憑證只送往 Notebook 鑰匙 main process 與系統安全儲存區，不經過 GitHub Pages。Profile ID 由系統自動發現。</p></header>
     <label for="region">Ads OAuth 區域</label><select id="region"><option value="na">NA · US／CA</option><option value="fe">FE · JP／SG／AU</option><option value="eu">EU · UK／DE</option></select>
     <label for="clientId">Ads LWA Client ID</label><input id="clientId" type="password" autocomplete="new-password" spellcheck="false">
     <label for="clientSecret">Ads LWA Client Secret</label><input id="clientSecret" type="password" autocomplete="new-password" spellcheck="false">
     <label for="refreshToken">Ads Refresh Token</label><input id="refreshToken" type="password" autocomplete="new-password" spellcheck="false">
     <div class="note">Amazon OAuth scope 為 <b>advertising::campaign_management</b>；請只授予 Campaign manager <b>Viewer</b>。AMZ.API 沒有廣告寫入能力。</div>
     <div id="feedback" role="alert"></div>
-    <div class="actions"><button id="cancel" class="cancel" type="button">取消</button><button id="save" class="save" type="button">Touch ID 加密保存</button></div>
+    <div class="actions"><button id="cancel" class="cancel" type="button">取消</button><button id="save" class="save" type="button">本機驗證並加密保存</button></div>
   </main>
   <script>
     (() => {

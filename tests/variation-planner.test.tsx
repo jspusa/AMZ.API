@@ -83,7 +83,7 @@ describe("variation planner", () => {
     expect(markup).toContain("解除變體存放區");
     expect(markup).toContain("SKU 或 ASIN 查詢");
     expect(markup).toContain('value="asin"');
-    expect(markup).toContain("Validation Preview、Touch ID、送出與唯讀回查");
+    expect(markup).toContain("Validation Preview、Notebook 鑰匙（Touch ID／Windows Hello）、送出與唯讀回查");
     expect(markup).toContain("FBA child only");
     expect(markup).toContain("不使用 Seller Central 私有接口");
   });

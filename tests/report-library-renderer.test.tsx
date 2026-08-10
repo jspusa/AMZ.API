@@ -236,7 +236,7 @@ describe("review audit renderer contracts", () => {
       />,
     );
     expect(html).toContain("查看進行中的評論健檢");
-    expect(html).toContain("Mac main process 仍會在背景繼續");
+    expect(html).toContain("本機主程序仍會在背景繼續");
     expect(html).toContain("不必回來按按鈕");
     expect(html).toContain("value=\"37\"");
     expect(html).not.toContain("重新掃描全站評論主題");

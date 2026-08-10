@@ -210,7 +210,7 @@ export default function ReviewAuditPanel({
           <strong>{job.message}</strong>
           <progress value={job.progress.percent} max={100}>{job.progress.percent}%</progress>
           <small>{job.capabilityNotice}</small>
-          <small>關閉這個健檢小視窗後，Mac main process 仍會在背景繼續；不必回來按按鈕，重新開啟即可查看最新進度。</small>
+          <small>關閉這個健檢小視窗後，本機主程序仍會在背景繼續；不必回來按按鈕，重新開啟即可查看最新進度。</small>
         </div>
       )}
       <div className="review-audit-actions">

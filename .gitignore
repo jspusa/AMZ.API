@@ -1,6 +1,7 @@
 node_modules/
 out/
 release/
+native/windows-hello/build/
 coverage/
 output/
 .playwright-cli/

@@ -1,0 +1,80 @@
+name: Build unsigned Windows x64 Notebook Key
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "native/windows-hello/**"
+      - "src/main/**"
+      - "src/preload/**"
+      - "src/shared/**"
+      - "build/**"
+      - "scripts/**"
+      - "tests/windows-hello.test.ts"
+      - "tests/windows-packaging.test.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "electron.vite.config.ts"
+      - "tsconfig.json"
+      - ".github/workflows/windows-dev.yml"
+  push:
+    branches: [main]
+    paths:
+      - "native/windows-hello/**"
+      - "src/main/**"
+      - "src/preload/**"
+      - "src/shared/**"
+      - "build/**"
+      - "scripts/**"
+      - "tests/windows-hello.test.ts"
+      - "tests/windows-packaging.test.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "electron.vite.config.ts"
+      - "tsconfig.json"
+      - ".github/workflows/windows-dev.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Validate on Windows runner
+        run: npm run check
+      - name: Package unsigned Windows x64 app
+        run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Verify ASAR addon boundary, artifacts and packaged Bridge smoke
+        shell: powershell
+        run: .\scripts\verify-windows-package.ps1
+      - name: Upload unsigned Windows x64 artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: AMZ.API-Notebook-Key-Windows-x64-${{ github.sha }}
+          path: |
+            release/AMZ.API-Notebook-Key-Windows-x64-Setup.exe
+            release/AMZ.API-Notebook-Key-Windows-x64.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

@@ -539,7 +539,7 @@ export const CURRENT_APP_EXPORTS = Object.freeze([
   {
     id: "CONTENT_AUDIT_XLSX",
     label: "FBA 全站文案健檢 Excel",
-    source: "GET_MERCHANT_LISTINGS_ALL_DATA + Listings Items API + Mac 本機拼字檢查",
+    source: "GET_MERCHANT_LISTINGS_ALL_DATA + Listings Items API + 作業系統本機拼字檢查",
     scope: "只匯出報表可證明的 FBA SKU；疑似錯字、賣點與成分問題。",
     availability: "AVAILABLE_AFTER_AUDIT",
   },

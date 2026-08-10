@@ -132,7 +132,7 @@ export function parseVariationMovePreparation(
   raw: unknown,
   expected: { marketplaceId: string; sellerSku: string; targetParentSku: string },
 ): VariationMovePreparation {
-  if (!isRecord(raw)) throw new Error("Mac App Bridge 回傳的變體準備資料格式不正確。");
+  if (!isRecord(raw)) throw new Error("本機 AMZ.API Bridge 回傳的變體準備資料格式不正確。");
   const dimensionNames = isStrings(raw.dimensionNames) ? raw.dimensionNames : null;
   const fields = Array.isArray(raw.fields) && raw.fields.every(isField)
     ? raw.fields
@@ -158,7 +158,7 @@ export function parseVariationMovePreparation(
     !isStrings(raw.warnings) ||
     typeof raw.notice !== "string"
   ) {
-    throw new Error("Mac App Bridge 回傳的變體準備資料不完整，已停止寫入。");
+    throw new Error("本機 AMZ.API Bridge 回傳的變體準備資料不完整，已停止寫入。");
   }
   return raw as VariationMovePreparation;
 }

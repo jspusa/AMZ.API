@@ -80,7 +80,7 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("疑似錯字");
     expect(markup).toContain("少於五個賣點");
     expect(markup).toContain("缺成分");
-    expect(markup).toContain("Amazon 唯讀＋Mac 本機拼字檢查");
+    expect(markup).toContain("Amazon 唯讀＋本機拼字檢查");
     expect(markup).toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("FBM 不會加入");
     expect(markup).not.toContain("全站內容健檢");
@@ -96,9 +96,9 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(source).toContain("讀取失敗／未完成");
-    expect(source).toContain("本列未計入缺賣點、缺成分或 Mac 拼字統計");
+    expect(source).toContain("本列未計入缺賣點、缺成分或本機拼字統計");
     expect(source).toContain("成分未驗證");
-    expect(source).toContain("大型 catalog 超過上限後的後續單字未做 Mac 字典檢查");
+    expect(source).toContain("大型 catalog 超過上限後的後續單字未做本機字典檢查");
     expect(source).toContain("LOCAL_SPELLCHECK_WORD_LIMIT");
   });
 
@@ -150,7 +150,7 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("本次錯誤原因");
     expect(markup).toContain("賣點不足（賣點）");
     expect(markup).toContain("完整編輯");
-    expect(markup.indexOf("Amazon 唯讀＋Mac 本機拼字檢查")).toBeLessThan(
+    expect(markup.indexOf("Amazon 唯讀＋本機拼字檢查")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
     );
     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(

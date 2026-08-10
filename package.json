@@ -1,7 +1,7 @@
 {
   "name": "amz-api",
-  "version": "0.1.15",
-  "description": "A private, local-first Amazon FBA operations console for macOS.",
+  "version": "0.1.16",
+  "description": "A private, local-first Amazon FBA operations console for macOS and Windows 11 Notebook Key.",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
@@ -23,6 +23,8 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run build",
     "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "build:windows-hello": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-hello.ps1",
+    "dist:win": "npm run build && npm run build:windows-hello && electron-builder --win nsis zip --x64 --publish never",
     "dist:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {
@@ -42,6 +44,7 @@
     "electron": "43.3.0",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
+    "node-gyp": "12.4.0",
     "typescript": "5.9.3",
     "vite": "7.3.6",
     "vitest": "4.0.18"
@@ -50,6 +53,9 @@
     "appId": "com.jspusa.amz-api",
     "productName": "AMZ.API",
     "asar": true,
+    "asarUnpack": [
+      "out/main/native/windows-hello.node"
+    ],
     "npmRebuild": false,
     "files": [
       "out/**/*",
@@ -78,6 +84,28 @@
     "dmg": {
       "sign": false,
       "title": "AMZ.API ${version}"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "AMZ.API-Notebook-Key-Windows-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "AMZ.API Notebook Key",
+      "artifactName": "AMZ.API-Notebook-Key-Windows-${arch}-Setup.${ext}"
     },
     "publish": {
       "provider": "github",

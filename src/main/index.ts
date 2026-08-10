@@ -37,12 +37,18 @@ import {
 } from "./credential-editor";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
-import { requestNativeConfirmation } from "./native-confirmation";
+import { NativeConfirmationGate, requestNativeConfirmation } from "./native-confirmation";
 import {
   DEV_RENDERER_ORIGIN,
   REMOTE_CONSOLE_URL,
   isTrustedRendererDocument,
 } from "./renderer-trust";
+import { desktopUpdatePolicy } from "./update-policy";
+import {
+  createWindowsHelloAdapter,
+  preflightWindowsHelloAddon,
+  requestWindowsHello,
+} from "./windows-hello";
 
 const { autoUpdater } = electronUpdater;
 
@@ -126,6 +132,7 @@ let updateStatus: UpdateStatus = { state: "idle" };
 let amazonWritesInFlight = 0;
 let apiRequestsInFlight = 0;
 let credentialsChangeInFlight = false;
+const nativeConfirmationGate = new NativeConfirmationGate();
 let appInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 
@@ -191,27 +198,59 @@ function assertTrustedFrame(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 async function confirmSensitiveAction(reason: string): Promise<void> {
-  await requestNativeConfirmation(reason, {
-    canPromptTouchID: () =>
-      process.platform === "darwin" && systemPreferences.canPromptTouchID(),
-    promptTouchID: (prompt) => systemPreferences.promptTouchID(prompt),
-    showMessageFallback: async (message) => {
-      const options: Electron.MessageBoxOptions = {
-        type: "warning",
-        title: "確認敏感操作",
-        message,
-        detail:
-          "這份摘要由 Mac 主程序依已驗證的操作內容產生。系統仍會核對舊值、預檢票證與防重送確認碼。",
-        buttons: ["取消", "確認執行"],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      };
-      const result = mainWindow
-        ? await dialog.showMessageBox(mainWindow, options)
-        : await dialog.showMessageBox(options);
-      return result.response === 1;
-    },
+  await nativeConfirmationGate.run(async () => {
+    const confirmationWindow =
+      credentialEditorWindow && !credentialEditorWindow.isDestroyed()
+        ? credentialEditorWindow
+        : advertisingCredentialEditorWindow && !advertisingCredentialEditorWindow.isDestroyed()
+          ? advertisingCredentialEditorWindow
+          : mainWindow;
+    await requestNativeConfirmation(reason, {
+      biometricMethod: () => {
+        if (process.platform === "darwin" && systemPreferences.canPromptTouchID()) {
+          return "touch-id";
+        }
+        if (process.platform === "win32") return "windows-hello";
+        return null;
+      },
+      promptBiometric: async (method, prompt) => {
+        if (method === "touch-id") {
+          await systemPreferences.promptTouchID(prompt);
+          return "verified";
+        }
+        return requestWindowsHello(
+          prompt,
+          createWindowsHelloAdapter({
+            platform: process.platform,
+            appPath: app.getAppPath(),
+            resourcesPath: process.resourcesPath,
+            packaged: app.isPackaged,
+            nativeWindowHandle: () =>
+              confirmationWindow && !confirmationWindow.isDestroyed()
+                ? confirmationWindow.getNativeWindowHandle()
+                : null,
+          }),
+        );
+      },
+      showMessageFallback: async (message) => {
+        const options: Electron.MessageBoxOptions = {
+          type: "warning",
+          title: "確認敏感操作",
+          message,
+          detail:
+            "這份摘要由 Notebook 鑰匙主程序依已驗證的操作內容產生。舊值、預檢票證與防重送確認碼仍會再核對。",
+          buttons: ["取消", "確認執行"],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        };
+        const result =
+          confirmationWindow && !confirmationWindow.isDestroyed()
+            ? await dialog.showMessageBox(confirmationWindow, options)
+            : await dialog.showMessageBox(options);
+        return result.response === 1;
+      },
+    });
   });
 }
 
@@ -224,6 +263,18 @@ function setUpdateStatus(status: UpdateStatus): UpdateStatus {
 }
 
 function configureUpdater(): void {
+  const policy = desktopUpdatePolicy({
+    platform: process.platform,
+    packaged: app.isPackaged,
+  });
+  if (!policy.enabled) {
+    setUpdateStatus({
+      state: "not-available",
+      version: app.getVersion(),
+      message: policy.message ?? undefined,
+    });
+    return;
+  }
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.on("checking-for-update", () =>
@@ -361,8 +412,8 @@ async function createWindow(): Promise<void> {
         const result = await dialog.showMessageBox(createdWindow, {
           type: "warning",
           title: "無法載入 GitHub 控制台",
-          message: "AMZ.API Mac 鑰匙已啟動，但目前無法取得 GitHub 上的最新控制台。",
-          detail: "請確認網路連線後重試。API 憑證仍只保存在這台 Mac，Amazon 沒有收到任何操作。",
+          message: "AMZ.API Notebook 鑰匙已啟動，但目前無法取得 GitHub 上的最新控制台。",
+          detail: "請確認網路連線後重試。API 憑證仍只保存在這台電腦的系統安全儲存區，Amazon 沒有收到任何操作。",
           buttons: ["退出", "重新載入"],
           defaultId: 1,
           cancelId: 0,
@@ -577,7 +628,7 @@ function registerIpc(): void {
     if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
     credentialsChangeInFlight = true;
     try {
-      await confirmSensitiveAction("確認保存 Amazon API 憑證到這台 Mac 的 Keychain");
+      await confirmSensitiveAction("確認保存 Amazon API 憑證到這台電腦的系統安全儲存區");
       const summary = await credentialVault.save(input);
       invalidateSpApiCredentialCaches();
       advertisingApi?.invalidate();
@@ -602,7 +653,7 @@ function registerIpc(): void {
     if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
     credentialsChangeInFlight = true;
     try {
-      await confirmSensitiveAction("確認清除這台 Mac 上的 Amazon API 憑證");
+      await confirmSensitiveAction("確認清除這台電腦上的 Amazon API 憑證");
       apiRouter?.clearPreviews();
       const summary = await credentialVault.clear();
       invalidateSpApiCredentialCaches();
@@ -646,7 +697,7 @@ function registerIpc(): void {
       if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
       credentialsChangeInFlight = true;
       try {
-        await confirmSensitiveAction("確認保存 Amazon Ads API 憑證到這台 Mac 的 Keychain");
+        await confirmSensitiveAction("確認保存 Amazon Ads API 憑證到這台電腦的系統安全儲存區");
         const summary = await advertisingCredentialVault.save(input);
         advertisingApi.invalidate();
         apiRouter?.clearPreviews();
@@ -671,7 +722,7 @@ function registerIpc(): void {
     if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
     credentialsChangeInFlight = true;
     try {
-      await confirmSensitiveAction("確認清除這台 Mac 上獨立的 Amazon Ads API 憑證");
+      await confirmSensitiveAction("確認清除這台電腦上獨立的 Amazon Ads API 憑證");
       const summary = await advertisingCredentialVault.clear();
       advertisingApi.invalidate();
       apiRouter?.clearPreviews();
@@ -724,11 +775,15 @@ function registerIpc(): void {
   );
   ipcMain.handle("fba:update-check", async (event) => {
     assertTrustedFrame(event);
-    if (!app.isPackaged) {
+    const policy = desktopUpdatePolicy({
+      platform: process.platform,
+      packaged: app.isPackaged,
+    });
+    if (!policy.enabled) {
       return setUpdateStatus({
         state: "not-available",
         version: app.getVersion(),
-        message: "開發版不執行自動更新。",
+        message: policy.message ?? undefined,
       });
     }
     const result = await autoUpdater.checkForUpdates();
@@ -739,6 +794,11 @@ function registerIpc(): void {
   });
   ipcMain.handle("fba:update-install", async (event) => {
     assertTrustedFrame(event);
+    const policy = desktopUpdatePolicy({
+      platform: process.platform,
+      packaged: app.isPackaged,
+    });
+    if (!policy.enabled) throw new Error("APP_UPDATE_DISABLED_FOR_PLATFORM");
     if (updateStatus.state !== "downloaded") throw new Error("UPDATE_NOT_READY");
     if (apiRequestsInFlight > 0 || credentialsChangeInFlight) {
       throw new Error("Amazon／本機安全操作仍在處理；完成後才能安裝更新。");
@@ -783,7 +843,7 @@ async function initializeVaultWithRecovery(vault: CredentialVault): Promise<void
       const result = await dialog.showMessageBox({
         type: "error",
         title: "無法開啟本機憑證",
-        message: "macOS Keychain 目前鎖定，或本機憑證檔已損壞。",
+        message: "本機系統安全儲存區目前無法解密，或憑證檔已損壞。",
         detail: "你可以先重試；只有確定不再需要舊憑證時，才清除並重新輸入。",
         buttons: ["退出 App", "重試", "清除本機憑證"],
         defaultId: 1,
@@ -795,7 +855,7 @@ async function initializeVaultWithRecovery(vault: CredentialVault): Promise<void
       const confirmation = await dialog.showMessageBox({
         type: "warning",
         title: "確認清除本機憑證",
-        message: "這會刪除這台 Mac 保存的 Amazon／R2 憑證。",
+        message: "這會刪除這台電腦保存的 Amazon／R2 憑證。",
         detail: "GitHub 程式與 Amazon 資料不會刪除；之後需要重新輸入 API 憑證。",
         buttons: ["取消", "確認清除"],
         defaultId: 0,
@@ -845,7 +905,7 @@ async function initializeAdvertisingVaultWithRecovery(
       const result = await dialog.showMessageBox({
         type: "error",
         title: "無法開啟 Amazon Ads 憑證",
-        message: "macOS Keychain 目前鎖定，或獨立 Ads 憑證檔已損壞。",
+        message: "本機系統安全儲存區目前無法解密，或獨立 Ads 憑證檔已損壞。",
         detail: "清除 Ads 憑證不會影響現有 SP-API 憑證或本機操作資料。",
         buttons: ["退出 App", "重試", "只清除 Ads 憑證"],
         defaultId: 1,
@@ -876,6 +936,15 @@ if (!hasSingleInstanceLock) {
     if (process.platform === "darwin" || app.isPackaged) {
       app.setAsDefaultProtocolClient("amz-api");
     }
+    if (process.platform === "win32" && app.isPackaged) {
+      await preflightWindowsHelloAddon({
+        platform: process.platform,
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath,
+        packaged: app.isPackaged,
+      });
+      console.info("AMZ_API_WINDOWS_HELLO_ADDON_READY");
+    }
     const userData = app.getPath("userData");
     credentialVault = new CredentialVault(resolve(userData, "credentials.enc"));
     advertisingCredentialVault = new AdvertisingCredentialVault(
@@ -901,7 +970,6 @@ if (!hasSingleInstanceLock) {
     });
     await registerAppProtocol();
     registerIpc();
-    configureUpdater();
     powerMonitor.on("lock-screen", () => {
       closeCredentialEditor();
       closeAdvertisingCredentialEditor();
@@ -915,6 +983,7 @@ if (!hasSingleInstanceLock) {
       advertisingApi?.invalidate();
     });
     await createWindow();
+    configureUpdater();
     appInitialized = true;
   }).catch(async () => {
     appInitialized = false;

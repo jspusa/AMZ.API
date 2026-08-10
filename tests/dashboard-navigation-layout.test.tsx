@@ -79,7 +79,7 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain('class="command-strip"');
     expect(markup).not.toContain("進階功能與系統說明");
     expect(markup).not.toContain("Amazon 已連線");
-    expect(markup).toContain("Mac 安全連線");
+    expect(markup).toContain("本機安全連線");
 
     const auditGrid = markup.slice(
       markup.indexOf('class="health-audit-home-grid"'),

@@ -1,43 +1,129 @@
 import { useState } from "react";
 import BrandGlyph from "./components/brand-glyph";
 
-export default function WebGate() {
+export type NotebookKeyDownload = Readonly<{
+  platform: "macos" | "windows";
+  label: string;
+  detail: string;
+  version: string | null;
+  href: string | null;
+  warning?: string;
+}>;
+
+export const DEFAULT_NOTEBOOK_KEY_DOWNLOADS: readonly NotebookKeyDownload[] = [
+  {
+    platform: "windows",
+    label: "Windows Notebook 鑰匙",
+    detail: "Windows 11 x64",
+    version: "0.1.16",
+    href: "https://github.com/jspusa/AMZ.API/releases/download/notebook-key-windows/AMZ.API-Notebook-Key-Windows-x64-Setup.exe",
+    warning: "內部未簽章版可能顯示 Microsoft SmartScreen；請只用 jspusa/AMZ.API 的 notebook-key-windows 固定 Release，並核對 SHA-256。",
+  },
+] as const;
+
+export function safeNotebookDownloadHref(href: string | null): string | null {
+  if (!href) return null;
+  try {
+    const url = new URL(href);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+export default function WebGate({
+  downloads = DEFAULT_NOTEBOOK_KEY_DOWNLOADS,
+}: {
+  downloads?: readonly NotebookKeyDownload[];
+}) {
   const [launching, setLaunching] = useState(false);
 
   return (
     <main className="web-gate">
-      <nav className="web-gate-nav">
-        <div className="web-gate-brand"><BrandGlyph className="web-gate-brand-mark" /><div><strong>AMZ.API</strong><small>GitHub Control Console</small></div></div>
-        <div className="web-gate-state"><i />Mac 鑰匙未連線</div>
+      <nav className="web-gate-nav" aria-label="AMZ.API 安全入口">
+        <div className="web-gate-brand">
+          <BrandGlyph className="web-gate-brand-mark" />
+          <div><strong>AMZ.API</strong><small>GitHub Control Console</small></div>
+        </div>
+        <div className="web-gate-state" role="status"><i />Notebook 鑰匙未連線</div>
       </nav>
 
       <section className="web-gate-card">
-        <div className="web-gate-icon"><span>⌁</span><i /></div>
-        <p className="web-gate-eyebrow">LOCAL KEY REQUIRED</p>
-        <h1>控制台已就緒。<br />請用 Mac 鑰匙安全開啟。</h1>
-        <p className="web-gate-copy">
-          這套介面由 GitHub 自動保持最新；Amazon API 憑證只存在你的 Mac。
-          瀏覽器本身不會取得金鑰，也不能執行任何 Amazon 操作。
-        </p>
-        <div className="web-gate-actions">
-          <a
-            className="web-gate-primary"
-            href="amz-api://launch"
-            onClick={() => setLaunching(true)}
-          >
-            {launching ? "正在開啟 AMZ.API…" : "開啟 Mac 鑰匙"}<span>↗</span>
-          </a>
+        <div className="web-gate-hero">
+          <div className="web-gate-icon"><span>⌁</span><i /></div>
+          <p className="web-gate-eyebrow">LOCAL KEY REQUIRED</p>
+          <h1 aria-label="控制台已就緒。請用 Notebook 鑰匙安全開啟。"><span>控制台已就緒。</span><span className="web-gate-key-line"><i>請用 <b>Notebook&nbsp;鑰匙</b></i>{" "}<i>安全開啟。</i></span></h1>
+          <div className="web-gate-copy" aria-label="GitHub 更新與本機憑證邊界">
+            <article>
+              <span>GITHUB UI</span>
+              <strong>介面自動保持最新</strong>
+              <p>GitHub Pages 只提供版面與流程，不會取得 Amazon 憑證。</p>
+            </article>
+            <article>
+              <span>LOCAL CREDENTIALS</span>
+              <strong>憑證只留在本機</strong>
+              <p>瀏覽器無權讀取本機憑證；Notebook 鑰匙連線後才會開啟控制台。</p>
+            </article>
+          </div>
+          <div className="web-gate-actions">
+            <a
+              className="web-gate-primary"
+              href="amz-api://launch"
+              onClick={() => setLaunching(true)}
+            >
+              {launching ? "正在開啟 AMZ.API…" : "開啟 Notebook 鑰匙"}<span>↗</span>
+            </a>
+          </div>
+          {launching && <p className="web-gate-hint">控制台會在 Notebook 鑰匙視窗中開啟；這個瀏覽器分頁維持鎖定是正常的。</p>}
         </div>
-        {launching && <p className="web-gate-hint">控制台會在 AMZ.API App 視窗中開啟；這個瀏覽器分頁維持鎖定是正常的。</p>}
+
+        <section className="web-gate-install" aria-labelledby="notebook-key-download-title">
+          <div className="web-gate-install-heading">
+            <div>
+              <p>NOTEBOOK KEY DOWNLOAD</p>
+              <h2 id="notebook-key-download-title">在這台電腦安全開啟</h2>
+            </div>
+            <small>一般瀏覽器永遠不會取得 Bridge 或 Amazon API 權限。</small>
+          </div>
+          <div className="web-gate-platform-grid">
+            <article className="web-gate-platform is-macos">
+              <span aria-hidden="true">⌘</span>
+              <div>
+                <strong>Mac Notebook 鑰匙</strong>
+                <small>已安裝者請使用上方「開啟 Notebook 鑰匙」</small>
+              </div>
+              <b>使用上方按鈕</b>
+            </article>
+            {downloads.map((download) => {
+              const href = safeNotebookDownloadHref(download.href);
+              const actionLabel = `安全下載 ${download.label}`;
+              return (
+                <article className={`web-gate-platform is-${download.platform}`} key={`${download.platform}-${download.label}`}>
+                  <span aria-hidden="true">▣</span>
+                  <div>
+                    <strong>{download.label}</strong>
+                    <small>{download.detail}{download.version ? ` · v${download.version}` : " · 最新發布版"}</small>
+                    {download.warning && <p>{download.warning}</p>}
+                  </div>
+                  {href ? (
+                    <a href={href} target="_blank" rel="noopener noreferrer">{actionLabel}<i aria-hidden="true">↓</i></a>
+                  ) : (
+                    <span className="web-gate-download-pending" aria-disabled="true">下載準備中</span>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </section>
       </section>
 
       <section className="web-gate-boundary" aria-label="安全架構">
         <article className="done"><span>01</span><div><strong>GitHub 控制台</strong><small>版面與流程自動更新</small></div><i>✓</i></article>
-        <article><span>02</span><div><strong>Mac Keychain</strong><small>API Secret 不離開電腦</small></div><i>鎖定</i></article>
-        <article><span>03</span><div><strong>Amazon SP-API</strong><small>開啟 Mac App 後才連線</small></div><i>等待</i></article>
+        <article><span>02</span><div><strong>Notebook 鑰匙</strong><small>本機憑證不進入瀏覽器</small></div><i>鎖定</i></article>
+        <article><span>03</span><div><strong>Amazon SP-API</strong><small>Notebook 鑰匙連線後才可使用</small></div><i>等待</i></article>
       </section>
 
-      <footer className="web-gate-footer">AMZ.API · FBA only · GitHub UI / Local API Bridge</footer>
+      <footer className="web-gate-footer">AMZ.API · FBA only · GitHub UI / Notebook Key Bridge</footer>
     </main>
   );
 }

@@ -6940,16 +6940,17 @@ body:has(.commerce-os .drawer-backdrop) {
 .web-gate-state i { width: 7px; height: 7px; border-radius: 50%; background: #e0a515; }
 
 .web-gate-card {
-  width: min(760px, 100%);
-  margin: clamp(56px, 9vh, 110px) auto 34px;
-  padding: clamp(38px, 6vw, 72px);
+  box-sizing: border-box;
+  width: min(900px, 100%);
+  margin: clamp(32px, 6vh, 72px) auto 34px;
+  padding: clamp(32px, 5vw, 58px);
   border: 1px solid rgba(221, 225, 232, .9);
   border-radius: 30px;
   background: rgba(255, 255, 255, .92);
-  text-align: center;
   box-shadow: 0 30px 90px rgba(22, 31, 48, .10);
   backdrop-filter: blur(18px);
 }
+.web-gate-hero { text-align: center; }
 .web-gate-icon {
   position: relative;
   display: grid;
@@ -6974,8 +6975,44 @@ body:has(.commerce-os .drawer-backdrop) {
   background: #e0a515;
 }
 .web-gate-eyebrow { margin: 0 0 13px; color: #8791a1; font-size: 10px; font-weight: 850; letter-spacing: .16em; }
-.web-gate-card h1 { margin: 0; color: #111827; font-size: clamp(32px, 5vw, 50px); line-height: 1.08; letter-spacing: -.045em; }
-.web-gate-copy { max-width: 570px; margin: 22px auto 0; color: #687386; font-size: 14px; line-height: 1.75; }
+.web-gate-card h1 {
+  max-width: 720px;
+  margin: 0 auto;
+  color: #111827;
+  font-size: clamp(30px, 3.3vw, 38px);
+  line-height: 1.12;
+  letter-spacing: -.04em;
+  text-wrap: balance;
+}
+.web-gate-card h1 > span { display: block; }
+.web-gate-card h1 b { font: inherit; white-space: nowrap; }
+.web-gate-key-line i { font-style: normal; }
+.web-gate-key-line { white-space: nowrap; }
+.web-gate-copy {
+  display: grid;
+  max-width: 700px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 26px auto 0;
+  text-align: left;
+}
+.web-gate-copy article {
+  min-width: 0;
+  padding: 15px 16px;
+  border: 1px solid #e3e7ed;
+  border-radius: 15px;
+  background: #f8f9fb;
+}
+.web-gate-copy article > span,
+.web-gate-install-heading p {
+  margin: 0;
+  color: #8b95a5;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: .13em;
+}
+.web-gate-copy strong { display: block; margin-top: 6px; color: #2f3949; font-size: 12px; }
+.web-gate-copy p { margin: 5px 0 0; color: #687386; font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
 .web-gate-actions { display: flex; justify-content: center; gap: 10px; margin-top: 30px; }
 .web-gate-actions a {
   display: inline-flex;
@@ -6995,6 +7032,85 @@ body:has(.commerce-os .drawer-backdrop) {
 .web-gate-primary span { color: #ffb13a; }
 .web-gate-secondary { border: 1px solid #dfe3e9; background: #fff; color: #445064; }
 .web-gate-hint { margin: 18px 0 -12px; color: #7c8797; font-size: 11px; }
+
+.web-gate-install {
+  margin-top: 34px;
+  padding-top: 24px;
+  border-top: 1px solid #e5e8ed;
+}
+.web-gate-install-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, .85fr);
+  align-items: end;
+  gap: 12px 24px;
+}
+.web-gate-install-heading h2 { margin: 5px 0 0; color: #202938; font-size: 18px; letter-spacing: -.025em; }
+.web-gate-install-heading > small { color: #7b8594; font-size: 9px; line-height: 1.55; text-align: right; overflow-wrap: anywhere; }
+.web-gate-platform-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; margin-top: 15px; }
+.web-gate-platform {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid #dfe4ea;
+  border-radius: 16px;
+  background: #fff;
+}
+.web-gate-platform > span:first-child {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 12px;
+  background: #eff2f6;
+  color: #445168;
+  font-size: 15px;
+  font-weight: 850;
+}
+.web-gate-platform > div { min-width: 0; }
+.web-gate-platform strong,
+.web-gate-platform small { display: block; }
+.web-gate-platform strong { color: #263145; font-size: 11px; }
+.web-gate-platform small { margin-top: 3px; color: #778294; font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
+.web-gate-platform p { margin: 6px 0 0; color: #98631b; font-size: 8px; line-height: 1.5; overflow-wrap: anywhere; }
+.web-gate-platform > b,
+.web-gate-download-pending {
+  grid-column: 1 / -1;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: #edf1f5;
+  color: #667286;
+  font-size: 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+.web-gate-platform > a {
+  display: inline-flex;
+  grid-column: 1 / -1;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: 10px;
+  background: #172238;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1.3;
+  text-align: center;
+  text-decoration: none;
+}
+.web-gate-platform > a i { color: #ffb13a; font-size: 11px; font-style: normal; }
+.web-gate-platform > a:hover { background: #22304a; }
+.web-gate-platform > a:focus-visible,
+.web-gate-actions a:focus-visible { outline: 3px solid rgba(0, 113, 227, .24); outline-offset: 2px; }
 
 .web-gate-boundary {
   display: grid;
@@ -7019,14 +7135,34 @@ body:has(.commerce-os .drawer-backdrop) {
 .web-gate-boundary small { color: #7c8797; font-size: 9px; }
 .web-gate-boundary article > i { color: #b07c00; font-size: 9px; font-style: normal; font-weight: 800; }
 .web-gate-boundary article.done > i { color: #16835b; }
-.web-gate-footer { margin-top: 28px; color: #9aa3b0; text-align: center; font-size: 9px; letter-spacing: .08em; }
+.web-gate-footer { display: block; width: auto; margin-top: 28px; padding: 0; color: #9aa3b0; text-align: center; font-size: 9px; letter-spacing: .08em; }
 
 @media (max-width: 720px) {
   .web-gate { padding: 0 16px 24px; }
-  .web-gate-state { padding: 8px; font-size: 0; }
-  .web-gate-card { margin-top: 34px; padding: 36px 22px; border-radius: 24px; }
+  .web-gate-nav { height: 72px; }
+  .web-gate-state { gap: 6px; padding: 7px 8px; font-size: 9px; }
+  .web-gate-card { margin-top: 18px; padding: 32px 22px; border-radius: 24px; }
+  .web-gate-card h1 { font-size: clamp(26px, 7vw, 28px); line-height: 1.14; text-wrap: wrap; }
+  .web-gate-key-line { white-space: normal; }
+  .web-gate-key-line i { display: block; }
+  .web-gate-copy,
+  .web-gate-install-heading,
+  .web-gate-platform-grid { grid-template-columns: minmax(0, 1fr); }
+  .web-gate-install-heading > small { text-align: left; }
   .web-gate-actions { flex-direction: column; }
   .web-gate-boundary { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 430px) {
+  .web-gate { padding-inline: 10px; }
+  .web-gate-brand { gap: 8px; }
+  .web-gate-brand > .web-gate-brand-mark { width: 36px; height: 36px; }
+  .web-gate-brand small { display: none; }
+  .web-gate-card { padding: 27px 16px; }
+  .web-gate-icon { width: 62px; height: 62px; margin-bottom: 20px; }
+  .web-gate-copy article { padding: 13px; }
+  .web-gate-platform { grid-template-columns: 36px minmax(0, 1fr); }
+  .web-gate-platform > span:first-child { width: 36px; height: 36px; }
 }
 
 .mac-bridge-button {
@@ -7141,6 +7277,15 @@ body:has(.commerce-os .drawer-backdrop) {
 .vault-status-grid small { margin-top: 3px; color: #a0a6af; font-size: 7px; }
 .vault-status-grid article.ready strong { color: #20784c; }
 .vault-status-grid article.attention strong { color: #ad6810; }
+.vault-status-grid.compact span,
+.vault-status-grid.compact strong,
+.vault-status-grid.compact small {
+  overflow: visible;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
 
 .connection-explainer,
 .connection-feedback {
@@ -7318,12 +7463,21 @@ body:has(.commerce-os .drawer-backdrop) {
 .connection-panel > footer button:disabled { opacity: .5; cursor: default; }
 .connection-actions .secondary { border: 1px solid #dce0e6; background: #fff; color: #525d6e; }
 .connection-actions .primary { border: 1px solid #142036; background: #142036; color: #fff; box-shadow: 0 9px 18px rgba(20,32,54,.14); }
-.connection-panel > footer { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #e1e4e8; }
-.connection-panel > footer > div { min-width: 0; flex: 1; }
+.connection-panel > footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 16px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e1e4e8;
+}
+.connection-panel-release { min-width: 0; }
 .connection-panel > footer strong,
 .connection-panel > footer small { display: block; }
 .connection-panel > footer strong { font-size: 9px; }
-.connection-panel > footer small { margin-top: 2px; color: #9098a4; font-size: 7px; }
+.connection-panel > footer small { margin-top: 4px; color: #7f8998; font-size: 8px; line-height: 1.55; overflow-wrap: anywhere; }
+.connection-panel-footer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .connection-panel > footer button { min-height: 30px; border: 1px solid #dbe0e6; background: #fff; color: #596475; }
 .connection-panel > footer button.danger-link { border-color: transparent; background: transparent; color: #b04450; }
 
@@ -7338,7 +7492,16 @@ body:has(.commerce-os .drawer-backdrop) {
   .connection-sop-actions { grid-template-columns: 1fr; }
   .mac-bridge-button { right: 14px; bottom: calc(14px + env(safe-area-inset-bottom)); min-width: auto; }
   .mac-bridge-button > div { display: none; }
-  .connection-panel > footer { align-items: stretch; flex-wrap: wrap; }
+  .connection-panel > footer { grid-template-columns: minmax(0, 1fr); }
+  .connection-panel-footer-actions { justify-content: flex-start; }
+}
+
+@media (max-width: 480px) {
+  .vault-status-grid.compact { grid-template-columns: minmax(0, 1fr); }
+  .vault-status-grid.compact article { border-right: 0; border-bottom: 1px solid #eceef1; }
+  .vault-status-grid.compact article:last-child { border-bottom: 0; }
+  .connection-panel-footer-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .connection-panel > footer button { width: 100%; white-space: normal; }
 }
 
 /* Variation family planner — two explicit, non-atomic safe-write stages. */

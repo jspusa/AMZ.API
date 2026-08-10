@@ -14,7 +14,7 @@ export const CREDENTIAL_EDITOR_HTML = String.raw`<!doctype html>
 </head>
 <body>
   <main>
-    <header><div class="tag">LOCAL MAC SHEET</div><h1>SP-API／R2／Skill 本機安全輸入</h1><p>欄位只存在此本機記憶體視窗，並直接送往 Mac main process 與 Keychain；不經 GitHub Pages。已保存內容不會回填，留白代表沿用既有值。</p></header>
+    <header><div class="tag">LOCAL NOTEBOOK SHEET</div><h1>SP-API／R2／Skill 本機安全輸入</h1><p>欄位只存在此本機記憶體視窗，並直接送往 Notebook 鑰匙 main process 與系統安全儲存區；不經 GitHub Pages。已保存內容不會回填，留白代表沿用既有值。</p></header>
     <section class="section"><h2>SP-API App 身分</h2><small>LWA Client ID 與 Secret 必須成對；若已保存可全部留白。</small><div class="grid">
       <label>LWA Client ID<input id="lwaClientId" type="password" autocomplete="new-password" spellcheck="false"></label>
       <label>LWA Client Secret<input id="lwaClientSecret" type="password" autocomplete="new-password" spellcheck="false"></label>
@@ -39,9 +39,9 @@ export const CREDENTIAL_EDITOR_HTML = String.raw`<!doctype html>
       <label class="full">公開圖片 HTTPS 網址<input id="r2PublicBaseUrl" type="url" autocomplete="off" spellcheck="false"></label>
     </div></section>
     <section class="section"><h2>補貨 Skill 接點（選配）</h2><div class="grid"><label class="full">HTTPS Skill URL<input id="replenishmentSkillUrl" type="url" autocomplete="off" spellcheck="false"></label></div></section>
-    <div class="note">保存會觸發 Touch ID／Mac 本機確認。取消、成功或視窗關閉時會立即清空所有欄位；任何 Secret 都不會回傳或顯示。</div>
+    <div class="note">保存會觸發 Touch ID 或 Windows Hello（指紋／臉部／PIN 由系統決定）。取消、成功或視窗關閉時會立即清空所有欄位；任何 Secret 都不會回傳或顯示。</div>
     <div id="feedback" role="alert"></div>
-    <div class="actions"><button id="cancel" class="cancel" type="button">取消</button><button id="save" class="save" type="button">Touch ID 加密保存</button></div>
+    <div class="actions"><button id="cancel" class="cancel" type="button">取消</button><button id="save" class="save" type="button">本機驗證並加密保存</button></div>
   </main>
   <script>
     (() => {

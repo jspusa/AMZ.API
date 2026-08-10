@@ -41,10 +41,10 @@ function confirmationElements(input: {
 }
 
 describe("listing content final confirmation", () => {
-  it("shows one Touch ID action without asking the user to retype the SKU", () => {
+  it("shows one Notebook Key action without asking the user to retype the SKU", () => {
     const markup = renderConfirmation();
 
-    expect(markup).toContain(`使用 Touch ID 確認更新 ${SELLER_SKU}`);
+    expect(markup).toContain(`使用 Notebook 鑰匙確認更新 ${SELLER_SKU}`);
     expect(markup).not.toContain("重新輸入完整 SKU");
     expect(markup).not.toContain("<input");
     expect(markup).not.toContain("disabled");

@@ -716,7 +716,7 @@ export default function ImageWorkspaceDrawer({
           </section>
         )}
 
-        <div className="drawer-api-footnote">Listings Items v2021-08-01 · Product Type Definitions · Mac validation · Optional R2 · FBA only</div>
+        <div className="drawer-api-footnote">Listings Items v2021-08-01 · Product Type Definitions · Local validation · Optional R2 · FBA only</div>
       </aside>
     </div>
   );

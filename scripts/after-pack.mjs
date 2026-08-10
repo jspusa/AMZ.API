@@ -2,16 +2,18 @@ import { join } from "node:path";
 import { flipFuses, FuseV1Options, FuseVersion } from "@electron/fuses";
 
 export default async function afterPack(context) {
-  const executable =
-    context.electronPlatformName === "darwin"
-      ? join(
-          context.appOutDir,
-          `${context.packager.appInfo.productFilename}.app`,
-          "Contents",
-          "MacOS",
-          context.packager.appInfo.productFilename,
-        )
-      : join(context.appOutDir, context.packager.appInfo.productFilename);
+  const productFilename = context.packager.appInfo.productFilename;
+  const executable = context.electronPlatformName === "darwin"
+    ? join(
+        context.appOutDir,
+        `${productFilename}.app`,
+        "Contents",
+        "MacOS",
+        productFilename,
+      )
+    : context.electronPlatformName === "win32"
+      ? join(context.appOutDir, `${productFilename}.exe`)
+      : join(context.appOutDir, productFilename);
 
   await flipFuses(executable, {
     version: FuseVersion.V1,

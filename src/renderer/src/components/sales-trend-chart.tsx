@@ -87,7 +87,7 @@ export function salesTrendFailureMessage(
   problem: { code?: string; message?: string },
 ): string {
   if (status === 404 && problem.code === "NOT_FOUND") {
-    return "這台 Mac App 尚未支援完整 FBA 銷售折線圖，請安裝新版後再同步。";
+    return "這台電腦上的 AMZ.API 尚未支援完整 FBA 銷售折線圖，請安裝新版後再同步。";
   }
   return problem.message || "目前無法載入 FBA 銷售趨勢。";
 }
@@ -817,7 +817,7 @@ export default function SalesTrendChart({
             可直接輸入 1–365 天，系統會換算日期；也可手動選開始日與結束日，並保留去年同期比較。
             {latestAvailableDate
               ? `目前資料截至 ${latestAvailableDate}。`
-              : "Amazon 仍會在 Mac 端再次驗證可查日期。"}
+              : "Amazon 仍會在本機端再次驗證可查日期。"}
             {earliestStartDate
               ? ` 為了同時查詢去年同期，開始日最早為 ${earliestStartDate}。`
               : ""}

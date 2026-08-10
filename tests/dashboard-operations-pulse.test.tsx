@@ -471,7 +471,7 @@ describe("dashboard operations pulse data flow", () => {
     expect(configured).toBe("configured-live");
     expect(dashboardConnectionBadgeCopy(configured, false)).toEqual({
       title: "Live 憑證已設定",
-      detail: "尚未驗證 · Mac 安全連線",
+      detail: "尚未驗證 · 本機安全連線",
       ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
       className: "configured",
     });
@@ -514,7 +514,7 @@ describe("dashboard operations pulse data flow", () => {
     );
 
     expect(markup).toContain("Amazon 已連線");
-    expect(markup).toContain("Live · Mac 安全連線");
+    expect(markup).toContain("Live · 本機安全連線");
     expect(markup).toContain("Sales API 重新同步失敗");
     expect(markup).toContain('mode-badge workspace-connection-status live');
     expect(markup).not.toContain('mode-badge demo');

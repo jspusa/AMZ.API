@@ -51,7 +51,7 @@ export default function App() {
         )
       ) {
         throw new Error(
-          "這台 Mac App Bridge 尚未支援新版銷售趨勢，請安裝新版後再同步。",
+          "這台電腦上的 AMZ.API Bridge 尚未支援新版銷售趨勢，請安裝新版後再同步。",
         );
       }
       if (abortRef.current === controller) setInitialSalesTrend(payload);
@@ -91,7 +91,7 @@ export default function App() {
       <main className="desktop-boot" aria-live="polite">
         <BrandGlyph className="desktop-boot-mark" />
         <strong>AMZ.API</strong>
-        <small>正在啟動 Mac 安全橋接…</small>
+        <small>正在啟動本機安全橋接…</small>
       </main>
     );
   }

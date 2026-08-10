@@ -1003,7 +1003,7 @@ export default function SkuOperationsDrawer({
           </button>
         </div>
 
-        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p><span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Touch ID。</p><span className="automation-badge manual">需人工</span><p>疑似錯字、標題、五大賣點與成分內容由你決定。</p></div>
+        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p><span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Notebook 鑰匙（Touch ID／Windows Hello）。</p><span className="automation-badge manual">需人工</span><p>疑似錯字、標題、五大賣點與成分內容由你決定。</p></div>
 
         <div className="sku-ops-tabs" role="tablist" aria-label="商品內容工具">
           <button
@@ -1328,7 +1328,7 @@ export default function SkuOperationsDrawer({
                   onCommit={commitContent}
                 />
                 <p className="submission-note">
-                  送出前 Mac App 會重新讀取舊內容並再次預檢；若內容已被其他系統修改，這次更新會停止。
+                  送出前本機 App 會重新讀取舊內容並再次預檢；若內容已被其他系統修改，這次更新會停止。
                 </p>
               </section>
             )}
@@ -1480,7 +1480,7 @@ export default function SkuOperationsDrawer({
         )}
 
         <div className="privacy-footnote price-footnote">
-          這個工具只處理 FBA 商品內容。所有憑證留在這台 Mac；寫入前會先跑 Amazon 預檢、舊值衝突檢查與 Touch ID／系統確認。
+          這個工具只處理 FBA 商品內容。所有憑證留在這台電腦的系統安全儲存區；寫入前會先跑 Amazon 預檢、舊值衝突檢查與 Notebook 鑰匙（Touch ID／Windows Hello）確認。
         </div>
       </aside>
     </div>

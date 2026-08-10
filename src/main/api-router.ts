@@ -3583,7 +3583,7 @@ export class ApiRouter {
           ? `正在依 Amazon 官方 1 request/second 限制讀取已驗證的非 parent ASIN 主題（${completed} / ${total}）。`
           : "Amazon 正在準備目前 FBA 商品清單。",
       capabilityNotice:
-        "資料每週更新且僅英文；前／後五名使用 Amazon 主題影響值。它不是商品總星等或 1–5 星制；負數是此負向主題對星等下降方向的影響值，不是商品負星等，也不會轉成 0 或絕對值。關閉健檢小視窗後，Mac main process 仍會在背景繼續。",
+        "資料每週更新且僅英文；前／後五名使用 Amazon 主題影響值。它不是商品總星等或 1–5 星制；負數是此負向主題對星等下降方向的影響值，不是商品負星等，也不會轉成 0 或絕對值。關閉健檢小視窗後，本機主程序仍會在背景繼續。",
     }, ready ? 200 : 202);
   }
 
@@ -3983,7 +3983,7 @@ export class ApiRouter {
             ? "attention"
             : "ready",
       },
-      notice: "這是只讀整合掃描；只有完成預檢、確認與 macOS 本機授權後，才可能寫入 Amazon。",
+      notice: "這是只讀整合掃描；只有完成預檢、確認與 Notebook 鑰匙（Touch ID／Windows Hello）本機授權後，才可能寫入 Amazon。",
     });
   }
 
@@ -4317,7 +4317,7 @@ export class ApiRouter {
       readyForAmazon: Boolean(amazonUrl),
       notice: amazonUrl
         ? "圖片已上傳到你自己的 R2，送出後仍需等待 Amazon 下載與驗證。"
-        : "圖片已在 Mac 本機完成格式與像素檢查；設定自己的 R2 公開網域後即可一鍵送交 Amazon。",
+        : "圖片已在這台電腦完成格式與像素檢查；設定自己的 R2 公開網域後即可一鍵送交 Amazon。",
     });
   }
 
@@ -4673,18 +4673,18 @@ export class ApiRouter {
         live ? "ready" : "attention",
         "automatic",
         live
-          ? `${marketplace.label}已設定 macOS Keychain 中的 ${region.toUpperCase()} 憑證；本項只核對本機設定，未代表即時驗證 Amazon 連線。`
+          ? `${marketplace.label}已設定本機系統安全儲存區中的 ${region.toUpperCase()} 憑證；本項只核對本機設定，未代表即時驗證 Amazon 連線。`
           : "尚未輸入此區域的 LWA、Refresh Token 與 Seller ID，目前使用展示資料。",
-        live ? null : "開啟右上角 Mac 安全連線，輸入 SP-API 憑證",
+        live ? null : "開啟右上角本機安全連線，輸入 SP-API 憑證",
       ),
       check(
         "keychain",
-        "macOS Keychain 加密",
+        "本機系統安全儲存區加密",
         summary.encryptionAvailable ? "ready" : "attention",
         "automatic",
         summary.encryptionAvailable
-          ? "Refresh Token 與 Client Secret 只以加密密文保存於這台 Mac。"
-          : "Keychain 不可用；系統已拒絕保存任何 API 憑證。",
+          ? "Refresh Token 與 Client Secret 只以加密密文保存於這台電腦。"
+          : "本機系統安全儲存區不可用；系統已拒絕保存任何 API 憑證。",
       ),
       check(
         "operation-ledger",
@@ -4698,7 +4698,7 @@ export class ApiRouter {
         "中央 SKU 商品主檔",
         "ready",
         "automatic",
-        "箱入數、交期、AWD 緩衝與效期設定保存在這台 Mac，所有補貨工具共用。",
+        "箱入數、交期、AWD 緩衝與效期設定保存在這台電腦，所有補貨工具共用。",
       ),
       check(
         "image-storage",
@@ -4706,9 +4706,9 @@ export class ApiRouter {
         summary.imageStorageConfigured ? "ready" : "attention",
         "one_click",
         summary.imageStorageConfigured
-          ? "圖片會在 Mac 驗證後上傳到你自己的 R2 公開網域，再交由 Amazon 讀取。"
+          ? "圖片會在本機驗證後上傳到你自己的 R2 公開網域，再交由 Amazon 讀取。"
           : "本機拖拉與格式檢查可用；正式送出圖片前需設定自己的 R2 公開 HTTPS 網域。",
-        summary.imageStorageConfigured ? null : "Mac 安全連線 → 圖片空間 → 加入 R2 設定",
+        summary.imageStorageConfigured ? null : "本機安全連線 → 圖片空間 → 加入 R2 設定",
       ),
       check(
         "replenishment-engine",
@@ -4745,15 +4745,15 @@ export class ApiRouter {
       },
       checks,
       safeguards: [
-        "Mac App 內部 IPC 白名單",
-        "macOS Keychain 加密",
+        "本機 App 內部 IPC 白名單",
+        "本機系統安全儲存區加密",
         "FBA-only 固定條件",
         "精確 Seller SKU 驗證",
         "Amazon Validation Preview",
         "舊值衝突檢查",
         "本機持久 Idempotency 防重送",
         "大幅調價二次確認",
-        "Touch ID／系統確認",
+        "Notebook 鑰匙（Touch ID／Windows Hello）系統確認",
         "送出後只讀回查，不自動重送",
       ],
       notice: "自我檢查只讀取本機設定狀態，未代表即時驗證 Amazon 連線；不會修改 Amazon、廣告或實體入庫。",
@@ -4978,7 +4978,7 @@ export class ApiRouter {
       context,
       status: "partial",
       fetchedAt: audit.fetchedAt,
-      notice: `${scopeNotice} Mac 字典錯字結果需個別文案健檢補充`,
+      notice: `${scopeNotice} 本機字典錯字結果需個別文案健檢補充`,
       payload: rows,
     });
   }

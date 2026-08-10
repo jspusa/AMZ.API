@@ -805,7 +805,7 @@ export default function PriceDrawer({
                   ? `模擬把 ${listing.sellerSku} 改為 ${formatMoney(validation.requestedPrice)}`
                   : `確認把 ${marketplace.label.split(" · ")[0]} · ${listing.sellerSku} 改為 ${formatMoney(validation.requestedPrice)}`}
             </button>
-            <p className="submission-note">送出前 Mac App 會重新查價並再次預檢；若價格已變動，這次更新會停止。</p>
+            <p className="submission-note">送出前本機 App 會重新查價並再次預檢；若價格已變動，這次更新會停止。</p>
           </section>
         )}
 
@@ -857,7 +857,7 @@ export default function PriceDrawer({
         )}
 
         <div className="privacy-footnote price-footnote">
-          憑證只留在這台 Mac 的 Keychain。正式調價會先核對舊價、跑 Amazon 預檢，再送出單一 SKU 更新。
+          憑證只留在這台電腦的系統安全儲存區。正式調價會先核對舊價、跑 Amazon 預檢，再送出單一 SKU 更新。
         </div>
       </aside>
     </div>

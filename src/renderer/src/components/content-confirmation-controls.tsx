@@ -13,7 +13,7 @@ export function ContentConfirmationControls({
 }: ContentConfirmationControlsProps) {
   const buttonLabel = actionLoading
     ? "送交 Amazon 中…"
-    : `使用 Touch ID 確認更新 ${sellerSku}`;
+    : `使用 Notebook 鑰匙確認更新 ${sellerSku}`;
 
   return (
     <>

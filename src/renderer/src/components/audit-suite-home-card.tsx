@@ -387,7 +387,7 @@ export default function AuditSuiteHomeCard({
         <div>
           <p className="eyebrow">ONE CLICK · SEVEN FBA AUDITS</p>
           <h2>一鍵執行全部 FBA 健檢</h2>
-          <p>七項唯讀健檢由 Mac main process 在背景繼續；你可以關閉視窗或先使用其他功能。</p>
+          <p>七項唯讀健檢由本機主程序在背景繼續；你可以關閉視窗或先使用其他功能。</p>
         </div>
       </div>
       <div

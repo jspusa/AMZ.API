@@ -635,7 +635,7 @@ export function resolveContentAuditQuickEditFocus(
 function scanStatusText(state: AuditState, reply: ReportReply | null): string {
   if (state === "starting") return "正在請 Amazon 建立全站 FBA 商品報表…";
   if (state === "polling") return reply?.message || "Amazon 正在整理商品清單…";
-  if (state === "scanning") return "正在逐一讀取 FBA 文案並執行 Mac 本機拼字檢查…";
+  if (state === "scanning") return "正在逐一讀取 FBA 文案並執行本機拼字檢查…";
   return "";
 }
 
@@ -751,10 +751,10 @@ export default function ContentAuditPanel({
       const words = wordsForLocalSpellcheck(rows);
       const misspellings = window.fbaOS.spellcheck.check(words);
       rows = addLocalSpellcheckIssues(rows, misspellings);
-      nextSpellcheckNote = `Mac 本機字典已檢查 ${words.length.toLocaleString()} 個不重複英文單字（每次最多 ${LOCAL_SPELLCHECK_WORD_LIMIT.toLocaleString()} 個）；只提示，不會自動改字。大型 catalog 超過上限後的後續單字未做 Mac 字典檢查。`;
+      nextSpellcheckNote = `本機系統字典已檢查 ${words.length.toLocaleString()} 個不重複英文單字（每次最多 ${LOCAL_SPELLCHECK_WORD_LIMIT.toLocaleString()} 個）；只提示，不會自動改字。大型 catalog 超過上限後的後續單字未做本機字典檢查。`;
     } catch {
       nextSpellcheckNote =
-        "Mac 本機字典目前不可用；已完成缺值、明確常見錯字、重複詞與不可見字元檢查。";
+        "本機系統字典目前不可用；已完成缺值、明確常見錯字、重複詞與不可見字元檢查。";
     }
     const completed = {
       ...base,
@@ -877,7 +877,7 @@ export default function ContentAuditPanel({
         一次掃描所選站點全部 FBA SKU，直接列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品；不用逐一輸入 SKU。
       </p>
       <div className="content-export-note content-audit-privacy">
-        <strong>Amazon 唯讀＋Mac 本機拼字檢查</strong>
+        <strong>Amazon 唯讀＋本機拼字檢查</strong>
         <p>文案不會送到第三方，也不會自動修改 Amazon；疑似錯字仍由你判斷。</p>
       </div>
       {state === "done" && snapshot && summary && (
@@ -889,7 +889,7 @@ export default function ContentAuditPanel({
         >
           <span aria-hidden="true">↓</span>
           <strong>匯出全部 {attentionRows.length.toLocaleString()} 個待確認項目 Excel</strong>
-          <small>只在這台 Mac 建立，不會上傳商品文案</small>
+          <small>只在這台電腦建立，不會上傳商品文案</small>
         </button>
       )}
       {error && <div className="price-error" role="alert">{error}</div>}
@@ -1082,7 +1082,7 @@ export default function ContentAuditPanel({
                           <div key={`${readError.code}-${index}`}>
                             <span className="kind-read_incomplete">讀取失敗／未完成</span>
                             <p>{readError.message}</p>
-                            <small>本列未計入缺賣點、缺成分或 Mac 拼字統計</small>
+                            <small>本列未計入缺賣點、缺成分或本機拼字統計</small>
                           </div>
                         ))}
                       {row.issues

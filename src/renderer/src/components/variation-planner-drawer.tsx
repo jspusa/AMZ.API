@@ -519,7 +519,7 @@ export default function VariationPlannerDrawer({
       parseVariationMovePreview(previewRaw, { action, marketplaceId, sellerSku: stagedMember.sellerSku });
 
       // No extra browser confirmation: the PATCH immediately invokes the
-      // trusted Mac Bridge Touch ID/system prompt with a Main-generated reason.
+      // trusted local Bridge system prompt with a Main-generated reason.
       const commitResponse = await fetch("/api/sp-api/variation-move", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -573,7 +573,7 @@ export default function VariationPlannerDrawer({
 
         <div className="variation-readonly-banner writable">
           <strong>兩階段安全寫入 · 不會盲目重送</strong>
-          <p>先把 FBA child 放進「解除變體」暫存區，再拖到另一個已查詢的 parent。Mac 會依 CHILD PTD 要求欄位，逐階段 Validation Preview、Touch ID、送出與唯讀回查。</p>
+          <p>先把 FBA child 放進「解除變體」暫存區，再拖到另一個已查詢的 parent。本機 App 會依 CHILD PTD 要求欄位，逐階段 Validation Preview、Notebook 鑰匙（Touch ID／Windows Hello）、送出與唯讀回查。</p>
         </div>
 
         <label className="variation-marketplace">
@@ -653,7 +653,7 @@ export default function VariationPlannerDrawer({
                 <div><strong>{stagedMember.sellerSku}</strong><span>{stagedState === "planned" ? "尚未解除" : stagedState === "detached" ? "已回查為獨立 SKU" : "已加入新 family"}</span></div>
                 <p>{stagedMember.title}</p>
                 <small>{stagedOriginalParentSku ? `原 Parent：${stagedOriginalParentSku}` : "原本沒有 parent"} · {memberDimensions(stagedMember)}</small>
-                {stagedState === "planned" && <em>按下方「確認解除變體」後會先 Amazon 預檢，再直接顯示 Touch ID。</em>}
+                {stagedState === "planned" && <em>按下方「確認解除變體」後會先 Amazon 預檢，再直接顯示 Notebook 鑰匙系統提示。</em>}
                 {stagedState === "detached" && <em>解除已回查完成；現在可把這張卡拖到下方目標 family。</em>}
               </article>
             ) : (
@@ -667,7 +667,7 @@ export default function VariationPlannerDrawer({
               disabled={busy || !sourceFamily?.familyComplete || sourceFamily.mode !== "live" || !stagedMember.parentSku}
               onClick={() => void runWrite("detach")}
             >
-              {writeAction === "detach" ? "等待 Touch ID／解除回查中…" : "確認解除變體"}
+              {writeAction === "detach" ? "等待 Notebook 鑰匙／解除回查中…" : "確認解除變體"}
             </button>
           )}
           {stagedMember && stagedState === "detached" && (
@@ -795,7 +795,7 @@ export default function VariationPlannerDrawer({
                   disabled={busy || !preparation.writable || preparation.blockers.length > 0 || missingFields.length > 0 || Object.values(fieldErrors).some(Boolean)}
                   onClick={() => void runWrite("attach")}
                 >
-                  {writeAction === "attach" ? "等待 Touch ID／綁定回查中…" : "確認綁定變體"}
+                  {writeAction === "attach" ? "等待 Notebook 鑰匙／綁定回查中…" : "確認綁定變體"}
                 </button>
               )}
               {stagedState === "attached" && <strong className="variation-success">✓ 已回查屬於 {preparation.targetParentSku}</strong>}
@@ -812,7 +812,7 @@ export default function VariationPlannerDrawer({
 
         <div className="variation-safety-boundary">
           <strong>能力邊界</strong>
-          <p>Listings Items v2021-08-01 · CHILD Product Type Definition · FBA child only · Validation Preview · Touch ID · 持久 Idempotency · 送出後唯讀回查 · 不使用 Seller Central 私有接口</p>
+          <p>Listings Items v2021-08-01 · CHILD Product Type Definition · FBA child only · Validation Preview · Notebook 鑰匙（Touch ID／Windows Hello）· 持久 Idempotency · 送出後唯讀回查 · 不使用 Seller Central 私有接口</p>
         </div>
         <div className="drawer-api-footnote">Two explicit non-atomic stages · No blind retry · No FBM</div>
       </aside>
@@ -860,7 +860,7 @@ function PlanReview({ plan }: { plan: VariationMovePlan }) {
       <div className="variation-plan-heading"><div><span>MOVE REVIEW</span><h3 id="variation-plan-review-title">{plan.source.sellerSku} → {plan.targetParent.sellerSku}</h3></div></div>
       {plan.blockers.length > 0 && <div className="variation-plan-blockers"><strong>目前不可安全移動</strong><ul>{plan.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></div>}
       <div className="variation-plan-warnings"><strong>非原子流程提醒</strong><ul>{plan.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>
-      <div className="variation-plan-steps"><strong>實際執行順序</strong><ol><li>Amazon 預檢解除舊 parent 關係</li><li>Touch ID 後送出解除並回查</li><li>依 CHILD PTD 補齊所有變體維度</li><li>Amazon 預檢加入新 parent</li><li>Touch ID 後送出加入並回查</li></ol></div>
+      <div className="variation-plan-steps"><strong>實際執行順序</strong><ol><li>Amazon 預檢解除舊 parent 關係</li><li>Notebook 鑰匙確認後送出解除並回查</li><li>依 CHILD PTD 補齊所有變體維度</li><li>Amazon 預檢加入新 parent</li><li>Notebook 鑰匙確認後送出加入並回查</li></ol></div>
     </section>
   );
 }
