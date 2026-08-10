@@ -20,7 +20,10 @@ export type ContentSpellingMatch = Readonly<{
 // every entry suppresses a warning on both Mac and Windows.
 const APPROVED_EXACT_TERMS = new Set([
   "afreschi",
+  "antioxidative",
+  "artisanal",
   "asin",
+  "australian",
   "basa",
   "bitartrate",
   "botanicals",
@@ -45,17 +48,22 @@ const APPROVED_EXACT_TERMS = new Set([
   "palatability",
   "pantothenate",
   "pawprint",
+  "perilla",
   "polyphosphate",
   "purr-fectly",
+  "pyridoxine",
   "pyrophosphate",
   "rawhide",
   "reishi",
   "resealable",
   "sku",
+  "superfood",
+  "superfoods",
   "taiwan",
   "taurine",
   "vietnam",
   "vitaday",
+  "zealand",
 ]);
 
 export const CONTENT_SPELLING_ALLOWLIST_COUNT = APPROVED_EXACT_TERMS.size;
