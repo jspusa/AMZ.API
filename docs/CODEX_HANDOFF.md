@@ -3,7 +3,7 @@
 最後更新：2026-08-10
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前狀態：`v0.1.15` 已由 PR #29 squash merge 至 `main` commit `ac5c18b2319061bcb06600967d4acec84c55d5f3`；main Validate、Pages 與 macOS universal workflows 均成功，live Pages HTML／JS／CSS 已與 release production output byte-for-byte 核對。artifact `9041374594` 已核對 GitHub digest、DMG／ZIP checksum、版本、bundle、Universal 架構與 deep strict ad-hoc codesign 後安裝為 `/Applications/AMZ.API.app`；原 v0.1.14 保留於 `/Applications/AMZ.API-v0.1.14-backup.app`。首次啟動曾在 macOS Keychain 解密前等待且尚未建立視窗；精確確認沒有 renderer 或 Amazon 請求後，只做一次 bounded restart 即健康啟動。首頁可見 `Amazon 已連線`、Live 7 天 Sales、品牌／品類切換與「狀態收斂進度」，系統資訊顯示「目前 Mac App 0.1.15」。只發生既有首頁自動 Sales 唯讀讀取與品牌 report 整理；品類實際資料與新版 Subscribe & Save 篩選／折線／六張 Excel 尚未做真實 Amazon 重測。任何真實 Amazon 寫入仍未執行，也未獲授權。
+目前狀態：`v0.1.16` 已由 PR #31 squash merge 至 `main` commit `654d70c0ed554b1b9cdd078fc0587d15274c2500`；main Validate、Pages、macOS universal 與 Windows 2025 x64 workflows 均成功。live Pages HTML／JS／CSS 已與 production output byte-for-byte 核對；WebGate 現以「Notebook 鑰匙」提供固定 Windows 下載。Windows `notebook-key-windows` prerelease 已公開 EXE、ZIP 與 `SHA256SUMS.txt`，匿名下載、asset digest、NSIS 安裝、ZIP 展開、原生 Windows Hello addon、ASAR／fuse 與 Bridge smoke 均通過。這仍是未簽章內部版：Windows in-app updater 已停用，真正 Windows 11 Pro 的 Hello 成功／取消／未設定／PIN fallback 與 DPAPI 跨使用者隔離仍待員工實機驗證。Mac 目前安裝版仍為 v0.1.15；沒有為本次 Windows 發布重裝 Mac App、開啟瀏覽器或執行 Amazon 寫入。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -18,7 +18,7 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 
 ## 1. 專案一句話
 
-AMZ.API 是 Jasper 公司自用的 **Amazon FBA-only 營運控制台**：GitHub Pages 自動更新介面，macOS Key Bridge 保存 Amazon SP-API 憑證並執行本機 API 請求；一般瀏覽器沒有 Mac App Bridge 時保持鎖定。
+AMZ.API 是 Jasper 公司自用的 **Amazon FBA-only 營運控制台**：GitHub Pages 自動更新介面，macOS／Windows Notebook Key Bridge 在本機系統安全儲存區保存 Amazon SP-API 憑證並執行本機 API 請求；一般瀏覽器沒有受信任 Bridge 時保持鎖定。
 
 這不是公開 SaaS、不是多租戶產品、不是 FBM 工具，也不是 Helium 10 的替代品。
 
@@ -62,14 +62,15 @@ AMZ.API 是 Jasper 公司自用的 **Amazon FBA-only 營運控制台**：GitHub 
 GitHub repository / Actions
 ├─ GitHub Pages：最新 renderer UI
 ├─ Validate workflow：型別、測試、build
-└─ macOS workflow：universal App、啟動檢查、DMG/ZIP
+├─ macOS workflow：universal App、啟動檢查、DMG/ZIP
+└─ Windows workflow：Windows 11 x64 App、原生 addon、NSIS/ZIP smoke
 
-macOS AMZ.API.app
+macOS／Windows AMZ.API Notebook Key
 ├─ 載入精確允許的 GitHub Pages origin
 ├─ Preload 提供窄化、白名單式 Bridge
 ├─ Main process 執行 Amazon SP-API
-├─ macOS Keychain-backed encrypted vault 保存 Secret
-└─ Touch ID／本機確認保護寫入
+├─ safeStorage 以 macOS Keychain／Windows DPAPI 加密 Secret
+└─ Touch ID／Windows Hello 保護敏感操作
 ```
 
 重要邊界：
@@ -79,7 +80,7 @@ macOS AMZ.API.app
 - 一般瀏覽器打開 GitHub Pages 只顯示鎖定／啟動頁；真正控制台在 AMZ.API App 視窗操作。
 - Renderer 不應取得解密後 Secret，也不應擁有通用任意 IPC 或任意 Amazon URL 請求能力。
 - Custom deep link 只用於啟動／聚焦 App，不得直接觸發 Amazon 寫入。
-- 寫入固定走：讀舊值 → Amazon Validation Preview → 本機票證 → 防呆 → Touch ID → 再檢查 → idempotency → 單次寫入 → 回查。
+- 寫入固定走：讀舊值 → Amazon Validation Preview → 本機票證 → 防呆 → Touch ID／Windows Hello → 再檢查 → idempotency → 單次寫入 → 回查。
 
 詳細安全邊界以 `SECURITY.md` 與 `docs/ARCHITECTURE.md` 為準。
 
@@ -307,19 +308,28 @@ Amazon App：
   - main artifact `9041374594`（`AMZ.API-unsigned-ac5c18b2319061bcb06600967d4acec84c55d5f3`）已核對 GitHub digest、內部 DMG／ZIP checksum、版本 `0.1.15`、bundle ID `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign。
   - v0.1.15 已安裝為 `/Applications/AMZ.API.app`，原 v0.1.14 保留為 `/Applications/AMZ.API-v0.1.14-backup.app`。首次啟動在 Keychain 解密前等待且尚未建立視窗；確認無 Amazon 請求後只重啟一次，隨後 App 正常顯示首頁、`Amazon 已連線`、Live 7 天 Sales、品牌／品類切換、「狀態收斂進度」與系統資訊版本 0.1.15，沒有 crash dialog。
   - v0.1.15 只完成首頁自動 US Sales 唯讀載入與品牌 report 整理中的可見證據；品類實際分類數值、Subscribe & Save 新篩選、全站／SKU 折線與六張 Excel 仍待追加真實唯讀驗證。沒有執行 Amazon 寫入。
+- v0.1.16 Windows Notebook Key 已發布：
+  - WebGate 與本機連線文案由 Mac 鑰匙改為平台中立的「Notebook 鑰匙」；一般瀏覽器仍沒有 Bridge／Amazon API。Windows 下載固定指向 `https://github.com/jspusa/AMZ.API/releases/tag/notebook-key-windows`，Mac 仍保留既有 `amz-api://launch`。
+  - Windows 11 x64 版沿用同一 renderer、窄化 preload、main API router、FBA-only 範圍與寫入安全鏈。Secret 只進 main-owned 本機 editor，Electron `safeStorage` 在 Windows 使用 DPAPI；沒有明文 fallback，也沒有把憑證送到 Pages。
+  - 新增 first-party x64 N-API addon，以 `IUserConsentVerifierInterop::RequestVerificationForWindowAsync` 綁定目前 AMZ.API 視窗；HWND 必須有效且屬於目前程序。只有 Windows 回傳 `Verified` 才放行，取消、未設定、錯誤或逾時一律 fail closed，沒有按鈕 fallback。
+  - Packaged App 啟動會驗證 addon 固定 ASAR-unpacked 路徑、manifest SHA-256、AMD64 架構與 N-API export，但 preflight 不會主動彈出 Windows Hello。Windows 未建立 publisher-bound Authenticode 鏈前，in-app check／install updater 固定停用。
+  - Windows 2025 workflow 會實際編譯 addon、讀回 8 個 Electron fuses，並分別啟動 win-unpacked、展開後 ZIP 與 NSIS 實際安裝版；三者都必須同時出現 Bridge ready 與 addon-ready sentinel。PR 不上傳可執行 artifact；只有 main／manual trusted run 會上傳。
+  - 本機最終 `npm run check` 通過 76 個測試檔／517 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。PR #31 已 squash merge：`https://github.com/jspusa/AMZ.API/pull/31`；release main commit 為 `654d70c0ed554b1b9cdd078fc0587d15274c2500`。main Validate run `31351732388`、Pages run `31351732381`、macOS run `31351732405` 與 Windows run `31351732415` 均成功。
+  - live Pages production assets 為 `index-CgWtRJve.js`／`index-BuIzmwBr.css`；HTML、JS、CSS SHA-256 分別為 `30e1d0b98cfa785c02a2123d5c54e0ee5589648556d89140521c79e654d640bf`、`833704b3d89a9ebaddf9e111ff3e192fe37638815ee3ec6ab379fba9cf617f06`、`5563b1c6567b8b63a408492721d1887078738188a3d897e863d37f2e3b25d30f`，與 release production output byte-for-byte 相同；全程以 `curl` 驗證，沒有再開瀏覽器。
+  - 固定 Windows prerelease 的 NSIS EXE SHA-256 為 `997209481a290a4e05dfc5111222d3deee9f2ff55bd5bff247deef06bbd8a3c0`，portable ZIP 為 `2b086fbd36c2ca8be7891a53a0d70cebc243b909b6ba2b9ba0c862799ab83b0a`；公開 `SHA256SUMS.txt` SHA-256 為 `426ff11bacc76166de15100ccd1e8dd6bc1d43cfb84428da25248bb8d5b7f12d`，與 trusted Windows run 原檔 byte-for-byte 相同。真正員工 Windows 11 Pro 裝置的 Hello UI／硬體與 DPAPI 使用者隔離尚未實測，不能用 CI smoke 冒充完成。
 
-### 已完成與仍待真實 Mac／Amazon 驗證
+### 已完成與仍待真實 Windows／Mac／Amazon 驗證
 
-v0.1.15 的 PR、main Actions、Pages、artifact、備份、Mac 安裝與可見首頁版本均已完成；首頁亦自動完成一次真實 US Sales 唯讀載入。下列範圍必須分開理解：
+v0.1.16 的 PR、main Actions、Pages、Windows 固定 prerelease 與公開 checksum 均已完成；Mac 仍安裝 v0.1.15，且 v0.1.16 Windows 尚未在員工真實 Windows 11 Pro 裝置做人機驗證。v0.1.15 首頁曾自動完成一次真實 US Sales 唯讀載入。下列範圍必須分開理解：
 
-1. v0.1.15 的可追溯發布鏈與 live Pages byte-for-byte 核對已完成；不得用任何本機 `out/` 冒充已發布成品。
+1. v0.1.16 的可追溯 source／Pages／Windows release 鏈與 live Pages byte-for-byte 核對已完成；Windows runner 的三種 packaged smoke 只證明封裝、Bridge 與 addon 可載入，不得冒充真實 Windows Hello 指紋／臉部／PIN 或 DPAPI 跨使用者驗證。
 2. 首頁可見 `Amazon 已連線`、Live 7 天 Sales、品牌／品類切換與「狀態收斂進度」。品牌 report 在驗證截圖時仍為整理中；品牌／品類共用 snapshot、cache fence 與 A→B→A 只建兩份不同日期 report 是測試證據，尚未取得 v0.1.15 真實八類分類數值，不得冒充 live 完成。
 3. v0.1.14 的真實 US 6 個月 Subscribe & Save 已證明單列問題可隔離、其他 offer 繼續；它只能保留為舊版歷史快照，不能自動證明 v0.1.15 的新篩選、全站／SKU 折線或五張正常表加一張問題表。這些仍待 6／12／23 個月追加唯讀重測。
 4. 全庫齡層級、AIS tier、評論首頁背景 observer、長 variation family、滑板動畫、36×36 關閉控制與健檢狀態 pill 已通過 production build、測試與 1280px／390px 假 Bridge 視覺驗收；不能以 mock 數值冒充 live Amazon。
 5. 評論負向數值必須保持原始負號並標示為 impact；公開 API 仍不提供商品總星等、總評論數或完整 review 全文。v0.1.12 的 23,765 件品牌出貨、257 個 non-parent review candidates，以及 v0.1.14 的 S&S aggregate 都只是各自時間點快照，不得當作恆定現值。
 6. 文案健檢 Excel rich-text 紅字、同次 cache 與「立刻修改」的 fresh read／stale fallback 仍只允許驗證到 Amazon Validation Preview；商品內容、圖片、價格、Sale Price 與 Variation 真實寫入均未授權。
 7. 報表文件庫列的是 109 個官方公開 report types 與能力說明，不代表 App 已建立 109 種通用下載器；廣告覆蓋 Live Ads API 與 FBA 帳務中心未接線能力須保持 unavailable／plan-only。
-8. 目前仍是 ad-hoc 內部測試 App；Apple Developer ID 簽章／公證與 GitHub Release 尚未決定。所有新增驗證必須保持 FBA-only、唯讀，且不得使用 Seller Central 私有接口。
+8. 目前仍是內部測試 App：Mac 為 ad-hoc、尚無 Apple Developer ID 簽章／公證；Windows fixed prerelease 為 unsigned、尚無 publisher-bound Authenticode，SmartScreen 可能警告且 in-app updater 已停用。所有新增驗證必須保持 FBA-only、唯讀，且不得使用 Seller Central 私有接口。
 
 ### 最近的真實錯誤
 
@@ -334,6 +344,9 @@ v0.1.15 的 PR、main Actions、Pages、artifact、備份、Mac 安裝與可見�
 
 ## 6. 目前安裝檔
 
+- Windows v0.1.16 固定內部 prerelease：`https://github.com/jspusa/AMZ.API/releases/tag/notebook-key-windows`。NSIS 安裝檔為 `AMZ.API-Notebook-Key-Windows-x64-Setup.exe`（101,400,294 bytes；SHA-256 `997209481a290a4e05dfc5111222d3deee9f2ff55bd5bff247deef06bbd8a3c0`）；portable ZIP 為 `AMZ.API-Notebook-Key-Windows-x64.zip`（142,515,498 bytes；SHA-256 `2b086fbd36c2ca8be7891a53a0d70cebc243b909b6ba2b9ba0c862799ab83b0a`）。兩者與公開 `SHA256SUMS.txt`、GitHub asset digest 完全一致，匿名下載均回 200。此版本未簽章；員工安裝前必須核對 SHA，並預期 SmartScreen 警告。
+- v0.1.16 main Windows workflow run：`31351732415`；artifact：`9049261782`，名稱 `AMZ.API-Notebook-Key-Windows-x64-654d70c0ed554b1b9cdd078fc0587d15274c2500`；GitHub artifact digest：`sha256:3902fb2eeec61b3e081391a4e7dcd43d02a9beec314a3c267b7187c277fe3c6d`，保存至 `2026-08-24T03:13:10Z`。用於固定 prerelease 的 trusted workflow run 為 `31351186684`，artifact `9049090358`，digest `sha256:684aa093428ff63df64d2e51c74ae3c086bbe74658b9ce0afa164c92b7035005`；其三個實檔已下載並逐一核對。
+- v0.1.16 main macOS workflow run：`31351732405`；artifact：`9049246734`，名稱 `AMZ.API-unsigned-654d70c0ed554b1b9cdd078fc0587d15274c2500`；GitHub artifact digest：`sha256:303773960c146c94cf2f883381297c93c8051dd78eac642e8869be55bab3bb7f`。此 artifact 只用於確認 Windows 變更沒有破壞既有 macOS workflow；本輪沒有下載、安裝或啟動 v0.1.16 Mac App。
 - 目前 `/Applications/AMZ.API.app` 是已發布的 v0.1.15 universal 內部測試 App；版本 `0.1.15`、build `0.1.15`、bundle ID `com.jspusa.amz-api`、executable `AMZ.API`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均已在安裝後再次核對。首次啟動停在 Keychain 載入，精確核對沒有 renderer 或 Amazon 請求後，只對該次主程序做標準終止並 bounded restart 一次；隨後系統資訊顯示「目前 Mac App 0.1.15」，首頁顯示 Amazon 已連線、Live US 7 天 Sales、品牌／品類切換與「狀態收斂進度」，沒有 crash dialog。
 - 安裝前的 v0.1.14 原封不動保留為 `/Applications/AMZ.API-v0.1.14-backup.app`，版本、bundle、Universal 架構與 deep strict codesign 均再次通過；更舊備份若仍存在，也不得在未核對版本前覆蓋。
 - v0.1.15 main macOS workflow run：`31325158197`；artifact：`9041374594`，名稱 `AMZ.API-unsigned-ac5c18b2319061bcb06600967d4acec84c55d5f3`；GitHub artifact digest：`sha256:1f13c1284c75942e15d9029bf2720ef0519a4a8786bc256bdff0b63c2ad1644d`，保存至 `2026-08-23T17:03:27Z`。DMG SHA-256：`3f3d52d7bcd2d33b973c81365308e011b56addfcb1e5c28676466fcc74bf1b9f`；ZIP SHA-256：`1acc5e3d36586d1091e604a9e2ce08aa96db338df84948c0f89de1f4c2a23695`；兩者均與 artifact 內 `SHA256SUMS.txt` 一致。
@@ -370,10 +383,10 @@ v0.1.15 的 PR、main Actions、Pages、artifact、備份、Mac 安裝與可見�
 10. `src/main/amazon/sp-api.ts` — SP-API endpoint、正規化、錯誤、報表、Listings、Orders、FBA。
 11. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
 12. `src/preload/index.ts` — 窄化 Bridge。
-13. `src/renderer/src/connection-panel.tsx` — Mac 安全連線與 API SOP。
+13. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
 14. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
 15. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-16. `.github/workflows/*.yml` — Validate、Pages、Mac build／release。
+16. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
 17. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
@@ -392,10 +405,10 @@ npm audit --omit=dev
 
 注意：
 
-- v0.1.15 發布 main commit 為 `ac5c18b2319061bcb06600967d4acec84c55d5f3`，對應 PR #29、Pages 與 macOS artifact。開始新工作前仍須 `git fetch origin` 並核對 merge base，不得把本機 `out/` 誤認成已發布 App artifact；本機 `main` 若尚未 fast-forward，也不得直接從舊 local `main` 建立新分支。
+- v0.1.16 發布 main commit 為 `654d70c0ed554b1b9cdd078fc0587d15274c2500`，對應 PR #31、Pages、macOS artifact、Windows artifact 與固定 `notebook-key-windows` prerelease。開始新工作前仍須 `git fetch origin` 並核對 merge base，不得把本機 `out/` 或未受信任 PR artifact 誤認成已發布 App；本機 `main` 若尚未 fast-forward，也不得直接從舊 local `main` 建立新分支。
 - 工作區可能存在使用者或其他 agent 的變更；不得 `git reset --hard`、`git checkout --` 或直接覆蓋。
 - 修改後應建立修復分支／PR，通過 Actions 再合併。
-- 真實 Amazon 驗證只能由使用者在自己的 Mac Keychain 憑證環境執行；Linux／CI 不得假裝已測過 SP-API live。
+- 真實 Amazon 驗證只能由使用者在自己的 Notebook Key 本機加密憑證環境執行；Linux／CI 不得假裝已測過 SP-API live，Windows runner 也不得假裝已完成員工裝置的 Windows Hello／DPAPI 人工驗證。
 
 ---
 
@@ -416,14 +429,22 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-接續 v0.1.15 尚未完成的真實唯讀矩陣；發布、Pages、artifact、備份、安裝、正常啟動、版本、US 7 天 Sales 與首頁自動品牌 report 已完成，不要重建、重裝或清除 Keychain vault，也不要做任何真實 Amazon 寫入：
+先完成 v0.1.16 Windows 11 Pro 員工裝置的人機驗證，再接續 v0.1.15 尚未完成的真實 Amazon 唯讀矩陣。不要在 Mac 反覆開 Chrome 冒充 Windows 驗證，不要清除既有 Mac Keychain vault，也不要做任何真實 Amazon 寫入：
 
-### A. 先接回目前 App
+### A. Windows 11 Pro x64 實機驗證
+
+1. 只從固定 `notebook-key-windows` prerelease 下載 EXE 或 ZIP；安裝前依 `SHA256SUMS.txt` 核對 SHA-256。不要改抓 PR／fork／過期 Actions artifact。
+2. 在一台員工 Windows 11 Pro x64 筆電核對 SmartScreen 警告、NSIS 安裝／移除、版本 0.1.16、Notebook Key Bridge ready、WebGate 開啟與一般瀏覽器無 Bridge 的鎖定狀態。Windows unsigned 版不得啟用 in-app updater。
+3. 使用 main-owned 本機安全 editor；不得把 Client Secret、Refresh Token 或完整 Seller ID 貼到聊天、Pages 或瀏覽器。核對保存後 renderer 只看到 redacted status，另一個 Windows 使用者不能解密原使用者的 DPAPI vault。
+4. 以 Windows Hello 實測成功、取消、未設定／不可用與 Windows 提供的 PIN fallback；記錄的只能是通過／拒絕與安全錯誤碼，不得記錄生物特徵種類或憑證。測試停在敏感操作授權邊界，不執行 Amazon mutation。
+5. CI 已證明 addon 可載入、HWND 屬於目前程序且三種 package 可啟動；它沒有證明實際指紋／臉部／PIN UI。只有上述實機矩陣完成後，才能把 Windows Notebook Key 標為已完成員工驗收。
+
+### B. 先接回目前 Mac App
 
 1. 讀取目前執行中的 v0.1.15；首次 Keychain 載入停滯已由一次 bounded restart 解決。不要清除或重新輸入 vault，也不要因短暫載入較慢而反覆重啟或建立相同 Amazon report。
 2. 首頁 exact 版本、Amazon 已連線、Live US 7 天 Sales、品牌／品類 toggle 與「狀態收斂進度」已核對。需要追加證據時使用既有 durable job／cache，避免按 terminal retry 或盲目重建。
 
-### B. 依序完成 v0.1.15 新功能的真實唯讀證據
+### C. 依序完成 v0.1.15 新功能的真實唯讀證據
 
 1. 品牌／品類：在同一日期範圍先看品牌、切至品類、再切回品牌；核對總額不變、八個品類依 Supply 最早關鍵字規則分類、未命中歸「其他」，且 main 沒有為回到品牌另建相同 report。範圍含站點今天時核對 `dataThrough`，不得把當天未完成資料冒充完整日。
 2. Subscribe & Save：先用 6 個月核對「全部／0／5／10／15／20／有問題」篩選、正常卡片欄位、預設全站折線、選取 SKU、取消或重選同 SKU 返回全站；問題 SKU 只能出現在問題範圍，未知折扣不得進 0%。
@@ -431,14 +452,14 @@ npm audit --omit=dev
 4. 首頁健檢狀態：核對成功、部分完成、失敗與未執行的外卡片狀態清楚；「狀態收斂進度」只表示步驟已結束，不得把全部失敗顯示為成功。
 5. 追加核對全庫齡層級與 AIS tier 的真實 US report、評論 drawer 關閉後首頁進度，以及長 variation family 的實際內容；只做唯讀，不進 Preview／Touch ID／commit。
 
-### C. 其餘既有唯讀矩陣
+### D. 其餘既有唯讀矩陣
 
 1. 評論主題：接回既有 job 後關閉 drawer，等待背景進度增加再重開；負數必須顯示為「負向影響值」且明示不是商品負星等。核對 parent 排除、child＋standalone non-parent 與六張 Excel。
 2. 未綁變體：完成批次掃描與 Excel，確認缺 relationships／站點或 ASIN 衝突列為未完成；Seller SKU／ASIN family 查詢只做唯讀，結果都要顯示 exact Seller SKU。
 3. 文案：核對 Excel 疑似錯字片段為紅字；以一個有問題欄位測「立刻修改」fresh read 與 stale fallback，只能走到 Amazon Validation Preview，未獲另行授權不得 commit。
 4. 報表文件庫：核對 109 個官方 report types 的分類、說明與「已接線／尚未接線／不適用」狀態。文件列出不等於 App 已能下載全部 109 種。
 
-### D. 若某一 endpoint 失敗
+### E. 若某一 endpoint 失敗
 
 依 endpoint 分開診斷，不把所有失敗歸因於「API 沒串好」：文案／圖片／variation 看 Listings Items 與 PTD；FBA 庫存看 FBA Inventory；訂閱省看 Replenishment；品牌／品類／評論／Excel／健檢／庫齡看 Reports、Customer Feedback 與 Listings enrichment；會計先分辨 Finances JSON、FBA report、Amazon-generated report、人工前置與 unavailable。保留錯誤 code、Amazon message、Request ID、App version 與 marketplace，但不得記錄或輸出 Secret、Refresh Token 或完整 Seller ID。
 
@@ -446,9 +467,9 @@ npm audit --omit=dev
 
 ## 11. 完成定義
 
-只有以下條件都成立，才能向使用者宣稱「已串好」：
+只有適用平台與 Amazon 範圍的下列條件都成立，才能向使用者宣稱「已串好」：
 
-- Mac App 顯示正確新版本。
+- Notebook Key 顯示正確版本；Windows 版必須另在真實 Windows 11 Pro x64 完成安裝、Bridge、DPAPI 與 Windows Hello 成功／取消／不可用／PIN fallback 人工驗證，不能拿 CI 或 Mac 測試代替。
 - Orders 與 Listings probe 均 live success。
 - US Seller SKU 文案、價格、促銷狀態能只讀查詢。
 - US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂 1–365 天與去年同期 AFN 銷售趨勢完整載入。
@@ -461,6 +482,6 @@ npm audit --omit=dev
 - 首頁全站健檢外卡片必須區分未執行、執行中、成功、部分完成與失敗；「狀態收斂進度」不得因所有步驟都已結束而把全部失敗冒充成功。
 - 會計中心只把公開 capability 與安全 access plan 標為完成；除非日後另行實作並驗證 report lifecycle，不得宣稱已下載報表、一般發票或 Seller Central 帳單。
 - Variation family 與 CHILD PTD 必須先通過真實唯讀驗證；目前 mutation 只能標為 mock/demo 已驗證。只有在使用者另行明確授權指定 SKU，且 detach 與 attach 各自完成 preview、Touch ID、單次 PATCH 與唯讀回查後，才可對該次操作宣稱真實寫入成功。
-- 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID。
+- 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID／Windows Hello。
 - 寫入後回查；結果不確定時阻止盲目重送。
-- Secret 仍只存在使用者 Mac 的加密 vault。
+- Secret 仍只存在各 Notebook Key 的本機加密 vault：macOS Keychain 或目前 Windows 使用者的 DPAPI，不進 Pages、renderer、GitHub、日誌或回覆。
