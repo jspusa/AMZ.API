@@ -34,6 +34,14 @@ const rows: ContentAuditRow[] = [
 ];
 
 const REQUESTED_APPROVED_TERMS = [
+  "Pyridoxine",
+  "artisanal",
+  "Australian",
+  "Superfood",
+  "superfoods",
+  "antioxidative",
+  "Zealand",
+  "Perilla",
   "Freschi",
   "Polyphosphate",
   "Choline",
@@ -68,7 +76,7 @@ describe("renderer content quality helpers", () => {
   it("uses one versioned general Pages dictionary on every platform", () => {
     expect(CONTENT_SPELLING_DICTIONARY_VERSION).toContain("dictionary-en@4.0.0");
     expect(CONTENT_SPELLING_DICTIONARY_LANGUAGE).toContain("en_US");
-    expect(CONTENT_SPELLING_ALLOWLIST_COUNT).toBeGreaterThanOrEqual(37);
+    expect(CONTENT_SPELLING_ALLOWLIST_COUNT).toBeGreaterThanOrEqual(45);
     const checked = addPagesDictionarySpellingIssues([{
       ...rows[0],
       title: "Trukey Tendons",
@@ -156,6 +164,13 @@ describe("renderer content quality helpers", () => {
         .toBeNull();
       expect(checked[0].title).toBe(mixedCase);
       expect(checked[0].issues).toEqual([]);
+    },
+  );
+
+  it.each(["pyridoxinee", "artisanall", "xzealandx", "perillaa", "superfoodish"])(
+    "does not let the approved term hide the different token %s",
+    (word) => {
+      expect(sharedContentSpellingMatch(word)).not.toBeNull();
     },
   );
 
