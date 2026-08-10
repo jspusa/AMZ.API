@@ -115,17 +115,23 @@ if ($nativeCopies.Count -ne 1 -or $nativeCopies[0].FullName -ne $addonPath) {
 }
 
 $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+$asarModulePath = Join-Path $repositoryRoot "node_modules\@electron\asar"
+if (-not (Test-Path -LiteralPath $asarModulePath -PathType Container)) {
+  throw "The locked @electron/asar module directory is unavailable."
+}
 $extractScriptPath = Join-Path `
   ([System.IO.Path]::GetTempPath()) `
   "amz-api-extract-manifest-$([Guid]::NewGuid().ToString('N')).cjs"
-$extractScript = 'const asar=require("@electron/asar");process.stdout.write(asar.extractFile(process.argv[2],process.argv[3]));'
+$extractScript = 'const asar=require(process.argv[2]);process.stdout.write(asar.extractFile(process.argv[3],process.argv[4]));'
 [System.IO.File]::WriteAllText(
   $extractScriptPath,
   $extractScript,
   (New-Object System.Text.UTF8Encoding($false))
 )
 try {
-  $manifestRaw = @(& $nodePath $extractScriptPath $asarPath $manifestEntry) -join ""
+  $manifestRaw = @(
+    & $nodePath $extractScriptPath $asarModulePath $asarPath $manifestEntry
+  ) -join ""
   if ($LASTEXITCODE -ne 0) {
     throw "Unable to extract the Windows Hello manifest from app.asar."
   }

@@ -103,9 +103,10 @@ describe("Windows x64 Notebook Key packaging", () => {
     expect(verifier).toContain("Get-Sha256Hex -Path $addonPath");
     expect(verifier).not.toContain("Get-FileHash");
     expect(verifier).toContain("amz-api-extract-manifest-");
+    expect(verifier).toContain('node_modules\\@electron\\asar');
     expect(verifier).toContain("[System.IO.File]::WriteAllText(");
     expect(verifier).toContain(
-      "& $nodePath $extractScriptPath $asarPath $manifestEntry",
+      "& $nodePath $extractScriptPath $asarModulePath $asarPath $manifestEntry",
     );
     expect(verifier).toContain(
       "Remove-Item -LiteralPath $extractScriptPath -Force",
