@@ -134,6 +134,16 @@ describe("Windows x64 Notebook Key packaging", () => {
     expect(nativeSource).toContain(
       "owner_process_id != GetCurrentProcessId()",
     );
+    expect(nativeSource).toContain(
+      "ABI::Windows::Foundation::AsyncStatus::Started",
+    );
+    expect(nativeSource).toContain(
+      "ABI::Windows::Foundation::AsyncStatus::Completed",
+    );
+    expect(nativeSource).toContain(
+      "ABI::Windows::Foundation::AsyncStatus::Canceled",
+    );
+    expect(nativeSource).not.toContain("AsyncStatus_Started");
 
     expect(workflow.indexOf("npm run check")).toBeLessThan(
       workflow.indexOf("npm run dist:win"),

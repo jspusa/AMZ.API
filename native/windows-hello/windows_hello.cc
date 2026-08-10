@@ -164,23 +164,23 @@ void ExecuteVerification(napi_env, void* data) {
 
   const auto deadline = std::chrono::steady_clock::now() + kMaximumWait;
   ABI::Windows::Foundation::AsyncStatus status =
-      ABI::Windows::Foundation::AsyncStatus_Started;
+      ABI::Windows::Foundation::AsyncStatus::Started;
   while (std::chrono::steady_clock::now() < deadline) {
     if (FAILED(info->get_Status(&status))) {
       work->token = "failed";
       break;
     }
-    if (status != ABI::Windows::Foundation::AsyncStatus_Started) break;
+    if (status != ABI::Windows::Foundation::AsyncStatus::Started) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(25));
   }
 
-  if (status == ABI::Windows::Foundation::AsyncStatus_Started) {
+  if (status == ABI::Windows::Foundation::AsyncStatus::Started) {
     info->Cancel();
     work->token = "timeout";
-  } else if (status == ABI::Windows::Foundation::AsyncStatus_Completed) {
+  } else if (status == ABI::Windows::Foundation::AsyncStatus::Completed) {
     ABI::Windows::Security::Credentials::UI::UserConsentVerificationResult result;
     if (SUCCEEDED(operation->GetResults(&result))) SetResultToken(work, result);
-  } else if (status == ABI::Windows::Foundation::AsyncStatus_Canceled) {
+  } else if (status == ABI::Windows::Foundation::AsyncStatus::Canceled) {
     work->token = "canceled";
   } else {
     work->token = "failed";
