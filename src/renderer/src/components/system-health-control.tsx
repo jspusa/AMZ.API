@@ -255,8 +255,8 @@ export default function SystemHealthControl({
                 <div>
                   <p className="eyebrow">VERSION GUIDANCE</p>
                   <h3 id="api-version-recommendation-title">API 版本更新建議</h3>
-                  <strong>{appVersion ? `目前 Mac App ${appVersion}` : "正在確認本機 App 版本"}</strong>
-                  <p>GitHub Release 出現新版時，先更新 Mac App／Bridge，再重跑唯讀健檢；網頁不會自行替換 Amazon API 能力。</p>
+                  <strong>{appVersion ? `目前本機 App ${appVersion}` : "正在確認本機 App 版本"}</strong>
+                  <p>GitHub Release 出現新版時，先更新本機 App／Bridge，再重跑唯讀健檢；網頁不會自行替換 Amazon API 能力。</p>
                 </div>
               </section>
 
@@ -276,7 +276,7 @@ export default function SystemHealthControl({
               <div>
                 <p className="eyebrow">LOCAL DISPLAY</p>
                 <h3 id="font-size-preference-title">介面字級</h3>
-                <small>只在這台 Mac 保存顯示偏好，不保存商品、銷售或其他營運資料。</small>
+                <small>只在這台電腦保存顯示偏好，不保存商品、銷售或其他營運資料。</small>
               </div>
               <div role="radiogroup" aria-label="介面字級">
                 {UI_FONT_SIZE_OPTIONS.map((option) => (
@@ -317,10 +317,10 @@ export default function SystemHealthControl({
                   <span className="automation-badge manual"><i />需人工</span>
                 </div>
                 <div className="connection-grid system-info-grid">
-                  <article><span>1</span><div><strong>SP-API Private Seller App</strong><p>Amazon 資料由 Mac Bridge 依固定白名單讀取。</p></div></article>
-                  <article><span>2</span><div><strong>Mac Keychain Secrets</strong><p>本機憑證只以加密密文留在這台 Mac。</p></div></article>
+                  <article><span>1</span><div><strong>SP-API Private Seller App</strong><p>Amazon 資料由本機 Bridge 依固定白名單讀取。</p></div></article>
+                  <article><span>2</span><div><strong>本機系統安全儲存區</strong><p>本機憑證只以加密密文留在這台電腦。</p></div></article>
                   <article><span>3</span><div><strong>FBA only</strong><p>健檢、庫存與營運資料都保留 FBA 證據邊界。</p></div></article>
-                  <article><span>4</span><div><strong>寫入防呆</strong><p>預檢、Touch ID、單次送出與唯讀回查不可略過。</p></div></article>
+                  <article><span>4</span><div><strong>寫入防呆</strong><p>預檢、Notebook 鑰匙（Touch ID／Windows Hello）、單次送出與唯讀回查不可略過。Windows Hello（指紋／臉部／PIN 由 Windows 決定）不會回傳所用方式。</p></div></article>
                 </div>
               </div>
             </details>

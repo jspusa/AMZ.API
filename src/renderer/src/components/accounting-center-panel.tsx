@@ -164,7 +164,7 @@ export function AccountingCenterPanel({ marketplaceId }: { marketplaceId: string
         )}
         {canPlan(capability) && dateRequirement === "START_ONLY_ENDS_NOW" && (
           <small>
-            FBA 費用預估只使用開始日，且須至少早於現在 72 小時；結束時間由 Mac main process 固定為送出當下 NOW，不會使用上方的舊日期午夜。
+            FBA 費用預估只使用開始日，且須至少早於現在 72 小時；結束時間由本機主程序固定為送出當下 NOW，不會使用上方的舊日期午夜。
           </small>
         )}
         {canPlan(capability) && dateRequirement === "START_AND_END" && !datesReady && (

@@ -111,7 +111,7 @@ export default function ConnectionPanel({
     try {
       await window.fbaOS.credentials.openEditor();
       await refreshSummary();
-      setMessage("Mac 本機 SP-API 安全輸入視窗已關閉，狀態已重新讀取。");
+      setMessage("Notebook 鑰匙的 SP-API 安全輸入視窗已關閉，狀態已重新讀取。");
       onConnectionChanged();
     } catch (openError) {
       setError(cleanError(openError));
@@ -143,7 +143,7 @@ export default function ConnectionPanel({
     try {
       await window.fbaOS.advertisingCredentials.openEditor();
       await refreshSummary();
-      setMessage("Mac 本機 Ads 安全輸入視窗已關閉，狀態已重新讀取。");
+      setMessage("Notebook 鑰匙的 Ads 安全輸入視窗已關閉，狀態已重新讀取。");
       onConnectionChanged();
     } catch (openError) {
       setError(cleanError(openError));
@@ -182,7 +182,7 @@ export default function ConnectionPanel({
       const nextSummary = await window.fbaOS.advertisingCredentials.clear();
       setAdsSummary(nextSummary);
       setAdsTest(null);
-      setMessage("這台 Mac 上的 Amazon Ads 憑證已清除；SP-API 憑證不受影響。");
+      setMessage("這台電腦上的 Amazon Ads 憑證已清除；SP-API 憑證不受影響。");
       onConnectionChanged();
     } catch (clearError) {
       setError(cleanError(clearError));
@@ -192,7 +192,7 @@ export default function ConnectionPanel({
   };
 
   const clearCredentials = async () => {
-    if (!window.confirm("確定清除這台 Mac 上的所有 Amazon／R2 憑證？此動作不會刪除 GitHub 程式。")) return;
+    if (!window.confirm("確定清除這台電腦上的所有 Amazon／R2 憑證？此動作不會刪除 GitHub 程式。")) return;
     setBusy("clear");
     setError(null);
     try {
@@ -227,10 +227,10 @@ export default function ConnectionPanel({
           type="button"
           className={`mac-bridge-button ${configuredCount ? "connected" : ""}`}
           onClick={() => setOpen(true)}
-          aria-label="開啟 Mac 安全連線設定"
+          aria-label="開啟 Notebook 安全連線設定"
         >
           <span>{configuredCount ? "✓" : "⌁"}</span>
-          <div><strong>Mac 安全連線</strong><small>{configuredCount ? `${configuredCount} 區域已連線` : "輸入 API 憑證"}</small></div>
+          <div><strong>Notebook 安全連線</strong><small>{configuredCount ? `${configuredCount} 區域已連線` : "輸入 API 憑證"}</small></div>
         </button>
       )}
 
@@ -241,12 +241,12 @@ export default function ConnectionPanel({
           <aside className="connection-panel" role="dialog" aria-modal="true" aria-labelledby="connection-panel-title">
             <header>
               <div className="connection-panel-icon">⌁</div>
-              <div><p>LOCAL KEYCHAIN BRIDGE</p><h2 id="connection-panel-title">Mac 安全連線</h2><small>GitHub 沒有金鑰；Amazon 資料只在這個 App 內流動。</small></div>
+              <div><p>LOCAL NOTEBOOK KEY</p><h2 id="connection-panel-title">Notebook 安全連線</h2><small>GitHub 沒有金鑰；Amazon 資料只在這個本機 App 內流動。</small></div>
               <button type="button" onClick={() => setOpen(false)} disabled={Boolean(busy)} aria-label="關閉">×</button>
             </header>
 
             <section className="vault-status-grid compact">
-              <article className={summary?.encryptionAvailable ? "ready" : "attention"}><span>MAC KEYCHAIN</span><strong>{summary?.encryptionAvailable ? "安全儲存可用" : "目前不可用"}</strong><small>Secret 不會傳到 GitHub</small></article>
+              <article className={summary?.encryptionAvailable ? "ready" : "attention"}><span>SYSTEM KEY STORE</span><strong>{summary?.encryptionAvailable ? "安全儲存可用" : "目前不可用"}</strong><small>Secret 不會傳到 GitHub</small></article>
               <article className={configuredCount ? "ready" : "attention"}><span>AMAZON SP-API</span><strong>{configuredCount ? `${configuredCount} 個區域已設定` : "等待連線"}</strong><small>{configuredCount ? formatTime(summary?.updatedAt ?? null) : "完成下方 4 項資料即可"}</small></article>
             </section>
 
@@ -268,9 +268,9 @@ export default function ConnectionPanel({
 
             <section className="credential-section">
               <div className="credential-heading"><span>SP</span><div><strong>SP-API／R2／Skill 本機安全輸入</strong><small>所有敏感欄位只存在 main process 建立的本機 modal</small></div><b className={summary?.lwaConfigured ? "saved" : ""}>{summary?.lwaConfigured ? "已保存" : "必填"}</b></div>
-              <div className="connection-explainer"><span>i</span><p>GitHub Pages 只讀取遮罩摘要，不能建立或送出憑證 save payload。已保存欄位不會回填；本機視窗留白會沿用 Keychain 既有值。</p></div>
+              <div className="connection-explainer"><span>i</span><p>GitHub Pages 只讀取遮罩摘要，不能建立或送出憑證 save payload。已保存欄位不會回填；本機視窗留白會沿用本機系統安全儲存區既有值。</p></div>
               <div className="connection-actions">
-                <button type="button" className="primary" onClick={() => void openCredentialEditor()} disabled={Boolean(busy) || !summary?.encryptionAvailable}>{busy === "sp-open" ? "開啟中…" : "開啟 Mac 本機 SP-API 安全輸入"}</button>
+                <button type="button" className="primary" onClick={() => void openCredentialEditor()} disabled={Boolean(busy) || !summary?.encryptionAvailable}>{busy === "sp-open" ? "開啟中…" : "開啟 Notebook SP-API 安全輸入"}</button>
               </div>
             </section>
 
@@ -281,13 +281,13 @@ export default function ConnectionPanel({
                 <ol>
                   <li><span>1</span><div><strong>建立獨立 Ads LWA security profile</strong><p>不沿用 SP-API LWA；申請 Ads API access 後，依官方流程完成 authorization grant。</p></div></li>
                   <li><span>2</span><div><strong>設定 Viewer 權限</strong><p>在 Amazon Ads Campaign manager 把專用使用者設為 Viewer；OAuth scope 名稱雖含 campaign_management，本 App 仍無任何 campaign write route。</p></div></li>
-                  <li><span>3</span><div><strong>開啟 Mac 本機安全輸入</strong><p>OAuth 區域與三個憑證欄位只存在本機 modal sheet；GitHub Pages 不持有這些 input state。Profile ID 不需要複製或貼上。</p></div></li>
+                  <li><span>3</span><div><strong>開啟 Notebook 本機安全輸入</strong><p>OAuth 區域與三個憑證欄位只存在本機 modal sheet；GitHub Pages 不持有這些 input state。Profile ID 不需要複製或貼上。</p></div></li>
                 </ol>
               </div>
               <div className="connection-actions">
                 <button type="button" className="secondary" onClick={() => void testAdvertisingConnection()} disabled={Boolean(busy) || !adsSummary?.configured}>{busy === "ads-test" ? "Ads 測試中…" : "測試 Ads 唯讀連線"}</button>
-                <button type="button" className="primary" onClick={() => void openAdvertisingCredentialEditor()} disabled={Boolean(busy) || !adsSummary?.encryptionAvailable}>{busy === "ads-open" ? "開啟中…" : "開啟 Mac 本機 Ads 安全輸入"}</button>
-                {adsSummary?.hasVault && <button type="button" className="danger-link" onClick={() => void clearAdvertisingCredentials()} disabled={Boolean(busy)}>{busy === "ads-clear" ? "清除中…" : "Touch ID 清除 Ads 憑證"}</button>}
+                <button type="button" className="primary" onClick={() => void openAdvertisingCredentialEditor()} disabled={Boolean(busy) || !adsSummary?.encryptionAvailable}>{busy === "ads-open" ? "開啟中…" : "開啟 Notebook Ads 安全輸入"}</button>
+                {adsSummary?.hasVault && <button type="button" className="danger-link" onClick={() => void clearAdvertisingCredentials()} disabled={Boolean(busy)}>{busy === "ads-clear" ? "清除中…" : "Touch ID／Windows Hello 清除 Ads 憑證"}</button>}
               </div>
               {adsTest && <p className="connection-sop-note">{adsTest.ok ? "已驗證 Seller Profile 與 Campaign 唯讀查詢。" : adsTest.message}</p>}
               <p className="connection-sop-note">安全邊界：GitHub Pages 只能開啟本機 sheet、讀取 redacted status、測試與清除；無法送出 Ads save payload。請勿將憑證貼入訊息、GitHub、URL 或試算表。</p>
@@ -310,7 +310,7 @@ export default function ConnectionPanel({
             </section>
 
             <details className="optional-credential-section">
-              <summary><div><span>•••</span><strong>進階選配狀態</strong><small>R2 與補貨 Skill 也只能在 Mac 本機安全輸入</small></div><i>＋</i></summary>
+              <summary><div><span>•••</span><strong>進階選配狀態</strong><small>R2 與補貨 Skill 也只能在 Notebook 鑰匙安全輸入</small></div><i>＋</i></summary>
               <div className="advanced-credential-block">
                 <div className="advanced-credential-heading"><strong>Cloudflare R2 圖片上傳</strong><small>{summary?.imageStorageConfigured ? `已連線 · ${summary.imagePublicBaseUrl}` : "未設定仍可拖拉預覽與貼公開 URL"}</small></div>
               </div>
@@ -326,10 +326,12 @@ export default function ConnectionPanel({
               <button type="button" className="secondary" onClick={() => void testConnection()} disabled={Boolean(busy) || !configuredCount}>{busy === "test" ? "測試中…" : "重新測試"}</button>
             </div>
 
-            <footer>
-              <div><strong>Mac 鑰匙版本</strong><small>{update.state === "downloaded" ? `安全更新 v${update.version} 已下載` : update.message ?? `v${version} · GitHub 控制台自動保持最新`}</small></div>
-              {update.state === "downloaded" ? <button type="button" onClick={() => void window.fbaOS.updates.install()}>更新並重啟</button> : <button type="button" onClick={() => void checkUpdate()} disabled={busy === "update"}>{busy === "update" ? "檢查中…" : "檢查鑰匙更新"}</button>}
-              {summary?.hasVault && <button type="button" className="danger-link" onClick={() => void clearCredentials()} disabled={Boolean(busy)}>清除本機憑證</button>}
+            <footer className="connection-panel-footer">
+              <div className="connection-panel-release"><strong>Notebook 鑰匙版本</strong><small>{update.state === "downloaded" ? `安全更新 v${update.version} 已下載` : update.message ?? `v${version} · GitHub 介面自動保持最新；本機憑證不會隨介面更新上傳。`}</small></div>
+              <div className="connection-panel-footer-actions">
+                {update.state === "downloaded" ? <button type="button" onClick={() => void window.fbaOS.updates.install()}>更新並重啟</button> : <button type="button" onClick={() => void checkUpdate()} disabled={busy === "update"}>{busy === "update" ? "檢查中…" : "檢查 Notebook 鑰匙更新"}</button>}
+                {summary?.hasVault && <button type="button" className="danger-link" onClick={() => void clearCredentials()} disabled={Boolean(busy)}>清除本機憑證</button>}
+              </div>
             </footer>
           </aside>
         </div>

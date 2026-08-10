@@ -122,7 +122,7 @@ export class AdvertisingCredentialVault {
       throw error;
     }
     if (!(await this.encryptionAvailable())) {
-      throw new Error("macOS Keychain 目前無法使用，因此系統拒絕解密 Amazon Ads 憑證。");
+      throw new Error("本機系統安全儲存區目前無法使用，因此系統拒絕解密 Amazon Ads 憑證。");
     }
     const decrypted = await safeStorage.decryptStringAsync(encrypted);
     const parsed = parseStored(decrypted.result);
@@ -134,7 +134,7 @@ export class AdvertisingCredentialVault {
   async save(input: AdvertisingCredentialInput): Promise<AdvertisingCredentialSummary> {
     validateInput(input);
     if (!(await this.encryptionAvailable())) {
-      throw new Error("macOS Keychain 目前無法使用；系統不會用明文保存 Ads 憑證。");
+      throw new Error("本機系統安全儲存區目前無法使用；系統不會用明文保存 Ads 憑證。");
     }
     const current = await this.load();
     const next = structuredClone(current);

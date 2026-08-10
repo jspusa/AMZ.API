@@ -135,7 +135,7 @@ export function parseVariationFamilyResponse(
     | { marketplaceId: string; asin: string; sellerSku?: never },
 ): VariationFamilyView {
   if (!isRecord(value)) {
-    throw new Error("Mac App Bridge 回傳的變體資料格式不正確。");
+    throw new Error("本機 AMZ.API Bridge 回傳的變體資料格式不正確。");
   }
   const parent = value.parent;
   const children = value.children;
@@ -173,7 +173,7 @@ export function parseVariationFamilyResponse(
     !isStrings(value.boundaries) ||
     typeof value.notice !== "string"
   ) {
-    throw new Error("Mac App Bridge 回傳的變體資料不完整，已停止規劃。");
+    throw new Error("本機 AMZ.API Bridge 回傳的變體資料不完整，已停止規劃。");
   }
   if (value.queried.role !== "parent" && !value.queried.fba) {
     throw new Error("查詢結果無法確認為 FBA 子商品，已停止規劃。");
@@ -308,7 +308,7 @@ export function buildVariationMovePlan(
     warnings.push("此 SKU 目前沒有 parent；正式建立關係仍需另外設計安全寫入流程。");
   }
   warnings.push(
-    "只有 Amazon Validation Preview、Touch ID 與送出後唯讀回查全部完成，介面才會標示該階段成功。",
+    "只有 Amazon Validation Preview、Notebook 鑰匙（Touch ID／Windows Hello）確認與送出後唯讀回查全部完成，介面才會標示該階段成功。",
   );
 
   return {
@@ -320,13 +320,13 @@ export function buildVariationMovePlan(
     proposedSteps: source.parentSku
       ? [
           `預檢並解除 ${source.sellerSku} 與 ${source.parentSku} 的舊關係`,
-          "Touch ID 後送出解除，並唯讀回查為獨立 SKU",
+          "Notebook 鑰匙確認後送出解除，並唯讀回查為獨立 SKU",
           `補齊 CHILD PTD 欄位後，預檢並加入 ${safeTarget.sellerSku}`,
-          "Touch ID 後送出加入，並唯讀回查 parent、theme 與維度",
+          "Notebook 鑰匙確認後送出加入，並唯讀回查 parent、theme 與維度",
         ]
       : [
           `補齊 CHILD PTD 欄位後，預檢並加入 ${safeTarget.sellerSku}`,
-          "Touch ID 後送出加入，並唯讀回查 parent、theme 與維度",
+          "Notebook 鑰匙確認後送出加入，並唯讀回查 parent、theme 與維度",
         ],
   };
 }

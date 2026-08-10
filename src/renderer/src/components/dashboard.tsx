@@ -127,7 +127,7 @@ export function dashboardConnectionBadgeCopy(
   if (evidence === "verified-live") {
     return {
       title: "Amazon 已連線",
-      detail: "Live · Mac 安全連線",
+      detail: "Live · 本機安全連線",
       ariaLabel: "Amazon 已連線",
       className: "live",
     };
@@ -135,7 +135,7 @@ export function dashboardConnectionBadgeCopy(
   if (evidence === "configured-live") {
     return {
       title: "Live 憑證已設定",
-      detail: "尚未驗證 · Mac 安全連線",
+      detail: "尚未驗證 · 本機安全連線",
       ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
       className: "configured",
     };
@@ -143,14 +143,14 @@ export function dashboardConnectionBadgeCopy(
   if (evidence === "demo") {
     return {
       title: "展示資料",
-      detail: "Demo · Mac 安全連線",
+      detail: "Demo · 本機安全連線",
       ariaLabel: "展示資料",
       className: "demo",
     };
   }
   return {
     title: checking ? "檢查連線中" : "連線狀態待確認",
-    detail: "狀態未知 · Mac 安全連線",
+    detail: "狀態未知 · 本機安全連線",
     ariaLabel: checking ? "正在檢查 Amazon 連線" : "Amazon 連線狀態尚未確認",
     className: "unavailable",
   };
@@ -594,7 +594,7 @@ export default function Dashboard({
         )
       ) {
         throw new Error(
-          "這台 Mac App Bridge 尚未支援新版銷售趨勢，請安裝新版後再同步。",
+          "這台電腦上的 AMZ.API Bridge 尚未支援新版銷售趨勢，請安裝新版後再同步。",
         );
       }
       if (salesTrendAbortRef.current === controller) {
@@ -1146,7 +1146,7 @@ export default function Dashboard({
                 type="button"
                 className={`mode-badge workspace-connection-status ${connectionBadge.className}`}
                 onClick={onOpenConnection}
-                aria-label={`${connectionBadge.ariaLabel}；開啟 Mac 安全連線設定`}
+                aria-label={`${connectionBadge.ariaLabel}；開啟本機安全連線設定`}
                 aria-haspopup="dialog"
               >
                 <i />
@@ -1175,7 +1175,7 @@ export default function Dashboard({
         <main id="workspace-top" className="workspace-content" tabIndex={-1}>
           <h1 className="visually-hidden">AMZ.API FBA 營運首頁</h1>
 
-          {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角 Mac 安全連線加入本機憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟 Mac 安全連線</button></section>}
+          {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
 
           <div className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
             <section className="operations-pulse">

@@ -39,7 +39,7 @@ describe("dashboard experience refinement", () => {
 
     expect(source).toContain("操作偏好與系統說明");
     expect(source).toContain("銷售趨勢自動同步");
-    expect(source).toContain("Mac Keychain Secrets");
+    expect(source).toContain("本機系統安全儲存區");
     expect(source).toContain("API 版本更新建議");
     expect(source).toContain("下次功能靈感");
     expect(source).toContain("不會讀取或分析 SKU、銷售、憑證等私密資料");
@@ -48,7 +48,7 @@ describe("dashboard experience refinement", () => {
     expect(markup).not.toContain("FBA 帳務中心");
   });
 
-  it("uses the top Amazon status as the only Mac connection entry", async () => {
+  it("uses the top Amazon status as the only local connection entry", async () => {
     const [appSource, connectionSource, dashboardSource] = await Promise.all([
       readFile(new URL("../src/renderer/src/App.tsx", import.meta.url), "utf8"),
       readFile(
@@ -64,7 +64,7 @@ describe("dashboard experience refinement", () => {
     expect(appSource).toContain("showTrigger={false}");
     expect(appSource).toContain("onOpenConnection={() => setConnectionOpen(true)}");
     expect(connectionSource).toContain("{showTrigger && (");
-    expect(dashboardSource).toContain("開啟 Mac 安全連線設定");
+    expect(dashboardSource).toContain("開啟本機安全連線設定");
     expect(dashboardSource).toContain("aria-haspopup=\"dialog\"");
   });
 

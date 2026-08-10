@@ -365,9 +365,9 @@ describe("sales trend comparison chart", () => {
 
   it("separates loading and API errors from chart data", () => {
     expect(render({ loading: true })).toContain("正在彙整每日 FBA 銷售");
-    const errorMarkup = render({ error: "請安裝新版 Mac App。" });
+    const errorMarkup = render({ error: "請安裝新版 AMZ.API。" });
     expect(errorMarkup).toContain('role="alert"');
-    expect(errorMarkup).toContain("請安裝新版 Mac App");
+    expect(errorMarkup).toContain("請安裝新版 AMZ.API");
   });
 
   it("maps pointer positions to one clamped point index without adding per-point tab stops", () => {

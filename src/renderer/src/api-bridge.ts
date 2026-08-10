@@ -55,7 +55,7 @@ async function bridgedFetch(
     input instanceof Request ? input.url : input instanceof URL ? input.toString() : input;
   const url = new URL(inputUrl, window.location.href);
   if (!url.pathname.startsWith("/api/")) return nativeFetch(input, init);
-  if (!window.fbaOS?.api) throw new TypeError("Mac 安全橋接尚未啟動。");
+  if (!window.fbaOS?.api) throw new TypeError("本機安全橋接尚未啟動。");
 
   const requestId = `api-${Date.now().toString(36)}-${crypto.randomUUID()}`;
   const method = String(init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();

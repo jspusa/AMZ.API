@@ -90,7 +90,7 @@ export default function AdsDrawer({
         </section>
 
         <section className="ads-connection-card">
-          <div className="ads-connection-heading"><div><span className={`connection-light ${status?.verified ? "connected" : ""}`} /><div><strong>{loading ? "檢查 Ads 設定…" : status?.verified ? "Amazon Ads 已驗證" : status?.configured ? "Ads 憑證已設定 · 這個站點尚未驗證" : "Amazon Ads 尚未設定"}</strong><p>{status?.notice ?? "正在由 Mac 主程式驗證獨立 Ads LWA 與 Seller Profile。"}</p></div></div><span className="capability-pill separate">不同於 SP-API</span></div>
+          <div className="ads-connection-heading"><div><span className={`connection-light ${status?.verified ? "connected" : ""}`} /><div><strong>{loading ? "檢查 Ads 設定…" : status?.verified ? "Amazon Ads 已驗證" : status?.configured ? "Ads 憑證已設定 · 這個站點尚未驗證" : "Amazon Ads 尚未設定"}</strong><p>{status?.notice ?? "正在由本機主程序驗證獨立 Ads LWA 與 Seller Profile。"}</p></div></div><span className="capability-pill separate">不同於 SP-API</span></div>
           {status && (
             <dl className="ads-connection-facts">
               <div><dt>Ads LWA client</dt><dd>{status.lwaConfigured ? "已設定" : "未設定"}</dd></div>
@@ -120,7 +120,7 @@ export default function AdsDrawer({
           </article>
         </section>
 
-        <div className="price-warning compact"><strong>OAuth scope 名稱不等於可寫入</strong><p>Amazon 官方使用 advertising::campaign_management；這裡要求 Campaign manager Viewer，而 Mac 主程式只實作 Profiles 與 Campaign query。建立、修改、啟用與暫停廣告都沒有 IPC 或 API route。</p></div>
+        <div className="price-warning compact"><strong>OAuth scope 名稱不等於可寫入</strong><p>Amazon 官方使用 advertising::campaign_management；這裡要求 Campaign manager Viewer，而本機主程序只實作 Profiles 與 Campaign query。建立、修改、啟用與暫停廣告都沒有 IPC 或 API route。</p></div>
 
         <div className="ads-actions">
           <a href="https://advertising.amazon.com/API/docs/en-us/guides/onboarding/apply-for-access" target="_blank" rel="noreferrer">申請 Amazon Ads API ↗</a>

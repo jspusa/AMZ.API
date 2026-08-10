@@ -3383,7 +3383,7 @@ async function fetchLiveVariationFamily(
     boundaries: [
       "Family 快照本身是唯讀資料；只有固定的變體改掛流程可送出 allowlisted PATCH。",
       "既有子商品改掛另一個 parent 需要先移除舊關係再重建，屬於非原子流程。",
-      "解除與加入各自都必須重新讀取、Amazon Validation Preview、Touch ID、持久防重送與送出後唯讀回查。",
+      "解除與加入各自都必須重新讀取、Amazon Validation Preview、Notebook 鑰匙（Touch ID／Windows Hello）確認、持久防重送與送出後唯讀回查。",
       "Parent 僅作為不可售的唯讀容器例外；所有可拖移 child 都必須可確認為 FBA。",
     ],
     notice: compatibilityFallback
@@ -3618,7 +3618,7 @@ export async function getVariationMovePreparation(input: {
     blockers: [],
     warnings: [
       context.sourceResult.member.parentSku
-        ? "解除舊 parent 與加入新 parent 是兩個非原子階段；每階段都會獨立預檢、Touch ID 與回查。"
+        ? "解除舊 parent 與加入新 parent 是兩個非原子階段；每階段都會獨立預檢、Notebook 鑰匙（Touch ID／Windows Hello）確認與回查。"
         : "此 SKU 目前沒有 parent；加入新 parent 前仍會重新確認為獨立 FBA SKU。",
       `必要欄位來自 Amazon CHILD PTD${context.schemaChecksum ? `（schema ${context.schemaChecksum.slice(0, 12)}…）` : ""}。`,
     ],
@@ -6273,7 +6273,7 @@ function getDemoVariationFamily(
     boundaries: [
       "展示 family 快照與預檢不會送出 PUT、PATCH 或 DELETE。",
       "既有子商品改掛另一個 parent 需要先移除舊關係再重建，屬於非原子流程。",
-      "正式模式只允許固定的兩階段 Validation Preview、Touch ID、持久防重送、單次 PATCH 與唯讀回查。",
+      "正式模式只允許固定的兩階段 Validation Preview、Notebook 鑰匙（Touch ID／Windows Hello）確認、持久防重送、單次 PATCH 與唯讀回查。",
       "Parent 僅作為不可售的唯讀容器例外；所有可拖移 child 都必須可確認為 FBA。",
     ],
     notice: "展示 family 只供拖拉規劃測試；Amazon 不會收到任何變更。",
@@ -10921,7 +10921,7 @@ export async function searchOrders(
       rateLimit: null,
       notice: isConfiguredForMarketplace(input.marketplaceId)
         ? "目前由 SP_API_MODE 強制使用展示資料。"
-        : `${MARKETPLACES[input.marketplaceId].label}站尚未在 Mac Keychain 加入 refresh token，因此顯示展示資料。`,
+        : `${MARKETPLACES[input.marketplaceId].label}站尚未在本機系統安全儲存區加入 refresh token，因此顯示展示資料。`,
     };
   }
 
@@ -11043,7 +11043,7 @@ export async function getSalesTrend(input: {
     notice: `${
       isConfiguredForMarketplace(input.marketplaceId)
         ? "目前由 SP_API_MODE 強制使用展示資料；趨勢只供版面測試。"
-        : `${MARKETPLACES[input.marketplaceId].label}站尚未在 Mac Keychain 加入 refresh token，因此顯示展示趨勢。`
+        : `${MARKETPLACES[input.marketplaceId].label}站尚未在本機系統安全儲存區加入 refresh token，因此顯示展示趨勢。`
     }${comparisonNotice ? ` ${comparisonNotice}` : ""}`,
   };
 }

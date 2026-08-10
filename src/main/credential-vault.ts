@@ -298,7 +298,7 @@ export class CredentialVault {
       throw error;
     }
     if (!(await this.encryptionAvailable())) {
-      throw new Error("macOS Keychain 目前無法使用，因此系統拒絕解密 Amazon 憑證。");
+      throw new Error("本機系統安全儲存區目前無法使用，因此系統拒絕解密 Amazon 憑證。");
     }
     const decrypted = await safeStorage.decryptStringAsync(encrypted);
     const parsed = safeParse(decrypted.result);
@@ -311,7 +311,7 @@ export class CredentialVault {
   async save(input: CredentialInput): Promise<CredentialSummary> {
     validateCredentialInput(input);
     if (!(await this.encryptionAvailable())) {
-      throw new Error("macOS Keychain 目前無法使用；系統不會用明文保存憑證。");
+      throw new Error("本機系統安全儲存區目前無法使用；系統不會用明文保存憑證。");
     }
     const current = await this.load();
     const next: StoredCredentials = structuredClone(current);
