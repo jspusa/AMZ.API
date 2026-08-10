@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-  addLocalSpellcheckIssues,
   contentHighlightSegments,
-  LOCAL_SPELLCHECK_WORD_LIMIT,
   locateInvisibleCharacters,
   summarizeContentAudit,
-  wordsForLocalSpellcheck,
   type ContentAuditRow,
 } from "../src/renderer/src/content-quality";
+import {
+  addPagesDictionarySpellingIssues,
+  CONTENT_SPELLING_ALLOWLIST_COUNT,
+  CONTENT_SPELLING_DICTIONARY_LANGUAGE,
+  CONTENT_SPELLING_DICTIONARY_VERSION,
+  sharedContentSpellingMatch,
+} from "../src/renderer/src/content-spelling-rules";
 
 const rows: ContentAuditRow[] = [
   {
@@ -30,14 +34,66 @@ const rows: ContentAuditRow[] = [
 ];
 
 describe("renderer content quality helpers", () => {
-  it("collects bounded English words while excluding brands and acronyms", () => {
-    const words = wordsForLocalSpellcheck(rows);
+  it("uses one versioned general Pages dictionary on every platform", () => {
+    expect(CONTENT_SPELLING_DICTIONARY_VERSION).toContain("dictionary-en@4.0.0");
+    expect(CONTENT_SPELLING_DICTIONARY_LANGUAGE).toContain("en_US");
+    expect(CONTENT_SPELLING_ALLOWLIST_COUNT).toBeGreaterThan(10);
+    const checked = addPagesDictionarySpellingIssues([{
+      ...rows[0],
+      title: "Trukey Tendons",
+      bulletPoints: ["Naturall treats"],
+      ingredients: "Cocount Glycerin",
+      issues: [],
+    }]);
 
-    expect(words).toContain("Naturall");
-    expect(words).toContain("Cocount");
-    expect(words).not.toContain("AFreschi");
-    expect(words).not.toContain("FBA");
+    expect(checked[0].issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: "title",
+        token: "Trukey",
+        suggestion: "Turkey",
+        source: "pages-dictionary",
+      }),
+      expect.objectContaining({
+        field: "bulletPoints",
+        token: "Naturall",
+        suggestion: "Natural",
+        source: "pages-dictionary",
+      }),
+      expect.objectContaining({
+        field: "ingredients",
+        token: "Cocount",
+        suggestion: "Coconut",
+        source: "pages-dictionary",
+      }),
+    ]));
   });
+
+  it.each([
+    ["Trukey", "turkey"],
+    ["Protien", "protein"],
+    ["Cocount", "coconut"],
+    ["Artifical", "artificial"],
+    ["Nutriton", "nutrition"],
+    ["Resealabe", "resealable"],
+    ["Naturall", "natural"],
+    ["Ingrediants", "ingredients"],
+    ["Mackeral", "mackerel"],
+    ["recieve", "receive"],
+    ["mistakke", "mistake"],
+    ["Tukey", "turkey"],
+  ])("classifies %s with the shared non-OS dictionary", (word, suggestion) => {
+    expect(sharedContentSpellingMatch(word)).toEqual({
+      suggestion,
+      kind: "dictionary",
+    });
+  });
+
+  it.each(["crunch", "turnkey", "resalable", "equality"])(
+    "does not flag the valid English near-neighbor %s",
+    (word) => {
+      expect(sharedContentSpellingMatch(word)).toBeNull();
+    },
+  );
 
   it("always treats GooToE as an approved product term", () => {
     const brandedRows = [{
@@ -46,12 +102,7 @@ describe("renderer content quality helpers", () => {
       bulletPoints: ["GooToE training reward"],
     }];
 
-    expect(wordsForLocalSpellcheck(brandedRows)).not.toContain("GooToE");
-    expect(
-      addLocalSpellcheckIssues(brandedRows, [
-        { word: "GooToE", suggestions: ["Goatee"] },
-      ])[0].issues,
-    ).not.toEqual(
+    expect(addPagesDictionarySpellingIssues(brandedRows)[0].issues).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ token: "GooToE" }),
       ]),
@@ -74,15 +125,35 @@ describe("renderer content quality helpers", () => {
       issues: [],
     }];
 
-    expect(wordsForLocalSpellcheck(approvedRows)).not.toEqual(
-      expect.arrayContaining(approvedTerms),
-    );
-    expect(
-      addLocalSpellcheckIssues(
-        approvedRows,
-        approvedTerms.map((word) => ({ word, suggestions: ["different"] })),
-      )[0].issues,
-    ).toEqual([]);
+    expect(addPagesDictionarySpellingIssues(approvedRows)[0].issues).toEqual([]);
+  });
+
+  it("keeps accepted catalog singular, plural and related variants out of typo results", () => {
+    const accepted = [
+      "snack", "snacks",
+      "mineral", "minerals",
+      "vitamin", "vitamins",
+      "package", "packages",
+      "customer", "customers",
+      "protein", "proteins",
+      "pretzel", "pretzels",
+      "source", "sourced",
+      "advertise", "advertised",
+      "balance", "balanced",
+      "indoor", "indoors",
+      "medium", "mediums",
+      "organic", "organics",
+      "purr-fectly",
+    ];
+    const acceptedRows: ContentAuditRow[] = [{
+      ...rows[0],
+      title: accepted.join(" "),
+      bulletPoints: [],
+      ingredients: "",
+      issues: [],
+    }];
+
+    expect(addPagesDictionarySpellingIssues(acceptedRows)[0].issues).toEqual([]);
   });
 
   it("locates U+200B with readable context and highlights it without changing content", () => {
@@ -142,6 +213,27 @@ describe("renderer content quality helpers", () => {
     expect(segments.map((segment) => segment.text).join("")).toBe(original);
   });
 
+  it("checks and highlights one misspelled part inside hyphenated catalog copy", () => {
+    const original = "Trukey-Sourced treats";
+    const checked = addPagesDictionarySpellingIssues([{
+      ...rows[0],
+      title: original,
+      bulletPoints: [],
+      ingredients: "",
+      issues: [],
+    }]);
+    const titleIssues = checked[0].issues.filter((issue) => issue.field === "title");
+
+    expect(titleIssues).toEqual([
+      expect.objectContaining({ token: "Trukey", suggestion: "Turkey" }),
+    ]);
+    expect(
+      contentHighlightSegments(original, titleIssues)
+        .filter((segment) => segment.highlighted)
+        .map((segment) => segment.text),
+    ).toEqual(["Trukey"]);
+  });
+
   it("only highlights complete typo-token boundaries", () => {
     const original = "Naturall treats can be naturally tasty";
     const segments = contentHighlightSegments(original, [
@@ -165,11 +257,8 @@ describe("renderer content quality helpers", () => {
     ).toBe(false);
   });
 
-  it("adds Mac-local spelling suggestions without changing content", () => {
-    const checked = addLocalSpellcheckIssues(rows, [
-      { word: "Naturall", suggestions: ["Natural"] },
-      { word: "Cocount", suggestions: ["Coconut"] },
-    ]);
+  it("adds Pages dictionary suggestions without changing content", () => {
+    const checked = addPagesDictionarySpellingIssues(rows);
 
     expect(checked[0].ingredients).toBe(rows[0].ingredients);
     expect(checked[0].issues).toEqual(
@@ -179,7 +268,7 @@ describe("renderer content quality helpers", () => {
           field: "bulletPoints",
           token: "Naturall",
           suggestion: "Natural",
-          source: "mac-spellcheck",
+          source: "pages-dictionary",
         }),
         expect.objectContaining({
           kind: "SUSPECTED_TYPO",
@@ -192,10 +281,7 @@ describe("renderer content quality helpers", () => {
   });
 
   it("counts affected SKUs once per issue category", () => {
-    const checked = addLocalSpellcheckIssues(rows, [
-      { word: "Naturall", suggestions: ["Natural"] },
-      { word: "Cocount", suggestions: ["Coconut"] },
-    ]);
+    const checked = addPagesDictionarySpellingIssues(rows);
 
     expect(summarizeContentAudit(checked, 12)).toEqual({
       total: 12,
@@ -209,38 +295,30 @@ describe("renderer content quality helpers", () => {
     });
   });
 
-  it("stops collecting immediately at 5,000 unique words", () => {
-    const suffix = (value: number): string => {
-      let result = "";
-      let current = value;
-      do {
-        result = String.fromCharCode(97 + (current % 26)) + result;
-        current = Math.floor(current / 26);
-      } while (current > 0);
-      return result.padStart(4, "a");
-    };
+  it("still applies explicit rules after a very large clean listing", () => {
     const first: ContentAuditRow = {
       ...rows[0],
-      title: Array.from(
-        { length: LOCAL_SPELLCHECK_WORD_LIMIT },
-        (_, index) => `catalogword${suffix(index)}`,
-      ).join(" "),
+      title: "natural ".repeat(5_100),
       bulletPoints: [],
       ingredients: "",
+      issues: [],
     };
-    const later = { ...rows[0] };
-    Object.defineProperty(later, "title", {
-      get: () => {
-        throw new Error("collector scanned past its limit");
-      },
-    });
+    const later = {
+      ...rows[0],
+      title: "Trukey ".repeat(2_000),
+      bulletPoints: ["Natural treats"],
+      ingredients: "Turkey",
+      issues: [],
+    };
+    const checked = addPagesDictionarySpellingIssues([first, later]);
 
-    const words = wordsForLocalSpellcheck([first, later]);
-
-    expect(words).toHaveLength(LOCAL_SPELLCHECK_WORD_LIMIT);
+    expect(checked[0].issues).toEqual([]);
+    expect(checked[1].issues).toEqual([
+      expect.objectContaining({ token: "Trukey", suggestion: "Turkey" }),
+    ]);
   });
 
-  it("does not spellcheck incomplete rows", () => {
+  it("does not apply spelling rules to incomplete rows", () => {
     const incomplete: ContentAuditRow = {
       ...rows[0],
       title: "Mistakke",
@@ -251,11 +329,6 @@ describe("renderer content quality helpers", () => {
       issues: [],
     };
 
-    expect(wordsForLocalSpellcheck([incomplete])).toEqual([]);
-    expect(
-      addLocalSpellcheckIssues([incomplete], [
-        { word: "Mistakke", suggestions: ["Mistake"] },
-      ])[0].issues,
-    ).toEqual([]);
+    expect(addPagesDictionarySpellingIssues([incomplete])[0].issues).toEqual([]);
   });
 });

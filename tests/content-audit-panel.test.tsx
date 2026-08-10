@@ -80,13 +80,15 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("疑似錯字");
     expect(markup).toContain("少於五個賣點");
     expect(markup).toContain("缺成分");
-    expect(markup).toContain("Amazon 唯讀＋本機拼字檢查");
+    expect(markup).toContain("Amazon 唯讀＋GitHub Pages 共用英文辭典");
+    expect(markup).toContain("Mac 與 Windows 一致");
+    expect(markup).toContain("文案不會送到第三方");
     expect(markup).toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("FBM 不會加入");
     expect(markup).not.toContain("全站內容健檢");
   });
 
-  it("discloses fail-closed reads, PTD uncertainty and the local dictionary cap", async () => {
+  it("discloses fail-closed reads, PTD uncertainty and the shared Pages dictionary", async () => {
     const source = await readFile(
       new URL(
         "../src/renderer/src/components/content-audit-panel.tsx",
@@ -94,12 +96,24 @@ describe("global FBA content audit panel", () => {
       ),
       "utf8",
     );
+    const dictionarySource = await readFile(
+      new URL("../src/renderer/src/content-spelling-rules.ts", import.meta.url),
+      "utf8",
+    );
 
     expect(source).toContain("讀取失敗／未完成");
-    expect(source).toContain("本列未計入缺賣點、缺成分或本機拼字統計");
+    expect(source).toContain("本列未計入缺賣點、缺成分或共用拼字統計");
     expect(source).toContain("成分未驗證");
-    expect(source).toContain("大型 catalog 超過上限後的後續單字未做本機字典檢查");
-    expect(source).toContain("LOCAL_SPELLCHECK_WORD_LIMIT");
+    expect(source).toContain("CONTENT_SPELLING_DICTIONARY_VERSION");
+    expect(source).toContain("CONTENT_SPELLING_DICTIONARY_LANGUAGE");
+    expect(source).toContain("GitHub Pages 共用美式英文辭典");
+    expect(source).toContain("await import(\"../content-spelling-rules\")");
+    expect(source).toContain("本次不會冒充已完成一般英文拼字檢查");
+    expect(source).not.toContain("window.fbaOS.spellcheck");
+    expect(dictionarySource).toContain("en_US.aff?raw");
+    expect(dictionarySource).toContain("en_US.dic?raw");
+    expect(dictionarySource).not.toMatch(/\bfetch\s*\(/u);
+    expect(dictionarySource).not.toContain("window.fbaOS.spellcheck");
   });
 
   it("restores a completed in-memory result and exposes the problem-only Excel", () => {
@@ -149,12 +163,30 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("立刻修改");
     expect(markup).toContain("本次錯誤原因");
     expect(markup).toContain("賣點不足（賣點）");
+    expect(markup).toContain('class="kind-missing_bullets"');
     expect(markup).toContain("完整編輯");
-    expect(markup.indexOf("Amazon 唯讀＋本機拼字檢查")).toBeLessThan(
+    expect(markup.indexOf("Amazon 唯讀＋GitHub Pages 共用英文辭典")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
     );
     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
       markup.indexOf("content-audit-summary"),
+    );
+  });
+
+  it("uses a whole-card yellow cue only when a visible missing-bullets issue exists", async () => {
+    const stylesheet = await readFile(
+      new URL("../src/renderer/src/app.css", import.meta.url),
+      "utf8",
+    );
+
+    expect(stylesheet).toContain(
+      ".content-audit-list > article:has(.content-audit-issues .kind-missing_bullets)",
+    );
+    expect(stylesheet).not.toContain(
+      ".content-audit-list > article:has(.content-audit-issues .kind-suspected_typo)",
+    );
+    expect(stylesheet).not.toContain(
+      ".content-audit-list > article:has(.content-audit-issues .kind-read_incomplete)",
     );
   });
 

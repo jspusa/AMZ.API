@@ -755,7 +755,7 @@ describe("FBA aged inventory renderer and read-only route", () => {
 
   it("shows a visible compact main-page entry for every age bucket, official fees, and Excel", () => {
     const markup = renderToStaticMarkup(
-      <AgedInventoryPanel marketplaceId={MARKETPLACE_ID} />,
+      <AgedInventoryPanel marketplaceId={MARKETPLACE_ID} marketplaceShort="US" />,
     );
 
     expect(markup).toContain("FBA 庫齡、冗餘與官方預估費用");

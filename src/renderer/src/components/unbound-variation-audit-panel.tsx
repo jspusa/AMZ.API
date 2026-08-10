@@ -5,6 +5,7 @@ import {
   parseUnboundVariationAuditSnapshot,
   type UnboundVariationAuditSnapshot,
 } from "../unbound-variation-audit";
+import { auditExportFilename } from "../audit-export-filename";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -54,21 +55,6 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
     }, milliseconds);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-export function downloadName(response: Response, fallback: string): string {
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const utf8Match = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
-  const plainMatch = disposition.match(/filename\s*=\s*"?([^";]+)"?/i);
-  let candidate = fallback;
-  try {
-    candidate = utf8Match?.[1]
-      ? decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/g, ""))
-      : plainMatch?.[1]?.trim() ?? fallback;
-  } catch {
-    candidate = fallback;
-  }
-  return candidate.replace(/[\\/:*?"<>|]/g, "-");
 }
 
 export default function UnboundVariationAuditPanel({
@@ -249,10 +235,11 @@ export default function UnboundVariationAuditPanel({
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = downloadName(
-        response,
-        `FBA-未綁變體健檢-${marketplaceShort}.xlsx`,
-      );
+      anchor.download = auditExportFilename({
+        kind: "variation",
+        marketplaceShort,
+        fetchedAt: snapshot.fetchedAt,
+      });
       document.body.append(anchor);
       anchor.click();
       anchor.remove();

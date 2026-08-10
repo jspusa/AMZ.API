@@ -22,7 +22,7 @@
 - Amazon preview、舊值衝突、必要路徑的完整 SKU／幅度檢查、Touch ID／Windows Hello／native confirmation
 - Windows Hello 必須從 repository 內的第一方 C++ WinRT desktop interop source，以鎖定的 `node-gyp` 與 Electron 43.3.0 x64 headers 編譯成 N-API addon。`windows-hello.node` 只能位於 `app.asar.unpacked` 固定路徑；`app.asar` 內的 manifest 記錄固定檔名與 SHA-256，不得改成 `extraResources`。main 載入前重算 addon SHA-256，且只接受固定結果 vocabulary。這是打包一致性檢查；Windows 未簽章 artifact 沒有 macOS embedded ASAR integrity，不能冒充 Authenticode 或抵抗同一使用者修改 App 檔案
 - 本機持久 idempotency ledger；未知結果不重送
-- 全站文案只用作業系統本機 spellchecker，不傳送到外部拼字服務
+- 全站文案使用 GitHub Pages renderer 內的版本化 SCOWL en_US 辭典、`nspell` 與窄範圍品牌／成分／Amazon 合法字詞表。Mac 與 Windows 套用同一份辭典；字典在 Pages 介面內本地執行，文案不傳送到外部拼字服務。第三方字典／引擎版本與 SHA-256 保存於 `src/renderer/src/vendor/spellcheck/`；完整授權公告保存於 `src/renderer/public/licenses/spellcheck/` 並隨 Pages artifact 發佈
 - Variation family 查詢保持唯讀；唯一改掛 route 只允許 FBA child，固定兩階段 Amazon Validation Preview → 本機身分確認 → 持久 idempotency → 單次 PATCH → 唯讀回查。真正 PATCH 前失敗會安全釋放 claim；已送出或已接受後的未知狀態不得重送
 - 全站文案／圖片／訂閱健檢只接收 main process 證明的 FBA SKU；訂閱的 exact-SKU offer／月度問題列只有帶同次 `CURRENT_FBA` 證據才可顯示／匯出，未證明識別值只保留聚合計數；問題列只能單列隔離並將範圍降為 partial，站點、program、FBA fulfillment、月份或分頁衝突仍整次 fail closed；訂閱 Excel 只能由 main 保存的短效快照建立
 - 一鍵全部健檢由 main process 綁定 account scope、mode、marketplace 與短效 context；七個 section 各自 fail honest，renderer 不能上傳整份 snapshot 或 account scope，Excel 只由同一 main job 的已驗證結果建立

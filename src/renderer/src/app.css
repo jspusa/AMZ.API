@@ -10908,15 +10908,13 @@ body {
 .audit-suite-home-card {
   width: min(100%, 1180px);
   margin: 18px auto 24px;
-  padding: 22px;
+  padding: 18px 19px;
   display: grid;
-  gap: 18px;
-  border: 1px solid rgba(29, 123, 74, 0.22);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at 92% 0%, rgba(247, 185, 74, 0.2), transparent 30%),
-    linear-gradient(135deg, #f4fbf6, #ffffff 55%);
-  box-shadow: 0 18px 48px rgba(21, 57, 37, 0.1);
+  gap: 14px;
+  border: 1px solid #e2e2e6;
+  border-radius: 21px;
+  background: #fff;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.035);
 }
 
 .audit-suite-home-heading {
@@ -10927,16 +10925,17 @@ body {
 }
 
 .audit-suite-home-icon {
-  width: 54px;
-  height: 54px;
+  width: 48px;
+  height: 48px;
   display: grid;
   place-items: center;
-  border-radius: 17px;
-  color: #fff;
-  background: #147a49;
-  font-weight: 900;
-  letter-spacing: -0.2em;
-  padding-right: 0.2em;
+  border-radius: 15px;
+  color: #27679f;
+  background: #e7f2fd;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: -0.08em;
+  padding-right: 0.08em;
 }
 
 .audit-suite-home-heading h2,
@@ -10947,12 +10946,22 @@ body {
 }
 
 .audit-suite-home-heading h2 {
-  font-size: clamp(1.28rem, 2vw, 1.75rem);
+  color: #27272b;
+  font-size: 14px;
+  letter-spacing: -0.025em;
+}
+
+.audit-suite-home-heading .eyebrow {
+  margin-bottom: 4px;
+  color: #65656b;
+  font-size: 7px;
 }
 
 .audit-suite-home-heading > div > p:last-child {
   margin-top: 5px;
-  color: var(--muted);
+  color: #737379;
+  font-size: 8px;
+  line-height: 1.55;
 }
 
 .audit-suite-home-status {
@@ -10960,10 +10969,10 @@ body {
   grid-template-columns: minmax(210px, 1fr) minmax(190px, 0.55fr);
   align-items: center;
   gap: 12px 18px;
-  padding: 14px;
-  border: 1px solid #dfe3e7;
-  border-radius: 14px;
-  background: rgba(248, 249, 250, 0.94);
+  padding: 12px;
+  border: 1px solid #e7e7ea;
+  border-radius: 13px;
+  background: #fafafd;
 }
 
 .audit-suite-home-status.is-running {
@@ -11046,6 +11055,9 @@ body {
 
 .audit-suite-home-status-copy > strong {
   min-width: 0;
+  color: #4f4f55;
+  font-size: 9px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
@@ -11087,8 +11099,49 @@ body {
 
 .audit-suite-home-status > small {
   grid-column: 1 / -1;
-  color: var(--muted);
-  line-height: 1.45;
+  color: #737379;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.audit-suite-auto-run-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  border: 1px solid #dbe7f2;
+  border-radius: 13px;
+  background: #f6faff;
+}
+
+.audit-suite-auto-run-note > span {
+  display: grid;
+  min-width: 48px;
+  min-height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  background: #e7f2fd;
+  color: #27679f;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.audit-suite-auto-run-note strong,
+.audit-suite-auto-run-note small {
+  display: block;
+}
+
+.audit-suite-auto-run-note strong {
+  color: #3f5264;
+  font-size: 9px;
+}
+
+.audit-suite-auto-run-note small {
+  margin-top: 3px;
+  color: #718092;
+  font-size: 8px;
+  line-height: 1.5;
 }
 
 .audit-suite-section-grid {
@@ -11102,9 +11155,9 @@ body {
   display: grid;
   gap: 8px;
   padding: 11px;
-  border: 1px solid var(--line);
+  border: 1px solid #e7e7ea;
   border-radius: 13px;
-  background: rgba(248, 249, 250, 0.94);
+  background: #fafafd;
 }
 
 .audit-suite-section-grid article.is-running {
@@ -11147,9 +11200,15 @@ body {
   overflow-wrap: anywhere;
 }
 
+.audit-suite-section-grid article > header > strong {
+  color: #4f4f55;
+  font-size: 9px;
+}
+
 .audit-suite-section-grid small {
-  color: var(--muted);
-  line-height: 1.45;
+  color: #77777d;
+  font-size: 8px;
+  line-height: 1.5;
 }
 
 .audit-suite-section-progress {
@@ -11172,18 +11231,32 @@ body {
 .audit-suite-home-actions {
   display: flex;
   gap: 10px;
-  justify-content: flex-end;
+  align-items: stretch;
 }
 
 .audit-suite-home-actions button {
-  min-height: 44px;
+  min-height: 40px;
+  border-radius: 12px;
+  font-size: 9px;
+  font-weight: 750;
 }
 
 .audit-suite-home-actions .audit-suite-start {
   flex: 1 1 420px;
   color: #fff;
-  background: #147a49;
-  border-color: #147a49;
+  background: #1d1d1f;
+  border-color: #1d1d1f;
+}
+
+.audit-suite-home-actions .audit-suite-start:hover:not(:disabled) {
+  background: #353538;
+  border-color: #353538;
+}
+
+.audit-suite-home-actions .audit-suite-start:disabled {
+  background: #ececef;
+  border-color: #ececef;
+  color: #8b8b91;
 }
 
 @media (max-width: 820px) {
@@ -11203,9 +11276,27 @@ body {
   .audit-suite-home-status { grid-template-columns: 1fr; gap: 10px; }
   .audit-suite-home-status-copy { align-items: flex-start; flex-direction: column; }
   .audit-suite-home-status > small { text-align: left; }
+  .audit-suite-auto-run-note { align-items: start; }
   .audit-suite-section-grid { grid-template-columns: 1fr; }
   .audit-suite-home-actions { display: grid; }
   .audit-suite-home-actions .audit-suite-start { flex-basis: auto; }
+}
+
+/* A missing-bullets result is a content gap, so the whole visible result card
+   receives the same quiet yellow cue as other items that require attention.
+   Typo-only and incomplete-read cards do not match this selector. */
+.content-audit-list > article:has(.content-audit-issues .kind-missing_bullets) {
+  border-color: #e5cc84;
+  background: #fff9df;
+  box-shadow: 0 8px 22px rgba(133, 96, 25, 0.07);
+}
+
+.content-audit-list > article:has(.content-audit-issues .kind-missing_bullets) .content-audit-issues {
+  border-top-color: #ead9a8;
+}
+
+.content-audit-list > article:has(.content-audit-issues .kind-missing_bullets) .content-audit-issues > div {
+  border-bottom-color: #f0e3bd;
 }
 
 /* v0.1.13 — one visible chevron per top-level menu and a solid, readable

@@ -11,6 +11,7 @@ import {
   type SubscriptionInventoryEvidence,
   type SubscriptionUpstreamCoverage,
 } from "../subscription-audit";
+import { auditExportFilename } from "../audit-export-filename";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 
@@ -223,15 +224,6 @@ export function subscriptionRevenueSummary(snapshot: SubscriptionAuditSnapshot):
         : "Amazon 未回傳",
     note: revenueCoverageNote(snapshot),
   };
-}
-
-function filenameFrom(response: Response): string {
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const match = /filename="?([^";]+)"?/iu.exec(disposition);
-  const candidate = match?.[1]?.trim() ?? "amazon-fba-subscription-audit.xlsx";
-  return /^[A-Za-z0-9._-]{1,180}$/u.test(candidate)
-    ? candidate
-    : "amazon-fba-subscription-audit.xlsx";
 }
 
 export function SubscriptionUpstreamCoverageWarning({
@@ -541,7 +533,11 @@ export default function SubscriptionAuditPanel({
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = filenameFrom(response);
+      anchor.download = auditExportFilename({
+        kind: "subscription",
+        marketplaceShort,
+        fetchedAt: snapshot.fetchedAt,
+      });
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (exportError) {

@@ -17,7 +17,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 策劃 | 依所選日期自動載入 FBA shipment report，以目前 Listing 標題前綴分類品牌營收與未分類列 | Amazon 報表唯讀 |
 | 策劃 | 全部 FBA 非重疊庫齡桶、Amazon 預估冗餘、下月倉儲成本與 AIS 預估附加費、Excel | Amazon 報表唯讀 |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID／Windows Hello／系統確認 |
-| 產品 | 全站 FBA 文案健檢（疑似錯字紅字定位、不可見字元位置、賣點不足、可證明適用的缺成分／成分未驗證、Excel 內紅字片段、只開啟有問題欄位的立刻修改） | Amazon 唯讀＋作業系統本機拼字檢查 |
+| 產品 | 全站 FBA 文案健檢（疑似錯字紅字定位、不可見字元位置、賣點不足、可證明適用的缺成分／成分未驗證、Excel 內紅字片段、只開啟有問題欄位的立刻修改） | Amazon 唯讀＋GitHub Pages 版本化美式英文辭典與 catalog 合法字詞表（Mac／Windows 一致） |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於五張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
 | 產品 | 全商品標題、五大賣點、成分匯出 Excel | 一鍵 |

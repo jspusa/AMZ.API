@@ -7,6 +7,7 @@ import {
   type ReviewAuditJobView,
   type ReviewAuditSnapshotView,
 } from "../review-audit";
+import { auditExportFilename } from "../audit-export-filename";
 
 const SUPPORTED = new Set([
   "ATVPDKIKX0DER",
@@ -24,15 +25,6 @@ function apiMessage(value: unknown, fallback: string): string {
     if (typeof raw.message === "string" && raw.message.trim()) return `${raw.message}${request}`;
   }
   return fallback;
-}
-
-function safeFilename(response: Response): string {
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const candidate = /filename="?([^";]+)"?/iu.exec(disposition)?.[1]?.trim() ??
-    "amazon-fba-review-topic-audit.xlsx";
-  return /^[A-Za-z0-9._-]{1,180}$/u.test(candidate)
-    ? candidate
-    : "amazon-fba-review-topic-audit.xlsx";
 }
 
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -177,7 +169,11 @@ export default function ReviewAuditPanel({
       const url = URL.createObjectURL(await response.blob());
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = safeFilename(response);
+      anchor.download = auditExportFilename({
+        kind: "review",
+        marketplaceShort,
+        fetchedAt: snapshot.fetchedAt,
+      });
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();

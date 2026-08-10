@@ -35,23 +35,30 @@ function run(
 }
 
 describe("audit suite home card", () => {
-  it("keeps all seven individual audit labels and an honest local-spellcheck boundary", () => {
+  it("keeps all seven audit labels and an honest shared-dictionary boundary", () => {
     const markup = renderToStaticMarkup(
-      <AuditSuiteHomeCard marketplaceId={MARKETPLACE_ID} />,
+      <AuditSuiteHomeCard marketplaceId={MARKETPLACE_ID} marketplaceShort="US" />,
     );
     expect(markup).toContain("一鍵執行全部 FBA 健檢");
     expect(markup).toContain("訂閱價格");
     expect(markup).toContain("180+ 庫齡與預估冗餘");
     expect(markup).toContain("評論主題");
     expect(markup).toContain("廣告覆蓋");
-    expect(markup).toContain("本機拼字紅字標示仍由「單項文案健檢」完成");
-    expect(markup).toContain("開始全部 FBA 健檢");
+    expect(markup).toContain("GitHub Pages 共用英文辭典與紅字標示由「單項文案健檢」完成");
+    expect(markup).toContain("按一次，讓七項健檢自動執行");
+    expect(markup).toContain("下面七項會自動執行");
+    expect(markup).toContain("這些卡片只顯示各項狀態，不是七個分開按鈕");
     expect(markup).toContain('data-state="waiting"');
     expect(markup).toContain("等待開始");
     expect(markup).toContain("狀態收斂進度");
     expect(markup).toContain("綜合 FBA 健檢狀態收斂進度 0%");
     expect(markup).toContain("audit-suite-section-pill");
     expect(markup).toContain("等待</span>");
+    expect(markup.match(/按上方一次後自動執行。/gu)).toHaveLength(7);
+    expect(markup.match(/<button\b/gu)).toHaveLength(1);
+    expect(markup.indexOf("audit-suite-home-actions")).toBeLessThan(
+      markup.indexOf("audit-suite-section-grid"),
+    );
   });
 
   it("uses explicit text, icons, and progress for every overall and section state", () => {
