@@ -15,6 +15,29 @@ $manifestPath = Join-Path $repositoryRoot "out\main\windows-hello-manifest.json"
 $nodeGypPath = Join-Path $repositoryRoot "node_modules\.bin\node-gyp.cmd"
 $electronVersion = "43.3.0"
 
+function Get-Sha256Hex {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $digest = $hasher.ComputeHash($stream)
+      return ([System.BitConverter]::ToString($digest)).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+      $hasher.Dispose()
+    }
+  }
+  finally {
+    $stream.Dispose()
+  }
+}
+
 if (-not (Test-Path -LiteralPath $bindingPath -PathType Leaf)) {
   throw "Windows Hello binding configuration is missing: $bindingPath"
 }
@@ -53,7 +76,7 @@ if ($bytes.Length -lt 1024 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
   throw "Windows Hello addon is not a valid non-empty PE module."
 }
 
-$hash = (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$hash = Get-Sha256Hex -Path $outputPath
 $manifest = [ordered]@{
   file = "windows-hello.node"
   sha256 = $hash

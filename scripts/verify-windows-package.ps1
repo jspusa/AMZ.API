@@ -17,6 +17,29 @@ $addonPath = Join-Path $unpackedDirectory "resources\app.asar.unpacked\out\main\
 $manifestEntry = "out/main/windows-hello-manifest.json"
 $addonEntry = "out/main/native/$addonName"
 
+function Get-Sha256Hex {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $digest = $hasher.ComputeHash($stream)
+      return ([System.BitConverter]::ToString($digest)).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+      $hasher.Dispose()
+    }
+  }
+  finally {
+    $stream.Dispose()
+  }
+}
+
 foreach ($path in @($appExecutable, $asarPath, $addonPath, $installerPath, $zipPath)) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
     throw "Expected Windows package output is missing: $path"
@@ -108,7 +131,7 @@ if (
 ) {
   throw "Windows Hello manifest is invalid."
 }
-$addonHash = (Get-FileHash -LiteralPath $addonPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$addonHash = Get-Sha256Hex -Path $addonPath
 if ($addonHash -cne $manifest.sha256) {
   throw "Windows Hello addon SHA-256 does not match the packed manifest."
 }
@@ -281,7 +304,7 @@ if (Test-Path -LiteralPath $installedExecutable) {
 $checksumLines = @($installerPath, $zipPath) |
   Sort-Object { Split-Path $_ -Leaf } |
   ForEach-Object {
-    $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hash = Get-Sha256Hex -Path $_
     "$hash  $(Split-Path $_ -Leaf)"
   }
 [System.IO.File]::WriteAllLines(

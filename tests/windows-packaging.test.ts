@@ -94,8 +94,14 @@ describe("Windows x64 Notebook Key packaging", () => {
     expect(compiler).toContain("out\\main\\native");
     expect(compiler).toContain("windows-hello.node");
     expect(compiler).toContain("windows-hello-manifest.json");
+    expect(compiler).toContain("[System.Security.Cryptography.SHA256]::Create()");
+    expect(compiler).toContain("Get-Sha256Hex -Path $outputPath");
+    expect(compiler).not.toContain("Get-FileHash");
     expect(JSON.parse(binding).targets[0].win_delay_load_hook).toBe("true");
     expect(verifier).toContain("app.asar.unpacked");
+    expect(verifier).toContain("[System.Security.Cryptography.SHA256]::Create()");
+    expect(verifier).toContain("Get-Sha256Hex -Path $addonPath");
+    expect(verifier).not.toContain("Get-FileHash");
     expect(verifier).toContain("electron-fuses.cmd");
     expect(verifier).toContain("RunAsNode is Disabled");
     expect(verifier).toContain("EnableCookieEncryption is Enabled");
