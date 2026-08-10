@@ -1195,7 +1195,10 @@ export default function Dashboard({
             )}
           </div>
 
-          <AuditSuiteHomeCard marketplaceId={marketplaceId} />
+          <AuditSuiteHomeCard
+            marketplaceId={marketplaceId}
+            marketplaceShort={marketplace.shortLabel}
+          />
 
           <div className="home-section-heading">
             <div><p className="eyebrow">ONE-CLICK CHECKS</p><h2>一鍵健檢</h2></div>
@@ -1405,7 +1408,10 @@ export default function Dashboard({
               <div><p className="eyebrow">FBA · 180+ DAYS · ESTIMATED EXCESS</p><h2 id="aged-inventory-audit-title">FBA 庫齡與預估冗餘健檢</h2></div>
               <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 庫齡與預估冗餘健檢">×</button>
             </div>
-            <AgedInventoryPanel marketplaceId={marketplaceId} />
+            <AgedInventoryPanel
+              marketplaceId={marketplaceId}
+              marketplaceShort={marketplace.shortLabel}
+            />
           </aside>
         </div>,
         document.body,

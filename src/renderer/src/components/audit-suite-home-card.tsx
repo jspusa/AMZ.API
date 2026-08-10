@@ -8,6 +8,7 @@ import {
   replaceAuditSuiteRun,
   storeAuditSuiteRun,
 } from "../audit-suite";
+import { auditExportFilename } from "../audit-export-filename";
 import {
   AUDIT_SUITE_SECTION_IDS,
   type AuditSuitePublicContext,
@@ -224,20 +225,12 @@ function problemMessage(value: unknown, fallback: string): string {
   }`;
 }
 
-function safeFilename(response: Response): string {
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  const plain = disposition.match(/filename="?([^";]+)"?/i)?.[1];
-  const candidate = encoded
-    ? decodeURIComponent(encoded)
-    : plain ?? `amazon-fba-audit-suite-${new Date().toISOString().slice(0, 10)}.xlsx`;
-  return candidate.replace(/[\\/:*?"<>|]/g, "-");
-}
-
 export default function AuditSuiteHomeCard({
   marketplaceId,
+  marketplaceShort,
 }: {
   marketplaceId: string;
+  marketplaceShort: string;
 }) {
   const [state, setState] = useState(createAuditSuiteState);
   const [starting, setStarting] = useState(false);
@@ -360,7 +353,11 @@ export default function AuditSuiteHomeCard({
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = safeFilename(response);
+      anchor.download = auditExportFilename({
+        kind: "suite",
+        marketplaceShort,
+        fetchedAt: run.startedAt,
+      });
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -387,7 +384,7 @@ export default function AuditSuiteHomeCard({
         <div>
           <p className="eyebrow">ONE CLICK · SEVEN FBA AUDITS</p>
           <h2>一鍵執行全部 FBA 健檢</h2>
-          <p>七項唯讀健檢由本機主程序在背景繼續；你可以關閉視窗或先使用其他功能。</p>
+          <p>按一次後，下面七項由本機主程序自動接手並在背景繼續；不需要逐項另按。</p>
         </div>
       </div>
       <div
@@ -413,7 +410,31 @@ export default function AuditSuiteHomeCard({
             aria-label={`綜合 FBA 健檢狀態收斂進度 ${statusPresentation.progressPercent}%`}
           />
         </div>
-        <small>本機拼字紅字標示仍由「單項文案健檢」完成；綜合健檢不會上傳文案或自動改 Amazon。</small>
+        <small>GitHub Pages 共用英文辭典與紅字標示由「單項文案健檢」完成；綜合健檢不會上傳文案或自動改 Amazon。</small>
+      </div>
+      {error && <div className="price-error" role="alert">{error}</div>}
+      <div className="audit-suite-home-actions">
+        <button type="button" className="audit-suite-start" onClick={() => void start()} disabled={starting || Boolean(run && !terminal(run) && stoppedRunId !== run.runId)}>
+          {starting
+            ? "正在建立背景健檢…"
+            : run && (terminal(run) || stoppedRunId === run.runId)
+              ? "重新執行七項 FBA 健檢"
+              : run
+                ? "七項健檢正在背景自動執行"
+                : "按一次，讓七項健檢自動執行"}
+        </button>
+        {run && (run.status === "completed" || run.status === "partial") && (
+          <button type="button" className="secondary" onClick={() => void download()} disabled={exporting}>
+            {exporting ? "正在建立 Excel…" : "下載合併健檢 Excel"}
+          </button>
+        )}
+      </div>
+      <div className="audit-suite-auto-run-note" role="note">
+        <span aria-hidden="true">1 → 7</span>
+        <div>
+          <strong>下面七項會自動執行</strong>
+          <small>這些卡片只顯示各項狀態，不是七個分開按鈕；執行期間可以先使用其他功能。</small>
+        </div>
       </div>
       <div className="audit-suite-section-grid">
         {AUDIT_SUITE_SECTION_IDS.map((id) => {
@@ -440,7 +461,7 @@ export default function AuditSuiteHomeCard({
                   {sectionPresentation.label}
                 </span>
               </header>
-              <small>{section?.message ?? "等待你開始。"}</small>
+              <small>{section?.message ?? "按上方一次後自動執行。"}</small>
               {hasMeasuredProgress && section && (
                 <div className="audit-suite-section-progress">
                   <progress
@@ -454,23 +475,6 @@ export default function AuditSuiteHomeCard({
             </article>
           );
         })}
-      </div>
-      {error && <div className="price-error" role="alert">{error}</div>}
-      <div className="audit-suite-home-actions">
-        <button type="button" className="audit-suite-start" onClick={() => void start()} disabled={starting || Boolean(run && !terminal(run) && stoppedRunId !== run.runId)}>
-          {starting
-            ? "正在建立背景健檢…"
-            : run && (terminal(run) || stoppedRunId === run.runId)
-              ? "重新執行七項 FBA 健檢"
-              : run
-                ? "全部健檢正在背景執行"
-                : "開始全部 FBA 健檢"}
-        </button>
-        {run && (run.status === "completed" || run.status === "partial") && (
-          <button type="button" className="secondary" onClick={() => void download()} disabled={exporting}>
-            {exporting ? "正在建立 Excel…" : "下載合併健檢 Excel"}
-          </button>
-        )}
       </div>
     </section>
   );

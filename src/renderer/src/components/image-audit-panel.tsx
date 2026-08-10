@@ -8,6 +8,7 @@ import {
   parseImageAuditSnapshot,
   type ImageAuditSnapshot,
 } from "../image-audit";
+import { auditExportFilename } from "../audit-export-filename";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -27,15 +28,6 @@ export type ImageAuditCache = {
   documentId: string;
   exportId: string;
 };
-
-function safeFilename(response: Response): string {
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const match = /filename="?([^";]+)"?/iu.exec(disposition);
-  const candidate = match?.[1]?.trim() ?? "amazon-fba-image-audit.xlsx";
-  return /^[A-Za-z0-9._-]{1,180}$/u.test(candidate)
-    ? candidate
-    : "amazon-fba-image-audit.xlsx";
-}
 
 function reportReply(raw: Record<string, unknown>): ReportReply {
   const reportId = raw.reportId ?? raw.report_id;
@@ -194,7 +186,7 @@ export default function ImageAuditPanel({
   };
 
   const downloadExcel = async () => {
-    if (!reportReference || exporting) return;
+    if (!reportReference || !snapshot || exporting) return;
     setExporting(true);
     setError(null);
     try {
@@ -224,7 +216,11 @@ export default function ImageAuditPanel({
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = safeFilename(response);
+      anchor.download = auditExportFilename({
+        kind: "image",
+        marketplaceShort,
+        fetchedAt: snapshot.fetchedAt,
+      });
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();

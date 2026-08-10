@@ -50,7 +50,7 @@ GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸�
 
 其他 path／method 回 `404`；renderer 無法指定 Amazon host 或任意 upstream URL。
 
-全站文案與圖片健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料，renderer 仍會核對回應站點後才顯示或快取；英文拼字再由 sandboxed preload 呼叫作業系統本機 spellchecker，文案不會送往第三方。Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
+全站文案與圖片健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料，renderer 仍會核對回應站點後才顯示或快取；英文錯字由 GitHub Pages renderer 內的版本化 SCOWL en_US 辭典與 `nspell` 檢查，再以窄範圍白名單保留品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份辭典，不再依賴作業系統字典；字典在 Pages 介面內本地執行，文案不會送往第三方。Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
 
 Reports 建立由 main process 的 account-scoped broker 協調。相同 account、marketplace、mode、report type 與 options 的 all-listings report 可由品牌、未綁變體、評論與內容／圖片匯出共用；日期型 shipment report 另外綁 exact window。Local store 只保存不含憑證的短效 report ID／狀態 tombstone，程序內用 single-flight 與單調狀態更新防止重複建立或完成狀態回退。`CANCELLED`、`FATAL` 或建立結果不明都不會由自動載入盲目重建；明確使用者再試仍受安全等待與 mode/account 驗證。
 

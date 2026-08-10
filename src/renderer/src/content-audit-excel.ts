@@ -10,6 +10,7 @@ import {
   isInvisibleCharacterIssue,
   locateInvisibleCharacters,
 } from "./content-quality";
+import { auditExportFilename } from "./audit-export-filename";
 
 const XLSX_CONTENT_TYPE =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -136,8 +137,11 @@ export function downloadContentAuditWorkbook(
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = `FBA-文案健檢-${marketplaceLabel}-${snapshot.fetchedAt.slice(0, 10)}.xlsx`
-    .replace(/[\\/:*?"<>|]/g, "-");
+  link.download = auditExportFilename({
+    kind: "content",
+    marketplaceShort: marketplaceLabel,
+    fetchedAt: snapshot.fetchedAt,
+  });
   document.body.append(link);
   link.click();
   link.remove();

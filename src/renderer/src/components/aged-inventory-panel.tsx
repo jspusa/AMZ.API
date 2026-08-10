@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { auditExportFilename } from "../audit-export-filename";
 
 type ReportReply = {
   ready: boolean;
@@ -630,16 +631,12 @@ export function AgedInventoryTierOverview({
   );
 }
 
-function safeFilename(response: Response, fallback: string): string {
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const match = disposition.match(/filename="?([^";]+)"?/i);
-  return (match?.[1] ?? fallback).replace(/[\\/:*?"<>|]/g, "-");
-}
-
 export default function AgedInventoryPanel({
   marketplaceId,
+  marketplaceShort,
 }: {
   marketplaceId: string;
+  marketplaceShort: string;
 }) {
   const [snapshot, setSnapshot] = useState<AgedInventorySnapshot | null>(null);
   const [status, setStatus] = useState("尚未同步");
@@ -699,7 +696,7 @@ export default function AgedInventoryPanel({
   };
 
   const downloadExcel = async () => {
-    if (!reportReference || exporting) return;
+    if (!reportReference || !snapshot || exporting) return;
     setExporting(true);
     setError(null);
     try {
@@ -726,10 +723,11 @@ export default function AgedInventoryPanel({
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = safeFilename(
-        response,
-        `amazon-fba-inventory-age-${new Date().toISOString().slice(0, 10)}.xlsx`,
-      );
+      anchor.download = auditExportFilename({
+        kind: "inventory",
+        marketplaceShort,
+        fetchedAt: snapshot.fetchedAt,
+      });
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
