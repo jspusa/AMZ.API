@@ -34,6 +34,7 @@ const rows: ContentAuditRow[] = [
 ];
 
 const REQUESTED_APPROVED_TERMS = [
+  "Artificials",
   "Inulin",
   "Pyridoxine",
   "artisanal",
@@ -77,7 +78,7 @@ describe("renderer content quality helpers", () => {
   it("uses one versioned general Pages dictionary on every platform", () => {
     expect(CONTENT_SPELLING_DICTIONARY_VERSION).toContain("dictionary-en@4.0.0");
     expect(CONTENT_SPELLING_DICTIONARY_LANGUAGE).toContain("en_US");
-    expect(CONTENT_SPELLING_ALLOWLIST_COUNT).toBeGreaterThanOrEqual(46);
+    expect(CONTENT_SPELLING_ALLOWLIST_COUNT).toBeGreaterThanOrEqual(47);
     const checked = addPagesDictionarySpellingIssues([{
       ...rows[0],
       title: "Trukey Tendons",
@@ -168,7 +169,7 @@ describe("renderer content quality helpers", () => {
     },
   );
 
-  it.each(["inulinn", "pyridoxinee", "artisanall", "xzealandx", "perillaa", "superfoodish"])(
+  it.each(["artificialss", "inulinn", "pyridoxinee", "artisanall", "xzealandx", "perillaa", "superfoodish"])(
     "does not let the approved term hide the different token %s",
     (word) => {
       expect(sharedContentSpellingMatch(word)).not.toBeNull();

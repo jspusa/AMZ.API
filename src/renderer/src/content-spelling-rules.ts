@@ -22,6 +22,7 @@ const APPROVED_EXACT_TERMS = new Set([
   "afreschi",
   "antioxidative",
   "artisanal",
+  "artificials",
   "asin",
   "australian",
   "basa",
