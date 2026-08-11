@@ -41,6 +41,7 @@ const APPROVED_EXACT_TERMS = new Set([
   "glycerin",
   "herz",
   "hypoallergenic",
+  "inulin",
   "intolerances",
   "kcal",
   "monopotassium",
