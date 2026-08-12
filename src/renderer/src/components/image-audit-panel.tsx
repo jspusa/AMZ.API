@@ -4,11 +4,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  downloadImageAuditWorkbook,
   imageAuditAttentionRows,
   parseImageAuditSnapshot,
+  summarizeImageAudit,
   type ImageAuditSnapshot,
 } from "../image-audit";
 import { auditExportFilename } from "../audit-export-filename";
+import { excludeProvenParentContainers } from "../parent-container-audit";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -172,7 +175,17 @@ export default function ImageAuditPanel({
       throw new Error(problemMessage(raw as ApiProblem, "全站圖片健檢失敗。"));
     }
     const exportId = parseImageAuditExportId(raw);
-    const completed = parseImageAuditSnapshot(raw, marketplaceIdRef.current);
+    const base = parseImageAuditSnapshot(raw, marketplaceIdRef.current);
+    const parentExclusion = await excludeProvenParentContainers({
+      marketplaceId: marketplaceIdRef.current,
+      rows: base.rows,
+      signal,
+    });
+    const completed = {
+      ...base,
+      rows: parentExclusion.rows,
+      summary: summarizeImageAudit(parentExclusion.rows, base.minimumImages),
+    };
     const reference = {
       reportId: ready.reportId,
       documentId: ready.documentId,
@@ -212,19 +225,18 @@ export default function ImageAuditPanel({
         }
         throw new Error(message);
       }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = auditExportFilename({
-        kind: "image",
+      // Main revalidates the short-lived, account-scoped audit snapshot first.
+      // The renderer then generates the workbook from the same filtered rows
+      // shown on screen, so relationships-proven parent containers stay out.
+      downloadImageAuditWorkbook(
+        snapshot,
         marketplaceShort,
-        fetchedAt: snapshot.fetchedAt,
-      });
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+        auditExportFilename({
+          kind: "image",
+          marketplaceShort,
+          fetchedAt: snapshot.fetchedAt,
+        }),
+      );
     } catch (downloadError) {
       setError(
         downloadError instanceof Error
@@ -305,7 +317,7 @@ export default function ImageAuditPanel({
   return (
     <section className="image-audit-panel" aria-label="全站 FBA 圖片健檢">
       <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，列出少於五張 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
+        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有圖片工作台的 parent 容器，再列出少於五張 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
       </p>
       <div className="content-export-note">
         <strong>Amazon 唯讀圖片健檢</strong>
@@ -333,7 +345,7 @@ export default function ImageAuditPanel({
       {state === "done" && snapshot && (
         <>
           <div className="image-audit-summary" aria-label="圖片健檢摘要">
-            <article><span>全部 FBA SKU</span><strong>{snapshot.summary.total.toLocaleString()}</strong></article>
+            <article><span>可健檢 FBA SKU</span><strong>{snapshot.summary.total.toLocaleString()}</strong></article>
             <article><span>少於 5 張</span><strong>{snapshot.summary.underMinimum.toLocaleString()}</strong></article>
             <article><span>讀取未完成</span><strong>{snapshot.summary.incomplete.toLocaleString()}</strong></article>
           </div>

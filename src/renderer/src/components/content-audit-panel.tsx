@@ -17,6 +17,7 @@ import {
   contentAuditAttentionRows,
   downloadContentAuditWorkbook,
 } from "../content-audit-excel";
+import { excludeProvenParentContainers } from "../parent-container-audit";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 
@@ -742,21 +743,34 @@ export default function ContentAuditPanel({
       throw new Error(problemMessage(raw as ApiProblem, "全站文案健檢失敗。"));
     }
     const base = parseContentAuditSnapshot(raw, marketplaceIdRef.current);
-    let rows = base.rows;
+    const parentExclusion = await excludeProvenParentContainers({
+      marketplaceId: marketplaceIdRef.current,
+      rows: base.rows,
+      signal,
+    });
+    const editableRows = parentExclusion.rows;
+    let rows = editableRows;
+    const parentNote = parentExclusion.excludedParentSkus.length
+      ? `Amazon relationships 已確認並排除 ${parentExclusion.excludedParentSkus.length.toLocaleString()} 個 parent 容器；parent 本身不列為文案錯誤，也不提供編輯。`
+      : "";
     let nextSpellcheckNote: string;
     try {
       const spelling = await import("../content-spelling-rules");
-      rows = spelling.addPagesDictionarySpellingIssues(base.rows);
+      rows = spelling.addPagesDictionarySpellingIssues(editableRows);
       nextSpellcheckNote =
-        `GitHub Pages 共用美式英文辭典 ${spelling.CONTENT_SPELLING_DICTIONARY_VERSION}（${spelling.CONTENT_SPELLING_DICTIONARY_LANGUAGE}）已套用，並保留 ${spelling.CONTENT_SPELLING_ALLOWLIST_COUNT.toLocaleString()} 項品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份結果；只會提示，不會自動改字。`;
+        `${parentNote}${parentNote ? " " : ""}GitHub Pages 共用美式英文辭典 ${spelling.CONTENT_SPELLING_DICTIONARY_VERSION}（${spelling.CONTENT_SPELLING_DICTIONARY_LANGUAGE}）已套用，並保留 ${spelling.CONTENT_SPELLING_ALLOWLIST_COUNT.toLocaleString()} 項品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份結果；只會提示，不會自動改字。`;
     } catch {
       nextSpellcheckNote =
-        "GitHub Pages 共用英文辭典目前無法載入；已保留缺賣點、缺成分、不可見字元與 Amazon 已回傳的明確問題，但本次不會冒充已完成一般英文拼字檢查。";
+        `${parentNote}${parentNote ? " " : ""}GitHub Pages 共用英文辭典目前無法載入；已保留缺賣點、缺成分、不可見字元與 Amazon 已回傳的明確問題，但本次不會冒充已完成一般英文拼字檢查。`;
     }
     const completed = {
       ...base,
       rows,
-      summary: summarizeContentAudit(rows, base.summary.total),
+      readErrors: rows.flatMap((row) => row.readErrors.map((readError) => ({
+        sellerSku: row.sellerSku,
+        ...readError,
+      }))),
+      summary: summarizeContentAudit(rows),
     };
     setSnapshot(completed);
     setFilter("all");
@@ -871,7 +885,7 @@ export default function ContentAuditPanel({
   return (
     <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
       <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，直接列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品；不用逐一輸入 SKU。
+        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。
       </p>
       <div className="content-export-note content-audit-privacy">
         <strong>Amazon 唯讀＋GitHub Pages 共用英文辭典</strong>
@@ -912,7 +926,7 @@ export default function ContentAuditPanel({
       {state === "done" && snapshot && summary && (
         <>
           <div className="content-audit-summary" aria-label="文案健檢摘要">
-            <article><span>完成讀取</span><strong>{summary.completed.toLocaleString()}</strong><small>共 {summary.total.toLocaleString()} 個 FBA SKU</small></article>
+            <article><span>完成讀取</span><strong>{summary.completed.toLocaleString()}</strong><small>共 {summary.total.toLocaleString()} 個可健檢 FBA SKU</small></article>
             <article><span>讀取未完成</span><strong>{summary.incomplete.toLocaleString()}</strong><small>不列入缺值統計</small></article>
             <article><span>有待確認</span><strong>{summary.withIssues.toLocaleString()}</strong><small>SKU</small></article>
             <article><span>疑似錯字</span><strong>{summary.suspectedTypos.toLocaleString()}</strong><small>SKU</small></article>
