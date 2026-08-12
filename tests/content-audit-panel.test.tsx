@@ -108,6 +108,8 @@ describe("global FBA content audit panel", () => {
     expect(source).toContain("CONTENT_SPELLING_DICTIONARY_LANGUAGE");
     expect(source).toContain("GitHub Pages 共用美式英文辭典");
     expect(source).toContain("await import(\"../content-spelling-rules\")");
+    expect(source).toContain("addPagesDictionarySpellingIssues(editableRows)");
+    expect(source).not.toContain("addPagesDictionarySpellingIssues(base.rows)");
     expect(source).toContain("本次不會冒充已完成一般英文拼字檢查");
     expect(source).not.toContain("window.fbaOS.spellcheck");
     expect(dictionarySource).toContain("en_US.aff?raw");
