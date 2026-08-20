@@ -10,14 +10,25 @@ export type NotebookKeyDownload = Readonly<{
   warning?: string;
 }>;
 
+export const PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL =
+  "https://supply-boss.brave-prawn-0848.chatgpt.site/downloads";
+
 export const DEFAULT_NOTEBOOK_KEY_DOWNLOADS: readonly NotebookKeyDownload[] = [
+  {
+    platform: "macos",
+    label: "Mac Notebook 鑰匙",
+    detail: "macOS · Universal",
+    version: "0.1.16",
+    href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
+    warning: "需先通過內部下載密碼驗證；安全下載頁會提供 DMG 大小與 SHA-256。",
+  },
   {
     platform: "windows",
     label: "Windows Notebook 鑰匙",
     detail: "Windows 11 x64",
     version: "0.1.16",
-    href: "https://github.com/jspusa/AMZ.API/releases/download/notebook-key-windows/AMZ.API-Notebook-Key-Windows-x64-Setup.exe",
-    warning: "內部未簽章版可能顯示 Microsoft SmartScreen；請只用 jspusa/AMZ.API 的 notebook-key-windows 固定 Release，並核對 SHA-256。",
+    href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
+    warning: "內部未簽章版可能顯示 Microsoft SmartScreen；請從安全下載頁取得並核對 SHA-256。",
   },
 ] as const;
 
@@ -86,20 +97,12 @@ export default function WebGate({
             <small>一般瀏覽器永遠不會取得 Bridge 或 Amazon API 權限。</small>
           </div>
           <div className="web-gate-platform-grid">
-            <article className="web-gate-platform is-macos">
-              <span aria-hidden="true">⌘</span>
-              <div>
-                <strong>Mac Notebook 鑰匙</strong>
-                <small>已安裝者請使用上方「開啟 Notebook 鑰匙」</small>
-              </div>
-              <b>使用上方按鈕</b>
-            </article>
             {downloads.map((download) => {
               const href = safeNotebookDownloadHref(download.href);
-              const actionLabel = `安全下載 ${download.label}`;
+              const actionLabel = `安全登入下載 ${download.label}`;
               return (
                 <article className={`web-gate-platform is-${download.platform}`} key={`${download.platform}-${download.label}`}>
-                  <span aria-hidden="true">▣</span>
+                  <span aria-hidden="true">{download.platform === "macos" ? "⌘" : "▣"}</span>
                   <div>
                     <strong>{download.label}</strong>
                     <small>{download.detail}{download.version ? ` · v${download.version}` : " · 最新發布版"}</small>

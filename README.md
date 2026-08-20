@@ -41,11 +41,8 @@ Customer Feedback API 提供的是每週更新的正／負「評論主題影響�
 
 ## 第一次使用
 
-1. macOS 從 GitHub Release 下載 `.dmg`；Windows 11 Pro x64 可選 NSIS installer 或解壓即用 ZIP。Windows 正式 Release 上線後使用固定檔名：
-   - [`AMZ.API-Notebook-Key-Windows-x64-Setup.exe`](https://github.com/jspusa/AMZ.API/releases/download/notebook-key-windows/AMZ.API-Notebook-Key-Windows-x64-Setup.exe)
-   - [`AMZ.API-Notebook-Key-Windows-x64.zip`](https://github.com/jspusa/AMZ.API/releases/download/notebook-key-windows/AMZ.API-Notebook-Key-Windows-x64.zip)
-   - [`SHA256SUMS.txt`](https://github.com/jspusa/AMZ.API/releases/download/notebook-key-windows/SHA256SUMS.txt)
-2. 目前 Windows artifact 是內部未簽章版；Windows SmartScreen 會顯示發行者未知警告。只從本 repository 的固定 `notebook-key-windows` Release 取得並先核對 `SHA256SUMS.txt`，不要從 PR 的測試結果下載，也不要關閉全系統 SmartScreen 來繞過警告。
+1. 前往 [AMZ.API Notebook Key 安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads)，通過內部密碼驗證後下載 Mac `.dmg`，或 Windows 11 Pro x64 的 NSIS installer／解壓即用 ZIP。安裝檔保存在私有 R2，不使用公開 GitHub Release 直連；GitHub Pages 也不包含密碼或真實檔案網址。
+2. 目前 Windows artifact 是內部未簽章版；Windows SmartScreen 會顯示發行者未知警告。請只從上述安全下載頁取得並核對頁面提供的 SHA-256，不要從 PR 的測試結果下載，也不要關閉全系統 SmartScreen 來繞過警告。
 3. 開啟 App，按右上角「Notebook Key 安全連線」，再開啟本機 SP-API 安全輸入。敏感欄位會在 main process 建立的本機 sheet 中開啟，不會進入 GitHub Pages renderer。
 4. 在本機 sheet 輸入 Private Seller App 的：
    - LWA Client ID
@@ -118,7 +115,7 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 
 - 推送 `main`：驗證程式、自動部署 GitHub 控制台，並分別建立 macOS universal 與 Windows x64 內部測試 artifact。
 - 建立和 `package.json` 完全相同的 tag（例如 `v0.1.0`）：簽章、公證、驗證後發布 GitHub Release。
-- macOS 正式更新同時發布 `.zip`、`latest-mac.yml` 與 `.dmg`；Windows 目前只產生固定檔名的 NSIS `.exe`、手動解壓 ZIP 與 `SHA256SUMS.txt`，尚未建立已簽章自動更新鏈，因此 Windows App 內更新會明確停用，只能從固定 `notebook-key-windows` Release 手動下載並核對 SHA-256。
+- macOS 正式更新仍會建立 `.zip`、`latest-mac.yml` 與 `.dmg`；Windows 目前只產生固定檔名的 NSIS `.exe`、手動解壓 ZIP 與 `SHA256SUMS.txt`，尚未建立已簽章自動更新鏈，因此 Windows App 內更新會明確停用。提供給使用者的 Mac／Windows 安裝檔只放在 [Notebook Key 安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads)，通過密碼驗證後下載並核對 SHA-256。
 - 未簽章測試版只供內部測試，Gatekeeper 會警告，也不能當正式自動更新來源。
 - Windows 內部 artifact 也未做 Authenticode 簽章，SmartScreen 顯示未知發行者是預期邊界；CI 會明確拒絕把它標成已簽章或 Windows Hello 實機通過。
 
