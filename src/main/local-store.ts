@@ -36,14 +36,16 @@ export type ProductMasterState = {
 
 type LedgerState = "pending" | "completed" | "unknown";
 
+export type LedgerOperationType =
+  | "price"
+  | "content"
+  | "images"
+  | "sale_price"
+  | "variation_detach"
+  | "variation_attach";
+
 type LedgerEntry = {
-  operationType:
-    | "price"
-    | "content"
-    | "images"
-    | "sale_price"
-    | "variation_detach"
-    | "variation_attach";
+  operationType: LedgerOperationType;
   marketplaceId: string;
   sellerSku: string;
   accountScope: string;
@@ -56,7 +58,7 @@ type LedgerEntry = {
   expiresAt: number;
 };
 
-export type BrandSalesReportLegStatus =
+export type DurableReportLegStatus =
   | "NOT_STARTED"
   | "CREATING"
   | "CREATE_FAILED"
@@ -67,14 +69,19 @@ export type BrandSalesReportLegStatus =
   | "CANCELLED"
   | "FATAL";
 
-export type BrandSalesReportLeg = {
+export type DurableReportLeg = {
   reportId: string | null;
   documentId: string | null;
-  status: BrandSalesReportLegStatus;
+  status: DurableReportLegStatus;
   createdAt: number | null;
   terminal: "CREATE_FAILED" | "CREATION_UNKNOWN" | "CANCELLED" | "FATAL" | null;
   terminalAt: number | null;
 };
+
+// Public compatibility aliases: brand jobs and generic Reports API leases use
+// the same durable state machine. New generic code should use DurableReportLeg.
+export type BrandSalesReportLegStatus = DurableReportLegStatus;
+export type BrandSalesReportLeg = DurableReportLeg;
 
 export type BrandSalesJobRecord = {
   jobId: string;
@@ -126,17 +133,30 @@ export function isBrandSalesIncompatibleJob(
     value.shipmentDataEndTime === BRAND_SALES_MISSING_WINDOW_SENTINEL;
 }
 
-export type SharedAllListingsReportLease = {
+export type SharedReportType =
+  | "GET_MERCHANT_LISTINGS_ALL_DATA"
+  | "GET_FBA_INVENTORY_PLANNING_DATA";
+
+export type SharedReportOptionsKey =
+  | "preferredReportDocumentLocale=en_US"
+  | "marketplaceIds=selected";
+
+export type SharedReportLease = {
   leaseId: string;
   accountScope: string;
   marketplaceId: string;
-  reportType: "GET_MERCHANT_LISTINGS_ALL_DATA";
-  optionsKey: "preferredReportDocumentLocale=en_US";
+  reportType: SharedReportType;
+  optionsKey: SharedReportOptionsKey;
   mode: "live" | "demo";
-  report: BrandSalesReportLeg;
+  report: DurableReportLeg;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+};
+
+export type SharedAllListingsReportLease = SharedReportLease & {
+  reportType: "GET_MERCHANT_LISTINGS_ALL_DATA";
+  optionsKey: "preferredReportDocumentLocale=en_US";
 };
 
 type StoreData = {
@@ -144,7 +164,10 @@ type StoreData = {
   profiles: Record<string, ProductMasterProfile>;
   ledger: Record<string, LedgerEntry>;
   brandSalesJobs: Record<string, StoredBrandSalesJobRecord>;
-  sharedAllListingsReports: Record<string, SharedAllListingsReportLease>;
+  // The persisted property name is intentionally retained for store-version-2
+  // rollback compatibility. Current builds may also place other allowlisted
+  // Reports API leases here; older builds ignore those optional entries.
+  sharedAllListingsReports: Record<string, SharedReportLease>;
 };
 
 type ProductSettings = Pick<
@@ -169,13 +192,23 @@ type OperationInput<T> = {
   sellerSku: string;
   accountScope: string;
   fingerprint: string;
-  execute: () => Promise<T>;
+  execute: (control: Readonly<{
+    recordAccepted(response: T): Promise<void>;
+  }>) => Promise<T>;
 };
 
 const OPERATION_TTL_MS = 24 * 60 * 60 * 1_000;
 const VARIATION_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([
   "variation_detach",
   "variation_attach",
+]);
+const OFFER_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([
+  "price",
+  "sale_price",
+]);
+const LISTING_ATTRIBUTE_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([
+  "content",
+  "images",
 ]);
 
 function emptyStore(): StoreData {
@@ -201,14 +234,16 @@ function brandSalesSelectionKey(input: {
   return `${input.accountScope}:${input.marketplaceId}:${input.startDate}:${input.endDate}`;
 }
 
-function sharedAllListingsKey(input: {
+function sharedReportKey(input: {
   accountScope: string;
   marketplaceId: string;
+  reportType: SharedReportType;
+  optionsKey: SharedReportOptionsKey;
 }): string {
-  return `${input.accountScope}:${input.marketplaceId}:GET_MERCHANT_LISTINGS_ALL_DATA:preferredReportDocumentLocale=en_US`;
+  return `${input.accountScope}:${input.marketplaceId}:${input.reportType}:${input.optionsKey}`;
 }
 
-const BRAND_SALES_LEG_STATUSES = new Set<BrandSalesReportLegStatus>([
+const DURABLE_REPORT_LEG_STATUSES = new Set<DurableReportLegStatus>([
   "NOT_STARTED",
   "CREATING",
   "CREATE_FAILED",
@@ -229,13 +264,13 @@ function isSafeIdentifier(value: unknown, maximum = 512): value is string {
   );
 }
 
-function parseBrandSalesLeg(value: unknown): BrandSalesReportLeg {
+function parseDurableReportLeg(value: unknown): DurableReportLeg {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Invalid persisted brand-sales report leg");
+    throw new Error("Invalid persisted report leg");
   }
   const raw = value as Record<string, unknown>;
   if (
-    !BRAND_SALES_LEG_STATUSES.has(raw.status as BrandSalesReportLegStatus) ||
+    !DURABLE_REPORT_LEG_STATUSES.has(raw.status as DurableReportLegStatus) ||
     (raw.reportId !== null && !isSafeIdentifier(raw.reportId)) ||
     (raw.documentId !== null && !isSafeIdentifier(raw.documentId)) ||
     (raw.createdAt !== null && (!Number.isSafeInteger(raw.createdAt) || Number(raw.createdAt) <= 0)) ||
@@ -245,10 +280,10 @@ function parseBrandSalesLeg(value: unknown): BrandSalesReportLeg {
     (raw.terminalAt !== null &&
       (!Number.isSafeInteger(raw.terminalAt) || Number(raw.terminalAt) <= 0))
   ) {
-    throw new Error("Invalid persisted brand-sales report leg");
+    throw new Error("Invalid persisted report leg");
   }
-  const status = raw.status as BrandSalesReportLegStatus;
-  const terminal = raw.terminal as BrandSalesReportLeg["terminal"];
+  const status = raw.status as DurableReportLegStatus;
+  const terminal = raw.terminal as DurableReportLeg["terminal"];
   const hasReportId = typeof raw.reportId === "string";
   const hasDocumentId = typeof raw.documentId === "string";
   const hasCreatedAt = typeof raw.createdAt === "number";
@@ -271,14 +306,14 @@ function parseBrandSalesLeg(value: unknown): BrandSalesReportLeg {
     (terminalStatus &&
       (!hasReportId || hasDocumentId || !hasCreatedAt || terminal !== status || !hasTerminalAt))
   ) {
-    throw new Error("Incoherent persisted brand-sales report leg");
+    throw new Error("Incoherent persisted report leg");
   }
   return {
     reportId: raw.reportId as string | null,
     documentId: raw.documentId as string | null,
-    status: raw.status as BrandSalesReportLegStatus,
+    status: raw.status as DurableReportLegStatus,
     createdAt: raw.createdAt as number | null,
-    terminal: raw.terminal as BrandSalesReportLeg["terminal"],
+    terminal: raw.terminal as DurableReportLeg["terminal"],
     terminalAt: raw.terminalAt as number | null,
   };
 }
@@ -318,8 +353,8 @@ function parseBrandSalesJobBase(
       startDate: raw.startDate as string,
       endDate: raw.endDate as string,
       mode: raw.mode,
-      listing: parseBrandSalesLeg(raw.listing),
-      shipment: parseBrandSalesLeg(raw.shipment),
+      listing: parseDurableReportLeg(raw.listing),
+      shipment: parseDurableReportLeg(raw.shipment),
       createdAt: Number(raw.createdAt),
       updatedAt: Number(raw.updatedAt),
       expiresAt: Number(raw.expiresAt),
@@ -377,19 +412,23 @@ function parseStoredBrandSalesJob(value: unknown): StoredBrandSalesJobRecord {
   };
 }
 
-function parseSharedAllListingsReport(
+function parseSharedReport(
   value: unknown,
-): SharedAllListingsReportLease {
+): SharedReportLease {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Invalid persisted shared all-listings report");
+    throw new Error("Invalid persisted shared report");
   }
   const raw = value as Record<string, unknown>;
+  const identityAllowed =
+    (raw.reportType === "GET_MERCHANT_LISTINGS_ALL_DATA" &&
+      raw.optionsKey === "preferredReportDocumentLocale=en_US") ||
+    (raw.reportType === "GET_FBA_INVENTORY_PLANNING_DATA" &&
+      raw.optionsKey === "marketplaceIds=selected");
   if (
     !isSafeIdentifier(raw.leaseId, 120) ||
     !isSafeIdentifier(raw.accountScope, 128) ||
     !isSafeIdentifier(raw.marketplaceId, 32) ||
-    raw.reportType !== "GET_MERCHANT_LISTINGS_ALL_DATA" ||
-    raw.optionsKey !== "preferredReportDocumentLocale=en_US" ||
+    !identityAllowed ||
     (raw.mode !== "live" && raw.mode !== "demo") ||
     !Number.isSafeInteger(raw.createdAt) ||
     !Number.isSafeInteger(raw.updatedAt) ||
@@ -398,16 +437,16 @@ function parseSharedAllListingsReport(
     Number(raw.updatedAt) < Number(raw.createdAt) ||
     Number(raw.expiresAt) <= Number(raw.createdAt)
   ) {
-    throw new Error("Invalid persisted shared all-listings report");
+    throw new Error("Invalid persisted shared report");
   }
   return {
     leaseId: raw.leaseId,
     accountScope: raw.accountScope,
     marketplaceId: raw.marketplaceId,
-    reportType: raw.reportType,
-    optionsKey: raw.optionsKey,
+    reportType: raw.reportType as SharedReportType,
+    optionsKey: raw.optionsKey as SharedReportOptionsKey,
     mode: raw.mode,
-    report: parseBrandSalesLeg(raw.report),
+    report: parseDurableReportLeg(raw.report),
     createdAt: Number(raw.createdAt),
     updatedAt: Number(raw.updatedAt),
     expiresAt: Number(raw.expiresAt),
@@ -659,9 +698,12 @@ export class LocalStore {
     accountScope: string;
     marketplaceId: string;
   }): Promise<SharedAllListingsReportLease | null> {
-    const data = await this.read();
-    const value = data.sharedAllListingsReports[sharedAllListingsKey(input)];
-    return value ? structuredClone(value) : null;
+    const value = await this.getSharedReport({
+      ...input,
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+    });
+    return value as SharedAllListingsReportLease | null;
   }
 
   async getSharedAllListingsReportById(input: {
@@ -669,11 +711,39 @@ export class LocalStore {
     marketplaceId: string;
     reportId: string;
   }): Promise<SharedAllListingsReportLease | null> {
+    const value = await this.getSharedReportById({
+      ...input,
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+    });
+    return value as SharedAllListingsReportLease | null;
+  }
+
+  async getSharedReport(input: {
+    accountScope: string;
+    marketplaceId: string;
+    reportType: SharedReportType;
+    optionsKey: SharedReportOptionsKey;
+  }): Promise<SharedReportLease | null> {
+    const data = await this.read();
+    const value = data.sharedAllListingsReports[sharedReportKey(input)];
+    return value ? structuredClone(value) : null;
+  }
+
+  async getSharedReportById(input: {
+    accountScope: string;
+    marketplaceId: string;
+    reportType: SharedReportType;
+    optionsKey: SharedReportOptionsKey;
+    reportId: string;
+  }): Promise<SharedReportLease | null> {
     const data = await this.read();
     const value = Object.values(data.sharedAllListingsReports).find(
       (candidate) =>
         candidate.accountScope === input.accountScope &&
         candidate.marketplaceId === input.marketplaceId &&
+        candidate.reportType === input.reportType &&
+        candidate.optionsKey === input.optionsKey &&
         candidate.report.reportId === input.reportId,
     );
     return value ? structuredClone(value) : null;
@@ -681,18 +751,29 @@ export class LocalStore {
 
   async createSharedAllListingsReportIfAbsent(
     input: SharedAllListingsReportLease,
-    _now = Date.now(),
+    now = Date.now(),
   ): Promise<{ created: boolean; lease: SharedAllListingsReportLease }> {
+    const result = await this.createSharedReportIfAbsent(input, now);
+    return {
+      created: result.created,
+      lease: result.lease as SharedAllListingsReportLease,
+    };
+  }
+
+  async createSharedReportIfAbsent(
+    input: SharedReportLease,
+    _now = Date.now(),
+  ): Promise<{ created: boolean; lease: SharedReportLease }> {
     let created = false;
-    let selected!: SharedAllListingsReportLease;
+    let selected!: SharedReportLease;
     await this.mutate((data) => {
-      const key = sharedAllListingsKey(input);
+      const key = sharedReportKey(input);
       const existing = data.sharedAllListingsReports[key];
       if (existing) {
         selected = existing;
         return;
       }
-      selected = parseSharedAllListingsReport(input);
+      selected = parseSharedReport(input);
       data.sharedAllListingsReports[key] = selected;
       created = true;
     });
@@ -701,17 +782,27 @@ export class LocalStore {
 
   async updateSharedAllListingsReport(input: {
     leaseId: string;
-    report: BrandSalesReportLeg;
+    report: DurableReportLeg;
     updatedAt: number;
     expiresAt?: number;
     expectedUpdatedAt?: number;
   }): Promise<SharedAllListingsReportLease> {
-    let updated!: SharedAllListingsReportLease;
+    return this.updateSharedReport(input) as Promise<SharedAllListingsReportLease>;
+  }
+
+  async updateSharedReport(input: {
+    leaseId: string;
+    report: DurableReportLeg;
+    updatedAt: number;
+    expiresAt?: number;
+    expectedUpdatedAt?: number;
+  }): Promise<SharedReportLease> {
+    let updated!: SharedReportLease;
     await this.mutate((data) => {
       const entry = Object.values(data.sharedAllListingsReports).find(
         (candidate) => candidate.leaseId === input.leaseId,
       );
-      if (!entry) throw new Error("Persisted shared all-listings report not found");
+      if (!entry) throw new Error("Persisted shared report not found");
       if (
         input.expectedUpdatedAt !== undefined &&
         entry.updatedAt !== input.expectedUpdatedAt
@@ -719,14 +810,14 @@ export class LocalStore {
         updated = entry;
         return;
       }
-      entry.report = parseBrandSalesLeg(input.report);
+      entry.report = parseDurableReportLeg(input.report);
       entry.updatedAt = Math.max(input.updatedAt, entry.updatedAt + 1);
       if (input.expiresAt !== undefined) {
         if (
           !Number.isSafeInteger(input.expiresAt) ||
           input.expiresAt <= entry.createdAt
         ) {
-          throw new Error("Invalid shared all-listings report expiry");
+          throw new Error("Invalid shared report expiry");
         }
         entry.expiresAt = input.expiresAt;
       }
@@ -736,6 +827,10 @@ export class LocalStore {
   }
 
   async deleteSharedAllListingsReport(leaseId: string): Promise<void> {
+    return this.deleteSharedReport(leaseId);
+  }
+
+  async deleteSharedReport(leaseId: string): Promise<void> {
     await this.mutate((data) => {
       for (const [key, entry] of Object.entries(data.sharedAllListingsReports)) {
         if (entry.leaseId === leaseId) delete data.sharedAllListingsReports[key];
@@ -806,7 +901,7 @@ export class LocalStore {
           candidate.jobId === input.jobId && !isBrandSalesIncompatibleJob(candidate),
       );
       if (!entry) throw new Error("Persisted brand-sales job not found");
-      entry[input.leg] = parseBrandSalesLeg(input.value);
+      entry[input.leg] = parseDurableReportLeg(input.value);
       entry.updatedAt = Math.max(input.updatedAt, entry.updatedAt + 1);
       if (input.expiresAt !== undefined) {
         if (
@@ -840,7 +935,12 @@ export class LocalStore {
     await this.mutate((data) => {
       const now = Date.now();
       for (const [key, value] of Object.entries(data.ledger)) {
-        if (value.expiresAt < now) delete data.ledger[key];
+        // Only a canonically completed operation may age out. A pending or
+        // unknown write can mean the App stopped after Amazon received the
+        // PATCH; deleting that evidence would permit a blind duplicate write.
+        if (value.state === "completed" && value.expiresAt < now) {
+          delete data.ledger[key];
+        }
       }
       const existing = data.ledger[input.idempotencyKey];
       if (existing) {
@@ -870,25 +970,34 @@ export class LocalStore {
           throw operationError(activeVariationForSku.state);
         }
       }
-      const equivalent = Object.values(data.ledger).find(
-        (entry) =>
-          entry.operationType === input.operationType &&
-          entry.marketplaceId === input.marketplaceId &&
-          entry.sellerSku === input.sellerSku &&
-          (!VARIATION_OPERATION_TYPES.has(input.operationType) ||
-            entry.state !== "completed") &&
-          ((entry.accountScope === input.accountScope &&
-            entry.fingerprint === fingerprint) ||
-            (entry.accountScope === "legacy-unknown" &&
-              entry.state !== "completed")),
-      );
-      if (equivalent) {
-        if (equivalent.state === "completed") {
-          cachedResult = structuredClone(equivalent.response) as T;
-          return;
-        }
-        throw operationError(equivalent.state);
+      if (OFFER_OPERATION_TYPES.has(input.operationType)) {
+        const activeOfferWrite = Object.values(data.ledger).find(
+          (entry) =>
+            OFFER_OPERATION_TYPES.has(entry.operationType) &&
+            entry.marketplaceId === input.marketplaceId &&
+            entry.sellerSku === input.sellerSku &&
+            entry.state !== "completed" &&
+            (entry.accountScope === input.accountScope ||
+              entry.accountScope === "legacy-unknown"),
+        );
+        if (activeOfferWrite) throw operationError(activeOfferWrite.state);
       }
+      if (LISTING_ATTRIBUTE_OPERATION_TYPES.has(input.operationType)) {
+        const activeAttributeWrite = Object.values(data.ledger).find(
+          (entry) =>
+            LISTING_ATTRIBUTE_OPERATION_TYPES.has(entry.operationType) &&
+            entry.marketplaceId === input.marketplaceId &&
+            entry.sellerSku === input.sellerSku &&
+            entry.state !== "completed" &&
+            (entry.accountScope === input.accountScope ||
+              entry.accountScope === "legacy-unknown"),
+        );
+        if (activeAttributeWrite) throw operationError(activeAttributeWrite.state);
+      }
+      const sequenceAt = Math.max(
+        now,
+        ...Object.values(data.ledger).map((entry) => entry.createdAt + 1),
+      );
       data.ledger[input.idempotencyKey] = {
         operationType: input.operationType,
         marketplaceId: input.marketplaceId,
@@ -898,8 +1007,8 @@ export class LocalStore {
         ownerToken,
         state: "pending",
         response: null,
-        createdAt: now,
-        updatedAt: now,
+        createdAt: sequenceAt,
+        updatedAt: sequenceAt,
         expiresAt: now + OPERATION_TTL_MS,
       };
       claimed = true;
@@ -907,7 +1016,21 @@ export class LocalStore {
     if (!claimed) return cachedResult as T;
 
     try {
-      const result = await input.execute();
+      const recordAccepted = async (response: T): Promise<void> => {
+        await this.mutate((data) => {
+          const entry = data.ledger[input.idempotencyKey];
+          if (!entry || entry.ownerToken !== ownerToken) {
+            throw new SpApiError(
+              "Amazon 已接受寫入，但防重送帳本無法保存回查目標。請勿重送。",
+              { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+            );
+          }
+          if (entry.state === "completed") return;
+          entry.response = structuredClone(response);
+          entry.updatedAt = Date.now();
+        });
+      };
+      const result = await input.execute({ recordAccepted });
       await this.mutate((data) => {
         const entry = data.ledger[input.idempotencyKey];
         if (!entry || entry.ownerToken !== ownerToken) {
@@ -925,6 +1048,7 @@ export class LocalStore {
       await this.mutate((data) => {
         const entry = data.ledger[input.idempotencyKey];
         if (!entry || entry.ownerToken !== ownerToken) return;
+        if (entry.state === "completed") return;
         if (resultMayBeUnknown(error)) {
           entry.state = "unknown";
           entry.updatedAt = Date.now();
@@ -938,6 +1062,47 @@ export class LocalStore {
         { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
       );
     }
+  }
+
+  async reconcileIdempotentOperations(input: {
+    operationTypes: readonly LedgerOperationType[];
+    marketplaceId: string;
+    sellerSku: string;
+    accountScope: string;
+    reconcile(response: unknown, operationType: LedgerOperationType): unknown | null;
+  }): Promise<number> {
+    let reconciled = 0;
+    await this.mutate((data) => {
+      const now = Date.now();
+      for (const entry of Object.values(data.ledger)) {
+        if (
+          entry.marketplaceId !== input.marketplaceId ||
+          entry.sellerSku !== input.sellerSku ||
+          entry.accountScope !== input.accountScope ||
+          !input.operationTypes.includes(entry.operationType) ||
+          (entry.state !== "pending" && entry.state !== "unknown") ||
+          entry.response === null
+        ) {
+          continue;
+        }
+        let result: unknown | null = null;
+        try {
+          result = input.reconcile(
+            structuredClone(entry.response),
+            entry.operationType,
+          );
+        } catch {
+          result = null;
+        }
+        if (result === null) continue;
+        entry.state = "completed";
+        entry.response = structuredClone(result);
+        entry.updatedAt = now;
+        entry.expiresAt = now + OPERATION_TTL_MS;
+        reconciled += 1;
+      }
+    });
+    return reconciled;
   }
 
   private async read(): Promise<StoreData> {
@@ -993,8 +1158,8 @@ export class LocalStore {
           Object.entries(raw.sharedAllListingsReports ?? {}).flatMap(
             ([key, report]) => {
               try {
-                const parsed = parseSharedAllListingsReport(report);
-                return sharedAllListingsKey(parsed) === key
+                const parsed = parseSharedReport(report);
+                return sharedReportKey(parsed) === key
                   ? [[key, parsed]]
                   : [];
               } catch {

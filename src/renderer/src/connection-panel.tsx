@@ -7,16 +7,21 @@ import type {
   SpApiRegion,
   UpdateStatus,
 } from "../../shared/contracts";
+import { MARKETPLACES } from "../../shared/marketplaces";
 
-const REGION_META: Array<{
-  region: SpApiRegion;
-  label: string;
-  sites: string;
-}> = [
-  { region: "na", label: "北美 NA", sites: "US · CA" },
-  { region: "fe", label: "遠東 FE", sites: "JP · SG · AU" },
-  { region: "eu", label: "歐洲 EU", sites: "UK · DE" },
-];
+const REGION_LABELS: Record<SpApiRegion, string> = {
+  na: "北美 NA",
+  fe: "遠東 FE",
+  eu: "歐洲 EU",
+};
+
+const REGION_META = (["na", "fe", "eu"] as const).map((region) => ({
+  region,
+  label: REGION_LABELS[region],
+  sites: MARKETPLACES.filter((marketplace) => marketplace.region === region)
+    .map((marketplace) => marketplace.code)
+    .join(" · "),
+}));
 
 function cleanError(error: unknown): string {
   const raw = error instanceof Error ? error.message : "操作未完成。";
@@ -158,11 +163,10 @@ export default function ConnectionPanel({
     setMessage(null);
     try {
       const region = adsSummary?.oauthRegion ?? "na";
-      const marketplaceId = region === "fe"
-        ? "A1VC38T7YXB528"
-        : region === "eu"
-          ? "A1F83G8C2ARO7P"
-          : "ATVPDKIKX0DER";
+      const marketplaceId = MARKETPLACES.find(
+        (marketplace) => marketplace.region === region,
+      )?.id;
+      if (!marketplaceId) throw new Error("找不到 Ads 區域對應的 Amazon 站點。");
       const result = await window.fbaOS.advertisingCredentials.test(marketplaceId);
       setAdsTest(result);
       setMessage(result.message);

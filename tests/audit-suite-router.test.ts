@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter, buildAdvertisingAuditSuiteResult } from "../src/main/api-router";
-import { startAllListingsReport } from "../src/main/amazon/sp-api";
+import {
+  startAgedInventoryReport,
+  startAllListingsReport,
+} from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -60,6 +63,7 @@ describe("main-owned audit suite routes", () => {
   let accountScope: string;
   let router: ApiRouter;
   let startListing: ReturnType<typeof vi.fn>;
+  let startAged: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
@@ -69,6 +73,14 @@ describe("main-owned audit suite routes", () => {
       ready: true,
       reportId: `demo-${marketplaceId}`,
       documentId: `demo-${marketplaceId}`,
+      status: "DONE" as const,
+      notice: "ready",
+    }));
+    startAged = vi.fn(async ({ marketplaceId }: { marketplaceId: string }) => ({
+      mode: "demo" as const,
+      ready: true,
+      reportId: `demo-aged-${marketplaceId}`,
+      documentId: `demo-aged-${marketplaceId}`,
       status: "DONE" as const,
       notice: "ready",
     }));
@@ -82,6 +94,7 @@ describe("main-owned audit suite routes", () => {
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       brandSalesReports: { startListing: startListing as typeof startAllListingsReport },
+      agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
     });
   });
 
@@ -138,6 +151,88 @@ describe("main-owned audit suite routes", () => {
     expect(exported.status).toBe(200);
     expect(exported.body.kind).toBe("bytes");
     expect(exported.headers["content-type"]).toContain("spreadsheetml.sheet");
+  });
+
+  it("does not turn a suite start into an explicit retry of an ambiguous listings report", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "audit-suite-ambiguous-report-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const now = Date.now();
+    await store.createSharedReportIfAbsent({
+      leaseId: crypto.randomUUID(),
+      accountScope,
+      marketplaceId: US,
+      mode: "demo",
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+      report: {
+        reportId: "ambiguous-report-id",
+        documentId: null,
+        status: "CREATION_UNKNOWN",
+        createdAt: now - 60 * 60 * 1_000,
+        terminal: "CREATION_UNKNOWN",
+        terminalAt: now - 60 * 60 * 1_000,
+      },
+      createdAt: now - 60 * 60 * 1_000,
+      updatedAt: now - 60 * 60 * 1_000,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    });
+    startListing = vi.fn();
+    router.clearPreviews();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: vi.fn(async () => accountScope),
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      brandSalesReports: {
+        startListing: startListing as typeof startAllListingsReport,
+      },
+      agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
+    });
+
+    const started = await router.handle(request("POST", "/api/sp-api/audit-suite", {
+      marketplaceId: US,
+    }));
+    await waitForTerminal(router, {
+      marketplaceId: US,
+      runId: String(jsonValue(started).runId),
+      contextId: String(jsonValue(started).contextId),
+    });
+
+    expect(startListing).not.toHaveBeenCalled();
+  });
+
+  it("single-flights one aged report across the standalone route and audit suite", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    startAged.mockImplementation(async ({ marketplaceId }: { marketplaceId: string }) => {
+      await gate;
+      return {
+        mode: "demo" as const,
+        ready: true,
+        reportId: `demo-aged-${marketplaceId}`,
+        documentId: `demo-aged-${marketplaceId}`,
+        status: "DONE" as const,
+        notice: "ready",
+      };
+    });
+
+    const suite = await router.handle(request("POST", "/api/sp-api/audit-suite", {
+      marketplaceId: US,
+    }));
+    const standalone = router.handle(request("POST", "/api/sp-api/aged-inventory", {
+      marketplaceId: US,
+    }));
+    await vi.waitFor(() => expect(startAged).toHaveBeenCalledTimes(1));
+    release();
+    await expect(standalone).resolves.toMatchObject({ status: 200 });
+    await waitForTerminal(router, {
+      marketplaceId: US,
+      runId: String(jsonValue(suite).runId),
+      contextId: String(jsonValue(suite).contextId),
+    });
+    expect(startAged).toHaveBeenCalledTimes(1);
   });
 
   it("rejects renderer-supplied account context and raw snapshot fields", async () => {
@@ -211,6 +306,52 @@ describe("main-owned audit suite routes", () => {
     const status = await router.handle(request("GET", "/api/sp-api/audit-suite", identity));
     expect(status.status).toBe(410);
     expect(jsonValue(status)).toMatchObject({ code: "AUDIT_SUITE_EXPIRED" });
+  });
+
+  it("does not issue the next report-status request after lifecycle cleanup aborts a wait", async () => {
+    const getListingStatus = vi.fn(async () => ({
+      mode: "demo" as const,
+      ready: false,
+      reportId: `pending-${US}`,
+      documentId: null,
+      status: "IN_PROGRESS" as const,
+      notice: "pending",
+    }));
+    startListing = vi.fn(async () => ({
+      mode: "demo" as const,
+      ready: false,
+      reportId: `pending-${US}`,
+      documentId: null,
+      status: "IN_QUEUE" as const,
+      notice: "pending",
+    }));
+    const directory = await mkdtemp(join(tmpdir(), "audit-suite-abort-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    router.clearPreviews();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: vi.fn(async () => accountScope),
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      brandSalesReports: {
+        startListing: startListing as typeof startAllListingsReport,
+        getListingStatus,
+      },
+    });
+    await router.handle(request("POST", "/api/sp-api/audit-suite", {
+      marketplaceId: US,
+    }));
+    for (let attempt = 0; attempt < 100 && startListing.mock.calls.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(startListing).toHaveBeenCalledTimes(1);
+
+    router.clearPreviews();
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    expect(getListingStatus).not.toHaveBeenCalled();
   });
 
   it("expires terminal jobs after the main-process TTL", async () => {

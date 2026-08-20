@@ -8,6 +8,11 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  DEFAULT_MARKETPLACE_ID,
+  MARKETPLACES as MARKETPLACE_OPTIONS,
+  marketplaceById,
+} from "../../../shared/marketplaces";
 import { AccountingCenterDrawer } from "./accounting-center-panel";
 import AdsDrawer from "./ads-drawer";
 import AgedInventoryPanel from "./aged-inventory-panel";
@@ -51,16 +56,6 @@ import {
   reviewAuditHomeProgress,
 } from "../review-audit";
 
-type Marketplace = {
-  id: string;
-  flag: string;
-  label: string;
-  shortLabel: string;
-  name: string;
-  currency: string;
-  region: "na" | "eu" | "fe";
-};
-
 export type DashboardReportMenuEntry = {
   id: string;
   label: string;
@@ -94,7 +89,7 @@ type Tool =
 type ToolGroup = "product" | "pricing" | "operations";
 type NavigationGroup = ToolGroup | "reports";
 
-export const DEFAULT_MARKETPLACE_ID = "ATVPDKIKX0DER";
+export { DEFAULT_MARKETPLACE_ID };
 
 export type DashboardConnectionEvidence =
   | "verified-live"
@@ -155,20 +150,6 @@ export function dashboardConnectionBadgeCopy(
     className: "unavailable",
   };
 }
-
-const MARKETPLACE_OPTIONS: Marketplace[] = [
-  { id: DEFAULT_MARKETPLACE_ID, label: "美國站", flag: "US", shortLabel: "US", name: "Amazon.com", currency: "USD", region: "na" },
-  { id: "A1VC38T7YXB528", label: "日本站", flag: "JP", shortLabel: "JP", name: "Amazon.co.jp", currency: "JPY", region: "fe" },
-  { id: "A2EUQ1WTGCTBG2", label: "加拿大站", flag: "CA", shortLabel: "CA", name: "Amazon.ca", currency: "CAD", region: "na" },
-  { id: "A19VAU5U5O7RUS", label: "新加坡站", flag: "SG", shortLabel: "SG", name: "Amazon.sg", currency: "SGD", region: "fe" },
-  { id: "A39IBJ37TRP1C6", label: "澳洲站", flag: "AU", shortLabel: "AU", name: "Amazon.com.au", currency: "AUD", region: "fe" },
-  { id: "A1F83G8C2ARO7P", label: "英國站", flag: "UK", shortLabel: "UK", name: "Amazon.co.uk", currency: "GBP", region: "eu" },
-  { id: "A1PA6795UKMFR9", label: "德國站", flag: "DE", shortLabel: "DE", name: "Amazon.de", currency: "EUR", region: "eu" },
-];
-
-const MARKETPLACES = new Map(
-  MARKETPLACE_OPTIONS.map((marketplace) => [marketplace.id, marketplace]),
-);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -358,7 +339,7 @@ export function isSalesTrendSnapshotForSelection(
   selection: TrendRangeSelection,
 ): value is SalesTrendSnapshot {
   if (!isRecord(value) || value.schemaVersion !== 2) return false;
-  const marketplace = MARKETPLACES.get(marketplaceId);
+  const marketplace = marketplaceById(marketplaceId);
   if (!marketplace) return false;
   if (
     value.marketplaceId !== marketplaceId ||
@@ -490,7 +471,7 @@ export default function Dashboard({
   performanceCompanion = null,
   reportMenuEntries,
 }: DashboardProps) {
-  const startingMarketplaceId = MARKETPLACES.has(initialMarketplaceId)
+  const startingMarketplaceId = marketplaceById(initialMarketplaceId)
     ? initialMarketplaceId
     : DEFAULT_MARKETPLACE_ID;
   const startingSelection: TrendRangeSelection = initialSalesTrend?.range.presetDays
@@ -923,13 +904,13 @@ export default function Dashboard({
   };
 
   const resolveGlobalContext = (nextMarketplaceId: string, sellerSku: string) => {
-    if (MARKETPLACE_OPTIONS.some((item) => item.id === nextMarketplaceId)) {
+    if (marketplaceById(nextMarketplaceId)) {
       setMarketplaceId(nextMarketplaceId);
     }
     setGlobalSku(sellerSku);
   };
 
-  const marketplace = MARKETPLACES.get(marketplaceId) ?? MARKETPLACE_OPTIONS[0];
+  const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACE_OPTIONS[0];
   const subscriptionAuditSupported = isSubscriptionAuditMarketplaceSupported(marketplaceId);
   const matchingSalesTrend =
     salesTrend?.marketplaceId === marketplaceId &&
@@ -1010,7 +991,7 @@ export default function Dashboard({
   const currentUnboundVariationAudit = unboundVariationAuditCache[marketplaceId] ?? null;
 
   const changeMarketplace = (nextMarketplaceId: string) => {
-    if (!MARKETPLACES.has(nextMarketplaceId) || salesTrendLoading) return;
+    if (!marketplaceById(nextMarketplaceId) || salesTrendLoading) return;
     setSalesTrend(null);
     setSalesTrendError(null);
     setMarketplaceId(nextMarketplaceId);
@@ -1161,7 +1142,7 @@ export default function Dashboard({
             <div className="workspace-contextbar">
               <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" /></label>
               <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)}><span aria-hidden="true">✦</span>SKU 總覽</button>
-              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.flag} · {item.label}</option>)}</select></label>
+              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
               <SystemHealthControl
                 marketplaceId={marketplaceId}
                 autoSync={autoSync}

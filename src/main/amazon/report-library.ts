@@ -7,17 +7,26 @@
  * does not mean that this FBA-only app is authorised or able to download it.
  */
 
-export const REPORT_LIBRARY_MARKETPLACES = Object.freeze({
-  ATVPDKIKX0DER: { code: "US", label: "美國" },
-  A2EUQ1WTGCTBG2: { code: "CA", label: "加拿大" },
-  A1VC38T7YXB528: { code: "JP", label: "日本" },
-  A19VAU5U5O7RUS: { code: "SG", label: "新加坡" },
-  A39IBJ37TRP1C6: { code: "AU", label: "澳洲" },
-  A1F83G8C2ARO7P: { code: "UK", label: "英國" },
-  A1PA6795UKMFR9: { code: "DE", label: "德國" },
-} as const);
+import {
+  MARKETPLACES,
+  marketplaceByCode,
+  type MarketplaceCode,
+  type MarketplaceId,
+} from "../../shared/marketplaces";
 
-export type ReportLibraryMarketplaceId = keyof typeof REPORT_LIBRARY_MARKETPLACES;
+export const REPORT_LIBRARY_MARKETPLACES = Object.freeze(
+  Object.fromEntries(
+    MARKETPLACES.map((marketplace) => [
+      marketplace.id,
+      {
+        code: marketplace.code,
+        label: marketplace.label.replace(/站$/u, ""),
+      },
+    ]),
+  ) as Record<MarketplaceId, { code: string; label: string }>,
+);
+
+export type ReportLibraryMarketplaceId = MarketplaceId;
 
 export type ReportCategory =
   | "AMAZON_BUSINESS"
@@ -108,14 +117,15 @@ const SOURCES: Record<ReportCategory, string> = {
   TAX: "https://developer-docs.amazon.com/sp-api/docs/report-type-values-tax",
 };
 
-const ALL = Object.keys(REPORT_LIBRARY_MARKETPLACES) as ReportLibraryMarketplaceId[];
-const CUSTOMER_FEEDBACK_STORES: ReportLibraryMarketplaceId[] = [
-  "ATVPDKIKX0DER",
-  "A1VC38T7YXB528",
-  "A1F83G8C2ARO7P",
-  "A1PA6795UKMFR9",
-];
-const EU_REGULATORY: ReportLibraryMarketplaceId[] = ["A1F83G8C2ARO7P", "A1PA6795UKMFR9"];
+function configuredMarketplaces(
+  ...codes: MarketplaceCode[]
+): ReportLibraryMarketplaceId[] {
+  return codes.map((code) => marketplaceByCode(code).id);
+}
+
+const ALL = MARKETPLACES.map((marketplace) => marketplace.id);
+const CUSTOMER_FEEDBACK_STORES = configuredMarketplaces("US", "JP", "UK", "DE");
+const EU_REGULATORY = configuredMarketplaces("UK", "DE");
 
 function entry(seed: Seed): ReportCatalogEntry {
   const categories = seed.categories;
@@ -199,7 +209,7 @@ const B2B = entries(
     output: "JSON",
     roles: ["Product Listing"],
     marketplaceAvailability: "US, ES, UK, FR, DE, IT, IN and JP.",
-    supportedConfiguredMarketplaces: ["ATVPDKIKX0DER", "A1VC38T7YXB528", "A1F83G8C2ARO7P", "A1PA6795UKMFR9"],
+    supportedConfiguredMarketplaces: CUSTOMER_FEEDBACK_STORES,
   },
   [
     ["GET_B2B_PRODUCT_OPPORTUNITIES_RECOMMENDED_FOR_YOU", "B2B 推薦機會", "Amazon Business 依目錄與需求提供的商品機會。"],
@@ -255,9 +265,9 @@ const FBA = entries(
     ["GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA", "FBA 客戶出貨銷售", "FBA 客戶出貨銷售明細。"],
     ["GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_PROMOTION_DATA", "FBA 客戶出貨促銷", "FBA 出貨所套用的促銷明細。"],
     ["GET_FBA_FULFILLMENT_CUSTOMER_TAXES_DATA", "FBA 客戶稅務", "FBA 客戶訂單稅額明細。", { restrictedData: "RDT_REQUIRED", roles: ["Tax Remittance (Restricted)"] }],
-    ["GET_REMOTE_FULFILLMENT_ELIGIBILITY", "遠端配送資格", "遠端配送計畫的 ASIN 資格。", { marketplaceAvailability: "Remote Fulfillment participating NA stores.", supportedConfiguredMarketplaces: ["ATVPDKIKX0DER", "A2EUQ1WTGCTBG2"] }],
+    ["GET_REMOTE_FULFILLMENT_ELIGIBILITY", "遠端配送資格", "遠端配送計畫的 ASIN 資格。", { marketplaceAvailability: "Remote Fulfillment participating NA stores.", supportedConfiguredMarketplaces: configuredMarketplaces("US", "CA") }],
     ["GET_AFN_INVENTORY_DATA", "AFN 庫存", "Amazon 配送網路的即時庫存摘要。"],
-    ["GET_AFN_INVENTORY_DATA_BY_COUNTRY", "AFN 各國庫存", "依國家分解的 Amazon 配送庫存。", { marketplaceAvailability: "Pan-European FBA participating stores.", supportedConfiguredMarketplaces: ["A1F83G8C2ARO7P", "A1PA6795UKMFR9"] }],
+    ["GET_AFN_INVENTORY_DATA_BY_COUNTRY", "AFN 各國庫存", "依國家分解的 Amazon 配送庫存。", { marketplaceAvailability: "Pan-European FBA participating stores.", supportedConfiguredMarketplaces: EU_REGULATORY }],
     ["GET_LEDGER_SUMMARY_VIEW_DATA", "FBA 庫存帳簿摘要", "FBA 庫存帳簿期初、變動與期末摘要。"],
     ["GET_LEDGER_DETAIL_VIEW_DATA", "FBA 庫存帳簿明細", "FBA 庫存所有變動事件。"],
     ["GET_RESERVED_INVENTORY_DATA", "FBA 預留庫存", "已預留但尚未可售的 FBA 庫存原因與數量。"],
@@ -317,8 +327,8 @@ const INVENTORY = entries(
     ["GET_MERCHANT_LISTINGS_DATA_LITER", "在售資訊 Liter", "更簡化的商品在售資訊；需 FBA 過濾。"],
     ["GET_MERCHANT_CANCELLED_LISTINGS_DATA", "已取消在售資訊", "已取消的商品在售資訊；不是目前 FBA 庫存。"],
     ["GET_MERCHANTS_LISTINGS_FYP_REPORT", "在售資訊改善建議", "Fix Your Products 在售資訊問題與改善建議。"],
-    ["GET_PAN_EU_OFFER_STATUS", "Pan-EU FBA Offer 狀態", "Pan-European FBA offer 狀態。", { fbaScope: "FBA_ONLY", marketplaceAvailability: "Pan-European FBA stores.", supportedConfiguredMarketplaces: ["A1F83G8C2ARO7P", "A1PA6795UKMFR9"] }],
-    ["GET_MFN_PANEU_OFFER_STATUS", "MFN Pan-EU Offer 狀態", "賣家自配送的 Pan-EU offer；非 FBA。", { fbaScope: "OUT_OF_FBA_SCOPE", marketplaceAvailability: "Pan-European stores.", supportedConfiguredMarketplaces: ["A1F83G8C2ARO7P", "A1PA6795UKMFR9"] }],
+    ["GET_PAN_EU_OFFER_STATUS", "Pan-EU FBA Offer 狀態", "Pan-European FBA offer 狀態。", { fbaScope: "FBA_ONLY", marketplaceAvailability: "Pan-European FBA stores.", supportedConfiguredMarketplaces: EU_REGULATORY }],
+    ["GET_MFN_PANEU_OFFER_STATUS", "MFN Pan-EU Offer 狀態", "賣家自配送的 Pan-EU offer；非 FBA。", { fbaScope: "OUT_OF_FBA_SCOPE", marketplaceAvailability: "Pan-European stores.", supportedConfiguredMarketplaces: EU_REGULATORY }],
     ["GET_REFERRAL_FEE_PREVIEW_REPORT", "銷售佣金預覽", "依商品預估銷售佣金；不是 FBA 專屬費用。", { roles: ["Pricing"] }],
   ],
 );
@@ -333,7 +343,7 @@ const INVOICE_DATA = entries(
     roles: ["Tax Invoicing (Restricted)"],
     prerequisites: ["VAT Calculation Service 或 Amazon 指定的稅務發票資格"],
     marketplaceAvailability: "VAT invoice participating stores, primarily Europe.",
-    supportedConfiguredMarketplaces: ["A1F83G8C2ARO7P", "A1PA6795UKMFR9"],
+    supportedConfiguredMarketplaces: EU_REGULATORY,
   },
   [
     ["GET_FLAT_FILE_VAT_INVOICE_DATA_REPORT", "VAT 發票資料", "VAT 發票明細，可同時包含 FBA 與非 FBA 訂單。"],
@@ -406,7 +416,7 @@ const REGULATORY = entries(
     output: "MIXED",
   },
   [
-    ["END_USER_DATA_REPORT", "終端使用者資料", "包含顧客聯絡、頁面流量與訂單個資；本 FBA-only 工具不讀取。", { lifecycle: "REQUEST_OR_SCHEDULE", restrictedData: "RDT_REQUIRED", roles: ["Buyer Communication"], marketplaceAvailability: "IE, ES, FR, BE, NL, DE, IT, SE and PL.", supportedConfiguredMarketplaces: ["A1PA6795UKMFR9"] }],
+    ["END_USER_DATA_REPORT", "終端使用者資料", "包含顧客聯絡、頁面流量與訂單個資；本 FBA-only 工具不讀取。", { lifecycle: "REQUEST_OR_SCHEDULE", restrictedData: "RDT_REQUIRED", roles: ["Buyer Communication"], marketplaceAvailability: "IE, ES, FR, BE, NL, DE, IT, SE and PL.", supportedConfiguredMarketplaces: configuredMarketplaces("DE") }],
     ["FBA_BULK_INVOICE", "FBA 批次發票", "以日期、訂單或出貨篩選的 FBA 發票檔；需稅務限制角色與 RDT。", { fbaScope: "FBA_ONLY", output: "PDF_OR_ZIP", restrictedData: "RDT_REQUIRED", roles: ["Tax Invoicing (Restricted)"] }],
     ["MARKETPLACE_ASIN_PAGE_VIEW_METRICS", "ASIN 頁面瀏覽指標", "特定歐洲站點的 ASIN 頁面流量；無 FBA 履約區分。", { lifecycle: "REQUEST_OR_SCHEDULE", output: "JSON", roles: ["Selling Partner Insights"], marketplaceAvailability: "DE, FR, IT, ES, NL, PL, SE, BE, UK and IE.", supportedConfiguredMarketplaces: EU_REGULATORY }],
     ["GET_EPR_MONTHLY_REPORTS", "EPR 月報", "生產者延伸責任月報；取決於國家與法規資格。", { roles: ["Tax Remittance"] }],
@@ -467,9 +477,9 @@ const TAX = entries(
     ["GST_MTR_STOCK_TRANSFER_REPORT", "印度 GST 庫存調撥", "印度 GST 庫存調撥稅務報表。", { supportedConfiguredMarketplaces: [] }],
     ["GST_MTR_B2B", "印度 GST B2B", "印度 GST B2B 交易稅務報表。", { supportedConfiguredMarketplaces: [] }],
     ["GST_MTR_B2C", "印度 GST B2C", "印度 GST B2C 交易稅務報表。", { supportedConfiguredMarketplaces: [] }],
-    ["GET_FLAT_FILE_SALES_TAX_DATA", "美國銷售稅", "美國銷售稅報表；Amazon 官方文件要求先在 Seller Central 產生，之後才能以 Reports API 列出。", { lifecycle: "MANUAL_THEN_LIST", supportedConfiguredMarketplaces: ["ATVPDKIKX0DER"], prerequisites: ["先在 Amazon 官方稅務報表介面產生文件"] }],
-    ["SC_VAT_TAX_REPORT", "Seller Central VAT 交易", "歐洲 VAT 交易稅務報表。", { supportedConfiguredMarketplaces: ["A1F83G8C2ARO7P", "A1PA6795UKMFR9"] }],
-    ["GET_VAT_TRANSACTION_DATA", "VAT 交易明細", "VAT 交易明細；可包含多種履約通道。", { supportedConfiguredMarketplaces: ["A1F83G8C2ARO7P", "A1PA6795UKMFR9"] }],
+    ["GET_FLAT_FILE_SALES_TAX_DATA", "美國銷售稅", "美國銷售稅報表；Amazon 官方文件要求先在 Seller Central 產生，之後才能以 Reports API 列出。", { lifecycle: "MANUAL_THEN_LIST", supportedConfiguredMarketplaces: configuredMarketplaces("US"), prerequisites: ["先在 Amazon 官方稅務報表介面產生文件"] }],
+    ["SC_VAT_TAX_REPORT", "Seller Central VAT 交易", "歐洲 VAT 交易稅務報表。", { supportedConfiguredMarketplaces: EU_REGULATORY }],
+    ["GET_VAT_TRANSACTION_DATA", "VAT 交易明細", "VAT 交易明細；可包含多種履約通道。", { supportedConfiguredMarketplaces: EU_REGULATORY }],
     ["GET_GST_MTR_B2B_CUSTOM", "自訂 GST B2B", "印度自訂 GST B2B 稅務報表。", { supportedConfiguredMarketplaces: [] }],
     ["GET_GST_MTR_B2C_CUSTOM", "自訂 GST B2C", "印度自訂 GST B2C 稅務報表。", { supportedConfiguredMarketplaces: [] }],
     ["GET_GST_STR_ADHOC", "GST 臨時報表", "印度 GST 臨時稅務報表。", { supportedConfiguredMarketplaces: [] }],

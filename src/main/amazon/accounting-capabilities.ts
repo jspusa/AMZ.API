@@ -8,17 +8,31 @@
  * configured marketplaces.
  */
 
-export const ACCOUNTING_MARKETPLACES = Object.freeze({
-  ATVPDKIKX0DER: { code: "US", region: "NA" },
-  A2EUQ1WTGCTBG2: { code: "CA", region: "NA" },
-  A1VC38T7YXB528: { code: "JP", region: "FE" },
-  A19VAU5U5O7RUS: { code: "SG", region: "FE" },
-  A39IBJ37TRP1C6: { code: "AU", region: "FE" },
-  A1F83G8C2ARO7P: { code: "UK", region: "EU" },
-  A1PA6795UKMFR9: { code: "DE", region: "EU" },
-} as const);
+import {
+  MARKETPLACES,
+  type MarketplaceId,
+  type MarketplaceRegion,
+} from "../../shared/marketplaces";
 
-export type AccountingMarketplaceId = keyof typeof ACCOUNTING_MARKETPLACES;
+const ACCOUNTING_REGIONS: Record<MarketplaceRegion, "NA" | "FE" | "EU"> = {
+  na: "NA",
+  fe: "FE",
+  eu: "EU",
+};
+
+export const ACCOUNTING_MARKETPLACES = Object.freeze(
+  Object.fromEntries(
+    MARKETPLACES.map((marketplace) => [
+      marketplace.id,
+      {
+        code: marketplace.code,
+        region: ACCOUNTING_REGIONS[marketplace.region],
+      },
+    ]),
+  ) as Record<MarketplaceId, { code: string; region: "NA" | "FE" | "EU" }>,
+);
+
+export type AccountingMarketplaceId = MarketplaceId;
 
 export type AccountingCapabilityId =
   | "FINANCES_TRANSACTIONS"

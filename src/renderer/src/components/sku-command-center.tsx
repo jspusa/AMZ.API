@@ -8,6 +8,12 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  MARKETPLACES,
+  marketplaceByCode,
+  marketplaceById,
+  marketplaceSelectLabel,
+} from "../../../shared/marketplaces";
 
 type Tool = "restock" | "copy" | "images" | "price" | "promotion";
 type SupplyRoute = "DIRECT_FBA" | "AWD_TO_FBA";
@@ -133,15 +139,7 @@ type ProfileDraft = {
   notes: string;
 };
 
-const MARKETPLACES = [
-  { id: "ATVPDKIKX0DER", label: "US · 美國站", sample: "AFA-TRKY-4OZ" },
-  { id: "A1VC38T7YXB528", label: "JP · 日本站", sample: "AFA100-JP" },
-  { id: "A2EUQ1WTGCTBG2", label: "CA · 加拿大站", sample: "AFA-TRKY-4OZ" },
-  { id: "A19VAU5U5O7RUS", label: "SG · 新加坡站", sample: "AFA-TRKY-4OZ" },
-  { id: "A39IBJ37TRP1C6", label: "AU · 澳洲站", sample: "AFA-TRKY-4OZ" },
-  { id: "A1F83G8C2ARO7P", label: "UK · 英國站", sample: "AFA-TRKY-4OZ" },
-  { id: "A1PA6795UKMFR9", label: "DE · 德國站", sample: "AFA-TRKY-4OZ" },
-];
+const US_MARKETPLACE_ID = marketplaceByCode("US").id;
 
 const TOOL_LABELS: Record<Tool, { label: string; symbol: string }> = {
   restock: { label: "補貨", symbol: "↗" },
@@ -240,8 +238,7 @@ export default function SkuCommandCenter({
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const autoLookupRef = useRef(false);
   const profileRef = useRef<HTMLDetailsElement | null>(null);
-  const marketplace =
-    MARKETPLACES.find((item) => item.id === marketplaceId) ?? MARKETPLACES[0];
+  const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
 
   const loadRecent = useCallback(async (query = "", marketplaceOverride?: string) => {
     setRecentLoading(true);
@@ -330,7 +327,7 @@ export default function SkuCommandCenter({
     if ([casePack, cartons, lead, safety, target, buffer].some((item) => item === null)) {
       return "箱入數、整板箱數與天數設定超出允許範圍。";
     }
-    if (draft.supplyRoute === "AWD_TO_FBA" && marketplaceId !== "ATVPDKIKX0DER") {
+    if (draft.supplyRoute === "AWD_TO_FBA" && marketplaceId !== US_MARKETPLACE_ID) {
       return "AWD→FBA 目前只支援美國站。";
     }
     const effectiveLead = lead! + (draft.supplyRoute === "AWD_TO_FBA" ? buffer! : 0);
@@ -461,7 +458,7 @@ export default function SkuCommandCenter({
             disabled={loading || saving}
             aria-label="Amazon 站點"
           >
-            {MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            {MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}
           </select>
           <label>
             <span>⌕</span>
@@ -471,7 +468,7 @@ export default function SkuCommandCenter({
                 setSkuInput(event.target.value);
                 setError(null);
               }}
-              placeholder={`Seller SKU，例如 ${marketplace.sample}`}
+              placeholder={`Seller SKU，例如 ${marketplace.sampleSku}`}
               maxLength={40}
               autoFocus
               autoComplete="off"
@@ -501,7 +498,7 @@ export default function SkuCommandCenter({
           <>
             <section className={`command-hero ${snapshot.summary.overall}`}>
               <div className="command-product-avatar" aria-hidden="true">{productName.slice(0, 1)}</div>
-              <div className="command-product-copy"><span>{snapshot.mode === "live" ? "LIVE" : "DEMO"} · {marketplace.label}</span><h3>{productName}</h3><p>{snapshot.sellerSku} · {snapshot.profile.profile.asin ?? "無 ASIN"}{snapshot.profile.profile.fnSku ? ` · ${snapshot.profile.profile.fnSku}` : ""}</p></div>
+              <div className="command-product-copy"><span>{snapshot.mode === "live" ? "LIVE" : "DEMO"} · {marketplaceSelectLabel(marketplace)}</span><h3>{productName}</h3><p>{snapshot.sellerSku} · {snapshot.profile.profile.asin ?? "無 ASIN"}{snapshot.profile.profile.fnSku ? ` · ${snapshot.profile.profile.fnSku}` : ""}</p></div>
               <div className="command-score"><strong>{snapshot.summary.score}</strong><span>%</span><small>{snapshot.summary.sourceReady}/{snapshot.summary.sourceTotal} 資料源</small></div>
             </section>
 

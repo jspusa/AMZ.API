@@ -1,6 +1,13 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  MARKETPLACES as MARKETPLACE_METADATA,
+  marketplaceByCode,
+  marketplaceById,
+  marketplaceSelectLabel,
+  type MarketplaceCode,
+} from "../../../shared/marketplaces";
 
 type RestockPlan = {
   mode: "live" | "demo";
@@ -74,15 +81,21 @@ type RestockAssumptions = {
   awdBufferDays: number;
 };
 
-const MARKETPLACES = [
-  { id: "ATVPDKIKX0DER", label: "US · 美國站", sample: "AFA-TRKY-4OZ", inbound: "https://sellercentral.amazon.com/fba/sendtoamazon" },
-  { id: "A1VC38T7YXB528", label: "JP · 日本站", sample: "AFA100-JP", inbound: "https://sellercentral.amazon.co.jp/fba/sendtoamazon" },
-  { id: "A2EUQ1WTGCTBG2", label: "CA · 加拿大站", sample: "AFA-TRKY-4OZ", inbound: "https://sellercentral.amazon.ca/fba/sendtoamazon" },
-  { id: "A19VAU5U5O7RUS", label: "SG · 新加坡站", sample: "AFA-TRKY-4OZ", inbound: "https://sellercentral.amazon.sg/fba/sendtoamazon" },
-  { id: "A39IBJ37TRP1C6", label: "AU · 澳洲站", sample: "AFA-TRKY-4OZ", inbound: "https://sellercentral.amazon.com.au/fba/sendtoamazon" },
-  { id: "A1F83G8C2ARO7P", label: "UK · 英國站", sample: "AFA-TRKY-4OZ", inbound: "https://sellercentral.amazon.co.uk/fba/sendtoamazon" },
-  { id: "A1PA6795UKMFR9", label: "DE · 德國站", sample: "AFA-TRKY-4OZ", inbound: "https://sellercentral.amazon.de/fba/sendtoamazon" },
-];
+const INBOUND_URLS: Record<MarketplaceCode, string> = {
+  US: "https://sellercentral.amazon.com/fba/sendtoamazon",
+  JP: "https://sellercentral.amazon.co.jp/fba/sendtoamazon",
+  CA: "https://sellercentral.amazon.ca/fba/sendtoamazon",
+  SG: "https://sellercentral.amazon.sg/fba/sendtoamazon",
+  AU: "https://sellercentral.amazon.com.au/fba/sendtoamazon",
+  UK: "https://sellercentral.amazon.co.uk/fba/sendtoamazon",
+  DE: "https://sellercentral.amazon.de/fba/sendtoamazon",
+};
+
+const MARKETPLACES = MARKETPLACE_METADATA.map((marketplace) => ({
+  ...marketplace,
+  inbound: INBOUND_URLS[marketplace.code],
+}));
+const US_MARKETPLACE_ID = marketplaceByCode("US").id;
 
 const ACTION_COPY: Record<RestockPlan["action"], { label: string; tone: string; detail: string }> = {
   RESTOCK_NOW: { label: "建議現在補貨", tone: "danger", detail: "現有可售天數已進入交期＋安全庫存範圍。" },
@@ -145,7 +158,11 @@ export default function ReplenishmentDrawer({
   const [copied, setCopied] = useState(false);
   const autoLookupRef = useRef(false);
   const loadedProfileKeyRef = useRef("");
-  const marketplace = MARKETPLACES.find((item) => item.id === marketplaceId) ?? MARKETPLACES[0];
+  const baseMarketplace = marketplaceById(marketplaceId) ?? MARKETPLACE_METADATA[0];
+  const marketplace = {
+    ...baseMarketplace,
+    inbound: INBOUND_URLS[baseMarketplace.code],
+  };
   const action = useMemo(() => (plan ? ACTION_COPY[plan.action] : null), [plan]);
   const recommendedCartons = plan
     ? Math.ceil(plan.recommendedUnits / Math.max(1, plan.casePack))
@@ -240,7 +257,7 @@ export default function ReplenishmentDrawer({
       }
       const problem = assumptionProblem(assumptions);
       if (problem) throw new Error(problem);
-      if (assumptions.supplyRoute === "AWD_TO_FBA" && marketplaceId !== "ATVPDKIKX0DER") {
+      if (assumptions.supplyRoute === "AWD_TO_FBA" && marketplaceId !== US_MARKETPLACE_ID) {
         throw new Error("AWD→FBA 目前只支援美國站。");
       }
       const effectiveLeadTime =
@@ -284,7 +301,7 @@ export default function ReplenishmentDrawer({
   const copyPlan = async () => {
     if (!plan) return;
     const text = [
-      `${marketplace.label} FBA 補貨建議`,
+      `${marketplaceSelectLabel(marketplace)} FBA 補貨建議`,
       `SKU: ${plan.sellerSku}`,
       `建議數量: ${plan.recommendedUnits}`,
       `整箱／整板: ${recommendedCartons} 箱／約 ${recommendedPallets} 板`,
@@ -354,10 +371,10 @@ export default function ReplenishmentDrawer({
         <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>從全域 SKU 開啟即計算；交期、庫存與箱入數不合理時會先阻擋。</p><span className="automation-badge manual">需人工</span><p>最終箱規、placement、運輸與實體入庫仍由你確認。</p></div>
 
         <form className="restock-form" onSubmit={lookup}>
-          <label><span>Amazon 站點</span><select value={marketplaceId} onChange={(event) => { setMarketplaceId(event.target.value); invalidatePlan(); setProfileState(null); setProfileMessage(null); loadedProfileKeyRef.current = ""; if (event.target.value !== "ATVPDKIKX0DER") setSupplyRoute("DIRECT_FBA"); }} disabled={loading}>{MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-          <label className="restock-sku"><span>Seller SKU</span><div className="sku-search-row"><input value={sku} onChange={(event) => { setSku(event.target.value); invalidatePlan(); setProfileState(null); setProfileMessage(null); loadedProfileKeyRef.current = ""; }} placeholder={`例如 ${marketplace.sample}`} autoFocus autoComplete="off" spellCheck={false} disabled={loading || profileLoading} /><button type="submit" disabled={loading || profileLoading || !sku.trim()}>{loading || profileLoading ? "自動載入與計算中…" : "一鍵計算"}</button></div></label>
+          <label><span>Amazon 站點</span><select value={marketplaceId} onChange={(event) => { setMarketplaceId(event.target.value); invalidatePlan(); setProfileState(null); setProfileMessage(null); loadedProfileKeyRef.current = ""; if (event.target.value !== US_MARKETPLACE_ID) setSupplyRoute("DIRECT_FBA"); }} disabled={loading}>{MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}</select></label>
+          <label className="restock-sku"><span>Seller SKU</span><div className="sku-search-row"><input value={sku} onChange={(event) => { setSku(event.target.value); invalidatePlan(); setProfileState(null); setProfileMessage(null); loadedProfileKeyRef.current = ""; }} placeholder={`例如 ${marketplace.sampleSku}`} autoFocus autoComplete="off" spellCheck={false} disabled={loading || profileLoading} /><button type="submit" disabled={loading || profileLoading || !sku.trim()}>{loading || profileLoading ? "自動載入與計算中…" : "一鍵計算"}</button></div></label>
           <div className="restock-route-row">
-            <label><span>補貨路徑</span><select value={supplyRoute} onChange={(event) => { setSupplyRoute(event.target.value as SupplyRoute); invalidatePlan(); }} disabled={loading}><option value="DIRECT_FBA">直接送 FBA</option><option value="AWD_TO_FBA" disabled={marketplaceId !== "ATVPDKIKX0DER"}>AWD → FBA（US）</option></select></label>
+            <label><span>補貨路徑</span><select value={supplyRoute} onChange={(event) => { setSupplyRoute(event.target.value as SupplyRoute); invalidatePlan(); }} disabled={loading}><option value="DIRECT_FBA">直接送 FBA</option><option value="AWD_TO_FBA" disabled={marketplaceId !== US_MARKETPLACE_ID}>AWD → FBA（US）</option></select></label>
           </div>
           <div className="restock-assumptions">
             <label><span>目標庫存</span><div><input value={targetDays} onChange={(event) => { setTargetDays(event.target.value); invalidatePlan(); }} inputMode="numeric" /><b>天</b></div></label>

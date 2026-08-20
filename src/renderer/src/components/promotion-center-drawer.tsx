@@ -8,6 +8,12 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  MARKETPLACES as MARKETPLACE_METADATA,
+  marketplaceById,
+  marketplaceSelectLabel,
+  type MarketplaceCode,
+} from "../../../shared/marketplaces";
 
 type Money = { amount: number; currencyCode: string };
 type ListingIssue = {
@@ -99,78 +105,28 @@ type ApiProblem = {
   issues?: ListingIssue[];
 };
 
-const MARKETPLACES = [
+const PROMOTION_CAPABILITY: Record<
+  MarketplaceCode,
   {
-    id: "ATVPDKIKX0DER",
-    label: "US · 美國站",
-    currency: "USD",
-    sample: "AFA-TRKY-4OZ",
-    snsSample: "GTC-CHKN-1LB",
-    sellerCentral: "https://sellercentral.amazon.com",
-    snsManage: "https://sellercentral.amazon.com/sns/manage",
-    snsSupported: true,
-  },
-  {
-    id: "A1VC38T7YXB528",
-    label: "JP · 日本站",
-    currency: "JPY",
-    sample: "AFA100-JP",
-    snsSample: "GTC454-JP",
-    sellerCentral: "https://sellercentral.amazon.co.jp",
-    snsManage: "https://sellercentral.amazon.co.jp/sns/manage",
-    snsSupported: true,
-  },
-  {
-    id: "A2EUQ1WTGCTBG2",
-    label: "CA · 加拿大站",
-    currency: "CAD",
-    sample: "AFA-TRKY-4OZ",
-    snsSample: "GTC-CHKN-1LB",
-    sellerCentral: "https://sellercentral.amazon.ca",
-    snsManage: "https://sellercentral.amazon.ca",
-    snsSupported: true,
-  },
-  {
-    id: "A19VAU5U5O7RUS",
-    label: "SG · 新加坡站",
-    currency: "SGD",
-    sample: "AFA-TRKY-4OZ",
-    snsSample: "GTC-CHKN-1LB",
-    sellerCentral: "https://sellercentral.amazon.sg",
-    snsManage: "https://sellercentral.amazon.sg",
-    snsSupported: false,
-  },
-  {
-    id: "A39IBJ37TRP1C6",
-    label: "AU · 澳洲站",
-    currency: "AUD",
-    sample: "AFA-TRKY-4OZ",
-    snsSample: "GTC-CHKN-1LB",
-    sellerCentral: "https://sellercentral.amazon.com.au",
-    snsManage: "https://sellercentral.amazon.com.au",
-    snsSupported: false,
-  },
-  {
-    id: "A1F83G8C2ARO7P",
-    label: "UK · 英國站",
-    currency: "GBP",
-    sample: "AFA-TRKY-4OZ",
-    snsSample: "GTC-CHKN-1LB",
-    sellerCentral: "https://sellercentral-europe.amazon.com",
-    snsManage: "https://sellercentral-europe.amazon.com",
-    snsSupported: true,
-  },
-  {
-    id: "A1PA6795UKMFR9",
-    label: "DE · 德國站",
-    currency: "EUR",
-    sample: "AFA-TRKY-4OZ",
-    snsSample: "GTC-CHKN-1LB",
-    sellerCentral: "https://sellercentral-europe.amazon.com",
-    snsManage: "https://sellercentral-europe.amazon.com",
-    snsSupported: true,
-  },
-];
+    snsSample: string;
+    sellerCentral: string;
+    snsManage: string;
+    snsSupported: boolean;
+  }
+> = {
+  US: { snsSample: "GTC-CHKN-1LB", sellerCentral: "https://sellercentral.amazon.com", snsManage: "https://sellercentral.amazon.com/sns/manage", snsSupported: true },
+  JP: { snsSample: "GTC454-JP", sellerCentral: "https://sellercentral.amazon.co.jp", snsManage: "https://sellercentral.amazon.co.jp/sns/manage", snsSupported: true },
+  CA: { snsSample: "GTC-CHKN-1LB", sellerCentral: "https://sellercentral.amazon.ca", snsManage: "https://sellercentral.amazon.ca", snsSupported: true },
+  SG: { snsSample: "GTC-CHKN-1LB", sellerCentral: "https://sellercentral.amazon.sg", snsManage: "https://sellercentral.amazon.sg", snsSupported: false },
+  AU: { snsSample: "GTC-CHKN-1LB", sellerCentral: "https://sellercentral.amazon.com.au", snsManage: "https://sellercentral.amazon.com.au", snsSupported: false },
+  UK: { snsSample: "GTC-CHKN-1LB", sellerCentral: "https://sellercentral-europe.amazon.com", snsManage: "https://sellercentral-europe.amazon.com", snsSupported: true },
+  DE: { snsSample: "GTC-CHKN-1LB", sellerCentral: "https://sellercentral-europe.amazon.com", snsManage: "https://sellercentral-europe.amazon.com", snsSupported: true },
+};
+
+const MARKETPLACES = MARKETPLACE_METADATA.map((marketplace) => ({
+  ...marketplace,
+  ...PROMOTION_CAPABILITY[marketplace.code],
+}));
 
 const ELIGIBILITY_LABELS: Record<string, string> = {
   ELIGIBLE: "可接受新訂閱",
@@ -283,8 +239,11 @@ export default function PromotionCenterDrawer({
   const autoRecheckRef = useRef("");
   const saleRequestSequence = useRef(0);
 
-  const marketplace =
-    MARKETPLACES.find((item) => item.id === marketplaceId) ?? MARKETPLACES[0];
+  const baseMarketplace = marketplaceById(marketplaceId) ?? MARKETPLACE_METADATA[0];
+  const marketplace = {
+    ...baseMarketplace,
+    ...PROMOTION_CAPABILITY[baseMarketplace.code],
+  };
   const parsedSalePrice = parsePrice(salePrice, marketplace.currency);
   const discountRatio = useMemo(() => {
     if (!listing?.standardPrice || parsedSalePrice === null) return null;
@@ -679,7 +638,7 @@ export default function PromotionCenterDrawer({
           >
             {MARKETPLACES.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.label}
+                {marketplaceSelectLabel(item)}
               </option>
             ))}
           </select>
@@ -714,7 +673,7 @@ export default function PromotionCenterDrawer({
                           setSalePhase("edit");
                           setRecheckState("pending");
                         }}
-                        placeholder={`例如 ${marketplace.sample}`}
+                        placeholder={`例如 ${marketplace.sampleSku}`}
                         autoComplete="off"
                         disabled={saleLoading}
                       />
@@ -819,7 +778,7 @@ export default function PromotionCenterDrawer({
                 </button>
                 <p className="eyebrow">FINAL CONFIRMATION</p>
                 <h3>{saleAction === "cancel" ? "確認取消 Sale Price" : "確認建立 Sale Price"}</h3>
-                <p className="confirmation-product">{listing.sellerSku} · {marketplace.label}</p>
+                <p className="confirmation-product">{listing.sellerSku} · {marketplaceSelectLabel(marketplace)}</p>
                 <div className="sale-confirm-card">
                   <div>
                     <span>標準售價</span>

@@ -228,6 +228,34 @@ describe("review-audit non-parent relationship proof", () => {
     )).toBe(true);
   });
 
+  it("does not start another relationship batch after lifecycle cleanup aborts the run", async () => {
+    const seeds = Array.from({ length: 45 }, (_, index) => seed(index + 1));
+    const controller = new AbortController();
+    const searchBatch = vi.fn(async (sellerSkus: string[]) => {
+      const selected = sellerSkus.map((sellerSku) =>
+        seeds.find((candidate) => candidate.sellerSku === sellerSku)!);
+      controller.abort(new Error("lifecycle cleanup"));
+      return {
+        status: 200,
+        requestId: "request-before-abort",
+        payload: {
+          numberOfResults: selected.length,
+          pagination: {},
+          items: selected.map((candidate) => item(candidate, "standalone")),
+        },
+      };
+    });
+
+    await expect(verifyFbaReviewAuditSeeds({
+      marketplaceId: US,
+      seeds,
+      searchBatch,
+      pace: async () => undefined,
+      signal: controller.signal,
+    })).rejects.toThrow(/lifecycle cleanup/u);
+    expect(searchBatch).toHaveBeenCalledTimes(1);
+  });
+
   it("marks invalid ASIN and unqueryable SKU incomplete without any Listings request", async () => {
     const searchBatch = vi.fn();
     const [rawPaddedAsin] = parseFbaListingReportSeeds([

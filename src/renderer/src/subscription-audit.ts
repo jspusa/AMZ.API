@@ -1,17 +1,26 @@
+import {
+  marketplaceById,
+  type MarketplaceCode,
+} from "../../shared/marketplaces";
+
 export type SubscriptionAuditMonthCount = 6 | 12 | 23;
 
-const SELLER_REPLENISHMENT_MARKETPLACE_IDS = new Set([
-  "ATVPDKIKX0DER",
-  "A1VC38T7YXB528",
-  "A2EUQ1WTGCTBG2",
-  "A1F83G8C2ARO7P",
-  "A1PA6795UKMFR9",
+const SELLER_REPLENISHMENT_MARKETPLACE_CODES = new Set<MarketplaceCode>([
+  "US",
+  "JP",
+  "CA",
+  "UK",
+  "DE",
 ]);
 
 export function isSubscriptionAuditMarketplaceSupported(
   marketplaceId: string,
 ): boolean {
-  return SELLER_REPLENISHMENT_MARKETPLACE_IDS.has(marketplaceId);
+  const marketplace = marketplaceById(marketplaceId);
+  return Boolean(
+    marketplace &&
+      SELLER_REPLENISHMENT_MARKETPLACE_CODES.has(marketplace.code),
+  );
 }
 
 export type SubscriptionAuditInterval = {

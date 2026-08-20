@@ -1,6 +1,12 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  MARKETPLACES as MARKETPLACE_METADATA,
+  marketplaceById,
+  marketplaceSelectLabel,
+  type MarketplaceCode,
+} from "../../../shared/marketplaces";
 
 type Money = {
   amount: number;
@@ -87,15 +93,23 @@ type HistoryEntry = {
   status: "processing" | "standard" | "effective" | "simulated";
 };
 
-const MARKETPLACES = [
-  { id: "ATVPDKIKX0DER", label: "US · 美國站", currency: "USD", sampleSku: "AFA-TRKY-4OZ", snsSupported: true, snsManage: "https://sellercentral.amazon.com/sns/manage" },
-  { id: "A1VC38T7YXB528", label: "JP · 日本站", currency: "JPY", sampleSku: "AFA100-JP", snsSupported: true, snsManage: "https://sellercentral.amazon.co.jp/sns/manage" },
-  { id: "A2EUQ1WTGCTBG2", label: "CA · 加拿大站", currency: "CAD", sampleSku: "AFA-TRKY-4OZ", snsSupported: true, snsManage: "https://sellercentral.amazon.ca" },
-  { id: "A19VAU5U5O7RUS", label: "SG · 新加坡站", currency: "SGD", sampleSku: "AFA-TRKY-4OZ", snsSupported: false, snsManage: "https://sellercentral.amazon.sg" },
-  { id: "A39IBJ37TRP1C6", label: "AU · 澳洲站", currency: "AUD", sampleSku: "AFA-TRKY-4OZ", snsSupported: false, snsManage: "https://sellercentral.amazon.com.au" },
-  { id: "A1F83G8C2ARO7P", label: "UK · 英國站", currency: "GBP", sampleSku: "AFA-TRKY-4OZ", snsSupported: true, snsManage: "https://sellercentral.amazon.co.uk" },
-  { id: "A1PA6795UKMFR9", label: "DE · 德國站", currency: "EUR", sampleSku: "AFA-TRKY-4OZ", snsSupported: true, snsManage: "https://sellercentral.amazon.de" },
-];
+const SUBSCRIBE_SAVE_CAPABILITY: Record<
+  MarketplaceCode,
+  { snsSupported: boolean; snsManage: string }
+> = {
+  US: { snsSupported: true, snsManage: "https://sellercentral.amazon.com/sns/manage" },
+  JP: { snsSupported: true, snsManage: "https://sellercentral.amazon.co.jp/sns/manage" },
+  CA: { snsSupported: true, snsManage: "https://sellercentral.amazon.ca" },
+  SG: { snsSupported: false, snsManage: "https://sellercentral.amazon.sg" },
+  AU: { snsSupported: false, snsManage: "https://sellercentral.amazon.com.au" },
+  UK: { snsSupported: true, snsManage: "https://sellercentral.amazon.co.uk" },
+  DE: { snsSupported: true, snsManage: "https://sellercentral.amazon.de" },
+};
+
+const MARKETPLACES = MARKETPLACE_METADATA.map((marketplace) => ({
+  ...marketplace,
+  ...SUBSCRIBE_SAVE_CAPABILITY[marketplace.code],
+}));
 
 function formatMoney(money: Money | null): string {
   if (!money) return "—";
@@ -199,8 +213,11 @@ export default function PriceDrawer({
   const autoLookupRef = useRef(false);
   const autoRecheckRef = useRef("");
 
-  const marketplace =
-    MARKETPLACES.find((item) => item.id === marketplaceId) ?? MARKETPLACES[0];
+  const baseMarketplace = marketplaceById(marketplaceId) ?? MARKETPLACE_METADATA[0];
+  const marketplace = {
+    ...baseMarketplace,
+    ...SUBSCRIBE_SAVE_CAPABILITY[baseMarketplace.code],
+  };
   const parsedNewPrice = parsePrice(newPrice, marketplace.currency);
   const change = useMemo(() => {
     if (!listing?.standardPrice || parsedNewPrice === null) return null;
@@ -381,7 +398,7 @@ export default function PriceDrawer({
     setHistory((entries) => [
       {
         id: key,
-        marketplaceLabel: marketplace.label,
+        marketplaceLabel: marketplaceSelectLabel(marketplace),
         sellerSku: listing.sellerSku,
         previousPrice: nextResult.previousPrice,
         requestedPrice: nextResult.requestedPrice,
@@ -569,7 +586,7 @@ export default function PriceDrawer({
                   disabled={lookupLoading || actionLoading}
                 >
                   {MARKETPLACES.map((option) => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
+                    <option key={option.id} value={option.id}>{marketplaceSelectLabel(option)}</option>
                   ))}
                 </select>
               </label>
@@ -754,7 +771,7 @@ export default function PriceDrawer({
             </button>
             <p className="eyebrow">FINAL CONFIRMATION</p>
             <h3>確認這次價格變更</h3>
-            <p className="confirmation-product">{marketplace.label} · {listing.sellerSku}</p>
+            <p className="confirmation-product">{marketplaceSelectLabel(marketplace)} · {listing.sellerSku}</p>
             <div className="price-transition">
               <div><span>目前標準售價</span><strong>{formatMoney(validation.previousPrice)}</strong></div>
               <i>→</i>
@@ -803,7 +820,7 @@ export default function PriceDrawer({
                 ? "送交 Amazon 中…"
                 : validation.mode === "demo"
                   ? `模擬把 ${listing.sellerSku} 改為 ${formatMoney(validation.requestedPrice)}`
-                  : `確認把 ${marketplace.label.split(" · ")[0]} · ${listing.sellerSku} 改為 ${formatMoney(validation.requestedPrice)}`}
+                  : `確認把 ${marketplace.code} · ${listing.sellerSku} 改為 ${formatMoney(validation.requestedPrice)}`}
             </button>
             <p className="submission-note">送出前本機 App 會重新查價並再次預檢；若價格已變動，這次更新會停止。</p>
           </section>

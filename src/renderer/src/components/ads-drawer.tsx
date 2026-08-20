@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  MARKETPLACES,
+  marketplaceSelectLabel,
+} from "../../../shared/marketplaces";
 import AdvertisingCoveragePanel from "./advertising-coverage-panel";
 
 type AdsStatus = {
@@ -17,16 +21,6 @@ type AdsStatus = {
   permissionVerified?: false;
   notice: string;
 };
-
-const MARKETPLACES = [
-  { id: "ATVPDKIKX0DER", label: "US · 美國站" },
-  { id: "A1VC38T7YXB528", label: "JP · 日本站" },
-  { id: "A2EUQ1WTGCTBG2", label: "CA · 加拿大站" },
-  { id: "A19VAU5U5O7RUS", label: "SG · 新加坡站" },
-  { id: "A39IBJ37TRP1C6", label: "AU · 澳洲站" },
-  { id: "A1F83G8C2ARO7P", label: "UK · 英國站" },
-  { id: "A1PA6795UKMFR9", label: "DE · 德國站" },
-];
 
 export default function AdsDrawer({
   initialMarketplaceId,
@@ -78,7 +72,7 @@ export default function AdsDrawer({
         <p className="price-intro">SP 操作繼續交給 Helium 10；Ads API 連線後，這裡只會查詢 ProductAI 活動名稱與全站 FBA SKU 覆蓋，不會寫入 campaign。</p>
         <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>系統自動檢查 Ads 連線，並列出沒有 ENABLED SP 活動或同 ASIN 覆蓋的 FBA SKU；不會建立或啟用廣告。</p><span className="automation-badge manual">需人工</span><p>SB／SD 的素材、預算、目標與正式啟用仍需人工確認，避免誤燒廣告費。</p></div>
 
-        <label className="ads-marketplace"><span>Amazon Ads 站點</span><select value={marketplaceId} onChange={(event) => { setLoading(true); setError(null); setStatus(null); setMarketplaceId(event.target.value); }}>{MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <label className="ads-marketplace"><span>Amazon Ads 站點</span><select value={marketplaceId} onChange={(event) => { setLoading(true); setError(null); setStatus(null); setMarketplaceId(event.target.value); }}>{MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}</select></label>
 
         {error && <div className="price-error" role="alert">{error}</div>}
 

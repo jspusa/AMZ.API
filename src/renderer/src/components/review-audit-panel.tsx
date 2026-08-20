@@ -2,6 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  marketplaceById,
+  type MarketplaceCode,
+} from "../../../shared/marketplaces";
+import {
   parseReviewAuditJob,
   parseReviewAuditSnapshot,
   type ReviewAuditJobView,
@@ -9,11 +13,11 @@ import {
 } from "../review-audit";
 import { auditExportFilename } from "../audit-export-filename";
 
-const SUPPORTED = new Set([
-  "ATVPDKIKX0DER",
-  "A1VC38T7YXB528",
-  "A1F83G8C2ARO7P",
-  "A1PA6795UKMFR9",
+const SUPPORTED_MARKETPLACE_CODES = new Set<MarketplaceCode>([
+  "US",
+  "JP",
+  "UK",
+  "DE",
 ]);
 
 function apiMessage(value: unknown, fallback: string): string {
@@ -185,7 +189,10 @@ export default function ReviewAuditPanel({
     }
   };
 
-  const supported = SUPPORTED.has(marketplaceId);
+  const marketplace = marketplaceById(marketplaceId);
+  const supported = Boolean(
+    marketplace && SUPPORTED_MARKETPLACE_CODES.has(marketplace.code),
+  );
   return (
     <section className="review-audit-panel" aria-label="FBA 評論主題健檢">
       <header className="review-audit-hero">

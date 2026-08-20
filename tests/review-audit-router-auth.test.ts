@@ -249,6 +249,219 @@ describe("review audit role failure fan-out", () => {
     expect(mocks.feedback).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts a standalone review job when lifecycle cleanup clears previews", async () => {
+    process.env.SP_API_MODE = "live";
+    mocks.mode = "live";
+    mocks.candidateCount = 1;
+    mocks.feedback.mockReset();
+    let observedSignal: AbortSignal | null = null;
+    mocks.feedback.mockImplementation(async ({ signal }) => {
+      observedSignal = signal;
+      await new Promise<never>((_resolve, reject) => {
+        const abortSignal = signal as AbortSignal;
+        const onAbort = () => reject(
+          abortSignal.reason instanceof Error
+            ? abortSignal.reason
+            : new Error("review job stopped"),
+        );
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+        if (abortSignal.aborted) onAbort();
+      });
+    });
+    const directory = await mkdtemp(join(tmpdir(), "review-router-abort-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const router = new ApiRouter({
+      store,
+      vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
+    const started = await router.handle(request(
+      "POST",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US },
+    ));
+    const polling = router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId: jsonValue(started).jobId as string },
+    ));
+    await vi.waitFor(() => expect(mocks.feedback).toHaveBeenCalledTimes(1));
+
+    router.clearPreviews();
+    await polling;
+
+    expect((observedSignal as AbortSignal | null)?.aborted).toBe(true);
+    expect(mocks.feedback).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an active standalone review job beyond its initial 30-minute window", async () => {
+    vi.useFakeTimers();
+    const startedAt = new Date("2026-08-09T00:00:00.000Z");
+    vi.setSystemTime(startedAt);
+    mocks.mode = "demo";
+    mocks.candidateCount = 1;
+    mocks.feedback.mockReset();
+    mocks.feedback.mockImplementation(async ({ candidate }) => ({
+      candidate,
+      response: null,
+      noContent: true,
+    }));
+    let releaseCandidates: () => void = () => {
+      throw new Error("Candidate gate was not initialized.");
+    };
+    mocks.candidateGate = new Promise<void>((resolve) => {
+      releaseCandidates = resolve;
+    });
+    const directory = await mkdtemp(join(tmpdir(), "review-router-active-retention-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const router = new ApiRouter({
+      store,
+      vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
+    const started = await router.handle(request(
+      "POST",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US },
+    ));
+    const jobId = jsonValue(started).jobId as string;
+    const firstPoll = router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId },
+    ));
+    for (let attempt = 0; attempt < 20 && !mocks.candidateStarted; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(mocks.candidateStarted).toBe(true);
+
+    vi.setSystemTime(new Date(startedAt.getTime() + 31 * 60 * 1_000));
+    const retainedPoll = router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId },
+    ));
+    releaseCandidates();
+
+    const [, retained] = await Promise.all([firstPoll, retainedPoll]);
+    expect(retained.status).toBe(200);
+    expect(jsonValue(retained)).toMatchObject({
+      summary: { uniqueFbaNonParentAsins: 1, noTopics: 1 },
+    });
+    router.clearPreviews();
+  });
+
+  it("retains a standalone review snapshot for 30 minutes after a long run completes", async () => {
+    vi.useFakeTimers();
+    const startedAt = new Date("2026-08-09T00:00:00.000Z");
+    vi.setSystemTime(startedAt);
+    mocks.mode = "demo";
+    mocks.candidateCount = 1;
+    mocks.feedback.mockReset();
+    mocks.feedback.mockImplementation(async ({ candidate }) => ({
+      candidate,
+      response: null,
+      noContent: true,
+    }));
+    let releaseCandidates: () => void = () => {
+      throw new Error("Candidate gate was not initialized.");
+    };
+    mocks.candidateGate = new Promise<void>((resolve) => {
+      releaseCandidates = resolve;
+    });
+    const directory = await mkdtemp(join(tmpdir(), "review-router-terminal-retention-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const router = new ApiRouter({
+      store,
+      vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
+    const started = await router.handle(request(
+      "POST",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US },
+    ));
+    const jobId = jsonValue(started).jobId as string;
+    const completing = router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId },
+    ));
+    for (let attempt = 0; attempt < 20 && !mocks.candidateStarted; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(mocks.candidateStarted).toBe(true);
+
+    vi.setSystemTime(new Date(startedAt.getTime() + 25 * 60 * 1_000));
+    releaseCandidates();
+    expect((await completing).status).toBe(200);
+
+    vi.setSystemTime(new Date(startedAt.getTime() + 31 * 60 * 1_000));
+    const retained = await router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId },
+    ));
+    expect(retained.status).toBe(200);
+    expect(jsonValue(retained)).toMatchObject({
+      summary: { uniqueFbaNonParentAsins: 1, noTopics: 1 },
+    });
+    router.clearPreviews();
+  });
+
+  it("clears and aborts a standalone review job after its terminal retention expires", async () => {
+    vi.useFakeTimers();
+    const completedAt = new Date("2026-08-09T00:00:00.000Z");
+    vi.setSystemTime(completedAt);
+    mocks.mode = "demo";
+    mocks.candidateCount = 1;
+    mocks.feedback.mockReset();
+    let observedSignal: AbortSignal | null = null;
+    mocks.feedback.mockImplementation(async ({ candidate, signal }) => {
+      observedSignal = signal as AbortSignal;
+      return {
+        candidate,
+        response: null,
+        noContent: true,
+      };
+    });
+    const directory = await mkdtemp(join(tmpdir(), "review-router-terminal-expiry-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const router = new ApiRouter({
+      store,
+      vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
+    const started = await router.handle(request(
+      "POST",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US },
+    ));
+    const jobId = jsonValue(started).jobId as string;
+    const completed = await router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId },
+    ));
+    expect(completed.status).toBe(200);
+    expect((observedSignal as AbortSignal | null)?.aborted).toBe(false);
+
+    vi.setSystemTime(new Date(completedAt.getTime() + 30 * 60 * 1_000 + 1));
+    const expired = await router.handle(request(
+      "GET",
+      "/api/sp-api/review-audit",
+      { marketplaceId: US, jobId },
+    ));
+
+    expect(expired.status).toBe(410);
+    expect(jsonValue(expired)).toMatchObject({ code: "SNAPSHOT_EXPIRED" });
+    expect((observedSignal as AbortSignal | null)?.aborted).toBe(true);
+  });
+
   it("paces Customer Feedback globally across parallel jobs", async () => {
     process.env.SP_API_MODE = "live";
     mocks.mode = "live";
