@@ -4,7 +4,6 @@ import {
   dialog,
   ipcMain,
   powerMonitor,
-  protocol,
   session,
   shell,
   systemPreferences,
@@ -12,8 +11,7 @@ import {
   type IpcMainInvokeEvent,
 } from "electron";
 import electronUpdater from "electron-updater";
-import { readFile } from "node:fs/promises";
-import { extname, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AdvertisingCredentialInput,
@@ -52,29 +50,7 @@ import {
 
 const { autoUpdater } = electronUpdater;
 
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: "fba-app",
-    privileges: { standard: true, secure: true, codeCache: true },
-  },
-]);
 app.enableSandbox();
-
-const CSP = [
-  "default-src 'none'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "font-src 'self' data:",
-  "connect-src 'none'",
-  "object-src 'none'",
-  "frame-src 'none'",
-  "worker-src 'none'",
-  "media-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-].join("; ");
 
 const EXTERNAL_DESTINATIONS: Record<ExternalDestination, string> = {
   "seller-central": "https://sellercentral.amazon.com/",
@@ -109,18 +85,6 @@ const ALLOWED_EXTERNAL_URLS = new Set([
   "https://sellercentral.amazon.co.jp/",
 ]);
 
-const MIME_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".woff2": "font/woff2",
-  ".json": "application/json; charset=utf-8",
-};
-
 let mainWindow: BrowserWindow | null = null;
 let credentialEditorWindow: BrowserWindow | null = null;
 let advertisingCredentialEditorWindow: BrowserWindow | null = null;
@@ -135,10 +99,6 @@ let credentialsChangeInFlight = false;
 const nativeConfirmationGate = new NativeConfirmationGate();
 let appInitialized = false;
 let initializationPromise: Promise<void> | null = null;
-
-const rendererDirectory = resolve(
-  fileURLToPath(new URL("../renderer", import.meta.url)),
-);
 
 function normalizedExternal(value: string): string | null {
   try {
@@ -303,53 +263,12 @@ function configureUpdater(): void {
   );
 }
 
-async function registerAppProtocol(): Promise<void> {
+function configureMainSession(): void {
   const appSession = session.fromPartition("fba-os-memory");
-  appSession.setSpellCheckerEnabled(true);
   appSession.setPermissionCheckHandler(() => false);
   appSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
     callback(false),
   );
-  await appSession.protocol.handle("fba-app", async (request) => {
-    try {
-      const url = new URL(request.url);
-      if (
-        url.hostname !== "bundle" ||
-        (request.method !== "GET" && request.method !== "HEAD") ||
-        url.search ||
-        url.hash ||
-        url.pathname.includes("%") ||
-        url.pathname.includes("\\") ||
-        url.pathname.includes("\0")
-      ) {
-        return new Response("Not found", { status: 404 });
-      }
-      const requestedPath = url.pathname === "/" ? "/index.html" : url.pathname;
-      const candidate = resolve(rendererDirectory, `.${requestedPath}`);
-      const rel = relative(rendererDirectory, candidate);
-      if (!rel || rel.startsWith("..") || rel.includes("..")) {
-        return new Response("Not found", { status: 404 });
-      }
-      const contentType = MIME_TYPES[extname(candidate).toLowerCase()];
-      if (!contentType) return new Response("Not found", { status: 404 });
-      const data = await readFile(candidate);
-      return new Response(request.method === "HEAD" ? null : data, {
-        status: 200,
-        headers: {
-          "content-type": contentType,
-          "content-security-policy": CSP,
-          "cache-control": candidate.endsWith("index.html")
-            ? "no-store"
-            : "public, max-age=31536000, immutable",
-          "x-content-type-options": "nosniff",
-          "cross-origin-opener-policy": "same-origin",
-          "referrer-policy": "no-referrer",
-        },
-      });
-    } catch {
-      return new Response("Not found", { status: 404 });
-    }
-  });
 }
 
 async function createWindow(): Promise<void> {
@@ -968,7 +887,7 @@ if (!hasSingleInstanceLock) {
       approveWrite: confirmSensitiveAction,
       advertising: advertisingApi,
     });
-    await registerAppProtocol();
+    configureMainSession();
     registerIpc();
     powerMonitor.on("lock-screen", () => {
       closeCredentialEditor();

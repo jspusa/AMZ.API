@@ -8,6 +8,7 @@ import type {
   ImageStorageCredentialInput,
   SpApiRegion,
 } from "../shared/contracts";
+import { MARKETPLACES } from "../shared/marketplaces";
 
 type StoredRegionCredentials = {
   refreshToken: string;
@@ -27,15 +28,9 @@ type StoredCredentials = {
 };
 
 const EMPTY_REGION = Object.freeze({ refreshToken: "", sellerId: "" });
-const KNOWN_MARKETPLACE_IDS = new Set([
-  "ATVPDKIKX0DER",
-  "A2EUQ1WTGCTBG2",
-  "A1VC38T7YXB528",
-  "A19VAU5U5O7RUS",
-  "A39IBJ37TRP1C6",
-  "A1F83G8C2ARO7P",
-  "A1PA6795UKMFR9",
-]);
+const KNOWN_MARKETPLACE_IDS = new Set<string>(
+  MARKETPLACES.map((marketplace) => marketplace.id),
+);
 const ENVIRONMENT_KEYS = [
   "SP_API_LWA_CLIENT_ID",
   "SP_API_LWA_CLIENT_SECRET",

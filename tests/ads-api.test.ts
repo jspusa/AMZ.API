@@ -200,6 +200,30 @@ describe("main-only Amazon Ads client", () => {
     expect(profileCount).toBe(2);
   });
 
+  it("does not dispatch an Ads 401 retry after lifecycle invalidation", async () => {
+    let tokenCount = 0;
+    let profileCount = 0;
+    let client: AdvertisingApiClient;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        tokenCount += 1;
+        return json({ access_token: `memory-token-${tokenCount}`, expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        profileCount += 1;
+        client.invalidate();
+        return json({ message: "expired" }, 401);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    client = new AdvertisingApiClient(vault(), fetchMock, spContext);
+
+    await expect(client.probeMarketplace("ATVPDKIKX0DER")).rejects.toThrow();
+    expect(tokenCount).toBe(1);
+    expect(profileCount).toBe(1);
+  });
+
   it("stops after the second 401 and does not expose either response body or token", async () => {
     let tokenCount = 0;
     let profileCount = 0;

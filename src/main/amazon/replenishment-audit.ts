@@ -18,25 +18,53 @@
  * transport and must not expose access tokens to the renderer.
  */
 
+import {
+  MARKETPLACES,
+  type Marketplace,
+} from "../../shared/marketplaces";
+
 export const REPLENISHMENT_OFFERS_PATH =
   "/replenishment/2022-11-07/offers/search";
 export const REPLENISHMENT_OFFER_METRICS_PATH =
   "/replenishment/2022-11-07/offers/metrics/search";
 
-export const OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES = Object.freeze({
-  ATVPDKIKX0DER: "USD", // US
-  A2EUQ1WTGCTBG2: "CAD", // CA
+const CONFIGURED_SELLER_REPLENISHMENT_CODES = [
+  "US",
+  "CA",
+  "UK",
+  "DE",
+  "JP",
+] as const;
+type ConfiguredSellerReplenishmentCode =
+  (typeof CONFIGURED_SELLER_REPLENISHMENT_CODES)[number];
+type ConfiguredSellerReplenishmentMarketplaceId = Extract<
+  Marketplace,
+  { code: ConfiguredSellerReplenishmentCode }
+>["id"];
+
+const OTHER_OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES = {
   A1RKKUPIHCS9HS: "EUR", // ES
-  A1F83G8C2ARO7P: "GBP", // UK
   A13V1IB3VIYZZH: "EUR", // FR
   APJ6JRA9NG5V4: "EUR", // IT
   A21TJRUUN4KGV: "INR", // IN
-  A1PA6795UKMFR9: "EUR", // DE
-  A1VC38T7YXB528: "JPY", // JP
-} as const);
+} as const;
 
 export type SellerReplenishmentMarketplaceId =
-  keyof typeof OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES;
+  | ConfiguredSellerReplenishmentMarketplaceId
+  | keyof typeof OTHER_OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES;
+
+const configuredSellerReplenishmentCodes = new Set<string>(
+  CONFIGURED_SELLER_REPLENISHMENT_CODES,
+);
+
+export const OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES = Object.freeze({
+  ...Object.fromEntries(
+    MARKETPLACES.filter((marketplace) =>
+      configuredSellerReplenishmentCodes.has(marketplace.code),
+    ).map((marketplace) => [marketplace.id, marketplace.currency]),
+  ),
+  ...OTHER_OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES,
+}) as Readonly<Record<SellerReplenishmentMarketplaceId, string>>;
 
 export const SUBSCRIPTION_AUDIT_DISCOUNT_BUCKETS = [
   0, 5, 10, 15, 20,

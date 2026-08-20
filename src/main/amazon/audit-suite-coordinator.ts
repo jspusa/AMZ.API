@@ -22,9 +22,37 @@ type MutableSectionSnapshots = {
 };
 type SnapshotFor<K extends AuditSuiteSectionId> = NonNullable<SectionSnapshots[K]>;
 
+type AuditSuiteHeartbeatProgress =
+  | Readonly<{ completedUnits?: undefined; totalUnits?: undefined }>
+  | Readonly<{ completedUnits: number; totalUnits: number }>
+  | Readonly<{ completedUnits: null; totalUnits: null }>;
+
+export type AuditSuiteHeartbeat = Readonly<{ message?: string }> &
+  AuditSuiteHeartbeatProgress;
+
+declare const AUDIT_SUITE_RESOURCE_VALUE: unique symbol;
+
+export type AuditSuiteResourceKey<T> = Readonly<{
+  token: symbol;
+  [AUDIT_SUITE_RESOURCE_VALUE]: (value: T) => T;
+}>;
+
+export function createAuditSuiteResourceKey<T>(
+  description: string,
+): AuditSuiteResourceKey<T> {
+  return Object.freeze({ token: Symbol(description) }) as AuditSuiteResourceKey<T>;
+}
+
+export type AuditSuiteRunControl = Readonly<{
+  signal: AbortSignal;
+  heartbeat(update?: AuditSuiteHeartbeat): void;
+  resource<T>(key: AuditSuiteResourceKey<T>, load: () => Promise<T>): Promise<T>;
+}>;
+
 export type AuditSuiteSectionRunners = Readonly<{
   [K in AuditSuiteSectionId]: (
     context: AuditSuiteContext,
+    control: AuditSuiteRunControl,
   ) => Promise<SnapshotFor<K>>;
 }>;
 
@@ -36,6 +64,8 @@ type AuditSuiteRuntimeJob = {
   expiresAt: number;
   progress: Record<AuditSuiteSectionId, AuditSuiteSectionProgress>;
   snapshots: MutableSectionSnapshots;
+  controller: AbortController;
+  resources: Map<symbol, Promise<unknown>>;
 };
 
 export class AuditSuiteCoordinatorError extends Error {
@@ -68,7 +98,11 @@ function aggregateStatus(
 }
 
 function safeFailureNotice(error: unknown): string {
-  const message = error instanceof Error ? error.message : "此項健檢未能建立可核對快照。";
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : "此項健檢未能建立可核對快照。";
   const normalized = message.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, 1_500);
   return normalized || "此項健檢未能建立可核對快照。";
 }
@@ -86,10 +120,7 @@ export class AuditSuiteCoordinator {
   }
 
   clear(): void {
-    for (const timer of this.timers.values()) clearTimeout(timer);
-    this.timers.clear();
-    this.jobs.clear();
-    this.flights.clear();
+    for (const runId of [...this.jobs.keys()]) this.deleteJob(runId);
   }
 
   start(input: {
@@ -133,6 +164,8 @@ export class AuditSuiteCoordinator {
       expiresAt: Date.now() + this.ttlMs,
       progress,
       snapshots,
+      controller: new AbortController(),
+      resources: new Map(),
     };
     this.jobs.set(runId, job);
     const timer = setTimeout(() => {
@@ -223,7 +256,9 @@ export class AuditSuiteCoordinator {
       this.runSection(job, "review", this.runners.review),
       this.runSection(job, "advertising", this.runners.advertising),
     ]).then(() => undefined).finally(() => {
+      job.resources.clear();
       if (this.flights.get(runId) === flight) this.flights.delete(runId);
+      this.scheduleTerminalExpiry(job);
     });
     this.flights.set(runId, flight);
     await flight;
@@ -232,13 +267,17 @@ export class AuditSuiteCoordinator {
   private async runSection<K extends AuditSuiteSectionId>(
     job: AuditSuiteRuntimeJob,
     id: K,
-    runner: (context: AuditSuiteContext) => Promise<SnapshotFor<K>>,
+    runner: (
+      context: AuditSuiteContext,
+      control: AuditSuiteRunControl,
+    ) => Promise<SnapshotFor<K>>,
   ): Promise<void> {
     if (this.jobs.get(job.context.runId) !== job) return;
     this.updateProgress(job, id, "running", "main process 正在執行唯讀健檢。", 0, 1);
+    const control = this.control(job, id);
     let snapshot: SnapshotFor<K>;
     try {
-      snapshot = await runner({ ...job.context });
+      snapshot = await runner({ ...job.context }, control);
       if (
         snapshot.runId !== job.context.runId ||
         snapshot.marketplaceId !== job.context.marketplaceId ||
@@ -258,7 +297,87 @@ export class AuditSuiteCoordinator {
     }
     if (this.jobs.get(job.context.runId) !== job) return;
     job.snapshots[id] = snapshot;
-    this.updateProgress(job, id, snapshot.status, snapshot.notice, 1, 1);
+    const current = job.progress[id];
+    const completedUnits = snapshot.status === "failed"
+      ? current.completedUnits
+      : current.totalUnits ?? 1;
+    const totalUnits = snapshot.status === "failed"
+      ? current.totalUnits
+      : current.totalUnits ?? 1;
+    this.updateProgress(
+      job,
+      id,
+      snapshot.status,
+      snapshot.notice,
+      completedUnits,
+      totalUnits,
+    );
+  }
+
+  private control(
+    job: AuditSuiteRuntimeJob,
+    id: AuditSuiteSectionId,
+  ): AuditSuiteRunControl {
+    return Object.freeze({
+      signal: job.controller.signal,
+      heartbeat: (update?: AuditSuiteHeartbeat) => {
+        this.assertActive(job);
+        const current = job.progress[id];
+        if (current.status !== "running") {
+          throw new Error(`${id} 健檢已結束，不能再回報進度。`);
+        }
+        const completedUnits = update?.completedUnits === undefined
+          ? current.completedUnits
+          : update.completedUnits;
+        const totalUnits = update?.totalUnits === undefined
+          ? current.totalUnits
+          : update.totalUnits;
+        if (
+          (completedUnits !== null && (!Number.isSafeInteger(completedUnits) || completedUnits < 0)) ||
+          (totalUnits !== null && (!Number.isSafeInteger(totalUnits) || totalUnits < 0)) ||
+          ((completedUnits === null) !== (totalUnits === null)) ||
+          (completedUnits !== null && totalUnits !== null && completedUnits > totalUnits) ||
+          (current.completedUnits !== null && completedUnits !== null &&
+            completedUnits < current.completedUnits)
+        ) {
+          throw new Error(`${id} 健檢回報了無效或倒退的進度。`);
+        }
+        this.updateProgress(
+          job,
+          id,
+          "running",
+          update?.message === undefined ? current.message : safeFailureNotice(update.message),
+          completedUnits,
+          totalUnits,
+        );
+      },
+      resource: <T>(key: AuditSuiteResourceKey<T>, load: () => Promise<T>) =>
+        this.resource(job, key, load),
+    });
+  }
+
+  private resource<T>(
+    job: AuditSuiteRuntimeJob,
+    key: AuditSuiteResourceKey<T>,
+    load: () => Promise<T>,
+  ): Promise<T> {
+    this.assertActive(job);
+    const existing = job.resources.get(key.token);
+    if (existing) return existing as Promise<T>;
+    const resource = Promise.resolve().then(async () => {
+      this.assertActive(job);
+      const value = await load();
+      this.assertActive(job);
+      return value;
+    });
+    job.resources.set(key.token, resource);
+    return resource;
+  }
+
+  private assertActive(job: AuditSuiteRuntimeJob): void {
+    if (this.jobs.get(job.context.runId) !== job || job.controller.signal.aborted) {
+      throw new Error("綜合健檢工作已停止，晚到結果不會寫回。");
+    }
   }
 
   private updateProgress(
@@ -266,8 +385,8 @@ export class AuditSuiteCoordinator {
     id: AuditSuiteSectionId,
     status: AuditSuiteSectionProgress["status"],
     message: string,
-    completedUnits: number,
-    totalUnits: number,
+    completedUnits: number | null,
+    totalUnits: number | null,
   ): void {
     const updatedAt = new Date().toISOString();
     job.progress[id] = {
@@ -298,15 +417,48 @@ export class AuditSuiteCoordinator {
 
   private prune(now = Date.now()): void {
     for (const [runId, job] of this.jobs) {
-      if (job.expiresAt <= now) this.deleteJob(runId);
+      if (terminal(aggregateStatus(job.progress)) && job.expiresAt <= now) {
+        this.deleteJob(runId);
+      }
     }
+  }
+
+  private scheduleTerminalExpiry(job: AuditSuiteRuntimeJob): void {
+    const runId = job.context.runId;
+    if (
+      this.jobs.get(runId) !== job ||
+      !terminal(aggregateStatus(job.progress))
+    ) {
+      return;
+    }
+    const existing = this.timers.get(runId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.timers.delete(runId);
+      if (
+        this.jobs.get(runId) === job &&
+        terminal(aggregateStatus(job.progress)) &&
+        job.expiresAt <= Date.now()
+      ) {
+        this.deleteJob(runId);
+      } else {
+        this.scheduleTerminalExpiry(job);
+      }
+    }, Math.max(0, job.expiresAt - Date.now()));
+    timer.unref?.();
+    this.timers.set(runId, timer);
   }
 
   private deleteJob(runId: string): void {
     const timer = this.timers.get(runId);
     if (timer) clearTimeout(timer);
     this.timers.delete(runId);
+    const job = this.jobs.get(runId);
     this.jobs.delete(runId);
+    if (job) {
+      job.controller.abort();
+      job.resources.clear();
+    }
     this.flights.delete(runId);
   }
 }

@@ -14,6 +14,11 @@ import ContentAuditPanel, {
   type ContentAuditCache,
   type ContentAuditQuickEditFocus,
 } from "./content-audit-panel";
+import {
+  MARKETPLACES,
+  marketplaceById,
+  marketplaceSelectLabel,
+} from "../../../shared/marketplaces";
 
 export type ContentWorkspaceTab = "single" | "audit" | "export";
 
@@ -117,16 +122,6 @@ type Draft = {
   bulletPoints: string[];
   ingredients: string;
 };
-
-const MARKETPLACES = [
-  { id: "ATVPDKIKX0DER", label: "US · 美國站", short: "US", sampleSku: "AFA-TRKY-4OZ" },
-  { id: "A1VC38T7YXB528", label: "JP · 日本站", short: "JP", sampleSku: "AFA100-JP" },
-  { id: "A2EUQ1WTGCTBG2", label: "CA · 加拿大站", short: "CA", sampleSku: "AFA-TRKY-4OZ" },
-  { id: "A19VAU5U5O7RUS", label: "SG · 新加坡站", short: "SG", sampleSku: "AFA-TRKY-4OZ" },
-  { id: "A39IBJ37TRP1C6", label: "AU · 澳洲站", short: "AU", sampleSku: "AFA-TRKY-4OZ" },
-  { id: "A1F83G8C2ARO7P", label: "UK · 英國站", short: "UK", sampleSku: "AFA-TRKY-4OZ" },
-  { id: "A1PA6795UKMFR9", label: "DE · 德國站", short: "DE", sampleSku: "AFA-TRKY-4OZ" },
-];
 
 const DEFAULT_CAPABILITIES: ContentCapabilities = {
   title: {
@@ -419,8 +414,7 @@ export default function SkuOperationsDrawer({
   const autoLookupRef = useRef(false);
   const autoRecheckRef = useRef("");
 
-  const marketplace =
-    MARKETPLACES.find((item) => item.id === marketplaceId) ?? MARKETPLACES[0];
+  const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const requestedContent = useMemo<ListingContent | null>(() => {
     if (!draft) return null;
     return {
@@ -881,7 +875,7 @@ export default function SkuOperationsDrawer({
       throw new Error(problemMessage(payload, "Excel 下載失敗，請重新匯出。"));
     }
     const blob = await response.blob();
-    const fallback = `amazon-listing-content-${marketplace.short}-${new Date()
+    const fallback = `amazon-listing-content-${marketplace.shortLabel}-${new Date()
       .toISOString()
       .slice(0, 10)}.xlsx`;
     const url = URL.createObjectURL(blob);
@@ -1051,7 +1045,7 @@ export default function SkuOperationsDrawer({
           >
             {MARKETPLACES.map((option) => (
               <option key={option.id} value={option.id}>
-                {option.label}
+                {marketplaceSelectLabel(option)}
               </option>
             ))}
           </select>
@@ -1299,7 +1293,7 @@ export default function SkuOperationsDrawer({
                 <p className="eyebrow">FINAL CONFIRMATION</p>
                 <h3>確認商品內容變更</h3>
                 <p className="confirmation-product">
-                  {marketplace.label} · {listing.sellerSku}
+                  {marketplaceSelectLabel(marketplace)} · {listing.sellerSku}
                 </p>
                 <div className="price-warning compact">
                   <strong>這次會修改</strong>
@@ -1391,7 +1385,7 @@ export default function SkuOperationsDrawer({
           >
             <ContentAuditPanel
               marketplaceId={marketplaceId}
-              marketplaceShort={marketplace.short}
+              marketplaceShort={marketplace.shortLabel}
               onOpenSku={openAuditSku}
               cachedResult={auditCacheByMarketplace[marketplaceId] ?? null}
               onCachedResultChange={onAuditCacheChange}
@@ -1448,7 +1442,7 @@ export default function SkuOperationsDrawer({
                     ? "下載中…"
                     : exportState === "done"
                       ? "再次匯出全部商品"
-                      : `一鍵匯出 ${marketplace.short} 全部商品`}
+                      : `一鍵匯出 ${marketplace.shortLabel} 全部商品`}
             </button>
             {exportState === "done" && exportReply && (
               <button

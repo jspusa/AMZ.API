@@ -83,4 +83,18 @@ describe("Subscribe & Save current FBA evidence", () => {
       collectCurrentFbaSkuSet(async () => ({ payload: {} })),
     ).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
   });
+
+  it("stops before requesting another inventory page after its run signal is aborted", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    await expect(collectCurrentFbaSkuEvidence(async () => {
+      calls += 1;
+      controller.abort(new Error("lifecycle cleanup"));
+      return {
+        payload: { inventorySummaries: [summary("FBA-ONE")] },
+        pagination: { nextToken: "page-2" },
+      };
+    }, controller.signal)).rejects.toThrow(/lifecycle cleanup/u);
+    expect(calls).toBe(1);
+  });
 });

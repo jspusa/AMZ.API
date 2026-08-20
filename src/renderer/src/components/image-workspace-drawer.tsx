@@ -11,6 +11,11 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
 } from "react";
+import {
+  MARKETPLACES,
+  marketplaceById,
+  marketplaceSelectLabel,
+} from "../../../shared/marketplaces";
 import ImageAuditPanel, { type ImageAuditCache } from "./image-audit-panel";
 
 export type ImageWorkspaceTab = "single" | "audit";
@@ -58,16 +63,6 @@ type UpdateResult = {
 };
 
 type ApiProblem = { message?: string; requestId?: string | null };
-
-const MARKETPLACES = [
-  { id: "ATVPDKIKX0DER", label: "US · 美國站", sample: "AFA-TRKY-4OZ" },
-  { id: "A1VC38T7YXB528", label: "JP · 日本站", sample: "AFA100-JP" },
-  { id: "A2EUQ1WTGCTBG2", label: "CA · 加拿大站", sample: "AFA-TRKY-4OZ" },
-  { id: "A19VAU5U5O7RUS", label: "SG · 新加坡站", sample: "AFA-TRKY-4OZ" },
-  { id: "A39IBJ37TRP1C6", label: "AU · 澳洲站", sample: "AFA-TRKY-4OZ" },
-  { id: "A1F83G8C2ARO7P", label: "UK · 英國站", sample: "AFA-TRKY-4OZ" },
-  { id: "A1PA6795UKMFR9", label: "DE · 德國站", sample: "AFA-TRKY-4OZ" },
-];
 
 function problemMessage(payload: ApiProblem, fallback: string) {
   return `${payload.message || fallback}${payload.requestId ? `（Request ID: ${payload.requestId}）` : ""}`;
@@ -147,8 +142,7 @@ export default function ImageWorkspaceDrawer({
   const autoLookupRef = useRef(false);
   const autoRecheckRef = useRef("");
 
-  const marketplace =
-    MARKETPLACES.find((item) => item.id === marketplaceId) ?? MARKETPLACES[0];
+  const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const supportedIndexes = useMemo(
     () =>
       snapshot?.images.flatMap((item, index) =>
@@ -579,13 +573,13 @@ export default function ImageWorkspaceDrawer({
               <label>
                 <span>Amazon 站點</span>
                 <select value={marketplaceId} onChange={(event) => reset(event.target.value)} disabled={loading || actionLoading}>
-                  {MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  {MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}
                 </select>
               </label>
               <label>
                 <span>Seller SKU</span>
                 <div className="sku-search-row">
-                  <input value={skuInput} onChange={(event) => setSkuInput(event.target.value)} placeholder={`例如 ${marketplace.sample}`} autoFocus autoComplete="off" spellCheck={false} />
+                  <input value={skuInput} onChange={(event) => setSkuInput(event.target.value)} placeholder={`例如 ${marketplace.sampleSku}`} autoFocus autoComplete="off" spellCheck={false} />
                   <button type="submit" disabled={loading || !skuInput.trim()}>{loading ? "查詢中" : "查詢"}</button>
                 </div>
               </label>
@@ -678,13 +672,13 @@ export default function ImageWorkspaceDrawer({
                 disabled={loading || actionLoading}
               >
                 {MARKETPLACES.map((item) => (
-                  <option key={item.id} value={item.id}>{item.label}</option>
+                  <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>
                 ))}
               </select>
             </label>
             <ImageAuditPanel
               marketplaceId={marketplaceId}
-              marketplaceShort={marketplace.label.split(" · ")[0]}
+              marketplaceShort={marketplace.shortLabel}
               onOpenSku={openAuditSku}
               cachedResult={auditCacheByMarketplace[marketplaceId] ?? null}
               onCachedResultChange={onAuditCacheChange}

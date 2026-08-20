@@ -32,6 +32,11 @@ import {
   type VariationMovePreparation,
   type VariationMoveResult,
 } from "../variation-move";
+import {
+  MARKETPLACES,
+  marketplaceById,
+  marketplaceSelectLabel,
+} from "../../../shared/marketplaces";
 
 type VariationPlannerDrawerProps = {
   initialMarketplaceId: string;
@@ -48,16 +53,6 @@ type ApiProblem = {
 
 type StagedState = "planned" | "detached" | "attached";
 type VariationIdentifierType = "sku" | "asin";
-
-const MARKETPLACES = [
-  { id: "ATVPDKIKX0DER", label: "US · 美國站", sample: "AFA-TRKY-4OZ" },
-  { id: "A1VC38T7YXB528", label: "JP · 日本站", sample: "AFA100-JP" },
-  { id: "A2EUQ1WTGCTBG2", label: "CA · 加拿大站", sample: "Seller SKU" },
-  { id: "A19VAU5U5O7RUS", label: "SG · 新加坡站", sample: "Seller SKU" },
-  { id: "A39IBJ37TRP1C6", label: "AU · 澳洲站", sample: "Seller SKU" },
-  { id: "A1F83G8C2ARO7P", label: "UK · 英國站", sample: "Seller SKU" },
-  { id: "A1PA6795UKMFR9", label: "DE · 德國站", sample: "Seller SKU" },
-];
 
 function memberDimensions(member: VariationMemberView): string {
   const values = member.dimensions.flatMap((dimension) =>
@@ -139,7 +134,7 @@ export default function VariationPlannerDrawer({
   const targetAbortRef = useRef<AbortController | null>(null);
   const preparationAbortRef = useRef<AbortController | null>(null);
   const autoLookupRef = useRef(false);
-  const marketplace = MARKETPLACES.find((option) => option.id === marketplaceId) ?? MARKETPLACES[0];
+  const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const busy = sourceLoading || targetLoading || preparing || Boolean(writeAction);
 
   const clearWorkflow = useCallback((keepStaged = false) => {
@@ -579,7 +574,7 @@ export default function VariationPlannerDrawer({
         <label className="variation-marketplace">
           <span>Amazon 站點</span>
           <select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={busy}>
-            {MARKETPLACES.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            {MARKETPLACES.map((option) => <option key={option.id} value={option.id}>{marketplaceSelectLabel(option)}</option>)}
           </select>
         </label>
 
@@ -600,7 +595,7 @@ export default function VariationPlannerDrawer({
                 <option value="sku">SKU</option>
                 <option value="asin">ASIN</option>
               </select>
-              <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} onKeyDown={handleSourceKeyDown} placeholder={sourceIdentifierType === "asin" ? "例如 B09S5VY2JS" : `例如 ${marketplace.sample}`} maxLength={sourceIdentifierType === "asin" ? 10 : 40} autoComplete="off" spellCheck={false} disabled={busy} aria-label={sourceIdentifierType === "asin" ? "來源 ASIN" : "來源 Seller SKU"} />
+              <input value={sourceInput} onChange={(event) => setSourceInput(event.target.value)} onKeyDown={handleSourceKeyDown} placeholder={sourceIdentifierType === "asin" ? "例如 B09S5VY2JS" : `例如 ${marketplace.sampleSku}`} maxLength={sourceIdentifierType === "asin" ? 10 : 40} autoComplete="off" spellCheck={false} disabled={busy} aria-label={sourceIdentifierType === "asin" ? "來源 ASIN" : "來源 Seller SKU"} />
               <button type="button" data-variation-lookup="source" onClick={runSourceLookup} disabled={busy || !sourceInput.trim()}>{sourceLoading ? "讀取中" : "讀取"}</button>
             </div>
             {sourceError && <div className="price-error" role="alert">{sourceError}</div>}

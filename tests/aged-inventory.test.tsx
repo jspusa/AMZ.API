@@ -1,4 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import {
@@ -9,7 +12,7 @@ import {
   startAgedInventoryReport,
 } from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
-import type { LocalStore } from "../src/main/local-store";
+import { LocalStore } from "../src/main/local-store";
 import AgedInventoryPanel, {
   AgedInventoryTierOverview,
   aggregateAgeBuckets,
@@ -730,19 +733,61 @@ describe("official FBA 180+ day inventory report", () => {
       }),
     ).rejects.toMatchObject({ code: "REPORT_MISMATCH", status: 409 });
   });
+
+  it("does not retry a report-status 401 after lifecycle cleanup aborts the run", async () => {
+    process.env.SP_API_MODE = "live";
+    process.env.SP_API_LWA_CLIENT_ID = "TEST_CLIENT_ID";
+    process.env.SP_API_LWA_CLIENT_SECRET = "TEST_CLIENT_SECRET";
+    process.env.SP_API_REFRESH_TOKEN_NA = "TEST_REFRESH_TOKEN";
+    process.env.SP_API_SELLER_ID_NA = "TEST_SELLER_ID";
+    invalidateSpApiCredentialCaches();
+    const controller = new AbortController();
+    let tokenCalls = 0;
+    let reportCalls = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.origin === "https://api.amazon.com") {
+        tokenCalls += 1;
+        return jsonResponse(200, {
+          access_token: `TEST_ACCESS_TOKEN_${tokenCalls}`,
+          expires_in: 3_600,
+        });
+      }
+      if (url.pathname === `/reports/2021-06-30/reports/${REPORT_ID}`) {
+        reportCalls += 1;
+        controller.abort(new Error("lifecycle cleanup"));
+        return jsonResponse(401, { errors: [{ message: "expired" }] });
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getAgedInventoryReportStatus({
+      marketplaceId: MARKETPLACE_ID,
+      reportId: REPORT_ID,
+      signal: controller.signal,
+    })).rejects.toThrow(/lifecycle cleanup/u);
+    expect(tokenCalls).toBe(1);
+    expect(reportCalls).toBe(1);
+  });
 });
 
 describe("FBA aged inventory renderer and read-only route", () => {
-  const router = new ApiRouter({
-    store: {} as LocalStore,
-    vault: {} as CredentialVault,
-    approveWrite: async () => undefined,
-  });
+  let router: ApiRouter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearSpEnvironment();
     process.env.SP_API_MODE = "demo";
     invalidateSpApiCredentialCaches();
+    const directory = await mkdtemp(join(tmpdir(), "aged-inventory-route-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: vi.fn(async () => "demo-aged-account"),
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
   });
 
   afterEach(() => {

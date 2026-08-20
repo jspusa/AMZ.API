@@ -148,6 +148,32 @@ describe("Customer Feedback live response boundaries", () => {
     expect(feedbackCalls).toBe(1);
   });
 
+  it("does not dispatch the 401 retry after lifecycle cleanup aborts the run", async () => {
+    const controller = new AbortController();
+    let tokenCalls = 0;
+    let feedbackCalls = 0;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        tokenCalls += 1;
+        return tokenResponse(tokenCalls);
+      }
+      feedbackCalls += 1;
+      controller.abort(new Error("lifecycle cleanup"));
+      return new Response(null, { status: 401 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getCustomerFeedbackReviewTopics({
+      marketplaceId: US,
+      candidate,
+      expectedMode: "live",
+      signal: controller.signal,
+    })).rejects.toThrow(/lifecycle cleanup/u);
+    expect(tokenCalls).toBe(1);
+    expect(feedbackCalls).toBe(1);
+  });
+
   it("maps 403 to unauthorized without retrying another ASIN request", async () => {
     let feedbackCalls = 0;
     const fetchMock = vi.fn(async (input: string | URL | Request) => {

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   SpApiError,
   SpApiPreCommitError,
@@ -67,7 +67,7 @@ describe("local durable safety store", () => {
     expect(executions).toBe(1);
   });
 
-  it("deduplicates the same write even when the UI generates a new key", async () => {
+  it("never replays a completed write under a new key because Amazon may have changed externally", async () => {
     const store = await testStore();
     let executions = 0;
     const base = {
@@ -90,8 +90,27 @@ describe("local durable safety store", () => {
         idempotencyKey: "price-second-12345",
         execute: async () => ({ execution: ++executions }),
       }),
-    ).resolves.toEqual({ execution: 1 });
-    expect(executions).toBe(1);
+    ).resolves.toEqual({ execution: 2 });
+    expect(executions).toBe(2);
+  });
+
+  it("does not replay an old completed result after a newer resource generation", async () => {
+    const store = await testStore();
+    let executions = 0;
+    const run = (key: string, fingerprint: string) =>
+      store.runIdempotentOperation({
+        idempotencyKey: key,
+        operationType: "price",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "PRICE-CYCLE",
+        accountScope: "account-a",
+        fingerprint,
+        execute: async () => ({ execution: ++executions }),
+      });
+
+    await expect(run("price-a-to-b-first", "A-to-B")).resolves.toEqual({ execution: 1 });
+    await expect(run("price-b-to-a", "B-to-A")).resolves.toEqual({ execution: 2 });
+    await expect(run("price-a-to-b-second", "A-to-B")).resolves.toEqual({ execution: 3 });
   });
 
   it("never reuses a cached result across seller account scopes", async () => {
@@ -209,6 +228,124 @@ describe("local durable safety store", () => {
         execute: async () => ({ shouldNotRun: true }),
       }),
     ).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 409 });
+  });
+
+  it("never expires unknown write evidence or permits an overlapping offer write", async () => {
+    const originalNow = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(originalNow));
+    const store = await testStore();
+    try {
+      await expect(store.runIdempotentOperation({
+        idempotencyKey: "price-unknown-persistent",
+        operationType: "price",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "OFFER-UNKNOWN",
+        accountScope: "account-a",
+        fingerprint: "price-change",
+        execute: async () => {
+          throw new SpApiError("accepted but readback timed out", {
+            status: 503,
+            code: "UPDATE_STATUS_UNKNOWN",
+          });
+        },
+      })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+      vi.setSystemTime(new Date(originalNow + 48 * 60 * 60 * 1_000));
+      const restarted = new LocalStore(store.filePath);
+      await restarted.initialize();
+      await expect(restarted.runIdempotentOperation({
+        idempotencyKey: "sale-after-unknown-price",
+        operationType: "sale_price",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "OFFER-UNKNOWN",
+        accountScope: "account-a",
+        fingerprint: "sale-change",
+        execute: async () => ({ shouldNotRun: true }),
+      })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 409 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconciles a persisted accepted receipt through a later canonical GET", async () => {
+    const store = await testStore();
+    const accepted = { requested: 12.34, status: "ACCEPTED" };
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "price-accepted-awaiting-readback",
+      operationType: "price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "PRICE-RECONCILE",
+      accountScope: "account-a",
+      fingerprint: "price-target",
+      execute: async ({ recordAccepted }) => {
+        await recordAccepted(accepted);
+        throw new SpApiError("readback timed out", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    await expect(store.reconcileIdempotentOperations({
+      operationTypes: ["price"],
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "PRICE-RECONCILE",
+      accountScope: "account-b",
+      reconcile: () => ({ shouldNotCrossAccount: true }),
+    })).resolves.toBe(0);
+    await expect(store.reconcileIdempotentOperations({
+      operationTypes: ["price"],
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "PRICE-RECONCILE",
+      accountScope: "account-a",
+      reconcile: (response) => ({ ...response as object, verified: true }),
+    })).resolves.toBe(1);
+
+    const execute = vi.fn(async () => ({ shouldNotRun: true }));
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "price-accepted-awaiting-readback",
+      operationType: "price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "PRICE-RECONCILE",
+      accountScope: "account-a",
+      fingerprint: "price-target",
+      execute,
+    })).resolves.toMatchObject({ status: "ACCEPTED", verified: true });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("locks content and image PATCHes as one listing-attribute resource", async () => {
+    const store = await testStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const content = store.runIdempotentOperation({
+      idempotencyKey: "content-pending-resource",
+      operationType: "content",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "ATTRIBUTE-LOCK",
+      accountScope: "account-a",
+      fingerprint: "content-change",
+      execute: async () => {
+        await gate;
+        return { ok: true };
+      },
+    });
+    await vi.waitFor(async () => {
+      const raw = await readFile(store.filePath, "utf8");
+      expect(raw).toContain("content-pending-resource");
+    });
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "images-during-content",
+      operationType: "images",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "ATTRIBUTE-LOCK",
+      accountScope: "account-a",
+      fingerprint: "image-change",
+      execute: async () => ({ shouldNotRun: true }),
+    })).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS", status: 409 });
+    release();
+    await expect(content).resolves.toEqual({ ok: true });
   });
 
   it("allows the attach stage after the detach stage is durably completed", async () => {
@@ -411,12 +548,31 @@ describe("local durable safety store", () => {
       updatedAt: now,
       expiresAt: now + 60 * 60 * 1_000,
     }, now);
+    await store.createSharedReportIfAbsent({
+      leaseId: "shared-aged-lease-1",
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_FBA_INVENTORY_PLANNING_DATA",
+      optionsKey: "marketplaceIds=selected",
+      mode: "live",
+      report: {
+        reportId: "aged-report-1",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: now,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    }, now);
     const raw = JSON.parse(await readFile(store.filePath, "utf8")) as {
       version: number;
       sharedAllListingsReports: Record<string, unknown>;
     };
     expect(raw.version).toBe(2);
-    expect(Object.keys(raw.sharedAllListingsReports)).toHaveLength(1);
+    expect(Object.keys(raw.sharedAllListingsReports)).toHaveLength(2);
     expect(JSON.stringify(raw)).not.toMatch(/refresh.?token|client.?secret|lwaClientSecret/i);
   });
 });
