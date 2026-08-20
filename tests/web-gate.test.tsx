@@ -4,11 +4,12 @@ import { describe, expect, it } from "vitest";
 import ConnectionPanel from "../src/renderer/src/connection-panel";
 import WebGate, {
   DEFAULT_NOTEBOOK_KEY_DOWNLOADS,
+  PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
   safeNotebookDownloadHref,
 } from "../src/renderer/src/web-gate";
 
 describe("Notebook Key WebGate", () => {
-  it("uses platform-neutral launch language and the approved Windows release entry", () => {
+  it("uses platform-neutral launch language and only the protected Mac and Windows portal", () => {
     const markup = renderToStaticMarkup(<WebGate />);
 
     expect(markup).toContain("LOCAL KEY REQUIRED");
@@ -20,22 +21,34 @@ describe("Notebook Key WebGate", () => {
     expect(markup).toContain("憑證只留在本機");
     expect(markup).not.toContain("開啟 Mac 鑰匙");
 
-    const windows = DEFAULT_NOTEBOOK_KEY_DOWNLOADS[0];
+    expect(DEFAULT_NOTEBOOK_KEY_DOWNLOADS).toHaveLength(2);
+    const macos = DEFAULT_NOTEBOOK_KEY_DOWNLOADS[0];
+    const windows = DEFAULT_NOTEBOOK_KEY_DOWNLOADS[1];
+    expect(macos).toMatchObject({
+      platform: "macos",
+      detail: "macOS · Universal",
+      version: "0.1.16",
+      href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
+    });
     expect(windows).toMatchObject({
       platform: "windows",
       detail: "Windows 11 x64",
       version: "0.1.16",
+      href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
     });
-    expect(markup).toContain(
-      "https://github.com/jspusa/AMZ.API/releases/download/notebook-key-windows/AMZ.API-Notebook-Key-Windows-x64-Setup.exe",
-    );
+    expect(markup.match(new RegExp(PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL, "g"))).toHaveLength(2);
+    expect(markup).not.toContain("github.com/jspusa/AMZ.API/releases/download");
+    expect(markup).not.toContain("AMZ.API-Notebook-Key-Windows-x64-Setup.exe");
+    expect(markup).toContain("macOS · Universal · v0.1.16");
     expect(markup).toContain("Windows 11 x64 · v0.1.16");
     expect(markup).toContain("Microsoft SmartScreen");
+    expect(markup).toContain("安全登入下載 Mac Notebook 鑰匙");
+    expect(markup).toContain("安全登入下載 Windows Notebook 鑰匙");
     expect(markup).toContain('target="_blank"');
     expect(markup).toContain('rel="noopener noreferrer"');
   });
 
-  it("accepts public download props but disables non-HTTPS values", () => {
+  it("accepts protected download props but disables non-HTTPS values", () => {
     expect(safeNotebookDownloadHref("javascript:alert(1)")).toBeNull();
     expect(safeNotebookDownloadHref("http://example.com/key.exe")).toBeNull();
     expect(safeNotebookDownloadHref("https://example.com/key.exe")).toBe(
@@ -69,6 +82,14 @@ describe("Notebook Key WebGate", () => {
     expect(gateSource).not.toContain("/api/");
     expect(gateSource).not.toContain("window.fbaOS");
     expect(gateSource).not.toContain("installApiBridge");
+  });
+
+  it("keeps user-facing install documentation on the protected portal", async () => {
+    const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+
+    expect(readme).toContain(PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL);
+    expect(readme).toContain("安裝檔保存在私有 R2");
+    expect(readme).not.toContain("/releases/download/notebook-key-windows/");
   });
 
   it("uses a non-overlapping Notebook footer in the local connection panel", async () => {
