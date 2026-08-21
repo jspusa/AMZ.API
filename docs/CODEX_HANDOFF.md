@@ -3,7 +3,7 @@
 最後更新：2026-08-21
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前狀態：`v0.1.17` 已由 PR #41 squash merge 至 `main` commit `ef5bd04a8c87bf51743fe72e95e3a59073f14b4f`；PR Validate／Windows CI 與 main Validate／Pages／macOS universal／Windows CI 均成功。live Pages HTML／JS／CSS 已與該 main commit 的 production output byte-for-byte 核對。可信 main macOS artifact 已驗證並安裝為 `/Applications/AMZ.API.app`，原 v0.1.16 保留為 `/Applications/AMZ.API-v0.1.16-backup.app`；Keychain vault 原樣保留，不需重輸入 SP-API 憑證，首頁顯示 `Amazon 已連線`、Live US FBA Sales 與系統資訊版本 0.1.17。US 2026-07-23 至 2026-08-21 的入庫貨件唯讀工作真實啟動後安全失敗，沒有產生可核對快照，也沒有 Amazon 寫入；`v0.1.18` 修正版目前只在本機候選分支，目標是保留已核對的部分貨件、停止未讀後續請求並顯示安全診斷代碼，不得在 PR／Actions／artifact／安裝與 live 重測完成前稱為已發布。Amazon Ads 獨立 LWA 尚未設定，因此廣告策略 Reporting v3 仍未 live 驗證。受密碼保護的 Supply Boss API v4 下載站已更新 Mac DMG 至 v0.1.17，員工頁只顯示 Mac DMG 與 Windows NSIS installer 兩張卡；Windows installer 仍為 v0.1.16。Windows main CI 只證明封裝、Bridge 與 addon smoke，不得冒充真實 Windows 11 Pro／Hello／DPAPI 人工驗證。
+目前狀態：`v0.1.17` 已由 PR #41 squash merge 至 `main` commit `ef5bd04a8c87bf51743fe72e95e3a59073f14b4f`；PR Validate／Windows CI 與 main Validate／Pages／macOS universal／Windows CI 均成功。live Pages HTML／JS／CSS 已與該 main commit 的 production output byte-for-byte 核對。可信 main macOS artifact 已驗證並安裝為 `/Applications/AMZ.API.app`，原 v0.1.16 保留為 `/Applications/AMZ.API-v0.1.16-backup.app`；Keychain vault 原樣保留，不需重輸入 SP-API 憑證，首頁顯示 `Amazon 已連線`、Live US FBA Sales 與系統資訊版本 0.1.17。US 2026-07-23 至 2026-08-21 的入庫貨件唯讀工作真實啟動後安全失敗，沒有產生可核對快照，也沒有 Amazon 寫入；`v0.1.18` 修正版目前仍是未發布候選，目標是保留已核對的部分貨件、停止未讀後續請求並顯示安全診斷代碼，不得在 main Actions／artifact／安裝與 live 重測完成前稱為已發布。Amazon Ads 獨立 LWA 尚未設定，因此廣告策略 Reporting v3 仍未 live 驗證。受密碼保護的 Supply Boss API v4 下載站已更新 Mac DMG 至 v0.1.17，員工頁只顯示 Mac DMG 與 Windows NSIS installer 兩張卡；Windows installer 仍為 v0.1.16。Windows main CI 只證明封裝、Bridge 與 addon smoke，不得冒充真實 Windows 11 Pro／Hello／DPAPI 人工驗證。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -321,7 +321,7 @@ Amazon App：
   - 根因：v0.1.17 將多種安全失敗壓成同一句 generic notice，且逐貨件商品明細連續三票異常時會丟掉前面已核對的部分結果；首頁再把任何 terminal failure 誤標為「需要重新接回」。這不能證明憑證真的斷線。
   - 修正後，global 401／403／429／5xx／網路失敗仍立即停止；逐貨件 local 失敗連續三票時只停止後續商品明細請求，保留已核對列，其餘貨件明確標成未知，不補 0。failed job 只回固定公開文案、安全診斷代碼與經 allowlist 的 Amazon Request ID，不回 raw upstream message、URL、report/document/account scope。
   - 首頁狀態改成「同步未完成」。renderer 對沒有新 diagnosis 欄位的 v0.1.17 reply 保持相容；只有 v0.1.18 Notebook Key 才能產生新診斷證據。
-  - 本機 `npm run check` 通過 99 個測試檔／800 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。尚未 PR、merge、Pages、Mac artifact、安裝或真實 Amazon 重測，也未做 Windows 實機測試。
+  - 本機 `npm run check` 通過 99 個測試檔／800 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。main macOS artifact、安裝與真實 Amazon 重測尚未完成，也未做 Windows 實機測試。
 - v0.1.17 FBA 入庫貨件追蹤與廣告策略表已發布、部署並安裝：
   - 營運區與首頁新增 30／90／180 天一鍵唯讀同步。main 背景工作依 account scope、mode、marketplace 與 exact date range 綁定；關閉 drawer 只停止 renderer observer，Notebook Key 仍會讀完全部所選貨件與每票商品。切換日期會取消舊 active range，相同 active range 才 single-flight。
   - 數量只採官方 Fulfillment Inbound v0 的 `QuantityShipped`／`QuantityReceived`，分別顯示預期、Amazon 已接收、尚在接收與多接收；接收中不稱短少或遺失，已關閉且仍有差異才建議回 Seller Central 核對。API 未提供的 title／ASIN／EAN 維持空白，不猜值。
