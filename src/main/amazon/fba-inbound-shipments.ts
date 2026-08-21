@@ -494,17 +494,6 @@ function isShipmentLocalItemFailure(error: unknown): boolean {
     error.code.startsWith("FBA_INBOUND_");
 }
 
-function recordConsecutiveItemFailure(current: number): number {
-  const next = current + 1;
-  if (next >= MAX_CONSECUTIVE_ITEM_FAILURES) {
-    throw new FbaInboundSnapshotError(
-      "Amazon FBA 入庫商品明細連續回傳異常；已停止後續讀取，避免對全部貨件發出大量無效請求。",
-      { status: 409, code: "FBA_INBOUND_ITEM_CIRCUIT_OPEN" },
-    );
-  }
-  return next;
-}
-
 function assertSafeCount(value: number, maximum: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
     throw new FbaInboundSnapshotError(
@@ -602,6 +591,7 @@ export async function collectFbaInboundShipmentSnapshot(
   let itemPages = 0;
   let completeShipments = 0;
   let consecutiveItemFailures = 0;
+  let itemScanStopped = false;
 
   for (const [shipmentIndex, shipment] of shipments.entries()) {
     throwIfAborted(input.signal);
@@ -629,9 +619,7 @@ export async function collectFbaInboundShipmentSnapshot(
           requestId: result.requestId,
           completedItemPages: 1,
         };
-        consecutiveItemFailures = recordConsecutiveItemFailure(
-          consecutiveItemFailures,
-        );
+        consecutiveItemFailures += 1;
       } else {
         consecutiveItemFailures = 0;
       }
@@ -640,9 +628,7 @@ export async function collectFbaInboundShipmentSnapshot(
       if (!isShipmentLocalItemFailure(error)) throw error;
       itemCoverage = "partial";
       issue = issueFromError(error, shipment.shipmentId);
-      consecutiveItemFailures = recordConsecutiveItemFailure(
-        consecutiveItemFailures,
-      );
+      consecutiveItemFailures += 1;
     }
     if (issue) issues.push(issue);
     if (itemCoverage === "complete") completeShipments += 1;
@@ -666,6 +652,33 @@ export async function collectFbaInboundShipmentSnapshot(
       completed: shipmentIndex + 1,
       total: shipments.length,
     });
+    if (consecutiveItemFailures >= MAX_CONSECUTIVE_ITEM_FAILURES) {
+      itemScanStopped = true;
+      for (const remaining of shipments.slice(shipmentIndex + 1)) {
+        issues.push({
+          stage: "items",
+          shipmentId: remaining.shipmentId,
+          code: "FBA_INBOUND_SCAN_STOPPED",
+          message:
+            "Amazon FBA 入庫商品明細已連續三票異常；這一票未再發出請求，未讀內容保持未知。",
+          requestId: null,
+          completedItemPages: 0,
+        });
+        rows.push({
+          ...remaining,
+          itemCoverage: "partial",
+          itemCount: 0,
+          totals: null,
+          verifiedTotals: emptyTotals(),
+        });
+      }
+      input.onProgress?.({
+        phase: "items",
+        completed: shipments.length,
+        total: shipments.length,
+      });
+      break;
+    }
   }
 
   const incompleteShipmentCount = shipments.length - completeShipments;
@@ -711,7 +724,11 @@ export async function collectFbaInboundShipmentSnapshot(
     notice:
       state === "complete"
         ? "Fulfillment Inbound API 已完整讀取所選更新區間的貨件與逐貨件商品明細；數量只代表 Amazon 目前回傳的送出與已接收快照。"
-        : `Fulfillment Inbound API 有 ${incompleteShipmentCount} 個貨件明細未完成；verifiedTotals 只加總已安全讀到的資料列，不能當作整個區間總量。`,
+        : `Fulfillment Inbound API 有 ${incompleteShipmentCount} 個貨件明細未完成；verifiedTotals 只加總已安全讀到的資料列，不能當作整個區間總量。${
+            itemScanStopped
+              ? " 因商品明細連續三票異常，後續貨件未再發出請求並保持未知。"
+              : ""
+          }`,
   };
   return snapshot;
 }

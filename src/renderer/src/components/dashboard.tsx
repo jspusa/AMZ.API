@@ -58,6 +58,7 @@ import {
 } from "../review-audit";
 import {
   inboundShipmentCacheKey,
+  inboundShipmentFailureMessage,
   pollInboundShipmentJob,
   replaceInboundShipmentCacheForMarketplace,
   type InboundShipmentCache,
@@ -909,7 +910,7 @@ export default function Dashboard({
     }).then((terminal) => {
       if (controller.signal.aborted) return;
       if (terminal.state === "failed" || !terminal.snapshot) {
-        throw new Error(terminal.notice || "FBA 入庫貨件同步未完成。");
+        throw new Error(inboundShipmentFailureMessage(terminal));
       }
       cacheInboundShipment({
         marketplaceId,
@@ -1297,7 +1298,7 @@ export default function Dashboard({
                   <small>{currentInboundShipment.snapshot.coverage.state === "complete" && currentInboundShipment.snapshot.issueReport.state === "completed" ? "完整快照" : "部分完成"} · {formatDateTime(currentInboundShipment.snapshot.fetchedAt, true)}</small>
                 </>
               ) : currentInboundShipment?.error ? (
-                <><strong>需要重新接回</strong><small>{currentInboundShipment.error}</small></>
+                <><strong>同步未完成</strong><small>{currentInboundShipment.error}</small></>
               ) : (
                 <><strong>尚未同步</strong><small>預設最近 90 天</small></>
               )}

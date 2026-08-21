@@ -278,6 +278,11 @@ type InboundShipmentProgress = Readonly<{
 
 type InboundShipmentJobState = "running" | "completed" | "partial" | "failed";
 
+type InboundShipmentFailure = Readonly<{
+  code: string;
+  requestId: string | null;
+}>;
+
 type InboundShipmentResultSnapshot = FbaInboundShipmentSnapshot & Readonly<{
   schemaVersion: 1;
   issueReport: InboundIssueReportSnapshot;
@@ -296,6 +301,7 @@ type InboundShipmentJob = {
   progress: InboundShipmentProgress;
   snapshot: InboundShipmentResultSnapshot | null;
   notice: string;
+  failure: InboundShipmentFailure | null;
   expiresAt: number;
   expiryTimer: ReturnType<typeof setTimeout> | null;
   controller: AbortController;
@@ -1322,6 +1328,10 @@ export class ApiRouter {
         job.state = "failed";
         job.snapshot = null;
         job.notice = "FBA 入庫貨件背景工作等待逾時；Amazon 沒有收到任何寫入。";
+        job.failure = {
+          code: "INBOUND_SHIPMENT_JOB_TIMEOUT",
+          requestId: null,
+        };
         this.retainInboundShipmentTerminalJob(
           job,
           INBOUND_SHIPMENT_TERMINAL_TTL_MS,
@@ -1341,6 +1351,7 @@ export class ApiRouter {
       progress: { ...job.progress },
       snapshot: job.snapshot ? structuredClone(job.snapshot) : null,
       notice: job.notice,
+      failure: job.failure ? { ...job.failure } : null,
     }, job.state === "running" ? 202 : 200);
   }
 
@@ -1475,22 +1486,77 @@ export class ApiRouter {
     };
   }
 
-  private inboundJobFailureNotice(error: unknown): string {
+  private inboundJobFailure(error: unknown): Readonly<{
+    notice: string;
+    diagnostic: InboundShipmentFailure;
+  }> {
+    const diagnostic: InboundShipmentFailure = {
+      code:
+        error instanceof SpApiError && /^[A-Z][A-Z0-9_]{0,127}$/u.test(error.code)
+          ? error.code
+          : "INBOUND_SHIPMENT_FAILED",
+      requestId:
+        error instanceof SpApiError
+          ? this.reportIdentifier(error.requestId)
+          : null,
+    };
     if (error instanceof Error && error.name === "AbortError") {
-      return "FBA 入庫貨件背景工作已安全停止。";
+      return {
+        notice: "FBA 入庫貨件背景工作已安全停止。",
+        diagnostic: { code: "INBOUND_SHIPMENT_ABORTED", requestId: null },
+      };
     }
     if (error instanceof SpApiError) {
       if (error.status === 401 || error.status === 403) {
-        return "Amazon 拒絕 FBA 入庫貨件查詢，請檢查 Amazon Fulfillment 角色與授權。";
+        return {
+          notice: "Amazon 拒絕 FBA 入庫貨件查詢，請檢查 Amazon Fulfillment 角色與授權；Amazon 沒有收到任何寫入。",
+          diagnostic,
+        };
       }
       if (error.status === 429 || error.code === "RATE_LIMITED") {
-        return "Amazon 暫時限制 FBA 入庫貨件查詢頻率；已停止後續讀取。";
+        return {
+          notice: "Amazon 暫時限制 FBA 入庫貨件查詢頻率；已停止後續讀取，請稍後只按一次重新同步。Amazon 沒有收到任何寫入。",
+          diagnostic,
+        };
       }
       if (error.code === "FBA_INBOUND_ITEM_CIRCUIT_OPEN") {
-        return "Amazon FBA 入庫商品明細連續異常；已停止後續讀取，避免大量無效請求。";
+        return {
+          notice: "Amazon FBA 入庫商品明細連續異常；已停止後續讀取，避免大量無效請求。Amazon 沒有收到任何寫入。",
+          diagnostic,
+        };
+      }
+      if (error.code === "FBA_INBOUND_FORMAT_UNSUPPORTED") {
+        return {
+          notice: "Amazon 回傳的 FBA 入庫資料格式目前無法安全辨識；已停止並保留未知值，不會補 0。Amazon 沒有收到任何寫入。",
+          diagnostic,
+        };
+      }
+      if (error.code === "PAGINATION_CHANGED") {
+        return {
+          notice: "Amazon FBA 入庫分頁資料前後不一致；已停止，避免重複或漏算貨件。Amazon 沒有收到任何寫入。",
+          diagnostic,
+        };
+      }
+      if (error.code === "PAGINATION_LIMIT_EXCEEDED") {
+        return {
+          notice: "Amazon FBA 入庫資料超過本次安全讀取上限；請縮短日期範圍後再同步。Amazon 沒有收到任何寫入。",
+          diagnostic,
+        };
+      }
+      if (error.code === "FBA_INBOUND_UPSTREAM_UNAVAILABLE") {
+        return {
+          notice:
+            error.status === 400 || error.status === 422
+              ? "Amazon 無法驗證這次 FBA 入庫貨件唯讀請求；請確認日期範圍後再按一次重新同步。Amazon 沒有收到任何寫入。"
+              : "Amazon FBA 入庫服務暫時無法回應；已在有限次唯讀重試後停止。請稍後只按一次重新同步；Amazon 沒有收到任何寫入。",
+          diagnostic,
+        };
       }
     }
-    return "FBA 入庫貨件目前無法完成；Amazon 沒有收到任何寫入。";
+    return {
+      notice: "FBA 入庫貨件同步未完成，Notebook Key 無法安全判定原因；請不要連續重試。Amazon 沒有收到任何寫入。",
+      diagnostic,
+    };
   }
 
   private async runInboundShipmentJob(job: InboundShipmentJob): Promise<void> {
@@ -1555,6 +1621,7 @@ export class ApiRouter {
         issueReport.state !== "completed";
       job.state = partial ? "partial" : "completed";
       job.notice = `${shipmentSnapshot.notice} ${issueReport.notice}`;
+      job.failure = null;
       this.retainInboundShipmentTerminalJob(job,
         issueReport.state === "unavailable"
           ? INBOUND_SHIPMENT_UNAVAILABLE_RETRY_TTL_MS
@@ -1566,7 +1633,9 @@ export class ApiRouter {
       if (this.inboundShipmentJobs.get(job.jobId) !== job) return;
       job.state = "failed";
       job.snapshot = null;
-      job.notice = this.inboundJobFailureNotice(error);
+      const failure = this.inboundJobFailure(error);
+      job.notice = failure.notice;
+      job.failure = failure.diagnostic;
       this.retainInboundShipmentTerminalJob(
         job,
         INBOUND_SHIPMENT_TERMINAL_TTL_MS,
@@ -1682,6 +1751,7 @@ export class ApiRouter {
       notice: retryIssueReport
         ? "只重新讀取每日 FBA 入庫瑕疵報表；既有貨件與商品接收數量快照不會重抓。"
         : "正在讀取 FBA 入庫貨件與商品接收數量；你可以關閉這個面板或先使用其他功能，Notebook 鑰匙仍會在背景繼續。",
+      failure: null,
       expiresAt: Date.now() + INBOUND_SHIPMENT_ACTIVE_TTL_MS,
       expiryTimer: null,
       controller,

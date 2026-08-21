@@ -6,6 +6,7 @@ import {
   defaultInboundShipmentDateRange,
   filterInboundShipments,
   inboundShipmentDifferenceCopy,
+  inboundShipmentFailureMessage,
   inboundShipmentStartBody,
   inboundShipmentStatusLabel,
   parseInboundShipmentJob,
@@ -187,7 +188,7 @@ export default function InboundShipmentsPanel({
     }).then((terminal) => {
       if (controller.signal.aborted) return;
       if (terminal.state === "failed" || !terminal.snapshot) {
-        throw new Error(terminal.notice || "FBA 入庫貨件同步未完成。" );
+        throw new Error(inboundShipmentFailureMessage(terminal));
       }
       setJob(terminal);
       setSnapshot(terminal.snapshot);
@@ -318,7 +319,7 @@ export default function InboundShipmentsPanel({
       });
       lastKnownJob = current;
       if (current.state === "failed" || !current.snapshot) {
-        throw new Error(current.notice || "FBA 入庫貨件同步未完成。" );
+        throw new Error(inboundShipmentFailureMessage(current));
       }
       setJob(current);
       setSnapshot(current.snapshot);
