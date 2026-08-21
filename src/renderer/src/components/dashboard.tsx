@@ -23,6 +23,7 @@ import ImageWorkspaceDrawer, {
   type ImageWorkspaceTab,
 } from "./image-workspace-drawer";
 import type { ImageAuditCache } from "./image-audit-panel";
+import InboundShipmentsDrawer from "./inbound-shipments-drawer";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
@@ -55,6 +56,12 @@ import {
   pollExistingReviewAuditJob,
   reviewAuditHomeProgress,
 } from "../review-audit";
+import {
+  inboundShipmentCacheKey,
+  pollInboundShipmentJob,
+  replaceInboundShipmentCacheForMarketplace,
+  type InboundShipmentCache,
+} from "../inbound-shipments";
 
 export type DashboardReportMenuEntry = {
   id: string;
@@ -78,6 +85,7 @@ type DashboardProps = {
 
 type Tool =
   | "ads"
+  | "inbound"
   | "restock"
   | "copy"
   | "images"
@@ -404,6 +412,7 @@ function salesTrendRequestKey(
 
 const TOOL_META: Record<Tool, { label: string; symbol: string; group: ToolGroup }> = {
   ads: { label: "廣告", symbol: "◎", group: "operations" },
+  inbound: { label: "入庫貨件", symbol: "⇣", group: "operations" },
   restock: { label: "補貨", symbol: "↗", group: "operations" },
   copy: { label: "文案", symbol: "Aa", group: "product" },
   images: { label: "圖片", symbol: "▧", group: "product" },
@@ -436,7 +445,7 @@ const TOOL_SECTIONS: ReadonlyArray<{
     label: "營運區",
     symbol: "◎",
     group: "operations",
-    tools: ["restock", "ads", "accounting"],
+    tools: ["restock", "inbound", "ads", "accounting"],
   },
   {
     label: "報表區",
@@ -508,6 +517,12 @@ export default function Dashboard({
   const [reviewAuditOpen, setReviewAuditOpen] = useState(false);
   const [reviewAuditCache, setReviewAuditCache] = useState<
     Record<string, ReviewAuditCache>
+  >({});
+  const [inboundShipmentCache, setInboundShipmentCache] = useState<
+    Record<string, InboundShipmentCache>
+  >({});
+  const [latestInboundShipmentKey, setLatestInboundShipmentKey] = useState<
+    Record<string, string>
   >({});
   const [auditPreference, setAuditPreference] = useState<AuditPreference>(null);
   const [returnToUnboundVariationAudit, setReturnToUnboundVariationAudit] = useState(false);
@@ -847,6 +862,83 @@ export default function Dashboard({
     });
   }, []);
 
+  const cacheInboundShipment = useCallback((cache: InboundShipmentCache) => {
+    const key = inboundShipmentCacheKey(cache.marketplaceId, cache.dateRange);
+    setInboundShipmentCache((current) =>
+      replaceInboundShipmentCacheForMarketplace(current, cache));
+    setLatestInboundShipmentKey((current) => ({
+      ...current,
+      [cache.marketplaceId]: key,
+    }));
+  }, []);
+
+  const currentInboundShipmentKey = latestInboundShipmentKey[marketplaceId] ?? null;
+  const currentInboundShipment = currentInboundShipmentKey
+    ? inboundShipmentCache[currentInboundShipmentKey] ?? null
+    : null;
+  const backgroundInboundShipmentJob =
+    currentInboundShipment?.job?.state === "running"
+      ? currentInboundShipment.job
+      : null;
+  const backgroundInboundShipmentJobId = backgroundInboundShipmentJob?.jobId ?? null;
+
+  useEffect(() => {
+    if (openTool === "inbound" || !backgroundInboundShipmentJob || !currentInboundShipment) {
+      return;
+    }
+    const controller = new AbortController();
+    const observedRange = currentInboundShipment.dateRange;
+    const preservedSnapshot = currentInboundShipment.snapshot;
+    void pollInboundShipmentJob({
+      marketplaceId,
+      dateRange: observedRange,
+      initialJob: backgroundInboundShipmentJob,
+      signal: controller.signal,
+      request: (url, signal) => fetch(url, { cache: "no-store", signal }),
+      onJob: (job) => {
+        if (!controller.signal.aborted) {
+          cacheInboundShipment({
+            marketplaceId,
+            dateRange: observedRange,
+            job,
+            snapshot: job.snapshot ?? preservedSnapshot,
+            error: null,
+          });
+        }
+      },
+    }).then((terminal) => {
+      if (controller.signal.aborted) return;
+      if (terminal.state === "failed" || !terminal.snapshot) {
+        throw new Error(terminal.notice || "FBA 入庫貨件同步未完成。");
+      }
+      cacheInboundShipment({
+        marketplaceId,
+        dateRange: observedRange,
+        job: terminal,
+        snapshot: terminal.snapshot,
+        error: null,
+      });
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+        return;
+      }
+      cacheInboundShipment({
+        marketplaceId,
+        dateRange: observedRange,
+        job: null,
+        snapshot: preservedSnapshot,
+        error: error instanceof Error
+          ? error.message
+          : "FBA 入庫貨件背景進度暫時無法接回。",
+      });
+    });
+    // Closing the drawer transfers observation here. Cleanup aborts only this
+    // renderer GET loop; the main-process job continues independently.
+    return () => controller.abort();
+    // Progress updates keep the same job identity and must not restart polling.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backgroundInboundShipmentJobId, cacheInboundShipment, marketplaceId, openTool]);
+
   const backgroundReviewAuditJob =
     reviewAuditCache[marketplaceId]?.snapshot
       ? null
@@ -1086,6 +1178,8 @@ export default function Dashboard({
                                         ? "FBA S&S 價格與趨勢"
                                         : tool === "restock"
                                           ? "FBA 庫存與補貨規劃"
+                                          : tool === "inbound"
+                                            ? "貨件、SKU 接收數量與三層瑕疵"
                                           : tool === "ads"
                                             ? "廣告授權與官方入口"
                                             : "公開 FBA 報表規劃"}</small>
@@ -1175,6 +1269,48 @@ export default function Dashboard({
               </aside>
             )}
           </div>
+
+          <section className="inbound-home-card" aria-label="FBA 入庫貨件追蹤捷徑">
+            <span className="inbound-home-icon" aria-hidden="true">⇣</span>
+            <div className="inbound-home-copy">
+              <p className="eyebrow">FBA FULFILLMENT INBOUND · READ ONLY</p>
+              <h2>FBA 入庫貨件追蹤</h2>
+              <p>一次同步所選日期內全部貨件、SKU 預期／Amazon 已接收數量，以及每日貨件／包裝箱／產品問題列；不用逐票點進去。</p>
+            </div>
+            <span className="inbound-home-status" role="status">
+              {currentInboundShipment?.job?.state === "running" ? (
+                <>
+                  <strong>{currentInboundShipment.job.progress.total === null
+                    ? `已完成 ${currentInboundShipment.job.progress.completed.toLocaleString("zh-TW")} 筆`
+                    : `${currentInboundShipment.job.progress.completed.toLocaleString("zh-TW")} / ${currentInboundShipment.job.progress.total.toLocaleString("zh-TW")}`}</strong>
+                  <small>背景同步中 · 可開啟查看</small>
+                  {currentInboundShipment.job.progress.total !== null && (
+                    <progress
+                      value={currentInboundShipment.job.progress.completed}
+                      max={Math.max(1, currentInboundShipment.job.progress.total)}
+                    />
+                  )}
+                </>
+              ) : currentInboundShipment?.snapshot ? (
+                <>
+                  <strong>{currentInboundShipment.snapshot.summary.shipmentCount.toLocaleString("zh-TW")} 個貨件</strong>
+                  <small>{currentInboundShipment.snapshot.coverage.state === "complete" && currentInboundShipment.snapshot.issueReport.state === "completed" ? "完整快照" : "部分完成"} · {formatDateTime(currentInboundShipment.snapshot.fetchedAt, true)}</small>
+                </>
+              ) : currentInboundShipment?.error ? (
+                <><strong>需要重新接回</strong><small>{currentInboundShipment.error}</small></>
+              ) : (
+                <><strong>尚未同步</strong><small>預設最近 90 天</small></>
+              )}
+            </span>
+            <button type="button" onClick={() => launch("inbound")}>
+              {currentInboundShipment?.job?.state === "running"
+                ? "查看進行中的貨件同步"
+                : currentInboundShipment?.snapshot
+                  ? "查看上次貨件快照"
+                  : "開啟 FBA 入庫貨件追蹤"}
+              <i aria-hidden="true">›</i>
+            </button>
+          </section>
 
           <AuditSuiteHomeCard
             marketplaceId={marketplaceId}
@@ -1327,6 +1463,7 @@ export default function Dashboard({
       </div>
 
       {openTool === "ads" && <AdsDrawer initialMarketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
+      {openTool === "inbound" && <InboundShipmentsDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} marketplaceTimeZone={marketplace.timeZone} cachedResult={currentInboundShipment} onCachedResultChange={cacheInboundShipment} onClose={() => setOpenTool(null)} />}
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCache} onAuditCacheChange={cacheContentAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCache} onAuditCacheChange={cacheImageAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}

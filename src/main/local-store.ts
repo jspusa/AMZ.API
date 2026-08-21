@@ -135,11 +135,17 @@ export function isBrandSalesIncompatibleJob(
 
 export type SharedReportType =
   | "GET_MERCHANT_LISTINGS_ALL_DATA"
-  | "GET_FBA_INVENTORY_PLANNING_DATA";
+  | "GET_FBA_INVENTORY_PLANNING_DATA"
+  | "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA"
+  | "GET_SALES_AND_TRAFFIC_REPORT"
+  | "ADS_SP_ADVERTISED_PRODUCT";
 
 export type SharedReportOptionsKey =
   | "preferredReportDocumentLocale=en_US"
-  | "marketplaceIds=selected";
+  | "marketplaceIds=selected"
+  | "marketplaceIds=selected;daily-inbound-noncompliance"
+  | `dateGranularity=DAY;asinGranularity=SKU;start=${string};end=${string}`
+  | `reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=${string};end=${string}`;
 
 export type SharedReportLease = {
   leaseId: string;
@@ -412,6 +418,23 @@ function parseStoredBrandSalesJob(value: unknown): StoredBrandSalesJobRecord {
   };
 }
 
+function validReportDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validDatedReportOptions(
+  value: unknown,
+  prefix: string,
+): boolean {
+  if (typeof value !== "string" || !value.startsWith(prefix)) return false;
+  const range = value.slice(prefix.length).split(";end=");
+  if (range.length !== 2) return false;
+  const [startDate, endDate] = range;
+  return validReportDate(startDate) && validReportDate(endDate) && startDate <= endDate;
+}
+
 function parseSharedReport(
   value: unknown,
 ): SharedReportLease {
@@ -423,7 +446,19 @@ function parseSharedReport(
     (raw.reportType === "GET_MERCHANT_LISTINGS_ALL_DATA" &&
       raw.optionsKey === "preferredReportDocumentLocale=en_US") ||
     (raw.reportType === "GET_FBA_INVENTORY_PLANNING_DATA" &&
-      raw.optionsKey === "marketplaceIds=selected");
+      raw.optionsKey === "marketplaceIds=selected") ||
+    (raw.reportType === "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA" &&
+      raw.optionsKey === "marketplaceIds=selected;daily-inbound-noncompliance") ||
+    (raw.reportType === "GET_SALES_AND_TRAFFIC_REPORT" &&
+      validDatedReportOptions(
+        raw.optionsKey,
+        "dateGranularity=DAY;asinGranularity=SKU;start=",
+      )) ||
+    (raw.reportType === "ADS_SP_ADVERTISED_PRODUCT" &&
+      validDatedReportOptions(
+        raw.optionsKey,
+        "reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=",
+      ));
   if (
     !isSafeIdentifier(raw.leaseId, 120) ||
     !isSafeIdentifier(raw.accountScope, 128) ||
@@ -762,11 +797,28 @@ export class LocalStore {
 
   async createSharedReportIfAbsent(
     input: SharedReportLease,
-    _now = Date.now(),
+    now = Date.now(),
   ): Promise<{ created: boolean; lease: SharedReportLease }> {
+    if (!Number.isSafeInteger(now) || now <= 0) {
+      throw new Error("Invalid shared report prune time");
+    }
     let created = false;
     let selected!: SharedReportLease;
     await this.mutate((data) => {
+      for (const [candidateKey, candidate] of Object.entries(
+        data.sharedAllListingsReports,
+      )) {
+        // Only evidence that is known to be safe to recreate may age out.
+        // Ambiguous creates and terminal failures remain durable so a new date
+        // range can never erase the no-blind-retry tombstone for an older one.
+        if (
+          candidate.expiresAt <= now &&
+          (candidate.report.status === "DONE" ||
+            candidate.report.status === "NOT_STARTED")
+        ) {
+          delete data.sharedAllListingsReports[candidateKey];
+        }
+      }
       const key = sharedReportKey(input);
       const existing = data.sharedAllListingsReports[key];
       if (existing) {

@@ -15,6 +15,7 @@ describe("renderer-owned FBA audit export filenames", () => {
     ["review", "FBA-評論主題健檢-US-2026-08-10.xlsx"],
     ["advertising", "FBA-廣告覆蓋健檢-US-2026-08-10.xlsx"],
     ["suite", "FBA-一鍵全部健檢-US-2026-08-10.xlsx"],
+    ["inbound", "FBA-入庫貨件-US-2026-08-10.xlsx"],
   ];
 
   it.each(cases)("uses the fixed Chinese label for %s", (kind, expected) => {
@@ -59,6 +60,7 @@ describe("renderer-owned FBA audit export filenames", () => {
     ["components/subscription-audit-panel.tsx", "subscription"],
     ["components/review-audit-panel.tsx", "review"],
     ["components/audit-suite-home-card.tsx", "suite"],
+    ["inbound-shipments-excel.ts", "inbound"],
   ] as const)("owns the %s download name in the renderer", (file, kind) => {
     const source = readFileSync(
       new URL(`../src/renderer/src/${file}`, import.meta.url),

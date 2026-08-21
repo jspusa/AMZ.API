@@ -32,6 +32,15 @@ import {
   type BrandSalesSnapshot,
 } from "./brand-sales";
 import {
+  buildDemoFbaInboundShipmentSnapshot,
+  collectFbaInboundShipmentSnapshot,
+  FbaInboundSnapshotError,
+  type FbaInboundProgress,
+  type FbaInboundShipmentSnapshot,
+  type FbaInboundTransportRequest,
+  type FbaInboundTransportResult,
+} from "./fba-inbound-shipments";
+import {
   dedupeFbaReviewCandidates,
   type DedupedFbaReviewCandidate,
   type FbaReviewCandidate,
@@ -55,6 +64,14 @@ import {
 import { spApiUserAgent } from "./sp-api-runtime";
 
 export type { BrandSalesSnapshot } from "./brand-sales";
+export type {
+  FbaInboundCoverageIssue,
+  FbaInboundProgress,
+  FbaInboundShipmentItem,
+  FbaInboundShipmentRow,
+  FbaInboundShipmentSnapshot,
+  FbaInboundUnitTotals,
+} from "./fba-inbound-shipments";
 import { classifyUnboundVariationEvidence } from "./unbound-variation-audit";
 
 export type {
@@ -408,6 +425,18 @@ export type ListingExportError = {
   message: string;
 };
 
+export type FbaListingIdentitySnapshot = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  fetchedAt: string;
+  rows: Array<{
+    sellerSku: string;
+    asin: string;
+    title: string;
+  }>;
+  notice: string;
+};
+
 export type VariationMoveAction = "detach" | "attach";
 
 export type VariationDetachInput = {
@@ -489,6 +518,24 @@ export type ListingReportStatus = {
   reportId: string;
   documentId: string | null;
   status: "IN_QUEUE" | "IN_PROGRESS" | "DONE" | "CANCELLED" | "FATAL";
+  notice: string;
+};
+
+export type SalesAndTrafficRow = {
+  sellerSku: string;
+  childAsin: string;
+  unitsOrdered: number;
+  orderedProductSales: number;
+  currencyCode: string;
+};
+
+export type SalesAndTrafficSnapshot = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  fetchedAt: string;
+  rows: SalesAndTrafficRow[];
   notice: string;
 };
 
@@ -980,6 +1027,7 @@ type AmazonReport = {
   marketplaceIds?: string[];
   dataStartTime?: string;
   dataEndTime?: string;
+  reportOptions?: Record<string, string>;
   processingStatus?: "IN_QUEUE" | "IN_PROGRESS" | "DONE" | "CANCELLED" | "FATAL";
   reportDocumentId?: string;
 };
@@ -1178,6 +1226,8 @@ type TokenCacheEntry = {
 
 const tokenCache = new Map<SpApiRegion, TokenCacheEntry>();
 const tokenRequests = new Map<SpApiRegion, Promise<TokenCacheEntry>>();
+const fbaInboundReadTails = new Map<SpApiRegion, Promise<void>>();
+const fbaInboundLastStartedAt = new Map<SpApiRegion, number>();
 let credentialGeneration = 0;
 
 export function invalidateSpApiCredentialCaches(): void {
@@ -5394,6 +5444,276 @@ async function fetchLiveSalesTrend(input: {
   };
 }
 
+const FBA_INBOUND_READ_INTERVAL_MS = 500;
+
+async function paceFbaInboundRead(
+  region: SpApiRegion,
+  signal?: AbortSignal,
+): Promise<void> {
+  assertNotAborted(signal);
+  const previous = fbaInboundReadTails.get(region) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(async () => {
+    assertNotAborted(signal);
+    const lastStartedAt = fbaInboundLastStartedAt.get(region) ?? 0;
+    const delay = Math.max(
+      0,
+      lastStartedAt + FBA_INBOUND_READ_INTERVAL_MS - Date.now(),
+    );
+    await wait(delay, signal);
+    assertNotAborted(signal);
+    fbaInboundLastStartedAt.set(region, Date.now());
+  });
+  fbaInboundReadTails.set(region, current.then(() => undefined, () => undefined));
+  await current;
+}
+
+async function callFbaInboundV0(
+  request: FbaInboundTransportRequest,
+  forceTokenRefresh = false,
+  signal?: AbortSignal,
+): Promise<Response> {
+  assertNotAborted(signal);
+  const marketplace = MARKETPLACES[request.marketplaceId];
+  const token = await requestAccessToken(
+    marketplace.region,
+    forceTokenRefresh,
+  );
+  assertNotAborted(signal);
+  await paceFbaInboundRead(marketplace.region, signal);
+  assertNotAborted(signal);
+
+  let path: string;
+  const query = new URLSearchParams();
+  if (request.kind === "shipments") {
+    path = "/fba/inbound/v0/shipments";
+    query.set("QueryType", request.queryType);
+    query.set("MarketplaceId", request.marketplaceId);
+    if (request.queryType === "DATE_RANGE") {
+      query.set("LastUpdatedAfter", request.lastUpdatedAfter);
+      query.set("LastUpdatedBefore", request.lastUpdatedBefore);
+    } else {
+      query.set("NextToken", request.nextToken);
+    }
+  } else {
+    path = `/fba/inbound/v0/shipments/${encodeURIComponent(
+      request.shipmentId,
+    )}/items`;
+    // MarketplaceId is deprecated for this operation. The shipment ID came
+    // from the exact-marketplace list request, so do not send the obsolete
+    // parameter or permit the renderer to choose an upstream path.
+  }
+
+  const controller = new AbortController();
+  const stopForwardingAbort = forwardAbort(controller, signal);
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const queryText = query.toString();
+  try {
+    return await fetch(
+      `${REGION_ENDPOINTS[marketplace.region]}${path}${
+        queryText ? `?${queryText}` : ""
+      }`,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "x-amz-access-token": token,
+          "x-amz-date": toAmzDate(),
+          "user-agent": spApiUserAgent(),
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      },
+    );
+  } catch (error) {
+    assertNotAborted(signal);
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new SpApiError(
+        "Amazon FBA 入庫貨件唯讀查詢逾時，已停止這次讀取。",
+        {
+          status: 504,
+          code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
+        },
+      );
+    }
+    throw new SpApiError("目前無法連線至 Amazon Fulfillment Inbound API。", {
+      status: 502,
+      code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
+    });
+  } finally {
+    clearTimeout(timeout);
+    stopForwardingAbort();
+  }
+}
+
+async function executeFbaInboundV0(
+  request: FbaInboundTransportRequest,
+  signal?: AbortSignal,
+): Promise<Response> {
+  assertNotAborted(signal);
+  let response = await callFbaInboundV0(request, false, signal);
+  let refreshedUnauthorized = false;
+  let transientRetries = 0;
+  while (true) {
+    assertNotAborted(signal);
+    if (response.status === 401 && !refreshedUnauthorized) {
+      refreshedUnauthorized = true;
+      tokenCache.delete(MARKETPLACES[request.marketplaceId].region);
+      assertNotAborted(signal);
+      response = await callFbaInboundV0(request, true, signal);
+      continue;
+    }
+    if (
+      [429, 500, 502, 503, 504].includes(response.status) &&
+      transientRetries < 2
+    ) {
+      await wait(retryDelayMs(response, transientRetries), signal);
+      transientRetries += 1;
+      assertNotAborted(signal);
+      response = await callFbaInboundV0(request, false, signal);
+      continue;
+    }
+    break;
+  }
+  return response;
+}
+
+async function throwFbaInboundReadError(response: Response): Promise<never> {
+  const message =
+    response.status === 401 || response.status === 403
+      ? "Amazon 拒絕 FBA 入庫貨件查詢。請確認 Private SP-API App 已具備 Amazon Fulfillment 角色並重新授權。"
+      : response.status === 429
+        ? "Amazon Fulfillment Inbound API 持續限流；已在有限次唯讀重試後停止。"
+        : response.status === 400 || response.status === 422
+          ? "Amazon 無法驗證這次 FBA 入庫貨件唯讀請求。"
+          : "Amazon 暫時無法完成 FBA 入庫貨件查詢。";
+  throw new SpApiError(message, {
+    status: response.status,
+    code:
+      response.status === 401 || response.status === 403
+        ? "FBA_INBOUND_UNAUTHORIZED"
+        : response.status === 429
+          ? "RATE_LIMITED"
+          : "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
+    requestId: response.headers.get("x-amzn-requestid"),
+    retryAfter: response.headers.get("retry-after"),
+  });
+}
+
+async function fetchFbaInboundTransport(
+  request: FbaInboundTransportRequest,
+  signal?: AbortSignal,
+): Promise<FbaInboundTransportResult> {
+  assertNotAborted(signal);
+  const response = await executeFbaInboundV0(request, signal);
+  assertNotAborted(signal);
+  if (!response.ok) return throwFbaInboundReadError(response);
+  const payload = await parseResponseJson<unknown>(response);
+  assertNotAborted(signal);
+  if (payload === null) {
+    throw new SpApiError(
+      "Amazon 回傳了無法辨識的 FBA 入庫貨件 JSON。",
+      {
+        status: 502,
+        code: "FBA_INBOUND_FORMAT_UNSUPPORTED",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  return {
+    payload,
+    requestId: response.headers.get("x-amzn-requestid"),
+  };
+}
+
+function invalidFbaInboundRange(message: string): never {
+  throw new SpApiError(message, {
+    status: 400,
+    code: "INVALID_FBA_INBOUND_RANGE",
+  });
+}
+
+function buildFbaInboundDateWindow(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  now: Date;
+}): { startAt: string; endAt: string } {
+  if (
+    Number.isNaN(input.now.getTime()) ||
+    !isDateOnly(input.startDate) ||
+    !isDateOnly(input.endDate)
+  ) {
+    invalidFbaInboundRange("FBA 入庫貨件日期必須使用有效的 YYYY-MM-DD 格式。");
+  }
+  const dayCount = calendarDayCount(input.startDate, input.endDate);
+  if (dayCount < 1 || dayCount > 180) {
+    invalidFbaInboundRange("FBA 入庫貨件日期範圍必須介於 1 到 180 天。");
+  }
+  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
+  const today = zonedDateParts(input.now, timeZone);
+  const todayKey = dateKey(today.year, today.month, today.day);
+  if (input.endDate > todayKey) {
+    invalidFbaInboundRange("FBA 入庫貨件結束日期不可晚於目前 Amazon 站點日期。");
+  }
+  return {
+    startAt: zonedIso(zonedMidnight(input.startDate, timeZone), timeZone),
+    endAt: input.endDate === todayKey
+      ? zonedIso(input.now, timeZone)
+      : zonedIso(
+          zonedMidnight(shiftDateKey(input.endDate, 1), timeZone),
+          timeZone,
+        ),
+  };
+}
+
+export async function getFbaInboundShipmentSnapshot(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  signal?: AbortSignal;
+  onProgress?: (progress: FbaInboundProgress) => void;
+}): Promise<FbaInboundShipmentSnapshot> {
+  assertNotAborted(input.signal);
+  const now = new Date();
+  const window = buildFbaInboundDateWindow({
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    now,
+  });
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    return buildDemoFbaInboundShipmentSnapshot({
+      marketplaceId: input.marketplaceId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      lastUpdatedAfter: window.startAt,
+      lastUpdatedBefore: window.endAt,
+      now,
+    });
+  }
+  try {
+    return await collectFbaInboundShipmentSnapshot({
+      marketplaceId: input.marketplaceId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      lastUpdatedAfter: window.startAt,
+      lastUpdatedBefore: window.endAt,
+      signal: input.signal,
+      onProgress: input.onProgress,
+      transport: (request) => fetchFbaInboundTransport(request, input.signal),
+    });
+  } catch (error) {
+    if (error instanceof FbaInboundSnapshotError) {
+      throw new SpApiError(error.message, {
+        status: error.status,
+        code: error.code,
+        requestId: error.requestId,
+      });
+    }
+    throw error;
+  }
+}
+
 async function callFbaInventoryApi(
   marketplaceId: MarketplaceId,
   sellerSku: string,
@@ -7803,6 +8123,13 @@ export async function updateListingContent(
   };
 }
 
+type ReportsPurpose =
+  | "listings"
+  | "aged-inventory"
+  | "brand-sales"
+  | "sales-and-traffic"
+  | "inbound-noncompliance";
+
 type ReportsRequestInput = {
   marketplaceId: MarketplaceId;
   path: string;
@@ -7810,6 +8137,7 @@ type ReportsRequestInput = {
   body?: unknown;
   forceTokenRefresh?: boolean;
   signal?: AbortSignal;
+  purpose?: ReportsPurpose;
 };
 
 async function callReportsApi(input: ReportsRequestInput): Promise<Response> {
@@ -7844,12 +8172,20 @@ async function callReportsApi(input: ReportsRequestInput): Promise<Response> {
   } catch (error) {
     assertNotAborted(input.signal);
     if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon 全商品報表查詢逾時，請稍後再試。", {
+      throw new SpApiError(input.purpose === "inbound-noncompliance"
+        ? "Amazon FBA 入庫瑕疵報表查詢逾時，請稍後再試。"
+        : input.purpose === "sales-and-traffic"
+          ? "Amazon 銷售與流量報表查詢逾時，請稍後再試。"
+          : "Amazon 全商品報表查詢逾時，請稍後再試。", {
         status: 504,
         code: "UPSTREAM_UNAVAILABLE",
       });
     }
-    throw new SpApiError("目前無法連線至 Amazon Reports API。", {
+    throw new SpApiError(input.purpose === "inbound-noncompliance"
+      ? "目前無法連線至 Amazon Reports API，FBA 入庫瑕疵報表建立或查詢結果未知。"
+      : input.purpose === "sales-and-traffic"
+        ? "目前無法連線至 Amazon Reports API，銷售與流量報表建立或查詢結果未知。"
+        : "目前無法連線至 Amazon Reports API。", {
       status: 502,
       code: "UPSTREAM_UNAVAILABLE",
     });
@@ -7863,15 +8199,16 @@ async function executeReportsRequest(
   input: ReportsRequestInput,
 ): Promise<Response> {
   assertNotAborted(input.signal);
+  const method = input.method ?? "GET";
   let response = await callReportsApi(input);
   assertNotAborted(input.signal);
-  if (response.status === 401) {
+  if (method === "GET" && response.status === 401) {
     tokenCache.delete(MARKETPLACES[input.marketplaceId].region);
     assertNotAborted(input.signal);
     response = await callReportsApi({ ...input, forceTokenRefresh: true });
     assertNotAborted(input.signal);
   }
-  if ((input.method ?? "GET") === "GET") {
+  if (method === "GET") {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (![429, 500, 503].includes(response.status)) break;
       await wait(retryDelayMs(response, attempt), input.signal);
@@ -7885,7 +8222,7 @@ async function executeReportsRequest(
 
 async function throwReportsError(
   response: Response,
-  purpose: "listings" | "aged-inventory" | "brand-sales" = "listings",
+  purpose: ReportsPurpose = "listings",
 ): Promise<never> {
   const payload = await parseResponseJson<{
     errors?: Array<{ code?: string; message?: string }>;
@@ -7897,6 +8234,10 @@ async function throwReportsError(
     ? "FBA 庫齡報表"
     : purpose === "brand-sales"
       ? "FBA 品牌出貨報表"
+      : purpose === "sales-and-traffic"
+        ? "銷售與流量報表"
+      : purpose === "inbound-noncompliance"
+        ? "FBA 入庫瑕疵報表"
       : "全商品報表";
   const message =
     response.status === 429
@@ -7907,7 +8248,9 @@ async function throwReportsError(
           : `Amazon 拒絕${subject}查詢，請確認 app 已有 Amazon Fulfillment 角色並重新授權。`
         : `Amazon 無法完成${subject}。`;
   throw new SpApiError(
-    upstreamMessage ? `${message}（${upstreamMessage}）` : message,
+    purpose === "sales-and-traffic" || purpose === "inbound-noncompliance"
+      ? message
+      : upstreamMessage ? `${message}（${upstreamMessage}）` : message,
     {
       status: response.status,
       code: response.status === 429 ? "RATE_LIMITED" : "REPORT_FAILED",
@@ -8028,6 +8371,563 @@ export async function getAllListingsReportStatus(input: {
       ? "Amazon 全商品清單已就緒，正在整理 Excel。"
       : "Amazon 正在準備全商品清單，完成後會自動下載。",
   };
+}
+
+const SALES_AND_TRAFFIC_REPORT_TYPE = "GET_SALES_AND_TRAFFIC_REPORT";
+const SALES_AND_TRAFFIC_REPORT_OPTIONS = {
+  dateGranularity: "DAY",
+  asinGranularity: "SKU",
+} as const;
+const MAX_SALES_AND_TRAFFIC_ROWS = 100_000;
+
+function salesAndTrafficDemoReference(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+}): string {
+  return `demo-sales-traffic-${input.marketplaceId}-${input.startDate}-${input.endDate}`;
+}
+
+function reportDateKey(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4}-\d{2}-\d{2})(?:T.*)?$/u.exec(value);
+  if (!match || Number.isNaN(Date.parse(`${match[1]}T00:00:00.000Z`))) return null;
+  return match[1];
+}
+
+function exactSalesAndTrafficOptions(value: unknown): boolean {
+  return isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    value.dateGranularity === SALES_AND_TRAFFIC_REPORT_OPTIONS.dateGranularity &&
+    value.asinGranularity === SALES_AND_TRAFFIC_REPORT_OPTIONS.asinGranularity;
+}
+
+function assertSalesAndTrafficReportIdentity(input: {
+  payload: AmazonReport;
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  requestId: string | null;
+}): void {
+  if (
+    input.payload.reportType !== SALES_AND_TRAFFIC_REPORT_TYPE ||
+    !Array.isArray(input.payload.marketplaceIds) ||
+    input.payload.marketplaceIds.length !== 1 ||
+    input.payload.marketplaceIds[0] !== input.marketplaceId ||
+    reportDateKey(input.payload.dataStartTime) !== input.startDate ||
+    reportDateKey(input.payload.dataEndTime) !== input.endDate
+  ) {
+    throw new SpApiError(
+      "這份 Amazon 銷售與流量報表不屬於目前站點或日期，已停止下載。",
+      { status: 409, code: "REPORT_MISMATCH", requestId: input.requestId },
+    );
+  }
+}
+
+export async function startSalesAndTrafficReport(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  signal?: AbortSignal;
+}): Promise<ListingReportStatus> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const reference = salesAndTrafficDemoReference(input);
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: reference,
+      documentId: reference,
+      status: "DONE",
+      notice: "展示用銷售與流量報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: "/reports",
+    method: "POST",
+    signal: input.signal,
+    purpose: "sales-and-traffic",
+    body: {
+      reportType: SALES_AND_TRAFFIC_REPORT_TYPE,
+      marketplaceIds: [input.marketplaceId],
+      dataStartTime: input.startDate,
+      dataEndTime: input.endDate,
+      reportOptions: SALES_AND_TRAFFIC_REPORT_OPTIONS,
+    },
+  });
+  if (!response.ok) return throwReportsError(response, "sales-and-traffic");
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (!payload?.reportId) {
+    throw new SpApiError("Amazon 沒有回傳有效的銷售與流量報表編號。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  return {
+    mode: "live",
+    ready: false,
+    reportId: payload.reportId,
+    documentId: null,
+    status: "IN_QUEUE",
+    notice: "Amazon 正在準備 SKU 銷售與流量報表。",
+  };
+}
+
+export async function getSalesAndTrafficReportStatus(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  startDate: string;
+  endDate: string;
+  signal?: AbortSignal;
+}): Promise<ListingReportStatus> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const reference = salesAndTrafficDemoReference(input);
+    if (input.reportId !== reference) {
+      throw new SpApiError("展示銷售與流量報表資訊不相符。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: reference,
+      documentId: reference,
+      status: "DONE",
+      notice: "展示用銷售與流量報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: `/reports/${encodeURIComponent(input.reportId)}`,
+    signal: input.signal,
+    purpose: "sales-and-traffic",
+  });
+  if (!response.ok) return throwReportsError(response, "sales-and-traffic");
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (!payload || payload.reportId !== input.reportId) {
+    throw new SpApiError("Amazon 銷售與流量報表編號不一致。", {
+      status: 409,
+      code: "REPORT_MISMATCH",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  assertSalesAndTrafficReportIdentity({
+    payload,
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    requestId: response.headers.get("x-amzn-requestid"),
+  });
+  const status = payload.processingStatus;
+  if (!status) {
+    throw new SpApiError("Amazon 回傳了無法辨識的銷售與流量報表狀態。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  if (status === "CANCELLED" || status === "FATAL") {
+    throw new SpApiError("Amazon 未能產生銷售與流量報表，系統不會自動重建。", {
+      status: 422,
+      code: status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  const ready = status === "DONE" && Boolean(payload.reportDocumentId);
+  return {
+    mode: "live",
+    ready,
+    reportId: input.reportId,
+    documentId: payload.reportDocumentId ?? null,
+    status,
+    notice: ready
+      ? "Amazon SKU 銷售與流量報表已就緒。"
+      : "Amazon 正在準備 SKU 銷售與流量報表。",
+  };
+}
+
+function requiredReportObject(
+  value: unknown,
+  message: string,
+): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new SpApiError(message, { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" });
+  }
+  return value;
+}
+
+function salesReportNumber(
+  value: unknown,
+  label: string,
+  integer = false,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > 1_000_000_000_000 ||
+    (integer && !Number.isSafeInteger(value))
+  ) {
+    throw new SpApiError(`Amazon 銷售與流量報表的${label}無法安全辨識。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  return value;
+}
+
+export function parseSalesAndTrafficReportDocument(input: {
+  text: string;
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+}): SalesAndTrafficRow[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(input.text.replace(/^\ufeff/u, ""));
+  } catch {
+    throw new SpApiError("Amazon 銷售與流量報表不是有效的 JSON。", {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  const root = requiredReportObject(value, "Amazon 銷售與流量報表格式無效。");
+  const specification = requiredReportObject(
+    root.reportSpecification,
+    "Amazon 銷售與流量報表缺少固定查詢規格。",
+  );
+  if (
+    specification.reportType !== SALES_AND_TRAFFIC_REPORT_TYPE ||
+    !exactSalesAndTrafficOptions(specification.reportOptions) ||
+    reportDateKey(specification.dataStartTime) !== input.startDate ||
+    reportDateKey(specification.dataEndTime) !== input.endDate ||
+    !Array.isArray(specification.marketplaceIds) ||
+    specification.marketplaceIds.length !== 1 ||
+    specification.marketplaceIds[0] !== input.marketplaceId ||
+    !Array.isArray(root.salesAndTrafficByAsin) ||
+    root.salesAndTrafficByAsin.length > MAX_SALES_AND_TRAFFIC_ROWS
+  ) {
+    throw new SpApiError("Amazon 銷售與流量報表與目前站點、日期或 SKU 粒度不一致。", {
+      status: 409,
+      code: "REPORT_MISMATCH",
+    });
+  }
+  const expectedCurrency = MARKETPLACES[input.marketplaceId].currency;
+  const seen = new Set<string>();
+  const rows = root.salesAndTrafficByAsin.map((raw): SalesAndTrafficRow => {
+    const row = requiredReportObject(raw, "Amazon 銷售與流量報表含有無效商品列。");
+    const sellerSku = typeof row.sku === "string" ? row.sku.trim() : "";
+    const childAsin = typeof row.childAsin === "string" ? row.childAsin.trim() : "";
+    if (
+      !sellerSku ||
+      sellerSku.length > 40 ||
+      sellerSku !== row.sku ||
+      /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(sellerSku) ||
+      childAsin !== row.childAsin ||
+      !/^[A-Z0-9]{10}$/u.test(childAsin) ||
+      seen.has(sellerSku)
+    ) {
+      throw new SpApiError("Amazon 銷售與流量報表的 SKU／ASIN 無法唯一辨識。", {
+        status: 502,
+        code: "REPORT_FORMAT_UNSUPPORTED",
+      });
+    }
+    const sales = requiredReportObject(
+      row.salesByAsin,
+      "Amazon 銷售與流量報表缺少 SKU 銷售資料。",
+    );
+    const money = requiredReportObject(
+      sales.orderedProductSales,
+      "Amazon 銷售與流量報表缺少 SKU 銷售額。",
+    );
+    const currencyCode = typeof money.currencyCode === "string"
+      ? money.currencyCode.trim()
+      : "";
+    if (currencyCode !== expectedCurrency) {
+      throw new SpApiError("Amazon 銷售與流量報表幣別與目前站點不一致。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    seen.add(sellerSku);
+    return {
+      sellerSku,
+      childAsin,
+      unitsOrdered: salesReportNumber(sales.unitsOrdered, "已售出單位", true),
+      orderedProductSales: salesReportNumber(money.amount, "銷售額"),
+      currencyCode,
+    };
+  });
+  return rows.sort((left, right) => left.sellerSku.localeCompare(right.sellerSku));
+}
+
+export async function getSalesAndTrafficReportData(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  documentId: string;
+  startDate: string;
+  endDate: string;
+  signal?: AbortSignal;
+}): Promise<SalesAndTrafficSnapshot> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const reference = salesAndTrafficDemoReference(input);
+    if (input.reportId !== reference || input.documentId !== reference) {
+      throw new SpApiError("展示銷售與流量報表資訊不相符。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    const skus = [...new Set(
+      buildDemoOrders(input.marketplaceId)
+        .flatMap((order) => order.items)
+        .map((item) => item.sellerSku),
+    )];
+    return {
+      mode: "demo",
+      marketplaceId: input.marketplaceId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      fetchedAt: new Date().toISOString(),
+      rows: skus.map((sellerSku, index) => {
+        const listing = getDemoListingContent(input.marketplaceId, sellerSku);
+        const unitsOrdered = Math.max(1, 12 - index * 2);
+        return {
+          sellerSku,
+          childAsin: listing.asin ?? `B0DEMOSAL${index}`,
+          unitsOrdered,
+          orderedProductSales: Number((unitsOrdered * (24.99 + index * 5)).toFixed(2)),
+          currencyCode: MARKETPLACES[input.marketplaceId].currency,
+        };
+      }),
+      notice: "展示資料只供廣告策略表版面測試，不是你的真實 Amazon 銷售。",
+    };
+  }
+  const status = await getSalesAndTrafficReportStatus(input);
+  assertNotAborted(input.signal);
+  if (!status.ready || status.documentId !== input.documentId) {
+    throw new SpApiError("銷售與流量報表尚未完成，或文件資訊已失效。", {
+      status: 409,
+      code: "REPORT_NOT_READY",
+    });
+  }
+  const text = await downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+    input.signal,
+    "sales-and-traffic",
+  );
+  assertNotAborted(input.signal);
+  return {
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    fetchedAt: new Date().toISOString(),
+    rows: parseSalesAndTrafficReportDocument({
+      text,
+      marketplaceId: input.marketplaceId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+    }),
+    notice: "銷售與單位來自 Amazon Sales and Traffic Business Report 的 SKU 粒度完整日期範圍。",
+  };
+}
+
+const FBA_INBOUND_NONCOMPLIANCE_REPORT_TYPE =
+  "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA";
+
+function demoInboundNoncomplianceReportId(
+  marketplaceId: MarketplaceId,
+): string {
+  return `demo-inbound-noncompliance-${marketplaceId}`;
+}
+
+export async function startInboundNoncomplianceReport(input: {
+  marketplaceId: MarketplaceId;
+  signal?: AbortSignal;
+}): Promise<ListingReportStatus> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const reportId = demoInboundNoncomplianceReportId(input.marketplaceId);
+    return {
+      mode: "demo",
+      ready: true,
+      reportId,
+      documentId: reportId,
+      status: "DONE",
+      notice: "展示用 FBA 入庫瑕疵報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: "/reports",
+    method: "POST",
+    signal: input.signal,
+    purpose: "inbound-noncompliance",
+    body: {
+      reportType: FBA_INBOUND_NONCOMPLIANCE_REPORT_TYPE,
+      marketplaceIds: [input.marketplaceId],
+    },
+  });
+  if (!response.ok) {
+    return throwReportsError(response, "inbound-noncompliance");
+  }
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (!payload?.reportId) {
+    throw new SpApiError("Amazon 沒有回傳有效的 FBA 入庫瑕疵報表編號。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  return {
+    mode: "live",
+    ready: false,
+    reportId: payload.reportId,
+    documentId: null,
+    status: "IN_QUEUE",
+    notice: "Amazon 正在準備每日 FBA 入庫瑕疵報表。",
+  };
+}
+
+export async function getInboundNoncomplianceReportStatus(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  signal?: AbortSignal;
+}): Promise<ListingReportStatus> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const reportId = demoInboundNoncomplianceReportId(input.marketplaceId);
+    if (input.reportId !== reportId) {
+      throw new SpApiError("展示報表編號與目前站點不一致。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    return {
+      mode: "demo",
+      ready: true,
+      reportId,
+      documentId: reportId,
+      status: "DONE",
+      notice: "展示用 FBA 入庫瑕疵報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: `/reports/${encodeURIComponent(input.reportId)}`,
+    signal: input.signal,
+    purpose: "inbound-noncompliance",
+  });
+  if (!response.ok) {
+    return throwReportsError(response, "inbound-noncompliance");
+  }
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (
+    payload?.reportId !== input.reportId ||
+    payload.reportType !== FBA_INBOUND_NONCOMPLIANCE_REPORT_TYPE ||
+    !Array.isArray(payload.marketplaceIds) ||
+    payload.marketplaceIds.length !== 1 ||
+    payload.marketplaceIds[0] !== input.marketplaceId
+  ) {
+    throw new SpApiError(
+      "這份 Amazon 報表不屬於目前站點或 FBA 入庫瑕疵類型，已停止下載。",
+      {
+        status: 409,
+        code: "REPORT_MISMATCH",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  const status = payload.processingStatus;
+  if (!status) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 入庫瑕疵報表狀態。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  if (status === "CANCELLED" || status === "FATAL") {
+    throw new SpApiError("Amazon 未能產生 FBA 入庫瑕疵報表。", {
+      status: 422,
+      code: status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  const ready = status === "DONE" && Boolean(payload.reportDocumentId);
+  return {
+    mode: "live",
+    ready,
+    reportId: input.reportId,
+    documentId: payload.reportDocumentId ?? null,
+    status,
+    notice: ready
+      ? "Amazon 每日 FBA 入庫瑕疵報表已就緒。"
+      : "Amazon 正在準備每日 FBA 入庫瑕疵報表。",
+  };
+}
+
+export async function getInboundNoncomplianceReportDocument(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  documentId: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const reportId = demoInboundNoncomplianceReportId(input.marketplaceId);
+    if (input.reportId !== reportId || input.documentId !== reportId) {
+      throw new SpApiError("展示報表文件與目前站點不一致。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
+      });
+    }
+    return [
+      "issue-reported-date",
+      "shipment-creation-date",
+      "fba-shipment-id",
+      "fba-carton-id",
+      "fulfillment-center-id",
+      "sku",
+      "fnsku",
+      "asin",
+      "product-name",
+      "problem-type",
+      "problem-quantity",
+      "expected-quantity",
+      "received-quantity",
+      "performance-measurement-unit",
+      "coaching-level",
+      "fee-type",
+      "currency",
+      "fee-total",
+      "problem-level",
+      "alert-status",
+    ].join("\t");
+  }
+  const status = await getInboundNoncomplianceReportStatus({
+    marketplaceId: input.marketplaceId,
+    reportId: input.reportId,
+    signal: input.signal,
+  });
+  assertNotAborted(input.signal);
+  if (!status.ready || status.documentId !== input.documentId) {
+    throw new SpApiError(
+      "FBA 入庫瑕疵報表尚未完成，或文件編號已改變。",
+      { status: 409, code: "REPORT_NOT_READY" },
+    );
+  }
+  return downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+    input.signal,
+    "inbound-noncompliance",
+  );
 }
 
 const CUSTOMER_FEEDBACK_MARKETPLACE_CODES = new Set<MarketplaceCode>([
@@ -8897,15 +9797,17 @@ async function downloadReportDocument(
   marketplaceId: MarketplaceId,
   documentId: string,
   signal?: AbortSignal,
+  purpose: ReportsPurpose = "listings",
 ): Promise<string> {
   assertNotAborted(signal);
   const response = await executeReportsRequest({
     marketplaceId,
     path: `/documents/${encodeURIComponent(documentId)}`,
     signal,
+    purpose,
   });
   assertNotAborted(signal);
-  if (!response.ok) return throwReportsError(response);
+  if (!response.ok) return throwReportsError(response, purpose);
   const document = await parseResponseJson<AmazonReportDocument>(response);
   assertNotAborted(signal);
   if (!document?.url) {
@@ -9844,7 +10746,7 @@ export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
       !sellerSku ||
       sellerSku.length > 40 ||
       sellerSku !== sellerSku.trim() ||
-      /[\u0000-\u001f\u007f]/u.test(sellerSku) ||
+      /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(sellerSku) ||
       seen.has(sellerSku)
     ) {
       throw new SpApiError(
@@ -10200,6 +11102,63 @@ export async function getAllListingsExportData(input: {
   const result = await fetchExportRows(input.marketplaceId, seeds, input.signal);
   assertNotAborted(input.signal);
   return { ...result, fetchedAt: new Date().toISOString() };
+}
+
+/**
+ * Reads only the CURRENT_FBA identity columns from the durable all-listings
+ * report. Advertising strategy does not need Listings Items content, so it
+ * must not fan out into hundreds of item-detail requests just to obtain
+ * Seller SKU, ASIN and title.
+ */
+export async function getFbaListingIdentitySnapshot(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  documentId: string;
+  signal?: AbortSignal;
+}): Promise<FbaListingIdentitySnapshot> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const data = await getAllListingsExportData(input);
+    return {
+      mode: "demo",
+      marketplaceId: input.marketplaceId,
+      fetchedAt: data.fetchedAt,
+      rows: data.rows.map(({ sellerSku, asin, title }) => ({ sellerSku, asin, title })),
+      notice: "展示資料只供廣告策略表版面測試，不是你的真實 FBA 商品。",
+    };
+  }
+  const status = await getAllListingsReportStatus({
+    marketplaceId: input.marketplaceId,
+    reportId: input.reportId,
+    signal: input.signal,
+  });
+  assertNotAborted(input.signal);
+  if (!status.ready || status.documentId !== input.documentId) {
+    throw new SpApiError("FBA 全商品報表尚未完成，或文件資訊已失效。", {
+      status: 409,
+      code: "REPORT_NOT_READY",
+    });
+  }
+  const report = await downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+    input.signal,
+  );
+  assertNotAborted(input.signal);
+  const rows = parseFbaListingReportSeeds(report);
+  if (rows.some((row) => !/^[A-Z0-9]{10}$/u.test(row.asin))) {
+    throw new SpApiError(
+      "Amazon FBA 全商品報表含缺失或無效 ASIN，已停止產生廣告策略。",
+      { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
+    );
+  }
+  return {
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    fetchedAt: new Date().toISOString(),
+    rows,
+    notice: "Seller SKU、ASIN 與商品名稱來自同次 Amazon FBA 全商品報表；沒有呼叫逐品項寫入 API。",
+  };
 }
 
 type UnboundVariationSearchSeed = {

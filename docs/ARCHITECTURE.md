@@ -42,6 +42,7 @@ GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸�
 - Sale price
 - Subscribe & Save single-SKU read + FBA-only whole-catalog audit/export
 - Replenishment plan
+- FBA inbound shipment list／per-shipment received quantities＋daily noncompliance report
 - FBA inventory age report/export
 - Public accounting capability and report-access planning
 - SKU command center
@@ -54,7 +55,11 @@ GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸�
 
 Reports 建立由 main process 的 account-scoped broker 協調。相同 account、marketplace、mode、report type 與 options 的 all-listings report 可由品牌、未綁變體、評論與內容／圖片匯出共用；日期型 shipment report 另外綁 exact window。Local store 只保存不含憑證的短效 report ID／狀態 tombstone，程序內用 single-flight 與單調狀態更新防止重複建立或完成狀態回退。`CANCELLED`、`FATAL` 或建立結果不明都不會由自動載入盲目重建；明確使用者再試仍受安全等待與 mode/account 驗證。
 
-Amazon Ads 使用與 SP-API 分離的 LWA App 與 vault。main process 只允許官方固定的 NA／EU／FE token、`/v2/profiles` 與 `/adsApi/v1/query/campaigns` endpoint；access token 保存在程序記憶體且用 single-flight 更新，Seller Profile 依 exact marketplace 自動發現並只留在 main。Profile 與 verified cache 同時綁 Ads vault scope 與目前 SP account scope；SP 憑證儲存或清除會立即失效 Ads cache，query 前後也會重新核對。OAuth scope 必須依 Amazon 官方使用 `advertising::campaign_management`，但實際使用者權限應為 Campaign manager Viewer；App 沒有 Ads write router 或 client method，`writeEnabled` 永遠為 false。覆蓋健檢只對已驗證且身分完整的 FBA all-listings 與 ENABLED Sponsored Products 進行比對；任何 listing error、缺 SKU 或無效 ASIN 都停止整次健檢，不會輸出偽裝成全站的部分 snapshot。
+FBA inbound shipment 工作在 main process 以 account、mode、marketplace 與精確日期區間綁定。Fulfillment Inbound v0 清單與逐貨件 items 只允許固定 GET path；逐貨件回應若出現官方操作無法承接的 continuation token，該貨件必須標為 partial。每日 noncompliance report 由同一耐久化 report broker 建立／輪詢，renderer 只取得已清理的 shipment／carton／product 問題列，不取得 report ID、document ID、帳號 scope 或任意下載 URL。
+
+Amazon Ads 使用與 SP-API 分離的 LWA App 與 vault。main process 只允許官方固定的 NA／EU／FE token、`/v2/profiles`、`/adsApi/v1/query/campaigns` 與固定 Ads Reporting v3 endpoint；access token 保存在程序記憶體且用 single-flight 更新，Seller Profile 依 exact marketplace 自動發現並只留在 main。Profile 與 verified cache 同時綁 Ads vault scope 與目前 SP account scope；SP 憑證儲存或清除會立即失效 Ads cache，query 前後也會重新核對。OAuth scope 必須依 Amazon 官方使用 `advertising::campaign_management`，但實際使用者權限應為 Campaign manager Viewer；App 沒有 Ads write router 或 client method，`writeEnabled` 永遠為 false。覆蓋健檢只對已驗證且身分完整的 FBA all-listings 與 ENABLED Sponsored Products 進行比對；任何 listing error、缺 SKU 或無效 ASIN 都停止整次健檢，不會輸出偽裝成全站的部分 snapshot。
+
+廣告策略工作由 main process 同時啟動 current-FBA all-listings、`GET_SALES_AND_TRAFFIC_REPORT`（DAY＋SKU）與 Ads `spAdvertisedProduct`（SUMMARY）三個固定唯讀來源；工作 identity 綁 SP／Ads account scopes、mode、marketplace、exact dates 與 report config。Sales SKU 必須連同 child ASIN exact match 目前 FBA 身分；Ads 先用 exact SKU，只有缺 SKU 且 ASIN 唯一時才 fallback。三種 report create 都經 durable lifecycle：active／known-DONE 可安全重用，建立結果不明、CANCELLED／FATAL 或 retry guard 內不自動重建。renderer 只取得已清理的策略 snapshot，不取得 profile、campaign、ad group、report／document ID、account scope 或 signed URL；Excel 在 renderer 由同一 snapshot 產生，資料量超限時整份拒絕而不截斷。
 
 評論健檢先以 FBA all-listings report 建立 seed，再以 Listings `searchListingsItems` 每批最多 20 SKU 驗證 exact current-marketplace relationships。只有 child 與 standalone 會進 Customer Feedback；parent 明確排除，缺站點、ASIN 衝突、relationships 歧義或批次失敗都列為未完成。Customer Feedback 呼叫跨工作共用 1 request/second 節流；結果只稱為正／負主題星等影響，不冒充總星等、評論數或全文。
 

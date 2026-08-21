@@ -27,7 +27,9 @@
 - 全站文案／圖片／訂閱健檢只接收 main process 證明的 FBA SKU；訂閱的 exact-SKU offer／月度問題列只有帶同次 `CURRENT_FBA` 證據才可顯示／匯出，未證明識別值只保留聚合計數；問題列只能單列隔離並將範圍降為 partial，站點、program、FBA fulfillment、月份或分頁衝突仍整次 fail closed；訂閱 Excel 只能由 main 保存的短效快照建立
 - 一鍵全部健檢由 main process 綁定 account scope、mode、marketplace 與短效 context；七個 section 各自 fail honest，renderer 不能上傳整份 snapshot 或 account scope，Excel 只由同一 main job 的已驗證結果建立
 - Amazon Ads 使用獨立 OS-safeStorage-backed vault；只允許官方固定 token／Profiles／Campaign query endpoint、精確 Seller Profile 與 Sponsored Products 唯讀查詢。App 沒有 Ads write route，Listing 身分或來源不完整時不輸出全站覆蓋結論
+- FBA 廣告策略工作綁 SP account scope、Ads vault＋Seller Profile scope、mode、marketplace、exact date range 與固定 report config。Reports／Ads create 結果不明時保存 durable tombstone 且不盲目重送；report／profile／campaign／account IDs 與 signed download URL 不進 renderer，缺值不補 0，也沒有任何 Ads write method／route
 - 會計能力使用固定公開 SP-API allowlist；未完成 FBA 過濾、人工前置、Brazil-only 與不存在的通用發票／帳單接口保持停用
+- FBA 入庫貨件只允許固定 Fulfillment Inbound v0 GET 與固定 inbound noncompliance report type；工作綁 account／mode／marketplace／日期，切換安全 context 即取消。逐貨件明細或問題報表不完整時標成 partial／unavailable，不把缺值補 0，也不使用 Seller Central session 或私有接口
 - Lock screen／suspend 清除所有短效預檢票證
 - Electron fuses：停用 RunAsNode、Node options／inspect，啟用 cookie encryption；embedded ASAR integrity 僅在 macOS 生效
 - Hardened Runtime、Developer ID、notarization 與 stapling release workflow

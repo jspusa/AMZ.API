@@ -286,6 +286,9 @@ describe("unbound variation relationship evidence", () => {
     expect(() => parseFbaListingReportSeeds(report([" SKU-ONE"]))).toThrow(
       /無法精確辨識/u,
     );
+    expect(() => parseFbaListingReportSeeds(report(["SKU\u200b-ONE"]))).toThrow(
+      /無法精確辨識/u,
+    );
     expect(() => parseFbaListingReportSeeds(report(["SKU-ONE", "SKU-ONE"]))).toThrow(
       /重複/u,
     );

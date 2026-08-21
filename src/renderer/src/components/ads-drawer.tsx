@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import {
   MARKETPLACES,
+  marketplaceById,
   marketplaceSelectLabel,
 } from "../../../shared/marketplaces";
 import AdvertisingCoveragePanel from "./advertising-coverage-panel";
+import AdvertisingStrategyPanel from "./advertising-strategy-panel";
 
 type AdsStatus = {
   marketplaceCode: string;
@@ -33,6 +35,7 @@ export default function AdsDrawer({
   const [status, setStatus] = useState<AdsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
 
   useEffect(() => {
     let active = true;
@@ -69,8 +72,8 @@ export default function AdsDrawer({
           <div><p className="eyebrow">AMAZON ADS · SEPARATE API</p><h2 id="ads-title">廣告</h2></div>
           <button type="button" onClick={onClose} aria-label="關閉廣告區">×</button>
         </div>
-        <p className="price-intro">SP 操作繼續交給 Helium 10；Ads API 連線後，這裡只會查詢 ProductAI 活動名稱與全站 FBA SKU 覆蓋，不會寫入 campaign。</p>
-        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>系統自動檢查 Ads 連線，並列出沒有 ENABLED SP 活動或同 ASIN 覆蓋的 FBA SKU；不會建立或啟用廣告。</p><span className="automation-badge manual">需人工</span><p>SB／SD 的素材、預算、目標與正式啟用仍需人工確認，避免誤燒廣告費。</p></div>
+        <p className="price-intro">SP 正式操作繼續交給 Helium 10；Ads API 連線後，這裡可核對全站 FBA 覆蓋，並把品項銷售與 SP 報表整理成可覆寫策略表，不會寫入 campaign。</p>
+        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>系統自動檢查 Ads 連線與 ENABLED SP 覆蓋；你按下產生後，Notebook 鑰匙才會在背景整理唯讀策略資料。</p><span className="automation-badge manual">需人工</span><p>SP 建議可覆寫；SB／SD 的素材、預算、目標與正式啟用仍需人工確認，避免誤燒廣告費。</p></div>
 
         <label className="ads-marketplace"><span>Amazon Ads 站點</span><select value={marketplaceId} onChange={(event) => { setLoading(true); setError(null); setStatus(null); setMarketplaceId(event.target.value); }}>{MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}</select></label>
 
@@ -84,7 +87,7 @@ export default function AdsDrawer({
         </section>
 
         <section className="ads-connection-card">
-          <div className="ads-connection-heading"><div><span className={`connection-light ${status?.verified ? "connected" : ""}`} /><div><strong>{loading ? "檢查 Ads 設定…" : status?.verified ? "Amazon Ads 已驗證" : status?.configured ? "Ads 憑證已設定 · 這個站點尚未驗證" : "Amazon Ads 尚未設定"}</strong><p>{status?.notice ?? "正在由本機主程序驗證獨立 Ads LWA 與 Seller Profile。"}</p></div></div><span className="capability-pill separate">不同於 SP-API</span></div>
+          <div className="ads-connection-heading"><div><span className={`connection-light ${status?.verified ? "connected" : ""}`} /><div><strong>{loading ? "檢查 Ads 設定…" : status?.verified ? "Ads Profiles／Campaign query 已驗證" : status?.configured ? "Ads 憑證已設定 · 這個站點尚未驗證" : "Amazon Ads 尚未設定"}</strong><p>{status?.notice ?? "正在由本機主程序驗證獨立 Ads LWA 與 Seller Profile。"}</p></div></div><span className="capability-pill separate">不同於 SP-API</span></div>
           {status && (
             <dl className="ads-connection-facts">
               <div><dt>Ads LWA client</dt><dd>{status.lwaConfigured ? "已設定" : "未設定"}</dd></div>
@@ -94,6 +97,18 @@ export default function AdsDrawer({
             </dl>
           )}
         </section>
+
+        <AdvertisingStrategyPanel
+          key={marketplaceId}
+          marketplaceId={marketplaceId}
+          marketplaceCode={marketplace.code}
+          marketplaceTimeZone={marketplace.timeZone}
+          currencyCode={marketplace.currency}
+          available={Boolean(status?.verified)}
+          unavailableNotice={loading
+            ? "正在由 Notebook 鑰匙確認這個站點的 Amazon Ads 連線。"
+            : status?.notice ?? "Amazon Ads API 尚未連線；目前不會用展示結果冒充真實策略。"}
+        />
 
         <AdvertisingCoveragePanel
           marketplaceId={marketplaceId}
@@ -114,13 +129,13 @@ export default function AdsDrawer({
           </article>
         </section>
 
-        <div className="price-warning compact"><strong>OAuth scope 名稱不等於可寫入</strong><p>Amazon 官方使用 advertising::campaign_management；這裡要求 Campaign manager Viewer，而本機主程序只實作 Profiles 與 Campaign query。建立、修改、啟用與暫停廣告都沒有 IPC 或 API route。</p></div>
+        <div className="price-warning compact"><strong>OAuth scope 名稱不等於可寫入</strong><p>Amazon 官方使用 advertising::campaign_management；這裡要求 Campaign manager Viewer，而本機主程序只實作 Profiles、Campaign query 與 Sponsored Products 唯讀報表。建立、修改、啟用與暫停廣告都沒有 IPC 或 API route。</p></div>
 
         <div className="ads-actions">
           <a href="https://advertising.amazon.com/API/docs/en-us/guides/onboarding/apply-for-access" target="_blank" rel="noreferrer">申請 Amazon Ads API ↗</a>
           <a className="primary" href="https://advertising.amazon.com/" target="_blank" rel="noreferrer">開啟 Amazon Ads ↗</a>
         </div>
-        <div className="drawer-api-footnote">Amazon Ads API v1 · advertising::campaign_management · Viewer · Profile 自動發現 · writes false</div>
+        <div className="drawer-api-footnote">Amazon Ads Profiles／Campaign query · Ads Reporting v3 · Viewer · Profile 自動發現 · writes false</div>
       </aside>
     </div>
   );

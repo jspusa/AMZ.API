@@ -567,12 +567,171 @@ describe("local durable safety store", () => {
       updatedAt: now,
       expiresAt: now + 60 * 60 * 1_000,
     }, now);
+    await store.createSharedReportIfAbsent({
+      leaseId: "shared-inbound-noncompliance-lease-1",
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA",
+      optionsKey: "marketplaceIds=selected;daily-inbound-noncompliance",
+      mode: "live",
+      report: {
+        reportId: "inbound-noncompliance-report-1",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: now,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    }, now);
+    await store.createSharedReportIfAbsent({
+      leaseId: "shared-sales-traffic-lease-1",
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_SALES_AND_TRAFFIC_REPORT",
+      optionsKey: "dateGranularity=DAY;asinGranularity=SKU;start=2026-08-01;end=2026-08-20",
+      mode: "live",
+      report: {
+        reportId: "sales-traffic-report-1",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: now,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    }, now);
+    await store.createSharedReportIfAbsent({
+      leaseId: "shared-ads-strategy-lease-1",
+      accountScope: "account-ads-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "ADS_SP_ADVERTISED_PRODUCT",
+      optionsKey: "reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=2026-08-01;end=2026-08-20",
+      mode: "live",
+      report: {
+        reportId: "ads-strategy-report-1",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: now,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    }, now);
     const raw = JSON.parse(await readFile(store.filePath, "utf8")) as {
       version: number;
       sharedAllListingsReports: Record<string, unknown>;
     };
     expect(raw.version).toBe(2);
-    expect(Object.keys(raw.sharedAllListingsReports)).toHaveLength(2);
+    expect(Object.keys(raw.sharedAllListingsReports)).toHaveLength(5);
     expect(JSON.stringify(raw)).not.toMatch(/refresh.?token|client.?secret|lwaClientSecret/i);
+    const restarted = new LocalStore(store.filePath);
+    await restarted.initialize();
+    await expect(restarted.getSharedReport({
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_SALES_AND_TRAFFIC_REPORT",
+      optionsKey: "dateGranularity=DAY;asinGranularity=SKU;start=2026-08-01;end=2026-08-20",
+    })).resolves.toMatchObject({ leaseId: "shared-sales-traffic-lease-1" });
+    await expect(restarted.getSharedReport({
+      accountScope: "account-ads-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "ADS_SP_ADVERTISED_PRODUCT",
+      optionsKey: "reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=2026-08-01;end=2026-08-20",
+    })).resolves.toMatchObject({ leaseId: "shared-ads-strategy-lease-1" });
+  });
+
+  it("prunes expired completed report identities without deleting ambiguous evidence", async () => {
+    const store = await testStore();
+    const now = 2_000_000_000_000;
+    const lease = (
+      leaseId: string,
+      optionsKey: `dateGranularity=DAY;asinGranularity=SKU;start=${string};end=${string}`,
+      report: {
+        reportId: string | null;
+        documentId: string | null;
+        status: "DONE" | "CREATION_UNKNOWN" | "IN_QUEUE";
+        createdAt: number;
+        terminal: "CREATION_UNKNOWN" | null;
+        terminalAt: number | null;
+      },
+      expiresAt: number,
+    ) => ({
+      leaseId,
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_SALES_AND_TRAFFIC_REPORT" as const,
+      optionsKey,
+      mode: "live" as const,
+      report,
+      createdAt: now - 10_000,
+      updatedAt: now - 5_000,
+      expiresAt,
+    });
+
+    await store.createSharedReportIfAbsent(lease(
+      "expired-done",
+      "dateGranularity=DAY;asinGranularity=SKU;start=2026-07-01;end=2026-07-30",
+      {
+        reportId: "done-report",
+        documentId: "done-document",
+        status: "DONE",
+        createdAt: now - 9_000,
+        terminal: null,
+        terminalAt: null,
+      },
+      now - 1,
+    ), now - 2_000);
+    await store.createSharedReportIfAbsent(lease(
+      "expired-ambiguous",
+      "dateGranularity=DAY;asinGranularity=SKU;start=2026-07-02;end=2026-07-31",
+      {
+        reportId: null,
+        documentId: null,
+        status: "CREATION_UNKNOWN",
+        createdAt: now - 9_000,
+        terminal: "CREATION_UNKNOWN",
+        terminalAt: now - 8_000,
+      },
+      now - 1,
+    ), now - 2_000);
+    await store.createSharedReportIfAbsent(lease(
+      "current-range",
+      "dateGranularity=DAY;asinGranularity=SKU;start=2026-08-01;end=2026-08-20",
+      {
+        reportId: "current-report",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: now,
+        terminal: null,
+        terminalAt: null,
+      },
+      now + 60_000,
+    ), now);
+
+    await expect(store.getSharedReport({
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_SALES_AND_TRAFFIC_REPORT",
+      optionsKey: "dateGranularity=DAY;asinGranularity=SKU;start=2026-07-01;end=2026-07-30",
+    })).resolves.toBeNull();
+    await expect(store.getSharedReport({
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_SALES_AND_TRAFFIC_REPORT",
+      optionsKey: "dateGranularity=DAY;asinGranularity=SKU;start=2026-07-02;end=2026-07-31",
+    })).resolves.toMatchObject({ leaseId: "expired-ambiguous" });
+    await expect(store.getSharedReport({
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_SALES_AND_TRAFFIC_REPORT",
+      optionsKey: "dateGranularity=DAY;asinGranularity=SKU;start=2026-08-01;end=2026-08-20",
+    })).resolves.toMatchObject({ leaseId: "current-range" });
   });
 });

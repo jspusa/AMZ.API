@@ -9,7 +9,10 @@ import type {
 } from "../shared/contracts";
 import {
   AdvertisingApiError,
+  SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
   type AdvertisingGateway,
+  type SponsoredProductsAdvertisedProductReport,
+  type SponsoredProductsAdvertisedProductReportReference,
 } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import {
@@ -61,12 +64,18 @@ import {
   getAllListingsReportStatus,
   getBrandSalesData,
   getBrandSalesReportWindow,
+  getFbaListingIdentitySnapshot,
   getFbaShipmentSalesReportStatus,
+  getFbaInboundShipmentSnapshot,
+  getInboundNoncomplianceReportDocument,
+  getInboundNoncomplianceReportStatus,
   getListingContent,
   getListingImages,
   getListingPrice,
   getRestockPlan,
   getSalesTrend,
+  getSalesAndTrafficReportData,
+  getSalesAndTrafficReportStatus,
   getFbaSubscriptionAudit,
   getCustomerFeedbackReviewTopics,
   getFbaReviewAuditCandidates,
@@ -86,6 +95,8 @@ import {
   startAgedInventoryReport,
   startAllListingsReport,
   startFbaShipmentSalesReport,
+  startInboundNoncomplianceReport,
+  startSalesAndTrafficReport,
   updateListingContent,
   updateListingImages,
   updateListingPrice,
@@ -98,15 +109,28 @@ import {
   type ListingPriceSnapshot,
   type MarketplaceId,
   type BrandSalesSnapshot,
+  type FbaInboundShipmentSnapshot,
+  type FbaListingIdentitySnapshot,
   type RestockPlanSnapshot,
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
+  type SalesAndTrafficSnapshot,
   type SubscribeAndSaveOfferSnapshot,
   type SubscriptionAuditSnapshot,
   type UpdateListingSalePriceInput,
   type UnboundVariationAuditSnapshot,
   type VariationMoveInput,
 } from "./amazon/sp-api";
+import {
+  buildAdvertisingStrategySnapshot,
+  type AdvertisingStrategySnapshot,
+} from "./amazon/advertising-strategy";
+import {
+  buildInboundIssueReportSnapshot,
+  parseInboundNoncomplianceReport,
+  type InboundIssueReportSnapshot,
+  type ParsedInboundNoncomplianceReport,
+} from "./amazon/inbound-noncompliance";
 import {
   ReplenishmentAuditError,
   subscriptionAuditDiscountBucket,
@@ -133,7 +157,9 @@ import {
 } from "./amazon/audit-suite-coordinator";
 import {
   DurableReportLifecycle,
+  type DurableReportGatewayStatus,
   type DurableReportIdentity,
+  type DurableReportStatus,
 } from "./amazon/report-lifecycle";
 import { testRegionConnections } from "./amazon/connection-health";
 import {
@@ -216,6 +242,95 @@ type AgedInventoryReportGateway = {
   status: typeof getAgedInventoryReportStatus;
 };
 
+type SalesAndTrafficReportGateway = {
+  start: typeof startSalesAndTrafficReport;
+  status: typeof getSalesAndTrafficReportStatus;
+  data: typeof getSalesAndTrafficReportData;
+};
+
+type AdvertisingStrategyReportGateway = AdvertisingGateway & Required<Pick<
+  AdvertisingGateway,
+  | "getCombinedAccountIdentity"
+  | "createSponsoredProductsAdvertisedProductReport"
+  | "getSponsoredProductsAdvertisedProductReportStatus"
+  | "downloadSponsoredProductsAdvertisedProductReport"
+>>;
+
+type AdvertisingStrategySourceGateway = {
+  fbaListings: typeof getFbaListingIdentitySnapshot;
+};
+
+type InboundShipmentGateway = {
+  snapshot: typeof getFbaInboundShipmentSnapshot;
+};
+
+type InboundNoncomplianceReportGateway = {
+  start: typeof startInboundNoncomplianceReport;
+  status: typeof getInboundNoncomplianceReportStatus;
+  document: typeof getInboundNoncomplianceReportDocument;
+};
+
+type InboundShipmentProgress = Readonly<{
+  phase: "shipments" | "items" | "issues";
+  completed: number;
+  total: number | null;
+}>;
+
+type InboundShipmentJobState = "running" | "completed" | "partial" | "failed";
+
+type InboundShipmentResultSnapshot = FbaInboundShipmentSnapshot & Readonly<{
+  schemaVersion: 1;
+  issueReport: InboundIssueReportSnapshot;
+}>;
+
+type InboundShipmentJob = {
+  jobId: string;
+  marketplaceId: MarketplaceId;
+  accountScope: string;
+  mode: "live" | "demo";
+  startDate: string;
+  endDate: string;
+  retryIssueReport: boolean;
+  shipmentSeed: FbaInboundShipmentSnapshot | null;
+  state: InboundShipmentJobState;
+  progress: InboundShipmentProgress;
+  snapshot: InboundShipmentResultSnapshot | null;
+  notice: string;
+  expiresAt: number;
+  expiryTimer: ReturnType<typeof setTimeout> | null;
+  controller: AbortController;
+  flight: Promise<void> | null;
+};
+
+type AdvertisingStrategyProgress = Readonly<{
+  phase: "fba" | "sales" | "ads" | "building";
+  completed: number;
+  total: 4;
+}>;
+
+type AdvertisingStrategyJobState = "running" | "completed" | "failed";
+
+type AdvertisingStrategyJob = {
+  jobId: string;
+  marketplaceId: MarketplaceId;
+  marketplaceCode: string;
+  spAccountScope: string;
+  adsAccountScope: string;
+  adsProfileFingerprint: string;
+  mode: "live" | "demo";
+  startDate: string;
+  endDate: string;
+  state: AdvertisingStrategyJobState;
+  progress: AdvertisingStrategyProgress;
+  notice: string;
+  errorCode: string | null;
+  snapshot: AdvertisingStrategySnapshot | null;
+  controller: AbortController;
+  expiresAt: number;
+  expiryTimer: ReturnType<typeof setTimeout> | null;
+  flight: Promise<void> | null;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 const JSON_HEADERS = {
@@ -239,6 +354,19 @@ const BRAND_SALES_NEAR_REUSE_BOUNDARY_MS = 2 * 60 * 1_000;
 const BRAND_SALES_JOB_RETENTION_MS = 60 * 60 * 1_000;
 const REVIEW_AUDIT_JOB_TTL_MS = 30 * 60 * 1_000;
 const REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS = 1_050;
+const INBOUND_SHIPMENT_ACTIVE_TTL_MS = 60 * 60 * 1_000;
+const INBOUND_SHIPMENT_TERMINAL_TTL_MS = 30 * 60 * 1_000;
+const INBOUND_SHIPMENT_UNAVAILABLE_RETRY_TTL_MS = 35 * 60 * 1_000;
+const ADVERTISING_STRATEGY_REPORT_WAIT_MS = 3 * 60 * 60 * 1_000 + 5 * 60 * 1_000;
+const ADVERTISING_STRATEGY_ACTIVE_TTL_MS = 3 * 60 * 60 * 1_000 + 30 * 60 * 1_000;
+const ADVERTISING_STRATEGY_TERMINAL_TTL_MS = 30 * 60 * 1_000;
+const ADVERTISING_STRATEGY_RETRY_TTL_MS = 35 * 60 * 1_000;
+
+function advertisingStrategyPollDelay(attempt: number): number {
+  if (attempt < 30) return 2_000;
+  if (attempt < 90) return 5_000;
+  return 15_000;
+}
 
 function assertAuditSuiteActive(control: AuditSuiteRunControl): void {
   assertBackgroundActive(control.signal);
@@ -629,6 +757,22 @@ function optionalDate(value: unknown): string | null | undefined {
     : undefined;
 }
 
+function dateKeyInTimeZone(date: Date, timeZone: string): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date).map((part) => [part.type, part.value]),
+  );
+  const key = `${parts.year ?? ""}-${parts.month ?? ""}-${parts.day ?? ""}`;
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(key)) {
+    throw new Error("無法判定 Amazon 站點目前日期。");
+  }
+  return key;
+}
+
 function integer(
   value: unknown,
   fallback: number | null,
@@ -806,6 +950,11 @@ export class ApiRouter {
   private readonly approveWrite: WriteApproval;
   private readonly brandSalesReports: BrandSalesReportGateway;
   private readonly agedInventoryReports: AgedInventoryReportGateway;
+  private readonly salesAndTrafficReports: SalesAndTrafficReportGateway;
+  private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
+  private readonly advertisingStrategyWait: typeof waitMilliseconds;
+  private readonly inboundShipments: InboundShipmentGateway;
+  private readonly inboundNoncomplianceReports: InboundNoncomplianceReportGateway;
   private readonly reportLifecycle: DurableReportLifecycle;
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
@@ -852,6 +1001,10 @@ export class ApiRouter {
   >();
   private reviewAuditFeedbackQueue: Promise<void> = Promise.resolve();
   private reviewAuditFeedbackNextStartAt = 0;
+  private readonly inboundShipmentJobs = new Map<string, InboundShipmentJob>();
+  private readonly inboundShipmentSelections = new Map<string, string>();
+  private readonly advertisingStrategyJobs = new Map<string, AdvertisingStrategyJob>();
+  private readonly advertisingStrategySelections = new Map<string, string>();
 
   constructor(input: {
     store: LocalStore;
@@ -859,6 +1012,11 @@ export class ApiRouter {
     approveWrite: WriteApproval;
     brandSalesReports?: Partial<BrandSalesReportGateway>;
     agedInventoryReports?: Partial<AgedInventoryReportGateway>;
+    salesAndTrafficReports?: Partial<SalesAndTrafficReportGateway>;
+    advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
+    advertisingStrategyWait?: typeof waitMilliseconds;
+    inboundShipments?: Partial<InboundShipmentGateway>;
+    inboundNoncomplianceReports?: Partial<InboundNoncomplianceReportGateway>;
     advertising?: AdvertisingGateway;
   }) {
     this.store = input.store;
@@ -879,6 +1037,27 @@ export class ApiRouter {
       start: startAgedInventoryReport,
       status: getAgedInventoryReportStatus,
       ...input.agedInventoryReports,
+    };
+    this.salesAndTrafficReports = {
+      start: startSalesAndTrafficReport,
+      status: getSalesAndTrafficReportStatus,
+      data: getSalesAndTrafficReportData,
+      ...input.salesAndTrafficReports,
+    };
+    this.advertisingStrategySources = {
+      fbaListings: getFbaListingIdentitySnapshot,
+      ...input.advertisingStrategySources,
+    };
+    this.advertisingStrategyWait = input.advertisingStrategyWait ?? waitMilliseconds;
+    this.inboundShipments = {
+      snapshot: getFbaInboundShipmentSnapshot,
+      ...input.inboundShipments,
+    };
+    this.inboundNoncomplianceReports = {
+      start: startInboundNoncomplianceReport,
+      status: getInboundNoncomplianceReportStatus,
+      document: getInboundNoncomplianceReportDocument,
+      ...input.inboundNoncomplianceReports,
     };
     this.auditSuite = new AuditSuiteCoordinator({
       runners: {
@@ -907,6 +1086,16 @@ export class ApiRouter {
       this.deleteReviewAuditJob(jobId);
     }
     this.reviewAuditPollFlights.clear();
+    for (const job of [...this.inboundShipmentJobs.values()]) {
+      job.controller.abort(new Error("FBA 入庫貨件工作已因安全 context 變更而停止。"));
+      this.removeInboundShipmentJob(job.jobId);
+    }
+    this.inboundShipmentSelections.clear();
+    for (const job of [...this.advertisingStrategyJobs.values()]) {
+      job.controller.abort(new Error("FBA 廣告策略工作已因安全 context 變更而停止。"));
+      this.removeAdvertisingStrategyJob(job.jobId);
+    }
+    this.advertisingStrategySelections.clear();
     this.auditSuite.clear();
     this.advertising?.invalidate();
     // Do not reset the Customer Feedback queue or its next slot. A credential
@@ -980,6 +1169,10 @@ export class ApiRouter {
         return this.startBrandSales(request);
       case "GET /api/sp-api/brand-sales":
         return this.brandSalesStatusOrData(request);
+      case "POST /api/sp-api/inbound-shipments":
+        return this.startInboundShipments(request);
+      case "GET /api/sp-api/inbound-shipments":
+        return this.inboundShipmentsStatus(request);
       case "GET /api/sp-api/listings":
         return this.listingPrice(request);
       case "POST /api/sp-api/listings":
@@ -1060,6 +1253,10 @@ export class ApiRouter {
         return this.adsStatus(request);
       case "GET /api/amazon-ads/coverage":
         return this.adsCoverage(request);
+      case "POST /api/amazon-ads/strategy":
+        return this.startAdvertisingStrategy(request);
+      case "GET /api/amazon-ads/strategy":
+        return this.advertisingStrategyStatus(request);
       case "POST /api/sp-api/audit-suite":
         return this.startAuditSuite(request);
       case "GET /api/sp-api/audit-suite":
@@ -1069,6 +1266,477 @@ export class ApiRouter {
       default:
         return invalid("此 App 版本不支援這個操作。", 404, "NOT_FOUND");
     }
+  }
+
+  private removeInboundShipmentJob(jobId: string): void {
+    const job = this.inboundShipmentJobs.get(jobId);
+    if (!job) return;
+    if (job.expiryTimer) clearTimeout(job.expiryTimer);
+    job.expiryTimer = null;
+    job.shipmentSeed = null;
+    this.inboundShipmentJobs.delete(jobId);
+    for (const [selection, selectedJobId] of this.inboundShipmentSelections) {
+      if (selectedJobId === jobId) this.inboundShipmentSelections.delete(selection);
+    }
+  }
+
+  private touchInboundShipmentJob(job: InboundShipmentJob): void {
+    if (
+      job.state !== "running" ||
+      job.controller.signal.aborted ||
+      this.inboundShipmentJobs.get(job.jobId) !== job
+    ) {
+      return;
+    }
+    job.expiresAt = Date.now() + INBOUND_SHIPMENT_ACTIVE_TTL_MS;
+  }
+
+  private retainInboundShipmentTerminalJob(
+    job: InboundShipmentJob,
+    ttl: number,
+  ): void {
+    if (this.inboundShipmentJobs.get(job.jobId) !== job || job.state === "running") {
+      return;
+    }
+    if (job.expiryTimer) clearTimeout(job.expiryTimer);
+    const expiresAt = Date.now() + ttl;
+    job.expiresAt = expiresAt;
+    job.expiryTimer = setTimeout(() => {
+      if (
+        this.inboundShipmentJobs.get(job.jobId) === job &&
+        job.state !== "running" &&
+        job.expiresAt === expiresAt &&
+        job.expiresAt <= Date.now()
+      ) {
+        this.removeInboundShipmentJob(job.jobId);
+      }
+    }, ttl);
+    job.expiryTimer.unref?.();
+  }
+
+  private pruneInboundShipmentJobs(now = Date.now()): void {
+    for (const job of this.inboundShipmentJobs.values()) {
+      if (job.expiresAt > now) continue;
+      if (job.state === "running") {
+        job.controller.abort(new Error("FBA 入庫貨件背景工作超過安全保留時間。"));
+        job.state = "failed";
+        job.snapshot = null;
+        job.notice = "FBA 入庫貨件背景工作等待逾時；Amazon 沒有收到任何寫入。";
+        this.retainInboundShipmentTerminalJob(
+          job,
+          INBOUND_SHIPMENT_TERMINAL_TTL_MS,
+        );
+      } else {
+        this.removeInboundShipmentJob(job.jobId);
+      }
+    }
+  }
+
+  private inboundShipmentJobReply(job: InboundShipmentJob): ApiResponse {
+    return json({
+      jobId: job.jobId,
+      marketplaceId: job.marketplaceId,
+      dateRange: { startDate: job.startDate, endDate: job.endDate },
+      state: job.state,
+      progress: { ...job.progress },
+      snapshot: job.snapshot ? structuredClone(job.snapshot) : null,
+      notice: job.notice,
+    }, job.state === "running" ? 202 : 200);
+  }
+
+  private async assertInboundShipmentJobContext(
+    job: InboundShipmentJob,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    assertBackgroundActive(signal);
+    const mode = usesDemoMode(job.marketplaceId) ? "demo" : "live";
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[job.marketplaceId].region,
+    );
+    assertBackgroundActive(signal);
+    if (mode !== job.mode || accountScope !== job.accountScope) {
+      throw new SpApiError("FBA 入庫貨件工作與目前帳號、站點或模式不一致。", {
+        status: 409,
+        code: "INBOUND_SHIPMENT_JOB_MISMATCH",
+      });
+    }
+  }
+
+  private inboundNoncomplianceIdentity(job: InboundShipmentJob): DurableReportIdentity {
+    return {
+      accountScope: job.accountScope,
+      marketplaceId: job.marketplaceId,
+      mode: job.mode,
+      reportType: "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA",
+      optionsKey: "marketplaceIds=selected;daily-inbound-noncompliance",
+    };
+  }
+
+  private unavailableInboundIssueReport(error: unknown): InboundIssueReportSnapshot {
+    let publicReason = "Amazon 每日 FBA 入庫瑕疵報表目前無法讀取。";
+    if (error instanceof SpApiError) {
+      if (error.code === "REPORT_RETRY_WAIT") {
+        publicReason = "Amazon 報表建立仍在安全間隔內；請稍後明確重試，系統不會重複建立。";
+      } else if (
+        [
+          "SHARED_REPORT_RETRY_REQUIRED",
+          "REPORT_CANCELLED",
+          "REPORT_FATAL",
+        ].includes(error.code)
+      ) {
+        publicReason = "上次每日 FBA 入庫瑕疵報表未完成；系統不會自動重建，需明確重試。";
+      } else if (error.code === "RATE_LIMITED" || error.status === 429) {
+        publicReason = "Amazon 暫時限制每日 FBA 入庫瑕疵報表請求頻率，請稍後再試。";
+      } else if (error.status === 401 || error.status === 403) {
+        publicReason = "Amazon 拒絕每日 FBA 入庫瑕疵報表查詢，請檢查 Amazon Fulfillment 角色與授權。";
+      } else if (error.code === "INBOUND_NONCOMPLIANCE_PENDING") {
+        publicReason = "Amazon 每日 FBA 入庫瑕疵報表仍在準備中。";
+      }
+    }
+    return {
+      state: "unavailable",
+      fetchedAt: null,
+      dataThrough: null,
+      excludedShipmentCount: null,
+      notice: `${publicReason} 商品接收數量仍可查看；瑕疵來源是每日報表，不能拿缺值冒充 Seller Central 即時「沒有瑕疵」。`,
+      shipment: [],
+      carton: [],
+      product: [],
+    };
+  }
+
+  private async loadInboundIssueReport(
+    job: InboundShipmentJob,
+    signal: AbortSignal,
+  ): Promise<Readonly<{
+    parsed: ParsedInboundNoncomplianceReport;
+    fetchedAt: string;
+  }>> {
+    await this.assertInboundShipmentJobContext(job, signal);
+    const identity = this.inboundNoncomplianceIdentity(job);
+    let report = await this.reportLifecycle.start({
+      identity,
+      explicitRetry: job.retryIssueReport,
+      freshCompleted: job.retryIssueReport,
+      signal,
+      create: ({ signal: lifecycleSignal }) => this.inboundNoncomplianceReports.start({
+        marketplaceId: job.marketplaceId,
+        signal: lifecycleSignal,
+      }),
+      notices: {
+        pending: "Amazon 正在準備每日 FBA 入庫瑕疵報表。",
+        done: "Amazon 每日 FBA 入庫瑕疵報表已就緒。",
+      },
+    });
+    this.touchInboundShipmentJob(job);
+    for (let attempt = 0; !report.ready && attempt < 150; attempt += 1) {
+      if (report.status !== "IN_QUEUE" && report.status !== "IN_PROGRESS") {
+        throw new SpApiError("Amazon 未能完成每日 FBA 入庫瑕疵報表。", {
+          status: 502,
+          code: "INBOUND_NONCOMPLIANCE_UNAVAILABLE",
+        });
+      }
+      await waitMilliseconds(2_000, signal);
+      await this.assertInboundShipmentJobContext(job, signal);
+      report = await this.reportLifecycle.status({
+        identity,
+        reportId: report.reportId,
+        signal,
+        poll: ({ reportId, signal: lifecycleSignal }) =>
+          this.inboundNoncomplianceReports.status({
+            marketplaceId: job.marketplaceId,
+            reportId,
+            signal: lifecycleSignal,
+          }),
+        notices: {
+          pending: "Amazon 正在準備每日 FBA 入庫瑕疵報表。",
+          done: "Amazon 每日 FBA 入庫瑕疵報表已就緒。",
+        },
+      });
+      this.touchInboundShipmentJob(job);
+    }
+    if (!report.ready || !report.documentId || report.mode !== job.mode) {
+      throw new SpApiError("Amazon 每日 FBA 入庫瑕疵報表仍在準備中。", {
+        status: 504,
+        code: "INBOUND_NONCOMPLIANCE_PENDING",
+      });
+    }
+    await this.assertInboundShipmentJobContext(job, signal);
+    const text = await this.inboundNoncomplianceReports.document({
+      marketplaceId: job.marketplaceId,
+      reportId: report.reportId,
+      documentId: report.documentId,
+      signal,
+    });
+    await this.assertInboundShipmentJobContext(job, signal);
+    return {
+      parsed: parseInboundNoncomplianceReport(text),
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  private inboundJobFailureNotice(error: unknown): string {
+    if (error instanceof Error && error.name === "AbortError") {
+      return "FBA 入庫貨件背景工作已安全停止。";
+    }
+    if (error instanceof SpApiError) {
+      if (error.status === 401 || error.status === 403) {
+        return "Amazon 拒絕 FBA 入庫貨件查詢，請檢查 Amazon Fulfillment 角色與授權。";
+      }
+      if (error.status === 429 || error.code === "RATE_LIMITED") {
+        return "Amazon 暫時限制 FBA 入庫貨件查詢頻率；已停止後續讀取。";
+      }
+      if (error.code === "FBA_INBOUND_ITEM_CIRCUIT_OPEN") {
+        return "Amazon FBA 入庫商品明細連續異常；已停止後續讀取，避免大量無效請求。";
+      }
+    }
+    return "FBA 入庫貨件目前無法完成；Amazon 沒有收到任何寫入。";
+  }
+
+  private async runInboundShipmentJob(job: InboundShipmentJob): Promise<void> {
+    const signal = job.controller.signal;
+    const issueOutcome = this.loadInboundIssueReport(job, signal).then(
+      (value) => ({ value, error: null as unknown }),
+      (error: unknown) => ({ value: null, error }),
+    );
+    try {
+      await this.assertInboundShipmentJobContext(job, signal);
+      let shipmentSnapshot: FbaInboundShipmentSnapshot;
+      if (job.shipmentSeed) {
+        shipmentSnapshot = job.shipmentSeed;
+        job.shipmentSeed = null;
+      } else {
+        shipmentSnapshot = await this.inboundShipments.snapshot({
+            marketplaceId: job.marketplaceId,
+            startDate: job.startDate,
+            endDate: job.endDate,
+            signal,
+            onProgress: (progress) => {
+              if (
+                job.state !== "running" ||
+                !["shipments", "items"].includes(progress.phase) ||
+                !Number.isSafeInteger(progress.completed) ||
+                progress.completed < 0 ||
+                (progress.total !== null &&
+                  (!Number.isSafeInteger(progress.total) || progress.total < progress.completed))
+              ) {
+                return;
+              }
+              job.progress = {
+                phase: progress.phase,
+                completed: progress.completed,
+                total: progress.total,
+              };
+              this.touchInboundShipmentJob(job);
+            },
+          });
+      }
+      await this.assertInboundShipmentJobContext(job, signal);
+      job.progress = { phase: "issues", completed: 0, total: 1 };
+      this.touchInboundShipmentJob(job);
+      const issue = await issueOutcome;
+      assertBackgroundActive(signal);
+      await this.assertInboundShipmentJobContext(job, signal);
+      const issueReport = issue.value
+        ? buildInboundIssueReportSnapshot({
+            ...issue.value,
+            allowedShipmentIds: new Set(
+              shipmentSnapshot.shipments.map((shipment) => shipment.shipmentId),
+            ),
+          })
+        : this.unavailableInboundIssueReport(issue.error);
+      job.progress = { phase: "issues", completed: 1, total: 1 };
+      job.snapshot = {
+        ...shipmentSnapshot,
+        schemaVersion: 1,
+        issueReport,
+      };
+      const partial = shipmentSnapshot.coverage.state === "partial" ||
+        issueReport.state !== "completed";
+      job.state = partial ? "partial" : "completed";
+      job.notice = `${shipmentSnapshot.notice} ${issueReport.notice}`;
+      this.retainInboundShipmentTerminalJob(job,
+        issueReport.state === "unavailable"
+          ? INBOUND_SHIPMENT_UNAVAILABLE_RETRY_TTL_MS
+          : INBOUND_SHIPMENT_TERMINAL_TTL_MS,
+      );
+    } catch (error) {
+      job.shipmentSeed = null;
+      job.controller.abort(error);
+      if (this.inboundShipmentJobs.get(job.jobId) !== job) return;
+      job.state = "failed";
+      job.snapshot = null;
+      job.notice = this.inboundJobFailureNotice(error);
+      this.retainInboundShipmentTerminalJob(
+        job,
+        INBOUND_SHIPMENT_TERMINAL_TTL_MS,
+      );
+    }
+  }
+
+  private async startInboundShipments(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (!body) return invalid("FBA 入庫貨件查詢格式無效。");
+    const allowedKeys = new Set([
+      "marketplaceId",
+      "startDate",
+      "endDate",
+      "retryIssueReport",
+    ]);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+      return invalid("FBA 入庫貨件查詢包含不支援的欄位。");
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    const startDate = optionalDate(body.startDate);
+    const endDate = optionalDate(body.endDate);
+    if (
+      body.retryIssueReport !== undefined &&
+      typeof body.retryIssueReport !== "boolean"
+    ) {
+      return invalid("FBA 入庫瑕疵報表重試意圖格式無效。");
+    }
+    const retryIssueReport = body.retryIssueReport === true;
+    if (!marketplaceId || typeof startDate !== "string" || typeof endDate !== "string") {
+      return invalid("請提供有效站點、開始日期與結束日期。");
+    }
+    const start = Date.parse(`${startDate}T00:00:00.000Z`);
+    const end = Date.parse(`${endDate}T00:00:00.000Z`);
+    const inclusiveDays = Math.floor((end - start) / 86_400_000) + 1;
+    if (end < start || inclusiveDays < 1 || inclusiveDays > 180) {
+      return invalid("FBA 入庫貨件日期範圍必須介於 1 到 180 天。");
+    }
+    const marketplaceToday = dateKeyInTimeZone(
+      new Date(Date.now()),
+      MARKETPLACES[marketplaceId].timeZone,
+    );
+    if (endDate > marketplaceToday) {
+      return invalid("FBA 入庫貨件結束日期不可晚於目前 Amazon 站點日期。");
+    }
+    this.pruneInboundShipmentJobs();
+    const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+    const accountScope = await this.vault.getAccountScope(MARKETPLACES[marketplaceId].region);
+    const selection = stableFingerprint({
+      accountScope,
+      marketplaceId,
+      mode,
+      startDate,
+      endDate,
+    });
+    const existingId = this.inboundShipmentSelections.get(selection);
+    const existing = existingId ? this.inboundShipmentJobs.get(existingId) : null;
+    if (
+      retryIssueReport &&
+      (
+        !existing ||
+        existing.state !== "partial" ||
+        existing.snapshot?.issueReport.state !== "unavailable" ||
+        existing.expiresAt <= Date.now()
+      )
+    ) {
+      return invalid(
+        "目前沒有同帳號、站點與日期區間的瑕疵報表未完成快照，不能建立重試工作。",
+        409,
+        "ISSUE_REPORT_RETRY_NOT_ALLOWED",
+      );
+    }
+    let shipmentSeed: FbaInboundShipmentSnapshot | null = null;
+    if (retryIssueReport && existing?.snapshot) {
+      const { issueReport: _issueReport, ...verifiedShipmentSnapshot } =
+        existing.snapshot;
+      shipmentSeed = verifiedShipmentSnapshot;
+    }
+    if (existing && existing.state === "running" && existing.expiresAt > Date.now()) {
+      return this.inboundShipmentJobReply(existing);
+    }
+    if (existing) this.removeInboundShipmentJob(existing.jobId);
+    for (const candidate of [...this.inboundShipmentJobs.values()]) {
+      if (
+        candidate.accountScope !== accountScope ||
+        candidate.marketplaceId !== marketplaceId ||
+        candidate.mode !== mode
+      ) {
+        continue;
+      }
+      if (candidate.state === "running") {
+        candidate.controller.abort(
+          new Error("相同帳號與站點已改用新的 FBA 入庫貨件日期區間。"),
+        );
+      }
+      this.removeInboundShipmentJob(candidate.jobId);
+    }
+    const controller = new AbortController();
+    const job: InboundShipmentJob = {
+      jobId: randomUUID(),
+      marketplaceId,
+      accountScope,
+      mode,
+      startDate,
+      endDate,
+      retryIssueReport,
+      shipmentSeed,
+      state: "running",
+      progress: retryIssueReport
+        ? { phase: "issues", completed: 0, total: 1 }
+        : { phase: "shipments", completed: 0, total: null },
+      snapshot: null,
+      notice: retryIssueReport
+        ? "只重新讀取每日 FBA 入庫瑕疵報表；既有貨件與商品接收數量快照不會重抓。"
+        : "正在讀取 FBA 入庫貨件與商品接收數量；你可以關閉這個面板或先使用其他功能，Notebook 鑰匙仍會在背景繼續。",
+      expiresAt: Date.now() + INBOUND_SHIPMENT_ACTIVE_TTL_MS,
+      expiryTimer: null,
+      controller,
+      flight: null,
+    };
+    this.inboundShipmentJobs.set(job.jobId, job);
+    this.inboundShipmentSelections.set(selection, job.jobId);
+    job.flight = this.runInboundShipmentJob(job).finally(() => {
+      job.flight = null;
+    });
+    void job.flight;
+    return this.inboundShipmentJobReply(job);
+  }
+
+  private async inboundShipmentsStatus(request: ApiRequest): Promise<ApiResponse> {
+    const allowedKeys = new Set(["marketplaceId", "jobId", "startDate", "endDate"]);
+    if (Object.keys(request.query).some((key) => !allowedKeys.has(key))) {
+      return invalid("FBA 入庫貨件工作查詢包含不支援的欄位。");
+    }
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const jobId = this.reportIdentifier(request.query.jobId);
+    const startDate = optionalDate(request.query.startDate);
+    const endDate = optionalDate(request.query.endDate);
+    if (
+      !marketplaceId ||
+      !jobId ||
+      typeof startDate !== "string" ||
+      typeof endDate !== "string"
+    ) {
+      return invalid("FBA 入庫貨件工作資訊無效，請重新同步。");
+    }
+    this.pruneInboundShipmentJobs();
+    const job = this.inboundShipmentJobs.get(jobId);
+    if (!job || job.marketplaceId !== marketplaceId) {
+      return invalid("找不到這份 FBA 入庫貨件工作，請重新同步。", 404, "JOB_NOT_FOUND");
+    }
+    if (job.startDate !== startDate || job.endDate !== endDate) {
+      return invalid(
+        "FBA 入庫貨件工作與所選日期區間不一致，請重新同步。",
+        409,
+        "JOB_MISMATCH",
+      );
+    }
+    try {
+      await this.assertInboundShipmentJobContext(job);
+    } catch {
+      job.controller.abort(new Error("FBA 入庫貨件工作 context 已變更。"));
+      this.removeInboundShipmentJob(job.jobId);
+      return invalid(
+        "FBA 入庫貨件工作不屬於目前帳號、站點或模式，請重新同步。",
+        409,
+        "JOB_MISMATCH",
+      );
+    }
+    return this.inboundShipmentJobReply(job);
   }
 
   private async orders(request: ApiRequest): Promise<ApiResponse> {
@@ -1397,7 +2065,8 @@ export class ApiRouter {
     marketplaceId: MarketplaceId,
     explicitRetry: boolean,
     signal?: AbortSignal,
-  ): Promise<Awaited<ReturnType<typeof startAllListingsReport>>> {
+    options: Readonly<{ freshCompleted?: boolean }> = {},
+  ): Promise<DurableReportStatus> {
     assertBackgroundActive(signal);
     const accountScope = await this.vault.getAccountScope(
       MARKETPLACES[marketplaceId].region,
@@ -1412,6 +2081,7 @@ export class ApiRouter {
         optionsKey: "preferredReportDocumentLocale=en_US",
       },
       explicitRetry,
+      freshCompleted: options.freshCompleted,
       signal,
       create: ({ signal: lifecycleSignal }) => this.brandSalesReports.startListing({
         marketplaceId,
@@ -1428,7 +2098,7 @@ export class ApiRouter {
     marketplaceId: MarketplaceId;
     reportId: string;
     signal?: AbortSignal;
-  }): Promise<Awaited<ReturnType<typeof getAllListingsReportStatus>>> {
+  }): Promise<DurableReportStatus> {
     assertBackgroundActive(input.signal);
     const accountScope = await this.vault.getAccountScope(
       MARKETPLACES[input.marketplaceId].region,
@@ -5067,6 +5737,735 @@ export class ApiRouter {
       context,
       ...result,
     });
+  }
+
+  private removeAdvertisingStrategyJob(jobId: string): void {
+    const job = this.advertisingStrategyJobs.get(jobId);
+    if (!job) return;
+    if (job.expiryTimer) clearTimeout(job.expiryTimer);
+    job.expiryTimer = null;
+    this.advertisingStrategyJobs.delete(jobId);
+    for (const [selection, selectedJobId] of this.advertisingStrategySelections) {
+      if (selectedJobId === jobId) this.advertisingStrategySelections.delete(selection);
+    }
+  }
+
+  private touchAdvertisingStrategyJob(job: AdvertisingStrategyJob): void {
+    if (
+      job.state !== "running" ||
+      job.controller.signal.aborted ||
+      this.advertisingStrategyJobs.get(job.jobId) !== job
+    ) {
+      return;
+    }
+    job.expiresAt = Date.now() + ADVERTISING_STRATEGY_ACTIVE_TTL_MS;
+  }
+
+  private retainAdvertisingStrategyJob(
+    job: AdvertisingStrategyJob,
+    ttl = ADVERTISING_STRATEGY_TERMINAL_TTL_MS,
+  ): void {
+    if (this.advertisingStrategyJobs.get(job.jobId) !== job || job.state === "running") {
+      return;
+    }
+    if (job.expiryTimer) clearTimeout(job.expiryTimer);
+    const expiresAt = Date.now() + ttl;
+    job.expiresAt = expiresAt;
+    job.expiryTimer = setTimeout(() => {
+      if (
+        this.advertisingStrategyJobs.get(job.jobId) === job &&
+        job.state !== "running" &&
+        job.expiresAt === expiresAt &&
+        job.expiresAt <= Date.now()
+      ) {
+        this.removeAdvertisingStrategyJob(job.jobId);
+      }
+    }, ttl);
+    job.expiryTimer.unref?.();
+  }
+
+  private pruneAdvertisingStrategyJobs(now = Date.now()): void {
+    for (const job of [...this.advertisingStrategyJobs.values()]) {
+      if (job.expiresAt > now) continue;
+      if (job.state === "running") {
+        job.controller.abort(new Error("FBA 廣告策略背景工作超過安全保留時間。"));
+        job.state = "failed";
+        job.snapshot = null;
+        job.notice = "FBA 廣告策略背景工作等待逾時；沒有建立、修改或啟用任何廣告。";
+        job.errorCode = "STRATEGY_TIMEOUT";
+        this.retainAdvertisingStrategyJob(job);
+      } else {
+        this.removeAdvertisingStrategyJob(job.jobId);
+      }
+    }
+  }
+
+  private advertisingStrategyReply(job: AdvertisingStrategyJob): ApiResponse {
+    return json({
+      schemaVersion: 1,
+      jobId: job.jobId,
+      marketplaceId: job.marketplaceId,
+      marketplaceCode: job.marketplaceCode,
+      dateRange: { startDate: job.startDate, endDate: job.endDate },
+      state: job.state,
+      progress: { ...job.progress },
+      notice: job.notice,
+      snapshot: job.snapshot ? structuredClone(job.snapshot) : null,
+      errorCode: job.errorCode,
+    }, job.state === "running" ? 202 : 200);
+  }
+
+  private advertisingStrategyGateway(): AdvertisingStrategyReportGateway {
+    const gateway = this.advertising;
+    if (
+      !gateway?.getCombinedAccountIdentity ||
+      !gateway.createSponsoredProductsAdvertisedProductReport ||
+      !gateway.getSponsoredProductsAdvertisedProductReportStatus ||
+      !gateway.downloadSponsoredProductsAdvertisedProductReport
+    ) {
+      throw new SpApiError(
+        "目前 Notebook 鑰匙版本尚未提供 Sponsored Products 報表；更新後才可產生策略。",
+        { status: 422, code: "ADS_STRATEGY_APP_UPDATE_REQUIRED" },
+      );
+    }
+    return gateway as AdvertisingStrategyReportGateway;
+  }
+
+  private async advertisingCall<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof AdvertisingApiError) {
+        throw new SpApiError(error.message, {
+          status: error.status,
+          code: error.status >= 500 ? "UPSTREAM_UNAVAILABLE" : error.code,
+          requestId: error.requestId,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private parseAdvertisingStrategyRange(input: {
+    marketplaceId: MarketplaceId;
+    startDate: unknown;
+    endDate: unknown;
+  }): { startDate: string; endDate: string } {
+    const startDate = optionalDate(input.startDate);
+    const endDate = optionalDate(input.endDate);
+    if (typeof startDate !== "string" || typeof endDate !== "string") {
+      throw new SpApiError("請提供有效的廣告策略開始日與結束日。", {
+        status: 400,
+        code: "ADS_STRATEGY_DATE_INVALID",
+      });
+    }
+    const start = Date.parse(`${startDate}T00:00:00.000Z`);
+    const end = Date.parse(`${endDate}T00:00:00.000Z`);
+    const inclusiveDays = Math.floor((end - start) / 86_400_000) + 1;
+    const today = dateKeyInTimeZone(
+      new Date(Date.now()),
+      MARKETPLACES[input.marketplaceId].timeZone,
+    );
+    const yesterday = new Date(`${today}T00:00:00.000Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const latest = yesterday.toISOString().slice(0, 10);
+    const earliestDate = new Date(yesterday);
+    earliestDate.setUTCDate(earliestDate.getUTCDate() - 94);
+    const earliest = earliestDate.toISOString().slice(0, 10);
+    if (
+      start > end ||
+      inclusiveDays < 1 ||
+      inclusiveDays > 31 ||
+      endDate > latest ||
+      startDate < earliest
+    ) {
+      throw new SpApiError(
+        "廣告策略一次只能讀取最近 95 天內的 1 到 31 個完整日，結束日最多到站點昨天。",
+        { status: 400, code: "ADS_STRATEGY_DATE_INVALID" },
+      );
+    }
+    return { startDate, endDate };
+  }
+
+  private salesAndTrafficIdentity(job: AdvertisingStrategyJob): DurableReportIdentity {
+    return {
+      accountScope: job.spAccountScope,
+      marketplaceId: job.marketplaceId,
+      mode: job.mode,
+      reportType: "GET_SALES_AND_TRAFFIC_REPORT",
+      optionsKey: `dateGranularity=DAY;asinGranularity=SKU;start=${job.startDate};end=${job.endDate}`,
+    };
+  }
+
+  private advertisedProductIdentity(job: AdvertisingStrategyJob): DurableReportIdentity {
+    return {
+      // The Ads client folds the Ads vault, SP account and exact Seller Profile
+      // into a fixed-size scope. Derive a separate lifecycle key so LocalStore
+      // never receives credential material or a raw Profile identifier.
+      accountScope: stableFingerprint(["ads-strategy", job.adsAccountScope]),
+      marketplaceId: job.marketplaceId,
+      mode: job.mode,
+      reportType: "ADS_SP_ADVERTISED_PRODUCT",
+      optionsKey: `reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=${job.startDate};end=${job.endDate}`,
+    };
+  }
+
+  private advertisedProductReference(
+    job: AdvertisingStrategyJob,
+    reportId: string,
+  ): SponsoredProductsAdvertisedProductReportReference {
+    return {
+      reportId,
+      marketplaceId: job.marketplaceId,
+      combinedAccountScope: job.adsAccountScope,
+      startDate: job.startDate,
+      endDate: job.endDate,
+      configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
+    };
+  }
+
+  private async assertAdvertisingStrategyContext(
+    job: AdvertisingStrategyJob,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    assertBackgroundActive(signal);
+    const gateway = this.advertisingStrategyGateway();
+    const mode = usesDemoMode(job.marketplaceId) ? "demo" : "live";
+    const [spAccountScope, adsIdentity] = await Promise.all([
+      this.vault.getAccountScope(MARKETPLACES[job.marketplaceId].region),
+      this.advertisingCall(() =>
+        gateway.getCombinedAccountIdentity(job.marketplaceId, signal)),
+    ]);
+    assertBackgroundActive(signal);
+    if (
+      mode !== job.mode ||
+      spAccountScope !== job.spAccountScope ||
+      adsIdentity.combinedAccountScope !== job.adsAccountScope ||
+      adsIdentity.adsProfileFingerprint !== job.adsProfileFingerprint
+    ) {
+      throw new SpApiError("廣告策略工作與目前 SP-API／Ads 帳號或模式不一致。", {
+        status: 409,
+        code: "ADS_STRATEGY_CONTEXT_CHANGED",
+      });
+    }
+  }
+
+  private async startSalesAndTrafficStrategyReport(
+    job: AdvertisingStrategyJob,
+    input: { refresh: boolean; explicitRetry: boolean },
+  ): Promise<DurableReportStatus> {
+    return this.reportLifecycle.start({
+      identity: this.salesAndTrafficIdentity(job),
+      explicitRetry: input.explicitRetry,
+      freshCompleted: input.refresh,
+      signal: job.controller.signal,
+      create: ({ signal }) => this.salesAndTrafficReports.start({
+        marketplaceId: job.marketplaceId,
+        startDate: job.startDate,
+        endDate: job.endDate,
+        signal,
+      }),
+      notices: {
+        pending: "Amazon 正在準備 SKU 銷售與流量報表。",
+        done: "Amazon SKU 銷售與流量報表已就緒。",
+      },
+    });
+  }
+
+  private async startAdvertisedProductStrategyReport(
+    job: AdvertisingStrategyJob,
+    input: { refresh: boolean; explicitRetry: boolean },
+  ): Promise<DurableReportStatus> {
+    const gateway = this.advertisingStrategyGateway();
+    return this.reportLifecycle.start({
+      identity: this.advertisedProductIdentity(job),
+      explicitRetry: input.explicitRetry,
+      freshCompleted: input.refresh,
+      signal: job.controller.signal,
+      create: async ({ signal }): Promise<DurableReportGatewayStatus> => {
+        const reference = await this.advertisingCall(() =>
+          gateway.createSponsoredProductsAdvertisedProductReport({
+            marketplaceId: job.marketplaceId,
+            startDate: job.startDate,
+            endDate: job.endDate,
+            signal,
+          }));
+        if (
+          reference.combinedAccountScope !== job.adsAccountScope ||
+          reference.marketplaceId !== job.marketplaceId ||
+          reference.startDate !== job.startDate ||
+          reference.endDate !== job.endDate
+        ) {
+          throw new SpApiError("Amazon Ads 報表 context 不一致，已停止。", {
+            status: 409,
+            code: "REPORT_MISMATCH",
+          });
+        }
+        return {
+          mode: "live",
+          ready: false,
+          reportId: reference.reportId,
+          documentId: null,
+          status: "IN_QUEUE",
+          notice: "Amazon Ads 正在準備 Sponsored Products 商品報表。",
+        };
+      },
+      notices: {
+        pending: "Amazon Ads 正在準備 Sponsored Products 商品報表。",
+        done: "Amazon Ads Sponsored Products 商品報表已就緒。",
+      },
+    });
+  }
+
+  private async waitForStrategyListings(
+    job: AdvertisingStrategyJob,
+    initial: DurableReportStatus,
+  ): Promise<FbaListingIdentitySnapshot> {
+    let status = initial;
+    let waited = 0;
+    for (let attempt = 0; !status.ready && waited < ADVERTISING_STRATEGY_REPORT_WAIT_MS; attempt += 1) {
+      const delay = Math.min(
+        advertisingStrategyPollDelay(attempt),
+        ADVERTISING_STRATEGY_REPORT_WAIT_MS - waited,
+      );
+      await this.advertisingStrategyWait(delay, job.controller.signal);
+      waited += delay;
+      await this.assertAdvertisingStrategyContext(job, job.controller.signal);
+      status = await this.getSharedAllListingsReportStatus({
+        marketplaceId: job.marketplaceId,
+        reportId: status.reportId,
+        signal: job.controller.signal,
+      });
+      this.touchAdvertisingStrategyJob(job);
+    }
+    if (!status.ready || !status.documentId) {
+      throw new SpApiError("Amazon FBA 全商品報表仍在準備中。", {
+        status: 504,
+        code: "REPORT_PENDING",
+      });
+    }
+    await this.assertAdvertisingStrategyContext(job, job.controller.signal);
+    return this.advertisingStrategySources.fbaListings({
+      marketplaceId: job.marketplaceId,
+      reportId: status.reportId,
+      documentId: status.documentId,
+      signal: job.controller.signal,
+    });
+  }
+
+  private async waitForStrategySales(
+    job: AdvertisingStrategyJob,
+    initial: DurableReportStatus,
+  ): Promise<SalesAndTrafficSnapshot> {
+    let status = initial;
+    let waited = 0;
+    for (let attempt = 0; !status.ready && waited < ADVERTISING_STRATEGY_REPORT_WAIT_MS; attempt += 1) {
+      const delay = Math.min(
+        advertisingStrategyPollDelay(attempt),
+        ADVERTISING_STRATEGY_REPORT_WAIT_MS - waited,
+      );
+      await this.advertisingStrategyWait(delay, job.controller.signal);
+      waited += delay;
+      await this.assertAdvertisingStrategyContext(job, job.controller.signal);
+      status = await this.reportLifecycle.status({
+        identity: this.salesAndTrafficIdentity(job),
+        reportId: status.reportId,
+        signal: job.controller.signal,
+        poll: ({ reportId, signal }) => this.salesAndTrafficReports.status({
+          marketplaceId: job.marketplaceId,
+          reportId,
+          startDate: job.startDate,
+          endDate: job.endDate,
+          signal,
+        }),
+        notices: {
+          pending: "Amazon 正在準備 SKU 銷售與流量報表。",
+          done: "Amazon SKU 銷售與流量報表已就緒。",
+        },
+      });
+      this.touchAdvertisingStrategyJob(job);
+    }
+    if (!status.ready || !status.documentId) {
+      throw new SpApiError("Amazon SKU 銷售與流量報表仍在準備中。", {
+        status: 504,
+        code: "REPORT_PENDING",
+      });
+    }
+    await this.assertAdvertisingStrategyContext(job, job.controller.signal);
+    return this.salesAndTrafficReports.data({
+      marketplaceId: job.marketplaceId,
+      reportId: status.reportId,
+      documentId: status.documentId,
+      startDate: job.startDate,
+      endDate: job.endDate,
+      signal: job.controller.signal,
+    });
+  }
+
+  private async waitForStrategyAds(
+    job: AdvertisingStrategyJob,
+    initial: DurableReportStatus,
+  ): Promise<SponsoredProductsAdvertisedProductReport> {
+    const gateway = this.advertisingStrategyGateway();
+    let status = initial;
+    let waited = 0;
+    for (let attempt = 0; !status.ready && waited < ADVERTISING_STRATEGY_REPORT_WAIT_MS; attempt += 1) {
+      const delay = Math.min(
+        advertisingStrategyPollDelay(attempt),
+        ADVERTISING_STRATEGY_REPORT_WAIT_MS - waited,
+      );
+      await this.advertisingStrategyWait(delay, job.controller.signal);
+      waited += delay;
+      await this.assertAdvertisingStrategyContext(job, job.controller.signal);
+      status = await this.reportLifecycle.status({
+        identity: this.advertisedProductIdentity(job),
+        reportId: status.reportId,
+        signal: job.controller.signal,
+        poll: async ({ reportId, signal }): Promise<DurableReportGatewayStatus> => {
+          const result = await this.advertisingCall(() =>
+            gateway.getSponsoredProductsAdvertisedProductReportStatus(
+              this.advertisedProductReference(job, reportId),
+              signal,
+            ));
+          const mappedStatus = result.status === "PENDING"
+            ? "IN_QUEUE"
+            : result.status === "PROCESSING"
+              ? "IN_PROGRESS"
+              : result.status === "COMPLETED"
+                ? "DONE"
+                : "FATAL";
+          return {
+            mode: "live",
+            ready: mappedStatus === "DONE",
+            reportId,
+            documentId: mappedStatus === "DONE" ? reportId : null,
+            status: mappedStatus,
+            notice: mappedStatus === "DONE"
+              ? "Amazon Ads Sponsored Products 商品報表已就緒。"
+              : "Amazon Ads 正在準備 Sponsored Products 商品報表。",
+          };
+        },
+        notices: {
+          pending: "Amazon Ads 正在準備 Sponsored Products 商品報表。",
+          done: "Amazon Ads Sponsored Products 商品報表已就緒。",
+        },
+      });
+      this.touchAdvertisingStrategyJob(job);
+    }
+    if (!status.ready) {
+      throw new SpApiError("Amazon Ads Sponsored Products 商品報表仍在準備中。", {
+        status: 504,
+        code: "REPORT_PENDING",
+      });
+    }
+    await this.assertAdvertisingStrategyContext(job, job.controller.signal);
+    return this.advertisingCall(() =>
+      gateway.downloadSponsoredProductsAdvertisedProductReport(
+        this.advertisedProductReference(job, status.reportId),
+        job.controller.signal,
+      ));
+  }
+
+  private strategyFailure(error: unknown): { notice: string; code: string } {
+    if (error instanceof Error && error.name === "AbortError") {
+      return {
+        notice: "FBA 廣告策略背景工作已安全停止。",
+        code: "STRATEGY_ABORTED",
+      };
+    }
+    if (error instanceof SpApiError) {
+      if (error.code === "REPORT_RETRY_WAIT") {
+        return { notice: error.message, code: "REPORT_RETRY_WAIT" };
+      }
+      if (
+        [
+          "SHARED_REPORT_RETRY_REQUIRED",
+          "REPORT_CANCELLED",
+          "REPORT_FATAL",
+          "UPSTREAM_UNAVAILABLE",
+          "ADS_UPSTREAM_FAILED",
+          "ADS_AUTHORIZATION_FAILED",
+          "ADS_RATE_LIMITED",
+        ].includes(error.code)
+      ) {
+        return {
+          notice: "上次 Amazon 報表建立或讀取未能確定完成；系統不會自動重建，請使用明確重試。",
+          code: "REPORT_RETRY_REQUIRED",
+        };
+      }
+      if (error.status === 401 || error.status === 403) {
+        return {
+          notice: "Amazon 拒絕廣告策略資料查詢，請檢查 SP-API Reports 與 Amazon Ads Viewer 授權。",
+          code: "ADS_STRATEGY_AUTHORIZATION_FAILED",
+        };
+      }
+      if (error.code === "REPORT_PENDING") {
+        return {
+          notice: "Amazon 報表準備時間超過本次等待上限；既有報表不會被重複建立，可重新接回。",
+          code: "REPORT_PENDING",
+        };
+      }
+    }
+    if (error instanceof AdvertisingApiError) {
+      return {
+        notice: "Amazon Ads 報表目前無法完成；沒有建立、修改或啟用任何 campaign。",
+        code: "ADS_STRATEGY_FAILED",
+      };
+    }
+    return {
+      notice: "FBA 廣告策略目前無法完成；缺值沒有被補成 0，也沒有修改任何廣告。",
+      code: "ADS_STRATEGY_FAILED",
+    };
+  }
+
+  private async runAdvertisingStrategyJob(
+    job: AdvertisingStrategyJob,
+    input: { refresh: boolean; explicitRetry: boolean },
+  ): Promise<void> {
+    try {
+      const signal = job.controller.signal;
+      await this.assertAdvertisingStrategyContext(job, signal);
+      const [listingsReport, salesReport, adsReport] = await Promise.all([
+        this.startSharedAllListingsReport(
+          job.marketplaceId,
+          input.explicitRetry,
+          signal,
+          { freshCompleted: input.refresh },
+        ),
+        this.startSalesAndTrafficStrategyReport(job, input),
+        this.startAdvertisedProductStrategyReport(job, input),
+      ]);
+
+      job.progress = { phase: "fba", completed: 0, total: 4 };
+      job.notice = "正在核對同一站點目前可證明為 FBA 的 Seller SKU。";
+      const fba = await this.waitForStrategyListings(job, listingsReport);
+      await this.assertAdvertisingStrategyContext(job, signal);
+      job.progress = { phase: "sales", completed: 1, total: 4 };
+      job.notice = "FBA 商品已核對；正在整理 SKU 粒度銷售與營業額。";
+      this.touchAdvertisingStrategyJob(job);
+
+      const sales = await this.waitForStrategySales(job, salesReport);
+      await this.assertAdvertisingStrategyContext(job, signal);
+      job.progress = { phase: "ads", completed: 2, total: 4 };
+      job.notice = "SKU 銷售已整理；正在讀取 Sponsored Products 實際花費。";
+      this.touchAdvertisingStrategyJob(job);
+
+      const ads = await this.waitForStrategyAds(job, adsReport);
+      const adsFetchedAt = new Date().toISOString();
+      await this.assertAdvertisingStrategyContext(job, signal);
+      job.progress = { phase: "building", completed: 3, total: 4 };
+      job.notice = "三份唯讀來源已完成；正在套用可見的 T1–T4 預設規則。";
+      this.touchAdvertisingStrategyJob(job);
+
+      const snapshot = buildAdvertisingStrategySnapshot({
+        marketplaceId: job.marketplaceId,
+        marketplaceCode: job.marketplaceCode,
+        dateRange: { startDate: job.startDate, endDate: job.endDate },
+        currencyCode: MARKETPLACES[job.marketplaceId].currency,
+        fetchedAt: new Date().toISOString(),
+        sourceFetchedAt: {
+          fba: fba.fetchedAt,
+          sales: sales.fetchedAt,
+          ads: adsFetchedAt,
+        },
+        listings: fba.rows,
+        salesRows: sales.rows.map((row) => ({
+          sellerSku: row.sellerSku,
+          childAsin: row.childAsin,
+          unitsSold: row.unitsOrdered,
+          salesAmount: row.orderedProductSales,
+          currencyCode: row.currencyCode,
+        })),
+        spAdvertisedProductRows: ads.rows.map((row) => ({
+          sellerSku: row.advertisedSku,
+          asin: row.advertisedAsin,
+          spend: row.cost,
+          sales14d: row.sales14d,
+          purchases14d: row.purchases14d,
+          currencyCode: MARKETPLACES[job.marketplaceId].currency,
+        })),
+      });
+      await this.assertAdvertisingStrategyContext(job, signal);
+      if (this.advertisingStrategyJobs.get(job.jobId) !== job) return;
+      job.snapshot = snapshot;
+      job.state = "completed";
+      job.progress = { phase: "building", completed: 4, total: 4 };
+      job.notice = "FBA 廣告策略表已完成；SB／SD 與規格欄位保留人工決策，不會自動寫回 Amazon。";
+      job.errorCode = null;
+      this.retainAdvertisingStrategyJob(job);
+    } catch (error) {
+      if (this.advertisingStrategyJobs.get(job.jobId) !== job) return;
+      const failure = this.strategyFailure(error);
+      job.controller.abort(error);
+      job.state = "failed";
+      job.snapshot = null;
+      job.notice = failure.notice;
+      job.errorCode = failure.code;
+      this.retainAdvertisingStrategyJob(
+        job,
+        failure.code === "REPORT_RETRY_REQUIRED" || failure.code === "REPORT_RETRY_WAIT"
+          ? ADVERTISING_STRATEGY_RETRY_TTL_MS
+          : ADVERTISING_STRATEGY_TERMINAL_TTL_MS,
+      );
+    }
+  }
+
+  private async startAdvertisingStrategy(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (!body) return invalid("廣告策略查詢格式無效。");
+    const allowedKeys = new Set([
+      "marketplaceId",
+      "startDate",
+      "endDate",
+      "refresh",
+      "explicitRetry",
+    ]);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+      return invalid("廣告策略查詢包含不支援的欄位。");
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
+    if (
+      (body.refresh !== undefined && typeof body.refresh !== "boolean") ||
+      (body.explicitRetry !== undefined && typeof body.explicitRetry !== "boolean")
+    ) {
+      return invalid("廣告策略重新產生意圖格式無效。");
+    }
+    const refresh = body.refresh === true;
+    const explicitRetry = body.explicitRetry === true;
+    if (explicitRetry && !refresh) {
+      return invalid("明確重試必須由重新產生操作觸發。");
+    }
+    let range: { startDate: string; endDate: string };
+    try {
+      range = this.parseAdvertisingStrategyRange({
+        marketplaceId,
+        startDate: body.startDate,
+        endDate: body.endDate,
+      });
+    } catch (error) {
+      return apiError(error, "廣告策略日期無效。");
+    }
+    if (usesDemoMode(marketplaceId)) {
+      return invalid(
+        "展示模式不會產生看似真實的 FBA 廣告策略表。",
+        422,
+        "ADS_STRATEGY_LIVE_REQUIRED",
+      );
+    }
+
+    this.pruneAdvertisingStrategyJobs();
+    const gateway = this.advertisingStrategyGateway();
+    const [spAccountScope, adsIdentity] = await Promise.all([
+      this.vault.getAccountScope(MARKETPLACES[marketplaceId].region),
+      this.advertisingCall(() =>
+        gateway.getCombinedAccountIdentity(
+          marketplaceId,
+          undefined,
+          { refreshProfile: true },
+        )),
+    ]);
+    const adsAccountScope = adsIdentity.combinedAccountScope;
+    const selection = stableFingerprint({
+      spAccountScope,
+      adsAccountScope,
+      adsProfileFingerprint: adsIdentity.adsProfileFingerprint,
+      marketplaceId,
+      startDate: range.startDate,
+      endDate: range.endDate,
+    });
+    const existingId = this.advertisingStrategySelections.get(selection);
+    const existing = existingId ? this.advertisingStrategyJobs.get(existingId) : null;
+    if (existing?.state === "running" && existing.expiresAt > Date.now()) {
+      return this.advertisingStrategyReply(existing);
+    }
+    if (explicitRetry && !(
+      existing?.state === "failed" &&
+      (existing.errorCode === "REPORT_RETRY_REQUIRED" || existing.errorCode === "REPORT_RETRY_WAIT") &&
+      existing.expiresAt > Date.now()
+    )) {
+      return invalid(
+        "目前沒有同帳號、站點與日期範圍的報表重試資格。",
+        409,
+        "REPORT_RETRY_NOT_ALLOWED",
+      );
+    }
+    if (existing && !refresh) return this.advertisingStrategyReply(existing);
+    if (existing) this.removeAdvertisingStrategyJob(existing.jobId);
+    for (const candidate of [...this.advertisingStrategyJobs.values()]) {
+      if (candidate.marketplaceId !== marketplaceId) continue;
+      if (candidate.state === "running") {
+        candidate.controller.abort(new Error("同一站點已改用新的廣告策略日期範圍。"));
+      }
+      this.removeAdvertisingStrategyJob(candidate.jobId);
+    }
+
+    const job: AdvertisingStrategyJob = {
+      jobId: randomUUID(),
+      marketplaceId,
+      marketplaceCode: MARKETPLACE_CODES[marketplaceId],
+      spAccountScope,
+      adsAccountScope,
+      adsProfileFingerprint: adsIdentity.adsProfileFingerprint,
+      mode: "live",
+      startDate: range.startDate,
+      endDate: range.endDate,
+      state: "running",
+      progress: { phase: "fba", completed: 0, total: 4 },
+      notice: "正在建立三份唯讀資料來源；你可以關閉這個面板或先使用其他功能。",
+      errorCode: null,
+      snapshot: null,
+      controller: new AbortController(),
+      expiresAt: Date.now() + ADVERTISING_STRATEGY_ACTIVE_TTL_MS,
+      expiryTimer: null,
+      flight: null,
+    };
+    this.advertisingStrategyJobs.set(job.jobId, job);
+    this.advertisingStrategySelections.set(selection, job.jobId);
+    job.flight = this.runAdvertisingStrategyJob(job, { refresh, explicitRetry }).finally(() => {
+      job.flight = null;
+    });
+    void job.flight;
+    return this.advertisingStrategyReply(job);
+  }
+
+  private async advertisingStrategyStatus(request: ApiRequest): Promise<ApiResponse> {
+    const allowedKeys = new Set(["marketplaceId", "jobId", "startDate", "endDate"]);
+    if (Object.keys(request.query).some((key) => !allowedKeys.has(key))) {
+      return invalid("廣告策略工作查詢包含不支援的欄位。");
+    }
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const jobId = this.reportIdentifier(request.query.jobId);
+    const startDate = optionalDate(request.query.startDate);
+    const endDate = optionalDate(request.query.endDate);
+    if (
+      !marketplaceId ||
+      !jobId ||
+      typeof startDate !== "string" ||
+      typeof endDate !== "string"
+    ) {
+      return invalid("廣告策略工作資訊無效，請重新產生。");
+    }
+    this.pruneAdvertisingStrategyJobs();
+    const job = this.advertisingStrategyJobs.get(jobId);
+    if (!job || job.marketplaceId !== marketplaceId) {
+      return invalid("找不到這份廣告策略工作，請重新產生。", 404, "JOB_NOT_FOUND");
+    }
+    if (job.startDate !== startDate || job.endDate !== endDate) {
+      return invalid("廣告策略工作與所選日期不一致。", 409, "JOB_MISMATCH");
+    }
+    try {
+      await this.assertAdvertisingStrategyContext(job);
+    } catch {
+      job.controller.abort(new Error("廣告策略工作 context 已變更。"));
+      this.removeAdvertisingStrategyJob(job.jobId);
+      return invalid(
+        "廣告策略工作不屬於目前 SP-API／Ads 帳號、站點或模式。",
+        409,
+        "JOB_MISMATCH",
+      );
+    }
+    return this.advertisingStrategyReply(job);
   }
 
   private async adsStatus(request: ApiRequest): Promise<ApiResponse> {
