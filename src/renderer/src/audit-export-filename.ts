@@ -6,6 +6,7 @@ export type AuditExportKind =
   | "subscription"
   | "review"
   | "advertising"
+  | "inbound"
   | "suite";
 
 const AUDIT_EXPORT_LABELS: Readonly<Record<AuditExportKind, string>> = {
@@ -16,6 +17,7 @@ const AUDIT_EXPORT_LABELS: Readonly<Record<AuditExportKind, string>> = {
   subscription: "訂閱價格健檢",
   review: "評論主題健檢",
   advertising: "廣告覆蓋健檢",
+  inbound: "入庫貨件",
   suite: "一鍵全部健檢",
 };
 

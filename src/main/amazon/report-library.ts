@@ -188,7 +188,7 @@ const ANALYTICS = entries(
     ["GET_BRAND_ANALYTICS_MARKET_BASKET_REPORT", "購物籃分析", "顧客與品牌商品一同購買的商品。", { party: "BOTH" }],
     ["GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT", "搜尋詞報表", "高熱度搜尋詞與品牌商品點擊／轉換。", { party: "BOTH" }],
     ["GET_BRAND_ANALYTICS_REPEAT_PURCHASE_REPORT", "重複購買", "品牌商品的重複購買顧客與銷售。", { party: "BOTH" }],
-    ["GET_SALES_AND_TRAFFIC_REPORT", "業務報表：銷售與流量", "以日期與 ASIN 彙總銷售、訂單、流量與購買盒指標；Amazon 官方 reportOptions 是 DATE 與 ASIN 聚合，不宣稱有 SKU 粒度，也不能直接證明 FBA-only。"],
+    ["GET_SALES_AND_TRAFFIC_REPORT", "業務報表：銷售與流量", "Amazon 官方 reportOptions 支援 DAY 與 SKU 粒度；報表本身仍不能證明 FBA-only，必須再與同次目前 FBA Seller SKU 清單精確核對。"],
     ["GET_VENDOR_REAL_TIME_INVENTORY_REPORT", "Vendor 即時庫存", "Vendor Central 即時庫存分析。", { party: "VENDOR", fbaScope: "OUT_OF_FBA_SCOPE", roles: ["Vendor Analytics"] }],
     ["GET_VENDOR_REAL_TIME_TRAFFIC_REPORT", "Vendor 即時流量", "Vendor Central 即時流量分析。", { party: "VENDOR", fbaScope: "OUT_OF_FBA_SCOPE", roles: ["Vendor Analytics"] }],
     ["GET_VENDOR_REAL_TIME_SALES_REPORT", "Vendor 即時銷售", "Vendor Central 即時銷售分析。", { party: "VENDOR", fbaScope: "OUT_OF_FBA_SCOPE", roles: ["Vendor Analytics"] }],

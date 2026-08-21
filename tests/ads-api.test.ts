@@ -1,5 +1,13 @@
+import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { AdvertisingApiClient } from "../src/main/amazon/ads-api";
+import {
+  AdvertisingApiClient,
+  SP_ADVERTISED_PRODUCT_REPORT_COLUMNS,
+  SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
+  parseSponsoredProductsAdvertisedProductRows,
+  type SponsoredProductsAdvertisedProductReportReference,
+} from "../src/main/amazon/ads-api";
 import type {
   AdvertisingCredentialVault,
   StoredAdvertisingCredentials,
@@ -37,6 +45,66 @@ function json(value: unknown, status = 200, headers: Record<string, string> = {}
     status,
     headers: { "content-type": "application/json", ...headers },
   });
+}
+
+function fingerprint(namespace: string, values: readonly string[]): string {
+  const hash = createHash("sha256");
+  hash.update(namespace);
+  values.forEach((value) => {
+    hash.update("\0");
+    hash.update(value);
+  });
+  return hash.digest("hex");
+}
+
+function combinedAccountScope(
+  profileId = "123456789",
+  spAccountScope = "sp-scope-test",
+): string {
+  const profileFingerprint = fingerprint("amz-api:amazon-ads-profile:v1", [
+    "ATVPDKIKX0DER",
+    profileId,
+  ]);
+  return fingerprint("amz-api:amazon-ads-combined-account:v1", [
+    `ads-account-scope:${spAccountScope}`,
+    profileFingerprint,
+  ]);
+}
+
+function reportReference(
+  overrides: Partial<SponsoredProductsAdvertisedProductReportReference> = {},
+): SponsoredProductsAdvertisedProductReportReference {
+  return {
+    reportId: "report-test-1",
+    marketplaceId: "ATVPDKIKX0DER",
+    combinedAccountScope: combinedAccountScope(),
+    startDate: "2026-07-01",
+    endDate: "2026-07-30",
+    configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
+    ...overrides,
+  };
+}
+
+function reportStatusPayload(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    reportId: "report-test-1",
+    startDate: "2026-07-01",
+    endDate: "2026-07-30",
+    status: "PENDING",
+    updatedAt: "2026-08-01T00:00:00.000Z",
+    url: null,
+    configuration: {
+      adProduct: "SPONSORED_PRODUCTS",
+      groupBy: ["advertiser"],
+      columns: [...SP_ADVERTISED_PRODUCT_REPORT_COLUMNS],
+      reportTypeId: "spAdvertisedProduct",
+      timeUnit: "SUMMARY",
+      format: "GZIP_JSON",
+    },
+    ...overrides,
+  };
 }
 
 const spContext = async () => ({ accountScope: "sp-scope-test", sellerId: "seller-test" });
@@ -360,5 +428,438 @@ describe("main-only Amazon Ads client", () => {
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/v2/profiles"))).toHaveLength(2);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/query/campaigns"))).toHaveLength(2);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/auth/o2/token"))).toHaveLength(1);
+  });
+
+  it("creates one exact classic v3 SP advertised-product SUMMARY report without retrying the POST", async () => {
+    let createCount = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-report-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: { id: "seller-test", type: "seller", marketplaceStringId: "ATVPDKIKX0DER" },
+        }]);
+      }
+      if (url === "https://advertising-api.amazon.com/reporting/reports") {
+        createCount += 1;
+        expect(init?.method).toBe("POST");
+        const headers = init?.headers as Record<string, string>;
+        expect(headers).toMatchObject({
+          "content-type": "application/vnd.createasyncreportrequest.v3+json",
+          accept: "application/vnd.createasyncreportresponse.v3+json",
+          "Amazon-Advertising-API-ClientId": credentials.lwaClientId,
+          "Amazon-Advertising-API-Scope": "123456789",
+          Authorization: "Bearer memory-report-token",
+        });
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).toMatchObject({
+          startDate: "2026-07-01",
+          endDate: "2026-07-30",
+          configuration: {
+            adProduct: "SPONSORED_PRODUCTS",
+            groupBy: ["advertiser"],
+            columns: [...SP_ADVERTISED_PRODUCT_REPORT_COLUMNS],
+            reportTypeId: "spAdvertisedProduct",
+            timeUnit: "SUMMARY",
+            format: "GZIP_JSON",
+          },
+        });
+        return json(
+          { reportId: "report-test-1" },
+          202,
+          { "content-type": "application/vnd.createasyncreportresponse.v3+json" },
+        );
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(
+      vault(),
+      fetchMock,
+      spContext,
+      () => new Date("2026-08-21T00:00:00.000Z"),
+    );
+
+    await expect(client.createSponsoredProductsAdvertisedProductReport({
+      marketplaceId: "ATVPDKIKX0DER",
+      startDate: "2026-07-01",
+      endDate: "2026-07-30",
+    })).resolves.toEqual(reportReference());
+    expect(await client.getCombinedAccountScope("ATVPDKIKX0DER"))
+      .toBe(combinedAccountScope());
+    expect(createCount).toBe(1);
+  });
+
+  it("fingerprints Seller Profile identity and detects a profile change on report status", async () => {
+    let profileId = "111";
+    let statusRequests = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId,
+          countryCode: "US",
+          accountInfo: {
+            id: "seller-test",
+            type: "seller",
+            marketplaceStringId: "ATVPDKIKX0DER",
+          },
+        }]);
+      }
+      if (url.endsWith("/reporting/reports/report-test-1")) {
+        statusRequests += 1;
+        return json(reportStatusPayload());
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(vault(), fetchMock, spContext);
+
+    const initial = await client.getCombinedAccountIdentity(
+      "ATVPDKIKX0DER",
+      undefined,
+      { refreshProfile: true },
+    );
+    expect(initial.combinedAccountScope).toHaveLength(64);
+    expect(initial.adsProfileFingerprint).toHaveLength(64);
+    expect(JSON.stringify(initial)).not.toContain(profileId);
+
+    profileId = "222";
+    const changed = await client.getCombinedAccountIdentity(
+      "ATVPDKIKX0DER",
+      undefined,
+      { refreshProfile: true },
+    );
+    expect(changed.adsProfileFingerprint).not.toBe(initial.adsProfileFingerprint);
+    expect(changed.combinedAccountScope).not.toBe(initial.combinedAccountScope);
+    expect(JSON.stringify(changed)).not.toContain(profileId);
+
+    await expect(client.getSponsoredProductsAdvertisedProductReportStatus(reportReference({
+      combinedAccountScope: initial.combinedAccountScope,
+    }))).rejects.toMatchObject({ code: "ADS_REPORT_ACCOUNT_CHANGED", status: 409 });
+    expect(statusRequests).toBe(0);
+  });
+
+  it("never retries a report create POST, including after a 401", async () => {
+    let tokenCount = 0;
+    let createCount = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        tokenCount += 1;
+        return json({ access_token: `memory-token-${tokenCount}`, expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: { id: "seller-test", type: "seller", marketplaceStringId: "ATVPDKIKX0DER" },
+        }]);
+      }
+      if (url.endsWith("/reporting/reports")) {
+        createCount += 1;
+        return json({ private: "must-not-leak" }, 401);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(
+      vault(),
+      fetchMock,
+      spContext,
+      () => new Date("2026-08-21T00:00:00.000Z"),
+    );
+
+    await expect(client.createSponsoredProductsAdvertisedProductReport({
+      marketplaceId: "ATVPDKIKX0DER",
+      startDate: "2026-07-01",
+      endDate: "2026-07-30",
+    })).rejects.toMatchObject({ code: "ADS_AUTHORIZATION_FAILED", status: 401 });
+    expect(createCount).toBe(1);
+    expect(tokenCount).toBe(1);
+  });
+
+  it("rejects future, stale, malformed, and over-31-day report windows before network use", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const client = new AdvertisingApiClient(
+      vault(),
+      fetchMock,
+      spContext,
+      () => new Date("2026-08-21T00:00:00.000Z"),
+    );
+    for (const [startDate, endDate] of [
+      ["2026-07-01", "2026-08-01"],
+      ["2026-08-20", "2026-08-21"],
+      ["2026-05-16", "2026-05-17"],
+      ["2026-02-30", "2026-03-01"],
+    ]) {
+      await expect(client.createSponsoredProductsAdvertisedProductReport({
+        marketplaceId: "ATVPDKIKX0DER",
+        startDate,
+        endDate,
+      })).rejects.toMatchObject({ code: "ADS_REPORT_DATE_INVALID" });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("polls an exact report with only one 401 refresh and bounded 429/5xx retries", async () => {
+    let tokenCount = 0;
+    let statusCount = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        tokenCount += 1;
+        return json({ access_token: `memory-status-token-${tokenCount}`, expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: { id: "seller-test", type: "seller", marketplaceStringId: "ATVPDKIKX0DER" },
+        }]);
+      }
+      if (url.endsWith("/reporting/reports/report-test-1")) {
+        statusCount += 1;
+        const headers = init?.headers as Record<string, string>;
+        expect(headers["Amazon-Advertising-API-ClientId"]).toBe(credentials.lwaClientId);
+        expect(headers["Amazon-Advertising-API-Scope"]).toBe("123456789");
+        expect(headers.Authorization).toBe(
+          `Bearer memory-status-token-${statusCount === 1 ? 1 : 2}`,
+        );
+        if (statusCount === 1) return json({ message: "expired" }, 401);
+        if (statusCount === 2) return json({ message: "rate" }, 429, { "retry-after": "0" });
+        if (statusCount === 3) return json({ message: "temporary" }, 503, { "retry-after": "0" });
+        return json(reportStatusPayload(), 200, {
+          "content-type": "application/vnd.getasyncreportresponse.v3+json",
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(vault(), fetchMock, spContext);
+
+    await expect(client.getSponsoredProductsAdvertisedProductReportStatus(reportReference()))
+      .resolves.toMatchObject({ status: "PENDING", ready: false });
+    expect(tokenCount).toBe(2);
+    expect(statusCount).toBe(4);
+  });
+
+  it("stops after the bounded status retry budget", async () => {
+    let statusCount = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: { id: "seller-test", type: "seller", marketplaceStringId: "ATVPDKIKX0DER" },
+        }]);
+      }
+      statusCount += 1;
+      return json({ message: "temporary" }, 503, { "retry-after": "0" });
+    });
+    const client = new AdvertisingApiClient(vault(), fetchMock, spContext);
+
+    await expect(client.getSponsoredProductsAdvertisedProductReportStatus(reportReference()))
+      .rejects.toMatchObject({ code: "ADS_UPSTREAM_FAILED", status: 503 });
+    expect(statusCount).toBe(3);
+  });
+
+  it("rejects an account or exact report configuration mismatch", async () => {
+    let scope = "sp-scope-test";
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: { id: "seller-test", type: "seller", marketplaceStringId: "ATVPDKIKX0DER" },
+        }]);
+      }
+      return json(reportStatusPayload({ endDate: "2026-07-29" }));
+    });
+    const client = new AdvertisingApiClient(
+      vault(),
+      fetchMock,
+      async () => ({ accountScope: scope, sellerId: "seller-test" }),
+    );
+
+    await expect(client.getSponsoredProductsAdvertisedProductReportStatus(reportReference()))
+      .rejects.toMatchObject({ code: "ADS_REPORT_MISMATCH" });
+    scope = "sp-scope-changed";
+    await expect(client.getSponsoredProductsAdvertisedProductReportStatus(reportReference()))
+      .rejects.toMatchObject({ code: "ADS_REPORT_ACCOUNT_CHANGED" });
+  });
+
+  it("downloads only an exact completed HTTPS AWS GZIP_JSON report and keeps optional metrics honest", async () => {
+    const rawRows = [{
+      campaignId: "campaign-1",
+      campaignName: "SP exact",
+      adGroupId: "ad-group-1",
+      adGroupName: "Main",
+      advertisedAsin: "B012345678",
+      impressions: 120,
+      clicks: 12,
+      cost: 9.5,
+    }, {
+      campaignId: "campaign-2",
+      advertisedSku: "SKU-2",
+      advertisedAsin: "B087654321",
+      impressions: 40,
+      clicks: 5,
+      cost: 3,
+      sales14d: 18,
+      purchases14d: 2,
+    }];
+    const compressed = gzipSync(Buffer.from(JSON.stringify(rawRows), "utf8"));
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: { id: "seller-test", type: "seller", marketplaceStringId: "ATVPDKIKX0DER" },
+        }]);
+      }
+      if (url.endsWith("/reporting/reports/report-test-1")) {
+        return json(reportStatusPayload({
+          status: "COMPLETED",
+          url: "https://amz-report-test.s3.amazonaws.com/report.gz?signature=private",
+        }));
+      }
+      if (url.startsWith("https://amz-report-test.s3.amazonaws.com/report.gz")) {
+        expect(init).toMatchObject({ method: "GET", redirect: "error", cache: "no-store" });
+        expect(init?.headers).toBeUndefined();
+        return new Response(compressed, {
+          status: 200,
+          headers: { "content-length": String(compressed.byteLength) },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(vault(), fetchMock, spContext);
+
+    const report = await client.downloadSponsoredProductsAdvertisedProductReport(
+      reportReference(),
+    );
+    expect(report.rows).toEqual([{
+      campaignId: "campaign-1",
+      campaignName: "SP exact",
+      adGroupId: "ad-group-1",
+      adGroupName: "Main",
+      advertisedSku: null,
+      advertisedAsin: "B012345678",
+      impressions: 120,
+      clicks: 12,
+      cost: 9.5,
+      sales14d: null,
+      purchases14d: null,
+    }, {
+      campaignId: "campaign-2",
+      campaignName: null,
+      adGroupId: null,
+      adGroupName: null,
+      advertisedSku: "SKU-2",
+      advertisedAsin: "B087654321",
+      impressions: 40,
+      clicks: 5,
+      cost: 3,
+      sales14d: 18,
+      purchases14d: 2,
+    }]);
+    expect(JSON.stringify(report)).not.toContain("signature=private");
+    expect(JSON.stringify(report)).not.toContain("123456789");
+  });
+
+  it("rejects non-AWS signed URLs and oversized compressed downloads", async () => {
+    let oversized = false;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: { id: "seller-test", type: "seller", marketplaceStringId: "ATVPDKIKX0DER" },
+        }]);
+      }
+      if (url.endsWith("/reporting/reports/report-test-1")) {
+        return json(reportStatusPayload({
+          status: "COMPLETED",
+          url: oversized
+            ? "https://amz-report-test.s3.amazonaws.com/report.gz"
+            : "https://example.com/private-report.gz",
+        }));
+      }
+      if (url.includes("s3.amazonaws.com")) {
+        return new Response(new Uint8Array([1]), {
+          headers: { "content-length": String(32 * 1024 * 1024 + 1) },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(vault(), fetchMock, spContext);
+
+    await expect(client.downloadSponsoredProductsAdvertisedProductReport(reportReference()))
+      .rejects.toMatchObject({ code: "ADS_REPORT_URL_INVALID" });
+    oversized = true;
+    await expect(client.downloadSponsoredProductsAdvertisedProductReport(reportReference()))
+      .rejects.toMatchObject({ code: "ADS_REPORT_TOO_LARGE", status: 413 });
+  });
+
+  it("fails closed for duplicate rows and malformed optional metrics", () => {
+    const base = {
+      campaignId: "campaign-1",
+      advertisedAsin: "B012345678",
+      impressions: 1,
+      clicks: 1,
+      cost: 1,
+    };
+    expect(() => parseSponsoredProductsAdvertisedProductRows([base, { ...base }]))
+      .toThrow(expect.objectContaining({ code: "ADS_REPORT_DUPLICATE_ROW" }));
+    expect(() => parseSponsoredProductsAdvertisedProductRows([{ ...base, sales14d: "12" }]))
+      .toThrow(expect.objectContaining({ code: "ADS_REPORT_ROW_INVALID" }));
+    expect(() => parseSponsoredProductsAdvertisedProductRows([{
+      ...base,
+      advertisedSku: "SKU\u200b-A",
+    }])).toThrow(expect.objectContaining({ code: "ADS_REPORT_ROW_INVALID" }));
+    expect(() => parseSponsoredProductsAdvertisedProductRows([{
+      ...base,
+      advertisedSku: " SKU-A",
+    }])).toThrow(expect.objectContaining({ code: "ADS_REPORT_ROW_INVALID" }));
+    expect(() => parseSponsoredProductsAdvertisedProductRows([{
+      ...base,
+      advertisedSku: "SKU\u00a0A",
+    }])).toThrow(expect.objectContaining({ code: "ADS_REPORT_ROW_INVALID" }));
+    expect(() => parseSponsoredProductsAdvertisedProductRows([{
+      ...base,
+      advertisedAsin: "B012345678 ",
+    }])).toThrow(expect.objectContaining({ code: "ADS_REPORT_ROW_INVALID" }));
+    expect(() => parseSponsoredProductsAdvertisedProductRows([{
+      ...base,
+      advertisedAsin: "B01234\u200b5678",
+    }])).toThrow(expect.objectContaining({ code: "ADS_REPORT_ROW_INVALID" }));
+    expect(parseSponsoredProductsAdvertisedProductRows([{
+      ...base,
+      campaignName: "  display campaign  ",
+      adGroupName: "  display group  ",
+    }])[0]).toMatchObject({
+      campaignName: "display campaign",
+      adGroupName: "display group",
+    });
   });
 });
