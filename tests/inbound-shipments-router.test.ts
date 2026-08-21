@@ -579,7 +579,7 @@ describe("FBA inbound shipment router job", () => {
     );
   });
 
-  it("maps hostile shipment gateway errors to a fixed failed-job notice", async () => {
+  it("maps a hostile upstream outage to a safe actionable failed-job notice", async () => {
     const hostile = [
       "accountScope=private-account",
       "reportId=private-report",
@@ -591,7 +591,7 @@ describe("FBA inbound shipment router job", () => {
       throw new SpApiError(hostile, {
         status: 503,
         code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
-        requestId: "SAFE-REQUEST-ID",
+        requestId: "unsafe/request?id=private",
       });
     });
     const app = router({ snapshot });
@@ -609,7 +609,8 @@ describe("FBA inbound shipment router job", () => {
     expect(terminal).toMatchObject({
       state: "failed",
       snapshot: null,
-      notice: "FBA 入庫貨件目前無法完成；Amazon 沒有收到任何寫入。",
+      notice:
+        "Amazon FBA 入庫服務暫時無法回應；已在有限次唯讀重試後停止。請稍後只按一次重新同步；Amazon 沒有收到任何寫入。",
     });
     for (const forbidden of [
       "accountScope",
@@ -620,9 +621,60 @@ describe("FBA inbound shipment router job", () => {
       "private-document",
       "https://",
       "GLOBAL-JOB-CANARY",
+      "unsafe/request",
     ]) {
       expect(serialized).not.toContain(forbidden);
     }
+    expect(terminal).toMatchObject({
+      failure: {
+        code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
+        requestId: null,
+      },
+    });
+  });
+
+  it.each([
+    [
+      400,
+      "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
+      "Amazon 無法驗證這次 FBA 入庫貨件唯讀請求；請確認日期範圍後再按一次重新同步。Amazon 沒有收到任何寫入。",
+    ],
+    [
+      502,
+      "FBA_INBOUND_FORMAT_UNSUPPORTED",
+      "Amazon 回傳的 FBA 入庫資料格式目前無法安全辨識；已停止並保留未知值，不會補 0。Amazon 沒有收到任何寫入。",
+    ],
+    [
+      409,
+      "PAGINATION_CHANGED",
+      "Amazon FBA 入庫分頁資料前後不一致；已停止，避免重複或漏算貨件。Amazon 沒有收到任何寫入。",
+    ],
+  ])("maps %s/%s to a specific safe notice", async (status, code, notice) => {
+    const snapshot = vi.fn(async () => {
+      throw new SpApiError("hostile upstream detail https://example.invalid/private", {
+        status,
+        code,
+        requestId: "SAFE-REQUEST-ID",
+      });
+    });
+    const app = router({ snapshot });
+    const started = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    })));
+    const terminal = await terminalJob(app, String(started.jobId));
+
+    expect(terminal).toMatchObject({
+      state: "failed",
+      snapshot: null,
+      notice,
+      failure: { code, requestId: "SAFE-REQUEST-ID" },
+    });
+    expect(JSON.stringify(terminal)).not.toContain("example.invalid");
   });
 
   it("requires a private explicit intent and the retry guard before recreating an ambiguous issue report", async () => {

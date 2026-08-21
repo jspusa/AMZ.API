@@ -111,7 +111,18 @@ export type InboundShipmentJob = {
   };
   snapshot: InboundShipmentSnapshot | null;
   notice: string;
+  failure: {
+    code: string;
+    requestId: string | null;
+  } | null;
 };
+
+export function inboundShipmentFailureMessage(job: InboundShipmentJob): string {
+  if (!job.failure) return job.notice;
+  return `${job.notice}（診斷代碼：${job.failure.code}${
+    job.failure.requestId ? `；Amazon Request ID：${job.failure.requestId}` : ""
+  }）`;
+}
 
 export type InboundShipmentCache = {
   marketplaceId: string;
@@ -676,6 +687,22 @@ export function parseInboundShipmentJob(
   ) {
     throw new Error("FBA 入庫貨件工作狀態與快照不一致。");
   }
+  const failure = raw.failure === undefined || raw.failure === null
+    ? null
+    : (() => {
+        const parsed = record(raw.failure, "FBA 入庫貨件診斷資訊");
+        return {
+          code: identifier(parsed.code, "FBA 入庫貨件診斷代碼", 128),
+          requestId: nullableIdentifier(
+            parsed.requestId,
+            "Amazon Request ID",
+            200,
+          ),
+        };
+      })();
+  if (raw.state !== "failed" && failure !== null) {
+    throw new Error("FBA 入庫貨件工作狀態與診斷資訊不一致。");
+  }
   return {
     jobId: identifier(raw.jobId, "FBA 入庫貨件工作 ID", 200),
     marketplaceId: expectedMarketplaceId,
@@ -684,6 +711,7 @@ export function parseInboundShipmentJob(
     progress: { phase: progress.phase, completed, total },
     snapshot,
     notice: text(raw.notice, "FBA 入庫貨件工作說明", 3_000),
+    failure,
   };
 }
 

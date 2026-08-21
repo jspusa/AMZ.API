@@ -299,7 +299,7 @@ describe("FBA inbound shipment snapshot collector", () => {
     }
   });
 
-  it("opens a circuit after three consecutive shipment-local HTTP, data or continuation failures", async () => {
+  it("stops after three consecutive local failures but returns a partial snapshot", async () => {
     const requestedItems: string[] = [];
     const transport = vi.fn(
       async (request: FbaInboundTransportRequest): Promise<FbaInboundTransportResult> => {
@@ -347,19 +347,27 @@ describe("FBA inbound shipment snapshot collector", () => {
       },
     );
 
-    let failure: unknown = null;
-    try {
-      await collectFbaInboundShipmentSnapshot({ ...BASE_INPUT, transport });
-    } catch (error) {
-      failure = error;
-    }
+    const snapshot = await collectFbaInboundShipmentSnapshot({
+      ...BASE_INPUT,
+      transport,
+    });
 
-    expect(failure).toMatchObject({
-      code: "FBA_INBOUND_ITEM_CIRCUIT_OPEN",
+    expect(snapshot.coverage).toMatchObject({
+      state: "partial",
+      shipmentCount: 4,
+      shipmentsWithCompleteItems: 0,
+      shipmentsWithPartialItems: 4,
+      incompleteShipmentCount: 4,
+      itemCount: 1,
+    });
+    expect(snapshot.summary.totals).toBeNull();
+    expect(snapshot.coverage.issues).toHaveLength(4);
+    expect(snapshot.coverage.issues.at(-1)).toMatchObject({
+      shipmentId: "FBA-LOCAL-4",
+      code: "FBA_INBOUND_SCAN_STOPPED",
       requestId: null,
     });
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).not.toContain("FBA-LOCAL");
+    expect(snapshot.coverage.issues.at(-1)?.message).not.toContain("FBA-LOCAL");
     expect(requestedItems).toEqual([
       "FBA-LOCAL-1",
       "FBA-LOCAL-2",

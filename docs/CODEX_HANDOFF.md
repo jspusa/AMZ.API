@@ -3,7 +3,7 @@
 最後更新：2026-08-21
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前狀態：`v0.1.17` 已由 PR #41 squash merge 至 `main` commit `ef5bd04a8c87bf51743fe72e95e3a59073f14b4f`；PR Validate／Windows CI 與 main Validate／Pages／macOS universal／Windows CI 均成功。live Pages HTML／JS／CSS 已與該 main commit 的 production output byte-for-byte 核對。可信 main macOS artifact 已驗證並安裝為 `/Applications/AMZ.API.app`，原 v0.1.16 保留為 `/Applications/AMZ.API-v0.1.16-backup.app`；Keychain vault 原樣保留，不需重輸入 SP-API 憑證，首頁顯示 `Amazon 已連線`、Live US FBA Sales 與系統資訊版本 0.1.17。US 2026-07-23 至 2026-08-21 的入庫貨件唯讀工作真實啟動後安全失敗，沒有產生可核對快照，也沒有 Amazon 寫入；Amazon Ads 獨立 LWA 尚未設定，因此廣告策略 Reporting v3 仍未 live 驗證。受密碼保護的 Supply Boss API v4 下載站已更新 Mac DMG 至 v0.1.17，員工頁只顯示 Mac DMG 與 Windows NSIS installer 兩張卡；Windows installer 仍為 v0.1.16。Windows main CI 只證明封裝、Bridge 與 addon smoke，不得冒充真實 Windows 11 Pro／Hello／DPAPI 人工驗證。
+目前狀態：`v0.1.17` 已由 PR #41 squash merge 至 `main` commit `ef5bd04a8c87bf51743fe72e95e3a59073f14b4f`；PR Validate／Windows CI 與 main Validate／Pages／macOS universal／Windows CI 均成功。live Pages HTML／JS／CSS 已與該 main commit 的 production output byte-for-byte 核對。可信 main macOS artifact 已驗證並安裝為 `/Applications/AMZ.API.app`，原 v0.1.16 保留為 `/Applications/AMZ.API-v0.1.16-backup.app`；Keychain vault 原樣保留，不需重輸入 SP-API 憑證，首頁顯示 `Amazon 已連線`、Live US FBA Sales 與系統資訊版本 0.1.17。US 2026-07-23 至 2026-08-21 的入庫貨件唯讀工作真實啟動後安全失敗，沒有產生可核對快照，也沒有 Amazon 寫入；`v0.1.18` 修正版目前只在本機候選分支，目標是保留已核對的部分貨件、停止未讀後續請求並顯示安全診斷代碼，不得在 PR／Actions／artifact／安裝與 live 重測完成前稱為已發布。Amazon Ads 獨立 LWA 尚未設定，因此廣告策略 Reporting v3 仍未 live 驗證。受密碼保護的 Supply Boss API v4 下載站已更新 Mac DMG 至 v0.1.17，員工頁只顯示 Mac DMG 與 Windows NSIS installer 兩張卡；Windows installer 仍為 v0.1.16。Windows main CI 只證明封裝、Bridge 與 addon smoke，不得冒充真實 Windows 11 Pro／Hello／DPAPI 人工驗證。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -317,6 +317,11 @@ Amazon App：
   - 本機最終 `npm run check` 通過 76 個測試檔／517 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。PR #31 已 squash merge：`https://github.com/jspusa/AMZ.API/pull/31`；release main commit 為 `654d70c0ed554b1b9cdd078fc0587d15274c2500`。main Validate run `31351732388`、Pages run `31351732381`、macOS run `31351732405` 與 Windows run `31351732415` 均成功。
   - live Pages production assets 為 `index-CgWtRJve.js`／`index-BuIzmwBr.css`；HTML、JS、CSS SHA-256 分別為 `30e1d0b98cfa785c02a2123d5c54e0ee5589648556d89140521c79e654d640bf`、`833704b3d89a9ebaddf9e111ff3e192fe37638815ee3ec6ab379fba9cf617f06`、`5563b1c6567b8b63a408492721d1887078738188a3d897e863d37f2e3b25d30f`，與 release production output byte-for-byte 相同；全程以 `curl` 驗證，沒有再開瀏覽器。
   - 固定 Windows prerelease 的 NSIS EXE SHA-256 為 `997209481a290a4e05dfc5111222d3deee9f2ff55bd5bff247deef06bbd8a3c0`，portable ZIP 為 `2b086fbd36c2ca8be7891a53a0d70cebc243b909b6ba2b9ba0c862799ab83b0a`；公開 `SHA256SUMS.txt` SHA-256 為 `426ff11bacc76166de15100ccd1e8dd6bc1d43cfb84428da25248bb8d5b7f12d`，與 trusted Windows run 原檔 byte-for-byte 相同。真正員工 Windows 11 Pro 裝置的 Hello UI／硬體與 DPAPI 使用者隔離尚未實測，不能用 CI smoke 冒充完成。
+- v0.1.18 FBA 入庫診斷修正版目前是未發布候選：
+  - 根因：v0.1.17 將多種安全失敗壓成同一句 generic notice，且逐貨件商品明細連續三票異常時會丟掉前面已核對的部分結果；首頁再把任何 terminal failure 誤標為「需要重新接回」。這不能證明憑證真的斷線。
+  - 修正後，global 401／403／429／5xx／網路失敗仍立即停止；逐貨件 local 失敗連續三票時只停止後續商品明細請求，保留已核對列，其餘貨件明確標成未知，不補 0。failed job 只回固定公開文案、安全診斷代碼與經 allowlist 的 Amazon Request ID，不回 raw upstream message、URL、report/document/account scope。
+  - 首頁狀態改成「同步未完成」。renderer 對沒有新 diagnosis 欄位的 v0.1.17 reply 保持相容；只有 v0.1.18 Notebook Key 才能產生新診斷證據。
+  - 本機 `npm run check` 通過 99 個測試檔／800 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。尚未 PR、merge、Pages、Mac artifact、安裝或真實 Amazon 重測，也未做 Windows 實機測試。
 - v0.1.17 FBA 入庫貨件追蹤與廣告策略表已發布、部署並安裝：
   - 營運區與首頁新增 30／90／180 天一鍵唯讀同步。main 背景工作依 account scope、mode、marketplace 與 exact date range 綁定；關閉 drawer 只停止 renderer observer，Notebook Key 仍會讀完全部所選貨件與每票商品。切換日期會取消舊 active range，相同 active range 才 single-flight。
   - 數量只採官方 Fulfillment Inbound v0 的 `QuantityShipped`／`QuantityReceived`，分別顯示預期、Amazon 已接收、尚在接收與多接收；接收中不稱短少或遺失，已關閉且仍有差異才建議回 Seller Central 核對。API 未提供的 title／ASIN／EAN 維持空白，不猜值。

@@ -12,6 +12,7 @@ import {
   defaultInboundShipmentDateRange,
   filterInboundShipments,
   inboundShipmentDifferenceCopy,
+  inboundShipmentFailureMessage,
   inboundShipmentStartBody,
   parseInboundShipmentJob,
   parseInboundShipmentSnapshot,
@@ -80,6 +81,44 @@ describe("FBA inbound shipment renderer contract", () => {
       US_MARKETPLACE_ID,
       RANGE,
     ).state).toBe("completed");
+  });
+
+  it("preserves only a safe failed-job diagnostic and formats it for support", () => {
+    const failed = inboundShipmentJobFixture({ state: "failed" });
+    failed.failure = {
+      code: "FBA_INBOUND_FORMAT_UNSUPPORTED",
+      requestId: "SAFE-REQUEST-ID",
+    };
+    const parsed = parseInboundShipmentJob(
+      failed,
+      US_MARKETPLACE_ID,
+      RANGE,
+    );
+    expect(inboundShipmentFailureMessage(parsed)).toContain(
+      "診斷代碼：FBA_INBOUND_FORMAT_UNSUPPORTED",
+    );
+    expect(inboundShipmentFailureMessage(parsed)).toContain(
+      "Amazon Request ID：SAFE-REQUEST-ID",
+    );
+
+    const hostile = structuredClone(failed);
+    (hostile.failure as Record<string, unknown>).code = "BAD\u200bCODE";
+    expect(() => parseInboundShipmentJob(
+      hostile,
+      US_MARKETPLACE_ID,
+      RANGE,
+    )).toThrow(/診斷代碼無效/u);
+
+    const contradictory = inboundShipmentJobFixture();
+    contradictory.failure = {
+      code: "FBA_INBOUND_FORMAT_UNSUPPORTED",
+      requestId: null,
+    };
+    expect(() => parseInboundShipmentJob(
+      contradictory,
+      US_MARKETPLACE_ID,
+      RANGE,
+    )).toThrow(/狀態與診斷資訊不一致/u);
   });
 
   it("fails closed on contradictory coverage and issue-report availability", () => {
@@ -530,6 +569,8 @@ describe("FBA inbound shipment renderer contract", () => {
     expect(dashboard).toContain("latestInboundShipmentKey");
     expect(dashboard).toContain("replaceInboundShipmentCacheForMarketplace");
     expect(dashboard).toContain("FBA 入庫貨件追蹤");
+    expect(dashboard).toContain("同步未完成");
+    expect(dashboard).not.toContain("需要重新接回");
     expect(panel).toContain("items.push(item)");
     expect(panel).not.toContain("grouped.set(item.shipmentId, [...items, item])");
     expect(css).toMatch(/\.inbound-item-table-scroll\s*\{[\s\S]*?max-width:\s*100%;[\s\S]*?overflow-x:\s*auto;/u);

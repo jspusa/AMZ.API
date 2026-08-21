@@ -28,7 +28,7 @@ describe("SP-API runtime identity", () => {
     try {
       expect(spApiUserAgent()).toBe(buildSpApiUserAgent({
         platform: process.platform,
-        version: "0.1.17",
+        version: "0.1.18",
       }));
     } finally {
       if (previous === undefined) delete process.env.SP_API_USER_AGENT;
