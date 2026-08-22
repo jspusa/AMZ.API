@@ -62,6 +62,8 @@ describe("FBA inbound shipment Excel", () => {
     expect(limitations).toContain("已排除 2 個不在本次貨件快照內");
     expect(limitations).toContain("未輸出其識別碼");
     expect(limitations).toContain("貨件數量快照時間");
+    expect(limitations).toContain("貨件清單範圍");
+    expect(limitations).toContain("所選日期範圍");
     expect(limitations).toContain("每日瑕疵報表讀取時間");
     expect(limitations).toContain("Amazon 未提供可證明的 dataThrough");
     expect(limitations).toContain("2026-08-21T08:00:00.000Z");

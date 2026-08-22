@@ -6,6 +6,7 @@ export function inboundShipmentSnapshotFixture(): Record<string, unknown> {
     mode: "live",
     marketplaceId: US_MARKETPLACE_ID,
     fetchedAt: "2026-08-21T08:00:00.000Z",
+    shipmentListScope: "selected-date-range",
     dateRange: {
       startDate: "2026-05-24",
       endDate: "2026-08-21",

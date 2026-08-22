@@ -79,6 +79,10 @@ export type InboundShipmentSnapshot = {
   mode: "live" | "demo";
   marketplaceId: string;
   fetchedAt: string;
+  shipmentListScope:
+    | "selected-date-range"
+    | "active-status-fallback"
+    | "modern-plan-range";
   dateRange: {
     startDate: string;
     endDate: string;
@@ -419,6 +423,16 @@ export function parseInboundShipmentSnapshot(
   const startDate = dateKey(parsedDateRange.startDate, "貨件開始日期");
   const endDate = dateKey(parsedDateRange.endDate, "貨件結束日期");
   if (startDate > endDate) throw new Error("貨件日期範圍前後顛倒。");
+  const shipmentListScope = raw.shipmentListScope === undefined
+    ? "selected-date-range"
+    : raw.shipmentListScope;
+  if (
+    shipmentListScope !== "selected-date-range" &&
+    shipmentListScope !== "active-status-fallback" &&
+    shipmentListScope !== "modern-plan-range"
+  ) {
+    throw new Error("FBA 入庫貨件清單範圍無效。");
+  }
 
   const parsedCoverage = record(raw.coverage, "貨件明細覆蓋");
   if (parsedCoverage.state !== "complete" && parsedCoverage.state !== "partial") {
@@ -608,6 +622,7 @@ export function parseInboundShipmentSnapshot(
     mode: raw.mode,
     marketplaceId: expectedMarketplaceId,
     fetchedAt: timestamp(raw.fetchedAt, "貨件快照時間"),
+    shipmentListScope,
     dateRange: {
       startDate,
       endDate,
@@ -673,6 +688,7 @@ export function parseInboundShipmentJob(
     ? null
     : parseInboundShipmentSnapshot(raw.snapshot, expectedMarketplaceId);
   const snapshotIsComplete =
+    snapshot?.shipmentListScope === "selected-date-range" &&
     snapshot?.coverage.state === "complete" &&
     snapshot.issueReport.state === "completed";
   if (

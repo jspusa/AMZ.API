@@ -263,6 +263,217 @@ describe("SP-API FBA inbound live read contract", () => {
     expect(itemCount).toBe(0);
   });
 
+  it("falls back to the modern inbound plan list when Amazon rejects the legacy date-range query", async () => {
+    let legacyCount = 0;
+    const modernPaths: string[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, {
+          access_token: "FAKE_ACCESS_TOKEN",
+          expires_in: 3_600,
+        });
+      }
+      if (url.pathname === "/fba/inbound/v0/shipments") {
+        legacyCount += 1;
+        return jsonResponse(400, {
+          errors: [{ code: "Invalid Input", message: "Data is invalid." }],
+        }, "LEGACY-INVALID");
+      }
+      if (url.pathname === "/inbound/fba/2024-03-20/inboundPlans") {
+        modernPaths.push(url.pathname);
+        expect(url.searchParams.get("sortBy")).toBe("LAST_UPDATED_TIME");
+        expect(url.searchParams.get("sortOrder")).toBe("DESC");
+        expect(url.searchParams.get("pageSize")).toBe("30");
+        return jsonResponse(200, {
+          inboundPlans: [
+            {
+              inboundPlanId: "wf1234abcd-1234-abcd-5678-1234abcd5678",
+              lastUpdatedAt: "2026-08-03T12:00:00Z",
+              marketplaceIds: [MARKETPLACE_ID],
+            },
+          ],
+        }, "MODERN-LIST");
+      }
+      if (
+        url.pathname ===
+        "/inbound/fba/2024-03-20/inboundPlans/wf1234abcd-1234-abcd-5678-1234abcd5678"
+      ) {
+        modernPaths.push(url.pathname);
+        return jsonResponse(200, {
+          inboundPlanId: "wf1234abcd-1234-abcd-5678-1234abcd5678",
+          lastUpdatedAt: "2026-08-03T12:00:00Z",
+          marketplaceIds: [MARKETPLACE_ID],
+          shipments: [
+            {
+              shipmentId: "sh1234abcd-1234-abcd-5678-1234abcd5678",
+              status: "RECEIVING",
+            },
+          ],
+        }, "MODERN-PLAN");
+      }
+      if (
+        url.pathname ===
+        "/inbound/fba/2024-03-20/inboundPlans/wf1234abcd-1234-abcd-5678-1234abcd5678/shipments/sh1234abcd-1234-abcd-5678-1234abcd5678"
+      ) {
+        modernPaths.push(url.pathname);
+        return jsonResponse(200, {
+          inboundPlanId: "wf1234abcd-1234-abcd-5678-1234abcd5678",
+          shipmentId: "sh1234abcd-1234-abcd-5678-1234abcd5678",
+          shipmentConfirmationId: "FBA19MODERN001",
+          name: "Modern shipment",
+          status: "RECEIVING",
+          destination: {
+            destinationType: "AMAZON_WAREHOUSE",
+            warehouseId: "ONT8",
+          },
+        }, "MODERN-SHIPMENT");
+      }
+      if (url.pathname === "/fba/inbound/v0/shipments/FBA19MODERN001/items") {
+        return jsonResponse(200, {
+          payload: {
+            ItemData: [
+              {
+                ShipmentId: "FBA19MODERN001",
+                SellerSKU: "MODERN-SKU",
+                FulfillmentNetworkSKU: "X00MODERN",
+                QuantityShipped: 48,
+                QuantityReceived: 49,
+              },
+            ],
+          },
+        }, "LEGACY-ITEMS");
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snapshotPromise = getFbaInboundShipmentSnapshot({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-03",
+      endDate: "2026-08-04",
+    });
+    await vi.runAllTimersAsync();
+    const snapshot = await snapshotPromise;
+
+    expect(legacyCount).toBe(2);
+    expect(modernPaths).toEqual([
+      "/inbound/fba/2024-03-20/inboundPlans",
+      "/inbound/fba/2024-03-20/inboundPlans/wf1234abcd-1234-abcd-5678-1234abcd5678",
+      "/inbound/fba/2024-03-20/inboundPlans/wf1234abcd-1234-abcd-5678-1234abcd5678/shipments/sh1234abcd-1234-abcd-5678-1234abcd5678",
+    ]);
+    expect(snapshot).toMatchObject({
+      shipmentListScope: "modern-plan-range",
+      dataSource: {
+        shipmentList:
+          "GET /inbound/fba/2024-03-20/inboundPlans + getInboundPlan/getShipment",
+      },
+      summary: {
+        shipmentCount: 1,
+        itemCount: 1,
+        totals: {
+          expectedUnits: 48,
+          receivedUnits: 49,
+          overReceivedUnits: 1,
+        },
+      },
+    });
+    expect(snapshot.notice).toContain(
+      "已自動改用 2024 新版入庫計畫最後更新時間篩選",
+    );
+  });
+
+  it("uses the bounded active-status list before the modern plan fallback", async () => {
+    const shipmentQueries: URL[] = [];
+    let modernCount = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, {
+          access_token: "FAKE_ACCESS_TOKEN",
+          expires_in: 3_600,
+        });
+      }
+      if (url.pathname === "/fba/inbound/v0/shipments") {
+        shipmentQueries.push(url);
+        if (url.searchParams.get("QueryType") === "DATE_RANGE") {
+          return jsonResponse(400, {
+            errors: [{ code: "Invalid Input", message: "Data is invalid." }],
+          }, "DATE-INVALID");
+        }
+        expect(url.searchParams.get("QueryType")).toBe("SHIPMENT");
+        expect(url.searchParams.get("ShipmentStatusList")?.split(",")).toEqual([
+          "WORKING",
+          "READY_TO_SHIP",
+          "SHIPPED",
+          "IN_TRANSIT",
+          "DELIVERED",
+          "CHECKED_IN",
+          "RECEIVING",
+          "ERROR",
+        ]);
+        return jsonResponse(200, {
+          payload: {
+            ShipmentData: [
+              {
+                ShipmentId: "FBA19ACTIVE001",
+                ShipmentName: "Receiving shipment",
+                ShipmentStatus: "RECEIVING",
+              },
+            ],
+          },
+        }, "ACTIVE-LIST");
+      }
+      if (url.pathname === "/fba/inbound/v0/shipments/FBA19ACTIVE001/items") {
+        return jsonResponse(200, {
+          payload: {
+            ItemData: [
+              {
+                ShipmentId: "FBA19ACTIVE001",
+                SellerSKU: "ACTIVE-SKU",
+                QuantityShipped: 10,
+                QuantityReceived: 8,
+              },
+            ],
+          },
+        }, "ACTIVE-ITEMS");
+      }
+      if (url.pathname.startsWith("/inbound/fba/2024-03-20/")) {
+        modernCount += 1;
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snapshotPromise = getFbaInboundShipmentSnapshot({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-03",
+      endDate: "2026-08-04",
+    });
+    await vi.runAllTimersAsync();
+    const snapshot = await snapshotPromise;
+
+    expect(shipmentQueries).toHaveLength(2);
+    expect(modernCount).toBe(0);
+    expect(snapshot).toMatchObject({
+      shipmentListScope: "active-status-fallback",
+      dataSource: {
+        shipmentList:
+          "GET /fba/inbound/v0/shipments?QueryType=SHIPMENT (active-status fallback)",
+      },
+      summary: {
+        shipmentCount: 1,
+        itemCount: 1,
+        totals: {
+          expectedUnits: 10,
+          receivedUnits: 8,
+          pendingUnits: 2,
+        },
+      },
+    });
+    expect(snapshot.notice).toContain("備援範圍不受上方日期限制");
+  });
+
   it("does not echo a hostile global 503 response into the public error", async () => {
     const hostileMessage = [
       "accountScope=private-account",

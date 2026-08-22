@@ -41,6 +41,11 @@ import {
   type FbaInboundTransportResult,
 } from "./fba-inbound-shipments";
 import {
+  collectModernFbaInboundShipmentList,
+  type ModernFbaInboundTransportRequest,
+  type ModernFbaInboundTransportResult,
+} from "./fba-inbound-modern";
+import {
   dedupeFbaReviewCandidates,
   type DedupedFbaReviewCandidate,
   type FbaReviewCandidate,
@@ -5491,6 +5496,8 @@ async function callFbaInboundV0(
     if (request.queryType === "DATE_RANGE") {
       query.set("LastUpdatedAfter", request.lastUpdatedAfter);
       query.set("LastUpdatedBefore", request.lastUpdatedBefore);
+    } else if (request.queryType === "SHIPMENT") {
+      query.set("ShipmentStatusList", request.shipmentStatuses.join(","));
     } else {
       query.set("NextToken", request.nextToken);
     }
@@ -5575,6 +5582,138 @@ async function executeFbaInboundV0(
     break;
   }
   return response;
+}
+
+async function callModernFbaInboundRead(
+  marketplaceId: MarketplaceId,
+  request: ModernFbaInboundTransportRequest,
+  forceTokenRefresh = false,
+  signal?: AbortSignal,
+): Promise<Response> {
+  assertNotAborted(signal);
+  const marketplace = MARKETPLACES[marketplaceId];
+  const token = await requestAccessToken(
+    marketplace.region,
+    forceTokenRefresh,
+  );
+  assertNotAborted(signal);
+  await paceFbaInboundRead(marketplace.region, signal);
+  assertNotAborted(signal);
+  let path = "/inbound/fba/2024-03-20/inboundPlans";
+  const query = new URLSearchParams();
+  if (request.kind === "plans") {
+    query.set("sortBy", "LAST_UPDATED_TIME");
+    query.set("sortOrder", "DESC");
+    query.set("pageSize", "30");
+    if (request.paginationToken) {
+      query.set("paginationToken", request.paginationToken);
+    }
+  } else {
+    path += `/${encodeURIComponent(request.inboundPlanId)}`;
+    if (request.kind === "shipment") {
+      path += `/shipments/${encodeURIComponent(request.shipmentId)}`;
+    }
+  }
+  const controller = new AbortController();
+  const stopForwardingAbort = forwardAbort(controller, signal);
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const queryText = query.toString();
+  try {
+    return await fetch(
+      `${REGION_ENDPOINTS[marketplace.region]}${path}${
+        queryText ? `?${queryText}` : ""
+      }`,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "x-amz-access-token": token,
+          "x-amz-date": toAmzDate(),
+          "user-agent": spApiUserAgent(),
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      },
+    );
+  } catch (error) {
+    assertNotAborted(signal);
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new SpApiError(
+        "Amazon 新版 FBA 入庫唯讀查詢逾時，已停止這次讀取。",
+        { status: 504, code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE" },
+      );
+    }
+    throw new SpApiError("目前無法連線至 Amazon 新版 FBA 入庫 API。", {
+      status: 502,
+      code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
+    });
+  } finally {
+    clearTimeout(timeout);
+    stopForwardingAbort();
+  }
+}
+
+async function fetchModernFbaInboundTransport(
+  marketplaceId: MarketplaceId,
+  request: ModernFbaInboundTransportRequest,
+  signal?: AbortSignal,
+): Promise<ModernFbaInboundTransportResult> {
+  assertNotAborted(signal);
+  let response = await callModernFbaInboundRead(
+    marketplaceId,
+    request,
+    false,
+    signal,
+  );
+  let refreshedUnauthorized = false;
+  let transientRetries = 0;
+  while (true) {
+    assertNotAborted(signal);
+    if (response.status === 401 && !refreshedUnauthorized) {
+      refreshedUnauthorized = true;
+      tokenCache.delete(MARKETPLACES[marketplaceId].region);
+      response = await callModernFbaInboundRead(
+        marketplaceId,
+        request,
+        true,
+        signal,
+      );
+      continue;
+    }
+    if (
+      [429, 500, 502, 503, 504].includes(response.status) &&
+      transientRetries < 2
+    ) {
+      await wait(retryDelayMs(response, transientRetries), signal);
+      transientRetries += 1;
+      response = await callModernFbaInboundRead(
+        marketplaceId,
+        request,
+        false,
+        signal,
+      );
+      continue;
+    }
+    break;
+  }
+  assertNotAborted(signal);
+  if (!response.ok) return throwFbaInboundReadError(response);
+  const payload = await parseResponseJson<unknown>(response);
+  assertNotAborted(signal);
+  if (payload === null) {
+    throw new SpApiError(
+      "Amazon 回傳了無法辨識的新版 FBA 入庫 JSON。",
+      {
+        status: 502,
+        code: "FBA_INBOUND_FORMAT_UNSUPPORTED",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  return {
+    payload,
+    requestId: response.headers.get("x-amzn-requestid"),
+  };
 }
 
 async function throwFbaInboundReadError(response: Response): Promise<never> {
@@ -5692,6 +5831,79 @@ export async function getFbaInboundShipmentSnapshot(input: {
     });
   }
   try {
+    const firstRequest: FbaInboundTransportRequest = {
+      kind: "shipments",
+      marketplaceId: input.marketplaceId,
+      queryType: "DATE_RANGE",
+      lastUpdatedAfter: window.startAt,
+      lastUpdatedBefore: window.endAt,
+      nextToken: null,
+    };
+    let firstShipmentPage: FbaInboundTransportResult;
+    let shipmentListSource: FbaInboundShipmentSnapshot["dataSource"]["shipmentList"] =
+      "GET /fba/inbound/v0/shipments";
+    try {
+      firstShipmentPage = await fetchFbaInboundTransport(
+        firstRequest,
+        input.signal,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof SpApiError) ||
+        (error.status !== 400 && error.status !== 422)
+      ) {
+        throw error;
+      }
+      try {
+        firstShipmentPage = await fetchFbaInboundTransport(
+          {
+            kind: "shipments",
+            marketplaceId: input.marketplaceId,
+            queryType: "SHIPMENT",
+            shipmentStatuses: [
+              "WORKING",
+              "READY_TO_SHIP",
+              "SHIPPED",
+              "IN_TRANSIT",
+              "DELIVERED",
+              "CHECKED_IN",
+              "RECEIVING",
+              "ERROR",
+            ],
+            lastUpdatedAfter: null,
+            lastUpdatedBefore: null,
+            nextToken: null,
+          },
+          input.signal,
+        );
+        shipmentListSource =
+          "GET /fba/inbound/v0/shipments?QueryType=SHIPMENT (active-status fallback)";
+      } catch (fallbackError) {
+        if (
+          !(fallbackError instanceof SpApiError) ||
+          (fallbackError.status !== 400 && fallbackError.status !== 422)
+        ) {
+          throw fallbackError;
+        }
+        firstShipmentPage = await collectModernFbaInboundShipmentList({
+          marketplaceId: input.marketplaceId,
+          startAt: window.startAt,
+          endAt: window.endAt,
+          signal: input.signal,
+          onProgress: (completed) =>
+            input.onProgress?.({ phase: "shipments", completed, total: null }),
+          transport: (request) =>
+            fetchModernFbaInboundTransport(
+              input.marketplaceId,
+              request,
+              input.signal,
+            ),
+        });
+        shipmentListSource =
+          "GET /inbound/fba/2024-03-20/inboundPlans + getInboundPlan/getShipment";
+      }
+    }
+    let firstShipmentPagePending = true;
     return await collectFbaInboundShipmentSnapshot({
       marketplaceId: input.marketplaceId,
       startDate: input.startDate,
@@ -5700,7 +5912,20 @@ export async function getFbaInboundShipmentSnapshot(input: {
       lastUpdatedBefore: window.endAt,
       signal: input.signal,
       onProgress: input.onProgress,
-      transport: (request) => fetchFbaInboundTransport(request, input.signal),
+      shipmentListSource,
+      transport: (request) => {
+        if (request.kind === "shipments" && request.queryType === "DATE_RANGE") {
+          if (!firstShipmentPagePending) {
+            throw new SpApiError(
+              "FBA 入庫貨件第一頁被重複請求，已停止同步。",
+              { status: 409, code: "PAGINATION_CHANGED" },
+            );
+          }
+          firstShipmentPagePending = false;
+          return Promise.resolve(firstShipmentPage);
+        }
+        return fetchFbaInboundTransport(request, input.signal);
+      },
     });
   } catch (error) {
     if (error instanceof FbaInboundSnapshotError) {

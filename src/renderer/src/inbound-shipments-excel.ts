@@ -549,6 +549,11 @@ export function createInboundShipmentWorkbook(
         ["站點", marketplaceShort],
         ["查詢日期範圍", `${snapshot.dateRange.startDate} – ${snapshot.dateRange.endDate}`],
         ["貨件數量快照時間", snapshot.fetchedAt],
+        ["貨件清單範圍", snapshot.shipmentListScope === "selected-date-range"
+          ? "所選日期範圍"
+          : snapshot.shipmentListScope === "active-status-fallback"
+            ? "Amazon 拒絕舊版日期查詢；只包含目前活動中／需注意的貨件，不受所選日期限制，已關閉／取消／刪除貨件可能缺少。"
+            : "Amazon 拒絕舊版日期查詢；依 2024 新版入庫計畫最後更新時間篩選，不等同舊版完整貨件日期清單。"],
         ["每日瑕疵報表讀取時間", snapshot.issueReport.fetchedAt ?? "未取得"],
         ["每日瑕疵資料截止日", "Amazon 未提供可證明的 dataThrough；不可由讀取時間推定。"],
         ["貨件明細覆蓋", snapshot.coverage.state === "complete" ? "完整" : `部分；${snapshot.coverage.incompleteShipmentCount} 個貨件未完整讀取`],

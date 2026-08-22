@@ -39,7 +39,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 
 Amazon 公開 API 目前不提供現有 FBA FC 庫存的逐 SKU／批次效期，因此 App 不會拿庫齡冒充近效期或已過期清單。一般 US／CA／JP／SG／AU／UK／DE 發票與 Seller Central 帳單也沒有通用公開下載 API；會計中心只啟用可證明為 FBA 的公開報表，Finances JSON、結算報表、人工前置與不可用能力會分開標示，不使用 Seller Central 私有接口。
 
-FBA 入庫貨件的「Amazon 已接收」取自 Fulfillment Inbound v0 `QuantityReceived`，不是 Seller Central 私有畫面的逐次掃描或調查結論。接收中貨件的正差額只稱為「尚未接收／暫時差異」；超收會獨立保留，只有已關閉貨件仍有差異時才提示回 Seller Central 核對。每日 inbound noncompliance report 只包含 Amazon 回傳的問題列且可能落後即時畫面，沒有問題列不等於可證明三個層級即時零瑕疵。
+FBA 入庫貨件的「Amazon 已接收」取自 Fulfillment Inbound v0 `QuantityReceived`，不是 Seller Central 私有畫面的逐次掃描或調查結論。接收中貨件的正差額只稱為「尚未接收／暫時差異」；超收會獨立保留，只有已關閉貨件仍有差異時才提示回 Seller Central 核對。若 Amazon 拒絕舊版日期範圍清單，Notebook Key 會依序嘗試 v0 活動中狀態清單與 2024 新版入庫計畫清單；兩種備援都固定標為部分範圍，不能冒充所選日期內的完整貨件清單。每日 inbound noncompliance report 只包含 Amazon 回傳的問題列且可能落後即時畫面，沒有問題列不等於可證明三個層級即時零瑕疵。
 
 Customer Feedback API 提供的是每週更新的正／負「評論主題影響值」（`starRatingImpact`），不是商品總星等、1–5 星制、總評論數或完整 review 全文。負值表示負向主題對星等下降方向的影響，不是「商品負星等」；App 保留 Amazon 原始正負號，不改成 0 或絕對值。評論健檢只對 Listings relationships 已證明為 child 或 standalone 的 FBA ASIN 排序主題；不會拿 parent 容器或推測值冒充商品評論排名。
 
