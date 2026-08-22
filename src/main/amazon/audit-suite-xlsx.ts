@@ -1,5 +1,9 @@
 import { strToU8, zipSync } from "fflate";
-import type { AuditSuiteContext } from "../../shared/audit-suite";
+import {
+  AUDIT_SUITE_SECTIONS,
+  AUDIT_SUITE_SECTION_LABELS,
+  type AuditSuiteContext,
+} from "../../shared/audit-suite";
 
 const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
 const MAX_CELL_CHARACTERS = 32_767;
@@ -54,6 +58,15 @@ export type ImageAuditProblemRow = Readonly<{
   notice: string;
 }>;
 
+export type APlusAuditProblemRow = Readonly<{
+  sellerSku: string;
+  title: string;
+  asin: string;
+  finding: string;
+  brandStoryFinding: string;
+  notice: string;
+}>;
+
 export type UnboundVariationAuditRow = Readonly<{
   sellerSku: string;
   title: string;
@@ -71,6 +84,18 @@ export type AdvertisingCoverageAuditRow = Readonly<{
   notice: string;
 }>;
 
+export type BusinessPricingAuditProblemRow = Readonly<{
+  sellerSku: string;
+  title: string;
+  asin: string;
+  standardPrice: number | null;
+  businessPrice: number | null;
+  currencyCode: string | null;
+  finding: string;
+  editable: boolean;
+  notice: string;
+}>;
+
 export type AuditSuiteWorkbookInput = Readonly<{
   context: AuditSuiteContext;
   marketplaceLabel: string;
@@ -78,8 +103,10 @@ export type AuditSuiteWorkbookInput = Readonly<{
   sections: Readonly<{
     content: ValidatedAuditSuiteSnapshot<readonly ContentAuditProblemRow[]> | null;
     image: ValidatedAuditSuiteSnapshot<readonly ImageAuditProblemRow[]> | null;
+    aplus: ValidatedAuditSuiteSnapshot<readonly APlusAuditProblemRow[]> | null;
     variation: ValidatedAuditSuiteSnapshot<readonly UnboundVariationAuditRow[]> | null;
     subscription: ValidatedAuditSuiteSnapshot<readonly SubscriptionAuditAnomalyRow[]> | null;
+    businessPricing: ValidatedAuditSuiteSnapshot<readonly BusinessPricingAuditProblemRow[]> | null;
     advertising: ValidatedAuditSuiteSnapshot<readonly AdvertisingCoverageAuditRow[]> | null;
   }>;
 }>;
@@ -131,6 +158,15 @@ function finiteNumber(
   if (!Number.isFinite(value) || value < minimum || value > maximum) {
     throw new TypeError(`${label}必須是可核對的有限數值或未知。`);
   }
+  return value;
+}
+
+function currencyCode(value: string | null, hasPrice: boolean): string {
+  if (value === null) {
+    if (hasPrice) throw new TypeError("B2B 價格有數值時必須提供幣別。");
+    return "";
+  }
+  if (!/^[A-Z]{3}$/u.test(value)) throw new TypeError("B2B 價格幣別無效。");
   return value;
 }
 
@@ -238,13 +274,9 @@ function checkedRow(values: readonly Cell[]): readonly Cell[] {
 
 function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetDefinition[] {
   const context = input.context;
-  const sectionSummary = [
-    ["文案問題", input.sections.content],
-    ["圖片問題", input.sections.image],
-    ["未綁變體", input.sections.variation],
-    ["訂閱異常", input.sections.subscription],
-    ["廣告覆蓋", input.sections.advertising],
-  ] as const;
+  const sectionSummary = AUDIT_SUITE_SECTIONS.map(({ id, label }) =>
+    [label, input.sections[id]] as const
+  );
   const overviewRows = sectionSummary.map(([label, snapshot]) => {
     if (!snapshot) {
       return [
@@ -273,11 +305,18 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
   const imageHeaders = [
     "資料狀態", "SKU", "商品標題", "ASIN", "圖片數", "判定", "說明",
   ];
+  const aplusHeaders = [
+    "資料狀態", "SKU", "商品標題", "ASIN", "A+ 判定", "From the brand 判定", "說明",
+  ];
   const variationHeaders = [
     "資料狀態", "SKU", "商品標題", "ASIN", "商品類型", "判定依據",
   ];
   const advertisingHeaders = [
     "資料狀態", "SKU", "商品標題", "ASIN", "判定", "證據", "說明",
+  ];
+  const businessPricingHeaders = [
+    "資料狀態", "SKU", "商品標題", "ASIN", "一般售價", "B2B 價格", "幣別",
+    "判定", "可直接修改", "說明",
   ];
 
   return [
@@ -288,13 +327,13 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
       rows: overviewRows,
     },
     {
-      name: "文案問題",
+      name: AUDIT_SUITE_SECTION_LABELS.content,
       headers: contentHeaders,
       widths: [16, 26, 48, 18, 24, 18, 72, 72],
       rows: rowsForSnapshot({
         snapshot: input.sections.content,
         context,
-        label: "文案問題",
+        label: AUDIT_SUITE_SECTION_LABELS.content,
         columnCount: contentHeaders.length,
         emptyNotice: "此快照已完整核對；沒有符合文案問題條件的項目。",
         map: (payload) => payload.map((row) => checkedRow([
@@ -309,13 +348,13 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
       }),
     },
     {
-      name: "圖片問題",
+      name: AUDIT_SUITE_SECTION_LABELS.image,
       headers: imageHeaders,
       widths: [16, 26, 48, 18, 14, 24, 72],
       rows: rowsForSnapshot({
         snapshot: input.sections.image,
         context,
-        label: "圖片問題",
+        label: AUDIT_SUITE_SECTION_LABELS.image,
         columnCount: imageHeaders.length,
         emptyNotice: "此快照已完整核對；沒有符合圖片問題條件的項目。",
         map: (payload) => payload.map((row) => checkedRow([
@@ -329,13 +368,33 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
       }),
     },
     {
-      name: "未綁變體",
+      name: AUDIT_SUITE_SECTION_LABELS.aplus,
+      headers: aplusHeaders,
+      widths: [16, 26, 48, 18, 28, 32, 72],
+      rows: rowsForSnapshot({
+        snapshot: input.sections.aplus,
+        context,
+        label: AUDIT_SUITE_SECTION_LABELS.aplus,
+        columnCount: aplusHeaders.length,
+        emptyNotice: "此快照已完整核對；沒有符合 A+ 健檢條件的項目。",
+        map: (payload) => payload.map((row) => checkedRow([
+          textCell(exactSku(row.sellerSku), 2),
+          textCell(safeText(row.title, "A+ 商品標題")),
+          textCell(safeText(row.asin, "A+ ASIN", 20), 2),
+          textCell(safeText(row.finding, "A+ 判定")),
+          textCell(safeText(row.brandStoryFinding, "From the brand 判定")),
+          textCell(safeText(row.notice, "A+ 說明")),
+        ])),
+      }),
+    },
+    {
+      name: AUDIT_SUITE_SECTION_LABELS.variation,
       headers: variationHeaders,
       widths: [16, 26, 48, 18, 24, 82],
       rows: rowsForSnapshot({
         snapshot: input.sections.variation,
         context,
-        label: "未綁變體",
+        label: AUDIT_SUITE_SECTION_LABELS.variation,
         columnCount: variationHeaders.length,
         emptyNotice: "此快照已完整核對；沒有 relationships 已證明為未綁變體的項目。",
         map: (payload) => payload.map((row) => checkedRow([
@@ -348,13 +407,13 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
       }),
     },
     {
-      name: "訂閱異常",
+      name: AUDIT_SUITE_SECTION_LABELS.subscription,
       headers: subscriptionHeaders,
       widths: [16, 26, 48, 18, 36, 20, 18, 16, 64],
       rows: rowsForSnapshot({
         snapshot: input.sections.subscription,
         context,
-        label: "訂閱異常",
+        label: AUDIT_SUITE_SECTION_LABELS.subscription,
         columnCount: subscriptionHeaders.length,
         emptyNotice: "此快照已完整核對；沒有符合訂閱異常條件的項目。",
         map: (payload) => payload.map((row) => checkedRow([
@@ -370,13 +429,44 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
       }),
     },
     {
-      name: "廣告覆蓋",
+      name: AUDIT_SUITE_SECTION_LABELS.businessPricing,
+      headers: businessPricingHeaders,
+      widths: [16, 26, 48, 18, 16, 16, 12, 32, 16, 72],
+      rows: rowsForSnapshot({
+        snapshot: input.sections.businessPricing,
+        context,
+        label: AUDIT_SUITE_SECTION_LABELS.businessPricing,
+        columnCount: businessPricingHeaders.length,
+        emptyNotice: "此快照已完整核對；沒有符合 B2B 價格健檢條件的項目。",
+        map: (payload) => payload.map((row) => {
+          const standardPrice = finiteNumber(row.standardPrice, "一般售價", 0, 1_000_000_000);
+          const businessPrice = finiteNumber(row.businessPrice, "B2B 價格", 0, 1_000_000_000);
+          const code = currencyCode(
+            row.currencyCode,
+            standardPrice !== null || businessPrice !== null,
+          );
+          return checkedRow([
+            textCell(exactSku(row.sellerSku), 2),
+            textCell(safeText(row.title, "B2B 商品標題")),
+            textCell(safeText(row.asin, "B2B ASIN", 20), 2),
+            numberCell(standardPrice),
+            numberCell(businessPrice),
+            textCell(code),
+            textCell(safeText(row.finding, "B2B 價格判定")),
+            textCell(row.editable ? "是" : "否"),
+            textCell(safeText(row.notice, "B2B 價格說明")),
+          ]);
+        }),
+      }),
+    },
+    {
+      name: AUDIT_SUITE_SECTION_LABELS.advertising,
       headers: advertisingHeaders,
       widths: [16, 26, 48, 18, 22, 72, 72],
       rows: rowsForSnapshot({
         snapshot: input.sections.advertising,
         context,
-        label: "廣告覆蓋",
+        label: AUDIT_SUITE_SECTION_LABELS.advertising,
         columnCount: advertisingHeaders.length,
         emptyNotice: "此快照已完整核對；沒有可列出的 FBA 廣告覆蓋項目。",
         map: (payload) => payload.map((row) => checkedRow([
@@ -476,7 +566,7 @@ function buildWorkbook(sheetNames: readonly string[]): string {
     `<sheet name="${escapeXml(name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
   ).join("");
   const definedNames = sheetNames.map((name, index) =>
-    `<definedName name="_xlnm.Print_Titles" localSheetId="${index}">'${name.replaceAll("'", "''")}'!$1:$1</definedName>`,
+    `<definedName name="_xlnm.Print_Titles" localSheetId="${index}">${escapeXml(`'${name.replaceAll("'", "''")}'!$1:$1`)}</definedName>`,
   ).join("");
   return `${XML_DECLARATION}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="0"/></bookViews><sheets>${sheets}</sheets><definedNames>${definedNames}</definedNames><calcPr calcId="0" calcMode="manual" fullCalcOnLoad="0" forceFullCalc="0"/></workbook>`;
 }

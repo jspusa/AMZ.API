@@ -493,4 +493,107 @@ describe("FBA listing content quality audit", () => {
     expect(result.rows[9]?.issues).toEqual([]);
     expect(result.summary).toMatchObject({ singleIngredientMismatch: 4 });
   });
+
+  it("flags tendon and hypoallergenic claims only against explicit ingredients evidence", () => {
+    const result = auditListingContentRows({
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: FETCHED_AT,
+      rows: [
+        row({
+          sellerSku: "TENDON-MISSING",
+          title: `${"T".repeat(60)} Turkey Tendons`,
+          itemHighlight: `${"H".repeat(110)} tendon treats`,
+          bulletPoints: [
+            `${"A".repeat(150)} premium TENDON chew`,
+            "B".repeat(150),
+            "C".repeat(150),
+            "D".repeat(150),
+            "E".repeat(150),
+          ],
+          ingredients: "Turkey, Vegetable Glycerin",
+        }),
+        row({
+          sellerSku: "TENDON-PRESENT",
+          title: `${"T".repeat(60)} Turkey Tendons`,
+          ingredients: "Turkey Tendon, Vegetable Glycerin",
+        }),
+        row({
+          sellerSku: "CHICKEN-HYPO",
+          title: `${"T".repeat(60)} Hypoallergenic dog treats`,
+          itemHighlight: `${"H".repeat(110)} HYPO-ALLERGENIC recipe`,
+          bulletPoints: [
+            `${"A".repeat(150)} hypoallergenic reward`,
+            "B".repeat(150),
+            "C".repeat(150),
+            "D".repeat(150),
+            "E".repeat(150),
+          ],
+          ingredients: "Turkey, Chicken, Vegetable Glycerin",
+        }),
+        row({
+          sellerSku: "NO-CHICKEN-HYPO",
+          title: `${"T".repeat(60)} Hypoallergenic dog treats`,
+          ingredients: "Turkey, Vegetable Glycerin",
+        }),
+        row({
+          sellerSku: "EMPTY-INGREDIENTS",
+          title: `${"T".repeat(60)} Turkey Tendons Hypoallergenic`,
+          ingredients: "",
+        }),
+      ],
+    });
+
+    const claimIssues = (index: number) => result.rows[index]!.issues.filter(
+      (issue) => issue.kind === "SINGLE_INGREDIENT_MISMATCH",
+    );
+    expect(claimIssues(0)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "title", token: "Tendons" }),
+      expect.objectContaining({ field: "itemHighlight", token: "tendon" }),
+      expect.objectContaining({ field: "bulletPoints", bulletIndex: 0, token: "TENDON" }),
+    ]));
+    expect(claimIssues(0)).toHaveLength(3);
+    expect(claimIssues(1)).toEqual([]);
+    expect(claimIssues(2)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "title", token: "Hypoallergenic" }),
+      expect.objectContaining({ field: "itemHighlight", token: "HYPO-ALLERGENIC" }),
+      expect.objectContaining({ field: "bulletPoints", bulletIndex: 0, token: "hypoallergenic" }),
+    ]));
+    expect(claimIssues(2)).toHaveLength(3);
+    expect(claimIssues(3)).toEqual([]);
+    expect(claimIssues(4)).toEqual([]);
+    expect(result.summary.singleIngredientMismatch).toBe(2);
+  });
+
+  it("uses whole-word claim matching and deduplicates repeats within one field", () => {
+    const result = auditListingContentRows({
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: FETCHED_AT,
+      rows: [
+        row({
+          sellerSku: "WHOLE-WORD",
+          title: `${"T".repeat(60)} tendonized texture`,
+          ingredients: "Turkey, Vegetable Glycerin",
+        }),
+        row({
+          sellerSku: "REPEATED-TENDON",
+          title: `${"T".repeat(60)} Tendon treats with Tendon texture`,
+          ingredients: "Turkey, Vegetable Glycerin",
+        }),
+        row({
+          sellerSku: "REPEATED-HYPO",
+          title: `${"T".repeat(60)} hypoallergenic hypoallergenic treats`,
+          ingredients: "Turkey, Chicken",
+        }),
+      ],
+    });
+
+    const claims = (index: number) => result.rows[index]!.issues.filter(
+      (issue) => issue.kind === "SINGLE_INGREDIENT_MISMATCH",
+    );
+    expect(claims(0)).toEqual([]);
+    expect(claims(1)).toHaveLength(1);
+    expect(claims(1)[0]).toMatchObject({ token: "Tendon" });
+    expect(claims(2)).toHaveLength(1);
+    expect(claims(2)[0]).toMatchObject({ token: "hypoallergenic" });
+  });
 });

@@ -126,11 +126,15 @@ describe("FBA listing content export completeness", () => {
       throw new Error(`Unexpected request: ${url.href}`);
     });
     vi.stubGlobal("fetch", fetchMock);
+    const progress: unknown[] = [];
 
     const result = await getAllListingsExportData({
       marketplaceId: MARKETPLACE_ID,
       reportId: REPORT_ID,
       documentId: DOCUMENT_ID,
+      onProgress: (value) => {
+        progress.push(value);
+      },
     });
 
     expect(result.rows).toHaveLength(1);
@@ -161,6 +165,11 @@ describe("FBA listing content export completeness", () => {
         expect.objectContaining({ sellerSku: "NO-AVAIL", kind: "非 FBA，已略過" }),
       ]),
     );
+    expect(progress).toEqual([
+      { phase: "report-ready", completedUnits: 1, totalUnits: 1 },
+      { phase: "report-downloaded", completedUnits: 1, totalUnits: 1 },
+      { phase: "listings", completedUnits: 1, totalUnits: 1 },
+    ]);
   });
 
   it("marks a successful Listings response without attributes incomplete", async () => {

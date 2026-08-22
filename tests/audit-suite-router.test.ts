@@ -2,7 +2,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiRouter, buildAdvertisingAuditSuiteResult } from "../src/main/api-router";
+import {
+  ApiRouter,
+  buildAdvertisingAuditSuiteResult,
+  buildAplusAuditSuiteResult,
+} from "../src/main/api-router";
 import {
   startAgedInventoryReport,
   startAllListingsReport,
@@ -137,14 +141,18 @@ describe("main-owned audit suite routes", () => {
       status: "partial",
       sections: {
         content: { status: "partial" },
+        aplus: { status: "completed" },
+        businessPricing: { status: "completed" },
         advertising: { status: "failed" },
       },
     });
     expect(Object.keys(jsonValue(completed).sections as Record<string, unknown>)).toEqual([
       "content",
       "image",
+      "aplus",
       "variation",
       "subscription",
+      "businessPricing",
       "advertising",
     ]);
     expect(containsKey(jsonValue(completed), "accountScope")).toBe(false);
@@ -357,6 +365,57 @@ describe("main-owned audit suite routes", () => {
     const status = await router.handle(request("GET", "/api/sp-api/audit-suite", identity));
     expect(status.status).toBe(410);
     expect(jsonValue(status)).toMatchObject({ code: "AUDIT_SUITE_EXPIRED" });
+  });
+});
+
+describe("A+ run-all adapter", () => {
+  it("keeps a published-but-partial row visible and marks the section partial", () => {
+    const result = buildAplusAuditSuiteResult({
+      mode: "live",
+      marketplaceId: US,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "main-owned-fba-snapshot",
+      totals: {
+        eligibleFbaSkus: 1,
+        uniqueAsins: 1,
+        published: 1,
+        missing: 0,
+        incomplete: 0,
+        unavailable: 0,
+      },
+      summary: {
+        eligibleFbaSkus: 1,
+        uniqueAsins: 1,
+        published: 1,
+        missing: 0,
+        incomplete: 0,
+        unavailable: 0,
+      },
+      rows: [{
+        sellerSku: "APLUS-PARTIAL",
+        asin: "B000000001",
+        title: "Published with partial coverage",
+        marketplaceId: US,
+        status: "published",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        contentTypes: ["EBC"],
+        locales: ["en-US"],
+        fromTheBrandStatus: "not_verifiable_by_public_api",
+        reasonCode: "PUBLISHED_RECORD_FOUND",
+        reason: "已找到 exact A+ 發布紀錄，但後續來源未完整。",
+      }],
+      notice: "A+ 後續頁面未完整；正向發布證據仍保留。",
+    });
+
+    expect(result.status).toBe("partial");
+    expect(result.payload).toEqual([expect.objectContaining({
+      sellerSku: "APLUS-PARTIAL",
+      finding: "已找到 A+，但資料範圍未完整",
+      notice: "已找到 exact A+ 發布紀錄，但後續來源未完整。",
+    })]);
+    expect(result.notice).toContain("已找到 A+");
+    expect(result.notice).toContain("資料範圍未完整");
   });
 });
 

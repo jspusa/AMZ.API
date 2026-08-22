@@ -119,6 +119,37 @@ describe("Amazon Business pricing routes", () => {
     });
   });
 
+  it("accepts only an explicit complete tier plan and shows it in native approval", async () => {
+    const body = {
+      ...await writeBody(),
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 10, percent: 10 },
+        { lowerBound: 15, percent: 15 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    };
+    expect((await router.handle(request("POST", body))).status).toBe(200);
+    expect((await router.handle(request("PATCH", body))).status).toBe(200);
+    expect(approveWrite.mock.calls[0]?.[0]).toContain("5件=5%");
+    expect(approveWrite.mock.calls[0]?.[0]).toContain("20件=20%");
+    expect(runIdempotentOperation.mock.calls[0]?.[0]).toMatchObject({
+      operationType: "business_price",
+    });
+
+    const incomplete = await router.handle(request("POST", {
+      ...await writeBody(),
+      quantityDiscountTiers: [{ lowerBound: 5, percent: 5 }],
+    }));
+    expect(incomplete.status).toBe(400);
+    expect(incomplete.body.kind).toBe("json");
+    if (incomplete.body.kind !== "json") throw new Error("Expected JSON response");
+    expect(incomplete.body.value).toMatchObject({
+      code: "INVALID_QUANTITY_DISCOUNT",
+    });
+  });
+
   it("rejects changed or undeclared fields before native approval", async () => {
     const body = await writeBody();
     expect((await router.handle(request("POST", body))).status).toBe(200);
@@ -161,6 +192,8 @@ describe("Amazon Business pricing routes", () => {
       asin: "B012345678",
       productType: "PET_FOOD",
       businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
+      previousQuantityDiscountPlanHash: null,
       schemaChecksum: "seller-schema-checksum",
       fbaEvidenceHash: "b".repeat(64),
       canonicalPatchHash: "c".repeat(64),
@@ -168,13 +201,24 @@ describe("Amazon Business pricing routes", () => {
     };
     const baseline = fingerprint(input, evidence);
     for (const field of [
+      "businessOfferProtectedHash",
       "fbaEvidenceHash",
       "canonicalPatchHash",
       "validationIssuesHash",
     ] as const) {
-      expect(fingerprint(input, { ...evidence, [field]: "e".repeat(64) }))
+      expect(fingerprint(input, { ...evidence, [field]: "f".repeat(64) }))
         .not.toBe(baseline);
     }
+    const combined: UpdateBusinessPriceInput = {
+      ...input,
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: [{ lowerBound: 5, percent: 5 }],
+    };
+    expect(fingerprint(combined, evidence)).not.toBe(baseline);
+    expect(fingerprint({
+      ...combined,
+      quantityDiscountTiers: [{ lowerBound: 6, percent: 5 }],
+    }, evidence)).not.toBe(fingerprint(combined, evidence));
   });
 });
 

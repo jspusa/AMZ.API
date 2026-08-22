@@ -63,7 +63,12 @@ export default function WebGate({
         <div className="web-gate-hero">
           <div className="web-gate-icon"><span>⌁</span><i /></div>
           <p className="web-gate-eyebrow">LOCAL KEY REQUIRED</p>
-          <h1 aria-label="控制台已就緒。請用 Notebook 鑰匙安全開啟。"><span>控制台已就緒。</span><span className="web-gate-key-line"><i>請用 <b>Notebook&nbsp;鑰匙</b></i>{" "}<i>安全開啟。</i></span></h1>
+          <h1 aria-label="控制台已就緒。請用 Notebook 鑰匙安全開啟。">
+            <span className="web-gate-heading-line">控制台已就緒。</span>
+            <span className="web-gate-heading-line web-gate-heading-key">
+              請用 <b>Notebook&nbsp;鑰匙</b>{" "}安全開啟。
+            </span>
+          </h1>
           <div className="web-gate-copy" aria-label="GitHub 更新與本機憑證邊界">
             <article>
               <span>GITHUB UI</span>

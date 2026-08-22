@@ -7,6 +7,8 @@ import {
   storeAuditSuiteRun,
 } from "../src/renderer/src/audit-suite";
 import {
+  AUDIT_SUITE_SECTION_COUNT,
+  AUDIT_SUITE_SECTIONS,
   AUDIT_SUITE_SECTION_IDS,
   type AuditSuitePublicContext,
   type AuditSuiteRunDto,
@@ -27,7 +29,7 @@ function runDto(
   updatedAt = "2026-08-09T04:05:00.000Z",
 ): AuditSuiteRunDto {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     ...CONTEXT,
     status,
     startedAt: "2026-08-09T04:00:00.000Z",
@@ -48,14 +50,31 @@ function runDto(
 }
 
 describe("audit suite renderer state", () => {
-  it("uses the same five-item order as the common one-click checks", () => {
-    expect(AUDIT_SUITE_SECTION_IDS).toEqual([
-      "content",
-      "image",
-      "variation",
-      "subscription",
-      "advertising",
+  it("publishes the seven canonical audit labels in the one-click order", () => {
+    expect(AUDIT_SUITE_SECTIONS).toEqual([
+      { id: "content", label: "全站文案健檢" },
+      { id: "image", label: "全站圖片健檢" },
+      { id: "aplus", label: "全站 A+ 健檢" },
+      { id: "variation", label: "未綁變體健檢" },
+      { id: "subscription", label: "全站訂閱價格健檢" },
+      { id: "businessPricing", label: "全站 B2B 價格健檢" },
+      { id: "advertising", label: "廣告覆蓋健檢" },
     ]);
+    expect(AUDIT_SUITE_SECTION_IDS).toEqual(
+      AUDIT_SUITE_SECTIONS.map(({ id }) => id),
+    );
+    expect(AUDIT_SUITE_SECTION_COUNT).toBe(7);
+  });
+
+  it("gives an explicit Notebook Key upgrade message for the previous five-section bridge", () => {
+    const previous = {
+      ...runDto("completed"),
+      schemaVersion: 2,
+    };
+
+    expect(() => parseAuditSuiteRun(previous, CONTEXT)).toThrow(
+      /Notebook Key.*更新/u,
+    );
   });
 
   it("retains one background run when a drawer closes and accepts monotonic progress", () => {
@@ -97,7 +116,7 @@ describe("audit suite renderer state", () => {
     )).toThrow(pattern);
   });
 
-  it("rejects an overall status that contradicts its five sections", () => {
+  it("rejects an overall status that contradicts its seven sections", () => {
     expect(() => parseAuditSuiteRun(runDto("completed", {
       image: "failed",
     }), CONTEXT)).toThrow(/總狀態.*不一致/u);

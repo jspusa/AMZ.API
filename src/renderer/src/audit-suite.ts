@@ -140,7 +140,12 @@ export function parseAuditSuiteRun(
     throw new Error("綜合健檢回應含有未允許欄位，已停止顯示。");
   }
   if (input.schemaVersion !== AUDIT_SUITE_SCHEMA_VERSION) {
-    throw new Error("綜合健檢版本不相容，已停止顯示。");
+    if (input.schemaVersion === 2) {
+      throw new Error(
+        "目前 Notebook Key 仍是舊版五項健檢合約；請更新 AMZ.API Notebook Key 後再執行七項健檢。",
+      );
+    }
+    throw new Error("綜合健檢版本不相容，請更新 AMZ.API Notebook Key 後再試。");
   }
   if (
     typeof input.runId !== "string" ||

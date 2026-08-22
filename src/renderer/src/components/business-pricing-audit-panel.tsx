@@ -8,6 +8,8 @@ import {
   type FormEvent,
 } from "react";
 import {
+  applyVerifiedBusinessPriceToAuditSnapshot,
+  businessPricingEditorProposal,
   businessPricingRowMatchesFilter,
   createSubmittedBusinessPricePreview,
   parseBusinessPriceUpdate,
@@ -18,7 +20,10 @@ import {
   type BusinessPricingAuditSnapshot,
   type BusinessPricingListingSnapshot,
   type BusinessPricingMoney,
+  type BusinessQuantityDiscountPlan,
+  type BusinessQuantityDiscountTier,
   type BusinessPriceUpdate,
+  type BusinessPricingEditorMode,
   type SubmittedBusinessPricePreview,
 } from "../business-pricing-audit";
 
@@ -36,6 +41,7 @@ const FILTERS: readonly Readonly<{
 }>[] = [
   { value: "all", label: "全部" },
   { value: "problem", label: "需處理" },
+  { value: "above_standard", label: "高於一般售價" },
   { value: "missing", label: "未設定" },
   { value: "configured", label: "已設定" },
   { value: "unsupported", label: "唯讀／不支援" },
@@ -160,9 +166,44 @@ function priceNumber(value: string, currencyCode: string): number | null {
 
 function statusLabel(status: BusinessPricingAuditRow["status"]): string {
   if (status === "configured") return "已設定";
+  if (status === "above_standard") return "B2B 高於一般售價";
   if (status === "missing") return "未設定 B2B 價格";
   if (status === "unsupported") return "PTD 不支援";
   return "資料未完成";
+}
+
+type TierDraft = Readonly<{ lowerBound: string; percent: string }>;
+
+function parseTierDrafts(
+  drafts: readonly TierDraft[],
+): readonly BusinessQuantityDiscountTier[] | null {
+  if (drafts.length < 1 || drafts.length > 5) return null;
+  const tiers: BusinessQuantityDiscountTier[] = [];
+  for (const draft of drafts) {
+    if (!/^[1-9]\d*$/u.test(draft.lowerBound) ||
+        !/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/u.test(draft.percent)) return null;
+    const lowerBound = Number(draft.lowerBound);
+    const percent = Number(draft.percent);
+    const previous = tiers.at(-1);
+    if (!Number.isSafeInteger(lowerBound) || lowerBound <= 0 ||
+        !Number.isFinite(percent) || percent <= 0 || percent >= 100 ||
+        (previous &&
+          (lowerBound <= previous.lowerBound || percent <= previous.percent))) {
+      return null;
+    }
+    tiers.push({ lowerBound, percent });
+  }
+  return tiers;
+}
+
+function formatQuantityDiscountPlan(
+  plan: BusinessQuantityDiscountPlan | null,
+): string {
+  if (!plan) return "未設定";
+  const suffix = plan.discountType === "percent" ? "%" : "";
+  return `${plan.discountType === "percent" ? "百分比" : "固定單價"}：${plan.levels
+    .map((level) => `${level.lowerBound} 件＝${level.value}${suffix}`)
+    .join("、")}`;
 }
 
 function rowCount(
@@ -196,6 +237,9 @@ export default function BusinessPricingAuditPanel({
   const [progress, setProgress] = useState<string | null>(null);
   const [selected, setSelected] = useState<BusinessPricingListingSnapshot | null>(null);
   const [newPrice, setNewPrice] = useState("");
+  const [editorMode, setEditorMode] =
+    useState<BusinessPricingEditorMode>("price_only");
+  const [tierDrafts, setTierDrafts] = useState<readonly TierDraft[]>([]);
   const [submittedPreview, setSubmittedPreview] =
     useState<SubmittedBusinessPricePreview | null>(null);
   const [result, setResult] = useState<BusinessPriceUpdate | null>(null);
@@ -298,6 +342,8 @@ export default function BusinessPricingAuditPanel({
     setSubmittedPreview(null);
     setResult(null);
     setNewPrice("");
+    setEditorMode("price_only");
+    setTierDrafts([]);
     try {
       const params = new URLSearchParams({ marketplaceId, sku: row.sellerSku });
       const response = await fetch(`/api/sp-api/business-pricing?${params}`, {
@@ -313,7 +359,12 @@ export default function BusinessPricingAuditPanel({
       }
       if (editorRevisionRef.current !== revision) return;
       setSelected(fresh);
-      setNewPrice(fresh.businessPrice?.amount.toString() ?? "");
+      const proposal = businessPricingEditorProposal(fresh, "price_only");
+      setNewPrice(
+        proposal?.businessPrice.toFixed(2) ??
+          fresh.businessPrice?.amount.toString() ?? "",
+      );
+      setTierDrafts([]);
     } catch (requestError) {
       if (editorRevisionRef.current === revision) {
         setError(requestError instanceof Error ? requestError.message : "無法開啟 B2B 價格編輯。" );
@@ -331,10 +382,37 @@ export default function BusinessPricingAuditPanel({
     parsedNewPrice !== null &&
     selected.businessPrice.amount === parsedNewPrice,
   );
+  const parsedTiers = editorMode === "combined"
+    ? parseTierDrafts(tierDrafts)
+    : undefined;
+  const tierInputInvalid = editorMode === "combined" && parsedTiers === null;
+  const canReplaceQuantityDiscounts = Boolean(
+    selected?.businessPricingCapability.quantityDiscountsEditable &&
+    selected.quantityDiscountPlanPresence !== "ambiguous" &&
+    !selected.businessPricingManagedByAutomation,
+  );
+
+  const chooseEditorMode = (mode: BusinessPricingEditorMode) => {
+    if (!selected || (mode === "combined" && !canReplaceQuantityDiscounts)) return;
+    editorRevisionRef.current += 1;
+    setEditorMode(mode);
+    if (mode === "combined") {
+      const proposal = businessPricingEditorProposal(selected, "combined");
+      setTierDrafts(proposal?.quantityDiscountTiers?.map((tier) => ({
+        lowerBound: String(tier.lowerBound),
+        percent: String(tier.percent),
+      })) ?? []);
+    } else {
+      setTierDrafts([]);
+    }
+    setSubmittedPreview(null);
+    setResult(null);
+  };
 
   const previewPrice = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selected || parsedNewPrice === null || unchanged) return;
+    if (!selected || parsedNewPrice === null ||
+        (unchanged && tierDrafts.length === 0) || parsedTiers === null) return;
     const listing = selected;
     const submittedPrice = parsedNewPrice;
     const key = createIdempotencyKey();
@@ -344,6 +422,10 @@ export default function BusinessPricingAuditPanel({
       expectedStandardPrice: listing.standardPrice!.amount,
       expectedBusinessPrice: listing.businessPrice?.amount ?? null,
       newBusinessPrice: submittedPrice,
+      ...(parsedTiers === undefined ? {} : {
+        expectedQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
+        quantityDiscountTiers: parsedTiers,
+      }),
       idempotencyKey: key,
     });
     const revision = ++editorRevisionRef.current;
@@ -364,6 +446,9 @@ export default function BusinessPricingAuditPanel({
       const submitted = createSubmittedBusinessPricePreview({
         listing,
         newBusinessPrice: submittedPrice,
+        ...(parsedTiers === undefined
+          ? {}
+          : { quantityDiscountTiers: parsedTiers }),
         idempotencyKey: key,
         response: payload,
       });
@@ -397,32 +482,12 @@ export default function BusinessPricingAuditPanel({
       setResult(nextResult);
       setSubmittedPreview(null);
       if (snapshot) {
-        const prior = snapshot.rows.find((row) =>
-          row.sellerSku === submitted.body.sellerSku);
-        if (prior) {
-          const nextSnapshot: BusinessPricingAuditSnapshot = {
-            ...snapshot,
-            rows: snapshot.rows.map((row) =>
-              row.sellerSku === submitted.body.sellerSku
-              ? {
-                  ...row,
-                  businessPrice: nextResult.requestedBusinessPrice,
-                  businessOfferPresence: "present" as const,
-                  status: "configured" as const,
-                  reason: "已設定 Amazon Business 價格，且主程序唯讀回查確認。",
-                }
-              : row),
-            summary: prior.status === "missing"
-              ? {
-                  ...snapshot.summary,
-                  missing: snapshot.summary.missing - 1,
-                  configured: snapshot.summary.configured + 1,
-                }
-              : snapshot.summary,
-          };
-          setSnapshot(nextSnapshot);
-          onSnapshotChange?.(nextSnapshot);
-        }
+        const nextSnapshot = applyVerifiedBusinessPriceToAuditSnapshot(
+          snapshot,
+          nextResult,
+        );
+        setSnapshot(nextSnapshot);
+        onSnapshotChange?.(nextSnapshot);
       }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Amazon 未能確認 B2B 價格更新。" );
@@ -436,14 +501,14 @@ export default function BusinessPricingAuditPanel({
       <div className="business-pricing-audit-intro">
         <div>
           <span>{marketplaceShort} · FBA ONLY</span>
-          <h3>找出尚未設定獨立 B2B 價格的商品</h3>
-          <p>是否設定以 Listings attributes 的 B2B contribution 為準；能否直接修改另由 seller-specific PTD 決定。</p>
+          <h3>找出未設定或高於一般售價的 B2B contribution</h3>
+          <p>同時核對 Business Price 與 canonical quantity discount plan；能否修改由 seller-specific PTD 決定。</p>
         </div>
         <button type="button" className="price-primary-button" onClick={() => void runAudit()} disabled={loading || editLoading}>
           {loading ? "健檢中…" : snapshot ? "重新健檢" : "開始全站 B2B 價格健檢"}
         </button>
       </div>
-      <p className="business-pricing-safety-note">先由 Amazon Validation Preview 核對，零寫入；正式送出前仍需 Touch ID／Windows Hello，且只 PATCH B2B audience 的 our_price，絕不改一般售價或盲目重送。</p>
+      <p className="business-pricing-safety-note">先由 Amazon Validation Preview 核對，零寫入；正式送出前仍需 Touch ID／Windows Hello。combined 操作只用一次 PATCH 更新同一個 B2B contribution 的 our_price 與完整數量折扣，不改一般售價，也不盲目重送。</p>
       {progress && <div className="business-pricing-progress" role="status">{progress}</div>}
       {error && <div className="price-error" role="alert">{error}</div>}
 
@@ -452,6 +517,7 @@ export default function BusinessPricingAuditPanel({
           <div className="business-pricing-summary" aria-label="B2B 價格健檢摘要">
             <article><span>FBA SKU</span><strong>{snapshot.summary.totalFbaSkuCount}</strong></article>
             <article className="problem"><span>未設定</span><strong>{snapshot.summary.missing}</strong></article>
+            <article className="problem"><span>高於一般售價</span><strong>{snapshot.summary.aboveStandard}</strong></article>
             <article><span>已設定</span><strong>{snapshot.summary.configured}</strong></article>
             <article><span>不可直接修改</span><strong>{snapshot.rows.filter((row) => !row.editable).length}</strong></article>
           </div>
@@ -497,6 +563,8 @@ export default function BusinessPricingAuditPanel({
             <button type="button" onClick={() => {
               editorRevisionRef.current += 1;
               setSelected(null);
+              setEditorMode("price_only");
+              setTierDrafts([]);
               setSubmittedPreview(null);
               setResult(null);
             }} disabled={editLoading} aria-label="關閉 B2B 價格編輯">×</button>
@@ -504,6 +572,7 @@ export default function BusinessPricingAuditPanel({
           <dl>
             <div><dt>目前一般售價</dt><dd>{formatMoney(selected.standardPrice)}</dd></div>
             <div><dt>目前 B2B 價格</dt><dd>{formatMoney(selected.businessPrice)}</dd></div>
+            <div><dt>目前數量折扣</dt><dd>{formatQuantityDiscountPlan(selected.quantityDiscountPlan)}</dd></div>
           </dl>
           {!selected.businessPricingCapability.editable ? (
             <div className="price-error">{selected.businessPricingCapability.reason ?? "Amazon PTD 未允許編輯 B2B 價格。"}</div>
@@ -518,12 +587,112 @@ export default function BusinessPricingAuditPanel({
               }} disabled={editLoading} inputMode={selected.standardPrice?.currencyCode === "JPY" ? "numeric" : "decimal"} autoComplete="off" />
             </label>
           )}
+          {canReplaceQuantityDiscounts ? (
+            <div className="business-pricing-tier-editor">
+              <div className="business-pricing-tier-mode" role="group" aria-label="B2B 數量折扣更新方式">
+                <button type="button" aria-pressed={editorMode === "price_only"} onClick={() => chooseEditorMode("price_only")} disabled={editLoading}>
+                  只改價格並保留原數量折扣
+                </button>
+                <button type="button" aria-pressed={editorMode === "combined"} onClick={() => chooseEditorMode("combined")} disabled={editLoading}>
+                  明確套用四階數量折扣
+                </button>
+              </div>
+              {editorMode === "price_only" ? (
+                <div className="price-warning compact">
+                  <strong>Price-only</strong>
+                  <p>本次預檢與正式 PATCH 都不帶 quantity_discount_plan，既有方案保持不變。</p>
+                </div>
+              ) : (
+                <fieldset className="business-pricing-tier-fieldset" disabled={editLoading}>
+                  <legend>新數量折扣（1–5 階百分比）</legend>
+                  <div className="business-pricing-tier-grid">
+                    {tierDrafts.map((tier, index) => (
+                      <div className="business-pricing-tier-card" key={index}>
+                        <strong>第 {index + 1} 階</strong>
+                        <label htmlFor={`business-tier-bound-${index}`}>
+                          <span>門檻件數</span>
+                          <input
+                            id={`business-tier-bound-${index}`}
+                            inputMode="numeric"
+                            value={tier.lowerBound}
+                            onChange={(event) => {
+                              editorRevisionRef.current += 1;
+                              setTierDrafts((current) => current.map((entry, entryIndex) =>
+                                entryIndex === index
+                                  ? { ...entry, lowerBound: event.target.value }
+                                  : entry));
+                              setSubmittedPreview(null);
+                              setResult(null);
+                            }}
+                          />
+                        </label>
+                        <label htmlFor={`business-tier-percent-${index}`}>
+                          <span>折扣百分比</span>
+                          <input
+                            id={`business-tier-percent-${index}`}
+                            inputMode="decimal"
+                            value={tier.percent}
+                            onChange={(event) => {
+                              editorRevisionRef.current += 1;
+                              setTierDrafts((current) => current.map((entry, entryIndex) =>
+                                entryIndex === index
+                                  ? { ...entry, percent: event.target.value }
+                                  : entry));
+                              setSubmittedPreview(null);
+                              setResult(null);
+                            }}
+                          />
+                        </label>
+                        {tierDrafts.length > 1 && (
+                          <button type="button" onClick={() => {
+                            editorRevisionRef.current += 1;
+                            setTierDrafts((current) => current.filter((_, entryIndex) =>
+                              entryIndex !== index));
+                            setSubmittedPreview(null);
+                            setResult(null);
+                          }}>刪除此階</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="business-pricing-tier-actions">
+                    {tierDrafts.length < 5 && (
+                      <button type="button" onClick={() => {
+                        editorRevisionRef.current += 1;
+                        const last = tierDrafts.at(-1);
+                        setTierDrafts((current) => [...current, {
+                          lowerBound: String((Number(last?.lowerBound) || 0) + 5),
+                          percent: String(Math.min((Number(last?.percent) || 0) + 5, 99)),
+                        }]);
+                        setSubmittedPreview(null);
+                        setResult(null);
+                      }}>＋ 新增一階</button>
+                    )}
+                    {tierInputInvalid && (
+                      <small role="alert">件數與百分比必須合法且逐階嚴格遞增；百分比需大於 0、小於 100。</small>
+                    )}
+                  </div>
+                </fieldset>
+              )}
+            </div>
+          ) : (
+            <div className="price-warning compact">
+              <strong>數量折扣不可直接修改</strong>
+              <p>{selected.businessPricingManagedByAutomation
+                ? "此 contribution 由 Amazon Automate Pricing 管理；請先在 Seller Central 處理規則。"
+                : selected.quantityDiscountPlanPresence === "ambiguous"
+                ? "Amazon 回傳的 quantity_discount_plan 不唯一或無法 canonicalize；本次只允許 price-only 並保留原方案。"
+                : selected.businessPricingCapability.quantityDiscountsReason ?? "seller-specific PTD 未開放 quantity_discount_plan。"}</p>
+            </div>
+          )}
           {parsedNewPrice !== null && selected.standardPrice && parsedNewPrice > selected.standardPrice.amount && (
             <div className="price-warning compact"><strong>B2B 價格高於一般售價</strong><p>Amazon 可能拒絕；預檢會以 seller-specific PTD 為準。</p></div>
           )}
           {validation && (
             <div className="business-pricing-validation">
               <strong>{validation.notice}</strong>
+              <p>舊數量折扣：{formatQuantityDiscountPlan(validation.previousQuantityDiscountPlan)}</p>
+              <p>新數量折扣：{formatQuantityDiscountPlan(validation.requestedQuantityDiscountPlan)}</p>
               {validation.issues.map((issue, index) => <p key={`${issue.severity}-${index}`}>{issue.severity} · {issue.message}</p>)}
               <button type="button" className="price-primary-button" onClick={() => void commitPrice()} disabled={editLoading}>
                 {editLoading ? "送出並回查中…" : "Touch ID／Windows Hello 確認並送出"}
@@ -532,8 +701,12 @@ export default function BusinessPricingAuditPanel({
           )}
           {result && <div className="business-pricing-result" role="status"><strong>已完成並回查</strong><p>{result.notice}</p></div>}
           {!validation && !result && selected.businessPricingCapability.editable && (
-            <button type="submit" className="price-primary-button" disabled={editLoading || parsedNewPrice === null || unchanged}>
-              {editLoading ? "Amazon 預檢中…" : "先預檢 B2B 價格（不寫入）"}
+            <button type="submit" className="price-primary-button" disabled={editLoading || parsedNewPrice === null || tierInputInvalid || (unchanged && tierDrafts.length === 0)}>
+              {editLoading
+                ? "Amazon 預檢中…"
+                : editorMode === "combined"
+                  ? "先預檢 B2B 價格與四階數量折扣（不寫入）"
+                  : "先預檢 B2B 價格並保留原數量折扣（不寫入）"}
             </button>
           )}
         </form>

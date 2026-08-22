@@ -21,9 +21,9 @@ import {
 } from "../content-audit-excel";
 import { excludeProvenParentContainers } from "../parent-container-audit";
 import {
+  contentClaimFindings,
+  contentClaimTokens,
   provenIngredientItems,
-  singleIngredientClaimFindings,
-  singleIngredientClaimTokens,
 } from "../../../shared/content-claims";
 
 type ApiProblem = { message?: string; requestId?: string | null };
@@ -162,21 +162,6 @@ type FreshListingForQuickEdit = {
     ingredients: string;
   };
 };
-
-const FILTERS: Array<{ value: AuditFilter; label: string }> = [
-  { value: "all", label: "全部問題" },
-  { value: "SUSPECTED_TYPO", label: "疑似錯字" },
-  { value: "TITLE_BELOW_TARGET", label: "產品名稱不足" },
-  { value: "HIGHLIGHT_BELOW_TARGET", label: "產品亮點不足" },
-  { value: "BULLET_BELOW_TARGET", label: "產品要點過短" },
-  { value: "BULLET_ABOVE_TARGET", label: "產品要點過長" },
-  { value: "DESCRIPTION_BELOW_TARGET", label: "產品敘述不足" },
-  { value: "MISSING_BULLETS", label: "賣點不足" },
-  { value: "MISSING_INGREDIENTS", label: "缺成分" },
-  { value: "INGREDIENTS_UNVERIFIED", label: "成分未驗證" },
-  { value: "SINGLE_INGREDIENT_MISMATCH", label: "單一成分宣稱不一致" },
-  { value: "READ_INCOMPLETE", label: "讀取未完成" },
-];
 
 function problemMessage(payload: ApiProblem, fallback: string): string {
   const requestId = payload.requestId ? `（Request ID: ${payload.requestId}）` : "";
@@ -490,7 +475,6 @@ function validContentAuditIssue(
   if (issue.kind === "SINGLE_INGREDIENT_MISMATCH") {
     if (
       !issue.token ||
-      provenIngredientItems(row.ingredients).length < 2 ||
       !["title", "itemHighlight", "bulletPoints"].includes(issue.field ?? "")
     ) {
       return false;
@@ -503,7 +487,7 @@ function validContentAuditIssue(
             issue.bulletIndex < row.bulletPoints.length
           ? row.bulletPoints[issue.bulletIndex] ?? ""
           : "";
-    return singleIngredientClaimTokens(value).includes(issue.token);
+    return contentClaimTokens(value, row.ingredients).includes(issue.token);
   }
   return issue.kind === "SUSPECTED_TYPO";
 }
@@ -600,7 +584,7 @@ export function parseContentAuditSnapshot(
           ...returnedIssues.filter(
             (issue) => issue.kind !== "SINGLE_INGREDIENT_MISMATCH",
           ),
-          ...singleIngredientClaimFindings({
+          ...contentClaimFindings({
             title: parsedRow.title,
             itemHighlight: parsedRow.itemHighlight ?? "",
             bulletPoints: parsedRow.bulletPoints,
@@ -652,7 +636,7 @@ function issueLabel(kind: ContentAuditIssueKind): string {
   if (kind === "BULLET_BELOW_TARGET") return "產品要點過短";
   if (kind === "BULLET_ABOVE_TARGET") return "產品要點過長";
   if (kind === "DESCRIPTION_BELOW_TARGET") return "產品敘述不足";
-  if (kind === "SINGLE_INGREDIENT_MISMATCH") return "單一成分宣稱不一致";
+  if (kind === "SINGLE_INGREDIENT_MISMATCH") return "成分宣稱不一致";
   return "疑似錯字";
 }
 
@@ -1057,14 +1041,15 @@ export function quickEditFocusForRow(
     }
 
     if (issue.kind === "SINGLE_INGREDIENT_MISMATCH") {
-      if (!issue.token || provenIngredientItems(row.ingredients).length < 2) {
+      if (!issue.token || !row.ingredients.trim()) {
         return null;
       }
       if (issue.field === "bulletPoints") {
         if (
           !isNonNegativeInteger(issue.bulletIndex) ||
-          !singleIngredientClaimTokens(
+          !contentClaimTokens(
             row.bulletPoints[issue.bulletIndex] ?? "",
+            row.ingredients,
           ).includes(issue.token)
         ) {
           return null;
@@ -1080,7 +1065,7 @@ export function quickEditFocusForRow(
       }
       if (issue.field !== "title" && issue.field !== "itemHighlight") return null;
       const value = issue.field === "title" ? row.title : row.itemHighlight ?? "";
-      if (!singleIngredientClaimTokens(value).includes(issue.token)) return null;
+      if (!contentClaimTokens(value, row.ingredients).includes(issue.token)) return null;
       evidence.push(quickEditEvidence(issue, value, null, row.ingredients));
       continue;
     }
@@ -1373,28 +1358,30 @@ export function resolveContentAuditQuickEditFocus(
         listing.content.ingredients !== evidence.relatedIngredients ||
         contentValueFingerprint(listing.content.ingredients) !==
           evidence.relatedIngredientsFingerprint ||
-        provenIngredientItems(listing.content.ingredients).length < 2
+        !listing.content.ingredients.trim()
       ) {
         return staleQuickEditResolution(
-          "Amazon ingredients 已和健檢時不同，無法沿用單一成分宣稱的比對證據。",
+          "Amazon ingredients 已和健檢時不同，無法沿用成分宣稱的比對證據。",
         );
       }
       if (evidence.field === "bulletPoints") {
         if (!isNonNegativeInteger(evidence.originalBulletIndex)) {
-          return staleQuickEditResolution("單一成分宣稱缺少原始產品要點位置。");
+          return staleQuickEditResolution("成分宣稱缺少原始產品要點位置。");
         }
         const candidates = listing.content.bulletPoints.flatMap((value, index) =>
           value === evidence.originalValue &&
           contentValueFingerprint(value) === evidence.originalValueFingerprint &&
-          singleIngredientClaimTokens(value).includes(evidence.token!)
+          contentClaimTokens(value, listing.content.ingredients).includes(
+            evidence.token!,
+          )
             ? [index]
             : [],
         );
         if (candidates.length !== 1) {
           return staleQuickEditResolution(
             candidates.length === 0
-              ? "健檢標示的單一成分宣稱原文已不存在。"
-              : "健檢標示的單一成分宣稱目前有多個相同產品要點，無法唯一定位。",
+              ? "健檢標示的成分宣稱原文已不存在。"
+              : "健檢標示的成分宣稱目前有多個相同產品要點，無法唯一定位。",
           );
         }
         const [candidate] = candidates;
@@ -1407,7 +1394,7 @@ export function resolveContentAuditQuickEditFocus(
         continue;
       }
       if (evidence.field !== "title" && evidence.field !== "itemHighlight") {
-        return staleQuickEditResolution("單一成分宣稱的欄位證據格式無效。");
+        return staleQuickEditResolution("成分宣稱的欄位證據格式無效。");
       }
       const currentValue = evidence.field === "title"
         ? listing.content.title
@@ -1415,10 +1402,12 @@ export function resolveContentAuditQuickEditFocus(
       if (
         currentValue !== evidence.originalValue ||
         contentValueFingerprint(currentValue) !== evidence.originalValueFingerprint ||
-        !singleIngredientClaimTokens(currentValue).includes(evidence.token)
+        !contentClaimTokens(currentValue, listing.content.ingredients).includes(
+          evidence.token,
+        )
       ) {
         return staleQuickEditResolution(
-          `${fieldLabel(evidence.field)}的單一成分宣稱已變動或不存在。`,
+          `${fieldLabel(evidence.field)}的成分宣稱已變動或不存在。`,
         );
       }
       fields.add(evidence.field);
@@ -1628,6 +1617,7 @@ export default function ContentAuditPanel({
   const [batchIdempotencyKey, setBatchIdempotencyKey] = useState<string | null>(null);
   const [batchDiffAcknowledged, setBatchDiffAcknowledged] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const resultHeadingRef = useRef<HTMLDivElement | null>(null);
   const marketplaceIdRef = useRef(marketplaceId);
   marketplaceIdRef.current = marketplaceId;
 
@@ -1823,8 +1813,29 @@ export default function ContentAuditPanel({
 
   const statusText = scanStatusText(state, reply);
   const summary = snapshot?.summary;
+  const summaryFilters: Array<{
+    filter: AuditFilter;
+    label: string;
+    count: number;
+    detail: string;
+  }> = summary
+    ? [
+        { filter: "READ_INCOMPLETE", label: "讀取未完成", count: summary.incomplete, detail: "不列入缺值統計" },
+        { filter: "all", label: "有待確認", count: attentionRows.length, detail: "SKU" },
+        { filter: "SUSPECTED_TYPO", label: "疑似錯字", count: summary.suspectedTypos, detail: "SKU" },
+        { filter: "TITLE_BELOW_TARGET", label: "產品名稱不足", count: summary.titleBelowTarget, detail: "少於 60 字元的 SKU" },
+        { filter: "HIGHLIGHT_BELOW_TARGET", label: "產品亮點不足", count: summary.highlightBelowTarget, detail: "少於 110 字元的 SKU" },
+        { filter: "BULLET_BELOW_TARGET", label: "產品要點過短", count: summary.bulletBelowTarget, detail: "至少一項少於 150 字元" },
+        { filter: "BULLET_ABOVE_TARGET", label: "產品要點過長", count: summary.bulletAboveTarget, detail: "至少一項超過 200 字元" },
+        { filter: "DESCRIPTION_BELOW_TARGET", label: "產品敘述不足", count: summary.descriptionBelowTarget, detail: "少於 1,800 字元的 SKU" },
+        { filter: "MISSING_BULLETS", label: "賣點不足", count: summary.missingBullets, detail: "SKU" },
+        { filter: "MISSING_INGREDIENTS", label: "缺成分", count: summary.missingIngredients, detail: "已證明適用的 SKU" },
+        { filter: "INGREDIENTS_UNVERIFIED", label: "成分未驗證", count: summary.ingredientsUnverified, detail: "需人工確認 PTD" },
+        { filter: "SINGLE_INGREDIENT_MISMATCH", label: "成分宣稱不一致", count: summary.singleIngredientMismatch, detail: "依 ingredients 明確證據核對" },
+      ]
+    : [];
 
-  const changeFilter = (nextFilter: AuditFilter) => {
+  const changeFilter = (nextFilter: AuditFilter, scrollToResults = false) => {
     setFilter(nextFilter);
     if (snapshot) {
       onCachedResultChange?.({
@@ -1832,6 +1843,14 @@ export default function ContentAuditPanel({
         filter: nextFilter,
         query,
         spellcheckNote,
+      });
+    }
+    if (scrollToResults) {
+      window.requestAnimationFrame(() => {
+        resultHeadingRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
       });
     }
   };
@@ -1942,7 +1961,7 @@ export default function ContentAuditPanel({
   return (
     <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
       <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；只有 Amazon ingredients 明確證明含多項成分時，才會標示文案中的單一成分宣稱不一致，資料未完成時不推測。
+        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic，資料未完成時不推測。
       </p>
       <div className="content-export-note content-audit-privacy">
         <strong>Amazon 唯讀＋GitHub Pages 共用英文辭典</strong>
@@ -2050,20 +2069,23 @@ export default function ContentAuditPanel({
 
       {state === "done" && snapshot && summary && (
         <>
-          <div className="content-audit-summary" aria-label="文案健檢摘要">
+          <div className="content-audit-summary" role="group" aria-label="文案健檢摘要與問題篩選">
             <article><span>完成讀取</span><strong>{summary.completed.toLocaleString()}</strong><small>共 {summary.total.toLocaleString()} 個可健檢 FBA SKU</small></article>
-            <article><span>讀取未完成</span><strong>{summary.incomplete.toLocaleString()}</strong><small>不列入缺值統計</small></article>
-            <article><span>有待確認</span><strong>{summary.withIssues.toLocaleString()}</strong><small>SKU</small></article>
-            <article><span>疑似錯字</span><strong>{summary.suspectedTypos.toLocaleString()}</strong><small>SKU</small></article>
-            <article><span>產品名稱不足</span><strong>{summary.titleBelowTarget.toLocaleString()}</strong><small>少於 60 字元的 SKU</small></article>
-            <article><span>產品亮點不足</span><strong>{summary.highlightBelowTarget.toLocaleString()}</strong><small>少於 110 字元的 SKU</small></article>
-            <article><span>產品要點過短</span><strong>{summary.bulletBelowTarget.toLocaleString()}</strong><small>至少一項少於 150 字元</small></article>
-            <article><span>產品要點過長</span><strong>{summary.bulletAboveTarget.toLocaleString()}</strong><small>至少一項超過 200 字元</small></article>
-            <article><span>產品敘述不足</span><strong>{summary.descriptionBelowTarget.toLocaleString()}</strong><small>少於 1,800 字元的 SKU</small></article>
-            <article><span>賣點不足</span><strong>{summary.missingBullets.toLocaleString()}</strong><small>SKU</small></article>
-            <article><span>缺成分</span><strong>{summary.missingIngredients.toLocaleString()}</strong><small>已證明適用的 SKU</small></article>
-            <article><span>成分未驗證</span><strong>{summary.ingredientsUnverified.toLocaleString()}</strong><small>需人工確認 PTD</small></article>
-            <article><span>單一成分宣稱不一致</span><strong>{summary.singleIngredientMismatch.toLocaleString()}</strong><small>ingredients 已明確證明多項</small></article>
+            {summaryFilters.map((item) => (
+              <button
+                key={item.filter}
+                type="button"
+                data-audit-filter={item.filter}
+                className={filter === item.filter ? "active" : ""}
+                aria-pressed={filter === item.filter}
+                aria-label={`${item.label} ${item.count.toLocaleString()}，顯示對應商品`}
+                onClick={() => changeFilter(item.filter, true)}
+              >
+                <span>{item.label}</span>
+                <strong>{item.count.toLocaleString()}</strong>
+                <small>{item.detail}</small>
+              </button>
+            ))}
           </div>
           {spellcheckNote && <p className="content-audit-note">{spellcheckNote}</p>}
           {invisibleLocations.length > 0 && (
@@ -2118,18 +2140,6 @@ export default function ContentAuditPanel({
             </aside>
           )}
           <div className="content-audit-controls">
-            <div role="tablist" aria-label="健檢問題篩選">
-              {FILTERS.map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  className={filter === item.value ? "active" : ""}
-                  onClick={() => changeFilter(item.value)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
             <label>
               <span>⌕</span>
               <input
@@ -2140,7 +2150,7 @@ export default function ContentAuditPanel({
               />
             </label>
           </div>
-          <div className="content-audit-result-heading">
+          <div className="content-audit-result-heading" ref={resultHeadingRef}>
             <strong>{visibleRows.length.toLocaleString()} 個符合條件的 SKU</strong>
             <div>
               <button type="button" onClick={() => void startAudit()}>重新掃描</button>

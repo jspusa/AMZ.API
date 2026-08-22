@@ -13,10 +13,15 @@ import {
   MARKETPLACES as MARKETPLACE_OPTIONS,
   marketplaceById,
 } from "../../../shared/marketplaces";
+import {
+  AUDIT_SUITE_SECTION_COUNT,
+  AUDIT_SUITE_SECTION_LABELS,
+} from "../../../shared/audit-suite";
 import { AccountingCenterDrawer } from "./accounting-center-panel";
 import AdsDrawer from "./ads-drawer";
 import AgedInventoryPanel from "./aged-inventory-panel";
 import AuditSuiteHomeCard from "./audit-suite-home-card";
+import AplusAuditDrawer from "./a-plus-audit-drawer";
 import BrandSalesCard from "./brand-sales-card";
 import BrandGlyph from "./brand-glyph";
 import ImageWorkspaceDrawer, {
@@ -54,6 +59,7 @@ import UnboundVariationAuditPanel, {
 import VariationPlannerDrawer from "./variation-planner-drawer";
 import { isSubscriptionAuditMarketplaceSupported } from "../subscription-audit";
 import type { BusinessPricingAuditSnapshot } from "../business-pricing-audit";
+import type { AplusAuditSnapshot } from "../a-plus-audit";
 import {
   pollExistingReviewAuditJob,
   reviewAuditHomeProgress,
@@ -92,6 +98,7 @@ type Tool =
   | "restock"
   | "copy"
   | "images"
+  | "a-plus"
   | "variations"
   | "price"
   | "promotion"
@@ -120,6 +127,14 @@ export function connectionEvidenceFromSales(
   mode: "live" | "demo",
 ): DashboardConnectionEvidence {
   return mode === "live" ? "verified-live" : "demo";
+}
+
+export function businessPricingAttentionCount(
+  summary: BusinessPricingAuditSnapshot["summary"] | null,
+): number {
+  return summary
+    ? summary.aboveStandard + summary.missing + summary.unsupported + summary.incomplete
+    : 0;
 }
 
 export function dashboardConnectionBadgeCopy(
@@ -420,6 +435,7 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: Navigation
   restock: { label: "補貨", symbol: "↗", group: "operations" },
   copy: { label: "文案", symbol: "Aa", group: "product" },
   images: { label: "圖片", symbol: "▧", group: "product" },
+  "a-plus": { label: "A+ 健檢", symbol: "A+", group: "product" },
   variations: { label: "變體", symbol: "◇", group: "product" },
   price: { label: "定價", symbol: "$", group: "pricing" },
   promotion: { label: "促銷", symbol: "%", group: "pricing" },
@@ -438,7 +454,7 @@ const TOOL_SECTIONS: ReadonlyArray<{
     label: "產品區",
     symbol: "◇",
     group: "product",
-    tools: ["copy", "images", "variations"],
+    tools: ["copy", "images", "a-plus", "variations"],
   },
   {
     label: "價格區",
@@ -512,6 +528,9 @@ export default function Dashboard({
     useState<ImageWorkspaceTab>("single");
   const [imageAuditCache, setImageAuditCache] = useState<
     Record<string, ImageAuditCache>
+  >({});
+  const [aplusAuditCache, setAplusAuditCache] = useState<
+    Record<string, AplusAuditSnapshot>
   >({});
   const [unboundVariationAuditCache, setUnboundVariationAuditCache] = useState<
     Record<string, UnboundVariationAuditCache>
@@ -762,6 +781,10 @@ export default function Dashboard({
   const launch = (tool: Tool) => {
     setOpenToolMenu(null);
     setCommandOpen(false);
+    if (tool === "a-plus" && !connectionEvidence[marketplaceId]) {
+      onOpenConnection?.();
+      return;
+    }
     if (tool === "copy") setContentWorkspaceTab("single");
     if (tool === "images") setImageWorkspaceTab("single");
     if (tool === "variations") setReturnToUnboundVariationAudit(false);
@@ -1043,14 +1066,24 @@ export default function Dashboard({
     ? currentImageAudit.snapshot.summary.underMinimum +
       currentImageAudit.snapshot.summary.incomplete
     : 0;
+  const currentAplusMode = currentConnectionEvidence === "demo"
+    ? "demo"
+    : currentConnectionEvidence ? "live" : null;
+  const cachedAplusAudit = aplusAuditCache[marketplaceId] ?? null;
+  const currentAplusAudit = cachedAplusAudit?.mode === currentAplusMode
+    ? cachedAplusAudit
+    : null;
+  const currentAplusAuditAttentionCount = currentAplusAudit
+    ? currentAplusAudit.summary.missing +
+      currentAplusAudit.summary.incomplete +
+      currentAplusAudit.summary.unavailable
+    : 0;
   const currentReviewAudit = reviewAuditCache[marketplaceId] ?? null;
   const currentReviewAuditProgress = reviewAuditHomeProgress(currentReviewAudit);
   const currentBusinessPricingAudit = businessPricingAuditCache[marketplaceId] ?? null;
-  const currentBusinessPricingAttentionCount = currentBusinessPricingAudit
-    ? currentBusinessPricingAudit.summary.missing +
-      currentBusinessPricingAudit.summary.unsupported +
-      currentBusinessPricingAudit.summary.incomplete
-    : 0;
+  const currentBusinessPricingAttentionCount = businessPricingAttentionCount(
+    currentBusinessPricingAudit?.summary ?? null,
+  );
   const effectiveReportMenuEntries: readonly DashboardReportMenuEntry[] =
     reportMenuEntries ?? [
       {
@@ -1305,7 +1338,7 @@ export default function Dashboard({
               <span className="content-audit-home-icon" aria-hidden="true">Aa✓</span>
               <div>
                 <p className="eyebrow">FBA CONTENT HEALTH</p>
-                <h2>全站文案健檢</h2>
+                <h2>{AUDIT_SUITE_SECTION_LABELS.content}</h2>
                 <p>一次找出全部 FBA SKU 的疑似錯字、賣點不足與缺成分；結果在這次 App 使用期間會保留。</p>
               </div>
               {currentContentAudit && (
@@ -1324,7 +1357,7 @@ export default function Dashboard({
               <span className="content-audit-home-icon" aria-hidden="true">▧6</span>
               <div>
                 <p className="eyebrow">FBA IMAGE HEALTH</p>
-                <h2>全站圖片健檢</h2>
+                <h2>{AUDIT_SUITE_SECTION_LABELS.image}</h2>
                 <p>一次找出少於六張 Listing 圖片與讀取未完成的 FBA SKU；關閉後仍可繼續上次結果。</p>
               </div>
               {currentImageAudit && (
@@ -1338,11 +1371,29 @@ export default function Dashboard({
                 <i aria-hidden="true">›</i>
               </button>
             </section>
+            <section className="content-audit-home-card" aria-label="全站 A+ 健檢捷徑">
+              <span className="content-audit-home-icon" aria-hidden="true">A+</span>
+              <div>
+                <p className="eyebrow">FBA A+ CONTENT</p>
+                <h2>{AUDIT_SUITE_SECTION_LABELS.aplus}</h2>
+                <p>逐一核對全部 FBA ASIN 是否已有公開的 A+ 發布紀錄；From the brand 公開 API 無法驗證。</p>
+              </div>
+              {currentAplusAudit && (
+                <span className="content-audit-home-status">
+                  <strong>{currentAplusAuditAttentionCount.toLocaleString()}</strong>
+                  <small>個缺 A+／待確認</small>
+                </span>
+              )}
+              <button type="button" onClick={() => launch("a-plus")}>
+                {currentAplusAudit ? "繼續上次 A+ 健檢" : "開始全站 A+ 健檢"}
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
             <section className="content-audit-home-card" aria-label="未綁變體健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true">◇?</span>
               <div>
                 <p className="eyebrow">VARIATION RELATIONSHIPS</p>
-                <h2>未綁變體健檢</h2>
+                <h2>{AUDIT_SUITE_SECTION_LABELS.variation}</h2>
                 <p>一次核對全部 FBA SKU；只有 Amazon relationships 明確完整且沒有 parent，才列為未綁變體。</p>
               </div>
               {currentUnboundVariationAudit && (
@@ -1363,7 +1414,7 @@ export default function Dashboard({
               <span className="content-audit-home-icon" aria-hidden="true">S&amp;S</span>
               <div>
                 <p className="eyebrow">FBA SUBSCRIBE &amp; SAVE</p>
-                <h2>全站訂閱價格健檢</h2>
+                <h2>{AUDIT_SUITE_SECTION_LABELS.subscription}</h2>
                 <p>{subscriptionAuditSupported
                   ? "一次核對全部 FBA Subscribe & Save SKU 的目前訂閱折扣與價格趨勢；不會自動修改 Amazon。"
                   : `${marketplace.shortLabel} 目前先顯示能力邊界；不會用其他站點資料代替。`}</p>
@@ -1377,13 +1428,13 @@ export default function Dashboard({
               <span className="content-audit-home-icon" aria-hidden="true">B2B</span>
               <div>
                 <p className="eyebrow">FBA AMAZON BUSINESS</p>
-                <h2>全站 B2B 價格健檢</h2>
-                <p>找出尚未設定 Amazon Business 價格的 FBA SKU；只有 seller-specific PTD 明確允許時才提供安全調整。</p>
+                <h2>{AUDIT_SUITE_SECTION_LABELS.businessPricing}</h2>
+                <p>找出未設定或高於一般售價的 Amazon Business 價格；可安全編輯時提供一般售價減 1 美元與四階數量折扣預設。</p>
               </div>
               {currentBusinessPricingAudit && (
                 <span className="content-audit-home-status">
                   <strong>{currentBusinessPricingAttentionCount.toLocaleString()}</strong>
-                  <small>個需設定／確認</small>
+                  <small>個需調整／確認</small>
                 </span>
               )}
               <button type="button" onClick={() => launch("business-pricing")}>
@@ -1395,7 +1446,7 @@ export default function Dashboard({
               <span className="content-audit-home-icon" aria-hidden="true">◎</span>
               <div>
                 <p className="eyebrow">ADS COVERAGE</p>
-                <h2>廣告覆蓋健檢</h2>
+                <h2>{AUDIT_SUITE_SECTION_LABELS.advertising}</h2>
                 <p>將依 SKU 優先、ASIN 補充比對 SP 活動；Amazon Ads API 尚未連線前不顯示推測結果。</p>
               </div>
               <button type="button" onClick={() => launch("ads")}>
@@ -1410,7 +1461,7 @@ export default function Dashboard({
             <summary>
               <span>
                 <strong>低頻健檢</strong>
-                <small>庫齡與評論不會跟著五項一鍵健檢自動執行，需要時再展開。</small>
+                <small>庫齡與評論不會跟著 {AUDIT_SUITE_SECTION_COUNT} 項一鍵健檢自動執行，需要時再展開。</small>
               </span>
               <i aria-hidden="true">＋</i>
             </summary>
@@ -1475,6 +1526,19 @@ export default function Dashboard({
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCache} onAuditCacheChange={cacheContentAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCache} onAuditCacheChange={cacheImageAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "a-plus" && (
+        <AplusAuditDrawer
+          marketplaceId={marketplaceId}
+          marketplaceShort={marketplace.shortLabel}
+          mode={currentAplusMode ?? "live"}
+          cachedSnapshot={currentAplusAudit}
+          onSnapshotChange={(snapshot) => setAplusAuditCache((current) => ({
+            ...current,
+            [snapshot.marketplaceId]: snapshot,
+          }))}
+          onClose={() => setOpenTool(null)}
+        />
+      )}
       {openTool === "variations" && <VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => {
         setOpenTool(null);
         if (returnToUnboundVariationAudit) {

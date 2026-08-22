@@ -102,6 +102,7 @@ describe("FBA variation grouping data", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     invalidateSpApiCredentialCaches();
     for (const key of Object.keys(process.env)) {
@@ -240,6 +241,53 @@ describe("FBA variation grouping data", () => {
       },
     ]);
     expect(grouped.rows[3]?.message).toMatch(/缺列|未回傳/u);
+  });
+
+  it("reports identity-free batch progress so a shared run can renew its active lease", async () => {
+    vi.useFakeTimers();
+    enableLiveMode();
+    const rows = Array.from({ length: 21 }, (_, index) =>
+      exportRow(
+        `SKU-${String(index).padStart(2, "0")}`,
+        `B${String(index).padStart(9, "0")}`,
+      )
+    );
+    const bySku = new Map(rows.map((row) => [row.sellerSku, row]));
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, {
+          access_token: "FAKE_ACCESS_TOKEN",
+          expires_in: 3_600,
+        });
+      }
+      const sellerSkus = url.searchParams.get("identifiers")!.split(",");
+      return jsonResponse(200, {
+        numberOfResults: sellerSkus.length,
+        pagination: {},
+        items: sellerSkus.map((sellerSku) => listingItem({
+          sellerSku,
+          asin: bySku.get(sellerSku)!.asin,
+        })),
+      });
+    }));
+    const progress: Array<{ completedBatches: number; totalBatches: number }> = [];
+
+    const grouping = getFbaVariationGroupingData({
+      marketplaceId: MARKETPLACE_ID,
+      rows,
+      onProgress: (update: { completedBatches: number; totalBatches: number }) => {
+        progress.push(update);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await grouping;
+
+    expect(progress).toEqual([
+      { completedBatches: 1, totalBatches: 2 },
+      { completedBatches: 2, totalBatches: 2 },
+    ]);
+    expect(Object.keys(progress[0]!)).toEqual(["completedBatches", "totalBatches"]);
   });
 
   it("keeps every row unknown when Amazon rejects relationships with 400", async () => {

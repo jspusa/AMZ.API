@@ -254,7 +254,12 @@ describe("main-owned listing write readback", () => {
       standardPrice: { amount: 30, currencyCode: "USD" },
       previousBusinessPrice: { amount: 28, currencyCode: "USD" },
       requestedBusinessPrice: { amount: 27.5, currencyCode: "USD" },
+      previousQuantityDiscountPlan: null,
+      previousQuantityDiscountPlanHash: null,
+      requestedQuantityDiscountPlan: null,
+      quantityDiscountPlanChange: "preserve" as const,
       businessOfferGuardHash: "quantity-discounts-before-write",
+      businessOfferProtectedHash: "protected-offers-before-write",
     };
     const snapshot = {
       ...identity,
@@ -269,6 +274,10 @@ describe("main-owned listing write readback", () => {
 
     expect(businessPriceReadbackDecision(result as never, snapshot as never))
       .toBe("verified");
+    expect(businessPriceReadbackDecision({
+      ...result,
+      quantityDiscountPlanChange: undefined,
+    } as never, snapshot as never)).toBe("pending");
     expect(businessPriceReadbackDecision(result as never, {
       ...snapshot,
       standardPrice: { amount: 31, currencyCode: "USD" },
@@ -354,6 +363,64 @@ describe("main-owned listing write readback", () => {
         categories: ["INVALID_PRICE"],
         marketplaceIds: [identity.marketplaceId],
       }],
+    } as never)).toBe("pending");
+  });
+
+  it("verifies a combined B2B price and explicit percent-tier readback", () => {
+    const requestedPlan = {
+      discountType: "percent" as const,
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+        { lowerBound: 15, value: 15 },
+        { lowerBound: 20, value: 20 },
+      ],
+    };
+    const result = {
+      ...identity,
+      status: "ACCEPTED" as const,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 30, currencyCode: "USD" },
+      previousBusinessPrice: { amount: 28, currencyCode: "USD" },
+      requestedBusinessPrice: { amount: 29, currencyCode: "USD" },
+      previousQuantityDiscountPlan: {
+        discountType: "fixed" as const,
+        levels: [{ lowerBound: 5, value: 25 }],
+      },
+      previousQuantityDiscountPlanHash: "old-plan-hash",
+      requestedQuantityDiscountPlan: requestedPlan,
+      quantityDiscountPlanChange: "replace" as const,
+      businessOfferGuardHash: "old-guard-includes-old-plan",
+      businessOfferProtectedHash: "protected-unrelated-offers",
+    };
+    const snapshot = {
+      ...identity,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      issues: [],
+      standardPrice: { amount: 30, currencyCode: "USD" },
+      businessPrice: { amount: 29, currencyCode: "USD" },
+      businessOfferPresence: "present" as const,
+      quantityDiscountPlan: requestedPlan,
+      quantityDiscountPlanPresence: "canonical" as const,
+      quantityDiscountPlanHash: "new-plan-hash",
+      businessOfferGuardHash: "new-guard-includes-new-plan",
+      businessOfferProtectedHash: "protected-unrelated-offers",
+    };
+
+    expect(businessPriceReadbackDecision(result as never, snapshot as never))
+      .toBe("verified");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      quantityDiscountPlan: {
+        ...requestedPlan,
+        levels: requestedPlan.levels.slice(0, 3),
+      },
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      businessOfferProtectedHash: "unrelated-offer-drifted",
     } as never)).toBe("pending");
   });
 

@@ -36,8 +36,10 @@ function completedInput(): AuditSuiteWorkbookInput {
     sections: {
       content: snapshot([]),
       image: snapshot([]),
+      aplus: snapshot([]),
       variation: snapshot([]),
       subscription: snapshot([]),
+      businessPricing: snapshot([]),
       advertising: snapshot([]),
     },
   };
@@ -66,7 +68,26 @@ describe("combined FBA audit suite Excel", () => {
           notice: "圖片健檢未完成；沒有建立結果快照。",
           payload: null,
         },
+        aplus: snapshot([{
+          sellerSku: "APLUS-01",
+          title: "A+ product",
+          asin: "B000000007",
+          finding: "尚未發布 A+",
+          brandStoryFinding: "From the brand 未確認",
+          notice: "只列官方 API 可證明的發布狀態。",
+        }]),
         variation: snapshot([]),
+        businessPricing: snapshot([{
+          sellerSku: "B2B-01",
+          title: "Business product",
+          asin: "B000000008",
+          standardPrice: 19.99,
+          businessPrice: 20.99,
+          currencyCode: "USD",
+          finding: "B2B 價格高於一般售價",
+          editable: true,
+          notice: "只讀核對；未執行寫入。",
+        }]),
         advertising: snapshot([{
           sellerSku: "ADS-01",
           title: "Advertising product",
@@ -81,21 +102,37 @@ describe("combined FBA audit suite Excel", () => {
     const archive = unzipSync(createAuditSuiteWorkbook(input));
     const workbook = strFromU8(archive["xl/workbook.xml"]);
     const expectedSheets = [
-      "總覽", "文案問題", "圖片問題", "未綁變體", "訂閱異常", "廣告覆蓋",
+      "總覽",
+      "全站文案健檢",
+      "全站圖片健檢",
+      "全站 A+ 健檢",
+      "未綁變體健檢",
+      "全站訂閱價格健檢",
+      "全站 B2B 價格健檢",
+      "廣告覆蓋健檢",
     ];
     expectedSheets.forEach((name) => expect(workbook).toContain(`sheet name="${name}"`));
+    for (let index = 1; index < expectedSheets.length; index += 1) {
+      expect(workbook.indexOf(`sheet name="${expectedSheets[index - 1]}"`)).toBeLessThan(
+        workbook.indexOf(`sheet name="${expectedSheets[index]}"`),
+      );
+    }
     expect(workbook).not.toContain("180天以上庫齡");
     expect(workbook).not.toContain("評論結果");
-    expect(Object.keys(archive).filter((name) => name.startsWith("xl/worksheets/sheet"))).toHaveLength(6);
+    expect(Object.keys(archive).filter((name) => name.startsWith("xl/worksheets/sheet"))).toHaveLength(8);
 
     const allXml = Object.entries(archive)
       .filter(([name]) => name.endsWith(".xml"))
       .map(([, bytes]) => strFromU8(bytes))
       .join("\n");
-    expect(allXml).toContain("本次合併匯出沒有可核對的文案問題快照");
+    expect(allXml).toContain("本次合併匯出沒有可核對的全站文案健檢快照");
     expect(allXml).toContain("範圍未完整");
     expect(allXml).toContain("圖片健檢未完成；沒有建立結果快照");
     expect(allXml).toContain("數量未知，未補 0");
+    expect(allXml).toContain("尚未發布 A+");
+    expect(allXml).toContain("From the brand 未確認");
+    expect(allXml).toContain("B2B 價格高於一般售價");
+    expect(allXml).toContain("只讀核對；未執行寫入。");
     expect(allXml).not.toContain("<v>0</v>");
     expect(allXml).not.toContain("<f>");
     expect(allXml).not.toContain("<f ");

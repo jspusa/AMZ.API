@@ -1,5 +1,6 @@
 export type BusinessPricingAuditStatus =
   | "configured"
+  | "above_standard"
   | "missing"
   | "unsupported"
   | "incomplete";
@@ -30,6 +31,7 @@ export type BusinessPricingAuditRow = Readonly<{
 export type BusinessPricingAuditSummary = Readonly<{
   totalFbaSkuCount: number;
   configured: number;
+  aboveStandard: number;
   missing: number;
   unsupported: number;
   incomplete: number;
@@ -49,6 +51,22 @@ export type BusinessPricingCapability = Readonly<{
   editable: boolean;
   reason: string | null;
   schemaChecksum: string | null;
+  quantityDiscountsSupported: boolean;
+  quantityDiscountsEditable: boolean;
+  quantityDiscountsReason: string | null;
+}>;
+
+export type BusinessQuantityDiscountTier = Readonly<{
+  lowerBound: number;
+  percent: number;
+}>;
+
+export type BusinessQuantityDiscountPlan = Readonly<{
+  discountType: "percent" | "fixed";
+  levels: readonly Readonly<{
+    lowerBound: number;
+    value: number;
+  }>[];
 }>;
 
 export type BusinessPricingListingSnapshot = Readonly<{
@@ -61,7 +79,12 @@ export type BusinessPricingListingSnapshot = Readonly<{
   standardPrice: BusinessPricingMoney | null;
   businessPrice: BusinessPricingMoney | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
+  businessPricingManagedByAutomation: boolean;
+  quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanHash: string | null;
   businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
   businessPricingCapability: BusinessPricingCapability;
   fetchedAt: string;
   notice: string | null;
@@ -73,6 +96,8 @@ export type BusinessPriceWriteBody = Readonly<{
   expectedStandardPrice: number;
   expectedBusinessPrice: number | null;
   newBusinessPrice: number;
+  expectedQuantityDiscountPlanHash?: string | null;
+  quantityDiscountTiers?: readonly BusinessQuantityDiscountTier[];
   idempotencyKey: string;
 }>;
 
@@ -91,7 +116,12 @@ export type BusinessPriceValidation = Readonly<{
   standardPrice: BusinessPricingMoney;
   previousBusinessPrice: BusinessPricingMoney | null;
   requestedBusinessPrice: BusinessPricingMoney;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  previousQuantityDiscountPlanHash: string | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
   schemaChecksum: string;
   fbaEvidenceHash: string;
   canonicalPatchHash: string;
@@ -116,6 +146,13 @@ export type BusinessPriceUpdate = Readonly<{
   standardPrice: BusinessPricingMoney;
   previousBusinessPrice: BusinessPricingMoney | null;
   requestedBusinessPrice: BusinessPricingMoney;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  previousQuantityDiscountPlanHash: string | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace";
+  businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
+  schemaChecksum: string;
   acceptedAt: string;
   issues: readonly BusinessPriceIssue[];
   notice: string;
@@ -192,6 +229,7 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
   const presence = source.businessOfferPresence;
   if (
     status !== "configured" &&
+    status !== "above_standard" &&
     status !== "missing" &&
     status !== "unsupported" &&
     status !== "incomplete"
@@ -207,9 +245,17 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
   const standardPrice = money(source.standardPrice, "標準售價");
   const businessPrice = money(source.businessPrice, "B2B 價格");
   if (
-    (status === "configured" && (presence !== "present" || !businessPrice)) ||
+    ((status === "configured" || status === "above_standard") &&
+      (presence !== "present" || !businessPrice)) ||
     (status === "missing" && (presence !== "absent" || businessPrice !== null)) ||
-    (source.editable && status !== "configured" && status !== "missing")
+    (source.editable && status !== "configured" &&
+      status !== "above_standard" && status !== "missing") ||
+    (status === "configured" &&
+      (!standardPrice || !businessPrice ||
+        businessPrice.amount > standardPrice.amount)) ||
+    (status === "above_standard" &&
+      (!standardPrice || !businessPrice ||
+        businessPrice.amount <= standardPrice.amount))
   ) {
     throw new Error("B2B 價格健檢的價格、狀態與能力不一致。");
   }
@@ -261,12 +307,14 @@ export function parseBusinessPricingAuditSnapshot(
   const summary: BusinessPricingAuditSummary = {
     totalFbaSkuCount: count(rawSummary.totalFbaSkuCount, "FBA SKU"),
     configured: count(rawSummary.configured, "已設定"),
+    aboveStandard: count(rawSummary.aboveStandard, "高於一般售價"),
     missing: count(rawSummary.missing, "未設定"),
     unsupported: count(rawSummary.unsupported, "不支援"),
     incomplete: count(rawSummary.incomplete, "資料未完成"),
   };
   const actual = {
     configured: rows.filter((row) => row.status === "configured").length,
+    aboveStandard: rows.filter((row) => row.status === "above_standard").length,
     missing: rows.filter((row) => row.status === "missing").length,
     unsupported: rows.filter((row) => row.status === "unsupported").length,
     incomplete: rows.filter((row) => row.status === "incomplete").length,
@@ -274,6 +322,7 @@ export function parseBusinessPricingAuditSnapshot(
   if (
     summary.totalFbaSkuCount !== rows.length ||
     summary.configured !== actual.configured ||
+    summary.aboveStandard !== actual.aboveStandard ||
     summary.missing !== actual.missing ||
     summary.unsupported !== actual.unsupported ||
     summary.incomplete !== actual.incomplete
@@ -302,6 +351,51 @@ export function businessPricingRowMatchesFilter(
   return row.status === filter;
 }
 
+export function applyVerifiedBusinessPriceToAuditSnapshot(
+  snapshot: BusinessPricingAuditSnapshot,
+  update: BusinessPriceUpdate,
+): BusinessPricingAuditSnapshot {
+  if (
+    snapshot.mode !== update.mode ||
+    snapshot.marketplaceId !== update.marketplaceId ||
+    snapshot.rows.filter((row) => row.sellerSku === update.sellerSku).length !== 1
+  ) {
+    throw new Error("B2B 價格回查結果與目前健檢快照不一致。");
+  }
+  const aboveStandard =
+    update.requestedBusinessPrice.currencyCode ===
+      update.standardPrice.currencyCode &&
+    update.requestedBusinessPrice.amount > update.standardPrice.amount;
+  const rows = snapshot.rows.map((row) =>
+    row.sellerSku === update.sellerSku
+      ? {
+          ...row,
+          asin: update.asin,
+          productType: update.productType,
+          standardPrice: update.standardPrice,
+          businessPrice: update.requestedBusinessPrice,
+          businessOfferPresence: "present" as const,
+          status: aboveStandard ? "above_standard" as const : "configured" as const,
+          reason: aboveStandard
+            ? "Amazon Business 價格仍高於一般售價；主程序已唯讀回查確認。"
+            : "已設定 Amazon Business 價格，且主程序唯讀回查確認。",
+        }
+      : row
+  );
+  return {
+    ...snapshot,
+    rows,
+    summary: {
+      totalFbaSkuCount: rows.length,
+      configured: rows.filter((row) => row.status === "configured").length,
+      aboveStandard: rows.filter((row) => row.status === "above_standard").length,
+      missing: rows.filter((row) => row.status === "missing").length,
+      unsupported: rows.filter((row) => row.status === "unsupported").length,
+      incomplete: rows.filter((row) => row.status === "incomplete").length,
+    },
+  };
+}
+
 function optionalExactText(
   value: unknown,
   label: string,
@@ -317,6 +411,75 @@ function exactHash(value: unknown, label: string): string {
   return value;
 }
 
+function parseQuantityDiscountPlan(
+  value: unknown,
+  presence: unknown,
+  hash: unknown,
+): {
+  plan: BusinessQuantityDiscountPlan | null;
+  presence: "absent" | "canonical" | "ambiguous";
+  hash: string | null;
+} {
+  if (presence !== "absent" && presence !== "canonical" &&
+      presence !== "ambiguous") {
+    throw new Error("B2B 數量折扣證據無效。");
+  }
+  if (presence === "absent") {
+    if (value !== null || hash !== null) {
+      throw new Error("B2B 數量折扣空值證據不一致。");
+    }
+    return { plan: null, presence, hash: null };
+  }
+  if (presence === "ambiguous") {
+    if (value !== null || hash !== null) {
+      throw new Error("B2B 數量折扣不明證據不一致。");
+    }
+    return { plan: null, presence, hash: null };
+  }
+  const source = record(value);
+  if (source.discountType !== "percent" && source.discountType !== "fixed") {
+    throw new Error("B2B 數量折扣類型無效。");
+  }
+  if (!Array.isArray(source.levels) || source.levels.length < 1 ||
+      source.levels.length > 5) {
+    throw new Error("B2B 數量折扣階數無效。");
+  }
+  const sourceLevels = source.levels;
+  const levels = sourceLevels.map((entry, index) => {
+    const level = record(entry);
+    if (
+      !Number.isSafeInteger(level.lowerBound) ||
+      Number(level.lowerBound) <= 0 ||
+      typeof level.value !== "number" ||
+      !Number.isFinite(level.value) ||
+      level.value <= 0 ||
+      (source.discountType === "percent" && level.value >= 100)
+    ) {
+      throw new Error("B2B 數量折扣內容無效。");
+    }
+    const previous = index > 0
+      ? sourceLevels[index - 1] as Record<string, unknown>
+      : null;
+    if (previous && (
+      Number(level.lowerBound) <= Number(previous.lowerBound) ||
+      (source.discountType === "percent"
+        ? level.value <= Number(previous.value)
+        : level.value >= Number(previous.value))
+    )) {
+      throw new Error("B2B 數量折扣必須依件數遞增並提供更優惠的階段。");
+    }
+    return Object.freeze({
+      lowerBound: Number(level.lowerBound),
+      value: level.value,
+    });
+  });
+  return {
+    plan: Object.freeze({ discountType: source.discountType, levels }),
+    presence,
+    hash: exactHash(hash, "數量折扣 hash"),
+  };
+}
+
 export function parseBusinessPricingListingSnapshot(
   value: unknown,
 ): BusinessPricingListingSnapshot {
@@ -330,6 +493,11 @@ export function parseBusinessPricingListingSnapshot(
   }
   const standardPrice = money(source.standardPrice, "標準售價");
   const businessPrice = money(source.businessPrice, "B2B 價格");
+  const quantityDiscount = parseQuantityDiscountPlan(
+    source.quantityDiscountPlan,
+    source.quantityDiscountPlanPresence,
+    source.quantityDiscountPlanHash,
+  );
   if (
     (presence === "present" && !businessPrice) ||
     (presence === "absent" && businessPrice !== null) ||
@@ -338,6 +506,10 @@ export function parseBusinessPricingListingSnapshot(
   ) {
     throw new Error("B2B 價格與 offer 證據不一致。");
   }
+  if (typeof source.businessPricingManagedByAutomation !== "boolean" ||
+      (source.businessPricingManagedByAutomation && presence !== "present")) {
+    throw new Error("B2B 自動定價管理證據無效。");
+  }
   const rawCapability = record(source.businessPricingCapability);
   if (
     typeof rawCapability.supported !== "boolean" ||
@@ -345,7 +517,13 @@ export function parseBusinessPricingListingSnapshot(
     (rawCapability.reason !== null && typeof rawCapability.reason !== "string") ||
     (rawCapability.schemaChecksum !== null &&
       typeof rawCapability.schemaChecksum !== "string") ||
-    (rawCapability.editable && !rawCapability.supported)
+    typeof rawCapability.quantityDiscountsSupported !== "boolean" ||
+    typeof rawCapability.quantityDiscountsEditable !== "boolean" ||
+    (rawCapability.quantityDiscountsReason !== null &&
+      typeof rawCapability.quantityDiscountsReason !== "string") ||
+    (rawCapability.editable && !rawCapability.supported) ||
+    (rawCapability.quantityDiscountsEditable &&
+      (!rawCapability.quantityDiscountsSupported || !rawCapability.editable))
   ) {
     throw new Error("B2B 價格 PTD 能力資料無效。");
   }
@@ -358,6 +536,13 @@ export function parseBusinessPricingListingSnapshot(
   if (rawCapability.editable && !schemaChecksum) {
     throw new Error("B2B 價格 PTD 可編輯能力缺少 checksum。");
   }
+  const quantityDiscountsReason = rawCapability.quantityDiscountsReason === null
+    ? null
+    : displayText(
+      rawCapability.quantityDiscountsReason,
+      "數量折扣 PTD 說明",
+      4_000,
+    );
   const fetchedAt = exactText(source.fetchedAt, "快照時間", 40);
   if (!Number.isFinite(Date.parse(fetchedAt))) {
     throw new Error("B2B 價格快照時間無效。");
@@ -376,18 +561,83 @@ export function parseBusinessPricingListingSnapshot(
     standardPrice,
     businessPrice,
     businessOfferPresence: presence,
+    businessPricingManagedByAutomation:
+      source.businessPricingManagedByAutomation,
+    quantityDiscountPlan: quantityDiscount.plan,
+    quantityDiscountPlanPresence: quantityDiscount.presence,
+    quantityDiscountPlanHash: quantityDiscount.hash,
     businessOfferGuardHash: exactHash(
       source.businessOfferGuardHash,
       "offer guard",
+    ),
+    businessOfferProtectedHash: exactHash(
+      source.businessOfferProtectedHash,
+      "protected offer",
     ),
     businessPricingCapability: Object.freeze({
       supported: rawCapability.supported,
       editable: rawCapability.editable,
       reason: capabilityReason,
       schemaChecksum,
+      quantityDiscountsSupported: rawCapability.quantityDiscountsSupported,
+      quantityDiscountsEditable: rawCapability.quantityDiscountsEditable,
+      quantityDiscountsReason,
     }),
     fetchedAt,
     notice: optionalExactText(source.notice, "說明", 4_000),
+  });
+}
+
+export function defaultBusinessPricingProposal(
+  listing: BusinessPricingListingSnapshot,
+): Readonly<{
+  businessPrice: number;
+  tiers: readonly BusinessQuantityDiscountTier[];
+}> | null {
+  const standard = listing.standardPrice;
+  if (
+    !standard ||
+    standard.currencyCode !== "USD" ||
+    standard.amount <= 1 ||
+    listing.businessPricingManagedByAutomation ||
+    !listing.businessPricingCapability.supported ||
+    !listing.businessPricingCapability.editable
+  ) return null;
+  const canReplaceQuantityDiscounts =
+    listing.quantityDiscountPlanPresence !== "ambiguous" &&
+    listing.businessPricingCapability.quantityDiscountsSupported &&
+    listing.businessPricingCapability.quantityDiscountsEditable;
+  return Object.freeze({
+    businessPrice: Number((standard.amount - 1).toFixed(2)),
+    tiers: Object.freeze(canReplaceQuantityDiscounts
+      ? [
+          Object.freeze({ lowerBound: 5, percent: 5 }),
+          Object.freeze({ lowerBound: 10, percent: 10 }),
+          Object.freeze({ lowerBound: 15, percent: 15 }),
+          Object.freeze({ lowerBound: 20, percent: 20 }),
+        ]
+      : []),
+  });
+}
+
+export type BusinessPricingEditorMode = "price_only" | "combined";
+
+export function businessPricingEditorProposal(
+  listing: BusinessPricingListingSnapshot,
+  mode: BusinessPricingEditorMode,
+): Readonly<{
+  businessPrice: number;
+  quantityDiscountTiers?: readonly BusinessQuantityDiscountTier[];
+}> | null {
+  const proposal = defaultBusinessPricingProposal(listing);
+  if (!proposal || (mode === "combined" && proposal.tiers.length === 0)) {
+    return null;
+  }
+  return Object.freeze({
+    businessPrice: proposal.businessPrice,
+    ...(mode === "combined"
+      ? { quantityDiscountTiers: proposal.tiers }
+      : {}),
   });
 }
 
@@ -429,6 +679,29 @@ function parseIssues(value: unknown): readonly BusinessPriceIssue[] {
   }));
 }
 
+function responseQuantityDiscountPlan(
+  value: unknown,
+  label: string,
+): BusinessQuantityDiscountPlan | null {
+  if (value === null) return null;
+  try {
+    return parseQuantityDiscountPlan(
+      value,
+      "canonical",
+      "0".repeat(64),
+    ).plan;
+  } catch {
+    throw new Error(`B2B 價格的${label}無法安全辨識。`);
+  }
+}
+
+function sameQuantityDiscountPlan(
+  left: BusinessQuantityDiscountPlan | null,
+  right: BusinessQuantityDiscountPlan | null,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export function parseBusinessPriceValidation(
   value: unknown,
 ): BusinessPriceValidation {
@@ -454,6 +727,43 @@ export function parseBusinessPriceValidation(
   if (!/^[A-Z0-9]{10}$/u.test(asin)) {
     throw new Error("B2B 價格預檢 ASIN 無效。");
   }
+  const previousQuantityDiscountPlan = responseQuantityDiscountPlan(
+    source.previousQuantityDiscountPlan,
+    "預檢舊數量折扣",
+  );
+  const requestedQuantityDiscountPlan = responseQuantityDiscountPlan(
+    source.requestedQuantityDiscountPlan,
+    "預檢新數量折扣",
+  );
+  const quantityDiscountPlanChange = source.quantityDiscountPlanChange;
+  const previousQuantityDiscountPlanHash = source.previousQuantityDiscountPlanHash ===
+      null
+    ? null
+    : exactHash(
+      source.previousQuantityDiscountPlanHash,
+      "預檢舊數量折扣 hash",
+    );
+  if (
+    quantityDiscountPlanChange !== "preserve" &&
+    quantityDiscountPlanChange !== "replace"
+  ) {
+    throw new Error("B2B 價格的預檢數量折扣操作無效。");
+  }
+  if (
+    (quantityDiscountPlanChange === "preserve" &&
+      !sameQuantityDiscountPlan(
+        previousQuantityDiscountPlan,
+        requestedQuantityDiscountPlan,
+      )) ||
+    (quantityDiscountPlanChange === "replace" &&
+      requestedQuantityDiscountPlan?.discountType !== "percent")
+  ) {
+    throw new Error("B2B 價格的預檢數量折扣證據不一致。");
+  }
+  if ((previousQuantityDiscountPlan === null) !==
+      (previousQuantityDiscountPlanHash === null)) {
+    throw new Error("B2B 價格的預檢舊數量折扣 hash 不一致。");
+  }
   return Object.freeze({
     mode,
     status: parsedStatus,
@@ -467,9 +777,17 @@ export function parseBusinessPriceValidation(
       source.requestedBusinessPrice,
       "預檢新 B2B 價格",
     ),
+    previousQuantityDiscountPlan,
+    previousQuantityDiscountPlanHash,
+    requestedQuantityDiscountPlan,
+    quantityDiscountPlanChange,
     businessOfferGuardHash: exactHash(
       source.businessOfferGuardHash,
       "預檢 offer guard",
+    ),
+    businessOfferProtectedHash: exactHash(
+      source.businessOfferProtectedHash,
+      "預檢 protected offer",
     ),
     schemaChecksum: exactText(source.schemaChecksum, "預檢 PTD checksum", 256),
     fbaEvidenceHash: exactHash(source.fbaEvidenceHash, "預檢 FBA 證據"),
@@ -487,6 +805,7 @@ export function parseBusinessPriceValidation(
 export function createSubmittedBusinessPricePreview(input: {
   listing: BusinessPricingListingSnapshot;
   newBusinessPrice: number;
+  quantityDiscountTiers?: readonly BusinessQuantityDiscountTier[];
   idempotencyKey: string;
   response: unknown;
 }): SubmittedBusinessPricePreview {
@@ -502,12 +821,64 @@ export function createSubmittedBusinessPricePreview(input: {
   ) {
     throw new Error("B2B 價格預檢送出資料無效。");
   }
+  const tiers = input.quantityDiscountTiers;
+  let requestedPlan: BusinessQuantityDiscountPlan | null = null;
+  if (tiers !== undefined) {
+    if (
+      input.listing.quantityDiscountPlanPresence === "ambiguous" ||
+      !input.listing.businessPricingCapability.quantityDiscountsSupported ||
+      !input.listing.businessPricingCapability.quantityDiscountsEditable ||
+      tiers.length < 1 || tiers.length > 5
+    ) {
+      throw new Error("B2B 數量折扣預檢送出資料無效。");
+    }
+    const levels = tiers.map((tier, index) => {
+      const previous = tiers[index - 1];
+      if (
+        !Number.isSafeInteger(tier.lowerBound) || tier.lowerBound <= 0 ||
+        !Number.isFinite(tier.percent) || tier.percent <= 0 ||
+        tier.percent >= 100 ||
+        Number(tier.percent.toFixed(2)) !== tier.percent ||
+        (previous !== undefined &&
+          (tier.lowerBound <= previous.lowerBound ||
+            tier.percent <= previous.percent))
+      ) {
+        throw new Error("B2B 數量折扣必須是 1–5 階，件數與折扣需嚴格遞增。");
+      }
+      const unitPrice = Number((
+        input.newBusinessPrice * (1 - tier.percent / 100)
+      ).toFixed(2));
+      const previousUnitPrice = previous === undefined
+        ? input.newBusinessPrice
+        : Number((
+          input.newBusinessPrice * (1 - previous.percent / 100)
+        ).toFixed(2));
+      if (unitPrice <= 0 || unitPrice >= previousUnitPrice) {
+        throw new Error("B2B 數量折扣在 USD 兩位小數後必須逐階降低單價。");
+      }
+      return Object.freeze({
+        lowerBound: tier.lowerBound,
+        value: tier.percent,
+      });
+    });
+    requestedPlan = Object.freeze({
+      discountType: "percent" as const,
+      levels: Object.freeze(levels),
+    });
+  }
   const body = Object.freeze({
     marketplaceId: input.listing.marketplaceId,
     sellerSku: input.listing.sellerSku,
     expectedStandardPrice: input.listing.standardPrice.amount,
     expectedBusinessPrice: input.listing.businessPrice?.amount ?? null,
     newBusinessPrice: input.newBusinessPrice,
+    ...(tiers === undefined ? {} : {
+      expectedQuantityDiscountPlanHash:
+        input.listing.quantityDiscountPlanHash,
+      quantityDiscountTiers: Object.freeze(tiers.map((tier) =>
+        Object.freeze({ ...tier })
+      )),
+    }),
     idempotencyKey: input.idempotencyKey,
   });
   const validation = parseBusinessPriceValidation(input.response);
@@ -518,12 +889,26 @@ export function createSubmittedBusinessPricePreview(input: {
     validation.asin !== input.listing.asin ||
     validation.productType !== input.listing.productType ||
     validation.businessOfferGuardHash !== input.listing.businessOfferGuardHash ||
+    validation.businessOfferProtectedHash !==
+      input.listing.businessOfferProtectedHash ||
     validation.schemaChecksum !==
       input.listing.businessPricingCapability.schemaChecksum ||
     !sameMoney(validation.standardPrice, input.listing.standardPrice) ||
     !sameMoney(validation.previousBusinessPrice, input.listing.businessPrice) ||
     validation.requestedBusinessPrice.amount !== body.newBusinessPrice ||
-    validation.requestedBusinessPrice.currencyCode !== currency
+    validation.requestedBusinessPrice.currencyCode !== currency ||
+    !sameQuantityDiscountPlan(
+      validation.previousQuantityDiscountPlan,
+      input.listing.quantityDiscountPlan,
+    ) ||
+    validation.previousQuantityDiscountPlanHash !==
+      input.listing.quantityDiscountPlanHash ||
+    validation.quantityDiscountPlanChange !==
+      (tiers === undefined ? "preserve" : "replace") ||
+    !sameQuantityDiscountPlan(
+      validation.requestedQuantityDiscountPlan,
+      tiers === undefined ? input.listing.quantityDiscountPlan : requestedPlan,
+    )
   ) {
     throw new Error("Amazon B2B 價格預檢回應與送出快照不一致。");
   }
@@ -562,6 +947,50 @@ export function parseBusinessPriceUpdate(
     source.requestedBusinessPrice,
     "更新新 B2B 價格",
   );
+  const previousQuantityDiscountPlan = responseQuantityDiscountPlan(
+    source.previousQuantityDiscountPlan,
+    "更新舊數量折扣",
+  );
+  const requestedQuantityDiscountPlan = responseQuantityDiscountPlan(
+    source.requestedQuantityDiscountPlan,
+    "更新新數量折扣",
+  );
+  const previousQuantityDiscountPlanHash = source.previousQuantityDiscountPlanHash ===
+      null
+    ? null
+    : exactHash(
+      source.previousQuantityDiscountPlanHash,
+      "更新舊數量折扣 hash",
+    );
+  const quantityDiscountPlanChange = source.quantityDiscountPlanChange;
+  if (
+    (quantityDiscountPlanChange !== "preserve" &&
+      quantityDiscountPlanChange !== "replace") ||
+    (previousQuantityDiscountPlan === null) !==
+      (previousQuantityDiscountPlanHash === null) ||
+    (quantityDiscountPlanChange === "preserve" &&
+      !sameQuantityDiscountPlan(
+        previousQuantityDiscountPlan,
+        requestedQuantityDiscountPlan,
+      )) ||
+    (quantityDiscountPlanChange === "replace" &&
+      requestedQuantityDiscountPlan?.discountType !== "percent")
+  ) {
+    throw new Error("B2B 價格更新的數量折扣證據不一致。");
+  }
+  const businessOfferGuardHash = exactHash(
+    source.businessOfferGuardHash,
+    "更新 offer guard",
+  );
+  const businessOfferProtectedHash = exactHash(
+    source.businessOfferProtectedHash,
+    "更新 protected offer",
+  );
+  const schemaChecksum = exactText(
+    source.schemaChecksum,
+    "更新 PTD checksum",
+    256,
+  );
   const lifecycle = record(source.writeLifecycle);
   if (
     lifecycle.state !== "verified" ||
@@ -586,12 +1015,24 @@ export function parseBusinessPriceUpdate(
     source.sellerSku !== submitted.body.sellerSku ||
     asin !== validation.asin ||
     source.productType !== validation.productType ||
-    source.businessOfferGuardHash !== validation.businessOfferGuardHash ||
-    source.schemaChecksum !== validation.schemaChecksum ||
+    businessOfferGuardHash !== validation.businessOfferGuardHash ||
+    businessOfferProtectedHash !== validation.businessOfferProtectedHash ||
+    schemaChecksum !== validation.schemaChecksum ||
     !sameMoney(standardPrice, validation.standardPrice) ||
     !sameMoney(previousBusinessPrice, validation.previousBusinessPrice) ||
     requestedBusinessPrice.amount !== submitted.body.newBusinessPrice ||
-    requestedBusinessPrice.currencyCode !== standardPrice.currencyCode
+    requestedBusinessPrice.currencyCode !== standardPrice.currencyCode ||
+    !sameQuantityDiscountPlan(
+      previousQuantityDiscountPlan,
+      validation.previousQuantityDiscountPlan,
+    ) ||
+    previousQuantityDiscountPlanHash !==
+      validation.previousQuantityDiscountPlanHash ||
+    !sameQuantityDiscountPlan(
+      requestedQuantityDiscountPlan,
+      validation.requestedQuantityDiscountPlan,
+    ) ||
+    quantityDiscountPlanChange !== validation.quantityDiscountPlanChange
   ) {
     throw new Error("Amazon B2B 價格更新識別或價格與預檢快照不一致。");
   }
@@ -605,6 +1046,13 @@ export function parseBusinessPriceUpdate(
     standardPrice,
     previousBusinessPrice,
     requestedBusinessPrice,
+    previousQuantityDiscountPlan,
+    previousQuantityDiscountPlanHash,
+    requestedQuantityDiscountPlan,
+    quantityDiscountPlanChange,
+    businessOfferGuardHash,
+    businessOfferProtectedHash,
+    schemaChecksum,
     acceptedAt,
     issues: parseIssues(source.issues),
     notice: displayText(source.notice, "更新說明", 4_000),

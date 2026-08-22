@@ -10,21 +10,14 @@ import {
 } from "../audit-suite";
 import { auditExportFilename } from "../audit-export-filename";
 import {
+  AUDIT_SUITE_SECTION_COUNT,
   AUDIT_SUITE_SECTION_IDS,
+  AUDIT_SUITE_SECTION_LABELS,
   type AuditSuitePublicContext,
   type AuditSuiteRun,
   type AuditSuiteRunDto,
-  type AuditSuiteSectionId,
   type AuditSuiteSectionStatus,
 } from "../../../shared/audit-suite";
-
-const SECTION_LABELS: Readonly<Record<AuditSuiteSectionId, string>> = {
-  content: "商品內容結構",
-  image: "Listing 圖片",
-  variation: "未綁變體",
-  subscription: "訂閱價格",
-  advertising: "廣告覆蓋",
-};
 
 type ApiProblem = { message?: string; requestId?: string | null };
 
@@ -107,7 +100,7 @@ export function auditSuiteStatusPresentation(
       state: "completed",
       label: "全部完成",
       icon: "✓",
-      progressText: "5 項全部完成",
+      progressText: `${AUDIT_SUITE_SECTION_COUNT} 項全部完成`,
       completedSections,
       progressPercent,
     };
@@ -127,7 +120,7 @@ export function auditSuiteStatusPresentation(
       state: "failed",
       label: "未完成",
       icon: "×",
-      progressText: "5 項都未建立可核對快照",
+      progressText: `${AUDIT_SUITE_SECTION_COUNT} 項都未建立可核對快照`,
       completedSections,
       progressPercent,
     };
@@ -136,7 +129,7 @@ export function auditSuiteStatusPresentation(
     state: "running",
     label: run.status === "queued" ? "準備中" : "背景執行中",
     icon: run.status === "queued" ? "…" : "↻",
-    progressText: `${completedSections}／5 項已收斂，main process 仍在背景處理`,
+    progressText: `${completedSections}／${AUDIT_SUITE_SECTION_COUNT} 項已收斂，main process 仍在背景處理`,
     completedSections,
     progressPercent,
   };
@@ -380,9 +373,9 @@ export default function AuditSuiteHomeCard({
       <div className="audit-suite-home-heading">
         <span className="audit-suite-home-icon" aria-hidden="true">✓✓</span>
         <div>
-          <p className="eyebrow">ONE CLICK · FIVE FBA AUDITS</p>
+          <p className="eyebrow">ONE CLICK · {AUDIT_SUITE_SECTION_COUNT} FBA AUDITS</p>
           <h2>一鍵執行全部 FBA 健檢</h2>
-          <p>按一次後，下面五項由本機主程序自動接手並在背景繼續；不需要逐項另按。</p>
+          <p>按一次後，下面 {AUDIT_SUITE_SECTION_COUNT} 項由本機主程序自動接手並在背景繼續；不需要逐項另按。</p>
         </div>
       </div>
       <div
@@ -416,10 +409,10 @@ export default function AuditSuiteHomeCard({
           {starting
             ? "正在建立背景健檢…"
             : run && (terminal(run) || stoppedRunId === run.runId)
-              ? "重新執行五項 FBA 健檢"
+              ? `重新執行 ${AUDIT_SUITE_SECTION_COUNT} 項 FBA 健檢`
               : run
-                ? "五項健檢正在背景自動執行"
-                : "按一次，讓五項健檢自動執行"}
+                ? `${AUDIT_SUITE_SECTION_COUNT} 項健檢正在背景自動執行`
+                : `按一次，讓 ${AUDIT_SUITE_SECTION_COUNT} 項健檢自動執行`}
         </button>
         {run && (run.status === "completed" || run.status === "partial") && (
           <button type="button" className="secondary" onClick={() => void download()} disabled={exporting}>
@@ -428,10 +421,10 @@ export default function AuditSuiteHomeCard({
         )}
       </div>
       <div className="audit-suite-auto-run-note" role="note">
-        <span aria-hidden="true">1 → 5</span>
+        <span aria-hidden="true">1 → {AUDIT_SUITE_SECTION_COUNT}</span>
         <div>
-          <strong>下面五項會自動執行</strong>
-          <small>這些卡片只顯示各項狀態，不是五個分開按鈕；執行期間可以先使用其他功能。</small>
+          <strong>下面 {AUDIT_SUITE_SECTION_COUNT} 項會自動執行</strong>
+          <small>這些卡片只顯示各項狀態，不是 {AUDIT_SUITE_SECTION_COUNT} 個分開按鈕；執行期間可以先使用其他功能。</small>
         </div>
       </div>
       <div className="audit-suite-section-grid">
@@ -453,7 +446,7 @@ export default function AuditSuiteHomeCard({
               data-state={sectionPresentation.state}
             >
               <header>
-                <strong>{SECTION_LABELS[id]}</strong>
+                <strong>{AUDIT_SUITE_SECTION_LABELS[id]}</strong>
                 <span className="audit-suite-section-pill">
                   <b aria-hidden="true">{sectionPresentation.icon}</b>
                   {sectionPresentation.label}
@@ -465,7 +458,7 @@ export default function AuditSuiteHomeCard({
                   <progress
                     max={section.totalUnits!}
                     value={Math.min(section.totalUnits!, section.completedUnits!)}
-                    aria-label={`${SECTION_LABELS[id]} ${section.completedUnits!.toLocaleString()}／${section.totalUnits!.toLocaleString()}`}
+                    aria-label={`${AUDIT_SUITE_SECTION_LABELS[id]} ${section.completedUnits!.toLocaleString()}／${section.totalUnits!.toLocaleString()}`}
                   />
                   <span>{section.completedUnits!.toLocaleString()}／{section.totalUnits!.toLocaleString()}</span>
                 </div>

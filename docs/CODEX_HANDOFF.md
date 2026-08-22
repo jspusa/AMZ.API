@@ -40,13 +40,13 @@ AMZ.API 是 Jasper 公司自用的 **Amazon FBA-only 營運控制台**：GitHub 
 
 - 文案：查詢及修改產品名稱、產品亮點、五大產品要點、產品敘述與成分；全站門檻為 60／110／每項 150–200／1,800 Unicode 字元，原因只顯示一次，且能帶入相符的立即修改欄位。
 - 圖片：拖拉上傳、排序、主圖選擇、尺寸與格式驗證、Amazon Validation Preview；全站少於 6 張才列為不足。
-- 一鍵健檢所選站點全部 FBA 文案並匯出依 variation family 分頁、問題欄有色標示的 Excel；同一檔案可選檔或 drag/drop 回傳做整批零寫入預檢，再經一次本機身分確認逐 SKU 安全更新。Excel 特殊換行需無損 round trip，且單一成分聲明只在 Amazon 成分可證明為多項時警示。
-- 首頁 run-all 在背景並行執行文案、圖片、未綁變體、訂閱省、廣告覆蓋五項，狀態固定依此順序顯示；180 天以上庫存與評論屬低頻工作，依此順序預設收合且不加入 run-all。
+- 一鍵健檢所選站點全部 FBA 文案並匯出依 variation family 分頁、問題欄有色標示的 Excel；同一檔案可選檔或 drag/drop 回傳做整批零寫入預檢，再經一次本機身分確認逐 SKU 安全更新。Excel 特殊換行需無損 round trip。成分宣稱只採同次完整 Amazon `ingredients` 證據：多成分否定 single ingredient、文案 Tendon／Tendons 必須有對應成分，且含 Chicken 時會標示 hypoallergenic 宣稱待核對。
+- 首頁 run-all 在背景並行執行文案、圖片、A+、未綁變體、訂閱省、B2B 價格、廣告覆蓋七項；一般健檢卡與 run-all 共用完全相同名稱與固定順序。180 天以上庫存與評論屬低頻工作，依此順序預設收合且不加入 run-all。
 
 ### 價格區
 
 - 定價：依 Seller SKU 查價與安全調價。
-- Amazon Business Price：全站只健檢目前 FBA SKU；只有 seller-specific PTD 明確開放時才能預檢或更新 `audience=B2B` 的價格，絕不覆蓋一般售價、數量折扣或其他 audiences。
+- Amazon Business Price：全站只健檢目前 FBA SKU，並獨立標示 B2B 高於一般售價；只有 seller-specific PTD 明確開放時才能預檢或更新 exact `audience=B2B` contribution。預設 price-only 固定省略 `quantity_discount_plan`；只有使用者明確選用且 QDP PTD 能力另行證明時，才可在同一次 combined 預檢／PATCH 更新完整 percent tiers。一般售價與其他 audiences 永遠不改。
 - Subscribe & Save：目前公開 SP-API 能力不足的部分維持唯讀／官方頁完成人工設定。
 - 促銷：限時售價 API；Coupon 及部分促銷資格在 Amazon 官方頁完成。
 
@@ -359,6 +359,12 @@ Amazon App：
   - `/Applications/AMZ.API.app` 已由 v0.1.16 安全備份後安裝 v0.1.17；備份為 `/Applications/AMZ.API-v0.1.16-backup.app`。啟動沿用原 Keychain vault且未重輸密鑰，同一程序在初次視窗讀取短暫等待後正常顯示首頁，沒有反覆重啟；系統資訊顯示「目前本機 App 0.1.17」。
   - 2026-08-21 真實 US 唯讀邊界：2026-07-23 至 2026-08-21 入庫同步只啟動一次，隨即以安全失敗通知收斂，沒有貨件／SKU／數量／三層瑕疵或 7-sheet Excel 可驗證，也沒有 Amazon mutation；不得寫成 0 貨件或 0 瑕疵。廣告 drawer 可見，但獨立 Amazon Ads LWA 尚未設定，故 Reporting v3、策略表與 3-sheet／29 欄 Excel 均保持未驗證。
   - Supply Boss API v4 production 沿用 server-side 兩檔 public allowlist；已將 private R2 的 `macos-dmg` 更新為 `AMZ.API-0.1.17-universal.dmg`（246,079,435 bytes；SHA-256 同上），Windows NSIS 卡維持 v0.1.16。portable ZIP 與 checksum manifest 仍只作內部 artifact，不顯示成員工下載卡；下載頁密碼與 session 規則未更改。
+- 2026-08-23 v0.1.25 全站七項健檢候選版已完成本機 release gate，尚未冒充已發布／安裝／live：
+  - 首頁一般健檢卡與 run-all 共用同一個 canonical schema v3，固定依序執行文案、圖片、A+、未綁變體、訂閱省、B2B 價格、廣告覆蓋七項；七個 worker 在 main 背景並行，A+ 與 variation 共用同次完整 all-listings／relationships 證據。舊 schema v2 Pages／Notebook Key 組合會顯示明確升級訊息，不會靜默少跑兩項。
+  - 新增 FBA-only A+ 全站唯讀健檢：只有 relationships 已證明為 child／standalone 且身分完整的 Seller SKU 才會依 marketplace＋ASIN 去重讀取全部 official publish-record pages；parent 排除，relationship／身分不完整列保留為 incomplete 且不發 A+ request。只有 warning-free 完整空頁可標沒有 A+；403、warning、pagination／schema 缺口保持 unavailable／incomplete。公開 API 無法驗證 From the brand／Brand Story，固定明示不可驗證。main-owned job 綁 account／mode／marketplace／context，支援長時間 observer reconnect、rate／Retry-After pacing、heartbeat lease 與 stale active abort。
+  - B2B 健檢新增高於一般售價狀態；編輯器預設只改價格並完整保留既有 `quantity_discount_plan`。只有使用者明確切換 combined 模式，且 seller-specific PTD 的 exact B2B price／QDP branch、1–5 階 percent tiers 與每個 requested numeric constraint 都能證明時，才會帶數量折扣。建議預設為一般售價減 USD 1，以及 5／10／15／20 件各 5%／10%／15%／20%；多個 levels 本身是正常結構。Preview、native confirmation、idempotency、單次 PATCH、完整 offer guard、price／tiers canonical readback 與 no-blind-retry 邊界均保留；本候選版沒有執行 Amazon Preview 或 mutation。
+  - 文案健檢摘要數字本身可直接篩選，全部待確認精確包含 issue 與讀取未完成列；原因仍只顯示一次。成分規則前台統一顯示「成分宣稱不一致」，並在完整且非空的 Amazon ingredients 證據下額外核對 Tendon／Tendons 與 Chicken＋hypoallergenic 文案。WebGate 兩行標題已改為獨立 block，桌面 1440×1000 真實 layout rect 間距 7px、沒有重疊或水平 overflow。
+  - 本機 `npm run check` 通過 113 個測試檔／1,046 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 與變更檔敏感字串掃描通過。桌面 fake Bridge QA 已實走七項順序、文案摘要篩選／不重複、A+ POST→GET job 與 B2B price-only／combined 切換；combined 四階全部在 1440×1000 drawer 可見，外部 request 與 PATCH 均為 0。依使用者指示沒有做 mobile 視覺測試。GitHub PR、main Actions、Pages、macOS／Windows artifacts、exact Mac 安裝與真實 Amazon 唯讀 canary 都仍待下一階段完成，不能拿本機證據代替。
 - 2026-08-23 v0.1.24 B2B live-shape hotfix 已發布、部署並安裝：
   - 真實 v0.1.23 唯讀 canary 共 274 列，當時 missing 0、configured 0、unsupported 42、incomplete 232。根因不是使用者沒有商品，而是 B2B parser 把 Listings Items 的 derived `offers` view 當成 explicit 設定真相、要求 optional audience、讀錯 canonical `price.currencyCode`，並把非價格 Issue 與 seller-specific PTD 的 ancestor flags 過度合併。v0.1.24 改以 `attributes.purchasable_offer` 的 exact marketplace／currency／`audience=B2B` contribution 判斷 explicit configured／missing；optional `offers`／`issues` 缺省可接受，present-but-malformed 仍 fail closed，IVP audiences 不再混入 base B2B。
   - Listings 身分必須由目標站 summary 證明 exact SKU／ASIN／非 generic Product Type；一致的重複 productTypes 證據可接受，跨站-only、缺失或衝突皆在 PTD／Preview 前停止。Issue 依 marketplace、官方 price categories 與 exact offer attributes 分流；INVALID_IMAGE 等明確非價格錯誤不再污染 B2B 健檢，無 scope、雙欄矛盾或 malformed ERROR 仍 fail closed。一般 ALL 與 B2B base price 都只接受一個無日期 metadata 的 canonical block／schedule，未證明 current value 時不提供編輯。
@@ -576,10 +582,11 @@ npm audit --omit=dev
 - US Seller SKU 文案、價格、促銷狀態能只讀查詢。
 - US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂 1–365 天與去年同期 AFN 銷售趨勢完整載入。
 - 180 天以上 FBA 庫齡報表能唯讀載入，庫齡與 Amazon 預估冗餘不混為同一指標；它與評論健檢只放在首頁預設收合的「低頻健檢」，不進 run-all。
-- 首頁 run-all 精確只包含文案、圖片、未綁變體、訂閱省、廣告覆蓋五項；五項在背景並行執行，狀態固定依此順序顯示。任一失敗要保留自己的終局狀態，不能把「全部結束」冒充成功。
-- 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；文案門檻精確為產品名稱 60、產品亮點 110、每項產品要點 150–200、產品敘述 1,800 Unicode 字元，圖片 0–5 張列不足、6 張通過，讀取未完成不推論。原因只能顯示一次，立即修改要聚焦並保留相符原因；單一成分聲明只在 Amazon ingredients 可證明至少兩個不同成分時警示，括號逗號與不完整讀取不得誤判。
+- 首頁 run-all 精確包含文案、圖片、A+、未綁變體、訂閱省、B2B 價格、廣告覆蓋七項；七項在背景並行執行，名稱與一般健檢卡完全一致並固定依此順序顯示。任一失敗要保留自己的終局狀態，不能把「全部結束」冒充成功。
+- 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；文案門檻精確為產品名稱 60、產品亮點 110、每項產品要點 150–200、產品敘述 1,800 Unicode 字元，圖片 0–5 張列不足、6 張通過，讀取未完成不推論。原因只能顯示一次，摘要數字本身可直接篩選，立即修改要聚焦並保留相符原因。成分宣稱只在完整且非空的 Amazon ingredients 證據下核對：至少兩個不同成分才可否定 single ingredient，Tendon／Tendons 需有同詞成分，ingredients 含 Chicken 時標示 hypoallergenic 待核對；括號逗號與不完整讀取不得誤判。
 - 文案 Excel 可按鈕選檔或 drag/drop，且只含 FBA 商品；schema v2 必須含「說明與索引」、已證明的變體 family 分頁、「未綁變體」與 fail-closed「資料未完成」，並保留原始／更新欄、問題顏色與「類型／說明」。CR／U+0085／U+2028／U+2029 必須無損 round trip；舊檔只能用 main-owned 唯一完整 digest bounded recovery。
 - 回傳文案健檢 Excel 時，無變更、篡改、過期、跨站點／帳號、公式／巨集／外部連結與任何 SKU 預檢失敗都必須在第一筆 Amazon PATCH 前停止；通過後一次 native confirmation 只授權該 main-owned batch，逐 SKU ledger／readback 與遇不明停止後續不得放寬。
+- A+ 全站健檢必須以同次完整 FBA all-listings 與 relationships 證明 exact child／standalone Seller SKU，再依 marketplace＋ASIN 去重讀取全部官方 publish-record pages；parent、身分或 relationship 未完成列不得發 A+ request 或誤標 missing。只有 warning-free、完整分頁的空清單才可標沒有 A+；任一 exact record 可證明已發布，403、warning、分頁／schema 缺口保持 unavailable／incomplete。公開 API 無法驗證 From the brand／Brand Story 時固定明示不可驗證，不得猜測。
 - Subscribe & Save 全站健檢能以完整 FBA Inventory 分頁證明 SKU，正確顯示目前有效訂閱、最多 23 個已完成月份與缺月；開啟顯示全站歷史並能切換／取消單一 SKU。Excel 必須產生 0／5／10／15／20% 五張無問題工作表與獨立「問題 SKU」工作表；未知折扣、問題列與缺值不得冒充 0 或完整總額。
 - FBA 冗餘庫存只依 Amazon `estimated excess quantity`，庫齡不會被列為冗餘；storage cost／AIS 缺值不會產生假的 0 或部分全站總額。
 - 未綁變體健檢能以真實 FBA relationships fail closed 載入並匯出 Excel；畸形、缺失或被改寫的識別碼不得被列為可安全操作。
@@ -587,7 +594,7 @@ npm audit --omit=dev
 - FBA 入庫貨件必須只出現在頂部「報表區」，不在首頁或「營運區」重複入口；並以真實 US 30 天背景 job 證明可完成。預期／Amazon 已接收／尚在接收／多接收、完整／部分 coverage、daily/problem-only 三層瑕疵邊界與 7-sheet Excel 均須驗證；安全失敗、空列或 unavailable 不得冒充 0 貨件、0 差異或 0 瑕疵。
 - 廣告策略必須以真實 US 最近 30 個完整日證明目前 FBA、Sales & Traffic 與 SP Reporting v3 可完成；T1–T4、缺值不補 0、價格／SB／SD／規格人工欄保持空白，以及 3-sheet／29 欄 Excel 均須驗證。Ads LWA 未設定或 Reporting 未成功時只能標為未驗證。
 - 首頁全站健檢外卡片必須區分未執行、執行中、成功、部分完成與失敗；「狀態收斂進度」不得因所有步驟都已結束而把全部失敗冒充成功。
-- B2B 全站健檢必須用同次完整 all-listings 證明 FBA 範圍，exact 核對 Seller SKU／ASIN／marketplace，並把 configured／missing／unsupported／incomplete 分開；只有帶目前 Seller ID 的 seller-specific PTD 明確開放 B2B audience／our_price 才能顯示可編輯。任何真實更新必須先呈現一般價與 B2B canonical diff，只 merge `audience=B2B` 的 `our_price`、保留一般 `ALL` offer、quantity discount plan 與其他 audiences，再經 Validation Preview、native confirmation、idempotency、單次 PATCH 與 canonical readback；不明結果禁止重送。
+- B2B 全站健檢必須用同次完整 all-listings 證明 FBA 範圍，exact 核對 Seller SKU／ASIN／marketplace，並把 configured／missing／above-standard／readonly／incomplete 分開；只有帶目前 Seller ID 的 seller-specific PTD 明確開放 exact B2B price path 才能顯示價格可編輯。任何真實更新必須先呈現一般價與 B2B canonical diff，只 merge `audience=B2B` contribution 並保留一般 `ALL` 與其他 audiences。price-only 必須省略並守住既有 `quantity_discount_plan`；combined 只有在使用者明確選用、canonical 1–5 階 percent tiers 與完整 QDP PTD path 都可證明時才可帶 plan。兩者都要經 fresh read、Validation Preview、native confirmation、idempotency、單次 PATCH 與 price／tiers canonical readback；不明結果禁止重送。
 - 會計中心只把公開 capability 與安全 access plan 標為完成；除非日後另行實作並驗證 report lifecycle，不得宣稱已下載報表、一般發票或 Seller Central 帳單。
 - Variation family 與 CHILD PTD 必須先通過真實唯讀驗證；目前 mutation 只能標為 mock/demo 已驗證。只有在使用者另行明確授權指定 SKU，且 detach 與 attach 各自完成 preview、Touch ID、單次 PATCH 與唯讀回查後，才可對該次操作宣稱真實寫入成功。
 - 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID／Windows Hello。
