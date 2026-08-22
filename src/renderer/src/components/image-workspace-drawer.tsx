@@ -523,7 +523,7 @@ export default function ImageWorkspaceDrawer({
 
         {phase === "edit" && (
           <>
-            <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站圖片健檢會找出少於五張圖片與讀取未完成的 FBA SKU；單一 SKU 的格式、像素、PTD 與回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>健檢會自動建立及輪詢報表；圖片排序完成後可安全預檢並送出。</p><span className="automation-badge manual">需人工</span><p>選圖、排序與主圖位置必須由你判斷。</p></div>
+            <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站圖片健檢會找出少於六張圖片與讀取未完成的 FBA SKU；單一 SKU 的格式、像素、PTD 與回查由系統處理。</p><span className="automation-badge one_click">一鍵</span><p>健檢會自動建立及輪詢報表；圖片排序完成後可安全預檢並送出。</p><span className="automation-badge manual">需人工</span><p>選圖、排序與主圖位置必須由你判斷。</p></div>
             <div className="sku-ops-tabs image-workspace-tabs" role="tablist" aria-label="商品圖片工具">
               <button
                 id="image-single-tab"

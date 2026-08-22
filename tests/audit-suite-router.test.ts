@@ -140,6 +140,13 @@ describe("main-owned audit suite routes", () => {
         advertising: { status: "failed" },
       },
     });
+    expect(Object.keys(jsonValue(completed).sections as Record<string, unknown>)).toEqual([
+      "content",
+      "image",
+      "variation",
+      "subscription",
+      "advertising",
+    ]);
     expect(containsKey(jsonValue(completed), "accountScope")).toBe(false);
     expect(startListing).toHaveBeenCalledTimes(1);
 
@@ -203,36 +210,16 @@ describe("main-owned audit suite routes", () => {
     expect(startListing).not.toHaveBeenCalled();
   });
 
-  it("single-flights one aged report across the standalone route and audit suite", async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    startAged.mockImplementation(async ({ marketplaceId }: { marketplaceId: string }) => {
-      await gate;
-      return {
-        mode: "demo" as const,
-        ready: true,
-        reportId: `demo-aged-${marketplaceId}`,
-        documentId: `demo-aged-${marketplaceId}`,
-        status: "DONE" as const,
-        notice: "ready",
-      };
-    });
-
+  it("does not start the low-frequency aged inventory report as part of run-all", async () => {
     const suite = await router.handle(request("POST", "/api/sp-api/audit-suite", {
       marketplaceId: US,
     }));
-    const standalone = router.handle(request("POST", "/api/sp-api/aged-inventory", {
-      marketplaceId: US,
-    }));
-    await vi.waitFor(() => expect(startAged).toHaveBeenCalledTimes(1));
-    release();
-    await expect(standalone).resolves.toMatchObject({ status: 200 });
     await waitForTerminal(router, {
       marketplaceId: US,
       runId: String(jsonValue(suite).runId),
       contextId: String(jsonValue(suite).contextId),
     });
-    expect(startAged).toHaveBeenCalledTimes(1);
+    expect(startAged).not.toHaveBeenCalled();
   });
 
   it("rejects renderer-supplied account context and raw snapshot fields", async () => {

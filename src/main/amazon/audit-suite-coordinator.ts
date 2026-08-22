@@ -248,12 +248,10 @@ export class AuditSuiteCoordinator {
     const runId = job.context.runId;
     if (this.flights.has(runId) || this.jobs.get(runId) !== job) return;
     const flight = Promise.all([
-      this.runSection(job, "subscription", this.runners.subscription),
-      this.runSection(job, "inventory", this.runners.inventory),
       this.runSection(job, "content", this.runners.content),
       this.runSection(job, "image", this.runners.image),
       this.runSection(job, "variation", this.runners.variation),
-      this.runSection(job, "review", this.runners.review),
+      this.runSection(job, "subscription", this.runners.subscription),
       this.runSection(job, "advertising", this.runners.advertising),
     ]).then(() => undefined).finally(() => {
       job.resources.clear();

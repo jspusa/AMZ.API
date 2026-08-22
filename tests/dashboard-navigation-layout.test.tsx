@@ -48,6 +48,8 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain("<aside");
     expect(markup).toContain("近期營運");
     expect(markup).toContain("一鍵健檢");
+    expect(markup).not.toContain('class="inbound-home-card"');
+    expect(markup).not.toContain("FBA 入庫貨件追蹤捷徑");
     expect(markup).toContain('class="content-audit-home-card"');
     expect(markup).toContain("全站文案健檢");
     expect(markup).toContain("開始全站文案健檢");
@@ -55,6 +57,9 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain('class="content-audit-home-card image-audit-home-card"');
     expect(markup).toContain("全站圖片健檢");
     expect(markup).toContain("開始全站圖片健檢");
+    expect(markup).toContain('<details class="low-frequency-audits">');
+    expect(markup).not.toContain('<details class="low-frequency-audits" open=""');
+    expect(markup).toContain("低頻健檢");
     expect(markup).toContain("FBA 180 天以上庫齡健檢");
     expect(markup).toContain("主清單只列已經超過 180 天的 FBA 庫存");
     expect(markup).toContain("estimated excess 預估與費用放在獨立分頁");
@@ -66,6 +71,8 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain("Amazon Ads API 尚未連線前不顯示推測結果");
     expect(markup).toContain("全站訂閱價格健檢");
     expect(markup).toContain("開始全站訂閱價格健檢");
+    expect(markup).toContain("全站 B2B 價格健檢");
+    expect(markup).toContain("開始全站 B2B 價格健檢");
     expect(markup).toContain("評論健檢");
     expect(markup).toContain("Listings relationships 已證明的 child 與 standalone ASIN");
     expect(markup).toContain("開始全站評論健檢");
@@ -81,30 +88,36 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain("Amazon 已連線");
     expect(markup).toContain("本機安全連線");
 
+    const lowFrequencyStart = markup.indexOf('class="low-frequency-audits"');
     const auditGrid = markup.slice(
       markup.indexOf('class="health-audit-home-grid"'),
-      markup.indexOf("</main>"),
+      lowFrequencyStart,
     );
     const orderedAuditCards = [
       "全站文案健檢",
       "全站圖片健檢",
       "未綁變體健檢",
-      "FBA 180 天以上庫齡健檢",
       "全站訂閱價格健檢",
+      "全站 B2B 價格健檢",
       "廣告覆蓋健檢",
-      "評論健檢",
     ];
     for (let index = 1; index < orderedAuditCards.length; index += 1) {
       expect(auditGrid.indexOf(orderedAuditCards[index - 1])).toBeLessThan(
         auditGrid.indexOf(orderedAuditCards[index]),
       );
     }
+    expect(auditGrid).not.toContain("FBA 180 天以上庫齡健檢");
+    expect(auditGrid).not.toContain("評論健檢");
+    const lowFrequency = markup.slice(lowFrequencyStart, markup.indexOf("</details>", lowFrequencyStart));
+    expect(lowFrequency.indexOf("FBA 180 天以上庫齡健檢")).toBeLessThan(
+      lowFrequency.indexOf("評論健檢"),
+    );
 
     const source = await readFile(
       new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
       "utf8",
     );
-    for (const label of ["文案", "圖片", "變體", "定價", "促銷", "訂閱價格健檢", "補貨", "廣告", "帳務"]) {
+    for (const label of ["文案", "圖片", "變體", "定價", "促銷", "訂閱價格健檢", "B2B 價格健檢", "補貨", "廣告", "帳務"]) {
       expect(source).toContain(`label: "${label}"`);
     }
     expect(source).toContain('role="menuitem"');
@@ -122,10 +135,15 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("<ReviewAuditPanel");
     expect(source).toContain("openReportExport");
     expect(source).toContain('label: "報表區"');
-    expect(source).toContain('tools: ["price", "promotion"]');
+    expect(source).toContain('tools: ["price", "promotion", "subscriptions", "business-pricing"]');
+    expect(source).toContain('tools: ["restock", "ads", "accounting"]');
+    expect(source).toContain('tools: ["inbound"]');
+    expect(source).toContain("section.tools.length + index");
     expect(source).toContain('.filter((entry) => entry.id !== "review-audit")');
     expect(source).toContain("查看進行中的評論健檢");
     expect(source).toContain("查看上次評論健檢");
+    expect(source).toContain("<BusinessPricingAuditDrawer");
+    expect(source).toContain("businessPricingAuditCache");
     expect(source).not.toContain("繼續上次評論健檢");
     expect(source).not.toContain("繼續查看評論健檢");
     expect(source).not.toContain(">⌄</i>");
@@ -180,6 +198,8 @@ describe("dashboard top navigation layout", () => {
     expect(css).toMatch(
       /\.health-audit-home-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
     );
+    expect(css).toMatch(/\.low-frequency-audits\s*\{[\s\S]*?border:/);
+    expect(css).toMatch(/\.low-frequency-audits\s*>\s*summary\s*\{[\s\S]*?cursor:\s*pointer;/);
     expect(css).toMatch(
       /@media \(max-width: 820px\)[\s\S]*?\.health-audit-home-grid\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
     );

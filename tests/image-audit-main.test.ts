@@ -2,23 +2,33 @@ import { describe, expect, it } from "vitest";
 import { auditListingImageRows } from "../src/main/amazon/image-audit";
 
 describe("image audit backend snapshot", () => {
-  it("deduplicates image URLs and excludes incomplete reads from under-five counts", () => {
+  it("flags zero through five images, passes six, and excludes incomplete reads", () => {
     const snapshot = auditListingImageRows({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-08T08:00:00.000Z",
       rows: [
         {
-          sellerSku: "FOUR",
-          asin: "B0FOUR",
+          sellerSku: "FIVE",
+          asin: "B0FIVE",
           productType: "PET_FOOD",
-          title: "Four images",
+          title: "Five images",
           imageUrls: [
             "https://a/1.jpg",
             "https://a/2.jpg",
             "https://a/3.jpg",
             "https://a/4.jpg",
-            "https://a/4.jpg",
+            "https://a/5.jpg",
+            "https://a/5.jpg",
           ],
+          readStatus: "complete",
+          readErrors: [],
+        },
+        {
+          sellerSku: "SIX",
+          asin: "B0SIX",
+          productType: "PET_FOOD",
+          title: "Six images",
+          imageUrls: Array.from({ length: 6 }, (_value, index) => `https://b/${index + 1}.jpg`),
           readStatus: "complete",
           readErrors: [],
         },
@@ -36,23 +46,25 @@ describe("image audit backend snapshot", () => {
       ],
     });
 
-    expect(snapshot.rows[0].imageCount).toBe(4);
+    expect(snapshot.minimumImages).toBe(6);
+    expect(snapshot.rows[0].imageCount).toBe(5);
+    expect(snapshot.rows[1].imageCount).toBe(6);
     expect(snapshot.summary).toEqual({
-      total: 2,
-      completed: 1,
+      total: 3,
+      completed: 2,
       incomplete: 1,
       underMinimum: 1,
     });
   });
 
-  it("rejects an invalid threshold instead of silently widening scope", () => {
+  it("rejects any threshold other than the fixed six-image standard", () => {
     expect(() =>
       auditListingImageRows({
         marketplaceId: "ATVPDKIKX0DER",
         fetchedAt: "2026-08-08T08:00:00.000Z",
-        minimumImages: 10,
+        minimumImages: 5,
         rows: [],
       }),
-    ).toThrow(/1 到 9/);
+    ).toThrow(/固定門檻為 6 張/);
   });
 });

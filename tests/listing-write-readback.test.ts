@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  businessPriceReadbackDecision,
   commitWithCanonicalReadback,
   contentReadbackDecision,
   imageReadbackDecision,
@@ -242,6 +243,62 @@ describe("main-owned listing write readback", () => {
         } as never,
       )).toBe("pending");
     }
+  });
+
+  it("verifies the exact B2B price while preserving standard price and quantity discounts", () => {
+    const result = {
+      ...identity,
+      status: "ACCEPTED" as const,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 30, currencyCode: "USD" },
+      previousBusinessPrice: { amount: 28, currencyCode: "USD" },
+      requestedBusinessPrice: { amount: 27.5, currencyCode: "USD" },
+      businessOfferGuardHash: "quantity-discounts-before-write",
+    };
+    const snapshot = {
+      ...identity,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      issues: [],
+      standardPrice: { amount: 30, currencyCode: "USD" },
+      businessPrice: { amount: 27.5, currencyCode: "USD" },
+      businessOfferPresence: "present" as const,
+      businessOfferGuardHash: "quantity-discounts-before-write",
+    };
+
+    expect(businessPriceReadbackDecision(result as never, snapshot as never))
+      .toBe("verified");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      standardPrice: { amount: 31, currencyCode: "USD" },
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      asin: "B087654321",
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      businessOfferGuardHash: "quantity-discounts-changed",
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      issues: [{
+        code: "INVALID_B2B_OFFER",
+        severity: "ERROR",
+        message: "invalid",
+        attributeNames: ["purchasable_offer"],
+      }],
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      issues: [{
+        code: "INVALID_QDP",
+        severity: "ERROR",
+        message: "invalid quantity discounts",
+        attributeNames: ["quantity_discount_plan"],
+      }],
+    } as never)).toBe("pending");
   });
 
   it("does not verify offer writes while the relevant Listing attribute has an ERROR", () => {

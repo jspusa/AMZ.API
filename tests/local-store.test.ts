@@ -271,6 +271,81 @@ describe("local durable safety store", () => {
     }
   });
 
+  it("locks standard and sale price writes while a Business Price write is pending", async () => {
+    const store = await testStore();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const didStart = new Promise<void>((resolve) => { started = resolve; });
+    const businessPrice = store.runIdempotentOperation({
+      idempotencyKey: "business-price-pending",
+      operationType: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "OFFER-B2B-LOCK",
+      accountScope: "account-a",
+      fingerprint: "business-price-change",
+      execute: async () => {
+        started();
+        await gate;
+        return { ok: true };
+      },
+    });
+    await didStart;
+
+    for (const operationType of ["price", "sale_price"] as const) {
+      await expect(store.runIdempotentOperation({
+        idempotencyKey: `${operationType}-while-business-price-pending`,
+        operationType,
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "OFFER-B2B-LOCK",
+        accountScope: "account-a",
+        fingerprint: `${operationType}-change`,
+        execute: async () => ({ shouldNotRun: true }),
+      })).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS", status: 409 });
+    }
+
+    release();
+    await expect(businessPrice).resolves.toEqual({ ok: true });
+  });
+
+  it("locks a Business Price write while a standard or sale price write is pending", async () => {
+    const store = await testStore();
+
+    for (const operationType of ["price", "sale_price"] as const) {
+      let release!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const didStart = new Promise<void>((resolve) => { started = resolve; });
+      const existingOfferWrite = store.runIdempotentOperation({
+        idempotencyKey: `${operationType}-pending-before-business`,
+        operationType,
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: `OFFER-${operationType}-LOCK`,
+        accountScope: "account-a",
+        fingerprint: `${operationType}-change`,
+        execute: async () => {
+          started();
+          await gate;
+          return { ok: true };
+        },
+      });
+      await didStart;
+
+      await expect(store.runIdempotentOperation({
+        idempotencyKey: `business-price-while-${operationType}-pending`,
+        operationType: "business_price",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: `OFFER-${operationType}-LOCK`,
+        accountScope: "account-a",
+        fingerprint: "business-price-change",
+        execute: async () => ({ shouldNotRun: true }),
+      })).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS", status: 409 });
+
+      release();
+      await expect(existingOfferWrite).resolves.toEqual({ ok: true });
+    }
+  });
+
   it("reconciles a persisted accepted receipt through a later canonical GET", async () => {
     const store = await testStore();
     const accepted = { requested: 12.34, status: "ACCEPTED" };

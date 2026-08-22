@@ -20,6 +20,11 @@ import {
   downloadContentAuditWorkbook,
 } from "../content-audit-excel";
 import { excludeProvenParentContainers } from "../parent-container-audit";
+import {
+  provenIngredientItems,
+  singleIngredientClaimFindings,
+  singleIngredientClaimTokens,
+} from "../../../shared/content-claims";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 
@@ -96,6 +101,9 @@ export type ContentAuditQuickEditEvidence = {
   actualLength: number | null;
   minLength: number | null;
   maxLength: number | null;
+  reason: string;
+  relatedIngredients: string | null;
+  relatedIngredientsFingerprint: string | null;
 };
 
 export type ContentAuditQuickEditFocus = {
@@ -113,6 +121,11 @@ export type ResolvedContentAuditQuickEditFocus = {
   fields: ContentAuditField[];
   bulletIndices: number[];
   relocationNote: string | null;
+  reasons: Array<{
+    field: ContentAuditField;
+    bulletIndex: number | null;
+    message: string;
+  }>;
 };
 
 export type ContentAuditQuickEditAvailability =
@@ -161,6 +174,7 @@ const FILTERS: Array<{ value: AuditFilter; label: string }> = [
   { value: "MISSING_BULLETS", label: "賣點不足" },
   { value: "MISSING_INGREDIENTS", label: "缺成分" },
   { value: "INGREDIENTS_UNVERIFIED", label: "成分未驗證" },
+  { value: "SINGLE_INGREDIENT_MISMATCH", label: "單一成分宣稱不一致" },
   { value: "READ_INCOMPLETE", label: "讀取未完成" },
 ];
 
@@ -368,6 +382,7 @@ const CONTENT_AUDIT_ISSUE_KINDS = new Set<ContentAuditIssueKind>([
   "BULLET_BELOW_TARGET",
   "BULLET_ABOVE_TARGET",
   "DESCRIPTION_BELOW_TARGET",
+  "SINGLE_INGREDIENT_MISMATCH",
   "SUSPECTED_TYPO",
 ]);
 
@@ -433,7 +448,11 @@ function validContentAuditIssue(
   candidate: unknown,
   row: Pick<
     ContentAuditRow,
-    "title" | "itemHighlight" | "bulletPoints" | "productDescription"
+    | "title"
+    | "itemHighlight"
+    | "bulletPoints"
+    | "productDescription"
+    | "ingredients"
   >,
 ): candidate is ContentAuditIssue {
   if (!candidate || typeof candidate !== "object") return false;
@@ -467,6 +486,24 @@ function validContentAuditIssue(
     issue.kind === "INGREDIENTS_UNVERIFIED"
   ) {
     return issue.field === "ingredients";
+  }
+  if (issue.kind === "SINGLE_INGREDIENT_MISMATCH") {
+    if (
+      !issue.token ||
+      provenIngredientItems(row.ingredients).length < 2 ||
+      !["title", "itemHighlight", "bulletPoints"].includes(issue.field ?? "")
+    ) {
+      return false;
+    }
+    const value = issue.field === "title"
+      ? row.title
+      : issue.field === "itemHighlight"
+        ? row.itemHighlight ?? ""
+        : isNonNegativeInteger(issue.bulletIndex) &&
+            issue.bulletIndex < row.bulletPoints.length
+          ? row.bulletPoints[issue.bulletIndex] ?? ""
+          : "";
+    return singleIngredientClaimTokens(value).includes(issue.token);
   }
   return issue.kind === "SUSPECTED_TYPO";
 }
@@ -554,13 +591,27 @@ export function parseContentAuditSnapshot(
       relationshipMessage:
         typeof row.relationshipMessage === "string" ? row.relationshipMessage : null,
     };
-    return {
-      ...parsedRow,
-      issues: readStatus === "complete" && Array.isArray(row.issues)
-        ? row.issues.filter((issue): issue is ContentAuditIssue =>
-            validContentAuditIssue(issue, parsedRow))
-        : [],
-    };
+    const returnedIssues = readStatus === "complete" && Array.isArray(row.issues)
+      ? row.issues.filter((issue): issue is ContentAuditIssue =>
+          validContentAuditIssue(issue, parsedRow))
+      : [];
+    const issues = readStatus === "complete"
+      ? [
+          ...returnedIssues.filter(
+            (issue) => issue.kind !== "SINGLE_INGREDIENT_MISMATCH",
+          ),
+          ...singleIngredientClaimFindings({
+            title: parsedRow.title,
+            itemHighlight: parsedRow.itemHighlight ?? "",
+            bulletPoints: parsedRow.bulletPoints,
+            ingredients: parsedRow.ingredients,
+          }).map((finding) => ({
+            kind: "SINGLE_INGREDIENT_MISMATCH" as const,
+            ...finding,
+          })),
+        ]
+      : [];
+    return { ...parsedRow, issues };
   });
   if (
     value.summary?.total !== undefined &&
@@ -601,6 +652,7 @@ function issueLabel(kind: ContentAuditIssueKind): string {
   if (kind === "BULLET_BELOW_TARGET") return "產品要點過短";
   if (kind === "BULLET_ABOVE_TARGET") return "產品要點過長";
   if (kind === "DESCRIPTION_BELOW_TARGET") return "產品敘述不足";
+  if (kind === "SINGLE_INGREDIENT_MISMATCH") return "單一成分宣稱不一致";
   return "疑似錯字";
 }
 
@@ -674,6 +726,7 @@ function quickEditEvidence(
   issue: ContentAuditIssue,
   originalValue: string,
   originalBulletIndex: number | null,
+  relatedIngredients: string | null = null,
 ): ContentAuditQuickEditEvidence {
   return {
     issueKind: issue.kind,
@@ -685,6 +738,11 @@ function quickEditEvidence(
     actualLength: issue.actualLength ?? null,
     minLength: issue.minLength ?? null,
     maxLength: issue.maxLength ?? null,
+    reason: issue.message,
+    relatedIngredients,
+    relatedIngredientsFingerprint: relatedIngredients === null
+      ? null
+      : contentValueFingerprint(relatedIngredients),
   };
 }
 
@@ -845,21 +903,96 @@ export function ContentAuditWorkbookFilePicker({
   disabled: boolean;
   onSelect: (file: File | null) => void;
 }) {
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const acceptFiles = (files: ArrayLike<File>) => {
+    const selection = contentAuditWorkbookSelection(files);
+    if (selection.status === "selected") {
+      setSelectionError(null);
+      onSelect(selection.file);
+      return;
+    }
+    if (selection.status === "empty") {
+      setSelectionError(null);
+      onSelect(null);
+      return;
+    }
+    setSelectionError(selection.message);
+    onSelect(null);
+  };
   return (
-    <label className="content-audit-file-picker">
+    <label
+      className={`content-audit-file-picker${dragging ? " is-dragging" : ""}`}
+      onDragEnter={(event) => {
+        if (disabled) return;
+        event.preventDefault();
+        setDragging(true);
+      }}
+      onDragOver={(event) => {
+        if (!disabled) event.preventDefault();
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setDragging(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        if (!disabled) acceptFiles(event.dataTransfer.files);
+      }}
+    >
       <span aria-live="polite">
         {fileName || "選擇原本匯出的 .xlsx"}
       </span>
+      <small>拖放單一 .xlsx 到這裡，或點選檔案</small>
+      {selectionError && <small className="content-audit-file-error" role="alert">{selectionError}</small>}
       <input
         className="content-audit-file-input"
         type="file"
         aria-label="選擇要回傳的 Excel 檔案"
         accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         disabled={disabled}
-        onChange={(event) => onSelect(event.target.files?.[0] ?? null)}
+        onChange={(event) =>
+          acceptFiles(consumeContentAuditWorkbookInput(event.currentTarget))}
       />
     </label>
   );
+}
+
+export function consumeContentAuditWorkbookInput(input: {
+  files: ArrayLike<File> | null;
+  value: string;
+}): File[] {
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  return files;
+}
+
+export type ContentAuditWorkbookSelection =
+  | { status: "selected"; file: File }
+  | { status: "empty" }
+  | { status: "rejected"; message: string };
+
+export function contentAuditWorkbookSelection(
+  input: ArrayLike<File>,
+): ContentAuditWorkbookSelection {
+  const files = Array.from({ length: input.length }, (_value, index) => input[index])
+    .filter((file): file is File => Boolean(file));
+  if (files.length === 0) return { status: "empty" };
+  if (files.length !== 1) {
+    return {
+      status: "rejected",
+      message: "一次只能選擇一份 AMZ.API 文案健檢 .xlsx 檔案。",
+    };
+  }
+  const [file] = files;
+  if (!file || !/\.xlsx$/iu.test(file.name)) {
+    return {
+      status: "rejected",
+      message: "只接受由 AMZ.API 匯出的 .xlsx 文案健檢檔。",
+    };
+  }
+  return { status: "selected", file };
 }
 
 function quickEditReasonForRow(row: ContentAuditRow): string {
@@ -923,6 +1056,35 @@ export function quickEditFocusForRow(
       continue;
     }
 
+    if (issue.kind === "SINGLE_INGREDIENT_MISMATCH") {
+      if (!issue.token || provenIngredientItems(row.ingredients).length < 2) {
+        return null;
+      }
+      if (issue.field === "bulletPoints") {
+        if (
+          !isNonNegativeInteger(issue.bulletIndex) ||
+          !singleIngredientClaimTokens(
+            row.bulletPoints[issue.bulletIndex] ?? "",
+          ).includes(issue.token)
+        ) {
+          return null;
+        }
+        evidence.push(quickEditEvidence(
+          issue,
+          row.bulletPoints[issue.bulletIndex] ?? "",
+          issue.bulletIndex,
+          row.ingredients,
+        ));
+        bulletIndices.add(issue.bulletIndex);
+        continue;
+      }
+      if (issue.field !== "title" && issue.field !== "itemHighlight") return null;
+      const value = issue.field === "title" ? row.title : row.itemHighlight ?? "";
+      if (!singleIngredientClaimTokens(value).includes(issue.token)) return null;
+      evidence.push(quickEditEvidence(issue, value, null, row.ingredients));
+      continue;
+    }
+
     if (issue.kind === "SUSPECTED_TYPO") {
       if (!issue.token) return null;
       if (issue.field === "bulletPoints") {
@@ -936,8 +1098,19 @@ export function quickEditFocusForRow(
         }
         continue;
       }
-      if (issue.field !== "title" && issue.field !== "ingredients") return null;
-      const value = issue.field === "title" ? row.title : row.ingredients;
+      if (
+        issue.field !== "title" &&
+        issue.field !== "itemHighlight" &&
+        issue.field !== "productDescription" &&
+        issue.field !== "ingredients"
+      ) return null;
+      const value = issue.field === "title"
+        ? row.title
+        : issue.field === "itemHighlight"
+          ? row.itemHighlight ?? ""
+          : issue.field === "productDescription"
+            ? row.productDescription ?? ""
+            : row.ingredients;
       if (!hasHighlightedContent(value, [issue])) return null;
       evidence.push(quickEditEvidence(issue, value, null));
       continue;
@@ -1033,6 +1206,19 @@ export function resolveContentAuditQuickEditFocus(
   const fields = new Set<ContentAuditField>();
   const bulletIndices = new Set<number>();
   const relocations = new Set<string>();
+  const reasons: ResolvedContentAuditQuickEditFocus["reasons"] = [];
+  const addReason = (
+    evidence: ContentAuditQuickEditEvidence,
+    field: ContentAuditField,
+    bulletIndex: number | null = null,
+  ) => {
+    if (!evidence.reason) return;
+    if (reasons.some((reason) =>
+      reason.field === field &&
+      reason.bulletIndex === bulletIndex &&
+      reason.message === evidence.reason)) return;
+    reasons.push({ field, bulletIndex, message: evidence.reason });
+  };
 
   for (const evidence of focus.evidence) {
     if (
@@ -1066,6 +1252,7 @@ export function resolveContentAuditQuickEditFocus(
         );
       }
       fields.add("title");
+      addReason(evidence, "title");
       continue;
     }
 
@@ -1093,6 +1280,7 @@ export function resolveContentAuditQuickEditFocus(
         );
       }
       fields.add("itemHighlight");
+      addReason(evidence, "itemHighlight");
       continue;
     }
 
@@ -1139,6 +1327,7 @@ export function resolveContentAuditQuickEditFocus(
       const [candidate] = candidates;
       bulletIndices.add(candidate);
       fields.add("bulletPoints");
+      addReason(evidence, "bulletPoints", candidate);
       if (candidate !== evidence.originalBulletIndex) {
         relocations.add(`${evidence.originalBulletIndex}:${candidate}`);
       }
@@ -1170,6 +1359,70 @@ export function resolveContentAuditQuickEditFocus(
         );
       }
       fields.add("productDescription");
+      addReason(evidence, "productDescription");
+      continue;
+    }
+
+    if (evidence.issueKind === "SINGLE_INGREDIENT_MISMATCH") {
+      if (
+        !evidence.token ||
+        evidence.relatedIngredients === null ||
+        evidence.relatedIngredientsFingerprint === null ||
+        contentValueFingerprint(evidence.relatedIngredients) !==
+          evidence.relatedIngredientsFingerprint ||
+        listing.content.ingredients !== evidence.relatedIngredients ||
+        contentValueFingerprint(listing.content.ingredients) !==
+          evidence.relatedIngredientsFingerprint ||
+        provenIngredientItems(listing.content.ingredients).length < 2
+      ) {
+        return staleQuickEditResolution(
+          "Amazon ingredients 已和健檢時不同，無法沿用單一成分宣稱的比對證據。",
+        );
+      }
+      if (evidence.field === "bulletPoints") {
+        if (!isNonNegativeInteger(evidence.originalBulletIndex)) {
+          return staleQuickEditResolution("單一成分宣稱缺少原始產品要點位置。");
+        }
+        const candidates = listing.content.bulletPoints.flatMap((value, index) =>
+          value === evidence.originalValue &&
+          contentValueFingerprint(value) === evidence.originalValueFingerprint &&
+          singleIngredientClaimTokens(value).includes(evidence.token!)
+            ? [index]
+            : [],
+        );
+        if (candidates.length !== 1) {
+          return staleQuickEditResolution(
+            candidates.length === 0
+              ? "健檢標示的單一成分宣稱原文已不存在。"
+              : "健檢標示的單一成分宣稱目前有多個相同產品要點，無法唯一定位。",
+          );
+        }
+        const [candidate] = candidates;
+        fields.add("bulletPoints");
+        bulletIndices.add(candidate);
+        addReason(evidence, "bulletPoints", candidate);
+        if (candidate !== evidence.originalBulletIndex) {
+          relocations.add(`${evidence.originalBulletIndex}:${candidate}`);
+        }
+        continue;
+      }
+      if (evidence.field !== "title" && evidence.field !== "itemHighlight") {
+        return staleQuickEditResolution("單一成分宣稱的欄位證據格式無效。");
+      }
+      const currentValue = evidence.field === "title"
+        ? listing.content.title
+        : listing.content.itemHighlight;
+      if (
+        currentValue !== evidence.originalValue ||
+        contentValueFingerprint(currentValue) !== evidence.originalValueFingerprint ||
+        !singleIngredientClaimTokens(currentValue).includes(evidence.token)
+      ) {
+        return staleQuickEditResolution(
+          `${fieldLabel(evidence.field)}的單一成分宣稱已變動或不存在。`,
+        );
+      }
+      fields.add(evidence.field);
+      addReason(evidence, evidence.field);
       continue;
     }
 
@@ -1215,18 +1468,31 @@ export function resolveContentAuditQuickEditFocus(
         const [candidate] = candidates;
         bulletIndices.add(candidate);
         fields.add("bulletPoints");
+        addReason(evidence, "bulletPoints", candidate);
         if (candidate !== evidence.originalBulletIndex) {
           relocations.add(`${evidence.originalBulletIndex}:${candidate}`);
         }
         continue;
       }
 
-      if (evidence.field !== "title" && evidence.field !== "ingredients") {
+      if (
+        evidence.originalBulletIndex !== null ||
+        (
+          evidence.field !== "title" &&
+          evidence.field !== "itemHighlight" &&
+          evidence.field !== "productDescription" &&
+          evidence.field !== "ingredients"
+        )
+      ) {
         return staleQuickEditResolution("這筆錯字對應的欄位無法安全定位。");
       }
       const currentValue = evidence.field === "title"
         ? listing.content.title
-        : listing.content.ingredients;
+        : evidence.field === "itemHighlight"
+          ? listing.content.itemHighlight
+          : evidence.field === "productDescription"
+            ? listing.content.productDescription
+            : listing.content.ingredients;
       if (
         currentValue !== evidence.originalValue ||
         contentValueFingerprint(currentValue) !== evidence.originalValueFingerprint ||
@@ -1237,6 +1503,7 @@ export function resolveContentAuditQuickEditFocus(
         );
       }
       fields.add(evidence.field);
+      addReason(evidence, evidence.field);
       continue;
     }
 
@@ -1252,6 +1519,7 @@ export function resolveContentAuditQuickEditFocus(
         );
       }
       missingIndices.forEach((index) => bulletIndices.add(index));
+      missingIndices.forEach((index) => addReason(evidence, "bulletPoints", index));
       fields.add("bulletPoints");
       continue;
     }
@@ -1263,6 +1531,7 @@ export function resolveContentAuditQuickEditFocus(
         );
       }
       fields.add("ingredients");
+      addReason(evidence, "ingredients");
       continue;
     }
 
@@ -1278,6 +1547,7 @@ export function resolveContentAuditQuickEditFocus(
         );
       }
       fields.add("ingredients");
+      addReason(evidence, "ingredients");
       continue;
     }
 
@@ -1306,6 +1576,7 @@ export function resolveContentAuditQuickEditFocus(
             ...new Set(relocatedTargets),
           ].join("、")}。`
         : null,
+      reasons,
     },
   };
 }
@@ -1671,7 +1942,7 @@ export default function ContentAuditPanel({
   return (
     <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
       <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因。
+        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；只有 Amazon ingredients 明確證明含多項成分時，才會標示文案中的單一成分宣稱不一致，資料未完成時不推測。
       </p>
       <div className="content-export-note content-audit-privacy">
         <strong>Amazon 唯讀＋GitHub Pages 共用英文辭典</strong>
@@ -1792,6 +2063,7 @@ export default function ContentAuditPanel({
             <article><span>賣點不足</span><strong>{summary.missingBullets.toLocaleString()}</strong><small>SKU</small></article>
             <article><span>缺成分</span><strong>{summary.missingIngredients.toLocaleString()}</strong><small>已證明適用的 SKU</small></article>
             <article><span>成分未驗證</span><strong>{summary.ingredientsUnverified.toLocaleString()}</strong><small>需人工確認 PTD</small></article>
+            <article><span>單一成分宣稱不一致</span><strong>{summary.singleIngredientMismatch.toLocaleString()}</strong><small>ingredients 已明確證明多項</small></article>
           </div>
           {spellcheckNote && <p className="content-audit-note">{spellcheckNote}</p>}
           {invisibleLocations.length > 0 && (

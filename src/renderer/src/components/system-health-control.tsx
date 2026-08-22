@@ -52,7 +52,7 @@ const FEATURE_IDEAS: Record<Exclude<AuditPreference, null>, { label: string; ide
   },
   images: {
     label: "圖片健檢",
-    idea: "下一步可加入圖片補齊優先順序，先看少於五張且仍在售的 FBA SKU。",
+    idea: "下一步可加入圖片補齊優先順序，先看少於六張且仍在售的 FBA SKU。",
   },
   inventory: {
     label: "冗餘庫存健檢",

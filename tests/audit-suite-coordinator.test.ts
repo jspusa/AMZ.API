@@ -35,16 +35,13 @@ function completed<T>(context: AuditSuiteContext, payload: T) {
   };
 }
 
-function reviewRow(marker: number) {
+function advertisingRow(marker: number) {
   return {
     sellerSku: `SKU-${marker}`,
     title: `marker-${marker}`,
     asin: `B00000000${marker}`,
-    topic: "Quality",
-    sentiment: "正向" as const,
-    starRatingImpact: 0.1,
-    mentions: null,
-    occurrencePercent: null,
+    finding: "已核對",
+    evidence: "ENABLED SP",
     notice: "test",
   };
 }
@@ -53,18 +50,10 @@ function sectionRunners(
   overrides: Partial<AuditSuiteSectionRunners> = {},
 ): AuditSuiteSectionRunners {
   return {
-    subscription: async (context) => completed(context, []),
-    inventory: async (context) => completed(context, {
-      over180Rows: [],
-      estimatedExcessRows: [],
-    }),
     content: async (context) => completed(context, []),
     image: async (context) => completed(context, []),
     variation: async (context) => completed(context, []),
-    review: async (context) => completed(context, {
-      resultRows: [],
-      incompleteRows: [],
-    }),
+    subscription: async (context) => completed(context, []),
     advertising: async (context) => completed(context, []),
     ...overrides,
   } as AuditSuiteSectionRunners;
@@ -96,17 +85,17 @@ describe("AuditSuiteCoordinator run ownership", () => {
 
   it("does not apply terminal retention to an active section and preserves measured progress", async () => {
     let control: AuditSuiteRunControl | null = null;
-    let finishReview: (() => void) | null = null;
-    const reviewGate = new Promise<void>((resolve) => {
-      finishReview = resolve;
+    let finishAdvertising: (() => void) | null = null;
+    const advertisingGate = new Promise<void>((resolve) => {
+      finishAdvertising = resolve;
     });
     const coordinator = new AuditSuiteCoordinator({
       ttlMs: 1_000,
       runners: sectionRunners({
-        review: async (context, runControl) => {
+        advertising: async (context, runControl) => {
           control = runControl;
-          await reviewGate;
-          return completed(context, { resultRows: [], incompleteRows: [] });
+          await advertisingGate;
+          return completed(context, []);
         },
       }),
     });
@@ -123,16 +112,16 @@ describe("AuditSuiteCoordinator run ownership", () => {
     expect(coordinator.get(identity(started.run)).status).toBe("running");
 
     control!.heartbeat({
-      message: "正在核對評論主題（1 / 2）。",
+      message: "正在核對廣告覆蓋（1 / 2）。",
       completedUnits: 1,
       totalUnits: 2,
     });
 
     const running = coordinator.get(identity(started.run));
     expect(running.status).toBe("running");
-    expect(running.sections.review).toMatchObject({
+    expect(running.sections.advertising).toMatchObject({
       status: "running",
-      message: "正在核對評論主題（1 / 2）。",
+      message: "正在核對廣告覆蓋（1 / 2）。",
       completedUnits: 1,
       totalUnits: 2,
     });
@@ -144,11 +133,11 @@ describe("AuditSuiteCoordinator run ownership", () => {
     };
     let rendererState = createAuditSuiteState(parseAuditSuiteRun(running, expected));
 
-    finishReview!();
+    finishAdvertising!();
     await flushCoordinator();
     const finished = coordinator.get(identity(started.run));
     expect(finished.status).toBe("completed");
-    expect(finished.sections.review).toMatchObject({
+    expect(finished.sections.advertising).toMatchObject({
       status: "completed",
       completedUnits: 2,
       totalUnits: 2,
@@ -271,7 +260,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     let signal: AbortSignal | null = null;
     const coordinator = new AuditSuiteCoordinator({
       runners: sectionRunners({
-        review: async (_context, control) => {
+        advertising: async (_context, control) => {
           signal = control.signal;
           return await new Promise<never>(() => undefined);
         },
@@ -310,15 +299,12 @@ describe("AuditSuiteCoordinator run ownership", () => {
     });
     const coordinator = new AuditSuiteCoordinator({
       runners: sectionRunners({
-        review: async (context, control) => {
+        advertising: async (context, control) => {
           const resource = await control.resource(resourceKey, async () => {
             loadCount += 1;
             return loadCount === 1 ? oldResource : currentResource;
           });
-          return completed(context, {
-            resultRows: [reviewRow(resource.marker)],
-            incompleteRows: [],
-          });
+          return completed(context, [advertisingRow(resource.marker)]);
         },
       }),
     });
@@ -351,7 +337,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     );
     expect(coordinator.get(identity(currentRun.run))).toMatchObject({
       status: "running",
-      sections: { review: { status: "running" } },
+      sections: { advertising: { status: "running" } },
     });
 
     resolveCurrent({ marker: 2 });
@@ -360,8 +346,8 @@ describe("AuditSuiteCoordinator run ownership", () => {
     expect(coordinator.workbookInput({
       ...identity(currentRun.run),
       marketplaceLabel: "US · United States",
-    }).sections.review).toMatchObject({
-      payload: { resultRows: [{ title: "marker-2" }] },
+    }).sections.advertising).toMatchObject({
+      payload: [{ title: "marker-2" }],
     });
   });
 
@@ -369,7 +355,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     let control: AuditSuiteRunControl | null = null;
     const coordinator = new AuditSuiteCoordinator({
       runners: sectionRunners({
-        review: async (_context, runControl) => {
+        advertising: async (_context, runControl) => {
           control = runControl;
           return await new Promise<never>(() => undefined);
         },

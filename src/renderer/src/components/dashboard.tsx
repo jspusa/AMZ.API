@@ -43,6 +43,7 @@ import SkuOperationsDrawer, {
   type ContentWorkspaceTab,
 } from "./sku-operations-drawer";
 import type { ContentAuditCache } from "./content-audit-panel";
+import BusinessPricingAuditDrawer from "./business-pricing-audit-drawer";
 import SystemHealthControl, {
   type AuditPreference,
 } from "./system-health-control";
@@ -52,6 +53,7 @@ import UnboundVariationAuditPanel, {
 } from "./unbound-variation-audit-panel";
 import VariationPlannerDrawer from "./variation-planner-drawer";
 import { isSubscriptionAuditMarketplaceSupported } from "../subscription-audit";
+import type { BusinessPricingAuditSnapshot } from "../business-pricing-audit";
 import {
   pollExistingReviewAuditJob,
   reviewAuditHomeProgress,
@@ -94,6 +96,7 @@ type Tool =
   | "price"
   | "promotion"
   | "subscriptions"
+  | "business-pricing"
   | "accounting";
 type ToolGroup = "product" | "pricing" | "operations";
 type NavigationGroup = ToolGroup | "reports";
@@ -411,9 +414,9 @@ function salesTrendRequestKey(
     : `${marketplaceId}:custom:${selection.startDate}:${selection.endDate}`;
 }
 
-const TOOL_META: Record<Tool, { label: string; symbol: string; group: ToolGroup }> = {
+const TOOL_META: Record<Tool, { label: string; symbol: string; group: NavigationGroup }> = {
   ads: { label: "廣告", symbol: "◎", group: "operations" },
-  inbound: { label: "入庫貨件", symbol: "⇣", group: "operations" },
+  inbound: { label: "入庫貨件", symbol: "⇣", group: "reports" },
   restock: { label: "補貨", symbol: "↗", group: "operations" },
   copy: { label: "文案", symbol: "Aa", group: "product" },
   images: { label: "圖片", symbol: "▧", group: "product" },
@@ -421,6 +424,7 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: ToolGroup 
   price: { label: "定價", symbol: "$", group: "pricing" },
   promotion: { label: "促銷", symbol: "%", group: "pricing" },
   subscriptions: { label: "訂閱價格健檢", symbol: "S", group: "pricing" },
+  "business-pricing": { label: "B2B 價格健檢", symbol: "B2B", group: "pricing" },
   accounting: { label: "帳務", symbol: "▤", group: "operations" },
 };
 
@@ -440,19 +444,19 @@ const TOOL_SECTIONS: ReadonlyArray<{
     label: "價格區",
     symbol: "$",
     group: "pricing",
-    tools: ["price", "promotion"],
+    tools: ["price", "promotion", "subscriptions", "business-pricing"],
   },
   {
     label: "營運區",
     symbol: "◎",
     group: "operations",
-    tools: ["restock", "inbound", "ads", "accounting"],
+    tools: ["restock", "ads", "accounting"],
   },
   {
     label: "報表區",
     symbol: "▤",
     group: "reports",
-    tools: [],
+    tools: ["inbound"],
   },
 ];
 
@@ -518,6 +522,9 @@ export default function Dashboard({
   const [reviewAuditOpen, setReviewAuditOpen] = useState(false);
   const [reviewAuditCache, setReviewAuditCache] = useState<
     Record<string, ReviewAuditCache>
+  >({});
+  const [businessPricingAuditCache, setBusinessPricingAuditCache] = useState<
+    Record<string, BusinessPricingAuditSnapshot>
   >({});
   const [inboundShipmentCache, setInboundShipmentCache] = useState<
     Record<string, InboundShipmentCache>
@@ -1038,6 +1045,12 @@ export default function Dashboard({
     : 0;
   const currentReviewAudit = reviewAuditCache[marketplaceId] ?? null;
   const currentReviewAuditProgress = reviewAuditHomeProgress(currentReviewAudit);
+  const currentBusinessPricingAudit = businessPricingAuditCache[marketplaceId] ?? null;
+  const currentBusinessPricingAttentionCount = currentBusinessPricingAudit
+    ? currentBusinessPricingAudit.summary.missing +
+      currentBusinessPricingAudit.summary.unsupported +
+      currentBusinessPricingAudit.summary.incomplete
+    : 0;
   const effectiveReportMenuEntries: readonly DashboardReportMenuEntry[] =
     reportMenuEntries ?? [
       {
@@ -1177,6 +1190,8 @@ export default function Dashboard({
                                       ? "Sale Price 限時售價"
                                       : tool === "subscriptions"
                                         ? "FBA S&S 價格與趨勢"
+                                        : tool === "business-pricing"
+                                          ? "FBA B2B offer 健檢與安全調整"
                                         : tool === "restock"
                                           ? "FBA 庫存與補貨規劃"
                                           : tool === "inbound"
@@ -1201,7 +1216,11 @@ export default function Dashboard({
                             setOpenToolMenu(null);
                             entry.onSelect?.();
                           }}
-                          onKeyDown={(event) => handleMenuItemKeyDown(event, section, index)}
+                          onKeyDown={(event) => handleMenuItemKeyDown(
+                            event,
+                            section,
+                            section.tools.length + index,
+                          )}
                         >
                           <span aria-hidden="true">{entry.symbol ?? "▤"}</span>
                           <span className="workspace-primary-menu-copy">
@@ -1271,48 +1290,6 @@ export default function Dashboard({
             )}
           </div>
 
-          <section className="inbound-home-card" aria-label="FBA 入庫貨件追蹤捷徑">
-            <span className="inbound-home-icon" aria-hidden="true">⇣</span>
-            <div className="inbound-home-copy">
-              <p className="eyebrow">FBA FULFILLMENT INBOUND · READ ONLY</p>
-              <h2>FBA 入庫貨件追蹤</h2>
-              <p>一次同步所選日期內全部貨件、SKU 預期／Amazon 已接收數量，以及每日貨件／包裝箱／產品問題列；不用逐票點進去。</p>
-            </div>
-            <span className="inbound-home-status" role="status">
-              {currentInboundShipment?.job?.state === "running" ? (
-                <>
-                  <strong>{currentInboundShipment.job.progress.total === null
-                    ? `已完成 ${currentInboundShipment.job.progress.completed.toLocaleString("zh-TW")} 筆`
-                    : `${currentInboundShipment.job.progress.completed.toLocaleString("zh-TW")} / ${currentInboundShipment.job.progress.total.toLocaleString("zh-TW")}`}</strong>
-                  <small>背景同步中 · 可開啟查看</small>
-                  {currentInboundShipment.job.progress.total !== null && (
-                    <progress
-                      value={currentInboundShipment.job.progress.completed}
-                      max={Math.max(1, currentInboundShipment.job.progress.total)}
-                    />
-                  )}
-                </>
-              ) : currentInboundShipment?.snapshot ? (
-                <>
-                  <strong>{currentInboundShipment.snapshot.summary.shipmentCount.toLocaleString("zh-TW")} 個貨件</strong>
-                  <small>{currentInboundShipment.snapshot.coverage.state === "complete" && currentInboundShipment.snapshot.issueReport.state === "completed" ? "完整快照" : "部分完成"} · {formatDateTime(currentInboundShipment.snapshot.fetchedAt, true)}</small>
-                </>
-              ) : currentInboundShipment?.error ? (
-                <><strong>同步未完成</strong><small>{currentInboundShipment.error}</small></>
-              ) : (
-                <><strong>尚未同步</strong><small>預設最近 90 天</small></>
-              )}
-            </span>
-            <button type="button" onClick={() => launch("inbound")}>
-              {currentInboundShipment?.job?.state === "running"
-                ? "查看進行中的貨件同步"
-                : currentInboundShipment?.snapshot
-                  ? "查看上次貨件快照"
-                  : "開啟 FBA 入庫貨件追蹤"}
-              <i aria-hidden="true">›</i>
-            </button>
-          </section>
-
           <AuditSuiteHomeCard
             marketplaceId={marketplaceId}
             marketplaceShort={marketplace.shortLabel}
@@ -1344,11 +1321,11 @@ export default function Dashboard({
             </section>
 
             <section className="content-audit-home-card image-audit-home-card" aria-label="全站圖片健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">▧5</span>
+              <span className="content-audit-home-icon" aria-hidden="true">▧6</span>
               <div>
                 <p className="eyebrow">FBA IMAGE HEALTH</p>
                 <h2>全站圖片健檢</h2>
-                <p>一次找出少於五張 Listing 圖片與讀取未完成的 FBA SKU；關閉後仍可繼續上次結果。</p>
+                <p>一次找出少於六張 Listing 圖片與讀取未完成的 FBA SKU；關閉後仍可繼續上次結果。</p>
               </div>
               {currentImageAudit && (
                 <span className="content-audit-home-status">
@@ -1382,21 +1359,6 @@ export default function Dashboard({
                 <i aria-hidden="true">›</i>
               </button>
             </section>
-            <section className="content-audit-home-card" aria-label="FBA 180 天以上庫齡健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
-              <div>
-                <p className="eyebrow">FBA AGED INVENTORY · 180+ DAYS</p>
-                <h2>FBA 180 天以上庫齡健檢</h2>
-                <p>主清單只列已經超過 180 天的 FBA 庫存；Amazon estimated excess 預估與費用放在獨立分頁。</p>
-              </div>
-              <button type="button" onClick={() => {
-                setAuditPreference("inventory");
-                setAgedInventoryOpen(true);
-              }}>
-                開始 FBA 180 天以上庫齡健檢
-                <i aria-hidden="true">›</i>
-              </button>
-            </section>
             <section className="content-audit-home-card" aria-label="全站訂閱價格健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true">S&amp;S</span>
               <div>
@@ -1408,6 +1370,24 @@ export default function Dashboard({
               </div>
               <button type="button" onClick={() => launch("subscriptions")}>
                 {subscriptionAuditSupported ? "開始全站訂閱價格健檢" : "查看 S&S 能力說明"}
+                <i aria-hidden="true">›</i>
+              </button>
+            </section>
+            <section className="content-audit-home-card business-pricing-audit-home-card" aria-label="全站 B2B 價格健檢捷徑">
+              <span className="content-audit-home-icon" aria-hidden="true">B2B</span>
+              <div>
+                <p className="eyebrow">FBA AMAZON BUSINESS</p>
+                <h2>全站 B2B 價格健檢</h2>
+                <p>找出尚未設定 Amazon Business 價格的 FBA SKU；只有 seller-specific PTD 明確允許時才提供安全調整。</p>
+              </div>
+              {currentBusinessPricingAudit && (
+                <span className="content-audit-home-status">
+                  <strong>{currentBusinessPricingAttentionCount.toLocaleString()}</strong>
+                  <small>個需設定／確認</small>
+                </span>
+              )}
+              <button type="button" onClick={() => launch("business-pricing")}>
+                {currentBusinessPricingAudit ? "繼續上次 B2B 價格健檢" : "開始全站 B2B 價格健檢"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1423,41 +1403,68 @@ export default function Dashboard({
                 <i aria-hidden="true">›</i>
               </button>
             </section>
-            <section className="content-audit-home-card review-audit-home-card" aria-label="FBA 評論主題健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">☆5</span>
-              <div>
-                <p className="eyebrow">CUSTOMER FEEDBACK · NON-PARENT ASIN</p>
-                <h2>評論健檢</h2>
-                <p>依 Listings relationships 已證明的 child 與 standalone ASIN 列出評論主題前五與後五；排除 parent，也不冒充商品總星等。</p>
-              </div>
-              {currentReviewAuditProgress && (
-                <span
-                  className="content-audit-home-status"
-                  aria-label={currentReviewAuditProgress.ariaLabel}
-                >
-                  <strong>{currentReviewAuditProgress.primary}</strong>
-                  <small>{currentReviewAuditProgress.detail}</small>
-                  {currentReviewAudit?.job && (
-                    <progress
-                      className="review-audit-home-progress"
-                      value={currentReviewAudit.job.progress.percent}
-                      max={100}
-                      aria-hidden="true"
-                    />
-                  )}
-                </span>
-              )}
-              <button type="button" onClick={() => setReviewAuditOpen(true)}>
-                {currentReviewAudit?.snapshot
-                  ? "查看上次評論健檢"
-                  : currentReviewAudit?.job
-                    ? "查看進行中的評論健檢"
-                    : "開始全站評論健檢"}
-                <i aria-hidden="true">›</i>
-              </button>
-            </section>
             {additionalAuditCards}
           </div>
+
+          <details className="low-frequency-audits">
+            <summary>
+              <span>
+                <strong>低頻健檢</strong>
+                <small>庫齡與評論不會跟著五項一鍵健檢自動執行，需要時再展開。</small>
+              </span>
+              <i aria-hidden="true">＋</i>
+            </summary>
+            <div className="health-audit-home-grid">
+              <section className="content-audit-home-card" aria-label="FBA 180 天以上庫齡健檢捷徑">
+                <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
+                <div>
+                  <p className="eyebrow">FBA AGED INVENTORY · 180+ DAYS</p>
+                  <h2>FBA 180 天以上庫齡健檢</h2>
+                  <p>主清單只列已經超過 180 天的 FBA 庫存；Amazon estimated excess 預估與費用放在獨立分頁。</p>
+                </div>
+                <button type="button" onClick={() => {
+                  setAuditPreference("inventory");
+                  setAgedInventoryOpen(true);
+                }}>
+                  開始 FBA 180 天以上庫齡健檢
+                  <i aria-hidden="true">›</i>
+                </button>
+              </section>
+              <section className="content-audit-home-card review-audit-home-card" aria-label="FBA 評論主題健檢捷徑">
+                <span className="content-audit-home-icon" aria-hidden="true">☆5</span>
+                <div>
+                  <p className="eyebrow">CUSTOMER FEEDBACK · NON-PARENT ASIN</p>
+                  <h2>評論健檢</h2>
+                  <p>依 Listings relationships 已證明的 child 與 standalone ASIN 列出評論主題前五與後五；排除 parent，也不冒充商品總星等。</p>
+                </div>
+                {currentReviewAuditProgress && (
+                  <span
+                    className="content-audit-home-status"
+                    aria-label={currentReviewAuditProgress.ariaLabel}
+                  >
+                    <strong>{currentReviewAuditProgress.primary}</strong>
+                    <small>{currentReviewAuditProgress.detail}</small>
+                    {currentReviewAudit?.job && (
+                      <progress
+                        className="review-audit-home-progress"
+                        value={currentReviewAudit.job.progress.percent}
+                        max={100}
+                        aria-hidden="true"
+                      />
+                    )}
+                  </span>
+                )}
+                <button type="button" onClick={() => setReviewAuditOpen(true)}>
+                  {currentReviewAudit?.snapshot
+                    ? "查看上次評論健檢"
+                    : currentReviewAudit?.job
+                      ? "查看進行中的評論健檢"
+                      : "開始全站評論健檢"}
+                  <i aria-hidden="true">›</i>
+                </button>
+              </section>
+            </div>
+          </details>
 
         </main>
         <footer className="os-footer"><span>AMZ.API · GitHub UI / Local Key</span><span>FBA only · No FBM · No buyer PII</span></footer>
@@ -1478,6 +1485,18 @@ export default function Dashboard({
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "promotion" && <PromotionCenterDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "subscriptions" && <SubscriptionAuditDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} onClose={() => setOpenTool(null)} />}
+      {openTool === "business-pricing" && (
+        <BusinessPricingAuditDrawer
+          marketplaceId={marketplaceId}
+          marketplaceShort={marketplace.shortLabel}
+          cachedSnapshot={currentBusinessPricingAudit}
+          onSnapshotChange={(snapshot) => setBusinessPricingAuditCache((current) => ({
+            ...current,
+            [snapshot.marketplaceId]: snapshot,
+          }))}
+          onClose={() => setOpenTool(null)}
+        />
+      )}
       {openTool === "accounting" && <AccountingCenterDrawer marketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
       {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}
       {unboundVariationAuditOpen && createPortal(

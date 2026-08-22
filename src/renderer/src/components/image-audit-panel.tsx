@@ -317,7 +317,7 @@ export default function ImageAuditPanel({
   return (
     <section className="image-audit-panel" aria-label="全站 FBA 圖片健檢">
       <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有圖片工作台的 parent 容器，再列出少於五張 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
+        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有圖片工作台的 parent 容器，再列出少於六張 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
       </p>
       <div className="content-export-note">
         <strong>Amazon 唯讀圖片健檢</strong>
@@ -346,7 +346,7 @@ export default function ImageAuditPanel({
         <>
           <div className="image-audit-summary" aria-label="圖片健檢摘要">
             <article><span>可健檢 FBA SKU</span><strong>{snapshot.summary.total.toLocaleString()}</strong></article>
-            <article><span>少於 5 張</span><strong>{snapshot.summary.underMinimum.toLocaleString()}</strong></article>
+            <article><span>少於 {snapshot.minimumImages} 張</span><strong>{snapshot.summary.underMinimum.toLocaleString()}</strong></article>
             <article><span>讀取未完成</span><strong>{snapshot.summary.incomplete.toLocaleString()}</strong></article>
           </div>
           <div className="audit-toolbar">
@@ -388,7 +388,7 @@ export default function ImageAuditPanel({
                   <strong>{row.title || row.sellerSku}</strong>
                   <p>{row.sellerSku}{row.asin ? ` · ${row.asin}` : ""}</p>
                   {row.readStatus === "complete"
-                    ? <small className="image-audit-count">目前 {row.imageCount} 張 · 還差 {Math.max(0, snapshot.minimumImages - row.imageCount)} 張達到 5 張</small>
+                    ? <small className="image-audit-count">目前 {row.imageCount} 張 · 還差 {Math.max(0, snapshot.minimumImages - row.imageCount)} 張達到 {snapshot.minimumImages} 張</small>
                     : <small className="variation-warning">讀取未完成：{row.readErrors.map((item) => item.message).join("；")}</small>}
                 </div>
                 <button type="button" onClick={() => onOpenSku(row.sellerSku)}>開啟圖片工作台</button>
@@ -396,7 +396,7 @@ export default function ImageAuditPanel({
             ))}
             {!visibleRows.length && (
               <p className="variation-empty">
-                {attentionRows.length ? "沒有符合搜尋條件的商品。" : "目前沒有少於五張圖片或讀取未完成的 FBA SKU。"}
+                {attentionRows.length ? "沒有符合搜尋條件的商品。" : "目前沒有少於六張圖片或讀取未完成的 FBA SKU。"}
               </p>
             )}
           </div>

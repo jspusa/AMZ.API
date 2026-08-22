@@ -13,15 +13,17 @@ export type ListingImageAuditSourceRow = {
   readErrors: ListingImageAuditReadError[];
 };
 
+export const IMAGE_AUDIT_MINIMUM_IMAGES = 6 as const;
+
 export function auditListingImageRows(input: {
   marketplaceId: string;
   fetchedAt: string;
   rows: ListingImageAuditSourceRow[];
   minimumImages?: number;
 }) {
-  const minimumImages = input.minimumImages ?? 5;
-  if (!Number.isInteger(minimumImages) || minimumImages < 1 || minimumImages > 9) {
-    throw new Error("圖片健檢門檻必須介於 1 到 9 張。");
+  const minimumImages = input.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES;
+  if (minimumImages !== IMAGE_AUDIT_MINIMUM_IMAGES) {
+    throw new Error("圖片健檢固定門檻為 6 張；拒絕使用其他標準。");
   }
   const rows = input.rows.map((row) => {
     const imageUrls = [...new Set(

@@ -27,7 +27,7 @@ function runDto(
   updatedAt = "2026-08-09T04:05:00.000Z",
 ): AuditSuiteRunDto {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ...CONTEXT,
     status,
     startedAt: "2026-08-09T04:00:00.000Z",
@@ -48,6 +48,16 @@ function runDto(
 }
 
 describe("audit suite renderer state", () => {
+  it("uses the same five-item order as the common one-click checks", () => {
+    expect(AUDIT_SUITE_SECTION_IDS).toEqual([
+      "content",
+      "image",
+      "variation",
+      "subscription",
+      "advertising",
+    ]);
+  });
+
   it("retains one background run when a drawer closes and accepts monotonic progress", () => {
     const queued = parseAuditSuiteRun(runDto("queued"), CONTEXT);
     let state = storeAuditSuiteRun(createAuditSuiteState(), queued);
@@ -56,22 +66,18 @@ describe("audit suite renderer state", () => {
     expect(auditSuiteRunForMarketplace(state, CONTEXT.marketplaceId)?.status).toBe("queued");
 
     const running = parseAuditSuiteRun(runDto("running", {
-      subscription: "running",
-      inventory: "queued",
-      content: "queued",
+      content: "running",
       image: "queued",
       variation: "queued",
-      review: "queued",
+      subscription: "queued",
     }, "2026-08-09T04:06:00.000Z"), CONTEXT);
     state = storeAuditSuiteRun(state, running);
 
     const partial = parseAuditSuiteRun(runDto("partial", {
-      subscription: "completed",
-      inventory: "partial",
       content: "completed",
       image: "failed",
       variation: "completed",
-      review: "completed",
+      subscription: "completed",
     }, "2026-08-09T04:10:00.000Z"), CONTEXT);
     state = storeAuditSuiteRun(state, partial);
     expect(auditSuiteRunForMarketplace(state, CONTEXT.marketplaceId)?.status).toBe("partial");
@@ -91,7 +97,7 @@ describe("audit suite renderer state", () => {
     )).toThrow(pattern);
   });
 
-  it("rejects an overall status that contradicts its seven sections", () => {
+  it("rejects an overall status that contradicts its five sections", () => {
     expect(() => parseAuditSuiteRun(runDto("completed", {
       image: "failed",
     }), CONTEXT)).toThrow(/總狀態.*不一致/u);

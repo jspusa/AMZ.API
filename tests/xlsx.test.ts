@@ -127,15 +127,15 @@ describe("FBA image audit Excel export", () => {
       marketplaceId: "ATVPDKIKX0DER",
       marketplaceLabel: "US · Amazon.com",
       fetchedAt: "2026-08-08T08:00:00.000Z",
-      minimumImages: 5,
+      minimumImages: 6,
       rows: [
         {
-          sellerSku: "FOUR-IMAGES",
+          sellerSku: "FIVE-IMAGES",
           asin: "B000000001",
           productType: "PET_FOOD",
-          title: "Four images",
-          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg"],
-          imageCount: 4,
+          title: "Five images",
+          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg", "https://a/5.jpg"],
+          imageCount: 5,
           readStatus: "complete",
           readErrors: [],
         },
@@ -165,12 +165,13 @@ describe("FBA image audit Excel export", () => {
       archive["xl/worksheets/sheet2.xml"],
     );
     expect(workbookXml).toContain("圖片健檢");
-    expect(auditSheet).toContain("FOUR-IMAGES");
+    expect(auditSheet).toContain("FIVE-IMAGES");
     expect(auditSheet).toContain("UNKNOWN-IMAGES");
     expect(auditSheet).toContain("圖片不足");
     expect(auditSheet).toContain("讀取未完成");
     expect(auditSheet).toContain("LISTING_CONTENT_NOT_RETURNED: attributes missing");
-    expect(auditSheet).toContain("https://a/4.jpg");
+    expect(auditSheet).toContain("https://a/5.jpg");
+    expect(notesSheet).toContain("至少 6 張圖片");
     expect(notesSheet).toContain("不含 FBM");
     expect(notesSheet).toContain("不把無法完整讀取的 Listing 冒充為零張圖片");
   });

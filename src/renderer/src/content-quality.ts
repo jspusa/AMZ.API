@@ -7,6 +7,7 @@ export type ContentAuditIssueKind =
   | "BULLET_BELOW_TARGET"
   | "BULLET_ABOVE_TARGET"
   | "DESCRIPTION_BELOW_TARGET"
+  | "SINGLE_INGREDIENT_MISMATCH"
   | "SUSPECTED_TYPO";
 
 export type ContentAuditField =
@@ -68,6 +69,7 @@ export type ContentAuditSummary = {
   bulletBelowTarget: number;
   bulletAboveTarget: number;
   descriptionBelowTarget: number;
+  singleIngredientMismatch: number;
 };
 
 export type ContentAuditSnapshot = {
@@ -363,6 +365,9 @@ export function summarizeContentAudit(
     ).length,
     descriptionBelowTarget: rows.filter((row) =>
       hasKind(row, "DESCRIPTION_BELOW_TARGET"),
+    ).length,
+    singleIngredientMismatch: rows.filter((row) =>
+      hasKind(row, "SINGLE_INGREDIENT_MISMATCH"),
     ).length,
   };
 }

@@ -35,30 +35,6 @@ export type SubscriptionAuditAnomalyRow = Readonly<{
   notice: string;
 }>;
 
-export type AgedInventoryOver180Row = Readonly<{
-  sellerSku: string;
-  title: string;
-  asin: string;
-  ageBucket: string;
-  quantity: number | null;
-  notice: string;
-}>;
-
-export type EstimatedExcessRow = Readonly<{
-  sellerSku: string;
-  title: string;
-  asin: string;
-  estimatedExcessQuantity: number | null;
-  daysOfSupply: number | null;
-  recommendedAction: string;
-  notice: string;
-}>;
-
-export type InventoryAuditSuitePayload = Readonly<{
-  over180Rows: readonly AgedInventoryOver180Row[];
-  estimatedExcessRows: readonly EstimatedExcessRow[];
-}>;
-
 export type ContentAuditProblemRow = Readonly<{
   sellerSku: string;
   title: string;
@@ -86,31 +62,6 @@ export type UnboundVariationAuditRow = Readonly<{
   notice: string;
 }>;
 
-export type ReviewAuditResultRow = Readonly<{
-  sellerSku: string;
-  title: string;
-  asin: string;
-  topic: string;
-  sentiment: "正向" | "負向";
-  starRatingImpact: number | null;
-  mentions: number | null;
-  occurrencePercent: number | null;
-  notice: string;
-}>;
-
-export type ReviewAuditIncompleteRow = Readonly<{
-  sellerSku: string;
-  title: string;
-  asin: string;
-  code: string;
-  message: string;
-}>;
-
-export type ReviewAuditSuitePayload = Readonly<{
-  resultRows: readonly ReviewAuditResultRow[];
-  incompleteRows: readonly ReviewAuditIncompleteRow[];
-}>;
-
 export type AdvertisingCoverageAuditRow = Readonly<{
   sellerSku: string;
   title: string;
@@ -125,12 +76,10 @@ export type AuditSuiteWorkbookInput = Readonly<{
   marketplaceLabel: string;
   generatedAt: string | Date;
   sections: Readonly<{
-    subscription: ValidatedAuditSuiteSnapshot<readonly SubscriptionAuditAnomalyRow[]> | null;
-    inventory: ValidatedAuditSuiteSnapshot<InventoryAuditSuitePayload> | null;
     content: ValidatedAuditSuiteSnapshot<readonly ContentAuditProblemRow[]> | null;
     image: ValidatedAuditSuiteSnapshot<readonly ImageAuditProblemRow[]> | null;
     variation: ValidatedAuditSuiteSnapshot<readonly UnboundVariationAuditRow[]> | null;
-    review: ValidatedAuditSuiteSnapshot<ReviewAuditSuitePayload> | null;
+    subscription: ValidatedAuditSuiteSnapshot<readonly SubscriptionAuditAnomalyRow[]> | null;
     advertising: ValidatedAuditSuiteSnapshot<readonly AdvertisingCoverageAuditRow[]> | null;
   }>;
 }>;
@@ -290,12 +239,10 @@ function checkedRow(values: readonly Cell[]): readonly Cell[] {
 function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetDefinition[] {
   const context = input.context;
   const sectionSummary = [
-    ["訂閱異常", input.sections.subscription],
-    ["庫齡與預估冗餘", input.sections.inventory],
     ["文案問題", input.sections.content],
     ["圖片問題", input.sections.image],
     ["未綁變體", input.sections.variation],
-    ["評論主題", input.sections.review],
+    ["訂閱異常", input.sections.subscription],
     ["廣告覆蓋", input.sections.advertising],
   ] as const;
   const overviewRows = sectionSummary.map(([label, snapshot]) => {
@@ -320,13 +267,6 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
     "資料狀態", "SKU", "商品標題", "ASIN", "異常類型", "賣家基礎折扣（%）",
     "目前有效訂閱", "目前售價", "說明",
   ];
-  const inventoryAgeHeaders = [
-    "資料狀態", "SKU", "商品標題", "ASIN", "Amazon 庫齡區間", "數量", "說明",
-  ];
-  const excessHeaders = [
-    "資料狀態", "SKU", "商品標題", "ASIN", "Amazon 預估冗餘數量",
-    "供應天數", "建議動作", "說明",
-  ];
   const contentHeaders = [
     "資料狀態", "SKU", "商品標題", "ASIN", "問題類型", "欄位", "原文", "說明",
   ];
@@ -335,13 +275,6 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
   ];
   const variationHeaders = [
     "資料狀態", "SKU", "商品標題", "ASIN", "商品類型", "判定依據",
-  ];
-  const reviewResultHeaders = [
-    "資料狀態", "SKU", "商品標題", "ASIN", "主題", "正負向", "評論主題影響值",
-    "提及數", "出現比例（%）", "說明",
-  ];
-  const reviewIncompleteHeaders = [
-    "資料狀態", "SKU", "商品標題", "ASIN", "狀態碼", "未完成原因",
   ];
   const advertisingHeaders = [
     "資料狀態", "SKU", "商品標題", "ASIN", "判定", "證據", "說明",
@@ -353,69 +286,6 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
       headers: ["健檢項目", "執行狀態", "資料時間", "範圍說明"],
       widths: [24, 16, 24, 92],
       rows: overviewRows,
-    },
-    {
-      name: "訂閱異常",
-      headers: subscriptionHeaders,
-      widths: [16, 26, 48, 18, 36, 20, 18, 16, 64],
-      rows: rowsForSnapshot({
-        snapshot: input.sections.subscription,
-        context,
-        label: "訂閱異常",
-        columnCount: subscriptionHeaders.length,
-        emptyNotice: "此快照已完整核對；沒有符合訂閱異常條件的項目。",
-        map: (payload) => payload.map((row) => checkedRow([
-          textCell(exactSku(row.sellerSku), 2),
-          textCell(safeText(row.title, "訂閱商品標題")),
-          textCell(safeText(row.asin, "訂閱 ASIN", 20), 2),
-          textCell(safeText(row.anomaly, "訂閱異常")),
-          numberCell(finiteNumber(row.sellerFundedBaseDiscountPercent, "賣家基礎折扣", 0, 100)),
-          numberCell(finiteNumber(row.currentActiveSubscriptions, "目前有效訂閱")),
-          numberCell(finiteNumber(row.currentPrice, "目前售價")),
-          textCell(safeText(row.notice, "訂閱說明")),
-        ])),
-      }),
-    },
-    {
-      name: "180天以上庫齡",
-      headers: inventoryAgeHeaders,
-      widths: [16, 26, 48, 18, 28, 14, 72],
-      rows: rowsForSnapshot({
-        snapshot: input.sections.inventory,
-        context,
-        label: "庫齡",
-        columnCount: inventoryAgeHeaders.length,
-        emptyNotice: "此快照已完整核對；沒有已驗證為 180 天以上庫齡的項目。",
-        map: (payload) => payload.over180Rows.map((row) => checkedRow([
-          textCell(exactSku(row.sellerSku), 2),
-          textCell(safeText(row.title, "庫齡商品標題")),
-          textCell(safeText(row.asin, "庫齡 ASIN", 20), 2),
-          textCell(safeText(row.ageBucket, "Amazon 庫齡區間")),
-          numberCell(finiteNumber(row.quantity, "庫齡數量")),
-          textCell(safeText(row.notice, "庫齡說明")),
-        ])),
-      }),
-    },
-    {
-      name: "預估冗餘",
-      headers: excessHeaders,
-      widths: [16, 26, 48, 18, 24, 16, 32, 72],
-      rows: rowsForSnapshot({
-        snapshot: input.sections.inventory,
-        context,
-        label: "預估冗餘",
-        columnCount: excessHeaders.length,
-        emptyNotice: "此快照已完整核對；沒有 Amazon 已回傳的預估冗餘項目。",
-        map: (payload) => payload.estimatedExcessRows.map((row) => checkedRow([
-          textCell(exactSku(row.sellerSku), 2),
-          textCell(safeText(row.title, "冗餘商品標題")),
-          textCell(safeText(row.asin, "冗餘 ASIN", 20), 2),
-          numberCell(finiteNumber(row.estimatedExcessQuantity, "預估冗餘數量")),
-          numberCell(finiteNumber(row.daysOfSupply, "供應天數")),
-          textCell(safeText(row.recommendedAction, "建議動作")),
-          textCell(safeText(row.notice, "冗餘說明")),
-        ])),
-      }),
     },
     {
       name: "文案問題",
@@ -478,47 +348,24 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
       }),
     },
     {
-      name: "評論結果",
-      headers: reviewResultHeaders,
-      widths: [16, 26, 48, 18, 46, 14, 18, 14, 18, 64],
+      name: "訂閱異常",
+      headers: subscriptionHeaders,
+      widths: [16, 26, 48, 18, 36, 20, 18, 16, 64],
       rows: rowsForSnapshot({
-        snapshot: input.sections.review,
+        snapshot: input.sections.subscription,
         context,
-        label: "評論結果",
-        columnCount: reviewResultHeaders.length,
-        emptyNotice: "此快照已完整核對；沒有可列出的非 parent ASIN 評論主題結果。",
-        map: (payload) => payload.resultRows.map((row) => checkedRow([
+        label: "訂閱異常",
+        columnCount: subscriptionHeaders.length,
+        emptyNotice: "此快照已完整核對；沒有符合訂閱異常條件的項目。",
+        map: (payload) => payload.map((row) => checkedRow([
           textCell(exactSku(row.sellerSku), 2),
-          textCell(safeText(row.title, "評論商品標題")),
-          textCell(safeText(row.asin, "評論 ASIN", 20), 2),
-          textCell(safeText(row.topic, "評論主題")),
-          textCell(row.sentiment),
-          numberCell(finiteNumber(row.starRatingImpact, "評論主題影響值", -5, 5)),
-          numberCell(finiteNumber(row.mentions, "評論提及數")),
-          numberCell(finiteNumber(row.occurrencePercent, "評論出現比例", 0, 100)),
-          textCell(safeText(
-            `評論主題影響值不是商品星等；負數是負向主題對星等下降方向的影響值，不是商品負星等，原始值不轉成 0 或絕對值。${row.notice}`,
-            "評論結果說明",
-          )),
-        ])),
-      }),
-    },
-    {
-      name: "評論未完成",
-      headers: reviewIncompleteHeaders,
-      widths: [16, 26, 48, 18, 34, 84],
-      rows: rowsForSnapshot({
-        snapshot: input.sections.review,
-        context,
-        label: "評論未完成",
-        columnCount: reviewIncompleteHeaders.length,
-        emptyNotice: "此快照已完整核對；沒有評論讀取未完成項目。",
-        map: (payload) => payload.incompleteRows.map((row) => checkedRow([
-          textCell(exactSku(row.sellerSku), 2),
-          textCell(safeText(row.title, "評論未完成商品標題")),
-          textCell(safeText(row.asin, "評論未完成 ASIN", 20), 2),
-          textCell(safeText(row.code, "評論未完成狀態碼")),
-          textCell(safeText(row.message, "評論未完成原因")),
+          textCell(safeText(row.title, "訂閱商品標題")),
+          textCell(safeText(row.asin, "訂閱 ASIN", 20), 2),
+          textCell(safeText(row.anomaly, "訂閱異常")),
+          numberCell(finiteNumber(row.sellerFundedBaseDiscountPercent, "賣家基礎折扣", 0, 100)),
+          numberCell(finiteNumber(row.currentActiveSubscriptions, "目前有效訂閱")),
+          numberCell(finiteNumber(row.currentPrice, "目前售價")),
+          textCell(safeText(row.notice, "訂閱說明")),
         ])),
       }),
     },

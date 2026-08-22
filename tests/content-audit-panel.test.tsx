@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
   ContentAuditWorkbookFilePicker,
   ContentWorkbookBatchPreviewCard,
+  consumeContentAuditWorkbookInput,
+  contentAuditWorkbookSelection,
   parseContentWorkbookBatchPreview,
   parseContentAuditSnapshot,
   quickEditAvailabilityForRow,
@@ -98,11 +100,42 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain('class="content-audit-file-input"');
     expect(markup).toContain('aria-label="選擇要回傳的 Excel 檔案"');
     expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain("拖放單一 .xlsx 到這裡");
     expect(stylesheet).toContain(".content-audit-file-input");
     expect(stylesheet).toContain("clip-path: inset(50%)");
     expect(stylesheet).toContain(
       ".content-audit-file-picker:has(.content-audit-file-input:focus-visible)",
     );
+  });
+
+  it("accepts one xlsx for click or drop and honestly rejects other selections", () => {
+    const workbook = { name: "FBA-文案健檢-US.xlsx" } as File;
+    const text = { name: "notes.txt" } as File;
+
+    expect(contentAuditWorkbookSelection([workbook])).toEqual({
+      status: "selected",
+      file: workbook,
+    });
+    expect(contentAuditWorkbookSelection([workbook, workbook])).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("一次只能選擇一份"),
+    });
+    expect(contentAuditWorkbookSelection([text])).toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("只接受"),
+    });
+    expect(contentAuditWorkbookSelection([])).toEqual({ status: "empty" });
+  });
+
+  it("clears the native picker value so the same edited workbook can be selected again", () => {
+    const workbook = { name: "FBA-文案健檢-US.xlsx" } as File;
+    const input = {
+      files: { 0: workbook, length: 1 },
+      value: "C:\\fakepath\\FBA-文案健檢-US.xlsx",
+    };
+
+    expect(consumeContentAuditWorkbookInput(input)).toEqual([workbook]);
+    expect(input.value).toBe("");
   });
 
   it("explains the one-click scope and starts from a read-only state", () => {
@@ -398,12 +431,97 @@ describe("global FBA content audit panel", () => {
     expect(drawerSource).toContain("確認並預檢這次修正");
     expect(drawerSource).toContain("健檢定位已失效，已顯示完整編輯");
     expect(drawerSource).toContain("個待修欄位；其他 Amazon 原值仍會原樣帶入預檢");
-    expect(drawerSource).toContain("查看本次待修原因");
-    expect(drawerSource).toContain("{activeQuickEditFocus.reason}");
-    expect(drawerSource).not.toContain(
-      "本次錯誤原因：{activeQuickEditFocus.reason}",
-    );
+    expect(drawerSource).not.toContain("查看本次待修原因");
+    expect(drawerSource).not.toContain("{activeQuickEditFocus.reason}");
+    expect(drawerSource).toContain("content-audit-field-reason");
+    expect(drawerSource).toContain("quickEditReasonsForField");
     expect(drawerSource).toContain("立刻修改未開始：");
+  });
+
+  it("keeps single-ingredient mismatch reasons field-scoped and fresh-read fail closed", () => {
+    const ingredients = "Turkey Tendon, Chicken, Coconut Glycerin";
+    const row = quickEditRow({
+      title: "Single-Ingredient dog treats",
+      ingredients,
+      issues: [{
+        kind: "SINGLE_INGREDIENT_MISMATCH",
+        field: "title",
+        token: "Single-Ingredient",
+        message:
+          "產品名稱宣稱「Single-Ingredient」，但 Amazon ingredients 明確列出 3 項。",
+      }],
+    });
+    const parsed = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [row],
+      summary: { total: 1 },
+    });
+
+    expect(parsed.summary.singleIngredientMismatch).toBe(1);
+    const focus = quickEditFocusForRow(parsed.rows[0]!);
+    expect(focus).toMatchObject({
+      fields: ["title"],
+      evidence: [expect.objectContaining({
+        issueKind: "SINGLE_INGREDIENT_MISMATCH",
+        reason: expect.stringContaining("Amazon ingredients"),
+        relatedIngredients: ingredients,
+        relatedIngredientsFingerprint: expect.stringMatching(/^v1:/u),
+      })],
+    });
+    expect(focus && resolveContentAuditQuickEditFocus(focus, freshListing({
+      title: row.title,
+      ingredients,
+    }))).toMatchObject({
+      status: "focused",
+      focus: {
+        fields: ["title"],
+        reasons: [expect.objectContaining({
+          field: "title",
+          bulletIndex: null,
+          message: expect.stringContaining("Amazon ingredients"),
+        })],
+      },
+    });
+    expect(focus && resolveContentAuditQuickEditFocus(focus, freshListing({
+      title: row.title,
+      ingredients: "Turkey Tendon, Chicken",
+    }))).toMatchObject({ status: "stale" });
+    expect(focus && resolveContentAuditQuickEditFocus(focus, freshListing({
+      title: "Dog treats",
+      ingredients,
+    }))).toMatchObject({ status: "stale" });
+  });
+
+  it("derives the deterministic single-ingredient mismatch when an older bridge omits it", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [{
+        sellerSku: "OLD-BRIDGE-CLAIM",
+        asin: "B000000321",
+        productType: "PET_FOOD",
+        title: "Single ingredient — Single-Ingredients turkey tendon treats",
+        itemHighlight: "",
+        bulletPoints: [],
+        productDescription: "",
+        ingredients: "Turkey Tendon\u2028Chicken",
+        readStatus: "complete",
+        readErrors: [],
+        issues: [],
+      }],
+      summary: { total: 1 },
+    });
+
+    expect(snapshot.rows[0]?.issues).toEqual([
+      expect.objectContaining({
+        kind: "SINGLE_INGREDIENT_MISMATCH",
+        field: "title",
+        token: "Single ingredient",
+        message: expect.stringContaining("明確列出 2 項"),
+      }),
+    ]);
+    expect(snapshot.summary.singleIngredientMismatch).toBe(1);
   });
 
   it("keeps an unavailable quick-edit action visible and explains why it is disabled", () => {
@@ -479,6 +597,11 @@ describe("global FBA content audit panel", () => {
         bulletIndices: [2],
         relocationNote:
           "Amazon 賣點順序已變動；系統依健檢時的完整原文，重新定位到賣點 3。",
+        reasons: [{
+          field: "bulletPoints",
+          bulletIndex: 2,
+          message: "疑似錯字。",
+        }],
       },
     });
   });
@@ -758,6 +881,94 @@ describe("global FBA content audit panel", () => {
         productDescription: "P".repeat(1_799),
       }),
     )).toMatchObject({ status: "stale" });
+  });
+
+  it("safely focuses highlight and description typos using exact fresh Amazon text", () => {
+    const itemHighlight = "Freshh turkey tendon treats";
+    const productDescription = "Nutritous rewards for everyday treating.";
+    const focus = quickEditFocusForRow(quickEditRow({
+      itemHighlight,
+      productDescription,
+      issues: [
+        {
+          kind: "SUSPECTED_TYPO",
+          field: "itemHighlight",
+          token: "Freshh",
+          suggestion: "Fresh",
+          message: "產品亮點疑似錯字。",
+        },
+        {
+          kind: "SUSPECTED_TYPO",
+          field: "productDescription",
+          token: "Nutritous",
+          suggestion: "Nutritious",
+          message: "產品敘述疑似錯字。",
+        },
+      ],
+    }));
+
+    expect(focus).toMatchObject({
+      fields: ["itemHighlight", "productDescription"],
+      bulletIndices: [],
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ itemHighlight, productDescription }),
+    )).toMatchObject({
+      status: "focused",
+      focus: {
+        fields: ["itemHighlight", "productDescription"],
+        reasons: [
+          expect.objectContaining({ field: "itemHighlight" }),
+          expect.objectContaining({ field: "productDescription" }),
+        ],
+      },
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        itemHighlight,
+        productDescription: `Updated ${productDescription}`,
+      }),
+    )).toMatchObject({ status: "stale" });
+  });
+
+  it("keeps a mixed highlight length-and-typo row immediately editable", () => {
+    const itemHighlight = `Freshh ${"H".repeat(102)}`;
+    const focus = quickEditFocusForRow(quickEditRow({
+      itemHighlight,
+      issues: [
+        {
+          kind: "HIGHLIGHT_BELOW_TARGET",
+          field: "itemHighlight",
+          message: "產品亮點目前 109 個字元，低於 110 個字元。",
+          actualLength: 109,
+          minLength: 110,
+        },
+        {
+          kind: "SUSPECTED_TYPO",
+          field: "itemHighlight",
+          token: "Freshh",
+          suggestion: "Fresh",
+          message: "產品亮點疑似錯字。",
+        },
+      ],
+    }));
+
+    expect(focus).toMatchObject({ fields: ["itemHighlight"] });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ itemHighlight }),
+    )).toMatchObject({
+      status: "focused",
+      focus: {
+        fields: ["itemHighlight"],
+        reasons: [
+          expect.objectContaining({ message: expect.stringContaining("109 個字元") }),
+          expect.objectContaining({ message: "產品亮點疑似錯字。" }),
+        ],
+      },
+    });
   });
 
   it("parses and explains every length reason with per-bullet evidence", () => {
