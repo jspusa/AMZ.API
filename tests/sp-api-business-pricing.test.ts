@@ -70,12 +70,19 @@ function listingResponse(): Response {
         },
       ],
     },
-    offers: [{
-      marketplaceId: MARKETPLACE_ID,
-      offerType: "B2B",
-      price: { currency: "USD", amount: "28.00" },
-      audience: { value: "B2B", displayName: "Amazon Business" },
-    }],
+    offers: [
+      {
+        marketplaceId: MARKETPLACE_ID,
+        offerType: "B2C",
+        price: { currencyCode: "USD", amount: "30.00" },
+      },
+      {
+        marketplaceId: MARKETPLACE_ID,
+        offerType: "B2B",
+        price: { currencyCode: "USD", amount: "28.00" },
+        audience: { value: "B2B", displayName: "Amazon Business" },
+      },
+    ],
     issues: [],
     fulfillmentAvailability: [{
       fulfillmentChannelCode: "AMAZON_NA",
@@ -84,23 +91,47 @@ function listingResponse(): Response {
   });
 }
 
+function businessOfferItemSchema(
+  audiences: readonly string[] = ["ALL", "B2B"],
+): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      audience: { type: "string", enum: [...audiences] },
+      currency: { type: "string", enum: ["USD"] },
+      marketplace_id: { type: "string", enum: [MARKETPLACE_ID] },
+      our_price: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            schedule: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  value_with_tax: {
+                    type: "number",
+                    editable: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      quantity_discount_plan: { type: "array", editable: true },
+    },
+  };
+}
+
 function businessSchema(): Record<string, unknown> {
   return {
     type: "object",
     properties: {
       purchasable_offer: {
         type: "array",
-        editable: true,
-        items: {
-          type: "object",
-          properties: {
-            audience: { type: "string", enum: ["ALL", "B2B"] },
-            currency: { type: "string", enum: ["USD"] },
-            marketplace_id: { type: "string", enum: [MARKETPLACE_ID] },
-            our_price: { type: "array", editable: true },
-            quantity_discount_plan: { type: "array", editable: true },
-          },
-        },
+        items: businessOfferItemSchema(),
       },
     },
   };
@@ -122,6 +153,31 @@ function unsupportedBusinessSchema(): Record<string, unknown> {
       },
     },
   };
+}
+
+function stubBusinessPricingSchema(schema: Record<string, unknown>): void {
+  const checksum = createHash("md5")
+    .update(JSON.stringify(schema))
+    .digest("base64");
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+    const url = urlOf(input);
+    if (url.origin === "https://api.amazon.com") {
+      return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+    }
+    if (url.href === SCHEMA_URL) return jsonResponse(200, schema);
+    if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+      return jsonResponse(200, {
+        schema: {
+          link: { resource: SCHEMA_URL, verb: "GET" },
+          checksum,
+        },
+      });
+    }
+    if (url.pathname.startsWith("/listings/2021-08-01/")) {
+      return listingResponse();
+    }
+    throw new Error(`Unexpected request: ${url.href}`);
+  }));
 }
 
 describe("Amazon Business pricing SP-API contract", () => {
@@ -183,6 +239,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       asin: ASIN,
       productType: "PET_FOOD",
       standardPrice: { amount: 30, currencyCode: "USD" },
+      effectivePrice: { amount: 30, currencyCode: "USD" },
       businessPrice: { amount: 28, currencyCode: "USD" },
       businessOfferPresence: "present",
       businessPricingCapability: {
@@ -199,6 +256,234 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(definitionUrl?.searchParams.get("marketplaceIds")).toBe(MARKETPLACE_ID);
     expect(definitionUrl?.searchParams.get("requirements")).toBe("LISTING_OFFER_ONLY");
     expect(definitionUrl?.searchParams.get("requirementsEnforced")).toBe("NOT_ENFORCED");
+  });
+
+  it("does not reject explicit B2B attributes when the derived view omits audience", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        const payload = await listingResponse().json() as {
+          offers: Array<Record<string, unknown>>;
+        };
+        payload.offers = [{
+          marketplaceId: MARKETPLACE_ID,
+          offerType: "B2B",
+          price: { currencyCode: "USD", amount: "28.00" },
+        }];
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    const snapshot = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+
+    expect(snapshot.businessPrice).toEqual({
+      amount: 28,
+      currencyCode: "USD",
+    });
+    expect(snapshot.businessOfferPresence).toBe("present");
+  });
+
+  it("accepts optional-view omissions and duplicate matching product-type evidence", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        const payload = await listingResponse().json() as Record<string, unknown>;
+        delete payload.offers;
+        delete payload.issues;
+        payload.productTypes = [
+          { marketplaceId: MARKETPLACE_ID, productType: "PET_FOOD" },
+          { marketplaceId: MARKETPLACE_ID, productType: "PET_FOOD" },
+        ];
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      standardPrice: { amount: 30, currencyCode: "USD" },
+      effectivePrice: null,
+      businessPrice: { amount: 28, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      businessPricingCapability: { supported: true, editable: true },
+    });
+  });
+
+  it("rejects malformed Listing collection elements without throwing", async () => {
+    let listingRead = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        listingRead += 1;
+        const payload = await listingResponse().json() as {
+          attributes: { purchasable_offer: unknown[] };
+          offers: unknown[];
+          fulfillmentAvailability: unknown[];
+        };
+        if (listingRead === 1) payload.offers = [null];
+        else if (listingRead === 2) {
+          payload.attributes.purchasable_offer = [null];
+        } else {
+          payload.fulfillmentAvailability = [null];
+        }
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(getBusinessPricing({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+      })).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+    }
+  });
+
+  it.each([
+    "missing-summary",
+    "mismatched-productTypes",
+    "other-market-productTypes",
+  ] as const)(
+    "requires exact product type identity before B2B preview: %s",
+    async (scenario) => {
+      let previewPatchCount = 0;
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+        const url = urlOf(input);
+        const method = init?.method ??
+          (input instanceof Request ? input.method : "GET");
+        if (url.origin === "https://api.amazon.com") {
+          return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+        }
+        if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+          const payload = await listingResponse().json() as {
+            summaries: Array<Record<string, unknown>>;
+            productTypes?: Array<Record<string, unknown>>;
+          };
+          if (scenario === "missing-summary") {
+            delete payload.summaries[0]!.productType;
+          } else if (scenario === "mismatched-productTypes") {
+            payload.productTypes = [{
+              marketplaceId: MARKETPLACE_ID,
+              productType: "OTHER",
+            }];
+          } else {
+            payload.productTypes = [{
+              marketplaceId: "A2EUQ1WTGCTBG2",
+              productType: "PET_FOOD",
+            }];
+          }
+          return jsonResponse(200, payload);
+        }
+        if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
+          previewPatchCount += 1;
+          return jsonResponse(200, {});
+        }
+        throw new Error(`Unexpected request: ${method} ${url.href}`);
+      }));
+
+      await expect(previewBusinessPriceUpdate({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+        expectedStandardPrice: 30,
+        expectedBusinessPrice: 28,
+        newBusinessPrice: 27.5,
+      })).rejects.toMatchObject({ code: "LISTING_IDENTITY_MISMATCH" });
+      expect(previewPatchCount).toBe(0);
+    },
+  );
+
+  it("accepts a legacy offer currency but rejects conflicting currency fields", async () => {
+    let listingRead = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        listingRead += 1;
+        const payload = await listingResponse().json() as {
+          offers: Array<{
+            offerType?: string;
+            price?: Record<string, unknown>;
+          }>;
+        };
+        const consumerOffer = payload.offers.find(
+          (offer) => offer.offerType === "B2C",
+        )!;
+        consumerOffer.price = listingRead === 1
+          ? { currency: "USD", amount: "30.00" }
+          : {
+              currencyCode: "USD",
+              currency: "CAD",
+              amount: "30.00",
+            };
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    const legacy = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+    const conflict = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+
+    expect(legacy.effectivePrice).toEqual({ amount: 30, currencyCode: "USD" });
+    expect(conflict.effectivePrice).toBeNull();
   });
 
   it("rejects a seller-specific PTD whose schema bytes do not match its checksum", async () => {
@@ -258,6 +543,41 @@ describe("Amazon Business pricing SP-API contract", () => {
       sellerSku: SELLER_SKU,
     })).rejects.toMatchObject({ code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE" });
     expect(seenUrls).not.toContain(untrustedUrl);
+  });
+
+  it("rejects an oversized seller-specific PTD before buffering its body", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) {
+        return new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/schema+json",
+            "content-length": String(16 * 1024 * 1024 + 1),
+          },
+        });
+      }
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        return listingResponse();
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).rejects.toMatchObject({ code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE" });
   });
 
   it("discards an in-flight PTD capability after Seller credentials change", async () => {
@@ -322,16 +642,33 @@ describe("Amazon Business pricing SP-API contract", () => {
   });
 
   it("does not infer write access when the relevant PTD branch omits editable", async () => {
-    const schema = businessSchema() as {
+    const schema = businessSchema() as Record<string, unknown> & {
       properties: {
         purchasable_offer: {
           editable?: boolean;
-          items: { properties: { our_price: { editable?: boolean } } };
+          items: {
+            properties: {
+              our_price: {
+                items: {
+                  properties: {
+                    schedule: {
+                      items: {
+                        properties: {
+                          value_with_tax: { editable?: boolean };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
         };
       };
     };
-    delete schema.properties.purchasable_offer.editable;
-    delete schema.properties.purchasable_offer.items.properties.our_price.editable;
+    schema.properties.purchasable_offer.editable = true;
+    delete schema.properties.purchasable_offer.items.properties.our_price.items
+      .properties.schedule.items.properties.value_with_tax.editable;
     const checksum = createHash("md5")
       .update(JSON.stringify(schema))
       .digest("base64");
@@ -362,6 +699,856 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(snapshot.businessPricingCapability).toMatchObject({
       supported: true,
       editable: false,
+    });
+  });
+
+  it("lets an explicit false on the B2B price path override an editable leaf", async () => {
+    const schema = businessSchema() as Record<string, unknown> & {
+      properties: {
+        purchasable_offer: {
+          items: {
+            properties: {
+              our_price: { editable?: boolean };
+            };
+          };
+        };
+      };
+    };
+    schema.properties.purchasable_offer.items.properties.our_price.editable = false;
+    const checksum = createHash("md5")
+      .update(JSON.stringify(schema))
+      .digest("base64");
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, schema);
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        return listingResponse();
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it.each(["root", "attribute", "leaf"] as const)(
+    "treats PTD readOnly on the selected %s as non-editable",
+    async (target) => {
+      const schema = businessSchema() as Record<string, unknown> & {
+        properties: {
+          purchasable_offer: Record<string, unknown> & {
+            items: {
+              properties: {
+                our_price: {
+                  items: {
+                    properties: {
+                      schedule: {
+                        items: {
+                          properties: {
+                            value_with_tax: Record<string, unknown>;
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+      if (target === "root") {
+        schema.readOnly = true;
+      } else if (target === "attribute") {
+        schema.properties.purchasable_offer.readOnly = true;
+      } else {
+        schema.properties.purchasable_offer.items.properties.our_price.items
+          .properties.schedule.items.properties.value_with_tax.readOnly = true;
+      }
+      stubBusinessPricingSchema(schema);
+
+      await expect(getBusinessPricing({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+      })).resolves.toMatchObject({
+        businessPricingCapability: { supported: true, editable: false },
+      });
+    },
+  );
+
+  it("does not skip an editable false on an items wrapper", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            editable: false,
+            oneOf: [businessOfferItemSchema()],
+          },
+        },
+      },
+    };
+    const checksum = createHash("md5")
+      .update(JSON.stringify(schema))
+      .digest("base64");
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, schema);
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        return listingResponse();
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it("checks every path when two PTD branches share the same reference", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            oneOf: [
+              { $ref: "#/$defs/businessOffer" },
+              {
+                editable: false,
+                allOf: [{ $ref: "#/$defs/businessOffer" }],
+              },
+            ],
+          },
+        },
+      },
+      $defs: { businessOffer: businessOfferItemSchema() },
+    };
+    const checksum = createHash("md5")
+      .update(JSON.stringify(schema))
+      .digest("base64");
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, schema);
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        return listingResponse();
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it("does not let a read-only ALL sibling contaminate the editable B2B branch", async () => {
+    const allOffer = {
+      ...businessOfferItemSchema(["ALL"]),
+      editable: false,
+    };
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            oneOf: [allOffer, businessOfferItemSchema(["B2B"])],
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: true },
+    });
+  });
+
+  it("fails closed on a conditional B2B price restriction in an allOf sibling", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            allOf: [
+              businessOfferItemSchema(["B2B"]),
+              {
+                if: {
+                  properties: {
+                    audience: { const: "B2B" },
+                  },
+                },
+                then: {
+                  properties: {
+                    our_price: { editable: false },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it("composes a partial read-only price restriction from an allOf sibling", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            allOf: [
+              businessOfferItemSchema(["B2B"]),
+              { properties: { our_price: { editable: false } } },
+            ],
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it("does not prove B2B when a selector pattern contradicts its enum", async () => {
+    const offer = businessOfferItemSchema(["B2B"]) as {
+      properties: Record<string, unknown>;
+    };
+    offer.properties.audience = {
+      enum: ["B2B"],
+      pattern: "^ALL$",
+    };
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: false, editable: false },
+    });
+  });
+
+  it("fails closed when a generic oneOf sibling also matches B2B", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            oneOf: [
+              businessOfferItemSchema(["B2B"]),
+              { type: "object" },
+            ],
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it("fails closed when a generic anyOf sibling may add a read-only rule", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            anyOf: [
+              businessOfferItemSchema(["B2B"]),
+              { type: "object", editable: false },
+            ],
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it("fails closed when a ref sibling contradicts the direct B2B selector", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            ...businessOfferItemSchema(["B2B"]),
+            $ref: "#/$defs/allOnly",
+          },
+        },
+      },
+      $defs: {
+        allOnly: { properties: { audience: { const: "ALL" } } },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("fails closed when a ref sibling adds a read-only price restriction", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            ...businessOfferItemSchema(["B2B"]),
+            $ref: "#/$defs/readOnlyPrice",
+          },
+        },
+      },
+      $defs: {
+        readOnlyPrice: { properties: { our_price: { editable: false } } },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("fails closed when an object applicator contradicts the direct selector", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            ...businessOfferItemSchema(["B2B"]),
+            patternProperties: {
+              "^audience$": { const: "ALL" },
+            },
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("fails closed when a direct offer has an adjacent selected disjunction", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            ...businessOfferItemSchema(["B2B"]),
+            oneOf: [
+              {
+                properties: {
+                  audience: { const: "B2B" },
+                  currency: { const: "CAD" },
+                },
+              },
+              { properties: { audience: { const: "ALL" } } },
+            ],
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("fails closed on an unhandled applicator along the selected price path", async () => {
+    const offer = businessOfferItemSchema(["B2B"]);
+    const properties = offer.properties as Record<string, unknown>;
+    const price = properties.our_price as Record<string, unknown>;
+    const priceItem = price.items as Record<string, unknown>;
+    priceItem.patternProperties = {
+      "^schedule$": { editable: false },
+    };
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("requires the offer contribution to be an object schema", async () => {
+    const offer = businessOfferItemSchema(["B2B"]);
+    offer.type = "string";
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("does not discover offer properties or items on the wrong structural type", async () => {
+    const fakeOffer = businessOfferItemSchema(["B2B"]);
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          properties: fakeOffer.properties,
+          items: {
+            type: "object",
+            items: fakeOffer,
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("requires each selected price container to accept one array item", async () => {
+    const offer = businessOfferItemSchema(["B2B"]);
+    const properties = offer.properties as Record<string, unknown>;
+    const price = properties.our_price as Record<string, unknown>;
+    price.type = "string";
+    price.maxItems = 0;
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("requires the editable Business Price leaf to accept a number", async () => {
+    const offer = businessOfferItemSchema(["B2B"]);
+    const properties = offer.properties as Record<string, unknown>;
+    const price = properties.our_price as Record<string, unknown>;
+    const priceItem = price.items as Record<string, unknown>;
+    const priceProperties = priceItem.properties as Record<string, unknown>;
+    const schedule = priceProperties.schedule as Record<string, unknown>;
+    const scheduleItem = schedule.items as Record<string, unknown>;
+    const scheduleProperties = scheduleItem.properties as Record<string, unknown>;
+    const valueWithTax = scheduleProperties.value_with_tax as Record<string, unknown>;
+    valueWithTax.type = "string";
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("rejects adjacent ref constraints along the selected price path", async () => {
+    const offer = businessOfferItemSchema(["B2B"]);
+    const properties = offer.properties as Record<string, unknown>;
+    const price = properties.our_price as Record<string, unknown>;
+    const priceItem = price.items as Record<string, unknown>;
+    priceItem.$ref = "#/$defs/priceItem";
+    priceItem.additionalProperties = { editable: false };
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+      $defs: {
+        priceItem: {
+          type: "object",
+          properties: priceItem.properties,
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("accepts a ref-only numeric leaf with Amazon editability annotations", async () => {
+    const offer = businessOfferItemSchema(["B2B"]);
+    const properties = offer.properties as Record<string, unknown>;
+    const price = properties.our_price as Record<string, unknown>;
+    const priceItem = price.items as { properties: Record<string, unknown> };
+    const schedule = priceItem.properties.schedule as Record<string, unknown>;
+    const scheduleItem = schedule.items as { properties: Record<string, unknown> };
+    scheduleItem.properties.value_with_tax = {
+      $ref: "#/$defs/businessMoney",
+      editable: true,
+      hidden: false,
+    };
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+      $defs: { businessMoney: { type: "number" } },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: true },
+    });
+  });
+
+  it.each(["array-const", "object-cardinality"] as const)(
+    "fails closed on an unproved selected price assertion: %s",
+    async (constraint) => {
+      const offer = businessOfferItemSchema(["B2B"]);
+      const properties = offer.properties as Record<string, unknown>;
+      const price = properties.our_price as Record<string, unknown>;
+      if (constraint === "array-const") {
+        price.const = [];
+      } else {
+        const priceItem = price.items as Record<string, unknown>;
+        priceItem.maxProperties = 0;
+      }
+      const schema = {
+        type: "object",
+        properties: {
+          purchasable_offer: { type: "array", items: offer },
+        },
+      };
+      stubBusinessPricingSchema(schema);
+
+      await expect(getBusinessPricing({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+      })).resolves.toMatchObject({
+        businessPricingCapability: { editable: false },
+      });
+    },
+  );
+
+  it("requires the PTD root to describe an object before discovering offers", async () => {
+    const schema = businessSchema();
+    schema.type = "string";
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("fails closed when a root ref sibling contradicts the direct offer schema", async () => {
+    const schema = {
+      ...businessSchema(),
+      $ref: "#/$defs/nonObject",
+      $defs: { nonObject: { type: "string" } },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("fails closed on an unhandled root dependency that can restrict offers", async () => {
+    const schema = {
+      ...businessSchema(),
+      dependencies: {
+        purchasable_offer: {
+          properties: { purchasable_offer: { editable: false } },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
+    });
+  });
+
+  it("accepts Amazon lifecycle annotations and unique-selector array bounds", async () => {
+    const schema = businessSchema() as Record<string, unknown> & {
+      properties: {
+        purchasable_offer: Record<string, unknown> & {
+          items: { properties: Record<string, unknown> };
+        };
+      };
+    };
+    schema.$lifecycle = "active";
+    schema.properties.purchasable_offer.minUniqueItems = 1;
+    schema.properties.purchasable_offer.maxUniqueItems = 1;
+    schema.properties.purchasable_offer.replacedBy = [];
+    const offer = schema.properties.purchasable_offer.items;
+    const audience = offer.properties.audience as Record<string, unknown>;
+    audience.enumDeprecated = [false, false];
+    const price = offer.properties.our_price as Record<string, unknown>;
+    price.minUniqueItems = 1;
+    price.maxUniqueItems = 1;
+    const priceItem = price.items as { properties: Record<string, unknown> };
+    const schedule = priceItem.properties.schedule as Record<string, unknown>;
+    schedule.minUniqueItems = 1;
+    schedule.maxUniqueItems = 1;
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: true },
+    });
+  });
+
+  it("does not treat a negated B2B schema as positive write capability", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            not: businessOfferItemSchema(["B2B"]),
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: false, editable: false },
+    });
+  });
+
+  it("does not treat an if predicate as positive B2B write capability", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            if: businessOfferItemSchema(["B2B"]),
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: false, editable: false },
+    });
+  });
+
+  it("honors allOf intersections that exclude the B2B audience", async () => {
+    const offer = businessOfferItemSchema(["ALL", "B2B"]) as {
+      properties: Record<string, unknown>;
+    };
+    offer.properties.audience = {
+      allOf: [
+        { enum: ["ALL", "B2B"] },
+        { enum: ["ALL"] },
+      ],
+    };
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: offer,
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: false, editable: false },
+    });
+  });
+
+  it("applies a root allOf restriction to the B2B offer attribute", async () => {
+    const schema = {
+      ...businessSchema(),
+      allOf: [{
+        properties: {
+          purchasable_offer: { editable: false },
+        },
+      }],
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { supported: true, editable: false },
+    });
+  });
+
+  it("fails closed when an allOf conjunct is the false schema", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        purchasable_offer: {
+          type: "array",
+          items: {
+            allOf: [businessOfferItemSchema(["B2B"]), false],
+          },
+        },
+      },
+    };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: { editable: false },
     });
   });
 
@@ -464,7 +1651,88 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(snapshot.businessOfferPresence).toBe("ambiguous");
   });
 
-  it("does not call B2B missing when the offers view contradicts attributes", async () => {
+  it("fails closed when a B2B base-price schedule carries unpreserved metadata", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        const payload = await listingResponse().json() as {
+          attributes: { purchasable_offer: Array<Record<string, unknown>> };
+        };
+        const businessOffer = payload.attributes.purchasable_offer.find(
+          (offer) => offer.audience === "B2B",
+        )!;
+        businessOffer.our_price = [{
+          schedule: [{ value_with_tax: 28, start_at: "2026-09-01" }],
+        }];
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+    });
+  });
+
+  it("rejects an ambiguous standard-price schedule before B2B preview", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        const payload = await listingResponse().json() as {
+          attributes: { purchasable_offer: Array<Record<string, unknown>> };
+        };
+        const standardOffer = payload.attributes.purchasable_offer.find(
+          (offer) => offer.audience === "ALL",
+        )!;
+        standardOffer.our_price = [{
+          schedule: [
+            { value_with_tax: 30 },
+            { value_with_tax: 29, start_at: "2026-09-01" },
+          ],
+        }];
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(previewBusinessPriceUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      expectedStandardPrice: 30,
+      expectedBusinessPrice: 28,
+      newBusinessPrice: 27.5,
+    })).rejects.toMatchObject({ code: "B2B_PRICE_EVIDENCE_INCOMPLETE" });
+  });
+
+  it("uses explicit B2B attributes as presence truth when a derived B2B view remains", async () => {
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
       const url = urlOf(input);
       if (url.origin === "https://api.amazon.com") {
@@ -497,7 +1765,90 @@ describe("Amazon Business pricing SP-API contract", () => {
       sellerSku: SELLER_SKU,
     });
     expect(snapshot.businessPrice).toBeNull();
-    expect(snapshot.businessOfferPresence).toBe("ambiguous");
+    expect(snapshot.businessOfferPresence).toBe("absent");
+  });
+
+  it("does not confuse an IVP derived offer with the explicit base B2B price", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        const payload = await listingResponse().json() as {
+          offers: Array<Record<string, unknown>>;
+        };
+        payload.offers.push({
+          marketplaceId: MARKETPLACE_ID,
+          offerType: "B2B",
+          price: { currencyCode: "USD", amount: "25.00" },
+          audience: {
+            value: "B2B_EDUCATION",
+            displayName: "Education",
+          },
+        });
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    const snapshot = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+
+    expect(snapshot.businessPrice).toEqual({
+      amount: 28,
+      currencyCode: "USD",
+    });
+    expect(snapshot.businessOfferPresence).toBe("present");
+  });
+
+  it("ignores an explicit B2B contribution for another marketplace", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        const payload = await listingResponse().json() as {
+          attributes: { purchasable_offer: Array<Record<string, unknown>> };
+        };
+        const businessOffer = payload.attributes.purchasable_offer.find(
+          (offer) => offer.audience === "B2B",
+        )!;
+        businessOffer.marketplace_id = "A2EUQ1WTGCTBG2";
+        businessOffer.currency = "CAD";
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPrice: null,
+      businessOfferPresence: "absent",
+    });
   });
 
   it("guards every non-target offer field against readback drift", async () => {
@@ -588,8 +1939,15 @@ describe("Amazon Business pricing SP-API contract", () => {
       "CONFIGURED\tB000000001\tConfigured item\tAMAZON_NA",
       "MISSING\tB000000002\tMissing item\tAMAZON_NA",
       "UNSUPPORTED\tB000000003\tUnsupported item\tAMAZON_NA",
+      "CONFIGURED-UNSUPPORTED\tB000000010\tConfigured read-only item\tAMAZON_NA",
       "INCOMPLETE\tB000000004\tIncomplete item\tAMAZON_NA",
       "AMBIGUOUS-UNSUPPORTED\tB000000006\tAmbiguous unsupported item\tAMAZON_NA",
+      "INVALID-IMAGE\tB000000007\tImage issue item\tAMAZON_NA",
+      "INVALID-PRICE\tB000000008\tPrice issue item\tAMAZON_NA",
+      "MALFORMED-ISSUE\tB000000011\tMalformed issue item\tAMAZON_NA",
+      "MALFORMED-SCOPE\tB000000012\tMalformed scope item\tAMAZON_NA",
+      "MALFORMED-FULFILLMENT\tB000000013\tMalformed fulfillment item\tAMAZON_NA",
+      "OTHER-MARKET-PRICE\tB000000009\tOther marketplace issue item\tAMAZON_NA",
       "FBM-IGNORED\tB000000005\tFBM item\tDEFAULT",
     ].join("\n");
     const supportedSchemaUrl =
@@ -648,7 +2006,8 @@ describe("Amazon Business pricing SP-API contract", () => {
           asin: string,
           productType: string,
           purchasableOffer: unknown,
-          offers: unknown[] = [],
+          offers?: unknown[],
+          issues?: unknown[],
         ) => ({
           sku,
           summaries: [{
@@ -661,15 +2020,15 @@ describe("Amazon Business pricing SP-API contract", () => {
           ...(purchasableOffer === undefined
             ? {}
             : { attributes: { purchasable_offer: purchasableOffer } }),
-          offers,
-          issues: [],
+          ...(offers === undefined ? {} : { offers }),
+          ...(issues === undefined ? {} : { issues }),
           fulfillmentAvailability: [{
             fulfillmentChannelCode: "AMAZON_NA",
             quantity: 3,
           }],
         });
         return jsonResponse(200, {
-          numberOfResults: 5,
+          numberOfResults: 12,
           items: [
             listing("AMBIGUOUS-UNSUPPORTED", "B000000006", "OTHER", [
               {
@@ -714,16 +2073,97 @@ describe("Amazon Business pricing SP-API contract", () => {
               marketplace_id: MARKETPLACE_ID,
               our_price: [{ schedule: [{ value_with_tax: 18 }] }],
             }]),
-            listing("INCOMPLETE", "B000000004", "PET_FOOD", [{
+            listing("CONFIGURED-UNSUPPORTED", "B000000010", "OTHER", [
+              {
+                audience: "ALL",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [{ value_with_tax: 19 }] }],
+              },
+              {
+                audience: "B2B",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [{ value_with_tax: 17 }] }],
+              },
+            ]),
+            listing("INCOMPLETE", "B000000004", "PET_FOOD", [
+              {
+                audience: "ALL",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [{ value_with_tax: 15 }] }],
+              },
+              {
+                audience: "B2B",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [
+                  { value_with_tax: 13.5 },
+                  { value_with_tax: 12.5, start_at: "2026-09-01" },
+                ] }],
+              },
+            ]),
+            listing("INVALID-IMAGE", "B000000007", "PET_FOOD", [{
+              audience: "ALL",
+              currency: "USD",
+              marketplace_id: MARKETPLACE_ID,
+              our_price: [{ schedule: [{ value_with_tax: 17 }] }],
+            }], [], [{
+              code: "18027",
+              severity: "ERROR",
+              message: "Image is invalid.",
+              categories: ["INVALID_IMAGE"],
+            }]),
+            listing("INVALID-PRICE", "B000000008", "PET_FOOD", [{
+              audience: "ALL",
+              currency: "USD",
+              marketplace_id: MARKETPLACE_ID,
+              our_price: [{ schedule: [{ value_with_tax: 16 }] }],
+            }], [], [{
+              code: "90220",
+              severity: "ERROR",
+              message: "Price is invalid.",
+              categories: ["INVALID_PRICE"],
+            }]),
+            listing("MALFORMED-ISSUE", "B000000011", "PET_FOOD", [{
               audience: "ALL",
               currency: "USD",
               marketplace_id: MARKETPLACE_ID,
               our_price: [{ schedule: [{ value_with_tax: 15 }] }],
-            }], [{
-              marketplaceId: MARKETPLACE_ID,
-              offerType: "B2B",
-              price: { currency: "USD", amount: "13.50" },
-              audience: { value: "B2B", displayName: "Amazon Business" },
+            }], [], [{ severity: "ERROR" }]),
+            listing("MALFORMED-SCOPE", "B000000012", "PET_FOOD", [{
+              audience: "ALL",
+              currency: "USD",
+              marketplace_id: MARKETPLACE_ID,
+              our_price: [{ schedule: [{ value_with_tax: 15 }] }],
+            }], [], [{
+              code: "90220",
+              severity: "ERROR",
+              message: "Malformed marketplace scope.",
+              categories: ["INVALID_PRICE"],
+              marketplaceIds: [` ${MARKETPLACE_ID}`],
+            }]),
+            {
+              ...listing("MALFORMED-FULFILLMENT", "B000000013", "PET_FOOD", [{
+                audience: "ALL",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [{ value_with_tax: 15 }] }],
+              }]),
+              fulfillmentAvailability: [null],
+            },
+            listing("OTHER-MARKET-PRICE", "B000000009", "PET_FOOD", [{
+              audience: "ALL",
+              currency: "USD",
+              marketplace_id: MARKETPLACE_ID,
+              our_price: [{ schedule: [{ value_with_tax: 14 }] }],
+            }], [], [{
+              code: "90220",
+              severity: "ERROR",
+              message: "Price is invalid for another marketplace.",
+              categories: ["INVALID_PRICE"],
+              marketplaceIds: ["A2EUQ1WTGCTBG2"],
             }]),
           ],
         });
@@ -741,9 +2181,16 @@ describe("Amazon Business pricing SP-API contract", () => {
       .toEqual([
         ["AMBIGUOUS-UNSUPPORTED", "incomplete", false],
         ["CONFIGURED", "configured", true],
+        ["CONFIGURED-UNSUPPORTED", "configured", false],
         ["INCOMPLETE", "incomplete", false],
+        ["INVALID-IMAGE", "missing", true],
+        ["INVALID-PRICE", "incomplete", false],
+        ["MALFORMED-FULFILLMENT", "incomplete", false],
+        ["MALFORMED-ISSUE", "incomplete", false],
+        ["MALFORMED-SCOPE", "incomplete", false],
         ["MISSING", "missing", true],
-        ["UNSUPPORTED", "unsupported", false],
+        ["OTHER-MARKET-PRICE", "missing", true],
+        ["UNSUPPORTED", "missing", false],
       ]);
     expect(snapshot.rows.find((row) => row.sellerSku === "CONFIGURED"))
       .toMatchObject({
@@ -752,12 +2199,17 @@ describe("Amazon Business pricing SP-API contract", () => {
         businessOfferPresence: "present",
       });
     expect(snapshot.summary).toEqual({
-      totalFbaSkuCount: 5,
-      configured: 1,
-      missing: 1,
-      unsupported: 1,
-      incomplete: 2,
+      totalFbaSkuCount: 12,
+      configured: 2,
+      missing: 4,
+      unsupported: 0,
+      incomplete: 6,
     });
+    expect(snapshot.rows.find((row) => row.sellerSku === "UNSUPPORTED")?.reason)
+      .toMatch(/尚未設定.*PTD/u);
+    expect(snapshot.rows.find((row) =>
+      row.sellerSku === "CONFIGURED-UNSUPPORTED"
+    )?.reason).toMatch(/已設定.*PTD/u);
   });
 
   it("previews an exact B2B-only merge and validates the returned identifier", async () => {
@@ -791,6 +2243,7 @@ describe("Amazon Business pricing SP-API contract", () => {
         return jsonResponse(200, {
           sku: SELLER_SKU,
           status: "VALID",
+          submissionId: "B2B-PREVIEW-1",
           identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
           issues: [],
         });
@@ -835,6 +2288,64 @@ describe("Amazon Business pricing SP-API contract", () => {
     });
   });
 
+  it.each([
+    ["malformed issues", {
+      submissionId: "B2B-PREVIEW-MALFORMED-ISSUES",
+      issues: [{ severity: "ERROR" }],
+    }],
+    ["missing submissionId", { issues: [] }],
+  ] as const)(
+    "rejects a Validation Preview with %s before any B2B write",
+    async (_scenario, previewReceipt) => {
+    let formalCommitCount = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = urlOf(input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        return listingResponse();
+      }
+      if (
+        url.pathname.startsWith("/listings/2021-08-01/") &&
+        method === "PATCH" &&
+        url.searchParams.get("mode") === "VALIDATION_PREVIEW"
+      ) {
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "VALID",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
+          ...previewReceipt,
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
+        formalCommitCount += 1;
+        return jsonResponse(200, { sku: SELLER_SKU, status: "ACCEPTED" });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    }));
+
+    await expect(previewBusinessPriceUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      expectedStandardPrice: 30,
+      expectedBusinessPrice: 28,
+      newBusinessPrice: 27.5,
+    })).rejects.toMatchObject({ code: "VALIDATION_STATUS_UNKNOWN" });
+    expect(formalCommitCount).toBe(0);
+    },
+  );
+
   it("stops before formal commit when preview-bound evidence drifted", async () => {
     let previewCount = 0;
     let formalCommitCount = 0;
@@ -862,6 +2373,7 @@ describe("Amazon Business pricing SP-API contract", () => {
           return jsonResponse(200, {
             sku: SELLER_SKU,
             status: "VALID",
+            submissionId: `B2B-PREVIEW-${previewCount}`,
             identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
             issues: [],
           });
@@ -924,12 +2436,14 @@ describe("Amazon Business pricing SP-API contract", () => {
         return jsonResponse(200, {
           sku: SELLER_SKU,
           status: "VALID",
+          submissionId: `B2B-PREVIEW-${previewCount}`,
           identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
           issues: previewCount === 1 ? [] : [{
             code: "NEW_BUSINESS_PRICE_WARNING",
             severity: "WARNING",
             message: "Amazon returned a new warning after the visible preview.",
             attributeNames: ["purchasable_offer"],
+            categories: ["INVALID_ATTRIBUTE"],
           }],
         });
       }
@@ -984,6 +2498,7 @@ describe("Amazon Business pricing SP-API contract", () => {
         return jsonResponse(200, {
           sku: SELLER_SKU,
           status: "VALID",
+          submissionId: "B2B-PREVIEW-COMMIT",
           identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
           issues: [],
         });
@@ -1024,9 +2539,77 @@ describe("Amazon Business pricing SP-API contract", () => {
     });
   });
 
-  it.each([undefined, "A-DIFFERENT-SKU"])(
-    "treats an ACCEPTED receipt with SKU %s as unknown without resending",
-    async (receiptSku) => {
+  it("treats malformed issues in an ACCEPTED B2B receipt as unknown", async () => {
+    let commitCount = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = urlOf(input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        return listingResponse();
+      }
+      if (
+        url.pathname.startsWith("/listings/2021-08-01/") &&
+        method === "PATCH" &&
+        url.searchParams.get("mode") === "VALIDATION_PREVIEW"
+      ) {
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "VALID",
+          submissionId: "B2B-PREVIEW-MALFORMED-RECEIPT",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
+          issues: [],
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
+        commitCount += 1;
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "ACCEPTED",
+          issues: [null],
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    }));
+
+    await expect(updateBusinessPrice({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      expectedStandardPrice: 30,
+      expectedBusinessPrice: 28,
+      newBusinessPrice: 27.5,
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+    expect(commitCount).toBe(1);
+  });
+
+  it.each([
+    [undefined, "UNTRUSTED-SUBMISSION", "ACCEPTED", []],
+    ["A-DIFFERENT-SKU", "UNTRUSTED-SUBMISSION", "ACCEPTED", []],
+    [SELLER_SKU, undefined, "ACCEPTED", []],
+    [SELLER_SKU, " ", "ACCEPTED", []],
+    [SELLER_SKU, "UNTRUSTED-SUBMISSION", undefined, []],
+    [SELLER_SKU, "UNTRUSTED-SUBMISSION", "VALID", []],
+    [SELLER_SKU, "UNTRUSTED-SUBMISSION", "ACCEPTED ", []],
+    [SELLER_SKU, "UNTRUSTED-SUBMISSION", "ACCEPTED", [{
+      code: "B2B_PRICE_REJECTED_AFTER_ACCEPT",
+      severity: "ERROR",
+      message: "The accepted receipt also contains a price error.",
+      categories: ["INVALID_PRICE"],
+    }]],
+  ] as const)(
+    "treats an untrusted receipt with SKU %s, submission %s, and status %s as unknown without resending",
+    async (receiptSku, receiptSubmissionId, receiptStatus, receiptIssues) => {
       let commitCount = 0;
       vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
         const url = urlOf(input);
@@ -1055,6 +2638,7 @@ describe("Amazon Business pricing SP-API contract", () => {
           return jsonResponse(200, {
             sku: SELLER_SKU,
             status: "VALID",
+            submissionId: "B2B-PREVIEW-UNTRUSTED-RECEIPT",
             identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
             issues: [],
           });
@@ -1063,9 +2647,11 @@ describe("Amazon Business pricing SP-API contract", () => {
           commitCount += 1;
           return jsonResponse(200, {
             ...(receiptSku === undefined ? {} : { sku: receiptSku }),
-            status: "ACCEPTED",
-            submissionId: "UNTRUSTED-SUBMISSION",
-            issues: [],
+            ...(receiptStatus === undefined ? {} : { status: receiptStatus }),
+            ...(receiptSubmissionId === undefined
+              ? {}
+              : { submissionId: receiptSubmissionId }),
+            issues: receiptIssues,
           });
         }
         throw new Error(`Unexpected request: ${method} ${url.href}`);

@@ -1,5 +1,6 @@
 import { abortableDelay, throwIfAborted } from "../abort-utils";
 import {
+  isPricingListingError,
   SpApiError,
   type BusinessPricingListingSnapshot,
   type BusinessPriceUpdateResult,
@@ -209,7 +210,9 @@ export function businessPriceReadbackDecision(
       result.asin === snapshot.asin &&
       result.productType === snapshot.productType &&
       snapshot.businessOfferPresence === "present" &&
-      !offerFieldHasError(snapshot) &&
+      !snapshot.issues.some((issue) =>
+        isPricingListingError(issue, snapshot.marketplaceId)
+      ) &&
       sameMoney(result.standardPrice, snapshot.standardPrice) &&
       sameMoney(result.requestedBusinessPrice, snapshot.businessPrice) &&
       result.businessOfferGuardHash === snapshot.businessOfferGuardHash
