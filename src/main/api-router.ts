@@ -1617,7 +1617,9 @@ export class ApiRouter {
         schemaVersion: 1,
         issueReport,
       };
-      const partial = shipmentSnapshot.coverage.state === "partial" ||
+      const partial =
+        shipmentSnapshot.shipmentListScope !== "selected-date-range" ||
+        shipmentSnapshot.coverage.state === "partial" ||
         issueReport.state !== "completed";
       job.state = partial ? "partial" : "completed";
       job.notice = `${shipmentSnapshot.notice} ${issueReport.notice}`;

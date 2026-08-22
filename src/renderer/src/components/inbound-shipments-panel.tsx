@@ -442,7 +442,7 @@ export default function InboundShipmentsPanel({
 
       <section className="inbound-sync-card" aria-label="同步範圍">
         <div className="inbound-range-heading">
-          <div><span>AMAZON LAST UPDATED WINDOW</span><strong>選擇貨件最後更新範圍</strong><small>公開 v0 API 可依日期篩選，但不回傳每一票的更新時間。</small></div>
+          <div><span>AMAZON LAST UPDATED WINDOW</span><strong>選擇入庫工作最後更新範圍</strong><small>系統優先使用貨件日期；若 Amazon 拒絕舊清單，會自動改用新版入庫計畫最後更新時間。</small></div>
           <div className="inbound-range-shortcuts" role="group" aria-label="日期快捷">
             {([30, 90, 180] as const).map((days) => (
               <button type="button" key={days} onClick={() => applyShortcut(days)} disabled={busy}>{days} 天</button>
@@ -477,11 +477,11 @@ export default function InboundShipmentsPanel({
               ["尚未接收", snapshot.summary.verifiedTotals.pendingUnits],
               ["多接收", snapshot.summary.verifiedTotals.overReceivedUnits],
             ].map(([label, value]) => (
-              <article key={String(label)}><span>{snapshot.coverage.state === "partial" && typeof value === "number" && label !== "貨件" ? "已核對 · " : ""}{label}</span><strong>{Number(value).toLocaleString("zh-TW")}</strong></article>
+              <article key={String(label)}><span>{(snapshot.coverage.state === "partial" || snapshot.shipmentListScope !== "selected-date-range") && typeof value === "number" ? "已核對 · " : ""}{label}</span><strong>{Number(value).toLocaleString("zh-TW")}</strong></article>
             ))}
           </div>
-          <div className={`inbound-coverage ${snapshot.coverage.state}`} role="status">
-            <strong>{snapshot.coverage.state === "complete" ? "全部貨件商品明細已完成" : `${snapshot.coverage.incompleteShipmentCount} 個貨件明細未完整`}</strong>
+          <div className={`inbound-coverage ${snapshot.coverage.state === "partial" || snapshot.shipmentListScope !== "selected-date-range" ? "partial" : "complete"}`} role="status">
+            <strong>{snapshot.shipmentListScope === "active-status-fallback" ? "活動中貨件已讀取；所選日期範圍不完整" : snapshot.shipmentListScope === "modern-plan-range" ? "新版入庫計畫範圍已讀取；不等同舊版完整貨件日期清單" : snapshot.coverage.state === "complete" ? "所選日期內全部貨件商品明細已完成" : `${snapshot.coverage.incompleteShipmentCount} 個貨件明細未完整`}</strong>
             <p>{snapshot.notice}</p>
             {snapshot.coverage.issues.length > 0 && (
               <details open={coverageIssuesOpen} onToggle={(event) => setCoverageIssuesOpen(event.currentTarget.open)}><summary>查看未完成範圍（{snapshot.coverage.issues.length.toLocaleString("zh-TW")}）</summary>{coverageIssuesOpen && <><ul>{snapshot.coverage.issues.slice(0, coverageIssueLimit).map((issue, index) => <li key={`${issue.shipmentId ?? "root"}-${issue.code}-${index}`}>{issue.shipmentId ? `${issue.shipmentId} · ` : ""}{issue.message}</li>)}</ul><div className="inbound-render-controls"><span>畫面 {Math.min(coverageIssueLimit, snapshot.coverage.issues.length).toLocaleString("zh-TW")} / {snapshot.coverage.issues.length.toLocaleString("zh-TW")} 個未完成貨件。</span>{coverageIssueLimit < snapshot.coverage.issues.length && <button type="button" onClick={() => setCoverageIssueLimit((current) => current + INBOUND_COVERAGE_ISSUE_RENDER_BATCH)}>顯示更多未完成範圍（{(snapshot.coverage.issues.length - coverageIssueLimit).toLocaleString("zh-TW")}）</button>}</div></>}</details>
@@ -556,7 +556,7 @@ export default function InboundShipmentsPanel({
             </div>
           </section>
 
-          <p className="inbound-footnote">貨件數量快照時間：{formatTimestamp(snapshot.fetchedAt)}。查詢範圍 {snapshot.dateRange.startDate} – {snapshot.dateRange.endDate}；Amazon 公開 v0 API 不回傳逐貨件更新時間，因此表內不會捏造日期排序。</p>
+          <p className="inbound-footnote">貨件數量快照時間：{formatTimestamp(snapshot.fetchedAt)}。查詢範圍 {snapshot.dateRange.startDate} – {snapshot.dateRange.endDate}；Amazon 不回傳可供表內逐票排序的同一更新時間欄位，因此不會捏造逐票日期。</p>
         </>
       )}
     </section>

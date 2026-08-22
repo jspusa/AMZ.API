@@ -84,8 +84,15 @@ export type FbaInboundShipmentSnapshot = {
     lastUpdatedBefore: string;
   };
   fetchedAt: string;
+  shipmentListScope:
+    | "selected-date-range"
+    | "active-status-fallback"
+    | "modern-plan-range";
   dataSource: {
-    shipmentList: "GET /fba/inbound/v0/shipments";
+    shipmentList:
+      | "GET /fba/inbound/v0/shipments"
+      | "GET /fba/inbound/v0/shipments?QueryType=SHIPMENT (active-status fallback)"
+      | "GET /inbound/fba/2024-03-20/inboundPlans + getInboundPlan/getShipment";
     shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items";
     startedAt: string;
     completedAt: string;
@@ -126,6 +133,15 @@ export type FbaInboundTransportRequest =
       queryType: "DATE_RANGE";
       lastUpdatedAfter: string;
       lastUpdatedBefore: string;
+      nextToken: null;
+    }
+  | {
+      kind: "shipments";
+      marketplaceId: MarketplaceId;
+      queryType: "SHIPMENT";
+      shipmentStatuses: readonly string[];
+      lastUpdatedAfter: null;
+      lastUpdatedBefore: null;
       nextToken: null;
     }
   | {
@@ -180,6 +196,7 @@ type CollectorInput = {
   signal?: AbortSignal;
   onProgress?: (progress: FbaInboundProgress) => void;
   now?: () => Date;
+  shipmentListSource?: FbaInboundShipmentSnapshot["dataSource"]["shipmentList"];
 };
 
 type ParsedShipment = Omit<
@@ -695,8 +712,17 @@ export async function collectFbaInboundShipmentSnapshot(
       lastUpdatedBefore: input.lastUpdatedBefore,
     },
     fetchedAt: completedAt,
+    shipmentListScope:
+      input.shipmentListSource ===
+      "GET /fba/inbound/v0/shipments?QueryType=SHIPMENT (active-status fallback)"
+        ? "active-status-fallback"
+        : input.shipmentListSource ===
+            "GET /inbound/fba/2024-03-20/inboundPlans + getInboundPlan/getShipment"
+          ? "modern-plan-range"
+          : "selected-date-range",
     dataSource: {
-      shipmentList: "GET /fba/inbound/v0/shipments",
+      shipmentList:
+        input.shipmentListSource ?? "GET /fba/inbound/v0/shipments",
       shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items",
       startedAt,
       completedAt,
@@ -721,14 +747,23 @@ export async function collectFbaInboundShipmentSnapshot(
     },
     shipments: rows,
     items,
-    notice:
+    notice: `${
+      input.shipmentListSource ===
+      "GET /inbound/fba/2024-03-20/inboundPlans + getInboundPlan/getShipment"
+        ? "Amazon 拒絕舊版貨件日期清單後，已自動改用 2024 新版入庫計畫最後更新時間篩選；逐貨件接收數量仍取自官方 QuantityReceived。"
+        : input.shipmentListSource ===
+            "GET /fba/inbound/v0/shipments?QueryType=SHIPMENT (active-status fallback)"
+          ? "Amazon 拒絕舊版日期清單後，已改讀目前尚未關閉／需注意的貨件；這個備援範圍不受上方日期限制，已關閉、取消或刪除貨件可能未列入。逐貨件接收數量仍取自官方 QuantityReceived。"
+        : ""
+    }${
       state === "complete"
         ? "Fulfillment Inbound API 已完整讀取所選更新區間的貨件與逐貨件商品明細；數量只代表 Amazon 目前回傳的送出與已接收快照。"
         : `Fulfillment Inbound API 有 ${incompleteShipmentCount} 個貨件明細未完成；verifiedTotals 只加總已安全讀到的資料列，不能當作整個區間總量。${
             itemScanStopped
               ? " 因商品明細連續三票異常，後續貨件未再發出請求並保持未知。"
               : ""
-          }`,
+          }`
+    }`,
   };
   return snapshot;
 }
@@ -830,6 +865,7 @@ export function buildDemoFbaInboundShipmentSnapshot(input: {
       lastUpdatedBefore: input.lastUpdatedBefore,
     },
     fetchedAt,
+    shipmentListScope: "selected-date-range",
     dataSource: {
       shipmentList: "GET /fba/inbound/v0/shipments",
       shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items",

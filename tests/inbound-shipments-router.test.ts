@@ -59,6 +59,7 @@ function inboundSnapshot(startDate: string, endDate: string): FbaInboundShipment
       lastUpdatedBefore: `${endDate}T23:59:59.999Z`,
     },
     fetchedAt,
+    shipmentListScope: "selected-date-range",
     dataSource: {
       shipmentList: "GET /fba/inbound/v0/shipments",
       shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items",
@@ -301,6 +302,34 @@ describe("FBA inbound shipment router job", () => {
     expect(serialized).not.toContain(accountScope);
     expect(serialized).not.toContain("demo-inbound-report");
     expect(serialized).not.toContain("demo-inbound-document");
+  });
+
+  it("marks an active-status fallback partial even when returned quantities and issues are complete", async () => {
+    const app = router({
+      snapshot: async ({ startDate, endDate }) => ({
+        ...inboundSnapshot(startDate, endDate),
+        shipmentListScope: "active-status-fallback",
+        notice:
+          "Amazon 拒絕舊版日期清單；已改讀活動中貨件，所選日期內已關閉貨件可能未列入。",
+      }),
+    });
+    const started = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    })));
+    const terminal = await terminalJob(app, String(started.jobId));
+    expect(terminal).toMatchObject({
+      state: "partial",
+      snapshot: {
+        shipmentListScope: "active-status-fallback",
+        coverage: { state: "complete" },
+        issueReport: { state: "completed" },
+      },
+    });
   });
 
   it("single-flights only an active exact range and refreshes quantities after terminal", async () => {

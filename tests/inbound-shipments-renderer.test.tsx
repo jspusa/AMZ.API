@@ -83,6 +83,46 @@ describe("FBA inbound shipment renderer contract", () => {
     ).state).toBe("completed");
   });
 
+  it("keeps an active-status fallback partial even when every returned item is complete", () => {
+    const rawSnapshot = inboundShipmentSnapshotFixture();
+    rawSnapshot.shipmentListScope = "active-status-fallback";
+    rawSnapshot.notice =
+      "Amazon 拒絕舊版日期清單；已改讀活動中貨件，所選日期內已關閉貨件可能未列入。";
+    const rawIssueReport = rawSnapshot.issueReport as Record<string, unknown>;
+    rawIssueReport.state = "completed";
+    rawIssueReport.notice = "Amazon 每日報表已完成讀取。";
+
+    expect(() => parseInboundShipmentJob(
+      inboundShipmentJobFixture({ state: "completed", snapshot: rawSnapshot }),
+      US_MARKETPLACE_ID,
+      RANGE,
+    )).toThrow(/工作狀態與快照不一致/u);
+
+    const job = parseInboundShipmentJob(
+      inboundShipmentJobFixture({ state: "partial", snapshot: rawSnapshot }),
+      US_MARKETPLACE_ID,
+      RANGE,
+    );
+    const snapshot = parseInboundShipmentSnapshot(rawSnapshot, US_MARKETPLACE_ID);
+    const markup = renderToStaticMarkup(
+      <InboundShipmentsPanel
+        marketplaceId={US_MARKETPLACE_ID}
+        marketplaceShort="US"
+        marketplaceTimeZone="America/Los_Angeles"
+        cachedResult={{
+          marketplaceId: US_MARKETPLACE_ID,
+          dateRange: RANGE,
+          job,
+          snapshot,
+          error: null,
+        }}
+      />,
+    );
+    expect(markup).toContain("活動中貨件已讀取；所選日期範圍不完整");
+    expect(markup).toContain("已核對 · 貨件");
+    expect(markup).not.toContain("所選日期內全部貨件商品明細已完成");
+  });
+
   it("preserves only a safe failed-job diagnostic and formats it for support", () => {
     const failed = inboundShipmentJobFixture({ state: "failed" });
     failed.failure = {
