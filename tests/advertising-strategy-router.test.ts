@@ -270,8 +270,11 @@ describe("FBA advertising strategy router job", () => {
 
   async function terminal(router: ApiRouter, jobId: string): Promise<Record<string, unknown>> {
     let last: Record<string, unknown> | null = null;
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    // A loaded CI runner can take longer than 200 ms to advance all four
+    // background phases. Keep fast local polling, but allow a bounded two
+    // seconds before declaring the job stuck.
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
       const response = await getJob(router, jobId);
       const value = jsonValue(response);
       last = value;
