@@ -17,7 +17,8 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 策劃 | 依所選日期自動載入 FBA shipment report，以目前 Listing 標題前綴分類品牌營收與未分類列 | Amazon 報表唯讀 |
 | 策劃 | 全部 FBA 非重疊庫齡桶、Amazon 預估冗餘、下月倉儲成本與 AIS 預估附加費、Excel | Amazon 報表唯讀 |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID／Windows Hello／系統確認 |
-| 產品 | 全站 FBA 文案健檢（疑似錯字紅字定位、不可見字元位置、賣點不足、可證明適用的缺成分／成分未驗證、Excel 內紅字片段、只開啟有問題欄位的立刻修改） | Amazon 唯讀＋GitHub Pages 版本化美式英文辭典與 catalog 合法字詞表（Mac／Windows 一致） |
+| 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值與逐項原因） | Amazon 唯讀掃描；Excel 依已證明的變體 family 分頁，問題欄著色 |
+| 產品 | 將同一份文案健檢 Excel 回傳，逐欄核對完整 Amazon 原值／Excel 更新值後批次更新 | 掃描證據可安全跨鎖屏／重啟保留 24 小時；全批零寫入預檢 → 一次 Touch ID／Windows Hello → 每 SKU 單次 PATCH＋回讀；不明即停止且不盲目重送 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於五張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
 | 產品 | 全商品標題、五大賣點、成分匯出 Excel | 一鍵 |
@@ -82,7 +83,7 @@ Amazon 寫入固定經過：
 
 `讀取舊值 → Amazon Validation Preview → 兩分鐘本機預檢票證 → 必要的 SKU／幅度防呆 → Touch ID／Windows Hello／系統確認 → 再核對舊值 → Idempotency 帳本 → 單次寫入 → 只讀回查`
 
-文案更新在 Validation Preview 後直接跳本機身分確認，不再要求重打 SKU；價格、圖片與 Sale Price 仍保留各自既定的額外防呆。
+文案更新在 Validation Preview 後直接跳本機身分確認，不再要求重打 SKU；Excel 批次文案先對整批重新讀取與 Validation Preview，全部通過才要求一次本機身分確認，之後仍以每 SKU 各自的 idempotency 與回讀結果處理。價格、圖片與 Sale Price 保留各自既定的額外防呆。
 
 寫入不會因為 `429`、逾時或 `5xx` 自動重送。真正 PATCH 前的重新讀取／PTD／Validation Preview 若失敗，會明示尚未送出並安全釋放 claim；真正 PATCH 已送或 Amazon 已接受後結果不確定時，帳本才會標記 `unknown` 並阻止同一確認碼重送。
 

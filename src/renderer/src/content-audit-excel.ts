@@ -1,4 +1,4 @@
-import { createListingsWorkbook } from "../../main/amazon/xlsx";
+import { createContentAuditWorkbookV2 } from "../../main/amazon/xlsx";
 import type {
   ContentAuditField,
   ContentAuditIssueKind,
@@ -19,13 +19,20 @@ function issueLabel(kind: ContentAuditIssueKind): string {
   if (kind === "MISSING_BULLETS") return "賣點不足";
   if (kind === "MISSING_INGREDIENTS") return "缺成分";
   if (kind === "INGREDIENTS_UNVERIFIED") return "成分未驗證";
+  if (kind === "TITLE_BELOW_TARGET") return "產品名稱過短";
+  if (kind === "HIGHLIGHT_BELOW_TARGET") return "產品亮點過短";
+  if (kind === "BULLET_BELOW_TARGET") return "產品要點過短";
+  if (kind === "BULLET_ABOVE_TARGET") return "產品要點過長";
+  if (kind === "DESCRIPTION_BELOW_TARGET") return "產品敘述過短";
   return "疑似錯字";
 }
 
 function fieldLabel(field: ContentAuditField): string {
-  if (field === "title") return "商品標題";
+  if (field === "title") return "產品名稱";
+  if (field === "itemHighlight") return "產品亮點";
+  if (field === "productDescription") return "產品敘述";
   if (field === "ingredients") return "成分";
-  return "五大賣點";
+  return "產品要點";
 }
 
 export function contentAuditAttentionRows(
@@ -78,9 +85,15 @@ function auditRichTextRuns(
   value: string,
   row: ContentAuditRow,
   field: ContentAuditField,
+  bulletIndex?: number,
 ) {
   const issues = row.issues.filter(
-    (issue) => issue.kind === "SUSPECTED_TYPO" && issue.field === field,
+    (issue) =>
+      issue.kind === "SUSPECTED_TYPO" &&
+      issue.field === field &&
+      (field !== "bulletPoints" ||
+        issue.bulletIndex === undefined ||
+        issue.bulletIndex === bulletIndex),
   );
   return contentHighlightSegments(value, issues).map((segment) => ({
     text: segment.text,
@@ -93,23 +106,80 @@ export function createContentAuditWorkbook(
   marketplaceLabel: string,
 ): Uint8Array {
   const rows = contentAuditAttentionRows(snapshot);
-  return createListingsWorkbook({
+  const workbookSnapshot = snapshot as ContentAuditSnapshot & {
+    exportId?: string;
+  };
+  if (!workbookSnapshot.exportId) {
+    throw new Error("內容健檢 Excel 缺少 exportId，請重新執行全站掃描。");
+  }
+  return createContentAuditWorkbookV2({
+    marketplaceId: snapshot.marketplaceId,
     marketplaceLabel,
+    exportId: workbookSnapshot.exportId,
     fetchedAt: snapshot.fetchedAt,
-    layout: "content-audit",
     rows: rows.map((row) => {
+      const variation = row as ContentAuditRow & {
+        variationRole?: string | null;
+        variationParentSku?: string | null;
+        variationFamilyKey?: string | null;
+        variationTheme?: string | null;
+      };
       const findings = auditFindings(row);
+      const itemHighlight = row.itemHighlight ?? "";
+      const productDescription = row.productDescription ?? "";
+      const bulletRuns = Array.from({ length: 5 }, (_, index) =>
+        auditRichTextRuns(
+          row.bulletPoints[index] ?? "",
+          row,
+          "bulletPoints",
+          index,
+        ));
+      const bulletIssueFields = Array.from({ length: 5 }, (_, index) =>
+        row.issues.some((issue) => {
+          if (issue.field !== "bulletPoints") return false;
+          if (issue.bulletIndex !== undefined) return issue.bulletIndex === index;
+          if (issue.kind === "SUSPECTED_TYPO") {
+            return bulletRuns[index]?.some((run) => run.alert) ?? false;
+          }
+          return true;
+        }));
       return {
-        marketplaceLabel,
-        sku: row.sellerSku,
+        sellerSku: row.sellerSku,
         asin: row.asin,
         productType: row.productType,
         title: row.title,
+        itemHighlight,
         bulletPoints: row.bulletPoints,
+        productDescription,
         ingredients: row.ingredients,
+        variationRole: variation.variationRole ?? "unknown",
+        variationParentSku: variation.variationParentSku ?? "",
+        variationFamilyKey: variation.variationFamilyKey ?? "",
+        variationTheme: variation.variationTheme ?? "",
+        issueFields: {
+          title: row.issues.some((issue) => issue.field === "title"),
+          itemHighlight: row.issues.some(
+            (issue) => issue.field === "itemHighlight",
+          ),
+          bulletPoints: bulletIssueFields,
+          productDescription: row.issues.some(
+            (issue) => issue.field === "productDescription",
+          ),
+          ingredients: row.issues.some(
+            (issue) => issue.field === "ingredients",
+          ),
+        },
         auditTitleRuns: auditRichTextRuns(row.title, row, "title"),
-        auditBulletPointRuns: row.bulletPoints.map((bulletPoint) =>
-          auditRichTextRuns(bulletPoint, row, "bulletPoints"),
+        auditItemHighlightRuns: auditRichTextRuns(
+          itemHighlight,
+          row,
+          "itemHighlight",
+        ),
+        auditBulletPointRuns: bulletRuns,
+        auditProductDescriptionRuns: auditRichTextRuns(
+          productDescription,
+          row,
+          "productDescription",
         ),
         auditIngredientsRuns: auditRichTextRuns(
           row.ingredients,

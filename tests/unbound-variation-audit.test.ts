@@ -74,7 +74,13 @@ describe("unbound variation relationship evidence", () => {
             }],
             relationships: [{
               marketplaceId: MARKETPLACE_ID,
-              relationships: [{ parentSkus: ["PARENT"] }],
+              relationships: [{
+                parentSkus: ["PARENT"],
+                variationTheme: {
+                  theme: "SIZE_NAME",
+                  attributes: ["size_name"],
+                },
+              }],
             }],
           },
         ],
@@ -84,6 +90,20 @@ describe("unbound variation relationship evidence", () => {
 
     expect(result.rows.map((row) => row.sellerSku)).toEqual(["STANDALONE"]);
     expect(result.boundChildren).toBe(1);
+    expect(result.verifiedRows).toMatchObject([
+      {
+        sellerSku: "STANDALONE",
+        role: "standalone",
+        parentSku: null,
+        variationTheme: null,
+      },
+      {
+        sellerSku: "CHILD",
+        role: "child",
+        parentSku: "PARENT",
+        variationTheme: "SIZE_NAME",
+      },
+    ]);
     expect(result.incompleteRows).toMatchObject([{
       sellerSku: "MISSING",
       code: "RELATIONSHIPS_NOT_RETURNED",

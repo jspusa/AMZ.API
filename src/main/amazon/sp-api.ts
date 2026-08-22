@@ -280,6 +280,13 @@ export type ListingContentFieldCapability = {
   reason: string | null;
 };
 
+export type ListingContentField =
+  | "title"
+  | "itemHighlight"
+  | "bulletPoints"
+  | "productDescription"
+  | "ingredients";
+
 export type ListingImageFieldCapability = {
   attributeName: string;
   label: string;
@@ -339,17 +346,23 @@ export type ListingContentSnapshot = {
   productType: string;
   status: string[];
   title: string;
+  itemHighlight: string;
   bulletPoints: string[];
+  productDescription: string;
   ingredients: string;
   languageTag: string;
   attributePresence: {
     title: boolean;
+    itemHighlight: boolean;
     bulletPoints: boolean;
+    productDescription: boolean;
     ingredients: boolean;
   };
   capabilities: {
     title: ListingContentFieldCapability;
+    itemHighlight: ListingContentFieldCapability;
     bulletPoints: ListingContentFieldCapability;
+    productDescription: ListingContentFieldCapability;
     ingredients: ListingContentFieldCapability;
     images: ListingImageFieldCapability[];
     schemaChecksum: string | null;
@@ -364,7 +377,9 @@ export type ListingContentSnapshot = {
 
 export type ListingContentValues = {
   title: string;
+  itemHighlight: string;
   bulletPoints: string[];
+  productDescription: string;
   ingredients: string;
 };
 
@@ -372,7 +387,9 @@ export type UpdateListingContentInput = ListingContentValues & {
   marketplaceId: MarketplaceId;
   sellerSku: string;
   expectedTitle: string;
+  expectedItemHighlight: string;
   expectedBulletPoints: string[];
+  expectedProductDescription: string;
   expectedIngredients: string;
 };
 
@@ -383,7 +400,7 @@ export type ListingContentValidationResult = {
   sellerSku: string;
   previous: ListingContentValues;
   requested: ListingContentValues;
-  changedFields: Array<"title" | "bulletPoints" | "ingredients">;
+  changedFields: ListingContentField[];
   validatedAt: string;
   issues: ListingIssue[];
   notice: string;
@@ -396,7 +413,7 @@ export type ListingContentUpdateResult = {
   sellerSku: string;
   previous: ListingContentValues;
   requested: ListingContentValues;
-  changedFields: Array<"title" | "bulletPoints" | "ingredients">;
+  changedFields: ListingContentField[];
   acceptedAt: string;
   submissionId: string | null;
   requestId: string | null;
@@ -410,7 +427,9 @@ export type ListingExportRow = {
   asin: string;
   productType: string;
   title: string;
+  itemHighlight: string;
   bulletPoints: string[];
+  productDescription: string;
   ingredients: string;
   imageUrls: string[];
   status: string;
@@ -1254,6 +1273,16 @@ const IMAGE_ATTRIBUTE_NAMES = [
   "other_product_image_locator_8",
 ] as const;
 
+const CONTENT_TEXT_ATTRIBUTE_NAMES = [
+  "item_name",
+  "title_differentiation",
+  "bullet_point",
+  "product_description",
+  "ingredients",
+] as const;
+
+type ListingContentAttributeName = typeof CONTENT_TEXT_ATTRIBUTE_NAMES[number];
+
 export type SpApiOperation =
   | "getListingsItem"
   | "searchListingsItems"
@@ -2051,7 +2080,7 @@ function preferredLanguageTag(
   allowed: string[] = [],
 ): string {
   const marketplaceLanguage = MARKETPLACES[marketplaceId].issueLocale;
-  const availableLanguages = ["item_name", "bullet_point", "ingredients"]
+  const availableLanguages = CONTENT_TEXT_ATTRIBUTE_NAMES
     .flatMap((name) => attributeObjects(payload, name, marketplaceId))
     .map((item) => item.language_tag)
     .filter(
@@ -2064,7 +2093,7 @@ function preferredLanguageTag(
   ) {
     return marketplaceLanguage;
   }
-  for (const name of ["item_name", "bullet_point", "ingredients"]) {
+  for (const name of CONTENT_TEXT_ATTRIBUTE_NAMES) {
     const languageTag = attributeObjects(payload, name, marketplaceId)
       .map((item) => item.language_tag)
       .find(
@@ -2253,7 +2282,9 @@ function readOnlyContentCapabilities(
   });
   return {
     title: field(source?.title),
+    itemHighlight: field(source?.itemHighlight),
     bulletPoints: field(source?.bulletPoints),
+    productDescription: field(source?.productDescription),
     ingredients: field(source?.ingredients),
     images: IMAGE_ATTRIBUTE_NAMES.map((attributeName, index) => {
       const capability = source?.images[index];
@@ -2585,7 +2616,9 @@ async function fetchContentCapabilities(
   }
   let capabilities: ContentCapabilities = {
     title: contentCapability(schema, "item_name"),
+    itemHighlight: contentCapability(schema, "title_differentiation"),
     bulletPoints: contentCapability(schema, "bullet_point"),
+    productDescription: contentCapability(schema, "product_description"),
     ingredients: contentCapability(schema, "ingredients"),
     images: IMAGE_ATTRIBUTE_NAMES.map((attributeName, index) =>
       imageCapability(schema, attributeName, index),
@@ -2706,7 +2739,9 @@ function normalizeListingContent(
   const summary = listingSummary(payload, marketplaceId);
   const allowedLanguages = [
     ...capabilities.title.languageTags,
+    ...capabilities.itemHighlight.languageTags,
     ...capabilities.bulletPoints.languageTags,
+    ...capabilities.productDescription.languageTags,
     ...capabilities.ingredients.languageTags,
   ];
   const languageTag = preferredLanguageTag(
@@ -2729,12 +2764,26 @@ function normalizeListingContent(
     productType: listingProductType(payload, marketplaceId),
     status: Array.isArray(summary?.status) ? summary.status : [],
     title,
+    itemHighlight:
+      attributeTextValuesForLanguage(
+        payload,
+        "title_differentiation",
+        marketplaceId,
+        languageTag,
+      )[0] ?? "",
     bulletPoints: attributeTextValuesForLanguage(
       payload,
       "bullet_point",
       marketplaceId,
       languageTag,
     ).slice(0, 5),
+    productDescription:
+      attributeTextValuesForLanguage(
+        payload,
+        "product_description",
+        marketplaceId,
+        languageTag,
+      )[0] ?? "",
     ingredients:
       attributeTextValuesForLanguage(
         payload,
@@ -2745,8 +2794,12 @@ function normalizeListingContent(
     languageTag,
     attributePresence: {
       title: attributeObjects(payload, "item_name", marketplaceId).length > 0,
+      itemHighlight:
+        attributeObjects(payload, "title_differentiation", marketplaceId).length > 0,
       bulletPoints:
         attributeObjects(payload, "bullet_point", marketplaceId).length > 0,
+      productDescription:
+        attributeObjects(payload, "product_description", marketplaceId).length > 0,
       ingredients:
         attributeObjects(payload, "ingredients", marketplaceId).length > 0,
     },
@@ -6966,6 +7019,9 @@ function getDemoListingContent(
   const isJapan = marketplaceId === JP_MARKETPLACE_ID;
   const base: ListingContentValues = {
     title: listing.title,
+    itemHighlight: isJapan
+      ? "単一原料で仕上げた、噛みごたえのある毎日のおやつ。"
+      : "Single-ingredient, naturally chewy rewards for everyday treating.",
     bulletPoints: isJapan
       ? [
           "厳選した単一原料を使用した、シンプルでおいしい犬用おやつです。",
@@ -6981,6 +7037,9 @@ function getDemoListingContent(
           "Easy to portion for training, walks, and enrichment.",
           "Prepared in a quality-controlled facility.",
         ],
+    productDescription: isJapan
+      ? "厳選した七面鳥の腱を使用し、素材本来の風味と噛みごたえを大切に仕上げた犬用おやつです。毎日のごほうびやトレーニングに合わせて与える量を調整してください。"
+      : "A simple dog treat made from carefully selected turkey tendon. The naturally chewy texture makes it suitable for everyday rewards, training, walks, and enrichment. Portion appropriately for your dog's size and supervise while treating.",
     ingredients: isJapan ? "七面鳥腱。" : "Turkey tendon.",
   };
   const content =
@@ -6994,23 +7053,35 @@ function getDemoListingContent(
     productType: listing.productType,
     status: listing.status,
     title: content.title,
+    itemHighlight: content.itemHighlight,
     bulletPoints: content.bulletPoints,
+    productDescription: content.productDescription,
     ingredients: content.ingredients,
     languageTag,
     attributePresence: {
       title: true,
+      itemHighlight: true,
       bulletPoints: true,
+      productDescription: true,
       ingredients: true,
     },
     capabilities: {
       title: demoCapability({
-        maxLength: 200,
+        maxLength: 75,
+        languageTags: [languageTag],
+      }),
+      itemHighlight: demoCapability({
+        maxLength: 125,
         languageTags: [languageTag],
       }),
       bulletPoints: demoCapability({
         minItems: 1,
         maxItems: 5,
         maxLength: 500,
+        languageTags: [languageTag],
+      }),
+      productDescription: demoCapability({
+        maxLength: 10_000,
         languageTags: [languageTag],
       }),
       ingredients: demoCapability({
@@ -7573,10 +7644,12 @@ function normalizeContentText(value: string): string {
 function normalizeContentValues(values: ListingContentValues): ListingContentValues {
   return {
     title: normalizeContentText(values.title),
+    itemHighlight: normalizeContentText(values.itemHighlight),
     bulletPoints: values.bulletPoints
       .map(normalizeContentText)
       .filter(Boolean)
       .slice(0, 5),
+    productDescription: normalizeContentText(values.productDescription),
     ingredients: normalizeContentText(values.ingredients),
   };
 }
@@ -7634,22 +7707,28 @@ function verifyContentChange(
 ): {
   previous: ListingContentValues;
   requested: ListingContentValues;
-  changedFields: Array<"title" | "bulletPoints" | "ingredients">;
+  changedFields: ListingContentField[];
 } {
   const previous = normalizeContentValues({
     title: listing.title,
+    itemHighlight: listing.itemHighlight,
     bulletPoints: listing.bulletPoints,
+    productDescription: listing.productDescription,
     ingredients: listing.ingredients,
   });
   const expected = normalizeContentValues({
     title: input.expectedTitle,
+    itemHighlight: input.expectedItemHighlight,
     bulletPoints: input.expectedBulletPoints,
+    productDescription: input.expectedProductDescription,
     ingredients: input.expectedIngredients,
   });
   const requested = normalizeContentValues(input);
   if (
     previous.title !== expected.title ||
+    previous.itemHighlight !== expected.itemHighlight ||
     !sameTextArray(previous.bulletPoints, expected.bulletPoints) ||
+    previous.productDescription !== expected.productDescription ||
     previous.ingredients !== expected.ingredients
   ) {
     throw new SpApiError(
@@ -7658,16 +7737,22 @@ function verifyContentChange(
     );
   }
 
-  const changedFields: Array<"title" | "bulletPoints" | "ingredients"> = [];
+  const changedFields: ListingContentField[] = [];
   if (requested.title !== previous.title) changedFields.push("title");
+  if (requested.itemHighlight !== previous.itemHighlight) {
+    changedFields.push("itemHighlight");
+  }
   if (!sameTextArray(requested.bulletPoints, previous.bulletPoints)) {
     changedFields.push("bulletPoints");
+  }
+  if (requested.productDescription !== previous.productDescription) {
+    changedFields.push("productDescription");
   }
   if (requested.ingredients !== previous.ingredients) {
     changedFields.push("ingredients");
   }
   if (!changedFields.length) {
-    throw new SpApiError("標題、五大賣點與成分都沒有變更。", {
+    throw new SpApiError("商品名稱、產品亮點、產品要點、產品敘述與成分都沒有變更。", {
       status: 400,
       code: "CONTENT_UNCHANGED",
     });
@@ -7682,6 +7767,17 @@ function verifyContentChange(
       });
     }
     verifyContentLength("商品標題", requested.title, listing.capabilities.title);
+  }
+  if (changedFields.includes("itemHighlight")) {
+    const capability = listing.capabilities.itemHighlight;
+    assertContentEditable("產品亮點", capability);
+    if (!requested.itemHighlight) {
+      throw new SpApiError("產品亮點不可直接清空；請輸入更新後內容。", {
+        status: 422,
+        code: "CONTENT_REQUIRED",
+      });
+    }
+    verifyContentLength("產品亮點", requested.itemHighlight, capability);
   }
   if (changedFields.includes("bulletPoints")) {
     const capability = listing.capabilities.bulletPoints;
@@ -7699,6 +7795,17 @@ function verifyContentChange(
     }
     requested.bulletPoints.forEach((value, index) =>
       verifyContentLength(`賣點 ${index + 1}`, value, capability));
+  }
+  if (changedFields.includes("productDescription")) {
+    const capability = listing.capabilities.productDescription;
+    assertContentEditable("產品敘述", capability);
+    if (!requested.productDescription) {
+      throw new SpApiError("產品敘述不可直接清空；請輸入更新後內容。", {
+        status: 422,
+        code: "CONTENT_REQUIRED",
+      });
+    }
+    verifyContentLength("產品敘述", requested.productDescription, capability);
   }
   if (changedFields.includes("ingredients")) {
     const capability = listing.capabilities.ingredients;
@@ -7718,7 +7825,7 @@ function buildContentPatch(
   payload: AmazonListingItem,
   listing: ListingContentSnapshot,
   requested: ListingContentValues,
-  changedFields: Array<"title" | "bulletPoints" | "ingredients">,
+  changedFields: ListingContentField[],
 ): { productType: string; patches: unknown[] } {
   const value = (text: string) => ({
     value: text,
@@ -7726,7 +7833,7 @@ function buildContentPatch(
     marketplace_id: listing.marketplaceId,
   });
   const attributeValue = (
-    attributeName: "item_name" | "bullet_point" | "ingredients",
+    attributeName: ListingContentAttributeName,
     label: string,
     texts: string[],
   ) => {
@@ -7775,6 +7882,18 @@ function buildContentPatch(
       value: next.values,
     });
   }
+  if (changedFields.includes("itemHighlight")) {
+    const next = attributeValue(
+      "title_differentiation",
+      "產品亮點",
+      [requested.itemHighlight],
+    );
+    patches.push({
+      op: next.exists ? "replace" : "add",
+      path: "/attributes/title_differentiation",
+      value: next.values,
+    });
+  }
   if (changedFields.includes("bulletPoints")) {
     const next = attributeValue(
       "bullet_point",
@@ -7784,6 +7903,18 @@ function buildContentPatch(
     patches.push({
       op: next.exists ? "replace" : "add",
       path: "/attributes/bullet_point",
+      value: next.values,
+    });
+  }
+  if (changedFields.includes("productDescription")) {
+    const next = attributeValue(
+      "product_description",
+      "產品敘述",
+      [requested.productDescription],
+    );
+    patches.push({
+      op: next.exists ? "replace" : "add",
+      path: "/attributes/product_description",
       value: next.values,
     });
   }
@@ -7804,7 +7935,7 @@ async function prepareLiveContentUpdate(
   listing: ListingContentSnapshot;
   previous: ListingContentValues;
   requested: ListingContentValues;
-  changedFields: Array<"title" | "bulletPoints" | "ingredients">;
+  changedFields: ListingContentField[];
   body: { productType: string; patches: unknown[] };
   issues: ListingIssue[];
 }> {
@@ -11016,12 +11147,26 @@ function exportRowFromListing(
         languageTag,
       )[0] ??
       safeText(summary?.itemName, ""),
+    itemHighlight:
+      attributeTextValuesForLanguage(
+        payload,
+        "title_differentiation",
+        marketplaceId,
+        languageTag,
+      )[0] ?? "",
     bulletPoints: attributeTextValuesForLanguage(
       payload,
       "bullet_point",
       marketplaceId,
       languageTag,
     ).slice(0, 5),
+    productDescription:
+      attributeTextValuesForLanguage(
+        payload,
+        "product_description",
+        marketplaceId,
+        languageTag,
+      )[0] ?? "",
     ingredients:
       attributeTextValuesForLanguage(
         payload,
@@ -11232,7 +11377,9 @@ async function fetchExportRows(
       asin: seed.asin,
       productType: "",
       title: seed.title,
+      itemHighlight: "",
       bulletPoints: [],
+      productDescription: "",
       ingredients: "",
       imageUrls: [],
       status: "",
@@ -11281,7 +11428,9 @@ export async function getAllListingsExportData(input: {
         asin: listing.asin ?? "",
         productType: listing.productType,
         title: listing.title,
+        itemHighlight: listing.itemHighlight,
         bulletPoints: listing.bulletPoints,
+        productDescription: listing.productDescription,
         ingredients: listing.ingredients,
         imageUrls: Array.from(
           { length: index === 0 ? 4 : 7 },
@@ -11403,8 +11552,26 @@ export type VerifiedFbaVariationRelationshipRow = {
   title: string;
   productType: string;
   role: "parent" | "child" | "standalone";
+  parentSku: string | null;
+  variationTheme: string | null;
   relationshipEvidence: "relationships";
   requestId: string | null;
+};
+
+export type FbaVariationGroupingRow = ListingExportRow & {
+  role: "parent" | "child" | "standalone" | "unknown";
+  parentSku: string | null;
+  familyKey: string;
+  theme: string | null;
+  status: "complete" | "incomplete";
+  message: string;
+};
+
+export type FbaVariationGroupingData = {
+  marketplaceId: MarketplaceId;
+  fetchedAt: string;
+  rows: FbaVariationGroupingRow[];
+  notice: string;
 };
 
 export type UnboundVariationSearchBatchResult = {
@@ -11683,6 +11850,8 @@ export function classifyUnboundVariationSearchBatch(input: {
         title: member.title || seed.title || "Amazon 未提供商品名稱",
         productType: member.productType,
         role: member.role,
+        parentSku: member.parentSku,
+        variationTheme: member.variationTheme,
         relationshipEvidence: "relationships",
         requestId: input.requestId,
       };
@@ -11726,6 +11895,260 @@ export function classifyUnboundVariationSearchBatch(input: {
     }
   }
   return { verifiedRows, rows, incompleteRows, boundChildren, parentContainers };
+}
+
+function incompleteVariationGroupingRow(
+  row: ListingExportRow,
+  message: string,
+): FbaVariationGroupingRow {
+  return {
+    ...row,
+    role: "unknown",
+    parentSku: null,
+    familyKey: row.sellerSku,
+    theme: null,
+    status: "incomplete",
+    message,
+  };
+}
+
+function completeVariationGroupingRow(
+  row: ListingExportRow,
+  relationship: Pick<
+    VerifiedFbaVariationRelationshipRow,
+    "role" | "parentSku" | "variationTheme"
+  >,
+): FbaVariationGroupingRow {
+  if (relationship.role === "child" && !relationship.parentSku) {
+    return incompleteVariationGroupingRow(
+      row,
+      "Amazon 將此 SKU 標示為 child，但沒有回傳可核對的 parent SKU；未建立 family 分組。",
+    );
+  }
+  if (relationship.role !== "child" && relationship.parentSku !== null) {
+    return incompleteVariationGroupingRow(
+      row,
+      "Amazon 回傳的角色與 parent SKU 互相矛盾；未建立 family 分組。",
+    );
+  }
+  const familyKey = relationship.role === "child"
+    ? relationship.parentSku!
+    : row.sellerSku;
+  const message = relationship.role === "child"
+    ? `Amazon relationships 已證明此 SKU 屬於 parent ${familyKey}。`
+    : relationship.role === "parent"
+      ? "Amazon relationships 已證明此 SKU 為 parent 容器。"
+      : "Amazon relationships 已證明此 SKU 為 standalone。";
+  return {
+    ...row,
+    role: relationship.role,
+    parentSku: relationship.parentSku,
+    familyKey,
+    theme: relationship.variationTheme,
+    status: "complete",
+    message,
+  };
+}
+
+function variationGroupingSignature(
+  row: VerifiedFbaVariationRelationshipRow,
+): string {
+  return [
+    row.role,
+    row.parentSku ?? "",
+    row.variationTheme?.trim().toUpperCase() ?? "",
+  ].join("\u0000");
+}
+
+/**
+ * Adds strict, read-only relationship grouping to a complete FBA listings
+ * export. Incomplete Amazon evidence is retained per SKU and is never treated
+ * as standalone or inferred from listing copy.
+ */
+export async function getFbaVariationGroupingData(input: {
+  marketplaceId: MarketplaceId;
+  rows: readonly ListingExportRow[];
+  signal?: AbortSignal;
+}): Promise<FbaVariationGroupingData> {
+  assertNotAborted(input.signal);
+  const sourceBySku = new Map<string, ListingExportRow>();
+  for (const row of input.rows) {
+    if (sourceBySku.has(row.sellerSku)) {
+      throw new SpApiError("全商品匯出含有重複 Seller SKU，已停止變體分組。", {
+        status: 409,
+        code: "PAGINATION_CHANGED",
+      });
+    }
+    sourceBySku.set(row.sellerSku, row);
+  }
+
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const rows = input.rows.map((row) => {
+      assertNotAborted(input.signal);
+      try {
+        const member = getDemoVariationFamily(
+          input.marketplaceId,
+          row.sellerSku,
+        ).queried;
+        if (member.sellerSku !== row.sellerSku || (member.asin ?? "") !== row.asin) {
+          return incompleteVariationGroupingRow(
+            row,
+            "展示 relationships 的 SKU／ASIN 與匯出列不一致；未建立 family 分組。",
+          );
+        }
+        return completeVariationGroupingRow(row, member);
+      } catch (error) {
+        return incompleteVariationGroupingRow(
+          row,
+          error instanceof Error
+            ? error.message
+            : "展示 relationships 無法安全判定。",
+        );
+      }
+    });
+    return {
+      marketplaceId: input.marketplaceId,
+      fetchedAt: new Date().toISOString(),
+      rows,
+      notice:
+        "展示資料沿用內建 parent／child relationships；不以商品名稱或 ASIN 相似度猜測 family。",
+    };
+  }
+
+  const incompleteBySku = new Map<string, FbaVariationGroupingRow>();
+  const queryableRows: ListingExportRow[] = [];
+  for (const row of input.rows) {
+    if (!/^[A-Z0-9]{10}$/u.test(row.asin)) {
+      incompleteBySku.set(
+        row.sellerSku,
+        incompleteVariationGroupingRow(
+          row,
+          "全商品匯出沒有可與 Listings summary 原樣比對的十碼 ASIN；未建立 family 分組。",
+        ),
+      );
+    } else {
+      queryableRows.push(row);
+    }
+  }
+
+  const queryableBySku = new Map(
+    queryableRows.map((row) => [row.sellerSku, row]),
+  );
+  const { batches, unqueryableSellerSkus } =
+    buildUnboundVariationSearchBatches(
+      queryableRows.map((row) => row.sellerSku),
+    );
+  for (const sellerSku of unqueryableSellerSkus) {
+    const row = queryableBySku.get(sellerSku)!;
+    incompleteBySku.set(
+      sellerSku,
+      incompleteVariationGroupingRow(
+        row,
+        "此 Seller SKU 無法不失真地放入官方 identifiers 批次參數；未 trim、改名或降級猜測。",
+      ),
+    );
+  }
+
+  const verifiedBySku = new Map<
+    string,
+    VerifiedFbaVariationRelationshipRow
+  >();
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    assertNotAborted(input.signal);
+    const sellerSkus = batches[batchIndex]!;
+    const seeds = sellerSkus.map((sellerSku) => {
+      const row = queryableBySku.get(sellerSku)!;
+      return { sellerSku, asin: row.asin, title: row.title };
+    });
+    try {
+      const response = await executeUnboundVariationSearchRequest(
+        input.marketplaceId,
+        sellerSkus,
+        input.signal,
+      );
+      assertNotAborted(input.signal);
+      const payload = response.ok
+        ? await parseResponseJson<AmazonListingSearchResponse>(response)
+        : null;
+      assertNotAborted(input.signal);
+      const result = classifyUnboundVariationSearchBatch({
+        marketplaceId: input.marketplaceId,
+        seeds,
+        status: response.status,
+        payload,
+        requestId: response.headers.get("x-amzn-requestid"),
+      });
+      for (const row of result.verifiedRows) {
+        verifiedBySku.set(row.sellerSku, row);
+      }
+      for (const incomplete of result.incompleteRows) {
+        const source = queryableBySku.get(incomplete.sellerSku)!;
+        incompleteBySku.set(
+          incomplete.sellerSku,
+          incompleteVariationGroupingRow(source, incomplete.message),
+        );
+      }
+    } catch (error) {
+      assertNotAborted(input.signal);
+      const message = error instanceof Error
+        ? error.message
+        : "Amazon relationships 批次查詢失敗。";
+      for (const sellerSku of sellerSkus) {
+        const row = queryableBySku.get(sellerSku)!;
+        incompleteBySku.set(
+          sellerSku,
+          incompleteVariationGroupingRow(row, message),
+        );
+      }
+    }
+    if (batchIndex + 1 < batches.length) {
+      await wait(220, input.signal);
+    }
+    assertNotAborted(input.signal);
+  }
+
+  const verifiedByAsin = new Map<
+    string,
+    VerifiedFbaVariationRelationshipRow[]
+  >();
+  for (const row of verifiedBySku.values()) {
+    const values = verifiedByAsin.get(row.asin) ?? [];
+    values.push(row);
+    verifiedByAsin.set(row.asin, values);
+  }
+  for (const rows of verifiedByAsin.values()) {
+    const signatures = new Set(rows.map(variationGroupingSignature));
+    if (signatures.size <= 1) continue;
+    for (const relationship of rows) {
+      const source = sourceBySku.get(relationship.sellerSku)!;
+      incompleteBySku.set(
+        relationship.sellerSku,
+        incompleteVariationGroupingRow(
+          source,
+          "同一 ASIN 在同次 relationships 查詢中出現互相衝突的角色、parent 或 variation theme；未建立 family 分組。",
+        ),
+      );
+      verifiedBySku.delete(relationship.sellerSku);
+    }
+  }
+
+  const rows = input.rows.map((row) => {
+    const incomplete = incompleteBySku.get(row.sellerSku);
+    if (incomplete) return incomplete;
+    const relationship = verifiedBySku.get(row.sellerSku);
+    if (relationship) return completeVariationGroupingRow(row, relationship);
+    return incompleteVariationGroupingRow(
+      row,
+      "relationships 覆蓋未與輸入匯出列完整對齊；未建立 family 分組。",
+    );
+  });
+  return {
+    marketplaceId: input.marketplaceId,
+    fetchedAt: new Date().toISOString(),
+    rows,
+    notice:
+      "每批最多 20 個 Seller SKU 以官方 searchListingsItems relationships 核對；缺列、400、ASIN 衝突與任何不完整證據均保留為 unknown，不會猜測 family。",
+  };
 }
 
 async function fetchFbaReviewRelationshipBatch(

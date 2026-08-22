@@ -2,9 +2,19 @@ export type ContentAuditIssueKind =
   | "MISSING_BULLETS"
   | "MISSING_INGREDIENTS"
   | "INGREDIENTS_UNVERIFIED"
+  | "TITLE_BELOW_TARGET"
+  | "HIGHLIGHT_BELOW_TARGET"
+  | "BULLET_BELOW_TARGET"
+  | "BULLET_ABOVE_TARGET"
+  | "DESCRIPTION_BELOW_TARGET"
   | "SUSPECTED_TYPO";
 
-export type ContentAuditField = "title" | "bulletPoints" | "ingredients";
+export type ContentAuditField =
+  | "title"
+  | "itemHighlight"
+  | "bulletPoints"
+  | "productDescription"
+  | "ingredients";
 
 export type ContentAuditIssue = {
   kind: ContentAuditIssueKind;
@@ -13,6 +23,10 @@ export type ContentAuditIssue = {
   token?: string;
   suggestion?: string;
   source?: "amazon-content" | "pages-dictionary";
+  bulletIndex?: number;
+  actualLength?: number;
+  minLength?: number;
+  maxLength?: number;
 };
 
 export type ContentAuditReadError = {
@@ -25,11 +39,19 @@ export type ContentAuditRow = {
   asin: string;
   productType: string;
   title: string;
+  itemHighlight?: string;
   bulletPoints: string[];
+  productDescription?: string;
   ingredients: string;
   readStatus: "complete" | "incomplete";
   readErrors: ContentAuditReadError[];
   issues: ContentAuditIssue[];
+  variationRole?: "parent" | "child" | "standalone" | "unknown";
+  variationParentSku?: string | null;
+  variationFamilyKey?: string | null;
+  variationTheme?: string | null;
+  relationshipStatus?: "complete" | "incomplete";
+  relationshipMessage?: string | null;
 };
 
 export type ContentAuditSummary = {
@@ -41,11 +63,17 @@ export type ContentAuditSummary = {
   missingBullets: number;
   missingIngredients: number;
   ingredientsUnverified: number;
+  titleBelowTarget: number;
+  highlightBelowTarget: number;
+  bulletBelowTarget: number;
+  bulletAboveTarget: number;
+  descriptionBelowTarget: number;
 };
 
 export type ContentAuditSnapshot = {
   marketplaceId: string;
   fetchedAt: string;
+  exportId?: string;
   rows: ContentAuditRow[];
   readErrors: Array<ContentAuditReadError & { sellerSku: string }>;
   summary: ContentAuditSummary;
@@ -69,6 +97,18 @@ export type InvisibleCharacterLocation = {
 };
 
 const INVISIBLE_CHARACTER = /[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/gu;
+
+export const CONTENT_AUDIT_LENGTH_TARGETS = Object.freeze({
+  titleMinimum: 60,
+  itemHighlightMinimum: 110,
+  bulletMinimum: 150,
+  bulletMaximum: 200,
+  productDescriptionMinimum: 1_800,
+});
+
+export function trimmedUnicodeLength(value: string): number {
+  return Array.from(value.trim()).length;
+}
 
 const INVISIBLE_CHARACTER_NAMES: Readonly<Record<string, string>> = {
   "U+200B": "零寬空格",
@@ -166,6 +206,13 @@ export function locateInvisibleCharacters(
         row.title,
         expectedCodePoints,
       ),
+      ...invisibleLocationsInValue(
+        row.sellerSku,
+        "itemHighlight",
+        "產品亮點",
+        row.itemHighlight ?? "",
+        expectedCodePoints,
+      ),
       ...row.bulletPoints.flatMap((bulletPoint, index) =>
         invisibleLocationsInValue(
           row.sellerSku,
@@ -174,6 +221,13 @@ export function locateInvisibleCharacters(
           bulletPoint,
           expectedCodePoints,
         ),
+      ),
+      ...invisibleLocationsInValue(
+        row.sellerSku,
+        "productDescription",
+        "產品敘述",
+        row.productDescription ?? "",
+        expectedCodePoints,
       ),
       ...invisibleLocationsInValue(
         row.sellerSku,
@@ -294,6 +348,21 @@ export function summarizeContentAudit(
     ).length,
     ingredientsUnverified: rows.filter((row) =>
       hasKind(row, "INGREDIENTS_UNVERIFIED"),
+    ).length,
+    titleBelowTarget: rows.filter((row) =>
+      hasKind(row, "TITLE_BELOW_TARGET"),
+    ).length,
+    highlightBelowTarget: rows.filter((row) =>
+      hasKind(row, "HIGHLIGHT_BELOW_TARGET"),
+    ).length,
+    bulletBelowTarget: rows.filter((row) =>
+      hasKind(row, "BULLET_BELOW_TARGET"),
+    ).length,
+    bulletAboveTarget: rows.filter((row) =>
+      hasKind(row, "BULLET_ABOVE_TARGET"),
+    ).length,
+    descriptionBelowTarget: rows.filter((row) =>
+      hasKind(row, "DESCRIPTION_BELOW_TARGET"),
     ).length,
   };
 }

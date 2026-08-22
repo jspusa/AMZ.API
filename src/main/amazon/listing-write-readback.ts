@@ -150,13 +150,19 @@ function changedFieldHasError(
   changedFields: ListingContentUpdateResult["changedFields"],
 ): boolean {
   const attributes = new Set(
-    changedFields.flatMap((field) =>
-      field === "title"
-        ? ["item_name", "title"]
-        : field === "bulletPoints"
-          ? ["bullet_point", "bulletPoints"]
-          : ["ingredients"],
-    ),
+    changedFields.flatMap((field) => {
+      if (field === "title") return ["item_name", "title"];
+      if (field === "itemHighlight") {
+        return ["title_differentiation", "itemHighlight"];
+      }
+      if (field === "bulletPoints") {
+        return ["bullet_point", "bulletPoints"];
+      }
+      if (field === "productDescription") {
+        return ["product_description", "productDescription"];
+      }
+      return ["ingredients"];
+    }),
   );
   return snapshot.issues.some((issue) =>
     issue.severity === "ERROR" &&
@@ -234,9 +240,23 @@ export function contentReadbackDecision(
         return "pending";
       }
     }
+    if (field === "itemHighlight") {
+      if (!snapshot.attributePresence.itemHighlight ||
+          canonicalText(snapshot.itemHighlight) !==
+            canonicalText(result.requested.itemHighlight)) {
+        return "pending";
+      }
+    }
     if (field === "ingredients") {
       if (!snapshot.attributePresence.ingredients ||
           canonicalText(snapshot.ingredients) !== canonicalText(result.requested.ingredients)) {
+        return "pending";
+      }
+    }
+    if (field === "productDescription") {
+      if (!snapshot.attributePresence.productDescription ||
+          canonicalText(snapshot.productDescription) !==
+            canonicalText(result.requested.productDescription)) {
         return "pending";
       }
     }
@@ -321,12 +341,18 @@ export function reconcileContentWrite(
       typeof response.acceptedAt !== "string" ||
       !isRecord(response.requested) ||
       typeof response.requested.title !== "string" ||
+      typeof response.requested.itemHighlight !== "string" ||
       !Array.isArray(response.requested.bulletPoints) ||
       !response.requested.bulletPoints.every((value) => typeof value === "string") ||
+      typeof response.requested.productDescription !== "string" ||
       typeof response.requested.ingredients !== "string" ||
       !Array.isArray(response.changedFields) ||
       !response.changedFields.every((value) =>
-        value === "title" || value === "bulletPoints" || value === "ingredients")) {
+        value === "title" ||
+        value === "itemHighlight" ||
+        value === "bulletPoints" ||
+        value === "productDescription" ||
+        value === "ingredients")) {
     return null;
   }
   const result = response as unknown as ListingContentUpdateResult;

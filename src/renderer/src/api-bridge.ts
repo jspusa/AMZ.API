@@ -1,6 +1,7 @@
 import type { ApiBody, ApiRequest, ApiResponse } from "../../shared/contracts";
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
+const MAX_MULTIPART_BYTES = 15 * 1024 * 1024;
 
 async function serializeBody(body: BodyInit | null | undefined): Promise<ApiBody | undefined> {
   if (body === null || body === undefined) return undefined;
@@ -11,8 +12,8 @@ async function serializeBody(body: BodyInit | null | undefined): Promise<ApiBody
       if (typeof value === "string") {
         fields[key] = value;
       } else if (!serializedFile) {
-        if (value.size > 10 * 1024 * 1024) {
-          throw new TypeError("圖片不可超過 10 MB。");
+        if (value.size > MAX_MULTIPART_BYTES) {
+          throw new TypeError("上傳檔案不可超過 15 MB。");
         }
         serializedFile = {
           name: value.name.slice(0, 255),
@@ -20,10 +21,10 @@ async function serializeBody(body: BodyInit | null | undefined): Promise<ApiBody
           bytes: new Uint8Array(await value.arrayBuffer()),
         };
       } else {
-        throw new TypeError("一次只能上傳一張圖片。");
+        throw new TypeError("一次只能上傳一個檔案。");
       }
     }
-    if (!serializedFile) throw new TypeError("圖片上傳缺少檔案。");
+    if (!serializedFile) throw new TypeError("檔案上傳缺少內容。");
     return { kind: "multipart", fields, file: serializedFile };
   }
   if (typeof body === "string") {
@@ -33,7 +34,7 @@ async function serializeBody(body: BodyInit | null | undefined): Promise<ApiBody
     }
     return { kind: "json", value: parsed as Record<string, unknown> };
   }
-  throw new TypeError("這個 App 只接受 JSON 或圖片表單。");
+  throw new TypeError("這個 App 只接受 JSON 或單一檔案表單。");
 }
 
 function responseFromIpc(response: ApiResponse): Response {

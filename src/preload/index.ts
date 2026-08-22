@@ -11,7 +11,7 @@ import type {
   UpdateStatus,
 } from "../shared/contracts";
 
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_MULTIPART_BYTES = 15 * 1024 * 1024;
 
 function invokeApi(input: ApiRequest): Promise<ApiResponse> {
   if (
@@ -25,9 +25,9 @@ function invokeApi(input: ApiRequest): Promise<ApiResponse> {
   }
   if (
     input.body?.kind === "multipart" &&
-    input.body.file.bytes.byteLength > MAX_IMAGE_BYTES
+    input.body.file.bytes.byteLength > MAX_MULTIPART_BYTES
   ) {
-    return Promise.reject(new TypeError("圖片不可超過 10 MB。"));
+    return Promise.reject(new TypeError("上傳檔案不可超過 15 MB。"));
   }
   return ipcRenderer.invoke("fba:api-request", input) as Promise<ApiResponse>;
 }

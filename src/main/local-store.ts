@@ -165,6 +165,48 @@ export type SharedAllListingsReportLease = SharedReportLease & {
   optionsKey: "preferredReportDocumentLocale=en_US";
 };
 
+/**
+ * Durable evidence for one exported content-audit workbook.
+ *
+ * The row digests bind the exact marketplace, SKU/ASIN/product type/family,
+ * canonical source content, and read status without persisting the source
+ * Seller SKUs or listing copy in the local store. The account scope is already
+ * a one-way SHA-256 value produced by CredentialVault; it is not a Seller ID.
+ */
+export type ContentAuditSnapshotEvidence = {
+  schemaVersion: 1;
+  exportId: string;
+  accountScope: string;
+  marketplaceId: string;
+  mode: "live" | "demo";
+  fetchedAt: string;
+  rowDigests: string[];
+  createdAt: number;
+  expiresAt: number;
+};
+
+export type ContentAuditSnapshotLookup =
+  | { status: "available"; evidence: ContentAuditSnapshotEvidence }
+  | {
+      status:
+        | "not-found"
+        | "expired"
+        | "marketplace-changed"
+        | "mode-changed"
+        | "account-scope-changed";
+      evidence: null;
+    };
+
+export type ContentAuditSnapshotEvidenceInput = Pick<
+  ContentAuditSnapshotEvidence,
+  | "exportId"
+  | "accountScope"
+  | "marketplaceId"
+  | "mode"
+  | "fetchedAt"
+  | "rowDigests"
+>;
+
 type StoreData = {
   version: 2;
   profiles: Record<string, ProductMasterProfile>;
@@ -174,6 +216,9 @@ type StoreData = {
   // rollback compatibility. Current builds may also place other allowlisted
   // Reports API leases here; older builds ignore those optional entries.
   sharedAllListingsReports: Record<string, SharedReportLease>;
+  // Optional version-2 extension. Older App builds ignore and may drop this
+  // cache on their next mutation, which only invalidates old workbooks safely.
+  contentAuditSnapshots: Record<string, ContentAuditSnapshotEvidence>;
 };
 
 type ProductSettings = Pick<
@@ -203,7 +248,23 @@ type OperationInput<T> = {
   }>) => Promise<T>;
 };
 
+export type IdempotentOperationAvailabilityInput = Pick<
+  OperationInput<unknown>,
+  | "idempotencyKey"
+  | "operationType"
+  | "marketplaceId"
+  | "sellerSku"
+  | "accountScope"
+  | "fingerprint"
+>;
+
 const OPERATION_TTL_MS = 24 * 60 * 60 * 1_000;
+export const CONTENT_AUDIT_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1_000;
+const MAX_CONTENT_AUDIT_SNAPSHOT_ROWS = 25_000;
+const MAX_CONTENT_AUDIT_SNAPSHOT_BYTES = 4 * 1024 * 1024;
+const MAX_CONTENT_AUDIT_SNAPSHOT_TOTAL_ROWS = 50_000;
+const MAX_CONTENT_AUDIT_SNAPSHOTS = 8;
+const MAX_CONTENT_AUDIT_SNAPSHOT_TOTAL_BYTES = 8 * 1024 * 1024;
 const VARIATION_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([
   "variation_detach",
   "variation_attach",
@@ -224,6 +285,7 @@ function emptyStore(): StoreData {
     ledger: {},
     brandSalesJobs: {},
     sharedAllListingsReports: {},
+    contentAuditSnapshots: {},
   };
 }
 
@@ -247,6 +309,126 @@ function sharedReportKey(input: {
   optionsKey: SharedReportOptionsKey;
 }): string {
   return `${input.accountScope}:${input.marketplaceId}:${input.reportType}:${input.optionsKey}`;
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 64) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function contentAuditSnapshotBytes(value: ContentAuditSnapshotEvidence): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function parseContentAuditSnapshotEvidence(
+  value: unknown,
+): ContentAuditSnapshotEvidence {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid persisted content-audit snapshot");
+  }
+  const raw = value as Record<string, unknown>;
+  const expectedKeys = [
+    "accountScope",
+    "createdAt",
+    "expiresAt",
+    "exportId",
+    "fetchedAt",
+    "marketplaceId",
+    "mode",
+    "rowDigests",
+    "schemaVersion",
+  ];
+  const actualKeys = Object.keys(raw).sort();
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index]) ||
+    raw.schemaVersion !== 1 ||
+    typeof raw.exportId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,200}$/u.test(raw.exportId) ||
+    typeof raw.accountScope !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(raw.accountScope) ||
+    typeof raw.marketplaceId !== "string" ||
+    !/^[A-Z0-9]{1,32}$/u.test(raw.marketplaceId) ||
+    (raw.mode !== "live" && raw.mode !== "demo") ||
+    !isCanonicalIsoTimestamp(raw.fetchedAt) ||
+    !Number.isSafeInteger(raw.createdAt) ||
+    Number(raw.createdAt) <= 0 ||
+    !Number.isSafeInteger(raw.expiresAt) ||
+    Number(raw.expiresAt) <= Number(raw.createdAt) ||
+    Number(raw.expiresAt) >
+      Number(raw.createdAt) + CONTENT_AUDIT_SNAPSHOT_TTL_MS ||
+    !Array.isArray(raw.rowDigests) ||
+    raw.rowDigests.length > MAX_CONTENT_AUDIT_SNAPSHOT_ROWS
+  ) {
+    throw new Error("Invalid persisted content-audit snapshot");
+  }
+  const rowDigests: string[] = [];
+  const seen = new Set<string>();
+  for (const value of raw.rowDigests) {
+    if (
+      typeof value !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(value) ||
+      seen.has(value)
+    ) {
+      throw new Error("Invalid persisted content-audit row evidence");
+    }
+    seen.add(value);
+    rowDigests.push(value);
+  }
+  const parsed: ContentAuditSnapshotEvidence = {
+    schemaVersion: 1,
+    exportId: raw.exportId,
+    accountScope: raw.accountScope,
+    marketplaceId: raw.marketplaceId,
+    mode: raw.mode,
+    fetchedAt: raw.fetchedAt,
+    rowDigests,
+    createdAt: Number(raw.createdAt),
+    expiresAt: Number(raw.expiresAt),
+  };
+  if (contentAuditSnapshotBytes(parsed) > MAX_CONTENT_AUDIT_SNAPSHOT_BYTES) {
+    throw new Error("Persisted content-audit snapshot exceeds its safety budget");
+  }
+  return parsed;
+}
+
+function parseContentAuditSnapshotCollection(
+  value: unknown,
+): Record<string, ContentAuditSnapshotEvidence> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (
+    entries.length > MAX_CONTENT_AUDIT_SNAPSHOTS ||
+    Buffer.byteLength(JSON.stringify(value), "utf8") >
+      MAX_CONTENT_AUDIT_SNAPSHOT_TOTAL_BYTES
+  ) return {};
+
+  const snapshots: Record<string, ContentAuditSnapshotEvidence> = {};
+  let totalRows = 0;
+  let totalBytes = 0;
+  for (const [key, snapshot] of entries) {
+    try {
+      const parsed = parseContentAuditSnapshotEvidence(snapshot);
+      if (parsed.exportId !== key) continue;
+      totalRows += parsed.rowDigests.length;
+      totalBytes += contentAuditSnapshotBytes(parsed);
+      if (
+        totalRows > MAX_CONTENT_AUDIT_SNAPSHOT_TOTAL_ROWS ||
+        totalBytes > MAX_CONTENT_AUDIT_SNAPSHOT_TOTAL_BYTES
+      ) {
+        // The cache is optional. If its aggregate envelope is corrupt or was
+        // created by an incompatible build, discard it as a unit so no
+        // arbitrary subset of workbook evidence remains trusted.
+        return {};
+      }
+      snapshots[key] = parsed;
+    } catch {
+      // One invalid optional cache entry must not hide the product profiles or
+      // the no-blind-retry ledger stored in the same device-local file.
+    }
+  }
+  return snapshots;
 }
 
 const DURABLE_REPORT_LEG_STATUSES = new Set<DurableReportLegStatus>([
@@ -548,11 +730,22 @@ export class LocalStore {
 
   async initialize(): Promise<void> {
     const data = await this.read();
-    if (Object.values(data.brandSalesJobs).some(isBrandSalesIncompatibleJob)) {
+    const now = Date.now();
+    const expiredContentAuditSnapshots = Object.entries(
+      data.contentAuditSnapshots,
+    ).filter(([, snapshot]) => snapshot.expiresAt <= now).map(([key]) => key);
+    if (
+      Object.values(data.brandSalesJobs).some(isBrandSalesIncompatibleJob) ||
+      expiredContentAuditSnapshots.length
+    ) {
       // Persist the rollback-readable sentinel immediately. Waiting for an
       // unrelated later mutation would leave the original missing-window row
       // vulnerable to being dropped if the user launches an older App build.
-      await this.mutate(() => undefined);
+      await this.mutate((draft) => {
+        for (const key of expiredContentAuditSnapshots) {
+          delete draft.contentAuditSnapshots[key];
+        }
+      });
     }
   }
 
@@ -571,6 +764,106 @@ export class LocalStore {
     }
     await this.initialize();
     return backupPath;
+  }
+
+  async saveContentAuditSnapshotEvidence(
+    input: ContentAuditSnapshotEvidenceInput,
+    now = Date.now(),
+  ): Promise<ContentAuditSnapshotEvidence> {
+    if (!Number.isSafeInteger(now) || now <= 0) {
+      throw new Error("Invalid content-audit snapshot time");
+    }
+    const evidence = parseContentAuditSnapshotEvidence({
+      schemaVersion: 1,
+      exportId: input.exportId,
+      accountScope: input.accountScope,
+      marketplaceId: input.marketplaceId,
+      mode: input.mode,
+      fetchedAt: input.fetchedAt,
+      rowDigests: [...input.rowDigests].sort(),
+      createdAt: now,
+      expiresAt: now + CONTENT_AUDIT_SNAPSHOT_TTL_MS,
+    });
+    await this.mutate((data) => {
+      for (const [key, candidate] of Object.entries(data.contentAuditSnapshots)) {
+        if (candidate.expiresAt <= now) delete data.contentAuditSnapshots[key];
+      }
+      if (data.contentAuditSnapshots[evidence.exportId]) {
+        throw new Error("Content-audit export ID already exists");
+      }
+      data.contentAuditSnapshots[evidence.exportId] = evidence;
+      const overBudget = () => {
+        const active = Object.values(data.contentAuditSnapshots);
+        return active.length > MAX_CONTENT_AUDIT_SNAPSHOTS ||
+          active.reduce(
+            (sum, candidate) => sum + candidate.rowDigests.length,
+            0,
+          ) > MAX_CONTENT_AUDIT_SNAPSHOT_TOTAL_ROWS ||
+          Buffer.byteLength(
+            JSON.stringify(data.contentAuditSnapshots),
+            "utf8",
+          ) > MAX_CONTENT_AUDIT_SNAPSHOT_TOTAL_BYTES;
+      };
+      while (overBudget()) {
+        const oldest = Object.values(data.contentAuditSnapshots)
+          .filter((candidate) => candidate.exportId !== evidence.exportId)
+          .sort((left, right) =>
+            left.createdAt - right.createdAt ||
+            (left.exportId < right.exportId
+              ? -1
+              : left.exportId > right.exportId
+                ? 1
+                : 0)
+          )[0];
+        // A single evidence record is validated against stricter per-record
+        // limits above, so an existing candidate must always be removable.
+        if (!oldest) throw new Error("Content-audit snapshot exceeds safety budget");
+        delete data.contentAuditSnapshots[oldest.exportId];
+      }
+    });
+    return structuredClone(evidence);
+  }
+
+  async getContentAuditSnapshotEvidence(input: {
+    exportId: string;
+    accountScope: string;
+    marketplaceId: string;
+    mode: "live" | "demo";
+    now?: number;
+  }): Promise<ContentAuditSnapshotLookup> {
+    const now = input.now ?? Date.now();
+    if (
+      !/^[A-Za-z0-9._-]{1,200}$/u.test(input.exportId) ||
+      !/^[a-f0-9]{64}$/u.test(input.accountScope) ||
+      !/^[A-Z0-9]{1,32}$/u.test(input.marketplaceId) ||
+      (input.mode !== "live" && input.mode !== "demo") ||
+      !Number.isSafeInteger(now) ||
+      now <= 0
+    ) {
+      throw new Error("Invalid content-audit snapshot lookup");
+    }
+    const data = await this.read();
+    const evidence = data.contentAuditSnapshots[input.exportId];
+    if (!evidence) return { status: "not-found", evidence: null };
+    if (evidence.expiresAt <= now) {
+      await this.mutate((draft) => {
+        const current = draft.contentAuditSnapshots[input.exportId];
+        if (current?.expiresAt && current.expiresAt <= now) {
+          delete draft.contentAuditSnapshots[input.exportId];
+        }
+      });
+      return { status: "expired", evidence: null };
+    }
+    if (evidence.accountScope !== input.accountScope) {
+      return { status: "account-scope-changed", evidence: null };
+    }
+    if (evidence.marketplaceId !== input.marketplaceId) {
+      return { status: "marketplace-changed", evidence: null };
+    }
+    if (evidence.mode !== input.mode) {
+      return { status: "mode-changed", evidence: null };
+    }
+    return { status: "available", evidence: structuredClone(evidence) };
   }
 
   async getProductMaster(
@@ -1116,6 +1409,81 @@ export class LocalStore {
     }
   }
 
+  /**
+   * Checks a bounded group before its first Amazon write. The API router holds
+   * the matching in-memory SKU reservations while this runs, so no other
+   * renderer request can enter a conflicting listing-attribute write between
+   * this check and the batch claims. This method deliberately does not create
+   * durable pending entries: a pending ledger row must only exist once its
+   * individual execute callback is ready to run.
+   */
+  async assertIdempotentOperationsAvailable(
+    inputs: readonly IdempotentOperationAvailabilityInput[],
+  ): Promise<void> {
+    if (!inputs.length) return;
+    const uniqueKeys = new Set<string>();
+    const uniqueTargets = new Set<string>();
+    for (const input of inputs) {
+      if (uniqueKeys.has(input.idempotencyKey)) {
+        throw new SpApiError("批次確認碼含有重複項目，已停止送出。", {
+          status: 409,
+          code: "IDEMPOTENCY_CONFLICT",
+        });
+      }
+      uniqueKeys.add(input.idempotencyKey);
+      const target = [
+        input.accountScope,
+        input.marketplaceId,
+        input.sellerSku,
+        input.operationType,
+      ].join("\u0000");
+      if (uniqueTargets.has(target)) {
+        throw new SpApiError("批次包含重複 SKU 操作，已停止送出。", {
+          status: 409,
+          code: "IDEMPOTENCY_CONFLICT",
+        });
+      }
+      uniqueTargets.add(target);
+    }
+
+    await this.mutate((data) => {
+      const now = Date.now();
+      for (const [key, value] of Object.entries(data.ledger)) {
+        if (value.state === "completed" && value.expiresAt < now) {
+          delete data.ledger[key];
+        }
+      }
+      for (const input of inputs) {
+        const fingerprint = createHash("sha256")
+          .update(input.fingerprint)
+          .digest("hex");
+        const existing = data.ledger[input.idempotencyKey];
+        if (existing) {
+          if (existing.fingerprint !== fingerprint) {
+            throw new SpApiError("這個確認碼已用於另一筆操作。", {
+              status: 409,
+              code: "IDEMPOTENCY_CONFLICT",
+            });
+          }
+          if (existing.state !== "completed") throw operationError(existing.state);
+          continue;
+        }
+        if (LISTING_ATTRIBUTE_OPERATION_TYPES.has(input.operationType)) {
+          const activeAttributeWrite = Object.values(data.ledger).find(
+            (entry) =>
+              LISTING_ATTRIBUTE_OPERATION_TYPES.has(entry.operationType) &&
+              entry.marketplaceId === input.marketplaceId &&
+              entry.sellerSku === input.sellerSku &&
+              entry.state !== "completed" &&
+              (entry.accountScope === input.accountScope ||
+                entry.accountScope === "legacy-unknown"),
+          );
+          if (activeAttributeWrite) throw operationError(activeAttributeWrite.state);
+        }
+      }
+    });
+  }
+
   async reconcileIdempotentOperations(input: {
     operationTypes: readonly LedgerOperationType[];
     marketplaceId: string;
@@ -1169,6 +1537,7 @@ export class LocalStore {
         >;
         brandSalesJobs?: Record<string, unknown>;
         sharedAllListingsReports?: Record<string, unknown>;
+        contentAuditSnapshots?: Record<string, unknown>;
       };
       if (
         (raw.version !== 1 && raw.version !== 2) ||
@@ -1219,6 +1588,9 @@ export class LocalStore {
               }
             },
           ),
+        ),
+        contentAuditSnapshots: parseContentAuditSnapshotCollection(
+          raw.contentAuditSnapshots,
         ),
       };
     } catch (error) {

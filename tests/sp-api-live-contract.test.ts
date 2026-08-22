@@ -11,6 +11,7 @@ import {
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const FAKE_SELLER_ID = "FAKE_SELLER_ID_NA";
 const FAKE_SKU = "FAKE SKU/01";
+const FAKE_SCHEMA_URL = "https://schemas.example.test/fake-product-type.json";
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
   key.startsWith("SP_API_"),
 );
@@ -58,6 +59,56 @@ function fakeListingItemResponse(): Response {
             marketplace_id: MARKETPLACE_ID,
           },
         ],
+        title_differentiation: [
+          {
+            value: "Fake item highlight",
+            language_tag: "en_US",
+            marketplace_id: MARKETPLACE_ID,
+          },
+          {
+            value: "既存の商品ハイライト",
+            language_tag: "ja_JP",
+            marketplace_id: MARKETPLACE_ID,
+          },
+        ],
+        bullet_point: [
+          {
+            value: "First fake bullet",
+            language_tag: "en_US",
+            marketplace_id: MARKETPLACE_ID,
+          },
+          {
+            value: "Second fake bullet",
+            language_tag: "en_US",
+            marketplace_id: MARKETPLACE_ID,
+          },
+        ],
+        product_description: [
+          {
+            value: "Fake product description",
+            language_tag: "en_US",
+            marketplace_id: MARKETPLACE_ID,
+          },
+          {
+            value: "既存の商品説明",
+            language_tag: "ja_JP",
+            marketplace_id: MARKETPLACE_ID,
+          },
+        ],
+        special_feature: [
+          {
+            value: "Separate special feature",
+            language_tag: "en_US",
+            marketplace_id: MARKETPLACE_ID,
+          },
+        ],
+        ingredients: [
+          {
+            value: "Turkey tendon",
+            language_tag: "en_US",
+            marketplace_id: MARKETPLACE_ID,
+          },
+        ],
         purchasable_offer: [
           {
             marketplace_id: MARKETPLACE_ID,
@@ -74,6 +125,46 @@ function fakeListingItemResponse(): Response {
     },
     { "x-amzn-requestid": "FAKE_REQUEST_ID_LISTING_OK" },
   );
+}
+
+function fakeContentSchema(): Record<string, unknown> {
+  const textAttribute = (maxLength: number, options: {
+    minItems?: number;
+    maxItems?: number;
+  } = {}) => ({
+    type: "array",
+    editable: true,
+    minItems: options.minItems ?? 0,
+    maxItems: options.maxItems ?? 1,
+    items: {
+      type: "object",
+      properties: {
+        value: { type: "string", minLength: 1, maxLength },
+        language_tag: { type: "string", enum: ["en_US", "ja_JP"] },
+        marketplace_id: { type: "string" },
+      },
+    },
+  });
+  return {
+    type: "object",
+    required: ["item_name"],
+    properties: {
+      item_name: textAttribute(75, { minItems: 1 }),
+      title_differentiation: textAttribute(125),
+      bullet_point: textAttribute(500, { minItems: 1, maxItems: 5 }),
+      product_description: textAttribute(5_000),
+      ingredients: textAttribute(5_000),
+    },
+  };
+}
+
+function fakeContentDefinitionResponse(): Response {
+  return jsonResponse(200, {
+    schema: {
+      link: { resource: FAKE_SCHEMA_URL, verb: "GET" },
+      checksum: "FAKE_CONTENT_SCHEMA_CHECKSUM",
+    },
+  });
 }
 
 function requestUrl(input: Parameters<typeof fetch>[0]): URL {
@@ -350,6 +441,150 @@ describe("SP-API live wire contracts", () => {
     });
   });
 
+  it("maps the four product copy attributes separately and reads their PTD capabilities", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+      if (url.href === FAKE_SCHEMA_URL) {
+        return jsonResponse(200, fakeContentSchema());
+      }
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return fakeContentDefinitionResponse();
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        return fakeListingItemResponse();
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const listing = await getListingContent({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: FAKE_SKU,
+    });
+
+    expect(listing).toMatchObject({
+      title: "Fake FBA item",
+      itemHighlight: "Fake item highlight",
+      bulletPoints: ["First fake bullet", "Second fake bullet"],
+      productDescription: "Fake product description",
+      ingredients: "Turkey tendon",
+      languageTag: "en_US",
+      attributePresence: {
+        title: true,
+        itemHighlight: true,
+        bulletPoints: true,
+        productDescription: true,
+        ingredients: true,
+      },
+    });
+    expect(listing.itemHighlight).not.toBe("Separate special feature");
+    expect(listing.capabilities.title).toMatchObject({
+      supported: true,
+      editable: true,
+      required: true,
+      maxLength: 75,
+    });
+    expect(listing.capabilities.itemHighlight).toMatchObject({
+      supported: true,
+      editable: true,
+      maxLength: 125,
+    });
+    expect(listing.capabilities.productDescription).toMatchObject({
+      supported: true,
+      editable: true,
+      maxLength: 5_000,
+    });
+    expect(listing.capabilities.schemaChecksum).toBe(
+      "FAKE_CONTENT_SCHEMA_CHECKSUM",
+    );
+  });
+
+  it("previews Item Highlight and product description with their exact top-level paths", async () => {
+    let previewBody: unknown;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+      if (url.href === FAKE_SCHEMA_URL) {
+        return jsonResponse(200, fakeContentSchema());
+      }
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return fakeContentDefinitionResponse();
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        return fakeListingItemResponse();
+      }
+      if (
+        url.pathname.startsWith("/listings/2021-08-01/") &&
+        method === "PATCH" &&
+        url.searchParams.get("mode") === "VALIDATION_PREVIEW"
+      ) {
+        previewBody = JSON.parse(String(init?.body));
+        return jsonResponse(200, { status: "VALID", issues: [] });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const preview = await previewListingContentUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: FAKE_SKU,
+      expectedTitle: "Fake FBA item",
+      expectedItemHighlight: "Fake item highlight",
+      expectedBulletPoints: ["First fake bullet", "Second fake bullet"],
+      expectedProductDescription: "Fake product description",
+      expectedIngredients: "Turkey tendon",
+      title: "Fake FBA item",
+      itemHighlight: "Updated fake item highlight",
+      bulletPoints: ["First fake bullet", "Second fake bullet"],
+      productDescription: "Updated fake product description",
+      ingredients: "Turkey tendon",
+    });
+
+    expect(preview.changedFields).toEqual([
+      "itemHighlight",
+      "productDescription",
+    ]);
+    expect(previewBody).toEqual({
+      productType: "FAKE_PRODUCT_TYPE",
+      patches: [
+        {
+          op: "replace",
+          path: "/attributes/title_differentiation",
+          value: [
+            {
+              value: "既存の商品ハイライト",
+              language_tag: "ja_JP",
+              marketplace_id: MARKETPLACE_ID,
+            },
+            {
+              value: "Updated fake item highlight",
+              language_tag: "en_US",
+              marketplace_id: MARKETPLACE_ID,
+            },
+          ],
+        },
+        {
+          op: "replace",
+          path: "/attributes/product_description",
+          value: [
+            {
+              value: "既存の商品説明",
+              language_tag: "ja_JP",
+              marketplace_id: MARKETPLACE_ID,
+            },
+            {
+              value: "Updated fake product description",
+              language_tag: "en_US",
+              marketplace_id: MARKETPLACE_ID,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it("keeps listing content read-only when seller-specific PTD is unavailable", async () => {
     const urls: URL[] = [];
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
@@ -396,7 +631,9 @@ describe("SP-API live wire contracts", () => {
       title: "Fake FBA item",
     });
     expect(listing.capabilities.title.editable).toBe(false);
+    expect(listing.capabilities.itemHighlight.editable).toBe(false);
     expect(listing.capabilities.bulletPoints.editable).toBe(false);
+    expect(listing.capabilities.productDescription.editable).toBe(false);
     expect(listing.capabilities.ingredients.editable).toBe(false);
     expect(listing.capabilities.images.every((item) => !item.editable)).toBe(
       true,
@@ -435,10 +672,14 @@ describe("SP-API live wire contracts", () => {
         marketplaceId: MARKETPLACE_ID,
         sellerSku: FAKE_SKU,
         expectedTitle: "Fake FBA item",
+        expectedItemHighlight: "",
         expectedBulletPoints: [],
+        expectedProductDescription: "",
         expectedIngredients: "",
         title: "Updated fake FBA item",
+        itemHighlight: "",
         bulletPoints: [],
+        productDescription: "",
         ingredients: "",
       }),
     );

@@ -14,14 +14,16 @@ function row(
     sellerSku: "AFA12AM",
     asin: "B09S5VY2JS",
     productType: "PET_FOOD",
-    title: "Turkey Tendons Dog Treats",
+    title: "T".repeat(60),
+    itemHighlight: "H".repeat(110),
     bulletPoints: [
-      "USA-sourced turkey tendons",
-      "High-protein reward",
-      "Lean and clean recipe",
-      "Gentle on sensitive stomachs",
-      "Slowly cooked for flavor",
+      "A".repeat(150),
+      "B".repeat(150),
+      "C".repeat(150),
+      "D".repeat(150),
+      "E".repeat(150),
     ],
+    productDescription: "P".repeat(1_800),
     ingredients: "Turkey Tendon, Chicken, Coconut Glycerin, Soy Protein",
     readStatus: "complete",
     readErrors: [],
@@ -53,6 +55,11 @@ describe("FBA listing content quality audit", () => {
         missingBullets: 0,
         missingIngredients: 0,
         ingredientsUnverified: 0,
+        titleBelowTarget: 0,
+        highlightBelowTarget: 0,
+        bulletBelowTarget: 0,
+        bulletAboveTarget: 0,
+        descriptionBelowTarget: 0,
       },
     });
   });
@@ -167,6 +174,11 @@ describe("FBA listing content quality audit", () => {
       missingBullets: 0,
       missingIngredients: 0,
       ingredientsUnverified: 0,
+      titleBelowTarget: 1,
+      highlightBelowTarget: 0,
+      bulletBelowTarget: 0,
+      bulletAboveTarget: 0,
+      descriptionBelowTarget: 0,
     });
   });
 
@@ -208,6 +220,11 @@ describe("FBA listing content quality audit", () => {
       missingBullets: 0,
       missingIngredients: 0,
       ingredientsUnverified: 0,
+      titleBelowTarget: 0,
+      highlightBelowTarget: 0,
+      bulletBelowTarget: 0,
+      bulletAboveTarget: 0,
+      descriptionBelowTarget: 0,
     });
   });
 
@@ -226,6 +243,133 @@ describe("FBA listing content quality audit", () => {
     expect(result.summary).toMatchObject({
       missingIngredients: 0,
       ingredientsUnverified: 1,
+    });
+  });
+
+  it("applies the title, highlight, per-bullet and description boundaries", () => {
+    const boundary = auditListingContentRows({
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: FETCHED_AT,
+      rows: [row()],
+    });
+    expect(boundary.rows[0].issues).toEqual([]);
+
+    const belowAndAbove = auditListingContentRows({
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: FETCHED_AT,
+      rows: [row({
+        title: "T".repeat(59),
+        itemHighlight: "H".repeat(109),
+        bulletPoints: [
+          "A".repeat(149),
+          "B".repeat(150),
+          "C".repeat(200),
+          "D".repeat(201),
+          "E".repeat(150),
+        ],
+        productDescription: "P".repeat(1_799),
+      })],
+    });
+
+    expect(belowAndAbove.rows[0].issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "TITLE_BELOW_TARGET",
+        field: "title",
+        actualLength: 59,
+        minLength: 60,
+      }),
+      expect.objectContaining({
+        kind: "HIGHLIGHT_BELOW_TARGET",
+        field: "itemHighlight",
+        actualLength: 109,
+        minLength: 110,
+      }),
+      expect.objectContaining({
+        kind: "BULLET_BELOW_TARGET",
+        field: "bulletPoints",
+        bulletIndex: 0,
+        actualLength: 149,
+        minLength: 150,
+        maxLength: 200,
+      }),
+      expect.objectContaining({
+        kind: "BULLET_ABOVE_TARGET",
+        field: "bulletPoints",
+        bulletIndex: 3,
+        actualLength: 201,
+        minLength: 150,
+        maxLength: 200,
+      }),
+      expect.objectContaining({
+        kind: "DESCRIPTION_BELOW_TARGET",
+        field: "productDescription",
+        actualLength: 1_799,
+        minLength: 1_800,
+      }),
+    ]));
+    expect(belowAndAbove.summary).toMatchObject({
+      titleBelowTarget: 1,
+      highlightBelowTarget: 1,
+      bulletBelowTarget: 1,
+      bulletAboveTarget: 1,
+      descriptionBelowTarget: 1,
+    });
+  });
+
+  it("trims outer whitespace and counts Unicode code points instead of UTF-16 units", () => {
+    const result = auditListingContentRows({
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: FETCHED_AT,
+      rows: [row({
+        title: `  ${"😀".repeat(59)}  `,
+        itemHighlight: `\n${"😀".repeat(110)}\t`,
+        bulletPoints: [
+          ` ${"😀".repeat(150)} `,
+          "B".repeat(150),
+          "C".repeat(150),
+          "D".repeat(150),
+          "E".repeat(150),
+        ],
+        productDescription: ` ${"😀".repeat(1_800)} `,
+      })],
+    });
+
+    expect(result.rows[0].issues).toEqual([
+      expect.objectContaining({
+        kind: "TITLE_BELOW_TARGET",
+        actualLength: 59,
+        minLength: 60,
+      }),
+    ]);
+  });
+
+  it("does not infer any length issue from an incomplete listing read", () => {
+    const result = auditListingContentRows({
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: FETCHED_AT,
+      rows: [row({
+        title: "",
+        itemHighlight: "",
+        bulletPoints: [""],
+        productDescription: "",
+        ingredients: "",
+        readStatus: "incomplete",
+        readErrors: [{
+          code: "LISTING_CONTENT_NOT_RETURNED",
+          message: "Amazon did not return listing content.",
+        }],
+      })],
+    });
+
+    expect(result.rows[0].issues).toEqual([]);
+    expect(result.summary).toMatchObject({
+      incomplete: 1,
+      withIssues: 0,
+      titleBelowTarget: 0,
+      highlightBelowTarget: 0,
+      bulletBelowTarget: 0,
+      bulletAboveTarget: 0,
+      descriptionBelowTarget: 0,
     });
   });
 });

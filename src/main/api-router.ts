@@ -47,7 +47,11 @@ import {
   type ReviewAuditRelationshipIncompleteRow,
   type ReviewAuditSnapshot,
 } from "./amazon/review-audit";
-import { auditListingContentRows } from "./amazon/content-quality";
+import {
+  auditListingContentRows,
+  type ContentQualityAudit,
+  type ContentQualityRow,
+} from "./amazon/content-quality";
 import { auditListingImageRows } from "./amazon/image-audit";
 import {
   auditAdvertisingCoverage,
@@ -58,6 +62,7 @@ import {
 import {
   MARKETPLACES,
   SpApiError,
+  SpApiPreCommitError,
   getAgedInventoryData,
   getAgedInventoryReportStatus,
   getAllListingsExportData,
@@ -65,6 +70,7 @@ import {
   getBrandSalesData,
   getBrandSalesReportWindow,
   getFbaListingIdentitySnapshot,
+  getFbaVariationGroupingData,
   getFbaShipmentSalesReportStatus,
   getFbaInboundShipmentSnapshot,
   getInboundNoncomplianceReportDocument,
@@ -105,6 +111,8 @@ import {
   usesDemoMode,
   verifyListingsAccess,
   type ListingContentSnapshot,
+  type ListingContentValidationResult,
+  type ListingContentUpdateResult,
   type ListingImageSnapshot,
   type ListingPriceSnapshot,
   type MarketplaceId,
@@ -117,6 +125,7 @@ import {
   type SalesAndTrafficSnapshot,
   type SubscribeAndSaveOfferSnapshot,
   type SubscriptionAuditSnapshot,
+  type UpdateListingContentInput,
   type UpdateListingSalePriceInput,
   type UnboundVariationAuditSnapshot,
   type VariationMoveInput,
@@ -143,6 +152,11 @@ import {
   createListingsWorkbook,
   createUnboundVariationWorkbook,
 } from "./amazon/xlsx";
+import {
+  ContentAuditWorkbookError,
+  parseContentAuditWorkbook,
+  type ParsedContentAuditValues,
+} from "./amazon/content-audit-workbook-parser";
 import {
   createAuditSuiteWorkbook,
   type AdvertisingCoverageAuditRow,
@@ -192,6 +206,51 @@ type PreviewTicket = {
   fingerprint: string;
   expiresAt: number;
   reserved: boolean;
+};
+
+type ContentAuditVariationGrouping = {
+  variationRole: "parent" | "child" | "standalone" | "unknown";
+  variationParentSku: string | null;
+  variationFamilyKey: string | null;
+  variationTheme: string | null;
+  relationshipStatus: "complete" | "incomplete";
+  relationshipMessage: string | null;
+};
+
+type ContentBatchChange = {
+  input: UpdateListingContentInput;
+  fingerprint: string;
+  ledgerKey: string;
+  validation: ListingContentValidationResult;
+};
+
+type ContentBatchRowResult = {
+  sellerSku: string;
+  state: "verified" | "simulated" | "rejected" | "unknown" | "not-started";
+  result: ListingContentUpdateResult | null;
+  error: { code: string; message: string; requestId: string | null } | null;
+};
+
+type ContentBatchCommitResult = {
+  previewId: string;
+  marketplaceId: MarketplaceId;
+  status: "COMPLETED" | "STOPPED_REJECTED" | "STOPPED_UNKNOWN";
+  rows: ContentBatchRowResult[];
+  completedAt: string;
+  notice: string;
+};
+
+type ContentBatchPlan = {
+  previewId: string;
+  exportId: string;
+  marketplaceId: MarketplaceId;
+  accountScope: string;
+  idempotencyKey: string;
+  fingerprint: string;
+  changes: ContentBatchChange[];
+  expiresAt: number;
+  state: "ready" | "committing" | "completed";
+  result: ContentBatchCommitResult | null;
 };
 
 type CommandTask = {
@@ -355,6 +414,84 @@ const MARKETPLACE_CODES = Object.fromEntries(
 const SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
 const UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
 const IMAGE_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
+const CONTENT_BATCH_PREVIEW_TTL_MS = 15 * 60 * 1_000;
+const CONTENT_BATCH_MAX_CHANGED_SKUS = 500;
+const CONTENT_AUDIT_STANDALONE_FAMILY_KEY = "STANDALONE";
+const CONTENT_AUDIT_INCOMPLETE_FAMILY_KEY = "DATA_INCOMPLETE";
+
+function contentAuditRowValues(row: ContentQualityRow): ParsedContentAuditValues {
+  return {
+    title: row.title,
+    itemHighlight: row.itemHighlight,
+    bulletPoints: Array.from(
+      { length: 5 },
+      (_value, index) => row.bulletPoints[index] ?? "",
+    ),
+    productDescription: row.productDescription,
+    ingredients: row.ingredients,
+  };
+}
+
+function sameContentAuditValues(
+  left: ParsedContentAuditValues,
+  right: ParsedContentAuditValues,
+): boolean {
+  return left.title === right.title &&
+    left.itemHighlight === right.itemHighlight &&
+    left.productDescription === right.productDescription &&
+    left.ingredients === right.ingredients &&
+    left.bulletPoints.length === right.bulletPoints.length &&
+    left.bulletPoints.every((value, index) => value === right.bulletPoints[index]);
+}
+
+function contentAuditWorkbookFamilyKey(
+  row: ContentQualityRow & ContentAuditVariationGrouping,
+): string {
+  if (row.variationRole === "standalone" && row.relationshipStatus === "complete") {
+    return CONTENT_AUDIT_STANDALONE_FAMILY_KEY;
+  }
+  if (
+    row.variationRole === "child" &&
+    row.relationshipStatus === "complete" &&
+    row.variationFamilyKey
+  ) {
+    return row.variationFamilyKey;
+  }
+  return CONTENT_AUDIT_INCOMPLETE_FAMILY_KEY;
+}
+
+function contentAuditSnapshotRowDigest(input: {
+  accountScope: string;
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  exportId: string;
+  fetchedAt: string;
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  variationFamilyKey: string;
+  values: ParsedContentAuditValues;
+  readStatus: "complete" | "incomplete";
+}): string {
+  return stableFingerprint([
+    "content-audit-snapshot-row-v1",
+    input.accountScope,
+    input.marketplaceId,
+    input.mode,
+    input.exportId,
+    input.fetchedAt,
+    input.sellerSku,
+    input.asin,
+    input.productType,
+    input.variationFamilyKey,
+    input.values.title,
+    input.values.itemHighlight,
+    input.values.bulletPoints,
+    input.values.productDescription,
+    input.values.ingredients,
+    input.readStatus,
+  ]);
+}
 const BRAND_SALES_REUSE_WINDOW_MS = 30 * 60 * 1_000;
 const BRAND_SALES_NEAR_REUSE_BOUNDARY_MS = 2 * 60 * 1_000;
 const BRAND_SALES_JOB_RETENTION_MS = 60 * 60 * 1_000;
@@ -965,6 +1102,7 @@ export class ApiRouter {
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
   private readonly previews = new Map<string, PreviewTicket>();
+  private readonly listingAttributeWriteReservations = new Map<string, string>();
   private readonly subscriptionAuditSnapshots = new Map<
     string,
     {
@@ -992,6 +1130,7 @@ export class ApiRouter {
       snapshot: ImageAuditSnapshot;
     }
   >();
+  private readonly contentBatchPlans = new Map<string, ContentBatchPlan>();
   private readonly brandSalesJobs = new Map<string, BrandSalesRuntimeJob>();
   private readonly brandSalesStartFlights = new Map<string, Promise<ApiResponse>>();
   private readonly brandSalesPollFlights = new Map<
@@ -1081,9 +1220,11 @@ export class ApiRouter {
   clearPreviews(): void {
     this.reportLifecycle.clear();
     this.previews.clear();
+    this.listingAttributeWriteReservations.clear();
     this.subscriptionAuditSnapshots.clear();
     this.unboundVariationAuditSnapshots.clear();
     this.imageAuditSnapshots.clear();
+    this.contentBatchPlans.clear();
     this.brandSalesJobs.clear();
     this.brandSalesStartFlights.clear();
     this.brandSalesPollFlights.clear();
@@ -1193,6 +1334,10 @@ export class ApiRouter {
         return this.previewContent(request);
       case "PATCH /api/sp-api/listing-content":
         return this.commitContent(request);
+      case "POST /api/sp-api/listing-content/import":
+        return this.previewContentWorkbookImport(request);
+      case "PATCH /api/sp-api/listing-content/import":
+        return this.commitContentWorkbookImport(request);
       case "GET /api/sp-api/listing-images":
         return this.listingImages(request);
       case "POST /api/sp-api/listing-images":
@@ -3186,8 +3331,12 @@ export class ApiRouter {
         sellerSku: string;
         title: string;
         expectedTitle: string;
+        itemHighlight: string;
+        expectedItemHighlight: string;
         bulletPoints: string[];
         expectedBulletPoints: string[];
+        productDescription: string;
+        expectedProductDescription: string;
         ingredients: string;
         expectedIngredients: string;
         idempotencyKey: string;
@@ -3199,8 +3348,15 @@ export class ApiRouter {
     const sellerSku = parseSellerSku(body.sellerSku);
     const title = parseText(body.title, 2_000);
     const expectedTitle = parseText(body.expectedTitle, 2_000);
+    const itemHighlight = parseText(body.itemHighlight, 2_000);
+    const expectedItemHighlight = parseText(body.expectedItemHighlight, 2_000);
     const bulletPoints = parseBullets(body.bulletPoints);
     const expectedBulletPoints = parseBullets(body.expectedBulletPoints);
+    const productDescription = parseText(body.productDescription, 50_000);
+    const expectedProductDescription = parseText(
+      body.expectedProductDescription,
+      50_000,
+    );
     const ingredients = parseText(body.ingredients, 20_000);
     const expectedIngredients = parseText(body.expectedIngredients, 20_000);
     if (
@@ -3208,20 +3364,30 @@ export class ApiRouter {
       !sellerSku ||
       title === null ||
       expectedTitle === null ||
+      itemHighlight === null ||
+      expectedItemHighlight === null ||
       bulletPoints === null ||
       expectedBulletPoints === null ||
+      productDescription === null ||
+      expectedProductDescription === null ||
       ingredients === null ||
       expectedIngredients === null
     ) {
-      return invalid("請提供有效的站點、SKU、標題、最多五個賣點與成分。");
+      return invalid(
+        "請提供有效的站點、SKU、產品名稱、產品亮點、最多五個產品要點、產品敘述與成分。",
+      );
     }
     return {
       marketplaceId,
       sellerSku,
       title,
       expectedTitle,
+      itemHighlight,
+      expectedItemHighlight,
       bulletPoints,
       expectedBulletPoints,
+      productDescription,
+      expectedProductDescription,
       ingredients,
       expectedIngredients,
       idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
@@ -3261,43 +3427,62 @@ export class ApiRouter {
     if ("status" in input) return input;
     const key = idempotencyKey(input.idempotencyKey);
     if (!key) return invalid("這次預檢已失效，請重新預檢。");
-    const scoped = await this.scopedFingerprint(
+    const reservationOwner = randomUUID();
+    const reservationError = this.reserveListingAttributeWrites(
       input.marketplaceId,
-      this.contentFingerprint(input),
+      [input.sellerSku],
+      reservationOwner,
     );
-    const fingerprint = scoped.fingerprint;
-    const changedFields = [
-      input.title !== input.expectedTitle ? "標題" : null,
-      JSON.stringify(input.bulletPoints) !== JSON.stringify(input.expectedBulletPoints)
-        ? "五大賣點"
-        : null,
-      input.ingredients !== input.expectedIngredients ? "成分" : null,
-    ].filter(Boolean).join("、");
-    const ticketError = await this.approveReservedPreview(
-      request.path,
-      key,
-      fingerprint,
-      `確認文案｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${changedFields}｜驗證碼 ${fingerprint.slice(0, 12)}`,
-    );
-    if (ticketError) return ticketError;
+    if (reservationError) return reservationError;
     try {
-      const result = await this.store.runIdempotentOperation({
-        idempotencyKey: key,
-        operationType: "content",
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-        accountScope: scoped.accountScope,
+      const scoped = await this.scopedFingerprint(
+        input.marketplaceId,
+        this.contentFingerprint(input),
+      );
+      const fingerprint = scoped.fingerprint;
+      const changedFields = [
+        input.title !== input.expectedTitle ? "產品名稱" : null,
+        input.itemHighlight !== input.expectedItemHighlight ? "產品亮點" : null,
+        JSON.stringify(input.bulletPoints) !== JSON.stringify(input.expectedBulletPoints)
+          ? "產品要點"
+          : null,
+        input.productDescription !== input.expectedProductDescription
+          ? "產品敘述"
+          : null,
+        input.ingredients !== input.expectedIngredients ? "成分" : null,
+      ].filter(Boolean).join("、");
+      const ticketError = await this.approveReservedPreview(
+        request.path,
+        key,
         fingerprint,
-        execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateListingContent(input),
-          onAccepted: recordAccepted,
-          read: () => getListingContent(input),
-          decide: contentReadbackDecision,
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return apiError(error, "送出商品內容時發生未預期的錯誤。");
+        `確認文案｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${changedFields}｜驗證碼 ${fingerprint.slice(0, 12)}`,
+      );
+      if (ticketError) return ticketError;
+      try {
+        const result = await this.store.runIdempotentOperation({
+          idempotencyKey: key,
+          operationType: "content",
+          marketplaceId: input.marketplaceId,
+          sellerSku: input.sellerSku,
+          accountScope: scoped.accountScope,
+          fingerprint,
+          execute: ({ recordAccepted }) => commitWithCanonicalReadback({
+            commit: () => updateListingContent(input),
+            onAccepted: recordAccepted,
+            read: () => getListingContent(input),
+            decide: contentReadbackDecision,
+          }),
+        });
+        return json(result);
+      } catch (error) {
+        return apiError(error, "送出商品內容時發生未預期的錯誤。");
+      }
+    } finally {
+      this.releaseListingAttributeWrites(
+        input.marketplaceId,
+        [input.sellerSku],
+        reservationOwner,
+      );
     }
   }
 
@@ -3306,8 +3491,12 @@ export class ApiRouter {
     sellerSku: string;
     title: string;
     expectedTitle: string;
+    itemHighlight: string;
+    expectedItemHighlight: string;
     bulletPoints: string[];
     expectedBulletPoints: string[];
+    productDescription: string;
+    expectedProductDescription: string;
     ingredients: string;
     expectedIngredients: string;
   }): string {
@@ -3315,12 +3504,523 @@ export class ApiRouter {
       input.marketplaceId,
       input.sellerSku,
       input.expectedTitle,
+      input.expectedItemHighlight,
       input.expectedBulletPoints,
+      input.expectedProductDescription,
       input.expectedIngredients,
       input.title,
+      input.itemHighlight,
       input.bulletPoints,
+      input.productDescription,
       input.ingredients,
     ]);
+  }
+
+  private contentBatchPreviewPayload(plan: ContentBatchPlan) {
+    return {
+      previewId: plan.previewId,
+      exportId: plan.exportId,
+      marketplaceId: plan.marketplaceId,
+      expiresAt: new Date(plan.expiresAt).toISOString(),
+      changes: plan.changes.map((change) => ({
+        sellerSku: change.input.sellerSku,
+        changedFields: change.validation.changedFields,
+        previous: change.validation.previous,
+        requested: change.validation.requested,
+        issues: change.validation.issues,
+      })),
+      notice:
+        `已逐 SKU 完成 Amazon Validation Preview；${plan.changes.length.toLocaleString()} 個 SKU 尚未寫入。`,
+    };
+  }
+
+  private async previewContentWorkbookImport(
+    request: ApiRequest,
+  ): Promise<ApiResponse> {
+    if (request.body?.kind !== "multipart") {
+      return invalid(
+        "文案 Excel 預檢必須使用單一 .xlsx 檔案表單。",
+        415,
+        "UNSUPPORTED_MEDIA_TYPE",
+      );
+    }
+    const marketplaceId = parseMarketplace(request.body.fields.marketplaceId);
+    const key = idempotencyKey(request.body.fields.idempotencyKey);
+    if (!marketplaceId || !key) {
+      return invalid("Excel 預檢缺少有效站點或批次確認碼。");
+    }
+    const file = request.body.file;
+    try {
+      const parsed = parseContentAuditWorkbook({
+        bytes: file.bytes,
+        fileName: file.name,
+        mediaType: file.type,
+      });
+      if (parsed.metadata.marketplaceId !== marketplaceId) {
+        return invalid(
+          "Excel 所屬站點與目前選擇的 Amazon 站點不同，已停止預檢。",
+          409,
+          "MARKETPLACE_CHANGED",
+        );
+      }
+      this.pruneContentBatchPlans();
+      const accountScope = await this.vault.getAccountScope(
+        MARKETPLACES[marketplaceId].region,
+      );
+      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+      const lookup = await this.store.getContentAuditSnapshotEvidence({
+        exportId: parsed.metadata.exportId,
+        marketplaceId,
+        accountScope,
+        mode,
+      });
+      if (lookup.status === "account-scope-changed") {
+        return invalid(
+          "Amazon 帳號範圍已改變，舊 Excel 不可用於更新。",
+          409,
+          "ACCOUNT_SCOPE_CHANGED",
+        );
+      }
+      if (lookup.status === "marketplace-changed") {
+        return invalid(
+          "Excel 掃描快照所屬站點已改變，請重新執行全站健檢。",
+          409,
+          "MARKETPLACE_CHANGED",
+        );
+      }
+      if (lookup.status === "mode-changed") {
+        return invalid(
+          "App 展示／真實模式已改變，舊 Excel 不可用於更新。",
+          409,
+          "REPORT_MODE_CHANGED",
+        );
+      }
+      if (lookup.status !== "available") {
+        return invalid(
+          "這份文案 Excel 的掃描快照已過期，請重新執行全站健檢。",
+          410,
+          "SNAPSHOT_EXPIRED",
+        );
+      }
+      const stored = lookup.evidence;
+      if (stored.fetchedAt !== parsed.metadata.fetchedAt) {
+        return invalid(
+          "Excel 的掃描時間已被修改或與本機快照不符。",
+          409,
+          "WORKBOOK_TAMPERED",
+        );
+      }
+
+      const rowDigests = new Set(stored.rowDigests);
+      const inputRows: UpdateListingContentInput[] = [];
+      for (const row of parsed.rows) {
+        const digest = (readStatus: "complete" | "incomplete") =>
+          contentAuditSnapshotRowDigest({
+            accountScope,
+            marketplaceId,
+            mode,
+            exportId: parsed.metadata.exportId,
+            fetchedAt: parsed.metadata.fetchedAt,
+            sellerSku: row.sellerSku,
+            asin: row.asin,
+            productType: row.productType,
+            variationFamilyKey: row.variationFamilyKey,
+            values: row.original,
+            readStatus,
+          });
+        const sourceReadStatus = rowDigests.has(digest("complete"))
+          ? "complete"
+          : rowDigests.has(digest("incomplete"))
+            ? "incomplete"
+            : null;
+        if (!sourceReadStatus) {
+          return invalid(
+            `SKU ${row.sellerSku} 的識別欄、變體分類或原始文案已被修改；已停止整批預檢。`,
+            409,
+            "WORKBOOK_TAMPERED",
+          );
+        }
+        if (sameContentAuditValues(row.original, row.proposed)) continue;
+        if (sourceReadStatus !== "complete") {
+          return invalid(
+            `SKU ${row.sellerSku} 的 Amazon 文案讀取未完成，不可由 Excel 回寫。`,
+            422,
+            "CONTENT_READ_INCOMPLETE",
+          );
+        }
+        const title = parseText(row.proposed.title, 2_000);
+        const expectedTitle = parseText(row.original.title, 2_000);
+        const itemHighlight = parseText(row.proposed.itemHighlight, 2_000);
+        const expectedItemHighlight = parseText(row.original.itemHighlight, 2_000);
+        const bulletPoints = parseBullets(row.proposed.bulletPoints);
+        const expectedBulletPoints = parseBullets(row.original.bulletPoints);
+        const productDescription = parseText(row.proposed.productDescription, 50_000);
+        const expectedProductDescription = parseText(
+          row.original.productDescription,
+          50_000,
+        );
+        const ingredients = parseText(row.proposed.ingredients, 20_000);
+        const expectedIngredients = parseText(row.original.ingredients, 20_000);
+        if (
+          title === null ||
+          expectedTitle === null ||
+          itemHighlight === null ||
+          expectedItemHighlight === null ||
+          bulletPoints === null ||
+          expectedBulletPoints === null ||
+          productDescription === null ||
+          expectedProductDescription === null ||
+          ingredients === null ||
+          expectedIngredients === null
+        ) {
+          return invalid(
+            `SKU ${row.sellerSku} 的更新文案含有不支援的控制字元或超過本機安全長度。`,
+            422,
+            "CONTENT_INVALID",
+          );
+        }
+        inputRows.push({
+          marketplaceId,
+          sellerSku: row.sellerSku,
+          title,
+          expectedTitle,
+          itemHighlight,
+          expectedItemHighlight,
+          bulletPoints,
+          expectedBulletPoints,
+          productDescription,
+          expectedProductDescription,
+          ingredients,
+          expectedIngredients,
+        });
+      }
+      if (!inputRows.length) {
+        return invalid(
+          "Excel 的更新欄位與原始值相同，沒有可預檢的變更。",
+          422,
+          "CONTENT_UNCHANGED",
+        );
+      }
+      if (inputRows.length > CONTENT_BATCH_MAX_CHANGED_SKUS) {
+        return invalid(
+          `一次最多更新 ${CONTENT_BATCH_MAX_CHANGED_SKUS} 個 SKU；請先保留本批要更新的列。`,
+          413,
+          "CONTENT_BATCH_TOO_LARGE",
+        );
+      }
+
+      const changes: ContentBatchChange[] = [];
+      const validationErrors: Array<{
+        sellerSku: string;
+        code: string;
+        message: string;
+        requestId: string | null;
+      }> = [];
+      for (const input of inputRows) {
+        try {
+          const validation = await previewListingContentUpdate(input);
+          const fingerprint = stableFingerprint([
+            accountScope,
+            this.contentFingerprint(input),
+          ]);
+          changes.push({
+            input,
+            fingerprint,
+            ledgerKey: `content-batch-${stableFingerprint([
+              key,
+              input.sellerSku,
+              fingerprint,
+            ]).slice(0, 56)}`,
+            validation,
+          });
+        } catch (error) {
+          validationErrors.push({
+            sellerSku: input.sellerSku,
+            code: error instanceof SpApiError ? error.code : "INTERNAL_ERROR",
+            message: error instanceof Error ? error.message : "Amazon 預檢失敗。",
+            requestId: error instanceof SpApiError ? error.requestId : null,
+          });
+        }
+      }
+      if (validationErrors.length) {
+        return json(
+          {
+            code: "CONTENT_BATCH_VALIDATION_FAILED",
+            message:
+              `${validationErrors.length.toLocaleString()} 個 SKU 未通過預檢；整批仍為零寫入。`,
+            rows: validationErrors,
+            writeCount: 0,
+          },
+          422,
+        );
+      }
+
+      const batchFingerprint = stableFingerprint([
+        marketplaceId,
+        parsed.metadata.exportId,
+        key,
+        changes.map((change) => [
+          change.input.sellerSku,
+          change.fingerprint,
+          change.validation.changedFields,
+        ]),
+      ]);
+      const conflictingPlan = [...this.contentBatchPlans.values()].find(
+        (plan) =>
+          plan.accountScope === accountScope &&
+          plan.marketplaceId === marketplaceId &&
+          plan.idempotencyKey === key &&
+          plan.state !== "completed",
+      );
+      if (conflictingPlan) {
+        if (conflictingPlan.fingerprint === batchFingerprint) {
+          return json(this.contentBatchPreviewPayload(conflictingPlan));
+        }
+        return invalid(
+          "這個批次確認碼已用於另一份 Excel。",
+          409,
+          "IDEMPOTENCY_CONFLICT",
+        );
+      }
+      const plan: ContentBatchPlan = {
+        previewId: randomUUID(),
+        exportId: parsed.metadata.exportId,
+        marketplaceId,
+        accountScope,
+        idempotencyKey: key,
+        fingerprint: batchFingerprint,
+        changes,
+        expiresAt: Date.now() + CONTENT_BATCH_PREVIEW_TTL_MS,
+        state: "ready",
+        result: null,
+      };
+      this.contentBatchPlans.set(plan.previewId, plan);
+      return json(this.contentBatchPreviewPayload(plan));
+    } catch (error) {
+      if (error instanceof ContentAuditWorkbookError) {
+        return json({ code: error.code, message: error.message }, error.status);
+      }
+      return apiError(error, "文案 Excel 預檢時發生未預期的錯誤。");
+    }
+  }
+
+  private async commitContentWorkbookImport(
+    request: ApiRequest,
+  ): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (!body) {
+      return invalid(
+        "文案 Excel 更新必須使用 JSON。",
+        415,
+        "UNSUPPORTED_MEDIA_TYPE",
+      );
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    const previewId = this.reportIdentifier(body.previewId);
+    const key = idempotencyKey(body.idempotencyKey);
+    if (!marketplaceId || !previewId || !key) {
+      return invalid("Excel 更新缺少有效的站點、previewId 或批次確認碼。");
+    }
+    this.pruneContentBatchPlans();
+    const plan = this.contentBatchPlans.get(previewId);
+    if (!plan || plan.expiresAt <= Date.now()) {
+      this.contentBatchPlans.delete(previewId);
+      return invalid(
+        "Excel 批次預檢已過期，請重新上傳並預檢。",
+        410,
+        "PREVIEW_EXPIRED",
+      );
+    }
+    if (
+      plan.marketplaceId !== marketplaceId ||
+      plan.idempotencyKey !== key
+    ) {
+      return invalid(
+        "Excel 批次預檢與目前的站點或確認碼不一致。",
+        409,
+        "PREVIEW_CHANGED",
+      );
+    }
+    const accountScope = await this.vault.getAccountScope(
+      MARKETPLACES[marketplaceId].region,
+    );
+    if (plan.accountScope !== accountScope) {
+      this.contentBatchPlans.delete(previewId);
+      return invalid(
+        "Amazon 帳號範圍已改變，舊預檢不可送出。",
+        409,
+        "ACCOUNT_SCOPE_CHANGED",
+      );
+    }
+    if (plan.state === "completed" && plan.result) return json(plan.result);
+    if (plan.state === "committing") {
+      return invalid(
+        "這份 Excel 批次正在處理，已阻止重複送出。",
+        409,
+        "OPERATION_IN_PROGRESS",
+      );
+    }
+
+    const ownerToken = randomUUID();
+    const sellerSkus = plan.changes.map((change) => change.input.sellerSku);
+    const reservationError = this.reserveListingAttributeWrites(
+      marketplaceId,
+      sellerSkus,
+      ownerToken,
+    );
+    if (reservationError) return reservationError;
+    plan.state = "committing";
+    try {
+      await this.store.assertIdempotentOperationsAvailable(
+        plan.changes.map((change) => ({
+          idempotencyKey: change.ledgerKey,
+          operationType: "content" as const,
+          marketplaceId,
+          sellerSku: change.input.sellerSku,
+          accountScope,
+          fingerprint: change.fingerprint,
+        })),
+      );
+
+      try {
+        for (const change of plan.changes) {
+          change.validation = await previewListingContentUpdate(change.input);
+        }
+      } catch (error) {
+        this.contentBatchPlans.delete(previewId);
+        const response = apiError(
+          error,
+          "整批送出前的 Amazon 重新讀取或 Validation Preview 失敗。",
+        );
+        if (response.body.kind === "json" && isPlainRecord(response.body.value)) {
+          return json({
+            ...response.body.value,
+            message:
+              `${String(response.body.value.message ?? "整批重新預檢失敗。")} Amazon 寫入數為 0，請重新上傳 Excel。`,
+            writeCount: 0,
+          }, response.status, response.headers);
+        }
+        return response;
+      }
+
+      try {
+        const shownSkus = sellerSkus.slice(0, 5).join("、");
+        const remaining = Math.max(0, sellerSkus.length - 5);
+        await this.approveWrite(
+          `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} 個 SKU｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}｜驗證碼 ${plan.fingerprint.slice(0, 12)}`,
+        );
+      } catch {
+        plan.state = "ready";
+        return invalid(
+          "操作已取消；Amazon 沒有收到任何文案變更。",
+          409,
+          "ACTION_CANCELLED",
+        );
+      }
+
+      const rows: ContentBatchRowResult[] = plan.changes.map((change) => ({
+        sellerSku: change.input.sellerSku,
+        state: "not-started",
+        result: null,
+        error: null,
+      }));
+      let status: ContentBatchCommitResult["status"] = "COMPLETED";
+      for (let index = 0; index < plan.changes.length; index += 1) {
+        const change = plan.changes[index]!;
+        try {
+          const result = await this.store.runIdempotentOperation<
+            ListingContentUpdateResult
+          >({
+            idempotencyKey: change.ledgerKey,
+            operationType: "content",
+            marketplaceId,
+            sellerSku: change.input.sellerSku,
+            accountScope,
+            fingerprint: change.fingerprint,
+            execute: async ({ recordAccepted }) => {
+              try {
+                return await commitWithCanonicalReadback({
+                  commit: () => updateListingContent(change.input),
+                  onAccepted: recordAccepted,
+                  read: () => getListingContent(change.input),
+                  decide: contentReadbackDecision,
+                });
+              } catch (error) {
+                if (
+                  error instanceof SpApiError &&
+                  !(error instanceof SpApiPreCommitError) &&
+                  [401, 429].includes(error.status) &&
+                  error.code !== "UPDATE_STATUS_UNKNOWN"
+                ) {
+                  throw new SpApiError(
+                    `${error.message} Amazon 可能已收到這筆 PATCH；系統已禁止重送，請先回查。`,
+                    {
+                      status: error.status,
+                      code: "UPDATE_STATUS_UNKNOWN",
+                      requestId: error.requestId,
+                      retryAfter: error.retryAfter,
+                      issues: error.issues,
+                      operation: error.operation,
+                      upstreamCode: error.upstreamCode,
+                    },
+                  );
+                }
+                throw error;
+              }
+            },
+          });
+          rows[index] = {
+            sellerSku: change.input.sellerSku,
+            state: result.mode === "demo" ? "simulated" : "verified",
+            result,
+            error: null,
+          };
+        } catch (error) {
+          const unknown =
+            !(error instanceof SpApiPreCommitError) &&
+            (!(error instanceof SpApiError) ||
+              error.code === "UPDATE_STATUS_UNKNOWN" ||
+              error.status >= 500 ||
+              [401, 429].includes(error.status));
+          rows[index] = {
+            sellerSku: change.input.sellerSku,
+            state: unknown ? "unknown" : "rejected",
+            result: null,
+            error: {
+              code: error instanceof SpApiError ? error.code : "UPDATE_STATUS_UNKNOWN",
+              message: error instanceof Error
+                ? error.message
+                : "Amazon 寫入結果尚未確認。",
+              requestId: error instanceof SpApiError ? error.requestId : null,
+            },
+          };
+          status = unknown ? "STOPPED_UNKNOWN" : "STOPPED_REJECTED";
+          break;
+        }
+      }
+      const completedCount = rows.filter((row) =>
+        row.state === "verified" || row.state === "simulated").length;
+      const result: ContentBatchCommitResult = {
+        previewId,
+        marketplaceId,
+        status,
+        rows,
+        completedAt: new Date().toISOString(),
+        notice: status === "COMPLETED"
+          ? `已完成 ${completedCount.toLocaleString()} 個 SKU；每筆皆經正式回讀或展示模擬核對。`
+          : status === "STOPPED_UNKNOWN"
+            ? `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆結果不明後已停止，後續 SKU 沒有送出。請先回查 Amazon，勿重送。`
+            : `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆已知拒絕後已停止，後續 SKU 沒有送出。`,
+      };
+      plan.result = result;
+      plan.state = "completed";
+      return json(result);
+    } catch (error) {
+      if (plan.state === "committing") plan.state = "ready";
+      return apiError(error, "Excel 批次文案更新時發生未預期的錯誤。");
+    } finally {
+      this.releaseListingAttributeWrites(marketplaceId, sellerSkus, ownerToken);
+    }
   }
 
   private imageInput(request: ApiRequest):
@@ -3392,39 +4092,54 @@ export class ApiRouter {
     if (input.confirmationSku !== input.sellerSku) {
       return invalid("送出圖片前，請重新輸入完整 SKU。", 400, "CONFIRMATION_REQUIRED");
     }
-    const scoped = await this.scopedFingerprint(
+    const reservationOwner = randomUUID();
+    const reservationError = this.reserveListingAttributeWrites(
       input.marketplaceId,
-      this.imageFingerprint(input),
+      [input.sellerSku],
+      reservationOwner,
     );
-    const fingerprint = scoped.fingerprint;
-    const changedSlots = input.urls
-      .map((value, index) => (value !== input.expectedUrls[index] ? index + 1 : null))
-      .filter((value): value is number => value !== null);
-    const ticketError = await this.approveReservedPreview(
-      request.path,
-      key,
-      fingerprint,
-      `確認圖片｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${fingerprint.slice(0, 12)}`,
-    );
-    if (ticketError) return ticketError;
+    if (reservationError) return reservationError;
     try {
-      const result = await this.store.runIdempotentOperation({
-        idempotencyKey: key,
-        operationType: "images",
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-        accountScope: scoped.accountScope,
+      const scoped = await this.scopedFingerprint(
+        input.marketplaceId,
+        this.imageFingerprint(input),
+      );
+      const fingerprint = scoped.fingerprint;
+      const changedSlots = input.urls
+        .map((value, index) => (value !== input.expectedUrls[index] ? index + 1 : null))
+        .filter((value): value is number => value !== null);
+      const ticketError = await this.approveReservedPreview(
+        request.path,
+        key,
         fingerprint,
-        execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateListingImages(input),
-          onAccepted: recordAccepted,
-          read: () => getListingImages(input),
-          decide: imageReadbackDecision,
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return apiError(error, "送出商品圖片時發生未預期的錯誤。");
+        `確認圖片｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${fingerprint.slice(0, 12)}`,
+      );
+      if (ticketError) return ticketError;
+      try {
+        const result = await this.store.runIdempotentOperation({
+          idempotencyKey: key,
+          operationType: "images",
+          marketplaceId: input.marketplaceId,
+          sellerSku: input.sellerSku,
+          accountScope: scoped.accountScope,
+          fingerprint,
+          execute: ({ recordAccepted }) => commitWithCanonicalReadback({
+            commit: () => updateListingImages(input),
+            onAccepted: recordAccepted,
+            read: () => getListingImages(input),
+            decide: imageReadbackDecision,
+          }),
+        });
+        return json(result);
+      } catch (error) {
+        return apiError(error, "送出商品圖片時發生未預期的錯誤。");
+      }
+    } finally {
+      this.releaseListingAttributeWrites(
+        input.marketplaceId,
+        [input.sellerSku],
+        reservationOwner,
+      );
     }
   }
 
@@ -5017,6 +5732,14 @@ export class ApiRouter {
     }
   }
 
+  private pruneContentBatchPlans(now = Date.now()): void {
+    for (const [previewId, plan] of this.contentBatchPlans) {
+      if (plan.expiresAt <= now && plan.state !== "committing") {
+        this.contentBatchPlans.delete(previewId);
+      }
+    }
+  }
+
   private async downloadImageAuditSnapshot(
     marketplaceId: MarketplaceId,
     exportId: string,
@@ -5098,13 +5821,63 @@ export class ApiRouter {
     try {
       const data = await getAllListingsExportData({ marketplaceId, reportId, documentId });
       if (auditRequested) {
-        return json(
-          auditListingContentRows({
-            marketplaceId,
-            fetchedAt: data.fetchedAt,
-            rows: data.rows,
-          }),
+        const grouping = await getFbaVariationGroupingData({
+          marketplaceId,
+          rows: data.rows,
+        });
+        const groupingBySku = new Map(
+          grouping.rows.map((row) => [row.sellerSku, row] as const),
         );
+        const auditableRows = grouping.rows.filter((row) => row.role !== "parent");
+        const audit = auditListingContentRows({
+          marketplaceId,
+          fetchedAt: data.fetchedAt,
+          rows: auditableRows,
+        });
+        const exportId = randomUUID();
+        const snapshot = {
+          ...audit,
+          exportId,
+          rows: audit.rows.map((row) => {
+            const relationship = groupingBySku.get(row.sellerSku);
+            return {
+              ...row,
+              variationRole: relationship?.role ?? "unknown",
+              variationParentSku: relationship?.parentSku ?? null,
+              variationFamilyKey: relationship?.familyKey ?? row.sellerSku,
+              variationTheme: relationship?.theme ?? null,
+              relationshipStatus: relationship?.status ?? "incomplete",
+              relationshipMessage: relationship?.message ??
+                "Amazon relationships 未與文案列完整對齊；本列不會被猜入任一變體 family。",
+            };
+          }),
+        };
+        const accountScope = await this.vault.getAccountScope(
+          MARKETPLACES[marketplaceId].region,
+        );
+        const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+        await this.store.saveContentAuditSnapshotEvidence({
+          exportId,
+          marketplaceId,
+          accountScope,
+          mode,
+          fetchedAt: snapshot.fetchedAt,
+          rowDigests: snapshot.rows.map((row) =>
+            contentAuditSnapshotRowDigest({
+              accountScope,
+              marketplaceId,
+              mode,
+              exportId,
+              fetchedAt: snapshot.fetchedAt,
+              sellerSku: row.sellerSku,
+              asin: row.asin,
+              productType: row.productType,
+              variationFamilyKey: contentAuditWorkbookFamilyKey(row),
+              values: contentAuditRowValues(row),
+              readStatus: row.readStatus,
+            })),
+        });
+        return json(snapshot);
       }
       if (imageAuditRequested) {
         const snapshot = auditListingImageRows({
@@ -5558,7 +6331,13 @@ export class ApiRouter {
       fetchedAt: data.fetchedAt,
       rows: data.rows,
     });
-    const fieldLabel = { title: "商品標題", bulletPoints: "賣點", ingredients: "成分" } as const;
+    const fieldLabel = {
+      title: "產品名稱",
+      itemHighlight: "產品亮點",
+      bulletPoints: "產品要點",
+      productDescription: "產品敘述",
+      ingredients: "成分",
+    } as const;
     const rows = audit.rows.flatMap((row) => row.issues.map((issue) => ({
       sellerSku: row.sellerSku,
       title: row.title,
@@ -5567,9 +6346,15 @@ export class ApiRouter {
       field: fieldLabel[issue.field],
       originalText: issue.field === "title"
         ? row.title
-        : issue.field === "bulletPoints"
-          ? row.bulletPoints.join("\n")
-          : row.ingredients,
+        : issue.field === "itemHighlight"
+          ? row.itemHighlight
+          : issue.field === "bulletPoints"
+            ? issue.bulletIndex === undefined
+              ? row.bulletPoints.join("\n")
+              : row.bulletPoints[issue.bulletIndex] ?? ""
+            : issue.field === "productDescription"
+              ? row.productDescription
+              : row.ingredients,
       description: issue.suggestion ? `${issue.message} 建議：${issue.suggestion}` : issue.message,
     })));
     const scopeNotice = audit.summary.incomplete
@@ -6677,6 +7462,43 @@ export class ApiRouter {
       accountScope,
       fingerprint: stableFingerprint([accountScope, operationFingerprint]),
     };
+  }
+
+  private reserveListingAttributeWrites(
+    marketplaceId: MarketplaceId,
+    sellerSkus: readonly string[],
+    ownerToken: string,
+  ): ApiResponse | null {
+    const keys = sellerSkus.map((sellerSku) => `${marketplaceId}\u0000${sellerSku}`);
+    if (new Set(keys).size !== keys.length) {
+      return invalid(
+        "批次包含重複 SKU，已停止送出。",
+        409,
+        "IDEMPOTENCY_CONFLICT",
+      );
+    }
+    if (keys.some((key) => this.listingAttributeWriteReservations.has(key))) {
+      return invalid(
+        "同一 SKU 的商品內容或圖片正在處理，系統已阻止重疊送出。",
+        409,
+        "OPERATION_IN_PROGRESS",
+      );
+    }
+    keys.forEach((key) => this.listingAttributeWriteReservations.set(key, ownerToken));
+    return null;
+  }
+
+  private releaseListingAttributeWrites(
+    marketplaceId: MarketplaceId,
+    sellerSkus: readonly string[],
+    ownerToken: string,
+  ): void {
+    for (const sellerSku of sellerSkus) {
+      const key = `${marketplaceId}\u0000${sellerSku}`;
+      if (this.listingAttributeWriteReservations.get(key) === ownerToken) {
+        this.listingAttributeWriteReservations.delete(key);
+      }
+    }
   }
 
   private async reconcilePriceWrites(snapshot: ListingPriceSnapshot): Promise<void> {

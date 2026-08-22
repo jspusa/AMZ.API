@@ -32,27 +32,37 @@ type ListingIssue = {
 type FieldCapability = {
   supported: boolean;
   editable: boolean;
+  required: boolean;
   minItems: number | null;
+  minLength: number | null;
   maxLength: number | null;
+  maxUtf8Bytes: number | null;
   maxItems: number | null;
+  languageTags: string[];
   reason: string | null;
 };
 
 type ContentCapabilities = {
   title: FieldCapability;
+  itemHighlight: FieldCapability;
   bulletPoints: FieldCapability;
+  productDescription: FieldCapability;
   ingredients: FieldCapability;
 };
 
 type ListingContent = {
   title: string;
+  itemHighlight: string;
   bulletPoints: string[];
+  productDescription: string;
   ingredients: string;
 };
 
 type SubmittedContent = Readonly<{
   title: string;
+  itemHighlight: string;
   bulletPoints: readonly string[];
+  productDescription: string;
   ingredients: string;
 }>;
 
@@ -82,9 +92,17 @@ type RawContentSnapshot = Omit<
 > & {
   sellerSku?: string;
   title?: string;
+  itemHighlight?: string;
+  titleDifferentiation?: string;
+  title_differentiation?: string;
   bulletPoints?: string[];
+  productDescription?: string;
+  product_description?: string;
   ingredients?: string | string[];
   content?: Partial<ListingContent> & {
+    titleDifferentiation?: string;
+    title_differentiation?: string;
+    product_description?: string;
     capabilities?: Partial<Record<string, RawCapability>>;
   };
   capabilities?: Partial<Record<string, RawCapability>>;
@@ -119,7 +137,9 @@ type ApiProblem = {
 
 type Draft = {
   title: string;
+  itemHighlight: string;
   bulletPoints: string[];
+  productDescription: string;
   ingredients: string;
 };
 
@@ -127,25 +147,61 @@ const DEFAULT_CAPABILITIES: ContentCapabilities = {
   title: {
     supported: true,
     editable: true,
+    required: true,
     minItems: 1,
+    minLength: 1,
     maxLength: 200,
+    maxUtf8Bytes: null,
     maxItems: 1,
+    languageTags: [],
     reason: null,
+  },
+  itemHighlight: {
+    supported: false,
+    editable: false,
+    required: false,
+    minItems: 1,
+    minLength: 1,
+    maxLength: 125,
+    maxUtf8Bytes: null,
+    maxItems: 1,
+    languageTags: [],
+    reason: "目前安裝的 Notebook 鑰匙未回傳產品亮點能力；請先更新 App。",
   },
   bulletPoints: {
     supported: true,
     editable: true,
+    required: true,
     minItems: 1,
+    minLength: 1,
     maxLength: 500,
+    maxUtf8Bytes: null,
     maxItems: 5,
+    languageTags: [],
     reason: null,
+  },
+  productDescription: {
+    supported: false,
+    editable: false,
+    required: false,
+    minItems: 1,
+    minLength: 1,
+    maxLength: 10_000,
+    maxUtf8Bytes: null,
+    maxItems: 1,
+    languageTags: [],
+    reason: "目前安裝的 Notebook 鑰匙未回傳產品敘述能力；請先更新 App。",
   },
   ingredients: {
     supported: true,
     editable: true,
+    required: false,
     minItems: 1,
+    minLength: 1,
     maxLength: 5000,
+    maxUtf8Bytes: null,
     maxItems: 1,
+    languageTags: [],
     reason: null,
   },
 };
@@ -197,6 +253,14 @@ function normalizedBullets(value: unknown): string[] {
   return value.slice(0, 5).map((item) => String(item ?? ""));
 }
 
+function contentCharacterLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function contentUtf8Length(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
 function positiveInteger(value: unknown, fallback: number | null): number | null {
   if (value === null) return null;
   return typeof value === "number" && Number.isInteger(value) && value >= 0
@@ -211,24 +275,50 @@ function normalizeCapability(
   return {
     supported: raw?.supported ?? fallback.supported,
     editable: raw?.editable ?? fallback.editable,
+    required: raw?.required ?? fallback.required,
     minItems: positiveInteger(raw?.minItems, fallback.minItems),
+    minLength: positiveInteger(raw?.minLength, fallback.minLength),
     maxLength: positiveInteger(raw?.maxLength, fallback.maxLength),
+    maxUtf8Bytes: positiveInteger(raw?.maxUtf8Bytes, fallback.maxUtf8Bytes),
     maxItems: positiveInteger(raw?.maxItems, fallback.maxItems),
+    languageTags: Array.isArray(raw?.languageTags)
+      ? raw.languageTags.filter((value): value is string => typeof value === "string")
+      : fallback.languageTags,
     reason: raw?.reason ?? raw?.message ?? fallback.reason,
   };
 }
 
-function normalizeSnapshot(raw: RawContentSnapshot): ListingContentSnapshot {
+export function normalizeListingContentSnapshot(
+  raw: RawContentSnapshot,
+): ListingContentSnapshot {
   const nestedContent = raw.content ?? {};
   const rawCapabilities = raw.capabilities ?? nestedContent.capabilities ?? {};
   const titleCapability =
     rawCapabilities.title ?? rawCapabilities.itemName ?? rawCapabilities.item_name;
+  const itemHighlightCapability =
+    rawCapabilities.itemHighlight ??
+    rawCapabilities.titleDifferentiation ??
+    rawCapabilities.title_differentiation;
   const bulletCapability =
     rawCapabilities.bulletPoints ??
     rawCapabilities.bullets ??
     rawCapabilities.bulletPoint ??
     rawCapabilities.bullet_point;
+  const productDescriptionCapability =
+    rawCapabilities.productDescription ?? rawCapabilities.product_description;
   const ingredientCapability = rawCapabilities.ingredients;
+  const itemHighlight =
+    nestedContent.itemHighlight ??
+    nestedContent.titleDifferentiation ??
+    nestedContent.title_differentiation ??
+    raw.itemHighlight ??
+    raw.titleDifferentiation ??
+    raw.title_differentiation;
+  const productDescription =
+    nestedContent.productDescription ??
+    nestedContent.product_description ??
+    raw.productDescription ??
+    raw.product_description;
   const ingredients = nestedContent.ingredients ?? raw.ingredients;
 
   return {
@@ -245,14 +335,24 @@ function normalizeSnapshot(raw: RawContentSnapshot): ListingContentSnapshot {
     notice: raw.notice ?? null,
     content: {
       title: nestedContent.title ?? raw.title ?? "",
+      itemHighlight: normalizedText(itemHighlight),
       bulletPoints: normalizedBullets(nestedContent.bulletPoints ?? raw.bulletPoints),
+      productDescription: normalizedText(productDescription),
       ingredients: normalizedText(ingredients),
     },
     capabilities: {
       title: normalizeCapability(titleCapability, DEFAULT_CAPABILITIES.title),
+      itemHighlight: normalizeCapability(
+        itemHighlightCapability,
+        DEFAULT_CAPABILITIES.itemHighlight,
+      ),
       bulletPoints: normalizeCapability(
         bulletCapability,
         DEFAULT_CAPABILITIES.bulletPoints,
+      ),
+      productDescription: normalizeCapability(
+        productDescriptionCapability,
+        DEFAULT_CAPABILITIES.productDescription,
       ),
       ingredients: normalizeCapability(
         ingredientCapability,
@@ -298,10 +398,12 @@ function normalizeExportReply(raw: Record<string, unknown>): ExportReply {
 function toDraft(content: ListingContent): Draft {
   return {
     title: content.title,
+    itemHighlight: content.itemHighlight,
     bulletPoints: Array.from(
       { length: 5 },
       (_, index) => content.bulletPoints[index] ?? "",
     ),
+    productDescription: content.productDescription,
     ingredients: content.ingredients,
   };
 }
@@ -310,9 +412,14 @@ function compactBullets(values: readonly string[]): string[] {
   return values.map((value) => value.trim()).filter(Boolean);
 }
 
-function contentMatches(left: SubmittedContent, right: SubmittedContent): boolean {
+export function listingContentMatches(
+  left: SubmittedContent,
+  right: SubmittedContent,
+): boolean {
   return (
     left.title.trim() === right.title.trim() &&
+    left.itemHighlight.trim() === right.itemHighlight.trim() &&
+    left.productDescription.trim() === right.productDescription.trim() &&
     left.ingredients.trim() === right.ingredients.trim() &&
     JSON.stringify(compactBullets(left.bulletPoints)) ===
       JSON.stringify(compactBullets(right.bulletPoints))
@@ -322,9 +429,44 @@ function contentMatches(left: SubmittedContent, right: SubmittedContent): boolea
 function immutableContent(content: ListingContent): SubmittedContent {
   return Object.freeze({
     title: content.title,
+    itemHighlight: content.itemHighlight,
     bulletPoints: Object.freeze([...content.bulletPoints]),
+    productDescription: content.productDescription,
     ingredients: content.ingredients,
   });
+}
+
+export function createListingContentMutationBody({
+  marketplaceId,
+  sellerSku,
+  expected,
+  requested,
+  idempotencyKey,
+}: {
+  marketplaceId: string;
+  sellerSku: string;
+  expected: ListingContent;
+  requested: SubmittedContent;
+  idempotencyKey: string;
+}) {
+  return {
+    marketplaceId,
+    sellerSku,
+    expectedTitle: expected.title,
+    expectedItemHighlight: expected.itemHighlight,
+    expectedBulletPoints: [...expected.bulletPoints],
+    expectedProductDescription: expected.productDescription,
+    expectedIngredients: expected.ingredients,
+    title: requested.title,
+    itemHighlight: requested.itemHighlight,
+    bulletPoints: [...requested.bulletPoints],
+    productDescription: requested.productDescription,
+    ingredients: requested.ingredients,
+    // Keep Pages compatible with an older installed bridge during rollout;
+    // the current bridge no longer treats this legacy field as an approval.
+    confirmationSku: sellerSku,
+    idempotencyKey,
+  };
 }
 
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -419,12 +561,16 @@ export default function SkuOperationsDrawer({
     if (!draft) return null;
     return {
       title: draft.title.trim(),
+      itemHighlight: draft.itemHighlight.trim(),
       bulletPoints: compactBullets(draft.bulletPoints),
+      productDescription: draft.productDescription.trim(),
       ingredients: draft.ingredients.trim(),
     };
   }, [draft]);
   const hasChanges = Boolean(
-    listing && requestedContent && !contentMatches(listing.content, requestedContent),
+    listing &&
+      requestedContent &&
+      !listingContentMatches(listing.content, requestedContent),
   );
   const quickEditResolution = useMemo(
     () =>
@@ -446,10 +592,21 @@ export default function SkuOperationsDrawer({
     const fields: string[] = [];
     if (listing.content.title.trim() !== requestedContent.title) fields.push("商品標題");
     if (
+      listing.content.itemHighlight.trim() !== requestedContent.itemHighlight
+    ) {
+      fields.push("產品亮點");
+    }
+    if (
       JSON.stringify(compactBullets(listing.content.bulletPoints)) !==
       JSON.stringify(requestedContent.bulletPoints)
     ) {
       fields.push("五大賣點");
+    }
+    if (
+      listing.content.productDescription.trim() !==
+      requestedContent.productDescription
+    ) {
+      fields.push("產品敘述");
     }
     if (listing.content.ingredients.trim() !== requestedContent.ingredients) {
       fields.push("成分");
@@ -461,12 +618,18 @@ export default function SkuOperationsDrawer({
     if (!listing || !draft) return [];
     const failures: string[] = [];
     const titleCapability = listing.capabilities.title;
+    const itemHighlightCapability = listing.capabilities.itemHighlight;
     const bulletCapability = listing.capabilities.bulletPoints;
+    const productDescriptionCapability = listing.capabilities.productDescription;
     const ingredientCapability = listing.capabilities.ingredients;
     const titleChanged = listing.content.title !== draft.title;
+    const itemHighlightChanged =
+      listing.content.itemHighlight !== draft.itemHighlight;
     const bulletsChanged =
       JSON.stringify(compactBullets(listing.content.bulletPoints)) !==
       JSON.stringify(compactBullets(draft.bulletPoints));
+    const productDescriptionChanged =
+      listing.content.productDescription !== draft.productDescription;
     const ingredientsChanged = listing.content.ingredients !== draft.ingredients;
     if (
       titleChanged &&
@@ -481,9 +644,100 @@ export default function SkuOperationsDrawer({
       titleCapability.supported &&
       titleCapability.editable &&
       titleCapability.maxLength !== null &&
-      draft.title.length > titleCapability.maxLength
+      contentCharacterLength(draft.title) > titleCapability.maxLength
     ) {
       failures.push(`商品標題超過 ${titleCapability.maxLength} 個字元`);
+    }
+    if (
+      titleChanged &&
+      titleCapability.supported &&
+      titleCapability.editable &&
+      titleCapability.maxUtf8Bytes !== null &&
+      contentUtf8Length(draft.title) > titleCapability.maxUtf8Bytes
+    ) {
+      failures.push(`商品標題超過 ${titleCapability.maxUtf8Bytes} UTF-8 bytes`);
+    }
+    if (
+      itemHighlightChanged &&
+      itemHighlightCapability.supported &&
+      itemHighlightCapability.editable &&
+      !draft.itemHighlight.trim()
+    ) {
+      failures.push("產品亮點不可直接清空");
+    }
+    if (
+      itemHighlightChanged &&
+      itemHighlightCapability.supported &&
+      itemHighlightCapability.editable &&
+      itemHighlightCapability.minLength !== null &&
+      contentCharacterLength(draft.itemHighlight.trim()) <
+        itemHighlightCapability.minLength
+    ) {
+      failures.push(`產品亮點至少需要 ${itemHighlightCapability.minLength} 個字元`);
+    }
+    if (
+      itemHighlightChanged &&
+      itemHighlightCapability.supported &&
+      itemHighlightCapability.editable &&
+      itemHighlightCapability.maxLength !== null &&
+      contentCharacterLength(draft.itemHighlight) > itemHighlightCapability.maxLength
+    ) {
+      failures.push(`產品亮點超過 ${itemHighlightCapability.maxLength} 個字元`);
+    }
+    if (
+      itemHighlightChanged &&
+      itemHighlightCapability.supported &&
+      itemHighlightCapability.editable &&
+      itemHighlightCapability.maxUtf8Bytes !== null &&
+      contentUtf8Length(draft.itemHighlight) > itemHighlightCapability.maxUtf8Bytes
+    ) {
+      failures.push(
+        `產品亮點超過 ${itemHighlightCapability.maxUtf8Bytes} UTF-8 bytes`,
+      );
+    }
+    if (
+      productDescriptionChanged &&
+      productDescriptionCapability.supported &&
+      productDescriptionCapability.editable &&
+      !draft.productDescription.trim()
+    ) {
+      failures.push("產品敘述不可直接清空");
+    }
+    if (
+      productDescriptionChanged &&
+      productDescriptionCapability.supported &&
+      productDescriptionCapability.editable &&
+      productDescriptionCapability.minLength !== null &&
+      contentCharacterLength(draft.productDescription.trim()) <
+        productDescriptionCapability.minLength
+    ) {
+      failures.push(
+        `產品敘述至少需要 ${productDescriptionCapability.minLength} 個字元`,
+      );
+    }
+    if (
+      productDescriptionChanged &&
+      productDescriptionCapability.supported &&
+      productDescriptionCapability.editable &&
+      productDescriptionCapability.maxLength !== null &&
+      contentCharacterLength(draft.productDescription) >
+        productDescriptionCapability.maxLength
+    ) {
+      failures.push(
+        `產品敘述超過 ${productDescriptionCapability.maxLength} 個字元`,
+      );
+    }
+    if (
+      productDescriptionChanged &&
+      productDescriptionCapability.supported &&
+      productDescriptionCapability.editable &&
+      productDescriptionCapability.maxUtf8Bytes !== null &&
+      contentUtf8Length(draft.productDescription) >
+        productDescriptionCapability.maxUtf8Bytes
+    ) {
+      failures.push(
+        `產品敘述超過 ${productDescriptionCapability.maxUtf8Bytes} UTF-8 bytes`,
+      );
     }
     if (
       ingredientsChanged &&
@@ -498,9 +752,18 @@ export default function SkuOperationsDrawer({
       ingredientCapability.supported &&
       ingredientCapability.editable &&
       ingredientCapability.maxLength !== null &&
-      draft.ingredients.length > ingredientCapability.maxLength
+      contentCharacterLength(draft.ingredients) > ingredientCapability.maxLength
     ) {
       failures.push(`成分超過 ${ingredientCapability.maxLength} 個字元`);
+    }
+    if (
+      ingredientsChanged &&
+      ingredientCapability.supported &&
+      ingredientCapability.editable &&
+      ingredientCapability.maxUtf8Bytes !== null &&
+      contentUtf8Length(draft.ingredients) > ingredientCapability.maxUtf8Bytes
+    ) {
+      failures.push(`成分超過 ${ingredientCapability.maxUtf8Bytes} UTF-8 bytes`);
     }
     draft.bulletPoints.forEach((bullet, index) => {
       if (
@@ -509,9 +772,32 @@ export default function SkuOperationsDrawer({
         bulletCapability.editable &&
         index < (bulletCapability.maxItems ?? 5) &&
         bulletCapability.maxLength !== null &&
-        bullet.length > bulletCapability.maxLength
+        contentCharacterLength(bullet) > bulletCapability.maxLength
       ) {
         failures.push(`賣點 ${index + 1} 超過 ${bulletCapability.maxLength} 個字元`);
+      }
+      if (
+        bulletsChanged &&
+        bullet.trim() &&
+        bulletCapability.supported &&
+        bulletCapability.editable &&
+        index < (bulletCapability.maxItems ?? 5) &&
+        bulletCapability.minLength !== null &&
+        contentCharacterLength(bullet.trim()) < bulletCapability.minLength
+      ) {
+        failures.push(`賣點 ${index + 1} 至少需要 ${bulletCapability.minLength} 個字元`);
+      }
+      if (
+        bulletsChanged &&
+        bulletCapability.supported &&
+        bulletCapability.editable &&
+        index < (bulletCapability.maxItems ?? 5) &&
+        bulletCapability.maxUtf8Bytes !== null &&
+        contentUtf8Length(bullet) > bulletCapability.maxUtf8Bytes
+      ) {
+        failures.push(
+          `賣點 ${index + 1} 超過 ${bulletCapability.maxUtf8Bytes} UTF-8 bytes`,
+        );
       }
     });
     if (
@@ -633,7 +919,9 @@ export default function SkuOperationsDrawer({
       if (!response.ok) {
         throw new Error(problemMessage(payload as ApiProblem, "目前無法查詢這個 SKU。"));
       }
-      const snapshot = normalizeSnapshot(payload as RawContentSnapshot);
+      const snapshot = normalizeListingContentSnapshot(
+        payload as RawContentSnapshot,
+      );
       if (!snapshot.sellerSku) throw new Error("Amazon 沒有回傳可核對的 Seller SKU。");
       return snapshot;
     },
@@ -705,18 +993,23 @@ export default function SkuOperationsDrawer({
   const mutationBody = (
     key = idempotencyKey,
     content: SubmittedContent | null = requestedContent,
-  ) => ({
+  ) => createListingContentMutationBody({
     marketplaceId,
-    sellerSku: listing?.sellerSku,
-    expectedTitle: listing?.content.title ?? "",
-    expectedBulletPoints: listing?.content.bulletPoints ?? [],
-    expectedIngredients: listing?.content.ingredients ?? "",
-    title: content?.title ?? "",
-    bulletPoints: content ? [...content.bulletPoints] : [],
-    ingredients: content?.ingredients ?? "",
-    // Keep Pages compatible with an older installed bridge during rollout;
-    // the current bridge no longer treats this legacy field as an approval.
-    confirmationSku: listing?.sellerSku ?? "",
+    sellerSku: listing?.sellerSku ?? "",
+    expected: listing?.content ?? {
+      title: "",
+      itemHighlight: "",
+      bulletPoints: [],
+      productDescription: "",
+      ingredients: "",
+    },
+    requested: content ?? {
+      title: "",
+      itemHighlight: "",
+      bulletPoints: [],
+      productDescription: "",
+      ingredients: "",
+    },
     idempotencyKey: key,
   });
 
@@ -803,7 +1096,7 @@ export default function SkuOperationsDrawer({
       );
       const confirmed =
         blockingIssues.length === 0 &&
-        contentMatches(latest.content, submittedContent);
+        listingContentMatches(latest.content, submittedContent);
       setResultConfirmed(confirmed);
       if (confirmed) {
         setListing(latest);
@@ -955,7 +1248,9 @@ export default function SkuOperationsDrawer({
   };
 
   const titleCapability = listing?.capabilities.title;
+  const itemHighlightCapability = listing?.capabilities.itemHighlight;
   const bulletCapability = listing?.capabilities.bulletPoints;
+  const productDescriptionCapability = listing?.capabilities.productDescription;
   const ingredientCapability = listing?.capabilities.ingredients;
   const bulletMaxItems = Math.min(5, bulletCapability?.maxItems ?? 5);
   const exportStatusText = exportState === "starting"
@@ -997,7 +1292,7 @@ export default function SkuOperationsDrawer({
           </button>
         </div>
 
-        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p><span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Notebook 鑰匙（Touch ID／Windows Hello）。</p><span className="automation-badge manual">需人工</span><p>疑似錯字、標題、五大賣點與成分內容由你決定。</p></div>
+        <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p><span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Notebook 鑰匙（Touch ID／Windows Hello）。</p><span className="automation-badge manual">需人工</span><p>疑似錯字、產品名稱、產品亮點、五大賣點、產品敘述與成分內容由你決定。</p></div>
 
         <div className="sku-ops-tabs" role="tablist" aria-label="商品內容工具">
           <button
@@ -1166,8 +1461,36 @@ export default function SkuOperationsDrawer({
                         />
                         <small id="content-title-help">
                           {titleCapability?.supported && titleCapability.editable
-                            ? `${draft.title.length}${titleCapability.maxLength === null ? "" : ` / ${titleCapability.maxLength}`} 字元`
+                            ? `${contentCharacterLength(draft.title)}${titleCapability.maxLength === null ? "" : ` / ${titleCapability.maxLength}`} 字元`
                             : titleCapability?.reason || "此商品類型不支援在這裡編輯標題。"}
+                        </small>
+                      </label>
+                      )}
+
+                      {(!activeQuickEditFocus ||
+                        activeQuickEditFocus.fields.includes("itemHighlight")) && (
+                      <label htmlFor="content-item-highlight" style={{ marginTop: 22 }}>
+                        <span>產品亮點</span>
+                        <textarea
+                          id="content-item-highlight"
+                          value={draft.itemHighlight}
+                          onChange={(event) =>
+                            updateDraft({ ...draft, itemHighlight: event.target.value })
+                          }
+                          rows={4}
+                          maxLength={itemHighlightCapability?.maxLength ?? undefined}
+                          disabled={
+                            !itemHighlightCapability?.supported ||
+                            !itemHighlightCapability.editable
+                          }
+                          aria-describedby="content-item-highlight-help"
+                        />
+                        <small id="content-item-highlight-help">
+                          {itemHighlightCapability?.supported &&
+                          itemHighlightCapability.editable
+                            ? `${contentCharacterLength(draft.itemHighlight)}${itemHighlightCapability.maxLength === null ? "" : ` / ${itemHighlightCapability.maxLength}`} 字元`
+                            : itemHighlightCapability?.reason ||
+                              "此商品類型不支援在這裡編輯產品亮點。"}
                         </small>
                       </label>
                       )}
@@ -1214,7 +1537,7 @@ export default function SkuOperationsDrawer({
                             />
                             <small id={helpId}>
                               {enabled
-                                ? `${bullet.length}${bulletCapability?.maxLength === null ? "" : ` / ${bulletCapability?.maxLength}`} 字元`
+                                ? `${contentCharacterLength(bullet)}${bulletCapability?.maxLength === null ? "" : ` / ${bulletCapability?.maxLength}`} 字元`
                                 : index >= bulletMaxItems
                                   ? `此商品類型最多 ${bulletMaxItems} 項`
                                   : bulletCapability?.reason || "此商品類型不支援在這裡編輯賣點。"}
@@ -1223,6 +1546,40 @@ export default function SkuOperationsDrawer({
                         );
                       })}
                       </>
+                      )}
+
+                      {(!activeQuickEditFocus ||
+                        activeQuickEditFocus.fields.includes("productDescription")) && (
+                      <label
+                        htmlFor="content-product-description"
+                        style={{ marginTop: 22 }}
+                      >
+                        <span>產品敘述</span>
+                        <textarea
+                          id="content-product-description"
+                          value={draft.productDescription}
+                          onChange={(event) =>
+                            updateDraft({
+                              ...draft,
+                              productDescription: event.target.value,
+                            })
+                          }
+                          rows={8}
+                          maxLength={productDescriptionCapability?.maxLength ?? undefined}
+                          disabled={
+                            !productDescriptionCapability?.supported ||
+                            !productDescriptionCapability.editable
+                          }
+                          aria-describedby="content-product-description-help"
+                        />
+                        <small id="content-product-description-help">
+                          {productDescriptionCapability?.supported &&
+                          productDescriptionCapability.editable
+                            ? `${contentCharacterLength(draft.productDescription)}${productDescriptionCapability.maxLength === null ? "" : ` / ${productDescriptionCapability.maxLength}`} 字元`
+                            : productDescriptionCapability?.reason ||
+                              "此商品類型不支援在這裡編輯產品敘述。"}
+                        </small>
+                      </label>
                       )}
 
                       {(!activeQuickEditFocus ||
@@ -1244,7 +1601,7 @@ export default function SkuOperationsDrawer({
                         />
                         <small id="content-ingredients-help">
                           {ingredientCapability?.supported && ingredientCapability.editable
-                            ? `${draft.ingredients.length}${ingredientCapability.maxLength === null ? "" : ` / ${ingredientCapability.maxLength}`} 字元`
+                            ? `${contentCharacterLength(draft.ingredients)}${ingredientCapability.maxLength === null ? "" : ` / ${ingredientCapability.maxLength}`} 字元`
                             : ingredientCapability?.reason || "此商品類型不支援在這裡編輯成分。"}
                         </small>
                       </label>
@@ -1346,7 +1703,7 @@ export default function SkuOperationsDrawer({
                       ? "模擬商品內容更新完成"
                       : "Amazon 已接受，等待同步"}
                 </h3>
-                <p>{resultConfirmed ? "標題、五大賣點與成分已完成回讀核對。" : result.notice}</p>
+                <p>{resultConfirmed ? "產品名稱、產品亮點、五大賣點、產品敘述與成分已完成回讀核對。" : result.notice}</p>
                 {error && <div className="price-error" role="alert">{error}</div>}
                 <button
                   className="price-primary-button"
