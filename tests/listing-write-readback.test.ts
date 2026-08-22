@@ -99,18 +99,34 @@ describe("main-owned listing write readback", () => {
     const result = {
       ...identity,
       status: "ACCEPTED" as const,
-      previous: { title: "Old", bulletPoints: ["A", "B"], ingredients: "Old" },
-      requested: { title: "New\r\nTitle", bulletPoints: ["A", "B"], ingredients: "New" },
+      previous: {
+        title: "Old",
+        itemHighlight: "Old highlight",
+        bulletPoints: ["A", "B"],
+        productDescription: "Old description",
+        ingredients: "Old",
+      },
+      requested: {
+        title: "New\r\nTitle",
+        itemHighlight: "New highlight",
+        bulletPoints: ["A", "B"],
+        productDescription: "New description",
+        ingredients: "New",
+      },
       changedFields: ["title"] as const,
     };
     const snapshot = {
       ...identity,
       title: " New\nTitle ",
+      itemHighlight: "New highlight",
       bulletPoints: ["different"],
+      productDescription: "New description",
       ingredients: "different",
       attributePresence: {
         title: true,
+        itemHighlight: true,
         bulletPoints: true,
+        productDescription: true,
         ingredients: true,
       },
       issues: [],
@@ -125,6 +141,39 @@ describe("main-owned listing write readback", () => {
       {
         ...snapshot,
         attributePresence: { ...snapshot.attributePresence, title: false },
+      } as never,
+    )).toBe("pending");
+    expect(contentReadbackDecision(
+      { ...result, changedFields: ["itemHighlight"] } as never,
+      { ...snapshot, itemHighlight: "different" } as never,
+    )).toBe("pending");
+    expect(contentReadbackDecision(
+      { ...result, changedFields: ["productDescription"] } as never,
+      {
+        ...snapshot,
+        productDescription: " New description\r\n",
+      } as never,
+    )).toBe("verified");
+    expect(contentReadbackDecision(
+      { ...result, changedFields: ["productDescription"] } as never,
+      {
+        ...snapshot,
+        attributePresence: {
+          ...snapshot.attributePresence,
+          productDescription: false,
+        },
+      } as never,
+    )).toBe("pending");
+    expect(contentReadbackDecision(
+      { ...result, changedFields: ["itemHighlight"] } as never,
+      {
+        ...snapshot,
+        issues: [{
+          code: "INVALID_HIGHLIGHT",
+          severity: "ERROR",
+          message: "invalid highlight",
+          attributeNames: ["title_differentiation"],
+        }],
       } as never,
     )).toBe("pending");
   });

@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  CONTENT_AUDIT_LENGTH_TARGETS,
   contentHighlightSegments,
   isInvisibleCharacterIssue,
   locateInvisibleCharacters,
   summarizeContentAudit,
+  trimmedUnicodeLength,
   type ContentAuditIssue,
   type ContentAuditIssueKind,
   type ContentAuditField,
@@ -20,6 +22,50 @@ import {
 import { excludeProvenParentContainers } from "../parent-container-audit";
 
 type ApiProblem = { message?: string; requestId?: string | null };
+
+type ContentWorkbookValues = {
+  title: string;
+  itemHighlight: string;
+  bulletPoints: string[];
+  productDescription: string;
+  ingredients: string;
+};
+
+export type ContentWorkbookBatchPreview = {
+  previewId: string;
+  marketplaceId: string;
+  expiresAt: string;
+  changes: Array<{
+    sellerSku: string;
+    changedFields: ContentAuditField[];
+    previous: ContentWorkbookValues;
+    requested: ContentWorkbookValues;
+    issues: Array<{ message: string }>;
+  }>;
+  notice: string;
+};
+
+const CONTENT_WORKBOOK_FIELDS: readonly ContentAuditField[] = [
+  "title",
+  "itemHighlight",
+  "bulletPoints",
+  "productDescription",
+  "ingredients",
+];
+
+const CONTENT_AUDIT_FIELDS = new Set<ContentAuditField>(CONTENT_WORKBOOK_FIELDS);
+
+type ContentWorkbookBatchResult = {
+  previewId: string;
+  marketplaceId: string;
+  status: "COMPLETED" | "STOPPED_REJECTED" | "STOPPED_UNKNOWN";
+  rows: Array<{
+    sellerSku: string;
+    state: "verified" | "simulated" | "rejected" | "unknown" | "not-started";
+    error: { message: string; requestId?: string | null } | null;
+  }>;
+  notice: string;
+};
 
 type ReportReply = {
   ready: boolean;
@@ -47,6 +93,9 @@ export type ContentAuditQuickEditEvidence = {
   originalValue: string;
   originalValueFingerprint: string;
   originalBulletIndex: number | null;
+  actualLength: number | null;
+  minLength: number | null;
+  maxLength: number | null;
 };
 
 export type ContentAuditQuickEditFocus = {
@@ -102,6 +151,11 @@ type FreshListingForQuickEdit = {
 const FILTERS: Array<{ value: AuditFilter; label: string }> = [
   { value: "all", label: "全部問題" },
   { value: "SUSPECTED_TYPO", label: "疑似錯字" },
+  { value: "TITLE_BELOW_TARGET", label: "產品名稱不足" },
+  { value: "HIGHLIGHT_BELOW_TARGET", label: "產品亮點不足" },
+  { value: "BULLET_BELOW_TARGET", label: "產品要點過短" },
+  { value: "BULLET_ABOVE_TARGET", label: "產品要點過長" },
+  { value: "DESCRIPTION_BELOW_TARGET", label: "產品敘述不足" },
   { value: "MISSING_BULLETS", label: "賣點不足" },
   { value: "MISSING_INGREDIENTS", label: "缺成分" },
   { value: "INGREDIENTS_UNVERIFIED", label: "成分未驗證" },
@@ -111,6 +165,166 @@ const FILTERS: Array<{ value: AuditFilter; label: string }> = [
 function problemMessage(payload: ApiProblem, fallback: string): string {
   const requestId = payload.requestId ? `（Request ID: ${payload.requestId}）` : "";
   return `${payload.message || fallback}${requestId}`;
+}
+
+function parseContentWorkbookValues(raw: unknown): ContentWorkbookValues {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Excel 預檢缺少可核對的原值或更新值。");
+  }
+  const value = raw as Record<string, unknown>;
+  const title = value.title;
+  const itemHighlight = value.itemHighlight;
+  const bulletPoints = value.bulletPoints;
+  const productDescription = value.productDescription;
+  const ingredients = value.ingredients;
+  if (
+    typeof title !== "string" || title.length > 2_000 ||
+    typeof itemHighlight !== "string" || itemHighlight.length > 2_000 ||
+    !Array.isArray(bulletPoints) || bulletPoints.length > 5 ||
+    !bulletPoints.every((bullet) =>
+      typeof bullet === "string" && bullet.length <= 2_000
+    ) ||
+    typeof productDescription !== "string" || productDescription.length > 50_000 ||
+    typeof ingredients !== "string" || ingredients.length > 20_000
+  ) {
+    throw new Error("Excel 預檢的原值或更新值格式無效。");
+  }
+  return {
+    title,
+    itemHighlight,
+    bulletPoints: bulletPoints as string[],
+    productDescription,
+    ingredients,
+  };
+}
+
+function sameContentWorkbookField(
+  field: ContentAuditField,
+  previous: ContentWorkbookValues,
+  requested: ContentWorkbookValues,
+): boolean {
+  if (field === "bulletPoints") {
+    return previous.bulletPoints.length === requested.bulletPoints.length &&
+      previous.bulletPoints.every(
+        (bullet, index) => bullet === requested.bulletPoints[index],
+      );
+  }
+  return previous[field] === requested[field];
+}
+
+export function parseContentWorkbookBatchPreview(
+  raw: unknown,
+  marketplaceId: string,
+): ContentWorkbookBatchPreview {
+  if (!raw || typeof raw !== "object") throw new Error("Excel 預檢回應格式無效。");
+  const value = raw as Partial<ContentWorkbookBatchPreview>;
+  if (
+    typeof value.previewId !== "string" ||
+    value.marketplaceId !== marketplaceId ||
+    typeof value.expiresAt !== "string" ||
+    !Array.isArray(value.changes) ||
+    !value.changes.length
+  ) {
+    throw new Error("Excel 預檢缺少可核對的站點或變更清單。");
+  }
+  const changes = value.changes.map((candidate) => {
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      typeof candidate.sellerSku !== "string" ||
+      !candidate.sellerSku ||
+      !Array.isArray(candidate.changedFields) ||
+      !Array.isArray(candidate.issues)
+    ) {
+      throw new Error("Excel 預檢含有無法核對的 SKU 變更。");
+    }
+    const changedFields = candidate.changedFields.filter(
+      (field): field is ContentAuditField => CONTENT_AUDIT_FIELDS.has(field),
+    );
+    const previous = parseContentWorkbookValues(candidate.previous);
+    const requested = parseContentWorkbookValues(candidate.requested);
+    const actualChangedFields = CONTENT_WORKBOOK_FIELDS.filter(
+      (field) => !sameContentWorkbookField(field, previous, requested),
+    );
+    if (
+      !changedFields.length ||
+      changedFields.length !== candidate.changedFields.length ||
+      new Set(changedFields).size !== changedFields.length ||
+      changedFields.length !== actualChangedFields.length ||
+      !actualChangedFields.every((field) => changedFields.includes(field))
+    ) {
+      throw new Error("Excel 預檢的欄位清單與前後內容不一致。");
+    }
+    const issues = candidate.issues.map((issue) => {
+      if (
+        !issue ||
+        typeof issue !== "object" ||
+        typeof issue.message !== "string" ||
+        issue.message.length > 10_000
+      ) {
+        throw new Error("Excel 預檢含有無法顯示的 Amazon 提醒。");
+      }
+      return { message: issue.message };
+    });
+    return {
+      sellerSku: candidate.sellerSku,
+      changedFields,
+      previous,
+      requested,
+      issues,
+    };
+  });
+  return {
+    previewId: value.previewId,
+    marketplaceId,
+    expiresAt: value.expiresAt,
+    changes,
+    notice: typeof value.notice === "string" ? value.notice : "Excel 預檢完成，尚未寫入 Amazon。",
+  };
+}
+
+function parseContentWorkbookBatchResult(
+  raw: unknown,
+  marketplaceId: string,
+): ContentWorkbookBatchResult {
+  if (!raw || typeof raw !== "object") throw new Error("Excel 更新回應格式無效。");
+  const value = raw as Partial<ContentWorkbookBatchResult>;
+  if (
+    typeof value.previewId !== "string" ||
+    value.marketplaceId !== marketplaceId ||
+    (value.status !== "COMPLETED" &&
+      value.status !== "STOPPED_REJECTED" &&
+      value.status !== "STOPPED_UNKNOWN") ||
+    !Array.isArray(value.rows)
+  ) {
+    throw new Error("Excel 更新回應缺少可核對的逐 SKU 結果。");
+  }
+  return {
+    previewId: value.previewId,
+    marketplaceId,
+    status: value.status,
+    rows: value.rows.map((candidate) => {
+      if (
+        !candidate ||
+        typeof candidate !== "object" ||
+        typeof candidate.sellerSku !== "string" ||
+        !["verified", "simulated", "rejected", "unknown", "not-started"].includes(
+          candidate.state,
+        )
+      ) {
+        throw new Error("Excel 更新回應含有無法核對的 SKU 狀態。");
+      }
+      return {
+        sellerSku: candidate.sellerSku,
+        state: candidate.state,
+        error:
+          candidate.error && typeof candidate.error.message === "string"
+            ? candidate.error
+            : null,
+      };
+    }),
+    notice: typeof value.notice === "string" ? value.notice : "批次處理完成。",
+  };
 }
 
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -141,6 +355,118 @@ function reportReply(raw: Record<string, unknown>): ReportReply {
         : null,
     message: typeof raw.message === "string" ? raw.message : null,
   };
+}
+
+const CONTENT_AUDIT_ISSUE_KINDS = new Set<ContentAuditIssueKind>([
+  "MISSING_BULLETS",
+  "MISSING_INGREDIENTS",
+  "INGREDIENTS_UNVERIFIED",
+  "TITLE_BELOW_TARGET",
+  "HIGHLIGHT_BELOW_TARGET",
+  "BULLET_BELOW_TARGET",
+  "BULLET_ABOVE_TARGET",
+  "DESCRIPTION_BELOW_TARGET",
+  "SUSPECTED_TYPO",
+]);
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function validLengthIssue(
+  issue: Partial<ContentAuditIssue>,
+  row: Pick<
+    ContentAuditRow,
+    "title" | "itemHighlight" | "bulletPoints" | "productDescription"
+  >,
+): boolean {
+  if (!isNonNegativeInteger(issue.actualLength)) return false;
+  if (issue.kind === "TITLE_BELOW_TARGET") {
+    return issue.field === "title" &&
+      issue.minLength === CONTENT_AUDIT_LENGTH_TARGETS.titleMinimum &&
+      issue.maxLength === undefined &&
+      issue.actualLength === trimmedUnicodeLength(row.title) &&
+      issue.actualLength < issue.minLength;
+  }
+  if (issue.kind === "HIGHLIGHT_BELOW_TARGET") {
+    return issue.field === "itemHighlight" &&
+      issue.minLength === CONTENT_AUDIT_LENGTH_TARGETS.itemHighlightMinimum &&
+      issue.maxLength === undefined &&
+      issue.actualLength === trimmedUnicodeLength(row.itemHighlight ?? "") &&
+      issue.actualLength < issue.minLength;
+  }
+  if (
+    issue.kind === "BULLET_BELOW_TARGET" ||
+    issue.kind === "BULLET_ABOVE_TARGET"
+  ) {
+    if (
+      issue.field !== "bulletPoints" ||
+      !isNonNegativeInteger(issue.bulletIndex) ||
+      issue.bulletIndex >= row.bulletPoints.length ||
+      issue.minLength !== CONTENT_AUDIT_LENGTH_TARGETS.bulletMinimum ||
+      issue.maxLength !== CONTENT_AUDIT_LENGTH_TARGETS.bulletMaximum
+    ) {
+      return false;
+    }
+    const actualLength = trimmedUnicodeLength(
+      row.bulletPoints[issue.bulletIndex] ?? "",
+    );
+    return issue.actualLength === actualLength &&
+      (issue.kind === "BULLET_BELOW_TARGET"
+        ? actualLength < issue.minLength
+        : actualLength > issue.maxLength);
+  }
+  if (issue.kind === "DESCRIPTION_BELOW_TARGET") {
+    return issue.field === "productDescription" &&
+      issue.minLength ===
+        CONTENT_AUDIT_LENGTH_TARGETS.productDescriptionMinimum &&
+      issue.maxLength === undefined &&
+      issue.actualLength === trimmedUnicodeLength(row.productDescription ?? "") &&
+      issue.actualLength < issue.minLength;
+  }
+  return false;
+}
+
+function validContentAuditIssue(
+  candidate: unknown,
+  row: Pick<
+    ContentAuditRow,
+    "title" | "itemHighlight" | "bulletPoints" | "productDescription"
+  >,
+): candidate is ContentAuditIssue {
+  if (!candidate || typeof candidate !== "object") return false;
+  const issue = candidate as Partial<ContentAuditIssue>;
+  if (
+    !CONTENT_AUDIT_ISSUE_KINDS.has(issue.kind as ContentAuditIssueKind) ||
+    !CONTENT_AUDIT_FIELDS.has(issue.field as ContentAuditField) ||
+    typeof issue.message !== "string"
+  ) {
+    return false;
+  }
+  if (
+    issue.source !== undefined &&
+    issue.source !== "amazon-content" &&
+    issue.source !== "pages-dictionary"
+  ) {
+    return false;
+  }
+  if (
+    issue.kind === "TITLE_BELOW_TARGET" ||
+    issue.kind === "HIGHLIGHT_BELOW_TARGET" ||
+    issue.kind === "BULLET_BELOW_TARGET" ||
+    issue.kind === "BULLET_ABOVE_TARGET" ||
+    issue.kind === "DESCRIPTION_BELOW_TARGET"
+  ) {
+    return validLengthIssue(issue, row);
+  }
+  if (issue.kind === "MISSING_BULLETS") return issue.field === "bulletPoints";
+  if (
+    issue.kind === "MISSING_INGREDIENTS" ||
+    issue.kind === "INGREDIENTS_UNVERIFIED"
+  ) {
+    return issue.field === "ingredients";
+  }
+  return issue.kind === "SUSPECTED_TYPO";
 }
 
 export function parseContentAuditSnapshot(
@@ -190,36 +516,47 @@ export function parseContentAuditSnapshot(
       readStatus === "incomplete" && parsedReadErrors.length === 0
         ? [{
             code: "LISTING_CONTENT_NOT_RETURNED" as const,
-            message: "回應缺少可驗證的完整讀取狀態；本列已排除缺值與拼字統計。",
+            message: "回應缺少可驗證的完整讀取狀態；本列已排除缺值、字數與拼字統計。",
           }]
         : parsedReadErrors;
-    return {
+    const parsedRow: Omit<ContentAuditRow, "issues"> = {
       sellerSku: row.sellerSku,
       asin: typeof row.asin === "string" ? row.asin : "",
       productType: typeof row.productType === "string" ? row.productType : "",
       title: typeof row.title === "string" ? row.title : "",
+      itemHighlight:
+        typeof row.itemHighlight === "string" ? row.itemHighlight : "",
       bulletPoints: Array.isArray(row.bulletPoints)
         ? row.bulletPoints.filter((item): item is string => typeof item === "string")
         : [],
+      productDescription:
+        typeof row.productDescription === "string" ? row.productDescription : "",
       ingredients: typeof row.ingredients === "string" ? row.ingredients : "",
       readStatus,
       readErrors,
+      variationRole:
+        row.variationRole === "parent" ||
+        row.variationRole === "child" ||
+        row.variationRole === "standalone" ||
+        row.variationRole === "unknown"
+          ? row.variationRole
+          : "unknown",
+      variationParentSku:
+        typeof row.variationParentSku === "string" ? row.variationParentSku : null,
+      variationFamilyKey:
+        typeof row.variationFamilyKey === "string" ? row.variationFamilyKey : null,
+      variationTheme:
+        typeof row.variationTheme === "string" ? row.variationTheme : null,
+      relationshipStatus:
+        row.relationshipStatus === "complete" ? "complete" : "incomplete",
+      relationshipMessage:
+        typeof row.relationshipMessage === "string" ? row.relationshipMessage : null,
+    };
+    return {
+      ...parsedRow,
       issues: readStatus === "complete" && Array.isArray(row.issues)
         ? row.issues.filter((issue): issue is ContentAuditIssue =>
-            Boolean(
-              issue &&
-              typeof issue === "object" &&
-              [
-                "MISSING_BULLETS",
-                "MISSING_INGREDIENTS",
-                "INGREDIENTS_UNVERIFIED",
-                "SUSPECTED_TYPO",
-              ].includes(
-                (issue as ContentAuditIssue).kind,
-              ) &&
-              typeof (issue as ContentAuditIssue).message === "string",
-            ),
-          )
+            validContentAuditIssue(issue, parsedRow))
         : [],
     };
   });
@@ -237,6 +574,11 @@ export function parseContentAuditSnapshot(
   return {
     marketplaceId: value.marketplaceId,
     fetchedAt: value.fetchedAt,
+    exportId:
+      typeof value.exportId === "string" &&
+      /^[A-Za-z0-9._-]{1,200}$/u.test(value.exportId)
+        ? value.exportId
+        : undefined,
     rows,
     readErrors: rows.flatMap((row) =>
       row.readErrors.map((readError) => ({
@@ -252,6 +594,11 @@ function issueLabel(kind: ContentAuditIssueKind): string {
   if (kind === "MISSING_BULLETS") return "賣點不足";
   if (kind === "MISSING_INGREDIENTS") return "缺成分";
   if (kind === "INGREDIENTS_UNVERIFIED") return "成分未驗證";
+  if (kind === "TITLE_BELOW_TARGET") return "產品名稱不足";
+  if (kind === "HIGHLIGHT_BELOW_TARGET") return "產品亮點不足";
+  if (kind === "BULLET_BELOW_TARGET") return "產品要點過短";
+  if (kind === "BULLET_ABOVE_TARGET") return "產品要點過長";
+  if (kind === "DESCRIPTION_BELOW_TARGET") return "產品敘述不足";
   return "疑似錯字";
 }
 
@@ -333,6 +680,9 @@ function quickEditEvidence(
     originalValue,
     originalValueFingerprint: contentValueFingerprint(originalValue),
     originalBulletIndex,
+    actualLength: issue.actualLength ?? null,
+    minLength: issue.minLength ?? null,
+    maxLength: issue.maxLength ?? null,
   };
 }
 
@@ -345,8 +695,143 @@ function staleQuickEditResolution(detail: string): ContentAuditQuickEditResoluti
 
 function fieldLabel(field: ContentAuditField): string {
   if (field === "title") return "商品標題";
+  if (field === "itemHighlight") return "產品亮點";
+  if (field === "productDescription") return "產品敘述";
   if (field === "ingredients") return "成分";
   return "賣點";
+}
+
+function workbookFieldLabel(field: ContentAuditField): string {
+  if (field === "title") return "產品名稱";
+  if (field === "bulletPoints") return "產品要點";
+  return fieldLabel(field);
+}
+
+function issueFieldLabel(issue: ContentAuditIssue): string {
+  if (issue.kind === "TITLE_BELOW_TARGET") return "產品名稱";
+  if (
+    (issue.kind === "BULLET_BELOW_TARGET" ||
+      issue.kind === "BULLET_ABOVE_TARGET") &&
+    issue.bulletIndex !== undefined
+  ) {
+    return `產品要點 ${issue.bulletIndex + 1}`;
+  }
+  return fieldLabel(issue.field);
+}
+
+function ContentWorkbookValue({
+  field,
+  value,
+}: {
+  field: ContentAuditField;
+  value: string | string[];
+}) {
+  if (field === "bulletPoints") {
+    const bullets = value as string[];
+    return bullets.length ? (
+      <ol>
+        {bullets.map((bullet, index) => (
+          <li key={`${index}-${bullet}`}>{bullet || "（空白）"}</li>
+        ))}
+      </ol>
+    ) : <p>（空白）</p>;
+  }
+  return <p>{(value as string) || "（空白）"}</p>;
+}
+
+export function ContentWorkbookBatchPreviewCard({
+  preview,
+  busy,
+  acknowledged,
+  onAcknowledgedChange,
+  onCommit,
+}: {
+  preview: ContentWorkbookBatchPreview;
+  busy: boolean;
+  acknowledged: boolean;
+  onAcknowledgedChange: (acknowledged: boolean) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <div
+      className="content-audit-batch-preview"
+      role="region"
+      aria-label="Excel 批次更新逐欄預覽"
+    >
+      <strong>
+        已通過 {preview.changes.length.toLocaleString()} 個 SKU 的零寫入預檢
+      </strong>
+      <p>{preview.notice}</p>
+      <p>
+        請展開每個 SKU，逐欄核對完整「Amazon 原值」與「Excel 更新值」後再確認。
+      </p>
+      <div className="content-audit-batch-diffs">
+        {preview.changes.map((change) => (
+          <details key={change.sellerSku}>
+            <summary>
+              <span>{change.sellerSku}</span>
+              <small>{change.changedFields.map(workbookFieldLabel).join("、")}</small>
+            </summary>
+            <div className="content-audit-batch-fields">
+              {change.changedFields.map((field) => (
+                <section key={field}>
+                  <h4>{workbookFieldLabel(field)}</h4>
+                  <div className="content-audit-before-after">
+                    <div>
+                      <strong>Amazon 原值</strong>
+                      <ContentWorkbookValue
+                        field={field}
+                        value={change.previous[field]}
+                      />
+                    </div>
+                    <div>
+                      <strong>Excel 更新值</strong>
+                      <ContentWorkbookValue
+                        field={field}
+                        value={change.requested[field]}
+                      />
+                    </div>
+                  </div>
+                </section>
+              ))}
+              {change.issues.length > 0 && (
+                <div className="content-audit-validation-issues">
+                  <strong>Amazon Validation Preview 提醒</strong>
+                  <ul>
+                    {change.issues.map((issue, index) => (
+                      <li key={`${index}-${issue.message}`}>{issue.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
+        ))}
+      </div>
+      <label className="content-audit-batch-acknowledgement">
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          disabled={busy}
+          onChange={(event) => onAcknowledgedChange(event.target.checked)}
+        />
+        <span>我已核對上述每個 SKU 的完整原值、更新值與 Amazon 提醒。</span>
+      </label>
+      <button
+        type="button"
+        className="price-primary-button"
+        disabled={busy || !acknowledged}
+        onClick={onCommit}
+      >
+        {busy
+          ? "等待 Touch ID／Windows Hello 並逐筆核對…"
+          : `一次確認並更新 ${preview.changes.length.toLocaleString()} 個 SKU`}
+      </button>
+      <small>
+        會先重新預檢整批，再要求一次本機生物辨識；Amazon 沒有跨 SKU 交易，若任一筆結果不明會停止後續且不盲目重送。
+      </small>
+    </div>
+  );
 }
 
 function quickEditReasonForRow(row: ContentAuditRow): string {
@@ -359,9 +844,9 @@ function quickEditReasonForRow(row: ContentAuditRow): string {
       ? `「${issue.token}」`
       : "";
     if (isInvisibleCharacterIssue(issue)) {
-      return `不可見字元（${fieldLabel(issue.field)}${token}）：已定位到需手動移除的不可見字元。`;
+      return `不可見字元（${issueFieldLabel(issue)}${token}）：已定位到需手動移除的不可見字元。`;
     }
-    return `${issueLabel(issue.kind)}（${fieldLabel(issue.field)}${token}）：${issue.message}`;
+    return `${issueLabel(issue.kind)}（${issueFieldLabel(issue)}${token}）：${issue.message}`;
   });
   return reasons.length ? reasons.join("；") : "這筆健檢目前沒有可修改的問題。";
 }
@@ -374,6 +859,30 @@ export function quickEditFocusForRow(
   const bulletIndices = new Set<number>();
 
   for (const issue of row.issues) {
+    if (issue.kind === "TITLE_BELOW_TARGET") {
+      if (!validLengthIssue(issue, row)) return null;
+      evidence.push(quickEditEvidence(issue, row.title, null));
+      continue;
+    }
+
+    if (
+      issue.kind === "BULLET_BELOW_TARGET" ||
+      issue.kind === "BULLET_ABOVE_TARGET"
+    ) {
+      if (!validLengthIssue(issue, row) || issue.bulletIndex === undefined) {
+        return null;
+      }
+      evidence.push(
+        quickEditEvidence(
+          issue,
+          row.bulletPoints[issue.bulletIndex] ?? "",
+          issue.bulletIndex,
+        ),
+      );
+      bulletIndices.add(issue.bulletIndex);
+      continue;
+    }
+
     if (issue.kind === "SUSPECTED_TYPO") {
       if (!issue.token) return null;
       if (issue.field === "bulletPoints") {
@@ -442,6 +951,11 @@ export function quickEditAvailabilityForRow(
     reason,
     unavailableReason: row.readStatus !== "complete"
       ? "Amazon 原文尚未完整讀取，無法建立安全定位證據。"
+      : row.issues.some((issue) =>
+          issue.kind === "HIGHLIGHT_BELOW_TARGET" ||
+          issue.kind === "DESCRIPTION_BELOW_TARGET"
+        )
+      ? "產品亮點或產品敘述目前無法取得立刻修改所需的新鮮 Amazon 原文證據；請使用完整編輯確認。"
       : "健檢時的原文、字詞或欄位證據不足，無法安全定位待修內容。",
   };
 }
@@ -491,6 +1005,82 @@ export function resolveContentAuditQuickEditFocus(
       evidence.originalValueFingerprint
     ) {
       return staleQuickEditResolution("這筆健檢結果的原文指紋已失效。");
+    }
+
+    if (evidence.issueKind === "TITLE_BELOW_TARGET") {
+      if (
+        evidence.field !== "title" ||
+        evidence.token !== null ||
+        evidence.originalBulletIndex !== null ||
+        evidence.minLength !== CONTENT_AUDIT_LENGTH_TARGETS.titleMinimum ||
+        evidence.maxLength !== null ||
+        !isNonNegativeInteger(evidence.actualLength) ||
+        trimmedUnicodeLength(evidence.originalValue) !== evidence.actualLength ||
+        evidence.actualLength >= evidence.minLength
+      ) {
+        return staleQuickEditResolution("產品名稱長度的健檢證據格式無效。");
+      }
+      if (
+        listing.content.title !== evidence.originalValue ||
+        contentValueFingerprint(listing.content.title) !==
+          evidence.originalValueFingerprint ||
+        trimmedUnicodeLength(listing.content.title) >= evidence.minLength
+      ) {
+        return staleQuickEditResolution(
+          "產品名稱已變動，原本的字數不足可能已被修正或改寫。",
+        );
+      }
+      fields.add("title");
+      continue;
+    }
+
+    if (
+      evidence.issueKind === "BULLET_BELOW_TARGET" ||
+      evidence.issueKind === "BULLET_ABOVE_TARGET"
+    ) {
+      if (
+        evidence.field !== "bulletPoints" ||
+        evidence.token !== null ||
+        evidence.originalBulletIndex === null ||
+        !isNonNegativeInteger(evidence.originalBulletIndex) ||
+        evidence.minLength !== CONTENT_AUDIT_LENGTH_TARGETS.bulletMinimum ||
+        evidence.maxLength !== CONTENT_AUDIT_LENGTH_TARGETS.bulletMaximum ||
+        !isNonNegativeInteger(evidence.actualLength) ||
+        trimmedUnicodeLength(evidence.originalValue) !== evidence.actualLength ||
+        (evidence.issueKind === "BULLET_BELOW_TARGET"
+          ? evidence.actualLength >= evidence.minLength
+          : evidence.actualLength <= evidence.maxLength)
+      ) {
+        return staleQuickEditResolution("產品要點長度的健檢證據格式無效。");
+      }
+      const candidates = listing.content.bulletPoints.flatMap((value, index) => {
+        const currentLength = trimmedUnicodeLength(value);
+        const stillApplies = evidence.issueKind === "BULLET_BELOW_TARGET"
+          ? currentLength < evidence.minLength!
+          : currentLength > evidence.maxLength!;
+        return value === evidence.originalValue &&
+            contentValueFingerprint(value) === evidence.originalValueFingerprint &&
+            stillApplies
+          ? [index]
+          : [];
+      });
+      if (candidates.length === 0) {
+        return staleQuickEditResolution(
+          "健檢標示的產品要點原文已不存在，字數問題可能已被修正或改寫。",
+        );
+      }
+      if (candidates.length !== 1) {
+        return staleQuickEditResolution(
+          "健檢標示的產品要點目前有多個相同候選，無法唯一定位。",
+        );
+      }
+      const [candidate] = candidates;
+      bulletIndices.add(candidate);
+      fields.add("bulletPoints");
+      if (candidate !== evidence.originalBulletIndex) {
+        relocations.add(`${evidence.originalBulletIndex}:${candidate}`);
+      }
+      continue;
     }
 
     if (evidence.issueKind === "SUSPECTED_TYPO") {
@@ -667,6 +1257,15 @@ export default function ContentAuditPanel({
   const [spellcheckNote, setSpellcheckNote] = useState<string | null>(
     initialCache?.spellcheckNote ?? null,
   );
+  const [workbookFile, setWorkbookFile] = useState<File | null>(null);
+  const [batchPreview, setBatchPreview] =
+    useState<ContentWorkbookBatchPreview | null>(null);
+  const [batchResult, setBatchResult] =
+    useState<ContentWorkbookBatchResult | null>(null);
+  const [batchBusy, setBatchBusy] = useState<"preview" | "commit" | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchIdempotencyKey, setBatchIdempotencyKey] = useState<string | null>(null);
+  const [batchDiffAcknowledged, setBatchDiffAcknowledged] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const marketplaceIdRef = useRef(marketplaceId);
   marketplaceIdRef.current = marketplaceId;
@@ -692,6 +1291,16 @@ export default function ContentAuditPanel({
     setSpellcheckNote(null);
   }, [cachedResult, marketplaceId]);
 
+  useEffect(() => {
+    setWorkbookFile(null);
+    setBatchPreview(null);
+    setBatchResult(null);
+    setBatchBusy(null);
+    setBatchError(null);
+    setBatchIdempotencyKey(null);
+    setBatchDiffAcknowledged(false);
+  }, [marketplaceId]);
+
   const attentionRows = useMemo(
     () =>
       snapshot ? contentAuditAttentionRows(snapshot) : [],
@@ -709,7 +1318,13 @@ export default function ContentAuditPanel({
         return false;
       }
       if (!normalizedQuery) return true;
-      return [row.sellerSku, row.asin, row.title]
+      return [
+        row.sellerSku,
+        row.asin,
+        row.title,
+        row.itemHighlight ?? "",
+        row.productDescription ?? "",
+      ]
         .join(" ")
         .toLocaleLowerCase("en-US")
         .includes(normalizedQuery);
@@ -761,7 +1376,7 @@ export default function ContentAuditPanel({
         `${parentNote}${parentNote ? " " : ""}GitHub Pages 共用美式英文辭典 ${spelling.CONTENT_SPELLING_DICTIONARY_VERSION}（${spelling.CONTENT_SPELLING_DICTIONARY_LANGUAGE}）已套用，並保留 ${spelling.CONTENT_SPELLING_ALLOWLIST_COUNT.toLocaleString()} 項品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份結果；只會提示，不會自動改字。`;
     } catch {
       nextSpellcheckNote =
-        `${parentNote}${parentNote ? " " : ""}GitHub Pages 共用英文辭典目前無法載入；已保留缺賣點、缺成分、不可見字元與 Amazon 已回傳的明確問題，但本次不會冒充已完成一般英文拼字檢查。`;
+        `${parentNote}${parentNote ? " " : ""}GitHub Pages 共用英文辭典目前無法載入；已保留文案字數、缺賣點、缺成分、不可見字元與 Amazon 已回傳的明確問題，但本次不會冒充已完成一般英文拼字檢查。`;
     }
     const completed = {
       ...base,
@@ -882,10 +1497,91 @@ export default function ContentAuditPanel({
     }
   };
 
+  const selectWorkbook = (file: File | null) => {
+    setWorkbookFile(file);
+    setBatchPreview(null);
+    setBatchResult(null);
+    setBatchError(null);
+    setBatchIdempotencyKey(null);
+    setBatchDiffAcknowledged(false);
+  };
+
+  const previewWorkbookImport = async () => {
+    if (!workbookFile || batchBusy) return;
+    if (!/\.xlsx$/iu.test(workbookFile.name)) {
+      setBatchError("只接受由 AMZ.API 匯出的 .xlsx 文案健檢檔。");
+      return;
+    }
+    const nextKey = `content-${crypto.randomUUID()}`;
+    setBatchBusy("preview");
+    setBatchError(null);
+    setBatchPreview(null);
+    setBatchResult(null);
+    setBatchDiffAcknowledged(false);
+    try {
+      const form = new FormData();
+      form.set("marketplaceId", marketplaceId);
+      form.set("idempotencyKey", nextKey);
+      form.set("file", workbookFile);
+      const response = await fetch("/api/sp-api/listing-content/import", {
+        method: "POST",
+        body: form,
+      });
+      const raw = (await response.json()) as unknown;
+      if (!response.ok) {
+        throw new Error(problemMessage(raw as ApiProblem, "Excel 預檢失敗。"));
+      }
+      const parsed = parseContentWorkbookBatchPreview(raw, marketplaceId);
+      setBatchIdempotencyKey(nextKey);
+      setBatchPreview(parsed);
+      setBatchDiffAcknowledged(false);
+    } catch (requestError) {
+      setBatchError(
+        requestError instanceof Error
+          ? requestError.message
+          : "目前無法預檢這份 Excel。",
+      );
+    } finally {
+      setBatchBusy(null);
+    }
+  };
+
+  const commitWorkbookImport = async () => {
+    if (!batchPreview || !batchIdempotencyKey || batchBusy) return;
+    setBatchBusy("commit");
+    setBatchError(null);
+    try {
+      const response = await fetch("/api/sp-api/listing-content/import", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          marketplaceId,
+          previewId: batchPreview.previewId,
+          idempotencyKey: batchIdempotencyKey,
+        }),
+      });
+      const raw = (await response.json()) as unknown;
+      if (!response.ok) {
+        throw new Error(problemMessage(raw as ApiProblem, "Excel 批次更新失敗。"));
+      }
+      setBatchResult(parseContentWorkbookBatchResult(raw, marketplaceId));
+      setBatchPreview(null);
+      setBatchDiffAcknowledged(false);
+    } catch (requestError) {
+      setBatchError(
+        requestError instanceof Error
+          ? requestError.message
+          : "目前無法完成 Excel 批次更新。",
+      );
+    } finally {
+      setBatchBusy(null);
+    }
+  };
+
   return (
     <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
       <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。
+        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因。
       </p>
       <div className="content-export-note content-audit-privacy">
         <strong>Amazon 唯讀＋GitHub Pages 共用英文辭典</strong>
@@ -902,6 +1598,78 @@ export default function ContentAuditPanel({
           <strong>匯出全部 {attentionRows.length.toLocaleString()} 個待確認項目 Excel</strong>
           <small>只在這台電腦建立，不會上傳商品文案</small>
         </button>
+      )}
+      {state === "done" && snapshot && summary && (
+        <section className="content-audit-roundtrip" aria-label="回傳 Excel 批次更新文案">
+          <div>
+            <strong>回傳同一份 Excel 批次更新</strong>
+            <p>
+              只編輯淺藍或黃色的「更新…」欄位後，把原檔選回來。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。
+              預檢通過後才會要求一次 Touch ID／Windows Hello；若任一筆結果不明會停止後續且不盲目重送。
+            </p>
+          </div>
+          <label className="content-audit-file-picker">
+            <span>{workbookFile ? workbookFile.name : "選擇原本匯出的 .xlsx"}</span>
+            <input
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              disabled={Boolean(batchBusy)}
+              onChange={(event) => selectWorkbook(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <button
+            type="button"
+            className="content-audit-roundtrip-preview"
+            disabled={!workbookFile || Boolean(batchBusy) || Boolean(batchPreview)}
+            onClick={() => void previewWorkbookImport()}
+          >
+            {batchBusy === "preview" ? "正在逐 SKU 預檢…" : "先預覽 Excel 變更（不寫入）"}
+          </button>
+          {batchError && <div className="price-error" role="alert">{batchError}</div>}
+          {batchPreview && (
+            <ContentWorkbookBatchPreviewCard
+              preview={batchPreview}
+              busy={batchBusy === "commit"}
+              acknowledged={batchDiffAcknowledged}
+              onAcknowledgedChange={setBatchDiffAcknowledged}
+              onCommit={() => void commitWorkbookImport()}
+            />
+          )}
+          {batchResult && (
+            <div
+              className={`content-audit-batch-result ${batchResult.status.toLocaleLowerCase()}`}
+              role="status"
+            >
+              <strong>
+                {batchResult.status === "COMPLETED"
+                  ? "批次處理完成"
+                  : batchResult.status === "STOPPED_UNKNOWN"
+                    ? "遇到結果不明，已停止後續 SKU"
+                    : "遇到拒絕，已停止後續 SKU"}
+              </strong>
+              <p>{batchResult.notice}</p>
+              <ul>
+                {batchResult.rows.map((row) => (
+                  <li key={row.sellerSku}>
+                    <span>{row.sellerSku}</span>
+                    <small>
+                      {row.state === "verified"
+                        ? "已由 Amazon 回讀驗證"
+                        : row.state === "simulated"
+                          ? "展示模式已模擬"
+                          : row.state === "rejected"
+                            ? `未送出／遭拒：${row.error?.message ?? "請重新預檢"}`
+                            : row.state === "unknown"
+                              ? `結果不明：${row.error?.message ?? "請先回查 Amazon"}`
+                              : "尚未開始，沒有送出"}
+                    </small>
+                  </li>
+                ))}
+              </ul>
+              <small>請重新掃描全站文案取得最新快照，再製作下一批 Excel。</small>
+            </div>
+          )}
+        </section>
       )}
       {error && <div className="price-error" role="alert">{error}</div>}
       {statusText && (
@@ -930,6 +1698,11 @@ export default function ContentAuditPanel({
             <article><span>讀取未完成</span><strong>{summary.incomplete.toLocaleString()}</strong><small>不列入缺值統計</small></article>
             <article><span>有待確認</span><strong>{summary.withIssues.toLocaleString()}</strong><small>SKU</small></article>
             <article><span>疑似錯字</span><strong>{summary.suspectedTypos.toLocaleString()}</strong><small>SKU</small></article>
+            <article><span>產品名稱不足</span><strong>{summary.titleBelowTarget.toLocaleString()}</strong><small>少於 60 字元的 SKU</small></article>
+            <article><span>產品亮點不足</span><strong>{summary.highlightBelowTarget.toLocaleString()}</strong><small>少於 110 字元的 SKU</small></article>
+            <article><span>產品要點過短</span><strong>{summary.bulletBelowTarget.toLocaleString()}</strong><small>至少一項少於 150 字元</small></article>
+            <article><span>產品要點過長</span><strong>{summary.bulletAboveTarget.toLocaleString()}</strong><small>至少一項超過 200 字元</small></article>
+            <article><span>產品敘述不足</span><strong>{summary.descriptionBelowTarget.toLocaleString()}</strong><small>少於 1,800 字元的 SKU</small></article>
             <article><span>賣點不足</span><strong>{summary.missingBullets.toLocaleString()}</strong><small>SKU</small></article>
             <article><span>缺成分</span><strong>{summary.missingIngredients.toLocaleString()}</strong><small>已證明適用的 SKU</small></article>
             <article><span>成分未驗證</span><strong>{summary.ingredientsUnverified.toLocaleString()}</strong><small>需人工確認 PTD</small></article>
@@ -1004,7 +1777,7 @@ export default function ContentAuditPanel({
               <input
                 value={query}
                 onChange={(event) => changeQuery(event.target.value)}
-                placeholder="搜尋 SKU、ASIN 或商品名稱"
+                placeholder="搜尋 SKU、ASIN 或商品文案"
                 aria-label="搜尋文案健檢結果"
               />
             </label>
@@ -1093,7 +1866,7 @@ export default function ContentAuditPanel({
                           <div key={`${readError.code}-${index}`}>
                             <span className="kind-read_incomplete">讀取失敗／未完成</span>
                             <p>{readError.message}</p>
-                            <small>本列未計入缺賣點、缺成分或共用拼字統計</small>
+                            <small>本列未計入字數、缺賣點、缺成分或共用拼字統計</small>
                           </div>
                         ))}
                       {row.issues
@@ -1108,7 +1881,7 @@ export default function ContentAuditPanel({
                               (filter !== "READ_INCOMPLETE" && issue.kind === filter)),
                         )
                         .map((issue, index) => (
-                          <div key={`${issue.kind}-${issue.field}-${issue.token ?? index}`}>
+                          <div key={`${issue.kind}-${issue.field}-${issue.bulletIndex ?? issue.token ?? index}`}>
                             <span className={`kind-${issue.kind.toLocaleLowerCase()}`}>{issueLabel(issue.kind)}</span>
                             <p>{issue.message}</p>
                             {issue.suggestion && <small>建議檢查：{issue.suggestion}</small>}

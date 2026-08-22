@@ -1,23 +1,81 @@
 import { strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { createContentAuditWorkbook } from "../src/renderer/src/content-audit-excel";
-import type { ContentAuditSnapshot } from "../src/renderer/src/content-quality";
+import type {
+  ContentAuditRow,
+  ContentAuditSnapshot,
+} from "../src/renderer/src/content-quality";
+
+type WorkbookAuditRow = ContentAuditRow & {
+  variationRole: "parent" | "child" | "standalone" | "unknown";
+  variationParentSku: string | null;
+  variationFamilyKey: string | null;
+  variationTheme: string | null;
+};
+
+type WorkbookAuditSnapshot = Omit<ContentAuditSnapshot, "rows"> & {
+  exportId: string;
+  rows: WorkbookAuditRow[];
+};
+
+function summary(): ContentAuditSnapshot["summary"] {
+  return {
+    total: 5,
+    completed: 4,
+    incomplete: 1,
+    withIssues: 4,
+    suspectedTypos: 1,
+    missingBullets: 1,
+    missingIngredients: 0,
+    ingredientsUnverified: 0,
+    titleBelowTarget: 0,
+    highlightBelowTarget: 1,
+    bulletBelowTarget: 0,
+    bulletAboveTarget: 0,
+    descriptionBelowTarget: 0,
+  };
+}
 
 describe("content audit Excel", () => {
-  it("exports attention rows in one concise sheet with type and description columns", () => {
-    const snapshot: ContentAuditSnapshot = {
+  it("exports schema v2 by proven variation family and colors the exact issue field", () => {
+    const base = {
+      productType: "PET_FOOD",
+      itemHighlight: "A concise highlight",
+      productDescription: "A complete product description",
+      ingredients: "Turkey",
+      readStatus: "complete" as const,
+      readErrors: [],
+      variationTheme: "SIZE_NAME",
+    };
+    const snapshot: WorkbookAuditSnapshot = {
       marketplaceId: "ATVPDKIKX0DER",
+      exportId: "export-content-audit-v2",
       fetchedAt: "2026-08-06T08:00:00.000Z",
       rows: [
         {
+          ...base,
+          sellerSku: "FAMILY-B-CHILD",
+          asin: "B000000004",
+          title: "Family B child",
+          bulletPoints: ["One", "Two", "Three", "Four", "Five"],
+          variationRole: "child",
+          variationParentSku: "PARENT-B",
+          variationFamilyKey: "PARENT-B",
+          issues: [{
+            kind: "HIGHLIGHT_BELOW_TARGET",
+            field: "itemHighlight",
+            message: "產品亮點目前 19 字元，低於 110 字元。",
+          }],
+        },
+        {
+          ...base,
           sellerSku: "NEEDS-EDIT",
           asin: "B000000001",
-          productType: "PET_FOOD",
           title: "GooToE Turkey Tendons",
           bulletPoints: ["Natural & Gentle\u200b : Only one point"],
-          ingredients: "Turkey",
-          readStatus: "complete",
-          readErrors: [],
+          variationRole: "child",
+          variationParentSku: "PARENT-A",
+          variationFamilyKey: "PARENT-A",
           issues: [
             {
               kind: "MISSING_BULLETS",
@@ -27,6 +85,7 @@ describe("content audit Excel", () => {
             {
               kind: "SUSPECTED_TYPO",
               field: "bulletPoints",
+              bulletIndex: 0,
               token: "U+200B",
               suggestion: "移除不可見字元",
               message: "發現不可見字元 U+200B。",
@@ -34,57 +93,96 @@ describe("content audit Excel", () => {
           ],
         },
         {
-          sellerSku: "CLEAN-SKU",
+          ...base,
+          sellerSku: "STANDALONE-ISSUE",
           asin: "B000000002",
-          productType: "PET_FOOD",
+          title: "Standalone listing",
+          bulletPoints: ["One", "Two", "Three", "Four", "Five"],
+          variationRole: "standalone",
+          variationParentSku: null,
+          variationFamilyKey: "SELF-SHOULD-NOT-BECOME-A-SHEET",
+          variationTheme: null,
+          issues: [{
+            kind: "HIGHLIGHT_BELOW_TARGET",
+            field: "itemHighlight",
+            message: "產品亮點目前 19 字元，低於 110 字元。",
+          }],
+        },
+        {
+          ...base,
+          sellerSku: "UNKNOWN-RELATIONSHIP",
+          asin: "B000000003",
+          title: "Relationship unavailable",
+          bulletPoints: [],
+          readStatus: "incomplete",
+          readErrors: [{
+            code: "LISTING_CONTENT_NOT_RETURNED",
+            message: "relationships missing",
+          }],
+          variationRole: "unknown",
+          variationParentSku: null,
+          variationFamilyKey: "UNKNOWN-RELATIONSHIP",
+          variationTheme: null,
+          issues: [],
+        },
+        {
+          ...base,
+          sellerSku: "CLEAN-SKU",
+          asin: "B000000005",
           title: "Complete listing",
           bulletPoints: ["1", "2", "3", "4", "5"],
-          ingredients: "Turkey",
-          readStatus: "complete",
-          readErrors: [],
+          variationRole: "child",
+          variationParentSku: "PARENT-A",
+          variationFamilyKey: "PARENT-A",
           issues: [],
         },
       ],
       readErrors: [],
-      summary: {
-        total: 2,
-        completed: 2,
-        incomplete: 0,
-        withIssues: 1,
-        suspectedTypos: 0,
-        missingBullets: 1,
-        missingIngredients: 0,
-        ingredientsUnverified: 0,
-      },
+      summary: summary(),
     };
 
-    const archive = unzipSync(createContentAuditWorkbook(snapshot, "US"));
-    const workbook = strFromU8(archive["xl/workbook.xml"]);
-    const productSheet = strFromU8(archive["xl/worksheets/sheet1.xml"]);
-    const styles = strFromU8(archive["xl/styles.xml"]);
-
-    expect(workbook).toContain('sheet name="內容健檢"');
-    expect(archive["xl/worksheets/sheet2.xml"]).toBeUndefined();
-    expect(productSheet).toContain("NEEDS-EDIT");
-    expect(productSheet).not.toContain("CLEAN-SKU");
-    expect(productSheet).toContain("類型");
-    expect(productSheet).toContain("說明");
-    expect(productSheet).not.toContain(">狀態<");
-    expect(productSheet).not.toContain(">最後更新<");
-    expect(productSheet).toContain("賣點不足");
-    expect(productSheet).toContain("目前只有 1 個非空白賣點");
-    expect(productSheet).toContain("U+200B（零寬空格）位於");
-    expect(productSheet).toContain("Gentle");
-    expect(productSheet).toContain("應手動修改此段");
-    expect(productSheet).toContain('<color rgb="FFC62828"/>');
-    expect(styles).toContain('<fgColor rgb="FFFFF2CC"/>');
-    expect(styles).toContain('fillId="3"');
-    expect(productSheet).toMatch(/<c r="F2" s="5" t="inlineStr">/u);
-    expect(productSheet).toMatch(/<c r="E2" s="3" t="inlineStr">/u);
-    expect(productSheet).toMatch(/<c r="K2" s="3" t="inlineStr">/u);
-    expect(productSheet).toContain("⟦U+200B 零寬空格⟧");
-    expect(productSheet).toMatch(
-      /<r><rPr><b\/><color rgb="FFC62828"\/>.*?<t xml:space="preserve">⟦U\+200B 零寬空格⟧<\/t><\/r>/u,
+    const archive = unzipSync(
+      createContentAuditWorkbook(snapshot as ContentAuditSnapshot, "US"),
     );
+    const workbook = strFromU8(archive["xl/workbook.xml"]!);
+    const indexSheet = strFromU8(archive["xl/worksheets/sheet1.xml"]!);
+    const familyA = strFromU8(archive["xl/worksheets/sheet2.xml"]!);
+    const familyB = strFromU8(archive["xl/worksheets/sheet3.xml"]!);
+    const standalone = strFromU8(archive["xl/worksheets/sheet4.xml"]!);
+    const incomplete = strFromU8(archive["xl/worksheets/sheet5.xml"]!);
+    const styles = strFromU8(archive["xl/styles.xml"]!);
+
+    expect(workbook).toContain('sheet name="說明與索引"');
+    expect(workbook).toContain('sheet name="F001"');
+    expect(workbook).toContain('sheet name="F002"');
+    expect(workbook).toContain('sheet name="未綁變體"');
+    expect(workbook).toContain('sheet name="資料未完成"');
+    expect(indexSheet).toContain("Schema Version");
+    expect(indexSheet).toContain("export-content-audit-v2");
+    expect(indexSheet).toContain("只能編輯淺藍色");
+    expect(indexSheet).toContain("PARENT-A");
+    expect(indexSheet).toContain("PARENT-B");
+    expect(indexSheet).toContain("STANDALONE");
+    expect(indexSheet).toContain("DATA_INCOMPLETE");
+
+    expect(familyA).toContain("NEEDS-EDIT");
+    expect(familyA).not.toContain("CLEAN-SKU");
+    expect(familyB).toContain("FAMILY-B-CHILD");
+    expect(standalone).toContain("STANDALONE-ISSUE");
+    expect(incomplete).toContain("UNKNOWN-RELATIONSHIP");
+    expect(familyA).toContain("原始產品名稱");
+    expect(familyA).toContain("更新產品名稱");
+    expect(familyA).toContain("原始產品亮點");
+    expect(familyA).toContain("更新產品敘述");
+    expect(familyA).toContain("類型");
+    expect(familyA).toContain("說明");
+
+    expect(styles).toContain('<fgColor rgb="FFFFF2CC"/>');
+    expect(styles).toContain('<fgColor rgb="FFE7E6E6"/>');
+    expect(styles).toContain('<fgColor rgb="FFDDEBF7"/>');
+    expect(familyA).toMatch(/<c r="H2" s="6" t="inlineStr">/u);
+    expect(familyA).toMatch(/<c r="I2" s="5" t="inlineStr">/u);
+    expect(familyA).toContain('<color rgb="FFC62828"/>');
+    expect(familyA).toContain("⟦U+200B 零寬空格⟧");
   });
 });

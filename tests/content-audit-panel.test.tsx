@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
+  ContentWorkbookBatchPreviewCard,
+  parseContentWorkbookBatchPreview,
   parseContentAuditSnapshot,
   quickEditAvailabilityForRow,
   quickEditFocusForRow,
@@ -80,6 +82,10 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("疑似錯字");
     expect(markup).toContain("少於五個賣點");
     expect(markup).toContain("缺成分");
+    expect(markup).toContain("產品名稱少於 60");
+    expect(markup).toContain("產品亮點少於 110");
+    expect(markup).toContain("產品要點少於 150 或超過 200");
+    expect(markup).toContain("產品敘述少於 1,800");
     expect(markup).toContain("Amazon 唯讀＋GitHub Pages 共用英文辭典");
     expect(markup).toContain("Mac 與 Windows 一致");
     expect(markup).toContain("文案不會送到第三方");
@@ -102,7 +108,7 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(source).toContain("讀取失敗／未完成");
-    expect(source).toContain("本列未計入缺賣點、缺成分或共用拼字統計");
+    expect(source).toContain("本列未計入字數、缺賣點、缺成分或共用拼字統計");
     expect(source).toContain("成分未驗證");
     expect(source).toContain("CONTENT_SPELLING_DICTIONARY_VERSION");
     expect(source).toContain("CONTENT_SPELLING_DICTIONARY_LANGUAGE");
@@ -121,6 +127,7 @@ describe("global FBA content audit panel", () => {
   it("restores a completed in-memory result and exposes the problem-only Excel", () => {
     const snapshot = parseContentAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
+      exportId: "content-audit-export-001",
       fetchedAt: "2026-08-06T08:00:00.000Z",
       rows: [
         {
@@ -132,6 +139,12 @@ describe("global FBA content audit panel", () => {
           ingredients: "Turkey",
           readStatus: "complete",
           readErrors: [],
+          variationRole: "child",
+          variationParentSku: "PARENT-001",
+          variationFamilyKey: "PARENT-001",
+          variationTheme: "SIZE_NAME",
+          relationshipStatus: "complete",
+          relationshipMessage: "Amazon relationships 已完成核對。",
           issues: [
             {
               kind: "MISSING_BULLETS",
@@ -167,12 +180,90 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("賣點不足（賣點）");
     expect(markup).toContain('class="kind-missing_bullets"');
     expect(markup).toContain("完整編輯");
+    expect(snapshot.exportId).toBe("content-audit-export-001");
+    expect(snapshot.rows[0]).toMatchObject({
+      variationRole: "child",
+      variationParentSku: "PARENT-001",
+      variationFamilyKey: "PARENT-001",
+      relationshipStatus: "complete",
+    });
+    expect(markup).toContain("回傳同一份 Excel 批次更新");
+    expect(markup).toContain("先預覽 Excel 變更（不寫入）");
+    expect(markup).toContain("Touch ID／Windows Hello");
+    expect(markup).toContain("若任一筆結果不明會停止後續且不盲目重送");
     expect(markup.indexOf("Amazon 唯讀＋GitHub Pages 共用英文辭典")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
     );
     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
       markup.indexOf("content-audit-summary"),
     );
+  });
+
+  it("shows the complete before/after workbook diff before batch approval", () => {
+    const preview = parseContentWorkbookBatchPreview({
+      previewId: "preview-content-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      expiresAt: "2026-08-22T10:00:00.000Z",
+      changes: [{
+        sellerSku: "DIFF-SKU-001",
+        changedFields: ["title", "bulletPoints", "productDescription"],
+        previous: {
+          title: "Amazon original title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Original bullet one", "Original bullet two"],
+          productDescription: "Original full description",
+          ingredients: "Turkey",
+        },
+        requested: {
+          title: "Excel requested title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Requested bullet one", "Requested bullet two"],
+          productDescription: "Requested full description",
+          ingredients: "Turkey",
+        },
+        issues: [{ message: "Amazon 提醒：請再次確認產品敘述。" }],
+      }],
+      notice: "預檢完成，尚未寫入。",
+    }, "ATVPDKIKX0DER");
+
+    const locked = renderToStaticMarkup(
+      <ContentWorkbookBatchPreviewCard
+        preview={preview}
+        busy={false}
+        acknowledged={false}
+        onAcknowledgedChange={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+    expect(locked).toContain("Amazon 原值");
+    expect(locked).toContain("Excel 更新值");
+    expect(locked).toContain("Amazon original title");
+    expect(locked).toContain("Excel requested title");
+    expect(locked).toContain("Original bullet two");
+    expect(locked).toContain("Requested full description");
+    expect(locked).toContain("Amazon Validation Preview 提醒");
+    expect(locked).toContain("我已核對上述每個 SKU 的完整原值、更新值與 Amazon 提醒");
+    expect(locked).toContain('class="price-primary-button" disabled=""');
+
+    const unlocked = renderToStaticMarkup(
+      <ContentWorkbookBatchPreviewCard
+        preview={preview}
+        busy={false}
+        acknowledged
+        onAcknowledgedChange={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+    expect(unlocked).toContain('class="price-primary-button"');
+    expect(unlocked).not.toContain('class="price-primary-button" disabled=""');
+
+    expect(() => parseContentWorkbookBatchPreview({
+      ...preview,
+      changes: [{
+        ...preview.changes[0],
+        changedFields: ["title"],
+      }],
+    }, "ATVPDKIKX0DER")).toThrow("欄位清單與前後內容不一致");
   });
 
   it("uses a whole-card yellow cue only when a visible missing-bullets issue exists", async () => {
@@ -467,6 +558,262 @@ describe("global FBA content audit panel", () => {
       focus!,
       freshListing({ ingredients: "Turkey" }),
     )).toMatchObject({ status: "stale" });
+  });
+
+  it("safely focuses a short title only while the exact Amazon text is current", () => {
+    const title = "T".repeat(59);
+    const focus = quickEditFocusForRow(quickEditRow({
+      title,
+      issues: [{
+        kind: "TITLE_BELOW_TARGET",
+        field: "title",
+        message: "產品名稱目前 59 個字元，低於 60 個字元。",
+        actualLength: 59,
+        minLength: 60,
+      }],
+    }));
+
+    expect(focus).toMatchObject({
+      fields: ["title"],
+      bulletIndices: [],
+      evidence: [expect.objectContaining({
+        issueKind: "TITLE_BELOW_TARGET",
+        actualLength: 59,
+        minLength: 60,
+        maxLength: null,
+      })],
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ title }),
+    )).toMatchObject({
+      status: "focused",
+      focus: { fields: ["title"], bulletIndices: [] },
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ title: "T".repeat(60) }),
+    )).toMatchObject({ status: "stale" });
+  });
+
+  it("relocates one exact length-flagged bullet and rejects duplicate candidates", () => {
+    const shortBullet = "B".repeat(149);
+    const focus = quickEditFocusForRow(quickEditRow({
+      bulletPoints: [shortBullet, "Second", "Third", "Fourth", "Fifth"],
+      issues: [{
+        kind: "BULLET_BELOW_TARGET",
+        field: "bulletPoints",
+        message: "產品要點 1 目前 149 個字元，低於 150 個字元。",
+        bulletIndex: 0,
+        actualLength: 149,
+        minLength: 150,
+        maxLength: 200,
+      }],
+    }));
+
+    expect(focus).toMatchObject({
+      fields: ["bulletPoints"],
+      bulletIndices: [0],
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        bulletPoints: ["Second", "Third", shortBullet, "Fourth", "Fifth"],
+      }),
+    )).toMatchObject({
+      status: "focused",
+      focus: {
+        fields: ["bulletPoints"],
+        bulletIndices: [2],
+        relocationNote: expect.stringContaining("賣點 3"),
+      },
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        bulletPoints: [shortBullet, "Second", shortBullet, "Fourth", "Fifth"],
+      }),
+    )).toMatchObject({ status: "stale" });
+  });
+
+  it("focuses an overlong bullet only while it remains above 200 code points", () => {
+    const longBullet = "😀".repeat(201);
+    const focus = quickEditFocusForRow(quickEditRow({
+      bulletPoints: [longBullet, "Second", "Third", "Fourth", "Fifth"],
+      issues: [{
+        kind: "BULLET_ABOVE_TARGET",
+        field: "bulletPoints",
+        message: "產品要點 1 目前 201 個字元，超過 200 個字元。",
+        bulletIndex: 0,
+        actualLength: 201,
+        minLength: 150,
+        maxLength: 200,
+      }],
+    }));
+
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ bulletPoints: [longBullet] }),
+    )).toMatchObject({
+      status: "focused",
+      focus: { fields: ["bulletPoints"], bulletIndices: [0] },
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({ bulletPoints: ["😀".repeat(200)] }),
+    )).toMatchObject({ status: "stale" });
+  });
+
+  it("explicitly falls back to full editing for highlight and description lengths", () => {
+    const row = quickEditRow({
+      itemHighlight: "H".repeat(109),
+      productDescription: "P".repeat(1_799),
+      issues: [
+        {
+          kind: "HIGHLIGHT_BELOW_TARGET",
+          field: "itemHighlight",
+          message: "產品亮點不足。",
+          actualLength: 109,
+          minLength: 110,
+        },
+        {
+          kind: "DESCRIPTION_BELOW_TARGET",
+          field: "productDescription",
+          message: "產品敘述不足。",
+          actualLength: 1_799,
+          minLength: 1_800,
+        },
+      ],
+    });
+
+    expect(quickEditFocusForRow(row)).toBeNull();
+    expect(quickEditAvailabilityForRow(row)).toMatchObject({
+      status: "unavailable",
+      unavailableReason: expect.stringContaining("請使用完整編輯確認"),
+    });
+  });
+
+  it("parses and explains every length reason with per-bullet evidence", () => {
+    const title = "T".repeat(59);
+    const itemHighlight = "H".repeat(109);
+    const bulletPoints = [
+      "A".repeat(149),
+      "B".repeat(201),
+      "C".repeat(150),
+      "D".repeat(150),
+      "E".repeat(150),
+    ];
+    const productDescription = "P".repeat(1_799);
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [{
+        sellerSku: "LENGTHS",
+        asin: "B000000999",
+        productType: "PET_FOOD",
+        title,
+        itemHighlight,
+        bulletPoints,
+        productDescription,
+        ingredients: "Turkey",
+        readStatus: "complete",
+        readErrors: [],
+        issues: [
+          {
+            kind: "TITLE_BELOW_TARGET",
+            field: "title",
+            message: "產品名稱目前 59 個字元，低於 60 個字元。",
+            actualLength: 59,
+            minLength: 60,
+          },
+          {
+            kind: "HIGHLIGHT_BELOW_TARGET",
+            field: "itemHighlight",
+            message: "產品亮點目前 109 個字元，低於 110 個字元。",
+            actualLength: 109,
+            minLength: 110,
+          },
+          {
+            kind: "BULLET_BELOW_TARGET",
+            field: "bulletPoints",
+            message: "產品要點 1 目前 149 個字元，低於 150 個字元。",
+            bulletIndex: 0,
+            actualLength: 149,
+            minLength: 150,
+            maxLength: 200,
+          },
+          {
+            kind: "BULLET_ABOVE_TARGET",
+            field: "bulletPoints",
+            message: "產品要點 2 目前 201 個字元，超過 200 個字元。",
+            bulletIndex: 1,
+            actualLength: 201,
+            minLength: 150,
+            maxLength: 200,
+          },
+          {
+            kind: "DESCRIPTION_BELOW_TARGET",
+            field: "productDescription",
+            message: "產品敘述目前 1799 個字元，低於 1800 個字元。",
+            actualLength: 1_799,
+            minLength: 1_800,
+          },
+        ],
+      }],
+      summary: { total: 1 },
+    });
+
+    expect(snapshot.rows[0].issues).toHaveLength(5);
+    expect(snapshot.summary).toMatchObject({
+      titleBelowTarget: 1,
+      highlightBelowTarget: 1,
+      bulletBelowTarget: 1,
+      bulletAboveTarget: 1,
+      descriptionBelowTarget: 1,
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        cachedResult={{
+          snapshot,
+          filter: "all",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+    expect(markup).toContain("產品名稱不足（產品名稱）");
+    expect(markup).toContain("產品要點過短（產品要點 1）");
+    expect(markup).toContain("產品要點過長（產品要點 2）");
+    expect(markup).toContain("產品敘述不足（產品敘述）");
+    expect(markup).toContain("目前 201 個字元，超過 200 個字元");
+  });
+
+  it("drops a length issue whose metadata does not match the returned content", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [{
+        sellerSku: "INVALID-LENGTH",
+        title: "T".repeat(59),
+        bulletPoints: [],
+        readStatus: "complete",
+        readErrors: [],
+        issues: [{
+          kind: "TITLE_BELOW_TARGET",
+          field: "title",
+          message: "tampered",
+          actualLength: 58,
+          minLength: 60,
+        }],
+      }],
+      summary: { total: 1 },
+    });
+
+    expect(snapshot.rows[0].issues).toEqual([]);
+    expect(snapshot.summary.titleBelowTarget).toBe(0);
   });
 
   it("shows typo text in red and explains invisible characters in one located guide", () => {

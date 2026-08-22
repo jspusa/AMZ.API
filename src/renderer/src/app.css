@@ -8426,6 +8426,221 @@ body {
   opacity: 0.58;
 }
 
+.content-audit-roundtrip {
+  display: grid;
+  gap: 11px;
+  margin: 12px 0 16px;
+  padding: 16px;
+  border: 1px solid #c9d7e8;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #f7faff, #eef4fb);
+  color: #24415f;
+}
+
+.content-audit-roundtrip p,
+.content-audit-roundtrip small {
+  margin: 4px 0 0;
+  color: #5d7188;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.content-audit-file-picker {
+  display: grid;
+  gap: 7px;
+  padding: 11px 13px;
+  border: 1px dashed #91aac5;
+  border-radius: 12px;
+  background: #fff;
+  color: #365b80;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.content-audit-file-picker input {
+  width: 100%;
+  color: #536b83;
+  font-size: 10px;
+}
+
+.content-audit-roundtrip-preview {
+  min-height: 38px;
+  border: 1px solid #8aa8c8;
+  border-radius: 11px;
+  background: #fff;
+  color: #27567f;
+  cursor: pointer;
+  font-weight: 760;
+}
+
+.content-audit-roundtrip-preview:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.content-audit-batch-preview,
+.content-audit-batch-result {
+  display: grid;
+  gap: 8px;
+  padding: 13px;
+  border: 1px solid #b8d9c4;
+  border-radius: 13px;
+  background: #f4fbf6;
+  color: #245a38;
+}
+
+.content-audit-batch-result.stopped_rejected,
+.content-audit-batch-result.stopped_unknown {
+  border-color: #e2b7af;
+  background: #fff7f5;
+  color: #8b332b;
+}
+
+.content-audit-batch-result ul {
+  display: grid;
+  gap: 5px;
+  max-height: 230px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.content-audit-batch-result li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.content-audit-batch-result li > small {
+  margin: 0;
+  text-align: right;
+}
+
+.content-audit-batch-diffs {
+  display: grid;
+  gap: 7px;
+  max-height: 480px;
+  overflow: auto;
+}
+
+.content-audit-batch-diffs > details {
+  border: 1px solid #c9ddcf;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.content-audit-batch-diffs summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  font-weight: 760;
+}
+
+.content-audit-batch-diffs summary > small {
+  margin: 0;
+  text-align: right;
+}
+
+.content-audit-batch-fields {
+  display: grid;
+  gap: 10px;
+  padding: 0 10px 10px;
+}
+
+.content-audit-batch-fields > section {
+  display: grid;
+  gap: 6px;
+}
+
+.content-audit-batch-fields h4 {
+  margin: 0;
+  color: #2f5c40;
+  font-size: 10px;
+}
+
+.content-audit-before-after {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 8px;
+}
+
+.content-audit-before-after > div {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #dbe5dd;
+  border-radius: 9px;
+  background: #f9fbfa;
+}
+
+.content-audit-before-after > div:last-child {
+  border-color: #b8d2ee;
+  background: #f3f8fe;
+}
+
+.content-audit-before-after strong {
+  color: #52685a;
+  font-size: 9px;
+}
+
+.content-audit-before-after p,
+.content-audit-before-after ol {
+  margin: 5px 0 0;
+  color: #263b2d;
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.content-audit-before-after ol {
+  display: grid;
+  gap: 5px;
+  padding-left: 18px;
+}
+
+.content-audit-validation-issues {
+  padding: 9px;
+  border: 1px solid #e5c783;
+  border-radius: 9px;
+  background: #fff9e8;
+  color: #77551c;
+}
+
+.content-audit-validation-issues ul {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 10px;
+}
+
+.content-audit-batch-acknowledgement {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid #b8d9c4;
+  border-radius: 9px;
+  background: #fff;
+  color: #2f5c40;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.content-audit-batch-acknowledgement input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
 .content-audit-invisible-more {
   margin-top: 9px;
   border-top: 1px solid rgba(180, 35, 24, 0.12);

@@ -6,7 +6,10 @@ import {
   SpApiError,
   SpApiPreCommitError,
 } from "../src/main/amazon/sp-api";
-import { LocalStore } from "../src/main/local-store";
+import {
+  CONTENT_AUDIT_SNAPSHOT_TTL_MS,
+  LocalStore,
+} from "../src/main/local-store";
 
 async function testStore(): Promise<LocalStore> {
   const directory = await mkdtemp(join(tmpdir(), "fba-os-store-"));
@@ -348,6 +351,72 @@ describe("local durable safety store", () => {
     await expect(content).resolves.toEqual({ ok: true });
   });
 
+  it("preflights every batch content ledger target before the first write", async () => {
+    const store = await testStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = store.runIdempotentOperation({
+      idempotencyKey: "existing-image-pending",
+      operationType: "images",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "BATCH-LOCKED",
+      accountScope: "account-a",
+      fingerprint: "existing-image-change",
+      execute: async () => {
+        await gate;
+        return { ok: true };
+      },
+    });
+    await vi.waitFor(async () => {
+      const raw = await readFile(store.filePath, "utf8");
+      expect(raw).toContain("existing-image-pending");
+    });
+
+    await expect(store.assertIdempotentOperationsAvailable([
+      {
+        idempotencyKey: "batch-content-safe",
+        operationType: "content",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "BATCH-SAFE",
+        accountScope: "account-a",
+        fingerprint: "safe-change",
+      },
+      {
+        idempotencyKey: "batch-content-locked",
+        operationType: "content",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "BATCH-LOCKED",
+        accountScope: "account-a",
+        fingerprint: "locked-change",
+      },
+    ])).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS", status: 409 });
+
+    const raw = await readFile(store.filePath, "utf8");
+    expect(raw).not.toContain("batch-content-safe");
+    expect(raw).not.toContain("batch-content-locked");
+    release();
+    await expect(pending).resolves.toEqual({ ok: true });
+  });
+
+  it("accepts an exact completed row during batch ledger preflight", async () => {
+    const store = await testStore();
+    const operation = {
+      idempotencyKey: "batch-content-completed",
+      operationType: "content" as const,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "BATCH-COMPLETED",
+      accountScope: "account-a",
+      fingerprint: "completed-change",
+    };
+    await store.runIdempotentOperation({
+      ...operation,
+      execute: async () => ({ ok: true }),
+    });
+    await expect(
+      store.assertIdempotentOperationsAvailable([operation]),
+    ).resolves.toBeUndefined();
+  });
+
   it("allows the attach stage after the detach stage is durably completed", async () => {
     const store = await testStore();
     const base = {
@@ -471,6 +540,193 @@ describe("local durable safety store", () => {
     expect(raw).not.toMatch(/refresh.?token|client.?secret|lwaClientSecret/i);
   });
 
+  it("persists only bounded content-audit hash evidence across a new LocalStore", async () => {
+    const store = await testStore();
+    const now = Date.now();
+    const exportId = "content-audit-restart-1";
+    const accountScope = "a".repeat(64);
+    const rowDigests = ["1".repeat(64), "2".repeat(64)];
+    await store.saveContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+      fetchedAt: new Date(now).toISOString(),
+      rowDigests,
+    }, now);
+
+    const rawText = await readFile(store.filePath, "utf8");
+    const raw = JSON.parse(rawText) as {
+      version: number;
+      contentAuditSnapshots: Record<string, { rowDigests: string[] }>;
+    };
+    expect(raw.version).toBe(2);
+    expect(raw.contentAuditSnapshots[exportId]?.rowDigests).toEqual(rowDigests);
+    expect(rawText).not.toContain("PRIVATE-SELLER-SKU");
+    expect(rawText).not.toContain("PRIVATE-LISTING-DESCRIPTION");
+    expect(rawText).not.toContain("A1FULLSELLERIDEXAMPLE");
+
+    const restarted = new LocalStore(store.filePath);
+    await restarted.initialize();
+    await expect(restarted.getContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+      now: now + 1,
+    })).resolves.toMatchObject({
+      status: "available",
+      evidence: { exportId, accountScope, rowDigests },
+    });
+    await expect(restarted.getContentAuditSnapshotEvidence({
+      exportId,
+      accountScope: "b".repeat(64),
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+      now: now + 1,
+    })).resolves.toEqual({ status: "account-scope-changed", evidence: null });
+    await expect(restarted.getContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "A1F83G8C2ARO7P",
+      mode: "live",
+      now: now + 1,
+    })).resolves.toEqual({ status: "marketplace-changed", evidence: null });
+    await expect(restarted.getContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      now: now + 1,
+    })).resolves.toEqual({ status: "mode-changed", evidence: null });
+  });
+
+  it("expires content-audit evidence at 24 hours without extending it on restart", async () => {
+    const store = await testStore();
+    const now = Date.now();
+    const exportId = "content-audit-expiry-1";
+    const accountScope = "c".repeat(64);
+    await store.saveContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      fetchedAt: new Date(now).toISOString(),
+      rowDigests: ["3".repeat(64)],
+    }, now);
+
+    const restarted = new LocalStore(store.filePath);
+    await restarted.initialize();
+    await expect(restarted.getContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      now: now + CONTENT_AUDIT_SNAPSHOT_TTL_MS - 1,
+    })).resolves.toMatchObject({ status: "available" });
+    await expect(restarted.getContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      now: now + CONTENT_AUDIT_SNAPSHOT_TTL_MS,
+    })).resolves.toEqual({ status: "expired", evidence: null });
+
+    const restartedAgain = new LocalStore(store.filePath);
+    await restartedAgain.initialize();
+    await expect(restartedAgain.getContentAuditSnapshotEvidence({
+      exportId,
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      now: now + CONTENT_AUDIT_SNAPSHOT_TTL_MS,
+    })).resolves.toEqual({ status: "not-found", evidence: null });
+  });
+
+  it("fails closed when a persisted content-audit collection exceeds its bounds", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fba-os-store-audit-cap-"));
+    const filePath = join(directory, "data.json");
+    const now = Date.now();
+    const contentAuditSnapshots = Object.fromEntries(
+      Array.from({ length: 9 }, (_value, index) => {
+        const exportId = `content-audit-over-cap-${index}`;
+        return [exportId, {
+          schemaVersion: 1,
+          exportId,
+          accountScope: "d".repeat(64),
+          marketplaceId: "ATVPDKIKX0DER",
+          mode: "demo",
+          fetchedAt: new Date(now).toISOString(),
+          rowDigests: [index.toString(16).padStart(64, "0")],
+          createdAt: now,
+          expiresAt: now + CONTENT_AUDIT_SNAPSHOT_TTL_MS,
+        }];
+      }),
+    );
+    await writeFile(filePath, JSON.stringify({
+      version: 2,
+      profiles: {},
+      ledger: {},
+      brandSalesJobs: {},
+      sharedAllListingsReports: {},
+      contentAuditSnapshots,
+    }));
+
+    const store = new LocalStore(filePath);
+    await expect(store.initialize()).resolves.toBeUndefined();
+    await expect(store.getContentAuditSnapshotEvidence({
+      exportId: "content-audit-over-cap-0",
+      accountScope: "d".repeat(64),
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      now,
+    })).resolves.toEqual({ status: "not-found", evidence: null });
+    await store.syncProductIdentity({
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "SAFE-SKU-AUDIT-CAP",
+    });
+    const rewritten = JSON.parse(await readFile(filePath, "utf8")) as {
+      contentAuditSnapshots: Record<string, unknown>;
+    };
+    expect(rewritten.contentAuditSnapshots).toEqual({});
+  });
+
+  it("evicts the oldest content-audit evidence deterministically at capacity", async () => {
+    const store = await testStore();
+    const now = Date.now();
+    const accountScope = "e".repeat(64);
+    for (let index = 0; index < 9; index += 1) {
+      await store.saveContentAuditSnapshotEvidence({
+        exportId: `content-audit-capacity-${index}`,
+        accountScope,
+        marketplaceId: "ATVPDKIKX0DER",
+        mode: "demo",
+        fetchedAt: new Date(now + index).toISOString(),
+        rowDigests: [(index + 10).toString(16).padStart(64, "0")],
+      }, now + index);
+    }
+
+    await expect(store.getContentAuditSnapshotEvidence({
+      exportId: "content-audit-capacity-0",
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      now: now + 9,
+    })).resolves.toEqual({ status: "not-found", evidence: null });
+    await expect(store.getContentAuditSnapshotEvidence({
+      exportId: "content-audit-capacity-8",
+      accountScope,
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+      now: now + 9,
+    })).resolves.toMatchObject({ status: "available" });
+    const raw = JSON.parse(await readFile(store.filePath, "utf8")) as {
+      contentAuditSnapshots: Record<string, unknown>;
+    };
+    expect(Object.keys(raw.contentAuditSnapshots)).toHaveLength(8);
+  });
+
   it("drops malformed optional report-cache entries without blocking profiles or ledger", async () => {
     const directory = await mkdtemp(join(tmpdir(), "fba-os-store-cache-"));
     const filePath = join(directory, "data.json");
@@ -498,6 +754,9 @@ describe("local durable safety store", () => {
           },
         },
       },
+      contentAuditSnapshots: {
+        malformed: { schemaVersion: 1, rowDigests: ["not-a-digest"] },
+      },
     }));
     const store = new LocalStore(filePath);
     await expect(store.initialize()).resolves.toBeUndefined();
@@ -520,10 +779,12 @@ describe("local durable safety store", () => {
       version: number;
       brandSalesJobs: Record<string, unknown>;
       sharedAllListingsReports: Record<string, unknown>;
+      contentAuditSnapshots: Record<string, unknown>;
     };
     expect(rewritten.version).toBe(2);
     expect(rewritten.brandSalesJobs).toEqual({});
     expect(rewritten.sharedAllListingsReports).toEqual({});
+    expect(rewritten.contentAuditSnapshots).toEqual({});
   });
 
   it("keeps the optional durable report ledger rollback-compatible at store version 2", async () => {

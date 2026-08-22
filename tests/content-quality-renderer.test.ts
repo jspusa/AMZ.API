@@ -3,6 +3,7 @@ import {
   contentHighlightSegments,
   locateInvisibleCharacters,
   summarizeContentAudit,
+  trimmedUnicodeLength,
   type ContentAuditRow,
 } from "../src/renderer/src/content-quality";
 import {
@@ -359,7 +360,103 @@ describe("renderer content quality helpers", () => {
       missingBullets: 1,
       missingIngredients: 0,
       ingredientsUnverified: 0,
+      titleBelowTarget: 0,
+      highlightBelowTarget: 0,
+      bulletBelowTarget: 0,
+      bulletAboveTarget: 0,
+      descriptionBelowTarget: 0,
     });
+  });
+
+  it("counts every new length category once per affected SKU", () => {
+    const lengthRows: ContentAuditRow[] = [{
+      ...rows[0],
+      itemHighlight: "Short highlight",
+      productDescription: "Short description",
+      issues: [
+        {
+          kind: "TITLE_BELOW_TARGET",
+          field: "title",
+          message: "產品名稱不足。",
+          actualLength: 20,
+          minLength: 60,
+        },
+        {
+          kind: "HIGHLIGHT_BELOW_TARGET",
+          field: "itemHighlight",
+          message: "產品亮點不足。",
+          actualLength: 15,
+          minLength: 110,
+        },
+        {
+          kind: "BULLET_BELOW_TARGET",
+          field: "bulletPoints",
+          message: "產品要點 1 過短。",
+          bulletIndex: 0,
+          actualLength: 10,
+          minLength: 150,
+          maxLength: 200,
+        },
+        {
+          kind: "BULLET_BELOW_TARGET",
+          field: "bulletPoints",
+          message: "產品要點 2 過短。",
+          bulletIndex: 1,
+          actualLength: 11,
+          minLength: 150,
+          maxLength: 200,
+        },
+        {
+          kind: "BULLET_ABOVE_TARGET",
+          field: "bulletPoints",
+          message: "產品要點 3 過長。",
+          bulletIndex: 2,
+          actualLength: 201,
+          minLength: 150,
+          maxLength: 200,
+        },
+        {
+          kind: "DESCRIPTION_BELOW_TARGET",
+          field: "productDescription",
+          message: "產品敘述不足。",
+          actualLength: 17,
+          minLength: 1_800,
+        },
+      ],
+    }];
+
+    expect(summarizeContentAudit(lengthRows)).toMatchObject({
+      withIssues: 1,
+      titleBelowTarget: 1,
+      highlightBelowTarget: 1,
+      bulletBelowTarget: 1,
+      bulletAboveTarget: 1,
+      descriptionBelowTarget: 1,
+    });
+  });
+
+  it("uses trimmed Unicode code-point lengths in renderer revalidation", () => {
+    expect(trimmedUnicodeLength(` \n${"😀".repeat(60)}\t `)).toBe(60);
+  });
+
+  it("checks product highlights and descriptions with the shared dictionary", () => {
+    const checked = addPagesDictionarySpellingIssues([{
+      ...rows[0],
+      itemHighlight: "Trukey nutrition",
+      productDescription: "Naturall ingredients",
+      title: "Turkey Treats",
+      bulletPoints: [],
+      ingredients: "Turkey",
+      issues: [],
+    }]);
+
+    expect(checked[0].issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "itemHighlight", token: "Trukey" }),
+      expect.objectContaining({
+        field: "productDescription",
+        token: "Naturall",
+      }),
+    ]));
   });
 
   it("still applies explicit rules after a very large clean listing", () => {

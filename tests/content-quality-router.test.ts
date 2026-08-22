@@ -23,8 +23,12 @@ function request(query: Record<string, string>): ApiRequest {
 
 describe("listing content quality audit route", () => {
   const router = new ApiRouter({
-    store: {} as LocalStore,
-    vault: {} as CredentialVault,
+    store: {
+      saveContentAuditSnapshotEvidence: async () => undefined,
+    } as unknown as LocalStore,
+    vault: {
+      getAccountScope: async () => "a".repeat(64),
+    } as unknown as CredentialVault,
     approveWrite: async () => undefined,
   });
 
@@ -59,7 +63,7 @@ describe("listing content quality audit route", () => {
     if (response.body.kind !== "json") throw new Error("Expected JSON response");
     const value = response.body.value as Record<string, unknown>;
     expect(Object.keys(value).sort()).toEqual(
-      ["marketplaceId", "fetchedAt", "rows", "readErrors", "summary"].sort(),
+      ["marketplaceId", "fetchedAt", "exportId", "rows", "readErrors", "summary"].sort(),
     );
     expect(value.marketplaceId).toBe("ATVPDKIKX0DER");
     expect(Array.isArray(value.rows)).toBe(true);
@@ -70,11 +74,16 @@ describe("listing content quality audit route", () => {
       asin: expect.any(String),
       productType: expect.any(String),
       title: expect.any(String),
+      itemHighlight: expect.any(String),
       bulletPoints: expect.any(Array),
+      productDescription: expect.any(String),
       ingredients: expect.any(String),
       readStatus: "complete",
       readErrors: expect.any(Array),
       issues: expect.any(Array),
+      variationRole: expect.stringMatching(/^(child|standalone|unknown)$/u),
+      variationFamilyKey: expect.any(String),
+      relationshipStatus: expect.stringMatching(/^(complete|incomplete)$/u),
     });
     expect(value.summary).toMatchObject({
       total: rows.length,
@@ -85,6 +94,11 @@ describe("listing content quality audit route", () => {
       missingBullets: expect.any(Number),
       missingIngredients: expect.any(Number),
       ingredientsUnverified: expect.any(Number),
+      titleBelowTarget: expect.any(Number),
+      highlightBelowTarget: expect.any(Number),
+      bulletBelowTarget: expect.any(Number),
+      bulletAboveTarget: expect.any(Number),
+      descriptionBelowTarget: expect.any(Number),
     });
   });
 

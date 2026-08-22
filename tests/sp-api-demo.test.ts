@@ -81,7 +81,11 @@ describe("SP-API demo safety boundary", () => {
       getListingImages(identity),
     ]);
     expect(content.mode).toBe("demo");
+    expect(content.itemHighlight).not.toBe("");
     expect(content.bulletPoints.length).toBeLessThanOrEqual(5);
+    expect(content.productDescription).not.toBe("");
+    expect(content.capabilities.itemHighlight.maxLength).toBe(125);
+    expect(content.capabilities.productDescription.supported).toBe(true);
     expect(images.images).toHaveLength(9);
     expect(images.images[0].attributeName).toBe("main_product_image_locator");
   });

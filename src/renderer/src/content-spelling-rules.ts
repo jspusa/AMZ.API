@@ -115,6 +115,8 @@ export function sharedContentSpellingMatch(word: string): ContentSpellingMatch |
 
 function issueFieldLabel(field: ContentAuditField): string {
   if (field === "title") return "標題";
+  if (field === "itemHighlight") return "產品亮點";
+  if (field === "productDescription") return "產品敘述";
   if (field === "ingredients") return "成分";
   return "五大賣點";
 }
@@ -139,7 +141,9 @@ export function addPagesDictionarySpellingIssues(
     let rowIssueCount = 0;
     const sources: Array<[ContentAuditField, string]> = [
       ["title", row.title],
+      ["itemHighlight", row.itemHighlight ?? ""],
       ["bulletPoints", row.bulletPoints.join("\n")],
+      ["productDescription", row.productDescription ?? ""],
       ["ingredients", row.ingredients],
     ];
     for (const [field, value] of sources) {

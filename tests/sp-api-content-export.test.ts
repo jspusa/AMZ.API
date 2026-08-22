@@ -97,6 +97,27 @@ describe("FBA listing content export completeness", () => {
                     value: "Listings availability title",
                   },
                 ],
+                title_differentiation: [
+                  {
+                    marketplace_id: MARKETPLACE_ID,
+                    language_tag: "en_US",
+                    value: "Listings item highlight",
+                  },
+                ],
+                bullet_point: [
+                  {
+                    marketplace_id: MARKETPLACE_ID,
+                    language_tag: "en_US",
+                    value: "Listings bullet point",
+                  },
+                ],
+                product_description: [
+                  {
+                    marketplace_id: MARKETPLACE_ID,
+                    language_tag: "en_US",
+                    value: "Listings product description",
+                  },
+                ],
               },
             },
           ],
@@ -116,6 +137,9 @@ describe("FBA listing content export completeness", () => {
     expect(result.rows[0]).toMatchObject({
       sellerSku: "NO-AVAIL",
       title: "Listings availability title",
+      itemHighlight: "Listings item highlight",
+      bulletPoints: ["Listings bullet point"],
+      productDescription: "Listings product description",
       readStatus: "incomplete",
       readErrors: [
         expect.objectContaining({

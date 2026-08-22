@@ -2,9 +2,19 @@ export type ContentQualityIssueKind =
   | "MISSING_BULLETS"
   | "MISSING_INGREDIENTS"
   | "INGREDIENTS_UNVERIFIED"
+  | "TITLE_BELOW_TARGET"
+  | "HIGHLIGHT_BELOW_TARGET"
+  | "BULLET_BELOW_TARGET"
+  | "BULLET_ABOVE_TARGET"
+  | "DESCRIPTION_BELOW_TARGET"
   | "SUSPECTED_TYPO";
 
-export type ContentQualityField = "title" | "bulletPoints" | "ingredients";
+export type ContentQualityField =
+  | "title"
+  | "itemHighlight"
+  | "bulletPoints"
+  | "productDescription"
+  | "ingredients";
 
 export type ContentQualityIssue = {
   kind: ContentQualityIssueKind;
@@ -12,6 +22,10 @@ export type ContentQualityIssue = {
   message: string;
   token?: string;
   suggestion?: string;
+  bulletIndex?: number;
+  actualLength?: number;
+  minLength?: number;
+  maxLength?: number;
 };
 
 export type ContentQualityReadError = {
@@ -24,13 +38,20 @@ export type ContentQualitySourceRow = {
   asin: string;
   productType: string;
   title: string;
+  itemHighlight?: string;
   bulletPoints: string[];
+  productDescription?: string;
   ingredients: string;
   readStatus: "complete" | "incomplete";
   readErrors: ContentQualityReadError[];
 };
 
-export type ContentQualityRow = ContentQualitySourceRow & {
+export type ContentQualityRow = Omit<
+  ContentQualitySourceRow,
+  "itemHighlight" | "productDescription"
+> & {
+  itemHighlight: string;
+  productDescription: string;
   issues: ContentQualityIssue[];
 };
 
@@ -43,6 +64,11 @@ export type ContentQualitySummary = {
   missingBullets: number;
   missingIngredients: number;
   ingredientsUnverified: number;
+  titleBelowTarget: number;
+  highlightBelowTarget: number;
+  bulletBelowTarget: number;
+  bulletAboveTarget: number;
+  descriptionBelowTarget: number;
 };
 
 export type ContentQualityAudit = {
@@ -68,6 +94,18 @@ const KNOWN_TYPOS: readonly KnownTypo[] = [
 
 const INVISIBLE_CHARACTER = /[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/gu;
 const REPEATED_WORD = /\b([A-Za-z][A-Za-z'-]*)\s+\1\b/giu;
+
+export const CONTENT_QUALITY_LENGTH_TARGETS = Object.freeze({
+  titleMinimum: 60,
+  itemHighlightMinimum: 110,
+  bulletMinimum: 150,
+  bulletMaximum: 200,
+  productDescriptionMinimum: 1_800,
+});
+
+export function trimmedUnicodeLength(value: string): number {
+  return Array.from(value.trim()).length;
+}
 
 function suggestionWithCase(token: string, suggestion: string): string {
   if (token === token.toUpperCase()) return suggestion.toUpperCase();
@@ -127,12 +165,16 @@ function typoIssues(
 }
 
 function auditRow(source: ContentQualitySourceRow): ContentQualityRow {
+  const itemHighlight = source.itemHighlight ?? "";
   const bulletPoints = [...source.bulletPoints];
+  const productDescription = source.productDescription ?? "";
   const readErrors = source.readErrors.map((error) => ({ ...error }));
   if (source.readStatus !== "complete") {
     return {
       ...source,
+      itemHighlight,
       bulletPoints,
+      productDescription,
       readStatus: "incomplete",
       readErrors,
       issues: [],
@@ -140,6 +182,67 @@ function auditRow(source: ContentQualitySourceRow): ContentQualityRow {
   }
   const nonEmptyBulletCount = bulletPoints.filter((value) => value.trim()).length;
   const issues: ContentQualityIssue[] = [];
+
+  const titleLength = trimmedUnicodeLength(source.title);
+  if (titleLength < CONTENT_QUALITY_LENGTH_TARGETS.titleMinimum) {
+    issues.push({
+      kind: "TITLE_BELOW_TARGET",
+      field: "title",
+      message: `產品名稱目前 ${titleLength} 個字元，低於 ${CONTENT_QUALITY_LENGTH_TARGETS.titleMinimum} 個字元。`,
+      actualLength: titleLength,
+      minLength: CONTENT_QUALITY_LENGTH_TARGETS.titleMinimum,
+    });
+  }
+
+  const highlightLength = trimmedUnicodeLength(itemHighlight);
+  if (highlightLength < CONTENT_QUALITY_LENGTH_TARGETS.itemHighlightMinimum) {
+    issues.push({
+      kind: "HIGHLIGHT_BELOW_TARGET",
+      field: "itemHighlight",
+      message: `產品亮點目前 ${highlightLength} 個字元，低於 ${CONTENT_QUALITY_LENGTH_TARGETS.itemHighlightMinimum} 個字元。`,
+      actualLength: highlightLength,
+      minLength: CONTENT_QUALITY_LENGTH_TARGETS.itemHighlightMinimum,
+    });
+  }
+
+  bulletPoints.forEach((bulletPoint, bulletIndex) => {
+    const actualLength = trimmedUnicodeLength(bulletPoint);
+    const lengthEvidence = {
+      bulletIndex,
+      actualLength,
+      minLength: CONTENT_QUALITY_LENGTH_TARGETS.bulletMinimum,
+      maxLength: CONTENT_QUALITY_LENGTH_TARGETS.bulletMaximum,
+    };
+    if (actualLength < CONTENT_QUALITY_LENGTH_TARGETS.bulletMinimum) {
+      issues.push({
+        kind: "BULLET_BELOW_TARGET",
+        field: "bulletPoints",
+        message: `產品要點 ${bulletIndex + 1} 目前 ${actualLength} 個字元，低於 ${CONTENT_QUALITY_LENGTH_TARGETS.bulletMinimum} 個字元。`,
+        ...lengthEvidence,
+      });
+    } else if (actualLength > CONTENT_QUALITY_LENGTH_TARGETS.bulletMaximum) {
+      issues.push({
+        kind: "BULLET_ABOVE_TARGET",
+        field: "bulletPoints",
+        message: `產品要點 ${bulletIndex + 1} 目前 ${actualLength} 個字元，超過 ${CONTENT_QUALITY_LENGTH_TARGETS.bulletMaximum} 個字元。`,
+        ...lengthEvidence,
+      });
+    }
+  });
+
+  const descriptionLength = trimmedUnicodeLength(productDescription);
+  if (
+    descriptionLength <
+    CONTENT_QUALITY_LENGTH_TARGETS.productDescriptionMinimum
+  ) {
+    issues.push({
+      kind: "DESCRIPTION_BELOW_TARGET",
+      field: "productDescription",
+      message: `產品敘述目前 ${descriptionLength} 個字元，低於 ${CONTENT_QUALITY_LENGTH_TARGETS.productDescriptionMinimum} 個字元。`,
+      actualLength: descriptionLength,
+      minLength: CONTENT_QUALITY_LENGTH_TARGETS.productDescriptionMinimum,
+    });
+  }
 
   if (nonEmptyBulletCount < 5) {
     issues.push({
@@ -167,9 +270,11 @@ function auditRow(source: ContentQualitySourceRow): ContentQualityRow {
   }
 
   issues.push(...typoIssues(source.title, "title"));
+  issues.push(...typoIssues(itemHighlight, "itemHighlight"));
   for (const bulletPoint of bulletPoints) {
     issues.push(...typoIssues(bulletPoint, "bulletPoints"));
   }
+  issues.push(...typoIssues(productDescription, "productDescription"));
   issues.push(...typoIssues(source.ingredients, "ingredients"));
 
   return {
@@ -177,7 +282,9 @@ function auditRow(source: ContentQualitySourceRow): ContentQualityRow {
     asin: source.asin,
     productType: source.productType,
     title: source.title,
+    itemHighlight,
     bulletPoints,
+    productDescription,
     ingredients: source.ingredients,
     readStatus: "complete",
     readErrors,
@@ -216,6 +323,21 @@ export function auditListingContentRows(input: {
       ).length,
       ingredientsUnverified: rows.filter((row) =>
         rowHas(row, "INGREDIENTS_UNVERIFIED"),
+      ).length,
+      titleBelowTarget: rows.filter((row) =>
+        rowHas(row, "TITLE_BELOW_TARGET"),
+      ).length,
+      highlightBelowTarget: rows.filter((row) =>
+        rowHas(row, "HIGHLIGHT_BELOW_TARGET"),
+      ).length,
+      bulletBelowTarget: rows.filter((row) =>
+        rowHas(row, "BULLET_BELOW_TARGET"),
+      ).length,
+      bulletAboveTarget: rows.filter((row) =>
+        rowHas(row, "BULLET_ABOVE_TARGET"),
+      ).length,
+      descriptionBelowTarget: rows.filter((row) =>
+        rowHas(row, "DESCRIPTION_BELOW_TARGET"),
       ).length,
     },
   };

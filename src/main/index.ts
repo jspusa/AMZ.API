@@ -507,6 +507,7 @@ function registerIpc(): void {
       [
         "/api/sp-api/listings",
         "/api/sp-api/listing-content",
+        "/api/sp-api/listing-content/import",
         "/api/sp-api/listing-images",
         "/api/sp-api/sale-price",
         "/api/sp-api/variation-move",

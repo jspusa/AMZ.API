@@ -41,6 +41,48 @@ const CONTENT_AUDIT_HEADERS = [
   "說明",
 ] as const;
 
+export const CONTENT_AUDIT_V2_SCHEMA_VERSION = 2 as const;
+export const CONTENT_AUDIT_V2_INDEX_SHEET_NAME = "說明與索引";
+export const CONTENT_AUDIT_V2_INDEX_HEADER_ROW = 9;
+export const CONTENT_AUDIT_V2_INDEX_HEADERS = [
+  "工作表",
+  "變體家庭 Key",
+  "Parent SKU",
+  "Variation Theme",
+  "角色",
+  "問題列數",
+] as const;
+export const CONTENT_AUDIT_V2_DATA_HEADERS = [
+  "SKU",
+  "ASIN",
+  "Product Type",
+  "原始產品名稱",
+  "更新產品名稱",
+  "原始產品亮點",
+  "更新產品亮點",
+  "原始要點 1",
+  "更新要點 1",
+  "原始要點 2",
+  "更新要點 2",
+  "原始要點 3",
+  "更新要點 3",
+  "原始要點 4",
+  "更新要點 4",
+  "原始要點 5",
+  "更新要點 5",
+  "原始產品敘述",
+  "更新產品敘述",
+  "原始成分",
+  "更新成分",
+  "類型",
+  "說明",
+] as const;
+
+const CONTENT_AUDIT_V2_MAX_FAMILY_SHEETS = 500;
+const CONTENT_AUDIT_V2_MAX_ROWS = 25_000;
+const CONTENT_AUDIT_V2_STANDALONE_KEY = "STANDALONE";
+const CONTENT_AUDIT_V2_INCOMPLETE_KEY = "DATA_INCOMPLETE";
+
 const AGED_INVENTORY_SHEET_NAME = "FBA 庫齡";
 const AGED_INVENTORY_NOTES_SHEET_NAME = "欄位與能力邊界";
 const IMAGE_AUDIT_SHEET_NAME = "圖片健檢";
@@ -164,9 +206,61 @@ export interface CreateUnboundVariationWorkbookInput {
   incompleteRows: readonly UnboundVariationWorkbookIncompleteRow[];
 }
 
+export type ContentAuditWorkbookContentValues = {
+  title: string;
+  itemHighlight: string;
+  bulletPoints: readonly string[];
+  productDescription: string;
+  ingredients: string;
+};
+
+export type ContentAuditWorkbookIssueFields = {
+  title?: boolean;
+  itemHighlight?: boolean;
+  bulletPoints?: readonly boolean[];
+  productDescription?: boolean;
+  ingredients?: boolean;
+};
+
+export interface ContentAuditWorkbookV2Row
+  extends ContentAuditWorkbookContentValues {
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  variationRole: string;
+  variationParentSku: string;
+  variationFamilyKey: string;
+  variationTheme: string;
+  auditType: string;
+  auditDescription: string;
+  issueFields?: ContentAuditWorkbookIssueFields;
+  auditTitleRuns?: readonly WorkbookRichTextRun[];
+  auditItemHighlightRuns?: readonly WorkbookRichTextRun[];
+  auditBulletPointRuns?: readonly (
+    | readonly WorkbookRichTextRun[]
+    | null
+    | undefined
+  )[];
+  auditProductDescriptionRuns?: readonly WorkbookRichTextRun[];
+  auditIngredientsRuns?: readonly WorkbookRichTextRun[];
+}
+
+export interface CreateContentAuditWorkbookV2Input {
+  marketplaceId: string;
+  marketplaceLabel: string;
+  exportId: string;
+  fetchedAt: string | Date;
+  rows: readonly ContentAuditWorkbookV2Row[];
+}
+
 type Cell =
-  | { kind: "text"; value: unknown; style: number }
-  | { kind: "rich-text"; runs: readonly WorkbookRichTextRun[]; style: number }
+  | { kind: "text"; value: unknown; style: number; preserveFormulaLikeText?: boolean }
+  | {
+      kind: "rich-text";
+      runs: readonly WorkbookRichTextRun[];
+      style: number;
+      preserveFormulaLikeText?: boolean;
+    }
   | { kind: "date"; value: string | Date | null | undefined; style: number }
   | { kind: "number"; value: number | null; style: number };
 
@@ -175,6 +269,8 @@ interface WorksheetOptions {
   rows: readonly (readonly Cell[])[];
   widths: readonly number[];
   dataRowHeight: number;
+  freezeRows?: number;
+  autoFilter?: string | false;
 }
 
 /**
@@ -284,6 +380,276 @@ export function createListingsWorkbook({
   });
 
   return zipSync(archive, { level: 6 });
+}
+
+/**
+ * Creates the editable, round-trip-safe content-audit workbook. Every listing
+ * value is written twice: an immutable-looking grey source cell and a blue
+ * proposed cell that the user may edit. The importer never trusts the styles;
+ * the duplicated source values are the evidence used for a fresh Amazon
+ * compare-before-write check.
+ */
+export function createContentAuditWorkbookV2({
+  marketplaceId,
+  marketplaceLabel,
+  exportId,
+  fetchedAt,
+  rows,
+}: CreateContentAuditWorkbookV2Input): Uint8Array {
+  const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
+  if (!/^[A-Z0-9]{1,32}$/u.test(marketplaceId)) {
+    throw new Error("Content audit workbook marketplace metadata is invalid.");
+  }
+  if (!/^[A-Za-z0-9._-]{1,200}$/u.test(exportId)) {
+    throw new Error("Content audit workbook export metadata is invalid.");
+  }
+  if (rows.length > CONTENT_AUDIT_V2_MAX_ROWS) {
+    throw new Error("Content audit workbook contains too many rows.");
+  }
+
+  const seenSkus = new Set<string>();
+  const groups = new Map<string, ContentAuditWorkbookV2Row[]>();
+  for (const row of rows) {
+    if (
+      !row.sellerSku ||
+      row.sellerSku.length > 40 ||
+      row.sellerSku !== row.sellerSku.trim() ||
+      /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(
+        row.sellerSku,
+      ) ||
+      seenSkus.has(row.sellerSku)
+    ) {
+      throw new Error(
+        "Content audit workbook rows must use unique, exact Seller SKUs.",
+      );
+    }
+    seenSkus.add(row.sellerSku);
+    const familyKey = contentAuditFamilyKey(row);
+    const group = groups.get(familyKey) ?? [];
+    group.push(row);
+    groups.set(familyKey, group);
+  }
+
+  const familyKeys = [...groups.keys()].sort(compareContentAuditFamilyKey);
+  if (familyKeys.length > CONTENT_AUDIT_V2_MAX_FAMILY_SHEETS) {
+    throw new Error("Content audit workbook contains too many variation families.");
+  }
+  let numberedFamilyIndex = 0;
+  const familySheets = familyKeys.map((familyKey) => {
+    const sheetName = familyKey === CONTENT_AUDIT_V2_STANDALONE_KEY
+      ? "未綁變體"
+      : familyKey === CONTENT_AUDIT_V2_INCOMPLETE_KEY
+        ? "資料未完成"
+        : `F${String(++numberedFamilyIndex).padStart(3, "0")}`;
+    const familyRows = [...(groups.get(familyKey) ?? [])].sort((left, right) =>
+      compareExactText(left.sellerSku, right.sellerSku));
+    return {
+      sheetName,
+      familyKey,
+      rows: familyRows,
+      parentSkus: uniqueSortedText(
+        familyRows.map((row) => row.variationParentSku),
+      ),
+      variationThemes: uniqueSortedText(
+        familyRows.map((row) => row.variationTheme),
+      ),
+      roles: uniqueSortedText(familyRows.map((row) => row.variationRole)),
+    };
+  });
+
+  const indexRows: readonly (readonly Cell[])[] = [
+    [textCell("Schema Version"), textCell(CONTENT_AUDIT_V2_SCHEMA_VERSION), ...emptyCells(4)],
+    [textCell("Marketplace ID"), textCell(marketplaceId, 2), ...emptyCells(4)],
+    [textCell("Export ID"), textCell(exportId, 2), ...emptyCells(4)],
+    [textCell("Fetched At"), textCell(generatedAt.toISOString()), ...emptyCells(4)],
+    [
+      textCell("使用說明"),
+      textCell(
+        "只能編輯淺藍色「更新...」欄位。灰色「原始...」欄位是匯出快照，回傳時會重新向 Amazon 核對；請勿修改 SKU、ASIN、Product Type 或工作表結構。",
+      ),
+      ...emptyCells(4),
+    ],
+    [
+      textCell("顏色說明"),
+      textCell(
+        "淺藍色＝可編輯更新值；灰色＝原始值；黃色＝此欄位被健檢抓到；紅字＝疑似錯字或不可見字元。",
+      ),
+      ...emptyCells(4),
+    ],
+    emptyCells(6),
+    CONTENT_AUDIT_V2_INDEX_HEADERS.map((header) => textCell(header, 1)),
+    ...familySheets.map((family): readonly Cell[] => [
+      textCell(family.sheetName, 2),
+      roundTripTextCell(family.familyKey, 2),
+      roundTripTextCell(family.parentSkus.join("、"), 2),
+      roundTripTextCell(family.variationThemes.join("、")),
+      textCell(family.roles.join("、")),
+      numberCell(family.rows.length),
+    ]),
+  ];
+
+  const sheetDefinitions = [
+    {
+      name: CONTENT_AUDIT_V2_INDEX_SHEET_NAME,
+      xml: buildWorksheet({
+        headers: ["AMZ.API 全站文案健檢 Excel", "", "", "", "", ""],
+        rows: indexRows,
+        widths: [22, 72, 34, 34, 24, 14],
+        dataRowHeight: 36,
+        freezeRows: CONTENT_AUDIT_V2_INDEX_HEADER_ROW,
+        // Excel and LibreOffice persist AutoFilter ranges as hidden
+        // _xlnm._FilterDatabase Defined Names. The importer deliberately
+        // rejects every Defined Name, so v2 omits filters rather than widening
+        // that security interface for a presentation-only feature.
+        autoFilter: false,
+      }),
+    },
+    ...familySheets.map((family) => ({
+      name: family.sheetName,
+      xml: buildWorksheet({
+        headers: CONTENT_AUDIT_V2_DATA_HEADERS,
+        rows: family.rows.map(contentAuditWorkbookCells),
+        widths: [
+          24, 16, 24,
+          48, 48,
+          42, 42,
+          40, 40, 40, 40, 40, 40, 40, 40, 40, 40,
+          72, 72,
+          42, 42,
+          28, 78,
+        ],
+        dataRowHeight: 72,
+        autoFilter: false,
+      }),
+    })),
+  ];
+
+  const archive: Record<string, Uint8Array> = {
+    "[Content_Types].xml": strToU8(buildContentTypes(sheetDefinitions.length)),
+    "_rels/.rels": strToU8(buildPackageRelationships()),
+    "docProps/app.xml": strToU8(
+      buildAppProperties(sheetDefinitions.map((sheet) => sheet.name)),
+    ),
+    "docProps/core.xml": strToU8(
+      buildCoreProperties(
+        marketplaceLabel,
+        generatedAt,
+        "AMZ.API 全站文案健檢 Excel v2",
+      ),
+    ),
+    "xl/_rels/workbook.xml.rels": strToU8(
+      buildWorkbookRelationships(sheetDefinitions.length),
+    ),
+    "xl/styles.xml": strToU8(buildStyles()),
+    "xl/workbook.xml": strToU8(
+      buildWorkbook(sheetDefinitions.map((sheet) => sheet.name)),
+    ),
+  };
+  sheetDefinitions.forEach((sheet, index) => {
+    archive[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(sheet.xml);
+  });
+  return zipSync(archive, { level: 6 });
+}
+
+function contentAuditFamilyKey(row: ContentAuditWorkbookV2Row): string {
+  const familyKey = row.variationRole === "standalone"
+    ? CONTENT_AUDIT_V2_STANDALONE_KEY
+    : row.variationRole === "child" && row.variationFamilyKey
+      ? row.variationFamilyKey
+      : CONTENT_AUDIT_V2_INCOMPLETE_KEY;
+  if (
+    familyKey.length > 2_000 ||
+    /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(
+      familyKey,
+    )
+  ) {
+    throw new Error("Content audit workbook variation family key is invalid.");
+  }
+  return familyKey;
+}
+
+function compareContentAuditFamilyKey(left: string, right: string): number {
+  const rank = (value: string) =>
+    value === CONTENT_AUDIT_V2_STANDALONE_KEY
+      ? 1
+      : value === CONTENT_AUDIT_V2_INCOMPLETE_KEY
+        ? 2
+        : 0;
+  const difference = rank(left) - rank(right);
+  return difference || compareExactText(left, right);
+}
+
+function compareExactText(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function uniqueSortedText(values: readonly string[]): string[] {
+  return [...new Set(values.filter(Boolean))].sort(compareExactText);
+}
+
+function emptyCells(length: number): Cell[] {
+  return Array.from({ length }, () => textCell(""));
+}
+
+function contentAuditWorkbookCells(
+  row: ContentAuditWorkbookV2Row,
+): readonly Cell[] {
+  const bullets = Array.from({ length: 5 }, (_, index) =>
+    row.bulletPoints[index] ?? "");
+  const bulletRuns = row.auditBulletPointRuns ?? [];
+  const bulletIssues = row.issueFields?.bulletPoints ?? [];
+  const pairedContentCells = (
+    value: string,
+    runs: readonly WorkbookRichTextRun[] | null | undefined,
+    issue: boolean,
+  ): Cell[] => [
+    contentAuditRoundTripCell(value, runs, 6),
+    contentAuditRoundTripCell(value, runs, issue ? 5 : 7),
+  ];
+
+  return [
+    roundTripTextCell(row.sellerSku, 2),
+    roundTripTextCell(row.asin, 2),
+    roundTripTextCell(row.productType),
+    ...pairedContentCells(
+      row.title,
+      row.auditTitleRuns,
+      Boolean(row.issueFields?.title),
+    ),
+    ...pairedContentCells(
+      row.itemHighlight,
+      row.auditItemHighlightRuns,
+      Boolean(row.issueFields?.itemHighlight),
+    ),
+    ...bullets.flatMap((bullet, index) =>
+      pairedContentCells(
+        bullet,
+        bulletRuns[index],
+        Boolean(bulletIssues[index]),
+      )),
+    ...pairedContentCells(
+      row.productDescription,
+      row.auditProductDescriptionRuns,
+      Boolean(row.issueFields?.productDescription),
+    ),
+    ...pairedContentCells(
+      row.ingredients,
+      row.auditIngredientsRuns,
+      Boolean(row.issueFields?.ingredients),
+    ),
+    roundTripTextCell(row.auditType),
+    roundTripTextCell(row.auditDescription),
+  ];
+}
+
+function contentAuditRoundTripCell(
+  value: string,
+  runs: readonly WorkbookRichTextRun[] | null | undefined,
+  style: number,
+): Cell {
+  return runs?.length
+    ? roundTripRichTextCell(runs, style)
+    : roundTripTextCell(value, style);
 }
 
 export function createImageAuditWorkbook({
@@ -662,8 +1028,19 @@ function textCell(value: unknown, style = 3): Cell {
   return { kind: "text", value, style };
 }
 
+function roundTripTextCell(value: unknown, style = 3): Cell {
+  return { kind: "text", value, style, preserveFormulaLikeText: true };
+}
+
 function richTextCell(runs: readonly WorkbookRichTextRun[], style = 3): Cell {
   return { kind: "rich-text", runs, style };
+}
+
+function roundTripRichTextCell(
+  runs: readonly WorkbookRichTextRun[],
+  style = 3,
+): Cell {
+  return { kind: "rich-text", runs, style, preserveFormulaLikeText: true };
 }
 
 function auditRichTextCell(runs: readonly WorkbookRichTextRun[]): Cell {
@@ -683,6 +1060,8 @@ function buildWorksheet({
   rows,
   widths,
   dataRowHeight,
+  freezeRows = 1,
+  autoFilter,
 }: WorksheetOptions): string {
   if (headers.length === 0 || headers.length !== widths.length) {
     throw new Error("Worksheet headers and widths must be non-empty and aligned.");
@@ -720,13 +1099,20 @@ function buildWorksheet({
     })
     .join("");
 
+  const pane = freezeRows > 0
+    ? `<pane ySplit="${freezeRows}" topLeftCell="A${freezeRows + 1}" activePane="bottomLeft" state="frozen"/>
+      <selection pane="bottomLeft" activeCell="A${freezeRows + 1}" sqref="A${freezeRows + 1}"/>`
+    : '<selection activeCell="A1" sqref="A1"/>';
+  const filterReference = autoFilter === false
+    ? null
+    : autoFilter ?? dimension;
+
   return `${XML_DECLARATION}
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <dimension ref="${dimension}"/>
   <sheetViews>
     <sheetView workbookViewId="0" showGridLines="0">
-      <pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>
-      <selection pane="bottomLeft" activeCell="A2" sqref="A2"/>
+      ${pane}
     </sheetView>
   </sheetViews>
   <sheetFormatPr defaultRowHeight="18"/>
@@ -735,7 +1121,7 @@ function buildWorksheet({
     <row r="1" ht="26" customHeight="1">${headerCells}</row>
     ${dataRows}
   </sheetData>
-  <autoFilter ref="${dimension}"/>
+  ${filterReference ? `<autoFilter ref="${filterReference}"/>` : ""}
   <pageMargins left="0.35" right="0.35" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>
   <pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>
 </worksheet>`;
@@ -756,19 +1142,30 @@ function renderCell(reference: string, cell: Cell): string {
   }
 
   if (cell.kind === "rich-text") {
-    return inlineRichTextCell(reference, cell.runs, cell.style);
+    return inlineRichTextCell(
+      reference,
+      cell.runs,
+      cell.style,
+      Boolean(cell.preserveFormulaLikeText),
+    );
   }
   const value = cell.kind === "text" ? cell.value : cell.value ?? "";
   const style = cell.kind === "date" ? 3 : cell.style;
-  return inlineStringCell(reference, value, style);
+  return inlineStringCell(
+    reference,
+    value,
+    style,
+    cell.kind === "text" && Boolean(cell.preserveFormulaLikeText),
+  );
 }
 
 function inlineRichTextCell(
   reference: string,
   rawRuns: readonly WorkbookRichTextRun[],
   style: number,
+  preserveFormulaLikeText = false,
 ): string {
-  const normalizedRuns = safeRichTextRuns(rawRuns);
+  const normalizedRuns = safeRichTextRuns(rawRuns, preserveFormulaLikeText);
   const runs = normalizedRuns
     .map((run) => {
       const properties = run.alert
@@ -782,6 +1179,7 @@ function inlineRichTextCell(
 
 function safeRichTextRuns(
   rawRuns: readonly WorkbookRichTextRun[],
+  preserveFormulaLikeText = false,
 ): WorkbookRichTextRun[] {
   const sanitized = rawRuns
     .map((run) => ({
@@ -790,7 +1188,7 @@ function safeRichTextRuns(
     }))
     .filter((run) => run.text.length > 0);
   if (!sanitized.length) return [{ text: "", alert: false }];
-  if (/^[=+\-@]/u.test(sanitized[0].text)) {
+  if (!preserveFormulaLikeText && /^[=+\-@]/u.test(sanitized[0].text)) {
     sanitized[0] = { ...sanitized[0], text: `'${sanitized[0].text}` };
   }
   let remaining = MAX_EXCEL_CELL_CHARACTERS;
@@ -805,15 +1203,25 @@ function safeRichTextRuns(
   return truncated.length ? truncated : [{ text: "", alert: false }];
 }
 
-function inlineStringCell(reference: string, value: unknown, style: number): string {
-  const safeValue = escapeXml(safeSpreadsheetText(value));
+function inlineStringCell(
+  reference: string,
+  value: unknown,
+  style: number,
+  preserveFormulaLikeText = false,
+): string {
+  const safeValue = escapeXml(
+    safeSpreadsheetText(value, preserveFormulaLikeText),
+  );
   return `<c r="${reference}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${safeValue}</t></is></c>`;
 }
 
-function safeSpreadsheetText(value: unknown): string {
+function safeSpreadsheetText(
+  value: unknown,
+  preserveFormulaLikeText = false,
+): string {
   let text = sanitizeXmlText(value === null || value === undefined ? "" : String(value));
 
-  if (/^[=+\-@]/.test(text)) {
+  if (!preserveFormulaLikeText && /^[=+\-@]/.test(text)) {
     text = `'${text}`;
   }
 
@@ -958,11 +1366,13 @@ function buildStyles(): string {
     <font><sz val="11"/><color rgb="FF17202A"/><name val="Aptos"/><family val="2"/></font>
     <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/><family val="2"/></font>
   </fonts>
-  <fills count="4">
+  <fills count="6">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FF17324D"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
   <borders count="2">
     <border><left/><right/><top/><bottom/><diagonal/></border>
@@ -977,13 +1387,15 @@ function buildStyles(): string {
   <cellStyleXfs count="1">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
   </cellStyleXfs>
-  <cellXfs count="6">
+  <cellXfs count="8">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
     <xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="top"/></xf>
     <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
   </cellXfs>
   <cellStyles count="1">
     <cellStyle name="Normal" xfId="0" builtinId="0"/>

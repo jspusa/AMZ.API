@@ -36,9 +36,9 @@ AMZ.API 是 Jasper 公司自用的 **Amazon FBA-only 營運控制台**：GitHub 
 
 ### 產品區
 
-- 文案：查詢及修改商品標題、五大賣點、成分。
+- 文案：查詢及修改產品名稱、產品亮點、五大產品要點、產品敘述與成分。
 - 圖片：拖拉上傳、排序、主圖選擇、尺寸與格式驗證、Amazon Validation Preview。
-- 一鍵匯出所選站點全部 FBA 商品的 Seller SKU、ASIN、標題、五點、成分 Excel。
+- 一鍵健檢所選站點全部 FBA 文案並匯出依 variation family 分頁的 Excel；同一檔案可回傳做整批零寫入預檢，再經一次本機身分確認逐 SKU 安全更新。
 
 ### 價格區
 
@@ -216,7 +216,7 @@ Amazon App：
   - 本機驗證：117/117 tests、TypeScript、main／preload／renderer production build、`git diff --check` 與 `npm audit --omit=dev` 0 vulnerabilities；Playwright 已確認桌面流程、有效 `.xlsx` 下載、編輯後返回、drawer 關閉後重開保留結果，以及 390px 無整頁水平溢出。
 - v0.1.8 experience／inventory refinement 已發布並安裝：
   - 全站內容健檢白名單新增 `Decapterus`、`Gluconate`、`Niacinamide`、`Reishi`、`purr-fectly`；疑似錯字在標題、賣點與成分原文中紅字定位。`U+200B` 等不可見字元集中在單一說明區，列出 SKU、欄位、前後詞與可讀上下文，不會自動修改文案。
-  - 健檢 Excel 改成唯一「內容健檢」工作表，最後兩欄為「類型／說明」；既有全商品 Excel 仍維持原格式。
+  - 舊版健檢 Excel 曾使用唯一「內容健檢」工作表；目前未發布工作樹已升級為 schema v2 的「說明與索引」＋變體 family／未綁變體／資料未完成工作表，最後兩欄仍為「類型／說明」。既有全商品 Excel 維持原格式。
   - 銷售自訂日期擴為 1–365 天，renderer 與 main 雙重拒絕 366 天；去年同期仍受 Sales API 兩年 horizon 保護。補貨的 SKU 銷速改用 Sales API exact `sku`＋`AFN`，不再因 Orders 前五頁掃描上限漏掉高銷量 SKU。
   - 主頁新增唯讀「180 天以上庫存」：請求 `GET_FBA_INVENTORY_PLANNING_DATA`，分開顯示官方庫齡、`estimated-excess-quantity` 與 `days-of-supply`。解析器依報表實際欄位選擇區域 366–455／456+ 尾段或非區域 `365-plus` 尾段，缺少完整區間即 fail closed；沒有推測、促銷、移除或 FBM 寫入。
   - 首頁與頂部導覽依「產品 → 價格 → 策劃」重排；七個工具順序固定為文案、圖片、變體規劃、定價、促銷、補貨、廣告。大段自動化／系統資訊預設收合，Product Master UI 暫時隱藏，所有 drawer 與 Mac ConnectionPanel 改為中央 Modal。
@@ -354,6 +354,13 @@ Amazon App：
   - `/Applications/AMZ.API.app` 已由 v0.1.16 安全備份後安裝 v0.1.17；備份為 `/Applications/AMZ.API-v0.1.16-backup.app`。啟動沿用原 Keychain vault且未重輸密鑰，同一程序在初次視窗讀取短暫等待後正常顯示首頁，沒有反覆重啟；系統資訊顯示「目前本機 App 0.1.17」。
   - 2026-08-21 真實 US 唯讀邊界：2026-07-23 至 2026-08-21 入庫同步只啟動一次，隨即以安全失敗通知收斂，沒有貨件／SKU／數量／三層瑕疵或 7-sheet Excel 可驗證，也沒有 Amazon mutation；不得寫成 0 貨件或 0 瑕疵。廣告 drawer 可見，但獨立 Amazon Ads LWA 尚未設定，故 Reporting v3、策略表與 3-sheet／29 欄 Excel 均保持未驗證。
   - Supply Boss API v4 production 沿用 server-side 兩檔 public allowlist；已將 private R2 的 `macos-dmg` 更新為 `AMZ.API-0.1.17-universal.dmg`（246,079,435 bytes；SHA-256 同上），Windows NSIS 卡維持 v0.1.16。portable ZIP 與 checksum manifest 仍只作內部 artifact，不顯示成員工下載卡；下載頁密碼與 session 規則未更改。
+- 2026-08-22 v0.1.21 新增全站文案健檢與 Excel round trip：
+  - `item_name`、`title_differentiation`、每項 `bullet_point`、`product_description` 分別套用內部目標 60／110／150–200／1,800 Unicode 字元；API 與前台保留實際字數、上下限與逐條要點索引，讀取未完成列不做缺值或字數推論。
+  - 全站 relationships 以官方批次查詢分 child family，已證明 parent 排除；standalone 固定進「未綁變體」，缺列／400／ASIN 或關係衝突固定進「資料未完成」，不以名稱或 ASIN 相似度猜 family。
+  - Excel schema v2 保留灰色原值與可編輯更新值；問題欄黃底、疑似錯字片段紅字。main parser 拒絕公式、巨集、外部連結、Defined Names、未知欄、重複 SKU、異常 ZIP/XML；工作簿不使用會在 Excel／LibreOffice 另存時產生 `_xlnm._FilterDatabase` 的 AutoFilter，已完成真實 LibreOffice 開啟／另存／重新匯入測試，公式樣式的 family key 仍可 inert round trip。
+  - 掃描授權證據以 account／marketplace／live-demo／export／fetchedAt-scoped SHA-256 列摘要在裝置端保存固定 24 小時；不落地 Seller SKU、ASIN、文案、Excel 或 proposed edits。鎖屏、睡眠與 App 重啟後同檔仍可重新預檢，換帳號／站點／模式或到期則 fail closed；集合限制 8 份／50,000 列／8 MiB，超量確定性淘汰最舊證據而不碰 idempotency ledger。
+  - 回傳 Excel 的 POST 只做逐 SKU fresh read／PTD／Amazon Validation Preview，任一失敗整批零寫入。renderer 會逐 SKU 展開完整 Amazon 原值／Excel 更新值與 Validation 提醒，使用者勾選已核對後，PATCH 才會在全批再預檢後要求一次 Touch ID／Windows Hello；每 SKU 仍各自有 ledger、單次 PATCH 與 canonical readback，拒絕或不明即停止後續，沒有跨 SKU 原子交易，也不自動重送。
+  - 本機 v0.1.21 候選已通過 `npm run check`：105 個測試檔／854 tests、TypeScript 與 main／preload／renderer production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。實際 `.xlsx` 已通過 ZIP、LibreOffice 開啟另存再匯入、openpyxl sheet／freeze／顏色核對；前台逐欄 diff 已做 1440px／390px Playwright 視覺 QA且無整頁水平溢出。尚未用真實 Amazon／真實 Windows Hello 執行任何文案 mutation。
 
 ### 已完成與仍待真實 Windows／Mac／Amazon 驗證
 
@@ -520,7 +527,8 @@ v0.1.20 已發布、安裝且 Keychain vault 保留；入庫商品官方續頁�
 - US Seller SKU 文案、價格、促銷狀態能只讀查詢。
 - US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂 1–365 天與去年同期 AFN 銷售趨勢完整載入。
 - 180 天以上 FBA 庫齡報表能唯讀載入，庫齡與 Amazon 預估冗餘不混為同一指標。
-- 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；Excel 可下載且只含 FBA 商品，全商品工作簿維持既有格式，文案健檢工作簿只有一張「內容健檢」表並含「類型／說明」。
+- 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；Excel 可下載且只含 FBA 商品，全商品工作簿維持既有格式。文案健檢 schema v2 必須含「說明與索引」、已證明的變體 family 分頁、「未綁變體」與 fail-closed「資料未完成」，並保留原始／更新欄、問題顏色與「類型／說明」。
+- 回傳文案健檢 Excel 時，無變更、篡改、過期、跨站點／帳號、公式／巨集／外部連結與任何 SKU 預檢失敗都必須在第一筆 Amazon PATCH 前停止；通過後一次 native confirmation 只授權該 main-owned batch，逐 SKU ledger／readback 與遇不明停止後續不得放寬。
 - Subscribe & Save 全站健檢能以完整 FBA Inventory 分頁證明 SKU，正確顯示目前有效訂閱、最多 23 個已完成月份與缺月；開啟顯示全站歷史並能切換／取消單一 SKU。Excel 必須產生 0／5／10／15／20% 五張無問題工作表與獨立「問題 SKU」工作表；未知折扣、問題列與缺值不得冒充 0 或完整總額。
 - FBA 冗餘庫存只依 Amazon `estimated excess quantity`，庫齡不會被列為冗餘；storage cost／AIS 缺值不會產生假的 0 或部分全站總額。
 - 未綁變體健檢能以真實 FBA relationships fail closed 載入並匯出 Excel；畸形、缺失或被改寫的識別碼不得被列為可安全操作。
