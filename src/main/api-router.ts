@@ -492,6 +492,181 @@ function contentAuditSnapshotRowDigest(input: {
     input.readStatus,
   ]);
 }
+
+const CONTENT_AUDIT_LEGACY_LINE_BREAK_CANDIDATES = [
+  "\r",
+  "\r\n",
+  "\u0085",
+  "\u2028",
+  "\u2029",
+] as const;
+const CONTENT_AUDIT_LEGACY_MAX_NORMALIZED_BREAKS = 64;
+const CONTENT_AUDIT_LEGACY_MAX_RECOVERED_ROWS = 500;
+const CONTENT_AUDIT_LEGACY_MAX_CANDIDATE_WORK = 500;
+const CONTENT_AUDIT_LEGACY_MAX_HASH_WORK = 1_000;
+const CONTENT_AUDIT_LEGACY_MAX_CANDIDATE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Older v2 workbooks could pass literal XML line-break code points through a
+ * spreadsheet consumer that normalized them to LF. These candidates never
+ * authorize a row by themselves: the caller must find exactly one candidate
+ * whose complete immutable digest already exists in the main-owned snapshot.
+ */
+function* legacyContentAuditSourceCandidates(
+  values: ParsedContentAuditValues,
+): Generator<ParsedContentAuditValues> {
+  type StringField =
+    | "title"
+    | "itemHighlight"
+    | "productDescription"
+    | "ingredients";
+  const locations: Array<
+    | { field: StringField; index: number }
+    | { field: "bulletPoints"; bulletIndex: number; index: number }
+  > = [];
+  const collect = (
+    value: string,
+    createLocation: (index: number) => (typeof locations)[number],
+  ) => {
+    let index = value.indexOf("\n");
+    while (index >= 0) {
+      locations.push(createLocation(index));
+      if (locations.length > CONTENT_AUDIT_LEGACY_MAX_NORMALIZED_BREAKS) return;
+      index = value.indexOf("\n", index + 1);
+    }
+  };
+  collect(values.title, (index) => ({ field: "title", index }));
+  collect(values.itemHighlight, (index) => ({ field: "itemHighlight", index }));
+  values.bulletPoints.forEach((value, bulletIndex) =>
+    collect(value, (index) => ({
+      field: "bulletPoints",
+      bulletIndex,
+      index,
+    })));
+  collect(values.productDescription, (index) => ({
+    field: "productDescription",
+    index,
+  }));
+  collect(values.ingredients, (index) => ({ field: "ingredients", index }));
+  if (
+    !locations.length ||
+    locations.length > CONTENT_AUDIT_LEGACY_MAX_NORMALIZED_BREAKS
+  ) {
+    return;
+  }
+
+  const clone = (): ParsedContentAuditValues => ({
+    title: values.title,
+    itemHighlight: values.itemHighlight,
+    bulletPoints: [...values.bulletPoints],
+    productDescription: values.productDescription,
+    ingredients: values.ingredients,
+  });
+  const replaceAt = (value: string, index: number, replacement: string) =>
+    `${value.slice(0, index)}${replacement}${value.slice(index + 1)}`;
+
+  for (const location of locations) {
+    for (const replacement of CONTENT_AUDIT_LEGACY_LINE_BREAK_CANDIDATES) {
+      const candidate = clone();
+      if (location.field === "bulletPoints") {
+        candidate.bulletPoints[location.bulletIndex] = replaceAt(
+          candidate.bulletPoints[location.bulletIndex] ?? "",
+          location.index,
+          replacement,
+        );
+      } else {
+        candidate[location.field] = replaceAt(
+          candidate[location.field],
+          location.index,
+          replacement,
+        );
+      }
+      yield candidate;
+    }
+  }
+  for (const replacement of CONTENT_AUDIT_LEGACY_LINE_BREAK_CANDIDATES) {
+    yield {
+      title: values.title.replaceAll("\n", replacement),
+      itemHighlight: values.itemHighlight.replaceAll("\n", replacement),
+      bulletPoints: values.bulletPoints.map((value) =>
+        value.replaceAll("\n", replacement)),
+      productDescription: values.productDescription.replaceAll("\n", replacement),
+      ingredients: values.ingredients.replaceAll("\n", replacement),
+    };
+  }
+}
+
+function contentAuditProposedWithRecoveredSource(input: {
+  parsedOriginal: ParsedContentAuditValues;
+  recoveredOriginal: ParsedContentAuditValues;
+  proposed: ParsedContentAuditValues;
+}): ParsedContentAuditValues {
+  const recoverUnchanged = (parsed: string, recovered: string, proposed: string) =>
+    proposed === parsed ? recovered : proposed;
+  return {
+    title: recoverUnchanged(
+      input.parsedOriginal.title,
+      input.recoveredOriginal.title,
+      input.proposed.title,
+    ),
+    itemHighlight: recoverUnchanged(
+      input.parsedOriginal.itemHighlight,
+      input.recoveredOriginal.itemHighlight,
+      input.proposed.itemHighlight,
+    ),
+    bulletPoints: input.proposed.bulletPoints.map((value, index) =>
+      recoverUnchanged(
+        input.parsedOriginal.bulletPoints[index] ?? "",
+        input.recoveredOriginal.bulletPoints[index] ?? "",
+        value,
+      )),
+    productDescription: recoverUnchanged(
+      input.parsedOriginal.productDescription,
+      input.recoveredOriginal.productDescription,
+      input.proposed.productDescription,
+    ),
+    ingredients: recoverUnchanged(
+      input.parsedOriginal.ingredients,
+      input.recoveredOriginal.ingredients,
+      input.proposed.ingredients,
+    ),
+  };
+}
+
+function contentAuditLegacyRecoveredFieldWasEdited(input: {
+  parsedOriginal: ParsedContentAuditValues;
+  recoveredOriginal: ParsedContentAuditValues;
+  proposed: ParsedContentAuditValues;
+}): boolean {
+  const editedRecovered = (parsed: string, recovered: string, proposed: string) =>
+    recovered !== parsed && proposed !== parsed;
+  return editedRecovered(
+      input.parsedOriginal.title,
+      input.recoveredOriginal.title,
+      input.proposed.title,
+    ) ||
+    editedRecovered(
+      input.parsedOriginal.itemHighlight,
+      input.recoveredOriginal.itemHighlight,
+      input.proposed.itemHighlight,
+    ) ||
+    input.proposed.bulletPoints.some((value, index) =>
+      editedRecovered(
+        input.parsedOriginal.bulletPoints[index] ?? "",
+        input.recoveredOriginal.bulletPoints[index] ?? "",
+        value,
+      )) ||
+    editedRecovered(
+      input.parsedOriginal.productDescription,
+      input.recoveredOriginal.productDescription,
+      input.proposed.productDescription,
+    ) ||
+    editedRecovered(
+      input.parsedOriginal.ingredients,
+      input.recoveredOriginal.ingredients,
+      input.proposed.ingredients,
+    );
+}
 const BRAND_SALES_REUSE_WINDOW_MS = 30 * 60 * 1_000;
 const BRAND_SALES_NEAR_REUSE_BOUNDARY_MS = 2 * 60 * 1_000;
 const BRAND_SALES_JOB_RETENTION_MS = 60 * 60 * 1_000;
@@ -3613,8 +3788,15 @@ export class ApiRouter {
 
       const rowDigests = new Set(stored.rowDigests);
       const inputRows: UpdateListingContentInput[] = [];
+      let legacyRecoveredRows = 0;
+      let legacyCandidateWork = 0;
+      let legacyHashWork = 0;
+      let legacyCandidateBytes = 0;
       for (const row of parsed.rows) {
-        const digest = (readStatus: "complete" | "incomplete") =>
+        const digest = (
+          values: ParsedContentAuditValues,
+          readStatus: "complete" | "incomplete",
+        ) =>
           contentAuditSnapshotRowDigest({
             accountScope,
             marketplaceId,
@@ -3625,22 +3807,93 @@ export class ApiRouter {
             asin: row.asin,
             productType: row.productType,
             variationFamilyKey: row.variationFamilyKey,
-            values: row.original,
+            values,
             readStatus,
           });
-        const sourceReadStatus = rowDigests.has(digest("complete"))
-          ? "complete"
-          : rowDigests.has(digest("incomplete"))
-            ? "incomplete"
-            : null;
-        if (!sourceReadStatus) {
+        const sourceMatches: Array<{
+          readStatus: "complete" | "incomplete";
+          values: ParsedContentAuditValues;
+        }> = [];
+        const seenCandidateMatches = new Set<string>();
+        const collectMatches = (candidates: readonly ParsedContentAuditValues[]) => {
+          for (const values of candidates) {
+            for (const readStatus of ["complete", "incomplete"] as const) {
+              if (!rowDigests.has(digest(values, readStatus))) continue;
+              const matchKey = JSON.stringify([readStatus, values]);
+              if (seenCandidateMatches.has(matchKey)) continue;
+              seenCandidateMatches.add(matchKey);
+              sourceMatches.push({ readStatus, values });
+            }
+          }
+        };
+        // The common path is exact and does no compatibility expansion. This
+        // also prevents a large unmodified workbook from consuming legacy work.
+        collectMatches([row.original]);
+        if (sourceMatches.length === 0) {
+          for (const values of legacyContentAuditSourceCandidates(row.original)) {
+            legacyCandidateWork += 1;
+            legacyHashWork += 2;
+            legacyCandidateBytes += Buffer.byteLength(
+              JSON.stringify(values),
+              "utf8",
+            );
+            if (
+              legacyCandidateWork > CONTENT_AUDIT_LEGACY_MAX_CANDIDATE_WORK ||
+              legacyHashWork > CONTENT_AUDIT_LEGACY_MAX_HASH_WORK ||
+              legacyCandidateBytes > CONTENT_AUDIT_LEGACY_MAX_CANDIDATE_BYTES
+            ) {
+              return invalid(
+                "舊版 Excel 相容核對超過安全上限；請重新執行全站健檢並匯出新檔。",
+                409,
+                "WORKBOOK_REEXPORT_REQUIRED",
+              );
+            }
+            collectMatches([values]);
+          }
+        }
+        if (sourceMatches.length !== 1) {
           return invalid(
             `SKU ${row.sellerSku} 的識別欄、變體分類或原始文案已被修改；已停止整批預檢。`,
             409,
             "WORKBOOK_TAMPERED",
           );
         }
-        if (sameContentAuditValues(row.original, row.proposed)) continue;
+        const [{ readStatus: sourceReadStatus, values: sourceOriginal }] =
+          sourceMatches;
+        const recoveredLegacySource = !sameContentAuditValues(
+          row.original,
+          sourceOriginal,
+        );
+        if (recoveredLegacySource) {
+          legacyRecoveredRows += 1;
+          if (legacyRecoveredRows > CONTENT_AUDIT_LEGACY_MAX_RECOVERED_ROWS) {
+            return invalid(
+              "這份舊版 Excel 有過多列需要相容復原；請重新執行全站健檢並匯出新檔。",
+              409,
+              "WORKBOOK_REEXPORT_REQUIRED",
+            );
+          }
+        }
+        if (
+          recoveredLegacySource &&
+          contentAuditLegacyRecoveredFieldWasEdited({
+            parsedOriginal: row.original,
+            recoveredOriginal: sourceOriginal,
+            proposed: row.proposed,
+          })
+        ) {
+          return invalid(
+            `SKU ${row.sellerSku} 的舊版 Excel 換行字元欄位同時被編輯；無法唯一復原原文，請重新匯出 Excel 後再修改。`,
+            409,
+            "WORKBOOK_REEXPORT_REQUIRED",
+          );
+        }
+        const proposed = contentAuditProposedWithRecoveredSource({
+          parsedOriginal: row.original,
+          recoveredOriginal: sourceOriginal,
+          proposed: row.proposed,
+        });
+        if (sameContentAuditValues(sourceOriginal, proposed)) continue;
         if (sourceReadStatus !== "complete") {
           return invalid(
             `SKU ${row.sellerSku} 的 Amazon 文案讀取未完成，不可由 Excel 回寫。`,
@@ -3648,19 +3901,19 @@ export class ApiRouter {
             "CONTENT_READ_INCOMPLETE",
           );
         }
-        const title = parseText(row.proposed.title, 2_000);
-        const expectedTitle = parseText(row.original.title, 2_000);
-        const itemHighlight = parseText(row.proposed.itemHighlight, 2_000);
-        const expectedItemHighlight = parseText(row.original.itemHighlight, 2_000);
-        const bulletPoints = parseBullets(row.proposed.bulletPoints);
-        const expectedBulletPoints = parseBullets(row.original.bulletPoints);
-        const productDescription = parseText(row.proposed.productDescription, 50_000);
+        const title = parseText(proposed.title, 2_000);
+        const expectedTitle = parseText(sourceOriginal.title, 2_000);
+        const itemHighlight = parseText(proposed.itemHighlight, 2_000);
+        const expectedItemHighlight = parseText(sourceOriginal.itemHighlight, 2_000);
+        const bulletPoints = parseBullets(proposed.bulletPoints);
+        const expectedBulletPoints = parseBullets(sourceOriginal.bulletPoints);
+        const productDescription = parseText(proposed.productDescription, 50_000);
         const expectedProductDescription = parseText(
-          row.original.productDescription,
+          sourceOriginal.productDescription,
           50_000,
         );
-        const ingredients = parseText(row.proposed.ingredients, 20_000);
-        const expectedIngredients = parseText(row.original.ingredients, 20_000);
+        const ingredients = parseText(proposed.ingredients, 20_000);
+        const expectedIngredients = parseText(sourceOriginal.ingredients, 20_000);
         if (
           title === null ||
           expectedTitle === null ||
@@ -3696,7 +3949,7 @@ export class ApiRouter {
       }
       if (!inputRows.length) {
         return invalid(
-          "Excel 的更新欄位與原始值相同，沒有可預檢的變更。",
+          "Excel 完整性核對通過；更新欄位與原始值相同，沒有需要預檢的變更。請只在「更新…」欄位填入新文案後再試。",
           422,
           "CONTENT_UNCHANGED",
         );

@@ -8446,6 +8446,7 @@ body {
 }
 
 .content-audit-file-picker {
+  position: relative;
   display: grid;
   gap: 7px;
   padding: 11px 13px;
@@ -8453,14 +8454,32 @@ body {
   border-radius: 12px;
   background: #fff;
   color: #365b80;
+  cursor: pointer;
   font-size: 11px;
   font-weight: 720;
 }
 
-.content-audit-file-picker input {
-  width: 100%;
-  color: #536b83;
-  font-size: 10px;
+.content-audit-file-picker:has(.content-audit-file-input:focus-visible) {
+  outline: 3px solid rgba(54, 91, 128, 0.28);
+  outline-offset: 2px;
+}
+
+.content-audit-file-picker:has(.content-audit-file-input:disabled) {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.content-audit-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .content-audit-roundtrip-preview {
@@ -10579,6 +10598,24 @@ body {
   color: #fff;
 }
 
+.content-audit-edit-actions > .content-audit-fix-now:disabled {
+  border-color: #d8d8dd;
+  background: #ececef;
+  color: #898990;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.content-audit-quick-edit-unavailable {
+  margin: 0 13px 10px 59px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: #f4f4f6;
+  color: #73737a;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
 .content-audit-quick-edit-notice {
   margin: 7px 0 0;
   padding: 8px 10px;
@@ -10587,6 +10624,24 @@ body {
   color: #5e6d7e;
   font-size: 9px;
   line-height: 1.5;
+}
+
+.content-audit-quick-edit-notice details,
+.content-audit-stale-notice details {
+  margin-top: 5px;
+}
+
+.content-audit-quick-edit-notice summary,
+.content-audit-stale-notice summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 760;
+}
+
+.content-audit-quick-edit-notice details > p,
+.content-audit-stale-notice details > p {
+  max-height: 150px;
+  overflow-y: auto;
 }
 
 @media (max-width: 900px) {
@@ -10803,6 +10858,10 @@ body {
     width: 100%;
     min-width: 0;
     grid-column: 1;
+  }
+
+  .content-audit-quick-edit-unavailable {
+    margin-left: 13px;
   }
 }
 

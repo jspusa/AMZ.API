@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createContentAuditWorkbookV2 } from "../src/main/amazon/xlsx";
@@ -126,7 +127,7 @@ function workbook(snapshot: AuditReply, rowCount = 1): Uint8Array {
 
 function replaceCell(
   bytes: Uint8Array,
-  reference: "D2" | "E2",
+  reference: string,
   value: string,
 ): Uint8Array {
   const archive = unzipSync(bytes);
@@ -147,6 +148,36 @@ function replaceCell(
   return zipSync(archive, { level: 6 });
 }
 
+function contentSnapshotDigest(input: {
+  evidence: ContentAuditSnapshotEvidence;
+  row: AuditReply["rows"][number];
+  bulletPoints: string[];
+  readStatus?: "complete" | "incomplete";
+}): string {
+  return createHash("sha256").update(JSON.stringify([
+    "content-audit-snapshot-row-v1",
+    input.evidence.accountScope,
+    input.evidence.marketplaceId,
+    input.evidence.mode,
+    input.evidence.exportId,
+    input.evidence.fetchedAt,
+    input.row.sellerSku,
+    input.row.asin,
+    input.row.productType,
+    input.row.variationRole === "standalone"
+      ? "STANDALONE"
+      : input.row.variationRole === "child" && input.row.variationFamilyKey
+        ? input.row.variationFamilyKey
+        : "DATA_INCOMPLETE",
+    input.row.title,
+    input.row.itemHighlight,
+    input.bulletPoints,
+    input.row.productDescription,
+    input.row.ingredients,
+    input.readStatus ?? "complete",
+  ])).digest("hex");
+}
+
 function replaceEveryProposedTitle(bytes: Uint8Array): Uint8Array {
   const archive = unzipSync(bytes);
   for (const [name, source] of Object.entries(archive)) {
@@ -159,6 +190,15 @@ function replaceEveryProposedTitle(bytes: Uint8Array): Uint8Array {
           ? cell
           : `<c r="E${rowNumber}" s="7" t="inlineStr"><is><t xml:space="preserve">Batch title ${rowNumber}</t></is></c>`,
     ));
+  }
+  return zipSync(archive, { level: 6 });
+}
+
+function normalizeAllU2028ToLf(bytes: Uint8Array): Uint8Array {
+  const archive = unzipSync(bytes);
+  for (const [name, source] of Object.entries(archive)) {
+    if (!/^xl\/worksheets\/sheet\d+\.xml$/u.test(name)) continue;
+    archive[name] = strToU8(strFromU8(source).replaceAll("&#x2028;", "\n"));
   }
   return zipSync(archive, { level: 6 });
 }
@@ -299,7 +339,11 @@ describe("content audit Excel batch router", () => {
     );
 
     expect(response.status).toBe(422);
-    expect(responseValue(response)).toMatchObject({ code: "CONTENT_UNCHANGED" });
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_UNCHANGED",
+      message:
+        "Excel 完整性核對通過；更新欄位與原始值相同，沒有需要預檢的變更。請只在「更新…」欄位填入新文案後再試。",
+    });
     expect(approveWrite).not.toHaveBeenCalled();
     expect(assertIdempotentOperationsAvailable).not.toHaveBeenCalled();
     expect(runIdempotentOperation).not.toHaveBeenCalled();
@@ -316,6 +360,163 @@ describe("content audit Excel batch router", () => {
     expect(responseValue(response)).toMatchObject({ code: "WORKBOOK_TAMPERED" });
     expect(approveWrite).not.toHaveBeenCalled();
     expect(assertIdempotentOperationsAvailable).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("uniquely reconciles a legacy U+2028-normalized workbook through strict evidence", async () => {
+    const snapshot = await audit();
+    const sourceRow = snapshot.rows[0]!;
+    const sourceBullet = `Line one\u2028Line two`;
+    const bulletPoints = [...sourceRow.bulletPoints];
+    bulletPoints[3] = sourceBullet;
+    const sourceSnapshot: AuditReply = {
+      ...snapshot,
+      rows: [{ ...sourceRow, bulletPoints }],
+    };
+    const evidence = contentAuditEvidence.get(snapshot.exportId)!;
+    evidence.rowDigests = [contentSnapshotDigest({
+      evidence,
+      row: sourceRow,
+      bulletPoints,
+    })];
+    let legacy = workbook(sourceSnapshot);
+    legacy = replaceCell(legacy, "N2", sourceBullet.replace("\u2028", "\n"));
+    legacy = replaceCell(legacy, "O2", sourceBullet.replace("\u2028", "\n"));
+
+    const noOp = await router.handle(
+      importRequest(legacy, "content-batch-legacy-line-noop-001"),
+    );
+    expect(noOp.status).toBe(422);
+    expect(responseValue(noOp)).toMatchObject({
+      code: "CONTENT_UNCHANGED",
+      message:
+        "Excel 完整性核對通過；更新欄位與原始值相同，沒有需要預檢的變更。請只在「更新…」欄位填入新文案後再試。",
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+
+    const editedRecoveredField = replaceCell(
+      legacy,
+      "O2",
+      "Line one\nLine two edited",
+    );
+    const editedRecoveredReply = await router.handle(
+      importRequest(
+        editedRecoveredField,
+        "content-batch-legacy-line-same-field-001",
+      ),
+    );
+    expect(editedRecoveredReply.status).toBe(409);
+    expect(responseValue(editedRecoveredReply)).toMatchObject({
+      code: "WORKBOOK_REEXPORT_REQUIRED",
+    });
+
+    const edited = replaceCell(
+      legacy,
+      "E2",
+      "Legacy-safe updated product title",
+    );
+    const preview = await router.handle(
+      importRequest(edited, "content-batch-legacy-line-edit-001"),
+    );
+    expect(preview.status).toBe(422);
+    expect(responseValue(preview)).toMatchObject({
+      code: "CONTENT_BATCH_VALIDATION_FAILED",
+      rows: [expect.objectContaining({ code: "CONTENT_CHANGED" })],
+      writeCount: 0,
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("applies a request-wide budget to legacy digest recovery", async () => {
+    const snapshot = await audit();
+    const selected = snapshot.rows.slice(0, 2);
+    expect(selected).toHaveLength(2);
+    const manySeparators = Array.from({ length: 61 }, () => "Line")
+      .join("\u2028");
+    const sourceRows = selected.map((row) => {
+      const bulletPoints = [...row.bulletPoints];
+      bulletPoints[3] = manySeparators;
+      return { ...row, bulletPoints };
+    });
+    const evidence = contentAuditEvidence.get(snapshot.exportId)!;
+    evidence.rowDigests = sourceRows.map((row) => contentSnapshotDigest({
+      evidence,
+      row,
+      bulletPoints: row.bulletPoints,
+    }));
+    const sourceSnapshot: AuditReply = { ...snapshot, rows: sourceRows };
+    const legacy = normalizeAllU2028ToLf(workbook(sourceSnapshot, 2));
+
+    const response = await router.handle(
+      importRequest(legacy, "content-batch-legacy-request-budget-001"),
+    );
+    expect(response.status).toBe(409);
+    expect(responseValue(response)).toMatchObject({
+      code: "WORKBOOK_REEXPORT_REQUIRED",
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when legacy line-break recovery is ambiguous or over budget", async () => {
+    const snapshot = await audit();
+    const sourceRow = snapshot.rows[0]!;
+    const evidence = contentAuditEvidence.get(snapshot.exportId)!;
+    const u2028Bullets = [...sourceRow.bulletPoints];
+    const u0085Bullets = [...sourceRow.bulletPoints];
+    u2028Bullets[3] = "Line one\u2028Line two";
+    u0085Bullets[3] = "Line one\u0085Line two";
+    evidence.rowDigests = [u2028Bullets, u0085Bullets].map((bulletPoints) =>
+      contentSnapshotDigest({ evidence, row: sourceRow, bulletPoints }));
+    const ambiguousSnapshot: AuditReply = {
+      ...snapshot,
+      rows: [{ ...sourceRow, bulletPoints: u2028Bullets }],
+    };
+    let ambiguous = workbook(ambiguousSnapshot);
+    ambiguous = replaceCell(ambiguous, "N2", "Line one\nLine two");
+    ambiguous = replaceCell(ambiguous, "O2", "Line one\nLine two");
+    const ambiguousReply = await router.handle(
+      importRequest(ambiguous, "content-batch-legacy-ambiguous-001"),
+    );
+    expect(ambiguousReply.status).toBe(409);
+    expect(responseValue(ambiguousReply)).toMatchObject({
+      code: "WORKBOOK_TAMPERED",
+    });
+
+    const manySeparators = Array.from({ length: 66 }, () => "Line")
+      .join("\u2028");
+    const overBudgetBullets = [...sourceRow.bulletPoints];
+    overBudgetBullets[3] = manySeparators;
+    evidence.rowDigests = [contentSnapshotDigest({
+      evidence,
+      row: sourceRow,
+      bulletPoints: overBudgetBullets,
+    })];
+    const overBudgetSnapshot: AuditReply = {
+      ...snapshot,
+      rows: [{ ...sourceRow, bulletPoints: overBudgetBullets }],
+    };
+    let overBudget = workbook(overBudgetSnapshot);
+    overBudget = replaceCell(
+      overBudget,
+      "N2",
+      manySeparators.replaceAll("\u2028", "\n"),
+    );
+    overBudget = replaceCell(
+      overBudget,
+      "O2",
+      manySeparators.replaceAll("\u2028", "\n"),
+    );
+    const overBudgetReply = await router.handle(
+      importRequest(overBudget, "content-batch-legacy-budget-001"),
+    );
+    expect(overBudgetReply.status).toBe(409);
+    expect(responseValue(overBudgetReply)).toMatchObject({
+      code: "WORKBOOK_TAMPERED",
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
     expect(runIdempotentOperation).not.toHaveBeenCalled();
   });
 

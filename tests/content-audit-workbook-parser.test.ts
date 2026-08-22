@@ -122,6 +122,31 @@ function expectWorkbookError(
 }
 
 describe("content audit workbook parser", () => {
+  it("preserves XML line-break code points in immutable and proposed cells", () => {
+    const separators = "CR:\r NEL:\u0085 LS:\u2028 PS:\u2029";
+    const bytes = workbook([auditRow("LINE-BREAKS-1", {
+      bulletPoints: [separators, "Two", "Three", "Four", "Five"],
+    })]);
+    const worksheet = strFromU8(unzipSync(bytes)["xl/worksheets/sheet2.xml"]!);
+    expect(worksheet).toContain("&#xD;");
+    expect(worksheet).toContain("&#x85;");
+    expect(worksheet).toContain("&#x2028;");
+    expect(worksheet).toContain("&#x2029;");
+    const result = parse(bytes);
+
+    expect(result.rows[0]?.original.bulletPoints[0]).toBe(separators);
+    expect(result.rows[0]?.proposed.bulletPoints[0]).toBe(separators);
+  });
+
+  it("rejects content-audit cells that OOXML cannot preserve losslessly", () => {
+    expect(() => workbook([auditRow("INVALID-CONTROL-1", {
+      title: "Unsafe\u000btitle",
+    })])).toThrow(/cannot preserve losslessly/u);
+    expect(() => workbook([auditRow("OVERSIZED-CELL-1", {
+      productDescription: "A".repeat(32_768),
+    })])).toThrow(/lossless cell limit/u);
+  });
+
   it("round-trips source values, proposed edits, metadata and fail-closed grouping", () => {
     const bytes = workbook([
       auditRow("CHILD-1", {
