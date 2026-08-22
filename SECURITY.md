@@ -29,7 +29,7 @@
 - Amazon Ads 使用獨立 OS-safeStorage-backed vault；只允許官方固定 token／Profiles／Campaign query endpoint、精確 Seller Profile 與 Sponsored Products 唯讀查詢。App 沒有 Ads write route，Listing 身分或來源不完整時不輸出全站覆蓋結論
 - FBA 廣告策略工作綁 SP account scope、Ads vault＋Seller Profile scope、mode、marketplace、exact date range 與固定 report config。Reports／Ads create 結果不明時保存 durable tombstone 且不盲目重送；report／profile／campaign／account IDs 與 signed download URL 不進 renderer，缺值不補 0，也沒有任何 Ads write method／route
 - 會計能力使用固定公開 SP-API allowlist；未完成 FBA 過濾、人工前置、Brazil-only 與不存在的通用發票／帳單接口保持停用
-- FBA 入庫貨件只允許固定 Fulfillment Inbound v0 GET、固定 2024-03-20 入庫計畫 GET 備援與固定 inbound noncompliance report type；工作綁 account／mode／marketplace／日期，切換安全 context 即取消。只有 v0 日期範圍清單可標為所選日期完整；活動狀態或新版計畫備援固定標成 partial。逐貨件明細或問題報表不完整時標成 partial／unavailable，不把缺值補 0，也不使用 Seller Central session 或私有接口
+- FBA 入庫貨件只允許固定 Fulfillment Inbound v0 GET、固定 2024-03-20 入庫計畫 GET 備援與固定 inbound noncompliance report type；工作綁 account／mode／marketplace／日期，切換安全 context 即取消。逐票第一頁只能由 exact shipment path 取得，後續 `NextToken` 只能交給固定 global `shipmentItems` NEXT_TOKEN GET，並檢查 token 前進、同票身分、重複 SKU 與頁數／列數上限。只有 v0 日期範圍清單可標為所選日期完整；活動狀態或新版計畫備援固定標成 partial。逐貨件明細或問題報表不完整時標成 partial／unavailable，不把缺值補 0，也不使用 Seller Central session 或私有接口
 - Lock screen／suspend 清除所有短效預檢票證
 - Electron fuses：停用 RunAsNode、Node options／inspect，啟用 cookie encryption；embedded ASAR integrity 僅在 macOS 生效
 - Hardened Runtime、Developer ID、notarization 與 stapling release workflow

@@ -2,6 +2,7 @@ import { throwIfAborted } from "../abort-utils";
 import type { MarketplaceId } from "../../shared/marketplaces";
 
 const MAX_SHIPMENT_PAGES = 200;
+const MAX_ITEM_PAGES_PER_SHIPMENT = 200;
 const MAX_SHIPMENTS = 10_000;
 const MAX_ITEMS = 250_000;
 const MAX_NEXT_TOKEN_LENGTH = 4_096;
@@ -93,7 +94,8 @@ export type FbaInboundShipmentSnapshot = {
       | "GET /fba/inbound/v0/shipments"
       | "GET /fba/inbound/v0/shipments?QueryType=SHIPMENT (active-status fallback)"
       | "GET /inbound/fba/2024-03-20/inboundPlans + getInboundPlan/getShipment";
-    shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items";
+    shipmentItems:
+      "GET /fba/inbound/v0/shipments/{shipmentId}/items + GET /fba/inbound/v0/shipmentItems?QueryType=NEXT_TOKEN";
     startedAt: string;
     completedAt: string;
   };
@@ -156,6 +158,15 @@ export type FbaInboundTransportRequest =
       kind: "items";
       marketplaceId: MarketplaceId;
       shipmentId: string;
+      queryType: "SHIPMENT";
+      nextToken: null;
+    }
+  | {
+      kind: "items";
+      marketplaceId: MarketplaceId;
+      shipmentId: string;
+      queryType: "NEXT_TOKEN";
+      nextToken: string;
     };
 
 export type FbaInboundTransportResult = {
@@ -388,7 +399,7 @@ function parseShipmentsPage(value: unknown): {
 function parseItemsPage(
   value: unknown,
   expectedShipmentId: string,
-): { items: FbaInboundShipmentItem[]; hasContinuation: boolean } {
+): { items: FbaInboundShipmentItem[]; nextToken: string | null } {
   if (!isRecord(value) || !isRecord(value.payload)) {
     throw new FbaInboundSnapshotError(
       "Amazon 回傳了無法辨識的 FBA 入庫商品明細。",
@@ -400,7 +411,6 @@ function parseItemsPage(
       "Amazon FBA 入庫商品明細缺少 ItemData。",
     );
   }
-  const seen = new Set<string>();
   const items = rows.map((row): FbaInboundShipmentItem => {
     if (!isRecord(row)) {
       throw new FbaInboundSnapshotError(
@@ -412,7 +422,10 @@ function parseItemsPage(
       64,
       "Shipment ID",
     );
-    if (returnedShipmentId && returnedShipmentId !== expectedShipmentId) {
+    // ShipmentId is optional in Amazon's InboundShipmentItem model. A missing
+    // value remains tied to the exact by-shipment request through its opaque
+    // continuation token; any value Amazon does return must still match.
+    if (returnedShipmentId !== null && returnedShipmentId !== expectedShipmentId) {
       throw new FbaInboundSnapshotError(
         "Amazon FBA 入庫商品明細回傳了不同的 Shipment ID。",
         { status: 409, code: "PAGINATION_CHANGED" },
@@ -424,14 +437,6 @@ function parseItemsPage(
       64,
       "FNSKU",
     );
-    const duplicateKey = `${sellerSku}\u0000${fulfillmentNetworkSku ?? ""}`;
-    if (seen.has(duplicateKey)) {
-      throw new FbaInboundSnapshotError(
-        "Amazon FBA 入庫商品明細重複回傳同一 SKU，已停止該貨件加總。",
-        { status: 409, code: "PAGINATION_CHANGED" },
-      );
-    }
-    seen.add(duplicateKey);
     const expectedUnits = safeNonNegativeInteger(
       row.QuantityShipped,
       "預期單位數量",
@@ -458,16 +463,14 @@ function parseItemsPage(
   });
   return {
     items,
-    // The official by-shipment operation has no continuation input. If the
-    // shared response schema nevertheless returns a token, keeping the first
-    // page is useful evidence but must never be called complete.
-    hasContinuation: parseNextToken(value.payload.NextToken) !== null,
+    nextToken: parseNextToken(value.payload.NextToken),
   };
 }
 
 function issueFromError(
   error: unknown,
   shipmentId: string,
+  completedItemPages = 0,
 ): FbaInboundCoverageIssue {
   const record = isRecord(error) ? error : null;
   const rawCode = record?.code;
@@ -492,14 +495,15 @@ function issueFromError(
       SAFE_IDENTIFIER.test(rawRequestId)
         ? rawRequestId
         : null,
-    completedItemPages: 0,
+    completedItemPages,
   };
 }
 
 function isShipmentLocalItemFailure(error: unknown): boolean {
   if (error instanceof FbaInboundSnapshotError) {
     return error.code === "FBA_INBOUND_FORMAT_UNSUPPORTED" ||
-      error.code === "PAGINATION_CHANGED";
+      error.code === "PAGINATION_CHANGED" ||
+      error.code === "PAGINATION_LIMIT_EXCEEDED";
   }
   if (!(error instanceof Error) || !isRecord(error)) return false;
   // These non-retryable statuses came from the exact by-shipment item path and
@@ -615,36 +619,90 @@ export async function collectFbaInboundShipmentSnapshot(
     let parsedItems: FbaInboundShipmentItem[] = [];
     let itemCoverage: "complete" | "partial" = "complete";
     let issue: FbaInboundCoverageIssue | null = null;
+    let completedShipmentItemPages = 0;
     try {
-      const result = await input.transport({
-        kind: "items",
-        marketplaceId: input.marketplaceId,
-        shipmentId: shipment.shipmentId,
-      });
-      throwIfAborted(input.signal);
-      const parsed = parseItemsPage(result.payload, shipment.shipmentId);
-      parsedItems = parsed.items;
-      itemPages += 1;
-      if (parsed.hasContinuation) {
-        itemCoverage = "partial";
-        issue = {
-          stage: "items",
-          shipmentId: shipment.shipmentId,
-          code: "UNSUPPORTED_ITEM_CONTINUATION",
-          message:
-            "Amazon 對單一貨件明細回傳續頁，但官方操作沒有可安全承接的 continuation 參數；已保留第一頁並標成部分完成。",
-          requestId: result.requestId,
-          completedItemPages: 1,
-        };
-        consecutiveItemFailures += 1;
-      } else {
-        consecutiveItemFailures = 0;
+      const seenItemKeys = new Set<string>();
+      const seenItemTokens = new Set<string>();
+      let itemNextToken: string | null = null;
+      for (
+        let itemPageIndex = 0;
+        itemPageIndex < MAX_ITEM_PAGES_PER_SHIPMENT;
+        itemPageIndex += 1
+      ) {
+        throwIfAborted(input.signal);
+        const result = await input.transport(
+          itemNextToken
+            ? {
+                kind: "items",
+                marketplaceId: input.marketplaceId,
+                shipmentId: shipment.shipmentId,
+                queryType: "NEXT_TOKEN",
+                nextToken: itemNextToken,
+              }
+            : {
+                kind: "items",
+                marketplaceId: input.marketplaceId,
+                shipmentId: shipment.shipmentId,
+                queryType: "SHIPMENT",
+                nextToken: null,
+              },
+        );
+        throwIfAborted(input.signal);
+        const parsed = parseItemsPage(result.payload, shipment.shipmentId);
+        for (const item of parsed.items) {
+          const itemKey = `${item.sellerSku}\u0000${
+            item.fulfillmentNetworkSku ?? ""
+          }`;
+          if (seenItemKeys.has(itemKey)) {
+            throw new FbaInboundSnapshotError(
+              "Amazon FBA 入庫商品明細分頁重複回傳同一 SKU，已停止該貨件加總。",
+              {
+                status: 409,
+                code: "PAGINATION_CHANGED",
+                requestId: result.requestId,
+              },
+            );
+          }
+          seenItemKeys.add(itemKey);
+          assertSafeCount(
+            items.length + parsedItems.length + 1,
+            MAX_ITEMS,
+            "商品列數",
+          );
+          parsedItems.push(item);
+        }
+        completedShipmentItemPages += 1;
+        itemPages += 1;
+        itemNextToken = parsed.nextToken;
+        if (!itemNextToken) break;
+        if (parsed.items.length === 0 || seenItemTokens.has(itemNextToken)) {
+          throw new FbaInboundSnapshotError(
+            "Amazon FBA 入庫商品明細分頁 nextToken 重複或沒有前進，已停止該貨件加總。",
+            {
+              status: 409,
+              code: "PAGINATION_CHANGED",
+              requestId: result.requestId,
+            },
+          );
+        }
+        seenItemTokens.add(itemNextToken);
       }
+      if (itemNextToken) {
+        throw new FbaInboundSnapshotError(
+          "Amazon FBA 入庫商品明細分頁超過安全上限，已停止該貨件加總。",
+          { status: 409, code: "PAGINATION_LIMIT_EXCEEDED" },
+        );
+      }
+      consecutiveItemFailures = 0;
     } catch (error) {
       throwIfAborted(input.signal);
       if (!isShipmentLocalItemFailure(error)) throw error;
       itemCoverage = "partial";
-      issue = issueFromError(error, shipment.shipmentId);
+      issue = issueFromError(
+        error,
+        shipment.shipmentId,
+        completedShipmentItemPages,
+      );
       consecutiveItemFailures += 1;
     }
     if (issue) issues.push(issue);
@@ -723,7 +781,8 @@ export async function collectFbaInboundShipmentSnapshot(
     dataSource: {
       shipmentList:
         input.shipmentListSource ?? "GET /fba/inbound/v0/shipments",
-      shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items",
+      shipmentItems:
+        "GET /fba/inbound/v0/shipments/{shipmentId}/items + GET /fba/inbound/v0/shipmentItems?QueryType=NEXT_TOKEN",
       startedAt,
       completedAt,
     },
@@ -757,7 +816,10 @@ export async function collectFbaInboundShipmentSnapshot(
         : ""
     }${
       state === "complete"
-        ? "Fulfillment Inbound API 已完整讀取所選更新區間的貨件與逐貨件商品明細；數量只代表 Amazon 目前回傳的送出與已接收快照。"
+        ? input.shipmentListSource &&
+            input.shipmentListSource !== "GET /fba/inbound/v0/shipments"
+          ? "Fulfillment Inbound API 已完整讀取備援清單內每票貨件的全部商品分頁；貨件清單本身仍不是上方所選日期範圍的完整證據。數量只代表 Amazon 目前回傳的送出與已接收快照。"
+          : "Fulfillment Inbound API 已完整讀取所選更新區間的貨件與逐貨件商品明細；數量只代表 Amazon 目前回傳的送出與已接收快照。"
         : `Fulfillment Inbound API 有 ${incompleteShipmentCount} 個貨件明細未完成；verifiedTotals 只加總已安全讀到的資料列，不能當作整個區間總量。${
             itemScanStopped
               ? " 因商品明細連續三票異常，後續貨件未再發出請求並保持未知。"
@@ -868,7 +930,8 @@ export function buildDemoFbaInboundShipmentSnapshot(input: {
     shipmentListScope: "selected-date-range",
     dataSource: {
       shipmentList: "GET /fba/inbound/v0/shipments",
-      shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items",
+      shipmentItems:
+        "GET /fba/inbound/v0/shipments/{shipmentId}/items + GET /fba/inbound/v0/shipmentItems?QueryType=NEXT_TOKEN",
       startedAt: fetchedAt,
       completedAt: fetchedAt,
     },

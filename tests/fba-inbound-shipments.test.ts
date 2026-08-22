@@ -372,8 +372,9 @@ describe("FBA inbound shipment snapshot collector", () => {
       "FBA-LOCAL-1",
       "FBA-LOCAL-2",
       "FBA-LOCAL-3",
+      "FBA-LOCAL-3",
     ]);
-    expect(transport).toHaveBeenCalledTimes(4);
+    expect(transport).toHaveBeenCalledTimes(5);
   });
 
   it("resets the local failure circuit after a complete shipment item response", async () => {
@@ -433,7 +434,73 @@ describe("FBA inbound shipment snapshot collector", () => {
     expect(snapshot.items).toHaveLength(1);
   });
 
-  it("keeps a verified first item page but fences totals when by-shipment continuation appears", async () => {
+  it("follows an item continuation token and completes the exact shipment totals", async () => {
+    let itemPage = 0;
+    const transport = vi.fn(
+      async (request: FbaInboundTransportRequest): Promise<FbaInboundTransportResult> => {
+        if (request.kind === "shipments") {
+          return result(
+            { payload: { ShipmentData: [shipment("FBA-CONTINUED")] } },
+            "LIST",
+          );
+        }
+        itemPage += 1;
+        expect(request).toMatchObject(
+          itemPage === 1
+            ? { queryType: "SHIPMENT", nextToken: null }
+            : { queryType: "NEXT_TOKEN", nextToken: "ITEM-TOKEN-2" },
+        );
+        return itemPage === 1
+          ? result(
+              {
+                payload: {
+                  ItemData: Array.from({ length: 25 }, (_value, index) =>
+                    item(
+                      "FBA-CONTINUED",
+                      `SKU-${String(index + 1).padStart(2, "0")}`,
+                      1,
+                      1,
+                    )
+                  ),
+                  NextToken: "ITEM-TOKEN-2",
+                },
+              },
+              "ITEM-1",
+            )
+          : result(
+              {
+                payload: {
+                  ItemData: [item("FBA-CONTINUED", "SKU-26", 2, 1)],
+                },
+              },
+              "ITEM-2",
+            );
+      },
+    );
+
+    const snapshot = await collectFbaInboundShipmentSnapshot({
+      ...BASE_INPUT,
+      transport,
+    });
+
+    expect(itemPage).toBe(2);
+    expect(snapshot.coverage).toMatchObject({
+      state: "complete",
+      itemPages: 2,
+      itemCount: 26,
+      shipmentsWithCompleteItems: 1,
+      incompleteShipmentCount: 0,
+      issues: [],
+    });
+    expect(snapshot.summary.totals).toEqual({
+      expectedUnits: 27,
+      receivedUnits: 26,
+      pendingUnits: 1,
+      overReceivedUnits: 0,
+    });
+  });
+
+  it("keeps a verified first item page but fences totals when item continuation cannot complete", async () => {
     const transport = vi.fn(
       async (request: FbaInboundTransportRequest): Promise<FbaInboundTransportResult> =>
         request.kind === "shipments"
@@ -475,9 +542,112 @@ describe("FBA inbound shipment snapshot collector", () => {
       },
     });
     expect(snapshot.coverage.issues[0]).toMatchObject({
-      code: "UNSUPPORTED_ITEM_CONTINUATION",
+      code: "PAGINATION_CHANGED",
       completedItemPages: 1,
       requestId: "ITEM",
+    });
+  });
+
+  it("rejects a continuation page that changes the shipment identity", async () => {
+    let itemPage = 0;
+    const transport = vi.fn(
+      async (request: FbaInboundTransportRequest): Promise<FbaInboundTransportResult> => {
+        if (request.kind === "shipments") {
+          return result(
+            { payload: { ShipmentData: [shipment("FBA-EXPECTED")] } },
+            "LIST",
+          );
+        }
+        itemPage += 1;
+        return itemPage === 1
+          ? result(
+              {
+                payload: {
+                  ItemData: [item("FBA-EXPECTED", "SKU-1", 12, 12)],
+                  NextToken: "ITEM-TOKEN-2",
+                },
+              },
+              "ITEM-1",
+            )
+          : result(
+              {
+                payload: {
+                  ItemData: [item("FBA-DIFFERENT", "SKU-2", 8, 8)],
+                },
+              },
+              "ITEM-2",
+            );
+      },
+    );
+
+    const snapshot = await collectFbaInboundShipmentSnapshot({
+      ...BASE_INPUT,
+      transport,
+    });
+
+    expect(snapshot.coverage).toMatchObject({
+      state: "partial",
+      itemPages: 1,
+      itemCount: 1,
+      incompleteShipmentCount: 1,
+    });
+    expect(snapshot.coverage.issues[0]).toMatchObject({
+      code: "PAGINATION_CHANGED",
+      completedItemPages: 1,
+    });
+    expect(snapshot.summary.totals).toBeNull();
+  });
+
+  it("stops a repeated item continuation token without double counting", async () => {
+    let itemPage = 0;
+    const transport = vi.fn(
+      async (request: FbaInboundTransportRequest): Promise<FbaInboundTransportResult> => {
+        if (request.kind === "shipments") {
+          return result(
+            { payload: { ShipmentData: [shipment("FBA-REPEAT-TOKEN")] } },
+            "LIST",
+          );
+        }
+        itemPage += 1;
+        return result(
+          {
+            payload: {
+              ItemData: [item(
+                "FBA-REPEAT-TOKEN",
+                `SKU-${itemPage}`,
+                1,
+                1,
+              )],
+              NextToken: "SAME-TOKEN",
+            },
+          },
+          `ITEM-${itemPage}`,
+        );
+      },
+    );
+
+    const snapshot = await collectFbaInboundShipmentSnapshot({
+      ...BASE_INPUT,
+      transport,
+    });
+
+    expect(itemPage).toBe(2);
+    expect(snapshot.coverage).toMatchObject({
+      state: "partial",
+      itemPages: 2,
+      itemCount: 2,
+      incompleteShipmentCount: 1,
+    });
+    expect(snapshot.coverage.issues[0]).toMatchObject({
+      code: "PAGINATION_CHANGED",
+      completedItemPages: 2,
+      requestId: "ITEM-2",
+    });
+    expect(snapshot.summary.verifiedTotals).toEqual({
+      expectedUnits: 2,
+      receivedUnits: 2,
+      pendingUnits: 0,
+      overReceivedUnits: 0,
     });
   });
 
@@ -504,6 +674,45 @@ describe("FBA inbound shipment snapshot collector", () => {
       }),
     ).rejects.toThrow("stop-after-list");
     expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks AbortSignal before an item continuation request", async () => {
+    const controller = new AbortController();
+    const itemRequests: FbaInboundTransportRequest[] = [];
+    const transport = vi.fn(
+      async (request: FbaInboundTransportRequest): Promise<FbaInboundTransportResult> => {
+        if (request.kind === "shipments") {
+          return result(
+            { payload: { ShipmentData: [shipment("FBA-PAGED-ABORT")] } },
+            "LIST",
+          );
+        }
+        itemRequests.push(request);
+        controller.abort(new Error("stop-before-continuation"));
+        return result(
+          {
+            payload: {
+              ItemData: [item("FBA-PAGED-ABORT", "SKU-1", 1, 1)],
+              NextToken: "ITEM-TOKEN-2",
+            },
+          },
+          "ITEM-1",
+        );
+      },
+    );
+
+    await expect(collectFbaInboundShipmentSnapshot({
+      ...BASE_INPUT,
+      transport,
+      signal: controller.signal,
+    })).rejects.toThrow("stop-before-continuation");
+
+    expect(itemRequests).toHaveLength(1);
+    expect(itemRequests[0]).toMatchObject({
+      kind: "items",
+      queryType: "SHIPMENT",
+      nextToken: null,
+    });
   });
 
   it("provides a same-schema demo snapshot with explicit over-received units", () => {

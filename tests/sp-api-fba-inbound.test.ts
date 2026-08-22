@@ -154,6 +154,77 @@ describe("SP-API FBA inbound live read contract", () => {
     expect([...itemCall!.url.searchParams.entries()]).toEqual([]);
   });
 
+  it("continues shipment items only through the fixed global NEXT_TOKEN GET", async () => {
+    const itemRequests: URL[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, {
+          access_token: "FAKE_ACCESS_TOKEN",
+          expires_in: 3_600,
+        });
+      }
+      if (url.pathname === "/fba/inbound/v0/shipments") {
+        return jsonResponse(200, {
+          payload: { ShipmentData: [{ ShipmentId: "FBA19PAGED001" }] },
+        });
+      }
+      if (url.pathname === "/fba/inbound/v0/shipments/FBA19PAGED001/items") {
+        itemRequests.push(url);
+        return jsonResponse(200, {
+          payload: {
+            ItemData: [{
+              ShipmentId: "FBA19PAGED001",
+              SellerSKU: "PAGED-SKU-1",
+              QuantityShipped: 25,
+              QuantityReceived: 24,
+            }],
+            NextToken: "SAFE-ITEM-TOKEN-2",
+          },
+        });
+      }
+      if (url.pathname === "/fba/inbound/v0/shipmentItems") {
+        itemRequests.push(url);
+        return jsonResponse(200, {
+          payload: {
+            ItemData: [{
+              ShipmentId: "FBA19PAGED001",
+              SellerSKU: "PAGED-SKU-2",
+              QuantityShipped: 5,
+              QuantityReceived: 6,
+            }],
+          },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snapshotPromise = getFbaInboundShipmentSnapshot({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-02",
+    });
+    await vi.runAllTimersAsync();
+    const snapshot = await snapshotPromise;
+
+    expect(itemRequests).toHaveLength(2);
+    expect([...itemRequests[0]!.searchParams.entries()]).toEqual([]);
+    expect(itemRequests[1]!.searchParams.get("QueryType")).toBe("NEXT_TOKEN");
+    expect(itemRequests[1]!.searchParams.get("NextToken")).toBe(
+      "SAFE-ITEM-TOKEN-2",
+    );
+    expect(itemRequests[1]!.searchParams.get("MarketplaceId")).toBe(
+      MARKETPLACE_ID,
+    );
+    expect(snapshot.coverage).toMatchObject({
+      state: "complete",
+      itemPages: 2,
+      itemCount: 2,
+      issues: [],
+    });
+  });
+
   it("accepts a valid 180-day inbound range older than the Sales API horizon", async () => {
     const shipmentRequests: URL[] = [];
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
