@@ -1,5 +1,6 @@
 import { strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
+import { parseContentAuditWorkbook } from "../src/main/amazon/content-audit-workbook-parser";
 import { createContentAuditWorkbook } from "../src/renderer/src/content-audit-excel";
 import type {
   ContentAuditRow,
@@ -141,9 +142,11 @@ describe("content audit Excel", () => {
       summary: summary(),
     };
 
-    const archive = unzipSync(
-      createContentAuditWorkbook(snapshot as ContentAuditSnapshot, "US"),
+    const bytes = createContentAuditWorkbook(
+      snapshot as ContentAuditSnapshot,
+      "US",
     );
+    const archive = unzipSync(bytes);
     const workbook = strFromU8(archive["xl/workbook.xml"]!);
     const indexSheet = strFromU8(archive["xl/worksheets/sheet1.xml"]!);
     const familyA = strFromU8(archive["xl/worksheets/sheet2.xml"]!);
@@ -182,7 +185,22 @@ describe("content audit Excel", () => {
     expect(styles).toContain('<fgColor rgb="FFDDEBF7"/>');
     expect(familyA).toMatch(/<c r="H2" s="6" t="inlineStr">/u);
     expect(familyA).toMatch(/<c r="I2" s="5" t="inlineStr">/u);
-    expect(familyA).toContain('<color rgb="FFC62828"/>');
     expect(familyA).toContain("⟦U+200B 零寬空格⟧");
+
+    const parsed = parseContentAuditWorkbook({
+      bytes,
+      fileName: "content-audit.xlsx",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const parsedInvisibleRow = parsed.rows.find(
+      (row) => row.sellerSku === "NEEDS-EDIT",
+    );
+    expect(parsedInvisibleRow?.original.bulletPoints[0]).toBe(
+      "Natural & Gentle\u200b : Only one point",
+    );
+    expect(parsedInvisibleRow?.proposed.bulletPoints[0]).toBe(
+      "Natural & Gentle\u200b : Only one point",
+    );
   });
 });

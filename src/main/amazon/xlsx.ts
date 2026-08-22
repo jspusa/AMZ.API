@@ -424,6 +424,27 @@ export function createContentAuditWorkbookV2({
       );
     }
     seenSkus.add(row.sellerSku);
+    for (const [label, value] of [
+      ["Seller SKU", row.sellerSku],
+      ["ASIN", row.asin],
+      ["Product Type", row.productType],
+      ["產品名稱", row.title],
+      ["產品亮點", row.itemHighlight],
+      ...Array.from({ length: 5 }, (_, index) => [
+        `產品要點 ${index + 1}`,
+        row.bulletPoints[index] ?? "",
+      ]),
+      ["產品敘述", row.productDescription],
+      ["成分", row.ingredients],
+      ["Variation Role", row.variationRole],
+      ["Variation Parent SKU", row.variationParentSku],
+      ["Variation Family Key", row.variationFamilyKey],
+      ["Variation Theme", row.variationTheme],
+      ["類型", row.auditType],
+      ["說明", row.auditDescription],
+    ] as const) {
+      assertContentAuditRoundTripText(value, label);
+    }
     const familyKey = contentAuditFamilyKey(row);
     const group = groups.get(familyKey) ?? [];
     group.push(row);
@@ -551,6 +572,29 @@ export function createContentAuditWorkbookV2({
   return zipSync(archive, { level: 6 });
 }
 
+function assertContentAuditRoundTripText(value: string, label: string): void {
+  if (Array.from(value).length > MAX_EXCEL_CELL_CHARACTERS) {
+    throw new Error(
+      `Content audit workbook ${label} exceeds Excel's lossless cell limit.`,
+    );
+  }
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    const xmlSafe =
+      codePoint === 0x09 ||
+      codePoint === 0x0a ||
+      codePoint === 0x0d ||
+      (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+      (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+      (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+    if (!xmlSafe) {
+      throw new Error(
+        `Content audit workbook ${label} contains text that OOXML cannot preserve losslessly.`,
+      );
+    }
+  }
+}
+
 function contentAuditFamilyKey(row: ContentAuditWorkbookV2Row): string {
   const familyKey = row.variationRole === "standalone"
     ? CONTENT_AUDIT_V2_STANDALONE_KEY
@@ -647,7 +691,10 @@ function contentAuditRoundTripCell(
   runs: readonly WorkbookRichTextRun[] | null | undefined,
   style: number,
 ): Cell {
-  return runs?.length
+  // Rich-text highlighting is presentation-only. Never let a replacement
+  // segment (for example the visible marker used for a zero-width character)
+  // rewrite the immutable source value that the importer binds to its digest.
+  return runs?.length && runs.map((run) => run.text).join("") === value
     ? roundTripRichTextCell(runs, style)
     : roundTripTextCell(value, style);
 }
@@ -1258,7 +1305,14 @@ function escapeXml(value: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
+    .replaceAll("'", "&apos;")
+    // Some OOXML consumers normalize XML line-break code points when they
+    // appear literally in text nodes. Character references preserve the exact
+    // Amazon source value across download/open/save/import round trips.
+    .replaceAll("\r", "&#xD;")
+    .replaceAll("\u0085", "&#x85;")
+    .replaceAll("\u2028", "&#x2028;")
+    .replaceAll("\u2029", "&#x2029;");
 }
 
 function columnName(oneBasedIndex: number): string {

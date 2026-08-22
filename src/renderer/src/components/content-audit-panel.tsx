@@ -143,7 +143,9 @@ type FreshListingForQuickEdit = {
   productType: string;
   content: {
     title: string;
+    itemHighlight: string;
     bulletPoints: readonly string[];
+    productDescription: string;
     ingredients: string;
   };
 };
@@ -834,6 +836,32 @@ export function ContentWorkbookBatchPreviewCard({
   );
 }
 
+export function ContentAuditWorkbookFilePicker({
+  fileName,
+  disabled,
+  onSelect,
+}: {
+  fileName: string | null;
+  disabled: boolean;
+  onSelect: (file: File | null) => void;
+}) {
+  return (
+    <label className="content-audit-file-picker">
+      <span aria-live="polite">
+        {fileName || "選擇原本匯出的 .xlsx"}
+      </span>
+      <input
+        className="content-audit-file-input"
+        type="file"
+        aria-label="選擇要回傳的 Excel 檔案"
+        accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        disabled={disabled}
+        onChange={(event) => onSelect(event.target.files?.[0] ?? null)}
+      />
+    </label>
+  );
+}
+
 function quickEditReasonForRow(row: ContentAuditRow): string {
   if (row.readStatus !== "complete") {
     const details = row.readErrors.map((error) => error.message).filter(Boolean);
@@ -865,6 +893,12 @@ export function quickEditFocusForRow(
       continue;
     }
 
+    if (issue.kind === "HIGHLIGHT_BELOW_TARGET") {
+      if (!validLengthIssue(issue, row)) return null;
+      evidence.push(quickEditEvidence(issue, row.itemHighlight ?? "", null));
+      continue;
+    }
+
     if (
       issue.kind === "BULLET_BELOW_TARGET" ||
       issue.kind === "BULLET_ABOVE_TARGET"
@@ -880,6 +914,12 @@ export function quickEditFocusForRow(
         ),
       );
       bulletIndices.add(issue.bulletIndex);
+      continue;
+    }
+
+    if (issue.kind === "DESCRIPTION_BELOW_TARGET") {
+      if (!validLengthIssue(issue, row)) return null;
+      evidence.push(quickEditEvidence(issue, row.productDescription ?? "", null));
       continue;
     }
 
@@ -951,11 +991,6 @@ export function quickEditAvailabilityForRow(
     reason,
     unavailableReason: row.readStatus !== "complete"
       ? "Amazon 原文尚未完整讀取，無法建立安全定位證據。"
-      : row.issues.some((issue) =>
-          issue.kind === "HIGHLIGHT_BELOW_TARGET" ||
-          issue.kind === "DESCRIPTION_BELOW_TARGET"
-        )
-      ? "產品亮點或產品敘述目前無法取得立刻修改所需的新鮮 Amazon 原文證據；請使用完整編輯確認。"
       : "健檢時的原文、字詞或欄位證據不足，無法安全定位待修內容。",
   };
 }
@@ -1034,6 +1069,33 @@ export function resolveContentAuditQuickEditFocus(
       continue;
     }
 
+    if (evidence.issueKind === "HIGHLIGHT_BELOW_TARGET") {
+      if (
+        evidence.field !== "itemHighlight" ||
+        evidence.token !== null ||
+        evidence.originalBulletIndex !== null ||
+        evidence.minLength !== CONTENT_AUDIT_LENGTH_TARGETS.itemHighlightMinimum ||
+        evidence.maxLength !== null ||
+        !isNonNegativeInteger(evidence.actualLength) ||
+        trimmedUnicodeLength(evidence.originalValue) !== evidence.actualLength ||
+        evidence.actualLength >= evidence.minLength
+      ) {
+        return staleQuickEditResolution("產品亮點長度的健檢證據格式無效。");
+      }
+      if (
+        listing.content.itemHighlight !== evidence.originalValue ||
+        contentValueFingerprint(listing.content.itemHighlight) !==
+          evidence.originalValueFingerprint ||
+        trimmedUnicodeLength(listing.content.itemHighlight) >= evidence.minLength
+      ) {
+        return staleQuickEditResolution(
+          "產品亮點已變動，原本的字數不足可能已被修正或改寫。",
+        );
+      }
+      fields.add("itemHighlight");
+      continue;
+    }
+
     if (
       evidence.issueKind === "BULLET_BELOW_TARGET" ||
       evidence.issueKind === "BULLET_ABOVE_TARGET"
@@ -1080,6 +1142,34 @@ export function resolveContentAuditQuickEditFocus(
       if (candidate !== evidence.originalBulletIndex) {
         relocations.add(`${evidence.originalBulletIndex}:${candidate}`);
       }
+      continue;
+    }
+
+    if (evidence.issueKind === "DESCRIPTION_BELOW_TARGET") {
+      if (
+        evidence.field !== "productDescription" ||
+        evidence.token !== null ||
+        evidence.originalBulletIndex !== null ||
+        evidence.minLength !==
+          CONTENT_AUDIT_LENGTH_TARGETS.productDescriptionMinimum ||
+        evidence.maxLength !== null ||
+        !isNonNegativeInteger(evidence.actualLength) ||
+        trimmedUnicodeLength(evidence.originalValue) !== evidence.actualLength ||
+        evidence.actualLength >= evidence.minLength
+      ) {
+        return staleQuickEditResolution("產品敘述長度的健檢證據格式無效。");
+      }
+      if (
+        listing.content.productDescription !== evidence.originalValue ||
+        contentValueFingerprint(listing.content.productDescription) !==
+          evidence.originalValueFingerprint ||
+        trimmedUnicodeLength(listing.content.productDescription) >= evidence.minLength
+      ) {
+        return staleQuickEditResolution(
+          "產品敘述已變動，原本的字數不足可能已被修正或改寫。",
+        );
+      }
+      fields.add("productDescription");
       continue;
     }
 
@@ -1608,15 +1698,11 @@ export default function ContentAuditPanel({
               預檢通過後才會要求一次 Touch ID／Windows Hello；若任一筆結果不明會停止後續且不盲目重送。
             </p>
           </div>
-          <label className="content-audit-file-picker">
-            <span>{workbookFile ? workbookFile.name : "選擇原本匯出的 .xlsx"}</span>
-            <input
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              disabled={Boolean(batchBusy)}
-              onChange={(event) => selectWorkbook(event.target.files?.[0] ?? null)}
-            />
-          </label>
+          <ContentAuditWorkbookFilePicker
+            fileName={workbookFile?.name ?? null}
+            disabled={Boolean(batchBusy)}
+            onSelect={selectWorkbook}
+          />
           <button
             type="button"
             className="content-audit-roundtrip-preview"
@@ -1823,7 +1909,7 @@ export default function ContentAuditPanel({
                           disabled={!quickEditFocus}
                           title={quickEditAvailability.status === "unavailable"
                             ? quickEditAvailability.unavailableReason
-                            : quickEditAvailability.reason}
+                            : "重新讀取 Amazon 後聚焦待修欄位，不會直接寫入。"}
                         >
                           立刻修改
                         </button>
@@ -1832,13 +1918,11 @@ export default function ContentAuditPanel({
                         </button>
                       </div>
                     </div>
-                    <div className="content-audit-quick-edit-reason" role="note">
-                      <strong>本次錯誤原因</strong>
-                      <p>{quickEditAvailability.reason}</p>
-                      {quickEditAvailability.status === "unavailable" && (
-                        <small>立刻修改不可用：{quickEditAvailability.unavailableReason}</small>
-                      )}
-                    </div>
+                    {quickEditAvailability.status === "unavailable" && (
+                      <p className="content-audit-quick-edit-unavailable" role="status">
+                        立刻修改目前不可用：{quickEditAvailability.unavailableReason}
+                      </p>
+                    )}
                     {(affectedBullets.length > 0 ||
                       hasHighlightedContent(row.ingredients, ingredientsIssues)) && (
                       <div
@@ -1859,7 +1943,7 @@ export default function ContentAuditPanel({
                         )}
                       </div>
                     )}
-                    <div className="content-audit-issues">
+                    <div className="content-audit-issues" aria-label="待修原因">
                       {row.readStatus === "incomplete" &&
                         (filter === "all" || filter === "READ_INCOMPLETE") &&
                         row.readErrors.map((readError, index) => (

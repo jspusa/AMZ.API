@@ -1407,8 +1407,17 @@ export default function SkuOperationsDrawer({
                     {activeQuickEditFocus && (
                       <div className="content-audit-quick-edit-notice" role="note">
                         <strong>立刻修改模式</strong>
-                        <p>本次錯誤原因：{activeQuickEditFocus.reason}</p>
-                        <p>只顯示這次健檢有問題的內容；其他 Amazon 原值仍會原樣帶入預檢，不會被清空。</p>
+                        <p>
+                          已聚焦 {
+                            activeQuickEditFocus.fields.filter(
+                              (field) => field !== "bulletPoints",
+                            ).length + activeQuickEditFocus.bulletIndices.length
+                          } 個待修欄位；其他 Amazon 原值仍會原樣帶入預檢，不會被清空。
+                        </p>
+                        <details>
+                          <summary>查看本次待修原因</summary>
+                          <p>{activeQuickEditFocus.reason}</p>
+                        </details>
                         {activeQuickEditFocus.relocationNote && (
                           <p>{activeQuickEditFocus.relocationNote}</p>
                         )}
@@ -1422,7 +1431,10 @@ export default function SkuOperationsDrawer({
                       >
                         <strong>健檢定位已失效，已顯示完整編輯</strong>
                         {quickEditFocus && (
-                          <p>本次錯誤原因：{quickEditFocus.reason}</p>
+                          <details>
+                            <summary>查看原健檢原因</summary>
+                            <p>{quickEditFocus.reason}</p>
+                          </details>
                         )}
                         <p>無法定位原因：{staleQuickEditNotice}</p>
                       </div>

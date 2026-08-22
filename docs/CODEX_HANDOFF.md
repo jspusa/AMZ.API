@@ -354,6 +354,11 @@ Amazon App：
   - `/Applications/AMZ.API.app` 已由 v0.1.16 安全備份後安裝 v0.1.17；備份為 `/Applications/AMZ.API-v0.1.16-backup.app`。啟動沿用原 Keychain vault且未重輸密鑰，同一程序在初次視窗讀取短暫等待後正常顯示首頁，沒有反覆重啟；系統資訊顯示「目前本機 App 0.1.17」。
   - 2026-08-21 真實 US 唯讀邊界：2026-07-23 至 2026-08-21 入庫同步只啟動一次，隨即以安全失敗通知收斂，沒有貨件／SKU／數量／三層瑕疵或 7-sheet Excel 可驗證，也沒有 Amazon mutation；不得寫成 0 貨件或 0 瑕疵。廣告 drawer 可見，但獨立 Amazon Ads LWA 尚未設定，故 Reporting v3、策略表與 3-sheet／29 欄 Excel 均保持未驗證。
   - Supply Boss API v4 production 沿用 server-side 兩檔 public allowlist；已將 private R2 的 `macos-dmg` 更新為 `AMZ.API-0.1.17-universal.dmg`（246,079,435 bytes；SHA-256 同上），Windows NSIS 卡維持 v0.1.16。portable ZIP 與 checksum manifest 仍只作內部 artifact，不顯示成員工下載卡；下載頁密碼與 session 規則未更改。
+- 2026-08-22 v0.1.22 文案健檢 UI／Excel round-trip hotfix 候選：
+  - 健檢卡片不再同時顯示巨型原因彙總與逐項原因；每則原因只出現一次。單 SKU 立刻修改摘要只顯示聚焦欄位數，完整原因預設收合；產品亮點與產品敘述也建立 raw value／fingerprint／length evidence，fresh Amazon 原文、Seller SKU、ASIN、Product Type 或門檻任一變動仍 stale fail closed。Excel 選檔區只顯示一次檔名並保留鍵盤與螢幕閱讀器操作。
+  - 真實未另存工作簿 273 列中有 9 列被誤判竄改；hash-only evidence 唯一命中根因是原始產品要點的 U+2028 LINE SEPARATOR 在舊 OOXML 讀回時被正規化成 LF。新版以 numeric character references 無損保存 CR／U+0085／U+2028／U+2029；舊 v2 只在 main-owned 完整 digest 唯一命中時 bounded 復原，exact digest 永遠先行，同一 recovered 欄若也被編輯則要求重新匯出，不猜內容或放寬 SKU／ASIN／family／原值核對。
+  - Legacy candidates 改為逐筆產生，先套 request-wide rows／work／hash／bytes budget再核對；歧義或超限 fail closed。rich-text 顯示 marker 不再改寫 immutable raw，content-audit cell 若含 OOXML 無法無損保存的控制字元或超過 32,767 code points，匯出時明確拒絕而不靜默替換／截斷。
+  - 本機 `npm run check` 通過 105 個測試檔／860 tests、TypeScript 與 main／preload／renderer production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。真實舊檔 273／273 列已走正式 ApiRouter no-op path 得到 `CONTENT_UNCHANGED`；1440px／390px Playwright 已驗證原因不重複、立即修改聚焦 8 個欄位、檔名只顯示一次且無水平 overflow。沒有執行 Amazon Validation Preview、文案 mutation 或生物辨識確認。
 - 2026-08-22 v0.1.21 新增全站文案健檢與 Excel round trip：
   - `item_name`、`title_differentiation`、每項 `bullet_point`、`product_description` 分別套用內部目標 60／110／150–200／1,800 Unicode 字元；API 與前台保留實際字數、上下限與逐條要點索引，讀取未完成列不做缺值或字數推論。
   - 全站 relationships 以官方批次查詢分 child family，已證明 parent 排除；standalone 固定進「未綁變體」，缺列／400／ASIN 或關係衝突固定進「資料未完成」，不以名稱或 ASIN 相似度猜 family。

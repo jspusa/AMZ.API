@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
+  ContentAuditWorkbookFilePicker,
   ContentWorkbookBatchPreviewCard,
   parseContentWorkbookBatchPreview,
   parseContentAuditSnapshot,
@@ -46,7 +47,9 @@ function quickEditRow(
 function freshListing(
   content: {
     title?: string;
+    itemHighlight?: string;
     bulletPoints?: readonly string[];
+    productDescription?: string;
     ingredients?: string;
   } = {},
 ) {
@@ -56,6 +59,7 @@ function freshListing(
     productType: "PET_FOOD",
     content: {
       title: content.title ?? "Clean title",
+      itemHighlight: content.itemHighlight ?? "Original highlight",
       bulletPoints: content.bulletPoints ?? [
         "Naturall nutrition",
         "Second point",
@@ -63,12 +67,44 @@ function freshListing(
         "Fourth point",
         "Fifth point",
       ],
+      productDescription:
+        content.productDescription ?? "Original product description",
       ingredients: content.ingredients ?? "Turkey",
     },
   };
 }
 
+function occurrenceCount(value: string, search: string): number {
+  return value.split(search).length - 1;
+}
+
 describe("global FBA content audit panel", () => {
+  it("shows a selected workbook filename once while keeping the file input accessible", async () => {
+    const fileName = "FBA-文案健檢-US-2026-01-02.xlsx";
+    const markup = renderToStaticMarkup(
+      <ContentAuditWorkbookFilePicker
+        fileName={fileName}
+        disabled={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    const stylesheet = await readFile(
+      new URL("../src/renderer/src/app.css", import.meta.url),
+      "utf8",
+    );
+
+    expect(occurrenceCount(markup, fileName)).toBe(1);
+    expect(markup).toContain('type="file"');
+    expect(markup).toContain('class="content-audit-file-input"');
+    expect(markup).toContain('aria-label="選擇要回傳的 Excel 檔案"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(stylesheet).toContain(".content-audit-file-input");
+    expect(stylesheet).toContain("clip-path: inset(50%)");
+    expect(stylesheet).toContain(
+      ".content-audit-file-picker:has(.content-audit-file-input:focus-visible)",
+    );
+  });
+
   it("explains the one-click scope and starts from a read-only state", () => {
     const markup = renderToStaticMarkup(
       <ContentAuditPanel
@@ -176,8 +212,9 @@ describe("global FBA content audit panel", () => {
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("content-audit-export-primary");
     expect(markup).toContain("立刻修改");
-    expect(markup).toContain("本次錯誤原因");
-    expect(markup).toContain("賣點不足（賣點）");
+    expect(markup).not.toContain("本次錯誤原因");
+    expect(markup).toContain('aria-label="待修原因"');
+    expect(occurrenceCount(markup, "目前只有 1 個非空白賣點，少於 5 個。")).toBe(1);
     expect(markup).toContain('class="kind-missing_bullets"');
     expect(markup).toContain("完整編輯");
     expect(snapshot.exportId).toBe("content-audit-export-001");
@@ -281,6 +318,10 @@ describe("global FBA content audit panel", () => {
     expect(stylesheet).not.toContain(
       ".content-audit-list > article:has(.content-audit-issues .kind-read_incomplete)",
     );
+    expect(stylesheet).toContain(
+      ".content-audit-edit-actions > .content-audit-fix-now:disabled",
+    );
+    expect(stylesheet).toContain("cursor: not-allowed");
   });
 
   it("opens a focused edit containing only flagged fields and missing bullet slots", async () => {
@@ -356,7 +397,12 @@ describe("global FBA content audit panel", () => {
     expect(drawerSource).toContain("其他 Amazon 原值仍會原樣帶入預檢");
     expect(drawerSource).toContain("確認並預檢這次修正");
     expect(drawerSource).toContain("健檢定位已失效，已顯示完整編輯");
-    expect(drawerSource).toContain("本次錯誤原因：{activeQuickEditFocus.reason}");
+    expect(drawerSource).toContain("個待修欄位；其他 Amazon 原值仍會原樣帶入預檢");
+    expect(drawerSource).toContain("查看本次待修原因");
+    expect(drawerSource).toContain("{activeQuickEditFocus.reason}");
+    expect(drawerSource).not.toContain(
+      "本次錯誤原因：{activeQuickEditFocus.reason}",
+    );
     expect(drawerSource).toContain("立刻修改未開始：");
   });
 
@@ -395,8 +441,8 @@ describe("global FBA content audit panel", () => {
       />,
     );
     expect(markup).toMatch(/class="content-audit-fix-now"[^>]*disabled=""/u);
-    expect(markup).toContain("本次錯誤原因");
-    expect(markup).toContain("立刻修改不可用");
+    expect(markup).not.toContain("本次錯誤原因");
+    expect(markup).toContain("立刻修改目前不可用");
     expect(markup).toContain("無法安全定位待修內容");
   });
 
@@ -664,7 +710,7 @@ describe("global FBA content audit panel", () => {
     )).toMatchObject({ status: "stale" });
   });
 
-  it("explicitly falls back to full editing for highlight and description lengths", () => {
+  it("opens highlight and description length issues only after exact fresh-read evidence matches", () => {
     const row = quickEditRow({
       itemHighlight: "H".repeat(109),
       productDescription: "P".repeat(1_799),
@@ -686,11 +732,32 @@ describe("global FBA content audit panel", () => {
       ],
     });
 
-    expect(quickEditFocusForRow(row)).toBeNull();
-    expect(quickEditAvailabilityForRow(row)).toMatchObject({
-      status: "unavailable",
-      unavailableReason: expect.stringContaining("請使用完整編輯確認"),
+    const focus = quickEditFocusForRow(row);
+    expect(focus).toMatchObject({
+      fields: ["itemHighlight", "productDescription"],
+      bulletIndices: [],
     });
+    expect(quickEditAvailabilityForRow(row)).toMatchObject({ status: "ready" });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        itemHighlight: "H".repeat(109),
+        productDescription: "P".repeat(1_799),
+      }),
+    )).toMatchObject({
+      status: "focused",
+      focus: {
+        fields: ["itemHighlight", "productDescription"],
+        bulletIndices: [],
+      },
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        itemHighlight: "H".repeat(110),
+        productDescription: "P".repeat(1_799),
+      }),
+    )).toMatchObject({ status: "stale" });
   });
 
   it("parses and explains every length reason with per-bullet evidence", () => {
@@ -784,10 +851,12 @@ describe("global FBA content audit panel", () => {
         }}
       />,
     );
-    expect(markup).toContain("產品名稱不足（產品名稱）");
-    expect(markup).toContain("產品要點過短（產品要點 1）");
-    expect(markup).toContain("產品要點過長（產品要點 2）");
-    expect(markup).toContain("產品敘述不足（產品敘述）");
+    expect(occurrenceCount(markup, "產品名稱目前 59 個字元，低於 60 個字元。")).toBe(1);
+    expect(occurrenceCount(markup, "產品亮點目前 109 個字元，低於 110 個字元。")).toBe(1);
+    expect(occurrenceCount(markup, "產品要點 1 目前 149 個字元，低於 150 個字元。")).toBe(1);
+    expect(occurrenceCount(markup, "產品要點 2 目前 201 個字元，超過 200 個字元。")).toBe(1);
+    expect(occurrenceCount(markup, "產品敘述目前 1799 個字元，低於 1800 個字元。")).toBe(1);
+    expect(markup).toMatch(/class="content-audit-fix-now"(?![^>]*disabled="")[^>]*>/u);
     expect(markup).toContain("目前 201 個字元，超過 200 個字元");
   });
 
