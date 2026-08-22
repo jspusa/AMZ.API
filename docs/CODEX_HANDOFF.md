@@ -361,17 +361,19 @@ Amazon App：
   - 掃描授權證據以 account／marketplace／live-demo／export／fetchedAt-scoped SHA-256 列摘要在裝置端保存固定 24 小時；不落地 Seller SKU、ASIN、文案、Excel 或 proposed edits。鎖屏、睡眠與 App 重啟後同檔仍可重新預檢，換帳號／站點／模式或到期則 fail closed；集合限制 8 份／50,000 列／8 MiB，超量確定性淘汰最舊證據而不碰 idempotency ledger。
   - 回傳 Excel 的 POST 只做逐 SKU fresh read／PTD／Amazon Validation Preview，任一失敗整批零寫入。renderer 會逐 SKU 展開完整 Amazon 原值／Excel 更新值與 Validation 提醒，使用者勾選已核對後，PATCH 才會在全批再預檢後要求一次 Touch ID／Windows Hello；每 SKU 仍各自有 ledger、單次 PATCH 與 canonical readback，拒絕或不明即停止後續，沒有跨 SKU 原子交易，也不自動重送。
   - 本機 v0.1.21 候選已通過 `npm run check`：105 個測試檔／854 tests、TypeScript 與 main／preload／renderer production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。實際 `.xlsx` 已通過 ZIP、LibreOffice 開啟另存再匯入、openpyxl sheet／freeze／顏色核對；前台逐欄 diff 已做 1440px／390px Playwright 視覺 QA且無整頁水平溢出。尚未用真實 Amazon／真實 Windows Hello 執行任何文案 mutation。
+  - PR #48 已 squash merge，main 為 `c919cd9714095330c150879b0eb1bb474817e3dd`；main Validate `32568946207`、Pages `32568946205`、macOS `32568946198` 與 Windows CI `32568946195` 均成功。live Pages assets 為 `index-CFy0t-bz.js`／`index-CddE3IYJ.css`，SHA-256 分別為 `51a1d55ea4e96af41390f4f19fb319e54f42a901d5aa0b27de42a54e14b020a0`／`8b9335242a20aa2112b9d042ee63532d300381bbac2933838a672658e0c4725c`，已確認含新門檻與同 Excel 回傳入口。
+  - main macOS artifact `9474859261` 名稱為 `AMZ.API-unsigned-c919cd9714095330c150879b0eb1bb474817e3dd`，GitHub metadata digest 為 `sha256:af9c17898c06b360b894ec91aba00e183c249b115881e93f9068d151e60ad686`。DMG 為 246,204,272 bytes、SHA-256 `3c3093e3c94d477b18baf491613f5eb15f3b2ac04cf45f392500cba299be169c`；universal ZIP 為 221,642,538 bytes、SHA-256 `930b2ad3c75acb8d961834b8e4d3b17c8acdcc93210dba17153f17e0c92afd29`。兩者與 manifest 一致，ZIP／DMG CRC、版本／build 0.1.21、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過。v0.1.21 已安裝並持續執行，v0.1.20 原封不動保留為 `/Applications/AMZ.API-v0.1.20-backup.app`；Keychain／本機 userData 未清除。
 
 ### 已完成與仍待真實 Windows／Mac／Amazon 驗證
 
-v0.1.17 的 PR、main Actions、Pages、Mac artifact／安裝與受保護 Mac 下載檔已完成；Windows 固定 prerelease 仍為 v0.1.16，且尚未在員工真實 Windows 11 Pro 裝置做人機驗證。v0.1.17 首頁已自動完成一次真實 US Sales 唯讀載入，但新增入庫與 Ads 策略沒有 live 完成。下列範圍必須分開理解：
+v0.1.21 的 PR、main Actions、Pages、Mac artifact／安裝已完成；受保護員工 Mac 下載檔仍是 v0.1.17，Windows 固定 prerelease 仍是 v0.1.16，且尚未在員工真實 Windows 11 Pro 裝置做人機驗證。v0.1.21 的新文案健檢／Excel round trip 尚未對真實 Amazon 執行 mutation；既有 v0.1.17 首頁曾完成真實 US Sales 唯讀載入，但新增入庫與 Ads 策略仍沒有 live 完成。下列範圍必須分開理解：
 
-1. v0.1.17 的可追溯 source／Pages／Mac artifact／安裝鏈與 live Pages byte-for-byte 核對已完成；同一 main SHA 的 Windows runner 成功只證明封裝、Bridge 與 addon 可載入，不得冒充真實 Windows Hello 指紋／臉部／PIN 或 DPAPI 跨使用者驗證。員工 Windows 安裝來源仍是固定 v0.1.16 prerelease／受保護 installer。
+1. v0.1.21 的可追溯 source／Pages／Mac artifact／安裝鏈與 live Pages asset 核對已完成；同一 main SHA 的 Windows runner 成功只證明封裝、Bridge 與 addon 可載入，不得冒充真實 Windows Hello 指紋／臉部／PIN 或 DPAPI 跨使用者驗證。員工 Windows 安裝來源仍是固定 v0.1.16 prerelease／受保護 installer。
 2. 首頁可見 `Amazon 已連線`、Live 7 天 Sales、品牌／品類切換與「狀態收斂進度」。品牌 report 在驗證截圖時仍為整理中；品牌／品類共用 snapshot、cache fence 與 A→B→A 只建兩份不同日期 report 是測試證據，尚未取得 v0.1.15 真實八類分類數值，不得冒充 live 完成。
 3. v0.1.14 的真實 US 6 個月 Subscribe & Save 已證明單列問題可隔離、其他 offer 繼續；它只能保留為舊版歷史快照，不能自動證明 v0.1.15 的新篩選、全站／SKU 折線或五張正常表加一張問題表。這些仍待 6／12／23 個月追加唯讀重測。
 4. 全庫齡層級、AIS tier、評論首頁背景 observer、長 variation family、滑板動畫、36×36 關閉控制與健檢狀態 pill 已通過 production build、測試與 1280px／390px 假 Bridge 視覺驗收；不能以 mock 數值冒充 live Amazon。
 5. 評論負向數值必須保持原始負號並標示為 impact；公開 API 仍不提供商品總星等、總評論數或完整 review 全文。v0.1.12 的 23,765 件品牌出貨、257 個 non-parent review candidates，以及 v0.1.14 的 S&S aggregate 都只是各自時間點快照，不得當作恆定現值。
-6. 文案健檢 Excel rich-text 紅字、同次 cache 與「立刻修改」的 fresh read／stale fallback 仍只允許驗證到 Amazon Validation Preview；商品內容、圖片、價格、Sale Price 與 Variation 真實寫入均未授權。
+6. 文案健檢 Excel rich-text 紅字、變體 family 分頁、同檔回傳、24 小時 hash-only evidence、整批零寫入 preview 與「立刻修改」的 fresh read／stale fallback 已通過本機／CI／LibreOffice 測試；真實 Amazon 文案批次 mutation 與 Windows Hello 實機確認仍未執行。商品內容、圖片、價格、Sale Price 與 Variation 不得因本次發布自動寫入。
 7. 報表文件庫列的是 109 個官方公開 report types 與能力說明，不代表 App 已建立 109 種通用下載器；廣告策略 Reporting v3 已接線但尚未設定真實 Ads LWA，既有廣告覆蓋 Live Ads API 也未因此自動完成，FBA 帳務中心未接線能力仍須保持 unavailable／plan-only。
 8. 目前仍是內部測試 App：Mac 為 ad-hoc、尚無 Apple Developer ID 簽章／公證；Windows fixed prerelease 為 unsigned、尚無 publisher-bound Authenticode，SmartScreen 可能警告且 in-app updater 已停用。所有新增驗證必須保持 FBA-only、唯讀，且不得使用 Seller Central 私有接口。
 
