@@ -62,7 +62,8 @@ function inboundSnapshot(startDate: string, endDate: string): FbaInboundShipment
     shipmentListScope: "selected-date-range",
     dataSource: {
       shipmentList: "GET /fba/inbound/v0/shipments",
-      shipmentItems: "GET /fba/inbound/v0/shipments/{shipmentId}/items",
+      shipmentItems:
+        "GET /fba/inbound/v0/shipments/{shipmentId}/items + GET /fba/inbound/v0/shipmentItems?QueryType=NEXT_TOKEN",
       startedAt: fetchedAt,
       completedAt: fetchedAt,
     },

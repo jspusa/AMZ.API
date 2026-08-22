@@ -5501,13 +5501,18 @@ async function callFbaInboundV0(
     } else {
       query.set("NextToken", request.nextToken);
     }
-  } else {
+  } else if (request.queryType === "SHIPMENT") {
     path = `/fba/inbound/v0/shipments/${encodeURIComponent(
       request.shipmentId,
     )}/items`;
     // MarketplaceId is deprecated for this operation. The shipment ID came
     // from the exact-marketplace list request, so do not send the obsolete
     // parameter or permit the renderer to choose an upstream path.
+  } else {
+    path = "/fba/inbound/v0/shipmentItems";
+    query.set("QueryType", "NEXT_TOKEN");
+    query.set("NextToken", request.nextToken);
+    query.set("MarketplaceId", request.marketplaceId);
   }
 
   const controller = new AbortController();

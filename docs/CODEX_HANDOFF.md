@@ -3,7 +3,7 @@
 最後更新：2026-08-22
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
-目前狀態：`v0.1.18` 已由 PR #43 squash merge 至 `main` commit `494c6c50e36c2e7b751e64526b98e8e40c5b0435`；main Validate `32462687517`、Pages `32462687505`、macOS universal `32462687527` 與 Windows CI `32462687475` 均成功。可信 macOS artifact 已驗證並安裝為 `/Applications/AMZ.API.app`，Keychain vault 原樣保留且首頁顯示 `Amazon 已連線`；Windows 結果仍只是 CI，沒有 Windows 實機驗證。真實 US 入庫診斷確認 Amazon 對 Fulfillment Inbound v0 日期範圍清單回 HTTP 400，但同一 Notebook Key／帳號可讀 2024-03-20 入庫計畫 API，故不是憑證遺失。`v0.1.19` 目前是未發布候選：v0 日期清單被明確拒絕時，先讀活動中貨件，再以新版計畫清單作第二備援；兩種備援固定標為 partial，不能冒充所選日期完整結果。候選已通過 100 files／807 tests、TypeScript、production build、audit 0 與 diff check，但尚未 PR／main artifact／安裝，也尚未以正式 artifact 完成 live 活動貨件驗證。Amazon Ads 獨立 LWA 尚未設定，因此廣告策略 Reporting v3 仍未 live 驗證。受密碼保護下載站的 Windows installer 仍為 v0.1.16；未經正式 artifact 驗證不得更新下載卡。
+目前狀態：`v0.1.19` 已由 PR #44 squash merge 至 `main` commit `cae2bd51cfeebc3bc9a8a4e77deaabd5af4e4bc1`；main Validate `32560390860`、Pages `32560390900`、macOS universal `32560390832` 與 Windows CI `32560390825` 均成功。可信 macOS artifact `9472647652` 已驗證並安裝為 `/Applications/AMZ.API.app`，Keychain vault 原樣保留且首頁顯示 `Amazon 已連線`；Windows 結果仍只是 CI，沒有 Windows 實機驗證。2026-08-22 真實 US 30 天唯讀驗證由 v0 日期清單安全接到活動中貨件，取得 31 票；前三票各在第 25 筆商品後收到官方 `NextToken`，舊版因未接續分頁而把它當成局部異常，連續三票後熔斷，故只保留 75 列已核對資料並誠實標為 partial。`v0.1.20` 目前是未發布修正候選：逐票第一頁仍使用固定 by-shipment GET，後續只使用 Amazon 官方固定 `/fba/inbound/v0/shipmentItems?QueryType=NEXT_TOKEN`，並綁定原貨件、opaque token、分頁／筆數上限、重複 token、跨頁重複列、取消與既有全域錯誤邊界。候選已通過 100 files／812 tests、TypeScript、production build、audit 0 與 diff check；尚未 PR／main artifact／正式安裝／單次 live 重測。Amazon Ads 獨立 LWA 尚未設定，因此廣告策略 Reporting v3 仍未 live 驗證。受密碼保護下載站的 Windows installer 仍為 v0.1.16；未經正式 artifact 驗證不得更新下載卡。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -317,12 +317,19 @@ Amazon App：
   - 本機最終 `npm run check` 通過 76 個測試檔／517 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。PR #31 已 squash merge：`https://github.com/jspusa/AMZ.API/pull/31`；release main commit 為 `654d70c0ed554b1b9cdd078fc0587d15274c2500`。main Validate run `31351732388`、Pages run `31351732381`、macOS run `31351732405` 與 Windows run `31351732415` 均成功。
   - live Pages production assets 為 `index-CgWtRJve.js`／`index-BuIzmwBr.css`；HTML、JS、CSS SHA-256 分別為 `30e1d0b98cfa785c02a2123d5c54e0ee5589648556d89140521c79e654d640bf`、`833704b3d89a9ebaddf9e111ff3e192fe37638815ee3ec6ab379fba9cf617f06`、`5563b1c6567b8b63a408492721d1887078738188a3d897e863d37f2e3b25d30f`，與 release production output byte-for-byte 相同；全程以 `curl` 驗證，沒有再開瀏覽器。
   - 固定 Windows prerelease 的 NSIS EXE SHA-256 為 `997209481a290a4e05dfc5111222d3deee9f2ff55bd5bff247deef06bbd8a3c0`，portable ZIP 為 `2b086fbd36c2ca8be7891a53a0d70cebc243b909b6ba2b9ba0c862799ab83b0a`；公開 `SHA256SUMS.txt` SHA-256 為 `426ff11bacc76166de15100ccd1e8dd6bc1d43cfb84428da25248bb8d5b7f12d`，與 trusted Windows run 原檔 byte-for-byte 相同。真正員工 Windows 11 Pro 裝置的 Hello UI／硬體與 DPAPI 使用者隔離尚未實測，不能用 CI smoke 冒充完成。
-- v0.1.19 FBA 入庫清單備援目前是未發布候選：
+- v0.1.20 FBA 入庫商品明細官方續頁目前是未發布候選：
+  - v0.1.19 真實 US 30 天唯讀工作已證明活動中清單備援可讀 31 票，但每票第一頁 25 筆商品後的官方 `NextToken` 被舊程式當成局部異常；前三票連續發生後觸發既有熔斷，因此只保留 75 列已核對資料，目標貨件若排在後面就不會讀到商品明細。這不是憑證遺失，也沒有 Amazon 寫入。
+  - 修正後，第一頁固定呼叫 `/fba/inbound/v0/shipments/{shipmentId}/items`；只有該回應提供安全 opaque token 時，才固定呼叫 `/fba/inbound/v0/shipmentItems` 並帶 `QueryType=NEXT_TOKEN`、原 token 與 exact marketplace。renderer、URL、log 與工作簿都不取得 token。
+  - 續頁若回傳 `ShipmentId` 必須與原貨件完全一致；Amazon 官方 model 允許省略時，仍只接受由 exact by-shipment 回應建立的同一 token chain。重複／無前進 token、跨頁重複商品、頁數或筆數超限都停止該票並保留先前已核對列；401／403／429／5xx、網路與 abort 仍依既有全域邊界停止，不盲目新增 Amazon 請求。
+  - 本機 `npm run check` 通過 100 個測試檔／812 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。尚未 PR／main artifact／正式安裝／單次 live US 30 天重測，不能先稱修復完成。
+- v0.1.19 FBA 入庫清單備援已發布並安裝：
   - 真實診斷已排除「金鑰遺失」：同一已連線 Notebook Key 對 v0 日期清單得到固定 HTTP 400，但固定 2024-03-20 `listInboundPlans` 唯讀探測成功。v0 日期序列化改為 UTC `Z` 後仍是 400。
   - v0 日期清單只有明確 400／422 時，才先嘗試固定 `QueryType=SHIPMENT`＋活動狀態清單；若該清單也明確 400／422，才改用固定 2024-03-20 plan／shipment GET。401／403／429／5xx、網路或未知失敗不會跳過安全邊界繼續備援。
   - 活動狀態清單不受使用者日期限制，且可能缺少 CLOSED／CANCELLED／DELETED；新版 plan 清單依 plan `lastUpdatedAt`，也不等同舊版貨件最後更新日期。兩種備援即使逐貨件 items 與每日問題報表都完整，job 仍固定是 partial；畫面、parser 與 Excel 都明示範圍限制。
   - 新版 plan／shipment 內部 ID 只留在 main，renderer 只收到安全 shipment confirmation ID。所有請求仍是固定 GET、signal-aware、一次 401 refresh 與有限 GET 重試；沒有 Amazon mutation。
-  - 本機 `npm run check` 通過 100 個測試檔／807 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。尚未 PR／main artifact／正式安裝／live 活動貨件驗證，不能先稱修復完成。
+  - 本機 `npm run check` 通過 100 個測試檔／807 tests、TypeScript 與 production build；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。PR #44 已 squash merge，main 為 `cae2bd51cfeebc3bc9a8a4e77deaabd5af4e4bc1`；main Validate `32560390860`、Pages `32560390900`、macOS `32560390832` 與 Windows CI `32560390825` 均成功。Windows 結果仍只是 CI，未做 Windows 實機驗證。
+  - main macOS artifact `9472647652` 的 GitHub digest 為 `sha256:22a3beb9243dae7cf2bda76dc3235422de1325e271d5da6e62301a1e31a45781`；DMG SHA-256 為 `bf9cc3931e20236357b348cc2e7f6e389ad07908a152aba5b59d177da83813f1`，universal ZIP 為 `ff3837763485fcd9b49cf073bccbf104a86d0f38b54ebf1fa2068ee6bf83ecf8`。版本／build 0.1.19、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過；正式 artifact 已安裝，v0.1.18 保留為備份，Keychain vault 未清除。
+  - 2026-08-22 真實 US 30 天結果為 partial：31 票活動中貨件；前三票各讀到 25 列後遇官方續頁 token，舊程式熔斷並保留 75 列。已核對預期 33,747、Amazon 已接收 33,592、尚在接收 403、多接收 248；這些只涵蓋已核對列，不能冒充完整 31 票總計。每日問題報表 unavailable，不能宣稱 0 瑕疵。沒有 Amazon mutation。
 - v0.1.18 FBA 入庫診斷修正版已發布並安裝：
   - 根因：v0.1.17 將多種安全失敗壓成同一句 generic notice，且逐貨件商品明細連續三票異常時會丟掉前面已核對的部分結果；首頁再把任何 terminal failure 誤標為「需要重新接回」。這不能證明憑證真的斷線。
   - 修正後，global 401／403／429／5xx／網路失敗仍立即停止；逐貨件 local 失敗連續三票時只停止後續商品明細請求，保留已核對列，其餘貨件明確標成未知，不補 0。failed job 只回固定公開文案、安全診斷代碼與經 allowlist 的 Amazon Request ID，不回 raw upstream message、URL、report/document/account scope。
@@ -370,8 +377,9 @@ v0.1.17 的 PR、main Actions、Pages、Mac artifact／安裝與受保護 Mac �
 
 ## 6. 目前安裝檔
 
+- v0.1.19 main macOS workflow run：`32560390832`；artifact：`9472647652`，名稱 `AMZ.API-unsigned-cae2bd51cfeebc3bc9a8a4e77deaabd5af4e4bc1`；GitHub metadata digest：`sha256:22a3beb9243dae7cf2bda76dc3235422de1325e271d5da6e62301a1e31a45781`。DMG SHA-256 為 `bf9cc3931e20236357b348cc2e7f6e389ad07908a152aba5b59d177da83813f1`；ZIP SHA-256 為 `ff3837763485fcd9b49cf073bccbf104a86d0f38b54ebf1fa2068ee6bf83ecf8`，均與 artifact 內 checksum manifest 一致。
+- 目前 `/Applications/AMZ.API.app` 是 v0.1.19 universal 內部測試 App；版本／build `0.1.19`、bundle ID `com.jspusa.amz-api`、executable `AMZ.API`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 已核對。原 v0.1.18 已保留為 `/Applications/AMZ.API-v0.1.18-backup.app`。Keychain vault 保留，啟動後不需重輸密鑰且顯示 `Amazon 已連線`。曾手工重包的臨時 canary 會被 macOS 終止且出現「重新打開／報告」對話框，已完全排除為正式安裝來源；不得再使用該臨時 App。
 - v0.1.17 main macOS workflow run：`32455530465`；artifact：`9437191218`，名稱 `AMZ.API-unsigned-ef5bd04a8c87bf51743fe72e95e3a59073f14b4f`；GitHub metadata digest：`sha256:6ee034932ca5043774ea5110bd6c7133d93b72fd9b7c90dc434a9aa756209ea1`，保存至 `2026-09-04T06:47:01Z`。DMG 為 `AMZ.API-0.1.17-universal.dmg`（246,079,435 bytes；SHA-256 `1f01c0455d0f7ca506a537e889be5d3de2443e571e27cfc59d332e0c1e8b3ab2`）；ZIP 為 `AMZ.API-0.1.17-universal.zip`（221,564,636 bytes；SHA-256 `1267d63573ccb54e825ca9cf3cc8d510fa2c100694de9d3abca8741859b24c82`）；`SHA256SUMS.txt` 自身 SHA-256 為 `05afb64ef24c5291126ef815c3b8f439a505f35d8b2572bf7f0a30bd0475ce13`，兩個 payload hash 均完全一致。
-- 目前 `/Applications/AMZ.API.app` 是 v0.1.17 universal 內部測試 App；版本／build `0.1.17`、bundle ID `com.jspusa.amz-api`、executable `AMZ.API`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 已在 DMG 與安裝後各核對一次。原 v0.1.16 已保留為 `/Applications/AMZ.API-v0.1.16-backup.app`，沒有覆寫既有備份。Keychain vault 保留，啟動後不需重輸密鑰且顯示 `Amazon 已連線`；DMG 已安全卸載。
 - 受保護的 Supply Boss API v4 下載站目前只提供 Mac DMG 與 Windows NSIS installer 兩個員工入口。Mac 卡的 private R2 物件已更新為上述 v0.1.17 DMG／SHA；Windows 卡維持 v0.1.16，portable ZIP 與 `SHA256SUMS.txt` 只保留為內部驗證 artifact。下載站密碼未更改。
 - Windows v0.1.16 固定內部 prerelease：`https://github.com/jspusa/AMZ.API/releases/tag/notebook-key-windows`。NSIS 安裝檔為 `AMZ.API-Notebook-Key-Windows-x64-Setup.exe`（101,400,294 bytes；SHA-256 `997209481a290a4e05dfc5111222d3deee9f2ff55bd5bff247deef06bbd8a3c0`）；portable ZIP 為 `AMZ.API-Notebook-Key-Windows-x64.zip`（142,515,498 bytes；SHA-256 `2b086fbd36c2ca8be7891a53a0d70cebc243b909b6ba2b9ba0c862799ab83b0a`）。兩者與公開 `SHA256SUMS.txt`、GitHub asset digest 完全一致，匿名下載均回 200。此版本未簽章；員工安裝前必須核對 SHA，並預期 SmartScreen 警告。
 - v0.1.16 main Windows workflow run：`31351732415`；artifact：`9049261782`，名稱 `AMZ.API-Notebook-Key-Windows-x64-654d70c0ed554b1b9cdd078fc0587d15274c2500`；GitHub artifact digest：`sha256:3902fb2eeec61b3e081391a4e7dcd43d02a9beec314a3c267b7187c277fe3c6d`，保存至 `2026-08-24T03:13:10Z`。用於固定 prerelease 的 trusted workflow run 為 `31351186684`，artifact `9049090358`，digest `sha256:684aa093428ff63df64d2e51c74ae3c086bbe74658b9ce0afa164c92b7035005`；其三個實檔已下載並逐一核對。
@@ -456,12 +464,12 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-v0.1.18 已安裝且 Keychain vault 保留；下一步先將 v0.1.19 備援候選經 PR／main artifact／正式安裝與真實 US 活動貨件唯讀驗證收斂，再另行處理 v0.1.16 Windows 11 Pro 員工裝置的人機驗證。不要在 Mac 反覆開 Chrome 冒充 Windows 驗證，不要清除既有 Mac Keychain vault，也不要做任何真實 Amazon 寫入：
+v0.1.19 已安裝且 Keychain vault 保留；下一步先將 v0.1.20 官方商品續頁修正經 PR／main artifact／正式安裝與單次真實 US 30 天唯讀驗證收斂，再另行處理 v0.1.16 Windows 11 Pro 員工裝置的人機驗證。不要在 Mac 反覆開 Chrome 冒充 Windows 驗證，不要清除既有 Mac Keychain vault，也不要做任何真實 Amazon 寫入：
 
-### A. v0.1.19 入庫備援與廣告策略 live 待辦
+### A. v0.1.20 入庫商品續頁與廣告策略 live 待辦
 
-1. Mac 已安裝 v0.1.18 並沿用 Keychain vault；v0.1.19 必須只由 exact main macOS artifact 安裝，不得重用 `/private/tmp/amz-api-inbound-active.IKX5Qe/AMZ.API.app` 這個手工重包、已崩潰的臨時候選，也不得要求重輸 SP-API 憑證。
-2. 正式 v0.1.19 安裝後，以 US 30 天唯讀工作確認 v0 日期 400 能自動接到活動狀態清單。核對首頁背景進度、關閉 drawer 後仍前進、job 必須是 partial、畫面必須顯示「活動中貨件／所選日期範圍不完整」，再核對貨件／SKU 數、預期／Amazon 已接收／尚在接收／多接收、三層每日問題報表與 7 張 Excel。活動備援回 0 只能寫「活動中清單回 0」，不能寫成所選日期 0 貨件；daily／problem-only report 的空列或 unavailable 也不能宣稱 Seller Central 即時沒有瑕疵。
+1. Mac 已安裝 v0.1.19 並沿用 Keychain vault；v0.1.20 必須只由 exact main macOS artifact 安裝，不得使用任何手工重包 App，也不得要求重輸 SP-API 憑證。
+2. 正式 v0.1.20 安裝後只做一次 US 30 天唯讀工作，確認 v0 日期 400 能自動接到活動狀態清單，且有 `NextToken` 的逐票商品會接續到固定全域 NEXT_TOKEN endpoint，不再因前三票各 25 列而熔斷。核對首頁背景進度、關閉 drawer 後仍前進、job 因活動清單範圍限制仍必須是 partial、畫面必須顯示「活動中貨件／所選日期範圍不完整」，再核對貨件／SKU 數、預期／Amazon 已接收／尚在接收／多接收、三層每日問題報表與 7 張 Excel。活動備援回 0 只能寫「活動中清單回 0」，不能寫成所選日期 0 貨件；daily／problem-only report 的空列或 unavailable 也不能宣稱 Seller Central 即時沒有瑕疵。
 3. Amazon Ads 獨立 LWA 尚未設定；先用 main-owned 本機安全 editor 完成 Ads LWA 與 US profile 驗證，不得把 Secret 或 profile ID 放入聊天／Pages。之後才用最近 30 個完整日核對 FBA SKU、Sales & Traffic、SP 實際花費／14 日歸因銷售／購買次數、實際 ACoS、花費排名與 T1–T4。
 4. 廣告策略缺報表列必須保持「未回報」，不得補 0；價格、SB／SD 策略與規格保持人工欄位。下載後核對三張工作表與 29 欄、分開來源時間；關閉 drawer 再重開只能 GET 接回同一 job。只有第一次真實 Reporting v3 成功後才能標成已驗證。
 
@@ -475,7 +483,7 @@ v0.1.18 已安裝且 Keychain vault 保留；下一步先將 v0.1.19 備援候�
 
 ### C. 接回目前 Mac App
 
-1. 目前執行中的是 v0.1.17；Keychain vault 已保留且不需重輸。第一次視窗讀取只有短暫等待，同一程序即正常顯示，不曾重啟。不要因短暫載入較慢而反覆重啟或建立相同 Amazon report。
+1. 目前執行中的是正式 artifact v0.1.19；Keychain vault 已保留且不需重輸。曾崩潰的是手工重包的臨時 canary，不是正式 v0.1.19；不要再開該臨時 App，也不要因短暫載入較慢而反覆重啟或建立相同 Amazon report。
 2. 首頁 exact 版本、Amazon 已連線與 Live US 7 天 Sales 已核對。需要追加證據時使用既有 durable job／cache，避免按 terminal retry 或盲目重建。
 
 ### D. 依序完成 v0.1.15 新功能的真實唯讀證據

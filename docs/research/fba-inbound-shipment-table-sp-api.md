@@ -33,7 +33,7 @@ v0 `getShipments` 的輸入可依狀態、最多 999 個 Shipment ID，或 `Last
 
 v0 `getShipmentItemsByShipmentId` 回應包含 `SellerSKU`、`FulfillmentNetworkSKU`、`QuantityShipped`、`QuantityReceived`、`QuantityInCase`，回應模型也定義了 `NextToken`。[getShipmentItemsByShipmentId reference](https://developer-docs.amazon.com/sp-api/reference/getshipmentitemsbyshipmentid) · [官方 v0 模型](https://github.com/amzn/selling-partner-api-models/blob/main/models/fulfillment-inbound-api-model/fulfillmentInboundV0.json)
 
-要注意一個 Amazon 官方合約缺口：目前 `getShipmentItemsByShipmentId` 的操作參數沒有可送回 `NextToken` 的 continuation 參數，雖然回應 schema 可以回傳 token。若真的收到 token，App 不得私自猜參數；應把該 shipment 標為 partial。需要完整大量增量時，可改用 v0 `getShipmentItems` 的日期區間＋正式 `NextToken` 分頁，依 `ShipmentId` 合併回貨件。
+`getShipmentItemsByShipmentId` 的 path 本身沒有 `NextToken` 輸入，但它與 global `getShipmentItems` 共用 `GetShipmentItemsResponse`，且官方明示回應 token 應傳入下一個 request。續頁應呼叫固定 global `getShipmentItems`，使用 `QueryType=NEXT_TOKEN`、原樣 token 與 exact marketplace；不能把 token 猜成 by-shipment path 的非官方參數，也不能重新改用日期窗口。由 exact shipment 第一頁產生的 opaque token 保留原查詢範圍；續頁若回傳 Shipment ID，仍必須和原票一致。
 
 ## Legacy v0 與 v2024-03-20 的差異
 
@@ -82,10 +82,10 @@ Amazon 公開預設 usage plan 如下；實際 account/application 可由 `x-amz
 實作時應：
 
 1. 清單只跑 `getShipments` 的所有 `NextToken` 頁，檢查 token 循環、重複 shipment ID 與 marketplace identity。
-2. 產品第一版採使用者要求的「按一次自動完成」：在 main process 背景以保守 2 requests/second 逐貨件呼叫 `getShipmentItemsByShipmentId`，renderer 關閉面板只停止觀察、不停止同一工作。若該回應出現官方無 continuation input 可承接的 `NextToken`，明確標示 partial，不得假裝完整。若日後貨件量證明需要更快的增量路徑，再另評估 global `getShipmentItems`；不能因日期窗口相同就假設它含每一個貨件的完整 item set。
+2. 產品採使用者要求的「按一次自動完成」：在 main process 背景以保守 2 requests/second 逐貨件呼叫 `getShipmentItemsByShipmentId`；若第一頁回傳 `NextToken`，改用固定 global `getShipmentItems` 的 `QueryType=NEXT_TOKEN` 讀到 token 結束。renderer 關閉面板只停止觀察、不停止同一工作。續頁必須防止 token 重複／空頁無前進、跨頁重複 SKU、Shipment ID 衝突與超出頁數／列數上限；失敗時保留已核對列並標 partial。
 3. 同一 account＋mode＋marketplace＋精確日期範圍的 active 工作做 single-flight；背景刷新必須遵守 429／`Retry-After`，唯讀 GET 可 bounded retry。terminal 後使用者明確再同步可建立新的 GET 工作，但每日問題報表仍由耐久化 broker 防止盲目重建。
 4. 一頁失敗時保留已證明的其他 shipment，但該 shipment 標成「明細未完成」，不得把未讀到的 received quantity 補 0。
-5. 需要大範圍完整 item 增量時，使用有正式 continuation 參數的 v0 `getShipmentItems` 日期窗口＋`NextToken`，再依 Shipment ID 合併；不能把不同窗口的舊值盲目相加。
+5. 不用 global 日期窗口替代逐票第一頁。global `getShipmentItems` 在本產品只承接 exact shipment 第一頁所回傳的 opaque `NextToken`；不能把不同窗口的舊值盲目相加。
 6. 只接受精確站點的 FBA inbound 資料；不加入 Merchant Fulfillment／FBM shipping API。
 
 官方集中 rate-limit 表目前列 `getShipment` 為 5 req/s、burst 6，但 v2024 模型內 operation 說明仍寫 2 req/s、burst 6。實作不能把其中一個常數當永久真理；應採較保守初始值，並以實際回應的 `x-amzn-RateLimit-Limit` 做 account/application 節流。
