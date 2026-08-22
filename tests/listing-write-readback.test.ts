@@ -293,10 +293,66 @@ describe("main-owned listing write readback", () => {
     expect(businessPriceReadbackDecision(result as never, {
       ...snapshot,
       issues: [{
+        code: "DUAL_ATTRIBUTE_SCOPE",
+        severity: "ERROR",
+        message: "Legacy price scope must not be discarded.",
+        attributeNames: [],
+        attributeName: "purchasable_offer",
+        categories: ["INVALID_ATTRIBUTE"],
+        marketplaceIds: [identity.marketplaceId],
+      }],
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      issues: [{
+        code: "UNSCOPED_ERROR",
+        severity: "ERROR",
+        message: "Amazon returned an unscoped error.",
+        attributeNames: [],
+        categories: [],
+        marketplaceIds: [identity.marketplaceId],
+      }],
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      issues: [{
+        code: "INVALID_B2B_SELECTOR",
+        severity: "ERROR",
+        message: "Business audience is invalid.",
+        attributeNames: ["audience"],
+        categories: ["INVALID_ATTRIBUTE"],
+        marketplaceIds: [identity.marketplaceId],
+      }],
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      issues: [{
         code: "INVALID_QDP",
         severity: "ERROR",
         message: "invalid quantity discounts",
         attributeNames: ["quantity_discount_plan"],
+      }],
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      issues: [{
+        code: "18027",
+        severity: "ERROR",
+        message: "Image is invalid.",
+        attributeNames: [],
+        categories: ["INVALID_IMAGE"],
+        marketplaceIds: [identity.marketplaceId],
+      }],
+    } as never)).toBe("verified");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
+      issues: [{
+        code: "90220",
+        severity: "ERROR",
+        message: "Price is invalid.",
+        attributeNames: [],
+        categories: ["INVALID_PRICE"],
+        marketplaceIds: [identity.marketplaceId],
       }],
     } as never)).toBe("pending");
   });

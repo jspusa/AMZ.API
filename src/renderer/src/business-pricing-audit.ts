@@ -296,6 +296,9 @@ export function businessPricingRowMatchesFilter(
 ): boolean {
   if (filter === "all") return true;
   if (filter === "problem") return row.status !== "configured";
+  if (filter === "unsupported") {
+    return !row.editable && row.status !== "incomplete";
+  }
   return row.status === filter;
 }
 

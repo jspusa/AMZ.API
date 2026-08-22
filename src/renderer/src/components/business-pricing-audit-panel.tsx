@@ -38,7 +38,7 @@ const FILTERS: readonly Readonly<{
   { value: "problem", label: "需處理" },
   { value: "missing", label: "未設定" },
   { value: "configured", label: "已設定" },
-  { value: "unsupported", label: "不支援" },
+  { value: "unsupported", label: "唯讀／不支援" },
   { value: "incomplete", label: "資料未完成" },
 ];
 
@@ -436,8 +436,8 @@ export default function BusinessPricingAuditPanel({
       <div className="business-pricing-audit-intro">
         <div>
           <span>{marketplaceShort} · FBA ONLY</span>
-          <h3>找出尚未設定 B2B 價格的商品</h3>
-          <p>只把 seller-specific PTD 明確提供 B2B audience、且 Listings Items API 完整回傳的 FBA SKU 判為可設定。</p>
+          <h3>找出尚未設定獨立 B2B 價格的商品</h3>
+          <p>是否設定以 Listings attributes 的 B2B contribution 為準；能否直接修改另由 seller-specific PTD 決定。</p>
         </div>
         <button type="button" className="price-primary-button" onClick={() => void runAudit()} disabled={loading || editLoading}>
           {loading ? "健檢中…" : snapshot ? "重新健檢" : "開始全站 B2B 價格健檢"}
@@ -453,7 +453,7 @@ export default function BusinessPricingAuditPanel({
             <article><span>FBA SKU</span><strong>{snapshot.summary.totalFbaSkuCount}</strong></article>
             <article className="problem"><span>未設定</span><strong>{snapshot.summary.missing}</strong></article>
             <article><span>已設定</span><strong>{snapshot.summary.configured}</strong></article>
-            <article><span>不支援／未完成</span><strong>{snapshot.summary.unsupported + snapshot.summary.incomplete}</strong></article>
+            <article><span>不可直接修改</span><strong>{snapshot.rows.filter((row) => !row.editable).length}</strong></article>
           </div>
           <div className="business-pricing-filters" role="group" aria-label="B2B 價格篩選">
             {FILTERS.map((option) => (
@@ -482,7 +482,7 @@ export default function BusinessPricingAuditPanel({
                   <button type="button" onClick={() => void openEditor(row)} disabled={editLoading}>
                     {row.status === "missing" ? "設定 B2B 價格" : "調整 B2B 價格"}
                   </button>
-                ) : <span className="business-pricing-readonly">唯讀</span>}
+                ) : <span className="business-pricing-readonly">不可直接修改</span>}
               </article>
             ))}
             {visibleRows.length === 0 && <p className="business-pricing-empty">這個篩選沒有商品。</p>}

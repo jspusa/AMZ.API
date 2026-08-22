@@ -41,11 +41,35 @@ function payload(): Record<string, unknown> {
         editable: true,
         reason: "已設定 Amazon Business 價格。",
       },
+      {
+        sellerSku: "FBA-MISSING-READONLY",
+        asin: "B000000003",
+        title: "Missing read-only business price",
+        productType: "OTHER",
+        standardPrice: { amount: 17.99, currencyCode: "USD" },
+        businessPrice: null,
+        businessOfferPresence: "absent",
+        status: "missing",
+        editable: false,
+        reason: "尚未設定 Amazon Business 價格；seller-specific PTD 不支援，因此只提供唯讀。",
+      },
+      {
+        sellerSku: "FBA-CONFIGURED-READONLY",
+        asin: "B000000004",
+        title: "Configured read-only business price",
+        productType: "OTHER",
+        standardPrice: { amount: 29.99, currencyCode: "USD" },
+        businessPrice: { amount: 27.99, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        status: "configured",
+        editable: false,
+        reason: "已設定 Amazon Business 價格；seller-specific PTD 唯讀，因此只提供唯讀。",
+      },
     ],
     summary: {
-      totalFbaSkuCount: 2,
-      configured: 1,
-      missing: 1,
+      totalFbaSkuCount: 4,
+      configured: 2,
+      missing: 2,
       unsupported: 0,
       incomplete: 0,
     },
@@ -60,9 +84,9 @@ describe("FBA business pricing audit renderer", () => {
       "Title with Amazon source\u2028line and zero-width\u200bcharacter";
     const snapshot = parseBusinessPricingAuditSnapshot(source);
     expect(snapshot.summary).toEqual({
-      totalFbaSkuCount: 2,
-      configured: 1,
-      missing: 1,
+      totalFbaSkuCount: 4,
+      configured: 2,
+      missing: 2,
       unsupported: 0,
       incomplete: 0,
     });
@@ -98,11 +122,13 @@ describe("FBA business pricing audit renderer", () => {
   it("filters missing, configured and problem rows without hiding incomplete evidence", () => {
     const rows = parseBusinessPricingAuditSnapshot(payload()).rows;
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "missing")))
-      .toHaveLength(1);
+      .toHaveLength(2);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "configured")))
-      .toHaveLength(1);
+      .toHaveLength(2);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "problem")))
-      .toHaveLength(1);
+      .toHaveLength(2);
+    expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "unsupported")))
+      .toHaveLength(2);
   });
 
   it("renders the audit summary, exact reason and in-place adjustment action", () => {
@@ -115,6 +141,8 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("未設定 B2B 價格");
     expect(markup).toContain("Amazon Business 可用，但尚未設定 B2B 價格。");
     expect(markup).toContain("設定 B2B 價格");
+    expect(markup).toContain("唯讀／不支援");
+    expect(markup).toContain("不可直接修改");
     expect(markup).toContain("先由 Amazon Validation Preview 核對");
   });
 
