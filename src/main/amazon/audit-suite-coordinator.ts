@@ -109,7 +109,8 @@ function safeFailureNotice(error: unknown): string {
 
 export class AuditSuiteCoordinator {
   private readonly jobs = new Map<string, AuditSuiteRuntimeJob>();
-  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly runnerTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly flights = new Map<string, Promise<void>>();
   private readonly runners: AuditSuiteSectionRunners;
   private readonly ttlMs: number;
@@ -169,11 +170,12 @@ export class AuditSuiteCoordinator {
     };
     this.jobs.set(runId, job);
     const timer = setTimeout(() => {
-      this.timers.delete(runId);
+      this.runnerTimers.delete(runId);
       void this.run(job);
     }, 0);
     timer.unref?.();
-    this.timers.set(runId, timer);
+    this.runnerTimers.set(runId, timer);
+    this.scheduleExpiry(job);
     return { run: this.dto(job), reused: false };
   }
 
@@ -247,16 +249,14 @@ export class AuditSuiteCoordinator {
   private async run(job: AuditSuiteRuntimeJob): Promise<void> {
     const runId = job.context.runId;
     if (this.flights.has(runId) || this.jobs.get(runId) !== job) return;
-    const flight = Promise.all([
-      this.runSection(job, "content", this.runners.content),
-      this.runSection(job, "image", this.runners.image),
-      this.runSection(job, "variation", this.runners.variation),
-      this.runSection(job, "subscription", this.runners.subscription),
-      this.runSection(job, "advertising", this.runners.advertising),
-    ]).then(() => undefined).finally(() => {
+    const flight = Promise.all(
+      AUDIT_SUITE_SECTION_IDS.map((id) =>
+        this.runSection(job, id, this.runners[id]),
+      ),
+    ).then(() => undefined).finally(() => {
       job.resources.clear();
       if (this.flights.get(runId) === flight) this.flights.delete(runId);
-      this.scheduleTerminalExpiry(job);
+      this.scheduleExpiry(job);
     });
     this.flights.set(runId, flight);
     await flight;
@@ -293,7 +293,10 @@ export class AuditSuiteCoordinator {
         payload: null,
       } as SnapshotFor<K>;
     }
-    if (this.jobs.get(job.context.runId) !== job) return;
+    if (
+      this.jobs.get(job.context.runId) !== job ||
+      job.progress[id].status !== "running"
+    ) return;
     job.snapshots[id] = snapshot;
     const current = job.progress[id];
     const completedUnits = snapshot.status === "failed"
@@ -397,6 +400,7 @@ export class AuditSuiteCoordinator {
     };
     job.updatedAt = updatedAt;
     job.expiresAt = Date.now() + this.ttlMs;
+    this.scheduleExpiry(job);
   }
 
   private dto(job: AuditSuiteRuntimeJob): AuditSuiteRunDto {
@@ -414,43 +418,80 @@ export class AuditSuiteCoordinator {
   }
 
   private prune(now = Date.now()): void {
-    for (const [runId, job] of this.jobs) {
-      if (terminal(aggregateStatus(job.progress)) && job.expiresAt <= now) {
-        this.deleteJob(runId);
-      }
+    for (const job of [...this.jobs.values()]) {
+      if (job.expiresAt <= now) this.expire(job, now);
     }
   }
 
-  private scheduleTerminalExpiry(job: AuditSuiteRuntimeJob): void {
+  private scheduleExpiry(job: AuditSuiteRuntimeJob): void {
     const runId = job.context.runId;
-    if (
-      this.jobs.get(runId) !== job ||
-      !terminal(aggregateStatus(job.progress))
-    ) {
-      return;
-    }
-    const existing = this.timers.get(runId);
+    if (this.jobs.get(runId) !== job) return;
+    const existing = this.expiryTimers.get(runId);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
-      this.timers.delete(runId);
-      if (
-        this.jobs.get(runId) === job &&
-        terminal(aggregateStatus(job.progress)) &&
-        job.expiresAt <= Date.now()
-      ) {
-        this.deleteJob(runId);
-      } else {
-        this.scheduleTerminalExpiry(job);
-      }
+      this.expiryTimers.delete(runId);
+      this.expire(job, Date.now());
     }, Math.max(0, job.expiresAt - Date.now()));
     timer.unref?.();
-    this.timers.set(runId, timer);
+    this.expiryTimers.set(runId, timer);
+  }
+
+  private failExpiredSection<K extends AuditSuiteSectionId>(
+    job: AuditSuiteRuntimeJob,
+    id: K,
+    notice: string,
+    updatedAt: string,
+  ): void {
+    const current = job.progress[id];
+    if (current.status !== "queued" && current.status !== "running") return;
+    job.snapshots[id] = {
+      ...job.context,
+      status: "failed",
+      fetchedAt: null,
+      notice,
+      payload: null,
+    } as SnapshotFor<K>;
+    job.progress[id] = {
+      ...current,
+      status: "failed",
+      message: notice,
+      updatedAt,
+    };
+  }
+
+  private expire(job: AuditSuiteRuntimeJob, now: number): void {
+    if (this.jobs.get(job.context.runId) !== job) return;
+    if (job.expiresAt > now) {
+      this.scheduleExpiry(job);
+      return;
+    }
+    if (terminal(aggregateStatus(job.progress))) {
+      this.deleteJob(job.context.runId);
+      return;
+    }
+    job.controller.abort();
+    job.resources.clear();
+    this.flights.delete(job.context.runId);
+    const runnerTimer = this.runnerTimers.get(job.context.runId);
+    if (runnerTimer) clearTimeout(runnerTimer);
+    this.runnerTimers.delete(job.context.runId);
+    const notice = "綜合健檢超過安全執行期限，已由 Notebook 鑰匙停止。";
+    const updatedAt = new Date(now).toISOString();
+    for (const id of AUDIT_SUITE_SECTION_IDS) {
+      this.failExpiredSection(job, id, notice, updatedAt);
+    }
+    job.updatedAt = updatedAt;
+    job.expiresAt = now + this.ttlMs;
+    this.scheduleExpiry(job);
   }
 
   private deleteJob(runId: string): void {
-    const timer = this.timers.get(runId);
-    if (timer) clearTimeout(timer);
-    this.timers.delete(runId);
+    const runnerTimer = this.runnerTimers.get(runId);
+    if (runnerTimer) clearTimeout(runnerTimer);
+    this.runnerTimers.delete(runId);
+    const expiryTimer = this.expiryTimers.get(runId);
+    if (expiryTimer) clearTimeout(expiryTimer);
+    this.expiryTimers.delete(runId);
     const job = this.jobs.get(runId);
     this.jobs.delete(runId);
     if (job) {

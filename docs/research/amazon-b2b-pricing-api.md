@@ -1,7 +1,7 @@
 # Amazon Business／B2B 價格的 SP-API 能力研究
 
-日期：2026-08-22
-範圍：Amazon Business 單件 Business Price 與 quantity discounts；僅查 Amazon 官方 SP-API 文件、官方 OpenAPI／JSON schema 與官方 changelog。
+日期：2026-08-23
+範圍：Amazon Business 單件 Business Price 與 quantity discounts；僅查 Amazon 官方 SP-API 文件、OpenAPI／JSON schema、changelog 與 Amazon 官方 Seller 指南。
 限制：本研究未使用 Jasper 的實際 Seller ID、未讀取真實商品，也未送出任何 Amazon 寫入。
 
 ## 結論
@@ -10,6 +10,9 @@
 2. **最適合 AMZ.API 的正式調價路徑是 `patchListingsItem`，不是 Product Pricing、Reports 或舊價格 feed。** Listings Items 可先用 `mode=VALIDATION_PREVIEW` 做零寫入驗證，再送同一份 PATCH；Product Pricing 與 Reports 都只能讀；`JSON_LISTINGS_FEED` 可批次寫，但沒有 Listings Items 同等的同步、逐 SKU、零寫入 Validation Preview。[Validation Preview changelog](https://developer-docs.amazon.com/sp-api/changelog/update-listings-items-api-v2021-08-01-now-supports-previewing-errors) [official JSON feed schema](https://github.com/amzn/selling-partner-api-models/blob/main/schemas/feeds/listings-feed-schema-v2.json)
 3. **判定「沒有 B2B 價格」不能只看一次 API 空值。** 只有在帳號／站點／SKU／ASIN／product type 均精確吻合、seller-specific PTD 明確支援 `B2B`、Listings Items 的 `attributes` 與 `offers` 均完整回應，且沒有相符 B2B offer 時，才可標為 `missing`。權限不足、PTD 不支援、Amazon 回應缺頁／缺欄／重複、FBA 身分衝突或讀取失敗都必須標成 `unsupported` 或 `incomplete`，不可當成沒有設定。
 4. **掃描全站 FBA SKU 應先取得完整 FBA 範圍，再逐 SKU 讀 B2B。** 現有 `GET_MERCHANT_LISTINGS_ALL_DATA` 可提供 SKU／ASIN／`fulfillment-channel`／status 的全 listing 基線，但官方欄位表沒有 Business Price；可再用 FBA Inventory 全頁結果交叉核對。其後以 Listings Items 每批最多 20 個精確 SKU 讀 `attributes,offers,productTypes,summaries,fulfillmentAvailability`。Active／Inventory report 的 B2B 欄位只能加速或交叉核對，不能取代 FBA 範圍與逐 SKU 完整性判定。[Inventory report types](https://developer-docs.amazon.com/sp-api/docs/report-type-values-inventory) [FBA Inventory model](https://github.com/amzn/selling-partner-api-models/blob/main/models/fba-inventory-api-model/fbaInventory.json)
+5. **「5 件 5%、10 件 10%、15 件 15%、20 件 20%」可以用正式 QDP shape 表示。** 應在 exact `B2B` offer 的單一 `quantity_discount_plan` schedule 內使用 `discount_type: "percent"`，並建立四個 `levels`；`lower_bound` 是開始適用的最低件數，`value` 是百分比數字，所以 5% 應送 `5`，不是 `0.05`，也不是折後單價。Amazon 官方 Seller 指南明確區分 percent 與 fixed，且允許最多五階；最終仍須由當下 seller-specific PTD 與 Validation Preview 接受。[Amazon 官方 B2B pricing 指南](https://sell.amazon.com/blog/amazon-b2b-prices) [Advanced multiple-offer guide](https://developer-docs.amazon.com/sp-api/docs/manage-amazon-haul-advanced-multiple-offer-multiple-fulfillment-use-cases)
+6. **既有「多段」通常是正常 levels，不應誤判成多個價格。** 不同 `audience`／`currency`／`marketplace_id` 的 offer 是正常多 offer；同一個 QDP schedule 內有多個 `levels` 也是正常的 quantity tiers。真正需 fail closed 的是 exact selector 重複、同一欄位出現程式不能證明語義的多個 plan／schedule、selector 缺失，或 seller-specific PTD 不允許該 shape。Amazon PTD 的 `selectors`、`minUniqueItems`／`maxUniqueItems` 才是當下陣列唯一性與數量限制的正式來源，不可把範例的 `[0]` 寫死成全站規則。[Amazon PTD meta-schema](https://developer-docs.amazon.com/sp-api/docs/product-type-definition-meta-schema)
+7. **B2B 價格高於標準價應列為健檢問題。** Amazon 官方說明：Business Price 高於 standard price 時，Business 客戶不會看到該 Business Price，而會看到 standard price。對美國站採「標準價減 USD 1.00」可作為 Jasper 的產品預設，但這是內部修正政策，不是 Amazon 強制公式；只能用 `audience=ALL` 的 canonical `our_price` 作基準，且須先確定 USD、結果大於 0、幣別精度正確、沒有自動定價衝突，再走 Preview／確認／單次 PATCH／回查。[Amazon 官方 Business Discount Insights 指南](https://sell.amazon.com/blog/business-discount-insights) [Pricing attribute mapping](https://developer-docs.amazon.com/sp-api/docs/mapping-product-attributes)
 
 ## API 能力矩陣
 
@@ -71,6 +74,62 @@ Amazon 的 mapping 明確對應如下：[Mapping product attributes](https://dev
 | 第 n 階價格／折扣值 | `.../levels[n]/value` |
 
 實作不可固定假設 `purchasable_offer[0]` 是 B2B，也不可只用 audience 找值；必須同時比對 `audience === "B2B"`、預期 `currency` 與 `marketplace_id`。Amazon 官方範例目前使用 `discount_type: "fixed"`；IVP 範例另出現 `percent`。可用型別、階數、上下限與條件必須以**當下 seller-specific PTD** 為準，不能把官方範例或 report 的五階欄位硬編成全站規則。[Advanced multiple-offer guide](https://developer-docs.amazon.com/sp-api/docs/manage-amazon-haul-advanced-multiple-offer-multiple-fulfillment-use-cases)
+
+### `fixed`／`percent` 與 Business Price 的精確關係
+
+`audience: "B2B"` 的 `our_price[0].schedule[0].value_with_tax` 是單件 Business Price；`quantity_discount_plan` 是掛在**同一個 B2B offer** 下的多件購買規則。Amazon 官方 Seller 指南對兩種 `discount_type` 的定義如下：[Amazon 官方 B2B pricing 指南](https://sell.amazon.com/blog/amazon-b2b-prices) [Amazon 官方 Business Discount Insights 指南](https://sell.amazon.com/blog/business-discount-insights)
+
+| `discount_type` | `levels[].lower_bound` | `levels[].value` | 語義 |
+| --- | --- | --- | --- |
+| `percent` | 這一階開始適用的最低購買件數 | 相對於單件 Business Price 的折扣百分比；`5` 表示 5%，不是 `0.05` | Amazon 依 Business Price 算該階每件價格 |
+| `fixed` | 這一階開始適用的最低購買件數 | 該階的實際每件固定價格 | `value` 是單價，不是減價金額也不是百分比 |
+
+Amazon 的 Seller 指南以 5–9 件、10–24 件等方式說明門檻，因此 `lower_bound` 是含該件數的階段起點，下一個更高門檻開始後改用下一階。每個後續 tier 必須給出更低的每件價格；對 percent 模式即折扣百分比應隨件數上升而增加。Seller Central 可建立最多五階，故四階策略在數量上位於正式 UI 能力範圍內；但實際 API payload 仍必須通過 seller-specific PTD 與 Validation Preview，不能只依部落格範例放行。[Amazon 官方 B2B pricing 指南](https://sell.amazon.com/blog/amazon-b2b-prices) [Retrieve a Product Type Definition](https://developer-docs.amazon.com/sp-api/docs/retrieve-a-product-type-definition)
+
+Jasper 要的 US 預設可正式表示為：
+
+```json
+{
+  "currency": "USD",
+  "audience": "B2B",
+  "marketplace_id": "ATVPDKIKX0DER",
+  "our_price": [
+    { "schedule": [{ "value_with_tax": "<ALL 單件標準價減 1.00>" }] }
+  ],
+  "quantity_discount_plan": [
+    {
+      "schedule": [
+        {
+          "discount_type": "percent",
+          "levels": [
+            { "lower_bound": 5, "value": 5 },
+            { "lower_bound": 10, "value": 10 },
+            { "lower_bound": 15, "value": 15 },
+            { "lower_bound": 20, "value": 20 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+上例的 `our_price` placeholder 只用來表達計算來源；正式 JSON 必須放符合 USD 兩位小數的正數。API 不應把自行算出的各階折後單價寫回 `levels[].value`；percent 模式寫入的是 `5／10／15／20`，實際 tier price 應在 canonical readback 時從 Listings attributes 重新核對，並可用 Product Pricing v0 回傳的 `quantityDiscountPrices[].listingPrice` 作第二讀取證據。Product Pricing 模型將該欄明確定義為「The price at this quantity tier」，但它是讀取面而不是設定 payload。[Product Pricing v0 model](https://github.com/amzn/selling-partner-api-models/blob/main/models/product-pricing-api-model/productPricingV0.json)
+
+若 UI 要做到「跟 Seller Central 一樣可填幾件折幾%」，一般 percent editor 可接受 1–5 個動態 tier，並在前台增刪門檻；「套用預設」才產生上述固定四階。使用者本次要求的是 percent，故第一版可只讓 `percent` 可編輯，把既有 `fixed` plan 完整顯示但保持唯讀；若也開放 fixed，欄位必須明確改稱「每件固定價」，不能仍標成「折扣 %」。Amazon 官方 UI 同時提供 `% off` 與 `Fixed Price`，最多五個 thresholds。[Amazon 官方 B2B pricing 指南](https://sell.amazon.com/blog/amazon-b2b-prices)
+
+### 多 offer、多 plan、多 schedule 與多 levels 的判讀
+
+| Amazon 回傳形狀 | 判讀 | 自動處理 |
+| --- | --- | --- |
+| 多個 `purchasable_offer`，selector tuple 不同 | 正常：可能同時有 `ALL`、`B2B`、IVP 或其他站點／幣別 | 只選 exact `B2B + expected currency + marketplace`；其餘原樣保護 |
+| exact B2B offer 的一個 plan／一個 schedule／多個 `levels` | 正常 quantity tiers | 顯示全部 tiers；不得因 `levels.length > 1` 標成歧義 |
+| exact selector tuple 出現兩個以上 offer | 重複且無唯一設定真相 | `incomplete/ambiguous`，禁止建議值、Preview 與 PATCH |
+| `quantity_discount_plan` 有多個 plan，或單一 plan 有多個 schedule | 不能只靠通用文件判斷哪筆是目前／未來有效；實際合法性與限制來自 seller-specific PTD | 保留 raw hash 並標 `ambiguous`；除非程式完整實作 PTD 對應的 schedule 語義，否則禁止一鍵覆寫 |
+| `our_price` 有多個 price block／schedule，或帶程式未理解的時間欄位 | 不是 quantity tiers；可能代表額外價格 schedule | 不取 `[0]` 猜目前價；標 `ambiguous` 並停用修正 |
+| fixed plan 要改成 percent default | 是 discount type 與所有 tiers 的實質變更 | 只能在畫面展示 old fixed → new percent 完整 diff 後明確送 Preview；不得暗中換算 |
+
+Amazon 明定 `purchasable_offer` 由 `audience`、`currency`、`marketplace_id` 唯一識別；offers view 只回每個 audience 的單件價，QDP 細節必須用 `includedData=attributes` 讀取。PTD meta-schema 的 `selectors` 定義陣列物件唯一性，`minUniqueItems`／`maxUniqueItems` 定義可接受的 unique item 數量；因此程式可把多個 levels 視為正常，但不能自行發明多 plan／schedule 的優先順序。[Advanced multiple-offer guide](https://developer-docs.amazon.com/sp-api/docs/manage-amazon-haul-advanced-multiple-offer-multiple-fulfillment-use-cases) [Amazon PTD meta-schema](https://developer-docs.amazon.com/sp-api/docs/product-type-definition-meta-schema)
 
 ### Listings Items 的兩種讀法
 
@@ -174,6 +233,94 @@ PTD 應驗證：
 | `unsupported` | seller-specific PTD 沒有 B2B，或 seller／站點／product type 明確不具資格 | 否 |
 | `incomplete` | 權限、節流、缺頁、缺欄、重複、身分衝突、schema download／checksum 失敗，或來源互相矛盾 | 否；不得假設 missing |
 
+### 「B2B 高於一般售價」的新增健檢判定
+
+一般售價應從 exact `audience=ALL + currency + marketplace_id` 的 canonical `our_price` 讀取；Business Price 應從 exact `audience=B2B + 同幣別 + 同站點` 的 canonical `our_price` 讀取。不能拿 `offers.price`、Product Pricing effective／sale price、`discounted_price`、Buy Box 或報表快照代替這兩個 base price。Amazon 的 attribute mapping 將 `ALL.our_price` 定義為 standard price、`B2B.our_price` 定義為 Business Price，而 `discounted_price` 是另一個有起訖日期的暫時 sale price。[Pricing attribute mapping](https://developer-docs.amazon.com/sp-api/docs/mapping-product-attributes)
+
+建議額外狀態／原因：
+
+| 狀態 | 條件 | US 預設建議 |
+| --- | --- | --- |
+| `configured_ok` | B2B base price 可解析且 `B2B <= ALL` | 不自動改 |
+| `business_price_above_standard` | 兩邊皆為 exact canonical USD，且 `B2B > ALL` | `ALL - 1.00`，但只作 proposed value |
+| `missing` | 已滿足前述完整性條件且沒有 B2B offer | `ALL - 1.00`，但只作 proposed value |
+| `ambiguous/incomplete` | 任一 selector、price schedule、PTD、identity 或來源不唯一 | 不產生預設、不開放修正 |
+
+Amazon 官方說明，Business Price 高於 standard price 時不會向 Business 客戶顯示，客戶會看到 standard price；因此 `business_price_above_standard` 是有實際營運影響的問題，不只是美觀提示。[Amazon 官方 Business Discount Insights 指南](https://sell.amazon.com/blog/business-discount-insights)
+
+`ALL - 1.00` 的自動建議只能在 US／USD 執行，並至少滿足：
+
+1. standard price 為 exact、單一、正值且符合 USD 兩位小數；
+2. standard price 大於 USD 1.00，使結果仍為正；
+3. 結果通過 seller-specific PTD 的最小／最大與條件式限制；
+4. 沒有 `automated_pricing_merchandising_rule_plan` 或其他已知自動定價管理衝突；Amazon 官方說明 Automate Pricing 可管理 Business Price 與 quantity discounts，直接提交 static value 可能之後再被規則改寫；[Amazon 官方 B2B pricing 指南](https://sell.amazon.com/blog/amazon-b2b-prices)
+5. fresh read 時 `ALL`、`B2B`、QDP 與受保護 offer hash 均未漂移。
+
+對非 USD 站點不可把「1 美元」誤翻成減當地貨幣 1 單位；應停用這個預設或另由使用者定義站點政策。`B2B === ALL` 並不符合本次「高於」的條件，若未來想把「沒有任何 Business 優惠」另列提醒，應建立不同 reason，不能偷偷擴大本次規則。
+
+## 可直接實作的 DTO 與 guards
+
+下列 DTO 刻意把「Amazon 原始 shape」、「已證明 canonical 的顯示值」與「待寫入 proposal」分開，避免 renderer 以畫面計算值重建 Amazon payload：
+
+```ts
+type BusinessOfferSelector = Readonly<{
+  audience: "B2B";
+  currency: string;
+  marketplaceId: string;
+}>;
+
+type QuantityDiscountLevel = Readonly<{
+  lowerBound: number; // positive integer
+  value: number;      // percent number or fixed per-unit price
+}>;
+
+type QuantityDiscountPlan = Readonly<{
+  discountType: "percent" | "fixed";
+  levels: readonly QuantityDiscountLevel[];
+  rawHash: string;
+}>;
+
+type BusinessPricingCanonicalSnapshot = Readonly<{
+  selector: BusinessOfferSelector;
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  standardPrice: Money;
+  businessPrice: Money | null;
+  businessOfferPresence: "absent" | "present";
+  quantityPlan: QuantityDiscountPlan | null;
+  quantityPlanPresence: "absent" | "canonical";
+  protectedOffersHash: string;
+  ptdSchemaChecksum: string;
+  fetchedAt: string;
+}>;
+
+type BusinessPricingProposal = Readonly<{
+  expectedStandardPrice: Money;
+  expectedBusinessPrice: Money | null;
+  requestedBusinessPrice: Money;
+  expectedQuantityPlanHash: string | null;
+  requestedQuantityPlan: QuantityDiscountPlan | null;
+  protectedOffersHash: string;
+  ptdSchemaChecksum: string;
+}>;
+```
+
+如果任何 shape 不能 canonicalize，不要以 `null` 冒充「沒有」，而應回另一個 fail-closed union，例如 `BusinessPricingUnresolvedSnapshot { state: "ambiguous" | "incomplete"; reasonCode }`。這可避免多 schedule 被錯當成 missing。
+
+實作 guards：
+
+1. **Exact identity**：Seller SKU、ASIN、marketplace、product type 與三 selector 全部唯一且精確；相同 selector tuple 重複即停止。
+2. **Canonical base price**：`ALL.our_price` 與 `B2B.our_price` 都只在程式完整理解其 price block／schedule 時轉成 `Money`；額外 schedule 或時間欄位不取第一筆猜值。
+3. **PTD validation**：取得帶 current sellerId、單一 marketplace、`LISTING_OFFER_ONLY` 的 schema，核對 MD5 checksum，並用完整 JSON Schema＋Amazon vocabulary 驗證 proposed offer；`editable: true` 只是一個必要 gate，不取代 schema validation。[Retrieve a Product Type Definition](https://developer-docs.amazon.com/sp-api/docs/retrieve-a-product-type-definition) [Amazon PTD meta-schema](https://developer-docs.amazon.com/sp-api/docs/product-type-definition-meta-schema)
+4. **Percent tier policy**：一般自訂 editor 接受 1–5 階；每個 `lower_bound` 必須是正整數、唯一且遞增，每個 percent `value` 必須大於 0 且小於 100、隨門檻遞增。「套用預設」另要求門檻恰為 `5,10,15,20`、value 恰為 `5,10,15,20`。以 Business Price 及幣別精度模擬後，每一階 per-unit price 必須嚴格下降；模擬只作本機 guard，不取代 Amazon Preview。
+5. **Fixed plan 不暗轉**：目前為 `fixed` 時，若使用者要套新 percent defaults，confirmation 必須明示 type 與每一階完整差異；price-only 更新則完全省略 `quantity_discount_plan`，原 plan hash 必須在 commit 前相同。
+6. **Automation conflict**：exact B2B offer 含 automated pricing plan 或讀到其他官方自動定價證據時，不做 silent static overwrite；改列 `managed_by_automation` 或要求先在 Seller Central 處理規則。
+7. **完整 patch hash**：ticket 綁 selector、old ALL/B2B、old/new QDP、PTD checksum、protected offers hash 與 canonical patch hash。即使只改 Business Price，QDP 漂移也必須使 preview 失效。
+8. **Preview strictness**：同一 body 使用 `mode=VALIDATION_PREVIEW&includedData=identifiers,issues`；只接受 exact SKU、exact marketplace identifier、非空 `submissionId`、`status === "VALID"` 且無 `ERROR`。`INVALID` 是明確未接受；缺 status、未知 status、缺 identifier 或壞 issue shape 都是 unknown/fail closed。官方 OpenAPI 定義 Preview 不持久化，且 `VALID` 只會在 Preview 回傳。[Listings Items official model](https://github.com/amzn/selling-partner-api-models/blob/main/models/listings-items-api-model/listingsItems_2021-08-01.json)
+9. **Native confirmation**：顯示 `ALL` 標準價、舊／新 B2B base price、舊／新 discount type 與四個 tiers；不得只顯示「更新價格」。
+10. **Commit/readback**：native confirmation 後再 fresh read＋PTD＋Preview；單次 PATCH 回 `ACCEPTED` 只代表 Amazon 已接受處理，不能當成功。bounded readback 必須核對 exact B2B base、四個 percent levels、`ALL` 與其他 audiences 未變；`offers` view 只能佐證單件價，QDP 必須以 `attributes` 回讀。timeout、429、5xx、缺 status 或 readback mismatch 均標 unknown，不 blind retry。[Advanced multiple-offer guide](https://developer-docs.amazon.com/sp-api/docs/manage-amazon-haul-advanced-multiple-offer-multiple-fulfillment-use-cases) [Listings Items official model](https://github.com/amzn/selling-partner-api-models/blob/main/models/listings-items-api-model/listingsItems_2021-08-01.json)
+
 ## 正式寫入協定
 
 ### Payload
@@ -202,7 +349,50 @@ PTD 應驗證：
 }
 ```
 
+程式碼區塊中的 `productType: "PRODUCT"` 是 Amazon 官方 offer 範例使用的通用值，不是 AMZ.API 可硬編的常數；AMZ.API 應沿用 fresh Listings identity 的 exact product type，並用同一 product type 取得 seller-specific PTD、做 Preview 與 commit。若 fresh identity 的 product type 漂移，舊 proposal 失效。
+
 Amazon 明確保證：PATCH 只更新 selector 相符的 offer，不影響 `ALL` offer。[Advanced multiple-offer guide](https://developer-docs.amazon.com/sp-api/docs/manage-amazon-haul-advanced-multiple-offer-multiple-fulfillment-use-cases)
+
+若該次操作同時明確套用 Jasper 的四階 percent 預設，則同一個 exact B2B selector 的 `merge` value 可同時帶 `our_price` 與 `quantity_discount_plan`：
+
+```json
+{
+  "productType": "PRODUCT",
+  "patches": [
+    {
+      "op": "merge",
+      "path": "/attributes/purchasable_offer",
+      "value": [
+        {
+          "currency": "USD",
+          "audience": "B2B",
+          "marketplace_id": "ATVPDKIKX0DER",
+          "our_price": [
+            { "schedule": [{ "value_with_tax": 19.0 }] }
+          ],
+          "quantity_discount_plan": [
+            {
+              "schedule": [
+                {
+                  "discount_type": "percent",
+                  "levels": [
+                    { "lower_bound": 5, "value": 5 },
+                    { "lower_bound": 10, "value": 10 },
+                    { "lower_bound": 15, "value": 15 },
+                    { "lower_bound": 20, "value": 20 }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+上例的 `19.0` 只是非真實商品的示意值。程式必須從 fresh canonical `ALL` price 計算實際 US proposal，並讓 seller-specific PTD 與 Validation Preview 驗證整個 object。只調 base Business Price 時應省略 `quantity_discount_plan`，讓既有 plan 原樣保留；只有「套用四階預設」這個明確操作才帶新 plan，且 old→new tiers 必須出現在 confirmation 中。[Manage purchasable offer](https://developer-docs.amazon.com/sp-api/docs/manage-purchasable-offer) [Advanced multiple-offer guide](https://developer-docs.amazon.com/sp-api/docs/manage-amazon-haul-advanced-multiple-offer-multiple-fulfillment-use-cases)
 
 若要刪 quantity discounts，可在相同 B2B selector 上 `merge` 並令 `quantity_discount_plan: null`；`our_price` 不能設為 `null`。刪掉整個 B2B offer 需使用 `delete`，但第一版應先停用，直到 seller-specific PTD、Validation Preview 與真實 canary 證明 exact selector delete payload，避免誤刪其他 audience。[Manage purchasable offer](https://developer-docs.amazon.com/sp-api/docs/manage-purchasable-offer)
 
@@ -253,7 +443,10 @@ Validation Preview 的 error code 在 2025 年底曾更新；實作必須泛化�
 - [Amazon B2B pricing changelog](https://developer-docs.amazon.com/sp-api/changelog/update-listings-items-api-v2021-08-01-and-json_listings_feed-now-support-amazon-business-b2b-pricing)
 - [Manage purchasable offer](https://developer-docs.amazon.com/sp-api/docs/manage-purchasable-offer)
 - [Advanced multiple-offer／B2B guide](https://developer-docs.amazon.com/sp-api/docs/manage-amazon-haul-advanced-multiple-offer-multiple-fulfillment-use-cases)
+- [Amazon 官方 B2B prices／quantity discounts 指南](https://sell.amazon.com/blog/amazon-b2b-prices)
+- [Amazon 官方 Business Discount Insights 指南](https://sell.amazon.com/blog/business-discount-insights)
 - [Retrieve a product type definition](https://developer-docs.amazon.com/sp-api/docs/retrieve-a-product-type-definition)
+- [Amazon Product Type Definitions meta-schema](https://developer-docs.amazon.com/sp-api/docs/product-type-definition-meta-schema)
 - [Mapping product attributes](https://developer-docs.amazon.com/sp-api/docs/mapping-product-attributes)
 - [Inventory report types](https://developer-docs.amazon.com/sp-api/docs/report-type-values-inventory)
 - [Validation Preview changelog](https://developer-docs.amazon.com/sp-api/changelog/update-listings-items-api-v2021-08-01-now-supports-previewing-errors)

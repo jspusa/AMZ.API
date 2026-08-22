@@ -181,7 +181,7 @@ describe("content audit Excel", () => {
     expect(familyA).toContain("NEEDS-EDIT");
     expect(familyA).not.toContain("CLEAN-SKU");
     expect(familyB).toContain("FAMILY-B-CHILD");
-    expect(familyB).toContain("單一成分宣稱不一致");
+    expect(familyB).toContain("成分宣稱不一致");
     expect(familyB).toContain("Amazon ingredients");
     expect(familyB).toMatch(/<c r="H2" s="6" t="inlineStr">/u);
     expect(standalone).toContain("STANDALONE-ISSUE");

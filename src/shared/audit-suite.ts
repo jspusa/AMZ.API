@@ -1,14 +1,26 @@
-export const AUDIT_SUITE_SCHEMA_VERSION = 2 as const;
+export const AUDIT_SUITE_SCHEMA_VERSION = 3 as const;
 
-export const AUDIT_SUITE_SECTION_IDS = [
-  "content",
-  "image",
-  "variation",
-  "subscription",
-  "advertising",
-] as const;
+export const AUDIT_SUITE_SECTIONS = Object.freeze([
+  { id: "content", label: "全站文案健檢" },
+  { id: "image", label: "全站圖片健檢" },
+  { id: "aplus", label: "全站 A+ 健檢" },
+  { id: "variation", label: "未綁變體健檢" },
+  { id: "subscription", label: "全站訂閱價格健檢" },
+  { id: "businessPricing", label: "全站 B2B 價格健檢" },
+  { id: "advertising", label: "廣告覆蓋健檢" },
+] as const);
 
-export type AuditSuiteSectionId = typeof AUDIT_SUITE_SECTION_IDS[number];
+export type AuditSuiteSectionId = typeof AUDIT_SUITE_SECTIONS[number]["id"];
+
+export const AUDIT_SUITE_SECTION_IDS: readonly AuditSuiteSectionId[] =
+  Object.freeze(AUDIT_SUITE_SECTIONS.map(({ id }) => id));
+
+export const AUDIT_SUITE_SECTION_COUNT = AUDIT_SUITE_SECTION_IDS.length;
+
+export const AUDIT_SUITE_SECTION_LABELS: Readonly<Record<AuditSuiteSectionId, string>> =
+  Object.freeze(Object.fromEntries(
+    AUDIT_SUITE_SECTIONS.map(({ id, label }) => [id, label]),
+  ) as Record<AuditSuiteSectionId, string>);
 export type AuditSuiteMode = "live" | "demo";
 export type AuditSuiteRunStatus =
   | "queued"

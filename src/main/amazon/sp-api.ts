@@ -256,13 +256,31 @@ export type BusinessPricingCapability = {
   supported: boolean;
   editable: boolean;
   reason: string | null;
+  quantityDiscountsSupported: boolean;
+  quantityDiscountsEditable: boolean;
+  quantityDiscountsReason: string | null;
   schemaChecksum: string | null;
+};
+
+export type BusinessQuantityDiscountLevel = {
+  lowerBound: number;
+  value: number;
+};
+
+export type BusinessQuantityDiscountPlan = {
+  discountType: "percent" | "fixed";
+  levels: BusinessQuantityDiscountLevel[];
 };
 
 export type BusinessPricingListingSnapshot = ListingPriceSnapshot & {
   businessPrice: Money | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
+  businessPricingManagedByAutomation: boolean;
+  quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanHash: string | null;
   businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
   businessPricingCapability: BusinessPricingCapability;
 };
 
@@ -274,7 +292,12 @@ export type BusinessPricingAuditRow = {
   standardPrice: Money | null;
   businessPrice: Money | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
-  status: "configured" | "missing" | "unsupported" | "incomplete";
+  status:
+    | "configured"
+    | "above_standard"
+    | "missing"
+    | "unsupported"
+    | "incomplete";
   editable: boolean;
   reason: string;
 };
@@ -287,6 +310,7 @@ export type BusinessPricingAuditSnapshot = {
   summary: {
     totalFbaSkuCount: number;
     configured: number;
+    aboveStandard: number;
     missing: number;
     unsupported: number;
     incomplete: number;
@@ -783,7 +807,12 @@ export type BusinessPriceValidationResult = {
   standardPrice: Money;
   previousBusinessPrice: Money | null;
   requestedBusinessPrice: Money;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  previousQuantityDiscountPlanHash: string | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
   schemaChecksum: string;
   fbaEvidenceHash: string;
   canonicalPatchHash: string;
@@ -798,6 +827,8 @@ export type BusinessPricePrecommitEvidence = Pick<
   | "asin"
   | "productType"
   | "businessOfferGuardHash"
+  | "businessOfferProtectedHash"
+  | "previousQuantityDiscountPlanHash"
   | "schemaChecksum"
   | "fbaEvidenceHash"
   | "canonicalPatchHash"
@@ -814,7 +845,12 @@ export type BusinessPriceUpdateResult = {
   standardPrice: Money;
   previousBusinessPrice: Money | null;
   requestedBusinessPrice: Money;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  previousQuantityDiscountPlanHash: string | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
   schemaChecksum: string;
   acceptedAt: string;
   submissionId: string | null;
@@ -1066,6 +1102,16 @@ type AmazonPriceSchedule = {
   }>;
 };
 
+type AmazonQuantityDiscountPlan = {
+  schedule?: Array<{
+    discount_type?: string;
+    levels?: Array<{
+      lower_bound?: string | number;
+      value?: string | number;
+    }>;
+  }>;
+};
+
 type AmazonPurchasableOffer = {
   marketplace_id?: string;
   currency?: string;
@@ -1074,7 +1120,7 @@ type AmazonPurchasableOffer = {
   discounted_price?: AmazonPriceSchedule[];
   minimum_seller_allowed_price?: AmazonPriceSchedule[];
   maximum_seller_allowed_price?: AmazonPriceSchedule[];
-  quantity_discount_plan?: unknown;
+  quantity_discount_plan?: AmazonQuantityDiscountPlan[];
   automated_pricing_merchandising_rule_plan?: unknown[];
 };
 
@@ -1341,6 +1387,11 @@ export type UpdateBusinessPriceInput = {
   expectedStandardPrice: number;
   expectedBusinessPrice: number | null;
   newBusinessPrice: number;
+  expectedQuantityDiscountPlanHash?: string | null;
+  quantityDiscountTiers?: Array<{
+    lowerBound: number;
+    percent: number;
+  }>;
 };
 
 export type UpdateListingSalePriceInput = {
@@ -1365,12 +1416,18 @@ const tokenCache = new Map<SpApiRegion, TokenCacheEntry>();
 const tokenRequests = new Map<SpApiRegion, Promise<TokenCacheEntry>>();
 const fbaInboundReadTails = new Map<SpApiRegion, Promise<void>>();
 const fbaInboundLastStartedAt = new Map<SpApiRegion, number>();
+const aplusContentReadTails = new Map<SpApiRegion, Promise<void>>();
+const aplusContentLastStartedAt = new Map<SpApiRegion, number>();
+const aplusContentRequestIntervals = new Map<SpApiRegion, number>();
 let credentialGeneration = 0;
 
 export function invalidateSpApiCredentialCaches(): void {
   credentialGeneration += 1;
   tokenCache.clear();
   tokenRequests.clear();
+  aplusContentReadTails.clear();
+  aplusContentLastStartedAt.clear();
+  aplusContentRequestIntervals.clear();
   clearProductTypeCapabilityCache();
 }
 
@@ -1399,6 +1456,7 @@ type ListingContentAttributeName = typeof CONTENT_TEXT_ATTRIBUTE_NAMES[number];
 export type SpApiOperation =
   | "getListingsItem"
   | "searchListingsItems"
+  | "getAplusContentPublishRecords"
   | "getItemReviewTopics"
   | "getDefinitionsProductType"
   | "patchListingsItemPreview"
@@ -1768,6 +1826,36 @@ function businessOfferGuardHash(
   return createHash("sha256")
     .update(JSON.stringify(protectedOffers))
     .digest("hex");
+}
+
+function businessOfferProtectedHash(
+  offers: readonly AmazonPurchasableOffer[],
+  marketplaceId: MarketplaceId,
+): string {
+  const marketplace = MARKETPLACES[marketplaceId];
+  const protectedOffers = offers
+    .map((offer) => {
+      if (
+        offer.marketplace_id !== marketplaceId ||
+        offer.audience !== "B2B" ||
+        offer.currency !== marketplace.currency
+      ) return offer;
+      const {
+        our_price: _targetBusinessPrice,
+        quantity_discount_plan: _targetQuantityDiscounts,
+        ...protectedOffer
+      } = offer;
+      const protectedFieldNames = Object.keys(protectedOffer).filter(
+        (key) => !["marketplace_id", "audience", "currency"].includes(key),
+      );
+      return protectedFieldNames.length ? protectedOffer : null;
+    })
+    .filter((offer): offer is AmazonPurchasableOffer => offer !== null)
+    .map(canonicalJsonValue)
+    .sort((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right))
+    );
+  return canonicalSha256(protectedOffers);
 }
 
 function parseDiscountedPrice(
@@ -2603,16 +2691,100 @@ function canonicalBusinessStandardPrice(
     : { amount, currencyCode: marketplace.currency };
 }
 
+function canonicalBusinessQuantityDiscountPlan(
+  value: AmazonQuantityDiscountPlan[] | undefined,
+): {
+  plan: BusinessQuantityDiscountPlan | null;
+  presence: "absent" | "canonical" | "ambiguous";
+  hash: string | null;
+} {
+  if (value === undefined) {
+    return { plan: null, presence: "absent", hash: null };
+  }
+  const plan = value[0];
+  const schedule = plan?.schedule?.[0];
+  const levels = schedule?.levels;
+  if (
+    value.length !== 1 ||
+    !isRecord(plan) ||
+    Object.keys(plan).length !== 1 ||
+    !Array.isArray(plan.schedule) ||
+    plan.schedule.length !== 1 ||
+    !isRecord(schedule) ||
+    Object.keys(schedule).some((key) =>
+      key !== "discount_type" && key !== "levels"
+    ) ||
+    (schedule.discount_type !== "percent" &&
+      schedule.discount_type !== "fixed") ||
+    !Array.isArray(levels) ||
+    levels.length < 1 ||
+    levels.length > 5
+  ) {
+    return { plan: null, presence: "ambiguous", hash: null };
+  }
+  const parsedLevels: BusinessQuantityDiscountLevel[] = [];
+  for (const rawLevel of levels) {
+    if (
+      !isRecord(rawLevel) ||
+      Object.keys(rawLevel).length !== 2 ||
+      !("lower_bound" in rawLevel) ||
+      !("value" in rawLevel)
+    ) {
+      return { plan: null, presence: "ambiguous", hash: null };
+    }
+    const lowerBound = finiteNumericValue(rawLevel.lower_bound);
+    const levelValue = finiteNumericValue(rawLevel.value);
+    if (
+      lowerBound === null ||
+      !Number.isSafeInteger(lowerBound) ||
+      lowerBound <= 0 ||
+      levelValue === null ||
+      levelValue <= 0 ||
+      (schedule.discount_type === "percent" && levelValue >= 100)
+    ) {
+      return { plan: null, presence: "ambiguous", hash: null };
+    }
+    const previous = parsedLevels.at(-1);
+    if (
+      previous &&
+      (lowerBound <= previous.lowerBound ||
+        (schedule.discount_type === "percent"
+          ? levelValue <= previous.value
+          : levelValue >= previous.value))
+    ) {
+      return { plan: null, presence: "ambiguous", hash: null };
+    }
+    parsedLevels.push({ lowerBound, value: levelValue });
+  }
+  const canonicalPlan: BusinessQuantityDiscountPlan = {
+    discountType: schedule.discount_type,
+    levels: parsedLevels,
+  };
+  return {
+    plan: canonicalPlan,
+    presence: "canonical",
+    hash: canonicalSha256(canonicalPlan),
+  };
+}
+
 function businessOfferSnapshot(
   payload: AmazonListingItem,
   marketplaceId: MarketplaceId,
 ): Pick<
   BusinessPricingListingSnapshot,
-  "businessPrice" | "businessOfferPresence" | "businessOfferGuardHash"
+  | "businessPrice"
+  | "businessOfferPresence"
+  | "businessPricingManagedByAutomation"
+  | "quantityDiscountPlan"
+  | "quantityDiscountPlanPresence"
+  | "quantityDiscountPlanHash"
+  | "businessOfferGuardHash"
+  | "businessOfferProtectedHash"
 > {
   const marketplace = MARKETPLACES[marketplaceId];
   const allOffers = payload.attributes?.purchasable_offer ?? [];
   const guardHash = businessOfferGuardHash(allOffers, marketplaceId);
+  const protectedHash = businessOfferProtectedHash(allOffers, marketplaceId);
   const businessAttributeOffers = allOffers.filter(
     (offer) => offer.audience === "B2B",
   );
@@ -2626,14 +2798,24 @@ function businessOfferSnapshot(
     return {
       businessPrice: null,
       businessOfferPresence: "ambiguous",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      quantityDiscountPlanHash: null,
       businessOfferGuardHash: guardHash,
+      businessOfferProtectedHash: protectedHash,
     };
   }
   if (marketplaceOffers.length === 0) {
     return {
       businessPrice: null,
       businessOfferPresence: "absent",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "absent",
+      quantityDiscountPlanHash: null,
       businessOfferGuardHash: guardHash,
+      businessOfferProtectedHash: protectedHash,
     };
   }
   if (
@@ -2643,22 +2825,57 @@ function businessOfferSnapshot(
     return {
       businessPrice: null,
       businessOfferPresence: "ambiguous",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      quantityDiscountPlanHash: null,
       businessOfferGuardHash: guardHash,
+      businessOfferProtectedHash: protectedHash,
     };
   }
   const priceBlocks = marketplaceOffers[0].our_price;
+  const automatedPricing = marketplaceOffers[0]
+    .automated_pricing_merchandising_rule_plan;
+  if (automatedPricing !== undefined && !Array.isArray(automatedPricing)) {
+    return {
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      quantityDiscountPlanHash: null,
+      businessOfferGuardHash: guardHash,
+      businessOfferProtectedHash: protectedHash,
+    };
+  }
+  const businessPricingManagedByAutomation = Boolean(
+    automatedPricing?.length,
+  );
   const amount = canonicalSingleBasePriceAmount(priceBlocks);
   if (amount === null) {
     return {
       businessPrice: null,
       businessOfferPresence: "ambiguous",
+      businessPricingManagedByAutomation,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      quantityDiscountPlanHash: null,
       businessOfferGuardHash: guardHash,
+      businessOfferProtectedHash: protectedHash,
     };
   }
+  const quantityDiscount = canonicalBusinessQuantityDiscountPlan(
+    marketplaceOffers[0].quantity_discount_plan,
+  );
   return {
     businessPrice: { amount, currencyCode: marketplace.currency },
     businessOfferPresence: "present",
+    businessPricingManagedByAutomation,
+    quantityDiscountPlan: quantityDiscount.plan,
+    quantityDiscountPlanPresence: quantityDiscount.presence,
+    quantityDiscountPlanHash: quantityDiscount.hash,
     businessOfferGuardHash: guardHash,
+    businessOfferProtectedHash: protectedHash,
   };
 }
 
@@ -2745,8 +2962,47 @@ const productTypeCapabilityCache = new Map<
 >();
 const businessPricingCapabilityCache = new Map<
   string,
-  { expiresAt: number; capability: BusinessPricingCapability }
+  {
+    expiresAt: number;
+    capability: BusinessPricingCapability;
+    schema: JsonRecord;
+  }
 >();
+
+function businessPricingCapabilityCacheKey(
+  generation: number,
+  sellerId: string,
+  marketplaceId: MarketplaceId,
+  productType: string,
+): string {
+  const sellerScope = createHash("sha256")
+    .update(sellerId)
+    .digest("hex")
+    .slice(0, 24);
+  return `${generation}:${sellerScope}:${marketplaceId}:${productType}`;
+}
+
+function cachedBusinessPricingSchema(
+  marketplaceId: MarketplaceId,
+  productType: string,
+  checksum: string,
+): JsonRecord | null {
+  const marketplace = MARKETPLACES[marketplaceId];
+  const sellerId = getSellerId(marketplace.region);
+  if (!sellerId) return null;
+  const cached = businessPricingCapabilityCache.get(
+    businessPricingCapabilityCacheKey(
+      credentialGeneration,
+      sellerId,
+      marketplaceId,
+      productType,
+    ),
+  );
+  return cached && cached.expiresAt > Date.now() &&
+      cached.capability.schemaChecksum === checksum
+    ? cached.schema
+    : null;
+}
 
 function clearProductTypeCapabilityCache(): void {
   productTypeCapabilityCache.clear();
@@ -3152,9 +3408,23 @@ type BusinessOfferSelector = {
 
 type BusinessOfferPriceBranch = {
   offerPath: readonly unknown[];
+  offerSchema: JsonRecord;
   price: unknown;
+  quantityDiscountPlan: unknown;
   selectorProven: boolean;
 };
+
+const BUSINESS_PRICE_ONLY_OFFER_PROPERTIES = [
+  "marketplace_id",
+  "currency",
+  "audience",
+  "our_price",
+] as const;
+
+const BUSINESS_COMBINED_OFFER_PROPERTIES = [
+  ...BUSINESS_PRICE_ONLY_OFFER_PROPERTIES,
+  "quantity_discount_plan",
+] as const;
 
 function newBusinessSchemaTraversal(): BusinessSchemaTraversal {
   return {
@@ -3356,7 +3626,12 @@ function hasBusinessRefSiblings(node: JsonRecord): boolean {
     Object.keys(node).some((key) => !BUSINESS_REF_ANNOTATION_KEYS.has(key));
 }
 
-type BusinessStructuralType = "array" | "object" | "number";
+type BusinessStructuralType =
+  | "array"
+  | "object"
+  | "number"
+  | "integer"
+  | "string";
 
 function businessSchemaAllowsType(
   node: JsonRecord,
@@ -3368,44 +3643,80 @@ function businessSchemaAllowsType(
     types.includes(expected);
 }
 
-function businessSchemaAllowsSingleArrayItem(node: JsonRecord): boolean {
+function businessSchemaAllowsArrayLengthRange(
+  node: JsonRecord,
+  minimumRequested: number,
+  maximumRequested: number,
+): boolean {
+  if (
+    !Number.isSafeInteger(minimumRequested) || minimumRequested < 0 ||
+    !Number.isSafeInteger(maximumRequested) ||
+    maximumRequested < minimumRequested
+  ) return false;
   const minItems = "minItems" in node ? node.minItems : 0;
   const maxItems = "maxItems" in node ? node.maxItems : Number.POSITIVE_INFINITY;
   const minUniqueItems = "minUniqueItems" in node ? node.minUniqueItems : 0;
   const maxUniqueItems = "maxUniqueItems" in node
     ? node.maxUniqueItems
     : Number.POSITIVE_INFINITY;
+  const uniqueItems = "uniqueItems" in node ? node.uniqueItems : false;
   return typeof minItems === "number" && Number.isSafeInteger(minItems) &&
-    minItems >= 0 && minItems <= 1 &&
+    minItems >= 0 && minItems <= minimumRequested &&
     typeof maxItems === "number" &&
     (maxItems === Number.POSITIVE_INFINITY || Number.isSafeInteger(maxItems)) &&
-    maxItems >= 1 &&
+    maxItems >= maximumRequested &&
     typeof minUniqueItems === "number" &&
     Number.isSafeInteger(minUniqueItems) && minUniqueItems >= 0 &&
-    minUniqueItems <= 1 &&
+    minUniqueItems <= minimumRequested &&
     typeof maxUniqueItems === "number" &&
     (maxUniqueItems === Number.POSITIVE_INFINITY ||
-      Number.isSafeInteger(maxUniqueItems)) && maxUniqueItems >= 1;
+      Number.isSafeInteger(maxUniqueItems)) &&
+    maxUniqueItems >= maximumRequested &&
+    typeof uniqueItems === "boolean";
 }
 
-function businessSchemaAllowsSingleObjectProperty(
+function businessSchemaAllowsSingleArrayItem(node: JsonRecord): boolean {
+  return businessSchemaAllowsArrayLengthRange(node, 1, 1);
+}
+
+function businessSchemaAllowsObjectProperties(
   node: JsonRecord,
-  propertyName: string | undefined,
+  propertyNames: readonly string[],
 ): boolean {
-  if (!propertyName) return false;
+  if (
+    propertyNames.length < 1 ||
+    new Set(propertyNames).size !== propertyNames.length
+  ) return false;
   const minProperties = "minProperties" in node ? node.minProperties : 0;
   const maxProperties = "maxProperties" in node
     ? node.maxProperties
     : Number.POSITIVE_INFINITY;
   const required = "required" in node ? node.required : [];
+  const propertyCount = propertyNames.length;
   return typeof minProperties === "number" &&
     Number.isSafeInteger(minProperties) && minProperties >= 0 &&
-    minProperties <= 1 &&
+    minProperties <= propertyCount &&
     typeof maxProperties === "number" &&
     (maxProperties === Number.POSITIVE_INFINITY ||
-      Number.isSafeInteger(maxProperties)) && maxProperties >= 1 &&
+      Number.isSafeInteger(maxProperties)) && maxProperties >= propertyCount &&
+    (!("additionalProperties" in node) ||
+      typeof node.additionalProperties === "boolean") &&
     Array.isArray(required) &&
-    required.every((value) => value === propertyName);
+    required.every((value) =>
+      typeof value === "string" && propertyNames.includes(value)
+    );
+}
+
+function businessOfferAllowsExactProperties(
+  node: JsonRecord,
+  propertyNames: readonly string[],
+): boolean {
+  const properties = isRecord(node.properties) ? node.properties : null;
+  return properties !== null &&
+    propertyNames.every((propertyName) => propertyName in properties) &&
+    businessSchemaAllowsObjectProperties(node, propertyNames) &&
+    (!("additionalProperties" in node) ||
+      typeof node.additionalProperties === "boolean");
 }
 
 // This deliberately small Draft 2019-09 evaluator is used only for the three
@@ -3770,7 +4081,9 @@ function businessOfferPriceBranches(
       : { matches: null, constrained: false };
     found.push({
       offerPath: currentPath,
+      offerSchema: node,
       price: properties?.our_price,
+      quantityDiscountPlan: properties?.quantity_discount_plan,
       selectorProven:
         marketplaceConstraint.matches === true &&
         marketplaceConstraint.constrained &&
@@ -3991,7 +4304,8 @@ function businessSimpleSchemaChain(
   node: unknown,
   traversal: BusinessSchemaTraversal,
   expectedType: BusinessStructuralType,
-  expectedProperty?: string,
+  expectedProperties: readonly string[] = [],
+  expectedArrayLengthRange: readonly [number, number] = [1, 1],
   seenRefs = new Set<string>(),
   depth = 0,
 ): { nodes: JsonRecord[]; safe: boolean } {
@@ -4005,10 +4319,15 @@ function businessSimpleSchemaChain(
   let safe = true;
   if (
     !businessSchemaAllowsType(node, expectedType) ||
-    (expectedType === "array" && !businessSchemaAllowsSingleArrayItem(node)) ||
+    (expectedType === "array" && !businessSchemaAllowsArrayLengthRange(
+      node,
+      expectedArrayLengthRange[0],
+      expectedArrayLengthRange[1],
+    )) ||
     (expectedType === "object" &&
-      !businessSchemaAllowsSingleObjectProperty(node, expectedProperty)) ||
-    (expectedType !== "number" && ("const" in node || "enum" in node)) ||
+      !businessSchemaAllowsObjectProperties(node, expectedProperties)) ||
+    ((expectedType === "array" || expectedType === "object") &&
+      ("const" in node || "enum" in node)) ||
     hasBusinessRefSiblings(node)
   ) {
     traversal.safe = false;
@@ -4042,7 +4361,8 @@ function businessSimpleSchemaChain(
       jsonPointer(root, node.$ref),
       traversal,
       expectedType,
-      expectedProperty,
+      expectedProperties,
+      expectedArrayLengthRange,
       new Set(seenRefs).add(node.$ref),
       depth + 1,
     );
@@ -4058,6 +4378,7 @@ function businessSingleSchemaValue(
   kind: "items" | "property",
   traversal: BusinessSchemaTraversal,
   propertyName?: string,
+  expectedArrayLengthRange: readonly [number, number] = [1, 1],
 ): { value: unknown; nodes: JsonRecord[]; safe: boolean } {
   const expectedType = kind === "items" ? "array" : "object";
   const chain = businessSimpleSchemaChain(
@@ -4065,7 +4386,8 @@ function businessSingleSchemaValue(
     node,
     traversal,
     expectedType,
-    kind === "property" ? propertyName : undefined,
+    kind === "property" && propertyName ? [propertyName] : [],
+    expectedArrayLengthRange,
   );
   const values: unknown[] = [];
   for (const candidate of chain.nodes) {
@@ -4093,6 +4415,78 @@ function businessSingleSchemaValue(
   const safe = chain.safe && values.length === 1;
   if (!safe) traversal.safe = false;
   return { value: values[0], nodes: chain.nodes, safe };
+}
+
+function businessSchemaPropertyValues(
+  root: JsonRecord,
+  node: unknown,
+  traversal: BusinessSchemaTraversal,
+  propertyNames: readonly string[],
+): {
+  values: Readonly<Record<string, unknown>>;
+  nodes: JsonRecord[];
+  safe: boolean;
+} {
+  const chain = businessSimpleSchemaChain(
+    root,
+    node,
+    traversal,
+    "object",
+    propertyNames,
+  );
+  const values = new Map<string, unknown[]>();
+  for (const propertyName of propertyNames) values.set(propertyName, []);
+  for (const candidate of chain.nodes) {
+    if (!isRecord(candidate.properties)) continue;
+    for (const propertyName of propertyNames) {
+      if (propertyName in candidate.properties) {
+        values.get(propertyName)!.push(candidate.properties[propertyName]);
+      }
+    }
+  }
+  const safe = chain.safe && propertyNames.every((propertyName) =>
+    values.get(propertyName)?.length === 1
+  );
+  if (!safe) traversal.safe = false;
+  return {
+    values: Object.fromEntries(propertyNames.map((propertyName) => [
+      propertyName,
+      values.get(propertyName)?.[0],
+    ])),
+    nodes: chain.nodes,
+    safe,
+  };
+}
+
+function businessNumericSchemaAccepts(
+  nodes: readonly JsonRecord[],
+  value: number,
+): boolean {
+  for (const node of nodes) {
+    if ("const" in node && node.const !== value) return false;
+    if ("enum" in node &&
+        (!Array.isArray(node.enum) || !node.enum.includes(value))) return false;
+    for (const [key, predicate] of [
+      ["minimum", (limit: number) => value >= limit],
+      ["exclusiveMinimum", (limit: number) => value > limit],
+      ["maximum", (limit: number) => value <= limit],
+      ["exclusiveMaximum", (limit: number) => value < limit],
+    ] as const) {
+      if (!(key in node)) continue;
+      const limit = node[key];
+      if (typeof limit !== "number" || !Number.isFinite(limit) ||
+          !predicate(limit)) return false;
+    }
+    if ("multipleOf" in node) {
+      const multiple = node.multipleOf;
+      if (typeof multiple !== "number" || !Number.isFinite(multiple) ||
+          multiple <= 0) return false;
+      const quotient = value / multiple;
+      if (Math.abs(quotient - Math.round(quotient)) >
+          Number.EPSILON * Math.max(1, Math.abs(quotient)) * 4) return false;
+    }
+  }
+  return true;
 }
 
 function businessPriceBranchEditable(
@@ -4141,7 +4535,7 @@ function businessPriceBranchEditable(
     valueWithTax.value,
     traversal,
     "number",
-    undefined,
+    [],
   );
   pathNodes.push(...leaf.nodes);
   if (!leaf.safe || !traversal.safe) return false;
@@ -4150,10 +4544,122 @@ function businessPriceBranchEditable(
   return leafFlags.includes(true) && !flags.includes(false);
 }
 
+function businessQuantityDiscountBranchEditable(
+  root: JsonRecord,
+  branch: BusinessOfferPriceBranch,
+  traversal: BusinessSchemaTraversal,
+  proposedLevels: readonly BusinessQuantityDiscountLevel[] = [
+    { lowerBound: 5, value: 5 },
+    { lowerBound: 10, value: 10 },
+    { lowerBound: 15, value: 15 },
+    { lowerBound: 20, value: 20 },
+  ],
+): boolean {
+  if (!branch.selectorProven || !traversal.safe) return false;
+  const pathNodes: JsonRecord[] = branch.offerPath.filter(isRecord);
+  const planItem = businessSingleSchemaValue(
+    root,
+    branch.quantityDiscountPlan,
+    "items",
+    traversal,
+  );
+  pathNodes.push(...planItem.nodes);
+  if (!planItem.safe) return false;
+  const schedule = businessSingleSchemaValue(
+    root,
+    planItem.value,
+    "property",
+    traversal,
+    "schedule",
+  );
+  pathNodes.push(...schedule.nodes);
+  if (!schedule.safe) return false;
+  const scheduleItem = businessSingleSchemaValue(
+    root,
+    schedule.value,
+    "items",
+    traversal,
+  );
+  pathNodes.push(...scheduleItem.nodes);
+  if (!scheduleItem.safe) return false;
+  const scheduleFields = businessSchemaPropertyValues(
+    root,
+    scheduleItem.value,
+    traversal,
+    ["discount_type", "levels"],
+  );
+  pathNodes.push(...scheduleFields.nodes);
+  if (!scheduleFields.safe) return false;
+  const discountType = businessSimpleSchemaChain(
+    root,
+    scheduleFields.values.discount_type,
+    traversal,
+    "string",
+  );
+  pathNodes.push(...discountType.nodes);
+  if (!discountType.safe) return false;
+  const percent = schemaExactStringConstraint(
+    root,
+    scheduleFields.values.discount_type,
+    "percent",
+    traversal,
+  );
+  const percentExplicitlyDeclared = discountType.nodes.some((node) =>
+    node.const === "percent" ||
+    (Array.isArray(node.enum) && node.enum.includes("percent"))
+  );
+  if (percent.matches !== true || !percentExplicitlyDeclared) return false;
+  const levelItem = businessSingleSchemaValue(
+    root,
+    scheduleFields.values.levels,
+    "items",
+    traversal,
+    undefined,
+    [1, 5],
+  );
+  pathNodes.push(...levelItem.nodes);
+  if (!levelItem.safe) return false;
+  const levelFields = businessSchemaPropertyValues(
+    root,
+    levelItem.value,
+    traversal,
+    ["lower_bound", "value"],
+  );
+  pathNodes.push(...levelFields.nodes);
+  if (!levelFields.safe) return false;
+  const lowerBound = businessSimpleSchemaChain(
+    root,
+    levelFields.values.lower_bound,
+    traversal,
+    "integer",
+  );
+  const value = businessSimpleSchemaChain(
+    root,
+    levelFields.values.value,
+    traversal,
+    "number",
+  );
+  pathNodes.push(...lowerBound.nodes, ...value.nodes);
+  if (!lowerBound.safe || !value.safe || !traversal.safe) return false;
+  if (
+    !proposedLevels.every((level) =>
+      businessNumericSchemaAccepts(lowerBound.nodes, level.lowerBound) &&
+      businessNumericSchemaAccepts(value.nodes, level.value)
+    )
+  ) return false;
+  const flags = pathNodes.flatMap(directEditableFlags);
+  const discountFlags = discountType.nodes.flatMap(directEditableFlags);
+  const lowerBoundFlags = lowerBound.nodes.flatMap(directEditableFlags);
+  const valueFlags = value.nodes.flatMap(directEditableFlags);
+  return discountFlags.includes(true) && lowerBoundFlags.includes(true) &&
+    valueFlags.includes(true) && !flags.includes(false);
+}
+
 function businessPricingCapabilityFromSchema(
   schema: JsonRecord,
   checksum: string | null,
   selector: BusinessOfferSelector,
+  proposedQuantityDiscountLevels?: readonly BusinessQuantityDiscountLevel[],
 ): BusinessPricingCapability {
   const traversal = newBusinessSchemaTraversal();
   const attributes = businessOfferAttributeSchemas(schema, traversal);
@@ -4162,6 +4668,10 @@ function businessPricingCapabilityFromSchema(
       supported: false,
       editable: false,
       reason: "Amazon seller-specific PTD 沒有提供 purchasable_offer。",
+      quantityDiscountsSupported: false,
+      quantityDiscountsEditable: false,
+      quantityDiscountsReason:
+        "Amazon seller-specific PTD 沒有提供 quantity_discount_plan。",
       schemaChecksum: checksum,
     };
   }
@@ -4180,6 +4690,10 @@ function businessPricingCapabilityFromSchema(
       editable: false,
       reason:
         "Amazon seller-specific PTD 未提供 B2B audience 或 Business Price 欄位；此帳號／站點／商品類型不可寫入。",
+      quantityDiscountsSupported: false,
+      quantityDiscountsEditable: false,
+      quantityDiscountsReason:
+        "Amazon seller-specific PTD 未提供可唯一選取的 B2B quantity_discount_plan。",
       schemaChecksum: checksum,
     };
   }
@@ -4192,14 +4706,39 @@ function businessPricingCapabilityFromSchema(
   const editable = attributes.safe && traversal.safe && !traversal.exhausted &&
     !rootFlags.includes(false) && !hasUncomposedAttributeConstraint &&
     branches.every((branch) =>
+      businessOfferAllowsExactProperties(
+        branch.offerSchema,
+        BUSINESS_PRICE_ONLY_OFFER_PROPERTIES,
+      ) &&
       businessPriceBranchEditable(schema, branch, traversal)
     ) && traversal.safe && !traversal.exhausted;
+  const quantityDiscountsSupported = branches.every((branch) =>
+    isRecord(branch.quantityDiscountPlan)
+  );
+  const quantityDiscountsEditable = editable && quantityDiscountsSupported &&
+    branches.every((branch) =>
+      businessOfferAllowsExactProperties(
+        branch.offerSchema,
+        BUSINESS_COMBINED_OFFER_PROPERTIES,
+      ) &&
+      businessQuantityDiscountBranchEditable(
+        schema,
+        branch,
+        traversal,
+        proposedQuantityDiscountLevels,
+      )
+    );
   return {
     supported: true,
     editable,
     reason: editable
       ? null
       : "Amazon seller-specific PTD 未能明確證明 B2B 價格可編輯。",
+    quantityDiscountsSupported,
+    quantityDiscountsEditable,
+    quantityDiscountsReason: quantityDiscountsEditable
+      ? null
+      : "Amazon seller-specific PTD 未能明確證明數量折扣可編輯。",
     schemaChecksum: checksum,
   };
 }
@@ -4267,11 +4806,12 @@ async function fetchBusinessPricingCapability(
       { status: 503, code: "LISTINGS_NOT_CONFIGURED" },
     );
   }
-  const sellerScope = createHash("sha256")
-    .update(sellerId)
-    .digest("hex")
-    .slice(0, 24);
-  const cacheKey = `${startedGeneration}:${sellerScope}:${marketplaceId}:${productType}`;
+  const cacheKey = businessPricingCapabilityCacheKey(
+    startedGeneration,
+    sellerId,
+    marketplaceId,
+    productType,
+  );
   const cached = businessPricingCapabilityCache.get(cacheKey);
   if (!options.forceRefresh && cached && cached.expiresAt > Date.now()) {
     return cached.capability;
@@ -4445,6 +4985,7 @@ async function fetchBusinessPricingCapability(
   businessPricingCapabilityCache.set(cacheKey, {
     expiresAt: Date.now() + 15 * 60_000,
     capability,
+    schema,
   });
   return capability;
 }
@@ -6215,9 +6756,13 @@ async function prepareLivePriceUpdate(input: UpdateListingPriceInput): Promise<{
 
 function buildBusinessPricePatch(
   listing: BusinessPricingListingSnapshot,
-  newBusinessPrice: number,
+  input: UpdateBusinessPriceInput,
 ): { productType: string; patches: unknown[] } {
   const marketplace = MARKETPLACES[listing.marketplaceId];
+  const requestedQuantityDiscountPlan = requestedBusinessQuantityDiscountPlan(
+    listing,
+    input,
+  );
   return {
     productType: listing.productType,
     patches: [{
@@ -6227,10 +6772,96 @@ function buildBusinessPricePatch(
         marketplace_id: listing.marketplaceId,
         currency: marketplace.currency,
         audience: "B2B",
-        our_price: [{ schedule: [{ value_with_tax: newBusinessPrice }] }],
+        our_price: [{ schedule: [{ value_with_tax: input.newBusinessPrice }] }],
+        ...(requestedQuantityDiscountPlan
+          ? {
+              quantity_discount_plan: [{
+                schedule: [{
+                  discount_type: "percent",
+                  levels: requestedQuantityDiscountPlan.levels.map((level) => ({
+                    lower_bound: level.lowerBound,
+                    value: level.value,
+                  })),
+                }],
+              }],
+            }
+          : {}),
       }],
     }],
   };
+}
+
+function requestedBusinessQuantityDiscountPlan(
+  listing: BusinessPricingListingSnapshot,
+  input: UpdateBusinessPriceInput,
+): BusinessQuantityDiscountPlan | null {
+  const tiers = input.quantityDiscountTiers;
+  if (tiers === undefined) {
+    if (input.expectedQuantityDiscountPlanHash !== undefined) {
+      throw new SpApiError(
+        "只調整 Business Price 時不可夾帶數量折扣 hash。",
+        { status: 400, code: "INVALID_QUANTITY_DISCOUNT" },
+      );
+    }
+    return null;
+  }
+  if (
+    !listing.businessPricingCapability.quantityDiscountsSupported ||
+    !listing.businessPricingCapability.quantityDiscountsEditable
+  ) {
+    throw new SpApiError(
+      listing.businessPricingCapability.quantityDiscountsReason ||
+        "Amazon seller-specific PTD 未開放 B2B 數量折扣寫入。",
+      { status: 422, code: "BUSINESS_QUANTITY_DISCOUNTS_UNSUPPORTED" },
+    );
+  }
+  if (
+    listing.quantityDiscountPlanPresence === "ambiguous" ||
+    tiers.length < 1 || tiers.length > 5 ||
+    input.expectedQuantityDiscountPlanHash === undefined ||
+    input.expectedQuantityDiscountPlanHash !== listing.quantityDiscountPlanHash
+  ) {
+    throw new SpApiError(
+      "目前數量折扣不明、已改變，或請求未明確綁定舊方案。",
+      { status: 409, code: "QUANTITY_DISCOUNT_CHANGED" },
+    );
+  }
+  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
+  const precision = currencyCode === "JPY" ? 0 : 2;
+  const levels: BusinessQuantityDiscountLevel[] = [];
+  for (const tier of tiers) {
+    const previous = levels.at(-1);
+    if (
+      !Number.isSafeInteger(tier.lowerBound) || tier.lowerBound <= 0 ||
+      !Number.isFinite(tier.percent) || tier.percent <= 0 ||
+      tier.percent >= 100 ||
+      Math.round(tier.percent * 100) / 100 !== tier.percent ||
+      (previous &&
+        (tier.lowerBound <= previous.lowerBound ||
+          tier.percent <= previous.value))
+    ) {
+      throw new SpApiError(
+        "數量折扣必須是 1–5 階；件數為正整數，件數與百分比需嚴格遞增，百分比須大於 0 且小於 100。",
+        { status: 400, code: "INVALID_QUANTITY_DISCOUNT" },
+      );
+    }
+    const unitPrice = Number((
+      input.newBusinessPrice * (1 - tier.percent / 100)
+    ).toFixed(precision));
+    const previousUnitPrice = previous
+      ? Number((
+        input.newBusinessPrice * (1 - previous.value / 100)
+      ).toFixed(precision))
+      : input.newBusinessPrice;
+    if (unitPrice <= 0 || unitPrice >= previousUnitPrice) {
+      throw new SpApiError(
+        "數量折扣依站點幣別精度換算後，必須逐階產生更低且大於 0 的單價。",
+        { status: 400, code: "INVALID_QUANTITY_DISCOUNT" },
+      );
+    }
+    levels.push({ lowerBound: tier.lowerBound, value: tier.percent });
+  }
+  return { discountType: "percent", levels };
 }
 
 function verifyBusinessPriceChange(
@@ -6240,7 +6871,12 @@ function verifyBusinessPriceChange(
   standardPrice: Money;
   previousBusinessPrice: Money | null;
   requestedBusinessPrice: Money;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  previousQuantityDiscountPlanHash: string | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
   schemaChecksum: string;
 } {
   const currencyCode = MARKETPLACES[input.marketplaceId].currency;
@@ -6296,6 +6932,16 @@ function verifyBusinessPriceChange(
       code: "BUSINESS_PRICE_AMBIGUOUS",
     });
   }
+  if (listing.businessPricingManagedByAutomation) {
+    throw new SpApiError(
+      "此 B2B contribution 由 Amazon Automate Pricing 管理；為避免 static value 被規則覆蓋，請先在 Seller Central 處理自動定價規則。",
+      { status: 409, code: "BUSINESS_PRICING_MANAGED_BY_AUTOMATION" },
+    );
+  }
+  const requestedQuantityDiscountPlan = requestedBusinessQuantityDiscountPlan(
+    listing,
+    input,
+  );
   if (listing.businessOfferPresence === "absent") {
     if (input.expectedBusinessPrice !== null) {
       throw new SpApiError("目前尚未設定 B2B 價格，舊值核對不一致。", {
@@ -6319,12 +6965,17 @@ function verifyBusinessPriceChange(
         code: "BUSINESS_PRICE_CHANGED",
       });
     }
-    if (samePrice(
+    const sameBusinessPrice = samePrice(
       listing.businessPrice.amount,
       input.newBusinessPrice,
       currencyCode,
-    )) {
-      throw new SpApiError("新 Business Price 與目前價格相同。", {
+    );
+    const sameQuantityDiscountPlan = requestedQuantityDiscountPlan !== null &&
+      canonicalSha256(requestedQuantityDiscountPlan) ===
+        listing.quantityDiscountPlanHash;
+    if (sameBusinessPrice &&
+        (!requestedQuantityDiscountPlan || sameQuantityDiscountPlan)) {
+      throw new SpApiError("新 B2B contribution 與目前價格及數量折扣相同。", {
         status: 400,
         code: "BUSINESS_PRICE_UNCHANGED",
       });
@@ -6337,7 +6988,15 @@ function verifyBusinessPriceChange(
       amount: input.newBusinessPrice,
       currencyCode,
     },
+    previousQuantityDiscountPlan: listing.quantityDiscountPlan,
+    previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
+    requestedQuantityDiscountPlan: requestedQuantityDiscountPlan ??
+      listing.quantityDiscountPlan,
+    quantityDiscountPlanChange: requestedQuantityDiscountPlan
+      ? "replace"
+      : "preserve",
     businessOfferGuardHash: listing.businessOfferGuardHash,
+    businessOfferProtectedHash: listing.businessOfferProtectedHash,
     schemaChecksum: listing.businessPricingCapability.schemaChecksum,
   };
 }
@@ -6364,6 +7023,8 @@ function businessPricePrecommitEvidence(
     asin: listing.asin,
     productType: listing.productType,
     businessOfferGuardHash: listing.businessOfferGuardHash,
+    businessOfferProtectedHash: listing.businessOfferProtectedHash,
+    previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
     schemaChecksum,
     fbaEvidenceHash: canonicalSha256(
       listing.fulfillmentAvailability
@@ -6395,6 +7056,9 @@ function assertBusinessPricePrecommitEvidence(
     actual.asin !== expected.asin ||
     actual.productType !== expected.productType ||
     actual.businessOfferGuardHash !== expected.businessOfferGuardHash ||
+    actual.businessOfferProtectedHash !== expected.businessOfferProtectedHash ||
+    actual.previousQuantityDiscountPlanHash !==
+      expected.previousQuantityDiscountPlanHash ||
     actual.schemaChecksum !== expected.schemaChecksum ||
     actual.fbaEvidenceHash !== expected.fbaEvidenceHash ||
     actual.canonicalPatchHash !== expected.canonicalPatchHash ||
@@ -6415,7 +7079,12 @@ async function prepareLiveBusinessPriceUpdate(
   standardPrice: Money;
   previousBusinessPrice: Money | null;
   requestedBusinessPrice: Money;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  previousQuantityDiscountPlanHash: string | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
+  businessOfferProtectedHash: string;
   schemaChecksum: string;
   body: { productType: string; patches: unknown[] };
   issues: ListingIssue[];
@@ -6425,7 +7094,36 @@ async function prepareLiveBusinessPriceUpdate(
     forceCapabilityRefresh: true,
   });
   const verified = verifyBusinessPriceChange(listing, input);
-  const body = buildBusinessPricePatch(listing, input.newBusinessPrice);
+  if (verified.quantityDiscountPlanChange === "replace") {
+    const schema = cachedBusinessPricingSchema(
+      input.marketplaceId,
+      listing.productType,
+      verified.schemaChecksum,
+    );
+    if (!schema || !verified.requestedQuantityDiscountPlan) {
+      throw new SpApiError(
+        "Amazon seller-specific PTD 證據無法核對自訂數量折扣，已停止預檢。",
+        { status: 502, code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE" },
+      );
+    }
+    const proposalCapability = businessPricingCapabilityFromSchema(
+      schema,
+      verified.schemaChecksum,
+      {
+        audience: "B2B",
+        marketplaceId: input.marketplaceId,
+        currencyCode: MARKETPLACES[input.marketplaceId].currency,
+      },
+      verified.requestedQuantityDiscountPlan.levels,
+    );
+    if (!proposalCapability.quantityDiscountsEditable) {
+      throw new SpApiError(
+        "自訂數量折扣不符合 exact B2B seller-specific PTD 的件數或折扣數值限制。",
+        { status: 422, code: "INVALID_QUANTITY_DISCOUNT" },
+      );
+    }
+  }
+  const body = buildBusinessPricePatch(listing, input);
   const response = await executeListingsRequest({
     marketplaceId: input.marketplaceId,
     sellerSku: input.sellerSku,
@@ -8823,6 +9521,10 @@ function buildDemoOrders(marketplaceId: MarketplaceId): DashboardOrder[] {
 
 const demoPriceOverrides = new Map<string, number>();
 const demoBusinessPriceOverrides = new Map<string, number>();
+const demoBusinessQuantityDiscountOverrides = new Map<
+  string,
+  BusinessQuantityDiscountPlan
+>();
 const demoSalePriceOverrides = new Map<
   string,
   { amount: number; startAt: string; endAt: string } | null
@@ -9577,17 +10279,43 @@ export async function getBusinessPricing(input: {
   if (shouldUseDemoMode(input.marketplaceId)) {
     const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
     const amount = demoBusinessPriceAmount(listing);
+    const quantityDiscountPlan = demoBusinessQuantityDiscountOverrides.get(
+      demoPriceKey(input.marketplaceId, input.sellerSku),
+    ) ?? null;
+    const demoOffers: AmazonPurchasableOffer[] = amount
+      ? [{
+          marketplace_id: input.marketplaceId,
+          currency: MARKETPLACES[input.marketplaceId].currency,
+          audience: "B2B",
+          our_price: [{ schedule: [{ value_with_tax: amount }] }],
+          ...(quantityDiscountPlan
+            ? {
+                quantity_discount_plan: [{
+                  schedule: [{
+                    discount_type: quantityDiscountPlan.discountType,
+                    levels: quantityDiscountPlan.levels.map((level) => ({
+                      lower_bound: level.lowerBound,
+                      value: level.value,
+                    })),
+                  }],
+                }],
+              }
+            : {}),
+        }]
+      : [];
+    const business = businessOfferSnapshot({
+      attributes: { purchasable_offer: demoOffers },
+    }, input.marketplaceId);
     return {
       ...listing,
-      businessPrice: amount && listing.standardPrice
-        ? { amount, currencyCode: listing.standardPrice.currencyCode }
-        : null,
-      businessOfferPresence: amount ? "present" : "absent",
-      businessOfferGuardHash: businessOfferGuardHash([], input.marketplaceId),
+      ...business,
       businessPricingCapability: {
         supported: true,
         editable: true,
         reason: null,
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: true,
+        quantityDiscountsReason: null,
         schemaChecksum: "demo-business-pricing-schema",
       },
     };
@@ -9602,6 +10330,7 @@ function summarizeBusinessPricingAudit(
   return {
     totalFbaSkuCount: rows.length,
     configured: rows.filter((row) => row.status === "configured").length,
+    aboveStandard: rows.filter((row) => row.status === "above_standard").length,
     missing: rows.filter((row) => row.status === "missing").length,
     unsupported: rows.filter((row) => row.status === "unsupported").length,
     incomplete: rows.filter((row) => row.status === "incomplete").length,
@@ -9718,8 +10447,27 @@ function completeBusinessPricingAuditRow(input: {
         "Amazon 回傳多個、幣別不符或價格無法解析的 B2B offer，已停止編輯。",
     };
   }
+  if (business.businessPricingManagedByAutomation) {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: business.businessPrice,
+      businessOfferPresence: business.businessOfferPresence,
+      status: "incomplete",
+      editable: false,
+      reason:
+        "此 B2B contribution 由 Amazon Automate Pricing 管理；請先在 Seller Central 處理規則。",
+    };
+  }
   if (!capability.supported || !capability.editable) {
     const configured = business.businessOfferPresence === "present";
+    const aboveStandard = configured && Boolean(
+      listing.standardPrice && business.businessPrice &&
+      business.businessPrice.amount > listing.standardPrice.amount,
+    );
     const capabilityReason = (capability.reason ??
       "Amazon seller-specific PTD 未開放 B2B 價格寫入")
       .replace(/[。．.!！]+$/u, "");
@@ -9731,14 +10479,22 @@ function completeBusinessPricingAuditRow(input: {
       standardPrice: listing.standardPrice,
       businessPrice: business.businessPrice,
       businessOfferPresence: business.businessOfferPresence,
-      status: configured ? "configured" : "missing",
+      status: aboveStandard
+        ? "above_standard"
+        : configured ? "configured" : "missing",
       editable: false,
-      reason: `${configured
-        ? "已設定 Amazon Business 價格"
+      reason: `${aboveStandard
+        ? "Amazon Business 價格高於一般售價"
+        : configured
+          ? "已設定 Amazon Business 價格"
         : "尚未設定 Amazon Business 價格"}；${capabilityReason}，因此只提供唯讀。`,
     };
   }
   const configured = business.businessOfferPresence === "present";
+  const aboveStandard = configured && Boolean(
+    listing.standardPrice && business.businessPrice &&
+    business.businessPrice.amount > listing.standardPrice.amount,
+  );
   return {
     sellerSku: seed.sellerSku,
     asin: seed.asin,
@@ -9747,10 +10503,14 @@ function completeBusinessPricingAuditRow(input: {
     standardPrice: listing.standardPrice,
     businessPrice: business.businessPrice,
     businessOfferPresence: business.businessOfferPresence,
-    status: configured ? "configured" : "missing",
+    status: aboveStandard
+      ? "above_standard"
+      : configured ? "configured" : "missing",
     editable: true,
-    reason: configured
-      ? "已設定 Amazon Business 價格；seller-specific PTD 允許編輯。"
+    reason: aboveStandard
+      ? "Amazon Business 價格高於一般售價；seller-specific PTD 允許編輯。"
+      : configured
+        ? "已設定 Amazon Business 價格；seller-specific PTD 允許編輯。"
       : "尚未設定 Amazon Business 價格；seller-specific PTD 允許建立。",
   };
 }
@@ -9771,7 +10531,10 @@ export async function getBusinessPricingAuditData(input: {
       });
       const status: BusinessPricingAuditRow["status"] =
         listing.businessOfferPresence === "present"
-          ? "configured"
+          ? listing.standardPrice && listing.businessPrice &&
+              listing.businessPrice.amount > listing.standardPrice.amount
+            ? "above_standard"
+            : "configured"
           : listing.businessOfferPresence === "absent"
             ? "missing"
             : "incomplete";
@@ -9784,8 +10547,11 @@ export async function getBusinessPricingAuditData(input: {
         businessPrice: listing.businessPrice,
         businessOfferPresence: listing.businessOfferPresence,
         status,
-        editable: status === "configured" || status === "missing",
-        reason: status === "configured"
+        editable: status === "configured" || status === "above_standard" ||
+          status === "missing",
+        reason: status === "above_standard"
+          ? "Amazon Business 價格高於一般售價；展示模式不會寫入 Amazon。"
+          : status === "configured"
           ? "已設定 Amazon Business 價格；展示資料不會寫入 Amazon。"
           : status === "missing"
             ? "尚未設定 Amazon Business 價格；展示模式可模擬建立。"
@@ -12037,6 +12803,283 @@ export async function getFbaReviewAuditCandidates(input: {
   });
 }
 
+type AplusContentRequestInput = {
+  marketplaceId: MarketplaceId;
+  asin: string;
+  pageToken?: string;
+  expectedMode: "live" | "demo";
+  forceTokenRefresh?: boolean;
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+};
+
+const APLUS_CONTENT_REQUEST_INTERVAL_MS = 110;
+const APLUS_CONTENT_MAX_CONTROLLED_DELAY_MS = 25 * 60 * 1_000;
+const APLUS_CONTENT_MIN_RATE_LIMIT =
+  1_000 / APLUS_CONTENT_MAX_CONTROLLED_DELAY_MS;
+const APLUS_CONTENT_MAX_RATE_LIMIT = 1_000;
+
+function observeAplusContentRateLimit(
+  region: SpApiRegion,
+  response: Response,
+): void {
+  const rawLimit = response.headers.get("x-amzn-ratelimit-limit")?.trim();
+  if (!rawLimit) return;
+  const requestsPerSecond = Number(rawLimit);
+  if (
+    !Number.isFinite(requestsPerSecond) ||
+    requestsPerSecond < APLUS_CONTENT_MIN_RATE_LIMIT ||
+    requestsPerSecond > APLUS_CONTENT_MAX_RATE_LIMIT
+  ) return;
+  const learnedInterval = Math.ceil(1_000 / requestsPerSecond);
+  if (
+    !Number.isSafeInteger(learnedInterval) ||
+    learnedInterval < 1 ||
+    learnedInterval > APLUS_CONTENT_MAX_CONTROLLED_DELAY_MS
+  ) return;
+  aplusContentRequestIntervals.set(
+    region,
+    Math.max(APLUS_CONTENT_REQUEST_INTERVAL_MS, learnedInterval),
+  );
+}
+
+function aplusContentRetryDelayMs(
+  response: Response,
+  attempt: number,
+  now = Date.now(),
+): number | null {
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  if (retryAfter) {
+    if (/^\d+(?:\.\d+)?$/u.test(retryAfter)) {
+      const seconds = Number(retryAfter);
+      if (
+        !Number.isFinite(seconds) ||
+        seconds > APLUS_CONTENT_MAX_CONTROLLED_DELAY_MS / 1_000
+      ) return null;
+      const delay = Math.ceil(seconds * 1_000);
+      return Number.isSafeInteger(delay) ? delay : null;
+    }
+    const retryAt = Date.parse(retryAfter);
+    if (!Number.isFinite(retryAt)) return null;
+    const delay = Math.max(0, retryAt - now);
+    if (
+      !Number.isSafeInteger(delay) ||
+      delay > APLUS_CONTENT_MAX_CONTROLLED_DELAY_MS
+    ) return null;
+    return delay;
+  }
+  return retryDelayMs(response, attempt);
+}
+
+async function reserveAplusContentReadStart(
+  region: SpApiRegion,
+  signal?: AbortSignal,
+  onControlledWait?: () => void,
+): Promise<void> {
+  const previous = aplusContentReadTails.get(region) ?? Promise.resolve();
+  const turn = previous.catch(() => undefined).then(async () => {
+    assertNotAborted(signal);
+    const lastStartedAt = aplusContentLastStartedAt.get(region) ?? 0;
+    const interval = aplusContentRequestIntervals.get(region) ??
+      APLUS_CONTENT_REQUEST_INTERVAL_MS;
+    const remaining = lastStartedAt + interval - Date.now();
+    if (remaining > 0) {
+      onControlledWait?.();
+      await wait(remaining, signal);
+      assertNotAborted(signal);
+      onControlledWait?.();
+    }
+    assertNotAborted(signal);
+    aplusContentLastStartedAt.set(region, Date.now());
+  });
+  aplusContentReadTails.set(region, turn);
+  try {
+    await turn;
+  } finally {
+    if (aplusContentReadTails.get(region) === turn) {
+      aplusContentReadTails.delete(region);
+    }
+  }
+}
+
+function assertAplusContentMode(
+  marketplaceId: MarketplaceId,
+  expectedMode: "live" | "demo",
+): void {
+  const currentMode = shouldUseDemoMode(marketplaceId) ? "demo" : "live";
+  if (currentMode !== expectedMode) {
+    throw new SpApiError(
+      "App 展示／真實模式已改變，已停止舊 A+ 健檢。",
+      { status: 409, code: "REPORT_MODE_CHANGED" },
+    );
+  }
+}
+
+function assertAplusContentInput(input: AplusContentRequestInput): void {
+  if (!MARKETPLACES[input.marketplaceId] || !/^[A-Z0-9]{10}$/u.test(input.asin)) {
+    throw new SpApiError("A+ 健檢缺少可安全核對的站點或 ASIN。", {
+      status: 409,
+      code: "LISTING_IDENTITY_MISMATCH",
+      operation: "getAplusContentPublishRecords",
+    });
+  }
+  if (
+    input.pageToken !== undefined &&
+    (
+      typeof input.pageToken !== "string" ||
+      input.pageToken.length === 0 ||
+      input.pageToken.length > 2_048 ||
+      input.pageToken !== input.pageToken.trim() ||
+      /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(input.pageToken)
+    )
+  ) {
+    throw new SpApiError("A+ 健檢分頁資訊無法安全辨識。", {
+      status: 409,
+      code: "A_PLUS_PAGINATION_INVALID",
+      operation: "getAplusContentPublishRecords",
+    });
+  }
+}
+
+async function callAplusContentApi(
+  input: AplusContentRequestInput,
+): Promise<Response> {
+  assertNotAborted(input.signal);
+  assertAplusContentInput(input);
+  assertAplusContentMode(input.marketplaceId, input.expectedMode);
+  const marketplace = MARKETPLACES[input.marketplaceId];
+  const token = await requestAccessToken(
+    marketplace.region,
+    input.forceTokenRefresh ?? false,
+  );
+  assertNotAborted(input.signal);
+  assertAplusContentMode(input.marketplaceId, input.expectedMode);
+  await reserveAplusContentReadStart(
+    marketplace.region,
+    input.signal,
+    input.onControlledWait,
+  );
+  assertNotAborted(input.signal);
+  assertAplusContentMode(input.marketplaceId, input.expectedMode);
+  const query = new URLSearchParams({
+    marketplaceId: input.marketplaceId,
+    asin: input.asin,
+  });
+  if (input.pageToken !== undefined) query.set("pageToken", input.pageToken);
+  const controller = new AbortController();
+  const stopForwardingAbort = forwardAbort(controller, input.signal);
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    return await fetch(
+      `${REGION_ENDPOINTS[marketplace.region]}/aplus/2020-11-01/contentPublishRecords?${query}`,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "x-amz-access-token": token,
+          "x-amz-date": toAmzDate(),
+          "user-agent": spApiUserAgent(),
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      },
+    );
+  } catch (error) {
+    assertNotAborted(input.signal);
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new SpApiError("Amazon A+ Content API 回應逾時。", {
+        status: 504,
+        code: "UPSTREAM_UNAVAILABLE",
+        operation: "getAplusContentPublishRecords",
+      });
+    }
+    throw new SpApiError("目前無法連線至 Amazon A+ Content API。", {
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+      operation: "getAplusContentPublishRecords",
+    });
+  } finally {
+    clearTimeout(timeout);
+    stopForwardingAbort();
+  }
+}
+
+async function executeAplusContentRequest(
+  input: AplusContentRequestInput,
+): Promise<Response> {
+  assertNotAborted(input.signal);
+  assertAplusContentMode(input.marketplaceId, input.expectedMode);
+  const region = MARKETPLACES[input.marketplaceId].region;
+  let response = await callAplusContentApi(input);
+  observeAplusContentRateLimit(region, response);
+  assertNotAborted(input.signal);
+  if (response.status === 401) {
+    tokenCache.delete(region);
+    assertAplusContentMode(input.marketplaceId, input.expectedMode);
+    response = await callAplusContentApi({ ...input, forceTokenRefresh: true });
+    observeAplusContentRateLimit(region, response);
+    assertNotAborted(input.signal);
+  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (![429, 500, 503].includes(response.status)) break;
+    const retryDelay = aplusContentRetryDelayMs(response, attempt);
+    if (retryDelay === null) break;
+    if (retryDelay > 0) input.onControlledWait?.();
+    await wait(retryDelay, input.signal);
+    assertNotAborted(input.signal);
+    if (retryDelay > 0) input.onControlledWait?.();
+    assertAplusContentMode(input.marketplaceId, input.expectedMode);
+    response = await callAplusContentApi(input);
+    observeAplusContentRateLimit(region, response);
+    assertNotAborted(input.signal);
+  }
+  return response;
+}
+
+export async function getAplusContentPublishRecordsPage(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  asin: string;
+  pageToken?: string;
+  expectedMode: "live" | "demo";
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+}>): Promise<{
+  status: number;
+  payload: unknown;
+  requestId: string | null;
+}> {
+  assertNotAborted(input.signal);
+  assertAplusContentInput(input);
+  assertAplusContentMode(input.marketplaceId, input.expectedMode);
+  if (input.expectedMode === "demo") {
+    const ordinal = Number(input.asin.at(-1));
+    return {
+      status: 200,
+      payload: {
+        publishRecordList: Number.isFinite(ordinal) && ordinal % 2 === 0
+          ? [{
+              marketplaceId: input.marketplaceId,
+              asin: input.asin,
+              contentReferenceKey: `demo-a-plus-${input.asin}`,
+              contentType: ordinal % 4 === 0 ? "EMC" : "EBC",
+              locale: "en-US",
+            }]
+          : [],
+      },
+      requestId: null,
+    };
+  }
+  const response = await executeAplusContentRequest(input);
+  const payload = response.status === 200
+    ? await parseResponseJson<unknown>(response)
+    : null;
+  return {
+    status: response.status,
+    payload,
+    requestId: response.headers.get("x-amzn-requestid"),
+  };
+}
+
 type CustomerFeedbackRequestInput = {
   marketplaceId: MarketplaceId;
   asin: string;
@@ -13840,6 +14883,7 @@ async function fetchExportRows(
   marketplaceId: MarketplaceId,
   seeds: ListingReportSeed[],
   signal?: AbortSignal,
+  onProgress?: (progress: AllListingsExportProgress) => void | Promise<void>,
 ): Promise<{ rows: ListingExportRow[]; errors: ListingExportError[] }> {
   assertNotAborted(signal);
   const bySku = new Map<string, ListingExportRow>();
@@ -13922,7 +14966,8 @@ async function fetchExportRows(
   }
   if (batch.length) batches.push(batch);
 
-  for (const sellerSkus of batches) {
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const sellerSkus = batches[batchIndex]!;
     assertNotAborted(signal);
     try {
       if (sellerSkus.length === 1 && sellerSkus[0].includes(",")) {
@@ -13967,6 +15012,13 @@ async function fetchExportRows(
             }
             await wait(220, signal);
           }
+          assertNotAborted(signal);
+          await onProgress?.({
+            phase: "listings",
+            completedUnits: batchIndex + 1,
+            totalUnits: batches.length,
+          });
+          assertNotAborted(signal);
           continue;
         }
         if (!response.ok) {
@@ -13996,6 +15048,13 @@ async function fetchExportRows(
       });
     }
     await wait(220, signal);
+    assertNotAborted(signal);
+    await onProgress?.({
+      phase: "listings",
+      completedUnits: batchIndex + 1,
+      totalUnits: batches.length,
+    });
+    assertNotAborted(signal);
   }
 
   const rows = seeds.flatMap((seed) => {
@@ -14043,11 +15102,20 @@ async function fetchExportRows(
   return { rows, errors };
 }
 
+export type AllListingsExportProgress = Readonly<{
+  phase: "report-ready" | "report-downloaded" | "listings";
+  completedUnits: number;
+  totalUnits: number;
+}>;
+
 export async function getAllListingsExportData(input: {
   marketplaceId: MarketplaceId;
   reportId: string;
   documentId: string;
   signal?: AbortSignal;
+  onProgress?: (
+    progress: AllListingsExportProgress,
+  ) => void | Promise<void>;
 }): Promise<{
   rows: ListingExportRow[];
   errors: ListingExportError[];
@@ -14110,6 +15178,12 @@ export async function getAllListingsExportData(input: {
       code: "REPORT_NOT_READY",
     });
   }
+  await input.onProgress?.({
+    phase: "report-ready",
+    completedUnits: 1,
+    totalUnits: 1,
+  });
+  assertNotAborted(input.signal);
   const report = await downloadReportDocument(
     input.marketplaceId,
     input.documentId,
@@ -14117,6 +15191,12 @@ export async function getAllListingsExportData(input: {
   );
   assertNotAborted(input.signal);
   const seeds = parseFbaListingReportSeeds(report);
+  await input.onProgress?.({
+    phase: "report-downloaded",
+    completedUnits: 1,
+    totalUnits: 1,
+  });
+  assertNotAborted(input.signal);
   if (!seeds.length) {
     return {
       rows: [],
@@ -14130,7 +15210,12 @@ export async function getAllListingsExportData(input: {
       fetchedAt: new Date().toISOString(),
     };
   }
-  const result = await fetchExportRows(input.marketplaceId, seeds, input.signal);
+  const result = await fetchExportRows(
+    input.marketplaceId,
+    seeds,
+    input.signal,
+    input.onProgress,
+  );
   assertNotAborted(input.signal);
   return { ...result, fetchedAt: new Date().toISOString() };
 }
@@ -14621,6 +15706,10 @@ export async function getFbaVariationGroupingData(input: {
   marketplaceId: MarketplaceId;
   rows: readonly ListingExportRow[];
   signal?: AbortSignal;
+  onProgress?: (progress: Readonly<{
+    completedBatches: number;
+    totalBatches: number;
+  }>) => void | Promise<void>;
 }): Promise<FbaVariationGroupingData> {
   assertNotAborted(input.signal);
   const sourceBySku = new Map<string, ListingExportRow>();
@@ -14756,6 +15845,11 @@ export async function getFbaVariationGroupingData(input: {
     if (batchIndex + 1 < batches.length) {
       await wait(220, input.signal);
     }
+    assertNotAborted(input.signal);
+    await input.onProgress?.({
+      completedBatches: batchIndex + 1,
+      totalBatches: batches.length,
+    });
     assertNotAborted(input.signal);
   }
 
@@ -15297,7 +16391,7 @@ export async function previewBusinessPriceUpdate(
   if (shouldUseDemoMode(input.marketplaceId)) {
     const listing = await getBusinessPricing(input);
     const verified = verifyBusinessPriceChange(listing, input);
-    const body = buildBusinessPricePatch(listing, input.newBusinessPrice);
+    const body = buildBusinessPricePatch(listing, input);
     const evidence = businessPricePrecommitEvidence(listing, body, []);
     return {
       mode: "demo",
@@ -15322,7 +16416,13 @@ export async function previewBusinessPriceUpdate(
     standardPrice: prepared.standardPrice,
     previousBusinessPrice: prepared.previousBusinessPrice,
     requestedBusinessPrice: prepared.requestedBusinessPrice,
+    previousQuantityDiscountPlan: prepared.previousQuantityDiscountPlan,
+    previousQuantityDiscountPlanHash:
+      prepared.previousQuantityDiscountPlanHash,
+    requestedQuantityDiscountPlan: prepared.requestedQuantityDiscountPlan,
+    quantityDiscountPlanChange: prepared.quantityDiscountPlanChange,
     businessOfferGuardHash: prepared.businessOfferGuardHash,
+    businessOfferProtectedHash: prepared.businessOfferProtectedHash,
     schemaChecksum: prepared.schemaChecksum,
     validatedAt: new Date().toISOString(),
     issues: prepared.issues,
@@ -15339,7 +16439,7 @@ export async function updateBusinessPrice(
   if (shouldUseDemoMode(input.marketplaceId)) {
     const listing = await getBusinessPricing(input);
     const verified = verifyBusinessPriceChange(listing, input);
-    const body = buildBusinessPricePatch(listing, input.newBusinessPrice);
+    const body = buildBusinessPricePatch(listing, input);
     const evidence = businessPricePrecommitEvidence(listing, body, []);
     if (expectedEvidence) {
       assertBusinessPricePrecommitEvidence(evidence, expectedEvidence);
@@ -15348,6 +16448,13 @@ export async function updateBusinessPrice(
       demoPriceKey(input.marketplaceId, input.sellerSku),
       input.newBusinessPrice,
     );
+    if (verified.quantityDiscountPlanChange === "replace" &&
+        verified.requestedQuantityDiscountPlan) {
+      demoBusinessQuantityDiscountOverrides.set(
+        demoPriceKey(input.marketplaceId, input.sellerSku),
+        structuredClone(verified.requestedQuantityDiscountPlan),
+      );
+    }
     return {
       mode: "demo",
       status: "SIMULATED",
@@ -15457,7 +16564,13 @@ export async function updateBusinessPrice(
     standardPrice: prepared.standardPrice,
     previousBusinessPrice: prepared.previousBusinessPrice,
     requestedBusinessPrice: prepared.requestedBusinessPrice,
+    previousQuantityDiscountPlan: prepared.previousQuantityDiscountPlan,
+    previousQuantityDiscountPlanHash:
+      prepared.previousQuantityDiscountPlanHash,
+    requestedQuantityDiscountPlan: prepared.requestedQuantityDiscountPlan,
+    quantityDiscountPlanChange: prepared.quantityDiscountPlanChange,
     businessOfferGuardHash: prepared.businessOfferGuardHash,
+    businessOfferProtectedHash: prepared.businessOfferProtectedHash,
     schemaChecksum: prepared.schemaChecksum,
     acceptedAt: new Date().toISOString(),
     submissionId: payload.submissionId,

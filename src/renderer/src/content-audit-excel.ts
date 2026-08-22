@@ -24,7 +24,7 @@ function issueLabel(kind: ContentAuditIssueKind): string {
   if (kind === "BULLET_BELOW_TARGET") return "產品要點過短";
   if (kind === "BULLET_ABOVE_TARGET") return "產品要點過長";
   if (kind === "DESCRIPTION_BELOW_TARGET") return "產品敘述過短";
-  if (kind === "SINGLE_INGREDIENT_MISMATCH") return "單一成分宣稱不一致";
+  if (kind === "SINGLE_INGREDIENT_MISMATCH") return "成分宣稱不一致";
   return "疑似錯字";
 }
 

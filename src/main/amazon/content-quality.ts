@@ -1,5 +1,5 @@
 import {
-  singleIngredientClaimFindings,
+  contentClaimFindings,
 } from "../../shared/content-claims";
 
 export type ContentQualityIssueKind =
@@ -275,7 +275,7 @@ function auditRow(source: ContentQualitySourceRow): ContentQualityRow {
     }
   }
 
-  issues.push(...singleIngredientClaimFindings({
+  issues.push(...contentClaimFindings({
     title: source.title,
     itemHighlight,
     bulletPoints,

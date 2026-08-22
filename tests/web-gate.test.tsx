@@ -48,6 +48,29 @@ describe("Notebook Key WebGate", () => {
     expect(markup).toContain('rel="noopener noreferrer"');
   });
 
+  it("uses two stable desktop heading rows without nested inline layout", async () => {
+    const markup = renderToStaticMarkup(<WebGate />);
+    const css = await readFile(
+      new URL("../src/renderer/src/app.css", import.meta.url),
+      "utf8",
+    );
+
+    expect(markup).toContain(
+      '<span class="web-gate-heading-line">控制台已就緒。</span>',
+    );
+    expect(markup).toContain(
+      '<span class="web-gate-heading-line web-gate-heading-key">請用 <b>Notebook\u00a0鑰匙</b> 安全開啟。</span>',
+    );
+    const heading = markup.match(/<h1[^>]*>[\s\S]*?<\/h1>/u)?.[0] ?? "";
+    expect(heading).not.toContain("<i");
+    expect(css).toMatch(
+      /\.web-gate-card h1\s*\{[^}]*display:\s*grid;[^}]*row-gap:/s,
+    );
+    expect(css).toMatch(
+      /\.web-gate-heading-line\s*\{[^}]*line-height:\s*1\.2;/s,
+    );
+  });
+
   it("accepts protected download props but disables non-HTTPS values", () => {
     expect(safeNotebookDownloadHref("javascript:alert(1)")).toBeNull();
     expect(safeNotebookDownloadHref("http://example.com/key.exe")).toBeNull();

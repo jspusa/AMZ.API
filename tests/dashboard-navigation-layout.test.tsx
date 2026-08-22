@@ -3,9 +3,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
+  businessPricingAttentionCount,
 } from "../src/renderer/src/components/dashboard";
 
 describe("dashboard top navigation layout", () => {
+  it("counts above-standard B2B prices as home attention", () => {
+    expect(businessPricingAttentionCount({
+      totalFbaSkuCount: 12,
+      configured: 4,
+      aboveStandard: 3,
+      missing: 2,
+      unsupported: 1,
+      incomplete: 2,
+    })).toBe(8);
+  });
+
   it("groups workspaces and injectable reports into four centered dropdowns and removes home tool tiles", async () => {
     const markup = renderToStaticMarkup(
       <Dashboard
@@ -57,9 +69,14 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain('class="content-audit-home-card image-audit-home-card"');
     expect(markup).toContain("全站圖片健檢");
     expect(markup).toContain("開始全站圖片健檢");
+    expect(markup).toContain("全站 A+ 健檢");
+    expect(markup).toContain("開始全站 A+ 健檢");
+    expect(markup).toContain("From the brand 公開 API 無法驗證");
     expect(markup).toContain('<details class="low-frequency-audits">');
     expect(markup).not.toContain('<details class="low-frequency-audits" open=""');
     expect(markup).toContain("低頻健檢");
+    expect(markup).toContain("庫齡與評論不會跟著 7 項一鍵健檢自動執行");
+    expect(markup).not.toContain("庫齡與評論不會跟著五項一鍵健檢自動執行");
     expect(markup).toContain("FBA 180 天以上庫齡健檢");
     expect(markup).toContain("主清單只列已經超過 180 天的 FBA 庫存");
     expect(markup).toContain("estimated excess 預估與費用放在獨立分頁");
@@ -96,6 +113,7 @@ describe("dashboard top navigation layout", () => {
     const orderedAuditCards = [
       "全站文案健檢",
       "全站圖片健檢",
+      "全站 A+ 健檢",
       "未綁變體健檢",
       "全站訂閱價格健檢",
       "全站 B2B 價格健檢",
@@ -117,6 +135,18 @@ describe("dashboard top navigation layout", () => {
       new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
       "utf8",
     );
+    expect(source).toContain("AUDIT_SUITE_SECTION_LABELS");
+    for (const id of [
+      "content",
+      "image",
+      "aplus",
+      "variation",
+      "subscription",
+      "businessPricing",
+      "advertising",
+    ]) {
+      expect(source).toContain(`<h2>{AUDIT_SUITE_SECTION_LABELS.${id}}</h2>`);
+    }
     for (const label of ["文案", "圖片", "變體", "定價", "促銷", "訂閱價格健檢", "B2B 價格健檢", "補貨", "廣告", "帳務"]) {
       expect(source).toContain(`label: "${label}"`);
     }
@@ -144,6 +174,9 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("查看上次評論健檢");
     expect(source).toContain("<BusinessPricingAuditDrawer");
     expect(source).toContain("businessPricingAuditCache");
+    expect(source).toContain("<AplusAuditDrawer");
+    expect(source).toContain("aplusAuditCache");
+    expect(source).toContain('tool === "a-plus" && !connectionEvidence[marketplaceId]');
     expect(source).not.toContain("繼續上次評論健檢");
     expect(source).not.toContain("繼續查看評論健檢");
     expect(source).not.toContain(">⌄</i>");

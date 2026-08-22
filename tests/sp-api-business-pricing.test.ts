@@ -120,7 +120,60 @@ function businessOfferItemSchema(
           },
         },
       },
-      quantity_discount_plan: { type: "array", editable: true },
+      quantity_discount_plan: {
+        type: "array",
+        editable: true,
+        minItems: 0,
+        maxItems: 1,
+        items: {
+          type: "object",
+          properties: {
+            schedule: {
+              type: "array",
+              minItems: 1,
+              maxItems: 1,
+              items: {
+                type: "object",
+                properties: {
+                  discount_type: {
+                    type: "string",
+                    enum: ["fixed", "percent"],
+                    editable: true,
+                  },
+                  levels: {
+                    type: "array",
+                    editable: true,
+                    minItems: 1,
+                    maxItems: 5,
+                    items: {
+                      type: "object",
+                      properties: {
+                        lower_bound: {
+                          type: "integer",
+                          minimum: 1,
+                          editable: true,
+                        },
+                        value: {
+                          type: "number",
+                          exclusiveMinimum: 0,
+                          maximum: 100,
+                          editable: true,
+                        },
+                      },
+                      required: ["lower_bound", "value"],
+                      additionalProperties: false,
+                    },
+                  },
+                },
+                required: ["discount_type", "levels"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["schedule"],
+          additionalProperties: false,
+        },
+      },
     },
   };
 }
@@ -256,6 +309,64 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(definitionUrl?.searchParams.get("marketplaceIds")).toBe(MARKETPLACE_ID);
     expect(definitionUrl?.searchParams.get("requirements")).toBe("LISTING_OFFER_ONLY");
     expect(definitionUrl?.searchParams.get("requirementsEnforced")).toBe("NOT_ENFORCED");
+  });
+
+  it("canonicalizes one quantity-discount schedule with multiple levels", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/")) {
+        const payload = await listingResponse().json() as {
+          attributes: { purchasable_offer: Array<Record<string, unknown>> };
+        };
+        const businessOffer = payload.attributes.purchasable_offer.find(
+          (offer) => offer.audience === "B2B",
+        )!;
+        businessOffer.quantity_discount_plan = [{
+          schedule: [{
+            discount_type: "percent",
+            levels: [
+              { lower_bound: 5, value: 5 },
+              { lower_bound: 10, value: 10 },
+              { lower_bound: 15, value: 15 },
+              { lower_bound: 20, value: 20 },
+            ],
+          }],
+        }];
+        return jsonResponse(200, payload);
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    const snapshot = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+
+    expect(snapshot).toMatchObject({
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+      quantityDiscountPlanHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
   });
 
   it("does not reject explicit B2B attributes when the derived view omits audience", async () => {
@@ -702,6 +813,43 @@ describe("Amazon Business pricing SP-API contract", () => {
     });
   });
 
+  it("fails price-only and combined capability closed when the exact offer requires an unsent property", async () => {
+    const schema = businessSchema() as {
+      properties: {
+        purchasable_offer: {
+          items: {
+            properties: Record<string, unknown>;
+            required?: string[];
+            additionalProperties?: boolean;
+          };
+        };
+      };
+    };
+    const offer = schema.properties.purchasable_offer.items;
+    offer.properties.extra_required = { type: "string" };
+    offer.required = [
+      "audience",
+      "currency",
+      "marketplace_id",
+      "our_price",
+      "extra_required",
+    ];
+    offer.additionalProperties = false;
+    stubBusinessPricingSchema(schema as unknown as Record<string, unknown>);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: {
+        supported: true,
+        editable: false,
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: false,
+      },
+    });
+  });
+
   it("lets an explicit false on the B2B price path override an editable leaf", async () => {
     const schema = businessSchema() as Record<string, unknown> & {
       properties: {
@@ -790,6 +938,184 @@ describe("Amazon Business pricing SP-API contract", () => {
       });
     },
   );
+
+  it("does not treat a shallow QDP array annotation as proof of tier editability", async () => {
+    const offer = businessOfferItemSchema(["B2B"]) as {
+      properties: Record<string, unknown>;
+    };
+    offer.properties.quantity_discount_plan = {
+      type: "array",
+      editable: true,
+    };
+    stubBusinessPricingSchema({
+      type: "object",
+      properties: {
+        purchasable_offer: { type: "array", items: offer },
+      },
+    });
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: {
+        supported: true,
+        editable: true,
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: false,
+      },
+    });
+  });
+
+  it("fails QDP editability closed on a nested read-only leaf", async () => {
+    const schema = businessSchema() as {
+      properties: {
+        purchasable_offer: {
+          items: {
+            properties: {
+              quantity_discount_plan: {
+                items: {
+                  properties: {
+                    schedule: {
+                      items: {
+                        properties: {
+                          levels: {
+                            items: {
+                              properties: {
+                                lower_bound: Record<string, unknown>;
+                              };
+                            };
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    schema.properties.purchasable_offer.items.properties
+      .quantity_discount_plan.items.properties.schedule.items.properties
+      .levels.items.properties.lower_bound.readOnly = true;
+    stubBusinessPricingSchema(schema as unknown as Record<string, unknown>);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: {
+        editable: true,
+        quantityDiscountsEditable: false,
+      },
+    });
+  });
+
+  it("fails QDP editability closed on a schema-valued additionalProperties constraint", async () => {
+    const schema = businessSchema() as {
+      properties: {
+        purchasable_offer: {
+          items: {
+            properties: {
+              quantity_discount_plan: {
+                items: {
+                  properties: {
+                    schedule: {
+                      items: {
+                        properties: {
+                          levels: {
+                            items: Record<string, unknown>;
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    schema.properties.purchasable_offer.items.properties
+      .quantity_discount_plan.items.properties.schedule.items.properties
+      .levels.items.additionalProperties = { type: "string" };
+    stubBusinessPricingSchema(schema as unknown as Record<string, unknown>);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: {
+        editable: true,
+        quantityDiscountsEditable: false,
+      },
+    });
+  });
+
+  it("fails QDP editability closed on an unhandled nested applicator", async () => {
+    const schema = businessSchema() as {
+      properties: {
+        purchasable_offer: {
+          items: {
+            properties: {
+              quantity_discount_plan: {
+                items: {
+                  properties: { schedule: { items: Record<string, unknown> } };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    schema.properties.purchasable_offer.items.properties
+      .quantity_discount_plan.items.properties.schedule.items.if = {
+        properties: { discount_type: { const: "percent" } },
+      };
+    stubBusinessPricingSchema(schema as unknown as Record<string, unknown>);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: {
+        editable: true,
+        quantityDiscountsEditable: false,
+      },
+    });
+  });
+
+  it("proves the complete QDP path through a bounded ref-only schema", async () => {
+    const schema = businessSchema() as Record<string, unknown> & {
+      properties: {
+        purchasable_offer: {
+          items: { properties: Record<string, unknown> };
+        };
+      };
+    };
+    const qdp = schema.properties.purchasable_offer.items.properties
+      .quantity_discount_plan;
+    schema.properties.purchasable_offer.items.properties.quantity_discount_plan = {
+      $ref: "#/$defs/qdp",
+      editable: true,
+    };
+    schema.$defs = { qdp };
+    stubBusinessPricingSchema(schema);
+
+    await expect(getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    })).resolves.toMatchObject({
+      businessPricingCapability: {
+        editable: true,
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: true,
+      },
+    });
+  });
 
   it("does not skip an editable false on an items wrapper", async () => {
     const schema = {
@@ -1920,14 +2246,131 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(snapshot.summary).toEqual({
       totalFbaSkuCount: snapshot.rows.length,
       configured: snapshot.rows.filter((row) => row.status === "configured").length,
+      aboveStandard: snapshot.rows.filter((row) =>
+        row.status === "above_standard"
+      ).length,
       missing: snapshot.rows.filter((row) => row.status === "missing").length,
       unsupported: snapshot.rows.filter((row) => row.status === "unsupported").length,
       incomplete: snapshot.rows.filter((row) => row.status === "incomplete").length,
     });
     expect(snapshot.rows.every((row) =>
       row.reason.length > 0 &&
-      (row.status === "configured" || row.status === "missing") === row.editable
+      (row.status === "configured" || row.status === "above_standard" ||
+        row.status === "missing") === row.editable
     )).toBe(true);
+  });
+
+  it("flags a canonical B2B base price above the canonical standard price", async () => {
+    process.env.SP_API_MODE = "demo";
+    invalidateSpApiCredentialCaches();
+    const initial = await getBusinessPricingAuditData({
+      marketplaceId: MARKETPLACE_ID,
+      reportId: `demo-${MARKETPLACE_ID}`,
+      documentId: `demo-${MARKETPLACE_ID}`,
+    });
+    const configured = initial.rows.find((row) =>
+      row.status === "configured" && row.standardPrice && row.businessPrice
+    );
+    if (!configured?.standardPrice || !configured.businessPrice) {
+      throw new Error("Expected one configured demo B2B listing");
+    }
+    await updateBusinessPrice({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: configured.sellerSku,
+      expectedStandardPrice: configured.standardPrice.amount,
+      expectedBusinessPrice: configured.businessPrice.amount,
+      newBusinessPrice: configured.standardPrice.amount + 1,
+    });
+
+    const audited = await getBusinessPricingAuditData({
+      marketplaceId: MARKETPLACE_ID,
+      reportId: `demo-${MARKETPLACE_ID}`,
+      documentId: `demo-${MARKETPLACE_ID}`,
+    });
+    const row = audited.rows.find((item) =>
+      item.sellerSku === configured.sellerSku
+    );
+
+    expect(row).toMatchObject({
+      status: "above_standard",
+      editable: true,
+      reason: expect.stringMatching(/高於一般售價/u),
+    });
+    expect(audited.summary.aboveStandard).toBe(1);
+  });
+
+  it("round-trips explicit demo tiers while price-only preserves the canonical QDP", async () => {
+    process.env.SP_API_MODE = "demo";
+    invalidateSpApiCredentialCaches();
+    const sellerSku = "AFA-TRKY-4OZ";
+    const before = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+    });
+    if (!before.standardPrice) throw new Error("Expected demo standard price");
+    expect(before.quantityDiscountPlanPresence).toBe("absent");
+    const tiers = [
+      { lowerBound: 5, percent: 5 },
+      { lowerBound: 10, percent: 10 },
+      { lowerBound: 15, percent: 15 },
+      { lowerBound: 20, percent: 20 },
+    ];
+    const firstPrice = Number((before.standardPrice.amount - 1).toFixed(2));
+    await updateBusinessPrice({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+      expectedStandardPrice: before.standardPrice.amount,
+      expectedBusinessPrice: before.businessPrice?.amount ?? null,
+      newBusinessPrice: firstPrice,
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: tiers,
+    });
+    const combined = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+    });
+    expect(combined.quantityDiscountPlan).toEqual({
+      discountType: "percent",
+      levels: tiers.map((tier) => ({
+        lowerBound: tier.lowerBound,
+        value: tier.percent,
+      })),
+    });
+    expect(combined.quantityDiscountPlanPresence).toBe("canonical");
+    expect(combined.quantityDiscountPlanHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(combined.businessOfferGuardHash).not.toBe(
+      before.businessOfferGuardHash,
+    );
+    expect(combined.businessOfferProtectedHash).toBe(
+      before.businessOfferProtectedHash,
+    );
+
+    await updateBusinessPrice({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+      expectedStandardPrice: before.standardPrice.amount,
+      expectedBusinessPrice: firstPrice,
+      newBusinessPrice: Number((before.standardPrice.amount - 2).toFixed(2)),
+    });
+    const priceOnly = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+    });
+    expect(priceOnly.quantityDiscountPlan).toEqual(
+      combined.quantityDiscountPlan,
+    );
+    expect(priceOnly.quantityDiscountPlanHash).toBe(
+      combined.quantityDiscountPlanHash,
+    );
+    await expect(previewBusinessPriceUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+      expectedStandardPrice: before.standardPrice.amount,
+      expectedBusinessPrice: priceOnly.businessPrice!.amount,
+      newBusinessPrice: priceOnly.businessPrice!.amount,
+      expectedQuantityDiscountPlanHash: priceOnly.quantityDiscountPlanHash,
+      quantityDiscountTiers: tiers,
+    })).rejects.toMatchObject({ code: "BUSINESS_PRICE_UNCHANGED" });
   });
 
   it("keeps supported, unsupported, and incomplete live rows distinct", async () => {
@@ -2201,6 +2644,7 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(snapshot.summary).toEqual({
       totalFbaSkuCount: 12,
       configured: 2,
+      aboveStandard: 0,
       missing: 4,
       unsupported: 0,
       incomplete: 6,
@@ -2286,6 +2730,314 @@ describe("Amazon Business pricing SP-API contract", () => {
         }],
       }],
     });
+  });
+
+  it("previews one explicit B2B contribution containing price and percent tiers", async () => {
+    let previewBody: unknown = null;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = urlOf(input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        return listingResponse();
+      }
+      if (
+        url.pathname.startsWith("/listings/2021-08-01/") &&
+        method === "PATCH" &&
+        url.searchParams.get("mode") === "VALIDATION_PREVIEW"
+      ) {
+        previewBody = JSON.parse(String(init?.body));
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "VALID",
+          submissionId: "B2B-PREVIEW-TIERS-1",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
+          issues: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    }));
+    const expectedQuantityDiscountPlanHash = createHash("sha256")
+      .update(JSON.stringify({
+        discountType: "fixed",
+        levels: [{ lowerBound: 5, value: 25 }],
+      }))
+      .digest("hex");
+
+    const result = await previewBusinessPriceUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      expectedStandardPrice: 30,
+      expectedBusinessPrice: 28,
+      newBusinessPrice: 29,
+      expectedQuantityDiscountPlanHash,
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 10, percent: 10 },
+        { lowerBound: 15, percent: 15 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      quantityDiscountPlanChange: "replace",
+      previousQuantityDiscountPlan: {
+        discountType: "fixed",
+        levels: [{ lowerBound: 5, value: 25 }],
+      },
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+    });
+    expect(previewBody).toEqual({
+      productType: "PET_FOOD",
+      patches: [{
+        op: "merge",
+        path: "/attributes/purchasable_offer",
+        value: [{
+          marketplace_id: MARKETPLACE_ID,
+          currency: "USD",
+          audience: "B2B",
+          our_price: [{ schedule: [{ value_with_tax: 29 }] }],
+          quantity_discount_plan: [{
+            schedule: [{
+              discount_type: "percent",
+              levels: [
+                { lower_bound: 5, value: 5 },
+                { lower_bound: 10, value: 10 },
+                { lower_bound: 15, value: 15 },
+                { lower_bound: 20, value: 20 },
+              ],
+            }],
+          }],
+        }],
+      }],
+    });
+  });
+
+  it("rejects custom tiers that violate the exact selected QDP numeric constraints before Amazon Preview", async () => {
+    const schema = businessSchema() as {
+      properties: {
+        purchasable_offer: {
+          items: {
+            properties: {
+              quantity_discount_plan: {
+                items: {
+                  properties: {
+                    schedule: {
+                      items: {
+                        properties: {
+                          levels: {
+                            items: {
+                              properties: {
+                                lower_bound: Record<string, unknown>;
+                                value: Record<string, unknown>;
+                              };
+                            };
+                          };
+                        };
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    const levelProperties = schema.properties.purchasable_offer.items.properties
+      .quantity_discount_plan.items.properties.schedule.items.properties.levels
+      .items.properties;
+    levelProperties.lower_bound.multipleOf = 5;
+    levelProperties.value.multipleOf = 5;
+    const checksum = createHash("md5")
+      .update(JSON.stringify(schema))
+      .digest("base64");
+    let previewCount = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = urlOf(input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, schema);
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        return listingResponse();
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
+        previewCount += 1;
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "VALID",
+          submissionId: "MUST-NOT-PREVIEW",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
+          issues: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    }));
+    const expectedQuantityDiscountPlanHash = createHash("sha256")
+      .update(JSON.stringify({
+        discountType: "fixed",
+        levels: [{ lowerBound: 5, value: 25 }],
+      }))
+      .digest("hex");
+
+    await expect(previewBusinessPriceUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      expectedStandardPrice: 30,
+      expectedBusinessPrice: 28,
+      newBusinessPrice: 29,
+      expectedQuantityDiscountPlanHash,
+      quantityDiscountTiers: [{ lowerBound: 6, percent: 7 }],
+    })).rejects.toMatchObject({
+      code: "INVALID_QUANTITY_DISCOUNT",
+    });
+    expect(previewCount).toBe(0);
+  });
+
+  it("stops a combined tier proposal when the seller-specific PTD does not expose QDP", async () => {
+    const schema = businessSchema() as {
+      properties: {
+        purchasable_offer: {
+          items: { properties: Record<string, unknown> };
+        };
+      };
+    };
+    delete schema.properties.purchasable_offer.items.properties
+      .quantity_discount_plan;
+    const checksum = createHash("md5")
+      .update(JSON.stringify(schema))
+      .digest("base64");
+    let previewCount = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = urlOf(input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, schema);
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        return listingResponse();
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
+        previewCount += 1;
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "VALID",
+          submissionId: "MUST-NOT-PREVIEW",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
+          issues: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    }));
+    const expectedQuantityDiscountPlanHash = createHash("sha256")
+      .update(JSON.stringify({
+        discountType: "fixed",
+        levels: [{ lowerBound: 5, value: 25 }],
+      }))
+      .digest("hex");
+
+    await expect(previewBusinessPriceUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      expectedStandardPrice: 30,
+      expectedBusinessPrice: 28,
+      newBusinessPrice: 29,
+      expectedQuantityDiscountPlanHash,
+      quantityDiscountTiers: [{ lowerBound: 5, percent: 5 }],
+    })).rejects.toMatchObject({
+      code: "BUSINESS_QUANTITY_DISCOUNTS_UNSUPPORTED",
+    });
+    expect(previewCount).toBe(0);
+  });
+
+  it("stops before preview when the exact B2B contribution is automation-managed", async () => {
+    let previewCount = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = urlOf(input);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, businessSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        const payload = await listingResponse().json() as {
+          attributes: { purchasable_offer: Array<Record<string, unknown>> };
+        };
+        payload.attributes.purchasable_offer.find(
+          (offer) => offer.audience === "B2B",
+        )!.automated_pricing_merchandising_rule_plan = [{
+          merchandising_rule_id: "AUTOMATION-RULE",
+        }];
+        return jsonResponse(200, payload);
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
+        previewCount += 1;
+        return jsonResponse(200, { status: "VALID" });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    }));
+
+    const snapshot = await getBusinessPricing({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+    expect(snapshot.businessPricingManagedByAutomation).toBe(true);
+    await expect(previewBusinessPriceUpdate({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      expectedStandardPrice: 30,
+      expectedBusinessPrice: 28,
+      newBusinessPrice: 27,
+    })).rejects.toMatchObject({
+      code: "BUSINESS_PRICING_MANAGED_BY_AUTOMATION",
+    });
+    expect(previewCount).toBe(0);
   });
 
   it.each([
@@ -2394,6 +3146,8 @@ describe("Amazon Business pricing SP-API contract", () => {
       asin: ASIN,
       productType: "PET_FOOD",
       businessOfferGuardHash: "preview-bound-guard-that-no-longer-matches",
+      businessOfferProtectedHash: "preview-protected-offer",
+      previousQuantityDiscountPlanHash: null,
       schemaChecksum: SCHEMA_CHECKSUM,
       fbaEvidenceHash: "preview-fba-evidence",
       canonicalPatchHash: "preview-patch-evidence",

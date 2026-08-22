@@ -13,7 +13,10 @@ import {
   parseAuditSuiteRun,
   storeAuditSuiteRun,
 } from "../src/renderer/src/audit-suite";
-import type { AuditSuiteContext } from "../src/shared/audit-suite";
+import {
+  AUDIT_SUITE_SECTION_IDS,
+  type AuditSuiteContext,
+} from "../src/shared/audit-suite";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const FETCHED_AT = "2026-08-17T00:00:00.000Z";
@@ -52,8 +55,10 @@ function sectionRunners(
   return {
     content: async (context) => completed(context, []),
     image: async (context) => completed(context, []),
+    aplus: async (context) => completed(context, []),
     variation: async (context) => completed(context, []),
     subscription: async (context) => completed(context, []),
+    businessPricing: async (context) => completed(context, []),
     advertising: async (context) => completed(context, []),
     ...overrides,
   } as AuditSuiteSectionRunners;
@@ -83,7 +88,33 @@ describe("AuditSuiteCoordinator run ownership", () => {
     vi.useRealTimers();
   });
 
-  it("does not apply terminal retention to an active section and preserves measured progress", async () => {
+  it("starts every canonical audit section in the same background run", async () => {
+    const startedSections: string[] = [];
+    const runners = Object.fromEntries(AUDIT_SUITE_SECTION_IDS.map((id) => [
+      id,
+      async (context: AuditSuiteContext) => {
+        startedSections.push(id);
+        return completed(context, []);
+      },
+    ])) as unknown as AuditSuiteSectionRunners;
+    const coordinator = new AuditSuiteCoordinator({ runners });
+
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    expect(startedSections).toEqual([...AUDIT_SUITE_SECTION_IDS]);
+    expect(coordinator.get(identity(started.run))).toMatchObject({
+      schemaVersion: 3,
+      status: "completed",
+    });
+  });
+
+  it("renews an active run lease from heartbeat without expiring a legal long scan", async () => {
     let control: AuditSuiteRunControl | null = null;
     let finishAdvertising: (() => void) | null = null;
     const advertisingGate = new Promise<void>((resolve) => {
@@ -108,14 +139,13 @@ describe("AuditSuiteCoordinator run ownership", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(control).not.toBeNull();
 
-    await vi.advanceTimersByTimeAsync(1_600);
-    expect(coordinator.get(identity(started.run)).status).toBe("running");
-
+    await vi.advanceTimersByTimeAsync(600);
     control!.heartbeat({
       message: "正在核對廣告覆蓋（1 / 2）。",
       completedUnits: 1,
       totalUnits: 2,
     });
+    await vi.advanceTimersByTimeAsync(600);
 
     const running = coordinator.get(identity(started.run));
     expect(running.status).toBe("running");
@@ -151,6 +181,47 @@ describe("AuditSuiteCoordinator run ownership", () => {
     await vi.advanceTimersByTimeAsync(999);
     expect(coordinator.get(identity(started.run)).status).toBe("completed");
     await vi.advanceTimersByTimeAsync(2);
+    expect(() => coordinator.get(identity(started.run))).toThrowError(
+      expect.objectContaining<Partial<AuditSuiteCoordinatorError>>({
+        code: "AUDIT_SUITE_EXPIRED",
+      }),
+    );
+  });
+
+  it("watchdogs a stale active run, aborts its control and retains a safe terminal result", async () => {
+    let signal: AbortSignal | null = null;
+    const coordinator = new AuditSuiteCoordinator({
+      ttlMs: 1_000,
+      runners: sectionRunners({
+        advertising: async (_context, control) => {
+          signal = control.signal;
+          return await new Promise<never>(() => undefined);
+        },
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+    expect((signal as AbortSignal | null)?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    const expired = coordinator.get(identity(started.run));
+    expect((signal as AbortSignal | null)?.aborted).toBe(true);
+    expect(expired).toMatchObject({
+      status: "partial",
+      sections: {
+        advertising: {
+          status: "failed",
+          message: "綜合健檢超過安全執行期限，已由 Notebook 鑰匙停止。",
+        },
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(1_001);
     expect(() => coordinator.get(identity(started.run))).toThrowError(
       expect.objectContaining<Partial<AuditSuiteCoordinatorError>>({
         code: "AUDIT_SUITE_EXPIRED",

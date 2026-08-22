@@ -83,6 +83,7 @@ import {
   getListingPrice,
   getBusinessPricing,
   getBusinessPricingAuditData,
+  getAplusContentPublishRecordsPage,
   getRestockPlan,
   getSalesTrend,
   getSalesAndTrafficReportData,
@@ -120,6 +121,7 @@ import {
   type ListingContentSnapshot,
   type BusinessPricingListingSnapshot,
   type BusinessPricePrecommitEvidence,
+  type BusinessPriceValidationResult,
   type ListingContentValidationResult,
   type ListingContentUpdateResult,
   type ListingImageSnapshot,
@@ -138,6 +140,7 @@ import {
   type UpdateBusinessPriceInput,
   type UpdateListingSalePriceInput,
   type UnboundVariationAuditSnapshot,
+  type FbaVariationGroupingData,
   type VariationMoveInput,
 } from "./amazon/sp-api";
 import {
@@ -169,6 +172,7 @@ import {
 } from "./amazon/content-audit-workbook-parser";
 import {
   createAuditSuiteWorkbook,
+  type APlusAuditProblemRow,
   type AdvertisingCoverageAuditRow,
   type AuditSuiteWorkbookInput,
   type ValidatedAuditSuiteSnapshot,
@@ -179,6 +183,20 @@ import {
   createAuditSuiteResourceKey,
   type AuditSuiteRunControl,
 } from "./amazon/audit-suite-coordinator";
+import {
+  buildAplusAuditSeedsFromFbaGrouping,
+  runAplusAudit,
+  type AplusAuditSnapshot,
+  type AplusAuditSeed,
+  type AplusPublishRecordFetchInput,
+} from "./amazon/a-plus-audit";
+import {
+  AplusAuditJobCoordinator,
+  AplusAuditJobCoordinatorError,
+  type AplusAuditJobBoundContext,
+  type AplusAuditJobGateway,
+  type AplusAuditJobMode,
+} from "./amazon/a-plus-audit-job";
 import {
   DurableReportLifecycle,
   type DurableReportGatewayStatus,
@@ -702,6 +720,12 @@ function assertAuditSuiteActive(control: AuditSuiteRunControl): void {
   assertBackgroundActive(control.signal);
 }
 
+function aplusAuditFenceAbort(): Error {
+  const error = new Error("A+ 健檢的帳號、站點或模式 context 已改變。");
+  error.name = "AbortError";
+  return error;
+}
+
 type ImageAuditSnapshot = ReturnType<typeof auditListingImageRows>;
 type AuditSuiteListingsData = Awaited<ReturnType<typeof getAllListingsExportData>>;
 const AUDIT_SUITE_LISTINGS_RESOURCE = createAuditSuiteResourceKey<{
@@ -709,6 +733,12 @@ const AUDIT_SUITE_LISTINGS_RESOURCE = createAuditSuiteResourceKey<{
   documentId: string;
   data: AuditSuiteListingsData;
 }>("audit-suite-verified-listings");
+const AUDIT_SUITE_FBA_GROUPING_RESOURCE = createAuditSuiteResourceKey<{
+  reportId: string;
+  documentId: string;
+  data: AuditSuiteListingsData;
+  grouping: FbaVariationGroupingData;
+}>("audit-suite-fba-relationship-grouping");
 
 function json(value: unknown, status = 200, headers: Record<string, string> = {}): ApiResponse {
   return {
@@ -736,6 +766,9 @@ function bytes(
 }
 
 function apiError(error: unknown, fallback: string): ApiResponse {
+  if (error instanceof AplusAuditJobCoordinatorError) {
+    return json({ code: error.code, message: error.message }, error.status);
+  }
   if (error instanceof AuditSuiteCoordinatorError) {
     return json({ code: error.code, message: error.message }, error.status);
   }
@@ -791,6 +824,46 @@ function suiteSnapshot<TPayload>(input: {
     fetchedAt: input.fetchedAt,
     notice: input.notice,
     payload: input.payload,
+  };
+}
+
+export function buildAplusAuditSuiteResult(
+  snapshot: AplusAuditSnapshot,
+): Readonly<{
+  status: "completed" | "partial";
+  fetchedAt: string;
+  notice: string;
+  payload: readonly APlusAuditProblemRow[];
+}> {
+  const partialPublished = snapshot.rows.filter((row) =>
+    row.status === "published" && row.sourceCompleteness === "partial"
+  );
+  const payload = snapshot.rows
+    .filter((row) => row.status !== "published" || row.sourceCompleteness === "partial")
+    .map((row): APlusAuditProblemRow => ({
+      sellerSku: row.sellerSku,
+      title: row.title,
+      asin: row.asin ?? "",
+      finding: row.status === "published"
+        ? "已找到 A+，但資料範圍未完整"
+        : row.status === "missing"
+          ? "未找到已發布 A+"
+          : row.status === "unavailable"
+            ? "A+ API 權限不可用"
+            : "資料未完成",
+      brandStoryFinding: "公開 API 無法驗證",
+      notice: row.reason,
+    }));
+  const partial = snapshot.summary.incomplete > 0 ||
+    snapshot.summary.unavailable > 0 ||
+    snapshot.rows.some((row) => row.sourceCompleteness === "partial");
+  return {
+    status: partial ? "partial" : "completed",
+    fetchedAt: snapshot.fetchedAt,
+    notice: partialPublished.length
+      ? `${partialPublished.length} 個 SKU 已找到 A+，但資料範圍未完整；保留正向發布證據並列為需揭露。${snapshot.notice}`
+      : snapshot.notice,
+    payload,
   };
 }
 
@@ -1288,6 +1361,7 @@ export class ApiRouter {
   private readonly reportLifecycle: DurableReportLifecycle;
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
+  private readonly aplusAuditJobs: AplusAuditJobCoordinator;
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly listingAttributeWriteReservations = new Map<string, string>();
   private readonly subscriptionAuditSnapshots = new Map<
@@ -1349,6 +1423,7 @@ export class ApiRouter {
     advertisingStrategyWait?: typeof waitMilliseconds;
     inboundShipments?: Partial<InboundShipmentGateway>;
     inboundNoncomplianceReports?: Partial<InboundNoncomplianceReportGateway>;
+    aplusAudit?: Partial<AplusAuditJobGateway>;
     advertising?: AdvertisingGateway;
   }) {
     this.store = input.store;
@@ -1391,12 +1466,33 @@ export class ApiRouter {
       document: getInboundNoncomplianceReportDocument,
       ...input.inboundNoncomplianceReports,
     };
+    this.aplusAuditJobs = new AplusAuditJobCoordinator({
+      gateway: {
+        bindContext: input.aplusAudit?.bindContext ?? ((identity) =>
+          this.bindAplusAuditContext(identity)),
+        loadFbaSeeds: input.aplusAudit?.loadFbaSeeds ?? ((job) =>
+          this.loadAplusAuditFbaSeeds(
+            job.context,
+            job.signal,
+            job.heartbeat,
+          )),
+        fetchPublishRecords: input.aplusAudit?.fetchPublishRecords ?? ((job) =>
+          this.fetchAplusAuditPublishRecords(
+            job.context,
+            job.request,
+            job.heartbeat,
+          )),
+      },
+    });
     this.auditSuite = new AuditSuiteCoordinator({
       runners: {
         content: (context, control) => this.runAuditSuiteContent(context, control),
         image: (context, control) => this.runAuditSuiteImage(context, control),
+        aplus: (context, control) => this.runAuditSuiteAplus(context, control),
         variation: (context, control) => this.runAuditSuiteVariation(context, control),
         subscription: (context, control) => this.runAuditSuiteSubscription(context, control),
+        businessPricing: (context, control) =>
+          this.runAuditSuiteBusinessPricing(context, control),
         advertising: (context, control) => this.runAuditSuiteAdvertising(context, control),
       },
     });
@@ -1404,6 +1500,7 @@ export class ApiRouter {
 
   clearPreviews(): void {
     this.reportLifecycle.clear();
+    this.aplusAuditJobs.clear();
     this.previews.clear();
     this.listingAttributeWriteReservations.clear();
     this.subscriptionAuditSnapshots.clear();
@@ -1603,6 +1700,10 @@ export class ApiRouter {
         return this.startAdvertisingStrategy(request);
       case "GET /api/amazon-ads/strategy":
         return this.advertisingStrategyStatus(request);
+      case "POST /api/sp-api/a-plus-audit":
+        return this.startAplusAudit(request);
+      case "GET /api/sp-api/a-plus-audit":
+        return this.aplusAuditStatus(request);
       case "POST /api/sp-api/audit-suite":
         return this.startAuditSuite(request);
       case "GET /api/sp-api/audit-suite":
@@ -3173,6 +3274,8 @@ export class ApiRouter {
       "expectedStandardPrice",
       "expectedBusinessPrice",
       "newBusinessPrice",
+      "expectedQuantityDiscountPlanHash",
+      "quantityDiscountTiers",
       "idempotencyKey",
     ]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
@@ -3206,12 +3309,89 @@ export class ApiRouter {
         "INVALID_PRICE",
       );
     }
+    const hasExpectedPlanHash = Object.prototype.hasOwnProperty.call(
+      body,
+      "expectedQuantityDiscountPlanHash",
+    );
+    const hasTiers = Object.prototype.hasOwnProperty.call(
+      body,
+      "quantityDiscountTiers",
+    );
+    if (hasExpectedPlanHash !== hasTiers) {
+      return invalid(
+        "數量折扣更新必須同時提供舊方案 hash 與完整 tiers；省略兩者才代表價格-only 並保留原方案。",
+        400,
+        "INVALID_QUANTITY_DISCOUNT",
+      );
+    }
+    let expectedQuantityDiscountPlanHash: string | null | undefined;
+    let quantityDiscountTiers: UpdateBusinessPriceInput["quantityDiscountTiers"];
+    if (hasTiers) {
+      expectedQuantityDiscountPlanHash = body.expectedQuantityDiscountPlanHash ===
+          null
+        ? null
+        : typeof body.expectedQuantityDiscountPlanHash === "string" &&
+            /^[a-f0-9]{64}$/u.test(body.expectedQuantityDiscountPlanHash)
+          ? body.expectedQuantityDiscountPlanHash
+          : undefined;
+      if (
+        expectedQuantityDiscountPlanHash === undefined ||
+        !Array.isArray(body.quantityDiscountTiers) ||
+        body.quantityDiscountTiers.length < 1 ||
+        body.quantityDiscountTiers.length > 5
+      ) {
+        return invalid(
+          "數量折扣必須提供 1–5 階完整方案與可核對的舊方案 hash。",
+          400,
+          "INVALID_QUANTITY_DISCOUNT",
+        );
+      }
+      const parsedTiers: NonNullable<
+        UpdateBusinessPriceInput["quantityDiscountTiers"]
+      > = [];
+      for (const rawTier of body.quantityDiscountTiers) {
+        if (!isPlainRecord(rawTier) ||
+            Object.keys(rawTier).length !== 2 ||
+            !("lowerBound" in rawTier) || !("percent" in rawTier)) {
+          return invalid(
+            "每一階數量折扣只能包含 lowerBound 與 percent。",
+            400,
+            "INVALID_QUANTITY_DISCOUNT",
+          );
+        }
+        const lowerBound = rawTier.lowerBound;
+        const percent = rawTier.percent;
+        const previous = parsedTiers.at(-1);
+        if (
+          !Number.isSafeInteger(lowerBound) || Number(lowerBound) <= 0 ||
+          Number(lowerBound) > 999_999_999 ||
+          typeof percent !== "number" || !Number.isFinite(percent) ||
+          percent <= 0 || percent >= 100 ||
+          Number(percent.toFixed(2)) !== percent ||
+          (previous !== undefined &&
+            (Number(lowerBound) <= previous.lowerBound ||
+              percent <= previous.percent))
+        ) {
+          return invalid(
+            "數量折扣件數與百分比必須合法且逐階嚴格遞增（百分比最多兩位小數）。",
+            400,
+            "INVALID_QUANTITY_DISCOUNT",
+          );
+        }
+        parsedTiers.push({ lowerBound: Number(lowerBound), percent });
+      }
+      quantityDiscountTiers = parsedTiers;
+    }
     return {
       marketplaceId,
       sellerSku,
       expectedStandardPrice,
       expectedBusinessPrice,
       newBusinessPrice,
+      ...(hasTiers ? {
+        expectedQuantityDiscountPlanHash,
+        quantityDiscountTiers,
+      } : {}),
       idempotencyKey: key,
     };
   }
@@ -3226,9 +3406,20 @@ export class ApiRouter {
       input.expectedStandardPrice,
       input.expectedBusinessPrice,
       input.newBusinessPrice,
+      input.quantityDiscountTiers === undefined
+        ? "quantity-discount:preserve"
+        : `quantity-discount:replace:${input.expectedQuantityDiscountPlanHash ?? "absent"}`,
+      input.quantityDiscountTiers === undefined
+        ? null
+        : input.quantityDiscountTiers.map((tier) => [
+          tier.lowerBound,
+          tier.percent,
+        ]),
       evidence.asin,
       evidence.productType,
       evidence.businessOfferGuardHash,
+      evidence.businessOfferProtectedHash,
+      evidence.previousQuantityDiscountPlanHash,
       evidence.schemaChecksum,
       evidence.fbaEvidenceHash,
       evidence.canonicalPatchHash,
@@ -3255,7 +3446,7 @@ export class ApiRouter {
   private async commitBusinessPricing(request: ApiRequest): Promise<ApiResponse> {
     const input = this.businessPricingInput(request);
     if ("status" in input) return input;
-    let evidence: BusinessPricePrecommitEvidence;
+    let evidence: BusinessPriceValidationResult;
     try {
       evidence = await previewBusinessPriceUpdate(input);
     } catch (error) {
@@ -3272,7 +3463,7 @@ export class ApiRouter {
       request.path,
       input.idempotencyKey,
       scoped.fingerprint,
-      `確認 B2B 調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${MARKETPLACES[input.marketplaceId].currency}`,
+      `確認 B2B 調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${MARKETPLACES[input.marketplaceId].currency}｜數量折扣 ${evidence.quantityDiscountPlanChange === "preserve" ? "維持原方案" : `${evidence.previousQuantityDiscountPlan ? `${evidence.previousQuantityDiscountPlan.discountType} ${evidence.previousQuantityDiscountPlan.levels.map((level) => `${level.lowerBound}件=${level.value}`).join("、")}` : "未設定"} → ${evidence.requestedQuantityDiscountPlan?.levels.map((level) => `${level.lowerBound}件=${level.value}%`).join("、") ?? "未設定"}`}`,
     );
     if (ticketError) return ticketError;
     try {
@@ -6561,6 +6752,197 @@ export class ApiRouter {
     });
   }
 
+  private async bindAplusAuditContext(input: Readonly<{
+    marketplaceId: string;
+    mode: AplusAuditJobMode;
+  }>): Promise<AplusAuditJobBoundContext> {
+    if (!isMarketplaceId(input.marketplaceId)) {
+      throw new AplusAuditJobCoordinatorError("A+ 健檢站點無效。", {
+        status: 400,
+        code: "INVALID_INPUT",
+      });
+    }
+    const current = await this.currentAuditSuiteContext(input.marketplaceId);
+    return {
+      accountScope: current.accountScope,
+      marketplaceId: input.marketplaceId,
+      mode: current.mode,
+    };
+  }
+
+  private async assertAplusAuditContext(
+    context: AplusAuditJobBoundContext,
+  ): Promise<MarketplaceId> {
+    if (!isMarketplaceId(context.marketplaceId)) {
+      throw new Error("A+ 健檢工作站點無法安全辨識。");
+    }
+    const current = await this.currentAuditSuiteContext(context.marketplaceId);
+    if (
+      current.accountScope !== context.accountScope ||
+      current.mode !== context.mode
+    ) {
+      throw new Error("A+ 健檢工作與目前帳號或展示／真實模式不一致。");
+    }
+    return context.marketplaceId;
+  }
+
+  private async loadAplusAuditFbaSeeds(
+    context: AplusAuditJobBoundContext,
+    signal: AbortSignal,
+    heartbeat: () => void,
+  ): Promise<{
+    fetchedAt: string;
+    fbaSnapshotId: string;
+    rows: readonly AplusAuditSeed[];
+  }> {
+    const marketplaceId = await this.assertAplusAuditContext(context);
+    assertBackgroundActive(signal);
+    heartbeat();
+    let status = await this.startSharedAllListingsReport(
+      marketplaceId,
+      false,
+      signal,
+    );
+    assertBackgroundActive(signal);
+    heartbeat();
+    for (let attempt = 0; !status.ready && attempt < 180; attempt += 1) {
+      if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
+        throw new Error("Amazon 未能產生本次 A+ 健檢所需的 FBA 全商品報表。");
+      }
+      heartbeat();
+      await waitMilliseconds(1_000, signal);
+      assertBackgroundActive(signal);
+      status = await this.getSharedAllListingsReportStatus({
+        marketplaceId,
+        reportId: status.reportId,
+        signal,
+      });
+      assertBackgroundActive(signal);
+      heartbeat();
+    }
+    if (
+      !status.ready ||
+      !status.reportId ||
+      !status.documentId ||
+      status.mode !== context.mode
+    ) {
+      throw new Error("A+ 健檢的 FBA 全商品報表未完成或 context 已改變。");
+    }
+    heartbeat();
+    const data = await getAllListingsExportData({
+      marketplaceId,
+      reportId: status.reportId,
+      documentId: status.documentId,
+      signal,
+      onProgress: () => heartbeat(),
+    });
+    assertBackgroundActive(signal);
+    heartbeat();
+    const grouping = await getFbaVariationGroupingData({
+      marketplaceId,
+      rows: data.rows,
+      signal,
+      onProgress: () => heartbeat(),
+    });
+    assertBackgroundActive(signal);
+    heartbeat();
+    await this.assertAplusAuditContext(context);
+    assertBackgroundActive(signal);
+    heartbeat();
+    return {
+      fetchedAt: data.fetchedAt,
+      fbaSnapshotId: createHash("sha256").update(JSON.stringify([
+        context.accountScope,
+        marketplaceId,
+        status.reportId,
+        status.documentId,
+        data.fetchedAt,
+      ])).digest("hex"),
+      rows: buildAplusAuditSeedsFromFbaGrouping(grouping.rows),
+    };
+  }
+
+  private async fetchAplusAuditPublishRecords(
+    context: AplusAuditJobBoundContext,
+    request: AplusPublishRecordFetchInput,
+    heartbeat: () => void,
+  ) {
+    let marketplaceId: MarketplaceId;
+    try {
+      marketplaceId = await this.assertAplusAuditContext(context);
+    } catch {
+      throw aplusAuditFenceAbort();
+    }
+    if (request.marketplaceId !== marketplaceId) {
+      throw new Error("A+ 健檢 ASIN request 與工作站點不一致。");
+    }
+    heartbeat();
+    const response = await getAplusContentPublishRecordsPage({
+      marketplaceId,
+      asin: request.asin,
+      pageToken: request.pageToken,
+      expectedMode: context.mode,
+      signal: request.signal,
+      onControlledWait: heartbeat,
+    });
+    heartbeat();
+    try {
+      await this.assertAplusAuditContext(context);
+    } catch {
+      throw aplusAuditFenceAbort();
+    }
+    heartbeat();
+    return { status: response.status, payload: response.payload };
+  }
+
+  private async startAplusAudit(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (
+      !body ||
+      Object.keys(body).length !== 2 ||
+      !("marketplaceId" in body) ||
+      !("mode" in body)
+    ) {
+      return invalid("A+ 健檢只接受 marketplaceId 與 mode；帳號和 FBA 快照由 main process 綁定。");
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    const mode = body.mode === "live" || body.mode === "demo" ? body.mode : null;
+    if (!marketplaceId || !mode) return invalid("A+ 健檢站點或模式無效。");
+    try {
+      const receipt = await this.aplusAuditJobs.start({ marketplaceId, mode });
+      return json(receipt, 202, { "retry-after": "1" });
+    } catch (error) {
+      return apiError(error, "開始全站 A+ 健檢時發生未預期的錯誤。");
+    }
+  }
+
+  private async aplusAuditStatus(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const mode = request.query.mode === "live" || request.query.mode === "demo"
+      ? request.query.mode
+      : null;
+    const jobId = this.reportIdentifier(request.query.jobId);
+    const contextId = this.reportIdentifier(request.query.contextId);
+    if (!marketplaceId || !mode || !jobId || !contextId) {
+      return invalid("A+ 健檢工作資訊無效。");
+    }
+    try {
+      const receipt = await this.aplusAuditJobs.get({
+        marketplaceId,
+        mode,
+        jobId,
+        contextId,
+      });
+      return json(
+        receipt,
+        receipt.ready ? 200 : 202,
+        receipt.ready ? {} : { "retry-after": "1" },
+      );
+    } catch (error) {
+      return apiError(error, "查詢全站 A+ 健檢進度時發生未預期的錯誤。");
+    }
+  }
+
   private auditSuiteRequestIdentity(request: ApiRequest): {
     marketplaceId: MarketplaceId;
     runId: string;
@@ -6693,6 +7075,37 @@ export class ApiRouter {
     });
   }
 
+  private auditSuiteFbaGrouping(
+    context: AuditSuiteContext,
+    control: AuditSuiteRunControl,
+  ): Promise<{
+    reportId: string;
+    documentId: string;
+    data: AuditSuiteListingsData;
+    grouping: FbaVariationGroupingData;
+  }> {
+    return control.resource(AUDIT_SUITE_FBA_GROUPING_RESOURCE, async () => {
+      const listing = await this.auditSuiteListings(context, control);
+      assertAuditSuiteActive(control);
+      const marketplaceId = context.marketplaceId as MarketplaceId;
+      const grouping = await getFbaVariationGroupingData({
+        marketplaceId,
+        rows: listing.data.rows,
+        signal: control.signal,
+        onProgress: ({ completedBatches, totalBatches }) => control.heartbeat({
+          message: `正在核對 FBA relationships（${completedBatches}／${totalBatches} 批）。`,
+        }),
+      });
+      assertAuditSuiteActive(control);
+      await this.assertAuditSuiteContext(context);
+      assertAuditSuiteActive(control);
+      if (grouping.marketplaceId !== marketplaceId) {
+        throw new Error("FBA relationships 與綜合健檢站點不一致。");
+      }
+      return { ...listing, grouping };
+    });
+  }
+
   private async runAuditSuiteSubscription(
     context: AuditSuiteContext,
     control: AuditSuiteRunControl,
@@ -6806,13 +7219,114 @@ export class ApiRouter {
     });
   }
 
+  private async runAuditSuiteAplus(
+    context: AuditSuiteContext,
+    control: AuditSuiteRunControl,
+  ) {
+    const marketplaceId = context.marketplaceId as MarketplaceId;
+    const listing = await this.auditSuiteFbaGrouping(context, control);
+    const fbaSnapshotId = createHash("sha256").update(JSON.stringify([
+      context.accountScope,
+      marketplaceId,
+      listing.reportId,
+      listing.documentId,
+      listing.data.fetchedAt,
+    ])).digest("hex");
+    const snapshot = await runAplusAudit({
+      mode: context.mode,
+      marketplaceId,
+      fetchedAt: listing.data.fetchedAt,
+      fbaSnapshotId,
+      rows: buildAplusAuditSeedsFromFbaGrouping(listing.grouping.rows),
+      signal: control.signal,
+      fetchPublishRecords: async (request) => {
+        assertAuditSuiteActive(control);
+        try {
+          await this.assertAuditSuiteContext(context);
+        } catch {
+          throw aplusAuditFenceAbort();
+        }
+        assertAuditSuiteActive(control);
+        if (request.marketplaceId !== marketplaceId) {
+          throw new Error("A+ 健檢 request 與綜合健檢站點不一致。");
+        }
+        const response = await getAplusContentPublishRecordsPage({
+          marketplaceId,
+          asin: request.asin,
+          pageToken: request.pageToken,
+          expectedMode: context.mode,
+          signal: request.signal,
+          onControlledWait: () => control.heartbeat({
+            message: "Amazon A+ API 要求延後重試；Notebook 鑰匙仍在受控等待。",
+          }),
+        });
+        assertAuditSuiteActive(control);
+        try {
+          await this.assertAuditSuiteContext(context);
+        } catch {
+          throw aplusAuditFenceAbort();
+        }
+        return { status: response.status, payload: response.payload };
+      },
+      onProgress: (progress) => control.heartbeat({
+        message: `正在核對 A+ publish records（${progress.completedAsins}／${progress.totalAsins} ASIN）。`,
+        completedUnits: progress.completedAsins,
+        totalUnits: progress.totalAsins,
+      }),
+    });
+    assertAuditSuiteActive(control);
+    await this.assertAuditSuiteContext(context);
+    assertAuditSuiteActive(control);
+    if (snapshot.mode !== context.mode || snapshot.marketplaceId !== marketplaceId) {
+      throw new Error("A+ 健檢快照與本次綜合健檢 context 不一致。");
+    }
+    const result = buildAplusAuditSuiteResult(snapshot);
+    return suiteSnapshot({
+      context,
+      ...result,
+    });
+  }
+
   private async runAuditSuiteVariation(
     context: AuditSuiteContext,
     control: AuditSuiteRunControl,
   ) {
     const marketplaceId = context.marketplaceId as MarketplaceId;
+    const listing = await this.auditSuiteFbaGrouping(context, control);
+    assertAuditSuiteActive(control);
+    await this.assertAuditSuiteContext(context);
+    assertAuditSuiteActive(control);
+    const incompleteRows = listing.grouping.rows.filter((row) =>
+      row.status === "incomplete"
+    );
+    const rows = listing.grouping.rows.filter((row) =>
+      row.status === "complete" && row.role === "standalone"
+    );
+    return suiteSnapshot({
+      context,
+      status: incompleteRows.length ? "partial" : "completed",
+      fetchedAt: listing.grouping.fetchedAt,
+      notice: incompleteRows.length
+        ? `${incompleteRows.length} 個 SKU relationships 無法安全判定；只列已驗證未綁變體。${listing.grouping.notice}`
+        : listing.grouping.notice,
+      payload: rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        productType: row.productType,
+        notice: row.message,
+      })),
+    });
+  }
+
+  private async runAuditSuiteBusinessPricing(
+    context: AuditSuiteContext,
+    control: AuditSuiteRunControl,
+  ) {
+    const marketplaceId = context.marketplaceId as MarketplaceId;
     const listing = await this.auditSuiteListings(context, control);
-    const snapshot = await getUnboundVariationAuditData({
+    assertAuditSuiteActive(control);
+    const snapshot = await getBusinessPricingAuditData({
       marketplaceId,
       reportId: listing.reportId,
       documentId: listing.documentId,
@@ -6822,22 +7336,34 @@ export class ApiRouter {
     await this.assertAuditSuiteContext(context);
     assertAuditSuiteActive(control);
     if (snapshot.mode !== context.mode || snapshot.marketplaceId !== marketplaceId) {
-      throw new Error("未綁變體快照與本次綜合健檢 context 不一致。");
+      throw new Error("B2B 價格健檢快照與本次綜合健檢 context 不一致。");
     }
-    return suiteSnapshot({
-      context,
-      status: snapshot.incompleteRows.length ? "partial" : "completed",
-      fetchedAt: snapshot.fetchedAt,
-      notice: snapshot.incompleteRows.length
-        ? `${snapshot.incompleteRows.length} 個 SKU relationships 無法安全判定；只列已驗證未綁變體。${snapshot.notice}`
-        : snapshot.notice,
-      payload: snapshot.rows.map((row) => ({
+    const rows = snapshot.rows
+      .filter((row) => row.status !== "configured")
+      .map((row) => ({
         sellerSku: row.sellerSku,
         title: row.title,
         asin: row.asin,
-        productType: row.productType,
-        notice: row.notice,
-      })),
+        standardPrice: row.standardPrice?.amount ?? null,
+        businessPrice: row.businessPrice?.amount ?? null,
+        currencyCode: row.businessPrice?.currencyCode ??
+          row.standardPrice?.currencyCode ?? null,
+        finding: row.status === "above_standard"
+          ? "B2B 價格高於一般售價"
+          : row.status === "missing"
+            ? "尚未設定 B2B 價格"
+            : row.status === "unsupported"
+              ? "seller-specific PTD 唯讀／不支援"
+              : "資料未完成",
+        editable: row.editable,
+        notice: row.reason,
+      }));
+    return suiteSnapshot({
+      context,
+      status: snapshot.summary.incomplete ? "partial" : "completed",
+      fetchedAt: snapshot.fetchedAt,
+      notice: snapshot.notice,
+      payload: rows,
     });
   }
 

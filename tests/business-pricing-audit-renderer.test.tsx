@@ -1,12 +1,17 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingRowMatchesFilter,
+  businessPricingEditorProposal,
   createSubmittedBusinessPricePreview,
+  defaultBusinessPricingProposal,
   parseBusinessPriceUpdate,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
+  type BusinessPriceUpdate,
 } from "../src/renderer/src/business-pricing-audit";
 import BusinessPricingAuditPanel from "../src/renderer/src/components/business-pricing-audit-panel";
 import BusinessPricingAuditDrawer from "../src/renderer/src/components/business-pricing-audit-drawer";
@@ -69,6 +74,7 @@ function payload(): Record<string, unknown> {
     summary: {
       totalFbaSkuCount: 4,
       configured: 2,
+      aboveStandard: 0,
       missing: 2,
       unsupported: 0,
       incomplete: 0,
@@ -86,6 +92,7 @@ describe("FBA business pricing audit renderer", () => {
     expect(snapshot.summary).toEqual({
       totalFbaSkuCount: 4,
       configured: 2,
+      aboveStandard: 0,
       missing: 2,
       unsupported: 0,
       incomplete: 0,
@@ -119,6 +126,16 @@ describe("FBA business pricing audit renderer", () => {
     expect(() => parseBusinessPricingAuditSnapshot(inconsistent)).toThrow(/摘要/u);
   });
 
+  it("rejects a configured row whose B2B price is still above standard", () => {
+    const inconsistent = payload();
+    const rows = inconsistent.rows as Array<Record<string, unknown>>;
+    rows[1]!.businessPrice = { amount: 25.99, currencyCode: "USD" };
+
+    expect(() => parseBusinessPricingAuditSnapshot(inconsistent)).toThrow(
+      /價格、狀態與能力/u,
+    );
+  });
+
   it("filters missing, configured and problem rows without hiding incomplete evidence", () => {
     const rows = parseBusinessPricingAuditSnapshot(payload()).rows;
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "missing")))
@@ -131,6 +148,84 @@ describe("FBA business pricing audit renderer", () => {
       .toHaveLength(2);
   });
 
+  it("treats a B2B price above standard as an editable problem", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    rows[1] = {
+      ...rows[1],
+      standardPrice: { amount: 24.99, currencyCode: "USD" },
+      businessPrice: { amount: 25.99, currencyCode: "USD" },
+      status: "above_standard",
+      reason: "Amazon Business 價格高於一般售價。",
+    };
+    const summary = source.summary as Record<string, unknown>;
+    summary.configured = 1;
+    summary.aboveStandard = 1;
+
+    const snapshot = parseBusinessPricingAuditSnapshot(source);
+    const row = snapshot.rows[1]!;
+
+    expect(row.status).toBe("above_standard");
+    expect(businessPricingRowMatchesFilter(row, "problem")).toBe(true);
+    expect(snapshot.summary.aboveStandard).toBe(1);
+  });
+
+  it("keeps a verified price above standard flagged until it is actually fixed", () => {
+    const snapshot = parseBusinessPricingAuditSnapshot(payload());
+    const update = (amount: number): BusinessPriceUpdate => ({
+      mode: "live",
+      status: "ACCEPTED",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "FBA-MISSING",
+      asin: "B000000001",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 19.99, currencyCode: "USD" },
+      previousBusinessPrice: null,
+      requestedBusinessPrice: { amount, currencyCode: "USD" },
+      previousQuantityDiscountPlan: null,
+      previousQuantityDiscountPlanHash: null,
+      requestedQuantityDiscountPlan: null,
+      quantityDiscountPlanChange: "preserve",
+      businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
+      schemaChecksum: "seller-schema-checksum",
+      acceptedAt: "2026-08-22T12:01:00.000Z",
+      issues: [],
+      notice: "Amazon write verified.",
+    });
+
+    const stillHigh = applyVerifiedBusinessPriceToAuditSnapshot(
+      snapshot,
+      update(20.99),
+    );
+    expect(stillHigh.rows[0]).toMatchObject({
+      status: "above_standard",
+      businessPrice: { amount: 20.99, currencyCode: "USD" },
+    });
+    expect(stillHigh.summary).toEqual({
+      totalFbaSkuCount: 4,
+      configured: 2,
+      aboveStandard: 1,
+      missing: 1,
+      unsupported: 0,
+      incomplete: 0,
+    });
+
+    const fixed = applyVerifiedBusinessPriceToAuditSnapshot(
+      stillHigh,
+      update(18.99),
+    );
+    expect(fixed.rows[0]?.status).toBe("configured");
+    expect(fixed.summary).toEqual({
+      totalFbaSkuCount: 4,
+      configured: 3,
+      aboveStandard: 0,
+      missing: 1,
+      unsupported: 0,
+      incomplete: 0,
+    });
+  });
+
   it("renders the audit summary, exact reason and in-place adjustment action", () => {
     const snapshot = parseBusinessPricingAuditSnapshot(payload());
     const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
@@ -139,11 +234,29 @@ describe("FBA business pricing audit renderer", () => {
       initialSnapshot: snapshot,
     }));
     expect(markup).toContain("未設定 B2B 價格");
+    expect(markup).toContain("高於一般售價");
+    expect(markup).toContain("完整數量折扣");
     expect(markup).toContain("Amazon Business 可用，但尚未設定 B2B 價格。");
     expect(markup).toContain("設定 B2B 價格");
     expect(markup).toContain("唯讀／不支援");
     expect(markup).toContain("不可直接修改");
     expect(markup).toContain("先由 Amazon Validation Preview 核對");
+  });
+
+  it("uses compact styled desktop controls for the explicit quantity-tier editor", () => {
+    const css = readFileSync(
+      new URL("../src/renderer/src/app.css", import.meta.url),
+      "utf8",
+    );
+
+    expect(css).toMatch(
+      /\.business-pricing-tier-mode\s*\{[^}]*grid-template-columns:\s*repeat\(2,/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-tier-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/su,
+    );
+    expect(css).toMatch(/\.business-pricing-tier-card\s*\{/u);
+    expect(css).toMatch(/\.business-pricing-tier-mode button\[aria-pressed="true"\]/u);
   });
 
   it("wraps the audit in an accessible Amazon Business drawer", () => {
@@ -168,12 +281,20 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 19.99, currencyCode: "USD" },
       businessPrice: null,
       businessOfferPresence: "absent",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "absent",
+      quantityDiscountPlanHash: null,
       businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
       businessPricingCapability: {
         supported: true,
         editable: true,
         reason: null,
         schemaChecksum: "seller-schema-checksum",
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: true,
+        quantityDiscountsReason: null,
       },
       fetchedAt: "2026-08-22T12:00:00.000Z",
       notice: null,
@@ -188,7 +309,12 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 19.99, currencyCode: "USD" },
       previousBusinessPrice: null,
       requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousQuantityDiscountPlan: null,
+      previousQuantityDiscountPlanHash: null,
+      requestedQuantityDiscountPlan: null,
+      quantityDiscountPlanChange: "preserve",
       businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
       schemaChecksum: "seller-schema-checksum",
       fbaEvidenceHash: "b".repeat(64),
       canonicalPatchHash: "c".repeat(64),
@@ -207,6 +333,8 @@ describe("FBA business pricing audit renderer", () => {
     expect(Object.isFrozen(submitted)).toBe(true);
     expect(Object.isFrozen(submitted.body)).toBe(true);
     expect(submitted.body.newBusinessPrice).toBe(17.99);
+    expect("quantityDiscountTiers" in submitted.body).toBe(false);
+    expect("expectedQuantityDiscountPlanHash" in submitted.body).toBe(false);
     expect(() => createSubmittedBusinessPricePreview({
       listing,
       newBusinessPrice: 17.99,
@@ -216,6 +344,259 @@ describe("FBA business pricing audit renderer", () => {
         requestedBusinessPrice: { amount: 16.99, currencyCode: "USD" },
       },
     })).toThrow(/預檢/u);
+  });
+
+  it("proposes USD standard-minus-one with the four explicit percent tiers", () => {
+    const proposal = defaultBusinessPricingProposal(
+      parseBusinessPricingListingSnapshot({
+        mode: "live",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "FBA-MISSING",
+        asin: "B000000001",
+        title: "Missing business price",
+        productType: "PET_FOOD",
+        standardPrice: { amount: 19.99, currencyCode: "USD" },
+        businessPrice: null,
+        businessOfferPresence: "absent",
+        businessPricingManagedByAutomation: false,
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "absent",
+        quantityDiscountPlanHash: null,
+        businessOfferGuardHash: "a".repeat(64),
+        businessOfferProtectedHash: "e".repeat(64),
+        businessPricingCapability: {
+          supported: true,
+          editable: true,
+          reason: null,
+          schemaChecksum: "seller-schema-checksum",
+          quantityDiscountsSupported: true,
+          quantityDiscountsEditable: true,
+          quantityDiscountsReason: null,
+        },
+        fetchedAt: "2026-08-22T12:00:00.000Z",
+        notice: null,
+      }),
+    );
+
+    expect(proposal).toEqual({
+      businessPrice: 18.99,
+      tiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 10, percent: 10 },
+        { lowerBound: 15, percent: 15 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    });
+  });
+
+  it("keeps the USD standard-minus-one default available for price-only edits", () => {
+    const proposal = defaultBusinessPricingProposal(
+      parseBusinessPricingListingSnapshot({
+        mode: "live",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "FBA-PRICE-ONLY",
+        asin: "B000000002",
+        title: "Price-only business listing",
+        productType: "PET_FOOD",
+        standardPrice: { amount: 19.99, currencyCode: "USD" },
+        businessPrice: null,
+        businessOfferPresence: "absent",
+        businessPricingManagedByAutomation: false,
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "absent",
+        quantityDiscountPlanHash: null,
+        businessOfferGuardHash: "a".repeat(64),
+        businessOfferProtectedHash: "e".repeat(64),
+        businessPricingCapability: {
+          supported: true,
+          editable: true,
+          reason: null,
+          schemaChecksum: "seller-schema-checksum",
+          quantityDiscountsSupported: false,
+          quantityDiscountsEditable: false,
+          quantityDiscountsReason: "QDP is read-only.",
+        },
+        fetchedAt: "2026-08-22T12:00:00.000Z",
+        notice: null,
+      }),
+    );
+
+    expect(proposal).toEqual({ businessPrice: 18.99, tiers: [] });
+  });
+
+  it("requires an explicit combined choice before proposing quantity tiers", () => {
+    const listing = parseBusinessPricingListingSnapshot({
+      mode: "live",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "FBA-EXPLICIT-TIERS",
+      asin: "B000000003",
+      title: "Explicit quantity tiers",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 19.99, currencyCode: "USD" },
+      businessPrice: { amount: 19.5, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: {
+        discountType: "fixed",
+        levels: [{ lowerBound: 5, value: 18 }],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlanHash: "f".repeat(64),
+      businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
+      businessPricingCapability: {
+        supported: true,
+        editable: true,
+        reason: null,
+        schemaChecksum: "seller-schema-checksum",
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: true,
+        quantityDiscountsReason: null,
+      },
+      fetchedAt: "2026-08-22T12:00:00.000Z",
+      notice: null,
+    });
+
+    expect(businessPricingEditorProposal(listing, "price_only")).toEqual({
+      businessPrice: 18.99,
+    });
+    expect(businessPricingEditorProposal(listing, "combined")).toEqual({
+      businessPrice: 18.99,
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 10, percent: 10 },
+        { lowerBound: 15, percent: 15 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    });
+    expect(businessPricingEditorProposal(listing, "price_only")).toEqual({
+      businessPrice: 18.99,
+    });
+  });
+
+  it("freezes an explicit combined Business Price and quantity-tier proposal", () => {
+    const tiers = [
+      { lowerBound: 5, percent: 5 },
+      { lowerBound: 10, percent: 10 },
+      { lowerBound: 15, percent: 15 },
+      { lowerBound: 20, percent: 20 },
+    ] as const;
+    const listing = parseBusinessPricingListingSnapshot({
+      mode: "live",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "FBA-MISSING",
+      asin: "B000000001",
+      title: "Missing business price",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 19.99, currencyCode: "USD" },
+      businessPrice: null,
+      businessOfferPresence: "absent",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "absent",
+      quantityDiscountPlanHash: null,
+      businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
+      businessPricingCapability: {
+        supported: true,
+        editable: true,
+        reason: null,
+        schemaChecksum: "seller-schema-checksum",
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: true,
+        quantityDiscountsReason: null,
+      },
+      fetchedAt: "2026-08-22T12:00:00.000Z",
+      notice: null,
+    });
+    const submitted = createSubmittedBusinessPricePreview({
+      listing,
+      newBusinessPrice: 18.99,
+      quantityDiscountTiers: tiers,
+      idempotencyKey: "business-price-tiers-001",
+      response: {
+        mode: "live",
+        status: "VALID",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "FBA-MISSING",
+        asin: "B000000001",
+        productType: "PET_FOOD",
+        standardPrice: { amount: 19.99, currencyCode: "USD" },
+        previousBusinessPrice: null,
+        requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+        previousQuantityDiscountPlan: null,
+        previousQuantityDiscountPlanHash: null,
+        requestedQuantityDiscountPlan: {
+          discountType: "percent",
+          levels: tiers.map((tier) => ({
+            lowerBound: tier.lowerBound,
+            value: tier.percent,
+          })),
+        },
+        quantityDiscountPlanChange: "replace",
+        businessOfferGuardHash: "a".repeat(64),
+        businessOfferProtectedHash: "e".repeat(64),
+        schemaChecksum: "seller-schema-checksum",
+        fbaEvidenceHash: "b".repeat(64),
+        canonicalPatchHash: "c".repeat(64),
+        validationIssuesHash: "d".repeat(64),
+        validatedAt: "2026-08-22T12:01:00.000Z",
+        issues: [],
+        notice: "Amazon Validation Preview 已通過。",
+      },
+    });
+
+    expect(submitted.body).toMatchObject({
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: tiers,
+    });
+    expect(submitted.validation.requestedQuantityDiscountPlan).toEqual({
+      discountType: "percent",
+      levels: tiers.map((tier) => ({
+        lowerBound: tier.lowerBound,
+        value: tier.percent,
+      })),
+    });
+    const update = {
+      mode: "live",
+      status: "ACCEPTED",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "FBA-MISSING",
+      asin: "B000000001",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 19.99, currencyCode: "USD" },
+      previousBusinessPrice: null,
+      requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+      previousQuantityDiscountPlan: null,
+      previousQuantityDiscountPlanHash: null,
+      requestedQuantityDiscountPlan: submitted.validation.requestedQuantityDiscountPlan,
+      quantityDiscountPlanChange: "replace",
+      businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
+      schemaChecksum: "seller-schema-checksum",
+      acceptedAt: "2026-08-22T12:02:00.000Z",
+      submissionId: "submission-tiers-1",
+      requestId: "request-tiers-1",
+      issues: [],
+      notice: "已接受並回查。",
+      writeLifecycle: {
+        state: "verified",
+        verified: true,
+        authoritative: true,
+        acceptedAt: "2026-08-22T12:02:00.000Z",
+        verifiedAt: "2026-08-22T12:02:05.000Z",
+        attempts: 2,
+      },
+    };
+    expect(parseBusinessPriceUpdate(update, submitted).quantityDiscountPlanChange)
+      .toBe("replace");
+    expect(() => parseBusinessPriceUpdate({
+      ...update,
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [{ lowerBound: 5, value: 6 }],
+      },
+    }, submitted)).toThrow(/數量折扣|快照/u);
   });
 
   it("accepts only a verified update for the immutable submitted preview", () => {
@@ -229,12 +610,20 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 19.99, currencyCode: "USD" },
       businessPrice: null,
       businessOfferPresence: "absent",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "absent",
+      quantityDiscountPlanHash: null,
       businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
       businessPricingCapability: {
         supported: true,
         editable: true,
         reason: null,
         schemaChecksum: "seller-schema-checksum",
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: true,
+        quantityDiscountsReason: null,
       },
       fetchedAt: "2026-08-22T12:00:00.000Z",
       notice: null,
@@ -253,7 +642,12 @@ describe("FBA business pricing audit renderer", () => {
         standardPrice: { amount: 19.99, currencyCode: "USD" },
         previousBusinessPrice: null,
         requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+        previousQuantityDiscountPlan: null,
+        previousQuantityDiscountPlanHash: null,
+        requestedQuantityDiscountPlan: null,
+        quantityDiscountPlanChange: "preserve",
         businessOfferGuardHash: "a".repeat(64),
+        businessOfferProtectedHash: "e".repeat(64),
         schemaChecksum: "seller-schema-checksum",
         fbaEvidenceHash: "b".repeat(64),
         canonicalPatchHash: "c".repeat(64),
@@ -273,7 +667,12 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 19.99, currencyCode: "USD" },
       previousBusinessPrice: null,
       requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousQuantityDiscountPlan: null,
+      previousQuantityDiscountPlanHash: null,
+      requestedQuantityDiscountPlan: null,
+      quantityDiscountPlanChange: "preserve",
       businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
       schemaChecksum: "seller-schema-checksum",
       acceptedAt: "2026-08-22T12:02:00.000Z",
       submissionId: "submission-1",

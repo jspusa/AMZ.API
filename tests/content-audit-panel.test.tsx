@@ -524,6 +524,141 @@ describe("global FBA content audit panel", () => {
     expect(snapshot.summary.singleIngredientMismatch).toBe(1);
   });
 
+  it("derives and safely focuses the broader ingredient claim mismatches", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [{
+        sellerSku: "QUICK-FIX",
+        asin: "B000000123",
+        productType: "PET_FOOD",
+        title: "Turkey Tendons hypoallergenic treats",
+        itemHighlight: "",
+        bulletPoints: [],
+        productDescription: "",
+        ingredients: "Turkey, Chicken, Vegetable Glycerin",
+        readStatus: "complete",
+        readErrors: [],
+        issues: [],
+      }],
+      summary: { total: 1 },
+    });
+
+    expect(snapshot.rows[0]?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ token: "Tendons" }),
+      expect.objectContaining({ token: "hypoallergenic" }),
+    ]));
+    const focus = quickEditFocusForRow(snapshot.rows[0]!);
+    expect(focus).toMatchObject({
+      fields: ["title"],
+      evidence: [
+        expect.objectContaining({ relatedIngredients: "Turkey, Chicken, Vegetable Glycerin" }),
+        expect.objectContaining({ relatedIngredients: "Turkey, Chicken, Vegetable Glycerin" }),
+      ],
+    });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        title: "Turkey Tendons hypoallergenic treats",
+        ingredients: "Turkey, Chicken, Vegetable Glycerin",
+      }),
+    )).toMatchObject({ status: "focused" });
+    expect(resolveContentAuditQuickEditFocus(
+      focus!,
+      freshListing({
+        title: "Turkey Tendon treats",
+        ingredients: "Turkey Tendon, Chicken, Vegetable Glycerin",
+      }),
+    )).toMatchObject({ status: "stale" });
+  });
+
+  it("merges issue filters into clickable summary numbers", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [quickEditRow({
+        title: "Short title",
+        issues: [{
+          kind: "TITLE_BELOW_TARGET",
+          field: "title",
+          message: "產品名稱目前 11 個字元，低於 60 個字元。",
+          actualLength: 11,
+          minLength: 60,
+        }],
+      })],
+      summary: { total: 1 },
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        cachedResult={{
+          snapshot,
+          filter: "TITLE_BELOW_TARGET",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+
+    expect(markup).toContain('class="content-audit-summary" role="group" aria-label="文案健檢摘要與問題篩選"');
+    expect(markup).toContain('data-audit-filter="TITLE_BELOW_TARGET"');
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup).toContain('data-audit-filter="SINGLE_INGREDIENT_MISMATCH"');
+    expect(markup).toContain("成分宣稱不一致");
+    expect(markup).not.toContain('role="tablist"');
+    expect(markup).not.toContain("單一成分宣稱不一致");
+  });
+
+  it("counts every row shown by the all-problems summary filter", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [
+        quickEditRow({
+          sellerSku: "HAS-ISSUE",
+          title: "Short title",
+          issues: [{
+            kind: "TITLE_BELOW_TARGET",
+            field: "title",
+            message: "產品名稱目前 11 個字元，低於 60 個字元。",
+            actualLength: 11,
+            minLength: 60,
+          }],
+        }),
+        quickEditRow({
+          sellerSku: "READ-INCOMPLETE",
+          asin: "B000000099",
+          readStatus: "incomplete",
+          readErrors: [{
+            code: "LISTING_QUERY_FAILED",
+            message: "Listings Items API 尚未完整回傳。",
+          }],
+          issues: [],
+        }),
+      ],
+      summary: { total: 2 },
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        cachedResult={{
+          snapshot,
+          filter: "all",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+
+    expect(markup).toMatch(
+      /data-audit-filter="all"[^>]*>[\s\S]*?<span>有待確認<\/span><strong>2<\/strong>/u,
+    );
+  });
+
   it("keeps an unavailable quick-edit action visible and explains why it is disabled", () => {
     const row = quickEditRow({
       issues: [{

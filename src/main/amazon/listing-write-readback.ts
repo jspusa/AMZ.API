@@ -65,6 +65,34 @@ function validMoney(value: unknown): boolean {
     value.currencyCode.length === 3;
 }
 
+function validSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function validQuantityDiscountPlan(value: unknown): boolean {
+  if (value === null) return true;
+  if (!isRecord(value) ||
+      (value.discountType !== "percent" && value.discountType !== "fixed") ||
+      !Array.isArray(value.levels) || value.levels.length < 1 ||
+      value.levels.length > 5) return false;
+  let previousLowerBound = 0;
+  let previousValue: number | null = null;
+  for (const entry of value.levels) {
+    if (!isRecord(entry) || !Number.isSafeInteger(entry.lowerBound) ||
+        Number(entry.lowerBound) <= previousLowerBound ||
+        typeof entry.value !== "number" || !Number.isFinite(entry.value) ||
+        entry.value <= 0 ||
+        (value.discountType === "percent" && entry.value >= 100) ||
+        (previousValue !== null &&
+          (value.discountType === "percent"
+            ? entry.value <= previousValue
+            : entry.value >= previousValue))) return false;
+    previousLowerBound = Number(entry.lowerBound);
+    previousValue = entry.value;
+  }
+  return true;
+}
+
 function acceptedBase(value: unknown): value is Record<string, unknown> & {
   mode: "live";
   status: "ACCEPTED";
@@ -127,6 +155,20 @@ function sameMoney(
     right !== null &&
     left.currencyCode === right.currencyCode &&
     left.amount === right.amount;
+}
+
+function sameQuantityDiscountPlan(
+  left: BusinessPriceUpdateResult["requestedQuantityDiscountPlan"],
+  right: BusinessPricingListingSnapshot["quantityDiscountPlan"],
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.discountType === right.discountType &&
+    left.levels.length === right.levels.length &&
+    left.levels.every((level, index) => {
+      const actual = right.levels[index];
+      return actual?.lowerBound === level.lowerBound &&
+        actual.value === level.value;
+    });
 }
 
 function canonicalText(value: string): string {
@@ -206,7 +248,9 @@ export function businessPriceReadbackDecision(
   result: BusinessPriceUpdateResult,
   snapshot: BusinessPricingListingSnapshot,
 ): ReadbackDecision {
-  return exactIdentity(result, snapshot) &&
+  if (result.quantityDiscountPlanChange !== "preserve" &&
+      result.quantityDiscountPlanChange !== "replace") return "pending";
+  const common = exactIdentity(result, snapshot) &&
       result.asin === snapshot.asin &&
       result.productType === snapshot.productType &&
       snapshot.businessOfferPresence === "present" &&
@@ -214,8 +258,20 @@ export function businessPriceReadbackDecision(
         isPricingListingError(issue, snapshot.marketplaceId)
       ) &&
       sameMoney(result.standardPrice, snapshot.standardPrice) &&
-      sameMoney(result.requestedBusinessPrice, snapshot.businessPrice) &&
-      result.businessOfferGuardHash === snapshot.businessOfferGuardHash
+      sameMoney(result.requestedBusinessPrice, snapshot.businessPrice);
+  if (!common) return "pending";
+  if (result.quantityDiscountPlanChange === "replace") {
+    return snapshot.quantityDiscountPlanPresence === "canonical" &&
+        result.businessOfferProtectedHash ===
+          snapshot.businessOfferProtectedHash &&
+        sameQuantityDiscountPlan(
+          result.requestedQuantityDiscountPlan,
+          snapshot.quantityDiscountPlan,
+        )
+      ? "verified"
+      : "pending";
+  }
+  return result.businessOfferGuardHash === snapshot.businessOfferGuardHash
     ? "verified"
     : "pending";
 }
@@ -353,6 +409,21 @@ export function reconcileBusinessPriceWrite(
       !response.productType ||
       typeof response.businessOfferGuardHash !== "string" ||
       !/^[a-f0-9]{64}$/u.test(response.businessOfferGuardHash) ||
+      !validSha256(response.businessOfferProtectedHash) ||
+      !validQuantityDiscountPlan(response.previousQuantityDiscountPlan) ||
+      !validQuantityDiscountPlan(response.requestedQuantityDiscountPlan) ||
+      !(response.previousQuantityDiscountPlanHash === null ||
+        validSha256(response.previousQuantityDiscountPlanHash)) ||
+      (response.previousQuantityDiscountPlan === null) !==
+        (response.previousQuantityDiscountPlanHash === null) ||
+      (response.quantityDiscountPlanChange !== "preserve" &&
+        response.quantityDiscountPlanChange !== "replace") ||
+      (response.quantityDiscountPlanChange === "preserve" &&
+        JSON.stringify(response.previousQuantityDiscountPlan) !==
+          JSON.stringify(response.requestedQuantityDiscountPlan)) ||
+      (response.quantityDiscountPlanChange === "replace" &&
+        (!isRecord(response.requestedQuantityDiscountPlan) ||
+          response.requestedQuantityDiscountPlan.discountType !== "percent")) ||
       typeof response.schemaChecksum !== "string" ||
       !response.schemaChecksum ||
       typeof response.acceptedAt !== "string") {
