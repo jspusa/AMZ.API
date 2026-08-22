@@ -94,6 +94,7 @@ describe("listing content quality audit route", () => {
       missingBullets: expect.any(Number),
       missingIngredients: expect.any(Number),
       ingredientsUnverified: expect.any(Number),
+      singleIngredientMismatch: expect.any(Number),
       titleBelowTarget: expect.any(Number),
       highlightBelowTarget: expect.any(Number),
       bulletBelowTarget: expect.any(Number),

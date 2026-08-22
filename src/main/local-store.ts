@@ -38,6 +38,7 @@ type LedgerState = "pending" | "completed" | "unknown";
 
 export type LedgerOperationType =
   | "price"
+  | "business_price"
   | "content"
   | "images"
   | "sale_price"
@@ -271,6 +272,7 @@ const VARIATION_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([
 ]);
 const OFFER_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([
   "price",
+  "business_price",
   "sale_price",
 ]);
 const LISTING_ATTRIBUTE_OPERATION_TYPES = new Set<LedgerEntry["operationType"]>([

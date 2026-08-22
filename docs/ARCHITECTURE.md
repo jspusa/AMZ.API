@@ -33,6 +33,7 @@ GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸�
 
 - Orders
 - Listings price / batch
+- FBA-only Business Price audit + B2B-audience-only preview/update
 - Listing content / export / FBA-only quality audit
 - Listing images / upload / FBA-only whole-catalog image audit
 - Variation family read + unbound audit + dedicated two-stage child move
@@ -51,7 +52,15 @@ GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸�
 
 其他 path／method 回 `404`；renderer 無法指定 Amazon host 或任意 upstream URL。
 
-全站文案與圖片健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料，renderer 仍會核對回應站點後才顯示或快取；文案掃描再以批次 Listings relationships 排除已證明的 parent，child 依 parent SKU 分 family，standalone 與 relationship 不完整列各自隔離。英文錯字由 GitHub Pages renderer 內的版本化 SCOWL en_US 辭典與 `nspell` 檢查，再以窄範圍白名單保留品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份辭典，不再依賴作業系統字典；字典在 Pages 介面內本地執行，文案不會送往第三方。文案 Excel 的原始／更新雙欄與變體索引可回傳 main process；main 嚴格解析 OOXML，並只用裝置端保存 24 小時的 account／marketplace／mode-scoped SHA-256 列證據核對原檔。該證據不保存 Seller SKU、ASIN、文案、Excel 或 proposed edits，鎖屏／重啟不展延期限。整批 fresh-read／Validation Preview 全通過、renderer 展示完整逐欄前後值並由使用者核對後，才做一次 native confirmation；之後逐 SKU 使用既有 ledger、單次 PATCH 與 canonical readback。Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
+全站文案與圖片健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料，renderer 仍會核對回應站點後才顯示或快取；文案掃描再以批次 Listings relationships 排除已證明的 parent，child 依 parent SKU 分 family，standalone 與 relationship 不完整列各自隔離。文案的內部健檢門檻固定為產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200、產品敘述少於 1,800 個 Unicode 字元；圖片少於 6 張才列為不足。英文錯字由 GitHub Pages renderer 內的版本化 SCOWL en_US 辭典與 `nspell` 檢查，再以窄範圍白名單保留品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份辭典，不再依賴作業系統字典；字典在 Pages 介面內本地執行，文案不會送往第三方。只有 Amazon `ingredients` 可證明解析出至少兩個不同成分時，單一成分聲明才列為矛盾；括號內逗號不拆項，成分讀取不完整不推論。前台每項原因只呈現一次，並把所選原因帶入相符的立即修改欄位；相關原文或成分 fingerprint 漂移即 stale fail closed。
+
+文案 Excel 的原始／更新雙欄、問題顏色與變體索引可回傳 main process；同一選檔區同時接受按鈕選檔與 drag/drop。main 嚴格解析 OOXML，對 CR／U+0085／U+2028／U+2029 做無損 round trip，舊工作簿只在 main-owned 完整 digest 唯一命中時做 bounded recovery；識別欄、family、原值、公式、巨集或外部連結仍 fail closed。裝置端只保存 24 小時的 account／marketplace／mode-scoped SHA-256 列證據核對原檔，不保存 Seller SKU、ASIN、文案、Excel 或 proposed edits，鎖屏／重啟不展延期限。整批 fresh-read／Validation Preview 全通過、renderer 展示完整逐欄前後值並由使用者核對後，才做一次 native confirmation；之後逐 SKU 使用既有 ledger、單次 PATCH 與 canonical readback。
+
+FBA Business Price 健檢同樣先由完整 all-listings 範圍證明目前 FBA Seller SKU，再以 exact SKU／ASIN／marketplace 讀取 B2B offer。可編輯能力只接受帶目前 Seller ID 的 seller-specific PTD（`LISTING_OFFER_ONLY`）；缺列、身分衝突、B2B offer 歧義或 PTD 失敗都列為未完成，不會當成未設定。更新只允許 merge `purchasable_offer` 中 `audience=B2B` 的 `our_price`，保留一般消費者 `ALL` offer、B2B quantity discount plan 與其他 audiences。POST 只做 fresh read、PTD checksum 與 Amazon Validation Preview；PATCH 前再做 native confirmation、idempotency claim、單次 Amazon PATCH 與 canonical readback，timeout 或結果不明時停止且不盲目重送。
+
+Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
+
+主導覽把 FBA 入庫貨件追蹤只放在「報表區」，不在首頁或「營運區」重複入口。首頁的一鍵全站流程在背景並行執行文案、圖片、未綁變體、訂閱省、廣告覆蓋五項，狀態固定依此順序顯示；耗時且低頻的 180 天以上庫存與評論依此順序收在獨立的「低頻健檢」收合區，不納入 run-all。
 
 Reports 建立由 main process 的 account-scoped broker 協調。相同 account、marketplace、mode、report type 與 options 的 all-listings report 可由品牌、未綁變體、評論與內容／圖片匯出共用；日期型 shipment report 另外綁 exact window。Local store 只保存不含憑證的短效 report ID／狀態 tombstone，程序內用 single-flight 與單調狀態更新防止重複建立或完成狀態回退。`CANCELLED`、`FATAL` 或建立結果不明都不會由自動載入盲目重建；明確使用者再試仍受安全等待與 mode/account 驗證。
 

@@ -52,7 +52,10 @@ import {
   type ContentQualityAudit,
   type ContentQualityRow,
 } from "./amazon/content-quality";
-import { auditListingImageRows } from "./amazon/image-audit";
+import {
+  IMAGE_AUDIT_MINIMUM_IMAGES,
+  auditListingImageRows,
+} from "./amazon/image-audit";
 import {
   auditAdvertisingCoverage,
   AdvertisingCoverageInputError,
@@ -78,6 +81,8 @@ import {
   getListingContent,
   getListingImages,
   getListingPrice,
+  getBusinessPricing,
+  getBusinessPricingAuditData,
   getRestockPlan,
   getSalesTrend,
   getSalesAndTrafficReportData,
@@ -92,6 +97,7 @@ import {
   isFulfillmentStatus,
   isMarketplaceId,
   previewListingContentUpdate,
+  previewBusinessPriceUpdate,
   previewListingImageUpdate,
   previewListingPriceUpdate,
   previewListingSalePriceUpdate,
@@ -104,6 +110,7 @@ import {
   startInboundNoncomplianceReport,
   startSalesAndTrafficReport,
   updateListingContent,
+  updateBusinessPrice,
   updateListingImages,
   updateListingPrice,
   updateListingSalePrice,
@@ -111,6 +118,8 @@ import {
   usesDemoMode,
   verifyListingsAccess,
   type ListingContentSnapshot,
+  type BusinessPricingListingSnapshot,
+  type BusinessPricePrecommitEvidence,
   type ListingContentValidationResult,
   type ListingContentUpdateResult,
   type ListingImageSnapshot,
@@ -126,6 +135,7 @@ import {
   type SubscribeAndSaveOfferSnapshot,
   type SubscriptionAuditSnapshot,
   type UpdateListingContentInput,
+  type UpdateBusinessPriceInput,
   type UpdateListingSalePriceInput,
   type UnboundVariationAuditSnapshot,
   type VariationMoveInput,
@@ -177,11 +187,13 @@ import {
 } from "./amazon/report-lifecycle";
 import { testRegionConnections } from "./amazon/connection-health";
 import {
+  businessPriceReadbackDecision,
   commitWithCanonicalReadback,
   contentReadbackDecision,
   imageReadbackDecision,
   priceReadbackDecision,
   reconcileContentWrite,
+  reconcileBusinessPriceWrite,
   reconcileImageWrite,
   reconcilePriceWrite,
   reconcileSalePriceWrite,
@@ -1381,12 +1393,10 @@ export class ApiRouter {
     };
     this.auditSuite = new AuditSuiteCoordinator({
       runners: {
-        subscription: (context, control) => this.runAuditSuiteSubscription(context, control),
-        inventory: (context, control) => this.runAuditSuiteInventory(context, control),
         content: (context, control) => this.runAuditSuiteContent(context, control),
         image: (context, control) => this.runAuditSuiteImage(context, control),
         variation: (context, control) => this.runAuditSuiteVariation(context, control),
-        review: (context, control) => this.runAuditSuiteReview(context, control),
+        subscription: (context, control) => this.runAuditSuiteSubscription(context, control),
         advertising: (context, control) => this.runAuditSuiteAdvertising(context, control),
       },
     });
@@ -1501,6 +1511,16 @@ export class ApiRouter {
         return this.previewPrice(request);
       case "PATCH /api/sp-api/listings":
         return this.commitPrice(request);
+      case "POST /api/sp-api/business-pricing-audit":
+        return this.startBusinessPricingAudit(request);
+      case "GET /api/sp-api/business-pricing-audit":
+        return this.businessPricingAuditStatusOrData(request);
+      case "GET /api/sp-api/business-pricing":
+        return this.businessPricing(request);
+      case "POST /api/sp-api/business-pricing":
+        return this.previewBusinessPricing(request);
+      case "PATCH /api/sp-api/business-pricing":
+        return this.commitBusinessPricing(request);
       case "POST /api/sp-api/listings/batch":
         return this.batchListings(request);
       case "GET /api/sp-api/listing-content":
@@ -3063,6 +3083,216 @@ export class ApiRouter {
       return json(snapshot);
     } catch (error) {
       return apiError(error, "查詢 SKU 價格時發生未預期的錯誤。");
+    }
+  }
+
+  private async startBusinessPricingAudit(
+    request: ApiRequest,
+  ): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (
+      !body ||
+      Object.keys(body).length !== 1 ||
+      !("marketplaceId" in body)
+    ) {
+      return invalid(
+        "B2B 價格健檢只接受 marketplaceId；帳號與報表身分由主程序綁定。",
+      );
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    if (!marketplaceId) return invalid("請選擇要健檢的 Amazon 站點。");
+    try {
+      const status = await this.startSharedAllListingsReport(marketplaceId, true);
+      return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
+    } catch (error) {
+      return apiError(error, "開始建立 B2B 價格健檢報表時發生未預期的錯誤。");
+    }
+  }
+
+  private async businessPricingAuditStatusOrData(
+    request: ApiRequest,
+  ): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const reportId = this.reportIdentifier(request.query.reportId);
+    if (!marketplaceId || !reportId) {
+      return invalid("B2B 價格健檢報表資訊無效，請重新掃描。");
+    }
+    if (request.query.data !== "1") {
+      try {
+        const status = await this.getSharedAllListingsReportStatus({
+          marketplaceId,
+          reportId,
+        });
+        return json({ ...status, message: status.notice });
+      } catch (error) {
+        return apiError(error, "查詢 B2B 價格健檢進度時發生未預期的錯誤。");
+      }
+    }
+    const documentId = this.reportIdentifier(request.query.documentId);
+    if (!documentId) {
+      return invalid("B2B 價格健檢文件資訊無效，請重新掃描。");
+    }
+    try {
+      return json(await getBusinessPricingAuditData({
+        marketplaceId,
+        reportId,
+        documentId,
+      }));
+    } catch (error) {
+      return apiError(error, "整理 B2B 價格健檢資料時發生未預期的錯誤。");
+    }
+  }
+
+  private async businessPricing(request: ApiRequest): Promise<ApiResponse> {
+    const identity = this.listingIdentity(request);
+    if ("status" in identity) return identity;
+    try {
+      const snapshot = await getBusinessPricing(identity);
+      await this.reconcilePriceWrites(snapshot);
+      await this.reconcileBusinessPriceWrites(snapshot);
+      return json(snapshot);
+    } catch (error) {
+      return apiError(error, "查詢 Amazon Business 價格時發生未預期的錯誤。");
+    }
+  }
+
+  private businessPricingInput(request: ApiRequest):
+    | (UpdateBusinessPriceInput & { idempotencyKey: string })
+    | ApiResponse {
+    const body = bodyRecord(request);
+    if (!body) {
+      return invalid(
+        "B2B 價格請求必須使用 JSON。",
+        415,
+        "UNSUPPORTED_MEDIA_TYPE",
+      );
+    }
+    const allowedKeys = new Set([
+      "marketplaceId",
+      "sellerSku",
+      "expectedStandardPrice",
+      "expectedBusinessPrice",
+      "newBusinessPrice",
+      "idempotencyKey",
+    ]);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+      return invalid("B2B 價格請求包含不支援的欄位。");
+    }
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    const sellerSku = parseSellerSku(body.sellerSku);
+    const key = idempotencyKey(body.idempotencyKey);
+    if (!marketplaceId || !sellerSku || !key) {
+      return invalid("請提供有效的 Amazon 站點、完整 SKU 與預檢識別碼。");
+    }
+    const currency = MARKETPLACES[marketplaceId].currency;
+    const expectedStandardPrice = parsePrice(
+      body.expectedStandardPrice,
+      currency,
+    );
+    const expectedBusinessPrice = body.expectedBusinessPrice === null
+      ? null
+      : parsePrice(body.expectedBusinessPrice, currency);
+    const newBusinessPrice = parsePrice(body.newBusinessPrice, currency);
+    if (
+      expectedStandardPrice === null ||
+      (body.expectedBusinessPrice !== null && expectedBusinessPrice === null) ||
+      newBusinessPrice === null
+    ) {
+      return invalid(
+        currency === "JPY"
+          ? "一般售價與 B2B 價格必須是大於 0 的整數。"
+          : "一般售價與 B2B 價格必須大於 0，且最多只能有兩位小數。",
+        400,
+        "INVALID_PRICE",
+      );
+    }
+    return {
+      marketplaceId,
+      sellerSku,
+      expectedStandardPrice,
+      expectedBusinessPrice,
+      newBusinessPrice,
+      idempotencyKey: key,
+    };
+  }
+
+  private businessPricingFingerprint(
+    input: UpdateBusinessPriceInput,
+    evidence: BusinessPricePrecommitEvidence,
+  ): string {
+    return stableFingerprint([
+      input.marketplaceId,
+      input.sellerSku,
+      input.expectedStandardPrice,
+      input.expectedBusinessPrice,
+      input.newBusinessPrice,
+      evidence.asin,
+      evidence.productType,
+      evidence.businessOfferGuardHash,
+      evidence.schemaChecksum,
+      evidence.fbaEvidenceHash,
+      evidence.canonicalPatchHash,
+      evidence.validationIssuesHash,
+    ]);
+  }
+
+  private async previewBusinessPricing(request: ApiRequest): Promise<ApiResponse> {
+    const input = this.businessPricingInput(request);
+    if ("status" in input) return input;
+    try {
+      const result = await previewBusinessPriceUpdate(input);
+      const scoped = await this.scopedFingerprint(
+        input.marketplaceId,
+        this.businessPricingFingerprint(input, result),
+      );
+      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      return json(result);
+    } catch (error) {
+      return apiError(error, "Amazon Business 價格預檢時發生未預期的錯誤。");
+    }
+  }
+
+  private async commitBusinessPricing(request: ApiRequest): Promise<ApiResponse> {
+    const input = this.businessPricingInput(request);
+    if ("status" in input) return input;
+    let evidence: BusinessPricePrecommitEvidence;
+    try {
+      evidence = await previewBusinessPriceUpdate(input);
+    } catch (error) {
+      return apiError(
+        error,
+        "正式確認前重新執行 Amazon Business 價格預檢時發生未預期的錯誤。",
+      );
+    }
+    const scoped = await this.scopedFingerprint(
+      input.marketplaceId,
+      this.businessPricingFingerprint(input, evidence),
+    );
+    const ticketError = await this.approveReservedPreview(
+      request.path,
+      input.idempotencyKey,
+      scoped.fingerprint,
+      `確認 B2B 調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${MARKETPLACES[input.marketplaceId].currency}`,
+    );
+    if (ticketError) return ticketError;
+    try {
+      const result = await this.store.runIdempotentOperation({
+        idempotencyKey: input.idempotencyKey,
+        operationType: "business_price",
+        marketplaceId: input.marketplaceId,
+        sellerSku: input.sellerSku,
+        accountScope: scoped.accountScope,
+        fingerprint: scoped.fingerprint,
+        execute: ({ recordAccepted }) => commitWithCanonicalReadback({
+          commit: () => updateBusinessPrice(input, evidence),
+          onAccepted: recordAccepted,
+          read: () => getBusinessPricing(input),
+          decide: businessPriceReadbackDecision,
+        }),
+      });
+      return json(result);
+    } catch (error) {
+      return apiError(error, "送出 Amazon Business 價格更新時發生未預期的錯誤。");
     }
   }
 
@@ -6145,7 +6375,7 @@ export class ApiRouter {
             readStatus: row.readStatus,
             readErrors: row.readErrors,
           })),
-          minimumImages: 5,
+          minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
         });
         const exportId = randomUUID();
         const accountScope = await this.vault.getAccountScope(
@@ -6495,85 +6725,6 @@ export class ApiRouter {
     });
   }
 
-  private async runAuditSuiteInventory(
-    context: AuditSuiteContext,
-    control: AuditSuiteRunControl,
-  ) {
-    const marketplaceId = context.marketplaceId as MarketplaceId;
-    assertAuditSuiteActive(control);
-    await this.assertAuditSuiteContext(context);
-    assertAuditSuiteActive(control);
-    let report = await this.startSharedAgedInventoryReport(
-      marketplaceId,
-      { explicitRetry: false, signal: control.signal },
-    );
-    assertAuditSuiteActive(control);
-    for (let attempt = 0; !report.ready && attempt < 180; attempt += 1) {
-      if (report.status !== "IN_QUEUE" && report.status !== "IN_PROGRESS") {
-        throw new Error("Amazon 未能產生 FBA 庫齡報表。");
-      }
-      control.heartbeat({
-        message: "Amazon 正在準備 FBA 庫齡報表。",
-        completedUnits: 0,
-        totalUnits: 1,
-      });
-      await waitMilliseconds(1_000, control.signal);
-      assertAuditSuiteActive(control);
-      report = await this.getSharedAgedInventoryReportStatus({
-        marketplaceId,
-        reportId: report.reportId,
-        signal: control.signal,
-      });
-      assertAuditSuiteActive(control);
-    }
-    if (!report.ready || !report.documentId || report.mode !== context.mode) {
-      throw new Error("FBA 庫齡報表尚未完成或模式不一致。");
-    }
-    const snapshot = await getAgedInventoryData({
-      marketplaceId,
-      reportId: report.reportId,
-      documentId: report.documentId,
-      signal: control.signal,
-    });
-    assertAuditSuiteActive(control);
-    await this.assertAuditSuiteContext(context);
-    assertAuditSuiteActive(control);
-    if (snapshot.mode !== context.mode || snapshot.marketplaceId !== marketplaceId) {
-      throw new Error("庫齡快照與本次綜合健檢 context 不一致。");
-    }
-    const over180Rows = snapshot.rows.flatMap((row) => row.ageBuckets
-      .filter((bucket) => bucket.over180 && bucket.units > 0)
-      .map((bucket) => ({
-        sellerSku: row.sellerSku,
-        title: row.title,
-        asin: row.asin,
-        ageBucket: bucket.label,
-        quantity: bucket.units,
-        notice: row.alert || snapshot.notice,
-      })));
-    const estimatedExcessRows = snapshot.rows
-      .filter((row) => row.estimatedExcessQuantity !== null && row.estimatedExcessQuantity > 0)
-      .map((row) => ({
-        sellerSku: row.sellerSku,
-        title: row.title,
-        asin: row.asin,
-        estimatedExcessQuantity: row.estimatedExcessQuantity,
-        daysOfSupply: row.daysOfSupply,
-        recommendedAction: row.recommendedAction,
-        notice: row.alert || snapshot.notice,
-      }));
-    const partial = snapshot.summary.excessAvailability !== "complete";
-    return suiteSnapshot({
-      context,
-      status: partial ? "partial" : "completed",
-      fetchedAt: snapshot.fetchedAt,
-      notice: partial
-        ? `Amazon 預估冗餘欄位覆蓋為 ${snapshot.summary.excessAvailability}；未知未補 0。${snapshot.notice}`
-        : snapshot.notice,
-      payload: { over180Rows, estimatedExcessRows },
-    });
-  }
-
   private async runAuditSuiteContent(
     context: AuditSuiteContext,
     control: AuditSuiteRunControl,
@@ -6631,7 +6782,7 @@ export class ApiRouter {
       marketplaceId: context.marketplaceId,
       fetchedAt: data.fetchedAt,
       rows: data.rows,
-      minimumImages: 5,
+      minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
     });
     const rows = audit.rows
       .filter((row) => row.readStatus === "incomplete" || row.imageCount < audit.minimumImages)
@@ -6688,127 +6839,6 @@ export class ApiRouter {
         notice: row.notice,
       })),
     });
-  }
-
-  private async runAuditSuiteReview(
-    context: AuditSuiteContext,
-    control: AuditSuiteRunControl,
-  ) {
-    const marketplaceId = context.marketplaceId as MarketplaceId;
-    if (!customerFeedbackMarketplaceSupported(marketplaceId)) {
-      throw new Error("Amazon Customer Feedback API 不支援此站點；未改用 parent 或私有資料。");
-    }
-    const listing = await this.auditSuiteListings(context, control);
-    const reviewJobId = `suite-review-${context.runId}`;
-    const job: ReviewAuditJob = {
-      marketplaceId,
-      accountScope: context.accountScope,
-      expiresAt: Date.now() + REVIEW_AUDIT_JOB_TTL_MS,
-      mode: context.mode,
-      listingReportId: listing.reportId,
-      listingDocumentId: listing.documentId,
-      listingStatus: "DONE",
-      candidates: null,
-      sourceCandidateCount: 0,
-      candidateCoverage: null,
-      relationshipIncompleteRows: [],
-      results: [],
-      nextCandidateIndex: 0,
-      nextQueryAt: 0,
-      snapshot: null,
-      signal: control.signal,
-      abort: () => undefined,
-      retainWhileActive: true,
-    };
-    this.reviewAuditJobs.set(reviewJobId, job);
-    try {
-      for (let attempt = 0; !job.snapshot && attempt < 2_000; attempt += 1) {
-        assertAuditSuiteActive(control);
-        const response = await this.reviewAuditFlight(reviewJobId, job);
-        assertAuditSuiteActive(control);
-        if (response.status >= 400) {
-          const value = response.body.kind === "json" && isPlainRecord(response.body.value)
-            ? response.body.value
-            : null;
-          throw new Error(typeof value?.message === "string"
-            ? value.message
-              : "評論主題健檢未完成。");
-        }
-        const totalUnits = job.candidates?.length ?? 1;
-        const completedUnits = job.candidates
-          ? Math.min(job.nextCandidateIndex, totalUnits)
-          : 0;
-        control.heartbeat({
-          message: job.candidates
-            ? `正在依 Amazon 官方限制讀取評論主題（${completedUnits} / ${totalUnits}）。`
-            : "Amazon 正在準備評論健檢候選清單。",
-          completedUnits,
-          totalUnits,
-        });
-        if (!job.snapshot) {
-          await waitMilliseconds(
-            Math.max(25, job.nextQueryAt - Date.now()),
-            control.signal,
-          );
-        }
-      }
-      assertAuditSuiteActive(control);
-      if (!job.snapshot) throw new Error("評論主題健檢等待逾時；未建立假快照。");
-      const snapshot = job.snapshot;
-      const resultRows = snapshot.rows.flatMap((row) => row.sellerSkus.flatMap((sellerSku) => [
-        ...row.positiveTopics.map((topic) => ({
-          sellerSku,
-          title: row.title,
-          asin: row.asin,
-          topic: topic.topic,
-          sentiment: "正向" as const,
-          starRatingImpact: topic.starRatingImpact,
-          mentions: topic.numberOfMentions,
-          occurrencePercent: topic.occurrencePercentage,
-          notice: "Amazon Customer Feedback 非 parent ASIN 主題證據。",
-        })),
-        ...row.negativeTopics.map((topic) => ({
-          sellerSku,
-          title: row.title,
-          asin: row.asin,
-          topic: topic.topic,
-          sentiment: "負向" as const,
-          starRatingImpact: topic.starRatingImpact,
-          mentions: topic.numberOfMentions,
-          occurrencePercent: topic.occurrencePercentage,
-          notice: "Amazon Customer Feedback 非 parent ASIN 主題證據。",
-        })),
-      ]));
-      const incompleteRows = [
-        ...snapshot.relationshipIncompleteRows.map((row) => ({
-          sellerSku: row.sellerSku,
-          title: row.title,
-          asin: row.asin,
-          code: row.code,
-          message: row.message,
-        })),
-        ...snapshot.rows.flatMap((row) => row.status === "INCOMPLETE" && row.incompleteReason
-          ? row.sellerSkus.map((sellerSku) => ({
-              sellerSku,
-              title: row.title,
-              asin: row.asin,
-              code: row.incompleteReason!.code,
-              message: row.incompleteReason!.message,
-            }))
-          : []),
-      ];
-      return suiteSnapshot({
-        context,
-        status: snapshot.summary.totalIncomplete ? "partial" : "completed",
-        fetchedAt: snapshot.fetchedAt,
-        notice: snapshot.summary.totalIncomplete
-          ? `${snapshot.summary.totalIncomplete} 個非 parent FBA 項目未完成；其餘結果可核對。`
-          : snapshot.notice,
-        payload: { resultRows, incompleteRows },
-      });
-    } finally {
-      this.deleteReviewAuditJob(reviewJobId);
-    }
   }
 
   private async runAuditSuiteAdvertising(
@@ -7771,6 +7801,26 @@ export class ApiRouter {
     } catch {
       // Reconciliation is fail-closed: the GET result remains useful, while a
       // ledger entry that cannot be proven stays locked instead of being reset.
+    }
+  }
+
+  private async reconcileBusinessPriceWrites(
+    snapshot: BusinessPricingListingSnapshot,
+  ): Promise<void> {
+    try {
+      const accountScope = await this.vault.getAccountScope(
+        MARKETPLACES[snapshot.marketplaceId].region,
+      );
+      await this.store.reconcileIdempotentOperations({
+        operationTypes: ["business_price"],
+        marketplaceId: snapshot.marketplaceId,
+        sellerSku: snapshot.sellerSku,
+        accountScope,
+        reconcile: (response) => reconcileBusinessPriceWrite(response, snapshot),
+      });
+    } catch {
+      // Keep unresolved Business-price evidence locked unless an exact
+      // canonical B2B readback proves both the target and every guard field.
     }
   }
 

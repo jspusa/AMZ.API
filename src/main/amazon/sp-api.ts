@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   applyVariationDimensionNames,
   normalizeVariationMember,
@@ -247,6 +248,48 @@ export type ListingPriceSnapshot = {
   issues: ListingIssue[];
   fulfillmentAvailability: FulfillmentAvailability[];
   notice: string | null;
+};
+
+export type BusinessPricingCapability = {
+  supported: boolean;
+  editable: boolean;
+  reason: string | null;
+  schemaChecksum: string | null;
+};
+
+export type BusinessPricingListingSnapshot = ListingPriceSnapshot & {
+  businessPrice: Money | null;
+  businessOfferPresence: "absent" | "present" | "ambiguous";
+  businessOfferGuardHash: string;
+  businessPricingCapability: BusinessPricingCapability;
+};
+
+export type BusinessPricingAuditRow = {
+  sellerSku: string;
+  asin: string;
+  title: string;
+  productType: string;
+  standardPrice: Money | null;
+  businessPrice: Money | null;
+  businessOfferPresence: "absent" | "present" | "ambiguous";
+  status: "configured" | "missing" | "unsupported" | "incomplete";
+  editable: boolean;
+  reason: string;
+};
+
+export type BusinessPricingAuditSnapshot = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  fetchedAt: string;
+  rows: BusinessPricingAuditRow[];
+  summary: {
+    totalFbaSkuCount: number;
+    configured: number;
+    missing: number;
+    unsupported: number;
+    incomplete: number;
+  };
+  notice: string;
 };
 
 export type SalePriceSchedule = {
@@ -728,6 +771,56 @@ export type PriceValidationResult = {
   notice: string;
 };
 
+export type BusinessPriceValidationResult = {
+  mode: "live" | "demo";
+  status: "VALID" | "SIMULATED";
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  standardPrice: Money;
+  previousBusinessPrice: Money | null;
+  requestedBusinessPrice: Money;
+  businessOfferGuardHash: string;
+  schemaChecksum: string;
+  fbaEvidenceHash: string;
+  canonicalPatchHash: string;
+  validationIssuesHash: string;
+  validatedAt: string;
+  issues: ListingIssue[];
+  notice: string;
+};
+
+export type BusinessPricePrecommitEvidence = Pick<
+  BusinessPriceValidationResult,
+  | "asin"
+  | "productType"
+  | "businessOfferGuardHash"
+  | "schemaChecksum"
+  | "fbaEvidenceHash"
+  | "canonicalPatchHash"
+  | "validationIssuesHash"
+>;
+
+export type BusinessPriceUpdateResult = {
+  mode: "live" | "demo";
+  status: "ACCEPTED" | "SIMULATED";
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  standardPrice: Money;
+  previousBusinessPrice: Money | null;
+  requestedBusinessPrice: Money;
+  businessOfferGuardHash: string;
+  schemaChecksum: string;
+  acceptedAt: string;
+  submissionId: string | null;
+  requestId: string | null;
+  issues: ListingIssue[];
+  notice: string;
+};
+
 export type SalePriceValidationResult = {
   mode: "live" | "demo";
   status: "VALID" | "SIMULATED";
@@ -977,6 +1070,7 @@ type AmazonPurchasableOffer = {
   discounted_price?: AmazonPriceSchedule[];
   minimum_seller_allowed_price?: AmazonPriceSchedule[];
   maximum_seller_allowed_price?: AmazonPriceSchedule[];
+  quantity_discount_plan?: unknown;
   automated_pricing_merchandising_rule_plan?: unknown[];
 };
 
@@ -1003,6 +1097,7 @@ type AmazonListingItem = {
     marketplaceId?: string;
     offerType?: string;
     price?: { currency?: string; amount?: string | number };
+    audience?: { value?: string; displayName?: string };
   }>;
   issues?: AmazonListingIssue[];
   relationships?: Array<{
@@ -1034,6 +1129,7 @@ type AmazonListingSubmission = {
   status?: string;
   submissionId?: string;
   issues?: AmazonListingIssue[];
+  identifiers?: Array<{ marketplaceId?: string; asin?: string }>;
 };
 
 type AmazonProductTypeDefinition = {
@@ -1221,6 +1317,7 @@ type ListingsRequestInput = {
   method?: "GET" | "PATCH";
   body?: unknown;
   validationPreview?: boolean;
+  validationPreviewIdentifiers?: boolean;
 };
 
 type UpdateListingPriceInput = {
@@ -1228,6 +1325,14 @@ type UpdateListingPriceInput = {
   sellerSku: string;
   newPrice: number;
   expectedPrice: number;
+};
+
+export type UpdateBusinessPriceInput = {
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  expectedStandardPrice: number;
+  expectedBusinessPrice: number | null;
+  newBusinessPrice: number;
 };
 
 export type UpdateListingSalePriceInput = {
@@ -1445,6 +1550,55 @@ function parseScheduledPrice(
   );
   if (amount === null || !currencyCode) return null;
   return { amount, currencyCode };
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+function canonicalSha256(value: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalJsonValue(value)))
+    .digest("hex");
+}
+
+function businessOfferGuardHash(
+  offers: readonly AmazonPurchasableOffer[],
+  marketplaceId: MarketplaceId,
+): string {
+  const marketplace = MARKETPLACES[marketplaceId];
+  const protectedOffers = offers
+    .map((offer) => {
+      if (
+        offer.marketplace_id !== marketplaceId ||
+        offer.audience !== "B2B" ||
+        offer.currency !== marketplace.currency
+      ) {
+        return offer;
+      }
+      const { our_price: _targetBusinessPrice, ...protectedOffer } = offer;
+      const protectedFieldNames = Object.keys(protectedOffer).filter(
+        (key) => !["marketplace_id", "audience", "currency"].includes(key),
+      );
+      return protectedFieldNames.length ? protectedOffer : null;
+    })
+    .filter((offer): offer is AmazonPurchasableOffer => offer !== null)
+    .map(canonicalJsonValue)
+    .sort((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right))
+    );
+  return createHash("sha256")
+    .update(JSON.stringify(protectedOffers))
+    .digest("hex");
 }
 
 function parseDiscountedPrice(
@@ -1798,7 +1952,12 @@ async function callListingsApi(
     }
   } else {
     query.set("issueLocale", marketplace.issueLocale);
-    query.set("includedData", "issues");
+    query.set(
+      "includedData",
+      input.validationPreview && input.validationPreviewIdentifiers
+        ? "identifiers,issues"
+        : "issues",
+    );
   }
   if (input.validationPreview) query.set("mode", "VALIDATION_PREVIEW");
 
@@ -2233,6 +2392,116 @@ function normalizeListingPrice(
   };
 }
 
+function businessOfferSnapshot(
+  payload: AmazonListingItem,
+  marketplaceId: MarketplaceId,
+): Pick<
+  BusinessPricingListingSnapshot,
+  "businessPrice" | "businessOfferPresence" | "businessOfferGuardHash"
+> {
+  const marketplace = MARKETPLACES[marketplaceId];
+  const allOffers = payload.attributes?.purchasable_offer ?? [];
+  const guardHash = businessOfferGuardHash(allOffers, marketplaceId);
+  const businessOfferViewCandidates = (payload.offers ?? []).filter(
+    (offer) =>
+      offer.offerType === "B2B" || offer.audience?.value === "B2B",
+  );
+  const exactBusinessOfferViews = businessOfferViewCandidates.filter(
+    (offer) =>
+      offer.offerType === "B2B" &&
+      offer.audience?.value === "B2B" &&
+      offer.marketplaceId === marketplaceId,
+  );
+  const offerViewIdentityAmbiguous =
+    exactBusinessOfferViews.length !== businessOfferViewCandidates.length ||
+    exactBusinessOfferViews.length > 1;
+  const marketplaceOffers = allOffers.filter(
+    (offer) =>
+      offer.marketplace_id === marketplaceId && offer.audience === "B2B",
+  );
+  if (marketplaceOffers.length === 0) {
+    if (businessOfferViewCandidates.length > 0) {
+      return {
+        businessPrice: null,
+        businessOfferPresence: "ambiguous",
+        businessOfferGuardHash: guardHash,
+      };
+    }
+    return {
+      businessPrice: null,
+      businessOfferPresence: "absent",
+      businessOfferGuardHash: guardHash,
+    };
+  }
+  if (
+    marketplaceOffers.length !== 1 ||
+    marketplaceOffers[0]?.currency !== marketplace.currency ||
+    offerViewIdentityAmbiguous
+  ) {
+    return {
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      businessOfferGuardHash: guardHash,
+    };
+  }
+  const priceBlocks = marketplaceOffers[0].our_price;
+  const schedules = priceBlocks?.[0]?.schedule;
+  const amount = finiteNumericValue(schedules?.[0]?.value_with_tax);
+  if (
+    priceBlocks?.length !== 1 ||
+    schedules?.length !== 1 ||
+    amount === null ||
+    amount <= 0
+  ) {
+    return {
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      businessOfferGuardHash: guardHash,
+    };
+  }
+  const offerView = exactBusinessOfferViews[0];
+  if (offerView) {
+    const viewAmount = finiteNumericValue(offerView.price?.amount);
+    if (
+      offerView.price?.currency !== marketplace.currency ||
+      viewAmount === null ||
+      !samePrice(amount, viewAmount, marketplace.currency)
+    ) {
+      return {
+        businessPrice: null,
+        businessOfferPresence: "ambiguous",
+        businessOfferGuardHash: guardHash,
+      };
+    }
+  }
+  return {
+    businessPrice: { amount, currencyCode: marketplace.currency },
+    businessOfferPresence: "present",
+    businessOfferGuardHash: guardHash,
+  };
+}
+
+function assertExactBusinessPricingIdentity(
+  payload: AmazonListingItem,
+  marketplaceId: MarketplaceId,
+  sellerSku: string,
+): void {
+  const summaries = (payload.summaries ?? []).filter(
+    (summary) => summary.marketplaceId === marketplaceId,
+  );
+  if (
+    payload.sku !== sellerSku ||
+    summaries.length !== 1 ||
+    typeof summaries[0]?.asin !== "string" ||
+    !/^[A-Z0-9]{10}$/u.test(summaries[0].asin)
+  ) {
+    throw new SpApiError(
+      "Amazon B2B 價格回應的 SKU、ASIN 或站點身分不完整，已停止使用。",
+      { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
+    );
+  }
+}
+
 async function fetchLiveListingPrice(
   marketplaceId: MarketplaceId,
   sellerSku: string,
@@ -2257,9 +2526,14 @@ const productTypeCapabilityCache = new Map<
   string,
   { expiresAt: number; capabilities: ContentCapabilities }
 >();
+const businessPricingCapabilityCache = new Map<
+  string,
+  { expiresAt: number; capability: BusinessPricingCapability }
+>();
 
 function clearProductTypeCapabilityCache(): void {
   productTypeCapabilityCache.clear();
+  businessPricingCapabilityCache.clear();
 }
 
 function readOnlyContentCapabilities(
@@ -2463,7 +2737,7 @@ async function callProductTypeDefinitionApi(
   forceTokenRefresh = false,
   includeSellerId = true,
   options: {
-    requirements?: "LISTING" | "LISTING_PRODUCT_ONLY";
+    requirements?: "LISTING" | "LISTING_PRODUCT_ONLY" | "LISTING_OFFER_ONLY";
     requirementsEnforced?: "ENFORCED" | "NOT_ENFORCED";
     parentageLevel?: "CHILD" | "PARENT" | "NONE";
   } = {},
@@ -2636,6 +2910,294 @@ async function fetchContentCapabilities(
     capabilities,
   });
   return { capabilities, degradedReason: null };
+}
+
+function businessOfferPriceBranches(
+  root: JsonRecord,
+  node: unknown,
+  seen = new Set<unknown>(),
+  depth = 0,
+): Array<{ audience: unknown; price: unknown }> {
+  if (depth > 40 || seen.has(node)) return [];
+  if (Array.isArray(node)) {
+    seen.add(node);
+    return node.flatMap((item) =>
+      businessOfferPriceBranches(root, item, seen, depth + 1),
+    );
+  }
+  if (!isRecord(node)) return [];
+  seen.add(node);
+  const found: Array<{ audience: unknown; price: unknown }> = [];
+  if (
+    isRecord(node.properties) &&
+    "audience" in node.properties &&
+    "our_price" in node.properties &&
+    schemaAllowsString(root, [node.properties.audience], "B2B")
+  ) {
+    found.push({
+      audience: node.properties.audience,
+      price: node.properties.our_price,
+    });
+  }
+  if (typeof node.$ref === "string") {
+    found.push(
+      ...businessOfferPriceBranches(
+        root,
+        jsonPointer(root, node.$ref),
+        seen,
+        depth + 1,
+      ),
+    );
+  }
+  for (const value of Object.values(node)) {
+    found.push(
+      ...businessOfferPriceBranches(root, value, seen, depth + 1),
+    );
+  }
+  return found;
+}
+
+function schemaExplicitlyEditable(root: JsonRecord, node: unknown): boolean {
+  const flags = schemaCandidates(root, node)
+    .map((candidate) => candidate.editable)
+    .filter((value): value is boolean => typeof value === "boolean");
+  return flags.includes(true) && !flags.includes(false);
+}
+
+function schemaAllowsString(
+  root: JsonRecord,
+  nodes: readonly unknown[],
+  expected: string,
+): boolean {
+  return nodes.some((node) =>
+    schemaCandidates(root, node).some((candidate) =>
+      candidate.const === expected ||
+      (Array.isArray(candidate.enum) && candidate.enum.includes(expected)),
+    ),
+  );
+}
+
+function businessPricingCapabilityFromSchema(
+  schema: JsonRecord,
+  checksum: string | null,
+): BusinessPricingCapability {
+  const offerAttribute = schemaProperty(schema, schema, "purchasable_offer");
+  if (!offerAttribute) {
+    return {
+      supported: false,
+      editable: false,
+      reason: "Amazon seller-specific PTD 沒有提供 purchasable_offer。",
+      schemaChecksum: checksum,
+    };
+  }
+  const branches = businessOfferPriceBranches(schema, offerAttribute);
+  if (branches.length === 0) {
+    return {
+      supported: false,
+      editable: false,
+      reason:
+        "Amazon seller-specific PTD 未提供 B2B audience 或 Business Price 欄位；此帳號／站點／商品類型不可寫入。",
+      schemaChecksum: checksum,
+    };
+  }
+  const editable = schemaExplicitlyEditable(schema, offerAttribute) &&
+    branches.every((branch) => schemaExplicitlyEditable(schema, branch.price));
+  return {
+    supported: true,
+    editable,
+    reason: editable
+      ? null
+      : "Amazon seller-specific PTD 將 B2B 價格標示為唯讀。",
+    schemaChecksum: checksum,
+  };
+}
+
+async function fetchBusinessPricingCapability(
+  marketplaceId: MarketplaceId,
+  productType: string,
+  options: { forceRefresh?: boolean } = {},
+): Promise<BusinessPricingCapability> {
+  const marketplace = MARKETPLACES[marketplaceId];
+  const startedGeneration = credentialGeneration;
+  const sellerId = getSellerId(marketplace.region);
+  if (!sellerId) {
+    throw new SpApiError(
+      `${marketplace.label}站尚未設定 Seller ID，無法取得 seller-specific B2B PTD。`,
+      { status: 503, code: "LISTINGS_NOT_CONFIGURED" },
+    );
+  }
+  const sellerScope = createHash("sha256")
+    .update(sellerId)
+    .digest("hex")
+    .slice(0, 24);
+  const cacheKey = `${startedGeneration}:${sellerScope}:${marketplaceId}:${productType}`;
+  const cached = businessPricingCapabilityCache.get(cacheKey);
+  if (!options.forceRefresh && cached && cached.expiresAt > Date.now()) {
+    return cached.capability;
+  }
+  const definitionOptions = {
+    requirements: "LISTING_OFFER_ONLY" as const,
+    requirementsEnforced: "NOT_ENFORCED" as const,
+  };
+  let response = await callProductTypeDefinitionApi(
+    marketplaceId,
+    productType,
+    false,
+    true,
+    definitionOptions,
+  );
+  if (response.status === 401) {
+    tokenCache.delete(marketplace.region);
+    response = await callProductTypeDefinitionApi(
+      marketplaceId,
+      productType,
+      true,
+      true,
+      definitionOptions,
+    );
+  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (![429, 500, 503].includes(response.status)) break;
+    await wait(retryDelayMs(response, attempt));
+    response = await callProductTypeDefinitionApi(
+      marketplaceId,
+      productType,
+      false,
+      true,
+      definitionOptions,
+    );
+  }
+  if (!response.ok) {
+    return throwListingsError(response, "read", "getDefinitionsProductType");
+  }
+  const definition = await parseResponseJson<AmazonProductTypeDefinition>(response);
+  const schemaUrl = definition?.schema?.link?.resource;
+  const checksum = definition?.schema?.checksum ?? null;
+  if (!schemaUrl || !checksum) {
+    throw new SpApiError(
+      "Amazon B2B seller-specific PTD 沒有回傳可核對的 schema 與 checksum。",
+      {
+        status: 502,
+        code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+        requestId: response.headers.get("x-amzn-requestid"),
+        operation: "getDefinitionsProductType",
+      },
+    );
+  }
+  let trustedSchemaUrl: URL;
+  try {
+    trustedSchemaUrl = new URL(schemaUrl);
+  } catch {
+    throw new SpApiError("Amazon B2B seller-specific PTD schema URL 無效。", {
+      status: 502,
+      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+      operation: "getDefinitionsProductType",
+    });
+  }
+  const trustedSchemaHost =
+    trustedSchemaUrl.hostname === "amazonaws.com" ||
+    trustedSchemaUrl.hostname.endsWith(".amazonaws.com") ||
+    trustedSchemaUrl.hostname.endsWith(".amazonaws.com.cn") ||
+    trustedSchemaUrl.hostname.endsWith(".cloudfront.net");
+  if (
+    trustedSchemaUrl.protocol !== "https:" ||
+    trustedSchemaUrl.username ||
+    trustedSchemaUrl.password ||
+    trustedSchemaUrl.port ||
+    !trustedSchemaHost
+  ) {
+    throw new SpApiError(
+      "Amazon B2B seller-specific PTD schema URL 未通過官方 AWS host 安全檢查。",
+      {
+        status: 502,
+        code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+        operation: "getDefinitionsProductType",
+      },
+    );
+  }
+  let schemaResponse: Response;
+  try {
+    schemaResponse = await fetch(trustedSchemaUrl, {
+      headers: { accept: "application/schema+json, application/json" },
+      cache: "no-store",
+      redirect: "error",
+    });
+  } catch {
+    throw new SpApiError("Amazon B2B seller-specific PTD schema 下載失敗。", {
+      status: 502,
+      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+      operation: "getDefinitionsProductType",
+    });
+  }
+  if (!schemaResponse.ok) {
+    throw new SpApiError("Amazon B2B seller-specific PTD schema 暫時無法下載。", {
+      status: 502,
+      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+      operation: "getDefinitionsProductType",
+    });
+  }
+  let schemaBytes: Uint8Array;
+  try {
+    schemaBytes = new Uint8Array(await schemaResponse.arrayBuffer());
+  } catch {
+    throw new SpApiError("Amazon B2B seller-specific PTD schema 無法完整讀取。", {
+      status: 502,
+      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+      operation: "getDefinitionsProductType",
+    });
+  }
+  const actualChecksum = createHash("md5")
+    .update(schemaBytes)
+    .digest("base64");
+  if (actualChecksum !== checksum) {
+    throw new SpApiError(
+      "Amazon B2B seller-specific PTD schema 與官方 checksum 不一致，已停止使用。",
+      {
+        status: 502,
+        code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+        operation: "getDefinitionsProductType",
+      },
+    );
+  }
+  let schemaText: string;
+  try {
+    schemaText = new TextDecoder("utf-8", { fatal: true }).decode(schemaBytes);
+  } catch {
+    throw new SpApiError("Amazon B2B seller-specific PTD schema 不是有效 UTF-8。", {
+      status: 502,
+      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+      operation: "getDefinitionsProductType",
+    });
+  }
+  let parsedSchema: unknown;
+  try {
+    parsedSchema = JSON.parse(schemaText);
+  } catch {
+    parsedSchema = null;
+  }
+  if (!isRecord(parsedSchema) || !isRecord(parsedSchema.properties)) {
+    throw new SpApiError("Amazon B2B seller-specific PTD schema 格式無法辨識。", {
+      status: 502,
+      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
+      operation: "getDefinitionsProductType",
+    });
+  }
+  const schema = parsedSchema;
+  const capability = businessPricingCapabilityFromSchema(schema, checksum);
+  if (
+    startedGeneration !== credentialGeneration ||
+    getSellerId(marketplace.region) !== sellerId
+  ) {
+    throw new SpApiError(
+      "Amazon 憑證或 Seller ID 已在 B2B PTD 查詢期間改變；舊結果已丟棄。",
+      { status: 409, code: "CREDENTIALS_CHANGED" },
+    );
+  }
+  businessPricingCapabilityCache.set(cacheKey, {
+    expiresAt: Date.now() + 15 * 60_000,
+    capability,
+  });
+  return capability;
 }
 
 async function fetchVariationChildSchema(
@@ -4400,6 +4962,283 @@ async function prepareLivePriceUpdate(input: UpdateListingPriceInput): Promise<{
   }
 
   return { listing, previousPrice, requestedPrice, body, issues };
+}
+
+function buildBusinessPricePatch(
+  listing: BusinessPricingListingSnapshot,
+  newBusinessPrice: number,
+): { productType: string; patches: unknown[] } {
+  const marketplace = MARKETPLACES[listing.marketplaceId];
+  return {
+    productType: listing.productType,
+    patches: [{
+      op: "merge",
+      path: "/attributes/purchasable_offer",
+      value: [{
+        marketplace_id: listing.marketplaceId,
+        currency: marketplace.currency,
+        audience: "B2B",
+        our_price: [{ schedule: [{ value_with_tax: newBusinessPrice }] }],
+      }],
+    }],
+  };
+}
+
+function verifyBusinessPriceChange(
+  listing: BusinessPricingListingSnapshot,
+  input: UpdateBusinessPriceInput,
+): {
+  standardPrice: Money;
+  previousBusinessPrice: Money | null;
+  requestedBusinessPrice: Money;
+  businessOfferGuardHash: string;
+  schemaChecksum: string;
+} {
+  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
+  const precision = currencyCode === "JPY" ? 0 : 2;
+  const factor = 10 ** precision;
+  if (
+    !Number.isFinite(input.newBusinessPrice) ||
+    input.newBusinessPrice <= 0 ||
+    Math.round(input.newBusinessPrice * factor) / factor !==
+      input.newBusinessPrice
+  ) {
+    throw new SpApiError("請提供符合站點幣別精度的 Amazon Business 價格。", {
+      status: 400,
+      code: "INVALID_PRICE",
+    });
+  }
+  if (!listing.standardPrice) {
+    throw new SpApiError("此 SKU 沒有可核對的標準售價，已停止 B2B 調價。", {
+      status: 422,
+      code: "PRICE_UNAVAILABLE",
+    });
+  }
+  if (listing.standardPrice.currencyCode !== currencyCode) {
+    throw new SpApiError("標準售價幣別與站點不一致，已停止 B2B 調價。", {
+      status: 409,
+      code: "CURRENCY_MISMATCH",
+    });
+  }
+  if (!samePrice(
+    listing.standardPrice.amount,
+    input.expectedStandardPrice,
+    currencyCode,
+  )) {
+    throw new SpApiError("標準售價已改變，請重新讀取後再預檢。", {
+      status: 409,
+      code: "PRICE_CHANGED",
+    });
+  }
+  if (
+    !listing.businessPricingCapability.supported ||
+    !listing.businessPricingCapability.editable ||
+    !listing.businessPricingCapability.schemaChecksum
+  ) {
+    throw new SpApiError(
+      listing.businessPricingCapability.reason ||
+        "Amazon seller-specific PTD 未開放 B2B 價格寫入。",
+      { status: 422, code: "BUSINESS_PRICING_UNSUPPORTED" },
+    );
+  }
+  if (listing.businessOfferPresence === "ambiguous") {
+    throw new SpApiError("目前 B2B offer 不唯一或無法解析，已停止覆蓋。", {
+      status: 409,
+      code: "BUSINESS_PRICE_AMBIGUOUS",
+    });
+  }
+  if (listing.businessOfferPresence === "absent") {
+    if (input.expectedBusinessPrice !== null) {
+      throw new SpApiError("目前尚未設定 B2B 價格，舊值核對不一致。", {
+        status: 409,
+        code: "BUSINESS_PRICE_CHANGED",
+      });
+    }
+  } else {
+    if (
+      !listing.businessPrice ||
+      input.expectedBusinessPrice === null ||
+      listing.businessPrice.currencyCode !== currencyCode ||
+      !samePrice(
+        listing.businessPrice.amount,
+        input.expectedBusinessPrice,
+        currencyCode,
+      )
+    ) {
+      throw new SpApiError("Amazon Business 價格已改變，請重新讀取後再預檢。", {
+        status: 409,
+        code: "BUSINESS_PRICE_CHANGED",
+      });
+    }
+    if (samePrice(
+      listing.businessPrice.amount,
+      input.newBusinessPrice,
+      currencyCode,
+    )) {
+      throw new SpApiError("新 Business Price 與目前價格相同。", {
+        status: 400,
+        code: "BUSINESS_PRICE_UNCHANGED",
+      });
+    }
+  }
+  return {
+    standardPrice: listing.standardPrice,
+    previousBusinessPrice: listing.businessPrice,
+    requestedBusinessPrice: {
+      amount: input.newBusinessPrice,
+      currencyCode,
+    },
+    businessOfferGuardHash: listing.businessOfferGuardHash,
+    schemaChecksum: listing.businessPricingCapability.schemaChecksum,
+  };
+}
+
+function businessPricePrecommitEvidence(
+  listing: BusinessPricingListingSnapshot,
+  body: { productType: string; patches: unknown[] },
+  issues: readonly ListingIssue[],
+): BusinessPricePrecommitEvidence {
+  if (!listing.asin || !listing.productType) {
+    throw new SpApiError(
+      "Amazon B2B 價格缺少可綁定預檢的 ASIN 或商品類型。",
+      { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
+    );
+  }
+  const schemaChecksum = listing.businessPricingCapability.schemaChecksum;
+  if (!schemaChecksum) {
+    throw new SpApiError(
+      "Amazon B2B 價格缺少可綁定預檢的 PTD checksum。",
+      { status: 409, code: "BUSINESS_PRICING_UNSUPPORTED" },
+    );
+  }
+  return {
+    asin: listing.asin,
+    productType: listing.productType,
+    businessOfferGuardHash: listing.businessOfferGuardHash,
+    schemaChecksum,
+    fbaEvidenceHash: canonicalSha256(
+      listing.fulfillmentAvailability
+        .filter((entry) => entry.fulfillment === "FBA")
+        .map((entry) => entry.channelCode)
+        .sort(),
+    ),
+    canonicalPatchHash: canonicalSha256(body),
+    validationIssuesHash: canonicalSha256(
+      issues
+        .map((issue) => ({
+          ...issue,
+          attributeNames: [...issue.attributeNames].sort(),
+        }))
+        .sort((left, right) =>
+          JSON.stringify(canonicalJsonValue(left)).localeCompare(
+            JSON.stringify(canonicalJsonValue(right)),
+          )
+        ),
+    ),
+  };
+}
+
+function assertBusinessPricePrecommitEvidence(
+  actual: BusinessPricePrecommitEvidence,
+  expected: BusinessPricePrecommitEvidence,
+): void {
+  if (
+    actual.asin !== expected.asin ||
+    actual.productType !== expected.productType ||
+    actual.businessOfferGuardHash !== expected.businessOfferGuardHash ||
+    actual.schemaChecksum !== expected.schemaChecksum ||
+    actual.fbaEvidenceHash !== expected.fbaEvidenceHash ||
+    actual.canonicalPatchHash !== expected.canonicalPatchHash ||
+    actual.validationIssuesHash !== expected.validationIssuesHash
+  ) {
+    throw new SpApiError(
+      "Amazon B2B 預檢後的身分、FBA、offer、PTD、patch 或警告證據已改變，請重新預檢。",
+      { status: 409, code: "PREVIEW_CHANGED" },
+    );
+  }
+}
+
+async function prepareLiveBusinessPriceUpdate(
+  input: UpdateBusinessPriceInput,
+  expectedEvidence?: BusinessPricePrecommitEvidence,
+): Promise<{
+  listing: BusinessPricingListingSnapshot;
+  standardPrice: Money;
+  previousBusinessPrice: Money | null;
+  requestedBusinessPrice: Money;
+  businessOfferGuardHash: string;
+  schemaChecksum: string;
+  body: { productType: string; patches: unknown[] };
+  issues: ListingIssue[];
+  evidence: BusinessPricePrecommitEvidence;
+}> {
+  const listing = await fetchLiveBusinessPricing(input, {
+    forceCapabilityRefresh: true,
+  });
+  const verified = verifyBusinessPriceChange(listing, input);
+  const body = buildBusinessPricePatch(listing, input.newBusinessPrice);
+  const response = await executeListingsRequest({
+    marketplaceId: input.marketplaceId,
+    sellerSku: input.sellerSku,
+    method: "PATCH",
+    body,
+    validationPreview: true,
+    validationPreviewIdentifiers: true,
+  });
+  if (!response.ok) {
+    return throwListingsError(response, "read", "patchListingsItemPreview");
+  }
+  const payload = await parseResponseJson<AmazonListingSubmission>(response);
+  if (!payload) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 B2B 價格預檢結果。", {
+      status: 502,
+      code: "VALIDATION_STATUS_UNKNOWN",
+      requestId: response.headers.get("x-amzn-requestid"),
+      operation: "patchListingsItemPreview",
+    });
+  }
+  const issues = normalizeListingIssues(payload.issues);
+  if (
+    payload.status === "INVALID" ||
+    issues.some((issue) => issue.severity === "ERROR")
+  ) {
+    throw new SpApiError(
+      issues.find((issue) => issue.severity === "ERROR")?.message ||
+        "Amazon B2B 價格 Validation Preview 未通過。",
+      {
+        status: 422,
+        code: "VALIDATION_FAILED",
+        requestId: response.headers.get("x-amzn-requestid"),
+        issues,
+        operation: "patchListingsItemPreview",
+      },
+    );
+  }
+  const identifiers = payload.identifiers ?? [];
+  if (
+    payload.status !== "VALID" ||
+    payload.sku !== input.sellerSku ||
+    !listing.asin ||
+    identifiers.length !== 1 ||
+    identifiers[0]?.marketplaceId !== input.marketplaceId ||
+    identifiers[0]?.asin !== listing.asin
+  ) {
+    throw new SpApiError(
+      "Amazon B2B 價格預檢沒有回傳 exact SKU／ASIN／站點的 VALID 證據。",
+      {
+        status: 502,
+        code: "VALIDATION_STATUS_UNKNOWN",
+        requestId: response.headers.get("x-amzn-requestid"),
+        issues,
+        operation: "patchListingsItemPreview",
+      },
+    );
+  }
+  const evidence = businessPricePrecommitEvidence(listing, body, issues);
+  if (expectedEvidence) {
+    assertBusinessPricePrecommitEvidence(evidence, expectedEvidence);
+  }
+  return { listing, ...verified, body, issues, evidence };
 }
 
 function isDateOnly(value: string | null): value is string {
@@ -6721,6 +7560,7 @@ function buildDemoOrders(marketplaceId: MarketplaceId): DashboardOrder[] {
 }
 
 const demoPriceOverrides = new Map<string, number>();
+const demoBusinessPriceOverrides = new Map<string, number>();
 const demoSalePriceOverrides = new Map<
   string,
   { amount: number; startAt: string; endAt: string } | null
@@ -6730,6 +7570,19 @@ const demoImageOverrides = new Map<string, Array<string | null>>();
 
 function demoPriceKey(marketplaceId: MarketplaceId, sellerSku: string): string {
   return `${marketplaceId}:${sellerSku}`;
+}
+
+function demoBusinessPriceAmount(listing: ListingPriceSnapshot): number | null {
+  if (!listing.standardPrice) return null;
+  const key = demoPriceKey(listing.marketplaceId, listing.sellerSku);
+  const override = demoBusinessPriceOverrides.get(key);
+  if (override !== undefined) return override;
+  const configuredByDefault = [...listing.sellerSku]
+    .reduce((sum, character) => sum + character.codePointAt(0)!, 0) % 2 === 0;
+  if (!configuredByDefault) return null;
+  return Number((listing.standardPrice.amount * 0.9).toFixed(
+    listing.standardPrice.currencyCode === "JPY" ? 0 : 2,
+  ));
 }
 
 function getDemoListingPrice(
@@ -7392,6 +8245,501 @@ export async function getListingPrice(input: {
     return getDemoListingPrice(input.marketplaceId, input.sellerSku);
   }
   return fetchLiveListingPrice(input.marketplaceId, input.sellerSku);
+}
+
+async function fetchLiveBusinessPricing(
+  input: { marketplaceId: MarketplaceId; sellerSku: string },
+  options: { forceCapabilityRefresh?: boolean } = {},
+): Promise<BusinessPricingListingSnapshot> {
+  const { payload, requestId } = await fetchLiveListingItem(
+    input.marketplaceId,
+    input.sellerSku,
+  );
+  assertExactBusinessPricingIdentity(
+    payload,
+    input.marketplaceId,
+    input.sellerSku,
+  );
+  assertFbaListingPayload(payload);
+  if (
+    !isRecord(payload.attributes) ||
+    !Array.isArray(payload.attributes.purchasable_offer) ||
+    !Array.isArray(payload.offers) ||
+    !Array.isArray(payload.issues)
+  ) {
+    throw new SpApiError(
+      "Amazon B2B 價格回應缺少 attributes、offers 或 issues 完整證據。",
+      { status: 502, code: "UPSTREAM_UNAVAILABLE" },
+    );
+  }
+  const listing = normalizeListingPrice(payload, input.marketplaceId, requestId);
+  const business = businessOfferSnapshot(payload, input.marketplaceId);
+  const capability = await fetchBusinessPricingCapability(
+    input.marketplaceId,
+    listing.productType,
+    { forceRefresh: options.forceCapabilityRefresh },
+  );
+  return {
+    ...listing,
+    ...business,
+    businessPricingCapability: capability,
+  };
+}
+
+export async function getBusinessPricing(input: {
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+}): Promise<BusinessPricingListingSnapshot> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
+    const amount = demoBusinessPriceAmount(listing);
+    return {
+      ...listing,
+      businessPrice: amount && listing.standardPrice
+        ? { amount, currencyCode: listing.standardPrice.currencyCode }
+        : null,
+      businessOfferPresence: amount ? "present" : "absent",
+      businessOfferGuardHash: businessOfferGuardHash([], input.marketplaceId),
+      businessPricingCapability: {
+        supported: true,
+        editable: true,
+        reason: null,
+        schemaChecksum: "demo-business-pricing-schema",
+      },
+    };
+  }
+
+  return fetchLiveBusinessPricing(input);
+}
+
+function summarizeBusinessPricingAudit(
+  rows: readonly BusinessPricingAuditRow[],
+): BusinessPricingAuditSnapshot["summary"] {
+  return {
+    totalFbaSkuCount: rows.length,
+    configured: rows.filter((row) => row.status === "configured").length,
+    missing: rows.filter((row) => row.status === "missing").length,
+    unsupported: rows.filter((row) => row.status === "unsupported").length,
+    incomplete: rows.filter((row) => row.status === "incomplete").length,
+  };
+}
+
+function incompleteBusinessPricingAuditRow(
+  seed: ListingReportSeed,
+  reason: string,
+  payload?: AmazonListingItem,
+  marketplaceId?: MarketplaceId,
+): BusinessPricingAuditRow {
+  const summary = marketplaceId && payload
+    ? payload.summaries?.find((item) => item.marketplaceId === marketplaceId)
+    : undefined;
+  const productType = marketplaceId && payload
+    ? listingProductType(payload, marketplaceId)
+    : "";
+  return {
+    sellerSku: seed.sellerSku,
+    asin: seed.asin,
+    title: safeText(summary?.itemName, seed.title),
+    productType: productType === "PRODUCT" && !summary?.productType
+      ? ""
+      : productType,
+    standardPrice: null,
+    businessPrice: null,
+    businessOfferPresence: "ambiguous",
+    status: "incomplete",
+    editable: false,
+    reason,
+  };
+}
+
+function exactBusinessPricingAuditPayload(input: {
+  seed: ListingReportSeed;
+  payload: AmazonListingItem;
+  marketplaceId: MarketplaceId;
+}): { listing: ListingPriceSnapshot; business: ReturnType<typeof businessOfferSnapshot> } | string {
+  const { seed, payload, marketplaceId } = input;
+  const summaries = (payload.summaries ?? []).filter(
+    (summary) => summary.marketplaceId === marketplaceId,
+  );
+  if (
+    payload.sku !== seed.sellerSku ||
+    summaries.length !== 1 ||
+    summaries[0]?.asin !== seed.asin ||
+    !/^[A-Z0-9]{10}$/u.test(seed.asin)
+  ) {
+    return "Amazon Listings 的 SKU／ASIN／站點身分與同次 FBA 報表不一致。";
+  }
+  if (!Array.isArray(payload.fulfillmentAvailability)) {
+    return "Amazon Listings 沒有回傳 fulfillmentAvailability，無法再次確認 FBA。";
+  }
+  if (!payloadHasFbaAvailability(payload)) {
+    return "Amazon Listings 與 FBA 報表的履約證據不一致。";
+  }
+  if (
+    !isRecord(payload.attributes) ||
+    !Array.isArray(payload.attributes.purchasable_offer)
+  ) {
+    return "Amazon Listings 沒有完整回傳 purchasable_offer attributes。";
+  }
+  if (!Array.isArray(payload.offers) || !Array.isArray(payload.issues)) {
+    return "Amazon Listings 沒有完整回傳 offers 或 issues 證據。";
+  }
+  const listing = normalizeListingPrice(payload, marketplaceId, null);
+  if (
+    !listing.productType ||
+    listing.productType === "PRODUCT" ||
+    listing.purchasableOfferPresence !== "present" ||
+    !listing.standardPrice
+  ) {
+    return "Amazon Listings 沒有唯一、可核對的商品類型或標準售價。";
+  }
+  if (
+    listing.issues.some((issue) =>
+      issue.severity === "ERROR" &&
+      (issue.attributeNames.length === 0 ||
+        issue.attributeNames.some((name) =>
+          name === "purchasable_offer" ||
+          name === "our_price" ||
+          name === "quantity_discount_plan")),
+    )
+  ) {
+    return "Amazon Listings 回傳與價格 offer 有關的 ERROR。";
+  }
+  return { listing, business: businessOfferSnapshot(payload, marketplaceId) };
+}
+
+function completeBusinessPricingAuditRow(input: {
+  seed: ListingReportSeed;
+  listing: ListingPriceSnapshot;
+  business: ReturnType<typeof businessOfferSnapshot>;
+  capability: BusinessPricingCapability;
+}): BusinessPricingAuditRow {
+  const { seed, listing, business, capability } = input;
+  if (business.businessOfferPresence === "ambiguous") {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason:
+        "Amazon 回傳多個、幣別不符或價格無法解析的 B2B offer，已停止編輯。",
+    };
+  }
+  if (!capability.supported || !capability.editable) {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: business.businessPrice,
+      businessOfferPresence: business.businessOfferPresence,
+      status: "unsupported",
+      editable: false,
+      reason: capability.reason ??
+        "Amazon seller-specific PTD 未開放 B2B 價格寫入。",
+    };
+  }
+  const configured = business.businessOfferPresence === "present";
+  return {
+    sellerSku: seed.sellerSku,
+    asin: seed.asin,
+    title: listing.title,
+    productType: listing.productType,
+    standardPrice: listing.standardPrice,
+    businessPrice: business.businessPrice,
+    businessOfferPresence: business.businessOfferPresence,
+    status: configured ? "configured" : "missing",
+    editable: true,
+    reason: configured
+      ? "已設定 Amazon Business 價格；seller-specific PTD 允許編輯。"
+      : "尚未設定 Amazon Business 價格；seller-specific PTD 允許建立。",
+  };
+}
+
+export async function getBusinessPricingAuditData(input: {
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  documentId: string;
+  signal?: AbortSignal;
+}): Promise<BusinessPricingAuditSnapshot> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const listingData = await getAllListingsExportData(input);
+    const rows = await Promise.all(listingData.rows.map(async (row) => {
+      const listing = await getBusinessPricing({
+        marketplaceId: input.marketplaceId,
+        sellerSku: row.sellerSku,
+      });
+      const status: BusinessPricingAuditRow["status"] =
+        listing.businessOfferPresence === "present"
+          ? "configured"
+          : listing.businessOfferPresence === "absent"
+            ? "missing"
+            : "incomplete";
+      return {
+        sellerSku: listing.sellerSku,
+        asin: listing.asin ?? "",
+        title: listing.title,
+        productType: listing.productType,
+        standardPrice: listing.standardPrice,
+        businessPrice: listing.businessPrice,
+        businessOfferPresence: listing.businessOfferPresence,
+        status,
+        editable: status === "configured" || status === "missing",
+        reason: status === "configured"
+          ? "已設定 Amazon Business 價格；展示資料不會寫入 Amazon。"
+          : status === "missing"
+            ? "尚未設定 Amazon Business 價格；展示模式可模擬建立。"
+            : "B2B offer 證據不完整，展示模式已停止編輯。",
+      } satisfies BusinessPricingAuditRow;
+    }));
+    return {
+      mode: "demo",
+      marketplaceId: input.marketplaceId,
+      fetchedAt: listingData.fetchedAt,
+      rows,
+      summary: summarizeBusinessPricingAudit(rows),
+      notice: "展示快照只供 B2B 價格健檢版面與安全流程測試，不是 Amazon 真實 Business Price。",
+    };
+  }
+
+  const reportStatus = await getAllListingsReportStatus({
+    marketplaceId: input.marketplaceId,
+    reportId: input.reportId,
+    signal: input.signal,
+  });
+  assertNotAborted(input.signal);
+  if (!reportStatus.ready || reportStatus.documentId !== input.documentId) {
+    throw new SpApiError("FBA 全商品報表尚未完成，或文件資訊已失效。", {
+      status: 409,
+      code: "REPORT_NOT_READY",
+    });
+  }
+  const report = await downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+    input.signal,
+  );
+  assertNotAborted(input.signal);
+  const seeds = parseFbaListingReportSeeds(report);
+  const seedBySku = new Map(seeds.map((seed) => [seed.sellerSku, seed]));
+  const rowsBySku = new Map<string, BusinessPricingAuditRow>();
+  const payloadBySku = new Map<string, AmazonListingItem>();
+  const { batches, unqueryableSellerSkus } =
+    buildUnboundVariationSearchBatches(seeds.map((seed) => seed.sellerSku));
+  for (const sellerSku of unqueryableSellerSkus) {
+    rowsBySku.set(
+      sellerSku,
+      incompleteBusinessPricingAuditRow(
+        seedBySku.get(sellerSku)!,
+        "Seller SKU 無法不失真地放入官方 Listings 批次參數。",
+      ),
+    );
+  }
+
+  for (const sellerSkus of batches) {
+    assertNotAborted(input.signal);
+    const batchSeeds = sellerSkus.map((sellerSku) => seedBySku.get(sellerSku)!);
+    try {
+      const response = await executeListingsSearchRequest(
+        input.marketplaceId,
+        sellerSkus,
+        input.signal,
+      );
+      assertNotAborted(input.signal);
+      if (response.status === 400) {
+        for (const seed of batchSeeds) {
+          assertNotAborted(input.signal);
+          try {
+            const exact = await fetchLiveListingItem(
+              input.marketplaceId,
+              seed.sellerSku,
+              input.signal,
+            );
+            payloadBySku.set(seed.sellerSku, exact.payload);
+          } catch (error) {
+            rowsBySku.set(
+              seed.sellerSku,
+              incompleteBusinessPricingAuditRow(
+                seed,
+                error instanceof Error
+                  ? `Amazon exact Listings 查詢失敗：${error.message}`
+                  : "Amazon exact Listings 查詢失敗。",
+              ),
+            );
+          }
+          await wait(220, input.signal);
+        }
+        continue;
+      }
+      if (!response.ok) {
+        const requestId = response.headers.get("x-amzn-requestid");
+        for (const seed of batchSeeds) {
+          rowsBySku.set(
+            seed.sellerSku,
+            incompleteBusinessPricingAuditRow(
+              seed,
+              `Amazon Listings 批次查詢未完成${requestId ? `（Request ID: ${requestId}）` : ""}。`,
+            ),
+          );
+        }
+        continue;
+      }
+      const payload = await parseResponseJson<AmazonListingSearchResponse>(response);
+      const items = payload?.items;
+      const malformedBatch =
+        !payload ||
+        !Array.isArray(items) ||
+        Boolean(payload.pagination?.nextToken) ||
+        (typeof payload.numberOfResults === "number" &&
+          payload.numberOfResults !== items.length) ||
+        items.some((item) =>
+          typeof item.sku !== "string" || !sellerSkus.includes(item.sku)) ||
+        new Set(items.map((item) => item.sku)).size !== items.length;
+      if (malformedBatch || !items) {
+        for (const seed of batchSeeds) {
+          rowsBySku.set(
+            seed.sellerSku,
+            incompleteBusinessPricingAuditRow(
+              seed,
+              "Amazon Listings 批次回應含缺頁、額外列、重複列或無法辨識的列數。",
+            ),
+          );
+        }
+        continue;
+      }
+      for (const item of items) payloadBySku.set(item.sku!, item);
+      for (const seed of batchSeeds) {
+        if (!payloadBySku.has(seed.sellerSku)) {
+          rowsBySku.set(
+            seed.sellerSku,
+            incompleteBusinessPricingAuditRow(
+              seed,
+              "Amazon Listings 批次沒有回傳此 FBA Seller SKU。",
+            ),
+          );
+        }
+      }
+    } catch (error) {
+      assertNotAborted(input.signal);
+      for (const seed of batchSeeds) {
+        rowsBySku.set(
+          seed.sellerSku,
+          incompleteBusinessPricingAuditRow(
+            seed,
+            error instanceof Error
+              ? `Amazon Listings 批次查詢失敗：${error.message}`
+              : "Amazon Listings 批次查詢失敗。",
+          ),
+        );
+      }
+    }
+    await wait(220, input.signal);
+  }
+
+  const exactBySku = new Map<string, {
+    listing: ListingPriceSnapshot;
+    business: ReturnType<typeof businessOfferSnapshot>;
+  }>();
+  for (const seed of seeds) {
+    if (rowsBySku.has(seed.sellerSku)) continue;
+    const payload = payloadBySku.get(seed.sellerSku);
+    if (!payload) continue;
+    const exact = exactBusinessPricingAuditPayload({
+      seed,
+      payload,
+      marketplaceId: input.marketplaceId,
+    });
+    if (typeof exact === "string") {
+      rowsBySku.set(
+        seed.sellerSku,
+        incompleteBusinessPricingAuditRow(
+          seed,
+          exact,
+          payload,
+          input.marketplaceId,
+        ),
+      );
+    } else {
+      exactBySku.set(seed.sellerSku, exact);
+    }
+  }
+
+  const capabilityByProductType = new Map<
+    string,
+    BusinessPricingCapability | Error
+  >();
+  const productTypes = [...new Set(
+    [...exactBySku.values()].map((value) => value.listing.productType),
+  )].sort();
+  for (const productType of productTypes) {
+    assertNotAborted(input.signal);
+    try {
+      capabilityByProductType.set(
+        productType,
+        await fetchBusinessPricingCapability(input.marketplaceId, productType),
+      );
+    } catch (error) {
+      capabilityByProductType.set(
+        productType,
+        error instanceof Error ? error : new Error("PTD 查詢失敗"),
+      );
+    }
+    await wait(220, input.signal);
+  }
+
+  for (const seed of seeds) {
+    if (rowsBySku.has(seed.sellerSku)) continue;
+    const exact = exactBySku.get(seed.sellerSku);
+    if (!exact) {
+      rowsBySku.set(
+        seed.sellerSku,
+        incompleteBusinessPricingAuditRow(
+          seed,
+          "Amazon B2B 價格資料沒有產生終局分類。",
+        ),
+      );
+      continue;
+    }
+    const capability = capabilityByProductType.get(exact.listing.productType);
+    if (!capability || capability instanceof Error) {
+      rowsBySku.set(
+        seed.sellerSku,
+        incompleteBusinessPricingAuditRow(
+          seed,
+          capability instanceof Error
+            ? `Amazon seller-specific PTD 未完成：${capability.message}`
+            : "Amazon seller-specific PTD 未完成。",
+          payloadBySku.get(seed.sellerSku),
+          input.marketplaceId,
+        ),
+      );
+      continue;
+    }
+    rowsBySku.set(
+      seed.sellerSku,
+      completeBusinessPricingAuditRow({ seed, ...exact, capability }),
+    );
+  }
+
+  const rows = seeds
+    .map((seed) => rowsBySku.get(seed.sellerSku)!)
+    .sort((left, right) => left.sellerSku.localeCompare(right.sellerSku));
+  return {
+    mode: "live",
+    marketplaceId: input.marketplaceId,
+    fetchedAt: new Date().toISOString(),
+    rows,
+    summary: summarizeBusinessPricingAudit(rows),
+    notice:
+      "FBA 範圍取自同次 Amazon 全商品報表；B2B offer 逐批由 Listings Items attributes／offers 核對，編輯能力只採帶 Seller ID 的 seller-specific PTD。缺列、身分衝突或 PTD 失敗維持資料未完成，不會當成未設定。",
+  };
 }
 
 function exactAsin(value: unknown): string | null {
@@ -12636,6 +13984,156 @@ export async function updateListingSalePrice(
       input.action === "cancel"
         ? "Amazon 已接受取消折扣，正在處理；重新查詢確認後才代表完成。"
         : "Amazon 已接受限時折扣，正在處理；重新查詢看到新折扣後才代表生效。",
+  };
+}
+
+export async function previewBusinessPriceUpdate(
+  input: UpdateBusinessPriceInput,
+): Promise<BusinessPriceValidationResult> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const listing = await getBusinessPricing(input);
+    const verified = verifyBusinessPriceChange(listing, input);
+    const body = buildBusinessPricePatch(listing, input.newBusinessPrice);
+    const evidence = businessPricePrecommitEvidence(listing, body, []);
+    return {
+      mode: "demo",
+      status: "SIMULATED",
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+      ...evidence,
+      ...verified,
+      validatedAt: new Date().toISOString(),
+      issues: [],
+      notice:
+        "展示 B2B 價格預檢已通過；尚未寫入 Amazon，最終按鈕只會模擬。",
+    };
+  }
+  const prepared = await prepareLiveBusinessPriceUpdate(input);
+  return {
+    mode: "live",
+    status: "VALID",
+    marketplaceId: input.marketplaceId,
+    sellerSku: input.sellerSku,
+    ...prepared.evidence,
+    standardPrice: prepared.standardPrice,
+    previousBusinessPrice: prepared.previousBusinessPrice,
+    requestedBusinessPrice: prepared.requestedBusinessPrice,
+    businessOfferGuardHash: prepared.businessOfferGuardHash,
+    schemaChecksum: prepared.schemaChecksum,
+    validatedAt: new Date().toISOString(),
+    issues: prepared.issues,
+    notice: prepared.issues.length
+      ? "Amazon B2B 價格預檢通過，但有警告需要確認；尚未寫入。"
+      : "Amazon B2B 價格 Validation Preview 已通過，尚未寫入。",
+  };
+}
+
+export async function updateBusinessPrice(
+  input: UpdateBusinessPriceInput,
+  expectedEvidence?: BusinessPricePrecommitEvidence,
+): Promise<BusinessPriceUpdateResult> {
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    const listing = await getBusinessPricing(input);
+    const verified = verifyBusinessPriceChange(listing, input);
+    const body = buildBusinessPricePatch(listing, input.newBusinessPrice);
+    const evidence = businessPricePrecommitEvidence(listing, body, []);
+    if (expectedEvidence) {
+      assertBusinessPricePrecommitEvidence(evidence, expectedEvidence);
+    }
+    demoBusinessPriceOverrides.set(
+      demoPriceKey(input.marketplaceId, input.sellerSku),
+      input.newBusinessPrice,
+    );
+    return {
+      mode: "demo",
+      status: "SIMULATED",
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+      asin: evidence.asin,
+      productType: evidence.productType,
+      ...verified,
+      acceptedAt: new Date().toISOString(),
+      submissionId: null,
+      requestId: null,
+      issues: [],
+      notice: "模擬 Amazon Business 調價完成；Amazon 真實價格沒有變更。",
+    };
+  }
+
+  const prepared = await prepareListingCommit(
+    () => prepareLiveBusinessPriceUpdate(input, expectedEvidence),
+    "B2B 價格正式寫入前的重新讀取、PTD 或 Validation Preview 失敗。",
+  );
+  const response = await executeListingsRequest({
+    marketplaceId: input.marketplaceId,
+    sellerSku: input.sellerSku,
+    method: "PATCH",
+    body: prepared.body,
+  });
+  if (!response.ok) {
+    return throwListingsError(response, "write", "patchListingsItem");
+  }
+
+  const payload = await parseResponseJson<AmazonListingSubmission>(response);
+  if (!payload) {
+    throw new SpApiError(
+      "Amazon 已收到 B2B 價格請求，但回應無法辨識。請重新查詢 SKU 確認，勿盲目重送。",
+      {
+        status: 502,
+        code: "UPDATE_STATUS_UNKNOWN",
+        requestId: response.headers.get("x-amzn-requestid"),
+        operation: "patchListingsItem",
+      },
+    );
+  }
+  const issues = normalizeListingIssues(payload.issues);
+  if (payload.sku !== input.sellerSku) {
+    throw new SpApiError(
+      "Amazon 已回傳 B2B 價格接受狀態，但 SKU 身分缺失或不一致。請重新查詢確認，勿盲目重送。",
+      {
+        status: 502,
+        code: "UPDATE_STATUS_UNKNOWN",
+        requestId: response.headers.get("x-amzn-requestid"),
+        issues,
+        operation: "patchListingsItem",
+      },
+    );
+  }
+  if (
+    payload.status !== "ACCEPTED" ||
+    issues.some((issue) => issue.severity === "ERROR")
+  ) {
+    throw new SpApiError(
+      issues.find((issue) => issue.severity === "ERROR")?.message ||
+        "Amazon 未接受這次 B2B 價格更新。",
+      {
+        status: 422,
+        code: "UPDATE_REJECTED",
+        requestId: response.headers.get("x-amzn-requestid"),
+        issues,
+        operation: "patchListingsItem",
+      },
+    );
+  }
+
+  return {
+    mode: "live",
+    status: "ACCEPTED",
+    marketplaceId: input.marketplaceId,
+    sellerSku: input.sellerSku,
+    asin: prepared.listing.asin!,
+    productType: prepared.listing.productType,
+    standardPrice: prepared.standardPrice,
+    previousBusinessPrice: prepared.previousBusinessPrice,
+    requestedBusinessPrice: prepared.requestedBusinessPrice,
+    businessOfferGuardHash: prepared.businessOfferGuardHash,
+    schemaChecksum: prepared.schemaChecksum,
+    acceptedAt: new Date().toISOString(),
+    submissionId: payload.submissionId ?? null,
+    requestId: response.headers.get("x-amzn-requestid"),
+    issues,
+    notice:
+      "Amazon 已接受 B2B 調價請求，正在處理；重新查詢確認後才代表 Business Price 已生效。",
   };
 }
 

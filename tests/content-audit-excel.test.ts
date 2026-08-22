@@ -29,6 +29,7 @@ function summary(): ContentAuditSnapshot["summary"] {
     missingBullets: 1,
     missingIngredients: 0,
     ingredientsUnverified: 0,
+    singleIngredientMismatch: 1,
     titleBelowTarget: 0,
     highlightBelowTarget: 1,
     bulletBelowTarget: 0,
@@ -57,16 +58,25 @@ describe("content audit Excel", () => {
           ...base,
           sellerSku: "FAMILY-B-CHILD",
           asin: "B000000004",
-          title: "Family B child",
+          title: "Single-Ingredient Family B child",
+          ingredients: "Turkey, Chicken",
           bulletPoints: ["One", "Two", "Three", "Four", "Five"],
           variationRole: "child",
           variationParentSku: "PARENT-B",
           variationFamilyKey: "PARENT-B",
-          issues: [{
-            kind: "HIGHLIGHT_BELOW_TARGET",
-            field: "itemHighlight",
-            message: "產品亮點目前 19 字元，低於 110 字元。",
-          }],
+          issues: [
+            {
+              kind: "HIGHLIGHT_BELOW_TARGET",
+              field: "itemHighlight",
+              message: "產品亮點目前 19 字元，低於 110 字元。",
+            },
+            {
+              kind: "SINGLE_INGREDIENT_MISMATCH",
+              field: "title",
+              token: "Single-Ingredient",
+              message: "產品名稱宣稱「Single-Ingredient」，但 Amazon ingredients 已明確列出 2 項：Turkey、Chicken。",
+            },
+          ],
         },
         {
           ...base,
@@ -171,6 +181,9 @@ describe("content audit Excel", () => {
     expect(familyA).toContain("NEEDS-EDIT");
     expect(familyA).not.toContain("CLEAN-SKU");
     expect(familyB).toContain("FAMILY-B-CHILD");
+    expect(familyB).toContain("單一成分宣稱不一致");
+    expect(familyB).toContain("Amazon ingredients");
+    expect(familyB).toMatch(/<c r="H2" s="6" t="inlineStr">/u);
     expect(standalone).toContain("STANDALONE-ISSUE");
     expect(incomplete).toContain("UNKNOWN-RELATIONSHIP");
     expect(familyA).toContain("原始產品名稱");

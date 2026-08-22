@@ -602,14 +602,14 @@ describe("FBA inbound shipment renderer contract", () => {
       readFile(new URL("../src/renderer/src/components/inbound-shipments-panel.tsx", import.meta.url), "utf8"),
       readFile(new URL("../src/renderer/src/app.css", import.meta.url), "utf8"),
     ]);
-    expect(dashboard).toContain('label: "入庫貨件"');
+    expect(dashboard).toContain('inbound: { label: "入庫貨件", symbol: "⇣", group: "reports" }');
+    expect(dashboard).toContain('tools: ["inbound"]');
     expect(dashboard).toContain("backgroundInboundShipmentJobId");
     expect(dashboard).toContain("pollInboundShipmentJob({");
     expect(dashboard).toContain('openTool === "inbound"');
     expect(dashboard).toContain("latestInboundShipmentKey");
     expect(dashboard).toContain("replaceInboundShipmentCacheForMarketplace");
-    expect(dashboard).toContain("FBA 入庫貨件追蹤");
-    expect(dashboard).toContain("同步未完成");
+    expect(dashboard).not.toContain('className="inbound-home-card"');
     expect(dashboard).not.toContain("需要重新接回");
     expect(panel).toContain("items.push(item)");
     expect(panel).not.toContain("grouped.set(item.shipmentId, [...items, item])");

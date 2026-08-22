@@ -13,6 +13,7 @@ import ContentAuditPanel, {
   resolveContentAuditQuickEditFocus,
   type ContentAuditCache,
   type ContentAuditQuickEditFocus,
+  type ResolvedContentAuditQuickEditFocus,
 } from "./content-audit-panel";
 import {
   MARKETPLACES,
@@ -503,6 +504,39 @@ export function contentLookupErrorMessage(
   quickEditAttempt: boolean,
 ): string {
   return quickEditAttempt ? `立刻修改未開始：${message}` : message;
+}
+
+function quickEditReasonsForField(
+  focus: ResolvedContentAuditQuickEditFocus | null,
+  field: "title" | "itemHighlight" | "bulletPoints" | "productDescription" | "ingredients",
+  bulletIndex: number | null = null,
+): string[] {
+  if (!focus) return [];
+  return focus.reasons
+    .filter((reason) =>
+      reason.field === field &&
+      (field !== "bulletPoints" || reason.bulletIndex === bulletIndex))
+    .map((reason) => reason.message);
+}
+
+function QuickEditFieldReasons({
+  focus,
+  field,
+  bulletIndex = null,
+}: {
+  focus: ResolvedContentAuditQuickEditFocus | null;
+  field: "title" | "itemHighlight" | "bulletPoints" | "productDescription" | "ingredients";
+  bulletIndex?: number | null;
+}) {
+  const reasons = quickEditReasonsForField(focus, field, bulletIndex);
+  if (!reasons.length) return null;
+  return (
+    <span className="content-audit-field-reasons" role="note">
+      {reasons.map((reason) => (
+        <span className="content-audit-field-reason" key={reason}>{reason}</span>
+      ))}
+    </span>
+  );
 }
 
 export default function SkuOperationsDrawer({
@@ -1414,10 +1448,6 @@ export default function SkuOperationsDrawer({
                             ).length + activeQuickEditFocus.bulletIndices.length
                           } 個待修欄位；其他 Amazon 原值仍會原樣帶入預檢，不會被清空。
                         </p>
-                        <details>
-                          <summary>查看本次待修原因</summary>
-                          <p>{activeQuickEditFocus.reason}</p>
-                        </details>
                         {activeQuickEditFocus.relocationNote && (
                           <p>{activeQuickEditFocus.relocationNote}</p>
                         )}
@@ -1430,12 +1460,6 @@ export default function SkuOperationsDrawer({
                         role="alert"
                       >
                         <strong>健檢定位已失效，已顯示完整編輯</strong>
-                        {quickEditFocus && (
-                          <details>
-                            <summary>查看原健檢原因</summary>
-                            <p>{quickEditFocus.reason}</p>
-                          </details>
-                        )}
                         <p>無法定位原因：{staleQuickEditNotice}</p>
                       </div>
                     )}
@@ -1462,6 +1486,10 @@ export default function SkuOperationsDrawer({
                         activeQuickEditFocus.fields.includes("title")) && (
                       <label htmlFor="content-title">
                         <span>商品標題</span>
+                        <QuickEditFieldReasons
+                          focus={activeQuickEditFocus}
+                          field="title"
+                        />
                         <textarea
                           id="content-title"
                           value={draft.title}
@@ -1483,6 +1511,10 @@ export default function SkuOperationsDrawer({
                         activeQuickEditFocus.fields.includes("itemHighlight")) && (
                       <label htmlFor="content-item-highlight" style={{ marginTop: 22 }}>
                         <span>產品亮點</span>
+                        <QuickEditFieldReasons
+                          focus={activeQuickEditFocus}
+                          field="itemHighlight"
+                        />
                         <textarea
                           id="content-item-highlight"
                           value={draft.itemHighlight}
@@ -1534,6 +1566,11 @@ export default function SkuOperationsDrawer({
                             style={{ marginTop: index === 0 ? 0 : 15 }}
                           >
                             <span>賣點 {index + 1}</span>
+                            <QuickEditFieldReasons
+                              focus={activeQuickEditFocus}
+                              field="bulletPoints"
+                              bulletIndex={index}
+                            />
                             <textarea
                               id={`content-bullet-${index + 1}`}
                               value={bullet}
@@ -1567,6 +1604,10 @@ export default function SkuOperationsDrawer({
                         style={{ marginTop: 22 }}
                       >
                         <span>產品敘述</span>
+                        <QuickEditFieldReasons
+                          focus={activeQuickEditFocus}
+                          field="productDescription"
+                        />
                         <textarea
                           id="content-product-description"
                           value={draft.productDescription}
@@ -1598,6 +1639,10 @@ export default function SkuOperationsDrawer({
                         activeQuickEditFocus.fields.includes("ingredients")) && (
                       <label htmlFor="content-ingredients" style={{ marginTop: 22 }}>
                         <span>成分</span>
+                        <QuickEditFieldReasons
+                          focus={activeQuickEditFocus}
+                          field="ingredients"
+                        />
                         <textarea
                           id="content-ingredients"
                           value={draft.ingredients}

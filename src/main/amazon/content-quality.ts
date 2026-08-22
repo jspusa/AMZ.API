@@ -1,3 +1,7 @@
+import {
+  singleIngredientClaimFindings,
+} from "../../shared/content-claims";
+
 export type ContentQualityIssueKind =
   | "MISSING_BULLETS"
   | "MISSING_INGREDIENTS"
@@ -7,6 +11,7 @@ export type ContentQualityIssueKind =
   | "BULLET_BELOW_TARGET"
   | "BULLET_ABOVE_TARGET"
   | "DESCRIPTION_BELOW_TARGET"
+  | "SINGLE_INGREDIENT_MISMATCH"
   | "SUSPECTED_TYPO";
 
 export type ContentQualityField =
@@ -69,6 +74,7 @@ export type ContentQualitySummary = {
   bulletBelowTarget: number;
   bulletAboveTarget: number;
   descriptionBelowTarget: number;
+  singleIngredientMismatch: number;
 };
 
 export type ContentQualityAudit = {
@@ -269,6 +275,16 @@ function auditRow(source: ContentQualitySourceRow): ContentQualityRow {
     }
   }
 
+  issues.push(...singleIngredientClaimFindings({
+    title: source.title,
+    itemHighlight,
+    bulletPoints,
+    ingredients: source.ingredients,
+  }).map((finding) => ({
+    kind: "SINGLE_INGREDIENT_MISMATCH" as const,
+    ...finding,
+  })));
+
   issues.push(...typoIssues(source.title, "title"));
   issues.push(...typoIssues(itemHighlight, "itemHighlight"));
   for (const bulletPoint of bulletPoints) {
@@ -338,6 +354,9 @@ export function auditListingContentRows(input: {
       ).length,
       descriptionBelowTarget: rows.filter((row) =>
         rowHas(row, "DESCRIPTION_BELOW_TARGET"),
+      ).length,
+      singleIngredientMismatch: rows.filter((row) =>
+        rowHas(row, "SINGLE_INGREDIENT_MISMATCH"),
       ).length,
     },
   };

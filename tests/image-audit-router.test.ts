@@ -51,9 +51,11 @@ describe("FBA image audit snapshot export route", () => {
     if (audit.body.kind !== "json") throw new Error("Expected audit JSON");
     const snapshot = audit.body.value as {
       exportId: string;
+      minimumImages: number;
       rows: Array<{ sellerSku: string }>;
       summary: { total: number; underMinimum: number; incomplete: number };
     };
+    expect(snapshot.minimumImages).toBe(6);
 
     const response = await router.handle(
       request({
@@ -84,6 +86,7 @@ describe("FBA image audit snapshot export route", () => {
     for (const row of snapshot.rows) expect(sheet).toContain(row.sellerSku);
     expect(sheet).toContain(MARKETPLACE_ID);
     expect(notes).toContain("同一份 Amazon 全商品報表快照");
+    expect(notes).toContain("至少 6 張圖片");
     expect(notes).toContain("不含 FBM");
   });
 

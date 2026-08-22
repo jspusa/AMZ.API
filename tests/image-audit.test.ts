@@ -24,26 +24,26 @@ describe("FBA image audit parsing", () => {
     );
   });
 
-  it("lists only complete rows below five images plus fail-visible reads", () => {
+  it("lists only complete rows below six images plus fail-visible reads", () => {
     const snapshot = parseImageAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-08T08:00:00.000Z",
-      minimumImages: 5,
+      minimumImages: 6,
       rows: [
         {
-          sellerSku: "FOUR-IMAGES",
-          asin: "B0FOUR",
+          sellerSku: "FIVE-IMAGES",
+          asin: "B0FIVE",
           productType: "PET_FOOD",
-          title: "Four images",
-          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg"],
-          imageCount: 4,
+          title: "Five images",
+          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg", "https://a/5.jpg"],
+          imageCount: 5,
           readStatus: "complete",
           readErrors: [],
         },
         {
-          sellerSku: "FIVE-IMAGES",
-          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg", "https://a/5.jpg"],
-          imageCount: 5,
+          sellerSku: "SIX-IMAGES",
+          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg", "https://a/5.jpg", "https://a/6.jpg"],
+          imageCount: 6,
           readStatus: "complete",
           readErrors: [],
         },
@@ -67,7 +67,7 @@ describe("FBA image audit parsing", () => {
       underMinimum: 1,
     });
     expect(imageAuditAttentionRows(snapshot).map((row) => row.sellerSku)).toEqual([
-      "FOUR-IMAGES",
+      "FIVE-IMAGES",
       "UNKNOWN-IMAGES",
     ]);
   });
@@ -77,7 +77,7 @@ describe("FBA image audit parsing", () => {
       parseImageAuditSnapshot({
         marketplaceId: "ATVPDKIKX0DER",
         fetchedAt: "2026-08-08T08:00:00.000Z",
-        minimumImages: 5,
+        minimumImages: 6,
         rows: [
           {
             sellerSku: "BAD-COUNT",
@@ -95,7 +95,7 @@ describe("FBA image audit parsing", () => {
     const snapshot = parseImageAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-08T08:00:00.000Z",
-      minimumImages: 5,
+      minimumImages: 6,
       rows: [
         {
           sellerSku: "INCOMPLETE",
@@ -118,7 +118,7 @@ describe("FBA image audit parsing", () => {
         {
           marketplaceId: "A39IBJ37TRP1C6",
           fetchedAt: "2026-08-08T08:00:00.000Z",
-          minimumImages: 5,
+          minimumImages: 6,
           rows: [],
         },
         "ATVPDKIKX0DER",
@@ -126,17 +126,28 @@ describe("FBA image audit parsing", () => {
     ).toThrow(/目前選擇的站點不一致；已停止顯示與快取/u);
   });
 
-  it("renders the five-image boundary and a direct image-workspace action", () => {
+  it("rejects an older bridge threshold instead of silently passing five-image listings", () => {
+    expect(() =>
+      parseImageAuditSnapshot({
+        marketplaceId: "ATVPDKIKX0DER",
+        fetchedAt: "2026-08-08T08:00:00.000Z",
+        minimumImages: 5,
+        rows: [],
+      }),
+    ).toThrow(/固定門檻為 6 張.*更新 AMZ\.API Notebook Key Bridge/u);
+  });
+
+  it("renders the six-image boundary and a direct image-workspace action", () => {
     const snapshot = parseImageAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-08T08:00:00.000Z",
-      minimumImages: 5,
+      minimumImages: 6,
       rows: [
         {
-          sellerSku: "FOUR-IMAGES",
+          sellerSku: "FIVE-IMAGES",
           title: "Turkey treats",
-          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg"],
-          imageCount: 4,
+          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg", "https://a/5.jpg"],
+          imageCount: 5,
           readStatus: "complete",
           readErrors: [],
         },
@@ -158,8 +169,8 @@ describe("FBA image audit parsing", () => {
     );
 
     expect(markup).toContain("全站 FBA 圖片健檢");
-    expect(markup).toContain("少於 5 張");
-    expect(markup).toContain("目前 4 張 · 還差 1 張達到 5 張");
+    expect(markup).toContain("少於 6 張");
+    expect(markup).toContain("目前 5 張 · 還差 1 張達到 6 張");
     expect(markup).toContain("匯出 Excel");
     expect(markup).toContain("開啟圖片工作台");
   });
@@ -168,13 +179,13 @@ describe("FBA image audit parsing", () => {
     const snapshot = parseImageAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-08T08:00:00.000Z",
-      minimumImages: 5,
+      minimumImages: 6,
       rows: [
         {
-          sellerSku: "FOUR-IMAGES",
+          sellerSku: "FIVE-IMAGES",
           title: "Turkey treats",
-          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg"],
-          imageCount: 4,
+          imageUrls: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg", "https://a/4.jpg", "https://a/5.jpg"],
+          imageCount: 5,
           readStatus: "complete",
           readErrors: [],
         },
@@ -187,7 +198,7 @@ describe("FBA image audit parsing", () => {
         auditCacheByMarketplace: {
           ATVPDKIKX0DER: {
             snapshot,
-            query: "FOUR",
+            query: "FIVE",
             reportId: "demo-ATVPDKIKX0DER",
             documentId: "demo-ATVPDKIKX0DER",
             exportId: "demo-export-1234",
@@ -199,8 +210,8 @@ describe("FBA image audit parsing", () => {
 
     expect(markup).toContain("單一 SKU 圖片工作台");
     expect(markup).toContain("全站圖片健檢");
-    expect(markup).toContain("FOUR-IMAGES");
-    expect(markup).toContain("目前 4 張 · 還差 1 張達到 5 張");
+    expect(markup).toContain("FIVE-IMAGES");
+    expect(markup).toContain("目前 5 張 · 還差 1 張達到 6 張");
     expect(markup).toContain("重新掃描");
   });
 

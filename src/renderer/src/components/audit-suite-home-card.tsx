@@ -19,12 +19,10 @@ import {
 } from "../../../shared/audit-suite";
 
 const SECTION_LABELS: Readonly<Record<AuditSuiteSectionId, string>> = {
-  subscription: "訂閱價格",
-  inventory: "180+ 庫齡與預估冗餘",
   content: "商品內容結構",
   image: "Listing 圖片",
   variation: "未綁變體",
-  review: "評論主題",
+  subscription: "訂閱價格",
   advertising: "廣告覆蓋",
 };
 
@@ -109,7 +107,7 @@ export function auditSuiteStatusPresentation(
       state: "completed",
       label: "全部完成",
       icon: "✓",
-      progressText: "7 項全部完成",
+      progressText: "5 項全部完成",
       completedSections,
       progressPercent,
     };
@@ -129,7 +127,7 @@ export function auditSuiteStatusPresentation(
       state: "failed",
       label: "未完成",
       icon: "×",
-      progressText: "7 項都未建立可核對快照",
+      progressText: "5 項都未建立可核對快照",
       completedSections,
       progressPercent,
     };
@@ -138,7 +136,7 @@ export function auditSuiteStatusPresentation(
     state: "running",
     label: run.status === "queued" ? "準備中" : "背景執行中",
     icon: run.status === "queued" ? "…" : "↻",
-    progressText: `${completedSections}／7 項已收斂，main process 仍在背景處理`,
+    progressText: `${completedSections}／5 項已收斂，main process 仍在背景處理`,
     completedSections,
     progressPercent,
   };
@@ -382,9 +380,9 @@ export default function AuditSuiteHomeCard({
       <div className="audit-suite-home-heading">
         <span className="audit-suite-home-icon" aria-hidden="true">✓✓</span>
         <div>
-          <p className="eyebrow">ONE CLICK · SEVEN FBA AUDITS</p>
+          <p className="eyebrow">ONE CLICK · FIVE FBA AUDITS</p>
           <h2>一鍵執行全部 FBA 健檢</h2>
-          <p>按一次後，下面七項由本機主程序自動接手並在背景繼續；不需要逐項另按。</p>
+          <p>按一次後，下面五項由本機主程序自動接手並在背景繼續；不需要逐項另按。</p>
         </div>
       </div>
       <div
@@ -418,10 +416,10 @@ export default function AuditSuiteHomeCard({
           {starting
             ? "正在建立背景健檢…"
             : run && (terminal(run) || stoppedRunId === run.runId)
-              ? "重新執行七項 FBA 健檢"
+              ? "重新執行五項 FBA 健檢"
               : run
-                ? "七項健檢正在背景自動執行"
-                : "按一次，讓七項健檢自動執行"}
+                ? "五項健檢正在背景自動執行"
+                : "按一次，讓五項健檢自動執行"}
         </button>
         {run && (run.status === "completed" || run.status === "partial") && (
           <button type="button" className="secondary" onClick={() => void download()} disabled={exporting}>
@@ -430,10 +428,10 @@ export default function AuditSuiteHomeCard({
         )}
       </div>
       <div className="audit-suite-auto-run-note" role="note">
-        <span aria-hidden="true">1 → 7</span>
+        <span aria-hidden="true">1 → 5</span>
         <div>
-          <strong>下面七項會自動執行</strong>
-          <small>這些卡片只顯示各項狀態，不是七個分開按鈕；執行期間可以先使用其他功能。</small>
+          <strong>下面五項會自動執行</strong>
+          <small>這些卡片只顯示各項狀態，不是五個分開按鈕；執行期間可以先使用其他功能。</small>
         </div>
       </div>
       <div className="audit-suite-section-grid">

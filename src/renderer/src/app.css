@@ -3841,6 +3841,298 @@ footer {
   }
 }
 
+/* Amazon Business pricing audit */
+.business-pricing-audit-drawer {
+  width: min(960px, 92vw);
+  max-width: 100%;
+}
+
+.business-pricing-audit-panel {
+  display: grid;
+  gap: 14px;
+  color: #25252a;
+}
+
+.business-pricing-audit-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid #e3e3e8;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #fff 0%, #f7f8fb 100%);
+}
+
+.business-pricing-audit-intro span,
+.business-pricing-editor-heading span {
+  color: #6e6e76;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.business-pricing-audit-intro h3 {
+  margin: 5px 0 0;
+  font-size: 22px;
+  letter-spacing: -.025em;
+}
+
+.business-pricing-audit-intro p,
+.business-pricing-safety-note,
+.business-pricing-notice {
+  margin: 7px 0 0;
+  color: #686870;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.business-pricing-safety-note {
+  margin: 0;
+  padding: 11px 14px;
+  border-left: 4px solid #32724d;
+  border-radius: 9px;
+  background: #f0f8f3;
+  color: #28583d;
+}
+
+.business-pricing-progress,
+.business-pricing-result {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f3f4f7;
+  color: #515158;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.business-pricing-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.business-pricing-summary article {
+  padding: 13px;
+  border: 1px solid #e4e4e9;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.business-pricing-summary article.problem {
+  border-color: #f0c9ad;
+  background: #fff8f1;
+}
+
+.business-pricing-summary span,
+.business-pricing-summary strong {
+  display: block;
+}
+
+.business-pricing-summary span {
+  color: #77777f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.business-pricing-summary strong {
+  margin-top: 6px;
+  font-size: 22px;
+}
+
+.business-pricing-filters {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.business-pricing-filters button {
+  padding: 9px 8px;
+  border: 1px solid #dedee4;
+  border-radius: 11px;
+  background: #fff;
+  color: #67676e;
+  cursor: pointer;
+}
+
+.business-pricing-filters button.active {
+  border-color: #25252a;
+  background: #25252a;
+  color: #fff;
+}
+
+.business-pricing-filters span,
+.business-pricing-filters strong {
+  display: block;
+  font-size: 11px;
+}
+
+.business-pricing-filters strong { margin-top: 3px; }
+
+.business-pricing-list {
+  display: grid;
+  gap: 8px;
+}
+
+.business-pricing-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.35fr) minmax(210px, .9fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid #e2e2e7;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.business-pricing-row.missing {
+  border-color: #edc7a6;
+  background: #fffbf6;
+}
+
+.business-pricing-row.incomplete,
+.business-pricing-row.unsupported { background: #f7f7f9; }
+
+.business-pricing-row > div > strong,
+.business-pricing-row > div > small,
+.business-pricing-row-status span,
+.business-pricing-row-status small {
+  display: block;
+}
+
+.business-pricing-row > div > strong { font-size: 13px; line-height: 1.35; }
+.business-pricing-row > div > small,
+.business-pricing-row-status small {
+  margin-top: 4px;
+  color: #777780;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.business-pricing-row dl,
+.business-pricing-editor dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+
+.business-pricing-row dl div,
+.business-pricing-editor dl div {
+  padding: 8px 9px;
+  border-radius: 9px;
+  background: #f4f4f6;
+}
+
+.business-pricing-row dt,
+.business-pricing-row dd,
+.business-pricing-editor dt,
+.business-pricing-editor dd { margin: 0; }
+.business-pricing-row dt,
+.business-pricing-editor dt { color: #777780; font-size: 10px; }
+.business-pricing-row dd,
+.business-pricing-editor dd { margin-top: 4px; font-size: 12px; font-weight: 800; }
+
+.business-pricing-row-status span {
+  color: #323238;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.business-pricing-row > button,
+.business-pricing-readonly {
+  min-width: 112px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.business-pricing-row > button {
+  border: 0;
+  background: #25252a;
+  color: #fff;
+  cursor: pointer;
+}
+
+.business-pricing-readonly { background: #e9e9ed; color: #777780; }
+.business-pricing-empty { padding: 22px; text-align: center; color: #777780; }
+
+.business-pricing-editor {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: grid;
+  gap: 12px;
+  padding: 17px;
+  border: 1px solid #cfcfd6;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .97);
+  box-shadow: 0 18px 50px rgba(24, 24, 29, .16);
+  backdrop-filter: blur(16px);
+}
+
+.business-pricing-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.business-pricing-editor-heading strong { display: block; margin-top: 4px; font-size: 15px; }
+.business-pricing-editor-heading button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #dddde2;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+}
+
+.business-pricing-editor label > span { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 800; }
+.business-pricing-editor input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #cfcfd6;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 16px;
+}
+
+.business-pricing-validation {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #d9c89b;
+  border-radius: 12px;
+  background: #fffaf0;
+}
+.business-pricing-validation strong,
+.business-pricing-validation p,
+.business-pricing-result p { margin: 0; font-size: 12px; line-height: 1.5; }
+.business-pricing-result { background: #edf8f1; color: #28583d; }
+
+@media (max-width: 820px) {
+  .business-pricing-audit-drawer { width: 100%; }
+  .business-pricing-audit-intro { align-items: stretch; flex-direction: column; }
+  .business-pricing-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .business-pricing-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .business-pricing-row { grid-template-columns: minmax(0, 1fr); }
+  .business-pricing-row > button,
+  .business-pricing-readonly { width: 100%; }
+}
+
+@media (max-width: 430px) {
+  .business-pricing-audit-intro { padding: 14px; }
+  .business-pricing-audit-intro h3 { font-size: 19px; }
+  .business-pricing-summary,
+  .business-pricing-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .business-pricing-row dl,
+  .business-pricing-editor dl { grid-template-columns: 1fr; }
+  .business-pricing-editor { position: static; padding: 14px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after {
@@ -8469,6 +8761,24 @@ body {
   opacity: 0.62;
 }
 
+.content-audit-file-picker.is-dragging {
+  border-color: #2872b2;
+  background: #eaf4ff;
+  box-shadow: inset 0 0 0 2px rgba(40, 114, 178, 0.14);
+}
+
+.content-audit-file-picker > small {
+  margin: 0;
+  color: #71859a;
+  font-size: 8px;
+  font-weight: 650;
+}
+
+.content-audit-file-picker > .content-audit-file-error {
+  color: #a33a32;
+  font-weight: 760;
+}
+
 .content-audit-file-input {
   position: absolute;
   width: 1px;
@@ -8775,6 +9085,76 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin: -10px 0 24px;
+}
+
+.low-frequency-audits {
+  margin: 0 0 24px;
+  overflow: hidden;
+  border: 1px solid #e3e4e8;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.low-frequency-audits > summary {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 17px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.low-frequency-audits > summary::-webkit-details-marker {
+  display: none;
+}
+
+.low-frequency-audits > summary span,
+.low-frequency-audits > summary strong,
+.low-frequency-audits > summary small {
+  display: block;
+  min-width: 0;
+}
+
+.low-frequency-audits > summary strong {
+  color: #45454a;
+  font-size: 11px;
+}
+
+.low-frequency-audits > summary small {
+  margin-top: 4px;
+  color: #85858b;
+  font-size: 8px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.low-frequency-audits > summary i {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  background: #f0f0f3;
+  color: #68686e;
+  font-size: 15px;
+  font-style: normal;
+  transition: transform 160ms ease;
+}
+
+.low-frequency-audits[open] > summary {
+  border-bottom: 1px solid #ececef;
+}
+
+.low-frequency-audits[open] > summary i {
+  transform: rotate(45deg);
+}
+
+.low-frequency-audits > .health-audit-home-grid {
+  margin: 0;
+  padding: 14px;
 }
 
 .health-audit-home-grid .content-audit-home-card {
@@ -10624,6 +11004,24 @@ body {
   color: #5e6d7e;
   font-size: 9px;
   line-height: 1.5;
+}
+
+.content-audit-field-reasons {
+  display: grid;
+  gap: 4px;
+  margin: 5px 0 7px;
+}
+
+.content-audit-field-reason {
+  display: block;
+  padding: 6px 8px;
+  border: 1px solid #f0cc78;
+  border-radius: 8px;
+  background: #fff7dc;
+  color: #805a06;
+  font-size: 8px;
+  font-weight: 720;
+  line-height: 1.45;
 }
 
 .content-audit-quick-edit-notice details,

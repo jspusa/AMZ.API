@@ -34,12 +34,10 @@ function completedInput(): AuditSuiteWorkbookInput {
     marketplaceLabel: "US · Amazon.com",
     generatedAt: "2026-08-09T05:10:00.000Z",
     sections: {
-      subscription: snapshot([]),
-      inventory: snapshot({ over180Rows: [], estimatedExcessRows: [] }),
       content: snapshot([]),
       image: snapshot([]),
       variation: snapshot([]),
-      review: snapshot({ resultRows: [], incompleteRows: [] }),
+      subscription: snapshot([]),
       advertising: snapshot([]),
     },
   };
@@ -50,26 +48,16 @@ describe("combined FBA audit suite Excel", () => {
     const input: AuditSuiteWorkbookInput = {
       ...completedInput(),
       sections: {
-        subscription: snapshot([]),
-        inventory: snapshot({
-          over180Rows: [{
-            sellerSku: "AGED-01",
-            title: "Aged inventory",
-            asin: "B000000001",
-            ageBucket: "181–210 天",
-            quantity: null,
-            notice: "Amazon 未回傳可核對數量；保持空白。",
-          }],
-          estimatedExcessRows: [{
-            sellerSku: "EXCESS-01",
-            title: "Estimated excess",
-            asin: "B000000002",
-            estimatedExcessQuantity: null,
-            daysOfSupply: null,
-            recommendedAction: "等待 Amazon 回傳完整欄位",
-            notice: "數量未知，未補 0。",
-          }],
-        }, "partial", "庫齡來源有一列未完成；只列已核對資料。"),
+        subscription: snapshot([{
+          sellerSku: "SUB-01",
+          title: "Subscription product",
+          asin: "B000000001",
+          anomaly: "折扣資料未完整",
+          sellerFundedBaseDiscountPercent: null,
+          currentActiveSubscriptions: null,
+          currentPrice: null,
+          notice: "數量未知，未補 0。",
+        }], "partial", "訂閱來源有一列未完成；只列已核對資料。"),
         content: null,
         image: {
           ...CONTEXT,
@@ -79,26 +67,6 @@ describe("combined FBA audit suite Excel", () => {
           payload: null,
         },
         variation: snapshot([]),
-        review: snapshot({
-          resultRows: [{
-            sellerSku: "REVIEW-01",
-            title: "Review product",
-            asin: "B000000003",
-            topic: "Indigestion",
-            sentiment: "負向",
-            starRatingImpact: -0.9,
-            mentions: null,
-            occurrencePercent: null,
-            notice: "公開 API 未回傳的數值保持空白。",
-          }],
-          incompleteRows: [{
-            sellerSku: "REVIEW-02",
-            title: "Incomplete review product",
-            asin: "B000000004",
-            code: "TOPICS_NOT_RETURNED",
-            message: "Customer Feedback 沒有回傳可核對主題。",
-          }],
-        }, "partial", "一個非 parent ASIN 未完成。"),
         advertising: snapshot([{
           sellerSku: "ADS-01",
           title: "Advertising product",
@@ -113,12 +81,12 @@ describe("combined FBA audit suite Excel", () => {
     const archive = unzipSync(createAuditSuiteWorkbook(input));
     const workbook = strFromU8(archive["xl/workbook.xml"]);
     const expectedSheets = [
-      "總覽", "訂閱異常", "180天以上庫齡", "預估冗餘", "文案問題",
-      "圖片問題", "未綁變體", "評論結果", "評論未完成",
-      "廣告覆蓋",
+      "總覽", "文案問題", "圖片問題", "未綁變體", "訂閱異常", "廣告覆蓋",
     ];
     expectedSheets.forEach((name) => expect(workbook).toContain(`sheet name="${name}"`));
-    expect(Object.keys(archive).filter((name) => name.startsWith("xl/worksheets/sheet"))).toHaveLength(10);
+    expect(workbook).not.toContain("180天以上庫齡");
+    expect(workbook).not.toContain("評論結果");
+    expect(Object.keys(archive).filter((name) => name.startsWith("xl/worksheets/sheet"))).toHaveLength(6);
 
     const allXml = Object.entries(archive)
       .filter(([name]) => name.endsWith(".xml"))
@@ -128,10 +96,6 @@ describe("combined FBA audit suite Excel", () => {
     expect(allXml).toContain("範圍未完整");
     expect(allXml).toContain("圖片健檢未完成；沒有建立結果快照");
     expect(allXml).toContain("數量未知，未補 0");
-    expect(allXml).toContain("評論主題影響值");
-    expect(allXml).toContain("負數是負向主題對星等下降方向的影響值，不是商品負星等");
-    expect(allXml).toContain("原始值不轉成 0 或絕對值");
-    expect(allXml).toContain("<v>-0.9</v>");
     expect(allXml).not.toContain("<v>0</v>");
     expect(allXml).not.toContain("<f>");
     expect(allXml).not.toContain("<f ");
@@ -156,7 +120,7 @@ describe("combined FBA audit suite Excel", () => {
       },
     };
     const archive = unzipSync(createAuditSuiteWorkbook(workbookInput));
-    const contentSheet = strFromU8(archive["xl/worksheets/sheet5.xml"]);
+    const contentSheet = strFromU8(archive["xl/worksheets/sheet2.xml"]);
     expect(contentSheet).toContain("&apos;=HYPERLINK");
     expect(contentSheet).not.toContain("<f>");
     expect(contentSheet).not.toContain("<f ");

@@ -60,6 +60,7 @@ describe("FBA listing content quality audit", () => {
         bulletBelowTarget: 0,
         bulletAboveTarget: 0,
         descriptionBelowTarget: 0,
+        singleIngredientMismatch: 0,
       },
     });
   });
@@ -179,6 +180,7 @@ describe("FBA listing content quality audit", () => {
       bulletBelowTarget: 0,
       bulletAboveTarget: 0,
       descriptionBelowTarget: 0,
+      singleIngredientMismatch: 0,
     });
   });
 
@@ -225,6 +227,7 @@ describe("FBA listing content quality audit", () => {
       bulletBelowTarget: 0,
       bulletAboveTarget: 0,
       descriptionBelowTarget: 0,
+      singleIngredientMismatch: 0,
     });
   });
 
@@ -371,5 +374,123 @@ describe("FBA listing content quality audit", () => {
       bulletAboveTarget: 0,
       descriptionBelowTarget: 0,
     });
+  });
+
+  it("flags single-ingredient claims only when complete ingredients prove multiple items", () => {
+    const result = auditListingContentRows({
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: FETCHED_AT,
+      rows: [
+        row({
+          sellerSku: "CLAIM-TITLE",
+          title: `${"T".repeat(60)} Single-Ingredient — single ingredients`,
+          ingredients: "Turkey Tendon, Chicken, Coconut Glycerin",
+        }),
+        row({
+          sellerSku: "CLAIM-HIGHLIGHT",
+          itemHighlight: `${"H".repeat(110)} SINGLE ingredient`,
+          ingredients: "Turkey Tendon; Chicken",
+        }),
+        row({
+          sellerSku: "CLAIM-BULLET",
+          bulletPoints: [
+            `${"A".repeat(150)} single‑ingredient recipe`,
+            "B".repeat(150),
+            "C".repeat(150),
+            "D".repeat(150),
+            "E".repeat(150),
+          ],
+          ingredients: "Turkey Tendon\nChicken",
+        }),
+        row({
+          sellerSku: "ONE-INGREDIENT",
+          title: `${"T".repeat(60)} single ingredient`,
+          ingredients: "Turkey Tendon",
+        }),
+        row({
+          sellerSku: "PARENTHETICAL-COMMA",
+          title: `${"T".repeat(60)} single ingredient`,
+          ingredients: "Natural flavor (turkey, rosemary)",
+        }),
+        row({
+          sellerSku: "FORMATTING-EQUIVALENT-DUPLICATE",
+          title: `${"T".repeat(60)} single ingredient`,
+          ingredients: "Turkey Tendon; Turkey  Tendon",
+        }),
+        row({
+          sellerSku: "PUNCTUATION-EQUIVALENT-DUPLICATE",
+          title: `${"T".repeat(60)} single ingredient`,
+          ingredients: "Turkey Tendon; Turkey Tendon.",
+        }),
+        row({
+          sellerSku: "PUNCTUATION-ONLY-ITEM",
+          title: `${"T".repeat(60)} single ingredient`,
+          ingredients: "Turkey Tendon; .",
+        }),
+        row({
+          sellerSku: "UNICODE-LINE-SEPARATOR",
+          title: `${"T".repeat(60)} single ingredient`,
+          ingredients: "Turkey Tendon\u2028Chicken",
+        }),
+        row({
+          sellerSku: "INCOMPLETE-CLAIM",
+          title: "single ingredient",
+          ingredients: "Turkey, Chicken",
+          readStatus: "incomplete",
+          readErrors: [{
+            code: "LISTING_CONTENT_NOT_RETURNED",
+            message: "Amazon did not return complete listing content.",
+          }],
+        }),
+      ],
+    });
+
+    expect(result.rows[0]?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "SINGLE_INGREDIENT_MISMATCH",
+        field: "title",
+        token: "Single-Ingredient",
+        message: expect.stringContaining("3 項"),
+      }),
+    ]));
+    expect(result.rows[0]?.issues.filter(
+      (issue) => issue.kind === "SINGLE_INGREDIENT_MISMATCH",
+    )).toHaveLength(1);
+    expect(result.rows[1]?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "SINGLE_INGREDIENT_MISMATCH",
+        field: "itemHighlight",
+        token: "SINGLE ingredient",
+        message: expect.stringContaining("2 項"),
+      }),
+    ]));
+    expect(result.rows[2]?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "SINGLE_INGREDIENT_MISMATCH",
+        field: "bulletPoints",
+        bulletIndex: 0,
+        token: "single‑ingredient",
+      }),
+    ]));
+    expect(result.rows[3]?.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "SINGLE_INGREDIENT_MISMATCH" }),
+    ]));
+    expect(result.rows[4]?.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "SINGLE_INGREDIENT_MISMATCH" }),
+    ]));
+    expect(result.rows[5]?.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "SINGLE_INGREDIENT_MISMATCH" }),
+    ]));
+    expect(result.rows[6]?.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "SINGLE_INGREDIENT_MISMATCH" }),
+    ]));
+    expect(result.rows[7]?.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "SINGLE_INGREDIENT_MISMATCH" }),
+    ]));
+    expect(result.rows[8]?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "SINGLE_INGREDIENT_MISMATCH" }),
+    ]));
+    expect(result.rows[9]?.issues).toEqual([]);
+    expect(result.summary).toMatchObject({ singleIngredientMismatch: 4 });
   });
 });

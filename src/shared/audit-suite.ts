@@ -1,12 +1,10 @@
-export const AUDIT_SUITE_SCHEMA_VERSION = 1 as const;
+export const AUDIT_SUITE_SCHEMA_VERSION = 2 as const;
 
 export const AUDIT_SUITE_SECTION_IDS = [
-  "subscription",
-  "inventory",
   "content",
   "image",
   "variation",
-  "review",
+  "subscription",
   "advertising",
 ] as const;
 

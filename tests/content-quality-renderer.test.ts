@@ -360,6 +360,7 @@ describe("renderer content quality helpers", () => {
       missingBullets: 1,
       missingIngredients: 0,
       ingredientsUnverified: 0,
+      singleIngredientMismatch: 0,
       titleBelowTarget: 0,
       highlightBelowTarget: 0,
       bulletBelowTarget: 0,

@@ -1,6 +1,8 @@
 import { abortableDelay, throwIfAborted } from "../abort-utils";
 import {
   SpApiError,
+  type BusinessPricingListingSnapshot,
+  type BusinessPriceUpdateResult,
   type ListingContentSnapshot,
   type ListingContentUpdateResult,
   type ListingImageSnapshot,
@@ -176,6 +178,9 @@ function offerFieldHasError(snapshot: ListingPriceSnapshot): boolean {
     "purchasable_offer",
     "our_price",
     "discounted_price",
+    "quantity_discount_plan",
+    "audience",
+    "currency",
   ]);
   return snapshot.issues.some((issue) =>
     issue.severity === "ERROR" &&
@@ -192,6 +197,22 @@ export function priceReadbackDecision(
       snapshot.purchasableOfferPresence === "present" &&
       !offerFieldHasError(snapshot) &&
       sameMoney(result.requestedPrice, snapshot.standardPrice)
+    ? "verified"
+    : "pending";
+}
+
+export function businessPriceReadbackDecision(
+  result: BusinessPriceUpdateResult,
+  snapshot: BusinessPricingListingSnapshot,
+): ReadbackDecision {
+  return exactIdentity(result, snapshot) &&
+      result.asin === snapshot.asin &&
+      result.productType === snapshot.productType &&
+      snapshot.businessOfferPresence === "present" &&
+      !offerFieldHasError(snapshot) &&
+      sameMoney(result.standardPrice, snapshot.standardPrice) &&
+      sameMoney(result.requestedBusinessPrice, snapshot.businessPrice) &&
+      result.businessOfferGuardHash === snapshot.businessOfferGuardHash
     ? "verified"
     : "pending";
 }
@@ -309,6 +330,33 @@ export function reconcilePriceWrite(
   }
   const result = response as unknown as PriceUpdateResult;
   return priceReadbackDecision(result, snapshot) === "verified"
+    ? verifiedResult(result, 0, now)
+    : null;
+}
+
+export function reconcileBusinessPriceWrite(
+  response: unknown,
+  snapshot: BusinessPricingListingSnapshot,
+  now: () => Date = () => new Date(),
+): unknown | null {
+  if (!acceptedBase(response) ||
+      !validMoney(response.standardPrice) ||
+      !(response.previousBusinessPrice === null ||
+        validMoney(response.previousBusinessPrice)) ||
+      !validMoney(response.requestedBusinessPrice) ||
+      typeof response.asin !== "string" ||
+      !/^[A-Z0-9]{10}$/u.test(response.asin) ||
+      typeof response.productType !== "string" ||
+      !response.productType ||
+      typeof response.businessOfferGuardHash !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(response.businessOfferGuardHash) ||
+      typeof response.schemaChecksum !== "string" ||
+      !response.schemaChecksum ||
+      typeof response.acceptedAt !== "string") {
+    return null;
+  }
+  const result = response as unknown as BusinessPriceUpdateResult;
+  return businessPriceReadbackDecision(result, snapshot) === "verified"
     ? verifiedResult(result, 0, now)
     : null;
 }
