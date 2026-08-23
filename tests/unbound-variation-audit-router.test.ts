@@ -114,20 +114,44 @@ describe("unbound variation audit router", () => {
     expect(workbook).toContain("未綁變體");
     expect(workbook).toContain("讀取未完成");
     expect(workbook).toContain("所有變體");
-    expect(workbook).toContain("全部變體（直式）");
+    expect(workbook).toContain("父變體橫排");
     const allVariationSheet = new TextDecoder().decode(
       archive["xl/worksheets/sheet3.xml"],
     );
     expect(allVariationSheet).toContain("變體家庭 Parent SKU");
     expect(allVariationSheet).not.toContain("ASIN");
-    const verticalVariationSheet = new TextDecoder().decode(
+    const parentColumnVariationSheet = new TextDecoder().decode(
       archive["xl/worksheets/sheet4.xml"],
     );
-    expect(verticalVariationSheet).toContain("分類");
-    expect(verticalVariationSheet).toContain("層級");
-    expect(verticalVariationSheet).toContain("未綁／Standalone");
-    expect(verticalVariationSheet.indexOf("父變體")).toBeLessThan(
-      verticalVariationSheet.indexOf("子變體"),
+    expect(parentColumnVariationSheet).not.toContain("分類");
+    expect(parentColumnVariationSheet).not.toContain("層級");
+    expect(parentColumnVariationSheet).not.toContain("未綁／Standalone");
+    const familySkus = snapshot.allVariationRows
+      .filter((row) => row.role === "parent")
+      .map((row) => row.sellerSku);
+    const childSkusByFamily = familySkus.map((familySku) =>
+      snapshot.allVariationRows
+        .filter((row) => row.role === "child" && row.familySku === familySku)
+        .map((row) => row.sellerSku)
+    );
+    expect(familySkus).toHaveLength(2);
+    expect(parentColumnVariationSheet).toMatch(
+      new RegExp(
+        `<c r="A1"[^>]*>.*?${familySkus[0]}.*?<c r="B1"[^>]*>.*?${familySkus[1]}`,
+        "su",
+      ),
+    );
+    expect(parentColumnVariationSheet).toMatch(
+      new RegExp(
+        `<c r="A2"[^>]*>.*?${childSkusByFamily[0]![0]}.*?<c r="B2"[^>]*>.*?${childSkusByFamily[1]![0]}`,
+        "su",
+      ),
+    );
+    expect(parentColumnVariationSheet).toMatch(
+      new RegExp(
+        `<c r="A3"[^>]*><is><t[^>]*><\\/t><\\/is><\\/c>.*?<c r="B3"[^>]*>.*?${childSkusByFamily[1]![1]}`,
+        "su",
+      ),
     );
     expect(exported.headers["x-exported-unbound-fba-sku-count"]).toBe(
       String(snapshot.summary.unbound),

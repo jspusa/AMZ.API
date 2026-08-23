@@ -825,10 +825,7 @@ async function readAplusDocumentIndex(input: Readonly<{
   for (const [compositeKey, aggregate] of relationAggregates) {
     const hasPublished = aggregate.states.has("published");
     const hasNotPublished = aggregate.states.has("not_published");
-    if (
-      (hasPublished && hasNotPublished) ||
-      (aggregate.invalid && !hasPublished)
-    ) {
+    if (aggregate.invalid && !hasPublished) {
       conflictAsins.add(aggregate.asin);
       partialAsins.add(aggregate.asin);
       continue;

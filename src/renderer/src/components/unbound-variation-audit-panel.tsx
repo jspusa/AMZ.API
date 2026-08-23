@@ -380,7 +380,7 @@ export default function UnboundVariationAuditPanel({
           >
             <span aria-hidden="true">↧</span>
             <strong>{exporting ? "正在建立 Excel…" : "匯出未綁變體＋讀取未完成＋所有變體 Excel"}</strong>
-            <small>3 張工作表（含「所有變體」）；只含本次 Amazon FBA 唯讀快照</small>
+            <small>4 張工作表（含「所有變體」與「父變體橫排」）；只含本次 Amazon FBA 唯讀快照</small>
           </button>
           <div className="audit-toolbar">
             <input

@@ -143,7 +143,8 @@ describe("unbound variation audit renderer parser", () => {
     expect(source).toContain('kind: "variation"');
     expect(source).toContain("fetchedAt: snapshot.fetchedAt");
     expect(source).toContain("匯出未綁變體＋讀取未完成＋所有變體 Excel");
-    expect(source).toContain("3 張工作表");
+    expect(source).toContain("4 張工作表");
+    expect(source).toContain("父變體橫排");
     expect(source).not.toMatch(/method:\s*["'](?:PATCH|PUT|DELETE)["']/);
     expect(source).not.toContain("localStorage");
   });

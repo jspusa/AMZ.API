@@ -10420,6 +10420,7 @@ function unavailableListingsBusinessPricingAuditRow(input: Readonly<{
   reason: string;
   reportBusinessPrice: ListingReportBusinessPriceEvidence;
   activeListingsBusinessPrice: ListingReportBusinessPriceEvidence;
+  reportQuantityDiscount: ListingReportQuantityDiscountEvidence;
 }>): BusinessPricingAuditRow {
   if (
     input.reportBusinessPrice.presence === "present" &&
@@ -10428,6 +10429,16 @@ function unavailableListingsBusinessPricingAuditRow(input: Readonly<{
     const reportSource = input.activeListingsBusinessPrice.presence === "present"
       ? "Amazon Active Listings 報表"
       : "Amazon 全商品報表";
+    const reportQuantityDiscount = input.reportQuantityDiscount.presence ===
+        "canonical"
+      ? {
+          quantityDiscountPlan: input.reportQuantityDiscount.plan,
+          quantityDiscountPlanPresence: "canonical" as const,
+        }
+      : {
+          quantityDiscountPlan: null,
+          quantityDiscountPlanPresence: "ambiguous" as const,
+        };
     return withBusinessPricingRecommendations({
       sellerSku: input.seed.sellerSku,
       asin: input.seed.asin,
@@ -10439,12 +10450,11 @@ function unavailableListingsBusinessPricingAuditRow(input: Readonly<{
         currencyCode: MARKETPLACES[input.marketplaceId].currency,
       },
       businessOfferPresence: "present",
-      quantityDiscountPlan: null,
-      quantityDiscountPlanPresence: "ambiguous",
+      ...reportQuantityDiscount,
       status: "configured",
       editable: false,
       reason:
-        `${reportSource}已以 exact SKU／ASIN／FBA 證據確認 Business Price；${input.reason}商品名稱、商品類型、一般售價與數量折扣保持未知。`,
+        `${reportSource}已以 exact SKU／ASIN／FBA 證據確認 Business Price；${input.reason}商品名稱、商品類型與一般售價保持未知${input.reportQuantityDiscount.presence === "canonical" ? "，數量折扣已由同一報表確認" : "，數量折扣保持未知"}。`,
     });
   }
   return incompleteBusinessPricingAuditRow(input.seed, input.reason);
@@ -10525,6 +10535,7 @@ function completeBusinessPricingAuditRow(input: {
   marketplaceId: MarketplaceId;
   reportBusinessPrice: ListingReportBusinessPriceEvidence;
   activeListingsBusinessPrice: ListingReportBusinessPriceEvidence;
+  reportQuantityDiscount: ListingReportQuantityDiscountEvidence;
 }): BusinessPricingAuditRow {
   const {
     seed,
@@ -10534,6 +10545,7 @@ function completeBusinessPricingAuditRow(input: {
     marketplaceId,
     reportBusinessPrice,
     activeListingsBusinessPrice,
+    reportQuantityDiscount,
   } = input;
   if (activeListingsBusinessPrice.presence === "ambiguous") {
     return withBusinessPricingRecommendations({
@@ -10595,6 +10607,10 @@ function completeBusinessPricingAuditRow(input: {
   const reportSource = activeListingsBusinessPrice.presence === "present"
     ? "Amazon Active Listings 報表"
     : "Amazon 全商品報表";
+  const quantityDiscount = reconcileListingsAndReportQuantityDiscountEvidence(
+    business,
+    reportQuantityDiscount,
+  );
   if (
     reportMoney && business.businessOfferPresence === "present" &&
     (!business.businessPrice ||
@@ -10618,8 +10634,7 @@ function completeBusinessPricingAuditRow(input: {
         standardPrice: listing.standardPrice,
         businessPrice: reportMoney,
         businessOfferPresence: "present",
-        quantityDiscountPlan: business.quantityDiscountPlan,
-        quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
+        ...quantityDiscount,
         status: aboveStandard ? "above_standard" : "configured",
         editable: false,
         reason: aboveStandard
@@ -10647,6 +10662,21 @@ function completeBusinessPricingAuditRow(input: {
       listing.standardPrice &&
         reportMoney.amount > listing.standardPrice.amount,
     );
+    const reportOnlyQuantityDiscount = reportQuantityDiscount.presence ===
+        "canonical"
+      ? {
+          quantityDiscountPlan: reportQuantityDiscount.plan,
+          quantityDiscountPlanPresence: "canonical" as const,
+        }
+      : reportQuantityDiscount.presence === "absent"
+        ? {
+            quantityDiscountPlan: null,
+            quantityDiscountPlanPresence: "absent" as const,
+          }
+        : {
+            quantityDiscountPlan: null,
+            quantityDiscountPlanPresence: "ambiguous" as const,
+          };
     return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
@@ -10655,8 +10685,7 @@ function completeBusinessPricingAuditRow(input: {
       standardPrice: listing.standardPrice,
       businessPrice: reportMoney,
       businessOfferPresence: "present",
-      quantityDiscountPlan: null,
-      quantityDiscountPlanPresence: "ambiguous",
+      ...reportOnlyQuantityDiscount,
       status: aboveStandard ? "above_standard" : "configured",
       editable: false,
       reason: aboveStandard
@@ -10714,8 +10743,7 @@ function completeBusinessPricingAuditRow(input: {
     standardPrice: listing.standardPrice,
     businessPrice: business.businessPrice,
     businessOfferPresence: business.businessOfferPresence,
-    quantityDiscountPlan: business.quantityDiscountPlan,
-    quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
+    ...quantityDiscount,
     status: aboveStandard
       ? "above_standard"
       : configured ? "configured" : "missing",
@@ -10806,6 +10834,8 @@ export async function getBusinessPricingAuditData(input: {
   const {
     seeds,
     businessPriceEvidenceBySku: allListingsBusinessPriceEvidenceBySku,
+    quantityDiscountEvidenceBySku:
+      allListingsQuantityDiscountEvidenceBySku,
   } = parseFbaListingReport(report);
   let activeListingsReport: string | null = null;
   if (input.activeListingsReport) {
@@ -10833,13 +10863,27 @@ export async function getBusinessPricingAuditData(input: {
     }
   }
   assertNotAborted(input.signal);
-  const activeListingsBusinessPriceEvidenceBySku = activeListingsReport === null
-    ? new Map<string, ListingReportBusinessPriceEvidence>()
+  const activeListingsEvidence = activeListingsReport === null
+    ? {
+        businessPriceEvidenceBySku:
+          new Map<string, ListingReportBusinessPriceEvidence>(),
+        quantityDiscountEvidenceBySku:
+          new Map<string, ListingReportQuantityDiscountEvidence>(),
+      }
     : parseBusinessPricingActiveListingsReport(activeListingsReport, seeds);
+  const activeListingsBusinessPriceEvidenceBySku =
+    activeListingsEvidence.businessPriceEvidenceBySku;
+  const activeListingsQuantityDiscountEvidenceBySku =
+    activeListingsEvidence.quantityDiscountEvidenceBySku;
   const unavailableBusinessPriceEvidence: ListingReportBusinessPriceEvidence = {
     presence: "unavailable",
     amount: null,
   };
+  const unavailableQuantityDiscountEvidence:
+    ListingReportQuantityDiscountEvidence = {
+      presence: "unavailable",
+      plan: null,
+    };
   const businessPriceEvidenceBySku = new Map(
     seeds.map((seed) => {
       return [
@@ -10850,6 +10894,19 @@ export async function getBusinessPricingAuditData(input: {
           allListingsBusinessPriceEvidenceBySku.get(seed.sellerSku) ??
             unavailableBusinessPriceEvidence,
           MARKETPLACES[input.marketplaceId].currency,
+        ),
+      ] as const;
+    }),
+  );
+  const quantityDiscountEvidenceBySku = new Map(
+    seeds.map((seed) => {
+      return [
+        seed.sellerSku,
+        reconcileBusinessQuantityDiscountReportEvidence(
+          activeListingsQuantityDiscountEvidenceBySku.get(seed.sellerSku) ??
+            unavailableQuantityDiscountEvidence,
+          allListingsQuantityDiscountEvidenceBySku.get(seed.sellerSku) ??
+            unavailableQuantityDiscountEvidence,
         ),
       ] as const;
     }),
@@ -10999,6 +11056,9 @@ export async function getBusinessPricingAuditData(input: {
           activeListingsBusinessPrice:
             activeListingsBusinessPriceEvidenceBySku.get(seed.sellerSku) ??
               unavailableBusinessPriceEvidence,
+          reportQuantityDiscount:
+            quantityDiscountEvidenceBySku.get(seed.sellerSku) ??
+              unavailableQuantityDiscountEvidence,
         }),
       );
       continue;
@@ -11025,6 +11085,9 @@ export async function getBusinessPricingAuditData(input: {
         activeListingsBusinessPrice:
           activeListingsBusinessPriceEvidenceBySku.get(seed.sellerSku) ??
             unavailableBusinessPriceEvidence,
+        reportQuantityDiscount:
+          quantityDiscountEvidenceBySku.get(seed.sellerSku) ??
+            unavailableQuantityDiscountEvidence,
       }),
     );
   }
@@ -15325,6 +15388,25 @@ type ListingReportBusinessPriceEvidence =
   | { presence: "unavailable" | "absent" | "ambiguous"; amount: null }
   | { presence: "present"; amount: number };
 
+type ListingReportQuantityDiscountEvidence =
+  | {
+      presence: "unavailable" | "absent" | "ambiguous";
+      plan: null;
+    }
+  | {
+      presence: "canonical";
+      plan: BusinessQuantityDiscountPlan;
+    };
+
+type ListingReportQuantityDiscountColumns =
+  | { presence: "unavailable" }
+  | { presence: "ambiguous" }
+  | {
+      presence: "available";
+      typeIndex: number;
+      levels: Array<{ lowerBoundIndex: number; valueIndex: number }>;
+    };
+
 function listingReportBusinessPriceEvidence(
   row: string[],
   businessPriceIndex: number,
@@ -15343,11 +15425,138 @@ function listingReportBusinessPriceEvidence(
     : { presence: "ambiguous", amount: null };
 }
 
+function listingReportQuantityDiscountColumns(
+  headers: string[],
+): ListingReportQuantityDiscountColumns {
+  const typeMatches = matchingReportColumns(headers, ["quantity-price-type"]);
+  const slots = Array.from({ length: 5 }, (_, offset) => {
+    const level = offset + 1;
+    return {
+      lowerBoundMatches: matchingReportColumns(headers, [
+        `quantity-lower-bound-${level}`,
+        `quantity-lower-bound${level}`,
+      ]),
+      valueMatches: matchingReportColumns(headers, [
+        `quantity-price-${level}`,
+        `quantity-price${level}`,
+      ]),
+    };
+  });
+  const hasAnyQuantityHeader = typeMatches.length > 0 || slots.some((slot) =>
+    slot.lowerBoundMatches.length > 0 || slot.valueMatches.length > 0
+  );
+  if (!hasAnyQuantityHeader) return { presence: "unavailable" };
+  if (
+    typeMatches.length !== 1 ||
+    slots.some((slot) =>
+      slot.lowerBoundMatches.length > 1 || slot.valueMatches.length > 1
+    )
+  ) {
+    return { presence: "ambiguous" };
+  }
+  const levels: Array<{ lowerBoundIndex: number; valueIndex: number }> = [];
+  let sawHeaderGap = false;
+  for (const slot of slots) {
+    const hasLowerBound = slot.lowerBoundMatches.length === 1;
+    const hasValue = slot.valueMatches.length === 1;
+    if (hasLowerBound !== hasValue) return { presence: "ambiguous" };
+    if (!hasLowerBound) {
+      sawHeaderGap = true;
+      continue;
+    }
+    if (sawHeaderGap) return { presence: "ambiguous" };
+    levels.push({
+      lowerBoundIndex: slot.lowerBoundMatches[0],
+      valueIndex: slot.valueMatches[0],
+    });
+  }
+  return levels.length > 0
+    ? { presence: "available", typeIndex: typeMatches[0], levels }
+    : { presence: "ambiguous" };
+}
+
+function listingReportPositiveNumber(rawValue: string): number | null {
+  const raw = rawValue.trim();
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/u.test(raw)) {
+    return null;
+  }
+  const value = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(value) && value > 0 && value <= 1_000_000_000
+    ? value
+    : null;
+}
+
+function listingReportQuantityDiscountEvidence(
+  row: string[],
+  columns: ListingReportQuantityDiscountColumns,
+): ListingReportQuantityDiscountEvidence {
+  if (columns.presence === "unavailable") {
+    return { presence: "unavailable", plan: null };
+  }
+  if (columns.presence === "ambiguous") {
+    return { presence: "ambiguous", plan: null };
+  }
+  const rawType = row[columns.typeIndex]?.trim().toLowerCase() ?? "";
+  const rawLevels = columns.levels.map((level) => ({
+    lowerBound: row[level.lowerBoundIndex]?.trim() ?? "",
+    value: row[level.valueIndex]?.trim() ?? "",
+  }));
+  if (!rawType && rawLevels.every((level) => !level.lowerBound && !level.value)) {
+    return { presence: "absent", plan: null };
+  }
+  const discountType = rawType === "percent" || rawType === "percentage"
+    ? "percent"
+    : rawType === "fixed"
+      ? "fixed"
+      : null;
+  if (!discountType) return { presence: "ambiguous", plan: null };
+
+  const levels: BusinessQuantityDiscountLevel[] = [];
+  let sawValueGap = false;
+  for (const rawLevel of rawLevels) {
+    if (!rawLevel.lowerBound && !rawLevel.value) {
+      sawValueGap = true;
+      continue;
+    }
+    if (!rawLevel.lowerBound || !rawLevel.value || sawValueGap) {
+      return { presence: "ambiguous", plan: null };
+    }
+    const lowerBound = listingReportPositiveNumber(rawLevel.lowerBound);
+    const value = listingReportPositiveNumber(rawLevel.value);
+    if (
+      lowerBound === null ||
+      !Number.isSafeInteger(lowerBound) ||
+      value === null ||
+      (discountType === "percent" && value >= 100)
+    ) {
+      return { presence: "ambiguous", plan: null };
+    }
+    const previous = levels.at(-1);
+    if (
+      previous &&
+      (lowerBound <= previous.lowerBound ||
+        (discountType === "percent"
+          ? value <= previous.value
+          : value >= previous.value))
+    ) {
+      return { presence: "ambiguous", plan: null };
+    }
+    levels.push({ lowerBound, value });
+  }
+  return levels.length > 0
+    ? { presence: "canonical", plan: { discountType, levels } }
+    : { presence: "ambiguous", plan: null };
+}
+
 function parseFbaListingReport(text: string): {
   seeds: ListingReportSeed[];
   businessPriceEvidenceBySku: Map<
     string,
     ListingReportBusinessPriceEvidence
+  >;
+  quantityDiscountEvidenceBySku: Map<
+    string,
+    ListingReportQuantityDiscountEvidence
   >;
 } {
   const rows = parseTsv(text);
@@ -15377,6 +15586,7 @@ function parseFbaListingReport(text: string): {
     headers,
     businessPriceHeaders,
   );
+  const quantityDiscountColumns = listingReportQuantityDiscountColumns(headers);
   const fixedLayoutRows = rows.slice(1).filter((row) => row.some(Boolean));
   const fixedFulfillmentValues = fixedLayoutRows
     .map((row) => row[26]?.trim() ?? "")
@@ -15416,6 +15626,10 @@ function parseFbaListingReport(text: string): {
     string,
     ListingReportBusinessPriceEvidence
   >();
+  const quantityDiscountEvidenceBySku = new Map<
+    string,
+    ListingReportQuantityDiscountEvidence
+  >();
   for (const row of rows.slice(1)) {
     const fulfillment = row[fulfillmentIndex]?.trim() ?? "";
     if (!/^(AMAZON|AFN)(?:_|$)/i.test(fulfillment)) {
@@ -15439,6 +15653,10 @@ function parseFbaListingReport(text: string): {
       sellerSku,
       listingReportBusinessPriceEvidence(row, businessPriceIndex),
     );
+    quantityDiscountEvidenceBySku.set(
+      sellerSku,
+      listingReportQuantityDiscountEvidence(row, quantityDiscountColumns),
+    );
     seeds.push({
       sellerSku,
       // Preserve report identity exactly. Canonical review-audit validation
@@ -15448,42 +15666,73 @@ function parseFbaListingReport(text: string): {
       title: titleIndex >= 0 ? row[titleIndex]?.trim() ?? "" : "",
     });
   }
-  return { seeds, businessPriceEvidenceBySku };
+  return {
+    seeds,
+    businessPriceEvidenceBySku,
+    quantityDiscountEvidenceBySku,
+  };
 }
 
 function parseBusinessPricingActiveListingsReport(
   text: string,
   seeds: readonly ListingReportSeed[],
-): Map<string, ListingReportBusinessPriceEvidence> {
-  const evidenceBySku = new Map<string, ListingReportBusinessPriceEvidence>(
+): {
+  businessPriceEvidenceBySku: Map<string, ListingReportBusinessPriceEvidence>;
+  quantityDiscountEvidenceBySku: Map<
+    string,
+    ListingReportQuantityDiscountEvidence
+  >;
+} {
+  const businessPriceEvidenceBySku = new Map<
+    string,
+    ListingReportBusinessPriceEvidence
+  >(
     seeds.map((seed) => [
       seed.sellerSku,
       { presence: "unavailable" as const, amount: null },
+    ]),
+  );
+  const quantityDiscountEvidenceBySku = new Map<
+    string,
+    ListingReportQuantityDiscountEvidence
+  >(
+    seeds.map((seed) => [
+      seed.sellerSku,
+      { presence: "unavailable" as const, plan: null },
     ]),
   );
   const seedBySku = new Map(seeds.map((seed) => [seed.sellerSku, seed]));
   const rows = parseTsv(text);
   const headers = rows[0] ?? [];
   const skuIndex = uniqueReportColumn(headers, ["seller-sku", "sku"]);
-  const asinIndex = uniqueReportColumn(headers, ["asin1", "asin"]);
+  const asinIndex = uniqueReportColumn(headers, ["asin1", "asin-1", "asin"]);
   const fulfillmentIndex = uniqueReportColumn(headers, [
     "fulfillment-channel",
     "fulfillment-channel-code",
   ]);
   const businessPriceIndex = uniqueReportColumn(headers, ["business-price"]);
+  const quantityDiscountColumns = listingReportQuantityDiscountColumns(headers);
   if (
     skuIndex < 0 ||
     asinIndex < 0 ||
-    fulfillmentIndex < 0 ||
-    businessPriceIndex < 0
-  ) return evidenceBySku;
+    fulfillmentIndex < 0
+  ) {
+    return { businessPriceEvidenceBySku, quantityDiscountEvidenceBySku };
+  }
   const seenTargetSkus = new Set<string>();
   for (const row of rows.slice(1)) {
     const sellerSku = row[skuIndex] ?? "";
     const seed = seedBySku.get(sellerSku);
     if (!seed) continue;
     if (seenTargetSkus.has(sellerSku)) {
-      evidenceBySku.set(sellerSku, { presence: "ambiguous", amount: null });
+      businessPriceEvidenceBySku.set(
+        sellerSku,
+        { presence: "ambiguous", amount: null },
+      );
+      quantityDiscountEvidenceBySku.set(
+        sellerSku,
+        { presence: "ambiguous", plan: null },
+      );
       continue;
     }
     seenTargetSkus.add(sellerSku);
@@ -15496,15 +15745,26 @@ function parseBusinessPricingActiveListingsReport(
       asin !== seed.asin ||
       !/^(AMAZON|AFN)(?:_|$)/iu.test(fulfillment)
     ) {
-      evidenceBySku.set(sellerSku, { presence: "ambiguous", amount: null });
+      businessPriceEvidenceBySku.set(
+        sellerSku,
+        { presence: "ambiguous", amount: null },
+      );
+      quantityDiscountEvidenceBySku.set(
+        sellerSku,
+        { presence: "ambiguous", plan: null },
+      );
       continue;
     }
-    evidenceBySku.set(
+    businessPriceEvidenceBySku.set(
       sellerSku,
       listingReportBusinessPriceEvidence(row, businessPriceIndex),
     );
+    quantityDiscountEvidenceBySku.set(
+      sellerSku,
+      listingReportQuantityDiscountEvidence(row, quantityDiscountColumns),
+    );
   }
-  return evidenceBySku;
+  return { businessPriceEvidenceBySku, quantityDiscountEvidenceBySku };
 }
 
 function reconcileBusinessPriceReportEvidence(
@@ -15529,6 +15789,88 @@ function reconcileBusinessPriceReportEvidence(
   return fallback.presence === "present"
     ? { presence: "ambiguous", amount: null }
     : primary;
+}
+
+function sameBusinessQuantityDiscountPlan(
+  left: BusinessQuantityDiscountPlan,
+  right: BusinessQuantityDiscountPlan,
+): boolean {
+  return canonicalSha256(left) === canonicalSha256(right);
+}
+
+function reconcileBusinessQuantityDiscountReportEvidence(
+  primary: ListingReportQuantityDiscountEvidence,
+  fallback: ListingReportQuantityDiscountEvidence,
+): ListingReportQuantityDiscountEvidence {
+  if (primary.presence === "unavailable") return fallback;
+  if (primary.presence === "ambiguous") {
+    return { presence: "ambiguous", plan: null };
+  }
+  if (primary.presence === "canonical") {
+    if (fallback.presence === "ambiguous") {
+      return { presence: "ambiguous", plan: null };
+    }
+    if (fallback.presence !== "canonical") return primary;
+    return sameBusinessQuantityDiscountPlan(primary.plan, fallback.plan)
+      ? primary
+      : { presence: "ambiguous", plan: null };
+  }
+  if (fallback.presence === "canonical" || fallback.presence === "ambiguous") {
+    return { presence: "ambiguous", plan: null };
+  }
+  return primary;
+}
+
+function reconcileListingsAndReportQuantityDiscountEvidence(
+  listings: Pick<
+    ReturnType<typeof businessOfferSnapshot>,
+    "quantityDiscountPlan" | "quantityDiscountPlanPresence"
+  >,
+  report: ListingReportQuantityDiscountEvidence,
+): Pick<
+  BusinessPricingAuditRow,
+  "quantityDiscountPlan" | "quantityDiscountPlanPresence"
+> {
+  if (report.presence === "unavailable") {
+    return {
+      quantityDiscountPlan: listings.quantityDiscountPlan,
+      quantityDiscountPlanPresence: listings.quantityDiscountPlanPresence,
+    };
+  }
+  if (report.presence === "ambiguous") {
+    return {
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+    };
+  }
+  if (report.presence === "canonical") {
+    if (listings.quantityDiscountPlanPresence === "absent") {
+      return {
+        quantityDiscountPlan: report.plan,
+        quantityDiscountPlanPresence: "canonical",
+      };
+    }
+    if (
+      listings.quantityDiscountPlanPresence === "canonical" &&
+      listings.quantityDiscountPlan &&
+      sameBusinessQuantityDiscountPlan(
+        report.plan,
+        listings.quantityDiscountPlan,
+      )
+    ) {
+      return {
+        quantityDiscountPlan: report.plan,
+        quantityDiscountPlanPresence: "canonical",
+      };
+    }
+    return {
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+    };
+  }
+  return listings.quantityDiscountPlanPresence === "absent"
+    ? { quantityDiscountPlan: null, quantityDiscountPlanPresence: "absent" }
+    : { quantityDiscountPlan: null, quantityDiscountPlanPresence: "ambiguous" };
 }
 
 export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {

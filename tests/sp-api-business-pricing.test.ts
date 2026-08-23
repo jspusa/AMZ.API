@@ -40,6 +40,150 @@ function urlOf(input: Parameters<typeof fetch>[0]): URL {
   return new URL(input instanceof Request ? input.url : String(input));
 }
 
+async function singleRowAuditWithActiveQuantityReport(input: Readonly<{
+  caseName: string;
+  quantityHeaders?: string[];
+  quantityValues?: string[];
+  allListingsQuantityHeaders?: string[];
+  allListingsQuantityValues?: string[];
+  includeActiveBusinessPrice?: boolean;
+  listingsQuantityDiscountPlan?: unknown;
+}>) {
+  const suffix = input.caseName.toUpperCase().replace(/[^A-Z0-9]+/g, "-");
+  const reportId = `B2B-QDP-ALL-${suffix}`;
+  const documentId = `${reportId}-DOCUMENT`;
+  const activeReportId = `B2B-QDP-ACTIVE-${suffix}`;
+  const activeDocumentId = `${activeReportId}-DOCUMENT`;
+  const reportUrl = `https://reports.example.cloudfront.net/${reportId}.tsv`;
+  const activeReportUrl =
+    `https://reports.example.cloudfront.net/${activeReportId}.tsv`;
+  const sellerSku = `QDP-${suffix}`.slice(0, 40);
+  const asin = "B000000072";
+  const allDataReport = [
+    [
+      "seller-sku",
+      "asin",
+      "item-name",
+      "fulfillment-channel",
+      "business-price",
+      ...(input.allListingsQuantityHeaders ?? []),
+    ].join("\t"),
+    [
+      sellerSku,
+      asin,
+      "Quantity discount listing",
+      "AMAZON_NA",
+      "13.99",
+      ...(input.allListingsQuantityValues ?? []),
+    ].join("\t"),
+  ].join("\n");
+  const includeActiveBusinessPrice = input.includeActiveBusinessPrice ?? true;
+  const activeHeaders = [
+    "seller-sku",
+    "asin1",
+    "fulfillment-channel",
+    ...(includeActiveBusinessPrice ? ["business-price"] : []),
+    ...(input.quantityHeaders ?? []),
+  ];
+  const activeValues = [
+    sellerSku,
+    asin,
+    "AMAZON_NA",
+    ...(includeActiveBusinessPrice ? ["13.99"] : []),
+    ...(input.quantityValues ?? []),
+  ];
+  const activeReport = [activeHeaders.join("\t"), activeValues.join("\t")]
+    .join("\n");
+
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (request) => {
+    const url = urlOf(request);
+    if (url.origin === "https://api.amazon.com") {
+      return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+    }
+    if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+      return jsonResponse(200, {
+        reportId,
+        reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+        marketplaceIds: [MARKETPLACE_ID],
+        processingStatus: "DONE",
+        reportDocumentId: documentId,
+      });
+    }
+    if (url.pathname === `/reports/2021-06-30/documents/${documentId}`) {
+      return jsonResponse(200, { url: reportUrl });
+    }
+    if (url.href === reportUrl) return new Response(allDataReport);
+    if (url.pathname === `/reports/2021-06-30/reports/${activeReportId}`) {
+      return jsonResponse(200, {
+        reportId: activeReportId,
+        reportType: "GET_MERCHANT_LISTINGS_DATA",
+        marketplaceIds: [MARKETPLACE_ID],
+        processingStatus: "DONE",
+        reportDocumentId: activeDocumentId,
+      });
+    }
+    if (url.pathname === `/reports/2021-06-30/documents/${activeDocumentId}`) {
+      return jsonResponse(200, { url: activeReportUrl });
+    }
+    if (url.href === activeReportUrl) return new Response(activeReport);
+    if (url.pathname === `/listings/2021-08-01/items/${SELLER_ID}`) {
+      return jsonResponse(200, {
+        numberOfResults: 1,
+        items: [{
+          sku: sellerSku,
+          summaries: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin,
+            productType: "PET_FOOD",
+            itemName: "Quantity discount listing",
+          }],
+          productTypes: [{
+            marketplaceId: MARKETPLACE_ID,
+            productType: "PET_FOOD",
+          }],
+          attributes: {
+            purchasable_offer: [{
+              audience: "ALL",
+              currency: "USD",
+              marketplace_id: MARKETPLACE_ID,
+              our_price: [{ schedule: [{ value_with_tax: 14.99 }] }],
+            }, {
+              audience: "B2B",
+              currency: "USD",
+              marketplace_id: MARKETPLACE_ID,
+              our_price: [{ schedule: [{ value_with_tax: 13.99 }] }],
+              ...(input.listingsQuantityDiscountPlan === undefined
+                ? {}
+                : {
+                    quantity_discount_plan:
+                      input.listingsQuantityDiscountPlan,
+                  }),
+            }],
+          },
+          offers: [],
+          issues: [],
+          fulfillmentAvailability: [{
+            fulfillmentChannelCode: "AMAZON_NA",
+            quantity: 3,
+          }],
+        }],
+      });
+    }
+    throw new Error(`Unexpected request: ${url.href}`);
+  }));
+
+  const snapshot = await getBusinessPricingAuditData({
+    marketplaceId: MARKETPLACE_ID,
+    reportId,
+    documentId,
+    activeListingsReport: {
+      reportId: activeReportId,
+      documentId: activeDocumentId,
+    },
+  });
+  return snapshot.rows[0];
+}
+
 function listingResponse(): Response {
   return jsonResponse(200, {
     sku: SELLER_SKU,
@@ -2397,6 +2541,381 @@ describe("Amazon Business pricing SP-API contract", () => {
       expectedQuantityDiscountPlanHash: priceOnly.quantityDiscountPlanHash,
       quantityDiscountTiers: tiers,
     })).rejects.toMatchObject({ code: "BUSINESS_PRICE_UNCHANGED" });
+  });
+
+  it("uses canonical Active Listings percentage quantity tiers when Listings attributes lag", async () => {
+    const reportId = "B2B-QDP-ALL-DATA";
+    const documentId = "B2B-QDP-ALL-DATA-DOCUMENT";
+    const reportUrl = "https://reports.example.cloudfront.net/b2b-qdp-all-data.tsv";
+    const activeReportId = "B2B-QDP-ACTIVE-LISTINGS";
+    const activeDocumentId = "B2B-QDP-ACTIVE-LISTINGS-DOCUMENT";
+    const activeReportUrl =
+      "https://reports.example.cloudfront.net/b2b-qdp-active-listings.tsv";
+    const sellerSku = "B2B-QDP-FBA";
+    const asin = "B000000071";
+    const allDataReport = [
+      "seller-sku\tasin\titem-name\tfulfillment-channel\tbusiness-price",
+      `${sellerSku}\t${asin}\tQuantity discount listing\tAMAZON_NA\t13.99`,
+    ].join("\n");
+    const activeListingsReport = [
+      [
+        "Seller SKU",
+        "ASIN 1",
+        "Fulfillment Channel",
+        "Business Price",
+        "Quantity Price Type",
+        "Quantity Lower Bound 1",
+        "Quantity Price 1",
+        "Quantity Lower Bound 2",
+        "Quantity Price 2",
+        "Quantity Lower Bound 3",
+        "Quantity Price 3",
+        "Quantity Lower Bound 4",
+        "Quantity Price 4",
+      ].join("\t"),
+      [
+        sellerSku,
+        asin,
+        "AMAZON_NA",
+        "13.99",
+        "percentage",
+        "5",
+        "5",
+        "10",
+        "10",
+        "15",
+        "15",
+        "20",
+        "20",
+      ].join("\t"),
+    ].join("\n");
+
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+        return jsonResponse(200, {
+          reportId,
+          reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          processingStatus: "DONE",
+          reportDocumentId: documentId,
+        });
+      }
+      if (url.pathname === `/reports/2021-06-30/documents/${documentId}`) {
+        return jsonResponse(200, { url: reportUrl });
+      }
+      if (url.href === reportUrl) return new Response(allDataReport);
+      if (url.pathname === `/reports/2021-06-30/reports/${activeReportId}`) {
+        return jsonResponse(200, {
+          reportId: activeReportId,
+          reportType: "GET_MERCHANT_LISTINGS_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          processingStatus: "DONE",
+          reportDocumentId: activeDocumentId,
+        });
+      }
+      if (
+        url.pathname === `/reports/2021-06-30/documents/${activeDocumentId}`
+      ) {
+        return jsonResponse(200, { url: activeReportUrl });
+      }
+      if (url.href === activeReportUrl) return new Response(activeListingsReport);
+      if (url.pathname === `/listings/2021-08-01/items/${SELLER_ID}`) {
+        return jsonResponse(200, {
+          numberOfResults: 1,
+          items: [{
+            sku: sellerSku,
+            summaries: [{
+              marketplaceId: MARKETPLACE_ID,
+              asin,
+              productType: "PET_FOOD",
+              itemName: "Quantity discount listing",
+            }],
+            productTypes: [{
+              marketplaceId: MARKETPLACE_ID,
+              productType: "PET_FOOD",
+            }],
+            attributes: {
+              purchasable_offer: [{
+                audience: "ALL",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [{ value_with_tax: 14.99 }] }],
+              }, {
+                audience: "B2B",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [{ value_with_tax: 13.99 }] }],
+              }],
+            },
+            offers: [],
+            issues: [],
+            fulfillmentAvailability: [{
+              fulfillmentChannelCode: "AMAZON_NA",
+              quantity: 3,
+            }],
+          }],
+        });
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    const snapshot = await getBusinessPricingAuditData({
+      marketplaceId: MARKETPLACE_ID,
+      reportId,
+      documentId,
+      activeListingsReport: {
+        reportId: activeReportId,
+        documentId: activeDocumentId,
+      },
+    });
+
+    expect(snapshot.rows).toEqual([expect.objectContaining({
+      sellerSku,
+      businessPrice: { amount: 13.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      recommendedPriceMismatch: false,
+      recommendedQuantityDiscountMismatch: false,
+      status: "configured",
+      editable: false,
+    })]);
+  });
+
+  it("reads Active quantity evidence independently from a missing Business Price column", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "independent-percent",
+      includeActiveBusinessPrice: false,
+      quantityHeaders: [
+        "quantity-price-type",
+        "quantity-lower-bound1",
+        "quantity-price1",
+        "quantity-lower-bound2",
+        "quantity-price2",
+        "quantity-lower-bound3",
+        "quantity-price3",
+        "quantity-lower-bound4",
+        "quantity-price4",
+      ],
+      quantityValues: [
+        "percent",
+        "5",
+        "5",
+        "10",
+        "10",
+        "15",
+        "15",
+        "20",
+        "20",
+      ],
+    });
+
+    expect(row).toMatchObject({
+      businessPrice: { amount: 13.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+      recommendedQuantityDiscountMismatch: false,
+      status: "configured",
+    });
+  });
+
+  it("canonicalizes a strictly decreasing fixed-price Active schedule", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "fixed",
+      quantityHeaders: [
+        "quantity price type",
+        "quantity lower bound 1",
+        "quantity price 1",
+        "quantity lower bound 2",
+        "quantity price 2",
+      ],
+      quantityValues: ["fixed", "5", "13.25", "10", "12.50"],
+    });
+
+    expect(row).toMatchObject({
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlan: {
+        discountType: "fixed",
+        levels: [
+          { lowerBound: 5, value: 13.25 },
+          { lowerBound: 10, value: 12.5 },
+        ],
+      },
+      status: "configured",
+    });
+  });
+
+  it.each([
+    {
+      name: "unknown-type",
+      values: ["relative", "5", "5", "", "", "10", "10"],
+    },
+    {
+      name: "unpaired",
+      values: ["percent", "5", "", "", "", "", ""],
+    },
+    {
+      name: "gap",
+      values: ["percent", "5", "5", "", "", "15", "15"],
+    },
+    {
+      name: "unsorted-bound",
+      values: ["percent", "10", "5", "5", "10", "", ""],
+    },
+    {
+      name: "non-increasing-percent",
+      values: ["percent", "5", "10", "10", "5", "", ""],
+    },
+    {
+      name: "non-numeric",
+      values: ["percent", "five", "5", "", "", "", ""],
+    },
+  ])("keeps malformed Active quantity evidence ambiguous: $name", async ({
+    name,
+    values,
+  }) => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: `malformed-${name}`,
+      quantityHeaders: [
+        "quantity-price-type",
+        "quantity-lower-bound-1",
+        "quantity-price-1",
+        "quantity-lower-bound-2",
+        "quantity-price-2",
+        "quantity-lower-bound-3",
+        "quantity-price-3",
+      ],
+      quantityValues: values,
+    });
+
+    expect(row).toMatchObject({
+      businessPrice: { amount: 13.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "configured",
+    });
+  });
+
+  it("does not let missing report quantity columns erase Listings canonical tiers", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "report-columns-unavailable",
+      listingsQuantityDiscountPlan: [{
+        schedule: [{
+          discount_type: "percent",
+          levels: [
+            { lower_bound: 5, value: 5 },
+            { lower_bound: 10, value: 10 },
+            { lower_bound: 15, value: 15 },
+            { lower_bound: 20, value: 20 },
+          ],
+        }],
+      }],
+    });
+
+    expect(row).toMatchObject({
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+      recommendedQuantityDiscountMismatch: false,
+    });
+  });
+
+  it("uses canonical all-listings quantity tiers when Active columns are unavailable", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "all-listings-fallback",
+      allListingsQuantityHeaders: [
+        "quantity price type",
+        "quantity lower bound 1",
+        "quantity price 1",
+        "quantity lower bound 2",
+        "quantity price 2",
+        "quantity lower bound 3",
+        "quantity price 3",
+        "quantity lower bound 4",
+        "quantity price 4",
+      ],
+      allListingsQuantityValues: [
+        "percentage",
+        "5",
+        "5",
+        "10",
+        "10",
+        "15",
+        "15",
+        "20",
+        "20",
+      ],
+    });
+
+    expect(row).toMatchObject({
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+      recommendedQuantityDiscountMismatch: false,
+      status: "configured",
+    });
+  });
+
+  it("keeps conflicting canonical Active and Listings tiers ambiguous", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "canonical-conflict",
+      quantityHeaders: [
+        "quantity-price-type",
+        "quantity-lower-bound-1",
+        "quantity-price-1",
+      ],
+      quantityValues: ["percent", "5", "5"],
+      listingsQuantityDiscountPlan: [{
+        schedule: [{
+          discount_type: "percent",
+          levels: [{ lower_bound: 5, value: 6 }],
+        }],
+      }],
+    });
+
+    expect(row).toMatchObject({
+      businessPrice: { amount: 13.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "configured",
+    });
   });
 
   it("preserves Active Listings Business Price when standard pricing is unavailable", async () => {

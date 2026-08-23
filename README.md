@@ -21,15 +21,15 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 產品 | 將同一份文案健檢 Excel 以選檔或拖放回傳，逐欄核對完整 Amazon 原值／Excel 更新值後批次更新 | 同檔 round trip 保留原始文案特殊換行；掃描證據可安全跨鎖屏／重啟保留 24 小時；全批零寫入預檢 → 一次 Touch ID／Windows Hello → 每 SKU 單次 PATCH＋回讀；不明即停止且不盲目重送 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於六張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
-| 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；`CONTENT_PUBLISHED` 可補強正向證據，同一文件／ASIN 的 published＋related 重複列會保留發布正向證據，真正 published／not-published 衝突仍 fail closed；重複文件 metadata 只降級顯示完整度，不刪除可驗證的關聯；文件存在或 APPROVED 本身不會被猜成已發布 |
+| 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；同一文件／ASIN 只要含 schema-valid `CONTENT_PUBLISHED` 就保留已發布正向證據，若同時有重複／較舊的 `CONTENT_NOT_PUBLISHED` 或畸形列則只把完整度降為 partial；沒有任何 published positive 的 malformed／negative 關聯仍 fail closed；文件存在或 APPROVED 本身不會被猜成已發布 |
 | 產品 | 全商品標題、五大賣點、成分匯出 Excel | 一鍵 |
 | 產品 | 雙 Family 並排、FBA child 拖拉改掛、CHILD PTD 動態欄位 | 兩階段預檢＋本機身分確認＋回查 |
-| 產品 | 全站未綁變體健檢（Listings relationships 每批最多 20 SKU、缺值／歧義 fail closed；Excel 含淺色 family 分組的「所有變體」與 Parent → Child 直列的「全部變體（直式）」） | Amazon 唯讀；每個 family 固定由 Parent SKU 起列，下面接續已驗證 Child SKU；standalone／資料未完成分開附列，不用 ASIN 猜 family |
+| 產品 | 全站未綁變體健檢（Listings relationships 每批最多 20 SKU、缺值／歧義 fail closed；Excel 含淺色 family 分組的「所有變體」與「父變體橫排」） | Amazon 唯讀；「父變體橫排」第一列直接橫排所有已驗證 Parent SKU，每一欄從第二列起只接續該 Parent 的 Child SKU；standalone／資料未完成留在各自工作表，不用 ASIN 猜 family |
 | 產品 | 非 parent FBA ASIN 評論主題健檢（child＋standalone、排除 parent、前五／後五與全量 Excel） | Amazon Customer Feedback 唯讀 |
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋本機身分確認 |
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋本機身分確認 |
 | 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel；具同次 current-FBA 證據的無效／重複 offer 或月度 SKU 獨立列為未完成，不拖垮其餘正常 SKU；未證明識別值只保留聚合計數 | 自動讀取；來源不完整時只顯示已核對範圍；SG／AU 顯示不支援邊界 |
-| 價格 | 全站 FBA Amazon Business 價格健檢，除既有狀態外獨立且可重疊標示「不符建議 B2B 價格」與「未正確設定階梯折扣」，並提供五工作表 Excel；建議規則為 USD 一般價減 1.00，以及 5／10／15／20 件各 5%／10%／15%／20% | 報表全程唯讀；Active Listings exact 現行 Business Price 可優先於尚未同步的 Listings attributes contribution，malformed／duplicate／身分衝突仍 fail closed；Excel 只由 account／站點／模式綁定且已完成的 main-owned 快照建立，不接受 renderer 傳入商品列 |
+| 價格 | 全站 FBA Amazon Business 價格健檢，除既有狀態外獨立且可重疊標示「不符建議 B2B 價格」與「未正確設定階梯折扣」，並提供五工作表 Excel；建議規則為 USD 一般價減 1.00，以及 5／10／15／20 件各 5%／10%／15%／20% | 報表全程唯讀；Active Listings exact 現行 Business Price 與 `Quantity Price Type`／`Quantity Lower Bound 1–5`／`Quantity Price 1–5` 可補足尚未同步的 Listings attributes contribution，兩個 canonical 來源衝突或報表 malformed／duplicate／身分不符仍 fail closed；Excel 只由 account／站點／模式綁定且已完成的 main-owned 快照建立，不接受 renderer 傳入商品列 |
 | 促銷 | Coupon、S&S 管理與 Amazon Ads 集中於「Amazon 官方完成」 | 一鍵開啟、Amazon 內完成 |
 | 報表 | FBA 入庫貨件追蹤（近 30／90／180 天、貨件狀態、逐 SKU 預期／送出、Amazon 已接收、尚未接收／超收、每日貨件／箱件／商品瑕疵與中文 Excel）；入口只放在頂端「報表」，不佔首頁或「營運」工具列 | Fulfillment Inbound GET＋耐久化每日問題報表；部分資料不補 0 |
 | 營運 | Amazon Ads Profile 自動發現、Sponsored Products 活動唯讀查詢與全站 FBA 廣告覆蓋健檢；任何 Listing 身分缺口都整次停止 | 獨立 Ads LWA＋唯讀；無 Ads 寫入 route |
