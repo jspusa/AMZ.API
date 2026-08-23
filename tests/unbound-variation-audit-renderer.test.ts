@@ -26,6 +26,35 @@ function snapshot() {
       message: "Amazon 沒有回傳 relationships 資料集。",
       requestId: null,
     }],
+    allVariationRows: [
+      {
+        familySku: "PARENT-01",
+        role: "parent",
+        sellerSku: "PARENT-01",
+        title: "",
+        productType: "",
+        variationTheme: "SIZE_NAME",
+        evidence: "parent-sku-from-verified-child",
+      },
+      {
+        familySku: "PARENT-01",
+        role: "child",
+        sellerSku: "CHILD-01",
+        title: "Child one",
+        productType: "PET_FOOD",
+        variationTheme: "SIZE_NAME",
+        evidence: "verified-child",
+      },
+      {
+        familySku: "PARENT-01",
+        role: "child",
+        sellerSku: "CHILD-02",
+        title: "Child two",
+        productType: "PET_FOOD",
+        variationTheme: "SIZE_NAME",
+        evidence: "verified-child",
+      },
+    ],
     summary: {
       totalFbaListings: 4,
       completed: 3,
@@ -43,7 +72,32 @@ describe("unbound variation audit renderer parser", () => {
     const parsed = parseUnboundVariationAuditSnapshot(snapshot(), MARKETPLACE_ID);
     expect(parsed.rows).toHaveLength(1);
     expect(parsed.incompleteRows).toHaveLength(1);
+    expect(parsed.allVariationRows.map((row) => row.sellerSku)).toEqual([
+      "PARENT-01",
+      "CHILD-01",
+      "CHILD-02",
+    ]);
     expect(parsed.summary.unbound).toBe(1);
+  });
+
+  it("accepts a v0.1.25 snapshot without the later allVariationRows field", () => {
+    const legacy = { ...snapshot() } as Record<string, unknown>;
+    delete legacy.allVariationRows;
+
+    expect(parseUnboundVariationAuditSnapshot(legacy, MARKETPLACE_ID)
+      .allVariationRows).toEqual([]);
+    expect(() => parseUnboundVariationAuditSnapshot({
+      ...legacy,
+      allVariationRows: "altered",
+    }, MARKETPLACE_ID)).toThrow(/明細格式/u);
+  });
+
+  it("rejects an all-variation family unless its parent SKU precedes its children", () => {
+    const rows = snapshot().allVariationRows;
+    expect(() => parseUnboundVariationAuditSnapshot({
+      ...snapshot(),
+      allVariationRows: [rows[1], rows[0], rows[2]],
+    }, MARKETPLACE_ID)).toThrow(/父變體.*子變體/u);
   });
 
   it("rejects cross-marketplace and summary mismatches before caching", () => {
@@ -84,11 +138,12 @@ describe("unbound variation audit renderer parser", () => {
       "utf8",
     );
     expect(source).toContain("/api/sp-api/variation-audit");
-    expect(source).toContain('method: "POST"');
+    expect(source).toContain("startStandaloneAuditJob");
     expect(source).toContain('download: "1"');
     expect(source).toContain('kind: "variation"');
     expect(source).toContain("fetchedAt: snapshot.fetchedAt");
-    expect(source).toContain("匯出未綁變體＋讀取未完成 Excel");
+    expect(source).toContain("匯出未綁變體＋讀取未完成＋所有變體 Excel");
+    expect(source).toContain("3 張工作表");
     expect(source).not.toMatch(/method:\s*["'](?:PATCH|PUT|DELETE)["']/);
     expect(source).not.toContain("localStorage");
   });

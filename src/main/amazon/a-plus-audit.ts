@@ -17,6 +17,7 @@ export type AplusAuditReasonCode =
   | "FBA_RELATIONSHIP_INCOMPLETE"
   | "A_PLUS_ACCESS_UNAVAILABLE"
   | "A_PLUS_READ_FAILED"
+  | "A_PLUS_WARNING_PRESENT"
   | "A_PLUS_RESPONSE_INVALID"
   | "A_PLUS_PAGINATION_INCOMPLETE";
 
@@ -93,7 +94,6 @@ export type AplusAuditRow = Readonly<{
   publishedRecordCount: number | null;
   contentTypes: readonly ("EBC" | "EMC")[];
   locales: readonly string[];
-  fromTheBrandStatus: "not_verifiable_by_public_api";
   reasonCode: AplusAuditReasonCode;
   reason: string;
 }>;
@@ -233,6 +233,28 @@ function isPublishRecord(
   );
 }
 
+function warningEnvelopeState(
+  value: unknown,
+): "none" | "present" | "invalid" {
+  if (value === undefined) return "none";
+  if (!Array.isArray(value) || value.length > 1_000) return "invalid";
+  if (value.length === 0) return "none";
+  const valid = value.every((candidate) => {
+    if (!isRecord(candidate)) return false;
+    if (
+      !isExactText(candidate.code, 256) ||
+      !isDisplayText(candidate.message, 4_000) ||
+      candidate.message.length === 0
+    ) {
+      return false;
+    }
+    return candidate.details === undefined || (
+      isDisplayText(candidate.details, 8_000) && candidate.details.length > 0
+    );
+  });
+  return valid ? "present" : "invalid";
+}
+
 function parsePublishRecordPage(
   marketplaceId: string,
   asin: string,
@@ -249,69 +271,57 @@ function parsePublishRecordPage(
       publishedRecordCount: null,
       contentTypes: [],
       locales: [],
-      fromTheBrandStatus: "not_verifiable_by_public_api",
       reasonCode: "A_PLUS_RESPONSE_INVALID",
       reason: "Amazon A+ publish-record 回應格式不完整，不能判定是否已發布。",
-    };
-  }
-  if (
-    payload.warnings !== undefined &&
-    (!Array.isArray(payload.warnings) || payload.warnings.length > 1_000)
-  ) {
-    return {
-      status: "incomplete",
-      sourceCompleteness: "partial",
-      publishedRecordCount: null,
-      contentTypes: [],
-      locales: [],
-      fromTheBrandStatus: "not_verifiable_by_public_api",
-      reasonCode: "A_PLUS_RESPONSE_INVALID",
-      reason: "Amazon A+ publish-record warnings 格式不完整，不能判定是否已發布。",
     };
   }
   const records = payload.publishRecordList.filter((candidate) =>
     isPublishRecord(candidate, marketplaceId, asin)
   );
   const hasInvalidRecord = records.length !== payload.publishRecordList.length;
-  if (records.length === 0) {
-    if (
-      hasInvalidRecord ||
-      (Array.isArray(payload.warnings) && payload.warnings.length > 0)
-    ) {
-      return {
-        status: "incomplete",
-        sourceCompleteness: "partial",
-        publishedRecordCount: null,
-        contentTypes: [],
-        locales: [],
-        fromTheBrandStatus: "not_verifiable_by_public_api",
-        reasonCode: "A_PLUS_RESPONSE_INVALID",
-        reason: "Amazon A+ publish-record 回應含 warning，不能把空清單當成沒有 A+。",
-      };
-    }
+  const warningState = warningEnvelopeState(payload.warnings);
+  if (records.length > 0) {
+    const sourceIsPartial = hasInvalidRecord || warningState !== "none";
     return {
-      status: "missing",
-      sourceCompleteness: "complete",
-      publishedRecordCount: 0,
-      contentTypes: [],
-      locales: [],
-      fromTheBrandStatus: "not_verifiable_by_public_api",
-      reasonCode: "NO_PUBLISHED_RECORD",
-      reason: "Amazon 完整查詢沒有找到目前 ASIN 的已發布 A+。",
+      status: "published",
+      sourceCompleteness: sourceIsPartial ? "partial" : "complete",
+      publishedRecordCount: sourceIsPartial ? null : records.length,
+      contentTypes: [...new Set(records.map((record) => record.contentType as "EBC" | "EMC"))],
+      locales: [...new Set(records.map((record) => String(record.locale)))],
+      reasonCode: "PUBLISHED_RECORD_FOUND",
+      reason: "Amazon publish record 已證明目前 ASIN 有已發布 A+。",
     };
   }
-  const hasWarnings =
-    hasInvalidRecord ||
-    (Array.isArray(payload.warnings) && payload.warnings.length > 0);
+  if (hasInvalidRecord || warningState === "invalid") {
+    return {
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: [],
+      locales: [],
+      reasonCode: "A_PLUS_RESPONSE_INVALID",
+      reason: "Amazon A+ publish-record 回應格式不完整，不能判定是否已發布。",
+    };
+  }
+  if (warningState === "present") {
+    return {
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: [],
+      locales: [],
+      reasonCode: "A_PLUS_WARNING_PRESENT",
+      reason: "Amazon A+ 回應含警告，無法確認目前是否已發布。",
+    };
+  }
   return {
-    status: "published",
-    sourceCompleteness: hasWarnings ? "partial" : "complete",
-    publishedRecordCount: hasWarnings ? null : records.length,
-    contentTypes: [...new Set(records.map((record) => record.contentType as "EBC" | "EMC"))],
-    locales: [...new Set(records.map((record) => String(record.locale)))],
-    fromTheBrandStatus: "not_verifiable_by_public_api",
-    reasonCode: "PUBLISHED_RECORD_FOUND",
-    reason: "Amazon publish record 已證明目前 ASIN 有已發布 A+。",
+    status: "missing",
+    sourceCompleteness: "complete",
+    publishedRecordCount: 0,
+    contentTypes: [],
+    locales: [],
+    reasonCode: "NO_PUBLISHED_RECORD",
+    reason: "Amazon 完整查詢沒有找到目前 ASIN 的已發布 A+。",
   };
 }
 
@@ -322,7 +332,6 @@ function readFailure(status: number): AsinResult {
     publishedRecordCount: null,
     contentTypes: [],
     locales: [],
-    fromTheBrandStatus: "not_verifiable_by_public_api",
     reasonCode: status === 403
       ? "A_PLUS_ACCESS_UNAVAILABLE"
       : "A_PLUS_READ_FAILED",
@@ -345,7 +354,6 @@ function partialEvidenceResult(
     publishedRecordCount: null,
     contentTypes: [...contentTypes].sort((left, right) => left.localeCompare(right)),
     locales: [...locales].sort((left, right) => left.localeCompare(right)),
-    fromTheBrandStatus: "not_verifiable_by_public_api",
     reasonCode: "PUBLISHED_RECORD_FOUND",
     reason: "Amazon exact publish record 已證明目前 ASIN 有 A+；後續資料未完成，因此不顯示完整筆數。",
   };
@@ -358,7 +366,6 @@ function paginationFailure(): AsinResult {
     publishedRecordCount: null,
     contentTypes: [],
     locales: [],
-    fromTheBrandStatus: "not_verifiable_by_public_api",
     reasonCode: "A_PLUS_PAGINATION_INCOMPLETE",
     reason: "Amazon A+ publish-record 分頁未正常結束，不能判定是否已發布。",
   };
@@ -376,6 +383,7 @@ async function readAsin(
   const contentTypes = new Set<"EBC" | "EMC">();
   const locales = new Set<string>();
   const seenPageTokens = new Set<string>();
+  let warningResult: AsinResult | null = null;
   for (let page = 0; page < 100; page += 1) {
     throwIfAuditAborted(signal);
     let response: AplusPublishRecordFetchResult;
@@ -445,7 +453,12 @@ async function readAsin(
         locales.add(record.locale);
       }
     }
-    if (parsed.status === "incomplete") {
+    if (
+      parsed.status === "incomplete" &&
+      parsed.reasonCode === "A_PLUS_WARNING_PRESENT"
+    ) {
+      warningResult = parsed;
+    } else if (parsed.status === "incomplete") {
       return partialEvidenceResult(
         recordKeys.size,
         contentTypes,
@@ -478,18 +491,25 @@ async function readAsin(
       ? raw.nextPageToken
       : undefined;
     if (!nextPageToken) {
-      return recordKeys.size > 0
-        ? {
+      if (recordKeys.size > 0) {
+        return warningResult
+          ? partialEvidenceResult(
+              recordKeys.size,
+              contentTypes,
+              locales,
+              warningResult,
+            )
+          : {
             status: "published",
             sourceCompleteness: "complete",
             publishedRecordCount: recordKeys.size,
             contentTypes: [...contentTypes].sort((left, right) => left.localeCompare(right)),
             locales: [...locales].sort((left, right) => left.localeCompare(right)),
-            fromTheBrandStatus: "not_verifiable_by_public_api",
             reasonCode: "PUBLISHED_RECORD_FOUND",
             reason: "Amazon publish record 已證明目前 ASIN 有已發布 A+。",
-          }
-        : parsed;
+          };
+      }
+      return warningResult ?? parsed;
     }
     if (seenPageTokens.has(nextPageToken)) {
       return partialEvidenceResult(
@@ -565,7 +585,6 @@ export async function runAplusAudit(input: Readonly<{
           publishedRecordCount: null,
           contentTypes: [],
           locales: [],
-          fromTheBrandStatus: "not_verifiable_by_public_api" as const,
           reasonCode: row.incompleteReasonCode ?? "FBA_IDENTITY_INCOMPLETE" as const,
           reason: row.incompleteReasonCode === "FBA_RELATIONSHIP_INCOMPLETE"
             ? "Amazon relationships 未完整證明此 FBA 商品為 child 或 standalone，未發出 A+ request。"
@@ -588,7 +607,6 @@ export async function runAplusAudit(input: Readonly<{
     totals: summary,
     summary,
     rows,
-    notice:
-      "只讀取目前 FBA 商品的 A+ publish records；From the brand／Brand Story 不在公開 API 可驗證範圍。",
+    notice: "只讀取目前 FBA 商品的官方 A+ publish records；不會修改 Amazon 商品頁。",
   };
 }

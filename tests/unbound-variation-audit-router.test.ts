@@ -76,11 +76,27 @@ describe("unbound variation audit router", () => {
     const snapshot = data.body.value as {
       exportId: string;
       summary: { totalFbaListings: number; unbound: number; incomplete: number };
+      allVariationRows: Array<{
+        familySku: string;
+        role: "parent" | "child";
+        sellerSku: string;
+      }>;
     };
     expect(snapshot.exportId).toMatch(/^[0-9a-f-]{36}$/);
     expect(snapshot.summary.totalFbaListings).toBeGreaterThan(0);
     expect(snapshot.summary.unbound).toBeGreaterThan(0);
     expect(snapshot.summary.incomplete).toBe(0);
+    expect(snapshot.allVariationRows.some((row) => row.role === "parent")).toBe(true);
+    for (let index = 0; index < snapshot.allVariationRows.length; index += 1) {
+      const row = snapshot.allVariationRows[index]!;
+      if (row.role !== "child") continue;
+      const parentIndex = snapshot.allVariationRows.findIndex(
+        (candidate) =>
+          candidate.familySku === row.familySku && candidate.role === "parent",
+      );
+      expect(parentIndex).toBeGreaterThanOrEqual(0);
+      expect(parentIndex).toBeLessThan(index);
+    }
 
     const exported = await router.handle(request({
       method: "GET",
@@ -97,6 +113,12 @@ describe("unbound variation audit router", () => {
     const workbook = new TextDecoder().decode(archive["xl/workbook.xml"]);
     expect(workbook).toContain("未綁變體");
     expect(workbook).toContain("讀取未完成");
+    expect(workbook).toContain("所有變體");
+    const allVariationSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet3.xml"],
+    );
+    expect(allVariationSheet).toContain("變體家庭 Parent SKU");
+    expect(allVariationSheet).not.toContain("ASIN");
     expect(exported.headers["x-exported-unbound-fba-sku-count"]).toBe(
       String(snapshot.summary.unbound),
     );

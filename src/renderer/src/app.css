@@ -3866,6 +3866,22 @@ footer {
   color: #28583d;
 }
 
+.business-pricing-recommendation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 12px;
+  padding: 12px 14px;
+  border: 1px solid #cfe3f5;
+  border-radius: 12px;
+  background: #f2f8fd;
+  color: #285d87;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.business-pricing-recommendation strong { color: #174f7c; }
+
 .business-pricing-progress,
 .business-pricing-result {
   padding: 12px 14px;
@@ -3878,7 +3894,7 @@ footer {
 
 .business-pricing-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 9px;
 }
 
@@ -3955,6 +3971,10 @@ footer {
   background: #fff;
 }
 
+.business-pricing-row.aplus-presence-row {
+  grid-template-columns: minmax(220px, 1.35fr) minmax(220px, 1fr) auto;
+}
+
 .business-pricing-row.missing {
   border-color: #edc7a6;
   background: #fffbf6;
@@ -4009,7 +4029,7 @@ footer {
   font-weight: 850;
 }
 
-.business-pricing-row > button,
+.business-pricing-row-actions button,
 .business-pricing-readonly {
   min-width: 112px;
   padding: 9px 11px;
@@ -4019,11 +4039,23 @@ footer {
   text-align: center;
 }
 
-.business-pricing-row > button {
+.business-pricing-row-actions {
+  display: grid;
+  min-width: 132px;
+  gap: 7px;
+}
+
+.business-pricing-row-actions button {
   border: 0;
   background: #25252a;
   color: #fff;
   cursor: pointer;
+}
+
+.business-pricing-row-actions .business-pricing-seller-central {
+  border: 1px solid #d7d7dd;
+  background: #fff;
+  color: #414149;
 }
 
 .business-pricing-readonly { background: #e9e9ed; color: #777780; }
@@ -4209,8 +4241,10 @@ footer {
   .business-pricing-audit-intro { align-items: stretch; flex-direction: column; }
   .business-pricing-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .business-pricing-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .business-pricing-row { grid-template-columns: minmax(0, 1fr); }
-  .business-pricing-row > button,
+  .business-pricing-row,
+  .business-pricing-row.aplus-presence-row { grid-template-columns: minmax(0, 1fr); }
+  .business-pricing-row-actions,
+  .business-pricing-row-actions button,
   .business-pricing-readonly { width: 100%; }
 }
 

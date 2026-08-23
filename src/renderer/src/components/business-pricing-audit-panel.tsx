@@ -26,14 +26,17 @@ import {
   type BusinessPricingEditorMode,
   type SubmittedBusinessPricePreview,
 } from "../business-pricing-audit";
-
-type ReportStatus = Readonly<{
-  ready: boolean;
-  reportId: string;
-  documentId: string | null;
-  status: string;
-  notice?: string;
-}>;
+import {
+  pollStandaloneAuditJob,
+  standaloneAuditSnapshotMatchesJob,
+  startStandaloneAuditJob,
+  type StandaloneAuditJob,
+  type StandaloneAuditMode,
+} from "../standalone-audit";
+import {
+  openSellerCentralInventoryHandoff,
+  supportsFixedSellerCentralHandoffs,
+} from "../seller-central-handoff";
 
 const FILTERS: readonly Readonly<{
   value: BusinessPricingAuditFilter;
@@ -67,74 +70,6 @@ function problemMessage(payload: unknown, fallback: string): string {
     ? source.requestId
     : null;
   return `${message}${requestId ? `（Request ID: ${requestId}）` : ""}`;
-}
-
-function reportStatus(value: unknown): ReportStatus {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Amazon 全商品報表狀態無效。");
-  }
-  const source = value as Record<string, unknown>;
-  const reportId = typeof source.reportId === "string" &&
-      source.reportId.length <= 256 &&
-      source.reportId === source.reportId.trim() &&
-      !/[\u0000-\u001f\u007f]/u.test(source.reportId)
-    ? source.reportId
-    : null;
-  const documentId = source.documentId === null
-    ? null
-    : typeof source.documentId === "string" &&
-        source.documentId.length <= 256 &&
-        source.documentId === source.documentId.trim() &&
-        !/[\u0000-\u001f\u007f]/u.test(source.documentId)
-      ? source.documentId
-      : undefined;
-  const status = typeof source.status === "string" &&
-      source.status.length <= 64 &&
-      source.status === source.status.trim() &&
-      !/[\u0000-\u001f\u007f]/u.test(source.status)
-    ? source.status
-    : null;
-  const notice = source.notice === undefined
-    ? undefined
-    : typeof source.notice === "string" &&
-        source.notice.length <= 4_000 &&
-        !source.notice.includes("\u0000")
-      ? source.notice
-      : null;
-  if (
-    typeof source.ready !== "boolean" ||
-    !reportId ||
-    documentId === undefined ||
-    !status ||
-    notice === null
-  ) {
-    throw new Error("Amazon 全商品報表狀態無效。");
-  }
-  return Object.freeze({
-    ready: source.ready,
-    reportId,
-    documentId,
-    status,
-    ...(notice === undefined ? {} : { notice }),
-  });
-}
-
-function auditPollDelay(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    const onAbort = () => {
-      window.clearTimeout(timer);
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, 2_000);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 function createIdempotencyKey(): string {
@@ -206,6 +141,24 @@ function formatQuantityDiscountPlan(
     .join("、")}`;
 }
 
+function formatAuditQuantityDiscount(row: BusinessPricingAuditRow): string {
+  if (row.quantityDiscountPlanPresence === "ambiguous") {
+    return "Amazon 未能確認，請到後台核對";
+  }
+  return formatQuantityDiscountPlan(row.quantityDiscountPlan);
+}
+
+function recommendedBusinessPrice(
+  standardPrice: BusinessPricingMoney | null,
+): BusinessPricingMoney | null {
+  if (!standardPrice || standardPrice.currencyCode !== "USD" ||
+      standardPrice.amount <= 1) return null;
+  return {
+    amount: Number((standardPrice.amount - 1).toFixed(2)),
+    currencyCode: "USD",
+  };
+}
+
 function rowCount(
   snapshot: BusinessPricingAuditSnapshot,
   filter: BusinessPricingAuditFilter,
@@ -215,18 +168,42 @@ function rowCount(
   ).length;
 }
 
+export function shouldResumeBusinessPricingAuditJob(input: Readonly<{
+  initialJob: StandaloneAuditJob | null;
+  snapshot: BusinessPricingAuditSnapshot | null;
+  marketplaceId: string;
+  mode: StandaloneAuditMode;
+  observerJobId: string | null;
+}>): boolean {
+  const { initialJob } = input;
+  if (
+    !initialJob ||
+    initialJob.kind !== "businessPricing" ||
+    initialJob.marketplaceId !== input.marketplaceId ||
+    initialJob.mode !== input.mode ||
+    (!initialJob.ready && input.observerJobId === initialJob.jobId)
+  ) return false;
+  return !standaloneAuditSnapshotMatchesJob(input.snapshot, initialJob);
+}
+
 export default function BusinessPricingAuditPanel({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
   initialSnapshot = null,
   cachedSnapshot = null,
+  initialJob = null,
   onSnapshotChange,
+  onJobChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
   initialSnapshot?: BusinessPricingAuditSnapshot | null;
   cachedSnapshot?: BusinessPricingAuditSnapshot | null;
+  initialJob?: StandaloneAuditJob | null;
   onSnapshotChange?: (snapshot: BusinessPricingAuditSnapshot) => void;
+  onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
   const [snapshot, setSnapshot] = useState<BusinessPricingAuditSnapshot | null>(
     initialSnapshot ?? cachedSnapshot,
@@ -234,6 +211,7 @@ export default function BusinessPricingAuditPanel({
   const [filter, setFilter] = useState<BusinessPricingAuditFilter>("problem");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [selected, setSelected] = useState<BusinessPricingListingSnapshot | null>(null);
   const [newPrice, setNewPrice] = useState("");
@@ -244,10 +222,21 @@ export default function BusinessPricingAuditPanel({
     useState<SubmittedBusinessPricePreview | null>(null);
   const [result, setResult] = useState<BusinessPriceUpdate | null>(null);
   const [editLoading, setEditLoading] = useState(false);
+  const [job, setJob] = useState<StandaloneAuditJob | null>(
+    initialJob?.kind === "businessPricing" &&
+      initialJob.marketplaceId === marketplaceId &&
+      initialJob.mode === mode
+      ? initialJob
+      : null,
+  );
   const abortRef = useRef<AbortController | null>(null);
+  const observerJobIdRef = useRef<string | null>(null);
   const editorRevisionRef = useRef(0);
 
   const validation = submittedPreview?.validation ?? null;
+  const fixedSellerCentralHandoffs = supportsFixedSellerCentralHandoffs(
+    typeof window === "undefined" ? null : window.fbaOS?.app,
+  );
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -257,6 +246,28 @@ export default function BusinessPricingAuditPanel({
     ) ?? [],
     [filter, snapshot],
   );
+
+  const loadAudit = async (
+    completedJob: StandaloneAuditJob,
+    signal: AbortSignal,
+  ) => {
+    if (!completedJob.ready || completedJob.status !== "completed") {
+      throw new Error(
+        completedJob.ready
+          ? completedJob.error.message
+          : "B2B 價格背景健檢尚未完成。",
+      );
+    }
+    const next = parseBusinessPricingAuditSnapshot(completedJob.snapshot);
+    if (next.marketplaceId !== marketplaceId) {
+      throw new Error("B2B 價格健檢站點與目前選擇不一致。");
+    }
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    setSnapshot(next);
+    onSnapshotChange?.(next);
+    setFilter("problem");
+    setProgress(null);
+  };
 
   const runAudit = async () => {
     abortRef.current?.abort();
@@ -268,60 +279,29 @@ export default function BusinessPricingAuditPanel({
     setSelected(null);
     setResult(null);
     try {
-      const startResponse = await fetch("/api/sp-api/business-pricing-audit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ marketplaceId }),
-        signal: controller.signal,
-      });
-      const startPayload = await startResponse.json();
-      if (!startResponse.ok) {
-        throw new Error(problemMessage(startPayload, "無法開始 B2B 價格健檢。"));
-      }
-      let status = reportStatus(startPayload);
-      for (let attempt = 0; !status.ready && attempt < 90; attempt += 1) {
-        await auditPollDelay(controller.signal);
-        const params = new URLSearchParams({
-          marketplaceId,
-          reportId: status.reportId,
-        });
-        const response = await fetch(`/api/sp-api/business-pricing-audit?${params}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(problemMessage(payload, "查詢 B2B 價格健檢進度失敗。"));
-        }
-        status = reportStatus(payload);
-        setProgress(status.notice ?? "Amazon 正在準備全商品清單…");
-      }
-      if (!status.ready || !status.documentId) {
-        throw new Error("Amazon 全商品清單仍未完成；系統沒有盲目重建，請稍後明確重試。");
-      }
-      setProgress("正在逐項核對 B2B offer 與 seller-specific PTD…");
-      const params = new URLSearchParams({
+      let current = await startStandaloneAuditJob({
+        kind: "businessPricing",
         marketplaceId,
-        reportId: status.reportId,
-        documentId: status.documentId,
-        data: "1",
-      });
-      const response = await fetch(`/api/sp-api/business-pricing-audit?${params}`, {
-        cache: "no-store",
+        mode,
         signal: controller.signal,
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(problemMessage(payload, "整理 B2B 價格健檢失敗。"));
-      }
-      const next = parseBusinessPricingAuditSnapshot(payload);
-      if (next.marketplaceId !== marketplaceId) {
-        throw new Error("B2B 價格健檢站點與目前選擇不一致。");
-      }
-      setSnapshot(next);
-      onSnapshotChange?.(next);
-      setFilter("problem");
-      setProgress(null);
+      observerJobIdRef.current = current.jobId;
+      setJob(current);
+      onJobChange?.(current);
+      setProgress(current.progress.message);
+      current = await pollStandaloneAuditJob({
+        expected: current,
+        signal: controller.signal,
+        onProgress: (next) => {
+          setJob(next);
+          onJobChange?.(next);
+          setProgress(next.progress.message);
+        },
+      });
+      setJob(current);
+      onJobChange?.(current);
+      await loadAudit(current, controller.signal);
+      observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       setError(requestError instanceof Error ? requestError.message : "B2B 價格健檢失敗。");
@@ -329,10 +309,75 @@ export default function BusinessPricingAuditPanel({
     } finally {
       if (abortRef.current === controller) {
         abortRef.current = null;
+        observerJobIdRef.current = null;
         setLoading(false);
       }
     }
   };
+
+  useEffect(() => {
+    if (!shouldResumeBusinessPricingAuditJob({
+      initialJob,
+      snapshot,
+      marketplaceId,
+      mode,
+      observerJobId: observerJobIdRef.current,
+    })) return;
+    // The guard above proves this is a matching B2B job.
+    const observedJob = initialJob!;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    observerJobIdRef.current = observedJob.jobId;
+    setJob(observedJob);
+    setLoading(true);
+    setError(null);
+    setProgress(observedJob.progress.message);
+    void (async () => {
+      try {
+        const terminal = observedJob.ready
+          ? observedJob
+          : await pollStandaloneAuditJob({
+              expected: observedJob,
+              signal: controller.signal,
+              onProgress: (next) => {
+                setJob(next);
+                onJobChange?.(next);
+                setProgress(next.progress.message);
+              },
+            });
+        setJob(terminal);
+        onJobChange?.(terminal);
+        await loadAudit(terminal, controller.signal);
+      } catch (resumeError) {
+        if (resumeError instanceof Error && resumeError.name === "AbortError") return;
+        setError(resumeError instanceof Error
+          ? resumeError.message
+          : "目前無法接續 B2B 價格健檢。");
+        setProgress(null);
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          observerJobIdRef.current = null;
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    initialJob?.jobId,
+    initialJob?.contextId,
+    initialJob?.ready,
+    marketplaceId,
+    mode,
+  ]);
 
   const openEditor = async (row: BusinessPricingAuditRow) => {
     const revision = ++editorRevisionRef.current;
@@ -371,6 +416,23 @@ export default function BusinessPricingAuditPanel({
       }
     } finally {
       if (editorRevisionRef.current === revision) setEditLoading(false);
+    }
+  };
+
+  const openSellerCentralInventory = async (sellerSku: string) => {
+    setHandoffError(null);
+    try {
+      const outcome = await openSellerCentralInventoryHandoff(
+        window.fbaOS.app,
+        sellerSku,
+      );
+      if (outcome === "upgrade-required") {
+        setHandoffError(
+          "目前 Notebook Key 版本無法安全開啟指定 SKU；請先更新 Notebook Key。為避免開錯商品，不會改開 Seller Central 首頁。",
+        );
+      }
+    } catch {
+      setHandoffError("無法開啟這個 SKU 的 Amazon 庫存頁；請更新 Notebook Key 後再試一次。");
     }
   };
 
@@ -508,9 +570,24 @@ export default function BusinessPricingAuditPanel({
           {loading ? "健檢中…" : snapshot ? "重新健檢" : "開始全站 B2B 價格健檢"}
         </button>
       </div>
+      <div className="business-pricing-recommendation" aria-label="B2B 價格建議規則">
+        <strong>Jasper US 建議規則</strong>
+        <span>US 一般售價 – USD 1.00</span>
+        <span>數量折扣：5 件 5%・10 件 10%・15 件 15%・20 件 20%</span>
+      </div>
       <p className="business-pricing-safety-note">先由 Amazon Validation Preview 核對，零寫入；正式送出前仍需 Touch ID／Windows Hello。combined 操作只用一次 PATCH 更新同一個 B2B contribution 的 our_price 與完整數量折扣，不改一般售價，也不盲目重送。</p>
-      {progress && <div className="business-pricing-progress" role="status">{progress}</div>}
+      {(job && !job.ready ? job.progress.message : progress) && (
+        <div className="business-pricing-progress" role="status">
+          {job && !job.ready ? job.progress.message : progress}
+        </div>
+      )}
       {error && <div className="price-error" role="alert">{error}</div>}
+      {handoffError && <div className="price-error" role="alert">{handoffError}</div>}
+      {!fixedSellerCentralHandoffs && (
+        <p className="business-pricing-notice" role="status">
+          目前 Notebook Key 需更新後才能安全開啟指定 SKU；為避免開錯商品，舊版不會改開 Seller Central 首頁。
+        </p>
+      )}
 
       {snapshot && (
         <>
@@ -519,7 +596,7 @@ export default function BusinessPricingAuditPanel({
             <article className="problem"><span>未設定</span><strong>{snapshot.summary.missing}</strong></article>
             <article className="problem"><span>高於一般售價</span><strong>{snapshot.summary.aboveStandard}</strong></article>
             <article><span>已設定</span><strong>{snapshot.summary.configured}</strong></article>
-            <article><span>不可直接修改</span><strong>{snapshot.rows.filter((row) => !row.editable).length}</strong></article>
+            <article><span>請到 Amazon 後台編輯</span><strong>{snapshot.rows.filter((row) => !row.editable).length}</strong></article>
           </div>
           <div className="business-pricing-filters" role="group" aria-label="B2B 價格篩選">
             {FILTERS.map((option) => (
@@ -539,16 +616,26 @@ export default function BusinessPricingAuditPanel({
                 <dl>
                   <div><dt>一般售價</dt><dd>{formatMoney(row.standardPrice)}</dd></div>
                   <div><dt>B2B 價格</dt><dd>{formatMoney(row.businessPrice)}</dd></div>
+                  <div><dt>建議 B2B 價格</dt><dd>{formatMoney(recommendedBusinessPrice(row.standardPrice))}</dd></div>
+                  <div><dt>目前數量折扣</dt><dd>{formatAuditQuantityDiscount(row)}</dd></div>
                 </dl>
                 <div className="business-pricing-row-status">
                   <span>{statusLabel(row.status)}</span>
                   <small>{row.reason}</small>
                 </div>
-                {row.editable && row.standardPrice ? (
-                  <button type="button" onClick={() => void openEditor(row)} disabled={editLoading}>
-                    {row.status === "missing" ? "設定 B2B 價格" : "調整 B2B 價格"}
-                  </button>
-                ) : <span className="business-pricing-readonly">不可直接修改</span>}
+                <div className="business-pricing-row-actions">
+                  {row.editable && row.standardPrice ? (
+                    <button type="button" onClick={() => void openEditor(row)} disabled={editLoading}>
+                      {row.status === "missing" ? "設定 B2B 價格" : "調整 B2B 價格"}
+                    </button>
+                  ) : <span className="business-pricing-readonly">請到 Amazon 後台編輯</span>}
+                  <button
+                    type="button"
+                    className="business-pricing-seller-central"
+                    onClick={() => void openSellerCentralInventory(row.sellerSku)}
+                    disabled={!fixedSellerCentralHandoffs}
+                  >前往編輯 ↗</button>
+                </div>
               </article>
             ))}
             {visibleRows.length === 0 && <p className="business-pricing-empty">這個篩選沒有商品。</p>}
@@ -677,7 +764,7 @@ export default function BusinessPricingAuditPanel({
             </div>
           ) : (
             <div className="price-warning compact">
-              <strong>數量折扣不可直接修改</strong>
+              <strong>數量折扣請到 Amazon 後台編輯</strong>
               <p>{selected.businessPricingManagedByAutomation
                 ? "此 contribution 由 Amazon Automate Pricing 管理；請先在 Seller Central 處理規則。"
                 : selected.quantityDiscountPlanPresence === "ambiguous"

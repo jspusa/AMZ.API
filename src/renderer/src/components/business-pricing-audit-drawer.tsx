@@ -2,19 +2,29 @@
 
 import { useEffect } from "react";
 import type { BusinessPricingAuditSnapshot } from "../business-pricing-audit";
+import type {
+  StandaloneAuditJob,
+  StandaloneAuditMode,
+} from "../standalone-audit";
 import BusinessPricingAuditPanel from "./business-pricing-audit-panel";
 
 export default function BusinessPricingAuditDrawer({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
   cachedSnapshot = null,
+  initialJob = null,
   onSnapshotChange,
+  onJobChange,
   onClose,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
   cachedSnapshot?: BusinessPricingAuditSnapshot | null;
+  initialJob?: StandaloneAuditJob | null;
   onSnapshotChange?: (snapshot: BusinessPricingAuditSnapshot) => void;
+  onJobChange?: (job: StandaloneAuditJob) => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -49,8 +59,11 @@ export default function BusinessPricingAuditDrawer({
         <BusinessPricingAuditPanel
           marketplaceId={marketplaceId}
           marketplaceShort={marketplaceShort}
+          mode={mode}
           cachedSnapshot={cachedSnapshot}
+          initialJob={initialJob}
           onSnapshotChange={onSnapshotChange}
+          onJobChange={onJobChange}
         />
       </aside>
     </div>

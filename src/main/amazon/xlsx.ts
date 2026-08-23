@@ -199,11 +199,25 @@ export interface UnboundVariationWorkbookIncompleteRow {
   message: string;
 }
 
+export interface AllVariationWorkbookRow {
+  familySku: string;
+  role: "parent" | "child";
+  sellerSku: string;
+  title: string;
+  productType: string;
+  variationTheme: string | null;
+  evidence:
+    | "verified-parent"
+    | "verified-child"
+    | "parent-sku-from-verified-child";
+}
+
 export interface CreateUnboundVariationWorkbookInput {
   marketplaceLabel: string;
   fetchedAt: string | Date;
   rows: readonly UnboundVariationWorkbookRow[];
   incompleteRows: readonly UnboundVariationWorkbookIncompleteRow[];
+  allVariationRows: readonly AllVariationWorkbookRow[];
 }
 
 export type ContentAuditWorkbookContentValues = {
@@ -1008,6 +1022,7 @@ export function createUnboundVariationWorkbook({
   fetchedAt,
   rows,
   incompleteRows,
+  allVariationRows,
 }: CreateUnboundVariationWorkbookInput): Uint8Array {
   const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
   const sheets = [
@@ -1041,6 +1056,35 @@ export function createUnboundVariationWorkbook({
         ]),
         widths: [26, 58, 18, 16, 34, 78],
         dataRowHeight: 42,
+      }),
+    },
+    {
+      name: "所有變體",
+      xml: buildWorksheet({
+        headers: [
+          "變體家庭 Parent SKU",
+          "角色",
+          "SKU",
+          "商品標題",
+          "商品類型",
+          "Variation Theme",
+          "判定依據",
+        ],
+        rows: allVariationRows.map((row): readonly Cell[] => [
+          textCell(row.familySku, 2),
+          textCell(row.role === "parent" ? "父變體" : "子變體"),
+          textCell(row.sellerSku, 2),
+          textCell(row.title),
+          textCell(row.productType),
+          textCell(row.variationTheme ?? ""),
+          textCell(row.evidence === "verified-parent"
+            ? "Amazon relationships 已驗證父變體"
+            : row.evidence === "verified-child"
+              ? "Amazon relationships 已驗證子變體"
+              : "父 SKU 取自已驗證子變體關係；未猜測父商品名稱"),
+        ]),
+        widths: [28, 14, 28, 58, 24, 24, 58],
+        dataRowHeight: 38,
       }),
     },
   ];

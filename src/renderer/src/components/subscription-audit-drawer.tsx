@@ -3,14 +3,24 @@
 import { useEffect } from "react";
 import { isSubscriptionAuditMarketplaceSupported } from "../subscription-audit";
 import SubscriptionAuditPanel from "./subscription-audit-panel";
+import type {
+  StandaloneAuditJob,
+  StandaloneAuditMode,
+} from "../standalone-audit";
 
 export default function SubscriptionAuditDrawer({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
+  initialJob = null,
+  onJobChange,
   onClose,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
+  initialJob?: StandaloneAuditJob | null;
+  onJobChange?: (job: StandaloneAuditJob) => void;
   onClose: () => void;
 }) {
   const marketplaceSupported = isSubscriptionAuditMarketplaceSupported(marketplaceId);
@@ -46,6 +56,9 @@ export default function SubscriptionAuditDrawer({
         <SubscriptionAuditPanel
           marketplaceId={marketplaceId}
           marketplaceShort={marketplaceShort}
+          mode={mode}
+          initialJob={initialJob}
+          onJobChange={onJobChange}
         />
       </aside>
     </div>

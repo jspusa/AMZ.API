@@ -71,7 +71,9 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain("開始全站圖片健檢");
     expect(markup).toContain("全站 A+ 健檢");
     expect(markup).toContain("開始全站 A+ 健檢");
-    expect(markup).toContain("From the brand 公開 API 無法驗證");
+    expect(markup).toContain("逐一核對全部 FBA ASIN 是否有官方 A+ 發布紀錄");
+    expect(markup).not.toContain("From the brand");
+    expect(markup).not.toContain("Brand Story");
     expect(markup).toContain('<details class="low-frequency-audits">');
     expect(markup).not.toContain('<details class="low-frequency-audits" open=""');
     expect(markup).toContain("低頻健檢");

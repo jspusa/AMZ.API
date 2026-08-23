@@ -1,0 +1,185 @@
+import { readFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ApiRouter } from "../src/main/api-router";
+import type { CredentialVault } from "../src/main/credential-vault";
+import { LocalStore } from "../src/main/local-store";
+import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
+
+const US = "ATVPDKIKX0DER";
+const previousMode = process.env.SP_API_MODE;
+
+function request(
+  method: "GET" | "POST",
+  input: Record<string, unknown>,
+): ApiRequest {
+  return {
+    requestId: crypto.randomUUID(),
+    method,
+    path: "/api/sp-api/standalone-audit",
+    query: method === "GET" ? input as Record<string, string> : {},
+    headers: {},
+    ...(method === "POST"
+      ? { body: { kind: "json" as const, value: input } }
+      : {}),
+  };
+}
+
+function payload(response: ApiResponse): Record<string, unknown> {
+  if (response.body.kind !== "json") throw new Error("Expected JSON");
+  return response.body.value as Record<string, unknown>;
+}
+
+async function terminal(
+  router: ApiRouter,
+  receipt: Record<string, unknown>,
+): Promise<ApiResponse> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await router.handle(request("GET", {
+      marketplaceId: String(receipt.marketplaceId),
+      mode: String(receipt.mode),
+      kind: String(receipt.kind),
+      jobId: String(receipt.jobId),
+      contextId: String(receipt.contextId),
+    }));
+    if (response.status !== 202) return response;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("Standalone audit did not finish");
+}
+
+describe("main-owned standalone audit route", () => {
+  let router: ApiRouter;
+  let accountScope: string;
+
+  beforeEach(async () => {
+    process.env.SP_API_MODE = "demo";
+    accountScope = "standalone-account-one";
+    const directory = await mkdtemp(join(tmpdir(), "standalone-audit-router-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => accountScope,
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      standaloneAudit: {
+        run: async ({ kind, options, context, updateProgress }) => {
+          updateProgress({
+            stage: "complete",
+            message: `${kind} 完成`,
+            completedUnits: 1,
+            totalUnits: 1,
+          });
+          return {
+            kind,
+            marketplaceId: context.marketplaceId,
+            months: options.months ?? null,
+            rows: [],
+          };
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    router?.clearPreviews();
+    if (previousMode === undefined) delete process.env.SP_API_MODE;
+    else process.env.SP_API_MODE = previousMode;
+  });
+
+  it("owns every non-review and non-A+ individual audit including final B2B enrichment", async () => {
+    const selections = [
+      { kind: "content" },
+      { kind: "image" },
+      { kind: "variation" },
+      { kind: "subscription", options: { months: 23 } },
+      { kind: "businessPricing" },
+      { kind: "advertising" },
+      { kind: "agedInventory" },
+    ];
+    for (const selection of selections) {
+      const started = await router.handle(request("POST", {
+        ...selection,
+        marketplaceId: US,
+        mode: "demo",
+      }));
+      expect(started.status).toBe(202);
+      const completed = await terminal(router, payload(started));
+      expect(completed.status).toBe(200);
+      expect(payload(completed)).toMatchObject({
+        kind: selection.kind,
+        marketplaceId: US,
+        mode: "demo",
+        ready: true,
+        status: "completed",
+        snapshot: {
+          kind: selection.kind,
+          marketplaceId: US,
+          rows: [],
+        },
+      });
+      expect(JSON.stringify(payload(completed))).not.toContain(accountScope);
+    }
+  });
+
+  it("rejects renderer account injection and invalidates a job after account drift", async () => {
+    const injected = await router.handle(request("POST", {
+      kind: "content",
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "renderer-supplied",
+    }));
+    expect(injected.status).toBe(400);
+
+    const started = await router.handle(request("POST", {
+      kind: "content",
+      marketplaceId: US,
+      mode: "demo",
+    }));
+    accountScope = "standalone-account-two";
+    const changed = await router.handle(request("GET", {
+      marketplaceId: US,
+      mode: "demo",
+      kind: "content",
+      jobId: String(payload(started).jobId),
+      contextId: String(payload(started).contextId),
+    }));
+    expect(changed.status).toBe(409);
+    expect(payload(changed)).toMatchObject({ code: "ACCOUNT_SCOPE_CHANGED" });
+  });
+
+  it("lets variation and B2B enrichment download the report document exactly once", () => {
+    const source = readFileSync(
+      new URL("../src/main/api-router.ts", import.meta.url),
+      "utf8",
+    );
+    const variationStart = source.indexOf('if (input.kind === "variation")');
+    const businessPricingStart = source.indexOf(
+      'if (input.kind === "businessPricing")',
+      variationStart,
+    );
+    const advertisingStart = source.indexOf(
+      'if (input.kind === "advertising")',
+      businessPricingStart,
+    );
+    const variationBranch = source.slice(variationStart, businessPricingStart);
+    const businessPricingBranch = source.slice(
+      businessPricingStart,
+      advertisingStart,
+    );
+
+    expect(variationStart).toBeGreaterThan(-1);
+    expect(businessPricingStart).toBeGreaterThan(variationStart);
+    expect(advertisingStart).toBeGreaterThan(businessPricingStart);
+    expect(variationBranch).toContain("standaloneListingReport(input)");
+    expect(variationBranch).toContain("getUnboundVariationAuditData({");
+    expect(variationBranch).not.toContain("standaloneListings(input)");
+    expect(businessPricingBranch).toContain("standaloneListingReport(input)");
+    expect(businessPricingBranch).toContain("getBusinessPricingAuditData({");
+    expect(businessPricingBranch).not.toContain("standaloneListings(input)");
+  });
+});

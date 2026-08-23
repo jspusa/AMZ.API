@@ -35,6 +35,7 @@ import {
 } from "./credential-editor";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
+import { sellerCentralInventoryUrl } from "./seller-central-inventory";
 import { NativeConfirmationGate, requestNativeConfirmation } from "./native-confirmation";
 import {
   DEV_RENDERER_ORIGIN,
@@ -54,6 +55,7 @@ app.enableSandbox();
 
 const EXTERNAL_DESTINATIONS: Record<ExternalDestination, string> = {
   "seller-central": "https://sellercentral.amazon.com/",
+  "a-plus-content": "https://sellercentral.amazon.com/enhanced-content/content-manager",
   coupons: "https://sellercentral.amazon.com/",
   "subscribe-save": "https://sellercentral.amazon.com/sns/manage",
   advertising: "https://advertising.amazon.com/",
@@ -692,6 +694,13 @@ function registerIpc(): void {
         throw new Error("INVALID_DESTINATION");
       }
       await shell.openExternal(EXTERNAL_DESTINATIONS[destination]);
+    },
+  );
+  ipcMain.handle(
+    "fba:open-seller-central-inventory",
+    async (event, sellerSku: unknown) => {
+      assertTrustedFrame(event);
+      await shell.openExternal(sellerCentralInventoryUrl(sellerSku));
     },
   );
   ipcMain.handle("fba:update-check", async (event) => {

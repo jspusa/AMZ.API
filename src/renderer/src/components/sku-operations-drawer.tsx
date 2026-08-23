@@ -20,6 +20,10 @@ import {
   marketplaceById,
   marketplaceSelectLabel,
 } from "../../../shared/marketplaces";
+import type {
+  StandaloneAuditJob,
+  StandaloneAuditMode,
+} from "../standalone-audit";
 
 export type ContentWorkspaceTab = "single" | "audit" | "export";
 
@@ -545,6 +549,9 @@ export default function SkuOperationsDrawer({
   initialTab = "single",
   auditCacheByMarketplace = {},
   onAuditCacheChange,
+  auditMode = "live",
+  auditJob = null,
+  onAuditJobChange,
   onContextResolved,
   onClose,
 }: {
@@ -553,6 +560,9 @@ export default function SkuOperationsDrawer({
   initialTab?: ContentWorkspaceTab;
   auditCacheByMarketplace?: Readonly<Record<string, ContentAuditCache>>;
   onAuditCacheChange?: (cache: ContentAuditCache) => void;
+  auditMode?: StandaloneAuditMode;
+  auditJob?: StandaloneAuditJob | null;
+  onAuditJobChange?: (job: StandaloneAuditJob) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
 }) {
@@ -1800,9 +1810,12 @@ export default function SkuOperationsDrawer({
             <ContentAuditPanel
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.shortLabel}
+              mode={auditMode}
               onOpenSku={openAuditSku}
               cachedResult={auditCacheByMarketplace[marketplaceId] ?? null}
               onCachedResultChange={onAuditCacheChange}
+              initialJob={auditJob}
+              onJobChange={onAuditJobChange}
             />
           </div>
         )}

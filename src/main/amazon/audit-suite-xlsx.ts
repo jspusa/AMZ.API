@@ -63,7 +63,6 @@ export type APlusAuditProblemRow = Readonly<{
   title: string;
   asin: string;
   finding: string;
-  brandStoryFinding: string;
   notice: string;
 }>;
 
@@ -306,7 +305,7 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
     "資料狀態", "SKU", "商品標題", "ASIN", "圖片數", "判定", "說明",
   ];
   const aplusHeaders = [
-    "資料狀態", "SKU", "商品標題", "ASIN", "A+ 判定", "From the brand 判定", "說明",
+    "資料狀態", "SKU", "商品標題", "ASIN", "A+ 判定", "說明",
   ];
   const variationHeaders = [
     "資料狀態", "SKU", "商品標題", "ASIN", "商品類型", "判定依據",
@@ -370,7 +369,7 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
     {
       name: AUDIT_SUITE_SECTION_LABELS.aplus,
       headers: aplusHeaders,
-      widths: [16, 26, 48, 18, 28, 32, 72],
+      widths: [16, 26, 48, 18, 28, 72],
       rows: rowsForSnapshot({
         snapshot: input.sections.aplus,
         context,
@@ -382,7 +381,6 @@ function createSheetDefinitions(input: AuditSuiteWorkbookInput): readonly SheetD
           textCell(safeText(row.title, "A+ 商品標題")),
           textCell(safeText(row.asin, "A+ ASIN", 20), 2),
           textCell(safeText(row.finding, "A+ 判定")),
-          textCell(safeText(row.brandStoryFinding, "From the brand 判定")),
           textCell(safeText(row.notice, "A+ 說明")),
         ])),
       }),

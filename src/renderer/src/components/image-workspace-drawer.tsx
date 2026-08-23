@@ -17,6 +17,10 @@ import {
   marketplaceSelectLabel,
 } from "../../../shared/marketplaces";
 import ImageAuditPanel, { type ImageAuditCache } from "./image-audit-panel";
+import type {
+  StandaloneAuditJob,
+  StandaloneAuditMode,
+} from "../standalone-audit";
 
 export type ImageWorkspaceTab = "single" | "audit";
 
@@ -108,6 +112,9 @@ export default function ImageWorkspaceDrawer({
   initialTab = "single",
   auditCacheByMarketplace = {},
   onAuditCacheChange,
+  auditMode = "live",
+  auditJob = null,
+  onAuditJobChange,
   onContextResolved,
   onClose,
 }: {
@@ -116,6 +123,9 @@ export default function ImageWorkspaceDrawer({
   initialTab?: ImageWorkspaceTab;
   auditCacheByMarketplace?: Readonly<Record<string, ImageAuditCache>>;
   onAuditCacheChange?: (cache: ImageAuditCache) => void;
+  auditMode?: StandaloneAuditMode;
+  auditJob?: StandaloneAuditJob | null;
+  onAuditJobChange?: (job: StandaloneAuditJob) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
 }) {
@@ -679,9 +689,12 @@ export default function ImageWorkspaceDrawer({
             <ImageAuditPanel
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.shortLabel}
+              mode={auditMode}
               onOpenSku={openAuditSku}
               cachedResult={auditCacheByMarketplace[marketplaceId] ?? null}
               onCachedResultChange={onAuditCacheChange}
+              initialJob={auditJob}
+              onJobChange={onAuditJobChange}
             />
           </div>
         )}

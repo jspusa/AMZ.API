@@ -369,7 +369,7 @@ describe("main-owned audit suite routes", () => {
 });
 
 describe("A+ run-all adapter", () => {
-  it("keeps a published-but-partial row visible and marks the section partial", () => {
+  it("treats an exact published record as clean presence after a later-page failure", () => {
     const result = buildAplusAuditSuiteResult({
       mode: "live",
       marketplaceId: US,
@@ -401,21 +401,60 @@ describe("A+ run-all adapter", () => {
         publishedRecordCount: null,
         contentTypes: ["EBC"],
         locales: ["en-US"],
-        fromTheBrandStatus: "not_verifiable_by_public_api",
         reasonCode: "PUBLISHED_RECORD_FOUND",
         reason: "已找到 exact A+ 發布紀錄，但後續來源未完整。",
       }],
-      notice: "A+ 後續頁面未完整；正向發布證據仍保留。",
+      notice: "只讀取目前 FBA 商品的官方 A+ publish records。",
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.payload).toEqual([]);
+    expect(result.notice).toBe("只讀取目前 FBA 商品的官方 A+ publish records。");
+  });
+
+  it("keeps warning-only A+ evidence actionable in the combined audit", () => {
+    const result = buildAplusAuditSuiteResult({
+      mode: "live",
+      marketplaceId: US,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "main-owned-fba-warning-snapshot",
+      totals: {
+        eligibleFbaSkus: 1,
+        uniqueAsins: 1,
+        published: 0,
+        missing: 0,
+        incomplete: 1,
+        unavailable: 0,
+      },
+      summary: {
+        eligibleFbaSkus: 1,
+        uniqueAsins: 1,
+        published: 0,
+        missing: 0,
+        incomplete: 1,
+        unavailable: 0,
+      },
+      rows: [{
+        sellerSku: "APLUS-WARNING",
+        asin: "B000000002",
+        title: "Warning-only evidence",
+        marketplaceId: US,
+        status: "incomplete",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        contentTypes: [],
+        locales: [],
+        reasonCode: "A_PLUS_WARNING_PRESENT",
+        reason: "Amazon A+ 回應含警告，無法確認目前是否已發布。",
+      }],
+      notice: "只讀取目前 FBA 商品的官方 A+ publish records。",
     });
 
     expect(result.status).toBe("partial");
-    expect(result.payload).toEqual([expect.objectContaining({
-      sellerSku: "APLUS-PARTIAL",
-      finding: "已找到 A+，但資料範圍未完整",
-      notice: "已找到 exact A+ 發布紀錄，但後續來源未完整。",
-    })]);
-    expect(result.notice).toContain("已找到 A+");
-    expect(result.notice).toContain("資料範圍未完整");
+    expect(result.payload[0]).toMatchObject({
+      sellerSku: "APLUS-WARNING",
+      finding: "Amazon 回應警告，請到 A+ 管理員確認",
+    });
   });
 });
 

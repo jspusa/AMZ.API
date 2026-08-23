@@ -78,7 +78,12 @@ export type {
   FbaInboundShipmentSnapshot,
   FbaInboundUnitTotals,
 } from "./fba-inbound-shipments";
-import { classifyUnboundVariationEvidence } from "./unbound-variation-audit";
+import {
+  buildAllVariationFamilyRows,
+  classifyUnboundVariationEvidence,
+  type AllVariationFamilyRow,
+  type VerifiedVariationFamilyMember,
+} from "./unbound-variation-audit";
 
 export type {
   VariationDimension,
@@ -292,6 +297,8 @@ export type BusinessPricingAuditRow = {
   standardPrice: Money | null;
   businessPrice: Money | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
+  quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
   status:
     | "configured"
     | "above_standard"
@@ -688,6 +695,7 @@ export type UnboundVariationAuditSnapshot = {
   fetchedAt: string;
   rows: UnboundVariationAuditRow[];
   incompleteRows: UnboundVariationAuditIncompleteRow[];
+  allVariationRows: AllVariationFamilyRow[];
   summary: {
     totalFbaListings: number;
     completed: number;
@@ -10359,6 +10367,8 @@ function incompleteBusinessPricingAuditRow(
     standardPrice: null,
     businessPrice: null,
     businessOfferPresence: "ambiguous",
+    quantityDiscountPlan: null,
+    quantityDiscountPlanPresence: "ambiguous",
     status: "incomplete",
     editable: false,
     reason,
@@ -10441,6 +10451,8 @@ function completeBusinessPricingAuditRow(input: {
       standardPrice: listing.standardPrice,
       businessPrice: null,
       businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
       status: "incomplete",
       editable: false,
       reason:
@@ -10456,6 +10468,8 @@ function completeBusinessPricingAuditRow(input: {
       standardPrice: listing.standardPrice,
       businessPrice: business.businessPrice,
       businessOfferPresence: business.businessOfferPresence,
+      quantityDiscountPlan: business.quantityDiscountPlan,
+      quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
       status: "incomplete",
       editable: false,
       reason:
@@ -10479,6 +10493,8 @@ function completeBusinessPricingAuditRow(input: {
       standardPrice: listing.standardPrice,
       businessPrice: business.businessPrice,
       businessOfferPresence: business.businessOfferPresence,
+      quantityDiscountPlan: business.quantityDiscountPlan,
+      quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
       status: aboveStandard
         ? "above_standard"
         : configured ? "configured" : "missing",
@@ -10503,6 +10519,8 @@ function completeBusinessPricingAuditRow(input: {
     standardPrice: listing.standardPrice,
     businessPrice: business.businessPrice,
     businessOfferPresence: business.businessOfferPresence,
+    quantityDiscountPlan: business.quantityDiscountPlan,
+    quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
     status: aboveStandard
       ? "above_standard"
       : configured ? "configured" : "missing",
@@ -10546,6 +10564,8 @@ export async function getBusinessPricingAuditData(input: {
         standardPrice: listing.standardPrice,
         businessPrice: listing.businessPrice,
         businessOfferPresence: listing.businessOfferPresence,
+        quantityDiscountPlan: listing.quantityDiscountPlan,
+        quantityDiscountPlanPresence: listing.quantityDiscountPlanPresence,
         status,
         editable: status === "configured" || status === "above_standard" ||
           status === "missing",
@@ -16109,11 +16129,20 @@ export async function getUnboundVariationAuditData(input: {
       ),
     ];
     const rows: UnboundVariationAuditRow[] = [];
+    const verifiedVariationMembers: VerifiedVariationFamilyMember[] = [];
     let boundChildren = 0;
     let parentContainers = 0;
     for (const sellerSku of sellerSkus) {
       assertNotAborted(input.signal);
       const family = getDemoVariationFamily(input.marketplaceId, sellerSku);
+      verifiedVariationMembers.push({
+        sellerSku: family.queried.sellerSku,
+        title: family.queried.title,
+        productType: family.queried.productType,
+        role: family.queried.role,
+        parentSku: family.queried.parentSku,
+        variationTheme: family.queried.variationTheme,
+      });
       if (family.queried.role === "standalone") {
         rows.push({
           sellerSku,
@@ -16135,6 +16164,7 @@ export async function getUnboundVariationAuditData(input: {
       fetchedAt: new Date().toISOString(),
       rows,
       incompleteRows: [],
+      allVariationRows: buildAllVariationFamilyRows(verifiedVariationMembers),
       summary: {
         totalFbaListings: sellerSkus.length,
         completed: sellerSkus.length,
@@ -16169,6 +16199,7 @@ export async function getUnboundVariationAuditData(input: {
   const seeds = parseFbaListingReportSeeds(report);
   const rows: UnboundVariationAuditRow[] = [];
   const incompleteRows: UnboundVariationAuditIncompleteRow[] = [];
+  const verifiedVariationMembers: VerifiedFbaVariationRelationshipRow[] = [];
   let boundChildren = 0;
   let parentContainers = 0;
   const seedBySku = new Map(seeds.map((seed) => [seed.sellerSku, seed]));
@@ -16210,6 +16241,7 @@ export async function getUnboundVariationAuditData(input: {
         requestId,
       });
       rows.push(...result.rows);
+      verifiedVariationMembers.push(...result.verifiedRows);
       incompleteRows.push(...result.incompleteRows);
       boundChildren += result.boundChildren;
       parentContainers += result.parentContainers;
@@ -16236,6 +16268,7 @@ export async function getUnboundVariationAuditData(input: {
     incompleteRows: incompleteRows.sort((left, right) =>
       left.sellerSku.localeCompare(right.sellerSku),
     ),
+    allVariationRows: buildAllVariationFamilyRows(verifiedVariationMembers),
     summary: {
       totalFbaListings: seeds.length,
       completed: seeds.length - incompleteRows.length,

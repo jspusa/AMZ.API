@@ -54,7 +54,7 @@ GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸�
 
 全站文案與圖片健檢沿用 Reports API 與 Listings Items 的 FBA-only 匯出資料，renderer 仍會核對回應站點後才顯示或快取；文案掃描再以批次 Listings relationships 排除已證明的 parent，child 依 parent SKU 分 family，standalone 與 relationship 不完整列各自隔離。文案的內部健檢門檻固定為產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200、產品敘述少於 1,800 個 Unicode 字元；圖片少於 6 張才列為不足。英文錯字由 GitHub Pages renderer 內的版本化 SCOWL en_US 辭典與 `nspell` 檢查，再以窄範圍白名單保留品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份辭典，不再依賴作業系統字典；字典在 Pages 介面內本地執行，文案不會送往第三方。成分宣稱規則由 main 與 renderer 共用：至少兩個不同 ingredients 才可否定 single ingredient；Tendon／Tendons 必須在 ingredients 有全詞證據；ingredients 含 Chicken 時，hypoallergenic／hypo-allergenic 會列為待核對。括號內逗號不拆項，空成分或讀取不完整不推論。前台每項原因只呈現一次，摘要數字本身就是同一個篩選入口，並把所選原因帶入相符的立即修改欄位；相關原文或成分 fingerprint 漂移即 stale fail closed。
 
-全站 A+ 健檢同樣以目前 FBA all-listings 範圍為 seed，依 marketplace＋ASIN 去重後逐一呼叫公開 A+ Content `contentPublishRecords`，再 fan-out 回 Seller SKU。只有完整走完所有 pages 且空清單、無 warning、無身分或 schema 衝突時才可標為未發布；任何 exact publish record 可正面證明已發布，403、warning、分頁或回應缺口維持 unavailable／incomplete。公開 model 沒有 From the brand／Brand Story 的可靠欄位，因此 renderer 與 Excel 固定顯示「公開 API 無法驗證」，不使用 Seller Central 私有接口或猜測。
+全站 A+ 健檢同樣以目前 FBA all-listings 範圍為 seed，依 marketplace＋ASIN 去重後逐一呼叫公開 A+ Content `contentPublishRecords`，再 fan-out 回 Seller SKU。功能介面只回答是否有官方 A+ 發布紀錄。只有完整走完所有 pages 且空清單、無 warning、無身分或 schema 衝突時才可標為未發布；任何 exact publish record 可正面證明已發布，即使 optional warnings envelope 異常也不丟棄這項正向證據。403、warning-only 空清單、分頁或回應缺口維持 unavailable／incomplete，並可透過固定白名單開啟 A+ Content Manager 核對；不使用 Seller Central 私有接口或猜測。
 
 文案 Excel 的原始／更新雙欄、問題顏色與變體索引可回傳 main process；同一選檔區同時接受按鈕選檔與 drag/drop。main 嚴格解析 OOXML，對 CR／U+0085／U+2028／U+2029 做無損 round trip，舊工作簿只在 main-owned 完整 digest 唯一命中時做 bounded recovery；識別欄、family、原值、公式、巨集或外部連結仍 fail closed。裝置端只保存 24 小時的 account／marketplace／mode-scoped SHA-256 列證據核對原檔，不保存 Seller SKU、ASIN、文案、Excel 或 proposed edits，鎖屏／重啟不展延期限。整批 fresh-read／Validation Preview 全通過、renderer 展示完整逐欄前後值並由使用者核對後，才做一次 native confirmation；之後逐 SKU 使用既有 ledger、單次 PATCH 與 canonical readback。
 
@@ -62,7 +62,7 @@ FBA Business Price 健檢同樣先由完整 all-listings 範圍證明目前 FBA 
 
 Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
 
-主導覽把 FBA 入庫貨件追蹤只放在「報表區」，不在首頁或「營運區」重複入口。首頁的一鍵全站流程依 schema v3 在背景並行執行全站文案、全站圖片、全站 A+、未綁變體、全站訂閱價格、全站 B2B 價格、廣告覆蓋七項；一般卡與 run-all 共用完全相同的名稱和順序。耗時且低頻的 180 天以上庫存與評論依此順序收在獨立的「低頻健檢」收合區，不納入 run-all。
+主導覽把 FBA 入庫貨件追蹤只放在「報表區」，不在首頁或「營運區」重複入口。首頁的一鍵全站流程依 schema v3 在背景並行執行全站文案、全站圖片、全站 A+、未綁變體、全站訂閱價格、全站 B2B 價格、廣告覆蓋七項；一般卡與 run-all 共用完全相同的名稱和順序。單項文案、圖片、未綁變體、訂閱價格、B2B、廣告覆蓋與庫齡使用共用 main-owned standalone job coordinator；A+、評論沿用各自 main-owned coordinator。每個工作都綁 account scope、mode、marketplace 與短效 context，renderer 關閉抽屜只中止 observer，首頁仍以 GET 重新接回單調進度與 terminal snapshot；credential／帳號／模式／站點改變時舊工作失效。耗時且低頻的 180 天以上庫存與評論依此順序收在獨立的「低頻健檢」收合區，不納入 run-all。
 
 Reports 建立由 main process 的 account-scoped broker 協調。相同 account、marketplace、mode、report type 與 options 的 all-listings report 可由品牌、未綁變體、評論與內容／圖片匯出共用；日期型 shipment report 另外綁 exact window。Local store 只保存不含憑證的短效 report ID／狀態 tombstone，程序內用 single-flight 與單調狀態更新防止重複建立或完成狀態回退。`CANCELLED`、`FATAL` 或建立結果不明都不會由自動載入盲目重建；明確使用者再試仍受安全等待與 mode/account 驗證。
 

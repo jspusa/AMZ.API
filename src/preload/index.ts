@@ -60,6 +60,11 @@ const bridge: DesktopBridge = Object.freeze({
     platform: () => ipcRenderer.invoke("fba:app-platform") as Promise<string>,
     openExternal: (destination: ExternalDestination) =>
       ipcRenderer.invoke("fba:open-external", destination) as Promise<void>,
+    openSellerCentralInventory: (sellerSku: string) =>
+      ipcRenderer.invoke(
+        "fba:open-seller-central-inventory",
+        sellerSku,
+      ) as Promise<void>,
   }),
   updates: Object.freeze({
     check: () => ipcRenderer.invoke("fba:update-check") as Promise<UpdateStatus>,

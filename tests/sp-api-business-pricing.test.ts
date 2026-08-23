@@ -2345,6 +2345,22 @@ describe("Amazon Business pricing SP-API contract", () => {
       before.businessOfferProtectedHash,
     );
 
+    const audited = await getBusinessPricingAuditData({
+      marketplaceId: MARKETPLACE_ID,
+      reportId: `demo-${MARKETPLACE_ID}`,
+      documentId: `demo-${MARKETPLACE_ID}`,
+    });
+    expect(audited.rows.find((row) => row.sellerSku === sellerSku)).toMatchObject({
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: tiers.map((tier) => ({
+          lowerBound: tier.lowerBound,
+          value: tier.percent,
+        })),
+      },
+    });
+
     await updateBusinessPrice({
       marketplaceId: MARKETPLACE_ID,
       sellerSku,

@@ -11,6 +11,9 @@ import AplusAuditPanel, {
   requestAplusAuditJob,
 } from "../src/renderer/src/components/a-plus-audit-panel";
 import AplusAuditDrawer from "../src/renderer/src/components/a-plus-audit-drawer";
+import {
+  openAplusManagerHandoff,
+} from "../src/renderer/src/seller-central-handoff";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
@@ -30,7 +33,6 @@ function payload(): Record<string, unknown> {
         publishedRecordCount: 1,
         contentTypes: ["EBC"],
         locales: ["en-US"],
-        fromTheBrandStatus: "not_verifiable_by_public_api",
         reasonCode: "PUBLISHED_RECORD_FOUND",
         reason: "Amazon publish record 已證明目前 ASIN 有已發布 A+。",
       },
@@ -44,7 +46,6 @@ function payload(): Record<string, unknown> {
         publishedRecordCount: 0,
         contentTypes: [],
         locales: [],
-        fromTheBrandStatus: "not_verifiable_by_public_api",
         reasonCode: "NO_PUBLISHED_RECORD",
         reason: "Amazon 完整查詢沒有找到目前 ASIN 的已發布 A+。",
       },
@@ -58,7 +59,6 @@ function payload(): Record<string, unknown> {
         publishedRecordCount: null,
         contentTypes: [],
         locales: [],
-        fromTheBrandStatus: "not_verifiable_by_public_api",
         reasonCode: "FBA_IDENTITY_INCOMPLETE",
         reason: "FBA 商品缺少可安全核對的 ASIN，未發出 A+ request。",
       },
@@ -79,11 +79,40 @@ function payload(): Record<string, unknown> {
       incomplete: 1,
       unavailable: 0,
     },
-    notice: "只讀取目前 FBA 商品的 A+ publish records；From the brand／Brand Story 不在公開 API 可驗證範圍。",
+    notice: "只讀取目前 FBA 商品的官方 A+ publish records；不會修改 Amazon 商品頁。",
   };
 }
 
 describe("A+ FBA audit renderer", () => {
+  it("does not send the new A+ destination to a legacy Pages-first Notebook Key", async () => {
+    const destinations: string[] = [];
+    const result = await openAplusManagerHandoff({
+      version: async () => "0.1.25",
+      platform: async () => "darwin",
+      openExternal: async (destination) => {
+        destinations.push(destination);
+      },
+    });
+
+    expect(result).toBe("upgrade-required");
+    expect(destinations).toEqual([]);
+  });
+
+  it("uses the fixed A+ destination only when the new desktop bridge is present", async () => {
+    const destinations: string[] = [];
+    const result = await openAplusManagerHandoff({
+      version: async () => "0.1.26",
+      platform: async () => "darwin",
+      openExternal: async (destination) => {
+        destinations.push(destination);
+      },
+      openSellerCentralInventory: async () => undefined,
+    });
+
+    expect(result).toBe("opened");
+    expect(destinations).toEqual(["a-plus-content"]);
+  });
+
   it("strictly parses a main-owned snapshot and preserves the public API boundary", () => {
     const snapshot = parseAplusAuditSnapshot(payload(), MARKETPLACE_ID, "live");
 
@@ -127,7 +156,7 @@ describe("A+ FBA audit renderer", () => {
       .toThrow(/A\+ 語系/u);
   });
 
-  it("renders missing A+ findings and the fixed Brand Story API boundary in a desktop drawer", () => {
+  it("renders only actionable A+ presence findings in a desktop drawer", () => {
     const snapshot = parseAplusAuditSnapshot(payload(), MARKETPLACE_ID, "live");
     const panelMarkup = renderToStaticMarkup(createElement(AplusAuditPanel, {
       marketplaceId: MARKETPLACE_ID,
@@ -146,8 +175,14 @@ describe("A+ FBA audit renderer", () => {
     expect(panelMarkup).toContain("全站 FBA A+ 健檢");
     expect(panelMarkup).toContain("未找到已發布 A+");
     expect(panelMarkup).toContain("Missing A plus");
-    expect(panelMarkup).toContain("From the brand／Brand Story");
-    expect(panelMarkup).toContain("公開 A+ API 未提供可驗證欄位");
+    expect(panelMarkup).toContain("前往 Amazon A+ 管理員");
+    expect(panelMarkup).toContain("Notebook Key 需更新後才能安全直達 A+ 管理員");
+    expect(panelMarkup).toContain("舊版不會改開 Seller Central 首頁");
+    expect(panelMarkup).toContain("business-pricing-row-actions");
+    expect(panelMarkup).not.toContain("A+ 類型");
+    expect(panelMarkup).not.toContain("語系／筆數");
+    expect(panelMarkup).not.toContain("From the brand");
+    expect(panelMarkup).not.toContain("Brand Story");
     expect(drawerMarkup).toContain('role="dialog"');
     expect(drawerMarkup).toContain("全站 A+ 健檢");
   });
@@ -164,7 +199,6 @@ describe("A+ FBA audit renderer", () => {
       publishedRecordCount: null,
       contentTypes: [],
       locales: [],
-      fromTheBrandStatus: "not_verifiable_by_public_api",
       reasonCode: "A_PLUS_ACCESS_UNAVAILABLE",
       reason: "A+ API 尚未取得讀取權限。",
     });
@@ -180,7 +214,7 @@ describe("A+ FBA audit renderer", () => {
     expect(rows.filter((row) => aplusAuditRowMatchesFilter(row, "unavailable"))).toHaveLength(1);
   });
 
-  it("rejects cross-market, duplicate, fabricated Brand Story or contradictory evidence", () => {
+  it("accepts only the exact v0.1.25 legacy field while rejecting other unknown fields", () => {
     expect(() => parseAplusAuditSnapshot(payload(), "A2EUQ1WTGCTBG2", "live"))
       .toThrow(/站點不一致/u);
 
@@ -192,11 +226,27 @@ describe("A+ FBA audit renderer", () => {
     expect(() => parseAplusAuditSnapshot(duplicate, MARKETPLACE_ID, "live"))
       .toThrow(/重複 Seller SKU/u);
 
-    const fabricatedBrandStory = payload();
-    (fabricatedBrandStory.rows as Array<Record<string, unknown>>)[0]!
+    const legacyExtraField = payload();
+    (legacyExtraField.rows as Array<Record<string, unknown>>)[0]!
+      .fromTheBrandStatus = "not_verifiable_by_public_api";
+    const parsedLegacy = parseAplusAuditSnapshot(
+      legacyExtraField,
+      MARKETPLACE_ID,
+      "live",
+    );
+    expect(parsedLegacy.rows[0]).not.toHaveProperty("fromTheBrandStatus");
+
+    const fabricatedLegacyValue = payload();
+    (fabricatedLegacyValue.rows as Array<Record<string, unknown>>)[0]!
       .fromTheBrandStatus = "present";
-    expect(() => parseAplusAuditSnapshot(fabricatedBrandStory, MARKETPLACE_ID, "live"))
-      .toThrow(/不得猜測 From the brand/u);
+    expect(() => parseAplusAuditSnapshot(fabricatedLegacyValue, MARKETPLACE_ID, "live"))
+      .toThrow(/欄位無效/u);
+
+    const unknownExtraField = payload();
+    (unknownExtraField.rows as Array<Record<string, unknown>>)[0]!
+      .unexpectedField = "must fail closed";
+    expect(() => parseAplusAuditSnapshot(unknownExtraField, MARKETPLACE_ID, "live"))
+      .toThrow(/欄位無效/u);
 
     const contradictory = payload();
     (contradictory.rows as Array<Record<string, unknown>>)[1]!
@@ -229,6 +279,26 @@ describe("A+ FBA audit renderer", () => {
     (wrongSummary.summary as Record<string, unknown>).missing = 0;
     expect(() => parseAplusAuditSnapshot(wrongSummary, MARKETPLACE_ID, "live"))
       .toThrow(/摘要與商品列不一致/u);
+  });
+
+  it("labels warning-only A+ evidence separately and gives the seller an action", () => {
+    const source = payload();
+    const row = (source.rows as Array<Record<string, unknown>>)[2]!;
+    row.asin = "B000000003";
+    row.reasonCode = "A_PLUS_WARNING_PRESENT";
+    row.reason = "Amazon A+ 回應含警告，無法確認目前是否已發布。";
+    (source.summary as Record<string, number>).uniqueAsins = 3;
+    (source.totals as Record<string, number>).uniqueAsins = 3;
+    const snapshot = parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live");
+    const markup = renderToStaticMarkup(createElement(AplusAuditPanel, {
+      marketplaceId: MARKETPLACE_ID,
+      marketplaceShort: "US",
+      mode: "live",
+      initialSnapshot: snapshot,
+    }));
+
+    expect(markup).toContain("Amazon 回應警告，請到 A+ 管理員確認");
+    expect(markup).toContain("前往 Amazon A+ 管理員");
   });
 
   it("starts and observes an exact main-owned job before accepting its completed snapshot", async () => {

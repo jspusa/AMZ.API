@@ -6,6 +6,14 @@ import {
   type UnboundVariationAuditSnapshot,
 } from "../unbound-variation-audit";
 import { auditExportFilename } from "../audit-export-filename";
+import {
+  pollStandaloneAuditJob,
+  shouldResumeStandaloneAuditJob,
+  startStandaloneAuditJob,
+  standaloneAuditReconnectRevision,
+  type StandaloneAuditJob,
+  type StandaloneAuditMode,
+} from "../standalone-audit";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -60,21 +68,34 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
 export default function UnboundVariationAuditPanel({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
   onOpenSku,
   cachedResult = null,
   onCachedResultChange,
+  initialJob = null,
+  onJobChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
   onOpenSku: (sellerSku: string) => void;
   cachedResult?: UnboundVariationAuditCache | null;
   onCachedResultChange?: (cache: UnboundVariationAuditCache) => void;
+  initialJob?: StandaloneAuditJob | null;
+  onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
   const initialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
     ? cachedResult
     : null;
   const [state, setState] = useState<AuditState>(initialCache ? "done" : "idle");
   const [reply, setReply] = useState<ReportReply | null>(null);
+  const [job, setJob] = useState<StandaloneAuditJob | null>(
+    initialJob?.kind === "variation" &&
+      initialJob.marketplaceId === marketplaceId &&
+      initialJob.mode === mode
+      ? initialJob
+      : null,
+  );
   const [snapshot, setSnapshot] = useState<UnboundVariationAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
   );
@@ -82,8 +103,10 @@ export default function UnboundVariationAuditPanel({
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const observerJobIdRef = useRef<string | null>(null);
   const marketplaceIdRef = useRef(marketplaceId);
   marketplaceIdRef.current = marketplaceId;
+  const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
@@ -122,29 +145,23 @@ export default function UnboundVariationAuditPanel({
     [normalizedQuery, snapshot],
   );
 
-  const loadAudit = async (ready: ReportReply, signal: AbortSignal) => {
-    if (!ready.reportId || !ready.documentId) {
-      throw new Error("Amazon 沒有回傳完整的未綁變體報表資訊。");
+  const loadAudit = async (
+    completedJob: StandaloneAuditJob,
+    signal: AbortSignal,
+  ) => {
+    if (!completedJob.ready || completedJob.status !== "completed") {
+      throw new Error(
+        completedJob.ready
+          ? completedJob.error.message
+          : "未綁變體背景工作尚未完成。",
+      );
     }
     setState("scanning");
-    const params = new URLSearchParams({
-      marketplaceId,
-      reportId: ready.reportId,
-      documentId: ready.documentId,
-      data: "1",
-    });
-    const response = await fetch(`/api/sp-api/variation-audit?${params}`, {
-      cache: "no-store",
-      signal,
-    });
-    const raw = (await response.json()) as unknown;
-    if (!response.ok) {
-      throw new Error(problemMessage(raw as ApiProblem, "未綁變體健檢失敗。"));
-    }
     const completed = parseUnboundVariationAuditSnapshot(
-      raw,
+      completedJob.snapshot,
       marketplaceIdRef.current,
     );
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     setSnapshot(completed);
     setQuery("");
     setState("done");
@@ -159,55 +176,92 @@ export default function UnboundVariationAuditPanel({
     setReply(null);
     setError(null);
     try {
-      const startResponse = await fetch("/api/sp-api/variation-audit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ marketplaceId }),
+      let current = await startStandaloneAuditJob({
+        kind: "variation",
+        marketplaceId,
+        mode,
         signal: controller.signal,
       });
-      const startRaw = (await startResponse.json()) as Record<string, unknown>;
-      if (!startResponse.ok) {
-        throw new Error(problemMessage(startRaw, "無法開始未綁變體健檢。"));
-      }
-      let current = reportReply(startRaw);
-      setReply(current);
-      if (current.ready) {
-        await loadAudit(current, controller.signal);
-        return;
-      }
-      if (!current.reportId) throw new Error("Amazon 沒有回傳可追蹤的報表 ID。");
-      const reportId = current.reportId;
+      observerJobIdRef.current = current.jobId;
+      setJob(current);
+      onJobChange?.(current);
       setState("polling");
-      for (let attempt = 0; attempt < 90; attempt += 1) {
-        await delay(2_000, controller.signal);
-        const params = new URLSearchParams({ marketplaceId, reportId });
-        const pollResponse = await fetch(`/api/sp-api/variation-audit?${params}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        const pollRaw = (await pollResponse.json()) as Record<string, unknown>;
-        if (!pollResponse.ok) {
-          throw new Error(problemMessage(pollRaw, "未綁變體報表狀態查詢失敗。"));
-        }
-        current = reportReply({ ...pollRaw, reportId });
-        setReply(current);
-        if (["CANCELLED", "CANCELED", "FATAL", "FAILED"].includes(
-          current.status?.toUpperCase() ?? "",
-        )) {
-          throw new Error(current.message || `Amazon 報表狀態為 ${current.status}。`);
-        }
-        if (current.ready) {
-          await loadAudit(current, controller.signal);
-          return;
-        }
-      }
-      throw new Error("未綁變體健檢超過三分鐘，請稍後再試。");
+      current = await pollStandaloneAuditJob({
+        expected: current,
+        signal: controller.signal,
+        onProgress: (next) => {
+          setJob(next);
+          onJobChange?.(next);
+        },
+      });
+      setJob(current);
+      onJobChange?.(current);
+      await loadAudit(current, controller.signal);
+      observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       setState(snapshot ? "done" : "idle");
       setError(requestError instanceof Error ? requestError.message : "目前無法完成未綁變體健檢。");
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
     }
   };
+
+  useEffect(() => {
+    if (!shouldResumeStandaloneAuditJob({
+      initialJob,
+      expectedKind: "variation",
+      marketplaceId,
+      mode,
+      observerJobId: observerJobIdRef.current,
+    })) return;
+    const observedJob = initialJob!;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    observerJobIdRef.current = observedJob.jobId;
+    setJob(observedJob);
+    setState(observedJob.ready ? "scanning" : "polling");
+    void (async () => {
+      try {
+        const terminal = observedJob.ready
+          ? observedJob
+          : await pollStandaloneAuditJob({
+              expected: observedJob,
+              signal: controller.signal,
+              onProgress: (next) => {
+                setJob(next);
+                onJobChange?.(next);
+              },
+            });
+        setJob(terminal);
+        onJobChange?.(terminal);
+        await loadAudit(terminal, controller.signal);
+      } catch (resumeError) {
+        if (resumeError instanceof Error && resumeError.name === "AbortError") return;
+        setState(snapshot ? "done" : "idle");
+        setError(resumeError instanceof Error
+          ? resumeError.message
+          : "目前無法接續未綁變體健檢。");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          observerJobIdRef.current = null;
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJobReconnectRevision, marketplaceId, mode]);
 
   const exportExcel = async () => {
     if (!snapshot || exporting) return;
@@ -251,7 +305,9 @@ export default function UnboundVariationAuditPanel({
     }
   };
 
-  const statusText = state === "starting"
+  const statusText = job && !job.ready
+    ? job.progress.message
+    : state === "starting"
     ? "正在請 Amazon 建立全站 FBA 商品報表…"
     : state === "polling"
       ? reply?.message || "Amazon 正在整理 FBA 商品清單…"
@@ -301,8 +357,8 @@ export default function UnboundVariationAuditPanel({
             disabled={exporting}
           >
             <span aria-hidden="true">↧</span>
-            <strong>{exporting ? "正在建立 Excel…" : "匯出未綁變體＋讀取未完成 Excel"}</strong>
-            <small>兩張工作表；只含本次 Amazon FBA 唯讀快照</small>
+            <strong>{exporting ? "正在建立 Excel…" : "匯出未綁變體＋讀取未完成＋所有變體 Excel"}</strong>
+            <small>3 張工作表（含「所有變體」）；只含本次 Amazon FBA 唯讀快照</small>
           </button>
           <div className="audit-toolbar">
             <input

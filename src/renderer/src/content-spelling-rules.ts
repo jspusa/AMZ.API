@@ -32,6 +32,7 @@ const APPROVED_EXACT_TERMS = new Set([
   "chondroitin",
   "croaker",
   "decapterus",
+  "differentiator",
   "fba",
   "flaxseed",
   "fnsku",
@@ -40,6 +41,7 @@ const APPROVED_EXACT_TERMS = new Set([
   "glucosamine",
   "gootoe",
   "glycerin",
+  "ganoderma",
   "herz",
   "hypoallergenic",
   "inulin",
@@ -61,11 +63,15 @@ const APPROVED_EXACT_TERMS = new Set([
   "sku",
   "superfood",
   "superfoods",
+  "staffordshire",
+  "american",
+  "siberian",
   "taiwan",
   "taurine",
   "vietnam",
   "vitaday",
   "zealand",
+  "cornucopiae",
 ]);
 
 export const CONTENT_SPELLING_ALLOWLIST_COUNT = APPROVED_EXACT_TERMS.size;
@@ -93,8 +99,19 @@ function shouldCheckWord(value: string): boolean {
 
 function candidateWords(value: string): string[] {
   const result: string[] = [];
+  const approvedContextStarts = new Set<number>();
+  for (const match of value.matchAll(/\bcocker(?=\s+spaniel\b)/giu)) {
+    if (match.index !== undefined) approvedContextStarts.add(match.index);
+  }
   for (const match of value.matchAll(WORD_CANDIDATE)) {
     const token = match[0];
+    if (
+      match.index !== undefined &&
+      approvedContextStarts.has(match.index) &&
+      normalizedWord(token) === "cocker"
+    ) {
+      continue;
+    }
     if (APPROVED_EXACT_TERMS.has(normalizedWord(token))) continue;
     for (const part of token.split("-")) {
       if (shouldCheckWord(part)) result.push(part);

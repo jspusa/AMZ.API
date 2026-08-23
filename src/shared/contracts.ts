@@ -125,6 +125,7 @@ export type UpdateStatus = {
 
 export type ExternalDestination =
   | "seller-central"
+  | "a-plus-content"
   | "coupons"
   | "subscribe-save"
   | "advertising"
@@ -151,6 +152,7 @@ export type DesktopBridge = {
     version(): Promise<string>;
     platform(): Promise<string>;
     openExternal(destination: ExternalDestination): Promise<void>;
+    openSellerCentralInventory?(sellerSku: string): Promise<void>;
   };
   updates: {
     check(): Promise<UpdateStatus>;
