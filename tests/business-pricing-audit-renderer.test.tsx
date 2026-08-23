@@ -189,6 +189,43 @@ describe("FBA business pricing audit renderer", () => {
     })).toBe(true);
   });
 
+  it("shows a current failed job without rendering an older cached B2B result", () => {
+    const failedJob = parseStandaloneAuditJob({
+      jobId: "74ec9cda-e878-4e87-984e-65c8c5652cee",
+      contextId: "64ec9cda-e878-4e87-984e-65c8c5652cef",
+      kind: "businessPricing",
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+      options: {},
+      ready: true,
+      status: "failed",
+      progress: {
+        stage: "failed",
+        message: "B2B 價格健檢未完成",
+        completedUnits: 2,
+        totalUnits: 4,
+      },
+      error: {
+        code: "BUSINESS_PRICING_AUDIT_FAILED",
+        message: "本次 B2B 價格健檢未完成。",
+      },
+    }, {
+      kind: "businessPricing",
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+    });
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      mode: "live",
+      initialJob: failedJob,
+      cachedSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+    }));
+
+    expect(markup).toContain("本次 B2B 價格健檢未完成。");
+    expect(markup).not.toContain("B2B 價格健檢摘要與篩選");
+  });
+
   it("keeps the live Pages rollout readable with a v0.1.25 audit payload", () => {
     const legacy = payload();
     for (const row of legacy.rows as Array<Record<string, unknown>>) {
@@ -392,6 +429,31 @@ describe("FBA business pricing audit renderer", () => {
     expect(panelSource).toContain("pollStandaloneAuditJob");
     expect(panelSource).toContain("onJobChange?.(current)");
     expect(panelSource).not.toContain('fetch("/api/sp-api/business-pricing-audit"');
+  });
+
+  it("uses one clickable B2B summary as the filter instead of repeating the counts", () => {
+    const snapshot = parseBusinessPricingAuditSnapshot(payload());
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: snapshot,
+    }));
+    const summary = markup.match(
+      /<div class="business-pricing-summary is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">[\s\S]*?<\/div>/u,
+    )?.[0];
+
+    expect(summary).toBeDefined();
+    expect(summary?.match(/<button\b/gu)).toHaveLength(7);
+    expect(summary).toContain('aria-pressed="true"');
+    expect(markup).not.toContain("business-pricing-filters");
+    expect(markup.match(/B2B 價格健檢摘要與篩選/gu)).toHaveLength(1);
+    const css = readFileSync(
+      new URL("../src/renderer/src/app.css", import.meta.url),
+      "utf8",
+    );
+    expect(css).toMatch(
+      /\.business-pricing-summary\s*\{[^}]*minmax\(104px,\s*1fr\)/su,
+    );
   });
 
   it("uses compact styled desktop controls for the explicit quantity-tier editor", () => {

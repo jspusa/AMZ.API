@@ -88,6 +88,10 @@ const AGED_INVENTORY_NOTES_SHEET_NAME = "欄位與能力邊界";
 const IMAGE_AUDIT_SHEET_NAME = "圖片健檢";
 const IMAGE_AUDIT_NOTES_SHEET_NAME = "範圍與狀態說明";
 
+const VARIATION_FAMILY_DARK_STYLE_BASE = 8;
+const VARIATION_FAMILY_LIGHT_STYLE_BASE = 20;
+const VARIATION_FAMILY_STYLE_VARIANTS = 12;
+
 export interface ListingsWorkbookRow {
   sku: string;
   asin?: string | null;
@@ -1025,6 +1029,7 @@ export function createUnboundVariationWorkbook({
   allVariationRows,
 }: CreateUnboundVariationWorkbookInput): Uint8Array {
   const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
+  const allVariationWorkbookRows = variationFamilyWorkbookRows(allVariationRows);
   const sheets = [
     {
       name: "未綁變體",
@@ -1070,19 +1075,7 @@ export function createUnboundVariationWorkbook({
           "Variation Theme",
           "判定依據",
         ],
-        rows: allVariationRows.map((row): readonly Cell[] => [
-          textCell(row.familySku, 2),
-          textCell(row.role === "parent" ? "父變體" : "子變體"),
-          textCell(row.sellerSku, 2),
-          textCell(row.title),
-          textCell(row.productType),
-          textCell(row.variationTheme ?? ""),
-          textCell(row.evidence === "verified-parent"
-            ? "Amazon relationships 已驗證父變體"
-            : row.evidence === "verified-child"
-              ? "Amazon relationships 已驗證子變體"
-              : "父 SKU 取自已驗證子變體關係；未猜測父商品名稱"),
-        ]),
+        rows: allVariationWorkbookRows,
         widths: [28, 14, 28, 58, 24, 24, 58],
         dataRowHeight: 38,
       }),
@@ -1113,6 +1106,82 @@ export function createUnboundVariationWorkbook({
     archive[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(sheet.xml);
   });
   return zipSync(archive, { level: 6 });
+}
+
+function variationFamilyWorkbookRows(
+  rows: readonly AllVariationWorkbookRow[],
+): readonly (readonly Cell[])[] {
+  const familyOrdinals = new Map<string, number>();
+  let currentFamily = "";
+  let currentOrdinal = -1;
+  for (const row of rows) {
+    if (row.familySku === currentFamily) continue;
+    if (familyOrdinals.has(row.familySku)) {
+      throw new Error("All-variation workbook families must be contiguous.");
+    }
+    currentFamily = row.familySku;
+    currentOrdinal += 1;
+    familyOrdinals.set(row.familySku, currentOrdinal);
+  }
+
+  return rows.map((row, rowIndex): readonly Cell[] => {
+    const firstInFamily = rowIndex === 0 ||
+      rows[rowIndex - 1]?.familySku !== row.familySku;
+    const lastInFamily = rowIndex === rows.length - 1 ||
+      rows[rowIndex + 1]?.familySku !== row.familySku;
+    const familyOrdinal = familyOrdinals.get(row.familySku);
+    if (familyOrdinal === undefined) {
+      throw new Error("All-variation workbook family is missing its ordinal.");
+    }
+    const values = [
+      row.familySku,
+      row.role === "parent" ? "父變體" : "子變體",
+      row.sellerSku,
+      row.title,
+      row.productType,
+      row.variationTheme ?? "",
+      row.evidence === "verified-parent"
+        ? "Amazon relationships 已驗證父變體"
+        : row.evidence === "verified-child"
+          ? "Amazon relationships 已驗證子變體"
+          : "父 SKU 取自已驗證子變體關係；未猜測父商品名稱",
+    ];
+    return values.map((value, columnIndex) => textCell(
+      value,
+      variationFamilyCellStyle({
+        familyOrdinal,
+        firstInFamily,
+        lastInFamily,
+        firstColumn: columnIndex === 0,
+        lastColumn: columnIndex === values.length - 1,
+      }),
+    ));
+  });
+}
+
+function variationFamilyCellStyle(input: {
+  familyOrdinal: number;
+  firstInFamily: boolean;
+  lastInFamily: boolean;
+  firstColumn: boolean;
+  lastColumn: boolean;
+}): number {
+  const horizontalOffset = input.firstColumn ? 0 : input.lastColumn ? 2 : 1;
+  const verticalOffset = input.firstInFamily && input.lastInFamily
+    ? 9
+    : input.firstInFamily
+      ? 0
+      : input.lastInFamily
+        ? 6
+        : 3;
+  const base = input.familyOrdinal % 2 === 0
+    ? VARIATION_FAMILY_DARK_STYLE_BASE
+    : VARIATION_FAMILY_LIGHT_STYLE_BASE;
+  const style = base + verticalOffset + horizontalOffset;
+  if (style >= base + VARIATION_FAMILY_STYLE_VARIANTS) {
+    throw new Error("All-variation workbook family style is invalid.");
+  }
+  return style;
 }
 
 function textCell(value: unknown, style = 3): Cell {
@@ -1455,14 +1524,36 @@ function buildWorkbookRelationships(sheetCount: number): string {
 }
 
 function buildStyles(): string {
+  const familyBorderColor = "FF0B1F33";
+  const familyBorders = [
+    `<border><left style="medium"><color rgb="${familyBorderColor}"/></left><right/><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom/><diagonal/></border>`,
+    `<border><left/><right/><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom/><diagonal/></border>`,
+    `<border><left/><right style="medium"><color rgb="${familyBorderColor}"/></right><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom/><diagonal/></border>`,
+    `<border><left style="medium"><color rgb="${familyBorderColor}"/></left><right/><top/><bottom/><diagonal/></border>`,
+    `<border><left/><right style="medium"><color rgb="${familyBorderColor}"/></right><top/><bottom/><diagonal/></border>`,
+    `<border><left style="medium"><color rgb="${familyBorderColor}"/></left><right/><top/><bottom style="medium"><color rgb="${familyBorderColor}"/></bottom><diagonal/></border>`,
+    `<border><left/><right/><top/><bottom style="medium"><color rgb="${familyBorderColor}"/></bottom><diagonal/></border>`,
+    `<border><left/><right style="medium"><color rgb="${familyBorderColor}"/></right><top/><bottom style="medium"><color rgb="${familyBorderColor}"/></bottom><diagonal/></border>`,
+    `<border><left style="medium"><color rgb="${familyBorderColor}"/></left><right/><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom style="medium"><color rgb="${familyBorderColor}"/></bottom><diagonal/></border>`,
+    `<border><left/><right/><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom style="medium"><color rgb="${familyBorderColor}"/></bottom><diagonal/></border>`,
+    `<border><left/><right style="medium"><color rgb="${familyBorderColor}"/></right><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom style="medium"><color rgb="${familyBorderColor}"/></bottom><diagonal/></border>`,
+  ];
+  const familyBorderIds = [2, 3, 4, 5, 0, 6, 7, 8, 9, 10, 11, 12];
+  const familyCellStyles = [
+    { fontId: 2, fillId: 2 },
+    { fontId: 0, fillId: 5 },
+  ].flatMap(({ fontId, fillId }) => familyBorderIds.map((borderId) =>
+    `<xf numFmtId="0" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>`,
+  )).join("");
   return `${XML_DECLARATION}
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <numFmts count="1">
     <numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm:ss"/>
   </numFmts>
-  <fonts count="2">
+  <fonts count="3">
     <font><sz val="11"/><color rgb="FF17202A"/><name val="Aptos"/><family val="2"/></font>
     <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/><family val="2"/></font>
+    <font><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/><family val="2"/></font>
   </fonts>
   <fills count="6">
     <fill><patternFill patternType="none"/></fill>
@@ -1472,7 +1563,7 @@ function buildStyles(): string {
     <fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
-  <borders count="2">
+  <borders count="13">
     <border><left/><right/><top/><bottom/><diagonal/></border>
     <border>
       <left style="thin"><color rgb="FFD8E0E8"/></left>
@@ -1481,11 +1572,12 @@ function buildStyles(): string {
       <bottom style="thin"><color rgb="FFD8E0E8"/></bottom>
       <diagonal/>
     </border>
+    ${familyBorders.join("")}
   </borders>
   <cellStyleXfs count="1">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
   </cellStyleXfs>
-  <cellXfs count="8">
+  <cellXfs count="32">
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
     <xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
@@ -1494,6 +1586,7 @@ function buildStyles(): string {
     <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    ${familyCellStyles}
   </cellXfs>
   <cellStyles count="1">
     <cellStyle name="Normal" xfId="0" builtinId="0"/>

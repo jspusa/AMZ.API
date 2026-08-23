@@ -1,187 +1,234 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import AuditSuiteHomeCard, {
-  auditSuiteCompletedSections,
-  auditSuiteSectionPresentation,
-  auditSuiteStatusPresentation,
-  parseAuditSuiteStart,
-  runAuditSuitePollLoop,
+  startIndividualAuditJobs,
 } from "../src/renderer/src/components/audit-suite-home-card";
-import {
-  AUDIT_SUITE_SECTIONS,
-  AUDIT_SUITE_SECTION_IDS,
-} from "../src/shared/audit-suite";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
-function run(
-  status: "queued" | "running" | "completed" | "partial" | "failed" = "queued",
-) {
+function standaloneJob(kind: string, index: number) {
   return {
-    schemaVersion: 3 as const,
-    runId: "suite-run-0001",
-    contextId: "context-run-0001-abcdef",
+    jobId: `standalone-job-${index}`,
+    contextId: `standalone-context-${index}`,
+    kind,
     marketplaceId: MARKETPLACE_ID,
     mode: "live" as const,
-    status,
-    startedAt: "2026-08-09T04:00:00.000Z",
-    updatedAt: "2026-08-09T04:00:00.000Z",
-    sections: Object.fromEntries(AUDIT_SUITE_SECTION_IDS.map((id) => [id, {
-      id,
-      status,
-      message: `${id} 狀態可核對。`,
-      completedUnits: status === "completed" ? 1 : 0,
-      totalUnits: 1,
-      updatedAt: "2026-08-09T04:00:00.000Z",
-    }])),
+    options: kind === "subscription" ? { months: 6 as const } : {},
+    ready: false as const,
+    status: "queued" as const,
+    progress: {
+      stage: "queued",
+      message: "已交給 Notebook Key 背景執行。",
+      completedUnits: 0,
+      totalUnits: null,
+    },
   };
 }
 
-describe("audit suite home card", () => {
-  it("renders the seven canonical audit labels in one-click order and an honest shared-dictionary boundary", () => {
+describe("one-click individual audit launcher", () => {
+  it("renders only one launcher and leaves status and results to the seven cards below", () => {
     const markup = renderToStaticMarkup(
-      <AuditSuiteHomeCard marketplaceId={MARKETPLACE_ID} marketplaceShort="US" />,
+      <AuditSuiteHomeCard
+        marketplaceId={MARKETPLACE_ID}
+        mode="live"
+        onStandaloneJobChange={() => undefined}
+        onAplusJobChange={() => undefined}
+      />,
     );
+
     expect(markup).toContain("一鍵執行全部 FBA 健檢");
-    const orderedLabels = AUDIT_SUITE_SECTIONS.map(({ label }) => label);
-    const serializedLabels = orderedLabels.map((label) => label.replaceAll("&", "&amp;"));
-    for (const label of serializedLabels) expect(markup).toContain(label);
-    for (let index = 1; index < serializedLabels.length; index += 1) {
-      expect(markup.indexOf(serializedLabels[index - 1])).toBeLessThan(
-        markup.indexOf(serializedLabels[index]),
-      );
-    }
-    expect(markup).not.toContain("180+ 庫齡與預估冗餘");
-    expect(markup).not.toContain("評論主題");
-    expect(markup).toContain("廣告覆蓋");
-    expect(markup).toContain("GitHub Pages 共用英文辭典與紅字標示由「單項文案健檢」完成");
-    expect(markup).toContain("按一次，讓 7 項健檢自動執行");
-    expect(markup).toContain("下面 7 項會自動執行");
-    expect(markup).toContain("這些卡片只顯示各項狀態，不是 7 個分開按鈕");
-    expect(markup).toContain('data-state="waiting"');
-    expect(markup).toContain("等待開始");
-    expect(markup).toContain("狀態收斂進度");
-    expect(markup).toContain("綜合 FBA 健檢狀態收斂進度 0%");
-    expect(markup).toContain("audit-suite-section-pill");
-    expect(markup).toContain("等待</span>");
-    expect(markup.match(/按上方一次後自動執行。/gu)).toHaveLength(7);
+    expect(markup).toContain("直接啟動下方 7 張單項卡片");
+    expect(markup).toContain("點進各卡片查看完整結果");
     expect(markup.match(/<button\b/gu)).toHaveLength(1);
-    expect(markup.indexOf("audit-suite-home-actions")).toBeLessThan(
-      markup.indexOf("audit-suite-section-grid"),
+    expect(markup).not.toContain("audit-suite-section-grid");
+    expect(markup).not.toContain("audit-suite-home-status");
+    expect(markup).not.toContain("狀態收斂進度");
+    expect(markup).not.toContain("下載合併健檢 Excel");
+    expect(markup).not.toContain("/api/sp-api/audit-suite");
+  });
+
+  it("keeps the launcher available when another card is already running", () => {
+    const markup = renderToStaticMarkup(
+      <AuditSuiteHomeCard
+        marketplaceId={MARKETPLACE_ID}
+        mode="live"
+        hasRunningJobs
+        onStandaloneJobChange={() => undefined}
+        onAplusJobChange={() => undefined}
+      />,
     );
+
+    expect(markup).toContain("啟動其餘健檢（執行中項目沿用）");
+    expect(markup).not.toContain("disabled=\"\"");
+    expect(markup).toContain("aria-busy=\"false\"");
   });
 
-  it("uses explicit text, icons, and progress for every overall and section state", () => {
-    expect(auditSuiteStatusPresentation(null)).toMatchObject({
-      state: "waiting",
-      label: "等待開始",
-      completedSections: 0,
-      progressPercent: 0,
-    });
-    expect(auditSuiteStatusPresentation(run("running"))).toMatchObject({
-      state: "running",
-      label: "背景執行中",
-      completedSections: 0,
-      progressPercent: 0,
-    });
-    expect(auditSuiteStatusPresentation(run("completed"))).toMatchObject({
-      state: "completed",
-      label: "全部完成",
-      completedSections: 7,
-      progressPercent: 100,
-    });
-    expect(auditSuiteStatusPresentation(run("partial"))).toMatchObject({
-      state: "partial",
-      label: "部分完成",
-      completedSections: 7,
-      progressPercent: 100,
-    });
-    expect(auditSuiteStatusPresentation(run("failed"))).toMatchObject({
-      state: "failed",
-      label: "未完成",
-      completedSections: 7,
-      progressPercent: 100,
-    });
+  it("starts the six standalone jobs and specialized A+ job, then hands every main identity to the existing card observers", async () => {
+    const starts: Array<{ kind: string; options?: unknown }> = [];
+    const launchOrder: string[] = [];
+    const standaloneIdentities: string[] = [];
+    const aplusIdentities: string[] = [];
 
-    expect(auditSuiteSectionPresentation(null)).toEqual({
-      state: "waiting",
-      label: "等待",
-      icon: "○",
-    });
-    expect(auditSuiteSectionPresentation("queued").label).toBe("排隊中");
-    expect(auditSuiteSectionPresentation("running").label).toBe("執行中");
-    expect(auditSuiteSectionPresentation("completed").label).toBe("完成");
-    expect(auditSuiteSectionPresentation("partial").label).toBe("部分完成");
-    expect(auditSuiteSectionPresentation("failed").label).toBe("未完成");
-  });
-
-  it("accepts only the requested marketplace and never exposes accountScope", () => {
-    const parsed = parseAuditSuiteStart(run(), MARKETPLACE_ID);
-    expect(parsed.marketplaceId).toBe(MARKETPLACE_ID);
-    expect("accountScope" in parsed).toBe(false);
-    expect(() => parseAuditSuiteStart(run(), "A2EUQ1WTGCTBG2")).toThrow(/context/u);
-  });
-
-  it("counts terminal section progress", () => {
-    const completed = parseAuditSuiteStart(run("completed"), MARKETPLACE_ID);
-    expect(auditSuiteCompletedSections(completed)).toBe(7);
-    expect(auditSuiteCompletedSections(null)).toBe(0);
-  });
-
-  it("allows an explicit second run to use a fresh main-issued context", async () => {
-    const source = await import("../src/renderer/src/audit-suite");
-    const first = parseAuditSuiteStart(run("completed"), MARKETPLACE_ID);
-    const second = parseAuditSuiteStart({
-      ...run(),
-      runId: "suite-run-0002",
-      contextId: "context-run-0002-abcdef",
-    }, MARKETPLACE_ID);
-    const state = source.replaceAuditSuiteRun(
-      source.createAuditSuiteState(first),
-      second,
-    );
-    expect(source.auditSuiteRunForMarketplace(state, MARKETPLACE_ID)).toMatchObject({
-      runId: "suite-run-0002",
-      contextId: "context-run-0002-abcdef",
-    });
-  });
-
-  it("continues polling across identical running snapshots and one retryable failure", async () => {
-    const running = parseAuditSuiteStart(run("running"), MARKETPLACE_ID);
-    const completed = parseAuditSuiteStart(run("completed"), MARKETPLACE_ID);
-    let calls = 0;
-    const seen: string[] = [];
-    await runAuditSuitePollLoop({
-      signal: new AbortController().signal,
-      wait: async () => undefined,
-      load: async () => {
-        calls += 1;
-        if (calls === 2) throw new Error("temporary 500");
-        return { kind: "run", run: calls < 4 ? running : completed };
+    const outcome = await startIndividualAuditJobs({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      startStandalone: vi.fn(async (input) => {
+        launchOrder.push(input.kind);
+        starts.push({ kind: input.kind, options: input.options });
+        return standaloneJob(input.kind, starts.length);
+      }),
+      startAplus: vi.fn(async () => {
+        launchOrder.push("aplus");
+        return {
+          jobId: "aplus-job-1",
+          contextId: "aplus-context-1",
+          marketplaceId: MARKETPLACE_ID,
+          mode: "live" as const,
+          ready: false as const,
+          status: "queued" as const,
+          progress: { completedAsins: 0, totalAsins: 0 },
+        };
+      }),
+      onStandaloneJobChange: (job) => {
+        standaloneIdentities.push(`${job.kind}:${job.jobId}:${job.contextId}`);
       },
-      onRun: (next) => seen.push(next.status),
-      onRetryableError: (error) => seen.push((error as Error).message),
-      onStopped: (message) => seen.push(message),
+      onAplusJobChange: (job) => {
+        aplusIdentities.push(`${job.jobId}:${job.contextId}`);
+      },
     });
-    expect(calls).toBe(4);
-    expect(seen).toEqual(["running", "temporary 500", "running", "completed"]);
+
+    expect(starts).toEqual([
+      { kind: "content", options: undefined },
+      { kind: "image", options: undefined },
+      { kind: "variation", options: undefined },
+      { kind: "subscription", options: { months: 6 } },
+      { kind: "businessPricing", options: undefined },
+      { kind: "advertising", options: undefined },
+    ]);
+    expect(launchOrder).toEqual([
+      "content",
+      "image",
+      "aplus",
+      "variation",
+      "subscription",
+      "businessPricing",
+      "advertising",
+    ]);
+    expect(standaloneIdentities).toEqual([
+      "content:standalone-job-1:standalone-context-1",
+      "image:standalone-job-2:standalone-context-2",
+      "variation:standalone-job-3:standalone-context-3",
+      "subscription:standalone-job-4:standalone-context-4",
+      "businessPricing:standalone-job-5:standalone-context-5",
+      "advertising:standalone-job-6:standalone-context-6",
+    ]);
+    expect(aplusIdentities).toEqual(["aplus-job-1:aplus-context-1"]);
+    expect(outcome.failedLabels).toEqual([]);
   });
 
-  it("stops polling after unmount abort", async () => {
-    const controller = new AbortController();
-    const running = parseAuditSuiteStart(run("running"), MARKETPLACE_ID);
-    let calls = 0;
-    await runAuditSuitePollLoop({
-      signal: controller.signal,
-      wait: async () => undefined,
-      load: async () => {
-        calls += 1;
-        return { kind: "run", run: running };
+  it("still starts every independent card when one main-owned job fails to start", async () => {
+    const attempted: string[] = [];
+    const successful: string[] = [];
+    const failed: Array<{ id: string; message: string }> = [];
+    const outcome = await startIndividualAuditJobs({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      startStandalone: async (input) => {
+        attempted.push(input.kind);
+        if (input.kind === "image") throw new Error("圖片工作無法建立");
+        return standaloneJob(input.kind, attempted.length);
       },
-      onRun: () => controller.abort(),
-      onRetryableError: () => undefined,
-      onStopped: () => undefined,
+      startAplus: async () => {
+        attempted.push("aplus");
+        return {
+          jobId: "aplus-job-2",
+          contextId: "aplus-context-2",
+          marketplaceId: MARKETPLACE_ID,
+          mode: "live" as const,
+          ready: false as const,
+          status: "queued" as const,
+          progress: { completedAsins: 0, totalAsins: 0 },
+        };
+      },
+      onStandaloneJobChange: () => undefined,
+      onAplusJobChange: () => undefined,
+      onStartSuccess: (id) => successful.push(id),
+      onStartFailure: (id, message) => failed.push({ id, message }),
     });
-    expect(calls).toBe(1);
+
+    expect(new Set(attempted)).toEqual(new Set([
+      "content",
+      "image",
+      "variation",
+      "subscription",
+      "businessPricing",
+      "advertising",
+      "aplus",
+    ]));
+    expect(outcome.failedLabels).toEqual(["全站圖片健檢"]);
+    expect(new Set(successful)).toEqual(new Set([
+      "content",
+      "aplus",
+      "variation",
+      "subscription",
+      "businessPricing",
+      "advertising",
+    ]));
+    expect(failed).toEqual([{
+      id: "image",
+      message: "全站圖片健檢本次未能啟動；上次結果不會當成本次結果。",
+    }]);
+  });
+
+  it("hands each successful identity to its card without waiting for another start call", async () => {
+    let releaseImage!: () => void;
+    const imageGate = new Promise<void>((resolve) => {
+      releaseImage = resolve;
+    });
+    const standaloneIdentities: string[] = [];
+    const aplusIdentities: string[] = [];
+    let ordinal = 0;
+    const launching = startIndividualAuditJobs({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      startStandalone: async (input) => {
+        ordinal += 1;
+        if (input.kind === "image") {
+          await imageGate;
+          throw new Error("圖片工作無法建立");
+        }
+        return standaloneJob(input.kind, ordinal);
+      },
+      startAplus: async () => ({
+        jobId: "aplus-job-immediate",
+        contextId: "aplus-context-immediate",
+        marketplaceId: MARKETPLACE_ID,
+        mode: "live" as const,
+        ready: false as const,
+        status: "queued" as const,
+        progress: { completedAsins: 0, totalAsins: 0 },
+      }),
+      onStandaloneJobChange: (job) => {
+        standaloneIdentities.push(job.kind);
+      },
+      onAplusJobChange: (job) => {
+        aplusIdentities.push(job.jobId);
+      },
+    });
+
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+    expect(new Set(standaloneIdentities)).toEqual(new Set([
+      "content",
+      "variation",
+      "subscription",
+      "businessPricing",
+      "advertising",
+    ]));
+    expect(aplusIdentities).toEqual(["aplus-job-immediate"]);
+
+    releaseImage();
+    await expect(launching).resolves.toEqual({
+      failedLabels: ["全站圖片健檢"],
+    });
   });
 });

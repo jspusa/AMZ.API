@@ -1,3 +1,9 @@
+import { parseAdvertisingCoverageSnapshot } from "./advertising-coverage";
+import { parseBusinessPricingAuditSnapshot } from "./business-pricing-audit";
+import { parseImageAuditSnapshot } from "./image-audit";
+import { parseSubscriptionAuditSnapshot } from "./subscription-audit";
+import { parseUnboundVariationAuditSnapshot } from "./unbound-variation-audit";
+
 export const STANDALONE_AUDIT_KINDS = [
   "content",
   "image",
@@ -558,4 +564,75 @@ export function standaloneAuditHomeProgress(job: StandaloneAuditJob): Readonly<{
     completedUnits: job.progress.completedUnits,
     totalUnits: job.progress.totalUnits,
   };
+}
+
+export type StandaloneAuditTerminalOutcome =
+  | "success"
+  | "partial"
+  | "failed";
+
+/**
+ * Keeps the home card honest before its drawer caches the terminal snapshot.
+ * A completed transport job is only "success" after the audit-specific parser
+ * accepts the complete payload; unknown or malformed shapes remain partial.
+ */
+export function standaloneAuditTerminalOutcome(
+  job: StandaloneAuditJob,
+): StandaloneAuditTerminalOutcome | null {
+  if (!job.ready) return null;
+  if (job.status !== "completed") return "failed";
+  try {
+    if (job.kind === "content" || job.kind === "agedInventory") {
+      // Content still needs the deterministic browser dictionary pass. Aged
+      // inventory is outside the seven-card run-all flow and parses in drawer.
+      return "partial";
+    }
+    if (job.kind === "image") {
+      const snapshot = parseImageAuditSnapshot(job.snapshot, job.marketplaceId);
+      return snapshot.summary.incomplete > 0 ? "partial" : "success";
+    }
+    if (job.kind === "variation") {
+      const snapshot = parseUnboundVariationAuditSnapshot(
+        job.snapshot,
+        job.marketplaceId,
+      );
+      if (snapshot.mode !== job.mode) return "partial";
+      return snapshot.summary.incomplete > 0 ? "partial" : "success";
+    }
+    if (job.kind === "subscription") {
+      const snapshot = parseSubscriptionAuditSnapshot(job.snapshot);
+      if (
+        snapshot.marketplaceId !== job.marketplaceId ||
+        snapshot.mode !== job.mode ||
+        snapshot.requestedMonths !== job.options.months
+      ) {
+        return "partial";
+      }
+      return snapshot.inventoryEvidence.coverage === "complete" &&
+          snapshot.upstreamCoverage.status === "complete" &&
+          snapshot.summary.revenueCoverage.status === "complete"
+        ? "success"
+        : "partial";
+    }
+    if (job.kind === "businessPricing") {
+      const snapshot = parseBusinessPricingAuditSnapshot(job.snapshot);
+      if (
+        snapshot.marketplaceId !== job.marketplaceId ||
+        snapshot.mode !== job.mode
+      ) {
+        return "partial";
+      }
+      return snapshot.summary.incomplete > 0 ? "partial" : "success";
+    }
+    if (job.kind === "advertising") {
+      const snapshot = parseAdvertisingCoverageSnapshot(
+        job.snapshot,
+        job.marketplaceId,
+      );
+      return snapshot.mode === job.mode ? "success" : "partial";
+    }
+  } catch {
+    return "partial";
+  }
+  return "partial";
 }
