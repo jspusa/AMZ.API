@@ -325,6 +325,11 @@ export type BusinessPricingAuditSnapshot = {
   notice: string;
 };
 
+export type BusinessPricingActiveListingsReportEvidence = Readonly<{
+  reportId: string;
+  documentId: string;
+}>;
+
 export type SalePriceSchedule = {
   price: Money;
   startAt: string | null;
@@ -1465,6 +1470,8 @@ export type SpApiOperation =
   | "getListingsItem"
   | "searchListingsItems"
   | "getAplusContentPublishRecords"
+  | "getAplusContentDocuments"
+  | "getAplusContentDocumentAsinRelations"
   | "getItemReviewTopics"
   | "getDefinitionsProductType"
   | "patchListingsItemPreview"
@@ -10375,11 +10382,51 @@ function incompleteBusinessPricingAuditRow(
   };
 }
 
+function unavailableListingsBusinessPricingAuditRow(input: Readonly<{
+  seed: ListingReportSeed;
+  marketplaceId: MarketplaceId;
+  reason: string;
+  reportBusinessPrice: ListingReportBusinessPriceEvidence;
+  activeListingsBusinessPrice: ListingReportBusinessPriceEvidence;
+}>): BusinessPricingAuditRow {
+  if (
+    input.reportBusinessPrice.presence === "present" &&
+    /^[A-Z0-9]{10}$/u.test(input.seed.asin)
+  ) {
+    const reportSource = input.activeListingsBusinessPrice.presence === "present"
+      ? "Amazon Active Listings 報表"
+      : "Amazon 全商品報表";
+    return {
+      sellerSku: input.seed.sellerSku,
+      asin: input.seed.asin,
+      title: "",
+      productType: "",
+      standardPrice: null,
+      businessPrice: {
+        amount: input.reportBusinessPrice.amount,
+        currencyCode: MARKETPLACES[input.marketplaceId].currency,
+      },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "configured",
+      editable: false,
+      reason:
+        `${reportSource}已以 exact SKU／ASIN／FBA 證據確認 Business Price；${input.reason}商品名稱、商品類型、一般售價與數量折扣保持未知。`,
+    };
+  }
+  return incompleteBusinessPricingAuditRow(input.seed, input.reason);
+}
+
 function exactBusinessPricingAuditPayload(input: {
   seed: ListingReportSeed;
   payload: AmazonListingItem;
   marketplaceId: MarketplaceId;
-}): { listing: ListingPriceSnapshot; business: ReturnType<typeof businessOfferSnapshot> } | string {
+}): {
+  listing: ListingPriceSnapshot;
+  business: ReturnType<typeof businessOfferSnapshot>;
+  standardPriceComplete: boolean;
+} | string {
   const { seed, payload, marketplaceId } = input;
   if (
     !exactBusinessPricingIdentity(
@@ -10400,38 +10447,41 @@ function exactBusinessPricingAuditPayload(input: {
   if (!payloadHasFbaAvailability(payload)) {
     return "Amazon Listings 與 FBA 報表的履約證據不一致。";
   }
+  const attributes = payload.attributes;
+  const purchasableOffers = isRecord(attributes)
+    ? attributes.purchasable_offer
+    : undefined;
   if (
-    !isRecord(payload.attributes) ||
-    !Array.isArray(payload.attributes.purchasable_offer)
-  ) {
-    return "Amazon Listings 沒有完整回傳 purchasable_offer attributes。";
-  }
-  if (
+    (attributes !== undefined && !isRecord(attributes)) ||
+    (purchasableOffers !== undefined &&
+      (!Array.isArray(purchasableOffers) ||
+        !purchasableOffers.every(isRecord))) ||
     (payload.offers !== undefined && !Array.isArray(payload.offers)) ||
     (Array.isArray(payload.offers) && !payload.offers.every(isRecord)) ||
-    !payload.attributes.purchasable_offer.every(isRecord) ||
     !listingSubmissionIssuesAreWellFormed(payload.issues)
   ) {
-    return "Amazon Listings 的 optional offers 或 issues 格式無法辨識。";
+    return "Amazon Listings 已回傳但 attributes、optional offers 或 issues 格式無法辨識。";
   }
   const listing = normalizeListingPrice(payload, marketplaceId, null);
   const standardPrice = canonicalBusinessStandardPrice(payload, marketplaceId);
-  if (
-    !listing.productType ||
-    listing.productType === "PRODUCT" ||
-    listing.purchasableOfferPresence !== "present" ||
-    !standardPrice
-  ) {
-    return "Amazon Listings 沒有唯一、可核對的商品類型或標準售價。";
+  if (!listing.productType || listing.productType === "PRODUCT") {
+    return "Amazon Listings 沒有唯一、可核對的商品類型。";
   }
-  if (payload.issues?.some((issue) =>
+  const hasPricingError = Boolean(payload.issues?.some((issue) =>
     isPricingListingError(issue, marketplaceId)
-  )) {
-    return "Amazon Listings 回傳與價格 offer 有關的 ERROR。";
-  }
+  ));
+  const standardPriceComplete = Boolean(
+    standardPrice &&
+    listing.purchasableOfferPresence === "present" &&
+    !hasPricingError,
+  );
   return {
-    listing: { ...listing, standardPrice },
+    listing: {
+      ...listing,
+      standardPrice: standardPriceComplete ? standardPrice : null,
+    },
     business: businessOfferSnapshot(payload, marketplaceId),
+    standardPriceComplete,
   };
 }
 
@@ -10439,10 +10489,37 @@ function completeBusinessPricingAuditRow(input: {
   seed: ListingReportSeed;
   listing: ListingPriceSnapshot;
   business: ReturnType<typeof businessOfferSnapshot>;
-  capability: BusinessPricingCapability;
+  standardPriceComplete: boolean;
+  marketplaceId: MarketplaceId;
   reportBusinessPrice: ListingReportBusinessPriceEvidence;
+  activeListingsBusinessPrice: ListingReportBusinessPriceEvidence;
 }): BusinessPricingAuditRow {
-  const { seed, listing, business, capability, reportBusinessPrice } = input;
+  const {
+    seed,
+    listing,
+    business,
+    standardPriceComplete,
+    marketplaceId,
+    reportBusinessPrice,
+    activeListingsBusinessPrice,
+  } = input;
+  if (activeListingsBusinessPrice.presence === "ambiguous") {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason:
+        "Amazon Active Listings 報表的 exact SKU／ASIN／FBA／Business Price 證據重複、衝突或無法辨識；即使 Listings attributes 有正向 B2B 證據也不會忽略此衝突。",
+    };
+  }
   if (business.businessOfferPresence === "ambiguous") {
     return {
       sellerSku: seed.sellerSku,
@@ -10477,16 +10554,18 @@ function completeBusinessPricingAuditRow(input: {
       status: "incomplete",
       editable: false,
       reason:
-        "同次 Amazon 全商品報表的 Business Price 不是可辨識的正值，已停止分類與編輯。",
+        "Amazon Active Listings／全商品報表的 Business Price 證據不一致或無法精確辨識，已停止分類。",
     };
   }
-  const reportMoney = reportBusinessPrice.presence === "present" &&
-      listing.standardPrice
+  const reportMoney = reportBusinessPrice.presence === "present"
     ? {
         amount: reportBusinessPrice.amount,
-        currencyCode: listing.standardPrice.currencyCode,
+        currencyCode: MARKETPLACES[marketplaceId].currency,
       }
     : null;
+  const reportSource = activeListingsBusinessPrice.presence === "present"
+    ? "Amazon Active Listings 報表"
+    : "Amazon 全商品報表";
   if (
     reportMoney && business.businessOfferPresence === "present" &&
     (!business.businessPrice ||
@@ -10509,8 +10588,7 @@ function completeBusinessPricingAuditRow(input: {
       quantityDiscountPlanPresence: "ambiguous",
       status: "incomplete",
       editable: false,
-      reason:
-        "同次 Amazon 全商品報表的 Business Price 與 Listings attributes 的 exact B2B contribution 不一致，已停止分類與編輯。",
+      reason: `${reportSource}的 Business Price 與 Listings attributes 的 exact B2B contribution 不一致，已停止分類。`,
     };
   }
   if (reportMoney && business.businessOfferPresence === "absent") {
@@ -10531,58 +10609,48 @@ function completeBusinessPricingAuditRow(input: {
       status: aboveStandard ? "above_standard" : "configured",
       editable: false,
       reason: aboveStandard
-        ? "同次 Amazon 全商品報表的 exact SKU Business Price 顯示已設定且高於一般售價；Listings attributes 未回傳 exact B2B contribution，無法核對數量折扣或安全組合寫入，因此只提供唯讀。"
-        : "同次 Amazon 全商品報表的 exact SKU Business Price 顯示已設定；Listings attributes 未回傳 exact B2B contribution，無法核對數量折扣或安全組合寫入，因此只提供唯讀。",
-    };
-  }
-  if (business.businessPricingManagedByAutomation) {
-    return {
-      sellerSku: seed.sellerSku,
-      asin: seed.asin,
-      title: listing.title,
-      productType: listing.productType,
-      standardPrice: listing.standardPrice,
-      businessPrice: business.businessPrice,
-      businessOfferPresence: business.businessOfferPresence,
-      quantityDiscountPlan: business.quantityDiscountPlan,
-      quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
-      status: "incomplete",
-      editable: false,
-      reason:
-        "此 B2B contribution 由 Amazon Automate Pricing 管理；請先在 Seller Central 處理規則。",
-    };
-  }
-  if (!capability.supported || !capability.editable) {
-    const configured = business.businessOfferPresence === "present";
-    const aboveStandard = configured && Boolean(
-      listing.standardPrice && business.businessPrice &&
-      business.businessPrice.amount > listing.standardPrice.amount,
-    );
-    const capabilityReason = (capability.reason ??
-      "Amazon seller-specific PTD 未開放 B2B 價格寫入")
-      .replace(/[。．.!！]+$/u, "");
-    return {
-      sellerSku: seed.sellerSku,
-      asin: seed.asin,
-      title: listing.title,
-      productType: listing.productType,
-      standardPrice: listing.standardPrice,
-      businessPrice: business.businessPrice,
-      businessOfferPresence: business.businessOfferPresence,
-      quantityDiscountPlan: business.quantityDiscountPlan,
-      quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
-      status: aboveStandard
-        ? "above_standard"
-        : configured ? "configured" : "missing",
-      editable: false,
-      reason: `${aboveStandard
-        ? "Amazon Business 價格高於一般售價"
-        : configured
-          ? "已設定 Amazon Business 價格"
-        : "尚未設定 Amazon Business 價格"}；${capabilityReason}，因此只提供唯讀。`,
+        ? `${reportSource}已確認此 SKU 設有 Business Price，且目前高於一般售價；數量折扣請至 Amazon 後台核對。`
+        : `${reportSource}已確認此 SKU 設有 Business Price；一般售價或數量折扣未完整回傳時，請至 Amazon 後台核對。`,
     };
   }
   const configured = business.businessOfferPresence === "present";
+  if (
+    !configured &&
+    activeListingsBusinessPrice.presence === "unavailable"
+  ) {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason:
+        "Amazon Active Listings 的 exact Business Price 證據目前無法取得，且 Listings／全商品報表沒有其他正向 Business Price 證據；不能判定為未設定。",
+    };
+  }
+  if (!configured && !standardPriceComplete) {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason:
+        "Amazon Listings 未完整回傳一般售價，且沒有其他正向 Business Price 證據；請至 Amazon 後台核對。",
+    };
+  }
   const aboveStandard = configured && Boolean(
     listing.standardPrice && business.businessPrice &&
     business.businessPrice.amount > listing.standardPrice.amount,
@@ -10600,12 +10668,14 @@ function completeBusinessPricingAuditRow(input: {
     status: aboveStandard
       ? "above_standard"
       : configured ? "configured" : "missing",
-    editable: true,
+    editable: false,
     reason: aboveStandard
-      ? "Amazon Business 價格高於一般售價；seller-specific PTD 允許編輯。"
+      ? "Amazon Business 價格高於一般售價。"
       : configured
-        ? "已設定 Amazon Business 價格；seller-specific PTD 允許編輯。"
-      : "尚未設定 Amazon Business 價格；seller-specific PTD 允許建立。",
+        ? business.businessPricingManagedByAutomation
+          ? "已設定 Amazon Business 價格，並由 Amazon Automate Pricing 管理。"
+          : "已設定 Amazon Business 價格。"
+      : "尚未設定 Amazon Business 價格。",
   };
 }
 
@@ -10613,6 +10683,7 @@ export async function getBusinessPricingAuditData(input: {
   marketplaceId: MarketplaceId;
   reportId: string;
   documentId: string;
+  activeListingsReport?: BusinessPricingActiveListingsReportEvidence | null;
   signal?: AbortSignal;
 }): Promise<BusinessPricingAuditSnapshot> {
   assertNotAborted(input.signal);
@@ -10643,14 +10714,13 @@ export async function getBusinessPricingAuditData(input: {
         quantityDiscountPlan: listing.quantityDiscountPlan,
         quantityDiscountPlanPresence: listing.quantityDiscountPlanPresence,
         status,
-        editable: status === "configured" || status === "above_standard" ||
-          status === "missing",
+        editable: false,
         reason: status === "above_standard"
-          ? "Amazon Business 價格高於一般售價；展示模式不會寫入 Amazon。"
+          ? "Amazon Business 價格高於一般售價；展示資料僅供檢視，不會寫入 Amazon。"
           : status === "configured"
-          ? "已設定 Amazon Business 價格；展示資料不會寫入 Amazon。"
+          ? "已設定 Amazon Business 價格；展示資料僅供檢視，不會寫入 Amazon。"
           : status === "missing"
-            ? "尚未設定 Amazon Business 價格；展示模式可模擬建立。"
+            ? "尚未設定 Amazon Business 價格；展示資料僅供檢視，不會寫入 Amazon。"
             : "B2B offer 證據不完整，展示模式已停止編輯。",
       } satisfies BusinessPricingAuditRow;
     }));
@@ -10682,19 +10752,67 @@ export async function getBusinessPricingAuditData(input: {
     input.signal,
   );
   assertNotAborted(input.signal);
-  const { seeds, businessPriceEvidenceBySku } = parseFbaListingReport(report);
+  const {
+    seeds,
+    businessPriceEvidenceBySku: allListingsBusinessPriceEvidenceBySku,
+  } = parseFbaListingReport(report);
+  let activeListingsReport: string | null = null;
+  if (input.activeListingsReport) {
+    try {
+      activeListingsReport =
+        await getBusinessPricingActiveListingsReportDocument({
+          marketplaceId: input.marketplaceId,
+          reportId: input.activeListingsReport.reportId,
+          documentId: input.activeListingsReport.documentId,
+          signal: input.signal,
+        });
+    } catch (error) {
+      assertNotAborted(input.signal);
+      if (
+        (error instanceof Error && error.name === "AbortError") ||
+        (error instanceof SpApiError && error.code === "REPORT_MISMATCH")
+      ) {
+        throw error;
+      }
+      // The lifecycle owns create/poll evidence. A transient status/document
+      // failure cannot prove that a SKU is missing B2B pricing, so keep the
+      // Active source unavailable and classify rows from other positive
+      // evidence only.
+      activeListingsReport = null;
+    }
+  }
+  assertNotAborted(input.signal);
+  const activeListingsBusinessPriceEvidenceBySku = activeListingsReport === null
+    ? new Map<string, ListingReportBusinessPriceEvidence>()
+    : parseBusinessPricingActiveListingsReport(activeListingsReport, seeds);
+  const unavailableBusinessPriceEvidence: ListingReportBusinessPriceEvidence = {
+    presence: "unavailable",
+    amount: null,
+  };
+  const businessPriceEvidenceBySku = new Map(
+    seeds.map((seed) => {
+      return [
+        seed.sellerSku,
+        reconcileBusinessPriceReportEvidence(
+          activeListingsBusinessPriceEvidenceBySku.get(seed.sellerSku) ??
+            unavailableBusinessPriceEvidence,
+          allListingsBusinessPriceEvidenceBySku.get(seed.sellerSku) ??
+            unavailableBusinessPriceEvidence,
+          MARKETPLACES[input.marketplaceId].currency,
+        ),
+      ] as const;
+    }),
+  );
   const seedBySku = new Map(seeds.map((seed) => [seed.sellerSku, seed]));
   const rowsBySku = new Map<string, BusinessPricingAuditRow>();
   const payloadBySku = new Map<string, AmazonListingItem>();
+  const listingsUnavailableReasonBySku = new Map<string, string>();
   const { batches, unqueryableSellerSkus } =
     buildUnboundVariationSearchBatches(seeds.map((seed) => seed.sellerSku));
   for (const sellerSku of unqueryableSellerSkus) {
-    rowsBySku.set(
+    listingsUnavailableReasonBySku.set(
       sellerSku,
-      incompleteBusinessPricingAuditRow(
-        seedBySku.get(sellerSku)!,
-        "Seller SKU 無法不失真地放入官方 Listings 批次參數。",
-      ),
+      "Seller SKU 無法不失真地放入官方 Listings 批次參數。",
     );
   }
 
@@ -10719,14 +10837,11 @@ export async function getBusinessPricingAuditData(input: {
             );
             payloadBySku.set(seed.sellerSku, exact.payload);
           } catch (error) {
-            rowsBySku.set(
+            listingsUnavailableReasonBySku.set(
               seed.sellerSku,
-              incompleteBusinessPricingAuditRow(
-                seed,
-                error instanceof Error
-                  ? `Amazon exact Listings 查詢失敗：${error.message}`
-                  : "Amazon exact Listings 查詢失敗。",
-              ),
+              error instanceof Error
+                ? `Amazon exact Listings 查詢失敗：${error.message}。`
+                : "Amazon exact Listings 查詢失敗。",
             );
           }
           await wait(220, input.signal);
@@ -10736,12 +10851,9 @@ export async function getBusinessPricingAuditData(input: {
       if (!response.ok) {
         const requestId = response.headers.get("x-amzn-requestid");
         for (const seed of batchSeeds) {
-          rowsBySku.set(
+          listingsUnavailableReasonBySku.set(
             seed.sellerSku,
-            incompleteBusinessPricingAuditRow(
-              seed,
-              `Amazon Listings 批次查詢未完成${requestId ? `（Request ID: ${requestId}）` : ""}。`,
-            ),
+            `Amazon Listings 批次查詢未完成${requestId ? `（Request ID: ${requestId}）` : ""}。`,
           );
         }
         continue;
@@ -10759,12 +10871,9 @@ export async function getBusinessPricingAuditData(input: {
         new Set(items.map((item) => item.sku)).size !== items.length;
       if (malformedBatch || !items) {
         for (const seed of batchSeeds) {
-          rowsBySku.set(
+          listingsUnavailableReasonBySku.set(
             seed.sellerSku,
-            incompleteBusinessPricingAuditRow(
-              seed,
-              "Amazon Listings 批次回應含缺頁、額外列、重複列或無法辨識的列數。",
-            ),
+            "Amazon Listings 批次回應含缺頁、額外列、重複列或無法辨識的列數。",
           );
         }
         continue;
@@ -10772,26 +10881,20 @@ export async function getBusinessPricingAuditData(input: {
       for (const item of items) payloadBySku.set(item.sku!, item);
       for (const seed of batchSeeds) {
         if (!payloadBySku.has(seed.sellerSku)) {
-          rowsBySku.set(
+          listingsUnavailableReasonBySku.set(
             seed.sellerSku,
-            incompleteBusinessPricingAuditRow(
-              seed,
-              "Amazon Listings 批次沒有回傳此 FBA Seller SKU。",
-            ),
+            "Amazon Listings 批次沒有回傳此 FBA Seller SKU。",
           );
         }
       }
     } catch (error) {
       assertNotAborted(input.signal);
       for (const seed of batchSeeds) {
-        rowsBySku.set(
+        listingsUnavailableReasonBySku.set(
           seed.sellerSku,
-          incompleteBusinessPricingAuditRow(
-            seed,
-            error instanceof Error
-              ? `Amazon Listings 批次查詢失敗：${error.message}`
-              : "Amazon Listings 批次查詢失敗。",
-          ),
+          error instanceof Error
+            ? `Amazon Listings 批次查詢失敗：${error.message}。`
+            : "Amazon Listings 批次查詢失敗。",
         );
       }
     }
@@ -10801,6 +10904,7 @@ export async function getBusinessPricingAuditData(input: {
   const exactBySku = new Map<string, {
     listing: ListingPriceSnapshot;
     business: ReturnType<typeof businessOfferSnapshot>;
+    standardPriceComplete: boolean;
   }>();
   for (const seed of seeds) {
     if (rowsBySku.has(seed.sellerSku)) continue;
@@ -10826,31 +10930,28 @@ export async function getBusinessPricingAuditData(input: {
     }
   }
 
-  const capabilityByProductType = new Map<
-    string,
-    BusinessPricingCapability | Error
-  >();
-  const productTypes = [...new Set(
-    [...exactBySku.values()].map((value) => value.listing.productType),
-  )].sort();
-  for (const productType of productTypes) {
-    assertNotAborted(input.signal);
-    try {
-      capabilityByProductType.set(
-        productType,
-        await fetchBusinessPricingCapability(input.marketplaceId, productType),
-      );
-    } catch (error) {
-      capabilityByProductType.set(
-        productType,
-        error instanceof Error ? error : new Error("PTD 查詢失敗"),
-      );
-    }
-    await wait(220, input.signal);
-  }
-
   for (const seed of seeds) {
     if (rowsBySku.has(seed.sellerSku)) continue;
+    const unavailableReason = listingsUnavailableReasonBySku.get(
+      seed.sellerSku,
+    );
+    if (unavailableReason) {
+      rowsBySku.set(
+        seed.sellerSku,
+        unavailableListingsBusinessPricingAuditRow({
+          seed,
+          marketplaceId: input.marketplaceId,
+          reason: unavailableReason,
+          reportBusinessPrice:
+            businessPriceEvidenceBySku.get(seed.sellerSku) ??
+              unavailableBusinessPriceEvidence,
+          activeListingsBusinessPrice:
+            activeListingsBusinessPriceEvidenceBySku.get(seed.sellerSku) ??
+              unavailableBusinessPriceEvidence,
+        }),
+      );
+      continue;
+    }
     const exact = exactBySku.get(seed.sellerSku);
     if (!exact) {
       rowsBySku.set(
@@ -10862,31 +10963,17 @@ export async function getBusinessPricingAuditData(input: {
       );
       continue;
     }
-    const capability = capabilityByProductType.get(exact.listing.productType);
-    if (!capability || capability instanceof Error) {
-      rowsBySku.set(
-        seed.sellerSku,
-        incompleteBusinessPricingAuditRow(
-          seed,
-          capability instanceof Error
-            ? `Amazon seller-specific PTD 未完成：${capability.message}`
-            : "Amazon seller-specific PTD 未完成。",
-          payloadBySku.get(seed.sellerSku),
-          input.marketplaceId,
-        ),
-      );
-      continue;
-    }
     rowsBySku.set(
       seed.sellerSku,
       completeBusinessPricingAuditRow({
         seed,
         ...exact,
-        capability,
-        reportBusinessPrice: businessPriceEvidenceBySku.get(seed.sellerSku) ?? {
-          presence: "unavailable",
-          amount: null,
-        },
+        marketplaceId: input.marketplaceId,
+        reportBusinessPrice: businessPriceEvidenceBySku.get(seed.sellerSku) ??
+          unavailableBusinessPriceEvidence,
+        activeListingsBusinessPrice:
+          activeListingsBusinessPriceEvidenceBySku.get(seed.sellerSku) ??
+            unavailableBusinessPriceEvidence,
       }),
     );
   }
@@ -10901,7 +10988,7 @@ export async function getBusinessPricingAuditData(input: {
     rows,
     summary: summarizeBusinessPricingAudit(rows),
     notice:
-      "FBA 範圍取自同次 Amazon 全商品報表；B2B 價格優先依 Listings Items attributes 的 exact marketplace／currency／audience=B2B contribution。若 Listings 未回傳 B2B contribution、但同次報表的 exact SKU 有正值 Business Price，只標示為已設定且保持唯讀；兩者衝突則標示資料未完成。衍生 offers view 不作設定存在證據；編輯能力只採帶 Seller ID 的 seller-specific PTD。",
+      "FBA 範圍取自 Amazon 全商品報表；Business Price 以 Listings Items 的 exact B2B contribution 與 Active Listings 報表交叉核對。一般售價／Buy Box 錯誤不會抹除另一來源已確認的 Business Price；來源衝突或身分不完整仍標示資料未完成。本報表不會修改 Amazon。",
   };
 }
 
@@ -12256,6 +12343,172 @@ export async function getAllListingsReportStatus(input: {
   };
 }
 
+const BUSINESS_PRICING_ACTIVE_LISTINGS_REPORT_TYPE =
+  "GET_MERCHANT_LISTINGS_DATA";
+
+export async function startBusinessPricingActiveListingsReport(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  signal?: AbortSignal;
+}>): Promise<ListingReportStatus> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: `demo-b2b-active-${input.marketplaceId}`,
+      documentId: `demo-b2b-active-${input.marketplaceId}`,
+      status: "DONE",
+      notice: "展示 Active Listings 報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: "/reports",
+    method: "POST",
+    signal: input.signal,
+    body: {
+      reportType: BUSINESS_PRICING_ACTIVE_LISTINGS_REPORT_TYPE,
+      marketplaceIds: [input.marketplaceId],
+      reportOptions: {
+        preferredReportDocumentLocale: "en_US",
+      },
+    },
+  });
+  assertNotAborted(input.signal);
+  if (!response.ok) return throwReportsError(response);
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (!payload?.reportId) {
+    throw new SpApiError(
+      "Amazon 沒有回傳有效的 Active Listings 報表編號；建立結果不會自動重送。",
+      {
+        status: 502,
+        code: "REPORT_FAILED",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  return {
+    mode: "live",
+    ready: false,
+    reportId: payload.reportId,
+    documentId: null,
+    status: "IN_QUEUE",
+    notice: "Amazon 正在準備 Active Listings Business Price 報表。",
+  };
+}
+
+export async function getBusinessPricingActiveListingsReportStatus(
+  input: Readonly<{
+    marketplaceId: MarketplaceId;
+    reportId: string;
+    signal?: AbortSignal;
+  }>,
+): Promise<ListingReportStatus> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) {
+    return {
+      mode: "demo",
+      ready: true,
+      reportId: input.reportId,
+      documentId: `demo-b2b-active-${input.marketplaceId}`,
+      status: "DONE",
+      notice: "展示 Active Listings 報表已準備完成。",
+    };
+  }
+  const response = await executeReportsRequest({
+    marketplaceId: input.marketplaceId,
+    path: `/reports/${encodeURIComponent(input.reportId)}`,
+    signal: input.signal,
+  });
+  assertNotAborted(input.signal);
+  if (!response.ok) return throwReportsError(response);
+  const payload = await parseResponseJson<AmazonReport>(response);
+  if (
+    payload?.reportId !== input.reportId ||
+    payload.reportType !== BUSINESS_PRICING_ACTIVE_LISTINGS_REPORT_TYPE ||
+    !Array.isArray(payload.marketplaceIds) ||
+    payload.marketplaceIds.length !== 1 ||
+    payload.marketplaceIds[0] !== input.marketplaceId ||
+    (payload.reportOptions !== undefined &&
+      (!isRecord(payload.reportOptions) ||
+        payload.reportOptions.preferredReportDocumentLocale !== "en_US"))
+  ) {
+    throw new SpApiError(
+      "這份 Active Listings 報表不屬於目前帳號綁定的站點或固定報表設定。",
+      {
+        status: 409,
+        code: "REPORT_MISMATCH",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  const status = payload.processingStatus;
+  if (!status) {
+    throw new SpApiError("Amazon 回傳了無法辨識的 Active Listings 報表狀態。", {
+      status: 502,
+      code: "REPORT_FAILED",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  if (status === "CANCELLED" || status === "FATAL") {
+    throw new SpApiError("Amazon 未能產生 Active Listings Business Price 報表。", {
+      status: 422,
+      code: status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
+      requestId: response.headers.get("x-amzn-requestid"),
+    });
+  }
+  const ready = status === "DONE" && Boolean(payload.reportDocumentId);
+  if (status === "DONE" && !ready) {
+    throw new SpApiError(
+      "Amazon Active Listings 報表已完成，但缺少文件識別。",
+      {
+        status: 502,
+        code: "REPORT_FAILED",
+        requestId: response.headers.get("x-amzn-requestid"),
+      },
+    );
+  }
+  return {
+    mode: "live",
+    ready,
+    reportId: input.reportId,
+    documentId: payload.reportDocumentId ?? null,
+    status,
+    notice: ready
+      ? "Amazon Active Listings Business Price 報表已就緒。"
+      : "Amazon 正在準備 Active Listings Business Price 報表。",
+  };
+}
+
+export async function getBusinessPricingActiveListingsReportDocument(
+  input: Readonly<{
+    marketplaceId: MarketplaceId;
+    reportId: string;
+    documentId: string;
+    signal?: AbortSignal;
+  }>,
+): Promise<string> {
+  assertNotAborted(input.signal);
+  if (shouldUseDemoMode(input.marketplaceId)) return "";
+  const status = await getBusinessPricingActiveListingsReportStatus({
+    marketplaceId: input.marketplaceId,
+    reportId: input.reportId,
+    signal: input.signal,
+  });
+  assertNotAborted(input.signal);
+  if (!status.ready || status.documentId !== input.documentId) {
+    throw new SpApiError(
+      "Active Listings 報表尚未完成，或文件識別已與耐久 lifecycle 不一致。",
+      { status: 409, code: "REPORT_MISMATCH" },
+    );
+  }
+  return downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+    input.signal,
+  );
+}
+
 const SALES_AND_TRAFFIC_REPORT_TYPE = "GET_SALES_AND_TRAFFIC_REPORT";
 const SALES_AND_TRAFFIC_REPORT_OPTIONS = {
   dateGranularity: "DAY",
@@ -12907,9 +13160,8 @@ export async function getFbaReviewAuditCandidates(input: {
   });
 }
 
-type AplusContentRequestInput = {
+type AplusContentRequestBase = {
   marketplaceId: MarketplaceId;
-  asin: string;
   pageToken?: string;
   expectedMode: "live" | "demo";
   forceTokenRefresh?: boolean;
@@ -12917,7 +13169,21 @@ type AplusContentRequestInput = {
   onControlledWait?: () => void;
 };
 
-const APLUS_CONTENT_REQUEST_INTERVAL_MS = 110;
+type AplusContentRequestInput = AplusContentRequestBase & (
+  | {
+      operation: "getAplusContentPublishRecords";
+      asin: string;
+    }
+  | {
+      operation: "getAplusContentDocuments";
+    }
+  | {
+      operation: "getAplusContentDocumentAsinRelations";
+      contentReferenceKey: string;
+    }
+);
+
+const APLUS_CONTENT_REQUEST_INTERVAL_MS = 1_050;
 const APLUS_CONTENT_MAX_CONTROLLED_DELAY_MS = 25 * 60 * 1_000;
 const APLUS_CONTENT_MIN_RATE_LIMIT =
   1_000 / APLUS_CONTENT_MAX_CONTROLLED_DELAY_MS;
@@ -13020,11 +13286,41 @@ function assertAplusContentMode(
 }
 
 function assertAplusContentInput(input: AplusContentRequestInput): void {
-  if (!MARKETPLACES[input.marketplaceId] || !/^[A-Z0-9]{10}$/u.test(input.asin)) {
+  if (!MARKETPLACES[input.marketplaceId]) {
     throw new SpApiError("A+ 健檢缺少可安全核對的站點或 ASIN。", {
       status: 409,
       code: "LISTING_IDENTITY_MISMATCH",
-      operation: "getAplusContentPublishRecords",
+      operation: input.operation,
+    });
+  }
+  if (
+    input.operation === "getAplusContentPublishRecords" &&
+    !/^[A-Z0-9]{10}$/u.test(input.asin)
+  ) {
+    throw new SpApiError("A+ 健檢缺少可安全核對的站點或 ASIN。", {
+      status: 409,
+      code: "LISTING_IDENTITY_MISMATCH",
+      operation: input.operation,
+    });
+  }
+  if (
+    input.operation === "getAplusContentDocumentAsinRelations" &&
+    (
+      typeof input.contentReferenceKey !== "string" ||
+      input.contentReferenceKey.length === 0 ||
+      input.contentReferenceKey.length > 2_048 ||
+      input.contentReferenceKey !== input.contentReferenceKey.trim() ||
+      input.contentReferenceKey === "." ||
+      input.contentReferenceKey === ".." ||
+      /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(
+        input.contentReferenceKey,
+      )
+    )
+  ) {
+    throw new SpApiError("A+ 內容文件識別資訊無法安全辨識。", {
+      status: 409,
+      code: "A_PLUS_CONTENT_REFERENCE_INVALID",
+      operation: input.operation,
     });
   }
   if (
@@ -13040,9 +13336,27 @@ function assertAplusContentInput(input: AplusContentRequestInput): void {
     throw new SpApiError("A+ 健檢分頁資訊無法安全辨識。", {
       status: 409,
       code: "A_PLUS_PAGINATION_INVALID",
-      operation: "getAplusContentPublishRecords",
+      operation: input.operation,
     });
   }
+}
+
+function aplusContentRequestUrl(input: AplusContentRequestInput): string {
+  const marketplace = MARKETPLACES[input.marketplaceId];
+  const baseUrl = `${REGION_ENDPOINTS[marketplace.region]}/aplus/2020-11-01`;
+  const query = new URLSearchParams({ marketplaceId: input.marketplaceId });
+  let path: string;
+  if (input.operation === "getAplusContentPublishRecords") {
+    path = "/contentPublishRecords";
+    query.set("asin", input.asin);
+  } else if (input.operation === "getAplusContentDocuments") {
+    path = "/contentDocuments";
+  } else {
+    path = `/contentDocuments/${encodeURIComponent(input.contentReferenceKey)}/asins`;
+    query.set("includedDataSet", "METADATA");
+  }
+  if (input.pageToken !== undefined) query.set("pageToken", input.pageToken);
+  return `${baseUrl}${path}?${query}`;
 }
 
 async function callAplusContentApi(
@@ -13065,17 +13379,12 @@ async function callAplusContentApi(
   );
   assertNotAborted(input.signal);
   assertAplusContentMode(input.marketplaceId, input.expectedMode);
-  const query = new URLSearchParams({
-    marketplaceId: input.marketplaceId,
-    asin: input.asin,
-  });
-  if (input.pageToken !== undefined) query.set("pageToken", input.pageToken);
   const controller = new AbortController();
   const stopForwardingAbort = forwardAbort(controller, input.signal);
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
     return await fetch(
-      `${REGION_ENDPOINTS[marketplace.region]}/aplus/2020-11-01/contentPublishRecords?${query}`,
+      aplusContentRequestUrl(input),
       {
         method: "GET",
         headers: {
@@ -13094,13 +13403,13 @@ async function callAplusContentApi(
       throw new SpApiError("Amazon A+ Content API 回應逾時。", {
         status: 504,
         code: "UPSTREAM_UNAVAILABLE",
-        operation: "getAplusContentPublishRecords",
+        operation: input.operation,
       });
     }
     throw new SpApiError("目前無法連線至 Amazon A+ Content API。", {
       status: 502,
       code: "UPSTREAM_UNAVAILABLE",
-      operation: "getAplusContentPublishRecords",
+      operation: input.operation,
     });
   } finally {
     clearTimeout(timeout);
@@ -13152,8 +13461,12 @@ export async function getAplusContentPublishRecordsPage(input: Readonly<{
   payload: unknown;
   requestId: string | null;
 }> {
+  const request: AplusContentRequestInput = {
+    ...input,
+    operation: "getAplusContentPublishRecords",
+  };
   assertNotAborted(input.signal);
-  assertAplusContentInput(input);
+  assertAplusContentInput(request);
   assertAplusContentMode(input.marketplaceId, input.expectedMode);
   if (input.expectedMode === "demo") {
     const ordinal = Number(input.asin.at(-1));
@@ -13173,7 +13486,97 @@ export async function getAplusContentPublishRecordsPage(input: Readonly<{
       requestId: null,
     };
   }
-  const response = await executeAplusContentRequest(input);
+  const response = await executeAplusContentRequest(request);
+  const payload = response.status === 200
+    ? await parseResponseJson<unknown>(response)
+    : null;
+  return {
+    status: response.status,
+    payload,
+    requestId: response.headers.get("x-amzn-requestid"),
+  };
+}
+
+export async function getAplusContentDocumentsPage(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  pageToken?: string;
+  expectedMode: "live" | "demo";
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+}>): Promise<{
+  status: number;
+  payload: unknown;
+  requestId: string | null;
+}> {
+  const request: AplusContentRequestInput = {
+    ...input,
+    operation: "getAplusContentDocuments",
+  };
+  assertNotAborted(input.signal);
+  assertAplusContentInput(request);
+  assertAplusContentMode(input.marketplaceId, input.expectedMode);
+  if (input.expectedMode === "demo") {
+    return {
+      status: 200,
+      payload: {
+        contentMetadataRecords: [{
+          contentReferenceKey: `demo-a-plus-document-${input.marketplaceId}`,
+          contentMetadata: {
+            name: "AMZ.API Demo A+ Content",
+            marketplaceId: input.marketplaceId,
+            status: "APPROVED",
+            badgeSet: ["STANDARD"],
+            updateTime: "2026-01-01T00:00:00Z",
+          },
+        }],
+      },
+      requestId: null,
+    };
+  }
+  const response = await executeAplusContentRequest(request);
+  const payload = response.status === 200
+    ? await parseResponseJson<unknown>(response)
+    : null;
+  return {
+    status: response.status,
+    payload,
+    requestId: response.headers.get("x-amzn-requestid"),
+  };
+}
+
+export async function getAplusContentDocumentAsinRelationsPage(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  contentReferenceKey: string;
+  pageToken?: string;
+  expectedMode: "live" | "demo";
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+}>): Promise<{
+  status: number;
+  payload: unknown;
+  requestId: string | null;
+}> {
+  const request: AplusContentRequestInput = {
+    ...input,
+    operation: "getAplusContentDocumentAsinRelations",
+  };
+  assertNotAborted(input.signal);
+  assertAplusContentInput(request);
+  assertAplusContentMode(input.marketplaceId, input.expectedMode);
+  if (input.expectedMode === "demo") {
+    return {
+      status: 200,
+      payload: {
+        asinMetadataSet: [{
+          asin: "B000000002",
+          badgeSet: ["CONTENT_PUBLISHED"],
+          contentReferenceKeySet: [input.contentReferenceKey],
+        }],
+      },
+      requestId: null,
+    };
+  }
+  const response = await executeAplusContentRequest(request);
   const payload = response.status === 200
     ? await parseResponseJson<unknown>(response)
     : null;
@@ -14153,6 +14556,22 @@ function reportColumn(headers: string[], candidates: string[]): number {
     .find((index) => index >= 0) ?? -1;
 }
 
+function matchingReportColumns(
+  headers: string[],
+  candidates: string[],
+): number[] {
+  const accepted = new Set(candidates.map(normalizedReportHeader));
+  return headers
+    .map(normalizedReportHeader)
+    .map((header, index) => accepted.has(header) ? index : -1)
+    .filter((index) => index >= 0);
+}
+
+function uniqueReportColumn(headers: string[], candidates: string[]): number {
+  const matches = matchingReportColumns(headers, candidates);
+  return matches.length === 1 ? matches[0] : -1;
+}
+
 function reportIntegerCell(
   row: string[],
   index: number,
@@ -14882,14 +15301,31 @@ function parseFbaListingReport(text: string): {
 } {
   const rows = parseTsv(text);
   const headers = rows[0] ?? [];
-  let skuIndex = reportColumn(headers, ["seller-sku", "sku"]);
-  let asinIndex = reportColumn(headers, ["asin1", "asin"]);
-  let titleIndex = reportColumn(headers, ["item-name", "title"]);
-  let fulfillmentIndex = reportColumn(headers, [
+  const skuHeaders = ["seller-sku", "sku"];
+  const asinHeaders = ["asin1", "asin"];
+  const fulfillmentHeaders = [
     "fulfillment-channel",
     "fulfillment-channel-code",
-  ]);
-  const businessPriceIndex = reportColumn(headers, ["business-price"]);
+  ];
+  const businessPriceHeaders = ["business-price"];
+  if (
+    [skuHeaders, asinHeaders, fulfillmentHeaders, businessPriceHeaders].some(
+      (candidates) => matchingReportColumns(headers, candidates).length > 1,
+    )
+  ) {
+    throw new SpApiError(
+      "Amazon 全商品報表含有重複的 SKU、ASIN、履約管道或 Business Price 欄位，已停止讀取。",
+      { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
+    );
+  }
+  let skuIndex = uniqueReportColumn(headers, skuHeaders);
+  let asinIndex = uniqueReportColumn(headers, asinHeaders);
+  let titleIndex = reportColumn(headers, ["item-name", "title"]);
+  let fulfillmentIndex = uniqueReportColumn(headers, fulfillmentHeaders);
+  const businessPriceIndex = uniqueReportColumn(
+    headers,
+    businessPriceHeaders,
+  );
   const fixedLayoutRows = rows.slice(1).filter((row) => row.some(Boolean));
   const fixedFulfillmentValues = fixedLayoutRows
     .map((row) => row[26]?.trim() ?? "")
@@ -14962,6 +15398,86 @@ function parseFbaListingReport(text: string): {
     });
   }
   return { seeds, businessPriceEvidenceBySku };
+}
+
+function parseBusinessPricingActiveListingsReport(
+  text: string,
+  seeds: readonly ListingReportSeed[],
+): Map<string, ListingReportBusinessPriceEvidence> {
+  const evidenceBySku = new Map<string, ListingReportBusinessPriceEvidence>(
+    seeds.map((seed) => [
+      seed.sellerSku,
+      { presence: "unavailable" as const, amount: null },
+    ]),
+  );
+  const seedBySku = new Map(seeds.map((seed) => [seed.sellerSku, seed]));
+  const rows = parseTsv(text);
+  const headers = rows[0] ?? [];
+  const skuIndex = uniqueReportColumn(headers, ["seller-sku", "sku"]);
+  const asinIndex = uniqueReportColumn(headers, ["asin1", "asin"]);
+  const fulfillmentIndex = uniqueReportColumn(headers, [
+    "fulfillment-channel",
+    "fulfillment-channel-code",
+  ]);
+  const businessPriceIndex = uniqueReportColumn(headers, ["business-price"]);
+  if (
+    skuIndex < 0 ||
+    asinIndex < 0 ||
+    fulfillmentIndex < 0 ||
+    businessPriceIndex < 0
+  ) return evidenceBySku;
+  const seenTargetSkus = new Set<string>();
+  for (const row of rows.slice(1)) {
+    const sellerSku = row[skuIndex] ?? "";
+    const seed = seedBySku.get(sellerSku);
+    if (!seed) continue;
+    if (seenTargetSkus.has(sellerSku)) {
+      evidenceBySku.set(sellerSku, { presence: "ambiguous", amount: null });
+      continue;
+    }
+    seenTargetSkus.add(sellerSku);
+    const asin = row[asinIndex] ?? "";
+    const fulfillment = row[fulfillmentIndex] ?? "";
+    if (
+      sellerSku.length > 40 ||
+      sellerSku !== sellerSku.trim() ||
+      !/^[A-Z0-9]{10}$/u.test(asin) ||
+      asin !== seed.asin ||
+      !/^(AMAZON|AFN)(?:_|$)/iu.test(fulfillment)
+    ) {
+      evidenceBySku.set(sellerSku, { presence: "ambiguous", amount: null });
+      continue;
+    }
+    evidenceBySku.set(
+      sellerSku,
+      listingReportBusinessPriceEvidence(row, businessPriceIndex),
+    );
+  }
+  return evidenceBySku;
+}
+
+function reconcileBusinessPriceReportEvidence(
+  primary: ListingReportBusinessPriceEvidence,
+  fallback: ListingReportBusinessPriceEvidence,
+  currencyCode: string,
+): ListingReportBusinessPriceEvidence {
+  if (primary.presence === "unavailable") {
+    return fallback.presence === "present"
+      ? fallback
+      : { presence: "unavailable", amount: null };
+  }
+  if (primary.presence === "ambiguous") {
+    return { presence: "ambiguous", amount: null };
+  }
+  if (primary.presence === "present") {
+    if (fallback.presence !== "present") return primary;
+    return samePrice(primary.amount, fallback.amount, currencyCode)
+      ? primary
+      : { presence: "ambiguous", amount: null };
+  }
+  return fallback.presence === "present"
+    ? { presence: "ambiguous", amount: null }
+    : primary;
 }
 
 export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {

@@ -21,7 +21,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 產品 | 將同一份文案健檢 Excel 以選檔或拖放回傳，逐欄核對完整 Amazon 原值／Excel 更新值後批次更新 | 同檔 round trip 保留原始文案特殊換行；掃描證據可安全跨鎖屏／重啟保留 24 小時；全批零寫入預檢 → 一次 Touch ID／Windows Hello → 每 SKU 單次 PATCH＋回讀；不明即停止且不盲目重送 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於六張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
-| 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records；已發布、未發布、Amazon 警告、資料未完成與權限不可用分開顯示，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；功能只判斷是否有官方 A+ 發布紀錄 |
+| 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；`CONTENT_PUBLISHED` 可補強正向證據，文件存在或 APPROVED 本身不會被猜成已發布；商品 relationships 未完成時不發該 ASIN 的 publish-record request，也不以空結果判未發布，但仍可接受 account-wide 文件關聯的 exact positive 證據；文件或關聯覆蓋未完整時不得判未發布 |
 | 產品 | 全商品標題、五大賣點、成分匯出 Excel | 一鍵 |
 | 產品 | 雙 Family 並排、FBA child 拖拉改掛、CHILD PTD 動態欄位 | 兩階段預檢＋本機身分確認＋回查 |
 | 產品 | 全站未綁變體健檢（Listings relationships 每批最多 20 SKU、缺值／歧義 fail closed、Excel 另含「所有變體」工作表） | Amazon 唯讀；所有變體依 Parent SKU 起列，下面接續已驗證 Child SKU，不用 ASIN 猜 family |
@@ -29,7 +29,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋本機身分確認 |
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋本機身分確認 |
 | 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel；具同次 current-FBA 證據的無效／重複 offer 或月度 SKU 獨立列為未完成，不拖垮其餘正常 SKU；未證明識別值只保留聚合計數 | 自動讀取；來源不完整時只顯示已核對範圍；SG／AU 顯示不支援邊界 |
-| 價格 | 全站 FBA Amazon Business 價格健檢，分開顯示已設定、未設定、B2B 高於一般售價、需到 Amazon 後台編輯與資料未完成；逐 SKU 顯示目前數量折扣證據、US 一般售價減 USD 1 建議價、5／5%、10／10%、15／15%、20／20% 建議階梯與 Seller Central 編輯連結 | FBA 唯讀掃描；只 merge exact `audience=B2B` contribution，價格單改不碰既有數量折扣；明確選用階梯時才將完整 percent plan 一起綁入預檢、本機身分確認、防重送與回讀 |
+| 價格 | 全站 FBA Amazon Business 價格健檢，分開顯示已設定、未設定、B2B 高於一般售價與資料未完成；以 Active Listings 的 Business Price 補足 all-listings 缺欄，逐 SKU 用階梯卡顯示「5 件以上／省 5%」等目前數量折扣，並提供 Seller Central 編輯連結 | 報表全程唯讀；Active Listings 由 account／站點／模式綁定的耐久 lifecycle single-flight 建立與沿用，一般售價／Buy Box ERROR 不會抹除另一個 exact 官方來源已確認的 Business Price；Active 證據不可用且沒有其他 exact positive 時保持 incomplete，身分、欄位或來源衝突則一律 fail closed |
 | 促銷 | Coupon、S&S 管理與 Amazon Ads 集中於「Amazon 官方完成」 | 一鍵開啟、Amazon 內完成 |
 | 報表 | FBA 入庫貨件追蹤（近 30／90／180 天、貨件狀態、逐 SKU 預期／送出、Amazon 已接收、尚未接收／超收、每日貨件／箱件／商品瑕疵與中文 Excel）；入口只放在頂端「報表」，不佔首頁或「營運」工具列 | Fulfillment Inbound GET＋耐久化每日問題報表；部分資料不補 0 |
 | 營運 | Amazon Ads Profile 自動發現、Sponsored Products 活動唯讀查詢與全站 FBA 廣告覆蓋健檢；任何 Listing 身分缺口都整次停止 | 獨立 Ads LWA＋唯讀；無 Ads 寫入 route |
@@ -40,7 +40,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 健檢 | FBA 180 天以上庫齡／預估冗餘與評論主題依此順序收在首頁預設折疊的「低頻健檢」，各自獨立執行 | 不納入一鍵全部，避免低頻或長時間工作阻塞常用健檢 |
 | 系統 | 作業系統安全儲存密文、防重送帳本、預檢票證、自我檢查、字級、API 版本更新建議、公開會計 API 能力與安全下載規劃 | 自動／能力邊界 |
 
-能力邊界：目前 Amazon SP-API 寫入流程涵蓋 Listing 一般價格、Sale Price、文案、圖片、符合 seller-specific PTD 的 B2B 價格／percent 數量折扣，以及既有 FBA child 的 variation 關係。B2B 只允許更新 exact `audience=B2B` contribution；一般消費者 `ALL` offer與其他 audience 必須原樣保留。只調價格時既有數量折扣也保持原樣；只有使用者在預檢內容中明確選用階梯，且 seller-specific PTD 同時證明可寫時，才會一起更新該 B2B plan。變體改掛不是原子操作，固定拆成「解除舊 parent」與「加入新 parent」兩階段；所有寫入都維持重新讀取、Amazon Validation Preview、本機身分確認、持久化防重送、單次 PATCH 與唯讀回查，任何不確定狀態都禁止直接重送。S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。
+能力邊界：目前 Amazon SP-API 寫入流程涵蓋 Listing 一般價格、Sale Price、文案、圖片、符合 seller-specific PTD 的單 SKU B2B 價格／percent 數量折扣，以及既有 FBA child 的 variation 關係；全站 B2B 健檢本身固定唯讀。B2B 寫入只允許更新 exact `audience=B2B` contribution；一般消費者 `ALL` offer與其他 audience 必須原樣保留。只調價格時既有數量折扣也保持原樣；只有使用者在預檢內容中明確選用階梯，且 seller-specific PTD 同時證明可寫時，才會一起更新該 B2B plan。變體改掛不是原子操作，固定拆成「解除舊 parent」與「加入新 parent」兩階段；所有寫入都維持重新讀取、Amazon Validation Preview、本機身分確認、持久化防重送、單次 PATCH 與唯讀回查，任何不確定狀態都禁止直接重送。S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。
 
 Amazon 公開 API 目前不提供現有 FBA FC 庫存的逐 SKU／批次效期，因此 App 不會拿庫齡冒充近效期或已過期清單。一般 US／CA／JP／SG／AU／UK／DE 發票與 Seller Central 帳單也沒有通用公開下載 API；會計中心只啟用可證明為 FBA 的公開報表，Finances JSON、結算報表、人工前置與不可用能力會分開標示，不使用 Seller Central 私有接口。
 

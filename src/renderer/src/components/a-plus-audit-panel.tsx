@@ -7,6 +7,8 @@ import {
   parseAplusAuditJobTerminal,
   parseAplusAuditSnapshot,
   type AplusAuditFilter,
+  type AplusAuditDocument,
+  type AplusAuditDocumentEvidenceCompleteness,
   type AplusAuditJobReceipt,
   type AplusAuditJobTerminal,
   type AplusAuditRow,
@@ -265,6 +267,83 @@ function rowStatusLabel(row: AplusAuditRow): string {
   return statusLabel(row.status);
 }
 
+function documentStatusLabel(
+  status: AplusAuditDocument["documentStatus"],
+): string {
+  if (status === "APPROVED") return "已核准";
+  if (status === "DRAFT") return "草稿";
+  if (status === "REJECTED") return "已拒絕";
+  if (status === "SUBMITTED") return "已送審";
+  return "狀態未取得";
+}
+
+function documentRelationLabel(
+  state: AplusAuditDocument["relationState"],
+): string {
+  if (state === "published") return "已發布";
+  if (state === "not_published") return "未發布";
+  return "已關聯";
+}
+
+function documentEvidenceCompletenessLabel(
+  completeness: AplusAuditDocumentEvidenceCompleteness,
+): string {
+  if (completeness === "complete") return "完整";
+  if (completeness === "partial") return "部分取得";
+  return "未取得";
+}
+
+function AplusDocumentEvidence({ row }: Readonly<{ row: AplusAuditRow }>) {
+  return (
+    <div className="aplus-document-evidence">
+      <header>
+        <span>A+ 文件名稱</span>
+        <small>
+          文件證據：{documentEvidenceCompletenessLabel(
+            row.documentEvidenceCompleteness,
+          )}
+        </small>
+      </header>
+      <div className="aplus-document-list" role="list">
+        {row.documents.length > 0 ? row.documents.map((document, index) => (
+          <article
+            className="aplus-document-card"
+            role="listitem"
+            key={`${document.name ?? "unnamed"}-${index}`}
+          >
+            <strong>{document.name ?? "文件名稱未取得"}</strong>
+            <dl>
+              <div>
+                <dt>文件狀態</dt>
+                <dd>{documentStatusLabel(document.documentStatus)}</dd>
+              </div>
+              <div>
+                <dt>關聯狀態</dt>
+                <dd>{documentRelationLabel(document.relationState)}</dd>
+              </div>
+            </dl>
+            {document.badges.length > 0 && (
+              <div className="aplus-document-badges" aria-label="A+ 文件標記">
+                {document.badges.map((badge) => <span key={badge}>{badge}</span>)}
+              </div>
+            )}
+          </article>
+        )) : (
+          <article className="aplus-document-card is-empty" role="listitem">
+            <strong>
+              {row.documentEvidenceCompleteness === "complete"
+                ? "未找到與此 ASIN 關聯的 A+ 文件"
+                : row.documentEvidenceCompleteness === "partial"
+                  ? "A+ 文件關聯尚未完整取得"
+                  : "A+ 文件清單目前未取得"}
+            </strong>
+          </article>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function rowCount(
   snapshot: AplusAuditSnapshot,
   filter: AplusAuditFilter,
@@ -401,7 +480,7 @@ export default function AplusAuditPanel({
         <div>
           <span>{marketplaceShort} · A+ CONTENT · FBA ONLY</span>
           <h3>全站 FBA A+ 健檢</h3>
-          <p>逐一核對目前 FBA ASIN 是否有官方 A+ 發布紀錄；同 ASIN 多個 Seller SKU 只查一次。</p>
+          <p>核對官方 A+ 發布紀錄、文件名稱與文件–ASIN 關聯；同 ASIN 多個 Seller SKU 只查一次。</p>
         </div>
         <button
           type="button"
@@ -415,8 +494,8 @@ export default function AplusAuditPanel({
       {(loading || observingBackgroundJob) && (
         <div className="business-pricing-progress" role="status">
           {job && !job.ready && job.progress.totalAsins > 0
-            ? `正在讀取 A+ publish records（${job.progress.completedAsins}／${job.progress.totalAsins} ASIN）；這是唯讀健檢，不會修改 Amazon 商品頁。`
-            : "正在讀取 A+ publish records；這是唯讀健檢，不會修改 Amazon 商品頁。"}
+            ? `正在核對 A+ publish records、文件與 ASIN 關聯（${job.progress.completedAsins}／${job.progress.totalAsins} ASIN）；這是唯讀健檢，不會修改 Amazon 商品頁。`
+            : "正在核對 A+ publish records、文件與 ASIN 關聯；這是唯讀健檢，不會修改 Amazon 商品頁。"}
         </div>
       )}
       {(error || terminalJobError) && (
@@ -463,6 +542,7 @@ export default function AplusAuditPanel({
                   <strong>{row.title || row.sellerSku}</strong>
                   <small>{row.sellerSku} · {row.asin ?? "無可驗證 ASIN"}</small>
                 </div>
+                <AplusDocumentEvidence row={row} />
                 <div className="business-pricing-row-status">
                   <span>{rowStatusLabel(row)}</span>
                   <small>{row.reason}</small>

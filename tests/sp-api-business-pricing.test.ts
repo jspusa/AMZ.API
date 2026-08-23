@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getBusinessPricingAuditData,
+  getBusinessPricingActiveListingsReportStatus,
   getBusinessPricing,
   invalidateSpApiCredentialCaches,
+  parseFbaListingReportSeeds,
   previewBusinessPriceUpdate,
   updateBusinessPrice,
 } from "../src/main/amazon/sp-api";
@@ -2254,9 +2256,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       incomplete: snapshot.rows.filter((row) => row.status === "incomplete").length,
     });
     expect(snapshot.rows.every((row) =>
-      row.reason.length > 0 &&
-      (row.status === "configured" || row.status === "above_standard" ||
-        row.status === "missing") === row.editable
+      row.reason.length > 0 && row.editable === false
     )).toBe(true);
   });
 
@@ -2293,7 +2293,7 @@ describe("Amazon Business pricing SP-API contract", () => {
 
     expect(row).toMatchObject({
       status: "above_standard",
-      editable: true,
+      editable: false,
       reason: expect.stringMatching(/高於一般售價/u),
     });
     expect(audited.summary.aboveStandard).toBe(1);
@@ -2359,7 +2359,11 @@ describe("Amazon Business pricing SP-API contract", () => {
           value: tier.percent,
         })),
       },
+      editable: false,
     });
+    expect(audited.rows.every((row) => row.editable === false)).toBe(true);
+    expect(audited.rows.map((row) => row.reason).join("\n"))
+      .not.toMatch(/模擬建立/u);
 
     await updateBusinessPrice({
       marketplaceId: MARKETPLACE_ID,
@@ -2389,9 +2393,581 @@ describe("Amazon Business pricing SP-API contract", () => {
     })).rejects.toMatchObject({ code: "BUSINESS_PRICE_UNCHANGED" });
   });
 
-  it("uses ACTL05's exact report Business Price as read-only evidence when Listings omits B2B", async () => {
+  it("preserves Active Listings Business Price when standard pricing is unavailable", async () => {
+    const reportId = "B2B-ALL-DATA-NO-BUSINESS-PRICE";
+    const documentId = "B2B-ALL-DATA-NO-BUSINESS-PRICE-DOCUMENT";
+    const reportUrl =
+      "https://reports.example.cloudfront.net/b2b-all-data-no-business-price.tsv";
+    const activeReportId = "B2B-ACTIVE-LISTINGS-BUSINESS-PRICE";
+    const activeDocumentId =
+      "B2B-ACTIVE-LISTINGS-BUSINESS-PRICE-DOCUMENT";
+    const activeReportUrl =
+      "https://reports.example.cloudfront.net/b2b-active-listings-business-price.tsv";
+    const allDataReport = [
+      "seller-sku\tasin\titem-name\tfulfillment-channel\tbusiness-price",
+      "AFA135AM\tB000000031\tAFA135AM listing\tAMAZON_NA\t",
+      "TRPL03\tB000000032\tTRPL03 listing\tAMAZON_NA\t18.45",
+      "DUPLICATE-ACTIVE\tB000000033\tDuplicate Active listing\tAMAZON_NA\t",
+      "MISMATCHED-ACTIVE\tB000000034\tMismatched Active listing\tAMAZON_NA\t",
+      "NO-PURCHASABLE-OFFER\tB000000035\tNo offer attribute listing\tAMAZON_NA\t",
+      "MALFORMED-OFFER\tB000000036\tMalformed offer listing\tAMAZON_NA\t",
+      "LISTINGS-IDENTITY-CONFLICT\tB000000037\tListings conflict\tAMAZON_NA\t",
+      "LISTINGS-FBA-CONFLICT\tB000000038\tListings FBA conflict\tAMAZON_NA\t",
+      "MALFORMED-ACTIVE-PRICE\tB000000039\tMalformed Active price\tAMAZON_NA\t",
+    ].join("\n");
+    const activeListingsReport = [
+      "seller-sku\tasin1\titem-name\tfulfillment-channel\tbusiness-price",
+      "AFA135AM\tB000000031\tAFA135AM listing\tAMAZON_NA\t17.45",
+      "TRPL03\tB000000032\tTRPL03 listing\tAMAZON_NA\t17.45",
+      "DUPLICATE-ACTIVE\tB000000033\tDuplicate Active listing\tAMAZON_NA\t17.45",
+      "DUPLICATE-ACTIVE\tB000000033\tDuplicate Active listing again\tAMAZON_NA\t17.45",
+      "MISMATCHED-ACTIVE\tB000000099\tWrong ASIN\tAMAZON_NA\t17.45",
+      "NO-PURCHASABLE-OFFER\tB000000035\tNo offer attribute listing\tAMAZON_NA\t17.45",
+      "MALFORMED-OFFER\tB000000036\tMalformed offer listing\tAMAZON_NA\t17.45",
+      "LISTINGS-IDENTITY-CONFLICT\tB000000037\tListings conflict\tAMAZON_NA\t17.45",
+      "LISTINGS-FBA-CONFLICT\tB000000038\tListings FBA conflict\tAMAZON_NA\t17.45",
+      "MALFORMED-ACTIVE-PRICE\tB000000039\tMalformed Active price\tAMAZON_NA\tUSD 17.45",
+    ].join("\n");
+    let activeReportPostCount = 0;
+    let productTypeDefinitionRequestCount = 0;
+
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = urlOf(input);
+      const method = init?.method ??
+        (input instanceof Request ? input.method : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (
+        method === "POST" &&
+        url.pathname === "/reports/2021-06-30/reports"
+      ) {
+        activeReportPostCount += 1;
+        throw new Error("Audit data GET must not create Active Listings reports");
+      }
+      if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+        return jsonResponse(200, {
+          reportId,
+          reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          processingStatus: "DONE",
+          reportDocumentId: documentId,
+        });
+      }
+      if (url.pathname === `/reports/2021-06-30/documents/${documentId}`) {
+        return jsonResponse(200, { url: reportUrl });
+      }
+      if (url.href === reportUrl) return new Response(allDataReport);
+      if (url.pathname === `/reports/2021-06-30/reports/${activeReportId}`) {
+        return jsonResponse(200, {
+          reportId: activeReportId,
+          reportType: "GET_MERCHANT_LISTINGS_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          processingStatus: "DONE",
+          reportDocumentId: activeDocumentId,
+        });
+      }
+      if (
+        url.pathname ===
+          `/reports/2021-06-30/documents/${activeDocumentId}`
+      ) {
+        return jsonResponse(200, { url: activeReportUrl });
+      }
+      if (url.href === activeReportUrl) {
+        return new Response(activeListingsReport);
+      }
+      if (url.pathname === `/listings/2021-08-01/items/${SELLER_ID}`) {
+        const listing = (
+          sku: string,
+          asin: string,
+          attributes: unknown = { purchasable_offer: [] },
+          fulfillmentChannelCode = "AMAZON_NA",
+        ) => ({
+          sku,
+          summaries: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin,
+            productType: "PET_FOOD",
+            itemName: `${sku} listing`,
+          }],
+          productTypes: [{
+            marketplaceId: MARKETPLACE_ID,
+            productType: "PET_FOOD",
+          }],
+          ...(attributes === null ? {} : { attributes }),
+          offers: [],
+          issues: [{
+            code: "90220",
+            severity: "ERROR",
+            message: "Amazon cannot determine the current listing price.",
+            categories: ["INVALID_PRICE"],
+            marketplaceIds: [MARKETPLACE_ID],
+          }],
+          fulfillmentAvailability: [{
+            fulfillmentChannelCode,
+            quantity: 3,
+          }],
+        });
+        const canonicalB2bAttributes = {
+          purchasable_offer: [{
+            audience: "B2B",
+            marketplace_id: MARKETPLACE_ID,
+            currency: "USD",
+            our_price: [{ schedule: [{ value_with_tax: 17.45 }] }],
+          }],
+        };
+        return jsonResponse(200, {
+          numberOfResults: 9,
+          items: [
+            listing("AFA135AM", "B000000031", null),
+            listing("TRPL03", "B000000032"),
+            listing(
+              "DUPLICATE-ACTIVE",
+              "B000000033",
+              canonicalB2bAttributes,
+            ),
+            listing("MISMATCHED-ACTIVE", "B000000034"),
+            listing("NO-PURCHASABLE-OFFER", "B000000035", {}),
+            listing("MALFORMED-OFFER", "B000000036", {
+              purchasable_offer: "malformed",
+            }),
+            listing("LISTINGS-IDENTITY-CONFLICT", "B000000099"),
+            listing(
+              "LISTINGS-FBA-CONFLICT",
+              "B000000038",
+              { purchasable_offer: [] },
+              "DEFAULT",
+            ),
+            listing(
+              "MALFORMED-ACTIVE-PRICE",
+              "B000000039",
+              canonicalB2bAttributes,
+            ),
+          ],
+        });
+      }
+      if (url.pathname.endsWith("/productTypes/PET_FOOD")) {
+        productTypeDefinitionRequestCount += 1;
+        return jsonResponse(403, {
+          errors: [{
+            code: "Unauthorized",
+            message: "Seller-specific PTD is unavailable.",
+          }],
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${url.href}`);
+    }));
+
+    const snapshot = await getBusinessPricingAuditData({
+      marketplaceId: MARKETPLACE_ID,
+      reportId,
+      documentId,
+      activeListingsReport: {
+        reportId: activeReportId,
+        documentId: activeDocumentId,
+      },
+    });
+
+    expect(activeReportPostCount).toBe(0);
+    expect(productTypeDefinitionRequestCount).toBe(0);
+    expect(snapshot.rows).toHaveLength(9);
+    for (const sellerSku of ["AFA135AM", "NO-PURCHASABLE-OFFER"]) {
+      expect(snapshot.rows.find((row) => row.sellerSku === sellerSku))
+        .toMatchObject({
+          sellerSku,
+          standardPrice: null,
+          businessPrice: { amount: 17.45, currencyCode: "USD" },
+          businessOfferPresence: "present",
+          quantityDiscountPlan: null,
+          quantityDiscountPlanPresence: "ambiguous",
+          status: "configured",
+          editable: false,
+        });
+    }
+    for (const sellerSku of [
+      "TRPL03",
+      "DUPLICATE-ACTIVE",
+      "MISMATCHED-ACTIVE",
+      "MALFORMED-OFFER",
+      "LISTINGS-IDENTITY-CONFLICT",
+      "LISTINGS-FBA-CONFLICT",
+      "MALFORMED-ACTIVE-PRICE",
+    ]) {
+      expect(snapshot.rows.find((row) => row.sellerSku === sellerSku))
+        .toMatchObject({
+          sellerSku,
+          standardPrice: null,
+          businessPrice: null,
+          businessOfferPresence: "ambiguous",
+          quantityDiscountPlan: null,
+          quantityDiscountPlanPresence: "ambiguous",
+          status: "incomplete",
+          editable: false,
+        });
+    }
+    expect(snapshot.summary).toMatchObject({
+      totalFbaSkuCount: 9,
+      configured: 2,
+      aboveStandard: 0,
+      missing: 0,
+      incomplete: 7,
+    });
+  });
+
+  it.each(["http-503", "missing-row"] as const)(
+    "keeps exact Active Business Price when Listings is unavailable: %s",
+    async (failure) => {
+      const suffix = failure.toUpperCase();
+      const reportId = `B2B-ALL-DATA-${suffix}`;
+      const documentId = `B2B-ALL-DATA-DOCUMENT-${suffix}`;
+      const reportUrl =
+        `https://reports.example.cloudfront.net/b2b-all-data-${failure}.tsv`;
+      const activeReportId = `B2B-ACTIVE-${suffix}`;
+      const activeDocumentId = `B2B-ACTIVE-DOCUMENT-${suffix}`;
+      const activeReportUrl =
+        `https://reports.example.cloudfront.net/b2b-active-${failure}.tsv`;
+      const sellerSku = `ACTIVE-${suffix}`;
+      const asin = failure === "http-503" ? "B000000041" : "B000000042";
+      const allDataReport = [
+        "seller-sku\tasin\titem-name\tfulfillment-channel\tbusiness-price",
+        `${sellerSku}\t${asin}\tReport title\tAMAZON_NA\t`,
+      ].join("\n");
+      const activeReport = [
+        "seller-sku\tasin1\titem-name\tfulfillment-channel\tbusiness-price",
+        `${sellerSku}\t${asin}\tActive title\tAMAZON_NA\t17.45`,
+      ].join("\n");
+
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+        const url = urlOf(input);
+        if (url.origin === "https://api.amazon.com") {
+          return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+        }
+        if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+          return jsonResponse(200, {
+            reportId,
+            reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+            marketplaceIds: [MARKETPLACE_ID],
+            processingStatus: "DONE",
+            reportDocumentId: documentId,
+          });
+        }
+        if (url.pathname === `/reports/2021-06-30/documents/${documentId}`) {
+          return jsonResponse(200, { url: reportUrl });
+        }
+        if (url.href === reportUrl) return new Response(allDataReport);
+        if (url.pathname === `/reports/2021-06-30/reports/${activeReportId}`) {
+          return jsonResponse(200, {
+            reportId: activeReportId,
+            reportType: "GET_MERCHANT_LISTINGS_DATA",
+            marketplaceIds: [MARKETPLACE_ID],
+            processingStatus: "DONE",
+            reportDocumentId: activeDocumentId,
+          });
+        }
+        if (
+          url.pathname ===
+            `/reports/2021-06-30/documents/${activeDocumentId}`
+        ) {
+          return jsonResponse(200, { url: activeReportUrl });
+        }
+        if (url.href === activeReportUrl) return new Response(activeReport);
+        if (url.pathname === `/listings/2021-08-01/items/${SELLER_ID}`) {
+          return failure === "http-503"
+            ? jsonResponse(503, {
+                errors: [{ code: "ServiceUnavailable", message: "Try later" }],
+              })
+            : jsonResponse(200, { numberOfResults: 0, items: [] });
+        }
+        throw new Error(`Unexpected request: ${url.href}`);
+      }));
+
+      const snapshot = await getBusinessPricingAuditData({
+        marketplaceId: MARKETPLACE_ID,
+        reportId,
+        documentId,
+        activeListingsReport: {
+          reportId: activeReportId,
+          documentId: activeDocumentId,
+        },
+      });
+
+      expect(snapshot.rows).toEqual([expect.objectContaining({
+        sellerSku,
+        asin,
+        title: "",
+        productType: "",
+        standardPrice: null,
+        businessPrice: { amount: 17.45, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "ambiguous",
+        status: "configured",
+        editable: false,
+        reason: expect.stringMatching(/Active Listings.*Listings.*未知/u),
+      })]);
+      expect(snapshot.summary).toMatchObject({
+        totalFbaSkuCount: 1,
+        configured: 1,
+        missing: 0,
+        incomplete: 0,
+      });
+    },
+  );
+
+  it.each(["http-503", "missing-row"] as const)(
+    "keeps exact all-listings Business Price when Active and Listings are unavailable: %s",
+    async (failure) => {
+      const suffix = failure.toUpperCase();
+      const reportId = `B2B-ALL-FALLBACK-${suffix}`;
+      const documentId = `B2B-ALL-FALLBACK-DOCUMENT-${suffix}`;
+      const reportUrl =
+        `https://reports.example.cloudfront.net/b2b-all-fallback-${failure}.tsv`;
+      const sellerSku = `ALL-FALLBACK-${suffix}`;
+      const asin = failure === "http-503" ? "B000000047" : "B000000048";
+      const allDataReport = [
+        "seller-sku\tasin\titem-name\tfulfillment-channel\tbusiness-price",
+        `${sellerSku}\t${asin}\tReport title\tAMAZON_NA\t17.45`,
+      ].join("\n");
+
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+        const url = urlOf(input);
+        if (url.origin === "https://api.amazon.com") {
+          return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+        }
+        if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+          return jsonResponse(200, {
+            reportId,
+            reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+            marketplaceIds: [MARKETPLACE_ID],
+            processingStatus: "DONE",
+            reportDocumentId: documentId,
+          });
+        }
+        if (url.pathname === `/reports/2021-06-30/documents/${documentId}`) {
+          return jsonResponse(200, { url: reportUrl });
+        }
+        if (url.href === reportUrl) return new Response(allDataReport);
+        if (url.pathname === `/listings/2021-08-01/items/${SELLER_ID}`) {
+          return failure === "http-503"
+            ? jsonResponse(503, {
+                errors: [{ code: "ServiceUnavailable", message: "Try later" }],
+              })
+            : jsonResponse(200, { numberOfResults: 0, items: [] });
+        }
+        throw new Error(`Unexpected request: ${url.href}`);
+      }));
+
+      const snapshot = await getBusinessPricingAuditData({
+        marketplaceId: MARKETPLACE_ID,
+        reportId,
+        documentId,
+        activeListingsReport: null,
+      });
+
+      expect(snapshot.rows).toEqual([expect.objectContaining({
+        sellerSku,
+        asin,
+        title: "",
+        productType: "",
+        standardPrice: null,
+        businessPrice: { amount: 17.45, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "ambiguous",
+        status: "configured",
+        editable: false,
+        reason: expect.stringMatching(/全商品報表.*Listings.*未知/u),
+      })]);
+      expect(snapshot.summary).toMatchObject({
+        totalFbaSkuCount: 1,
+        configured: 1,
+        missing: 0,
+        incomplete: 0,
+      });
+    },
+  );
+
+  it.each(["business-price", "seller-sku"] as const)(
+    "rejects duplicate normalized Active critical header: %s",
+    async (duplicateHeader) => {
+      const suffix = duplicateHeader.toUpperCase();
+      const reportId = `B2B-DUPLICATE-HEADER-ALL-${suffix}`;
+      const documentId = `B2B-DUPLICATE-HEADER-ALL-DOCUMENT-${suffix}`;
+      const reportUrl =
+        `https://reports.example.cloudfront.net/b2b-duplicate-${duplicateHeader}-all.tsv`;
+      const activeReportId = `B2B-DUPLICATE-HEADER-ACTIVE-${suffix}`;
+      const activeDocumentId =
+        `B2B-DUPLICATE-HEADER-ACTIVE-DOCUMENT-${suffix}`;
+      const activeReportUrl =
+        `https://reports.example.cloudfront.net/b2b-duplicate-${duplicateHeader}-active.tsv`;
+      const sellerSku = `DUP-${suffix}`;
+      const asin = duplicateHeader === "business-price"
+        ? "B000000043"
+        : "B000000044";
+      const allDataReport = [
+        "seller-sku\tasin\titem-name\tfulfillment-channel\tbusiness-price",
+        `${sellerSku}\t${asin}\tDuplicate header listing\tAMAZON_NA\t`,
+      ].join("\n");
+      const activeReport = duplicateHeader === "business-price"
+        ? [
+            "seller-sku\tasin1\tfulfillment-channel\tbusiness-price\tBusiness Price",
+            `${sellerSku}\t${asin}\tAMAZON_NA\t17.45\t17.45`,
+          ].join("\n")
+        : [
+            "seller-sku\tSKU\tasin1\tfulfillment-channel\tbusiness-price",
+            `${sellerSku}\t${sellerSku}\t${asin}\tAMAZON_NA\t17.45`,
+          ].join("\n");
+
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+        const url = urlOf(input);
+        if (url.origin === "https://api.amazon.com") {
+          return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+        }
+        if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+          return jsonResponse(200, {
+            reportId,
+            reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+            marketplaceIds: [MARKETPLACE_ID],
+            processingStatus: "DONE",
+            reportDocumentId: documentId,
+          });
+        }
+        if (url.pathname === `/reports/2021-06-30/documents/${documentId}`) {
+          return jsonResponse(200, { url: reportUrl });
+        }
+        if (url.href === reportUrl) return new Response(allDataReport);
+        if (url.pathname === `/reports/2021-06-30/reports/${activeReportId}`) {
+          return jsonResponse(200, {
+            reportId: activeReportId,
+            reportType: "GET_MERCHANT_LISTINGS_DATA",
+            marketplaceIds: [MARKETPLACE_ID],
+            processingStatus: "DONE",
+            reportDocumentId: activeDocumentId,
+          });
+        }
+        if (
+          url.pathname ===
+            `/reports/2021-06-30/documents/${activeDocumentId}`
+        ) {
+          return jsonResponse(200, { url: activeReportUrl });
+        }
+        if (url.href === activeReportUrl) return new Response(activeReport);
+        if (url.pathname === `/listings/2021-08-01/items/${SELLER_ID}`) {
+          return jsonResponse(200, {
+            numberOfResults: 1,
+            items: [{
+              sku: sellerSku,
+              summaries: [{
+                marketplaceId: MARKETPLACE_ID,
+                asin,
+                productType: "PET_FOOD",
+                itemName: "Duplicate header listing",
+              }],
+              productTypes: [{
+                marketplaceId: MARKETPLACE_ID,
+                productType: "PET_FOOD",
+              }],
+              attributes: { purchasable_offer: [] },
+              offers: [],
+              issues: [],
+              fulfillmentAvailability: [{
+                fulfillmentChannelCode: "AMAZON_NA",
+                quantity: 3,
+              }],
+            }],
+          });
+        }
+        throw new Error(`Unexpected request: ${url.href}`);
+      }));
+
+      const snapshot = await getBusinessPricingAuditData({
+        marketplaceId: MARKETPLACE_ID,
+        reportId,
+        documentId,
+        activeListingsReport: {
+          reportId: activeReportId,
+          documentId: activeDocumentId,
+        },
+      });
+
+      expect(snapshot.rows).toEqual([expect.objectContaining({
+        sellerSku,
+        businessPrice: null,
+        businessOfferPresence: "ambiguous",
+        status: "incomplete",
+        editable: false,
+        reason: expect.stringMatching(/Active Listings.*無法取得/u),
+      })]);
+      expect(snapshot.summary).toMatchObject({
+        totalFbaSkuCount: 1,
+        configured: 0,
+        missing: 0,
+        incomplete: 1,
+      });
+    },
+  );
+
+  it.each([
+    {
+      logicalHeader: "business-price",
+      report: [
+        "seller-sku\tasin\tfulfillment-channel\tbusiness-price\tBusiness Price",
+        "ALL-DUP-BP\tB000000045\tAMAZON_NA\t17.45\t17.45",
+      ].join("\n"),
+    },
+    {
+      logicalHeader: "seller-sku",
+      report: [
+        "seller-sku\tSKU\tasin\tfulfillment-channel\tbusiness-price",
+        "ALL-DUP-SKU\tALL-DUP-SKU\tB000000046\tAMAZON_NA\t17.45",
+      ].join("\n"),
+    },
+  ])(
+    "fails the all-listings scope closed on duplicate normalized $logicalHeader header",
+    ({ report }) => {
+      let thrown: unknown = null;
+      try {
+        parseFbaListingReportSeeds(report);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toMatchObject({
+        code: "REPORT_FORMAT_UNSUPPORTED",
+        status: 502,
+      });
+    },
+  );
+
+  it("rejects Active Listings status evidence from a different report identity", async () => {
+    const reportId = "B2B-ACTIVE-IDENTITY-MISMATCH";
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+        return jsonResponse(200, {
+          reportId,
+          reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          processingStatus: "DONE",
+          reportDocumentId: "WRONG-ACTIVE-DOCUMENT",
+        });
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    await expect(getBusinessPricingActiveListingsReportStatus({
+      marketplaceId: MARKETPLACE_ID,
+      reportId,
+    })).rejects.toMatchObject({ code: "REPORT_MISMATCH" });
+  });
+
+  it("keeps positive all-listings evidence when Active status is temporarily unavailable", async () => {
     const reportId = "B2B-REPORT-EVIDENCE-AUDIT";
     const documentId = "B2B-REPORT-EVIDENCE-DOCUMENT";
+    const activeReportId = "B2B-ACTIVE-STATUS-UNAVAILABLE";
+    const activeDocumentId = "B2B-ACTIVE-DOCUMENT-UNAVAILABLE";
     const reportUrl =
       "https://reports.example.cloudfront.net/b2b-report-evidence.tsv";
     const report = [
@@ -2460,6 +3036,11 @@ describe("Amazon Business pricing SP-API contract", () => {
         return jsonResponse(200, { url: reportUrl });
       }
       if (url.href === reportUrl) return new Response(report);
+      if (url.pathname === `/reports/2021-06-30/reports/${activeReportId}`) {
+        return jsonResponse(503, {
+          errors: [{ code: "ServiceUnavailable", message: "Try later" }],
+        });
+      }
       if (url.href === SCHEMA_URL) {
         return jsonResponse(200, businessSchema());
       }
@@ -2494,6 +3075,10 @@ describe("Amazon Business pricing SP-API contract", () => {
       marketplaceId: MARKETPLACE_ID,
       reportId,
       documentId,
+      activeListingsReport: {
+        reportId: activeReportId,
+        documentId: activeDocumentId,
+      },
     });
 
     expect(snapshot.rows.find((row) => row.sellerSku === "ACTL05"))
@@ -2504,7 +3089,7 @@ describe("Amazon Business pricing SP-API contract", () => {
         quantityDiscountPlanPresence: "ambiguous",
         status: "configured",
         editable: false,
-        reason: expect.stringMatching(/全商品報表.*Listings.*唯讀/u),
+        reason: expect.stringMatching(/報表.*Amazon 後台/u),
       });
     expect(snapshot.rows.find((row) => row.sellerSku === "MATCH"))
       .toMatchObject({
@@ -2512,7 +3097,7 @@ describe("Amazon Business pricing SP-API contract", () => {
         businessOfferPresence: "present",
         quantityDiscountPlanPresence: "absent",
         status: "configured",
-        editable: true,
+        editable: false,
       });
     expect(snapshot.rows.find((row) => row.sellerSku === "CONFLICT"))
       .toMatchObject({
@@ -2525,9 +3110,10 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(snapshot.rows.find((row) => row.sellerSku === "BLANK"))
       .toMatchObject({
         businessPrice: null,
-        businessOfferPresence: "absent",
-        status: "missing",
-        editable: true,
+        businessOfferPresence: "ambiguous",
+        status: "incomplete",
+        editable: false,
+        reason: expect.stringMatching(/Active Listings.*不能判定為未設定/u),
       });
     expect(snapshot.rows.find((row) => row.sellerSku === "CANONICAL-WINS"))
       .toMatchObject({
@@ -2535,15 +3121,15 @@ describe("Amazon Business pricing SP-API contract", () => {
         businessOfferPresence: "present",
         quantityDiscountPlanPresence: "absent",
         status: "configured",
-        editable: true,
+        editable: false,
       });
     expect(snapshot.summary).toEqual({
       totalFbaSkuCount: 5,
       configured: 3,
       aboveStandard: 0,
-      missing: 1,
+      missing: 0,
       unsupported: 0,
-      incomplete: 1,
+      incomplete: 2,
     });
   });
 
@@ -2551,6 +3137,10 @@ describe("Amazon Business pricing SP-API contract", () => {
     const reportId = "B2B-AUDIT-REPORT";
     const documentId = "B2B-AUDIT-DOCUMENT";
     const reportUrl = "https://reports.example.cloudfront.net/b2b-audit.tsv";
+    const activeReportId = "B2B-AUDIT-ACTIVE-REPORT";
+    const activeDocumentId = "B2B-AUDIT-ACTIVE-DOCUMENT";
+    const activeReportUrl =
+      "https://reports.example.cloudfront.net/b2b-audit-active.tsv";
     const report = [
       "seller-sku\tasin\titem-name\tfulfillment-channel",
       "CONFIGURED\tB000000001\tConfigured item\tAMAZON_NA",
@@ -2566,6 +3156,21 @@ describe("Amazon Business pricing SP-API contract", () => {
       "MALFORMED-FULFILLMENT\tB000000013\tMalformed fulfillment item\tAMAZON_NA",
       "OTHER-MARKET-PRICE\tB000000009\tOther marketplace issue item\tAMAZON_NA",
       "FBM-IGNORED\tB000000005\tFBM item\tDEFAULT",
+    ].join("\n");
+    const activeReport = [
+      "seller-sku\tasin1\titem-name\tfulfillment-channel\tbusiness-price",
+      "CONFIGURED\tB000000001\tConfigured item\tAMAZON_NA\t",
+      "MISSING\tB000000002\tMissing item\tAMAZON_NA\t",
+      "UNSUPPORTED\tB000000003\tUnsupported item\tAMAZON_NA\t",
+      "CONFIGURED-UNSUPPORTED\tB000000010\tConfigured read-only item\tAMAZON_NA\t",
+      "INCOMPLETE\tB000000004\tIncomplete item\tAMAZON_NA\t",
+      "AMBIGUOUS-UNSUPPORTED\tB000000006\tAmbiguous unsupported item\tAMAZON_NA\t",
+      "INVALID-IMAGE\tB000000007\tImage issue item\tAMAZON_NA\t",
+      "INVALID-PRICE\tB000000008\tPrice issue item\tAMAZON_NA\t",
+      "MALFORMED-ISSUE\tB000000011\tMalformed issue item\tAMAZON_NA\t",
+      "MALFORMED-SCOPE\tB000000012\tMalformed scope item\tAMAZON_NA\t",
+      "MALFORMED-FULFILLMENT\tB000000013\tMalformed fulfillment item\tAMAZON_NA\t",
+      "OTHER-MARKET-PRICE\tB000000009\tOther marketplace issue item\tAMAZON_NA\t",
     ].join("\n");
     const supportedSchemaUrl =
       "https://selling-partner-definitions-prod-na.s3.amazonaws.com/pet-food-b2b.json";
@@ -2595,6 +3200,22 @@ describe("Amazon Business pricing SP-API contract", () => {
         return jsonResponse(200, { url: reportUrl });
       }
       if (url.href === reportUrl) return new Response(report);
+      if (url.pathname === `/reports/2021-06-30/reports/${activeReportId}`) {
+        return jsonResponse(200, {
+          reportId: activeReportId,
+          reportType: "GET_MERCHANT_LISTINGS_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          processingStatus: "DONE",
+          reportDocumentId: activeDocumentId,
+        });
+      }
+      if (
+        url.pathname ===
+          `/reports/2021-06-30/documents/${activeDocumentId}`
+      ) {
+        return jsonResponse(200, { url: activeReportUrl });
+      }
+      if (url.href === activeReportUrl) return new Response(activeReport);
       if (url.href === supportedSchemaUrl) {
         return jsonResponse(200, businessSchema());
       }
@@ -2792,21 +3413,25 @@ describe("Amazon Business pricing SP-API contract", () => {
       marketplaceId: MARKETPLACE_ID,
       reportId,
       documentId,
+      activeListingsReport: {
+        reportId: activeReportId,
+        documentId: activeDocumentId,
+      },
     });
 
     expect(snapshot.rows.map((row) => [row.sellerSku, row.status, row.editable]))
       .toEqual([
         ["AMBIGUOUS-UNSUPPORTED", "incomplete", false],
-        ["CONFIGURED", "configured", true],
+        ["CONFIGURED", "configured", false],
         ["CONFIGURED-UNSUPPORTED", "configured", false],
         ["INCOMPLETE", "incomplete", false],
-        ["INVALID-IMAGE", "missing", true],
+        ["INVALID-IMAGE", "missing", false],
         ["INVALID-PRICE", "incomplete", false],
         ["MALFORMED-FULFILLMENT", "incomplete", false],
         ["MALFORMED-ISSUE", "incomplete", false],
         ["MALFORMED-SCOPE", "incomplete", false],
-        ["MISSING", "missing", true],
-        ["OTHER-MARKET-PRICE", "missing", true],
+        ["MISSING", "missing", false],
+        ["OTHER-MARKET-PRICE", "missing", false],
         ["UNSUPPORTED", "missing", false],
       ]);
     expect(snapshot.rows.find((row) => row.sellerSku === "CONFIGURED"))
@@ -2824,10 +3449,10 @@ describe("Amazon Business pricing SP-API contract", () => {
       incomplete: 6,
     });
     expect(snapshot.rows.find((row) => row.sellerSku === "UNSUPPORTED")?.reason)
-      .toMatch(/尚未設定.*PTD/u);
+      .toBe("尚未設定 Amazon Business 價格。");
     expect(snapshot.rows.find((row) =>
       row.sellerSku === "CONFIGURED-UNSUPPORTED"
-    )?.reason).toMatch(/已設定.*PTD/u);
+    )?.reason).toBe("已設定 Amazon Business 價格。");
   });
 
   it("previews an exact B2B-only merge and validates the returned identifier", async () => {

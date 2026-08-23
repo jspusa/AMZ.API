@@ -136,6 +136,7 @@ export function isBrandSalesIncompatibleJob(
 
 export type SharedReportType =
   | "GET_MERCHANT_LISTINGS_ALL_DATA"
+  | "GET_MERCHANT_LISTINGS_DATA"
   | "GET_FBA_INVENTORY_PLANNING_DATA"
   | "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA"
   | "GET_SALES_AND_TRAFFIC_REPORT"
@@ -628,6 +629,8 @@ function parseSharedReport(
   const raw = value as Record<string, unknown>;
   const identityAllowed =
     (raw.reportType === "GET_MERCHANT_LISTINGS_ALL_DATA" &&
+      raw.optionsKey === "preferredReportDocumentLocale=en_US") ||
+    (raw.reportType === "GET_MERCHANT_LISTINGS_DATA" &&
       raw.optionsKey === "preferredReportDocumentLocale=en_US") ||
     (raw.reportType === "GET_FBA_INVENTORY_PLANNING_DATA" &&
       raw.optionsKey === "marketplaceIds=selected") ||

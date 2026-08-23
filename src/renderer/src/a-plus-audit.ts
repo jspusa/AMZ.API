@@ -12,6 +12,7 @@ export type AplusAuditStatus =
 
 export type AplusAuditReasonCode =
   | "PUBLISHED_RECORD_FOUND"
+  | "PUBLISHED_DOCUMENT_RELATION_FOUND"
   | "NO_PUBLISHED_RECORD"
   | "FBA_IDENTITY_INCOMPLETE"
   | "FBA_RELATIONSHIP_INCOMPLETE"
@@ -23,6 +24,33 @@ export type AplusAuditReasonCode =
 
 export type AplusAuditFilter = "all" | "problem" | AplusAuditStatus;
 
+export type AplusAuditDocumentStatus =
+  | "APPROVED"
+  | "DRAFT"
+  | "REJECTED"
+  | "SUBMITTED";
+
+export type AplusAuditDocumentBadge =
+  | "BULK"
+  | "GENERATED"
+  | "LAUNCHPAD"
+  | "PREMIUM"
+  | "STANDARD";
+
+export type AplusAuditDocument = Readonly<{
+  name: string | null;
+  documentStatus: AplusAuditDocumentStatus | null;
+  badges: readonly AplusAuditDocumentBadge[];
+  relationState: "published" | "not_published" | "related";
+  evidence: "publish_record" | "relation_badge" | "relation_only";
+  completeness: "complete" | "partial";
+}>;
+
+export type AplusAuditDocumentEvidenceCompleteness =
+  | "complete"
+  | "partial"
+  | "unavailable";
+
 export type AplusAuditRow = Readonly<{
   sellerSku: string;
   asin: string | null;
@@ -33,6 +61,8 @@ export type AplusAuditRow = Readonly<{
   publishedRecordCount: number | null;
   contentTypes: readonly ("EBC" | "EMC")[];
   locales: readonly string[];
+  documents: readonly AplusAuditDocument[];
+  documentEvidenceCompleteness: AplusAuditDocumentEvidenceCompleteness;
   reasonCode: AplusAuditReasonCode;
   reason: string;
 }>;
@@ -190,6 +220,85 @@ function stringList(
   return result;
 }
 
+function parseDocument(value: unknown): AplusAuditDocument {
+  const source = record(value, "A+ 文件");
+  exactKeys(source, [
+    "name",
+    "documentStatus",
+    "badges",
+    "relationState",
+    "evidence",
+    "completeness",
+  ], "A+ 文件");
+  const name = source.name === null
+    ? null
+    : exactText(source.name, "文件名稱", 100);
+  const documentStatus = source.documentStatus;
+  if (
+    documentStatus !== null &&
+    documentStatus !== "APPROVED" &&
+    documentStatus !== "DRAFT" &&
+    documentStatus !== "REJECTED" &&
+    documentStatus !== "SUBMITTED"
+  ) {
+    throw new Error("A+ 文件狀態無效。");
+  }
+  if (!Array.isArray(source.badges) || source.badges.length > 5) {
+    throw new Error("A+ 文件 badge 無效。");
+  }
+  const badges = source.badges.map((badge) => {
+    if (
+      badge !== "BULK" &&
+      badge !== "GENERATED" &&
+      badge !== "LAUNCHPAD" &&
+      badge !== "PREMIUM" &&
+      badge !== "STANDARD"
+    ) {
+      throw new Error("A+ 文件 badge 無效。");
+    }
+    return badge;
+  });
+  if (new Set(badges).size !== badges.length) {
+    throw new Error("A+ 文件 badge 含有重複值。");
+  }
+  const relationState = source.relationState;
+  if (
+    relationState !== "published" &&
+    relationState !== "not_published" &&
+    relationState !== "related"
+  ) {
+    throw new Error("A+ 文件關聯狀態無效。");
+  }
+  const evidence = source.evidence;
+  if (
+    evidence !== "publish_record" &&
+    evidence !== "relation_badge" &&
+    evidence !== "relation_only"
+  ) {
+    throw new Error("A+ 文件證據類型無效。");
+  }
+  const completeness = source.completeness;
+  if (completeness !== "complete" && completeness !== "partial") {
+    throw new Error("A+ 文件完整度無效。");
+  }
+  const evidenceCombinationValid =
+    (evidence === "publish_record" && relationState === "published") ||
+    (evidence === "relation_badge" && relationState === "published") ||
+    (evidence === "relation_only" &&
+      (relationState === "not_published" || relationState === "related"));
+  if (!evidenceCombinationValid) {
+    throw new Error("A+ 文件關聯狀態與證據類型不一致。");
+  }
+  return {
+    name,
+    documentStatus,
+    badges,
+    relationState,
+    evidence,
+    completeness,
+  };
+}
+
 function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
   const source = record(value, "A+ 健檢商品列");
   const rowKeys = [
@@ -202,6 +311,8 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
     "publishedRecordCount",
     "contentTypes",
     "locales",
+    "documents",
+    "documentEvidenceCompleteness",
     "reasonCode",
     "reason",
   ] as const;
@@ -246,9 +357,21 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
     APLUS_AUDIT_MAX_PUBLIC_LOCALES_PER_ASIN,
     isAplusLanguageTag,
   );
+  if (!Array.isArray(source.documents) || source.documents.length > 100) {
+    throw new Error("A+ 文件清單無效。");
+  }
+  const documents = source.documents.map(parseDocument);
+  const documentEvidenceCompleteness = source.documentEvidenceCompleteness;
+  if (
+    documentEvidenceCompleteness !== "complete" &&
+    documentEvidenceCompleteness !== "partial" &&
+    documentEvidenceCompleteness !== "unavailable"
+  ) {
+    throw new Error("A+ 文件證據完整度無效。");
+  }
   const reasonCode = source.reasonCode;
   const reasonsByStatus: Record<AplusAuditStatus, readonly AplusAuditReasonCode[]> = {
-    published: ["PUBLISHED_RECORD_FOUND"],
+    published: ["PUBLISHED_RECORD_FOUND", "PUBLISHED_DOCUMENT_RELATION_FOUND"],
     missing: ["NO_PUBLISHED_RECORD"],
     incomplete: [
       "FBA_IDENTITY_INCOMPLETE",
@@ -263,15 +386,41 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
   if (!reasonsByStatus[status].includes(reasonCode as AplusAuditReasonCode)) {
     throw new Error("A+ 健檢狀態與原因碼不一致。");
   }
+  const hasPublishedRelationDocument = documents.some((document) =>
+    document.evidence === "relation_badge" &&
+    document.relationState === "published"
+  );
+  const hasPositiveDocumentEvidence = documents.some((document) =>
+    document.evidence === "publish_record" ||
+    document.evidence === "relation_badge"
+  );
+  if (status !== "published" && hasPositiveDocumentEvidence) {
+    throw new Error("A+ 健檢狀態與正向文件證據不一致。");
+  }
   if (
-    (status === "published" && (
-      !asin ||
-      contentTypes.length === 0 ||
-      locales.length === 0 ||
-      (sourceCompleteness === "complete"
-        ? publishedRecordCount === null || publishedRecordCount < 1
-        : publishedRecordCount !== null)
-    )) ||
+    reasonCode === "PUBLISHED_DOCUMENT_RELATION_FOUND" &&
+    (
+      !hasPublishedRelationDocument ||
+      documents.some((document) => document.evidence === "publish_record")
+    )
+  ) {
+    throw new Error("A+ 健檢缺少 exact CONTENT_PUBLISHED 文件證據。");
+  }
+  const publishedEvidenceInvalid = status === "published" && (
+    !asin ||
+    (reasonCode === "PUBLISHED_DOCUMENT_RELATION_FOUND"
+      ? sourceCompleteness !== "partial" ||
+        publishedRecordCount !== null ||
+        contentTypes.length > 0 ||
+        locales.length > 0
+      : contentTypes.length === 0 ||
+        locales.length === 0 ||
+        (sourceCompleteness === "complete"
+          ? publishedRecordCount === null || publishedRecordCount < 1
+          : publishedRecordCount !== null))
+  );
+  if (
+    publishedEvidenceInvalid ||
     (status === "missing" && (
       !asin ||
       sourceCompleteness !== "complete" ||
@@ -289,8 +438,7 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
     throw new Error("A+ 健檢狀態、完整度與 publish-record 證據不一致。");
   }
   if (
-    ((reasonCode === "FBA_IDENTITY_INCOMPLETE" ||
-      reasonCode === "FBA_RELATIONSHIP_INCOMPLETE") && asin !== null) ||
+    (reasonCode === "FBA_IDENTITY_INCOMPLETE" && asin !== null) ||
     (status === "incomplete" &&
       reasonCode !== "FBA_IDENTITY_INCOMPLETE" &&
       reasonCode !== "FBA_RELATIONSHIP_INCOMPLETE" &&
@@ -309,6 +457,8 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
     publishedRecordCount,
     contentTypes,
     locales,
+    documents,
+    documentEvidenceCompleteness,
     reasonCode: reasonCode as AplusAuditReasonCode,
     reason: exactText(source.reason, "原因", 2_000),
   };
@@ -338,6 +488,35 @@ function summariesEqual(left: AplusAuditSummary, right: AplusAuditSummary): bool
   return (Object.keys(left) as Array<keyof AplusAuditSummary>).every(
     (key) => left[key] === right[key],
   );
+}
+
+type SameAsinEvidenceClass =
+  | "direct"
+  | "relationship_conservative"
+  | "relation_positive";
+
+function sameAsinEvidenceClass(row: AplusAuditRow): SameAsinEvidenceClass {
+  if (row.reasonCode === "FBA_RELATIONSHIP_INCOMPLETE") {
+    return "relationship_conservative";
+  }
+  if (row.reasonCode === "PUBLISHED_DOCUMENT_RELATION_FOUND") {
+    return "relation_positive";
+  }
+  return "direct";
+}
+
+function sameAsinEvidenceSignature(row: AplusAuditRow): string {
+  return JSON.stringify([
+    row.status,
+    row.sourceCompleteness,
+    row.publishedRecordCount,
+    row.contentTypes,
+    row.locales,
+    row.documents,
+    row.documentEvidenceCompleteness,
+    row.reasonCode,
+    row.reason,
+  ]);
 }
 
 function exactJobId(value: unknown, label: string): string {
@@ -546,27 +725,42 @@ export function parseAplusAuditSnapshot(
   }
   const rows = source.rows.map((row) => parseRow(row, marketplaceId));
   const seenSellerSkus = new Set<string>();
-  const evidenceByAsin = new Map<string, string>();
+  const evidenceByAsin = new Map<
+    string,
+    Map<SameAsinEvidenceClass, Readonly<{
+      signature: string;
+      row: AplusAuditRow;
+    }>>
+  >();
   for (const row of rows) {
     if (seenSellerSkus.has(row.sellerSku)) {
       throw new Error("A+ 健檢含有重複 Seller SKU；已停止顯示與快取。");
     }
     seenSellerSkus.add(row.sellerSku);
     if (row.asin !== null) {
-      const evidence = JSON.stringify([
-        row.status,
-        row.sourceCompleteness,
-        row.publishedRecordCount,
-        row.contentTypes,
-        row.locales,
-        row.reasonCode,
-        row.reason,
-      ]);
-      const priorEvidence = evidenceByAsin.get(row.asin);
-      if (priorEvidence !== undefined && priorEvidence !== evidence) {
-        throw new Error("A+ 健檢同一 ASIN 的 publish-record 證據不一致；已停止顯示與快取。");
+      const evidenceClass = sameAsinEvidenceClass(row);
+      const signature = sameAsinEvidenceSignature(row);
+      const classes = evidenceByAsin.get(row.asin) ?? new Map();
+      const priorEvidence = classes.get(evidenceClass);
+      if (priorEvidence !== undefined && priorEvidence.signature !== signature) {
+        throw new Error("A+ 健檢同一 ASIN 的 publish-record 與文件證據不一致；已停止顯示與快取。");
       }
-      evidenceByAsin.set(row.asin, evidence);
+      classes.set(evidenceClass, { signature, row });
+      evidenceByAsin.set(row.asin, classes);
+    }
+  }
+  for (const classes of evidenceByAsin.values()) {
+    const direct = classes.get("direct")?.row;
+    const relationshipConservative = classes.has("relationship_conservative");
+    const relationPositive = classes.has("relation_positive");
+    if (
+      (relationshipConservative && relationPositive) ||
+      (direct && relationPositive && (
+        direct.status !== "published" ||
+        direct.reasonCode !== "PUBLISHED_RECORD_FOUND"
+      ))
+    ) {
+      throw new Error("A+ 健檢同一 ASIN 的 publish-record 與文件證據不一致；已停止顯示與快取。");
     }
   }
   const summary = parseSummary(source.summary);

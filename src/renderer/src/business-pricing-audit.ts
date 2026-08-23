@@ -8,7 +8,10 @@ export type BusinessPricingAuditStatus =
 export type BusinessPricingAuditFilter =
   | "all"
   | "problem"
-  | BusinessPricingAuditStatus;
+  | "above_standard"
+  | "missing"
+  | "configured"
+  | "incomplete";
 
 export type BusinessPricingMoney = Readonly<{
   amount: number;
@@ -259,11 +262,9 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
     ((status === "configured" || status === "above_standard") &&
       (presence !== "present" || !businessPrice)) ||
     (status === "missing" && (presence !== "absent" || businessPrice !== null)) ||
-    (source.editable && status !== "configured" &&
-      status !== "above_standard" && status !== "missing") ||
     (status === "configured" &&
-      (!standardPrice || !businessPrice ||
-        businessPrice.amount > standardPrice.amount)) ||
+      (!businessPrice ||
+        (standardPrice && businessPrice.amount > standardPrice.amount))) ||
     (status === "above_standard" &&
       (!standardPrice || !businessPrice ||
         businessPrice.amount <= standardPrice.amount))
@@ -288,7 +289,10 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
     quantityDiscountPlan: quantityDiscount.plan,
     quantityDiscountPlanPresence: quantityDiscount.presence,
     status,
-    editable: source.editable,
+    // Audit output is always rendered read-only. Keep accepting the legacy
+    // boolean so older cache/demo/API payloads remain parseable, but never let
+    // that historical capability bit reopen mutation UI.
+    editable: false,
     reason: exactText(source.reason, "原因", 2_000),
   };
 }
@@ -358,9 +362,6 @@ export function businessPricingRowMatchesFilter(
 ): boolean {
   if (filter === "all") return true;
   if (filter === "problem") return row.status !== "configured";
-  if (filter === "unsupported") {
-    return !row.editable && row.status !== "incomplete";
-  }
   return row.status === filter;
 }
 
@@ -388,6 +389,7 @@ export function applyVerifiedBusinessPriceToAuditSnapshot(
           standardPrice: update.standardPrice,
           businessPrice: update.requestedBusinessPrice,
           businessOfferPresence: "present" as const,
+          editable: false,
           ...(update.quantityDiscountPlanChange === "replace"
             ? {
                 quantityDiscountPlan: update.requestedQuantityDiscountPlan,

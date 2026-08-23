@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAplusAuditSeedsFromFbaGrouping,
   runAplusAudit,
+  type AplusContentDocumentRelationFetchInput,
   type AplusPublishRecordFetchInput,
 } from "../src/main/amazon/a-plus-audit";
 import { parseAplusAuditSnapshot } from "../src/renderer/src/a-plus-audit";
@@ -9,7 +10,7 @@ import { parseAplusAuditSnapshot } from "../src/renderer/src/a-plus-audit";
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
 describe("A+ FBA audit core", () => {
-  it("only turns relationship-proven non-parent listings into queryable A+ seeds", async () => {
+  it("uses exact document relations for relationship-incomplete FBA ASINs without direct publish queries", async () => {
     const seeds = buildAplusAuditSeedsFromFbaGrouping([
       {
         sellerSku: "CHILD-SKU",
@@ -39,32 +40,683 @@ describe("A+ FBA audit core", () => {
         role: "unknown",
         status: "incomplete",
       },
+      {
+        sellerSku: "UNKNOWN-WITHOUT-RELATION",
+        asin: "B000000105",
+        title: "Relationship unavailable without A plus relation",
+        role: "unknown",
+        status: "incomplete",
+      },
     ]);
     const calls: string[] = [];
+    const progress: Array<{ completedAsins: number; totalAsins: number }> = [];
     const snapshot = await runAplusAudit({
       mode: "live",
       marketplaceId: MARKETPLACE_ID,
       fetchedAt: "2026-08-23T08:00:00.000Z",
       fbaSnapshotId: "strict-fba-snapshot",
       rows: seeds,
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "relationship-incomplete-reference",
+            contentMetadata: {
+              name: "Relationship incomplete product detail",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T07:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: "B000000104",
+            badgeSet: ["CONTENT_PUBLISHED"],
+            contentReferenceKeySet: ["relationship-incomplete-reference"],
+          }],
+        },
+      }),
       fetchPublishRecords: async ({ asin }) => {
         calls.push(asin);
         return { status: 200, payload: { publishRecordList: [] } };
       },
+      onProgress: (value) => {
+        progress.push({ ...value });
+      },
     });
 
     expect(calls).toEqual(["B000000101", "B000000102"]);
+    expect(progress).toEqual([
+      { completedAsins: 1, totalAsins: 4 },
+      { completedAsins: 2, totalAsins: 4 },
+      { completedAsins: 4, totalAsins: 4 },
+    ]);
     expect(snapshot.rows).toMatchObject([
       { sellerSku: "CHILD-SKU", asin: "B000000101", status: "missing" },
       { sellerSku: "STANDALONE-SKU", asin: "B000000102", status: "missing" },
       {
         sellerSku: "UNKNOWN-RELATIONSHIP",
-        asin: null,
+        asin: "B000000104",
+        status: "published",
+        reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+        documents: [{
+          name: "Relationship incomplete product detail",
+          relationState: "published",
+          evidence: "relation_badge",
+        }],
+      },
+      {
+        sellerSku: "UNKNOWN-WITHOUT-RELATION",
+        asin: "B000000105",
         status: "incomplete",
         reasonCode: "FBA_RELATIONSHIP_INCOMPLETE",
       },
     ]);
+    expect(snapshot.summary.uniqueAsins).toBe(4);
     expect(snapshot.rows.some(({ sellerSku }) => sellerSku === "PARENT-SKU")).toBe(false);
+    const { fbaSnapshotId: _fbaSnapshotId, ...publicSnapshot } = snapshot;
+    expect(() => parseAplusAuditSnapshot(
+      publicSnapshot,
+      MARKETPLACE_ID,
+      "live",
+    )).not.toThrow();
+  });
+
+  it("keeps direct and relationship-conservative evidence distinct for Seller SKUs sharing an ASIN", async () => {
+    const calls: string[] = [];
+    const seeds = buildAplusAuditSeedsFromFbaGrouping([
+      {
+        sellerSku: "DIRECT-CHILD",
+        asin: "B000000106",
+        title: "Direct child",
+        role: "child",
+        status: "complete",
+      },
+      {
+        sellerSku: "CONSERVATIVE-UNKNOWN",
+        asin: "B000000106",
+        title: "Conservative unknown",
+        role: "unknown",
+        status: "incomplete",
+      },
+    ]);
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "mixed-direct-conservative-evidence",
+      rows: seeds,
+      fetchPublishRecords: async ({ asin }) => {
+        calls.push(asin);
+        return {
+          status: 200,
+          payload: {
+            publishRecordList: [{
+              marketplaceId: MARKETPLACE_ID,
+              asin,
+              contentReferenceKey: "mixed-evidence-reference",
+              contentType: "EBC",
+              locale: "en-US",
+            }],
+          },
+        };
+      },
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "mixed-evidence-reference",
+            contentMetadata: {
+              name: "Mixed evidence product detail",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T08:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: "B000000106",
+            badgeSet: ["CONTENT_PUBLISHED"],
+            contentReferenceKeySet: ["mixed-evidence-reference"],
+          }],
+        },
+      }),
+    });
+
+    expect(calls).toEqual(["B000000106"]);
+    expect(snapshot.rows).toMatchObject([
+      {
+        sellerSku: "DIRECT-CHILD",
+        status: "published",
+        reasonCode: "PUBLISHED_RECORD_FOUND",
+        documents: [{ evidence: "publish_record", relationState: "published" }],
+      },
+      {
+        sellerSku: "CONSERVATIVE-UNKNOWN",
+        status: "published",
+        reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+        documents: [{ evidence: "relation_badge", relationState: "published" }],
+      },
+    ]);
+    const { fbaSnapshotId: _fbaSnapshotId, ...publicSnapshot } = snapshot;
+    expect(() => parseAplusAuditSnapshot(
+      publicSnapshot,
+      MARKETPLACE_ID,
+      "live",
+    )).not.toThrow();
+  });
+
+  it("joins official Content Manager documents to publish records without exposing reference keys", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-001",
+      rows: [{ sellerSku: "DOCUMENT-NAME", asin: "B000000201", title: "Document name" }],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "private-reference-one",
+            contentMetadata: {
+              name: "Buffalo Treats Brand Story",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T09:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: "B000000201",
+            badgeSet: ["CONTENT_PUBLISHED"],
+            contentReferenceKeySet: ["private-reference-one"],
+          }],
+        },
+      }),
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: {
+          publishRecordList: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin: "B000000201",
+            contentReferenceKey: "private-reference-one",
+            contentType: "EBC",
+            locale: "en-US",
+          }],
+        },
+      }),
+    } as never);
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      documentEvidenceCompleteness: "complete",
+      documents: [{
+        name: "Buffalo Treats Brand Story",
+        documentStatus: "APPROVED",
+        badges: ["STANDARD"],
+        relationState: "published",
+        evidence: "publish_record",
+        completeness: "complete",
+      }],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("private-reference-one");
+  });
+
+  it("uses an exact CONTENT_PUBLISHED relation as positive evidence when publish records fail", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-002",
+      rows: [{ sellerSku: "RELATION-PUBLISHED", asin: "B000000202", title: "Relation published" }],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "private-reference-two",
+            contentMetadata: {
+              name: "Premium Product Detail",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["PREMIUM"],
+              updateTime: "2026-08-22T10:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: "B000000202",
+            badgeSet: ["CONTENT_PUBLISHED"],
+            contentReferenceKeySet: ["private-reference-two"],
+          }],
+        },
+      }),
+      fetchPublishRecords: async () => ({ status: 500, payload: null }),
+    } as never);
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      documentEvidenceCompleteness: "complete",
+      documents: [{
+        name: "Premium Product Detail",
+        relationState: "published",
+        evidence: "relation_badge",
+      }],
+    });
+  });
+
+  it("does not call an empty publish-record result missing when a later document relation read fails", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-relation-partial",
+      rows: [{
+        sellerSku: "RELATION-PAGE-FAILED",
+        asin: "B000000208",
+        title: "Relation page failed",
+      }],
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [
+            {
+              contentReferenceKey: "first-empty-relation",
+              contentMetadata: {
+                name: "First empty relation",
+                marketplaceId: MARKETPLACE_ID,
+                status: "APPROVED",
+                badgeSet: ["STANDARD"],
+                updateTime: "2026-08-22T15:00:00Z",
+              },
+            },
+            {
+              contentReferenceKey: "second-failed-relation",
+              contentMetadata: {
+                name: "Second failed relation",
+                marketplaceId: MARKETPLACE_ID,
+                status: "APPROVED",
+                badgeSet: ["STANDARD"],
+                updateTime: "2026-08-22T15:01:00Z",
+              },
+            },
+          ],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async ({ contentReferenceKey }) =>
+        contentReferenceKey === "first-empty-relation"
+          ? { status: 200, payload: { asinMetadataSet: [] } }
+          : { status: 500, payload: null },
+    });
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "A_PLUS_READ_FAILED",
+      documents: [],
+      documentEvidenceCompleteness: "partial",
+    });
+    expect(snapshot.summary).toMatchObject({ published: 0, missing: 0, incomplete: 1 });
+  });
+
+  it("fails closed when content-document pagination stops before coverage completes", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-pagination-partial",
+      rows: [{
+        sellerSku: "DOCUMENT-PAGE-FAILED",
+        asin: "B000000209",
+        title: "Document page failed",
+      }],
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+      fetchContentDocuments: async ({ pageToken }) => pageToken
+        ? { status: 500, payload: null }
+        : {
+            status: 200,
+            payload: {
+              contentMetadataRecords: [],
+              nextPageToken: "document-page-two",
+            },
+          },
+      fetchContentDocumentAsinRelations: async () => {
+        throw new Error("No document relation should be requested without a document.");
+      },
+    });
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "A_PLUS_READ_FAILED",
+      documentEvidenceCompleteness: "partial",
+    });
+  });
+
+  it("requires document-relation coverage for a negative result but preserves an exact publish positive", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-unavailable",
+      rows: [
+        { sellerSku: "EMPTY-WITHOUT-INDEX", asin: "B000000210", title: "Empty" },
+        { sellerSku: "POSITIVE-WITHOUT-INDEX", asin: "B000000211", title: "Positive" },
+      ],
+      fetchPublishRecords: async ({ asin }) => ({
+        status: 200,
+        payload: {
+          publishRecordList: asin === "B000000211"
+            ? [{
+                marketplaceId: MARKETPLACE_ID,
+                asin,
+                contentReferenceKey: "exact-positive-without-index",
+                contentType: "EBC",
+                locale: "en-US",
+              }]
+            : [],
+        },
+      }),
+    });
+
+    expect(snapshot.rows).toMatchObject([
+      {
+        sellerSku: "EMPTY-WITHOUT-INDEX",
+        status: "incomplete",
+        reasonCode: "A_PLUS_READ_FAILED",
+        documentEvidenceCompleteness: "unavailable",
+      },
+      {
+        sellerSku: "POSITIVE-WITHOUT-INDEX",
+        status: "published",
+        reasonCode: "PUBLISHED_RECORD_FOUND",
+        publishedRecordCount: 1,
+        documents: [{ evidence: "publish_record", completeness: "partial" }],
+        documentEvidenceCompleteness: "unavailable",
+      },
+    ]);
+    expect(snapshot.summary).toMatchObject({ published: 1, missing: 0, incomplete: 1 });
+  });
+
+  it("shows non-published document associations without promoting them to published", async () => {
+    const documents = [
+      {
+        contentReferenceKey: "not-published-reference",
+        contentMetadata: {
+          name: "Draft product detail",
+          marketplaceId: MARKETPLACE_ID,
+          status: "DRAFT",
+          badgeSet: ["STANDARD"],
+          updateTime: "2026-08-22T11:00:00Z",
+        },
+      },
+      {
+        contentReferenceKey: "related-reference",
+        contentMetadata: {
+          name: "Submitted brand story",
+          marketplaceId: MARKETPLACE_ID,
+          status: "SUBMITTED",
+          badgeSet: ["STANDARD"],
+          updateTime: "2026-08-22T12:00:00Z",
+        },
+      },
+    ];
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-non-published",
+      rows: [
+        { sellerSku: "NOT-PUBLISHED", asin: "B000000203", title: "Not published" },
+        { sellerSku: "RELATED-ONLY", asin: "B000000204", title: "Related only" },
+      ],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: { contentMetadataRecords: documents },
+      }),
+      fetchContentDocumentAsinRelations: async (
+        { contentReferenceKey }: AplusContentDocumentRelationFetchInput,
+      ) => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: contentReferenceKey === "not-published-reference"
+            ? [{
+                asin: "B000000203",
+                badgeSet: ["CONTENT_NOT_PUBLISHED"],
+                contentReferenceKeySet: [contentReferenceKey],
+              }]
+            : [{
+                asin: "B000000204",
+                badgeSet: [],
+                contentReferenceKeySet: [contentReferenceKey],
+              }],
+        },
+      }),
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+    } as never);
+
+    expect(snapshot.rows).toMatchObject([
+      {
+        sellerSku: "NOT-PUBLISHED",
+        status: "missing",
+        sourceCompleteness: "complete",
+        reasonCode: "NO_PUBLISHED_RECORD",
+        documentEvidenceCompleteness: "complete",
+        documents: [{
+          name: "Draft product detail",
+          documentStatus: "DRAFT",
+          relationState: "not_published",
+          evidence: "relation_only",
+          completeness: "complete",
+        }],
+      },
+      {
+        sellerSku: "RELATED-ONLY",
+        status: "missing",
+        sourceCompleteness: "complete",
+        reasonCode: "NO_PUBLISHED_RECORD",
+        documentEvidenceCompleteness: "complete",
+        documents: [{
+          name: "Submitted brand story",
+          documentStatus: "SUBMITTED",
+          relationState: "related",
+          evidence: "relation_only",
+          completeness: "complete",
+        }],
+      },
+    ]);
+    expect(snapshot.summary).toMatchObject({ published: 0, missing: 2, incomplete: 0 });
+  });
+
+  it("fails closed when one A+ relation claims both published and not published", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-conflict",
+      rows: [{ sellerSku: "RELATION-CONFLICT", asin: "B000000205", title: "Conflict" }],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "conflicting-reference",
+            contentMetadata: {
+              name: "Conflicting content",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T13:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: "B000000205",
+            badgeSet: ["CONTENT_PUBLISHED", "CONTENT_NOT_PUBLISHED"],
+            contentReferenceKeySet: ["conflicting-reference"],
+          }],
+        },
+      }),
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+    } as never);
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "A_PLUS_RESPONSE_INVALID",
+      documents: [],
+      documentEvidenceCompleteness: "partial",
+    });
+    expect(snapshot.summary).toMatchObject({ published: 0, missing: 0, incomplete: 1 });
+  });
+
+  it("drops duplicate relation positives after a malformed conflict but preserves an exact publish record", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-duplicate-conflict",
+      rows: [
+        {
+          sellerSku: "RELATION-ONLY-CONFLICT",
+          asin: "B000000206",
+          title: "Relation only conflict",
+        },
+        {
+          sellerSku: "EXACT-PUBLISH-CONFLICT",
+          asin: "B000000207",
+          title: "Exact publish conflict",
+        },
+      ],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "duplicate-conflicting-reference",
+            contentMetadata: {
+              name: "Duplicate conflicting content",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T14:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [
+            {
+              asin: "B000000206",
+              badgeSet: ["CONTENT_PUBLISHED"],
+              contentReferenceKeySet: ["duplicate-conflicting-reference"],
+            },
+            {
+              asin: "B000000206",
+              badgeSet: ["CONTENT_PUBLISHED"],
+              contentReferenceKeySet: ["duplicate-conflicting-reference"],
+            },
+            {
+              asin: "B000000206",
+              badgeSet: ["CONTENT_PUBLISHED", "CONTENT_NOT_PUBLISHED"],
+              contentReferenceKeySet: ["duplicate-conflicting-reference"],
+            },
+            {
+              asin: "B000000207",
+              badgeSet: ["CONTENT_PUBLISHED"],
+              contentReferenceKeySet: ["duplicate-conflicting-reference"],
+            },
+            {
+              asin: "B000000207",
+              badgeSet: ["CONTENT_PUBLISHED", "CONTENT_NOT_PUBLISHED"],
+              contentReferenceKeySet: ["duplicate-conflicting-reference"],
+            },
+          ],
+        },
+      }),
+      fetchPublishRecords: async ({ asin }: AplusPublishRecordFetchInput) => ({
+        status: 200,
+        payload: {
+          publishRecordList: asin === "B000000207"
+            ? [{
+                marketplaceId: MARKETPLACE_ID,
+                asin,
+                contentReferenceKey: "duplicate-conflicting-reference",
+                contentType: "EBC",
+                locale: "en-US",
+              }]
+            : [],
+        },
+      }),
+    } as never);
+
+    expect(snapshot.rows).toMatchObject([
+      {
+        sellerSku: "RELATION-ONLY-CONFLICT",
+        status: "incomplete",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        reasonCode: "A_PLUS_RESPONSE_INVALID",
+        documents: [],
+        documentEvidenceCompleteness: "partial",
+      },
+      {
+        sellerSku: "EXACT-PUBLISH-CONFLICT",
+        status: "published",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        reasonCode: "PUBLISHED_RECORD_FOUND",
+        documents: [{
+          name: "Duplicate conflicting content",
+          relationState: "published",
+          evidence: "publish_record",
+          completeness: "partial",
+        }],
+        documentEvidenceCompleteness: "partial",
+      },
+    ]);
+    expect(snapshot.summary).toMatchObject({ published: 1, missing: 0, incomplete: 1 });
   });
 
   it("queries each exact ASIN once and fans the result out to every FBA Seller SKU", async () => {
@@ -97,6 +749,14 @@ describe("A+ FBA audit core", () => {
         }
         return { status: 200, payload: { publishRecordList: [] } };
       },
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: { contentMetadataRecords: [] },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: { asinMetadataSet: [] },
+      }),
     });
 
     expect(calls.map(({ marketplaceId, asin, pageToken }) => ({
@@ -554,6 +1214,14 @@ describe("A+ FBA audit core", () => {
         if (asin === "B000000013") throw new Error("raw upstream detail");
         return { status: 200, payload: { publishRecordList: [] } };
       },
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: { contentMetadataRecords: [] },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: { asinMetadataSet: [] },
+      }),
     });
 
     expect(snapshot.rows.map((row) => ({
@@ -765,6 +1433,14 @@ describe("A+ FBA audit core", () => {
       fetchPublishRecords: async () => ({
         status: 200,
         payload: { publishRecordList: [] },
+      }),
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: { contentMetadataRecords: [] },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: { asinMetadataSet: [] },
       }),
       onProgress: async (update) => {
         progress.push(update);

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getAplusContentDocumentAsinRelationsPage,
+  getAplusContentDocumentsPage,
   getAplusContentPublishRecordsPage,
   invalidateSpApiCredentialCaches,
 } from "../src/main/amazon/sp-api";
@@ -116,7 +118,142 @@ describe("A+ Content publish-record SP-API gateway", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("paces concurrent live A+ request starts across callers", async () => {
+  it("requests official content-document and ASIN-relation pages with fixed GET routes", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.includes("/auth/o2/token")) return tokenResponse();
+      if (url.includes("/asins?")) {
+        return new Response(JSON.stringify({
+          asinMetadataSet: [{
+            asin: "B000000001",
+            badgeSet: ["CONTENT_PUBLISHED"],
+            contentReferenceKeySet: ["reference/segment?query#fragment"],
+          }],
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-amzn-requestid": "request-a-plus-relations",
+          },
+        });
+      }
+      return new Response(JSON.stringify({
+        contentMetadataRecords: [{
+          contentReferenceKey: "reference/segment?query#fragment",
+          contentMetadata: {
+            name: "A+ document",
+            marketplaceId: US,
+            status: "APPROVED",
+            badgeSet: ["STANDARD"],
+            updateTime: "2026-08-23T08:00:00Z",
+          },
+        }],
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-amzn-requestid": "request-a-plus-documents",
+        },
+      });
+    }));
+
+    await expect(getAplusContentDocumentsPage({
+      marketplaceId: US,
+      pageToken: "documents-next-page",
+      expectedMode: "live",
+    })).resolves.toMatchObject({
+      status: 200,
+      payload: { contentMetadataRecords: expect.any(Array) },
+      requestId: "request-a-plus-documents",
+    });
+    await expect(getAplusContentDocumentAsinRelationsPage({
+      marketplaceId: US,
+      contentReferenceKey: "reference/segment?query#fragment",
+      pageToken: "relations-next-page",
+      expectedMode: "live",
+    })).resolves.toMatchObject({
+      status: 200,
+      payload: { asinMetadataSet: expect.any(Array) },
+      requestId: "request-a-plus-relations",
+    });
+
+    const apiRequests = requests.filter(({ url }) =>
+      url.includes("/aplus/2020-11-01/"));
+    expect(apiRequests).toHaveLength(2);
+    const documentsUrl = new URL(apiRequests[0]!.url);
+    expect(documentsUrl.pathname).toBe("/aplus/2020-11-01/contentDocuments");
+    expect(Object.fromEntries(documentsUrl.searchParams)).toEqual({
+      marketplaceId: US,
+      pageToken: "documents-next-page",
+    });
+    expect(apiRequests[0]!.init).toMatchObject({ method: "GET", cache: "no-store" });
+
+    const relationsUrl = new URL(apiRequests[1]!.url);
+    expect(relationsUrl.pathname).toBe(
+      "/aplus/2020-11-01/contentDocuments/reference%2Fsegment%3Fquery%23fragment/asins",
+    );
+    expect(Object.fromEntries(relationsUrl.searchParams)).toEqual({
+      marketplaceId: US,
+      includedDataSet: "METADATA",
+      pageToken: "relations-next-page",
+    });
+    expect(apiRequests[1]!.init).toMatchObject({ method: "GET", cache: "no-store" });
+  });
+
+  it("returns deterministic schema-shaped demo document pages without network access", async () => {
+    configure("demo");
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const documentsInput = {
+      marketplaceId: US,
+      expectedMode: "demo" as const,
+    };
+    const firstDocuments = await getAplusContentDocumentsPage(documentsInput);
+    const secondDocuments = await getAplusContentDocumentsPage(documentsInput);
+    expect(secondDocuments).toEqual(firstDocuments);
+    expect(firstDocuments).toEqual({
+      status: 200,
+      payload: {
+        contentMetadataRecords: [{
+          contentReferenceKey: `demo-a-plus-document-${US}`,
+          contentMetadata: {
+            name: "AMZ.API Demo A+ Content",
+            marketplaceId: US,
+            status: "APPROVED",
+            badgeSet: ["STANDARD"],
+            updateTime: "2026-01-01T00:00:00Z",
+          },
+        }],
+      },
+      requestId: null,
+    });
+
+    const relationInput = {
+      marketplaceId: US,
+      contentReferenceKey: `demo-a-plus-document-${US}`,
+      expectedMode: "demo" as const,
+    };
+    const firstRelations = await getAplusContentDocumentAsinRelationsPage(relationInput);
+    const secondRelations = await getAplusContentDocumentAsinRelationsPage(relationInput);
+    expect(secondRelations).toEqual(firstRelations);
+    expect(firstRelations).toEqual({
+      status: 200,
+      payload: {
+        asinMetadataSet: [{
+          asin: "B000000002",
+          badgeSet: ["CONTENT_PUBLISHED"],
+          contentReferenceKeySet: [`demo-a-plus-document-${US}`],
+        }],
+      },
+      requestId: null,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("paces concurrent live A+ request starts across operations in the shared regional queue", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 1_000);
     const apiStarts: number[] = [];
@@ -136,20 +273,19 @@ describe("A+ Content publish-record SP-API gateway", () => {
       asin: "B000000001",
       expectedMode: "live",
     });
-    const second = getAplusContentPublishRecordsPage({
+    const second = getAplusContentDocumentsPage({
       marketplaceId: US,
-      asin: "B000000002",
       expectedMode: "live",
       onControlledWait: () => controlledWaitHeartbeats.push(Date.now()),
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(apiStarts).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(109);
+    await vi.advanceTimersByTimeAsync(1_049);
     expect(apiStarts).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     await Promise.all([first, second]);
     expect(apiStarts).toHaveLength(2);
-    expect(apiStarts[1] - apiStarts[0]).toBeGreaterThanOrEqual(100);
+    expect(apiStarts[1] - apiStarts[0]).toBeGreaterThanOrEqual(1_050);
     expect(controlledWaitHeartbeats).toEqual([
       apiStarts[0],
       apiStarts[1],
@@ -277,7 +413,7 @@ describe("A+ Content publish-record SP-API gateway", () => {
         status: 200,
         headers: {
           "content-type": "application/json",
-          "x-amzn-RateLimit-Limit": "2",
+          "x-amzn-RateLimit-Limit": "0.5",
         },
       });
     }));
@@ -296,12 +432,12 @@ describe("A+ Content publish-record SP-API gateway", () => {
       asin: "B000000005",
       expectedMode: "live",
     });
-    await vi.advanceTimersByTimeAsync(499);
+    await vi.advanceTimersByTimeAsync(1_999);
     expect(apiStarts).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(11);
+    await vi.advanceTimersByTimeAsync(1);
     await second;
     expect(apiStarts).toHaveLength(2);
-    expect(apiStarts[1] - apiStarts[0]).toBeGreaterThanOrEqual(500);
+    expect(apiStarts[1] - apiStarts[0]).toBeGreaterThanOrEqual(2_000);
   });
 
   it("rejects an extreme rate-limit header instead of creating an infinite timer", async () => {
@@ -336,13 +472,83 @@ describe("A+ Content publish-record SP-API gateway", () => {
       expectedMode: "live",
       signal: controller.signal,
     });
-    await vi.advanceTimersByTimeAsync(110);
+    await vi.advanceTimersByTimeAsync(1_050);
     const starts = [...apiStarts];
     controller.abort();
     await second.catch(() => null);
 
     expect(starts).toHaveLength(2);
-    expect(starts[1] - starts[0]).toBeGreaterThanOrEqual(100);
+    expect(starts[1] - starts[0]).toBeGreaterThanOrEqual(1_050);
+  });
+
+  it("refreshes once on 401 and bounds retryable failures for new document reads", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T08:00:00.000Z"));
+    const accessTokens: string[] = [];
+    let tokenCalls = 0;
+    let apiCalls = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        tokenCalls += 1;
+        return new Response(JSON.stringify({
+          access_token: `fake-a-plus-token-${tokenCalls}`,
+          expires_in: 3_600,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      accessTokens.push(new Headers(init?.headers).get("x-amz-access-token") ?? "");
+      apiCalls += 1;
+      if (apiCalls === 1) return new Response(null, { status: 401 });
+      if (apiCalls <= 3) return new Response(null, { status: 503 });
+      return new Response(JSON.stringify({ contentMetadataRecords: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+
+    const request = getAplusContentDocumentsPage({
+      marketplaceId: US,
+      expectedMode: "live",
+    });
+    await vi.runAllTimersAsync();
+    const result = await request;
+
+    expect(result.status).toBe(200);
+    expect(tokenCalls).toBe(2);
+    expect(apiCalls).toBe(4);
+    expect(accessTokens).toEqual([
+      "fake-a-plus-token-1",
+      "fake-a-plus-token-2",
+      "fake-a-plus-token-2",
+      "fake-a-plus-token-2",
+    ]);
+  });
+
+  it("turns a new document-read timeout into the controlled A+ timeout error", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T08:00:00.000Z"));
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>((input, init) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) return Promise.resolve(tokenResponse());
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      });
+    }));
+
+    const request = getAplusContentDocumentAsinRelationsPage({
+      marketplaceId: US,
+      contentReferenceKey: "timeout-reference",
+      expectedMode: "live",
+    });
+    const rejection = expect(request).rejects.toMatchObject({
+      status: 504,
+      code: "UPSTREAM_UNAVAILABLE",
+      operation: "getAplusContentDocumentAsinRelations",
+    });
+    await vi.advanceTimersByTimeAsync(12_000);
+    await rejection;
   });
 
   it("rejects unsafe identity, token and live-demo drift before dispatch", async () => {
@@ -360,6 +566,30 @@ describe("A+ Content publish-record SP-API gateway", () => {
       pageToken: " unsafe ",
       expectedMode: "live",
     })).rejects.toMatchObject({ code: "A_PLUS_PAGINATION_INVALID" });
+    await expect(getAplusContentDocumentsPage({
+      marketplaceId: "UNSAFE" as typeof US,
+      expectedMode: "live",
+    })).rejects.toMatchObject({ code: "LISTING_IDENTITY_MISMATCH" });
+    await expect(getAplusContentDocumentsPage({
+      marketplaceId: US,
+      pageToken: " unsafe ",
+      expectedMode: "live",
+    })).rejects.toMatchObject({ code: "A_PLUS_PAGINATION_INVALID" });
+    await expect(getAplusContentDocumentAsinRelationsPage({
+      marketplaceId: US,
+      contentReferenceKey: " unsafe-reference ",
+      expectedMode: "live",
+    })).rejects.toMatchObject({ code: "A_PLUS_CONTENT_REFERENCE_INVALID" });
+    await expect(getAplusContentDocumentAsinRelationsPage({
+      marketplaceId: US,
+      contentReferenceKey: "unsafe\nreference",
+      expectedMode: "live",
+    })).rejects.toMatchObject({ code: "A_PLUS_CONTENT_REFERENCE_INVALID" });
+    await expect(getAplusContentDocumentAsinRelationsPage({
+      marketplaceId: US,
+      contentReferenceKey: "..",
+      expectedMode: "live",
+    })).rejects.toMatchObject({ code: "A_PLUS_CONTENT_REFERENCE_INVALID" });
     process.env.SP_API_MODE = "demo";
     await expect(getAplusContentPublishRecordsPage({
       marketplaceId: US,

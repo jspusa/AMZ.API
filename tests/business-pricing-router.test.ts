@@ -287,4 +287,145 @@ describe("Amazon Business pricing audit routes", () => {
     });
     expect((data.body.value as { rows: unknown[] }).rows.length).toBeGreaterThan(0);
   });
+
+  it("never creates an Active Listings report from a data GET with a missing or expired lease", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "business-pricing-get-only-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const startActive = vi.fn(async () => ({
+      mode: "demo" as const,
+      ready: true,
+      reportId: "must-not-start",
+      documentId: "must-not-start",
+      status: "DONE" as const,
+      notice: "must not start",
+    }));
+    const statusActive = vi.fn(async () => ({
+      mode: "demo" as const,
+      ready: true,
+      reportId: "must-not-poll",
+      documentId: "must-not-poll",
+      status: "DONE" as const,
+      notice: "must not poll",
+    }));
+    const router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "business-pricing-get-only-scope",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      businessPricingActiveListingsReports: {
+        start: startActive,
+        status: statusActive,
+      },
+    });
+    const dataRequest = (requestId: string): ApiRequest => ({
+      requestId,
+      method: "GET",
+      path: "/api/sp-api/business-pricing-audit",
+      query: {
+        marketplaceId: MARKETPLACE_ID,
+        reportId: `demo-${MARKETPLACE_ID}`,
+        documentId: `demo-${MARKETPLACE_ID}`,
+        data: "1",
+      },
+      headers: {},
+    });
+
+    const missingLease = await router.handle(dataRequest(
+      "business-pricing-audit-data-no-active-lease",
+    ));
+    expect(missingLease.status).toBe(200);
+    expect(startActive).not.toHaveBeenCalled();
+    expect(statusActive).not.toHaveBeenCalled();
+
+    const now = Date.now();
+    await store.createSharedReportIfAbsent({
+      leaseId: "expired-business-pricing-active-lease",
+      accountScope: "business-pricing-get-only-scope",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "demo",
+      reportType: "GET_MERCHANT_LISTINGS_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+      report: {
+        reportId: "expired-active-report",
+        documentId: "expired-active-document",
+        status: "DONE",
+        createdAt: now - 2_000,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now - 2_000,
+      updatedAt: now - 1_500,
+      expiresAt: now - 1_000,
+    }, now - 2_000);
+
+    const expiredLease = await router.handle(dataRequest(
+      "business-pricing-audit-data-expired-active-lease",
+    ));
+    expect(expiredLease.status).toBe(200);
+    expect(startActive).not.toHaveBeenCalled();
+    expect(statusActive).not.toHaveBeenCalled();
+    expect(expiredLease.body.kind).toBe("json");
+    if (expiredLease.body.kind !== "json") {
+      throw new Error("Expected JSON response");
+    }
+    expect((expiredLease.body.value as { rows: Array<{ editable: boolean }> })
+      .rows.every((row) => row.editable === false)).toBe(true);
+  });
+
+  it("persists an unknown Active Listings create and does not blind-retry it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "business-pricing-unknown-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const startActive = vi.fn(async () => {
+      throw new Error("connection ended after Active Listings create");
+    });
+    const makeRouter = () => new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "business-pricing-unknown-scope",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      businessPricingActiveListingsReports: { start: startActive },
+    });
+    const startRequest = (requestId: string): ApiRequest => ({
+      requestId,
+      method: "POST",
+      path: "/api/sp-api/business-pricing-audit",
+      query: {},
+      headers: { "content-type": "application/json" },
+      body: { kind: "json", value: { marketplaceId: MARKETPLACE_ID } },
+    });
+
+    const firstRouter = makeRouter();
+    const concurrent = await Promise.all([
+      firstRouter.handle(startRequest(
+        "business-pricing-active-create-unknown-1",
+      )),
+      firstRouter.handle(startRequest(
+        "business-pricing-active-create-unknown-concurrent",
+      )),
+    ]);
+    expect(concurrent.map((response) => response.status)).toEqual([200, 200]);
+    expect(startActive).toHaveBeenCalledOnce();
+    await expect(store.getSharedReport({
+      accountScope: "business-pricing-unknown-scope",
+      marketplaceId: MARKETPLACE_ID,
+      reportType: "GET_MERCHANT_LISTINGS_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+    })).resolves.toMatchObject({
+      report: {
+        reportId: null,
+        documentId: null,
+        status: "CREATION_UNKNOWN",
+        terminal: "CREATION_UNKNOWN",
+      },
+    });
+
+    expect((await makeRouter().handle(startRequest(
+      "business-pricing-active-create-unknown-after-restart",
+    ))).status).toBe(200);
+    expect(startActive).toHaveBeenCalledOnce();
+  });
 });
