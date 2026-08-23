@@ -1030,6 +1030,11 @@ export function createUnboundVariationWorkbook({
 }: CreateUnboundVariationWorkbookInput): Uint8Array {
   const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
   const allVariationWorkbookRows = variationFamilyWorkbookRows(allVariationRows);
+  const verticalVariationWorkbookRows = variationFamilyVerticalWorkbookRows({
+    allVariationRows,
+    standaloneRows: rows,
+    incompleteRows,
+  });
   const sheets = [
     {
       name: "未綁變體",
@@ -1080,6 +1085,24 @@ export function createUnboundVariationWorkbook({
         dataRowHeight: 38,
       }),
     },
+    {
+      name: "全部變體（直式）",
+      xml: buildWorksheet({
+        headers: [
+          "分類",
+          "層級",
+          "SKU",
+          "商品標題",
+          "ASIN",
+          "商品類型",
+          "Variation Theme",
+          "判定依據",
+        ],
+        rows: verticalVariationWorkbookRows,
+        widths: [22, 32, 28, 58, 18, 24, 24, 72],
+        dataRowHeight: 38,
+      }),
+    },
   ];
   const archive: Record<string, Uint8Array> = {
     "[Content_Types].xml": strToU8(buildContentTypes(sheets.length)),
@@ -1111,6 +1134,83 @@ export function createUnboundVariationWorkbook({
 function variationFamilyWorkbookRows(
   rows: readonly AllVariationWorkbookRow[],
 ): readonly (readonly Cell[])[] {
+  return styledVariationFamilyRows(rows, (row) => [
+    row.familySku,
+    row.role === "parent" ? "父變體" : "子變體",
+    row.sellerSku,
+    row.title,
+    row.productType,
+    row.variationTheme ?? "",
+    variationFamilyEvidenceLabel(row.evidence),
+  ]);
+}
+
+function variationFamilyVerticalWorkbookRows(input: {
+  allVariationRows: readonly AllVariationWorkbookRow[];
+  standaloneRows: readonly UnboundVariationWorkbookRow[];
+  incompleteRows: readonly UnboundVariationWorkbookIncompleteRow[];
+}): readonly (readonly Cell[])[] {
+  assertVariationFamiliesBeginWithParent(input.allVariationRows);
+  const familyRows = styledVariationFamilyRows(
+    input.allVariationRows,
+    (row) => [
+      "變體家庭",
+      row.role === "parent" ? "父變體／Parent" : "↳ 子變體／Child",
+      row.sellerSku,
+      row.title,
+      "",
+      row.productType,
+      row.variationTheme ?? "",
+      variationFamilyEvidenceLabel(row.evidence),
+    ],
+  );
+  const standaloneRows = input.standaloneRows.map((row): readonly Cell[] => [
+    textCell("已確認未綁", 7),
+    textCell("未綁／Standalone（無 Parent）", 7),
+    textCell(row.sellerSku, 7),
+    textCell(row.title, 7),
+    textCell(row.asin, 7),
+    textCell(row.productType, 7),
+    textCell("", 7),
+    textCell(row.notice, 7),
+  ]);
+  const incompleteRows = input.incompleteRows.map((row): readonly Cell[] => [
+    textCell("關係讀取未完成", 5),
+    textCell("未知／不綁定 Parent", 5),
+    textCell(row.sellerSku, 5),
+    textCell(row.title, 5),
+    textCell(row.asin, 5),
+    textCell("", 5),
+    textCell("", 5),
+    textCell(`${row.code}：${row.message}`, 5),
+  ]);
+  return [...familyRows, ...standaloneRows, ...incompleteRows];
+}
+
+function assertVariationFamiliesBeginWithParent(
+  rows: readonly AllVariationWorkbookRow[],
+): void {
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    const firstInFamily = index === 0 ||
+      rows[index - 1]?.familySku !== row.familySku;
+    if (firstInFamily && row.role !== "parent") {
+      throw new Error(
+        "All-variation workbook families must begin with their exact parent row.",
+      );
+    }
+    if (!firstInFamily && row.role === "parent") {
+      throw new Error(
+        "All-variation workbook families must contain one leading parent row.",
+      );
+    }
+  }
+}
+
+function styledVariationFamilyRows(
+  rows: readonly AllVariationWorkbookRow[],
+  valuesForRow: (row: AllVariationWorkbookRow) => readonly string[],
+): readonly (readonly Cell[])[] {
   const familyOrdinals = new Map<string, number>();
   let currentFamily = "";
   let currentOrdinal = -1;
@@ -1133,19 +1233,7 @@ function variationFamilyWorkbookRows(
     if (familyOrdinal === undefined) {
       throw new Error("All-variation workbook family is missing its ordinal.");
     }
-    const values = [
-      row.familySku,
-      row.role === "parent" ? "父變體" : "子變體",
-      row.sellerSku,
-      row.title,
-      row.productType,
-      row.variationTheme ?? "",
-      row.evidence === "verified-parent"
-        ? "Amazon relationships 已驗證父變體"
-        : row.evidence === "verified-child"
-          ? "Amazon relationships 已驗證子變體"
-          : "父 SKU 取自已驗證子變體關係；未猜測父商品名稱",
-    ];
+    const values = valuesForRow(row);
     return values.map((value, columnIndex) => textCell(
       value,
       variationFamilyCellStyle({
@@ -1157,6 +1245,16 @@ function variationFamilyWorkbookRows(
       }),
     ));
   });
+}
+
+function variationFamilyEvidenceLabel(
+  evidence: AllVariationWorkbookRow["evidence"],
+): string {
+  return evidence === "verified-parent"
+    ? "Amazon relationships 已驗證父變體"
+    : evidence === "verified-child"
+      ? "Amazon relationships 已驗證子變體"
+      : "父 SKU 取自已驗證子變體關係；未猜測父商品名稱";
 }
 
 function variationFamilyCellStyle(input: {
@@ -1524,7 +1622,7 @@ function buildWorkbookRelationships(sheetCount: number): string {
 }
 
 function buildStyles(): string {
-  const familyBorderColor = "FF0B1F33";
+  const familyBorderColor = "FF6F8EAC";
   const familyBorders = [
     `<border><left style="medium"><color rgb="${familyBorderColor}"/></left><right/><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom/><diagonal/></border>`,
     `<border><left/><right/><top style="medium"><color rgb="${familyBorderColor}"/></top><bottom/><diagonal/></border>`,
@@ -1540,8 +1638,8 @@ function buildStyles(): string {
   ];
   const familyBorderIds = [2, 3, 4, 5, 0, 6, 7, 8, 9, 10, 11, 12];
   const familyCellStyles = [
-    { fontId: 2, fillId: 2 },
-    { fontId: 0, fillId: 5 },
+    { fontId: 0, fillId: 6 },
+    { fontId: 0, fillId: 7 },
   ].flatMap(({ fontId, fillId }) => familyBorderIds.map((borderId) =>
     `<xf numFmtId="0" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>`,
   )).join("");
@@ -1555,13 +1653,15 @@ function buildStyles(): string {
     <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/><family val="2"/></font>
     <font><sz val="11"/><color rgb="FFFFFFFF"/><name val="Aptos"/><family val="2"/></font>
   </fonts>
-  <fills count="6">
+  <fills count="8">
     <fill><patternFill patternType="none"/></fill>
     <fill><patternFill patternType="gray125"/></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FF17324D"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFEAF4FB"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFF8FBFE"/><bgColor indexed="64"/></patternFill></fill>
   </fills>
   <borders count="13">
     <border><left/><right/><top/><bottom/><diagonal/></border>

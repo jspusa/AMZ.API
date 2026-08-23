@@ -4,6 +4,7 @@ export type AuditExportKind =
   | "variation"
   | "inventory"
   | "subscription"
+  | "businessPricing"
   | "review"
   | "advertising"
   | "inbound"
@@ -15,6 +16,7 @@ const AUDIT_EXPORT_LABELS: Readonly<Record<AuditExportKind, string>> = {
   variation: "未綁變體健檢",
   inventory: "庫齡與預估冗餘健檢",
   subscription: "訂閱價格健檢",
+  businessPricing: "B2B價格健檢",
   review: "評論主題健檢",
   advertising: "廣告覆蓋健檢",
   inbound: "入庫貨件",

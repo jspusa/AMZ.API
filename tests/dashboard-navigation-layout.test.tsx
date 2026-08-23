@@ -7,15 +7,47 @@ import Dashboard, {
 } from "../src/renderer/src/components/dashboard";
 
 describe("dashboard top navigation layout", () => {
-  it("counts above-standard B2B prices as home attention", () => {
+  it("counts each B2B attention row once when recommendation categories overlap", () => {
+    const attentionRow = {
+      sellerSku: "BOTH-MISMATCH",
+      asin: "B000000001",
+      title: "Both recommendation issues",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 20, currencyCode: "USD" },
+      businessPrice: { amount: 17, currencyCode: "USD" },
+      businessOfferPresence: "present" as const,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "absent" as const,
+      recommendedPriceMismatch: true,
+      recommendedQuantityDiscountMismatch: true,
+      status: "configured" as const,
+      editable: false,
+      reason: "同時不符兩項建議。",
+    };
     expect(businessPricingAttentionCount({
-      totalFbaSkuCount: 12,
-      configured: 4,
-      aboveStandard: 3,
-      missing: 2,
-      unsupported: 1,
-      incomplete: 2,
-    })).toBe(8);
+      mode: "live",
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-23T10:00:00.000Z",
+      rows: [attentionRow, {
+        ...attentionRow,
+        sellerSku: "EXACT-GOOD",
+        asin: "B000000002",
+        recommendedPriceMismatch: false,
+        recommendedQuantityDiscountMismatch: false,
+        reason: "符合建議。",
+      }],
+      summary: {
+        totalFbaSkuCount: 2,
+        configured: 2,
+        aboveStandard: 0,
+        missing: 0,
+        unsupported: 0,
+        incomplete: 0,
+        recommendedPriceMismatch: 1,
+        recommendedQuantityDiscountMismatch: 1,
+      },
+      notice: "FBA-only fixture。",
+    })).toBe(1);
   });
 
   it("groups workspaces and injectable reports into four centered dropdowns and removes home tool tiles", async () => {

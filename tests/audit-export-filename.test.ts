@@ -12,6 +12,7 @@ describe("renderer-owned FBA audit export filenames", () => {
     ["variation", "FBA-未綁變體健檢-US-2026-08-10.xlsx"],
     ["inventory", "FBA-庫齡與預估冗餘健檢-US-2026-08-10.xlsx"],
     ["subscription", "FBA-訂閱價格健檢-US-2026-08-10.xlsx"],
+    ["businessPricing", "FBA-B2B價格健檢-US-2026-08-10.xlsx"],
     ["review", "FBA-評論主題健檢-US-2026-08-10.xlsx"],
     ["advertising", "FBA-廣告覆蓋健檢-US-2026-08-10.xlsx"],
     ["suite", "FBA-一鍵全部健檢-US-2026-08-10.xlsx"],
@@ -58,6 +59,7 @@ describe("renderer-owned FBA audit export filenames", () => {
     ["components/unbound-variation-audit-panel.tsx", "variation"],
     ["components/aged-inventory-panel.tsx", "inventory"],
     ["components/subscription-audit-panel.tsx", "subscription"],
+    ["components/business-pricing-audit-panel.tsx", "businessPricing"],
     ["components/review-audit-panel.tsx", "review"],
     ["inbound-shipments-excel.ts", "inbound"],
   ] as const)("owns the %s download name in the renderer", (file, kind) => {

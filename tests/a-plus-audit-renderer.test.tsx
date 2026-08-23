@@ -519,8 +519,9 @@ describe("A+ FBA audit renderer", () => {
     )?.[0];
 
     expect(summary).toBeDefined();
-    expect(summary?.match(/<button\b/gu)).toHaveLength(6);
+    expect(summary?.match(/<button\b/gu)).toHaveLength(5);
     expect(summary).toContain('aria-pressed="true"');
+    expect(summary).not.toContain("API 不可用");
     expect(markup).not.toContain("business-pricing-filters");
     expect(markup.match(/A\+ 健檢摘要與篩選/gu)).toHaveLength(1);
   });

@@ -2254,6 +2254,12 @@ describe("Amazon Business pricing SP-API contract", () => {
       missing: snapshot.rows.filter((row) => row.status === "missing").length,
       unsupported: snapshot.rows.filter((row) => row.status === "unsupported").length,
       incomplete: snapshot.rows.filter((row) => row.status === "incomplete").length,
+      recommendedPriceMismatch: snapshot.rows.filter((row) =>
+        row.recommendedPriceMismatch
+      ).length,
+      recommendedQuantityDiscountMismatch: snapshot.rows.filter((row) =>
+        row.recommendedQuantityDiscountMismatch
+      ).length,
     });
     expect(snapshot.rows.every((row) =>
       row.reason.length > 0 && row.editable === false
@@ -2414,6 +2420,8 @@ describe("Amazon Business pricing SP-API contract", () => {
       "LISTINGS-IDENTITY-CONFLICT\tB000000037\tListings conflict\tAMAZON_NA\t",
       "LISTINGS-FBA-CONFLICT\tB000000038\tListings FBA conflict\tAMAZON_NA\t",
       "MALFORMED-ACTIVE-PRICE\tB000000039\tMalformed Active price\tAMAZON_NA\t",
+      "ACTIVE-LISTINGS-WINS\tB000000040\tActive Listings current price\tAMAZON_NA\t",
+      "THREE-SOURCE-CONFLICT\tB000000041\tThree source conflict\tAMAZON_NA\t16.45",
     ].join("\n");
     const activeListingsReport = [
       "seller-sku\tasin1\titem-name\tfulfillment-channel\tbusiness-price",
@@ -2427,6 +2435,8 @@ describe("Amazon Business pricing SP-API contract", () => {
       "LISTINGS-IDENTITY-CONFLICT\tB000000037\tListings conflict\tAMAZON_NA\t17.45",
       "LISTINGS-FBA-CONFLICT\tB000000038\tListings FBA conflict\tAMAZON_NA\t17.45",
       "MALFORMED-ACTIVE-PRICE\tB000000039\tMalformed Active price\tAMAZON_NA\tUSD 17.45",
+      "ACTIVE-LISTINGS-WINS\tB000000040\tActive Listings current price\tAMAZON_NA\t17.45",
+      "THREE-SOURCE-CONFLICT\tB000000041\tThree source conflict\tAMAZON_NA\t17.45",
     ].join("\n");
     let activeReportPostCount = 0;
     let productTypeDefinitionRequestCount = 0;
@@ -2517,7 +2527,7 @@ describe("Amazon Business pricing SP-API contract", () => {
           }],
         };
         return jsonResponse(200, {
-          numberOfResults: 9,
+          numberOfResults: 11,
           items: [
             listing("AFA135AM", "B000000031", null),
             listing("TRPL03", "B000000032"),
@@ -2543,6 +2553,38 @@ describe("Amazon Business pricing SP-API contract", () => {
               "B000000039",
               canonicalB2bAttributes,
             ),
+            listing("ACTIVE-LISTINGS-WINS", "B000000040", {
+              purchasable_offer: [{
+                audience: "ALL",
+                marketplace_id: MARKETPLACE_ID,
+                currency: "USD",
+                our_price: [{ schedule: [{ value_with_tax: 20 }] }],
+              }, {
+                audience: "B2B",
+                marketplace_id: MARKETPLACE_ID,
+                currency: "USD",
+                // Listings attributes can lag the durable Active Listings
+                // report. The exact Active row is the current read evidence.
+                our_price: [{ schedule: [{ value_with_tax: 18.45 }] }],
+                quantity_discount_plan: [{ schedule: [{
+                  discount_type: "percent",
+                  levels: [
+                    { lower_bound: 5, value: 5 },
+                    { lower_bound: 10, value: 10 },
+                    { lower_bound: 15, value: 15 },
+                    { lower_bound: 20, value: 20 },
+                  ],
+                }] }],
+              }],
+            }),
+            listing("THREE-SOURCE-CONFLICT", "B000000041", {
+              purchasable_offer: [{
+                audience: "B2B",
+                marketplace_id: MARKETPLACE_ID,
+                currency: "USD",
+                our_price: [{ schedule: [{ value_with_tax: 18.45 }] }],
+              }],
+            }),
           ],
         });
       }
@@ -2570,7 +2612,7 @@ describe("Amazon Business pricing SP-API contract", () => {
 
     expect(activeReportPostCount).toBe(0);
     expect(productTypeDefinitionRequestCount).toBe(0);
-    expect(snapshot.rows).toHaveLength(9);
+    expect(snapshot.rows).toHaveLength(11);
     for (const sellerSku of ["AFA135AM", "NO-PURCHASABLE-OFFER"]) {
       expect(snapshot.rows.find((row) => row.sellerSku === sellerSku))
         .toMatchObject({
@@ -2584,6 +2626,19 @@ describe("Amazon Business pricing SP-API contract", () => {
           editable: false,
         });
     }
+    expect(snapshot.rows.find((row) =>
+      row.sellerSku === "ACTIVE-LISTINGS-WINS"
+    )).toMatchObject({
+      standardPrice: null,
+      businessPrice: { amount: 17.45, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlanPresence: "canonical",
+      recommendedPriceMismatch: false,
+      recommendedQuantityDiscountMismatch: false,
+      status: "configured",
+      editable: false,
+      reason: expect.stringMatching(/Active Listings.*現行/u),
+    });
     for (const sellerSku of [
       "TRPL03",
       "DUPLICATE-ACTIVE",
@@ -2592,6 +2647,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       "LISTINGS-IDENTITY-CONFLICT",
       "LISTINGS-FBA-CONFLICT",
       "MALFORMED-ACTIVE-PRICE",
+      "THREE-SOURCE-CONFLICT",
     ]) {
       expect(snapshot.rows.find((row) => row.sellerSku === sellerSku))
         .toMatchObject({
@@ -2606,11 +2662,11 @@ describe("Amazon Business pricing SP-API contract", () => {
         });
     }
     expect(snapshot.summary).toMatchObject({
-      totalFbaSkuCount: 9,
-      configured: 2,
+      totalFbaSkuCount: 11,
+      configured: 3,
       aboveStandard: 0,
       missing: 0,
-      incomplete: 7,
+      incomplete: 8,
     });
   });
 
@@ -3130,6 +3186,8 @@ describe("Amazon Business pricing SP-API contract", () => {
       missing: 0,
       unsupported: 0,
       incomplete: 2,
+      recommendedPriceMismatch: 3,
+      recommendedQuantityDiscountMismatch: 2,
     });
   });
 
@@ -3447,6 +3505,8 @@ describe("Amazon Business pricing SP-API contract", () => {
       missing: 4,
       unsupported: 0,
       incomplete: 6,
+      recommendedPriceMismatch: 2,
+      recommendedQuantityDiscountMismatch: 6,
     });
     expect(snapshot.rows.find((row) => row.sellerSku === "UNSUPPORTED")?.reason)
       .toBe("尚未設定 Amazon Business 價格。");

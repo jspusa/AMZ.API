@@ -63,7 +63,10 @@ import UnboundVariationAuditPanel, {
 } from "./unbound-variation-audit-panel";
 import VariationPlannerDrawer from "./variation-planner-drawer";
 import { isSubscriptionAuditMarketplaceSupported } from "../subscription-audit";
-import type { BusinessPricingAuditSnapshot } from "../business-pricing-audit";
+import {
+  businessPricingRowMatchesFilter,
+  type BusinessPricingAuditSnapshot,
+} from "../business-pricing-audit";
 import type { AplusAuditSnapshot } from "../a-plus-audit";
 import {
   pollExistingReviewAuditJob,
@@ -146,11 +149,11 @@ export function connectionEvidenceFromSales(
 }
 
 export function businessPricingAttentionCount(
-  summary: BusinessPricingAuditSnapshot["summary"] | null,
+  snapshot: BusinessPricingAuditSnapshot | null,
 ): number {
-  return summary
-    ? summary.aboveStandard + summary.missing + summary.unsupported + summary.incomplete
-    : 0;
+  return snapshot?.rows.filter((row) =>
+    businessPricingRowMatchesFilter(row, "problem")
+  ).length ?? 0;
 }
 
 export function standaloneAuditDashboardKey(
@@ -1393,7 +1396,7 @@ export default function Dashboard({
   const currentReviewAuditProgress = reviewAuditHomeProgress(currentReviewAudit);
   const currentBusinessPricingAudit = businessPricingAuditCache[marketplaceId] ?? null;
   const currentBusinessPricingAttentionCount = businessPricingAttentionCount(
-    currentBusinessPricingAudit?.summary ?? null,
+    currentBusinessPricingAudit,
   );
   const currentBusinessPricingAuditOutcome = currentBusinessPricingAudit?.summary.incomplete
     ? "部分完成"
