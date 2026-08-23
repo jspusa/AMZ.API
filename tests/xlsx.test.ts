@@ -216,6 +216,15 @@ describe("FBA unbound variation audit Excel export", () => {
           evidence: "verified-child",
         },
         {
+          familySku: "PARENT-01",
+          role: "child",
+          sellerSku: "CHILD-01-B",
+          title: "Second child in first family",
+          productType: "PET_FOOD",
+          variationTheme: "SIZE_NAME",
+          evidence: "verified-child",
+        },
+        {
           familySku: "PARENT-02",
           role: "parent",
           sellerSku: "PARENT-02",
@@ -265,14 +274,14 @@ describe("FBA unbound variation audit Excel export", () => {
     const allVariationSheet = new TextDecoder().decode(
       archive["xl/worksheets/sheet3.xml"],
     );
-    const verticalVariationSheet = new TextDecoder().decode(
+    const parentColumnVariationSheet = new TextDecoder().decode(
       archive["xl/worksheets/sheet4.xml"],
     );
     const styles = new TextDecoder().decode(archive["xl/styles.xml"]);
     expect(workbookXml).toContain("未綁變體");
     expect(workbookXml).toContain("讀取未完成");
     expect(workbookXml).toContain("所有變體");
-    expect(workbookXml).toContain("全部變體（直式）");
+    expect(workbookXml).toContain("父變體橫排");
     expect(unboundSheet).not.toContain("Product Type");
     expect(unboundSheet.indexOf(">SKU<")).toBeLessThan(
       unboundSheet.indexOf(">商品標題<"),
@@ -342,49 +351,44 @@ describe("FBA unbound variation audit Excel export", () => {
       return Number(xf.match(/fontId="(\d+)"/u)?.[1]);
     };
 
-    expect(new Set([fillId("A2"), fillId("A3")])).toEqual(
+    expect(new Set([fillId("A2"), fillId("A3"), fillId("A4")])).toEqual(
       new Set([fillId("A2")]),
     );
-    expect(new Set([fillId("A4"), fillId("A5")])).toEqual(
-      new Set([fillId("A4")]),
+    expect(new Set([fillId("A5"), fillId("A6")])).toEqual(
+      new Set([fillId("A5")]),
     );
-    expect(fillId("A2")).not.toBe(fillId("A4"));
-    expect(fillId("A2")).toBe(fillId("A6"));
+    expect(fillId("A2")).not.toBe(fillId("A5"));
+    expect(fillId("A2")).toBe(fillId("A7"));
     expect(fill("A2")).toContain('fgColor rgb="FFEAF4FB"');
-    expect(fill("A4")).toContain('fgColor rgb="FFF8FBFE"');
+    expect(fill("A5")).toContain('fgColor rgb="FFF8FBFE"');
     expect(fontId("A2")).toBe(0);
-    expect(fontId("A4")).toBe(0);
+    expect(fontId("A5")).toBe(0);
 
     expect(border("A2")).toContain('<left style="medium"');
     expect(border("A2")).toContain('<top style="medium"');
     expect(border("G2")).toContain('<right style="medium"');
     expect(border("G2")).toContain('<top style="medium"');
-    expect(border("A3")).toContain('<left style="medium"');
-    expect(border("A3")).toContain('<bottom style="medium"');
-    expect(border("G3")).toContain('<right style="medium"');
-    expect(border("G3")).toContain('<bottom style="medium"');
+    expect(border("A4")).toContain('<left style="medium"');
+    expect(border("A4")).toContain('<bottom style="medium"');
+    expect(border("G4")).toContain('<right style="medium"');
+    expect(border("G4")).toContain('<bottom style="medium"');
 
-    expect(verticalVariationSheet).toContain("分類");
-    expect(verticalVariationSheet).toContain("層級");
-    expect(verticalVariationSheet).toContain("未綁／Standalone");
-    expect(verticalVariationSheet).toContain("未知／不綁定");
-    const verticalRows = verticalVariationSheet.match(
+    expect(parentColumnVariationSheet).not.toContain("分類");
+    expect(parentColumnVariationSheet).not.toContain("層級");
+    expect(parentColumnVariationSheet).not.toContain("UNBOUND-01");
+    expect(parentColumnVariationSheet).not.toContain("UNKNOWN-02");
+    const parentColumnRows = parentColumnVariationSheet.match(
       /<row r="\d+"[^>]*>.*?<\/row>/gsu,
     ) ?? [];
-    expect(verticalRows).toHaveLength(9);
-    expect(verticalRows[1]).toContain("PARENT-01");
-    expect(verticalRows[1]).toContain("父變體");
-    expect(verticalRows[2]).toContain("CHILD-01");
-    expect(verticalRows[2]).toContain("子變體");
-    expect(verticalRows[3]).toContain("PARENT-02");
-    expect(verticalRows[5]).toContain("PARENT-03");
-    expect(verticalRows[7]).toContain("UNBOUND-01");
-    expect(verticalRows[7]).toContain("已確認未綁");
-    expect(verticalRows[7]).toContain("無 Parent");
-    expect(verticalRows[7]).not.toContain("PARENT-0");
-    expect(verticalRows[8]).toContain("UNKNOWN-02");
-    expect(verticalRows[8]).toContain("關係讀取未完成");
-    expect(verticalRows[8]).toContain("未知／不綁定 Parent");
-    expect(verticalRows[8]).not.toContain("PARENT-0");
+    expect(parentColumnRows).toHaveLength(3);
+    expect(parentColumnRows[0]).toMatch(
+      /<c r="A1"[^>]*>.*?PARENT-01.*?<c r="B1"[^>]*>.*?PARENT-02.*?<c r="C1"[^>]*>.*?PARENT-03/su,
+    );
+    expect(parentColumnRows[1]).toMatch(
+      /<c r="A2"[^>]*>.*?CHILD-01.*?<c r="B2"[^>]*>.*?CHILD-02.*?<c r="C2"[^>]*>.*?CHILD-03/su,
+    );
+    expect(parentColumnRows[2]).toMatch(
+      /<c r="A3"[^>]*>.*?CHILD-01-B.*?<c r="B3"[^>]*><is><t[^>]*><\/t><\/is><\/c>.*?<c r="C3"[^>]*><is><t[^>]*><\/t><\/is><\/c>/su,
+    );
   });
 });

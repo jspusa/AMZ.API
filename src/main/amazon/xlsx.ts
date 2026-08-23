@@ -1030,11 +1030,9 @@ export function createUnboundVariationWorkbook({
 }: CreateUnboundVariationWorkbookInput): Uint8Array {
   const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
   const allVariationWorkbookRows = variationFamilyWorkbookRows(allVariationRows);
-  const verticalVariationWorkbookRows = variationFamilyVerticalWorkbookRows({
+  const parentColumnWorkbook = variationFamilyParentColumnWorkbook(
     allVariationRows,
-    standaloneRows: rows,
-    incompleteRows,
-  });
+  );
   const sheets = [
     {
       name: "未綁變體",
@@ -1086,21 +1084,13 @@ export function createUnboundVariationWorkbook({
       }),
     },
     {
-      name: "全部變體（直式）",
+      name: "父變體橫排",
       xml: buildWorksheet({
-        headers: [
-          "分類",
-          "層級",
-          "SKU",
-          "商品標題",
-          "ASIN",
-          "商品類型",
-          "Variation Theme",
-          "判定依據",
-        ],
-        rows: verticalVariationWorkbookRows,
-        widths: [22, 32, 28, 58, 18, 24, 24, 72],
-        dataRowHeight: 38,
+        headers: parentColumnWorkbook.parentSkus,
+        rows: parentColumnWorkbook.childRows,
+        widths: parentColumnWorkbook.parentSkus.map(() => 28),
+        dataRowHeight: 30,
+        autoFilter: false,
       }),
     },
   ];
@@ -1145,46 +1135,55 @@ function variationFamilyWorkbookRows(
   ]);
 }
 
-function variationFamilyVerticalWorkbookRows(input: {
-  allVariationRows: readonly AllVariationWorkbookRow[];
-  standaloneRows: readonly UnboundVariationWorkbookRow[];
-  incompleteRows: readonly UnboundVariationWorkbookIncompleteRow[];
-}): readonly (readonly Cell[])[] {
-  assertVariationFamiliesBeginWithParent(input.allVariationRows);
-  const familyRows = styledVariationFamilyRows(
-    input.allVariationRows,
-    (row) => [
-      "變體家庭",
-      row.role === "parent" ? "父變體／Parent" : "↳ 子變體／Child",
-      row.sellerSku,
-      row.title,
-      "",
-      row.productType,
-      row.variationTheme ?? "",
-      variationFamilyEvidenceLabel(row.evidence),
-    ],
+function variationFamilyParentColumnWorkbook(
+  rows: readonly AllVariationWorkbookRow[],
+): {
+  parentSkus: readonly string[];
+  childRows: readonly (readonly Cell[])[];
+} {
+  assertVariationFamiliesBeginWithParent(rows);
+  const families: Array<{
+    familySku: string;
+    parentSku: string;
+    childSkus: string[];
+  }> = [];
+  for (const row of rows) {
+    if (row.role === "parent") {
+      families.push({
+        familySku: row.familySku,
+        parentSku: row.sellerSku,
+        childSkus: [],
+      });
+      continue;
+    }
+    const family = families.at(-1);
+    if (!family || family.familySku !== row.familySku) {
+      throw new Error(
+        "All-variation workbook child rows must follow their exact parent row.",
+      );
+    }
+    family.childSkus.push(row.sellerSku);
+  }
+
+  if (!families.length) {
+    return {
+      parentSkus: ["尚無已驗證 Parent SKU"],
+      childRows: [],
+    };
+  }
+  const childRowCount = Math.max(
+    0,
+    ...families.map((family) => family.childSkus.length),
   );
-  const standaloneRows = input.standaloneRows.map((row): readonly Cell[] => [
-    textCell("已確認未綁", 7),
-    textCell("未綁／Standalone（無 Parent）", 7),
-    textCell(row.sellerSku, 7),
-    textCell(row.title, 7),
-    textCell(row.asin, 7),
-    textCell(row.productType, 7),
-    textCell("", 7),
-    textCell(row.notice, 7),
-  ]);
-  const incompleteRows = input.incompleteRows.map((row): readonly Cell[] => [
-    textCell("關係讀取未完成", 5),
-    textCell("未知／不綁定 Parent", 5),
-    textCell(row.sellerSku, 5),
-    textCell(row.title, 5),
-    textCell(row.asin, 5),
-    textCell("", 5),
-    textCell("", 5),
-    textCell(`${row.code}：${row.message}`, 5),
-  ]);
-  return [...familyRows, ...standaloneRows, ...incompleteRows];
+  return {
+    parentSkus: families.map((family) => family.parentSku),
+    childRows: Array.from(
+      { length: childRowCount },
+      (_, childIndex): readonly Cell[] => families.map((family) =>
+        textCell(family.childSkus[childIndex] ?? "", 2)
+      ),
+    ),
+  };
 }
 
 function assertVariationFamiliesBeginWithParent(

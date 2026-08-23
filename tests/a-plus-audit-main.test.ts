@@ -791,7 +791,7 @@ describe("A+ FBA audit core", () => {
     expect(snapshot.summary).toMatchObject({ published: 0, missing: 2, incomplete: 0 });
   });
 
-  it("fails closed when one A+ relation claims both published and not published", async () => {
+  it("preserves exact CONTENT_PUBLISHED when the same official relation also repeats CONTENT_NOT_PUBLISHED", async () => {
     const snapshot = await runAplusAudit({
       mode: "live",
       marketplaceId: MARKETPLACE_ID,
@@ -816,11 +816,18 @@ describe("A+ FBA audit core", () => {
       fetchContentDocumentAsinRelations: async () => ({
         status: 200,
         payload: {
-          asinMetadataSet: [{
-            asin: "B000000205",
-            badgeSet: ["CONTENT_PUBLISHED", "CONTENT_NOT_PUBLISHED"],
-            contentReferenceKeySet: ["conflicting-reference"],
-          }],
+          asinMetadataSet: [
+            {
+              asin: "B000000205",
+              badgeSet: ["CONTENT_PUBLISHED", "CONTENT_NOT_PUBLISHED"],
+              contentReferenceKeySet: ["conflicting-reference"],
+            },
+            {
+              asin: "B000000205",
+              badgeSet: ["CONTENT_NOT_PUBLISHED"],
+              contentReferenceKeySet: ["conflicting-reference"],
+            },
+          ],
         },
       }),
       fetchPublishRecords: async () => ({
@@ -830,17 +837,22 @@ describe("A+ FBA audit core", () => {
     } as never);
 
     expect(snapshot.rows[0]).toMatchObject({
-      status: "incomplete",
+      status: "published",
       sourceCompleteness: "partial",
       publishedRecordCount: null,
-      reasonCode: "A_PLUS_RESPONSE_INVALID",
-      documents: [],
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      documents: [{
+        name: "Conflicting content",
+        relationState: "published",
+        evidence: "relation_badge",
+        completeness: "partial",
+      }],
       documentEvidenceCompleteness: "partial",
     });
-    expect(snapshot.summary).toMatchObject({ published: 0, missing: 0, incomplete: 1 });
+    expect(snapshot.summary).toMatchObject({ published: 1, missing: 0, incomplete: 0 });
   });
 
-  it("drops duplicate relation positives after a malformed conflict but preserves an exact publish record", async () => {
+  it("keeps duplicate relation positives partial and leaves an exact publish record authoritative", async () => {
     const snapshot = await runAplusAudit({
       mode: "live",
       marketplaceId: MARKETPLACE_ID,
@@ -924,18 +936,23 @@ describe("A+ FBA audit core", () => {
     expect(snapshot.rows).toMatchObject([
       {
         sellerSku: "RELATION-ONLY-CONFLICT",
-        status: "incomplete",
+        status: "published",
         sourceCompleteness: "partial",
         publishedRecordCount: null,
-        reasonCode: "A_PLUS_RESPONSE_INVALID",
-        documents: [],
+        reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+        documents: [{
+          name: "Duplicate conflicting content",
+          relationState: "published",
+          evidence: "relation_badge",
+          completeness: "partial",
+        }],
         documentEvidenceCompleteness: "partial",
       },
       {
         sellerSku: "EXACT-PUBLISH-CONFLICT",
         status: "published",
-        sourceCompleteness: "partial",
-        publishedRecordCount: null,
+        sourceCompleteness: "complete",
+        publishedRecordCount: 1,
         reasonCode: "PUBLISHED_RECORD_FOUND",
         documents: [{
           name: "Duplicate conflicting content",
@@ -946,7 +963,63 @@ describe("A+ FBA audit core", () => {
         documentEvidenceCompleteness: "partial",
       },
     ]);
-    expect(snapshot.summary).toMatchObject({ published: 1, missing: 0, incomplete: 1 });
+    expect(snapshot.summary).toMatchObject({ published: 2, missing: 0, incomplete: 0 });
+  });
+
+  it("still fails closed for a malformed negative relation without CONTENT_PUBLISHED", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-malformed-negative",
+      rows: [{ sellerSku: "MALFORMED-NEGATIVE", asin: "B000000208", title: "Malformed negative" }],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "malformed-negative-reference",
+            contentMetadata: {
+              name: "Malformed negative content",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T14:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [
+            {
+              asin: "B000000208",
+              badgeSet: ["CONTENT_NOT_PUBLISHED"],
+              contentReferenceKeySet: ["malformed-negative-reference"],
+            },
+            {
+              asin: "B000000208",
+              badgeSet: ["CONTENT_NOT_PUBLISHED", "NOT_AN_AMAZON_BADGE"],
+              contentReferenceKeySet: ["malformed-negative-reference"],
+            },
+          ],
+        },
+      }),
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+    } as never);
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "A_PLUS_RESPONSE_INVALID",
+      documents: [],
+      documentEvidenceCompleteness: "partial",
+    });
+    expect(snapshot.summary).toMatchObject({ published: 0, missing: 0, incomplete: 1 });
   });
 
   it("queries each exact ASIN once and fans the result out to every FBA Seller SKU", async () => {
