@@ -73,7 +73,6 @@ describe("combined FBA audit suite Excel", () => {
           title: "A+ product",
           asin: "B000000007",
           finding: "尚未發布 A+",
-          brandStoryFinding: "From the brand 未確認",
           notice: "只列官方 API 可證明的發布狀態。",
         }]),
         variation: snapshot([]),
@@ -130,7 +129,8 @@ describe("combined FBA audit suite Excel", () => {
     expect(allXml).toContain("圖片健檢未完成；沒有建立結果快照");
     expect(allXml).toContain("數量未知，未補 0");
     expect(allXml).toContain("尚未發布 A+");
-    expect(allXml).toContain("From the brand 未確認");
+    expect(allXml).not.toContain("From the brand");
+    expect(allXml).not.toContain("Brand Story");
     expect(allXml).toContain("B2B 價格高於一般售價");
     expect(allXml).toContain("只讀核對；未執行寫入。");
     expect(allXml).not.toContain("<v>0</v>");

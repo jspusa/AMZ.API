@@ -23,6 +23,8 @@ export type BusinessPricingAuditRow = Readonly<{
   standardPrice: BusinessPricingMoney | null;
   businessPrice: BusinessPricingMoney | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
+  quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
   status: BusinessPricingAuditStatus;
   editable: boolean;
   reason: string;
@@ -244,6 +246,15 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
   }
   const standardPrice = money(source.standardPrice, "標準售價");
   const businessPrice = money(source.businessPrice, "B2B 價格");
+  const legacyQuantityDiscountShape =
+    source.quantityDiscountPlan === undefined &&
+    source.quantityDiscountPlanPresence === undefined;
+  const quantityDiscount = legacyQuantityDiscountShape
+    ? { plan: null, presence: "ambiguous" as const }
+    : parseAuditQuantityDiscountPlan(
+        source.quantityDiscountPlan,
+        source.quantityDiscountPlanPresence,
+      );
   if (
     ((status === "configured" || status === "above_standard") &&
       (presence !== "present" || !businessPrice)) ||
@@ -274,6 +285,8 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
     standardPrice,
     businessPrice,
     businessOfferPresence: presence,
+    quantityDiscountPlan: quantityDiscount.plan,
+    quantityDiscountPlanPresence: quantityDiscount.presence,
     status,
     editable: source.editable,
     reason: exactText(source.reason, "原因", 2_000),
@@ -375,6 +388,12 @@ export function applyVerifiedBusinessPriceToAuditSnapshot(
           standardPrice: update.standardPrice,
           businessPrice: update.requestedBusinessPrice,
           businessOfferPresence: "present" as const,
+          ...(update.quantityDiscountPlanChange === "replace"
+            ? {
+                quantityDiscountPlan: update.requestedQuantityDiscountPlan,
+                quantityDiscountPlanPresence: "canonical" as const,
+              }
+            : {}),
           status: aboveStandard ? "above_standard" as const : "configured" as const,
           reason: aboveStandard
             ? "Amazon Business 價格仍高於一般售價；主程序已唯讀回查確認。"
@@ -411,31 +430,9 @@ function exactHash(value: unknown, label: string): string {
   return value;
 }
 
-function parseQuantityDiscountPlan(
+function parseCanonicalQuantityDiscountPlan(
   value: unknown,
-  presence: unknown,
-  hash: unknown,
-): {
-  plan: BusinessQuantityDiscountPlan | null;
-  presence: "absent" | "canonical" | "ambiguous";
-  hash: string | null;
-} {
-  if (presence !== "absent" && presence !== "canonical" &&
-      presence !== "ambiguous") {
-    throw new Error("B2B 數量折扣證據無效。");
-  }
-  if (presence === "absent") {
-    if (value !== null || hash !== null) {
-      throw new Error("B2B 數量折扣空值證據不一致。");
-    }
-    return { plan: null, presence, hash: null };
-  }
-  if (presence === "ambiguous") {
-    if (value !== null || hash !== null) {
-      throw new Error("B2B 數量折扣不明證據不一致。");
-    }
-    return { plan: null, presence, hash: null };
-  }
+): BusinessQuantityDiscountPlan {
   const source = record(value);
   if (source.discountType !== "percent" && source.discountType !== "fixed") {
     throw new Error("B2B 數量折扣類型無效。");
@@ -473,9 +470,47 @@ function parseQuantityDiscountPlan(
       value: level.value,
     });
   });
+  return Object.freeze({ discountType: source.discountType, levels });
+}
+
+function parseAuditQuantityDiscountPlan(
+  value: unknown,
+  presence: unknown,
+): {
+  plan: BusinessQuantityDiscountPlan | null;
+  presence: "absent" | "canonical" | "ambiguous";
+} {
+  if (presence !== "absent" && presence !== "canonical" &&
+      presence !== "ambiguous") {
+    throw new Error("B2B 數量折扣證據無效。");
+  }
+  if (presence === "absent" || presence === "ambiguous") {
+    if (value !== null) {
+      throw new Error("B2B 數量折扣空值證據不一致。");
+    }
+    return { plan: null, presence };
+  }
+  return { plan: parseCanonicalQuantityDiscountPlan(value), presence };
+}
+
+function parseQuantityDiscountPlan(
+  value: unknown,
+  presence: unknown,
+  hash: unknown,
+): {
+  plan: BusinessQuantityDiscountPlan | null;
+  presence: "absent" | "canonical" | "ambiguous";
+  hash: string | null;
+} {
+  const parsed = parseAuditQuantityDiscountPlan(value, presence);
+  if (parsed.presence !== "canonical") {
+    if (hash !== null) {
+      throw new Error("B2B 數量折扣空值證據不一致。");
+    }
+    return { ...parsed, hash: null };
+  }
   return {
-    plan: Object.freeze({ discountType: source.discountType, levels }),
-    presence,
+    ...parsed,
     hash: exactHash(hash, "數量折扣 hash"),
   };
 }

@@ -196,6 +196,50 @@ describe("renderer content quality helpers", () => {
     expect(addPagesDictionarySpellingIssues(approvedRows)[0].issues).toEqual([]);
   });
 
+  it.each([
+    "differentiator",
+    "GANODERMA",
+    "CORNUCOPIAE",
+    "Staffordshire",
+    "American",
+    "Siberian",
+  ])("keeps the explicitly approved catalog term %s out of typo results", (term) => {
+    const checked = addPagesDictionarySpellingIssues([{
+      ...rows[0],
+      title: term,
+      bulletPoints: [],
+      ingredients: "",
+      issues: [],
+    }]);
+
+    expect(sharedContentSpellingMatch(term)).toBeNull();
+    expect(checked[0].issues).toEqual([]);
+  });
+
+  it("accepts Cocker only in the contiguous breed phrase Cocker Spaniel", () => {
+    const accepted = addPagesDictionarySpellingIssues([{
+      ...rows[0],
+      title: "Dental chew for Cocker Spaniel dogs",
+      bulletPoints: [],
+      ingredients: "",
+      issues: [],
+    }]);
+    const unpaired = addPagesDictionarySpellingIssues([{
+      ...rows[0],
+      title: "Dental chew for Cocker dogs",
+      bulletPoints: [],
+      ingredients: "",
+      issues: [],
+    }]);
+
+    expect(accepted[0].issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ token: "Cocker" }),
+    ]));
+    expect(unpaired[0].issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ token: "Cocker" }),
+    ]));
+  });
+
   it("keeps accepted catalog singular, plural and related variants out of typo results", () => {
     const accepted = [
       "snack", "snacks",

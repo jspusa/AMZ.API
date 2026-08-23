@@ -7,9 +7,17 @@ import {
   parseAplusAuditJobTerminal,
   parseAplusAuditSnapshot,
   type AplusAuditFilter,
+  type AplusAuditJobReceipt,
+  type AplusAuditJobTerminal,
   type AplusAuditRow,
   type AplusAuditSnapshot,
 } from "../a-plus-audit";
+import {
+  openAplusManagerHandoff,
+  supportsFixedSellerCentralHandoffs,
+} from "../seller-central-handoff";
+
+export type AplusAuditObservableJob = AplusAuditJobReceipt | AplusAuditJobTerminal;
 
 const FILTERS: readonly Readonly<{
   value: AplusAuditFilter;
@@ -28,6 +36,7 @@ export type AplusAuditRequester = (
     marketplaceId: string;
     mode: "live" | "demo";
     isObserverActive?: () => boolean;
+    onJobChange?: (job: AplusAuditObservableJob) => void;
   }>,
 ) => Promise<unknown>;
 
@@ -64,6 +73,7 @@ export async function requestAplusAuditJob({
   wait = defaultJobWait,
   maxPolls = Number.POSITIVE_INFINITY,
   isObserverActive = () => true,
+  onJobChange,
 }: Readonly<{
   marketplaceId: string;
   mode: "live" | "demo";
@@ -71,6 +81,7 @@ export async function requestAplusAuditJob({
   wait?: () => Promise<void>;
   maxPolls?: number;
   isObserverActive?: () => boolean;
+  onJobChange?: (job: AplusAuditObservableJob) => void;
 }>): Promise<AplusAuditSnapshot> {
   if (
     maxPolls !== Number.POSITIVE_INFINITY &&
@@ -95,7 +106,42 @@ export async function requestAplusAuditJob({
       : "無法啟動全站 A+ 健檢。";
     throw new Error(message);
   }
-  let receipt = parseAplusAuditJobReceipt(payload, { marketplaceId, mode });
+  const receipt = parseAplusAuditJobReceipt(payload, { marketplaceId, mode });
+  onJobChange?.(receipt);
+  return observeAplusAuditJob({
+    initialJob: receipt,
+    fetcher,
+    wait,
+    maxPolls,
+    isObserverActive,
+    onJobChange,
+  });
+}
+
+export async function observeAplusAuditJob({
+  initialJob,
+  fetcher = fetch,
+  wait = defaultJobWait,
+  maxPolls = Number.POSITIVE_INFINITY,
+  isObserverActive = () => true,
+  onJobChange,
+}: Readonly<{
+  initialJob: AplusAuditJobReceipt;
+  fetcher?: AplusAuditJobFetcher;
+  wait?: () => Promise<void>;
+  maxPolls?: number;
+  isObserverActive?: () => boolean;
+  onJobChange?: (job: AplusAuditObservableJob) => void;
+}>): Promise<AplusAuditSnapshot> {
+  if (
+    maxPolls !== Number.POSITIVE_INFINITY &&
+    (!Number.isSafeInteger(maxPolls) || maxPolls < 1)
+  ) {
+    throw new Error("A+ 健檢輪詢上限無效。");
+  }
+  if (!isObserverActive()) throw observerStopped();
+  let receipt = initialJob;
+  const { marketplaceId, mode } = initialJob;
   let completedAsins = receipt.progress.completedAsins;
   let totalAsins = receipt.progress.totalAsins > 0
     ? receipt.progress.totalAsins
@@ -136,6 +182,7 @@ export async function requestAplusAuditJob({
         jobId: receipt.jobId,
         contextId: receipt.contextId,
       });
+      onJobChange?.(terminal);
       if (
         terminal.progress.completedAsins < completedAsins ||
         (totalAsins !== null && terminal.progress.totalAsins !== totalAsins)
@@ -172,6 +219,7 @@ export async function requestAplusAuditJob({
     if (next.progress.totalAsins > 0) totalAsins = next.progress.totalAsins;
     if (next.status === "running") hasRun = true;
     receipt = next;
+    onJobChange?.(receipt);
   }
   throw new Error("A+ 健檢測試輪詢上限已到；本機工作不會被盲目重建。");
 }
@@ -184,6 +232,25 @@ function statusLabel(status: AplusAuditRow["status"]): string {
   if (status === "missing") return "未找到已發布 A+";
   if (status === "unavailable") return "A+ API 尚未取得讀取權限";
   return "資料未完成，不能判定";
+}
+
+function rowStatusLabel(row: AplusAuditRow): string {
+  if (row.reasonCode === "A_PLUS_WARNING_PRESENT") {
+    return "Amazon 回應警告，請到 A+ 管理員確認";
+  }
+  if (row.reasonCode === "FBA_IDENTITY_INCOMPLETE") {
+    return "缺少可核對的 ASIN";
+  }
+  if (row.reasonCode === "FBA_RELATIONSHIP_INCOMPLETE") {
+    return "商品關係資料未完成";
+  }
+  if (row.reasonCode === "A_PLUS_RESPONSE_INVALID") {
+    return "Amazon 回應格式未完成";
+  }
+  if (row.reasonCode === "A_PLUS_READ_FAILED") {
+    return "Amazon A+ 查詢未完成";
+  }
+  return statusLabel(row.status);
 }
 
 function rowCount(
@@ -200,6 +267,8 @@ export default function AplusAuditPanel({
   initialSnapshot = null,
   cachedSnapshot = null,
   onSnapshotChange,
+  job = null,
+  onJobChange,
   requestAudit = defaultAuditRequester,
 }: {
   marketplaceId: string;
@@ -208,6 +277,8 @@ export default function AplusAuditPanel({
   initialSnapshot?: AplusAuditSnapshot | null;
   cachedSnapshot?: AplusAuditSnapshot | null;
   onSnapshotChange?: (snapshot: AplusAuditSnapshot) => void;
+  job?: AplusAuditObservableJob | null;
+  onJobChange?: (job: AplusAuditObservableJob) => void;
   requestAudit?: AplusAuditRequester;
 }) {
   const matchingInitial = [initialSnapshot, cachedSnapshot].find(
@@ -218,6 +289,7 @@ export default function AplusAuditPanel({
   const [filter, setFilter] = useState<AplusAuditFilter>("problem");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const requestRevisionRef = useRef(0);
 
@@ -237,6 +309,7 @@ export default function AplusAuditPanel({
     setSnapshot(matching);
     setFilter("problem");
     setError(null);
+    setHandoffError(null);
   }, [cachedSnapshot, initialSnapshot, marketplaceId, mode]);
 
   const visibleRows = useMemo(
@@ -253,6 +326,7 @@ export default function AplusAuditPanel({
       const raw = await requestAudit({
         marketplaceId,
         mode,
+        onJobChange,
         isObserverActive: () =>
           mountedRef.current && requestRevisionRef.current === revision,
       });
@@ -277,32 +351,56 @@ export default function AplusAuditPanel({
     }
   };
 
+  const observingBackgroundJob = Boolean(job && !job.ready);
+  const fixedSellerCentralHandoffs = supportsFixedSellerCentralHandoffs(
+    typeof window === "undefined" ? null : window.fbaOS?.app,
+  );
+
+  const openAplusManager = async () => {
+    setHandoffError(null);
+    try {
+      const outcome = await openAplusManagerHandoff(window.fbaOS.app);
+      if (outcome === "upgrade-required") {
+        setHandoffError(
+          "目前 Notebook Key 版本無法安全直達 A+ 管理員；請先更新 Notebook Key。為避免開錯頁，不會改開 Seller Central 首頁。",
+        );
+      }
+    } catch {
+      setHandoffError("無法開啟 Amazon A+ 管理員；請更新 Notebook Key 後再試一次。");
+    }
+  };
+
   return (
     <section className="business-pricing-audit-panel" aria-label="全站 FBA A+ 健檢">
       <div className="business-pricing-audit-intro">
         <div>
           <span>{marketplaceShort} · A+ CONTENT · FBA ONLY</span>
           <h3>全站 FBA A+ 健檢</h3>
-          <p>逐一核對目前 FBA ASIN 的官方 A+ publish records；同 ASIN 多個 Seller SKU 只查一次。</p>
+          <p>逐一核對目前 FBA ASIN 是否有官方 A+ 發布紀錄；同 ASIN 多個 Seller SKU 只查一次。</p>
         </div>
         <button
           type="button"
           className="price-primary-button"
           onClick={() => void runAudit()}
-          disabled={loading}
+          disabled={loading || observingBackgroundJob}
         >
-          {loading ? "A+ 健檢中…" : snapshot ? "重新健檢" : "開始全站 A+ 健檢"}
+          {loading || observingBackgroundJob ? "A+ 健檢中…" : snapshot ? "重新健檢" : "開始全站 A+ 健檢"}
         </button>
       </div>
-      <p className="business-pricing-safety-note">
-        From the brand／Brand Story：Amazon 公開 A+ API 未提供可驗證欄位，因此本健檢不猜測有或沒有，也不使用 Seller Central 私有接口。
-      </p>
-      {loading && (
+      {(loading || observingBackgroundJob) && (
         <div className="business-pricing-progress" role="status">
-          正在讀取 A+ publish records；這是唯讀健檢，不會修改 Amazon 商品頁。
+          {job && !job.ready && job.progress.totalAsins > 0
+            ? `正在讀取 A+ publish records（${job.progress.completedAsins}／${job.progress.totalAsins} ASIN）；這是唯讀健檢，不會修改 Amazon 商品頁。`
+            : "正在讀取 A+ publish records；這是唯讀健檢，不會修改 Amazon 商品頁。"}
         </div>
       )}
       {error && <div className="price-error" role="alert">{error}</div>}
+      {handoffError && <div className="price-error" role="alert">{handoffError}</div>}
+      {!fixedSellerCentralHandoffs && (
+        <p className="business-pricing-notice" role="status">
+          目前 Notebook Key 需更新後才能安全直達 A+ 管理員；為避免開錯頁，舊版不會改開 Seller Central 首頁。
+        </p>
+      )}
 
       {snapshot && (
         <>
@@ -333,33 +431,30 @@ export default function AplusAuditPanel({
             {visibleRows.map((row) => (
               <article
                 key={row.sellerSku}
-                className={`business-pricing-row ${row.status === "unavailable" ? "incomplete" : row.status}`}
+                className={`business-pricing-row aplus-presence-row ${row.status === "unavailable" ? "incomplete" : row.status}`}
                 role="listitem"
               >
                 <div>
                   <strong>{row.title || row.sellerSku}</strong>
                   <small>{row.sellerSku} · {row.asin ?? "無可驗證 ASIN"}</small>
                 </div>
-                <dl>
-                  <div>
-                    <dt>A+ 類型</dt>
-                    <dd>{row.contentTypes.length ? row.contentTypes.join("／") : "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>語系／筆數</dt>
-                    <dd>
-                      {row.locales.length ? row.locales.join("／") : "—"}
-                      {row.publishedRecordCount === null ? "" : ` · ${row.publishedRecordCount}`}
-                    </dd>
-                  </div>
-                </dl>
                 <div className="business-pricing-row-status">
-                  <span>{statusLabel(row.status)}</span>
+                  <span>{rowStatusLabel(row)}</span>
                   <small>{row.reason}</small>
                 </div>
-                <span className="business-pricing-readonly">
-                  Brand Story<br />API 無可驗證欄位
-                </span>
+                {row.status === "published" ? (
+                  <span className="business-pricing-readonly">已確認有 A+</span>
+                ) : (
+                  <div className="business-pricing-row-actions">
+                    <button
+                      type="button"
+                      onClick={() => void openAplusManager()}
+                      disabled={!fixedSellerCentralHandoffs}
+                    >
+                      前往 Amazon A+ 管理員 ↗
+                    </button>
+                  </div>
+                )}
               </article>
             ))}
             {visibleRows.length === 0 && (

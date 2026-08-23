@@ -20,6 +20,102 @@ export type UnboundVariationEvidenceResult =
       message: string;
     };
 
+export type VerifiedVariationFamilyMember = Readonly<{
+  sellerSku: string;
+  title: string;
+  productType: string;
+  role: "parent" | "child" | "standalone";
+  parentSku: string | null;
+  variationTheme: string | null;
+}>;
+
+export type AllVariationFamilyRow = Readonly<{
+  familySku: string;
+  role: "parent" | "child";
+  sellerSku: string;
+  title: string;
+  productType: string;
+  variationTheme: string | null;
+  evidence:
+    | "verified-parent"
+    | "verified-child"
+    | "parent-sku-from-verified-child";
+}>;
+
+/**
+ * Produces a deterministic SKU-only family view from already verified Amazon
+ * relationship rows. Standalone listings are intentionally excluded. When an
+ * FBA child points to a parent container that is not itself present in the FBA
+ * report, the exact parent SKU returned by Amazon becomes a synthetic heading
+ * row; no title, ASIN, product type, or variation theme is guessed for that
+ * parent.
+ */
+export function buildAllVariationFamilyRows(
+  members: readonly VerifiedVariationFamilyMember[],
+): AllVariationFamilyRow[] {
+  const families = new Map<string, {
+    parent: VerifiedVariationFamilyMember | null;
+    children: VerifiedVariationFamilyMember[];
+  }>();
+  for (const member of members) {
+    if (member.role === "standalone") continue;
+    const familySku = member.role === "parent"
+      ? member.sellerSku
+      : member.parentSku;
+    if (!familySku) continue;
+    const family = families.get(familySku) ?? { parent: null, children: [] };
+    if (member.role === "parent") {
+      family.parent = member;
+    } else {
+      family.children.push(member);
+    }
+    families.set(familySku, family);
+  }
+
+  const rows: AllVariationFamilyRow[] = [];
+  for (const familySku of [...families.keys()].sort((left, right) =>
+    left.localeCompare(right, "en"))) {
+    const family = families.get(familySku)!;
+    // Only a relationship row for the parent itself can prove the parent's
+    // variation theme. Child themes may conflict, and copying even a single
+    // child's value onto a synthetic parent would turn child evidence into a
+    // guessed parent attribute.
+    const parentTheme = family.parent?.variationTheme ?? null;
+    rows.push(family.parent
+      ? {
+          familySku,
+          role: "parent",
+          sellerSku: family.parent.sellerSku,
+          title: family.parent.title,
+          productType: family.parent.productType,
+          variationTheme: parentTheme,
+          evidence: "verified-parent",
+        }
+      : {
+          familySku,
+          role: "parent",
+          sellerSku: familySku,
+          title: "",
+          productType: "",
+          variationTheme: parentTheme,
+          evidence: "parent-sku-from-verified-child",
+        });
+    for (const child of [...family.children].sort((left, right) =>
+      left.sellerSku.localeCompare(right.sellerSku, "en"))) {
+      rows.push({
+        familySku,
+        role: "child",
+        sellerSku: child.sellerSku,
+        title: child.title,
+        productType: child.productType,
+        variationTheme: child.variationTheme,
+        evidence: "verified-child",
+      });
+    }
+  }
+  return rows;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

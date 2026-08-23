@@ -196,6 +196,26 @@ describe("FBA unbound variation audit Excel export", () => {
         code: "RELATIONSHIPS_NOT_RETURNED",
         message: "缺資料不會被誤列為未綁變體。",
       }],
+      allVariationRows: [
+        {
+          familySku: "PARENT-01",
+          role: "parent",
+          sellerSku: "PARENT-01",
+          title: "",
+          productType: "",
+          variationTheme: null,
+          evidence: "parent-sku-from-verified-child",
+        },
+        {
+          familySku: "PARENT-01",
+          role: "child",
+          sellerSku: "CHILD-01",
+          title: "Child product",
+          productType: "PET_FOOD",
+          variationTheme: "SIZE_NAME",
+          evidence: "verified-child",
+        },
+      ],
     });
 
     const archive = unzipSync(workbook);
@@ -206,8 +226,12 @@ describe("FBA unbound variation audit Excel export", () => {
     const incompleteSheet = new TextDecoder().decode(
       archive["xl/worksheets/sheet2.xml"],
     );
+    const allVariationSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet3.xml"],
+    );
     expect(workbookXml).toContain("未綁變體");
     expect(workbookXml).toContain("讀取未完成");
+    expect(workbookXml).toContain("所有變體");
     expect(unboundSheet).not.toContain("Product Type");
     expect(unboundSheet.indexOf(">SKU<")).toBeLessThan(
       unboundSheet.indexOf(">商品標題<"),
@@ -231,5 +255,19 @@ describe("FBA unbound variation audit Excel export", () => {
     );
     expect(incompleteSheet).toContain("UNKNOWN-02");
     expect(incompleteSheet).toContain("RELATIONSHIPS_NOT_RETURNED");
+    expect(allVariationSheet).not.toContain("ASIN");
+    expect(allVariationSheet.indexOf("PARENT-01")).toBeLessThan(
+      allVariationSheet.indexOf("CHILD-01"),
+    );
+    const syntheticParentRow = allVariationSheet.match(
+      /<row r="2"[^>]*>.*?<\/row>/su,
+    )?.[0];
+    expect(syntheticParentRow).toContain("PARENT-01");
+    expect(syntheticParentRow).not.toContain("SIZE_NAME");
+    expect(syntheticParentRow).toMatch(
+      /<c r="F2"[^>]*><is><t[^>]*><\/t><\/is><\/c>/su,
+    );
+    expect(allVariationSheet).toContain("父變體");
+    expect(allVariationSheet).toContain("子變體");
   });
 });

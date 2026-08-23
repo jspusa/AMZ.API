@@ -17,6 +17,7 @@ export type AplusAuditReasonCode =
   | "FBA_RELATIONSHIP_INCOMPLETE"
   | "A_PLUS_ACCESS_UNAVAILABLE"
   | "A_PLUS_READ_FAILED"
+  | "A_PLUS_WARNING_PRESENT"
   | "A_PLUS_RESPONSE_INVALID"
   | "A_PLUS_PAGINATION_INCOMPLETE";
 
@@ -32,7 +33,6 @@ export type AplusAuditRow = Readonly<{
   publishedRecordCount: number | null;
   contentTypes: readonly ("EBC" | "EMC")[];
   locales: readonly string[];
-  fromTheBrandStatus: "not_verifiable_by_public_api";
   reasonCode: AplusAuditReasonCode;
   reason: string;
 }>;
@@ -192,7 +192,7 @@ function stringList(
 
 function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
   const source = record(value, "A+ 健檢商品列");
-  exactKeys(source, [
+  const rowKeys = [
     "sellerSku",
     "asin",
     "title",
@@ -202,10 +202,13 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
     "publishedRecordCount",
     "contentTypes",
     "locales",
-    "fromTheBrandStatus",
     "reasonCode",
     "reason",
-  ], "A+ 健檢商品列");
+  ] as const;
+  const keys = source.fromTheBrandStatus === "not_verifiable_by_public_api"
+    ? [...rowKeys, "fromTheBrandStatus"]
+    : rowKeys;
+  exactKeys(source, keys, "A+ 健檢商品列");
   const status = source.status;
   if (
     status !== "published" &&
@@ -243,9 +246,6 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
     APLUS_AUDIT_MAX_PUBLIC_LOCALES_PER_ASIN,
     isAplusLanguageTag,
   );
-  if (source.fromTheBrandStatus !== "not_verifiable_by_public_api") {
-    throw new Error("A+ 健檢不得猜測 From the brand／Brand Story 狀態。");
-  }
   const reasonCode = source.reasonCode;
   const reasonsByStatus: Record<AplusAuditStatus, readonly AplusAuditReasonCode[]> = {
     published: ["PUBLISHED_RECORD_FOUND"],
@@ -254,6 +254,7 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
       "FBA_IDENTITY_INCOMPLETE",
       "FBA_RELATIONSHIP_INCOMPLETE",
       "A_PLUS_READ_FAILED",
+      "A_PLUS_WARNING_PRESENT",
       "A_PLUS_RESPONSE_INVALID",
       "A_PLUS_PAGINATION_INCOMPLETE",
     ],
@@ -308,7 +309,6 @@ function parseRow(value: unknown, marketplaceId: string): AplusAuditRow {
     publishedRecordCount,
     contentTypes,
     locales,
-    fromTheBrandStatus: "not_verifiable_by_public_api",
     reasonCode: reasonCode as AplusAuditReasonCode,
     reason: exactText(source.reason, "原因", 2_000),
   };
@@ -559,7 +559,6 @@ export function parseAplusAuditSnapshot(
         row.publishedRecordCount,
         row.contentTypes,
         row.locales,
-        row.fromTheBrandStatus,
         row.reasonCode,
         row.reason,
       ]);

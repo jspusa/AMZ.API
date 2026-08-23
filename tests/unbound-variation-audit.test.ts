@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifyUnboundVariationEvidence } from "../src/main/amazon/unbound-variation-audit";
+import {
+  buildAllVariationFamilyRows,
+  classifyUnboundVariationEvidence,
+} from "../src/main/amazon/unbound-variation-audit";
 import {
   buildUnboundVariationSearchBatches,
   classifyUnboundVariationSearchBatch,
@@ -10,6 +13,120 @@ import {
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
 describe("unbound variation relationship evidence", () => {
+  it("orders every verified family as one parent SKU followed by its child SKUs", () => {
+    expect(buildAllVariationFamilyRows([
+      {
+        sellerSku: "CHILD-B2",
+        title: "Child B2",
+        productType: "PET_FOOD",
+        role: "child",
+        parentSku: "PARENT-B",
+        variationTheme: "SIZE_NAME",
+      },
+      {
+        sellerSku: "PARENT-A",
+        title: "Parent A",
+        productType: "PET_FOOD",
+        role: "parent",
+        parentSku: null,
+        variationTheme: "FLAVOR_NAME",
+      },
+      {
+        sellerSku: "CHILD-A1",
+        title: "Child A1",
+        productType: "PET_FOOD",
+        role: "child",
+        parentSku: "PARENT-A",
+        variationTheme: "FLAVOR_NAME",
+      },
+      {
+        sellerSku: "STANDALONE",
+        title: "Standalone",
+        productType: "PET_FOOD",
+        role: "standalone",
+        parentSku: null,
+        variationTheme: null,
+      },
+      {
+        sellerSku: "CHILD-B1",
+        title: "Child B1",
+        productType: "PET_FOOD",
+        role: "child",
+        parentSku: "PARENT-B",
+        variationTheme: "FLAVOR_NAME",
+      },
+    ])).toEqual([
+      {
+        familySku: "PARENT-A",
+        role: "parent",
+        sellerSku: "PARENT-A",
+        title: "Parent A",
+        productType: "PET_FOOD",
+        variationTheme: "FLAVOR_NAME",
+        evidence: "verified-parent",
+      },
+      expect.objectContaining({
+        familySku: "PARENT-A",
+        role: "child",
+        sellerSku: "CHILD-A1",
+      }),
+      {
+        familySku: "PARENT-B",
+        role: "parent",
+        sellerSku: "PARENT-B",
+        title: "",
+        productType: "",
+        variationTheme: null,
+        evidence: "parent-sku-from-verified-child",
+      },
+      expect.objectContaining({
+        familySku: "PARENT-B",
+        role: "child",
+        sellerSku: "CHILD-B1",
+      }),
+      expect.objectContaining({
+        familySku: "PARENT-B",
+        role: "child",
+        sellerSku: "CHILD-B2",
+      }),
+    ]);
+  });
+
+  it("keeps a synthetic parent's variation theme blank when child themes conflict", () => {
+    const rows = buildAllVariationFamilyRows([
+      {
+        sellerSku: "CHILD-SIZE",
+        title: "Size child",
+        productType: "PET_FOOD",
+        role: "child",
+        parentSku: "PARENT-CONFLICT",
+        variationTheme: "SIZE_NAME",
+      },
+      {
+        sellerSku: "CHILD-FLAVOR",
+        title: "Flavor child",
+        productType: "PET_FOOD",
+        role: "child",
+        parentSku: "PARENT-CONFLICT",
+        variationTheme: "FLAVOR_NAME",
+      },
+    ]);
+
+    expect(rows[0]).toEqual({
+      familySku: "PARENT-CONFLICT",
+      role: "parent",
+      sellerSku: "PARENT-CONFLICT",
+      title: "",
+      productType: "",
+      variationTheme: null,
+      evidence: "parent-sku-from-verified-child",
+    });
+    expect(rows.slice(1).map((row) => row.variationTheme).sort()).toEqual([
+      "FLAVOR_NAME",
+      "SIZE_NAME",
+    ]);
+  });
+
   it("builds exact official search batches of at most 20 without trimming or aliasing", () => {
     const sellerSkus = Array.from({ length: 45 }, (_, index) =>
       `SKU-${String(index + 1).padStart(2, "0")}`);

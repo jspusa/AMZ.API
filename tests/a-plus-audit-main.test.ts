@@ -117,7 +117,6 @@ describe("A+ FBA audit core", () => {
         publishedRecordCount: 1,
         contentTypes: ["EBC"],
         locales: ["en-US"],
-        fromTheBrandStatus: "not_verifiable_by_public_api",
         reasonCode: "PUBLISHED_RECORD_FOUND",
       },
       {
@@ -219,14 +218,92 @@ describe("A+ FBA audit core", () => {
       status: "incomplete",
       sourceCompleteness: "partial",
       publishedRecordCount: null,
-      reasonCode: "A_PLUS_RESPONSE_INVALID",
+      reasonCode: "A_PLUS_WARNING_PRESENT",
     });
+    expect(snapshot.rows[0]).not.toHaveProperty("fromTheBrandStatus");
     expect(snapshot.rows[1]).toMatchObject({
       status: "published",
       sourceCompleteness: "partial",
       publishedRecordCount: null,
       contentTypes: ["EBC"],
       locales: ["en-US"],
+      reasonCode: "PUBLISHED_RECORD_FOUND",
+    });
+    expect(snapshot.rows[1]).not.toHaveProperty("fromTheBrandStatus");
+  });
+
+  it("follows a warning-only page token and preserves a later exact publish record", async () => {
+    const pageTokens: Array<string | undefined> = [];
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-snapshot-warning-pagination",
+      rows: [{ sellerSku: "WARN-NEXT", asin: "B000000054", title: "Warning then positive" }],
+      fetchPublishRecords: async ({ asin, pageToken }) => {
+        pageTokens.push(pageToken);
+        if (pageToken === undefined) {
+          return {
+            status: 200,
+            payload: {
+              publishRecordList: [],
+              warnings: [{ code: "PARTIAL_SUCCESS", message: "Continue to next page" }],
+              nextPageToken: "warning-next-page",
+            },
+          };
+        }
+        return {
+          status: 200,
+          payload: {
+            publishRecordList: [{
+              marketplaceId: MARKETPLACE_ID,
+              asin,
+              contentReferenceKey: "content-reference-after-warning",
+              contentType: "EBC",
+              locale: "en-US",
+            }],
+          },
+        };
+      },
+    });
+
+    expect(pageTokens).toEqual([undefined, "warning-next-page"]);
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: ["EBC"],
+      locales: ["en-US"],
+      reasonCode: "PUBLISHED_RECORD_FOUND",
+    });
+  });
+
+  it("keeps an exact positive record even when Amazon's optional warnings envelope is malformed", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-snapshot-warning-envelope",
+      rows: [{ sellerSku: "WARN-SHAPE", asin: "B000000055", title: "Warning shape" }],
+      fetchPublishRecords: async ({ asin }) => ({
+        status: 200,
+        payload: {
+          publishRecordList: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin,
+            contentReferenceKey: "content-reference-warning-shape",
+            contentType: "EBC",
+            locale: "en-US",
+          }],
+          warnings: { code: "UPSTREAM_DRIFT", message: "Unexpected envelope" },
+        },
+      }),
+    });
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
       reasonCode: "PUBLISHED_RECORD_FOUND",
     });
   });

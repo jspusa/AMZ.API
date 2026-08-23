@@ -1,60 +1,83 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   parseAdvertisingCoverageSnapshot,
   type AdvertisingCoverageSnapshot,
 } from "../advertising-coverage";
+import {
+  pollStandaloneAuditJob,
+  shouldResumeStandaloneAuditJob,
+  startStandaloneAuditJob,
+  standaloneAuditReconnectRevision,
+  type StandaloneAuditJob,
+  type StandaloneAuditMode,
+} from "../standalone-audit";
 
 export default function AdvertisingCoveragePanel({
   marketplaceId,
+  mode = "live",
   available,
   unavailableNotice,
+  initialJob = null,
+  onJobChange,
 }: {
   marketplaceId: string;
+  mode?: StandaloneAuditMode;
   available: boolean;
   unavailableNotice: string;
+  initialJob?: StandaloneAuditJob | null;
+  onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
   const [snapshot, setSnapshot] = useState<AdvertisingCoverageSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const observerJobIdRef = useRef<string | null>(null);
+  const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
 
   useEffect(() => {
+    abortRef.current?.abort();
     setSnapshot(null);
     setBusy(false);
     setError(null);
   }, [marketplaceId]);
 
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const acceptTerminal = (job: StandaloneAuditJob) => {
+    if (!job.ready || job.status !== "completed") {
+      throw new Error(
+        job.ready ? job.error.message : "廣告覆蓋背景工作尚未完成。",
+      );
+    }
+    setSnapshot(parseAdvertisingCoverageSnapshot(job.snapshot, marketplaceId));
+  };
+
   async function runAudit(): Promise<void> {
     if (!available || busy) return;
     setBusy(true);
     setError(null);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const params = new URLSearchParams({ marketplaceId });
-      let response: Response | null = null;
-      let payload: unknown = null;
-      for (let attempt = 0; attempt < 90; attempt += 1) {
-        response = await fetch(`/api/amazon-ads/coverage?${params}`, {
-          cache: "no-store",
-        });
-        payload = await response.json() as unknown;
-        if (response.status !== 202) break;
-        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
-      }
-      if (!response || response.status === 202) {
-        throw new Error("Amazon 全商品報表仍在準備；請稍後再重新掃描。");
-      }
-      if (!response.ok) {
-        const problem = payload && typeof payload === "object"
-          ? payload as { message?: unknown }
-          : null;
-        throw new Error(
-          typeof problem?.message === "string"
-            ? problem.message
-            : "目前無法執行廣告覆蓋健檢。",
-        );
-      }
-      setSnapshot(parseAdvertisingCoverageSnapshot(payload, marketplaceId));
+      let current = await startStandaloneAuditJob({
+        kind: "advertising",
+        marketplaceId,
+        mode,
+        signal: controller.signal,
+      });
+      observerJobIdRef.current = current.jobId;
+      onJobChange?.(current);
+      current = await pollStandaloneAuditJob({
+        expected: current,
+        signal: controller.signal,
+        onProgress: onJobChange,
+      });
+      onJobChange?.(current);
+      acceptTerminal(current);
+      observerJobIdRef.current = null;
     } catch (auditError) {
       setSnapshot(null);
       setError(
@@ -63,9 +86,61 @@ export default function AdvertisingCoveragePanel({
           : "目前無法執行廣告覆蓋健檢。",
       );
     } finally {
-      setBusy(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+        setBusy(false);
+      }
     }
   }
+
+  useEffect(() => {
+    if (!shouldResumeStandaloneAuditJob({
+      initialJob,
+      expectedKind: "advertising",
+      marketplaceId,
+      mode,
+      observerJobId: observerJobIdRef.current,
+    })) return;
+    const observedJob = initialJob!;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    observerJobIdRef.current = observedJob.jobId;
+    setBusy(true);
+    void (async () => {
+      try {
+        const terminal = observedJob.ready
+          ? observedJob
+          : await pollStandaloneAuditJob({
+              expected: observedJob,
+              signal: controller.signal,
+              onProgress: onJobChange,
+            });
+        onJobChange?.(terminal);
+        acceptTerminal(terminal);
+      } catch (resumeError) {
+        if (resumeError instanceof Error && resumeError.name === "AbortError") return;
+        setError(resumeError instanceof Error
+          ? resumeError.message
+          : "目前無法接續廣告覆蓋健檢。");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setBusy(false);
+          observerJobIdRef.current = null;
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJobReconnectRevision, marketplaceId, mode]);
 
   return (
     <section className="ads-coverage-panel">

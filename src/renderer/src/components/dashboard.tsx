@@ -22,6 +22,10 @@ import AdsDrawer from "./ads-drawer";
 import AgedInventoryPanel from "./aged-inventory-panel";
 import AuditSuiteHomeCard from "./audit-suite-home-card";
 import AplusAuditDrawer from "./a-plus-audit-drawer";
+import {
+  observeAplusAuditJob,
+  type AplusAuditObservableJob,
+} from "./a-plus-audit-panel";
 import BrandSalesCard from "./brand-sales-card";
 import BrandGlyph from "./brand-glyph";
 import ImageWorkspaceDrawer, {
@@ -71,6 +75,16 @@ import {
   replaceInboundShipmentCacheForMarketplace,
   type InboundShipmentCache,
 } from "../inbound-shipments";
+import {
+  mergeAuditJobObservation,
+  observeStandaloneAuditJob,
+  standaloneAuditHomeProgress,
+  standaloneAuditSnapshotMatchesJob,
+  type StandaloneAuditJob,
+  type StandaloneAuditKind,
+} from "../standalone-audit";
+
+export { standaloneAuditSnapshotMatchesJob };
 
 export type DashboardReportMenuEntry = {
   id: string;
@@ -135,6 +149,13 @@ export function businessPricingAttentionCount(
   return summary
     ? summary.aboveStandard + summary.missing + summary.unsupported + summary.incomplete
     : 0;
+}
+
+export function standaloneAuditDashboardKey(
+  marketplaceId: string,
+  kind: StandaloneAuditKind,
+): string {
+  return `${marketplaceId}\u0000${kind}`;
 }
 
 export function dashboardConnectionBadgeCopy(
@@ -532,6 +553,9 @@ export default function Dashboard({
   const [aplusAuditCache, setAplusAuditCache] = useState<
     Record<string, AplusAuditSnapshot>
   >({});
+  const [aplusAuditJobs, setAplusAuditJobs] = useState<
+    Record<string, AplusAuditObservableJob>
+  >({});
   const [unboundVariationAuditCache, setUnboundVariationAuditCache] = useState<
     Record<string, UnboundVariationAuditCache>
   >({});
@@ -544,6 +568,9 @@ export default function Dashboard({
   >({});
   const [businessPricingAuditCache, setBusinessPricingAuditCache] = useState<
     Record<string, BusinessPricingAuditSnapshot>
+  >({});
+  const [standaloneAuditJobs, setStandaloneAuditJobs] = useState<
+    Record<string, StandaloneAuditJob>
   >({});
   const [inboundShipmentCache, setInboundShipmentCache] = useState<
     Record<string, InboundShipmentCache>
@@ -876,6 +903,80 @@ export default function Dashboard({
     [],
   );
 
+  const cacheStandaloneAuditJob = useCallback((job: StandaloneAuditJob) => {
+    setStandaloneAuditJobs((current) => {
+      const key = standaloneAuditDashboardKey(job.marketplaceId, job.kind);
+      const merged = mergeAuditJobObservation(current[key], job);
+      if (merged === current[key]) return current;
+      return { ...current, [key]: merged };
+    });
+  }, []);
+
+  const cacheAplusAuditJob = useCallback((job: AplusAuditObservableJob) => {
+    setAplusAuditJobs((current) => {
+      const merged = mergeAuditJobObservation(current[job.marketplaceId], job);
+      if (merged === current[job.marketplaceId]) return current;
+      return { ...current, [job.marketplaceId]: merged };
+    });
+    if (job.ready && job.status === "completed") {
+      setAplusAuditCache((current) => ({
+        ...current,
+        [job.marketplaceId]: job.snapshot,
+      }));
+    }
+  }, []);
+
+  const activeAplusAuditIdentity = Object.values(aplusAuditJobs)
+    .filter((job) => !job.ready)
+    .map((job) => `${job.jobId}:${job.contextId}`)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    if (!activeAplusAuditIdentity) return;
+    let active = true;
+    for (const job of Object.values(aplusAuditJobs)) {
+      if (job.ready) continue;
+      void observeAplusAuditJob({
+        initialJob: job,
+        isObserverActive: () => active,
+        onJobChange: cacheAplusAuditJob,
+      }).catch((observerError: unknown) => {
+        if (observerError instanceof Error && observerError.name === "AbortError") return;
+      });
+    }
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAplusAuditIdentity, cacheAplusAuditJob]);
+
+  const activeStandaloneAuditIdentity = Object.values(standaloneAuditJobs)
+    .filter((job) => !job.ready)
+    .map((job) => `${job.jobId}:${job.contextId}`)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    if (!activeStandaloneAuditIdentity) return;
+    const controllers: AbortController[] = [];
+    for (const job of Object.values(standaloneAuditJobs)) {
+      if (job.ready) continue;
+      const controller = new AbortController();
+      controllers.push(controller);
+      void observeStandaloneAuditJob({
+        expected: job,
+        signal: controller.signal,
+        onProgress: cacheStandaloneAuditJob,
+      }).then(cacheStandaloneAuditJob).catch((observerError: unknown) => {
+        if (observerError instanceof Error && observerError.name === "AbortError") return;
+        // A drawer may still own a healthy observer. The home observer never
+        // starts a new Amazon job and leaves the last verified progress visible.
+      });
+    }
+    return () => controllers.forEach((controller) => controller.abort());
+  // Job identity, rather than each progress tick, owns the home observer.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStandaloneAuditIdentity, cacheStandaloneAuditJob]);
+
   const cacheReviewAudit = useCallback((cache: ReviewAuditCache) => {
     const cacheMarketplaceId = cache.snapshot?.marketplaceId ?? cache.job?.marketplaceId;
     if (!cacheMarketplaceId) return;
@@ -1069,6 +1170,24 @@ export default function Dashboard({
   const currentAplusMode = currentConnectionEvidence === "demo"
     ? "demo"
     : currentConnectionEvidence ? "live" : null;
+  const currentStandaloneMode = currentAplusMode ?? "live";
+  const cachedAplusJob = aplusAuditJobs[marketplaceId] ?? null;
+  const currentAplusJob = cachedAplusJob?.mode === currentStandaloneMode
+    ? cachedAplusJob
+    : null;
+  const currentStandaloneJob = (kind: StandaloneAuditKind) => {
+    const job = standaloneAuditJobs[
+      standaloneAuditDashboardKey(marketplaceId, kind)
+    ] ?? null;
+    return job?.mode === currentStandaloneMode ? job : null;
+  };
+  const currentContentAuditJob = currentStandaloneJob("content");
+  const currentImageAuditJob = currentStandaloneJob("image");
+  const currentVariationAuditJob = currentStandaloneJob("variation");
+  const currentSubscriptionAuditJob = currentStandaloneJob("subscription");
+  const currentBusinessPricingAuditJob = currentStandaloneJob("businessPricing");
+  const currentAdvertisingAuditJob = currentStandaloneJob("advertising");
+  const currentAgedInventoryJob = currentStandaloneJob("agedInventory");
   const cachedAplusAudit = aplusAuditCache[marketplaceId] ?? null;
   const currentAplusAudit = cachedAplusAudit?.mode === currentAplusMode
     ? cachedAplusAudit
@@ -1128,6 +1247,53 @@ export default function Dashboard({
     }
   };
   const currentUnboundVariationAudit = unboundVariationAuditCache[marketplaceId] ?? null;
+  const contentAuditCacheMatchesJob = standaloneAuditSnapshotMatchesJob(
+    currentContentAudit?.snapshot ?? null,
+    currentContentAuditJob,
+  );
+  const imageAuditCacheMatchesJob = standaloneAuditSnapshotMatchesJob(
+    currentImageAudit?.snapshot ?? null,
+    currentImageAuditJob,
+  );
+  const variationAuditCacheMatchesJob = standaloneAuditSnapshotMatchesJob(
+    currentUnboundVariationAudit?.snapshot ?? null,
+    currentVariationAuditJob,
+  );
+  const businessPricingCacheMatchesJob = standaloneAuditSnapshotMatchesJob(
+    currentBusinessPricingAudit,
+    currentBusinessPricingAuditJob,
+  );
+  const standaloneProgressStatus = (job: StandaloneAuditJob | null) => {
+    if (!job) return null;
+    if (job.ready) {
+      return (
+        <span className="content-audit-home-status" aria-live="polite">
+          <strong>{job.status === "completed" ? "已完成" : "未完成"}</strong>
+          <small>{job.status === "completed"
+            ? "點開查看並載入本次結果"
+            : job.error.message}</small>
+        </span>
+      );
+    }
+    const progress = standaloneAuditHomeProgress(job);
+    const hasCount = progress.completedUnits !== null && progress.totalUnits !== null;
+    return (
+      <span className="content-audit-home-status" aria-live="polite">
+        <strong>{hasCount
+          ? `${progress.completedUnits!.toLocaleString()}／${progress.totalUnits!.toLocaleString()}`
+          : "進行中"}</strong>
+        <small>{progress.label}</small>
+        {hasCount && progress.totalUnits! > 0 && (
+          <progress
+            className="review-audit-home-progress"
+            value={progress.completedUnits!}
+            max={progress.totalUnits!}
+            aria-label={`${progress.label} ${progress.completedUnits}／${progress.totalUnits}`}
+          />
+        )}
+      </span>
+    );
+  };
 
   const changeMarketplace = (nextMarketplaceId: string) => {
     if (!marketplaceById(nextMarketplaceId) || salesTrendLoading) return;
@@ -1341,14 +1507,25 @@ export default function Dashboard({
                 <h2>{AUDIT_SUITE_SECTION_LABELS.content}</h2>
                 <p>一次找出全部 FBA SKU 的疑似錯字、賣點不足與缺成分；結果在這次 App 使用期間會保留。</p>
               </div>
-              {currentContentAudit && (
+              {standaloneProgressStatus(
+                currentContentAuditJob && !contentAuditCacheMatchesJob
+                  ? currentContentAuditJob
+                  : null,
+              )}
+              {contentAuditCacheMatchesJob && currentContentAudit && (
                 <span className="content-audit-home-status">
                   <strong>{currentAuditAttentionCount.toLocaleString()}</strong>
                   <small>個待確認項目</small>
                 </span>
               )}
               <button type="button" onClick={launchContentAudit}>
-                {currentContentAudit ? "繼續上次文案健檢" : "開始全站文案健檢"}
+                {currentContentAuditJob
+                  ? currentContentAuditJob.ready
+                    ? currentContentAuditJob.status === "completed"
+                      ? "查看已完成的文案健檢"
+                      : "查看未完成的文案健檢"
+                    : "查看進行中的文案健檢"
+                  : currentContentAudit ? "繼續上次文案健檢" : "開始全站文案健檢"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1360,14 +1537,25 @@ export default function Dashboard({
                 <h2>{AUDIT_SUITE_SECTION_LABELS.image}</h2>
                 <p>一次找出少於六張 Listing 圖片與讀取未完成的 FBA SKU；關閉後仍可繼續上次結果。</p>
               </div>
-              {currentImageAudit && (
+              {standaloneProgressStatus(
+                currentImageAuditJob && !imageAuditCacheMatchesJob
+                  ? currentImageAuditJob
+                  : null,
+              )}
+              {imageAuditCacheMatchesJob && currentImageAudit && (
                 <span className="content-audit-home-status">
                   <strong>{currentImageAuditAttentionCount.toLocaleString()}</strong>
                   <small>個需補圖／確認</small>
                 </span>
               )}
               <button type="button" onClick={launchImageAudit}>
-                {currentImageAudit ? "繼續上次圖片健檢" : "開始全站圖片健檢"}
+                {currentImageAuditJob
+                  ? currentImageAuditJob.ready
+                    ? currentImageAuditJob.status === "completed"
+                      ? "查看已完成的圖片健檢"
+                      : "查看未完成的圖片健檢"
+                    : "查看進行中的圖片健檢"
+                  : currentImageAudit ? "繼續上次圖片健檢" : "開始全站圖片健檢"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1376,16 +1564,34 @@ export default function Dashboard({
               <div>
                 <p className="eyebrow">FBA A+ CONTENT</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.aplus}</h2>
-                <p>逐一核對全部 FBA ASIN 是否已有公開的 A+ 發布紀錄；From the brand 公開 API 無法驗證。</p>
+                <p>逐一核對全部 FBA ASIN 是否有官方 A+ 發布紀錄。</p>
               </div>
-              {currentAplusAudit && (
+              {currentAplusJob && !currentAplusJob.ready && (
+                <span className="content-audit-home-status" aria-live="polite">
+                  <strong>{currentAplusJob.progress.totalAsins > 0
+                    ? `${currentAplusJob.progress.completedAsins}／${currentAplusJob.progress.totalAsins}`
+                    : "進行中"}</strong>
+                  <small>正在核對官方 A+ 發布紀錄</small>
+                  {currentAplusJob.progress.totalAsins > 0 && (
+                    <progress
+                      className="review-audit-home-progress"
+                      value={currentAplusJob.progress.completedAsins}
+                      max={currentAplusJob.progress.totalAsins}
+                      aria-label={`A+ 健檢 ${currentAplusJob.progress.completedAsins}／${currentAplusJob.progress.totalAsins}`}
+                    />
+                  )}
+                </span>
+              )}
+              {(!currentAplusJob || currentAplusJob.ready) && currentAplusAudit && (
                 <span className="content-audit-home-status">
                   <strong>{currentAplusAuditAttentionCount.toLocaleString()}</strong>
                   <small>個缺 A+／待確認</small>
                 </span>
               )}
               <button type="button" onClick={() => launch("a-plus")}>
-                {currentAplusAudit ? "繼續上次 A+ 健檢" : "開始全站 A+ 健檢"}
+                {currentAplusJob && !currentAplusJob.ready
+                  ? "查看進行中的 A+ 健檢"
+                  : currentAplusAudit ? "繼續上次 A+ 健檢" : "開始全站 A+ 健檢"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1396,7 +1602,12 @@ export default function Dashboard({
                 <h2>{AUDIT_SUITE_SECTION_LABELS.variation}</h2>
                 <p>一次核對全部 FBA SKU；只有 Amazon relationships 明確完整且沒有 parent，才列為未綁變體。</p>
               </div>
-              {currentUnboundVariationAudit && (
+              {standaloneProgressStatus(
+                currentVariationAuditJob && !variationAuditCacheMatchesJob
+                  ? currentVariationAuditJob
+                  : null,
+              )}
+              {variationAuditCacheMatchesJob && currentUnboundVariationAudit && (
                 <span className="content-audit-home-status">
                   <strong>{currentUnboundVariationAudit.snapshot.summary.unbound.toLocaleString()}</strong>
                   <small>個確定未綁</small>
@@ -1406,7 +1617,13 @@ export default function Dashboard({
                 setAuditPreference("variations");
                 setUnboundVariationAuditOpen(true);
               }}>
-                {currentUnboundVariationAudit ? "繼續上次未綁變體健檢" : "開始未綁變體健檢"}
+                {currentVariationAuditJob
+                  ? currentVariationAuditJob.ready
+                    ? currentVariationAuditJob.status === "completed"
+                      ? "查看已完成的未綁變體健檢"
+                      : "查看未完成的未綁變體健檢"
+                    : "查看進行中的未綁變體健檢"
+                  : currentUnboundVariationAudit ? "繼續上次未綁變體健檢" : "開始未綁變體健檢"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1419,8 +1636,15 @@ export default function Dashboard({
                   ? "一次核對全部 FBA Subscribe & Save SKU 的目前訂閱折扣與價格趨勢；不會自動修改 Amazon。"
                   : `${marketplace.shortLabel} 目前先顯示能力邊界；不會用其他站點資料代替。`}</p>
               </div>
+              {standaloneProgressStatus(currentSubscriptionAuditJob)}
               <button type="button" onClick={() => launch("subscriptions")}>
-                {subscriptionAuditSupported ? "開始全站訂閱價格健檢" : "查看 S&S 能力說明"}
+                {currentSubscriptionAuditJob
+                  ? currentSubscriptionAuditJob.ready
+                    ? currentSubscriptionAuditJob.status === "completed"
+                      ? "查看已完成的訂閱價格健檢"
+                      : "查看未完成的訂閱價格健檢"
+                    : "查看進行中的訂閱價格健檢"
+                  : subscriptionAuditSupported ? "開始全站訂閱價格健檢" : "查看 S&S 能力說明"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1431,14 +1655,25 @@ export default function Dashboard({
                 <h2>{AUDIT_SUITE_SECTION_LABELS.businessPricing}</h2>
                 <p>找出未設定或高於一般售價的 Amazon Business 價格；可安全編輯時提供一般售價減 1 美元與四階數量折扣預設。</p>
               </div>
-              {currentBusinessPricingAudit && (
+              {standaloneProgressStatus(
+                currentBusinessPricingAuditJob && !businessPricingCacheMatchesJob
+                  ? currentBusinessPricingAuditJob
+                  : null,
+              )}
+              {businessPricingCacheMatchesJob && currentBusinessPricingAudit && (
                 <span className="content-audit-home-status">
                   <strong>{currentBusinessPricingAttentionCount.toLocaleString()}</strong>
                   <small>個需調整／確認</small>
                 </span>
               )}
               <button type="button" onClick={() => launch("business-pricing")}>
-                {currentBusinessPricingAudit ? "繼續上次 B2B 價格健檢" : "開始全站 B2B 價格健檢"}
+                {currentBusinessPricingAuditJob
+                  ? currentBusinessPricingAuditJob.ready
+                    ? currentBusinessPricingAuditJob.status === "completed"
+                      ? "查看已完成的 B2B 價格健檢"
+                      : "查看未完成的 B2B 價格健檢"
+                    : "查看進行中的 B2B 價格健檢"
+                  : currentBusinessPricingAudit ? "繼續上次 B2B 價格健檢" : "開始全站 B2B 價格健檢"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1449,8 +1684,15 @@ export default function Dashboard({
                 <h2>{AUDIT_SUITE_SECTION_LABELS.advertising}</h2>
                 <p>將依 SKU 優先、ASIN 補充比對 SP 活動；Amazon Ads API 尚未連線前不顯示推測結果。</p>
               </div>
+              {standaloneProgressStatus(currentAdvertisingAuditJob)}
               <button type="button" onClick={() => launch("ads")}>
-                查看健檢能力與連線
+                {currentAdvertisingAuditJob
+                  ? currentAdvertisingAuditJob.ready
+                    ? currentAdvertisingAuditJob.status === "completed"
+                      ? "查看已完成的廣告覆蓋健檢"
+                      : "查看未完成的廣告覆蓋健檢"
+                    : "查看進行中的廣告覆蓋健檢"
+                  : "查看健檢能力與連線"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -1473,11 +1715,18 @@ export default function Dashboard({
                   <h2>FBA 180 天以上庫齡健檢</h2>
                   <p>主清單只列已經超過 180 天的 FBA 庫存；Amazon estimated excess 預估與費用放在獨立分頁。</p>
                 </div>
+                {standaloneProgressStatus(currentAgedInventoryJob)}
                 <button type="button" onClick={() => {
                   setAuditPreference("inventory");
                   setAgedInventoryOpen(true);
                 }}>
-                  開始 FBA 180 天以上庫齡健檢
+                  {currentAgedInventoryJob
+                    ? currentAgedInventoryJob.ready
+                      ? currentAgedInventoryJob.status === "completed"
+                        ? "查看已完成的 FBA 庫齡健檢"
+                        : "查看未完成的 FBA 庫齡健檢"
+                      : "查看進行中的 FBA 庫齡健檢"
+                    : "開始 FBA 180 天以上庫齡健檢"}
                   <i aria-hidden="true">›</i>
                 </button>
               </section>
@@ -1521,17 +1770,25 @@ export default function Dashboard({
         <footer className="os-footer"><span>AMZ.API · GitHub UI / Local Key</span><span>FBA only · No FBM · No buyer PII</span></footer>
       </div>
 
-      {openTool === "ads" && <AdsDrawer initialMarketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
+      {openTool === "ads" && <AdsDrawer
+        initialMarketplaceId={marketplaceId}
+        auditMode={currentStandaloneMode}
+        coverageAuditJob={currentAdvertisingAuditJob}
+        onCoverageAuditJobChange={cacheStandaloneAuditJob}
+        onClose={() => setOpenTool(null)}
+      />}
       {openTool === "inbound" && <InboundShipmentsDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} marketplaceTimeZone={marketplace.timeZone} cachedResult={currentInboundShipment} onCachedResultChange={cacheInboundShipment} onClose={() => setOpenTool(null)} />}
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCache} onAuditCacheChange={cacheContentAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCache} onAuditCacheChange={cacheImageAudit} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCache} onAuditCacheChange={cacheContentAudit} auditMode={currentStandaloneMode} auditJob={currentContentAuditJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCache} onAuditCacheChange={cacheImageAudit} auditMode={currentStandaloneMode} auditJob={currentImageAuditJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "a-plus" && (
         <AplusAuditDrawer
           marketplaceId={marketplaceId}
           marketplaceShort={marketplace.shortLabel}
           mode={currentAplusMode ?? "live"}
           cachedSnapshot={currentAplusAudit}
+          job={currentAplusJob}
+          onJobChange={cacheAplusAuditJob}
           onSnapshotChange={(snapshot) => setAplusAuditCache((current) => ({
             ...current,
             [snapshot.marketplaceId]: snapshot,
@@ -1548,11 +1805,14 @@ export default function Dashboard({
       }} />}
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "promotion" && <PromotionCenterDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "subscriptions" && <SubscriptionAuditDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} onClose={() => setOpenTool(null)} />}
+      {openTool === "subscriptions" && <SubscriptionAuditDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} mode={currentStandaloneMode} initialJob={currentSubscriptionAuditJob} onJobChange={cacheStandaloneAuditJob} onClose={() => setOpenTool(null)} />}
       {openTool === "business-pricing" && (
         <BusinessPricingAuditDrawer
           marketplaceId={marketplaceId}
           marketplaceShort={marketplace.shortLabel}
+          mode={currentStandaloneMode}
+          initialJob={currentBusinessPricingAuditJob}
+          onJobChange={cacheStandaloneAuditJob}
           cachedSnapshot={currentBusinessPricingAudit}
           onSnapshotChange={(snapshot) => setBusinessPricingAuditCache((current) => ({
             ...current,
@@ -1584,9 +1844,12 @@ export default function Dashboard({
             <UnboundVariationAuditPanel
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.shortLabel}
+              mode={currentStandaloneMode}
               onOpenSku={openUnboundVariationSku}
               cachedResult={currentUnboundVariationAudit}
               onCachedResultChange={cacheUnboundVariationAudit}
+              initialJob={currentVariationAuditJob}
+              onJobChange={cacheStandaloneAuditJob}
             />
           </aside>
         </div>,
@@ -1613,6 +1876,9 @@ export default function Dashboard({
             <AgedInventoryPanel
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.shortLabel}
+              mode={currentStandaloneMode}
+              initialJob={currentAgedInventoryJob}
+              onJobChange={cacheStandaloneAuditJob}
             />
           </aside>
         </div>,

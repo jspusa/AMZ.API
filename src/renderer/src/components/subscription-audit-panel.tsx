@@ -12,6 +12,14 @@ import {
   type SubscriptionUpstreamCoverage,
 } from "../subscription-audit";
 import { auditExportFilename } from "../audit-export-filename";
+import {
+  pollStandaloneAuditJob,
+  shouldResumeStandaloneAuditJob,
+  startStandaloneAuditJob,
+  standaloneAuditReconnectRevision,
+  type StandaloneAuditJob,
+  type StandaloneAuditMode,
+} from "../standalone-audit";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 
@@ -442,17 +450,29 @@ export function SubscriptionAggregateHistoryChart({
 export default function SubscriptionAuditPanel({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
+  initialJob = null,
+  onJobChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
+  initialJob?: StandaloneAuditJob | null;
+  onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
-  const [months, setMonths] = useState<SubscriptionAuditMonthCount>(6);
+  const [months, setMonths] = useState<SubscriptionAuditMonthCount>(
+    initialJob?.kind === "subscription" && initialJob.options.months
+      ? initialJob.options.months
+      : 6,
+  );
   const [snapshot, setSnapshot] = useState<SubscriptionAuditSnapshot | null>(null);
   const [selectedSku, setSelectedSku] = useState<string | null>(null);
   const [filter, setFilter] = useState<SubscriptionAuditFilter>("all");
   const [busy, setBusy] = useState<"load" | "export" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const observerJobIdRef = useRef<string | null>(null);
+  const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
   const marketplaceSupported = isSubscriptionAuditMarketplaceSupported(marketplaceId);
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -489,28 +509,111 @@ export default function SubscriptionAuditPanel({
     setBusy("load");
     setError(null);
     try {
-      const params = new URLSearchParams({ marketplaceId, months: String(requestedMonths) });
-      const response = await fetch(`/api/sp-api/subscription-audit?${params}`, {
-        cache: "no-store",
+      let current = await startStandaloneAuditJob({
+        kind: "subscription",
+        marketplaceId,
+        mode,
+        options: { months: requestedMonths },
         signal: controller.signal,
       });
-      const raw = await response.json() as unknown;
-      if (!response.ok) throw new Error(apiMessage(raw, "全站 Subscribe & Save 健檢失敗。"));
-      const parsed = parseSubscriptionAuditSnapshot(raw);
+      observerJobIdRef.current = current.jobId;
+      onJobChange?.(current);
+      current = await pollStandaloneAuditJob({
+        expected: current,
+        signal: controller.signal,
+        onProgress: onJobChange,
+      });
+      onJobChange?.(current);
+      if (!current.ready || current.status !== "completed") {
+        throw new Error(
+          current.ready
+            ? current.error.message
+            : "Subscribe & Save 背景工作尚未完成。",
+        );
+      }
+      const parsed = parseSubscriptionAuditSnapshot(current.snapshot);
       if (parsed.marketplaceId !== marketplaceId || parsed.requestedMonths !== requestedMonths) {
         throw new Error("訂閱健檢回應與目前選擇的站點或月份不一致。");
       }
       setSnapshot(parsed);
       setSelectedSku(null);
+      observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       setSnapshot(null);
       setSelectedSku(null);
       setError(requestError instanceof Error ? requestError.message : "目前無法完成訂閱健檢。");
     } finally {
-      if (!controller.signal.aborted) setBusy(null);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+        setBusy(null);
+      }
     }
   };
+
+  useEffect(() => {
+    if (!shouldResumeStandaloneAuditJob({
+      initialJob,
+      expectedKind: "subscription",
+      marketplaceId,
+      mode,
+      observerJobId: observerJobIdRef.current,
+    })) return;
+    const observedJob = initialJob!;
+    const requestedMonths = observedJob.options.months ?? 6;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    observerJobIdRef.current = observedJob.jobId;
+    setMonths(requestedMonths);
+    setBusy("load");
+    void (async () => {
+      try {
+        const terminal = observedJob.ready
+          ? observedJob
+          : await pollStandaloneAuditJob({
+              expected: observedJob,
+              signal: controller.signal,
+              onProgress: onJobChange,
+            });
+        onJobChange?.(terminal);
+        if (!terminal.ready || terminal.status !== "completed") {
+          throw new Error(
+            terminal.ready
+              ? terminal.error.message
+              : "Subscribe & Save 背景工作尚未完成。",
+          );
+        }
+        const parsed = parseSubscriptionAuditSnapshot(terminal.snapshot);
+        if (
+          parsed.marketplaceId !== marketplaceId ||
+          parsed.requestedMonths !== requestedMonths
+        ) throw new Error("訂閱健檢回應與目前站點或月份不一致。");
+        setSnapshot(parsed);
+        setSelectedSku(null);
+      } catch (resumeError) {
+        if (resumeError instanceof Error && resumeError.name === "AbortError") return;
+        setError(resumeError instanceof Error
+          ? resumeError.message
+          : "目前無法接續訂閱健檢。");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setBusy(null);
+          observerJobIdRef.current = null;
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJobReconnectRevision, marketplaceId, mode]);
 
   const exportExcel = async () => {
     if (!snapshot?.exportId) return;

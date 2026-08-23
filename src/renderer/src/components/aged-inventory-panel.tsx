@@ -2,6 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { auditExportFilename } from "../audit-export-filename";
+import {
+  pollStandaloneAuditJob,
+  shouldResumeStandaloneAuditJob,
+  startStandaloneAuditJob,
+  standaloneAuditReconnectRevision,
+  type StandaloneAuditJob,
+  type StandaloneAuditMode,
+} from "../standalone-audit";
 
 type ReportReply = {
   ready: boolean;
@@ -634,9 +642,15 @@ export function AgedInventoryTierOverview({
 export default function AgedInventoryPanel({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
+  initialJob = null,
+  onJobChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
+  initialJob?: StandaloneAuditJob | null;
+  onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
   const [snapshot, setSnapshot] = useState<AgedInventorySnapshot | null>(null);
   const [status, setStatus] = useState("尚未同步");
@@ -649,6 +663,8 @@ export default function AgedInventoryPanel({
     documentId: string;
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const observerJobIdRef = useRef<string | null>(null);
+  const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -663,35 +679,29 @@ export default function AgedInventoryPanel({
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const loadData = async (reply: ReportReply, signal: AbortSignal) => {
-    if (!reply.reportId || !reply.documentId) {
-      throw new Error("Amazon 沒有回傳可讀取的 FBA 庫齡文件。");
-    }
-    setStatus("正在整理全部 FBA 庫齡與官方費用欄位…");
-    const params = new URLSearchParams({
-      marketplaceId,
-      reportId: reply.reportId,
-      documentId: reply.documentId,
-      data: "1",
-    });
-    const response = await fetch(`/api/sp-api/aged-inventory?${params}`, {
-      cache: "no-store",
-      signal,
-    });
-    const raw = (await response.json()) as unknown;
-    if (!response.ok) {
+  const loadData = async (
+    completedJob: StandaloneAuditJob,
+    signal: AbortSignal,
+  ) => {
+    if (!completedJob.ready || completedJob.status !== "completed") {
       throw new Error(
-        isRecord(raw) && typeof raw.message === "string"
-          ? raw.message
-          : "目前無法讀取 FBA 庫齡資料。",
+        completedJob.ready
+          ? completedJob.error.message
+          : "FBA 庫齡背景工作尚未完成。",
       );
     }
+    setStatus("正在整理全部 FBA 庫齡與官方費用欄位…");
+    const raw = completedJob.snapshot;
     const next = parseAgedInventorySnapshot(raw, marketplaceId);
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    const reference = isRecord(raw) &&
+        typeof raw.reportId === "string" &&
+        typeof raw.documentId === "string"
+      ? { reportId: raw.reportId, documentId: raw.documentId }
+      : null;
+    if (!reference) throw new Error("FBA 庫齡快照缺少可核對的 Excel 匯出 reference。");
     setSnapshot(next);
-    setReportReference({
-      reportId: reply.reportId,
-      documentId: reply.documentId,
-    });
+    setReportReference(reference);
     setStatus(`最後同步 ${next.fetchedAt.slice(0, 16).replace("T", " ")}`);
   };
 
@@ -751,50 +761,25 @@ export default function AgedInventoryPanel({
     setError(null);
     setStatus("正在請 Amazon 建立 FBA 庫齡報表…");
     try {
-      const response = await fetch("/api/sp-api/aged-inventory", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ marketplaceId }),
+      let current = await startStandaloneAuditJob({
+        kind: "agedInventory",
+        marketplaceId,
+        mode,
         signal: controller.signal,
       });
-      const raw = (await response.json()) as unknown;
-      if (!response.ok) {
-        throw new Error(
-          isRecord(raw) && typeof (raw as ApiProblem).message === "string"
-            ? (raw as ApiProblem).message!
-            : "無法開始 FBA 庫齡同步。",
-        );
-      }
-      let reply = reportReply(raw);
-      if (reply.ready) {
-        await loadData(reply, controller.signal);
-        return;
-      }
-      if (!reply.reportId) throw new Error("Amazon 沒有回傳可追蹤的報表 ID。");
-      const reportId = reply.reportId;
-      for (let attempt = 0; attempt < 90; attempt += 1) {
-        setStatus(reply.message || "Amazon 正在準備 FBA 庫齡資料…");
-        await delay(2_000, controller.signal);
-        const params = new URLSearchParams({ marketplaceId, reportId });
-        const pollResponse = await fetch(`/api/sp-api/aged-inventory?${params}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        const pollRaw = (await pollResponse.json()) as unknown;
-        if (!pollResponse.ok) {
-          throw new Error(
-            isRecord(pollRaw) && typeof pollRaw.message === "string"
-              ? pollRaw.message
-              : "FBA 庫齡報表狀態查詢失敗。",
-          );
-        }
-        reply = reportReply({ ...(pollRaw as Record<string, unknown>), reportId });
-        if (reply.ready) {
-          await loadData(reply, controller.signal);
-          return;
-        }
-      }
-      throw new Error("FBA 庫齡報表超過三分鐘仍未完成，請稍後再同步。");
+      observerJobIdRef.current = current.jobId;
+      onJobChange?.(current);
+      current = await pollStandaloneAuditJob({
+        expected: current,
+        signal: controller.signal,
+        onProgress: (next) => {
+          setStatus(next.progress.message);
+          onJobChange?.(next);
+        },
+      });
+      onJobChange?.(current);
+      await loadData(current, controller.signal);
+      observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       setError(
@@ -804,9 +789,66 @@ export default function AgedInventoryPanel({
       );
       setStatus("同步未完成");
     } finally {
-      if (abortRef.current === controller) setLoading(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+        setLoading(false);
+      }
     }
   };
+
+  useEffect(() => {
+    if (!shouldResumeStandaloneAuditJob({
+      initialJob,
+      expectedKind: "agedInventory",
+      marketplaceId,
+      mode,
+      observerJobId: observerJobIdRef.current,
+    })) return;
+    const observedJob = initialJob!;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    observerJobIdRef.current = observedJob.jobId;
+    setLoading(true);
+    setStatus(observedJob.progress.message);
+    void (async () => {
+      try {
+        const terminal = observedJob.ready
+          ? observedJob
+          : await pollStandaloneAuditJob({
+              expected: observedJob,
+              signal: controller.signal,
+              onProgress: (next) => {
+                setStatus(next.progress.message);
+                onJobChange?.(next);
+              },
+            });
+        onJobChange?.(terminal);
+        await loadData(terminal, controller.signal);
+      } catch (resumeError) {
+        if (resumeError instanceof Error && resumeError.name === "AbortError") return;
+        setError(resumeError instanceof Error
+          ? resumeError.message
+          : "目前無法接續 FBA 庫齡健檢。");
+        setStatus("同步未完成");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setLoading(false);
+          observerJobIdRef.current = null;
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJobReconnectRevision, marketplaceId, mode]);
 
   const confirmedExcessRows = snapshot?.rows.filter(
     (row) => row.estimatedExcessQuantity !== null && row.estimatedExcessQuantity > 0,

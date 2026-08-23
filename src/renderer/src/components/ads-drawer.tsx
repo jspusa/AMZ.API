@@ -8,6 +8,10 @@ import {
 } from "../../../shared/marketplaces";
 import AdvertisingCoveragePanel from "./advertising-coverage-panel";
 import AdvertisingStrategyPanel from "./advertising-strategy-panel";
+import type {
+  StandaloneAuditJob,
+  StandaloneAuditMode,
+} from "../standalone-audit";
 
 type AdsStatus = {
   marketplaceCode: string;
@@ -26,9 +30,15 @@ type AdsStatus = {
 
 export default function AdsDrawer({
   initialMarketplaceId,
+  auditMode = "live",
+  coverageAuditJob = null,
+  onCoverageAuditJobChange,
   onClose,
 }: {
   initialMarketplaceId: string;
+  auditMode?: StandaloneAuditMode;
+  coverageAuditJob?: StandaloneAuditJob | null;
+  onCoverageAuditJobChange?: (job: StandaloneAuditJob) => void;
   onClose: () => void;
 }) {
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
@@ -112,8 +122,11 @@ export default function AdsDrawer({
 
         <AdvertisingCoveragePanel
           marketplaceId={marketplaceId}
+          mode={auditMode}
           available={Boolean(status?.coverageAuditAvailable)}
           unavailableNotice={status?.coverageAuditNotice ?? "Amazon Ads API 尚未連線；目前不會用展示結果冒充真實覆蓋。"}
+          initialJob={coverageAuditJob}
+          onJobChange={onCoverageAuditJobChange}
         />
 
         <section className="ads-product-grid">

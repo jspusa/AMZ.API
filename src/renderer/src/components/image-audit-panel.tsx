@@ -11,7 +11,14 @@ import {
   type ImageAuditSnapshot,
 } from "../image-audit";
 import { auditExportFilename } from "../audit-export-filename";
-import { excludeProvenParentContainers } from "../parent-container-audit";
+import {
+  pollStandaloneAuditJob,
+  shouldResumeStandaloneAuditJob,
+  startStandaloneAuditJob,
+  standaloneAuditReconnectRevision,
+  type StandaloneAuditJob,
+  type StandaloneAuditMode,
+} from "../standalone-audit";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -79,21 +86,34 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
 export default function ImageAuditPanel({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
   onOpenSku,
   cachedResult = null,
   onCachedResultChange,
+  initialJob = null,
+  onJobChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
   onOpenSku: (sellerSku: string) => void;
   cachedResult?: ImageAuditCache | null;
   onCachedResultChange?: (cache: ImageAuditCache) => void;
+  initialJob?: StandaloneAuditJob | null;
+  onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
   const initialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
     ? cachedResult
     : null;
   const [state, setState] = useState<AuditState>(initialCache ? "done" : "idle");
   const [reply, setReply] = useState<ReportReply | null>(null);
+  const [job, setJob] = useState<StandaloneAuditJob | null>(
+    initialJob?.kind === "image" &&
+      initialJob.marketplaceId === marketplaceId &&
+      initialJob.mode === mode
+      ? initialJob
+      : null,
+  );
   const [snapshot, setSnapshot] = useState<ImageAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
   );
@@ -114,8 +134,10 @@ export default function ImageAuditPanel({
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const observerJobIdRef = useRef<string | null>(null);
   const marketplaceIdRef = useRef(marketplaceId);
   marketplaceIdRef.current = marketplaceId;
+  const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
@@ -155,40 +177,27 @@ export default function ImageAuditPanel({
     );
   }, [attentionRows, query]);
 
-  const loadAudit = async (ready: ReportReply, signal: AbortSignal) => {
-    if (!ready.reportId || !ready.documentId) {
-      throw new Error("Amazon 沒有回傳完整的報表文件資訊。");
+  const loadAudit = async (
+    completedJob: StandaloneAuditJob,
+    signal: AbortSignal,
+  ) => {
+    if (!completedJob.ready || completedJob.status !== "completed") {
+      throw new Error(
+        completedJob.ready
+          ? completedJob.error.message
+          : "圖片健檢背景工作尚未完成。",
+      );
     }
     setState("scanning");
-    const params = new URLSearchParams({
-      marketplaceId,
-      reportId: ready.reportId,
-      documentId: ready.documentId,
-      imageAudit: "1",
-    });
-    const response = await fetch(`/api/sp-api/listing-content/export?${params}`, {
-      cache: "no-store",
-      signal,
-    });
-    const raw = (await response.json()) as unknown;
-    if (!response.ok) {
-      throw new Error(problemMessage(raw as ApiProblem, "全站圖片健檢失敗。"));
-    }
-    const exportId = parseImageAuditExportId(raw);
-    const base = parseImageAuditSnapshot(raw, marketplaceIdRef.current);
-    const parentExclusion = await excludeProvenParentContainers({
-      marketplaceId: marketplaceIdRef.current,
-      rows: base.rows,
-      signal,
-    });
-    const completed = {
-      ...base,
-      rows: parentExclusion.rows,
-      summary: summarizeImageAudit(parentExclusion.rows, base.minimumImages),
-    };
+    const exportId = parseImageAuditExportId(completedJob.snapshot);
+    const completed = parseImageAuditSnapshot(
+      completedJob.snapshot,
+      marketplaceIdRef.current,
+    );
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const reference = {
-      reportId: ready.reportId,
-      documentId: ready.documentId,
+      reportId: completedJob.jobId,
+      documentId: completedJob.contextId,
       exportId,
     };
     setSnapshot(completed);
@@ -256,57 +265,96 @@ export default function ImageAuditPanel({
     setReply(null);
     setError(null);
     try {
-      const startResponse = await fetch("/api/sp-api/listing-content/export", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ marketplaceId }),
+      let current = await startStandaloneAuditJob({
+        kind: "image",
+        marketplaceId,
+        mode,
         signal: controller.signal,
       });
-      const startRaw = (await startResponse.json()) as Record<string, unknown>;
-      if (!startResponse.ok) {
-        throw new Error(problemMessage(startRaw as ApiProblem, "無法開始圖片健檢。"));
-      }
-      let current = reportReply(startRaw);
-      setReply(current);
-      if (current.ready) {
-        await loadAudit(current, controller.signal);
-        return;
-      }
-      if (!current.reportId) throw new Error("Amazon 沒有回傳可追蹤的報表 ID。");
-      const reportId = current.reportId;
+      observerJobIdRef.current = current.jobId;
+      setJob(current);
+      onJobChange?.(current);
       setState("polling");
-      for (let attempt = 0; attempt < 90; attempt += 1) {
-        await delay(2_000, controller.signal);
-        const params = new URLSearchParams({ marketplaceId, reportId });
-        const pollResponse = await fetch(
-          `/api/sp-api/listing-content/export?${params}`,
-          { cache: "no-store", signal: controller.signal },
-        );
-        const pollRaw = (await pollResponse.json()) as Record<string, unknown>;
-        if (!pollResponse.ok) {
-          throw new Error(problemMessage(pollRaw as ApiProblem, "報表狀態查詢失敗。"));
-        }
-        current = reportReply({ ...pollRaw, reportId });
-        setReply(current);
-        if (["CANCELLED", "CANCELED", "FATAL", "FAILED"].includes(
-          current.status?.toUpperCase() ?? "",
-        )) {
-          throw new Error(current.message || `Amazon 報表狀態為 ${current.status}。`);
-        }
-        if (current.ready) {
-          await loadAudit(current, controller.signal);
-          return;
-        }
-      }
-      throw new Error("圖片健檢超過三分鐘，請稍後再試。");
+      current = await pollStandaloneAuditJob({
+        expected: current,
+        signal: controller.signal,
+        onProgress: (next) => {
+          setJob(next);
+          onJobChange?.(next);
+        },
+      });
+      setJob(current);
+      onJobChange?.(current);
+      await loadAudit(current, controller.signal);
+      observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       setState(snapshot ? "done" : "idle");
       setError(requestError instanceof Error ? requestError.message : "目前無法完成圖片健檢。");
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
     }
   };
 
-  const statusText = state === "starting"
+  useEffect(() => {
+    if (!shouldResumeStandaloneAuditJob({
+      initialJob,
+      expectedKind: "image",
+      marketplaceId,
+      mode,
+      observerJobId: observerJobIdRef.current,
+    })) return;
+    const observedJob = initialJob!;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    observerJobIdRef.current = observedJob.jobId;
+    setJob(observedJob);
+    setState(observedJob.ready ? "scanning" : "polling");
+    void (async () => {
+      try {
+        const terminal = observedJob.ready
+          ? observedJob
+          : await pollStandaloneAuditJob({
+              expected: observedJob,
+              signal: controller.signal,
+              onProgress: (next) => {
+                setJob(next);
+                onJobChange?.(next);
+              },
+            });
+        setJob(terminal);
+        onJobChange?.(terminal);
+        await loadAudit(terminal, controller.signal);
+      } catch (resumeError) {
+        if (resumeError instanceof Error && resumeError.name === "AbortError") return;
+        setState(snapshot ? "done" : "idle");
+        setError(resumeError instanceof Error
+          ? resumeError.message
+          : "目前無法接續圖片健檢。");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          observerJobIdRef.current = null;
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJobReconnectRevision, marketplaceId, mode]);
+
+  const statusText = job && !job.ready
+    ? job.progress.message
+    : state === "starting"
     ? "正在請 Amazon 建立全站 FBA 商品報表…"
     : state === "polling"
       ? reply?.message || "Amazon 正在整理商品清單…"

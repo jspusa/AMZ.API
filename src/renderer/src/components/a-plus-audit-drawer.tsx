@@ -2,7 +2,10 @@
 
 import { useEffect } from "react";
 import type { AplusAuditSnapshot } from "../a-plus-audit";
-import AplusAuditPanel, { type AplusAuditRequester } from "./a-plus-audit-panel";
+import AplusAuditPanel, {
+  type AplusAuditObservableJob,
+  type AplusAuditRequester,
+} from "./a-plus-audit-panel";
 
 export default function AplusAuditDrawer({
   marketplaceId,
@@ -10,6 +13,8 @@ export default function AplusAuditDrawer({
   mode,
   cachedSnapshot = null,
   onSnapshotChange,
+  job = null,
+  onJobChange,
   requestAudit,
   onClose,
 }: {
@@ -18,6 +23,8 @@ export default function AplusAuditDrawer({
   mode: "live" | "demo";
   cachedSnapshot?: AplusAuditSnapshot | null;
   onSnapshotChange?: (snapshot: AplusAuditSnapshot) => void;
+  job?: AplusAuditObservableJob | null;
+  onJobChange?: (job: AplusAuditObservableJob) => void;
   requestAudit?: AplusAuditRequester;
   onClose: () => void;
 }) {
@@ -56,6 +63,8 @@ export default function AplusAuditDrawer({
           mode={mode}
           cachedSnapshot={cachedSnapshot}
           onSnapshotChange={onSnapshotChange}
+          job={job}
+          onJobChange={onJobChange}
           requestAudit={requestAudit}
         />
       </aside>

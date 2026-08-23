@@ -198,6 +198,13 @@ import {
   type AplusAuditJobMode,
 } from "./amazon/a-plus-audit-job";
 import {
+  StandaloneAuditJobCoordinator,
+  StandaloneAuditJobCoordinatorError,
+  type StandaloneAuditJobBoundContext,
+  type StandaloneAuditJobGateway,
+  type StandaloneAuditKind,
+} from "./amazon/standalone-audit-job";
+import {
   DurableReportLifecycle,
   type DurableReportGatewayStatus,
   type DurableReportIdentity,
@@ -766,6 +773,9 @@ function bytes(
 }
 
 function apiError(error: unknown, fallback: string): ApiResponse {
+  if (error instanceof StandaloneAuditJobCoordinatorError) {
+    return json({ code: error.code, message: error.message }, error.status);
+  }
   if (error instanceof AplusAuditJobCoordinatorError) {
     return json({ code: error.code, message: error.message }, error.status);
   }
@@ -835,34 +845,30 @@ export function buildAplusAuditSuiteResult(
   notice: string;
   payload: readonly APlusAuditProblemRow[];
 }> {
-  const partialPublished = snapshot.rows.filter((row) =>
-    row.status === "published" && row.sourceCompleteness === "partial"
-  );
   const payload = snapshot.rows
-    .filter((row) => row.status !== "published" || row.sourceCompleteness === "partial")
+    .filter((row) => row.status !== "published")
     .map((row): APlusAuditProblemRow => ({
       sellerSku: row.sellerSku,
       title: row.title,
       asin: row.asin ?? "",
-      finding: row.status === "published"
-        ? "已找到 A+，但資料範圍未完整"
-        : row.status === "missing"
-          ? "未找到已發布 A+"
-          : row.status === "unavailable"
-            ? "A+ API 權限不可用"
+      finding: row.status === "missing"
+        ? "未找到已發布 A+"
+        : row.status === "unavailable"
+          ? "A+ API 權限不可用"
+          : row.reasonCode === "A_PLUS_WARNING_PRESENT"
+            ? "Amazon 回應警告，請到 A+ 管理員確認"
             : "資料未完成",
-      brandStoryFinding: "公開 API 無法驗證",
       notice: row.reason,
     }));
   const partial = snapshot.summary.incomplete > 0 ||
     snapshot.summary.unavailable > 0 ||
-    snapshot.rows.some((row) => row.sourceCompleteness === "partial");
+    snapshot.rows.some((row) =>
+      row.status !== "published" && row.sourceCompleteness === "partial"
+    );
   return {
     status: partial ? "partial" : "completed",
     fetchedAt: snapshot.fetchedAt,
-    notice: partialPublished.length
-      ? `${partialPublished.length} 個 SKU 已找到 A+，但資料範圍未完整；保留正向發布證據並列為需揭露。${snapshot.notice}`
-      : snapshot.notice,
+    notice: snapshot.notice,
     payload,
   };
 }
@@ -1362,6 +1368,7 @@ export class ApiRouter {
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
   private readonly aplusAuditJobs: AplusAuditJobCoordinator;
+  private readonly standaloneAuditJobs: StandaloneAuditJobCoordinator;
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly listingAttributeWriteReservations = new Map<string, string>();
   private readonly subscriptionAuditSnapshots = new Map<
@@ -1424,6 +1431,7 @@ export class ApiRouter {
     inboundShipments?: Partial<InboundShipmentGateway>;
     inboundNoncomplianceReports?: Partial<InboundNoncomplianceReportGateway>;
     aplusAudit?: Partial<AplusAuditJobGateway>;
+    standaloneAudit?: Partial<StandaloneAuditJobGateway>;
     advertising?: AdvertisingGateway;
   }) {
     this.store = input.store;
@@ -1484,6 +1492,14 @@ export class ApiRouter {
           )),
       },
     });
+    this.standaloneAuditJobs = new StandaloneAuditJobCoordinator({
+      gateway: {
+        bindContext: input.standaloneAudit?.bindContext ?? ((identity) =>
+          this.bindStandaloneAuditContext(identity)),
+        run: input.standaloneAudit?.run ?? ((job) =>
+          this.runStandaloneAudit(job)),
+      },
+    });
     this.auditSuite = new AuditSuiteCoordinator({
       runners: {
         content: (context, control) => this.runAuditSuiteContent(context, control),
@@ -1501,6 +1517,7 @@ export class ApiRouter {
   clearPreviews(): void {
     this.reportLifecycle.clear();
     this.aplusAuditJobs.clear();
+    this.standaloneAuditJobs.clear();
     this.previews.clear();
     this.listingAttributeWriteReservations.clear();
     this.subscriptionAuditSnapshots.clear();
@@ -1710,6 +1727,10 @@ export class ApiRouter {
         return this.auditSuiteStatus(request);
       case "GET /api/sp-api/audit-suite/export":
         return this.auditSuiteExport(request);
+      case "POST /api/sp-api/standalone-audit":
+        return this.startStandaloneAudit(request);
+      case "GET /api/sp-api/standalone-audit":
+        return this.standaloneAuditStatus(request);
       default:
         return invalid("此 App 版本不支援這個操作。", 404, "NOT_FOUND");
     }
@@ -3570,6 +3591,7 @@ export class ApiRouter {
           fetchedAt: stored.snapshot.fetchedAt,
           rows: stored.snapshot.rows,
           incompleteRows: stored.snapshot.incompleteRows,
+          allVariationRows: stored.snapshot.allVariationRows,
         });
         const date = stored.snapshot.fetchedAt.slice(0, 10);
         const filename = `amazon-fba-unbound-variation-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
@@ -6750,6 +6772,569 @@ export class ApiRouter {
       ],
       notice: "自我檢查只讀取本機設定狀態，未代表即時驗證 Amazon 連線；不會修改 Amazon、廣告或實體入庫。",
     });
+  }
+
+  private standaloneAuditKind(value: unknown): StandaloneAuditKind | null {
+    return value === "content" ||
+      value === "image" ||
+      value === "variation" ||
+      value === "subscription" ||
+      value === "businessPricing" ||
+      value === "advertising" ||
+      value === "agedInventory"
+      ? value
+      : null;
+  }
+
+  private async bindStandaloneAuditContext(input: Readonly<{
+    marketplaceId: string;
+    mode: "live" | "demo";
+  }>): Promise<StandaloneAuditJobBoundContext> {
+    if (!isMarketplaceId(input.marketplaceId)) {
+      throw new StandaloneAuditJobCoordinatorError("單項健檢站點無效。", {
+        status: 400,
+        code: "INVALID_INPUT",
+      });
+    }
+    const current = await this.currentAuditSuiteContext(input.marketplaceId);
+    return {
+      accountScope: current.accountScope,
+      marketplaceId: input.marketplaceId,
+      mode: current.mode,
+    };
+  }
+
+  private async startStandaloneAudit(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (
+      !body ||
+      Object.keys(body).some((key) =>
+        key !== "kind" &&
+        key !== "marketplaceId" &&
+        key !== "mode" &&
+        key !== "options") ||
+      !Object.hasOwn(body, "kind") ||
+      !Object.hasOwn(body, "marketplaceId") ||
+      !Object.hasOwn(body, "mode")
+    ) {
+      return invalid(
+        "單項健檢只接受 kind、marketplaceId、mode 與受限 options；帳號由 main process 綁定。",
+      );
+    }
+    const kind = this.standaloneAuditKind(body.kind);
+    const marketplaceId = parseMarketplace(body.marketplaceId);
+    const mode = body.mode === "live" || body.mode === "demo" ? body.mode : null;
+    let options: { months?: 6 | 12 | 23 } | undefined;
+    if (body.options !== undefined) {
+      if (!body.options || typeof body.options !== "object" || Array.isArray(body.options)) {
+        return invalid("單項健檢 options 格式無效。");
+      }
+      const source = body.options as Record<string, unknown>;
+      if (Object.keys(source).some((key) => key !== "months")) {
+        return invalid("單項健檢 options 欄位無效。");
+      }
+      if (source.months !== undefined) {
+        if (source.months !== 6 && source.months !== 12 && source.months !== 23) {
+          return invalid("Subscribe & Save 月數只能選 6、12 或 23。");
+        }
+        options = { months: source.months };
+      } else {
+        options = {};
+      }
+    }
+    if (!kind || !marketplaceId || !mode) {
+      return invalid("單項健檢種類、站點或模式無效。");
+    }
+    try {
+      const receipt = await this.standaloneAuditJobs.start({
+        kind,
+        marketplaceId,
+        mode,
+        options,
+      });
+      return json(receipt, 202, { "retry-after": "1" });
+    } catch (error) {
+      return apiError(error, "開始單項健檢時發生未預期的錯誤。");
+    }
+  }
+
+  private async standaloneAuditStatus(request: ApiRequest): Promise<ApiResponse> {
+    const kind = this.standaloneAuditKind(request.query.kind);
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const mode = request.query.mode === "live" || request.query.mode === "demo"
+      ? request.query.mode
+      : null;
+    const jobId = this.reportIdentifier(request.query.jobId);
+    const contextId = this.reportIdentifier(request.query.contextId);
+    if (!kind || !marketplaceId || !mode || !jobId || !contextId) {
+      return invalid("單項健檢工作資訊無效。");
+    }
+    try {
+      const receipt = await this.standaloneAuditJobs.get({
+        kind,
+        marketplaceId,
+        mode,
+        jobId,
+        contextId,
+      });
+      return json(
+        receipt,
+        receipt.ready ? 200 : 202,
+        receipt.ready ? {} : { "retry-after": "1" },
+      );
+    } catch (error) {
+      return apiError(error, "查詢單項健檢進度時發生未預期的錯誤。");
+    }
+  }
+
+  private async assertStandaloneAuditContext(
+    context: StandaloneAuditJobBoundContext,
+    signal: AbortSignal,
+  ): Promise<MarketplaceId> {
+    assertBackgroundActive(signal);
+    if (!isMarketplaceId(context.marketplaceId)) {
+      throw new Error("單項健檢工作站點無法安全辨識。");
+    }
+    const current = await this.currentAuditSuiteContext(context.marketplaceId);
+    assertBackgroundActive(signal);
+    if (
+      current.accountScope !== context.accountScope ||
+      current.mode !== context.mode
+    ) {
+      throw new Error("單項健檢工作與目前帳號或展示／真實模式不一致。");
+    }
+    return context.marketplaceId;
+  }
+
+  private async standaloneListingReport(input: Readonly<{
+    context: StandaloneAuditJobBoundContext;
+    signal: AbortSignal;
+    heartbeat(): void;
+    updateProgress: Parameters<StandaloneAuditJobGateway["run"]>[0]["updateProgress"];
+  }>): Promise<{
+    reportId: string;
+    documentId: string;
+  }> {
+    const marketplaceId = await this.assertStandaloneAuditContext(
+      input.context,
+      input.signal,
+    );
+    input.updateProgress({
+      stage: "amazon_report",
+      message: "Amazon 正在準備 FBA 全商品報表。",
+      completedUnits: 0,
+      totalUnits: 1,
+    });
+    let status = await this.startSharedAllListingsReport(
+      marketplaceId,
+      false,
+      input.signal,
+    );
+    input.heartbeat();
+    for (let attempt = 0; !status.ready && attempt < 180; attempt += 1) {
+      if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
+        throw new Error("Amazon 未能產生本次單項健檢所需的 FBA 全商品報表。");
+      }
+      input.heartbeat();
+      await waitMilliseconds(1_000, input.signal);
+      status = await this.getSharedAllListingsReportStatus({
+        marketplaceId,
+        reportId: status.reportId,
+        signal: input.signal,
+      });
+      input.heartbeat();
+    }
+    if (
+      !status.ready ||
+      !status.reportId ||
+      !status.documentId ||
+      status.mode !== input.context.mode
+    ) {
+      throw new Error("Amazon FBA 全商品報表未完成或 context 已改變。");
+    }
+    return { reportId: status.reportId, documentId: status.documentId };
+  }
+
+  private async standaloneListings(input: Readonly<{
+    context: StandaloneAuditJobBoundContext;
+    signal: AbortSignal;
+    heartbeat(): void;
+    updateProgress: Parameters<StandaloneAuditJobGateway["run"]>[0]["updateProgress"];
+  }>): Promise<{
+    reportId: string;
+    documentId: string;
+    data: AuditSuiteListingsData;
+  }> {
+    const marketplaceId = await this.assertStandaloneAuditContext(
+      input.context,
+      input.signal,
+    );
+    const report = await this.standaloneListingReport(input);
+    input.updateProgress({
+      stage: "listing_rows",
+      message: "正在下載並核對 FBA 商品資料。",
+      completedUnits: 0,
+      totalUnits: 1,
+    });
+    const data = await getAllListingsExportData({
+      marketplaceId,
+      reportId: report.reportId,
+      documentId: report.documentId,
+      signal: input.signal,
+      onProgress: () => input.heartbeat(),
+    });
+    await this.assertStandaloneAuditContext(input.context, input.signal);
+    input.updateProgress({
+      stage: "listing_rows",
+      message: `已取得 ${data.rows.length.toLocaleString()} 個 FBA 商品，正在執行健檢。`,
+      completedUnits: 1,
+      totalUnits: 1,
+    });
+    return {
+      ...report,
+      data,
+    };
+  }
+
+  private async standaloneGrouping(input: Readonly<{
+    context: StandaloneAuditJobBoundContext;
+    signal: AbortSignal;
+    heartbeat(): void;
+    updateProgress: Parameters<StandaloneAuditJobGateway["run"]>[0]["updateProgress"];
+  }>): Promise<{
+    reportId: string;
+    documentId: string;
+    data: AuditSuiteListingsData;
+    grouping: FbaVariationGroupingData;
+  }> {
+    const listing = await this.standaloneListings(input);
+    const marketplaceId = input.context.marketplaceId as MarketplaceId;
+    input.updateProgress({
+      stage: "relationships",
+      message: "正在核對 FBA parent／child relationships。",
+      completedUnits: 0,
+      totalUnits: null,
+    });
+    const grouping = await getFbaVariationGroupingData({
+      marketplaceId,
+      rows: listing.data.rows,
+      signal: input.signal,
+      onProgress: ({ completedBatches, totalBatches }) => input.updateProgress({
+        stage: "relationships",
+        message: `正在核對 FBA relationships（${completedBatches}／${totalBatches} 批）。`,
+        completedUnits: completedBatches,
+        totalUnits: totalBatches,
+      }),
+    });
+    await this.assertStandaloneAuditContext(input.context, input.signal);
+    return { ...listing, grouping };
+  }
+
+  private async runStandaloneAudit(
+    input: Parameters<StandaloneAuditJobGateway["run"]>[0],
+  ): Promise<unknown> {
+    const marketplaceId = await this.assertStandaloneAuditContext(
+      input.context,
+      input.signal,
+    );
+    if (input.kind === "subscription") {
+      input.updateProgress({
+        stage: "subscription",
+        message: "正在核對全站 FBA Subscribe & Save。",
+        completedUnits: 0,
+        totalUnits: null,
+      });
+      const snapshot = await getFbaSubscriptionAudit({
+        marketplaceId,
+        months: input.options.months ?? 6,
+        signal: input.signal,
+      });
+      await this.assertStandaloneAuditContext(input.context, input.signal);
+      const exportId = randomUUID();
+      this.pruneSubscriptionAuditSnapshots();
+      this.subscriptionAuditSnapshots.set(exportId, {
+        marketplaceId,
+        accountScope: input.context.accountScope,
+        expiresAt: Date.now() + SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS,
+        snapshot: structuredClone(snapshot),
+      });
+      input.updateProgress({
+        stage: "complete",
+        message: "Subscribe & Save 健檢完成。",
+        completedUnits: snapshot.offers.length,
+        totalUnits: snapshot.offers.length,
+      });
+      return {
+        ...snapshot,
+        offers: snapshot.offers.map((offer) => ({
+          ...offer,
+          monthlySeries: offer.monthlySeries.map((metric) => ({
+            month: metric.interval.month,
+            subscriptionRevenue: metric.subscriptionRevenue,
+            shippedSubscriptionUnits: metric.shippedSubscriptionUnits,
+            activeSubscriptionsAtPeriodEnd: metric.activeSubscriptionsAtPeriodEnd,
+            currencyCode: metric.currencyCode,
+          })),
+        })),
+        exportId,
+      };
+    }
+
+    if (input.kind === "agedInventory") {
+      input.updateProgress({
+        stage: "amazon_report",
+        message: "Amazon 正在準備 FBA 庫齡報表。",
+        completedUnits: 0,
+        totalUnits: 1,
+      });
+      let status = await this.startSharedAgedInventoryReport(marketplaceId, {
+        explicitRetry: false,
+        signal: input.signal,
+      });
+      for (let attempt = 0; !status.ready && attempt < 900; attempt += 1) {
+        if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
+          throw new Error("Amazon 未能產生本次 FBA 庫齡報表。");
+        }
+        input.heartbeat();
+        await waitMilliseconds(2_000, input.signal);
+        status = await this.getSharedAgedInventoryReportStatus({
+          marketplaceId,
+          reportId: status.reportId,
+          signal: input.signal,
+        });
+      }
+      if (
+        !status.ready ||
+        !status.reportId ||
+        !status.documentId ||
+        status.mode !== input.context.mode
+      ) {
+        throw new Error("Amazon FBA 庫齡報表未完成或 context 已改變。");
+      }
+      const snapshot = await getAgedInventoryData({
+        marketplaceId,
+        reportId: status.reportId,
+        documentId: status.documentId,
+        signal: input.signal,
+      });
+      await this.assertStandaloneAuditContext(input.context, input.signal);
+      input.updateProgress({
+        stage: "complete",
+        message: "FBA 庫齡健檢完成。",
+        completedUnits: snapshot.rows.length,
+        totalUnits: snapshot.rows.length,
+      });
+      return {
+        ...snapshot,
+        reportId: status.reportId,
+        documentId: status.documentId,
+      };
+    }
+
+    if (input.kind === "content") {
+      const listing = await this.standaloneGrouping(input);
+      const groupingBySku = new Map(
+        listing.grouping.rows.map((row) => [row.sellerSku, row] as const),
+      );
+      const audit = auditListingContentRows({
+        marketplaceId,
+        fetchedAt: listing.data.fetchedAt,
+        rows: listing.grouping.rows.filter((row) => row.role !== "parent"),
+      });
+      const exportId = randomUUID();
+      const snapshot = {
+        ...audit,
+        exportId,
+        rows: audit.rows.map((row) => {
+          const relationship = groupingBySku.get(row.sellerSku);
+          return {
+            ...row,
+            variationRole: relationship?.role ?? "unknown",
+            variationParentSku: relationship?.parentSku ?? null,
+            variationFamilyKey: relationship?.familyKey ?? row.sellerSku,
+            variationTheme: relationship?.theme ?? null,
+            relationshipStatus: relationship?.status ?? "incomplete",
+            relationshipMessage: relationship?.message ??
+              "Amazon relationships 未與文案列完整對齊；本列不會被猜入任一變體 family。",
+          };
+        }),
+      };
+      await this.store.saveContentAuditSnapshotEvidence({
+        exportId,
+        marketplaceId,
+        accountScope: input.context.accountScope,
+        mode: input.context.mode,
+        fetchedAt: snapshot.fetchedAt,
+        rowDigests: snapshot.rows.map((row) =>
+          contentAuditSnapshotRowDigest({
+            accountScope: input.context.accountScope,
+            marketplaceId,
+            mode: input.context.mode,
+            exportId,
+            fetchedAt: snapshot.fetchedAt,
+            sellerSku: row.sellerSku,
+            asin: row.asin,
+            productType: row.productType,
+            variationFamilyKey: contentAuditWorkbookFamilyKey(row),
+            values: contentAuditRowValues(row),
+            readStatus: row.readStatus,
+          })),
+      });
+      input.updateProgress({
+        stage: "complete",
+        message: "全站文案健檢完成。",
+        completedUnits: snapshot.rows.length,
+        totalUnits: snapshot.rows.length,
+      });
+      return snapshot;
+    }
+
+    if (input.kind === "image") {
+      const listing = await this.standaloneGrouping(input);
+      const auditable = new Set(
+        listing.grouping.rows
+          .filter((row) => row.role !== "parent")
+          .map((row) => row.sellerSku),
+      );
+      const snapshot = auditListingImageRows({
+        marketplaceId,
+        fetchedAt: listing.data.fetchedAt,
+        rows: listing.data.rows
+          .filter((row) => auditable.has(row.sellerSku))
+          .map((row) => ({
+            sellerSku: row.sellerSku,
+            asin: row.asin,
+            productType: row.productType,
+            title: row.title,
+            imageUrls: row.imageUrls,
+            readStatus: row.readStatus,
+            readErrors: row.readErrors,
+          })),
+        minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
+      });
+      const exportId = randomUUID();
+      this.pruneImageAuditSnapshots();
+      this.imageAuditSnapshots.set(exportId, {
+        marketplaceId,
+        accountScope: input.context.accountScope,
+        expiresAt: Date.now() + IMAGE_AUDIT_SNAPSHOT_TTL_MS,
+        snapshot: structuredClone(snapshot),
+      });
+      input.updateProgress({
+        stage: "complete",
+        message: "全站圖片健檢完成。",
+        completedUnits: snapshot.rows.length,
+        totalUnits: snapshot.rows.length,
+      });
+      return { ...snapshot, exportId };
+    }
+
+    if (input.kind === "variation") {
+      const report = await this.standaloneListingReport(input);
+      input.updateProgress({
+        stage: "relationships",
+        message: "正在核對未綁變體與完整變體 family。",
+        completedUnits: 0,
+        totalUnits: null,
+      });
+      const snapshot = await getUnboundVariationAuditData({
+        marketplaceId,
+        reportId: report.reportId,
+        documentId: report.documentId,
+        signal: input.signal,
+      });
+      await this.assertStandaloneAuditContext(input.context, input.signal);
+      const exportId = randomUUID();
+      this.pruneUnboundVariationAuditSnapshots();
+      this.unboundVariationAuditSnapshots.set(exportId, {
+        marketplaceId,
+        accountScope: input.context.accountScope,
+        expiresAt: Date.now() + UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS,
+        snapshot: structuredClone(snapshot),
+      });
+      input.updateProgress({
+        stage: "complete",
+        message: "未綁變體健檢完成。",
+        completedUnits: snapshot.allVariationRows.length,
+        totalUnits: snapshot.allVariationRows.length,
+      });
+      return { ...snapshot, exportId };
+    }
+
+    if (input.kind === "businessPricing") {
+      const report = await this.standaloneListingReport(input);
+      input.updateProgress({
+        stage: "business_pricing",
+        message: "正在核對全部 FBA 商品的 B2B 價格與數量折扣。",
+        completedUnits: 0,
+        totalUnits: null,
+      });
+      const snapshot = await getBusinessPricingAuditData({
+        marketplaceId,
+        reportId: report.reportId,
+        documentId: report.documentId,
+        signal: input.signal,
+      });
+      await this.assertStandaloneAuditContext(input.context, input.signal);
+      input.updateProgress({
+        stage: "complete",
+        message: "B2B 價格健檢完成。",
+        completedUnits: snapshot.rows.length,
+        totalUnits: snapshot.rows.length,
+      });
+      return snapshot;
+    }
+
+    if (input.kind === "advertising") {
+      const listing = await this.standaloneListings(input);
+      if (input.context.mode === "live" && !this.advertising) {
+        throw new Error("Amazon Ads API 尚未連線。");
+      }
+      if (input.context.mode === "live") {
+        const summary = await this.advertising!.getCredentialSummary();
+        if (!summary.configured) throw new Error("Amazon Ads 憑證尚未完整設定。");
+      }
+      const listings = prepareAdvertisingCoverageListings({
+        rows: listing.data.rows,
+        errors: listing.data.errors,
+      });
+      input.updateProgress({
+        stage: "advertising",
+        message: "正在核對 FBA 商品與啟用中的 Sponsored Products 活動。",
+        completedUnits: 0,
+        totalUnits: listings.length,
+      });
+      const campaigns: AdvertisingCoverageCampaign[] = input.context.mode === "demo"
+        ? listings
+            .filter((_, index) => index % 2 === 0)
+            .map((row, index) => ({
+              campaignId: `demo-productai-${index + 1}`,
+              name: `[ProductAI] ${MARKETPLACE_CODES[marketplaceId]}-${row.asin}-${row.sellerSku}-SP-PAT-Aug92026`,
+              state: "ENABLED",
+              adProduct: "SPONSORED_PRODUCTS",
+            }))
+        : await this.advertising!.listEnabledSponsoredProductCampaigns(
+            marketplaceId,
+            input.signal,
+          );
+      await this.assertStandaloneAuditContext(input.context, input.signal);
+      const snapshot = auditAdvertisingCoverage({
+        mode: input.context.mode,
+        marketplaceId,
+        marketplaceCode: MARKETPLACE_CODES[marketplaceId],
+        listings,
+        campaigns,
+      });
+      input.updateProgress({
+        stage: "complete",
+        message: "Amazon Ads 覆蓋健檢完成。",
+        completedUnits: listings.length,
+        totalUnits: listings.length,
+      });
+      return snapshot;
+    }
+
+    throw new Error("不支援這個單項健檢種類。");
   }
 
   private async bindAplusAuditContext(input: Readonly<{

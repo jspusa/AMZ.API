@@ -19,7 +19,14 @@ import {
   contentAuditAttentionRows,
   downloadContentAuditWorkbook,
 } from "../content-audit-excel";
-import { excludeProvenParentContainers } from "../parent-container-audit";
+import {
+  pollStandaloneAuditJob,
+  shouldResumeStandaloneAuditJob,
+  startStandaloneAuditJob,
+  standaloneAuditReconnectRevision,
+  type StandaloneAuditJob,
+  type StandaloneAuditMode,
+} from "../standalone-audit";
 import {
   contentClaimFindings,
   contentClaimTokens,
@@ -1580,24 +1587,37 @@ function scanStatusText(state: AuditState, reply: ReportReply | null): string {
 export default function ContentAuditPanel({
   marketplaceId,
   marketplaceShort,
+  mode = "live",
   onOpenSku,
   cachedResult = null,
   onCachedResultChange,
+  initialJob = null,
+  onJobChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
+  mode?: StandaloneAuditMode;
   onOpenSku: (
     sellerSku: string,
     quickEditFocus?: ContentAuditQuickEditFocus,
   ) => void;
   cachedResult?: ContentAuditCache | null;
   onCachedResultChange?: (cache: ContentAuditCache) => void;
+  initialJob?: StandaloneAuditJob | null;
+  onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
   const initialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
     ? cachedResult
     : null;
   const [state, setState] = useState<AuditState>(initialCache ? "done" : "idle");
   const [reply, setReply] = useState<ReportReply | null>(null);
+  const [job, setJob] = useState<StandaloneAuditJob | null>(
+    initialJob?.kind === "content" &&
+      initialJob.marketplaceId === marketplaceId &&
+      initialJob.mode === mode
+      ? initialJob
+      : null,
+  );
   const [snapshot, setSnapshot] = useState<ContentAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
   );
@@ -1617,15 +1637,18 @@ export default function ContentAuditPanel({
   const [batchIdempotencyKey, setBatchIdempotencyKey] = useState<string | null>(null);
   const [batchDiffAcknowledged, setBatchDiffAcknowledged] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const observerJobIdRef = useRef<string | null>(null);
   const resultHeadingRef = useRef<HTMLDivElement | null>(null);
   const marketplaceIdRef = useRef(marketplaceId);
   marketplaceIdRef.current = marketplaceId;
+  const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
     abortRef.current?.abort();
     setReply(null);
+    setJob(null);
     setError(null);
     if (cachedResult?.snapshot.marketplaceId === marketplaceId) {
       setState("done");
@@ -1640,7 +1663,7 @@ export default function ContentAuditPanel({
     setFilter("all");
     setQuery("");
     setSpellcheckNote(null);
-  }, [cachedResult, marketplaceId]);
+  }, [cachedResult, marketplaceId, mode]);
 
   useEffect(() => {
     setWorkbookFile(null);
@@ -1689,36 +1712,27 @@ export default function ContentAuditPanel({
     [filter, visibleRows],
   );
 
-  const loadAudit = async (ready: ReportReply, signal: AbortSignal) => {
-    if (!ready.reportId || !ready.documentId) {
-      throw new Error("Amazon 沒有回傳完整的報表文件資訊。");
+  const loadAudit = async (
+    completedJob: StandaloneAuditJob,
+    signal: AbortSignal,
+  ) => {
+    if (!completedJob.ready || completedJob.status !== "completed") {
+      throw new Error(
+        completedJob.ready
+          ? completedJob.error.message
+          : "文案健檢背景工作尚未完成。",
+      );
     }
     setState("scanning");
-    const params = new URLSearchParams({
-      marketplaceId,
-      reportId: ready.reportId,
-      documentId: ready.documentId,
-      audit: "1",
-    });
-    const response = await fetch(`/api/sp-api/listing-content/export?${params}`, {
-      cache: "no-store",
-      signal,
-    });
-    const raw = (await response.json()) as unknown;
-    if (!response.ok) {
-      throw new Error(problemMessage(raw as ApiProblem, "全站文案健檢失敗。"));
-    }
-    const base = parseContentAuditSnapshot(raw, marketplaceIdRef.current);
-    const parentExclusion = await excludeProvenParentContainers({
-      marketplaceId: marketplaceIdRef.current,
-      rows: base.rows,
-      signal,
-    });
-    const editableRows = parentExclusion.rows;
+    const base = parseContentAuditSnapshot(
+      completedJob.snapshot,
+      marketplaceIdRef.current,
+    );
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    const editableRows = base.rows;
     let rows = editableRows;
-    const parentNote = parentExclusion.excludedParentSkus.length
-      ? `Amazon relationships 已確認並排除 ${parentExclusion.excludedParentSkus.length.toLocaleString()} 個 parent 容器；parent 本身不列為文案錯誤，也不提供編輯。`
-      : "";
+    const parentNote =
+      "Amazon relationships 已在 Notebook 鑰匙背景工作中核對；已證明的 parent 容器不列為文案錯誤，也不提供編輯。";
     let nextSpellcheckNote: string;
     try {
       const spelling = await import("../content-spelling-rules");
@@ -1759,59 +1773,99 @@ export default function ContentAuditPanel({
     setReply(null);
     setError(null);
     try {
-      const startResponse = await fetch("/api/sp-api/listing-content/export", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ marketplaceId }),
+      let current = await startStandaloneAuditJob({
+        kind: "content",
+        marketplaceId,
+        mode,
         signal: controller.signal,
       });
-      const startRaw = (await startResponse.json()) as Record<string, unknown>;
-      if (!startResponse.ok) {
-        throw new Error(problemMessage(startRaw as ApiProblem, "無法開始文案健檢。"));
-      }
-      let current = reportReply(startRaw);
-      setReply(current);
-      if (current.ready) {
-        await loadAudit(current, controller.signal);
-        return;
-      }
-      if (!current.reportId) throw new Error("Amazon 沒有回傳可追蹤的報表 ID。");
-      const reportId = current.reportId;
+      observerJobIdRef.current = current.jobId;
+      setJob(current);
+      onJobChange?.(current);
       setState("polling");
-      for (let attempt = 0; attempt < 90; attempt += 1) {
-        await delay(2_000, controller.signal);
-        const params = new URLSearchParams({ marketplaceId, reportId });
-        const pollResponse = await fetch(
-          `/api/sp-api/listing-content/export?${params}`,
-          { cache: "no-store", signal: controller.signal },
-        );
-        const pollRaw = (await pollResponse.json()) as Record<string, unknown>;
-        if (!pollResponse.ok) {
-          throw new Error(problemMessage(pollRaw as ApiProblem, "報表狀態查詢失敗。"));
-        }
-        current = reportReply({ ...pollRaw, reportId });
-        setReply(current);
-        if (["CANCELLED", "CANCELED", "FATAL", "FAILED"].includes(
-          current.status?.toUpperCase() ?? "",
-        )) {
-          throw new Error(current.message || `Amazon 報表狀態為 ${current.status}。`);
-        }
-        if (current.ready) {
-          await loadAudit(current, controller.signal);
-          return;
-        }
-      }
-      throw new Error("文案健檢超過三分鐘，請稍後再試。");
+      current = await pollStandaloneAuditJob({
+        expected: current,
+        signal: controller.signal,
+        onProgress: (next) => {
+          setJob(next);
+          onJobChange?.(next);
+        },
+      });
+      setJob(current);
+      onJobChange?.(current);
+      await loadAudit(current, controller.signal);
+      observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       setState(snapshot ? "done" : "idle");
       setError(
         requestError instanceof Error ? requestError.message : "目前無法完成文案健檢。",
       );
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
     }
   };
 
-  const statusText = scanStatusText(state, reply);
+  useEffect(() => {
+    if (!shouldResumeStandaloneAuditJob({
+      initialJob,
+      expectedKind: "content",
+      marketplaceId,
+      mode,
+      observerJobId: observerJobIdRef.current,
+    })) return;
+    const observedJob = initialJob!;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    observerJobIdRef.current = observedJob.jobId;
+    setJob(observedJob);
+    setState(observedJob.ready ? "scanning" : "polling");
+    void (async () => {
+      try {
+        const terminal = observedJob.ready
+          ? observedJob
+          : await pollStandaloneAuditJob({
+              expected: observedJob,
+              signal: controller.signal,
+              onProgress: (next) => {
+                setJob(next);
+                onJobChange?.(next);
+              },
+            });
+        setJob(terminal);
+        onJobChange?.(terminal);
+        await loadAudit(terminal, controller.signal);
+      } catch (resumeError) {
+        if (resumeError instanceof Error && resumeError.name === "AbortError") return;
+        setState(snapshot ? "done" : "idle");
+        setError(resumeError instanceof Error
+          ? resumeError.message
+          : "目前無法接續文案健檢。");
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          observerJobIdRef.current = null;
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        observerJobIdRef.current = null;
+      }
+    };
+  // The job identity is the reconnect boundary; local filter/query changes must not restart it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJobReconnectRevision, marketplaceId, mode]);
+
+  const statusText = job && !job.ready
+    ? job.progress.message
+    : scanStatusText(state, reply);
   const summary = snapshot?.summary;
   const summaryFilters: Array<{
     filter: AuditFilter;

@@ -16,6 +16,19 @@ export type UnboundVariationAuditIncompleteRow = {
   requestId: string | null;
 };
 
+export type AllVariationFamilyRow = {
+  familySku: string;
+  role: "parent" | "child";
+  sellerSku: string;
+  title: string;
+  productType: string;
+  variationTheme: string | null;
+  evidence:
+    | "verified-parent"
+    | "verified-child"
+    | "parent-sku-from-verified-child";
+};
+
 export type UnboundVariationAuditSnapshot = {
   mode: "live" | "demo";
   marketplaceId: string;
@@ -23,6 +36,7 @@ export type UnboundVariationAuditSnapshot = {
   exportId: string;
   rows: UnboundVariationAuditRow[];
   incompleteRows: UnboundVariationAuditIncompleteRow[];
+  allVariationRows: AllVariationFamilyRow[];
   summary: {
     totalFbaListings: number;
     completed: number;
@@ -108,7 +122,14 @@ export function parseUnboundVariationAuditSnapshot(
   }
   const mode = raw.mode === "live" || raw.mode === "demo" ? raw.mode : null;
   if (!mode) throw new Error("未綁變體健檢模式無法辨識。");
-  if (!Array.isArray(raw.rows) || !Array.isArray(raw.incompleteRows)) {
+  const rawAllVariationRows = raw.allVariationRows === undefined
+    ? []
+    : raw.allVariationRows;
+  if (
+    !Array.isArray(raw.rows) ||
+    !Array.isArray(raw.incompleteRows) ||
+    !Array.isArray(rawAllVariationRows)
+  ) {
     throw new Error("未綁變體健檢明細格式無法辨識。");
   }
   const rows = raw.rows.map((value, index): UnboundVariationAuditRow => {
@@ -137,6 +158,52 @@ export function parseUnboundVariationAuditSnapshot(
         requestId: row.requestId === null || row.requestId === undefined
           ? null
           : text(row.requestId, "Amazon Request ID", 200),
+      };
+    },
+  );
+  const seenFamilies = new Set<string>();
+  let currentFamilySku: string | null = null;
+  const allVariationRows = rawAllVariationRows.map(
+    (value, index): AllVariationFamilyRow => {
+      const row = record(value, `所有變體第 ${index + 1} 筆`);
+      const familySku = exactSellerSku(row.familySku, "變體家庭 Parent SKU");
+      const sellerSku = exactSellerSku(row.sellerSku, "所有變體 Seller SKU");
+      const role = row.role === "parent" || row.role === "child"
+        ? row.role
+        : null;
+      if (!role) throw new Error("所有變體角色格式無法辨識。");
+      const evidence = row.evidence === "verified-parent" ||
+          row.evidence === "verified-child" ||
+          row.evidence === "parent-sku-from-verified-child"
+        ? row.evidence
+        : null;
+      if (!evidence) throw new Error("所有變體 relationships 證據格式無法辨識。");
+      if (role === "parent") {
+        if (
+          sellerSku !== familySku ||
+          seenFamilies.has(familySku) ||
+          evidence === "verified-child"
+        ) {
+          throw new Error("每個父變體必須以唯一 Parent SKU 開始，才能接續子變體。");
+        }
+        seenFamilies.add(familySku);
+        currentFamilySku = familySku;
+      } else if (
+        currentFamilySku !== familySku ||
+        evidence !== "verified-child"
+      ) {
+        throw new Error("所有變體中每個父變體必須先出現，下面才能接續其子變體。");
+      }
+      return {
+        familySku,
+        role,
+        sellerSku,
+        title: optionalText(row.title, "所有變體商品標題"),
+        productType: optionalText(row.productType, "所有變體 Product Type", 128),
+        variationTheme: row.variationTheme === null || row.variationTheme === ""
+          ? null
+          : text(row.variationTheme, "所有變體 Variation Theme", 128),
+        evidence,
       };
     },
   );
@@ -169,6 +236,7 @@ export function parseUnboundVariationAuditSnapshot(
     exportId: exactExportId(raw.exportId),
     rows,
     incompleteRows,
+    allVariationRows,
     summary,
     notice: text(raw.notice, "健檢說明"),
   };
