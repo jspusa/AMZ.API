@@ -47,6 +47,7 @@ async function singleRowAuditWithActiveQuantityReport(input: Readonly<{
   allListingsQuantityHeaders?: string[];
   allListingsQuantityValues?: string[];
   includeActiveBusinessPrice?: boolean;
+  activeAsinHeader?: string | null;
   listingsQuantityDiscountPlan?: unknown;
 }>) {
   const suffix = input.caseName.toUpperCase().replace(/[^A-Z0-9]+/g, "-");
@@ -78,16 +79,19 @@ async function singleRowAuditWithActiveQuantityReport(input: Readonly<{
     ].join("\t"),
   ].join("\n");
   const includeActiveBusinessPrice = input.includeActiveBusinessPrice ?? true;
+  const activeAsinHeader = input.activeAsinHeader === undefined
+    ? "asin1"
+    : input.activeAsinHeader;
   const activeHeaders = [
     "seller-sku",
-    "asin1",
+    ...(activeAsinHeader === null ? [] : [activeAsinHeader]),
     "fulfillment-channel",
     ...(includeActiveBusinessPrice ? ["business-price"] : []),
     ...(input.quantityHeaders ?? []),
   ];
   const activeValues = [
     sellerSku,
-    asin,
+    ...(activeAsinHeader === null ? [] : [asin]),
     "AMAZON_NA",
     ...(includeActiveBusinessPrice ? ["13.99"] : []),
     ...(input.quantityValues ?? []),
@@ -2918,6 +2922,95 @@ describe("Amazon Business pricing SP-API contract", () => {
     });
   });
 
+  it("does not let Listings canonical evidence wash out a duplicate Active identity header", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "duplicate-active-identity",
+      quantityHeaders: [
+        "SKU",
+        "quantity-price-type",
+        "quantity-lower-bound-1",
+        "quantity-price-1",
+      ],
+      quantityValues: ["QDP-DUPLICATE-ACTIVE-IDENTITY", "percent", "5", "5"],
+      listingsQuantityDiscountPlan: [{
+        schedule: [{
+          discount_type: "percent",
+          levels: [{ lower_bound: 5, value: 5 }],
+        }],
+      }],
+    });
+
+    expect(row).toMatchObject({
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason: expect.stringMatching(/Active Listings.*重複/u),
+    });
+  });
+
+  it("keeps a truly missing Active identity header unavailable", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "missing-active-identity",
+      activeAsinHeader: null,
+      quantityHeaders: [
+        "quantity-price-type",
+        "quantity-lower-bound-1",
+        "quantity-price-1",
+      ],
+      quantityValues: ["percent", "5", "6"],
+      listingsQuantityDiscountPlan: [{
+        schedule: [{
+          discount_type: "percent",
+          levels: [{ lower_bound: 5, value: 5 }],
+        }],
+      }],
+    });
+
+    expect(row).toMatchObject({
+      businessPrice: { amount: 13.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [{ lowerBound: 5, value: 5 }],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      status: "configured",
+      editable: false,
+    });
+  });
+
+  it("does not let positive fallback wash out duplicate Active Business Price headers", async () => {
+    const row = await singleRowAuditWithActiveQuantityReport({
+      caseName: "duplicate-active-business-price",
+      quantityHeaders: [
+        "Business Price",
+        "quantity-price-type",
+        "quantity-lower-bound-1",
+        "quantity-price-1",
+      ],
+      quantityValues: ["13.99", "percent", "5", "5"],
+      listingsQuantityDiscountPlan: [{
+        schedule: [{
+          discount_type: "percent",
+          levels: [{ lower_bound: 5, value: 5 }],
+        }],
+      }],
+    });
+
+    expect(row).toMatchObject({
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason: expect.stringMatching(/Active Listings.*Business Price.*重複/u),
+    });
+  });
+
   it("preserves Active Listings Business Price when standard pricing is unavailable", async () => {
     const reportId = "B2B-ALL-DATA-NO-BUSINESS-PRICE";
     const documentId = "B2B-ALL-DATA-NO-BUSINESS-PRICE-DOCUMENT";
@@ -3471,7 +3564,7 @@ describe("Amazon Business pricing SP-API contract", () => {
         businessOfferPresence: "ambiguous",
         status: "incomplete",
         editable: false,
-        reason: expect.stringMatching(/Active Listings.*無法取得/u),
+        reason: expect.stringMatching(/Active Listings.*重複/u),
       })]);
       expect(snapshot.summary).toMatchObject({
         totalFbaSkuCount: 1,

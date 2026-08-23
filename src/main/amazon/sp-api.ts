@@ -15704,21 +15704,58 @@ function parseBusinessPricingActiveListingsReport(
   const seedBySku = new Map(seeds.map((seed) => [seed.sellerSku, seed]));
   const rows = parseTsv(text);
   const headers = rows[0] ?? [];
-  const skuIndex = uniqueReportColumn(headers, ["seller-sku", "sku"]);
-  const asinIndex = uniqueReportColumn(headers, ["asin1", "asin-1", "asin"]);
-  const fulfillmentIndex = uniqueReportColumn(headers, [
+  const skuMatches = matchingReportColumns(headers, ["seller-sku", "sku"]);
+  const asinMatches = matchingReportColumns(headers, [
+    "asin1",
+    "asin-1",
+    "asin",
+  ]);
+  const fulfillmentMatches = matchingReportColumns(headers, [
     "fulfillment-channel",
     "fulfillment-channel-code",
   ]);
-  const businessPriceIndex = uniqueReportColumn(headers, ["business-price"]);
+  const businessPriceMatches = matchingReportColumns(headers, [
+    "business-price",
+  ]);
+  const businessPriceIndex = businessPriceMatches.length === 1
+    ? businessPriceMatches[0]
+    : -1;
   const quantityDiscountColumns = listingReportQuantityDiscountColumns(headers);
   if (
-    skuIndex < 0 ||
-    asinIndex < 0 ||
-    fulfillmentIndex < 0
+    [skuMatches, asinMatches, fulfillmentMatches].some((matches) =>
+      matches.length > 1
+    )
+  ) {
+    for (const seed of seeds) {
+      businessPriceEvidenceBySku.set(
+        seed.sellerSku,
+        { presence: "ambiguous", amount: null },
+      );
+      quantityDiscountEvidenceBySku.set(
+        seed.sellerSku,
+        { presence: "ambiguous", plan: null },
+      );
+    }
+    return { businessPriceEvidenceBySku, quantityDiscountEvidenceBySku };
+  }
+  if (businessPriceMatches.length > 1) {
+    for (const seed of seeds) {
+      businessPriceEvidenceBySku.set(
+        seed.sellerSku,
+        { presence: "ambiguous", amount: null },
+      );
+    }
+  }
+  if (
+    skuMatches.length === 0 ||
+    asinMatches.length === 0 ||
+    fulfillmentMatches.length === 0
   ) {
     return { businessPriceEvidenceBySku, quantityDiscountEvidenceBySku };
   }
+  const skuIndex = skuMatches[0];
+  const asinIndex = asinMatches[0];
+  const fulfillmentIndex = fulfillmentMatches[0];
   const seenTargetSkus = new Set<string>();
   for (const row of rows.slice(1)) {
     const sellerSku = row[skuIndex] ?? "";
@@ -15755,10 +15792,12 @@ function parseBusinessPricingActiveListingsReport(
       );
       continue;
     }
-    businessPriceEvidenceBySku.set(
-      sellerSku,
-      listingReportBusinessPriceEvidence(row, businessPriceIndex),
-    );
+    if (businessPriceMatches.length <= 1) {
+      businessPriceEvidenceBySku.set(
+        sellerSku,
+        listingReportBusinessPriceEvidence(row, businessPriceIndex),
+      );
+    }
     quantityDiscountEvidenceBySku.set(
       sellerSku,
       listingReportQuantityDiscountEvidence(row, quantityDiscountColumns),
