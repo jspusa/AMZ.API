@@ -586,7 +586,11 @@ function mergeDuplicateDocumentRecord(
 
 function parseDocumentRelation(
   value: unknown,
-): { asin: string; states: readonly AplusDocumentRelation["state"][] } | null {
+): {
+  asin: string;
+  states: readonly AplusDocumentRelation["state"][];
+  completeness: "complete" | "partial";
+} | null {
   if (!isRecord(value) || typeof value.asin !== "string" || !/^[A-Z0-9]{10}$/u.test(value.asin)) {
     return null;
   }
@@ -601,15 +605,18 @@ function parseDocumentRelation(
       )
     )
   ) return null;
-  if (
-    value.contentReferenceKeySet !== undefined &&
+  // The route path already identifies the exact content document. Amazon's
+  // contentReferenceKeySet is optional display metadata, so a malformed value
+  // must lower completeness without discarding an otherwise exact badge state.
+  // A negative row with this drift still fails closed in the aggregate below.
+  const contentReferenceKeySetComplete =
+    value.contentReferenceKeySet === undefined ||
     (
-      !Array.isArray(value.contentReferenceKeySet) ||
-      value.contentReferenceKeySet.length > APLUS_AUDIT_MAX_PUBLIC_COUNT ||
-      new Set(value.contentReferenceKeySet).size !== value.contentReferenceKeySet.length ||
-      !value.contentReferenceKeySet.every((key) => isExactText(key, 2_048))
-    )
-  ) return null;
+      Array.isArray(value.contentReferenceKeySet) &&
+      value.contentReferenceKeySet.length <= APLUS_AUDIT_MAX_PUBLIC_COUNT &&
+      new Set(value.contentReferenceKeySet).size === value.contentReferenceKeySet.length &&
+      value.contentReferenceKeySet.every((key) => isExactText(key, 2_048))
+    );
   const badges = new Set(
     Array.isArray(value.badgeSet)
       ? value.badgeSet.filter((badge): badge is string => typeof badge === "string")
@@ -622,6 +629,7 @@ function parseDocumentRelation(
   return {
     asin: value.asin,
     states,
+    completeness: contentReferenceKeySetComplete ? "complete" : "partial",
   };
 }
 
@@ -798,6 +806,10 @@ async function readAplusDocumentIndex(input: Readonly<{
           relation.asin,
           document.contentReferenceKey,
         );
+        if (relation.completeness === "partial") {
+          aggregate.invalid = true;
+          partialAsins.add(relation.asin);
+        }
         for (const state of relation.states) {
           aggregate.states.add(state);
         }
@@ -951,9 +963,7 @@ function mergeDocumentEvidence(input: Readonly<{
   if (documents.length > APLUS_MAX_DOCUMENTS_PER_ASIN) evidencePartial = true;
   const boundedDocuments = documents.slice(0, APLUS_MAX_DOCUMENTS_PER_ASIN);
   const relationPublished = relations.some((relation) => relation.state === "published");
-  const canPromotePublishedRelation = relationPublished &&
-    !relationshipConflict &&
-    !publicationConflict;
+  const canPromotePublishedRelation = relationPublished && !publicationConflict;
   let outcome = input.read.outcome;
   if (outcome.status === "published") {
     if (relationshipConflict || publicationConflict) {
@@ -964,6 +974,16 @@ function mergeDocumentEvidence(input: Readonly<{
         reason: "Amazon exact publish record 已證明目前 ASIN 有 A+；文件關聯資料未完整或互相衝突，因此不顯示完整筆數。",
       };
     }
+  } else if (canPromotePublishedRelation) {
+    outcome = {
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: [],
+      locales: [],
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      reason: "Amazon A+ 文件與 ASIN 關聯的 CONTENT_PUBLISHED 已證明目前有已發布 A+；publish record 或其他文件關聯未完整，因此不顯示完整筆數。",
+    };
   } else if (relationshipConflict) {
     outcome = outcome.reasonCode === "FBA_RELATIONSHIP_INCOMPLETE"
       ? {
@@ -982,16 +1002,6 @@ function mergeDocumentEvidence(input: Readonly<{
           reasonCode: "A_PLUS_RESPONSE_INVALID",
           reason: "Amazon A+ 文件與 ASIN 關聯資料互相衝突，不能判定是否已發布。",
         };
-  } else if (canPromotePublishedRelation) {
-    outcome = {
-      status: "published",
-      sourceCompleteness: "partial",
-      publishedRecordCount: null,
-      contentTypes: [],
-      locales: [],
-      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
-      reason: "Amazon A+ 文件與 ASIN 關聯的 CONTENT_PUBLISHED 已證明目前有已發布 A+；publish record 未完整，因此不顯示完整筆數。",
-    };
   } else if (
     outcome.status === "missing" &&
     input.index.completeness !== "complete"

@@ -852,6 +852,168 @@ describe("A+ FBA audit core", () => {
     expect(snapshot.summary).toMatchObject({ published: 1, missing: 0, incomplete: 0 });
   });
 
+  it("keeps a published document authoritative when another document has a malformed exact relation", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-cross-document-malformed",
+      rows: [{
+        sellerSku: "CROSS-DOCUMENT-PUBLISHED",
+        asin: "B000000209",
+        title: "Cross document published",
+      }],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [
+            {
+              contentReferenceKey: "published-reference",
+              contentMetadata: {
+                name: "Published product detail",
+                marketplaceId: MARKETPLACE_ID,
+                status: "APPROVED",
+                badgeSet: ["STANDARD"],
+                updateTime: "2026-08-22T14:00:00Z",
+              },
+            },
+            {
+              contentReferenceKey: "malformed-reference",
+              contentMetadata: {
+                name: "Malformed product detail",
+                marketplaceId: MARKETPLACE_ID,
+                status: "SUBMITTED",
+                badgeSet: ["STANDARD"],
+                updateTime: "2026-08-22T15:00:00Z",
+              },
+            },
+          ],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async (
+        { contentReferenceKey }: AplusContentDocumentRelationFetchInput,
+      ) => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: contentReferenceKey === "published-reference"
+            ? [{
+                asin: "B000000209",
+                badgeSet: ["CONTENT_PUBLISHED"],
+                contentReferenceKeySet: [contentReferenceKey],
+              }]
+            : [{
+                asin: "B000000209",
+                badgeSet: ["CONTENT_NOT_PUBLISHED", "NOT_AN_AMAZON_BADGE"],
+                contentReferenceKeySet: [contentReferenceKey],
+              }],
+        },
+      }),
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+    } as never);
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      documents: [{
+        name: "Published product detail",
+        relationState: "published",
+        evidence: "relation_badge",
+        completeness: "complete",
+      }],
+      documentEvidenceCompleteness: "partial",
+    });
+    expect(snapshot.summary).toMatchObject({ published: 1, missing: 0, incomplete: 0 });
+  });
+
+  it("uses a valid published badge when unused optional relation metadata is malformed", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-optional-metadata",
+      rows: [
+        {
+          sellerSku: "PUBLISHED-MALFORMED-OPTIONAL",
+          asin: "B000000212",
+          title: "Published malformed optional metadata",
+        },
+        {
+          sellerSku: "NEGATIVE-MALFORMED-OPTIONAL",
+          asin: "B000000213",
+          title: "Negative malformed optional metadata",
+        },
+      ],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "optional-metadata-reference",
+            contentMetadata: {
+              name: "Optional metadata product detail",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T14:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [
+            {
+              asin: "B000000212",
+              badgeSet: ["CONTENT_PUBLISHED"],
+              contentReferenceKeySet: null,
+            },
+            {
+              asin: "B000000213",
+              badgeSet: ["CONTENT_NOT_PUBLISHED"],
+              contentReferenceKeySet: null,
+            },
+          ],
+        },
+      }),
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+    } as never);
+
+    expect(snapshot.rows).toMatchObject([
+      {
+        sellerSku: "PUBLISHED-MALFORMED-OPTIONAL",
+        status: "published",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+        documents: [{
+          name: "Optional metadata product detail",
+          relationState: "published",
+          evidence: "relation_badge",
+          completeness: "partial",
+        }],
+        documentEvidenceCompleteness: "partial",
+      },
+      {
+        sellerSku: "NEGATIVE-MALFORMED-OPTIONAL",
+        status: "incomplete",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        reasonCode: "A_PLUS_RESPONSE_INVALID",
+        documents: [],
+        documentEvidenceCompleteness: "partial",
+      },
+    ]);
+    expect(snapshot.summary).toMatchObject({ published: 1, missing: 0, incomplete: 1 });
+  });
+
   it("keeps duplicate relation positives partial and leaves an exact publish record authoritative", async () => {
     const snapshot = await runAplusAudit({
       mode: "live",
