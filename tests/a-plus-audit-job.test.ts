@@ -117,6 +117,14 @@ describe("A+ audit background job coordinator", () => {
             },
           };
         },
+        fetchContentDocuments: async () => ({
+          status: 200,
+          payload: { contentMetadataRecords: [] },
+        }),
+        fetchContentDocumentAsinRelations: async () => ({
+          status: 200,
+          payload: { asinMetadataSet: [] },
+        }),
       }),
     });
     const started = await coordinator.start({

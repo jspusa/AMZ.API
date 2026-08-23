@@ -3950,7 +3950,7 @@ footer {
 
 .business-pricing-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.35fr) minmax(210px, .9fr) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(300px, 1.7fr) minmax(140px, .9fr) auto;
   align-items: center;
   gap: 12px;
   padding: 13px 14px;
@@ -3960,7 +3960,83 @@ footer {
 }
 
 .business-pricing-row.aplus-presence-row {
-  grid-template-columns: minmax(220px, 1.35fr) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(170px, 1.1fr) minmax(300px, 1.7fr) minmax(160px, 1fr) auto;
+}
+
+.aplus-document-evidence {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.aplus-document-evidence > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aplus-document-evidence > header > span {
+  color: #55555d;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.aplus-document-evidence > header > small {
+  color: #85858d;
+  font-size: 9px;
+}
+
+.aplus-document-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 7px;
+}
+
+.aplus-document-card {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid #e0e0e5;
+  border-radius: 10px;
+  background: #f7f7f9;
+}
+
+.aplus-document-card > strong {
+  overflow-wrap: anywhere;
+  color: #323238;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.aplus-document-card.is-empty > strong { color: #777780; }
+
+.aplus-document-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0;
+}
+
+.aplus-document-card dt,
+.aplus-document-card dd { margin: 0; }
+.aplus-document-card dt { color: #86868e; font-size: 8px; }
+.aplus-document-card dd { margin-top: 2px; color: #44444b; font-size: 10px; font-weight: 800; }
+
+.aplus-document-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.aplus-document-badges span {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #e8edf5;
+  color: #4e6179;
+  font-size: 7px;
+  font-weight: 850;
 }
 
 .business-pricing-row.missing {
@@ -3990,16 +4066,60 @@ footer {
 .business-pricing-row dl,
 .business-pricing-editor dl {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   margin: 0;
 }
 
-.business-pricing-row dl div,
-.business-pricing-editor dl div {
+.business-pricing-row dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.business-pricing-editor dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.business-pricing-row dl > div,
+.business-pricing-editor dl > div {
   padding: 8px 9px;
   border-radius: 9px;
   background: #f4f4f6;
+}
+
+.business-pricing-quantity-cell {
+  grid-column: 1 / -1;
+}
+
+.business-pricing-quantity-plan {
+  display: grid;
+  gap: 7px;
+}
+
+.business-pricing-quantity-kind,
+.business-pricing-quantity-empty {
+  color: #5f5f67;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.business-pricing-quantity-tiers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 6px;
+}
+
+.business-pricing-quantity-tier {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid #dedee4;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.business-pricing-quantity-tier strong {
+  color: #3d3d43;
+  font-size: 10px;
+}
+
+.business-pricing-quantity-tier span {
+  color: #18724b;
+  font-size: 11px;
+  font-weight: 850;
 }
 
 .business-pricing-row dt,

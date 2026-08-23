@@ -4,6 +4,8 @@ import {
   type AplusAuditSnapshot,
   type AplusAuditProgress,
   type AplusAuditSeed,
+  type AplusContentDocumentFetchInput,
+  type AplusContentDocumentRelationFetchInput,
   type AplusPublishRecordFetchInput,
   type AplusPublishRecordFetchResult,
 } from "./a-plus-audit";
@@ -37,6 +39,16 @@ export type AplusAuditJobGateway = Readonly<{
   fetchPublishRecords(input: Readonly<{
     context: AplusAuditJobBoundContext;
     request: AplusPublishRecordFetchInput;
+    heartbeat(): void;
+  }>): Promise<AplusPublishRecordFetchResult>;
+  fetchContentDocuments?(input: Readonly<{
+    context: AplusAuditJobBoundContext;
+    request: AplusContentDocumentFetchInput;
+    heartbeat(): void;
+  }>): Promise<AplusPublishRecordFetchResult>;
+  fetchContentDocumentAsinRelations?(input: Readonly<{
+    context: AplusAuditJobBoundContext;
+    request: AplusContentDocumentRelationFetchInput;
     heartbeat(): void;
   }>): Promise<AplusPublishRecordFetchResult>;
 }>;
@@ -276,6 +288,27 @@ export class AplusAuditJobCoordinator {
             heartbeat: () => this.touchActive(job),
           });
         },
+        fetchContentDocuments: this.gateway.fetchContentDocuments
+          ? async (request) => {
+              await this.assertJobContext(job);
+              return this.gateway.fetchContentDocuments!({
+                context: job.context,
+                request,
+                heartbeat: () => this.touchActive(job),
+              });
+            }
+          : undefined,
+        fetchContentDocumentAsinRelations:
+          this.gateway.fetchContentDocumentAsinRelations
+            ? async (request) => {
+                await this.assertJobContext(job);
+                return this.gateway.fetchContentDocumentAsinRelations!({
+                  context: job.context,
+                  request,
+                  heartbeat: () => this.touchActive(job),
+                });
+              }
+            : undefined,
         onProgress: (progress) => {
           if (
             this.jobs.get(job.jobId) === job &&

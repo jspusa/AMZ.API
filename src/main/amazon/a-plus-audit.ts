@@ -12,6 +12,7 @@ export type AplusAuditStatus =
 
 export type AplusAuditReasonCode =
   | "PUBLISHED_RECORD_FOUND"
+  | "PUBLISHED_DOCUMENT_RELATION_FOUND"
   | "NO_PUBLISHED_RECORD"
   | "FBA_IDENTITY_INCOMPLETE"
   | "FBA_RELATIONSHIP_INCOMPLETE"
@@ -38,20 +39,27 @@ export type AplusFbaGroupingSeed = Readonly<{
 
 /**
  * Converts the strict Listings relationships result into the only seed shape
- * allowed to reach the A+ reader. Parent containers are not auditable rows;
- * incomplete relationships remain visible but cannot carry a queryable ASIN.
+ * allowed to reach the A+ reader. Proven parent containers are not auditable
+ * rows. An exact ASIN from the FBA all-listings scope remains available to the
+ * account-wide document-relation index when variation relationships are
+ * incomplete, but the incomplete marker prevents a per-ASIN publish request.
  */
 export function buildAplusAuditSeedsFromFbaGrouping(
   rows: readonly AplusFbaGroupingSeed[],
 ): AplusAuditSeed[] {
   return rows.flatMap((row): AplusAuditSeed[] => {
     if (row.status === "complete" && row.role === "parent") return [];
-    if (
-      row.status === "complete" &&
-      (row.role === "child" || row.role === "standalone") &&
-      /^[A-Z0-9]{10}$/u.test(row.asin)
-    ) {
-      return [{ sellerSku: row.sellerSku, asin: row.asin, title: row.title }];
+    if (/^[A-Z0-9]{10}$/u.test(row.asin)) {
+      const relationshipProven = row.status === "complete" &&
+        (row.role === "child" || row.role === "standalone");
+      return [{
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        title: row.title,
+        ...(relationshipProven
+          ? {}
+          : { incompleteReasonCode: "FBA_RELATIONSHIP_INCOMPLETE" as const }),
+      }];
     }
     return [{
       sellerSku: row.sellerSku,
@@ -79,9 +87,52 @@ export type AplusPublishRecordFetcher = (
   input: AplusPublishRecordFetchInput,
 ) => Promise<AplusPublishRecordFetchResult>;
 
+export type AplusContentDocumentFetchInput = Readonly<{
+  marketplaceId: string;
+  pageToken?: string;
+  signal?: AbortSignal;
+}>;
+
+export type AplusContentDocumentRelationFetchInput = Readonly<{
+  marketplaceId: string;
+  contentReferenceKey: string;
+  pageToken?: string;
+  signal?: AbortSignal;
+}>;
+
+export type AplusContentDocumentFetcher = (
+  input: AplusContentDocumentFetchInput,
+) => Promise<AplusPublishRecordFetchResult>;
+
+export type AplusContentDocumentRelationFetcher = (
+  input: AplusContentDocumentRelationFetchInput,
+) => Promise<AplusPublishRecordFetchResult>;
+
 export type AplusAuditProgress = Readonly<{
   completedAsins: number;
   totalAsins: number;
+}>;
+
+export type AplusDocumentStatus =
+  | "APPROVED"
+  | "DRAFT"
+  | "REJECTED"
+  | "SUBMITTED";
+
+export type AplusDocumentBadge =
+  | "BULK"
+  | "GENERATED"
+  | "LAUNCHPAD"
+  | "PREMIUM"
+  | "STANDARD";
+
+export type AplusDocumentEvidence = Readonly<{
+  name: string | null;
+  documentStatus: AplusDocumentStatus | null;
+  badges: readonly AplusDocumentBadge[];
+  relationState: "published" | "not_published" | "related";
+  evidence: "publish_record" | "relation_badge" | "relation_only";
+  completeness: "complete" | "partial";
 }>;
 
 export type AplusAuditRow = Readonly<{
@@ -94,6 +145,8 @@ export type AplusAuditRow = Readonly<{
   publishedRecordCount: number | null;
   contentTypes: readonly ("EBC" | "EMC")[];
   locales: readonly string[];
+  documents: readonly AplusDocumentEvidence[];
+  documentEvidenceCompleteness: "complete" | "partial" | "unavailable";
   reasonCode: AplusAuditReasonCode;
   reason: string;
 }>;
@@ -123,7 +176,63 @@ export type AplusAuditSnapshot = Readonly<{
   notice: string;
 }>;
 
-type AsinResult = Omit<AplusAuditRow, "sellerSku" | "title" | "asin" | "marketplaceId">;
+type AsinResult = Omit<
+  AplusAuditRow,
+  | "sellerSku"
+  | "title"
+  | "asin"
+  | "marketplaceId"
+  | "documents"
+  | "documentEvidenceCompleteness"
+>;
+
+type AsinReadResult = Readonly<{
+  outcome: AsinResult;
+  contentReferenceKeys: readonly string[];
+}>;
+
+type AplusDocumentRecord = Readonly<{
+  contentReferenceKey: string;
+  name: string;
+  documentStatus: AplusDocumentStatus;
+  badges: readonly AplusDocumentBadge[];
+}>;
+
+type AplusDocumentRelation = Readonly<{
+  contentReferenceKey: string;
+  state: "published" | "not_published" | "related";
+}>;
+
+type AplusDocumentIndex = Readonly<{
+  documentsByKey: ReadonlyMap<string, AplusDocumentRecord>;
+  relationsByAsin: ReadonlyMap<string, readonly AplusDocumentRelation[]>;
+  conflictAsins: ReadonlySet<string>;
+  completeness: "complete" | "partial" | "unavailable";
+}>;
+
+const APLUS_DOCUMENT_STATUSES = new Set<AplusDocumentStatus>([
+  "APPROVED",
+  "DRAFT",
+  "REJECTED",
+  "SUBMITTED",
+]);
+
+const APLUS_DOCUMENT_BADGES = new Set<AplusDocumentBadge>([
+  "BULK",
+  "GENERATED",
+  "LAUNCHPAD",
+  "PREMIUM",
+  "STANDARD",
+]);
+
+const APLUS_ASIN_BADGES = new Set([
+  "BRAND_NOT_ELIGIBLE",
+  "CATALOG_NOT_FOUND",
+  "CONTENT_NOT_PUBLISHED",
+  "CONTENT_PUBLISHED",
+]);
+
+const APLUS_MAX_DOCUMENTS_PER_ASIN = 100;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -204,7 +313,7 @@ function normalizedSeeds(input: Readonly<{
     const incompleteReasonCode = row.incompleteReasonCode;
     if (
       incompleteReasonCode !== undefined &&
-      (incompleteReasonCode !== "FBA_RELATIONSHIP_INCOMPLETE" || asin !== null)
+      incompleteReasonCode !== "FBA_RELATIONSHIP_INCOMPLETE"
     ) {
       throw new Error("A+ 健檢 relationship incomplete seed 無效。");
     }
@@ -345,6 +454,22 @@ function readFailure(status: number): AsinResult {
   };
 }
 
+function relationshipIncompleteRead(): AsinReadResult {
+  return {
+    outcome: {
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: [],
+      locales: [],
+      reasonCode: "FBA_RELATIONSHIP_INCOMPLETE",
+      reason:
+        "Amazon variation relationships 未完整證明此 FBA 商品為 child 或 standalone；未發出逐 ASIN publish-record request，只核對 account-wide A+ 文件關聯。",
+    },
+    contentReferenceKeys: [],
+  };
+}
+
 function partialEvidenceResult(
   publishedRecordCount: number,
   contentTypes: ReadonlySet<"EBC" | "EMC">,
@@ -375,18 +500,464 @@ function paginationFailure(): AsinResult {
   };
 }
 
+function aplusPageToken(value: unknown): string | null | "invalid" {
+  if (value === undefined || value === null) return null;
+  return isExactText(value, 2_048) ? value : "invalid";
+}
+
+function parseDocumentRecord(
+  value: unknown,
+  marketplaceId: string,
+): AplusDocumentRecord | null {
+  if (!isRecord(value) || !isExactText(value.contentReferenceKey, 512)) {
+    return null;
+  }
+  const metadata = value.contentMetadata;
+  if (!isRecord(metadata)) return null;
+  if (
+    !isExactText(metadata.name, 100) ||
+    metadata.marketplaceId !== marketplaceId ||
+    typeof metadata.status !== "string" ||
+    !APLUS_DOCUMENT_STATUSES.has(metadata.status as AplusDocumentStatus) ||
+    !Array.isArray(metadata.badgeSet) ||
+    metadata.badgeSet.length > APLUS_DOCUMENT_BADGES.size ||
+    new Set(metadata.badgeSet).size !== metadata.badgeSet.length ||
+    !metadata.badgeSet.every((badge) =>
+      typeof badge === "string" &&
+      APLUS_DOCUMENT_BADGES.has(badge as AplusDocumentBadge)
+    ) ||
+    !isExactText(metadata.updateTime, 64) ||
+    !Number.isFinite(Date.parse(metadata.updateTime))
+  ) return null;
+  return {
+    contentReferenceKey: value.contentReferenceKey,
+    name: metadata.name,
+    documentStatus: metadata.status as AplusDocumentStatus,
+    badges: [...metadata.badgeSet as AplusDocumentBadge[]].sort((left, right) =>
+      left.localeCompare(right)
+    ),
+  };
+}
+
+function sameDocumentRecord(
+  left: AplusDocumentRecord,
+  right: AplusDocumentRecord,
+): boolean {
+  return (
+    left.contentReferenceKey === right.contentReferenceKey &&
+    left.name === right.name &&
+    left.documentStatus === right.documentStatus &&
+    JSON.stringify(left.badges) === JSON.stringify(right.badges)
+  );
+}
+
+function parseDocumentRelation(
+  value: unknown,
+  contentReferenceKey: string,
+): { asin: string; state: AplusDocumentRelation["state"] } | null {
+  if (!isRecord(value) || typeof value.asin !== "string" || !/^[A-Z0-9]{10}$/u.test(value.asin)) {
+    return null;
+  }
+  if (
+    value.badgeSet !== undefined &&
+    (
+      !Array.isArray(value.badgeSet) ||
+      value.badgeSet.length > APLUS_ASIN_BADGES.size ||
+      new Set(value.badgeSet).size !== value.badgeSet.length ||
+      !value.badgeSet.every((badge) =>
+        typeof badge === "string" && APLUS_ASIN_BADGES.has(badge)
+      )
+    )
+  ) return null;
+  if (
+    value.contentReferenceKeySet !== undefined &&
+    (
+      !Array.isArray(value.contentReferenceKeySet) ||
+      value.contentReferenceKeySet.length > APLUS_AUDIT_MAX_PUBLIC_COUNT ||
+      new Set(value.contentReferenceKeySet).size !== value.contentReferenceKeySet.length ||
+      !value.contentReferenceKeySet.every((key) => isExactText(key, 512)) ||
+      !value.contentReferenceKeySet.includes(contentReferenceKey)
+    )
+  ) return null;
+  const badges = new Set(
+    Array.isArray(value.badgeSet)
+      ? value.badgeSet.filter((badge): badge is string => typeof badge === "string")
+      : [],
+  );
+  if (badges.has("CONTENT_PUBLISHED") && badges.has("CONTENT_NOT_PUBLISHED")) {
+    return null;
+  }
+  return {
+    asin: value.asin,
+    state: badges.has("CONTENT_PUBLISHED")
+      ? "published"
+      : badges.has("CONTENT_NOT_PUBLISHED")
+        ? "not_published"
+        : "related",
+  };
+}
+
+async function readAplusDocumentIndex(input: Readonly<{
+  marketplaceId: string;
+  targetAsins: ReadonlySet<string>;
+  fetchContentDocuments?: AplusContentDocumentFetcher;
+  fetchContentDocumentAsinRelations?: AplusContentDocumentRelationFetcher;
+  signal?: AbortSignal;
+}>): Promise<AplusDocumentIndex> {
+  if (!input.fetchContentDocuments || !input.fetchContentDocumentAsinRelations) {
+    return {
+      documentsByKey: new Map(),
+      relationsByAsin: new Map(),
+      conflictAsins: new Set(),
+      completeness: "unavailable",
+    };
+  }
+  const documentsByKey = new Map<string, AplusDocumentRecord>();
+  const invalidDocumentKeys = new Set<string>();
+  const seenDocumentPageTokens = new Set<string>();
+  let documentPageToken: string | undefined;
+  let partial = false;
+  let documentPaginationComplete = false;
+  for (let page = 0; page < 100; page += 1) {
+    throwIfAuditAborted(input.signal);
+    let response: AplusPublishRecordFetchResult;
+    try {
+      response = await input.fetchContentDocuments({
+        marketplaceId: input.marketplaceId,
+        pageToken: documentPageToken,
+        signal: input.signal,
+      });
+      throwIfAuditAborted(input.signal);
+    } catch (error) {
+      throwIfAuditAborted(input.signal);
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      partial = true;
+      break;
+    }
+    if (response.status === 403 && documentsByKey.size === 0) {
+      return {
+        documentsByKey,
+        relationsByAsin: new Map(),
+        conflictAsins: new Set(),
+        completeness: "unavailable",
+      };
+    }
+    if (response.status !== 200 || !isRecord(response.payload)) {
+      partial = true;
+      break;
+    }
+    const records = response.payload.contentMetadataRecords;
+    if (!Array.isArray(records) || records.length > 10_000) {
+      partial = true;
+      break;
+    }
+    if (warningEnvelopeState(response.payload.warnings) !== "none") partial = true;
+    for (const candidate of records) {
+      const record = parseDocumentRecord(candidate, input.marketplaceId);
+      if (!record) {
+        partial = true;
+        continue;
+      }
+      if (invalidDocumentKeys.has(record.contentReferenceKey)) continue;
+      const previous = documentsByKey.get(record.contentReferenceKey);
+      if (previous && !sameDocumentRecord(previous, record)) {
+        documentsByKey.delete(record.contentReferenceKey);
+        invalidDocumentKeys.add(record.contentReferenceKey);
+        partial = true;
+        continue;
+      }
+      if (!previous && documentsByKey.size >= APLUS_AUDIT_MAX_PUBLIC_COUNT) {
+        partial = true;
+        continue;
+      }
+      documentsByKey.set(record.contentReferenceKey, record);
+    }
+    const nextPageToken = aplusPageToken(response.payload.nextPageToken);
+    if (nextPageToken === "invalid") {
+      partial = true;
+      break;
+    }
+    if (nextPageToken === null) {
+      documentPaginationComplete = true;
+      break;
+    }
+    if (seenDocumentPageTokens.has(nextPageToken)) {
+      partial = true;
+      break;
+    }
+    seenDocumentPageTokens.add(nextPageToken);
+    documentPageToken = nextPageToken;
+  }
+  if (!documentPaginationComplete) partial = true;
+
+  const relationByCompositeKey = new Map<string, AplusDocumentRelation>();
+  const invalidRelationKeys = new Set<string>();
+  const conflictAsins = new Set<string>();
+  for (const document of [...documentsByKey.values()].sort((left, right) =>
+    left.contentReferenceKey.localeCompare(right.contentReferenceKey)
+  )) {
+    let relationPageToken: string | undefined;
+    const seenRelationPageTokens = new Set<string>();
+    let relationPaginationComplete = false;
+    for (let page = 0; page < 100; page += 1) {
+      throwIfAuditAborted(input.signal);
+      let response: AplusPublishRecordFetchResult;
+      try {
+        response = await input.fetchContentDocumentAsinRelations({
+          marketplaceId: input.marketplaceId,
+          contentReferenceKey: document.contentReferenceKey,
+          pageToken: relationPageToken,
+          signal: input.signal,
+        });
+        throwIfAuditAborted(input.signal);
+      } catch (error) {
+        throwIfAuditAborted(input.signal);
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        partial = true;
+        break;
+      }
+      if (response.status !== 200 || !isRecord(response.payload)) {
+        partial = true;
+        break;
+      }
+      const metadataSet = response.payload.asinMetadataSet;
+      if (!Array.isArray(metadataSet) || metadataSet.length > 10_000) {
+        partial = true;
+        break;
+      }
+      if (warningEnvelopeState(response.payload.warnings) !== "none") partial = true;
+      for (const candidate of metadataSet) {
+        const relation = parseDocumentRelation(candidate, document.contentReferenceKey);
+        if (!relation) {
+          partial = true;
+          if (isRecord(candidate) && typeof candidate.asin === "string" &&
+              input.targetAsins.has(candidate.asin)) {
+            const compositeKey = JSON.stringify([
+              candidate.asin,
+              document.contentReferenceKey,
+            ]);
+            conflictAsins.add(candidate.asin);
+            invalidRelationKeys.add(compositeKey);
+            relationByCompositeKey.delete(compositeKey);
+          }
+          continue;
+        }
+        if (!input.targetAsins.has(relation.asin)) continue;
+        const compositeKey = JSON.stringify([
+          relation.asin,
+          document.contentReferenceKey,
+        ]);
+        if (invalidRelationKeys.has(compositeKey)) continue;
+        const previous = relationByCompositeKey.get(compositeKey);
+        if (previous && previous.state !== relation.state) {
+          relationByCompositeKey.delete(compositeKey);
+          invalidRelationKeys.add(compositeKey);
+          conflictAsins.add(relation.asin);
+          partial = true;
+          continue;
+        }
+        relationByCompositeKey.set(compositeKey, {
+          contentReferenceKey: document.contentReferenceKey,
+          state: relation.state,
+        });
+      }
+      const nextPageToken = aplusPageToken(response.payload.nextPageToken);
+      if (nextPageToken === "invalid") {
+        partial = true;
+        break;
+      }
+      if (nextPageToken === null) {
+        relationPaginationComplete = true;
+        break;
+      }
+      if (seenRelationPageTokens.has(nextPageToken)) {
+        partial = true;
+        break;
+      }
+      seenRelationPageTokens.add(nextPageToken);
+      relationPageToken = nextPageToken;
+    }
+    if (!relationPaginationComplete) partial = true;
+  }
+
+  const relationsByAsin = new Map<string, AplusDocumentRelation[]>();
+  for (const [compositeKey, relation] of relationByCompositeKey) {
+    const parsed = JSON.parse(compositeKey) as [string, string];
+    const asin = parsed[0];
+    const list = relationsByAsin.get(asin) ?? [];
+    list.push(relation);
+    relationsByAsin.set(asin, list);
+  }
+  for (const list of relationsByAsin.values()) {
+    list.sort((left, right) =>
+      left.contentReferenceKey.localeCompare(right.contentReferenceKey)
+    );
+  }
+  return {
+    documentsByKey,
+    relationsByAsin,
+    conflictAsins,
+    completeness: partial ? "partial" : "complete",
+  };
+}
+
+function mergeDocumentEvidence(input: Readonly<{
+  asin: string;
+  read: AsinReadResult;
+  index: AplusDocumentIndex;
+}>): Pick<
+  AplusAuditRow,
+  | "status"
+  | "sourceCompleteness"
+  | "publishedRecordCount"
+  | "contentTypes"
+  | "locales"
+  | "documents"
+  | "documentEvidenceCompleteness"
+  | "reasonCode"
+  | "reason"
+> {
+  const relations = input.index.relationsByAsin.get(input.asin) ?? [];
+  const relationByKey = new Map(
+    relations.map((relation) => [relation.contentReferenceKey, relation]),
+  );
+  const publishKeys = new Set(input.read.contentReferenceKeys);
+  const documents: AplusDocumentEvidence[] = [];
+  let evidencePartial = input.index.completeness !== "complete";
+  let publicationConflict = false;
+  for (const contentReferenceKey of publishKeys) {
+    const document = input.index.documentsByKey.get(contentReferenceKey);
+    const relation = relationByKey.get(contentReferenceKey);
+    const relationConflicts = relation?.state === "not_published";
+    if (
+      (!document && input.index.completeness !== "unavailable") ||
+      relationConflicts
+    ) evidencePartial = true;
+    if (relationConflicts) publicationConflict = true;
+    documents.push({
+      name: document?.name ?? null,
+      documentStatus: document?.documentStatus ?? null,
+      badges: document?.badges ?? [],
+      relationState: "published",
+      evidence: "publish_record",
+      completeness: !document || relationConflicts || input.index.completeness !== "complete"
+        ? "partial"
+        : "complete",
+    });
+  }
+  for (const relation of relations) {
+    if (publishKeys.has(relation.contentReferenceKey)) continue;
+    const document = input.index.documentsByKey.get(relation.contentReferenceKey);
+    if (!document) {
+      evidencePartial = true;
+      continue;
+    }
+    documents.push({
+      name: document.name,
+      documentStatus: document.documentStatus,
+      badges: document.badges,
+      relationState: relation.state,
+      evidence: relation.state === "published" ? "relation_badge" : "relation_only",
+      completeness: input.index.completeness === "complete" ? "complete" : "partial",
+    });
+  }
+  documents.sort((left, right) =>
+    (left.name ?? "\uffff").localeCompare(right.name ?? "\uffff") ||
+    (left.documentStatus ?? "").localeCompare(right.documentStatus ?? "") ||
+    left.relationState.localeCompare(right.relationState) ||
+    left.evidence.localeCompare(right.evidence)
+  );
+  if (documents.length > APLUS_MAX_DOCUMENTS_PER_ASIN) evidencePartial = true;
+  const boundedDocuments = documents.slice(0, APLUS_MAX_DOCUMENTS_PER_ASIN);
+  const relationPublished = relations.some((relation) => relation.state === "published");
+  const relationshipConflict = input.index.conflictAsins.has(input.asin);
+  const canPromotePublishedRelation = relationPublished &&
+    !relationshipConflict &&
+    !publicationConflict;
+  let outcome = input.read.outcome;
+  if (outcome.status === "published") {
+    if (relationshipConflict || publicationConflict) {
+      outcome = {
+        ...outcome,
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        reason: "Amazon exact publish record 已證明目前 ASIN 有 A+；文件關聯資料未完整或互相衝突，因此不顯示完整筆數。",
+      };
+    }
+  } else if (relationshipConflict) {
+    outcome = outcome.reasonCode === "FBA_RELATIONSHIP_INCOMPLETE"
+      ? {
+          ...outcome,
+          sourceCompleteness: "partial",
+          publishedRecordCount: null,
+          reason:
+            "Amazon variation relationships 未完整，且 A+ 文件與 ASIN 關聯資料互相衝突；未發出逐 ASIN publish-record request，不能判定是否已發布。",
+        }
+      : {
+          status: "incomplete",
+          sourceCompleteness: "partial",
+          publishedRecordCount: null,
+          contentTypes: [],
+          locales: [],
+          reasonCode: "A_PLUS_RESPONSE_INVALID",
+          reason: "Amazon A+ 文件與 ASIN 關聯資料互相衝突，不能判定是否已發布。",
+        };
+  } else if (canPromotePublishedRelation) {
+    outcome = {
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: [],
+      locales: [],
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      reason: "Amazon A+ 文件與 ASIN 關聯的 CONTENT_PUBLISHED 已證明目前有已發布 A+；publish record 未完整，因此不顯示完整筆數。",
+    };
+  } else if (
+    outcome.status === "missing" &&
+    input.index.completeness !== "complete"
+  ) {
+    outcome = {
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: [],
+      locales: [],
+      reasonCode: "A_PLUS_READ_FAILED",
+      reason:
+        "Amazon publish-record 完整空清單，但 A+ 文件與 ASIN 關聯索引未完整，可能漏掉 CONTENT_PUBLISHED；不能判定為未發布。",
+    };
+  }
+  const documentEvidenceCompleteness = input.index.completeness === "unavailable"
+    ? "unavailable" as const
+    : evidencePartial || relationshipConflict
+      ? "partial" as const
+      : "complete" as const;
+  return {
+    ...outcome,
+    documents: boundedDocuments,
+    documentEvidenceCompleteness,
+  };
+}
+
 async function readAsin(
   marketplaceId: string,
   asin: string,
   fetchPublishRecords: AplusPublishRecordFetcher,
   signal?: AbortSignal,
-): Promise<AsinResult> {
+): Promise<AsinReadResult> {
   throwIfAuditAborted(signal);
   let pageToken: string | undefined;
   const recordKeys = new Set<string>();
+  const contentReferenceKeys = new Set<string>();
   const contentTypes = new Set<"EBC" | "EMC">();
   const locales = new Set<string>();
   const seenPageTokens = new Set<string>();
+  const finish = (outcome: AsinResult): AsinReadResult => ({
+    outcome,
+    contentReferenceKeys: [...contentReferenceKeys].sort((left, right) =>
+      left.localeCompare(right)
+    ),
+  });
   let warningResult: AsinResult | null = null;
   for (let page = 0; page < 100; page += 1) {
     throwIfAuditAborted(signal);
@@ -402,20 +973,20 @@ async function readAsin(
     } catch (error) {
       throwIfAuditAborted(signal);
       if (error instanceof Error && error.name === "AbortError") throw error;
-      return partialEvidenceResult(
+      return finish(partialEvidenceResult(
         recordKeys.size,
         contentTypes,
         locales,
         readFailure(0),
-      );
+      ));
     }
     if (response.status !== 200) {
-      return partialEvidenceResult(
+      return finish(partialEvidenceResult(
         recordKeys.size,
         contentTypes,
         locales,
         readFailure(response.status),
-      );
+      ));
     }
     const parsed = parsePublishRecordPage(marketplaceId, asin, response.payload);
     if (parsed.status === "published") {
@@ -434,25 +1005,26 @@ async function readAsin(
           !recordKeys.has(recordKey) &&
           recordKeys.size >= APLUS_AUDIT_MAX_PUBLIC_COUNT
         ) {
-          return partialEvidenceResult(
+          return finish(partialEvidenceResult(
             recordKeys.size,
             contentTypes,
             locales,
             paginationFailure(),
-          );
+          ));
         }
         if (
           !locales.has(record.locale) &&
           locales.size >= APLUS_AUDIT_MAX_PUBLIC_LOCALES_PER_ASIN
         ) {
-          return partialEvidenceResult(
+          return finish(partialEvidenceResult(
             recordKeys.size,
             contentTypes,
             locales,
             paginationFailure(),
-          );
+          ));
         }
         recordKeys.add(recordKey);
+        contentReferenceKeys.add(record.contentReferenceKey);
         contentTypes.add(record.contentType);
         locales.add(record.locale);
       }
@@ -463,20 +1035,20 @@ async function readAsin(
     ) {
       warningResult = parsed;
     } else if (parsed.status === "incomplete") {
-      return partialEvidenceResult(
+      return finish(partialEvidenceResult(
         recordKeys.size,
         contentTypes,
         locales,
         parsed,
-      );
+      ));
     }
     if (parsed.status === "published" && parsed.sourceCompleteness === "partial") {
-      return partialEvidenceResult(
+      return finish(partialEvidenceResult(
         recordKeys.size,
         contentTypes,
         locales,
         parsed,
-      );
+      ));
     }
     const raw = response.payload as Record<string, unknown>;
     if (
@@ -484,19 +1056,19 @@ async function readAsin(
       raw.nextPageToken !== null &&
       !isExactText(raw.nextPageToken, 2_048)
     ) {
-      return partialEvidenceResult(
+      return finish(partialEvidenceResult(
         recordKeys.size,
         contentTypes,
         locales,
         paginationFailure(),
-      );
+      ));
     }
     const nextPageToken = typeof raw.nextPageToken === "string"
       ? raw.nextPageToken
       : undefined;
     if (!nextPageToken) {
       if (recordKeys.size > 0) {
-        return warningResult
+        return finish(warningResult
           ? partialEvidenceResult(
               recordKeys.size,
               contentTypes,
@@ -511,27 +1083,27 @@ async function readAsin(
             locales: [...locales].sort((left, right) => left.localeCompare(right)),
             reasonCode: "PUBLISHED_RECORD_FOUND",
             reason: "Amazon publish record 已證明目前 ASIN 有已發布 A+。",
-          };
+          });
       }
-      return warningResult ?? parsed;
+      return finish(warningResult ?? parsed);
     }
     if (seenPageTokens.has(nextPageToken)) {
-      return partialEvidenceResult(
+      return finish(partialEvidenceResult(
         recordKeys.size,
         contentTypes,
         locales,
         paginationFailure(),
-      );
+      ));
     }
     seenPageTokens.add(nextPageToken);
     pageToken = nextPageToken;
   }
-  return partialEvidenceResult(
+  return finish(partialEvidenceResult(
     recordKeys.size,
     contentTypes,
     locales,
     paginationFailure(),
-  );
+  ));
 }
 
 export async function runAplusAudit(input: Readonly<{
@@ -541,6 +1113,8 @@ export async function runAplusAudit(input: Readonly<{
   fbaSnapshotId: string;
   rows: readonly AplusAuditSeed[];
   fetchPublishRecords: AplusPublishRecordFetcher;
+  fetchContentDocuments?: AplusContentDocumentFetcher;
+  fetchContentDocumentAsinRelations?: AplusContentDocumentRelationFetcher;
   signal?: AbortSignal;
   onProgress?: (
     progress: AplusAuditProgress,
@@ -548,15 +1122,20 @@ export async function runAplusAudit(input: Readonly<{
 }>): Promise<AplusAuditSnapshot> {
   const seeds = normalizedSeeds(input);
   throwIfAuditAborted(input.signal);
-  const byAsin = new Map<string, AsinResult>();
+  const byAsin = new Map<string, AsinReadResult>();
   let accessUnavailable = false;
-  const uniqueAsins = [...new Set(
+  const targetAsins = [...new Set(
     seeds.map((row) => row.asin).filter((value): value is string => Boolean(value)),
   )];
-  for (const asin of uniqueAsins) {
+  const directQueryAsins = [...new Set(
+    seeds.flatMap((row) =>
+      row.asin && !row.incompleteReasonCode ? [row.asin] : []
+    ),
+  )];
+  for (const asin of directQueryAsins) {
     throwIfAuditAborted(input.signal);
     const result = accessUnavailable
-      ? readFailure(403)
+      ? { outcome: readFailure(403), contentReferenceKeys: [] }
       : await readAsin(
           input.marketplaceId,
           asin,
@@ -564,15 +1143,34 @@ export async function runAplusAudit(input: Readonly<{
           input.signal,
         );
     byAsin.set(asin, result);
-    if (result.status === "unavailable") accessUnavailable = true;
+    if (result.outcome.status === "unavailable") accessUnavailable = true;
     try {
       await input.onProgress?.(Object.freeze({
         completedAsins: byAsin.size,
-        totalAsins: uniqueAsins.length,
+        totalAsins: targetAsins.length,
       }));
     } catch {
       // Progress is observability only. A failed observer cannot rewrite the
       // Amazon evidence or turn a completed ASIN back into an unknown state.
+    }
+    throwIfAuditAborted(input.signal);
+  }
+  const documentIndex = await readAplusDocumentIndex({
+    marketplaceId: input.marketplaceId,
+    targetAsins: new Set(targetAsins),
+    fetchContentDocuments: input.fetchContentDocuments,
+    fetchContentDocumentAsinRelations: input.fetchContentDocumentAsinRelations,
+    signal: input.signal,
+  });
+  throwIfAuditAborted(input.signal);
+  if (byAsin.size < targetAsins.length) {
+    try {
+      await input.onProgress?.(Object.freeze({
+        completedAsins: targetAsins.length,
+        totalAsins: targetAsins.length,
+      }));
+    } catch {
+      // Progress is observability only. Document evidence remains authoritative.
     }
     throwIfAuditAborted(input.signal);
   }
@@ -582,13 +1180,21 @@ export async function runAplusAudit(input: Readonly<{
     title: row.title,
     marketplaceId: input.marketplaceId,
     ...(row.asin
-      ? byAsin.get(row.asin)!
+      ? mergeDocumentEvidence({
+          asin: row.asin,
+          read: row.incompleteReasonCode
+            ? relationshipIncompleteRead()
+            : byAsin.get(row.asin)!,
+          index: documentIndex,
+        })
       : {
           status: "incomplete" as const,
           sourceCompleteness: "partial" as const,
           publishedRecordCount: null,
           contentTypes: [],
           locales: [],
+          documents: [],
+          documentEvidenceCompleteness: "unavailable" as const,
           reasonCode: row.incompleteReasonCode ?? "FBA_IDENTITY_INCOMPLETE" as const,
           reason: row.incompleteReasonCode === "FBA_RELATIONSHIP_INCOMPLETE"
             ? "Amazon relationships 未完整證明此 FBA 商品為 child 或 standalone，未發出 A+ request。"
@@ -597,7 +1203,7 @@ export async function runAplusAudit(input: Readonly<{
   }));
   const summary = {
     eligibleFbaSkus: rows.length,
-    uniqueAsins: byAsin.size,
+    uniqueAsins: targetAsins.length,
     published: rows.filter((row) => row.status === "published").length,
     missing: rows.filter((row) => row.status === "missing").length,
     incomplete: rows.filter((row) => row.status === "incomplete").length,
@@ -611,6 +1217,6 @@ export async function runAplusAudit(input: Readonly<{
     totals: summary,
     summary,
     rows,
-    notice: "只讀取目前 FBA 商品的官方 A+ publish records；不會修改 Amazon 商品頁。",
+    notice: "只讀取目前 FBA 商品的官方 A+ publish records、Content Manager 文件與 ASIN 關聯；顯示文件名稱與發布證據，不會修改 Amazon 商品頁。",
   };
 }

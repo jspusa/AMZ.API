@@ -83,6 +83,9 @@ import {
   getListingPrice,
   getBusinessPricing,
   getBusinessPricingAuditData,
+  getBusinessPricingActiveListingsReportStatus,
+  getAplusContentDocumentAsinRelationsPage,
+  getAplusContentDocumentsPage,
   getAplusContentPublishRecordsPage,
   getRestockPlan,
   getSalesTrend,
@@ -107,6 +110,7 @@ import {
   searchOrders,
   startAgedInventoryReport,
   startAllListingsReport,
+  startBusinessPricingActiveListingsReport,
   startFbaShipmentSalesReport,
   startInboundNoncomplianceReport,
   startSalesAndTrafficReport,
@@ -120,6 +124,7 @@ import {
   verifyListingsAccess,
   type ListingContentSnapshot,
   type BusinessPricingListingSnapshot,
+  type BusinessPricingActiveListingsReportEvidence,
   type BusinessPricePrecommitEvidence,
   type BusinessPriceValidationResult,
   type ListingContentValidationResult,
@@ -188,6 +193,8 @@ import {
   runAplusAudit,
   type AplusAuditSnapshot,
   type AplusAuditSeed,
+  type AplusContentDocumentFetchInput,
+  type AplusContentDocumentRelationFetchInput,
   type AplusPublishRecordFetchInput,
 } from "./amazon/a-plus-audit";
 import {
@@ -336,6 +343,11 @@ type BrandSalesReportGateway = {
 type AgedInventoryReportGateway = {
   start: typeof startAgedInventoryReport;
   status: typeof getAgedInventoryReportStatus;
+};
+
+type BusinessPricingActiveListingsReportGateway = {
+  start: typeof startBusinessPricingActiveListingsReport;
+  status: typeof getBusinessPricingActiveListingsReportStatus;
 };
 
 type SalesAndTrafficReportGateway = {
@@ -1359,6 +1371,8 @@ export class ApiRouter {
   private readonly approveWrite: WriteApproval;
   private readonly brandSalesReports: BrandSalesReportGateway;
   private readonly agedInventoryReports: AgedInventoryReportGateway;
+  private readonly businessPricingActiveListingsReports:
+    BusinessPricingActiveListingsReportGateway;
   private readonly salesAndTrafficReports: SalesAndTrafficReportGateway;
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
@@ -1425,6 +1439,9 @@ export class ApiRouter {
     approveWrite: WriteApproval;
     brandSalesReports?: Partial<BrandSalesReportGateway>;
     agedInventoryReports?: Partial<AgedInventoryReportGateway>;
+    businessPricingActiveListingsReports?: Partial<
+      BusinessPricingActiveListingsReportGateway
+    >;
     salesAndTrafficReports?: Partial<SalesAndTrafficReportGateway>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
     advertisingStrategyWait?: typeof waitMilliseconds;
@@ -1452,6 +1469,11 @@ export class ApiRouter {
       start: startAgedInventoryReport,
       status: getAgedInventoryReportStatus,
       ...input.agedInventoryReports,
+    };
+    this.businessPricingActiveListingsReports = {
+      start: startBusinessPricingActiveListingsReport,
+      status: getBusinessPricingActiveListingsReportStatus,
+      ...input.businessPricingActiveListingsReports,
     };
     this.salesAndTrafficReports = {
       start: startSalesAndTrafficReport,
@@ -1490,6 +1512,19 @@ export class ApiRouter {
             job.request,
             job.heartbeat,
           )),
+        fetchContentDocuments: input.aplusAudit?.fetchContentDocuments ?? ((job) =>
+          this.fetchAplusAuditContentDocuments(
+            job.context,
+            job.request,
+            job.heartbeat,
+          )),
+        fetchContentDocumentAsinRelations:
+          input.aplusAudit?.fetchContentDocumentAsinRelations ?? ((job) =>
+            this.fetchAplusAuditContentDocumentAsinRelations(
+              job.context,
+              job.request,
+              job.heartbeat,
+            )),
       },
     });
     this.standaloneAuditJobs = new StandaloneAuditJobCoordinator({
@@ -2660,6 +2695,156 @@ export class ApiRouter {
     });
   }
 
+  private businessPricingActiveListingsIdentity(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    accountScope: string;
+    mode: "live" | "demo";
+  }>): DurableReportIdentity {
+    return {
+      accountScope: input.accountScope,
+      marketplaceId: input.marketplaceId,
+      mode: input.mode,
+      reportType: "GET_MERCHANT_LISTINGS_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+    };
+  }
+
+  private startSharedBusinessPricingActiveListingsReport(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    accountScope: string;
+    mode: "live" | "demo";
+    explicitRetry: boolean;
+    signal?: AbortSignal;
+  }>): Promise<DurableReportStatus> {
+    return this.reportLifecycle.start({
+      identity: this.businessPricingActiveListingsIdentity(input),
+      explicitRetry: input.explicitRetry,
+      signal: input.signal,
+      create: ({ signal }) => this.businessPricingActiveListingsReports.start({
+        marketplaceId: input.marketplaceId,
+        signal,
+      }),
+      notices: {
+        pending: "Amazon 正在準備 Active Listings Business Price 報表。",
+        done: "Amazon Active Listings Business Price 報表已就緒。",
+      },
+    });
+  }
+
+  private getSharedBusinessPricingActiveListingsReportStatus(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    accountScope: string;
+    mode: "live" | "demo";
+    reportId: string;
+    signal?: AbortSignal;
+  }>): Promise<DurableReportStatus> {
+    return this.reportLifecycle.status({
+      identity: this.businessPricingActiveListingsIdentity(input),
+      reportId: input.reportId,
+      signal: input.signal,
+      poll: ({ reportId, signal }) =>
+        this.businessPricingActiveListingsReports.status({
+          marketplaceId: input.marketplaceId,
+          reportId,
+          signal,
+        }),
+      notices: {
+        pending: "Amazon 正在準備 Active Listings Business Price 報表。",
+        done: "Amazon Active Listings Business Price 報表已就緒。",
+      },
+    });
+  }
+
+  private async businessPricingActiveListingsEvidence(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    accountScope: string;
+    mode: "live" | "demo";
+    allowCreate: boolean;
+    signal?: AbortSignal;
+    heartbeat?: () => void;
+  }>): Promise<BusinessPricingActiveListingsReportEvidence | null> {
+    assertBackgroundActive(input.signal);
+    const identity = this.businessPricingActiveListingsIdentity(input);
+    try {
+      let status: DurableReportStatus;
+      if (!input.allowCreate) {
+        const existing = await this.store.getSharedReport(identity);
+        assertBackgroundActive(input.signal);
+        // A legacy renderer GET must never enter start(): an expired DONE lease
+        // is deleted there and would otherwise turn this GET into a hidden POST.
+        if (!existing || existing.expiresAt <= Date.now()) return null;
+        if (existing.mode !== input.mode) {
+          throw new SpApiError(
+            "Active Listings 報表與目前 App 模式不一致。",
+            { status: 409, code: "REPORT_MODE_CHANGED" },
+          );
+        }
+        if (
+          existing.report.status === "DONE" &&
+          existing.report.reportId &&
+          existing.report.documentId &&
+          existing.report.terminal === null
+        ) {
+          return {
+            reportId: existing.report.reportId,
+            documentId: existing.report.documentId,
+          };
+        }
+        if (
+          (existing.report.status !== "IN_QUEUE" &&
+            existing.report.status !== "IN_PROGRESS") ||
+          !existing.report.reportId ||
+          existing.report.documentId !== null ||
+          existing.report.terminal !== null
+        ) {
+          return null;
+        }
+        status = {
+          mode: existing.mode,
+          ready: false,
+          reportId: existing.report.reportId,
+          documentId: null,
+          status: existing.report.status,
+          notice: "Amazon 正在準備 Active Listings Business Price 報表。",
+        };
+      } else {
+        status = await this.startSharedBusinessPricingActiveListingsReport({
+          ...input,
+          explicitRetry: false,
+        });
+      }
+      input.heartbeat?.();
+      for (let attempt = 0; !status.ready && attempt < 180; attempt += 1) {
+        if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
+          return null;
+        }
+        input.heartbeat?.();
+        await waitMilliseconds(1_000, input.signal);
+        status = await this.getSharedBusinessPricingActiveListingsReportStatus({
+          ...input,
+          reportId: status.reportId,
+        });
+        input.heartbeat?.();
+      }
+      return status.ready && status.documentId && status.mode === input.mode
+        ? { reportId: status.reportId, documentId: status.documentId }
+        : null;
+    } catch (error) {
+      assertBackgroundActive(input.signal);
+      if (
+        error instanceof SpApiError &&
+        (error.code === "REPORT_MISMATCH" ||
+          error.code === "REPORT_MODE_CHANGED")
+      ) {
+        throw error;
+      }
+      // DurableReportLifecycle already persisted create-unknown/terminal
+      // evidence. Returning unavailable here degrades each SKU to incomplete;
+      // a later GET will reuse the tombstone and cannot blind-POST again.
+      return null;
+    }
+  }
+
   private async ensureBrandSalesListingLeg(
     job: BrandSalesRuntimeJob,
     explicitRetry: boolean,
@@ -3224,7 +3409,25 @@ export class ApiRouter {
     const marketplaceId = parseMarketplace(body.marketplaceId);
     if (!marketplaceId) return invalid("請選擇要健檢的 Amazon 站點。");
     try {
-      const status = await this.startSharedAllListingsReport(marketplaceId, true);
+      const context = await this.currentAuditSuiteContext(marketplaceId);
+      const [listingResult, activeResult] = await Promise.allSettled([
+        this.startSharedAllListingsReport(marketplaceId, true),
+        this.startSharedBusinessPricingActiveListingsReport({
+          marketplaceId,
+          ...context,
+          explicitRetry: true,
+        }),
+      ]);
+      if (listingResult.status === "rejected") throw listingResult.reason;
+      if (
+        activeResult.status === "rejected" &&
+        activeResult.reason instanceof SpApiError &&
+        (activeResult.reason.code === "REPORT_MISMATCH" ||
+          activeResult.reason.code === "REPORT_MODE_CHANGED")
+      ) {
+        throw activeResult.reason;
+      }
+      const status = listingResult.value;
       return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
     } catch (error) {
       return apiError(error, "開始建立 B2B 價格健檢報表時發生未預期的錯誤。");
@@ -3255,10 +3458,27 @@ export class ApiRouter {
       return invalid("B2B 價格健檢文件資訊無效，請重新掃描。");
     }
     try {
+      const context = await this.currentAuditSuiteContext(marketplaceId);
+      const activeListingsReport = await this.businessPricingActiveListingsEvidence({
+        marketplaceId,
+        ...context,
+        allowCreate: false,
+      });
+      const current = await this.currentAuditSuiteContext(marketplaceId);
+      if (
+        current.accountScope !== context.accountScope ||
+        current.mode !== context.mode
+      ) {
+        throw new SpApiError("B2B 價格健檢與目前帳號或模式不一致。", {
+          status: 409,
+          code: "REPORT_MISMATCH",
+        });
+      }
       return json(await getBusinessPricingAuditData({
         marketplaceId,
         reportId,
         documentId,
+        activeListingsReport,
       }));
     } catch (error) {
       return apiError(error, "整理 B2B 價格健檢資料時發生未預期的錯誤。");
@@ -7269,10 +7489,20 @@ export class ApiRouter {
         completedUnits: 0,
         totalUnits: null,
       });
+      const activeListingsReport =
+        await this.businessPricingActiveListingsEvidence({
+          marketplaceId,
+          accountScope: input.context.accountScope,
+          mode: input.context.mode,
+          allowCreate: true,
+          signal: input.signal,
+          heartbeat: input.heartbeat,
+        });
       const snapshot = await getBusinessPricingAuditData({
         marketplaceId,
         reportId: report.reportId,
         documentId: report.documentId,
+        activeListingsReport,
         signal: input.signal,
       });
       await this.assertStandaloneAuditContext(input.context, input.signal);
@@ -7478,6 +7708,79 @@ export class ApiRouter {
     }
     heartbeat();
     return { status: response.status, payload: response.payload };
+  }
+
+  private async fetchAplusAuditContentDocuments(
+    context: AplusAuditJobBoundContext,
+    request: AplusContentDocumentFetchInput,
+    heartbeat: () => void,
+  ) {
+    let marketplaceId: MarketplaceId;
+    try {
+      marketplaceId = await this.assertAplusAuditContext(context);
+    } catch {
+      throw aplusAuditFenceAbort();
+    }
+    if (request.marketplaceId !== marketplaceId) {
+      throw new Error("A+ 文件 request 與工作站點不一致。");
+    }
+    heartbeat();
+    const response = await getAplusContentDocumentsPage({
+      marketplaceId,
+      pageToken: request.pageToken,
+      expectedMode: context.mode,
+      signal: request.signal,
+      onControlledWait: heartbeat,
+    });
+    heartbeat();
+    try {
+      await this.assertAplusAuditContext(context);
+    } catch {
+      throw aplusAuditFenceAbort();
+    }
+    heartbeat();
+    return {
+      status: response.status,
+      payload: response.payload,
+      requestId: response.requestId,
+    };
+  }
+
+  private async fetchAplusAuditContentDocumentAsinRelations(
+    context: AplusAuditJobBoundContext,
+    request: AplusContentDocumentRelationFetchInput,
+    heartbeat: () => void,
+  ) {
+    let marketplaceId: MarketplaceId;
+    try {
+      marketplaceId = await this.assertAplusAuditContext(context);
+    } catch {
+      throw aplusAuditFenceAbort();
+    }
+    if (request.marketplaceId !== marketplaceId) {
+      throw new Error("A+ 文件 ASIN 關聯 request 與工作站點不一致。");
+    }
+    heartbeat();
+    const response = await getAplusContentDocumentAsinRelationsPage({
+      marketplaceId,
+      contentReferenceKey: request.contentReferenceKey,
+      pageToken: request.pageToken,
+      expectedMode: context.mode,
+      signal: request.signal,
+      onControlledWait: heartbeat,
+    });
+    heartbeat();
+    try {
+      await this.assertAplusAuditContext(context);
+    } catch {
+      throw aplusAuditFenceAbort();
+    }
+    heartbeat();
+    return {
+      status: response.status,
+      payload: response.payload,
+      requestId: response.requestId,
+    };
   }
 
   private async startAplusAudit(request: ApiRequest): Promise<ApiResponse> {
@@ -7853,6 +8156,69 @@ export class ApiRouter {
         }
         return { status: response.status, payload: response.payload };
       },
+      fetchContentDocuments: async (request) => {
+        assertAuditSuiteActive(control);
+        try {
+          await this.assertAuditSuiteContext(context);
+        } catch {
+          throw aplusAuditFenceAbort();
+        }
+        if (request.marketplaceId !== marketplaceId) {
+          throw new Error("A+ 文件 request 與綜合健檢站點不一致。");
+        }
+        const response = await getAplusContentDocumentsPage({
+          marketplaceId,
+          pageToken: request.pageToken,
+          expectedMode: context.mode,
+          signal: request.signal,
+          onControlledWait: () => control.heartbeat({
+            message: "Amazon A+ API 要求延後文件讀取；Notebook 鑰匙仍在受控等待。",
+          }),
+        });
+        assertAuditSuiteActive(control);
+        try {
+          await this.assertAuditSuiteContext(context);
+        } catch {
+          throw aplusAuditFenceAbort();
+        }
+        return {
+          status: response.status,
+          payload: response.payload,
+          requestId: response.requestId,
+        };
+      },
+      fetchContentDocumentAsinRelations: async (request) => {
+        assertAuditSuiteActive(control);
+        try {
+          await this.assertAuditSuiteContext(context);
+        } catch {
+          throw aplusAuditFenceAbort();
+        }
+        if (request.marketplaceId !== marketplaceId) {
+          throw new Error("A+ 文件 ASIN 關聯 request 與綜合健檢站點不一致。");
+        }
+        const response = await getAplusContentDocumentAsinRelationsPage({
+          marketplaceId,
+          contentReferenceKey: request.contentReferenceKey,
+          pageToken: request.pageToken,
+          expectedMode: context.mode,
+          signal: request.signal,
+          onControlledWait: () => control.heartbeat({
+            message: "Amazon A+ API 要求延後關聯讀取；Notebook 鑰匙仍在受控等待。",
+          }),
+        });
+        assertAuditSuiteActive(control);
+        try {
+          await this.assertAuditSuiteContext(context);
+        } catch {
+          throw aplusAuditFenceAbort();
+        }
+        return {
+          status: response.status,
+          payload: response.payload,
+          requestId: response.requestId,
+        };
+      },
       onProgress: (progress) => control.heartbeat({
         message: `正在核對 A+ publish records（${progress.completedAsins}／${progress.totalAsins} ASIN）。`,
         completedUnits: progress.completedAsins,
@@ -7911,10 +8277,23 @@ export class ApiRouter {
     const marketplaceId = context.marketplaceId as MarketplaceId;
     const listing = await this.auditSuiteListings(context, control);
     assertAuditSuiteActive(control);
+    const activeListingsReport =
+      await this.businessPricingActiveListingsEvidence({
+        marketplaceId,
+        accountScope: context.accountScope,
+        mode: context.mode,
+        allowCreate: true,
+        signal: control.signal,
+        heartbeat: () => control.heartbeat({
+          message: "Amazon 正在準備 Active Listings Business Price 報表。",
+        }),
+      });
+    assertAuditSuiteActive(control);
     const snapshot = await getBusinessPricingAuditData({
       marketplaceId,
       reportId: listing.reportId,
       documentId: listing.documentId,
+      activeListingsReport,
       signal: control.signal,
     });
     assertAuditSuiteActive(control);
@@ -7938,7 +8317,7 @@ export class ApiRouter {
           : row.status === "missing"
             ? "尚未設定 B2B 價格"
             : row.status === "unsupported"
-              ? "seller-specific PTD 唯讀／不支援"
+              ? "請至 Amazon 後台確認"
               : "資料未完成",
         editable: row.editable,
         notice: row.reason,

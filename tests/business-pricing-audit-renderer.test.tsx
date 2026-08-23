@@ -40,7 +40,7 @@ function payload(): Record<string, unknown> {
         quantityDiscountPlanPresence: "absent",
         status: "missing",
         editable: true,
-        reason: "Amazon Business 可用，但尚未設定 B2B 價格。",
+        reason: "尚未設定 Amazon Business 價格；seller-specific PTD 允許建立。",
       },
       {
         sellerSku: "FBA-CONFIGURED",
@@ -60,7 +60,7 @@ function payload(): Record<string, unknown> {
         quantityDiscountPlanPresence: "canonical",
         status: "configured",
         editable: true,
-        reason: "已設定 Amazon Business 價格。",
+        reason: "已設定 Amazon Business 價格；seller-specific PTD 允許編輯。",
       },
       {
         sellerSku: "FBA-MISSING-READONLY",
@@ -258,7 +258,7 @@ describe("FBA business pricing audit renderer", () => {
     expect(snapshot.rows[0]).toMatchObject({
       sellerSku: "FBA-MISSING",
       status: "missing",
-      editable: true,
+      editable: false,
       businessPrice: null,
       title: "Title with Amazon source\u2028line and zero-width\u200bcharacter",
     });
@@ -294,6 +294,40 @@ describe("FBA business pricing audit renderer", () => {
     );
   });
 
+  it("normalizes legacy editable audit rows to read-only, including a configured price without standard-price evidence", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    rows[1] = {
+      ...rows[1],
+      standardPrice: null,
+      businessPrice: { amount: 17.45, currencyCode: "USD" },
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [{ lowerBound: 5, value: 5 }],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      status: "configured",
+      editable: true,
+    };
+
+    const snapshot = parseBusinessPricingAuditSnapshot(source);
+    expect(snapshot.rows[1]).toMatchObject({
+      standardPrice: null,
+      businessPrice: { amount: 17.45, currencyCode: "USD" },
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [{ lowerBound: 5, value: 5 }],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      status: "configured",
+      editable: false,
+    });
+
+    rows[1]!.editable = false;
+    expect(parseBusinessPricingAuditSnapshot(source).rows[1]?.editable)
+      .toBe(false);
+  });
+
   it("filters missing, configured and problem rows without hiding incomplete evidence", () => {
     const rows = parseBusinessPricingAuditSnapshot(payload()).rows;
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "missing")))
@@ -302,11 +336,11 @@ describe("FBA business pricing audit renderer", () => {
       .toHaveLength(2);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "problem")))
       .toHaveLength(2);
-    expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "unsupported")))
-      .toHaveLength(2);
+    expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "all")))
+      .toHaveLength(4);
   });
 
-  it("treats a B2B price above standard as an editable problem", () => {
+  it("treats a B2B price above standard as a read-only problem", () => {
     const source = payload();
     const rows = source.rows as Array<Record<string, unknown>>;
     rows[1] = {
@@ -324,6 +358,7 @@ describe("FBA business pricing audit renderer", () => {
     const row = snapshot.rows[1]!;
 
     expect(row.status).toBe("above_standard");
+    expect(row.editable).toBe(false);
     expect(businessPricingRowMatchesFilter(row, "problem")).toBe(true);
     expect(snapshot.summary.aboveStandard).toBe(1);
   });
@@ -403,22 +438,31 @@ describe("FBA business pricing audit renderer", () => {
     }));
     expect(markup).toContain("未設定 B2B 價格");
     expect(markup).toContain("高於一般售價");
-    expect(markup).toContain("完整數量折扣");
+    expect(markup).toContain("百分比折扣");
     expect(markup).toContain("Amazon Business 可用，但尚未設定 B2B 價格。");
-    expect(markup).toContain("設定 B2B 價格");
-    expect(markup).toContain("唯讀／不支援");
-    expect(markup).toContain("請到 Amazon 後台編輯");
+    expect(markup).not.toContain(">設定 B2B 價格<");
+    expect(markup).not.toContain(">調整 B2B 價格<");
+    expect(markup).not.toContain("唯讀／不支援");
+    expect(markup).not.toContain("seller-specific PTD");
+    expect(markup).not.toContain("因此只提供唯讀");
+    expect(markup).toContain("本報表全程唯讀，不會修改 Amazon");
+    expect(markup).toContain("需要調整 Business Price 或數量折扣時");
     expect(markup).not.toContain("不可直接修改");
     expect(markup).toContain("建議 B2B 價格");
     expect(markup).toContain("US 一般售價 – USD 1.00");
     expect(markup).toContain("5 件 5%・10 件 10%・15 件 15%・20 件 20%");
     expect(markup).toContain("目前數量折扣");
-    expect(markup).toContain("百分比：5 件＝5%、10 件＝10%");
+    expect(markup).not.toContain("百分比：5 件＝5%、10 件＝10%");
+    expect(markup).toContain('class="business-pricing-quantity-plan"');
+    expect(markup).toContain("5 件以上");
+    expect(markup).toContain("省 5%");
+    expect(markup).toContain("10 件以上");
+    expect(markup).toContain("省 10%");
     expect(markup).toContain("Amazon 未能確認，請到後台核對");
     expect(markup).toContain("Notebook Key 需更新後才能安全開啟指定 SKU");
     expect(markup).toContain("舊版不會改開 Seller Central 首頁");
-    expect(markup.match(/前往編輯/g)).toHaveLength(3);
-    expect(markup).toContain("先由 Amazon Validation Preview 核對");
+    expect(markup.match(/>前往 Amazon 後台 ↗<\/button>/g)).toHaveLength(3);
+    expect(markup).not.toContain("Amazon Validation Preview");
     const panelSource = readFileSync(
       new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
       "utf8",
@@ -429,6 +473,61 @@ describe("FBA business pricing audit renderer", () => {
     expect(panelSource).toContain("pollStandaloneAuditJob");
     expect(panelSource).toContain("onJobChange?.(current)");
     expect(panelSource).not.toContain('fetch("/api/sp-api/business-pricing-audit"');
+    expect(panelSource).not.toContain("business-pricing-editor");
+    expect(panelSource).not.toContain("openEditor");
+    expect(panelSource).not.toContain("/api/sp-api/business-pricing?");
+    expect(panelSource).not.toContain('method: "POST"');
+    expect(panelSource).not.toContain('method: "PATCH"');
+  });
+
+  it("shows exact incomplete reasons for AFA135AM and TRPL03 without exposing PTD capability prose", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    rows[0] = {
+      ...rows[0],
+      sellerSku: "AFA135AM",
+      asin: "B000000031",
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: true,
+      reason: "AFA135AM 的 Active Listings Business Price 與 Listings 身分證據不一致。",
+    };
+    rows[1] = {
+      ...rows[1],
+      sellerSku: "TRPL03",
+      asin: "B000000032",
+      standardPrice: null,
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: true,
+      reason: "TRPL03 的一般售價證據未完整回傳，無法安全判定 Business Price 狀態。",
+    };
+    Object.assign(source.summary as Record<string, unknown>, {
+      configured: 1,
+      missing: 1,
+      incomplete: 2,
+    });
+
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+    }));
+
+    expect(markup).toContain(
+      "AFA135AM 的 Active Listings Business Price 與 Listings 身分證據不一致。",
+    );
+    expect(markup).toContain(
+      "TRPL03 的一般售價證據未完整回傳，無法安全判定 Business Price 狀態。",
+    );
+    expect(markup).not.toContain("seller-specific PTD");
+    expect(markup).not.toContain("因此只提供唯讀");
   });
 
   it("uses one clickable B2B summary as the filter instead of repeating the counts", () => {
@@ -443,7 +542,8 @@ describe("FBA business pricing audit renderer", () => {
     )?.[0];
 
     expect(summary).toBeDefined();
-    expect(summary?.match(/<button\b/gu)).toHaveLength(7);
+    expect(summary?.match(/<button\b/gu)).toHaveLength(6);
+    expect(summary).not.toContain("唯讀／不支援");
     expect(summary).toContain('aria-pressed="true"');
     expect(markup).not.toContain("business-pricing-filters");
     expect(markup.match(/B2B 價格健檢摘要與篩選/gu)).toHaveLength(1);
@@ -456,20 +556,33 @@ describe("FBA business pricing audit renderer", () => {
     );
   });
 
-  it("uses compact styled desktop controls for the explicit quantity-tier editor", () => {
+  it("lays out current quantity discounts as readable desktop tiers", () => {
     const css = readFileSync(
       new URL("../src/renderer/src/app.css", import.meta.url),
       "utf8",
     );
 
     expect(css).toMatch(
-      /\.business-pricing-tier-mode\s*\{[^}]*grid-template-columns:\s*repeat\(2,/su,
+      /\.business-pricing-quantity-cell\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/su,
     );
     expect(css).toMatch(
-      /\.business-pricing-tier-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/su,
+      /\.business-pricing-quantity-tiers\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(96px,\s*1fr\)\)/su,
     );
-    expect(css).toMatch(/\.business-pricing-tier-card\s*\{/u);
-    expect(css).toMatch(/\.business-pricing-tier-mode button\[aria-pressed="true"\]/u);
+    expect(css).toMatch(/\.business-pricing-quantity-tier\s*\{/u);
+  });
+
+  it("keeps the audit panel read-only without removing the isolated write helpers", () => {
+    const panelSource = readFileSync(
+      new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(panelSource).not.toContain("BusinessPricingListingSnapshot");
+    expect(panelSource).not.toContain("SubmittedBusinessPricePreview");
+    expect(panelSource).not.toContain("applyVerifiedBusinessPriceToAuditSnapshot");
+    expect(typeof parseBusinessPricingListingSnapshot).toBe("function");
+    expect(typeof createSubmittedBusinessPricePreview).toBe("function");
+    expect(typeof parseBusinessPriceUpdate).toBe("function");
   });
 
   it("wraps the audit in an accessible Amazon Business drawer", () => {

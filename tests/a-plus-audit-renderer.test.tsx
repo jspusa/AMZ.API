@@ -33,6 +33,8 @@ function payload(): Record<string, unknown> {
         publishedRecordCount: 1,
         contentTypes: ["EBC"],
         locales: ["en-US"],
+        documents: [],
+        documentEvidenceCompleteness: "unavailable",
         reasonCode: "PUBLISHED_RECORD_FOUND",
         reason: "Amazon publish record 已證明目前 ASIN 有已發布 A+。",
       },
@@ -46,6 +48,8 @@ function payload(): Record<string, unknown> {
         publishedRecordCount: 0,
         contentTypes: [],
         locales: [],
+        documents: [],
+        documentEvidenceCompleteness: "unavailable",
         reasonCode: "NO_PUBLISHED_RECORD",
         reason: "Amazon 完整查詢沒有找到目前 ASIN 的已發布 A+。",
       },
@@ -59,6 +63,8 @@ function payload(): Record<string, unknown> {
         publishedRecordCount: null,
         contentTypes: [],
         locales: [],
+        documents: [],
+        documentEvidenceCompleteness: "unavailable",
         reasonCode: "FBA_IDENTITY_INCOMPLETE",
         reason: "FBA 商品缺少可安全核對的 ASIN，未發出 A+ request。",
       },
@@ -80,6 +86,20 @@ function payload(): Record<string, unknown> {
       unavailable: 0,
     },
     notice: "只讀取目前 FBA 商品的官方 A+ publish records；不會修改 Amazon 商品頁。",
+  };
+}
+
+function documentEvidence(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    name: "Premium Pet Treat Detail Page",
+    documentStatus: "APPROVED",
+    badges: ["PREMIUM"],
+    relationState: "published",
+    evidence: "publish_record",
+    completeness: "complete",
+    ...overrides,
   };
 }
 
@@ -148,6 +168,259 @@ describe("A+ FBA audit renderer", () => {
     expect(JSON.stringify(snapshot)).not.toContain("pageToken");
   });
 
+  it("strictly parses exact A+ document evidence without inventing a theme field", () => {
+    const source = payload();
+    const published = (source.rows as Array<Record<string, unknown>>)[0]!;
+    published.documents = [{
+      name: "Premium Pet Treat Detail Page",
+      documentStatus: "APPROVED",
+      badges: ["BULK", "PREMIUM"],
+      relationState: "published",
+      evidence: "publish_record",
+      completeness: "complete",
+    }];
+    published.documentEvidenceCompleteness = "complete";
+
+    const row = parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live").rows[0]!;
+
+    expect(row.documents).toEqual([{
+      name: "Premium Pet Treat Detail Page",
+      documentStatus: "APPROVED",
+      badges: ["BULK", "PREMIUM"],
+      relationState: "published",
+      evidence: "publish_record",
+      completeness: "complete",
+    }]);
+    expect(row.documentEvidenceCompleteness).toBe("complete");
+    expect(JSON.stringify(row)).not.toContain("theme");
+  });
+
+  it("accepts exact published relation evidence when publish records are partial", () => {
+    const source = payload();
+    const published = (source.rows as Array<Record<string, unknown>>)[0]!;
+    published.sourceCompleteness = "partial";
+    published.publishedRecordCount = null;
+    published.contentTypes = [];
+    published.locales = [];
+    published.documents = [documentEvidence({
+      relationState: "published",
+      evidence: "relation_badge",
+    })];
+    published.documentEvidenceCompleteness = "complete";
+    published.reasonCode = "PUBLISHED_DOCUMENT_RELATION_FOUND";
+    published.reason = "Amazon A+ 文件關聯已證明目前有已發布 A+。";
+
+    const row = parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live").rows[0]!;
+
+    expect(row).toMatchObject({
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+    });
+  });
+
+  it("accepts an exact ASIN on relationship-incomplete evidence and a legal mixed same-ASIN result", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    const conservative = rows[2]!;
+    conservative.asin = "B000000001";
+    conservative.reasonCode = "FBA_RELATIONSHIP_INCOMPLETE";
+    conservative.reason =
+      "Amazon variation relationships 未完整；未發出逐 ASIN publish-record request。";
+
+    const snapshot = parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live");
+
+    expect(snapshot.rows[2]).toMatchObject({
+      asin: "B000000001",
+      status: "incomplete",
+      reasonCode: "FBA_RELATIONSHIP_INCOMPLETE",
+    });
+    expect(snapshot.summary.uniqueAsins).toBe(2);
+  });
+
+  it("accepts exact publish-record and promoted relation positives for the same ASIN", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    const published = rows[0]!;
+    rows.push({
+      ...published,
+      sellerSku: "PUBLISHED-BY-RELATION",
+      title: "Published by exact relation",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      contentTypes: [],
+      locales: [],
+      documents: [documentEvidence({
+        evidence: "relation_badge",
+        relationState: "published",
+      })],
+      documentEvidenceCompleteness: "complete",
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      reason: "Amazon A+ 文件關聯已證明目前有已發布 A+。",
+    });
+    for (const key of ["summary", "totals"] as const) {
+      const summary = source[key] as Record<string, number>;
+      summary.eligibleFbaSkus += 1;
+      summary.published += 1;
+    }
+
+    const snapshot = parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live");
+
+    expect(snapshot.rows.filter((row) => row.asin === "B000000001"))
+      .toHaveLength(2);
+  });
+
+  it("rejects unknown, oversized, duplicate or invalid A+ document evidence", () => {
+    const expectInvalidDocument = (
+      document: Record<string, unknown>,
+      pattern: RegExp,
+    ) => {
+      const source = payload();
+      const row = (source.rows as Array<Record<string, unknown>>)[0]!;
+      row.documents = [document];
+      row.documentEvidenceCompleteness = "complete";
+      expect(() => parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live"))
+        .toThrow(pattern);
+    };
+
+    expectInvalidDocument(documentEvidence({ theme: "fabricated" }), /A\+ 文件欄位/u);
+    expectInvalidDocument(documentEvidence({ name: "N".repeat(101) }), /文件名稱/u);
+    expectInvalidDocument(documentEvidence({ documentStatus: "ARCHIVED" }), /文件狀態/u);
+    expectInvalidDocument(documentEvidence({ badges: ["PREMIUM", "PREMIUM"] }), /重複/u);
+    expectInvalidDocument(documentEvidence({ badges: ["UNKNOWN"] }), /badge/u);
+    expectInvalidDocument(documentEvidence({ relationState: "detached" }), /關聯狀態/u);
+    expectInvalidDocument(documentEvidence({ evidence: "theme" }), /證據類型/u);
+    expectInvalidDocument(documentEvidence({ completeness: "unavailable" }), /文件完整度/u);
+    expectInvalidDocument(documentEvidence({
+      relationState: "related",
+      evidence: "publish_record",
+    }), /關聯狀態與證據類型/u);
+    expectInvalidDocument(documentEvidence({
+      relationState: "not_published",
+      evidence: "relation_badge",
+    }), /關聯狀態與證據類型/u);
+    expectInvalidDocument(documentEvidence({
+      relationState: "published",
+      evidence: "relation_only",
+    }), /關聯狀態與證據類型/u);
+
+    const tooMany = payload();
+    const tooManyRow = (tooMany.rows as Array<Record<string, unknown>>)[0]!;
+    tooManyRow.documents = Array.from({ length: 101 }, () => documentEvidence());
+    expect(() => parseAplusAuditSnapshot(tooMany, MARKETPLACE_ID, "live"))
+      .toThrow(/文件清單/u);
+
+    const invalidCompleteness = payload();
+    (invalidCompleteness.rows as Array<Record<string, unknown>>)[0]!
+      .documentEvidenceCompleteness = "unknown";
+    expect(() => parseAplusAuditSnapshot(
+      invalidCompleteness,
+      MARKETPLACE_ID,
+      "live",
+    )).toThrow(/文件證據完整度/u);
+  });
+
+  it("requires identical document evidence for every Seller SKU sharing an ASIN", () => {
+    const conflictingSnapshot = (change: "document" | "completeness") => {
+      const source = payload();
+      const rows = source.rows as Array<Record<string, unknown>>;
+      const published = rows[0]!;
+      published.documents = [documentEvidence()];
+      published.documentEvidenceCompleteness = "complete";
+      rows.push({
+        ...published,
+        sellerSku: `PUBLISHED-${change}`,
+        title: `Second ${change}`,
+        documents: [documentEvidence(
+          change === "document" ? { name: "Different A+ document" } : {},
+        )],
+        documentEvidenceCompleteness: change === "completeness"
+          ? "partial"
+          : "complete",
+      });
+      for (const key of ["summary", "totals"] as const) {
+        const summary = source[key] as Record<string, number>;
+        summary.eligibleFbaSkus += 1;
+        summary.published += 1;
+      }
+      return source;
+    };
+
+    expect(() => parseAplusAuditSnapshot(
+      conflictingSnapshot("document"),
+      MARKETPLACE_ID,
+      "live",
+    )).toThrow(/同一 ASIN.*文件/u);
+    expect(() => parseAplusAuditSnapshot(
+      conflictingSnapshot("completeness"),
+      MARKETPLACE_ID,
+      "live",
+    )).toThrow(/同一 ASIN.*文件/u);
+  });
+
+  it("rejects conflicting evidence inside the same legal same-ASIN provenance class", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    const conservative = {
+      ...rows[2]!,
+      asin: "B000000003",
+      reasonCode: "FBA_RELATIONSHIP_INCOMPLETE",
+      reason: "Relationship evidence one.",
+    };
+    rows[2] = conservative;
+    rows.push({
+      ...conservative,
+      sellerSku: "INCOMPLETE-SECOND",
+      reason: "Relationship evidence two.",
+    });
+    for (const key of ["summary", "totals"] as const) {
+      const summary = source[key] as Record<string, number>;
+      summary.eligibleFbaSkus += 1;
+      summary.uniqueAsins += 1;
+      summary.incomplete += 1;
+    }
+
+    expect(() => parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live"))
+      .toThrow(/同一 ASIN.*文件/u);
+  });
+
+  it("requires a published relation document for relation-promoted status", () => {
+    const missingDocument = payload();
+    const row = (missingDocument.rows as Array<Record<string, unknown>>)[0]!;
+    row.sourceCompleteness = "partial";
+    row.publishedRecordCount = null;
+    row.contentTypes = [];
+    row.locales = [];
+    row.documents = [];
+    row.documentEvidenceCompleteness = "complete";
+    row.reasonCode = "PUBLISHED_DOCUMENT_RELATION_FOUND";
+    row.reason = "Claimed relation positive without evidence.";
+
+    expect(() => parseAplusAuditSnapshot(
+      missingDocument,
+      MARKETPLACE_ID,
+      "live",
+    )).toThrow(/CONTENT_PUBLISHED 文件證據/u);
+
+    const wrongDocumentType = payload();
+    const wrongRow = (wrongDocumentType.rows as Array<Record<string, unknown>>)[0]!;
+    wrongRow.sourceCompleteness = "partial";
+    wrongRow.publishedRecordCount = null;
+    wrongRow.contentTypes = [];
+    wrongRow.locales = [];
+    wrongRow.documents = [documentEvidence()];
+    wrongRow.documentEvidenceCompleteness = "complete";
+    wrongRow.reasonCode = "PUBLISHED_DOCUMENT_RELATION_FOUND";
+    wrongRow.reason = "Claimed relation positive with publish-record evidence.";
+
+    expect(() => parseAplusAuditSnapshot(
+      wrongDocumentType,
+      MARKETPLACE_ID,
+      "live",
+    )).toThrow(/CONTENT_PUBLISHED 文件證據/u);
+  });
+
   it("rejects a locale outside the exact official A+ LanguageTag pattern", () => {
     const source = payload();
     (source.rows as Array<Record<string, unknown>>)[0]!.locales = ["EN-us-extra"];
@@ -187,6 +460,52 @@ describe("A+ FBA audit renderer", () => {
     expect(drawerMarkup).toContain("全站 A+ 健檢");
   });
 
+  it("shows A+ document names plus Chinese document and relation states", () => {
+    const source = payload();
+    const missing = (source.rows as Array<Record<string, unknown>>)[1]!;
+    missing.documents = [{
+      name: null,
+      documentStatus: "DRAFT",
+      badges: ["GENERATED"],
+      relationState: "not_published",
+      evidence: "relation_only",
+      completeness: "partial",
+    }];
+    missing.documentEvidenceCompleteness = "partial";
+    const snapshot = parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live");
+    const markup = renderToStaticMarkup(createElement(AplusAuditPanel, {
+      marketplaceId: MARKETPLACE_ID,
+      marketplaceShort: "US",
+      mode: "live",
+      initialSnapshot: snapshot,
+    }));
+
+    expect(markup).toContain("A+ 文件名稱");
+    expect(markup).toContain("文件名稱未取得");
+    expect(markup).toContain("文件狀態");
+    expect(markup).toContain("草稿");
+    expect(markup).toContain("關聯狀態");
+    expect(markup).toContain("未發布");
+    expect(markup).toContain("文件證據：部分取得");
+    expect(markup).toContain("GENERATED");
+    expect(markup).not.toContain("theme");
+  });
+
+  it("distinguishes a complete no-relation result from unavailable document evidence", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    rows[1]!.documentEvidenceCompleteness = "complete";
+    const markup = renderToStaticMarkup(createElement(AplusAuditPanel, {
+      marketplaceId: MARKETPLACE_ID,
+      marketplaceShort: "US",
+      mode: "live",
+      initialSnapshot: parseAplusAuditSnapshot(source, MARKETPLACE_ID, "live"),
+    }));
+
+    expect(markup).toContain("未找到與此 ASIN 關聯的 A+ 文件");
+    expect(markup).toContain("A+ 文件清單目前未取得");
+  });
+
   it("uses one clickable A+ summary as the filter instead of repeating the counts", () => {
     const snapshot = parseAplusAuditSnapshot(payload(), MARKETPLACE_ID, "live");
     const markup = renderToStaticMarkup(createElement(AplusAuditPanel, {
@@ -218,6 +537,8 @@ describe("A+ FBA audit renderer", () => {
       publishedRecordCount: null,
       contentTypes: [],
       locales: [],
+      documents: [],
+      documentEvidenceCompleteness: "unavailable",
       reasonCode: "A_PLUS_ACCESS_UNAVAILABLE",
       reason: "A+ API 尚未取得讀取權限。",
     });
