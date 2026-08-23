@@ -21,7 +21,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 產品 | 將同一份文案健檢 Excel 以選檔或拖放回傳，逐欄核對完整 Amazon 原值／Excel 更新值後批次更新 | 同檔 round trip 保留原始文案特殊換行；掃描證據可安全跨鎖屏／重啟保留 24 小時；全批零寫入預檢 → 一次 Touch ID／Windows Hello → 每 SKU 單次 PATCH＋回讀；不明即停止且不盲目重送 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於六張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
-| 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；同一文件／ASIN 只要含 schema-valid `CONTENT_PUBLISHED` 就保留已發布正向證據，若同時有重複／較舊的 `CONTENT_NOT_PUBLISHED` 或畸形列則只把完整度降為 partial；沒有任何 published positive 的 malformed／negative 關聯仍 fail closed；文件存在或 APPROVED 本身不會被猜成已發布 |
+| 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；任一 exact 文件／ASIN 關聯只要含 schema-valid `CONTENT_PUBLISHED` 就保留已發布正向證據，不會被同 ASIN 另一文件的 negative／malformed 關聯抹除；未使用的 optional `contentReferenceKeySet` 畸形只把完整度降為 partial；沒有任何 published positive 的 malformed／negative 關聯仍 fail closed；文件存在或 APPROVED 本身不會被猜成已發布 |
 | 產品 | 全商品標題、五大賣點、成分匯出 Excel | 一鍵 |
 | 產品 | 雙 Family 並排、FBA child 拖拉改掛、CHILD PTD 動態欄位 | 兩階段預檢＋本機身分確認＋回查 |
 | 產品 | 全站未綁變體健檢（Listings relationships 每批最多 20 SKU、缺值／歧義 fail closed；Excel 含淺色 family 分組的「所有變體」與「父變體橫排」） | Amazon 唯讀；「父變體橫排」第一列直接橫排所有已驗證 Parent SKU，每一欄從第二列起只接續該 Parent 的 Child SKU；standalone／資料未完成留在各自工作表，不用 ASIN 猜 family |
