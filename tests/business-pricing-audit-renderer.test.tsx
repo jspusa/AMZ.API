@@ -101,6 +101,8 @@ function payload(): Record<string, unknown> {
       missing: 2,
       unsupported: 0,
       incomplete: 0,
+      recommendedPriceMismatch: 2,
+      recommendedQuantityDiscountMismatch: 3,
     },
     notice: "只納入 Amazon 報表與 Listings Items API 共同確認的 FBA SKU。",
   };
@@ -232,6 +234,9 @@ describe("FBA business pricing audit renderer", () => {
       delete row.quantityDiscountPlan;
       delete row.quantityDiscountPlanPresence;
     }
+    delete (legacy.summary as Record<string, unknown>).recommendedPriceMismatch;
+    delete (legacy.summary as Record<string, unknown>)
+      .recommendedQuantityDiscountMismatch;
 
     const snapshot = parseBusinessPricingAuditSnapshot(legacy);
 
@@ -254,6 +259,8 @@ describe("FBA business pricing audit renderer", () => {
       missing: 2,
       unsupported: 0,
       incomplete: 0,
+      recommendedPriceMismatch: 2,
+      recommendedQuantityDiscountMismatch: 3,
     });
     expect(snapshot.rows[0]).toMatchObject({
       sellerSku: "FBA-MISSING",
@@ -309,6 +316,7 @@ describe("FBA business pricing audit renderer", () => {
       status: "configured",
       editable: true,
     };
+    (source.summary as Record<string, unknown>).recommendedPriceMismatch = 1;
 
     const snapshot = parseBusinessPricingAuditSnapshot(source);
     expect(snapshot.rows[1]).toMatchObject({
@@ -335,7 +343,16 @@ describe("FBA business pricing audit renderer", () => {
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "configured")))
       .toHaveLength(2);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "problem")))
-      .toHaveLength(2);
+      .toHaveLength(4);
+    expect(rows.filter((row) =>
+      businessPricingRowMatchesFilter(row, "recommended_price_mismatch")
+    )).toHaveLength(2);
+    expect(rows.filter((row) =>
+      businessPricingRowMatchesFilter(
+        row,
+        "recommended_quantity_discount_mismatch",
+      )
+    )).toHaveLength(3);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "all")))
       .toHaveLength(4);
   });
@@ -402,6 +419,8 @@ describe("FBA business pricing audit renderer", () => {
       missing: 1,
       unsupported: 0,
       incomplete: 0,
+      recommendedPriceMismatch: 3,
+      recommendedQuantityDiscountMismatch: 3,
     });
 
     const fixed = applyVerifiedBusinessPriceToAuditSnapshot(
@@ -416,6 +435,8 @@ describe("FBA business pricing audit renderer", () => {
       missing: 1,
       unsupported: 0,
       incomplete: 0,
+      recommendedPriceMismatch: 2,
+      recommendedQuantityDiscountMismatch: 3,
     });
   });
 
@@ -461,7 +482,7 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("Amazon 未能確認，請到後台核對");
     expect(markup).toContain("Notebook Key 需更新後才能安全開啟指定 SKU");
     expect(markup).toContain("舊版不會改開 Seller Central 首頁");
-    expect(markup.match(/>前往 Amazon 後台 ↗<\/button>/g)).toHaveLength(3);
+    expect(markup.match(/>前往 Amazon 後台 ↗<\/button>/g)).toHaveLength(4);
     expect(markup).not.toContain("Amazon Validation Preview");
     const panelSource = readFileSync(
       new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
@@ -512,6 +533,8 @@ describe("FBA business pricing audit renderer", () => {
       configured: 1,
       missing: 1,
       incomplete: 2,
+      recommendedPriceMismatch: 1,
+      recommendedQuantityDiscountMismatch: 1,
     });
 
     const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
@@ -542,11 +565,17 @@ describe("FBA business pricing audit renderer", () => {
     )?.[0];
 
     expect(summary).toBeDefined();
-    expect(summary?.match(/<button\b/gu)).toHaveLength(6);
+    expect(summary?.match(/<button\b/gu)).toHaveLength(8);
     expect(summary).not.toContain("唯讀／不支援");
+    expect(summary).toContain("不符建議 B2B 價格");
+    expect(summary).toContain("未正確設定階梯折扣");
     expect(summary).toContain('aria-pressed="true"');
     expect(markup).not.toContain("business-pricing-filters");
     expect(markup.match(/B2B 價格健檢摘要與篩選/gu)).toHaveLength(1);
+    expect(markup).toContain("business-pricing-export-button");
+    expect(markup).not.toContain(
+      'class="content-audit-export-primary">匯出 B2B 價格 Excel',
+    );
     const css = readFileSync(
       new URL("../src/renderer/src/app.css", import.meta.url),
       "utf8",

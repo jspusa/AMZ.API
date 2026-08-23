@@ -26,6 +26,7 @@ import {
   openSellerCentralInventoryHandoff,
   supportsFixedSellerCentralHandoffs,
 } from "../seller-central-handoff";
+import { auditExportFilename } from "../audit-export-filename";
 
 const FILTERS: readonly Readonly<{
   value: BusinessPricingAuditFilter;
@@ -33,6 +34,11 @@ const FILTERS: readonly Readonly<{
 }>[] = [
   { value: "all", label: "全部" },
   { value: "problem", label: "需處理" },
+  { value: "recommended_price_mismatch", label: "不符建議 B2B 價格" },
+  {
+    value: "recommended_quantity_discount_mismatch",
+    label: "未正確設定階梯折扣",
+  },
   { value: "above_standard", label: "高於一般售價" },
   { value: "missing", label: "未設定" },
   { value: "configured", label: "已設定" },
@@ -74,6 +80,15 @@ function rowStatusDetail(row: BusinessPricingAuditRow): string {
     return "Amazon Business 可用，但尚未設定 B2B 價格。";
   }
   return "已找到 Amazon Business 價格；需要調整時請前往 Amazon 後台。";
+}
+
+function recommendationFindings(row: BusinessPricingAuditRow): string[] {
+  return [
+    ...(row.recommendedPriceMismatch ? ["不符建議 B2B 價格"] : []),
+    ...(row.recommendedQuantityDiscountMismatch
+      ? ["未正確設定階梯折扣"]
+      : []),
+  ];
 }
 
 function QuantityDiscountPlan({
@@ -179,6 +194,7 @@ export default function BusinessPricingAuditPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [job, setJob] = useState<StandaloneAuditJob | null>(
     initialJob?.kind === "businessPricing" &&
@@ -366,6 +382,58 @@ export default function BusinessPricingAuditPanel({
     }
   };
 
+  const exportExcel = async () => {
+    if (
+      !visibleSnapshot ||
+      exporting ||
+      !job?.ready ||
+      job.status !== "completed"
+    ) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        marketplaceId,
+        mode,
+        jobId: job.jobId,
+        contextId: job.contextId,
+      });
+      const response = await fetch(
+        `/api/sp-api/business-pricing-audit/export?${params}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) {
+        let message = "目前無法匯出 B2B 價格 Excel。";
+        try {
+          const payload = await response.json() as { message?: unknown };
+          if (typeof payload.message === "string") message = payload.message;
+        } catch {
+          // The bytes endpoint may not have a JSON body.
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = auditExportFilename({
+        kind: "businessPricing",
+        marketplaceShort,
+        fetchedAt: visibleSnapshot.fetchedAt,
+      });
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (exportError) {
+      setError(exportError instanceof Error
+        ? exportError.message
+        : "目前無法匯出 B2B 價格 Excel。");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <section className="business-pricing-audit-panel" aria-label="全站 FBA Amazon Business 價格健檢">
       <div className="business-pricing-audit-intro">
@@ -422,9 +490,36 @@ export default function BusinessPricingAuditPanel({
           <p className="business-pricing-notice">
             本次已核對 {visibleSnapshot.summary.totalFbaSkuCount} 個 FBA SKU；需要手動處理時可從商品列開啟 Amazon 後台。
           </p>
+          <div className="business-pricing-export">
+            <button
+              type="button"
+              className="business-pricing-export-button"
+              onClick={() => void exportExcel()}
+              disabled={
+                exporting ||
+                !job?.ready ||
+                job.status !== "completed"
+              }
+            >
+              {exporting ? "正在建立 Excel…" : "匯出 B2B 價格 Excel"}
+            </button>
+            {(!job?.ready || job.status !== "completed") && (
+              <small>請先完成本次背景健檢；Excel 只會使用主程序保存的原始快照。</small>
+            )}
+          </div>
           <div className="business-pricing-list" role="list" aria-label="FBA B2B 價格商品">
             {visibleRows.map((row) => (
-              <article key={row.sellerSku} className={`business-pricing-row ${row.status}`} role="listitem">
+              <article
+                key={row.sellerSku}
+                className={`business-pricing-row ${row.status}${
+                  row.recommendedPriceMismatch ? " is-price-mismatch" : ""
+                }${
+                  row.recommendedQuantityDiscountMismatch
+                    ? " is-tier-mismatch"
+                    : ""
+                }`}
+                role="listitem"
+              >
                 <div>
                   <strong>{row.title || row.sellerSku}</strong>
                   <small>{row.sellerSku} · {row.asin || "無 ASIN"}</small>
@@ -445,6 +540,13 @@ export default function BusinessPricingAuditPanel({
                 </dl>
                 <div className="business-pricing-row-status">
                   <span>{statusLabel(row.status)}</span>
+                  {recommendationFindings(row).length > 0 && (
+                    <div className="business-pricing-findings" aria-label="建議規則問題">
+                      {recommendationFindings(row).map((finding) => (
+                        <strong key={finding}>{finding}</strong>
+                      ))}
+                    </div>
+                  )}
                   <small>{rowStatusDetail(row)}</small>
                 </div>
                 <div className="business-pricing-row-actions">

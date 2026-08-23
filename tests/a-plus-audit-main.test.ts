@@ -326,6 +326,236 @@ describe("A+ FBA audit core", () => {
     });
   });
 
+  it("keeps an exact published relation when a duplicate schema-valid row only has contextual brand badges", async () => {
+    let relationCalls = 0;
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-live-duplicate-relation",
+      rows: [{
+        sellerSku: "LIVE-DUPLICATE-RELATION",
+        asin: "B0G11WRYBF",
+        title: "Live duplicate relation shape",
+        incompleteReasonCode: "FBA_RELATIONSHIP_INCOMPLETE",
+      }],
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "live-duplicate-relation-reference",
+            contentMetadata: {
+              name: "Live product detail",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T10:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => {
+        relationCalls += 1;
+        return {
+          status: 200,
+          payload: {
+            asinMetadataSet: [
+              {
+                asin: "B0G11WRYBF",
+                badgeSet: ["CONTENT_PUBLISHED"],
+                contentReferenceKeySet: ["live-duplicate-relation-reference"],
+              },
+              {
+                asin: "B0G11WRYBF",
+                badgeSet: ["BRAND_NOT_ELIGIBLE"],
+                contentReferenceKeySet: ["another-contextual-reference"],
+              },
+            ],
+          },
+        };
+      },
+      fetchPublishRecords: async () => {
+        throw new Error("Relationship-incomplete rows must not issue a publish-record request.");
+      },
+    });
+
+    expect(relationCalls).toBe(1);
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      documents: [{
+        name: "Live product detail",
+        relationState: "published",
+        evidence: "relation_badge",
+        completeness: "partial",
+      }],
+      documentEvidenceCompleteness: "partial",
+    });
+  });
+
+  it("deduplicates repeated document keys without dropping relation traversal when display metadata changes", async () => {
+    const relationKeys: string[] = [];
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-live-duplicate-document",
+      rows: [{ sellerSku: "LIVE-DUPLICATE-DOCUMENT", asin: "B0HCV7MHZ4", title: "Live duplicate document" }],
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [
+            {
+              contentReferenceKey: "live-duplicate-document-reference",
+              contentMetadata: {
+                name: "Older product detail name",
+                marketplaceId: MARKETPLACE_ID,
+                status: "SUBMITTED",
+                badgeSet: ["STANDARD"],
+                updateTime: "2026-08-21T10:00:00Z",
+              },
+            },
+            {
+              contentReferenceKey: "live-duplicate-document-reference",
+              contentMetadata: {
+                name: "Current product detail name",
+                marketplaceId: MARKETPLACE_ID,
+                status: "APPROVED",
+                badgeSet: ["STANDARD"],
+                updateTime: "2026-08-22T10:00:00Z",
+              },
+            },
+          ],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async ({ contentReferenceKey }) => {
+        relationKeys.push(contentReferenceKey);
+        return {
+          status: 200,
+          payload: {
+            asinMetadataSet: [{
+              asin: "B0HCV7MHZ4",
+              badgeSet: ["CONTENT_PUBLISHED"],
+              contentReferenceKeySet: [contentReferenceKey],
+            }],
+          },
+        };
+      },
+    });
+
+    expect(relationKeys).toEqual(["live-duplicate-document-reference"]);
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      documents: [{
+        name: "Current product detail name",
+        documentStatus: "APPROVED",
+        relationState: "published",
+        evidence: "relation_badge",
+        completeness: "partial",
+      }],
+      documentEvidenceCompleteness: "partial",
+    });
+  });
+
+  it("does not let a malformed exact non-target relation invalidate complete target coverage", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-non-target-malformed",
+      rows: [{ sellerSku: "TARGET-COMPLETE", asin: "B000000212", title: "Target complete" }],
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "non-target-malformed-reference",
+            contentMetadata: {
+              name: "Unrelated product detail",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T10:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: "B000000999",
+            badgeSet: ["NOT_AN_AMAZON_BADGE"],
+          }],
+        },
+      }),
+    });
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "missing",
+      sourceCompleteness: "complete",
+      publishedRecordCount: 0,
+      reasonCode: "NO_PUBLISHED_RECORD",
+      documentEvidenceCompleteness: "complete",
+    });
+  });
+
+  it("keeps every target negative partial when a malformed relation has no exact ASIN identity", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-document-index-unknown-malformed-asin",
+      rows: [{ sellerSku: "TARGET-UNKNOWN-COVERAGE", asin: "B000000213", title: "Unknown coverage" }],
+      fetchPublishRecords: async () => ({
+        status: 200,
+        payload: { publishRecordList: [] },
+      }),
+      fetchContentDocuments: async () => ({
+        status: 200,
+        payload: {
+          contentMetadataRecords: [{
+            contentReferenceKey: "unknown-malformed-asin-reference",
+            contentMetadata: {
+              name: "Unknown ASIN relation",
+              marketplaceId: MARKETPLACE_ID,
+              status: "APPROVED",
+              badgeSet: ["STANDARD"],
+              updateTime: "2026-08-22T10:00:00Z",
+            },
+          }],
+        },
+      }),
+      fetchContentDocumentAsinRelations: async () => ({
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: null,
+            badgeSet: ["CONTENT_PUBLISHED"],
+          }],
+        },
+      }),
+    });
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "incomplete",
+      sourceCompleteness: "partial",
+      publishedRecordCount: null,
+      reasonCode: "A_PLUS_READ_FAILED",
+      documentEvidenceCompleteness: "partial",
+    });
+  });
+
   it("does not call an empty publish-record result missing when a later document relation read fails", async () => {
     const snapshot = await runAplusAudit({
       mode: "live",

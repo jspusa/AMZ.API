@@ -1,3 +1,7 @@
+import {
+  businessPricingRecommendationFlags,
+} from "../../shared/business-pricing-recommendations";
+
 export type BusinessPricingAuditStatus =
   | "configured"
   | "above_standard"
@@ -8,6 +12,8 @@ export type BusinessPricingAuditStatus =
 export type BusinessPricingAuditFilter =
   | "all"
   | "problem"
+  | "recommended_price_mismatch"
+  | "recommended_quantity_discount_mismatch"
   | "above_standard"
   | "missing"
   | "configured"
@@ -28,6 +34,8 @@ export type BusinessPricingAuditRow = Readonly<{
   businessOfferPresence: "absent" | "present" | "ambiguous";
   quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  recommendedPriceMismatch: boolean;
+  recommendedQuantityDiscountMismatch: boolean;
   status: BusinessPricingAuditStatus;
   editable: boolean;
   reason: string;
@@ -40,6 +48,8 @@ export type BusinessPricingAuditSummary = Readonly<{
   missing: number;
   unsupported: number;
   incomplete: number;
+  recommendedPriceMismatch: number;
+  recommendedQuantityDiscountMismatch: number;
 }>;
 
 export type BusinessPricingAuditSnapshot = Readonly<{
@@ -258,6 +268,24 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
         source.quantityDiscountPlan,
         source.quantityDiscountPlanPresence,
       );
+  const recommendationFlags = businessPricingRecommendationFlags({
+    standardPrice,
+    businessPrice,
+    quantityDiscountPlan: quantityDiscount.plan,
+    quantityDiscountPlanPresence: quantityDiscount.presence,
+  });
+  for (const [key, expected] of [
+    ["recommendedPriceMismatch", recommendationFlags.recommendedPriceMismatch],
+    [
+      "recommendedQuantityDiscountMismatch",
+      recommendationFlags.recommendedQuantityDiscountMismatch,
+    ],
+  ] as const) {
+    const supplied = source[key];
+    if (supplied !== undefined && (typeof supplied !== "boolean" || supplied !== expected)) {
+      throw new Error("B2B 價格健檢的建議分類與價格證據不一致。");
+    }
+  }
   if (
     ((status === "configured" || status === "above_standard") &&
       (presence !== "present" || !businessPrice)) ||
@@ -288,6 +316,7 @@ function parseRow(value: unknown): BusinessPricingAuditRow {
     businessOfferPresence: presence,
     quantityDiscountPlan: quantityDiscount.plan,
     quantityDiscountPlanPresence: quantityDiscount.presence,
+    ...recommendationFlags,
     status,
     // Audit output is always rendered read-only. Keep accepting the legacy
     // boolean so older cache/demo/API payloads remain parseable, but never let
@@ -328,6 +357,16 @@ export function parseBusinessPricingAuditSnapshot(
     missing: count(rawSummary.missing, "未設定"),
     unsupported: count(rawSummary.unsupported, "不支援"),
     incomplete: count(rawSummary.incomplete, "資料未完成"),
+    recommendedPriceMismatch: rawSummary.recommendedPriceMismatch === undefined
+      ? rows.filter((row) => row.recommendedPriceMismatch).length
+      : count(rawSummary.recommendedPriceMismatch, "不符建議 B2B 價格"),
+    recommendedQuantityDiscountMismatch:
+      rawSummary.recommendedQuantityDiscountMismatch === undefined
+        ? rows.filter((row) => row.recommendedQuantityDiscountMismatch).length
+        : count(
+            rawSummary.recommendedQuantityDiscountMismatch,
+            "未正確設定階梯折扣",
+          ),
   };
   const actual = {
     configured: rows.filter((row) => row.status === "configured").length,
@@ -335,6 +374,12 @@ export function parseBusinessPricingAuditSnapshot(
     missing: rows.filter((row) => row.status === "missing").length,
     unsupported: rows.filter((row) => row.status === "unsupported").length,
     incomplete: rows.filter((row) => row.status === "incomplete").length,
+    recommendedPriceMismatch: rows.filter((row) =>
+      row.recommendedPriceMismatch
+    ).length,
+    recommendedQuantityDiscountMismatch: rows.filter((row) =>
+      row.recommendedQuantityDiscountMismatch
+    ).length,
   };
   if (
     summary.totalFbaSkuCount !== rows.length ||
@@ -342,7 +387,10 @@ export function parseBusinessPricingAuditSnapshot(
     summary.aboveStandard !== actual.aboveStandard ||
     summary.missing !== actual.missing ||
     summary.unsupported !== actual.unsupported ||
-    summary.incomplete !== actual.incomplete
+    summary.incomplete !== actual.incomplete ||
+    summary.recommendedPriceMismatch !== actual.recommendedPriceMismatch ||
+    summary.recommendedQuantityDiscountMismatch !==
+      actual.recommendedQuantityDiscountMismatch
   ) {
     throw new Error("B2B 價格健檢摘要與商品列不一致。");
   }
@@ -361,7 +409,17 @@ export function businessPricingRowMatchesFilter(
   filter: BusinessPricingAuditFilter,
 ): boolean {
   if (filter === "all") return true;
-  if (filter === "problem") return row.status !== "configured";
+  if (filter === "problem") {
+    return row.status !== "configured" ||
+      row.recommendedPriceMismatch ||
+      row.recommendedQuantityDiscountMismatch;
+  }
+  if (filter === "recommended_price_mismatch") {
+    return row.recommendedPriceMismatch;
+  }
+  if (filter === "recommended_quantity_discount_mismatch") {
+    return row.recommendedQuantityDiscountMismatch;
+  }
   return row.status === filter;
 }
 
@@ -380,9 +438,22 @@ export function applyVerifiedBusinessPriceToAuditSnapshot(
     update.requestedBusinessPrice.currencyCode ===
       update.standardPrice.currencyCode &&
     update.requestedBusinessPrice.amount > update.standardPrice.amount;
-  const rows = snapshot.rows.map((row) =>
-    row.sellerSku === update.sellerSku
-      ? {
+  const rows = snapshot.rows.map((row) => {
+    if (row.sellerSku !== update.sellerSku) return row;
+    const updatedQuantityDiscountPlan = update.quantityDiscountPlanChange === "replace"
+      ? update.requestedQuantityDiscountPlan
+      : row.quantityDiscountPlan;
+    const updatedQuantityDiscountPlanPresence =
+      update.quantityDiscountPlanChange === "replace"
+        ? "canonical" as const
+        : row.quantityDiscountPlanPresence;
+    const recommendationFlags = businessPricingRecommendationFlags({
+      standardPrice: update.standardPrice,
+      businessPrice: update.requestedBusinessPrice,
+      quantityDiscountPlan: updatedQuantityDiscountPlan,
+      quantityDiscountPlanPresence: updatedQuantityDiscountPlanPresence,
+    });
+    return {
           ...row,
           asin: update.asin,
           productType: update.productType,
@@ -390,19 +461,15 @@ export function applyVerifiedBusinessPriceToAuditSnapshot(
           businessPrice: update.requestedBusinessPrice,
           businessOfferPresence: "present" as const,
           editable: false,
-          ...(update.quantityDiscountPlanChange === "replace"
-            ? {
-                quantityDiscountPlan: update.requestedQuantityDiscountPlan,
-                quantityDiscountPlanPresence: "canonical" as const,
-              }
-            : {}),
+          quantityDiscountPlan: updatedQuantityDiscountPlan,
+          quantityDiscountPlanPresence: updatedQuantityDiscountPlanPresence,
+          ...recommendationFlags,
           status: aboveStandard ? "above_standard" as const : "configured" as const,
           reason: aboveStandard
             ? "Amazon Business 價格仍高於一般售價；主程序已唯讀回查確認。"
             : "已設定 Amazon Business 價格，且主程序唯讀回查確認。",
-        }
-      : row
-  );
+        };
+  });
   return {
     ...snapshot,
     rows,
@@ -413,6 +480,12 @@ export function applyVerifiedBusinessPriceToAuditSnapshot(
       missing: rows.filter((row) => row.status === "missing").length,
       unsupported: rows.filter((row) => row.status === "unsupported").length,
       incomplete: rows.filter((row) => row.status === "incomplete").length,
+      recommendedPriceMismatch: rows.filter((row) =>
+        row.recommendedPriceMismatch
+      ).length,
+      recommendedQuantityDiscountMismatch: rows.filter((row) =>
+        row.recommendedQuantityDiscountMismatch
+      ).length,
     },
   };
 }

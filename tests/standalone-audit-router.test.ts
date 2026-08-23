@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { strFromU8, unzipSync } from "fflate";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -74,6 +75,41 @@ describe("main-owned standalone audit route", () => {
             completedUnits: 1,
             totalUnits: 1,
           });
+          if (kind === "businessPricing") {
+            return {
+              kind,
+              mode: context.mode,
+              marketplaceId: context.marketplaceId,
+              fetchedAt: "2026-08-23T10:00:00.000Z",
+              rows: [{
+                sellerSku: "MAIN-SNAPSHOT-SKU",
+                asin: "B000000001",
+                title: "Main-owned B2B snapshot",
+                productType: "PET_FOOD",
+                standardPrice: { amount: 20, currencyCode: "USD" },
+                businessPrice: { amount: 17.5, currencyCode: "USD" },
+                businessOfferPresence: "present",
+                quantityDiscountPlan: null,
+                quantityDiscountPlanPresence: "absent",
+                recommendedPriceMismatch: true,
+                recommendedQuantityDiscountMismatch: true,
+                status: "configured",
+                editable: false,
+                reason: "Main process evidence.",
+              }],
+              summary: {
+                totalFbaSkuCount: 1,
+                configured: 1,
+                aboveStandard: 0,
+                missing: 0,
+                unsupported: 0,
+                incomplete: 0,
+                recommendedPriceMismatch: 1,
+                recommendedQuantityDiscountMismatch: 1,
+              },
+              notice: "Main-owned fixture.",
+            };
+          }
           return {
             kind,
             marketplaceId: context.marketplaceId,
@@ -119,7 +155,9 @@ describe("main-owned standalone audit route", () => {
         snapshot: {
           kind: selection.kind,
           marketplaceId: US,
-          rows: [],
+          rows: selection.kind === "businessPricing"
+            ? [expect.objectContaining({ sellerSku: "MAIN-SNAPSHOT-SKU" })]
+            : [],
         },
       });
       expect(JSON.stringify(payload(completed))).not.toContain(accountScope);
@@ -150,6 +188,92 @@ describe("main-owned standalone audit route", () => {
     }));
     expect(changed.status).toBe(409);
     expect(payload(changed)).toMatchObject({ code: "ACCOUNT_SCOPE_CHANGED" });
+  });
+
+  it("exports B2B Excel only from the main-owned completed job snapshot", async () => {
+    const started = await router.handle(request("POST", {
+      kind: "businessPricing",
+      marketplaceId: US,
+      mode: "demo",
+    }));
+    const pendingReceipt = payload(started);
+    const pendingExport = await router.handle({
+      requestId: crypto.randomUUID(),
+      method: "GET",
+      path: "/api/sp-api/business-pricing-audit/export",
+      query: {
+        marketplaceId: US,
+        mode: "demo",
+        jobId: String(pendingReceipt.jobId),
+        contextId: String(pendingReceipt.contextId),
+      },
+      headers: {},
+    });
+    expect(pendingExport.status).toBe(409);
+    expect(payload(pendingExport)).toMatchObject({ code: "SNAPSHOT_NOT_READY" });
+
+    const completed = await terminal(router, payload(started));
+    const receipt = payload(completed);
+    const staleContextExport = await router.handle({
+      requestId: crypto.randomUUID(),
+      method: "GET",
+      path: "/api/sp-api/business-pricing-audit/export",
+      query: {
+        marketplaceId: US,
+        mode: "demo",
+        jobId: String(receipt.jobId),
+        contextId: crypto.randomUUID(),
+      },
+      headers: {},
+    });
+    expect(staleContextExport.status).toBe(410);
+    expect(payload(staleContextExport)).toMatchObject({
+      code: "STANDALONE_AUDIT_JOB_EXPIRED",
+    });
+
+    const exported = await router.handle({
+      requestId: crypto.randomUUID(),
+      method: "GET",
+      path: "/api/sp-api/business-pricing-audit/export",
+      query: {
+        marketplaceId: US,
+        mode: "demo",
+        jobId: String(receipt.jobId),
+        contextId: String(receipt.contextId),
+        rows: "INJECTED-RENDERER-ROW",
+      },
+      headers: {},
+    });
+
+    expect(exported.status).toBe(200);
+    expect(exported.body.kind).toBe("bytes");
+    if (exported.body.kind !== "bytes") throw new Error("Expected XLSX bytes");
+    const archive = unzipSync(exported.body.value);
+    const content = Object.values(archive)
+      .map((value) => strFromU8(value))
+      .join("\n");
+    expect(content).toContain("MAIN-SNAPSHOT-SKU");
+    expect(content).not.toContain("INJECTED-RENDERER-ROW");
+    expect(exported.headers["x-b2b-price-mismatch-count"]).toBe("1");
+    expect(exported.headers["x-b2b-tier-mismatch-count"]).toBe("1");
+
+    accountScope = "standalone-account-two";
+    const changedAccountExport = await router.handle({
+      requestId: crypto.randomUUID(),
+      method: "GET",
+      path: "/api/sp-api/business-pricing-audit/export",
+      query: {
+        marketplaceId: US,
+        mode: "demo",
+        jobId: String(receipt.jobId),
+        contextId: String(receipt.contextId),
+      },
+      headers: {},
+    });
+    expect(changedAccountExport.status).toBe(409);
+    expect(payload(changedAccountExport)).toMatchObject({
+      code: "ACCOUNT_SCOPE_CHANGED",
+    });
   });
 
   it("lets variation and B2B enrichment download the report document exactly once", () => {

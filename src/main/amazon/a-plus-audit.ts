@@ -196,17 +196,21 @@ type AplusDocumentRecord = Readonly<{
   name: string;
   documentStatus: AplusDocumentStatus;
   badges: readonly AplusDocumentBadge[];
+  updateTime: string;
+  metadataCompleteness: "complete" | "partial";
 }>;
 
 type AplusDocumentRelation = Readonly<{
   contentReferenceKey: string;
   state: "published" | "not_published" | "related";
+  completeness: "complete" | "partial";
 }>;
 
 type AplusDocumentIndex = Readonly<{
   documentsByKey: ReadonlyMap<string, AplusDocumentRecord>;
   relationsByAsin: ReadonlyMap<string, readonly AplusDocumentRelation[]>;
   conflictAsins: ReadonlySet<string>;
+  partialAsins: ReadonlySet<string>;
   completeness: "complete" | "partial" | "unavailable";
 }>;
 
@@ -334,7 +338,7 @@ function isPublishRecord(
   return (
     value.marketplaceId === marketplaceId &&
     value.asin === asin &&
-    isExactText(value.contentReferenceKey, 512) &&
+    isExactText(value.contentReferenceKey, 2_048) &&
     (value.contentType === "EBC" || value.contentType === "EMC") &&
     isExactText(value.locale, 64) &&
     isAplusLanguageTag(value.locale) &&
@@ -509,7 +513,7 @@ function parseDocumentRecord(
   value: unknown,
   marketplaceId: string,
 ): AplusDocumentRecord | null {
-  if (!isRecord(value) || !isExactText(value.contentReferenceKey, 512)) {
+  if (!isRecord(value) || !isExactText(value.contentReferenceKey, 2_048)) {
     return null;
   }
   const metadata = value.contentMetadata;
@@ -536,6 +540,8 @@ function parseDocumentRecord(
     badges: [...metadata.badgeSet as AplusDocumentBadge[]].sort((left, right) =>
       left.localeCompare(right)
     ),
+    updateTime: metadata.updateTime,
+    metadataCompleteness: "complete",
   };
 }
 
@@ -547,14 +553,40 @@ function sameDocumentRecord(
     left.contentReferenceKey === right.contentReferenceKey &&
     left.name === right.name &&
     left.documentStatus === right.documentStatus &&
-    JSON.stringify(left.badges) === JSON.stringify(right.badges)
+    JSON.stringify(left.badges) === JSON.stringify(right.badges) &&
+    left.updateTime === right.updateTime
   );
+}
+
+function mergeDuplicateDocumentRecord(
+  left: AplusDocumentRecord,
+  right: AplusDocumentRecord,
+): AplusDocumentRecord {
+  // Amazon's ContentMetadataRecordList explicitly permits duplicate array
+  // items. The opaque key still identifies the relation route; only the
+  // mutable display metadata becomes partial when duplicate snapshots differ.
+  if (sameDocumentRecord(left, right)) {
+    return left.metadataCompleteness === "partial"
+      ? left
+      : right.metadataCompleteness === "partial"
+        ? { ...left, metadataCompleteness: "partial" }
+        : left;
+  }
+  const leftTime = Date.parse(left.updateTime);
+  const rightTime = Date.parse(right.updateTime);
+  const selected = rightTime > leftTime
+    ? right
+    : leftTime > rightTime
+      ? left
+      : JSON.stringify(right).localeCompare(JSON.stringify(left)) < 0
+        ? right
+        : left;
+  return { ...selected, metadataCompleteness: "partial" };
 }
 
 function parseDocumentRelation(
   value: unknown,
-  contentReferenceKey: string,
-): { asin: string; state: AplusDocumentRelation["state"] } | null {
+): { asin: string; states: readonly AplusDocumentRelation["state"][] } | null {
   if (!isRecord(value) || typeof value.asin !== "string" || !/^[A-Z0-9]{10}$/u.test(value.asin)) {
     return null;
   }
@@ -575,8 +607,7 @@ function parseDocumentRelation(
       !Array.isArray(value.contentReferenceKeySet) ||
       value.contentReferenceKeySet.length > APLUS_AUDIT_MAX_PUBLIC_COUNT ||
       new Set(value.contentReferenceKeySet).size !== value.contentReferenceKeySet.length ||
-      !value.contentReferenceKeySet.every((key) => isExactText(key, 512)) ||
-      !value.contentReferenceKeySet.includes(contentReferenceKey)
+      !value.contentReferenceKeySet.every((key) => isExactText(key, 2_048))
     )
   ) return null;
   const badges = new Set(
@@ -584,16 +615,13 @@ function parseDocumentRelation(
       ? value.badgeSet.filter((badge): badge is string => typeof badge === "string")
       : [],
   );
-  if (badges.has("CONTENT_PUBLISHED") && badges.has("CONTENT_NOT_PUBLISHED")) {
-    return null;
-  }
+  const states: AplusDocumentRelation["state"][] = [];
+  if (badges.has("CONTENT_PUBLISHED")) states.push("published");
+  if (badges.has("CONTENT_NOT_PUBLISHED")) states.push("not_published");
+  if (states.length === 0) states.push("related");
   return {
     asin: value.asin,
-    state: badges.has("CONTENT_PUBLISHED")
-      ? "published"
-      : badges.has("CONTENT_NOT_PUBLISHED")
-        ? "not_published"
-        : "related",
+    states,
   };
 }
 
@@ -609,11 +637,11 @@ async function readAplusDocumentIndex(input: Readonly<{
       documentsByKey: new Map(),
       relationsByAsin: new Map(),
       conflictAsins: new Set(),
+      partialAsins: new Set(),
       completeness: "unavailable",
     };
   }
   const documentsByKey = new Map<string, AplusDocumentRecord>();
-  const invalidDocumentKeys = new Set<string>();
   const seenDocumentPageTokens = new Set<string>();
   let documentPageToken: string | undefined;
   let partial = false;
@@ -639,6 +667,7 @@ async function readAplusDocumentIndex(input: Readonly<{
         documentsByKey,
         relationsByAsin: new Map(),
         conflictAsins: new Set(),
+        partialAsins: new Set(),
         completeness: "unavailable",
       };
     }
@@ -658,15 +687,15 @@ async function readAplusDocumentIndex(input: Readonly<{
         partial = true;
         continue;
       }
-      if (invalidDocumentKeys.has(record.contentReferenceKey)) continue;
       const previous = documentsByKey.get(record.contentReferenceKey);
-      if (previous && !sameDocumentRecord(previous, record)) {
-        documentsByKey.delete(record.contentReferenceKey);
-        invalidDocumentKeys.add(record.contentReferenceKey);
-        partial = true;
+      if (previous) {
+        documentsByKey.set(
+          record.contentReferenceKey,
+          mergeDuplicateDocumentRecord(previous, record),
+        );
         continue;
       }
-      if (!previous && documentsByKey.size >= APLUS_AUDIT_MAX_PUBLIC_COUNT) {
+      if (documentsByKey.size >= APLUS_AUDIT_MAX_PUBLIC_COUNT) {
         partial = true;
         continue;
       }
@@ -690,9 +719,27 @@ async function readAplusDocumentIndex(input: Readonly<{
   }
   if (!documentPaginationComplete) partial = true;
 
-  const relationByCompositeKey = new Map<string, AplusDocumentRelation>();
-  const invalidRelationKeys = new Set<string>();
+  const relationAggregates = new Map<string, {
+    asin: string;
+    contentReferenceKey: string;
+    states: Set<AplusDocumentRelation["state"]>;
+    invalid: boolean;
+  }>();
   const conflictAsins = new Set<string>();
+  const partialAsins = new Set<string>();
+  const relationAggregate = (asin: string, contentReferenceKey: string) => {
+    const compositeKey = JSON.stringify([asin, contentReferenceKey]);
+    const previous = relationAggregates.get(compositeKey);
+    if (previous) return previous;
+    const created = {
+      asin,
+      contentReferenceKey,
+      states: new Set<AplusDocumentRelation["state"]>(),
+      invalid: false,
+    };
+    relationAggregates.set(compositeKey, created);
+    return created;
+  };
   for (const document of [...documentsByKey.values()].sort((left, right) =>
     left.contentReferenceKey.localeCompare(right.contentReferenceKey)
   )) {
@@ -727,39 +774,33 @@ async function readAplusDocumentIndex(input: Readonly<{
       }
       if (warningEnvelopeState(response.payload.warnings) !== "none") partial = true;
       for (const candidate of metadataSet) {
-        const relation = parseDocumentRelation(candidate, document.contentReferenceKey);
+        const exactCandidateAsin = isRecord(candidate) &&
+            typeof candidate.asin === "string" &&
+            /^[A-Z0-9]{10}$/u.test(candidate.asin)
+          ? candidate.asin
+          : null;
+        const relation = parseDocumentRelation(candidate);
         if (!relation) {
-          partial = true;
-          if (isRecord(candidate) && typeof candidate.asin === "string" &&
-              input.targetAsins.has(candidate.asin)) {
-            const compositeKey = JSON.stringify([
-              candidate.asin,
-              document.contentReferenceKey,
-            ]);
-            conflictAsins.add(candidate.asin);
-            invalidRelationKeys.add(compositeKey);
-            relationByCompositeKey.delete(compositeKey);
+          if (exactCandidateAsin === null) {
+            // Without an exact ASIN, the malformed row could conceal any
+            // target relation, so negative conclusions remain globally partial.
+            partial = true;
+          } else if (input.targetAsins.has(exactCandidateAsin)) {
+            relationAggregate(exactCandidateAsin, document.contentReferenceKey).invalid = true;
+            partialAsins.add(exactCandidateAsin);
           }
+          // A malformed row with an exact non-target ASIN cannot change the
+          // coverage of any requested FBA ASIN.
           continue;
         }
         if (!input.targetAsins.has(relation.asin)) continue;
-        const compositeKey = JSON.stringify([
+        const aggregate = relationAggregate(
           relation.asin,
           document.contentReferenceKey,
-        ]);
-        if (invalidRelationKeys.has(compositeKey)) continue;
-        const previous = relationByCompositeKey.get(compositeKey);
-        if (previous && previous.state !== relation.state) {
-          relationByCompositeKey.delete(compositeKey);
-          invalidRelationKeys.add(compositeKey);
-          conflictAsins.add(relation.asin);
-          partial = true;
-          continue;
+        );
+        for (const state of relation.states) {
+          aggregate.states.add(state);
         }
-        relationByCompositeKey.set(compositeKey, {
-          contentReferenceKey: document.contentReferenceKey,
-          state: relation.state,
-        });
       }
       const nextPageToken = aplusPageToken(response.payload.nextPageToken);
       if (nextPageToken === "invalid") {
@@ -780,6 +821,32 @@ async function readAplusDocumentIndex(input: Readonly<{
     if (!relationPaginationComplete) partial = true;
   }
 
+  const relationByCompositeKey = new Map<string, AplusDocumentRelation>();
+  for (const [compositeKey, aggregate] of relationAggregates) {
+    const hasPublished = aggregate.states.has("published");
+    const hasNotPublished = aggregate.states.has("not_published");
+    if (
+      (hasPublished && hasNotPublished) ||
+      (aggregate.invalid && !hasPublished)
+    ) {
+      conflictAsins.add(aggregate.asin);
+      partialAsins.add(aggregate.asin);
+      continue;
+    }
+    if (aggregate.states.size === 0) continue;
+    const relationIsPartial = aggregate.invalid || aggregate.states.size > 1;
+    if (relationIsPartial) partialAsins.add(aggregate.asin);
+    relationByCompositeKey.set(compositeKey, {
+      contentReferenceKey: aggregate.contentReferenceKey,
+      state: hasPublished
+        ? "published"
+        : hasNotPublished
+          ? "not_published"
+          : "related",
+      completeness: relationIsPartial ? "partial" : "complete",
+    });
+  }
+
   const relationsByAsin = new Map<string, AplusDocumentRelation[]>();
   for (const [compositeKey, relation] of relationByCompositeKey) {
     const parsed = JSON.parse(compositeKey) as [string, string];
@@ -797,6 +864,7 @@ async function readAplusDocumentIndex(input: Readonly<{
     documentsByKey,
     relationsByAsin,
     conflictAsins,
+    partialAsins,
     completeness: partial ? "partial" : "complete",
   };
 }
@@ -823,7 +891,11 @@ function mergeDocumentEvidence(input: Readonly<{
   );
   const publishKeys = new Set(input.read.contentReferenceKeys);
   const documents: AplusDocumentEvidence[] = [];
-  let evidencePartial = input.index.completeness !== "complete";
+  const relationshipConflict = input.index.conflictAsins.has(input.asin);
+  const asinEvidencePartial = input.index.partialAsins.has(input.asin);
+  let evidencePartial = input.index.completeness !== "complete" ||
+    asinEvidencePartial ||
+    relationshipConflict;
   let publicationConflict = false;
   for (const contentReferenceKey of publishKeys) {
     const document = input.index.documentsByKey.get(contentReferenceKey);
@@ -831,7 +903,9 @@ function mergeDocumentEvidence(input: Readonly<{
     const relationConflicts = relation?.state === "not_published";
     if (
       (!document && input.index.completeness !== "unavailable") ||
-      relationConflicts
+      relationConflicts ||
+      document?.metadataCompleteness === "partial" ||
+      relation?.completeness === "partial"
     ) evidencePartial = true;
     if (relationConflicts) publicationConflict = true;
     documents.push({
@@ -840,7 +914,12 @@ function mergeDocumentEvidence(input: Readonly<{
       badges: document?.badges ?? [],
       relationState: "published",
       evidence: "publish_record",
-      completeness: !document || relationConflicts || input.index.completeness !== "complete"
+      completeness: !document ||
+          relationConflicts ||
+          document.metadataCompleteness === "partial" ||
+          relation?.completeness === "partial" ||
+          relationshipConflict ||
+          input.index.completeness !== "complete"
         ? "partial"
         : "complete",
     });
@@ -852,13 +931,18 @@ function mergeDocumentEvidence(input: Readonly<{
       evidencePartial = true;
       continue;
     }
+    const relationEvidencePartial =
+      document.metadataCompleteness === "partial" ||
+      relation.completeness === "partial" ||
+      input.index.completeness !== "complete";
+    if (relationEvidencePartial) evidencePartial = true;
     documents.push({
       name: document.name,
       documentStatus: document.documentStatus,
       badges: document.badges,
       relationState: relation.state,
       evidence: relation.state === "published" ? "relation_badge" : "relation_only",
-      completeness: input.index.completeness === "complete" ? "complete" : "partial",
+      completeness: relationEvidencePartial ? "partial" : "complete",
     });
   }
   documents.sort((left, right) =>
@@ -870,7 +954,6 @@ function mergeDocumentEvidence(input: Readonly<{
   if (documents.length > APLUS_MAX_DOCUMENTS_PER_ASIN) evidencePartial = true;
   const boundedDocuments = documents.slice(0, APLUS_MAX_DOCUMENTS_PER_ASIN);
   const relationPublished = relations.some((relation) => relation.state === "published");
-  const relationshipConflict = input.index.conflictAsins.has(input.asin);
   const canPromotePublishedRelation = relationPublished &&
     !relationshipConflict &&
     !publicationConflict;

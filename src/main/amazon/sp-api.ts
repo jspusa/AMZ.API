@@ -67,6 +67,9 @@ import {
   type MarketplaceId,
   type MarketplaceRegion,
 } from "../../shared/marketplaces";
+import {
+  businessPricingRecommendationFlags,
+} from "../../shared/business-pricing-recommendations";
 import { spApiUserAgent } from "./sp-api-runtime";
 
 export type { BrandSalesSnapshot } from "./brand-sales";
@@ -299,6 +302,8 @@ export type BusinessPricingAuditRow = {
   businessOfferPresence: "absent" | "present" | "ambiguous";
   quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  recommendedPriceMismatch: boolean;
+  recommendedQuantityDiscountMismatch: boolean;
   status:
     | "configured"
     | "above_standard"
@@ -321,6 +326,8 @@ export type BusinessPricingAuditSnapshot = {
     missing: number;
     unsupported: number;
     incomplete: number;
+    recommendedPriceMismatch: number;
+    recommendedQuantityDiscountMismatch: number;
   };
   notice: string;
 };
@@ -10349,6 +10356,31 @@ function summarizeBusinessPricingAudit(
     missing: rows.filter((row) => row.status === "missing").length,
     unsupported: rows.filter((row) => row.status === "unsupported").length,
     incomplete: rows.filter((row) => row.status === "incomplete").length,
+    recommendedPriceMismatch: rows.filter((row) =>
+      row.recommendedPriceMismatch
+    ).length,
+    recommendedQuantityDiscountMismatch: rows.filter((row) =>
+      row.recommendedQuantityDiscountMismatch
+    ).length,
+  };
+}
+
+type BusinessPricingAuditRowWithoutRecommendations = Omit<
+  BusinessPricingAuditRow,
+  "recommendedPriceMismatch" | "recommendedQuantityDiscountMismatch"
+>;
+
+function withBusinessPricingRecommendations(
+  row: BusinessPricingAuditRowWithoutRecommendations,
+): BusinessPricingAuditRow {
+  return {
+    ...row,
+    ...businessPricingRecommendationFlags({
+      standardPrice: row.standardPrice,
+      businessPrice: row.businessPrice,
+      quantityDiscountPlan: row.quantityDiscountPlan,
+      quantityDiscountPlanPresence: row.quantityDiscountPlanPresence,
+    }),
   };
 }
 
@@ -10364,7 +10396,7 @@ function incompleteBusinessPricingAuditRow(
   const productType = marketplaceId && payload
     ? listingProductType(payload, marketplaceId)
     : "";
-  return {
+  return withBusinessPricingRecommendations({
     sellerSku: seed.sellerSku,
     asin: seed.asin,
     title: safeText(summary?.itemName, seed.title),
@@ -10379,7 +10411,7 @@ function incompleteBusinessPricingAuditRow(
     status: "incomplete",
     editable: false,
     reason,
-  };
+  });
 }
 
 function unavailableListingsBusinessPricingAuditRow(input: Readonly<{
@@ -10396,7 +10428,7 @@ function unavailableListingsBusinessPricingAuditRow(input: Readonly<{
     const reportSource = input.activeListingsBusinessPrice.presence === "present"
       ? "Amazon Active Listings 報表"
       : "Amazon 全商品報表";
-    return {
+    return withBusinessPricingRecommendations({
       sellerSku: input.seed.sellerSku,
       asin: input.seed.asin,
       title: "",
@@ -10413,7 +10445,7 @@ function unavailableListingsBusinessPricingAuditRow(input: Readonly<{
       editable: false,
       reason:
         `${reportSource}已以 exact SKU／ASIN／FBA 證據確認 Business Price；${input.reason}商品名稱、商品類型、一般售價與數量折扣保持未知。`,
-    };
+    });
   }
   return incompleteBusinessPricingAuditRow(input.seed, input.reason);
 }
@@ -10504,7 +10536,7 @@ function completeBusinessPricingAuditRow(input: {
     activeListingsBusinessPrice,
   } = input;
   if (activeListingsBusinessPrice.presence === "ambiguous") {
-    return {
+    return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
       title: listing.title,
@@ -10518,10 +10550,10 @@ function completeBusinessPricingAuditRow(input: {
       editable: false,
       reason:
         "Amazon Active Listings 報表的 exact SKU／ASIN／FBA／Business Price 證據重複、衝突或無法辨識；即使 Listings attributes 有正向 B2B 證據也不會忽略此衝突。",
-    };
+    });
   }
   if (business.businessOfferPresence === "ambiguous") {
-    return {
+    return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
       title: listing.title,
@@ -10535,13 +10567,10 @@ function completeBusinessPricingAuditRow(input: {
       editable: false,
       reason:
         "Amazon 回傳多個、幣別不符或價格無法解析的 B2B offer，已停止編輯。",
-    };
+    });
   }
-  if (
-    reportBusinessPrice.presence === "ambiguous" &&
-    business.businessOfferPresence === "absent"
-  ) {
-    return {
+  if (reportBusinessPrice.presence === "ambiguous") {
+    return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
       title: listing.title,
@@ -10555,7 +10584,7 @@ function completeBusinessPricingAuditRow(input: {
       editable: false,
       reason:
         "Amazon Active Listings／全商品報表的 Business Price 證據不一致或無法精確辨識，已停止分類。",
-    };
+    });
   }
   const reportMoney = reportBusinessPrice.presence === "present"
     ? {
@@ -10576,7 +10605,29 @@ function completeBusinessPricingAuditRow(input: {
         reportMoney.currencyCode,
       ))
   ) {
-    return {
+    if (activeListingsBusinessPrice.presence === "present") {
+      const aboveStandard = Boolean(
+        listing.standardPrice &&
+          reportMoney.amount > listing.standardPrice.amount,
+      );
+      return withBusinessPricingRecommendations({
+        sellerSku: seed.sellerSku,
+        asin: seed.asin,
+        title: listing.title,
+        productType: listing.productType,
+        standardPrice: listing.standardPrice,
+        businessPrice: reportMoney,
+        businessOfferPresence: "present",
+        quantityDiscountPlan: business.quantityDiscountPlan,
+        quantityDiscountPlanPresence: business.quantityDiscountPlanPresence,
+        status: aboveStandard ? "above_standard" : "configured",
+        editable: false,
+        reason: aboveStandard
+          ? "Amazon Active Listings 報表已確認現行 Business Price，且目前高於一般售價；Listings attributes 的價格 contribution 尚未同步。"
+          : "Amazon Active Listings 報表已確認現行 Business Price；Listings attributes 的價格 contribution 尚未同步。",
+      });
+    }
+    return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
       title: listing.title,
@@ -10589,14 +10640,14 @@ function completeBusinessPricingAuditRow(input: {
       status: "incomplete",
       editable: false,
       reason: `${reportSource}的 Business Price 與 Listings attributes 的 exact B2B contribution 不一致，已停止分類。`,
-    };
+    });
   }
   if (reportMoney && business.businessOfferPresence === "absent") {
     const aboveStandard = Boolean(
       listing.standardPrice &&
         reportMoney.amount > listing.standardPrice.amount,
     );
-    return {
+    return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
       title: listing.title,
@@ -10611,14 +10662,14 @@ function completeBusinessPricingAuditRow(input: {
       reason: aboveStandard
         ? `${reportSource}已確認此 SKU 設有 Business Price，且目前高於一般售價；數量折扣請至 Amazon 後台核對。`
         : `${reportSource}已確認此 SKU 設有 Business Price；一般售價或數量折扣未完整回傳時，請至 Amazon 後台核對。`,
-    };
+    });
   }
   const configured = business.businessOfferPresence === "present";
   if (
     !configured &&
     activeListingsBusinessPrice.presence === "unavailable"
   ) {
-    return {
+    return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
       title: listing.title,
@@ -10632,10 +10683,10 @@ function completeBusinessPricingAuditRow(input: {
       editable: false,
       reason:
         "Amazon Active Listings 的 exact Business Price 證據目前無法取得，且 Listings／全商品報表沒有其他正向 Business Price 證據；不能判定為未設定。",
-    };
+    });
   }
   if (!configured && !standardPriceComplete) {
-    return {
+    return withBusinessPricingRecommendations({
       sellerSku: seed.sellerSku,
       asin: seed.asin,
       title: listing.title,
@@ -10649,13 +10700,13 @@ function completeBusinessPricingAuditRow(input: {
       editable: false,
       reason:
         "Amazon Listings 未完整回傳一般售價，且沒有其他正向 Business Price 證據；請至 Amazon 後台核對。",
-    };
+    });
   }
   const aboveStandard = configured && Boolean(
     listing.standardPrice && business.businessPrice &&
     business.businessPrice.amount > listing.standardPrice.amount,
   );
-  return {
+  return withBusinessPricingRecommendations({
     sellerSku: seed.sellerSku,
     asin: seed.asin,
     title: listing.title,
@@ -10676,7 +10727,7 @@ function completeBusinessPricingAuditRow(input: {
           ? "已設定 Amazon Business 價格，並由 Amazon Automate Pricing 管理。"
           : "已設定 Amazon Business 價格。"
       : "尚未設定 Amazon Business 價格。",
-  };
+  });
 }
 
 export async function getBusinessPricingAuditData(input: {
@@ -10703,7 +10754,7 @@ export async function getBusinessPricingAuditData(input: {
           : listing.businessOfferPresence === "absent"
             ? "missing"
             : "incomplete";
-      return {
+      return withBusinessPricingRecommendations({
         sellerSku: listing.sellerSku,
         asin: listing.asin ?? "",
         title: listing.title,
@@ -10722,7 +10773,7 @@ export async function getBusinessPricingAuditData(input: {
           : status === "missing"
             ? "尚未設定 Amazon Business 價格；展示資料僅供檢視，不會寫入 Amazon。"
             : "B2B offer 證據不完整，展示模式已停止編輯。",
-      } satisfies BusinessPricingAuditRow;
+      });
     }));
     return {
       mode: "demo",

@@ -114,11 +114,21 @@ describe("unbound variation audit router", () => {
     expect(workbook).toContain("未綁變體");
     expect(workbook).toContain("讀取未完成");
     expect(workbook).toContain("所有變體");
+    expect(workbook).toContain("全部變體（直式）");
     const allVariationSheet = new TextDecoder().decode(
       archive["xl/worksheets/sheet3.xml"],
     );
     expect(allVariationSheet).toContain("變體家庭 Parent SKU");
     expect(allVariationSheet).not.toContain("ASIN");
+    const verticalVariationSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet4.xml"],
+    );
+    expect(verticalVariationSheet).toContain("分類");
+    expect(verticalVariationSheet).toContain("層級");
+    expect(verticalVariationSheet).toContain("未綁／Standalone");
+    expect(verticalVariationSheet.indexOf("父變體")).toBeLessThan(
+      verticalVariationSheet.indexOf("子變體"),
+    );
     expect(exported.headers["x-exported-unbound-fba-sku-count"]).toBe(
       String(snapshot.summary.unbound),
     );

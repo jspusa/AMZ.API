@@ -124,6 +124,7 @@ import {
   verifyListingsAccess,
   type ListingContentSnapshot,
   type BusinessPricingListingSnapshot,
+  type BusinessPricingAuditSnapshot,
   type BusinessPricingActiveListingsReportEvidence,
   type BusinessPricePrecommitEvidence,
   type BusinessPriceValidationResult,
@@ -163,6 +164,7 @@ import {
   subscriptionAuditDiscountBucket,
 } from "./amazon/replenishment-audit";
 import { createSubscriptionAuditWorkbook } from "./amazon/subscription-audit-xlsx";
+import { createBusinessPricingAuditWorkbook } from "./amazon/business-pricing-audit-xlsx";
 import { createReviewAuditWorkbook } from "./amazon/review-audit-xlsx";
 import {
   createAgedInventoryWorkbook,
@@ -1664,6 +1666,8 @@ export class ApiRouter {
         return this.startBusinessPricingAudit(request);
       case "GET /api/sp-api/business-pricing-audit":
         return this.businessPricingAuditStatusOrData(request);
+      case "GET /api/sp-api/business-pricing-audit/export":
+        return this.businessPricingAuditExport(request);
       case "GET /api/sp-api/business-pricing":
         return this.businessPricing(request);
       case "POST /api/sp-api/business-pricing":
@@ -3482,6 +3486,61 @@ export class ApiRouter {
       }));
     } catch (error) {
       return apiError(error, "整理 B2B 價格健檢資料時發生未預期的錯誤。");
+    }
+  }
+
+  private async businessPricingAuditExport(
+    request: ApiRequest,
+  ): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const mode = request.query.mode === "live" || request.query.mode === "demo"
+      ? request.query.mode
+      : null;
+    const jobId = this.reportIdentifier(request.query.jobId);
+    const contextId = this.reportIdentifier(request.query.contextId);
+    if (!marketplaceId || !mode || !jobId || !contextId) {
+      return invalid("B2B 價格 Excel 工作資訊無效，請重新執行健檢。");
+    }
+    try {
+      const receipt = await this.standaloneAuditJobs.get({
+        kind: "businessPricing",
+        marketplaceId,
+        mode,
+        jobId,
+        contextId,
+      });
+      if (!receipt.ready || receipt.status !== "completed") {
+        return invalid(
+          "B2B 價格健檢尚未完成，不能匯出不完整快照。",
+          409,
+          "SNAPSHOT_NOT_READY",
+        );
+      }
+      const snapshot = receipt.snapshot as BusinessPricingAuditSnapshot;
+      const marketplace = MARKETPLACES[marketplaceId];
+      const workbook = createBusinessPricingAuditWorkbook({
+        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
+        snapshot,
+      });
+      const date = snapshot.fetchedAt.slice(0, 10);
+      const filename = `amazon-fba-business-pricing-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
+      const localizedFilename = `FBA-B2B價格健檢-${marketplace.shortLabel}-${date}.xlsx`;
+      return bytes(
+        workbook,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        {
+          "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(localizedFilename)}`,
+          "x-exported-fba-sku-count": String(snapshot.summary.totalFbaSkuCount),
+          "x-b2b-price-mismatch-count": String(
+            snapshot.summary.recommendedPriceMismatch,
+          ),
+          "x-b2b-tier-mismatch-count": String(
+            snapshot.summary.recommendedQuantityDiscountMismatch,
+          ),
+        },
+      );
+    } catch (error) {
+      return apiError(error, "建立 B2B 價格健檢 Excel 時發生未預期的錯誤。");
     }
   }
 
@@ -8303,7 +8362,11 @@ export class ApiRouter {
       throw new Error("B2B 價格健檢快照與本次綜合健檢 context 不一致。");
     }
     const rows = snapshot.rows
-      .filter((row) => row.status !== "configured")
+      .filter((row) =>
+        row.status !== "configured" ||
+        row.recommendedPriceMismatch ||
+        row.recommendedQuantityDiscountMismatch
+      )
       .map((row) => ({
         sellerSku: row.sellerSku,
         title: row.title,
@@ -8312,13 +8375,21 @@ export class ApiRouter {
         businessPrice: row.businessPrice?.amount ?? null,
         currencyCode: row.businessPrice?.currencyCode ??
           row.standardPrice?.currencyCode ?? null,
-        finding: row.status === "above_standard"
-          ? "B2B 價格高於一般售價"
-          : row.status === "missing"
-            ? "尚未設定 B2B 價格"
-            : row.status === "unsupported"
-              ? "請至 Amazon 後台確認"
-              : "資料未完成",
+        finding: [
+          ...(row.status === "above_standard"
+            ? ["B2B 價格高於一般售價"]
+            : row.status === "missing"
+              ? ["尚未設定 B2B 價格"]
+              : row.status === "unsupported"
+                ? ["請至 Amazon 後台確認"]
+                : row.status === "incomplete" ? ["資料未完成"] : []),
+          ...(row.recommendedPriceMismatch
+            ? ["不符建議 B2B 價格"]
+            : []),
+          ...(row.recommendedQuantityDiscountMismatch
+            ? ["未正確設定階梯折扣"]
+            : []),
+        ].join("；"),
         editable: row.editable,
         notice: row.reason,
       }));

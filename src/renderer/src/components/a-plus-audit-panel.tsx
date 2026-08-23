@@ -30,7 +30,6 @@ const FILTERS: readonly Readonly<{
   { value: "missing", label: "未發布" },
   { value: "published", label: "已發布" },
   { value: "incomplete", label: "資料未完成" },
-  { value: "unavailable", label: "API 不可用" },
 ];
 
 export type AplusAuditRequester = (
