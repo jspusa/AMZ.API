@@ -90,6 +90,27 @@ export async function requestAplusAuditJob({
     throw new Error("A+ 健檢輪詢上限無效。");
   }
   if (!isObserverActive()) throw observerStopped();
+  const receipt = await startAplusAuditJob({ marketplaceId, mode, fetcher });
+  onJobChange?.(receipt);
+  return observeAplusAuditJob({
+    initialJob: receipt,
+    fetcher,
+    wait,
+    maxPolls,
+    isObserverActive,
+    onJobChange,
+  });
+}
+
+export async function startAplusAuditJob({
+  marketplaceId,
+  mode,
+  fetcher = fetch,
+}: Readonly<{
+  marketplaceId: string;
+  mode: "live" | "demo";
+  fetcher?: AplusAuditJobFetcher;
+}>): Promise<AplusAuditJobReceipt> {
   const response = await fetcher("/api/sp-api/a-plus-audit", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -106,16 +127,7 @@ export async function requestAplusAuditJob({
       : "無法啟動全站 A+ 健檢。";
     throw new Error(message);
   }
-  const receipt = parseAplusAuditJobReceipt(payload, { marketplaceId, mode });
-  onJobChange?.(receipt);
-  return observeAplusAuditJob({
-    initialJob: receipt,
-    fetcher,
-    wait,
-    maxPolls,
-    isObserverActive,
-    onJobChange,
-  });
+  return parseAplusAuditJobReceipt(payload, { marketplaceId, mode });
 }
 
 export async function observeAplusAuditJob({
@@ -293,6 +305,13 @@ export default function AplusAuditPanel({
   const mountedRef = useRef(true);
   const requestRevisionRef = useRef(0);
 
+  const visibleSnapshot = useMemo(() => {
+    if (!snapshot) return null;
+    if (!job) return snapshot;
+    if (!job.ready || job.status !== "completed") return null;
+    return job.snapshot.fetchedAt === snapshot.fetchedAt ? snapshot : null;
+  }, [job, snapshot]);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -313,8 +332,10 @@ export default function AplusAuditPanel({
   }, [cachedSnapshot, initialSnapshot, marketplaceId, mode]);
 
   const visibleRows = useMemo(
-    () => snapshot?.rows.filter((row) => aplusAuditRowMatchesFilter(row, filter)) ?? [],
-    [filter, snapshot],
+    () => visibleSnapshot?.rows.filter((row) =>
+      aplusAuditRowMatchesFilter(row, filter)
+    ) ?? [],
+    [filter, visibleSnapshot],
   );
 
   const runAudit = async () => {
@@ -322,6 +343,7 @@ export default function AplusAuditPanel({
     const revision = ++requestRevisionRef.current;
     setLoading(true);
     setError(null);
+    setSnapshot(null);
     try {
       const raw = await requestAudit({
         marketplaceId,
@@ -352,6 +374,9 @@ export default function AplusAuditPanel({
   };
 
   const observingBackgroundJob = Boolean(job && !job.ready);
+  const terminalJobError = job?.ready && job.status !== "completed"
+    ? job.error.message
+    : null;
   const fixedSellerCentralHandoffs = supportsFixedSellerCentralHandoffs(
     typeof window === "undefined" ? null : window.fbaOS?.app,
   );
@@ -394,7 +419,9 @@ export default function AplusAuditPanel({
             : "正在讀取 A+ publish records；這是唯讀健檢，不會修改 Amazon 商品頁。"}
         </div>
       )}
-      {error && <div className="price-error" role="alert">{error}</div>}
+      {(error || terminalJobError) && (
+        <div className="price-error" role="alert">{error ?? terminalJobError}</div>
+      )}
       {handoffError && <div className="price-error" role="alert">{handoffError}</div>}
       {!fixedSellerCentralHandoffs && (
         <p className="business-pricing-notice" role="status">
@@ -402,30 +429,28 @@ export default function AplusAuditPanel({
         </p>
       )}
 
-      {snapshot && (
+      {visibleSnapshot && (
         <>
-          <div className="business-pricing-summary" aria-label="A+ 健檢摘要">
-            <article><span>已發布 A+</span><strong>{snapshot.summary.published}</strong></article>
-            <article className="problem"><span>未找到已發布 A+</span><strong>{snapshot.summary.missing}</strong></article>
-            <article><span>資料未完成</span><strong>{snapshot.summary.incomplete}</strong></article>
-            <article><span>API 不可用</span><strong>{snapshot.summary.unavailable}</strong></article>
-          </div>
-          <div className="business-pricing-filters" role="group" aria-label="A+ 健檢篩選">
+          <div className="business-pricing-summary is-interactive" role="group" aria-label="A+ 健檢摘要與篩選">
             {FILTERS.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                className={filter === option.value ? "active" : ""}
+                className={`${filter === option.value ? "active" : ""}${
+                  option.value === "problem" || option.value === "missing"
+                    ? " problem"
+                    : ""
+                }`}
                 aria-pressed={filter === option.value}
                 onClick={() => setFilter(option.value)}
               >
                 <span>{option.label}</span>
-                <strong>{rowCount(snapshot, option.value)}</strong>
+                <strong>{rowCount(visibleSnapshot, option.value)}</strong>
               </button>
             ))}
           </div>
           <p className="business-pricing-notice">
-            {snapshot.summary.eligibleFbaSkus} 個 FBA SKU · {snapshot.summary.uniqueAsins} 個唯一 ASIN。{snapshot.notice}
+            {visibleSnapshot.summary.eligibleFbaSkus} 個 FBA SKU · {visibleSnapshot.summary.uniqueAsins} 個唯一 ASIN。{visibleSnapshot.notice}
           </p>
           <div className="business-pricing-list" role="list" aria-label="FBA A+ 健檢商品">
             {visibleRows.map((row) => (

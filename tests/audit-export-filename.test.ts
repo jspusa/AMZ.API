@@ -59,7 +59,6 @@ describe("renderer-owned FBA audit export filenames", () => {
     ["components/aged-inventory-panel.tsx", "inventory"],
     ["components/subscription-audit-panel.tsx", "subscription"],
     ["components/review-audit-panel.tsx", "review"],
-    ["components/audit-suite-home-card.tsx", "suite"],
     ["inbound-shipments-excel.ts", "inbound"],
   ] as const)("owns the %s download name in the renderer", (file, kind) => {
     const source = readFileSync(
@@ -70,5 +69,18 @@ describe("renderer-owned FBA audit export filenames", () => {
     expect(source).toContain(`kind: "${kind}"`);
     expect(source).not.toMatch(/anchor\.download\s*=\s*(?:safeFilename|filenameFrom|downloadName)/u);
     expect(source).not.toMatch(/(?:anchor|link)\.download\s*=\s*`amazon-/u);
+  });
+
+  it("keeps the legacy suite filename helper without rendering a second combined-result download", () => {
+    const source = readFileSync(
+      new URL(
+        "../src/renderer/src/components/audit-suite-home-card.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(source).not.toContain("auditExportFilename({");
+    expect(source).not.toContain('kind: "suite"');
+    expect(source).not.toContain("下載合併健檢 Excel");
   });
 });

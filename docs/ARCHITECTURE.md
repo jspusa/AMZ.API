@@ -62,7 +62,7 @@ FBA Business Price 健檢同樣先由完整 all-listings 範圍證明目前 FBA 
 
 Subscribe & Save 全站健檢先由 FBA Inventory API 的完整同次分頁證明目前 FBA SKU，再與 Replenishment offer／完整月 metrics 合併；缺月不補 0，coverage 不完整不顯示部分總額，Excel 只由 main process 保存的短效快照產生。Seller Replenishment API 未支援的 SG／AU 在 renderer 送出前即停用掃描。
 
-主導覽把 FBA 入庫貨件追蹤只放在「報表區」，不在首頁或「營運區」重複入口。首頁的一鍵全站流程依 schema v3 在背景並行執行全站文案、全站圖片、全站 A+、未綁變體、全站訂閱價格、全站 B2B 價格、廣告覆蓋七項；一般卡與 run-all 共用完全相同的名稱和順序。單項文案、圖片、未綁變體、訂閱價格、B2B、廣告覆蓋與庫齡使用共用 main-owned standalone job coordinator；A+、評論沿用各自 main-owned coordinator。每個工作都綁 account scope、mode、marketplace 與短效 context，renderer 關閉抽屜只中止 observer，首頁仍以 GET 重新接回單調進度與 terminal snapshot；credential／帳號／模式／站點改變時舊工作失效。耗時且低頻的 180 天以上庫存與評論依此順序收在獨立的「低頻健檢」收合區，不納入 run-all。
+主導覽把 FBA 入庫貨件追蹤只放在「報表區」，不在首頁或「營運區」重複入口。首頁的一鍵全站 launcher 依 schema v3 的固定名稱與順序，直接 fan out 至全站文案、全站圖片、全站 A+、未綁變體、全站訂閱價格、全站 B2B 價格、廣告覆蓋七張既有卡片；不建立第二套進度／結果區，也不另外啟動會重複掃描的 legacy suite coordinator。單項文案、圖片、未綁變體、訂閱價格、B2B、廣告覆蓋與庫齡使用共用 main-owned standalone job coordinator；A+、評論沿用各自 main-owned coordinator。相同 selection 的 active 工作由 main single-flight 沿用；每個工作都綁 account scope、mode、marketplace 與短效 context，renderer 關閉抽屜只中止 observer，首頁仍以 GET 重新接回單調進度與 terminal snapshot。任一啟動失敗或 terminal failure 只進對應卡片，舊 cache 不得冒充本次結果；credential／帳號／模式／站點改變時舊工作失效。legacy `/audit-suite` 與合併匯出 route 暫留相容性但首頁不可達。耗時且低頻的 180 天以上庫存與評論依此順序收在獨立的「低頻健檢」收合區，不納入 run-all。
 
 Reports 建立由 main process 的 account-scoped broker 協調。相同 account、marketplace、mode、report type 與 options 的 all-listings report 可由品牌、未綁變體、評論與內容／圖片匯出共用；日期型 shipment report 另外綁 exact window。Local store 只保存不含憑證的短效 report ID／狀態 tombstone，程序內用 single-flight 與單調狀態更新防止重複建立或完成狀態回退。`CANCELLED`、`FATAL` 或建立結果不明都不會由自動載入盲目重建；明確使用者再試仍受安全等待與 mode/account 驗證。
 

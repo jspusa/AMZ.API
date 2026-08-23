@@ -233,6 +233,21 @@ export default function BusinessPricingAuditPanel({
   const observerJobIdRef = useRef<string | null>(null);
   const editorRevisionRef = useRef(0);
 
+  const visibleSnapshot = useMemo(() => {
+    if (!snapshot || loading) return null;
+    if (!job) return snapshot;
+    if (!job.ready || job.status !== "completed") return null;
+    const jobSnapshot = job.snapshot;
+    return jobSnapshot && typeof jobSnapshot === "object" &&
+        !Array.isArray(jobSnapshot) &&
+        (jobSnapshot as { fetchedAt?: unknown }).fetchedAt === snapshot.fetchedAt
+      ? snapshot
+      : null;
+  }, [job, loading, snapshot]);
+  const terminalJobError = job?.ready && job.status !== "completed"
+    ? job.error.message
+    : null;
+
   const validation = submittedPreview?.validation ?? null;
   const fixedSellerCentralHandoffs = supportsFixedSellerCentralHandoffs(
     typeof window === "undefined" ? null : window.fbaOS?.app,
@@ -241,10 +256,10 @@ export default function BusinessPricingAuditPanel({
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const visibleRows = useMemo(
-    () => snapshot?.rows.filter((row) =>
+    () => visibleSnapshot?.rows.filter((row) =>
       businessPricingRowMatchesFilter(row, filter),
     ) ?? [],
-    [filter, snapshot],
+    [filter, visibleSnapshot],
   );
 
   const loadAudit = async (
@@ -275,6 +290,7 @@ export default function BusinessPricingAuditPanel({
     abortRef.current = controller;
     setLoading(true);
     setError(null);
+    setSnapshot(null);
     setProgress("正在建立 Amazon FBA 全商品清單…");
     setSelected(null);
     setResult(null);
@@ -581,7 +597,9 @@ export default function BusinessPricingAuditPanel({
           {job && !job.ready ? job.progress.message : progress}
         </div>
       )}
-      {error && <div className="price-error" role="alert">{error}</div>}
+      {(error || terminalJobError) && (
+        <div className="price-error" role="alert">{error ?? terminalJobError}</div>
+      )}
       {handoffError && <div className="price-error" role="alert">{handoffError}</div>}
       {!fixedSellerCentralHandoffs && (
         <p className="business-pricing-notice" role="status">
@@ -589,23 +607,27 @@ export default function BusinessPricingAuditPanel({
         </p>
       )}
 
-      {snapshot && (
+      {visibleSnapshot && (
         <>
-          <div className="business-pricing-summary" aria-label="B2B 價格健檢摘要">
-            <article><span>FBA SKU</span><strong>{snapshot.summary.totalFbaSkuCount}</strong></article>
-            <article className="problem"><span>未設定</span><strong>{snapshot.summary.missing}</strong></article>
-            <article className="problem"><span>高於一般售價</span><strong>{snapshot.summary.aboveStandard}</strong></article>
-            <article><span>已設定</span><strong>{snapshot.summary.configured}</strong></article>
-            <article><span>請到 Amazon 後台編輯</span><strong>{snapshot.rows.filter((row) => !row.editable).length}</strong></article>
-          </div>
-          <div className="business-pricing-filters" role="group" aria-label="B2B 價格篩選">
+          <div className="business-pricing-summary is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">
             {FILTERS.map((option) => (
-              <button key={option.value} type="button" className={filter === option.value ? "active" : ""} onClick={() => setFilter(option.value)}>
-                <span>{option.label}</span><strong>{rowCount(snapshot, option.value)}</strong>
+              <button
+                key={option.value}
+                type="button"
+                className={`${filter === option.value ? "active" : ""}${
+                  option.value === "problem" || option.value === "missing" ||
+                    option.value === "above_standard"
+                    ? " problem"
+                    : ""
+                }`}
+                aria-pressed={filter === option.value}
+                onClick={() => setFilter(option.value)}
+              >
+                <span>{option.label}</span><strong>{rowCount(visibleSnapshot, option.value)}</strong>
               </button>
             ))}
           </div>
-          <p className="business-pricing-notice">{snapshot.notice}</p>
+          <p className="business-pricing-notice">{visibleSnapshot.notice}</p>
           <div className="business-pricing-list" role="list" aria-label="FBA B2B 價格商品">
             {visibleRows.map((row) => (
               <article key={row.sellerSku} className={`business-pricing-row ${row.status}`} role="listitem">

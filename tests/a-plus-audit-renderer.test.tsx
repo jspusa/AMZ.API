@@ -187,6 +187,25 @@ describe("A+ FBA audit renderer", () => {
     expect(drawerMarkup).toContain("全站 A+ 健檢");
   });
 
+  it("uses one clickable A+ summary as the filter instead of repeating the counts", () => {
+    const snapshot = parseAplusAuditSnapshot(payload(), MARKETPLACE_ID, "live");
+    const markup = renderToStaticMarkup(createElement(AplusAuditPanel, {
+      marketplaceId: MARKETPLACE_ID,
+      marketplaceShort: "US",
+      mode: "live",
+      initialSnapshot: snapshot,
+    }));
+    const summary = markup.match(
+      /<div class="business-pricing-summary is-interactive" role="group" aria-label="A\+ 健檢摘要與篩選">[\s\S]*?<\/div>/u,
+    )?.[0];
+
+    expect(summary).toBeDefined();
+    expect(summary?.match(/<button\b/gu)).toHaveLength(6);
+    expect(summary).toContain('aria-pressed="true"');
+    expect(markup).not.toContain("business-pricing-filters");
+    expect(markup.match(/A\+ 健檢摘要與篩選/gu)).toHaveLength(1);
+  });
+
   it("filters missing and fail-visible rows without hiding unavailable capability", () => {
     const source = payload();
     (source.rows as Array<Record<string, unknown>>).push({
@@ -528,16 +547,26 @@ describe("A+ FBA audit renderer", () => {
         message: "A+ 健檢未完成，請稍後重新執行。",
       },
     };
-    expect(parseAplusAuditJobTerminal(failure, {
+    const parsedFailure = parseAplusAuditJobTerminal(failure, {
       marketplaceId: MARKETPLACE_ID,
       mode: "live",
       jobId: receipt.jobId,
       contextId: receipt.contextId,
-    })).toMatchObject({
+    });
+    expect(parsedFailure).toMatchObject({
       ready: true,
       status: "failed",
       error: { code: "A_PLUS_JOB_FAILED" },
     });
+    const failedMarkup = renderToStaticMarkup(createElement(AplusAuditPanel, {
+      marketplaceId: MARKETPLACE_ID,
+      marketplaceShort: "US",
+      mode: "live",
+      job: parsedFailure,
+      cachedSnapshot: parseAplusAuditSnapshot(payload(), MARKETPLACE_ID, "live"),
+    }));
+    expect(failedMarkup).toContain("A+ 健檢未完成，請稍後重新執行。");
+    expect(failedMarkup).not.toContain("A+ 健檢摘要與篩選");
 
     const responses = [
       new Response(JSON.stringify(receipt), { status: 202 }),

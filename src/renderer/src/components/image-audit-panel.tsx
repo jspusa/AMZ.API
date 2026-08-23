@@ -16,6 +16,7 @@ import {
   shouldResumeStandaloneAuditJob,
   startStandaloneAuditJob,
   standaloneAuditReconnectRevision,
+  standaloneAuditSnapshotMatchesJob,
   type StandaloneAuditJob,
   type StandaloneAuditMode,
 } from "../standalone-audit";
@@ -102,17 +103,26 @@ export default function ImageAuditPanel({
   initialJob?: StandaloneAuditJob | null;
   onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
-  const initialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
+  const matchingInitialJob = initialJob?.kind === "image" &&
+      initialJob.marketplaceId === marketplaceId &&
+      initialJob.mode === mode
+    ? initialJob
+    : null;
+  const candidateInitialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
     ? cachedResult
+    : null;
+  const initialCache = candidateInitialCache && standaloneAuditSnapshotMatchesJob(
+    candidateInitialCache.snapshot,
+    matchingInitialJob,
+  ) ? candidateInitialCache : null;
+  const initialJobError = matchingInitialJob?.ready &&
+      matchingInitialJob.status !== "completed"
+    ? matchingInitialJob.error.message
     : null;
   const [state, setState] = useState<AuditState>(initialCache ? "done" : "idle");
   const [reply, setReply] = useState<ReportReply | null>(null);
   const [job, setJob] = useState<StandaloneAuditJob | null>(
-    initialJob?.kind === "image" &&
-      initialJob.marketplaceId === marketplaceId &&
-      initialJob.mode === mode
-      ? initialJob
-      : null,
+    matchingInitialJob,
   );
   const [snapshot, setSnapshot] = useState<ImageAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
@@ -131,7 +141,7 @@ export default function ImageAuditPanel({
       : null,
   );
   const [query, setQuery] = useState(initialCache?.query ?? "");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialJobError);
   const [exporting, setExporting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const observerJobIdRef = useRef<string | null>(null);
@@ -143,9 +153,19 @@ export default function ImageAuditPanel({
   useEffect(() => {
     abortRef.current?.abort();
     setReply(null);
-    setError(null);
     setExporting(false);
-    if (cachedResult?.snapshot.marketplaceId === marketplaceId) {
+    const matchingJob = initialJob?.kind === "image" &&
+        initialJob.marketplaceId === marketplaceId &&
+        initialJob.mode === mode
+      ? initialJob
+      : null;
+    setError(matchingJob?.ready && matchingJob.status !== "completed"
+      ? matchingJob.error.message
+      : null);
+    if (
+      cachedResult?.snapshot.marketplaceId === marketplaceId &&
+      standaloneAuditSnapshotMatchesJob(cachedResult.snapshot, matchingJob)
+    ) {
       setState("done");
       setSnapshot(cachedResult.snapshot);
       setQuery(cachedResult.query);
@@ -160,7 +180,7 @@ export default function ImageAuditPanel({
       setQuery("");
       setReportReference(null);
     }
-  }, [cachedResult, marketplaceId]);
+  }, [cachedResult, initialJobReconnectRevision, marketplaceId, mode]);
 
   const attentionRows = useMemo(
     () => snapshot ? imageAuditAttentionRows(snapshot) : [],
@@ -264,6 +284,9 @@ export default function ImageAuditPanel({
     setState("starting");
     setReply(null);
     setError(null);
+    setSnapshot(null);
+    setReportReference(null);
+    setQuery("");
     try {
       let current = await startStandaloneAuditJob({
         kind: "image",
@@ -289,7 +312,7 @@ export default function ImageAuditPanel({
       observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
-      setState(snapshot ? "done" : "idle");
+      setState("idle");
       setError(requestError instanceof Error ? requestError.message : "目前無法完成圖片健檢。");
     } finally {
       if (abortRef.current === controller) {
@@ -331,7 +354,7 @@ export default function ImageAuditPanel({
         await loadAudit(terminal, controller.signal);
       } catch (resumeError) {
         if (resumeError instanceof Error && resumeError.name === "AbortError") return;
-        setState(snapshot ? "done" : "idle");
+        setState("idle");
         setError(resumeError instanceof Error
           ? resumeError.message
           : "目前無法接續圖片健檢。");

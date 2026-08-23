@@ -2389,6 +2389,164 @@ describe("Amazon Business pricing SP-API contract", () => {
     })).rejects.toMatchObject({ code: "BUSINESS_PRICE_UNCHANGED" });
   });
 
+  it("uses ACTL05's exact report Business Price as read-only evidence when Listings omits B2B", async () => {
+    const reportId = "B2B-REPORT-EVIDENCE-AUDIT";
+    const documentId = "B2B-REPORT-EVIDENCE-DOCUMENT";
+    const reportUrl =
+      "https://reports.example.cloudfront.net/b2b-report-evidence.tsv";
+    const report = [
+      "seller-sku\tasin\titem-name\tfulfillment-channel\tbusiness-price",
+      "ACTL05\tB000000021\tReport-only Business Price\tAMAZON_NA\t12.60",
+      "MATCH\tB000000022\tMatching Business Price\tAMAZON_NA\t12.60",
+      "CONFLICT\tB000000023\tConflicting Business Price\tAMAZON_NA\t12.60",
+      "BLANK\tB000000024\tNo Business Price\tAMAZON_NA\t",
+      "CANONICAL-WINS\tB000000025\tCanonical Business Price\tAMAZON_NA\tUSD 12.60",
+    ].join("\n");
+    const listing = (
+      sku: string,
+      asin: string,
+      businessPrice?: number,
+      offers?: unknown[],
+    ) => ({
+      sku,
+      summaries: [{
+        marketplaceId: MARKETPLACE_ID,
+        asin,
+        productType: "PET_FOOD",
+        itemName: `${sku} listing`,
+      }],
+      productTypes: [{ marketplaceId: MARKETPLACE_ID, productType: "PET_FOOD" }],
+      attributes: {
+        purchasable_offer: [
+          {
+            audience: "ALL",
+            currency: "USD",
+            marketplace_id: MARKETPLACE_ID,
+            our_price: [{ schedule: [{ value_with_tax: 15 }] }],
+          },
+          ...(businessPrice === undefined
+            ? []
+            : [{
+                audience: "B2B",
+                currency: "USD",
+                marketplace_id: MARKETPLACE_ID,
+                our_price: [{ schedule: [{ value_with_tax: businessPrice }] }],
+              }]),
+        ],
+      },
+      ...(offers === undefined ? {} : { offers }),
+      issues: [],
+      fulfillmentAvailability: [{
+        fulfillmentChannelCode: "AMAZON_NA",
+        quantity: 3,
+      }],
+    });
+
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = urlOf(input);
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
+      }
+      if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
+        return jsonResponse(200, {
+          reportId,
+          reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+          marketplaceIds: [MARKETPLACE_ID],
+          processingStatus: "DONE",
+          reportDocumentId: documentId,
+        });
+      }
+      if (url.pathname === `/reports/2021-06-30/documents/${documentId}`) {
+        return jsonResponse(200, { url: reportUrl });
+      }
+      if (url.href === reportUrl) return new Response(report);
+      if (url.href === SCHEMA_URL) {
+        return jsonResponse(200, businessSchema());
+      }
+      if (url.pathname.endsWith("/productTypes/PET_FOOD")) {
+        return jsonResponse(200, {
+          schema: {
+            link: { resource: SCHEMA_URL, verb: "GET" },
+            checksum: SCHEMA_CHECKSUM,
+          },
+        });
+      }
+      if (url.pathname === `/listings/2021-08-01/items/${SELLER_ID}`) {
+        return jsonResponse(200, {
+          numberOfResults: 5,
+          items: [
+            listing("ACTL05", "B000000021"),
+            listing("MATCH", "B000000022", 12.6),
+            listing("CONFLICT", "B000000023", 12.5),
+            listing("BLANK", "B000000024", undefined, [{
+              marketplaceId: MARKETPLACE_ID,
+              offerType: "B2B",
+              price: { currencyCode: "USD", amount: "11.00" },
+            }]),
+            listing("CANONICAL-WINS", "B000000025", 12.6),
+          ],
+        });
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+
+    const snapshot = await getBusinessPricingAuditData({
+      marketplaceId: MARKETPLACE_ID,
+      reportId,
+      documentId,
+    });
+
+    expect(snapshot.rows.find((row) => row.sellerSku === "ACTL05"))
+      .toMatchObject({
+        businessPrice: { amount: 12.6, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "ambiguous",
+        status: "configured",
+        editable: false,
+        reason: expect.stringMatching(/全商品報表.*Listings.*唯讀/u),
+      });
+    expect(snapshot.rows.find((row) => row.sellerSku === "MATCH"))
+      .toMatchObject({
+        businessPrice: { amount: 12.6, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlanPresence: "absent",
+        status: "configured",
+        editable: true,
+      });
+    expect(snapshot.rows.find((row) => row.sellerSku === "CONFLICT"))
+      .toMatchObject({
+        businessPrice: null,
+        businessOfferPresence: "ambiguous",
+        status: "incomplete",
+        editable: false,
+        reason: expect.stringMatching(/全商品報表.*Listings.*不一致/u),
+      });
+    expect(snapshot.rows.find((row) => row.sellerSku === "BLANK"))
+      .toMatchObject({
+        businessPrice: null,
+        businessOfferPresence: "absent",
+        status: "missing",
+        editable: true,
+      });
+    expect(snapshot.rows.find((row) => row.sellerSku === "CANONICAL-WINS"))
+      .toMatchObject({
+        businessPrice: { amount: 12.6, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlanPresence: "absent",
+        status: "configured",
+        editable: true,
+      });
+    expect(snapshot.summary).toEqual({
+      totalFbaSkuCount: 5,
+      configured: 3,
+      aboveStandard: 0,
+      missing: 1,
+      unsupported: 0,
+      incomplete: 1,
+    });
+  });
+
   it("keeps supported, unsupported, and incomplete live rows distinct", async () => {
     const reportId = "B2B-AUDIT-REPORT";
     const documentId = "B2B-AUDIT-DOCUMENT";

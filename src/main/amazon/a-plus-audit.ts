@@ -229,7 +229,11 @@ function isPublishRecord(
     (value.contentType === "EBC" || value.contentType === "EMC") &&
     isExactText(value.locale, 64) &&
     isAplusLanguageTag(value.locale) &&
-    (value.contentSubType === undefined || isExactText(value.contentSubType, 256))
+    (
+      value.contentSubType === undefined ||
+      value.contentSubType === null ||
+      isExactText(value.contentSubType, 256)
+    )
   );
 }
 

@@ -239,7 +239,9 @@ describe("FBA image audit parsing", () => {
     expect(source).toContain("auditCacheByMarketplace[marketplaceId]");
     expect(source).toContain("onCachedResultChange={onAuditCacheChange}");
     expect(dashboardSource).toContain("[cache.snapshot.marketplaceId]: cache");
-    expect(dashboardSource).toContain("auditCacheByMarketplace={imageAuditCache}");
+    expect(dashboardSource).toContain(
+      "auditCacheByMarketplace={imageAuditCacheForDrawer}",
+    );
     expect(dashboardSource).toContain("繼續上次圖片健檢");
   });
 });

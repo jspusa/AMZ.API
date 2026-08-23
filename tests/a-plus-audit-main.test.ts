@@ -308,6 +308,67 @@ describe("A+ FBA audit core", () => {
     });
   });
 
+  it("treats a null optional content subtype as absent without accepting other malformed types", async () => {
+    const snapshot = await runAplusAudit({
+      mode: "live",
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-23T08:00:00.000Z",
+      fbaSnapshotId: "fba-snapshot-null-content-subtype",
+      rows: [
+        { sellerSku: "NULL-SUBTYPE", asin: "B000000056", title: "Null subtype" },
+        { sellerSku: "OBJECT-SUBTYPE", asin: "B000000057", title: "Object subtype" },
+        { sellerSku: "NUMBER-SUBTYPE", asin: "B000000058", title: "Number subtype" },
+      ],
+      fetchPublishRecords: async ({ asin }) => ({
+        status: 200,
+        payload: {
+          publishRecordList: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin,
+            contentReferenceKey: `content-reference-${asin}`,
+            contentType: "EBC",
+            contentSubType: asin === "B000000056"
+              ? null
+              : asin === "B000000057"
+                ? { unexpected: true }
+                : 1,
+            locale: "en-US",
+          }],
+        },
+      }),
+    });
+
+    expect(snapshot.rows.map((row) => ({
+      sellerSku: row.sellerSku,
+      status: row.status,
+      sourceCompleteness: row.sourceCompleteness,
+      publishedRecordCount: row.publishedRecordCount,
+      reasonCode: row.reasonCode,
+    }))).toEqual([
+      {
+        sellerSku: "NULL-SUBTYPE",
+        status: "published",
+        sourceCompleteness: "complete",
+        publishedRecordCount: 1,
+        reasonCode: "PUBLISHED_RECORD_FOUND",
+      },
+      {
+        sellerSku: "OBJECT-SUBTYPE",
+        status: "incomplete",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        reasonCode: "A_PLUS_RESPONSE_INVALID",
+      },
+      {
+        sellerSku: "NUMBER-SUBTYPE",
+        status: "incomplete",
+        sourceCompleteness: "partial",
+        publishedRecordCount: null,
+        reasonCode: "A_PLUS_RESPONSE_INVALID",
+      },
+    ]);
+  });
+
   it("treats mismatched or malformed publish records as incomplete instead of missing", async () => {
     const snapshot = await runAplusAudit({
       mode: "live",

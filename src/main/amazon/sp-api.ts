@@ -10440,8 +10440,9 @@ function completeBusinessPricingAuditRow(input: {
   listing: ListingPriceSnapshot;
   business: ReturnType<typeof businessOfferSnapshot>;
   capability: BusinessPricingCapability;
+  reportBusinessPrice: ListingReportBusinessPriceEvidence;
 }): BusinessPricingAuditRow {
-  const { seed, listing, business, capability } = input;
+  const { seed, listing, business, capability, reportBusinessPrice } = input;
   if (business.businessOfferPresence === "ambiguous") {
     return {
       sellerSku: seed.sellerSku,
@@ -10457,6 +10458,81 @@ function completeBusinessPricingAuditRow(input: {
       editable: false,
       reason:
         "Amazon 回傳多個、幣別不符或價格無法解析的 B2B offer，已停止編輯。",
+    };
+  }
+  if (
+    reportBusinessPrice.presence === "ambiguous" &&
+    business.businessOfferPresence === "absent"
+  ) {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason:
+        "同次 Amazon 全商品報表的 Business Price 不是可辨識的正值，已停止分類與編輯。",
+    };
+  }
+  const reportMoney = reportBusinessPrice.presence === "present" &&
+      listing.standardPrice
+    ? {
+        amount: reportBusinessPrice.amount,
+        currencyCode: listing.standardPrice.currencyCode,
+      }
+    : null;
+  if (
+    reportMoney && business.businessOfferPresence === "present" &&
+    (!business.businessPrice ||
+      business.businessPrice.currencyCode !== reportMoney.currencyCode ||
+      !samePrice(
+        business.businessPrice.amount,
+        reportMoney.amount,
+        reportMoney.currencyCode,
+      ))
+  ) {
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      editable: false,
+      reason:
+        "同次 Amazon 全商品報表的 Business Price 與 Listings attributes 的 exact B2B contribution 不一致，已停止分類與編輯。",
+    };
+  }
+  if (reportMoney && business.businessOfferPresence === "absent") {
+    const aboveStandard = Boolean(
+      listing.standardPrice &&
+        reportMoney.amount > listing.standardPrice.amount,
+    );
+    return {
+      sellerSku: seed.sellerSku,
+      asin: seed.asin,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: reportMoney,
+      businessOfferPresence: "present",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: aboveStandard ? "above_standard" : "configured",
+      editable: false,
+      reason: aboveStandard
+        ? "同次 Amazon 全商品報表的 exact SKU Business Price 顯示已設定且高於一般售價；Listings attributes 未回傳 exact B2B contribution，無法核對數量折扣或安全組合寫入，因此只提供唯讀。"
+        : "同次 Amazon 全商品報表的 exact SKU Business Price 顯示已設定；Listings attributes 未回傳 exact B2B contribution，無法核對數量折扣或安全組合寫入，因此只提供唯讀。",
     };
   }
   if (business.businessPricingManagedByAutomation) {
@@ -10606,7 +10682,7 @@ export async function getBusinessPricingAuditData(input: {
     input.signal,
   );
   assertNotAborted(input.signal);
-  const seeds = parseFbaListingReportSeeds(report);
+  const { seeds, businessPriceEvidenceBySku } = parseFbaListingReport(report);
   const seedBySku = new Map(seeds.map((seed) => [seed.sellerSku, seed]));
   const rowsBySku = new Map<string, BusinessPricingAuditRow>();
   const payloadBySku = new Map<string, AmazonListingItem>();
@@ -10803,7 +10879,15 @@ export async function getBusinessPricingAuditData(input: {
     }
     rowsBySku.set(
       seed.sellerSku,
-      completeBusinessPricingAuditRow({ seed, ...exact, capability }),
+      completeBusinessPricingAuditRow({
+        seed,
+        ...exact,
+        capability,
+        reportBusinessPrice: businessPriceEvidenceBySku.get(seed.sellerSku) ?? {
+          presence: "unavailable",
+          amount: null,
+        },
+      }),
     );
   }
 
@@ -10817,7 +10901,7 @@ export async function getBusinessPricingAuditData(input: {
     rows,
     summary: summarizeBusinessPricingAudit(rows),
     notice:
-      "FBA 範圍取自同次 Amazon 全商品報表；是否設定獨立 B2B 價格只依 Listings Items attributes 的 exact marketplace／currency／audience=B2B contribution，衍生 offers view 不作設定存在證據。編輯能力只採帶 Seller ID 的 seller-specific PTD；缺列、身分衝突或 PTD 失敗維持資料未完成。",
+      "FBA 範圍取自同次 Amazon 全商品報表；B2B 價格優先依 Listings Items attributes 的 exact marketplace／currency／audience=B2B contribution。若 Listings 未回傳 B2B contribution、但同次報表的 exact SKU 有正值 Business Price，只標示為已設定且保持唯讀；兩者衝突則標示資料未完成。衍生 offers view 不作設定存在證據；編輯能力只採帶 Seller ID 的 seller-specific PTD。",
   };
 }
 
@@ -14767,7 +14851,35 @@ type ListingReportSeed = {
   title: string;
 };
 
-export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
+type ListingReportBusinessPriceEvidence =
+  | { presence: "unavailable" | "absent" | "ambiguous"; amount: null }
+  | { presence: "present"; amount: number };
+
+function listingReportBusinessPriceEvidence(
+  row: string[],
+  businessPriceIndex: number,
+): ListingReportBusinessPriceEvidence {
+  if (businessPriceIndex < 0) {
+    return { presence: "unavailable", amount: null };
+  }
+  const raw = row[businessPriceIndex]?.trim() ?? "";
+  if (!raw) return { presence: "absent", amount: null };
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/u.test(raw)) {
+    return { presence: "ambiguous", amount: null };
+  }
+  const amount = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(amount) && amount > 0 && amount <= 1_000_000_000
+    ? { presence: "present", amount }
+    : { presence: "ambiguous", amount: null };
+}
+
+function parseFbaListingReport(text: string): {
+  seeds: ListingReportSeed[];
+  businessPriceEvidenceBySku: Map<
+    string,
+    ListingReportBusinessPriceEvidence
+  >;
+} {
   const rows = parseTsv(text);
   const headers = rows[0] ?? [];
   let skuIndex = reportColumn(headers, ["seller-sku", "sku"]);
@@ -14777,6 +14889,7 @@ export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
     "fulfillment-channel",
     "fulfillment-channel-code",
   ]);
+  const businessPriceIndex = reportColumn(headers, ["business-price"]);
   const fixedLayoutRows = rows.slice(1).filter((row) => row.some(Boolean));
   const fixedFulfillmentValues = fixedLayoutRows
     .map((row) => row[26]?.trim() ?? "")
@@ -14812,6 +14925,10 @@ export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
   }
   const seen = new Set<string>();
   const seeds: ListingReportSeed[] = [];
+  const businessPriceEvidenceBySku = new Map<
+    string,
+    ListingReportBusinessPriceEvidence
+  >();
   for (const row of rows.slice(1)) {
     const fulfillment = row[fulfillmentIndex]?.trim() ?? "";
     if (!/^(AMAZON|AFN)(?:_|$)/i.test(fulfillment)) {
@@ -14831,6 +14948,10 @@ export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
       );
     }
     seen.add(sellerSku);
+    businessPriceEvidenceBySku.set(
+      sellerSku,
+      listingReportBusinessPriceEvidence(row, businessPriceIndex),
+    );
     seeds.push({
       sellerSku,
       // Preserve report identity exactly. Canonical review-audit validation
@@ -14840,7 +14961,11 @@ export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
       title: titleIndex >= 0 ? row[titleIndex]?.trim() ?? "" : "",
     });
   }
-  return seeds;
+  return { seeds, businessPriceEvidenceBySku };
+}
+
+export function parseFbaListingReportSeeds(text: string): ListingReportSeed[] {
+  return parseFbaListingReport(text).seeds;
 }
 
 function exportRowFromListing(

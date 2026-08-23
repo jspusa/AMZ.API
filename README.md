@@ -35,7 +35,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 營運 | Amazon Ads Profile 自動發現、Sponsored Products 活動唯讀查詢與全站 FBA 廣告覆蓋健檢；任何 Listing 身分缺口都整次停止 | 獨立 Ads LWA＋唯讀；無 Ads 寫入 route |
 | 營運 | FBA 廣告策略表：同一日期範圍整合目前 FBA SKU、SKU 粒度品項銷售與 Sponsored Products advertised-product 報表，產生 T1–T4、可覆寫 SP 預算／目標 ACoS、實際花費／歸因銷售／購買次數與中文 Excel | 三份 main-owned 唯讀報表；缺值不補 0；SB／SD／規格與價格保持人工留白 |
 | 報表 | 文件庫列出 Amazon 官方 109 個唯一公開 report types、用途、角色、FBA 邊界與 App 接線狀態；Vendor 類型不顯示，並可依可用性快速篩選 | 公開文件＋唯讀規劃 |
-| 健檢 | 首頁一鍵在 Desktop main process 背景並行執行文案、圖片、A+、未綁變體、Subscribe & Save、B2B 價格、廣告覆蓋七項常用健檢，名稱與一般健檢卡完全共用且固定依此順序顯示；完成／部分完成可匯出「總覽＋七項」八張工作表的同次快照 | 全部唯讀；各項失敗互不冒充成功 |
+| 健檢 | 首頁一鍵直接啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B 價格、廣告覆蓋七張既有卡片的 main-owned 工作，名稱與順序完全共用；進度、結果、篩選與可用匯出只留在各卡片，不再建立第二套合併結果區 | 全部唯讀；執行中工作會沿用，啟動或執行失敗各自在原卡片 fail honest |
 | 健檢 | 從任一單項卡啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B、廣告覆蓋、庫齡或評論後，可關閉抽屜繼續在 Notebook Key 主程序執行，首頁持續顯示該站點進度並可重新接回結果 | renderer 只觀察 main-owned、account／mode／marketplace-scoped 工作；關閉畫面不會取消工作，切換安全 context 會失效 |
 | 健檢 | FBA 180 天以上庫齡／預估冗餘與評論主題依此順序收在首頁預設折疊的「低頻健檢」，各自獨立執行 | 不納入一鍵全部，避免低頻或長時間工作阻塞常用健檢 |
 | 系統 | 作業系統安全儲存密文、防重送帳本、預檢票證、自我檢查、字級、API 版本更新建議、公開會計 API 能力與安全下載規劃 | 自動／能力邊界 |

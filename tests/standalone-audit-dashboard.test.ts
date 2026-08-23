@@ -1,13 +1,43 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  auditCacheForMarketplace,
+  auditSnapshotMatchesCurrentAttempt,
+  auditSuiteLaunchFailureKey,
+  shouldClearAuditSuiteLaunchFailure,
   standaloneAuditDashboardKey,
   standaloneAuditSnapshotMatchesJob,
 } from "../src/renderer/src/components/dashboard";
 import {
   mergeAuditJobObservation,
   parseStandaloneAuditJob,
+  standaloneAuditTerminalOutcome,
+  type StandaloneAuditKind,
 } from "../src/renderer/src/standalone-audit";
+
+function completedJob(kind: StandaloneAuditKind, snapshot: unknown) {
+  return parseStandaloneAuditJob({
+    jobId: "84ec9cda-e878-4e87-984e-65c8c5652cee",
+    contextId: "94ec9cda-e878-4e87-984e-65c8c5652cef",
+    kind,
+    marketplaceId: "ATVPDKIKX0DER",
+    mode: "live",
+    options: kind === "subscription" ? { months: 6 } : {},
+    ready: true,
+    status: "completed",
+    progress: {
+      stage: "complete",
+      message: "完成",
+      completedUnits: 1,
+      totalUnits: 1,
+    },
+    snapshot,
+  }, {
+    kind,
+    marketplaceId: "ATVPDKIKX0DER",
+    mode: "live",
+  });
+}
 
 describe("dashboard audit background observation", () => {
   it("keys independent main-owned jobs by exact marketplace and audit kind", () => {
@@ -15,6 +45,15 @@ describe("dashboard audit background observation", () => {
       .toBe("ATVPDKIKX0DER\u0000content");
     expect(standaloneAuditDashboardKey("ATVPDKIKX0DER", "agedInventory"))
       .not.toBe(standaloneAuditDashboardKey("ATVPDKIKX0DER", "content"));
+    expect(auditSuiteLaunchFailureKey(
+      "ATVPDKIKX0DER",
+      "live",
+      "businessPricing",
+    )).not.toBe(auditSuiteLaunchFailureKey(
+      "ATVPDKIKX0DER",
+      "demo",
+      "businessPricing",
+    ));
   });
 
   it("does not let a late pending observation replace a terminal job identity", () => {
@@ -36,6 +75,55 @@ describe("dashboard audit background observation", () => {
 
     expect(mergeAuditJobObservation(terminal, latePending)).toBe(terminal);
     expect(mergeAuditJobObservation(terminal, newJob)).toBe(newJob);
+  });
+
+  it("keeps a launch failure fenced from observations of the blocked old job", () => {
+    const oldJob = {
+      jobId: "84ec9cda-e878-4e87-984e-65c8c5652cee",
+      contextId: "94ec9cda-e878-4e87-984e-65c8c5652cef",
+    };
+    const failure = {
+      message: "本次未能啟動。",
+      blockedJobIdentity: `${oldJob.jobId}\u0000${oldJob.contextId}`,
+    };
+
+    expect(shouldClearAuditSuiteLaunchFailure(failure, oldJob)).toBe(false);
+    expect(shouldClearAuditSuiteLaunchFailure(failure, {
+      ...oldJob,
+      jobId: "74ec9cda-e878-4e87-984e-65c8c5652ced",
+    })).toBe(true);
+  });
+
+  it("hides old cached output for launch failures and newer failed jobs", () => {
+    const snapshot = {
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-22T03:00:00.000Z",
+    };
+    const failedJob = {
+      jobId: "74ec9cda-e878-4e87-984e-65c8c5652ced",
+      contextId: "64ec9cda-e878-4e87-984e-65c8c5652cec",
+      marketplaceId: "ATVPDKIKX0DER",
+      ready: true,
+      status: "failed",
+    };
+    const launchFailure = {
+      message: "本次未能啟動。",
+      blockedJobIdentity: null,
+    };
+
+    expect(auditSnapshotMatchesCurrentAttempt(snapshot, failedJob, null)).toBe(false);
+    expect(auditSnapshotMatchesCurrentAttempt(snapshot, null, launchFailure)).toBe(false);
+    expect(auditSnapshotMatchesCurrentAttempt(snapshot, {
+      ...failedJob,
+      status: "completed",
+      snapshot,
+    }, null)).toBe(true);
+
+    const cached = { ATVPDKIKX0DER: snapshot, A2EUQ1WTGCTBG2: snapshot };
+    const masked = auditCacheForMarketplace(cached, "ATVPDKIKX0DER", null);
+    expect(masked).not.toHaveProperty("ATVPDKIKX0DER");
+    expect(masked.A2EUQ1WTGCTBG2).toBe(snapshot);
+    expect(cached).toHaveProperty("ATVPDKIKX0DER");
   });
 
   it("shows a cached count only when terminal time and marketplace match", () => {
@@ -78,6 +166,64 @@ describe("dashboard audit background observation", () => {
     }, job)).toBe(false);
   });
 
+  it("keeps terminal home status fail-honest before a drawer parses the snapshot", () => {
+    expect(standaloneAuditTerminalOutcome(completedJob("content", {
+      marketplaceId: "ATVPDKIKX0DER",
+      rows: [],
+    }))).toBe("partial");
+    expect(standaloneAuditTerminalOutcome(completedJob("image", {
+      marketplaceId: "ATVPDKIKX0DER",
+      summary: { incomplete: 0 },
+    }))).toBe("partial");
+    expect(standaloneAuditTerminalOutcome(completedJob("image", {
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-23T03:00:00.000Z",
+      minimumImages: 6,
+      rows: [],
+      summary: { total: 0, completed: 0, incomplete: 0, underMinimum: 0 },
+    }))).toBe("success");
+    expect(standaloneAuditTerminalOutcome(completedJob("variation", {
+      marketplaceId: "ATVPDKIKX0DER",
+      summary: { incomplete: 2 },
+    }))).toBe("partial");
+    expect(standaloneAuditTerminalOutcome(completedJob("subscription", {
+      marketplaceId: "ATVPDKIKX0DER",
+      inventoryEvidence: { coverage: "complete" },
+      upstreamCoverage: { status: "complete" },
+      summary: { revenueCoverage: { status: "partial" } },
+    }))).toBe("partial");
+    expect(standaloneAuditTerminalOutcome(completedJob("advertising", {
+      marketplaceId: "ATVPDKIKX0DER",
+      schemaVersion: 1,
+      rows: [],
+      summary: {},
+    }))).toBe("partial");
+    expect(standaloneAuditTerminalOutcome(completedJob("advertising", {
+      schemaVersion: 1,
+      mode: "live",
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceCode: "US",
+      fetchedAt: "2026-08-23T03:00:00.000Z",
+      rows: [],
+      uncovered: [],
+      summary: {
+        currentFbaSkuCount: 0,
+        coveredSkuCount: 0,
+        directSkuCount: 0,
+        sameAsinCount: 0,
+        uncoveredSkuCount: 0,
+        eligibleCampaignCount: 0,
+        ignoredInactiveCampaignCount: 0,
+        ignoredMalformedCampaignCount: 0,
+      },
+      rule: "SKU exact first, same-ASIN supplement second.",
+      notice: "完整唯讀驗收快照。",
+    }))).toBe("success");
+    expect(standaloneAuditTerminalOutcome(completedJob("advertising", {
+      marketplaceId: "ATVPDKIKX0DER",
+    }))).toBe("partial");
+  });
+
   it("observes every individual audit from home and reconnects drawers to the same job", () => {
     const source = readFileSync(
       new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
@@ -107,6 +253,29 @@ describe("dashboard audit background observation", () => {
     // home-observer handoff behavior.
     expect(source).toContain("observeAplusAuditJob({");
     expect(source).toContain("onJobChange={cacheAplusAuditJob}");
+  });
+
+  it("routes the one-click launcher into the exact same card-owned job stores", () => {
+    const dashboardSource = readFileSync(
+      new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
+      "utf8",
+    );
+    const launcherSource = readFileSync(
+      new URL("../src/renderer/src/components/audit-suite-home-card.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(dashboardSource).toContain("onStandaloneJobChange={cacheStandaloneAuditJob}");
+    expect(dashboardSource).toContain("onAplusJobChange={cacheAplusAuditJob}");
+    expect(dashboardSource).toContain("onStartFailure={(sectionId, message)");
+    expect(dashboardSource).toContain("currentBusinessPricingLaunchFailure");
+    expect(dashboardSource).toContain("auditLaunchFailureStatus");
+    expect(dashboardSource).toContain("mode={currentStandaloneMode}");
+    expect(launcherSource).toContain("startStandaloneAuditJob");
+    expect(launcherSource).toContain("startAplusAuditJob");
+    expect(launcherSource).not.toContain('fetch("/api/sp-api/audit-suite"');
+    expect(launcherSource).not.toContain("audit-suite-section-grid");
+    expect(dashboardSource).toContain("查看未完成的 A+ 健檢");
   });
 
   it("wires every standalone panel to the pending-to-terminal reconnect revision", () => {

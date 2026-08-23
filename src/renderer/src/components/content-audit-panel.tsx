@@ -24,6 +24,7 @@ import {
   shouldResumeStandaloneAuditJob,
   startStandaloneAuditJob,
   standaloneAuditReconnectRevision,
+  standaloneAuditSnapshotMatchesJob,
   type StandaloneAuditJob,
   type StandaloneAuditMode,
 } from "../standalone-audit";
@@ -1606,24 +1607,33 @@ export default function ContentAuditPanel({
   initialJob?: StandaloneAuditJob | null;
   onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
-  const initialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
+  const matchingInitialJob = initialJob?.kind === "content" &&
+      initialJob.marketplaceId === marketplaceId &&
+      initialJob.mode === mode
+    ? initialJob
+    : null;
+  const candidateInitialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
     ? cachedResult
+    : null;
+  const initialCache = candidateInitialCache && standaloneAuditSnapshotMatchesJob(
+    candidateInitialCache.snapshot,
+    matchingInitialJob,
+  ) ? candidateInitialCache : null;
+  const initialJobError = matchingInitialJob?.ready &&
+      matchingInitialJob.status !== "completed"
+    ? matchingInitialJob.error.message
     : null;
   const [state, setState] = useState<AuditState>(initialCache ? "done" : "idle");
   const [reply, setReply] = useState<ReportReply | null>(null);
   const [job, setJob] = useState<StandaloneAuditJob | null>(
-    initialJob?.kind === "content" &&
-      initialJob.marketplaceId === marketplaceId &&
-      initialJob.mode === mode
-      ? initialJob
-      : null,
+    matchingInitialJob,
   );
   const [snapshot, setSnapshot] = useState<ContentAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
   );
   const [filter, setFilter] = useState<AuditFilter>(initialCache?.filter ?? "all");
   const [query, setQuery] = useState(initialCache?.query ?? "");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialJobError);
   const [spellcheckNote, setSpellcheckNote] = useState<string | null>(
     initialCache?.spellcheckNote ?? null,
   );
@@ -1649,8 +1659,18 @@ export default function ContentAuditPanel({
     abortRef.current?.abort();
     setReply(null);
     setJob(null);
-    setError(null);
-    if (cachedResult?.snapshot.marketplaceId === marketplaceId) {
+    const matchingJob = initialJob?.kind === "content" &&
+        initialJob.marketplaceId === marketplaceId &&
+        initialJob.mode === mode
+      ? initialJob
+      : null;
+    setError(matchingJob?.ready && matchingJob.status !== "completed"
+      ? matchingJob.error.message
+      : null);
+    if (
+      cachedResult?.snapshot.marketplaceId === marketplaceId &&
+      standaloneAuditSnapshotMatchesJob(cachedResult.snapshot, matchingJob)
+    ) {
       setState("done");
       setSnapshot(cachedResult.snapshot);
       setFilter(cachedResult.filter);
@@ -1663,7 +1683,7 @@ export default function ContentAuditPanel({
     setFilter("all");
     setQuery("");
     setSpellcheckNote(null);
-  }, [cachedResult, marketplaceId, mode]);
+  }, [cachedResult, initialJobReconnectRevision, marketplaceId, mode]);
 
   useEffect(() => {
     setWorkbookFile(null);
@@ -1772,6 +1792,13 @@ export default function ContentAuditPanel({
     setState("starting");
     setReply(null);
     setError(null);
+    setSnapshot(null);
+    setFilter("all");
+    setQuery("");
+    setSpellcheckNote(null);
+    setWorkbookFile(null);
+    setBatchPreview(null);
+    setBatchResult(null);
     try {
       let current = await startStandaloneAuditJob({
         kind: "content",
@@ -1797,7 +1824,7 @@ export default function ContentAuditPanel({
       observerJobIdRef.current = null;
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
-      setState(snapshot ? "done" : "idle");
+      setState("idle");
       setError(
         requestError instanceof Error ? requestError.message : "目前無法完成文案健檢。",
       );
@@ -1841,7 +1868,7 @@ export default function ContentAuditPanel({
         await loadAudit(terminal, controller.signal);
       } catch (resumeError) {
         if (resumeError instanceof Error && resumeError.name === "AbortError") return;
-        setState(snapshot ? "done" : "idle");
+        setState("idle");
         setError(resumeError instanceof Error
           ? resumeError.message
           : "目前無法接續文案健檢。");

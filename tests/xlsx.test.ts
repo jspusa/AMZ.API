@@ -215,6 +215,42 @@ describe("FBA unbound variation audit Excel export", () => {
           variationTheme: "SIZE_NAME",
           evidence: "verified-child",
         },
+        {
+          familySku: "PARENT-02",
+          role: "parent",
+          sellerSku: "PARENT-02",
+          title: "Second parent",
+          productType: "PET_FOOD",
+          variationTheme: "FLAVOR_NAME",
+          evidence: "verified-parent",
+        },
+        {
+          familySku: "PARENT-02",
+          role: "child",
+          sellerSku: "CHILD-02",
+          title: "Second child",
+          productType: "PET_FOOD",
+          variationTheme: "FLAVOR_NAME",
+          evidence: "verified-child",
+        },
+        {
+          familySku: "PARENT-03",
+          role: "parent",
+          sellerSku: "PARENT-03",
+          title: "Third parent",
+          productType: "PET_FOOD",
+          variationTheme: "SIZE_NAME",
+          evidence: "verified-parent",
+        },
+        {
+          familySku: "PARENT-03",
+          role: "child",
+          sellerSku: "CHILD-03",
+          title: "Third child",
+          productType: "PET_FOOD",
+          variationTheme: "SIZE_NAME",
+          evidence: "verified-child",
+        },
       ],
     });
 
@@ -229,6 +265,7 @@ describe("FBA unbound variation audit Excel export", () => {
     const allVariationSheet = new TextDecoder().decode(
       archive["xl/worksheets/sheet3.xml"],
     );
+    const styles = new TextDecoder().decode(archive["xl/styles.xml"]);
     expect(workbookXml).toContain("未綁變體");
     expect(workbookXml).toContain("讀取未完成");
     expect(workbookXml).toContain("所有變體");
@@ -269,5 +306,48 @@ describe("FBA unbound variation audit Excel export", () => {
     );
     expect(allVariationSheet).toContain("父變體");
     expect(allVariationSheet).toContain("子變體");
+
+    const styleIndex = (reference: string) => {
+      const match = allVariationSheet.match(
+        new RegExp(`<c r="${reference}" s="(\\d+)"`, "u"),
+      );
+      if (!match) throw new Error(`Missing styled cell ${reference}`);
+      return Number(match[1]);
+    };
+    const cellXfs = styles.match(/<cellXfs[^>]*>(.*?)<\/cellXfs>/su)?.[1]
+      .match(/<xf\b(?:[^>]*\/>|[^>]*>.*?<\/xf>)/gsu) ?? [];
+    const borders = styles.match(/<borders[^>]*>(.*?)<\/borders>/su)?.[1]
+      .match(/<border>.*?<\/border>/gsu) ?? [];
+    const fillId = (reference: string) => {
+      const xf = cellXfs[styleIndex(reference)];
+      if (!xf) throw new Error(`Missing cell style for ${reference}`);
+      return Number(xf.match(/fillId="(\d+)"/u)?.[1]);
+    };
+    const border = (reference: string) => {
+      const xf = cellXfs[styleIndex(reference)];
+      if (!xf) throw new Error(`Missing cell style for ${reference}`);
+      const borderId = Number(xf.match(/borderId="(\d+)"/u)?.[1]);
+      return borders[borderId] ?? "";
+    };
+
+    expect(new Set([fillId("A2"), fillId("A3")])).toEqual(
+      new Set([fillId("A2")]),
+    );
+    expect(new Set([fillId("A4"), fillId("A5")])).toEqual(
+      new Set([fillId("A4")]),
+    );
+    expect(fillId("A2")).not.toBe(fillId("A4"));
+    expect(fillId("A2")).toBe(fillId("A6"));
+    expect(styles).toContain('fgColor rgb="FF17324D"');
+    expect(styles).toContain('fgColor rgb="FFDDEBF7"');
+
+    expect(border("A2")).toContain('<left style="medium"');
+    expect(border("A2")).toContain('<top style="medium"');
+    expect(border("G2")).toContain('<right style="medium"');
+    expect(border("G2")).toContain('<top style="medium"');
+    expect(border("A3")).toContain('<left style="medium"');
+    expect(border("A3")).toContain('<bottom style="medium"');
+    expect(border("G3")).toContain('<right style="medium"');
+    expect(border("G3")).toContain('<bottom style="medium"');
   });
 });
