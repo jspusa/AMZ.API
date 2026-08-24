@@ -84,6 +84,20 @@ import {
   type SalesTrendRange,
   type SalesTrendWindow,
 } from "./fba-sales-calendar";
+import {
+  FbaSalesMetricsError,
+  normalizeFbaSalesDailyEnvelope,
+  readFbaSalesTrend,
+  type SalesTrendPoint as FbaSalesTrendPoint,
+  type SalesTrendSnapshot as FbaSalesTrendSnapshot,
+  type SalesTrendTotals as FbaSalesTrendTotals,
+} from "./fba-sales-metrics";
+import { createDeterministicFbaSalesMetricsDemoAdapter } from "./fba-sales-metrics-demo";
+import {
+  buildFbaSalesMetricsQuery,
+  createFbaSalesMetricsProductionAdapter,
+  fbaSalesMetricsRetryDelayMs,
+} from "./fba-sales-metrics-production";
 
 export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
 export type {
@@ -164,45 +178,9 @@ export type OrdersSnapshot = {
 
 export type SalesTrendDays = SalesTrendPresetDays;
 
-export type SalesTrendPoint = {
-  date: string;
-  interval: string;
-  totalSales: Money;
-  unitCount: number;
-  orderItemCount: number;
-  orderCount: number;
-  partial: boolean;
-};
-
-export type SalesTrendTotals = {
-  totalSales: Money;
-  unitCount: number;
-  orderItemCount: number;
-  orderCount: number;
-};
-
-export type SalesTrendSnapshot = {
-  schemaVersion: 2;
-  mode: "live" | "demo";
-  marketplaceId: MarketplaceId;
-  days: number;
-  range: SalesTrendRange;
-  timeZone: string;
-  points: SalesTrendPoint[];
-  totals: SalesTrendTotals;
-  fetchedAt: string;
-  requestId: string | null;
-  rateLimit: string | null;
-  comparison: null | {
-    kind: "previous-year";
-    range: SalesTrendRange;
-    points: SalesTrendPoint[];
-    totals: SalesTrendTotals;
-    requestId: string | null;
-    rateLimit: string | null;
-  };
-  notice: string;
-};
+export type SalesTrendPoint = FbaSalesTrendPoint;
+export type SalesTrendTotals = FbaSalesTrendTotals;
+export type SalesTrendSnapshot = FbaSalesTrendSnapshot;
 
 export type SubscriptionAuditSnapshot = Omit<
   FbaSubscriptionAuditHistorySnapshot,
@@ -1377,19 +1355,6 @@ export function findExactInventorySummary(
 ): AmazonInventorySummary | null {
   return summaries.find((item) => item.sellerSku === sellerSku) ?? null;
 }
-
-type AmazonSalesMetric = {
-  interval?: string;
-  unitCount?: number;
-  orderItemCount?: number;
-  orderCount?: number;
-  totalSales?: AmazonMoney;
-};
-
-type AmazonSalesMetricsResponse = {
-  payload?: AmazonSalesMetric[];
-  errors?: Array<{ code?: string; message?: string; details?: string }>;
-};
 
 type ListingsRequestInput = {
   marketplaceId: MarketplaceId;
@@ -7594,216 +7559,46 @@ function planFbaSalesTrendOrThrow(
   }
 }
 
+// Kept for the exact-SKU velocity compatibility path until #72 cuts
+// replenishment over; Trend callers cannot provide these request parameters.
 export function buildSalesTrendQuery(
   marketplaceId: MarketplaceId,
   window: SalesTrendWindow,
   options: { sellerSku?: string } = {},
 ): URLSearchParams {
-  const query = new URLSearchParams({
-    marketplaceIds: marketplaceId,
-    interval: `${window.startAt}--${window.endAt}`,
-    granularityTimeZone: window.timeZone,
-    granularity: "Day",
-    buyerType: "All",
-    fulfillmentNetwork: "AFN",
+  return buildFbaSalesMetricsQuery({
+    marketplaceId,
+    window,
+    sellerSku: options.sellerSku ?? null,
+    series: "current",
+    trendDayCount: window.range.dayCount,
   });
-  if (options.sellerSku) query.set("sku", options.sellerSku);
-  return query;
 }
 
-function salesMetricDate(
-  value: unknown,
-  marketplaceId: MarketplaceId,
-): string | null {
-  if (typeof value !== "string") return null;
-  const delimiter = value.indexOf("--", 10);
-  if (delimiter < 0) return null;
-  const start = value.slice(0, delimiter);
-  const end = value.slice(delimiter + 2);
-  const startInstant = new Date(start);
-  const endInstant = new Date(end);
-  if (
-    Number.isNaN(startInstant.getTime()) ||
-    Number.isNaN(endInstant.getTime()) ||
-    startInstant.getTime() >= endInstant.getTime()
-  ) {
-    return null;
-  }
-  const calendar = marketplaceCalendar(marketplaceId);
-  const localStart = calendar.partsAt(startInstant);
-  if (localStart.hour !== 0 || localStart.minute !== 0 || localStart.second !== 0) {
-    return null;
-  }
-  return calendar.dayAt(startInstant);
-}
-
-function salesTrendTotals(
-  points: SalesTrendPoint[],
-  currencyCode: string,
-): SalesTrendSnapshot["totals"] {
-  const totals = points.reduce(
-    (result, point) => ({
-      amount: result.amount + point.totalSales.amount,
-      unitCount: result.unitCount + point.unitCount,
-      orderItemCount: result.orderItemCount + point.orderItemCount,
-      orderCount: result.orderCount + point.orderCount,
-    }),
-    { amount: 0, unitCount: 0, orderItemCount: 0, orderCount: 0 },
-  );
-  const precision = currencyCode === "JPY" ? 0 : 2;
-  return {
-    totalSales: {
-      amount: Number(totals.amount.toFixed(precision)),
-      currencyCode,
-    },
-    unitCount: totals.unitCount,
-    orderItemCount: totals.orderItemCount,
-    orderCount: totals.orderCount,
-  };
-}
-
+// Temporary compatibility surface for the exact-SKU velocity reader. Trend
+// requests normalize inside fba-sales-metrics; #72 removes this wrapper when
+// replenishment moves onto the same semantic Daily-FBA adapter.
 export function normalizeSalesTrendResponse(input: {
   response: unknown;
   marketplaceId: MarketplaceId;
   window: SalesTrendWindow;
 }): { points: SalesTrendPoint[]; totals: SalesTrendSnapshot["totals"] } {
-  if (!input.response || typeof input.response !== "object" || Array.isArray(input.response)) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  }
-  const response = input.response as JsonRecord;
-  if (response.errors !== undefined && !Array.isArray(response.errors)) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  }
-  if (Array.isArray(response.errors) && response.errors.length) {
-    const upstreamMessage = response.errors.find(
-      (error) =>
-        isRecord(error) &&
-        typeof error.message === "string" &&
-        error.message.trim(),
-    );
-    throw new SpApiError(
-      (isRecord(upstreamMessage) && typeof upstreamMessage.message === "string"
-        ? upstreamMessage.message.trim()
-        : "") ||
-        "Amazon 無法完成 FBA 銷售趨勢查詢。",
-      { status: 502, code: "UPSTREAM_UNAVAILABLE" },
-    );
-  }
-  if (!Array.isArray(response.payload)) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  }
-
-  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
-  const expectedDates = new Set(input.window.dateKeys);
-  const byDate = new Map<string, SalesTrendPoint>();
-  for (const rawMetric of response.payload) {
-    if (!isRecord(rawMetric)) {
-      throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
-        status: 502,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    const metric = rawMetric as AmazonSalesMetric;
-    const metricDate = salesMetricDate(metric.interval, input.marketplaceId);
-    const amount = finiteNumericValue(metric.totalSales?.amount);
-    const unitCount = finiteNonNegativeInteger(metric.unitCount);
-    const orderItemCount = finiteNonNegativeInteger(metric.orderItemCount);
-    const orderCount = finiteNonNegativeInteger(metric.orderCount);
-    if (
-      !metricDate ||
-      !expectedDates.has(metricDate) ||
-      byDate.has(metricDate) ||
-      amount === null ||
-      amount < 0 ||
-      metric.totalSales?.currencyCode !== currencyCode ||
-      unitCount === null ||
-      orderItemCount === null ||
-      orderCount === null
-    ) {
-      throw new SpApiError("Amazon 回傳了無法辨識的 FBA 銷售趨勢。", {
-        status: 502,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    byDate.set(metricDate, {
-      date: metricDate,
-      interval: metric.interval!,
-      totalSales: { amount, currencyCode },
-      unitCount,
-      orderItemCount,
-      orderCount,
-      partial: metricDate === input.window.partialDateKey,
-    });
-  }
-
-  const points = input.window.dateKeys.map((key, index) =>
-    byDate.get(key) ?? {
-      date: key,
-      interval: input.window.intervals[index],
-      totalSales: { amount: 0, currencyCode },
-      unitCount: 0,
-      orderItemCount: 0,
-      orderCount: 0,
-      partial: key === input.window.partialDateKey,
-    },
-  );
-  return { points, totals: salesTrendTotals(points, currencyCode) };
-}
-
-async function callSalesTrendApi(
-  marketplaceId: MarketplaceId,
-  window: SalesTrendWindow,
-  forceTokenRefresh = false,
-  sellerSku?: string,
-): Promise<Response> {
-  const marketplace = MARKETPLACES[marketplaceId];
-  const token = await requestAccessToken(marketplace.region, forceTokenRefresh);
-  const query = buildSalesTrendQuery(marketplaceId, window, { sellerSku });
-  const controller = new AbortController();
-  // Long custom daily ranges return substantially more buckets. Keep one
-  // Sales API request per series (rather than multiplying rate-limited calls),
-  // but give Amazon a bounded amount of extra response time.
-  const timeoutMilliseconds = Math.min(
-    30_000,
-    12_000 + window.range.dayCount * 40,
-  );
-  const timeout = setTimeout(() => controller.abort(), timeoutMilliseconds);
   try {
-    return await fetch(
-      `${REGION_ENDPOINTS[marketplace.region]}/sales/v1/orderMetrics?${query}`,
-      {
-        headers: {
-          accept: "application/json",
-          "x-amz-access-token": token,
-          "x-amz-date": toAmzDate(),
-          "user-agent": spApiUserAgent(),
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      },
-    );
+    return normalizeFbaSalesDailyEnvelope({
+      envelope: input.response,
+      marketplaceId: input.marketplaceId,
+      window: input.window,
+    });
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon FBA 銷售趨勢查詢逾時，請稍後再試。", {
-        status: 504,
-        code: "UPSTREAM_UNAVAILABLE",
+    if (error instanceof FbaSalesMetricsError) {
+      throw new SpApiError(error.message, {
+        status: error.status,
+        code: error.code,
+        requestId: error.requestId,
+        retryAfter: error.retryAfter,
       });
     }
-    throw new SpApiError("目前無法連線至 Amazon Sales API。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
+    throw error;
   }
 }
 
@@ -7812,26 +7607,7 @@ export function salesTrendRetryDelayMs(
   attempt: number,
   now = Date.now(),
 ): number {
-  const retryAfter = response.headers.get("retry-after")?.trim();
-  let requestedDelay: number | null = null;
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      requestedDelay = seconds * 1_000;
-    } else {
-      const retryAt = Date.parse(retryAfter);
-      if (Number.isFinite(retryAt) && retryAt > now) {
-        requestedDelay = retryAt - now;
-      }
-    }
-  }
-  if (requestedDelay !== null) {
-    return Math.min(Math.max(Math.ceil(requestedDelay), 2_000), 60_000);
-  }
-  return Math.min(
-    2_000 * 2 ** Math.max(0, attempt) + Math.random() * 250,
-    10_000,
-  );
+  return fbaSalesMetricsRetryDelayMs(response, attempt, now);
 }
 
 type SalesTrendSeriesResult = {
@@ -7841,156 +7617,43 @@ type SalesTrendSeriesResult = {
   rateLimit: string | null;
 };
 
-type SalesTrendComparisonResult = SalesTrendSeriesResult & {
-  range: SalesTrendRange;
-};
-
-function comparablePreviousYearSeries(
-  comparablePreviousYearDateKeys: string[],
-  comparisonWindow: SalesTrendWindow,
-  rawSeries: SalesTrendSeriesResult,
-): SalesTrendComparisonResult {
-  const comparableDates = new Set(comparablePreviousYearDateKeys);
-  const points = rawSeries.points.filter((point) => comparableDates.has(point.date));
-  return {
-    ...rawSeries,
-    range: {
-      startDate: points[0]?.date ?? comparisonWindow.range.startDate,
-      endDate: points.at(-1)?.date ?? comparisonWindow.range.endDate,
-      dayCount: points.length,
-      presetDays: null,
-    },
-    points,
-    totals: salesTrendTotals(
-      points,
-      rawSeries.totals.totalSales.currencyCode,
-    ),
-  };
-}
-
 async function fetchLiveSalesTrendSeries(
   marketplaceId: MarketplaceId,
   window: SalesTrendWindow,
   sellerSku?: string,
 ): Promise<SalesTrendSeriesResult> {
-  let response = await callSalesTrendApi(
-    marketplaceId,
-    window,
-    false,
-    sellerSku,
-  );
-  if (response.status === 401) {
-    tokenCache.delete(MARKETPLACES[marketplaceId].region);
-    response = await callSalesTrendApi(
-      marketplaceId,
-      window,
-      true,
-      sellerSku,
-    );
-  }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (![429, 500, 503].includes(response.status)) break;
-    await wait(
-      response.status === 429
-        ? salesTrendRetryDelayMs(response, attempt)
-        : retryDelayMs(response, attempt),
-    );
-    response = await callSalesTrendApi(
-      marketplaceId,
-      window,
-      false,
-      sellerSku,
-    );
-  }
-  const requestId = response.headers.get("x-amzn-requestid");
-  if (!response.ok) {
-    const payload = await parseResponseJson<AmazonSalesMetricsResponse>(response);
-    const upstreamMessage = payload?.errors?.find(
-      (error) => typeof error?.message === "string" && error.message.trim(),
-    )?.message;
-    const message =
-      response.status === 401 || response.status === 403
-        ? "Amazon 拒絕 FBA 銷售趨勢查詢。請確認 Private SP-API App 已具備 Pricing、Inventory and Order Tracking 或 Product Listing 角色，並重新授權。"
-        : response.status === 429
-          ? "Amazon Sales API 正在限流，請稍後再試。"
-          : upstreamMessage || "Amazon 暫時無法完成 FBA 銷售趨勢查詢。";
-    throw new SpApiError(message, {
-      status: response.status,
-      code:
-        response.status === 401 || response.status === 403
-          ? "SALES_METRICS_UNAUTHORIZED"
-          : response.status === 429
-            ? "RATE_LIMITED"
-            : "UPSTREAM_UNAVAILABLE",
-      requestId,
-      retryAfter: response.headers.get("retry-after"),
-    });
-  }
-  const payload = await parseResponseJson<AmazonSalesMetricsResponse>(response);
-  const normalized = normalizeSalesTrendResponse({
-    response: payload,
-    marketplaceId,
-    window,
+  const adapter = createFbaSalesMetricsProductionAdapter({
+    getAccessToken: requestAccessToken,
+    invalidateAccessToken: (region) => tokenCache.delete(region),
   });
-  return {
-    ...normalized,
-    requestId,
-    rateLimit: response.headers.get("x-amzn-ratelimit-limit"),
-  };
-}
-
-async function fetchLiveSalesTrend(input: {
-  marketplaceId: MarketplaceId;
-  range: SalesTrendRange;
-  window: SalesTrendWindow;
-  comparisonWindow: SalesTrendWindow | null;
-  comparablePreviousYearDateKeys: string[] | null;
-  comparisonNotice: string | null;
-}): Promise<SalesTrendSnapshot> {
-  const current = await fetchLiveSalesTrendSeries(
-    input.marketplaceId,
-    input.window,
-  );
-  const rawPrevious = input.comparisonWindow
-    ? await fetchLiveSalesTrendSeries(input.marketplaceId, input.comparisonWindow)
-    : null;
-  const previous =
-    rawPrevious &&
-    input.comparisonWindow &&
-    input.comparablePreviousYearDateKeys
-      ? comparablePreviousYearSeries(
-          input.comparablePreviousYearDateKeys,
-          input.comparisonWindow,
-          rawPrevious,
-        )
-      : null;
-  return {
-    schemaVersion: 2,
-    mode: "live",
-    marketplaceId: input.marketplaceId,
-    days: input.range.dayCount,
-    range: input.range,
-    timeZone: input.window.timeZone,
-    points: current.points,
-    totals: current.totals,
-    fetchedAt: new Date().toISOString(),
-    requestId: current.requestId,
-    rateLimit: current.rateLimit,
-    comparison:
-      previous && input.comparisonWindow
-        ? {
-            kind: "previous-year",
-            range: previous.range,
-            points: previous.points,
-            totals: previous.totals,
-            requestId: previous.requestId,
-            rateLimit: previous.rateLimit,
-          }
-        : null,
-    notice: input.comparisonNotice
-      ? `Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA）。${input.comparisonNotice}`
-      : "Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA），今日數字仍會變動。",
-  };
+  try {
+    const result = await adapter.readDaily({
+      marketplaceId,
+      window,
+      sellerSku: sellerSku ?? null,
+      series: "current",
+      trendDayCount: window.range.dayCount,
+    });
+    return {
+      ...normalizeSalesTrendResponse({
+        response: result.envelope,
+        marketplaceId,
+        window,
+      }),
+      requestId: result.requestId,
+      rateLimit: result.rateLimit,
+    };
+  } catch (error) {
+    if (error instanceof FbaSalesMetricsError) {
+      throw new SpApiError(error.message, {
+        status: error.status,
+        code: error.code,
+        requestId: error.requestId,
+        retryAfter: error.retryAfter,
+      });
+    }
+    throw error;
+  }
 }
 
 const FBA_INBOUND_READ_INTERVAL_MS = 500;
@@ -17504,33 +17167,6 @@ export async function searchOrders(
   return fetchLiveOrders(fbaInput);
 }
 
-function buildDemoSalesTrendSeries(
-  marketplaceId: MarketplaceId,
-  window: SalesTrendWindow,
-  seed: number,
-): Pick<SalesTrendSeriesResult, "points" | "totals"> {
-  const currencyCode = MARKETPLACES[marketplaceId].currency;
-  const base = currencyCode === "JPY" ? 18_000 : 180;
-  const points = window.dateKeys.map((date, index): SalesTrendPoint => {
-    const unitCount = 8 + ((index * 7 + seed) % 13);
-    const amount = Number(
-      (base * (0.72 + ((index * 11 + seed) % 9) / 10)).toFixed(
-        currencyCode === "JPY" ? 0 : 2,
-      ),
-    );
-    return {
-      date,
-      interval: window.intervals[index],
-      totalSales: { amount, currencyCode },
-      unitCount,
-      orderItemCount: Math.max(1, unitCount - (index % 3)),
-      orderCount: Math.max(1, unitCount - 2 - (index % 4)),
-      partial: date === window.partialDateKey,
-    };
-  });
-  return { points, totals: salesTrendTotals(points, currencyCode) };
-}
-
 export async function getSalesTrend(input: {
   marketplaceId: MarketplaceId;
   days?: SalesTrendPresetDays | null;
@@ -17538,76 +17174,37 @@ export async function getSalesTrend(input: {
   endDate?: string | null;
   comparison?: SalesTrendComparisonMode;
 }): Promise<SalesTrendSnapshot> {
-  const now = new Date();
-  const plan = planFbaSalesTrendOrThrow(input, now);
-  const {
-    range,
-    window,
-    comparisonWindow,
-    comparablePreviousYearDateKeys,
-    comparisonNotice,
-  } = plan;
-
-  if (!shouldUseDemoMode(input.marketplaceId)) {
-    return fetchLiveSalesTrend({
-      marketplaceId: input.marketplaceId,
-      range,
-      window,
-      comparisonWindow,
-      comparablePreviousYearDateKeys,
-      comparisonNotice,
+  const demoMode = shouldUseDemoMode(input.marketplaceId);
+  const adapter = demoMode
+    ? createDeterministicFbaSalesMetricsDemoAdapter()
+    : createFbaSalesMetricsProductionAdapter({
+        getAccessToken: requestAccessToken,
+        invalidateAccessToken: (region) => tokenCache.delete(region),
+      });
+  try {
+    return await readFbaSalesTrend(input, {
+      adapter,
+      mode: demoMode ? "demo" : "live",
+      demoNotice: demoMode
+        ? isConfiguredForMarketplace(input.marketplaceId)
+          ? "目前由 SP_API_MODE 強制使用展示資料；趨勢只供版面測試。"
+          : `${MARKETPLACES[input.marketplaceId].label}站尚未在本機系統安全儲存區加入 refresh token，因此顯示展示趨勢。`
+        : undefined,
     });
+  } catch (error) {
+    if (error instanceof FbaSalesPlanningError) {
+      invalidSalesTrendRange(error.message);
+    }
+    if (error instanceof FbaSalesMetricsError) {
+      throw new SpApiError(error.message, {
+        status: error.status,
+        code: error.code,
+        requestId: error.requestId,
+        retryAfter: error.retryAfter,
+      });
+    }
+    throw error;
   }
-
-  const current = buildDemoSalesTrendSeries(
-    input.marketplaceId,
-    window,
-    range.dayCount,
-  );
-  const rawPrevious = comparisonWindow
-    ? buildDemoSalesTrendSeries(
-        input.marketplaceId,
-        comparisonWindow,
-        range.dayCount + 5,
-      )
-    : null;
-  const previous =
-    rawPrevious && comparisonWindow && comparablePreviousYearDateKeys
-      ? comparablePreviousYearSeries(comparablePreviousYearDateKeys, comparisonWindow, {
-          ...rawPrevious,
-          requestId: null,
-          rateLimit: null,
-        })
-      : null;
-  return {
-    schemaVersion: 2,
-    mode: "demo",
-    marketplaceId: input.marketplaceId,
-    days: range.dayCount,
-    range,
-    timeZone: window.timeZone,
-    points: current.points,
-    totals: current.totals,
-    fetchedAt: new Date().toISOString(),
-    requestId: null,
-    rateLimit: null,
-    comparison:
-      previous && comparisonWindow
-        ? {
-            kind: "previous-year",
-            range: previous.range,
-            points: previous.points,
-            totals: previous.totals,
-            requestId: null,
-            rateLimit: null,
-          }
-        : null,
-    notice: `${
-      isConfiguredForMarketplace(input.marketplaceId)
-        ? "目前由 SP_API_MODE 強制使用展示資料；趨勢只供版面測試。"
-        : `${MARKETPLACES[input.marketplaceId].label}站尚未在本機系統安全儲存區加入 refresh token，因此顯示展示趨勢。`
-    }${comparisonNotice ? ` ${comparisonNotice}` : ""}`,
-  };
 }
 
 type RestockPlanInput = {
