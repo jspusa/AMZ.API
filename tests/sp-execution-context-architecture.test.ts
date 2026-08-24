@@ -59,6 +59,42 @@ const PURE_CATALOG_REPORT_MODULES = [
 const FBA_CATALOG_REPORTS_COORDINATOR =
   "src/main/amazon/fba-catalog-reports.ts";
 
+const PURE_REVENUE_REPORT_MODULES = [
+  "src/main/amazon/revenue-report-windows.ts",
+  "src/main/amazon/brand-sales-reads.ts",
+  "src/main/amazon/sales-and-traffic-reads.ts",
+] as const;
+
+const REVENUE_REPORT_COORDINATORS = [
+  ["src/main/amazon/sales-and-traffic-reports.ts", false],
+  ["src/main/amazon/fba-revenue-reports.ts", true],
+] as const;
+
+const REVENUE_REPORT_DEMO_MODULES: ReadonlySet<string> = new Set([
+  "src/main/amazon/brand-sales-demo.ts",
+  "src/main/amazon/sales-and-traffic-demo.ts",
+]);
+
+const SUPERSEDED_REVENUE_REPORT_FACADES = [
+  "getBrandSalesReportWindow",
+  "startFbaShipmentSalesReport",
+  "getFbaShipmentSalesReportStatus",
+  "getBrandSalesData",
+  "getBrandSalesDataFromDocuments",
+  "startSalesAndTrafficReport",
+  "getSalesAndTrafficReportStatus",
+  "getSalesAndTrafficReportData",
+  "getSalesAndTrafficReportDataFromDocument",
+  "parseSalesAndTrafficReportDocument",
+] as const;
+
+const SUPERSEDED_REVENUE_ROUTER_WIRING = [
+  "BrandSalesReportGateway",
+  "SalesAndTrafficReportGateway",
+  "brandSalesReports",
+  "salesAndTrafficReports",
+] as const;
+
 const FORBIDDEN_CATALOG_MODULE_DEPENDENCIES = new Set([
   "src/main/amazon/listing-write-readback.ts",
   "src/main/amazon/reports-runtime.ts",
@@ -257,6 +293,7 @@ function catalogDependencyViolations(
   options: Readonly<{
     recursive: boolean;
     allowReportsRuntime?: boolean;
+    allowLocalStore?: boolean;
     forbidReportTransportImports?: boolean;
   }>,
 ): string[] {
@@ -275,13 +312,12 @@ function catalogDependencyViolations(
       if (!dependency) continue;
       const dependencyPath = repositoryPath(dependency);
       const sourceRepositoryPath = repositoryPath(sourcePath);
-      if (
-        isForbiddenCatalogDependency(dependencyPath) &&
-        !(
-          options.allowReportsRuntime &&
-          dependencyPath === "src/main/amazon/reports-runtime.ts"
-        )
-      ) {
+      const allowedDependency =
+        (options.allowReportsRuntime &&
+          dependencyPath === "src/main/amazon/reports-runtime.ts") ||
+        (options.allowLocalStore &&
+          dependencyPath === "src/main/local-store.ts");
+      if (isForbiddenCatalogDependency(dependencyPath) && !allowedDependency) {
         violations.add(`${sourceRepositoryPath} -> ${dependencyPath}`);
       }
 
@@ -422,6 +458,37 @@ describe("SP execution-context architecture", () => {
     })).toEqual([]);
   });
 
+  it.each(PURE_REVENUE_REPORT_MODULES)(
+    "%s stays outside legacy, production, runtime, store, write, PTD, preload, and renderer wiring",
+    (entryPath) => {
+      expect(catalogDependencyViolations(entryPath, { recursive: true }))
+        .toEqual([]);
+    },
+  );
+
+  it.each(REVENUE_REPORT_COORDINATORS)(
+    "%s stays on semantic ports and out of demo, transport, production, and write wiring",
+    (entryPath, allowLocalStore) => {
+      expect(catalogDependencyViolations(entryPath, {
+        recursive: false,
+        allowReportsRuntime: true,
+        allowLocalStore,
+        forbidReportTransportImports: true,
+      })).toEqual([]);
+
+      const sourcePath = absolutePath(entryPath);
+      const demoDependencies = sourceImports(sourcePath)
+        .map((sourceImport) =>
+          resolveLocalImport(sourcePath, sourceImport.specifier),
+        )
+        .filter((dependency): dependency is string => dependency !== null)
+        .map(repositoryPath)
+        .filter((dependency) => REVENUE_REPORT_DEMO_MODULES.has(dependency));
+
+      expect(demoDependencies).toEqual([]);
+    },
+  );
+
   it("keeps the catalog Listings interface free of fetch, URL, method, and PTD capabilities", () => {
     expect(exportedTypePropertyNames(
       absolutePath("src/main/amazon/catalog-report-reads.ts"),
@@ -438,6 +505,33 @@ describe("SP execution-context architecture", () => {
       expect(source).not.toMatch(new RegExp(`function\\s+${helper}\\b`, "u"));
     }
     expect(source).not.toContain("parseFbaListingReportSeeds");
+  });
+
+  it("removes superseded Brand Sales and Sales & Traffic facades from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const symbol of SUPERSEDED_REVENUE_REPORT_FACADES) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).not.toContain('"brand-sales"');
+    expect(source).not.toContain('"sales-and-traffic"');
+  });
+
+  it("routes Brand Sales and Sales & Traffic only through their semantic coordinators", () => {
+    const source = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    for (const symbol of [
+      ...SUPERSEDED_REVENUE_REPORT_FACADES,
+      ...SUPERSEDED_REVENUE_ROUTER_WIRING,
+    ]) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).toContain("new SalesAndTrafficReports({");
+    expect(source).toContain("new FbaRevenueReports({");
   });
 
   it("keeps report documents behind the FBA catalog coordinator", () => {

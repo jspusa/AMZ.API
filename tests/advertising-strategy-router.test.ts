@@ -14,7 +14,7 @@ import {
 } from "../src/main/amazon/reports-runtime";
 import type {
   SalesAndTrafficSnapshot,
-} from "../src/main/amazon/sp-api";
+} from "../src/main/amazon/sales-and-traffic-reads";
 import type {
   FbaCatalogIdentitySnapshot as FbaListingIdentitySnapshot,
 } from "../src/main/amazon/catalog-report-reads";
@@ -92,7 +92,7 @@ describe("FBA advertising strategy router job", () => {
   });
 
   function buildRouter(input: {
-    createAdsReport?: () => Promise<SponsoredProductsAdvertisedProductReportReference>;
+    createAdsReport?: AdvertisingGateway["createSponsoredProductsAdvertisedProductReport"];
     getAdsStatus?: AdvertisingGateway["getSponsoredProductsAdvertisedProductReportStatus"];
     onStrategyWait?: (milliseconds: number) => void;
     onScope?: () => void;
@@ -101,16 +101,22 @@ describe("FBA advertising strategy router job", () => {
     router: ApiRouter;
     createAdsReport: ReturnType<typeof vi.fn>;
     startListing: ReturnType<typeof vi.fn>;
+    startSales: ReturnType<typeof vi.fn>;
   } {
-    const adsReference = (): SponsoredProductsAdvertisedProductReportReference => ({
-      reportId: "ads-report-main-only-1",
+    const adsReference = (range: {
+      startDate?: string;
+      endDate?: string;
+    } = {}): SponsoredProductsAdvertisedProductReportReference => ({
+      reportId: `ads-report-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
       marketplaceId: MARKETPLACE_ID,
       combinedAccountScope: adsScope,
-      startDate: START_DATE,
-      endDate: END_DATE,
+      startDate: range.startDate ?? START_DATE,
+      endDate: range.endDate ?? END_DATE,
       configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
     });
-    const createAdsReport = vi.fn(input.createAdsReport ?? (async () => adsReference()));
+    const createAdsReport = vi.fn(
+      input.createAdsReport ?? (async (request) => adsReference(request)),
+    );
     const startListing = vi.fn(async () => ({
       mode: "live" as const,
       ready: true,
@@ -127,19 +133,25 @@ describe("FBA advertising strategy router job", () => {
       status: "DONE" as const,
       notice: "ready",
     }));
-    const startSales = vi.fn(async () => ({
+    const startSales = vi.fn(async (range: {
+      startDate?: string;
+      endDate?: string;
+    } = {}) => ({
       mode: "live" as const,
       ready: true,
-      reportId: "sales-report-main-only",
-      documentId: "sales-document-main-only",
+      reportId: `sales-report-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
+      documentId: `sales-document-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
       status: "DONE" as const,
       notice: "ready",
     }));
-    const getSalesStatus = vi.fn(async () => ({
+    const getSalesStatus = vi.fn(async (range: {
+      startDate?: string;
+      endDate?: string;
+    } = {}) => ({
       mode: "live" as const,
       ready: true,
-      reportId: "sales-report-main-only",
-      documentId: "sales-document-main-only",
+      reportId: `sales-report-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
+      documentId: `sales-document-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
       status: "DONE" as const,
       notice: "ready",
     }));
@@ -249,7 +261,7 @@ describe("FBA advertising strategy router job", () => {
         const result = request.intent === "all-listings"
           ? await startListing()
           : request.intent === "sales-and-traffic-daily-sku"
-            ? await startSales()
+            ? await startSales(request)
             : null;
         if (!result) {
           throw new Error(`Unexpected Reports create intent: ${request.intent}`);
@@ -263,7 +275,7 @@ describe("FBA advertising strategy router job", () => {
         const result = request.intent === "all-listings"
           ? await getListingStatus()
           : request.intent === "sales-and-traffic-daily-sku"
-            ? await getSalesStatus()
+            ? await getSalesStatus(request)
             : null;
         if (!result || result.reportId !== request.reportId) {
           throw new Error(`Unexpected Reports status intent: ${request.intent}`);
@@ -282,8 +294,8 @@ describe("FBA advertising strategy router job", () => {
             }
           : request.intent === "sales-and-traffic-daily-sku"
             ? {
-                reportId: "sales-report-main-only",
-                documentId: "sales-document-main-only",
+                reportId: `sales-report-main-only-${request.startDate}-${request.endDate}`,
+                documentId: `sales-document-main-only-${request.startDate}-${request.endDate}`,
                 text: "synthetic sales-and-traffic document",
               }
             : null;
@@ -313,10 +325,6 @@ describe("FBA advertising strategy router job", () => {
       approveWrite: async () => undefined,
       advertising,
       reportsAdapter,
-      brandSalesReports: {
-        startListing,
-        getListingStatus,
-      },
       advertisingStrategySources: {
         fbaListings,
       },
@@ -324,15 +332,10 @@ describe("FBA advertising strategy router job", () => {
         if (signal?.aborted) throw new DOMException("aborted", "AbortError");
         input.onStrategyWait?.(milliseconds);
       },
-      salesAndTrafficReports: {
-        start: startSales,
-        status: getSalesStatus,
-        data: salesData,
-        dataFromDocument: salesData,
-      },
+      salesAndTrafficRead: salesData,
     });
     routers.push(router);
-    return { router, createAdsReport, startListing };
+    return { router, createAdsReport, startListing, startSales };
   }
 
   async function start(router: ApiRouter, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
@@ -347,26 +350,34 @@ describe("FBA advertising strategy router job", () => {
     })));
   }
 
-  async function getJob(router: ApiRouter, jobId: string): Promise<ApiResponse> {
+  async function getJob(
+    router: ApiRouter,
+    jobId: string,
+    range: { startDate?: string; endDate?: string } = {},
+  ): Promise<ApiResponse> {
     return router.handle(apiRequest({
       method: "GET",
       query: {
         marketplaceId: MARKETPLACE_ID,
         jobId,
-        startDate: START_DATE,
-        endDate: END_DATE,
+        startDate: range.startDate ?? START_DATE,
+        endDate: range.endDate ?? END_DATE,
       },
     }));
   }
 
-  async function terminal(router: ApiRouter, jobId: string): Promise<Record<string, unknown>> {
+  async function terminal(
+    router: ApiRouter,
+    jobId: string,
+    range: { startDate?: string; endDate?: string } = {},
+  ): Promise<Record<string, unknown>> {
     let last: Record<string, unknown> | null = null;
     // A loaded CI runner can take longer than 200 ms to advance all four
     // background phases. Keep fast local polling, but allow a bounded two
     // seconds before declaring the job stuck.
     for (let attempt = 0; attempt < 200; attempt += 1) {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      const response = await getJob(router, jobId);
+      const response = await getJob(router, jobId, range);
       const value = jsonValue(response);
       last = value;
       if (value.state !== "running") return value;
@@ -393,9 +404,26 @@ describe("FBA advertising strategy router job", () => {
         schemaVersion: 1,
         marketplaceId: MARKETPLACE_ID,
         currencyCode: "USD",
+        sourceFetchedAt: {
+          sales: "2026-08-21T12:00:03.000Z",
+        },
         rows: [
-          { sellerSku: "SAFE-SKU-1", salesTier: "T1", spSpend: 12 },
-          { sellerSku: "SAFE-SKU-2", salesTier: "T3", spSpend: 5 },
+          {
+            sellerSku: "SAFE-SKU-1",
+            asin: "B000000001",
+            unitsSold: 10,
+            salesAmount: 100,
+            salesTier: "T1",
+            spSpend: 12,
+          },
+          {
+            sellerSku: "SAFE-SKU-2",
+            asin: "B000000002",
+            unitsSold: 5,
+            salesAmount: 25,
+            salesTier: "T3",
+            spSpend: 5,
+          },
         ],
       },
     });
@@ -435,12 +463,13 @@ describe("FBA advertising strategy router job", () => {
   });
 
   it("single-flights the same running selection", async () => {
-    const { router, createAdsReport } = buildRouter();
+    const { router, createAdsReport, startSales } = buildRouter();
     const first = await start(router);
     const second = await start(router);
     expect(second.jobId).toBe(first.jobId);
     await terminal(router, String(first.jobId));
     expect(createAdsReport).toHaveBeenCalledTimes(1);
+    expect(startSales).toHaveBeenCalledTimes(1);
   });
 
   it("keeps polling the same Ads report beyond thirty minutes", async () => {
@@ -474,6 +503,27 @@ describe("FBA advertising strategy router job", () => {
     await terminal(built.router, String(refreshed.jobId));
 
     expect(built.startListing).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses compatible Sales & Traffic reports when the date selection returns A to B to A", async () => {
+    const built = buildRouter();
+    const rangeB = { startDate: "2026-07-01", endDate: "2026-07-20" };
+
+    const rangeA = await start(built.router);
+    await terminal(built.router, String(rangeA.jobId));
+    const rangeBJob = await start(built.router, { ...rangeB, refresh: true });
+    await terminal(built.router, String(rangeBJob.jobId), rangeB);
+    const rangeAAgain = await start(built.router, { refresh: true });
+    await terminal(built.router, String(rangeAAgain.jobId));
+
+    expect(built.startSales).toHaveBeenCalledTimes(2);
+    expect(built.startSales.mock.calls.map(([request]) => ({
+      startDate: request.startDate,
+      endDate: request.endDate,
+    }))).toEqual([
+      { startDate: START_DATE, endDate: END_DATE },
+      rangeB,
+    ]);
   });
 
   it("rejects future dates before reading account scope or creating reports", async () => {

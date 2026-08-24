@@ -1104,34 +1104,6 @@ export class LocalStore {
     return value ? structuredClone(value) : null;
   }
 
-  async findBrandSalesListingCandidate(input: {
-    accountScope: string;
-    marketplaceId: string;
-    now?: number;
-  }): Promise<BrandSalesJobRecord | null> {
-    const now = input.now ?? Date.now();
-    const data = await this.read();
-    const value = Object.values(data.brandSalesJobs)
-      .filter(
-        (candidate): candidate is BrandSalesJobRecord =>
-          !isBrandSalesIncompatibleJob(candidate),
-      )
-      .filter(
-        (candidate) =>
-          candidate.accountScope === input.accountScope &&
-          candidate.marketplaceId === input.marketplaceId &&
-          candidate.expiresAt > now &&
-          candidate.listing.status !== "NOT_STARTED" &&
-          candidate.listing.status !== "CREATE_FAILED",
-      )
-      .sort(
-        (left, right) =>
-          (right.listing.createdAt ?? right.createdAt) -
-          (left.listing.createdAt ?? left.createdAt),
-      )[0];
-    return value ? structuredClone(value) : null;
-  }
-
   async getSharedAllListingsReport(input: {
     accountScope: string;
     marketplaceId: string;

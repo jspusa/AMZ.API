@@ -22,7 +22,7 @@ const previousClientSecret = process.env.SP_API_LWA_CLIENT_SECRET;
 const previousRefreshToken = process.env.SP_API_REFRESH_TOKEN_NA;
 type RouterInput = ConstructorParameters<typeof ApiRouter>[0];
 type DemoListingStart = NonNullable<
-  NonNullable<RouterInput["brandSalesReports"]>["startListing"]
+  NonNullable<RouterInput["allListingsDemoReports"]>["start"]
 >;
 
 function request(
@@ -100,7 +100,7 @@ describe("main-owned audit suite routes", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      brandSalesReports: { startListing },
+      allListingsDemoReports: { start: startListing },
       agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
     });
   });
@@ -203,8 +203,8 @@ describe("main-owned audit suite routes", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      brandSalesReports: {
-        startListing,
+      allListingsDemoReports: {
+        start: startListing,
       },
       agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
     });
@@ -333,9 +333,9 @@ describe("main-owned audit suite routes", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      brandSalesReports: {
-        startListing,
-        getListingStatus,
+      allListingsDemoReports: {
+        start: startListing,
+        status: getListingStatus,
       },
     });
     await router.handle(request("POST", "/api/sp-api/audit-suite", {

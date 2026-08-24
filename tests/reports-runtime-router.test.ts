@@ -184,9 +184,9 @@ describe("Reports runtime router wiring", () => {
         accountScope: "opaque-live-account",
       })),
       reportsAdapter,
-      brandSalesReports: {
-        startListing: legacyStart as never,
-        getListingStatus: legacyStatus as never,
+      allListingsDemoReports: {
+        start: legacyStart as never,
+        status: legacyStatus as never,
       },
     });
 

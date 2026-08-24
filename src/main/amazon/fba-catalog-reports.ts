@@ -17,7 +17,10 @@ import type {
   ReportsRuntimeReceipt,
 } from "./reports-runtime";
 import { SpApiError } from "./sp-api-error";
-import type { SpExecutionContextAdapter } from "./sp-execution-context";
+import type {
+  SpExecutionContext,
+  SpExecutionContextAdapter,
+} from "./sp-execution-context";
 
 export type FbaCatalogReportsPurpose =
   | "catalog"
@@ -52,6 +55,7 @@ type CatalogReadBase = Readonly<{
   reportId: string;
   documentId: string;
   signal?: AbortSignal;
+  expectedContext?: SpExecutionContext;
 }>;
 
 export type FbaCatalogReportsReadInput =
@@ -124,14 +128,33 @@ export class FbaCatalogReports {
     this.now = input.now ?? (() => new Date());
   }
 
+  private async executionContext(
+    marketplaceId: MarketplaceId,
+    expected?: SpExecutionContext,
+  ): Promise<SpExecutionContext> {
+    if (!expected) return this.context.capture(marketplaceId);
+    if (expected.marketplaceId !== marketplaceId) {
+      throw new SpApiError("Catalog 報表與固定執行站點不一致。", {
+        status: 409,
+        code: "SP_CONTEXT_INVALIDATED",
+      });
+    }
+    await this.context.assertCurrent(expected);
+    return expected;
+  }
+
   async begin(input: Readonly<{
     purpose: FbaCatalogReportsPurpose;
     marketplaceId: MarketplaceId;
     explicitRetry: boolean;
     freshCompleted?: boolean;
     signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
   }>): Promise<ReportsRuntimeReceipt> {
-    const context = await this.context.capture(input.marketplaceId);
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
     const allListings = this.reports.start(
       {
         intent: "all-listings",
@@ -141,6 +164,7 @@ export class FbaCatalogReports {
       {
         explicitRetry: input.explicitRetry,
         freshCompleted: input.freshCompleted,
+        expectedContext: context,
       },
     );
     if (input.purpose === "catalog") {
@@ -157,7 +181,7 @@ export class FbaCatalogReports {
           marketplaceId: input.marketplaceId,
           signal: input.signal,
         },
-        { explicitRetry: input.explicitRetry },
+        { explicitRetry: input.explicitRetry, expectedContext: context },
       ),
     ]);
     const rejectedReasons = [allResult, activeResult].flatMap((result) =>
@@ -178,8 +202,12 @@ export class FbaCatalogReports {
     marketplaceId: MarketplaceId;
     reportId: string;
     signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
   }>): Promise<ReportsRuntimeReceipt> {
-    const context = await this.context.capture(input.marketplaceId);
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
     const receipt = await this.reports.status(
       {
         intent: "all-listings",
@@ -187,6 +215,7 @@ export class FbaCatalogReports {
         signal: input.signal,
       },
       input.reportId,
+      context,
     );
     await this.context.assertCurrent(context);
     return receipt;
@@ -217,14 +246,17 @@ export class FbaCatalogReports {
     | FbaCatalogSeed[]
     | BusinessPricingAuditSnapshot
   > {
-    const context = await this.context.capture(input.marketplaceId);
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
     const plan = {
       intent: "all-listings" as const,
       marketplaceId: input.marketplaceId,
       signal: input.signal,
     };
     if (context.mode === "demo") {
-      const receipt = await this.reports.read(plan);
+      const receipt = await this.reports.read(plan, context);
       await this.context.assertCurrent(context);
       if (
         !receipt ||
@@ -255,6 +287,7 @@ export class FbaCatalogReports {
     const document = await this.reports.readDocument(
       plan,
       { reportId: input.reportId, documentId: input.documentId },
+      context,
     );
     await this.context.assertCurrent(context);
     if (document.mode !== context.mode) {
@@ -297,6 +330,7 @@ export class FbaCatalogReports {
     const activeListingsDocument = await this.readExistingActiveDocument(
       input.marketplaceId,
       context.mode,
+      context,
       input.signal,
       "heartbeat" in input ? input.heartbeat : undefined,
     );
@@ -317,6 +351,7 @@ export class FbaCatalogReports {
   private async readExistingActiveDocument(
     marketplaceId: MarketplaceId,
     expectedMode: "live" | "demo",
+    context: SpExecutionContext,
     signal?: AbortSignal,
     heartbeat?: () => void,
   ): Promise<string | null> {
@@ -327,7 +362,7 @@ export class FbaCatalogReports {
     };
     try {
       heartbeat?.();
-      let receipt = await this.reports.read(plan);
+      let receipt = await this.reports.read(plan, context);
       heartbeat?.();
       if (!receipt) return null;
       for (let attempt = 0; !receipt.ready && attempt < 180; attempt += 1) {
@@ -339,7 +374,7 @@ export class FbaCatalogReports {
         }
         await this.pace(1_000, signal);
         heartbeat?.();
-        receipt = await this.reports.status(plan, receipt.reportId);
+        receipt = await this.reports.status(plan, receipt.reportId, context);
         heartbeat?.();
       }
       if (
@@ -352,7 +387,7 @@ export class FbaCatalogReports {
       const document = await this.reports.readDocument(plan, {
         reportId: receipt.reportId,
         documentId: receipt.documentId,
-      });
+      }, context);
       heartbeat?.();
       if (document.mode !== expectedMode) {
         throw new SpApiError("B2B 報表模式與全商品報表不一致。", {

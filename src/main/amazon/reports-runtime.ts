@@ -114,6 +114,7 @@ export type ReportsRuntimeDocument = Readonly<{
 export type ReportsRuntimeStartOptions = Readonly<{
   explicitRetry: boolean;
   freshCompleted?: boolean;
+  expectedContext?: SpExecutionContext;
 }>;
 
 type ScriptedCreateStep = Readonly<{
@@ -538,12 +539,30 @@ export class ReportsRuntime {
     }
   }
 
+  private async executionContext(
+    marketplaceId: MarketplaceId,
+    expected?: SpExecutionContext,
+  ): Promise<SpExecutionContext> {
+    if (!expected) return this.context.capture(marketplaceId);
+    if (expected.marketplaceId !== marketplaceId) {
+      throw new SpExecutionContextError(
+        "SP_CONTEXT_INVALIDATED",
+        "Amazon 執行環境與固定報表站點不一致；請重新開始。",
+      );
+    }
+    await this.context.assertCurrent(expected);
+    return expected;
+  }
+
   async start(
     plan: ReportsIntentPlan,
     options: ReportsRuntimeStartOptions,
   ): Promise<ReportsRuntimeReceipt> {
     assertPlan(plan);
-    const context = await this.context.capture(plan.marketplaceId);
+    const context = await this.executionContext(
+      plan.marketplaceId,
+      options.expectedContext,
+    );
     const identity = reportsDurableIdentity(context, plan);
     const adapterIdentity = reportsAdapterIdentity(plan, context.mode);
     await this.lifecycleCall(context, () =>
@@ -576,9 +595,12 @@ export class ReportsRuntime {
     return receipt;
   }
 
-  async read(plan: ReportsIntentPlan): Promise<ReportsRuntimeReceipt | null> {
+  async read(
+    plan: ReportsIntentPlan,
+    expectedContext?: SpExecutionContext,
+  ): Promise<ReportsRuntimeReceipt | null> {
     assertPlan(plan);
-    const context = await this.context.capture(plan.marketplaceId);
+    const context = await this.executionContext(plan.marketplaceId, expectedContext);
     const identity = reportsDurableIdentity(context, plan);
     const lease = await this.store.getSharedReport(identity);
     await this.context.assertCurrent(context);
@@ -606,9 +628,10 @@ export class ReportsRuntime {
   async status(
     plan: ReportsIntentPlan,
     opaqueReportId: string,
+    expectedContext?: SpExecutionContext,
   ): Promise<ReportsRuntimeReceipt> {
     assertPlan(plan);
-    const context = await this.context.capture(plan.marketplaceId);
+    const context = await this.executionContext(plan.marketplaceId, expectedContext);
     const identity = reportsDurableIdentity(context, plan);
     const adapterIdentity = reportsAdapterIdentity(plan, context.mode);
     const lease = await this.leaseForHandle(identity, context.mode, opaqueReportId);
@@ -642,9 +665,10 @@ export class ReportsRuntime {
   async readDocument(
     plan: ReportsIntentPlan,
     input: Readonly<{ reportId: string; documentId: string }>,
+    expectedContext?: SpExecutionContext,
   ): Promise<ReportsRuntimeDocument> {
     assertPlan(plan);
-    const context = await this.context.capture(plan.marketplaceId);
+    const context = await this.executionContext(plan.marketplaceId, expectedContext);
     const identity = reportsDurableIdentity(context, plan);
     const adapterIdentity = reportsAdapterIdentity(plan, context.mode);
     const lease = await this.leaseForHandle(identity, context.mode, input.reportId);
@@ -685,8 +709,9 @@ export class ReportsRuntime {
    */
   async projectDurableLeg(
     plan: ReportsIntentPlan,
+    expectedContext?: SpExecutionContext,
   ): Promise<DurableReportLeg | null> {
-    const context = await this.context.capture(plan.marketplaceId);
+    const context = await this.executionContext(plan.marketplaceId, expectedContext);
     const identity = reportsDurableIdentity(context, plan);
     const lease = await this.store.getSharedReport(identity);
     await this.context.assertCurrent(context);
@@ -709,8 +734,9 @@ export class ReportsRuntime {
       updatedAt: number;
       expiresAt: number;
     }>,
+    expectedContext?: SpExecutionContext,
   ): Promise<ReportsRuntimeReceipt | null> {
-    const context = await this.context.capture(plan.marketplaceId);
+    const context = await this.executionContext(plan.marketplaceId, expectedContext);
     const identity = reportsDurableIdentity(context, plan);
     const claim = await this.store.createSharedReportIfAbsent({
       leaseId: randomUUID(),

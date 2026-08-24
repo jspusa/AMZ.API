@@ -3,31 +3,10 @@ import {
   buildBrandSalesSnapshot,
   classifyListingBrand,
   classifyListingCategory,
-  parseCurrentFbaListingTitles,
   parseFbaShipmentSalesReport,
 } from "../src/main/amazon/brand-sales";
 
 describe("FBA brand sales", () => {
-  it("reads only FBA listing titles and rejects a missing fulfillment column", () => {
-    const listings = parseCurrentFbaListingTitles(
-      [
-        "item-name\tseller-sku\tasin1\tfulfillment-channel",
-        "Afreschi Treats\tAFA01\tB000000001\tAMAZON_NA",
-        "GooToE Treats\tGTC01\tB000000002\tAFN",
-        "\tUNTITLED\tB000000004\tAMAZON",
-        "FBM Treats\tMFN01\tB000000003\tDEFAULT",
-      ].join("\n"),
-    );
-    expect(listings).toEqual([
-      { sellerSku: "AFA01", title: "Afreschi Treats" },
-      { sellerSku: "GTC01", title: "GooToE Treats" },
-      { sellerSku: "UNTITLED", title: "" },
-    ]);
-    expect(() =>
-      parseCurrentFbaListingTitles("item-name\tseller-sku\nA\tSKU"),
-    ).toThrow(/履約管道/u);
-  });
-
   it("parses official FBA shipment rows without accepting malformed money", () => {
     const report = [
       "shipment-date\tsku\tquantity\tcurrency\titem-price-per-unit",
@@ -48,23 +27,6 @@ describe("FBA brand sales", () => {
   });
 
   it("never trims or aliases Seller SKU evidence before joining brand sales", () => {
-    expect(() =>
-      parseCurrentFbaListingTitles(
-        [
-          "item-name\tseller-sku\tfulfillment-channel",
-          "Afreschi Treats\t AFA01\tAMAZON",
-        ].join("\n"),
-      ),
-    ).toThrow(/無法安全辨識/u);
-    expect(() =>
-      parseCurrentFbaListingTitles(
-        [
-          "item-name\tseller-sku\tfulfillment-channel",
-          "Afreschi Treats\tAFA01\tAMAZON",
-          "Afreschi Treats duplicate\tAFA01\tAMAZON",
-        ].join("\n"),
-      ),
-    ).toThrow(/重複/u);
     expect(() =>
       parseFbaShipmentSalesReport(
         [

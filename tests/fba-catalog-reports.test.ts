@@ -144,7 +144,15 @@ describe("FBA catalog Reports coordinator", () => {
     expect(start).toHaveBeenNthCalledWith(
       1,
       { intent: "all-listings", marketplaceId: US, signal: undefined },
-      { explicitRetry: true, freshCompleted: undefined },
+      {
+        explicitRetry: true,
+        freshCompleted: undefined,
+        expectedContext: expect.objectContaining({
+          marketplaceId: US,
+          mode: "live",
+          accountScope: "opaque-catalog-account",
+        }),
+      },
     );
     expect(start).toHaveBeenNthCalledWith(
       2,
@@ -153,7 +161,14 @@ describe("FBA catalog Reports coordinator", () => {
         marketplaceId: US,
         signal: undefined,
       },
-      { explicitRetry: true },
+      {
+        explicitRetry: true,
+        expectedContext: expect.objectContaining({
+          marketplaceId: US,
+          mode: "live",
+          accountScope: "opaque-catalog-account",
+        }),
+      },
     );
   });
 
@@ -200,6 +215,11 @@ describe("FBA catalog Reports coordinator", () => {
     expect(status).toHaveBeenCalledWith(
       { intent: "all-listings", marketplaceId: US, signal: undefined },
       "report-lease.all",
+      expect.objectContaining({
+        marketplaceId: US,
+        mode: "live",
+        accountScope: "opaque-catalog-account",
+      }),
     );
   });
 
@@ -264,11 +284,20 @@ describe("FBA catalog Reports coordinator", () => {
       intent: "active-business-listings",
       marketplaceId: US,
       signal: undefined,
-    });
+    }, expect.objectContaining({
+      marketplaceId: US,
+      mode: "live",
+      accountScope: "opaque-catalog-account",
+    }));
     expect(readDocument).toHaveBeenNthCalledWith(
       1,
       { intent: "all-listings", marketplaceId: US, signal: undefined },
       { reportId: "report-lease.all", documentId: "report-document.all" },
+      expect.objectContaining({
+        marketplaceId: US,
+        mode: "live",
+        accountScope: "opaque-catalog-account",
+      }),
     );
     expect(readDocument).toHaveBeenNthCalledWith(
       2,
@@ -281,6 +310,11 @@ describe("FBA catalog Reports coordinator", () => {
         reportId: "report-lease.active",
         documentId: "report-document.active",
       },
+      expect.objectContaining({
+        marketplaceId: US,
+        mode: "live",
+        accountScope: "opaque-catalog-account",
+      }),
     );
   });
 

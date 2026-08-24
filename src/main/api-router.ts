@@ -16,11 +16,7 @@ import {
 } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import {
-  isBrandSalesIncompatibleJob,
   LocalStore,
-  type BrandSalesIncompatibleJobRecord,
-  type BrandSalesJobRecord,
-  type BrandSalesReportLeg,
   type ProductMasterState,
 } from "./local-store";
 import {
@@ -79,10 +75,7 @@ import {
   getAgedInventoryData,
   getAgedInventoryDataFromDocument,
   getAgedInventoryReportStatus,
-  getBrandSalesDataFromDocuments,
-  getBrandSalesReportWindow,
   getFbaVariationGroupingData,
-  getFbaShipmentSalesReportStatus,
   getFbaInboundShipmentSnapshot,
   getInboundNoncomplianceReportDocument,
   getInboundNoncomplianceReportStatus,
@@ -95,9 +88,6 @@ import {
   getAplusContentPublishRecordsPage,
   getRestockPlan,
   getSalesTrend,
-  getSalesAndTrafficReportData,
-  getSalesAndTrafficReportDataFromDocument,
-  getSalesAndTrafficReportStatus,
   getFbaSubscriptionAudit,
   getCustomerFeedbackReviewTopics,
   getDemoFbaReviewAuditCandidates,
@@ -118,9 +108,7 @@ import {
   searchListingsBySku,
   searchOrders,
   startAgedInventoryReport,
-  startFbaShipmentSalesReport,
   startInboundNoncomplianceReport,
-  startSalesAndTrafficReport,
   updateListingContent,
   updateBusinessPrice,
   updateListingImages,
@@ -138,12 +126,10 @@ import {
   type ListingImageSnapshot,
   type ListingPriceSnapshot,
   type MarketplaceId,
-  type BrandSalesSnapshot,
   type FbaInboundShipmentSnapshot,
   type RestockPlanSnapshot,
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
-  type SalesAndTrafficSnapshot,
   type SubscribeAndSaveOfferSnapshot,
   type SubscriptionAuditSnapshot,
   type UpdateListingContentInput,
@@ -152,6 +138,25 @@ import {
   type FbaVariationGroupingData,
   type VariationMoveInput,
 } from "./amazon/sp-api";
+import {
+  SalesAndTrafficReports,
+  type SalesAndTrafficDemoSource,
+  type SalesAndTrafficDocumentReader,
+} from "./amazon/sales-and-traffic-reports";
+import { createSalesAndTrafficDemoSource } from
+  "./amazon/sales-and-traffic-demo";
+import type {
+  SalesAndTrafficSnapshot,
+} from "./amazon/sales-and-traffic-reads";
+import {
+  planCompletedSalesAndTrafficWindow,
+} from "./amazon/revenue-report-windows";
+import { createBrandSalesDemoSource } from "./amazon/brand-sales-demo";
+import {
+  FbaRevenueReports,
+  FbaRevenueReportsError,
+  type BrandSalesDemoSource,
+} from "./amazon/fba-revenue-reports";
 import {
   FbaCatalogReports,
   type FbaCatalogReportsDemoSource,
@@ -361,10 +366,6 @@ type ReviewAuditJob = {
   retainWhileActive: boolean;
 };
 
-type BrandSalesRuntimeJob = BrandSalesJobRecord & {
-  snapshot: BrandSalesSnapshot | null;
-};
-
 type DemoFixedReportStart = (input: Readonly<{
   marketplaceId: MarketplaceId;
   signal?: AbortSignal;
@@ -376,13 +377,9 @@ type DemoFixedReportStatus = (input: Readonly<{
   signal?: AbortSignal;
 }>) => Promise<DurableReportGatewayStatus>;
 
-type BrandSalesReportGateway = {
-  startListing: DemoFixedReportStart;
-  startShipment: typeof startFbaShipmentSalesReport;
-  getListingStatus: DemoFixedReportStatus;
-  getShipmentStatus: typeof getFbaShipmentSalesReportStatus;
-  getDataFromDocuments: typeof getBrandSalesDataFromDocuments;
-  reportWindow: typeof getBrandSalesReportWindow;
+type DemoAllListingsReportGateway = {
+  start: DemoFixedReportStart;
+  status: DemoFixedReportStatus;
 };
 
 type AgedInventoryReportGateway = {
@@ -393,13 +390,6 @@ type AgedInventoryReportGateway = {
 type BusinessPricingActiveListingsReportGateway = {
   start: DemoFixedReportStart;
   status: DemoFixedReportStatus;
-};
-
-type SalesAndTrafficReportGateway = {
-  start: typeof startSalesAndTrafficReport;
-  status: typeof getSalesAndTrafficReportStatus;
-  data: typeof getSalesAndTrafficReportData;
-  dataFromDocument: typeof getSalesAndTrafficReportDataFromDocument;
 };
 
 type AdvertisingStrategyReportGateway = AdvertisingGateway & Required<Pick<
@@ -494,38 +484,62 @@ function assertDemoReportsRequest(request: Readonly<{ mode: "live" | "demo" }>):
   }
 }
 
+function demoRevenueReportReference(
+  request: Extract<
+    ReportsIntentPlan,
+    { intent: "fba-shipment-sales" | "sales-and-traffic-daily-sku" }
+  >,
+): string {
+  return request.intent === "fba-shipment-sales"
+    ? `demo-brand-${request.marketplaceId}-${request.startDate}-${request.endDate}`
+    : `demo-sales-traffic-${request.marketplaceId}-${request.startDate}-${request.endDate}`;
+}
+
+function demoRevenueReportStatus(
+  request: Extract<
+    ReportsIntentPlan,
+    { intent: "fba-shipment-sales" | "sales-and-traffic-daily-sku" }
+  >,
+  reportId?: string,
+): DurableReportGatewayStatus {
+  const reference = demoRevenueReportReference(request);
+  if (reportId !== undefined && reportId !== reference) {
+    throw new SpApiError("展示營收報表與目前站點或日期不一致。", {
+      status: 409,
+      code: "REPORT_MISMATCH",
+    });
+  }
+  return {
+    mode: "demo",
+    ready: true,
+    reportId: reference,
+    documentId: reference,
+    status: "DONE",
+    notice: request.intent === "fba-shipment-sales"
+      ? "展示用 FBA 品牌出貨報表已準備完成。"
+      : "展示用銷售與流量報表已準備完成。",
+  };
+}
+
 function routerDemoReportsAdapter(input: Readonly<{
-  brand: BrandSalesReportGateway;
+  allListings: DemoAllListingsReportGateway;
   aged: AgedInventoryReportGateway;
   activeBusiness: BusinessPricingActiveListingsReportGateway;
-  salesAndTraffic: SalesAndTrafficReportGateway;
   inboundNoncompliance: InboundNoncomplianceReportGateway;
 }>): ReportsAdapter {
   const identity = (
     request: ReportsIntentPlan & { mode: "live" | "demo" },
-    result?: Readonly<{
-      mode: "live" | "demo";
-      dataStartTime?: string;
-      dataEndTime?: string;
-    }>,
-  ) => {
-    const expected = reportsAdapterIdentity(
+    result?: Readonly<{ mode: "live" | "demo" }>,
+  ) =>
+    reportsAdapterIdentity(
       request as unknown as ReportsIntentPlan,
       result?.mode ?? request.mode,
     );
-    return request.intent === "fba-shipment-sales" && result
-      ? {
-          ...expected,
-          dataStartTime: result.dataStartTime ?? "",
-          dataEndTime: result.dataEndTime ?? "",
-        }
-      : expected;
-  };
   return {
     async create(request) {
       assertDemoReportsRequest(request);
       const result = request.intent === "all-listings"
-        ? await input.brand.startListing({
+        ? await input.allListings.start({
             marketplaceId: request.marketplaceId,
             signal: request.signal,
           })
@@ -545,26 +559,14 @@ function routerDemoReportsAdapter(input: Readonly<{
                   signal: request.signal,
                 })
               : request.intent === "sales-and-traffic-daily-sku"
-                ? await input.salesAndTraffic.start({
-                    marketplaceId: request.marketplaceId,
-                    startDate: request.startDate,
-                    endDate: request.endDate,
-                    signal: request.signal,
-                  })
-                : await input.brand.startShipment({
-                    marketplaceId: request.marketplaceId,
-                    startDate: request.startDate,
-                    endDate: request.endDate,
-                    dataStartTime: request.dataStartTime,
-                    dataEndTime: request.dataEndTime,
-                    windowCreatedAt: request.windowCreatedAt,
-                  });
+                ? demoRevenueReportStatus(request)
+                : demoRevenueReportStatus(request);
       return { ...result, identity: identity(request, result) };
     },
     async status(request) {
       assertDemoReportsRequest(request);
       const result = request.intent === "all-listings"
-        ? await input.brand.getListingStatus({
+        ? await input.allListings.status({
             marketplaceId: request.marketplaceId,
             reportId: request.reportId,
             signal: request.signal,
@@ -588,22 +590,8 @@ function routerDemoReportsAdapter(input: Readonly<{
                   signal: request.signal,
                 })
               : request.intent === "sales-and-traffic-daily-sku"
-                ? await input.salesAndTraffic.status({
-                    marketplaceId: request.marketplaceId,
-                    reportId: request.reportId,
-                    startDate: request.startDate,
-                    endDate: request.endDate,
-                    signal: request.signal,
-                  })
-                : await input.brand.getShipmentStatus({
-                    marketplaceId: request.marketplaceId,
-                    reportId: request.reportId,
-                    startDate: request.startDate,
-                    endDate: request.endDate,
-                    dataStartTime: request.dataStartTime,
-                    dataEndTime: request.dataEndTime,
-                    windowCreatedAt: request.windowCreatedAt,
-                  });
+                ? demoRevenueReportStatus(request, request.reportId)
+                : demoRevenueReportStatus(request, request.reportId);
       return { ...result, identity: identity(request, result) };
     },
     async readDocument(request) {
@@ -963,9 +951,6 @@ function contentAuditLegacyRecoveredFieldWasEdited(input: {
       input.proposed.ingredients,
     );
 }
-const BRAND_SALES_REUSE_WINDOW_MS = 30 * 60 * 1_000;
-const BRAND_SALES_NEAR_REUSE_BOUNDARY_MS = 2 * 60 * 1_000;
-const BRAND_SALES_JOB_RETENTION_MS = 60 * 60 * 1_000;
 const REVIEW_AUDIT_JOB_TTL_MS = 30 * 60 * 1_000;
 const REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS = 1_050;
 const INBOUND_SHIPMENT_ACTIVE_TTL_MS = 60 * 60 * 1_000;
@@ -1032,6 +1017,13 @@ function bytes(
 }
 
 function apiError(error: unknown, fallback: string): ApiResponse {
+  if (error instanceof FbaRevenueReportsError) {
+    return json(
+      { code: error.code, message: error.message },
+      error.status,
+      error.retryAfter ? { "retry-after": error.retryAfter } : {},
+    );
+  }
   if (error instanceof StandaloneAuditJobCoordinatorError) {
     return json({ code: error.code, message: error.message }, error.status);
   }
@@ -1602,11 +1594,10 @@ export class ApiRouter {
   private readonly vault: CredentialVault;
   private readonly approveWrite: WriteApproval;
   private readonly spExecutionContext: SpExecutionContextAdapter;
-  private readonly brandSalesReports: BrandSalesReportGateway;
+  private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReports: AgedInventoryReportGateway;
   private readonly businessPricingActiveListingsReports:
     BusinessPricingActiveListingsReportGateway;
-  private readonly salesAndTrafficReports: SalesAndTrafficReportGateway;
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
   private readonly reviewAuditCandidates: ReviewAuditCandidateSource;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
@@ -1614,8 +1605,10 @@ export class ApiRouter {
   private readonly inboundNoncomplianceReports: InboundNoncomplianceReportGateway;
   private readonly reportLifecycle: DurableReportLifecycle;
   private readonly reportsRuntime: ReportsRuntime;
+  private readonly salesAndTraffic: SalesAndTrafficReports;
   private readonly catalogListings: CatalogListingsReadAdapter;
   private readonly fbaCatalogReports: FbaCatalogReports;
+  private readonly fbaRevenueReports: FbaRevenueReports;
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
   private readonly aplusAuditJobs: AplusAuditJobCoordinator;
@@ -1650,13 +1643,6 @@ export class ApiRouter {
     }
   >();
   private readonly contentBatchPlans = new Map<string, ContentBatchPlan>();
-  private readonly brandSalesJobs = new Map<string, BrandSalesRuntimeJob>();
-  private readonly brandSalesStartFlights = new Map<string, Promise<ApiResponse>>();
-  private readonly brandSalesPollFlights = new Map<
-    string,
-    Promise<ApiResponse | null>
-  >();
-  private readonly brandSalesDataFlights = new Map<string, Promise<ApiResponse>>();
   private readonly reviewAuditJobs = new Map<string, ReviewAuditJob>();
   private readonly reviewAuditPollFlights = new Map<string, Promise<ApiResponse>>();
   private readonly reviewAuditRunnerTimers = new Map<
@@ -1674,20 +1660,23 @@ export class ApiRouter {
     store: LocalStore;
     vault: CredentialVault;
     approveWrite: WriteApproval;
-    brandSalesReports?: Partial<BrandSalesReportGateway>;
+    allListingsDemoReports?: Partial<DemoAllListingsReportGateway>;
     agedInventoryReports?: Partial<AgedInventoryReportGateway>;
     businessPricingActiveListingsReports?: Partial<
       BusinessPricingActiveListingsReportGateway
     >;
-    salesAndTrafficReports?: Partial<SalesAndTrafficReportGateway>;
+    salesAndTrafficRead?: SalesAndTrafficDocumentReader;
+    salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
     reviewAuditCandidates?: ReviewAuditCandidateSource;
     advertisingStrategyWait?: typeof waitMilliseconds;
     inboundShipments?: Partial<InboundShipmentGateway>;
     inboundNoncomplianceReports?: Partial<InboundNoncomplianceReportGateway>;
     reportsAdapter?: ReportsAdapter;
+    demoReportsAdapter?: ReportsAdapter;
     catalogListings?: CatalogListingsReadAdapter;
     catalogDemo?: Partial<FbaCatalogReportsDemoSource>;
+    brandSalesDemo?: Partial<BrandSalesDemoSource>;
     catalogPace?: (
       milliseconds: number,
       signal?: AbortSignal,
@@ -1712,20 +1701,16 @@ export class ApiRouter {
       });
     this.advertising = input.advertising ?? null;
     this.reportLifecycle = new DurableReportLifecycle(this.store);
-    this.brandSalesReports = {
-      startListing: (request) => startDemoFixedReport({
+    this.allListingsDemoReports = {
+      start: (request) => startDemoFixedReport({
         intent: "all-listings",
         ...request,
       }),
-      startShipment: startFbaShipmentSalesReport,
-      getListingStatus: (request) => statusDemoFixedReport({
+      status: (request) => statusDemoFixedReport({
         intent: "all-listings",
         ...request,
       }),
-      getShipmentStatus: getFbaShipmentSalesReportStatus,
-      getDataFromDocuments: getBrandSalesDataFromDocuments,
-      reportWindow: getBrandSalesReportWindow,
-      ...input.brandSalesReports,
+      ...input.allListingsDemoReports,
     };
     this.agedInventoryReports = {
       start: startAgedInventoryReport,
@@ -1743,13 +1728,6 @@ export class ApiRouter {
       }),
       ...input.businessPricingActiveListingsReports,
     };
-    this.salesAndTrafficReports = {
-      start: startSalesAndTrafficReport,
-      status: getSalesAndTrafficReportStatus,
-      data: getSalesAndTrafficReportData,
-      dataFromDocument: getSalesAndTrafficReportDataFromDocument,
-      ...input.salesAndTrafficReports,
-    };
     this.advertisingStrategyWait = input.advertisingStrategyWait ?? waitMilliseconds;
     this.inboundShipments = {
       snapshot: getFbaInboundShipmentSnapshot,
@@ -1761,11 +1739,10 @@ export class ApiRouter {
       document: getInboundNoncomplianceReportDocument,
       ...input.inboundNoncomplianceReports,
     };
-    const compatibilityReportsAdapter = routerDemoReportsAdapter({
-      brand: this.brandSalesReports,
+    const compatibilityReportsAdapter = input.demoReportsAdapter ?? routerDemoReportsAdapter({
+      allListings: this.allListingsDemoReports,
       aged: this.agedInventoryReports,
       activeBusiness: this.businessPricingActiveListingsReports,
-      salesAndTraffic: this.salesAndTrafficReports,
       inboundNoncompliance: this.inboundNoncomplianceReports,
     });
     const liveReportsAdapter = input.reportsAdapter ??
@@ -1791,6 +1768,18 @@ export class ApiRouter {
       ...catalogReportsDemoSource,
       ...input.catalogDemo,
     };
+    this.salesAndTraffic = new SalesAndTrafficReports({
+      reports: this.reportsRuntime,
+      context: this.spExecutionContext,
+      liveReader: input.salesAndTrafficRead,
+      demo: {
+        ...createSalesAndTrafficDemoSource({
+          listings: async ({ marketplaceId, signal }) =>
+            (await defaultCatalogDemo.identity({ marketplaceId, signal })).rows,
+        }),
+        ...input.salesAndTrafficDemo,
+      },
+    });
     this.catalogListings = input.catalogListings ??
       catalogListingsReadAdapterProduction;
     this.fbaCatalogReports = new FbaCatalogReports({
@@ -1800,6 +1789,19 @@ export class ApiRouter {
       demo: defaultCatalogDemo,
       pace: input.catalogPace,
       now: input.catalogNow,
+    });
+    this.fbaRevenueReports = new FbaRevenueReports({
+      store: this.store,
+      reports: this.reportsRuntime,
+      catalog: this.fbaCatalogReports,
+      context: this.spExecutionContext,
+      demo: {
+        ...createBrandSalesDemoSource({
+          listings: ({ marketplaceId, signal }) =>
+            defaultCatalogDemo.seeds({ marketplaceId, signal }),
+        }),
+        ...input.brandSalesDemo,
+      },
     });
     this.advertisingStrategySources = {
       fbaListings: (request) => this.fbaCatalogReports.read({
@@ -1874,6 +1876,7 @@ export class ApiRouter {
 
   clearPreviews(): void {
     this.reportsRuntime.clear();
+    this.fbaRevenueReports.clear();
     this.aplusAuditJobs.clear();
     this.standaloneAuditJobs.clear();
     this.previews.clear();
@@ -1882,10 +1885,6 @@ export class ApiRouter {
     this.unboundVariationAuditSnapshots.clear();
     this.imageAuditSnapshots.clear();
     this.contentBatchPlans.clear();
-    this.brandSalesJobs.clear();
-    this.brandSalesStartFlights.clear();
-    this.brandSalesPollFlights.clear();
-    this.brandSalesDataFlights.clear();
     for (const jobId of [...this.reviewAuditJobs.keys()]) {
       this.deleteReviewAuditJob(jobId);
     }
@@ -2696,236 +2695,6 @@ export class ApiRouter {
     }
   }
 
-  private pruneBrandSalesJobs(now = Date.now()): void {
-    for (const [jobId, job] of this.brandSalesJobs) {
-      if (job.expiresAt <= now) this.brandSalesJobs.delete(jobId);
-    }
-  }
-
-  private brandSalesRuntimeJob(record: BrandSalesJobRecord): BrandSalesRuntimeJob {
-    const current = this.brandSalesJobs.get(record.jobId);
-    if (current) {
-      const snapshot = current.snapshot;
-      Object.assign(current, structuredClone(record));
-      current.snapshot = snapshot;
-      return current;
-    }
-    const job: BrandSalesRuntimeJob = {
-      ...structuredClone(record),
-      snapshot: null,
-    };
-    this.brandSalesJobs.set(job.jobId, job);
-    return job;
-  }
-
-  private brandSalesLegReusable(leg: BrandSalesReportLeg): boolean {
-    return (
-      Boolean(leg.reportId) &&
-      leg.terminal === null &&
-      (leg.status === "IN_QUEUE" ||
-        leg.status === "IN_PROGRESS" ||
-        (leg.status === "DONE" && Boolean(leg.documentId)))
-    );
-  }
-
-  private brandSalesJobReady(job: BrandSalesRuntimeJob): boolean {
-    return (
-      job.listing.status === "DONE" &&
-      Boolean(job.listing.reportId) &&
-      Boolean(job.listing.documentId) &&
-      job.shipment.status === "DONE" &&
-      Boolean(job.shipment.reportId) &&
-      Boolean(job.shipment.documentId)
-    );
-  }
-
-  private brandSalesJobReply(job: BrandSalesRuntimeJob): ApiResponse {
-    const ready = this.brandSalesJobReady(job);
-    const status = ready
-      ? "DONE"
-      : job.listing.status === "IN_PROGRESS" || job.shipment.status === "IN_PROGRESS"
-        ? "IN_PROGRESS"
-        : "IN_QUEUE";
-    return json(
-      {
-        jobId: job.jobId,
-        mode: job.mode,
-        marketplaceId: job.marketplaceId,
-        startDate: job.startDate,
-        endDate: job.endDate,
-        expiresAt: new Date(job.expiresAt).toISOString(),
-        ready,
-        status,
-        message: ready
-          ? "Amazon FBA 品牌出貨資料已就緒。"
-          : "Amazon 正在準備 FBA 品牌出貨與目前商品清單。",
-      },
-      ready ? 200 : 202,
-    );
-  }
-
-  private incompatibleBrandSalesRetryWait(
-    job: BrandSalesIncompatibleJobRecord,
-    now: number,
-  ): number {
-    const lastPossibleCreateAt = Math.max(
-      job.createdAt,
-      job.listing.createdAt ?? 0,
-      job.shipment.createdAt ?? 0,
-    );
-    return Math.max(
-      0,
-      lastPossibleCreateAt + BRAND_SALES_REUSE_WINDOW_MS - now,
-    );
-  }
-
-  private brandSalesWaitReply(milliseconds: number): ApiResponse {
-    const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
-    return json(
-      {
-        code: "REPORT_RETRY_WAIT",
-        message: `Amazon 報表建立仍在 30 分鐘安全間隔內；請約 ${Math.ceil(seconds / 60)} 分鐘後再重試，系統不會重複建立。`,
-      },
-      409,
-      { "retry-after": String(seconds) },
-    );
-  }
-
-  private async saveBrandSalesLeg(
-    job: BrandSalesRuntimeJob,
-    leg: "listing" | "shipment",
-    value: BrandSalesReportLeg,
-    now = Date.now(),
-    extendRetention = false,
-  ): Promise<void> {
-    const snapshot = job.snapshot;
-    const persisted = await this.store.updateBrandSalesJobLeg({
-      jobId: job.jobId,
-      leg,
-      value,
-      updatedAt: now,
-      ...(extendRetention
-        ? { expiresAt: Math.max(job.expiresAt, now + BRAND_SALES_JOB_RETENTION_MS) }
-        : {}),
-    });
-    Object.assign(job, persisted);
-    job.snapshot = snapshot;
-  }
-
-  private brandSalesReportPlan(
-    job: BrandSalesRuntimeJob,
-    leg: "listing" | "shipment",
-    signal?: AbortSignal,
-  ): ReportsIntentPlan {
-    const marketplaceId = job.marketplaceId as MarketplaceId;
-    return leg === "listing"
-      ? { intent: "all-listings", marketplaceId, signal }
-      : {
-          intent: "fba-shipment-sales",
-          marketplaceId,
-          startDate: job.startDate,
-          endDate: job.endDate,
-          dataStartTime: job.shipmentDataStartTime,
-          dataEndTime: job.shipmentDataEndTime,
-          windowCreatedAt: job.createdAt,
-          signal,
-        };
-  }
-
-  private async mirrorBrandSalesReceipt(
-    job: BrandSalesRuntimeJob,
-    leg: "listing" | "shipment",
-    status: DurableReportStatus,
-  ): Promise<void> {
-    await this.saveBrandSalesLeg(job, leg, {
-      reportId: status.reportId,
-      documentId: status.documentId,
-      status: status.status,
-      createdAt: job[leg].createdAt ?? Date.now(),
-      terminal: null,
-      terminalAt: null,
-    });
-  }
-
-  private async normalizeBrandSalesLeg(
-    job: BrandSalesRuntimeJob,
-    leg: "listing" | "shipment",
-  ): Promise<void> {
-    const legacy = job[leg];
-    if (
-      legacy.status === "NOT_STARTED" &&
-      !legacy.reportId &&
-      !legacy.terminal
-    ) return;
-    const plan = this.brandSalesReportPlan(job, leg);
-    const opaque = legacy.reportId?.startsWith("report-lease.") ?? false;
-    if (!opaque) {
-      await this.reportsRuntime.adopt(plan, {
-        report: legacy,
-        createdAt: job.createdAt,
-        updatedAt: job.updatedAt,
-        expiresAt: job.expiresAt,
-      });
-    }
-    const projected = await this.reportsRuntime.projectDurableLeg(plan);
-    if (!projected) {
-      throw new SpApiError("品牌營收報表 lease 已失效。", {
-        status: 409,
-        code: "REPORT_MISMATCH",
-      });
-    }
-    if (
-      opaque &&
-      (projected.reportId !== legacy.reportId ||
-        (legacy.documentId !== null &&
-          projected.documentId !== legacy.documentId))
-    ) {
-      throw new SpApiError("品牌營收工作與 Reports runtime 不一致。", {
-        status: 409,
-        code: "REPORT_MISMATCH",
-      });
-    }
-    if (JSON.stringify(projected) !== JSON.stringify(legacy)) {
-      await this.saveBrandSalesLeg(job, leg, projected);
-    }
-  }
-
-  private async normalizeBrandSalesJob(
-    job: BrandSalesRuntimeJob,
-  ): Promise<void> {
-    await Promise.all([
-      this.normalizeBrandSalesLeg(job, "listing"),
-      this.normalizeBrandSalesLeg(job, "shipment"),
-    ]);
-  }
-
-  private async startBrandSalesLeg(
-    job: BrandSalesRuntimeJob,
-    leg: "listing" | "shipment",
-    explicitRetry: boolean,
-  ): Promise<unknown | null> {
-    try {
-      const plan = this.brandSalesReportPlan(job, leg);
-      const status = await this.reportsRuntime.start(
-        plan,
-        { explicitRetry },
-      );
-      await this.mirrorBrandSalesReceipt(job, leg, status);
-      return null;
-    } catch (error) {
-      try {
-        const projected = await this.reportsRuntime.projectDurableLeg(
-          this.brandSalesReportPlan(job, leg),
-        );
-        if (projected) await this.saveBrandSalesLeg(job, leg, projected);
-      } catch {
-        // Preserve the originating Reports error. The runtime lease remains
-        // authoritative even if the compatibility job projection cannot save.
-      }
-      return error;
-    }
-  }
-
   private async startSharedAllListingsReport(
     marketplaceId: MarketplaceId,
     explicitRetry: boolean,
@@ -3022,165 +2791,6 @@ export class ApiRouter {
     });
   }
 
-  private async ensureBrandSalesListingLeg(
-    job: BrandSalesRuntimeJob,
-    explicitRetry: boolean,
-  ): Promise<unknown | null> {
-    if (this.brandSalesLegReusable(job.listing)) return null;
-    return this.startBrandSalesLeg(job, "listing", explicitRetry);
-  }
-
-  private async startBrandSalesSelection(input: {
-    accountScope: string;
-    marketplaceId: MarketplaceId;
-    startDate: string;
-    endDate: string;
-    retry: boolean;
-  }): Promise<ApiResponse> {
-    const now = Date.now();
-    const mode = usesDemoMode(input.marketplaceId) ? "demo" : "live";
-    this.pruneBrandSalesJobs(now);
-    let stored = await this.store.getBrandSalesJob(input);
-    let incompatibleToReplace: BrandSalesIncompatibleJobRecord | null = null;
-    if (stored && stored.mode !== mode) {
-      if (stored.mode === "demo" && mode === "live") {
-        await this.store.deleteBrandSalesJob(stored.jobId);
-        this.brandSalesJobs.delete(stored.jobId);
-        stored = null;
-      } else {
-        return invalid(
-          "尚有真實 Amazon 品牌營收工作紀錄；展示模式不會覆蓋或重送它。",
-          409,
-          "REPORT_MODE_CHANGED",
-        );
-      }
-    }
-    if (stored && isBrandSalesIncompatibleJob(stored)) {
-      if (!input.retry) {
-        return invalid(
-          "上次品牌營收工作缺少新版不可變時間窗；已保留 Amazon 報表識別，不會自動重建。請明確重試。",
-          409,
-          "BRAND_REPORT_WINDOW_INCOMPATIBLE",
-        );
-      }
-      const wait = this.incompatibleBrandSalesRetryWait(stored, now);
-      if (wait > 0) return this.brandSalesWaitReply(wait);
-      incompatibleToReplace = stored;
-      stored = null;
-    }
-    if (
-      stored &&
-      stored.expiresAt <= now &&
-      stored.listing.status === "DONE" &&
-      stored.shipment.status === "DONE" &&
-      this.brandSalesLegReusable(stored.listing) &&
-      this.brandSalesLegReusable(stored.shipment)
-    ) {
-      // Completed documents may be refreshed after the local reuse window.
-      // Unresolved/active records remain durable tombstones instead.
-      await this.store.deleteBrandSalesJob(stored.jobId);
-      this.brandSalesJobs.delete(stored.jobId);
-      stored = null;
-    }
-    let job = stored ? this.brandSalesRuntimeJob(stored) : null;
-
-    if (job) {
-      await this.normalizeBrandSalesJob(job);
-      const bothReusable =
-        this.brandSalesLegReusable(job.listing) &&
-        this.brandSalesLegReusable(job.shipment);
-      if (bothReusable) {
-        const retentionRemaining = job.expiresAt - now;
-        const activeLeg = (["listing", "shipment"] as const).find((leg) =>
-          job![leg].status === "IN_QUEUE" || job![leg].status === "IN_PROGRESS"
-        );
-        if (
-          activeLeg &&
-          retentionRemaining <= BRAND_SALES_NEAR_REUSE_BOUNDARY_MS
-        ) {
-          await this.saveBrandSalesLeg(
-            job,
-            activeLeg,
-            job[activeLeg],
-            now,
-            true,
-          );
-          return this.brandSalesJobReply(job);
-        }
-        if (retentionRemaining > BRAND_SALES_NEAR_REUSE_BOUNDARY_MS) {
-          return this.brandSalesJobReply(job);
-        }
-        if (retentionRemaining > 0) {
-          return this.brandSalesWaitReply(retentionRemaining);
-        }
-      }
-    }
-
-    if (!job) {
-      const window = this.brandSalesReports.reportWindow({
-        marketplaceId: input.marketplaceId,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        now: new Date(now),
-      });
-      const emptyLeg = (): BrandSalesReportLeg => ({
-        reportId: null,
-        documentId: null,
-        status: "NOT_STARTED",
-        createdAt: null,
-        terminal: null,
-        terminalAt: null,
-      });
-      const candidate: BrandSalesJobRecord = {
-        jobId: randomUUID(),
-        accountScope: input.accountScope,
-        marketplaceId: input.marketplaceId,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        mode,
-        shipmentDataStartTime: window.dataStartTime,
-        shipmentDataEndTime: window.dataEndTime,
-        listing: emptyLeg(),
-        shipment: emptyLeg(),
-        createdAt: now,
-        updatedAt: now,
-        expiresAt: now + BRAND_SALES_JOB_RETENTION_MS,
-      };
-      const claimed = incompatibleToReplace
-        ? await this.store.replaceIncompatibleBrandSalesJob({
-            expectedJobId: incompatibleToReplace.jobId,
-            replacement: candidate,
-          })
-        : await this.store.createBrandSalesJobIfAbsent(candidate, now);
-      job = this.brandSalesRuntimeJob(claimed.job);
-      if (!claimed.created) {
-        return this.startBrandSalesSelection(input);
-      }
-    }
-
-    const results = await Promise.all([
-      this.ensureBrandSalesListingLeg(job, input.retry),
-      this.brandSalesLegReusable(job.shipment)
-        ? Promise.resolve(null)
-        : this.startBrandSalesLeg(job, "shipment", input.retry),
-    ]);
-    const failure = results.find((value) => value !== null);
-    if (failure) {
-      if (
-        failure instanceof SpApiError &&
-        failure.code === "SHARED_REPORT_RETRY_REQUIRED"
-      ) {
-        return invalid(
-          "上次品牌營收工作只完成一部分；已保留成功報表，請按重試只補齊缺少的一側。",
-          409,
-          "BRAND_REPORT_RETRY_REQUIRED",
-        );
-      }
-      return apiError(failure, "開始整理 FBA 品牌營收時發生未預期的錯誤。");
-    }
-    return this.brandSalesJobReply(job);
-  }
-
   private async startBrandSales(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
@@ -3196,210 +2806,15 @@ export class ApiRouter {
       return invalid("品牌營收需要有效站點與完整 YYYY-MM-DD 日期範圍。");
     }
     try {
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[marketplaceId].region,
-      );
-      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
-      // The exact account/market/mode/date selection has one creation flight.
-      // A concurrent explicit retry must never bypass an automatic start that
-      // is already claiming the same durable job.
-      const flightKey = `${accountScope}:${marketplaceId}:${mode}:${startDate}:${endDate}`;
-      const existing = this.brandSalesStartFlights.get(flightKey);
-      if (existing) return existing;
-      const flight = this.startBrandSalesSelection({
-        accountScope,
+      const view = await this.fbaRevenueReports.begin({
         marketplaceId,
         startDate,
         endDate,
-        retry: body.retry === true,
-      }).finally(() => {
-        if (this.brandSalesStartFlights.get(flightKey) === flight) {
-          this.brandSalesStartFlights.delete(flightKey);
-        }
+        explicitRetry: body.retry === true,
       });
-      this.brandSalesStartFlights.set(flightKey, flight);
-      return flight;
+      return json(view, view.ready ? 200 : 202);
     } catch (error) {
       return apiError(error, "開始整理 FBA 品牌營收時發生未預期的錯誤。");
-    }
-  }
-
-  private async loadBrandSalesJob(jobId: string): Promise<BrandSalesRuntimeJob | null> {
-    const cached = this.brandSalesJobs.get(jobId);
-    if (cached) return cached;
-    const stored = await this.store.getBrandSalesJobById(jobId);
-    return stored && !isBrandSalesIncompatibleJob(stored)
-      ? this.brandSalesRuntimeJob(stored)
-      : null;
-  }
-
-  private async markBrandSalesPollFailure(
-    job: BrandSalesRuntimeJob,
-    leg: "listing" | "shipment",
-    error: unknown,
-  ): Promise<void> {
-    if (
-      !(error instanceof SpApiError) ||
-      (error.code !== "REPORT_CANCELLED" &&
-        error.code !== "REPORT_FATAL")
-    ) {
-      return;
-    }
-    const terminal = error.code === "REPORT_CANCELLED" ? "CANCELLED" : "FATAL";
-    await this.saveBrandSalesLeg(job, leg, {
-      reportId: job[leg].reportId,
-      documentId: null,
-      status: terminal,
-      createdAt: job[leg].createdAt,
-      terminal,
-      terminalAt: Date.now(),
-    });
-  }
-
-  private async pollBrandSalesJobState(
-    job: BrandSalesRuntimeJob,
-  ): Promise<ApiResponse | null> {
-    const marketplaceId = job.marketplaceId as MarketplaceId;
-    try {
-      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
-      if (job.mode !== mode) {
-        throw new SpApiError("App 展示／真實模式已改變，已停止讀取舊報表。", {
-          status: 409,
-          code: "REPORT_MODE_CHANGED",
-        });
-      }
-      if (
-        (job.listing.status === "IN_QUEUE" || job.listing.status === "IN_PROGRESS") &&
-        job.listing.reportId
-      ) {
-        try {
-          const listing = await this.getSharedAllListingsReportStatus({
-            marketplaceId,
-            reportId: job.listing.reportId,
-          });
-          if (
-            listing.status !== "IN_QUEUE" &&
-            listing.status !== "IN_PROGRESS" &&
-            listing.status !== "DONE"
-          ) {
-            throw new SpApiError("Amazon 未能產生目前 FBA 商品清單。", {
-              status: 422,
-              code: listing.status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
-            });
-          }
-          if (listing.status === "DONE" && !listing.documentId) {
-            throw new SpApiError("Amazon FBA 商品清單已完成但缺少文件編號。", {
-              status: 502,
-              code: "REPORT_FAILED",
-            });
-          }
-          if (
-            job.listing.status !== listing.status ||
-            job.listing.documentId !== listing.documentId
-          ) {
-            await this.saveBrandSalesLeg(job, "listing", {
-              ...job.listing,
-              documentId: listing.documentId,
-              status: listing.status,
-            });
-          }
-        } catch (error) {
-          await this.markBrandSalesPollFailure(job, "listing", error);
-          throw error;
-        }
-      }
-      if (
-        (job.shipment.status === "IN_QUEUE" || job.shipment.status === "IN_PROGRESS") &&
-        job.shipment.reportId
-      ) {
-        try {
-          const shipment = await this.reportsRuntime.status(
-            this.brandSalesReportPlan(job, "shipment"),
-            job.shipment.reportId,
-          );
-          if (
-            job.shipment.status !== shipment.status ||
-            job.shipment.documentId !== shipment.documentId
-          ) {
-            await this.saveBrandSalesLeg(job, "shipment", {
-              ...job.shipment,
-              documentId: shipment.documentId,
-              status: shipment.status,
-            });
-          }
-        } catch (error) {
-          await this.markBrandSalesPollFailure(job, "shipment", error);
-          throw error;
-        }
-      }
-      return null;
-    } catch (error) {
-      return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
-    }
-  }
-
-  private async loadBrandSalesData(
-    job: BrandSalesRuntimeJob,
-  ): Promise<ApiResponse> {
-    const marketplaceId = job.marketplaceId as MarketplaceId;
-    try {
-      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
-      if (job.mode !== mode) {
-        throw new SpApiError("App 展示／真實模式已改變，已停止讀取舊報表。", {
-          status: 409,
-          code: "REPORT_MODE_CHANGED",
-        });
-      }
-      if (
-        !this.brandSalesJobReady(job) ||
-        !job.listing.reportId ||
-        !job.listing.documentId ||
-        !job.shipment.reportId ||
-        !job.shipment.documentId
-      ) {
-        return invalid("Amazon 品牌營收報表尚未完成。", 409, "REPORT_NOT_READY");
-      }
-      if (!job.snapshot) {
-        const [listingDocument, shipmentDocument] = await Promise.all([
-          this.reportsRuntime.readDocument(
-            { intent: "all-listings", marketplaceId },
-            {
-              reportId: job.listing.reportId,
-              documentId: job.listing.documentId,
-            },
-          ),
-          this.reportsRuntime.readDocument(
-            this.brandSalesReportPlan(job, "shipment"),
-            {
-              reportId: job.shipment.reportId,
-              documentId: job.shipment.documentId,
-            },
-          ),
-        ]);
-        if (
-          listingDocument.mode !== job.mode ||
-          shipmentDocument.mode !== job.mode
-        ) {
-          throw new SpApiError("品牌營收報表模式已改變。", {
-            status: 409,
-            code: "REPORT_MODE_CHANGED",
-          });
-        }
-        job.snapshot = await this.brandSalesReports.getDataFromDocuments({
-          marketplaceId,
-          mode: job.mode,
-          startDate: job.startDate,
-          endDate: job.endDate,
-          listingDocument: listingDocument.text,
-          shipmentDocument: shipmentDocument.text,
-          shipmentDataStartTime: job.shipmentDataStartTime,
-          shipmentDataEndTime: job.shipmentDataEndTime,
-          windowCreatedAt: job.createdAt,
-        });
-      }
-      return json(structuredClone(job.snapshot));
-    } catch (error) {
-      return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
     }
   }
 
@@ -3409,106 +2824,19 @@ export class ApiRouter {
     if (!marketplaceId || !jobId) {
       return invalid("品牌營收工作資訊無效，請重新同步。");
     }
-    this.pruneBrandSalesJobs();
-    const job = await this.loadBrandSalesJob(jobId);
-    if (!job || job.marketplaceId !== marketplaceId) {
-      return invalid(
-        "品牌營收工作已過期或站點不符，請重新同步。",
-        410,
-        "SNAPSHOT_EXPIRED",
-      );
-    }
-    const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
-    if (job.mode !== mode) {
-      if (job.mode === "demo" && mode === "live") {
-        await this.store.deleteBrandSalesJob(job.jobId);
-        this.brandSalesJobs.delete(job.jobId);
-      }
-      return invalid(
-        "App 展示／真實模式已改變，舊品牌營收工作不可繼續。",
-        409,
-        "REPORT_MODE_CHANGED",
-      );
-    }
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
-    if (job.accountScope !== accountScope) {
-      this.brandSalesJobs.delete(jobId);
-      return invalid(
-        "Amazon 帳號範圍已改變，舊品牌營收工作不可繼續。",
-        409,
-        "ACCOUNT_SCOPE_CHANGED",
-      );
-    }
     try {
-      await this.normalizeBrandSalesJob(job);
+      const result = await this.fbaRevenueReports.get({
+        marketplaceId,
+        jobId,
+        includeData: request.query.data === "1",
+      });
+      return json(
+        result.snapshot ?? result.view,
+        result.snapshot || result.view.ready ? 200 : 202,
+      );
     } catch (error) {
       return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
     }
-    const now = Date.now();
-    if (job.expiresAt <= now && this.brandSalesJobReady(job)) {
-      await this.store.deleteBrandSalesJob(job.jobId);
-      this.brandSalesJobs.delete(job.jobId);
-      return invalid(
-        "品牌營收快照已過期，請重新同步。",
-        410,
-        "SNAPSHOT_EXPIRED",
-      );
-    }
-    if (job.expiresAt <= now) {
-      const activeLeg = (["listing", "shipment"] as const).find((leg) =>
-        job[leg].status === "IN_QUEUE" || job[leg].status === "IN_PROGRESS"
-      );
-      if (activeLeg) {
-        await this.saveBrandSalesLeg(
-          job,
-          activeLeg,
-          job[activeLeg],
-          now,
-          true,
-        );
-      } else if (!job.listing.terminal && !job.shipment.terminal) {
-        return invalid(
-          "上次品牌營收工作狀態未完成；系統已禁止自動重送，請回到品牌區明確重試。",
-          409,
-          "BRAND_REPORT_RETRY_REQUIRED",
-        );
-      }
-    }
-    if (job.listing.terminal || job.shipment.terminal) {
-      const terminal = job.shipment.terminal ?? job.listing.terminal;
-      return invalid(
-        terminal === "CANCELLED"
-          ? "Amazon 已取消 FBA 品牌出貨報表；已保留另一側成功結果，不會自動重建。"
-          : "Amazon 品牌營收報表工作未完成；已保留成功的一側，請明確重試。",
-        409,
-        terminal === "CANCELLED" ? "REPORT_CANCELLED" : terminal === "FATAL" ? "REPORT_FATAL" : "BRAND_REPORT_RETRY_REQUIRED",
-      );
-    }
-    let pollFlight = this.brandSalesPollFlights.get(jobId);
-    if (!pollFlight) {
-      pollFlight = this.pollBrandSalesJobState(job).finally(() => {
-        if (this.brandSalesPollFlights.get(jobId) === pollFlight) {
-          this.brandSalesPollFlights.delete(jobId);
-        }
-      });
-      this.brandSalesPollFlights.set(jobId, pollFlight);
-    }
-    const pollError = await pollFlight;
-    if (pollError) return pollError;
-
-    if (request.query.data !== "1") return this.brandSalesJobReply(job);
-    let dataFlight = this.brandSalesDataFlights.get(jobId);
-    if (!dataFlight) {
-      dataFlight = this.loadBrandSalesData(job).finally(() => {
-        if (this.brandSalesDataFlights.get(jobId) === dataFlight) {
-          this.brandSalesDataFlights.delete(jobId);
-        }
-      });
-      this.brandSalesDataFlights.set(jobId, dataFlight);
-    }
-    return dataFlight;
   }
 
   private listingIdentity(request: ApiRequest):
@@ -8648,32 +7976,10 @@ export class ApiRouter {
     startDate: unknown;
     endDate: unknown;
   }): { startDate: string; endDate: string } {
-    const startDate = optionalDate(input.startDate);
-    const endDate = optionalDate(input.endDate);
-    if (typeof startDate !== "string" || typeof endDate !== "string") {
-      throw new SpApiError("請提供有效的廣告策略開始日與結束日。", {
-        status: 400,
-        code: "ADS_STRATEGY_DATE_INVALID",
-      });
-    }
-    const calendar = marketplaceCalendar(input.marketplaceId);
-    const inclusiveDays = calendar.inclusiveDayCount(startDate, endDate);
-    const today = calendar.dayAt(new Date(Date.now()));
-    const latest = calendar.shiftDate(today, -1);
-    const earliest = calendar.shiftDate(latest, -94);
-    if (
-      startDate > endDate ||
-      inclusiveDays < 1 ||
-      inclusiveDays > 31 ||
-      endDate > latest ||
-      startDate < earliest
-    ) {
-      throw new SpApiError(
-        "廣告策略一次只能讀取最近 95 天內的 1 到 31 個完整日，結束日最多到站點昨天。",
-        { status: 400, code: "ADS_STRATEGY_DATE_INVALID" },
-      );
-    }
-    return { startDate, endDate };
+    return planCompletedSalesAndTrafficWindow({
+      ...input,
+      now: new Date(Date.now()),
+    });
   }
 
   private advertisedProductIdentity(job: AdvertisingStrategyJob): DurableReportIdentity {
@@ -8733,19 +8039,14 @@ export class ApiRouter {
     job: AdvertisingStrategyJob,
     input: { refresh: boolean; explicitRetry: boolean },
   ): Promise<DurableReportStatus> {
-    return this.reportsRuntime.start(
-      {
-        intent: "sales-and-traffic-daily-sku",
-        marketplaceId: job.marketplaceId,
-        startDate: job.startDate,
-        endDate: job.endDate,
-        signal: job.controller.signal,
-      },
-      {
-        explicitRetry: input.explicitRetry,
-        freshCompleted: input.refresh,
-      },
-    );
+    return this.salesAndTraffic.begin({
+      marketplaceId: job.marketplaceId,
+      startDate: job.startDate,
+      endDate: job.endDate,
+      signal: job.controller.signal,
+      explicitRetry: input.explicitRetry,
+      freshCompleted: input.refresh,
+    });
   }
 
   private async startAdvertisedProductStrategyReport(
@@ -8843,16 +8144,13 @@ export class ApiRouter {
       await this.advertisingStrategyWait(delay, job.controller.signal);
       waited += delay;
       await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-      status = await this.reportsRuntime.status(
-        {
-          intent: "sales-and-traffic-daily-sku",
-          marketplaceId: job.marketplaceId,
-          startDate: job.startDate,
-          endDate: job.endDate,
-          signal: job.controller.signal,
-        },
-        status.reportId,
-      );
+      status = await this.salesAndTraffic.status({
+        marketplaceId: job.marketplaceId,
+        startDate: job.startDate,
+        endDate: job.endDate,
+        reportId: status.reportId,
+        signal: job.controller.signal,
+      });
       this.touchAdvertisingStrategyJob(job);
     }
     if (!status.ready || !status.documentId) {
@@ -8862,23 +8160,12 @@ export class ApiRouter {
       });
     }
     await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-    const plan = {
-      intent: "sales-and-traffic-daily-sku" as const,
+    return this.salesAndTraffic.read({
       marketplaceId: job.marketplaceId,
       startDate: job.startDate,
       endDate: job.endDate,
-      signal: job.controller.signal,
-    };
-    const document = await this.reportsRuntime.readDocument(
-      plan,
-      { reportId: status.reportId, documentId: status.documentId },
-    );
-    return this.salesAndTrafficReports.dataFromDocument({
-      marketplaceId: job.marketplaceId,
-      mode: document.mode,
-      startDate: job.startDate,
-      endDate: job.endDate,
-      document: document.text,
+      reportId: status.reportId,
+      documentId: status.documentId,
       signal: job.controller.signal,
     });
   }
@@ -9178,6 +8465,11 @@ export class ApiRouter {
       );
     }
     if (existing && !refresh) return this.advertisingStrategyReply(existing);
+    // The renderer also sends refresh when the user changes a date selection.
+    // Only an exact selection that is already known locally is an explicit
+    // request to replace compatible completed report leases. A -> B -> A must
+    // reconnect to A's existing DAY+SKU report instead of issuing a third POST.
+    const freshCompleted = refresh && Boolean(existing);
     if (existing) this.removeAdvertisingStrategyJob(existing.jobId);
     for (const candidate of [...this.advertisingStrategyJobs.values()]) {
       if (candidate.marketplaceId !== marketplaceId) continue;
@@ -9209,7 +8501,10 @@ export class ApiRouter {
     };
     this.advertisingStrategyJobs.set(job.jobId, job);
     this.advertisingStrategySelections.set(selection, job.jobId);
-    job.flight = this.runAdvertisingStrategyJob(job, { refresh, explicitRetry }).finally(() => {
+    job.flight = this.runAdvertisingStrategyJob(job, {
+      refresh: freshCompleted,
+      explicitRetry,
+    }).finally(() => {
       job.flight = null;
     });
     void job.flight;

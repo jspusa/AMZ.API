@@ -119,7 +119,9 @@ function jsonResponse(
 
 function validStatusPayload(
   plan: ReportsIntentPlan,
-  input: Readonly<{ status?: "IN_QUEUE" | "IN_PROGRESS" | "DONE" }> = {},
+  input: Readonly<{
+    status?: "IN_QUEUE" | "IN_PROGRESS" | "DONE" | "CANCELLED" | "FATAL";
+  }> = {},
 ): Record<string, unknown> {
   const processingStatus = input.status ?? "DONE";
   const base: Record<string, unknown> = {
@@ -285,6 +287,24 @@ describe("Reports runtime production adapter", () => {
     expect(forceRefreshes).toEqual([false, true, false, false]);
     expect(invalidations).toEqual(["na"]);
     expect(delays).toEqual([0, 500]);
+  });
+
+  it("retains the Amazon request ID on a terminal status for canonical error sanitization", async () => {
+    const adapter = createReportsRuntimeProductionAdapter({
+      getAccessToken: async () => "TOKEN",
+      invalidateAccessToken: () => undefined,
+      fetchImpl: async () => jsonResponse(
+        200,
+        validStatusPayload(PLANS[0], { status: "CANCELLED" }),
+        { "x-amzn-requestid": "safe-terminal-request-id" },
+      ),
+      now: () => new Date(NOW),
+    });
+
+    await expect(adapter.status(statusRequest(PLANS[0]))).resolves.toMatchObject({
+      status: "CANCELLED",
+      requestId: "safe-terminal-request-id",
+    });
   });
 
   it("keeps the control-plane timeout active while a JSON body stalls", async () => {

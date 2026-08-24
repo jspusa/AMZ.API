@@ -152,10 +152,14 @@ describe("durable report lifecycle", () => {
       documentId: null,
       status: "CANCELLED" as const,
       notice: "cancelled",
+      requestId: "safe-terminal-request-id",
     }));
 
     await expect(broker.start({ identity, explicitRetry: false, create }))
-      .rejects.toMatchObject({ code: "REPORT_CANCELLED" });
+      .rejects.toMatchObject({
+        code: "REPORT_CANCELLED",
+        requestId: "safe-terminal-request-id",
+      });
     await expect(new DurableReportLifecycle(store).start({
       identity,
       explicitRetry: false,

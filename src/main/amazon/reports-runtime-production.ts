@@ -17,7 +17,10 @@ import {
   type ReportsIntentPlan,
   type ReportsStatusRequest,
 } from "./reports-runtime";
-import { planFbaSalesTrend } from "./fba-sales-calendar";
+import {
+  assertFbaShipmentSalesWindow,
+  strictReportDateKey,
+} from "./revenue-report-windows";
 import { SpApiError } from "./sp-api-error";
 import { spApiUserAgent } from "./sp-api-runtime";
 
@@ -87,26 +90,6 @@ function exactRecord(
   const keys = Object.keys(expected);
   return Object.keys(source).length === keys.length &&
     keys.every((key) => source[key] === expected[key]);
-}
-
-function reportDateKey(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const dateOnly = /^(\d{4}-\d{2}-\d{2})$/u.exec(value);
-  const dateTime = /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/u.exec(
-    value,
-  );
-  const dateKey = dateOnly?.[1] ?? dateTime?.[1];
-  if (!dateKey) return null;
-  const parsedDate = new Date(`${dateKey}T00:00:00.000Z`);
-  const offset = dateTime?.[2];
-  const validOffset = !offset || offset === "Z" ||
-    offset.slice(1, 3) !== "14" || offset.slice(4) === "00";
-  return !Number.isNaN(parsedDate.getTime()) &&
-      parsedDate.toISOString().slice(0, 10) === dateKey &&
-      validOffset &&
-      (dateOnly !== null || Number.isFinite(Date.parse(value)))
-    ? dateKey
-    : null;
 }
 
 function sameInstant(value: unknown, expected: string): boolean {
@@ -179,32 +162,7 @@ function assertFixedShipmentWindow(
   now: () => Date,
 ): void {
   if (request.intent !== "fba-shipment-sales") return;
-  const invalidWindow = (): never => {
-    throw new SpApiError("FBA 品牌出貨報表的固定查詢時間無效。", {
-      status: 400,
-      code: "INVALID_DATE_RANGE",
-    });
-  };
-  if (request.windowCreatedAt > now().getTime() + 1_000) invalidWindow();
-  try {
-    const planned = planFbaSalesTrend(
-      {
-        marketplaceId: request.marketplaceId,
-        startDate: request.startDate,
-        endDate: request.endDate,
-      },
-      new Date(request.windowCreatedAt),
-    ).window;
-    if (
-      Date.parse(request.dataStartTime) !== Date.parse(planned.startAt) ||
-      Date.parse(request.dataEndTime) !== Date.parse(planned.endAt)
-    ) {
-      invalidWindow();
-    }
-  } catch (error) {
-    if (error instanceof SpApiError) throw error;
-    invalidWindow();
-  }
+  assertFbaShipmentSalesWindow(request, now().getTime());
 }
 
 function assertLiveRequest(
@@ -445,8 +403,8 @@ function assertStatusIdentity(
     marketplaces[0] === request.marketplaceId &&
     fixedOptions;
   const exactDates = request.intent === "sales-and-traffic-daily-sku"
-    ? reportDateKey(payload.dataStartTime) === request.startDate &&
-      reportDateKey(payload.dataEndTime) === request.endDate
+    ? strictReportDateKey(payload.dataStartTime) === request.startDate &&
+      strictReportDateKey(payload.dataEndTime) === request.endDate
     : request.intent === "fba-shipment-sales"
       ? sameInstant(payload.dataStartTime, request.dataStartTime) &&
         sameInstant(payload.dataEndTime, request.dataEndTime)
@@ -740,6 +698,9 @@ export function createReportsRuntimeProductionAdapter(
         documentId,
         status,
         notice: status === "DONE" ? fixed.doneNotice : fixed.pendingNotice,
+        ...(status === "CANCELLED" || status === "FATAL"
+          ? { requestId }
+          : {}),
       };
     },
 

@@ -33,6 +33,7 @@ export type DurableReportStatus = {
 
 export type DurableReportGatewayStatus = Omit<DurableReportStatus, "status"> & {
   status: DurableReportStatus["status"] | "CANCELLED" | "FATAL";
+  requestId?: string | null;
 };
 
 type ReportNotices = {
@@ -474,6 +475,7 @@ export class DurableReportLifecycle {
       throw new SpApiError("Amazon 未能產生這份報表。", {
         status: 422,
         code: status.status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
+        requestId: status.requestId ?? null,
       });
     }
     if (
