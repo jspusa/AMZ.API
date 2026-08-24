@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  fbaSalesDailyReadIdentity,
+  readFbaSalesVelocity,
   readFbaSalesTrend,
   type FbaSalesDailyReadPlan,
   type FbaSalesDailyReadResult,
   type FbaSalesMetricsAdapter,
 } from "../src/main/amazon/fba-sales-metrics";
-import { planFbaSalesTrend } from "../src/main/amazon/fba-sales-calendar";
+import {
+  planCompletedFbaSalesVelocity,
+  planFbaSalesTrend,
+} from "../src/main/amazon/fba-sales-calendar";
 import { createDeterministicFbaSalesMetricsDemoAdapter } from "../src/main/amazon/fba-sales-metrics-demo";
 import { createFbaSalesMetricsProductionAdapter } from "../src/main/amazon/fba-sales-metrics-production";
 
@@ -15,13 +20,22 @@ const NOW = new Date("2026-03-10T12:00:00.000Z");
 class ScriptedFbaSalesMetricsAdapter implements FbaSalesMetricsAdapter {
   readonly requests: FbaSalesDailyReadPlan[] = [];
 
-  constructor(private readonly results: FbaSalesDailyReadResult[]) {}
+  constructor(
+    private readonly results: Array<
+      Omit<FbaSalesDailyReadResult, "identity"> & {
+        identity?: FbaSalesDailyReadResult["identity"];
+      }
+    >,
+  ) {}
 
   async readDaily(plan: FbaSalesDailyReadPlan): Promise<FbaSalesDailyReadResult> {
     this.requests.push(plan);
     const result = this.results.shift();
     if (!result) throw new Error("Missing scripted FBA Sales Metrics result.");
-    return result;
+    return {
+      ...result,
+      identity: result.identity ?? fbaSalesDailyReadIdentity(plan),
+    };
   }
 }
 
@@ -101,6 +115,216 @@ describe("FBA Sales Metrics", () => {
     expect(snapshot.points).toHaveLength(7);
     expect(snapshot.points[1].totalSales.amount).toBe(0);
     expect(snapshot.points[6].partial).toBe(true);
+  });
+
+  it("normalizes equivalent UTC intervals through the public Trend operation", async () => {
+    const marketplaceId = "A1VC38T7YXB528" as const;
+    const planned = planFbaSalesTrend(
+      { marketplaceId, days: 7 },
+      new Date("2026-08-06T03:00:00.000Z"),
+    );
+    const [startAt, endAt] = planned.window.intervals[0].split("--");
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        envelope: {
+          payload: [
+            {
+              interval: `${new Date(startAt).toISOString()}--${new Date(endAt).toISOString()}`,
+              unitCount: 1,
+              orderItemCount: 1,
+              orderCount: 1,
+              totalSales: { amount: "1200", currencyCode: "JPY" },
+            },
+          ],
+        },
+        requestId: "request-utc",
+        rateLimit: null,
+      },
+    ]);
+
+    const snapshot = await readFbaSalesTrend(
+      { marketplaceId, days: 7 },
+      {
+        adapter,
+        mode: "live",
+        clock: () => new Date("2026-08-06T03:00:00.000Z"),
+      },
+    );
+
+    expect(snapshot.points[0]).toMatchObject({
+      date: planned.window.dateKeys[0],
+      totalSales: { amount: 1200, currencyCode: "JPY" },
+    });
+  });
+
+  it("reads an exact SKU over the fixed 30 completed Marketplace Days", async () => {
+    const sellerSku = "EXACT-SKU";
+    const planned = planCompletedFbaSalesVelocity(
+      { marketplaceId: MARKETPLACE_ID, sellerSku },
+      NOW,
+    );
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        envelope: {
+          payload: [
+            metric(planned.window.intervals[0], "35.98", 2),
+            metric(planned.window.intervals[29], "53.97", 3),
+          ],
+        },
+        requestId: "request-velocity",
+        rateLimit: "0.5",
+      },
+    ]);
+
+    const velocity = await readFbaSalesVelocity(
+      { marketplaceId: MARKETPLACE_ID, sellerSku },
+      {
+        adapter,
+        clock: () => new Date(NOW),
+      },
+    );
+
+    expect(adapter.requests).toHaveLength(1);
+    expect(adapter.requests[0]).toMatchObject({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+      series: "velocity",
+      trendDayCount: 30,
+      window: {
+        range: {
+          startDate: "2026-02-08",
+          endDate: "2026-03-09",
+          dayCount: 30,
+        },
+        endAt: "2026-03-10T00:00:00-07:00",
+        partialDateKey: null,
+      },
+    });
+    expect(adapter.requests[0]).not.toHaveProperty("duration");
+    expect(adapter.requests[0]).not.toHaveProperty("includeCurrentDay");
+    expect(velocity).toEqual({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku,
+      completedDayCount: 30,
+      units: 5,
+      averageDailyUnits: 5 / 30,
+      orderCount: 3,
+      requestId: "request-velocity",
+      rateLimit: "0.5",
+    });
+  });
+
+  it("returns zero velocity only from a structurally valid empty envelope", async () => {
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        envelope: { payload: [] },
+        requestId: "request-empty",
+        rateLimit: null,
+      },
+    ]);
+
+    await expect(
+      readFbaSalesVelocity(
+        { marketplaceId: MARKETPLACE_ID, sellerSku: "EXACT-SKU" },
+        { adapter, clock: () => new Date(NOW) },
+      ),
+    ).resolves.toMatchObject({
+      completedDayCount: 30,
+      units: 0,
+      averageDailyUnits: 0,
+      orderCount: 0,
+    });
+  });
+
+  it("fails closed when an adapter binds the envelope to a different SKU", async () => {
+    const planned = planCompletedFbaSalesVelocity(
+      { marketplaceId: MARKETPLACE_ID, sellerSku: "EXACT-SKU" },
+      NOW,
+    );
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        identity: fbaSalesDailyReadIdentity({
+          marketplaceId: MARKETPLACE_ID,
+          window: planned.window,
+          sellerSku: "OTHER-SKU",
+          series: "velocity",
+          trendDayCount: 30,
+        }),
+        envelope: { payload: [] },
+        requestId: "request-conflict",
+        rateLimit: null,
+      },
+    ]);
+
+    await expect(
+      readFbaSalesVelocity(
+        { marketplaceId: MARKETPLACE_ID, sellerSku: "EXACT-SKU" },
+        { adapter, clock: () => new Date(NOW) },
+      ),
+    ).rejects.toMatchObject({
+      name: "FbaSalesMetricsError",
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+      message: "Amazon 回傳了無法辨識的 FBA 銷售趨勢。",
+    });
+  });
+
+  it.each([
+    [
+      "duplicate date",
+      (interval: string) => ({
+        payload: [metric(interval, "10", 1), metric(interval, "11", 1)],
+      }),
+    ],
+    [
+      "wrong currency",
+      (interval: string) => ({
+        payload: [
+          {
+            ...metric(interval, "10", 1),
+            totalSales: { amount: "10", currencyCode: "CAD" },
+          },
+        ],
+      }),
+    ],
+    [
+      "mismatched interval boundary",
+      (interval: string) => {
+        const startAt = interval.split("--")[0];
+        return {
+          payload: [
+            metric(
+              `${startAt}--${new Date(new Date(startAt).getTime() + 48 * 60 * 60 * 1_000).toISOString()}`,
+              "10",
+              1,
+            ),
+          ],
+        };
+      },
+    ],
+    ["malformed row", () => ({ payload: [null] })],
+  ])("fails velocity closed on a %s envelope", async (_label, envelope) => {
+    const planned = planCompletedFbaSalesVelocity(
+      { marketplaceId: MARKETPLACE_ID, sellerSku: "EXACT-SKU" },
+      NOW,
+    );
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        envelope: envelope(planned.window.intervals[0]),
+        requestId: "request-invalid-velocity",
+        rateLimit: null,
+      },
+    ]);
+
+    await expect(
+      readFbaSalesVelocity(
+        { marketplaceId: MARKETPLACE_ID, sellerSku: "EXACT-SKU" },
+        { adapter, clock: () => new Date(NOW) },
+      ),
+    ).rejects.toMatchObject({
+      name: "FbaSalesMetricsError",
+      code: "UPSTREAM_UNAVAILABLE",
+    });
   });
 
   it("reads and aligns the previous-year series through the same adapter", async () => {
@@ -243,6 +467,13 @@ describe("FBA Sales Metrics", () => {
     expect(url.searchParams.get("fulfillmentNetwork")).toBe("AFN");
     expect(url.searchParams.has("sku")).toBe(false);
     expect(result).toEqual({
+      identity: fbaSalesDailyReadIdentity({
+        marketplaceId: MARKETPLACE_ID,
+        window: planned.window,
+        sellerSku: null,
+        series: "current",
+        trendDayCount: 7,
+      }),
       envelope: { payload: [] },
       requestId: "request-live",
       rateLimit: "0.5",

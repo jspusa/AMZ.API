@@ -277,6 +277,16 @@ export function planCompletedFbaSalesVelocity(
   if (Number.isNaN(now.getTime())) {
     throw new FbaSalesPlanningError("FBA Sales Velocity 日期範圍無效。");
   }
+  if (
+    !input.sellerSku ||
+    input.sellerSku.trim() !== input.sellerSku ||
+    input.sellerSku.length > 40 ||
+    /[\u0000-\u001f\u007f]/u.test(input.sellerSku)
+  ) {
+    throw new FbaSalesPlanningError(
+      "FBA Sales Velocity 必須使用完整且精確的 Seller SKU。",
+    );
+  }
   const calendar = calendarFor(input.marketplaceId);
   const todayKey = todayKeyAt(now, calendar);
   const endDate = calendar.shiftDate(todayKey, -1);

@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  fbaSalesDailyReadIdentity,
   type FbaSalesDailyReadPlan,
 } from "../src/main/amazon/fba-sales-metrics";
 import { createFbaSalesMetricsProductionAdapter } from "../src/main/amazon/fba-sales-metrics-production";
-import { planFbaSalesTrend } from "../src/main/amazon/fba-sales-calendar";
+import {
+  planCompletedFbaSalesVelocity,
+  planFbaSalesTrend,
+} from "../src/main/amazon/fba-sales-calendar";
 import type { MarketplaceRegion } from "../src/shared/marketplaces";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
@@ -23,6 +27,20 @@ function dailyPlan(): FbaSalesDailyReadPlan {
   };
 }
 
+function velocityPlan(): FbaSalesDailyReadPlan {
+  const planned = planCompletedFbaSalesVelocity(
+    { marketplaceId: MARKETPLACE_ID, sellerSku: "EXACT-SKU" },
+    NOW,
+  );
+  return {
+    marketplaceId: MARKETPLACE_ID,
+    window: planned.window,
+    sellerSku: planned.sellerSku,
+    series: "velocity",
+    trendDayCount: planned.completedDayCount,
+  };
+}
+
 function jsonResponse(
   status: number,
   envelope: unknown,
@@ -37,6 +55,42 @@ function jsonResponse(
 describe("FBA Sales Metrics production adapter", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("sends exact-SKU velocity through the fixed GET Daily-All-AFN request", async () => {
+    const requests: Array<{ url: URL; init: RequestInit | undefined }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init) => {
+        requests.push({
+          url: new URL(input instanceof Request ? input.url : String(input)),
+          init,
+        });
+        return jsonResponse(200, { payload: [] });
+      }),
+    );
+    const adapter = createFbaSalesMetricsProductionAdapter({
+      getAccessToken: async () => "TOKEN",
+      invalidateAccessToken: () => undefined,
+      userAgent: () => "AMZ.API/test",
+      now: () => new Date(NOW),
+    });
+    const plan = velocityPlan();
+
+    const result = await adapter.readDaily(plan);
+
+    expect(requests).toHaveLength(1);
+    const [{ url, init }] = requests;
+    expect(url.pathname).toBe("/sales/v1/orderMetrics");
+    expect(init?.method).toBe("GET");
+    expect(url.searchParams.get("sku")).toBe("EXACT-SKU");
+    expect(url.searchParams.get("granularity")).toBe("Day");
+    expect(url.searchParams.get("buyerType")).toBe("All");
+    expect(url.searchParams.get("fulfillmentNetwork")).toBe("AFN");
+    expect(url.searchParams.get("interval")).toBe(
+      `${plan.window.startAt}--${plan.window.endAt}`,
+    );
+    expect(result.identity).toEqual(fbaSalesDailyReadIdentity(plan));
   });
 
   it("invalidates and force-refreshes the regional token exactly once after an initial 401", async () => {
@@ -95,6 +149,7 @@ describe("FBA Sales Metrics production adapter", () => {
     });
 
     await expect(adapter.readDaily(dailyPlan())).resolves.toEqual({
+      identity: fbaSalesDailyReadIdentity(dailyPlan()),
       envelope: { payload: [] },
       requestId: "final",
       rateLimit: "0.4",
@@ -102,6 +157,43 @@ describe("FBA Sales Metrics production adapter", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(delays).toEqual([2_000, 1_000]);
   });
+
+  it.each([
+    ["delta seconds", "7", 7_000],
+    [
+      "HTTP date",
+      new Date(NOW.getTime() + 8_000).toUTCString(),
+      8_000,
+    ],
+  ])(
+    "honors a Sales Retry-After %s through the adapter",
+    async (_label, retryAfter, expectedDelay) => {
+      const responses = [
+        jsonResponse(429, {}, { "retry-after": retryAfter }),
+        jsonResponse(200, { payload: [] }),
+      ];
+      const delays: number[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async () => responses.shift()!),
+      );
+      const adapter = createFbaSalesMetricsProductionAdapter({
+        getAccessToken: async () => "TOKEN",
+        invalidateAccessToken: () => undefined,
+        userAgent: () => "AMZ.API/test",
+        now: () => new Date(NOW),
+        random: () => 0,
+        sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        },
+      });
+
+      await expect(adapter.readDaily(dailyPlan())).resolves.toMatchObject({
+        envelope: { payload: [] },
+      });
+      expect(delays).toEqual([expectedDelay]);
+    },
+  );
 
   it("stops after two transient retries and reports the final upstream failure", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>

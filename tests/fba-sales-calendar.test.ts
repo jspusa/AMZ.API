@@ -90,6 +90,24 @@ describe("FBA Sales Metrics calendar planning", () => {
     );
   });
 
+  it.each([
+    "",
+    " EXACT-SKU",
+    "EXACT-SKU ",
+    "X".repeat(41),
+    "EXACT\nSKU",
+  ])(
+    "rejects a non-exact Seller SKU before planning: %j",
+    (sellerSku) => {
+      expect(() =>
+        planCompletedFbaSalesVelocity(
+          { marketplaceId: US_MARKETPLACE_ID, sellerSku },
+          new Date("2026-03-10T12:00:00.000Z"),
+        ),
+      ).toThrow("必須使用完整且精確的 Seller SKU");
+    },
+  );
+
   it("plans a current partial FBA Sales Trend in Marketplace Days", () => {
     const plan = planFbaSalesTrend(
       {

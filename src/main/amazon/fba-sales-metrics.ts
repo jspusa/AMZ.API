@@ -3,6 +3,8 @@ import {
   type MarketplaceId,
 } from "../../shared/marketplaces";
 import {
+  FBA_SALES_VELOCITY_COMPLETED_DAY_COUNT,
+  planCompletedFbaSalesVelocity,
   planFbaSalesTrend,
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
@@ -60,11 +62,21 @@ export type FbaSalesDailyReadPlan = {
   marketplaceId: MarketplaceId;
   window: SalesTrendWindow;
   sellerSku: string | null;
-  series: "current" | "previous-year";
+  series: "current" | "previous-year" | "velocity";
   trendDayCount: number;
 };
 
+export type FbaSalesDailyReadIdentity = {
+  marketplaceId: MarketplaceId;
+  sellerSku: string | null;
+  series: FbaSalesDailyReadPlan["series"];
+  startAt: string;
+  endAt: string;
+  timeZone: string;
+};
+
 export type FbaSalesDailyReadResult = {
+  identity: FbaSalesDailyReadIdentity;
   envelope: unknown;
   requestId: string | null;
   rateLimit: string | null;
@@ -80,6 +92,17 @@ export type ReadFbaSalesTrendInput = {
   startDate?: string | null;
   endDate?: string | null;
   comparison?: SalesTrendComparisonMode;
+};
+
+export type FbaSalesVelocityResult = {
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  completedDayCount: typeof FBA_SALES_VELOCITY_COMPLETED_DAY_COUNT;
+  units: number;
+  averageDailyUnits: number;
+  orderCount: number;
+  requestId: string | null;
+  rateLimit: string | null;
 };
 
 export class FbaSalesMetricsError extends Error {
@@ -136,10 +159,41 @@ function invalidEnvelope(): never {
   );
 }
 
-function metricDate(
+export function fbaSalesDailyReadIdentity(
+  plan: FbaSalesDailyReadPlan,
+): FbaSalesDailyReadIdentity {
+  return {
+    marketplaceId: plan.marketplaceId,
+    sellerSku: plan.sellerSku,
+    series: plan.series,
+    startAt: plan.window.startAt,
+    endAt: plan.window.endAt,
+    timeZone: plan.window.timeZone,
+  };
+}
+
+function assertDailyReadIdentity(
+  plan: FbaSalesDailyReadPlan,
+  result: FbaSalesDailyReadResult,
+): void {
+  const expected = fbaSalesDailyReadIdentity(plan);
+  if (
+    !result.identity ||
+    result.identity.marketplaceId !== expected.marketplaceId ||
+    result.identity.sellerSku !== expected.sellerSku ||
+    result.identity.series !== expected.series ||
+    result.identity.startAt !== expected.startAt ||
+    result.identity.endAt !== expected.endAt ||
+    result.identity.timeZone !== expected.timeZone
+  ) {
+    invalidEnvelope();
+  }
+}
+
+function metricInterval(
   value: unknown,
   marketplaceId: MarketplaceId,
-): string | null {
+): { date: string; startTime: number; endTime: number } | null {
   if (typeof value !== "string") return null;
   const delimiter = value.indexOf("--", 10);
   if (delimiter < 0) return null;
@@ -161,7 +215,11 @@ function metricDate(
   ) {
     return null;
   }
-  return calendar.dayAt(startInstant);
+  return {
+    date: calendar.dayAt(startInstant),
+    startTime: startInstant.getTime(),
+    endTime: endInstant.getTime(),
+  };
 }
 
 function totalSalesTrendPoints(
@@ -188,7 +246,7 @@ function totalSalesTrendPoints(
   };
 }
 
-export function normalizeFbaSalesDailyEnvelope(input: {
+function normalizeFbaSalesDailyEnvelope(input: {
   envelope: unknown;
   marketplaceId: MarketplaceId;
   window: SalesTrendWindow;
@@ -214,11 +272,31 @@ export function normalizeFbaSalesDailyEnvelope(input: {
   const currencyCode = marketplaceById(input.marketplaceId)?.currency;
   if (!currencyCode) invalidEnvelope();
   const expectedDates = new Set(input.window.dateKeys);
+  const expectedIntervals = new Map(
+    input.window.dateKeys.map((date, index) => {
+      const interval = input.window.intervals[index];
+      const delimiter = interval?.indexOf("--", 10) ?? -1;
+      return [
+        date,
+        delimiter < 0
+          ? null
+          : {
+              startTime: Date.parse(interval.slice(0, delimiter)),
+              endTime: Date.parse(interval.slice(delimiter + 2)),
+            },
+      ] as const;
+    }),
+  );
   const byDate = new Map<string, SalesTrendPoint>();
   for (const rawMetric of input.envelope.payload) {
     if (!isRecord(rawMetric)) invalidEnvelope();
     const totalSales = rawMetric.totalSales;
-    const date = metricDate(rawMetric.interval, input.marketplaceId);
+    const parsedInterval = metricInterval(
+      rawMetric.interval,
+      input.marketplaceId,
+    );
+    const date = parsedInterval?.date ?? null;
+    const expectedInterval = date ? expectedIntervals.get(date) : null;
     const amount = isRecord(totalSales)
       ? finiteNumericValue(totalSales.amount)
       : null;
@@ -228,6 +306,10 @@ export function normalizeFbaSalesDailyEnvelope(input: {
     if (
       !date ||
       !expectedDates.has(date) ||
+      !parsedInterval ||
+      !expectedInterval ||
+      parsedInterval.startTime !== expectedInterval.startTime ||
+      parsedInterval.endTime !== expectedInterval.endTime ||
       byDate.has(date) ||
       amount === null ||
       amount < 0 ||
@@ -279,27 +361,35 @@ export async function readFbaSalesTrend(
 ): Promise<SalesTrendSnapshot> {
   const clock = context.clock ?? (() => new Date());
   const plan = planFbaSalesTrend(input, clock());
-  const currentResult = await context.adapter.readDaily({
+  const currentReadPlan = {
     marketplaceId: input.marketplaceId,
     window: plan.window,
     sellerSku: null,
     series: "current",
     trendDayCount: plan.range.dayCount,
-  });
+  } satisfies FbaSalesDailyReadPlan;
+  const currentResult = await context.adapter.readDaily(currentReadPlan);
+  assertDailyReadIdentity(currentReadPlan, currentResult);
   const current = normalizeFbaSalesDailyEnvelope({
     envelope: currentResult.envelope,
     marketplaceId: input.marketplaceId,
     window: plan.window,
   });
-  const previousResult = plan.comparisonWindow
-      ? await context.adapter.readDaily({
+  const previousReadPlan = plan.comparisonWindow
+    ? ({
         marketplaceId: input.marketplaceId,
         window: plan.comparisonWindow,
         sellerSku: null,
         series: "previous-year",
         trendDayCount: plan.range.dayCount,
-      })
+      } satisfies FbaSalesDailyReadPlan)
     : null;
+  const previousResult = previousReadPlan
+    ? await context.adapter.readDaily(previousReadPlan)
+    : null;
+  if (previousReadPlan && previousResult) {
+    assertDailyReadIdentity(previousReadPlan, previousResult);
+  }
   const rawPrevious =
     previousResult && plan.comparisonWindow
       ? normalizeFbaSalesDailyEnvelope({
@@ -366,5 +456,44 @@ export async function readFbaSalesTrend(
           }
         : null,
     notice,
+  };
+}
+
+export async function readFbaSalesVelocity(
+  input: {
+    marketplaceId: MarketplaceId;
+    sellerSku: string;
+  },
+  context: {
+    adapter: FbaSalesMetricsAdapter;
+    clock?: () => Date;
+  },
+): Promise<FbaSalesVelocityResult> {
+  const clock = context.clock ?? (() => new Date());
+  const plan = planCompletedFbaSalesVelocity(input, clock());
+  const readPlan = {
+    marketplaceId: plan.marketplaceId,
+    window: plan.window,
+    sellerSku: plan.sellerSku,
+    series: "velocity",
+    trendDayCount: plan.completedDayCount,
+  } satisfies FbaSalesDailyReadPlan;
+  const result = await context.adapter.readDaily(readPlan);
+  assertDailyReadIdentity(readPlan, result);
+  const normalized = normalizeFbaSalesDailyEnvelope({
+    envelope: result.envelope,
+    marketplaceId: plan.marketplaceId,
+    window: plan.window,
+  });
+  const units = normalized.totals.unitCount;
+  return {
+    marketplaceId: plan.marketplaceId,
+    sellerSku: plan.sellerSku,
+    completedDayCount: plan.completedDayCount,
+    units,
+    averageDailyUnits: units / plan.completedDayCount,
+    orderCount: normalized.totals.orderCount,
+    requestId: result.requestId,
+    rateLimit: result.rateLimit,
   };
 }

@@ -4,6 +4,7 @@ import {
 } from "../../shared/marketplaces";
 import {
   FbaSalesMetricsError,
+  fbaSalesDailyReadIdentity,
   type FbaSalesDailyReadPlan,
   type FbaSalesDailyReadResult,
   type FbaSalesMetricsAdapter,
@@ -32,7 +33,7 @@ function toAmzDate(date: Date): string {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
 }
 
-export function buildFbaSalesMetricsQuery(
+function buildFbaSalesMetricsQuery(
   plan: FbaSalesDailyReadPlan,
 ): URLSearchParams {
   const query = new URLSearchParams({
@@ -55,7 +56,7 @@ async function parseJson(response: Response): Promise<unknown> {
   }
 }
 
-export function fbaSalesMetricsRetryDelayMs(
+function fbaSalesMetricsRetryDelayMs(
   response: Pick<Response, "headers">,
   attempt: number,
   now = Date.now(),
@@ -214,6 +215,7 @@ export function createFbaSalesMetricsProductionAdapter(
         });
       }
       return {
+        identity: fbaSalesDailyReadIdentity(plan),
         envelope,
         requestId,
         rateLimit: response.headers.get("x-amzn-ratelimit-limit"),

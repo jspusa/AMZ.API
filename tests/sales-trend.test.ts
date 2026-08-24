@@ -1,11 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  SpApiError,
-  buildSalesTrendQuery,
-  getSalesTrend,
-  normalizeSalesTrendResponse,
-  salesTrendRetryDelayMs,
-} from "../src/main/amazon/sp-api";
+import { getSalesTrend } from "../src/main/amazon/sp-api";
 import {
   MAX_SALES_TREND_DAY_COUNT,
   planFbaSalesTrend,
@@ -43,23 +37,6 @@ async function demoSalesTrendAt(
 }
 
 describe("FBA sales trend contract", () => {
-  it("builds one AFN-only daily Sales API request with an optional exact SKU", () => {
-    const window = presetWindow(7);
-    const query = buildSalesTrendQuery(MARKETPLACE_ID, window);
-    const skuQuery = buildSalesTrendQuery(MARKETPLACE_ID, window, {
-      sellerSku: "AFA12AM",
-    });
-
-    expect(query.getAll("marketplaceIds")).toEqual([MARKETPLACE_ID]);
-    expect(query.get("granularity")).toBe("Day");
-    expect(query.get("buyerType")).toBe("All");
-    expect(query.get("fulfillmentNetwork")).toBe("AFN");
-    expect(query.get("granularityTimeZone")).toBe("America/Los_Angeles");
-    expect(query.has("sku")).toBe(false);
-    expect(skuQuery.get("sku")).toBe("AFA12AM");
-    expect(skuQuery.get("fulfillmentNetwork")).toBe("AFN");
-  });
-
   it("uses marketplace calendar days and preserves DST offsets", () => {
     const window = presetWindow(7);
 
@@ -80,119 +57,6 @@ describe("FBA sales trend contract", () => {
     expect(window.intervals[4]).toContain(
       "2026-03-08T00:00:00-08:00--2026-03-09T00:00:00-07:00",
     );
-  });
-
-  it("maps equivalent UTC intervals back to the marketplace calendar date", () => {
-    const marketplaceId = "A1VC38T7YXB528" as const;
-    const window = planFbaSalesTrend(
-      { marketplaceId, days: 7 },
-      new Date("2026-08-06T03:00:00.000Z"),
-    ).window;
-    const [start, end] = window.intervals[0].split("--");
-    const interval = `${new Date(start).toISOString()}--${new Date(end).toISOString()}`;
-    const normalized = normalizeSalesTrendResponse({
-      marketplaceId,
-      window,
-      response: {
-        payload: [
-          {
-            interval,
-            unitCount: 1,
-            orderItemCount: 1,
-            orderCount: 1,
-            totalSales: { amount: "1200", currencyCode: "JPY" },
-          },
-        ],
-      },
-    });
-
-    expect(normalized.points[0]).toMatchObject({
-      date: window.dateKeys[0],
-      totalSales: { amount: 1200, currencyCode: "JPY" },
-    });
-  });
-
-  it("zero-fills missing dates and totals all daily buckets", () => {
-    const window = presetWindow(7);
-    const normalized = normalizeSalesTrendResponse({
-      marketplaceId: MARKETPLACE_ID,
-      window,
-      response: {
-        payload: [
-          {
-            interval: window.intervals[0],
-            unitCount: 2,
-            orderItemCount: 2,
-            orderCount: 2,
-            totalSales: { amount: "35.98", currencyCode: "USD" },
-          },
-          {
-            interval: window.intervals[6],
-            unitCount: 3,
-            orderItemCount: 3,
-            orderCount: 2,
-            totalSales: { amount: "53.97", currencyCode: "USD" },
-          },
-        ],
-      },
-    });
-
-    expect(normalized.points).toHaveLength(7);
-    expect(normalized.points[1].totalSales.amount).toBe(0);
-    expect(normalized.points[6].partial).toBe(true);
-    expect(normalized.totals).toEqual({
-      totalSales: { amount: 89.95, currencyCode: "USD" },
-      unitCount: 5,
-      orderItemCount: 5,
-      orderCount: 4,
-    });
-  });
-
-  it("rejects payload errors and cross-currency buckets", () => {
-    const window = presetWindow(7);
-    expect(() =>
-      normalizeSalesTrendResponse({
-        marketplaceId: MARKETPLACE_ID,
-        window,
-        response: { errors: [{ code: "InvalidInput", message: "Invalid metrics" }], payload: [] },
-      }),
-    ).toThrow(SpApiError);
-
-    expect(() =>
-      normalizeSalesTrendResponse({
-        marketplaceId: MARKETPLACE_ID,
-        window,
-        response: {
-          payload: [
-            {
-              interval: window.intervals[0],
-              unitCount: 1,
-              orderItemCount: 1,
-              orderCount: 1,
-              totalSales: { amount: "10", currencyCode: "CAD" },
-            },
-          ],
-        },
-      }),
-    ).toThrow(SpApiError);
-  });
-
-  it("rejects malformed array entries as upstream data errors", () => {
-    const window = presetWindow(7);
-    expect(() =>
-      normalizeSalesTrendResponse({
-        marketplaceId: MARKETPLACE_ID,
-        window,
-        response: { payload: [null] },
-      }),
-    ).toThrow(SpApiError);
-    expect(() =>
-      normalizeSalesTrendResponse({
-        marketplaceId: MARKETPLACE_ID,
-        window,
-        response: { errors: [null], payload: [] },
-      }),
-    ).toThrow("Amazon 無法完成 FBA 銷售趨勢查詢");
   });
 
   it("accepts the supported 7, 14, 30, and 90 day presets", () => {
@@ -218,12 +82,6 @@ describe("FBA sales trend contract", () => {
     expect(window.endAt).toBe("2026-02-04T00:00:00-08:00");
     expect(window.partialDateKey).toBeNull();
 
-    const normalized = normalizeSalesTrendResponse({
-      marketplaceId: MARKETPLACE_ID,
-      window,
-      response: { payload: [] },
-    });
-    expect(normalized.points.every((point) => point.partial === false)).toBe(true);
   });
 
   it("accepts 365 custom days but rejects 366 before issuing a Sales API request", () => {
@@ -333,8 +191,6 @@ describe("FBA sales trend contract", () => {
       NOW,
     );
     const previous = plan.comparisonWindow!;
-    const query = buildSalesTrendQuery(MARKETPLACE_ID, previous);
-
     expect(previous.range).toEqual({
       startDate: "2025-03-04",
       endDate: "2025-03-10",
@@ -343,8 +199,6 @@ describe("FBA sales trend contract", () => {
     });
     expect(previous.endAt).toBe("2025-03-10T05:00:00-07:00");
     expect(previous.partialDateKey).toBe("2025-03-10");
-    expect(query.get("fulfillmentNetwork")).toBe("AFN");
-    expect(query.get("granularity")).toBe("Day");
   });
 
   it("keeps leap-day comparison dates unique instead of mapping Feb 29 onto Feb 28", () => {
@@ -440,33 +294,4 @@ describe("FBA sales trend contract", () => {
     expect(snapshot.notice).not.toContain("去年同期也只計到相同站點當地時間");
   });
 
-  it("uses a Sales-specific two-second throttle floor and honors Retry-After", () => {
-    const fallback = salesTrendRetryDelayMs(
-      new Response(null, { status: 429 }),
-      0,
-      NOW.getTime(),
-    );
-    expect(fallback).toBeGreaterThanOrEqual(2_000);
-    expect(fallback).toBeLessThanOrEqual(2_250);
-
-    expect(
-      salesTrendRetryDelayMs(
-        new Response(null, { status: 429, headers: { "retry-after": "7" } }),
-        0,
-        NOW.getTime(),
-      ),
-    ).toBe(7_000);
-    expect(
-      salesTrendRetryDelayMs(
-        new Response(null, {
-          status: 429,
-          headers: {
-            "retry-after": new Date(NOW.getTime() + 5_000).toUTCString(),
-          },
-        }),
-        0,
-        NOW.getTime(),
-      ),
-    ).toBe(5_000);
-  });
 });

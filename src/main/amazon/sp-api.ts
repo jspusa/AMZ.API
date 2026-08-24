@@ -77,7 +77,6 @@ import {
 } from "./marketplace-calendar";
 import {
   FbaSalesPlanningError,
-  planCompletedFbaSalesVelocity,
   planFbaSalesTrend,
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
@@ -86,18 +85,14 @@ import {
 } from "./fba-sales-calendar";
 import {
   FbaSalesMetricsError,
-  normalizeFbaSalesDailyEnvelope,
+  readFbaSalesVelocity,
   readFbaSalesTrend,
   type SalesTrendPoint as FbaSalesTrendPoint,
   type SalesTrendSnapshot as FbaSalesTrendSnapshot,
   type SalesTrendTotals as FbaSalesTrendTotals,
 } from "./fba-sales-metrics";
 import { createDeterministicFbaSalesMetricsDemoAdapter } from "./fba-sales-metrics-demo";
-import {
-  buildFbaSalesMetricsQuery,
-  createFbaSalesMetricsProductionAdapter,
-  fbaSalesMetricsRetryDelayMs,
-} from "./fba-sales-metrics-production";
+import { createFbaSalesMetricsProductionAdapter } from "./fba-sales-metrics-production";
 
 export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
 export type {
@@ -7559,101 +7554,19 @@ function planFbaSalesTrendOrThrow(
   }
 }
 
-// Kept for the exact-SKU velocity compatibility path until #72 cuts
-// replenishment over; Trend callers cannot provide these request parameters.
-export function buildSalesTrendQuery(
-  marketplaceId: MarketplaceId,
-  window: SalesTrendWindow,
-  options: { sellerSku?: string } = {},
-): URLSearchParams {
-  return buildFbaSalesMetricsQuery({
-    marketplaceId,
-    window,
-    sellerSku: options.sellerSku ?? null,
-    series: "current",
-    trendDayCount: window.range.dayCount,
-  });
-}
-
-// Temporary compatibility surface for the exact-SKU velocity reader. Trend
-// requests normalize inside fba-sales-metrics; #72 removes this wrapper when
-// replenishment moves onto the same semantic Daily-FBA adapter.
-export function normalizeSalesTrendResponse(input: {
-  response: unknown;
-  marketplaceId: MarketplaceId;
-  window: SalesTrendWindow;
-}): { points: SalesTrendPoint[]; totals: SalesTrendSnapshot["totals"] } {
-  try {
-    return normalizeFbaSalesDailyEnvelope({
-      envelope: input.response,
-      marketplaceId: input.marketplaceId,
-      window: input.window,
-    });
-  } catch (error) {
-    if (error instanceof FbaSalesMetricsError) {
-      throw new SpApiError(error.message, {
-        status: error.status,
-        code: error.code,
-        requestId: error.requestId,
-        retryAfter: error.retryAfter,
-      });
-    }
-    throw error;
+function throwFbaSalesFacadeError(error: unknown): never {
+  if (error instanceof FbaSalesPlanningError) {
+    invalidSalesTrendRange(error.message);
   }
-}
-
-export function salesTrendRetryDelayMs(
-  response: Pick<Response, "headers">,
-  attempt: number,
-  now = Date.now(),
-): number {
-  return fbaSalesMetricsRetryDelayMs(response, attempt, now);
-}
-
-type SalesTrendSeriesResult = {
-  points: SalesTrendPoint[];
-  totals: SalesTrendSnapshot["totals"];
-  requestId: string | null;
-  rateLimit: string | null;
-};
-
-async function fetchLiveSalesTrendSeries(
-  marketplaceId: MarketplaceId,
-  window: SalesTrendWindow,
-  sellerSku?: string,
-): Promise<SalesTrendSeriesResult> {
-  const adapter = createFbaSalesMetricsProductionAdapter({
-    getAccessToken: requestAccessToken,
-    invalidateAccessToken: (region) => tokenCache.delete(region),
-  });
-  try {
-    const result = await adapter.readDaily({
-      marketplaceId,
-      window,
-      sellerSku: sellerSku ?? null,
-      series: "current",
-      trendDayCount: window.range.dayCount,
+  if (error instanceof FbaSalesMetricsError) {
+    throw new SpApiError(error.message, {
+      status: error.status,
+      code: error.code,
+      requestId: error.requestId,
+      retryAfter: error.retryAfter,
     });
-    return {
-      ...normalizeSalesTrendResponse({
-        response: result.envelope,
-        marketplaceId,
-        window,
-      }),
-      requestId: result.requestId,
-      rateLimit: result.rateLimit,
-    };
-  } catch (error) {
-    if (error instanceof FbaSalesMetricsError) {
-      throw new SpApiError(error.message, {
-        status: error.status,
-        code: error.code,
-        requestId: error.requestId,
-        retryAfter: error.retryAfter,
-      });
-    }
-    throw error;
   }
+  throw error;
 }
 
 const FBA_INBOUND_READ_INTERVAL_MS = 500;
@@ -17192,18 +17105,7 @@ export async function getSalesTrend(input: {
         : undefined,
     });
   } catch (error) {
-    if (error instanceof FbaSalesPlanningError) {
-      invalidSalesTrendRange(error.message);
-    }
-    if (error instanceof FbaSalesMetricsError) {
-      throw new SpApiError(error.message, {
-        status: error.status,
-        code: error.code,
-        requestId: error.requestId,
-        retryAfter: error.retryAfter,
-      });
-    }
-    throw error;
+    throwFbaSalesFacadeError(error);
   }
 }
 
@@ -17299,29 +17201,26 @@ function createRestockPlan(
   };
 }
 
-async function fetchLiveSalesVelocity(
+async function readRestockSalesVelocity(
   marketplaceId: MarketplaceId,
   sellerSku: string,
+  demoMode: boolean,
 ): Promise<RestockPlanSnapshot["demand"]> {
-  // Use complete marketplace-local days so a partial current day does not
-  // artificially depress average daily demand. Sales API's exact SKU filter
-  // avoids the previous five-page Orders scan, which could miss a valid SKU in
-  // a high-volume account and incorrectly leave days of cover blank.
-  const plan = planCompletedFbaSalesVelocity(
+  const adapter = demoMode
+    ? createDeterministicFbaSalesMetricsDemoAdapter()
+    : createFbaSalesMetricsProductionAdapter({
+        getAccessToken: requestAccessToken,
+        invalidateAccessToken: (region) => tokenCache.delete(region),
+      });
+  const velocity = await readFbaSalesVelocity(
     { marketplaceId, sellerSku },
-    new Date(),
+    { adapter },
   );
-  const series = await fetchLiveSalesTrendSeries(
-    marketplaceId,
-    plan.window,
-    sellerSku,
-  );
-  const units = series.totals.unitCount;
   return {
-    lookbackDays: plan.completedDayCount,
-    units,
-    averageDailyUnits: units / plan.completedDayCount,
-    ordersScanned: series.totals.orderCount,
+    lookbackDays: velocity.completedDayCount,
+    units: velocity.units,
+    averageDailyUnits: velocity.averageDailyUnits,
+    ordersScanned: velocity.orderCount,
     partial: false,
   };
 }
@@ -17329,68 +17228,73 @@ async function fetchLiveSalesVelocity(
 export async function getRestockPlan(
   input: RestockPlanInput,
 ): Promise<RestockPlanSnapshot> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
-    const fba = listing.fulfillmentAvailability.find(
-      (item) => item.fulfillment === "FBA",
-    );
-    const fulfillable = inventoryQuantity(fba?.quantity);
-    const averageDailyUnits =
-      input.marketplaceId === JP_MARKETPLACE_ID ? 1.3 : 1.8;
-    return createRestockPlan(input, {
-      mode: "demo",
-      listing,
-      fnSku: listing.asin ? `X00${listing.asin.slice(-7)}` : null,
-      inventory: {
-        fulfillable,
-        reserved: 4,
-        inboundWorking: fulfillable > 0 ? 12 : 0,
-        inboundShipped: fulfillable > 0 ? 18 : 0,
-        inboundReceiving: 6,
-        unfulfillable: 1,
-        researching: 0,
-      },
-      demand: {
-        lookbackDays: 30,
-        units: Math.round(averageDailyUnits * 30),
-        averageDailyUnits,
-        ordersScanned: 37,
-        partial: false,
-      },
-      requestId: null,
-      rateLimit: null,
-    });
-  }
+  const demoMode = shouldUseDemoMode(input.marketplaceId);
+  try {
+    if (demoMode) {
+      const demand = await readRestockSalesVelocity(
+        input.marketplaceId,
+        input.sellerSku,
+        true,
+      );
+      const listing = getDemoListingPrice(
+        input.marketplaceId,
+        input.sellerSku,
+      );
+      const fba = listing.fulfillmentAvailability.find(
+        (item) => item.fulfillment === "FBA",
+      );
+      const fulfillable = inventoryQuantity(fba?.quantity);
+      return createRestockPlan(input, {
+        mode: "demo",
+        listing,
+        fnSku: listing.asin ? `X00${listing.asin.slice(-7)}` : null,
+        inventory: {
+          fulfillable,
+          reserved: 4,
+          inboundWorking: fulfillable > 0 ? 12 : 0,
+          inboundShipped: fulfillable > 0 ? 18 : 0,
+          inboundReceiving: 6,
+          unfulfillable: 1,
+          researching: 0,
+        },
+        demand,
+        requestId: null,
+        rateLimit: null,
+      });
+    }
 
-  const [listing, inventoryResult, demand] = await Promise.all([
-    fetchLiveListingPrice(input.marketplaceId, input.sellerSku),
-    fetchLiveFbaInventorySummary(input.marketplaceId, input.sellerSku),
-    fetchLiveSalesVelocity(input.marketplaceId, input.sellerSku),
-  ]);
-  const details = inventoryResult.summary.inventoryDetails;
-  return createRestockPlan(input, {
-    mode: "live",
-    listing,
-    fnSku: inventoryResult.summary.fnSku?.trim() || null,
-    inventory: {
-      fulfillable: inventoryQuantity(details?.fulfillableQuantity),
-      reserved: inventoryQuantity(
-        details?.reservedQuantity?.totalReservedQuantity,
-      ),
-      inboundWorking: inventoryQuantity(details?.inboundWorkingQuantity),
-      inboundShipped: inventoryQuantity(details?.inboundShippedQuantity),
-      inboundReceiving: inventoryQuantity(details?.inboundReceivingQuantity),
-      unfulfillable: inventoryQuantity(
-        details?.unfulfillableQuantity?.totalUnfulfillableQuantity,
-      ),
-      researching: inventoryQuantity(
-        details?.researchingQuantity?.totalResearchingQuantity,
-      ),
-    },
-    demand,
-    requestId: inventoryResult.requestId,
-    rateLimit: inventoryResult.rateLimit,
-  });
+    const [demand, listing, inventoryResult] = await Promise.all([
+      readRestockSalesVelocity(input.marketplaceId, input.sellerSku, false),
+      fetchLiveListingPrice(input.marketplaceId, input.sellerSku),
+      fetchLiveFbaInventorySummary(input.marketplaceId, input.sellerSku),
+    ]);
+    const details = inventoryResult.summary.inventoryDetails;
+    return createRestockPlan(input, {
+      mode: "live",
+      listing,
+      fnSku: inventoryResult.summary.fnSku?.trim() || null,
+      inventory: {
+        fulfillable: inventoryQuantity(details?.fulfillableQuantity),
+        reserved: inventoryQuantity(
+          details?.reservedQuantity?.totalReservedQuantity,
+        ),
+        inboundWorking: inventoryQuantity(details?.inboundWorkingQuantity),
+        inboundShipped: inventoryQuantity(details?.inboundShippedQuantity),
+        inboundReceiving: inventoryQuantity(details?.inboundReceivingQuantity),
+        unfulfillable: inventoryQuantity(
+          details?.unfulfillableQuantity?.totalUnfulfillableQuantity,
+        ),
+        researching: inventoryQuantity(
+          details?.researchingQuantity?.totalResearchingQuantity,
+        ),
+      },
+      demand,
+      requestId: inventoryResult.requestId,
+      rateLimit: inventoryResult.rateLimit,
+    });
+  } catch (error) {
+    throwFbaSalesFacadeError(error);
+  }
 }
 
 export function isMarketplaceId(value: string): value is MarketplaceId {
