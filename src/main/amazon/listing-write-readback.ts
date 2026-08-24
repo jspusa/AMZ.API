@@ -1,7 +1,7 @@
 import { abortableDelay, throwIfAborted } from "../abort-utils";
+import { SpApiError } from "./sp-api-error";
 import {
   isPricingListingError,
-  SpApiError,
   type BusinessPricingListingSnapshot,
   type BusinessPriceUpdateResult,
   type ListingContentSnapshot,

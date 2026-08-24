@@ -6,7 +6,7 @@ import {
   type SharedReportOptionsKey,
   type SharedReportType,
 } from "../local-store";
-import { SpApiError } from "./sp-api";
+import { SpApiError } from "./sp-api-error";
 import {
   throwIfAborted,
   waitForPromiseWithSignal,

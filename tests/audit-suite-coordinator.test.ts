@@ -8,6 +8,7 @@ import {
   type AuditSuiteRunControl,
   type AuditSuiteSectionRunners,
 } from "../src/main/amazon/audit-suite-coordinator";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import {
   createAuditSuiteState,
   parseAuditSuiteRun,
@@ -325,6 +326,42 @@ describe("AuditSuiteCoordinator run ownership", () => {
     await vi.advanceTimersByTimeAsync(0);
     await flushCoordinator();
     expect(loads).toBe(2);
+  });
+
+  it("sanitizes a failed section before its notice crosses to the renderer", async () => {
+    const hostile = [
+      "Bearer private-access-token",
+      "accountScope=private-account",
+      "reportId=private-report",
+      "https://example.invalid/private?client_secret=private-secret",
+      "HOSTILE-CANARY\u202e\u0000",
+    ].join(" ");
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        content: async () => {
+          throw new SpApiError(hostile, {
+            requestId: "Atza|private-token",
+          });
+        },
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const serialized = JSON.stringify(run.sections.content);
+    expect(run.sections.content).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    expect(serialized).not.toMatch(
+      /Bearer|access.?token|accountScope|reportId|client.?secret|https?:|HOSTILE-CANARY|Atza|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
+    );
   });
 
   it("aborts active run controls when lifecycle cleanup clears the coordinator", async () => {

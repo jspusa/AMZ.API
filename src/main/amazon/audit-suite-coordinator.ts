@@ -13,6 +13,7 @@ import type {
   AuditSuiteWorkbookInput,
   ValidatedAuditSuiteSnapshot,
 } from "./audit-suite-xlsx";
+import { publicSpApiError, SpApiError } from "./sp-api-error";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
 
@@ -103,7 +104,10 @@ function safeFailureNotice(error: unknown): string {
     : typeof error === "string"
       ? error
       : "此項健檢未能建立可核對快照。";
-  const normalized = message.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, 1_500);
+  const normalized = publicSpApiError(
+    error instanceof SpApiError ? error : new SpApiError(message),
+    "此項健檢未能建立可核對快照。",
+  ).message.trim().slice(0, 1_500);
   return normalized || "此項健檢未能建立可核對快照。";
 }
 

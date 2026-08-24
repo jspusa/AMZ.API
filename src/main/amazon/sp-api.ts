@@ -93,14 +93,22 @@ import {
 } from "./fba-sales-metrics";
 import { createDeterministicFbaSalesMetricsDemoAdapter } from "./fba-sales-metrics-demo";
 import { createFbaSalesMetricsProductionAdapter } from "./fba-sales-metrics-production";
+import {
+  SpApiError,
+  SpApiPreCommitError,
+  type ListingIssue,
+  type SpApiOperation,
+} from "./sp-api-error";
 
 export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
+export { SpApiError, SpApiPreCommitError } from "./sp-api-error";
 export type {
   SalesTrendComparisonMode,
   SalesTrendPresetDays,
   SalesTrendRange,
   SalesTrendWindow,
 } from "./fba-sales-calendar";
+export type { ListingIssue, SpApiOperation } from "./sp-api-error";
 
 export type { BrandSalesSnapshot } from "./brand-sales";
 export type {
@@ -195,15 +203,6 @@ export type SubscriptionAuditSnapshot = Omit<
     unverifiedFbaSkuCount: number;
   };
   notice: string;
-};
-
-export type ListingIssue = {
-  code: string | null;
-  severity: string;
-  message: string;
-  attributeNames: string[];
-  categories?: string[];
-  marketplaceIds?: string[];
 };
 
 export type FulfillmentAvailability = {
@@ -1407,14 +1406,24 @@ const aplusContentLastStartedAt = new Map<SpApiRegion, number>();
 const aplusContentRequestIntervals = new Map<SpApiRegion, number>();
 let credentialGeneration = 0;
 
-export function invalidateSpApiCredentialCaches(): void {
+export function invalidateSpApiCredentialCaches(
+  options: Readonly<{ preserveRateLimitPacing?: boolean }> = {},
+): void {
   credentialGeneration += 1;
   tokenCache.clear();
   tokenRequests.clear();
-  aplusContentReadTails.clear();
-  aplusContentLastStartedAt.clear();
-  aplusContentRequestIntervals.clear();
+  if (!options.preserveRateLimitPacing) {
+    aplusContentReadTails.clear();
+    aplusContentLastStartedAt.clear();
+    aplusContentRequestIntervals.clear();
+  }
   clearProductTypeCapabilityCache();
+  demoPriceOverrides.clear();
+  demoBusinessPriceOverrides.clear();
+  demoBusinessQuantityDiscountOverrides.clear();
+  demoSalePriceOverrides.clear();
+  demoContentOverrides.clear();
+  demoImageOverrides.clear();
 }
 
 const IMAGE_ATTRIBUTE_NAMES = [
@@ -1438,70 +1447,6 @@ const CONTENT_TEXT_ATTRIBUTE_NAMES = [
 ] as const;
 
 type ListingContentAttributeName = typeof CONTENT_TEXT_ATTRIBUTE_NAMES[number];
-
-export type SpApiOperation =
-  | "getListingsItem"
-  | "searchListingsItems"
-  | "getAplusContentPublishRecords"
-  | "getAplusContentDocuments"
-  | "getAplusContentDocumentAsinRelations"
-  | "getItemReviewTopics"
-  | "getDefinitionsProductType"
-  | "patchListingsItemPreview"
-  | "patchListingsItem";
-
-export class SpApiError extends Error {
-  status: number;
-  code: string;
-  requestId: string | null;
-  retryAfter: string | null;
-  issues: ListingIssue[];
-  operation: SpApiOperation | null;
-  upstreamCode: string | null;
-
-  constructor(
-    message: string,
-    options: {
-      status?: number;
-      code?: string;
-      requestId?: string | null;
-      retryAfter?: string | null;
-      issues?: ListingIssue[];
-      operation?: SpApiOperation | null;
-      upstreamCode?: string | null;
-    } = {},
-  ) {
-    super(message);
-    this.name = "SpApiError";
-    this.status = options.status ?? 500;
-    this.code = options.code ?? "UPSTREAM_UNAVAILABLE";
-    this.requestId = options.requestId ?? null;
-    this.retryAfter = options.retryAfter ?? null;
-    this.issues = options.issues ?? [];
-    this.operation = options.operation ?? null;
-    this.upstreamCode = options.upstreamCode ?? null;
-  }
-}
-
-export class SpApiPreCommitError extends SpApiError {
-  readonly commitPatchSent = false;
-
-  constructor(cause: SpApiError) {
-    super(
-      `${cause.message} 正式 commit PATCH 尚未送出；可重新預檢後再試。`,
-      {
-        status: cause.status,
-        code: cause.code,
-        requestId: cause.requestId,
-        retryAfter: cause.retryAfter,
-        issues: cause.issues,
-        operation: cause.operation,
-        upstreamCode: cause.upstreamCode,
-      },
-    );
-    this.name = "SpApiPreCommitError";
-  }
-}
 
 async function prepareListingCommit<T>(
   prepare: () => Promise<T>,

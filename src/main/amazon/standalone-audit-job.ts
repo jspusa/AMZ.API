@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SpExecutionContextError } from "./sp-execution-context";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
 
@@ -398,7 +399,13 @@ export class StandaloneAuditJobCoordinator {
     let context: StandaloneAuditJobBoundContext;
     try {
       context = await this.gateway.bindContext(input);
-    } catch {
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) {
+        throw new StandaloneAuditJobCoordinatorError(error.message, {
+          status: error.status,
+          code: error.code,
+        });
+      }
       throw new StandaloneAuditJobCoordinatorError(
         "單項健檢無法安全綁定目前 Notebook 鑰匙 context。",
         { status: 503, code: "STANDALONE_AUDIT_CONTEXT_UNAVAILABLE" },

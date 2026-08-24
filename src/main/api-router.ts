@@ -63,9 +63,17 @@ import {
   type AdvertisingCoverageCampaign,
 } from "./amazon/advertising-coverage";
 import {
-  MARKETPLACES,
+  publicSpApiError,
   SpApiError,
   SpApiPreCommitError,
+} from "./amazon/sp-api-error";
+import {
+  createProductionSpExecutionContextAdapter,
+  type SpExecutionContextAdapter,
+  type SpExecutionContextInvalidationReason,
+} from "./amazon/sp-execution-context";
+import {
+  MARKETPLACES,
   getAgedInventoryData,
   getAgedInventoryReportStatus,
   getAllListingsExportData,
@@ -100,6 +108,7 @@ import {
   getVariationMovePreparation,
   isFulfillmentStatus,
   isMarketplaceId,
+  invalidateSpApiCredentialCaches,
   previewListingContentUpdate,
   previewBusinessPriceUpdate,
   previewListingImageUpdate,
@@ -801,18 +810,18 @@ function apiError(error: unknown, fallback: string): ApiResponse {
     return json({ code: error.code, message: error.message }, error.status);
   }
   if (error instanceof SpApiError) {
-    const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+    const publicError = publicSpApiError(error, fallback);
     return json(
       {
-        code: error.code,
-        message: error.message,
-        requestId: error.requestId,
-        issues: error.issues,
-        operation: error.operation,
-        upstreamCode: error.upstreamCode,
+        code: publicError.code,
+        message: publicError.message,
+        requestId: publicError.requestId,
+        issues: publicError.issues,
+        operation: publicError.operation,
+        upstreamCode: publicError.upstreamCode,
       },
-      status,
-      error.retryAfter ? { "retry-after": error.retryAfter } : {},
+      publicError.status,
+      publicError.retryAfter ? { "retry-after": publicError.retryAfter } : {},
     );
   }
   if (error instanceof ReplenishmentAuditError) {
@@ -1332,16 +1341,21 @@ function stableFingerprint(value: unknown): string {
 function sourceResult<T>(result: PromiseSettledResult<T>) {
   if (result.status === "fulfilled") return { data: result.value, error: null };
   const error = result.reason;
+  const publicError = error instanceof SpApiError
+    ? publicSpApiError(
+        error,
+        "這項 Amazon 資料暫時無法讀取，其他結果仍可使用。",
+      )
+    : null;
   return {
     data: null,
-    error:
-      error instanceof SpApiError
+    error: publicError
         ? {
-            code: error.code,
-            message: error.message,
-            requestId: error.requestId,
-            operation: error.operation,
-            upstreamCode: error.upstreamCode,
+            code: publicError.code,
+            message: publicError.message,
+            requestId: publicError.requestId,
+            operation: publicError.operation,
+            upstreamCode: publicError.upstreamCode,
           }
         : {
             code: "UPSTREAM_UNAVAILABLE",
@@ -1355,6 +1369,7 @@ export class ApiRouter {
   private readonly store: LocalStore;
   private readonly vault: CredentialVault;
   private readonly approveWrite: WriteApproval;
+  private readonly spExecutionContext: SpExecutionContextAdapter;
   private readonly brandSalesReports: BrandSalesReportGateway;
   private readonly agedInventoryReports: AgedInventoryReportGateway;
   private readonly businessPricingActiveListingsReports:
@@ -1436,10 +1451,20 @@ export class ApiRouter {
     aplusAudit?: Partial<AplusAuditJobGateway>;
     standaloneAudit?: Partial<StandaloneAuditJobGateway>;
     advertising?: AdvertisingGateway;
+    spExecutionContext?: SpExecutionContextAdapter;
   }) {
     this.store = input.store;
     this.vault = input.vault;
     this.approveWrite = input.approveWrite;
+    this.spExecutionContext = input.spExecutionContext
+      ?? createProductionSpExecutionContextAdapter({
+        getOpaqueAccountScope: (region) => this.vault.getAccountScope(region),
+        resolveMode: (marketplaceId) => usesDemoMode(marketplaceId) ? "demo" : "live",
+        onContextChanged: () => {
+          invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true });
+          this.clearPreviews();
+        },
+      });
     this.advertising = input.advertising ?? null;
     this.reportLifecycle = new DurableReportLifecycle(this.store);
     this.brandSalesReports = {
@@ -1568,6 +1593,12 @@ export class ApiRouter {
     // Do not reset the Customer Feedback queue or its next slot. A credential
     // change must not let a new account overtake an already-started request or
     // bypass the App-session-wide one-request-per-second boundary.
+  }
+
+  invalidateSpExecutionContext(reason: SpExecutionContextInvalidationReason): void {
+    this.spExecutionContext.invalidate(reason);
+    invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true });
+    this.clearPreviews();
   }
 
   async handle(request: ApiRequest): Promise<ApiResponse> {
@@ -4689,11 +4720,14 @@ export class ApiRouter {
             validation,
           });
         } catch (error) {
+          const publicError = error instanceof SpApiError
+            ? publicSpApiError(error, "Amazon 預檢失敗。")
+            : null;
           validationErrors.push({
             sellerSku: input.sellerSku,
-            code: error instanceof SpApiError ? error.code : "INTERNAL_ERROR",
-            message: error instanceof Error ? error.message : "Amazon 預檢失敗。",
-            requestId: error instanceof SpApiError ? error.requestId : null,
+            code: publicError?.code ?? "INTERNAL_ERROR",
+            message: publicError?.message ?? "Amazon 預檢失敗。",
+            requestId: publicError?.requestId ?? null,
           });
         }
       }
@@ -4937,16 +4971,22 @@ export class ApiRouter {
               error.code === "UPDATE_STATUS_UNKNOWN" ||
               error.status >= 500 ||
               [401, 429].includes(error.status));
+          const publicError = error instanceof SpApiError
+            ? publicSpApiError(
+                error,
+                unknown
+                  ? "Amazon 寫入結果尚未確認。"
+                  : "Amazon 拒絕這筆商品內容變更。",
+              )
+            : null;
           rows[index] = {
             sellerSku: change.input.sellerSku,
             state: unknown ? "unknown" : "rejected",
             result: null,
             error: {
-              code: error instanceof SpApiError ? error.code : "UPDATE_STATUS_UNKNOWN",
-              message: error instanceof Error
-                ? error.message
-                : "Amazon 寫入結果尚未確認。",
-              requestId: error instanceof SpApiError ? error.requestId : null,
+              code: publicError?.code ?? "UPDATE_STATUS_UNKNOWN",
+              message: publicError?.message ?? "Amazon 寫入結果尚未確認。",
+              requestId: publicError?.requestId ?? null,
             },
           };
           status = unknown ? "STOPPED_UNKNOWN" : "STOPPED_REJECTED";
@@ -7887,9 +7927,10 @@ export class ApiRouter {
     accountScope: string;
     mode: "live" | "demo";
   }> {
+    const context = await this.spExecutionContext.capture(marketplaceId);
     return {
-      accountScope: await this.vault.getAccountScope(MARKETPLACES[marketplaceId].region),
-      mode: usesDemoMode(marketplaceId) ? "demo" : "live",
+      accountScope: context.accountScope,
+      mode: context.mode,
     };
   }
 
@@ -8848,7 +8889,13 @@ export class ApiRouter {
     }
     if (error instanceof SpApiError) {
       if (error.code === "REPORT_RETRY_WAIT") {
-        return { notice: error.message, code: "REPORT_RETRY_WAIT" };
+        return {
+          notice: publicSpApiError(
+            error,
+            "Amazon 報表仍在安全重試間隔內。",
+          ).message,
+          code: "REPORT_RETRY_WAIT",
+        };
       }
       if (
         [

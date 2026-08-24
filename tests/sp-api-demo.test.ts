@@ -3,6 +3,7 @@ import {
   getListingContent,
   getListingImages,
   getListingPrice,
+  invalidateSpApiCredentialCaches,
   listingIncludedData,
   previewListingPriceUpdate,
   previewListingSalePriceUpdate,
@@ -16,6 +17,7 @@ const savedEnvironment = new Map(SP_ENV_KEYS.map((key) => [key, process.env[key]
 
 describe("SP-API demo safety boundary", () => {
   beforeEach(() => {
+    invalidateSpApiCredentialCaches();
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
@@ -70,6 +72,25 @@ describe("SP-API demo safety boundary", () => {
     expect(result.status).toBe("SIMULATED");
     expect(result.previousPrice.amount).toBe(expectedPrice);
     expect(result.requestedPrice.amount).toBe(newPrice);
+  });
+
+  it("clears context-bound demo writes when the SP execution context is invalidated", async () => {
+    const identity = {
+      marketplaceId: "ATVPDKIKX0DER" as const,
+      sellerSku: "AFA-TRKY-4OZ",
+    };
+    const original = await getListingPrice(identity);
+    const expectedPrice = original.standardPrice!.amount;
+    await updateListingPrice({
+      ...identity,
+      expectedPrice,
+      newPrice: expectedPrice + 3,
+    });
+    expect((await getListingPrice(identity)).standardPrice?.amount).toBe(expectedPrice + 3);
+
+    invalidateSpApiCredentialCaches();
+
+    expect((await getListingPrice(identity)).standardPrice?.amount).toBe(expectedPrice);
   });
 
   it("preserves valid Marketplace Day literals in a Sale Price preview", async () => {

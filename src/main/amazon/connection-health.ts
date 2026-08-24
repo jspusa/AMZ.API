@@ -1,5 +1,9 @@
 import type { ConnectionTestResult } from "../../shared/contracts";
-import { SpApiError } from "./sp-api";
+import {
+  publicSpApiError,
+  publicSpApiRequestId,
+  SpApiError,
+} from "./sp-api-error";
 
 type RegionResult = NonNullable<ConnectionTestResult["regions"]["na"]>;
 
@@ -29,10 +33,11 @@ function failed(stage: "Orders" | "Listings", error: unknown): RegionResult {
       ? " 請確認 Orders 角色後重新授權 App。"
       : " 請確認 Product Listing 角色後重新授權 App。";
   }
+  const publicError = publicSpApiError(error, "Amazon 回應無法安全顯示。");
   return {
     ok: false,
-    message: `${stage} 驗證失敗：${error.message}${guidance}`,
-    requestId: error.requestId,
+    message: `${stage} 驗證失敗：${publicError.message}${guidance}`,
+    requestId: publicError.requestId,
   };
 }
 
@@ -51,7 +56,7 @@ export async function testRegionConnections(input: Readonly<{
     return {
       ok: false,
       message: "目前仍是展示模式。",
-      requestId: orders.requestId,
+      requestId: publicSpApiRequestId(orders.requestId),
     };
   }
 
@@ -66,6 +71,7 @@ export async function testRegionConnections(input: Readonly<{
     message: listings.compatibilityFallback
       ? "Orders 與 Listings 連線成功；Listings 使用唯讀相容參數。"
       : "Orders 與 Listings 連線成功。",
-    requestId: listings.requestId ?? orders.requestId,
+    requestId: publicSpApiRequestId(listings.requestId) ??
+      publicSpApiRequestId(orders.requestId),
   };
 }

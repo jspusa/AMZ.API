@@ -24,6 +24,7 @@ import { ApiRouter } from "./api-router";
 import { AdvertisingApiClient } from "./amazon/ads-api";
 import { invalidateSpApiCredentialCaches } from "./amazon/sp-api";
 import { isMarketplaceId, usesDemoMode } from "./amazon/sp-api";
+import type { SpExecutionContextInvalidationReason } from "./amazon/sp-execution-context";
 import { AdvertisingCredentialVault } from "./advertising-credential-vault";
 import {
   advertisingCredentialEditorDataUrl,
@@ -101,6 +102,17 @@ let credentialsChangeInFlight = false;
 const nativeConfirmationGate = new NativeConfirmationGate();
 let appInitialized = false;
 let initializationPromise: Promise<void> | null = null;
+
+function invalidateAmazonSecurityContext(
+  reason: SpExecutionContextInvalidationReason,
+): void {
+  if (apiRouter) {
+    apiRouter.invalidateSpExecutionContext(reason);
+    return;
+  }
+  invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true });
+  advertisingApi?.invalidate();
+}
 
 function normalizedExternal(value: string): string | null {
   try {
@@ -552,10 +564,8 @@ function registerIpc(): void {
     credentialsChangeInFlight = true;
     try {
       await confirmSensitiveAction("確認保存 Amazon API 憑證到這台電腦的系統安全儲存區");
+      invalidateAmazonSecurityContext("credentials-saved");
       const summary = await credentialVault.save(input);
-      invalidateSpApiCredentialCaches();
-      advertisingApi?.invalidate();
-      apiRouter?.clearPreviews();
       return summary;
     } finally {
       credentialsChangeInFlight = false;
@@ -577,10 +587,8 @@ function registerIpc(): void {
     credentialsChangeInFlight = true;
     try {
       await confirmSensitiveAction("確認清除這台電腦上的 Amazon API 憑證");
-      apiRouter?.clearPreviews();
+      invalidateAmazonSecurityContext("credentials-cleared");
       const summary = await credentialVault.clear();
-      invalidateSpApiCredentialCaches();
-      advertisingApi?.invalidate();
       return summary;
     } finally {
       credentialsChangeInFlight = false;
@@ -903,14 +911,12 @@ if (!hasSingleInstanceLock) {
     powerMonitor.on("lock-screen", () => {
       closeCredentialEditor();
       closeAdvertisingCredentialEditor();
-      apiRouter?.clearPreviews();
-      advertisingApi?.invalidate();
+      invalidateAmazonSecurityContext("lock-screen");
     });
     powerMonitor.on("suspend", () => {
       closeCredentialEditor();
       closeAdvertisingCredentialEditor();
-      apiRouter?.clearPreviews();
-      advertisingApi?.invalidate();
+      invalidateAmazonSecurityContext("suspend");
     });
     await createWindow();
     configureUpdater();

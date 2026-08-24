@@ -440,6 +440,45 @@ describe("A+ Content publish-record SP-API gateway", () => {
     expect(apiStarts[1] - apiStarts[0]).toBeGreaterThanOrEqual(2_000);
   });
 
+  it("preserves app-session A+ pacing across a security-context invalidation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T08:00:00.000Z"));
+    const apiStarts: number[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) return tokenResponse();
+      apiStarts.push(Date.now());
+      return new Response(JSON.stringify({ publishRecordList: [] }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-amzn-RateLimit-Limit": "0.5",
+        },
+      });
+    }));
+
+    const first = getAplusContentPublishRecordsPage({
+      marketplaceId: US,
+      asin: "B000000010",
+      expectedMode: "live",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await first;
+    invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true });
+
+    const second = getAplusContentPublishRecordsPage({
+      marketplaceId: US,
+      asin: "B000000011",
+      expectedMode: "live",
+    });
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(apiStarts).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await second;
+    expect(apiStarts).toHaveLength(2);
+    expect(apiStarts[1] - apiStarts[0]).toBeGreaterThanOrEqual(2_000);
+  });
+
   it("rejects an extreme rate-limit header instead of creating an infinite timer", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-23T08:00:00.000Z"));

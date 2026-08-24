@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api";
+import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
 
 export type SupplyRoute = "DIRECT_FBA" | "AWD_TO_FBA";
 

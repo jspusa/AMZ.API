@@ -29,6 +29,8 @@ GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸�
 
 控制台的 client components 仍呼叫相對 `/api/**`。只有在 Notebook 鑰匙 App 視窗中，Renderer 才會安裝 fetch adapter，將允許的 JSON／單檔 multipart request 序列化到 preload；一般瀏覽器只渲染鎖定頁。main process router 重建 HTTP-like status、headers、JSON 或 bytes response，全程不啟動 localhost server。
 
+main process 已為新抽離的 SP domain module 與 main-owned audit／report coordinator 建立不可變 execution context：marketplace、由 marketplace 推導的 region、demo／live mode、不透明的 account scope 與單調 generation；既有尚未抽離的 legacy facade route 維持原相容路徑，不冒充已全面遷移。production 與 scripted test adapter 共用同一契約，renderer 不能提供 region、帳號識別值或 generation。憑證儲存／清除、鎖屏、系統 suspend，以及偵測到帳號或 mode 改變時，main 會先讓舊 generation 失效，再清除 token、capability、demo override 與 router runtime cache；耐久的 LocalStore 證據與 app-session 級 A+／FBA inbound／Customer Feedback rate-limit pacing 不會被誤當成短效 context cache 清除。canonical SP errors 定義在獨立 leaf module，legacy facade 只 re-export；所有已接入的 SP error public seam 與連線測試都在跨 main／renderer 邊界前轉成 frozen、allowlisted descriptor，保留安全的 status、code、Request ID 與 rate-limit 資訊，同時移除 token、Seller ID、account scope、report／document ID、URL 與控制字元。pre-commit 錯誤的 `commitPatchSent=false` 仍只供 main 內部 no-blind-retry 判斷，不暴露給 renderer。
+
 允許路由只有：
 
 - Orders

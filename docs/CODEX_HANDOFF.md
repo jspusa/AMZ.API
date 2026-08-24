@@ -549,15 +549,17 @@ Amazon App：
 6. `src/shared/contracts.ts` — Renderer／Preload／Main 的資料合約。
 7. `src/main/index.ts` — App 啟動、視窗、IPC、更新與請求協調。
 8. `src/main/credential-vault.ts` — Keychain-backed secret vault。
-9. `src/main/api-router.ts` — 所有 UI API 路由、preview／commit 與輸入驗證。
-10. `src/main/amazon/sp-api.ts` — SP-API endpoint、正規化、錯誤、報表、Listings、Orders、FBA。
-11. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-12. `src/preload/index.ts` — 窄化 Bridge。
-13. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-14. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-15. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-16. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-17. `tests/*.test.ts` — 已建立的安全與回歸契約。
+9. `src/main/amazon/sp-execution-context.ts` — 不可變 marketplace／region／mode／account generation 與失效契約。
+10. `src/main/amazon/sp-api-error.ts` — canonical SP error vocabulary 與 renderer-boundary sanitizer。
+11. `src/main/api-router.ts` — 所有 UI API 路由、preview／commit 與輸入驗證。
+12. `src/main/amazon/sp-api.ts` — SP-API endpoint、正規化、報表、Listings、Orders、FBA。
+13. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+14. `src/preload/index.ts` — 窄化 Bridge。
+15. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+16. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+17. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+18. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+19. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

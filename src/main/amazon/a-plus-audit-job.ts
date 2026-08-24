@@ -9,6 +9,7 @@ import {
   type AplusPublishRecordFetchInput,
   type AplusPublishRecordFetchResult,
 } from "./a-plus-audit";
+import { SpExecutionContextError } from "./sp-execution-context";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
 
@@ -403,7 +404,13 @@ export class AplusAuditJobCoordinator {
     let context: AplusAuditJobBoundContext;
     try {
       context = await this.gateway.bindContext(input);
-    } catch {
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) {
+        throw new AplusAuditJobCoordinatorError(error.message, {
+          status: error.status,
+          code: error.code,
+        });
+      }
       throw new AplusAuditJobCoordinatorError(
         "A+ 健檢無法安全綁定目前 Notebook 鑰匙 context。",
         { status: 503, code: "A_PLUS_AUDIT_CONTEXT_UNAVAILABLE" },
