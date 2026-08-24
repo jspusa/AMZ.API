@@ -71,6 +71,27 @@ import {
   businessPricingRecommendationFlags,
 } from "../../shared/business-pricing-recommendations";
 import { spApiUserAgent } from "./sp-api-runtime";
+import {
+  isDateOnly,
+  marketplaceCalendar,
+} from "./marketplace-calendar";
+import {
+  FbaSalesPlanningError,
+  planCompletedFbaSalesVelocity,
+  planFbaSalesTrend,
+  type SalesTrendComparisonMode,
+  type SalesTrendPresetDays,
+  type SalesTrendRange,
+  type SalesTrendWindow,
+} from "./fba-sales-calendar";
+
+export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
+export type {
+  SalesTrendComparisonMode,
+  SalesTrendPresetDays,
+  SalesTrendRange,
+  SalesTrendWindow,
+} from "./fba-sales-calendar";
 
 export type { BrandSalesSnapshot } from "./brand-sales";
 export type {
@@ -141,22 +162,7 @@ export type OrdersSnapshot = {
   notice: string | null;
 };
 
-export type SalesTrendPresetDays = 7 | 14 | 30 | 90;
 export type SalesTrendDays = SalesTrendPresetDays;
-export type SalesTrendComparisonMode = "none" | "previous-year";
-
-// Amazon Sales API permits non-hour intervals that begin within the last two
-// years. This app keeps a one-year daily cap so the paired previous-year query
-// remains inside that horizon and the renderer stays responsive. The exact
-// comparison horizon is still checked again in getSalesTrend.
-export const MAX_SALES_TREND_DAY_COUNT = 365;
-
-export type SalesTrendRange = {
-  startDate: string;
-  endDate: string;
-  dayCount: number;
-  presetDays: SalesTrendPresetDays | null;
-};
 
 export type SalesTrendPoint = {
   date: string;
@@ -1904,11 +1910,7 @@ function canonicalSaleDate(value: unknown): string | null {
     /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/,
   )?.[1];
   const candidate = dateOnly ?? isoDate;
-  if (!candidate) return null;
-  const parsed = new Date(`${candidate}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === candidate
-    ? candidate
-    : null;
+  return candidate && isDateOnly(candidate) ? candidate : null;
 }
 
 function finiteNumericValue(value: unknown): number | null {
@@ -7223,15 +7225,6 @@ async function prepareLiveBusinessPriceUpdate(
   return { listing, ...verified, body, issues, evidence };
 }
 
-function isDateOnly(value: string | null): value is string {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return (
-    !Number.isNaN(parsed.getTime()) &&
-    parsed.toISOString().slice(0, 10) === value
-  );
-}
-
 function saleScheduleMatches(
   current: SalePriceSchedule | null,
   input: UpdateListingSalePriceInput,
@@ -7580,164 +7573,6 @@ async function fetchLiveOrders(input: SearchOrdersInput): Promise<OrdersSnapshot
   };
 }
 
-export type SalesTrendWindow = {
-  timeZone: string;
-  range: SalesTrendRange;
-  startAt: string;
-  endAt: string;
-  dateKeys: string[];
-  intervals: string[];
-  partialDateKey: string | null;
-};
-
-type ZonedDateParts = {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-};
-
-const zonedFormatterCache = new Map<string, Intl.DateTimeFormat>();
-
-function zonedDateParts(date: Date, timeZone: string): ZonedDateParts {
-  let formatter = zonedFormatterCache.get(timeZone);
-  if (!formatter) {
-    formatter = new Intl.DateTimeFormat("en-CA-u-hc-h23", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23",
-    });
-    zonedFormatterCache.set(timeZone, formatter);
-  }
-  const parts = Object.fromEntries(
-    formatter
-      .formatToParts(date)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, Number(part.value)]),
-  );
-  return {
-    year: parts.year,
-    month: parts.month,
-    day: parts.day,
-    hour: parts.hour,
-    minute: parts.minute,
-    second: parts.second,
-  };
-}
-
-function timeZoneOffsetMinutes(date: Date, timeZone: string): number {
-  const instant = new Date(Math.floor(date.getTime() / 1_000) * 1_000);
-  const parts = zonedDateParts(instant, timeZone);
-  const representedAsUtc = Date.UTC(
-    parts.year,
-    parts.month - 1,
-    parts.day,
-    parts.hour,
-    parts.minute,
-    parts.second,
-  );
-  return Math.round((representedAsUtc - instant.getTime()) / 60_000);
-}
-
-function offsetText(minutes: number): string {
-  const sign = minutes >= 0 ? "+" : "-";
-  const absolute = Math.abs(minutes);
-  return `${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(
-    absolute % 60,
-  ).padStart(2, "0")}`;
-}
-
-function zonedIso(date: Date, timeZone: string): string {
-  const parts = zonedDateParts(date, timeZone);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(
-    parts.minute,
-  )}:${pad(parts.second)}${offsetText(timeZoneOffsetMinutes(date, timeZone))}`;
-}
-
-function dateKey(year: number, month: number, day: number): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${year}-${pad(month)}-${pad(day)}`;
-}
-
-function shiftDateKey(value: string, days: number): string {
-  const [year, month, day] = value.split("-").map(Number);
-  const shifted = new Date(Date.UTC(year, month - 1, day + days));
-  return dateKey(
-    shifted.getUTCFullYear(),
-    shifted.getUTCMonth() + 1,
-    shifted.getUTCDate(),
-  );
-}
-
-function zonedLocalInstant(
-  value: string,
-  timeZone: string,
-  time: Pick<ZonedDateParts, "hour" | "minute" | "second"> = {
-    hour: 0,
-    minute: 0,
-    second: 0,
-  },
-): Date {
-  const [year, month, day] = value.split("-").map(Number);
-  const localAsUtc = Date.UTC(
-    year,
-    month - 1,
-    day,
-    time.hour,
-    time.minute,
-    time.second,
-  );
-  let instant = localAsUtc;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const next =
-      localAsUtc -
-      timeZoneOffsetMinutes(new Date(instant), timeZone) * 60_000;
-    if (next === instant) break;
-    instant = next;
-  }
-  return new Date(instant);
-}
-
-function zonedMidnight(value: string, timeZone: string): Date {
-  return zonedLocalInstant(value, timeZone);
-}
-
-function calendarDayCount(startDate: string, endDate: string): number {
-  const [startYear, startMonth, startDay] = startDate.split("-").map(Number);
-  const [endYear, endMonth, endDay] = endDate.split("-").map(Number);
-  return (
-    Math.round(
-      (Date.UTC(endYear, endMonth - 1, endDay) -
-        Date.UTC(startYear, startMonth - 1, startDay)) /
-        86_400_000,
-    ) + 1
-  );
-}
-
-function exactYearShift(value: string, years: number): string | null {
-  const [year, month, day] = value.split("-").map(Number);
-  const shifted = new Date(Date.UTC(year + years, month - 1, day));
-  return shifted.getUTCMonth() === month - 1 && shifted.getUTCDate() === day
-    ? dateKey(shifted.getUTCFullYear(), month, day)
-    : null;
-}
-
-function clampedYearShift(value: string, years: number): string {
-  const exact = exactYearShift(value, years);
-  if (exact) return exact;
-  const [year, month] = value.split("-").map(Number);
-  const lastDay = new Date(Date.UTC(year + years, month, 0)).getUTCDate();
-  return dateKey(year + years, month, lastDay);
-}
-
 function invalidSalesTrendRange(message: string): never {
   throw new SpApiError(message, {
     status: 400,
@@ -7745,166 +7580,18 @@ function invalidSalesTrendRange(message: string): never {
   });
 }
 
-function assertSalesTrendApiHorizon(
-  range: SalesTrendRange,
-  todayKey: string,
-): void {
-  const firstConservativeDate = shiftDateKey(
-    clampedYearShift(todayKey, -2),
-    1,
-  );
-  if (range.startDate < firstConservativeDate) {
-    invalidSalesTrendRange(
-      "Sales API 每日資料的開始日必須晚於距今兩年的同一站點日期；請將開始日往後調整至少一天。",
-    );
-  }
-}
-
-export function resolveSalesTrendRange(
-  input: {
-    marketplaceId: MarketplaceId;
-    days?: number | null;
-    startDate?: string | null;
-    endDate?: string | null;
-  },
-  now = new Date(),
-): SalesTrendRange {
-  if (Number.isNaN(now.getTime())) {
-    invalidSalesTrendRange("銷售趨勢日期範圍無效。");
-  }
-  const hasDays = input.days !== null && input.days !== undefined;
-  const hasStart = input.startDate !== null && input.startDate !== undefined;
-  const hasEnd = input.endDate !== null && input.endDate !== undefined;
-  if (hasDays && (hasStart || hasEnd)) {
-    invalidSalesTrendRange("預設天數與自訂日期不可同時使用。");
-  }
-  if (hasStart !== hasEnd) {
-    invalidSalesTrendRange("自訂日期必須同時提供開始日與結束日。");
-  }
-
-  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
-  const today = zonedDateParts(now, timeZone);
-  const todayKey = dateKey(today.year, today.month, today.day);
-  if (!hasStart) {
-    const days = hasDays ? input.days! : 7;
-    if (![7, 14, 30, 90].includes(days)) {
-      invalidSalesTrendRange("銷售趨勢只支援最近 7、14、30 或 90 天。");
+function planFbaSalesTrendOrThrow(
+  input: Parameters<typeof planFbaSalesTrend>[0],
+  now: Date,
+): ReturnType<typeof planFbaSalesTrend> {
+  try {
+    return planFbaSalesTrend(input, now);
+  } catch (error) {
+    if (error instanceof FbaSalesPlanningError) {
+      invalidSalesTrendRange(error.message);
     }
-    const presetDays = days as SalesTrendPresetDays;
-    const range = {
-      startDate: shiftDateKey(todayKey, -(presetDays - 1)),
-      endDate: todayKey,
-      dayCount: presetDays,
-      presetDays,
-    } satisfies SalesTrendRange;
-    assertSalesTrendApiHorizon(range, todayKey);
-    return range;
+    throw error;
   }
-
-  const startDate = input.startDate!;
-  const endDate = input.endDate!;
-  if (!isDateOnly(startDate) || !isDateOnly(endDate)) {
-    invalidSalesTrendRange("自訂日期必須使用 YYYY-MM-DD 格式。");
-  }
-  const dayCount = calendarDayCount(startDate, endDate);
-  if (dayCount < 1 || dayCount > MAX_SALES_TREND_DAY_COUNT) {
-    invalidSalesTrendRange(
-      `自訂日期範圍必須介於 1 到 ${MAX_SALES_TREND_DAY_COUNT} 天。`,
-    );
-  }
-  if (endDate > todayKey) {
-    invalidSalesTrendRange("自訂日期不可包含未來日期。");
-  }
-  const range = {
-    startDate,
-    endDate,
-    dayCount,
-    presetDays: null,
-  } satisfies SalesTrendRange;
-  assertSalesTrendApiHorizon(range, todayKey);
-  return range;
-}
-
-function buildSalesTrendRangeWindow(
-  marketplaceId: MarketplaceId,
-  range: SalesTrendRange,
-  partialEnd: Date | null,
-): SalesTrendWindow {
-  const timeZone = MARKETPLACES[marketplaceId].timeZone;
-  const dateKeys = Array.from({ length: range.dayCount }, (_, index) =>
-    shiftDateKey(range.startDate, index),
-  );
-  const endAt = partialEnd
-    ? zonedIso(partialEnd, timeZone)
-    : zonedIso(zonedMidnight(shiftDateKey(range.endDate, 1), timeZone), timeZone);
-  const intervals = dateKeys.map((key, index) => {
-    const start = zonedIso(zonedMidnight(key, timeZone), timeZone);
-    const end =
-      index === dateKeys.length - 1
-        ? endAt
-        : zonedIso(zonedMidnight(dateKeys[index + 1], timeZone), timeZone);
-    return `${start}--${end}`;
-  });
-  return {
-    timeZone,
-    range,
-    startAt: zonedIso(zonedMidnight(range.startDate, timeZone), timeZone),
-    endAt,
-    dateKeys,
-    intervals,
-    partialDateKey: partialEnd ? range.endDate : null,
-  };
-}
-
-export function buildSalesTrendWindow(
-  marketplaceId: MarketplaceId,
-  days: SalesTrendPresetDays,
-  now = new Date(),
-): SalesTrendWindow {
-  const range = resolveSalesTrendRange({ marketplaceId, days }, now);
-  return buildSalesTrendRangeWindow(marketplaceId, range, now);
-}
-
-export function buildCustomSalesTrendWindow(
-  marketplaceId: MarketplaceId,
-  startDate: string,
-  endDate: string,
-  now = new Date(),
-): SalesTrendWindow {
-  const range = resolveSalesTrendRange(
-    { marketplaceId, startDate, endDate },
-    now,
-  );
-  const timeZone = MARKETPLACES[marketplaceId].timeZone;
-  const today = zonedDateParts(now, timeZone);
-  const todayKey = dateKey(today.year, today.month, today.day);
-  return buildSalesTrendRangeWindow(
-    marketplaceId,
-    range,
-    range.endDate === todayKey ? now : null,
-  );
-}
-
-export function buildPreviousYearSalesTrendWindow(
-  marketplaceId: MarketplaceId,
-  current: SalesTrendWindow,
-): SalesTrendWindow {
-  const range = {
-    startDate: clampedYearShift(current.range.startDate, -1),
-    endDate: clampedYearShift(current.range.endDate, -1),
-    dayCount: 0,
-    presetDays: null,
-  } satisfies SalesTrendRange;
-  range.dayCount = calendarDayCount(range.startDate, range.endDate);
-
-  let partialEnd: Date | null = null;
-  const exactEndDate = exactYearShift(current.range.endDate, -1);
-  if (current.partialDateKey && exactEndDate) {
-    const currentEnd = new Date(current.endAt);
-    const time = zonedDateParts(currentEnd, current.timeZone);
-    partialEnd = zonedLocalInstant(exactEndDate, current.timeZone, time);
-  }
-  return buildSalesTrendRangeWindow(marketplaceId, range, partialEnd);
 }
 
 export function buildSalesTrendQuery(
@@ -7924,7 +7611,10 @@ export function buildSalesTrendQuery(
   return query;
 }
 
-function salesMetricDate(value: unknown, timeZone: string): string | null {
+function salesMetricDate(
+  value: unknown,
+  marketplaceId: MarketplaceId,
+): string | null {
   if (typeof value !== "string") return null;
   const delimiter = value.indexOf("--", 10);
   if (delimiter < 0) return null;
@@ -7939,11 +7629,12 @@ function salesMetricDate(value: unknown, timeZone: string): string | null {
   ) {
     return null;
   }
-  const localStart = zonedDateParts(startInstant, timeZone);
+  const calendar = marketplaceCalendar(marketplaceId);
+  const localStart = calendar.partsAt(startInstant);
   if (localStart.hour !== 0 || localStart.minute !== 0 || localStart.second !== 0) {
     return null;
   }
-  return dateKey(localStart.year, localStart.month, localStart.day);
+  return calendar.dayAt(startInstant);
 }
 
 function salesTrendTotals(
@@ -8022,7 +7713,7 @@ export function normalizeSalesTrendResponse(input: {
       });
     }
     const metric = rawMetric as AmazonSalesMetric;
-    const metricDate = salesMetricDate(metric.interval, input.window.timeZone);
+    const metricDate = salesMetricDate(metric.interval, input.marketplaceId);
     const amount = finiteNumericValue(metric.totalSales?.amount);
     const unitCount = finiteNonNegativeInteger(metric.unitCount);
     const orderItemCount = finiteNonNegativeInteger(metric.orderItemCount);
@@ -8155,15 +7846,11 @@ type SalesTrendComparisonResult = SalesTrendSeriesResult & {
 };
 
 function comparablePreviousYearSeries(
-  currentWindow: SalesTrendWindow,
+  comparablePreviousYearDateKeys: string[],
   comparisonWindow: SalesTrendWindow,
   rawSeries: SalesTrendSeriesResult,
 ): SalesTrendComparisonResult {
-  const comparableDates = new Set(
-    currentWindow.dateKeys
-      .map((value) => exactYearShift(value, -1))
-      .filter((value): value is string => value !== null),
-  );
+  const comparableDates = new Set(comparablePreviousYearDateKeys);
   const points = rawSeries.points.filter((point) => comparableDates.has(point.date));
   return {
     ...rawSeries,
@@ -8179,23 +7866,6 @@ function comparablePreviousYearSeries(
       rawSeries.totals.totalSales.currencyCode,
     ),
   };
-}
-
-function salesTrendComparisonNotice(
-  currentWindow: SalesTrendWindow,
-  hasComparison: boolean,
-): string | null {
-  if (!hasComparison) return null;
-  if (
-    currentWindow.partialDateKey &&
-    !exactYearShift(currentWindow.partialDateKey, -1)
-  ) {
-    return "今天是 2 月 29 日，去年沒有相同月日；該日的去年同期會留空，不套用相同時分的 cutoff。";
-  }
-  if (currentWindow.partialDateKey) {
-    return "本期包含今天時，去年同期也只計到相同站點當地時間；無法按相同月日對應的閏日會留空。";
-  }
-  return "去年同期只保留可按相同月日精確對應的日期；無法對應的閏日會留空。";
 }
 
 async function fetchLiveSalesTrendSeries(
@@ -8274,6 +7944,8 @@ async function fetchLiveSalesTrend(input: {
   range: SalesTrendRange;
   window: SalesTrendWindow;
   comparisonWindow: SalesTrendWindow | null;
+  comparablePreviousYearDateKeys: string[] | null;
+  comparisonNotice: string | null;
 }): Promise<SalesTrendSnapshot> {
   const current = await fetchLiveSalesTrendSeries(
     input.marketplaceId,
@@ -8283,17 +7955,15 @@ async function fetchLiveSalesTrend(input: {
     ? await fetchLiveSalesTrendSeries(input.marketplaceId, input.comparisonWindow)
     : null;
   const previous =
-    rawPrevious && input.comparisonWindow
+    rawPrevious &&
+    input.comparisonWindow &&
+    input.comparablePreviousYearDateKeys
       ? comparablePreviousYearSeries(
-          input.window,
+          input.comparablePreviousYearDateKeys,
           input.comparisonWindow,
           rawPrevious,
         )
       : null;
-  const comparisonNotice = salesTrendComparisonNotice(
-    input.window,
-    Boolean(input.comparisonWindow),
-  );
   return {
     schemaVersion: 2,
     mode: "live",
@@ -8317,8 +7987,8 @@ async function fetchLiveSalesTrend(input: {
             rateLimit: previous.rateLimit,
           }
         : null,
-    notice: comparisonNotice
-      ? `Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA）。${comparisonNotice}`
+    notice: input.comparisonNotice
+      ? `Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA）。${input.comparisonNotice}`
       : "Sales API 以站點當地日界彙總；僅包含 Amazon 配送（AFN/FBA），今日數字仍會變動。",
   };
 }
@@ -8663,23 +8333,21 @@ function buildFbaInboundDateWindow(input: {
   ) {
     invalidFbaInboundRange("FBA 入庫貨件日期必須使用有效的 YYYY-MM-DD 格式。");
   }
-  const dayCount = calendarDayCount(input.startDate, input.endDate);
+  const calendar = marketplaceCalendar(input.marketplaceId);
+  const dayCount = calendar.inclusiveDayCount(input.startDate, input.endDate);
   if (dayCount < 1 || dayCount > 180) {
     invalidFbaInboundRange("FBA 入庫貨件日期範圍必須介於 1 到 180 天。");
   }
-  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
-  const today = zonedDateParts(input.now, timeZone);
-  const todayKey = dateKey(today.year, today.month, today.day);
+  const todayKey = calendar.dayAt(input.now);
   if (input.endDate > todayKey) {
     invalidFbaInboundRange("FBA 入庫貨件結束日期不可晚於目前 Amazon 站點日期。");
   }
   return {
-    startAt: zonedIso(zonedMidnight(input.startDate, timeZone), timeZone),
+    startAt: calendar.formatInstant(calendar.midnight(input.startDate)),
     endAt: input.endDate === todayKey
-      ? zonedIso(input.now, timeZone)
-      : zonedIso(
-          zonedMidnight(shiftDateKey(input.endDate, 1), timeZone),
-          timeZone,
+      ? calendar.formatInstant(input.now)
+      : calendar.formatInstant(
+          calendar.midnight(calendar.shiftDate(input.endDate, 1)),
         ),
   };
 }
@@ -14092,12 +13760,14 @@ function exactBrandSalesWindow(input: {
   endDate: string;
   now?: Date;
 }): SalesTrendWindow {
-  return buildCustomSalesTrendWindow(
-    input.marketplaceId,
-    input.startDate,
-    input.endDate,
-    input.now,
-  );
+  return planFbaSalesTrendOrThrow(
+    {
+      marketplaceId: input.marketplaceId,
+      startDate: input.startDate,
+      endDate: input.endDate,
+    },
+    input.now ?? new Date(),
+  ).window;
 }
 
 export function getBrandSalesReportWindow(input: {
@@ -14157,7 +13827,7 @@ function validateFixedBrandSalesWindow(input: {
     });
   }
   const createdAt = new Date(input.windowCreatedAt);
-  resolveSalesTrendRange(
+  const planned = planFbaSalesTrendOrThrow(
     {
       marketplaceId: input.marketplaceId,
       startDate: input.startDate,
@@ -14165,13 +13835,8 @@ function validateFixedBrandSalesWindow(input: {
     },
     createdAt,
   );
-  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
-  const createdParts = zonedDateParts(createdAt, timeZone);
-  const createdDate = dateKey(createdParts.year, createdParts.month, createdParts.day);
-  const expectedStart = zonedMidnight(input.startDate, timeZone).getTime();
-  const expectedEnd = input.endDate === createdDate
-    ? Math.floor(input.windowCreatedAt / 1_000) * 1_000
-    : zonedMidnight(shiftDateKey(input.endDate, 1), timeZone).getTime();
+  const expectedStart = Date.parse(planned.window.startAt);
+  const expectedEnd = Date.parse(planned.window.endAt);
   if (
     startTime !== expectedStart ||
     endTime !== expectedEnd ||
@@ -14338,11 +14003,9 @@ export async function getFbaShipmentSalesReportStatus(input: {
   };
 }
 
-function shipmentDateKey(value: string, timeZone: string): string {
+function shipmentDateKey(value: string, marketplaceId: MarketplaceId): string {
   if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) return value;
-  const instant = new Date(value);
-  const local = zonedDateParts(instant, timeZone);
-  return dateKey(local.year, local.month, local.day);
+  return marketplaceCalendar(marketplaceId).dayAt(new Date(value));
 }
 
 function brandSalesRangeFreshness(input: {
@@ -14350,9 +14013,10 @@ function brandSalesRangeFreshness(input: {
   endDate: string;
   windowCreatedAt: number;
 }): "complete-days" | "includes-current-day" {
-  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
-  const created = zonedDateParts(new Date(input.windowCreatedAt), timeZone);
-  return input.endDate === dateKey(created.year, created.month, created.day)
+  const createdDate = marketplaceCalendar(input.marketplaceId).dayAt(
+    new Date(input.windowCreatedAt),
+  );
+  return input.endDate === createdDate
     ? "includes-current-day"
     : "complete-days";
 }
@@ -14452,9 +14116,8 @@ export async function getBrandSalesData(input: {
     downloadReportDocument(input.marketplaceId, input.shipmentDocumentId),
   ]);
   const listings = parseCurrentFbaListingTitles(listingReport);
-  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
   const sales = parseFbaShipmentSalesReport(shipmentReport).filter((sale) => {
-    const key = shipmentDateKey(sale.shipmentDate, timeZone);
+    const key = shipmentDateKey(sale.shipmentDate, input.marketplaceId);
     return key >= input.startDate && key <= input.endDate;
   });
   return buildBrandSalesSnapshot({
@@ -17876,26 +17539,14 @@ export async function getSalesTrend(input: {
   comparison?: SalesTrendComparisonMode;
 }): Promise<SalesTrendSnapshot> {
   const now = new Date();
-  const comparisonMode = input.comparison ?? "none";
-  if (!(["none", "previous-year"] as string[]).includes(comparisonMode)) {
-    invalidSalesTrendRange("不支援這個銷售趨勢比較方式。");
-  }
-  const range = resolveSalesTrendRange(input, now);
-  const timeZone = MARKETPLACES[input.marketplaceId].timeZone;
-  const today = zonedDateParts(now, timeZone);
-  const todayKey = dateKey(today.year, today.month, today.day);
-  const window = buildSalesTrendRangeWindow(
-    input.marketplaceId,
+  const plan = planFbaSalesTrendOrThrow(input, now);
+  const {
     range,
-    range.endDate === todayKey ? now : null,
-  );
-  const comparisonWindow =
-    comparisonMode === "previous-year"
-      ? buildPreviousYearSalesTrendWindow(input.marketplaceId, window)
-      : null;
-  if (comparisonWindow) {
-    assertSalesTrendApiHorizon(comparisonWindow.range, todayKey);
-  }
+    window,
+    comparisonWindow,
+    comparablePreviousYearDateKeys,
+    comparisonNotice,
+  } = plan;
 
   if (!shouldUseDemoMode(input.marketplaceId)) {
     return fetchLiveSalesTrend({
@@ -17903,6 +17554,8 @@ export async function getSalesTrend(input: {
       range,
       window,
       comparisonWindow,
+      comparablePreviousYearDateKeys,
+      comparisonNotice,
     });
   }
 
@@ -17919,17 +17572,13 @@ export async function getSalesTrend(input: {
       )
     : null;
   const previous =
-    rawPrevious && comparisonWindow
-      ? comparablePreviousYearSeries(window, comparisonWindow, {
+    rawPrevious && comparisonWindow && comparablePreviousYearDateKeys
+      ? comparablePreviousYearSeries(comparablePreviousYearDateKeys, comparisonWindow, {
           ...rawPrevious,
           requestId: null,
           rateLimit: null,
         })
       : null;
-  const comparisonNotice = salesTrendComparisonNotice(
-    window,
-    Boolean(comparisonWindow),
-  );
   return {
     schemaVersion: 2,
     mode: "demo",
@@ -18056,33 +17705,25 @@ function createRestockPlan(
 async function fetchLiveSalesVelocity(
   marketplaceId: MarketplaceId,
   sellerSku: string,
-  lookbackDays = 30,
 ): Promise<RestockPlanSnapshot["demand"]> {
-  const now = new Date();
-  const timeZone = MARKETPLACES[marketplaceId].timeZone;
-  const today = zonedDateParts(now, timeZone);
-  const todayKey = dateKey(today.year, today.month, today.day);
   // Use complete marketplace-local days so a partial current day does not
   // artificially depress average daily demand. Sales API's exact SKU filter
   // avoids the previous five-page Orders scan, which could miss a valid SKU in
   // a high-volume account and incorrectly leave days of cover blank.
-  const endDate = shiftDateKey(todayKey, -1);
-  const startDate = shiftDateKey(endDate, -(lookbackDays - 1));
-  const range = resolveSalesTrendRange(
-    { marketplaceId, startDate, endDate },
-    now,
+  const plan = planCompletedFbaSalesVelocity(
+    { marketplaceId, sellerSku },
+    new Date(),
   );
-  const window = buildSalesTrendRangeWindow(marketplaceId, range, null);
   const series = await fetchLiveSalesTrendSeries(
     marketplaceId,
-    window,
+    plan.window,
     sellerSku,
   );
   const units = series.totals.unitCount;
   return {
-    lookbackDays,
+    lookbackDays: plan.completedDayCount,
     units,
-    averageDailyUnits: units / lookbackDays,
+    averageDailyUnits: units / plan.completedDayCount,
     ordersScanned: series.totals.orderCount,
     partial: false,
   };

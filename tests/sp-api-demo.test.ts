@@ -5,6 +5,7 @@ import {
   getListingPrice,
   listingIncludedData,
   previewListingPriceUpdate,
+  previewListingSalePriceUpdate,
   searchOrders,
   shouldFallbackListingsExport,
   updateListingPrice,
@@ -69,6 +70,53 @@ describe("SP-API demo safety boundary", () => {
     expect(result.status).toBe("SIMULATED");
     expect(result.previousPrice.amount).toBe(expectedPrice);
     expect(result.requestedPrice.amount).toBe(newPrice);
+  });
+
+  it("preserves valid Marketplace Day literals in a Sale Price preview", async () => {
+    const current = await getListingPrice({
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "AFA-TRKY-4OZ",
+    });
+    const preview = await previewListingSalePriceUpdate({
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: current.sellerSku,
+      action: "set",
+      expectedPrice: current.standardPrice!.amount,
+      expectedDiscountedPrice: current.discountedPrice?.price.amount ?? null,
+      expectedStartAt: current.discountedPrice?.startAt ?? null,
+      expectedEndAt: current.discountedPrice?.endAt ?? null,
+      salePrice: current.standardPrice!.amount - 1,
+      startAt: "2026-03-08",
+      endAt: "2026-03-09",
+    });
+
+    expect(preview.status).toBe("SIMULATED");
+    expect(preview.requestedDiscountedPrice).toMatchObject({
+      startAt: "2026-03-08",
+      endAt: "2026-03-09",
+    });
+  });
+
+  it("rejects an impossible Sale Price date during preview", async () => {
+    const current = await getListingPrice({
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "AFA-TRKY-4OZ",
+    });
+
+    await expect(
+      previewListingSalePriceUpdate({
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: current.sellerSku,
+        action: "set",
+        expectedPrice: current.standardPrice!.amount,
+        expectedDiscountedPrice: current.discountedPrice?.price.amount ?? null,
+        expectedStartAt: current.discountedPrice?.startAt ?? null,
+        expectedEndAt: current.discountedPrice?.endAt ?? null,
+        salePrice: current.standardPrice!.amount - 1,
+        startAt: "2026-02-30",
+        endAt: "2026-03-09",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_SALE_PRICE" });
   });
 
   it("provides content and nine ordered image slots", async () => {

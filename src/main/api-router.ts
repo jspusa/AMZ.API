@@ -150,6 +150,10 @@ import {
   type VariationMoveInput,
 } from "./amazon/sp-api";
 import {
+  isDateOnly,
+  marketplaceCalendar,
+} from "./amazon/marketplace-calendar";
+import {
   buildAdvertisingStrategySnapshot,
   type AdvertisingStrategySnapshot,
 } from "./amazon/advertising-strategy";
@@ -1173,27 +1177,7 @@ function optionalPrice(value: unknown, currency: string): number | null | undefi
 
 function optionalDate(value: unknown): string | null | undefined {
   if (value === null || value === "" || value === undefined) return null;
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
-    ? value
-    : undefined;
-}
-
-function dateKeyInTimeZone(date: Date, timeZone: string): string {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(date).map((part) => [part.type, part.value]),
-  );
-  const key = `${parts.year ?? ""}-${parts.month ?? ""}-${parts.day ?? ""}`;
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(key)) {
-    throw new Error("無法判定 Amazon 站點目前日期。");
-  }
-  return key;
+  return isDateOnly(value) ? value : undefined;
 }
 
 function integer(
@@ -2171,16 +2155,12 @@ export class ApiRouter {
     if (!marketplaceId || typeof startDate !== "string" || typeof endDate !== "string") {
       return invalid("請提供有效站點、開始日期與結束日期。");
     }
-    const start = Date.parse(`${startDate}T00:00:00.000Z`);
-    const end = Date.parse(`${endDate}T00:00:00.000Z`);
-    const inclusiveDays = Math.floor((end - start) / 86_400_000) + 1;
-    if (end < start || inclusiveDays < 1 || inclusiveDays > 180) {
+    const calendar = marketplaceCalendar(marketplaceId);
+    const inclusiveDays = calendar.inclusiveDayCount(startDate, endDate);
+    if (inclusiveDays < 1 || inclusiveDays > 180) {
       return invalid("FBA 入庫貨件日期範圍必須介於 1 到 180 天。");
     }
-    const marketplaceToday = dateKeyInTimeZone(
-      new Date(Date.now()),
-      MARKETPLACES[marketplaceId].timeZone,
-    );
+    const marketplaceToday = calendar.dayAt(new Date(Date.now()));
     if (endDate > marketplaceToday) {
       return invalid("FBA 入庫貨件結束日期不可晚於目前 Amazon 站點日期。");
     }
@@ -8560,21 +8540,13 @@ export class ApiRouter {
         code: "ADS_STRATEGY_DATE_INVALID",
       });
     }
-    const start = Date.parse(`${startDate}T00:00:00.000Z`);
-    const end = Date.parse(`${endDate}T00:00:00.000Z`);
-    const inclusiveDays = Math.floor((end - start) / 86_400_000) + 1;
-    const today = dateKeyInTimeZone(
-      new Date(Date.now()),
-      MARKETPLACES[input.marketplaceId].timeZone,
-    );
-    const yesterday = new Date(`${today}T00:00:00.000Z`);
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    const latest = yesterday.toISOString().slice(0, 10);
-    const earliestDate = new Date(yesterday);
-    earliestDate.setUTCDate(earliestDate.getUTCDate() - 94);
-    const earliest = earliestDate.toISOString().slice(0, 10);
+    const calendar = marketplaceCalendar(input.marketplaceId);
+    const inclusiveDays = calendar.inclusiveDayCount(startDate, endDate);
+    const today = calendar.dayAt(new Date(Date.now()));
+    const latest = calendar.shiftDate(today, -1);
+    const earliest = calendar.shiftDate(latest, -94);
     if (
-      start > end ||
+      startDate > endDate ||
       inclusiveDays < 1 ||
       inclusiveDays > 31 ||
       endDate > latest ||

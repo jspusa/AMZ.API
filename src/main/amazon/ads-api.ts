@@ -12,12 +12,12 @@ import {
 import type { AdvertisingCredentialVault } from "../advertising-credential-vault";
 import { abortableDelay, forwardAbort, throwIfAborted } from "../abort-utils";
 import type { AdvertisingCoverageCampaign } from "./advertising-coverage";
+import { marketplaceCalendar } from "./marketplace-calendar";
 
 type MarketplaceAdsConfig = {
   code: string;
   countryCode: string;
   region: AdvertisingApiRegion;
-  timeZone: string;
 };
 
 const ADS_COUNTRY_CODE_OVERRIDES: Partial<Record<MarketplaceCode, string>> = {
@@ -34,7 +34,6 @@ const MARKETPLACES = Object.fromEntries(
         code: countryCode,
         countryCode,
         region: marketplace.region,
-        timeZone: marketplace.timeZone,
       },
     ];
   }),
@@ -330,24 +329,6 @@ function reportIdentifier(value: unknown): string | null {
   return result && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(result) ? result : null;
 }
 
-function exactDate(value: string): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return null;
-  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
-  if (!Number.isFinite(timestamp)) return null;
-  return new Date(timestamp).toISOString().slice(0, 10) === value ? timestamp : null;
-}
-
-function marketplaceDate(now: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
 function assertReportDateRange(input: {
   marketplaceId: MarketplaceId;
   startDate: string;
@@ -355,15 +336,21 @@ function assertReportDateRange(input: {
   now?: Date;
   enforceCurrentWindow: boolean;
 }): void {
-  const start = exactDate(input.startDate);
-  const end = exactDate(input.endDate);
-  if (start === null || end === null || start > end) {
+  const calendar = marketplaceCalendar(input.marketplaceId);
+  if (
+    !calendar.isDateKey(input.startDate) ||
+    !calendar.isDateKey(input.endDate) ||
+    input.startDate > input.endDate
+  ) {
     throw new AdvertisingApiError("Amazon Ads 報表日期範圍無效。", {
       status: 400,
       code: "ADS_REPORT_DATE_INVALID",
     });
   }
-  const inclusiveDays = Math.floor((end - start) / 86_400_000) + 1;
+  const inclusiveDays = calendar.inclusiveDayCount(
+    input.startDate,
+    input.endDate,
+  );
   if (inclusiveDays > MAX_ADS_REPORT_RANGE_DAYS) {
     throw new AdvertisingApiError("Amazon Ads 報表一次最多讀取 31 個完整日。", {
       status: 400,
@@ -371,16 +358,19 @@ function assertReportDateRange(input: {
     });
   }
   if (!input.enforceCurrentWindow) return;
-  const today = exactDate(marketplaceDate(input.now ?? new Date(), MARKETPLACES[input.marketplaceId].timeZone));
-  if (today === null) {
+  const now = input.now ?? new Date();
+  if (Number.isNaN(now.getTime())) {
     throw new AdvertisingApiError("Amazon Ads 站點日期無法核對。", {
       status: 500,
       code: "ADS_REPORT_DATE_INVALID",
     });
   }
-  const latest = today - 86_400_000;
-  const earliest = latest - (MAX_ADS_REPORT_HISTORY_DAYS - 1) * 86_400_000;
-  if (end > latest || start < earliest) {
+  const latest = calendar.shiftDate(calendar.dayAt(now), -1);
+  const earliest = calendar.shiftDate(
+    latest,
+    -(MAX_ADS_REPORT_HISTORY_DAYS - 1),
+  );
+  if (input.endDate > latest || input.startDate < earliest) {
     throw new AdvertisingApiError("Amazon Ads 報表只能讀取最近 95 天內的完整日。", {
       status: 400,
       code: "ADS_REPORT_DATE_INVALID",
