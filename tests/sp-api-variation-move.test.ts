@@ -44,6 +44,14 @@ function jsonResponse(
   });
 }
 
+function asinForSku(sku: string): string {
+  let value = 0;
+  for (const character of sku) {
+    value = (value * 31 + character.codePointAt(0)!) % 1_000_000_000;
+  }
+  return `B${String(value).padStart(9, "0")}`;
+}
+
 function childPayload(
   sku: string,
   parentSku: string | null,
@@ -53,7 +61,7 @@ function childPayload(
     sku,
     summaries: [{
       marketplaceId: MARKETPLACE_ID,
-      asin: `ASIN-${sku}`,
+      asin: asinForSku(sku),
       productType: "PET_FOOD",
       status: ["BUYABLE"],
       itemName: `Listing ${sku}`,
@@ -88,6 +96,7 @@ function parentPayload(parentSku: string, children: string[]) {
     sku: parentSku,
     summaries: [{
       marketplaceId: MARKETPLACE_ID,
+      asin: asinForSku(parentSku),
       productType: "PET_FOOD",
       itemName: `Parent ${parentSku}`,
     }],
@@ -187,6 +196,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
           link: { resource: "https://schema.example/child.json" },
         },
         productType: "PET_FOOD",
+        marketplaceIds: [MARKETPLACE_ID],
       }, "PTD");
     }
     if (method === "PATCH") {
@@ -378,6 +388,7 @@ describe("live variation detach and attach wire safety", () => {
             link: { resource: "https://schema.example/child.json" },
           },
           productType: "PET_FOOD",
+          marketplaceIds: [MARKETPLACE_ID],
         }, "PTD");
       }
       if (method === "PATCH") {

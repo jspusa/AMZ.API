@@ -4,11 +4,9 @@ import {
   getListingImages,
   getListingPrice,
   invalidateSpApiCredentialCaches,
-  listingIncludedData,
   previewListingPriceUpdate,
   previewListingSalePriceUpdate,
   searchOrders,
-  shouldFallbackListingsExport,
   updateListingPrice,
 } from "../src/main/amazon/sp-api";
 
@@ -159,21 +157,4 @@ describe("SP-API demo safety boundary", () => {
     expect(images.images[0].attributeName).toBe("main_product_image_locator");
   });
 
-  it("keeps search-only productTypes off single-item listing requests", () => {
-    expect(listingIncludedData("item").split(",")).toEqual([
-      "summaries",
-      "attributes",
-      "offers",
-      "issues",
-      "fulfillmentAvailability",
-    ]);
-    expect(listingIncludedData("search").split(",")).toContain("productTypes");
-  });
-
-  it("falls back to single-item reads only for invalid batch parameters", () => {
-    expect(shouldFallbackListingsExport(400)).toBe(true);
-    expect(shouldFallbackListingsExport(401)).toBe(false);
-    expect(shouldFallbackListingsExport(403)).toBe(false);
-    expect(shouldFallbackListingsExport(429)).toBe(false);
-  });
 });

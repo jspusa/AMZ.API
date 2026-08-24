@@ -24,6 +24,11 @@ const EXTRACTED_FBA_SALES_MODULES = [
   "src/main/amazon/fba-sales-metrics-production.ts",
 ] as const;
 
+const EXTRACTED_LISTINGS_READ_MODULES = [
+  "src/main/amazon/listings-reads.ts",
+  "src/main/amazon/listings-reads-production.ts",
+] as const;
+
 const ERROR_CONSUMERS = new Map<string, readonly string[]>([
   ["src/main/local-store.ts", ["SpApiError", "SpApiPreCommitError"]],
   ["src/main/amazon/connection-health.ts", ["SpApiError"]],
@@ -153,6 +158,13 @@ describe("SP execution-context architecture", () => {
         .filter((dependency) => dependency === "src/main/amazon/sp-api.ts");
 
       expect(violations).toEqual([]);
+    },
+  );
+
+  it.each(EXTRACTED_LISTINGS_READ_MODULES)(
+    "%s does not import the legacy SP facade",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
     },
   );
 

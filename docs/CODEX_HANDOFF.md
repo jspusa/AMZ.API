@@ -1,11 +1,13 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-08-23
+最後更新：2026-08-24
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 目前正式基線：`v0.1.31` 已發布、部署並由 exact release-code main macOS artifact 安裝為 `/Applications/AMZ.API.app`；原 v0.1.30 保留為 `/Applications/AMZ.API-v0.1.30-backup.app`，更舊備份、原 userData 與既有 encrypted vault file 均未清除。live Pages 的 HTML、主 JS、CSS 與文案規則 chunk 均與 exact main production output byte-for-byte 相同；已安裝 App 的版本／build、bundle、雙架構、deep strict codesign、ASAR header integrity 與 `app.asar` 均匹配 artifact。v0.1.31 主程序已啟動且沒有啟動即崩潰；正式 A+ 唯讀 canary 尚待 Mac 解鎖後完成，沒有執行 Touch ID／Windows Hello、Validation Preview、PATCH、readback 或任何 Amazon mutation。受保護員工 Mac 下載卡仍是舊版，Windows 固定 prerelease 仍為 v0.1.16，且沒有真實 Windows Hello／DPAPI 硬體驗證。
 
 目前工作樹：v0.1.31 release code 已由 PR #67 squash merge，唯一 release code main SHA 為 `fd02266279414e4e716316dbedfe7a507079bb10`；同一 SHA 的 Validate、Pages、macOS universal 與 Windows x64 workflows 均成功，source、CI、Pages、Mac／Windows artifacts 與 exact Mac 安裝已完成。v0.1.30 的正式 US 唯讀 canary 已證明 B2B canonical quantity tiers 與 `父變體橫排`，並暴露 A+ 全數 incomplete；同形 fixture 鎖定跨文件 conflict poisoning 核心缺口。v0.1.31 讓任一 exact `CONTENT_PUBLISHED` 保持正向權威，另一文件的 negative／malformed relation 只能把完整度降為 partial，且未使用的 optional `contentReferenceKeySet` 畸形不再丟棄合法 badge。沒有任何 positive 時仍 fail closed。v0.1.31 A+ 正式唯讀 canary 尚待 Mac 解鎖；任何 PATCH／readback、文案或圖片 mutation，以及真實 Windows Hello／DPAPI 裝置矩陣仍未執行。
+
+架構深化工作依 #69 的 tracer bullets 進行中：S01–S04 已分別發布為尚未合併的 stacked PR #109–#112；S05 在其上抽出 `listings-reads.ts` 與 `listings-reads-production.ts`。新 seam 只接受封閉的 item／search／definition 語意，不接受任意 URL、method、query、Seller ID 或 token；production 固定 Listings／PTD GET、用途限定的 400 fallback、401 refresh 與 bounded read retry，scripted adapter 回傳 raw envelope 並通過與 production 相同的公開 identity normalization。PTD schema URL 只能來自 Amazon definition，且在下載前必須核對 exact Product Type／marketplace；content-read 的 generic schema fallback 在結果型別與 runtime 都不可供任何 write、B2B 或 variation CHILD 使用。variation item 與 children 也會在 normalization 前核對 requested SKU、目前 marketplace、合法 ASIN、非 generic Product Type、重複列與 exact parent evidence。legacy Listings PATCH 已縮成 write-only helper，因此 timeout／429／5xx 後不盲目重送的規則沒有被讀取相容層穿透。一般 price／content／images 同樣會在 PTD 前 fail closed，歧義回 `LISTING_IDENTITY_MISMATCH`。此輪只有 fixture／local 測試，沒有部署、安裝、Notebook Key、live Amazon、Validation Preview、PATCH 或真實裝置驗證；兩個既有 user-owned untracked duplicate files 仍排除。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -552,14 +554,16 @@ Amazon App：
 9. `src/main/amazon/sp-execution-context.ts` — 不可變 marketplace／region／mode／account generation 與失效契約。
 10. `src/main/amazon/sp-api-error.ts` — canonical SP error vocabulary 與 renderer-boundary sanitizer。
 11. `src/main/api-router.ts` — 所有 UI API 路由、preview／commit 與輸入驗證。
-12. `src/main/amazon/sp-api.ts` — SP-API endpoint、正規化、報表、Listings、Orders、FBA。
-13. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-14. `src/preload/index.ts` — 窄化 Bridge。
-15. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-16. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-17. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-18. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-19. `tests/*.test.ts` — 已建立的安全與回歸契約。
+12. `src/main/amazon/listings-reads.ts` — 封閉的 Listings／PTD item、search、definition 語意與 scripted adapter。
+13. `src/main/amazon/listings-reads-production.ts` — 固定 GET endpoint、token／retry／fallback 與 PTD schema 外部 seam。
+14. `src/main/amazon/sp-api.ts` — 尚未抽離的 SP-API facade、正規化、報表、Listings writes、Orders、FBA。
+15. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+16. `src/preload/index.ts` — 窄化 Bridge。
+17. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+18. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+19. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+20. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+21. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

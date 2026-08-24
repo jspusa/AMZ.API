@@ -7,7 +7,6 @@ import {
   buildUnboundVariationSearchBatches,
   classifyUnboundVariationSearchBatch,
   parseFbaListingReportSeeds,
-  unboundVariationSearchIncludedData,
 } from "../src/main/amazon/sp-api";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -138,9 +137,6 @@ describe("unbound variation relationship evidence", () => {
     expect(result.batches.map((batch) => batch.length)).toEqual([20, 20, 5]);
     expect(result.batches.flat()).toEqual(sellerSkus);
     expect(result.unqueryableSellerSkus).toEqual(["SKU,AMBIGUOUS"]);
-    expect(unboundVariationSearchIncludedData()).toBe(
-      "relationships,summaries,fulfillmentAvailability,productTypes",
-    );
   });
 
   it("classifies exact returned rows and keeps missing batch rows incomplete", () => {

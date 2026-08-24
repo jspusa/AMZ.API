@@ -30,7 +30,20 @@ function jsonResponse(
   body: unknown,
   headers: Record<string, string> = {},
 ): Response {
-  return new Response(JSON.stringify(body), {
+  const definitionFixture =
+    status >= 200 &&
+    status < 300 &&
+    body !== null &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    ("schema" in body || "productType" in body)
+      ? {
+          productType: "PET_FOOD",
+          marketplaceIds: [MARKETPLACE_ID],
+          ...body,
+        }
+      : body;
+  return new Response(JSON.stringify(definitionFixture), {
     status,
     headers: { "content-type": "application/json", ...headers },
   });
@@ -3902,6 +3915,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       }
       if (url.pathname.endsWith("/productTypes/OTHER")) {
         return jsonResponse(200, {
+          productType: "OTHER",
           schema: {
             link: { resource: unsupportedSchemaUrl, verb: "GET" },
             checksum: unsupportedChecksum,

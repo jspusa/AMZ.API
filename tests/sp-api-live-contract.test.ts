@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getListingContent,
+  getListingImages,
   getListingPrice,
   invalidateSpApiCredentialCaches,
   previewListingContentUpdate,
@@ -45,7 +46,7 @@ function fakeListingItemResponse(): Response {
       summaries: [
         {
           marketplaceId: MARKETPLACE_ID,
-          asin: "FAKE_ASIN",
+          asin: "B000000001",
           productType: "FAKE_PRODUCT_TYPE",
           status: ["BUYABLE"],
           itemName: "Fake FBA item",
@@ -160,6 +161,8 @@ function fakeContentSchema(): Record<string, unknown> {
 
 function fakeContentDefinitionResponse(): Response {
   return jsonResponse(200, {
+    productType: "FAKE_PRODUCT_TYPE",
+    marketplaceIds: [MARKETPLACE_ID],
     schema: {
       link: { resource: FAKE_SCHEMA_URL, verb: "GET" },
       checksum: "FAKE_CONTENT_SCHEMA_CHECKSUM",
@@ -270,6 +273,90 @@ describe("SP-API live wire contracts", () => {
     expect(urls).toHaveLength(2);
     expectTokenRequest(urls[0]);
     expectGetListingsItemUrl(urls[1]);
+  });
+
+  it("fails a public price read closed when Amazon returns a different Seller SKU", async () => {
+    const envelope = await fakeListingItemResponse().json() as {
+      sku: string;
+    };
+    envelope.sku = "OTHER-SKU";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        const url = requestUrl(input);
+        return url.origin === "https://api.amazon.com"
+          ? fakeTokenResponse()
+          : jsonResponse(200, envelope);
+      }),
+    );
+
+    const error = await captureSpApiError(() =>
+      getListingPrice({ marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU }),
+    );
+
+    expect(error).toMatchObject({
+      status: 409,
+      code: "LISTING_IDENTITY_MISMATCH",
+    });
+  });
+
+  it("stops public content before PTD when the exact marketplace summary is missing", async () => {
+    const envelope = await fakeListingItemResponse().json() as {
+      summaries: Array<{ marketplaceId: string }>;
+    };
+    envelope.summaries[0]!.marketplaceId = "A2EUQ1WTGCTBG2";
+    const urls: URL[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        const url = requestUrl(input);
+        urls.push(url);
+        return url.origin === "https://api.amazon.com"
+          ? fakeTokenResponse()
+          : jsonResponse(200, envelope);
+      }),
+    );
+
+    await expect(
+      getListingContent({ marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "LISTING_IDENTITY_MISMATCH",
+    });
+    expect(urls.some((url) => url.pathname.startsWith("/definitions/"))).toBe(
+      false,
+    );
+  });
+
+  it("stops public images before PTD when exact Product Type evidence conflicts", async () => {
+    const envelope = await fakeListingItemResponse().json() as {
+      productTypes?: Array<{ marketplaceId: string; productType: string }>;
+    };
+    envelope.productTypes = [
+      { marketplaceId: MARKETPLACE_ID, productType: "PET_FOOD" },
+      { marketplaceId: MARKETPLACE_ID, productType: "CONFLICTING_TYPE" },
+    ];
+    const urls: URL[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        const url = requestUrl(input);
+        urls.push(url);
+        return url.origin === "https://api.amazon.com"
+          ? fakeTokenResponse()
+          : jsonResponse(200, envelope);
+      }),
+    );
+
+    await expect(
+      getListingImages({ marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "LISTING_IDENTITY_MISMATCH",
+    });
+    expect(urls.some((url) => url.pathname.startsWith("/definitions/"))).toBe(
+      false,
+    );
   });
 
   it("uses the minimal search probe and preserves a 400 request ID", async () => {
