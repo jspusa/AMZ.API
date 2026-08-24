@@ -51,6 +51,82 @@ const EXTRACTED_REPORTS_MODULES = [
   "src/main/amazon/reports-runtime-production.ts",
 ] as const;
 
+const PURE_CATALOG_REPORT_MODULES = [
+  "src/main/amazon/business-pricing-evidence.ts",
+  "src/main/amazon/catalog-report-reads.ts",
+] as const;
+
+const FBA_CATALOG_REPORTS_COORDINATOR =
+  "src/main/amazon/fba-catalog-reports.ts";
+
+const FORBIDDEN_CATALOG_MODULE_DEPENDENCIES = new Set([
+  "src/main/amazon/listing-write-readback.ts",
+  "src/main/amazon/reports-runtime.ts",
+  "src/main/amazon/variation-update.ts",
+  "src/main/credential-vault.ts",
+  "src/main/local-store.ts",
+]);
+
+const FORBIDDEN_CATALOG_PTD_IMPORTS = new Set([
+  "ProductTypeDefinitionReadIdentity",
+  "ProductTypeDefinitionReadPlan",
+  "ProductTypeDefinitionReadResult",
+  "readDefinition",
+  "readProductTypeDefinition",
+]);
+
+const FORBIDDEN_REPORT_TRANSPORT_IMPORTS = new Set([
+  "ReportsAdapter",
+  "ReportsAdapterDocument",
+  "ReportsAdapterIdentity",
+  "ReportsAdapterRequest",
+  "ReportsAdapterStatus",
+  "ReportsCreateRequest",
+  "ReportsDocumentRequest",
+  "ReportsStatusRequest",
+]);
+
+const SUPERSEDED_CATALOG_HELPERS = [
+  "canonicalSingleBasePriceAmount",
+  "canonicalBusinessQuantityDiscountPlan",
+  "summarizeBusinessPricingAudit",
+  "withBusinessPricingRecommendations",
+  "incompleteBusinessPricingAuditRow",
+  "unavailableListingsBusinessPricingAuditRow",
+  "exactBusinessPricingAuditPayload",
+  "completeBusinessPricingAuditRow",
+  "listingReportBusinessPriceEvidence",
+  "listingReportQuantityDiscountColumns",
+  "listingReportPositiveNumber",
+  "listingReportQuantityDiscountEvidence",
+  "parseFbaListingReport",
+  "parseBusinessPricingActiveListingsReport",
+  "reconcileBusinessPriceReportEvidence",
+  "sameBusinessQuantityDiscountPlan",
+  "reconcileBusinessQuantityDiscountReportEvidence",
+  "reconcileListingsAndReportQuantityDiscountEvidence",
+  "exportRowFromListing",
+  "fetchExportRows",
+  "getBusinessPricingAuditData",
+  "getBusinessPricingAuditDataFromDocuments",
+  "getBusinessPricingActiveListingsReportDocument",
+  "getFbaReviewAuditCandidates",
+  "getFbaReviewAuditCandidatesFromDocument",
+  "getAllListingsExportData",
+  "getAllListingsExportDataFromDocument",
+  "getFbaListingIdentitySnapshot",
+  "getFbaListingIdentitySnapshotFromDocument",
+  "getUnboundVariationAuditData",
+  "getUnboundVariationAuditDataFromDocument",
+  "verifyFbaReviewAuditSeeds",
+  "startAllListingsReport",
+  "getAllListingsReportStatus",
+  "startBusinessPricingActiveListingsReport",
+  "getBusinessPricingActiveListingsReportStatus",
+  "getBrandSalesData",
+  "getFixedReportsDocumentText",
+] as const;
+
 const FORBIDDEN_VARIATION_CATALOG_DEPENDENCIES = new Set([
   "src/main/amazon/listings-reads-production.ts",
   "src/main/amazon/variation-update.ts",
@@ -167,6 +243,109 @@ function legacyDependencies(entryPath: string): string[] {
   return [...violations].sort();
 }
 
+function isForbiddenCatalogDependency(dependencyPath: string): boolean {
+  return LEGACY_RUNTIME_MODULES.has(dependencyPath) ||
+    FORBIDDEN_CATALOG_MODULE_DEPENDENCIES.has(dependencyPath) ||
+    /-production\.(?:ts|tsx)$/u.test(dependencyPath) ||
+    /(?:^|\/)transport(?:[-/.]|$)/u.test(dependencyPath) ||
+    dependencyPath.startsWith("src/preload/") ||
+    dependencyPath.startsWith("src/renderer/");
+}
+
+function catalogDependencyViolations(
+  entryPath: string,
+  options: Readonly<{
+    recursive: boolean;
+    allowReportsRuntime?: boolean;
+    forbidReportTransportImports?: boolean;
+  }>,
+): string[] {
+  const entrySourcePath = absolutePath(entryPath);
+  const pending = [entrySourcePath];
+  const visited = new Set<string>();
+  const violations = new Set<string>();
+
+  while (pending.length > 0) {
+    const sourcePath = pending.pop();
+    if (!sourcePath || visited.has(sourcePath)) continue;
+    visited.add(sourcePath);
+
+    for (const sourceImport of sourceImports(sourcePath)) {
+      const dependency = resolveLocalImport(sourcePath, sourceImport.specifier);
+      if (!dependency) continue;
+      const dependencyPath = repositoryPath(dependency);
+      const sourceRepositoryPath = repositoryPath(sourcePath);
+      if (
+        isForbiddenCatalogDependency(dependencyPath) &&
+        !(
+          options.allowReportsRuntime &&
+          dependencyPath === "src/main/amazon/reports-runtime.ts"
+        )
+      ) {
+        violations.add(`${sourceRepositoryPath} -> ${dependencyPath}`);
+      }
+
+      const forbiddenPtdImports = sourcePath === entrySourcePath
+        ? sourceImport.importedNames.filter((name) =>
+            FORBIDDEN_CATALOG_PTD_IMPORTS.has(name)
+          )
+        : [];
+      if (forbiddenPtdImports.length > 0) {
+        violations.add(
+          `${sourceRepositoryPath} -> ${dependencyPath} (${forbiddenPtdImports.sort().join(", ")})`,
+        );
+      }
+
+      if (
+        options.forbidReportTransportImports &&
+        dependencyPath === "src/main/amazon/reports-runtime.ts"
+      ) {
+        const forbiddenTransportImports = sourceImport.importedNames.filter(
+          (name) => FORBIDDEN_REPORT_TRANSPORT_IMPORTS.has(name),
+        );
+        if (forbiddenTransportImports.length > 0) {
+          violations.add(
+            `${sourceRepositoryPath} -> ${dependencyPath} (${forbiddenTransportImports.sort().join(", ")})`,
+          );
+        }
+      }
+
+      if (options.recursive && !visited.has(dependency)) {
+        pending.push(dependency);
+      }
+    }
+  }
+
+  return [...violations].sort();
+}
+
+function exportedTypePropertyNames(
+  sourcePath: string,
+  exportedTypeName: string,
+): string[] {
+  const program = ts.createProgram([sourcePath], {
+    target: ts.ScriptTarget.Latest,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    skipLibCheck: true,
+  });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(sourcePath);
+  if (!source) throw new Error(`Source file not found: ${sourcePath}`);
+  const moduleSymbol = checker.getSymbolAtLocation(source);
+  if (!moduleSymbol) throw new Error(`Module symbol not found: ${sourcePath}`);
+  const exportedType = checker
+    .getExportsOfModule(moduleSymbol)
+    .find((symbol) => symbol.name === exportedTypeName);
+  if (!exportedType) {
+    throw new Error(`Exported type not found: ${exportedTypeName}`);
+  }
+  return checker
+    .getPropertiesOfType(checker.getDeclaredTypeOfSymbol(exportedType))
+    .map((property) => property.name)
+    .sort();
+}
+
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(directory, entry.name);
@@ -226,6 +405,59 @@ describe("SP execution-context architecture", () => {
       expect(legacyDependencies(entryPath)).toEqual([]);
     },
   );
+
+  it.each(PURE_CATALOG_REPORT_MODULES)(
+    "%s stays outside legacy, production, write, PTD, preload, and renderer wiring",
+    (entryPath) => {
+      expect(catalogDependencyViolations(entryPath, { recursive: true }))
+        .toEqual([]);
+    },
+  );
+
+  it("keeps the FBA catalog coordinator on runtime ports and out of transport, production, and write wiring", () => {
+    expect(catalogDependencyViolations(FBA_CATALOG_REPORTS_COORDINATOR, {
+      recursive: false,
+      allowReportsRuntime: true,
+      forbidReportTransportImports: true,
+    })).toEqual([]);
+  });
+
+  it("keeps the catalog Listings interface free of fetch, URL, method, and PTD capabilities", () => {
+    expect(exportedTypePropertyNames(
+      absolutePath("src/main/amazon/catalog-report-reads.ts"),
+      "CatalogListingsReadAdapter",
+    )).toEqual(["readItem", "searchItems"]);
+  });
+
+  it("removes superseded catalog and B2B helper declarations from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const helper of SUPERSEDED_CATALOG_HELPERS) {
+      expect(source).not.toMatch(new RegExp(`function\\s+${helper}\\b`, "u"));
+    }
+    expect(source).not.toContain("parseFbaListingReportSeeds");
+  });
+
+  it("keeps report documents behind the FBA catalog coordinator", () => {
+    const routerSource = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    for (const helper of [
+      "getBusinessPricingAuditDataFromDocuments",
+      "getFbaReviewAuditCandidatesFromDocument",
+      "getAllListingsExportDataFromDocument",
+      "getFbaListingIdentitySnapshotFromDocument",
+      "getUnboundVariationAuditDataFromDocument",
+    ]) {
+      expect(routerSource).not.toMatch(new RegExp(`\\b${helper}\\b`, "u"));
+    }
+    expect(routerSource).toContain("function routerDemoReportsAdapter");
+    expect(routerSource).toContain("assertDemoReportsRequest(request)");
+    expect(routerSource).not.toMatch(/\brouterReportsAdapter\b/u);
+  });
 
   it("keeps the Reports runtime main-only and wires its production adapter explicitly", () => {
     const forbiddenConsumers = [

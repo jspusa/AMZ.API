@@ -6,8 +6,10 @@ import {
 import {
   buildUnboundVariationSearchBatches,
   classifyUnboundVariationSearchBatch,
-  parseFbaListingReportSeeds,
 } from "../src/main/amazon/sp-api";
+import {
+  readFbaCatalogSeeds as parseFbaListingReportSeeds,
+} from "../src/main/amazon/catalog-report-reads";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 

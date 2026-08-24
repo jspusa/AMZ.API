@@ -91,7 +91,7 @@ export function buildUnboundVariationSearchBatches(
 }
 
 export async function readVariationRelationshipBatch(
-  adapter: ListingsReadAdapter,
+  adapter: Pick<ListingsReadAdapter, "searchItems">,
   input: Readonly<{
     marketplaceId: MarketplaceId;
     sellerSkus: readonly string[];

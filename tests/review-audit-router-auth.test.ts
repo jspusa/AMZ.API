@@ -3,26 +3,27 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const mocks = vi.hoisted(() => ({
-  feedback: vi.fn(),
-  mode: "demo" as "demo" | "live",
-  candidateCount: 3,
-  candidateGate: null as Promise<void> | null,
-  candidateStarted: false,
-}));
-
-vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/main/amazon/sp-api")>();
-  const getCandidates = vi.fn(async () => {
-    const mode = mocks.mode;
-    mocks.candidateStarted = true;
-    await mocks.candidateGate;
+const mocks = vi.hoisted(() => {
+  const state = {
+    feedback: vi.fn(),
+    mode: "demo" as "demo" | "live",
+    candidateCount: 3,
+    candidateGate: null as Promise<void> | null,
+    candidateStarted: false,
+    candidates: vi.fn(),
+  };
+  state.candidates.mockImplementation(async () => {
+    const mode = state.mode;
+    state.candidateStarted = true;
+    await state.candidateGate;
     return {
       mode,
       marketplaceId: "ATVPDKIKX0DER" as const,
-      sourceCandidateCount: mocks.candidateCount,
-      candidates: Array.from({ length: mocks.candidateCount }, (_, offset) => offset + 1)
-        .map((index) => ({
+      sourceCandidateCount: state.candidateCount,
+      candidates: Array.from(
+        { length: state.candidateCount },
+        (_, offset) => offset + 1,
+      ).map((index) => ({
         sellerSkus: [`SKU-${index}`],
         asin: `B00000000${index}`,
         title: `Product ${index}`,
@@ -31,39 +32,36 @@ vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
       })),
       relationshipIncompleteRows: [],
       coverage: {
-        sourceFbaListings: mocks.candidateCount,
-        verifiedNonParentListings: mocks.candidateCount,
-        verifiedChildListings: Math.floor(mocks.candidateCount / 2),
+        sourceFbaListings: state.candidateCount,
+        verifiedNonParentListings: state.candidateCount,
+        verifiedChildListings: Math.floor(state.candidateCount / 2),
         verifiedStandaloneListings:
-          mocks.candidateCount - Math.floor(mocks.candidateCount / 2),
+          state.candidateCount - Math.floor(state.candidateCount / 2),
         excludedParentContainers: 0,
         relationshipIncomplete: 0,
       },
       notice: "FBA only",
     };
   });
+  return state;
+});
+
+vi.mock("../src/main/amazon/variation-catalog-reads", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../src/main/amazon/variation-catalog-reads")
+  >();
+  return {
+    ...actual,
+    verifyFbaReviewAuditSeeds: mocks.candidates,
+  };
+});
+
+vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/main/amazon/sp-api")>();
   return {
     ...actual,
     usesDemoMode: vi.fn(() => mocks.mode === "demo"),
-    startAllListingsReport: vi.fn(async () => ({
-      mode: mocks.mode,
-      ready: true,
-      reportId: "report-live",
-      documentId: "document-live",
-      status: "DONE" as const,
-      notice: "ready",
-    })),
-    getAllListingsReportStatus: vi.fn(async () => ({
-      mode: mocks.mode,
-      ready: true,
-      reportId: "report-live",
-      documentId: "document-live",
-      status: "DONE" as const,
-      notice: "ready",
-    })),
-    getFixedReportsDocumentText: vi.fn(async () => "review-audit-report-fixture"),
-    getFbaReviewAuditCandidates: getCandidates,
-    getFbaReviewAuditCandidatesFromDocument: getCandidates,
+    getDemoFbaReviewAuditCandidates: mocks.candidates,
     getCustomerFeedbackReviewTopics: mocks.feedback,
   };
 });
@@ -131,7 +129,14 @@ const liveReportsAdapter: ReportsAdapter = {
       identity: liveAllListingsIdentity(request),
       reportId: request.reportId,
       documentId: request.documentId,
-      text: "review-audit-report-fixture",
+      text: [
+        "seller-sku\tasin\titem-name\tfulfillment-channel",
+        ...Array.from(
+          { length: mocks.candidateCount },
+          (_, index) =>
+            `SKU-${index + 1}\tB00000000${index + 1}\tProduct ${index + 1}\tAFN`,
+        ),
+      ].join("\n"),
     };
   },
 };

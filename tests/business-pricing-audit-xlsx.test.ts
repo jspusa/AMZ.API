@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createBusinessPricingAuditWorkbook } from
   "../src/main/amazon/business-pricing-audit-xlsx";
 import type { BusinessPricingAuditSnapshot } from
-  "../src/main/amazon/sp-api";
+  "../src/main/amazon/catalog-report-reads";
 
 function snapshot(): BusinessPricingAuditSnapshot {
   return {

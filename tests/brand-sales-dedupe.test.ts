@@ -852,7 +852,6 @@ describe("durable brand-sales report dedupe", () => {
       startShipment: async () => queuedShipment(1),
       getListingStatus,
       getShipmentStatus,
-      getData: async () => ({ schemaVersion: 1, responseKind: "data" }) as never,
       getDataFromDocuments: async () => ({
         schemaVersion: 1,
         responseKind: "data",

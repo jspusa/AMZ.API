@@ -12,14 +12,6 @@ import {
 } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
-vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/main/amazon/sp-api")>();
-  return {
-    ...actual,
-    getFixedReportsDocumentText: vi.fn(async () => "synthetic all-listings document"),
-  };
-});
-
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const ACCOUNT_SCOPE_A = "a".repeat(64);
 const ACCOUNT_SCOPE_B = "b".repeat(64);

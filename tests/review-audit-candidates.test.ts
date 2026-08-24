@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  parseFbaListingReportSeeds,
-  type FbaReviewAuditSeed,
-} from "../src/main/amazon/sp-api";
+  readFbaCatalogSeeds as parseFbaListingReportSeeds,
+} from "../src/main/amazon/catalog-report-reads";
 import {
   createScriptedListingsReadAdapter,
 } from "../src/main/amazon/listings-reads";
 import {
   verifyFbaReviewAuditSeeds,
+  type FbaReviewAuditSeed,
 } from "../src/main/amazon/variation-catalog-reads";
 
 const US = "ATVPDKIKX0DER";

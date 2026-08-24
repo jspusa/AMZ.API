@@ -344,7 +344,8 @@ describe("main-owned standalone audit route", () => {
     expect(variationBranch).toContain("standaloneListingReport(input)");
     expect(variationBranch).toContain("getSharedUnboundVariationAuditData({");
     expect(variationBranch).not.toContain("standaloneListings(input)");
-    expect(businessPricingBranch).toContain("standaloneListingReport(input)");
+    expect(businessPricingBranch).toContain("standaloneListingReport(");
+    expect(businessPricingBranch).toContain('"business-pricing-audit"');
     expect(businessPricingBranch).toContain("getSharedBusinessPricingAuditData({");
     expect(businessPricingBranch).not.toContain("standaloneListings(input)");
   });

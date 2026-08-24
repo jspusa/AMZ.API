@@ -537,7 +537,7 @@ function assertResultIdentity(
 }
 
 export async function readListingsItem(
-  adapter: ListingsReadAdapter,
+  adapter: Pick<ListingsReadAdapter, "readItem">,
   plan: ListingItemReadPlan,
 ): Promise<ListingItemReadResult> {
   const expected = listingItemReadIdentity(plan);
@@ -556,7 +556,7 @@ export async function readListingsItem(
 }
 
 export async function searchListingsItems(
-  adapter: ListingsReadAdapter,
+  adapter: Pick<ListingsReadAdapter, "searchItems">,
   plan: ListingsSearchPlan,
 ): Promise<ListingsSearchReadResult> {
   const expected = listingsSearchIdentity(plan);
@@ -569,7 +569,7 @@ export async function searchListingsItems(
 }
 
 export async function readProductTypeDefinition(
-  adapter: ListingsReadAdapter,
+  adapter: Pick<ListingsReadAdapter, "readDefinition">,
   plan: ProductTypeDefinitionReadPlan,
 ): Promise<ProductTypeDefinitionReadResult> {
   const expected = productTypeDefinitionReadIdentity(plan);

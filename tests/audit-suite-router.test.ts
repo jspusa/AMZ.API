@@ -9,7 +9,6 @@ import {
 } from "../src/main/api-router";
 import {
   startAgedInventoryReport,
-  startAllListingsReport,
 } from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -21,6 +20,10 @@ const previousMode = process.env.SP_API_MODE;
 const previousClientId = process.env.SP_API_LWA_CLIENT_ID;
 const previousClientSecret = process.env.SP_API_LWA_CLIENT_SECRET;
 const previousRefreshToken = process.env.SP_API_REFRESH_TOKEN_NA;
+type RouterInput = ConstructorParameters<typeof ApiRouter>[0];
+type DemoListingStart = NonNullable<
+  NonNullable<RouterInput["brandSalesReports"]>["startListing"]
+>;
 
 function request(
   method: "GET" | "POST",
@@ -66,13 +69,13 @@ async function waitForTerminal(
 describe("main-owned audit suite routes", () => {
   let accountScope: string;
   let router: ApiRouter;
-  let startListing: ReturnType<typeof vi.fn>;
+  let startListing: ReturnType<typeof vi.fn<DemoListingStart>>;
   let startAged: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
     accountScope = "account-scope-one";
-    startListing = vi.fn(async ({ marketplaceId }: { marketplaceId: string }) => ({
+    startListing = vi.fn<DemoListingStart>(async ({ marketplaceId }) => ({
       mode: "demo" as const,
       ready: true,
       reportId: `demo-${marketplaceId}`,
@@ -97,7 +100,7 @@ describe("main-owned audit suite routes", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      brandSalesReports: { startListing: startListing as typeof startAllListingsReport },
+      brandSalesReports: { startListing },
       agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
     });
   });
@@ -201,7 +204,7 @@ describe("main-owned audit suite routes", () => {
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       brandSalesReports: {
-        startListing: startListing as typeof startAllListingsReport,
+        startListing,
       },
       agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
     });
@@ -331,7 +334,7 @@ describe("main-owned audit suite routes", () => {
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       brandSalesReports: {
-        startListing: startListing as typeof startAllListingsReport,
+        startListing,
         getListingStatus,
       },
     });

@@ -8,6 +8,8 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 目前工作樹：v0.1.31 release code 已由 PR #67 squash merge，唯一 release code main SHA 為 `fd02266279414e4e716316dbedfe7a507079bb10`；同一 SHA 的 Validate、Pages、macOS universal 與 Windows x64 workflows 均成功，source、CI、Pages、Mac／Windows artifacts 與 exact Mac 安裝已完成。v0.1.30 的正式 US 唯讀 canary 已證明 B2B canonical quantity tiers 與 `父變體橫排`，並暴露 A+ 全數 incomplete；同形 fixture 鎖定跨文件 conflict poisoning 核心缺口。v0.1.31 讓任一 exact `CONTENT_PUBLISHED` 保持正向權威，另一文件的 negative／malformed relation 只能把完整度降為 partial，且未使用的 optional `contentReferenceKeySet` 畸形不再丟棄合法 badge。沒有任何 positive 時仍 fail closed。v0.1.31 A+ 正式唯讀 canary 尚待 Mac 解鎖；任何 PATCH／readback、文案或圖片 mutation，以及真實 Windows Hello／DPAPI 裝置矩陣仍未執行。
 
 架構深化工作依 #69 的 tracer bullets 進行中：S01–S07 已分別發布為尚未合併的 stacked PR #109–#115；S08 已發布為 stacked Draft PR #116（base 為 `codex/s07-variation-catalog-reads`），本分支建立 main-only 固定 Reports runtime 與 production adapter。runtime 只接受 all listings、Active Business Listings、aged inventory、inbound noncompliance、exact-date DAY＋SKU sales/traffic，以及綁 exact dates／immutable data timestamps／`windowCreatedAt` 的 FBA shipment sales 六種封閉意圖；production adapter 固定官方 report type／options／endpoint，POST 不 replay，GET 只有一次 401 refresh 與最多兩次 bounded transient retry，並限制 timeout、redirect、HTTPS signed URL、壓縮與解壓大小。官方 `GetReport` 未回傳 create-time options 時由 durable identity 維持固定選項，若有該欄則 exact match；live ApiRouter 不再退回 legacy transport，compatibility adapter 只處理 demo。所有六種意圖共用 account／mode／marketplace／type／canonical options 綁定的 `DurableReportLifecycle`、single-flight、30 分鐘 retry guard 與 terminal／unknown tombstone；data/document read 不隱含 create，final store read 後也會再驗 context generation。store v2 雙寫 collision-safe tuple key 與上一版 colon alias，alias 碰撞 fail closed，`CREATION_UNKNOWN` 已通過新版→舊版 mutation→新版往返測試。公開 route／legacy coordinator 只保存 `report-lease.*`／`report-document.*` 不透明 handle；runtime `readDocument` 是 metadata、signed URL 與下載的唯一 owner，原始 report／document ID 不再解析回 router caller，domain parser 只接收文字且不得重新輪詢或下載。`ACCOUNT_SCOPE_CHANGED`、`REPORT_MODE_CHANGED` 與 `SP_CONTEXT_INVALIDATED` 不得被 optional Active Business fallback 或 AbortError 降級；create rejection／abort-ignoring success、status／document simultaneous invalidate+abort、create／status caller-signal-first cleanup 與 B2B router cleanup 競態均鎖定原始 409，create 已開始時仍保存 `CREATION_UNKNOWN`。品牌營收 job 只剩雙 leg 協調與公開投影，不再擁有第二套 POST／poll lifecycle；既有 Ads report transport 保持獨立但沿用同一耐久 lifecycle。Review Audit 的帳號／模式 transition 保留原始 409 context error且不重設全 App Customer Feedback pace boundary。本地 `npm run check` 已通過 141 個測試檔／1,384 項測試、typecheck 與 production build，`npm audit --omit=dev` 為 0 漏洞，`git diff --check` 通過；stacked Draft PR #116 的 Validate 與 Windows x64 unsigned build／ASAR addon boundary／packaged Bridge smoke CI 已通過；PR run 依 workflow 規則未上傳 artifact。本文件記錄的是 fixture／demo／local 證據，不能冒充部署、安裝、Notebook Key、live Amazon、Validation Preview、PATCH 或真實裝置驗證。兩個既有 user-owned untracked duplicate files 仍排除。
+
+S09 candidate branch 進一步抽離 catalog reports／B2B 唯讀語意：`ReportsRuntime` 保持 lifecycle 與文件下載的唯一 owner；`FbaCatalogReports` 只協調固定 All／Active Listings 意圖、opaque handles、context fences 與 demo／live dispatch；`catalog-report-reads.ts` 只負責 FBA 報表 parse、exact identity、Listings read enrichment、export 與 B2B audit；`business-pricing-evidence.ts` 是無 I/O／無狀態的 pure leaf。Active unavailable 不等於 absence，unknown／ambiguous evidence 不得建立 mismatch，audit rows 固定 `editable: false`，整個 S09 cluster 不接 PTD、Preview、PATCH 或其他 write seam。舊的 live catalog／B2B download-and-parse facade 已移除，只保留明確命名的 demo source；本地完整 gate 已通過，但 Draft PR／CI 尚待本次發布後另行記錄，S08 的證據不能冒充 S09，分層證據見下方專節。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -484,6 +486,17 @@ Amazon App：
   - PR #48 已 squash merge，main 為 `c919cd9714095330c150879b0eb1bb474817e3dd`；main Validate `32568946207`、Pages `32568946205`、macOS `32568946198` 與 Windows CI `32568946195` 均成功。live Pages assets 為 `index-CFy0t-bz.js`／`index-CddE3IYJ.css`，SHA-256 分別為 `51a1d55ea4e96af41390f4f19fb319e54f42a901d5aa0b27de42a54e14b020a0`／`8b9335242a20aa2112b9d042ee63532d300381bbac2933838a672658e0c4725c`，已確認含新門檻與同 Excel 回傳入口。
   - main macOS artifact `9474859261` 名稱為 `AMZ.API-unsigned-c919cd9714095330c150879b0eb1bb474817e3dd`，GitHub metadata digest 為 `sha256:af9c17898c06b360b894ec91aba00e183c249b115881e93f9068d151e60ad686`。DMG 為 246,204,272 bytes、SHA-256 `3c3093e3c94d477b18baf491613f5eb15f3b2ac04cf45f392500cba299be169c`；universal ZIP 為 221,642,538 bytes、SHA-256 `930b2ad3c75acb8d961834b8e4d3b17c8acdcc93210dba17153f17e0c92afd29`。兩者與 manifest 一致，ZIP／DMG CRC、版本／build 0.1.21、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過。v0.1.21 已安裝並持續執行，v0.1.20 原封不動保留為 `/Applications/AMZ.API-v0.1.20-backup.app`；Keychain／本機 userData 未清除。
 
+### 2026-08-24 S09 catalog reports／B2B read-only extraction（candidate branch，Draft PR 待發布）
+
+- Ownership：`ReportsRuntime` 仍是 report create／poll／durable lifecycle、opaque handle 驗證與 `readDocument()` 的唯一 owner；原始 report／document ID、metadata、signed URL 與下載不離開 runtime／production adapter。`FbaCatalogReports` 是上層 semantic coordinator，只在明確 begin 建立固定 All Listings，且只有 B2B begin 同時建立固定 Active Listings；status／read／optional Active lookup 只沿用既有 lease，不會隱含 POST。coordinator 在 runtime 與 domain read 前後重驗 marketplace／mode／account generation，不擁有 transport、credential、store、workbook 或 mutation。
+- Pure read domain：`catalog-report-reads.ts` 接收 runtime 已下載的 All／Active 文字與注入的封閉 `ListingsReadAdapter`，負責 FBA-only parse、exact Seller SKU／ASIN identity、catalog export enrichment／progress，以及 B2B read-only audit。它不接 report handle、不 poll／download、不讀 credential／store、不接 production adapter，也不呼叫 PTD、Preview 或 write module。`business-pricing-evidence.ts` 是更底層的 pure leaf，只做 raw Listings offer／issue normalization、exact marketplace price／quantity-plan evidence與 canonical equality，沒有 I/O、context 或 mutable state。
+- Fail-honest 語意：Active Listings unavailable 只代表 optional source 目前不可用，不等於 Business offer absence；只有完整負面證據才可判 missing。unknown／ambiguous／malformed／conflicting evidence 不會建立建議價格或階梯 mismatch，也不能被另一個 positive source 洗掉。全站 B2B audit row 固定 `editable: false`；S09 不接 seller-specific PTD、Validation Preview、PATCH、readback 或任何寫入。`ACCOUNT_SCOPE_CHANGED`、`REPORT_MODE_CHANGED`、`SP_CONTEXT_INVALIDATED` 與 AbortError 不得被 Active fallback 降級。
+- Demo／live 分離：demo export／identity／seed／B2B snapshot 只由注入的 demo source 提供；`routerDemoReportsAdapter` 另有明確 mode guard，拒絕任何 live request。舊 All／Active Listings create、status、document 與 catalog type／parser facade 已移除；live 只能把 `ReportsRuntime.readDocument()` 的文字交給 fixed Listings read adapter。scripted fixture 不得成為 live fallback，demo 結果也不得冒充 Notebook Key／Amazon 證據。
+- Public DTO redaction：Listings upstream `errors[].message` 不得進入成功的 catalog export 或 B2B incomplete row；輸出只使用固定 allowlisted 中文診斷與經 `publicSpApiRequestId` 清理的 Request ID。fixture 已以惡意 URL、Seller ID、token-like 文字與 NUL control character 鎖定不外洩。
+- Local evidence（2026-08-24）：review-fix RED 已先證明 Active AbortError／identity fence、demo document-dispatch 與 successful-DTO upstream-message 洩漏缺口，再轉為 GREEN；最後一輪相關 B2B、catalog export、identity、variation、review、advertising、router 與 architecture focused 回歸共 263 項通過。其後以目前 S09 candidate tree 實際執行完整 `npm run check`，143 個測試檔／1,399 項測試、typecheck 與 production build 全部通過；`npm audit --omit=dev` 為 0 漏洞，`git diff --check` 通過。這些仍是 fixture／scripted-adapter／local build 證據，不是 packaged Bridge、安裝、Notebook Key 或 live Amazon 驗證。
+- CI evidence：S09 尚未建立或完成可歸屬於此 working tree 的 PR／Actions run；沒有 S09 Validate、Windows package smoke、Pages、macOS artifact 或 CI 通過聲稱。
+- Live evidence：S09 尚未在已安裝 Notebook Key 或真實 Amazon 帳號執行。v0.1.30 的 274 列 B2B live canary 只是既有產品行為的歷史基線，不證明本次抽離；本次沒有 PTD、Validation Preview、Touch ID／Windows Hello、PATCH、readback 或 Amazon mutation。
+
 ### 已完成與仍待真實 Windows／Mac／Amazon 驗證
 
 正式基線 v0.1.31 的 PR、四條 main Actions、Pages、Mac／Windows artifacts 與 exact Mac 安裝均已完成；v0.1.30 的 B2B／未綁變體正式 Amazon 唯讀 canary 已完成，A+ canary 全數 incomplete 後以同形 fixture 鎖定並修正一個核心缺口，v0.1.31 A+ canary 尚待 Mac 解鎖。本次發布與安裝沒有 Amazon mutation；seller-specific PTD、真實 B2B Preview／PATCH／readback 仍未執行。受保護員工 Mac 下載檔仍是舊版，Windows 固定 prerelease 仍為 v0.1.16，且尚未在員工真實 Windows 11 Pro 裝置做人機驗證。下列範圍必須分開理解：
@@ -563,17 +576,22 @@ Amazon App：
 18. `src/main/amazon/variation-family-reads.ts` — exact SKU／ASIN member、declared children 與 child pagination。
 19. `src/main/amazon/variation-relationship-evidence.ts` — 固定 relationship batch 與逐列 identity／role classification。
 20. `src/main/amazon/variation-catalog-reads.ts` — FBA grouping、unbound／review seed 的高階唯讀組合 seam。
-21. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
-22. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
-23. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
-24. `src/main/amazon/sp-api.ts` — 尚未抽離的 SP-API facade、報表、demo dispatch、Listings writes 與 Orders。
-25. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-26. `src/preload/index.ts` — 窄化 Bridge。
-27. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-28. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-29. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-30. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-31. `tests/*.test.ts` — 已建立的安全與回歸契約。
+21. `src/main/amazon/reports-runtime.ts` — 六種固定 Reports intent、durable lifecycle、opaque handle 與文件唯一 owner。
+22. `src/main/amazon/reports-runtime-production.ts` — 固定 report create／status／document transport、bounded GET retry 與下載邊界。
+23. `src/main/amazon/business-pricing-evidence.ts` — 無 I/O 的 B2B offer／issue normalization 與 canonical equality pure leaf。
+24. `src/main/amazon/catalog-report-reads.ts` — All／Active Listings 文字的 FBA parser、Listings enrichment、export／identity 與 B2B 唯讀 audit。
+25. `src/main/amazon/fba-catalog-reports.ts` — 只協調 runtime、context、live read 與注入 demo source 的 catalog semantic coordinator。
+26. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
+27. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
+28. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
+29. `src/main/amazon/sp-api.ts` — 尚未抽離的 SP-API facade、報表、demo dispatch、Listings writes 與 Orders。
+30. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+31. `src/preload/index.ts` — 窄化 Bridge。
+32. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+33. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+34. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+35. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+36. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

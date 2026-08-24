@@ -204,7 +204,7 @@ function stableRelationshipFailureMessage(error: unknown): string {
 export async function readFbaVariationGroupingData<
   Row extends VariationGroupingSourceRow,
 >(
-  adapter: ListingsReadAdapter,
+  adapter: Pick<ListingsReadAdapter, "searchItems">,
   input: Readonly<{
     marketplaceId: MarketplaceId;
     rows: readonly Row[];
@@ -358,7 +358,7 @@ export async function readFbaVariationGroupingData<
 }
 
 export async function verifyFbaReviewAuditSeeds(
-  adapter: ListingsReadAdapter,
+  adapter: Pick<ListingsReadAdapter, "searchItems">,
   input: Readonly<{
     marketplaceId: MarketplaceId;
     seeds: readonly FbaReviewAuditSeed[];
@@ -524,7 +524,7 @@ export async function verifyFbaReviewAuditSeeds(
 }
 
 export async function readUnboundVariationAudit(
-  adapter: ListingsReadAdapter,
+  adapter: Pick<ListingsReadAdapter, "searchItems">,
   input: Readonly<{
     marketplaceId: MarketplaceId;
     seeds: readonly UnboundVariationSearchSeed[];

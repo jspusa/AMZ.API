@@ -13,9 +13,11 @@ import {
   type ReportsAdapter,
 } from "../src/main/amazon/reports-runtime";
 import type {
-  FbaListingIdentitySnapshot,
   SalesAndTrafficSnapshot,
 } from "../src/main/amazon/sp-api";
+import type {
+  FbaCatalogIdentitySnapshot as FbaListingIdentitySnapshot,
+} from "../src/main/amazon/catalog-report-reads";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -317,7 +319,6 @@ describe("FBA advertising strategy router job", () => {
       },
       advertisingStrategySources: {
         fbaListings,
-        fbaListingsFromDocument: fbaListings,
       },
       advertisingStrategyWait: async (milliseconds, signal) => {
         if (signal?.aborted) throw new DOMException("aborted", "AbortError");

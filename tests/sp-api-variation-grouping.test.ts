@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  getAllListingsExportData,
+  catalogReportsDemoSource,
   getFbaVariationGroupingData,
   invalidateSpApiCredentialCaches,
-  type ListingExportRow,
 } from "../src/main/amazon/sp-api";
+import type {
+  CatalogExportRow as ListingExportRow,
+} from "../src/main/amazon/catalog-report-reads";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const FAKE_SELLER_ID = "FAKE_SELLER_ID_NA";
@@ -123,11 +125,8 @@ describe("FBA variation grouping data", () => {
   }
 
   it("uses the real demo parent families instead of making every SKU standalone", async () => {
-    const reference = `demo-${MARKETPLACE_ID}`;
-    const exported = await getAllListingsExportData({
+    const exported = await catalogReportsDemoSource.export({
       marketplaceId: MARKETPLACE_ID,
-      reportId: reference,
-      documentId: reference,
     });
 
     const grouped = await getFbaVariationGroupingData({
