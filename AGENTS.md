@@ -21,3 +21,17 @@ Non-negotiable project rules:
 - Run `npm run check` and `npm audit --omit=dev` before proposing release.
 - CI cannot prove live Amazon behavior or real Windows Hello hardware. State
   clearly what still requires the user's Notebook Key and Amazon account.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues for `jspusa/AMZ.API`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default canonical triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository using a root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
