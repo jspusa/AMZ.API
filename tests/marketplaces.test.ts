@@ -129,6 +129,8 @@ describe("shared marketplace metadata", () => {
       "../src/main/amazon/accounting-capabilities.ts",
       "../src/main/amazon/ads-api.ts",
       "../src/main/amazon/replenishment-audit.ts",
+      "../src/main/amazon/fba-inventory-replenishment.ts",
+      "../src/main/amazon/fba-inventory-replenishment-production.ts",
       "../src/main/amazon/report-library.ts",
       "../src/main/amazon/sp-api.ts",
       "../src/main/credential-vault.ts",
@@ -145,10 +147,10 @@ describe("shared marketplace metadata", () => {
     }
     expect(sources[1]).toContain('UK: "GB"');
     expect(sources[2]).toContain("OTHER_OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES");
-    expect(sources[3]).toContain("CUSTOMER_FEEDBACK_STORES");
-    expect(sources[4]).toContain("SELLER_REPLENISHMENT_MARKETPLACE_CODES");
-    expect(sources[4]).toContain("CUSTOMER_FEEDBACK_MARKETPLACE_CODES");
-    expect(sources[4]).toContain('UK: "GB"');
+    expect(sources[3]).toContain("OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES");
+    expect(sources[5]).toContain("CUSTOMER_FEEDBACK_STORES");
+    expect(sources[6]).toContain("CUSTOMER_FEEDBACK_MARKETPLACE_CODES");
+    expect(sources[6]).toContain('UK: "GB"');
   });
 
   it("keeps renderer marketplace selectors dependent on the shared source", async () => {

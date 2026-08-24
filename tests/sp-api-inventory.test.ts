@@ -1,16 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
-  findExactInventorySummary,
-  inventorySummariesFromResponse,
-} from "../src/main/amazon/sp-api";
+  createScriptedFbaInventoryReplenishmentAdapter,
+  readFbaInventoryItem,
+} from "../src/main/amazon/fba-inventory-replenishment";
+
+const US = "ATVPDKIKX0DER" as const;
+
+function inventoryAdapter(envelope: unknown) {
+  return createScriptedFbaInventoryReplenishmentAdapter([
+    {
+      operation: "inventory",
+      result: {
+        envelope,
+        requestId: "inventory-request",
+        rateLimit: "2",
+      },
+    },
+  ]);
+}
 
 describe("FBA Inventory response envelope", () => {
-  it("reads inventory summaries from Amazon's nested payload", () => {
-    const summaries = inventorySummariesFromResponse({
+  it("reads the exact inventory summary from Amazon's nested payload", async () => {
+    const adapter = inventoryAdapter({
       payload: {
         granularity: {
           granularityType: "Marketplace",
-          granularityId: "ATVPDKIKX0DER",
+          granularityId: US,
         },
         inventorySummaries: [
           {
@@ -29,9 +44,11 @@ describe("FBA Inventory response envelope", () => {
       pagination: {},
     });
 
-    expect(summaries).not.toBeNull();
-    const summary = summaries!.find((item) => item.sellerSku === "SAFE-SKU-1");
-    expect(summary?.inventoryDetails).toMatchObject({
+    const result = await readFbaInventoryItem(
+      { marketplaceId: US, sellerSku: "SAFE-SKU-1" },
+      { adapter },
+    );
+    expect(result.summary.inventoryDetails).toMatchObject({
       fulfillableQuantity: 8902,
       inboundWorkingQuantity: 100,
       inboundShippedQuantity: 14900,
@@ -40,38 +57,68 @@ describe("FBA Inventory response envelope", () => {
     });
   });
 
-  it("treats a valid empty list differently from a malformed 200 response", () => {
-    expect(
-      inventorySummariesFromResponse({ payload: { inventorySummaries: [] } }),
-    ).toEqual([]);
-    expect(inventorySummariesFromResponse({ inventorySummaries: [] })).toBeNull();
-    expect(inventorySummariesFromResponse({ payload: {} })).toBeNull();
+  it("treats a valid empty list differently from a malformed 200 response", async () => {
+    await expect(
+      readFbaInventoryItem(
+        { marketplaceId: US, sellerSku: "SAFE-SKU-1" },
+        {
+          adapter: inventoryAdapter({
+            payload: { inventorySummaries: [] },
+          }),
+        },
+      ),
+    ).rejects.toMatchObject({
+      status: 404,
+      code: "FBA_SKU_NOT_FOUND",
+      requestId: "inventory-request",
+    });
+    for (const envelope of [{ inventorySummaries: [] }, { payload: {} }]) {
+      await expect(
+        readFbaInventoryItem(
+          { marketplaceId: US, sellerSku: "SAFE-SKU-1" },
+          { adapter: inventoryAdapter(envelope) },
+        ),
+      ).rejects.toMatchObject({
+        status: 502,
+        code: "UPSTREAM_UNAVAILABLE",
+        requestId: "inventory-request",
+      });
+    }
   });
 
-  it("keeps Seller SKU matching exact and case-sensitive", () => {
-    const summaries = inventorySummariesFromResponse({
+  it("keeps Seller SKU matching exact and case-sensitive", async () => {
+    const envelope = {
       payload: {
         inventorySummaries: [
           { sellerSku: "SAFE-SKU-1", inventoryDetails: {} },
         ],
       },
-    });
+    };
 
-    expect(findExactInventorySummary(summaries!, "SAFE-SKU-1")).not.toBeNull();
-    expect(findExactInventorySummary(summaries!, "safe-sku-1")).toBeNull();
+    await expect(
+      readFbaInventoryItem(
+        { marketplaceId: US, sellerSku: "SAFE-SKU-1" },
+        { adapter: inventoryAdapter(envelope) },
+      ),
+    ).resolves.toMatchObject({
+      summary: { sellerSku: "SAFE-SKU-1" },
+    });
+    await expect(
+      readFbaInventoryItem(
+        { marketplaceId: US, sellerSku: "safe-sku-1" },
+        { adapter: inventoryAdapter(envelope) },
+      ),
+    ).rejects.toMatchObject({
+      status: 404,
+      code: "FBA_SKU_NOT_FOUND",
+    });
   });
 
-  it("rejects malformed summaries instead of treating them as zero inventory", () => {
-    expect(
-      inventorySummariesFromResponse({ payload: { inventorySummaries: [null] } }),
-    ).toBeNull();
-    expect(
-      inventorySummariesFromResponse({
-        payload: { inventorySummaries: [{ sellerSku: "SAFE-SKU-1" }] },
-      }),
-    ).toBeNull();
-    expect(
-      inventorySummariesFromResponse({
+  it("rejects malformed summaries instead of treating them as zero inventory", async () => {
+    const malformed = [
+      { payload: { inventorySummaries: [null] } },
+      { payload: { inventorySummaries: [{ sellerSku: "SAFE-SKU-1" }] } },
+      {
         payload: {
           inventorySummaries: [
             {
@@ -80,7 +127,18 @@ describe("FBA Inventory response envelope", () => {
             },
           ],
         },
-      }),
-    ).toBeNull();
+      },
+    ];
+    for (const envelope of malformed) {
+      await expect(
+        readFbaInventoryItem(
+          { marketplaceId: US, sellerSku: "SAFE-SKU-1" },
+          { adapter: inventoryAdapter(envelope) },
+        ),
+      ).rejects.toMatchObject({
+        status: 502,
+        code: "UPSTREAM_UNAVAILABLE",
+      });
+    }
   });
 });

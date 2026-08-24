@@ -24,7 +24,6 @@ import {
   fetchFbaSubscriptionAuditHistory,
   officialCompleteMonthlyIntervals,
   type FbaSubscriptionAuditHistorySnapshot,
-  type ReplenishmentPageRequest,
 } from "./replenishment-audit";
 import {
   buildBrandSalesSnapshot,
@@ -94,6 +93,16 @@ import {
 import { createDeterministicFbaSalesMetricsDemoAdapter } from "./fba-sales-metrics-demo";
 import { createFbaSalesMetricsProductionAdapter } from "./fba-sales-metrics-production";
 import {
+  assertSellerReplenishmentMarketplace,
+  readFbaSubscriptionAuditInputs,
+  readReplenishmentInventoryInputs,
+  readSubscribeAndSaveOffer as readLiveSubscribeAndSaveOffer,
+  subscriptionInventoryEvidence,
+  type CurrentFbaSkuEvidence,
+  type SubscribeAndSaveOfferSnapshot,
+} from "./fba-inventory-replenishment";
+import { createFbaInventoryReplenishmentProductionAdapter } from "./fba-inventory-replenishment-production";
+import {
   exactListingEnvelopeIdentity,
   readListingsItem,
   readProductTypeDefinition,
@@ -119,6 +128,7 @@ export type {
   SalesTrendWindow,
 } from "./fba-sales-calendar";
 export type { ListingIssue, SpApiOperation } from "./sp-api-error";
+export type { SubscribeAndSaveOfferSnapshot } from "./fba-inventory-replenishment";
 
 export type { BrandSalesSnapshot } from "./brand-sales";
 export type {
@@ -897,40 +907,6 @@ export type SalePriceUpdateResult = {
   notice: string;
 };
 
-export type SubscribeAndSaveOfferSnapshot = {
-  mode: "live" | "demo";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  found: boolean;
-  asin: string | null;
-  eligibility: string | null;
-  enrollmentMethod: string | null;
-  autoEnrollment: string | null;
-  sellerFundedBaseDiscount: number | null;
-  sellerFundedTieredDiscount: number | null;
-  amazonFundedBaseDiscount: number | null;
-  amazonFundedTieredDiscount: number | null;
-  price: Money | null;
-  inventory: number | null;
-  subscriptions: number | null;
-  stockRisk: string | null;
-  forecastDeliveries: {
-    next15Days: number | null;
-    next30Days: number | null;
-    next60Days: number | null;
-    next90Days: number | null;
-  } | null;
-  deliveryConditions: Array<{
-    condition: string;
-    next30DaysDeliveries: number | null;
-  }>;
-  fetchedAt: string;
-  requestId: string | null;
-  rateLimit: string | null;
-  notice: string;
-  writable: false;
-};
-
 export type RestockPlanSnapshot = {
   mode: "live" | "demo";
   marketplaceId: MarketplaceId;
@@ -1200,147 +1176,6 @@ type AmazonReportDocument = {
   url?: string;
   compressionAlgorithm?: "GZIP";
 };
-
-type AmazonReplenishmentOffer = {
-  sku?: string;
-  asin?: string;
-  marketplaceId?: string;
-  eligibility?: string;
-  programType?: string;
-  offerProgramConfiguration?: {
-    preferences?: { autoEnrollment?: string };
-    promotions?: {
-      sellingPartnerFundedBaseDiscount?: { percentage?: number };
-      sellingPartnerFundedTieredDiscount?: { percentage?: number };
-      amazonFundedBaseDiscount?: { percentage?: number };
-      amazonFundedTieredDiscount?: { percentage?: number };
-    };
-    enrollmentMethod?: string;
-  };
-  price?: number;
-  priceCurrencyCode?: string;
-  inventory?: number;
-  subscriptions?: number;
-  stockRisk?: string;
-  forecastDeliveries?: {
-    next15DaysDeliveries?: number;
-    next30DaysDeliveries?: number;
-    next60DaysDeliveries?: number;
-    next90DaysDeliveries?: number;
-  };
-  deliveriesConditions?: Array<{
-    condition?: string;
-    next30DaysDeliveries?: number;
-  }>;
-};
-
-type AmazonReplenishmentOffersResponse = {
-  offers?: AmazonReplenishmentOffer[];
-  pagination?: { totalResults?: number };
-};
-
-type AmazonInventorySummary = {
-  asin?: string;
-  fnSku?: string;
-  sellerSku?: string;
-  inventoryDetails?: {
-    fulfillableQuantity?: number;
-    inboundWorkingQuantity?: number;
-    inboundShippedQuantity?: number;
-    inboundReceivingQuantity?: number;
-    reservedQuantity?: { totalReservedQuantity?: number };
-    unfulfillableQuantity?: { totalUnfulfillableQuantity?: number };
-    researchingQuantity?: { totalResearchingQuantity?: number };
-  };
-};
-
-type AmazonInventorySummariesResponse = {
-  payload?: {
-    inventorySummaries?: AmazonInventorySummary[];
-  };
-  pagination?: { nextToken?: string };
-  errors?: Array<{ code?: string; message?: string; details?: string }>;
-};
-
-function hasValidOptionalInventoryQuantity(
-  record: Record<string, unknown>,
-  key: string,
-): boolean {
-  return record[key] === undefined || finiteNonNegativeInteger(record[key]) !== null;
-}
-
-function hasValidOptionalInventoryGroup(
-  record: Record<string, unknown>,
-  key: string,
-  totalKey: string,
-): boolean {
-  const group = record[key];
-  return (
-    group === undefined ||
-    (isRecord(group) && hasValidOptionalInventoryQuantity(group, totalKey))
-  );
-}
-
-function isAmazonInventorySummary(value: unknown): value is AmazonInventorySummary {
-  if (!isRecord(value)) return false;
-  const details = value.inventoryDetails;
-  return (
-    isRecord(details) &&
-    [
-      "fulfillableQuantity",
-      "inboundWorkingQuantity",
-      "inboundShippedQuantity",
-      "inboundReceivingQuantity",
-    ].every((key) => hasValidOptionalInventoryQuantity(details, key)) &&
-    hasValidOptionalInventoryGroup(
-      details,
-      "reservedQuantity",
-      "totalReservedQuantity",
-    ) &&
-    hasValidOptionalInventoryGroup(
-      details,
-      "unfulfillableQuantity",
-      "totalUnfulfillableQuantity",
-    ) &&
-    hasValidOptionalInventoryGroup(
-      details,
-      "researchingQuantity",
-      "totalResearchingQuantity",
-    )
-  );
-}
-
-function exactInventorySellerSku(value: unknown): string | null {
-  return typeof value === "string" &&
-      Boolean(value) &&
-      value.length <= 256 &&
-      value === value.trim() &&
-      !/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(value)
-    ? value
-    : null;
-}
-
-export function inventorySummariesFromResponse(
-  response: unknown,
-): AmazonInventorySummary[] | null {
-  if (!isRecord(response)) {
-    return null;
-  }
-  if (Array.isArray(response.errors) && response.errors.length) return null;
-  const payload = response.payload;
-  if (!isRecord(payload)) return null;
-  const summaries = payload.inventorySummaries;
-  return Array.isArray(summaries) && summaries.every(isAmazonInventorySummary)
-    ? summaries
-    : null;
-}
-
-export function findExactInventorySummary(
-  summaries: AmazonInventorySummary[],
-  sellerSku: string,
-): AmazonInventorySummary | null {
-  return summaries.find((item) => item.sellerSku === sellerSku) ?? null;
-}
 
 type ListingsWriteRequestInput = {
   marketplaceId: MarketplaceId;
@@ -2188,6 +2023,12 @@ const listingsReadAdapter = createListingsReadProductionAdapter({
   invalidateAccessToken: (region) => tokenCache.delete(region),
   getSellerId: (region) => getSellerId(region) ?? null,
 });
+
+const fbaInventoryReplenishmentAdapter =
+  createFbaInventoryReplenishmentProductionAdapter({
+    getAccessToken: requestAccessToken,
+    invalidateAccessToken: (region) => tokenCache.delete(region),
+  });
 
 async function parseResponseJson<T>(response: Response): Promise<T | null> {
   try {
@@ -7433,657 +7274,6 @@ export async function getFbaInboundShipmentSnapshot(input: {
   }
 }
 
-async function callFbaInventoryApi(
-  marketplaceId: MarketplaceId,
-  sellerSku: string,
-  forceTokenRefresh = false,
-): Promise<Response> {
-  const marketplace = MARKETPLACES[marketplaceId];
-  const token = await requestAccessToken(marketplace.region, forceTokenRefresh);
-  const query = new URLSearchParams({
-    granularityType: "Marketplace",
-    granularityId: marketplaceId,
-    marketplaceIds: marketplaceId,
-    details: "true",
-    sellerSkus: sellerSku,
-  });
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  try {
-    return await fetch(
-      `${REGION_ENDPOINTS[marketplace.region]}/fba/inventory/v1/summaries?${query}`,
-      {
-        headers: {
-          accept: "application/json",
-          "x-amz-access-token": token,
-          "x-amz-date": toAmzDate(),
-          "user-agent": spApiUserAgent(),
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon FBA 庫存查詢逾時，請稍後再試。", {
-        status: 504,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    throw new SpApiError("目前無法連線至 Amazon FBA Inventory API。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function fetchLiveFbaInventorySummary(
-  marketplaceId: MarketplaceId,
-  sellerSku: string,
-): Promise<{
-  summary: AmazonInventorySummary;
-  requestId: string | null;
-  rateLimit: string | null;
-}> {
-  let response = await callFbaInventoryApi(marketplaceId, sellerSku);
-  if (response.status === 401) {
-    tokenCache.delete(MARKETPLACES[marketplaceId].region);
-    response = await callFbaInventoryApi(marketplaceId, sellerSku, true);
-  }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (![429, 500, 503].includes(response.status)) break;
-    await wait(retryDelayMs(response, attempt));
-    response = await callFbaInventoryApi(marketplaceId, sellerSku);
-  }
-  const requestId = response.headers.get("x-amzn-requestid");
-  if (!response.ok) {
-    const payload = await parseResponseJson<{
-      errors?: Array<{ message?: string }>;
-    }>(response);
-    const upstreamMessage = payload?.errors?.find((item) => item.message)?.message;
-    throw new SpApiError(
-      response.status === 401 || response.status === 403
-        ? "Amazon 拒絕 FBA 庫存查詢。請確認 app 具有 Amazon Fulfillment 角色並重新授權。"
-        : response.status === 429
-          ? "Amazon FBA Inventory API 正在限流，請稍後再試。"
-          : upstreamMessage || "Amazon 暫時無法完成 FBA 庫存查詢。",
-      {
-        status: response.status,
-        code:
-          response.status === 401 || response.status === 403
-            ? "FBA_INVENTORY_UNAUTHORIZED"
-            : response.status === 429
-              ? "RATE_LIMITED"
-              : "UPSTREAM_UNAVAILABLE",
-        requestId,
-        retryAfter: response.headers.get("retry-after"),
-      },
-    );
-  }
-  const payload = await parseResponseJson<AmazonInventorySummariesResponse>(
-    response,
-  );
-  const summaries = inventorySummariesFromResponse(payload);
-  if (!summaries) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 庫存資料。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-      requestId,
-    });
-  }
-  const summary = findExactInventorySummary(summaries, sellerSku);
-  if (!summary) {
-    throw new SpApiError("Amazon FBA 庫存中找不到這個 SKU。", {
-      status: 404,
-      code: "FBA_SKU_NOT_FOUND",
-      requestId,
-    });
-  }
-  return {
-    summary,
-    requestId,
-    rateLimit: response.headers.get("x-amzn-ratelimit-limit"),
-  };
-}
-
-const FBA_INVENTORY_AUDIT_MAX_PAGES = 200;
-
-async function callFbaInventoryAuditPage(
-  marketplaceId: MarketplaceId,
-  nextToken: string | null,
-  forceTokenRefresh = false,
-  signal?: AbortSignal,
-): Promise<Response> {
-  assertNotAborted(signal);
-  const marketplace = MARKETPLACES[marketplaceId];
-  const token = await requestAccessToken(marketplace.region, forceTokenRefresh);
-  assertNotAborted(signal);
-  const query = new URLSearchParams({
-    granularityType: "Marketplace",
-    granularityId: marketplaceId,
-    marketplaceIds: marketplaceId,
-    details: "true",
-  });
-  if (nextToken) query.set("nextToken", nextToken);
-  const controller = new AbortController();
-  const stopForwardingAbort = forwardAbort(controller, signal);
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  try {
-    return await fetch(
-      `${REGION_ENDPOINTS[marketplace.region]}/fba/inventory/v1/summaries?${query}`,
-      {
-        headers: {
-          accept: "application/json",
-          "x-amz-access-token": token,
-          "x-amz-date": toAmzDate(),
-          "user-agent": spApiUserAgent(),
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    assertNotAborted(signal);
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon FBA 全站庫存證據查詢逾時，已停止健檢。", {
-        status: 504,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    throw new SpApiError("目前無法連線至 Amazon FBA Inventory API。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
-    stopForwardingAbort();
-  }
-}
-
-function inventoryNextTokenFromResponse(value: unknown): string | null {
-  if (!isRecord(value)) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 庫存分頁資料。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  }
-  if (value.pagination === undefined || value.pagination === null) return null;
-  if (!isRecord(value.pagination)) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 庫存分頁資料。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  }
-  const nextToken = value.pagination.nextToken;
-  if (nextToken === undefined || nextToken === null || nextToken === "") return null;
-  if (
-    typeof nextToken !== "string" ||
-    nextToken.length > 4_096 ||
-    /[\u0000-\u001f\u007f]/u.test(nextToken)
-  ) {
-    throw new SpApiError("Amazon 回傳了無效的 FBA 庫存 nextToken。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  }
-  return nextToken;
-}
-
-async function throwFbaInventoryAuditError(response: Response): Promise<never> {
-  const payload = await parseResponseJson<{
-    errors?: Array<{ message?: string }>;
-  }>(response);
-  const requestId = response.headers.get("x-amzn-requestid");
-  const upstreamMessage = payload?.errors?.find((item) => item.message)?.message;
-  throw new SpApiError(
-    response.status === 401 || response.status === 403
-      ? "Amazon 拒絕 FBA 全站庫存證據查詢。請確認 Amazon Fulfillment 角色並重新授權。"
-      : response.status === 429
-        ? "Amazon FBA Inventory API 正在限流；本次健檢已停止，沒有自動重送。"
-        : upstreamMessage || "Amazon 暫時無法完成 FBA 全站庫存證據查詢。",
-    {
-      status: response.status,
-      code:
-        response.status === 401 || response.status === 403
-          ? "FBA_INVENTORY_UNAUTHORIZED"
-          : response.status === 429
-            ? "RATE_LIMITED"
-            : "UPSTREAM_UNAVAILABLE",
-      requestId,
-      retryAfter: response.headers.get("retry-after"),
-    },
-  );
-}
-
-export type CurrentFbaSkuEvidence = {
-  knownFbaSkus: Set<string>;
-  returnedInventoryRows: number;
-  unrecognizedSellerSkuRows: number;
-};
-
-async function fetchLiveCurrentFbaSkuEvidence(
-  marketplaceId: MarketplaceId,
-  signal?: AbortSignal,
-): Promise<CurrentFbaSkuEvidence> {
-  return collectCurrentFbaSkuEvidence(async (nextToken) => {
-    assertNotAborted(signal);
-    let response = await callFbaInventoryAuditPage(
-      marketplaceId,
-      nextToken,
-      false,
-      signal,
-    );
-    assertNotAborted(signal);
-    // One explicit credential refresh is allowed; 429/5xx/timeouts are never
-    // automatically replayed by this audit path.
-    if (response.status === 401) {
-      tokenCache.delete(MARKETPLACES[marketplaceId].region);
-      assertNotAborted(signal);
-      response = await callFbaInventoryAuditPage(
-        marketplaceId,
-        nextToken,
-        true,
-        signal,
-      );
-      assertNotAborted(signal);
-    }
-    if (!response.ok) return throwFbaInventoryAuditError(response);
-    const payload = await parseResponseJson<AmazonInventorySummariesResponse>(response);
-    assertNotAborted(signal);
-    return payload;
-  }, signal);
-}
-
-export async function collectCurrentFbaSkuEvidence(
-  transport: (nextToken: string | null) => Promise<unknown>,
-  signal?: AbortSignal,
-): Promise<CurrentFbaSkuEvidence> {
-  const sellerSkus = new Set<string>();
-  const seenTokens = new Set<string>();
-  let returnedInventoryRows = 0;
-  let unrecognizedSellerSkuRows = 0;
-  let nextToken: string | null = null;
-  for (let page = 0; page < FBA_INVENTORY_AUDIT_MAX_PAGES; page += 1) {
-    assertNotAborted(signal);
-    const payload = await transport(nextToken);
-    assertNotAborted(signal);
-    const summaries = inventorySummariesFromResponse(payload);
-    if (!summaries) {
-      throw new SpApiError("Amazon 回傳了無法辨識的 FBA 全站庫存資料。", {
-        status: 502,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    for (const summary of summaries) {
-      returnedInventoryRows += 1;
-      if (!Number.isSafeInteger(returnedInventoryRows)) {
-        throw new SpApiError("FBA Inventory 回傳列數超過安全上限。", {
-          status: 502,
-          code: "UPSTREAM_UNAVAILABLE",
-        });
-      }
-      const sku = exactInventorySellerSku(summary.sellerSku);
-      if (!sku) {
-        unrecognizedSellerSkuRows += 1;
-        continue;
-      }
-      if (sellerSkus.has(sku)) {
-        throw new SpApiError("FBA Inventory 分頁重複回傳同一 SKU，已停止健檢。", {
-          status: 409,
-          code: "PAGINATION_CHANGED",
-        });
-      }
-      sellerSkus.add(sku);
-    }
-    nextToken = inventoryNextTokenFromResponse(payload);
-    if (!nextToken) {
-      return {
-        knownFbaSkus: sellerSkus,
-        returnedInventoryRows,
-        unrecognizedSellerSkuRows,
-      };
-    }
-    if (summaries.length === 0) {
-      throw new SpApiError("FBA Inventory 回傳空白分頁但仍有 nextToken，已停止健檢。", {
-        status: 409,
-        code: "PAGINATION_CHANGED",
-      });
-    }
-    if (seenTokens.has(nextToken)) {
-      throw new SpApiError("FBA Inventory 分頁 nextToken 重複，已停止健檢。", {
-        status: 409,
-        code: "PAGINATION_CHANGED",
-      });
-    }
-    seenTokens.add(nextToken);
-  }
-  throw new SpApiError("FBA Inventory 分頁超過安全上限，無法證明已完整讀取。", {
-    status: 409,
-    code: "PAGINATION_LIMIT_EXCEEDED",
-  });
-}
-
-export async function collectCurrentFbaSkuSet(
-  transport: (nextToken: string | null) => Promise<unknown>,
-): Promise<Set<string>> {
-  return (await collectCurrentFbaSkuEvidence(transport)).knownFbaSkus;
-}
-
-const SELLER_REPLENISHMENT_MARKETPLACE_CODES = new Set<MarketplaceCode>([
-  "US",
-  "JP",
-  "CA",
-  "UK",
-  "DE",
-]);
-const SELLER_REPLENISHMENT_MARKETPLACES = new Set<MarketplaceId>(
-  MARKETPLACE_METADATA.filter((marketplace) =>
-    SELLER_REPLENISHMENT_MARKETPLACE_CODES.has(marketplace.code),
-  ).map((marketplace) => marketplace.id),
-);
-
-async function callReplenishmentOffersApi(
-  marketplaceId: MarketplaceId,
-  sellerSku: string,
-  forceTokenRefresh = false,
-): Promise<Response> {
-  const marketplace = MARKETPLACES[marketplaceId];
-  const token = await requestAccessToken(
-    marketplace.region,
-    forceTokenRefresh,
-  );
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  const url = `${REGION_ENDPOINTS[marketplace.region]}/replenishment/2022-11-07/offers/search`;
-  try {
-    return await fetch(url, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        "x-amz-access-token": token,
-        "x-amz-date": toAmzDate(),
-        "user-agent": spApiUserAgent(),
-      },
-      body: JSON.stringify({
-        pagination: { limit: 20, offset: 0 },
-        filters: {
-          marketplaceId,
-          programTypes: ["SUBSCRIBE_AND_SAVE"],
-          skus: [sellerSku],
-        },
-        sort: { order: "ASC", key: "ASIN" },
-      }),
-      cache: "no-store",
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon Subscribe & Save 查詢逾時，請稍後再試。", {
-        status: 504,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    throw new SpApiError("目前無法連線至 Amazon Replenishment API。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function executeReplenishmentOffersRequest(
-  marketplaceId: MarketplaceId,
-  sellerSku: string,
-): Promise<Response> {
-  let response = await callReplenishmentOffersApi(marketplaceId, sellerSku);
-  if (response.status === 401) {
-    tokenCache.delete(MARKETPLACES[marketplaceId].region);
-    response = await callReplenishmentOffersApi(marketplaceId, sellerSku, true);
-  }
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (![429, 500, 503].includes(response.status)) break;
-    await wait(retryDelayMs(response, attempt));
-    response = await callReplenishmentOffersApi(marketplaceId, sellerSku);
-  }
-  return response;
-}
-
-async function throwReplenishmentError(response: Response): Promise<never> {
-  const payload = await parseResponseJson<{
-    errors?: Array<{ code?: string; message?: string }>;
-  }>(response);
-  const requestId = response.headers.get("x-amzn-requestid");
-  const upstreamMessage = payload?.errors?.find(
-    (error) => typeof error.message === "string" && error.message.trim(),
-  )?.message;
-  if (response.status === 401 || response.status === 403) {
-    throw new SpApiError(
-      "Amazon 拒絕 Subscribe & Save 查詢。請確認 app 具備 Inventory and Order Tracking 或 Brand Analytics 角色，並重新授權 refresh token。",
-      {
-        status: response.status,
-        code: "REPLENISHMENT_UNAUTHORIZED",
-        requestId,
-      },
-    );
-  }
-  if (response.status === 429) {
-    throw new SpApiError("Amazon Replenishment API 正在限流，請稍後再試。", {
-      status: 429,
-      code: "RATE_LIMITED",
-      requestId,
-      retryAfter: response.headers.get("retry-after"),
-    });
-  }
-  throw new SpApiError(
-    upstreamMessage
-      ? `Amazon 無法完成 Subscribe & Save 查詢。（${upstreamMessage}）`
-      : "Amazon 無法完成 Subscribe & Save 查詢。",
-    {
-      status: response.status,
-      code: "UPSTREAM_UNAVAILABLE",
-      requestId,
-    },
-  );
-}
-
-async function callReplenishmentAuditPage(
-  marketplaceId: MarketplaceId,
-  request: ReplenishmentPageRequest,
-  forceTokenRefresh = false,
-  signal?: AbortSignal,
-): Promise<Response> {
-  assertNotAborted(signal);
-  // This assertion compares the entire request to the canonical module-built
-  // request. The transport cannot be used as a generic SP-API POST tunnel.
-  assertReplenishmentRequestBody(request);
-  const marketplace = MARKETPLACES[marketplaceId];
-  const token = await requestAccessToken(marketplace.region, forceTokenRefresh);
-  assertNotAborted(signal);
-  const controller = new AbortController();
-  const stopForwardingAbort = forwardAbort(controller, signal);
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  try {
-    return await fetch(`${REGION_ENDPOINTS[marketplace.region]}${request.path}`, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        "x-amz-access-token": token,
-        "x-amz-date": toAmzDate(),
-        "user-agent": spApiUserAgent(),
-      },
-      body: JSON.stringify(request.body),
-      cache: "no-store",
-      signal: controller.signal,
-    });
-  } catch (error) {
-    assertNotAborted(signal);
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon Subscribe & Save 全站健檢逾時，已停止讀取。", {
-        status: 504,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    throw new SpApiError("目前無法連線至 Amazon Replenishment API。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
-    stopForwardingAbort();
-  }
-}
-
-async function executeReplenishmentAuditPage(
-  marketplaceId: MarketplaceId,
-  request: ReplenishmentPageRequest,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  assertNotAborted(signal);
-  let response = await callReplenishmentAuditPage(
-    marketplaceId,
-    request,
-    false,
-    signal,
-  );
-  assertNotAborted(signal);
-  if (response.status === 401) {
-    tokenCache.delete(MARKETPLACES[marketplaceId].region);
-    assertNotAborted(signal);
-    response = await callReplenishmentAuditPage(
-      marketplaceId,
-      request,
-      true,
-      signal,
-    );
-    assertNotAborted(signal);
-  }
-  // No 429/5xx/timeout replay: every metrics month either succeeds once or
-  // fails the whole requested-period snapshot visibly.
-  if (!response.ok) return throwReplenishmentError(response);
-  const payload = await parseResponseJson<unknown>(response);
-  assertNotAborted(signal);
-  if (payload === null) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 Subscribe & Save 健檢資料。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  return payload;
-}
-
-function normalizeSubscribeAndSaveOffer(
-  marketplaceId: MarketplaceId,
-  sellerSku: string,
-  offer: AmazonReplenishmentOffer | undefined,
-  response: Response,
-): SubscribeAndSaveOfferSnapshot {
-  const promotions = offer?.offerProgramConfiguration?.promotions;
-  const forecast = offer?.forecastDeliveries;
-  const rawPrice = finiteNumericValue(offer?.price);
-  const priceCurrency =
-    typeof offer?.priceCurrencyCode === "string" && offer.priceCurrencyCode
-      ? offer.priceCurrencyCode
-      : MARKETPLACES[marketplaceId].currency;
-  return {
-    mode: "live",
-    marketplaceId,
-    sellerSku,
-    found: Boolean(offer),
-    asin: offer?.asin?.trim() || null,
-    eligibility: offer?.eligibility?.trim() || null,
-    enrollmentMethod:
-      offer?.offerProgramConfiguration?.enrollmentMethod?.trim() || null,
-    autoEnrollment:
-      offer?.offerProgramConfiguration?.preferences?.autoEnrollment?.trim() ||
-      null,
-    sellerFundedBaseDiscount: finitePercentage(
-      promotions?.sellingPartnerFundedBaseDiscount?.percentage,
-    ),
-    sellerFundedTieredDiscount: finitePercentage(
-      promotions?.sellingPartnerFundedTieredDiscount?.percentage,
-    ),
-    amazonFundedBaseDiscount: finitePercentage(
-      promotions?.amazonFundedBaseDiscount?.percentage,
-    ),
-    amazonFundedTieredDiscount: finitePercentage(
-      promotions?.amazonFundedTieredDiscount?.percentage,
-    ),
-    price: rawPrice !== null
-      ? { amount: rawPrice, currencyCode: priceCurrency }
-      : null,
-    inventory: finiteNonNegativeInteger(offer?.inventory),
-    subscriptions: finiteNonNegativeInteger(offer?.subscriptions),
-    stockRisk: offer?.stockRisk?.trim() || null,
-    forecastDeliveries: forecast
-      ? {
-          next15Days: finiteNonNegativeInteger(forecast.next15DaysDeliveries),
-          next30Days: finiteNonNegativeInteger(forecast.next30DaysDeliveries),
-          next60Days: finiteNonNegativeInteger(forecast.next60DaysDeliveries),
-          next90Days: finiteNonNegativeInteger(forecast.next90DaysDeliveries),
-        }
-      : null,
-    deliveryConditions: (offer?.deliveriesConditions ?? [])
-      .filter(
-        (condition) =>
-          typeof condition.condition === "string" &&
-          Boolean(condition.condition.trim()),
-      )
-      .map((condition) => ({
-        condition: condition.condition!.trim(),
-        next30DaysDeliveries: finiteNonNegativeInteger(
-          condition.next30DaysDeliveries,
-        ),
-      })),
-    fetchedAt: new Date().toISOString(),
-    requestId: response.headers.get("x-amzn-requestid"),
-    rateLimit: response.headers.get("x-amzn-ratelimit-limit"),
-    notice: offer
-      ? "Replenishment API 是唯讀查詢；啟用、停用與折扣調整仍需在 Seller Central 完成。"
-      : "Amazon 未回傳此 SKU 的 Subscribe & Save offer；不代表一定不符合資格。",
-    writable: false,
-  };
-}
-
-async function fetchLiveSubscribeAndSaveOffer(
-  marketplaceId: MarketplaceId,
-  sellerSku: string,
-): Promise<SubscribeAndSaveOfferSnapshot> {
-  if (!SELLER_REPLENISHMENT_MARKETPLACES.has(marketplaceId)) {
-    throw new SpApiError(
-      `${MARKETPLACES[marketplaceId].label}站目前不在 Amazon 公開的 Seller Replenishment API 支援清單。`,
-      { status: 422, code: "REPLENISHMENT_MARKETPLACE_UNSUPPORTED" },
-    );
-  }
-  const response = await executeReplenishmentOffersRequest(
-    marketplaceId,
-    sellerSku,
-  );
-  if (!response.ok) return throwReplenishmentError(response);
-  const payload = await parseResponseJson<AmazonReplenishmentOffersResponse>(
-    response,
-  );
-  if (!payload || !Array.isArray(payload.offers)) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 Subscribe & Save 資料。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const offer = payload.offers.find((item) => item.sku === sellerSku);
-  return normalizeSubscribeAndSaveOffer(
-    marketplaceId,
-    sellerSku,
-    offer,
-    response,
-  );
-}
-
 function isoHoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3_600_000).toISOString();
 }
@@ -8565,12 +7755,7 @@ function getDemoSubscribeAndSaveOffer(
   marketplaceId: MarketplaceId,
   sellerSku: string,
 ): SubscribeAndSaveOfferSnapshot {
-  if (!SELLER_REPLENISHMENT_MARKETPLACES.has(marketplaceId)) {
-    throw new SpApiError(
-      `${MARKETPLACES[marketplaceId].label}站目前不在 Amazon 公開的 Seller Replenishment API 支援清單。`,
-      { status: 422, code: "REPLENISHMENT_MARKETPLACE_UNSUPPORTED" },
-    );
-  }
+  assertSellerReplenishmentMarketplace(marketplaceId);
   const listing = getDemoListingPrice(marketplaceId, sellerSku);
   const fba = listing.fulfillmentAvailability.find(
     (availability) => availability.fulfillment === "FBA",
@@ -8633,10 +7818,9 @@ export async function getSubscribeAndSaveOffer(input: {
       input.sellerSku,
     );
   }
-  return fetchLiveSubscribeAndSaveOffer(
-    input.marketplaceId,
-    input.sellerSku,
-  );
+  return readLiveSubscribeAndSaveOffer(input, {
+    adapter: fbaInventoryReplenishmentAdapter,
+  });
 }
 
 function demoSubscriptionAuditOffer(
@@ -8672,39 +7856,6 @@ function demoSubscriptionAuditOffer(
       next90DaysDeliveries: 18 + index,
     },
     deliveriesConditions: [],
-  };
-}
-
-function subscriptionInventoryEvidence(
-  currentFba: CurrentFbaSkuEvidence,
-  verifiableReplenishmentOfferCount: number,
-): SubscriptionAuditSnapshot["inventoryEvidence"] {
-  if (
-    !Number.isSafeInteger(verifiableReplenishmentOfferCount) ||
-    verifiableReplenishmentOfferCount < 0 ||
-    verifiableReplenishmentOfferCount > currentFba.knownFbaSkus.size ||
-    !Number.isSafeInteger(currentFba.returnedInventoryRows) ||
-    !Number.isSafeInteger(currentFba.unrecognizedSellerSkuRows) ||
-    currentFba.returnedInventoryRows < 0 ||
-    currentFba.unrecognizedSellerSkuRows < 0 ||
-    currentFba.returnedInventoryRows !==
-      currentFba.knownFbaSkus.size + currentFba.unrecognizedSellerSkuRows
-  ) {
-    throw new SpApiError(
-      "Subscribe & Save offer 範圍與同次 FBA Inventory 證據不一致。",
-      { status: 502, code: "UPSTREAM_UNAVAILABLE" },
-    );
-  }
-  return {
-    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION",
-    coverage:
-      currentFba.unrecognizedSellerSkuRows === 0 ? "complete" : "partial",
-    returnedInventoryRows: currentFba.returnedInventoryRows,
-    provenSkuCount: currentFba.knownFbaSkus.size,
-    unrecognizedSellerSkuRows: currentFba.unrecognizedSellerSkuRows,
-    verifiableReplenishmentOfferCount,
-    unverifiedFbaSkuCount:
-      currentFba.knownFbaSkus.size - verifiableReplenishmentOfferCount,
   };
 }
 
@@ -8784,43 +7935,22 @@ export async function getFbaSubscriptionAudit(input: {
 }): Promise<SubscriptionAuditSnapshot> {
   assertNotAborted(input.signal);
   const now = input.now ? new Date(input.now.getTime()) : new Date();
-  const intervals = officialCompleteMonthlyIntervals(input.months, now);
-  if (!SELLER_REPLENISHMENT_MARKETPLACES.has(input.marketplaceId)) {
-    throw new SpApiError(
-      `${MARKETPLACES[input.marketplaceId].label}站目前不在 Amazon 公開的 Seller Replenishment API 支援清單。`,
-      { status: 422, code: "REPLENISHMENT_MARKETPLACE_UNSUPPORTED" },
-    );
-  }
+  officialCompleteMonthlyIntervals(input.months, now);
+  assertSellerReplenishmentMarketplace(input.marketplaceId);
   if (shouldUseDemoMode(input.marketplaceId)) {
     assertNotAborted(input.signal);
     return getDemoSubscriptionAudit(input.marketplaceId, input.months, now);
   }
-  // Current FBA evidence and Replenishment are both fetched during this single
-  // audit invocation. Incomplete Inventory pagination aborts before any offer
-  // can be represented as currently FBA.
-  const currentFba = await fetchLiveCurrentFbaSkuEvidence(
-    input.marketplaceId,
-    input.signal,
-  );
-  assertNotAborted(input.signal);
-  const audit = await fetchFbaSubscriptionAuditHistory({
-    marketplaceId: input.marketplaceId,
-    metricIntervals: intervals,
-    knownFbaSkus: currentFba.knownFbaSkus,
-    knownFbaSkuCoverage:
-      currentFba.unrecognizedSellerSkuRows === 0 ? "complete" : "partial",
-    now,
-    transport: async (request) => {
-      assertNotAborted(input.signal);
-      const page = await executeReplenishmentAuditPage(
-        input.marketplaceId,
-        request,
-        input.signal,
-      );
-      assertNotAborted(input.signal);
-      return page;
-    },
-  });
+  const { audit, currentFba, inventoryEvidence } =
+    await readFbaSubscriptionAuditInputs(
+      {
+        marketplaceId: input.marketplaceId,
+        months: input.months,
+        now,
+        signal: input.signal,
+      },
+      { adapter: fbaInventoryReplenishmentAdapter },
+    );
   assertNotAborted(input.signal);
   return {
     ...audit,
@@ -8828,10 +7958,7 @@ export async function getFbaSubscriptionAudit(input: {
     marketplaceId: input.marketplaceId,
     requestedMonths: input.months,
     fetchedAt: now.toISOString(),
-    inventoryEvidence: subscriptionInventoryEvidence(
-      currentFba,
-      audit.offers.length,
-    ),
+    inventoryEvidence,
     notice: currentFba.unrecognizedSellerSkuRows > 0
       ? `本頁已完整讀取同次 FBA Inventory 分頁；其中 ${currentFba.unrecognizedSellerSkuRows} 列 Seller SKU 無法原樣辨識，已保留為覆蓋不完整，未 trim、改名、推定不符合資格或計為 0。其餘可原樣核對的 FBA SKU 照常比對；月度 PERFORMANCE 缺值維持缺值。`
       : "本頁以同次完整分頁 FBA Inventory API 作為總範圍，分開顯示可核對 Replenishment offer 與未取得可核對 offer（未回傳或資料值無法安全解析）的 FBA SKU；後者不代表不符合資格或 0 訂閱。Replenishment offers 全站只抓一次；月度 PERFORMANCE 缺值維持缺值，不補 0。",
@@ -16645,28 +15772,19 @@ export async function getRestockPlan(
     const [demand, listing, inventoryResult] = await Promise.all([
       readRestockSalesVelocity(input.marketplaceId, input.sellerSku, false),
       fetchLiveListingPrice(input.marketplaceId, input.sellerSku),
-      fetchLiveFbaInventorySummary(input.marketplaceId, input.sellerSku),
+      readReplenishmentInventoryInputs(
+        {
+          marketplaceId: input.marketplaceId,
+          sellerSku: input.sellerSku,
+        },
+        { adapter: fbaInventoryReplenishmentAdapter },
+      ),
     ]);
-    const details = inventoryResult.summary.inventoryDetails;
     return createRestockPlan(input, {
       mode: "live",
       listing,
-      fnSku: inventoryResult.summary.fnSku?.trim() || null,
-      inventory: {
-        fulfillable: inventoryQuantity(details?.fulfillableQuantity),
-        reserved: inventoryQuantity(
-          details?.reservedQuantity?.totalReservedQuantity,
-        ),
-        inboundWorking: inventoryQuantity(details?.inboundWorkingQuantity),
-        inboundShipped: inventoryQuantity(details?.inboundShippedQuantity),
-        inboundReceiving: inventoryQuantity(details?.inboundReceivingQuantity),
-        unfulfillable: inventoryQuantity(
-          details?.unfulfillableQuantity?.totalUnfulfillableQuantity,
-        ),
-        researching: inventoryQuantity(
-          details?.researchingQuantity?.totalResearchingQuantity,
-        ),
-      },
+      fnSku: inventoryResult.fnSku,
+      inventory: inventoryResult.inventory,
       demand,
       requestId: inventoryResult.requestId,
       rateLimit: inventoryResult.rateLimit,

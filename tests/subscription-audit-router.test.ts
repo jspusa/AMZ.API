@@ -37,6 +37,66 @@ describe("FBA Subscribe & Save audit routes", () => {
     else process.env.SP_API_MODE = previousMode;
   });
 
+  it("preserves the single-SKU Subscribe & Save route and DTO contract", async () => {
+    const response = await router.handle(
+      get("/api/sp-api/subscribe-save", {
+        marketplaceId: "ATVPDKIKX0DER",
+        sku: "AFA-TRKY-4OZ",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body.kind).toBe("json");
+    if (response.body.kind !== "json") throw new Error("Expected JSON");
+    expect(response.body.value).toMatchObject({
+      mode: "demo",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "AFA-TRKY-4OZ",
+      found: true,
+      writable: false,
+      requestId: null,
+      rateLimit: "1 request/second",
+    });
+    expect(Object.keys(response.body.value as Record<string, unknown>).sort())
+      .toEqual([
+        "amazonFundedBaseDiscount",
+        "amazonFundedTieredDiscount",
+        "asin",
+        "autoEnrollment",
+        "deliveryConditions",
+        "eligibility",
+        "enrollmentMethod",
+        "fetchedAt",
+        "forecastDeliveries",
+        "found",
+        "inventory",
+        "marketplaceId",
+        "mode",
+        "notice",
+        "price",
+        "rateLimit",
+        "requestId",
+        "sellerFundedBaseDiscount",
+        "sellerFundedTieredDiscount",
+        "sellerSku",
+        "stockRisk",
+        "subscriptions",
+        "writable",
+      ].sort());
+
+    const unsupported = await router.handle(
+      get("/api/sp-api/subscribe-save", {
+        marketplaceId: "A19VAU5U5O7RUS",
+        sku: "AFA-TRKY-4OZ",
+      }),
+    );
+    expect(unsupported.status).toBe(422);
+    expect(unsupported.body.kind).toBe("json");
+    if (unsupported.body.kind !== "json") throw new Error("Expected JSON");
+    expect(unsupported.body.value).toMatchObject({
+      code: "REPLENISHMENT_MARKETPLACE_UNSUPPORTED",
+    });
+  });
+
   it("returns a server snapshot with selected-month totals and omitted missing points", async () => {
     const response = await router.handle(
       get("/api/sp-api/subscription-audit", {

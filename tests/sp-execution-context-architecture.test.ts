@@ -29,6 +29,12 @@ const EXTRACTED_LISTINGS_READ_MODULES = [
   "src/main/amazon/listings-reads-production.ts",
 ] as const;
 
+const EXTRACTED_FBA_INVENTORY_REPLENISHMENT_MODULES = [
+  "src/main/amazon/fba-inventory-replenishment.ts",
+  "src/main/amazon/fba-inventory-replenishment-production.ts",
+  "src/main/amazon/replenishment-audit.ts",
+] as const;
+
 const ERROR_CONSUMERS = new Map<string, readonly string[]>([
   ["src/main/local-store.ts", ["SpApiError", "SpApiPreCommitError"]],
   ["src/main/amazon/connection-health.ts", ["SpApiError"]],
@@ -163,6 +169,13 @@ describe("SP execution-context architecture", () => {
 
   it.each(EXTRACTED_LISTINGS_READ_MODULES)(
     "%s does not import the legacy SP facade",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
+  it.each(EXTRACTED_FBA_INVENTORY_REPLENISHMENT_MODULES)(
+    "%s stays independent from legacy runtime modules",
     (entryPath) => {
       expect(legacyDependencies(entryPath)).toEqual([]);
     },
