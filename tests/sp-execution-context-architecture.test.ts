@@ -248,7 +248,10 @@ describe("SP execution-context architecture", () => {
     const indexSource = readFileSync(absolutePath("src/main/index.ts"), "utf8");
     expect(indexSource).toContain("reportsAdapter: reportsRuntimeProductionAdapter");
 
-    const routerSource = readFileSync(absolutePath("src/main/api-router.ts"), "utf8");
+    const routerSource = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    ).replace(/\r\n?/gu, "\n");
     expect(routerSource).not.toContain("resolveInternalReferences(");
     expect(routerSource).toContain(
       "const liveReportsAdapter = input.reportsAdapter ??\n" +
