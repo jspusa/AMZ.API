@@ -164,6 +164,48 @@ describe("main-owned standalone audit route", () => {
     }
   });
 
+  it("keeps Amazon report and document identifiers out of the completed aged-inventory snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "standalone-aged-runtime-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const runtimeRouter = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "standalone-aged-account",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
+
+    try {
+      const started = await runtimeRouter.handle(request("POST", {
+        kind: "agedInventory",
+        marketplaceId: US,
+        mode: "demo",
+      }));
+      expect(started.status).toBe(202);
+
+      const completed = await terminal(runtimeRouter, payload(started));
+      expect(completed.status).toBe(200);
+      const receipt = payload(completed);
+      expect(receipt).toMatchObject({
+        kind: "agedInventory",
+        marketplaceId: US,
+        mode: "demo",
+        ready: true,
+        status: "completed",
+        snapshot: {
+          marketplaceId: US,
+          rows: expect.any(Array),
+        },
+      });
+      expect(JSON.stringify(receipt.snapshot)).not.toMatch(
+        /reportId|documentId|signedUrl|amazonaws\.com|cloudfront\.net/u,
+      );
+    } finally {
+      runtimeRouter.clearPreviews();
+    }
+  });
+
   it("rejects renderer account injection and invalidates a job after account drift", async () => {
     const injected = await router.handle(request("POST", {
       kind: "content",
@@ -300,10 +342,10 @@ describe("main-owned standalone audit route", () => {
     expect(businessPricingStart).toBeGreaterThan(variationStart);
     expect(advertisingStart).toBeGreaterThan(businessPricingStart);
     expect(variationBranch).toContain("standaloneListingReport(input)");
-    expect(variationBranch).toContain("getUnboundVariationAuditData({");
+    expect(variationBranch).toContain("getSharedUnboundVariationAuditData({");
     expect(variationBranch).not.toContain("standaloneListings(input)");
     expect(businessPricingBranch).toContain("standaloneListingReport(input)");
-    expect(businessPricingBranch).toContain("getBusinessPricingAuditData({");
+    expect(businessPricingBranch).toContain("getSharedBusinessPricingAuditData({");
     expect(businessPricingBranch).not.toContain("standaloneListings(input)");
   });
 });

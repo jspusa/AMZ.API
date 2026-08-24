@@ -1,7 +1,10 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
-import type { LocalStore } from "../src/main/local-store";
+import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
@@ -21,24 +24,52 @@ function request(query: Record<string, string>): ApiRequest {
   };
 }
 
-describe("listing content quality audit route", () => {
-  const router = new ApiRouter({
-    store: {
-      saveContentAuditSnapshotEvidence: async () => undefined,
-    } as unknown as LocalStore,
-    vault: {
-      getAccountScope: async () => "a".repeat(64),
-    } as unknown as CredentialVault,
-    approveWrite: async () => undefined,
+async function startReadyReport(router: ApiRouter): Promise<{
+  reportId: string;
+  documentId: string;
+}> {
+  const response = await router.handle({
+    requestId: crypto.randomUUID(),
+    method: "POST",
+    path: "/api/sp-api/listing-content/export",
+    query: {},
+    headers: {},
+    body: {
+      kind: "json",
+      value: { marketplaceId: "ATVPDKIKX0DER" },
+    },
   });
+  if (response.status !== 200 || response.body.kind !== "json") {
+    throw new Error("Expected a ready demo report");
+  }
+  const value = response.body.value as Record<string, unknown>;
+  if (typeof value.reportId !== "string" || typeof value.documentId !== "string") {
+    throw new Error("Expected opaque report document handles");
+  }
+  return { reportId: value.reportId, documentId: value.documentId };
+}
 
-  beforeEach(() => {
+describe("listing content quality audit route", () => {
+  let router: ApiRouter;
+
+  beforeEach(async () => {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
+    const directory = await mkdtemp(join(tmpdir(), "amz-content-quality-router-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "a".repeat(64),
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
   });
 
   afterEach(() => {
+    router.clearPreviews();
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
@@ -48,11 +79,12 @@ describe("listing content quality audit route", () => {
   });
 
   it("returns JSON for a ready FBA report when audit=1", async () => {
+    const report = await startReadyReport(router);
     const response = await router.handle(
       request({
         marketplaceId: "ATVPDKIKX0DER",
-        reportId: "demo-ATVPDKIKX0DER",
-        documentId: "demo-ATVPDKIKX0DER",
+        reportId: report.reportId,
+        documentId: report.documentId,
         audit: "1",
       }),
     );
@@ -104,10 +136,11 @@ describe("listing content quality audit route", () => {
   });
 
   it("requires the ready report document identifier before auditing", async () => {
+    const report = await startReadyReport(router);
     const response = await router.handle(
       request({
         marketplaceId: "ATVPDKIKX0DER",
-        reportId: "demo-ATVPDKIKX0DER",
+        reportId: report.reportId,
         audit: "1",
       }),
     );

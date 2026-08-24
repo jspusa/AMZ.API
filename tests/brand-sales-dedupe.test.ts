@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import { SpApiError } from "../src/main/amazon/sp-api";
+import {
+  reportsAdapterIdentity,
+  type ReportsAdapter,
+} from "../src/main/amazon/reports-runtime";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -93,6 +97,39 @@ type GatewayOverrides = NonNullable<
   ConstructorParameters<typeof ApiRouter>[0]["brandSalesReports"]
 >;
 
+function liveReportsAdapter(overrides: GatewayOverrides): ReportsAdapter {
+  return {
+    async create(request) {
+      const result = request.intent === "all-listings"
+        ? await overrides.startListing?.({
+            marketplaceId: request.marketplaceId,
+            signal: request.signal,
+          })
+        : request.intent === "fba-shipment-sales"
+          ? await overrides.startShipment?.({
+              marketplaceId: request.marketplaceId,
+              startDate: request.startDate,
+              endDate: request.endDate,
+              dataStartTime: request.dataStartTime,
+              dataEndTime: request.dataEndTime,
+              windowCreatedAt: request.windowCreatedAt,
+            })
+          : null;
+      if (!result) throw new Error(`Unexpected live Reports intent: ${request.intent}`);
+      return {
+        ...result,
+        identity: reportsAdapterIdentity(request, result.mode),
+      };
+    },
+    async status(request) {
+      throw new Error(`Unexpected live Reports status: ${request.intent}`);
+    },
+    async readDocument(request) {
+      throw new Error(`Unexpected live Reports document: ${request.intent}`);
+    },
+  };
+}
+
 function router(localStore: LocalStore, overrides: GatewayOverrides = {}): ApiRouter {
   return new ApiRouter({
     store: localStore,
@@ -101,6 +138,7 @@ function router(localStore: LocalStore, overrides: GatewayOverrides = {}): ApiRo
     } as unknown as CredentialVault,
     approveWrite: async () => undefined,
     brandSalesReports: overrides,
+    reportsAdapter: liveReportsAdapter(overrides),
   });
 }
 
@@ -383,7 +421,8 @@ describe("durable brand-sales report dedupe", () => {
     const [brand, audit] = await Promise.all([automatic, explicitAudit]);
     expect(brand.status).toBe(202);
     expect(audit.status).toBe(202);
-    expect(body(audit).reportId).toBe("listing-report-1");
+    expect(body(audit).reportId).toMatch(/^report-lease\./u);
+    expect(body(audit).reportId).not.toBe("listing-report-1");
   });
 
   it("reuses active report IDs after an ApiRouter/App-main restart", async () => {
@@ -636,10 +675,11 @@ describe("durable brand-sales report dedupe", () => {
       endDate: "2026-08-07",
     });
     expect(persisted?.shipment).toMatchObject({
-      reportId: "shipment-report-1",
       status: "CREATION_UNKNOWN",
       terminal: "CREATION_UNKNOWN",
     });
+    expect(persisted?.shipment.reportId).toMatch(/^report-lease\./u);
+    expect(persisted?.shipment.reportId).not.toBe("shipment-report-1");
     expect(body(await brandStart(app, { retry: true })).code).toBe("REPORT_RETRY_WAIT");
     expect(shipmentStarts).toBe(1);
   });
@@ -813,6 +853,10 @@ describe("durable brand-sales report dedupe", () => {
       getListingStatus,
       getShipmentStatus,
       getData: async () => ({ schemaVersion: 1, responseKind: "data" }) as never,
+      getDataFromDocuments: async () => ({
+        schemaVersion: 1,
+        responseKind: "data",
+      }) as never,
     });
     const started = await brandStart(app);
     const jobId = String(body(started).jobId);
@@ -874,6 +918,9 @@ describe("durable brand-sales report dedupe", () => {
     }));
     expect(body(oldStatus).code).toBe("REPORT_MODE_CHANGED");
 
+    const transition = await brandStart(app);
+    expect(transition.status).toBe(409);
+    expect(body(transition).code).toBe("REPORT_MODE_CHANGED");
     const live = await brandStart(app);
     expect(live.status).toBe(202);
     expect(body(live).jobId).not.toBe(demoJobId);

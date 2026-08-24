@@ -8,6 +8,14 @@ import {
   type AdvertisingGateway,
   type SponsoredProductsAdvertisedProductReportReference,
 } from "../src/main/amazon/ads-api";
+import {
+  reportsAdapterIdentity,
+  type ReportsAdapter,
+} from "../src/main/amazon/reports-runtime";
+import type {
+  FbaListingIdentitySnapshot,
+  SalesAndTrafficSnapshot,
+} from "../src/main/amazon/sp-api";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -109,6 +117,30 @@ describe("FBA advertising strategy router job", () => {
       status: "DONE" as const,
       notice: "ready",
     }));
+    const getListingStatus = vi.fn(async () => ({
+      mode: "live" as const,
+      ready: true,
+      reportId: "fba-listings-report-main-only",
+      documentId: "fba-listings-document-main-only",
+      status: "DONE" as const,
+      notice: "ready",
+    }));
+    const startSales = vi.fn(async () => ({
+      mode: "live" as const,
+      ready: true,
+      reportId: "sales-report-main-only",
+      documentId: "sales-document-main-only",
+      status: "DONE" as const,
+      notice: "ready",
+    }));
+    const getSalesStatus = vi.fn(async () => ({
+      mode: "live" as const,
+      ready: true,
+      reportId: "sales-report-main-only",
+      documentId: "sales-document-main-only",
+      status: "DONE" as const,
+      notice: "ready",
+    }));
     const advertising: AdvertisingGateway = {
       getCredentialSummary: vi.fn(async () => ({
         encryptionAvailable: true,
@@ -176,6 +208,98 @@ describe("FBA advertising strategy router job", () => {
       })),
       invalidate: vi.fn(),
     };
+    const fbaListings = async (): Promise<FbaListingIdentitySnapshot> => ({
+      mode: "live" as const,
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-21T12:00:02.000Z",
+      rows: [
+        { sellerSku: "SAFE-SKU-1", asin: "B000000001", title: "Synthetic Dog Treat One" },
+        { sellerSku: "SAFE-SKU-2", asin: "B000000002", title: "Synthetic Dog Treat Two" },
+      ],
+      notice: "synthetic FBA",
+    });
+    const salesData = async (): Promise<SalesAndTrafficSnapshot> => ({
+      mode: "live" as const,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: START_DATE,
+      endDate: END_DATE,
+      fetchedAt: "2026-08-21T12:00:03.000Z",
+      rows: [
+        {
+          sellerSku: "SAFE-SKU-1",
+          childAsin: "B000000001",
+          unitsOrdered: 10,
+          orderedProductSales: 100,
+          currencyCode: "USD",
+        },
+        {
+          sellerSku: "SAFE-SKU-2",
+          childAsin: input.secondSalesChildAsin ?? "B000000002",
+          unitsOrdered: 5,
+          orderedProductSales: 25,
+          currencyCode: "USD",
+        },
+      ],
+      notice: "synthetic sales",
+    });
+    const reportsAdapter: ReportsAdapter = {
+      async create(request) {
+        const result = request.intent === "all-listings"
+          ? await startListing()
+          : request.intent === "sales-and-traffic-daily-sku"
+            ? await startSales()
+            : null;
+        if (!result) {
+          throw new Error(`Unexpected Reports create intent: ${request.intent}`);
+        }
+        return {
+          ...result,
+          identity: reportsAdapterIdentity(request, request.mode),
+        };
+      },
+      async status(request) {
+        const result = request.intent === "all-listings"
+          ? await getListingStatus()
+          : request.intent === "sales-and-traffic-daily-sku"
+            ? await getSalesStatus()
+            : null;
+        if (!result || result.reportId !== request.reportId) {
+          throw new Error(`Unexpected Reports status intent: ${request.intent}`);
+        }
+        return {
+          ...result,
+          identity: reportsAdapterIdentity(request, request.mode),
+        };
+      },
+      async readDocument(request) {
+        const expected = request.intent === "all-listings"
+          ? {
+              reportId: "fba-listings-report-main-only",
+              documentId: "fba-listings-document-main-only",
+              text: "synthetic all-listings document",
+            }
+          : request.intent === "sales-and-traffic-daily-sku"
+            ? {
+                reportId: "sales-report-main-only",
+                documentId: "sales-document-main-only",
+                text: "synthetic sales-and-traffic document",
+              }
+            : null;
+        if (
+          !expected ||
+          expected.reportId !== request.reportId ||
+          expected.documentId !== request.documentId
+        ) {
+          throw new Error(`Unexpected Reports document intent: ${request.intent}`);
+        }
+        return {
+          identity: reportsAdapterIdentity(request, request.mode),
+          reportId: expected.reportId,
+          documentId: expected.documentId,
+          text: expected.text,
+        };
+      },
+    };
     const router = new ApiRouter({
       store,
       vault: {
@@ -186,58 +310,24 @@ describe("FBA advertising strategy router job", () => {
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       advertising,
+      reportsAdapter,
       brandSalesReports: {
         startListing,
+        getListingStatus,
       },
       advertisingStrategySources: {
-        fbaListings: async () => ({
-          mode: "live",
-          marketplaceId: MARKETPLACE_ID,
-          fetchedAt: "2026-08-21T12:00:02.000Z",
-          rows: [
-            { sellerSku: "SAFE-SKU-1", asin: "B000000001", title: "Synthetic Dog Treat One" },
-            { sellerSku: "SAFE-SKU-2", asin: "B000000002", title: "Synthetic Dog Treat Two" },
-          ],
-          notice: "synthetic FBA",
-        }),
+        fbaListings,
+        fbaListingsFromDocument: fbaListings,
       },
       advertisingStrategyWait: async (milliseconds, signal) => {
         if (signal?.aborted) throw new DOMException("aborted", "AbortError");
         input.onStrategyWait?.(milliseconds);
       },
       salesAndTrafficReports: {
-        start: async () => ({
-          mode: "live",
-          ready: true,
-          reportId: "sales-report-main-only",
-          documentId: "sales-document-main-only",
-          status: "DONE",
-          notice: "ready",
-        }),
-        data: async () => ({
-          mode: "live",
-          marketplaceId: MARKETPLACE_ID,
-          startDate: START_DATE,
-          endDate: END_DATE,
-          fetchedAt: "2026-08-21T12:00:03.000Z",
-          rows: [
-            {
-              sellerSku: "SAFE-SKU-1",
-              childAsin: "B000000001",
-              unitsOrdered: 10,
-              orderedProductSales: 100,
-              currencyCode: "USD",
-            },
-            {
-              sellerSku: "SAFE-SKU-2",
-              childAsin: input.secondSalesChildAsin ?? "B000000002",
-              unitsOrdered: 5,
-              orderedProductSales: 25,
-              currencyCode: "USD",
-            },
-          ],
-          notice: "synthetic sales",
-        }),
+        start: startSales,
+        status: getSalesStatus,
+        data: salesData,
+        dataFromDocument: salesData,
       },
     });
     routers.push(router);

@@ -7,6 +7,8 @@ import {
   type SharedReportType,
 } from "../local-store";
 import { SpApiError } from "./sp-api-error";
+import { SpExecutionContextAfterAdapterError } from
+  "./sp-execution-context";
 import {
   throwIfAborted,
   waitForPromiseWithSignal,
@@ -51,6 +53,7 @@ type CreateInput = {
   freshCompleted?: boolean;
   signal?: AbortSignal;
   create: (input: { signal: AbortSignal }) => Promise<DurableReportGatewayStatus>;
+  validate?: (status: DurableReportGatewayStatus) => void | Promise<void>;
   notices?: Partial<ReportNotices>;
 };
 
@@ -83,13 +86,13 @@ const DEFAULT_NOTICES: ReportNotices = {
 const assertActive = throwIfAborted;
 
 function flightKey(identity: DurableReportIdentity): string {
-  return [
+  return JSON.stringify([
     identity.accountScope,
     identity.marketplaceId,
     identity.mode,
     identity.reportType,
     identity.optionsKey,
-  ].join(":");
+  ]);
 }
 
 function notices(input?: Partial<ReportNotices>): ReportNotices {
@@ -164,7 +167,7 @@ export class DurableReportLifecycle {
     assertActive(input.signal);
     const lifecycleSignal = this.lifecycle.signal;
     assertActive(lifecycleSignal);
-    const key = `${flightKey(input.identity)}:${input.reportId}`;
+    const key = JSON.stringify([flightKey(input.identity), input.reportId]);
     let flight = this.statusFlights.get(key);
     if (!flight) {
       flight = this.pollLease({ ...input, signal: lifecycleSignal }).finally(() => {
@@ -289,6 +292,7 @@ export class DurableReportLifecycle {
       const status = await input.create({ signal: input.signal });
       returned = status;
       assertActive(input.signal);
+      await input.validate?.(status);
       this.assertStatus(status, input.identity);
       return {
         lease: await this.store.updateSharedReport({
@@ -517,7 +521,8 @@ export class DurableReportLifecycle {
   }
 
   private creationFailure(error: unknown, createdAt: number): DurableReportLeg {
-    const unknown = !(error instanceof SpApiError) ||
+    const unknown = error instanceof SpExecutionContextAfterAdapterError ||
+      !(error instanceof SpApiError) ||
       error.status >= 500 ||
       error.code === "UPSTREAM_UNAVAILABLE";
     const status = unknown ? "CREATION_UNKNOWN" : "CREATE_FAILED";

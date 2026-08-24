@@ -9,11 +9,23 @@ import type {
   ContentAuditSnapshotEvidence,
   ContentAuditSnapshotEvidenceInput,
   LocalStore,
+  SharedReportLease,
 } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
+vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/main/amazon/sp-api")>();
+  return {
+    ...actual,
+    getFixedReportsDocumentText: vi.fn(async () => "synthetic all-listings document"),
+  };
+});
+
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const ACCOUNT_SCOPE = "a".repeat(64);
+const REPORT_LEASE_ID = "content-audit-batch-router";
+const REPORT_HANDLE = `report-lease.${REPORT_LEASE_ID}`;
+const DOCUMENT_HANDLE = `report-document.${REPORT_LEASE_ID}`;
 const MEDIA_TYPE =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
@@ -51,11 +63,34 @@ function auditRequest(): ApiRequest {
     path: "/api/sp-api/listing-content/export",
     query: {
       marketplaceId: MARKETPLACE_ID,
-      reportId: `demo-${MARKETPLACE_ID}`,
-      documentId: `demo-${MARKETPLACE_ID}`,
+      reportId: REPORT_HANDLE,
+      documentId: DOCUMENT_HANDLE,
       audit: "1",
     },
     headers: {},
+  };
+}
+
+function completedAllListingsLease(): SharedReportLease {
+  const now = Date.now();
+  return {
+    leaseId: REPORT_LEASE_ID,
+    accountScope: ACCOUNT_SCOPE,
+    marketplaceId: MARKETPLACE_ID,
+    mode: "demo",
+    reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+    optionsKey: "preferredReportDocumentLocale=en_US",
+    report: {
+      reportId: "synthetic-all-listings-report",
+      documentId: "synthetic-all-listings-document",
+      status: "DONE",
+      createdAt: now,
+      terminal: null,
+      terminalAt: null,
+    },
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: Number.MAX_SAFE_INTEGER,
   };
 }
 
@@ -260,6 +295,7 @@ describe("content audit Excel batch router", () => {
       runIdempotentOperation,
       saveContentAuditSnapshotEvidence,
       getContentAuditSnapshotEvidence,
+      getSharedReport: vi.fn(async () => completedAllListingsLease()),
     } as unknown as LocalStore,
     vault: {
       getAccountScope: async () => ACCOUNT_SCOPE,

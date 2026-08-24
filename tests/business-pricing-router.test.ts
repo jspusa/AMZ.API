@@ -292,6 +292,27 @@ describe("Amazon Business pricing audit routes", () => {
     const directory = await mkdtemp(join(tmpdir(), "business-pricing-get-only-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
+    const now = Date.now();
+    const allListingsLeaseId = "business-pricing-get-only-all-listings";
+    await store.createSharedReportIfAbsent({
+      leaseId: allListingsLeaseId,
+      accountScope: "business-pricing-get-only-scope",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "demo",
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+      report: {
+        reportId: `demo-${MARKETPLACE_ID}`,
+        documentId: `demo-${MARKETPLACE_ID}`,
+        status: "DONE",
+        createdAt: now - 2_000,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now - 2_000,
+      updatedAt: now - 1_500,
+      expiresAt: now + 60_000,
+    }, now);
     const startActive = vi.fn(async () => ({
       mode: "demo" as const,
       ready: true,
@@ -325,8 +346,8 @@ describe("Amazon Business pricing audit routes", () => {
       path: "/api/sp-api/business-pricing-audit",
       query: {
         marketplaceId: MARKETPLACE_ID,
-        reportId: `demo-${MARKETPLACE_ID}`,
-        documentId: `demo-${MARKETPLACE_ID}`,
+        reportId: `report-lease.${allListingsLeaseId}`,
+        documentId: `report-document.${allListingsLeaseId}`,
         data: "1",
       },
       headers: {},
@@ -339,7 +360,6 @@ describe("Amazon Business pricing audit routes", () => {
     expect(startActive).not.toHaveBeenCalled();
     expect(statusActive).not.toHaveBeenCalled();
 
-    const now = Date.now();
     await store.createSharedReportIfAbsent({
       leaseId: "expired-business-pricing-active-lease",
       accountScope: "business-pricing-get-only-scope",

@@ -139,14 +139,19 @@ export type SharedReportType =
   | "GET_MERCHANT_LISTINGS_DATA"
   | "GET_FBA_INVENTORY_PLANNING_DATA"
   | "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA"
+  | "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA"
   | "GET_SALES_AND_TRAFFIC_REPORT"
   | "ADS_SP_ADVERTISED_PRODUCT";
+
+export type SharedFbaShipmentSalesOptionsKey =
+  `marketplaceIds=selected;shipment-sales;start=${string};end=${string};dataStartTime=${string};dataEndTime=${string};windowCreatedAt=${number}`;
 
 export type SharedReportOptionsKey =
   | "preferredReportDocumentLocale=en_US"
   | "marketplaceIds=selected"
   | "marketplaceIds=selected;daily-inbound-noncompliance"
   | `dateGranularity=DAY;asinGranularity=SKU;start=${string};end=${string}`
+  | SharedFbaShipmentSalesOptionsKey
   | `reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=${string};end=${string}`;
 
 export type SharedReportLease = {
@@ -311,7 +316,58 @@ function sharedReportKey(input: {
   reportType: SharedReportType;
   optionsKey: SharedReportOptionsKey;
 }): string {
+  return JSON.stringify([
+    input.accountScope,
+    input.marketplaceId,
+    input.reportType,
+    input.optionsKey,
+  ]);
+}
+
+function legacySharedReportKey(input: {
+  accountScope: string;
+  marketplaceId: string;
+  reportType: SharedReportType;
+  optionsKey: SharedReportOptionsKey;
+}): string {
   return `${input.accountScope}:${input.marketplaceId}:${input.reportType}:${input.optionsKey}`;
+}
+
+function persistedSharedReports(
+  reports: StoreData["sharedAllListingsReports"],
+): StoreData["sharedAllListingsReports"] {
+  const persisted: StoreData["sharedAllListingsReports"] = {};
+  const legacyOwners = new Map<string, string>();
+  for (const [key, report] of Object.entries(reports)) {
+    const canonicalKey = sharedReportKey(report);
+    if (key !== canonicalKey) {
+      throw new Error("Non-canonical shared report identity");
+    }
+    persisted[canonicalKey] = report;
+    const legacyKey = legacySharedReportKey(report);
+    const owner = legacyOwners.get(legacyKey);
+    if (owner && owner !== canonicalKey) {
+      // A v2 reader cannot distinguish two identities that collapse to the
+      // same colon-delimited key. Refuse the atomic write instead of choosing
+      // one tombstone and making a rollback capable of replaying the other.
+      throw new Error("Ambiguous legacy shared report identity");
+    }
+    legacyOwners.set(legacyKey, canonicalKey);
+    persisted[legacyKey] = report;
+  }
+  return persisted;
+}
+
+function persistedStore(data: StoreData): StoreData {
+  return {
+    ...data,
+    // Keep collision-safe tuple keys for current readers and a v2 alias for
+    // the immediately previous App. Current read() collapses both copies back
+    // to one canonical in-memory lease.
+    sharedAllListingsReports: persistedSharedReports(
+      data.sharedAllListingsReports,
+    ),
+  };
 }
 
 function isCanonicalIsoTimestamp(value: unknown): value is string {
@@ -620,6 +676,53 @@ function validDatedReportOptions(
   return validReportDate(startDate) && validReportDate(endDate) && startDate <= endDate;
 }
 
+function validFixedReportTimestamp(value: string): boolean {
+  return value.length <= 64 &&
+    /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/u.test(value) &&
+    Number.isFinite(Date.parse(value));
+}
+
+export function sharedFbaShipmentSalesOptionsKey(input: {
+  startDate: string;
+  endDate: string;
+  dataStartTime: string;
+  dataEndTime: string;
+  windowCreatedAt: number;
+}): SharedFbaShipmentSalesOptionsKey {
+  if (
+    !validReportDate(input.startDate) ||
+    !validReportDate(input.endDate) ||
+    input.startDate > input.endDate ||
+    !validFixedReportTimestamp(input.dataStartTime) ||
+    !validFixedReportTimestamp(input.dataEndTime) ||
+    Date.parse(input.dataEndTime) <= Date.parse(input.dataStartTime) ||
+    !Number.isSafeInteger(input.windowCreatedAt) ||
+    input.windowCreatedAt < 0
+  ) {
+    throw new Error("Invalid fixed FBA shipment-sales report window");
+  }
+  return `marketplaceIds=selected;shipment-sales;start=${input.startDate};end=${input.endDate};dataStartTime=${encodeURIComponent(input.dataStartTime)};dataEndTime=${encodeURIComponent(input.dataEndTime)};windowCreatedAt=${input.windowCreatedAt}`;
+}
+
+function validFbaShipmentSalesOptions(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = /^marketplaceIds=selected;shipment-sales;start=(\d{4}-\d{2}-\d{2});end=(\d{4}-\d{2}-\d{2});dataStartTime=([^;]+);dataEndTime=([^;]+);windowCreatedAt=(\d+)$/u.exec(
+    value,
+  );
+  if (!match) return false;
+  try {
+    return sharedFbaShipmentSalesOptionsKey({
+      startDate: match[1],
+      endDate: match[2],
+      dataStartTime: decodeURIComponent(match[3]),
+      dataEndTime: decodeURIComponent(match[4]),
+      windowCreatedAt: Number(match[5]),
+    }) === value;
+  } catch {
+    return false;
+  }
+}
+
 function parseSharedReport(
   value: unknown,
 ): SharedReportLease {
@@ -636,6 +739,8 @@ function parseSharedReport(
       raw.optionsKey === "marketplaceIds=selected") ||
     (raw.reportType === "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA" &&
       raw.optionsKey === "marketplaceIds=selected;daily-inbound-noncompliance") ||
+    (raw.reportType === "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA" &&
+      validFbaShipmentSalesOptions(raw.optionsKey)) ||
     (raw.reportType === "GET_SALES_AND_TRAFFIC_REPORT" &&
       validDatedReportOptions(
         raw.optionsKey,
@@ -1123,6 +1228,15 @@ export class LocalStore {
         selected = existing;
         return;
       }
+      const legacyKey = legacySharedReportKey(input);
+      const legacyCollision = Object.values(data.sharedAllListingsReports).find(
+        (candidate) =>
+          legacySharedReportKey(candidate) === legacyKey &&
+          sharedReportKey(candidate) !== key,
+      );
+      if (legacyCollision) {
+        throw new Error("Ambiguous legacy shared report identity");
+      }
       selected = parseSharedReport(input);
       data.sharedAllListingsReports[key] = selected;
       created = true;
@@ -1585,8 +1699,9 @@ export class LocalStore {
             ([key, report]) => {
               try {
                 const parsed = parseSharedReport(report);
-                return sharedReportKey(parsed) === key
-                  ? [[key, parsed]]
+                const canonicalKey = sharedReportKey(parsed);
+                return canonicalKey === key || legacySharedReportKey(parsed) === key
+                  ? [[canonicalKey, parsed]]
                   : [];
               } catch {
                 return [];
@@ -1628,7 +1743,8 @@ export class LocalStore {
       mutator(data);
       await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
       const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
-      await writeFile(temporaryPath, `${JSON.stringify(data, null, 2)}\n`, {
+      const serialized = persistedStore(data);
+      await writeFile(temporaryPath, `${JSON.stringify(serialized, null, 2)}\n`, {
         encoding: "utf8",
         mode: 0o600,
         flag: "wx",

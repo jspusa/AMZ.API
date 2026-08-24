@@ -12,6 +12,14 @@ import {
 } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
+vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/main/amazon/sp-api")>();
+  return {
+    ...actual,
+    getFixedReportsDocumentText: vi.fn(async () => "synthetic all-listings document"),
+  };
+});
+
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const ACCOUNT_SCOPE_A = "a".repeat(64);
 const ACCOUNT_SCOPE_B = "b".repeat(64);
@@ -44,15 +52,29 @@ type AuditReply = {
   }>;
 };
 
-function auditRequest(): ApiRequest {
+function auditStartRequest(): ApiRequest {
+  return {
+    requestId: "content-audit-durable-start",
+    method: "POST",
+    path: "/api/sp-api/listing-content/export",
+    query: {},
+    headers: { "content-type": "application/json" },
+    body: {
+      kind: "json",
+      value: { marketplaceId: MARKETPLACE_ID },
+    },
+  };
+}
+
+function auditRequest(reportId: string, documentId: string): ApiRequest {
   return {
     requestId: "content-audit-durable-scan",
     method: "GET",
     path: "/api/sp-api/listing-content/export",
     query: {
       marketplaceId: MARKETPLACE_ID,
-      reportId: `demo-${MARKETPLACE_ID}`,
-      documentId: `demo-${MARKETPLACE_ID}`,
+      reportId,
+      documentId,
       audit: "1",
     },
     headers: {},
@@ -154,7 +176,16 @@ function replaceProposedTitle(bytes: Uint8Array, value: string): Uint8Array {
 }
 
 async function scan(router: ApiRouter): Promise<AuditReply> {
-  const response = await router.handle(auditRequest());
+  const started = await router.handle(auditStartRequest());
+  expect(started.status, JSON.stringify(responseValue(started))).toBe(200);
+  const reference = responseValue(started) as {
+    reportId: string;
+    documentId: string;
+  };
+  const response = await router.handle(auditRequest(
+    reference.reportId,
+    reference.documentId,
+  ));
   expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
   return responseValue(response) as unknown as AuditReply;
 }

@@ -9,6 +9,7 @@ import {
 import {
   CONTENT_AUDIT_SNAPSHOT_TTL_MS,
   LocalStore,
+  sharedFbaShipmentSalesOptionsKey,
 } from "../src/main/local-store";
 
 async function testStore(): Promise<LocalStore> {
@@ -941,6 +942,32 @@ describe("local durable safety store", () => {
       updatedAt: now,
       expiresAt: now + 60 * 60 * 1_000,
     }, now);
+    const shipmentOptionsKey = sharedFbaShipmentSalesOptionsKey({
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+      dataStartTime: "2026-08-01T00:00:00-07:00",
+      dataEndTime: "2026-08-08T00:00:00-07:00",
+      windowCreatedAt: now,
+    });
+    await store.createSharedReportIfAbsent({
+      leaseId: "shared-fba-shipment-sales-lease-1",
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA",
+      optionsKey: shipmentOptionsKey,
+      mode: "live",
+      report: {
+        reportId: "fba-shipment-sales-report-1",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: now,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    }, now);
     await store.createSharedReportIfAbsent({
       leaseId: "shared-ads-strategy-lease-1",
       accountScope: "account-ads-a",
@@ -965,7 +992,10 @@ describe("local durable safety store", () => {
       sharedAllListingsReports: Record<string, unknown>;
     };
     expect(raw.version).toBe(2);
-    expect(Object.keys(raw.sharedAllListingsReports)).toHaveLength(5);
+    const persistedReportKeys = Object.keys(raw.sharedAllListingsReports);
+    expect(persistedReportKeys).toHaveLength(12);
+    expect(persistedReportKeys.filter((key) => key.startsWith("["))).toHaveLength(6);
+    expect(persistedReportKeys.filter((key) => !key.startsWith("["))).toHaveLength(6);
     expect(JSON.stringify(raw)).not.toMatch(/refresh.?token|client.?secret|lwaClientSecret/i);
     const restarted = new LocalStore(store.filePath);
     await restarted.initialize();
@@ -981,6 +1011,218 @@ describe("local durable safety store", () => {
       reportType: "ADS_SP_ADVERTISED_PRODUCT",
       optionsKey: "reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=2026-08-01;end=2026-08-20",
     })).resolves.toMatchObject({ leaseId: "shared-ads-strategy-lease-1" });
+    await expect(restarted.getSharedReport({
+      accountScope: "account-a",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA",
+      optionsKey: shipmentOptionsKey,
+    })).resolves.toMatchObject({
+      leaseId: "shared-fba-shipment-sales-lease-1",
+    });
+  });
+
+  it("loads legacy colon report keys and preserves a rollback alias beside the canonical tuple", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fba-os-legacy-report-key-"));
+    const filePath = join(directory, "data.json");
+    const now = Date.now();
+    const accountScope = "opaque:account-scope";
+    const marketplaceId = "ATVPDKIKX0DER";
+    const reportType = "GET_MERCHANT_LISTINGS_ALL_DATA";
+    const optionsKey = "preferredReportDocumentLocale=en_US";
+    const legacyKey = [accountScope, marketplaceId, reportType, optionsKey].join(":");
+    await writeFile(filePath, JSON.stringify({
+      version: 2,
+      profiles: {},
+      ledger: {},
+      brandSalesJobs: {},
+      sharedAllListingsReports: {
+        [legacyKey]: {
+          leaseId: "legacy-colon-report-lease",
+          accountScope,
+          marketplaceId,
+          reportType,
+          optionsKey,
+          mode: "live",
+          report: {
+            reportId: "legacy-amazon-report",
+            documentId: null,
+            status: "IN_QUEUE",
+            createdAt: now,
+            terminal: null,
+            terminalAt: null,
+          },
+          createdAt: now,
+          updatedAt: now,
+          expiresAt: now + 60 * 60 * 1_000,
+        },
+      },
+      contentAuditSnapshots: {},
+    }));
+
+    const store = new LocalStore(filePath);
+    await store.initialize();
+    await expect(store.getSharedReport({
+      accountScope,
+      marketplaceId,
+      reportType,
+      optionsKey,
+    })).resolves.toMatchObject({ leaseId: "legacy-colon-report-lease" });
+
+    await store.syncProductIdentity({
+      accountScope,
+      marketplaceId,
+      sellerSku: "SAFE-CANONICAL-KEY",
+    });
+    const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+      sharedAllListingsReports: Record<string, unknown>;
+    };
+    expect(Object.keys(persisted.sharedAllListingsReports)).toEqual([
+      JSON.stringify([accountScope, marketplaceId, reportType, optionsKey]),
+      legacyKey,
+    ]);
+  });
+
+  it("survives a previous-v2 reader mutation without losing an ambiguous tombstone", async () => {
+    const store = await testStore();
+    const now = Date.now();
+    const identity = {
+      accountScope: "rollback-account",
+      marketplaceId: "ATVPDKIKX0DER",
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA" as const,
+      optionsKey: "preferredReportDocumentLocale=en_US" as const,
+    };
+    await store.createSharedReportIfAbsent({
+      leaseId: "rollback-unknown-lease",
+      ...identity,
+      mode: "live",
+      report: {
+        reportId: "amazon-report-result-ambiguous",
+        documentId: null,
+        status: "CREATION_UNKNOWN",
+        createdAt: now,
+        terminal: "CREATION_UNKNOWN",
+        terminalAt: now,
+      },
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    }, now);
+
+    const canonicalKey = JSON.stringify([
+      identity.accountScope,
+      identity.marketplaceId,
+      identity.reportType,
+      identity.optionsKey,
+    ]);
+    const legacyKey = [
+      identity.accountScope,
+      identity.marketplaceId,
+      identity.reportType,
+      identity.optionsKey,
+    ].join(":");
+    const currentRaw = JSON.parse(await readFile(store.filePath, "utf8")) as {
+      version: number;
+      profiles: Record<string, unknown>;
+      ledger: Record<string, unknown>;
+      brandSalesJobs: Record<string, unknown>;
+      sharedAllListingsReports: Record<string, Record<string, unknown>>;
+      contentAuditSnapshots: Record<string, unknown>;
+    };
+    expect(Object.keys(currentRaw.sharedAllListingsReports)).toEqual([
+      canonicalKey,
+      legacyKey,
+    ]);
+
+    // Emulate the immediately previous v2 reader: it recognizes only the
+    // colon-delimited key, reconstructs its in-memory store, then performs an
+    // unrelated mutation and rewrites the whole JSON file.
+    const baseVisibleReports = Object.fromEntries(
+      Object.entries(currentRaw.sharedAllListingsReports).filter(
+        ([key, report]) =>
+          key === [
+            report.accountScope,
+            report.marketplaceId,
+            report.reportType,
+            report.optionsKey,
+          ].join(":"),
+      ),
+    );
+    expect(Object.keys(baseVisibleReports)).toEqual([legacyKey]);
+    await writeFile(store.filePath, `${JSON.stringify({
+      ...currentRaw,
+      sharedAllListingsReports: baseVisibleReports,
+    }, null, 2)}\n`);
+
+    const restarted = new LocalStore(store.filePath);
+    await restarted.initialize();
+    await expect(restarted.getSharedReport(identity)).resolves.toMatchObject({
+      leaseId: "rollback-unknown-lease",
+      report: {
+        reportId: "amazon-report-result-ambiguous",
+        status: "CREATION_UNKNOWN",
+        terminal: "CREATION_UNKNOWN",
+      },
+    });
+
+    await restarted.syncProductIdentity({
+      accountScope: identity.accountScope,
+      marketplaceId: identity.marketplaceId,
+      sellerSku: "ROLLBACK-ROUND-TRIP",
+    });
+    const rewritten = JSON.parse(await readFile(store.filePath, "utf8")) as {
+      sharedAllListingsReports: Record<string, unknown>;
+    };
+    expect(Object.keys(rewritten.sharedAllListingsReports)).toEqual([
+      canonicalKey,
+      legacyKey,
+    ]);
+  });
+
+  it("fails closed when two canonical identities collapse to one v2 alias", async () => {
+    const store = await testStore();
+    const now = Date.now();
+    const report = {
+      reportId: "ambiguous-create-evidence",
+      documentId: null,
+      status: "CREATION_UNKNOWN" as const,
+      createdAt: now,
+      terminal: "CREATION_UNKNOWN" as const,
+      terminalAt: now,
+    };
+    const common = {
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA" as const,
+      optionsKey: "preferredReportDocumentLocale=en_US" as const,
+      mode: "live" as const,
+      report,
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: now + 60 * 60 * 1_000,
+    };
+    await store.createSharedReportIfAbsent({
+      ...common,
+      leaseId: "collision-lease-a",
+      accountScope: "opaque",
+      marketplaceId: "segment:market",
+    }, now);
+
+    await expect(store.createSharedReportIfAbsent({
+      ...common,
+      leaseId: "collision-lease-b",
+      accountScope: "opaque:segment",
+      marketplaceId: "market",
+    }, now)).rejects.toThrow("Ambiguous legacy shared report identity");
+    await expect(store.getSharedReport({
+      accountScope: "opaque",
+      marketplaceId: "segment:market",
+      reportType: common.reportType,
+      optionsKey: common.optionsKey,
+    })).resolves.toMatchObject({ leaseId: "collision-lease-a" });
+    await expect(store.getSharedReport({
+      accountScope: "opaque:segment",
+      marketplaceId: "market",
+      reportType: common.reportType,
+      optionsKey: common.optionsKey,
+    })).resolves.toBeNull();
   });
 
   it("prunes expired completed report identities without deleting ambiguous evidence", async () => {

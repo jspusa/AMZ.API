@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -43,6 +43,12 @@ const EXTRACTED_VARIATION_CATALOG_MODULES = [
   "src/main/amazon/listings-response-error.ts",
   "src/main/amazon/variation-family.ts",
   "src/main/amazon/unbound-variation-audit.ts",
+] as const;
+
+const EXTRACTED_REPORTS_MODULES = [
+  "src/main/amazon/report-lifecycle.ts",
+  "src/main/amazon/reports-runtime.ts",
+  "src/main/amazon/reports-runtime-production.ts",
 ] as const;
 
 const FORBIDDEN_VARIATION_CATALOG_DEPENDENCIES = new Set([
@@ -161,6 +167,14 @@ function legacyDependencies(entryPath: string): string[] {
   return [...violations].sort();
 }
 
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return /\.(?:ts|tsx)$/u.test(entry.name) ? [path] : [];
+  });
+}
+
 describe("SP execution-context architecture", () => {
   it.each(NEW_SP_LEAF_MODULES)(
     "%s stays independent from legacy runtime modules",
@@ -205,6 +219,45 @@ describe("SP execution-context architecture", () => {
       expect(legacyDependencies(entryPath)).toEqual([]);
     },
   );
+
+  it.each(EXTRACTED_REPORTS_MODULES)(
+    "%s stays independent from legacy runtime modules",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
+  it("keeps the Reports runtime main-only and wires its production adapter explicitly", () => {
+    const forbiddenConsumers = [
+      ...sourceFiles(absolutePath("src/preload")),
+      ...sourceFiles(absolutePath("src/renderer")),
+      ...sourceFiles(absolutePath("src/shared")),
+    ].flatMap((sourcePath) =>
+      sourceImports(sourcePath)
+        .map((sourceImport) => resolveLocalImport(sourcePath, sourceImport.specifier))
+        .filter((dependency): dependency is string => dependency !== null)
+        .map(repositoryPath)
+        .filter((dependency) =>
+          dependency === "src/main/amazon/reports-runtime.ts" ||
+          dependency === "src/main/amazon/reports-runtime-production.ts"
+        )
+        .map((dependency) => `${repositoryPath(sourcePath)} -> ${dependency}`)
+    );
+    expect(forbiddenConsumers).toEqual([]);
+
+    const indexSource = readFileSync(absolutePath("src/main/index.ts"), "utf8");
+    expect(indexSource).toContain("reportsAdapter: reportsRuntimeProductionAdapter");
+
+    const routerSource = readFileSync(absolutePath("src/main/api-router.ts"), "utf8");
+    expect(routerSource).not.toContain("resolveInternalReferences(");
+    expect(routerSource).toContain(
+      "const liveReportsAdapter = input.reportsAdapter ??\n" +
+      "      reportsRuntimeProductionAdapter;",
+    );
+    expect(routerSource).not.toContain(
+      "const reportsAdapter: ReportsAdapter = input.reportsAdapter",
+    );
+  });
 
   it.each([
     "src/main/amazon/variation-family-reads.ts",

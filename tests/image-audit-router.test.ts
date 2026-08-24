@@ -1,13 +1,15 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { strFromU8, unzipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
-import type { LocalStore } from "../src/main/local-store";
+import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const previousMode = process.env.SP_API_MODE;
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
-const REPORT_ID = `demo-${MARKETPLACE_ID}`;
 
 function request(query: Record<string, string>): ApiRequest {
   return {
@@ -19,13 +21,41 @@ function request(query: Record<string, string>): ApiRequest {
   };
 }
 
+async function startReadyReport(router: ApiRouter): Promise<{
+  reportId: string;
+  documentId: string;
+}> {
+  const response = await router.handle({
+    requestId: crypto.randomUUID(),
+    method: "POST",
+    path: "/api/sp-api/listing-content/export",
+    query: {},
+    headers: {},
+    body: {
+      kind: "json",
+      value: { marketplaceId: MARKETPLACE_ID },
+    },
+  });
+  if (response.status !== 200 || response.body.kind !== "json") {
+    throw new Error("Expected a ready demo report");
+  }
+  const value = response.body.value as Record<string, unknown>;
+  if (typeof value.reportId !== "string" || typeof value.documentId !== "string") {
+    throw new Error("Expected opaque report document handles");
+  }
+  return { reportId: value.reportId, documentId: value.documentId };
+}
+
 describe("FBA image audit snapshot export route", () => {
   let router: ApiRouter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
+    const directory = await mkdtemp(join(tmpdir(), "amz-image-audit-router-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
     router = new ApiRouter({
-      store: {} as LocalStore,
+      store,
       vault: {
         getAccountScope: async () => "demo-account-scope",
       } as unknown as CredentialVault,
@@ -34,15 +64,17 @@ describe("FBA image audit snapshot export route", () => {
   });
 
   afterEach(() => {
+    router.clearPreviews();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
   });
 
   it("downloads all FBA rows from the same marketplace/report snapshot", async () => {
+    const report = await startReadyReport(router);
     const baseQuery = {
       marketplaceId: MARKETPLACE_ID,
-      reportId: REPORT_ID,
-      documentId: REPORT_ID,
+      reportId: report.reportId,
+      documentId: report.documentId,
       imageAudit: "1",
     };
     const audit = await router.handle(request(baseQuery));
@@ -91,11 +123,12 @@ describe("FBA image audit snapshot export route", () => {
   });
 
   it("binds the download to the stored marketplace snapshot instead of report ids", async () => {
+    const report = await startReadyReport(router);
     const audit = await router.handle(
       request({
         marketplaceId: MARKETPLACE_ID,
-        reportId: REPORT_ID,
-        documentId: REPORT_ID,
+        reportId: report.reportId,
+        documentId: report.documentId,
         imageAudit: "1",
       }),
     );
@@ -115,8 +148,8 @@ describe("FBA image audit snapshot export route", () => {
     const reportOnly = await router.handle(
       request({
         marketplaceId: MARKETPLACE_ID,
-        reportId: REPORT_ID,
-        documentId: REPORT_ID,
+        reportId: report.reportId,
+        documentId: report.documentId,
         imageAudit: "1",
         download: "1",
       }),

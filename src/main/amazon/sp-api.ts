@@ -94,6 +94,8 @@ import {
   type SubscribeAndSaveOfferSnapshot,
 } from "./fba-inventory-replenishment";
 import { createFbaInventoryReplenishmentProductionAdapter } from "./fba-inventory-replenishment-production";
+import { createReportsRuntimeProductionAdapter } from "./reports-runtime-production";
+import type { ReportsAdapter, ReportsIntentPlan } from "./reports-runtime";
 import {
   exactListingEnvelopeIdentity,
   readListingsItem,
@@ -1908,6 +1910,12 @@ const listingsReadAdapter = createListingsReadProductionAdapter({
 
 const fbaInventoryReplenishmentAdapter =
   createFbaInventoryReplenishmentProductionAdapter({
+    getAccessToken: requestAccessToken,
+    invalidateAccessToken: (region) => tokenCache.delete(region),
+  });
+
+export const reportsRuntimeProductionAdapter: ReportsAdapter =
+  createReportsRuntimeProductionAdapter({
     getAccessToken: requestAccessToken,
     invalidateAccessToken: (region) => tokenCache.delete(region),
   });
@@ -7531,53 +7539,60 @@ async function fetchLiveBusinessPricing(
   };
 }
 
+function demoBusinessPricing(
+  marketplaceId: MarketplaceId,
+  sellerSku: string,
+): BusinessPricingListingSnapshot {
+  const listing = getDemoListingPrice(marketplaceId, sellerSku);
+  const amount = demoBusinessPriceAmount(listing);
+  const quantityDiscountPlan = demoBusinessQuantityDiscountOverrides.get(
+    demoPriceKey(marketplaceId, sellerSku),
+  ) ?? null;
+  const demoOffers: AmazonPurchasableOffer[] = amount
+    ? [{
+        marketplace_id: marketplaceId,
+        currency: MARKETPLACES[marketplaceId].currency,
+        audience: "B2B",
+        our_price: [{ schedule: [{ value_with_tax: amount }] }],
+        ...(quantityDiscountPlan
+          ? {
+              quantity_discount_plan: [{
+                schedule: [{
+                  discount_type: quantityDiscountPlan.discountType,
+                  levels: quantityDiscountPlan.levels.map((level) => ({
+                    lower_bound: level.lowerBound,
+                    value: level.value,
+                  })),
+                }],
+              }],
+            }
+          : {}),
+      }]
+    : [];
+  const business = businessOfferSnapshot({
+    attributes: { purchasable_offer: demoOffers },
+  }, marketplaceId);
+  return {
+    ...listing,
+    ...business,
+    businessPricingCapability: {
+      supported: true,
+      editable: true,
+      reason: null,
+      quantityDiscountsSupported: true,
+      quantityDiscountsEditable: true,
+      quantityDiscountsReason: null,
+      schemaChecksum: "demo-business-pricing-schema",
+    },
+  };
+}
+
 export async function getBusinessPricing(input: {
   marketplaceId: MarketplaceId;
   sellerSku: string;
 }): Promise<BusinessPricingListingSnapshot> {
   if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
-    const amount = demoBusinessPriceAmount(listing);
-    const quantityDiscountPlan = demoBusinessQuantityDiscountOverrides.get(
-      demoPriceKey(input.marketplaceId, input.sellerSku),
-    ) ?? null;
-    const demoOffers: AmazonPurchasableOffer[] = amount
-      ? [{
-          marketplace_id: input.marketplaceId,
-          currency: MARKETPLACES[input.marketplaceId].currency,
-          audience: "B2B",
-          our_price: [{ schedule: [{ value_with_tax: amount }] }],
-          ...(quantityDiscountPlan
-            ? {
-                quantity_discount_plan: [{
-                  schedule: [{
-                    discount_type: quantityDiscountPlan.discountType,
-                    levels: quantityDiscountPlan.levels.map((level) => ({
-                      lower_bound: level.lowerBound,
-                      value: level.value,
-                    })),
-                  }],
-                }],
-              }
-            : {}),
-        }]
-      : [];
-    const business = businessOfferSnapshot({
-      attributes: { purchasable_offer: demoOffers },
-    }, input.marketplaceId);
-    return {
-      ...listing,
-      ...business,
-      businessPricingCapability: {
-        supported: true,
-        editable: true,
-        reason: null,
-        quantityDiscountsSupported: true,
-        quantityDiscountsEditable: true,
-        quantityDiscountsReason: null,
-        schemaChecksum: "demo-business-pricing-schema",
-      },
-    };
+    return demoBusinessPricing(input.marketplaceId, input.sellerSku);
   }
 
   return fetchLiveBusinessPricing(input);
@@ -8004,12 +8019,90 @@ export async function getBusinessPricingAuditData(input: {
 }): Promise<BusinessPricingAuditSnapshot> {
   assertNotAborted(input.signal);
   if (shouldUseDemoMode(input.marketplaceId)) {
-    const listingData = await getAllListingsExportData(input);
-    const rows = await Promise.all(listingData.rows.map(async (row) => {
-      const listing = await getBusinessPricing({
-        marketplaceId: input.marketplaceId,
-        sellerSku: row.sellerSku,
+    const expected = `demo-${input.marketplaceId}`;
+    if (input.reportId !== expected || input.documentId !== expected) {
+      throw new SpApiError("展示全商品報表與目前站點快照不一致。", {
+        status: 409,
+        code: "REPORT_MISMATCH",
       });
+    }
+    return getBusinessPricingAuditDataFromDocuments({
+      marketplaceId: input.marketplaceId,
+      mode: "demo",
+      allListingsDocument: "",
+      activeListingsDocument: null,
+      signal: input.signal,
+    });
+  }
+  const reportStatus = await getAllListingsReportStatus({
+    marketplaceId: input.marketplaceId,
+    reportId: input.reportId,
+    signal: input.signal,
+  });
+  assertNotAborted(input.signal);
+  if (!reportStatus.ready || reportStatus.documentId !== input.documentId) {
+    throw new SpApiError("FBA 全商品報表尚未完成，或文件資訊已失效。", {
+      status: 409,
+      code: "REPORT_NOT_READY",
+    });
+  }
+  const allListingsDocument = await downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+    input.signal,
+  );
+  assertNotAborted(input.signal);
+  let activeListingsDocument: string | null = null;
+  if (input.activeListingsReport) {
+    try {
+      activeListingsDocument =
+        await getBusinessPricingActiveListingsReportDocument({
+          marketplaceId: input.marketplaceId,
+          reportId: input.activeListingsReport.reportId,
+          documentId: input.activeListingsReport.documentId,
+          signal: input.signal,
+        });
+    } catch (error) {
+      assertNotAborted(input.signal);
+      if (
+        (error instanceof Error && error.name === "AbortError") ||
+        (error instanceof SpApiError && error.code === "REPORT_MISMATCH")
+      ) {
+        throw error;
+      }
+      // The lifecycle owns create/poll evidence. A transient status/document
+      // failure cannot prove that a SKU is missing B2B pricing, so keep the
+      // Active source unavailable and classify rows from other positive
+      // evidence only.
+      activeListingsDocument = null;
+    }
+  }
+  assertNotAborted(input.signal);
+  return getBusinessPricingAuditDataFromDocuments({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    allListingsDocument,
+    activeListingsDocument,
+    signal: input.signal,
+  });
+}
+
+export async function getBusinessPricingAuditDataFromDocuments(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  allListingsDocument: string;
+  activeListingsDocument?: string | null;
+  signal?: AbortSignal;
+}): Promise<BusinessPricingAuditSnapshot> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  if (input.mode === "demo") {
+    const listingData = demoAllListingsExportData(input.marketplaceId);
+    const rows = listingData.rows.map((row) => {
+      const listing = demoBusinessPricing(
+        input.marketplaceId,
+        row.sellerSku,
+      );
       const status: BusinessPricingAuditRow["status"] =
         listing.businessOfferPresence === "present"
           ? listing.standardPrice && listing.businessPrice &&
@@ -8039,7 +8132,7 @@ export async function getBusinessPricingAuditData(input: {
             ? "尚未設定 Amazon Business 價格；展示資料僅供檢視，不會寫入 Amazon。"
             : "B2B offer 證據不完整，展示模式已停止編輯。",
       });
-    }));
+    });
     return {
       mode: "demo",
       marketplaceId: input.marketplaceId,
@@ -8050,64 +8143,24 @@ export async function getBusinessPricingAuditData(input: {
     };
   }
 
-  const reportStatus = await getAllListingsReportStatus({
-    marketplaceId: input.marketplaceId,
-    reportId: input.reportId,
-    signal: input.signal,
-  });
-  assertNotAborted(input.signal);
-  if (!reportStatus.ready || reportStatus.documentId !== input.documentId) {
-    throw new SpApiError("FBA 全商品報表尚未完成，或文件資訊已失效。", {
-      status: 409,
-      code: "REPORT_NOT_READY",
-    });
-  }
-  const report = await downloadReportDocument(
-    input.marketplaceId,
-    input.documentId,
-    input.signal,
-  );
-  assertNotAborted(input.signal);
   const {
     seeds,
     businessPriceEvidenceBySku: allListingsBusinessPriceEvidenceBySku,
     quantityDiscountEvidenceBySku:
       allListingsQuantityDiscountEvidenceBySku,
-  } = parseFbaListingReport(report);
-  let activeListingsReport: string | null = null;
-  if (input.activeListingsReport) {
-    try {
-      activeListingsReport =
-        await getBusinessPricingActiveListingsReportDocument({
-          marketplaceId: input.marketplaceId,
-          reportId: input.activeListingsReport.reportId,
-          documentId: input.activeListingsReport.documentId,
-          signal: input.signal,
-        });
-    } catch (error) {
-      assertNotAborted(input.signal);
-      if (
-        (error instanceof Error && error.name === "AbortError") ||
-        (error instanceof SpApiError && error.code === "REPORT_MISMATCH")
-      ) {
-        throw error;
-      }
-      // The lifecycle owns create/poll evidence. A transient status/document
-      // failure cannot prove that a SKU is missing B2B pricing, so keep the
-      // Active source unavailable and classify rows from other positive
-      // evidence only.
-      activeListingsReport = null;
-    }
-  }
+  } = parseFbaListingReport(input.allListingsDocument);
   assertNotAborted(input.signal);
-  const activeListingsEvidence = activeListingsReport === null
+  const activeListingsEvidence = input.activeListingsDocument == null
     ? {
         businessPriceEvidenceBySku:
           new Map<string, ListingReportBusinessPriceEvidence>(),
         quantityDiscountEvidenceBySku:
           new Map<string, ListingReportQuantityDiscountEvidence>(),
       }
-    : parseBusinessPricingActiveListingsReport(activeListingsReport, seeds);
+    : parseBusinessPricingActiveListingsReport(
+        input.activeListingsDocument,
+        seeds,
+      );
   const activeListingsBusinessPriceEvidenceBySku =
     activeListingsEvidence.businessPriceEvidenceBySku;
   const activeListingsQuantityDiscountEvidenceBySku =
@@ -9309,6 +9362,17 @@ type ReportsPurpose =
   | "sales-and-traffic"
   | "inbound-noncompliance";
 
+function assertReportsDocumentMode(
+  mode: "live" | "demo",
+): asserts mode is "live" | "demo" {
+  if (mode !== "live" && mode !== "demo") {
+    throw new SpApiError("Reports 文件解析模式無法辨識。", {
+      status: 409,
+      code: "REPORT_MODE_CHANGED",
+    });
+  }
+}
+
 type ReportsRequestInput = {
   marketplaceId: MarketplaceId;
   path: string;
@@ -10010,6 +10074,39 @@ export function parseSalesAndTrafficReportDocument(input: {
   return rows.sort((left, right) => left.sellerSku.localeCompare(right.sellerSku));
 }
 
+function demoSalesAndTrafficSnapshot(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+}): SalesAndTrafficSnapshot {
+  const skus = [...new Set(
+    buildDemoOrders(input.marketplaceId)
+      .flatMap((order) => order.items)
+      .map((item) => item.sellerSku),
+  )];
+  return {
+    mode: "demo",
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    fetchedAt: new Date().toISOString(),
+    rows: skus.map((sellerSku, index) => {
+      const listing = getDemoListingContent(input.marketplaceId, sellerSku);
+      const unitsOrdered = Math.max(1, 12 - index * 2);
+      return {
+        sellerSku,
+        childAsin: listing.asin ?? `B0DEMOSAL${index}`,
+        unitsOrdered,
+        orderedProductSales: Number(
+          (unitsOrdered * (24.99 + index * 5)).toFixed(2),
+        ),
+        currencyCode: MARKETPLACES[input.marketplaceId].currency,
+      };
+    }),
+    notice: "展示資料只供廣告策略表版面測試，不是你的真實 Amazon 銷售。",
+  };
+}
+
 export async function getSalesAndTrafficReportData(input: {
   marketplaceId: MarketplaceId;
   reportId: string;
@@ -10027,30 +10124,7 @@ export async function getSalesAndTrafficReportData(input: {
         code: "REPORT_MISMATCH",
       });
     }
-    const skus = [...new Set(
-      buildDemoOrders(input.marketplaceId)
-        .flatMap((order) => order.items)
-        .map((item) => item.sellerSku),
-    )];
-    return {
-      mode: "demo",
-      marketplaceId: input.marketplaceId,
-      startDate: input.startDate,
-      endDate: input.endDate,
-      fetchedAt: new Date().toISOString(),
-      rows: skus.map((sellerSku, index) => {
-        const listing = getDemoListingContent(input.marketplaceId, sellerSku);
-        const unitsOrdered = Math.max(1, 12 - index * 2);
-        return {
-          sellerSku,
-          childAsin: listing.asin ?? `B0DEMOSAL${index}`,
-          unitsOrdered,
-          orderedProductSales: Number((unitsOrdered * (24.99 + index * 5)).toFixed(2)),
-          currencyCode: MARKETPLACES[input.marketplaceId].currency,
-        };
-      }),
-      notice: "展示資料只供廣告策略表版面測試，不是你的真實 Amazon 銷售。",
-    };
+    return demoSalesAndTrafficSnapshot(input);
   }
   const status = await getSalesAndTrafficReportStatus(input);
   assertNotAborted(input.signal);
@@ -10067,6 +10141,29 @@ export async function getSalesAndTrafficReportData(input: {
     "sales-and-traffic",
   );
   assertNotAborted(input.signal);
+  return getSalesAndTrafficReportDataFromDocument({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    startDate: input.startDate,
+    endDate: input.endDate,
+    document: text,
+    signal: input.signal,
+  });
+}
+
+export async function getSalesAndTrafficReportDataFromDocument(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  startDate: string;
+  endDate: string;
+  document: string;
+  signal?: AbortSignal;
+}): Promise<SalesAndTrafficSnapshot> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  if (input.mode === "demo") {
+    return demoSalesAndTrafficSnapshot(input);
+  }
   return {
     mode: "live",
     marketplaceId: input.marketplaceId,
@@ -10074,7 +10171,7 @@ export async function getSalesAndTrafficReportData(input: {
     endDate: input.endDate,
     fetchedAt: new Date().toISOString(),
     rows: parseSalesAndTrafficReportDocument({
-      text,
+      text: input.document,
       marketplaceId: input.marketplaceId,
       startDate: input.startDate,
       endDate: input.endDate,
@@ -10362,9 +10459,34 @@ export async function getFbaReviewAuditCandidates(input: {
     input.signal,
   );
   assertNotAborted(input.signal);
+  return getFbaReviewAuditCandidatesFromDocument({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    document,
+    signal: input.signal,
+  });
+}
+
+export async function getFbaReviewAuditCandidatesFromDocument(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  document: string;
+  signal?: AbortSignal;
+}): Promise<ReviewAuditCandidateSnapshot> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  if (!CUSTOMER_FEEDBACK_SUPPORTED_MARKETPLACES.has(input.marketplaceId)) {
+    throw new SpApiError(
+      "Amazon Customer Feedback API 尚不支援此站點；未改用父變體或私有接口。",
+      { status: 422, code: "MARKETPLACE_UNSUPPORTED" },
+    );
+  }
+  if (input.mode === "demo") {
+    return demoReviewAuditCandidates(input.marketplaceId);
+  }
   return verifyFbaReviewAuditSeeds({
     marketplaceId: input.marketplaceId,
-    seeds: parseFbaListingReportSeeds(document),
+    seeds: parseFbaListingReportSeeds(input.document),
     signal: input.signal,
   });
 }
@@ -11448,6 +11570,42 @@ function brandSalesRangeFreshness(input: {
     : "complete-days";
 }
 
+function demoBrandSalesSnapshot(input: {
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  shipmentDataStartTime: string;
+  shipmentDataEndTime: string;
+  windowCreatedAt: number;
+}): BrandSalesSnapshot {
+  const listingData = demoAllListingsExportData(input.marketplaceId);
+  const listings = listingData.rows.map((row) => ({
+    sellerSku: row.sellerSku,
+    title: row.title,
+  }));
+  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
+  const sales = listings.map((listing, index) => ({
+    shipmentDate: `${input.startDate}T12:00:00.000Z`,
+    sellerSku: listing.sellerSku,
+    quantity: index + 1,
+    unitPrice: currencyCode === "JPY"
+      ? 1_280 + index * 300
+      : 12.99 + index * 2.5,
+    currencyCode,
+  }));
+  return buildBrandSalesSnapshot({
+    mode: "demo",
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    currencyCode,
+    listings,
+    sales,
+    dataThrough: input.shipmentDataEndTime,
+    rangeFreshness: brandSalesRangeFreshness(input),
+  });
+}
+
 export async function getBrandSalesData(input: {
   marketplaceId: MarketplaceId;
   startDate: string;
@@ -11482,34 +11640,7 @@ export async function getBrandSalesData(input: {
         code: "REPORT_MISMATCH",
       });
     }
-    const listingData = await getAllListingsExportData({
-      marketplaceId: input.marketplaceId,
-      reportId: listingReference,
-      documentId: listingReference,
-    });
-    const listings = listingData.rows.map((row) => ({
-      sellerSku: row.sellerSku,
-      title: row.title,
-    }));
-    const currencyCode = MARKETPLACES[input.marketplaceId].currency;
-    const sales = listings.map((listing, index) => ({
-      shipmentDate: `${input.startDate}T12:00:00.000Z`,
-      sellerSku: listing.sellerSku,
-      quantity: index + 1,
-      unitPrice: currencyCode === "JPY" ? 1_280 + index * 300 : 12.99 + index * 2.5,
-      currencyCode,
-    }));
-    return buildBrandSalesSnapshot({
-      mode: "demo",
-      marketplaceId: input.marketplaceId,
-      startDate: input.startDate,
-      endDate: input.endDate,
-      currencyCode,
-      listings,
-      sales,
-      dataThrough: input.shipmentDataEndTime,
-      rangeFreshness: brandSalesRangeFreshness(input),
-    });
+    return demoBrandSalesSnapshot(input);
   }
 
   const [listingStatus, shipmentStatus] = await Promise.all([
@@ -11542,11 +11673,53 @@ export async function getBrandSalesData(input: {
     downloadReportDocument(input.marketplaceId, input.listingDocumentId),
     downloadReportDocument(input.marketplaceId, input.shipmentDocumentId),
   ]);
-  const listings = parseCurrentFbaListingTitles(listingReport);
-  const sales = parseFbaShipmentSalesReport(shipmentReport).filter((sale) => {
-    const key = shipmentDateKey(sale.shipmentDate, input.marketplaceId);
-    return key >= input.startDate && key <= input.endDate;
+  return getBrandSalesDataFromDocuments({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    startDate: input.startDate,
+    endDate: input.endDate,
+    shipmentDataStartTime: input.shipmentDataStartTime,
+    shipmentDataEndTime: input.shipmentDataEndTime,
+    windowCreatedAt: input.windowCreatedAt,
+    listingDocument: listingReport,
+    shipmentDocument: shipmentReport,
   });
+}
+
+export async function getBrandSalesDataFromDocuments(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  startDate: string;
+  endDate: string;
+  shipmentDataStartTime: string;
+  shipmentDataEndTime: string;
+  windowCreatedAt: number;
+  listingDocument: string;
+  shipmentDocument: string;
+  signal?: AbortSignal;
+}): Promise<BrandSalesSnapshot> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  validateFixedBrandSalesWindow({
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    dataStartTime: input.shipmentDataStartTime,
+    dataEndTime: input.shipmentDataEndTime,
+    windowCreatedAt: input.windowCreatedAt,
+  });
+  if (input.mode === "demo") {
+    return demoBrandSalesSnapshot(input);
+  }
+  const listings = parseCurrentFbaListingTitles(input.listingDocument);
+  assertNotAborted(input.signal);
+  const sales = parseFbaShipmentSalesReport(input.shipmentDocument).filter(
+    (sale) => {
+      const key = shipmentDateKey(sale.shipmentDate, input.marketplaceId);
+      return key >= input.startDate && key <= input.endDate;
+    },
+  );
+  assertNotAborted(input.signal);
   return buildBrandSalesSnapshot({
     mode: "live",
     marketplaceId: input.marketplaceId,
@@ -11558,6 +11731,53 @@ export async function getBrandSalesData(input: {
     dataThrough: input.shipmentDataEndTime,
     rangeFreshness: brandSalesRangeFreshness(input),
   });
+}
+
+export type FixedReportsDocumentIntent = ReportsIntentPlan["intent"];
+
+function fixedReportsDocumentPurpose(
+  intent: FixedReportsDocumentIntent,
+): ReportsPurpose {
+  switch (intent) {
+    case "all-listings":
+    case "active-business-listings":
+      return "listings";
+    case "aged-inventory":
+      return "aged-inventory";
+    case "inbound-noncompliance":
+      return "inbound-noncompliance";
+    case "sales-and-traffic-daily-sku":
+      return "sales-and-traffic";
+    case "fba-shipment-sales":
+      return "brand-sales";
+    default:
+      throw new SpApiError("Reports 文件讀取意圖不在允許清單內。", {
+        status: 400,
+        code: "INVALID_INPUT",
+      });
+  }
+}
+
+/**
+ * Compatibility-only fixed document reader. Runtime-owned callers should use
+ * the text returned by ReportsRuntime.readDocument and then cross a
+ * FromDocument seam below; this function never creates or polls a report.
+ */
+export async function getFixedReportsDocumentText(input: {
+  marketplaceId: MarketplaceId;
+  documentId: string;
+  intent: FixedReportsDocumentIntent;
+  signal?: AbortSignal;
+}): Promise<string> {
+  assertNotAborted(input.signal);
+  const purpose = fixedReportsDocumentPurpose(input.intent);
+  if (shouldUseDemoMode(input.marketplaceId)) return "";
+  return downloadReportDocument(
+    input.marketplaceId,
+    input.documentId,
+    input.signal,
+    purpose,
+  );
 }
 
 async function downloadReportDocument(
@@ -12398,7 +12618,29 @@ export async function getAgedInventoryData(input: {
     input.signal,
   );
   assertNotAborted(input.signal);
-  const parsed = parseAgedInventoryReportData(document, input.marketplaceId);
+  return getAgedInventoryDataFromDocument({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    document,
+    signal: input.signal,
+  });
+}
+
+export async function getAgedInventoryDataFromDocument(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  document: string;
+  signal?: AbortSignal;
+}): Promise<AgedInventorySnapshot> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  if (input.mode === "demo") {
+    return demoAgedInventorySnapshot(input.marketplaceId);
+  }
+  const parsed = parseAgedInventoryReportData(
+    input.document,
+    input.marketplaceId,
+  );
   const rows = parsed.rows;
   if (
     parsed.currencyCode &&
@@ -13308,6 +13550,46 @@ export type AllListingsExportProgress = Readonly<{
   totalUnits: number;
 }>;
 
+function demoAllListingsExportData(
+  marketplaceId: MarketplaceId,
+): {
+  rows: ListingExportRow[];
+  errors: ListingExportError[];
+  fetchedAt: string;
+} {
+  const sellerSkus = [
+    ...new Set(
+      buildDemoOrders(marketplaceId)
+        .flatMap((order) => order.items)
+        .map((item) => item.sellerSku),
+    ),
+  ];
+  const rows = sellerSkus.map((sellerSku, index) => {
+    const listing = getDemoListingContent(marketplaceId, sellerSku);
+    return {
+      marketplace: MARKETPLACES[marketplaceId].name,
+      sellerSku,
+      asin: listing.asin ?? "",
+      productType: listing.productType,
+      title: listing.title,
+      itemHighlight: listing.itemHighlight,
+      bulletPoints: listing.bulletPoints,
+      productDescription: listing.productDescription,
+      ingredients: listing.ingredients,
+      imageUrls: Array.from(
+        { length: index === 0 ? 4 : 7 },
+        (_, imageIndex) =>
+          `https://images.example.invalid/${encodeURIComponent(sellerSku)}/${imageIndex + 1}.jpg`,
+      ),
+      status: listing.status.join(", "),
+      updatedAt: listing.updatedAt ?? "",
+      readStatus: "complete" as const,
+      readErrors: [],
+    };
+  });
+  return { rows, errors: [], fetchedAt: new Date().toISOString() };
+}
+
 export async function getAllListingsExportData(input: {
   marketplaceId: MarketplaceId;
   reportId: string;
@@ -13333,37 +13615,7 @@ export async function getAllListingsExportData(input: {
         code: "REPORT_MISMATCH",
       });
     }
-    const sellerSkus = [
-      ...new Set(
-        buildDemoOrders(input.marketplaceId)
-          .flatMap((order) => order.items)
-          .map((item) => item.sellerSku),
-      ),
-    ];
-    const rows = sellerSkus.map((sellerSku, index) => {
-      const listing = getDemoListingContent(input.marketplaceId, sellerSku);
-      return {
-        marketplace: MARKETPLACES[input.marketplaceId].name,
-        sellerSku,
-        asin: listing.asin ?? "",
-        productType: listing.productType,
-        title: listing.title,
-        itemHighlight: listing.itemHighlight,
-        bulletPoints: listing.bulletPoints,
-        productDescription: listing.productDescription,
-        ingredients: listing.ingredients,
-        imageUrls: Array.from(
-          { length: index === 0 ? 4 : 7 },
-          (_, imageIndex) =>
-            `https://images.example.invalid/${encodeURIComponent(sellerSku)}/${imageIndex + 1}.jpg`,
-        ),
-        status: listing.status.join(", "),
-        updatedAt: listing.updatedAt ?? "",
-        readStatus: "complete" as const,
-        readErrors: [],
-      };
-    });
-    return { rows, errors: [], fetchedAt: new Date().toISOString() };
+    return demoAllListingsExportData(input.marketplaceId);
   }
 
   const status = await getAllListingsReportStatus({
@@ -13390,7 +13642,34 @@ export async function getAllListingsExportData(input: {
     input.signal,
   );
   assertNotAborted(input.signal);
-  const seeds = parseFbaListingReportSeeds(report);
+  return getAllListingsExportDataFromDocument({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    document: report,
+    signal: input.signal,
+    onProgress: input.onProgress,
+  });
+}
+
+export async function getAllListingsExportDataFromDocument(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  document: string;
+  signal?: AbortSignal;
+  onProgress?: (
+    progress: AllListingsExportProgress,
+  ) => void | Promise<void>;
+}): Promise<{
+  rows: ListingExportRow[];
+  errors: ListingExportError[];
+  fetchedAt: string;
+}> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  if (input.mode === "demo") {
+    return demoAllListingsExportData(input.marketplaceId);
+  }
+  const seeds = parseFbaListingReportSeeds(input.document);
   await input.onProgress?.({
     phase: "report-downloaded",
     completedUnits: 1,
@@ -13461,7 +13740,37 @@ export async function getFbaListingIdentitySnapshot(input: {
     input.signal,
   );
   assertNotAborted(input.signal);
-  const rows = parseFbaListingReportSeeds(report);
+  return getFbaListingIdentitySnapshotFromDocument({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    document: report,
+    signal: input.signal,
+  });
+}
+
+export async function getFbaListingIdentitySnapshotFromDocument(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  document: string;
+  signal?: AbortSignal;
+}): Promise<FbaListingIdentitySnapshot> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  if (input.mode === "demo") {
+    const data = demoAllListingsExportData(input.marketplaceId);
+    return {
+      mode: "demo",
+      marketplaceId: input.marketplaceId,
+      fetchedAt: data.fetchedAt,
+      rows: data.rows.map(({ sellerSku, asin, title }) => ({
+        sellerSku,
+        asin,
+        title,
+      })),
+      notice: "展示資料只供廣告策略表版面測試，不是你的真實 FBA 商品。",
+    };
+  }
+  const rows = parseFbaListingReportSeeds(input.document);
   if (rows.some((row) => !/^[A-Z0-9]{10}$/u.test(row.asin))) {
     throw new SpApiError(
       "Amazon FBA 全商品報表含缺失或無效 ASIN，已停止產生廣告策略。",
@@ -13568,6 +13877,67 @@ export async function verifyFbaReviewAuditSeeds(input: {
   return verifyLiveFbaReviewAuditSeeds(listingsReadAdapter, input);
 }
 
+function demoUnboundVariationAuditSnapshot(input: {
+  marketplaceId: MarketplaceId;
+  signal?: AbortSignal;
+}): UnboundVariationAuditSnapshot {
+  const sellerSkus = [
+    ...new Set(
+      buildDemoOrders(input.marketplaceId)
+        .flatMap((order) => order.items)
+        .map((item) => item.sellerSku),
+    ),
+  ];
+  const rows: UnboundVariationAuditRow[] = [];
+  const verifiedVariationMembers: VerifiedVariationFamilyMember[] = [];
+  let boundChildren = 0;
+  let parentContainers = 0;
+  for (const sellerSku of sellerSkus) {
+    assertNotAborted(input.signal);
+    const family = getDemoVariationFamily(input.marketplaceId, sellerSku);
+    verifiedVariationMembers.push({
+      sellerSku: family.queried.sellerSku,
+      title: family.queried.title,
+      productType: family.queried.productType,
+      role: family.queried.role,
+      parentSku: family.queried.parentSku,
+      variationTheme: family.queried.variationTheme,
+    });
+    if (family.queried.role === "standalone") {
+      rows.push({
+        sellerSku,
+        asin: family.queried.asin ?? "",
+        title: family.queried.title,
+        productType: family.queried.productType,
+        relationshipEvidence: "relationships",
+        notice: "展示 relationships 明確沒有 parent；不會寫入 Amazon。",
+      });
+    } else if (family.queried.role === "child") {
+      boundChildren += 1;
+    } else {
+      parentContainers += 1;
+    }
+  }
+  return {
+    mode: "demo",
+    marketplaceId: input.marketplaceId,
+    fetchedAt: new Date().toISOString(),
+    rows,
+    incompleteRows: [],
+    allVariationRows: buildAllVariationFamilyRows(verifiedVariationMembers),
+    summary: {
+      totalFbaListings: sellerSkus.length,
+      completed: sellerSkus.length,
+      unbound: rows.length,
+      boundChildren,
+      parentContainers,
+      incomplete: 0,
+    },
+    notice:
+      "展示結果只驗證流程；正式模式會以官方 searchListingsItems 每批最多 20 個 SKU 要求 Amazon relationships 證據。",
+  };
+}
+
 export async function getUnboundVariationAuditData(input: {
   marketplaceId: MarketplaceId;
   reportId: string;
@@ -13576,61 +13946,7 @@ export async function getUnboundVariationAuditData(input: {
 }): Promise<UnboundVariationAuditSnapshot> {
   assertNotAborted(input.signal);
   if (shouldUseDemoMode(input.marketplaceId)) {
-    const sellerSkus = [
-      ...new Set(
-        buildDemoOrders(input.marketplaceId)
-          .flatMap((order) => order.items)
-          .map((item) => item.sellerSku),
-      ),
-    ];
-    const rows: UnboundVariationAuditRow[] = [];
-    const verifiedVariationMembers: VerifiedVariationFamilyMember[] = [];
-    let boundChildren = 0;
-    let parentContainers = 0;
-    for (const sellerSku of sellerSkus) {
-      assertNotAborted(input.signal);
-      const family = getDemoVariationFamily(input.marketplaceId, sellerSku);
-      verifiedVariationMembers.push({
-        sellerSku: family.queried.sellerSku,
-        title: family.queried.title,
-        productType: family.queried.productType,
-        role: family.queried.role,
-        parentSku: family.queried.parentSku,
-        variationTheme: family.queried.variationTheme,
-      });
-      if (family.queried.role === "standalone") {
-        rows.push({
-          sellerSku,
-          asin: family.queried.asin ?? "",
-          title: family.queried.title,
-          productType: family.queried.productType,
-          relationshipEvidence: "relationships",
-          notice: "展示 relationships 明確沒有 parent；不會寫入 Amazon。",
-        });
-      } else if (family.queried.role === "child") {
-        boundChildren += 1;
-      } else {
-        parentContainers += 1;
-      }
-    }
-    return {
-      mode: "demo",
-      marketplaceId: input.marketplaceId,
-      fetchedAt: new Date().toISOString(),
-      rows,
-      incompleteRows: [],
-      allVariationRows: buildAllVariationFamilyRows(verifiedVariationMembers),
-      summary: {
-        totalFbaListings: sellerSkus.length,
-        completed: sellerSkus.length,
-        unbound: rows.length,
-        boundChildren,
-        parentContainers,
-        incomplete: 0,
-      },
-      notice:
-        "展示結果只驗證流程；正式模式會以官方 searchListingsItems 每批最多 20 個 SKU 要求 Amazon relationships 證據。",
-    };
+    return demoUnboundVariationAuditSnapshot(input);
   }
 
   const status = await getAllListingsReportStatus({
@@ -13651,9 +13967,28 @@ export async function getUnboundVariationAuditData(input: {
     input.signal,
   );
   assertNotAborted(input.signal);
+  return getUnboundVariationAuditDataFromDocument({
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    document: report,
+    signal: input.signal,
+  });
+}
+
+export async function getUnboundVariationAuditDataFromDocument(input: {
+  marketplaceId: MarketplaceId;
+  mode: "live" | "demo";
+  document: string;
+  signal?: AbortSignal;
+}): Promise<UnboundVariationAuditSnapshot> {
+  assertNotAborted(input.signal);
+  assertReportsDocumentMode(input.mode);
+  if (input.mode === "demo") {
+    return demoUnboundVariationAuditSnapshot(input);
+  }
   return readUnboundVariationAudit(listingsReadAdapter, {
     marketplaceId: input.marketplaceId,
-    seeds: parseFbaListingReportSeeds(report),
+    seeds: parseFbaListingReportSeeds(input.document),
     signal: input.signal,
   });
 }

@@ -1,8 +1,11 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdvertisingGateway } from "../src/main/amazon/ads-api";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
-import type { LocalStore } from "../src/main/local-store";
+import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const previousMode = process.env.SP_API_MODE;
@@ -29,17 +32,25 @@ function useLiveSpMode(): void {
 }
 
 describe("advertising coverage route boundary", () => {
-  const router = new ApiRouter({
-    store: {} as LocalStore,
-    vault: {} as CredentialVault,
-    approveWrite: async () => undefined,
-  });
+  let store: LocalStore;
+  let router: ApiRouter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
+    const directory = await mkdtemp(join(tmpdir(), "amz-ad-coverage-router-"));
+    store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "demo-account-scope",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
   });
 
   afterEach(() => {
+    router.clearPreviews();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
     if (previousClientId === undefined) delete process.env.SP_API_LWA_CLIENT_ID;
@@ -93,8 +104,10 @@ describe("advertising coverage route boundary", () => {
       invalidate: vi.fn(),
     };
     const demoRouter = new ApiRouter({
-      store: {} as LocalStore,
-      vault: {} as CredentialVault,
+      store,
+      vault: {
+        getAccountScope: async () => "demo-account-scope",
+      } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       advertising,
     });
@@ -131,8 +144,10 @@ describe("advertising coverage route boundary", () => {
       invalidate: vi.fn(),
     };
     const liveRouter = new ApiRouter({
-      store: {} as LocalStore,
-      vault: {} as CredentialVault,
+      store,
+      vault: {
+        getAccountScope: async () => "live-account-scope",
+      } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       advertising,
     });

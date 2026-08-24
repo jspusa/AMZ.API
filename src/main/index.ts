@@ -22,8 +22,12 @@ import type {
 } from "../shared/contracts";
 import { ApiRouter } from "./api-router";
 import { AdvertisingApiClient } from "./amazon/ads-api";
-import { invalidateSpApiCredentialCaches } from "./amazon/sp-api";
-import { isMarketplaceId, usesDemoMode } from "./amazon/sp-api";
+import {
+  invalidateSpApiCredentialCaches,
+  isMarketplaceId,
+  reportsRuntimeProductionAdapter,
+  usesDemoMode,
+} from "./amazon/sp-api";
 import type { SpExecutionContextInvalidationReason } from "./amazon/sp-execution-context";
 import { AdvertisingCredentialVault } from "./advertising-credential-vault";
 import {
@@ -905,6 +909,7 @@ if (!hasSingleInstanceLock) {
       vault: credentialVault,
       approveWrite: confirmSensitiveAction,
       advertising: advertisingApi,
+      reportsAdapter: reportsRuntimeProductionAdapter,
     });
     configureMainSession();
     registerIpc();

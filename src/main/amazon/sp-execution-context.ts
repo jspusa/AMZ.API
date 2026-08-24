@@ -35,12 +35,29 @@ export type SpExecutionContextErrorCode =
   | "SP_CONTEXT_INVALIDATED";
 
 export class SpExecutionContextError extends SpApiError {
+  declare code: SpExecutionContextErrorCode;
+
   constructor(
     code: SpExecutionContextErrorCode,
     message: string,
   ) {
     super(message, { status: 409, code });
     this.name = "SpExecutionContextError";
+  }
+}
+
+/**
+ * A context fence raised only after an external adapter call has begun.
+ * Callers receive the original 409 context vocabulary, while durable create
+ * owners can retain an outcome-unknown tombstone instead of permitting replay.
+ */
+export class SpExecutionContextAfterAdapterError
+  extends SpExecutionContextError {
+  readonly adapterOutcomeUnknown = true;
+
+  constructor(contextError: SpExecutionContextError) {
+    super(contextError.code, contextError.message);
+    this.name = "SpExecutionContextAfterAdapterError";
   }
 }
 

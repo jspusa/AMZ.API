@@ -13,6 +13,35 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/main/amazon/sp-api")>();
+  const getCandidates = vi.fn(async () => {
+    const mode = mocks.mode;
+    mocks.candidateStarted = true;
+    await mocks.candidateGate;
+    return {
+      mode,
+      marketplaceId: "ATVPDKIKX0DER" as const,
+      sourceCandidateCount: mocks.candidateCount,
+      candidates: Array.from({ length: mocks.candidateCount }, (_, offset) => offset + 1)
+        .map((index) => ({
+        sellerSkus: [`SKU-${index}`],
+        asin: `B00000000${index}`,
+        title: `Product ${index}`,
+        relationshipRole: index % 2 === 0 ? "child" as const : "standalone" as const,
+        evidence: "FBA_LISTING_REPORT_RELATIONSHIPS_NON_PARENT_ASIN" as const,
+      })),
+      relationshipIncompleteRows: [],
+      coverage: {
+        sourceFbaListings: mocks.candidateCount,
+        verifiedNonParentListings: mocks.candidateCount,
+        verifiedChildListings: Math.floor(mocks.candidateCount / 2),
+        verifiedStandaloneListings:
+          mocks.candidateCount - Math.floor(mocks.candidateCount / 2),
+        excludedParentContainers: 0,
+        relationshipIncomplete: 0,
+      },
+      notice: "FBA only",
+    };
+  });
   return {
     ...actual,
     usesDemoMode: vi.fn(() => mocks.mode === "demo"),
@@ -32,46 +61,80 @@ vi.mock("../src/main/amazon/sp-api", async (importOriginal) => {
       status: "DONE" as const,
       notice: "ready",
     })),
-    getFbaReviewAuditCandidates: vi.fn(async () => {
-      const mode = mocks.mode;
-      mocks.candidateStarted = true;
-      await mocks.candidateGate;
-      return {
-        mode,
-        marketplaceId: "ATVPDKIKX0DER" as const,
-        sourceCandidateCount: mocks.candidateCount,
-        candidates: Array.from({ length: mocks.candidateCount }, (_, offset) => offset + 1)
-          .map((index) => ({
-          sellerSkus: [`SKU-${index}`],
-          asin: `B00000000${index}`,
-          title: `Product ${index}`,
-          relationshipRole: index % 2 === 0 ? "child" as const : "standalone" as const,
-          evidence: "FBA_LISTING_REPORT_RELATIONSHIPS_NON_PARENT_ASIN" as const,
-        })),
-        relationshipIncompleteRows: [],
-        coverage: {
-          sourceFbaListings: mocks.candidateCount,
-          verifiedNonParentListings: mocks.candidateCount,
-          verifiedChildListings: Math.floor(mocks.candidateCount / 2),
-          verifiedStandaloneListings:
-            mocks.candidateCount - Math.floor(mocks.candidateCount / 2),
-          excludedParentContainers: 0,
-          relationshipIncomplete: 0,
-        },
-        notice: "FBA only",
-      };
-    }),
+    getFixedReportsDocumentText: vi.fn(async () => "review-audit-report-fixture"),
+    getFbaReviewAuditCandidates: getCandidates,
+    getFbaReviewAuditCandidatesFromDocument: getCandidates,
     getCustomerFeedbackReviewTopics: mocks.feedback,
   };
 });
 
 import { ApiRouter } from "../src/main/api-router";
+import type {
+  ReportsAdapter,
+  ReportsAdapterIdentity,
+  ReportsAdapterRequest,
+} from "../src/main/amazon/reports-runtime";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER";
 const previousMode = process.env.SP_API_MODE;
+
+function liveAllListingsIdentity(
+  request: ReportsAdapterRequest,
+): ReportsAdapterIdentity {
+  if (request.mode !== "live" || request.intent !== "all-listings") {
+    throw new Error("Expected a live all-listings Reports request.");
+  }
+  return {
+    intent: request.intent,
+    marketplaceId: request.marketplaceId,
+    mode: request.mode,
+  };
+}
+
+const liveReportsAdapter: ReportsAdapter = {
+  async create(request) {
+    return {
+      identity: liveAllListingsIdentity(request),
+      mode: "live",
+      ready: true,
+      reportId: "report-live",
+      documentId: "document-live",
+      status: "DONE",
+      notice: "ready",
+    };
+  },
+  async status(request) {
+    if (request.reportId !== "report-live") {
+      throw new Error("Unexpected live all-listings report ID.");
+    }
+    return {
+      identity: liveAllListingsIdentity(request),
+      mode: "live",
+      ready: true,
+      reportId: request.reportId,
+      documentId: "document-live",
+      status: "DONE",
+      notice: "ready",
+    };
+  },
+  async readDocument(request) {
+    if (
+      request.reportId !== "report-live" ||
+      request.documentId !== "document-live"
+    ) {
+      throw new Error("Unexpected live all-listings document handles.");
+    }
+    return {
+      identity: liveAllListingsIdentity(request),
+      reportId: request.reportId,
+      documentId: request.documentId,
+      text: "review-audit-report-fixture",
+    };
+  },
+};
 
 function request(method: "GET" | "POST", path: string, input: Record<string, unknown>): ApiRequest {
   return {
@@ -122,6 +185,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request("POST", "/api/sp-api/review-audit", { marketplaceId: US }));
     expect(started.status, JSON.stringify(jsonValue(started))).toBe(202);
@@ -162,6 +226,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -218,6 +283,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -275,6 +341,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -320,6 +387,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -332,10 +400,7 @@ describe("review audit role failure fan-out", () => {
       "/api/sp-api/review-audit",
       { marketplaceId: US, jobId },
     ));
-    for (let attempt = 0; attempt < 20 && !mocks.candidateStarted; attempt += 1) {
-      await Promise.resolve();
-    }
-    expect(mocks.candidateStarted).toBe(true);
+    await vi.waitFor(() => expect(mocks.candidateStarted).toBe(true));
 
     vi.setSystemTime(new Date(startedAt.getTime() + 31 * 60 * 1_000));
     const retainedPoll = router.handle(request(
@@ -378,6 +443,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -390,10 +456,7 @@ describe("review audit role failure fan-out", () => {
       "/api/sp-api/review-audit",
       { marketplaceId: US, jobId },
     ));
-    for (let attempt = 0; attempt < 20 && !mocks.candidateStarted; attempt += 1) {
-      await Promise.resolve();
-    }
-    expect(mocks.candidateStarted).toBe(true);
+    await vi.waitFor(() => expect(mocks.candidateStarted).toBe(true));
 
     vi.setSystemTime(new Date(startedAt.getTime() + 25 * 60 * 1_000));
     releaseCandidates();
@@ -435,6 +498,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -486,6 +550,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const firstStarted = await router.handle(request(
       "POST",
@@ -549,6 +614,7 @@ describe("review audit role failure fan-out", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const startAndPoll = async () => {
       const started = await router.handle(request(
@@ -566,7 +632,7 @@ describe("review audit role failure fan-out", () => {
     const first = await startAndPoll();
     expect(first.status).toBe(200);
     expect(mocks.feedback).toHaveBeenCalledTimes(1);
-    router.clearPreviews();
+    router.invalidateSpExecutionContext("account-changed");
     accountScope = "scope-b";
     const second = startAndPoll();
     await vi.advanceTimersByTimeAsync(1_049);
@@ -595,6 +661,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -618,7 +685,7 @@ describe("review audit role failure fan-out", () => {
       "/api/sp-api/review-audit",
       { marketplaceId: US, jobId },
     ));
-    expect(rejected.status).toBe(409);
+    expect(rejected.status, JSON.stringify(jsonValue(rejected))).toBe(409);
     expect(jsonValue(rejected)).toMatchObject({ code: "REPORT_MODE_CHANGED" });
     expect(mocks.feedback).toHaveBeenCalledTimes(1);
   });
@@ -640,6 +707,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
@@ -658,7 +726,7 @@ describe("review audit role failure fan-out", () => {
     releaseCandidates();
 
     const rejected = await polling;
-    expect(rejected.status).toBe(409);
+    expect(rejected.status, JSON.stringify(jsonValue(rejected))).toBe(409);
     expect(jsonValue(rejected)).toMatchObject({ code: "REPORT_MODE_CHANGED" });
     expect(mocks.feedback).not.toHaveBeenCalled();
   });
@@ -679,6 +747,7 @@ describe("review audit role failure fan-out", () => {
       store,
       vault: { getAccountScope: vi.fn(async () => "scope") } as unknown as CredentialVault,
       approveWrite: async () => undefined,
+      reportsAdapter: liveReportsAdapter,
     });
     const started = await router.handle(request(
       "POST",
