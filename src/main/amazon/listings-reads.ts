@@ -318,12 +318,13 @@ function assertSearchEnvelopeIdentity(
     if (
       !requested ||
       seen.has(sellerSku) ||
-      !exactListingEnvelopeIdentity(
-        item,
-        identity.marketplaceId,
-        sellerSku,
-        expectedAsin,
-      ) ||
+      (identity.intent !== "variation-sku-batch" &&
+        !exactListingEnvelopeIdentity(
+          item,
+          identity.marketplaceId,
+          sellerSku,
+          expectedAsin,
+        )) ||
       (identity.intent === "variation-children" &&
         !exactParentEvidence(
           item,
@@ -333,6 +334,10 @@ function assertSearchEnvelopeIdentity(
     ) {
       throwListingIdentityMismatch(requestId);
     }
+    // Variation batches deliberately keep malformed per-item summaries and
+    // relationships in the raw envelope. The Variation domain classifier
+    // binds each exact requested SKU, then marks only the conflicting row
+    // incomplete instead of poisoning unrelated rows in the same batch.
     seen.add(sellerSku);
   }
 }

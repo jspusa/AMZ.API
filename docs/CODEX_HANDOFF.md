@@ -7,7 +7,7 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 
 目前工作樹：v0.1.31 release code 已由 PR #67 squash merge，唯一 release code main SHA 為 `fd02266279414e4e716316dbedfe7a507079bb10`；同一 SHA 的 Validate、Pages、macOS universal 與 Windows x64 workflows 均成功，source、CI、Pages、Mac／Windows artifacts 與 exact Mac 安裝已完成。v0.1.30 的正式 US 唯讀 canary 已證明 B2B canonical quantity tiers 與 `父變體橫排`，並暴露 A+ 全數 incomplete；同形 fixture 鎖定跨文件 conflict poisoning 核心缺口。v0.1.31 讓任一 exact `CONTENT_PUBLISHED` 保持正向權威，另一文件的 negative／malformed relation 只能把完整度降為 partial，且未使用的 optional `contentReferenceKeySet` 畸形不再丟棄合法 badge。沒有任何 positive 時仍 fail closed。v0.1.31 A+ 正式唯讀 canary 尚待 Mac 解鎖；任何 PATCH／readback、文案或圖片 mutation，以及真實 Windows Hello／DPAPI 裝置矩陣仍未執行。
 
-架構深化工作依 #69 的 tracer bullets 進行中：S01–S05 已分別發布為尚未合併的 stacked PR #109–#113；S06 在其上抽出 `fba-inventory-replenishment.ts` 與 `fba-inventory-replenishment-production.ts`。新 seam 只接受封閉的 Inventory item／catalog-page 與 Replenishment single-offer／offers-page／metrics-page 語意，不接受任意 URL、method、query、body、Seller ID、token 或 retry control；production 固定 Amazon endpoint、request shape、一次 401 refresh，以及依用途限定的 bounded retry 或 no-replay policy。scripted adapter 回傳 raw envelope 並通過與 production 相同的 identity normalization。single-SKU Subscribe & Save 現在必須先有同次 exact current-FBA Inventory 證據，沒有證據就維持既有 `FBA_SKU_NOT_FOUND` 且不查 offer；全站 audit 保留零庫存 FBA 證據、最多 200 頁、unknown row partial、duplicate／token fail-closed、SG／AU 禁用、最多 23 個完整月、missing 不補零與 FBM 不進 snapshot／export。重複 exact offer 會以 `PAGINATION_CHANGED` 停止使用，不再默默採第一筆。Restock 的既有 optional inventory quantity→0 DTO 相容規則沒有改變。本地 `npm run check` 已通過 136 個測試檔／1,294 項測試、typecheck 與 production build，`npm audit --omit=dev` 為 0 漏洞，`git diff --check` 通過。本文件記錄的是 fixture／demo／local 證據；PR CI 另行核對，且不能冒充部署、安裝、Notebook Key、live Amazon、Validation Preview、PATCH 或真實裝置驗證。兩個既有 user-owned untracked duplicate files 仍排除。
+架構深化工作依 #69 的 tracer bullets 進行中：S01–S06 已分別發布為尚未合併的 stacked PR #109–#114；S07 本分支在其上抽出 Variation／catalog identity 唯讀 cluster。`variation-family-reads.ts` 封閉 exact SKU／ASIN member、declared children 與 opaque child pagination；`variation-relationship-evidence.ts` 封閉最多 20 SKU 的 relationships batch 與逐列 identity／role classification；`variation-catalog-reads.ts` 組合既有 FBA grouping、未綁變體與評論候選 public seam。三者只接受 S05 的固定 `ListingsReadAdapter`，不接受任意 transport callback、URL、method、query、body、Seller ID、token 或 retry control；variation batch 固定 production `variation` profile，Product Type 逐列 exact 核對，角色／parent／theme 只取 current-market relationships，attributes 只能交叉核對。Parent／child／standalone 不由標題或相似 ASIN 推論，站點、角色、ASIN、declared child、queried child 是否實際出現在 canonical search、總列數、跨頁重複 SKU、重複 page token 與 family theme conflict 均 fail closed。畸形 2xx nested payload 會轉為 canonical `SpApiError`；成功 family DTO 的 issue message 使用固定公開文案，Request ID 與 issue identifiers 經同一 canonical private-material sanitizer 與數量上限。報表 lifecycle、demo／live dispatch 與所有 mutation PTD／preview／native approval／idempotency／PATCH／readback 留在 facade；B2B 與 Variation 只共用中立的 exact 20-SKU planner。`sp-api.ts` 從 S06 的 15,803 行降為 14,361 行，新 cluster 分為 826／485／613 行，沒有建立新的 God File。本地 `npm run check` 已通過 138 個測試檔／1,321 項測試、typecheck 與 production build，`npm audit --omit=dev` 為 0 漏洞，`git diff --check` 通過。本文件記錄的是 fixture／demo／local 證據；PR CI 另行核對，且不能冒充部署、安裝、Notebook Key、live Amazon、Validation Preview、PATCH 或真實裝置驗證。兩個既有 user-owned untracked duplicate files 仍排除。
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -556,17 +556,24 @@ Amazon App：
 11. `src/main/api-router.ts` — 所有 UI API 路由、preview／commit 與輸入驗證。
 12. `src/main/amazon/listings-reads.ts` — 封閉的 Listings／PTD item、search、definition 語意與 scripted adapter。
 13. `src/main/amazon/listings-reads-production.ts` — 固定 GET endpoint、token／retry／fallback 與 PTD schema 外部 seam。
-14. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
-15. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
-16. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
-17. `src/main/amazon/sp-api.ts` — 尚未抽離的 SP-API facade、正規化、報表、Listings writes 與 Orders。
-18. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-19. `src/preload/index.ts` — 窄化 Bridge。
-20. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-21. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-22. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-23. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-24. `tests/*.test.ts` — 已建立的安全與回歸契約。
+14. `src/main/amazon/listings-response-error.ts` — Listings read／write 共用 status、issue 與 upstream error mapping。
+15. `src/main/amazon/exact-seller-sku-batches.ts` — 不 trim／不 alias 的固定 20-SKU batch planner。
+16. `src/main/amazon/variation-family.ts` — family member、role、theme、dimension 與 relationship 純 normalization。
+17. `src/main/amazon/unbound-variation-audit.ts` — explicit relationships evidence 與 deterministic workbook family rows。
+18. `src/main/amazon/variation-family-reads.ts` — exact SKU／ASIN member、declared children 與 child pagination。
+19. `src/main/amazon/variation-relationship-evidence.ts` — 固定 relationship batch 與逐列 identity／role classification。
+20. `src/main/amazon/variation-catalog-reads.ts` — FBA grouping、unbound／review seed 的高階唯讀組合 seam。
+21. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
+22. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
+23. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
+24. `src/main/amazon/sp-api.ts` — 尚未抽離的 SP-API facade、報表、demo dispatch、Listings writes 與 Orders。
+25. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+26. `src/preload/index.ts` — 窄化 Bridge。
+27. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+28. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+29. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+30. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+31. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

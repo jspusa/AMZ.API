@@ -141,6 +141,10 @@ export function publicSpApiRequestId(value: unknown): string | null {
   return publicMetadata(value);
 }
 
+export function publicSpApiIssueIdentifier(value: unknown): string | null {
+  return publicMetadata(value);
+}
+
 function publicRetryAfter(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.length > 64) {
     return null;
@@ -160,17 +164,10 @@ function publicIdentifierList(value: unknown): readonly string[] {
   if (!Array.isArray(value)) return Object.freeze([]);
   const identifiers: string[] = [];
   for (const candidate of value.slice(0, PUBLIC_ISSUE_IDENTIFIER_LIMIT)) {
-    if (
-      typeof candidate !== "string" ||
-      candidate.length === 0 ||
-      candidate.length > PUBLIC_METADATA_LIMIT ||
-      stripInvisibleAndControlCharacters(candidate) !== candidate ||
-      containsPrivateMaterial(candidate) ||
-      !SAFE_ISSUE_IDENTIFIER_PATTERN.test(candidate)
-    ) {
-      continue;
+    const identifier = publicSpApiIssueIdentifier(candidate);
+    if (identifier && SAFE_ISSUE_IDENTIFIER_PATTERN.test(identifier)) {
+      identifiers.push(identifier);
     }
-    identifiers.push(candidate);
   }
   return Object.freeze(identifiers);
 }
@@ -206,6 +203,12 @@ function publicIssues(value: unknown): readonly PublicListingIssue[] {
     if (issue) issues.push(issue);
   }
   return Object.freeze(issues);
+}
+
+export function publicSpApiListingIssues(
+  value: unknown,
+): readonly PublicListingIssue[] {
+  return publicIssues(value);
 }
 
 function publicOperation(value: unknown): SpApiOperation | null {

@@ -35,6 +35,24 @@ const EXTRACTED_FBA_INVENTORY_REPLENISHMENT_MODULES = [
   "src/main/amazon/replenishment-audit.ts",
 ] as const;
 
+const EXTRACTED_VARIATION_CATALOG_MODULES = [
+  "src/main/amazon/variation-family-reads.ts",
+  "src/main/amazon/variation-relationship-evidence.ts",
+  "src/main/amazon/variation-catalog-reads.ts",
+  "src/main/amazon/exact-seller-sku-batches.ts",
+  "src/main/amazon/listings-response-error.ts",
+  "src/main/amazon/variation-family.ts",
+  "src/main/amazon/unbound-variation-audit.ts",
+] as const;
+
+const FORBIDDEN_VARIATION_CATALOG_DEPENDENCIES = new Set([
+  "src/main/amazon/listings-reads-production.ts",
+  "src/main/amazon/variation-update.ts",
+  "src/main/local-store.ts",
+  "src/main/credential-vault.ts",
+  "src/preload/index.ts",
+]);
+
 const ERROR_CONSUMERS = new Map<string, readonly string[]>([
   ["src/main/local-store.ts", ["SpApiError", "SpApiPreCommitError"]],
   ["src/main/amazon/connection-health.ts", ["SpApiError"]],
@@ -180,6 +198,61 @@ describe("SP execution-context architecture", () => {
       expect(legacyDependencies(entryPath)).toEqual([]);
     },
   );
+
+  it.each(EXTRACTED_VARIATION_CATALOG_MODULES)(
+    "%s stays independent from legacy runtime modules",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
+  it.each([
+    "src/main/amazon/variation-family-reads.ts",
+    "src/main/amazon/variation-relationship-evidence.ts",
+    "src/main/amazon/variation-catalog-reads.ts",
+  ])("keeps %s outside write and production wiring", (entryPath) => {
+    const sourcePath = absolutePath(entryPath);
+    const forbiddenImports = sourceImports(sourcePath)
+      .map((sourceImport) =>
+        resolveLocalImport(sourcePath, sourceImport.specifier),
+      )
+      .filter((dependency): dependency is string => dependency !== null)
+      .map(repositoryPath)
+      .filter((dependency) =>
+        FORBIDDEN_VARIATION_CATALOG_DEPENDENCIES.has(dependency)
+      );
+
+    expect(forbiddenImports).toEqual([]);
+  });
+
+  it("removes superseded Variation read helper declarations from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const helper of [
+      "normalizeVariationPayload",
+      "fetchVariationItem",
+      "fetchVariationChildren",
+      "fetchLiveVariationFamily",
+      "resolveLiveSellerSkuByAsin",
+      "executeUnboundVariationSearchRequest",
+      "exactUnboundVariationMarketplaceSummary",
+      "incompleteVariationBatch",
+      "variationGroupingSignature",
+      "fetchFbaReviewRelationshipBatch",
+    ]) {
+      expect(source).not.toMatch(new RegExp(`function\\s+${helper}\\b`, "u"));
+    }
+  });
+
+  it("keeps arbitrary relationship transport callbacks out of the Variation read cluster", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/variation-catalog-reads.ts"),
+      "utf8",
+    );
+    expect(source).not.toMatch(/\bsearchBatch\b/u);
+  });
 
   it.each([...ERROR_CONSUMERS.entries()])(
     "%s imports canonical SP errors from the error seam",

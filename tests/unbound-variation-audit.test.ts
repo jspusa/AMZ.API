@@ -159,6 +159,7 @@ describe("unbound variation relationship evidence", () => {
               marketplaceId: MARKETPLACE_ID,
               asin: "B000000001",
               itemName: "Standalone",
+              productType: "PET_FOOD",
             }],
             productTypes: [{
               marketplaceId: MARKETPLACE_ID,
@@ -176,6 +177,7 @@ describe("unbound variation relationship evidence", () => {
               marketplaceId: MARKETPLACE_ID,
               asin: "B000000002",
               itemName: "Child",
+              productType: "PET_FOOD",
             }],
             productTypes: [{
               marketplaceId: MARKETPLACE_ID,
@@ -465,18 +467,23 @@ describe("unbound variation relationship evidence", () => {
   });
 
   it("separates bound child and parent container results", () => {
-    const relationships = [{ marketplaceId: MARKETPLACE_ID, relationships: [] }];
     expect(classifyUnboundVariationEvidence({
       marketplaceId: MARKETPLACE_ID,
       profile: "relationships",
-      relationships,
+      relationships: [{
+        marketplaceId: MARKETPLACE_ID,
+        relationships: [{ parentSkus: ["PARENT-SKU"] }],
+      }],
       role: "child",
       listingFulfillmentEvidence: "FBA",
     })).toEqual({ kind: "bound-child" });
     expect(classifyUnboundVariationEvidence({
       marketplaceId: MARKETPLACE_ID,
       profile: "relationships",
-      relationships,
+      relationships: [{
+        marketplaceId: MARKETPLACE_ID,
+        relationships: [{ childSkus: ["CHILD-SKU"] }],
+      }],
       role: "parent",
       listingFulfillmentEvidence: "FBA",
     })).toEqual({ kind: "parent-container" });
