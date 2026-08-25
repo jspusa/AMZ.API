@@ -136,6 +136,9 @@ describe("shared marketplace metadata", () => {
       customerFeedback: "../src/main/amazon/customer-feedback-reads.ts",
       customerFeedbackProduction:
         "../src/main/amazon/customer-feedback-reads-production.ts",
+      demoFbaCatalog: "../src/main/amazon/demo-fba-catalog.ts",
+      orders: "../src/main/amazon/orders-reads.ts",
+      ordersProduction: "../src/main/amazon/orders-reads-production.ts",
       spApi: "../src/main/amazon/sp-api.ts",
       vault: "../src/main/credential-vault.ts",
     } as const;

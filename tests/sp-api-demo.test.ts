@@ -6,7 +6,6 @@ import {
   invalidateSpApiCredentialCaches,
   previewListingPriceUpdate,
   previewListingSalePriceUpdate,
-  searchOrders,
   updateListingPrice,
 } from "../src/main/amazon/sp-api";
 
@@ -28,19 +27,6 @@ describe("SP-API demo safety boundary", () => {
     for (const [key, value] of savedEnvironment) {
       if (value !== undefined) process.env[key] = value;
     }
-  });
-
-  it("always returns FBA-only orders when credentials are absent", async () => {
-    const snapshot = await searchOrders({
-      marketplaceId: "ATVPDKIKX0DER",
-      lastUpdatedAfter: new Date(Date.now() - 7 * 86_400_000).toISOString(),
-      fulfilledBy: "AMAZON",
-      maxResultsPerPage: 50,
-    });
-
-    expect(snapshot.mode).toBe("demo");
-    expect(snapshot.orders.length).toBeGreaterThan(0);
-    expect(snapshot.orders.every((order) => order.fulfilledBy === "AMAZON")).toBe(true);
   });
 
   it("keeps price changes behind preview and expected-price checks", async () => {

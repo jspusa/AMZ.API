@@ -79,6 +79,7 @@ import {
   getBusinessPricing,
   aplusContentPageAdapterProduction,
   customerFeedbackPageAdapterProduction,
+  isConfiguredForMarketplace,
   getRestockPlan,
   getSalesTrend,
   getFbaSubscriptionAudit,
@@ -86,7 +87,6 @@ import {
   getSubscribeAndSaveOffer,
   getVariationFamilyPlanner,
   getVariationMovePreparation,
-  isFulfillmentStatus,
   isMarketplaceId,
   invalidateSpApiCredentialCaches,
   previewListingContentUpdate,
@@ -97,8 +97,8 @@ import {
   previewVariationMove,
   fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
+  ordersPageAdapterProduction,
   searchListingsBySku,
-  searchOrders,
   updateListingContent,
   updateBusinessPrice,
   updateListingImages,
@@ -181,6 +181,12 @@ import {
   customerFeedbackMarketplaceSupported,
   type CustomerFeedbackReadsPort,
 } from "./amazon/customer-feedback-reads";
+import {
+  isOrderFulfillmentStatus,
+  OrdersReads,
+  type OrderFulfillmentStatus,
+  type OrdersReadsPort,
+} from "./amazon/orders-reads";
 import {
   isDateOnly,
   marketplaceCalendar,
@@ -1714,6 +1720,7 @@ export class ApiRouter {
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
   private readonly reviewAuditCandidates: ReviewAuditCandidateSource;
   private readonly customerFeedbackReads: CustomerFeedbackReadsPort;
+  private readonly ordersReads: OrdersReadsPort;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
   private readonly fbaInboundReads: InboundReadsPort;
   private readonly reportLifecycle: DurableReportLifecycle;
@@ -1781,6 +1788,7 @@ export class ApiRouter {
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
     reviewAuditCandidates?: ReviewAuditCandidateSource;
     customerFeedbackReads?: CustomerFeedbackReadsPort;
+    ordersReads?: OrdersReadsPort;
     advertisingStrategyWait?: typeof waitMilliseconds;
     fbaInboundReads?: Partial<InboundReadsPort>;
     inboundNoncomplianceDemoReports?: Partial<
@@ -1946,6 +1954,11 @@ export class ApiRouter {
         context: this.spExecutionContext,
         live: customerFeedbackPageAdapterProduction,
       });
+    this.ordersReads = input.ordersReads ?? new OrdersReads({
+      context: this.spExecutionContext,
+      live: ordersPageAdapterProduction,
+      isConfiguredForMarketplace,
+    });
     this.aplusContentReads = input.aplusContentReads ?? new AplusContentReads({
       context: this.spExecutionContext,
       live: aplusContentPageAdapterProduction,
@@ -2056,11 +2069,9 @@ export class ApiRouter {
     for (const region of ["na", "fe", "eu"] as const) {
       if (!summary.regions[region].configured) continue;
       result.regions[region] = await testRegionConnections({
-        orders: () => searchOrders({
+        orders: () => this.ordersReads.read({
+          intent: "connection-probe",
           marketplaceId: representatives[region],
-          lastUpdatedAfter: new Date(Date.now() - 86_400_000).toISOString(),
-          fulfilledBy: "AMAZON",
-          maxResultsPerPage: 1,
         }),
         listings: () => verifyListingsAccess(representatives[region]),
       });
@@ -2702,24 +2713,27 @@ export class ApiRouter {
       request.query.marketplaceId ?? DEFAULT_MARKETPLACE_ID,
     );
     const days = integer(request.query.days, 14, 1, 90);
-    const fulfillmentStatus = request.query.status || null;
+    const requestedFulfillmentStatus = request.query.status || null;
+    let fulfillmentStatus: OrderFulfillmentStatus | null = null;
     const paginationToken = request.query.paginationToken || null;
     if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
     if (days === null) return invalid("日期範圍必須介於 1 到 90 天。");
-    if (fulfillmentStatus && !isFulfillmentStatus(fulfillmentStatus)) {
-      return invalid("不支援這個訂單狀態。");
+    if (requestedFulfillmentStatus) {
+      if (!isOrderFulfillmentStatus(requestedFulfillmentStatus)) {
+        return invalid("不支援這個訂單狀態。");
+      }
+      fulfillmentStatus = requestedFulfillmentStatus;
     }
     if (paginationToken && paginationToken.length > 4_096) {
       return invalid("分頁資訊無效，請重新查詢。");
     }
     try {
-      const snapshot = await searchOrders({
+      const snapshot = await this.ordersReads.read({
+        intent: "dashboard-page",
         marketplaceId,
-        lastUpdatedAfter: new Date(Date.now() - days * 86_400_000).toISOString(),
+        days,
         fulfillmentStatus,
-        fulfilledBy: "AMAZON",
         paginationToken,
-        maxResultsPerPage: 50,
       });
       return json({ ...snapshot, marketplace: MARKETPLACES[marketplaceId] });
     } catch (error) {

@@ -73,6 +73,9 @@ import { createAplusContentReadProductionAdapter } from
   "./a-plus-content-reads-production";
 import { createCustomerFeedbackReadProductionAdapter } from
   "./customer-feedback-reads-production";
+import { createOrdersReadProductionAdapter } from
+  "./orders-reads-production";
+import { demoFbaCatalogRows } from "./demo-fba-catalog";
 import type { FbaCatalogReportsDemoSource } from "./fba-catalog-reports";
 import {
   exactListingEnvelopeIdentity,
@@ -162,44 +165,6 @@ export type { MarketplaceId } from "../../shared/marketplaces";
 export type Money = {
   amount: number;
   currencyCode: string;
-};
-
-export type DashboardOrderItem = {
-  orderItemId: string;
-  asin: string;
-  sellerSku: string;
-  title: string;
-  quantity: number;
-  unitPrice: Money | null;
-  lineTotal: Money | null;
-};
-
-export type DashboardOrder = {
-  orderId: string;
-  createdTime: string;
-  lastUpdatedTime: string;
-  marketplaceId: string;
-  marketplaceName: string;
-  programs: string[];
-  fulfillmentStatus: string;
-  fulfilledBy: string;
-  fulfillmentServiceLevel: string;
-  shipBy: string | null;
-  deliverBy: string | null;
-  total: Money | null;
-  items: DashboardOrderItem[];
-};
-
-export type OrdersSnapshot = {
-  mode: "live" | "demo";
-  orders: DashboardOrder[];
-  marketplaceId: string;
-  fetchedAt: string;
-  nextToken: string | null;
-  lastUpdatedBefore: string | null;
-  requestId: string | null;
-  rateLimit: string | null;
-  notice: string | null;
 };
 
 export type SalesTrendDays = SalesTrendPresetDays;
@@ -750,71 +715,6 @@ const REGION_ENDPOINTS: Record<SpApiRegion, string> = {
   fe: "https://sellingpartnerapi-fe.amazon.com",
 };
 
-const VALID_STATUSES = new Set([
-  "PENDING_AVAILABILITY",
-  "PENDING",
-  "UNSHIPPED",
-  "PARTIALLY_SHIPPED",
-  "SHIPPED",
-  "CANCELLED",
-  "UNFULFILLABLE",
-]);
-
-type SearchOrdersInput = {
-  marketplaceId: MarketplaceId;
-  lastUpdatedAfter: string;
-  fulfillmentStatus?: string | null;
-  fulfilledBy?: "AMAZON" | null;
-  paginationToken?: string | null;
-  maxResultsPerPage?: number;
-};
-
-type AmazonMoney = {
-  amount?: string | number;
-  currencyCode?: string;
-};
-
-type AmazonOrderItem = {
-  orderItemId?: string;
-  quantityOrdered?: number;
-  product?: {
-    asin?: string;
-    title?: string;
-    sellerSku?: string;
-    price?: { unitPrice?: AmazonMoney };
-  };
-  proceeds?: {
-    proceedsTotal?: AmazonMoney;
-  };
-};
-
-type AmazonOrder = {
-  orderId?: string;
-  createdTime?: string;
-  lastUpdatedTime?: string;
-  programs?: string[];
-  salesChannel?: {
-    marketplaceId?: string;
-    marketplaceName?: string;
-  };
-  proceeds?: {
-    grandTotal?: AmazonMoney;
-  };
-  fulfillment?: {
-    fulfillmentStatus?: string;
-    fulfilledBy?: string;
-    fulfillmentServiceLevel?: string;
-    shipByWindow?: { latestDateTime?: string };
-    deliverByWindow?: { latestDateTime?: string };
-  };
-  orderItems?: AmazonOrderItem[];
-};
-
-type SearchOrdersResponse = {
-  orders?: AmazonOrder[];
-  pagination?: { nextToken?: string };
-  lastUpdatedBefore?: string;
-};
 
 type AmazonListingIssue = {
   code?: string;
@@ -1083,12 +983,6 @@ function toAmzDate(date = new Date()): string {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
 }
 
-function parseMoney(value: AmazonMoney | undefined): Money | null {
-  const amount = Number(value?.amount);
-  if (!Number.isFinite(amount) || !value?.currencyCode) return null;
-  return { amount, currencyCode: value.currencyCode };
-}
-
 function safeText(value: string | undefined, fallback: string): string {
   return typeof value === "string" && value.trim() ? value : fallback;
 }
@@ -1264,85 +1158,6 @@ function samePrice(left: number, right: number, currencyCode: string): boolean {
   const precision = currencyCode === "JPY" ? 0 : 2;
   const factor = 10 ** precision;
   return Math.round(left * factor) === Math.round(right * factor);
-}
-
-function normalizeOrders(
-  orders: AmazonOrder[] | undefined,
-  fallbackMarketplaceId: MarketplaceId,
-): DashboardOrder[] {
-  const marketplace = MARKETPLACES[fallbackMarketplaceId];
-
-  return (orders ?? []).map((order, orderIndex) => {
-    const items = (order.orderItems ?? []).map((item, itemIndex) => {
-      const unitPrice = parseMoney(item.product?.price?.unitPrice);
-      const quantity = Number.isFinite(item.quantityOrdered)
-        ? Math.max(0, Number(item.quantityOrdered))
-        : 0;
-      const suppliedLineTotal = parseMoney(item.proceeds?.proceedsTotal);
-      const lineTotal =
-        suppliedLineTotal ??
-        (unitPrice
-          ? {
-              amount: unitPrice.amount * quantity,
-              currencyCode: unitPrice.currencyCode,
-            }
-          : null);
-
-      return {
-        orderItemId: safeText(
-          item.orderItemId,
-          `item-${orderIndex + 1}-${itemIndex + 1}`,
-        ),
-        asin: safeText(item.product?.asin, "—"),
-        sellerSku: safeText(item.product?.sellerSku, "—"),
-        title: safeText(item.product?.title, "未提供商品名稱"),
-        quantity,
-        unitPrice,
-        lineTotal,
-      };
-    });
-
-    const calculatedTotal = items.reduce<Money | null>((total, item) => {
-      if (!item.lineTotal) return total;
-      if (!total) return { ...item.lineTotal };
-      if (total.currencyCode !== item.lineTotal.currencyCode) return total;
-      return {
-        amount: total.amount + item.lineTotal.amount,
-        currencyCode: total.currencyCode,
-      };
-    }, null);
-
-    return {
-      orderId: safeText(order.orderId, `unknown-${orderIndex + 1}`),
-      createdTime: safeText(order.createdTime, new Date(0).toISOString()),
-      lastUpdatedTime: safeText(
-        order.lastUpdatedTime,
-        safeText(order.createdTime, new Date(0).toISOString()),
-      ),
-      marketplaceId: safeText(
-        order.salesChannel?.marketplaceId,
-        fallbackMarketplaceId,
-      ),
-      marketplaceName: safeText(
-        order.salesChannel?.marketplaceName,
-        marketplace.name,
-      ),
-      programs: Array.isArray(order.programs) ? order.programs : [],
-      fulfillmentStatus: safeText(
-        order.fulfillment?.fulfillmentStatus,
-        "UNKNOWN",
-      ),
-      fulfilledBy: safeText(order.fulfillment?.fulfilledBy, "UNKNOWN"),
-      fulfillmentServiceLevel: safeText(
-        order.fulfillment?.fulfillmentServiceLevel,
-        "—",
-      ),
-      shipBy: order.fulfillment?.shipByWindow?.latestDateTime ?? null,
-      deliverBy: order.fulfillment?.deliverByWindow?.latestDateTime ?? null,
-      total: parseMoney(order.proceeds?.grandTotal) ?? calculatedTotal,
-      items,
-    };
-  });
 }
 
 async function requestAccessToken(
@@ -1602,6 +1417,14 @@ export const aplusContentPageAdapterProduction =
 /** One long-lived adapter preserves the global Customer Feedback quota fence. */
 export const customerFeedbackPageAdapterProduction =
   createCustomerFeedbackReadProductionAdapter({
+    getAccessToken: requestAccessToken,
+    invalidateAccessToken: (region) => tokenCache.delete(region),
+    resolveMode: (marketplaceId) =>
+      shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+  });
+
+export const ordersPageAdapterProduction =
+  createOrdersReadProductionAdapter({
     getAccessToken: requestAccessToken,
     invalidateAccessToken: (region) => tokenCache.delete(region),
     resolveMode: (marketplaceId) =>
@@ -5642,118 +5465,6 @@ async function prepareLiveSalePriceUpdate(
   };
 }
 
-async function callOrdersApi(
-  input: SearchOrdersInput,
-  forceTokenRefresh = false,
-): Promise<Response> {
-  const marketplace = MARKETPLACES[input.marketplaceId];
-  const region = marketplace.region;
-  const token = await requestAccessToken(region, forceTokenRefresh);
-  const query = new URLSearchParams({
-    lastUpdatedAfter: input.lastUpdatedAfter,
-    marketplaceIds: input.marketplaceId,
-    maxResultsPerPage: String(input.maxResultsPerPage ?? 50),
-    includedData: "PROCEEDS,FULFILLMENT,CANCELLATION,PROMOTION",
-  });
-
-  if (input.fulfillmentStatus && VALID_STATUSES.has(input.fulfillmentStatus)) {
-    query.set("fulfillmentStatuses", input.fulfillmentStatus);
-  }
-  if (input.fulfilledBy === "AMAZON") {
-    query.set("fulfilledBy", input.fulfilledBy);
-  }
-  if (input.paginationToken) {
-    query.set("paginationToken", input.paginationToken);
-  }
-
-  const url = `${REGION_ENDPOINTS[region]}/orders/2026-01-01/orders?${query}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-
-  try {
-    return await fetch(url, {
-      headers: {
-        accept: "application/json",
-        "x-amz-access-token": token,
-        "x-amz-date": toAmzDate(),
-        "user-agent": spApiUserAgent(),
-      },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon SP-API 回應逾時，請稍後再試。", {
-        status: 504,
-        code: "UPSTREAM_UNAVAILABLE",
-      });
-    }
-    throw new SpApiError("目前無法連線至 Amazon SP-API。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function fetchLiveOrders(input: SearchOrdersInput): Promise<OrdersSnapshot> {
-  let response = await callOrdersApi(input);
-
-  if (response.status === 401) {
-    tokenCache.delete(MARKETPLACES[input.marketplaceId].region);
-    response = await callOrdersApi(input, true);
-  }
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (![429, 500, 503].includes(response.status)) break;
-    await wait(retryDelayMs(response, attempt));
-    response = await callOrdersApi(input);
-  }
-
-  const requestId = response.headers.get("x-amzn-requestid");
-  const rateLimit = response.headers.get("x-amzn-ratelimit-limit");
-
-  if (!response.ok) {
-    const status = response.status;
-    const code =
-      status === 401 || status === 403
-        ? "UNAUTHORIZED"
-        : status === 429
-          ? "RATE_LIMITED"
-          : "UPSTREAM_UNAVAILABLE";
-    const message =
-      status === 401 || status === 403
-        ? "Amazon 拒絕了這次請求，請確認 app 角色、refresh token 與站點授權。"
-        : status === 429
-          ? "Amazon API 正在限流，請稍後再重新整理。"
-          : "Amazon SP-API 暫時無法完成請求。";
-
-    throw new SpApiError(message, {
-      status,
-      code,
-      requestId,
-      retryAfter: response.headers.get("retry-after"),
-    });
-  }
-
-  const payload = (await response.json()) as SearchOrdersResponse;
-  const orders = normalizeOrders(payload.orders, input.marketplaceId).filter(
-    (order) => order.fulfilledBy === "AMAZON",
-  );
-  return {
-    mode: "live",
-    orders,
-    marketplaceId: input.marketplaceId,
-    fetchedAt: new Date().toISOString(),
-    nextToken: payload.pagination?.nextToken ?? null,
-    lastUpdatedBefore: payload.lastUpdatedBefore ?? null,
-    requestId,
-    rateLimit,
-    notice: null,
-  };
-}
-
 function invalidSalesTrendRange(message: string): never {
   throw new SpApiError(message, {
     status: 400,
@@ -5794,74 +5505,6 @@ function isoHoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3_600_000).toISOString();
 }
 
-function buildDemoOrders(marketplaceId: MarketplaceId): DashboardOrder[] {
-  const marketplace = MARKETPLACES[marketplaceId];
-  const isJapan = marketplaceId === JP_MARKETPLACE_ID;
-  const products = isJapan
-    ? [
-        ["AFA100-JP", "B0JPFA1001", "Afreschi 七面鳥筋肉ジャーキー 100g", 1680],
-        ["GTC454-JP", "B0JPGTC454", "GooToE チキンジャーキー 454g", 2980],
-        ["AFA285-JP", "B0JPFA2851", "Afreschi ターキーテンドン 285g", 3680],
-        ["HERZ-SC-JP", "B0JPHERZ01", "HERZ ソフトチキントリーツ", 1280],
-      ]
-    : [
-        ["AFA-TRKY-4OZ", "B0USAFA004", "Afreschi Turkey Tendon Jerky, 4 oz", 13.99],
-        ["GTC-CHKN-1LB", "B0USGTC001", "GooToE Chicken Jerky Treats, 1 lb", 14.99],
-        ["AFA-TRKY-285G", "B0USAFA285", "Afreschi Turkey Tendon, 10 oz", 29.99],
-        ["ACTL-TRAIN-8OZ", "B0USACTL08", "Afreschi Training-Friendly Chicken Treats", 16.49],
-      ];
-  const statuses = [
-    "UNSHIPPED",
-    "SHIPPED",
-    "SHIPPED",
-    "PARTIALLY_SHIPPED",
-    "CANCELLED",
-    "PENDING",
-    "SHIPPED",
-    "UNSHIPPED",
-  ];
-
-  return statuses.map((status, index) => {
-    const product = products[index % products.length];
-    const quantity = (index % 3) + 1;
-    const unitAmount = Number(product[3]);
-    const itemTotal = status === "CANCELLED" ? 0 : unitAmount * quantity;
-    const createdTime = isoHoursAgo(3 + index * 11);
-
-    return {
-      orderId: `DEMO-${isJapan ? "JP" : "US"}-${String(840215 + index).padStart(7, "0")}`,
-      createdTime,
-      lastUpdatedTime: isoHoursAgo(1 + index * 8),
-      marketplaceId,
-      marketplaceName: marketplace.name,
-      programs: index % 2 === 0 ? ["PRIME"] : [],
-      fulfillmentStatus: status,
-      fulfilledBy: "AMAZON",
-      fulfillmentServiceLevel: index % 2 === 0 ? "EXPEDITED" : "STANDARD",
-      shipBy:
-        status === "CANCELLED"
-          ? null
-          : new Date(Date.now() + (index + 1) * 8 * 3_600_000).toISOString(),
-      deliverBy:
-        status === "CANCELLED"
-          ? null
-          : new Date(Date.now() + (index + 2) * 24 * 3_600_000).toISOString(),
-      total: { amount: itemTotal, currencyCode: marketplace.currency },
-      items: [
-        {
-          orderItemId: `DEMO-ITEM-${index + 1}`,
-          sellerSku: String(product[0]),
-          asin: String(product[1]),
-          title: String(product[2]),
-          quantity,
-          unitPrice: { amount: unitAmount, currencyCode: marketplace.currency },
-          lineTotal: { amount: itemTotal, currencyCode: marketplace.currency },
-        },
-      ],
-    };
-  });
-}
-
 const demoPriceOverrides = new Map<string, number>();
 const demoBusinessPriceOverrides = new Map<string, number>();
 const demoBusinessQuantityDiscountOverrides = new Map<
@@ -5897,11 +5540,10 @@ function getDemoListingPrice(
   sellerSku: string,
 ): ListingPriceSnapshot {
   const marketplace = MARKETPLACES[marketplaceId];
-  const item = buildDemoOrders(marketplaceId)
-    .flatMap((order) => order.items)
+  const item = demoFbaCatalogRows(marketplaceId)
     .find((candidate) => candidate.sellerSku === sellerSku);
 
-  if (!item || !item.unitPrice) {
+  if (!item) {
     const sampleSku =
       marketplaceById(marketplaceId)?.sampleSku ?? MARKETPLACE_METADATA[0].sampleSku;
     throw new SpApiError(
@@ -5912,7 +5554,7 @@ function getDemoListingPrice(
 
   const amount =
     demoPriceOverrides.get(demoPriceKey(marketplaceId, sellerSku)) ??
-    item.unitPrice.amount;
+    item.unitAmount;
   const price = { amount, currencyCode: marketplace.currency };
   const saleKey = demoPriceKey(marketplaceId, sellerSku);
   const demoSale = demoSalePriceOverrides.has(saleKey)
@@ -6685,8 +6327,7 @@ function resolveDemoSellerSkuByAsin(
   }
   const sellerSkus = [
     ...new Set(
-      buildDemoOrders(marketplaceId)
-        .flatMap((order) => order.items)
+      demoFbaCatalogRows(marketplaceId)
         .filter((item) => item.asin === asin)
         .map((item) => item.sellerSku),
     ),
@@ -7639,8 +7280,7 @@ function demoAllListingsExportData(
 } {
   const sellerSkus = [
     ...new Set(
-      buildDemoOrders(marketplaceId)
-        .flatMap((order) => order.items)
+      demoFbaCatalogRows(marketplaceId)
         .map((item) => item.sellerSku),
     ),
   ];
@@ -7794,8 +7434,7 @@ function demoUnboundVariationAuditSnapshot(input: {
 }): UnboundVariationAuditSnapshot {
   const sellerSkus = [
     ...new Set(
-      buildDemoOrders(input.marketplaceId)
-        .flatMap((order) => order.items)
+      demoFbaCatalogRows(input.marketplaceId)
         .map((item) => item.sellerSku),
     ),
   ];
@@ -8312,36 +7951,6 @@ export async function updateListingPrice(
   };
 }
 
-export async function searchOrders(
-  input: SearchOrdersInput,
-): Promise<OrdersSnapshot> {
-  const fbaInput: SearchOrdersInput = { ...input, fulfilledBy: "AMAZON" };
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    let orders = buildDemoOrders(input.marketplaceId);
-    if (fbaInput.fulfillmentStatus) {
-      orders = orders.filter(
-        (order) => order.fulfillmentStatus === fbaInput.fulfillmentStatus,
-      );
-    }
-    orders = orders.filter((order) => order.fulfilledBy === "AMAZON");
-    return {
-      mode: "demo",
-      orders,
-      marketplaceId: input.marketplaceId,
-      fetchedAt: new Date().toISOString(),
-      nextToken: null,
-      lastUpdatedBefore: new Date().toISOString(),
-      requestId: null,
-      rateLimit: null,
-      notice: isConfiguredForMarketplace(input.marketplaceId)
-        ? "目前由 SP_API_MODE 強制使用展示資料。"
-        : `${MARKETPLACES[input.marketplaceId].label}站尚未在本機系統安全儲存區加入 refresh token，因此顯示展示資料。`,
-    };
-  }
-
-  return fetchLiveOrders(fbaInput);
-}
-
 export async function getSalesTrend(input: {
   marketplaceId: MarketplaceId;
   days?: SalesTrendPresetDays | null;
@@ -8552,8 +8161,4 @@ export async function getRestockPlan(
 
 export function isMarketplaceId(value: string): value is MarketplaceId {
   return value in MARKETPLACES;
-}
-
-export function isFulfillmentStatus(value: string): boolean {
-  return VALID_STATUSES.has(value);
 }

@@ -73,6 +73,25 @@ const EXTRACTED_CUSTOMER_FEEDBACK_MODULES = [
   "src/main/amazon/customer-feedback-reads-production.ts",
 ] as const;
 
+const EXTRACTED_ORDERS_READ_MODULES = [
+  "src/main/amazon/orders-reads.ts",
+  "src/main/amazon/orders-reads-production.ts",
+] as const;
+
+const ORDERS_SEMANTIC_MODULE = "src/main/amazon/orders-reads.ts";
+const ORDERS_PRODUCTION_MODULE =
+  "src/main/amazon/orders-reads-production.ts";
+
+const FORBIDDEN_ORDERS_SEMANTIC_DEPENDENCIES = new Set([
+  ORDERS_PRODUCTION_MODULE,
+  "src/main/amazon/sp-api-runtime.ts",
+  "src/main/amazon/listing-write-readback.ts",
+  "src/main/amazon/variation-update.ts",
+  "src/main/advertising-credential-vault.ts",
+  "src/main/credential-vault.ts",
+  "src/main/update-policy.ts",
+]);
+
 const PURE_CATALOG_REPORT_MODULES = [
   "src/main/amazon/business-pricing-evidence.ts",
   "src/main/amazon/catalog-report-reads.ts",
@@ -360,6 +379,76 @@ function legacyDependencies(entryPath: string): string[] {
   return [...violations].sort();
 }
 
+function isForbiddenOrdersSemanticDependency(dependencyPath: string): boolean {
+  return LEGACY_RUNTIME_MODULES.has(dependencyPath) ||
+    FORBIDDEN_ORDERS_SEMANTIC_DEPENDENCIES.has(dependencyPath) ||
+    /-production\.(?:ts|tsx)$/u.test(dependencyPath) ||
+    /(?:^|[-/])(?:transport|update|vault|write)(?:[-/.]|$)/u.test(
+      dependencyPath,
+    ) ||
+    dependencyPath.startsWith("src/preload/") ||
+    dependencyPath.startsWith("src/renderer/");
+}
+
+function ordersSemanticDependencyViolations(): string[] {
+  const pending = [absolutePath(ORDERS_SEMANTIC_MODULE)];
+  const visited = new Set<string>();
+  const violations = new Set<string>();
+
+  while (pending.length > 0) {
+    const sourcePath = pending.pop();
+    if (!sourcePath || visited.has(sourcePath)) continue;
+    visited.add(sourcePath);
+
+    for (const sourceImport of sourceImports(sourcePath)) {
+      const dependency = resolveLocalImport(sourcePath, sourceImport.specifier);
+      if (!dependency) continue;
+      const dependencyPath = repositoryPath(dependency);
+      if (isForbiddenOrdersSemanticDependency(dependencyPath)) {
+        violations.add(`${repositoryPath(sourcePath)} -> ${dependencyPath}`);
+      } else if (!visited.has(dependency)) {
+        pending.push(dependency);
+      }
+    }
+  }
+
+  return [...violations].sort();
+}
+
+function isOrdersPrivateRawImport(name: string): boolean {
+  return /^OrdersPage/u.test(name) || /^AmazonOrder/u.test(name);
+}
+
+function ordersPrivateImportViolations(
+  sourcePaths: readonly string[],
+): string[] {
+  const violations = new Set<string>();
+  for (const sourcePath of sourcePaths) {
+    for (const sourceImport of sourceImports(sourcePath)) {
+      const dependency = resolveLocalImport(sourcePath, sourceImport.specifier);
+      if (!dependency) continue;
+      const dependencyPath = repositoryPath(dependency);
+      if (dependencyPath === ORDERS_PRODUCTION_MODULE) {
+        violations.add(`${repositoryPath(sourcePath)} -> ${dependencyPath}`);
+        continue;
+      }
+      if (dependencyPath !== ORDERS_SEMANTIC_MODULE) continue;
+      const rawImports = sourceImport.importedNames.filter(
+        isOrdersPrivateRawImport,
+      );
+      if (sourceImport.importedNames.length === 0 || rawImports.length > 0) {
+        const imported = rawImports.length > 0
+          ? rawImports.sort().join(", ")
+          : "*";
+        violations.add(
+          `${repositoryPath(sourcePath)} -> ${dependencyPath} (${imported})`,
+        );
+      }
+    }
+  }
+  return [...violations].sort();
+}
+
 function isForbiddenCatalogDependency(dependencyPath: string): boolean {
   return LEGACY_RUNTIME_MODULES.has(dependencyPath) ||
     FORBIDDEN_CATALOG_MODULE_DEPENDENCIES.has(dependencyPath) ||
@@ -551,6 +640,13 @@ describe("SP execution-context architecture", () => {
     },
   );
 
+  it.each(EXTRACTED_ORDERS_READ_MODULES)(
+    "%s stays independent from legacy runtime modules",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
   it.each(PURE_CATALOG_REPORT_MODULES)(
     "%s stays outside legacy, production, write, PTD, preload, and renderer wiring",
     (entryPath) => {
@@ -598,12 +694,18 @@ describe("SP execution-context architecture", () => {
     },
   );
 
-  it("keeps the catalog Listings interface free of fetch, URL, method, and PTD capabilities", () => {
-    expect(exportedTypePropertyNames(
-      absolutePath("src/main/amazon/catalog-report-reads.ts"),
-      "CatalogListingsReadAdapter",
-    )).toEqual(["readItem", "searchItems"]);
-  });
+  it(
+    "keeps the catalog Listings interface free of fetch, URL, method, and PTD capabilities",
+    () => {
+      expect(exportedTypePropertyNames(
+        absolutePath("src/main/amazon/catalog-report-reads.ts"),
+        "CatalogListingsReadAdapter",
+      )).toEqual(["readItem", "searchItems"]);
+    },
+    // The first TypeScript AST contract assertion cold-loads the full source
+    // program and can exceed Vitest's 5s default under full-suite contention.
+    15_000,
+  );
 
   it("removes superseded catalog and B2B helper declarations from the SP facade", () => {
     const source = readFileSync(
@@ -783,6 +885,100 @@ describe("SP execution-context architecture", () => {
     expect(source).not.toContain("reviewAuditFeedbackQueue");
     expect(source).not.toContain("reviewAuditFeedbackNextStartAt");
     expect(source).not.toContain("runReviewAuditFeedbackRequest");
+  });
+
+  it("keeps Orders behind one semantic read and one closed page adapter", () => {
+    const semanticPath = absolutePath(ORDERS_SEMANTIC_MODULE);
+    expect(exportedTypePropertyNames(
+      semanticPath,
+      "OrdersReadsPort",
+    )).toEqual(["read"]);
+    expect(exportedTypePropertyNames(
+      semanticPath,
+      "OrdersPageAdapter",
+    )).toEqual(["read"]);
+    expect(readFileSync(semanticPath, "utf8")).not.toMatch(
+      /export\s+(?:interface|type)\s+AmazonOrder\w*\b/u,
+    );
+  });
+
+  it("keeps the Orders semantic owner outside legacy, production, transport, write, vault, preload, and renderer wiring", () => {
+    expect(ordersSemanticDependencyViolations()).toEqual([]);
+  });
+
+  it("keeps Orders production and raw page internals private to the composition seam", () => {
+    const siblingAmazonDomains = sourceFiles(
+      absolutePath("src/main/amazon"),
+    ).filter((sourcePath) => ![
+      absolutePath(ORDERS_SEMANTIC_MODULE),
+      absolutePath(ORDERS_PRODUCTION_MODULE),
+      absolutePath("src/main/amazon/sp-api.ts"),
+    ].includes(sourcePath));
+    const forbiddenConsumers = [
+      ...sourceFiles(absolutePath("src/preload")),
+      ...sourceFiles(absolutePath("src/renderer")),
+      ...sourceFiles(absolutePath("src/shared")),
+      ...siblingAmazonDomains,
+    ];
+
+    expect(ordersPrivateImportViolations(forbiddenConsumers)).toEqual([]);
+  });
+
+  it("lets the router import only the public Orders semantic API", () => {
+    const routerPath = absolutePath("src/main/api-router.ts");
+    const imports = sourceImports(routerPath).map((sourceImport) => ({
+      ...sourceImport,
+      dependency: resolveLocalImport(routerPath, sourceImport.specifier),
+    }));
+    const productionImports = imports
+      .filter(({ dependency }) =>
+        dependency !== null &&
+        repositoryPath(dependency) === ORDERS_PRODUCTION_MODULE
+      )
+      .map(() => ORDERS_PRODUCTION_MODULE);
+    const semanticImports = imports.filter(({ dependency }) =>
+      dependency !== null &&
+      repositoryPath(dependency) === ORDERS_SEMANTIC_MODULE
+    );
+    const semanticImportNames = semanticImports.flatMap(
+      ({ importedNames }) => importedNames,
+    );
+    const rawImports = semanticImportNames.filter(isOrdersPrivateRawImport);
+
+    expect(productionImports).toEqual([]);
+    expect(ordersPrivateImportViolations([routerPath])).toEqual([]);
+    expect(semanticImportNames).toEqual(
+      expect.arrayContaining(["OrdersReads", "OrdersReadsPort"]),
+    );
+    expect(rawImports).toEqual([]);
+  });
+
+  it("removes superseded Orders transport and raw models from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const symbol of [
+      "searchOrders",
+      "callOrdersApi",
+      "fetchLiveOrders",
+      "normalizeOrders",
+      "buildDemoOrders",
+      "VALID_STATUSES",
+      "SearchOrdersInput",
+    ]) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).not.toMatch(/\bAmazonOrder\w*\b/u);
+  });
+
+  it("routes dashboard and connection-test Orders reads through the same semantic owner", () => {
+    const source = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    expect(source).not.toMatch(/\bsearchOrders\b/u);
+    expect(source.match(/this\.ordersReads\.read\(/gu)).toHaveLength(2);
   });
 
   it("reuses one normalized Aged Inventory header index", () => {
