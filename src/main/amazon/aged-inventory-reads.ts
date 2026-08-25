@@ -120,6 +120,8 @@ export interface AgedInventoryReadsPort {
 
 type ParsedAgedInventoryReport = {
   rows: AgedInventoryRow[];
+  storageCostCents: Array<number | null>;
+  agedSurchargeCents: Array<number | null>;
   ageBucketKeys: string[];
   agedSurchargeBucketKeys: string[];
   excessAvailability: AgedInventoryFeeAvailability;
@@ -262,12 +264,13 @@ function normalizedReportHeader(value: string): string {
   return value.trim().toLowerCase().replace(/[\s_]+/g, "-");
 }
 
-function reportColumn(headers: string[], candidates: string[]): number {
-  const normalized = headers.map(normalizedReportHeader);
-  const accepted = new Set(candidates.map(normalizedReportHeader));
-  const matches = normalized
-    .map((header, index) => accepted.has(header) ? index : -1)
-    .filter((index) => index >= 0);
+function reportColumn(
+  headerIndexes: ReadonlyMap<string, number>,
+  candidates: string[],
+): number {
+  const matches = candidates
+    .map((candidate) => headerIndexes.get(normalizedReportHeader(candidate)))
+    .filter((index): index is number => index !== undefined);
   if (matches.length > 1) {
     reportFormatUnsupported(
       "Amazon FBA 庫齡報表包含重複或衝突欄位，已停止讀取。",
@@ -332,14 +335,67 @@ function reportDecimalCell(
       code: "REPORT_FORMAT_UNSUPPORTED",
     });
   }
-  const value = Number(raw.replace(/,/g, ""));
+  const normalized = raw.replace(/,/g, "");
+  const value = Number(normalized);
   if (!Number.isFinite(value) || value < 0) {
     throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」不是有效數字。`, {
       status: 502,
       code: "REPORT_FORMAT_UNSUPPORTED",
     });
   }
+  if (value === 0 && /[1-9]/.test(normalized)) {
+    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
   return value;
+}
+
+function reportMoneyCents(
+  row: string[],
+  index: number,
+  label: string,
+): number | null {
+  if (index < 0) return null;
+  const raw = row[index]?.trim() ?? "";
+  if (!raw) return null;
+  if (
+    !/^(?:\d+(?:\.\d{1,2})?|\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)$/.test(
+      raw,
+    )
+  ) {
+    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」不是有效數字。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  const normalized = raw.replace(/,/g, "");
+  const [whole = "0", fraction = ""] = normalized.split(".");
+  const significantWhole = whole.replace(/^0+/u, "") || "0";
+  if (significantWhole.length > 14) {
+    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  const exactCents =
+    BigInt(significantWhole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  if (exactCents > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  const cents = Number(exactCents);
+  const publicValue = cents / 100;
+  if (Math.round(publicValue * 100) !== cents) {
+    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
+      status: 502,
+      code: "REPORT_FORMAT_UNSUPPORTED",
+    });
+  }
+  return cents;
 }
 
 function safeIntegerTotal(values: number[], label: string): number {
@@ -361,30 +417,15 @@ function safeIntegerTotal(values: number[], label: string): number {
   return total;
 }
 
-function safeDecimalTotal(values: number[], label: string): number {
-  let total = 0;
-  for (const value of values) {
-    if (!Number.isFinite(value) || value < 0) {
-      reportFormatUnsupported(
-        `Amazon FBA 庫齡報表的${label}加總超出安全範圍。`,
-      );
-    }
-    const next = total + value;
-    if (!Number.isFinite(next)) {
-      reportFormatUnsupported(
-        `Amazon FBA 庫齡報表的${label}加總超出安全範圍。`,
-      );
-    }
-    total = next;
-  }
-  const rounded = Number(total.toFixed(2));
-  const roundedCents = Math.round(rounded * 100);
-  if (!Number.isSafeInteger(roundedCents)) {
+function safeMoneyTotal(centsValues: number[], label: string): number {
+  const cents = safeIntegerTotal(centsValues, label);
+  const value = cents / 100;
+  if (Math.round(value * 100) !== cents) {
     reportFormatUnsupported(
       `Amazon FBA 庫齡報表的${label}加總超出安全範圍。`,
     );
   }
-  return rounded;
+  return value;
 }
 
 function reportCurrencyCell(row: string[], index: number): string | null {
@@ -450,22 +491,26 @@ function parseAgedInventoryReportData(
   const rows = parseTsv(text);
   const headers = rows[0] ?? [];
   const normalizedHeaders = headers.map(normalizedReportHeader);
-  const seenHeaders = new Set<string>();
-  for (const header of normalizedHeaders) {
+  const headerIndexes = new Map<string, number>();
+  for (const [index, header] of normalizedHeaders.entries()) {
     if (!header) continue;
-    if (seenHeaders.has(header)) {
+    if (headerIndexes.has(header)) {
       reportFormatUnsupported(
         "Amazon FBA 庫齡報表包含重複或衝突欄位，已停止讀取。",
       );
     }
-    seenHeaders.add(header);
+    headerIndexes.set(header, index);
   }
   if (rows.slice(1).some((row) => row.length !== headers.length)) {
     reportFormatUnsupported(
       "Amazon FBA 庫齡報表資料列的欄位數與標題列不一致。",
     );
   }
-  const skuIndex = reportColumn(headers, ["sku", "seller-sku", "merchant-sku"]);
+  const skuIndex = reportColumn(headerIndexes, [
+    "sku",
+    "seller-sku",
+    "merchant-sku",
+  ]);
   if (skuIndex < 0) {
     throw new SpApiError("Amazon FBA 庫齡報表找不到 Seller SKU 欄位。", {
       status: 502,
@@ -478,7 +523,7 @@ function parseAgedInventoryReportData(
   ): ReportAgeColumn[] =>
     definitions.map((item) => ({
       ...item,
-      index: reportColumn(headers, [item.header]),
+      index: reportColumn(headerIndexes, [item.header]),
     }));
   const recentDetailedAgeColumns = ageColumns([
     {
@@ -621,10 +666,10 @@ function parseAgedInventoryReportData(
   ): ReportSurchargeColumn[] =>
     definitions.map((item) => ({
       ...item,
-      quantityIndex: reportColumn(headers, [
+      quantityIndex: reportColumn(headerIndexes, [
         `quantity-to-be-charged-ais-${item.key}-days`,
       ]),
-      estimatedIndex: reportColumn(headers, [
+      estimatedIndex: reportColumn(headerIndexes, [
         `estimated-ais-${item.key}-days`,
       ]),
     }));
@@ -672,34 +717,54 @@ function parseAgedInventoryReportData(
     );
   }
 
-  const fnSkuIndex = reportColumn(headers, ["fnsku", "fulfillment-channel-sku"]);
-  const asinIndex = reportColumn(headers, ["asin"]);
-  const titleIndex = reportColumn(headers, [
+  const fnSkuIndex = reportColumn(headerIndexes, [
+    "fnsku",
+    "fulfillment-channel-sku",
+  ]);
+  const asinIndex = reportColumn(headerIndexes, ["asin"]);
+  const titleIndex = reportColumn(headerIndexes, [
     "product-name",
     "item-name",
     "title",
   ]);
-  const conditionIndex = reportColumn(headers, ["condition"]);
-  const availableIndex = reportColumn(headers, ["available"]);
-  const excessIndex = reportColumn(headers, ["estimated-excess-quantity"]);
-  const removalIndex = reportColumn(headers, ["recommended-removal-quantity"]);
-  const daysOfSupplyIndex = reportColumn(headers, [
+  const conditionIndex = reportColumn(headerIndexes, ["condition"]);
+  const availableIndex = reportColumn(headerIndexes, ["available"]);
+  const excessIndex = reportColumn(headerIndexes, [
+    "estimated-excess-quantity",
+  ]);
+  const removalIndex = reportColumn(headerIndexes, [
+    "recommended-removal-quantity",
+  ]);
+  const daysOfSupplyIndex = reportColumn(headerIndexes, [
     "days-of-supply",
     "total-days-of-supply-(including-units-from-open-shipments)",
   ]);
-  const currencyIndex = reportColumn(headers, ["currency", "currency-code"]);
-  const storageCostIndex = reportColumn(headers, [
+  const currencyIndex = reportColumn(headerIndexes, [
+    "currency",
+    "currency-code",
+  ]);
+  const storageCostIndex = reportColumn(headerIndexes, [
     "estimated-storage-cost-next-month",
   ]);
-  const storageVolumeIndex = reportColumn(headers, ["storage-volume"]);
-  const alertIndex = reportColumn(headers, ["alert"]);
-  const recommendedActionIndex = reportColumn(headers, ["recommended-action"]);
-  const snapshotDateIndex = reportColumn(headers, [
+  const storageVolumeIndex = reportColumn(headerIndexes, ["storage-volume"]);
+  const alertIndex = reportColumn(headerIndexes, ["alert"]);
+  const recommendedActionIndex = reportColumn(headerIndexes, [
+    "recommended-action",
+  ]);
+  const snapshotDateIndex = reportColumn(headerIndexes, [
     "inventory-age-snapshot-date",
     "snapshot-date",
   ]);
 
   const result: AgedInventoryRow[] = [];
+  const storageCostCents: Array<number | null> = [];
+  const agedSurchargeCents: Array<number | null> = [];
+  const surchargeTierQuantities = selectedSurchargeColumns.map(
+    () => [] as Array<number | null>,
+  );
+  const surchargeTierChargeCents = selectedSurchargeColumns.map(
+    () => [] as Array<number | null>,
+  );
   const seen = new Set<string>();
   for (const row of rows.slice(1)) {
     const sellerSku = row[skuIndex] ?? "";
@@ -743,7 +808,7 @@ function parseAgedInventoryReportData(
       storageVolumeIndex,
       "Amazon storage volume",
     );
-    const reportedStorageCostNextMonth = reportDecimalCell(
+    const reportedStorageCostCents = reportMoneyCents(
       row,
       storageCostIndex,
       "下月預估倉儲成本",
@@ -751,36 +816,58 @@ function parseAgedInventoryReportData(
 
     // A blank estimate is safely zero only when Amazon reports a zero basis.
     // A positive or missing basis remains unknown and therefore partial.
-    const estimatedStorageCostNextMonth = storageCostIndex < 0
+    const estimatedStorageCostCents = storageCostIndex < 0
       ? null
-      : reportedStorageCostNextMonth ?? (storageVolume === 0 ? 0 : null);
-    const agedSurchargeBuckets = selectedSurchargeColumns.map((item) => {
+      : reportedStorageCostCents ?? (storageVolume === 0 ? 0 : null);
+    const estimatedStorageCostNextMonth = estimatedStorageCostCents === null
+      ? null
+      : estimatedStorageCostCents / 100;
+    const agedSurchargeEvidence = selectedSurchargeColumns.map((item, index) => {
       const quantity = reportIntegerCell(
         row,
         item.quantityIndex,
         `${item.label}計費數量`,
       );
-      const reportedCharge = reportDecimalCell(
+      const reportedChargeCents = reportMoneyCents(
         row,
         item.estimatedIndex,
         `${item.label}預估附加費`,
       );
+      const estimatedChargeCents =
+        reportedChargeCents ?? (quantity === 0 ? 0 : null);
+      surchargeTierQuantities[index]!.push(quantity);
+      surchargeTierChargeCents[index]!.push(estimatedChargeCents);
       return {
         key: item.key,
         label: item.label,
         quantity,
-        estimatedCharge: reportedCharge ?? (quantity === 0 ? 0 : null),
+        estimatedChargeCents,
       };
     });
-    const estimatedAgedSurcharge = agedSurchargeBuckets.length > 0 &&
-        agedSurchargeBuckets.every(
-          (item) => item.quantity !== null && item.estimatedCharge !== null,
+    const estimatedAgedSurchargeCents = agedSurchargeEvidence.length > 0 &&
+        agedSurchargeEvidence.every(
+          (item) =>
+            item.quantity !== null && item.estimatedChargeCents !== null,
         )
-      ? safeDecimalTotal(
-          agedSurchargeBuckets.map((item) => item.estimatedCharge!),
+      ? safeIntegerTotal(
+          agedSurchargeEvidence.map((item) => item.estimatedChargeCents!),
           "單一 SKU AIS 預估附加費",
         )
       : null;
+    const estimatedAgedSurcharge = estimatedAgedSurchargeCents === null
+      ? null
+      : safeMoneyTotal(
+          [estimatedAgedSurchargeCents],
+          "單一 SKU AIS 預估附加費",
+        );
+    const agedSurchargeBuckets = agedSurchargeEvidence.map((item) => ({
+      key: item.key,
+      label: item.label,
+      quantity: item.quantity,
+      estimatedCharge: item.estimatedChargeCents === null
+        ? null
+        : item.estimatedChargeCents / 100,
+    }));
     if (
       ((estimatedStorageCostNextMonth ?? 0) > 0 ||
         agedSurchargeBuckets.some(
@@ -795,6 +882,8 @@ function parseAgedInventoryReportData(
     }
 
     seen.add(sellerSku);
+    storageCostCents.push(estimatedStorageCostCents);
+    agedSurchargeCents.push(estimatedAgedSurchargeCents);
     result.push({
       sellerSku,
       fnSku: fnSkuIndex >= 0 ? row[fnSkuIndex]?.trim() ?? "" : "",
@@ -830,6 +919,31 @@ function parseAgedInventoryReportData(
     });
   }
 
+  if (result.length > 0) {
+    for (const [index, item] of selectedSurchargeColumns.entries()) {
+      const quantities = surchargeTierQuantities[index]!;
+      const completeQuantities = quantities.filter(
+        (value): value is number => value !== null,
+      );
+      if (completeQuantities.length === result.length) {
+        safeIntegerTotal(
+          completeQuantities,
+          `${item.label}計費數量`,
+        );
+      }
+      const chargeCents = surchargeTierChargeCents[index]!;
+      const completeChargeCents = chargeCents.filter(
+        (value): value is number => value !== null,
+      );
+      if (completeChargeCents.length === result.length) {
+        safeMoneyTotal(
+          completeChargeCents,
+          `${item.label}預估附加費`,
+        );
+      }
+    }
+  }
+
   result.sort((left, right) => {
     const leftExcess = left.estimatedExcessQuantity ?? -1;
     const rightExcess = right.estimatedExcessQuantity ?? -1;
@@ -854,6 +968,8 @@ function parseAgedInventoryReportData(
 
   const parsed: ParsedAgedInventoryReport = {
     rows: result,
+    storageCostCents,
+    agedSurchargeCents,
     ageBucketKeys: selectedAgeColumns.map((item) => item.key),
     agedSurchargeBucketKeys: selectedSurchargeColumns.map((item) => item.key),
     excessAvailability: feeAvailability(
@@ -888,18 +1004,21 @@ function completeIntegerTotal(
   return safeIntegerTotal(completeValues, label);
 }
 
-function completeDecimalTotal(
+function completeMoneyTotal(
   availability: AgedInventoryFeeAvailability,
-  values: Array<number | null>,
+  centsValues: Array<number | null>,
   label: string,
 ): number | null {
-  const completeValues = values.filter(
+  const completeValues = centsValues.filter(
     (value): value is number => value !== null,
   );
-  if (availability !== "complete" || completeValues.length !== values.length) {
+  if (
+    availability !== "complete" ||
+    completeValues.length !== centsValues.length
+  ) {
     return null;
   }
-  return safeDecimalTotal(completeValues, label);
+  return safeMoneyTotal(completeValues, label);
 }
 
 function agedInventoryExpirationBoundary(): AgedInventorySnapshot["expiration"] {
@@ -973,18 +1092,18 @@ function liveAgedInventorySnapshot(input: Readonly<{
         .length,
       currencyCode: parsed.currencyCode,
       storageCostAvailability: parsed.storageCostAvailability,
-      estimatedStorageCostNextMonth: completeDecimalTotal(
+      estimatedStorageCostNextMonth: completeMoneyTotal(
         parsed.storageCostAvailability,
-        storageCostValues,
+        parsed.storageCostCents,
         "全站下月預估倉儲成本",
       ),
       storageCostReportedSkuCount: storageCostValues.filter(
         (value) => value !== null,
       ).length,
       agedSurchargeAvailability: parsed.agedSurchargeAvailability,
-      estimatedAgedSurcharge: completeDecimalTotal(
+      estimatedAgedSurcharge: completeMoneyTotal(
         parsed.agedSurchargeAvailability,
-        agedSurchargeValues,
+        parsed.agedSurchargeCents,
         "全站 AIS 預估附加費",
       ),
       agedSurchargeReportedSkuCount: agedSurchargeValues.filter(

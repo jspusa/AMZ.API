@@ -646,6 +646,22 @@ describe("SP execution-context architecture", () => {
     expect(source).toContain("expectedContext: agedInventoryContext");
   });
 
+  it("reuses one normalized Aged Inventory header index", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/aged-inventory-reads.ts"),
+      "utf8",
+    );
+    const reportColumnStart = source.indexOf("function reportColumn(");
+    const reportColumnEnd = source.indexOf("\n}\n", reportColumnStart);
+    const reportColumnSource = source.slice(reportColumnStart, reportColumnEnd);
+
+    expect(reportColumnStart).toBeGreaterThanOrEqual(0);
+    expect(reportColumnEnd).toBeGreaterThan(reportColumnStart);
+    expect(source).toContain("const headerIndexes = new Map<string, number>()");
+    expect(reportColumnSource).toContain("headerIndexes.get(");
+    expect(reportColumnSource).not.toContain("headers.map(");
+  });
+
   it("keeps report documents behind the FBA catalog coordinator", () => {
     const routerSource = readFileSync(
       absolutePath("src/main/api-router.ts"),

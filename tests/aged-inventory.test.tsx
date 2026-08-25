@@ -185,6 +185,30 @@ describe("FBA aged inventory renderer and read-only route", () => {
     expect(markup).toContain("US$2.00");
   });
 
+  it("fails closed on unsafe complete tier aggregates", () => {
+    const surchargeRow = (
+      quantity: number,
+      estimatedCharge: number,
+    ) => ({
+      agedSurchargeBuckets: [{
+        key: "181-210",
+        label: "AIS 181–210 天",
+        quantity,
+        estimatedCharge,
+      }],
+    });
+
+    expect(() => aggregateAgedSurchargeBuckets([
+      surchargeRow(Number.MAX_SAFE_INTEGER, 0),
+      surchargeRow(1, 0),
+    ])).toThrow("安全範圍");
+
+    expect(() => aggregateAgedSurchargeBuckets([
+      surchargeRow(0, 90_071_992_547_409),
+      surchargeRow(0, 0.01),
+    ])).toThrow("安全範圍");
+  });
+
   it("validates every row and the server summary before displaying it", () => {
     const raw = {
       mode: "live",

@@ -465,6 +465,33 @@ describe("AgedInventoryReads", () => {
       message: expect.stringContaining("不是有效數字"),
     });
 
+    const underflowBasis = reportText(
+      [
+        ...GLOBAL_AGE_HEADERS,
+        "storage-volume",
+        "estimated-storage-cost-next-month",
+      ],
+      [globalAgeRecord("UNDERFLOW-BASIS", {
+        "storage-volume": `0.${"0".repeat(323)}1`,
+      })],
+    );
+    await expect(readLive(underflowBasis)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("超出安全範圍"),
+    });
+
+    const subCentCost = reportText(
+      [...GLOBAL_AGE_HEADERS, "currency", "estimated-storage-cost-next-month"],
+      [globalAgeRecord("SUB-CENT-COST", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "1.005",
+      })],
+    );
+    await expect(readLive(subCentCost)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("不是有效數字"),
+    });
+
     const groupedNumbers = reportText(
       [
         ...GLOBAL_AGE_HEADERS,
@@ -608,7 +635,7 @@ describe("AgedInventoryReads", () => {
     });
   });
 
-  it("fails closed when decimal marketplace totals are non-finite", async () => {
+  it("fails closed when monetary cells or marketplace totals are unsafe", async () => {
     const headers = [
       ...GLOBAL_AGE_HEADERS,
       "currency",
@@ -617,17 +644,97 @@ describe("AgedInventoryReads", () => {
     const document = reportText(headers, [
       globalAgeRecord("COST-A", {
         currency: "JPY",
-        "estimated-storage-cost-next-month": `1${"0".repeat(308)}`,
+        "estimated-storage-cost-next-month": "90071992547409",
       }),
       globalAgeRecord("COST-B", {
         currency: "JPY",
-        "estimated-storage-cost-next-month": `1${"0".repeat(308)}`,
+        "estimated-storage-cost-next-month": "90071992547409",
       }),
     ]);
 
     await expect(readLive(document)).rejects.toMatchObject({
       code: "REPORT_FORMAT_UNSUPPORTED",
       message: expect.stringContaining("全站下月預估倉儲成本加總超出安全範圍"),
+    });
+
+    const wrongCentTotal = reportText(headers, [
+      globalAgeRecord("COST-WHOLE", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "90071992547409",
+      }),
+      globalAgeRecord("COST-CENT", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "0.01",
+      }),
+    ]);
+    await expect(readLive(wrongCentTotal)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("全站下月預估倉儲成本加總超出安全範圍"),
+    });
+
+    const unsafePartialCell = reportText(headers, [
+      globalAgeRecord("UNSAFE-CELL", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "90071992547409.01",
+      }),
+      globalAgeRecord("MISSING-CELL", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "",
+      }),
+    ]);
+    await expect(readLive(unsafePartialCell)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("超出安全範圍"),
+    });
+  });
+
+  it("validates every fully covered AIS tier even when the report is partial", async () => {
+    const quantityRecords = [
+      globalAgeRecord("AIS-QUANTITY-MAX"),
+      globalAgeRecord("AIS-QUANTITY-ONE"),
+    ];
+    for (const key of GLOBAL_AIS_KEYS) {
+      quantityRecords[0][`quantity-to-be-charged-ais-${key}-days`] =
+        key === "181-210" ? Number.MAX_SAFE_INTEGER : 0;
+      quantityRecords[1][`quantity-to-be-charged-ais-${key}-days`] =
+        key === "181-210" ? 1 : 0;
+      quantityRecords[0][`estimated-ais-${key}-days`] = 0;
+      if (key !== "211-240") {
+        quantityRecords[1][`estimated-ais-${key}-days`] = 0;
+      }
+    }
+    await expect(readLive(reportText(
+      [...GLOBAL_AGE_HEADERS, ...aisHeaders(GLOBAL_AIS_KEYS)],
+      quantityRecords,
+    ))).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("AIS 181–210 天計費數量加總超出安全範圍"),
+    });
+
+    const chargeRecords = [
+      globalAgeRecord("AIS-CHARGE-WHOLE", { currency: "JPY" }),
+      globalAgeRecord("AIS-CHARGE-CENT", { currency: "JPY" }),
+    ];
+    for (const key of GLOBAL_AIS_KEYS) {
+      chargeRecords[0][`quantity-to-be-charged-ais-${key}-days`] = 0;
+      chargeRecords[1][`quantity-to-be-charged-ais-${key}-days`] = 0;
+      chargeRecords[0][`estimated-ais-${key}-days`] =
+        key === "181-210" ? "90071992547409" : 0;
+      if (key !== "211-240") {
+        chargeRecords[1][`estimated-ais-${key}-days`] =
+          key === "181-210" ? "0.01" : 0;
+      }
+    }
+    await expect(readLive(reportText(
+      [
+        ...GLOBAL_AGE_HEADERS,
+        "currency",
+        ...aisHeaders(GLOBAL_AIS_KEYS),
+      ],
+      chargeRecords,
+    ))).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("AIS 181–210 天預估附加費加總超出安全範圍"),
     });
   });
 

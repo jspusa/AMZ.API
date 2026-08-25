@@ -124,6 +124,51 @@ function nullableNonNegativeNumber(value: unknown): value is number | null {
   );
 }
 
+function safeIntegerTotal(values: number[], label: string): number {
+  let total = 0;
+  for (const value of values) {
+    const next = total + value;
+    if (
+      !Number.isSafeInteger(value) ||
+      value < 0 ||
+      !Number.isSafeInteger(next)
+    ) {
+      throw new Error(`${label}加總超出安全範圍，已停止顯示。`);
+    }
+    total = next;
+  }
+  return total;
+}
+
+function moneyCents(value: number, label: string): number {
+  const cents = Math.round(value * 100);
+  if (
+    !Number.isFinite(value) ||
+    value < 0 ||
+    !Number.isSafeInteger(cents) ||
+    cents / 100 !== value
+  ) {
+    throw new Error(`${label}超出安全貨幣精度，已停止顯示。`);
+  }
+  return cents;
+}
+
+function moneyValueFromCents(cents: number, label: string): number {
+  const value = cents / 100;
+  if (Math.round(value * 100) !== cents) {
+    throw new Error(`${label}加總超出安全範圍，已停止顯示。`);
+  }
+  return value;
+}
+
+function safeMoneyTotal(values: number[], label: string): number {
+  const cents = safeIntegerTotal(
+    values.map((value) => moneyCents(value, label)),
+    label,
+  );
+  return moneyValueFromCents(cents, label);
+}
+
 function feeAvailabilityValue(value: unknown): value is FeeAvailability {
   return value === "complete" || value === "partial" || value === "unavailable";
 }
@@ -145,7 +190,10 @@ export function aggregateAgeBuckets(
       ) {
         throw new Error("FBA 庫齡彙總使用不同區域欄位，已停止顯示。");
       }
-      units += candidate.units;
+      units = safeIntegerTotal(
+        [units, candidate.units],
+        `FBA ${bucket.label}庫齡數量`,
+      );
     }
     return {
       key: bucket.key,
@@ -165,7 +213,7 @@ export function aggregateAgedSurchargeBuckets(
   return template.map((bucket, index) => {
     let quantity = 0;
     let quantityReportedSkuCount = 0;
-    let estimatedCharge = 0;
+    let estimatedChargeCents = 0;
     let chargeReportedSkuCount = 0;
     for (const row of rows) {
       const candidate = row.agedSurchargeBuckets[index];
@@ -178,11 +226,23 @@ export function aggregateAgedSurchargeBuckets(
         throw new Error("FBA AIS 預估計費彙總使用不同區域欄位，已停止顯示。");
       }
       if (candidate.quantity !== null) {
-        quantity += candidate.quantity;
+        quantity = safeIntegerTotal(
+          [quantity, candidate.quantity],
+          `FBA ${bucket.label}計費數量`,
+        );
         quantityReportedSkuCount += 1;
       }
       if (candidate.estimatedCharge !== null) {
-        estimatedCharge += candidate.estimatedCharge;
+        estimatedChargeCents = safeIntegerTotal(
+          [
+            estimatedChargeCents,
+            moneyCents(
+              candidate.estimatedCharge,
+              `FBA ${bucket.label}預估附加費`,
+            ),
+          ],
+          `FBA ${bucket.label}預估附加費`,
+        );
         chargeReportedSkuCount += 1;
       }
     }
@@ -194,7 +254,10 @@ export function aggregateAgedSurchargeBuckets(
       quantityReportedSkuCount,
       estimatedCharge:
         chargeReportedSkuCount === rows.length
-          ? Number(estimatedCharge.toFixed(2))
+          ? moneyValueFromCents(
+              estimatedChargeCents,
+              `FBA ${bucket.label}預估附加費`,
+            )
           : null,
       chargeReportedSkuCount,
       totalSkuCount: rows.length,
@@ -275,6 +338,12 @@ export function parseAgedInventorySnapshot(
     ) {
       throw new Error("FBA 庫齡商品列格式無效，已停止顯示。");
     }
+    if (raw.estimatedStorageCostNextMonth !== null) {
+      moneyCents(raw.estimatedStorageCostNextMonth, "FBA 下月預估倉儲成本");
+    }
+    if (raw.estimatedAgedSurcharge !== null) {
+      moneyCents(raw.estimatedAgedSurcharge, "FBA AIS 預估附加費");
+    }
     const bucketKeys = new Set<string>();
     const ageBuckets = raw.ageBuckets.map((bucket) => {
       if (
@@ -305,10 +374,16 @@ export function parseAgedInventorySnapshot(
     }
     ageBucketSignature = nextAgeSignature;
     if (
-      ageBuckets.reduce((sum, bucket) => sum + bucket.units, 0) !== raw.totalAgedUnits ||
-      ageBuckets
-        .filter((bucket) => bucket.over180)
-        .reduce((sum, bucket) => sum + bucket.units, 0) !== raw.agedOver180
+      safeIntegerTotal(
+        ageBuckets.map((bucket) => bucket.units),
+        "FBA 單一 SKU 庫齡數量",
+      ) !== raw.totalAgedUnits ||
+      safeIntegerTotal(
+        ageBuckets.filter((bucket) => bucket.over180).map(
+          (bucket) => bucket.units,
+        ),
+        "FBA 單一 SKU 超過 180 天庫齡數量",
+      ) !== raw.agedOver180
     ) {
       throw new Error("FBA 庫齡分層與總數不一致，已停止顯示。");
     }
@@ -327,6 +402,9 @@ export function parseAgedInventorySnapshot(
         throw new Error("FBA AIS 預估附加費分層格式無效，已停止顯示。");
       }
       surchargeKeys.add(bucket.key);
+      if (bucket.estimatedCharge !== null) {
+        moneyCents(bucket.estimatedCharge, `FBA ${bucket.label}預估附加費`);
+      }
       return {
         key: bucket.key,
         label: bucket.label,
@@ -337,13 +415,15 @@ export function parseAgedInventorySnapshot(
     const surchargeCharges = agedSurchargeBuckets.map(
       (bucket) => bucket.estimatedCharge,
     );
+    const completeSurchargeCharges = surchargeCharges.filter(
+      (charge): charge is number => charge !== null,
+    );
     const expectedRowSurcharge =
       surchargeCharges.length > 0 &&
-      surchargeCharges.every((charge) => charge !== null)
-        ? Number(
-            surchargeCharges
-              .reduce((sum, charge) => sum + charge!, 0)
-              .toFixed(2),
+      completeSurchargeCharges.length === surchargeCharges.length
+        ? safeMoneyTotal(
+            completeSurchargeCharges,
+            "FBA 單一 SKU AIS 預估附加費",
           )
         : null;
     if (raw.estimatedAgedSurcharge !== expectedRowSurcharge) {
@@ -392,8 +472,14 @@ export function parseAgedInventorySnapshot(
       snapshotDate: raw.snapshotDate,
     };
   });
-  const totalAgedUnits = rows.reduce((sum, row) => sum + row.totalAgedUnits, 0);
-  const agedOver180 = rows.reduce((sum, row) => sum + row.agedOver180, 0);
+  const totalAgedUnits = safeIntegerTotal(
+    rows.map((row) => row.totalAgedUnits),
+    "FBA 全站庫齡數量",
+  );
+  const agedOver180 = safeIntegerTotal(
+    rows.map((row) => row.agedOver180),
+    "FBA 全站超過 180 天庫齡數量",
+  );
   const agedOver180SkuCount = rows.filter((row) => row.agedOver180 > 0).length;
   const excessValues = rows.map((row) => row.estimatedExcessQuantity);
   const currencies = new Set(
@@ -420,14 +506,32 @@ export function parseAgedInventorySnapshot(
   const excessReportedSkuCount = excessValues.filter((item) => item !== null).length;
   const storageCostReportedSkuCount = storageValues.filter((item) => item !== null).length;
   const agedSurchargeReportedSkuCount = surchargeValues.filter((item) => item !== null).length;
+  const completeExcessValues = excessValues.filter(
+    (item): item is number => item !== null,
+  );
+  const completeStorageValues = storageValues.filter(
+    (item): item is number => item !== null,
+  );
+  const completeSurchargeValues = surchargeValues.filter(
+    (item): item is number => item !== null,
+  );
   const expectedExcess = excessAvailability === "complete"
-    ? excessValues.reduce<number>((sum, item) => sum + (item ?? 0), 0)
+    ? safeIntegerTotal(
+        completeExcessValues,
+        "FBA 全站預估冗餘數量",
+      )
     : null;
   const expectedStorageCost = storageCostAvailability === "complete"
-    ? Number(storageValues.reduce<number>((sum, item) => sum + (item ?? 0), 0).toFixed(2))
+    ? safeMoneyTotal(
+        completeStorageValues,
+        "FBA 全站下月預估倉儲成本",
+      )
     : null;
   const expectedAgedSurcharge = agedSurchargeAvailability === "complete"
-    ? Number(surchargeValues.reduce<number>((sum, item) => sum + (item ?? 0), 0).toFixed(2))
+    ? safeMoneyTotal(
+        completeSurchargeValues,
+        "FBA 全站 AIS 預估附加費",
+      )
     : null;
   const statusesConsistent =
     (excessAvailability !== "complete" || excessReportedSkuCount === rows.length) &&
