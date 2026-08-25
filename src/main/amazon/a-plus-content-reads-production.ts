@@ -24,6 +24,7 @@ const REGION_ENDPOINTS: Record<MarketplaceRegion, string> = {
 };
 
 const REQUEST_INTERVAL_MS = 1_050;
+const REQUEST_TIMEOUT_MS = 12_000;
 const MAX_CONTROLLED_DELAY_MS = 25 * 60 * 1_000;
 const MAX_RESPONSE_BODY_BYTES = 16 * 1_024 * 1_024;
 const MIN_RATE_LIMIT = 1_000 / MAX_CONTROLLED_DELAY_MS;
@@ -154,6 +155,18 @@ function responseTooLargeError(
   });
 }
 
+function responseTimeoutError(
+  response: Response,
+  plan: AplusContentPagePlan,
+): SpApiError {
+  return new SpApiError("Amazon A+ Content API 回應逾時。", {
+    status: 504,
+    code: "UPSTREAM_UNAVAILABLE",
+    operation: operationName(plan.operation),
+    requestId: response.headers.get("x-amzn-requestid"),
+  });
+}
+
 async function readBoundedResponseBytes(
   response: Response,
   plan: AplusContentPagePlan,
@@ -166,6 +179,7 @@ async function readBoundedResponseBytes(
       Number.isFinite(declaredLength) &&
       declaredLength > MAX_RESPONSE_BODY_BYTES
     ) {
+      void response.body?.cancel().catch(() => undefined);
       throw responseTooLargeError(response, plan);
     }
   }
@@ -178,6 +192,10 @@ async function readBoundedResponseBytes(
   const aborted = new Promise<never>((_resolve, reject) => {
     rejectAborted = reject;
   });
+  let rejectDeadline: (reason: unknown) => void = () => undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject;
+  });
   const onAbort = () => {
     const reason = plan.signal?.reason instanceof Error
       ? plan.signal.reason
@@ -185,11 +203,16 @@ async function readBoundedResponseBytes(
     void reader.cancel(reason).catch(() => undefined);
     rejectAborted(reason);
   };
+  const timeout = setTimeout(() => {
+    const error = responseTimeoutError(response, plan);
+    rejectDeadline(error);
+    void reader.cancel(error).catch(() => undefined);
+  }, REQUEST_TIMEOUT_MS);
   plan.signal?.addEventListener("abort", onAbort, { once: true });
   if (plan.signal?.aborted) onAbort();
   try {
     for (;;) {
-      const chunk = await Promise.race([reader.read(), aborted]);
+      const chunk = await Promise.race([reader.read(), aborted, deadline]);
       if (chunk.done) break;
       total += chunk.value.byteLength;
       if (total > MAX_RESPONSE_BODY_BYTES) {
@@ -199,6 +222,7 @@ async function readBoundedResponseBytes(
       chunks.push(chunk.value);
     }
   } finally {
+    clearTimeout(timeout);
     plan.signal?.removeEventListener("abort", onAbort);
   }
 
@@ -214,15 +238,24 @@ async function readBoundedResponseBytes(
 async function parseJson(
   response: Response,
   plan: AplusContentPagePlan,
-): Promise<unknown> {
+): Promise<Readonly<{ payload: unknown; responseBytes: number }>> {
+  const bytes = await readBoundedResponseBytes(response, plan);
   try {
-    const bytes = await readBoundedResponseBytes(response, plan);
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch (error) {
+    return {
+      payload: JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      ),
+      responseBytes: bytes.byteLength,
+    };
+  } catch {
     throwIfAborted(plan.signal);
-    if (error instanceof SpApiError) throw error;
-    return null;
+    return { payload: null, responseBytes: bytes.byteLength };
   }
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  if (!response.body || response.bodyUsed) return;
+  await response.body.cancel().catch(() => undefined);
 }
 
 export function createAplusContentReadProductionAdapter(
@@ -343,7 +376,7 @@ export function createAplusContentReadProductionAdapter(
     assertMode(plan);
     const controller = new AbortController();
     const stopForwardingAbort = forwardAbort(controller, plan.signal);
-    const timeout = setTimeout(() => controller.abort(), 12_000);
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       return await (fetcher ?? globalThis.fetch)(requestUrl(plan), {
         method: "GET",
@@ -385,6 +418,7 @@ export function createAplusContentReadProductionAdapter(
     observeRateLimit(region, response);
     throwIfAborted(plan.signal);
     if (response.status === 401) {
+      await discardResponseBody(response);
       dependencies.invalidateAccessToken(region);
       assertMode(plan);
       response = await call(plan, true);
@@ -395,6 +429,7 @@ export function createAplusContentReadProductionAdapter(
       if (![429, 500, 503].includes(response.status)) break;
       const delay = retryDelayMs(response, attempt);
       if (delay === null) break;
+      await discardResponseBody(response);
       if (delay > 0) plan.onControlledWait?.();
       await sleep(delay, plan.signal);
       throwIfAborted(plan.signal);
@@ -419,10 +454,15 @@ export function createAplusContentReadProductionAdapter(
       assertPlan(plan);
       assertMode(plan);
       const response = await execute(plan);
+      const decoded = response.status === 200
+        ? await parseJson(response, plan)
+        : null;
+      if (response.status !== 200) await discardResponseBody(response);
       return {
         status: response.status,
-        payload: response.status === 200 ? await parseJson(response, plan) : null,
+        payload: decoded?.payload ?? null,
         requestId: response.headers.get("x-amzn-requestid"),
+        responseBytes: decoded?.responseBytes ?? 0,
       };
     },
   };

@@ -9,6 +9,7 @@ import {
   SpExecutionContextError,
   type SpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
+import { parseAplusAuditSnapshot } from "../src/renderer/src/a-plus-audit";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 
@@ -213,6 +214,97 @@ describe("bounded A+ Content reads", () => {
     expect(snapshot.summary.missing).toBe(0);
   });
 
+  it("caps aggregate decoded response bytes across the whole audit", async () => {
+    let pageCalls = 0;
+    const adapter: AplusContentPageAdapter = {
+      async read(plan) {
+        pageCalls += 1;
+        if (plan.operation !== "publish-records") {
+          throw new Error("The response-byte budget should stop before document reads.");
+        }
+        return {
+          status: 200,
+          payload: {
+            publishRecordList: plan.asin === "B000000000"
+              ? [{
+                  marketplaceId: MARKETPLACE_ID,
+                  asin: plan.asin,
+                  contentReferenceKey: "byte-budget-positive",
+                  contentType: "EBC",
+                  locale: "en-US",
+                }]
+              : [],
+          },
+          requestId: null,
+          responseBytes: 16 * 1_024 * 1_024,
+        };
+      },
+    };
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "s13-response-byte-budget-account-scope",
+    }));
+    const expectedContext = await context.capture(MARKETPLACE_ID);
+    const reads = new AplusContentReads({ context, live: adapter });
+
+    const snapshot = await reads.read({
+      marketplaceId: MARKETPLACE_ID,
+      expectedContext,
+      fetchedAt: "2026-08-24T00:00:00Z",
+      fbaSnapshotId: "fba-snapshot-response-byte-budget",
+      rows: Array.from({ length: 17 }, (_, index) => ({
+        sellerSku: `BYTE-${index}`,
+        asin: `B${String(index).padStart(9, "0")}`,
+        title: `Byte ${index}`,
+      })),
+    });
+
+    expect(pageCalls).toBe(16);
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      reasonCode: "PUBLISHED_RECORD_FOUND",
+    });
+    expect(snapshot.rows.at(-1)).toMatchObject({
+      status: "incomplete",
+      sourceCompleteness: "partial",
+    });
+    expect(snapshot.summary.missing).toBe(0);
+  });
+
+  it("charges failed page reads against the reserved aggregate response budget", async () => {
+    let pageCalls = 0;
+    const adapter: AplusContentPageAdapter = {
+      async read() {
+        pageCalls += 1;
+        throw new Error("Simulated oversized or stalled page read.");
+      },
+    };
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "s13-failed-response-budget-account-scope",
+    }));
+    const expectedContext = await context.capture(MARKETPLACE_ID);
+    const snapshot = await new AplusContentReads({ context, live: adapter }).read({
+      marketplaceId: MARKETPLACE_ID,
+      expectedContext,
+      fetchedAt: "2026-08-24T00:00:00Z",
+      fbaSnapshotId: "fba-snapshot-failed-response-budget",
+      rows: Array.from({ length: 17 }, (_, index) => ({
+        sellerSku: `FAILED-BYTE-${index}`,
+        asin: `B${String(index).padStart(9, "0")}`,
+        title: `Failed byte ${index}`,
+      })),
+    });
+
+    expect(pageCalls).toBe(16);
+    expect(snapshot.summary).toMatchObject({
+      missing: 0,
+      incomplete: 17,
+    });
+  });
+
   it("bounds relationship edges across documents without losing an already seen exact positive", async () => {
     let pageCalls = 0;
     const asins = Array.from(
@@ -302,6 +394,84 @@ describe("bounded A+ Content reads", () => {
       sourceCompleteness: "partial",
     });
     expect(snapshot.summary.missing).toBe(0);
+  });
+
+  it("charges non-target duplicate relation rows against the audit-wide row budget", async () => {
+    let pageCalls = 0;
+    const adapter: AplusContentPageAdapter = {
+      async read(plan) {
+        pageCalls += 1;
+        if (plan.operation === "publish-records") {
+          throw new Error("Relationship-incomplete seeds must not query publish records.");
+        }
+        if (plan.operation === "content-documents") {
+          return {
+            status: 200,
+            payload: {
+              contentMetadataRecords: [{
+                contentReferenceKey: "duplicate-non-target-document",
+                contentMetadata: {
+                  name: "Duplicate non-target relations",
+                  marketplaceId: MARKETPLACE_ID,
+                  status: "APPROVED",
+                  badgeSet: ["STANDARD"],
+                  updateTime: "2026-08-24T00:00:00Z",
+                },
+              }],
+            },
+            requestId: null,
+          };
+        }
+        const page = Number(plan.pageToken ?? "0");
+        return {
+          status: 200,
+          payload: {
+            asinMetadataSet: Array.from({ length: 10_000 }, (_, index) =>
+              index === 0 && page === 0
+                ? {
+                    asin: "B000000001",
+                    badgeSet: ["CONTENT_PUBLISHED"],
+                    contentReferenceKeySet: [plan.contentReferenceKey],
+                  }
+                : {
+                    asin: "B999999999",
+                    badgeSet: ["CONTENT_NOT_PUBLISHED"],
+                    contentReferenceKeySet: [plan.contentReferenceKey],
+                  }
+            ),
+            nextPageToken: String(page + 1),
+          },
+          requestId: null,
+        };
+      },
+    };
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "s13-relation-row-budget-account-scope",
+    }));
+    const expectedContext = await context.capture(MARKETPLACE_ID);
+    const reads = new AplusContentReads({ context, live: adapter });
+
+    const snapshot = await reads.read({
+      marketplaceId: MARKETPLACE_ID,
+      expectedContext,
+      fetchedAt: "2026-08-24T00:00:00Z",
+      fbaSnapshotId: "fba-snapshot-relation-row-budget",
+      rows: [{
+        sellerSku: "ROW-BUDGET",
+        asin: "B000000001",
+        title: "Row budget",
+        incompleteReasonCode: "FBA_RELATIONSHIP_INCOMPLETE",
+      }],
+    });
+
+    expect(pageCalls).toBe(4);
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      sourceCompleteness: "partial",
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+    });
   });
 
   it("follows relation pagination but never promotes an APPROVED-only document to published", async () => {
@@ -436,6 +606,140 @@ describe("bounded A+ Content reads", () => {
         pageToken: "relation-next",
       },
     ]);
+  });
+
+  it("retains exact relation-positive evidence when the public document list is bounded", async () => {
+    const positiveKey = "document-positive-sorts-last";
+    const negativeKeys = Array.from(
+      { length: 100 },
+      (_, index) => `document-negative-${String(index).padStart(3, "0")}`,
+    );
+    const adapter: AplusContentPageAdapter = {
+      async read(plan) {
+        if (plan.operation === "publish-records") {
+          throw new Error("Relationship-incomplete seeds must not query publish records.");
+        }
+        if (plan.operation === "content-documents") {
+          return {
+            status: 200,
+            payload: {
+              contentMetadataRecords: [...negativeKeys, positiveKey].map(
+                (contentReferenceKey) => ({
+                  contentReferenceKey,
+                  contentMetadata: {
+                    name: contentReferenceKey === positiveKey
+                      ? "ZZZ published document"
+                      : `AAA ${contentReferenceKey}`,
+                    marketplaceId: MARKETPLACE_ID,
+                    status: "APPROVED",
+                    badgeSet: ["STANDARD"],
+                    updateTime: "2026-08-24T00:00:00Z",
+                  },
+                }),
+              ),
+            },
+            requestId: null,
+          };
+        }
+        return {
+          status: 200,
+          payload: {
+            asinMetadataSet: [{
+              asin: "B000000001",
+              badgeSet: [plan.contentReferenceKey === positiveKey
+                ? "CONTENT_PUBLISHED"
+                : "CONTENT_NOT_PUBLISHED"],
+              contentReferenceKeySet: [plan.contentReferenceKey],
+            }],
+          },
+          requestId: null,
+        };
+      },
+    };
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "s13-public-bound-account-scope",
+    }));
+    const expectedContext = await context.capture(MARKETPLACE_ID);
+    const reads = new AplusContentReads({ context, live: adapter });
+
+    const snapshot = await reads.read({
+      marketplaceId: MARKETPLACE_ID,
+      expectedContext,
+      fetchedAt: "2026-08-24T00:00:00Z",
+      fbaSnapshotId: "fba-snapshot-public-bound",
+      rows: [{
+        sellerSku: "PUBLIC-BOUND",
+        asin: "B000000001",
+        title: "Public bound",
+        incompleteReasonCode: "FBA_RELATIONSHIP_INCOMPLETE",
+      }],
+    });
+    const { fbaSnapshotId: _internalSnapshotId, ...publicSnapshot } = snapshot;
+
+    expect(snapshot.rows[0]).toMatchObject({
+      status: "published",
+      reasonCode: "PUBLISHED_DOCUMENT_RELATION_FOUND",
+      documents: expect.arrayContaining([expect.objectContaining({
+        name: "ZZZ published document",
+        relationState: "published",
+        evidence: "relation_badge",
+      })]),
+    });
+    expect(snapshot.rows[0]?.documents).toHaveLength(100);
+    expect(() => parseAplusAuditSnapshot(
+      publicSnapshot,
+      MARKETPLACE_ID,
+      "live",
+    )).not.toThrow();
+  });
+
+  it("reuses the bounded evidence projection for Seller SKUs sharing one ASIN and evidence class", async () => {
+    const adapter: AplusContentPageAdapter = {
+      async read(plan) {
+        if (plan.operation === "publish-records") {
+          return { status: 200, payload: { publishRecordList: [] }, requestId: null };
+        }
+        if (plan.operation === "content-documents") {
+          return {
+            status: 200,
+            payload: {
+              contentMetadataRecords: [{
+                contentReferenceKey: "shared-projection-document",
+                contentMetadata: {
+                  name: "Shared projection",
+                  marketplaceId: MARKETPLACE_ID,
+                  status: "APPROVED",
+                  badgeSet: ["STANDARD"],
+                  updateTime: "2026-08-24T00:00:00Z",
+                },
+              }],
+            },
+            requestId: null,
+          };
+        }
+        return { status: 200, payload: { asinMetadataSet: [] }, requestId: null };
+      },
+    };
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "s13-shared-projection-account-scope",
+    }));
+    const expectedContext = await context.capture(MARKETPLACE_ID);
+    const snapshot = await new AplusContentReads({ context, live: adapter }).read({
+      marketplaceId: MARKETPLACE_ID,
+      expectedContext,
+      fetchedAt: "2026-08-24T00:00:00Z",
+      fbaSnapshotId: "fba-snapshot-shared-projection",
+      rows: [
+        { sellerSku: "SHARED-ONE", asin: "B000000001", title: "Shared one" },
+        { sellerSku: "SHARED-TWO", asin: "B000000001", title: "Shared two" },
+      ],
+    });
+
+    expect(snapshot.rows[0]?.documents).toBe(snapshot.rows[1]?.documents);
   });
 
   it("propagates a post-adapter context fence immediately instead of degrading it to partial evidence", async () => {

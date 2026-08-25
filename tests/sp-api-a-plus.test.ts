@@ -150,10 +150,18 @@ describe("A+ Content production page adapter", () => {
   });
 
   it("rejects a declared oversized A+ response before parsing its body", async () => {
+    let canceledBodies = 0;
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       if (url.includes("/auth/o2/token")) return tokenResponse();
-      return new Response("{}", {
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("{}"));
+        },
+        cancel() {
+          canceledBodies += 1;
+        },
+      }), {
         status: 200,
         headers: {
           "content-type": "application/json",
@@ -172,6 +180,7 @@ describe("A+ Content production page adapter", () => {
       operation: "getAplusContentDocuments",
       requestId: "request-a-plus-too-large",
     });
+    expect(canceledBodies).toBe(1);
   });
 
   it("bounds an oversized streamed A+ response even without Content-Length", async () => {
@@ -203,6 +212,84 @@ describe("A+ Content production page adapter", () => {
       operation: "getAplusContentDocuments",
       requestId: "request-a-plus-stream-too-large",
     });
+  });
+
+  it("times out a response body that stalls after headers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T00:00:00.000Z"));
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) return tokenResponse();
+      return new Response(new ReadableStream<Uint8Array>({
+        start() {
+          // Deliberately never enqueue or close after the 200 headers arrive.
+        },
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-amzn-requestid": "request-a-plus-stalled-body",
+        },
+      });
+    }));
+    const controller = new AbortController();
+    let outcome: unknown = "pending";
+    const request = getAplusContentDocumentsPage({
+      marketplaceId: US,
+      expectedMode: "live",
+      signal: controller.signal,
+    });
+    void request.then(
+      (value) => {
+        outcome = value;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(12_000);
+      await Promise.resolve();
+      expect(outcome).toMatchObject({
+        status: 504,
+        code: "UPSTREAM_UNAVAILABLE",
+        operation: "getAplusContentDocuments",
+        requestId: "request-a-plus-stalled-body",
+      });
+    } finally {
+      controller.abort();
+      await request.catch(() => undefined);
+    }
+  });
+
+  it("cancels a non-success response body that the adapter will not parse", async () => {
+    let canceledBodies = 0;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) return tokenResponse();
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("private upstream error"));
+        },
+        cancel() {
+          canceledBodies += 1;
+        },
+      }), {
+        status: 403,
+        headers: { "x-amzn-requestid": "request-a-plus-forbidden-body" },
+      });
+    }));
+
+    await expect(getAplusContentDocumentsPage({
+      marketplaceId: US,
+      expectedMode: "live",
+    })).resolves.toMatchObject({
+      status: 403,
+      payload: null,
+      requestId: "request-a-plus-forbidden-body",
+    });
+    expect(canceledBodies).toBe(1);
   });
 
   it("preserves opaque dot page tokens without treating them as path segments", async () => {

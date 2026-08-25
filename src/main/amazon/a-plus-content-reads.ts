@@ -89,6 +89,7 @@ type AplusPublishRecordFetchResult = Readonly<{
   status: number;
   payload: unknown;
   requestId?: string | null;
+  responseBytes?: number;
 }>;
 
 type AplusPublishRecordFetcher = (
@@ -246,13 +247,43 @@ const APLUS_ASIN_BADGES = new Set([
 
 const APLUS_MAX_DOCUMENTS_PER_ASIN = 100;
 const APLUS_MAX_PAGE_REQUESTS = APLUS_AUDIT_MAX_PUBLIC_COUNT;
-const APLUS_MAX_RELATION_EDGES = APLUS_AUDIT_MAX_PUBLIC_COUNT;
+const APLUS_MAX_RELATION_ROWS = APLUS_AUDIT_MAX_PUBLIC_COUNT;
+const APLUS_MAX_RESPONSE_BYTES = 256 * 1_024 * 1_024;
+const APLUS_RESERVED_RESPONSE_BYTES_PER_PAGE = 16 * 1_024 * 1_024;
 
-type AplusPageBudget = { remaining: number };
+type AplusPageBudget = {
+  remainingPages: number;
+  remainingResponseBytes: number;
+};
 
 function claimAplusPage(budget: AplusPageBudget): boolean {
-  if (budget.remaining <= 0) return false;
-  budget.remaining -= 1;
+  if (
+    budget.remainingPages <= 0 ||
+    budget.remainingResponseBytes < APLUS_RESERVED_RESPONSE_BYTES_PER_PAGE
+  ) return false;
+  budget.remainingPages -= 1;
+  budget.remainingResponseBytes -= APLUS_RESERVED_RESPONSE_BYTES_PER_PAGE;
+  return true;
+}
+
+function consumeAplusResponseBytes(
+  budget: AplusPageBudget,
+  responseBytes: number | undefined,
+): boolean {
+  if (responseBytes === undefined) {
+    budget.remainingResponseBytes += APLUS_RESERVED_RESPONSE_BYTES_PER_PAGE;
+    return true;
+  }
+  if (
+    !Number.isSafeInteger(responseBytes) ||
+    responseBytes < 0 ||
+    responseBytes > APLUS_RESERVED_RESPONSE_BYTES_PER_PAGE
+  ) {
+    budget.remainingResponseBytes = 0;
+    return false;
+  }
+  budget.remainingResponseBytes +=
+    APLUS_RESERVED_RESPONSE_BYTES_PER_PAGE - responseBytes;
   return true;
 }
 
@@ -698,6 +729,9 @@ async function readAplusDocumentIndex(input: Readonly<{
       partial = true;
       break;
     }
+    if (!consumeAplusResponseBytes(input.budget, response.responseBytes)) {
+      partial = true;
+    }
     if (response.status === 403 && documentsByKey.size === 0) {
       return {
         documentsByKey,
@@ -763,14 +797,11 @@ async function readAplusDocumentIndex(input: Readonly<{
   }>();
   const conflictAsins = new Set<string>();
   const partialAsins = new Set<string>();
+  let remainingRelationRows = APLUS_MAX_RELATION_ROWS;
   const relationAggregate = (asin: string, contentReferenceKey: string) => {
     const compositeKey = JSON.stringify([asin, contentReferenceKey]);
     const previous = relationAggregates.get(compositeKey);
     if (previous) return previous;
-    if (relationAggregates.size >= APLUS_MAX_RELATION_EDGES) {
-      partial = true;
-      return null;
-    }
     const created = {
       asin,
       contentReferenceKey,
@@ -783,7 +814,7 @@ async function readAplusDocumentIndex(input: Readonly<{
   documentRelations: for (const document of [...documentsByKey.values()].sort((left, right) =>
     left.contentReferenceKey.localeCompare(right.contentReferenceKey)
   )) {
-    if (relationAggregates.size >= APLUS_MAX_RELATION_EDGES) {
+    if (remainingRelationRows <= 0) {
       partial = true;
       break;
     }
@@ -811,6 +842,9 @@ async function readAplusDocumentIndex(input: Readonly<{
         partial = true;
         break;
       }
+      if (!consumeAplusResponseBytes(input.budget, response.responseBytes)) {
+        partial = true;
+      }
       if (response.status !== 200 || !isRecord(response.payload)) {
         partial = true;
         break;
@@ -822,6 +856,11 @@ async function readAplusDocumentIndex(input: Readonly<{
       }
       if (warningEnvelopeState(response.payload.warnings) !== "none") partial = true;
       for (const candidate of metadataSet) {
+        if (remainingRelationRows <= 0) {
+          partial = true;
+          break documentRelations;
+        }
+        remainingRelationRows -= 1;
         const exactCandidateAsin = isRecord(candidate) &&
             typeof candidate.asin === "string" &&
             /^[A-Z0-9]{10}$/u.test(candidate.asin)
@@ -838,7 +877,6 @@ async function readAplusDocumentIndex(input: Readonly<{
               exactCandidateAsin,
               document.contentReferenceKey,
             );
-            if (!aggregate) break documentRelations;
             aggregate.invalid = true;
             partialAsins.add(exactCandidateAsin);
           }
@@ -851,7 +889,6 @@ async function readAplusDocumentIndex(input: Readonly<{
           relation.asin,
           document.contentReferenceKey,
         );
-        if (!aggregate) break documentRelations;
         if (relation.completeness === "partial") {
           aggregate.invalid = true;
           partialAsins.add(relation.asin);
@@ -922,6 +959,44 @@ async function readAplusDocumentIndex(input: Readonly<{
     partialAsins,
     completeness: partial ? "partial" : "complete",
   };
+}
+
+function compareAplusDocumentEvidence(
+  left: AplusDocumentEvidence,
+  right: AplusDocumentEvidence,
+): number {
+  return (left.name ?? "\uffff").localeCompare(right.name ?? "\uffff") ||
+    (left.documentStatus ?? "").localeCompare(right.documentStatus ?? "") ||
+    left.relationState.localeCompare(right.relationState) ||
+    left.evidence.localeCompare(right.evidence);
+}
+
+function isAuthoritativeDocumentEvidence(
+  document: AplusDocumentEvidence,
+): boolean {
+  return document.evidence === "publish_record" ||
+    (document.evidence === "relation_badge" &&
+      document.relationState === "published");
+}
+
+function boundedAplusDocumentEvidence(
+  documents: readonly AplusDocumentEvidence[],
+): readonly AplusDocumentEvidence[] {
+  const sorted = [...documents].sort(compareAplusDocumentEvidence);
+  if (sorted.length <= APLUS_MAX_DOCUMENTS_PER_ASIN) {
+    return Object.freeze(sorted);
+  }
+  const selected = sorted
+    .filter(isAuthoritativeDocumentEvidence)
+    .slice(0, APLUS_MAX_DOCUMENTS_PER_ASIN);
+  const retained = new Set(selected);
+  for (const document of sorted) {
+    if (selected.length >= APLUS_MAX_DOCUMENTS_PER_ASIN) break;
+    if (retained.has(document)) continue;
+    selected.push(document);
+    retained.add(document);
+  }
+  return Object.freeze(selected.sort(compareAplusDocumentEvidence));
 }
 
 function mergeDocumentEvidence(input: Readonly<{
@@ -1000,14 +1075,8 @@ function mergeDocumentEvidence(input: Readonly<{
       completeness: relationEvidencePartial ? "partial" : "complete",
     });
   }
-  documents.sort((left, right) =>
-    (left.name ?? "\uffff").localeCompare(right.name ?? "\uffff") ||
-    (left.documentStatus ?? "").localeCompare(right.documentStatus ?? "") ||
-    left.relationState.localeCompare(right.relationState) ||
-    left.evidence.localeCompare(right.evidence)
-  );
   if (documents.length > APLUS_MAX_DOCUMENTS_PER_ASIN) evidencePartial = true;
-  const boundedDocuments = documents.slice(0, APLUS_MAX_DOCUMENTS_PER_ASIN);
+  const boundedDocuments = boundedAplusDocumentEvidence(documents);
   const relationPublished = relations.some((relation) => relation.state === "published");
   const canPromotePublishedRelation = relationPublished && !publicationConflict;
   let outcome = input.read.outcome;
@@ -1125,6 +1194,10 @@ async function readAsin(
         readFailure(0),
       ));
     }
+    const responseBudgetComplete = consumeAplusResponseBytes(
+      budget,
+      response.responseBytes,
+    );
     if (response.status !== 200) {
       return finish(partialEvidenceResult(
         recordKeys.size,
@@ -1193,6 +1266,14 @@ async function readAsin(
         contentTypes,
         locales,
         parsed,
+      ));
+    }
+    if (!responseBudgetComplete) {
+      return finish(partialEvidenceResult(
+        recordKeys.size,
+        contentTypes,
+        locales,
+        paginationFailure(),
       ));
     }
     const raw = response.payload as Record<string, unknown>;
@@ -1269,7 +1350,8 @@ async function runAplusAudit(input: Readonly<{
   throwIfAuditAborted(input.signal);
   const byAsin = new Map<string, AsinReadResult>();
   const pageBudget: AplusPageBudget = {
-    remaining: APLUS_MAX_PAGE_REQUESTS,
+    remainingPages: APLUS_MAX_PAGE_REQUESTS,
+    remainingResponseBytes: APLUS_MAX_RESPONSE_BYTES,
   };
   let accessUnavailable = false;
   const targetAsins = [...new Set(
@@ -1324,20 +1406,36 @@ async function runAplusAudit(input: Readonly<{
     }
     throwIfAuditAborted(input.signal);
   }
-  const rows = seeds.map((row): AplusAuditRow => ({
-    sellerSku: row.sellerSku,
-    asin: row.asin,
-    title: row.title,
-    marketplaceId: input.marketplaceId,
-    ...(row.asin
-      ? mergeDocumentEvidence({
-          asin: row.asin,
-          read: row.incompleteReasonCode
-            ? relationshipIncompleteRead()
-            : byAsin.get(row.asin)!,
-          index: documentIndex,
-        })
-      : {
+  const evidenceByAsinClass = new Map<
+    string,
+    ReturnType<typeof mergeDocumentEvidence>
+  >();
+  const evidenceFor = (
+    row: AplusAuditSeed,
+  ): ReturnType<typeof mergeDocumentEvidence> | null => {
+    if (!row.asin) return null;
+    const evidenceClass = row.incompleteReasonCode ? "relationship" : "direct";
+    const key = JSON.stringify([row.asin, evidenceClass]);
+    const previous = evidenceByAsinClass.get(key);
+    if (previous) return previous;
+    const evidence = mergeDocumentEvidence({
+      asin: row.asin,
+      read: row.incompleteReasonCode
+        ? relationshipIncompleteRead()
+        : byAsin.get(row.asin)!,
+      index: documentIndex,
+    });
+    evidenceByAsinClass.set(key, evidence);
+    return evidence;
+  };
+  const rows = seeds.map((row): AplusAuditRow => {
+    const evidence = evidenceFor(row);
+    return {
+      sellerSku: row.sellerSku,
+      asin: row.asin,
+      title: row.title,
+      marketplaceId: input.marketplaceId,
+      ...(evidence ?? {
           status: "incomplete" as const,
           sourceCompleteness: "partial" as const,
           publishedRecordCount: null,
@@ -1350,7 +1448,8 @@ async function runAplusAudit(input: Readonly<{
             ? "Amazon relationships 未完整證明此 FBA 商品為 child 或 standalone，未發出 A+ request。"
             : "FBA 商品缺少可安全核對的 ASIN，未發出 A+ request。",
         }),
-  }));
+    };
+  });
   const summary = {
     eligibleFbaSkus: rows.length,
     uniqueAsins: targetAsins.length,
