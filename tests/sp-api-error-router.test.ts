@@ -10,8 +10,6 @@ import { AplusAuditJobCoordinatorError } from
   "../src/main/amazon/a-plus-audit-job";
 import { AuditSuiteCoordinatorError } from
   "../src/main/amazon/audit-suite-coordinator";
-import { FbaRevenueReportsError } from
-  "../src/main/amazon/fba-revenue-reports";
 import { ReplenishmentAuditError } from
   "../src/main/amazon/replenishment-audit";
 import {
@@ -221,25 +219,6 @@ describe("public SP-API error mapping", () => {
 
   it("preserves safe coordinator, Ads and unknown error envelopes", async () => {
     const cases = [
-      {
-        error: new FbaRevenueReportsError(
-          "報表暫時受到 Amazon 速率限制。",
-          429,
-          "REPORT_RATE_LIMITED",
-          "5",
-        ),
-        expected: {
-          status: 429,
-          headers: { ...JSON_HEADERS, "retry-after": "5" },
-          body: {
-            kind: "json" as const,
-            value: {
-              code: "REPORT_RATE_LIMITED",
-              message: "報表暫時受到 Amazon 速率限制。",
-            },
-          },
-        },
-      },
       ...[
         new StandaloneAuditJobCoordinatorError("工作 context 已改變。", {
           status: 409,
@@ -344,18 +323,6 @@ describe("public SP-API error mapping", () => {
       "hostile-text\u202e\u0000",
     ].join(" ");
     const cases = [
-      {
-        error: new FbaRevenueReportsError(
-          hostile,
-          302,
-          "BAD\nCODE",
-          "-1\r\nx-private: example",
-        ),
-        expectedValue: {
-          code: "UPSTREAM_UNAVAILABLE",
-          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
-        },
-      },
       {
         error: new StandaloneAuditJobCoordinatorError(hostile, {
           status: 302,

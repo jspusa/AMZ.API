@@ -107,6 +107,7 @@ const PURE_REVENUE_REPORT_MODULES = [
 ] as const;
 
 const REVENUE_REPORT_COORDINATORS = [
+  ["src/main/brand-sales-coordinator.ts", false],
   ["src/main/amazon/sales-and-traffic-reports.ts", false],
   ["src/main/amazon/fba-revenue-reports.ts", true],
 ] as const;
@@ -735,6 +736,10 @@ describe("SP execution-context architecture", () => {
       absolutePath("src/main/api-router.ts"),
       "utf8",
     );
+    const brandCoordinator = readFileSync(
+      absolutePath("src/main/brand-sales-coordinator.ts"),
+      "utf8",
+    );
     for (const symbol of [
       ...SUPERSEDED_REVENUE_REPORT_FACADES,
       ...SUPERSEDED_REVENUE_ROUTER_WIRING,
@@ -742,7 +747,10 @@ describe("SP execution-context architecture", () => {
       expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
     }
     expect(source).toContain("new SalesAndTrafficReports({");
-    expect(source).toContain("new FbaRevenueReports({");
+    expect(source).toContain("createBrandSalesCoordinator({");
+    expect(source).not.toContain("new FbaRevenueReports({");
+    expect(brandCoordinator).toContain("new FbaRevenueReports(input)");
+    expect(brandCoordinator).not.toContain("new FixedReportBroker(");
   });
 
   it("removes superseded FBA Inbound production facades from the SP facade", () => {

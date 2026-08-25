@@ -22,16 +22,17 @@ import {
   type FbaShipmentSalesWindow,
 } from "./revenue-report-windows";
 import { SpApiError } from "./sp-api-error";
-import type {
-  SpExecutionContext,
-  SpExecutionContextAdapter,
+import {
+  SpExecutionContextError,
+  type SpExecutionContext,
+  type SpExecutionContextAdapter,
 } from "./sp-execution-context";
 
 const REUSE_WINDOW_MS = 30 * 60 * 1_000;
 const NEAR_REUSE_BOUNDARY_MS = 2 * 60 * 1_000;
 const JOB_RETENTION_MS = 60 * 60 * 1_000;
 
-type ReportsPort = Pick<
+type FbaRevenueReportsPort = Pick<
   FixedReportBroker,
   | "adopt"
   | "canRebindPersistedSpLeg"
@@ -41,7 +42,10 @@ type ReportsPort = Pick<
   | "status"
 >;
 
-type CatalogPort = Pick<FbaCatalogReports, "begin" | "read" | "status">;
+type FbaRevenueCatalogPort = Pick<
+  FbaCatalogReports,
+  "begin" | "read" | "status"
+>;
 
 type BrandSalesJobStore = Pick<
   LocalStore,
@@ -84,6 +88,17 @@ export interface BrandSalesDemoSource {
     signal?: AbortSignal;
   }>): BrandSalesSnapshot | Promise<BrandSalesSnapshot>;
 }
+
+export type FbaRevenueReportsDependencies = Readonly<{
+  store: BrandSalesJobStore;
+  reports: FbaRevenueReportsPort;
+  catalog: FbaRevenueCatalogPort;
+  context: SpExecutionContextAdapter;
+  demo: BrandSalesDemoSource;
+  liveReader?: BrandSalesLiveReader;
+  now?: () => number;
+  newId?: () => string;
+}>;
 
 export class FbaRevenueReportsError extends Error {
   constructor(
@@ -143,13 +158,13 @@ function isExecutionContextFenceError(error: unknown): error is SpApiError {
 /**
  * Complete semantic owner of the Brand/Category revenue read family. It owns
  * the durable two-leg state machine, immutable shipment cutoff, reuse,
- * polling, context fences and snapshot cache. ApiRouter only translates its
- * public view and errors to HTTP DTOs.
+ * polling, context fences and snapshot cache. Its owner lifecycle cancels and
+ * fences volatile work without deleting durable report evidence.
  */
 export class FbaRevenueReports {
   private readonly store: BrandSalesJobStore;
-  private readonly reports: ReportsPort;
-  private readonly catalog: CatalogPort;
+  private readonly reports: FbaRevenueReportsPort;
+  private readonly catalog: FbaRevenueCatalogPort;
   private readonly context: SpExecutionContextAdapter;
   private readonly demo: BrandSalesDemoSource;
   private readonly liveReader: BrandSalesLiveReader;
@@ -159,17 +174,10 @@ export class FbaRevenueReports {
   private readonly startFlights = new Map<string, Promise<FbaRevenueJobView>>();
   private readonly pollFlights = new Map<string, Promise<void>>();
   private readonly dataFlights = new Map<string, Promise<BrandSalesSnapshot>>();
+  private lifecycleRevision = 0;
+  private lifecycleController = new AbortController();
 
-  constructor(input: Readonly<{
-    store: BrandSalesJobStore;
-    reports: ReportsPort;
-    catalog: CatalogPort;
-    context: SpExecutionContextAdapter;
-    demo: BrandSalesDemoSource;
-    liveReader?: BrandSalesLiveReader;
-    now?: () => number;
-    newId?: () => string;
-  }>) {
+  constructor(input: FbaRevenueReportsDependencies) {
     this.store = input.store;
     this.reports = input.reports;
     this.catalog = input.catalog;
@@ -181,6 +189,13 @@ export class FbaRevenueReports {
   }
 
   clear(): void {
+    const staleLifecycle = this.lifecycleController;
+    this.lifecycleController = new AbortController();
+    this.lifecycleRevision += 1;
+    staleLifecycle.abort(new SpExecutionContextError(
+      "SP_CONTEXT_INVALIDATED",
+      "Amazon 執行環境已更新；請重新開始這次操作。",
+    ));
     this.jobs.clear();
     this.startFlights.clear();
     this.pollFlights.clear();
@@ -190,18 +205,78 @@ export class FbaRevenueReports {
   private async settleInContext<T>(
     context: SpExecutionContext,
     operation: Promise<T>,
+    lifecycleRevision: number,
+    signal: AbortSignal,
   ): Promise<T> {
     try {
-      const value = await operation;
+      const value = await this.waitForLifecycle(operation, signal);
       await this.context.assertCurrent(context);
+      this.assertLifecycleCurrent(lifecycleRevision, signal);
       return value;
     } catch (error) {
-      if (isExecutionContextFenceError(error)) {
+      if (
+        error instanceof FbaRevenueReportsError &&
+        (error.code === "ACCOUNT_SCOPE_CHANGED" ||
+          error.code === "REPORT_MODE_CHANGED")
+      ) {
+        throw error;
+      }
+      if (
+        isExecutionContextFenceError(error) &&
+        error.code !== "SP_CONTEXT_INVALIDATED"
+      ) {
         throw error;
       }
       await this.context.assertCurrent(context);
+      this.assertLifecycleCurrent(lifecycleRevision, signal);
       throw error;
     }
+  }
+
+  private waitForLifecycle<T>(
+    operation: Promise<T>,
+    signal: AbortSignal,
+  ): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(signal.reason instanceof Error
+        ? signal.reason
+        : new SpExecutionContextError(
+            "SP_CONTEXT_INVALIDATED",
+            "Amazon 執行環境已更新；請重新開始這次操作。",
+          ));
+    }
+    return new Promise<T>((resolve, reject) => {
+      const rejectStale = () => reject(signal.reason instanceof Error
+        ? signal.reason
+        : new SpExecutionContextError(
+            "SP_CONTEXT_INVALIDATED",
+            "Amazon 執行環境已更新；請重新開始這次操作。",
+          ));
+      signal.addEventListener("abort", rejectStale, { once: true });
+      void operation
+        .then(resolve, reject)
+        .finally(() => signal.removeEventListener("abort", rejectStale));
+    });
+  }
+
+  private assertLifecycleCurrent(
+    expected: number,
+    signal: AbortSignal,
+  ): void {
+    if (expected === this.lifecycleRevision && !signal.aborted) return;
+    throw new SpExecutionContextError(
+      "SP_CONTEXT_INVALIDATED",
+      "Amazon 執行環境已更新；請重新開始這次操作。",
+    );
+  }
+
+  private async assertCurrent(
+    context: SpExecutionContext,
+    lifecycleRevision: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.context.assertCurrent(context);
+    this.assertLifecycleCurrent(lifecycleRevision, signal);
   }
 
   async begin(input: Readonly<{
@@ -210,24 +285,38 @@ export class FbaRevenueReports {
     endDate: string;
     explicitRetry: boolean;
   }>): Promise<FbaRevenueJobView> {
+    const lifecycleRevision = this.lifecycleRevision;
+    const signal = this.lifecycleController.signal;
     const context = await this.context.capture(input.marketplaceId);
+    this.assertLifecycleCurrent(lifecycleRevision, signal);
     const flightKey = [
       context.accountScope,
       input.marketplaceId,
       context.mode,
       context.generation,
+      lifecycleRevision,
       input.startDate,
       input.endDate,
     ].join(":");
     const existing = this.startFlights.get(flightKey);
     const flight = existing ??
-      this.beginSelection(context, input).finally(() => {
+      this.beginSelection(
+        context,
+        input,
+        lifecycleRevision,
+        signal,
+      ).finally(() => {
         if (this.startFlights.get(flightKey) === flight) {
           this.startFlights.delete(flightKey);
         }
       });
     if (!existing) this.startFlights.set(flightKey, flight);
-    return this.settleInContext(context, flight);
+    return this.settleInContext(
+      context,
+      flight,
+      lifecycleRevision,
+      signal,
+    );
   }
 
   async get(input: Readonly<{
@@ -235,9 +324,17 @@ export class FbaRevenueReports {
     jobId: string;
     includeData: boolean;
   }>): Promise<FbaRevenueJobResult> {
-    this.prune();
+    const lifecycleRevision = this.lifecycleRevision;
+    const signal = this.lifecycleController.signal;
     const context = await this.context.capture(input.marketplaceId);
-    const job = await this.load(input.jobId, context);
+    this.assertLifecycleCurrent(lifecycleRevision, signal);
+    this.prune();
+    const job = await this.load(
+      input.jobId,
+      context,
+      lifecycleRevision,
+      signal,
+    );
     if (!job || job.marketplaceId !== input.marketplaceId) {
       return throwSemanticError(
         "品牌營收工作已過期或站點不符，請重新同步。",
@@ -247,7 +344,15 @@ export class FbaRevenueReports {
     }
     return this.settleInContext(
       context,
-      this.getSelection(context, job, input),
+      this.getSelection(
+        context,
+        job,
+        input,
+        lifecycleRevision,
+        signal,
+      ),
+      lifecycleRevision,
+      signal,
     );
   }
 
@@ -259,8 +364,10 @@ export class FbaRevenueReports {
       jobId: string;
       includeData: boolean;
     }>,
+    lifecycleRevision: number,
+    signal: AbortSignal,
   ): Promise<FbaRevenueJobResult> {
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     if (job.mode !== context.mode) {
       if (job.mode === "demo" && context.mode === "live") {
         await this.store.deleteBrandSalesJob(job.jobId);
@@ -280,8 +387,8 @@ export class FbaRevenueReports {
         "ACCOUNT_SCOPE_CHANGED",
       );
     }
-    await this.normalize(context, job);
-    await this.context.assertCurrent(context);
+    await this.normalize(context, job, signal);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     const now = this.now();
     if (job.expiresAt <= now && this.ready(job)) {
       await this.store.deleteBrandSalesJob(job.jobId);
@@ -322,7 +429,12 @@ export class FbaRevenueReports {
     }
     let pollFlight = this.pollFlights.get(job.jobId);
     if (!pollFlight) {
-      pollFlight = this.poll(context, job).finally(() => {
+      pollFlight = this.poll(
+        context,
+        job,
+        lifecycleRevision,
+        signal,
+      ).finally(() => {
         if (this.pollFlights.get(job.jobId) === pollFlight) {
           this.pollFlights.delete(job.jobId);
         }
@@ -330,11 +442,16 @@ export class FbaRevenueReports {
       this.pollFlights.set(job.jobId, pollFlight);
     }
     await pollFlight;
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     if (!input.includeData) return { view: this.view(job), snapshot: null };
     let dataFlight = this.dataFlights.get(job.jobId);
     if (!dataFlight) {
-      dataFlight = this.readSnapshot(context, job).finally(() => {
+      dataFlight = this.readSnapshot(
+        context,
+        job,
+        lifecycleRevision,
+        signal,
+      ).finally(() => {
         if (this.dataFlights.get(job.jobId) === dataFlight) {
           this.dataFlights.delete(job.jobId);
         }
@@ -342,7 +459,7 @@ export class FbaRevenueReports {
       this.dataFlights.set(job.jobId, dataFlight);
     }
     const snapshot = await dataFlight;
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     return { view: this.view(job), snapshot: structuredClone(snapshot) };
   }
 
@@ -352,7 +469,12 @@ export class FbaRevenueReports {
     }
   }
 
-  private runtimeJob(record: BrandSalesJobRecord): BrandSalesRuntimeJob {
+  private runtimeJob(
+    record: BrandSalesJobRecord,
+    lifecycleRevision: number,
+    signal: AbortSignal,
+  ): BrandSalesRuntimeJob {
+    this.assertLifecycleCurrent(lifecycleRevision, signal);
     const current = this.jobs.get(record.jobId);
     if (current) {
       const snapshot = current.snapshot;
@@ -490,9 +612,10 @@ export class FbaRevenueReports {
     context: SpExecutionContext,
     job: BrandSalesRuntimeJob,
     leg: "listing" | "shipment",
+    signal: AbortSignal,
   ): Promise<void> {
     const projected = await this.reports.projectDurableLeg(
-      this.plan(job, leg),
+      this.plan(job, leg, signal),
       context,
     );
     if (!projected) {
@@ -511,12 +634,13 @@ export class FbaRevenueReports {
     context: SpExecutionContext,
     job: BrandSalesRuntimeJob,
     leg: "listing" | "shipment",
+    signal: AbortSignal,
   ): Promise<void> {
     const legacy = job[leg];
     if (legacy.status === "NOT_STARTED" && !legacy.reportId && !legacy.terminal) {
       return;
     }
-    const reportPlan = this.plan(job, leg);
+    const reportPlan = this.plan(job, leg, signal);
     const opaque = legacy.reportId?.startsWith("report-lease.") ?? false;
     const unboundLegacy = legacy.leaseBinding == null &&
       legacy.handleBinding == null;
@@ -565,10 +689,11 @@ export class FbaRevenueReports {
   private async normalize(
     context: SpExecutionContext,
     job: BrandSalesRuntimeJob,
+    signal: AbortSignal,
   ): Promise<void> {
     await Promise.all([
-      this.normalizeLeg(context, job, "listing"),
-      this.normalizeLeg(context, job, "shipment"),
+      this.normalizeLeg(context, job, "listing", signal),
+      this.normalizeLeg(context, job, "shipment", signal),
     ]);
   }
 
@@ -577,6 +702,8 @@ export class FbaRevenueReports {
     job: BrandSalesRuntimeJob,
     leg: "listing" | "shipment",
     explicitRetry: boolean,
+    lifecycleRevision: number,
+    signal: AbortSignal,
   ): Promise<unknown | null> {
     try {
       if (leg === "listing") {
@@ -584,30 +711,31 @@ export class FbaRevenueReports {
           purpose: "catalog",
           marketplaceId: job.marketplaceId as MarketplaceId,
           explicitRetry,
+          signal,
           expectedContext: context,
         });
       } else {
-        await this.reports.start(this.plan(job, leg), {
+        await this.reports.start(this.plan(job, leg, signal), {
           explicitRetry,
           expectedContext: context,
         });
       }
-      await this.context.assertCurrent(context);
-      await this.saveProjectedLeg(context, job, leg);
-      await this.context.assertCurrent(context);
+      await this.assertCurrent(context, lifecycleRevision, signal);
+      await this.saveProjectedLeg(context, job, leg, signal);
+      await this.assertCurrent(context, lifecycleRevision, signal);
       return null;
     } catch (error) {
       if (isExecutionContextFenceError(error)) return error;
       try {
-        await this.context.assertCurrent(context);
+        await this.assertCurrent(context, lifecycleRevision, signal);
         const projected = await this.reports.projectDurableLeg(
-          this.plan(job, leg),
+          this.plan(job, leg, signal),
           context,
         );
-        await this.context.assertCurrent(context);
+        await this.assertCurrent(context, lifecycleRevision, signal);
         if (projected) {
           await this.saveLeg(job, leg, projected);
-          await this.context.assertCurrent(context);
+          await this.assertCurrent(context, lifecycleRevision, signal);
         }
       } catch (projectionError) {
         if (isExecutionContextFenceError(projectionError)) {
@@ -627,6 +755,8 @@ export class FbaRevenueReports {
       endDate: string;
       explicitRetry: boolean;
     }>,
+    lifecycleRevision: number,
+    signal: AbortSignal,
   ): Promise<FbaRevenueJobView> {
     const now = this.now();
     this.prune(now);
@@ -636,7 +766,7 @@ export class FbaRevenueReports {
       startDate: input.startDate,
       endDate: input.endDate,
     });
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     let incompatibleToReplace: BrandSalesIncompatibleJobRecord | null = null;
     if (stored && stored.mode !== context.mode) {
       if (stored.mode === "demo" && context.mode === "live") {
@@ -680,10 +810,12 @@ export class FbaRevenueReports {
       this.jobs.delete(stored.jobId);
       stored = null;
     }
-    let job = stored ? this.runtimeJob(stored) : null;
+    let job = stored
+      ? this.runtimeJob(stored, lifecycleRevision, signal)
+      : null;
     if (job) {
-      await this.normalize(context, job);
-      await this.context.assertCurrent(context);
+      await this.normalize(context, job, signal);
+      await this.assertCurrent(context, lifecycleRevision, signal);
       if (this.legReusable(job.listing) && this.legReusable(job.shipment)) {
         const remaining = job.expiresAt - now;
         const activeLeg = (["listing", "shipment"] as const).find((leg) =>
@@ -698,7 +830,7 @@ export class FbaRevenueReports {
       }
     }
     if (!job) {
-      await this.context.assertCurrent(context);
+      await this.assertCurrent(context, lifecycleRevision, signal);
       const window = planFbaShipmentSalesWindow({
         marketplaceId: input.marketplaceId,
         startDate: input.startDate,
@@ -726,20 +858,41 @@ export class FbaRevenueReports {
             replacement: candidate,
           })
         : await this.store.createBrandSalesJobIfAbsent(candidate, now);
-      await this.context.assertCurrent(context);
-      job = this.runtimeJob(claimed.job);
-      if (!claimed.created) return this.beginSelection(context, input);
+      await this.assertCurrent(context, lifecycleRevision, signal);
+      job = this.runtimeJob(claimed.job, lifecycleRevision, signal);
+      if (!claimed.created) {
+        return this.beginSelection(
+          context,
+          input,
+          lifecycleRevision,
+          signal,
+        );
+      }
     }
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     const results = await Promise.all([
       this.legReusable(job.listing)
         ? Promise.resolve(null)
-        : this.startLeg(context, job, "listing", input.explicitRetry),
+        : this.startLeg(
+            context,
+            job,
+            "listing",
+            input.explicitRetry,
+            lifecycleRevision,
+            signal,
+          ),
       this.legReusable(job.shipment)
         ? Promise.resolve(null)
-        : this.startLeg(context, job, "shipment", input.explicitRetry),
+        : this.startLeg(
+            context,
+            job,
+            "shipment",
+            input.explicitRetry,
+            lifecycleRevision,
+            signal,
+          ),
     ]);
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     const failure = results.find((value) => value !== null);
     if (failure) {
       if (
@@ -761,13 +914,16 @@ export class FbaRevenueReports {
   private async load(
     jobId: string,
     context: SpExecutionContext,
+    lifecycleRevision: number,
+    signal: AbortSignal,
   ): Promise<BrandSalesRuntimeJob | null> {
     const cached = this.jobs.get(jobId);
     if (cached) return cached;
     const stored = await this.store.getBrandSalesJobById(jobId);
     await this.context.assertCurrent(context);
+    this.assertLifecycleCurrent(lifecycleRevision, signal);
     return stored && !isBrandSalesIncompatibleJob(stored)
-      ? this.runtimeJob(stored)
+      ? this.runtimeJob(stored, lifecycleRevision, signal)
       : null;
   }
 
@@ -776,6 +932,7 @@ export class FbaRevenueReports {
     job: BrandSalesRuntimeJob,
     leg: "listing" | "shipment",
     error: unknown,
+    signal: AbortSignal,
   ): Promise<void> {
     if (
       !(error instanceof SpApiError) ||
@@ -783,14 +940,16 @@ export class FbaRevenueReports {
     ) {
       return;
     }
-    await this.saveProjectedLeg(context, job, leg);
+    await this.saveProjectedLeg(context, job, leg, signal);
   }
 
   private async poll(
     context: SpExecutionContext,
     job: BrandSalesRuntimeJob,
+    lifecycleRevision: number,
+    signal: AbortSignal,
   ): Promise<void> {
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     const marketplaceId = job.marketplaceId as MarketplaceId;
     if (
       (job.listing.status === "IN_QUEUE" || job.listing.status === "IN_PROGRESS") &&
@@ -802,8 +961,11 @@ export class FbaRevenueReports {
           this.catalog.status({
             marketplaceId,
             reportId: job.listing.reportId,
+            signal,
             expectedContext: context,
           }),
+          lifecycleRevision,
+          signal,
         );
         if (
           listing.status !== "IN_QUEUE" &&
@@ -823,10 +985,10 @@ export class FbaRevenueReports {
             "REPORT_FAILED",
           );
         }
-        await this.saveProjectedLeg(context, job, "listing");
-        await this.context.assertCurrent(context);
+        await this.saveProjectedLeg(context, job, "listing", signal);
+        await this.assertCurrent(context, lifecycleRevision, signal);
       } catch (error) {
-        await this.markPollFailure(context, job, "listing", error);
+        await this.markPollFailure(context, job, "listing", error, signal);
         throw error;
       }
     }
@@ -838,15 +1000,17 @@ export class FbaRevenueReports {
         const shipment = await this.settleInContext(
           context,
           this.reports.status(
-            this.plan(job, "shipment"),
+            this.plan(job, "shipment", signal),
             job.shipment.reportId,
             context,
           ),
+          lifecycleRevision,
+          signal,
         );
-        await this.saveProjectedLeg(context, job, "shipment");
-        await this.context.assertCurrent(context);
+        await this.saveProjectedLeg(context, job, "shipment", signal);
+        await this.assertCurrent(context, lifecycleRevision, signal);
       } catch (error) {
-        await this.markPollFailure(context, job, "shipment", error);
+        await this.markPollFailure(context, job, "shipment", error, signal);
         throw error;
       }
     }
@@ -855,8 +1019,10 @@ export class FbaRevenueReports {
   private async readSnapshot(
     context: SpExecutionContext,
     job: BrandSalesRuntimeJob,
+    lifecycleRevision: number,
+    signal: AbortSignal,
   ): Promise<BrandSalesSnapshot> {
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     if (
       !this.ready(job) ||
       !job.listing.reportId ||
@@ -878,7 +1044,7 @@ export class FbaRevenueReports {
     const window = this.window(job);
     let candidate: BrandSalesSnapshot;
     if (job.mode === "demo") {
-      candidate = await this.demo.read(window);
+      candidate = await this.demo.read({ ...window, signal });
     } else {
       const marketplaceId = job.marketplaceId as MarketplaceId;
       const [listings, shipmentDocument] = await Promise.all([
@@ -887,10 +1053,11 @@ export class FbaRevenueReports {
           marketplaceId,
           reportId: job.listing.reportId,
           documentId: job.listing.documentId,
+          signal,
           expectedContext: context,
         }),
         this.reports.readDocument(
-          this.plan(job, "shipment"),
+          this.plan(job, "shipment", signal),
           {
             reportId: job.shipment.reportId,
             documentId: job.shipment.documentId,
@@ -909,18 +1076,19 @@ export class FbaRevenueReports {
         ...window,
         listings,
         shipmentDocument: shipmentDocument.text,
+        signal,
       });
     }
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     const projected = projectBrandSalesSnapshot(candidate, {
       ...window,
       mode: job.mode,
     });
-    await this.context.assertCurrent(context);
+    await this.assertCurrent(context, lifecycleRevision, signal);
     job.snapshot = projected;
     job.snapshotGeneration = context.generation;
     try {
-      await this.context.assertCurrent(context);
+      await this.assertCurrent(context, lifecycleRevision, signal);
     } catch (error) {
       if (job.snapshot === projected) {
         job.snapshot = null;

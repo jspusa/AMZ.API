@@ -86,6 +86,7 @@ import {
   parseAsin,
   parseMarketplace,
   parseSellerSku,
+  reportIdentifier,
   shortText,
   type JsonRecord,
 } from "./route-input";
@@ -94,6 +95,11 @@ import {
   FbaSalesMetricsRoutes,
   type FbaSalesMetricsRoutesPort,
 } from "./fba-sales-metrics-routes";
+import {
+  createBrandSalesCoordinator,
+  type BrandSalesCoordinatorPort,
+  type BrandSalesDemoSource,
+} from "./brand-sales-coordinator";
 export {
   parseAsin,
   parseMarketplace,
@@ -178,11 +184,6 @@ import {
   planCompletedSalesAndTrafficWindow,
 } from "./amazon/revenue-report-windows";
 import { createBrandSalesDemoSource } from "./amazon/brand-sales-demo";
-import {
-  FbaRevenueReports,
-  FbaRevenueReportsError,
-  type BrandSalesDemoSource,
-} from "./amazon/fba-revenue-reports";
 import {
   FbaCatalogReports,
   type FbaCatalogReportsDemoSource,
@@ -1150,14 +1151,6 @@ function publicRouterError(
 }
 
 function apiError(error: unknown, fallback: string): ApiResponse {
-  if (error instanceof FbaRevenueReportsError) {
-    const publicError = publicRouterError(error, fallback);
-    return json(
-      { code: publicError.code, message: publicError.message },
-      publicError.status,
-      publicError.retryAfter ? { "retry-after": publicError.retryAfter } : {},
-    );
-  }
   if (
     error instanceof StandaloneAuditJobCoordinatorError ||
     error instanceof AplusAuditJobCoordinatorError ||
@@ -1608,7 +1601,7 @@ export class ApiRouter {
   private readonly salesAndTraffic: SalesAndTrafficReports;
   private readonly catalogListings: CatalogListingsReadAdapter;
   private readonly fbaCatalogReports: FbaCatalogReports;
-  private readonly fbaRevenueReports: FbaRevenueReports;
+  private readonly brandSalesCoordinator: BrandSalesCoordinatorPort;
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
   private readonly aplusAuditJobs: AplusAuditJobCoordinator;
@@ -1677,6 +1670,7 @@ export class ApiRouter {
     productMasterRoutes?: ProductMasterRoutesPort;
     skuCommandRoute?: SkuCommandRoutePort;
     fbaSalesMetricsRoutes?: FbaSalesMetricsRoutesPort;
+    brandSalesCoordinator?: BrandSalesCoordinatorPort;
     advertisingStrategyWait?: typeof waitMilliseconds;
     fbaInboundReads?: Partial<InboundReadsPort>;
     inboundNoncomplianceDemoReports?: Partial<
@@ -1807,19 +1801,20 @@ export class ApiRouter {
       pace: input.catalogPace,
       now: input.catalogNow,
     });
-    this.fbaRevenueReports = new FbaRevenueReports({
-      store: this.store,
-      reports: this.reportBroker,
-      catalog: this.fbaCatalogReports,
-      context: this.spExecutionContext,
-      demo: {
-        ...createBrandSalesDemoSource({
-          listings: ({ marketplaceId, signal }) =>
-            defaultCatalogDemo.seeds({ marketplaceId, signal }),
-        }),
-        ...input.brandSalesDemo,
-      },
-    });
+    this.brandSalesCoordinator = input.brandSalesCoordinator ??
+      createBrandSalesCoordinator({
+        store: this.store,
+        reports: this.reportBroker,
+        catalog: this.fbaCatalogReports,
+        context: this.spExecutionContext,
+        demo: {
+          ...createBrandSalesDemoSource({
+            listings: ({ marketplaceId, signal }) =>
+              defaultCatalogDemo.seeds({ marketplaceId, signal }),
+          }),
+          ...input.brandSalesDemo,
+        },
+      });
     this.advertisingStrategySources = {
       fbaListings: (request) => this.fbaCatalogReports.read({
         view: "identity",
@@ -1947,7 +1942,7 @@ export class ApiRouter {
   private clearContextBoundState(): void {
     this.contextStateRevision += 1;
     this.reportBroker.clear();
-    this.fbaRevenueReports.clear();
+    this.brandSalesCoordinator.clear();
     this.aplusAuditJobs.clear();
     this.standaloneAuditJobs.clear();
     this.previews.clear();
@@ -2105,9 +2100,9 @@ export class ApiRouter {
       case "GET /api/sp-api/sales-trend":
         return this.fbaSalesMetricsRoutes.salesTrend(request);
       case "POST /api/sp-api/brand-sales":
-        return this.startBrandSales(request);
+        return this.brandSalesCoordinator.start(request);
       case "GET /api/sp-api/brand-sales":
-        return this.brandSalesStatusOrData(request);
+        return this.brandSalesCoordinator.observe(request);
       case "POST /api/sp-api/inbound-shipments":
         return this.startInboundShipments(request);
       case "GET /api/sp-api/inbound-shipments":
@@ -2804,54 +2799,6 @@ export class ApiRouter {
       signal: input.signal,
       heartbeat: input.heartbeat,
     });
-  }
-
-  private async startBrandSales(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    const marketplaceId = parseMarketplace(body?.marketplaceId);
-    const startDate = optionalDate(body?.startDate);
-    const endDate = optionalDate(body?.endDate);
-    if (
-      !body ||
-      !marketplaceId ||
-      typeof startDate !== "string" ||
-      typeof endDate !== "string" ||
-      (body.retry !== undefined && body.retry !== true)
-    ) {
-      return invalid("品牌營收需要有效站點與完整 YYYY-MM-DD 日期範圍。");
-    }
-    try {
-      const view = await this.fbaRevenueReports.begin({
-        marketplaceId,
-        startDate,
-        endDate,
-        explicitRetry: body.retry === true,
-      });
-      return json(view, view.ready ? 200 : 202);
-    } catch (error) {
-      return apiError(error, "開始整理 FBA 品牌營收時發生未預期的錯誤。");
-    }
-  }
-
-  private async brandSalesStatusOrData(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const jobId = this.reportIdentifier(request.query.jobId);
-    if (!marketplaceId || !jobId) {
-      return invalid("品牌營收工作資訊無效，請重新同步。");
-    }
-    try {
-      const result = await this.fbaRevenueReports.get({
-        marketplaceId,
-        jobId,
-        includeData: request.query.data === "1",
-      });
-      return json(
-        result.snapshot ?? result.view,
-        result.snapshot || result.view.ready ? 200 : 202,
-      );
-    } catch (error) {
-      return apiError(error, "整理 FBA 品牌營收時發生未預期的錯誤。");
-    }
   }
 
   private listingIdentity(request: ApiRequest):
@@ -5674,11 +5621,7 @@ export class ApiRouter {
   }
 
   private reportIdentifier(value: unknown): string | null {
-    // Amazon reportDocumentId values commonly use the `amzn1.spdoc...`
-    // namespace, so a dot is expected and is not a path separator here.
-    return typeof value === "string" && /^[A-Za-z0-9._-]{1,200}$/.test(value)
-      ? value
-      : null;
+    return reportIdentifier(value);
   }
 
   private standaloneAuditKind(value: unknown): StandaloneAuditKind | null {

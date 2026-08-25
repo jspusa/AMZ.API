@@ -44,6 +44,14 @@ export function parseAsin(value: unknown): string | null {
     : null;
 }
 
+export function reportIdentifier(value: unknown): string | null {
+  // Amazon reportDocumentId values commonly use the `amzn1.spdoc...`
+  // namespace, so a dot is expected and is not a path separator here.
+  return typeof value === "string" && /^[A-Za-z0-9._-]{1,200}$/u.test(value)
+    ? value
+    : null;
+}
+
 export function integer(
   value: unknown,
   fallback: number | null,

@@ -22,7 +22,10 @@ import {
 } from "../src/main/amazon/sp-execution-context";
 import { planFbaShipmentSalesWindow } from
   "../src/main/amazon/revenue-report-windows";
-import { LocalStore } from "../src/main/local-store";
+import {
+  LocalStore,
+  sharedFbaShipmentSalesOptionsKey,
+} from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -129,6 +132,7 @@ type GatewayOverrides = {
     dataStartTime: string;
     dataEndTime: string;
     windowCreatedAt: number;
+    signal?: AbortSignal;
   }): Promise<ShipmentStatus>;
   getShipmentStatus?(input: {
     marketplaceId: MarketplaceId;
@@ -138,6 +142,7 @@ type GatewayOverrides = {
     dataStartTime: string;
     dataEndTime: string;
     windowCreatedAt: number;
+    signal?: AbortSignal;
   }): Promise<ShipmentStatus>;
   getDataFromDocuments?(input: {
     marketplaceId: MarketplaceId;
@@ -149,6 +154,7 @@ type GatewayOverrides = {
     windowCreatedAt: number;
     listingDocument: string;
     shipmentDocument: string;
+    signal?: AbortSignal;
   }): Promise<BrandSalesSnapshot>;
 };
 
@@ -168,6 +174,7 @@ function liveReportsAdapter(overrides: GatewayOverrides): ReportsAdapter {
               dataStartTime: request.dataStartTime,
               dataEndTime: request.dataEndTime,
               windowCreatedAt: request.windowCreatedAt,
+              signal: request.signal,
             })
           : null;
       if (!result) throw new Error(`Unexpected live Reports intent: ${request.intent}`);
@@ -199,6 +206,7 @@ function liveReportsAdapter(overrides: GatewayOverrides): ReportsAdapter {
               dataStartTime: request.dataStartTime,
               dataEndTime: request.dataEndTime,
               windowCreatedAt: request.windowCreatedAt,
+              signal: request.signal,
             })
           : null;
       if (!result) throw new Error(`Unexpected live Reports status: ${request.intent}`);
@@ -242,6 +250,7 @@ function router(localStore: LocalStore, overrides: GatewayOverrides = {}): ApiRo
               windowCreatedAt: window.windowCreatedAt,
               listingDocument: "",
               shipmentDocument: "",
+              signal: window.signal,
             }),
           },
         }
@@ -1439,6 +1448,217 @@ describe("durable brand-sales report dedupe", () => {
       ?.internalOnly).toBeUndefined();
     expect((body(dataResponse).summary as Record<string, unknown>).internalOnly)
       .toBeUndefined();
+  });
+
+  it("aborts disposed start flights without joining or reposting them in the fresh lifecycle", async () => {
+    const localStore = await store();
+    let releaseListing!: () => void;
+    let releaseShipment!: () => void;
+    const listingGate = new Promise<void>((resolve) => {
+      releaseListing = resolve;
+    });
+    const shipmentGate = new Promise<void>((resolve) => {
+      releaseShipment = resolve;
+    });
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const listingSignals: AbortSignal[] = [];
+    const shipmentSignals: AbortSignal[] = [];
+    const app = router(localStore, {
+      startListing: async ({ signal }) => {
+        listingStarts += 1;
+        if (signal) listingSignals.push(signal);
+        await listingGate;
+        return queuedListing(listingStarts);
+      },
+      startShipment: async ({ signal }) => {
+        shipmentStarts += 1;
+        if (signal) shipmentSignals.push(signal);
+        await shipmentGate;
+        return queuedShipment(shipmentStarts);
+      },
+    });
+
+    const stale = brandStart(app);
+    await vi.waitFor(() => {
+      expect(listingStarts).toBe(1);
+      expect(shipmentStarts).toBe(1);
+    });
+    app.dispose();
+
+    const cancelled = await stale;
+    expect(cancelled.status).toBe(409);
+    expect(body(cancelled).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(listingSignals[0]?.aborted).toBe(true);
+    expect(shipmentSignals[0]?.aborted).toBe(true);
+
+    const fresh = await brandStart(app);
+    expect(fresh.status).toBe(409);
+    expect(body(fresh).code).toBe("BRAND_REPORT_RETRY_REQUIRED");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+
+    releaseListing();
+    releaseShipment();
+    await vi.advanceTimersByTimeAsync(1);
+    const afterStaleSettlement = await brandStart(app);
+    expect(afterStaleSettlement.status).toBe(409);
+    expect(body(afterStaleSettlement).code).toBe("BRAND_REPORT_RETRY_REQUIRED");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
+  it("aborts a disposed poll flight without losing the fresh single-flight", async () => {
+    const localStore = await store();
+    let releaseStale!: () => void;
+    let releaseFresh!: () => void;
+    const staleGate = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
+    const freshGate = new Promise<void>((resolve) => {
+      releaseFresh = resolve;
+    });
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    let shipmentPolls = 0;
+    const shipmentSignals: AbortSignal[] = [];
+    const app = router(localStore, {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async ({ reportId }) => ({
+        ...queuedListing(1),
+        ready: true,
+        reportId,
+        documentId: "listing-document-1",
+        status: "DONE",
+      }),
+      getShipmentStatus: async ({ reportId, signal }) => {
+        shipmentPolls += 1;
+        const call = shipmentPolls;
+        if (signal) shipmentSignals.push(signal);
+        await (call === 1 ? staleGate : freshGate);
+        return {
+          ...queuedShipment(1),
+          ready: true,
+          reportId,
+          documentId: call === 1
+            ? "stale-shipment-document"
+            : "fresh-shipment-document",
+          status: "DONE",
+        };
+      },
+    });
+    const started = await brandStart(app);
+    const jobId = String(body(started).jobId);
+    const observe = () => app.handle(request({
+      method: "GET",
+      path: "/api/sp-api/brand-sales",
+      query: { marketplaceId: MARKETPLACE_ID, jobId },
+    }));
+
+    const stale = observe();
+    await vi.waitFor(() => expect(shipmentPolls).toBe(1));
+    app.dispose();
+
+    const cancelled = await stale;
+    expect(cancelled.status).toBe(409);
+    expect(body(cancelled).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(shipmentSignals[0]?.aborted).toBe(true);
+
+    const fresh = observe();
+    await vi.waitFor(() => expect(shipmentPolls).toBe(2));
+    expect(shipmentSignals[1]?.aborted).toBe(false);
+
+    releaseStale();
+    await vi.advanceTimersByTimeAsync(1);
+    const joined = observe();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(shipmentPolls).toBe(2);
+
+    releaseFresh();
+    const [freshResponse, joinedResponse] = await Promise.all([fresh, joined]);
+    expect(freshResponse.status).toBe(200);
+    expect(joinedResponse.status).toBe(200);
+    expect(body(freshResponse)).toMatchObject({ jobId, ready: true });
+    expect(body(joinedResponse)).toMatchObject({ jobId, ready: true });
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+    expect(shipmentPolls).toBe(2);
+    const persisted = await localStore.getBrandSalesJobById(jobId);
+    if (!persisted) throw new Error("Expected the fresh Brand job to persist");
+    const shipmentLease = await localStore.getSharedReport({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      reportType: "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA",
+      optionsKey: sharedFbaShipmentSalesOptionsKey({
+        startDate: persisted.startDate,
+        endDate: persisted.endDate,
+        dataStartTime: persisted.shipmentDataStartTime,
+        dataEndTime: persisted.shipmentDataEndTime,
+        windowCreatedAt: persisted.createdAt,
+      }),
+    });
+    expect(shipmentLease?.report.documentId).toBe("fresh-shipment-document");
+  });
+
+  it("aborts a disposed data flight without joining or caching it in the fresh lifecycle", async () => {
+    const localStore = await store();
+    let releaseStale!: () => void;
+    const staleGate = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    let reads = 0;
+    const signals: AbortSignal[] = [];
+    const app = router(localStore, {
+      startListing: async () => ({
+        ...queuedListing(++listingStarts),
+        ready: true,
+        documentId: "listing-document-1",
+        status: "DONE",
+      }),
+      startShipment: async () => ({
+        ...queuedShipment(++shipmentStarts),
+        ready: true,
+        documentId: "shipment-document-1",
+        status: "DONE",
+      }),
+      getDataFromDocuments: async (input) => {
+        reads += 1;
+        if (input.signal) signals.push(input.signal);
+        if (reads === 1) await staleGate;
+        return demoBrandSnapshot(input);
+      },
+    });
+    const started = await brandStart(app);
+    const jobId = String(body(started).jobId);
+    const readData = () => app.handle(request({
+      method: "GET",
+      path: "/api/sp-api/brand-sales",
+      query: { marketplaceId: MARKETPLACE_ID, jobId, data: "1" },
+    }));
+
+    const stale = readData();
+    await vi.waitFor(() => expect(reads).toBe(1));
+    app.dispose();
+
+    const cancelled = await stale;
+    expect(cancelled.status).toBe(409);
+    expect(body(cancelled).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(signals[0]?.aborted).toBe(true);
+
+    const fresh = await readData();
+    expect(fresh.status).toBe(200);
+    expect(reads).toBe(2);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+
+    releaseStale();
+    await Promise.resolve();
+    const cached = await readData();
+    expect(cached.status).toBe(200);
+    expect(reads).toBe(2);
   });
 
   it("rejects a reader snapshot whose identity is not bound to the fixed job window", async () => {
