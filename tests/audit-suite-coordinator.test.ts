@@ -487,7 +487,6 @@ describe("AuditSuiteCoordinator run ownership", () => {
       .join("\n");
     const publicPublication = [
       JSON.stringify(run.sections.advertising),
-      JSON.stringify(workbookInput.sections.advertising),
       xlsxText,
     ].join("\n");
 
