@@ -1,8 +1,16 @@
+import { throwIfAborted } from "../abort-utils";
+import type { MarketplaceId } from "../../shared/marketplaces";
 import {
   APLUS_AUDIT_MAX_PUBLIC_COUNT,
   APLUS_AUDIT_MAX_PUBLIC_LOCALES_PER_ASIN,
   isAplusLanguageTag,
 } from "../../shared/a-plus";
+import {
+  SpExecutionContextError,
+  type SpExecutionContext,
+  type SpExecutionContextAdapter,
+  type SpExecutionMode,
+} from "./sp-execution-context";
 
 export type AplusAuditStatus =
   | "published"
@@ -70,41 +78,41 @@ export function buildAplusAuditSeedsFromFbaGrouping(
   });
 }
 
-export type AplusPublishRecordFetchInput = Readonly<{
+type AplusPublishRecordFetchInput = Readonly<{
   marketplaceId: string;
   asin: string;
   pageToken?: string;
   signal?: AbortSignal;
 }>;
 
-export type AplusPublishRecordFetchResult = Readonly<{
+type AplusPublishRecordFetchResult = Readonly<{
   status: number;
   payload: unknown;
   requestId?: string | null;
 }>;
 
-export type AplusPublishRecordFetcher = (
+type AplusPublishRecordFetcher = (
   input: AplusPublishRecordFetchInput,
 ) => Promise<AplusPublishRecordFetchResult>;
 
-export type AplusContentDocumentFetchInput = Readonly<{
+type AplusContentDocumentFetchInput = Readonly<{
   marketplaceId: string;
   pageToken?: string;
   signal?: AbortSignal;
 }>;
 
-export type AplusContentDocumentRelationFetchInput = Readonly<{
+type AplusContentDocumentRelationFetchInput = Readonly<{
   marketplaceId: string;
   contentReferenceKey: string;
   pageToken?: string;
   signal?: AbortSignal;
 }>;
 
-export type AplusContentDocumentFetcher = (
+type AplusContentDocumentFetcher = (
   input: AplusContentDocumentFetchInput,
 ) => Promise<AplusPublishRecordFetchResult>;
 
-export type AplusContentDocumentRelationFetcher = (
+type AplusContentDocumentRelationFetcher = (
   input: AplusContentDocumentRelationFetchInput,
 ) => Promise<AplusPublishRecordFetchResult>;
 
@@ -237,6 +245,16 @@ const APLUS_ASIN_BADGES = new Set([
 ]);
 
 const APLUS_MAX_DOCUMENTS_PER_ASIN = 100;
+const APLUS_MAX_PAGE_REQUESTS = APLUS_AUDIT_MAX_PUBLIC_COUNT;
+const APLUS_MAX_RELATION_EDGES = APLUS_AUDIT_MAX_PUBLIC_COUNT;
+
+type AplusPageBudget = { remaining: number };
+
+function claimAplusPage(budget: AplusPageBudget): boolean {
+  if (budget.remaining <= 0) return false;
+  budget.remaining -= 1;
+  return true;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -247,6 +265,11 @@ function throwIfAuditAborted(signal?: AbortSignal): void {
   const error = new Error("A+ 健檢背景工作已中止。");
   error.name = "AbortError";
   throw error;
+}
+
+function throwIfAuditFence(error: unknown): void {
+  if (error instanceof SpExecutionContextError) throw error;
+  if (error instanceof Error && error.name === "AbortError") throw error;
 }
 
 function isExactText(value: unknown, maximum: number): value is string {
@@ -636,6 +659,7 @@ function parseDocumentRelation(
 async function readAplusDocumentIndex(input: Readonly<{
   marketplaceId: string;
   targetAsins: ReadonlySet<string>;
+  budget: AplusPageBudget;
   fetchContentDocuments?: AplusContentDocumentFetcher;
   fetchContentDocumentAsinRelations?: AplusContentDocumentRelationFetcher;
   signal?: AbortSignal;
@@ -656,6 +680,10 @@ async function readAplusDocumentIndex(input: Readonly<{
   let documentPaginationComplete = false;
   for (let page = 0; page < 100; page += 1) {
     throwIfAuditAborted(input.signal);
+    if (!claimAplusPage(input.budget)) {
+      partial = true;
+      break;
+    }
     let response: AplusPublishRecordFetchResult;
     try {
       response = await input.fetchContentDocuments({
@@ -666,7 +694,7 @@ async function readAplusDocumentIndex(input: Readonly<{
       throwIfAuditAborted(input.signal);
     } catch (error) {
       throwIfAuditAborted(input.signal);
-      if (error instanceof Error && error.name === "AbortError") throw error;
+      throwIfAuditFence(error);
       partial = true;
       break;
     }
@@ -739,6 +767,10 @@ async function readAplusDocumentIndex(input: Readonly<{
     const compositeKey = JSON.stringify([asin, contentReferenceKey]);
     const previous = relationAggregates.get(compositeKey);
     if (previous) return previous;
+    if (relationAggregates.size >= APLUS_MAX_RELATION_EDGES) {
+      partial = true;
+      return null;
+    }
     const created = {
       asin,
       contentReferenceKey,
@@ -748,14 +780,22 @@ async function readAplusDocumentIndex(input: Readonly<{
     relationAggregates.set(compositeKey, created);
     return created;
   };
-  for (const document of [...documentsByKey.values()].sort((left, right) =>
+  documentRelations: for (const document of [...documentsByKey.values()].sort((left, right) =>
     left.contentReferenceKey.localeCompare(right.contentReferenceKey)
   )) {
+    if (relationAggregates.size >= APLUS_MAX_RELATION_EDGES) {
+      partial = true;
+      break;
+    }
     let relationPageToken: string | undefined;
     const seenRelationPageTokens = new Set<string>();
     let relationPaginationComplete = false;
     for (let page = 0; page < 100; page += 1) {
       throwIfAuditAborted(input.signal);
+      if (!claimAplusPage(input.budget)) {
+        partial = true;
+        break documentRelations;
+      }
       let response: AplusPublishRecordFetchResult;
       try {
         response = await input.fetchContentDocumentAsinRelations({
@@ -767,7 +807,7 @@ async function readAplusDocumentIndex(input: Readonly<{
         throwIfAuditAborted(input.signal);
       } catch (error) {
         throwIfAuditAborted(input.signal);
-        if (error instanceof Error && error.name === "AbortError") throw error;
+        throwIfAuditFence(error);
         partial = true;
         break;
       }
@@ -794,7 +834,12 @@ async function readAplusDocumentIndex(input: Readonly<{
             // target relation, so negative conclusions remain globally partial.
             partial = true;
           } else if (input.targetAsins.has(exactCandidateAsin)) {
-            relationAggregate(exactCandidateAsin, document.contentReferenceKey).invalid = true;
+            const aggregate = relationAggregate(
+              exactCandidateAsin,
+              document.contentReferenceKey,
+            );
+            if (!aggregate) break documentRelations;
+            aggregate.invalid = true;
             partialAsins.add(exactCandidateAsin);
           }
           // A malformed row with an exact non-target ASIN cannot change the
@@ -806,6 +851,7 @@ async function readAplusDocumentIndex(input: Readonly<{
           relation.asin,
           document.contentReferenceKey,
         );
+        if (!aggregate) break documentRelations;
         if (relation.completeness === "partial") {
           aggregate.invalid = true;
           partialAsins.add(relation.asin);
@@ -1033,6 +1079,7 @@ async function readAsin(
   marketplaceId: string,
   asin: string,
   fetchPublishRecords: AplusPublishRecordFetcher,
+  budget: AplusPageBudget,
   signal?: AbortSignal,
 ): Promise<AsinReadResult> {
   throwIfAuditAborted(signal);
@@ -1051,6 +1098,14 @@ async function readAsin(
   let warningResult: AsinResult | null = null;
   for (let page = 0; page < 100; page += 1) {
     throwIfAuditAborted(signal);
+    if (!claimAplusPage(budget)) {
+      return finish(partialEvidenceResult(
+        recordKeys.size,
+        contentTypes,
+        locales,
+        paginationFailure(),
+      ));
+    }
     let response: AplusPublishRecordFetchResult;
     try {
       response = await fetchPublishRecords({
@@ -1062,7 +1117,7 @@ async function readAsin(
       throwIfAuditAborted(signal);
     } catch (error) {
       throwIfAuditAborted(signal);
-      if (error instanceof Error && error.name === "AbortError") throw error;
+      throwIfAuditFence(error);
       return finish(partialEvidenceResult(
         recordKeys.size,
         contentTypes,
@@ -1196,7 +1251,7 @@ async function readAsin(
   ));
 }
 
-export async function runAplusAudit(input: Readonly<{
+async function runAplusAudit(input: Readonly<{
   mode: "live" | "demo";
   marketplaceId: string;
   fetchedAt: string;
@@ -1213,6 +1268,9 @@ export async function runAplusAudit(input: Readonly<{
   const seeds = normalizedSeeds(input);
   throwIfAuditAborted(input.signal);
   const byAsin = new Map<string, AsinReadResult>();
+  const pageBudget: AplusPageBudget = {
+    remaining: APLUS_MAX_PAGE_REQUESTS,
+  };
   let accessUnavailable = false;
   const targetAsins = [...new Set(
     seeds.map((row) => row.asin).filter((value): value is string => Boolean(value)),
@@ -1230,6 +1288,7 @@ export async function runAplusAudit(input: Readonly<{
           input.marketplaceId,
           asin,
           input.fetchPublishRecords,
+          pageBudget,
           input.signal,
         );
     byAsin.set(asin, result);
@@ -1248,6 +1307,7 @@ export async function runAplusAudit(input: Readonly<{
   const documentIndex = await readAplusDocumentIndex({
     marketplaceId: input.marketplaceId,
     targetAsins: new Set(targetAsins),
+    budget: pageBudget,
     fetchContentDocuments: input.fetchContentDocuments,
     fetchContentDocumentAsinRelations: input.fetchContentDocumentAsinRelations,
     signal: input.signal,
@@ -1309,4 +1369,226 @@ export async function runAplusAudit(input: Readonly<{
     rows,
     notice: "只讀取目前 FBA 商品的官方 A+ publish records、Content Manager 文件與 ASIN 關聯；顯示文件名稱與發布證據，不會修改 Amazon 商品頁。",
   };
+}
+
+export type AplusContentPageOperation =
+  | "publish-records"
+  | "content-documents"
+  | "document-relations";
+
+type AplusContentPagePlanBase = Readonly<{
+  marketplaceId: MarketplaceId;
+  expectedMode: SpExecutionMode;
+  pageToken?: string;
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+}>;
+
+export type AplusContentPagePlan =
+  | (AplusContentPagePlanBase & Readonly<{
+      operation: "publish-records";
+      asin: string;
+    }>)
+  | (AplusContentPagePlanBase & Readonly<{
+      operation: "content-documents";
+    }>)
+  | (AplusContentPagePlanBase & Readonly<{
+      operation: "document-relations";
+      contentReferenceKey: string;
+    }>);
+
+type WithoutExpectedMode<T> = T extends unknown
+  ? Omit<T, "expectedMode">
+  : never;
+type AplusContentPagePlanWithoutMode =
+  WithoutExpectedMode<AplusContentPagePlan>;
+
+export type AplusContentPageResult = AplusPublishRecordFetchResult & Readonly<{
+  requestId: string | null;
+}>;
+
+/**
+ * True-external A+ Content seam. Implementations receive only the three fixed
+ * read intents used by the audit; callers cannot provide a host, path, method,
+ * query name, arbitrary URL, or write capability.
+ */
+export interface AplusContentPageAdapter {
+  read(plan: AplusContentPagePlan): Promise<AplusContentPageResult>;
+}
+
+export type AplusContentReadInput = Readonly<{
+  marketplaceId: MarketplaceId;
+  fetchedAt: string;
+  fbaSnapshotId: string;
+  rows: readonly AplusAuditSeed[];
+  expectedContext?: SpExecutionContext;
+  signal?: AbortSignal;
+  onProgress?: (
+    progress: AplusAuditProgress,
+  ) => void | Promise<void>;
+  onControlledWait?: (operation: AplusContentPageOperation) => void;
+}>;
+
+export interface AplusContentReadsPort {
+  read(input: AplusContentReadInput): Promise<AplusAuditSnapshot>;
+}
+
+export function createDeterministicAplusContentDemoAdapter():
+  AplusContentPageAdapter {
+  return {
+    async read(plan) {
+      throwIfAborted(plan.signal);
+      if (plan.expectedMode !== "demo") {
+        throw new Error("A+ 展示 adapter 不接受真實 Amazon request。");
+      }
+      if (plan.operation === "publish-records") {
+        const ordinal = Number(plan.asin.at(-1));
+        return {
+          status: 200,
+          payload: {
+            publishRecordList: Number.isFinite(ordinal) && ordinal % 2 === 0
+              ? [{
+                  marketplaceId: plan.marketplaceId,
+                  asin: plan.asin,
+                  contentReferenceKey: `demo-a-plus-${plan.asin}`,
+                  contentType: ordinal % 4 === 0 ? "EMC" : "EBC",
+                  locale: "en-US",
+                }]
+              : [],
+          },
+          requestId: null,
+        };
+      }
+      if (plan.operation === "content-documents") {
+        return {
+          status: 200,
+          payload: {
+            contentMetadataRecords: [{
+              contentReferenceKey:
+                `demo-a-plus-document-${plan.marketplaceId}`,
+              contentMetadata: {
+                name: "AMZ.API Demo A+ Content",
+                marketplaceId: plan.marketplaceId,
+                status: "APPROVED",
+                badgeSet: ["STANDARD"],
+                updateTime: "2026-01-01T00:00:00Z",
+              },
+            }],
+          },
+          requestId: null,
+        };
+      }
+      return {
+        status: 200,
+        payload: {
+          asinMetadataSet: [{
+            asin: "B000000002",
+            badgeSet: ["CONTENT_PUBLISHED"],
+            contentReferenceKeySet: [plan.contentReferenceKey],
+          }],
+        },
+        requestId: null,
+      };
+    },
+  };
+}
+
+/**
+ * Semantic owner of the bounded A+ Content read family. The module captures
+ * one immutable execution context, selects live or deterministic-demo
+ * transport once, and keeps publish-record, document and relationship
+ * pagination plus evidence precedence behind one interface.
+ */
+export class AplusContentReads implements AplusContentReadsPort {
+  private readonly context: SpExecutionContextAdapter;
+  private readonly live: AplusContentPageAdapter;
+  private readonly demo: AplusContentPageAdapter;
+
+  constructor(input: Readonly<{
+    context: SpExecutionContextAdapter;
+    live: AplusContentPageAdapter;
+    demo?: AplusContentPageAdapter;
+  }>) {
+    this.context = input.context;
+    this.live = input.live;
+    this.demo = input.demo ?? createDeterministicAplusContentDemoAdapter();
+  }
+
+  private async executionContext(
+    marketplaceId: MarketplaceId,
+    expected?: SpExecutionContext,
+  ): Promise<SpExecutionContext> {
+    if (!expected) return this.context.capture(marketplaceId);
+    if (expected.marketplaceId !== marketplaceId) {
+      throw new SpExecutionContextError(
+        "SP_CONTEXT_INVALIDATED",
+        "Amazon 執行環境與 A+ 健檢站點不一致；請重新開始。",
+      );
+    }
+    await this.context.assertCurrent(expected);
+    return expected;
+  }
+
+  private async readPage(
+    context: SpExecutionContext,
+    plan: AplusContentPagePlanWithoutMode,
+    onControlledWait?: AplusContentReadInput["onControlledWait"],
+  ): Promise<AplusContentPageResult> {
+    await this.context.assertCurrent(context);
+    throwIfAborted(plan.signal);
+    const adapter = context.mode === "demo" ? this.demo : this.live;
+    try {
+      const result = await adapter.read({
+        ...plan,
+        expectedMode: context.mode,
+        onControlledWait: () => onControlledWait?.(plan.operation),
+      } as AplusContentPagePlan);
+      await this.context.assertCurrent(context);
+      throwIfAborted(plan.signal);
+      return result;
+    } catch (error) {
+      await this.context.assertCurrent(context);
+      throw error;
+    }
+  }
+
+  async read(input: AplusContentReadInput): Promise<AplusAuditSnapshot> {
+    throwIfAborted(input.signal);
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
+    const snapshot = await runAplusAudit({
+      mode: context.mode,
+      marketplaceId: input.marketplaceId,
+      fetchedAt: input.fetchedAt,
+      fbaSnapshotId: input.fbaSnapshotId,
+      rows: input.rows,
+      signal: input.signal,
+      onProgress: input.onProgress,
+      fetchPublishRecords: (request) => this.readPage(context, {
+        operation: "publish-records",
+        marketplaceId: input.marketplaceId,
+        asin: request.asin,
+        pageToken: request.pageToken,
+        signal: request.signal,
+      }, input.onControlledWait),
+      fetchContentDocuments: (request) => this.readPage(context, {
+        operation: "content-documents",
+        marketplaceId: input.marketplaceId,
+        pageToken: request.pageToken,
+        signal: request.signal,
+      }, input.onControlledWait),
+      fetchContentDocumentAsinRelations: (request) => this.readPage(context, {
+        operation: "document-relations",
+        marketplaceId: input.marketplaceId,
+        contentReferenceKey: request.contentReferenceKey,
+        pageToken: request.pageToken,
+        signal: request.signal,
+      }, input.onControlledWait),
+    });
+    await this.context.assertCurrent(context);
+    throwIfAborted(input.signal);
+    return snapshot;
+  }
 }

@@ -3,12 +3,63 @@ import {
   AplusAuditJobCoordinator,
   AplusAuditJobCoordinatorError,
   type AplusAuditJobGateway,
+  type AplusAuditFbaSeedSnapshot,
+  type AplusAuditJobBoundContext,
 } from "../src/main/amazon/a-plus-audit-job";
+import type { AplusAuditSnapshot } from
+  "../src/main/amazon/a-plus-content-reads";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
 async function flushBackgroundJob(): Promise<void> {
   for (let index = 0; index < 12; index += 1) await Promise.resolve();
+}
+
+function completedSnapshot(input: Readonly<{
+  context: AplusAuditJobBoundContext;
+  seed: AplusAuditFbaSeedSnapshot;
+  publishedAsins?: ReadonlySet<string>;
+}>): AplusAuditSnapshot {
+  const rows = input.seed.rows.map((row) => {
+    const published = Boolean(row.asin && input.publishedAsins?.has(row.asin));
+    return {
+      sellerSku: row.sellerSku,
+      asin: row.asin,
+      title: row.title,
+      marketplaceId: input.context.marketplaceId,
+      status: published ? "published" as const : "missing" as const,
+      sourceCompleteness: "complete" as const,
+      publishedRecordCount: published ? 1 : 0,
+      contentTypes: published ? ["EBC" as const] : [],
+      locales: published ? ["en-US"] : [],
+      documents: [],
+      documentEvidenceCompleteness: "complete" as const,
+      reasonCode: published
+        ? "PUBLISHED_RECORD_FOUND" as const
+        : "NO_PUBLISHED_RECORD" as const,
+      reason: published ? "Published." : "Missing.",
+    };
+  });
+  const uniqueAsins = new Set(rows.flatMap((row) => row.asin ? [row.asin] : []))
+    .size;
+  const summary = {
+    eligibleFbaSkus: rows.length,
+    uniqueAsins,
+    published: rows.filter((row) => row.status === "published").length,
+    missing: rows.filter((row) => row.status === "missing").length,
+    incomplete: 0,
+    unavailable: 0,
+  };
+  return {
+    mode: input.context.mode,
+    marketplaceId: input.context.marketplaceId,
+    fetchedAt: input.seed.fetchedAt,
+    fbaSnapshotId: input.seed.fbaSnapshotId,
+    totals: summary,
+    summary,
+    rows,
+    notice: "Read-only A+ test snapshot.",
+  };
 }
 
 function gateway(
@@ -25,10 +76,12 @@ function gateway(
       fbaSnapshotId: "internal-fba-report-snapshot-001",
       rows: [],
     }),
-    fetchPublishRecords: async () => ({
-      status: 200,
-      payload: { publishRecordList: [] },
-    }),
+    read: async ({ context, seed, onProgress }) => {
+      const totalAsins = new Set(seed.rows.flatMap((row) => row.asin ? [row.asin] : []))
+        .size;
+      onProgress({ completedAsins: totalAsins, totalAsins });
+      return completedSnapshot({ context, seed });
+    },
     ...overrides,
   };
 }
@@ -89,7 +142,7 @@ describe("A+ audit background job coordinator", () => {
   });
 
   it("loads FBA seeds in the background and returns a fenced terminal snapshot", async () => {
-    const publishCalls: string[] = [];
+    const readAsins: string[][] = [];
     const coordinator = new AplusAuditJobCoordinator({
       gateway: gateway({
         loadFbaSeeds: async () => ({
@@ -100,31 +153,15 @@ describe("A+ audit background job coordinator", () => {
             { sellerSku: "SKU-TWO", asin: "B000000002", title: "Two" },
           ],
         }),
-        fetchPublishRecords: async ({ request }) => {
-          publishCalls.push(request.asin);
-          return {
-            status: 200,
-            payload: {
-              publishRecordList: request.asin === "B000000001"
-                ? [{
-                    marketplaceId: MARKETPLACE_ID,
-                    asin: request.asin,
-                    contentReferenceKey: "published-content-one",
-                    contentType: "EBC",
-                    locale: "en-US",
-                  }]
-                : [],
-            },
-          };
+        read: async ({ context, seed, onProgress }) => {
+          readAsins.push(seed.rows.flatMap((row) => row.asin ? [row.asin] : []));
+          onProgress({ completedAsins: 2, totalAsins: 2 });
+          return completedSnapshot({
+            context,
+            seed,
+            publishedAsins: new Set(["B000000001"]),
+          });
         },
-        fetchContentDocuments: async () => ({
-          status: 200,
-          payload: { contentMetadataRecords: [] },
-        }),
-        fetchContentDocumentAsinRelations: async () => ({
-          status: 200,
-          payload: { asinMetadataSet: [] },
-        }),
       }),
     });
     const started = await coordinator.start({
@@ -141,7 +178,7 @@ describe("A+ audit background job coordinator", () => {
       mode: "live",
     });
 
-    expect(publishCalls).toEqual(["B000000001", "B000000002"]);
+    expect(readAsins).toEqual([["B000000001", "B000000002"]]);
     expect(terminal).toMatchObject({
       jobId: started.jobId,
       contextId: started.contextId,
@@ -235,9 +272,11 @@ describe("A+ audit background job coordinator", () => {
             { sellerSku: "SKU-TWO", asin: "B000000002", title: "Two" },
           ],
         }),
-        fetchPublishRecords: async ({ request }) => {
-          if (request.asin === "B000000002") await secondGate;
-          return { status: 200, payload: { publishRecordList: [] } };
+        read: async ({ context, seed, onProgress }) => {
+          onProgress({ completedAsins: 1, totalAsins: 2 });
+          await secondGate;
+          onProgress({ completedAsins: 2, totalAsins: 2 });
+          return completedSnapshot({ context, seed });
         },
       }),
     });
@@ -385,11 +424,12 @@ describe("A+ audit background job coordinator", () => {
             { sellerSku: "SKU-ONE", asin: "B000000001", title: "One" },
           ],
         }),
-        fetchPublishRecords: async ({ heartbeat }) => {
+        read: async ({ context, seed, heartbeat, onProgress }) => {
           await new Promise((resolve) => setTimeout(resolve, 750));
           heartbeat();
           await new Promise((resolve) => setTimeout(resolve, 750));
-          return { status: 200, payload: { publishRecordList: [] } };
+          onProgress({ completedAsins: 1, totalAsins: 1 });
+          return completedSnapshot({ context, seed });
         },
       }),
     });

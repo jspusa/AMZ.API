@@ -1,14 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
-  runAplusAudit,
   type AplusAuditSnapshot,
   type AplusAuditProgress,
   type AplusAuditSeed,
-  type AplusContentDocumentFetchInput,
-  type AplusContentDocumentRelationFetchInput,
-  type AplusPublishRecordFetchInput,
-  type AplusPublishRecordFetchResult,
-} from "./a-plus-audit";
+} from "./a-plus-content-reads";
 import { SpExecutionContextError } from "./sp-execution-context";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
@@ -37,21 +32,13 @@ export type AplusAuditJobGateway = Readonly<{
     signal: AbortSignal;
     heartbeat(): void;
   }>): Promise<AplusAuditFbaSeedSnapshot>;
-  fetchPublishRecords(input: Readonly<{
+  read(input: Readonly<{
     context: AplusAuditJobBoundContext;
-    request: AplusPublishRecordFetchInput;
+    seed: AplusAuditFbaSeedSnapshot;
+    signal: AbortSignal;
     heartbeat(): void;
-  }>): Promise<AplusPublishRecordFetchResult>;
-  fetchContentDocuments?(input: Readonly<{
-    context: AplusAuditJobBoundContext;
-    request: AplusContentDocumentFetchInput;
-    heartbeat(): void;
-  }>): Promise<AplusPublishRecordFetchResult>;
-  fetchContentDocumentAsinRelations?(input: Readonly<{
-    context: AplusAuditJobBoundContext;
-    request: AplusContentDocumentRelationFetchInput;
-    heartbeat(): void;
-  }>): Promise<AplusPublishRecordFetchResult>;
+    onProgress(progress: AplusAuditProgress): void;
+  }>): Promise<AplusAuditSnapshot>;
 }>;
 
 export type AplusAuditJobPendingReceipt = Readonly<{
@@ -274,42 +261,11 @@ export class AplusAuditJobCoordinator {
       )).size;
       job.progress = { completedAsins: 0, totalAsins };
       this.touchActive(job);
-      const snapshot = await runAplusAudit({
-        mode: job.context.mode,
-        marketplaceId: job.context.marketplaceId,
-        fetchedAt: seed.fetchedAt,
-        fbaSnapshotId: seed.fbaSnapshotId,
-        rows: seed.rows,
+      const snapshot = await this.gateway.read({
+        context: job.context,
+        seed,
         signal: job.controller.signal,
-        fetchPublishRecords: async (request) => {
-          await this.assertJobContext(job);
-          return this.gateway.fetchPublishRecords({
-            context: job.context,
-            request,
-            heartbeat: () => this.touchActive(job),
-          });
-        },
-        fetchContentDocuments: this.gateway.fetchContentDocuments
-          ? async (request) => {
-              await this.assertJobContext(job);
-              return this.gateway.fetchContentDocuments!({
-                context: job.context,
-                request,
-                heartbeat: () => this.touchActive(job),
-              });
-            }
-          : undefined,
-        fetchContentDocumentAsinRelations:
-          this.gateway.fetchContentDocumentAsinRelations
-            ? async (request) => {
-                await this.assertJobContext(job);
-                return this.gateway.fetchContentDocumentAsinRelations!({
-                  context: job.context,
-                  request,
-                  heartbeat: () => this.touchActive(job),
-                });
-              }
-            : undefined,
+        heartbeat: () => this.touchActive(job),
         onProgress: (progress) => {
           if (
             this.jobs.get(job.jobId) === job &&

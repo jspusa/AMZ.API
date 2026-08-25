@@ -78,9 +78,7 @@ import {
   getListingImages,
   getListingPrice,
   getBusinessPricing,
-  getAplusContentDocumentAsinRelationsPage,
-  getAplusContentDocumentsPage,
-  getAplusContentPublishRecordsPage,
+  aplusContentPageAdapterProduction,
   getRestockPlan,
   getSalesTrend,
   getFbaSubscriptionAudit,
@@ -225,17 +223,20 @@ import {
 } from "./amazon/audit-suite-coordinator";
 import {
   buildAplusAuditSeedsFromFbaGrouping,
-  runAplusAudit,
+  type AplusAuditProgress,
   type AplusAuditSnapshot,
   type AplusAuditSeed,
-  type AplusContentDocumentFetchInput,
-  type AplusContentDocumentRelationFetchInput,
-  type AplusPublishRecordFetchInput,
-} from "./amazon/a-plus-audit";
+} from "./amazon/a-plus-content-reads";
+import {
+  AplusContentReads,
+  type AplusContentPageOperation,
+  type AplusContentReadsPort,
+} from "./amazon/a-plus-content-reads";
 import {
   AplusAuditJobCoordinator,
   AplusAuditJobCoordinatorError,
   type AplusAuditJobBoundContext,
+  type AplusAuditFbaSeedSnapshot,
   type AplusAuditJobGateway,
   type AplusAuditJobMode,
 } from "./amazon/a-plus-audit-job";
@@ -1672,6 +1673,7 @@ export class ApiRouter {
   private readonly spExecutionContext: SpExecutionContextAdapter;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
+  private readonly aplusContentReads: AplusContentReadsPort;
   private readonly businessPricingActiveListingsReports:
     BusinessPricingActiveListingsReportGateway;
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
@@ -1759,6 +1761,7 @@ export class ApiRouter {
       signal?: AbortSignal,
     ) => Promise<void>;
     catalogNow?: () => Date;
+    aplusContentReads?: AplusContentReadsPort;
     aplusAudit?: Partial<AplusAuditJobGateway>;
     standaloneAudit?: Partial<StandaloneAuditJobGateway>;
     advertising?: AdvertisingGateway;
@@ -1903,6 +1906,10 @@ export class ApiRouter {
             seeds: request.seeds,
             signal: request.signal,
           }));
+    this.aplusContentReads = input.aplusContentReads ?? new AplusContentReads({
+      context: this.spExecutionContext,
+      live: aplusContentPageAdapterProduction,
+    });
     this.aplusAuditJobs = new AplusAuditJobCoordinator({
       gateway: {
         bindContext: input.aplusAudit?.bindContext ?? ((identity) =>
@@ -1913,25 +1920,14 @@ export class ApiRouter {
             job.signal,
             job.heartbeat,
           )),
-        fetchPublishRecords: input.aplusAudit?.fetchPublishRecords ?? ((job) =>
-          this.fetchAplusAuditPublishRecords(
+        read: input.aplusAudit?.read ?? ((job) =>
+          this.readAplusAudit(
             job.context,
-            job.request,
+            job.seed,
+            job.signal,
             job.heartbeat,
+            job.onProgress,
           )),
-        fetchContentDocuments: input.aplusAudit?.fetchContentDocuments ?? ((job) =>
-          this.fetchAplusAuditContentDocuments(
-            job.context,
-            job.request,
-            job.heartbeat,
-          )),
-        fetchContentDocumentAsinRelations:
-          input.aplusAudit?.fetchContentDocumentAsinRelations ?? ((job) =>
-            this.fetchAplusAuditContentDocumentAsinRelations(
-              job.context,
-              job.request,
-              job.heartbeat,
-            )),
       },
     });
     this.standaloneAuditJobs = new StandaloneAuditJobCoordinator({
@@ -7084,18 +7080,18 @@ export class ApiRouter {
 
   private async assertAplusAuditContext(
     context: AplusAuditJobBoundContext,
-  ): Promise<MarketplaceId> {
+  ): Promise<SpExecutionContext> {
     if (!isMarketplaceId(context.marketplaceId)) {
       throw new Error("A+ 健檢工作站點無法安全辨識。");
     }
-    const current = await this.currentAuditSuiteContext(context.marketplaceId);
+    const current = await this.spExecutionContext.capture(context.marketplaceId);
     if (
       current.accountScope !== context.accountScope ||
       current.mode !== context.mode
     ) {
       throw new Error("A+ 健檢工作與目前帳號或展示／真實模式不一致。");
     }
-    return context.marketplaceId;
+    return current;
   }
 
   private async loadAplusAuditFbaSeeds(
@@ -7107,7 +7103,8 @@ export class ApiRouter {
     fbaSnapshotId: string;
     rows: readonly AplusAuditSeed[];
   }> {
-    const marketplaceId = await this.assertAplusAuditContext(context);
+    const expectedContext = await this.assertAplusAuditContext(context);
+    const marketplaceId = expectedContext.marketplaceId;
     assertBackgroundActive(signal);
     heartbeat();
     let status = await this.startSharedAllListingsReport(
@@ -7174,110 +7171,46 @@ export class ApiRouter {
     };
   }
 
-  private async fetchAplusAuditPublishRecords(
+  private async readAplusAudit(
     context: AplusAuditJobBoundContext,
-    request: AplusPublishRecordFetchInput,
+    seed: AplusAuditFbaSeedSnapshot,
+    signal: AbortSignal,
     heartbeat: () => void,
-  ) {
-    let marketplaceId: MarketplaceId;
+    onProgress: (progress: AplusAuditProgress) => void,
+  ): Promise<AplusAuditSnapshot> {
+    let expectedContext: SpExecutionContext;
     try {
-      marketplaceId = await this.assertAplusAuditContext(context);
+      expectedContext = await this.assertAplusAuditContext(context);
     } catch {
       throw aplusAuditFenceAbort();
     }
-    if (request.marketplaceId !== marketplaceId) {
-      throw new Error("A+ 健檢 ASIN request 與工作站點不一致。");
-    }
-    heartbeat();
-    const response = await getAplusContentPublishRecordsPage({
-      marketplaceId,
-      asin: request.asin,
-      pageToken: request.pageToken,
-      expectedMode: context.mode,
-      signal: request.signal,
-      onControlledWait: heartbeat,
-    });
     heartbeat();
     try {
+      const snapshot = await this.aplusContentReads.read({
+        marketplaceId: expectedContext.marketplaceId,
+        expectedContext,
+        fetchedAt: seed.fetchedAt,
+        fbaSnapshotId: seed.fbaSnapshotId,
+        rows: seed.rows,
+        signal,
+        onControlledWait: () => heartbeat(),
+        onProgress: (progress) => {
+          onProgress(progress);
+          heartbeat();
+        },
+      });
+      heartbeat();
       await this.assertAplusAuditContext(context);
-    } catch {
-      throw aplusAuditFenceAbort();
+      heartbeat();
+      return snapshot;
+    } catch (error) {
+      try {
+        await this.assertAplusAuditContext(context);
+      } catch {
+        throw aplusAuditFenceAbort();
+      }
+      throw error;
     }
-    heartbeat();
-    return { status: response.status, payload: response.payload };
-  }
-
-  private async fetchAplusAuditContentDocuments(
-    context: AplusAuditJobBoundContext,
-    request: AplusContentDocumentFetchInput,
-    heartbeat: () => void,
-  ) {
-    let marketplaceId: MarketplaceId;
-    try {
-      marketplaceId = await this.assertAplusAuditContext(context);
-    } catch {
-      throw aplusAuditFenceAbort();
-    }
-    if (request.marketplaceId !== marketplaceId) {
-      throw new Error("A+ 文件 request 與工作站點不一致。");
-    }
-    heartbeat();
-    const response = await getAplusContentDocumentsPage({
-      marketplaceId,
-      pageToken: request.pageToken,
-      expectedMode: context.mode,
-      signal: request.signal,
-      onControlledWait: heartbeat,
-    });
-    heartbeat();
-    try {
-      await this.assertAplusAuditContext(context);
-    } catch {
-      throw aplusAuditFenceAbort();
-    }
-    heartbeat();
-    return {
-      status: response.status,
-      payload: response.payload,
-      requestId: response.requestId,
-    };
-  }
-
-  private async fetchAplusAuditContentDocumentAsinRelations(
-    context: AplusAuditJobBoundContext,
-    request: AplusContentDocumentRelationFetchInput,
-    heartbeat: () => void,
-  ) {
-    let marketplaceId: MarketplaceId;
-    try {
-      marketplaceId = await this.assertAplusAuditContext(context);
-    } catch {
-      throw aplusAuditFenceAbort();
-    }
-    if (request.marketplaceId !== marketplaceId) {
-      throw new Error("A+ 文件 ASIN 關聯 request 與工作站點不一致。");
-    }
-    heartbeat();
-    const response = await getAplusContentDocumentAsinRelationsPage({
-      marketplaceId,
-      contentReferenceKey: request.contentReferenceKey,
-      pageToken: request.pageToken,
-      expectedMode: context.mode,
-      signal: request.signal,
-      onControlledWait: heartbeat,
-    });
-    heartbeat();
-    try {
-      await this.assertAplusAuditContext(context);
-    } catch {
-      throw aplusAuditFenceAbort();
-    }
-    heartbeat();
-    return {
-      status: response.status,
-      payload: response.payload,
-      requestId: response.requestId,
-    };
   }
 
   private async startAplusAudit(request: ApiRequest): Promise<ApiResponse> {
@@ -7618,111 +7551,53 @@ export class ApiRouter {
       listing.documentId,
       listing.data.fetchedAt,
     ])).digest("hex");
-    const snapshot = await runAplusAudit({
-      mode: context.mode,
-      marketplaceId,
-      fetchedAt: listing.data.fetchedAt,
-      fbaSnapshotId,
-      rows: buildAplusAuditSeedsFromFbaGrouping(listing.grouping.rows),
-      signal: control.signal,
-      fetchPublishRecords: async (request) => {
-        assertAuditSuiteActive(control);
-        try {
-          await this.assertAuditSuiteContext(context);
-        } catch {
-          throw aplusAuditFenceAbort();
-        }
-        assertAuditSuiteActive(control);
-        if (request.marketplaceId !== marketplaceId) {
-          throw new Error("A+ 健檢 request 與綜合健檢站點不一致。");
-        }
-        const response = await getAplusContentPublishRecordsPage({
-          marketplaceId,
-          asin: request.asin,
-          pageToken: request.pageToken,
-          expectedMode: context.mode,
-          signal: request.signal,
-          onControlledWait: () => control.heartbeat({
-            message: "Amazon A+ API 要求延後重試；Notebook 鑰匙仍在受控等待。",
-          }),
-        });
-        assertAuditSuiteActive(control);
-        try {
-          await this.assertAuditSuiteContext(context);
-        } catch {
-          throw aplusAuditFenceAbort();
-        }
-        return { status: response.status, payload: response.payload };
-      },
-      fetchContentDocuments: async (request) => {
-        assertAuditSuiteActive(control);
-        try {
-          await this.assertAuditSuiteContext(context);
-        } catch {
-          throw aplusAuditFenceAbort();
-        }
-        if (request.marketplaceId !== marketplaceId) {
-          throw new Error("A+ 文件 request 與綜合健檢站點不一致。");
-        }
-        const response = await getAplusContentDocumentsPage({
-          marketplaceId,
-          pageToken: request.pageToken,
-          expectedMode: context.mode,
-          signal: request.signal,
-          onControlledWait: () => control.heartbeat({
-            message: "Amazon A+ API 要求延後文件讀取；Notebook 鑰匙仍在受控等待。",
-          }),
-        });
-        assertAuditSuiteActive(control);
-        try {
-          await this.assertAuditSuiteContext(context);
-        } catch {
-          throw aplusAuditFenceAbort();
-        }
-        return {
-          status: response.status,
-          payload: response.payload,
-          requestId: response.requestId,
-        };
-      },
-      fetchContentDocumentAsinRelations: async (request) => {
-        assertAuditSuiteActive(control);
-        try {
-          await this.assertAuditSuiteContext(context);
-        } catch {
-          throw aplusAuditFenceAbort();
-        }
-        if (request.marketplaceId !== marketplaceId) {
-          throw new Error("A+ 文件 ASIN 關聯 request 與綜合健檢站點不一致。");
-        }
-        const response = await getAplusContentDocumentAsinRelationsPage({
-          marketplaceId,
-          contentReferenceKey: request.contentReferenceKey,
-          pageToken: request.pageToken,
-          expectedMode: context.mode,
-          signal: request.signal,
-          onControlledWait: () => control.heartbeat({
-            message: "Amazon A+ API 要求延後關聯讀取；Notebook 鑰匙仍在受控等待。",
-          }),
-        });
-        assertAuditSuiteActive(control);
-        try {
-          await this.assertAuditSuiteContext(context);
-        } catch {
-          throw aplusAuditFenceAbort();
-        }
-        return {
-          status: response.status,
-          payload: response.payload,
-          requestId: response.requestId,
-        };
-      },
-      onProgress: (progress) => control.heartbeat({
-        message: `正在核對 A+ publish records（${progress.completedAsins}／${progress.totalAsins} ASIN）。`,
-        completedUnits: progress.completedAsins,
-        totalUnits: progress.totalAsins,
-      }),
-    });
+    let expectedContext: SpExecutionContext;
+    try {
+      expectedContext = await this.spExecutionContext.capture(marketplaceId);
+      if (
+        expectedContext.accountScope !== context.accountScope ||
+        expectedContext.mode !== context.mode
+      ) {
+        throw new Error("A+ 綜合健檢 context 已改變。");
+      }
+    } catch {
+      throw aplusAuditFenceAbort();
+    }
+    const controlledWaitMessages: Record<AplusContentPageOperation, string> = {
+      "publish-records":
+        "Amazon A+ API 要求延後重試；Notebook 鑰匙仍在受控等待。",
+      "content-documents":
+        "Amazon A+ API 要求延後文件讀取；Notebook 鑰匙仍在受控等待。",
+      "document-relations":
+        "Amazon A+ API 要求延後關聯讀取；Notebook 鑰匙仍在受控等待。",
+    };
+    let snapshot: AplusAuditSnapshot;
+    try {
+      snapshot = await this.aplusContentReads.read({
+        marketplaceId,
+        expectedContext,
+        fetchedAt: listing.data.fetchedAt,
+        fbaSnapshotId,
+        rows: buildAplusAuditSeedsFromFbaGrouping(listing.grouping.rows),
+        signal: control.signal,
+        onControlledWait: (operation) => control.heartbeat({
+          message: controlledWaitMessages[operation],
+        }),
+        onProgress: (progress) => control.heartbeat({
+          message: `正在核對 A+ publish records（${progress.completedAsins}／${progress.totalAsins} ASIN）。`,
+          completedUnits: progress.completedAsins,
+          totalUnits: progress.totalAsins,
+        }),
+      });
+    } catch (error) {
+      try {
+        await this.assertAuditSuiteContext(context);
+      } catch {
+        throw aplusAuditFenceAbort();
+      }
+      throw error;
+    }
+
     assertAuditSuiteActive(control);
     await this.assertAuditSuiteContext(context);
     assertAuditSuiteActive(control);

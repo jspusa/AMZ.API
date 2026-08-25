@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  getAplusContentDocumentAsinRelationsPage,
-  getAplusContentDocumentsPage,
-  getAplusContentPublishRecordsPage,
+  aplusContentPageAdapterProduction,
   invalidateSpApiCredentialCaches,
 } from "../src/main/amazon/sp-api";
+import {
+  createDeterministicAplusContentDemoAdapter,
+  type AplusContentPagePlan,
+  type AplusContentPageResult,
+} from "../src/main/amazon/a-plus-content-reads";
 
 const US = "ATVPDKIKX0DER" as const;
+const demoAdapter = createDeterministicAplusContentDemoAdapter();
 const savedEnvironment = new Map(
   Object.keys(process.env)
     .filter((key) => key.startsWith("SP_API_"))
@@ -36,7 +40,46 @@ function tokenResponse(): Response {
   });
 }
 
-describe("A+ Content publish-record SP-API gateway", () => {
+function readAplusPage(plan: AplusContentPagePlan):
+  Promise<AplusContentPageResult> {
+  return plan.expectedMode === "demo"
+    ? demoAdapter.read(plan)
+    : aplusContentPageAdapterProduction.read(plan);
+}
+
+function getAplusContentPublishRecordsPage(input: Readonly<{
+  marketplaceId: typeof US;
+  asin: string;
+  pageToken?: string;
+  expectedMode: "live" | "demo";
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+}>): Promise<AplusContentPageResult> {
+  return readAplusPage({ ...input, operation: "publish-records" });
+}
+
+function getAplusContentDocumentsPage(input: Readonly<{
+  marketplaceId: typeof US;
+  pageToken?: string;
+  expectedMode: "live" | "demo";
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+}>): Promise<AplusContentPageResult> {
+  return readAplusPage({ ...input, operation: "content-documents" });
+}
+
+function getAplusContentDocumentAsinRelationsPage(input: Readonly<{
+  marketplaceId: typeof US;
+  contentReferenceKey: string;
+  pageToken?: string;
+  expectedMode: "live" | "demo";
+  signal?: AbortSignal;
+  onControlledWait?: () => void;
+}>): Promise<AplusContentPageResult> {
+  return readAplusPage({ ...input, operation: "document-relations" });
+}
+
+describe("A+ Content production page adapter", () => {
   beforeEach(() => configure("live"));
 
   afterEach(() => {
@@ -97,9 +140,89 @@ describe("A+ Content publish-record SP-API gateway", () => {
       asin: "B000000001",
       pageToken: "opaque-next-page",
     });
-    expect(apiRequest!.init).toMatchObject({ method: "GET", cache: "no-store" });
+    expect(apiRequest!.init).toMatchObject({
+      method: "GET",
+      cache: "no-store",
+      redirect: "error",
+    });
     expect(new Headers(apiRequest!.init?.headers).get("x-amz-access-token"))
       .toBe("fake-a-plus-token");
+  });
+
+  it("rejects a declared oversized A+ response before parsing its body", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) return tokenResponse();
+      return new Response("{}", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(16 * 1_024 * 1_024 + 1),
+          "x-amzn-requestid": "request-a-plus-too-large",
+        },
+      });
+    }));
+
+    await expect(getAplusContentDocumentsPage({
+      marketplaceId: US,
+      expectedMode: "live",
+    })).rejects.toMatchObject({
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+      operation: "getAplusContentDocuments",
+      requestId: "request-a-plus-too-large",
+    });
+  });
+
+  it("bounds an oversized streamed A+ response even without Content-Length", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) return tokenResponse();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(16 * 1_024 * 1_024));
+          controller.enqueue(new Uint8Array([0x7b]));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-amzn-requestid": "request-a-plus-stream-too-large",
+        },
+      });
+    }));
+
+    await expect(getAplusContentDocumentsPage({
+      marketplaceId: US,
+      expectedMode: "live",
+    })).rejects.toMatchObject({
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+      operation: "getAplusContentDocuments",
+      requestId: "request-a-plus-stream-too-large",
+    });
+  });
+
+  it("preserves opaque dot page tokens without treating them as path segments", async () => {
+    const apiUrls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) return tokenResponse();
+      apiUrls.push(url);
+      return new Response(JSON.stringify({ contentMetadataRecords: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+
+    await expect(getAplusContentDocumentsPage({
+      marketplaceId: US,
+      pageToken: ".",
+      expectedMode: "live",
+    })).resolves.toMatchObject({ status: 200 });
+    expect(new URL(apiUrls[0]!).searchParams.get("pageToken")).toBe(".");
   });
 
   it("returns deterministic demo records without any network request", async () => {

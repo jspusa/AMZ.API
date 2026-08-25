@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { AplusAuditJobGateway } from "../src/main/amazon/a-plus-audit-job";
+import type { AplusAuditSeed } from
+  "../src/main/amazon/a-plus-content-reads";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -53,23 +55,51 @@ async function terminal(
 describe("main-owned A+ audit routes", () => {
   let router: ApiRouter;
   let accountScope: string;
-  let fetchPublishRecords: AplusAuditJobGateway["fetchPublishRecords"];
+  let readAplus: AplusAuditJobGateway["read"];
 
   beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
     accountScope = "account-scope-a-plus-one";
-    fetchPublishRecords = vi.fn(async ({ request: item }) => ({
-      status: 200,
-      payload: {
-        publishRecordList: [{
-          marketplaceId: US,
-          asin: item.asin,
-          contentReferenceKey: "internal-record-key-must-not-leak",
-          contentType: "EBC",
-          locale: "en-US",
-        }],
-      },
-    }));
+    readAplus = vi.fn(async ({ context, seed, onProgress }) => {
+      onProgress({ completedAsins: 1, totalAsins: 1 });
+      const rows = seed.rows.map((row: AplusAuditSeed) => ({
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        title: row.title,
+        marketplaceId: context.marketplaceId,
+        status: row.asin ? "published" as const : "incomplete" as const,
+        sourceCompleteness: row.asin ? "complete" as const : "partial" as const,
+        publishedRecordCount: row.asin ? 1 : null,
+        contentTypes: row.asin ? ["EBC" as const] : [],
+        locales: row.asin ? ["en-US"] : [],
+        documents: [],
+        documentEvidenceCompleteness: row.asin
+          ? "complete" as const
+          : "unavailable" as const,
+        reasonCode: row.asin
+          ? "PUBLISHED_RECORD_FOUND" as const
+          : "FBA_IDENTITY_INCOMPLETE" as const,
+        reason: row.asin ? "Published." : "Incomplete identity.",
+      }));
+      const summary = {
+        eligibleFbaSkus: rows.length,
+        uniqueAsins: 1,
+        published: 2,
+        missing: 0,
+        incomplete: 1,
+        unavailable: 0,
+      };
+      return {
+        mode: context.mode,
+        marketplaceId: context.marketplaceId,
+        fetchedAt: seed.fetchedAt,
+        fbaSnapshotId: seed.fbaSnapshotId,
+        totals: summary,
+        summary,
+        rows,
+        notice: "Read-only A+ route snapshot.",
+      };
+    });
     const directory = await mkdtemp(join(tmpdir(), "a-plus-router-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
@@ -89,7 +119,7 @@ describe("main-owned A+ audit routes", () => {
             { sellerSku: "A-PLUS-SKU-3", asin: null, title: "Unknown" },
           ],
         }),
-        fetchPublishRecords,
+        read: readAplus,
       },
     });
   });
@@ -129,7 +159,7 @@ describe("main-owned A+ audit routes", () => {
         summary: { published: 2, incomplete: 1, uniqueAsins: 1 },
       },
     });
-    expect(fetchPublishRecords).toHaveBeenCalledTimes(1);
+    expect(readAplus).toHaveBeenCalledTimes(1);
     const serialized = JSON.stringify(payload(completed));
     expect(serialized).not.toMatch(/account-scope|fba-snapshot|record-key|reportId/iu);
   });

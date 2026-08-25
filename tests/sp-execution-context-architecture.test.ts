@@ -63,6 +63,11 @@ const EXTRACTED_AGED_INVENTORY_MODULES = [
   "src/main/amazon/aged-inventory-reads.ts",
 ] as const;
 
+const EXTRACTED_APLUS_CONTENT_MODULES = [
+  "src/main/amazon/a-plus-content-reads.ts",
+  "src/main/amazon/a-plus-content-reads-production.ts",
+] as const;
+
 const PURE_CATALOG_REPORT_MODULES = [
   "src/main/amazon/business-pricing-evidence.ts",
   "src/main/amazon/catalog-report-reads.ts",
@@ -139,6 +144,31 @@ const SUPERSEDED_AGED_INVENTORY_ROUTER_WIRING = [
   "startSharedAgedInventoryReport",
   "getSharedAgedInventoryReportStatus",
   "getSharedAgedInventoryData",
+] as const;
+
+const SUPERSEDED_APLUS_CONTENT_FACADES = [
+  "AplusContentRequestBase",
+  "AplusContentRequestInput",
+  "observeAplusContentRateLimit",
+  "aplusContentRetryDelayMs",
+  "reserveAplusContentReadStart",
+  "assertAplusContentMode",
+  "assertAplusContentInput",
+  "aplusContentRequestUrl",
+  "callAplusContentApi",
+  "executeAplusContentRequest",
+  "getAplusContentPublishRecordsPage",
+  "getAplusContentDocumentsPage",
+  "getAplusContentDocumentAsinRelationsPage",
+] as const;
+
+const SUPERSEDED_APLUS_ROUTER_WIRING = [
+  "fetchAplusAuditPublishRecords",
+  "fetchAplusAuditContentDocuments",
+  "fetchAplusAuditContentDocumentAsinRelations",
+  "getAplusContentPublishRecordsPage",
+  "getAplusContentDocumentsPage",
+  "getAplusContentDocumentAsinRelationsPage",
 ] as const;
 
 const FORBIDDEN_CATALOG_MODULE_DEPENDENCIES = new Set([
@@ -502,6 +532,13 @@ describe("SP execution-context architecture", () => {
     },
   );
 
+  it.each(EXTRACTED_APLUS_CONTENT_MODULES)(
+    "%s stays independent from legacy runtime modules",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
   it.each(PURE_CATALOG_REPORT_MODULES)(
     "%s stays outside legacy, production, write, PTD, preload, and renderer wiring",
     (entryPath) => {
@@ -644,6 +681,49 @@ describe("SP execution-context architecture", () => {
     }
     expect(source).toContain("new AgedInventoryReads({");
     expect(source).toContain("expectedContext: agedInventoryContext");
+  });
+
+  it("keeps A+ Content behind one semantic read and one closed page adapter", () => {
+    const semanticPath = absolutePath(
+      "src/main/amazon/a-plus-content-reads.ts",
+    );
+    expect(exportedTypePropertyNames(
+      semanticPath,
+      "AplusContentReadsPort",
+    )).toEqual(["read"]);
+    expect(exportedTypePropertyNames(
+      semanticPath,
+      "AplusContentPageAdapter",
+    )).toEqual(["read"]);
+    expect(readFileSync(semanticPath, "utf8"))
+      .not.toMatch(/export\s+(?:async\s+)?function\s+runAplusAudit\b/u);
+    expect(existsSync(absolutePath("src/main/amazon/a-plus-audit.ts")))
+      .toBe(false);
+  });
+
+  it("removes superseded A+ transport and pacing facades from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const symbol of SUPERSEDED_APLUS_CONTENT_FACADES) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).not.toContain("aplusContentReadTails");
+    expect(source).toContain("createAplusContentReadProductionAdapter({");
+  });
+
+  it("routes standalone and suite A+ audits through the same semantic read owner", () => {
+    const source = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    for (const symbol of SUPERSEDED_APLUS_ROUTER_WIRING) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).toContain("new AplusContentReads({");
+    expect(source).toContain("read: input.aplusAudit?.read");
+    expect(source.match(/this\.aplusContentReads\.read\(/gu)).toHaveLength(2);
   });
 
   it("reuses one normalized Aged Inventory header index", () => {
