@@ -363,6 +363,84 @@ describe("standalone audit background job coordinator", () => {
     expect((jobSignal as AbortSignal | null)?.aborted).toBe(true);
   });
 
+  it("invalidates and aborts an active audit when the context generation changes", async () => {
+    let generation = 0;
+    let jobSignal: AbortSignal | null = null;
+    const coordinator = new StandaloneAuditJobCoordinator({
+      gateway: gateway({
+        bindContext: async ({ marketplaceId, mode }) => ({
+          accountScope: "internal-account-scope-one",
+          generation,
+          marketplaceId,
+          mode,
+        }),
+        run: async ({ signal }) => {
+          jobSignal = signal;
+          return await new Promise<never>(() => undefined);
+        },
+      }),
+    });
+    const started = await coordinator.start({
+      kind: "variation",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((jobSignal as AbortSignal | null)?.aborted).toBe(false);
+
+    generation = 1;
+    await expect(coordinator.get({
+      jobId: started.jobId,
+      contextId: started.contextId,
+      kind: "variation",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+    })).rejects.toEqual(expect.objectContaining<Partial<StandaloneAuditJobCoordinatorError>>({
+      status: 409,
+      code: "SP_CONTEXT_INVALIDATED",
+    }));
+    expect((jobSignal as AbortSignal | null)?.aborted).toBe(true);
+  });
+
+  it("invalidates and aborts an active audit when the resolved mode changes", async () => {
+    let resolvedMode: "live" | "demo" = "live";
+    let jobSignal: AbortSignal | null = null;
+    const coordinator = new StandaloneAuditJobCoordinator({
+      gateway: gateway({
+        bindContext: async ({ marketplaceId }) => ({
+          accountScope: "internal-account-scope-one",
+          generation: 0,
+          marketplaceId,
+          mode: resolvedMode,
+        }),
+        run: async ({ signal }) => {
+          jobSignal = signal;
+          return await new Promise<never>(() => undefined);
+        },
+      }),
+    });
+    const started = await coordinator.start({
+      kind: "advertising",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((jobSignal as AbortSignal | null)?.aborted).toBe(false);
+
+    resolvedMode = "demo";
+    await expect(coordinator.get({
+      jobId: started.jobId,
+      contextId: started.contextId,
+      kind: "advertising",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+    })).rejects.toEqual(expect.objectContaining<Partial<StandaloneAuditJobCoordinatorError>>({
+      status: 409,
+      code: "REPORT_MODE_CHANGED",
+    }));
+    expect((jobSignal as AbortSignal | null)?.aborted).toBe(true);
+  });
+
   it("extends an active TTL on progress, retains a terminal result, then expires it", async () => {
     let updateProgress!: StandaloneAuditJobGateway["run"] extends
       (input: infer Input) => unknown
