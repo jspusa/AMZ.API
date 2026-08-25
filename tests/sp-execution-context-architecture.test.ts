@@ -650,7 +650,7 @@ describe("SP execution-context architecture", () => {
     const source = readFileSync(
       absolutePath("src/main/amazon/aged-inventory-reads.ts"),
       "utf8",
-    );
+    ).replaceAll("\r\n", "\n");
     const reportColumnStart = source.indexOf("function reportColumn(");
     const reportColumnEnd = source.indexOf("\n}\n", reportColumnStart);
     const reportColumnSource = source.slice(reportColumnStart, reportColumnEnd);
