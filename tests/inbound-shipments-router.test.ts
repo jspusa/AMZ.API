@@ -1269,7 +1269,7 @@ describe("FBA inbound shipment router job", () => {
     expect(response.status).toBe(202);
     expect(jsonValue(response).state).toBe("running");
     expect(observed.signal?.aborted).toBe(false);
-    app.clearPreviews();
+    app.dispose();
   });
 
   it("stops an active job that has made no verified progress for one hour", async () => {
@@ -1397,7 +1397,7 @@ describe("FBA inbound shipment router job", () => {
     })));
     await vi.waitFor(() => expect(observed.signal).not.toBeNull());
 
-    app.clearPreviews();
+    app.dispose();
     expect(observed.signal?.aborted).toBe(true);
     const gone = await app.handle(apiRequest({
       method: "GET",

@@ -125,7 +125,7 @@ describe("main-owned A+ audit routes", () => {
   });
 
   afterEach(() => {
-    router?.clearPreviews();
+    router?.dispose();
     vi.unstubAllGlobals();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
@@ -205,7 +205,7 @@ describe("main-owned A+ audit routes", () => {
       marketplaceId: US,
       mode: "demo",
     }));
-    router.clearPreviews();
+    router.dispose();
     const response = await router.handle(request("GET", {
       marketplaceId: US,
       mode: "demo",
@@ -221,7 +221,7 @@ describe("main-owned A+ audit routes", () => {
     const directory = await mkdtemp(join(tmpdir(), "a-plus-router-demo-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
-    router.clearPreviews();
+    router.dispose();
     router = new ApiRouter({
       store,
       vault: {

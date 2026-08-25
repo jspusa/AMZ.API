@@ -3,6 +3,12 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createContentAuditWorkbookV2 } from "../src/main/amazon/xlsx";
 import { SpApiError } from "../src/main/amazon/sp-api";
+import {
+  createScriptedSpExecutionContextAdapter,
+  SpExecutionContextError,
+  type SpExecutionContextAdapter,
+} from
+  "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type {
@@ -299,7 +305,7 @@ describe("content audit Excel batch router", () => {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
-    router.clearPreviews();
+    router.dispose();
     contentAuditEvidence.clear();
     approveWrite.mockClear();
     assertIdempotentOperationsAvailable.mockClear();
@@ -608,5 +614,131 @@ describe("content audit Excel batch router", () => {
     const repeated = await router.handle(commitRequest(previewId, key));
     expect(responseValue(repeated)).toEqual(responseValue(response));
     expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops before the next SKU when the router context is invalidated mid-batch", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(workbook(snapshot, 3));
+    const key = "content-batch-context-fence-001";
+    const contextRouter = new ApiRouter({
+      store: {
+        assertIdempotentOperationsAvailable,
+        runIdempotentOperation,
+        saveContentAuditSnapshotEvidence,
+        getContentAuditSnapshotEvidence,
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: {} as CredentialVault,
+      approveWrite,
+      spExecutionContext: createScriptedSpExecutionContextAdapter(
+        (marketplaceId) => ({
+          marketplaceId,
+          mode: "demo",
+          accountScope: ACCOUNT_SCOPE,
+        }),
+      ),
+    });
+    const preview = await contextRouter.handle(importRequest(edited, key));
+    expect(preview.status).toBe(200);
+    const previewId = String(responseValue(preview).previewId);
+    let enterFirstRow!: () => void;
+    const firstRowEntered = new Promise<void>((resolve) => {
+      enterFirstRow = resolve;
+    });
+    let releaseFirstRow!: () => void;
+    const firstRowReleased = new Promise<void>((resolve) => {
+      releaseFirstRow = resolve;
+    });
+    runIdempotentOperation.mockImplementationOnce(async () => {
+      enterFirstRow();
+      await firstRowReleased;
+      return {
+        mode: "demo",
+        status: "SIMULATED",
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: "first",
+      };
+    });
+
+    const pending = contextRouter.handle(commitRequest(previewId, key));
+    await firstRowEntered;
+    contextRouter.invalidateContext("lock-screen");
+    releaseFirstRow();
+    const response = await pending;
+
+    expect(response.status).toBe(409);
+    expect(responseValue(response)).toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    expect(runIdempotentOperation).toHaveBeenCalledOnce();
+    const repeated = await contextRouter.handle(commitRequest(previewId, key));
+    expect(repeated.status).toBe(410);
+    expect(runIdempotentOperation).toHaveBeenCalledOnce();
+    contextRouter.dispose();
+  });
+
+  it("preserves the canonical context error before native batch approval", async () => {
+    let assertions = 0;
+    let armed = false;
+    const context = Object.freeze({
+      marketplaceId: MARKETPLACE_ID,
+      region: "na" as const,
+      mode: "demo" as const,
+      accountScope: ACCOUNT_SCOPE as never,
+      generation: 0,
+    });
+    const spExecutionContext = {
+      capture: vi.fn(async () => context),
+      assertCurrent: vi.fn(async () => {
+        assertions += 1;
+        if (armed && assertions === 3) {
+          throw new SpExecutionContextError(
+            "SP_CONTEXT_INVALIDATED",
+            "Amazon 執行環境已更新；請重新開始這次操作。",
+          );
+        }
+      }),
+      invalidate: vi.fn(),
+    } satisfies SpExecutionContextAdapter;
+    const contextRouter = new ApiRouter({
+      store: {
+        assertIdempotentOperationsAvailable,
+        runIdempotentOperation,
+        saveContentAuditSnapshotEvidence,
+        getContentAuditSnapshotEvidence,
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: {} as CredentialVault,
+      approveWrite,
+      spExecutionContext,
+    });
+    const snapshot = await (async (): Promise<AuditReply> => {
+      const response = await contextRouter.handle(auditRequest());
+      expect(response.status).toBe(200);
+      return responseValue(response) as unknown as AuditReply;
+    })();
+    const key = "content-batch-pre-approval-context-001";
+    const preview = await contextRouter.handle(importRequest(
+      replaceCell(workbook(snapshot), "E2", "Context-safe title"),
+      key,
+    ));
+    expect(preview.status).toBe(200);
+    assertions = 0;
+    armed = true;
+
+    const response = await contextRouter.handle(commitRequest(
+      String(responseValue(preview).previewId),
+      key,
+    ));
+
+    expect(response.status).toBe(409);
+    expect(responseValue(response)).toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+      message: "Amazon 執行環境已更新；請重新開始這次操作。",
+    });
+    expect(responseValue(response)).not.toMatchObject({ code: "ACTION_CANCELLED" });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+    contextRouter.dispose();
   });
 });

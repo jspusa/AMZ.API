@@ -589,8 +589,10 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     signal?: AbortSignal,
     options: AdvertisingCombinedAccountIdentityOptions = {},
   ): Promise<AdvertisingCombinedAccountIdentity> {
+    const lifecycleSignal = this.captureLifecycleSignal();
     const identity = await this.resolveCombinedAccountIdentity(
       marketplaceId,
+      lifecycleSignal,
       signal,
       options.refreshProfile === true,
     );
@@ -611,15 +613,24 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     this.verificationFlights.clear();
   }
 
+  private captureLifecycleSignal(): AbortSignal {
+    const signal = this.lifecycleController.signal;
+    assertNotAborted(signal);
+    return signal;
+  }
+
   async probeMarketplace(marketplaceId: MarketplaceId): Promise<AdvertisingConnectionTestResult> {
-    const accountScope = (await this.marketplaceAccountContext(marketplaceId)).cacheScope;
+    const lifecycleSignal = this.captureLifecycleSignal();
+    const accountScope = (await this.marketplaceAccountContext(
+      marketplaceId,
+      lifecycleSignal,
+    )).cacheScope;
     const cached = this.verifications.get(marketplaceId);
     if (cached && cached.accountScope === accountScope && cached.expiresAt > Date.now()) {
       return structuredClone(cached.result);
     }
     const existing = this.verificationFlights.get(marketplaceId);
     if (existing) return structuredClone(await existing);
-    const lifecycleSignal = this.lifecycleController.signal;
     const flight = this.runProbeMarketplace(
       marketplaceId,
       accountScope,
@@ -636,22 +647,34 @@ export class AdvertisingApiClient implements AdvertisingGateway {
   private async runProbeMarketplace(
     marketplaceId: MarketplaceId,
     accountScope: string,
-    signal?: AbortSignal,
+    lifecycleSignal: AbortSignal,
   ): Promise<AdvertisingConnectionTestResult> {
-    assertNotAborted(signal);
+    assertNotAborted(lifecycleSignal);
     const config = MARKETPLACES[marketplaceId];
     const testedAt = new Date().toISOString();
     try {
-      const profileId = await this.getProfileId(marketplaceId, signal);
-      await this.queryCampaignPage(marketplaceId, profileId, 1, undefined, signal);
-      assertNotAborted(signal);
-      if ((await this.marketplaceAccountContext(marketplaceId)).cacheScope !== accountScope) {
+      const profileId = await this.getProfileId(
+        marketplaceId,
+        lifecycleSignal,
+      );
+      await this.queryCampaignPage(
+        marketplaceId,
+        profileId,
+        1,
+        undefined,
+        lifecycleSignal,
+      );
+      assertNotAborted(lifecycleSignal);
+      if ((await this.marketplaceAccountContext(
+        marketplaceId,
+        lifecycleSignal,
+      )).cacheScope !== accountScope) {
         throw new AdvertisingApiError("SP-API 帳號在 Ads 驗證期間已改變。", {
           status: 409,
           code: "ADS_SP_ACCOUNT_CHANGED",
         });
       }
-      assertNotAborted(signal);
+      assertNotAborted(lifecycleSignal);
       const result: AdvertisingConnectionTestResult = {
         ok: true,
         testedAt,
@@ -687,10 +710,22 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     marketplaceId: MarketplaceId,
     signal?: AbortSignal,
   ): Promise<AdvertisingCoverageCampaign[]> {
+    const lifecycleSignal = this.captureLifecycleSignal();
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
-    const startingScope = (await this.marketplaceAccountContext(marketplaceId)).cacheScope;
+    const startingScope = (await this.marketplaceAccountContext(
+      marketplaceId,
+      lifecycleSignal,
+      signal,
+    )).cacheScope;
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
-    const profileId = await this.getProfileId(marketplaceId, signal);
+    const profileId = await this.getProfileId(
+      marketplaceId,
+      lifecycleSignal,
+      signal,
+    );
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const campaigns: AdvertisingCoverageCampaign[] = [];
     const seenIds = new Set<string>();
@@ -699,7 +734,12 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     let nextToken: string | undefined;
     do {
       assertNotAborted(signal);
-      if ((await this.marketplaceAccountContext(marketplaceId)).cacheScope !== startingScope) {
+      assertNotAborted(lifecycleSignal);
+      if ((await this.marketplaceAccountContext(
+        marketplaceId,
+        lifecycleSignal,
+        signal,
+      )).cacheScope !== startingScope) {
         throw new AdvertisingApiError("SP-API 帳號在 Ads 健檢期間已改變。", {
           status: 409,
           code: "ADS_SP_ACCOUNT_CHANGED",
@@ -724,8 +764,10 @@ export class AdvertisingApiClient implements AdvertisingGateway {
         profileId,
         CAMPAIGN_PAGE_SIZE,
         nextToken,
+        lifecycleSignal,
         signal,
       );
+      assertNotAborted(lifecycleSignal);
       assertNotAborted(signal);
       for (const campaign of page.campaigns) {
         if (seenIds.has(campaign.campaignId)) {
@@ -745,8 +787,13 @@ export class AdvertisingApiClient implements AdvertisingGateway {
       }
       nextToken = page.nextToken;
     } while (nextToken);
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
-    if ((await this.marketplaceAccountContext(marketplaceId)).cacheScope !== startingScope) {
+    if ((await this.marketplaceAccountContext(
+      marketplaceId,
+      lifecycleSignal,
+      signal,
+    )).cacheScope !== startingScope) {
       throw new AdvertisingApiError("SP-API 帳號在 Ads 健檢期間已改變。", {
         status: 409,
         code: "ADS_SP_ACCOUNT_CHANGED",
@@ -761,6 +808,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     endDate: string;
     signal?: AbortSignal;
   }): Promise<SponsoredProductsAdvertisedProductReportReference> {
+    const lifecycleSignal = this.captureLifecycleSignal();
     assertReportDateRange({
       marketplaceId: input.marketplaceId,
       startDate: input.startDate,
@@ -768,9 +816,11 @@ export class AdvertisingApiClient implements AdvertisingGateway {
       now: this.now(),
       enforceCurrentWindow: true,
     });
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(input.signal);
     const identity = await this.resolveCombinedAccountIdentity(
       input.marketplaceId,
+      lifecycleSignal,
       input.signal,
       false,
     );
@@ -778,6 +828,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     const profileId = identity.profileId;
     const config = MARKETPLACES[input.marketplaceId];
     const credentials = await this.vault.load();
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(input.signal);
     const { response, payload } = await this.authorizedRequest(
       `${API_ENDPOINTS[config.region]}/reporting/reports`,
@@ -803,6 +854,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
           },
         }),
       },
+      lifecycleSignal,
       input.signal,
       { retryUnauthorized: false },
     );
@@ -818,7 +870,12 @@ export class AdvertisingApiClient implements AdvertisingGateway {
         code: "ADS_REPORT_CREATE_INVALID",
       });
     }
-    await this.assertCombinedAccountScope(input.marketplaceId, accountScope, input.signal);
+    await this.assertCombinedAccountScope(
+      input.marketplaceId,
+      accountScope,
+      lifecycleSignal,
+      input.signal,
+    );
     return {
       reportId,
       marketplaceId: input.marketplaceId,
@@ -833,8 +890,10 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     reference: SponsoredProductsAdvertisedProductReportReference,
     signal?: AbortSignal,
   ): Promise<SponsoredProductsAdvertisedProductReportStatus> {
+    const lifecycleSignal = this.captureLifecycleSignal();
     const status = await this.loadSponsoredProductsAdvertisedProductReportStatus(
       reference,
+      lifecycleSignal,
       signal,
     );
     return {
@@ -849,8 +908,10 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     reference: SponsoredProductsAdvertisedProductReportReference,
     signal?: AbortSignal,
   ): Promise<SponsoredProductsAdvertisedProductReport> {
+    const lifecycleSignal = this.captureLifecycleSignal();
     const status = await this.loadSponsoredProductsAdvertisedProductReportStatus(
       reference,
+      lifecycleSignal,
       signal,
     );
     if (status.status !== "COMPLETED" || !status.reportUrl) {
@@ -859,8 +920,8 @@ export class AdvertisingApiClient implements AdvertisingGateway {
         code: "ADS_REPORT_NOT_READY",
       });
     }
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
-    const lifecycleSignal = this.lifecycleController.signal;
     const controller = new AbortController();
     const stopLifecycleAbort = forwardAbort(controller, lifecycleSignal);
     const stopCallerAbort = forwardAbort(controller, signal);
@@ -916,6 +977,8 @@ export class AdvertisingApiClient implements AdvertisingGateway {
       await this.assertCombinedAccountScope(
         reference.marketplaceId,
         reference.combinedAccountScope,
+        lifecycleSignal,
+        signal,
       );
       return { reference: structuredClone(reference), rows };
     } finally {
@@ -957,11 +1020,13 @@ export class AdvertisingApiClient implements AdvertisingGateway {
   private async assertCombinedAccountScope(
     marketplaceId: MarketplaceId,
     expected: string,
+    lifecycleSignal: AbortSignal,
     signal?: AbortSignal,
     refreshProfile = false,
   ): Promise<void> {
     const current = await this.resolveCombinedAccountIdentity(
       marketplaceId,
+      lifecycleSignal,
       signal,
       refreshProfile,
     );
@@ -975,12 +1040,15 @@ export class AdvertisingApiClient implements AdvertisingGateway {
 
   private async loadSponsoredProductsAdvertisedProductReportStatus(
     reference: SponsoredProductsAdvertisedProductReportReference,
+    lifecycleSignal: AbortSignal,
     signal?: AbortSignal,
   ): Promise<InternalSponsoredProductsReportStatus> {
     this.assertSponsoredProductsReportReference(reference);
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const identity = await this.resolveCombinedAccountIdentity(
       reference.marketplaceId,
+      lifecycleSignal,
       signal,
       true,
     );
@@ -993,6 +1061,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     const profileId = identity.profileId;
     const config = MARKETPLACES[reference.marketplaceId];
     const credentials = await this.vault.load();
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const { response, payload } = await this.authorizedRequest(
       `${API_ENDPOINTS[config.region]}/reporting/reports/${encodeURIComponent(reference.reportId)}`,
@@ -1004,6 +1073,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
           "Amazon-Advertising-API-Scope": profileId,
         },
       },
+      lifecycleSignal,
       signal,
       {
         retryUnauthorized: true,
@@ -1015,6 +1085,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     await this.assertCombinedAccountScope(
       reference.marketplaceId,
       reference.combinedAccountScope,
+      lifecycleSignal,
       signal,
     );
     return parsed;
@@ -1089,8 +1160,14 @@ export class AdvertisingApiClient implements AdvertisingGateway {
 
   private async marketplaceAccountContext(
     marketplaceId: MarketplaceId,
+    lifecycleSignal: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<MarketplaceAccountContext> {
+    assertNotAborted(lifecycleSignal);
+    assertNotAborted(signal);
     const adsScope = await this.vault.getAccountScope();
+    assertNotAborted(lifecycleSignal);
+    assertNotAborted(signal);
     if (!this.spAccountForRegion) {
       throw new AdvertisingApiError("SP-API Seller 帳號尚未完整設定，無法安全核對 Ads Profile。", {
         status: 422,
@@ -1098,6 +1175,8 @@ export class AdvertisingApiClient implements AdvertisingGateway {
       });
     }
     const sp = await this.spAccountForRegion(MARKETPLACES[marketplaceId].region);
+    assertNotAborted(lifecycleSignal);
+    assertNotAborted(signal);
     const sellerId = sp.sellerId.trim();
     if (!sp.accountScope || !sellerId) {
       throw new AdvertisingApiError("SP-API Seller 帳號尚未完整設定，無法安全核對 Ads Profile。", {
@@ -1109,11 +1188,14 @@ export class AdvertisingApiClient implements AdvertisingGateway {
   }
 
   private async getAccessToken(
-    force = false,
+    force: boolean,
+    lifecycleSignal: AbortSignal,
     signal?: AbortSignal,
   ): Promise<string> {
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const accountScope = await this.vault.getAccountScope();
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const now = Date.now();
     if (!force && this.token && this.token.accountScope === accountScope && this.token.expiresAt > now) {
@@ -1121,15 +1203,16 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     }
     if (this.tokenFlight) {
       const token = await this.tokenFlight;
+      assertNotAborted(lifecycleSignal);
       assertNotAborted(signal);
       return token;
     }
-    const lifecycleSignal = this.lifecycleController.signal;
     const flight = this.refreshAccessToken(accountScope, lifecycleSignal).finally(() => {
       if (this.tokenFlight === flight) this.tokenFlight = null;
     });
     this.tokenFlight = flight;
     const token = await flight;
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     return token;
   }
@@ -1198,13 +1281,29 @@ export class AdvertisingApiClient implements AdvertisingGateway {
 
   private async resolveCombinedAccountIdentity(
     marketplaceId: MarketplaceId,
+    lifecycleSignal: AbortSignal,
     signal?: AbortSignal,
     refreshProfile = false,
   ): Promise<InternalCombinedAccountIdentity> {
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
-    const startingContext = await this.marketplaceAccountContext(marketplaceId);
-    const profileId = await this.getProfileId(marketplaceId, signal, refreshProfile);
-    const currentContext = await this.marketplaceAccountContext(marketplaceId);
+    const startingContext = await this.marketplaceAccountContext(
+      marketplaceId,
+      lifecycleSignal,
+      signal,
+    );
+    const profileId = await this.getProfileId(
+      marketplaceId,
+      lifecycleSignal,
+      signal,
+      refreshProfile,
+    );
+    const currentContext = await this.marketplaceAccountContext(
+      marketplaceId,
+      lifecycleSignal,
+      signal,
+    );
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     if (currentContext.cacheScope !== startingContext.cacheScope) {
       throw new AdvertisingApiError("SP-API 或 Ads 帳號在身分核對期間已改變。", {
@@ -1225,11 +1324,18 @@ export class AdvertisingApiClient implements AdvertisingGateway {
 
   private async getProfileId(
     marketplaceId: MarketplaceId,
+    lifecycleSignal: AbortSignal,
     signal?: AbortSignal,
     refresh = false,
   ): Promise<string> {
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
-    const context = await this.marketplaceAccountContext(marketplaceId);
+    const context = await this.marketplaceAccountContext(
+      marketplaceId,
+      lifecycleSignal,
+      signal,
+    );
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const accountScope = context.cacheScope;
     const cached = this.profiles.get(marketplaceId);
@@ -1244,10 +1350,10 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     const existing = this.profileFlights.get(marketplaceId);
     if (existing) {
       const profileId = await existing;
+      assertNotAborted(lifecycleSignal);
       assertNotAborted(signal);
       return profileId;
     }
-    const lifecycleSignal = this.lifecycleController.signal;
     const flight = this.discoverProfile(
       marketplaceId,
       accountScope,
@@ -1258,6 +1364,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     });
     this.profileFlights.set(marketplaceId, flight);
     const profileId = await flight;
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     return profileId;
   }
@@ -1266,12 +1373,12 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     marketplaceId: MarketplaceId,
     accountScope: string,
     expectedSellerId: string | null,
-    signal?: AbortSignal,
+    lifecycleSignal: AbortSignal,
   ): Promise<string> {
-    assertNotAborted(signal);
+    assertNotAborted(lifecycleSignal);
     const config = MARKETPLACES[marketplaceId];
     const credentials = await this.vault.load();
-    assertNotAborted(signal);
+    assertNotAborted(lifecycleSignal);
     if (credentials.oauthRegion !== config.region) {
       throw new AdvertisingApiError(
         `Ads LWA 區域是 ${credentials.oauthRegion.toUpperCase()}，無法用於 ${config.code}。`,
@@ -1285,7 +1392,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     const { response, payload } = await this.authorizedRequest(endpoint.toString(), {
       method: "GET",
       headers: { "Amazon-Advertising-API-ClientId": credentials.lwaClientId },
-    }, signal);
+    }, lifecycleSignal);
     if (!response.ok) throw upstreamError("Profiles", response, payload);
     if (!Array.isArray(payload)) {
       throw new AdvertisingApiError("Amazon Ads Profiles 回應格式無效。", {
@@ -1310,13 +1417,16 @@ export class AdvertisingApiClient implements AdvertisingGateway {
         code: "ADS_PROFILE_INVALID",
       });
     }
-    if ((await this.marketplaceAccountContext(marketplaceId)).cacheScope !== accountScope) {
+    if ((await this.marketplaceAccountContext(
+      marketplaceId,
+      lifecycleSignal,
+    )).cacheScope !== accountScope) {
       throw new AdvertisingApiError("SP-API 帳號在 Ads Profile 發現期間已改變。", {
         status: 409,
         code: "ADS_SP_ACCOUNT_CHANGED",
       });
     }
-    assertNotAborted(signal);
+    assertNotAborted(lifecycleSignal);
     this.profiles.set(marketplaceId, {
       profileId,
       accountScope,
@@ -1328,10 +1438,10 @@ export class AdvertisingApiClient implements AdvertisingGateway {
   private async authorizedRequest(
     url: string,
     init: RequestInit,
+    lifecycleSignal: AbortSignal,
     signal?: AbortSignal,
     policy: ReportingRequestPolicy = {},
   ): Promise<{ response: Response; payload: unknown }> {
-    const lifecycleSignal = this.lifecycleController.signal;
     const retryUnauthorized = policy.retryUnauthorized ?? true;
     const maximumTransientRetries = policy.transientRetries ?? 0;
     let unauthorizedRetries = 0;
@@ -1340,7 +1450,11 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     for (;;) {
       assertNotAborted(lifecycleSignal);
       assertNotAborted(signal);
-      const token = await this.getAccessToken(forceTokenRefresh, signal);
+      const token = await this.getAccessToken(
+        forceTokenRefresh,
+        lifecycleSignal,
+        signal,
+      );
       forceTokenRefresh = false;
       assertNotAborted(lifecycleSignal);
       assertNotAborted(signal);
@@ -1397,12 +1511,15 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     marketplaceId: MarketplaceId,
     profileId: string,
     maxResults: number,
-    nextToken?: string,
+    nextToken: string | undefined,
+    lifecycleSignal: AbortSignal,
     signal?: AbortSignal,
   ): Promise<{ campaigns: AdvertisingCoverageCampaign[]; nextToken?: string }> {
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const config = MARKETPLACES[marketplaceId];
     const credentials = await this.vault.load();
+    assertNotAborted(lifecycleSignal);
     assertNotAborted(signal);
     const body: Record<string, unknown> = {
       adProductFilter: { include: ["SPONSORED_PRODUCTS"] },
@@ -1421,6 +1538,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
         },
         body: JSON.stringify(body),
       },
+      lifecycleSignal,
       signal,
     );
     if (!response.ok) throw upstreamError("Campaign query", response, payload);

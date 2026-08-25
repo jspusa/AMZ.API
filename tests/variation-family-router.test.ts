@@ -26,7 +26,9 @@ function request(
 describe("variation family read-only route", () => {
   const router = new ApiRouter({
     store: {} as LocalStore,
-    vault: {} as CredentialVault,
+    vault: {
+      getAccountScope: async () => "variation-family-demo-scope",
+    } as unknown as CredentialVault,
     approveWrite: async () => undefined,
   });
 

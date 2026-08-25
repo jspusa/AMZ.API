@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getBusinessPricing,
   getListingContent,
   getListingImages,
   getListingPrice,
   invalidateSpApiCredentialCaches,
   previewListingPriceUpdate,
   previewListingSalePriceUpdate,
+  updateBusinessPrice,
+  updateListingImages,
   updateListingPrice,
 } from "../src/main/amazon/sp-api";
 
@@ -141,6 +144,47 @@ describe("SP-API demo safety boundary", () => {
     expect(content.capabilities.productDescription.supported).toBe(true);
     expect(images.images).toHaveLength(9);
     expect(images.images[0].attributeName).toBe("main_product_image_locator");
+  });
+
+  it("does not republish a demo image override after context invalidation", async () => {
+    const identity = {
+      marketplaceId: "ATVPDKIKX0DER" as const,
+      sellerSku: "AFA-TRKY-4OZ",
+    };
+    const before = await getListingImages(identity);
+    const expectedUrls = before.images.map((image) => image.url);
+    const update = updateListingImages({
+      ...identity,
+      expectedUrls,
+      urls: ["https://example.com/main.jpg", ...expectedUrls.slice(1)],
+    });
+
+    invalidateSpApiCredentialCaches();
+
+    await expect(update).rejects.toMatchObject({ code: "CREDENTIALS_CHANGED" });
+    expect((await getListingImages(identity)).images.map((image) => image.url))
+      .toEqual(expectedUrls);
+  });
+
+  it("does not republish demo B2B overrides after context invalidation", async () => {
+    const identity = {
+      marketplaceId: "ATVPDKIKX0DER" as const,
+      sellerSku: "AFA-TRKY-4OZ",
+    };
+    const before = await getBusinessPricing(identity);
+    if (!before.standardPrice) throw new Error("Expected demo standard price");
+    const update = updateBusinessPrice({
+      ...identity,
+      expectedStandardPrice: before.standardPrice.amount,
+      expectedBusinessPrice: before.businessPrice?.amount ?? null,
+      newBusinessPrice: Number((before.standardPrice.amount - 1).toFixed(2)),
+    });
+
+    invalidateSpApiCredentialCaches();
+
+    await expect(update).rejects.toMatchObject({ code: "CREDENTIALS_CHANGED" });
+    expect((await getBusinessPricing(identity)).businessPrice?.amount ?? null)
+      .toBe(before.businessPrice?.amount ?? null);
   });
 
 });

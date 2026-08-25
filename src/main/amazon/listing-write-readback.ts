@@ -31,6 +31,7 @@ type ReadbackDecision = "verified" | "pending";
 type ReadbackInput<TResult, TSnapshot> = Readonly<{
   commit: () => Promise<TResult>;
   onAccepted?: (result: TResult) => Promise<void>;
+  assertCurrent?: () => Promise<void>;
   read: () => Promise<TSnapshot>;
   decide: (result: TResult, snapshot: TSnapshot) => ReadbackDecision;
   signal?: AbortSignal;
@@ -38,6 +39,24 @@ type ReadbackInput<TResult, TSnapshot> = Readonly<{
   delay?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   now?: () => Date;
 }>;
+
+async function assertAcceptedReadbackContext(
+  assertCurrent: (() => Promise<void>) | undefined,
+): Promise<void> {
+  if (!assertCurrent) return;
+  try {
+    await assertCurrent();
+  } catch (error) {
+    throw new SpApiError(
+      "Amazon 可能已接受寫入，但執行環境在安全回查前改變；系統已禁止重送，請重新讀取 Amazon 確認。",
+      {
+        status: 503,
+        code: "UPDATE_STATUS_UNKNOWN",
+        requestId: error instanceof SpApiError ? error.requestId : null,
+      },
+    );
+  }
+}
 
 const DEFAULT_READBACK_DELAYS_MS = [
   0,
@@ -521,6 +540,7 @@ export async function commitWithCanonicalReadback<TResult extends {
   input: ReadbackInput<TResult, TSnapshot>,
 ): Promise<VerifiedListingWrite<TResult>> {
   throwIfAborted(input.signal);
+  await input.assertCurrent?.();
   const result = await input.commit();
   if (result.status === "VALID") {
     throw new SpApiError(
@@ -536,10 +556,12 @@ export async function commitWithCanonicalReadback<TResult extends {
     );
   }
   if (result.mode === "demo") {
+    await input.assertCurrent?.();
     return verifiedResult(result, 0, input.now ?? (() => new Date()))!;
   }
 
   await input.onAccepted?.(result);
+  await assertAcceptedReadbackContext(input.assertCurrent);
 
   const delays = input.delaysMs ?? DEFAULT_READBACK_DELAYS_MS;
   const delay = input.delay ?? abortableDelay;
@@ -548,8 +570,10 @@ export async function commitWithCanonicalReadback<TResult extends {
     throwIfAborted(input.signal);
     if (delays[index] > 0) await delay(delays[index], input.signal);
     throwIfAborted(input.signal);
+    await assertAcceptedReadbackContext(input.assertCurrent);
     try {
       const snapshot = await input.read();
+      await assertAcceptedReadbackContext(input.assertCurrent);
       throwIfAborted(input.signal);
       if (input.decide(result, snapshot) === "verified") {
         return verifiedResult(

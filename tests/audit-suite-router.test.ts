@@ -116,7 +116,7 @@ describe("main-owned audit suite routes", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    router?.clearPreviews();
+    router?.dispose();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
     if (previousClientId === undefined) delete process.env.SP_API_LWA_CLIENT_ID;
@@ -205,7 +205,7 @@ describe("main-owned audit suite routes", () => {
       expiresAt: Number.MAX_SAFE_INTEGER,
     });
     startListing = vi.fn();
-    router.clearPreviews();
+    router.dispose();
     router = new ApiRouter({
       store,
       vault: {
@@ -309,7 +309,7 @@ describe("main-owned audit suite routes", () => {
       runId: String(jsonValue(started).runId),
       contextId: String(jsonValue(started).contextId),
     };
-    router.clearPreviews();
+    router.dispose();
     const status = await router.handle(request("GET", "/api/sp-api/audit-suite", identity));
     expect(status.status).toBe(410);
     expect(jsonValue(status)).toMatchObject({ code: "AUDIT_SUITE_EXPIRED" });
@@ -335,7 +335,7 @@ describe("main-owned audit suite routes", () => {
     const directory = await mkdtemp(join(tmpdir(), "audit-suite-abort-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
-    router.clearPreviews();
+    router.dispose();
     router = new ApiRouter({
       store,
       vault: {
@@ -355,7 +355,7 @@ describe("main-owned audit suite routes", () => {
     }
     expect(startListing).toHaveBeenCalledTimes(1);
 
-    router.clearPreviews();
+    router.dispose();
     await new Promise((resolve) => setTimeout(resolve, 1_100));
 
     expect(getListingStatus).not.toHaveBeenCalled();

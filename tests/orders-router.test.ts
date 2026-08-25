@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import { SpApiError } from "../src/main/amazon/sp-api-error";
+import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
@@ -146,6 +147,7 @@ describe("Orders public read route", () => {
       });
     });
     const vault = {
+      getAccountScope: vi.fn(async () => "orders-probe-scope"),
       getSummary: vi.fn(async () => ({
         encryptionAvailable: true,
         hasVault: true,
@@ -189,6 +191,125 @@ describe("Orders public read route", () => {
       },
     });
     expect(result.regions.na?.message).toContain("Orders 驗證失敗");
+  });
+
+  it("stops a connection test invalidated while its credential summary is loading", async () => {
+    let summaryEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      summaryEntered = resolve;
+    });
+    let releaseSummary!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const read = vi.fn();
+    const vault = {
+      getSummary: vi.fn(async () => {
+        summaryEntered();
+        await released;
+        return {
+          encryptionAvailable: true,
+          hasVault: true,
+          lwaConfigured: true,
+          regions: {
+            na: {
+              configured: true,
+              refreshTokenHint: "configured",
+              sellerIdHint: "configured",
+            },
+            fe: { configured: false, refreshTokenHint: null, sellerIdHint: null },
+            eu: { configured: false, refreshTokenHint: null, sellerIdHint: null },
+          },
+          imageStorageConfigured: false,
+          imagePublicBaseUrl: null,
+          replenishmentSkillConfigured: false,
+          updatedAt: null,
+        };
+      }),
+    } as unknown as CredentialVault;
+    const router = new ApiRouter({
+      store: {} as LocalStore,
+      vault,
+      approveWrite: async () => undefined,
+      ordersReads: { read },
+    });
+
+    const pending = router.testConnections();
+    await entered;
+    router.invalidateContext("lock-screen");
+    releaseSummary();
+
+    await expect(pending).rejects.toMatchObject({
+      status: 409,
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    expect(read).not.toHaveBeenCalled();
+    router.dispose();
+  });
+
+  it("rejects a connection result if the account changes between its probes", async () => {
+    const previousMode = process.env.SP_API_MODE;
+    process.env.SP_API_MODE = "demo";
+    let accountScope = "connection-account-a";
+    const read = vi.fn(async () => {
+      accountScope = "connection-account-b";
+      return {
+        mode: "live" as const,
+        orders: [],
+        marketplaceId: US,
+        fetchedAt: "2026-08-25T00:00:00.000Z",
+        nextToken: null,
+        lastUpdatedBefore: "2026-08-24T23:59:59.000Z",
+        requestId: "orders-account-a",
+        rateLimit: null,
+        notice: null,
+      };
+    });
+    const vault = {
+      getSummary: vi.fn(async () => ({
+        encryptionAvailable: true,
+        hasVault: true,
+        lwaConfigured: true,
+        regions: {
+          na: {
+            configured: true,
+            refreshTokenHint: "configured",
+            sellerIdHint: "configured",
+          },
+          fe: { configured: false, refreshTokenHint: null, sellerIdHint: null },
+          eu: { configured: false, refreshTokenHint: null, sellerIdHint: null },
+        },
+        imageStorageConfigured: false,
+        imagePublicBaseUrl: null,
+        replenishmentSkillConfigured: false,
+        updatedAt: null,
+      })),
+    } as unknown as CredentialVault;
+    const router = new ApiRouter({
+      store: {} as LocalStore,
+      vault,
+      approveWrite: async () => undefined,
+      ordersReads: { read },
+      spExecutionContext: createScriptedSpExecutionContextAdapter(
+        (marketplaceId) => ({
+          marketplaceId,
+          mode: "demo",
+          accountScope,
+        }),
+      ),
+    });
+
+    try {
+      await expect(router.testConnections()).rejects.toMatchObject({
+        status: 409,
+        code: "ACCOUNT_SCOPE_CHANGED",
+      });
+      expect(read).toHaveBeenCalledOnce();
+    } finally {
+      router.dispose();
+      if (previousMode === undefined) delete process.env.SP_API_MODE;
+      else process.env.SP_API_MODE = previousMode;
+    }
   });
 
   it("keeps malformed upstream success handling at the established public seam", async () => {

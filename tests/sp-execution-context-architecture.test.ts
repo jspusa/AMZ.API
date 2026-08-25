@@ -1099,6 +1099,34 @@ describe("SP execution-context architecture", () => {
     expect(source).not.toMatch(/\bsearchBatch\b/u);
   });
 
+  it("keeps private execution and audit-suite contexts out of shared, preload, and renderer modules", () => {
+    const privateContextModules = new Set([
+      "src/main/amazon/audit-suite-context.ts",
+      "src/main/amazon/sp-execution-context.ts",
+      "src/main/router-request-context.ts",
+    ]);
+    const forbiddenImports = [
+      ...sourceFiles(absolutePath("src/shared")),
+      ...sourceFiles(absolutePath("src/preload")),
+      ...sourceFiles(absolutePath("src/renderer")),
+    ].flatMap((sourcePath) =>
+      sourceImports(sourcePath)
+        .map((sourceImport) => resolveLocalImport(sourcePath, sourceImport.specifier))
+        .filter((dependency): dependency is string => dependency !== null)
+        .map(repositoryPath)
+        .filter((dependency) => privateContextModules.has(dependency))
+        .map((dependency) => `${repositoryPath(sourcePath)} -> ${dependency}`)
+    );
+    const sharedAuditSuite = readFileSync(
+      absolutePath("src/shared/audit-suite.ts"),
+      "utf8",
+    );
+
+    expect(forbiddenImports).toEqual([]);
+    expect(sharedAuditSuite).not.toMatch(/\bAuditSuiteContext\b/u);
+    expect(sharedAuditSuite).not.toMatch(/\baccountScope\b/u);
+  });
+
   it.each([...ERROR_CONSUMERS.entries()])(
     "%s imports canonical SP errors from the error seam",
     (entryPath, expectedErrors) => {

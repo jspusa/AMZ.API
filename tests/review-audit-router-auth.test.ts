@@ -253,7 +253,7 @@ describe("review audit role failure fan-out", () => {
     expect(jsonValue(completed)).toMatchObject({
       summary: { uniqueFbaNonParentAsins: 3, noTopics: 3 },
     });
-    router.clearPreviews();
+    router.dispose();
   });
 
   it("single-flights concurrent status polls for the same job", async () => {
@@ -313,7 +313,7 @@ describe("review audit role failure fan-out", () => {
       progress: { completed: 1, total: 3 },
     });
     expect(mocks.feedback).toHaveBeenCalledTimes(1);
-    router.clearPreviews();
+    router.dispose();
   });
 
   it("aborts a standalone review job when lifecycle cleanup clears previews", async () => {
@@ -357,7 +357,7 @@ describe("review audit role failure fan-out", () => {
     ));
     await vi.waitFor(() => expect(mocks.feedback).toHaveBeenCalledTimes(1));
 
-    router.clearPreviews();
+    router.dispose();
     await polling;
 
     expect((observedSignal as AbortSignal | null)?.aborted).toBe(true);
@@ -417,7 +417,7 @@ describe("review audit role failure fan-out", () => {
     expect(jsonValue(retained)).toMatchObject({
       summary: { uniqueFbaNonParentAsins: 1, noTopics: 1 },
     });
-    router.clearPreviews();
+    router.dispose();
   });
 
   it("retains a standalone review snapshot for 30 minutes after a long run completes", async () => {
@@ -474,7 +474,7 @@ describe("review audit role failure fan-out", () => {
     expect(jsonValue(retained)).toMatchObject({
       summary: { uniqueFbaNonParentAsins: 1, noTopics: 1 },
     });
-    router.clearPreviews();
+    router.dispose();
   });
 
   it("clears and aborts a standalone review job after its terminal retention expires", async () => {
@@ -592,7 +592,7 @@ describe("review audit role failure fan-out", () => {
         accountScope: "scope",
       }),
     ]);
-    router.clearPreviews();
+    router.dispose();
   });
 
   it("captures a fresh context after account-scoped jobs are cleared", async () => {
@@ -638,7 +638,7 @@ describe("review audit role failure fan-out", () => {
     const first = await startAndPoll();
     expect(first.status).toBe(200);
     expect(mocks.feedback).toHaveBeenCalledTimes(1);
-    router.invalidateSpExecutionContext("account-changed");
+    router.invalidateContext("account-changed");
     accountScope = "scope-b";
     expect((await startAndPoll()).status).toBe(200);
 
@@ -650,7 +650,7 @@ describe("review audit role failure fan-out", () => {
     expect(observedContexts[1]!.generation).toBeGreaterThan(
       observedContexts[0]!.generation,
     );
-    router.clearPreviews();
+    router.dispose();
   });
 
   it("bounds route-level rate-limit rescheduling and completes as incomplete", async () => {
@@ -715,7 +715,7 @@ describe("review audit role failure fan-out", () => {
       }],
     });
     expect(mocks.feedback).toHaveBeenCalledTimes(2);
-    router.clearPreviews();
+    router.dispose();
   });
 
   it("rejects a live job after candidates exist if the App changes to demo", async () => {

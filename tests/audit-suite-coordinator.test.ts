@@ -16,8 +16,9 @@ import {
 } from "../src/renderer/src/audit-suite";
 import {
   AUDIT_SUITE_SECTION_IDS,
-  type AuditSuiteContext,
 } from "../src/shared/audit-suite";
+import type { AuditSuiteContext } from
+  "../src/main/amazon/audit-suite-context";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const FETCHED_AT = "2026-08-17T00:00:00.000Z";
@@ -71,6 +72,7 @@ function identity(run: ReturnType<AuditSuiteCoordinator["start"]>["run"]) {
     contextId: run.contextId,
     marketplaceId: run.marketplaceId,
     accountScope: "account-one",
+    generation: 0,
     mode: run.mode,
   } as const;
 }
@@ -103,6 +105,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -112,6 +115,69 @@ describe("AuditSuiteCoordinator run ownership", () => {
     expect(coordinator.get(identity(started.run))).toMatchObject({
       schemaVersion: 3,
       status: "completed",
+    });
+  });
+
+  it("does not reuse or authorize a run from an older execution generation", () => {
+    const coordinator = new AuditSuiteCoordinator({ runners: sectionRunners() });
+    const first = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    const second = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 1,
+      mode: "demo",
+    });
+
+    expect(second.reused).toBe(false);
+    expect(second.run.runId).not.toBe(first.run.runId);
+    expect(() => coordinator.get({
+      ...identity(first.run),
+      generation: 1,
+    })).toThrowError(expect.objectContaining({
+      status: 409,
+      code: "SP_CONTEXT_INVALIDATED",
+    }));
+    expect(coordinator.get({
+      ...identity(second.run),
+      generation: 1,
+    })).toMatchObject({ runId: second.run.runId, status: "queued" });
+  });
+
+  it("rejects a section snapshot returned from an older execution generation", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: async (context) => completed({
+          ...context,
+          generation: context.generation - 1,
+        }, []),
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 1,
+      mode: "demo",
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    expect(coordinator.get({
+      ...identity(started.run),
+      generation: 1,
+    })).toMatchObject({
+      status: "partial",
+      sections: {
+        advertising: {
+          status: "failed",
+          message: "advertising 健檢回傳 context 不一致。",
+        },
+      },
     });
   });
 
@@ -135,6 +201,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -203,6 +270,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -258,6 +326,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const first = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -268,6 +337,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const second = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -303,6 +373,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const first = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -321,6 +392,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -348,6 +420,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -377,6 +450,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -420,6 +494,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const oldRun = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -430,6 +505,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const currentRun = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -472,6 +548,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);

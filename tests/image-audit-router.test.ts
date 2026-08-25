@@ -64,7 +64,7 @@ describe("FBA image audit snapshot export route", () => {
   });
 
   afterEach(() => {
-    router.clearPreviews();
+    router.dispose();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
   });

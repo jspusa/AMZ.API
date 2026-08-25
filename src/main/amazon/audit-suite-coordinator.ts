@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import {
   AUDIT_SUITE_SCHEMA_VERSION,
   AUDIT_SUITE_SECTION_IDS,
-  type AuditSuiteContext,
   type AuditSuiteMode,
   type AuditSuiteRunDto,
   type AuditSuiteRunStatus,
   type AuditSuiteSectionId,
   type AuditSuiteSectionProgress,
 } from "../../shared/audit-suite";
+import type { AuditSuiteContext } from "./audit-suite-context";
 import type {
   AuditSuiteWorkbookInput,
   ValidatedAuditSuiteSnapshot,
@@ -131,12 +131,14 @@ export class AuditSuiteCoordinator {
   start(input: {
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
   }): { run: AuditSuiteRunDto; reused: boolean } {
     this.prune();
     const existing = [...this.jobs.values()].find((job) =>
       job.context.marketplaceId === input.marketplaceId &&
       job.context.accountScope === input.accountScope &&
+      job.context.generation === input.generation &&
       job.context.mode === input.mode &&
       !terminal(aggregateStatus(job.progress)),
     );
@@ -161,6 +163,7 @@ export class AuditSuiteCoordinator {
         runId,
         marketplaceId: input.marketplaceId,
         accountScope: input.accountScope,
+        generation: input.generation,
         mode: input.mode,
       },
       contextId,
@@ -188,6 +191,7 @@ export class AuditSuiteCoordinator {
     contextId: string;
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
   }): AuditSuiteRunDto {
     return this.dto(this.authorize(input));
@@ -198,6 +202,7 @@ export class AuditSuiteCoordinator {
     contextId: string;
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
     marketplaceLabel: string;
     generatedAt?: string | Date;
@@ -223,6 +228,7 @@ export class AuditSuiteCoordinator {
     contextId: string;
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
   }): AuditSuiteRuntimeJob {
     this.prune();
@@ -238,6 +244,13 @@ export class AuditSuiteCoordinator {
       throw new AuditSuiteCoordinatorError(
         "Amazon 帳號範圍已改變，舊綜合健檢不可讀取或匯出。",
         { status: 409, code: "ACCOUNT_SCOPE_CHANGED" },
+      );
+    }
+    if (job.context.generation !== input.generation) {
+      this.deleteJob(input.runId);
+      throw new AuditSuiteCoordinatorError(
+        "Amazon 執行環境已更新，舊綜合健檢不可讀取或匯出。",
+        { status: 409, code: "SP_CONTEXT_INVALIDATED" },
       );
     }
     if (job.context.mode !== input.mode) {
@@ -284,6 +297,7 @@ export class AuditSuiteCoordinator {
         snapshot.runId !== job.context.runId ||
         snapshot.marketplaceId !== job.context.marketplaceId ||
         snapshot.accountScope !== job.context.accountScope ||
+        snapshot.generation !== job.context.generation ||
         snapshot.mode !== job.context.mode
       ) {
         throw new Error(`${id} 健檢回傳 context 不一致。`);

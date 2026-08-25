@@ -183,7 +183,9 @@ describe("FBA Sales Velocity replenishment facade", () => {
   it("preserves the public replenishment route and query contract", async () => {
     const router = new ApiRouter({
       store: {} as LocalStore,
-      vault: {} as CredentialVault,
+      vault: {
+        getAccountScope: async () => "replenishment-demo-scope",
+      } as unknown as CredentialVault,
       approveWrite: async () => undefined,
     });
     const response = await router.handle(

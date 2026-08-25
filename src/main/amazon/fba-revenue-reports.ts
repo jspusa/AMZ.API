@@ -232,7 +232,8 @@ export class FbaRevenueReports {
     includeData: boolean;
   }>): Promise<FbaRevenueJobResult> {
     this.prune();
-    const job = await this.load(input.jobId);
+    const context = await this.context.capture(input.marketplaceId);
+    const job = await this.load(input.jobId, context);
     if (!job || job.marketplaceId !== input.marketplaceId) {
       return throwSemanticError(
         "品牌營收工作已過期或站點不符，請重新同步。",
@@ -240,7 +241,6 @@ export class FbaRevenueReports {
         "SNAPSHOT_EXPIRED",
       );
     }
-    const context = await this.context.capture(input.marketplaceId);
     return this.settleInContext(
       context,
       this.getSelection(context, job, input),
@@ -702,6 +702,7 @@ export class FbaRevenueReports {
             replacement: candidate,
           })
         : await this.store.createBrandSalesJobIfAbsent(candidate, now);
+      await this.context.assertCurrent(context);
       job = this.runtimeJob(claimed.job);
       if (!claimed.created) return this.beginSelection(context, input);
     }
@@ -733,10 +734,14 @@ export class FbaRevenueReports {
     return this.view(job);
   }
 
-  private async load(jobId: string): Promise<BrandSalesRuntimeJob | null> {
+  private async load(
+    jobId: string,
+    context: SpExecutionContext,
+  ): Promise<BrandSalesRuntimeJob | null> {
     const cached = this.jobs.get(jobId);
     if (cached) return cached;
     const stored = await this.store.getBrandSalesJobById(jobId);
+    await this.context.assertCurrent(context);
     return stored && !isBrandSalesIncompatibleJob(stored)
       ? this.runtimeJob(stored)
       : null;

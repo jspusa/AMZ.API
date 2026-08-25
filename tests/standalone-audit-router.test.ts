@@ -122,7 +122,7 @@ describe("main-owned standalone audit route", () => {
   });
 
   afterEach(() => {
-    router?.clearPreviews();
+    router?.dispose();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
   });
@@ -202,7 +202,7 @@ describe("main-owned standalone audit route", () => {
         /reportId|documentId|signedUrl|amazonaws\.com|cloudfront\.net/u,
       );
     } finally {
-      runtimeRouter.clearPreviews();
+      runtimeRouter.dispose();
     }
   });
 

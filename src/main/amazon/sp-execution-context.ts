@@ -24,6 +24,8 @@ export type SpExecutionContext = Readonly<{
 export type SpExecutionContextInvalidationReason =
   | "credentials-saved"
   | "credentials-cleared"
+  | "advertising-credentials-saved"
+  | "advertising-credentials-cleared"
   | "account-changed"
   | "mode-changed"
   | "lock-screen"

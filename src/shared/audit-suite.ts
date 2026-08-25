@@ -30,13 +30,6 @@ export type AuditSuiteRunStatus =
   | "failed";
 export type AuditSuiteSectionStatus = AuditSuiteRunStatus;
 
-export type AuditSuiteContext = Readonly<{
-  runId: string;
-  marketplaceId: string;
-  accountScope: string;
-  mode: AuditSuiteMode;
-}>;
-
 /** Public, run-bound context. Never expose the stable account-scope hash. */
 export type AuditSuitePublicContext = Readonly<{
   runId: string;

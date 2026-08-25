@@ -200,7 +200,7 @@ describe("durable content-audit snapshot lifecycle", () => {
     }
   });
 
-  it("survives clearPreviews and a new Router/LocalStore but rejects account and mode changes", async () => {
+  it("survives Router disposal and a new Router/LocalStore but rejects account and mode changes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "content-audit-lifecycle-"));
     const filePath = join(directory, "data.json");
     const store = new LocalStore(filePath);
@@ -221,13 +221,13 @@ describe("durable content-audit snapshot lifecycle", () => {
       workbook(snapshot),
       "Batch-safe durable product title",
     );
-    router.clearPreviews();
+    router.dispose();
     const afterClear = await router.handle(
       importRequest(edited, "durable-after-clear-001"),
     );
     expect(afterClear.status, JSON.stringify(responseValue(afterClear))).toBe(200);
 
-    router.clearPreviews();
+    router.dispose();
     const restartedStore = new LocalStore(filePath);
     await restartedStore.initialize();
     const restartedRouter = createRouter(restartedStore);

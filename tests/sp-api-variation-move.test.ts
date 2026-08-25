@@ -10,6 +10,7 @@ import {
   updateVariationMove,
   type VariationMoveInput,
 } from "../src/main/amazon/sp-api";
+import { SpExecutionContextError } from "../src/main/amazon/sp-execution-context";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
@@ -563,6 +564,43 @@ describe("live variation detach and attach wire safety", () => {
       expect(wire.commitPatchCount()).toBe(1);
     },
   );
+
+  it("keeps the durable claim unknown when context changes after the commit PATCH", async () => {
+    const wire = installDetachSafetyWire();
+    const directory = await mkdtemp(join(tmpdir(), "amz-api-variation-context-"));
+    const store = new LocalStore(join(directory, "store.json"));
+    await store.initialize();
+    const operation = () => store.runIdempotentOperation({
+      idempotencyKey: "variation-context-after-accepted",
+      operationType: "variation_detach" as const,
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SOURCE_SKU,
+      accountScope: "variation-context-account",
+      fingerprint: "variation-context-fingerprint",
+      execute: () => updateVariationMove(input("detach"), {
+        assertCurrent: async () => {
+          if (wire.commitPatchCount() > 0) {
+            throw new SpExecutionContextError(
+              "SP_CONTEXT_INVALIDATED",
+              "Amazon 執行環境已更新；請重新開始這次操作。",
+            );
+          }
+        },
+      }),
+    });
+
+    await expect(operation()).rejects.toMatchObject({
+      status: 503,
+      code: "UPDATE_STATUS_UNKNOWN",
+    });
+    expect(wire.commitPatchCount()).toBe(1);
+
+    await expect(operation()).rejects.toMatchObject({
+      status: 409,
+      code: "UPDATE_STATUS_UNKNOWN",
+    });
+    expect(wire.commitPatchCount()).toBe(1);
+  });
 
   it("blocks attach before preview when relationships still name the old parent", async () => {
     const wire = installDetachSafetyWire({

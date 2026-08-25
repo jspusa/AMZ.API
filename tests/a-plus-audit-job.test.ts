@@ -68,6 +68,7 @@ function gateway(
   return {
     bindContext: async ({ marketplaceId, mode }) => ({
       accountScope: "internal-account-scope-one",
+      generation: 0,
       marketplaceId,
       mode,
     }),
@@ -218,6 +219,7 @@ describe("A+ audit background job coordinator", () => {
       gateway: gateway({
         bindContext: async ({ marketplaceId, mode }) => ({
           accountScope,
+          generation: 0,
           marketplaceId,
           mode,
         }),

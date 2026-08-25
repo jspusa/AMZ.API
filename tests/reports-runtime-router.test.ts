@@ -500,7 +500,7 @@ describe("Reports runtime router wiring", () => {
       signal: controller.signal,
     });
     await activeStarted;
-    router.invalidateSpExecutionContext("account-changed");
+    router.invalidateContext("account-changed");
     controller.abort(new Error("context cleanup aborted the document read"));
 
     await expect(pending).rejects.toMatchObject({

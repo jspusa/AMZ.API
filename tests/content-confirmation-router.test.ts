@@ -51,7 +51,7 @@ describe("listing content Touch ID commit route", () => {
     approveWrite.mockReset();
     approveWrite.mockResolvedValue(undefined);
     runIdempotentOperation.mockClear();
-    router.clearPreviews();
+    router.dispose();
   });
 
   afterEach(() => {

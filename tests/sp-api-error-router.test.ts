@@ -122,7 +122,7 @@ describe("public SP-API error mapping", () => {
     const router = await routerThatThrows(error);
 
     const response = await router.handle(startRequest());
-    router.clearPreviews();
+    router.dispose();
 
     expect(response.status).toBe(429);
     expect(response.headers["retry-after"]).toBe("7");
@@ -164,7 +164,7 @@ describe("public SP-API error mapping", () => {
     const router = await routerThatThrows(error);
 
     const response = await router.handle(startRequest());
-    router.clearPreviews();
+    router.dispose();
     const serialized = JSON.stringify({
       headers: response.headers,
       body: jsonValue(response),

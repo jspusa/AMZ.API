@@ -59,7 +59,7 @@ describe("Amazon Business pricing routes", () => {
     approveWrite.mockReset();
     approveWrite.mockResolvedValue(undefined);
     runIdempotentOperation.mockClear();
-    router.clearPreviews();
+    router.dispose();
   });
 
   afterEach(() => {

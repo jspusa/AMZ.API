@@ -111,7 +111,7 @@ function invalidateAmazonSecurityContext(
   reason: SpExecutionContextInvalidationReason,
 ): void {
   if (apiRouter) {
-    apiRouter.invalidateSpExecutionContext(reason);
+    apiRouter.invalidateContext(reason);
     return;
   }
   invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true });
@@ -633,9 +633,8 @@ function registerIpc(): void {
       credentialsChangeInFlight = true;
       try {
         await confirmSensitiveAction("確認保存 Amazon Ads API 憑證到這台電腦的系統安全儲存區");
+        invalidateAmazonSecurityContext("advertising-credentials-saved");
         const summary = await advertisingCredentialVault.save(input);
-        advertisingApi.invalidate();
-        apiRouter?.clearPreviews();
         return summary;
       } finally {
         credentialsChangeInFlight = false;
@@ -658,9 +657,8 @@ function registerIpc(): void {
     credentialsChangeInFlight = true;
     try {
       await confirmSensitiveAction("確認清除這台電腦上獨立的 Amazon Ads API 憑證");
+      invalidateAmazonSecurityContext("advertising-credentials-cleared");
       const summary = await advertisingCredentialVault.clear();
-      advertisingApi.invalidate();
-      apiRouter?.clearPreviews();
       return summary;
     } finally {
       credentialsChangeInFlight = false;
@@ -745,7 +743,7 @@ function registerIpc(): void {
     if (apiRequestsInFlight > 0 || credentialsChangeInFlight) {
       throw new Error("Amazon／本機安全操作仍在處理；完成後才能安裝更新。");
     }
-    apiRouter?.clearPreviews();
+    apiRouter?.dispose();
     autoUpdater.quitAndInstall(false, true);
   });
 }

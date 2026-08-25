@@ -64,10 +64,15 @@ import {
 } from "./amazon/sp-api-error";
 import {
   createProductionSpExecutionContextAdapter,
+  SpExecutionContextError,
   type SpExecutionContext,
   type SpExecutionContextAdapter,
   type SpExecutionContextInvalidationReason,
 } from "./amazon/sp-execution-context";
+import {
+  createRouterRequestContextAdapter,
+  type RouterRequestContextAdapter,
+} from "./router-request-context";
 import {
   MARKETPLACES,
   catalogListingsReadAdapterProduction,
@@ -283,7 +288,7 @@ import {
   reconcileSalePriceWrite,
   salePriceReadbackDecision,
 } from "./amazon/listing-write-readback";
-import type { AuditSuiteContext } from "../shared/audit-suite";
+import type { AuditSuiteContext } from "./amazon/audit-suite-context";
 import {
   DEFAULT_MARKETPLACE_ID,
   MARKETPLACES as MARKETPLACE_METADATA,
@@ -298,6 +303,7 @@ type WriteApproval = (reason: string) => Promise<void>;
 
 type PreviewTicket = {
   path: string;
+  context: SpExecutionContext;
   fingerprint: string;
   expiresAt: number;
   reserved: boolean;
@@ -338,6 +344,7 @@ type ContentBatchCommitResult = {
 type ContentBatchPlan = {
   previewId: string;
   exportId: string;
+  context: SpExecutionContext;
   marketplaceId: MarketplaceId;
   accountScope: string;
   idempotencyKey: string;
@@ -748,6 +755,7 @@ type AdvertisingStrategyJobState = "running" | "completed" | "failed";
 
 type AdvertisingStrategyJob = {
   jobId: string;
+  context: SpExecutionContext;
   marketplaceId: MarketplaceId;
   marketplaceCode: string;
   spAccountScope: string;
@@ -1775,7 +1783,7 @@ export class ApiRouter {
   private readonly store: LocalStore;
   private readonly vault: CredentialVault;
   private readonly approveWrite: WriteApproval;
-  private readonly spExecutionContext: SpExecutionContextAdapter;
+  private readonly spExecutionContext: RouterRequestContextAdapter;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly aplusContentReads: AplusContentReadsPort;
@@ -1802,8 +1810,8 @@ export class ApiRouter {
   private readonly subscriptionAuditSnapshots = new Map<
     string,
     {
+      context: SpExecutionContext;
       marketplaceId: MarketplaceId;
-      accountScope: string;
       expiresAt: number;
       snapshot: SubscriptionAuditSnapshot;
     }
@@ -1811,8 +1819,8 @@ export class ApiRouter {
   private readonly unboundVariationAuditSnapshots = new Map<
     string,
     {
+      context: SpExecutionContext;
       marketplaceId: MarketplaceId;
-      accountScope: string;
       expiresAt: number;
       snapshot: UnboundVariationAuditSnapshot;
     }
@@ -1820,8 +1828,8 @@ export class ApiRouter {
   private readonly imageAuditSnapshots = new Map<
     string,
     {
+      context: SpExecutionContext;
       marketplaceId: MarketplaceId;
-      accountScope: string;
       expiresAt: number;
       snapshot: ImageAuditSnapshot;
     }
@@ -1837,6 +1845,7 @@ export class ApiRouter {
   private readonly inboundShipmentSelections = new Map<string, string>();
   private readonly advertisingStrategyJobs = new Map<string, AdvertisingStrategyJob>();
   private readonly advertisingStrategySelections = new Map<string, string>();
+  private contextStateRevision = 0;
 
   constructor(input: {
     store: LocalStore;
@@ -1877,15 +1886,17 @@ export class ApiRouter {
     this.store = input.store;
     this.vault = input.vault;
     this.approveWrite = input.approveWrite;
-    this.spExecutionContext = input.spExecutionContext
+    const baseSpExecutionContext = input.spExecutionContext
       ?? createProductionSpExecutionContextAdapter({
         getOpaqueAccountScope: (region) => this.vault.getAccountScope(region),
         resolveMode: (marketplaceId) => usesDemoMode(marketplaceId) ? "demo" : "live",
-        onContextChanged: () => {
-          invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true });
-          this.clearPreviews();
+        onContextChanged: (reason) => {
+          this.invalidateContextBoundState(reason, true);
         },
       });
+    this.spExecutionContext = createRouterRequestContextAdapter(
+      baseSpExecutionContext,
+    );
     this.advertising = input.advertising ?? null;
     this.reportLifecycle = new DurableReportLifecycle(this.store);
     this.allListingsDemoReports = {
@@ -2069,7 +2080,8 @@ export class ApiRouter {
     });
   }
 
-  clearPreviews(): void {
+  private clearContextBoundState(): void {
+    this.contextStateRevision += 1;
     this.reportsRuntime.clear();
     this.fbaRevenueReports.clear();
     this.aplusAuditJobs.clear();
@@ -2101,25 +2113,74 @@ export class ApiRouter {
     // one-request-per-second boundary.
   }
 
-  invalidateSpExecutionContext(reason: SpExecutionContextInvalidationReason): void {
-    this.spExecutionContext.invalidate(reason);
+  private invalidateContextBoundState(
+    reason: SpExecutionContextInvalidationReason,
+    contextAlreadyInvalidated: boolean,
+  ): void {
+    if (!contextAlreadyInvalidated) this.spExecutionContext.invalidate(reason);
     invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true });
-    this.clearPreviews();
+    this.clearContextBoundState();
+  }
+
+  invalidateContext(reason: SpExecutionContextInvalidationReason): void {
+    this.invalidateContextBoundState(reason, false);
+  }
+
+  dispose(): void {
+    this.clearContextBoundState();
+  }
+
+  private assertContextStateRevision(expected: number): void {
+    if (expected === this.contextStateRevision) return;
+    throw new SpExecutionContextError(
+      "SP_CONTEXT_INVALIDATED",
+      "Amazon 執行環境已更新；請重新開始這次操作。",
+    );
   }
 
   async handle(request: ApiRequest): Promise<ApiResponse> {
     if (!this.validEnvelope(request)) {
       return invalid("App 內部請求格式無效。", 400, "INVALID_REQUEST");
     }
+    const operationStateRevision = this.contextStateRevision;
     try {
-      return await this.route(request);
+      return await this.spExecutionContext.runOperation(async () => {
+        let response: ApiResponse;
+        try {
+          response = await this.route(request);
+        } catch (error) {
+          try {
+            await this.spExecutionContext.assertOperationCurrent();
+          } catch (contextError) {
+            if (
+              contextError instanceof SpExecutionContextError &&
+              this.contextStateRevision === operationStateRevision
+            ) {
+              this.clearContextBoundState();
+            }
+          }
+          throw error;
+        }
+        if (response.status < 400) {
+          await this.spExecutionContext.assertOperationCurrent();
+        }
+        return response;
+      });
     } catch (error) {
+      if (
+        error instanceof SpExecutionContextError &&
+        this.contextStateRevision === operationStateRevision
+      ) {
+        this.clearContextBoundState();
+      }
       return apiError(error, "執行本機 Amazon 操作時發生未預期的錯誤。");
     }
   }
 
   async testConnections(): Promise<ConnectionTestResult> {
+    const operationStateRevision = this.contextStateRevision;
     const summary = await this.vault.getSummary();
+    this.assertContextStateRevision(operationStateRevision);
     const representatives: Record<"na" | "fe" | "eu", MarketplaceId> = {
       na: marketplaceByCode("US").id,
       fe: marketplaceByCode("JP").id,
@@ -2131,17 +2192,28 @@ export class ApiRouter {
       regions: {},
     };
     for (const region of ["na", "fe", "eu"] as const) {
+      this.assertContextStateRevision(operationStateRevision);
       if (!summary.regions[region].configured) continue;
-      result.regions[region] = await testRegionConnections({
-        orders: () => this.ordersReads.read({
-          intent: "connection-probe",
-          marketplaceId: representatives[region],
-        }),
-        listings: () => verifyListingsAccess(representatives[region]),
+      result.regions[region] = await this.spExecutionContext.runOperation(async () => {
+        this.assertContextStateRevision(operationStateRevision);
+        const marketplaceId = representatives[region];
+        const context = await this.spExecutionContext.capture(marketplaceId);
+        const regionResult = await testRegionConnections({
+          orders: () => this.ordersReads.read({
+            intent: "connection-probe",
+            marketplaceId,
+          }),
+          listings: () => verifyListingsAccess(marketplaceId),
+        });
+        await this.spExecutionContext.assertCurrent(context);
+        this.assertContextStateRevision(operationStateRevision);
+        return regionResult;
       });
+      this.assertContextStateRevision(operationStateRevision);
     }
     const tested = Object.values(result.regions);
     result.ok = tested.length > 0 && tested.every((item) => item?.ok);
+    this.assertContextStateRevision(operationStateRevision);
     return result;
   }
 
@@ -2849,8 +2921,9 @@ export class ApiRouter {
       return invalid("不支援這個銷售趨勢比較方式。");
     }
     try {
-      return json(
-        await getSalesTrend({
+      const { value } = await this.runContextBoundWork(
+        marketplaceId,
+        () => getSalesTrend({
           marketplaceId,
           days,
           startDate,
@@ -2858,6 +2931,7 @@ export class ApiRouter {
           comparison: comparison as SalesTrendComparisonMode,
         }),
       );
+      return json(value);
     } catch (error) {
       return apiError(error, "載入 FBA 銷售趨勢時發生未預期的錯誤。");
     }
@@ -2920,6 +2994,7 @@ export class ApiRouter {
       signal?: AbortSignal;
     }>,
   ): Promise<UnboundVariationAuditSnapshot> {
+    const context = await this.spExecutionContext.capture(input.marketplaceId);
     const seeds = await this.fbaCatalogReports.read({
       view: "seeds",
       marketplaceId: input.marketplaceId,
@@ -2927,7 +3002,7 @@ export class ApiRouter {
       documentId: input.documentId,
       signal: input.signal,
     });
-    if (usesDemoMode(input.marketplaceId)) {
+    if (context.mode === "demo") {
       return getDemoUnboundVariationAuditData({
         marketplaceId: input.marketplaceId,
         signal: input.signal,
@@ -3021,8 +3096,11 @@ export class ApiRouter {
     const identity = this.listingIdentity(request);
     if ("status" in identity) return identity;
     try {
-      const snapshot = await getListingPrice(identity);
-      await this.reconcilePriceWrites(snapshot);
+      const { context, value: snapshot } = await this.runContextBoundWork(
+        identity.marketplaceId,
+        () => getListingPrice(identity),
+      );
+      await this.reconcilePriceWrites(snapshot, context);
       return json(snapshot);
     } catch (error) {
       return apiError(error, "查詢 SKU 價格時發生未預期的錯誤。");
@@ -3150,9 +3228,12 @@ export class ApiRouter {
     const identity = this.listingIdentity(request);
     if ("status" in identity) return identity;
     try {
-      const snapshot = await getBusinessPricing(identity);
-      await this.reconcilePriceWrites(snapshot);
-      await this.reconcileBusinessPriceWrites(snapshot);
+      const { context, value: snapshot } = await this.runContextBoundWork(
+        identity.marketplaceId,
+        () => getBusinessPricing(identity),
+      );
+      await this.reconcilePriceWrites(snapshot, context);
+      await this.reconcileBusinessPriceWrites(snapshot, context);
       return json(snapshot);
     } catch (error) {
       return apiError(error, "查詢 Amazon Business 價格時發生未預期的錯誤。");
@@ -3333,12 +3414,20 @@ export class ApiRouter {
     const input = this.businessPricingInput(request);
     if ("status" in input) return input;
     try {
-      const result = await previewBusinessPriceUpdate(input);
-      const scoped = await this.scopedFingerprint(
+      const { context, value: result } = await this.runContextBoundWork(
         input.marketplaceId,
+        () => previewBusinessPriceUpdate(input),
+      );
+      const scoped = this.scopedFingerprintForContext(
+        context,
         this.businessPricingFingerprint(input, result),
       );
-      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      await this.issuePreview(
+        request.path,
+        input.idempotencyKey,
+        scoped.fingerprint,
+        context,
+      );
       return json(result);
     } catch (error) {
       return apiError(error, "Amazon Business 價格預檢時發生未預期的錯誤。");
@@ -3349,22 +3438,29 @@ export class ApiRouter {
     const input = this.businessPricingInput(request);
     if ("status" in input) return input;
     let evidence: BusinessPriceValidationResult;
+    let context: SpExecutionContext;
     try {
-      evidence = await previewBusinessPriceUpdate(input);
+      const bound = await this.runContextBoundWork(
+        input.marketplaceId,
+        () => previewBusinessPriceUpdate(input),
+      );
+      context = bound.context;
+      evidence = bound.value;
     } catch (error) {
       return apiError(
         error,
         "正式確認前重新執行 Amazon Business 價格預檢時發生未預期的錯誤。",
       );
     }
-    const scoped = await this.scopedFingerprint(
-      input.marketplaceId,
+    const scoped = this.scopedFingerprintForContext(
+      context,
       this.businessPricingFingerprint(input, evidence),
     );
     const ticketError = await this.approveReservedPreview(
       request.path,
       input.idempotencyKey,
       scoped.fingerprint,
+      scoped.context,
       `確認 B2B 調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${MARKETPLACES[input.marketplaceId].currency}｜數量折扣 ${evidence.quantityDiscountPlanChange === "preserve" ? "維持原方案" : `${evidence.previousQuantityDiscountPlan ? `${evidence.previousQuantityDiscountPlan.discountType} ${evidence.previousQuantityDiscountPlan.levels.map((level) => `${level.lowerBound}件=${level.value}`).join("、")}` : "未設定"} → ${evidence.requestedQuantityDiscountPlan?.levels.map((level) => `${level.lowerBound}件=${level.value}%`).join("、") ?? "未設定"}`}`,
     );
     if (ticketError) return ticketError;
@@ -3377,8 +3473,12 @@ export class ApiRouter {
         accountScope: scoped.accountScope,
         fingerprint: scoped.fingerprint,
         execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateBusinessPrice(input, evidence),
+          commit: () => updateBusinessPrice(input, evidence, {
+            assertCurrent: () =>
+              this.spExecutionContext.assertCurrent(scoped.context),
+          }),
           onAccepted: recordAccepted,
+          assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
           read: () => getBusinessPricing(input),
           decide: businessPriceReadbackDecision,
         }),
@@ -3406,10 +3506,14 @@ export class ApiRouter {
       );
     }
     try {
-      return json(await getVariationFamilyPlanner({
+      const { value } = await this.runContextBoundWork(
         marketplaceId,
-        ...(sellerSku ? { sellerSku } : { asin: asin! }),
-      }));
+        () => getVariationFamilyPlanner({
+          marketplaceId,
+          ...(sellerSku ? { sellerSku } : { asin: asin! }),
+        }),
+      );
+      return json(value);
     } catch (error) {
       return apiError(error, "查詢變體 family 時發生未預期的錯誤。");
     }
@@ -3454,16 +3558,21 @@ export class ApiRouter {
           "SNAPSHOT_EXPIRED",
         );
       }
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[marketplaceId].region,
-      );
-      if (stored.accountScope !== accountScope) {
+      const context = await this.spExecutionContext.capture(marketplaceId);
+      try {
+        await this.spExecutionContext.assertCurrent(stored.context);
+      } catch (error) {
         this.unboundVariationAuditSnapshots.delete(exportId);
-        return invalid(
-          "Amazon 帳號範圍已改變，舊未綁變體快照不可匯出。",
-          409,
-          "ACCOUNT_SCOPE_CHANGED",
-        );
+        if (error instanceof SpExecutionContextError) {
+          return invalid(
+            error.code === "ACCOUNT_SCOPE_CHANGED"
+              ? "Amazon 帳號範圍已改變，舊未綁變體快照不可匯出。"
+              : error.message,
+            409,
+            error.code,
+          );
+        }
+        throw error;
       }
       try {
         const marketplace = MARKETPLACES[marketplaceId];
@@ -3506,19 +3615,19 @@ export class ApiRouter {
     const documentId = this.reportIdentifier(request.query.documentId);
     if (!documentId) return invalid("未綁變體報表文件資訊無效，請重新掃描。");
     try {
-      const snapshot = await this.getSharedUnboundVariationAuditData({
+      const { context, value: snapshot } = await this.runContextBoundWork(
         marketplaceId,
-        reportId,
-        documentId,
-      });
-      const exportId = randomUUID();
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[marketplaceId].region,
+        () => this.getSharedUnboundVariationAuditData({
+          marketplaceId,
+          reportId,
+          documentId,
+        }),
       );
+      const exportId = randomUUID();
       this.pruneUnboundVariationAuditSnapshots();
       this.unboundVariationAuditSnapshots.set(exportId, {
+        context,
         marketplaceId,
-        accountScope,
         expiresAt: Date.now() + UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS,
         snapshot: structuredClone(snapshot),
       });
@@ -3539,11 +3648,15 @@ export class ApiRouter {
       return invalid("來源 SKU 與目標 parent 不能相同。");
     }
     try {
-      return json(await getVariationMovePreparation({
+      const { value } = await this.runContextBoundWork(
         marketplaceId,
-        sellerSku,
-        targetParentSku,
-      }));
+        () => getVariationMovePreparation({
+          marketplaceId,
+          sellerSku,
+          targetParentSku,
+        }),
+      );
+      return json(value);
     } catch (error) {
       return apiError(error, "準備變體必要欄位時發生未預期的錯誤。");
     }
@@ -3644,12 +3757,20 @@ export class ApiRouter {
     const input = this.variationMoveInput(request);
     if ("status" in input) return input;
     try {
-      const result = await previewVariationMove(input);
-      const scoped = await this.scopedFingerprint(
+      const { context, value: result } = await this.runContextBoundWork(
         input.marketplaceId,
+        () => previewVariationMove(input),
+      );
+      const scoped = this.scopedFingerprintForContext(
+        context,
         this.variationMoveFingerprint(input),
       );
-      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      await this.issuePreview(
+        request.path,
+        input.idempotencyKey,
+        scoped.fingerprint,
+        context,
+      );
       return json(result);
     } catch (error) {
       return apiError(error, "Amazon 變體預檢時發生未預期的錯誤。");
@@ -3672,6 +3793,7 @@ export class ApiRouter {
       request.path,
       key,
       scoped.fingerprint,
+      scoped.context,
       reason,
     );
     if (ticketError) return ticketError;
@@ -3683,7 +3805,10 @@ export class ApiRouter {
         sellerSku: input.sellerSku,
         accountScope: scoped.accountScope,
         fingerprint: scoped.fingerprint,
-        execute: () => updateVariationMove(input),
+        execute: () => updateVariationMove(input, {
+          assertCurrent: () =>
+            this.spExecutionContext.assertCurrent(scoped.context),
+        }),
       });
       return json(result);
     } catch (error) {
@@ -3734,12 +3859,20 @@ export class ApiRouter {
     const input = this.priceInput(request);
     if ("status" in input) return input;
     try {
-      const result = await previewListingPriceUpdate(input);
-      const scoped = await this.scopedFingerprint(
+      const { context, value: result } = await this.runContextBoundWork(
         input.marketplaceId,
+        () => previewListingPriceUpdate(input),
+      );
+      const scoped = this.scopedFingerprintForContext(
+        context,
         this.priceFingerprint(input),
       );
-      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      await this.issuePreview(
+        request.path,
+        input.idempotencyKey,
+        scoped.fingerprint,
+        context,
+      );
       return json(result);
     } catch (error) {
       return apiError(error, "價格預檢時發生未預期的錯誤。");
@@ -3764,6 +3897,7 @@ export class ApiRouter {
       request.path,
       key,
       fingerprint,
+      scoped.context,
       `確認調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.newPrice} ${MARKETPLACES[input.marketplaceId].currency}`,
     );
     if (ticketError) return ticketError;
@@ -3776,8 +3910,12 @@ export class ApiRouter {
         accountScope: scoped.accountScope,
         fingerprint,
         execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateListingPrice(input),
+          commit: () => updateListingPrice(input, {
+            assertCurrent: () =>
+              this.spExecutionContext.assertCurrent(scoped.context),
+          }),
           onAccepted: recordAccepted,
+          assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
           read: () => getListingPrice(input),
           decide: priceReadbackDecision,
         }),
@@ -3818,7 +3956,11 @@ export class ApiRouter {
       return invalid("一次可查詢 1 到 20 個不重複 SKU。");
     }
     try {
-      return json(await searchListingsBySku({ marketplaceId, sellerSkus: skus }));
+      const { value } = await this.runContextBoundWork(
+        marketplaceId,
+        () => searchListingsBySku({ marketplaceId, sellerSkus: skus }),
+      );
+      return json(value);
     } catch (error) {
       return apiError(error, "批次查詢 SKU 時發生未預期的錯誤。");
     }
@@ -3897,8 +4039,11 @@ export class ApiRouter {
     const identity = this.listingIdentity(request);
     if ("status" in identity) return identity;
     try {
-      const snapshot = await getListingContent(identity);
-      await this.reconcileContentWrites(snapshot);
+      const { context, value: snapshot } = await this.runContextBoundWork(
+        identity.marketplaceId,
+        () => getListingContent(identity),
+      );
+      await this.reconcileContentWrites(snapshot, context);
       return json(snapshot);
     } catch (error) {
       return apiError(error, "查詢商品內容時發生未預期的錯誤。");
@@ -3909,12 +4054,20 @@ export class ApiRouter {
     const input = this.contentInput(request);
     if ("status" in input) return input;
     try {
-      const result = await previewListingContentUpdate(input);
-      const scoped = await this.scopedFingerprint(
+      const { context, value: result } = await this.runContextBoundWork(
         input.marketplaceId,
+        () => previewListingContentUpdate(input),
+      );
+      const scoped = this.scopedFingerprintForContext(
+        context,
         this.contentFingerprint(input),
       );
-      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      await this.issuePreview(
+        request.path,
+        input.idempotencyKey,
+        scoped.fingerprint,
+        context,
+      );
       return json(result);
     } catch (error) {
       return apiError(error, "商品內容預檢時發生未預期的錯誤。");
@@ -3954,6 +4107,7 @@ export class ApiRouter {
         request.path,
         key,
         fingerprint,
+        scoped.context,
         `確認文案｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${changedFields}｜驗證碼 ${fingerprint.slice(0, 12)}`,
       );
       if (ticketError) return ticketError;
@@ -3966,8 +4120,12 @@ export class ApiRouter {
           accountScope: scoped.accountScope,
           fingerprint,
           execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-            commit: () => updateListingContent(input),
+            commit: () => updateListingContent(input, {
+              assertCurrent: () =>
+                this.spExecutionContext.assertCurrent(scoped.context),
+            }),
             onAccepted: recordAccepted,
+            assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
             read: () => getListingContent(input),
             decide: contentReadbackDecision,
           }),
@@ -4063,10 +4221,8 @@ export class ApiRouter {
         );
       }
       this.pruneContentBatchPlans();
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[marketplaceId].region,
-      );
-      const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+      const context = await this.spExecutionContext.capture(marketplaceId);
+      const { accountScope, mode } = context;
       const lookup = await this.store.getContentAuditSnapshotEvidence({
         exportId: parsed.metadata.exportId,
         marketplaceId,
@@ -4295,6 +4451,7 @@ export class ApiRouter {
       }> = [];
       for (const input of inputRows) {
         try {
+          await this.spExecutionContext.assertCurrent(context);
           const validation = await previewListingContentUpdate(input);
           const fingerprint = stableFingerprint([
             accountScope,
@@ -4311,6 +4468,7 @@ export class ApiRouter {
             validation,
           });
         } catch (error) {
+          if (error instanceof SpExecutionContextError) throw error;
           const publicError = error instanceof SpApiError
             ? publicSpApiError(error, "Amazon 預檢失敗。")
             : null;
@@ -4322,6 +4480,7 @@ export class ApiRouter {
           });
         }
       }
+      await this.spExecutionContext.assertCurrent(context);
       if (validationErrors.length) {
         return json(
           {
@@ -4365,6 +4524,7 @@ export class ApiRouter {
       const plan: ContentBatchPlan = {
         previewId: randomUUID(),
         exportId: parsed.metadata.exportId,
+        context,
         marketplaceId,
         accountScope,
         idempotencyKey: key,
@@ -4421,15 +4581,19 @@ export class ApiRouter {
         "PREVIEW_CHANGED",
       );
     }
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    try {
+      await this.spExecutionContext.assertCurrent(plan.context);
+    } catch (error) {
+      this.contentBatchPlans.delete(previewId);
+      throw error;
+    }
+    const { accountScope } = context;
     if (plan.accountScope !== accountScope) {
       this.contentBatchPlans.delete(previewId);
-      return invalid(
-        "Amazon 帳號範圍已改變，舊預檢不可送出。",
-        409,
+      throw new SpExecutionContextError(
         "ACCOUNT_SCOPE_CHANGED",
+        "Amazon 帳號範圍已改變；本次操作已停止。",
       );
     }
     if (plan.state === "completed" && plan.result) return json(plan.result);
@@ -4464,6 +4628,7 @@ export class ApiRouter {
 
       try {
         for (const change of plan.changes) {
+          await this.spExecutionContext.assertCurrent(context);
           change.validation = await previewListingContentUpdate(change.input);
         }
       } catch (error) {
@@ -4483,6 +4648,7 @@ export class ApiRouter {
         return response;
       }
 
+      await this.spExecutionContext.assertCurrent(context);
       try {
         const shownSkus = sellerSkus.slice(0, 5).join("、");
         const remaining = Math.max(0, sellerSkus.length - 5);
@@ -4498,6 +4664,8 @@ export class ApiRouter {
         );
       }
 
+      await this.spExecutionContext.assertCurrent(context);
+
       const rows: ContentBatchRowResult[] = plan.changes.map((change) => ({
         sellerSku: change.input.sellerSku,
         state: "not-started",
@@ -4507,6 +4675,7 @@ export class ApiRouter {
       let status: ContentBatchCommitResult["status"] = "COMPLETED";
       for (let index = 0; index < plan.changes.length; index += 1) {
         const change = plan.changes[index]!;
+        await this.spExecutionContext.assertCurrent(context);
         try {
           const result = await this.store.runIdempotentOperation<
             ListingContentUpdateResult
@@ -4520,8 +4689,12 @@ export class ApiRouter {
             execute: async ({ recordAccepted }) => {
               try {
                 return await commitWithCanonicalReadback({
-                  commit: () => updateListingContent(change.input),
+                  commit: () => updateListingContent(change.input, {
+                    assertCurrent: () =>
+                      this.spExecutionContext.assertCurrent(context),
+                  }),
                   onAccepted: recordAccepted,
+                  assertCurrent: () => this.spExecutionContext.assertCurrent(context),
                   read: () => getListingContent(change.input),
                   decide: contentReadbackDecision,
                 });
@@ -4646,8 +4819,11 @@ export class ApiRouter {
     const identity = this.listingIdentity(request);
     if ("status" in identity) return identity;
     try {
-      const snapshot = await getListingImages(identity);
-      await this.reconcileImageWrites(snapshot);
+      const { context, value: snapshot } = await this.runContextBoundWork(
+        identity.marketplaceId,
+        () => getListingImages(identity),
+      );
+      await this.reconcileImageWrites(snapshot, context);
       return json(snapshot);
     } catch (error) {
       return apiError(error, "查詢商品圖片時發生未預期的錯誤。");
@@ -4658,12 +4834,20 @@ export class ApiRouter {
     const input = this.imageInput(request);
     if ("status" in input) return input;
     try {
-      const result = await previewListingImageUpdate(input);
-      const scoped = await this.scopedFingerprint(
+      const { context, value: result } = await this.runContextBoundWork(
         input.marketplaceId,
+        () => previewListingImageUpdate(input),
+      );
+      const scoped = this.scopedFingerprintForContext(
+        context,
         this.imageFingerprint(input),
       );
-      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      await this.issuePreview(
+        request.path,
+        input.idempotencyKey,
+        scoped.fingerprint,
+        context,
+      );
       return json(result);
     } catch (error) {
       return apiError(error, "商品圖片預檢時發生未預期的錯誤。");
@@ -4698,6 +4882,7 @@ export class ApiRouter {
         request.path,
         key,
         fingerprint,
+        scoped.context,
         `確認圖片｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${fingerprint.slice(0, 12)}`,
       );
       if (ticketError) return ticketError;
@@ -4710,8 +4895,12 @@ export class ApiRouter {
           accountScope: scoped.accountScope,
           fingerprint,
           execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-            commit: () => updateListingImages(input),
+            commit: () => updateListingImages(input, {
+              assertCurrent: () =>
+                this.spExecutionContext.assertCurrent(scoped.context),
+            }),
             onAccepted: recordAccepted,
+            assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
             read: () => getListingImages(input),
             decide: imageReadbackDecision,
           }),
@@ -4803,12 +4992,20 @@ export class ApiRouter {
     const input = this.salePriceInput(request);
     if ("status" in input) return input;
     try {
-      const result = await previewListingSalePriceUpdate(input);
-      const scoped = await this.scopedFingerprint(
+      const { context, value: result } = await this.runContextBoundWork(
         input.marketplaceId,
+        () => previewListingSalePriceUpdate(input),
+      );
+      const scoped = this.scopedFingerprintForContext(
+        context,
         this.saleFingerprint(input),
       );
-      this.issuePreview(request.path, input.idempotencyKey, scoped.fingerprint);
+      await this.issuePreview(
+        request.path,
+        input.idempotencyKey,
+        scoped.fingerprint,
+        context,
+      );
       return json(result);
     } catch (error) {
       return apiError(error, "折扣預檢時發生未預期的錯誤。");
@@ -4845,6 +5042,7 @@ export class ApiRouter {
       request.path,
       key,
       fingerprint,
+      scoped.context,
       input.action === "cancel"
         ? `確認取消折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜目前 ${input.expectedDiscountedPrice ?? "—"}`
         : `確認折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.salePrice} ${MARKETPLACES[input.marketplaceId].currency}｜${input.startAt}～${input.endAt}`,
@@ -4859,8 +5057,12 @@ export class ApiRouter {
         accountScope: scoped.accountScope,
         fingerprint,
         execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateListingSalePrice(input),
+          commit: () => updateListingSalePrice(input, {
+            assertCurrent: () =>
+              this.spExecutionContext.assertCurrent(scoped.context),
+          }),
           onAccepted: recordAccepted,
+          assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
           read: () => getListingPrice(input),
           decide: salePriceReadbackDecision,
         }),
@@ -4890,7 +5092,11 @@ export class ApiRouter {
     const identity = this.listingIdentity(request);
     if ("status" in identity) return identity;
     try {
-      return json(await getSubscribeAndSaveOffer(identity));
+      const { value } = await this.runContextBoundWork(
+        identity.marketplaceId,
+        () => getSubscribeAndSaveOffer(identity),
+      );
+      return json(value);
     } catch (error) {
       return apiError(error, "查詢 Subscribe & Save 時發生未預期的錯誤。");
     }
@@ -4912,15 +5118,15 @@ export class ApiRouter {
       return invalid("請選擇支援的站點；月度歷史只能選最近 6、12 或 23 個完整月份。");
     }
     try {
-      const snapshot = await getFbaSubscriptionAudit({ marketplaceId, months });
-      const exportId = randomUUID();
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[marketplaceId].region,
+      const { context, value: snapshot } = await this.runContextBoundWork(
+        marketplaceId,
+        () => getFbaSubscriptionAudit({ marketplaceId, months }),
       );
+      const exportId = randomUUID();
       this.pruneSubscriptionAuditSnapshots();
       this.subscriptionAuditSnapshots.set(exportId, {
+        context,
         marketplaceId,
-        accountScope,
         expiresAt: Date.now() + SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS,
         snapshot: structuredClone(snapshot),
       });
@@ -4960,16 +5166,21 @@ export class ApiRouter {
         "SNAPSHOT_EXPIRED",
       );
     }
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
-    if (stored.accountScope !== accountScope) {
+    await this.spExecutionContext.capture(marketplaceId);
+    try {
+      await this.spExecutionContext.assertCurrent(stored.context);
+    } catch (error) {
       this.subscriptionAuditSnapshots.delete(snapshotId);
-      return invalid(
-        "Amazon 帳號範圍已改變，舊健檢快照不可匯出。",
-        409,
-        "ACCOUNT_SCOPE_CHANGED",
-      );
+      if (error instanceof SpExecutionContextError) {
+        return invalid(
+          error.code === "ACCOUNT_SCOPE_CHANGED"
+            ? "Amazon 帳號範圍已改變，舊健檢快照不可匯出。"
+            : error.message,
+          409,
+          error.code,
+        );
+      }
+      throw error;
     }
     const snapshot = stored.snapshot;
     const metricMonths = snapshot.intervals.map((interval) => interval.month);
@@ -5409,6 +5620,7 @@ export class ApiRouter {
           signal,
         });
         assertBackgroundActive(signal);
+        await this.spExecutionContext.assertCurrent(job.context);
         if (
           status.status !== "IN_QUEUE" &&
           status.status !== "IN_PROGRESS" &&
@@ -5439,6 +5651,7 @@ export class ApiRouter {
           signal,
         });
         assertBackgroundActive(signal);
+        await this.spExecutionContext.assertCurrent(job.context);
         if (candidateSnapshot.mode !== job.mode) {
           return invalid(
             "FBA 商品清單與評論健檢模式不一致，已停止。",
@@ -5510,6 +5723,7 @@ export class ApiRouter {
       }
       job.retryNotBefore = 0;
       if (job.nextCandidateIndex >= candidates.length) {
+        await this.spExecutionContext.assertCurrent(job.context);
         job.snapshot = buildReviewAuditSnapshot({
           mode: job.mode,
           marketplaceId,
@@ -5605,8 +5819,9 @@ export class ApiRouter {
       );
     }
     try {
-      return json(
-        await getRestockPlan({
+      const { value } = await this.runContextBoundWork(
+        marketplaceId,
+        () => getRestockPlan({
           marketplaceId,
           sellerSku,
           targetDays,
@@ -5615,6 +5830,7 @@ export class ApiRouter {
           casePack,
         }),
       );
+      return json(value);
     } catch (error) {
       return apiError(error, "建立 FBA 補貨建議時發生未預期的錯誤。");
     }
@@ -5624,9 +5840,8 @@ export class ApiRouter {
     const identity = this.listingIdentity(request);
     if ("status" in identity) return identity;
     const { marketplaceId, sellerSku } = identity;
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    const { accountScope } = context;
     const profileState = await this.store.getProductMaster(
       accountScope,
       marketplaceId,
@@ -5650,6 +5865,7 @@ export class ApiRouter {
         casePack: profile.casePack,
       }),
     ] as const);
+    await this.spExecutionContext.assertCurrent(context);
     const price = sourceResult<ListingPriceSnapshot>(settled[0]);
     const content = sourceResult<ListingContentSnapshot>(settled[1]);
     const images = sourceResult<ListingImageSnapshot>(settled[2]);
@@ -5684,7 +5900,7 @@ export class ApiRouter {
     const sources = [price, content, images, subscribeSave, restock];
     const sourceReady = sources.filter((item) => item.data).length;
     return json({
-      mode: usesDemoMode(marketplaceId) ? "demo" : "live",
+      mode: context.mode,
       marketplaceId,
       sellerSku,
       fetchedAt: new Date().toISOString(),
@@ -5846,21 +6062,28 @@ export class ApiRouter {
   private async getProductMaster(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     if (!marketplaceId) return invalid("請選擇有效的 Amazon 站點。");
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
+    const context = await this.spExecutionContext.capture(marketplaceId);
     if (Object.prototype.hasOwnProperty.call(request.query, "sku")) {
       const sellerSku = parseSellerSku(request.query.sku);
       if (!sellerSku) return invalid("請輸入有效的 Seller SKU。");
       return json(
-        await this.store.getProductMaster(accountScope, marketplaceId, sellerSku),
+        await this.store.getProductMaster(
+          context.accountScope,
+          marketplaceId,
+          sellerSku,
+        ),
       );
     }
     const query = (request.query.q ?? "").trim();
     const limit = integer(request.query.limit, 8, 1, 20);
     if (query.length > 80 || limit === null) return invalid("商品主檔搜尋條件無效。");
     return json(
-      await this.store.listProductMasters({ accountScope, marketplaceId, query, limit }),
+      await this.store.listProductMasters({
+        accountScope: context.accountScope,
+        marketplaceId,
+        query,
+        limit,
+      }),
     );
   }
 
@@ -5936,11 +6159,10 @@ export class ApiRouter {
         "INVALID_SHELF_LIFE",
       );
     }
+    const context = await this.spExecutionContext.capture(marketplaceId);
     return json(
       await this.store.saveProductMaster({
-        accountScope: await this.vault.getAccountScope(
-          MARKETPLACES[marketplaceId].region,
-        ),
+        accountScope: context.accountScope,
         marketplaceId,
         sellerSku,
         settings: {
@@ -5988,11 +6210,13 @@ export class ApiRouter {
         "IMAGE_TOO_SMALL",
       );
     }
+    const context = await this.spExecutionContext.capture(marketplaceId);
     const skuHash = createHash("sha256").update(sellerSku).digest("hex").slice(0, 16);
     const extension = contentType === "image/png" ? "png" : "jpg";
     const key = `listing-images/${marketplaceId}/${skuHash}/${randomUUID()}.${extension}`;
     const previewUrl = `data:${contentType};base64,${Buffer.from(file.bytes).toString("base64")}`;
     const storage = await this.vault.getImageStorage();
+    await this.spExecutionContext.assertCurrent(context);
     let amazonUrl: string | null = null;
     if (storage) {
       const expectedHost = `${storage.accountId}.r2.cloudflarestorage.com`;
@@ -6015,6 +6239,7 @@ export class ApiRouter {
         },
       });
       try {
+        await this.spExecutionContext.assertCurrent(context);
         await client.send(
           new PutObjectCommand({
             Bucket: storage.bucket,
@@ -6030,6 +6255,7 @@ export class ApiRouter {
             },
           }),
         );
+        await this.spExecutionContext.assertCurrent(context);
         amazonUrl = `${storage.publicBaseUrl.replace(/\/$/, "")}/${key}`;
       } finally {
         client.destroy();
@@ -6227,16 +6453,21 @@ export class ApiRouter {
         "SNAPSHOT_EXPIRED",
       );
     }
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
-    if (stored.accountScope !== accountScope) {
+    await this.spExecutionContext.capture(marketplaceId);
+    try {
+      await this.spExecutionContext.assertCurrent(stored.context);
+    } catch (error) {
       this.imageAuditSnapshots.delete(exportId);
-      return invalid(
-        "Amazon 帳號範圍已改變，舊圖片健檢快照不可匯出。",
-        409,
-        "ACCOUNT_SCOPE_CHANGED",
-      );
+      if (error instanceof SpExecutionContextError) {
+        return invalid(
+          error.code === "ACCOUNT_SCOPE_CHANGED"
+            ? "Amazon 帳號範圍已改變，舊圖片健檢快照不可匯出。"
+            : error.message,
+          409,
+          error.code,
+        );
+      }
+      throw error;
     }
     const marketplace = MARKETPLACES[marketplaceId];
     const snapshot = stored.snapshot;
@@ -6293,12 +6524,22 @@ export class ApiRouter {
     const documentId = this.reportIdentifier(request.query.documentId);
     if (!documentId) return invalid("報表文件資訊無效，請重新匯出。");
     try {
-      const data = await this.getSharedAllListingsExportData({ marketplaceId, reportId, documentId });
-      if (auditRequested) {
-        const grouping = await getFbaVariationGroupingData({
+      const { context, value: data } = await this.runContextBoundWork(
+        marketplaceId,
+        () => this.getSharedAllListingsExportData({
           marketplaceId,
-          rows: data.rows,
-        });
+          reportId,
+          documentId,
+        }),
+      );
+      if (auditRequested) {
+        const { value: grouping } = await this.runContextBoundWork(
+          marketplaceId,
+          () => getFbaVariationGroupingData({
+            marketplaceId,
+            rows: data.rows,
+          }),
+        );
         const groupingBySku = new Map(
           grouping.rows.map((row) => [row.sellerSku, row] as const),
         );
@@ -6326,10 +6567,7 @@ export class ApiRouter {
             };
           }),
         };
-        const accountScope = await this.vault.getAccountScope(
-          MARKETPLACES[marketplaceId].region,
-        );
-        const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
+        const { accountScope, mode } = context;
         await this.store.saveContentAuditSnapshotEvidence({
           exportId,
           marketplaceId,
@@ -6369,13 +6607,10 @@ export class ApiRouter {
           minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
         });
         const exportId = randomUUID();
-        const accountScope = await this.vault.getAccountScope(
-          MARKETPLACES[marketplaceId].region,
-        );
         this.pruneImageAuditSnapshots();
         this.imageAuditSnapshots.set(exportId, {
+          context,
           marketplaceId,
-          accountScope,
           expiresAt: Date.now() + IMAGE_AUDIT_SNAPSHOT_TTL_MS,
           snapshot: structuredClone(snapshot),
         });
@@ -6577,6 +6812,7 @@ export class ApiRouter {
     const current = await this.currentAuditSuiteContext(input.marketplaceId);
     return {
       accountScope: current.accountScope,
+      generation: current.generation,
       marketplaceId: input.marketplaceId,
       mode: current.mode,
     };
@@ -6677,11 +6913,45 @@ export class ApiRouter {
     assertBackgroundActive(signal);
     if (
       current.accountScope !== context.accountScope ||
+      current.generation !== context.generation ||
       current.mode !== context.mode
     ) {
       throw new Error("單項健檢工作與目前帳號或展示／真實模式不一致。");
     }
     return context.marketplaceId;
+  }
+
+  private async captureStandaloneSnapshotContext(
+    context: StandaloneAuditJobBoundContext,
+    signal: AbortSignal,
+  ): Promise<SpExecutionContext> {
+    assertBackgroundActive(signal);
+    if (!isMarketplaceId(context.marketplaceId)) {
+      throw new Error("單項健檢工作站點無法安全辨識。");
+    }
+    const current = await this.spExecutionContext.capture(context.marketplaceId);
+    assertBackgroundActive(signal);
+    if (current.accountScope !== context.accountScope) {
+      throw new SpExecutionContextError(
+        "ACCOUNT_SCOPE_CHANGED",
+        "Amazon 帳號範圍已改變；本次操作已停止。",
+      );
+    }
+    if (current.mode !== context.mode) {
+      throw new SpExecutionContextError(
+        "REPORT_MODE_CHANGED",
+        "App 展示／真實模式已改變；本次操作已停止。",
+      );
+    }
+    if (current.generation !== context.generation) {
+      throw new SpExecutionContextError(
+        "SP_CONTEXT_INVALIDATED",
+        "Amazon 執行環境已更新；請重新開始這次操作。",
+      );
+    }
+    await this.spExecutionContext.assertCurrent(current);
+    assertBackgroundActive(signal);
+    return current;
   }
 
   private async standaloneListingReport(input: Readonly<{
@@ -6828,12 +7098,15 @@ export class ApiRouter {
         months: input.options.months ?? 6,
         signal: input.signal,
       });
-      await this.assertStandaloneAuditContext(input.context, input.signal);
       const exportId = randomUUID();
+      const context = await this.captureStandaloneSnapshotContext(
+        input.context,
+        input.signal,
+      );
       this.pruneSubscriptionAuditSnapshots();
       this.subscriptionAuditSnapshots.set(exportId, {
+        context,
         marketplaceId,
-        accountScope: input.context.accountScope,
         expiresAt: Date.now() + SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS,
         snapshot: structuredClone(snapshot),
       });
@@ -7004,10 +7277,14 @@ export class ApiRouter {
         minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
       });
       const exportId = randomUUID();
+      const context = await this.captureStandaloneSnapshotContext(
+        input.context,
+        input.signal,
+      );
       this.pruneImageAuditSnapshots();
       this.imageAuditSnapshots.set(exportId, {
+        context,
         marketplaceId,
-        accountScope: input.context.accountScope,
         expiresAt: Date.now() + IMAGE_AUDIT_SNAPSHOT_TTL_MS,
         snapshot: structuredClone(snapshot),
       });
@@ -7036,10 +7313,14 @@ export class ApiRouter {
       });
       await this.assertStandaloneAuditContext(input.context, input.signal);
       const exportId = randomUUID();
+      const context = await this.captureStandaloneSnapshotContext(
+        input.context,
+        input.signal,
+      );
       this.pruneUnboundVariationAuditSnapshots();
       this.unboundVariationAuditSnapshots.set(exportId, {
+        context,
         marketplaceId,
-        accountScope: input.context.accountScope,
         expiresAt: Date.now() + UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS,
         snapshot: structuredClone(snapshot),
       });
@@ -7145,6 +7426,7 @@ export class ApiRouter {
     const current = await this.currentAuditSuiteContext(input.marketplaceId);
     return {
       accountScope: current.accountScope,
+      generation: current.generation,
       marketplaceId: input.marketplaceId,
       mode: current.mode,
     };
@@ -7156,9 +7438,13 @@ export class ApiRouter {
     if (!isMarketplaceId(context.marketplaceId)) {
       throw new Error("A+ 健檢工作站點無法安全辨識。");
     }
+    const revision = this.contextStateRevision;
     const current = await this.spExecutionContext.capture(context.marketplaceId);
+    await this.spExecutionContext.assertCurrent(current);
+    this.assertContextStateRevision(revision);
     if (
       current.accountScope !== context.accountScope ||
+      current.generation !== context.generation ||
       current.mode !== context.mode
     ) {
       throw new Error("A+ 健檢工作與目前帳號或展示／真實模式不一致。");
@@ -7348,11 +7634,16 @@ export class ApiRouter {
 
   private async currentAuditSuiteContext(marketplaceId: MarketplaceId): Promise<{
     accountScope: string;
+    generation: number;
     mode: "live" | "demo";
   }> {
+    const revision = this.contextStateRevision;
     const context = await this.spExecutionContext.capture(marketplaceId);
+    await this.spExecutionContext.assertCurrent(context);
+    this.assertContextStateRevision(revision);
     return {
       accountScope: context.accountScope,
+      generation: context.generation,
       mode: context.mode,
     };
   }
@@ -7364,8 +7655,15 @@ export class ApiRouter {
     }
     const marketplaceId = parseMarketplace(body.marketplaceId);
     if (!marketplaceId) return invalid("請選擇支援的 Amazon 站點。");
+    const revision = this.contextStateRevision;
     const context = await this.currentAuditSuiteContext(marketplaceId);
-    const started = this.auditSuite.start({ marketplaceId, ...context });
+    this.assertContextStateRevision(revision);
+    const started = this.auditSuite.start({
+      marketplaceId,
+      accountScope: context.accountScope,
+      generation: context.generation,
+      mode: context.mode,
+    });
     return json(started.run, 202, { "retry-after": "1" });
   }
 
@@ -7399,6 +7697,9 @@ export class ApiRouter {
     const current = await this.currentAuditSuiteContext(context.marketplaceId as MarketplaceId);
     if (current.accountScope !== context.accountScope) {
       throw new Error("Amazon 帳號範圍已改變，本次綜合健檢已停止。");
+    }
+    if (current.generation !== context.generation) {
+      throw new Error("Amazon 執行環境已更新，本次綜合健檢已停止。");
     }
     if (current.mode !== context.mode) {
       throw new Error("App 展示／真實模式已改變，本次綜合健檢已停止。");
@@ -7977,16 +8278,13 @@ export class ApiRouter {
   ): Promise<void> {
     assertBackgroundActive(signal);
     const gateway = this.advertisingStrategyGateway();
-    const mode = usesDemoMode(job.marketplaceId) ? "demo" : "live";
-    const [spAccountScope, adsIdentity] = await Promise.all([
-      this.vault.getAccountScope(MARKETPLACES[job.marketplaceId].region),
-      this.advertisingCall(() =>
-        gateway.getCombinedAccountIdentity(job.marketplaceId, signal)),
-    ]);
+    await this.spExecutionContext.assertCurrent(job.context);
+    assertBackgroundActive(signal);
+    const adsIdentity = await this.advertisingCall(() =>
+      gateway.getCombinedAccountIdentity(job.marketplaceId, signal));
+    await this.spExecutionContext.assertCurrent(job.context);
     assertBackgroundActive(signal);
     if (
-      mode !== job.mode ||
-      spAccountScope !== job.spAccountScope ||
       adsIdentity.combinedAccountScope !== job.adsAccountScope ||
       adsIdentity.adsProfileFingerprint !== job.adsProfileFingerprint
     ) {
@@ -8382,7 +8680,8 @@ export class ApiRouter {
     } catch (error) {
       return apiError(error, "廣告策略日期無效。");
     }
-    if (usesDemoMode(marketplaceId)) {
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    if (context.mode === "demo") {
       return invalid(
         "展示模式不會產生看似真實的 FBA 廣告策略表。",
         422,
@@ -8392,15 +8691,16 @@ export class ApiRouter {
 
     this.pruneAdvertisingStrategyJobs();
     const gateway = this.advertisingStrategyGateway();
-    const [spAccountScope, adsIdentity] = await Promise.all([
-      this.vault.getAccountScope(MARKETPLACES[marketplaceId].region),
-      this.advertisingCall(() =>
+    const { value: adsIdentity } = await this.runContextBoundWork(
+      marketplaceId,
+      () => this.advertisingCall(() =>
         gateway.getCombinedAccountIdentity(
           marketplaceId,
           undefined,
           { refreshProfile: true },
         )),
-    ]);
+    );
+    const spAccountScope = context.accountScope;
     const adsAccountScope = adsIdentity.combinedAccountScope;
     const selection = stableFingerprint({
       spAccountScope,
@@ -8443,6 +8743,7 @@ export class ApiRouter {
 
     const job: AdvertisingStrategyJob = {
       jobId: randomUUID(),
+      context,
       marketplaceId,
       marketplaceCode: MARKETPLACE_CODES[marketplaceId],
       spAccountScope,
@@ -8515,13 +8816,20 @@ export class ApiRouter {
   private async adsStatus(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
-    const demo = usesDemoMode(marketplaceId);
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    const demo = context.mode === "demo";
     const summary = demo || !this.advertising
       ? null
-      : await this.advertising.getCredentialSummary();
+      : (await this.runContextBoundWork(
+          marketplaceId,
+          () => this.advertising!.getCredentialSummary(),
+        )).value;
     let verification: AdvertisingConnectionTestResult | null = null;
     if (!demo && summary?.configured && this.advertising) {
-      verification = await this.advertising.probeMarketplace(marketplaceId);
+      verification = (await this.runContextBoundWork(
+        marketplaceId,
+        () => this.advertising!.probeMarketplace(marketplaceId),
+      )).value;
     }
     const coverageAuditAvailable = demo || Boolean(verification?.ok);
     return json({
@@ -8554,7 +8862,8 @@ export class ApiRouter {
   private async adsCoverage(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
-    const demo = usesDemoMode(marketplaceId);
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    const demo = context.mode === "demo";
     if (!demo && !this.advertising) {
       return invalid(
         "Amazon Ads API 尚未連線；廣告覆蓋健檢已備妥，但不會用展示活動冒充真實資料。",
@@ -8585,7 +8894,10 @@ export class ApiRouter {
         reportId = status.reportId;
         documentId = status.documentId;
       } else {
-        const summary = await this.advertising!.getCredentialSummary();
+        const { value: summary } = await this.runContextBoundWork(
+          marketplaceId,
+          () => this.advertising!.getCredentialSummary(),
+        );
         if (!summary.configured) {
           return invalid(
             "Amazon Ads 憑證尚未完整設定。",
@@ -8621,11 +8933,14 @@ export class ApiRouter {
         reportId = status.reportId;
         documentId = status.documentId;
       }
-      const data = await this.getSharedAllListingsExportData({
+      const { value: data } = await this.runContextBoundWork(
         marketplaceId,
-        reportId,
-        documentId,
-      });
+        () => this.getSharedAllListingsExportData({
+          marketplaceId,
+          reportId,
+          documentId,
+        }),
+      );
       const listings = prepareAdvertisingCoverageListings({
         rows: data.rows,
         errors: data.errors,
@@ -8639,7 +8954,12 @@ export class ApiRouter {
               state: "ENABLED",
               adProduct: "SPONSORED_PRODUCTS",
             }))
-        : await this.advertising!.listEnabledSponsoredProductCampaigns(marketplaceId);
+        : (await this.runContextBoundWork(
+            marketplaceId,
+            () => this.advertising!.listEnabledSponsoredProductCampaigns(
+              marketplaceId,
+            ),
+          )).value;
       return json(
         auditAdvertisingCoverage({
           mode: demo ? "demo" : "live",
@@ -8657,14 +8977,39 @@ export class ApiRouter {
   private async scopedFingerprint(
     marketplaceId: MarketplaceId,
     operationFingerprint: string,
-  ): Promise<{ accountScope: string; fingerprint: string }> {
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
+  ): Promise<{
+    context: SpExecutionContext;
+    accountScope: string;
+    fingerprint: string;
+  }> {
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    return this.scopedFingerprintForContext(context, operationFingerprint);
+  }
+
+  private scopedFingerprintForContext(
+    context: SpExecutionContext,
+    operationFingerprint: string,
+  ): {
+    context: SpExecutionContext;
+    accountScope: string;
+    fingerprint: string;
+  } {
+    const { accountScope } = context;
     return {
+      context,
       accountScope,
       fingerprint: stableFingerprint([accountScope, operationFingerprint]),
     };
+  }
+
+  private async runContextBoundWork<T>(
+    marketplaceId: MarketplaceId,
+    work: () => Promise<T>,
+  ): Promise<{ context: SpExecutionContext; value: T }> {
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    const value = await work();
+    await this.spExecutionContext.assertCurrent(context);
+    return { context, value };
   }
 
   private reserveListingAttributeWrites(
@@ -8704,16 +9049,17 @@ export class ApiRouter {
     }
   }
 
-  private async reconcilePriceWrites(snapshot: ListingPriceSnapshot): Promise<void> {
+  private async reconcilePriceWrites(
+    snapshot: ListingPriceSnapshot,
+    context: SpExecutionContext,
+  ): Promise<void> {
     try {
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[snapshot.marketplaceId].region,
-      );
+      if (context.marketplaceId !== snapshot.marketplaceId) return;
       await this.store.reconcileIdempotentOperations({
         operationTypes: ["price", "sale_price"],
         marketplaceId: snapshot.marketplaceId,
         sellerSku: snapshot.sellerSku,
-        accountScope,
+        accountScope: context.accountScope,
         reconcile: (response, operationType) => operationType === "price"
           ? reconcilePriceWrite(response, snapshot)
           : reconcileSalePriceWrite(response, snapshot),
@@ -8726,16 +9072,15 @@ export class ApiRouter {
 
   private async reconcileBusinessPriceWrites(
     snapshot: BusinessPricingListingSnapshot,
+    context: SpExecutionContext,
   ): Promise<void> {
     try {
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[snapshot.marketplaceId].region,
-      );
+      if (context.marketplaceId !== snapshot.marketplaceId) return;
       await this.store.reconcileIdempotentOperations({
         operationTypes: ["business_price"],
         marketplaceId: snapshot.marketplaceId,
         sellerSku: snapshot.sellerSku,
-        accountScope,
+        accountScope: context.accountScope,
         reconcile: (response) => reconcileBusinessPriceWrite(response, snapshot),
       });
     } catch {
@@ -8746,16 +9091,15 @@ export class ApiRouter {
 
   private async reconcileContentWrites(
     snapshot: ListingContentSnapshot,
+    context: SpExecutionContext,
   ): Promise<void> {
     try {
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[snapshot.marketplaceId].region,
-      );
+      if (context.marketplaceId !== snapshot.marketplaceId) return;
       await this.store.reconcileIdempotentOperations({
         operationTypes: ["content"],
         marketplaceId: snapshot.marketplaceId,
         sellerSku: snapshot.sellerSku,
-        accountScope,
+        accountScope: context.accountScope,
         reconcile: (response) => reconcileContentWrite(response, snapshot),
       });
     } catch {
@@ -8763,16 +9107,17 @@ export class ApiRouter {
     }
   }
 
-  private async reconcileImageWrites(snapshot: ListingImageSnapshot): Promise<void> {
+  private async reconcileImageWrites(
+    snapshot: ListingImageSnapshot,
+    context: SpExecutionContext,
+  ): Promise<void> {
     try {
-      const accountScope = await this.vault.getAccountScope(
-        MARKETPLACES[snapshot.marketplaceId].region,
-      );
+      if (context.marketplaceId !== snapshot.marketplaceId) return;
       await this.store.reconcileIdempotentOperations({
         operationTypes: ["images"],
         marketplaceId: snapshot.marketplaceId,
         sellerSku: snapshot.sellerSku,
-        accountScope,
+        accountScope: context.accountScope,
         reconcile: (response) => reconcileImageWrite(response, snapshot),
       });
     } catch {
@@ -8780,15 +9125,40 @@ export class ApiRouter {
     }
   }
 
-  private issuePreview(path: string, rawKey: string, fingerprint: string): void {
+  private samePreviewContext(
+    left: SpExecutionContext,
+    right: SpExecutionContext,
+  ): boolean {
+    return left.marketplaceId === right.marketplaceId &&
+      left.region === right.region &&
+      left.mode === right.mode &&
+      left.accountScope === right.accountScope &&
+      left.generation === right.generation;
+  }
+
+  private async issuePreview(
+    path: string,
+    rawKey: string,
+    fingerprint: string,
+    context: SpExecutionContext,
+  ): Promise<void> {
     const key = idempotencyKey(rawKey);
     if (!key) return;
+    const stateRevision = this.contextStateRevision;
+    await this.spExecutionContext.assertCurrent(context);
+    if (stateRevision !== this.contextStateRevision) {
+      throw new SpExecutionContextError(
+        "SP_CONTEXT_INVALIDATED",
+        "Amazon 執行環境已更新；請重新開始這次操作。",
+      );
+    }
     const now = Date.now();
     for (const [ticketKey, value] of this.previews) {
       if (value.expiresAt < now) this.previews.delete(ticketKey);
     }
     this.previews.set(`${path}:${key}`, {
       path,
+      context,
       fingerprint,
       expiresAt: now + 2 * 60_000,
       reserved: false,
@@ -8799,26 +9169,52 @@ export class ApiRouter {
     path: string,
     key: string,
     fingerprint: string,
+    context: SpExecutionContext,
     reason: string,
   ): Promise<ApiResponse | null> {
-    const reservationError = this.reservePreview(path, key, fingerprint);
+    const stateRevision = this.contextStateRevision;
+    const reservationError = this.reservePreview(
+      path,
+      key,
+      fingerprint,
+      context,
+    );
     if (reservationError) return reservationError;
     try {
       await this.approveWrite(reason);
     } catch {
-      this.releasePreview(path, key, fingerprint);
+      this.releasePreview(path, key, fingerprint, context);
       return invalid(
         "操作已取消；Amazon 沒有收到任何變更。",
         409,
         "ACTION_CANCELLED",
       );
     }
-    return this.consumePreview(path, key, fingerprint);
+    await this.spExecutionContext.assertCurrent(context);
+    if (stateRevision !== this.contextStateRevision) {
+      throw new SpExecutionContextError(
+        "SP_CONTEXT_INVALIDATED",
+        "Amazon 執行環境已更新；請重新開始這次操作。",
+      );
+    }
+    return this.consumePreview(path, key, fingerprint, context);
   }
 
-  private reservePreview(path: string, key: string, fingerprint: string): ApiResponse | null {
+  private reservePreview(
+    path: string,
+    key: string,
+    fingerprint: string,
+    context: SpExecutionContext,
+  ): ApiResponse | null {
     const ticket = this.previews.get(`${path}:${key}`);
     if (!ticket || ticket.path !== path || ticket.expiresAt < Date.now()) {
+      return invalid(
+        "這次 Amazon 預檢已過期，請重新預檢後再送出。",
+        409,
+        "PREVIEW_EXPIRED",
+      );
+    }
+    if (!this.samePreviewContext(ticket.context, context)) {
       return invalid(
         "這次 Amazon 預檢已過期，請重新預檢後再送出。",
         409,
@@ -8843,25 +9239,49 @@ export class ApiRouter {
     return null;
   }
 
-  private releasePreview(path: string, key: string, fingerprint: string): void {
+  private releasePreview(
+    path: string,
+    key: string,
+    fingerprint: string,
+    context: SpExecutionContext,
+  ): void {
     const ticketKey = `${path}:${key}`;
     const ticket = this.previews.get(ticketKey);
-    if (!ticket || ticket.fingerprint !== fingerprint) return;
+    if (
+      !ticket ||
+      ticket.fingerprint !== fingerprint ||
+      !this.samePreviewContext(ticket.context, context)
+    ) return;
     if (ticket.expiresAt < Date.now()) this.previews.delete(ticketKey);
     else ticket.reserved = false;
   }
 
-  private consumePreview(path: string, key: string, fingerprint: string): ApiResponse | null {
+  private consumePreview(
+    path: string,
+    key: string,
+    fingerprint: string,
+    context: SpExecutionContext,
+  ): ApiResponse | null {
     const ticketKey = `${path}:${key}`;
     const ticket = this.previews.get(ticketKey);
-    this.previews.delete(ticketKey);
     if (!ticket || ticket.path !== path || ticket.expiresAt < Date.now()) {
+      if (ticket?.expiresAt && ticket.expiresAt < Date.now()) {
+        this.previews.delete(ticketKey);
+      }
       return invalid(
         "這次 Amazon 預檢已過期，請重新預檢後再送出。",
         409,
         "PREVIEW_EXPIRED",
       );
     }
+    if (!this.samePreviewContext(ticket.context, context)) {
+      return invalid(
+        "這次 Amazon 預檢已過期，請重新預檢後再送出。",
+        409,
+        "PREVIEW_EXPIRED",
+      );
+    }
+    this.previews.delete(ticketKey);
     if (ticket.fingerprint !== fingerprint) {
       return invalid(
         "預檢後的內容已改變，系統已停止送出；請重新預檢。",

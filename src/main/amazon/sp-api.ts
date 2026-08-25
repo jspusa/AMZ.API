@@ -505,6 +505,12 @@ export type VariationMoveResult = {
   notice: string;
 };
 
+export type ListingWriteExecutionFence = Readonly<{
+  assertCurrent(): Promise<void>;
+}>;
+
+export type VariationMoveExecutionFence = ListingWriteExecutionFence;
+
 export type ListingReportStatus = {
   mode: "live" | "demo";
   ready: boolean;
@@ -834,6 +840,7 @@ type ListingsWriteRequestInput = {
   body?: unknown;
   validationPreview?: boolean;
   validationPreviewIdentifiers?: boolean;
+  assertBeforeSend?: () => Promise<void>;
 };
 
 type UpdateListingPriceInput = {
@@ -1315,6 +1322,19 @@ async function callListingsWriteApi(
   const url = `${REGION_ENDPOINTS[region]}/listings/2021-08-01/items/${encodeURIComponent(
     sellerId,
   )}/${encodeURIComponent(input.sellerSku)}?${query}`;
+  if (input.assertBeforeSend) {
+    try {
+      await input.assertBeforeSend();
+    } catch (error) {
+      const cause = error instanceof SpApiError
+        ? error
+        : new SpApiError(
+            "Amazon 執行環境在正式 Listing PATCH 前改變，已停止送出。",
+            { status: 409, code: "SP_CONTEXT_INVALIDATED" },
+          );
+      throw new SpApiPreCommitError(cause);
+    }
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
@@ -2077,7 +2097,8 @@ async function fetchContentCapabilities(
   productType: string,
   options: { allowGenericFallback?: boolean } = {},
 ): Promise<ContentCapabilityResult> {
-  const cacheKey = `${marketplaceId}:${productType}`;
+  const startedGeneration = credentialGeneration;
+  const cacheKey = `${startedGeneration}:${marketplaceId}:${productType}`;
   const cached = productTypeCapabilityCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     return { capabilities: cached.capabilities, degradedReason: null };
@@ -2127,6 +2148,12 @@ async function fetchContentCapabilities(
       "Amazon 目前只提供通用商品欄位規格；內容可唯讀，所有寫入已停用。";
     capabilities = readOnlyContentCapabilities(reason, capabilities);
     return { capabilities, degradedReason: reason };
+  }
+  if (startedGeneration !== credentialGeneration) {
+    throw new SpApiError(
+      "Amazon 憑證已在商品欄位規格查詢期間改變；舊結果已丟棄。",
+      { status: 409, code: "CREDENTIALS_CHANGED" },
+    );
   }
   productTypeCapabilityCache.set(cacheKey, {
     expiresAt: Date.now() + 15 * 60_000,
@@ -4501,10 +4528,34 @@ export async function previewVariationMove(
   };
 }
 
-async function verifyVariationMoveReadback(input: VariationMoveInput): Promise<void> {
+async function assertVariationMovePostWriteContext(
+  fence: VariationMoveExecutionFence | undefined,
+  requestId: string | null = null,
+): Promise<void> {
+  if (!fence) return;
+  try {
+    await fence.assertCurrent();
+  } catch {
+    throw new SpApiError(
+      "Amazon 可能已接受變體請求，但執行環境在安全回查前改變；系統已禁止重送，請重新讀取 Amazon 確認。",
+      {
+        status: 503,
+        code: "UPDATE_STATUS_UNKNOWN",
+        requestId,
+        operation: "patchListingsItem",
+      },
+    );
+  }
+}
+
+async function verifyVariationMoveReadback(
+  input: VariationMoveInput,
+  fence?: VariationMoveExecutionFence,
+): Promise<void> {
   let lastMismatch: unknown = null;
   for (let attempt = 0; attempt < 7; attempt += 1) {
     if (attempt > 0) await wait(Math.min(700 + attempt * 300, 2_000));
+    await assertVariationMovePostWriteContext(fence);
     let latest: VariationItemReadResult;
     try {
       latest = await readVariationItem(listingsReadAdapter, {
@@ -4523,6 +4574,7 @@ async function verifyVariationMoveReadback(input: VariationMoveInput): Promise<v
         },
       );
     }
+    await assertVariationMovePostWriteContext(fence);
     try {
       if (input.action === "detach") {
         assertExplicitStandaloneVariationSource(latest, input.marketplaceId);
@@ -4554,9 +4606,12 @@ async function verifyVariationMoveReadback(input: VariationMoveInput): Promise<v
 
 export async function updateVariationMove(
   input: VariationMoveInput,
+  fence?: VariationMoveExecutionFence,
 ): Promise<VariationMoveResult> {
   if (shouldUseDemoMode(input.marketplaceId)) {
+    await fence?.assertCurrent();
     await previewVariationMove(input);
+    await fence?.assertCurrent();
     return {
       mode: "demo",
       action: input.action,
@@ -4576,7 +4631,9 @@ export async function updateVariationMove(
   }
   let prepared: Awaited<ReturnType<typeof prepareLiveVariationAction>>;
   try {
+    await fence?.assertCurrent();
     prepared = await prepareLiveVariationAction(input);
+    await fence?.assertCurrent();
   } catch (error) {
     return throwVariationPreCommitFailure(error);
   }
@@ -4585,11 +4642,22 @@ export async function updateVariationMove(
     sellerSku: input.sellerSku,
     method: "PATCH",
     body: prepared.body,
+    ...(fence
+      ? { assertBeforeSend: () => fence.assertCurrent() }
+      : {}),
   });
+  await assertVariationMovePostWriteContext(
+    fence,
+    response.headers.get("x-amzn-requestid"),
+  );
   if (!response.ok) {
     return throwListingsError(response, "write", "patchListingsItem");
   }
   const payload = await parseResponseJson<AmazonListingSubmission>(response);
+  await assertVariationMovePostWriteContext(
+    fence,
+    response.headers.get("x-amzn-requestid"),
+  );
   if (!payload) {
     throw new SpApiError(
       "Amazon 已收到變體請求，但回應無法辨識。請先重新讀取，不要直接重送。",
@@ -4613,7 +4681,7 @@ export async function updateVariationMove(
       },
     );
   }
-  await verifyVariationMoveReadback(input);
+  await verifyVariationMoveReadback(input, fence);
   return {
     mode: "live",
     action: input.action,
@@ -7070,10 +7138,18 @@ export async function previewListingImageUpdate(
 
 export async function updateListingImages(
   input: UpdateListingImagesInput,
+  fence?: ListingWriteExecutionFence,
 ): Promise<ListingImageUpdateResult> {
   if (shouldUseDemoMode(input.marketplaceId)) {
+    const startedGeneration = credentialGeneration;
     const snapshot = await getListingImages(input);
     const verified = verifyImageChange(snapshot, input);
+    if (startedGeneration !== credentialGeneration) {
+      throw new SpApiError(
+        "Amazon 憑證已在展示圖片更新期間改變；舊結果已丟棄。",
+        { status: 409, code: "CREDENTIALS_CHANGED" },
+      );
+    }
     demoImageOverrides.set(
       demoPriceKey(input.marketplaceId, input.sellerSku),
       verified.requestedUrls,
@@ -7100,6 +7176,9 @@ export async function updateListingImages(
     sellerSku: input.sellerSku,
     method: "PATCH",
     body: prepared.body,
+    ...(fence
+      ? { assertBeforeSend: () => fence.assertCurrent() }
+      : {}),
   });
   if (!response.ok) {
     return throwListingsError(response, "write", "patchListingsItem");
@@ -7192,6 +7271,7 @@ export async function previewListingContentUpdate(
 
 export async function updateListingContent(
   input: UpdateListingContentInput,
+  fence?: ListingWriteExecutionFence,
 ): Promise<ListingContentUpdateResult> {
   if (shouldUseDemoMode(input.marketplaceId)) {
     const listing = getDemoListingContent(input.marketplaceId, input.sellerSku);
@@ -7223,6 +7303,9 @@ export async function updateListingContent(
     sellerSku: input.sellerSku,
     method: "PATCH",
     body: prepared.body,
+    ...(fence
+      ? { assertBeforeSend: () => fence.assertCurrent() }
+      : {}),
   });
   if (!response.ok) {
     return throwListingsError(response, "write", "patchListingsItem");
@@ -7535,6 +7618,7 @@ export async function previewListingSalePriceUpdate(
 
 export async function updateListingSalePrice(
   input: UpdateListingSalePriceInput,
+  fence?: ListingWriteExecutionFence,
 ): Promise<SalePriceUpdateResult> {
   if (shouldUseDemoMode(input.marketplaceId)) {
     const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
@@ -7579,6 +7663,9 @@ export async function updateListingSalePrice(
     sellerSku: input.sellerSku,
     method: "PATCH",
     body: prepared.body,
+    ...(fence
+      ? { assertBeforeSend: () => fence.assertCurrent() }
+      : {}),
   });
   if (!response.ok) {
     return throwListingsError(response, "write", "patchListingsItem");
@@ -7681,14 +7768,22 @@ export async function previewBusinessPriceUpdate(
 export async function updateBusinessPrice(
   input: UpdateBusinessPriceInput,
   expectedEvidence?: BusinessPricePrecommitEvidence,
+  fence?: ListingWriteExecutionFence,
 ): Promise<BusinessPriceUpdateResult> {
   if (shouldUseDemoMode(input.marketplaceId)) {
+    const startedGeneration = credentialGeneration;
     const listing = await getBusinessPricing(input);
     const verified = verifyBusinessPriceChange(listing, input);
     const body = buildBusinessPricePatch(listing, input);
     const evidence = businessPricePrecommitEvidence(listing, body, []);
     if (expectedEvidence) {
       assertBusinessPricePrecommitEvidence(evidence, expectedEvidence);
+    }
+    if (startedGeneration !== credentialGeneration) {
+      throw new SpApiError(
+        "Amazon 憑證已在展示 B2B 價格更新期間改變；舊結果已丟棄。",
+        { status: 409, code: "CREDENTIALS_CHANGED" },
+      );
     }
     demoBusinessPriceOverrides.set(
       demoPriceKey(input.marketplaceId, input.sellerSku),
@@ -7726,6 +7821,9 @@ export async function updateBusinessPrice(
     sellerSku: input.sellerSku,
     method: "PATCH",
     body: prepared.body,
+    ...(fence
+      ? { assertBeforeSend: () => fence.assertCurrent() }
+      : {}),
   });
   if (!response.ok) {
     return throwListingsError(response, "write", "patchListingsItem");
@@ -7867,6 +7965,7 @@ export async function previewListingPriceUpdate(
 
 export async function updateListingPrice(
   input: UpdateListingPriceInput,
+  fence?: ListingWriteExecutionFence,
 ): Promise<PriceUpdateResult> {
   if (shouldUseDemoMode(input.marketplaceId)) {
     const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
@@ -7902,6 +8001,9 @@ export async function updateListingPrice(
     sellerSku: input.sellerSku,
     method: "PATCH",
     body: prepared.body,
+    ...(fence
+      ? { assertBeforeSend: () => fence.assertCurrent() }
+      : {}),
   });
   if (!response.ok) {
     return throwListingsError(response, "write", "patchListingsItem");

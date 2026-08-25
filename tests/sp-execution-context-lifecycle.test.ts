@@ -5,8 +5,8 @@ function block(source: string, start: string, end: string): string {
   return source.slice(source.indexOf(start), source.indexOf(end));
 }
 
-describe("main SP execution context lifecycle", () => {
-  it("centralizes credential, lock and suspend invalidation without dropping durable evidence", async () => {
+describe("main Amazon execution context lifecycle", () => {
+  it("centralizes every credential, lock and suspend invalidation without dropping durable evidence", async () => {
     const source = await readFile(
       new URL("../src/main/index.ts", import.meta.url),
       "utf8",
@@ -16,7 +16,7 @@ describe("main SP execution context lifecycle", () => {
       "function invalidateAmazonSecurityContext",
       "function normalizedExternal",
     );
-    expect(invalidator).toContain("apiRouter.invalidateSpExecutionContext(reason)");
+    expect(invalidator).toContain("apiRouter.invalidateContext(reason)");
     expect(invalidator).toContain(
       "invalidateSpApiCredentialCaches({ preserveRateLimitPacing: true })",
     );
@@ -43,6 +43,34 @@ describe("main SP execution context lifecycle", () => {
       clear.indexOf("credentialVault.clear"),
     );
 
+    const advertisingSave = block(
+      source,
+      '"fba:ads-credentials-save"',
+      'ipcMain.handle("fba:ads-credentials-editor-close"',
+    );
+    expect(advertisingSave).toContain(
+      'invalidateAmazonSecurityContext("advertising-credentials-saved")',
+    );
+    expect(advertisingSave.indexOf("invalidateAmazonSecurityContext")).toBeLessThan(
+      advertisingSave.indexOf("advertisingCredentialVault.save"),
+    );
+    expect(advertisingSave).not.toContain("advertisingApi.invalidate");
+    expect(advertisingSave).not.toContain("dispose()");
+
+    const advertisingClear = block(
+      source,
+      'ipcMain.handle("fba:ads-credentials-clear"',
+      'ipcMain.handle("fba:ads-credentials-test"',
+    );
+    expect(advertisingClear).toContain(
+      'invalidateAmazonSecurityContext("advertising-credentials-cleared")',
+    );
+    expect(advertisingClear.indexOf("invalidateAmazonSecurityContext")).toBeLessThan(
+      advertisingClear.indexOf("advertisingCredentialVault.clear"),
+    );
+    expect(advertisingClear).not.toContain("advertisingApi.invalidate");
+    expect(advertisingClear).not.toContain("dispose()");
+
     const lock = block(
       source,
       'powerMonitor.on("lock-screen"',
@@ -56,5 +84,6 @@ describe("main SP execution context lifecycle", () => {
       "await createWindow()",
     );
     expect(suspend).toContain('invalidateAmazonSecurityContext("suspend")');
+    expect(source).not.toContain("clearPreviews");
   });
 });

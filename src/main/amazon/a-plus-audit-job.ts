@@ -12,6 +12,7 @@ export type AplusAuditJobMode = "live" | "demo";
 
 export type AplusAuditJobBoundContext = Readonly<{
   accountScope: string;
+  generation: number;
   marketplaceId: string;
   mode: AplusAuditJobMode;
 }>;
@@ -111,6 +112,7 @@ function validAccountScope(value: string): boolean {
 function scopeKey(context: AplusAuditJobBoundContext): string {
   return JSON.stringify([
     context.accountScope,
+    context.generation,
     context.marketplaceId,
     context.mode,
   ]);
@@ -226,6 +228,7 @@ export class AplusAuditJobCoordinator {
     }
     if (
       context.accountScope !== job.context.accountScope ||
+      context.generation !== job.context.generation ||
       context.marketplaceId !== job.context.marketplaceId ||
       context.mode !== job.context.mode
     ) {
@@ -375,7 +378,9 @@ export class AplusAuditJobCoordinator {
     if (
       context.marketplaceId !== input.marketplaceId ||
       context.mode !== input.mode ||
-      !validAccountScope(context.accountScope)
+      !validAccountScope(context.accountScope) ||
+      !Number.isSafeInteger(context.generation) ||
+      context.generation < 0
     ) {
       throw new AplusAuditJobCoordinatorError(
         "A+ 健檢的帳號、站點或模式 context 已改變。",
@@ -384,6 +389,7 @@ export class AplusAuditJobCoordinator {
     }
     return {
       accountScope: context.accountScope,
+      generation: context.generation,
       marketplaceId: context.marketplaceId,
       mode: context.mode,
     };
@@ -400,7 +406,10 @@ export class AplusAuditJobCoordinator {
       marketplaceId: job.context.marketplaceId,
       mode: job.context.mode,
     });
-    if (current.accountScope !== job.context.accountScope) {
+    if (
+      current.accountScope !== job.context.accountScope ||
+      current.generation !== job.context.generation
+    ) {
       throw new AplusAuditJobCoordinatorError(
         "A+ 健檢的帳號 context 已改變。",
         { status: 409, code: "ACCOUNT_SCOPE_CHANGED" },

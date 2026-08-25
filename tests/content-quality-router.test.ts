@@ -69,7 +69,7 @@ describe("listing content quality audit route", () => {
   });
 
   afterEach(() => {
-    router.clearPreviews();
+    router.dispose();
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }

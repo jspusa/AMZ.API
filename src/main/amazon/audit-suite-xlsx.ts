@@ -2,8 +2,8 @@ import { strToU8, zipSync } from "fflate";
 import {
   AUDIT_SUITE_SECTIONS,
   AUDIT_SUITE_SECTION_LABELS,
-  type AuditSuiteContext,
 } from "../../shared/audit-suite";
+import type { AuditSuiteContext } from "./audit-suite-context";
 
 const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
 const MAX_CELL_CHARACTERS = 32_767;
@@ -199,6 +199,7 @@ function validateSnapshotMetadata<TSnapshot extends AuditSuiteSnapshotMetadata>(
     snapshot.runId !== expected.runId ||
     snapshot.marketplaceId !== expected.marketplaceId ||
     snapshot.accountScope !== expected.accountScope ||
+    snapshot.generation !== expected.generation ||
     snapshot.mode !== expected.mode
   ) {
     throw new TypeError(`${label}快照與綜合健檢 context 不一致。`);

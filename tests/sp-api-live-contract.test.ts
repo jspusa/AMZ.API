@@ -6,8 +6,10 @@ import {
   invalidateSpApiCredentialCaches,
   previewListingContentUpdate,
   SpApiError,
+  updateListingPrice,
   verifyListingsAccess,
 } from "../src/main/amazon/sp-api";
+import { SpExecutionContextError } from "../src/main/amazon/sp-execution-context";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const FAKE_SELLER_ID = "FAKE_SELLER_ID_NA";
@@ -273,6 +275,54 @@ describe("SP-API live wire contracts", () => {
     expect(urls).toHaveLength(2);
     expectTokenRequest(urls[0]);
     expectGetListingsItemUrl(urls[1]);
+  });
+
+  it("does not send a commit PATCH after context changes during price precommit", async () => {
+    let contextCurrent = true;
+    let previewPatches = 0;
+    let commitPatches = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+      const method = init?.method ?? "GET";
+      if (method === "GET") return fakeListingItemResponse();
+      if (method === "PATCH" && url.searchParams.get("mode") === "VALIDATION_PREVIEW") {
+        previewPatches += 1;
+        contextCurrent = false;
+        return jsonResponse(200, { status: "VALID", issues: [] });
+      }
+      if (method === "PATCH") {
+        commitPatches += 1;
+        return jsonResponse(200, { status: "ACCEPTED", issues: [] });
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const error = await captureSpApiError(() => updateListingPrice({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: FAKE_SKU,
+      expectedPrice: 12.34,
+      newPrice: 13.34,
+    }, {
+      assertCurrent: async () => {
+        if (!contextCurrent) {
+          throw new SpExecutionContextError(
+            "SP_CONTEXT_INVALIDATED",
+            "Amazon 執行環境已更新；請重新開始這次操作。",
+          );
+        }
+      },
+    }));
+
+    expect(error).toMatchObject({
+      name: "SpApiPreCommitError",
+      status: 409,
+      code: "SP_CONTEXT_INVALIDATED",
+      commitPatchSent: false,
+    });
+    expect(previewPatches).toBe(1);
+    expect(commitPatches).toBe(0);
   });
 
   it("fails a public price read closed when Amazon returns a different Seller SKU", async () => {
@@ -726,6 +776,62 @@ describe("SP-API live wire contracts", () => {
       true,
     );
     expect(listing.notice).toContain("所有寫入已停用");
+  });
+
+  it("discards a seller-specific content PTD that resolves after credential invalidation", async () => {
+    let enterFirstSchema!: () => void;
+    const firstSchemaEntered = new Promise<void>((resolve) => {
+      enterFirstSchema = resolve;
+    });
+    let releaseFirstSchema!: () => void;
+    const firstSchemaReleased = new Promise<void>((resolve) => {
+      releaseFirstSchema = resolve;
+    });
+    let schemaReads = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = requestUrl(input);
+      if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+      if (url.pathname.startsWith("/listings/")) {
+        return fakeListingItemResponse();
+      }
+      if (url.pathname.startsWith("/definitions/")) {
+        return fakeContentDefinitionResponse();
+      }
+      if (url.href === FAKE_SCHEMA_URL) {
+        schemaReads += 1;
+        if (schemaReads === 1) {
+          enterFirstSchema();
+          await firstSchemaReleased;
+        }
+        return jsonResponse(200, fakeContentSchema());
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const stale = getListingContent({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: FAKE_SKU,
+    });
+    await firstSchemaEntered;
+    invalidateSpApiCredentialCaches();
+    releaseFirstSchema();
+
+    const discarded = await stale;
+    expect(discarded.capabilities.schemaChecksum).toBeNull();
+    expect(discarded.capabilities.title.editable).toBe(false);
+    await expect(getListingContent({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: FAKE_SKU,
+    })).resolves.toMatchObject({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: FAKE_SKU,
+      capabilities: {
+        schemaChecksum: "FAKE_CONTENT_SCHEMA_CHECKSUM",
+        title: { editable: true },
+      },
+    });
+    expect(schemaReads).toBe(2);
   });
 
   it("labels PTD failures and blocks content preview before PATCH", async () => {

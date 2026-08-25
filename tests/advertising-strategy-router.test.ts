@@ -18,6 +18,11 @@ import type {
 import type {
   FbaCatalogIdentitySnapshot as FbaListingIdentitySnapshot,
 } from "../src/main/amazon/catalog-report-reads";
+import {
+  createScriptedSpExecutionContextAdapter,
+  type SpExecutionContext,
+  type SpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -79,7 +84,7 @@ describe("FBA advertising strategy router job", () => {
   });
 
   afterEach(() => {
-    routers.forEach((router) => router.clearPreviews());
+    routers.forEach((router) => router.dispose());
     vi.restoreAllMocks();
     if (previousEnvironment.mode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousEnvironment.mode;
@@ -97,9 +102,11 @@ describe("FBA advertising strategy router job", () => {
     onStrategyWait?: (milliseconds: number) => void;
     onScope?: () => void;
     secondSalesChildAsin?: string;
+    spExecutionContext?: SpExecutionContextAdapter;
   } = {}): {
     router: ApiRouter;
     createAdsReport: ReturnType<typeof vi.fn>;
+    getAdsIdentity: ReturnType<typeof vi.fn>;
     startListing: ReturnType<typeof vi.fn>;
     startSales: ReturnType<typeof vi.fn>;
   } {
@@ -155,6 +162,10 @@ describe("FBA advertising strategy router job", () => {
       status: "DONE" as const,
       notice: "ready",
     }));
+    const getAdsIdentity = vi.fn(async () => {
+      input.onScope?.();
+      return { combinedAccountScope: adsScope, adsProfileFingerprint };
+    });
     const advertising: AdvertisingGateway = {
       getCredentialSummary: vi.fn(async () => ({
         encryptionAvailable: true,
@@ -169,10 +180,7 @@ describe("FBA advertising strategy router job", () => {
         input.onScope?.();
         return adsScope;
       }),
-      getCombinedAccountIdentity: vi.fn(async () => {
-        input.onScope?.();
-        return { combinedAccountScope: adsScope, adsProfileFingerprint };
-      }),
+      getCombinedAccountIdentity: getAdsIdentity,
       probeMarketplace: vi.fn(async () => ({
         ok: true,
         testedAt: "2026-08-21T00:00:00.000Z",
@@ -333,9 +341,10 @@ describe("FBA advertising strategy router job", () => {
         input.onStrategyWait?.(milliseconds);
       },
       salesAndTrafficRead: salesData,
+      spExecutionContext: input.spExecutionContext,
     });
     routers.push(router);
-    return { router, createAdsReport, startListing, startSales };
+    return { router, createAdsReport, getAdsIdentity, startListing, startSales };
   }
 
   async function start(router: ApiRouter, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
@@ -551,6 +560,38 @@ describe("FBA advertising strategy router job", () => {
     const response = await getJob(router, String(started.jobId));
     expect(response.status).toBe(409);
     expect(jsonValue(response)).toMatchObject({ code: "JOB_MISMATCH" });
+  });
+
+  it("checks the SP context before starting an Ads identity read", async () => {
+    let currentScope = "sp-context-before-ads-a";
+    const spExecutionContext = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "live",
+        accountScope: currentScope,
+      }),
+    );
+    const context = await spExecutionContext.capture(MARKETPLACE_ID);
+    const { router, getAdsIdentity } = buildRouter({ spExecutionContext });
+    currentScope = "sp-context-before-ads-b";
+
+    await expect((router as unknown as {
+      assertAdvertisingStrategyContext(job: {
+        context: SpExecutionContext;
+        marketplaceId: typeof MARKETPLACE_ID;
+        adsAccountScope: string;
+        adsProfileFingerprint: string;
+      }): Promise<void>;
+    }).assertAdvertisingStrategyContext({
+      context,
+      marketplaceId: MARKETPLACE_ID,
+      adsAccountScope: adsScope,
+      adsProfileFingerprint,
+    })).rejects.toMatchObject({
+      status: 409,
+      code: "ACCOUNT_SCOPE_CHANGED",
+    });
+    expect(getAdsIdentity).not.toHaveBeenCalled();
   });
 
   it("invalidates an old job when the main-only Ads Profile fingerprint changes", async () => {

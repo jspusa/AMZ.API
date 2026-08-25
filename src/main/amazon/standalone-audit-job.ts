@@ -19,6 +19,7 @@ export type StandaloneAuditJobOptions = Readonly<{ months?: 6 | 12 | 23 }>;
 
 export type StandaloneAuditJobBoundContext = Readonly<{
   accountScope: string;
+  generation: number;
   marketplaceId: string;
   mode: StandaloneAuditJobMode;
 }>;
@@ -137,6 +138,7 @@ function selectionKey(input: Readonly<{
 }>): string {
   return JSON.stringify([
     input.context.accountScope,
+    input.context.generation,
     input.context.marketplaceId,
     input.context.mode,
     input.kind,
@@ -286,6 +288,7 @@ export class StandaloneAuditJobCoordinator {
     }
     if (
       context.accountScope !== job.context.accountScope ||
+      context.generation !== job.context.generation ||
       context.marketplaceId !== job.context.marketplaceId ||
       context.mode !== job.context.mode
     ) {
@@ -414,7 +417,9 @@ export class StandaloneAuditJobCoordinator {
     if (
       context.marketplaceId !== input.marketplaceId ||
       context.mode !== input.mode ||
-      !validAccountScope(context.accountScope)
+      !validAccountScope(context.accountScope) ||
+      !Number.isSafeInteger(context.generation) ||
+      context.generation < 0
     ) {
       throw new StandaloneAuditJobCoordinatorError(
         "單項健檢的帳號、站點或模式 context 已改變。",
@@ -435,7 +440,10 @@ export class StandaloneAuditJobCoordinator {
       marketplaceId: job.context.marketplaceId,
       mode: job.context.mode,
     });
-    if (current.accountScope !== job.context.accountScope) {
+    if (
+      current.accountScope !== job.context.accountScope ||
+      current.generation !== job.context.generation
+    ) {
       throw new StandaloneAuditJobCoordinatorError(
         "單項健檢的帳號 context 已改變。",
         { status: 409, code: "ACCOUNT_SCOPE_CHANGED" },

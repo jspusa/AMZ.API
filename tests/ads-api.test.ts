@@ -292,6 +292,53 @@ describe("main-only Amazon Ads client", () => {
     expect(profileCount).toBe(1);
   });
 
+  it("does not rebind a probe to a new lifecycle after invalidation during account lookup", async () => {
+    let accountLookupEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      accountLookupEntered = resolve;
+    });
+    let releaseAccountLookup!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseAccountLookup = resolve;
+    });
+    const credentialVault = vault() as unknown as {
+      getAccountScope: ReturnType<typeof vi.fn>;
+    };
+    credentialVault.getAccountScope = vi.fn(async () => {
+      accountLookupEntered();
+      await released;
+      return "ads-account-scope";
+    });
+    const fetchMock = vi.fn<typeof fetch>();
+    const client = new AdvertisingApiClient(
+      credentialVault as unknown as AdvertisingCredentialVault,
+      fetchMock,
+      spContext,
+    );
+
+    const pending = client.probeMarketplace("ATVPDKIKX0DER");
+    await entered;
+    client.invalidate();
+    releaseAccountLookup();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const state = client as unknown as {
+      token: unknown;
+      profiles: Map<unknown, unknown>;
+      verifications: Map<unknown, unknown>;
+      tokenFlight: unknown;
+      profileFlights: Map<unknown, unknown>;
+      verificationFlights: Map<unknown, unknown>;
+    };
+    expect(state.token).toBeNull();
+    expect(state.tokenFlight).toBeNull();
+    expect(state.profiles.size).toBe(0);
+    expect(state.verifications.size).toBe(0);
+    expect(state.profileFlights.size).toBe(0);
+    expect(state.verificationFlights.size).toBe(0);
+  });
+
   it("stops after the second 401 and does not expose either response body or token", async () => {
     let tokenCount = 0;
     let profileCount = 0;
