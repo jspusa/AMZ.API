@@ -688,23 +688,25 @@ Amazon App：
 37. `src/main/amazon/sales-and-traffic-reports.ts` — S&T begin／status／read semantic coordinator與accepted-lease context fence。
 38. `src/main/amazon/sales-and-traffic-demo.ts` — 只使用注入 canonical demo listings的S&T demo source。
 39. `src/main/advertising-read-coordinator.ts` — 唯讀 Ads status／coverage／strategy、Standalone／Suite hooks、job lifecycle、context fence與公開error projection的唯一 owner。
-40. `src/main/fba-inbound-coordinator.ts` — inbound renderer-facing job identity、selection、abort／flight／TTL、progress、partial snapshot與noncompliance merge的唯一 owner。
-41. `src/main/amazon/fba-inbound-shipments.ts` — v0 shipment／items normalization、opaque continuation、duplicate與page／row budgets。
-42. `src/main/amazon/fba-inbound-modern.ts` — bounded modern plan／shipment fallback collector與partial coverage。
-43. `src/main/amazon/inbound-noncompliance.ts` — daily report strict parser、public issue filtering與demo document。
-44. `src/main/amazon/fba-inbound-reads.ts` — shipment／noncompliance兩條leg、400／422 fallback、同一execution context與ReportsRuntime composition。
-45. `src/main/amazon/fba-inbound-reads-production.ts` — 固定official GET endpoints、global pace、timeout、token refresh與bounded transient retry。
-46. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
-47. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
-48. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
-49. `src/main/amazon/sp-api.ts` — 尚未抽離的 Listings write／legacy demo facade與production adapter composition；Orders read語意已移除。
-50. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-51. `src/preload/index.ts` — 窄化 Bridge。
-52. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-53. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-54. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-55. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-56. `tests/*.test.ts` — 已建立的安全與回歸契約。
+40. `src/main/standalone-audit-coordinator.ts` — 七種單項健檢route、context fence、owner dispatch與公開error projection的唯一 semantic owner。
+41. `src/main/amazon/standalone-audit-job.ts` — 單項健檢selection、job、controller、timer、progress、TTL與terminal receipt的唯一 lifecycle owner。
+42. `src/main/fba-inbound-coordinator.ts` — inbound renderer-facing job identity、selection、abort／flight／TTL、progress、partial snapshot與noncompliance merge的唯一 owner。
+43. `src/main/amazon/fba-inbound-shipments.ts` — v0 shipment／items normalization、opaque continuation、duplicate與page／row budgets。
+44. `src/main/amazon/fba-inbound-modern.ts` — bounded modern plan／shipment fallback collector與partial coverage。
+45. `src/main/amazon/inbound-noncompliance.ts` — daily report strict parser、public issue filtering與demo document。
+46. `src/main/amazon/fba-inbound-reads.ts` — shipment／noncompliance兩條leg、400／422 fallback、同一execution context與ReportsRuntime composition。
+47. `src/main/amazon/fba-inbound-reads-production.ts` — 固定official GET endpoints、global pace、timeout、token refresh與bounded transient retry。
+48. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
+49. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
+50. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
+51. `src/main/amazon/sp-api.ts` — 尚未抽離的 Listings write／legacy demo facade與production adapter composition；Orders read語意已移除。
+52. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+53. `src/preload/index.ts` — 窄化 Bridge。
+54. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+55. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+56. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+57. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+58. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

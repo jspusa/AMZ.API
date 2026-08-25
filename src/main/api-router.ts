@@ -161,6 +161,10 @@ import {
   type AdvertisingStrategySourceGateway,
 } from "./advertising-read-coordinator";
 import {
+  StandaloneAuditCoordinator,
+  type StandaloneAuditCoordinatorPort,
+} from "./standalone-audit-coordinator";
+import {
   SalesAndTrafficReports,
   type SalesAndTrafficDemoSource,
   type SalesAndTrafficDocumentReader,
@@ -226,13 +230,6 @@ import {
   AplusAuditCoordinator,
   type AplusAuditCoordinatorPort,
 } from "./a-plus-audit-coordinator";
-import {
-  StandaloneAuditJobCoordinator,
-  StandaloneAuditJobCoordinatorError,
-  type StandaloneAuditJobBoundContext,
-  type StandaloneAuditJobGateway,
-  type StandaloneAuditKind,
-} from "./amazon/standalone-audit-job";
 import {
   BusinessPricingAudit,
   type BusinessPricingAuditPort,
@@ -887,10 +884,7 @@ function publicRouterError(
 }
 
 function apiError(error: unknown, fallback: string): ApiResponse {
-  if (
-    error instanceof StandaloneAuditJobCoordinatorError ||
-    error instanceof AuditSuiteCoordinatorError
-  ) {
+  if (error instanceof AuditSuiteCoordinatorError) {
     const publicError = publicRouterError(error, fallback);
     return json(
       { code: publicError.code, message: publicError.message },
@@ -1222,7 +1216,7 @@ export class ApiRouter {
   private readonly advertisingCoordinator: AdvertisingCoordinatorPort;
   private readonly auditSuite: AuditSuiteCoordinator;
   private readonly aPlusAuditCoordinator: AplusAuditCoordinatorPort;
-  private readonly standaloneAuditJobs: StandaloneAuditJobCoordinator;
+  private readonly standaloneAuditCoordinator: StandaloneAuditCoordinatorPort;
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly listingAttributeWriteReservations = new Map<string, string>();
   private readonly contentBatchPlans = new Map<string, ContentBatchPlan>();
@@ -1278,7 +1272,7 @@ export class ApiRouter {
     catalogNow?: () => Date;
     aplusContentReads?: AplusContentReadsPort;
     aPlusAuditCoordinator?: AplusAuditCoordinatorPort;
-    standaloneAudit?: Partial<StandaloneAuditJobGateway>;
+    standaloneAuditCoordinator?: StandaloneAuditCoordinatorPort;
     advertising?: AdvertisingGateway;
     spExecutionContext?: SpExecutionContextAdapter;
   }) {
@@ -1422,7 +1416,8 @@ export class ApiRouter {
         }),
         statusReport: (request) => this.fbaCatalogReports.status(request),
         readReport: (request) => this.getSharedBusinessPricingAuditData(request),
-        getStandaloneJob: (request) => this.standaloneAuditJobs.get(request),
+        getStandaloneJob: (request) =>
+          this.standaloneAuditCoordinator.getJob(request),
       });
     this.agedInventoryAuditOwner = input.agedInventoryAudit ??
       new AgedInventoryAudit({
@@ -1583,14 +1578,18 @@ export class ApiRouter {
         readGrouping: (request) => getFbaVariationGroupingData(request),
         contentReads: this.aplusContentReads,
       });
-    this.standaloneAuditJobs = new StandaloneAuditJobCoordinator({
-      gateway: {
-        bindContext: input.standaloneAudit?.bindContext ?? ((identity) =>
-          this.bindStandaloneAuditContext(identity)),
-        run: input.standaloneAudit?.run ?? ((job) =>
-          this.runStandaloneAudit(job)),
-      },
-    });
+    this.standaloneAuditCoordinator = input.standaloneAuditCoordinator ??
+      new StandaloneAuditCoordinator({
+        context: this.spExecutionContext,
+        subscription: this.subscriptionAuditOwner,
+        agedInventory: this.agedInventoryAuditOwner,
+        listingsExport: this.listingsExportOwner,
+        content: this.contentAuditOwner,
+        image: this.imageAuditOwner,
+        variation: this.unboundVariationAuditOwner,
+        businessPricing: this.businessPricingAuditOwner,
+        advertising: this.advertisingCoordinator,
+      });
     this.auditSuite = new AuditSuiteCoordinator({
       runners: {
         content: (context, control) => this.runAuditSuiteContent(context, control),
@@ -1620,7 +1619,7 @@ export class ApiRouter {
     this.reviewAuditCoordinator.clear();
     this.aPlusAuditCoordinator.clear();
     this.listingsExportOwner.clear();
-    this.standaloneAuditJobs.clear();
+    this.standaloneAuditCoordinator.clear();
     this.previews.clear();
     this.listingAttributeWriteReservations.clear();
     this.contentBatchPlans.clear();
@@ -1877,9 +1876,9 @@ export class ApiRouter {
       case "GET /api/sp-api/audit-suite/export":
         return this.auditSuiteExport(request);
       case "POST /api/sp-api/standalone-audit":
-        return this.startStandaloneAudit(request);
+        return this.standaloneAuditCoordinator.start(request);
       case "GET /api/sp-api/standalone-audit":
-        return this.standaloneAuditStatus(request);
+        return this.standaloneAuditCoordinator.observe(request);
       default:
         return invalid("此 App 版本不支援這個操作。", 404, "NOT_FOUND");
     }
@@ -3806,319 +3805,6 @@ export class ApiRouter {
 
   private reportIdentifier(value: unknown): string | null {
     return reportIdentifier(value);
-  }
-
-  private standaloneAuditKind(value: unknown): StandaloneAuditKind | null {
-    return value === "content" ||
-      value === "image" ||
-      value === "variation" ||
-      value === "subscription" ||
-      value === "businessPricing" ||
-      value === "advertising" ||
-      value === "agedInventory"
-      ? value
-      : null;
-  }
-
-  private async bindStandaloneAuditContext(input: Readonly<{
-    marketplaceId: string;
-    mode: "live" | "demo";
-  }>): Promise<StandaloneAuditJobBoundContext> {
-    if (!isMarketplaceId(input.marketplaceId)) {
-      throw new StandaloneAuditJobCoordinatorError("單項健檢站點無效。", {
-        status: 400,
-        code: "INVALID_INPUT",
-      });
-    }
-    const current = await this.currentAuditSuiteContext(input.marketplaceId);
-    return {
-      accountScope: current.accountScope,
-      generation: current.generation,
-      marketplaceId: input.marketplaceId,
-      mode: current.mode,
-    };
-  }
-
-  private async startStandaloneAudit(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    if (
-      !body ||
-      Object.keys(body).some((key) =>
-        key !== "kind" &&
-        key !== "marketplaceId" &&
-        key !== "mode" &&
-        key !== "options") ||
-      !Object.hasOwn(body, "kind") ||
-      !Object.hasOwn(body, "marketplaceId") ||
-      !Object.hasOwn(body, "mode")
-    ) {
-      return invalid(
-        "單項健檢只接受 kind、marketplaceId、mode 與受限 options；帳號由 main process 綁定。",
-      );
-    }
-    const kind = this.standaloneAuditKind(body.kind);
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const mode = body.mode === "live" || body.mode === "demo" ? body.mode : null;
-    let options: { months?: 6 | 12 | 23 } | undefined;
-    if (body.options !== undefined) {
-      if (!body.options || typeof body.options !== "object" || Array.isArray(body.options)) {
-        return invalid("單項健檢 options 格式無效。");
-      }
-      const source = body.options as Record<string, unknown>;
-      if (Object.keys(source).some((key) => key !== "months")) {
-        return invalid("單項健檢 options 欄位無效。");
-      }
-      if (source.months !== undefined) {
-        if (source.months !== 6 && source.months !== 12 && source.months !== 23) {
-          return invalid("Subscribe & Save 月數只能選 6、12 或 23。");
-        }
-        options = { months: source.months };
-      } else {
-        options = {};
-      }
-    }
-    if (!kind || !marketplaceId || !mode) {
-      return invalid("單項健檢種類、站點或模式無效。");
-    }
-    try {
-      const receipt = await this.standaloneAuditJobs.start({
-        kind,
-        marketplaceId,
-        mode,
-        options,
-      });
-      return json(receipt, 202, { "retry-after": "1" });
-    } catch (error) {
-      return apiError(error, "開始單項健檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async standaloneAuditStatus(request: ApiRequest): Promise<ApiResponse> {
-    const kind = this.standaloneAuditKind(request.query.kind);
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const mode = request.query.mode === "live" || request.query.mode === "demo"
-      ? request.query.mode
-      : null;
-    const jobId = this.reportIdentifier(request.query.jobId);
-    const contextId = this.reportIdentifier(request.query.contextId);
-    if (!kind || !marketplaceId || !mode || !jobId || !contextId) {
-      return invalid("單項健檢工作資訊無效。");
-    }
-    try {
-      const receipt = await this.standaloneAuditJobs.get({
-        kind,
-        marketplaceId,
-        mode,
-        jobId,
-        contextId,
-      });
-      return json(
-        receipt,
-        receipt.ready ? 200 : 202,
-        receipt.ready ? {} : { "retry-after": "1" },
-      );
-    } catch (error) {
-      return apiError(error, "查詢單項健檢進度時發生未預期的錯誤。");
-    }
-  }
-
-  private async assertStandaloneAuditContext(
-    context: StandaloneAuditJobBoundContext,
-    signal: AbortSignal,
-  ): Promise<MarketplaceId> {
-    assertBackgroundActive(signal);
-    if (!isMarketplaceId(context.marketplaceId)) {
-      throw new Error("單項健檢工作站點無法安全辨識。");
-    }
-    const current = await this.currentAuditSuiteContext(context.marketplaceId);
-    assertBackgroundActive(signal);
-    if (
-      current.accountScope !== context.accountScope ||
-      current.generation !== context.generation ||
-      current.mode !== context.mode
-    ) {
-      throw new Error("單項健檢工作與目前帳號或展示／真實模式不一致。");
-    }
-    return context.marketplaceId;
-  }
-
-  private async captureStandaloneSnapshotContext(
-    context: StandaloneAuditJobBoundContext,
-    signal: AbortSignal,
-  ): Promise<SpExecutionContext> {
-    assertBackgroundActive(signal);
-    if (!isMarketplaceId(context.marketplaceId)) {
-      throw new Error("單項健檢工作站點無法安全辨識。");
-    }
-    const current = await this.spExecutionContext.capture(context.marketplaceId);
-    assertBackgroundActive(signal);
-    if (current.accountScope !== context.accountScope) {
-      throw new SpExecutionContextError(
-        "ACCOUNT_SCOPE_CHANGED",
-        "Amazon 帳號範圍已改變；本次操作已停止。",
-      );
-    }
-    if (current.mode !== context.mode) {
-      throw new SpExecutionContextError(
-        "REPORT_MODE_CHANGED",
-        "App 展示／真實模式已改變；本次操作已停止。",
-      );
-    }
-    if (current.generation !== context.generation) {
-      throw new SpExecutionContextError(
-        "SP_CONTEXT_INVALIDATED",
-        "Amazon 執行環境已更新；請重新開始這次操作。",
-      );
-    }
-    await this.spExecutionContext.assertCurrent(current);
-    assertBackgroundActive(signal);
-    return current;
-  }
-
-  private async standaloneListings(input: Readonly<{
-    context: StandaloneAuditJobBoundContext;
-    signal: AbortSignal;
-    heartbeat(): void;
-    updateProgress: Parameters<StandaloneAuditJobGateway["run"]>[0]["updateProgress"];
-  }>): Promise<{
-    exportId: string;
-    context: SpExecutionContext;
-    data: AuditSuiteListingsData;
-  }> {
-    const captured = await this.listingsExportOwner.runStandalone(input);
-    input.updateProgress({
-      stage: "listing_rows",
-      message: `已取得 ${captured.snapshot.rows.length.toLocaleString()} 個 FBA 商品，正在執行健檢。`,
-      completedUnits: 1,
-      totalUnits: 1,
-    });
-    return {
-      exportId: captured.exportId,
-      context: captured.context,
-      data: captured.snapshot,
-    };
-  }
-
-  private async runStandaloneAudit(
-    input: Parameters<StandaloneAuditJobGateway["run"]>[0],
-  ): Promise<unknown> {
-    const marketplaceId = await this.assertStandaloneAuditContext(
-      input.context,
-      input.signal,
-    );
-    if (input.kind === "subscription") {
-      input.updateProgress({
-        stage: "subscription",
-        message: "正在核對全站 FBA Subscribe & Save。",
-        completedUnits: 0,
-        totalUnits: null,
-      });
-      const context = await this.captureStandaloneSnapshotContext(
-        input.context,
-        input.signal,
-      );
-      const snapshot = await this.subscriptionAuditOwner.runStandalone({
-        marketplaceId,
-        months: input.options.months ?? 6,
-        signal: input.signal,
-        expectedContext: context,
-      });
-      input.updateProgress({
-        stage: "complete",
-        message: "Subscribe & Save 健檢完成。",
-        completedUnits: snapshot.offers.length,
-        totalUnits: snapshot.offers.length,
-      });
-      return snapshot;
-    }
-
-    if (input.kind === "agedInventory") {
-      return this.agedInventoryAuditOwner.runStandalone(input);
-    }
-
-    if (input.kind === "content") {
-      const listing = await this.standaloneListings(input);
-      input.updateProgress({
-        stage: "relationships",
-        message: "正在核對 FBA parent／child relationships。",
-        completedUnits: 0,
-        totalUnits: null,
-      });
-      const snapshot = await this.contentAuditOwner.captureStandaloneFromListings({
-        context: listing.context,
-        marketplaceId,
-        listings: listing.data,
-        signal: input.signal,
-        onGroupingProgress: ({ completedBatches, totalBatches }) =>
-          input.updateProgress({
-            stage: "relationships",
-            message: `正在核對 FBA relationships（${completedBatches}／${totalBatches} 批）。`,
-            completedUnits: completedBatches,
-            totalUnits: totalBatches,
-          }),
-      });
-      input.updateProgress({
-        stage: "complete",
-        message: "全站文案健檢完成。",
-        completedUnits: snapshot.rows.length,
-        totalUnits: snapshot.rows.length,
-      });
-      return snapshot;
-    }
-
-    if (input.kind === "image") {
-      const listing = await this.standaloneListings(input);
-      input.updateProgress({
-        stage: "relationships",
-        message: "正在核對 FBA parent／child relationships。",
-        completedUnits: 0,
-        totalUnits: null,
-      });
-      const snapshot = await this.imageAuditOwner.captureStandaloneFromListings({
-        context: listing.context,
-        marketplaceId,
-        listings: listing.data,
-        signal: input.signal,
-        onGroupingProgress: ({ completedBatches, totalBatches }) =>
-          input.updateProgress({
-            stage: "relationships",
-            message: `正在核對 FBA relationships（${completedBatches}／${totalBatches} 批）。`,
-            completedUnits: completedBatches,
-            totalUnits: totalBatches,
-          }),
-      });
-      input.updateProgress({
-        stage: "complete",
-        message: "全站圖片健檢完成。",
-        completedUnits: snapshot.rows.length,
-        totalUnits: snapshot.rows.length,
-      });
-      return snapshot;
-    }
-
-    if (input.kind === "variation") {
-      const context = await this.captureStandaloneSnapshotContext(
-        input.context,
-        input.signal,
-      );
-      return this.unboundVariationAuditOwner.runStandalone({
-        marketplaceId,
-        signal: input.signal,
-        expectedContext: context,
-        heartbeat: input.heartbeat,
-        updateProgress: (progress) => input.updateProgress(progress),
-      });
-    }
-
-    if (input.kind === "businessPricing") {
-      return this.businessPricingAuditOwner.runStandalone(input);
-    }
-
-    if (input.kind === "advertising") {
-      return this.advertisingCoordinator.runStandalone(input);
-    }
-
-    throw new Error("不支援這個單項健檢種類。");
   }
 
   private auditSuiteRequestIdentity(request: ApiRequest): {

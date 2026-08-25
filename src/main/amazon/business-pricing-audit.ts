@@ -17,7 +17,7 @@ import type { BusinessPricingAuditSnapshot } from
 import { ContextBoundAuditSnapshotStore } from
   "./context-bound-audit-snapshot";
 import type { ReportsRuntimeReceipt } from "./reports-runtime";
-import { SpApiError } from "./sp-api-error";
+import { publicSpApiError, SpApiError } from "./sp-api-error";
 import {
   SpExecutionContextError,
   type SpExecutionContext,
@@ -501,7 +501,17 @@ export class BusinessPricingAudit implements BusinessPricingAuditPort {
       );
     } catch (error) {
       if (error instanceof StandaloneAuditJobCoordinatorError) {
-        return json({ code: error.code, message: error.message }, error.status);
+        const publicError = publicSpApiError(
+          new SpApiError(error.message, {
+            status: error.status,
+            code: error.code,
+          }),
+          "建立 B2B 價格健檢 Excel 時發生未預期的錯誤。",
+        );
+        return json(
+          { code: publicError.code, message: publicError.message },
+          publicError.status,
+        );
       }
       return routeError(error, "建立 B2B 價格健檢 Excel 時發生未預期的錯誤。");
     }
