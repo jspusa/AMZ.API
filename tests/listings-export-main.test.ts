@@ -100,6 +100,17 @@ describe("ListingsExport main owner", () => {
     }));
     startReport.mockClear();
 
+    await expect(owner.startReusable({ marketplaceId: US })).resolves.toMatchObject({
+      ready: false,
+      reportId: "listings-report-1",
+    });
+    expect(startReport).toHaveBeenCalledWith(expect.objectContaining({
+      marketplaceId: US,
+      explicitRetry: false,
+      expectedContext: expect.objectContaining({ marketplaceId: US }),
+    }));
+    startReport.mockClear();
+
     await expect(owner.status({
       marketplaceId: US,
       reportId: "listings-report-1",

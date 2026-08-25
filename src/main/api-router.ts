@@ -243,8 +243,6 @@ import {
   AplusAuditCoordinator,
   type AplusAuditCoordinatorPort,
 } from "./a-plus-audit-coordinator";
-import { AplusAuditJobCoordinatorError } from
-  "./amazon/a-plus-audit-job";
 import {
   StandaloneAuditJobCoordinator,
   StandaloneAuditJobCoordinatorError,
@@ -969,7 +967,6 @@ function publicRouterError(
 function apiError(error: unknown, fallback: string): ApiResponse {
   if (
     error instanceof StandaloneAuditJobCoordinatorError ||
-    error instanceof AplusAuditJobCoordinatorError ||
     error instanceof AuditSuiteCoordinatorError
   ) {
     const publicError = publicRouterError(error, fallback);

@@ -97,6 +97,11 @@ export interface ListingsExportPort {
     signal?: AbortSignal;
     expectedContext?: SpExecutionContext;
   }>): Promise<ReportsRuntimeReceipt>;
+  startReusable(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
+  }>): Promise<ReportsRuntimeReceipt>;
   status(input: Readonly<{
     marketplaceId: MarketplaceId;
     reportId: string;
@@ -256,6 +261,20 @@ export class ListingsExport implements ListingsExportPort {
     return this.execute(input, (context, signal) => this.startReport({
       marketplaceId: input.marketplaceId,
       explicitRetry: true,
+      signal,
+      expectedContext: context,
+    }));
+  }
+
+  /** Starts or reuses the fixed Listings lease without authorizing a retry. */
+  async startReusable(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
+  }>): Promise<ReportsRuntimeReceipt> {
+    return this.execute(input, (context, signal) => this.startReport({
+      marketplaceId: input.marketplaceId,
+      explicitRetry: false,
       signal,
       expectedContext: context,
     }));

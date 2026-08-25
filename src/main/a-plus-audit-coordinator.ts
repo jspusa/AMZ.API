@@ -37,7 +37,7 @@ const REPORT_POLL_INTERVAL_MS = 1_000;
 
 type AplusListingsExportPort = Pick<
   ListingsExportPort,
-  "start" | "status" | "data"
+  "startReusable" | "status" | "data"
 >;
 
 export type AplusAuditGroupingReader = (input: Readonly<{
@@ -235,7 +235,7 @@ export class AplusAuditCoordinator implements AplusAuditCoordinatorPort {
     const exact = await this.exactContext(bound, signal);
     const marketplaceId = exact.context.marketplaceId;
     heartbeat();
-    let status = await this.listingsExport.start({
+    let status = await this.listingsExport.startReusable({
       marketplaceId,
       signal,
       expectedContext: exact.context,

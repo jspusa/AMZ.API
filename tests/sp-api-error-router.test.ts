@@ -6,8 +6,6 @@ import { ApiRouter } from "../src/main/api-router";
 import { AdvertisingApiError } from "../src/main/amazon/ads-api";
 import { AdvertisingCoverageInputError } from
   "../src/main/amazon/advertising-coverage";
-import { AplusAuditJobCoordinatorError } from
-  "../src/main/amazon/a-plus-audit-job";
 import { AuditSuiteCoordinatorError } from
   "../src/main/amazon/audit-suite-coordinator";
 import { ReplenishmentAuditError } from
@@ -224,10 +222,6 @@ describe("public SP-API error mapping", () => {
           status: 409,
           code: "JOB_MISMATCH",
         }),
-        new AplusAuditJobCoordinatorError("A+ 工作 context 已改變。", {
-          status: 409,
-          code: "JOB_MISMATCH",
-        }),
         new AuditSuiteCoordinatorError("Audit Suite context 已改變。", {
           status: 409,
           code: "JOB_MISMATCH",
@@ -325,16 +319,6 @@ describe("public SP-API error mapping", () => {
     const cases = [
       {
         error: new StandaloneAuditJobCoordinatorError(hostile, {
-          status: 302,
-          code: "BAD\nCODE",
-        }),
-        expectedValue: {
-          code: "UPSTREAM_UNAVAILABLE",
-          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
-        },
-      },
-      {
-        error: new AplusAuditJobCoordinatorError(hostile, {
           status: 302,
           code: "BAD\nCODE",
         }),

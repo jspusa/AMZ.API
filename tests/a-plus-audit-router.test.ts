@@ -122,7 +122,7 @@ describe("main-owned A+ audit routes", () => {
     const aPlusAuditCoordinator = new AplusAuditCoordinator({
       context: spExecutionContext,
       listingsExport: {
-        start: async () => ({
+        startReusable: async () => ({
           mode: "demo",
           ready: true,
           reportId,

@@ -63,8 +63,8 @@ function unreachableDependencies(
   return {
     context,
     listingsExport: {
-      start: vi.fn(async () => {
-        throw new Error("Unexpected Listings start.");
+      startReusable: vi.fn(async () => {
+        throw new Error("Unexpected reusable Listings start.");
       }),
       status: vi.fn(async () => {
         throw new Error("Unexpected Listings status.");
@@ -133,7 +133,7 @@ describe("R09 A+ audit coordinator", () => {
       invalidate: vi.fn(),
     };
     const listingsExport = {
-      start: vi.fn(async () => ({
+      startReusable: vi.fn(async () => ({
         mode: "live" as const,
         ready: false,
         reportId: "report-lease.a-plus-001",
@@ -255,8 +255,8 @@ describe("R09 A+ audit coordinator", () => {
         },
       },
     });
-    expect(listingsExport.start).toHaveBeenCalledTimes(1);
-    expect(listingsExport.start).toHaveBeenCalledWith(expect.objectContaining({
+    expect(listingsExport.startReusable).toHaveBeenCalledTimes(1);
+    expect(listingsExport.startReusable).toHaveBeenCalledWith(expect.objectContaining({
       marketplaceId: US,
       expectedContext: context,
     }));
@@ -360,6 +360,54 @@ describe("R09 A+ audit coordinator", () => {
     coordinator.clear();
   });
 
+  it("fails hostile coordinator metadata closed at the A+ public seam", async () => {
+    const hostile = [
+      "Bearer example-access-value",
+      "accountScope=example-private-scope",
+      "reportId=example-private-report",
+      "https://example.invalid/private?client_secret=example-secret",
+      "hostile-text\u202e\u0000",
+    ].join(" ");
+    const hostileContextError = new SpExecutionContextError(
+      "ACCOUNT_SCOPE_CHANGED",
+      hostile,
+    );
+    Object.assign(
+      hostileContextError as unknown as { code: string; status: number },
+      { code: "BAD\nCODE", status: 302 },
+    );
+    const contextPort = {
+      capture: vi.fn(async () => {
+        throw hostileContextError;
+      }),
+      assertCurrent: vi.fn(async () => undefined),
+      invalidate: vi.fn(),
+    } satisfies SpExecutionContextAdapter;
+    const coordinator = new AplusAuditCoordinator(
+      unreachableDependencies(contextPort),
+    );
+
+    const response = await coordinator.start(request("POST", {
+      marketplaceId: US,
+      mode: "live",
+    }));
+
+    expect(response).toMatchObject({
+      status: 500,
+      body: {
+        kind: "json",
+        value: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "開始全站 A+ 健檢時發生未預期的錯誤。",
+        },
+      },
+    });
+    expect(JSON.stringify(response)).not.toMatch(
+      /Bearer|access.?value|client.?secret|accountScope|reportId|https?:|hostile-text|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
+    );
+    coordinator.clear();
+  });
+
   it("fences a start whose context capture resolves after clear", async () => {
     const context = executionContext();
     const contextGate = deferred<SpExecutionContext>();
@@ -388,7 +436,7 @@ describe("R09 A+ audit coordinator", () => {
         value: { code: "SP_CONTEXT_INVALIDATED" },
       },
     });
-    expect(dependencies.listingsExport.start).not.toHaveBeenCalled();
+    expect(dependencies.listingsExport.startReusable).not.toHaveBeenCalled();
 
     capture.mockResolvedValue(context);
     const fresh = await coordinator.start(request("POST", {
@@ -411,7 +459,7 @@ describe("R09 A+ audit coordinator", () => {
     } satisfies SpExecutionContextAdapter;
     const statusGate = deferred<StatusReceipt>();
     const startReport = vi.fn<
-      AplusAuditCoordinatorDependencies["listingsExport"]["start"]
+      AplusAuditCoordinatorDependencies["listingsExport"]["startReusable"]
     >(async () => ({
       mode: "live",
       ready: false,
@@ -437,7 +485,7 @@ describe("R09 A+ audit coordinator", () => {
     const coordinator = new AplusAuditCoordinator({
       context: contextPort,
       listingsExport: {
-        start: startReport,
+        startReusable: startReport,
         status: statusReport,
         data: readData,
       },

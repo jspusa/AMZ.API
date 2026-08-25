@@ -912,7 +912,7 @@ describe("SP execution-context architecture", () => {
     expect(router).not.toContain("input.aplusAudit");
     expect(router.match(/this\.aplusContentReads\.read\(/gu)).toHaveLength(1);
     expect(coordinator).toContain("this.contentReads.read({");
-    expect(coordinator).toContain("this.listingsExport.start({");
+    expect(coordinator).toContain("this.listingsExport.startReusable({");
     expect(coordinator).toContain("expectedContext: exact.context");
   });
 
