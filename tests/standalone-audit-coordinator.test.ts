@@ -15,6 +15,7 @@ import {
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER" as const;
+const CA = "A2EUQ1WTGCTBG2" as const;
 const OPAQUE_ACCOUNT_SCOPE = "opaque-standalone-coordinator-account";
 
 function request(
@@ -353,6 +354,35 @@ describe("StandaloneAuditCoordinator", () => {
       /Bearer|access.?token|client.?secret|accountScope|reportId|documentId|https?:|hostile-text|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
     );
     coordinator.clear();
+  });
+
+  it("fails closed before delegation when the context adapter returns another marketplace", async () => {
+    const caContext = await createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: CA,
+      mode: "demo",
+      accountScope: OPAQUE_ACCOUNT_SCOPE,
+    })).capture(CA);
+    const context: SpExecutionContextAdapter = {
+      async capture() {
+        return caContext;
+      },
+      async assertCurrent() {},
+      invalidate() {},
+    };
+    const harness = await semanticHarness({ context });
+
+    const response = await harness.coordinator.start(request("POST", {
+      kind: "subscription",
+      marketplaceId: US,
+      mode: "demo",
+    }));
+    expect(response.status).toBe(409);
+    expect(jsonValue(response)).toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(harness.subscription).not.toHaveBeenCalled();
+    harness.coordinator.clear();
   });
 
   it("does not own report lifecycle, child cleanup, or a second job store", () => {
