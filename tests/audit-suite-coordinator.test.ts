@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { strFromU8, unzipSync } from "fflate";
 import {
   AuditSuiteCoordinator,
   AuditSuiteCoordinatorError,
@@ -19,6 +20,8 @@ import {
 } from "../src/shared/audit-suite";
 import type { AuditSuiteContext } from
   "../src/main/amazon/audit-suite-context";
+import { createAuditSuiteWorkbook } from
+  "../src/main/amazon/audit-suite-xlsx";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const FETCHED_AT = "2026-08-17T00:00:00.000Z";
@@ -434,6 +437,66 @@ describe("AuditSuiteCoordinator run ownership", () => {
     });
     expect(serialized).not.toMatch(
       /Bearer|access.?token|accountScope|reportId|client.?secret|https?:|HOSTILE-CANARY|Atza|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
+    );
+  });
+
+  it("sanitizes a partial section notice and message fields before GET or XLSX publication", async () => {
+    const hostile = [
+      "Bearer private-access-token",
+      "accountScope=private-account",
+      "reportId=private-report",
+      "documentId=private-document",
+      "https://example.invalid/private?client_secret=private-secret",
+      "PARTIAL-HOSTILE-CANARY\u202e\u0000",
+    ].join(" ");
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: async (context) => ({
+          ...context,
+          status: "partial",
+          fetchedAt: FETCHED_AT,
+          notice: hostile,
+          payload: [{
+            sellerSku: "SAFE-SKU",
+            title: "Safe title",
+            asin: "B000000001",
+            finding: "資料未完成",
+            evidence: hostile,
+            notice: hostile,
+          }],
+        }),
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const workbookInput = coordinator.workbookInput({
+      ...identity(started.run),
+      marketplaceLabel: "US · United States",
+    });
+    const workbook = createAuditSuiteWorkbook(workbookInput);
+    const xlsxText = Object.values(unzipSync(workbook))
+      .map((file) => strFromU8(file))
+      .join("\n");
+    const publicPublication = [
+      JSON.stringify(run.sections.advertising),
+      JSON.stringify(workbookInput.sections.advertising),
+      xlsxText,
+    ].join("\n");
+
+    expect(run).toMatchObject({
+      status: "partial",
+      sections: { advertising: { status: "partial" } },
+    });
+    expect(publicPublication).not.toMatch(
+      /Bearer|access.?token|accountScope|reportId|documentId|client.?secret|https?:|PARTIAL-HOSTILE-CANARY|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
     );
   });
 
