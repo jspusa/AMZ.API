@@ -942,7 +942,7 @@ export function createAgedInventoryWorkbook({
         excessAvailability === "complete"
           ? "Amazon 報表欄位對全部商品都有值；全站合計才可成立。"
           : excessAvailability === "partial"
-            ? `Amazon 有回傳欄位，但部分商品缺值；已回傳 ${excessReportedSkuCount}/${rows.length} SKU。可加總已回傳值，但不得冒充全站合計；逐列空白仍保留。`
+            ? `Amazon 有回傳欄位，但部分商品缺值；已回傳 ${excessReportedSkuCount}/${rows.length} SKU。逐列已回傳值與空白原樣保留；不計算或顯示部分全站合計。`
             : "Amazon 本次報表未提供欄位；不推算全站合計。",
       ),
     ],
@@ -952,7 +952,7 @@ export function createAgedInventoryWorkbook({
         storageCostAvailability === "complete"
           ? "Amazon 報表欄位完整；顯示原值。若同列官方 storage-volume 明確為 0 而費用留白，僅將該列安全呈現為 0；不猜費率。"
           : storageCostAvailability === "partial"
-            ? `Amazon 有回傳欄位，但部分商品缺值；已回傳 ${storageCostReportedSkuCount}/${rows.length} SKU。可加總已回傳原值，不得冒充全站費用，也不猜費率。`
+            ? `Amazon 有回傳欄位，但部分商品缺值；已回傳 ${storageCostReportedSkuCount}/${rows.length} SKU。逐列已回傳原值與空白原樣保留；不計算或顯示部分全站費用，也不猜費率。`
             : "Amazon 本次報表未提供欄位；不猜費率。",
       ),
     ],
@@ -962,7 +962,7 @@ export function createAgedInventoryWorkbook({
         agedSurchargeAvailability === "complete"
           ? "Amazon 報表區間完整；顯示原值。若同列官方計費數量明確為 0 而費用留白，僅將該區間安全呈現為 0；不猜費率。"
           : agedSurchargeAvailability === "partial"
-            ? `Amazon 有回傳區間欄位，但部分商品缺值；已回傳 ${agedSurchargeReportedSkuCount}/${rows.length} SKU。可加總已回傳原值，不得冒充全站費用，也不猜費率。`
+            ? `Amazon 有回傳區間欄位，但部分商品缺值；已回傳 ${agedSurchargeReportedSkuCount}/${rows.length} SKU。逐列與各區間已回傳原值及空白原樣保留；不計算或顯示部分全站費用，也不猜費率。`
             : "Amazon 本次報表未提供完整 AIS 區間；不猜費率。",
       ),
     ],

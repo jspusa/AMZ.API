@@ -10,6 +10,8 @@ import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER" as const;
 const previousMode = process.env.SP_API_MODE;
+type RouterInput = ConstructorParameters<typeof ApiRouter>[0];
+type DemoReportsAdapter = NonNullable<RouterInput["demoReportsAdapter"]>;
 
 function startRequest(): ApiRequest {
   return {
@@ -31,17 +33,24 @@ async function routerThatThrows(error: SpApiError): Promise<ApiRouter> {
   const directory = await mkdtemp(join(tmpdir(), "sp-error-router-"));
   const store = new LocalStore(join(directory, "data.json"));
   await store.initialize();
+  const demoReportsAdapter: DemoReportsAdapter = {
+    async create() {
+      throw error;
+    },
+    async status() {
+      throw new Error("status must not run while aged inventory create fails");
+    },
+    async readDocument() {
+      throw new Error("document read must not run while aged inventory create fails");
+    },
+  };
   return new ApiRouter({
     store,
     vault: {
       getAccountScope: async () => "opaque-error-test-account",
     } as unknown as CredentialVault,
     approveWrite: async () => undefined,
-    agedInventoryReports: {
-      start: async () => {
-        throw error;
-      },
-    },
+    demoReportsAdapter,
   });
 }
 

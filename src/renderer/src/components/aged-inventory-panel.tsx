@@ -189,10 +189,11 @@ export function aggregateAgedSurchargeBuckets(
     return {
       key: bucket.key,
       label: bucket.label,
-      quantity: quantityReportedSkuCount > 0 ? quantity : null,
+      quantity:
+        quantityReportedSkuCount === rows.length ? quantity : null,
       quantityReportedSkuCount,
       estimatedCharge:
-        chargeReportedSkuCount > 0
+        chargeReportedSkuCount === rows.length
           ? Number(estimatedCharge.toFixed(2))
           : null,
       chargeReportedSkuCount,
@@ -419,13 +420,13 @@ export function parseAgedInventorySnapshot(
   const excessReportedSkuCount = excessValues.filter((item) => item !== null).length;
   const storageCostReportedSkuCount = storageValues.filter((item) => item !== null).length;
   const agedSurchargeReportedSkuCount = surchargeValues.filter((item) => item !== null).length;
-  const expectedExcess = excessAvailability !== "unavailable" && excessReportedSkuCount > 0
+  const expectedExcess = excessAvailability === "complete"
     ? excessValues.reduce<number>((sum, item) => sum + (item ?? 0), 0)
     : null;
-  const expectedStorageCost = storageCostAvailability !== "unavailable" && storageCostReportedSkuCount > 0
+  const expectedStorageCost = storageCostAvailability === "complete"
     ? Number(storageValues.reduce<number>((sum, item) => sum + (item ?? 0), 0).toFixed(2))
     : null;
-  const expectedAgedSurcharge = agedSurchargeAvailability !== "unavailable" && agedSurchargeReportedSkuCount > 0
+  const expectedAgedSurcharge = agedSurchargeAvailability === "complete"
     ? Number(surchargeValues.reduce<number>((sum, item) => sum + (item ?? 0), 0).toFixed(2))
     : null;
   const statusesConsistent =
@@ -583,7 +584,7 @@ export function AgedInventoryTierOverview({
             <p className="eyebrow">AMAZON AIS ESTIMATE</p>
             <h4>AIS 官方預估計費分層</h4>
             <p>
-              這是 Amazon 另列的預估計費數量與附加費；不拿上方庫齡數量代填，也不反推或猜測每件費率。尾段會依站點實際報表顯示。
+              這是 Amazon 另列的預估計費數量與附加費；不拿上方庫齡數量代填，也不反推或猜測每件費率。只有全部 SKU 都回傳同一欄位時才顯示區間合計；部分回傳只保留逐 SKU 證據與回傳筆數。尾段會依站點實際報表顯示。
             </p>
           </div>
           <small>
@@ -887,7 +888,7 @@ export default function AgedInventoryPanel({
         </div>
       </header>
       <p className="aged-inventory-explainer">
-        冗餘健檢只依 Amazon FBA Manage Inventory Health report 的 estimated excess quantity；不會因庫齡高就判定冗餘。另彙總全部非重疊庫齡桶與 AIS 181 天起的官方預估計費層；費用缺欄或缺值時不套費率、不推算。
+        冗餘健檢只依 Amazon FBA Manage Inventory Health report 的 estimated excess quantity；不會因庫齡高就判定冗餘。另彙總全部非重疊庫齡桶與 AIS 181 天起的官方預估計費層；任一 SKU 缺值時只保留逐列證據，不顯示部分全站合計，也不套費率或推算。
       </p>
       {error && <div className="price-error" role="alert">{error}</div>}
       {!snapshot && (
@@ -907,9 +908,9 @@ export default function AgedInventoryPanel({
           <div className="aged-inventory-summary">
             <article><span>全部 FBA SKU</span><strong>{snapshot.summary.skuCount.toLocaleString()}</strong></article>
             <article><span>180 天以上</span><strong>{snapshot.summary.agedOver180.toLocaleString()}</strong><small>件 · {snapshot.summary.agedOver180SkuCount.toLocaleString()} SKU</small></article>
-            <article><span>Amazon 預估冗餘</span><strong>{snapshot.summary.excessAvailability === "unavailable" ? "報表未提供" : count(snapshot.summary.estimatedExcessQuantity)}</strong><small>{snapshot.summary.excessAvailability === "unavailable" ? "不推算" : `件 · ${coverageText(snapshot.summary.excessReportedSkuCount, snapshot.summary.skuCount)}`}</small></article>
-            <article><span>下月預估倉儲成本</span><strong>{snapshot.summary.storageCostAvailability === "unavailable" ? "報表未提供" : formatAgedInventoryMoney(snapshot.summary.estimatedStorageCostNextMonth, snapshot.summary.currencyCode)}</strong><small>{snapshot.summary.storageCostAvailability === "unavailable" ? "不猜費率" : coverageText(snapshot.summary.storageCostReportedSkuCount, snapshot.summary.skuCount)}</small></article>
-            <article><span>AIS 預估附加費</span><strong>{snapshot.summary.agedSurchargeAvailability === "unavailable" ? "報表未提供" : formatAgedInventoryMoney(snapshot.summary.estimatedAgedSurcharge, snapshot.summary.currencyCode)}</strong><small>{snapshot.summary.agedSurchargeAvailability === "unavailable" ? "不猜費率" : coverageText(snapshot.summary.agedSurchargeReportedSkuCount, snapshot.summary.skuCount)}</small></article>
+            <article><span>Amazon 預估冗餘</span><strong>{snapshot.summary.excessAvailability === "complete" ? count(snapshot.summary.estimatedExcessQuantity) : snapshot.summary.excessAvailability === "partial" ? "不顯示部分合計" : "報表未提供"}</strong><small>{snapshot.summary.excessAvailability === "unavailable" ? "不推算" : `${snapshot.summary.excessAvailability === "partial" ? "逐列保留 · " : "件 · "}${coverageText(snapshot.summary.excessReportedSkuCount, snapshot.summary.skuCount)}`}</small></article>
+            <article><span>下月預估倉儲成本</span><strong>{snapshot.summary.storageCostAvailability === "complete" ? formatAgedInventoryMoney(snapshot.summary.estimatedStorageCostNextMonth, snapshot.summary.currencyCode) : snapshot.summary.storageCostAvailability === "partial" ? "不顯示部分合計" : "報表未提供"}</strong><small>{snapshot.summary.storageCostAvailability === "unavailable" ? "不猜費率" : `${snapshot.summary.storageCostAvailability === "partial" ? "逐列保留 · " : ""}${coverageText(snapshot.summary.storageCostReportedSkuCount, snapshot.summary.skuCount)}`}</small></article>
+            <article><span>AIS 預估附加費</span><strong>{snapshot.summary.agedSurchargeAvailability === "complete" ? formatAgedInventoryMoney(snapshot.summary.estimatedAgedSurcharge, snapshot.summary.currencyCode) : snapshot.summary.agedSurchargeAvailability === "partial" ? "不顯示部分合計" : "報表未提供"}</strong><small>{snapshot.summary.agedSurchargeAvailability === "unavailable" ? "不猜費率" : `${snapshot.summary.agedSurchargeAvailability === "partial" ? "逐列保留 · " : ""}${coverageText(snapshot.summary.agedSurchargeReportedSkuCount, snapshot.summary.skuCount)}`}</small></article>
           </div>
           <AgedInventoryTierOverview
             rows={snapshot.rows}

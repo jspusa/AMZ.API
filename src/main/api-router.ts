@@ -73,9 +73,6 @@ import {
   MARKETPLACES,
   catalogListingsReadAdapterProduction,
   catalogReportsDemoSource,
-  getAgedInventoryData,
-  getAgedInventoryDataFromDocument,
-  getAgedInventoryReportStatus,
   getFbaVariationGroupingData,
   getListingContent,
   getListingImages,
@@ -106,7 +103,6 @@ import {
   reportsRuntimeProductionAdapter,
   searchListingsBySku,
   searchOrders,
-  startAgedInventoryReport,
   updateListingContent,
   updateBusinessPrice,
   updateListingImages,
@@ -135,6 +131,10 @@ import {
   type FbaVariationGroupingData,
   type VariationMoveInput,
 } from "./amazon/sp-api";
+import {
+  AgedInventoryReads,
+  type AgedInventoryReadsPort,
+} from "./amazon/aged-inventory-reads";
 import {
   FbaInboundReads,
   type FbaInboundNoncomplianceReadResult,
@@ -384,11 +384,6 @@ type DemoAllListingsReportGateway = {
   status: DemoFixedReportStatus;
 };
 
-type AgedInventoryReportGateway = {
-  start: typeof startAgedInventoryReport;
-  status: typeof getAgedInventoryReportStatus;
-};
-
 type BusinessPricingActiveListingsReportGateway = {
   start: DemoFixedReportStart;
   status: DemoFixedReportStatus;
@@ -444,16 +439,21 @@ type InboundNoncomplianceDemoReportGateway = {
 };
 
 function demoReportReference(
-  intent: "all-listings" | "active-business-listings",
+  intent: "all-listings" | "active-business-listings" | "aged-inventory",
   marketplaceId: MarketplaceId,
 ): string {
-  return intent === "all-listings"
-    ? `demo-${marketplaceId}`
-    : `demo-b2b-active-${marketplaceId}`;
+  switch (intent) {
+    case "all-listings":
+      return `demo-${marketplaceId}`;
+    case "active-business-listings":
+      return `demo-b2b-active-${marketplaceId}`;
+    case "aged-inventory":
+      return `demo-aged-${marketplaceId}`;
+  }
 }
 
 async function startDemoFixedReport(input: Readonly<{
-  intent: "all-listings" | "active-business-listings";
+  intent: "all-listings" | "active-business-listings" | "aged-inventory";
   marketplaceId: MarketplaceId;
   signal?: AbortSignal;
 }>): Promise<DurableReportGatewayStatus> {
@@ -467,12 +467,14 @@ async function startDemoFixedReport(input: Readonly<{
     status: "DONE",
     notice: input.intent === "all-listings"
       ? "展示報表已準備完成。"
-      : "展示 Active Listings 報表已準備完成。",
+      : input.intent === "active-business-listings"
+        ? "展示 Active Listings 報表已準備完成。"
+        : "展示用 FBA 庫齡報表已準備完成。",
   };
 }
 
 async function statusDemoFixedReport(input: Readonly<{
-  intent: "all-listings" | "active-business-listings";
+  intent: "all-listings" | "active-business-listings" | "aged-inventory";
   marketplaceId: MarketplaceId;
   reportId: string;
   signal?: AbortSignal;
@@ -486,7 +488,9 @@ async function statusDemoFixedReport(input: Readonly<{
     status: "DONE",
     notice: input.intent === "all-listings"
       ? "展示報表已準備完成。"
-      : "展示 Active Listings 報表已準備完成。",
+      : input.intent === "active-business-listings"
+        ? "展示 Active Listings 報表已準備完成。"
+        : "展示用 FBA 庫齡報表已準備完成。",
   };
 }
 
@@ -593,7 +597,6 @@ async function readDemoInboundNoncomplianceDocument(input: Readonly<{
 
 function routerDemoReportsAdapter(input: Readonly<{
   allListings: DemoAllListingsReportGateway;
-  aged: AgedInventoryReportGateway;
   activeBusiness: BusinessPricingActiveListingsReportGateway;
   inboundNoncompliance: InboundNoncomplianceDemoReportGateway;
 }>): ReportsAdapter {
@@ -619,7 +622,8 @@ function routerDemoReportsAdapter(input: Readonly<{
               signal: request.signal,
             })
           : request.intent === "aged-inventory"
-            ? await input.aged.start({
+            ? await startDemoFixedReport({
+                intent: "aged-inventory",
                 marketplaceId: request.marketplaceId,
                 signal: request.signal,
               })
@@ -648,7 +652,8 @@ function routerDemoReportsAdapter(input: Readonly<{
               signal: request.signal,
             })
           : request.intent === "aged-inventory"
-            ? await input.aged.status({
+            ? await statusDemoFixedReport({
+                intent: "aged-inventory",
                 marketplaceId: request.marketplaceId,
                 reportId: request.reportId,
                 signal: request.signal,
@@ -1666,7 +1671,7 @@ export class ApiRouter {
   private readonly approveWrite: WriteApproval;
   private readonly spExecutionContext: SpExecutionContextAdapter;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
-  private readonly agedInventoryReports: AgedInventoryReportGateway;
+  private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly businessPricingActiveListingsReports:
     BusinessPricingActiveListingsReportGateway;
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
@@ -1731,7 +1736,7 @@ export class ApiRouter {
     vault: CredentialVault;
     approveWrite: WriteApproval;
     allListingsDemoReports?: Partial<DemoAllListingsReportGateway>;
-    agedInventoryReports?: Partial<AgedInventoryReportGateway>;
+    agedInventoryReads?: AgedInventoryReadsPort;
     businessPricingActiveListingsReports?: Partial<
       BusinessPricingActiveListingsReportGateway
     >;
@@ -1784,11 +1789,6 @@ export class ApiRouter {
       }),
       ...input.allListingsDemoReports,
     };
-    this.agedInventoryReports = {
-      start: startAgedInventoryReport,
-      status: getAgedInventoryReportStatus,
-      ...input.agedInventoryReports,
-    };
     this.businessPricingActiveListingsReports = {
       start: (request) => startDemoFixedReport({
         intent: "active-business-listings",
@@ -1809,7 +1809,6 @@ export class ApiRouter {
     };
     const compatibilityReportsAdapter = input.demoReportsAdapter ?? routerDemoReportsAdapter({
       allListings: this.allListingsDemoReports,
-      aged: this.agedInventoryReports,
       activeBusiness: this.businessPricingActiveListingsReports,
       inboundNoncompliance: inboundNoncomplianceDemoReports,
     });
@@ -1831,6 +1830,10 @@ export class ApiRouter {
       lifecycle: this.reportLifecycle,
       context: this.spExecutionContext,
       adapter: reportsAdapter,
+    });
+    this.agedInventoryReads = input.agedInventoryReads ?? new AgedInventoryReads({
+      reports: this.reportsRuntime,
+      context: this.spExecutionContext,
     });
     const defaultFbaInboundReads = new FbaInboundReads({
       adapter: fbaInboundExternalReadAdapterProduction,
@@ -6051,61 +6054,6 @@ export class ApiRouter {
     }
   }
 
-  private async startSharedAgedInventoryReport(
-    marketplaceId: MarketplaceId,
-    options: Readonly<{
-      explicitRetry: boolean;
-      freshCompleted?: boolean;
-      signal?: AbortSignal;
-    }>,
-  ) {
-    return this.reportsRuntime.start(
-      {
-        intent: "aged-inventory",
-        marketplaceId,
-        signal: options.signal,
-      },
-      {
-        explicitRetry: options.explicitRetry,
-        freshCompleted: options.freshCompleted,
-      },
-    );
-  }
-
-  private async getSharedAgedInventoryReportStatus(input: {
-    marketplaceId: MarketplaceId;
-    reportId: string;
-    signal?: AbortSignal;
-  }) {
-    return this.reportsRuntime.status(
-      {
-        intent: "aged-inventory",
-        marketplaceId: input.marketplaceId,
-        signal: input.signal,
-      },
-      input.reportId,
-    );
-  }
-
-  private async getSharedAgedInventoryData(
-    input: Parameters<typeof getAgedInventoryData>[0],
-  ): ReturnType<typeof getAgedInventoryData> {
-    const document = await this.reportsRuntime.readDocument(
-      {
-        intent: "aged-inventory",
-        marketplaceId: input.marketplaceId,
-        signal: input.signal,
-      },
-      { reportId: input.reportId, documentId: input.documentId },
-    );
-    return getAgedInventoryDataFromDocument({
-      marketplaceId: input.marketplaceId,
-      mode: document.mode,
-      document: document.text,
-      signal: input.signal,
-    });
-  }
-
   private async startAgedInventory(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
@@ -6113,10 +6061,11 @@ export class ApiRouter {
       return invalid("請選擇要查詢庫齡的 Amazon 站點。");
     }
     try {
-      const status = await this.startSharedAgedInventoryReport(
+      const status = await this.agedInventoryReads.begin({
         marketplaceId,
-        { explicitRetry: true, freshCompleted: true },
-      );
+        explicitRetry: true,
+        freshCompleted: true,
+      });
       return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
     } catch (error) {
       return apiError(error, "開始建立 FBA 庫齡報表時發生未預期的錯誤。");
@@ -6135,7 +6084,7 @@ export class ApiRouter {
     const downloadRequested = request.query.download === "1";
     if (!dataRequested && !downloadRequested) {
       try {
-        const status = await this.getSharedAgedInventoryReportStatus({
+        const status = await this.agedInventoryReads.status({
           marketplaceId,
           reportId,
         });
@@ -6149,7 +6098,7 @@ export class ApiRouter {
       return invalid("FBA 庫齡報表文件資訊無效，請重新同步。");
     }
     try {
-      const snapshot = await this.getSharedAgedInventoryData({
+      const snapshot = await this.agedInventoryReads.read({
         marketplaceId,
         reportId,
         documentId,
@@ -6843,15 +6792,29 @@ export class ApiRouter {
     }
 
     if (input.kind === "agedInventory") {
+      const agedInventoryContext = await this.spExecutionContext.capture(
+        marketplaceId,
+      );
+      if (
+        agedInventoryContext.accountScope !== input.context.accountScope ||
+        agedInventoryContext.mode !== input.context.mode ||
+        agedInventoryContext.marketplaceId !== input.context.marketplaceId
+      ) {
+        throw new Error(
+          "FBA 庫齡工作與目前帳號或展示／真實模式不一致。",
+        );
+      }
       input.updateProgress({
         stage: "amazon_report",
         message: "Amazon 正在準備 FBA 庫齡報表。",
         completedUnits: 0,
         totalUnits: 1,
       });
-      let status = await this.startSharedAgedInventoryReport(marketplaceId, {
+      let status = await this.agedInventoryReads.begin({
+        marketplaceId,
         explicitRetry: false,
         signal: input.signal,
+        expectedContext: agedInventoryContext,
       });
       for (let attempt = 0; !status.ready && attempt < 900; attempt += 1) {
         if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
@@ -6859,10 +6822,11 @@ export class ApiRouter {
         }
         input.heartbeat();
         await waitMilliseconds(2_000, input.signal);
-        status = await this.getSharedAgedInventoryReportStatus({
+        status = await this.agedInventoryReads.status({
           marketplaceId,
           reportId: status.reportId,
           signal: input.signal,
+          expectedContext: agedInventoryContext,
         });
       }
       if (
@@ -6873,11 +6837,12 @@ export class ApiRouter {
       ) {
         throw new Error("Amazon FBA 庫齡報表未完成或 context 已改變。");
       }
-      const snapshot = await this.getSharedAgedInventoryData({
+      const snapshot = await this.agedInventoryReads.read({
         marketplaceId,
         reportId: status.reportId,
         documentId: status.documentId,
         signal: input.signal,
+        expectedContext: agedInventoryContext,
       });
       await this.assertStandaloneAuditContext(input.context, input.signal);
       input.updateProgress({

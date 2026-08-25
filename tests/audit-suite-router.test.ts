@@ -7,9 +7,6 @@ import {
   buildAdvertisingAuditSuiteResult,
   buildAplusAuditSuiteResult,
 } from "../src/main/api-router";
-import {
-  startAgedInventoryReport,
-} from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -24,6 +21,8 @@ type RouterInput = ConstructorParameters<typeof ApiRouter>[0];
 type DemoListingStart = NonNullable<
   NonNullable<RouterInput["allListingsDemoReports"]>["start"]
 >;
+type AgedInventoryReadsInput = NonNullable<RouterInput["agedInventoryReads"]>;
+type AgedInventoryBegin = AgedInventoryReadsInput["begin"];
 
 function request(
   method: "GET" | "POST",
@@ -70,7 +69,8 @@ describe("main-owned audit suite routes", () => {
   let accountScope: string;
   let router: ApiRouter;
   let startListing: ReturnType<typeof vi.fn<DemoListingStart>>;
-  let startAged: ReturnType<typeof vi.fn>;
+  let startAged: ReturnType<typeof vi.fn<AgedInventoryBegin>>;
+  let agedInventoryReads: AgedInventoryReadsInput;
 
   beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
@@ -83,7 +83,7 @@ describe("main-owned audit suite routes", () => {
       status: "DONE" as const,
       notice: "ready",
     }));
-    startAged = vi.fn(async ({ marketplaceId }: { marketplaceId: string }) => ({
+    startAged = vi.fn<AgedInventoryBegin>(async ({ marketplaceId }) => ({
       mode: "demo" as const,
       ready: true,
       reportId: `demo-aged-${marketplaceId}`,
@@ -91,6 +91,15 @@ describe("main-owned audit suite routes", () => {
       status: "DONE" as const,
       notice: "ready",
     }));
+    agedInventoryReads = {
+      begin: startAged,
+      status: vi.fn(async () => {
+        throw new Error("aged inventory status must not run in audit suite");
+      }),
+      read: vi.fn(async () => {
+        throw new Error("aged inventory read must not run in audit suite");
+      }),
+    };
     const directory = await mkdtemp(join(tmpdir(), "audit-suite-router-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
@@ -101,7 +110,7 @@ describe("main-owned audit suite routes", () => {
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       allListingsDemoReports: { start: startListing },
-      agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
+      agedInventoryReads,
     });
   });
 
@@ -206,7 +215,7 @@ describe("main-owned audit suite routes", () => {
       allListingsDemoReports: {
         start: startListing,
       },
-      agedInventoryReports: { start: startAged as typeof startAgedInventoryReport },
+      agedInventoryReads,
     });
 
     const started = await router.handle(request("POST", "/api/sp-api/audit-suite", {

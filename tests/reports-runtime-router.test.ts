@@ -221,37 +221,81 @@ describe("Reports runtime router wiring", () => {
     const directory = await mkdtemp(join(tmpdir(), "reports-router-document-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
+    const aisKeys = [
+      "181-210",
+      "211-240",
+      "241-270",
+      "271-300",
+      "301-330",
+      "331-365",
+      "366-455",
+      "456-plus",
+    ] as const;
+    const headers = [
+      "seller-sku",
+      "fnsku",
+      "asin",
+      "product-name",
+      "condition",
+      "available",
+      "inv-age-0-to-90-days",
+      "inv-age-91-to-180-days",
+      "inv-age-181-to-270-days",
+      "inv-age-271-to-365-days",
+      "inv-age-366-to-455-days",
+      "inv-age-456-plus-days",
+      "estimated-excess-quantity",
+      "currency",
+      "storage-volume",
+      "estimated-storage-cost-next-month",
+      ...aisKeys.flatMap((key) => [
+        `quantity-to-be-charged-ais-${key}-days`,
+        `estimated-ais-${key}-days`,
+      ]),
+    ];
+    const known: Record<string, string> = {
+      "seller-sku": "AGED-FBA-KNOWN",
+      fnsku: "X001AGED01",
+      asin: "B0AGED0001",
+      "product-name": "Aged FBA known evidence",
+      condition: "New",
+      available: "1",
+      "inv-age-0-to-90-days": "0",
+      "inv-age-91-to-180-days": "0",
+      "inv-age-181-to-270-days": "1",
+      "inv-age-271-to-365-days": "0",
+      "inv-age-366-to-455-days": "0",
+      "inv-age-456-plus-days": "0",
+      "estimated-excess-quantity": "7",
+      currency: "USD",
+      "storage-volume": "1",
+      "estimated-storage-cost-next-month": "2.5",
+    };
+    const missing: Record<string, string> = {
+      "seller-sku": "AGED-FBA-MISSING",
+      fnsku: "X001AGED02",
+      asin: "B0AGED0002",
+      "product-name": "Aged FBA missing evidence",
+      condition: "New",
+      available: "1",
+      "inv-age-0-to-90-days": "0",
+      "inv-age-91-to-180-days": "0",
+      "inv-age-181-to-270-days": "1",
+      "inv-age-271-to-365-days": "0",
+      "inv-age-366-to-455-days": "0",
+      "inv-age-456-plus-days": "0",
+      currency: "USD",
+      "storage-volume": "1",
+    };
+    aisKeys.forEach((key, index) => {
+      known[`quantity-to-be-charged-ais-${key}-days`] = index === 0 ? "1" : "0";
+      known[`estimated-ais-${key}-days`] = index === 0 ? "1.2" : "0";
+      missing[`quantity-to-be-charged-ais-${key}-days`] = index === 0 ? "1" : "0";
+    });
     const document = [
-      [
-        "seller-sku",
-        "fnsku",
-        "asin",
-        "product-name",
-        "condition",
-        "available",
-        "inv-age-0-to-90-days",
-        "inv-age-91-to-180-days",
-        "inv-age-181-to-270-days",
-        "inv-age-271-to-365-days",
-        "inv-age-366-to-455-days",
-        "inv-age-456-plus-days",
-        "currency",
-      ].join("\t"),
-      [
-        "AGED-FBA-01",
-        "X001AGED01",
-        "B0AGED0001",
-        "Aged FBA product",
-        "New",
-        "1",
-        "0",
-        "0",
-        "1",
-        "0",
-        "0",
-        "0",
-        "USD",
-      ].join("\t"),
+      headers.join("\t"),
+      headers.map((header) => known[header] ?? "").join("\t"),
+      headers.map((header) => missing[header] ?? "").join("\t"),
     ].join("\n");
     const reportsAdapter = createScriptedReportsAdapter([
       {
@@ -320,7 +364,33 @@ describe("Reports runtime router wiring", () => {
     expect(body(data)).toMatchObject({
       mode: "live",
       marketplaceId: US,
-      summary: { skuCount: 1, agedOver180: 1 },
+      rows: [
+        expect.objectContaining({
+          sellerSku: "AGED-FBA-KNOWN",
+          estimatedExcessQuantity: 7,
+          estimatedStorageCostNextMonth: 2.5,
+          estimatedAgedSurcharge: 1.2,
+        }),
+        expect.objectContaining({
+          sellerSku: "AGED-FBA-MISSING",
+          estimatedExcessQuantity: null,
+          estimatedStorageCostNextMonth: null,
+          estimatedAgedSurcharge: null,
+        }),
+      ],
+      summary: {
+        skuCount: 2,
+        agedOver180: 2,
+        excessAvailability: "partial",
+        estimatedExcessQuantity: null,
+        excessReportedSkuCount: 1,
+        storageCostAvailability: "partial",
+        estimatedStorageCostNextMonth: null,
+        storageCostReportedSkuCount: 1,
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+        agedSurchargeReportedSkuCount: 1,
+      },
     });
     expect(JSON.stringify(body(data))).not.toContain("AMAZON-RAW");
     expect(reportsAdapter.requests.map(({ operation }) => operation)).toEqual([

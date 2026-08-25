@@ -59,6 +59,10 @@ const EXTRACTED_REPORTS_MODULES = [
   "src/main/amazon/reports-runtime-production.ts",
 ] as const;
 
+const EXTRACTED_AGED_INVENTORY_MODULES = [
+  "src/main/amazon/aged-inventory-reads.ts",
+] as const;
+
 const PURE_CATALOG_REPORT_MODULES = [
   "src/main/amazon/business-pricing-evidence.ts",
   "src/main/amazon/catalog-report-reads.ts",
@@ -115,6 +119,26 @@ const SUPERSEDED_FBA_INBOUND_ROUTER_WIRING = [
   "InboundNoncomplianceReportGateway",
   "inboundShipments",
   "inboundNoncomplianceReports",
+] as const;
+
+const SUPERSEDED_AGED_INVENTORY_FACADES = [
+  "startAgedInventoryReport",
+  "getAgedInventoryReportStatus",
+  "getAgedInventoryData",
+  "getAgedInventoryDataFromDocument",
+  "parseAgedInventoryReportData",
+  "parseAgedInventoryReportDocument",
+  "downloadReportDocument",
+  "executeReportsRequest",
+  "callReportsApi",
+] as const;
+
+const SUPERSEDED_AGED_INVENTORY_ROUTER_WIRING = [
+  "AgedInventoryReportGateway",
+  "agedInventoryReports",
+  "startSharedAgedInventoryReport",
+  "getSharedAgedInventoryReportStatus",
+  "getSharedAgedInventoryData",
 ] as const;
 
 const FORBIDDEN_CATALOG_MODULE_DEPENDENCIES = new Set([
@@ -471,6 +495,13 @@ describe("SP execution-context architecture", () => {
     },
   );
 
+  it.each(EXTRACTED_AGED_INVENTORY_MODULES)(
+    "%s stays independent from legacy runtime modules",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
   it.each(PURE_CATALOG_REPORT_MODULES)(
     "%s stays outside legacy, production, write, PTD, preload, and renderer wiring",
     (entryPath) => {
@@ -589,6 +620,30 @@ describe("SP execution-context architecture", () => {
     expect(source).toContain("new FbaInboundReads({");
     expect(source).toContain("expectedContext: job.context");
     expect(source).toContain("this.spExecutionContext.capture(marketplaceId)");
+  });
+
+  it("removes superseded Aged Inventory facades and duplicate Reports transport from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const symbol of SUPERSEDED_AGED_INVENTORY_FACADES) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).not.toContain("AGED_INVENTORY_REPORT_TYPE");
+    expect(source).not.toContain("ReportsPurpose");
+  });
+
+  it("routes Aged Inventory only through its semantic read owner", () => {
+    const source = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    for (const symbol of SUPERSEDED_AGED_INVENTORY_ROUTER_WIRING) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).toContain("new AgedInventoryReads({");
+    expect(source).toContain("expectedContext: agedInventoryContext");
   });
 
   it("keeps report documents behind the FBA catalog coordinator", () => {
