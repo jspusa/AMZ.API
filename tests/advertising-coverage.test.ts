@@ -74,6 +74,9 @@ describe("FBA advertising coverage audit", () => {
     });
     expect(result.rows.find((row) => row.sellerSku === "AFA33AM")?.evidence?.kind)
       .toBe("seller-sku");
+    expect(result.rows.find((row) => row.sellerSku === "AFA33AM")?.evidence)
+      .toMatchObject({ campaignId: "coverage-evidence.1" });
+    expect(JSON.stringify(result)).not.toContain('"campaignId":"c1"');
     expect(result.rows.find((row) => row.sellerSku === "AFA33AM-2")?.evidence)
       .toMatchObject({ kind: "same-asin", campaignSellerSku: "AFA33AM" });
     expect(result.uncovered.map((row) => row.sellerSku)).toEqual(["GTC01AM"]);

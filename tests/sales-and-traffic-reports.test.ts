@@ -131,6 +131,24 @@ describe("SalesAndTrafficReports", () => {
     });
   });
 
+  it("reuses one caller-captured execution context across the strategy report seam", async () => {
+    const built = build();
+    const expectedContext = await built.context.capture(MARKETPLACE_ID);
+
+    await built.coordinator.begin({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: START_DATE,
+      endDate: END_DATE,
+      explicitRetry: false,
+      expectedContext,
+    });
+
+    expect(built.start).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ expectedContext }),
+    );
+  });
+
   it("uses existing handles for status and document reads without an implicit create", async () => {
     const built = build();
 

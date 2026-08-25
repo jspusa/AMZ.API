@@ -93,6 +93,21 @@ export class SalesAndTrafficReports {
     this.demo = input.demo;
   }
 
+  private async executionContext(
+    marketplaceId: MarketplaceId,
+    expected?: SpExecutionContext,
+  ): Promise<SpExecutionContext> {
+    if (!expected) return this.context.capture(marketplaceId);
+    if (expected.marketplaceId !== marketplaceId) {
+      throw new SpApiError("銷售與流量報表與固定執行站點不一致。", {
+        status: 409,
+        code: "SP_CONTEXT_INVALIDATED",
+      });
+    }
+    await this.context.assertCurrent(expected);
+    return expected;
+  }
+
   private async settleInContext<T>(
     context: SpExecutionContext,
     operation: Promise<T>,
@@ -124,8 +139,12 @@ export class SalesAndTrafficReports {
     explicitRetry: boolean;
     freshCompleted?: boolean;
     signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
   }>): Promise<ReportsRuntimeReceipt> {
-    const context = await this.context.capture(input.marketplaceId);
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
     const receipt = await this.reports.start(beginPlan(input), {
       explicitRetry: input.explicitRetry,
       freshCompleted: input.freshCompleted,
@@ -141,8 +160,12 @@ export class SalesAndTrafficReports {
     endDate: string;
     reportId: string;
     signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
   }>): Promise<ReportsRuntimeReceipt> {
-    const context = await this.context.capture(input.marketplaceId);
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
     const receipt = await this.reports.status(
       acceptedPlan(input),
       input.reportId,
@@ -159,8 +182,12 @@ export class SalesAndTrafficReports {
     reportId: string;
     documentId: string;
     signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
   }>): Promise<SalesAndTrafficSnapshot> {
-    const context = await this.context.capture(input.marketplaceId);
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
     const reportPlan = acceptedPlan(input);
     if (context.mode === "demo") {
       const receipt = await this.reports.read(reportPlan, context);

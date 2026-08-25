@@ -1,15 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  AdvertisingConnectionTestResult,
   ApiRequest,
   ApiResponse,
   ConnectionTestResult,
   CredentialSummary,
 } from "../shared/contracts";
-import {
-  AdvertisingApiError,
-  type AdvertisingGateway,
-} from "./amazon/ads-api";
+import type { AdvertisingGateway } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
 import {
@@ -19,12 +15,6 @@ import {
   IMAGE_AUDIT_MINIMUM_IMAGES,
   auditListingImageRows,
 } from "./amazon/image-audit";
-import {
-  auditAdvertisingCoverage,
-  AdvertisingCoverageInputError,
-  prepareAdvertisingCoverageListings,
-  type AdvertisingCoverageCampaign,
-} from "./amazon/advertising-coverage";
 import {
   publicSpApiError,
   SpApiError,
@@ -166,18 +156,17 @@ import {
   type ReviewAuditCoordinatorPort,
 } from "./review-audit-coordinator";
 import {
+  ReadOnlyAdvertisingCoordinator,
+  type AdvertisingCoordinatorPort,
+  type AdvertisingStrategySourceGateway,
+} from "./advertising-read-coordinator";
+import {
   SalesAndTrafficReports,
   type SalesAndTrafficDemoSource,
   type SalesAndTrafficDocumentReader,
 } from "./amazon/sales-and-traffic-reports";
 import { createSalesAndTrafficDemoSource } from
   "./amazon/sales-and-traffic-demo";
-import type {
-  SalesAndTrafficSnapshot,
-} from "./amazon/sales-and-traffic-reads";
-import {
-  planCompletedSalesAndTrafficWindow,
-} from "./amazon/revenue-report-windows";
 import { createBrandSalesDemoSource } from "./amazon/brand-sales-demo";
 import {
   FbaCatalogReports,
@@ -189,7 +178,6 @@ import type {
   CatalogExportProgress,
   CatalogListingsReadAdapter,
   FbaCatalogExport,
-  FbaCatalogIdentitySnapshot as FbaListingIdentitySnapshot,
 } from "./amazon/catalog-report-reads";
 import {
   getDemoFbaReviewAuditCandidates,
@@ -202,10 +190,6 @@ import {
   type CustomerFeedbackReadsPort,
 } from "./amazon/customer-feedback-reads";
 import { OrdersReads, type OrdersReadsPort } from "./amazon/orders-reads";
-import {
-  buildAdvertisingStrategySnapshot,
-  type AdvertisingStrategySnapshot,
-} from "./amazon/advertising-strategy";
 import { DEMO_INBOUND_NONCOMPLIANCE_DOCUMENT } from
   "./amazon/inbound-noncompliance";
 import {
@@ -220,7 +204,6 @@ import {
 import {
   createAuditSuiteWorkbook,
   type APlusAuditProblemRow,
-  type AdvertisingCoverageAuditRow,
   type AuditSuiteWorkbookInput,
   type ValidatedAuditSuiteSnapshot,
 } from "./amazon/audit-suite-xlsx";
@@ -288,11 +271,7 @@ import {
   type ReportsAdapter,
   type ReportsIntentPlan,
 } from "./amazon/reports-runtime";
-import {
-  FixedReportBroker,
-  type AdvertisedProductAccountBinding,
-  type AdvertisedProductReportData,
-} from "./amazon/report-broker";
+import { FixedReportBroker } from "./amazon/report-broker";
 import { testRegionConnections } from "./amazon/connection-health";
 import {
   businessPriceReadbackDecision,
@@ -383,23 +362,6 @@ type DemoAllListingsReportGateway = {
 type BusinessPricingActiveListingsReportGateway = {
   start: DemoFixedReportStart;
   status: DemoFixedReportStatus;
-};
-
-type AdvertisingStrategyReportGateway = AdvertisingGateway & Required<Pick<
-  AdvertisingGateway,
-  | "getCombinedAccountIdentity"
-  | "createSponsoredProductsAdvertisedProductReport"
-  | "getSponsoredProductsAdvertisedProductReportStatus"
-  | "downloadSponsoredProductsAdvertisedProductReport"
->>;
-
-type AdvertisingStrategySourceGateway = {
-  fbaListings(input: Readonly<{
-    marketplaceId: MarketplaceId;
-    reportId: string;
-    documentId: string;
-    signal?: AbortSignal;
-  }>): Promise<FbaListingIdentitySnapshot>;
 };
 
 type InboundNoncomplianceDemoReportGateway = {
@@ -670,35 +632,6 @@ function routerDemoReportsAdapter(input: Readonly<{
   };
 }
 
-type AdvertisingStrategyProgress = Readonly<{
-  phase: "fba" | "sales" | "ads" | "building";
-  completed: number;
-  total: 4;
-}>;
-
-type AdvertisingStrategyJobState = "running" | "completed" | "failed";
-
-type AdvertisingStrategyJob = {
-  jobId: string;
-  context: SpExecutionContext;
-  marketplaceId: MarketplaceId;
-  marketplaceCode: string;
-  spAccountScope: string;
-  adsReportBinding: AdvertisedProductAccountBinding;
-  mode: "live" | "demo";
-  startDate: string;
-  endDate: string;
-  state: AdvertisingStrategyJobState;
-  progress: AdvertisingStrategyProgress;
-  notice: string;
-  errorCode: string | null;
-  snapshot: AdvertisingStrategySnapshot | null;
-  controller: AbortController;
-  expiresAt: number;
-  expiryTimer: ReturnType<typeof setTimeout> | null;
-  flight: Promise<void> | null;
-};
-
 const MARKETPLACE_CODES = Object.fromEntries(
   MARKETPLACE_METADATA.map((marketplace) => [
     marketplace.id,
@@ -895,17 +828,6 @@ function contentAuditLegacyRecoveredFieldWasEdited(input: {
       input.proposed.ingredients,
     );
 }
-const ADVERTISING_STRATEGY_REPORT_WAIT_MS = 3 * 60 * 60 * 1_000 + 5 * 60 * 1_000;
-const ADVERTISING_STRATEGY_ACTIVE_TTL_MS = 3 * 60 * 60 * 1_000 + 30 * 60 * 1_000;
-const ADVERTISING_STRATEGY_TERMINAL_TTL_MS = 30 * 60 * 1_000;
-const ADVERTISING_STRATEGY_RETRY_TTL_MS = 35 * 60 * 1_000;
-
-function advertisingStrategyPollDelay(attempt: number): number {
-  if (attempt < 30) return 2_000;
-  if (attempt < 90) return 5_000;
-  return 15_000;
-}
-
 function assertAuditSuiteActive(control: AuditSuiteRunControl): void {
   assertBackgroundActive(control.signal);
 }
@@ -994,28 +916,6 @@ function apiError(error: unknown, fallback: string): ApiResponse {
       publicError.status,
     );
   }
-  if (error instanceof AdvertisingApiError) {
-    const publicError = publicRouterError(error, fallback);
-    return json(
-      {
-        code: publicError.code,
-        message: publicError.message,
-        requestId: publicError.requestId,
-      },
-      publicError.status,
-    );
-  }
-  if (error instanceof AdvertisingCoverageInputError) {
-    const publicError = publicRouterError({
-      status: 422,
-      code: error.code,
-      message: error.message,
-    }, fallback);
-    return json(
-      { code: publicError.code, message: publicError.message },
-      publicError.status,
-    );
-  }
   return json({ code: "INTERNAL_ERROR", message: fallback }, 500);
 }
 
@@ -1068,106 +968,6 @@ export function buildAplusAuditSuiteResult(
     fetchedAt: snapshot.fetchedAt,
     notice: snapshot.notice,
     payload,
-  };
-}
-
-type AdvertisingAuditSuiteSource = Readonly<{
-  fetchedAt: string;
-  rows: readonly Readonly<{
-    sellerSku: string;
-    asin: string;
-    title: string;
-    readStatus: "complete" | "incomplete";
-    readErrors: readonly Readonly<{ message: string }>[];
-  }>[];
-  errors: readonly Readonly<{
-    sellerSku: string;
-    kind: string;
-    message: string;
-  }>[];
-}>;
-
-export function buildAdvertisingAuditSuiteResult(input: {
-  marketplaceId: MarketplaceId;
-  marketplaceCode: string;
-  source: AdvertisingAuditSuiteSource;
-  campaigns: AdvertisingCoverageCampaign[];
-}): Readonly<{
-  status: "completed" | "partial";
-  fetchedAt: string;
-  notice: string;
-  payload: readonly AdvertisingCoverageAuditRow[];
-}> {
-  const errorsBySku = new Map<string, string[]>();
-  for (const error of input.source.errors) {
-    if (!parseSellerSku(error.sellerSku)) {
-      throw new Error("廣告覆蓋的 FBA 商品錯誤缺少可核對 Seller SKU；此 section 已停止。");
-    }
-    const messages = errorsBySku.get(error.sellerSku) ?? [];
-    messages.push(`${error.kind}：${error.message}`);
-    errorsBySku.set(error.sellerSku, messages);
-  }
-  const verifiableRows = input.source.rows.filter((row) =>
-    /^[A-Z0-9]{10}$/u.test(row.asin) &&
-    row.readStatus === "complete" &&
-    !errorsBySku.has(row.sellerSku),
-  );
-  const incompleteBySku = new Map<string, AdvertisingCoverageAuditRow>(input.source.rows
-    .filter((row) => !verifiableRows.includes(row))
-    .map((row) => [row.sellerSku, {
-      sellerSku: row.sellerSku,
-      title: row.title,
-      asin: row.asin,
-      finding: "未完成",
-      evidence: [
-        ...row.readErrors.map((error) => error.message),
-        ...(errorsBySku.get(row.sellerSku) ?? []),
-      ].join("；") || "FBA 商品 ASIN／內容證據未完整。",
-      notice: "FBA 商品證據未完整，不判定為未覆蓋。",
-    }] as const));
-  for (const [sellerSku, messages] of errorsBySku) {
-    if (incompleteBySku.has(sellerSku)) continue;
-    incompleteBySku.set(sellerSku, {
-      sellerSku,
-      title: "",
-      asin: "",
-      finding: "未完成",
-      evidence: messages.join("；"),
-      notice: "FBA 商品資料錯誤未能對應完整 listing；不判定為未覆蓋。",
-    });
-  }
-  const audit = auditAdvertisingCoverage({
-    mode: "live",
-    marketplaceId: input.marketplaceId,
-    marketplaceCode: input.marketplaceCode,
-    listings: verifiableRows.map((row) => ({
-      sellerSku: row.sellerSku,
-      asin: row.asin,
-      title: row.title,
-    })),
-    campaigns: input.campaigns,
-    fetchedAt: input.source.fetchedAt,
-  });
-  const incompleteRows = [...incompleteBySku.values()];
-  return {
-    status: incompleteRows.length ? "partial" : "completed",
-    fetchedAt: audit.fetchedAt,
-    notice: incompleteRows.length
-      ? `${incompleteRows.length} 個 FBA SKU 無法安全判定廣告覆蓋；未當成 0。${audit.notice}`
-      : audit.notice,
-    payload: [
-      ...audit.rows.map((row) => ({
-        sellerSku: row.sellerSku,
-        title: row.title,
-        asin: row.asin,
-        finding: row.covered ? "已有廣告覆蓋" : "未找到廣告覆蓋",
-        evidence: row.evidence
-          ? `${row.evidence.kind === "seller-sku" ? "同 SKU" : "同 ASIN"}：${row.evidence.campaignName}`
-          : "沒有符合 ProductAI 命名與站點規則的 ENABLED SP 活動",
-        notice: audit.rule,
-      })),
-      ...incompleteRows,
-    ],
   };
 }
 
@@ -1397,7 +1197,6 @@ export class ApiRouter {
   private readonly aplusContentReads: AplusContentReadsPort;
   private readonly businessPricingActiveListingsReports:
     BusinessPricingActiveListingsReportGateway;
-  private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
   private readonly ordersReads: OrdersReadsPort;
   private readonly statelessCapabilities: StatelessCapabilityRoutesPort;
   private readonly imageUpload: LocalImageUploadPort;
@@ -1406,7 +1205,6 @@ export class ApiRouter {
   private readonly productMasterRoutes: ProductMasterRoutesPort;
   private readonly skuCommandRoute: SkuCommandRoutePort;
   private readonly fbaSalesMetricsRoutes: FbaSalesMetricsRoutesPort;
-  private readonly advertisingStrategyWait: typeof waitMilliseconds;
   private readonly fbaInboundCoordinator: FbaInboundCoordinatorPort;
   private readonly reportBroker: FixedReportBroker;
   private readonly salesAndTraffic: SalesAndTrafficReports;
@@ -1421,15 +1219,13 @@ export class ApiRouter {
   private readonly imageAuditOwner: ImageAuditOwnerPort;
   private readonly listingsExportOwner: ListingsExportPort;
   private readonly reviewAuditCoordinator: ReviewAuditCoordinatorPort;
-  private readonly advertising: AdvertisingGateway | null;
+  private readonly advertisingCoordinator: AdvertisingCoordinatorPort;
   private readonly auditSuite: AuditSuiteCoordinator;
   private readonly aPlusAuditCoordinator: AplusAuditCoordinatorPort;
   private readonly standaloneAuditJobs: StandaloneAuditJobCoordinator;
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly listingAttributeWriteReservations = new Map<string, string>();
   private readonly contentBatchPlans = new Map<string, ContentBatchPlan>();
-  private readonly advertisingStrategyJobs = new Map<string, AdvertisingStrategyJob>();
-  private readonly advertisingStrategySelections = new Map<string, string>();
   private contextStateRevision = 0;
 
   constructor(input: {
@@ -1444,6 +1240,7 @@ export class ApiRouter {
     salesAndTrafficRead?: SalesAndTrafficDocumentReader;
     salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
+    advertisingCoordinator?: AdvertisingCoordinatorPort;
     reviewAuditCoordinator?: ReviewAuditCoordinatorPort;
     reviewAuditCandidates?: ReviewAuditCandidateSource;
     customerFeedbackReads?: CustomerFeedbackReadsPort;
@@ -1499,7 +1296,7 @@ export class ApiRouter {
     this.spExecutionContext = createRouterRequestContextAdapter(
       baseSpExecutionContext,
     );
-    this.advertising = input.advertising ?? null;
+    const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
       start: (request) => startDemoFixedReport({
         intent: "all-listings",
@@ -1522,7 +1319,6 @@ export class ApiRouter {
       }),
       ...input.businessPricingActiveListingsReports,
     };
-    this.advertisingStrategyWait = input.advertisingStrategyWait ?? waitMilliseconds;
     const inboundNoncomplianceDemoReports = {
       start: startDemoInboundNoncomplianceReport,
       status: statusDemoInboundNoncomplianceReport,
@@ -1551,7 +1347,7 @@ export class ApiRouter {
       store: this.store,
       context: this.spExecutionContext,
       reportsAdapter,
-      advertising: this.advertising,
+      advertising,
     });
     this.agedInventoryReads = input.agedInventoryReads ?? new AgedInventoryReads({
       reports: this.reportBroker,
@@ -1673,13 +1469,25 @@ export class ApiRouter {
           ...input.brandSalesDemo,
         },
       });
-    this.advertisingStrategySources = {
-      fbaListings: (request) => this.fbaCatalogReports.read({
-        view: "identity",
-        ...request,
-      }),
-      ...input.advertisingStrategySources,
-    };
+    this.advertisingCoordinator = input.advertisingCoordinator ??
+      new ReadOnlyAdvertisingCoordinator({
+        context: this.spExecutionContext,
+        advertising,
+        reports: this.reportBroker,
+        catalog: this.fbaCatalogReports,
+        salesAndTraffic: this.salesAndTraffic,
+        listingsExport: this.listingsExportOwner,
+        loadAuditSuiteListings: (context, control) =>
+          this.auditSuiteListings(context, control),
+        strategySources: {
+          fbaListings: (request) => this.fbaCatalogReports.read({
+            view: "identity",
+            ...request,
+          }),
+          ...input.advertisingStrategySources,
+        },
+        wait: input.advertisingStrategyWait,
+      });
     const reviewAuditCandidates = input.reviewAuditCandidates ?? (async (request) =>
       request.mode === "demo"
         ? getDemoFbaReviewAuditCandidates({
@@ -1792,7 +1600,8 @@ export class ApiRouter {
         subscription: (context, control) => this.runAuditSuiteSubscription(context, control),
         businessPricing: (context, control) =>
           this.runAuditSuiteBusinessPricing(context, control),
-        advertising: (context, control) => this.runAuditSuiteAdvertising(context, control),
+        advertising: (context, control) =>
+          this.advertisingCoordinator.runAuditSuite(context, control),
       },
     });
   }
@@ -1800,6 +1609,7 @@ export class ApiRouter {
   private clearContextBoundState(): void {
     this.contextStateRevision += 1;
     this.reportBroker.clear();
+    this.advertisingCoordinator.clear();
     this.brandSalesCoordinator.clear();
     this.businessPricingAuditOwner.clear();
     this.subscriptionAuditOwner.clear();
@@ -1815,13 +1625,7 @@ export class ApiRouter {
     this.listingAttributeWriteReservations.clear();
     this.contentBatchPlans.clear();
     this.fbaInboundCoordinator.clear();
-    for (const job of [...this.advertisingStrategyJobs.values()]) {
-      job.controller.abort(new Error("FBA 廣告策略工作已因安全 context 變更而停止。"));
-      this.removeAdvertisingStrategyJob(job.jobId);
-    }
-    this.advertisingStrategySelections.clear();
     this.auditSuite.clear();
-    this.advertising?.invalidate();
     // The long-lived Customer Feedback production adapter intentionally keeps
     // its pacing slot. A context change must not bypass the App-session-wide
     // one-request-per-second boundary.
@@ -2055,13 +1859,13 @@ export class ApiRouter {
       case "GET /api/system/health":
         return this.health.systemHealth(request);
       case "GET /api/amazon-ads/status":
-        return this.adsStatus(request);
+        return this.advertisingCoordinator.status(request);
       case "GET /api/amazon-ads/coverage":
-        return this.adsCoverage(request);
+        return this.advertisingCoordinator.coverage(request);
       case "POST /api/amazon-ads/strategy":
-        return this.startAdvertisingStrategy(request);
+        return this.advertisingCoordinator.startStrategy(request);
       case "GET /api/amazon-ads/strategy":
-        return this.advertisingStrategyStatus(request);
+        return this.advertisingCoordinator.observeStrategy(request);
       case "POST /api/sp-api/a-plus-audit":
         return this.aPlusAuditCoordinator.start(request);
       case "GET /api/sp-api/a-plus-audit":
@@ -4311,52 +4115,7 @@ export class ApiRouter {
     }
 
     if (input.kind === "advertising") {
-      const listing = await this.standaloneListings(input);
-      if (input.context.mode === "live" && !this.advertising) {
-        throw new Error("Amazon Ads API 尚未連線。");
-      }
-      if (input.context.mode === "live") {
-        const summary = await this.advertising!.getCredentialSummary();
-        if (!summary.configured) throw new Error("Amazon Ads 憑證尚未完整設定。");
-      }
-      const listings = prepareAdvertisingCoverageListings({
-        rows: listing.data.rows,
-        errors: listing.data.errors,
-      });
-      input.updateProgress({
-        stage: "advertising",
-        message: "正在核對 FBA 商品與啟用中的 Sponsored Products 活動。",
-        completedUnits: 0,
-        totalUnits: listings.length,
-      });
-      const campaigns: AdvertisingCoverageCampaign[] = input.context.mode === "demo"
-        ? listings
-            .filter((_, index) => index % 2 === 0)
-            .map((row, index) => ({
-              campaignId: `demo-productai-${index + 1}`,
-              name: `[ProductAI] ${MARKETPLACE_CODES[marketplaceId]}-${row.asin}-${row.sellerSku}-SP-PAT-Aug92026`,
-              state: "ENABLED",
-              adProduct: "SPONSORED_PRODUCTS",
-            }))
-        : await this.advertising!.listEnabledSponsoredProductCampaigns(
-            marketplaceId,
-            input.signal,
-          );
-      await this.assertStandaloneAuditContext(input.context, input.signal);
-      const snapshot = auditAdvertisingCoverage({
-        mode: input.context.mode,
-        marketplaceId,
-        marketplaceCode: MARKETPLACE_CODES[marketplaceId],
-        listings,
-        campaigns,
-      });
-      input.updateProgress({
-        stage: "complete",
-        message: "Amazon Ads 覆蓋健檢完成。",
-        completedUnits: listings.length,
-        totalUnits: listings.length,
-      });
-      return snapshot;
+      return this.advertisingCoordinator.runStandalone(input);
     }
 
     throw new Error("不支援這個單項健檢種類。");
@@ -4832,770 +4591,6 @@ export class ApiRouter {
     });
   }
 
-  private async runAuditSuiteAdvertising(
-    context: AuditSuiteContext,
-    control: AuditSuiteRunControl,
-  ) {
-    const marketplaceId = context.marketplaceId as MarketplaceId;
-    if (context.mode !== "live") {
-      throw new Error("廣告覆蓋需已驗證的真實 Amazon Ads 連線；綜合健檢不以 demo 活動冒充結果。");
-    }
-    if (!this.advertising) {
-      throw new Error("Amazon Ads API 尚未連線；未用 demo 或 0 冒充廣告覆蓋。");
-    }
-    assertAuditSuiteActive(control);
-    const summary = await this.advertising.getCredentialSummary();
-    assertAuditSuiteActive(control);
-    if (!summary.configured) {
-      throw new Error("Amazon Ads 憑證尚未完整設定；廣告覆蓋未執行。");
-    }
-    const listing = await this.auditSuiteListings(context, control);
-    assertAuditSuiteActive(control);
-    const campaigns = await this.advertising.listEnabledSponsoredProductCampaigns(
-      marketplaceId,
-      control.signal,
-    );
-    assertAuditSuiteActive(control);
-    await this.assertAuditSuiteContext(context);
-    assertAuditSuiteActive(control);
-    const result = buildAdvertisingAuditSuiteResult({
-      marketplaceId,
-      marketplaceCode: MARKETPLACE_CODES[marketplaceId],
-      source: listing.data,
-      campaigns,
-    });
-    return suiteSnapshot({
-      context,
-      ...result,
-    });
-  }
-
-  private removeAdvertisingStrategyJob(jobId: string): void {
-    const job = this.advertisingStrategyJobs.get(jobId);
-    if (!job) return;
-    if (job.expiryTimer) clearTimeout(job.expiryTimer);
-    job.expiryTimer = null;
-    this.advertisingStrategyJobs.delete(jobId);
-    for (const [selection, selectedJobId] of this.advertisingStrategySelections) {
-      if (selectedJobId === jobId) this.advertisingStrategySelections.delete(selection);
-    }
-  }
-
-  private touchAdvertisingStrategyJob(job: AdvertisingStrategyJob): void {
-    if (
-      job.state !== "running" ||
-      job.controller.signal.aborted ||
-      this.advertisingStrategyJobs.get(job.jobId) !== job
-    ) {
-      return;
-    }
-    job.expiresAt = Date.now() + ADVERTISING_STRATEGY_ACTIVE_TTL_MS;
-  }
-
-  private retainAdvertisingStrategyJob(
-    job: AdvertisingStrategyJob,
-    ttl = ADVERTISING_STRATEGY_TERMINAL_TTL_MS,
-  ): void {
-    if (this.advertisingStrategyJobs.get(job.jobId) !== job || job.state === "running") {
-      return;
-    }
-    if (job.expiryTimer) clearTimeout(job.expiryTimer);
-    const expiresAt = Date.now() + ttl;
-    job.expiresAt = expiresAt;
-    job.expiryTimer = setTimeout(() => {
-      if (
-        this.advertisingStrategyJobs.get(job.jobId) === job &&
-        job.state !== "running" &&
-        job.expiresAt === expiresAt &&
-        job.expiresAt <= Date.now()
-      ) {
-        this.removeAdvertisingStrategyJob(job.jobId);
-      }
-    }, ttl);
-    job.expiryTimer.unref?.();
-  }
-
-  private pruneAdvertisingStrategyJobs(now = Date.now()): void {
-    for (const job of [...this.advertisingStrategyJobs.values()]) {
-      if (job.expiresAt > now) continue;
-      if (job.state === "running") {
-        job.controller.abort(new Error("FBA 廣告策略背景工作超過安全保留時間。"));
-        job.state = "failed";
-        job.snapshot = null;
-        job.notice = "FBA 廣告策略背景工作等待逾時；沒有建立、修改或啟用任何廣告。";
-        job.errorCode = "STRATEGY_TIMEOUT";
-        this.retainAdvertisingStrategyJob(job);
-      } else {
-        this.removeAdvertisingStrategyJob(job.jobId);
-      }
-    }
-  }
-
-  private advertisingStrategyReply(job: AdvertisingStrategyJob): ApiResponse {
-    return json({
-      schemaVersion: 1,
-      jobId: job.jobId,
-      marketplaceId: job.marketplaceId,
-      marketplaceCode: job.marketplaceCode,
-      dateRange: { startDate: job.startDate, endDate: job.endDate },
-      state: job.state,
-      progress: { ...job.progress },
-      notice: job.notice,
-      snapshot: job.snapshot ? structuredClone(job.snapshot) : null,
-      errorCode: job.errorCode,
-    }, job.state === "running" ? 202 : 200);
-  }
-
-  private advertisingStrategyGateway(): AdvertisingStrategyReportGateway {
-    const gateway = this.advertising;
-    if (
-      !gateway?.getCombinedAccountIdentity ||
-      !gateway.createSponsoredProductsAdvertisedProductReport ||
-      !gateway.getSponsoredProductsAdvertisedProductReportStatus ||
-      !gateway.downloadSponsoredProductsAdvertisedProductReport
-    ) {
-      throw new SpApiError(
-        "目前 Notebook 鑰匙版本尚未提供 Sponsored Products 報表；更新後才可產生策略。",
-        { status: 422, code: "ADS_STRATEGY_APP_UPDATE_REQUIRED" },
-      );
-    }
-    return gateway as AdvertisingStrategyReportGateway;
-  }
-
-  private async advertisingCall<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (error instanceof AdvertisingApiError) {
-        throw new SpApiError(error.message, {
-          status: error.status,
-          code: error.status >= 500 ? "UPSTREAM_UNAVAILABLE" : error.code,
-          requestId: error.requestId,
-        });
-      }
-      throw error;
-    }
-  }
-
-  private parseAdvertisingStrategyRange(input: {
-    marketplaceId: MarketplaceId;
-    startDate: unknown;
-    endDate: unknown;
-  }): { startDate: string; endDate: string } {
-    return planCompletedSalesAndTrafficWindow({
-      ...input,
-      now: new Date(Date.now()),
-    });
-  }
-
-  private advertisedProductPlan(job: AdvertisingStrategyJob) {
-    return {
-      intent: "ads-sp-advertised-product" as const,
-      marketplaceId: job.marketplaceId,
-      startDate: job.startDate,
-      endDate: job.endDate,
-      signal: job.controller.signal,
-    };
-  }
-
-  private async assertAdvertisingStrategyContext(
-    job: AdvertisingStrategyJob,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    assertBackgroundActive(signal);
-    this.advertisingStrategyGateway();
-    await this.spExecutionContext.assertCurrent(job.context);
-    assertBackgroundActive(signal);
-    await this.reportBroker.assertAdvertisedProductBinding({
-      binding: job.adsReportBinding,
-      marketplaceId: job.marketplaceId,
-      signal,
-      expectedContext: job.context,
-    });
-    await this.spExecutionContext.assertCurrent(job.context);
-    assertBackgroundActive(signal);
-  }
-
-  private async startSalesAndTrafficStrategyReport(
-    job: AdvertisingStrategyJob,
-    input: { refresh: boolean; explicitRetry: boolean },
-  ): Promise<DurableReportStatus> {
-    return this.salesAndTraffic.begin({
-      marketplaceId: job.marketplaceId,
-      startDate: job.startDate,
-      endDate: job.endDate,
-      signal: job.controller.signal,
-      explicitRetry: input.explicitRetry,
-      freshCompleted: input.refresh,
-    });
-  }
-
-  private async startAdvertisedProductStrategyReport(
-    job: AdvertisingStrategyJob,
-    input: { refresh: boolean; explicitRetry: boolean },
-  ): Promise<DurableReportStatus> {
-    this.advertisingStrategyGateway();
-    return this.reportBroker.startAdvertisedProduct(
-      this.advertisedProductPlan(job),
-      {
-        binding: job.adsReportBinding,
-        explicitRetry: input.explicitRetry,
-        freshCompleted: input.refresh,
-        expectedContext: job.context,
-      },
-    );
-  }
-
-  private async waitForStrategyListings(
-    job: AdvertisingStrategyJob,
-    initial: DurableReportStatus,
-  ): Promise<FbaListingIdentitySnapshot> {
-    let status = initial;
-    let waited = 0;
-    for (let attempt = 0; !status.ready && waited < ADVERTISING_STRATEGY_REPORT_WAIT_MS; attempt += 1) {
-      const delay = Math.min(
-        advertisingStrategyPollDelay(attempt),
-        ADVERTISING_STRATEGY_REPORT_WAIT_MS - waited,
-      );
-      await this.advertisingStrategyWait(delay, job.controller.signal);
-      waited += delay;
-      await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-      status = await this.getSharedAllListingsReportStatus({
-        marketplaceId: job.marketplaceId,
-        reportId: status.reportId,
-        signal: job.controller.signal,
-      });
-      this.touchAdvertisingStrategyJob(job);
-    }
-    if (!status.ready || !status.documentId) {
-      throw new SpApiError("Amazon FBA 全商品報表仍在準備中。", {
-        status: 504,
-        code: "REPORT_PENDING",
-      });
-    }
-    await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-    return this.advertisingStrategySources.fbaListings({
-      marketplaceId: job.marketplaceId,
-      reportId: status.reportId,
-      documentId: status.documentId,
-      signal: job.controller.signal,
-    });
-  }
-
-  private async waitForStrategySales(
-    job: AdvertisingStrategyJob,
-    initial: DurableReportStatus,
-  ): Promise<SalesAndTrafficSnapshot> {
-    let status = initial;
-    let waited = 0;
-    for (let attempt = 0; !status.ready && waited < ADVERTISING_STRATEGY_REPORT_WAIT_MS; attempt += 1) {
-      const delay = Math.min(
-        advertisingStrategyPollDelay(attempt),
-        ADVERTISING_STRATEGY_REPORT_WAIT_MS - waited,
-      );
-      await this.advertisingStrategyWait(delay, job.controller.signal);
-      waited += delay;
-      await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-      status = await this.salesAndTraffic.status({
-        marketplaceId: job.marketplaceId,
-        startDate: job.startDate,
-        endDate: job.endDate,
-        reportId: status.reportId,
-        signal: job.controller.signal,
-      });
-      this.touchAdvertisingStrategyJob(job);
-    }
-    if (!status.ready || !status.documentId) {
-      throw new SpApiError("Amazon SKU 銷售與流量報表仍在準備中。", {
-        status: 504,
-        code: "REPORT_PENDING",
-      });
-    }
-    await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-    return this.salesAndTraffic.read({
-      marketplaceId: job.marketplaceId,
-      startDate: job.startDate,
-      endDate: job.endDate,
-      reportId: status.reportId,
-      documentId: status.documentId,
-      signal: job.controller.signal,
-    });
-  }
-
-  private async waitForStrategyAds(
-    job: AdvertisingStrategyJob,
-    initial: DurableReportStatus,
-  ): Promise<AdvertisedProductReportData> {
-    let status = initial;
-    let waited = 0;
-    for (let attempt = 0; !status.ready && waited < ADVERTISING_STRATEGY_REPORT_WAIT_MS; attempt += 1) {
-      const delay = Math.min(
-        advertisingStrategyPollDelay(attempt),
-        ADVERTISING_STRATEGY_REPORT_WAIT_MS - waited,
-      );
-      await this.advertisingStrategyWait(delay, job.controller.signal);
-      waited += delay;
-      await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-      status = await this.reportBroker.statusAdvertisedProduct(
-        this.advertisedProductPlan(job),
-        status.reportId,
-        { binding: job.adsReportBinding, expectedContext: job.context },
-      );
-      this.touchAdvertisingStrategyJob(job);
-    }
-    if (!status.ready || !status.documentId) {
-      throw new SpApiError("Amazon Ads Sponsored Products 商品報表仍在準備中。", {
-        status: 504,
-        code: "REPORT_PENDING",
-      });
-    }
-    await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-    return this.reportBroker.readAdvertisedProductData(
-      this.advertisedProductPlan(job),
-      { reportId: status.reportId, documentId: status.documentId },
-      { binding: job.adsReportBinding, expectedContext: job.context },
-    );
-  }
-
-  private strategyFailure(error: unknown): { notice: string; code: string } {
-    if (error instanceof Error && error.name === "AbortError") {
-      return {
-        notice: "FBA 廣告策略背景工作已安全停止。",
-        code: "STRATEGY_ABORTED",
-      };
-    }
-    if (error instanceof SpApiError) {
-      if (error.code === "REPORT_RETRY_WAIT") {
-        return {
-          notice: publicSpApiError(
-            error,
-            "Amazon 報表仍在安全重試間隔內。",
-          ).message,
-          code: "REPORT_RETRY_WAIT",
-        };
-      }
-      if (
-        [
-          "SHARED_REPORT_RETRY_REQUIRED",
-          "REPORT_CANCELLED",
-          "REPORT_FATAL",
-          "UPSTREAM_UNAVAILABLE",
-          "ADS_UPSTREAM_FAILED",
-          "ADS_AUTHORIZATION_FAILED",
-          "ADS_RATE_LIMITED",
-        ].includes(error.code)
-      ) {
-        return {
-          notice: "上次 Amazon 報表建立或讀取未能確定完成；系統不會自動重建，請使用明確重試。",
-          code: "REPORT_RETRY_REQUIRED",
-        };
-      }
-      if (error.status === 401 || error.status === 403) {
-        return {
-          notice: "Amazon 拒絕廣告策略資料查詢，請檢查 SP-API Reports 與 Amazon Ads Viewer 授權。",
-          code: "ADS_STRATEGY_AUTHORIZATION_FAILED",
-        };
-      }
-      if (error.code === "REPORT_PENDING") {
-        return {
-          notice: "Amazon 報表準備時間超過本次等待上限；既有報表不會被重複建立，可重新接回。",
-          code: "REPORT_PENDING",
-        };
-      }
-    }
-    if (error instanceof AdvertisingApiError) {
-      return {
-        notice: "Amazon Ads 報表目前無法完成；沒有建立、修改或啟用任何 campaign。",
-        code: "ADS_STRATEGY_FAILED",
-      };
-    }
-    return {
-      notice: "FBA 廣告策略目前無法完成；缺值沒有被補成 0，也沒有修改任何廣告。",
-      code: "ADS_STRATEGY_FAILED",
-    };
-  }
-
-  private async runAdvertisingStrategyJob(
-    job: AdvertisingStrategyJob,
-    input: { refresh: boolean; explicitRetry: boolean },
-  ): Promise<void> {
-    try {
-      const signal = job.controller.signal;
-      await this.assertAdvertisingStrategyContext(job, signal);
-      const [listingsReport, salesReport, adsReport] = await Promise.all([
-        this.startSharedAllListingsReport(
-          job.marketplaceId,
-          input.explicitRetry,
-          signal,
-          { freshCompleted: input.refresh },
-        ),
-        this.startSalesAndTrafficStrategyReport(job, input),
-        this.startAdvertisedProductStrategyReport(job, input),
-      ]);
-
-      job.progress = { phase: "fba", completed: 0, total: 4 };
-      job.notice = "正在核對同一站點目前可證明為 FBA 的 Seller SKU。";
-      const fba = await this.waitForStrategyListings(job, listingsReport);
-      await this.assertAdvertisingStrategyContext(job, signal);
-      job.progress = { phase: "sales", completed: 1, total: 4 };
-      job.notice = "FBA 商品已核對；正在整理 SKU 粒度銷售與營業額。";
-      this.touchAdvertisingStrategyJob(job);
-
-      const sales = await this.waitForStrategySales(job, salesReport);
-      await this.assertAdvertisingStrategyContext(job, signal);
-      job.progress = { phase: "ads", completed: 2, total: 4 };
-      job.notice = "SKU 銷售已整理；正在讀取 Sponsored Products 實際花費。";
-      this.touchAdvertisingStrategyJob(job);
-
-      const ads = await this.waitForStrategyAds(job, adsReport);
-      const adsFetchedAt = new Date().toISOString();
-      await this.assertAdvertisingStrategyContext(job, signal);
-      job.progress = { phase: "building", completed: 3, total: 4 };
-      job.notice = "三份唯讀來源已完成；正在套用可見的 T1–T4 預設規則。";
-      this.touchAdvertisingStrategyJob(job);
-
-      const snapshot = buildAdvertisingStrategySnapshot({
-        marketplaceId: job.marketplaceId,
-        marketplaceCode: job.marketplaceCode,
-        dateRange: { startDate: job.startDate, endDate: job.endDate },
-        currencyCode: MARKETPLACES[job.marketplaceId].currency,
-        fetchedAt: new Date().toISOString(),
-        sourceFetchedAt: {
-          fba: fba.fetchedAt,
-          sales: sales.fetchedAt,
-          ads: adsFetchedAt,
-        },
-        listings: fba.rows,
-        salesRows: sales.rows.map((row) => ({
-          sellerSku: row.sellerSku,
-          childAsin: row.childAsin,
-          unitsSold: row.unitsOrdered,
-          salesAmount: row.orderedProductSales,
-          currencyCode: row.currencyCode,
-        })),
-        spAdvertisedProductRows: ads.rows.map((row) => ({
-          sellerSku: row.advertisedSku,
-          asin: row.advertisedAsin,
-          spend: row.cost,
-          sales14d: row.sales14d,
-          purchases14d: row.purchases14d,
-          currencyCode: MARKETPLACES[job.marketplaceId].currency,
-        })),
-      });
-      await this.assertAdvertisingStrategyContext(job, signal);
-      if (this.advertisingStrategyJobs.get(job.jobId) !== job) return;
-      job.snapshot = snapshot;
-      job.state = "completed";
-      job.progress = { phase: "building", completed: 4, total: 4 };
-      job.notice = "FBA 廣告策略表已完成；SB／SD 與規格欄位保留人工決策，不會自動寫回 Amazon。";
-      job.errorCode = null;
-      this.retainAdvertisingStrategyJob(job);
-    } catch (error) {
-      if (this.advertisingStrategyJobs.get(job.jobId) !== job) return;
-      const failure = this.strategyFailure(error);
-      job.controller.abort(error);
-      job.state = "failed";
-      job.snapshot = null;
-      job.notice = failure.notice;
-      job.errorCode = failure.code;
-      this.retainAdvertisingStrategyJob(
-        job,
-        failure.code === "REPORT_RETRY_REQUIRED" || failure.code === "REPORT_RETRY_WAIT"
-          ? ADVERTISING_STRATEGY_RETRY_TTL_MS
-          : ADVERTISING_STRATEGY_TERMINAL_TTL_MS,
-      );
-    }
-  }
-
-  private async startAdvertisingStrategy(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    if (!body) return invalid("廣告策略查詢格式無效。");
-    const allowedKeys = new Set([
-      "marketplaceId",
-      "startDate",
-      "endDate",
-      "refresh",
-      "explicitRetry",
-    ]);
-    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
-      return invalid("廣告策略查詢包含不支援的欄位。");
-    }
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
-    if (
-      (body.refresh !== undefined && typeof body.refresh !== "boolean") ||
-      (body.explicitRetry !== undefined && typeof body.explicitRetry !== "boolean")
-    ) {
-      return invalid("廣告策略重新產生意圖格式無效。");
-    }
-    const refresh = body.refresh === true;
-    const explicitRetry = body.explicitRetry === true;
-    if (explicitRetry && !refresh) {
-      return invalid("明確重試必須由重新產生操作觸發。");
-    }
-    let range: { startDate: string; endDate: string };
-    try {
-      range = this.parseAdvertisingStrategyRange({
-        marketplaceId,
-        startDate: body.startDate,
-        endDate: body.endDate,
-      });
-    } catch (error) {
-      return apiError(error, "廣告策略日期無效。");
-    }
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    if (context.mode === "demo") {
-      return invalid(
-        "展示模式不會產生看似真實的 FBA 廣告策略表。",
-        422,
-        "ADS_STRATEGY_LIVE_REQUIRED",
-      );
-    }
-
-    this.pruneAdvertisingStrategyJobs();
-    this.advertisingStrategyGateway();
-    const adsReportBinding = await this.reportBroker
-      .bindAdvertisedProductAccount({
-        marketplaceId,
-        expectedContext: context,
-      });
-    const spAccountScope = context.accountScope;
-    const selection = stableFingerprint({
-      spAccountScope,
-      adsReportBinding,
-      marketplaceId,
-      startDate: range.startDate,
-      endDate: range.endDate,
-    });
-    const existingId = this.advertisingStrategySelections.get(selection);
-    const existing = existingId ? this.advertisingStrategyJobs.get(existingId) : null;
-    if (existing?.state === "running" && existing.expiresAt > Date.now()) {
-      return this.advertisingStrategyReply(existing);
-    }
-    if (explicitRetry && !(
-      existing?.state === "failed" &&
-      (existing.errorCode === "REPORT_RETRY_REQUIRED" || existing.errorCode === "REPORT_RETRY_WAIT") &&
-      existing.expiresAt > Date.now()
-    )) {
-      return invalid(
-        "目前沒有同帳號、站點與日期範圍的報表重試資格。",
-        409,
-        "REPORT_RETRY_NOT_ALLOWED",
-      );
-    }
-    if (existing && !refresh) return this.advertisingStrategyReply(existing);
-    // The renderer also sends refresh when the user changes a date selection.
-    // Only an exact selection that is already known locally is an explicit
-    // request to replace compatible completed report leases. A -> B -> A must
-    // reconnect to A's existing DAY+SKU report instead of issuing a third POST.
-    const freshCompleted = refresh && Boolean(existing);
-    if (existing) this.removeAdvertisingStrategyJob(existing.jobId);
-    for (const candidate of [...this.advertisingStrategyJobs.values()]) {
-      if (candidate.marketplaceId !== marketplaceId) continue;
-      if (candidate.state === "running") {
-        candidate.controller.abort(new Error("同一站點已改用新的廣告策略日期範圍。"));
-      }
-      this.removeAdvertisingStrategyJob(candidate.jobId);
-    }
-
-    const job: AdvertisingStrategyJob = {
-      jobId: randomUUID(),
-      context,
-      marketplaceId,
-      marketplaceCode: MARKETPLACE_CODES[marketplaceId],
-      spAccountScope,
-      adsReportBinding,
-      mode: "live",
-      startDate: range.startDate,
-      endDate: range.endDate,
-      state: "running",
-      progress: { phase: "fba", completed: 0, total: 4 },
-      notice: "正在建立三份唯讀資料來源；你可以關閉這個面板或先使用其他功能。",
-      errorCode: null,
-      snapshot: null,
-      controller: new AbortController(),
-      expiresAt: Date.now() + ADVERTISING_STRATEGY_ACTIVE_TTL_MS,
-      expiryTimer: null,
-      flight: null,
-    };
-    this.advertisingStrategyJobs.set(job.jobId, job);
-    this.advertisingStrategySelections.set(selection, job.jobId);
-    job.flight = this.runAdvertisingStrategyJob(job, {
-      refresh: freshCompleted,
-      explicitRetry,
-    }).finally(() => {
-      job.flight = null;
-    });
-    void job.flight;
-    return this.advertisingStrategyReply(job);
-  }
-
-  private async advertisingStrategyStatus(request: ApiRequest): Promise<ApiResponse> {
-    const allowedKeys = new Set(["marketplaceId", "jobId", "startDate", "endDate"]);
-    if (Object.keys(request.query).some((key) => !allowedKeys.has(key))) {
-      return invalid("廣告策略工作查詢包含不支援的欄位。");
-    }
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const jobId = this.reportIdentifier(request.query.jobId);
-    const startDate = optionalDate(request.query.startDate);
-    const endDate = optionalDate(request.query.endDate);
-    if (
-      !marketplaceId ||
-      !jobId ||
-      typeof startDate !== "string" ||
-      typeof endDate !== "string"
-    ) {
-      return invalid("廣告策略工作資訊無效，請重新產生。");
-    }
-    this.pruneAdvertisingStrategyJobs();
-    const job = this.advertisingStrategyJobs.get(jobId);
-    if (!job || job.marketplaceId !== marketplaceId) {
-      return invalid("找不到這份廣告策略工作，請重新產生。", 404, "JOB_NOT_FOUND");
-    }
-    if (job.startDate !== startDate || job.endDate !== endDate) {
-      return invalid("廣告策略工作與所選日期不一致。", 409, "JOB_MISMATCH");
-    }
-    try {
-      await this.assertAdvertisingStrategyContext(job);
-    } catch {
-      job.controller.abort(new Error("廣告策略工作 context 已變更。"));
-      this.removeAdvertisingStrategyJob(job.jobId);
-      return invalid(
-        "廣告策略工作不屬於目前 SP-API／Ads 帳號、站點或模式。",
-        409,
-        "JOB_MISMATCH",
-      );
-    }
-    return this.advertisingStrategyReply(job);
-  }
-
-  private async adsStatus(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    const demo = context.mode === "demo";
-    const summary = demo || !this.advertising
-      ? null
-      : (await this.runContextBoundWork(
-          marketplaceId,
-          () => this.advertising!.getCredentialSummary(),
-        )).value;
-    let verification: AdvertisingConnectionTestResult | null = null;
-    if (!demo && summary?.configured && this.advertising) {
-      verification = (await this.runContextBoundWork(
-        marketplaceId,
-        () => this.advertising!.probeMarketplace(marketplaceId),
-      )).value;
-    }
-    const coverageAuditAvailable = demo || Boolean(verification?.ok);
-    return json({
-      marketplaceId,
-      marketplaceCode: MARKETPLACE_CODES[marketplaceId],
-      configured: Boolean(summary?.configured),
-      verified: Boolean(verification?.ok),
-      lwaConfigured: Boolean(summary?.lwaConfigured),
-      profileConfigured: Boolean(verification?.ok),
-      writeEnabled: false,
-      scope: "advertising::campaign_management",
-      requiredPermission: "Campaign manager Viewer",
-      permissionVerified: false,
-      supportedProducts: ["SPONSORED_PRODUCTS"],
-      separateFromSpApi: true,
-      testedAt: verification?.testedAt ?? null,
-      requestId: verification?.requestId ?? null,
-      coverageAuditAvailable,
-      coverageAuditNotice: coverageAuditAvailable
-        ? demo
-          ? "目前是展示模式，可驗證 ProductAI 命名與同 ASIN 覆蓋規則；結果不是你的真實 Amazon Ads 資料。"
-          : "已用這個站點自動找到的 Seller Profile 驗證唯讀 Campaign 查詢。"
-        : verification?.message ?? "Amazon Ads API 尚未完成獨立授權；不會用展示結果冒充真實覆蓋。",
-      notice: demo
-        ? "展示模式不會呼叫 Amazon Ads。"
-        : verification?.message ?? "Amazon Ads 需要獨立 LWA App；Profile ID 由主程式自動發現，不需要輸入。",
-    });
-  }
-
-  private async adsCoverage(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    if (!marketplaceId) return invalid("不支援這個 Amazon Ads 站點。");
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    const demo = context.mode === "demo";
-    if (!demo && !this.advertising) {
-      return invalid(
-        "Amazon Ads API 尚未連線；廣告覆蓋健檢已備妥，但不會用展示活動冒充真實資料。",
-        422,
-        "ADS_API_NOT_CONNECTED",
-      );
-    }
-    try {
-      if (!demo) {
-        const { value: summary } = await this.runContextBoundWork(
-          marketplaceId,
-          () => this.advertising!.getCredentialSummary(),
-        );
-        if (!summary.configured) {
-          return invalid(
-            "Amazon Ads 憑證尚未完整設定。",
-            422,
-            "ADS_API_NOT_CONNECTED",
-          );
-        }
-      }
-      const existing = await this.fbaCatalogReports.readExistingExport({
-        marketplaceId,
-        expectedContext: context,
-      });
-      if (existing.state === "missing") {
-        return invalid(
-          "目前沒有可安全接回的 FBA 全商品報表；請先從具明確啟動動作的功能建立報表。",
-          409,
-          "REPORT_NOT_READY",
-        );
-      }
-      if (existing.state === "pending") {
-        return json(
-          {
-            state: "processing",
-            marketplaceId,
-            message: "Amazon 正在準備 FBA 全商品清單，稍後會自動繼續。",
-          },
-          202,
-          { "retry-after": "2" },
-        );
-      }
-      const data = existing.data;
-      const listings = prepareAdvertisingCoverageListings({
-        rows: data.rows,
-        errors: data.errors,
-      });
-      const campaigns: AdvertisingCoverageCampaign[] = demo
-        ? listings
-            .filter((_, index) => index % 2 === 0)
-            .map((listing, index) => ({
-              campaignId: `demo-productai-${index + 1}`,
-              name: `[ProductAI] ${MARKETPLACE_CODES[marketplaceId]}-${listing.asin}-${listing.sellerSku}-SP-PAT-Aug92026`,
-              state: "ENABLED",
-              adProduct: "SPONSORED_PRODUCTS",
-            }))
-        : (await this.runContextBoundWork(
-            marketplaceId,
-            () => this.advertising!.listEnabledSponsoredProductCampaigns(
-              marketplaceId,
-            ),
-          )).value;
-      return json(
-        auditAdvertisingCoverage({
-          mode: demo ? "demo" : "live",
-          marketplaceId,
-          marketplaceCode: MARKETPLACE_CODES[marketplaceId],
-          listings,
-          campaigns,
-        }),
-      );
-    } catch (error) {
-      return apiError(error, "執行 Amazon Ads 覆蓋健檢時發生未預期錯誤。");
-    }
-  }
 
   private async scopedFingerprint(
     marketplaceId: MarketplaceId,

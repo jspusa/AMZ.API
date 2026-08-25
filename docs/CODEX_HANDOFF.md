@@ -42,6 +42,8 @@ R08 issue #92 已發布為 stacked Draft PR #133，分支為 `codex/r08-catalog-
 
 R09 issue #93 已發布為 stacked Draft PR #134，分支為 `codex/r09-review-a-plus-coordinators`，base 固定為 R08 final head `836c0c6866b1c2b060f9a267ab0c0f27324c9325`。main-only `ReviewAuditCoordinator` 現在透過 `start／observe／download／clear` 四方法 port 完整擁有 Review job identity、poll flight、timer、active／terminal retention、固定報表 identity、candidate／coverage evidence、Customer Feedback 背景續跑、全 App session 共用的一秒一請求 queue、一次 bounded 429 retry、403 fan-out、terminal snapshot、workbook bytes與download headers；clear會取消舊 job／flight，但不會重設全域 pacing boundary。main-only `AplusAuditCoordinator` 透過 `start／observe／clear` 三方法 port 擁有 exact `SpExecutionContext`、FBA Listings seed report、variation grouping、A+ publish／document／relation semantic read、heartbeat、single-flight與TTL；任一exact published正向證據仍優先，negative／malformed／partial／unavailable／unreported在沒有positive時繼續fail closed。A+ seed只能走owner固定`explicitRetry:false`的`ListingsExport.startReusable()`，caller沒有retry boolean或旁路；Review既有明確public start仍保留explicit retry語意。A+ job error也只在新coordinator公開seam翻譯與sanitize，中央`ApiRouter`不再反向依賴內部job error；adversarial regression證明token、帳號、report、URL與控制字元不會外洩。`api-router.ts`由6,621行降為5,924行，Review coordinator為863行、A+ coordinator為401行；最高public RED commit `69b0a40713a10f094db9a2b488f3930a8c20c546` 先證明Router尚未委派Review start。Spec／Standards／Security／concurrency三組獨立終審均無剩餘P0–P3。final local `npm run check`通過180個測試檔／1,867項測試、typecheck與production build，`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。implementation／review-fix head `9d05fd43bf3069d9671d562fafd0c3ef9946ef8f`的Validate run `32896070973`／job `97958946374`與Windows x64 run `32896070923`／job `97958946575`均成功；Windows包含runner validation、unsigned package、ASAR addon boundary與packaged Bridge smoke，PR workflow依規則跳過artifact upload。本次交接回填會形成docs-only final head，仍須讓兩條CI在該head重跑。#93保持OPEN；兩個既有user-owned untracked duplicate files仍未追蹤且排除。本段只有local／static／fixture／scripted／demo／test／build／CI證據，沒有合併、部署、安裝、Notebook Key、live Amazon、Pages、真實裝置、Validation Preview、PATCH、readback或Amazon mutation。
 
+R10 issue #94 已完成本地實作，分支為 `codex/r10-read-only-ads-coordinator`，base 固定為 R09 final head `bf5e3c69c5d84bf27e5748b6f3eaca5bd062d517`，準備發布為 stacked Draft PR。main-only `ReadOnlyAdvertisingCoordinator` 透過 `status／coverage／startStrategy／observeStrategy／runStandalone／runAuditSuite／clear` 七方法 port，完整擁有 Ads public status／coverage／strategy、strategy job identity／selection／controller／timer／flight／progress／TTL、Standalone advertising hook、Audit Suite advertising runner與 Ads-specific sanitizer；中央 `ApiRouter` 只保留四條 exact public route 委派、composition與全域 clear，並固定先 clear shared `FixedReportBroker` 再 clear coordinator。每個 public／Standalone／Suite operation 都在第一個 await 前建立 owner controller並固定 signal；同一份 immutable `SpExecutionContext` 穿過 catalog、Sales & Traffic與Ads broker的 begin／status／read，success／error publication前都重新核對context、lifecycle revision與job identity。clear、timeout、A→B與遲到 completion不能復活舊工作或把原始context error降級；durable broker lease／terminal／unknown tombstone仍保留，避免blind repost。coverage公開DTO維持原欄位形狀，但`campaignId`值改為不含Amazon身分的逐snapshot `coverage-evidence.N` token，原始campaign／profile／report／document／account identifiers保持main-only。不完整Listings identity會停止public coverage與Standalone；Audit Suite只保留已知evidence並標記partial／未完成，不會把unavailable Ads值補0。write capability仍固定false，沒有新增mutation route或method。`sp-api.ts`仍為8,266行，`api-router.ts`由5,924行降為4,919行，coordinator為1,663行；最高public RED commit `d7b402f456879104c38adbfb7763e5546cdb6545` 先證明四條route尚未委派。focused 10個測試檔／142 tests通過，local `npm run check`通過183個測試檔／1,883項測試、typecheck與production build，`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean；最終獨立Spec／Standards／Security複查與GitHub CI證據仍待發布流程完成。#94保持OPEN；兩個既有user-owned untracked duplicate files仍未追蹤且排除。本段只有local／static／fixture／scripted／demo／test／build證據，沒有合併、部署、安裝、Notebook Key、live Amazon、Pages、真實裝置、Validation Preview、PATCH、readback或Amazon mutation。
+
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -685,23 +687,24 @@ Amazon App：
 36. `src/main/amazon/sales-and-traffic-reads.ts` — fixed DAY＋SKU document parser、strict identity／number／currency與public snapshot projection。
 37. `src/main/amazon/sales-and-traffic-reports.ts` — S&T begin／status／read semantic coordinator與accepted-lease context fence。
 38. `src/main/amazon/sales-and-traffic-demo.ts` — 只使用注入 canonical demo listings的S&T demo source。
-39. `src/main/fba-inbound-coordinator.ts` — inbound renderer-facing job identity、selection、abort／flight／TTL、progress、partial snapshot與noncompliance merge的唯一 owner。
-40. `src/main/amazon/fba-inbound-shipments.ts` — v0 shipment／items normalization、opaque continuation、duplicate與page／row budgets。
-41. `src/main/amazon/fba-inbound-modern.ts` — bounded modern plan／shipment fallback collector與partial coverage。
-42. `src/main/amazon/inbound-noncompliance.ts` — daily report strict parser、public issue filtering與demo document。
-43. `src/main/amazon/fba-inbound-reads.ts` — shipment／noncompliance兩條leg、400／422 fallback、同一execution context與ReportsRuntime composition。
-44. `src/main/amazon/fba-inbound-reads-production.ts` — 固定official GET endpoints、global pace、timeout、token refresh與bounded transient retry。
-45. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
-46. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
-47. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
-48. `src/main/amazon/sp-api.ts` — 尚未抽離的 Listings write／legacy demo facade與production adapter composition；Orders read語意已移除。
-49. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-50. `src/preload/index.ts` — 窄化 Bridge。
-51. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-52. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-53. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-54. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-55. `tests/*.test.ts` — 已建立的安全與回歸契約。
+39. `src/main/advertising-read-coordinator.ts` — 唯讀 Ads status／coverage／strategy、Standalone／Suite hooks、job lifecycle、context fence與公開error projection的唯一 owner。
+40. `src/main/fba-inbound-coordinator.ts` — inbound renderer-facing job identity、selection、abort／flight／TTL、progress、partial snapshot與noncompliance merge的唯一 owner。
+41. `src/main/amazon/fba-inbound-shipments.ts` — v0 shipment／items normalization、opaque continuation、duplicate與page／row budgets。
+42. `src/main/amazon/fba-inbound-modern.ts` — bounded modern plan／shipment fallback collector與partial coverage。
+43. `src/main/amazon/inbound-noncompliance.ts` — daily report strict parser、public issue filtering與demo document。
+44. `src/main/amazon/fba-inbound-reads.ts` — shipment／noncompliance兩條leg、400／422 fallback、同一execution context與ReportsRuntime composition。
+45. `src/main/amazon/fba-inbound-reads-production.ts` — 固定official GET endpoints、global pace、timeout、token refresh與bounded transient retry。
+46. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
+47. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
+48. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
+49. `src/main/amazon/sp-api.ts` — 尚未抽離的 Listings write／legacy demo facade與production adapter composition；Orders read語意已移除。
+50. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+51. `src/preload/index.ts` — 窄化 Bridge。
+52. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+53. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+54. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+55. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+56. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

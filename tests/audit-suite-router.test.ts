@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiRouter,
-  buildAdvertisingAuditSuiteResult,
   buildAplusAuditSuiteResult,
 } from "../src/main/api-router";
+import { buildAdvertisingAuditSuiteResult } from
+  "../src/main/advertising-read-coordinator";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";

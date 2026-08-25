@@ -19,8 +19,6 @@ import type {
   FbaCatalogIdentitySnapshot as FbaListingIdentitySnapshot,
 } from "../src/main/amazon/catalog-report-reads";
 import {
-  createScriptedSpExecutionContextAdapter,
-  type SpExecutionContext,
   type SpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
@@ -561,36 +559,6 @@ describe("FBA advertising strategy router job", () => {
     const response = await getJob(router, String(started.jobId));
     expect(response.status).toBe(409);
     expect(jsonValue(response)).toMatchObject({ code: "JOB_MISMATCH" });
-  });
-
-  it("checks the SP context before starting an Ads identity read", async () => {
-    let currentScope = "sp-context-before-ads-a";
-    const spExecutionContext = createScriptedSpExecutionContextAdapter(
-      (marketplaceId) => ({
-        marketplaceId,
-        mode: "live",
-        accountScope: currentScope,
-      }),
-    );
-    const context = await spExecutionContext.capture(MARKETPLACE_ID);
-    const { router, getAdsIdentity } = buildRouter({ spExecutionContext });
-    currentScope = "sp-context-before-ads-b";
-
-    await expect((router as unknown as {
-      assertAdvertisingStrategyContext(job: {
-        context: SpExecutionContext;
-        marketplaceId: typeof MARKETPLACE_ID;
-        adsReportBinding: string;
-      }): Promise<void>;
-    }).assertAdvertisingStrategyContext({
-      context,
-      marketplaceId: MARKETPLACE_ID,
-      adsReportBinding: "opaque-binding-must-not-be-read",
-    })).rejects.toMatchObject({
-      status: 409,
-      code: "ACCOUNT_SCOPE_CHANGED",
-    });
-    expect(getAdsIdentity).not.toHaveBeenCalled();
   });
 
   it("invalidates an old job when the main-only Ads Profile fingerprint changes", async () => {

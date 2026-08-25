@@ -296,5 +296,7 @@ describe("advertising coverage route boundary", () => {
     if (response.body.kind !== "json") throw new Error("Expected problem JSON");
     expect(response.body.value).toMatchObject({ code: "ACCOUNT_SCOPE_CHANGED" });
     expect(advertising.probeMarketplace).not.toHaveBeenCalled();
+    expect(advertising.invalidate).toHaveBeenCalledOnce();
+    liveRouter.dispose();
   });
 });

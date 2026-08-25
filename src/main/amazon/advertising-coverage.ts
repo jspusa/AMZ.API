@@ -206,6 +206,12 @@ export function auditAdvertisingCoverage(input: {
     left.campaign.name.localeCompare(right.campaign.name) ||
     left.campaign.campaignId.localeCompare(right.campaign.campaignId),
   );
+  const publicEvidenceIds = new Map(
+    eligible.map((entry, index) => [
+      entry,
+      `coverage-evidence.${index + 1}`,
+    ] as const),
+  );
 
   const rows = [...input.listings]
     .sort((left, right) => left.sellerSku.localeCompare(right.sellerSku))
@@ -224,7 +230,7 @@ export function auditAdvertisingCoverage(input: {
         evidence: match
           ? {
               kind: direct ? "seller-sku" : "same-asin",
-              campaignId: match.campaign.campaignId,
+              campaignId: publicEvidenceIds.get(match)!,
               campaignName: match.campaign.name,
               campaignSellerSku: match.parsed.sellerSku,
             }

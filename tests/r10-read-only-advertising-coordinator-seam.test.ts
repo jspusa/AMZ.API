@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
@@ -59,7 +60,7 @@ describe("R10 read-only Amazon Ads coordinator public seam", () => {
       vault: {} as CredentialVault,
       approveWrite: async () => undefined,
       advertisingCoordinator,
-    } as unknown as ConstructorParameters<typeof ApiRouter>[0]);
+    });
     const statusRequest = request("GET", "/api/amazon-ads/status");
     const coverageRequest = request("GET", "/api/amazon-ads/coverage");
     const strategyStartRequest = request("POST", "/api/amazon-ads/strategy");
@@ -74,13 +75,17 @@ describe("R10 read-only Amazon Ads coordinator public seam", () => {
     router.dispose();
 
     expect(advertisingCoordinator.status).toHaveBeenCalledWith(statusRequest);
+    expect(advertisingCoordinator.status).toHaveBeenCalledOnce();
     expect(advertisingCoordinator.coverage).toHaveBeenCalledWith(coverageRequest);
+    expect(advertisingCoordinator.coverage).toHaveBeenCalledOnce();
     expect(advertisingCoordinator.startStrategy).toHaveBeenCalledWith(
       strategyStartRequest,
     );
+    expect(advertisingCoordinator.startStrategy).toHaveBeenCalledOnce();
     expect(advertisingCoordinator.observeStrategy).toHaveBeenCalledWith(
       strategyObserveRequest,
     );
+    expect(advertisingCoordinator.observeStrategy).toHaveBeenCalledOnce();
     expect(responses).toEqual([
       statusResponse,
       coverageResponse,
@@ -88,5 +93,40 @@ describe("R10 read-only Amazon Ads coordinator public seam", () => {
       strategyObserveResponse,
     ]);
     expect(advertisingCoordinator.clear).toHaveBeenCalledOnce();
+  });
+
+  it("keeps every Ads hook on the owner and clears the shared broker first", () => {
+    const routerSource = readFileSync(
+      new URL("../src/main/api-router.ts", import.meta.url),
+      "utf8",
+    );
+    const coordinatorSource = readFileSync(
+      new URL("../src/main/advertising-read-coordinator.ts", import.meta.url),
+      "utf8",
+    );
+    const clearStart = routerSource.indexOf(
+      "private clearContextBoundState(): void",
+    );
+    const clearEnd = routerSource.indexOf(
+      "private invalidateContextBoundState(",
+      clearStart,
+    );
+    const clearBody = routerSource.slice(clearStart, clearEnd);
+    const brokerClear = clearBody.indexOf("this.reportBroker.clear()");
+    const coordinatorClear = clearBody.indexOf(
+      "this.advertisingCoordinator.clear()",
+    );
+
+    expect(clearStart).toBeGreaterThan(-1);
+    expect(brokerClear).toBeGreaterThan(-1);
+    expect(coordinatorClear).toBeGreaterThan(-1);
+    expect(brokerClear).toBeLessThan(coordinatorClear);
+    expect(coordinatorSource).not.toContain("this.reportBroker.clear()");
+    expect(routerSource).toContain(
+      "return this.advertisingCoordinator.runStandalone(input)",
+    );
+    expect(routerSource).toContain(
+      "this.advertisingCoordinator.runAuditSuite(context, control)",
+    );
   });
 });

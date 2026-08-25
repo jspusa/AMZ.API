@@ -1171,7 +1171,7 @@ describe("SP execution-context architecture", () => {
     expect(routerSource).not.toContain("this.reportLifecycle");
     expect(routerSource).not.toContain("adsAccountScope:");
     expect(routerSource).not.toContain("adsProfileFingerprint:");
-    expect(routerSource.match(/reports:\s*this\.reportBroker\b/gu)).toHaveLength(5);
+    expect(routerSource.match(/reports:\s*this\.reportBroker\b/gu)).toHaveLength(6);
     for (const directCall of [
       /\.getCombinedAccountIdentity\s*\(/u,
       /\.createSponsoredProductsAdvertisedProductReport\s*\(/u,

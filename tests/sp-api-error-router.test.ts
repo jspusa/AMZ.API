@@ -3,9 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import { AdvertisingApiError } from "../src/main/amazon/ads-api";
-import { AdvertisingCoverageInputError } from
-  "../src/main/amazon/advertising-coverage";
 import { AuditSuiteCoordinatorError } from
   "../src/main/amazon/audit-suite-coordinator";
 import { ReplenishmentAuditError } from
@@ -215,7 +212,7 @@ describe("public SP-API error mapping", () => {
     expect(JSON.stringify(response)).not.toContain("commitPatchSent");
   });
 
-  it("preserves safe coordinator, Ads and unknown error envelopes", async () => {
+  it("preserves safe coordinator and unknown error envelopes", async () => {
     const cases = [
       ...[
         new StandaloneAuditJobCoordinatorError("工作 context 已改變。", {
@@ -238,25 +235,6 @@ describe("public SP-API error mapping", () => {
         },
       })),
       {
-        error: new AdvertisingApiError("Amazon Ads 暫時無法使用。", {
-          status: 503,
-          code: "ADS_UPSTREAM_FAILED",
-          requestId: "ads-request.safe:001",
-        }),
-        expected: {
-          status: 503,
-          headers: JSON_HEADERS,
-          body: {
-            kind: "json" as const,
-            value: {
-              code: "ADS_UPSTREAM_FAILED",
-              message: "Amazon Ads 暫時無法使用。",
-              requestId: "ads-request.safe:001",
-            },
-          },
-        },
-      },
-      {
         error: new ReplenishmentAuditError(
           "REQUEST_INVALID",
           "補貨請求無效。",
@@ -269,20 +247,6 @@ describe("public SP-API error mapping", () => {
             value: {
               code: "REPLENISHMENT_REQUEST_INVALID",
               message: "補貨請求無效。",
-            },
-          },
-        },
-      },
-      {
-        error: new AdvertisingCoverageInputError("廣告覆蓋證據不完整。"),
-        expected: {
-          status: 422,
-          headers: JSON_HEADERS,
-          body: {
-            kind: "json" as const,
-            value: {
-              code: "ADS_LISTING_COVERAGE_INCOMPLETE",
-              message: "廣告覆蓋證據不完整。",
             },
           },
         },
@@ -338,30 +302,10 @@ describe("public SP-API error mapping", () => {
         },
       },
       {
-        error: new AdvertisingApiError(hostile, {
-          status: 302,
-          code: "BAD\nCODE",
-          requestId: "Atza|example-access-value",
-        }),
-        expectedValue: {
-          code: "UPSTREAM_UNAVAILABLE",
-          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
-          requestId: null,
-        },
-      },
-      {
         error: new ReplenishmentAuditError("REQUEST_INVALID", hostile),
         expectedStatus: 422,
         expectedValue: {
           code: "REPLENISHMENT_REQUEST_INVALID",
-          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
-        },
-      },
-      {
-        error: new AdvertisingCoverageInputError(hostile),
-        expectedStatus: 422,
-        expectedValue: {
-          code: "ADS_LISTING_COVERAGE_INCOMPLETE",
           message: "執行本機 Amazon 操作時發生未預期的錯誤。",
         },
       },
