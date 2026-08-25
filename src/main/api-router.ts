@@ -1134,22 +1134,43 @@ function bytes(
   };
 }
 
+function publicRouterError(
+  error: Readonly<{
+    message: string;
+    status: number;
+    code: string;
+    requestId?: string | null;
+    retryAfter?: string | null;
+  }>,
+  fallback: string,
+) {
+  return publicSpApiError(new SpApiError(error.message, {
+    status: error.status,
+    code: error.code,
+    requestId: error.requestId ?? null,
+    retryAfter: error.retryAfter ?? null,
+  }), fallback);
+}
+
 function apiError(error: unknown, fallback: string): ApiResponse {
   if (error instanceof FbaRevenueReportsError) {
+    const publicError = publicRouterError(error, fallback);
     return json(
-      { code: error.code, message: error.message },
-      error.status,
-      error.retryAfter ? { "retry-after": error.retryAfter } : {},
+      { code: publicError.code, message: publicError.message },
+      publicError.status,
+      publicError.retryAfter ? { "retry-after": publicError.retryAfter } : {},
     );
   }
-  if (error instanceof StandaloneAuditJobCoordinatorError) {
-    return json({ code: error.code, message: error.message }, error.status);
-  }
-  if (error instanceof AplusAuditJobCoordinatorError) {
-    return json({ code: error.code, message: error.message }, error.status);
-  }
-  if (error instanceof AuditSuiteCoordinatorError) {
-    return json({ code: error.code, message: error.message }, error.status);
+  if (
+    error instanceof StandaloneAuditJobCoordinatorError ||
+    error instanceof AplusAuditJobCoordinatorError ||
+    error instanceof AuditSuiteCoordinatorError
+  ) {
+    const publicError = publicRouterError(error, fallback);
+    return json(
+      { code: publicError.code, message: publicError.message },
+      publicError.status,
+    );
   }
   if (error instanceof SpApiError) {
     const publicError = publicSpApiError(error, fallback);
@@ -1172,16 +1193,37 @@ function apiError(error: unknown, fallback: string): ApiResponse {
       : error.code === "PAGINATION_CHANGED" || error.code === "DUPLICATE_SKU"
         ? 409
         : 502;
-    return json({ code: `REPLENISHMENT_${error.code}`, message: error.message }, status);
+    const publicError = publicRouterError({
+      status,
+      code: `REPLENISHMENT_${error.code}`,
+      message: error.message,
+    }, fallback);
+    return json(
+      { code: publicError.code, message: publicError.message },
+      publicError.status,
+    );
   }
   if (error instanceof AdvertisingApiError) {
+    const publicError = publicRouterError(error, fallback);
     return json(
-      { code: error.code, message: error.message, requestId: error.requestId },
-      error.status >= 400 && error.status < 600 ? error.status : 502,
+      {
+        code: publicError.code,
+        message: publicError.message,
+        requestId: publicError.requestId,
+      },
+      publicError.status,
     );
   }
   if (error instanceof AdvertisingCoverageInputError) {
-    return json({ code: error.code, message: error.message }, 422);
+    const publicError = publicRouterError({
+      status: 422,
+      code: error.code,
+      message: error.message,
+    }, fallback);
+    return json(
+      { code: publicError.code, message: publicError.message },
+      publicError.status,
+    );
   }
   return json({ code: "INTERNAL_ERROR", message: fallback }, 500);
 }
@@ -1421,6 +1463,28 @@ function isPlainRecord(value: unknown): value is JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isPlainRecord(value) &&
+    Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function validApiBody(value: unknown): boolean {
+  if (!isPlainRecord(value)) return false;
+  if (value.kind === "json") return isPlainRecord(value.value);
+  if (
+    value.kind !== "multipart" ||
+    !isStringRecord(value.fields) ||
+    !isPlainRecord(value.file)
+  ) {
+    return false;
+  }
+  return (
+    typeof value.file.name === "string" &&
+    typeof value.file.type === "string" &&
+    value.file.bytes instanceof Uint8Array
+  );
 }
 
 function bodyRecord(request: ApiRequest): JsonRecord | null {
@@ -2091,8 +2155,9 @@ export class ApiRouter {
         typeof request.path === "string" &&
         request.path.startsWith("/api/") &&
         request.path.length <= 200 &&
-        isPlainRecord(request.query) &&
-        isPlainRecord(request.headers),
+        isStringRecord(request.query) &&
+        isStringRecord(request.headers) &&
+        (request.body === undefined || validApiBody(request.body)),
     );
   }
 
