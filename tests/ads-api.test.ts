@@ -3,6 +3,7 @@ import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import {
   AdvertisingApiClient,
+  AdvertisingReportAcceptedError,
   SP_ADVERTISED_PRODUCT_REPORT_COLUMNS,
   SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
   parseSponsoredProductsAdvertisedProductRows,
@@ -534,10 +535,107 @@ describe("main-only Amazon Ads client", () => {
       marketplaceId: "ATVPDKIKX0DER",
       startDate: "2026-07-01",
       endDate: "2026-07-30",
+      expectedCombinedAccountScope: combinedAccountScope(),
     })).resolves.toEqual(reportReference());
     expect(await client.getCombinedAccountScope("ATVPDKIKX0DER"))
       .toBe(combinedAccountScope());
     expect(createCount).toBe(1);
+  });
+
+  it("carries an accepted report ID when the post-dispatch account fence changes", async () => {
+    let spAccountScope = "sp-scope-test";
+    let createCount = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-report-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: {
+            id: "seller-test",
+            type: "seller",
+            marketplaceStringId: "ATVPDKIKX0DER",
+          },
+        }]);
+      }
+      if (url.endsWith("/reporting/reports")) {
+        createCount += 1;
+        spAccountScope = "sp-scope-changed-after-post";
+        return json({ reportId: "report-test-1" }, 202);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(
+      vault(),
+      fetchMock,
+      async () => ({ accountScope: spAccountScope, sellerId: "seller-test" }),
+      () => new Date("2026-08-21T00:00:00.000Z"),
+    );
+
+    let accepted: unknown;
+    try {
+      await client.createSponsoredProductsAdvertisedProductReport({
+        marketplaceId: "ATVPDKIKX0DER",
+        startDate: "2026-07-01",
+        endDate: "2026-07-30",
+        expectedCombinedAccountScope: combinedAccountScope(),
+      });
+    } catch (error) {
+      accepted = error;
+    }
+
+    expect(accepted).toBeInstanceOf(AdvertisingReportAcceptedError);
+    expect(accepted).toMatchObject({
+      reference: reportReference(),
+      reason: { code: "ADS_REPORT_ACCOUNT_CHANGED", status: 409 },
+    });
+    expect(createCount).toBe(1);
+  });
+
+  it("rejects a broker scope mismatch before the report POST", async () => {
+    let reportingPosts = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/auth/o2/token")) {
+        return json({ access_token: "memory-report-token", expires_in: 3600 });
+      }
+      if (url.includes("/v2/profiles")) {
+        return json([{
+          profileId: 123456789,
+          countryCode: "US",
+          accountInfo: {
+            id: "seller-test",
+            type: "seller",
+            marketplaceStringId: "ATVPDKIKX0DER",
+          },
+        }]);
+      }
+      if (url.endsWith("/reporting/reports")) {
+        reportingPosts += 1;
+        return json({ reportId: "must-not-exist" }, 202);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const client = new AdvertisingApiClient(
+      vault(),
+      fetchMock,
+      spContext,
+      () => new Date("2026-08-21T00:00:00.000Z"),
+    );
+
+    await expect(client.createSponsoredProductsAdvertisedProductReport({
+      marketplaceId: "ATVPDKIKX0DER",
+      startDate: "2026-07-01",
+      endDate: "2026-07-30",
+      expectedCombinedAccountScope: "wrong-broker-scope",
+    })).rejects.toMatchObject({
+      code: "ADS_REPORT_ACCOUNT_CHANGED",
+      status: 409,
+    });
+    expect(reportingPosts).toBe(0);
   });
 
   it("fingerprints Seller Profile identity and detects a profile change on report status", async () => {
@@ -625,6 +723,7 @@ describe("main-only Amazon Ads client", () => {
       marketplaceId: "ATVPDKIKX0DER",
       startDate: "2026-07-01",
       endDate: "2026-07-30",
+      expectedCombinedAccountScope: combinedAccountScope(),
     })).rejects.toMatchObject({ code: "ADS_AUTHORIZATION_FAILED", status: 401 });
     expect(createCount).toBe(1);
     expect(tokenCount).toBe(1);
@@ -648,6 +747,7 @@ describe("main-only Amazon Ads client", () => {
         marketplaceId: "ATVPDKIKX0DER",
         startDate,
         endDate,
+        expectedCombinedAccountScope: combinedAccountScope(),
       })).rejects.toMatchObject({ code: "ADS_REPORT_DATE_INVALID" });
     }
     expect(fetchMock).not.toHaveBeenCalled();

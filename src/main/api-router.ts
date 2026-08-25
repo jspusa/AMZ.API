@@ -9,10 +9,7 @@ import type {
 } from "../shared/contracts";
 import {
   AdvertisingApiError,
-  SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
   type AdvertisingGateway,
-  type SponsoredProductsAdvertisedProductReport,
-  type SponsoredProductsAdvertisedProductReportReference,
 } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import {
@@ -263,17 +260,19 @@ import {
   type StandaloneAuditKind,
 } from "./amazon/standalone-audit-job";
 import {
-  DurableReportLifecycle,
   type DurableReportGatewayStatus,
-  type DurableReportIdentity,
   type DurableReportStatus,
 } from "./amazon/report-lifecycle";
 import {
-  ReportsRuntime,
   reportsAdapterIdentity,
   type ReportsAdapter,
   type ReportsIntentPlan,
 } from "./amazon/reports-runtime";
+import {
+  FixedReportBroker,
+  type AdvertisedProductAccountBinding,
+  type AdvertisedProductReportData,
+} from "./amazon/report-broker";
 import { testRegionConnections } from "./amazon/connection-health";
 import {
   businessPriceReadbackDecision,
@@ -759,8 +758,7 @@ type AdvertisingStrategyJob = {
   marketplaceId: MarketplaceId;
   marketplaceCode: string;
   spAccountScope: string;
-  adsAccountScope: string;
-  adsProfileFingerprint: string;
+  adsReportBinding: AdvertisedProductAccountBinding;
   mode: "live" | "demo";
   startDate: string;
   endDate: string;
@@ -1795,8 +1793,7 @@ export class ApiRouter {
   private readonly ordersReads: OrdersReadsPort;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
   private readonly fbaInboundReads: InboundReadsPort;
-  private readonly reportLifecycle: DurableReportLifecycle;
-  private readonly reportsRuntime: ReportsRuntime;
+  private readonly reportBroker: FixedReportBroker;
   private readonly salesAndTraffic: SalesAndTrafficReports;
   private readonly catalogListings: CatalogListingsReadAdapter;
   private readonly fbaCatalogReports: FbaCatalogReports;
@@ -1898,7 +1895,6 @@ export class ApiRouter {
       baseSpExecutionContext,
     );
     this.advertising = input.advertising ?? null;
-    this.reportLifecycle = new DurableReportLifecycle(this.store);
     this.allListingsDemoReports = {
       start: (request) => startDemoFixedReport({
         intent: "all-listings",
@@ -1946,19 +1942,19 @@ export class ApiRouter {
         ? liveReportsAdapter
         : compatibilityReportsAdapter).readDocument(request),
     };
-    this.reportsRuntime = new ReportsRuntime({
+    this.reportBroker = new FixedReportBroker({
       store: this.store,
-      lifecycle: this.reportLifecycle,
       context: this.spExecutionContext,
-      adapter: reportsAdapter,
+      reportsAdapter,
+      advertising: this.advertising,
     });
     this.agedInventoryReads = input.agedInventoryReads ?? new AgedInventoryReads({
-      reports: this.reportsRuntime,
+      reports: this.reportBroker,
       context: this.spExecutionContext,
     });
     const defaultFbaInboundReads = new FbaInboundReads({
       adapter: fbaInboundExternalReadAdapterProduction,
-      reports: this.reportsRuntime,
+      reports: this.reportBroker,
       context: this.spExecutionContext,
     });
     this.fbaInboundReads = {
@@ -1972,7 +1968,7 @@ export class ApiRouter {
       ...input.catalogDemo,
     };
     this.salesAndTraffic = new SalesAndTrafficReports({
-      reports: this.reportsRuntime,
+      reports: this.reportBroker,
       context: this.spExecutionContext,
       liveReader: input.salesAndTrafficRead,
       demo: {
@@ -1986,7 +1982,7 @@ export class ApiRouter {
     this.catalogListings = input.catalogListings ??
       catalogListingsReadAdapterProduction;
     this.fbaCatalogReports = new FbaCatalogReports({
-      reports: this.reportsRuntime,
+      reports: this.reportBroker,
       context: this.spExecutionContext,
       listings: this.catalogListings,
       demo: defaultCatalogDemo,
@@ -1995,7 +1991,7 @@ export class ApiRouter {
     });
     this.fbaRevenueReports = new FbaRevenueReports({
       store: this.store,
-      reports: this.reportsRuntime,
+      reports: this.reportBroker,
       catalog: this.fbaCatalogReports,
       context: this.spExecutionContext,
       demo: {
@@ -2082,7 +2078,7 @@ export class ApiRouter {
 
   private clearContextBoundState(): void {
     this.contextStateRevision += 1;
-    this.reportsRuntime.clear();
+    this.reportBroker.clear();
     this.fbaRevenueReports.clear();
     this.aplusAuditJobs.clear();
     this.standaloneAuditJobs.clear();
@@ -8245,30 +8241,13 @@ export class ApiRouter {
     });
   }
 
-  private advertisedProductIdentity(job: AdvertisingStrategyJob): DurableReportIdentity {
+  private advertisedProductPlan(job: AdvertisingStrategyJob) {
     return {
-      // The Ads client folds the Ads vault, SP account and exact Seller Profile
-      // into a fixed-size scope. Derive a separate lifecycle key so LocalStore
-      // never receives credential material or a raw Profile identifier.
-      accountScope: stableFingerprint(["ads-strategy", job.adsAccountScope]),
+      intent: "ads-sp-advertised-product" as const,
       marketplaceId: job.marketplaceId,
-      mode: job.mode,
-      reportType: "ADS_SP_ADVERTISED_PRODUCT",
-      optionsKey: `reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=${job.startDate};end=${job.endDate}`,
-    };
-  }
-
-  private advertisedProductReference(
-    job: AdvertisingStrategyJob,
-    reportId: string,
-  ): SponsoredProductsAdvertisedProductReportReference {
-    return {
-      reportId,
-      marketplaceId: job.marketplaceId,
-      combinedAccountScope: job.adsAccountScope,
       startDate: job.startDate,
       endDate: job.endDate,
-      configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
+      signal: job.controller.signal,
     };
   }
 
@@ -8277,22 +8256,17 @@ export class ApiRouter {
     signal?: AbortSignal,
   ): Promise<void> {
     assertBackgroundActive(signal);
-    const gateway = this.advertisingStrategyGateway();
+    this.advertisingStrategyGateway();
     await this.spExecutionContext.assertCurrent(job.context);
     assertBackgroundActive(signal);
-    const adsIdentity = await this.advertisingCall(() =>
-      gateway.getCombinedAccountIdentity(job.marketplaceId, signal));
+    await this.reportBroker.assertAdvertisedProductBinding({
+      binding: job.adsReportBinding,
+      marketplaceId: job.marketplaceId,
+      signal,
+      expectedContext: job.context,
+    });
     await this.spExecutionContext.assertCurrent(job.context);
     assertBackgroundActive(signal);
-    if (
-      adsIdentity.combinedAccountScope !== job.adsAccountScope ||
-      adsIdentity.adsProfileFingerprint !== job.adsProfileFingerprint
-    ) {
-      throw new SpApiError("廣告策略工作與目前 SP-API／Ads 帳號或模式不一致。", {
-        status: 409,
-        code: "ADS_STRATEGY_CONTEXT_CHANGED",
-      });
-    }
   }
 
   private async startSalesAndTrafficStrategyReport(
@@ -8313,45 +8287,16 @@ export class ApiRouter {
     job: AdvertisingStrategyJob,
     input: { refresh: boolean; explicitRetry: boolean },
   ): Promise<DurableReportStatus> {
-    const gateway = this.advertisingStrategyGateway();
-    return this.reportLifecycle.start({
-      identity: this.advertisedProductIdentity(job),
-      explicitRetry: input.explicitRetry,
-      freshCompleted: input.refresh,
-      signal: job.controller.signal,
-      create: async ({ signal }): Promise<DurableReportGatewayStatus> => {
-        const reference = await this.advertisingCall(() =>
-          gateway.createSponsoredProductsAdvertisedProductReport({
-            marketplaceId: job.marketplaceId,
-            startDate: job.startDate,
-            endDate: job.endDate,
-            signal,
-          }));
-        if (
-          reference.combinedAccountScope !== job.adsAccountScope ||
-          reference.marketplaceId !== job.marketplaceId ||
-          reference.startDate !== job.startDate ||
-          reference.endDate !== job.endDate
-        ) {
-          throw new SpApiError("Amazon Ads 報表 context 不一致，已停止。", {
-            status: 409,
-            code: "REPORT_MISMATCH",
-          });
-        }
-        return {
-          mode: "live",
-          ready: false,
-          reportId: reference.reportId,
-          documentId: null,
-          status: "IN_QUEUE",
-          notice: "Amazon Ads 正在準備 Sponsored Products 商品報表。",
-        };
+    this.advertisingStrategyGateway();
+    return this.reportBroker.startAdvertisedProduct(
+      this.advertisedProductPlan(job),
+      {
+        binding: job.adsReportBinding,
+        explicitRetry: input.explicitRetry,
+        freshCompleted: input.refresh,
+        expectedContext: job.context,
       },
-      notices: {
-        pending: "Amazon Ads 正在準備 Sponsored Products 商品報表。",
-        done: "Amazon Ads Sponsored Products 商品報表已就緒。",
-      },
-    });
+    );
   }
 
   private async waitForStrategyListings(
@@ -8433,8 +8378,7 @@ export class ApiRouter {
   private async waitForStrategyAds(
     job: AdvertisingStrategyJob,
     initial: DurableReportStatus,
-  ): Promise<SponsoredProductsAdvertisedProductReport> {
-    const gateway = this.advertisingStrategyGateway();
+  ): Promise<AdvertisedProductReportData> {
     let status = initial;
     let waited = 0;
     for (let attempt = 0; !status.ready && waited < ADVERTISING_STRATEGY_REPORT_WAIT_MS; attempt += 1) {
@@ -8445,53 +8389,25 @@ export class ApiRouter {
       await this.advertisingStrategyWait(delay, job.controller.signal);
       waited += delay;
       await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-      status = await this.reportLifecycle.status({
-        identity: this.advertisedProductIdentity(job),
-        reportId: status.reportId,
-        signal: job.controller.signal,
-        poll: async ({ reportId, signal }): Promise<DurableReportGatewayStatus> => {
-          const result = await this.advertisingCall(() =>
-            gateway.getSponsoredProductsAdvertisedProductReportStatus(
-              this.advertisedProductReference(job, reportId),
-              signal,
-            ));
-          const mappedStatus = result.status === "PENDING"
-            ? "IN_QUEUE"
-            : result.status === "PROCESSING"
-              ? "IN_PROGRESS"
-              : result.status === "COMPLETED"
-                ? "DONE"
-                : "FATAL";
-          return {
-            mode: "live",
-            ready: mappedStatus === "DONE",
-            reportId,
-            documentId: mappedStatus === "DONE" ? reportId : null,
-            status: mappedStatus,
-            notice: mappedStatus === "DONE"
-              ? "Amazon Ads Sponsored Products 商品報表已就緒。"
-              : "Amazon Ads 正在準備 Sponsored Products 商品報表。",
-          };
-        },
-        notices: {
-          pending: "Amazon Ads 正在準備 Sponsored Products 商品報表。",
-          done: "Amazon Ads Sponsored Products 商品報表已就緒。",
-        },
-      });
+      status = await this.reportBroker.statusAdvertisedProduct(
+        this.advertisedProductPlan(job),
+        status.reportId,
+        { binding: job.adsReportBinding, expectedContext: job.context },
+      );
       this.touchAdvertisingStrategyJob(job);
     }
-    if (!status.ready) {
+    if (!status.ready || !status.documentId) {
       throw new SpApiError("Amazon Ads Sponsored Products 商品報表仍在準備中。", {
         status: 504,
         code: "REPORT_PENDING",
       });
     }
     await this.assertAdvertisingStrategyContext(job, job.controller.signal);
-    return this.advertisingCall(() =>
-      gateway.downloadSponsoredProductsAdvertisedProductReport(
-        this.advertisedProductReference(job, status.reportId),
-        job.controller.signal,
-      ));
+    return this.reportBroker.readAdvertisedProductData(
+      this.advertisedProductPlan(job),
+      { reportId: status.reportId, documentId: status.documentId },
+      { binding: job.adsReportBinding, expectedContext: job.context },
+    );
   }
 
   private strategyFailure(error: unknown): { notice: string; code: string } {
@@ -8690,22 +8606,16 @@ export class ApiRouter {
     }
 
     this.pruneAdvertisingStrategyJobs();
-    const gateway = this.advertisingStrategyGateway();
-    const { value: adsIdentity } = await this.runContextBoundWork(
-      marketplaceId,
-      () => this.advertisingCall(() =>
-        gateway.getCombinedAccountIdentity(
-          marketplaceId,
-          undefined,
-          { refreshProfile: true },
-        )),
-    );
+    this.advertisingStrategyGateway();
+    const adsReportBinding = await this.reportBroker
+      .bindAdvertisedProductAccount({
+        marketplaceId,
+        expectedContext: context,
+      });
     const spAccountScope = context.accountScope;
-    const adsAccountScope = adsIdentity.combinedAccountScope;
     const selection = stableFingerprint({
       spAccountScope,
-      adsAccountScope,
-      adsProfileFingerprint: adsIdentity.adsProfileFingerprint,
+      adsReportBinding,
       marketplaceId,
       startDate: range.startDate,
       endDate: range.endDate,
@@ -8747,8 +8657,7 @@ export class ApiRouter {
       marketplaceId,
       marketplaceCode: MARKETPLACE_CODES[marketplaceId],
       spAccountScope,
-      adsAccountScope,
-      adsProfileFingerprint: adsIdentity.adsProfileFingerprint,
+      adsReportBinding,
       mode: "live",
       startDate: range.startDate,
       endDate: range.endDate,
@@ -8872,28 +8781,7 @@ export class ApiRouter {
       );
     }
     try {
-      let reportId: string;
-      let documentId: string;
-      if (demo) {
-        const status = await this.startSharedAllListingsReport(
-          marketplaceId,
-          false,
-        );
-        if (
-          status.mode !== "demo" ||
-          !status.ready ||
-          !status.reportId ||
-          !status.documentId
-        ) {
-          return invalid(
-            "展示用 FBA 全商品報表尚未完成。",
-            409,
-            "REPORT_NOT_READY",
-          );
-        }
-        reportId = status.reportId;
-        documentId = status.documentId;
-      } else {
+      if (!demo) {
         const { value: summary } = await this.runContextBoundWork(
           marketplaceId,
           () => this.advertising!.getCredentialSummary(),
@@ -8905,42 +8793,30 @@ export class ApiRouter {
             "ADS_API_NOT_CONNECTED",
           );
         }
-        let status = await this.startSharedAllListingsReport(marketplaceId, true);
-        if (!status.ready && status.reportId) {
-          status = await this.getSharedAllListingsReportStatus({
-            marketplaceId,
-            reportId: status.reportId,
-          });
-        }
-        if (status.mode !== "live") {
-          return invalid(
-            "全商品報表模式與 Ads 真實健檢不一致。",
-            409,
-            "REPORT_MODE_CHANGED",
-          );
-        }
-        if (!status.ready || !status.reportId || !status.documentId) {
-          return json(
-            {
-              state: "processing",
-              marketplaceId,
-              message: "Amazon 正在準備 FBA 全商品清單，稍後會自動繼續。",
-            },
-            202,
-            { "retry-after": "2" },
-          );
-        }
-        reportId = status.reportId;
-        documentId = status.documentId;
       }
-      const { value: data } = await this.runContextBoundWork(
+      const existing = await this.fbaCatalogReports.readExistingExport({
         marketplaceId,
-        () => this.getSharedAllListingsExportData({
-          marketplaceId,
-          reportId,
-          documentId,
-        }),
-      );
+        expectedContext: context,
+      });
+      if (existing.state === "missing") {
+        return invalid(
+          "目前沒有可安全接回的 FBA 全商品報表；請先從具明確啟動動作的功能建立報表。",
+          409,
+          "REPORT_NOT_READY",
+        );
+      }
+      if (existing.state === "pending") {
+        return json(
+          {
+            state: "processing",
+            marketplaceId,
+            message: "Amazon 正在準備 FBA 全商品清單，稍後會自動繼續。",
+          },
+          202,
+          { "retry-after": "2" },
+        );
+      }
+      const data = existing.data;
       const listings = prepareAdvertisingCoverageListings({
         rows: data.rows,
         errors: data.errors,

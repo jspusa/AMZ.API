@@ -101,6 +101,7 @@ describe("FBA advertising strategy router job", () => {
     getAdsStatus?: AdvertisingGateway["getSponsoredProductsAdvertisedProductReportStatus"];
     onStrategyWait?: (milliseconds: number) => void;
     onScope?: () => void;
+    onAdsIdentity?: () => void;
     secondSalesChildAsin?: string;
     spExecutionContext?: SpExecutionContextAdapter;
   } = {}): {
@@ -163,7 +164,7 @@ describe("FBA advertising strategy router job", () => {
       notice: "ready",
     }));
     const getAdsIdentity = vi.fn(async () => {
-      input.onScope?.();
+      input.onAdsIdentity?.();
       return { combinedAccountScope: adsScope, adsProfileFingerprint };
     });
     const advertising: AdvertisingGateway = {
@@ -579,14 +580,12 @@ describe("FBA advertising strategy router job", () => {
       assertAdvertisingStrategyContext(job: {
         context: SpExecutionContext;
         marketplaceId: typeof MARKETPLACE_ID;
-        adsAccountScope: string;
-        adsProfileFingerprint: string;
+        adsReportBinding: string;
       }): Promise<void>;
     }).assertAdvertisingStrategyContext({
       context,
       marketplaceId: MARKETPLACE_ID,
-      adsAccountScope: adsScope,
-      adsProfileFingerprint,
+      adsReportBinding: "opaque-binding-must-not-be-read",
     })).rejects.toMatchObject({
       status: 409,
       code: "ACCOUNT_SCOPE_CHANGED",
@@ -605,6 +604,25 @@ describe("FBA advertising strategy router job", () => {
     expect(response.status).toBe(409);
     expect(jsonValue(response)).toMatchObject({ code: "JOB_MISMATCH" });
     expect(JSON.stringify(jsonValue(response))).not.toMatch(/[ab]{64}/u);
+  });
+
+  it("does not POST when the broker account binding changes after the runner fence", async () => {
+    let identityReads = 0;
+    const built = buildRouter({
+      onAdsIdentity: () => {
+        identityReads += 1;
+        if (identityReads === 3) {
+          adsScope = "ads-account-scope-b:sp-account-scope-a";
+          adsProfileFingerprint = "b".repeat(64);
+        }
+      },
+    });
+
+    const started = await start(built.router);
+    const result = await terminal(built.router, String(started.jobId));
+
+    expect(built.createAdsReport).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ code: "JOB_MISMATCH" });
   });
 
   it("does not repeat an ambiguous Ads report POST on automatic rerun", async () => {
@@ -629,6 +647,46 @@ describe("FBA advertising strategy router job", () => {
       errorCode: "REPORT_RETRY_REQUIRED",
     });
     expect(createAdsReport).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an accepted Ads create whose returned selection mismatches", async () => {
+    const createAdsReport = vi.fn(async (
+      input: Parameters<NonNullable<
+        AdvertisingGateway["createSponsoredProductsAdvertisedProductReport"]
+      >>[0],
+    ): Promise<SponsoredProductsAdvertisedProductReportReference> => ({
+      reportId: "ads-report-accepted-selection-mismatch",
+      marketplaceId: input.marketplaceId,
+      combinedAccountScope: adsScope,
+      startDate: "2026-08-02",
+      endDate: input.endDate,
+      configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
+    }));
+    const built = buildRouter({ createAdsReport });
+
+    const first = await start(built.router);
+    expect(await terminal(built.router, String(first.jobId))).toMatchObject({
+      state: "failed",
+    });
+    expect(createAdsReport).toHaveBeenCalledTimes(1);
+
+    const guarded = await start(built.router, { refresh: true });
+    expect(await terminal(built.router, String(guarded.jobId))).toMatchObject({
+      state: "failed",
+      errorCode: "REPORT_RETRY_REQUIRED",
+    });
+    expect(createAdsReport).toHaveBeenCalledTimes(1);
+
+    const explicit = await start(built.router, {
+      refresh: true,
+      explicitRetry: true,
+    });
+    const explicitTerminal = await terminal(built.router, String(explicit.jobId));
+    expect(createAdsReport).toHaveBeenCalledTimes(1);
+    expect(explicitTerminal).toMatchObject({
+      state: "failed",
+      errorCode: "REPORT_RETRY_WAIT",
+    });
   });
 
   it("allows one explicit retry only after the durable retry guard expires", async () => {

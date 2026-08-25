@@ -14,11 +14,8 @@ import {
 } from "./brand-sales-reads";
 import type { BrandSalesSnapshot } from "./brand-sales";
 import type { FbaCatalogReports } from "./fba-catalog-reports";
-import type { DurableReportStatus } from "./report-lifecycle";
-import type {
-  ReportsIntentPlan,
-  ReportsRuntime,
-} from "./reports-runtime";
+import type { FixedReportBroker } from "./report-broker";
+import type { ReportsIntentPlan } from "./reports-runtime";
 import {
   assertFbaShipmentSalesWindow,
   planFbaShipmentSalesWindow,
@@ -35,8 +32,13 @@ const NEAR_REUSE_BOUNDARY_MS = 2 * 60 * 1_000;
 const JOB_RETENTION_MS = 60 * 60 * 1_000;
 
 type ReportsPort = Pick<
-  ReportsRuntime,
-  "adopt" | "projectDurableLeg" | "readDocument" | "start" | "status"
+  FixedReportBroker,
+  | "adopt"
+  | "canRebindPersistedSpLeg"
+  | "projectDurableLeg"
+  | "readDocument"
+  | "start"
+  | "status"
 >;
 
 type CatalogPort = Pick<FbaCatalogReports, "begin" | "read" | "status">;
@@ -103,6 +105,8 @@ function emptyLeg(): BrandSalesReportLeg {
     createdAt: null,
     terminal: null,
     terminalAt: null,
+    leaseBinding: null,
+    handleBinding: null,
   };
 }
 
@@ -482,19 +486,25 @@ export class FbaRevenueReports {
     job.snapshotGeneration = snapshotGeneration;
   }
 
-  private async mirror(
+  private async saveProjectedLeg(
+    context: SpExecutionContext,
     job: BrandSalesRuntimeJob,
     leg: "listing" | "shipment",
-    status: DurableReportStatus,
   ): Promise<void> {
-    await this.saveLeg(job, leg, {
-      reportId: status.reportId,
-      documentId: status.documentId,
-      status: status.status,
-      createdAt: job[leg].createdAt ?? this.now(),
-      terminal: null,
-      terminalAt: null,
-    });
+    const projected = await this.reports.projectDurableLeg(
+      this.plan(job, leg),
+      context,
+    );
+    if (!projected) {
+      return throwRuntimeError(
+        "Amazon 報表建立後缺少 durable lease。",
+        409,
+        "REPORT_MISMATCH",
+      );
+    }
+    if (JSON.stringify(projected) !== JSON.stringify(job[leg])) {
+      await this.saveLeg(job, leg, projected);
+    }
   }
 
   private async normalizeLeg(
@@ -508,6 +518,15 @@ export class FbaRevenueReports {
     }
     const reportPlan = this.plan(job, leg);
     const opaque = legacy.reportId?.startsWith("report-lease.") ?? false;
+    const unboundLegacy = legacy.leaseBinding == null &&
+      legacy.handleBinding == null;
+    if (!opaque && !unboundLegacy) {
+      return throwRuntimeError(
+        "品牌營收工作與 Reports runtime 不一致。",
+        409,
+        "REPORT_MISMATCH",
+      );
+    }
     if (!opaque) {
       await this.reports.adopt(reportPlan, {
         report: legacy,
@@ -526,8 +545,11 @@ export class FbaRevenueReports {
     }
     if (
       opaque &&
-      (projected.reportId !== legacy.reportId ||
-        (legacy.documentId !== null && projected.documentId !== legacy.documentId))
+      (
+        !projected.reportId ||
+        !legacy.reportId ||
+        !this.reports.canRebindPersistedSpLeg(legacy, projected)
+      )
     ) {
       return throwRuntimeError(
         "品牌營收工作與 Reports runtime 不一致。",
@@ -557,19 +579,21 @@ export class FbaRevenueReports {
     explicitRetry: boolean,
   ): Promise<unknown | null> {
     try {
-      const status = leg === "listing"
-        ? await this.catalog.begin({
-            purpose: "catalog",
-            marketplaceId: job.marketplaceId as MarketplaceId,
-            explicitRetry,
-            expectedContext: context,
-          })
-        : await this.reports.start(this.plan(job, leg), {
-            explicitRetry,
-            expectedContext: context,
-          });
+      if (leg === "listing") {
+        await this.catalog.begin({
+          purpose: "catalog",
+          marketplaceId: job.marketplaceId as MarketplaceId,
+          explicitRetry,
+          expectedContext: context,
+        });
+      } else {
+        await this.reports.start(this.plan(job, leg), {
+          explicitRetry,
+          expectedContext: context,
+        });
+      }
       await this.context.assertCurrent(context);
-      await this.mirror(job, leg, status);
+      await this.saveProjectedLeg(context, job, leg);
       await this.context.assertCurrent(context);
       return null;
     } catch (error) {
@@ -748,6 +772,7 @@ export class FbaRevenueReports {
   }
 
   private async markPollFailure(
+    context: SpExecutionContext,
     job: BrandSalesRuntimeJob,
     leg: "listing" | "shipment",
     error: unknown,
@@ -758,15 +783,7 @@ export class FbaRevenueReports {
     ) {
       return;
     }
-    const terminal = error.code === "REPORT_CANCELLED" ? "CANCELLED" : "FATAL";
-    await this.saveLeg(job, leg, {
-      reportId: job[leg].reportId,
-      documentId: null,
-      status: terminal,
-      createdAt: job[leg].createdAt,
-      terminal,
-      terminalAt: this.now(),
-    });
+    await this.saveProjectedLeg(context, job, leg);
   }
 
   private async poll(
@@ -806,19 +823,10 @@ export class FbaRevenueReports {
             "REPORT_FAILED",
           );
         }
-        if (
-          job.listing.status !== listing.status ||
-          job.listing.documentId !== listing.documentId
-        ) {
-          await this.saveLeg(job, "listing", {
-            ...job.listing,
-            documentId: listing.documentId,
-            status: listing.status,
-          });
-          await this.context.assertCurrent(context);
-        }
+        await this.saveProjectedLeg(context, job, "listing");
+        await this.context.assertCurrent(context);
       } catch (error) {
-        await this.markPollFailure(job, "listing", error);
+        await this.markPollFailure(context, job, "listing", error);
         throw error;
       }
     }
@@ -835,19 +843,10 @@ export class FbaRevenueReports {
             context,
           ),
         );
-        if (
-          job.shipment.status !== shipment.status ||
-          job.shipment.documentId !== shipment.documentId
-        ) {
-          await this.saveLeg(job, "shipment", {
-            ...job.shipment,
-            documentId: shipment.documentId,
-            status: shipment.status,
-          });
-          await this.context.assertCurrent(context);
-        }
+        await this.saveProjectedLeg(context, job, "shipment");
+        await this.context.assertCurrent(context);
       } catch (error) {
-        await this.markPollFailure(job, "shipment", error);
+        await this.markPollFailure(context, job, "shipment", error);
         throw error;
       }
     }

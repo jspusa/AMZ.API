@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createContentAuditWorkbookV2 } from "../src/main/amazon/xlsx";
+import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import { SpApiError } from "../src/main/amazon/sp-api";
 import {
   createScriptedSpExecutionContextAdapter,
@@ -22,8 +23,6 @@ import type { ApiRequest } from "../src/shared/contracts";
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const ACCOUNT_SCOPE = "a".repeat(64);
 const REPORT_LEASE_ID = "content-audit-batch-router";
-const REPORT_HANDLE = `report-lease.${REPORT_LEASE_ID}`;
-const DOCUMENT_HANDLE = `report-document.${REPORT_LEASE_ID}`;
 const MEDIA_TYPE =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
@@ -54,19 +53,35 @@ type AuditReply = {
   }>;
 };
 
-function auditRequest(): ApiRequest {
+function auditRequest(reportId: string, documentId: string): ApiRequest {
   return {
     requestId: "content-batch-audit-001",
     method: "GET",
     path: "/api/sp-api/listing-content/export",
     query: {
       marketplaceId: MARKETPLACE_ID,
-      reportId: REPORT_HANDLE,
-      documentId: DOCUMENT_HANDLE,
+      reportId,
+      documentId,
       audit: "1",
     },
     headers: {},
   };
+}
+
+async function issuedAllListingsHandles(router: ApiRouter): Promise<{
+  reportId: string;
+  documentId: string;
+}> {
+  const broker = (router as unknown as { reportBroker: FixedReportBroker })
+    .reportBroker;
+  const leg = await broker.projectDurableLeg({
+    intent: "all-listings",
+    marketplaceId: MARKETPLACE_ID,
+  });
+  if (!leg?.reportId || !leg.documentId) {
+    throw new Error("Expected broker-issued completed All Listings handles");
+  }
+  return { reportId: leg.reportId, documentId: leg.documentId };
 }
 
 function completedAllListingsLease(): SharedReportLease {
@@ -287,7 +302,7 @@ describe("content audit Excel batch router", () => {
     }
     return { status: "available" as const, evidence: structuredClone(evidence) };
   });
-  const router = new ApiRouter({
+  const createRouter = () => new ApiRouter({
     store: {
       assertIdempotentOperationsAvailable,
       runIdempotentOperation,
@@ -300,21 +315,27 @@ describe("content audit Excel batch router", () => {
     } as unknown as CredentialVault,
     approveWrite,
   });
+  let router: ApiRouter;
+  let reportHandle: string;
+  let documentHandle: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
-    router.dispose();
     contentAuditEvidence.clear();
     approveWrite.mockClear();
     assertIdempotentOperationsAvailable.mockClear();
     runIdempotentOperation.mockClear();
     saveContentAuditSnapshotEvidence.mockClear();
     getContentAuditSnapshotEvidence.mockClear();
+    router = createRouter();
+    ({ reportId: reportHandle, documentId: documentHandle } =
+      await issuedAllListingsHandles(router));
   });
 
   afterEach(() => {
+    router.dispose();
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
@@ -324,7 +345,7 @@ describe("content audit Excel batch router", () => {
   });
 
   async function audit(): Promise<AuditReply> {
-    const response = await router.handle(auditRequest());
+    const response = await router.handle(auditRequest(reportHandle, documentHandle));
     expect(response.status).toBe(200);
     return responseValue(response) as unknown as AuditReply;
   }
@@ -712,8 +733,12 @@ describe("content audit Excel batch router", () => {
       approveWrite,
       spExecutionContext,
     });
+    const contextHandles = await issuedAllListingsHandles(contextRouter);
     const snapshot = await (async (): Promise<AuditReply> => {
-      const response = await contextRouter.handle(auditRequest());
+      const response = await contextRouter.handle(auditRequest(
+        contextHandles.reportId,
+        contextHandles.documentId,
+      ));
       expect(response.status).toBe(200);
       return responseValue(response) as unknown as AuditReply;
     })();

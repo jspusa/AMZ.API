@@ -331,6 +331,140 @@ describe("durable brand-sales report dedupe", () => {
     }
   });
 
+  it("rebinds persisted report handles across broker clear and process restart", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const overrides: GatewayOverrides = {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async () => queuedListing(listingStarts),
+      getShipmentStatus: async () => queuedShipment(shipmentStarts),
+    };
+    const firstRouter = router(localStore, overrides);
+    const first = await brandStart(firstRouter);
+    expect(first.status).toBe(202);
+
+    firstRouter.dispose();
+    const reboundAfterClear = await brandStart(firstRouter);
+    expect(reboundAfterClear.status).toBe(202);
+    expect(body(reboundAfterClear).jobId).toBe(body(first).jobId);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+
+    firstRouter.dispose();
+    const restartedStore = new LocalStore(localStore.filePath);
+    await restartedStore.initialize();
+    const restartedRouter = router(restartedStore, overrides);
+    const reboundAfterRestart = await brandStart(restartedRouter);
+    expect(reboundAfterRestart.status).toBe(202);
+    expect(body(reboundAfterRestart).jobId).toBe(body(first).jobId);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
+  it("migrates an R02 raw lease handle once without creating another report", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const overrides: GatewayOverrides = {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async () => queuedListing(listingStarts),
+      getShipmentStatus: async () => queuedShipment(shipmentStarts),
+    };
+    const firstRouter = router(localStore, overrides);
+    expect((await brandStart(firstRouter)).status).toBe(202);
+    const persisted = await localStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    const listingLease = await localStore.getSharedReport({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+    });
+    if (!persisted || !listingLease) {
+      throw new Error("Expected persisted Brand job and All Listings lease");
+    }
+    await localStore.updateBrandSalesJobLeg({
+      jobId: persisted.jobId,
+      leg: "listing",
+      value: {
+        ...persisted.listing,
+        reportId: `report-lease.${listingLease.leaseId}`,
+        documentId: null,
+        leaseBinding: null,
+        handleBinding: null,
+      },
+      updatedAt: persisted.updatedAt + 1,
+    });
+    firstRouter.dispose();
+    const restartedStore = new LocalStore(localStore.filePath);
+    await restartedStore.initialize();
+
+    const response = await brandStart(router(restartedStore, overrides));
+    const migrated = await restartedStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+
+    expect(response.status).toBe(202);
+    expect(migrated?.listing.reportId).toMatch(/^report-lease\.broker\./u);
+    expect(migrated?.listing.leaseBinding).toMatch(/^[a-f0-9]{64}$/u);
+    expect(migrated?.listing.handleBinding).toMatch(/^[a-f0-9]{64}$/u);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
+  it("fails closed when a persisted broker handle loses its main-only bindings", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const overrides: GatewayOverrides = {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async () => queuedListing(listingStarts),
+      getShipmentStatus: async () => queuedShipment(shipmentStarts),
+    };
+    const firstRouter = router(localStore, overrides);
+    const started = await brandStart(firstRouter);
+    expect(started.status).toBe(202);
+    const persisted = await localStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    if (!persisted) throw new Error("Expected persisted brand job");
+    expect(persisted.listing.reportId).toMatch(/^report-lease\.broker\./u);
+    await localStore.updateBrandSalesJobLeg({
+      jobId: persisted.jobId,
+      leg: "listing",
+      value: {
+        ...persisted.listing,
+        leaseBinding: null,
+        handleBinding: null,
+      },
+      updatedAt: persisted.updatedAt + 1,
+    });
+
+    firstRouter.dispose();
+    const restartedStore = new LocalStore(localStore.filePath);
+    await restartedStore.initialize();
+    const response = await brandStart(router(restartedStore, overrides));
+
+    expect(response.status).toBe(409);
+    expect(body(response).code).toBe("REPORT_MISMATCH");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
   it("keeps legacy missing-window active, done, and unknown jobs as fail-closed tombstones", async () => {
     for (const status of ["IN_QUEUE", "DONE", "CREATION_UNKNOWN"] as const) {
       const localStore = await legacyWindowStore(status);
@@ -1047,7 +1181,7 @@ describe("durable brand-sales report dedupe", () => {
     expect(shipmentStarts).toBe(1);
   });
 
-  it("preserves the sanitized rich DTO for an internal report lease mismatch", async () => {
+  it("rejects a bound handle changed to a raw-looking ID with a sanitized DTO", async () => {
     const localStore = await store();
     const overrides: GatewayOverrides = {
       startListing: async () => queuedListing(1),
@@ -1066,7 +1200,7 @@ describe("durable brand-sales report dedupe", () => {
       leg: "listing",
       value: {
         ...persisted.listing,
-        reportId: "report-lease.tampered",
+        reportId: "listing-report-tampered",
       },
       updatedAt: persisted.updatedAt + 1,
     });

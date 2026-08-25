@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdvertisingGateway } from "../src/main/amazon/ads-api";
+import type { ReportsAdapter } from "../src/main/amazon/reports-runtime";
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
@@ -165,6 +166,80 @@ describe("advertising coverage route boundary", () => {
       writeEnabled: false,
       coverageAuditAvailable: true,
     });
+  });
+
+  it("does not turn the legacy coverage data GET into a report create or retry", async () => {
+    useLiveSpMode();
+    const advertising: AdvertisingGateway = {
+      getCredentialSummary: vi.fn(async () => ({
+        encryptionAvailable: true,
+        hasVault: true,
+        configured: true,
+        lwaConfigured: true,
+        refreshTokenConfigured: true,
+        oauthRegion: "na" as const,
+        updatedAt: "2026-08-25T00:00:00.000Z",
+      })),
+      probeMarketplace: vi.fn(),
+      listEnabledSponsoredProductCampaigns: vi.fn(async () => []),
+      invalidate: vi.fn(),
+    };
+    const create = vi.fn<ReportsAdapter["create"]>(async (request) => {
+      const { operation: _operation, signal: _signal, ...identity } = request;
+      return {
+        identity,
+        mode: "live",
+        ready: false,
+        reportId: "must-not-be-created",
+        documentId: null,
+        status: "IN_QUEUE",
+        notice: "pending",
+      };
+    });
+    const reportsAdapter: ReportsAdapter = {
+      create,
+      status: vi.fn<ReportsAdapter["status"]>(async (request) => {
+        const {
+          operation: _operation,
+          reportId,
+          signal: _signal,
+          ...identity
+        } = request;
+        return {
+          identity,
+          mode: "live",
+          ready: false,
+          reportId,
+          documentId: null,
+          status: "IN_QUEUE",
+          notice: "pending",
+        };
+      }),
+      readDocument: vi.fn(async () => {
+        throw new Error("A missing lease must not be downloaded.");
+      }),
+    };
+    const liveRouter = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "live-account-scope",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      advertising,
+      reportsAdapter,
+    });
+
+    const coverage = await liveRouter.handle(request("/api/amazon-ads/coverage"));
+
+    expect(coverage.status).toBe(409);
+    expect(coverage.body.kind).toBe("json");
+    if (coverage.body.kind !== "json") throw new Error("Expected problem JSON");
+    expect(coverage.body.value).toMatchObject({ code: "REPORT_NOT_READY" });
+    expect(create).not.toHaveBeenCalled();
+    expect(reportsAdapter.status).not.toHaveBeenCalled();
+    expect(reportsAdapter.readDocument).not.toHaveBeenCalled();
+    expect(advertising.listEnabledSponsoredProductCampaigns).not.toHaveBeenCalled();
+    liveRouter.dispose();
   });
 
   it("fails closed when the account context changes during an Ads status read", async () => {

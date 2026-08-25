@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
+import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import {
   getBusinessPricing,
   invalidateSpApiCredentialCaches,
@@ -340,14 +341,26 @@ describe("Amazon Business pricing audit routes", () => {
         status: statusActive,
       },
     });
+    const reportBroker = (router as unknown as {
+      reportBroker: FixedReportBroker;
+    }).reportBroker;
+    const allListings = await reportBroker.projectDurableLeg({
+      intent: "all-listings",
+      marketplaceId: MARKETPLACE_ID,
+    });
+    if (!allListings?.reportId || !allListings.documentId) {
+      throw new Error("Expected broker-issued All Listings handles");
+    }
+    const reportId = allListings.reportId;
+    const documentId = allListings.documentId;
     const dataRequest = (requestId: string): ApiRequest => ({
       requestId,
       method: "GET",
       path: "/api/sp-api/business-pricing-audit",
       query: {
         marketplaceId: MARKETPLACE_ID,
-        reportId: `report-lease.${allListingsLeaseId}`,
-        documentId: `report-document.${allListingsLeaseId}`,
+        reportId,
+        documentId,
         data: "1",
       },
       headers: {},

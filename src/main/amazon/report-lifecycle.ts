@@ -423,6 +423,13 @@ export class DurableReportLifecycle {
         if (
           latest &&
           latest.mode === input.identity.mode &&
+          latest.report.status === "DONE"
+        ) {
+          return this.leaseStatus(latest, notices(input.notices));
+        }
+        if (
+          latest &&
+          latest.mode === input.identity.mode &&
           latest.report.status !== "DONE" &&
           latest.report.status !== "CANCELLED" &&
           latest.report.status !== "FATAL"

@@ -1028,7 +1028,8 @@ describe("SP execution-context architecture", () => {
         .map(repositoryPath)
         .filter((dependency) =>
           dependency === "src/main/amazon/reports-runtime.ts" ||
-          dependency === "src/main/amazon/reports-runtime-production.ts"
+          dependency === "src/main/amazon/reports-runtime-production.ts" ||
+          dependency === "src/main/amazon/report-broker.ts"
         )
         .map((dependency) => `${repositoryPath(sourcePath)} -> ${dependency}`)
     );
@@ -1048,6 +1049,65 @@ describe("SP execution-context architecture", () => {
     );
     expect(routerSource).not.toContain(
       "const reportsAdapter: ReportsAdapter = input.reportsAdapter",
+    );
+  });
+
+  it("keeps one fixed Report Broker as the only router lifecycle owner", () => {
+    const routerSource = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    const brokerPath = absolutePath("src/main/amazon/report-broker.ts");
+    const brokerSource = readFileSync(brokerPath, "utf8");
+
+    expect(routerSource).toContain(
+      "private readonly reportBroker: FixedReportBroker;",
+    );
+    expect(routerSource.match(/new FixedReportBroker\(/gu)).toHaveLength(1);
+    expect(routerSource).not.toContain("new DurableReportLifecycle(");
+    expect(routerSource).not.toContain("this.reportLifecycle");
+    expect(routerSource).not.toContain("adsAccountScope:");
+    expect(routerSource).not.toContain("adsProfileFingerprint:");
+    expect(routerSource.match(/reports:\s*this\.reportBroker\b/gu)).toHaveLength(5);
+    for (const directCall of [
+      /\.getCombinedAccountIdentity\s*\(/u,
+      /\.createSponsoredProductsAdvertisedProductReport\s*\(/u,
+      /\.getSponsoredProductsAdvertisedProductReportStatus\s*\(/u,
+      /\.downloadSponsoredProductsAdvertisedProductReport\s*\(/u,
+    ]) {
+      expect(routerSource).not.toMatch(directCall);
+    }
+
+    const competingOwners = sourceFiles(absolutePath("src/main"))
+      .filter((sourcePath) => sourcePath !== brokerPath)
+      .flatMap((sourcePath) => {
+        const source = readFileSync(sourcePath, "utf8");
+        return [
+          ...(source.includes("new DurableReportLifecycle(")
+            ? [`${repositoryPath(sourcePath)} -> DurableReportLifecycle`]
+            : []),
+          ...(source.includes("new ReportsRuntime(")
+            ? [`${repositoryPath(sourcePath)} -> ReportsRuntime`]
+            : []),
+        ];
+      });
+    expect(competingOwners).toEqual([]);
+    expect(brokerSource.match(/new DurableReportLifecycle\(/gu)).toHaveLength(1);
+    expect(brokerSource.match(/new ReportsRuntime\(/gu)).toHaveLength(1);
+
+    expect(brokerSource).toContain(
+      'intent: "ads-sp-advertised-product";',
+    );
+    expect(brokerSource).toContain(
+      'reportType: "ADS_SP_ADVERTISED_PRODUCT"',
+    );
+    const planStart = brokerSource.indexOf(
+      "export type AdvertisedProductReportPlan",
+    );
+    const planEnd = brokerSource.indexOf("}>;", planStart);
+    const publicPlan = brokerSource.slice(planStart, planEnd);
+    expect(publicPlan).not.toMatch(
+      /accountScope|reportType|optionsKey|configuration|columns|format|method|path|host|url/iu,
     );
   });
 

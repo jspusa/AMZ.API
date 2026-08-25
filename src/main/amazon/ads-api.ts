@@ -12,7 +12,8 @@ import {
 import type { AdvertisingCredentialVault } from "../advertising-credential-vault";
 import { abortableDelay, forwardAbort, throwIfAborted } from "../abort-utils";
 import type { AdvertisingCoverageCampaign } from "./advertising-coverage";
-import { marketplaceCalendar } from "./marketplace-calendar";
+import { advertisedProductReportDateViolation } from
+  "./advertised-product-report-policy";
 
 type MarketplaceAdsConfig = {
   code: string;
@@ -62,8 +63,6 @@ const MAX_REPORT_STATUS_RETRY_DELAY_MS = 5_000;
 const MAX_REPORT_COMPRESSED_BYTES = 32 * 1024 * 1024;
 const MAX_REPORT_DECOMPRESSED_BYTES = 128 * 1024 * 1024;
 const MAX_ADVERTISED_PRODUCT_ROWS = 50_000;
-const MAX_ADS_REPORT_RANGE_DAYS = 31;
-const MAX_ADS_REPORT_HISTORY_DAYS = 95;
 
 export const SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID =
   "spAdvertisedProduct-summary-v1";
@@ -179,6 +178,27 @@ export class AdvertisingApiError extends Error {
   }
 }
 
+/**
+ * The Ads report POST returned an accepted report ID, but a post-dispatch
+ * identity fence failed before the normal gateway result could be returned.
+ * Main-process lifecycle owners must preserve the reference as an ambiguous
+ * accepted create; callers must never treat this as a safe-to-repeat POST.
+ */
+export class AdvertisingReportAcceptedError extends Error {
+  readonly reference: SponsoredProductsAdvertisedProductReportReference;
+  readonly reason: unknown;
+
+  constructor(
+    reference: SponsoredProductsAdvertisedProductReportReference,
+    reason: unknown,
+  ) {
+    super("Amazon Ads 已接受報表建立，但建立後的帳號驗證未能完成。");
+    this.name = "AdvertisingReportAcceptedError";
+    this.reference = structuredClone(reference);
+    this.reason = reason;
+  }
+}
+
 export type AdvertisingGateway = {
   getCredentialSummary(): Promise<AdvertisingCredentialSummary>;
   getCombinedAccountScope?(marketplaceId: MarketplaceId): Promise<string>;
@@ -196,6 +216,7 @@ export type AdvertisingGateway = {
     marketplaceId: MarketplaceId;
     startDate: string;
     endDate: string;
+    expectedCombinedAccountScope: string;
     signal?: AbortSignal;
   }): Promise<SponsoredProductsAdvertisedProductReportReference>;
   getSponsoredProductsAdvertisedProductReportStatus?(
@@ -336,46 +357,15 @@ function assertReportDateRange(input: {
   now?: Date;
   enforceCurrentWindow: boolean;
 }): void {
-  const calendar = marketplaceCalendar(input.marketplaceId);
-  if (
-    !calendar.isDateKey(input.startDate) ||
-    !calendar.isDateKey(input.endDate) ||
-    input.startDate > input.endDate
-  ) {
-    throw new AdvertisingApiError("Amazon Ads 報表日期範圍無效。", {
-      status: 400,
-      code: "ADS_REPORT_DATE_INVALID",
-    });
-  }
-  const inclusiveDays = calendar.inclusiveDayCount(
-    input.startDate,
-    input.endDate,
-  );
-  if (inclusiveDays > MAX_ADS_REPORT_RANGE_DAYS) {
-    throw new AdvertisingApiError("Amazon Ads 報表一次最多讀取 31 個完整日。", {
-      status: 400,
-      code: "ADS_REPORT_DATE_INVALID",
-    });
-  }
-  if (!input.enforceCurrentWindow) return;
-  const now = input.now ?? new Date();
-  if (Number.isNaN(now.getTime())) {
-    throw new AdvertisingApiError("Amazon Ads 站點日期無法核對。", {
-      status: 500,
-      code: "ADS_REPORT_DATE_INVALID",
-    });
-  }
-  const latest = calendar.shiftDate(calendar.dayAt(now), -1);
-  const earliest = calendar.shiftDate(
-    latest,
-    -(MAX_ADS_REPORT_HISTORY_DAYS - 1),
-  );
-  if (input.endDate > latest || input.startDate < earliest) {
-    throw new AdvertisingApiError("Amazon Ads 報表只能讀取最近 95 天內的完整日。", {
-      status: 400,
-      code: "ADS_REPORT_DATE_INVALID",
-    });
-  }
+  const violation = advertisedProductReportDateViolation({
+    ...input,
+    now: input.now ?? new Date(),
+  });
+  if (!violation) return;
+  throw new AdvertisingApiError(violation.message, {
+    status: violation.status,
+    code: violation.code,
+  });
 }
 
 function retryDelayMs(response: Response, attempt: number): number {
@@ -806,6 +796,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     marketplaceId: MarketplaceId;
     startDate: string;
     endDate: string;
+    expectedCombinedAccountScope: string;
     signal?: AbortSignal;
   }): Promise<SponsoredProductsAdvertisedProductReportReference> {
     const lifecycleSignal = this.captureLifecycleSignal();
@@ -826,6 +817,12 @@ export class AdvertisingApiClient implements AdvertisingGateway {
     );
     const accountScope = identity.combinedAccountScope;
     const profileId = identity.profileId;
+    if (input.expectedCombinedAccountScope !== accountScope) {
+      throw new AdvertisingApiError(
+        "Amazon Ads 或 SP-API 帳號在報表建立前已改變。",
+        { status: 409, code: "ADS_REPORT_ACCOUNT_CHANGED" },
+      );
+    }
     const config = MARKETPLACES[input.marketplaceId];
     const credentials = await this.vault.load();
     assertNotAborted(lifecycleSignal);
@@ -870,13 +867,7 @@ export class AdvertisingApiClient implements AdvertisingGateway {
         code: "ADS_REPORT_CREATE_INVALID",
       });
     }
-    await this.assertCombinedAccountScope(
-      input.marketplaceId,
-      accountScope,
-      lifecycleSignal,
-      input.signal,
-    );
-    return {
+    const reference: SponsoredProductsAdvertisedProductReportReference = {
       reportId,
       marketplaceId: input.marketplaceId,
       combinedAccountScope: accountScope,
@@ -884,6 +875,17 @@ export class AdvertisingApiClient implements AdvertisingGateway {
       endDate: input.endDate,
       configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
     };
+    try {
+      await this.assertCombinedAccountScope(
+        input.marketplaceId,
+        accountScope,
+        lifecycleSignal,
+        input.signal,
+      );
+    } catch (error) {
+      throw new AdvertisingReportAcceptedError(reference, error);
+    }
+    return reference;
   }
 
   async getSponsoredProductsAdvertisedProductReportStatus(

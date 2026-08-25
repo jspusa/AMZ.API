@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
+import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import {
   createScriptedReportsAdapter,
   reportsAdapterIdentity,
@@ -45,12 +46,7 @@ function body(response: ApiResponse): Record<string, unknown> {
 async function seedCompletedBusinessPricingReports(
   store: LocalStore,
   accountScope: string,
-): Promise<Readonly<{
-  allListingsReportId: string;
-  allListingsDocumentId: string;
-  activeListingsReportId: string;
-  activeListingsDocumentId: string;
-}>> {
+): Promise<void> {
   const now = Date.now();
   const allListingsLeaseId = "router-context-all-listings";
   const activeListingsLeaseId = "router-context-active-listings";
@@ -92,11 +88,36 @@ async function seedCompletedBusinessPricingReports(
     updatedAt: now - 1_000,
     expiresAt: now + 60_000,
   }, now);
+}
+
+async function issuedBusinessPricingHandles(
+  router: ApiRouter,
+): Promise<Readonly<{
+  allListingsReportId: string;
+  allListingsDocumentId: string;
+  activeListingsReportId: string;
+  activeListingsDocumentId: string;
+}>> {
+  const broker = (router as unknown as { reportBroker: FixedReportBroker })
+    .reportBroker;
+  const [allListings, activeListings] = await Promise.all([
+    broker.projectDurableLeg({ intent: "all-listings", marketplaceId: US }),
+    broker.projectDurableLeg({
+      intent: "active-business-listings",
+      marketplaceId: US,
+    }),
+  ]);
+  if (
+    !allListings?.reportId ||
+    !allListings.documentId ||
+    !activeListings?.reportId ||
+    !activeListings.documentId
+  ) throw new Error("Expected broker-issued completed report handles");
   return {
-    allListingsReportId: `report-lease.${allListingsLeaseId}`,
-    allListingsDocumentId: `report-document.${allListingsLeaseId}`,
-    activeListingsReportId: `report-lease.${activeListingsLeaseId}`,
-    activeListingsDocumentId: `report-document.${activeListingsLeaseId}`,
+    allListingsReportId: allListings.reportId,
+    allListingsDocumentId: allListings.documentId,
+    activeListingsReportId: activeListings.reportId,
+    activeListingsDocumentId: activeListings.documentId,
   };
 }
 
@@ -405,7 +426,7 @@ describe("Reports runtime router wiring", () => {
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
     let accountScope = "opaque-live-account-a";
-    const handles = await seedCompletedBusinessPricingReports(store, accountScope);
+    await seedCompletedBusinessPricingReports(store, accountScope);
     const router = new ApiRouter({
       store,
       vault: {
@@ -423,6 +444,7 @@ describe("Reports runtime router wiring", () => {
         }
       }),
     });
+    const handles = await issuedBusinessPricingHandles(router);
 
     const response = await router.handle(request({
       method: "GET",
@@ -444,7 +466,7 @@ describe("Reports runtime router wiring", () => {
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
     const accountScope = "opaque-live-account-a";
-    const handles = await seedCompletedBusinessPricingReports(store, accountScope);
+    await seedCompletedBusinessPricingReports(store, accountScope);
     let markActiveStarted!: () => void;
     const activeStarted = new Promise<void>((resolve) => {
       markActiveStarted = resolve;
@@ -475,6 +497,7 @@ describe("Reports runtime router wiring", () => {
         });
       }),
     });
+    const handles = await issuedBusinessPricingHandles(router);
     const controller = new AbortController();
     const getAuditData = (router as unknown as {
       getSharedBusinessPricingAuditData(input: Readonly<{
@@ -514,13 +537,13 @@ describe("Reports runtime router wiring", () => {
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
     const accountScope = "opaque-live-account-a";
-    const handles = await seedCompletedBusinessPricingReports(store, accountScope);
+    await seedCompletedBusinessPricingReports(store, accountScope);
     const baseContext = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: US,
       mode: "live",
       accountScope,
     }));
-    let invalidateActiveEvidenceRead = true;
+    let invalidateActiveEvidenceRead = false;
     const spExecutionContext: SpExecutionContextAdapter = {
       capture: (marketplaceId) => baseContext.capture(marketplaceId),
       async assertCurrent(context) {
@@ -544,6 +567,8 @@ describe("Reports runtime router wiring", () => {
       spExecutionContext,
       reportsAdapter: businessPricingDocumentAdapter(),
     });
+    const handles = await issuedBusinessPricingHandles(router);
+    invalidateActiveEvidenceRead = true;
 
     const response = await router.handle(request({
       method: "GET",

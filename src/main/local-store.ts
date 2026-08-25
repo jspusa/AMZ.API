@@ -82,7 +82,10 @@ export type DurableReportLeg = {
 // Public compatibility aliases: brand jobs and generic Reports API leases use
 // the same durable state machine. New generic code should use DurableReportLeg.
 export type BrandSalesReportLegStatus = DurableReportLegStatus;
-export type BrandSalesReportLeg = DurableReportLeg;
+export type BrandSalesReportLeg = DurableReportLeg & {
+  leaseBinding?: string | null;
+  handleBinding?: string | null;
+};
 
 export type BrandSalesJobRecord = {
   jobId: string;
@@ -565,6 +568,22 @@ function parseDurableReportLeg(value: unknown): DurableReportLeg {
   };
 }
 
+function parseBrandSalesReportLeg(value: unknown): BrandSalesReportLeg {
+  const report = parseDurableReportLeg(value);
+  const raw = value as Record<string, unknown>;
+  return {
+    ...report,
+    leaseBinding: typeof raw.leaseBinding === "string" &&
+        /^[a-f0-9]{64}$/u.test(raw.leaseBinding)
+      ? raw.leaseBinding
+      : null,
+    handleBinding: typeof raw.handleBinding === "string" &&
+        /^[a-f0-9]{64}$/u.test(raw.handleBinding)
+      ? raw.handleBinding
+      : null,
+  };
+}
+
 function parseBrandSalesJobBase(
   value: unknown,
 ): {
@@ -600,8 +619,8 @@ function parseBrandSalesJobBase(
       startDate: raw.startDate as string,
       endDate: raw.endDate as string,
       mode: raw.mode,
-      listing: parseDurableReportLeg(raw.listing),
-      shipment: parseDurableReportLeg(raw.shipment),
+      listing: parseBrandSalesReportLeg(raw.listing),
+      shipment: parseBrandSalesReportLeg(raw.shipment),
       createdAt: Number(raw.createdAt),
       updatedAt: Number(raw.updatedAt),
       expiresAt: Number(raw.expiresAt),
@@ -1337,7 +1356,7 @@ export class LocalStore {
           candidate.jobId === input.jobId && !isBrandSalesIncompatibleJob(candidate),
       );
       if (!entry) throw new Error("Persisted brand-sales job not found");
-      entry[input.leg] = parseDurableReportLeg(input.value);
+      entry[input.leg] = parseBrandSalesReportLeg(input.value);
       entry.updatedAt = Math.max(input.updatedAt, entry.updatedAt + 1);
       if (input.expiresAt !== undefined) {
         if (

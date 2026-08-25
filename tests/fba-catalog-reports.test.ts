@@ -223,6 +223,79 @@ describe("FBA catalog Reports coordinator", () => {
     );
   });
 
+  it("returns a missing live export without creating or polling a report", async () => {
+    const start = vi.fn();
+    const read = vi.fn(async () => null);
+    const status = vi.fn();
+    const readDocument = vi.fn();
+    const coordinator = new FbaCatalogReports({
+      reports: { start, read, status, readDocument } as unknown as Pick<
+        ReportsRuntime,
+        "start" | "read" | "status" | "readDocument"
+      >,
+      context: createScriptedSpExecutionContextAdapter(() => ({
+        marketplaceId: US,
+        mode: "live",
+        accountScope: "opaque-catalog-account",
+      })),
+      listings: createScriptedListingsReadAdapter([]),
+      demo: {
+        export: vi.fn(),
+        identity: vi.fn(),
+        seeds: vi.fn(),
+        businessPricingAudit: vi.fn(),
+      },
+    });
+
+    await expect(coordinator.readExistingExport({ marketplaceId: US }))
+      .resolves.toEqual({ state: "missing" });
+    expect(read).toHaveBeenCalledOnce();
+    expect(start).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+    expect(readDocument).not.toHaveBeenCalled();
+  });
+
+  it("reads demo coverage data without creating a demo report lease", async () => {
+    const exportData = {
+      rows: [],
+      errors: [],
+      fetchedAt: "2026-08-25T00:00:00.000Z",
+    };
+    const reports = {
+      start: vi.fn(),
+      read: vi.fn(),
+      status: vi.fn(),
+      readDocument: vi.fn(),
+    };
+    const demo = {
+      export: vi.fn(async () => exportData),
+      identity: vi.fn(),
+      seeds: vi.fn(),
+      businessPricingAudit: vi.fn(),
+    };
+    const coordinator = new FbaCatalogReports({
+      reports: reports as unknown as Pick<
+        ReportsRuntime,
+        "start" | "read" | "status" | "readDocument"
+      >,
+      context: createScriptedSpExecutionContextAdapter(() => ({
+        marketplaceId: US,
+        mode: "demo",
+        accountScope: "opaque-demo-account",
+      })),
+      listings: createScriptedListingsReadAdapter([]),
+      demo,
+    });
+
+    await expect(coordinator.readExistingExport({ marketplaceId: US }))
+      .resolves.toEqual({ state: "ready", data: exportData });
+    expect(demo.export).toHaveBeenCalledOnce();
+    expect(reports.start).not.toHaveBeenCalled();
+    expect(reports.read).not.toHaveBeenCalled();
+    expect(reports.status).not.toHaveBeenCalled();
+    expect(reports.readDocument).not.toHaveBeenCalled();
+  });
+
   it("reads B2B data from existing All and Active documents without create", async () => {
     const start = vi.fn();
     const heartbeat = vi.fn();

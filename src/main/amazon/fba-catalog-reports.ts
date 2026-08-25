@@ -45,6 +45,11 @@ export interface FbaCatalogReportsDemoSource {
   }>): BusinessPricingAuditSnapshot | Promise<BusinessPricingAuditSnapshot>;
 }
 
+export type FbaCatalogExistingExport =
+  | Readonly<{ state: "missing" }>
+  | Readonly<{ state: "pending"; receipt: ReportsRuntimeReceipt }>
+  | Readonly<{ state: "ready"; data: FbaCatalogExport }>;
+
 type ReportsPort = Pick<
   ReportsRuntime,
   "start" | "read" | "status" | "readDocument"
@@ -219,6 +224,54 @@ export class FbaCatalogReports {
     );
     await this.context.assertCurrent(context);
     return receipt;
+  }
+
+  /**
+   * Data-GET seam for legacy consumers. Demo data has no report lifecycle;
+   * live mode may read or poll one existing lease but can never create one.
+   */
+  async readExistingExport(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    signal?: AbortSignal;
+    expectedContext?: SpExecutionContext;
+  }>): Promise<FbaCatalogExistingExport> {
+    const context = await this.executionContext(
+      input.marketplaceId,
+      input.expectedContext,
+    );
+    if (context.mode === "demo") {
+      const data = await this.demo.export({
+        marketplaceId: input.marketplaceId,
+        signal: input.signal,
+      });
+      await this.context.assertCurrent(context);
+      return { state: "ready", data };
+    }
+    const plan = {
+      intent: "all-listings" as const,
+      marketplaceId: input.marketplaceId,
+      signal: input.signal,
+    };
+    let receipt = await this.reports.read(plan, context);
+    await this.context.assertCurrent(context);
+    if (!receipt) return { state: "missing" };
+    if (!receipt.ready) {
+      receipt = await this.reports.status(plan, receipt.reportId, context);
+      await this.context.assertCurrent(context);
+    }
+    if (!receipt.ready || !receipt.documentId) {
+      return { state: "pending", receipt };
+    }
+    const data = await this.read({
+      view: "export",
+      marketplaceId: input.marketplaceId,
+      reportId: receipt.reportId,
+      documentId: receipt.documentId,
+      signal: input.signal,
+      expectedContext: context,
+    });
+    await this.context.assertCurrent(context);
+    return { state: "ready", data };
   }
 
   async read(
