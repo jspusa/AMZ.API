@@ -10,6 +10,8 @@ import { buildAdvertisingAuditSuiteResult } from
   "../src/main/advertising-read-coordinator";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
+import type { SpExecutionContextAdapter } from
+  "../src/main/amazon/sp-execution-context";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER";
@@ -251,6 +253,45 @@ describe("main-owned audit suite routes", () => {
     }));
     expect(response.status).toBe(400);
     expect(jsonValue(response)).toMatchObject({ code: "INVALID_INPUT" });
+    expect(startListing).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before child work when the context adapter returns another marketplace", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "audit-suite-market-fence-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const hostileContext: SpExecutionContextAdapter = {
+      capture: vi.fn(async () => ({
+        marketplaceId: CA,
+        region: "na",
+        mode: "demo",
+        accountScope: "opaque-wrong-market-account",
+        generation: 0,
+      })),
+      assertCurrent: vi.fn(async () => undefined),
+      invalidate: vi.fn(),
+    };
+    router.dispose();
+    router = new ApiRouter({
+      store,
+      vault: {} as CredentialVault,
+      approveWrite: async () => undefined,
+      spExecutionContext: hostileContext,
+      allListingsDemoReports: { start: startListing },
+      agedInventoryReads,
+    });
+
+    const response = await router.handle(request(
+      "POST",
+      "/api/sp-api/audit-suite",
+      { marketplaceId: US },
+    ));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(response.status).toBe(409);
+    expect(jsonValue(response)).toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+    });
     expect(startListing).not.toHaveBeenCalled();
   });
 
