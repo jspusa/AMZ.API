@@ -686,6 +686,21 @@ describe("AgedInventoryReads", () => {
       code: "REPORT_FORMAT_UNSUPPORTED",
       message: expect.stringContaining("超出安全範圍"),
     });
+
+    const lossyPublicCell = reportText(headers, [
+      globalAgeRecord("LOSSY-PUBLIC-CELL", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "90071992547409.91",
+      }),
+      globalAgeRecord("MISSING-PUBLIC-CELL", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "",
+      }),
+    ]);
+    await expect(readLive(lossyPublicCell)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("超出安全範圍"),
+    });
   });
 
   it("validates every fully covered AIS tier even when the report is partial", async () => {

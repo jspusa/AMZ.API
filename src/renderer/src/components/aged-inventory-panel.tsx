@@ -141,21 +141,33 @@ function safeIntegerTotal(values: number[], label: string): number {
 }
 
 function moneyCents(value: number, label: string): number {
-  const cents = Math.round(value * 100);
+  const cents = exactCentsFromPublicMoney(value);
   if (
     !Number.isFinite(value) ||
     value < 0 ||
-    !Number.isSafeInteger(cents) ||
-    cents / 100 !== value
+    cents === null
   ) {
     throw new Error(`${label}超出安全貨幣精度，已停止顯示。`);
   }
   return cents;
 }
 
+function exactCentsFromPublicMoney(value: number): number | null {
+  const normalized = String(value);
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const [whole = "0", fraction = ""] = normalized.split(".");
+  const significantWhole = whole.replace(/^0+/u, "") || "0";
+  if (significantWhole.length > 14) return null;
+  const exactCents =
+    BigInt(significantWhole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  return exactCents > BigInt(Number.MAX_SAFE_INTEGER)
+    ? null
+    : Number(exactCents);
+}
+
 function moneyValueFromCents(cents: number, label: string): number {
   const value = cents / 100;
-  if (Math.round(value * 100) !== cents) {
+  if (exactCentsFromPublicMoney(value) !== cents) {
     throw new Error(`${label}加總超出安全範圍，已停止顯示。`);
   }
   return value;
@@ -211,10 +223,8 @@ export function aggregateAgedSurchargeBuckets(
 ): AgedInventorySurchargeBucketOverview[] {
   const template = rows[0]?.agedSurchargeBuckets ?? [];
   return template.map((bucket, index) => {
-    let quantity = 0;
-    let quantityReportedSkuCount = 0;
-    let estimatedChargeCents = 0;
-    let chargeReportedSkuCount = 0;
+    const quantities: number[] = [];
+    const estimatedCharges: number[] = [];
     for (const row of rows) {
       const candidate = row.agedSurchargeBuckets[index];
       if (
@@ -226,38 +236,32 @@ export function aggregateAgedSurchargeBuckets(
         throw new Error("FBA AIS 預估計費彙總使用不同區域欄位，已停止顯示。");
       }
       if (candidate.quantity !== null) {
-        quantity = safeIntegerTotal(
-          [quantity, candidate.quantity],
-          `FBA ${bucket.label}計費數量`,
-        );
-        quantityReportedSkuCount += 1;
+        if (!nonNegativeInteger(candidate.quantity)) {
+          throw new Error("FBA AIS 預估計費數量格式無效，已停止顯示。");
+        }
+        quantities.push(candidate.quantity);
       }
       if (candidate.estimatedCharge !== null) {
-        estimatedChargeCents = safeIntegerTotal(
-          [
-            estimatedChargeCents,
-            moneyCents(
-              candidate.estimatedCharge,
-              `FBA ${bucket.label}預估附加費`,
-            ),
-          ],
+        moneyCents(
+          candidate.estimatedCharge,
           `FBA ${bucket.label}預估附加費`,
         );
-        chargeReportedSkuCount += 1;
+        estimatedCharges.push(candidate.estimatedCharge);
       }
     }
+    const quantityReportedSkuCount = quantities.length;
+    const chargeReportedSkuCount = estimatedCharges.length;
     return {
       key: bucket.key,
       label: bucket.label,
       quantity:
-        quantityReportedSkuCount === rows.length ? quantity : null,
+        quantityReportedSkuCount === rows.length
+          ? safeIntegerTotal(quantities, `FBA ${bucket.label}計費數量`)
+          : null,
       quantityReportedSkuCount,
       estimatedCharge:
         chargeReportedSkuCount === rows.length
-          ? moneyValueFromCents(
-              estimatedChargeCents,
-              `FBA ${bucket.label}預估附加費`,
-            )
+          ? safeMoneyTotal(estimatedCharges, `FBA ${bucket.label}預估附加費`)
           : null,
       chargeReportedSkuCount,
       totalSkuCount: rows.length,
@@ -622,7 +626,7 @@ export function formatAgedInventoryMoney(
     return new Intl.NumberFormat("zh-TW", {
       style: "currency",
       currency: currencyCode,
-      maximumFractionDigits: currencyCode === "JPY" ? 0 : 2,
+      maximumFractionDigits: 2,
     }).format(value);
   } catch {
     return `${currencyCode} ${value.toLocaleString("zh-TW")}`;

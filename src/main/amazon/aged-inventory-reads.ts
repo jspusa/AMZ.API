@@ -371,31 +371,26 @@ function reportMoneyCents(
     });
   }
   const normalized = raw.replace(/,/g, "");
-  const [whole = "0", fraction = ""] = normalized.split(".");
-  const significantWhole = whole.replace(/^0+/u, "") || "0";
-  if (significantWhole.length > 14) {
-    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
-      status: 502,
-      code: "REPORT_FORMAT_UNSUPPORTED",
-    });
-  }
-  const exactCents =
-    BigInt(significantWhole) * 100n + BigInt(fraction.padEnd(2, "0"));
-  if (exactCents > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
-      status: 502,
-      code: "REPORT_FORMAT_UNSUPPORTED",
-    });
-  }
-  const cents = Number(exactCents);
-  const publicValue = cents / 100;
-  if (Math.round(publicValue * 100) !== cents) {
+  const cents = exactCentsFromNormalizedMoney(normalized);
+  if (cents === null || exactCentsFromNormalizedMoney(String(cents / 100)) !== cents) {
     throw new SpApiError(`Amazon FBA 庫齡報表的「${label}」超出安全範圍。`, {
       status: 502,
       code: "REPORT_FORMAT_UNSUPPORTED",
     });
   }
   return cents;
+}
+
+function exactCentsFromNormalizedMoney(normalized: string): number | null {
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const [whole = "0", fraction = ""] = normalized.split(".");
+  const significantWhole = whole.replace(/^0+/u, "") || "0";
+  if (significantWhole.length > 14) return null;
+  const exactCents =
+    BigInt(significantWhole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  return exactCents > BigInt(Number.MAX_SAFE_INTEGER)
+    ? null
+    : Number(exactCents);
 }
 
 function safeIntegerTotal(values: number[], label: string): number {
@@ -420,7 +415,7 @@ function safeIntegerTotal(values: number[], label: string): number {
 function safeMoneyTotal(centsValues: number[], label: string): number {
   const cents = safeIntegerTotal(centsValues, label);
   const value = cents / 100;
-  if (Math.round(value * 100) !== cents) {
+  if (exactCentsFromNormalizedMoney(String(value)) !== cents) {
     reportFormatUnsupported(
       `Amazon FBA 庫齡報表的${label}加總超出安全範圍。`,
     );

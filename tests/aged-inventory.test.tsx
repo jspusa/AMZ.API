@@ -82,6 +82,7 @@ describe("FBA aged inventory renderer and read-only route", () => {
     expect(markup).toContain(
       "任一 SKU 缺值時只保留逐列證據，不顯示部分全站合計",
     );
+    expect(formatAgedInventoryMoney(1.5, "JPY")).toMatch(/1[.,]5/u);
   });
 
   it("aggregates every US age and AIS tier while preserving partial quantity and fee coverage", () => {
@@ -187,8 +188,8 @@ describe("FBA aged inventory renderer and read-only route", () => {
 
   it("fails closed on unsafe complete tier aggregates", () => {
     const surchargeRow = (
-      quantity: number,
-      estimatedCharge: number,
+      quantity: number | null,
+      estimatedCharge: number | null,
     ) => ({
       agedSurchargeBuckets: [{
         key: "181-210",
@@ -207,6 +208,18 @@ describe("FBA aged inventory renderer and read-only route", () => {
       surchargeRow(0, 90_071_992_547_409),
       surchargeRow(0, 0.01),
     ])).toThrow("安全範圍");
+
+    expect(aggregateAgedSurchargeBuckets([
+      surchargeRow(Number.MAX_SAFE_INTEGER, 90_071_992_547_409),
+      surchargeRow(1, 1),
+      surchargeRow(null, null),
+    ])).toEqual([expect.objectContaining({
+      quantity: null,
+      quantityReportedSkuCount: 2,
+      estimatedCharge: null,
+      chargeReportedSkuCount: 2,
+      totalSkuCount: 3,
+    })]);
   });
 
   it("validates every row and the server summary before displaying it", () => {
