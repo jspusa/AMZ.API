@@ -350,18 +350,39 @@ describe("ApiRouter SP execution context", () => {
         },
       };
       const standaloneRun = vi.fn(async () => ({}));
-      const loadAplusSeeds = vi.fn(async () => ({
-        fetchedAt: "2026-08-25T00:00:00.000Z",
-        fbaSnapshotId: "must-not-start",
-        rows: [],
-      }));
+      const aPlusAuditClear = vi.fn();
+      const aPlusAuditCoordinator = {
+        start: vi.fn(async () => {
+          await (router as unknown as {
+            spExecutionContext: SpExecutionContextAdapter;
+          }).spExecutionContext.capture(US);
+          await new Promise<void>((resolve) => queueMicrotask(resolve));
+          return {
+            status: 202,
+            headers: { "retry-after": "1" },
+            body: {
+              kind: "json" as const,
+              value: { ready: false, status: "queued" },
+            },
+          };
+        }),
+        observe: vi.fn(async () => ({
+          status: 410,
+          headers: {},
+          body: {
+            kind: "json" as const,
+            value: { code: "A_PLUS_AUDIT_JOB_EXPIRED" },
+          },
+        })),
+        clear: aPlusAuditClear,
+      };
       router = new ApiRouter({
         store: {} as LocalStore,
         vault: {} as CredentialVault,
         approveWrite: async () => undefined,
         spExecutionContext,
         standaloneAudit: { run: standaloneRun },
-        aplusAudit: { loadFbaSeeds: loadAplusSeeds },
+        aPlusAuditCoordinator,
       });
 
       const response = await router.handle({
@@ -379,14 +400,12 @@ describe("ApiRouter SP execution context", () => {
         code: "SP_CONTEXT_INVALIDATED",
       });
       expect(standaloneRun, candidate.label).not.toHaveBeenCalled();
-      expect(loadAplusSeeds, candidate.label).not.toHaveBeenCalled();
+      expect(aPlusAuditClear, candidate.label).toHaveBeenCalled();
       const state = router as unknown as {
         standaloneAuditJobs: { jobs: Map<string, unknown> };
-        aplusAuditJobs: { jobs: Map<string, unknown> };
         auditSuite: { jobs: Map<string, unknown> };
       };
       expect(state.standaloneAuditJobs.jobs.size, candidate.label).toBe(0);
-      expect(state.aplusAuditJobs.jobs.size, candidate.label).toBe(0);
       expect(state.auditSuite.jobs.size, candidate.label).toBe(0);
       router.dispose();
     }

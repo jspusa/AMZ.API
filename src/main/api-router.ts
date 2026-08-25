@@ -13,14 +13,6 @@ import {
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
 import {
-  buildReviewAuditSnapshot,
-  type DedupedFbaReviewCandidate,
-  type ReviewAuditCandidateCoverage,
-  type ReviewAuditFetchResult,
-  type ReviewAuditRelationshipIncompleteRow,
-  type ReviewAuditSnapshot,
-} from "./amazon/review-audit";
-import {
   auditListingContentRows,
 } from "./amazon/content-quality";
 import {
@@ -169,6 +161,11 @@ import {
   type FbaInboundReadsPort,
 } from "./fba-inbound-coordinator";
 import {
+  ReviewAuditCoordinator,
+  type ReviewAuditCandidateSource,
+  type ReviewAuditCoordinatorPort,
+} from "./review-audit-coordinator";
+import {
   SalesAndTrafficReports,
   type SalesAndTrafficDemoSource,
   type SalesAndTrafficDocumentReader,
@@ -198,13 +195,10 @@ import {
   getDemoFbaReviewAuditCandidates,
   readUnboundVariationAudit,
   verifyFbaReviewAuditSeeds,
-  type FbaReviewAuditSeed,
-  type ReviewAuditCandidateSnapshot,
   type UnboundVariationAuditSnapshot,
 } from "./amazon/variation-catalog-reads";
 import {
   CustomerFeedbackReads,
-  customerFeedbackMarketplaceSupported,
   type CustomerFeedbackReadsPort,
 } from "./amazon/customer-feedback-reads";
 import { OrdersReads, type OrdersReadsPort } from "./amazon/orders-reads";
@@ -218,7 +212,6 @@ import {
   ReplenishmentAuditError,
   subscriptionAuditDiscountBucket,
 } from "./amazon/replenishment-audit";
-import { createReviewAuditWorkbook } from "./amazon/review-audit-xlsx";
 import {
   ContentAuditWorkbookError,
   parseContentAuditWorkbook,
@@ -239,9 +232,7 @@ import {
 } from "./amazon/audit-suite-coordinator";
 import {
   buildAplusAuditSeedsFromFbaGrouping,
-  type AplusAuditProgress,
   type AplusAuditSnapshot,
-  type AplusAuditSeed,
 } from "./amazon/a-plus-content-reads";
 import {
   AplusContentReads,
@@ -249,13 +240,11 @@ import {
   type AplusContentReadsPort,
 } from "./amazon/a-plus-content-reads";
 import {
-  AplusAuditJobCoordinator,
-  AplusAuditJobCoordinatorError,
-  type AplusAuditJobBoundContext,
-  type AplusAuditFbaSeedSnapshot,
-  type AplusAuditJobGateway,
-  type AplusAuditJobMode,
-} from "./amazon/a-plus-audit-job";
+  AplusAuditCoordinator,
+  type AplusAuditCoordinatorPort,
+} from "./a-plus-audit-coordinator";
+import { AplusAuditJobCoordinatorError } from
+  "./amazon/a-plus-audit-job";
 import {
   StandaloneAuditJobCoordinator,
   StandaloneAuditJobCoordinatorError,
@@ -377,28 +366,6 @@ type ContentBatchPlan = {
   result: ContentBatchCommitResult | null;
 };
 
-type ReviewAuditJob = {
-  marketplaceId: MarketplaceId;
-  context: SpExecutionContext;
-  expiresAt: number;
-  mode: "live" | "demo";
-  listingReportId: string;
-  listingDocumentId: string | null;
-  listingStatus: "IN_QUEUE" | "IN_PROGRESS" | "DONE";
-  candidates: DedupedFbaReviewCandidate[] | null;
-  sourceCandidateCount: number;
-  candidateCoverage: ReviewAuditCandidateCoverage | null;
-  relationshipIncompleteRows: ReviewAuditRelationshipIncompleteRow[];
-  results: ReviewAuditFetchResult[];
-  nextCandidateIndex: number;
-  retryNotBefore: number;
-  rateLimitRetryCount: number;
-  snapshot: ReviewAuditSnapshot | null;
-  signal: AbortSignal;
-  abort(): void;
-  retainWhileActive: boolean;
-};
-
 type DemoFixedReportStart = (input: Readonly<{
   marketplaceId: MarketplaceId;
   signal?: AbortSignal;
@@ -436,15 +403,6 @@ type AdvertisingStrategySourceGateway = {
     signal?: AbortSignal;
   }>): Promise<FbaListingIdentitySnapshot>;
 };
-
-type ReviewAuditCandidateSource = (
-  input: Readonly<{
-    marketplaceId: MarketplaceId;
-    mode: "live" | "demo";
-    seeds: readonly FbaReviewAuditSeed[];
-    signal?: AbortSignal;
-  }>,
-) => Promise<ReviewAuditCandidateSnapshot>;
 
 type InboundNoncomplianceDemoReportGateway = {
   start(input: Readonly<{
@@ -939,43 +897,10 @@ function contentAuditLegacyRecoveredFieldWasEdited(input: {
       input.proposed.ingredients,
     );
 }
-const REVIEW_AUDIT_JOB_TTL_MS = 30 * 60 * 1_000;
-const REVIEW_AUDIT_RATE_LIMIT_RETRY_LIMIT = 1;
-const REVIEW_AUDIT_DEFAULT_RATE_LIMIT_DELAY_MS = 2_000;
-const REVIEW_AUDIT_MAX_RATE_LIMIT_DELAY_MS = 25 * 60 * 1_000;
 const ADVERTISING_STRATEGY_REPORT_WAIT_MS = 3 * 60 * 60 * 1_000 + 5 * 60 * 1_000;
 const ADVERTISING_STRATEGY_ACTIVE_TTL_MS = 3 * 60 * 60 * 1_000 + 30 * 60 * 1_000;
 const ADVERTISING_STRATEGY_TERMINAL_TTL_MS = 30 * 60 * 1_000;
 const ADVERTISING_STRATEGY_RETRY_TTL_MS = 35 * 60 * 1_000;
-
-function reviewAuditRateLimitDelay(
-  retryAfter: string | null | undefined,
-  now = Date.now(),
-): number | null {
-  if (!retryAfter) return REVIEW_AUDIT_DEFAULT_RATE_LIMIT_DELAY_MS;
-  const trimmed = retryAfter.trim();
-  let milliseconds: number;
-  if (/^\d+(?:\.\d+)?$/u.test(trimmed)) {
-    milliseconds = Math.ceil(Number(trimmed) * 1_000);
-  } else {
-    const retryAt = Date.parse(trimmed);
-    if (
-      !Number.isFinite(retryAt) ||
-      new Date(retryAt).toUTCString() !== trimmed
-    ) {
-      return null;
-    }
-    milliseconds = Math.max(0, retryAt - now);
-  }
-  if (
-    !Number.isSafeInteger(milliseconds) ||
-    milliseconds < 0 ||
-    milliseconds > REVIEW_AUDIT_MAX_RATE_LIMIT_DELAY_MS
-  ) {
-    return null;
-  }
-  return Math.max(REVIEW_AUDIT_DEFAULT_RATE_LIMIT_DELAY_MS, milliseconds);
-}
 
 function advertisingStrategyPollDelay(attempt: number): number {
   if (attempt < 30) return 2_000;
@@ -1476,8 +1401,6 @@ export class ApiRouter {
   private readonly businessPricingActiveListingsReports:
     BusinessPricingActiveListingsReportGateway;
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
-  private readonly reviewAuditCandidates: ReviewAuditCandidateSource;
-  private readonly customerFeedbackReads: CustomerFeedbackReadsPort;
   private readonly ordersReads: OrdersReadsPort;
   private readonly statelessCapabilities: StatelessCapabilityRoutesPort;
   private readonly imageUpload: LocalImageUploadPort;
@@ -1500,19 +1423,14 @@ export class ApiRouter {
   private readonly contentAuditOwner: ContentAuditOwnerPort;
   private readonly imageAuditOwner: ImageAuditOwnerPort;
   private readonly listingsExportOwner: ListingsExportPort;
+  private readonly reviewAuditCoordinator: ReviewAuditCoordinatorPort;
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
-  private readonly aplusAuditJobs: AplusAuditJobCoordinator;
+  private readonly aPlusAuditCoordinator: AplusAuditCoordinatorPort;
   private readonly standaloneAuditJobs: StandaloneAuditJobCoordinator;
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly listingAttributeWriteReservations = new Map<string, string>();
   private readonly contentBatchPlans = new Map<string, ContentBatchPlan>();
-  private readonly reviewAuditJobs = new Map<string, ReviewAuditJob>();
-  private readonly reviewAuditPollFlights = new Map<string, Promise<ApiResponse>>();
-  private readonly reviewAuditRunnerTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
   private readonly advertisingStrategyJobs = new Map<string, AdvertisingStrategyJob>();
   private readonly advertisingStrategySelections = new Map<string, string>();
   private contextStateRevision = 0;
@@ -1529,6 +1447,7 @@ export class ApiRouter {
     salesAndTrafficRead?: SalesAndTrafficDocumentReader;
     salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
+    reviewAuditCoordinator?: ReviewAuditCoordinatorPort;
     reviewAuditCandidates?: ReviewAuditCandidateSource;
     customerFeedbackReads?: CustomerFeedbackReadsPort;
     ordersReads?: OrdersReadsPort;
@@ -1564,7 +1483,7 @@ export class ApiRouter {
     ) => Promise<void>;
     catalogNow?: () => Date;
     aplusContentReads?: AplusContentReadsPort;
-    aplusAudit?: Partial<AplusAuditJobGateway>;
+    aPlusAuditCoordinator?: AplusAuditCoordinatorPort;
     standaloneAudit?: Partial<StandaloneAuditJobGateway>;
     advertising?: AdvertisingGateway;
     spExecutionContext?: SpExecutionContextAdapter;
@@ -1764,7 +1683,7 @@ export class ApiRouter {
       }),
       ...input.advertisingStrategySources,
     };
-    this.reviewAuditCandidates = input.reviewAuditCandidates ?? (async (request) =>
+    const reviewAuditCandidates = input.reviewAuditCandidates ?? (async (request) =>
       request.mode === "demo"
         ? getDemoFbaReviewAuditCandidates({
             marketplaceId: request.marketplaceId,
@@ -1775,10 +1694,23 @@ export class ApiRouter {
             seeds: request.seeds,
             signal: request.signal,
           }));
-    this.customerFeedbackReads = input.customerFeedbackReads ??
+    const customerFeedbackReads = input.customerFeedbackReads ??
       new CustomerFeedbackReads({
         context: this.spExecutionContext,
         live: customerFeedbackPageAdapterProduction,
+      });
+    this.reviewAuditCoordinator = input.reviewAuditCoordinator ??
+      new ReviewAuditCoordinator({
+        context: this.spExecutionContext,
+        resolveMode: (marketplaceId) =>
+          usesDemoMode(marketplaceId) ? "demo" : "live",
+        listings: this.listingsExportOwner,
+        readCatalogSeeds: (request) => this.fbaCatalogReports.read({
+          view: "seeds",
+          ...request,
+        }),
+        readCandidates: reviewAuditCandidates,
+        customerFeedback: customerFeedbackReads,
       });
     this.ordersReads = input.ordersReads ?? new OrdersReads({
       context: this.spExecutionContext,
@@ -1839,26 +1771,13 @@ export class ApiRouter {
       context: this.spExecutionContext,
       live: aplusContentPageAdapterProduction,
     });
-    this.aplusAuditJobs = new AplusAuditJobCoordinator({
-      gateway: {
-        bindContext: input.aplusAudit?.bindContext ?? ((identity) =>
-          this.bindAplusAuditContext(identity)),
-        loadFbaSeeds: input.aplusAudit?.loadFbaSeeds ?? ((job) =>
-          this.loadAplusAuditFbaSeeds(
-            job.context,
-            job.signal,
-            job.heartbeat,
-          )),
-        read: input.aplusAudit?.read ?? ((job) =>
-          this.readAplusAudit(
-            job.context,
-            job.seed,
-            job.signal,
-            job.heartbeat,
-            job.onProgress,
-          )),
-      },
-    });
+    this.aPlusAuditCoordinator = input.aPlusAuditCoordinator ??
+      new AplusAuditCoordinator({
+        context: this.spExecutionContext,
+        listingsExport: this.listingsExportOwner,
+        readGrouping: (request) => getFbaVariationGroupingData(request),
+        contentReads: this.aplusContentReads,
+      });
     this.standaloneAuditJobs = new StandaloneAuditJobCoordinator({
       gateway: {
         bindContext: input.standaloneAudit?.bindContext ?? ((identity) =>
@@ -1891,16 +1810,13 @@ export class ApiRouter {
     this.agedInventoryAuditOwner.clear();
     this.contentAuditOwner.clear();
     this.imageAuditOwner.clear();
+    this.reviewAuditCoordinator.clear();
+    this.aPlusAuditCoordinator.clear();
     this.listingsExportOwner.clear();
-    this.aplusAuditJobs.clear();
     this.standaloneAuditJobs.clear();
     this.previews.clear();
     this.listingAttributeWriteReservations.clear();
     this.contentBatchPlans.clear();
-    for (const jobId of [...this.reviewAuditJobs.keys()]) {
-      this.deleteReviewAuditJob(jobId);
-    }
-    this.reviewAuditPollFlights.clear();
     this.fbaInboundCoordinator.clear();
     for (const job of [...this.advertisingStrategyJobs.values()]) {
       job.controller.abort(new Error("FBA 廣告策略工作已因安全 context 變更而停止。"));
@@ -2104,11 +2020,11 @@ export class ApiRouter {
       case "POST /api/sp-api/report-library/access-plan":
         return this.planningCapabilities.reportLibraryAccessPlan(request);
       case "POST /api/sp-api/review-audit":
-        return this.startReviewAudit(request);
+        return this.reviewAuditCoordinator.start(request);
       case "GET /api/sp-api/review-audit":
-        return this.reviewAuditStatusOrData(request);
+        return this.reviewAuditCoordinator.observe(request);
       case "GET /api/sp-api/review-audit/export":
-        return this.reviewAuditExport(request);
+        return this.reviewAuditCoordinator.download(request);
       case "GET /api/sp-api/replenishment-plan":
         return this.fbaSalesMetricsRoutes.replenishment(request);
       case "POST /api/sp-api/aged-inventory":
@@ -2150,9 +2066,9 @@ export class ApiRouter {
       case "GET /api/amazon-ads/strategy":
         return this.advertisingStrategyStatus(request);
       case "POST /api/sp-api/a-plus-audit":
-        return this.startAplusAudit(request);
+        return this.aPlusAuditCoordinator.start(request);
       case "GET /api/sp-api/a-plus-audit":
-        return this.aplusAuditStatus(request);
+        return this.aPlusAuditCoordinator.observe(request);
       case "POST /api/sp-api/audit-suite":
         return this.startAuditSuite(request);
       case "GET /api/sp-api/audit-suite":
@@ -3992,410 +3908,6 @@ export class ApiRouter {
     ]);
   }
 
-  private pruneReviewAuditJobs(now = Date.now()): void {
-    for (const [jobId, job] of this.reviewAuditJobs) {
-      if (job.signal.aborted) {
-        this.deleteReviewAuditJob(jobId);
-        continue;
-      }
-      if (job.retainWhileActive || !job.snapshot) continue;
-      if (job.expiresAt <= now) this.deleteReviewAuditJob(jobId);
-    }
-  }
-
-  private deleteReviewAuditJob(jobId: string): void {
-    const timer = this.reviewAuditRunnerTimers.get(jobId);
-    if (timer) clearTimeout(timer);
-    this.reviewAuditRunnerTimers.delete(jobId);
-    const job = this.reviewAuditJobs.get(jobId);
-    this.reviewAuditJobs.delete(jobId);
-    job?.abort();
-  }
-
-  private reviewAuditFlight(
-    jobId: string,
-    job: ReviewAuditJob,
-  ): Promise<ApiResponse> {
-    let flight = this.reviewAuditPollFlights.get(jobId);
-    if (!flight) {
-      flight = this.advanceReviewAuditJob(jobId, job, job.signal).finally(() => {
-        if (this.reviewAuditPollFlights.get(jobId) === flight) {
-          this.reviewAuditPollFlights.delete(jobId);
-        }
-      });
-      this.reviewAuditPollFlights.set(jobId, flight);
-    }
-    return flight;
-  }
-
-  private scheduleReviewAuditRunner(jobId: string, delay = 25): void {
-    if (
-      this.reviewAuditRunnerTimers.has(jobId) ||
-      !this.reviewAuditJobs.has(jobId)
-    ) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      this.reviewAuditRunnerTimers.delete(jobId);
-      void this.runReviewAuditBackground(jobId);
-    }, Math.max(0, delay));
-    timer.unref?.();
-    this.reviewAuditRunnerTimers.set(jobId, timer);
-  }
-
-  private async runReviewAuditBackground(jobId: string): Promise<void> {
-    this.pruneReviewAuditJobs();
-    const job = this.reviewAuditJobs.get(jobId);
-    if (!job || job.snapshot) return;
-    try {
-      const response = await this.reviewAuditFlight(jobId, job);
-      if (
-        response.status >= 400 ||
-        job.snapshot ||
-        this.reviewAuditJobs.get(jobId) !== job
-      ) {
-        return;
-      }
-      const paceDelay = job.candidates
-        ? Math.max(25, job.retryNotBefore - Date.now())
-        : 1_150;
-      this.scheduleReviewAuditRunner(jobId, paceDelay);
-    } catch {
-      // A later explicit status read can surface the same fail-closed error.
-      // Do not auto-restart reports or retry a failed Customer Feedback call.
-    }
-  }
-
-  private reviewAuditJobReply(jobId: string, job: ReviewAuditJob): ApiResponse {
-    const total = job.candidates?.length ?? null;
-    const completed = job.nextCandidateIndex;
-    const ready = Boolean(job.snapshot);
-    return json({
-      jobId,
-      exportId: ready ? jobId : null,
-      mode: job.mode,
-      marketplaceId: job.marketplaceId,
-      ready,
-      status: ready
-        ? "DONE"
-        : job.candidates
-          ? "READING_NON_PARENT_TOPICS"
-          : job.listingStatus,
-      progress: {
-        completed,
-        total,
-        percent: total === null || total === 0
-          ? ready ? 100 : 0
-          : Math.round((completed / total) * 100),
-      },
-      message: ready
-        ? "FBA 非 parent ASIN 評論主題健檢已完成。"
-        : job.candidates
-          ? `正在依 Amazon 官方 1 request/second 限制讀取已驗證的非 parent ASIN 主題（${completed} / ${total}）。`
-          : "Amazon 正在準備目前 FBA 商品清單。",
-      capabilityNotice:
-        "資料每週更新且僅英文；前／後五名使用 Amazon 主題影響值。它不是商品總星等或 1–5 星制；負數是此負向主題對星等下降方向的影響值，不是商品負星等，也不會轉成 0 或絕對值。關閉健檢小視窗後，本機主程序仍會在背景繼續。",
-    }, ready ? 200 : 202);
-  }
-
-  private reviewAuditModeFence(
-    jobId: string,
-    job: ReviewAuditJob,
-  ): ApiResponse | null {
-    const mode = usesDemoMode(job.marketplaceId) ? "demo" : "live";
-    if (mode === job.mode) return null;
-    this.deleteReviewAuditJob(jobId);
-    return invalid(
-      "App 展示／真實模式已改變，舊評論健檢不可繼續或匯出。",
-      409,
-      "REPORT_MODE_CHANGED",
-    );
-  }
-
-  private async startReviewAudit(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    const marketplaceId = parseMarketplace(body?.marketplaceId);
-    if (!body || !marketplaceId) {
-      return invalid("請選擇要健檢評論主題的 Amazon 站點。");
-    }
-    if (!customerFeedbackMarketplaceSupported(marketplaceId)) {
-      return invalid(
-        "Amazon Customer Feedback API 僅支援本 App 的 US、JP、UK 與 DE 站；未改用父變體或私有 Seller Central 資料。",
-        422,
-        "MARKETPLACE_UNSUPPORTED",
-      );
-    }
-    try {
-      const context = await this.spExecutionContext.capture(marketplaceId);
-      const status = await this.listingsExportOwner.start({ marketplaceId });
-      await this.spExecutionContext.assertCurrent(context);
-      if (status.mode !== context.mode) {
-        return invalid(
-          "FBA 商品清單與評論健檢執行環境不一致，已停止。",
-          409,
-          "REPORT_MODE_CHANGED",
-        );
-      }
-      if (
-        status.status !== "IN_QUEUE" &&
-        status.status !== "IN_PROGRESS" &&
-        status.status !== "DONE"
-      ) {
-        return invalid("Amazon 未能開始建立 FBA 商品清單。", 422, "REPORT_FAILED");
-      }
-      const jobId = randomUUID();
-      const controller = new AbortController();
-      const job: ReviewAuditJob = {
-        marketplaceId,
-        context,
-        expiresAt: Date.now() + REVIEW_AUDIT_JOB_TTL_MS,
-        mode: status.mode,
-        listingReportId: status.reportId,
-        listingDocumentId: status.documentId,
-        listingStatus: status.status,
-        candidates: null,
-        sourceCandidateCount: 0,
-        candidateCoverage: null,
-        relationshipIncompleteRows: [],
-        results: [],
-        nextCandidateIndex: 0,
-        retryNotBefore: 0,
-        rateLimitRetryCount: 0,
-        snapshot: null,
-        signal: controller.signal,
-        abort: () => controller.abort(),
-        retainWhileActive: false,
-      };
-      this.pruneReviewAuditJobs();
-      this.reviewAuditJobs.set(jobId, job);
-      this.scheduleReviewAuditRunner(jobId);
-      return this.reviewAuditJobReply(jobId, job);
-    } catch (error) {
-      return apiError(error, "開始 FBA 評論主題健檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async reviewAuditStatusOrData(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const jobId = this.reportIdentifier(request.query.jobId);
-    if (!marketplaceId || !jobId) {
-      return invalid("評論主題健檢工作資訊無效。");
-    }
-    this.pruneReviewAuditJobs();
-    const job = this.reviewAuditJobs.get(jobId);
-    if (!job || job.marketplaceId !== marketplaceId) {
-      return invalid(
-        "評論主題健檢已過期或站點不符，請重新掃描。",
-        410,
-        "SNAPSHOT_EXPIRED",
-      );
-    }
-    const modeError = this.reviewAuditModeFence(jobId, job);
-    if (modeError) return modeError;
-    return this.reviewAuditFlight(jobId, job);
-  }
-
-  private async advanceReviewAuditJob(
-    jobId: string,
-    job: ReviewAuditJob,
-    signal?: AbortSignal,
-  ): Promise<ApiResponse> {
-    assertBackgroundActive(signal);
-    const marketplaceId = job.marketplaceId;
-    const initialModeError = this.reviewAuditModeFence(jobId, job);
-    if (initialModeError) return initialModeError;
-    try {
-      await this.spExecutionContext.assertCurrent(job.context);
-    } catch (error) {
-      this.deleteReviewAuditJob(jobId);
-      return apiError(error, "評論健檢執行環境已改變，請重新開始。");
-    }
-    assertBackgroundActive(signal);
-    const accountModeError = this.reviewAuditModeFence(jobId, job);
-    if (accountModeError) return accountModeError;
-    if (job.snapshot) {
-      return json({ ...structuredClone(job.snapshot), exportId: jobId });
-    }
-    try {
-      if (job.listingStatus !== "DONE" || !job.listingDocumentId) {
-        const status = await this.getSharedAllListingsReportStatus({
-          marketplaceId,
-          reportId: job.listingReportId,
-          signal,
-        });
-        assertBackgroundActive(signal);
-        await this.spExecutionContext.assertCurrent(job.context);
-        if (
-          status.status !== "IN_QUEUE" &&
-          status.status !== "IN_PROGRESS" &&
-          status.status !== "DONE"
-        ) {
-          return invalid("Amazon 未能產生 FBA 商品清單。", 422, "REPORT_FAILED");
-        }
-        job.listingStatus = status.status;
-        job.listingDocumentId = status.documentId;
-        const listingModeError = this.reviewAuditModeFence(jobId, job);
-        if (listingModeError) return listingModeError;
-        if (!status.ready || !status.documentId) {
-          return this.reviewAuditJobReply(jobId, job);
-        }
-      }
-      if (!job.candidates) {
-        const seeds = await this.fbaCatalogReports.read({
-          view: "seeds",
-          marketplaceId,
-          reportId: job.listingReportId,
-          documentId: job.listingDocumentId!,
-          signal,
-        });
-        const candidateSnapshot = await this.reviewAuditCandidates({
-          marketplaceId,
-          mode: job.mode,
-          seeds,
-          signal,
-        });
-        assertBackgroundActive(signal);
-        await this.spExecutionContext.assertCurrent(job.context);
-        if (candidateSnapshot.mode !== job.mode) {
-          return invalid(
-            "FBA 商品清單與評論健檢模式不一致，已停止。",
-            409,
-            "REPORT_MISMATCH",
-          );
-        }
-        job.candidates = candidateSnapshot.candidates;
-        job.sourceCandidateCount = candidateSnapshot.sourceCandidateCount;
-        job.candidateCoverage = candidateSnapshot.coverage;
-        job.relationshipIncompleteRows = candidateSnapshot.relationshipIncompleteRows;
-        const candidateModeError = this.reviewAuditModeFence(jobId, job);
-        if (candidateModeError) return candidateModeError;
-      }
-      const candidates = job.candidates;
-      if (
-        job.mode === "live" &&
-        job.nextCandidateIndex < candidates.length &&
-        Date.now() < job.retryNotBefore
-      ) {
-        return this.reviewAuditJobReply(jobId, job);
-      }
-      const quota = job.mode === "demo"
-        ? candidates.length - job.nextCandidateIndex
-        : Math.min(1, candidates.length - job.nextCandidateIndex);
-      for (let count = 0; count < quota; count += 1) {
-        const candidate = candidates[job.nextCandidateIndex];
-        if (!candidate) break;
-        const queryModeError = this.reviewAuditModeFence(jobId, job);
-        if (queryModeError) return queryModeError;
-        const result = await this.customerFeedbackReads.read({
-          marketplaceId,
-          candidate,
-          expectedContext: job.context,
-          signal,
-        });
-        assertBackgroundActive(signal);
-        const resultModeError = this.reviewAuditModeFence(jobId, job);
-        if (resultModeError) return resultModeError;
-        if (result.error?.code === "RATE_LIMITED") {
-          const delay = reviewAuditRateLimitDelay(result.error.retryAfter);
-          if (
-            delay !== null &&
-            job.rateLimitRetryCount < REVIEW_AUDIT_RATE_LIMIT_RETRY_LIMIT
-          ) {
-            job.rateLimitRetryCount += 1;
-            job.retryNotBefore = Date.now() + delay;
-            return this.reviewAuditJobReply(jobId, job);
-          }
-        }
-        job.results.push(result);
-        job.nextCandidateIndex += 1;
-        job.rateLimitRetryCount = 0;
-        if (result.error?.code === "UNAUTHORIZED") {
-          while (job.nextCandidateIndex < candidates.length) {
-            const remaining = candidates[job.nextCandidateIndex]!;
-            job.results.push({
-              candidate: remaining,
-              error: {
-                code: "UNAUTHORIZED",
-                message: result.error.message,
-                requestId: result.error.requestId ?? null,
-              },
-            });
-            job.nextCandidateIndex += 1;
-          }
-          break;
-        }
-      }
-      job.retryNotBefore = 0;
-      if (job.nextCandidateIndex >= candidates.length) {
-        await this.spExecutionContext.assertCurrent(job.context);
-        job.snapshot = buildReviewAuditSnapshot({
-          mode: job.mode,
-          marketplaceId,
-          fetchedAt: new Date(),
-          results: job.results,
-          relationshipIncompleteRows: job.relationshipIncompleteRows,
-          candidateCoverage: job.candidateCoverage ?? undefined,
-          sourceCandidateCount: job.sourceCandidateCount,
-        });
-        job.expiresAt = Date.now() + REVIEW_AUDIT_JOB_TTL_MS;
-        return json({ ...structuredClone(job.snapshot), exportId: jobId });
-      }
-      return this.reviewAuditJobReply(jobId, job);
-    } catch (error) {
-      // A detected account or mode transition clears and aborts the old job.
-      // Preserve that classified context error instead of replacing it with
-      // the abort reason raised by the cleanup it intentionally triggered.
-      if (!(error instanceof SpApiError)) assertBackgroundActive(signal);
-      return apiError(error, "整理 FBA 評論主題時發生未預期的錯誤。");
-    }
-  }
-
-  private async reviewAuditExport(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const exportId = this.reportIdentifier(request.query.exportId);
-    if (!marketplaceId || !exportId) {
-      return invalid("評論主題 Excel 快照資訊無效。");
-    }
-    this.pruneReviewAuditJobs();
-    const job = this.reviewAuditJobs.get(exportId);
-    if (!job || job.marketplaceId !== marketplaceId || !job.snapshot) {
-      return invalid(
-        "評論主題健檢尚未完成、已過期或站點不符。",
-        410,
-        "SNAPSHOT_EXPIRED",
-      );
-    }
-    const modeError = this.reviewAuditModeFence(exportId, job);
-    if (modeError) return modeError;
-    try {
-      await this.spExecutionContext.assertCurrent(job.context);
-    } catch (error) {
-      this.deleteReviewAuditJob(exportId);
-      return apiError(error, "評論健檢執行環境已改變，舊快照不可匯出。");
-    }
-    const accountModeError = this.reviewAuditModeFence(exportId, job);
-    if (accountModeError) return accountModeError;
-    try {
-      const marketplace = MARKETPLACES[marketplaceId];
-      const workbook = createReviewAuditWorkbook({
-        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
-        snapshot: job.snapshot,
-      });
-      const filename = `amazon-fba-review-topic-audit-${marketplace.shortLabel.toLowerCase()}-${job.snapshot.fetchedAt.slice(0, 10)}.xlsx`;
-      return bytes(
-        workbook,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        {
-          "content-disposition": `attachment; filename="${filename}"`,
-          "x-exported-fba-non-parent-asin-count": String(job.snapshot.rows.length),
-          "x-review-topic-incomplete-count": String(job.snapshot.summary.incomplete),
-        },
-      );
-    } catch (error) {
-      return apiError(error, "建立 FBA 評論主題 Excel 時發生未預期的錯誤。");
-    }
-  }
-
   private async startExport(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
@@ -4851,212 +4363,6 @@ export class ApiRouter {
     }
 
     throw new Error("不支援這個單項健檢種類。");
-  }
-
-  private async bindAplusAuditContext(input: Readonly<{
-    marketplaceId: string;
-    mode: AplusAuditJobMode;
-  }>): Promise<AplusAuditJobBoundContext> {
-    if (!isMarketplaceId(input.marketplaceId)) {
-      throw new AplusAuditJobCoordinatorError("A+ 健檢站點無效。", {
-        status: 400,
-        code: "INVALID_INPUT",
-      });
-    }
-    const current = await this.currentAuditSuiteContext(input.marketplaceId);
-    return {
-      accountScope: current.accountScope,
-      generation: current.generation,
-      marketplaceId: input.marketplaceId,
-      mode: current.mode,
-    };
-  }
-
-  private async assertAplusAuditContext(
-    context: AplusAuditJobBoundContext,
-  ): Promise<SpExecutionContext> {
-    if (!isMarketplaceId(context.marketplaceId)) {
-      throw new Error("A+ 健檢工作站點無法安全辨識。");
-    }
-    const revision = this.contextStateRevision;
-    const current = await this.spExecutionContext.capture(context.marketplaceId);
-    await this.spExecutionContext.assertCurrent(current);
-    this.assertContextStateRevision(revision);
-    if (
-      current.accountScope !== context.accountScope ||
-      current.generation !== context.generation ||
-      current.mode !== context.mode
-    ) {
-      throw new Error("A+ 健檢工作與目前帳號或展示／真實模式不一致。");
-    }
-    return current;
-  }
-
-  private async loadAplusAuditFbaSeeds(
-    context: AplusAuditJobBoundContext,
-    signal: AbortSignal,
-    heartbeat: () => void,
-  ): Promise<{
-    fetchedAt: string;
-    fbaSnapshotId: string;
-    rows: readonly AplusAuditSeed[];
-  }> {
-    const expectedContext = await this.assertAplusAuditContext(context);
-    const marketplaceId = expectedContext.marketplaceId;
-    assertBackgroundActive(signal);
-    heartbeat();
-    let status = await this.startSharedAllListingsReport(
-      marketplaceId,
-      false,
-      signal,
-    );
-    assertBackgroundActive(signal);
-    heartbeat();
-    for (let attempt = 0; !status.ready && attempt < 180; attempt += 1) {
-      if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
-        throw new Error("Amazon 未能產生本次 A+ 健檢所需的 FBA 全商品報表。");
-      }
-      heartbeat();
-      await waitMilliseconds(1_000, signal);
-      assertBackgroundActive(signal);
-      status = await this.getSharedAllListingsReportStatus({
-        marketplaceId,
-        reportId: status.reportId,
-        signal,
-      });
-      assertBackgroundActive(signal);
-      heartbeat();
-    }
-    if (
-      !status.ready ||
-      !status.reportId ||
-      !status.documentId ||
-      status.mode !== context.mode
-    ) {
-      throw new Error("A+ 健檢的 FBA 全商品報表未完成或 context 已改變。");
-    }
-    heartbeat();
-    const data = await this.getSharedAllListingsExportData({
-      marketplaceId,
-      reportId: status.reportId,
-      documentId: status.documentId,
-      signal,
-      onProgress: () => heartbeat(),
-    });
-    assertBackgroundActive(signal);
-    heartbeat();
-    const grouping = await getFbaVariationGroupingData({
-      marketplaceId,
-      rows: data.rows,
-      signal,
-      onProgress: () => heartbeat(),
-    });
-    assertBackgroundActive(signal);
-    heartbeat();
-    await this.assertAplusAuditContext(context);
-    assertBackgroundActive(signal);
-    heartbeat();
-    return {
-      fetchedAt: data.fetchedAt,
-      fbaSnapshotId: createHash("sha256").update(JSON.stringify([
-        context.accountScope,
-        marketplaceId,
-        status.reportId,
-        status.documentId,
-        data.fetchedAt,
-      ])).digest("hex"),
-      rows: buildAplusAuditSeedsFromFbaGrouping(grouping.rows),
-    };
-  }
-
-  private async readAplusAudit(
-    context: AplusAuditJobBoundContext,
-    seed: AplusAuditFbaSeedSnapshot,
-    signal: AbortSignal,
-    heartbeat: () => void,
-    onProgress: (progress: AplusAuditProgress) => void,
-  ): Promise<AplusAuditSnapshot> {
-    let expectedContext: SpExecutionContext;
-    try {
-      expectedContext = await this.assertAplusAuditContext(context);
-    } catch {
-      throw aplusAuditFenceAbort();
-    }
-    heartbeat();
-    try {
-      const snapshot = await this.aplusContentReads.read({
-        marketplaceId: expectedContext.marketplaceId,
-        expectedContext,
-        fetchedAt: seed.fetchedAt,
-        fbaSnapshotId: seed.fbaSnapshotId,
-        rows: seed.rows,
-        signal,
-        onControlledWait: () => heartbeat(),
-        onProgress: (progress) => {
-          onProgress(progress);
-          heartbeat();
-        },
-      });
-      heartbeat();
-      await this.assertAplusAuditContext(context);
-      heartbeat();
-      return snapshot;
-    } catch (error) {
-      try {
-        await this.assertAplusAuditContext(context);
-      } catch {
-        throw aplusAuditFenceAbort();
-      }
-      throw error;
-    }
-  }
-
-  private async startAplusAudit(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    if (
-      !body ||
-      Object.keys(body).length !== 2 ||
-      !("marketplaceId" in body) ||
-      !("mode" in body)
-    ) {
-      return invalid("A+ 健檢只接受 marketplaceId 與 mode；帳號和 FBA 快照由 main process 綁定。");
-    }
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const mode = body.mode === "live" || body.mode === "demo" ? body.mode : null;
-    if (!marketplaceId || !mode) return invalid("A+ 健檢站點或模式無效。");
-    try {
-      const receipt = await this.aplusAuditJobs.start({ marketplaceId, mode });
-      return json(receipt, 202, { "retry-after": "1" });
-    } catch (error) {
-      return apiError(error, "開始全站 A+ 健檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async aplusAuditStatus(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const mode = request.query.mode === "live" || request.query.mode === "demo"
-      ? request.query.mode
-      : null;
-    const jobId = this.reportIdentifier(request.query.jobId);
-    const contextId = this.reportIdentifier(request.query.contextId);
-    if (!marketplaceId || !mode || !jobId || !contextId) {
-      return invalid("A+ 健檢工作資訊無效。");
-    }
-    try {
-      const receipt = await this.aplusAuditJobs.get({
-        marketplaceId,
-        mode,
-        jobId,
-        contextId,
-      });
-      return json(
-        receipt,
-        receipt.ready ? 200 : 202,
-        receipt.ready ? {} : { "retry-after": "1" },
-      );
-    } catch (error) {
-      return apiError(error, "查詢全站 A+ 健檢進度時發生未預期的錯誤。");
-    }
   }
 
   private auditSuiteRequestIdentity(request: ApiRequest): {

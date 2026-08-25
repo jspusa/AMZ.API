@@ -3,9 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import type { AplusAuditJobGateway } from "../src/main/amazon/a-plus-audit-job";
-import type { AplusAuditSeed } from
+import { AplusAuditCoordinator } from
+  "../src/main/a-plus-audit-coordinator";
+import type { AplusAuditSeed, AplusContentReadsPort } from
   "../src/main/amazon/a-plus-content-reads";
+import {
+  createScriptedSpExecutionContextAdapter,
+  type SpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -55,13 +60,16 @@ async function terminal(
 describe("main-owned A+ audit routes", () => {
   let router: ApiRouter;
   let accountScope: string;
-  let readAplus: AplusAuditJobGateway["read"];
+  let readAplus: AplusContentReadsPort["read"];
 
   beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
     accountScope = "account-scope-a-plus-one";
-    readAplus = vi.fn(async ({ context, seed, onProgress }) => {
-      onProgress({ completedAsins: 1, totalAsins: 1 });
+    readAplus = vi.fn(async (input) => {
+      const context = input.expectedContext;
+      if (!context) throw new Error("Expected one bound A+ execution context.");
+      const seed = input;
+      await input.onProgress?.({ completedAsins: 1, totalAsins: 1 });
       const rows = seed.rows.map((row: AplusAuditSeed) => ({
         sellerSku: row.sellerSku,
         asin: row.asin,
@@ -103,24 +111,83 @@ describe("main-owned A+ audit routes", () => {
     const directory = await mkdtemp(join(tmpdir(), "a-plus-router-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
+    const spExecutionContext: SpExecutionContextAdapter =
+      createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope,
+      }));
+    const reportId = "report-a-plus-router-001";
+    const documentId = "document-a-plus-router-001";
+    const aPlusAuditCoordinator = new AplusAuditCoordinator({
+      context: spExecutionContext,
+      listingsExport: {
+        start: async () => ({
+          mode: "demo",
+          ready: true,
+          reportId,
+          documentId,
+          status: "DONE",
+          notice: "A+ router fixture ready.",
+        }),
+        status: async () => ({
+          mode: "demo",
+          ready: true,
+          reportId,
+          documentId,
+          status: "DONE",
+          notice: "A+ router fixture ready.",
+        }),
+        data: async () => ({
+          fetchedAt: "2026-08-23T09:00:00.000Z",
+          rows: [
+            { sellerSku: "A-PLUS-SKU-1", asin: "B000000001", title: "One" },
+            { sellerSku: "A-PLUS-SKU-2", asin: "B000000001", title: "Two" },
+            { sellerSku: "A-PLUS-SKU-3", asin: "", title: "Unknown" },
+          ].map((row) => ({
+            marketplace: "US",
+            productType: "PET_FOOD",
+            itemHighlight: "",
+            bulletPoints: [],
+            productDescription: "",
+            ingredients: "",
+            imageUrls: [],
+            status: "Active",
+            updatedAt: "",
+            readStatus: "complete" as const,
+            readErrors: [],
+            ...row,
+          })),
+          errors: [],
+        }),
+      },
+      readGrouping: async (input) => ({
+        marketplaceId: input.marketplaceId,
+        fetchedAt: "2026-08-23T09:00:00.000Z",
+        rows: input.rows.map((row, index) => ({
+          ...row,
+          role: index < 2 ? "child" as const : "unknown" as const,
+          parentSku: index < 2 ? "A-PLUS-PARENT-1" : null,
+          familyKey: index < 2 ? "A-PLUS-PARENT-1" : row.sellerSku,
+          theme: index < 2 ? "SIZE_NAME" : null,
+          status: index < 2 ? "complete" as const : "incomplete" as const,
+          message: index < 2
+            ? "Relationship verified."
+            : "Relationship unavailable.",
+        })),
+        notice: "Fixture relationship evidence.",
+      }),
+      contentReads: { read: readAplus },
+      wait: async () => undefined,
+    });
     router = new ApiRouter({
       store,
       vault: {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      aplusAudit: {
-        loadFbaSeeds: async () => ({
-          fetchedAt: "2026-08-23T09:00:00.000Z",
-          fbaSnapshotId: "internal-fba-snapshot-must-not-leak",
-          rows: [
-            { sellerSku: "A-PLUS-SKU-1", asin: "B000000001", title: "One" },
-            { sellerSku: "A-PLUS-SKU-2", asin: "B000000001", title: "Two" },
-            { sellerSku: "A-PLUS-SKU-3", asin: null, title: "Unknown" },
-          ],
-        }),
-        read: readAplus,
-      },
+      spExecutionContext,
+      aPlusAuditCoordinator,
     });
   });
 

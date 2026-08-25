@@ -895,16 +895,25 @@ describe("SP execution-context architecture", () => {
   });
 
   it("routes standalone and suite A+ audits through the same semantic read owner", () => {
-    const source = readFileSync(
+    const router = readFileSync(
       absolutePath("src/main/api-router.ts"),
       "utf8",
     );
+    const coordinator = readFileSync(
+      absolutePath("src/main/a-plus-audit-coordinator.ts"),
+      "utf8",
+    );
     for (const symbol of SUPERSEDED_APLUS_ROUTER_WIRING) {
-      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+      expect(router).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+      expect(coordinator).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
     }
-    expect(source).toContain("new AplusContentReads({");
-    expect(source).toContain("read: input.aplusAudit?.read");
-    expect(source.match(/this\.aplusContentReads\.read\(/gu)).toHaveLength(2);
+    expect(router).toContain("new AplusContentReads({");
+    expect(router).toContain("new AplusAuditCoordinator({");
+    expect(router).not.toContain("input.aplusAudit");
+    expect(router.match(/this\.aplusContentReads\.read\(/gu)).toHaveLength(1);
+    expect(coordinator).toContain("this.contentReads.read({");
+    expect(coordinator).toContain("this.listingsExport.start({");
+    expect(coordinator).toContain("expectedContext: exact.context");
   });
 
   it("keeps Customer Feedback behind one semantic read and one closed adapter", () => {
@@ -942,16 +951,34 @@ describe("SP execution-context architecture", () => {
   });
 
   it("routes Review Audit through the Customer Feedback semantic owner", () => {
-    const source = readFileSync(
+    const router = readFileSync(
       absolutePath("src/main/api-router.ts"),
       "utf8",
     );
-    expect(source).toContain("new CustomerFeedbackReads({");
-    expect(source).toContain("expectedContext: job.context");
-    expect(source).not.toContain("getCustomerFeedbackReviewTopics");
-    expect(source).not.toContain("reviewAuditFeedbackQueue");
-    expect(source).not.toContain("reviewAuditFeedbackNextStartAt");
-    expect(source).not.toContain("runReviewAuditFeedbackRequest");
+    const coordinator = readFileSync(
+      absolutePath("src/main/review-audit-coordinator.ts"),
+      "utf8",
+    );
+    expect(router).toContain("new CustomerFeedbackReads({");
+    expect(router).toContain("new ReviewAuditCoordinator({");
+    expect(coordinator).toContain("expectedContext: job.context");
+    for (const source of [router, coordinator]) {
+      expect(source).not.toContain("getCustomerFeedbackReviewTopics");
+      expect(source).not.toContain("reviewAuditFeedbackQueue");
+      expect(source).not.toContain("reviewAuditFeedbackNextStartAt");
+      expect(source).not.toContain("runReviewAuditFeedbackRequest");
+    }
+    for (const superseded of [
+      "ReviewAuditJob",
+      "reviewAuditJobs",
+      "reviewAuditPollFlights",
+      "reviewAuditRunnerTimers",
+      "startReviewAudit",
+      "reviewAuditStatusOrData",
+      "reviewAuditExport",
+    ]) {
+      expect(router).not.toContain(superseded);
+    }
   });
 
   it("keeps Orders behind one semantic read and one closed page adapter", () => {
