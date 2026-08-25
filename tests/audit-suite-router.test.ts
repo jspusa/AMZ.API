@@ -260,7 +260,7 @@ describe("main-owned audit suite routes", () => {
     const directory = await mkdtemp(join(tmpdir(), "audit-suite-market-fence-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
-    const hostileContext: SpExecutionContextAdapter = {
+    const hostileContext = {
       capture: vi.fn(async () => ({
         marketplaceId: CA,
         region: "na",
@@ -270,7 +270,7 @@ describe("main-owned audit suite routes", () => {
       })),
       assertCurrent: vi.fn(async () => undefined),
       invalidate: vi.fn(),
-    };
+    } as unknown as SpExecutionContextAdapter;
     router.dispose();
     router = new ApiRouter({
       store,

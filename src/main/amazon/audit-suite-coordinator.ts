@@ -104,11 +104,134 @@ function safeFailureNotice(error: unknown): string {
     : typeof error === "string"
       ? error
       : "此項健檢未能建立可核對快照。";
-  const normalized = publicSpApiError(
-    error instanceof SpApiError ? error : new SpApiError(message),
+  return safeSnapshotText(
+    error instanceof SpApiError ? error.message : message,
     "此項健檢未能建立可核對快照。",
+  );
+}
+
+function safeSnapshotText(
+  value: unknown,
+  fallback = "此欄位含不可公開資訊，已隱藏。",
+): string {
+  if (value === "") return "";
+  const message = typeof value === "string" ? value : fallback;
+  const normalized = publicSpApiError(
+    new SpApiError(message),
+    fallback,
   ).message.trim().slice(0, 1_500);
-  return normalized || "此項健檢未能建立可核對快照。";
+  return normalized || fallback;
+}
+
+type SnapshotPayload<K extends AuditSuiteSectionId> = Extract<
+  SnapshotFor<K>,
+  Readonly<{ status: "completed" | "partial" }>
+>["payload"];
+
+function sanitizeSnapshotPayload(
+  id: AuditSuiteSectionId,
+  payload: unknown,
+): unknown {
+  if (!Array.isArray(payload)) return payload;
+  switch (id) {
+    case "content": {
+      const rows = payload as SnapshotPayload<"content">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        problemType: safeSnapshotText(row.problemType),
+        field: safeSnapshotText(row.field),
+        originalText: row.originalText,
+        description: safeSnapshotText(row.description),
+      }));
+    }
+    case "image": {
+      const rows = payload as SnapshotPayload<"image">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        imageCount: row.imageCount,
+        finding: safeSnapshotText(row.finding),
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "aplus": {
+      const rows = payload as SnapshotPayload<"aplus">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        finding: safeSnapshotText(row.finding),
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "variation": {
+      const rows = payload as SnapshotPayload<"variation">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        productType: row.productType,
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "subscription": {
+      const rows = payload as SnapshotPayload<"subscription">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        anomaly: safeSnapshotText(row.anomaly),
+        sellerFundedBaseDiscountPercent:
+          row.sellerFundedBaseDiscountPercent,
+        currentActiveSubscriptions: row.currentActiveSubscriptions,
+        currentPrice: row.currentPrice,
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "businessPricing": {
+      const rows = payload as SnapshotPayload<"businessPricing">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        standardPrice: row.standardPrice,
+        businessPrice: row.businessPrice,
+        currencyCode: row.currencyCode,
+        finding: safeSnapshotText(row.finding),
+        editable: row.editable,
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "advertising": {
+      const rows = payload as SnapshotPayload<"advertising">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        finding: safeSnapshotText(row.finding),
+        evidence: safeSnapshotText(row.evidence),
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+  }
+}
+
+function sanitizeSnapshot<K extends AuditSuiteSectionId>(
+  id: K,
+  snapshot: SnapshotFor<K>,
+): SnapshotFor<K> {
+  const notice = safeSnapshotText(snapshot.notice);
+  if (snapshot.status === "failed") {
+    return { ...snapshot, notice } as SnapshotFor<K>;
+  }
+  return {
+    ...snapshot,
+    notice,
+    payload: sanitizeSnapshotPayload(id, snapshot.payload),
+  } as unknown as SnapshotFor<K>;
 }
 
 export class AuditSuiteCoordinator {
@@ -302,6 +425,7 @@ export class AuditSuiteCoordinator {
       ) {
         throw new Error(`${id} 健檢回傳 context 不一致。`);
       }
+      snapshot = sanitizeSnapshot(id, snapshot);
     } catch (error) {
       snapshot = {
         ...job.context,

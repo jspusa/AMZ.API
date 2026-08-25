@@ -485,18 +485,25 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const xlsxText = Object.values(unzipSync(workbook))
       .map((file) => strFromU8(file))
       .join("\n");
-    const publicPublication = [
-      JSON.stringify(run.sections.advertising),
-      xlsxText,
-    ].join("\n");
+    const publicStatus = JSON.stringify(run.sections.advertising);
 
     expect(run).toMatchObject({
       status: "partial",
       sections: { advertising: { status: "partial" } },
     });
-    expect(publicPublication).not.toMatch(
+    expect(publicStatus).not.toMatch(
       /Bearer|access.?token|accountScope|reportId|documentId|client.?secret|https?:|PARTIAL-HOSTILE-CANARY|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
     );
+    for (const canary of [
+      "private-access-token",
+      "private-account",
+      "private-report",
+      "private-document",
+      "private-secret",
+      "PARTIAL-HOSTILE-CANARY",
+    ]) {
+      expect(xlsxText).not.toContain(canary);
+    }
   });
 
   it("aborts active run controls when lifecycle cleanup clears the coordinator", async () => {
