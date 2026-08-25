@@ -427,6 +427,80 @@ describe("AgedInventoryReads", () => {
     });
   });
 
+  it("rejects duplicate normalized headers instead of selecting a false zero", async () => {
+    const headers = [
+      ...GLOBAL_AGE_HEADERS,
+      "currency",
+      "storage-volume",
+      "estimated-storage-cost-next-month",
+      "estimated_storage_cost_next_month",
+    ];
+    const document = reportText(headers, [globalAgeRecord("DUPLICATE-COST", {
+      currency: "JPY",
+      "storage-volume": 1,
+      "estimated-storage-cost-next-month": 0,
+      estimated_storage_cost_next_month: 10,
+    })]);
+
+    await expect(readLive(document)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("重複或衝突欄位"),
+    });
+  });
+
+  it("rejects unterminated quoted fields and inconsistent row widths", async () => {
+    const unterminated = [
+      GLOBAL_AGE_HEADERS.join("\t"),
+      '"UNTERMINATED\t1\t0\t0\t0\t0',
+      "ABSORBED-LATER-ROW\t1\t0\t0\t0\t0",
+    ].join("\n");
+    await expect(readLive(unterminated)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("未結束的引用欄位"),
+    });
+
+    const inconsistent = [
+      GLOBAL_AGE_HEADERS.join("\t"),
+      "SHORT-ROW\t1\t0\t0\t0",
+    ].join("\n");
+    await expect(readLive(inconsistent)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("欄位數與標題列不一致"),
+    });
+  });
+
+  it("rejects reports beyond main-side row, column, and field limits", async () => {
+    const tooManyColumns = Array.from(
+      { length: 257 },
+      (_, index) => `column-${index}`,
+    ).join("\t");
+    await expect(readLive(tooManyColumns)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("欄位數超過安全上限"),
+    });
+
+    const oversizedField = reportText(GLOBAL_AGE_HEADERS, [
+      globalAgeRecord("X".repeat(65_537)),
+    ]);
+    await expect(readLive(oversizedField)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("單一欄位超過安全上限"),
+    });
+
+    const row = "ROW-00000\t1\t0\t0\t0\t0";
+    const tooManyRows = [
+      GLOBAL_AGE_HEADERS.join("\t"),
+      ...Array.from(
+        { length: 20_001 },
+        (_, index) => row.replace("00000", String(index).padStart(5, "0")),
+      ),
+    ].join("\n");
+    await expect(readLive(tooManyRows)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("資料列數超過安全上限"),
+    });
+  });
+
   it("validates demo opaque handles before returning a handle-free snapshot", async () => {
     const mismatched = build({
       document: "",

@@ -155,6 +155,18 @@ const REGIONAL_AGED_INVENTORY_MARKETPLACES = new Set<MarketplaceId>(
   ).map((marketplace) => marketplace.id),
 );
 
+const MAX_REPORT_CHARACTERS = 64 * 1024 * 1024;
+const MAX_REPORT_ROWS = 20_001;
+const MAX_REPORT_COLUMNS = 256;
+const MAX_REPORT_FIELD_CHARACTERS = 64 * 1024;
+
+function reportFormatUnsupported(message: string): never {
+  throw new SpApiError(message, {
+    status: 502,
+    code: "REPORT_FORMAT_UNSUPPORTED",
+  });
+}
+
 function fixedPlan(input: Readonly<{
   marketplaceId: MarketplaceId;
   signal?: AbortSignal;
@@ -171,32 +183,77 @@ function parseTsv(text: string): string[][] {
   let row: string[] = [];
   let value = "";
   let quoted = false;
+  let closedQuotedField = false;
   const source = text.replace(/^\uFEFF/, "");
+  const append = (character: string): void => {
+    if (value.length >= MAX_REPORT_FIELD_CHARACTERS) {
+      reportFormatUnsupported(
+        "Amazon FBA 庫齡報表的單一欄位超過安全上限。",
+      );
+    }
+    value += character;
+  };
+  const finishCell = (): void => {
+    if (row.length >= MAX_REPORT_COLUMNS) {
+      reportFormatUnsupported(
+        "Amazon FBA 庫齡報表欄位數超過安全上限。",
+      );
+    }
+    row.push(value);
+    value = "";
+    closedQuotedField = false;
+  };
+  const finishRow = (): void => {
+    finishCell();
+    if (row.some((cell) => cell.length > 0)) {
+      if (rows.length >= MAX_REPORT_ROWS) {
+        reportFormatUnsupported(
+          "Amazon FBA 庫齡報表資料列數超過安全上限。",
+        );
+      }
+      rows.push(row);
+    }
+    row = [];
+  };
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
     if (character === '"') {
       if (quoted && source[index + 1] === '"') {
-        value += '"';
+        append('"');
         index += 1;
+      } else if (quoted) {
+        quoted = false;
+        closedQuotedField = true;
+      } else if (value.length === 0 && !closedQuotedField) {
+        quoted = true;
+      } else if (closedQuotedField) {
+        reportFormatUnsupported(
+          "Amazon FBA 庫齡報表引用欄位結尾後仍有無法辨識的文字。",
+        );
       } else {
-        quoted = !quoted;
+        append('"');
       }
     } else if (character === "\t" && !quoted) {
-      row.push(value);
-      value = "";
+      finishCell();
     } else if ((character === "\n" || character === "\r") && !quoted) {
       if (character === "\r" && source[index + 1] === "\n") index += 1;
-      row.push(value);
-      if (row.some((cell) => cell.length)) rows.push(row);
-      row = [];
-      value = "";
+      finishRow();
     } else {
-      value += character;
+      if (closedQuotedField) {
+        reportFormatUnsupported(
+          "Amazon FBA 庫齡報表引用欄位結尾後仍有無法辨識的文字。",
+        );
+      }
+      append(character);
     }
   }
+  if (quoted) {
+    reportFormatUnsupported(
+      "Amazon FBA 庫齡報表含有未結束的引用欄位。",
+    );
+  }
   if (value.length || row.length) {
-    row.push(value);
-    if (row.some((cell) => cell.length)) rows.push(row);
+    finishRow();
   }
   return rows;
 }
@@ -207,9 +264,16 @@ function normalizedReportHeader(value: string): string {
 
 function reportColumn(headers: string[], candidates: string[]): number {
   const normalized = headers.map(normalizedReportHeader);
-  return candidates
-    .map((candidate) => normalized.indexOf(candidate))
-    .find((index) => index >= 0) ?? -1;
+  const accepted = new Set(candidates.map(normalizedReportHeader));
+  const matches = normalized
+    .map((header, index) => accepted.has(header) ? index : -1)
+    .filter((index) => index >= 0);
+  if (matches.length > 1) {
+    reportFormatUnsupported(
+      "Amazon FBA 庫齡報表包含重複或衝突欄位，已停止讀取。",
+    );
+  }
+  return matches[0] ?? -1;
 }
 
 function reportIntegerCell(
@@ -325,8 +389,29 @@ function parseAgedInventoryReportData(
   text: string,
   marketplaceId: MarketplaceId,
 ): ParsedAgedInventoryReport {
+  if (text.length > MAX_REPORT_CHARACTERS) {
+    reportFormatUnsupported(
+      "Amazon FBA 庫齡報表內容超過安全大小上限。",
+    );
+  }
   const rows = parseTsv(text);
   const headers = rows[0] ?? [];
+  const normalizedHeaders = headers.map(normalizedReportHeader);
+  const seenHeaders = new Set<string>();
+  for (const header of normalizedHeaders) {
+    if (!header) continue;
+    if (seenHeaders.has(header)) {
+      reportFormatUnsupported(
+        "Amazon FBA 庫齡報表包含重複或衝突欄位，已停止讀取。",
+      );
+    }
+    seenHeaders.add(header);
+  }
+  if (rows.slice(1).some((row) => row.length !== headers.length)) {
+    reportFormatUnsupported(
+      "Amazon FBA 庫齡報表資料列的欄位數與標題列不一致。",
+    );
+  }
   const skuIndex = reportColumn(headers, ["sku", "seller-sku", "merchant-sku"]);
   if (skuIndex < 0) {
     throw new SpApiError("Amazon FBA 庫齡報表找不到 Seller SKU 欄位。", {
