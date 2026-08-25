@@ -3,13 +3,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import ConnectionPanel from "../src/renderer/src/connection-panel";
 import WebGate, {
-  DEFAULT_NOTEBOOK_KEY_DOWNLOADS,
+  APP_DOWNLOAD_VERSION,
   PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
   safeNotebookDownloadHref,
 } from "../src/renderer/src/web-gate";
+import packageJson from "../package.json";
 
 describe("Notebook Key WebGate", () => {
-  it("uses platform-neutral launch language and only the protected Mac and Windows portal", () => {
+  it("shows one concise protected App 0.1.31 download action", () => {
     const markup = renderToStaticMarkup(<WebGate />);
 
     expect(markup).toContain("LOCAL KEY REQUIRED");
@@ -21,29 +22,16 @@ describe("Notebook Key WebGate", () => {
     expect(markup).toContain("憑證只留在本機");
     expect(markup).not.toContain("開啟 Mac 鑰匙");
 
-    expect(DEFAULT_NOTEBOOK_KEY_DOWNLOADS).toHaveLength(2);
-    const macos = DEFAULT_NOTEBOOK_KEY_DOWNLOADS[0];
-    const windows = DEFAULT_NOTEBOOK_KEY_DOWNLOADS[1];
-    expect(macos).toMatchObject({
-      platform: "macos",
-      detail: "macOS · Universal",
-      version: "0.1.16",
-      href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
-    });
-    expect(windows).toMatchObject({
-      platform: "windows",
-      detail: "Windows 11 x64",
-      version: "0.1.16",
-      href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
-    });
-    expect(markup.match(new RegExp(PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL, "g"))).toHaveLength(2);
+    expect(APP_DOWNLOAD_VERSION).toBe(packageJson.version);
+    expect(markup).toContain(`下載 AMZ.API App ${packageJson.version}`);
+    expect(markup.match(new RegExp(PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL, "g"))).toHaveLength(1);
     expect(markup).not.toContain("github.com/jspusa/AMZ.API/releases/download");
     expect(markup).not.toContain("AMZ.API-Notebook-Key-Windows-x64-Setup.exe");
-    expect(markup).toContain("macOS · Universal · v0.1.16");
-    expect(markup).toContain("Windows 11 x64 · v0.1.16");
-    expect(markup).toContain("Microsoft SmartScreen");
-    expect(markup).toContain("安全登入下載 Mac Notebook 鑰匙");
-    expect(markup).toContain("安全登入下載 Windows Notebook 鑰匙");
+    expect(markup).not.toContain("v0.1.16");
+    expect(markup).not.toContain("Mac Notebook 鑰匙");
+    expect(markup).not.toContain("Windows Notebook 鑰匙");
+    expect(markup).not.toContain("Microsoft SmartScreen");
+    expect(markup).toContain("安全登入下載 Mac／Windows App");
     expect(markup).toContain('target="_blank"');
     expect(markup).toContain('rel="noopener noreferrer"');
   });
@@ -80,13 +68,7 @@ describe("Notebook Key WebGate", () => {
 
     const markup = renderToStaticMarkup(
       <WebGate
-        downloads={[{
-          platform: "windows",
-          label: "測試 Notebook 鑰匙",
-          detail: "公開設定尚未完成",
-          version: null,
-          href: "javascript:alert(1)",
-        }]}
+        downloadHref="javascript:alert(1)"
       />,
     );
     expect(markup).toContain("下載準備中");
@@ -148,14 +130,14 @@ describe("Notebook Key WebGate", () => {
     );
   });
 
-  it("stacks WebGate explanations and download cards on narrow screens", async () => {
+  it("stacks WebGate explanations and download action on narrow screens", async () => {
     const css = await readFile(
       new URL("../src/renderer/src/app.css", import.meta.url),
       "utf8",
     );
 
     expect(css).toMatch(
-      /@media \(max-width:\s*720px\)[\s\S]*?\.web-gate-copy,[\s\S]*?\.web-gate-platform-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\);/,
+      /@media \(max-width:\s*720px\)[\s\S]*?\.web-gate-copy,[\s\S]*?\.web-gate-install-heading\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\);/,
     );
     expect(css).toContain("overflow-wrap: anywhere");
   });
