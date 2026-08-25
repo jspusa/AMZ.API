@@ -81,6 +81,7 @@ import {
   integer,
   isPlainRecord,
   multiLineText,
+  optionalDate,
   optionalInteger,
   parseAsin,
   parseMarketplace,
@@ -89,6 +90,10 @@ import {
   type JsonRecord,
 } from "./route-input";
 import { invalid, json, routeError } from "./route-response";
+import {
+  FbaSalesMetricsRoutes,
+  type FbaSalesMetricsRoutesPort,
+} from "./fba-sales-metrics-routes";
 export {
   parseAsin,
   parseMarketplace,
@@ -142,8 +147,6 @@ import {
   type ListingImageSnapshot,
   type ListingPriceSnapshot,
   type MarketplaceId,
-  type SalesTrendComparisonMode,
-  type SalesTrendPresetDays,
   type SubscriptionAuditSnapshot,
   type UpdateListingContentInput,
   type UpdateBusinessPriceInput,
@@ -206,10 +209,7 @@ import {
   type CustomerFeedbackReadsPort,
 } from "./amazon/customer-feedback-reads";
 import { OrdersReads, type OrdersReadsPort } from "./amazon/orders-reads";
-import {
-  isDateOnly,
-  marketplaceCalendar,
-} from "./amazon/marketplace-calendar";
+import { marketplaceCalendar } from "./amazon/marketplace-calendar";
 import {
   buildAdvertisingStrategySnapshot,
   type AdvertisingStrategySnapshot,
@@ -306,7 +306,6 @@ import {
 } from "./amazon/listing-write-readback";
 import type { AuditSuiteContext } from "./amazon/audit-suite-context";
 import {
-  DEFAULT_MARKETPLACE_ID,
   MARKETPLACES as MARKETPLACE_METADATA,
   marketplaceByCode,
 } from "../shared/marketplaces";
@@ -1478,11 +1477,6 @@ function optionalPrice(value: unknown, currency: string): number | null | undefi
   return parsed === null ? undefined : parsed;
 }
 
-function optionalDate(value: unknown): string | null | undefined {
-  if (value === null || value === "" || value === undefined) return null;
-  return isDateOnly(value) ? value : undefined;
-}
-
 function parseText(value: unknown, maximum: number): string | null {
   if (typeof value !== "string" || value.length > maximum) return null;
   return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
@@ -1607,6 +1601,7 @@ export class ApiRouter {
   private readonly planningCapabilities: PlanningCapabilityRoutesPort;
   private readonly productMasterRoutes: ProductMasterRoutesPort;
   private readonly skuCommandRoute: SkuCommandRoutePort;
+  private readonly fbaSalesMetricsRoutes: FbaSalesMetricsRoutesPort;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
   private readonly fbaInboundReads: InboundReadsPort;
   private readonly reportBroker: FixedReportBroker;
@@ -1681,6 +1676,7 @@ export class ApiRouter {
     planningCapabilities?: PlanningCapabilityRoutesPort;
     productMasterRoutes?: ProductMasterRoutesPort;
     skuCommandRoute?: SkuCommandRoutePort;
+    fbaSalesMetricsRoutes?: FbaSalesMetricsRoutesPort;
     advertisingStrategyWait?: typeof waitMilliseconds;
     fbaInboundReads?: Partial<InboundReadsPort>;
     inboundNoncomplianceDemoReports?: Partial<
@@ -1896,6 +1892,12 @@ export class ApiRouter {
         },
       }),
     });
+    this.fbaSalesMetricsRoutes = input.fbaSalesMetricsRoutes ??
+      new FbaSalesMetricsRoutes({
+        context: this.spExecutionContext,
+        salesTrend: getSalesTrend,
+        replenishment: getRestockPlan,
+      });
     this.aplusContentReads = input.aplusContentReads ?? new AplusContentReads({
       context: this.spExecutionContext,
       live: aplusContentPageAdapterProduction,
@@ -2101,7 +2103,7 @@ export class ApiRouter {
       case "GET /api/sp-api/orders":
         return this.statelessCapabilities.orders(request);
       case "GET /api/sp-api/sales-trend":
-        return this.salesTrend(request);
+        return this.fbaSalesMetricsRoutes.salesTrend(request);
       case "POST /api/sp-api/brand-sales":
         return this.startBrandSales(request);
       case "GET /api/sp-api/brand-sales":
@@ -2171,7 +2173,7 @@ export class ApiRouter {
       case "GET /api/sp-api/review-audit/export":
         return this.reviewAuditExport(request);
       case "GET /api/sp-api/replenishment-plan":
-        return this.replenishment(request);
+        return this.fbaSalesMetricsRoutes.replenishment(request);
       case "POST /api/sp-api/aged-inventory":
         return this.startAgedInventory(request);
       case "GET /api/sp-api/aged-inventory":
@@ -2705,65 +2707,6 @@ export class ApiRouter {
       );
     }
     return this.inboundShipmentJobReply(job);
-  }
-
-  private async salesTrend(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(
-      request.query.marketplaceId ?? DEFAULT_MARKETPLACE_ID,
-    );
-    if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
-
-    const supplied = (name: string) =>
-      Object.prototype.hasOwnProperty.call(request.query, name);
-    const hasDays = supplied("days");
-    const hasStartDate = supplied("startDate");
-    const hasEndDate = supplied("endDate");
-    if (hasDays && (hasStartDate || hasEndDate)) {
-      return invalid("預設天數與自訂日期不可同時使用。");
-    }
-    if (hasStartDate !== hasEndDate) {
-      return invalid("自訂日期必須同時提供開始日與結束日。");
-    }
-
-    let days: SalesTrendPresetDays | null = null;
-    let startDate: string | null = null;
-    let endDate: string | null = null;
-    if (hasDays) {
-      if (!/^(?:7|14|30|90)$/.test(request.query.days)) {
-        return invalid("銷售趨勢只支援最近 7、14、30 或 90 天。");
-      }
-      days = Number(request.query.days) as SalesTrendPresetDays;
-    } else if (hasStartDate && hasEndDate) {
-      const parsedStart = optionalDate(request.query.startDate);
-      const parsedEnd = optionalDate(request.query.endDate);
-      if (typeof parsedStart !== "string" || typeof parsedEnd !== "string") {
-        return invalid("自訂日期必須使用 YYYY-MM-DD 格式。");
-      }
-      startDate = parsedStart;
-      endDate = parsedEnd;
-    } else {
-      days = 7;
-    }
-
-    const comparison = request.query.comparison ?? "none";
-    if (comparison !== "none" && comparison !== "previous-year") {
-      return invalid("不支援這個銷售趨勢比較方式。");
-    }
-    try {
-      const { value } = await this.runContextBoundWork(
-        marketplaceId,
-        () => getSalesTrend({
-          marketplaceId,
-          days,
-          startDate,
-          endDate,
-          comparison: comparison as SalesTrendComparisonMode,
-        }),
-      );
-      return json(value);
-    } catch (error) {
-      return apiError(error, "載入 FBA 銷售趨勢時發生未預期的錯誤。");
-    }
   }
 
   private async startSharedAllListingsReport(
@@ -5410,50 +5353,6 @@ export class ApiRouter {
       );
     } catch (error) {
       return apiError(error, "建立 FBA 評論主題 Excel 時發生未預期的錯誤。");
-    }
-  }
-
-  private async replenishment(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const sellerSku = parseSellerSku(request.query.sku);
-    const targetDays = integer(request.query.targetDays, 60, 14, 180);
-    // The restock endpoint receives the effective lead time. AWD profiles add
-    // up to 60 days to the basic 1–120 day supplier lead time.
-    const leadTimeDays = integer(request.query.leadTimeDays, 35, 1, 180);
-    const safetyDays = integer(request.query.safetyDays, 14, 0, 90);
-    const casePack = integer(request.query.casePack, 1, 1, 10_000);
-    if (
-      !marketplaceId ||
-      !sellerSku ||
-      targetDays === null ||
-      leadTimeDays === null ||
-      safetyDays === null ||
-      casePack === null
-    ) {
-      return invalid("請提供有效的站點、SKU、目標天數、交期、安全天數與箱入數。");
-    }
-    if (targetDays < leadTimeDays + safetyDays) {
-      return invalid(
-        "目標庫存天數不能小於補貨交期加安全庫存，否則補貨建議會互相矛盾。",
-        400,
-        "INVALID_RESTOCK_WINDOW",
-      );
-    }
-    try {
-      const { value } = await this.runContextBoundWork(
-        marketplaceId,
-        () => getRestockPlan({
-          marketplaceId,
-          sellerSku,
-          targetDays,
-          leadTimeDays,
-          safetyDays,
-          casePack,
-        }),
-      );
-      return json(value);
-    } catch (error) {
-      return apiError(error, "建立 FBA 補貨建議時發生未預期的錯誤。");
     }
   }
 

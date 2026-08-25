@@ -3,6 +3,7 @@ import {
   marketplaceById,
   type MarketplaceId,
 } from "../shared/marketplaces";
+import { isDateOnly } from "./amazon/marketplace-calendar";
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -69,6 +70,13 @@ export function optionalInteger(
   if (value === null || value === undefined || value === "") return null;
   const parsed = integer(value, null, minimum, maximum);
   return parsed === null ? undefined : parsed;
+}
+
+export function optionalDate(
+  value: unknown,
+): string | null | undefined {
+  if (value === null || value === "" || value === undefined) return null;
+  return isDateOnly(value) ? value : undefined;
 }
 
 export function shortText(
