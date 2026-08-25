@@ -973,12 +973,21 @@ describe("SP execution-context architecture", () => {
   });
 
   it("routes dashboard and connection-test Orders reads through the same semantic owner", () => {
-    const source = readFileSync(
+    const routerSource = readFileSync(
       absolutePath("src/main/api-router.ts"),
       "utf8",
     );
-    expect(source).not.toMatch(/\bsearchOrders\b/u);
-    expect(source.match(/this\.ordersReads\.read\(/gu)).toHaveLength(2);
+    const statelessRoutesSource = readFileSync(
+      absolutePath("src/main/stateless-capability-routes.ts"),
+      "utf8",
+    );
+    const combinedSource = `${routerSource}\n${statelessRoutesSource}`;
+
+    expect(combinedSource).not.toMatch(/\bsearchOrders\b/u);
+    expect(routerSource).toContain("orders: this.ordersReads");
+    expect(routerSource.match(/this\.ordersReads\.read\(/gu)).toHaveLength(1);
+    expect(statelessRoutesSource.match(/this\.ordersReads\.read\(/gu))
+      .toHaveLength(1);
   });
 
   it("reuses one normalized Aged Inventory header index", () => {

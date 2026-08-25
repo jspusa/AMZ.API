@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type {
   AdvertisingConnectionTestResult,
   ApiRequest,
@@ -12,26 +11,8 @@ import {
   type AdvertisingGateway,
 } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
+import { LocalStore } from "./local-store";
 import {
-  LocalStore,
-  type ProductMasterState,
-} from "./local-store";
-import {
-  PUBLIC_ACCOUNTING_CAPABILITIES,
-  buildAccountingAccessPlan,
-  type AccountingAccessPlan,
-  type AccountingCapability,
-  type AccountingCapabilityId,
-} from "./amazon/accounting-capabilities";
-import {
-  CURRENT_APP_EXPORTS,
-  PUBLIC_REPORT_CATALOG,
-  REPORT_LIBRARY_NOTICE,
-  REPORT_LIBRARY_UNAVAILABLE_DOCUMENTS,
-  buildReportAccessPlan,
-} from "./amazon/report-library";
-import {
-  REVIEW_AUDIT_CAPABILITY,
   buildReviewAuditSnapshot,
   type DedupedFbaReviewCandidate,
   type ReviewAuditCandidateCoverage,
@@ -70,6 +51,49 @@ import {
   createRouterRequestContextAdapter,
   type RouterRequestContextAdapter,
 } from "./router-request-context";
+import {
+  StatelessCapabilityRoutes,
+  type StatelessCapabilityRoutesPort,
+} from "./stateless-capability-routes";
+import {
+  LocalImageUpload,
+  type LocalImageUploadPort,
+} from "./local-image-upload";
+import {
+  SystemHealthRoute,
+  type SystemHealthRoutePort,
+} from "./system-health-route";
+import {
+  PlanningCapabilityRoutes,
+  type PlanningCapabilityRoutesPort,
+} from "./planning-capability-routes";
+import {
+  ProductMasterRoutes,
+  type ProductMasterRoutesPort,
+} from "./product-master-routes";
+import { SkuCommand } from "./amazon/sku-command";
+import {
+  SkuCommandRoute,
+  type SkuCommandRoutePort,
+} from "./sku-command-route";
+import {
+  bodyRecord,
+  integer,
+  isPlainRecord,
+  multiLineText,
+  optionalInteger,
+  parseAsin,
+  parseMarketplace,
+  parseSellerSku,
+  shortText,
+  type JsonRecord,
+} from "./route-input";
+import { invalid, json, routeError } from "./route-response";
+export {
+  parseAsin,
+  parseMarketplace,
+  parseSellerSku,
+} from "./route-input";
 import {
   MARKETPLACES,
   catalogListingsReadAdapterProduction,
@@ -118,10 +142,8 @@ import {
   type ListingImageSnapshot,
   type ListingPriceSnapshot,
   type MarketplaceId,
-  type RestockPlanSnapshot,
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
-  type SubscribeAndSaveOfferSnapshot,
   type SubscriptionAuditSnapshot,
   type UpdateListingContentInput,
   type UpdateBusinessPriceInput,
@@ -183,12 +205,7 @@ import {
   customerFeedbackMarketplaceSupported,
   type CustomerFeedbackReadsPort,
 } from "./amazon/customer-feedback-reads";
-import {
-  isOrderFulfillmentStatus,
-  OrdersReads,
-  type OrderFulfillmentStatus,
-  type OrdersReadsPort,
-} from "./amazon/orders-reads";
+import { OrdersReads, type OrdersReadsPort } from "./amazon/orders-reads";
 import {
   isDateOnly,
   marketplaceCalendar,
@@ -352,15 +369,6 @@ type ContentBatchPlan = {
   expiresAt: number;
   state: "ready" | "committing" | "completed";
   result: ContentBatchCommitResult | null;
-};
-
-type CommandTask = {
-  id: string;
-  title: string;
-  detail: string;
-  automation: "automatic" | "one_click" | "manual";
-  severity: "info" | "warning" | "critical";
-  tool: "restock" | "copy" | "images" | "price" | "promotion" | null;
 };
 
 type ReviewAuditJob = {
@@ -773,14 +781,6 @@ type AdvertisingStrategyJob = {
   flight: Promise<void> | null;
 };
 
-type JsonRecord = Record<string, unknown>;
-
-const JSON_HEADERS = {
-  "cache-control": "private, no-store, max-age=0",
-  "content-type": "application/json; charset=utf-8",
-  "x-content-type-options": "nosniff",
-};
-
 const MARKETPLACE_CODES = Object.fromEntries(
   MARKETPLACE_METADATA.map((marketplace) => [
     marketplace.id,
@@ -1115,14 +1115,6 @@ const AUDIT_SUITE_FBA_GROUPING_RESOURCE = createAuditSuiteResourceKey<{
   grouping: FbaVariationGroupingData;
 }>("audit-suite-fba-relationship-grouping");
 
-function json(value: unknown, status = 200, headers: Record<string, string> = {}): ApiResponse {
-  return {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-    body: { kind: "json", value },
-  };
-}
-
 function bytes(
   value: Uint8Array,
   contentType: string,
@@ -1179,19 +1171,7 @@ function apiError(error: unknown, fallback: string): ApiResponse {
     );
   }
   if (error instanceof SpApiError) {
-    const publicError = publicSpApiError(error, fallback);
-    return json(
-      {
-        code: publicError.code,
-        message: publicError.message,
-        requestId: publicError.requestId,
-        issues: publicError.issues,
-        operation: publicError.operation,
-        upstreamCode: publicError.upstreamCode,
-      },
-      publicError.status,
-      publicError.retryAfter ? { "retry-after": publicError.retryAfter } : {},
-    );
+    return routeError(error, fallback);
   }
   if (error instanceof ReplenishmentAuditError) {
     const status = error.code === "MARKETPLACE_UNSUPPORTED" || error.code === "REQUEST_INVALID"
@@ -1232,10 +1212,6 @@ function apiError(error: unknown, fallback: string): ApiResponse {
     );
   }
   return json({ code: "INTERNAL_ERROR", message: fallback }, 500);
-}
-
-function invalid(message: string, status = 400, code = "INVALID_INPUT"): ApiResponse {
-  return json({ code, message }, status);
 }
 
 function suiteSnapshot<TPayload>(input: {
@@ -1465,12 +1441,6 @@ export function buildSubscriptionAuditSuiteRows(
   return [...offerRows, ...excludedRows, ...problemOnlyRows];
 }
 
-function isPlainRecord(value: unknown): value is JsonRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isPlainRecord(value) &&
     Object.values(value).every((entry) => typeof entry === "string");
@@ -1493,94 +1463,6 @@ function validApiBody(value: unknown): boolean {
   );
 }
 
-function bodyRecord(request: ApiRequest): JsonRecord | null {
-  return request.body?.kind === "json" && isPlainRecord(request.body.value)
-    ? request.body.value
-    : null;
-}
-
-export function parseMarketplace(value: unknown): MarketplaceId | null {
-  return typeof value === "string" && isMarketplaceId(value) ? value : null;
-}
-
-function parseAccountingCapabilityId(value: unknown): AccountingCapabilityId | null {
-  if (typeof value !== "string") return null;
-  return PUBLIC_ACCOUNTING_CAPABILITIES.some((capability) => capability.id === value)
-    ? value as AccountingCapabilityId
-    : null;
-}
-
-function canonicalIsoTimestamp(value: unknown): string | null {
-  if (typeof value !== "string" || !value || value !== value.trim()) return null;
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value
-    ? value
-    : null;
-}
-
-function accountingCatalogState(
-  capability: AccountingCapability,
-): AccountingAccessPlan["state"] {
-  if (capability.availability !== "CONFIGURED_FBA_MARKETPLACES") {
-    return "UNAVAILABLE";
-  }
-  if (capability.id === "FINANCES_TRANSACTIONS") {
-    return "MAIN_FBA_FILTER_REQUIRED";
-  }
-  if (capability.access === "SELLER_CENTRAL_PREREQUISITE") {
-    return "MANUAL_PREREQUISITE";
-  }
-  if (
-    capability.access === "LIST_AMAZON_GENERATED_REPORT" &&
-    capability.fbaSafety === "ACCOUNT_WIDE_NOT_FBA_SAFE"
-  ) {
-    return "FBA_FILTER_NOT_IMPLEMENTED";
-  }
-  if (capability.access === "LIST_AMAZON_GENERATED_REPORT") {
-    return "READY_LIST_GENERATED";
-  }
-  if (capability.access === "CREATE_PUBLIC_REPORT") {
-    return "READY_CREATE_REPORT";
-  }
-  return capability.access === "DIRECT_PUBLIC_API"
-    ? "READY_PUBLIC_API"
-    : "UNAVAILABLE";
-}
-
-function accountingPlanNextStep(state: AccountingAccessPlan["state"]): string | null {
-  switch (state) {
-    case "READY_PUBLIC_API":
-      return "這裡只完成公開 API 與日期規則的安全規劃；尚未讀取交易，也不會輸出未證明為 FBA 的金額。";
-    case "READY_CREATE_REPORT":
-      return "這裡只完成公開 Reports API、日期與 FBA allowlist 驗證；尚未建立、輪詢或下載 Amazon 報表。";
-    case "READY_LIST_GENERATED":
-      return "這裡只完成列出 Amazon 已產生報表的安全規劃；尚未查詢或下載文件。";
-    case "MAIN_FBA_FILTER_REQUIRED":
-      return "必須先在 main process 完成逐項 AFN 證據過濾；目前不讀取，也不會把帳戶總額送到畫面。";
-    case "FBA_FILTER_NOT_IMPLEMENTED":
-      return "文件可能混有非 FBA 資料；在逐列 FBA 過濾完成前維持禁止下載。";
-    case "MANUAL_PREREQUISITE":
-      return "必須先由你在 Amazon 官方介面產生文件；AMZ.API 不會使用 Seller Central 私有接口。";
-    case "UNAVAILABLE":
-      return "目前沒有符合此站點與 FBA-only 邊界的 Amazon 公開下載 API。";
-  }
-}
-
-export function parseSellerSku(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const sellerSku = value.trim();
-  if (!sellerSku || sellerSku.length > 40 || /[\u0000-\u001f\u007f]/.test(sellerSku)) {
-    return null;
-  }
-  return sellerSku;
-}
-
-export function parseAsin(value: unknown): string | null {
-  return typeof value === "string" && /^[A-Z0-9]{10}$/u.test(value)
-    ? value
-    : null;
-}
-
 function parsePrice(value: unknown, currencyCode: string): number | null {
   const text = typeof value === "number" ? String(value) : value;
   if (typeof text !== "string") return null;
@@ -1599,51 +1481,6 @@ function optionalPrice(value: unknown, currency: string): number | null | undefi
 function optionalDate(value: unknown): string | null | undefined {
   if (value === null || value === "" || value === undefined) return null;
   return isDateOnly(value) ? value : undefined;
-}
-
-function integer(
-  value: unknown,
-  fallback: number | null,
-  minimum: number,
-  maximum: number,
-): number | null {
-  if ((value === null || value === undefined || value === "") && fallback !== null) {
-    return fallback;
-  }
-  const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum
-    ? parsed
-    : null;
-}
-
-function optionalInteger(value: unknown, minimum: number, maximum: number): number | null | undefined {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = integer(value, null, minimum, maximum);
-  return parsed === null ? undefined : parsed;
-}
-
-function shortText(value: unknown, maximum: number): string | null | undefined {
-  if (value === null || value === undefined || value === "") return null;
-  if (typeof value !== "string") return undefined;
-  const result = value.trim();
-  if (!result || result.length > maximum || /[\u0000-\u001f\u007f]/.test(result)) {
-    return undefined;
-  }
-  return result;
-}
-
-function multiLineText(value: unknown, maximum: number): string | null | undefined {
-  if (value === null || value === undefined || value === "") return null;
-  if (typeof value !== "string") return undefined;
-  const result = value.replace(/\r\n?/g, "\n").trim();
-  if (
-    !result ||
-    result.length > maximum ||
-    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(result)
-  ) {
-    return undefined;
-  }
-  return result;
 }
 
 function parseText(value: unknown, maximum: number): string | null {
@@ -1750,33 +1587,6 @@ function stableFingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function sourceResult<T>(result: PromiseSettledResult<T>) {
-  if (result.status === "fulfilled") return { data: result.value, error: null };
-  const error = result.reason;
-  const publicError = error instanceof SpApiError
-    ? publicSpApiError(
-        error,
-        "這項 Amazon 資料暫時無法讀取，其他結果仍可使用。",
-      )
-    : null;
-  return {
-    data: null,
-    error: publicError
-        ? {
-            code: publicError.code,
-            message: publicError.message,
-            requestId: publicError.requestId,
-            operation: publicError.operation,
-            upstreamCode: publicError.upstreamCode,
-          }
-        : {
-            code: "UPSTREAM_UNAVAILABLE",
-            message: "這項 Amazon 資料暫時無法讀取，其他結果仍可使用。",
-            requestId: null,
-          },
-  };
-}
-
 export class ApiRouter {
   private readonly store: LocalStore;
   private readonly vault: CredentialVault;
@@ -1791,6 +1601,12 @@ export class ApiRouter {
   private readonly reviewAuditCandidates: ReviewAuditCandidateSource;
   private readonly customerFeedbackReads: CustomerFeedbackReadsPort;
   private readonly ordersReads: OrdersReadsPort;
+  private readonly statelessCapabilities: StatelessCapabilityRoutesPort;
+  private readonly imageUpload: LocalImageUploadPort;
+  private readonly health: SystemHealthRoutePort;
+  private readonly planningCapabilities: PlanningCapabilityRoutesPort;
+  private readonly productMasterRoutes: ProductMasterRoutesPort;
+  private readonly skuCommandRoute: SkuCommandRoutePort;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
   private readonly fbaInboundReads: InboundReadsPort;
   private readonly reportBroker: FixedReportBroker;
@@ -1859,6 +1675,12 @@ export class ApiRouter {
     reviewAuditCandidates?: ReviewAuditCandidateSource;
     customerFeedbackReads?: CustomerFeedbackReadsPort;
     ordersReads?: OrdersReadsPort;
+    statelessCapabilities?: StatelessCapabilityRoutesPort;
+    imageUpload?: LocalImageUploadPort;
+    health?: SystemHealthRoutePort;
+    planningCapabilities?: PlanningCapabilityRoutesPort;
+    productMasterRoutes?: ProductMasterRoutesPort;
+    skuCommandRoute?: SkuCommandRoutePort;
     advertisingStrategyWait?: typeof waitMilliseconds;
     fbaInboundReads?: Partial<InboundReadsPort>;
     inboundNoncomplianceDemoReports?: Partial<
@@ -2029,6 +1851,50 @@ export class ApiRouter {
       context: this.spExecutionContext,
       live: ordersPageAdapterProduction,
       isConfiguredForMarketplace,
+    });
+    this.statelessCapabilities = input.statelessCapabilities ??
+      new StatelessCapabilityRoutes({
+        context: this.spExecutionContext,
+        orders: this.ordersReads,
+        searchListings: searchListingsBySku,
+        readSubscription: getSubscribeAndSaveOffer,
+        readVariationFamily: getVariationFamilyPlanner,
+      });
+    this.imageUpload = input.imageUpload ?? new LocalImageUpload({
+      context: this.spExecutionContext,
+      vault: this.vault,
+    });
+    this.health = input.health ?? new SystemHealthRoute({
+      getCredentialSummary: () => this.vault.getSummary(),
+      usesDemoMode,
+    });
+    this.planningCapabilities = input.planningCapabilities ??
+      new PlanningCapabilityRoutes();
+    this.productMasterRoutes = input.productMasterRoutes ??
+      new ProductMasterRoutes({
+        context: this.spExecutionContext,
+        store: this.store,
+      });
+    this.skuCommandRoute = input.skuCommandRoute ?? new SkuCommandRoute({
+      command: new SkuCommand({
+        context: this.spExecutionContext,
+        productMaster: {
+          get: (accountScope, marketplaceId, sellerSku) =>
+            this.store.getProductMaster(
+              accountScope,
+              marketplaceId,
+              sellerSku,
+            ),
+          syncIdentity: (identity) => this.store.syncProductIdentity(identity),
+        },
+        reads: {
+          price: getListingPrice,
+          content: getListingContent,
+          images: getListingImages,
+          subscribeSave: getSubscribeAndSaveOffer,
+          restock: getRestockPlan,
+        },
+      }),
     });
     this.aplusContentReads = input.aplusContentReads ?? new AplusContentReads({
       context: this.spExecutionContext,
@@ -2233,7 +2099,7 @@ export class ApiRouter {
     const key = `${request.method} ${request.path}`;
     switch (key) {
       case "GET /api/sp-api/orders":
-        return this.orders(request);
+        return this.statelessCapabilities.orders(request);
       case "GET /api/sp-api/sales-trend":
         return this.salesTrend(request);
       case "POST /api/sp-api/brand-sales":
@@ -2263,7 +2129,7 @@ export class ApiRouter {
       case "PATCH /api/sp-api/business-pricing":
         return this.commitBusinessPricing(request);
       case "POST /api/sp-api/listings/batch":
-        return this.batchListings(request);
+        return this.statelessCapabilities.batchListings(request);
       case "GET /api/sp-api/listing-content":
         return this.listingContent(request);
       case "POST /api/sp-api/listing-content":
@@ -2285,19 +2151,19 @@ export class ApiRouter {
       case "PATCH /api/sp-api/sale-price":
         return this.commitSalePrice(request);
       case "GET /api/sp-api/subscribe-save":
-        return this.subscribeSave(request);
+        return this.statelessCapabilities.subscribeSave(request);
       case "GET /api/sp-api/subscription-audit":
         return this.subscriptionAudit(request);
       case "GET /api/sp-api/subscription-audit/export":
         return this.subscriptionAuditExport(request);
       case "GET /api/sp-api/accounting/capabilities":
-        return this.accountingCapabilities(request);
+        return this.planningCapabilities.accountingCapabilities(request);
       case "POST /api/sp-api/accounting/access-plan":
-        return this.accountingAccessPlan(request);
+        return this.planningCapabilities.accountingAccessPlan(request);
       case "GET /api/sp-api/report-library":
-        return this.reportLibrary(request);
+        return this.planningCapabilities.reportLibrary(request);
       case "POST /api/sp-api/report-library/access-plan":
-        return this.reportLibraryAccessPlan(request);
+        return this.planningCapabilities.reportLibraryAccessPlan(request);
       case "POST /api/sp-api/review-audit":
         return this.startReviewAudit(request);
       case "GET /api/sp-api/review-audit":
@@ -2311,7 +2177,7 @@ export class ApiRouter {
       case "GET /api/sp-api/aged-inventory":
         return this.agedInventoryStatusOrData(request);
       case "GET /api/sp-api/variation-family":
-        return this.variationFamily(request);
+        return this.statelessCapabilities.variationFamily(request);
       case "POST /api/sp-api/variation-audit":
         return this.startUnboundVariationAudit(request);
       case "GET /api/sp-api/variation-audit":
@@ -2323,19 +2189,19 @@ export class ApiRouter {
       case "PATCH /api/sp-api/variation-move":
         return this.commitVariationMove(request);
       case "GET /api/sp-api/sku-command":
-        return this.skuCommand(request);
+        return this.skuCommandRoute.skuCommand(request);
       case "GET /api/product-master":
-        return this.getProductMaster(request);
+        return this.productMasterRoutes.getProductMaster(request);
       case "PUT /api/product-master":
-        return this.putProductMaster(request);
+        return this.productMasterRoutes.putProductMaster(request);
       case "POST /api/uploads/listing-images":
-        return this.uploadImage(request);
+        return this.imageUpload.uploadImage(request);
       case "POST /api/sp-api/listing-content/export":
         return this.startExport(request);
       case "GET /api/sp-api/listing-content/export":
         return this.exportStatusOrDownload(request);
       case "GET /api/system/health":
-        return this.systemHealth(request);
+        return this.health.systemHealth(request);
       case "GET /api/amazon-ads/status":
         return this.adsStatus(request);
       case "GET /api/amazon-ads/coverage":
@@ -2839,39 +2705,6 @@ export class ApiRouter {
       );
     }
     return this.inboundShipmentJobReply(job);
-  }
-
-  private async orders(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(
-      request.query.marketplaceId ?? DEFAULT_MARKETPLACE_ID,
-    );
-    const days = integer(request.query.days, 14, 1, 90);
-    const requestedFulfillmentStatus = request.query.status || null;
-    let fulfillmentStatus: OrderFulfillmentStatus | null = null;
-    const paginationToken = request.query.paginationToken || null;
-    if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
-    if (days === null) return invalid("日期範圍必須介於 1 到 90 天。");
-    if (requestedFulfillmentStatus) {
-      if (!isOrderFulfillmentStatus(requestedFulfillmentStatus)) {
-        return invalid("不支援這個訂單狀態。");
-      }
-      fulfillmentStatus = requestedFulfillmentStatus;
-    }
-    if (paginationToken && paginationToken.length > 4_096) {
-      return invalid("分頁資訊無效，請重新查詢。");
-    }
-    try {
-      const snapshot = await this.ordersReads.read({
-        intent: "dashboard-page",
-        marketplaceId,
-        days,
-        fulfillmentStatus,
-        paginationToken,
-      });
-      return json({ ...snapshot, marketplace: MARKETPLACES[marketplaceId] });
-    } catch (error) {
-      return apiError(error, "載入訂單時發生未預期的錯誤。");
-    }
   }
 
   private async salesTrend(request: ApiRequest): Promise<ApiResponse> {
@@ -3485,36 +3318,6 @@ export class ApiRouter {
     }
   }
 
-  private async variationFamily(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const hasSku = request.query.sku !== undefined;
-    const hasAsin = request.query.asin !== undefined;
-    const sellerSku = hasSku ? parseSellerSku(request.query.sku) : null;
-    const asin = hasAsin ? parseAsin(request.query.asin) : null;
-    if (
-      !marketplaceId ||
-      hasSku === hasAsin ||
-      (hasSku && !sellerSku) ||
-      (hasAsin && !asin)
-    ) {
-      return invalid(
-        "請選擇站點，並且只提供完整 Seller SKU 或原樣 10 碼 ASIN 其中一項。",
-      );
-    }
-    try {
-      const { value } = await this.runContextBoundWork(
-        marketplaceId,
-        () => getVariationFamilyPlanner({
-          marketplaceId,
-          ...(sellerSku ? { sellerSku } : { asin: asin! }),
-        }),
-      );
-      return json(value);
-    } catch (error) {
-      return apiError(error, "查詢變體 family 時發生未預期的錯誤。");
-    }
-  }
-
   private pruneUnboundVariationAuditSnapshots(now = Date.now()): void {
     for (const [id, entry] of this.unboundVariationAuditSnapshots) {
       if (entry.expiresAt <= now) this.unboundVariationAuditSnapshots.delete(id);
@@ -3934,32 +3737,6 @@ export class ApiRouter {
       input.expectedPrice,
       input.newPrice,
     ]);
-  }
-
-  private async batchListings(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    const marketplaceId = parseMarketplace(body?.marketplaceId);
-    if (!body || !marketplaceId || !Array.isArray(body.skus)) {
-      return invalid("請選擇站點並提供 SKU 清單。");
-    }
-    const skus: string[] = [];
-    for (const value of body.skus) {
-      const sku = parseSellerSku(value);
-      if (!sku) return invalid("SKU 清單包含空白或無效內容。");
-      if (!skus.includes(sku)) skus.push(sku);
-    }
-    if (!skus.length || skus.length > 20) {
-      return invalid("一次可查詢 1 到 20 個不重複 SKU。");
-    }
-    try {
-      const { value } = await this.runContextBoundWork(
-        marketplaceId,
-        () => searchListingsBySku({ marketplaceId, sellerSkus: skus }),
-      );
-      return json(value);
-    } catch (error) {
-      return apiError(error, "批次查詢 SKU 時發生未預期的錯誤。");
-    }
   }
 
   private contentInput(request: ApiRequest):
@@ -5084,20 +4861,6 @@ export class ApiRouter {
     ]);
   }
 
-  private async subscribeSave(request: ApiRequest): Promise<ApiResponse> {
-    const identity = this.listingIdentity(request);
-    if ("status" in identity) return identity;
-    try {
-      const { value } = await this.runContextBoundWork(
-        identity.marketplaceId,
-        () => getSubscribeAndSaveOffer(identity),
-      );
-      return json(value);
-    } catch (error) {
-      return apiError(error, "查詢 Subscribe & Save 時發生未預期的錯誤。");
-    }
-  }
-
   private pruneSubscriptionAuditSnapshots(now = Date.now()): void {
     for (const [id, entry] of this.subscriptionAuditSnapshots) {
       if (entry.expiresAt <= now) this.subscriptionAuditSnapshots.delete(id);
@@ -5243,144 +5006,6 @@ export class ApiRouter {
       );
     } catch (error) {
       return apiError(error, "建立 Subscribe & Save 健檢 Excel 時發生未預期的錯誤。");
-    }
-  }
-
-  private accountingCapabilities(request: ApiRequest): ApiResponse {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
-    return json({
-      marketplaceId,
-      fetchedAt: new Date().toISOString(),
-      capabilities: PUBLIC_ACCOUNTING_CAPABILITIES.map((capability) => ({
-        ...capability,
-        roles: [...capability.roles],
-        state: accountingCatalogState(capability),
-      })),
-      notice:
-        "這裡只列出 Amazon 公開 SP-API 的 FBA 帳務能力與安全規劃狀態；尚未建立、輪詢或下載報表，也不使用 Seller Central 私有接口。",
-    });
-  }
-
-  private accountingAccessPlan(request: ApiRequest): ApiResponse {
-    const body = bodyRecord(request);
-    if (!body) {
-      return invalid("帳務規劃必須使用 JSON。", 400, "INVALID_ACCOUNTING_PLAN");
-    }
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const capabilityId = parseAccountingCapabilityId(body.capabilityId);
-    if (!marketplaceId || !capabilityId) {
-      return invalid(
-        "請提供有效的站點與公開 API 帳務能力。",
-        400,
-        "INVALID_ACCOUNTING_PLAN",
-      );
-    }
-    const startPresent = body.dataStartTime !== undefined;
-    const endPresent = body.dataEndTime !== undefined;
-    const dataStartTime = startPresent
-      ? canonicalIsoTimestamp(body.dataStartTime)
-      : undefined;
-    const dataEndTime = endPresent
-      ? canonicalIsoTimestamp(body.dataEndTime)
-      : undefined;
-    if ((startPresent && !dataStartTime) || (endPresent && !dataEndTime)) {
-      return invalid(
-        "帳務日期必須是完整、標準的 ISO 時間。",
-        400,
-        "INVALID_ACCOUNTING_DATE",
-      );
-    }
-    try {
-      const plan = buildAccountingAccessPlan({
-        capabilityId,
-        marketplaceId,
-        ...(dataStartTime ? { dataStartTime } : {}),
-        ...(dataEndTime ? { dataEndTime } : {}),
-      });
-      return json({
-        capabilityId,
-        marketplaceId,
-        state: plan.state,
-        notice: plan.capability.notice,
-        nextStep: accountingPlanNextStep(plan.state),
-      });
-    } catch (error) {
-      if (error instanceof TypeError) {
-        return invalid(error.message, 400, "INVALID_ACCOUNTING_PLAN");
-      }
-      return apiError(error, "建立公開 API 帳務規劃時發生未預期的錯誤。");
-    }
-  }
-
-  private reportLibrary(request: ApiRequest): ApiResponse {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    if (!marketplaceId) return invalid("文件庫站點無效。");
-    return json({
-      schemaVersion: 1,
-      marketplaceId,
-      fetchedAt: new Date().toISOString(),
-      officialCatalog: {
-        uniqueReportTypeCount: PUBLIC_REPORT_CATALOG.length,
-        verifiedAt: "2026-08-09",
-        officialPageUpdatedLabel: "Amazon 官方頁面於驗證時標示 Updated 5 days ago",
-        source: "https://developer-docs.amazon.com/sp-api/docs/report-type-values",
-        changeNotice: "Amazon 官方 report type 清單可能隨時更新；此版本依 2026-08-09 驗證的 109 個唯一類型。",
-      },
-      currentAppExports: CURRENT_APP_EXPORTS.map((item) => ({ ...item })),
-      reports: PUBLIC_REPORT_CATALOG.map((report) => {
-        const plan = buildReportAccessPlan({
-          marketplaceId,
-          reportType: report.reportType,
-        });
-        return {
-          ...report,
-          categories: [...report.categories],
-          roles: [...report.roles],
-          supportedConfiguredMarketplaces:
-            report.supportedConfiguredMarketplaces === null
-              ? null
-              : [...report.supportedConfiguredMarketplaces],
-          prerequisites: [...report.prerequisites],
-          state: plan.state,
-          amazonPublicArtifactAvailable: plan.amazonPublicArtifactAvailable,
-          appDownloadImplemented: plan.appDownloadImplemented,
-          stateNotice: plan.notice,
-        };
-      }),
-      unavailableDocuments: REPORT_LIBRARY_UNAVAILABLE_DOCUMENTS.map((item) => ({ ...item })),
-      reviewAuditCapability: {
-        ...REVIEW_AUDIT_CAPABILITY,
-        roles: [...REVIEW_AUDIT_CAPABILITY.roles],
-        supportedConfiguredMarketplaces: [
-          ...REVIEW_AUDIT_CAPABILITY.supportedConfiguredMarketplaces,
-        ],
-        supportedForMarketplace: customerFeedbackMarketplaceSupported(marketplaceId),
-      },
-      notice: REPORT_LIBRARY_NOTICE,
-    });
-  }
-
-  private reportLibraryAccessPlan(request: ApiRequest): ApiResponse {
-    const body = bodyRecord(request);
-    const marketplaceId = parseMarketplace(body?.marketplaceId);
-    const reportType = typeof body?.reportType === "string" &&
-      /^[A-Z0-9_]{3,120}$/u.test(body.reportType)
-      ? body.reportType
-      : null;
-    if (!body || !marketplaceId || !reportType) {
-      return invalid(
-        "請提供有效站點與 Amazon 公開 reportType。",
-        400,
-        "INVALID_REPORT_PLAN",
-      );
-    }
-    try {
-      return json(buildReportAccessPlan({ marketplaceId, reportType }));
-    } catch (error) {
-      return error instanceof TypeError
-        ? invalid(error.message, 400, "INVALID_REPORT_PLAN")
-        : apiError(error, "建立文件庫能力規劃時發生未預期的錯誤。");
     }
   }
 
@@ -5832,506 +5457,6 @@ export class ApiRouter {
     }
   }
 
-  private async skuCommand(request: ApiRequest): Promise<ApiResponse> {
-    const identity = this.listingIdentity(request);
-    if ("status" in identity) return identity;
-    const { marketplaceId, sellerSku } = identity;
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    const { accountScope } = context;
-    const profileState = await this.store.getProductMaster(
-      accountScope,
-      marketplaceId,
-      sellerSku,
-    );
-    const profile = profileState.profile;
-    const effectiveLead =
-      profile.leadTimeDays +
-      (profile.supplyRoute === "AWD_TO_FBA" ? profile.awdBufferDays : 0);
-    const settled = await Promise.allSettled([
-      getListingPrice(identity),
-      getListingContent(identity),
-      getListingImages(identity),
-      getSubscribeAndSaveOffer(identity),
-      getRestockPlan({
-        marketplaceId,
-        sellerSku,
-        targetDays: profile.targetDays,
-        leadTimeDays: effectiveLead,
-        safetyDays: profile.safetyDays,
-        casePack: profile.casePack,
-      }),
-    ] as const);
-    await this.spExecutionContext.assertCurrent(context);
-    const price = sourceResult<ListingPriceSnapshot>(settled[0]);
-    const content = sourceResult<ListingContentSnapshot>(settled[1]);
-    const images = sourceResult<ListingImageSnapshot>(settled[2]);
-    const subscribeSave = sourceResult<SubscribeAndSaveOfferSnapshot>(settled[3]);
-    const restock = sourceResult<RestockPlanSnapshot>(settled[4]);
-    const identityData = {
-      displayName: price.data?.title ?? content.data?.title ?? restock.data?.title ?? null,
-      asin: price.data?.asin ?? content.data?.asin ?? restock.data?.asin ?? null,
-      fnSku: restock.data?.fnSku ?? null,
-    };
-    const synced = await this.store.syncProductIdentity({
-      accountScope,
-      marketplaceId,
-      sellerSku,
-      ...identityData,
-    });
-    const effectiveProfile: ProductMasterState = {
-      ...synced,
-      profile: {
-        ...synced.profile,
-        settingsConfigured: profile.settingsConfigured,
-      },
-    };
-    const tasks = this.commandTasks({
-      profile: effectiveProfile,
-      price,
-      content,
-      images,
-      subscribeSave,
-      restock,
-    });
-    const sources = [price, content, images, subscribeSave, restock];
-    const sourceReady = sources.filter((item) => item.data).length;
-    return json({
-      mode: context.mode,
-      marketplaceId,
-      sellerSku,
-      fetchedAt: new Date().toISOString(),
-      profile: effectiveProfile,
-      price,
-      content,
-      images,
-      subscribeSave,
-      restock,
-      tasks,
-      summary: {
-        score: Math.round((sourceReady / sources.length) * 100),
-        sourceReady,
-        sourceTotal: sources.length,
-        critical: tasks.filter((item) => item.severity === "critical").length,
-        warning: tasks.filter((item) => item.severity === "warning").length,
-        manual: tasks.filter((item) => item.automation === "manual").length,
-        overall: tasks.some((item) => item.severity === "critical")
-          ? "critical"
-          : tasks.some((item) => item.severity === "warning")
-            ? "attention"
-            : "ready",
-      },
-      notice: "這是只讀整合掃描；只有完成預檢、確認與 Notebook 鑰匙（Touch ID／Windows Hello）本機授權後，才可能寫入 Amazon。",
-    });
-  }
-
-  private commandTasks(input: {
-    profile: ProductMasterState;
-    price: ReturnType<typeof sourceResult<ListingPriceSnapshot>>;
-    content: ReturnType<typeof sourceResult<ListingContentSnapshot>>;
-    images: ReturnType<typeof sourceResult<ListingImageSnapshot>>;
-    subscribeSave: ReturnType<typeof sourceResult<SubscribeAndSaveOfferSnapshot>>;
-    restock: ReturnType<typeof sourceResult<RestockPlanSnapshot>>;
-  }): CommandTask[] {
-    const tasks: CommandTask[] = [];
-    const add = (task: CommandTask) => {
-      if (!tasks.some((item) => item.id === task.id)) tasks.push(task);
-    };
-    if (!input.profile.profile.settingsConfigured) {
-      add({
-        id: "profile-settings",
-        title: "儲存一次商品補貨規格",
-        detail: "設定箱入數、交期、安全天數與 AWD 緩衝後，之後會自動套用。",
-        automation: "one_click",
-        severity: "info",
-        tool: null,
-      });
-    }
-    const sourceEntries = [
-      ["price", input.price, "價格", "price"],
-      ["content", input.content, "文案", "copy"],
-      ["images", input.images, "圖片", "images"],
-      ["subscribe", input.subscribeSave, "訂閱", "price"],
-      ["restock", input.restock, "補貨", "restock"],
-    ] as const;
-    for (const [id, source, label, tool] of sourceEntries) {
-      if (!source.error) continue;
-      add({
-        id: `source-${id}`,
-        title: `${label}資料未完成`,
-        detail: source.error.message,
-        automation: "automatic",
-        severity: id === "price" || id === "restock" ? "warning" : "info",
-        tool,
-      });
-    }
-    if (input.content.data) {
-      const content = input.content.data;
-      const missing = [
-        content.capabilities.title.supported && !content.title.trim() ? "標題" : null,
-        content.capabilities.bulletPoints.supported &&
-        content.bulletPoints.filter(Boolean).length <
-          Math.min(5, content.capabilities.bulletPoints.maxItems ?? 5)
-          ? `五大賣點（目前 ${content.bulletPoints.filter(Boolean).length}）`
-          : null,
-        content.capabilities.ingredients.supported && !content.ingredients.trim()
-          ? "成分"
-          : null,
-      ].filter(Boolean);
-      if (missing.length) {
-        add({
-          id: "content-missing",
-          title: "商品內容不完整",
-          detail: `缺少：${missing.join("、")}。可直接帶入文案工具修正。`,
-          automation: "one_click",
-          severity: "warning",
-          tool: "copy",
-        });
-      }
-      const errors = content.issues.filter((issue) => issue.severity.toUpperCase() === "ERROR");
-      if (errors.length) {
-        add({
-          id: "listing-errors",
-          title: `Amazon 回報 ${errors.length} 個 Listing 錯誤`,
-          detail: errors[0]?.message || "請打開文案工具查看 Amazon issue。",
-          automation: "manual",
-          severity: "critical",
-          tool: "copy",
-        });
-      }
-    }
-    if (input.images.data) {
-      const count = input.images.data.images.filter((item) => item.url).length;
-      const hasMain = Boolean(input.images.data.images[0]?.url);
-      if (!hasMain || count < 6) {
-        add({
-          id: "images-incomplete",
-          title: hasMain ? "商品圖片可以再補強" : "商品缺少主圖",
-          detail: hasMain
-            ? `目前 ${count} 張；可直接拖拉補到建議的 6 張以上。`
-            : "主圖是必備欄位，系統已準備好拖拉上傳與格式檢查。",
-          automation: "one_click",
-          severity: hasMain ? "info" : "critical",
-          tool: "images",
-        });
-      }
-    }
-    if (input.price.data && !input.price.data.standardPrice) {
-      add({
-        id: "price-missing",
-        title: "查不到可核對的標準售價",
-        detail: "為避免誤改，價格寫入已自動停止。",
-        automation: "manual",
-        severity: "critical",
-        tool: "price",
-      });
-    }
-    if (input.restock.data) {
-      const restock = input.restock.data;
-      if (restock.action === "RESTOCK_NOW" || restock.action === "WATCH") {
-        add({
-          id: restock.action === "RESTOCK_NOW" ? "restock-now" : "restock-watch",
-          title:
-            restock.action === "RESTOCK_NOW"
-              ? `建議現在補貨 ${restock.recommendedUnits.toLocaleString()} 件`
-              : `準備補貨 ${restock.recommendedUnits.toLocaleString()} 件`,
-          detail: `目前可售約 ${restock.daysOfCover?.toFixed(1) ?? "—"} 天；已依每箱 ${restock.casePack} 件向上取整。`,
-          automation: "one_click",
-          severity: restock.action === "RESTOCK_NOW" ? "critical" : "warning",
-          tool: "restock",
-        });
-      }
-    }
-    if (!tasks.length) {
-      add({
-        id: "all-clear",
-        title: "這個 SKU 目前沒有明顯異常",
-        detail: "價格、內容、圖片與 FBA 補貨訊號已完成掃描。",
-        automation: "automatic",
-        severity: "info",
-        tool: null,
-      });
-    }
-    const rank = { critical: 0, warning: 1, info: 2 } as const;
-    return tasks.sort((left, right) => rank[left.severity] - rank[right.severity]);
-  }
-
-  private async getProductMaster(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    if (!marketplaceId) return invalid("請選擇有效的 Amazon 站點。");
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    if (Object.prototype.hasOwnProperty.call(request.query, "sku")) {
-      const sellerSku = parseSellerSku(request.query.sku);
-      if (!sellerSku) return invalid("請輸入有效的 Seller SKU。");
-      return json(
-        await this.store.getProductMaster(
-          context.accountScope,
-          marketplaceId,
-          sellerSku,
-        ),
-      );
-    }
-    const query = (request.query.q ?? "").trim();
-    const limit = integer(request.query.limit, 8, 1, 20);
-    if (query.length > 80 || limit === null) return invalid("商品主檔搜尋條件無效。");
-    return json(
-      await this.store.listProductMasters({
-        accountScope: context.accountScope,
-        marketplaceId,
-        query,
-        limit,
-      }),
-    );
-  }
-
-  private async putProductMaster(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    if (!body) return invalid("商品主檔請求必須使用 JSON。", 415, "UNSUPPORTED_MEDIA_TYPE");
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const sellerSku = parseSellerSku(body.sellerSku);
-    const supplyRoute =
-      body.supplyRoute === "DIRECT_FBA" || body.supplyRoute === "AWD_TO_FBA"
-        ? body.supplyRoute
-        : null;
-    const settings = {
-      casePack: integer(body.casePack, null, 1, 10_000),
-      cartonsPerPallet: integer(body.cartonsPerPallet, null, 1, 1_000),
-      leadTimeDays: integer(body.leadTimeDays, null, 1, 120),
-      safetyDays: integer(body.safetyDays, null, 0, 90),
-      targetDays: integer(body.targetDays, null, 14, 180),
-      supplyRoute,
-      awdBufferDays: integer(body.awdBufferDays, null, 0, 60),
-      shelfLifeDays: optionalInteger(body.shelfLifeDays, 1, 3_650),
-      minimumRemainingDays: optionalInteger(body.minimumRemainingDays, 1, 3_650),
-      factory: shortText(body.factory, 80),
-      notes: multiLineText(body.notes, 500),
-    };
-    const displayName = shortText(body.displayName, 300);
-    const asin = shortText(body.asin, 20);
-    const fnSku = shortText(body.fnSku, 40);
-    if (
-      !marketplaceId ||
-      !sellerSku ||
-      !supplyRoute ||
-      settings.casePack === null ||
-      settings.cartonsPerPallet === null ||
-      settings.leadTimeDays === null ||
-      settings.safetyDays === null ||
-      settings.targetDays === null ||
-      settings.awdBufferDays === null ||
-      settings.shelfLifeDays === undefined ||
-      settings.minimumRemainingDays === undefined ||
-      settings.factory === undefined ||
-      settings.notes === undefined ||
-      displayName === undefined ||
-      asin === undefined ||
-      fnSku === undefined
-    ) {
-      return invalid("商品主檔內有格式或範圍不正確的欄位。");
-    }
-    if (
-      supplyRoute === "AWD_TO_FBA" &&
-      marketplaceId !== marketplaceByCode("US").id
-    ) {
-      return invalid("AWD→FBA 目前只開放美國站。", 422, "AWD_US_ONLY");
-    }
-    const effectiveLead =
-      settings.leadTimeDays! +
-      (supplyRoute === "AWD_TO_FBA" ? settings.awdBufferDays! : 0);
-    if (settings.targetDays! < effectiveLead + settings.safetyDays!) {
-      return invalid(
-        "目標庫存不能小於補貨交期、AWD 緩衝與安全庫存的合計。",
-        422,
-        "INVALID_RESTOCK_WINDOW",
-      );
-    }
-    if (
-      settings.shelfLifeDays &&
-      settings.minimumRemainingDays &&
-      settings.minimumRemainingDays > settings.shelfLifeDays
-    ) {
-      return invalid(
-        "到倉最低剩餘效期不能大於商品總效期。",
-        422,
-        "INVALID_SHELF_LIFE",
-      );
-    }
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    return json(
-      await this.store.saveProductMaster({
-        accountScope: context.accountScope,
-        marketplaceId,
-        sellerSku,
-        settings: {
-          casePack: settings.casePack!,
-          cartonsPerPallet: settings.cartonsPerPallet!,
-          leadTimeDays: settings.leadTimeDays!,
-          safetyDays: settings.safetyDays!,
-          targetDays: settings.targetDays!,
-          supplyRoute,
-          awdBufferDays: settings.awdBufferDays!,
-          shelfLifeDays: settings.shelfLifeDays!,
-          minimumRemainingDays: settings.minimumRemainingDays!,
-          factory: settings.factory!,
-          notes: settings.notes!,
-        },
-        displayName,
-        asin,
-        fnSku,
-      }),
-    );
-  }
-
-  private async uploadImage(request: ApiRequest): Promise<ApiResponse> {
-    if (request.body?.kind !== "multipart") {
-      return invalid("圖片上傳必須使用 multipart/form-data。", 415, "UNSUPPORTED_MEDIA_TYPE");
-    }
-    const marketplaceId = parseMarketplace(request.body.fields.marketplaceId);
-    const sellerSku = parseSellerSku(request.body.fields.sellerSku);
-    const file = request.body.file;
-    if (!marketplaceId || !sellerSku || !file || !(file.bytes instanceof Uint8Array)) {
-      return invalid("請提供有效的站點、SKU 與圖片檔案。");
-    }
-    if (file.bytes.byteLength <= 0 || file.bytes.byteLength > 10 * 1024 * 1024) {
-      return invalid("圖片必須小於 10 MB。", 413, "IMAGE_TOO_LARGE");
-    }
-    const contentType = this.imageContentType(file.bytes);
-    if (!contentType) {
-      return invalid("只接受內容有效的 JPEG 或 PNG 圖片。", 415, "INVALID_IMAGE");
-    }
-    const dimensions = this.imageDimensions(file.bytes, contentType);
-    if (!dimensions || dimensions.width < 500 || dimensions.height < 500) {
-      return invalid(
-        "Amazon 圖片寬高都必須至少 500px；建議 1000px 以上。",
-        422,
-        "IMAGE_TOO_SMALL",
-      );
-    }
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    const skuHash = createHash("sha256").update(sellerSku).digest("hex").slice(0, 16);
-    const extension = contentType === "image/png" ? "png" : "jpg";
-    const key = `listing-images/${marketplaceId}/${skuHash}/${randomUUID()}.${extension}`;
-    const previewUrl = `data:${contentType};base64,${Buffer.from(file.bytes).toString("base64")}`;
-    const storage = await this.vault.getImageStorage();
-    await this.spExecutionContext.assertCurrent(context);
-    let amazonUrl: string | null = null;
-    if (storage) {
-      const expectedHost = `${storage.accountId}.r2.cloudflarestorage.com`;
-      const endpoint = new URL(`https://${expectedHost}`);
-      if (
-        endpoint.protocol !== "https:" ||
-        endpoint.hostname !== expectedHost ||
-        endpoint.username ||
-        endpoint.password ||
-        endpoint.port
-      ) {
-        return invalid("R2 endpoint 未通過安全檢查。", 422, "INVALID_IMAGE_STORAGE");
-      }
-      const client = new S3Client({
-        region: "auto",
-        endpoint: endpoint.toString(),
-        credentials: {
-          accessKeyId: storage.accessKeyId,
-          secretAccessKey: storage.secretAccessKey,
-        },
-      });
-      try {
-        await this.spExecutionContext.assertCurrent(context);
-        await client.send(
-          new PutObjectCommand({
-            Bucket: storage.bucket,
-            Key: key,
-            Body: file.bytes,
-            ContentType: contentType,
-            CacheControl: "public, max-age=31536000, immutable",
-            Metadata: {
-              marketplace: marketplaceId,
-              sku: skuHash,
-              width: String(dimensions.width),
-              height: String(dimensions.height),
-            },
-          }),
-        );
-        await this.spExecutionContext.assertCurrent(context);
-        amazonUrl = `${storage.publicBaseUrl.replace(/\/$/, "")}/${key}`;
-      } finally {
-        client.destroy();
-      }
-    }
-    return json({
-      key,
-      previewUrl,
-      amazonUrl,
-      width: dimensions.width,
-      height: dimensions.height,
-      contentType,
-      readyForAmazon: Boolean(amazonUrl),
-      notice: amazonUrl
-        ? "圖片已上傳到你自己的 R2，送出後仍需等待 Amazon 下載與驗證。"
-        : "圖片已在這台電腦完成格式與像素檢查；設定自己的 R2 公開網域後即可一鍵送交 Amazon。",
-    });
-  }
-
-  private imageContentType(bytesValue: Uint8Array): "image/png" | "image/jpeg" | null {
-    if (
-      bytesValue.length >= 24 &&
-      bytesValue[0] === 0x89 &&
-      bytesValue[1] === 0x50 &&
-      bytesValue[2] === 0x4e &&
-      bytesValue[3] === 0x47 &&
-      bytesValue[4] === 0x0d &&
-      bytesValue[5] === 0x0a &&
-      bytesValue[6] === 0x1a &&
-      bytesValue[7] === 0x0a
-    ) {
-      return "image/png";
-    }
-    return bytesValue.length >= 4 &&
-      bytesValue[0] === 0xff &&
-      bytesValue[1] === 0xd8 &&
-      bytesValue[2] === 0xff
-      ? "image/jpeg"
-      : null;
-  }
-
-  private imageDimensions(
-    bytesValue: Uint8Array,
-    type: "image/png" | "image/jpeg",
-  ): { width: number; height: number } | null {
-    if (type === "image/png") {
-      const view = new DataView(
-        bytesValue.buffer,
-        bytesValue.byteOffset,
-        bytesValue.byteLength,
-      );
-      return { width: view.getUint32(16), height: view.getUint32(20) };
-    }
-    let offset = 2;
-    while (offset + 8 < bytesValue.length) {
-      if (bytesValue[offset] !== 0xff) {
-        offset += 1;
-        continue;
-      }
-      const marker = bytesValue[offset + 1];
-      offset += 2;
-      if (marker === 0xd8 || marker === 0xd9) continue;
-      if (offset + 2 > bytesValue.length) break;
-      const length = (bytesValue[offset] << 8) | bytesValue[offset + 1];
-      if (length < 2 || offset + length > bytesValue.length) break;
-      if (
-        [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(
-          marker,
-        )
-      ) {
-        return {
-          height: (bytesValue[offset + 3] << 8) | bytesValue[offset + 4],
-          width: (bytesValue[offset + 5] << 8) | bytesValue[offset + 6],
-        };
-      }
-      offset += length;
-    }
-    return null;
-  }
-
   private async startExport(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
@@ -6655,132 +5780,6 @@ export class ApiRouter {
     return typeof value === "string" && /^[A-Za-z0-9._-]{1,200}$/.test(value)
       ? value
       : null;
-  }
-
-  private async systemHealth(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(
-      request.query.marketplaceId ?? DEFAULT_MARKETPLACE_ID,
-    );
-    if (!marketplaceId) return invalid("不支援這個 Amazon 站點。");
-    const marketplace = MARKETPLACES[marketplaceId];
-    const summary = await this.vault.getSummary();
-    const region = marketplace.region;
-    const live = summary.regions[region].configured && !usesDemoMode(marketplaceId);
-    type Check = {
-      id: string;
-      label: string;
-      state: "ready" | "attention" | "manual";
-      automation: "automatic" | "one_click" | "manual";
-      detail: string;
-      action: string | null;
-    };
-    const check = (
-      id: string,
-      label: string,
-      state: Check["state"],
-      automation: Check["automation"],
-      detail: string,
-      action: string | null = null,
-    ): Check => ({ id, label, state, automation, detail, action });
-    const checks: Check[] = [
-      check(
-        "fba-only",
-        "FBA-only 守門",
-        "ready",
-        "automatic",
-        "所有訂單、庫存與補貨查詢都固定為 Amazon 履約；沒有 FBM 操作入口。",
-      ),
-      check(
-        "sp-api",
-        "Amazon SP-API 憑證設定",
-        live ? "ready" : "attention",
-        "automatic",
-        live
-          ? `${marketplace.label}已設定本機系統安全儲存區中的 ${region.toUpperCase()} 憑證；本項只核對本機設定，未代表即時驗證 Amazon 連線。`
-          : "尚未輸入此區域的 LWA、Refresh Token 與 Seller ID，目前使用展示資料。",
-        live ? null : "開啟右上角本機安全連線，輸入 SP-API 憑證",
-      ),
-      check(
-        "keychain",
-        "本機系統安全儲存區加密",
-        summary.encryptionAvailable ? "ready" : "attention",
-        "automatic",
-        summary.encryptionAvailable
-          ? "Refresh Token 與 Client Secret 只以加密密文保存於這台電腦。"
-          : "本機系統安全儲存區不可用；系統已拒絕保存任何 API 憑證。",
-      ),
-      check(
-        "operation-ledger",
-        "本機防重送帳本",
-        "ready",
-        "automatic",
-        "已確認結果保留 24 小時；未確認寫入會持續鎖定，直到主程序唯讀回查證明完成，絕不盲目重送。",
-      ),
-      check(
-        "product-master",
-        "中央 SKU 商品主檔",
-        "ready",
-        "automatic",
-        "箱入數、交期、AWD 緩衝與效期設定保存在這台電腦，所有補貨工具共用。",
-      ),
-      check(
-        "image-storage",
-        "圖片拖拉與公開來源",
-        summary.imageStorageConfigured ? "ready" : "attention",
-        "one_click",
-        summary.imageStorageConfigured
-          ? "圖片會在本機驗證後上傳到你自己的 R2 公開網域，再交由 Amazon 讀取。"
-          : "本機拖拉與格式檢查可用；正式送出圖片前需設定自己的 R2 公開 HTTPS 網域。",
-        summary.imageStorageConfigured ? null : "本機安全連線 → 圖片空間 → 加入 R2 設定",
-      ),
-      check(
-        "replenishment-engine",
-        "FBA 補貨引擎",
-        "ready",
-        "automatic",
-        summary.replenishmentSkillConfigured
-          ? "內建 FBA 計算已就緒，外部補貨 Skill 接點也已設定。"
-          : "內建 FBA 庫存、在途與近 30 天銷速計算已就緒；外部 Skill 為選配。",
-      ),
-      check(
-        "amazon-ads",
-        "SB／SD 廣告授權",
-        "manual",
-        "manual",
-        "Amazon Ads 需要獨立 Direct Advertiser、LWA client 與站點 Profile；SP 仍建議留在 Helium 10。",
-        "一鍵開啟 Amazon Ads Console",
-      ),
-    ];
-    const actionable = checks.filter((item) => item.state !== "manual");
-    const readyCount = actionable.filter((item) => item.state === "ready").length;
-    const attentionCount = actionable.length - readyCount;
-    return json({
-      marketplaceId,
-      marketplaceLabel: marketplace.label,
-      mode: live ? "live" : "demo",
-      overall: attentionCount ? "attention" : "ready",
-      checkedAt: new Date().toISOString(),
-      score: Math.round((readyCount / Math.max(1, actionable.length)) * 100),
-      summary: {
-        ready: readyCount,
-        attention: attentionCount,
-        manual: checks.filter((item) => item.state === "manual").length,
-      },
-      checks,
-      safeguards: [
-        "本機 App 內部 IPC 白名單",
-        "本機系統安全儲存區加密",
-        "FBA-only 固定條件",
-        "精確 Seller SKU 驗證",
-        "Amazon Validation Preview",
-        "舊值衝突檢查",
-        "本機持久 Idempotency 防重送",
-        "大幅調價二次確認",
-        "Notebook 鑰匙（Touch ID／Windows Hello）系統確認",
-        "送出後只讀回查，不自動重送",
-      ],
-      notice: "自我檢查只讀取本機設定狀態，未代表即時驗證 Amazon 連線；不會修改 Amazon、廣告或實體入庫。",
-    });
   }
 
   private standaloneAuditKind(value: unknown): StandaloneAuditKind | null {
