@@ -7624,77 +7624,37 @@ body:has(.commerce-os .drawer-backdrop) {
 }
 .web-gate-install-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, .85fr);
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 12px 24px;
 }
 .web-gate-install-heading h2 { margin: 5px 0 0; color: #202938; font-size: 18px; letter-spacing: -.025em; }
-.web-gate-install-heading > small { color: #7b8594; font-size: 9px; line-height: 1.55; text-align: right; overflow-wrap: anywhere; }
-.web-gate-platform-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; margin-top: 15px; }
-.web-gate-platform {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 38px minmax(0, 1fr);
-  align-items: start;
-  gap: 11px;
-  padding: 14px;
-  border: 1px solid #dfe4ea;
-  border-radius: 16px;
-  background: #fff;
-}
-.web-gate-platform > span:first-child {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  border-radius: 12px;
-  background: #eff2f6;
-  color: #445168;
-  font-size: 15px;
-  font-weight: 850;
-}
-.web-gate-platform > div { min-width: 0; }
-.web-gate-platform strong,
-.web-gate-platform small { display: block; }
-.web-gate-platform strong { color: #263145; font-size: 11px; }
-.web-gate-platform small { margin-top: 3px; color: #778294; font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
-.web-gate-platform p { margin: 6px 0 0; color: #98631b; font-size: 8px; line-height: 1.5; overflow-wrap: anywhere; }
-.web-gate-platform > b,
+.web-gate-download,
 .web-gate-download-pending {
-  grid-column: 1 / -1;
-  box-sizing: border-box;
-  width: 100%;
-  padding: 7px 9px;
-  border-radius: 9px;
-  background: #edf1f5;
-  color: #667286;
-  font-size: 8px;
-  text-align: center;
-  white-space: nowrap;
-}
-.web-gate-platform > a {
   display: inline-flex;
-  grid-column: 1 / -1;
   box-sizing: border-box;
-  width: 100%;
-  min-height: 36px;
+  min-height: 42px;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 0 11px;
-  border-radius: 10px;
+  padding: 9px 16px;
+  border-radius: 11px;
+  white-space: nowrap;
+}
+.web-gate-download {
   background: #172238;
   color: #fff;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 800;
   line-height: 1.3;
   text-align: center;
   text-decoration: none;
 }
-.web-gate-platform > a i { color: #ffb13a; font-size: 11px; font-style: normal; }
-.web-gate-platform > a:hover { background: #22304a; }
-.web-gate-platform > a:focus-visible,
+.web-gate-download i { color: #ffb13a; font-size: 11px; font-style: normal; }
+.web-gate-download:hover { background: #22304a; }
+.web-gate-download:focus-visible,
 .web-gate-actions a:focus-visible { outline: 3px solid rgba(0, 113, 227, .24); outline-offset: 2px; }
+.web-gate-download-pending { background: #edf1f5; color: #667286; font-size: 9px; }
 
 .web-gate-boundary {
   display: grid;
@@ -7730,9 +7690,9 @@ body:has(.commerce-os .drawer-backdrop) {
   .web-gate-key-line { white-space: normal; }
   .web-gate-key-line i { display: block; }
   .web-gate-copy,
-  .web-gate-install-heading,
-  .web-gate-platform-grid { grid-template-columns: minmax(0, 1fr); }
-  .web-gate-install-heading > small { text-align: left; }
+  .web-gate-install-heading { grid-template-columns: minmax(0, 1fr); }
+  .web-gate-download,
+  .web-gate-download-pending { width: 100%; }
   .web-gate-actions { flex-direction: column; }
   .web-gate-boundary { grid-template-columns: 1fr; }
 }
@@ -7745,8 +7705,6 @@ body:has(.commerce-os .drawer-backdrop) {
   .web-gate-card { padding: 27px 16px; }
   .web-gate-icon { width: 62px; height: 62px; margin-bottom: 20px; }
   .web-gate-copy article { padding: 13px; }
-  .web-gate-platform { grid-template-columns: 36px minmax(0, 1fr); }
-  .web-gate-platform > span:first-child { width: 36px; height: 36px; }
 }
 
 .mac-bridge-button {
