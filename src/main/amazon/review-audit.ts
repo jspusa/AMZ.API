@@ -1,11 +1,14 @@
+import type { ReportLibraryMarketplaceId } from "./report-library";
 import {
   CUSTOMER_FEEDBACK_SUPPORTED_CONFIGURED_MARKETPLACES,
-  type ReportLibraryMarketplaceId,
-} from "./report-library";
+  customerFeedbackMarketplaceSupported,
+} from "./customer-feedback-reads";
+
+export { customerFeedbackMarketplaceSupported } from
+  "./customer-feedback-reads";
 
 const MAX_TEXT = 5_000;
 const MAX_SKU = 40;
-const MAX_TOPICS = 10;
 const CUSTOMER_FEEDBACK_SOURCE =
   "https://developer-docs.amazon.com/sp-api/docs/get-feedback-insights-asin";
 
@@ -142,7 +145,7 @@ export type ReviewAuditSnapshot = {
 
 export type ReviewAuditFetchResult = {
   candidate: DedupedFbaReviewCandidate;
-  response: unknown | null;
+  evidence?: ReviewAuditFeedbackEvidence;
   /** HTTP 204 is a successful requested-ASIN query with no topic payload. */
   noContent?: boolean;
   requestId?: string | null;
@@ -150,15 +153,15 @@ export type ReviewAuditFetchResult = {
     code?: string | null;
     message?: string | null;
     requestId?: string | null;
+    retryAfter?: string | null;
   } | null;
 };
 
-export function customerFeedbackMarketplaceSupported(
-  marketplaceId: string,
-): marketplaceId is ReportLibraryMarketplaceId {
-  return (CUSTOMER_FEEDBACK_SUPPORTED_CONFIGURED_MARKETPLACES as readonly string[])
-    .includes(marketplaceId);
-}
+export type ReviewAuditFeedbackEvidence = {
+  dateRange: { startDate: string; endDate: string };
+  positiveTopics: ReviewTopicEvidence[];
+  negativeTopics: ReviewTopicEvidence[];
+};
 
 function requiredText(value: unknown, label: string, maximum = MAX_TEXT): string {
   if (
@@ -171,34 +174,6 @@ function requiredText(value: unknown, label: string, maximum = MAX_TEXT): string
     throw new TypeError(`${label} is invalid.`);
   }
   return value;
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${label} is invalid.`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function nonNegativeInteger(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new TypeError(`${label} is invalid.`);
-  }
-  return value;
-}
-
-function finiteNumber(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new TypeError(`${label} is invalid.`);
-  }
-  return value;
-}
-
-function canonicalTimestamp(value: unknown, label: string): string {
-  const text = requiredText(value, label, 64);
-  const parsed = new Date(text);
-  if (Number.isNaN(parsed.getTime())) throw new TypeError(`${label} is invalid.`);
-  return text;
 }
 
 function validateCandidate(candidate: FbaReviewCandidate): FbaReviewCandidate {
@@ -256,47 +231,6 @@ export function dedupeFbaReviewCandidates(
   );
 }
 
-function parseTopics(value: unknown, label: string): ReviewTopicEvidence[] {
-  if (!Array.isArray(value) || value.length > MAX_TOPICS) {
-    throw new TypeError(`${label} is invalid.`);
-  }
-  const topics = value.map((item, index) => {
-    const raw = record(item, `${label}[${index}]`);
-    const metrics = record(raw.asinMetrics, `${label}[${index}].asinMetrics`);
-    const occurrencePercentage = finiteNumber(
-      metrics.occurrencePercentage,
-      `${label}[${index}].occurrencePercentage`,
-    );
-    if (occurrencePercentage < 0 || occurrencePercentage > 100) {
-      throw new TypeError(`${label}[${index}].occurrencePercentage is invalid.`);
-    }
-    const snippets = raw.reviewSnippets === undefined ? [] : raw.reviewSnippets;
-    if (!Array.isArray(snippets) || snippets.length > 20) {
-      throw new TypeError(`${label}[${index}].reviewSnippets is invalid.`);
-    }
-    return {
-      topic: requiredText(raw.topic, `${label}[${index}].topic`, 300),
-      numberOfMentions: nonNegativeInteger(
-        metrics.numberOfMentions,
-        `${label}[${index}].numberOfMentions`,
-      ),
-      occurrencePercentage,
-      starRatingImpact: finiteNumber(
-        metrics.starRatingImpact,
-        `${label}[${index}].starRatingImpact`,
-      ),
-      reviewSnippets: snippets.map((snippet, snippetIndex) =>
-        requiredText(snippet, `${label}[${index}].reviewSnippets[${snippetIndex}]`, 1_000),
-      ),
-    };
-  });
-  const names = topics.map(({ topic }) => topic);
-  if (new Set(names).size !== names.length) {
-    throw new TypeError(`${label} contains duplicate topics.`);
-  }
-  return topics;
-}
-
 function incompleteRow(
   candidate: DedupedFbaReviewCandidate,
   reason: ReviewAuditIncompleteReason,
@@ -325,7 +259,7 @@ function incompleteRow(
  */
 export function normalizeReviewAuditResult(
   result: ReviewAuditFetchResult,
-  marketplaceId: ReportLibraryMarketplaceId,
+  _marketplaceId: ReportLibraryMarketplaceId,
 ): ReviewAuditRow {
   const candidate = dedupeFbaReviewCandidates(
     result.candidate.sellerSkus.map((sellerSku) => ({
@@ -337,8 +271,15 @@ export function normalizeReviewAuditResult(
   )[0];
   if (!candidate) throw new TypeError("Review audit candidate is empty.");
   if (result.error) {
+    const semanticCode = [
+      "CUSTOMER_FEEDBACK_ASIN_MISMATCH",
+      "CUSTOMER_FEEDBACK_MARKETPLACE_MISMATCH",
+      "CUSTOMER_FEEDBACK_RESPONSE_INVALID",
+    ].includes(result.error.code ?? "")
+      ? result.error.code as ReviewAuditIncompleteReason["code"]
+      : "CUSTOMER_FEEDBACK_QUERY_FAILED";
     return incompleteRow(candidate, {
-      code: "CUSTOMER_FEEDBACK_QUERY_FAILED",
+      code: semanticCode,
       message: result.error.message?.trim() ||
         "Amazon Customer Feedback 主題查詢失敗，未將缺列當成零評論。",
       requestId: result.error.requestId?.trim() || result.requestId?.trim() || null,
@@ -362,77 +303,38 @@ export function normalizeReviewAuditResult(
       fullReviewTextAvailable: false,
     };
   }
-  if (result.response === null) {
-    return incompleteRow(candidate, {
-      code: "CUSTOMER_FEEDBACK_NOT_RETURNED",
-      message: "Amazon 未回傳可驗證的評論主題回應，不推定為零評論。",
-      requestId: result.requestId?.trim() || null,
-    });
-  }
-  try {
-    const raw = record(result.response, "Customer Feedback response");
-    const asin = requiredText(raw.asin, "response.asin", 10);
-    if (asin !== candidate.asin) {
-      return incompleteRow(candidate, {
-        code: "CUSTOMER_FEEDBACK_ASIN_MISMATCH",
-        message: "Amazon Customer Feedback 回應的 ASIN 與要求不一致，已停止合併。",
-        requestId: result.requestId?.trim() || null,
-      });
-    }
-    const responseMarketplaceId = requiredText(raw.marketplaceId, "response.marketplaceId", 32);
-    if (responseMarketplaceId !== marketplaceId) {
-      return incompleteRow(candidate, {
-        code: "CUSTOMER_FEEDBACK_MARKETPLACE_MISMATCH",
-        message: "Amazon Customer Feedback 回應的站點與要求不一致，已停止合併。",
-        requestId: result.requestId?.trim() || null,
-      });
-    }
-    const rawRange = record(raw.dateRange, "response.dateRange");
-    const dateRange = {
-      startDate: canonicalTimestamp(rawRange.startDate, "response.dateRange.startDate"),
-      endDate: canonicalTimestamp(rawRange.endDate, "response.dateRange.endDate"),
-    };
-    if (new Date(dateRange.startDate).getTime() > new Date(dateRange.endDate).getTime()) {
-      throw new TypeError("response.dateRange is reversed.");
-    }
-    const rawTopics = record(raw.topics, "response.topics");
-    const positiveTopics = parseTopics(rawTopics.positiveTopics ?? [], "positiveTopics")
-      .sort((left, right) =>
-        right.starRatingImpact - left.starRatingImpact ||
-        right.numberOfMentions - left.numberOfMentions ||
-        left.topic.localeCompare(right.topic, "en"),
-      );
-    const negativeTopics = parseTopics(rawTopics.negativeTopics ?? [], "negativeTopics")
-      .sort((left, right) =>
-        left.starRatingImpact - right.starRatingImpact ||
-        right.numberOfMentions - left.numberOfMentions ||
-        left.topic.localeCompare(right.topic, "en"),
-      );
+  if (result.evidence) {
     return {
       sellerSkus: [...candidate.sellerSkus],
       asin: candidate.asin,
       title: candidate.title,
       relationshipRole: candidate.relationshipRole,
-      status: positiveTopics.length || negativeTopics.length ? "COMPLETE" : "NO_TOPICS",
+      status: result.evidence.positiveTopics.length ||
+          result.evidence.negativeTopics.length
+        ? "COMPLETE"
+        : "NO_TOPICS",
       nonParentAsinEvidence:
         "LISTINGS_RELATIONSHIPS_NON_PARENT_PLUS_CUSTOMER_FEEDBACK_ASIN",
-      dateRange,
-      positiveTopics,
-      negativeTopics,
+      dateRange: { ...result.evidence.dateRange },
+      positiveTopics: result.evidence.positiveTopics.map((topic) => ({
+        ...topic,
+        reviewSnippets: [...topic.reviewSnippets],
+      })),
+      negativeTopics: result.evidence.negativeTopics.map((topic) => ({
+        ...topic,
+        reviewSnippets: [...topic.reviewSnippets],
+      })),
       incompleteReason: null,
       averageProductRating: null,
       totalReviewCount: null,
       fullReviewTextAvailable: false,
     };
-  } catch (error) {
-    return incompleteRow(candidate, {
-      code: "CUSTOMER_FEEDBACK_RESPONSE_INVALID",
-      message: error instanceof Error
-        ? `Amazon Customer Feedback 回應無法驗證：${error.message}`
-        : "Amazon Customer Feedback 回應無法驗證。",
-      requestId: result.requestId?.trim() || null,
-    });
   }
+  return incompleteRow(candidate, {
+    code: "CUSTOMER_FEEDBACK_NOT_RETURNED",
+    message: "Amazon 未回傳可驗證的評論主題回應，不推定為零評論。",
+    requestId: result.requestId?.trim() || null,
+  });
 }
 
 function ranked(

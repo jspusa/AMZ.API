@@ -21,6 +21,8 @@ import {
   type ReviewAuditCandidateCoverage,
   type ReviewAuditRelationshipIncompleteRow,
 } from "./review-audit";
+import { customerFeedbackMarketplaceSupported } from
+  "./customer-feedback-reads";
 import {
   buildUnboundVariationSearchBatches,
   classifyUnboundVariationSearchBatch,
@@ -120,6 +122,44 @@ export type ReviewAuditCandidateSnapshot = {
   coverage: ReviewAuditCandidateCoverage;
   notice: string;
 };
+
+/** Deterministic non-parent candidates for the renderer-only demo workflow. */
+export function getDemoFbaReviewAuditCandidates(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  signal?: AbortSignal;
+}>): ReviewAuditCandidateSnapshot {
+  assertNotAborted(input.signal);
+  if (!customerFeedbackMarketplaceSupported(input.marketplaceId)) {
+    throw new SpApiError(
+      "Amazon Customer Feedback API 尚不支援此站點；未改用父變體或私有接口。",
+      { status: 422, code: "MARKETPLACE_UNSUPPORTED" },
+    );
+  }
+  const seeds = Array.from({ length: 6 }, (_, index) => ({
+    sellerSku: `DEMO-REVIEW-${index + 1}`,
+    asin: `B0DEMOREV${index + 1}`,
+    title: `展示用 FBA 評論主題商品 ${index + 1}`,
+    relationshipRole: index % 2 === 0 ? "child" as const : "standalone" as const,
+  }));
+  return {
+    mode: "demo",
+    marketplaceId: input.marketplaceId,
+    sourceCandidateCount: seeds.length,
+    candidates: dedupeFbaReviewCandidates(seeds),
+    relationshipIncompleteRows: [],
+    coverage: {
+      sourceFbaListings: seeds.length,
+      verifiedNonParentListings: seeds.length,
+      verifiedChildListings: seeds.filter(({ relationshipRole }) =>
+        relationshipRole === "child").length,
+      verifiedStandaloneListings: seeds.filter(({ relationshipRole }) =>
+        relationshipRole === "standalone").length,
+      excludedParentContainers: 0,
+      relationshipIncomplete: 0,
+    },
+    notice: "展示資料僅供非 parent FBA ASIN 版面與 Excel 測試，沒有呼叫 Amazon。",
+  };
+}
 
 function incompleteVariationGroupingRow<Row extends VariationGroupingSourceRow>(
   row: Row,

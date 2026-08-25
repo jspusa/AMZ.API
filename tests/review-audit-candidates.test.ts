@@ -6,6 +6,7 @@ import {
   createScriptedListingsReadAdapter,
 } from "../src/main/amazon/listings-reads";
 import {
+  getDemoFbaReviewAuditCandidates,
   verifyFbaReviewAuditSeeds,
   type FbaReviewAuditSeed,
 } from "../src/main/amazon/variation-catalog-reads";
@@ -68,6 +69,31 @@ function searchStep(
 }
 
 describe("review-audit non-parent relationship proof", () => {
+  it("keeps deterministic demo candidates inside the relationship owner", () => {
+    const snapshot = getDemoFbaReviewAuditCandidates({ marketplaceId: US });
+
+    expect(snapshot).toMatchObject({
+      mode: "demo",
+      marketplaceId: US,
+      sourceCandidateCount: 6,
+      coverage: {
+        sourceFbaListings: 6,
+        verifiedNonParentListings: 6,
+        verifiedChildListings: 3,
+        verifiedStandaloneListings: 3,
+        excludedParentContainers: 0,
+        relationshipIncomplete: 0,
+      },
+    });
+    expect(snapshot.candidates).toHaveLength(6);
+    expect(snapshot.candidates.every(({ relationshipRole }) =>
+      relationshipRole === "child" || relationshipRole === "standalone"
+    )).toBe(true);
+    expect(() => getDemoFbaReviewAuditCandidates({
+      marketplaceId: "A2EUQ1WTGCTBG2",
+    })).toThrow(/尚不支援此站點/u);
+  });
+
   it("includes verified child and standalone, excludes parent, and keeps missing/conflicting evidence incomplete", async () => {
     const seeds = [
       seed(1, { sellerSku: "CHILD" }),

@@ -18,6 +18,10 @@ S11 issue #80 已發布為 stacked Draft PR #121，分支為 `codex/s11-fba-inbo
 S12 issue #81 已發布為 stacked Draft PR #122，分支為 `codex/s12-aged-inventory-reads`，base 固定為 S11 final head `8ffa11a4023e86f21dce61872fe68c1fc2ec9c55`。main-only `AgedInventoryReads` 是固定 aged-inventory begin／status／read、regional schema、parser、逐列 evidence、demo／live 與 public snapshot 的唯一 semantic owner；`ReportsRuntime` 仍唯一擁有 durable lifecycle、opaque handles與文件下載。任何 estimated excess、storage cost 或 AIS coverage 不完整時，逐 SKU 已知值與 reported counts保留，但 marketplace與renderer tier totals均為null；workbook也不再把部分回傳值描述為全站合計。舊 `sp-api.ts` aged façade／parser／第二套 Reports transport與router gateway已刪除；`sp-api.ts`為9,288行，`api-router.ts`為8,934行。最高穩定public route的partial-total RED與parser／numeric adversarial RED均已先失敗再轉綠；本機`npm run check`通過147個測試檔／1,463項測試、typecheck與production build，`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。implementation／Windows-fix head `37fbe5f41362f86f079a8da675c712aef3aa6760`的Validate run `32808044696`／job `97681860954`與Windows x64 run `32808044661`／job `97681861137`均成功；Windows包含runner validation、unsigned package、ASAR addon boundary與packaged Bridge smoke，PR workflow依規則跳過artifact upload。#81與前置issues #73／#77仍是OPEN。本段只有local／fixture／scripted／demo／CI證據，沒有合併、部署、安裝、Notebook Key、live Amazon、Pages、真實裝置或Amazon mutation證據。
 
 S13 issue #82 已發布為 stacked Draft PR #123，分支為 `codex/s13-a-plus-content-reads`，base 固定為 S12 final head `f12629b056aa19da17258df152e707b5e8dada93`。main-only `AplusContentReads` 是 publish-record、content-document、document-relation 完整分頁、evidence precedence、demo／live 與 public snapshot 的唯一 semantic owner；production adapter 只接受三種封閉 GET plan，不讓 caller 傳 URL、method、host、任意 query 或 write capability。任一 exact publish record 或 `CONTENT_PUBLISHED` relation badge 都保持正向權威；不存在 positive 時，warning、malformed、conflict、incomplete relationship 或單純文件存在／approval 一律 fail closed，且 incomplete relationship seed 不會觸發未證明安全的 per-ASIN 呼叫。semantic audit 固定 25,000 relation-row／page budgets、256 MiB aggregate reservation、每頁 16 MiB與每 ASIN 100 documents公開上限；adapter固定12秒request／body deadline、redirect rejection、regional pacing、一次401 refresh、最多兩次bounded 429／500／503 retry、完整受控Retry-After與discarded-body cancellation。舊`sp-api.ts` A+ façade與router三callback gateway已刪除；`sp-api.ts`為8,866行，`api-router.ts`為8,809行。本機`npm run check`通過148個測試檔／1,483項測試、typecheck與production build；`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。implementation／review-fix head `288ad402f7bf8f01fac1e040cf41fb60571302a0`的Validate run `32813195392`／job `97696398035`與Windows x64 run `32813195216`／job `97696397540`均成功；Windows包含runner validation、unsigned package、ASAR addon boundary與packaged Bridge smoke，PR workflow依規則跳過artifact upload。#82與前置issues #74／#77仍是OPEN。本段只有local／fixture／scripted／demo／CI證據，沒有合併、部署、安裝、Notebook Key、live Amazon、Pages、真實裝置或Amazon mutation證據。
+
+S14 issue #83 目前在 `codex/s14-customer-feedback-reads`，base 固定為 S13 final head `9af562812b8968c4849ab2c4430746ea5640c3e3`。main-only `CustomerFeedbackReads` 是 supported marketplace、relationships-proven child／standalone identity、exact ASIN／marketplace、204、raw response schema、signed topic impact、demo／live 與 sanitized result 的唯一 semantic owner；`review-audit.ts` 只聚合已驗證 evidence，不再解析 raw Amazon JSON。production adapter 只接受固定 `getItemReviewTopics` GET plan，維持跨 job／region 的 App-session 全域 1 request/second、12 秒 request／body deadline、16 MiB body bound、一次 401 refresh、一次 bounded 500／503 retry與最高25分鐘canonical安全Retry-After；429不在transport內 replay，但其安全Retry-After會在queue turn釋放前成為全域quota fence。官方operation沒有cursor，固定一頁並限制最多十筆正向／十筆負向主題。Router保留既有report/candidate job、背景進度、403 fan-out與terminal snapshot，但每個job只保存一份immutable `SpExecutionContext`，已刪除第二套transport／normal pacing queue。舊`sp-api.ts` Customer Feedback façade與巨型facade test已移除；demo candidates搬回relationship owner。`sp-api.ts`目前8,559行，`api-router.ts`目前8,802行。本機`npm run check`通過149個測試檔／1,511項測試、typecheck與production build；`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。此時尚未建立S14 PR或取得CI證據；兩個既有user-owned untracked duplicate files保持未追蹤且未納入工作。這些只有local／fixture／scripted／demo證據，不能冒充合併、部署、安裝、Notebook Key、live Amazon、Pages、真實裝置或Amazon mutation。
+S14的route-level 429只允許依安全Retry-After延後同一candidate一次；第二次429會保留為incomplete並前進，不會讓active job無限自動重送。
+
 交接目的：讓新的 Codex 對話不需要重讀原始聊天，也能安全地繼續開發、除錯與發布。
 
 ---
@@ -494,6 +498,16 @@ Amazon App：
   - PR #48 已 squash merge，main 為 `c919cd9714095330c150879b0eb1bb474817e3dd`；main Validate `32568946207`、Pages `32568946205`、macOS `32568946198` 與 Windows CI `32568946195` 均成功。live Pages assets 為 `index-CFy0t-bz.js`／`index-CddE3IYJ.css`，SHA-256 分別為 `51a1d55ea4e96af41390f4f19fb319e54f42a901d5aa0b27de42a54e14b020a0`／`8b9335242a20aa2112b9d042ee63532d300381bbac2933838a672658e0c4725c`，已確認含新門檻與同 Excel 回傳入口。
   - main macOS artifact `9474859261` 名稱為 `AMZ.API-unsigned-c919cd9714095330c150879b0eb1bb474817e3dd`，GitHub metadata digest 為 `sha256:af9c17898c06b360b894ec91aba00e183c249b115881e93f9068d151e60ad686`。DMG 為 246,204,272 bytes、SHA-256 `3c3093e3c94d477b18baf491613f5eb15f3b2ac04cf45f392500cba299be169c`；universal ZIP 為 221,642,538 bytes、SHA-256 `930b2ad3c75acb8d961834b8e4d3b17c8acdcc93210dba17153f17e0c92afd29`。兩者與 manifest 一致，ZIP／DMG CRC、版本／build 0.1.21、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過。v0.1.21 已安裝並持續執行，v0.1.20 原封不動保留為 `/Applications/AMZ.API-v0.1.20-backup.app`；Keychain／本機 userData 未清除。
 
+### 2026-08-25 S14 Customer Feedback reads extraction（GitHub Draft PR pending）
+
+- Ownership：`CustomerFeedbackReads.read()`是supported marketplace、relationships-proven child／standalone identity、exact requested ASIN／marketplace、204、raw payload schema、topic evidence、demo／live分流與sanitized domain result的唯一semantic owner。`variation-catalog-reads.ts`繼續唯一負責relationships證明、parent排除與candidate／demo candidate建立；`review-audit.ts`只聚合typed evidence、coverage、排名與public snapshot，不再解析raw Amazon JSON。`ApiRouter`保留既有report／candidate job、background progress、403 fan-out、observer reconnect與30分鐘terminal snapshot，不再擁有Customer Feedback HTTP或normal-rate queue。renderer／preload／shared DTO、FBA-only範圍與所有write seam均未改動。
+- Rate-limit coordinator：production adapter對429零次transport replay；安全numeric或canonical HTTP-date Retry-After會在queue turn釋放前先成為跨job／region的global quota fence，parseable但非canonical、畸形或超過25分鐘的header不會建立長期timer。router只可依同一套sanitized bound延後同一candidate一次，第二次429直接保留為incomplete並前進；無header時固定等待2秒。credential／context invalidation仍不清App-session quota fence。
+- Identity／evidence contract：semantic boundary在任何adapter call前重新核對US／JP／UK／DE、十碼ASIN、非空且不失真的Seller SKU／title、`child | standalone`與固定`FBA_LISTING_REPORT_RELATIONSHIPS_NON_PARENT_ASIN` marker；parent、unsupported、未證明或畸形candidate不碰I/O。200 response必須exact match requested ASIN與marketplace，日期與topic schema完整；只採`asinMetrics`，parent／browse-node／child aggregate一律忽略。正負`starRatingImpact`必須是finite原值，缺值不補0、不取絕對值；每類最多十個topic、每topic最多二十段snippet，重複topic與畸形值fail closed。204是成功但沒有topic；403可由router沿既有規則fan-out sanitized incomplete，不冒充零評論。
+- Transport／bounds：production `CustomerFeedbackPageAdapter.read()`只接受marketplace、ASIN、expected mode與signal，固定official regional HTTPS endpoint、GET與`sortBy=STAR_RATING_IMPACT`，caller不能傳host、URL、method、query、body、token或write capability。官方`getItemReviewTopics`沒有cursor，故此operation的page bound固定一頁，positive／negative各最多十筆。單一long-lived adapter跨job與region共用App-session queue，前次實體request完整結束後至少1,050ms才開始下一次；credential／account／mode invalidation不清quota fence。request與body stream各有12秒deadline，deadline先封閉失敗結果再cancel reader，避免stream done競態；redirect rejected，200 body宣告或實際超過16 MiB即cancel並fail closed，JSON使用fatal UTF-8。401只refresh一次；500／503只retry一次並接受最高25分鐘的安全Retry-After；429不在transport replay。排隊中的caller可立即abort且不越過仍在執行的前一筆request；token waiter abort會立即釋放queue，未完成token Promise即使稍後完成也不能再dispatch。fetch與body read同樣受caller abort；Request ID、Retry-After與error只以canonical sanitized metadata離開owner。
+- RED／GREEN evidence：最高穩定public review-audit route先注入新的`customerFeedbackReads.read`並讓舊facade故意throw，舊router仍呼叫legacy symbol而形成單一預期RED；最小constructor seam接線後轉綠。後續module-missing、parent／identity guard、signed evidence、ASIN／marketplace mismatch、Retry-After、secret redaction、demo、fixed request、global cross-region pacing、401、503、oversize與architecture removal均逐項先RED再GREEN。最終focused suite覆蓋unsupported marketplace、204／403、missing impact、in-flight context invalidation、predecessor與token都未settle時的立即abort、body timeout cancel競態、mode-change-before-401-retry、429 zero transport replay、global Retry-After fence、非canonical日期拒絕與persistent 503 exact retry bound。
+- Local evidence：目前code tree執行`npm run check`通過149個測試檔／1,511項測試、typecheck與production build；`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。S14 branch為`codex/s14-customer-feedback-reads`，base固定S13 final head `9af562812b8968c4849ab2c4430746ea5640c3e3`；`sp-api.ts`為8,559行，`api-router.ts`為8,802行。兩個既有user-owned untracked duplicate files保持未追蹤且未納入工作。
+- External evidence：此時尚未建立Draft PR、commit或CI evidence；#83保持OPEN。本輪沒有合併、Pages部署、artifact安裝、Notebook Key、live Amazon、Touch ID／Windows Hello、Validation Preview、PATCH、readback或任何Amazon mutation。
+
 ### 2026-08-25 S13 A+ Content reads extraction（stacked Draft PR #123）
 
 - Ownership：`AplusContentReads.read()` 是 A+ publish records、content documents、document-ASIN relations、完整分頁、evidence merge、demo／live分流與public snapshot的唯一semantic owner。`ApiRouter`只捕捉一份不可變`SpExecutionContext`、啟動／輪詢背景job與投影既有DTO；standalone與Audit Suite共用同一個owner。production `AplusContentPageAdapter.read()`只接受`publish-records`、`content-documents`、`document-relations`三種discriminated plan；caller不能傳host、path、method、任意query、body、token refresh、retry policy或write capability。renderer／preload／shared contracts、FBA-only seed、existing routes與所有write seam均未改動。
@@ -625,34 +639,37 @@ Amazon App：
 18. `src/main/amazon/variation-family-reads.ts` — exact SKU／ASIN member、declared children 與 child pagination。
 19. `src/main/amazon/variation-relationship-evidence.ts` — 固定 relationship batch 與逐列 identity／role classification。
 20. `src/main/amazon/variation-catalog-reads.ts` — FBA grouping、unbound／review seed 的高階唯讀組合 seam。
-21. `src/main/amazon/reports-runtime.ts` — 六種固定 Reports intent、durable lifecycle、opaque handle 與文件唯一 owner。
-22. `src/main/amazon/reports-runtime-production.ts` — 固定 report create／status／document transport、bounded GET retry 與下載邊界。
-23. `src/main/amazon/business-pricing-evidence.ts` — 無 I/O 的 B2B offer／issue normalization 與 canonical equality pure leaf。
-24. `src/main/amazon/catalog-report-reads.ts` — All／Active Listings 文字的 FBA parser、Listings enrichment、export／identity 與 B2B 唯讀 audit。
-25. `src/main/amazon/fba-catalog-reports.ts` — 只協調 runtime、context、live read 與注入 demo source 的 catalog semantic coordinator。
-26. `src/main/amazon/revenue-report-windows.ts` — Brand shipment不可變站點時間窗、strict report日期／timestamp與S&T已接受日期 selection。
-27. `src/main/amazon/brand-sales-reads.ts` — canonical current-FBA seeds＋shipment document的pure Brand／Category snapshot與public allowlist projection。
-28. `src/main/amazon/fba-revenue-reports.ts` — Brand revenue雙 leg durable coordinator、expected context、reuse／retry／poll與generation-bound cache。
-29. `src/main/amazon/brand-sales-demo.ts` — 只使用注入 canonical demo listings的Brand demo source。
-30. `src/main/amazon/sales-and-traffic-reads.ts` — fixed DAY＋SKU document parser、strict identity／number／currency與public snapshot projection。
-31. `src/main/amazon/sales-and-traffic-reports.ts` — S&T begin／status／read semantic coordinator與accepted-lease context fence。
-32. `src/main/amazon/sales-and-traffic-demo.ts` — 只使用注入 canonical demo listings的S&T demo source。
-33. `src/main/amazon/fba-inbound-shipments.ts` — v0 shipment／items normalization、opaque continuation、duplicate與page／row budgets。
-34. `src/main/amazon/fba-inbound-modern.ts` — bounded modern plan／shipment fallback collector與partial coverage。
-35. `src/main/amazon/inbound-noncompliance.ts` — daily report strict parser、public issue filtering與demo document。
-36. `src/main/amazon/fba-inbound-reads.ts` — shipment／noncompliance兩條leg、400／422 fallback、同一execution context與ReportsRuntime composition。
-37. `src/main/amazon/fba-inbound-reads-production.ts` — 固定official GET endpoints、global pace、timeout、token refresh與bounded transient retry。
-38. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
-39. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
-40. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
-41. `src/main/amazon/sp-api.ts` — 尚未抽離的 SP-API facade、報表、demo dispatch、Listings writes 與 Orders。
-42. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-43. `src/preload/index.ts` — 窄化 Bridge。
-44. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-45. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-46. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-47. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-48. `tests/*.test.ts` — 已建立的安全與回歸契約。
+21. `src/main/amazon/customer-feedback-reads.ts` — Customer Feedback identity、raw schema、signed topic evidence、demo／live 與 semantic result 唯一 owner。
+22. `src/main/amazon/customer-feedback-reads-production.ts` — 固定 getItemReviewTopics GET、App-session global pace、abort、body bound 與 bounded retry adapter。
+23. `src/main/amazon/review-audit.ts` — 只聚合已驗證 Customer Feedback evidence、coverage、排名與 public snapshot。
+24. `src/main/amazon/reports-runtime.ts` — 六種固定 Reports intent、durable lifecycle、opaque handle 與文件唯一 owner。
+25. `src/main/amazon/reports-runtime-production.ts` — 固定 report create／status／document transport、bounded GET retry 與下載邊界。
+26. `src/main/amazon/business-pricing-evidence.ts` — 無 I/O 的 B2B offer／issue normalization 與 canonical equality pure leaf。
+27. `src/main/amazon/catalog-report-reads.ts` — All／Active Listings 文字的 FBA parser、Listings enrichment、export／identity 與 B2B 唯讀 audit。
+28. `src/main/amazon/fba-catalog-reports.ts` — 只協調 runtime、context、live read 與注入 demo source 的 catalog semantic coordinator。
+29. `src/main/amazon/revenue-report-windows.ts` — Brand shipment不可變站點時間窗、strict report日期／timestamp與S&T已接受日期 selection。
+30. `src/main/amazon/brand-sales-reads.ts` — canonical current-FBA seeds＋shipment document的pure Brand／Category snapshot與public allowlist projection。
+31. `src/main/amazon/fba-revenue-reports.ts` — Brand revenue雙 leg durable coordinator、expected context、reuse／retry／poll與generation-bound cache。
+32. `src/main/amazon/brand-sales-demo.ts` — 只使用注入 canonical demo listings的Brand demo source。
+33. `src/main/amazon/sales-and-traffic-reads.ts` — fixed DAY＋SKU document parser、strict identity／number／currency與public snapshot projection。
+34. `src/main/amazon/sales-and-traffic-reports.ts` — S&T begin／status／read semantic coordinator與accepted-lease context fence。
+35. `src/main/amazon/sales-and-traffic-demo.ts` — 只使用注入 canonical demo listings的S&T demo source。
+36. `src/main/amazon/fba-inbound-shipments.ts` — v0 shipment／items normalization、opaque continuation、duplicate與page／row budgets。
+37. `src/main/amazon/fba-inbound-modern.ts` — bounded modern plan／shipment fallback collector與partial coverage。
+38. `src/main/amazon/inbound-noncompliance.ts` — daily report strict parser、public issue filtering與demo document。
+39. `src/main/amazon/fba-inbound-reads.ts` — shipment／noncompliance兩條leg、400／422 fallback、同一execution context與ReportsRuntime composition。
+40. `src/main/amazon/fba-inbound-reads-production.ts` — 固定official GET endpoints、global pace、timeout、token refresh與bounded transient retry。
+41. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
+42. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
+43. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
+44. `src/main/amazon/sp-api.ts` — 尚未抽離的 SP-API facade、報表、demo dispatch、Listings writes 與 Orders。
+45. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+46. `src/preload/index.ts` — 窄化 Bridge。
+47. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+48. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+49. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+50. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+51. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

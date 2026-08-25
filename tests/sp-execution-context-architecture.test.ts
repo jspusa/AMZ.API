@@ -68,6 +68,11 @@ const EXTRACTED_APLUS_CONTENT_MODULES = [
   "src/main/amazon/a-plus-content-reads-production.ts",
 ] as const;
 
+const EXTRACTED_CUSTOMER_FEEDBACK_MODULES = [
+  "src/main/amazon/customer-feedback-reads.ts",
+  "src/main/amazon/customer-feedback-reads-production.ts",
+] as const;
+
 const PURE_CATALOG_REPORT_MODULES = [
   "src/main/amazon/business-pricing-evidence.ts",
   "src/main/amazon/catalog-report-reads.ts",
@@ -539,6 +544,13 @@ describe("SP execution-context architecture", () => {
     },
   );
 
+  it.each(EXTRACTED_CUSTOMER_FEEDBACK_MODULES)(
+    "%s stays independent from legacy runtime modules",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
   it.each(PURE_CATALOG_REPORT_MODULES)(
     "%s stays outside legacy, production, write, PTD, preload, and renderer wiring",
     (entryPath) => {
@@ -724,6 +736,53 @@ describe("SP execution-context architecture", () => {
     expect(source).toContain("new AplusContentReads({");
     expect(source).toContain("read: input.aplusAudit?.read");
     expect(source.match(/this\.aplusContentReads\.read\(/gu)).toHaveLength(2);
+  });
+
+  it("keeps Customer Feedback behind one semantic read and one closed adapter", () => {
+    const semanticPath = absolutePath(
+      "src/main/amazon/customer-feedback-reads.ts",
+    );
+    expect(exportedTypePropertyNames(
+      semanticPath,
+      "CustomerFeedbackReadsPort",
+    )).toEqual(["read"]);
+    expect(exportedTypePropertyNames(
+      semanticPath,
+      "CustomerFeedbackPageAdapter",
+    )).toEqual(["read"]);
+  });
+
+  it("removes superseded Customer Feedback transport from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const symbol of [
+      "CustomerFeedbackRequestInput",
+      "callCustomerFeedbackApi",
+      "executeCustomerFeedbackRequest",
+      "assertCustomerFeedbackMode",
+      "demoCustomerFeedbackResult",
+      "getCustomerFeedbackReviewTopics",
+    ]) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).toContain(
+      "createCustomerFeedbackReadProductionAdapter({",
+    );
+  });
+
+  it("routes Review Audit through the Customer Feedback semantic owner", () => {
+    const source = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    expect(source).toContain("new CustomerFeedbackReads({");
+    expect(source).toContain("expectedContext: job.context");
+    expect(source).not.toContain("getCustomerFeedbackReviewTopics");
+    expect(source).not.toContain("reviewAuditFeedbackQueue");
+    expect(source).not.toContain("reviewAuditFeedbackNextStartAt");
+    expect(source).not.toContain("runReviewAuditFeedbackRequest");
   });
 
   it("reuses one normalized Aged Inventory header index", () => {

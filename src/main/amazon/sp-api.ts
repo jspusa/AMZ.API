@@ -21,20 +21,13 @@ import {
   type FbaSubscriptionAuditHistorySnapshot,
 } from "./replenishment-audit";
 import {
-  dedupeFbaReviewCandidates,
-  type DedupedFbaReviewCandidate,
-  type ReviewAuditFetchResult,
-} from "./review-audit";
-import {
   abortableDelay as wait,
-  forwardAbort,
   throwIfAborted as assertNotAborted,
 } from "../abort-utils";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
   marketplaceByCode,
   marketplaceById,
-  type MarketplaceCode,
   type MarketplaceId,
   type MarketplaceRegion,
 } from "../../shared/marketplaces";
@@ -78,6 +71,8 @@ import { createReportsRuntimeProductionAdapter } from "./reports-runtime-product
 import type { ReportsAdapter } from "./reports-runtime";
 import { createAplusContentReadProductionAdapter } from
   "./a-plus-content-reads-production";
+import { createCustomerFeedbackReadProductionAdapter } from
+  "./customer-feedback-reads-production";
 import type { FbaCatalogReportsDemoSource } from "./fba-catalog-reports";
 import {
   exactListingEnvelopeIdentity,
@@ -1598,6 +1593,15 @@ export const reportsRuntimeProductionAdapter: ReportsAdapter =
 
 export const aplusContentPageAdapterProduction =
   createAplusContentReadProductionAdapter({
+    getAccessToken: requestAccessToken,
+    invalidateAccessToken: (region) => tokenCache.delete(region),
+    resolveMode: (marketplaceId) =>
+      shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+  });
+
+/** One long-lived adapter preserves the global Customer Feedback quota fence. */
+export const customerFeedbackPageAdapterProduction =
+  createCustomerFeedbackReadProductionAdapter({
     getAccessToken: requestAccessToken,
     invalidateAccessToken: (region) => tokenCache.delete(region),
     resolveMode: (marketplaceId) =>
@@ -7625,317 +7629,6 @@ export async function updateListingContent(
       "Amazon 已接受商品內容更新；重新查詢看到新內容且沒有 ERROR 才代表完成。",
   };
 }
-
-const CUSTOMER_FEEDBACK_MARKETPLACE_CODES = new Set<MarketplaceCode>([
-  "US",
-  "JP",
-  "UK",
-  "DE",
-]);
-const CUSTOMER_FEEDBACK_SUPPORTED_MARKETPLACES = new Set<MarketplaceId>(
-  MARKETPLACE_METADATA.filter((marketplace) =>
-    CUSTOMER_FEEDBACK_MARKETPLACE_CODES.has(marketplace.code),
-  ).map((marketplace) => marketplace.id),
-);
-
-function demoReviewAuditCandidates(
-  marketplaceId: MarketplaceId,
-): ReviewAuditCandidateSnapshot {
-  const seeds = Array.from({ length: 6 }, (_, index) => ({
-    sellerSku: `DEMO-REVIEW-${index + 1}`,
-    asin: `B0DEMOREV${index + 1}`,
-    title: `展示用 FBA 評論主題商品 ${index + 1}`,
-    relationshipRole: index % 2 === 0 ? "child" as const : "standalone" as const,
-  }));
-  return {
-    mode: "demo",
-    marketplaceId,
-    sourceCandidateCount: seeds.length,
-    candidates: dedupeFbaReviewCandidates(seeds),
-    relationshipIncompleteRows: [],
-    coverage: {
-      sourceFbaListings: seeds.length,
-      verifiedNonParentListings: seeds.length,
-      verifiedChildListings: seeds.filter(({ relationshipRole }) =>
-        relationshipRole === "child").length,
-      verifiedStandaloneListings: seeds.filter(({ relationshipRole }) =>
-        relationshipRole === "standalone").length,
-      excludedParentContainers: 0,
-      relationshipIncomplete: 0,
-    },
-    notice: "展示資料僅供非 parent FBA ASIN 版面與 Excel 測試，沒有呼叫 Amazon。",
-  };
-}
-
-export function getDemoFbaReviewAuditCandidates(input: {
-  marketplaceId: MarketplaceId;
-  signal?: AbortSignal;
-}): ReviewAuditCandidateSnapshot {
-  assertNotAborted(input.signal);
-  if (!CUSTOMER_FEEDBACK_SUPPORTED_MARKETPLACES.has(input.marketplaceId)) {
-    throw new SpApiError(
-      "Amazon Customer Feedback API 尚不支援此站點；未改用父變體或私有接口。",
-      { status: 422, code: "MARKETPLACE_UNSUPPORTED" },
-    );
-  }
-  return demoReviewAuditCandidates(input.marketplaceId);
-}
-
-type CustomerFeedbackRequestInput = {
-  marketplaceId: MarketplaceId;
-  asin: string;
-  forceTokenRefresh?: boolean;
-  signal?: AbortSignal;
-};
-
-const CUSTOMER_FEEDBACK_REQUEST_INTERVAL_MS = 1_050;
-
-async function callCustomerFeedbackApi(
-  input: CustomerFeedbackRequestInput,
-): Promise<Response> {
-  assertNotAborted(input.signal);
-  const marketplace = MARKETPLACES[input.marketplaceId];
-  const token = await requestAccessToken(
-    marketplace.region,
-    input.forceTokenRefresh ?? false,
-  );
-  assertNotAborted(input.signal);
-  const query = new URLSearchParams({
-    marketplaceId: input.marketplaceId,
-    sortBy: "STAR_RATING_IMPACT",
-  });
-  const controller = new AbortController();
-  const stopForwardingAbort = forwardAbort(controller, input.signal);
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  try {
-    return await fetch(
-      `${REGION_ENDPOINTS[marketplace.region]}/customerFeedback/2024-06-01/items/${encodeURIComponent(input.asin)}/reviews/topics?${query}`,
-      {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          "x-amz-access-token": token,
-          "x-amz-date": toAmzDate(),
-          "user-agent": spApiUserAgent(),
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    assertNotAborted(input.signal);
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError("Amazon Customer Feedback API 回應逾時。", {
-        status: 504,
-        code: "UPSTREAM_UNAVAILABLE",
-        operation: "getItemReviewTopics",
-      });
-    }
-    throw new SpApiError("目前無法連線至 Amazon Customer Feedback API。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-      operation: "getItemReviewTopics",
-    });
-  } finally {
-    clearTimeout(timeout);
-    stopForwardingAbort();
-  }
-}
-
-async function executeCustomerFeedbackRequest(
-  input: CustomerFeedbackRequestInput & { expectedMode: "live" | "demo" },
-): Promise<Response> {
-  assertNotAborted(input.signal);
-  assertCustomerFeedbackMode(input.marketplaceId, input.expectedMode);
-  let response = await callCustomerFeedbackApi(input);
-  assertNotAborted(input.signal);
-  if (response.status === 401) {
-    tokenCache.delete(MARKETPLACES[input.marketplaceId].region);
-    await wait(CUSTOMER_FEEDBACK_REQUEST_INTERVAL_MS, input.signal);
-    assertNotAborted(input.signal);
-    assertCustomerFeedbackMode(input.marketplaceId, input.expectedMode);
-    response = await callCustomerFeedbackApi({ ...input, forceTokenRefresh: true });
-    assertNotAborted(input.signal);
-  }
-  if ([500, 503].includes(response.status)) {
-    await wait(Math.max(
-      CUSTOMER_FEEDBACK_REQUEST_INTERVAL_MS,
-      retryDelayMs(response, 0),
-    ), input.signal);
-    assertNotAborted(input.signal);
-    assertCustomerFeedbackMode(input.marketplaceId, input.expectedMode);
-    response = await callCustomerFeedbackApi(input);
-    assertNotAborted(input.signal);
-  }
-  return response;
-}
-
-function assertCustomerFeedbackMode(
-  marketplaceId: MarketplaceId,
-  expectedMode: "live" | "demo",
-): "live" | "demo" {
-  const currentMode = shouldUseDemoMode(marketplaceId) ? "demo" : "live";
-  if (currentMode !== expectedMode) {
-    throw new SpApiError(
-      "App 展示／真實模式已改變，已停止舊評論健檢。",
-      { status: 409, code: "REPORT_MODE_CHANGED" },
-    );
-  }
-  return currentMode;
-}
-
-function demoCustomerFeedbackResult(input: {
-  marketplaceId: MarketplaceId;
-  candidate: DedupedFbaReviewCandidate;
-}): ReviewAuditFetchResult {
-  const ordinal = Number(input.candidate.asin.at(-1));
-  if (ordinal === 6) {
-    return { candidate: input.candidate, response: null, noContent: true };
-  }
-  return {
-    candidate: input.candidate,
-    response: {
-      asin: input.candidate.asin,
-      itemName: input.candidate.title,
-      marketplaceId: input.marketplaceId,
-      countryCode: REPORT_LIBRARY_MARKETPLACE_CODE[input.marketplaceId],
-      dateRange: {
-        startDate: "2026-02-01T00:00:00.000Z",
-        endDate: "2026-08-01T00:00:00.000Z",
-      },
-      topics: {
-        positiveTopics: [{
-          topic: ordinal % 2 === 0 ? "Taste" : "Quality",
-          asinMetrics: {
-            numberOfMentions: 8 + ordinal,
-            occurrencePercentage: 12 + ordinal,
-            starRatingImpact: 3 + ordinal / 10,
-          },
-          reviewSnippets: ["Demo positive topic evidence"],
-        }],
-        negativeTopics: [{
-          topic: ordinal % 2 === 0 ? "Smell" : "Size",
-          asinMetrics: {
-            numberOfMentions: 2 + ordinal,
-            occurrencePercentage: 3 + ordinal,
-            starRatingImpact: -(0.5 + ordinal / 10),
-          },
-          reviewSnippets: ["Demo negative topic evidence"],
-        }],
-      },
-    },
-  };
-}
-
-const REPORT_LIBRARY_CODE_OVERRIDES: Partial<Record<MarketplaceCode, string>> = {
-  UK: "GB",
-};
-const REPORT_LIBRARY_MARKETPLACE_CODE = Object.fromEntries(
-  MARKETPLACE_METADATA.map((marketplace) => [
-    marketplace.id,
-    REPORT_LIBRARY_CODE_OVERRIDES[marketplace.code] ?? marketplace.code,
-  ]),
-) as Record<MarketplaceId, string>;
-
-/** One public Customer Feedback request for one relationships-proven non-parent FBA ASIN. */
-export async function getCustomerFeedbackReviewTopics(input: {
-  marketplaceId: MarketplaceId;
-  candidate: DedupedFbaReviewCandidate;
-  expectedMode: "live" | "demo";
-  signal?: AbortSignal;
-}): Promise<ReviewAuditFetchResult> {
-  assertNotAborted(input.signal);
-  if (!CUSTOMER_FEEDBACK_SUPPORTED_MARKETPLACES.has(input.marketplaceId)) {
-    return {
-      candidate: input.candidate,
-      response: null,
-      error: {
-        code: "MARKETPLACE_UNSUPPORTED",
-        message: "Amazon Customer Feedback API 尚不支援此站點。",
-      },
-    };
-  }
-  const currentMode = assertCustomerFeedbackMode(
-    input.marketplaceId,
-    input.expectedMode,
-  );
-  if (currentMode === "demo") {
-    assertNotAborted(input.signal);
-    return demoCustomerFeedbackResult(input);
-  }
-  try {
-    const response = await executeCustomerFeedbackRequest({
-      marketplaceId: input.marketplaceId,
-      asin: input.candidate.asin,
-      expectedMode: input.expectedMode,
-      signal: input.signal,
-    });
-    assertNotAborted(input.signal);
-    const requestId = response.headers.get("x-amzn-requestid");
-    if (response.status === 204) {
-      return {
-        candidate: input.candidate,
-        response: null,
-        noContent: true,
-        requestId,
-      };
-    }
-    if (!response.ok) {
-      const message = response.status === 401 || response.status === 403
-        ? "Amazon 拒絕評論主題查詢；請確認 App 至少已取得 Selling Partner Insights 或 Brand Analytics 其一角色並重新授權。"
-        : response.status === 404
-          ? "Amazon 沒有找到此非 parent ASIN 的 Customer Feedback 資源；未改用父變體資料。"
-          : response.status === 429
-            ? "Amazon Customer Feedback API 正在限流；請稍後繼續這個快照。"
-            : "Amazon Customer Feedback API 未完成此非 parent ASIN 查詢。";
-      return {
-        candidate: input.candidate,
-        response: null,
-        requestId,
-        error: {
-          code: response.status === 401 || response.status === 403
-            ? "UNAUTHORIZED"
-            : response.status === 429
-              ? "RATE_LIMITED"
-              : "QUERY_FAILED",
-          message,
-          requestId,
-        },
-      };
-    }
-    const payload = await parseResponseJson<unknown>(response);
-    assertNotAborted(input.signal);
-    return payload === null
-      ? {
-          candidate: input.candidate,
-          response: null,
-          requestId,
-          error: {
-            code: "RESPONSE_INVALID",
-            message: "Amazon Customer Feedback API 回應不是可驗證的 JSON。",
-            requestId,
-          },
-        }
-      : { candidate: input.candidate, response: payload, requestId };
-  } catch (error) {
-    assertNotAborted(input.signal);
-    if (error instanceof SpApiError && error.code === "REPORT_MODE_CHANGED") {
-      throw error;
-    }
-    return {
-      candidate: input.candidate,
-      response: null,
-      error: {
-        code: error instanceof SpApiError ? error.code : "UPSTREAM_UNAVAILABLE",
-        message: error instanceof SpApiError
-          ? error.message
-          : "Amazon Customer Feedback API 查詢失敗。",
-        requestId: error instanceof SpApiError ? error.requestId : null,
-      },
-    };
-  }
-}
-
 
 function demoAllListingsExportData(
   marketplaceId: MarketplaceId,

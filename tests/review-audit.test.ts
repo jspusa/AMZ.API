@@ -9,51 +9,29 @@ import {
 
 const US = "ATVPDKIKX0DER";
 
-function response(input: {
-  asin: string;
+function evidence(input: {
   positiveImpact: number;
   negativeImpact: number;
-  marketplaceId?: string;
 }) {
   return {
-    asin: input.asin,
-    itemName: "Amazon response title",
-    marketplaceId: input.marketplaceId ?? US,
-    countryCode: "US",
     dateRange: {
       startDate: "2026-01-01T00:00:00.000Z",
       endDate: "2026-07-01T00:00:00.000Z",
     },
-    topics: {
-      positiveTopics: [{
-        topic: "Taste",
-        asinMetrics: {
-          numberOfMentions: 12,
-          occurrencePercentage: 20,
-          starRatingImpact: input.positiveImpact,
-        },
-        parentAsinMetrics: {
-          numberOfMentions: 99_999,
-          occurrencePercentage: 100,
-          starRatingImpact: 99,
-        },
-        reviewSnippets: ["Dogs love it"],
-      }],
-      negativeTopics: [{
-        topic: "Smell",
-        asinMetrics: {
-          numberOfMentions: 3,
-          occurrencePercentage: 5,
-          starRatingImpact: input.negativeImpact,
-        },
-        parentAsinMetrics: {
-          numberOfMentions: 88_888,
-          occurrencePercentage: 100,
-          starRatingImpact: -99,
-        },
-        reviewSnippets: ["Strong smell"],
-      }],
-    },
+    positiveTopics: [{
+      topic: "Taste",
+      numberOfMentions: 12,
+      occurrencePercentage: 20,
+      starRatingImpact: input.positiveImpact,
+      reviewSnippets: ["Dogs love it"],
+    }],
+    negativeTopics: [{
+      topic: "Smell",
+      numberOfMentions: 3,
+      occurrencePercentage: 5,
+      starRatingImpact: input.negativeImpact,
+      reviewSnippets: ["Strong smell"],
+    }],
   };
 }
 
@@ -99,11 +77,10 @@ describe("FBA non-parent ASIN review topic audit", () => {
     ])).toThrow(/cannot merge child and standalone/u);
   });
 
-  it("uses only asinMetrics and ignores parent variation metrics", () => {
+  it("aggregates only validated exact-ASIN evidence with signed impacts", () => {
     const row = normalizeReviewAuditResult({
       candidate: candidate("B000000001"),
-      response: response({
-        asin: "B000000001",
+      evidence: evidence({
         positiveImpact: 4.2,
         negativeImpact: -2.1,
       }),
@@ -117,14 +94,11 @@ describe("FBA non-parent ASIN review topic audit", () => {
       totalReviewCount: null,
       fullReviewTextAvailable: false,
     });
-    expect(JSON.stringify(row)).not.toContain("99999");
-    expect(JSON.stringify(row)).not.toContain("88888");
   });
 
   it("treats HTTP 204 as successful no-topic data, not a query failure", () => {
     const row = normalizeReviewAuditResult({
       candidate: candidate("B000000001"),
-      response: null,
       noContent: true,
       requestId: "request-204",
     }, US);
@@ -137,27 +111,39 @@ describe("FBA non-parent ASIN review topic audit", () => {
     });
   });
 
-  it("fails closed on ASIN, marketplace, malformed, and query failures", () => {
+  it("preserves semantic validation failures and fails closed on missing evidence", () => {
     const cases = [
       normalizeReviewAuditResult({
         candidate: candidate("B000000001"),
-        response: response({ asin: "B000000002", positiveImpact: 4, negativeImpact: -1 }),
+        error: {
+          code: "CUSTOMER_FEEDBACK_ASIN_MISMATCH",
+          message: "ASIN mismatch",
+        },
       }, US),
       normalizeReviewAuditResult({
         candidate: candidate("B000000001"),
-        response: response({ asin: "B000000001", positiveImpact: 4, negativeImpact: -1, marketplaceId: "A1VC38T7YXB528" }),
+        error: {
+          code: "CUSTOMER_FEEDBACK_MARKETPLACE_MISMATCH",
+          message: "Marketplace mismatch",
+        },
       }, US),
       normalizeReviewAuditResult({
         candidate: candidate("B000000001"),
-        response: { asin: "B000000001", marketplaceId: US, topics: {} },
+        error: {
+          code: "CUSTOMER_FEEDBACK_RESPONSE_INVALID",
+          message: "Malformed response",
+        },
       }, US),
       normalizeReviewAuditResult({
         candidate: candidate("B000000001"),
-        response: null,
         error: { message: "Access denied", requestId: "request-403" },
+      }, US),
+      normalizeReviewAuditResult({
+        candidate: candidate("B000000001"),
       }, US),
     ];
     expect(cases.map((row) => row.status)).toEqual([
+      "INCOMPLETE",
       "INCOMPLETE",
       "INCOMPLETE",
       "INCOMPLETE",
@@ -168,6 +154,7 @@ describe("FBA non-parent ASIN review topic audit", () => {
       "CUSTOMER_FEEDBACK_MARKETPLACE_MISMATCH",
       "CUSTOMER_FEEDBACK_RESPONSE_INVALID",
       "CUSTOMER_FEEDBACK_QUERY_FAILED",
+      "CUSTOMER_FEEDBACK_NOT_RETURNED",
     ]);
   });
 
@@ -191,7 +178,7 @@ describe("FBA non-parent ASIN review topic audit", () => {
           index === 0 ? [`SKU-${asin.slice(-2)}`, "SKU-DUPLICATE"] : undefined,
           index % 2 === 0 ? "child" : "standalone",
         ),
-        response: response({ asin, positiveImpact, negativeImpact }),
+        evidence: evidence({ positiveImpact, negativeImpact }),
       })),
     });
     expect(snapshot.topFivePositive.map(({ asin }) => asin)).toEqual([

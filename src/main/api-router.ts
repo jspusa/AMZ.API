@@ -36,7 +36,6 @@ import {
 import {
   REVIEW_AUDIT_CAPABILITY,
   buildReviewAuditSnapshot,
-  customerFeedbackMarketplaceSupported,
   type DedupedFbaReviewCandidate,
   type ReviewAuditCandidateCoverage,
   type ReviewAuditFetchResult,
@@ -79,11 +78,10 @@ import {
   getListingPrice,
   getBusinessPricing,
   aplusContentPageAdapterProduction,
+  customerFeedbackPageAdapterProduction,
   getRestockPlan,
   getSalesTrend,
   getFbaSubscriptionAudit,
-  getCustomerFeedbackReviewTopics,
-  getDemoFbaReviewAuditCandidates,
   getDemoUnboundVariationAuditData,
   getSubscribeAndSaveOffer,
   getVariationFamilyPlanner,
@@ -171,12 +169,18 @@ import type {
   FbaCatalogIdentitySnapshot as FbaListingIdentitySnapshot,
 } from "./amazon/catalog-report-reads";
 import {
+  getDemoFbaReviewAuditCandidates,
   readUnboundVariationAudit,
   verifyFbaReviewAuditSeeds,
   type FbaReviewAuditSeed,
   type ReviewAuditCandidateSnapshot,
   type UnboundVariationAuditSnapshot,
 } from "./amazon/variation-catalog-reads";
+import {
+  CustomerFeedbackReads,
+  customerFeedbackMarketplaceSupported,
+  type CustomerFeedbackReadsPort,
+} from "./amazon/customer-feedback-reads";
 import {
   isDateOnly,
   marketplaceCalendar,
@@ -282,7 +286,6 @@ import {
 import {
   abortableDelay as waitMilliseconds,
   throwIfAborted as assertBackgroundActive,
-  waitForPromiseWithSignal,
 } from "./abort-utils";
 
 type WriteApproval = (reason: string) => Promise<void>;
@@ -350,7 +353,7 @@ type CommandTask = {
 
 type ReviewAuditJob = {
   marketplaceId: MarketplaceId;
-  accountScope: string;
+  context: SpExecutionContext;
   expiresAt: number;
   mode: "live" | "demo";
   listingReportId: string;
@@ -362,7 +365,8 @@ type ReviewAuditJob = {
   relationshipIncompleteRows: ReviewAuditRelationshipIncompleteRow[];
   results: ReviewAuditFetchResult[];
   nextCandidateIndex: number;
-  nextQueryAt: number;
+  retryNotBefore: number;
+  rateLimitRetryCount: number;
   snapshot: ReviewAuditSnapshot | null;
   signal: AbortSignal;
   abort(): void;
@@ -1029,7 +1033,9 @@ function contentAuditLegacyRecoveredFieldWasEdited(input: {
     );
 }
 const REVIEW_AUDIT_JOB_TTL_MS = 30 * 60 * 1_000;
-const REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS = 1_050;
+const REVIEW_AUDIT_RATE_LIMIT_RETRY_LIMIT = 1;
+const REVIEW_AUDIT_DEFAULT_RATE_LIMIT_DELAY_MS = 2_000;
+const REVIEW_AUDIT_MAX_RATE_LIMIT_DELAY_MS = 25 * 60 * 1_000;
 const INBOUND_SHIPMENT_ACTIVE_TTL_MS = 60 * 60 * 1_000;
 const INBOUND_SHIPMENT_TERMINAL_TTL_MS = 30 * 60 * 1_000;
 const INBOUND_SHIPMENT_UNAVAILABLE_RETRY_TTL_MS = 35 * 60 * 1_000;
@@ -1037,6 +1043,35 @@ const ADVERTISING_STRATEGY_REPORT_WAIT_MS = 3 * 60 * 60 * 1_000 + 5 * 60 * 1_000
 const ADVERTISING_STRATEGY_ACTIVE_TTL_MS = 3 * 60 * 60 * 1_000 + 30 * 60 * 1_000;
 const ADVERTISING_STRATEGY_TERMINAL_TTL_MS = 30 * 60 * 1_000;
 const ADVERTISING_STRATEGY_RETRY_TTL_MS = 35 * 60 * 1_000;
+
+function reviewAuditRateLimitDelay(
+  retryAfter: string | null | undefined,
+  now = Date.now(),
+): number | null {
+  if (!retryAfter) return REVIEW_AUDIT_DEFAULT_RATE_LIMIT_DELAY_MS;
+  const trimmed = retryAfter.trim();
+  let milliseconds: number;
+  if (/^\d+(?:\.\d+)?$/u.test(trimmed)) {
+    milliseconds = Math.ceil(Number(trimmed) * 1_000);
+  } else {
+    const retryAt = Date.parse(trimmed);
+    if (
+      !Number.isFinite(retryAt) ||
+      new Date(retryAt).toUTCString() !== trimmed
+    ) {
+      return null;
+    }
+    milliseconds = Math.max(0, retryAt - now);
+  }
+  if (
+    !Number.isSafeInteger(milliseconds) ||
+    milliseconds < 0 ||
+    milliseconds > REVIEW_AUDIT_MAX_RATE_LIMIT_DELAY_MS
+  ) {
+    return null;
+  }
+  return Math.max(REVIEW_AUDIT_DEFAULT_RATE_LIMIT_DELAY_MS, milliseconds);
+}
 
 function advertisingStrategyPollDelay(attempt: number): number {
   if (attempt < 30) return 2_000;
@@ -1678,6 +1713,7 @@ export class ApiRouter {
     BusinessPricingActiveListingsReportGateway;
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
   private readonly reviewAuditCandidates: ReviewAuditCandidateSource;
+  private readonly customerFeedbackReads: CustomerFeedbackReadsPort;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
   private readonly fbaInboundReads: InboundReadsPort;
   private readonly reportLifecycle: DurableReportLifecycle;
@@ -1726,8 +1762,6 @@ export class ApiRouter {
     string,
     ReturnType<typeof setTimeout>
   >();
-  private reviewAuditFeedbackQueue: Promise<void> = Promise.resolve();
-  private reviewAuditFeedbackNextStartAt = 0;
   private readonly inboundShipmentJobs = new Map<string, InboundShipmentJob>();
   private readonly inboundShipmentSelections = new Map<string, string>();
   private readonly advertisingStrategyJobs = new Map<string, AdvertisingStrategyJob>();
@@ -1746,6 +1780,7 @@ export class ApiRouter {
     salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
     reviewAuditCandidates?: ReviewAuditCandidateSource;
+    customerFeedbackReads?: CustomerFeedbackReadsPort;
     advertisingStrategyWait?: typeof waitMilliseconds;
     fbaInboundReads?: Partial<InboundReadsPort>;
     inboundNoncomplianceDemoReports?: Partial<
@@ -1906,6 +1941,11 @@ export class ApiRouter {
             seeds: request.seeds,
             signal: request.signal,
           }));
+    this.customerFeedbackReads = input.customerFeedbackReads ??
+      new CustomerFeedbackReads({
+        context: this.spExecutionContext,
+        live: customerFeedbackPageAdapterProduction,
+      });
     this.aplusContentReads = input.aplusContentReads ?? new AplusContentReads({
       context: this.spExecutionContext,
       live: aplusContentPageAdapterProduction,
@@ -1979,9 +2019,9 @@ export class ApiRouter {
     this.advertisingStrategySelections.clear();
     this.auditSuite.clear();
     this.advertising?.invalidate();
-    // Do not reset the Customer Feedback queue or its next slot. A credential
-    // change must not let a new account overtake an already-started request or
-    // bypass the App-session-wide one-request-per-second boundary.
+    // The long-lived Customer Feedback production adapter intentionally keeps
+    // its pacing slot. A context change must not bypass the App-session-wide
+    // one-request-per-second boundary.
   }
 
   invalidateSpExecutionContext(reason: SpExecutionContextInvalidationReason): void {
@@ -5123,63 +5163,12 @@ export class ApiRouter {
         return;
       }
       const paceDelay = job.candidates
-        ? Math.max(25, job.nextQueryAt - Date.now())
+        ? Math.max(25, job.retryNotBefore - Date.now())
         : 1_150;
       this.scheduleReviewAuditRunner(jobId, paceDelay);
     } catch {
       // A later explicit status read can surface the same fail-closed error.
       // Do not auto-restart reports or retry a failed Customer Feedback call.
-    }
-  }
-
-  private async runReviewAuditFeedbackRequest(input: {
-    mode: ReviewAuditJob["mode"];
-    marketplaceId: MarketplaceId;
-    candidate: DedupedFbaReviewCandidate;
-    signal?: AbortSignal;
-  }): Promise<ReviewAuditFetchResult> {
-    assertBackgroundActive(input.signal);
-    if (input.mode === "demo") {
-      return getCustomerFeedbackReviewTopics({
-        marketplaceId: input.marketplaceId,
-        candidate: input.candidate,
-        expectedMode: input.mode,
-        signal: input.signal,
-      });
-    }
-
-    let releaseTurn: () => void = () => {};
-    const turn = new Promise<void>((resolve) => {
-      releaseTurn = resolve;
-    });
-    const previous = this.reviewAuditFeedbackQueue;
-    this.reviewAuditFeedbackQueue = previous
-      .catch(() => undefined)
-      .then(() => turn);
-    let dispatched = false;
-    try {
-      await waitForPromiseWithSignal(previous.catch(() => undefined), input.signal);
-      assertBackgroundActive(input.signal);
-      await waitMilliseconds(
-        this.reviewAuditFeedbackNextStartAt - Date.now(),
-        input.signal,
-      );
-      assertBackgroundActive(input.signal);
-      dispatched = true;
-      return await getCustomerFeedbackReviewTopics({
-        marketplaceId: input.marketplaceId,
-        candidate: input.candidate,
-        expectedMode: input.mode,
-        signal: input.signal,
-      });
-    } finally {
-      // Measure from completion rather than initial dispatch. This remains safe
-      // when the gateway performs its single 401 token-refresh retry.
-      if (dispatched) {
-        this.reviewAuditFeedbackNextStartAt =
-          Date.now() + REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS;
-      }
-      releaseTurn();
     }
   }
 
@@ -5243,10 +5232,16 @@ export class ApiRouter {
       );
     }
     try {
-      const [accountScope, status] = await Promise.all([
-        this.vault.getAccountScope(MARKETPLACES[marketplaceId].region),
-        this.startSharedAllListingsReport(marketplaceId, true),
-      ]);
+      const context = await this.spExecutionContext.capture(marketplaceId);
+      const status = await this.startSharedAllListingsReport(marketplaceId, true);
+      await this.spExecutionContext.assertCurrent(context);
+      if (status.mode !== context.mode) {
+        return invalid(
+          "FBA 商品清單與評論健檢執行環境不一致，已停止。",
+          409,
+          "REPORT_MODE_CHANGED",
+        );
+      }
       if (
         status.status !== "IN_QUEUE" &&
         status.status !== "IN_PROGRESS" &&
@@ -5258,7 +5253,7 @@ export class ApiRouter {
       const controller = new AbortController();
       const job: ReviewAuditJob = {
         marketplaceId,
-        accountScope,
+        context,
         expiresAt: Date.now() + REVIEW_AUDIT_JOB_TTL_MS,
         mode: status.mode,
         listingReportId: status.reportId,
@@ -5270,7 +5265,8 @@ export class ApiRouter {
         relationshipIncompleteRows: [],
         results: [],
         nextCandidateIndex: 0,
-        nextQueryAt: 0,
+        retryNotBefore: 0,
+        rateLimitRetryCount: 0,
         snapshot: null,
         signal: controller.signal,
         abort: () => controller.abort(),
@@ -5314,18 +5310,13 @@ export class ApiRouter {
     const marketplaceId = job.marketplaceId;
     const initialModeError = this.reviewAuditModeFence(jobId, job);
     if (initialModeError) return initialModeError;
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
-    assertBackgroundActive(signal);
-    if (accountScope !== job.accountScope) {
+    try {
+      await this.spExecutionContext.assertCurrent(job.context);
+    } catch (error) {
       this.deleteReviewAuditJob(jobId);
-      return invalid(
-        "Amazon 帳號範圍已改變，舊評論健檢不可繼續。",
-        409,
-        "ACCOUNT_SCOPE_CHANGED",
-      );
+      return apiError(error, "評論健檢執行環境已改變，請重新開始。");
     }
+    assertBackgroundActive(signal);
     const accountModeError = this.reviewAuditModeFence(jobId, job);
     if (accountModeError) return accountModeError;
     if (job.snapshot) {
@@ -5387,7 +5378,7 @@ export class ApiRouter {
       if (
         job.mode === "live" &&
         job.nextCandidateIndex < candidates.length &&
-        Date.now() < job.nextQueryAt
+        Date.now() < job.retryNotBefore
       ) {
         return this.reviewAuditJobReply(jobId, job);
       }
@@ -5399,27 +5390,34 @@ export class ApiRouter {
         if (!candidate) break;
         const queryModeError = this.reviewAuditModeFence(jobId, job);
         if (queryModeError) return queryModeError;
-        const result = await this.runReviewAuditFeedbackRequest({
-          mode: job.mode,
+        const result = await this.customerFeedbackReads.read({
           marketplaceId,
           candidate,
+          expectedContext: job.context,
           signal,
         });
         assertBackgroundActive(signal);
         const resultModeError = this.reviewAuditModeFence(jobId, job);
         if (resultModeError) return resultModeError;
         if (result.error?.code === "RATE_LIMITED") {
-          job.nextQueryAt = Date.now() + 2_000;
-          return this.reviewAuditJobReply(jobId, job);
+          const delay = reviewAuditRateLimitDelay(result.error.retryAfter);
+          if (
+            delay !== null &&
+            job.rateLimitRetryCount < REVIEW_AUDIT_RATE_LIMIT_RETRY_LIMIT
+          ) {
+            job.rateLimitRetryCount += 1;
+            job.retryNotBefore = Date.now() + delay;
+            return this.reviewAuditJobReply(jobId, job);
+          }
         }
         job.results.push(result);
         job.nextCandidateIndex += 1;
+        job.rateLimitRetryCount = 0;
         if (result.error?.code === "UNAUTHORIZED") {
           while (job.nextCandidateIndex < candidates.length) {
             const remaining = candidates[job.nextCandidateIndex]!;
             job.results.push({
               candidate: remaining,
-              response: null,
               error: {
                 code: "UNAUTHORIZED",
                 message: result.error.message,
@@ -5431,7 +5429,7 @@ export class ApiRouter {
           break;
         }
       }
-      job.nextQueryAt = Date.now() + REVIEW_AUDIT_LIVE_REQUEST_INTERVAL_MS;
+      job.retryNotBefore = 0;
       if (job.nextCandidateIndex >= candidates.length) {
         job.snapshot = buildReviewAuditSnapshot({
           mode: job.mode,
@@ -5472,16 +5470,11 @@ export class ApiRouter {
     }
     const modeError = this.reviewAuditModeFence(exportId, job);
     if (modeError) return modeError;
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[marketplaceId].region,
-    );
-    if (accountScope !== job.accountScope) {
+    try {
+      await this.spExecutionContext.assertCurrent(job.context);
+    } catch (error) {
       this.deleteReviewAuditJob(exportId);
-      return invalid(
-        "Amazon 帳號範圍已改變，舊評論健檢不可匯出。",
-        409,
-        "ACCOUNT_SCOPE_CHANGED",
-      );
+      return apiError(error, "評論健檢執行環境已改變，舊快照不可匯出。");
     }
     const accountModeError = this.reviewAuditModeFence(exportId, job);
     if (accountModeError) return accountModeError;
