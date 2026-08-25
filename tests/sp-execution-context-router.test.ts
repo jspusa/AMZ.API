@@ -126,7 +126,11 @@ describe("ApiRouter SP execution context", () => {
         requestId: crypto.randomUUID(),
         method: "GET",
         path: "/api/sp-api/audit-suite",
-        query: { marketplaceId: US, ...identity },
+        query: {
+          marketplaceId: US,
+          runId: identity.runId,
+          contextId: identity.contextId,
+        },
         headers: {},
       });
 

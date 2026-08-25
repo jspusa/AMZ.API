@@ -3,13 +3,34 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import { SpApiError } from "../src/main/amazon/sp-api-error";
+import { AdvertisingApiError } from "../src/main/amazon/ads-api";
+import { AdvertisingCoverageInputError } from
+  "../src/main/amazon/advertising-coverage";
+import { AplusAuditJobCoordinatorError } from
+  "../src/main/amazon/a-plus-audit-job";
+import { AuditSuiteCoordinatorError } from
+  "../src/main/amazon/audit-suite-coordinator";
+import { FbaRevenueReportsError } from
+  "../src/main/amazon/fba-revenue-reports";
+import { ReplenishmentAuditError } from
+  "../src/main/amazon/replenishment-audit";
+import {
+  SpApiError,
+  SpApiPreCommitError,
+} from "../src/main/amazon/sp-api-error";
+import { StandaloneAuditJobCoordinatorError } from
+  "../src/main/amazon/standalone-audit-job";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER" as const;
 const previousMode = process.env.SP_API_MODE;
+const JSON_HEADERS = {
+  "cache-control": "private, no-store, max-age=0",
+  "content-type": "application/json; charset=utf-8",
+  "x-content-type-options": "nosniff",
+};
 type RouterInput = ConstructorParameters<typeof ApiRouter>[0];
 type DemoReportsAdapter = NonNullable<RouterInput["demoReportsAdapter"]>;
 
@@ -51,6 +72,25 @@ async function routerThatThrows(error: SpApiError): Promise<ApiRouter> {
     } as unknown as CredentialVault,
     approveWrite: async () => undefined,
     demoReportsAdapter,
+  });
+}
+
+async function publicHandleError(error: unknown): Promise<ApiResponse> {
+  const router = new ApiRouter({
+    store: {} as LocalStore,
+    vault: {
+      getAccountScope: async () => {
+        throw error;
+      },
+    } as unknown as CredentialVault,
+    approveWrite: async () => undefined,
+  } as ConstructorParameters<typeof ApiRouter>[0]);
+  return router.handle({
+    requestId: "router-error-contract-001",
+    method: "GET",
+    path: "/api/product-master",
+    query: { marketplaceId: US },
+    headers: {},
   });
 }
 
@@ -143,5 +183,250 @@ describe("public SP-API error mapping", () => {
     expect(serialized).not.toMatch(
       /Bearer|Atza|Atzr|access.?token|refresh.?token|client.?secret|accountScope|reportId|documentId|https?:|hostile-text|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
     );
+  });
+
+  it("preserves the safe pre-commit status while keeping commit state private", async () => {
+    const error = new SpApiPreCommitError(new SpApiError(
+      "Amazon Validation Preview 暫時無法使用。",
+      {
+        status: 503,
+        code: "UPSTREAM_UNAVAILABLE",
+        requestId: "precommit-request.safe:001",
+        retryAfter: "4",
+        operation: "patchListingsItemPreview",
+        upstreamCode: "ServiceUnavailable",
+      },
+    ));
+
+    const response = await publicHandleError(error);
+
+    expect(response).toEqual({
+      status: 503,
+      headers: { ...JSON_HEADERS, "retry-after": "4" },
+      body: {
+        kind: "json",
+        value: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message:
+            "Amazon Validation Preview 暫時無法使用。 正式 commit PATCH 尚未送出；可重新預檢後再試。",
+          requestId: "precommit-request.safe:001",
+          issues: [],
+          operation: "patchListingsItemPreview",
+          upstreamCode: "ServiceUnavailable",
+        },
+      },
+    });
+    expect(JSON.stringify(response)).not.toContain("commitPatchSent");
+  });
+
+  it("preserves safe coordinator, Ads and unknown error envelopes", async () => {
+    const cases = [
+      {
+        error: new FbaRevenueReportsError(
+          "報表暫時受到 Amazon 速率限制。",
+          429,
+          "REPORT_RATE_LIMITED",
+          "5",
+        ),
+        expected: {
+          status: 429,
+          headers: { ...JSON_HEADERS, "retry-after": "5" },
+          body: {
+            kind: "json" as const,
+            value: {
+              code: "REPORT_RATE_LIMITED",
+              message: "報表暫時受到 Amazon 速率限制。",
+            },
+          },
+        },
+      },
+      ...[
+        new StandaloneAuditJobCoordinatorError("工作 context 已改變。", {
+          status: 409,
+          code: "JOB_MISMATCH",
+        }),
+        new AplusAuditJobCoordinatorError("A+ 工作 context 已改變。", {
+          status: 409,
+          code: "JOB_MISMATCH",
+        }),
+        new AuditSuiteCoordinatorError("Audit Suite context 已改變。", {
+          status: 409,
+          code: "JOB_MISMATCH",
+        }),
+      ].map((error) => ({
+        error,
+        expected: {
+          status: 409,
+          headers: JSON_HEADERS,
+          body: {
+            kind: "json" as const,
+            value: { code: "JOB_MISMATCH", message: error.message },
+          },
+        },
+      })),
+      {
+        error: new AdvertisingApiError("Amazon Ads 暫時無法使用。", {
+          status: 503,
+          code: "ADS_UPSTREAM_FAILED",
+          requestId: "ads-request.safe:001",
+        }),
+        expected: {
+          status: 503,
+          headers: JSON_HEADERS,
+          body: {
+            kind: "json" as const,
+            value: {
+              code: "ADS_UPSTREAM_FAILED",
+              message: "Amazon Ads 暫時無法使用。",
+              requestId: "ads-request.safe:001",
+            },
+          },
+        },
+      },
+      {
+        error: new ReplenishmentAuditError(
+          "REQUEST_INVALID",
+          "補貨請求無效。",
+        ),
+        expected: {
+          status: 422,
+          headers: JSON_HEADERS,
+          body: {
+            kind: "json" as const,
+            value: {
+              code: "REPLENISHMENT_REQUEST_INVALID",
+              message: "補貨請求無效。",
+            },
+          },
+        },
+      },
+      {
+        error: new AdvertisingCoverageInputError("廣告覆蓋證據不完整。"),
+        expected: {
+          status: 422,
+          headers: JSON_HEADERS,
+          body: {
+            kind: "json" as const,
+            value: {
+              code: "ADS_LISTING_COVERAGE_INCOMPLETE",
+              message: "廣告覆蓋證據不完整。",
+            },
+          },
+        },
+      },
+      {
+        error: new Error("private implementation detail"),
+        expected: {
+          status: 500,
+          headers: JSON_HEADERS,
+          body: {
+            kind: "json" as const,
+            value: {
+              code: "INTERNAL_ERROR",
+              message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+            },
+          },
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(await publicHandleError(testCase.error)).toEqual(testCase.expected);
+    }
+  });
+
+  it("fails hostile non-SP error metadata closed at the public handle seam", async () => {
+    const hostile = [
+      "Bearer example-access-value",
+      "accountScope=example-private-scope",
+      "reportId=example-private-report",
+      "https://example.invalid/private?client_secret=example-secret",
+      "hostile-text\u202e\u0000",
+    ].join(" ");
+    const cases = [
+      {
+        error: new FbaRevenueReportsError(
+          hostile,
+          302,
+          "BAD\nCODE",
+          "-1\r\nx-private: example",
+        ),
+        expectedValue: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+        },
+      },
+      {
+        error: new StandaloneAuditJobCoordinatorError(hostile, {
+          status: 302,
+          code: "BAD\nCODE",
+        }),
+        expectedValue: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+        },
+      },
+      {
+        error: new AplusAuditJobCoordinatorError(hostile, {
+          status: 302,
+          code: "BAD\nCODE",
+        }),
+        expectedValue: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+        },
+      },
+      {
+        error: new AuditSuiteCoordinatorError(hostile, {
+          status: 302,
+          code: "BAD\nCODE",
+        }),
+        expectedValue: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+        },
+      },
+      {
+        error: new AdvertisingApiError(hostile, {
+          status: 302,
+          code: "BAD\nCODE",
+          requestId: "Atza|example-access-value",
+        }),
+        expectedValue: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+          requestId: null,
+        },
+      },
+      {
+        error: new ReplenishmentAuditError("REQUEST_INVALID", hostile),
+        expectedStatus: 422,
+        expectedValue: {
+          code: "REPLENISHMENT_REQUEST_INVALID",
+          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+        },
+      },
+      {
+        error: new AdvertisingCoverageInputError(hostile),
+        expectedStatus: 422,
+        expectedValue: {
+          code: "ADS_LISTING_COVERAGE_INCOMPLETE",
+          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await publicHandleError(testCase.error);
+      const serialized = JSON.stringify(response);
+      expect(response).toEqual({
+        status: testCase.expectedStatus ?? 500,
+        headers: JSON_HEADERS,
+        body: { kind: "json", value: testCase.expectedValue },
+      });
+      expect(serialized).not.toMatch(
+        /Bearer|Atza|access.?value|client.?secret|accountScope|reportId|https?:|hostile-text|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
+      );
+    }
   });
 });
