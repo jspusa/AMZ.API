@@ -208,6 +208,7 @@ type CollectorInput = {
   onProgress?: (progress: FbaInboundProgress) => void;
   now?: () => Date;
   shipmentListSource?: FbaInboundShipmentSnapshot["dataSource"]["shipmentList"];
+  firstShipmentPage?: FbaInboundTransportResult;
 };
 
 type ParsedShipment = Omit<
@@ -537,25 +538,27 @@ export async function collectFbaInboundShipmentSnapshot(
 
   for (let pageIndex = 0; pageIndex < MAX_SHIPMENT_PAGES; pageIndex += 1) {
     throwIfAborted(input.signal);
-    const result = await input.transport(
-      nextToken
-        ? {
-            kind: "shipments",
-            marketplaceId: input.marketplaceId,
-            queryType: "NEXT_TOKEN",
-            lastUpdatedAfter: null,
-            lastUpdatedBefore: null,
-            nextToken,
-          }
-        : {
-            kind: "shipments",
-            marketplaceId: input.marketplaceId,
-            queryType: "DATE_RANGE",
-            lastUpdatedAfter: input.lastUpdatedAfter,
-            lastUpdatedBefore: input.lastUpdatedBefore,
-            nextToken: null,
-          },
-    );
+    const result = pageIndex === 0 && input.firstShipmentPage
+      ? input.firstShipmentPage
+      : await input.transport(
+          nextToken
+            ? {
+                kind: "shipments",
+                marketplaceId: input.marketplaceId,
+                queryType: "NEXT_TOKEN",
+                lastUpdatedAfter: null,
+                lastUpdatedBefore: null,
+                nextToken,
+              }
+            : {
+                kind: "shipments",
+                marketplaceId: input.marketplaceId,
+                queryType: "DATE_RANGE",
+                lastUpdatedAfter: input.lastUpdatedAfter,
+                lastUpdatedBefore: input.lastUpdatedBefore,
+                nextToken: null,
+              },
+        );
     throwIfAborted(input.signal);
     const parsed = parseShipmentsPage(result.payload);
     shipmentPages += 1;

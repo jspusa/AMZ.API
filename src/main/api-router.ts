@@ -65,6 +65,7 @@ import {
 } from "./amazon/sp-api-error";
 import {
   createProductionSpExecutionContextAdapter,
+  type SpExecutionContext,
   type SpExecutionContextAdapter,
   type SpExecutionContextInvalidationReason,
 } from "./amazon/sp-execution-context";
@@ -76,9 +77,6 @@ import {
   getAgedInventoryDataFromDocument,
   getAgedInventoryReportStatus,
   getFbaVariationGroupingData,
-  getFbaInboundShipmentSnapshot,
-  getInboundNoncomplianceReportDocument,
-  getInboundNoncomplianceReportStatus,
   getListingContent,
   getListingImages,
   getListingPrice,
@@ -104,11 +102,11 @@ import {
   previewListingPriceUpdate,
   previewListingSalePriceUpdate,
   previewVariationMove,
+  fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
   searchListingsBySku,
   searchOrders,
   startAgedInventoryReport,
-  startInboundNoncomplianceReport,
   updateListingContent,
   updateBusinessPrice,
   updateListingImages,
@@ -126,7 +124,6 @@ import {
   type ListingImageSnapshot,
   type ListingPriceSnapshot,
   type MarketplaceId,
-  type FbaInboundShipmentSnapshot,
   type RestockPlanSnapshot,
   type SalesTrendComparisonMode,
   type SalesTrendPresetDays,
@@ -138,6 +135,12 @@ import {
   type FbaVariationGroupingData,
   type VariationMoveInput,
 } from "./amazon/sp-api";
+import {
+  FbaInboundReads,
+  type FbaInboundNoncomplianceReadResult,
+} from "./amazon/fba-inbound-reads";
+import type { FbaInboundShipmentSnapshot } from
+  "./amazon/fba-inbound-shipments";
 import {
   SalesAndTrafficReports,
   type SalesAndTrafficDemoSource,
@@ -186,9 +189,8 @@ import {
 } from "./amazon/advertising-strategy";
 import {
   buildInboundIssueReportSnapshot,
-  parseInboundNoncomplianceReport,
+  DEMO_INBOUND_NONCOMPLIANCE_DOCUMENT,
   type InboundIssueReportSnapshot,
-  type ParsedInboundNoncomplianceReport,
 } from "./amazon/inbound-noncompliance";
 import {
   ReplenishmentAuditError,
@@ -418,14 +420,27 @@ type ReviewAuditCandidateSource = (
   }>,
 ) => Promise<ReviewAuditCandidateSnapshot>;
 
-type InboundShipmentGateway = {
-  snapshot: typeof getFbaInboundShipmentSnapshot;
-};
+type InboundReadsPort = Pick<
+  FbaInboundReads,
+  "readShipments" | "readNoncompliance"
+>;
 
-type InboundNoncomplianceReportGateway = {
-  start: typeof startInboundNoncomplianceReport;
-  status: typeof getInboundNoncomplianceReportStatus;
-  document: typeof getInboundNoncomplianceReportDocument;
+type InboundNoncomplianceDemoReportGateway = {
+  start(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    signal?: AbortSignal;
+  }>): Promise<DurableReportGatewayStatus>;
+  status(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    reportId: string;
+    signal?: AbortSignal;
+  }>): Promise<DurableReportGatewayStatus>;
+  document(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    reportId: string;
+    documentId: string;
+    signal?: AbortSignal;
+  }>): Promise<string>;
 };
 
 function demoReportReference(
@@ -521,11 +536,66 @@ function demoRevenueReportStatus(
   };
 }
 
+function demoInboundNoncomplianceReference(
+  marketplaceId: MarketplaceId,
+): string {
+  return `demo-inbound-noncompliance-${marketplaceId}`;
+}
+
+async function startDemoInboundNoncomplianceReport(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  signal?: AbortSignal;
+}>): Promise<DurableReportGatewayStatus> {
+  assertBackgroundActive(input.signal);
+  const reference = demoInboundNoncomplianceReference(input.marketplaceId);
+  return {
+    mode: "demo",
+    ready: true,
+    reportId: reference,
+    documentId: reference,
+    status: "DONE",
+    notice: "展示用 FBA 入庫瑕疵報表已準備完成。",
+  };
+}
+
+async function statusDemoInboundNoncomplianceReport(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  signal?: AbortSignal;
+}>): Promise<DurableReportGatewayStatus> {
+  assertBackgroundActive(input.signal);
+  const reference = demoInboundNoncomplianceReference(input.marketplaceId);
+  if (input.reportId !== reference) {
+    throw new SpApiError("展示報表編號與目前站點不一致。", {
+      status: 409,
+      code: "REPORT_MISMATCH",
+    });
+  }
+  return startDemoInboundNoncomplianceReport(input);
+}
+
+async function readDemoInboundNoncomplianceDocument(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  reportId: string;
+  documentId: string;
+  signal?: AbortSignal;
+}>): Promise<string> {
+  assertBackgroundActive(input.signal);
+  const reference = demoInboundNoncomplianceReference(input.marketplaceId);
+  if (input.reportId !== reference || input.documentId !== reference) {
+    throw new SpApiError("展示報表文件與目前站點不一致。", {
+      status: 409,
+      code: "REPORT_MISMATCH",
+    });
+  }
+  return DEMO_INBOUND_NONCOMPLIANCE_DOCUMENT;
+}
+
 function routerDemoReportsAdapter(input: Readonly<{
   allListings: DemoAllListingsReportGateway;
   aged: AgedInventoryReportGateway;
   activeBusiness: BusinessPricingActiveListingsReportGateway;
-  inboundNoncompliance: InboundNoncomplianceReportGateway;
+  inboundNoncompliance: InboundNoncomplianceDemoReportGateway;
 }>): ReportsAdapter {
   const identity = (
     request: ReportsIntentPlan & { mode: "live" | "demo" },
@@ -633,6 +703,7 @@ type InboundShipmentResultSnapshot = FbaInboundShipmentSnapshot & Readonly<{
 
 type InboundShipmentJob = {
   jobId: string;
+  context: SpExecutionContext;
   marketplaceId: MarketplaceId;
   accountScope: string;
   mode: "live" | "demo";
@@ -1601,8 +1672,7 @@ export class ApiRouter {
   private readonly advertisingStrategySources: AdvertisingStrategySourceGateway;
   private readonly reviewAuditCandidates: ReviewAuditCandidateSource;
   private readonly advertisingStrategyWait: typeof waitMilliseconds;
-  private readonly inboundShipments: InboundShipmentGateway;
-  private readonly inboundNoncomplianceReports: InboundNoncomplianceReportGateway;
+  private readonly fbaInboundReads: InboundReadsPort;
   private readonly reportLifecycle: DurableReportLifecycle;
   private readonly reportsRuntime: ReportsRuntime;
   private readonly salesAndTraffic: SalesAndTrafficReports;
@@ -1670,8 +1740,10 @@ export class ApiRouter {
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
     reviewAuditCandidates?: ReviewAuditCandidateSource;
     advertisingStrategyWait?: typeof waitMilliseconds;
-    inboundShipments?: Partial<InboundShipmentGateway>;
-    inboundNoncomplianceReports?: Partial<InboundNoncomplianceReportGateway>;
+    fbaInboundReads?: Partial<InboundReadsPort>;
+    inboundNoncomplianceDemoReports?: Partial<
+      InboundNoncomplianceDemoReportGateway
+    >;
     reportsAdapter?: ReportsAdapter;
     demoReportsAdapter?: ReportsAdapter;
     catalogListings?: CatalogListingsReadAdapter;
@@ -1729,21 +1801,17 @@ export class ApiRouter {
       ...input.businessPricingActiveListingsReports,
     };
     this.advertisingStrategyWait = input.advertisingStrategyWait ?? waitMilliseconds;
-    this.inboundShipments = {
-      snapshot: getFbaInboundShipmentSnapshot,
-      ...input.inboundShipments,
-    };
-    this.inboundNoncomplianceReports = {
-      start: startInboundNoncomplianceReport,
-      status: getInboundNoncomplianceReportStatus,
-      document: getInboundNoncomplianceReportDocument,
-      ...input.inboundNoncomplianceReports,
+    const inboundNoncomplianceDemoReports = {
+      start: startDemoInboundNoncomplianceReport,
+      status: statusDemoInboundNoncomplianceReport,
+      document: readDemoInboundNoncomplianceDocument,
+      ...input.inboundNoncomplianceDemoReports,
     };
     const compatibilityReportsAdapter = input.demoReportsAdapter ?? routerDemoReportsAdapter({
       allListings: this.allListingsDemoReports,
       aged: this.agedInventoryReports,
       activeBusiness: this.businessPricingActiveListingsReports,
-      inboundNoncompliance: this.inboundNoncomplianceReports,
+      inboundNoncompliance: inboundNoncomplianceDemoReports,
     });
     const liveReportsAdapter = input.reportsAdapter ??
       reportsRuntimeProductionAdapter;
@@ -1764,6 +1832,17 @@ export class ApiRouter {
       context: this.spExecutionContext,
       adapter: reportsAdapter,
     });
+    const defaultFbaInboundReads = new FbaInboundReads({
+      adapter: fbaInboundExternalReadAdapterProduction,
+      reports: this.reportsRuntime,
+      context: this.spExecutionContext,
+    });
+    this.fbaInboundReads = {
+      readShipments: (request) => defaultFbaInboundReads.readShipments(request),
+      readNoncompliance: (request) =>
+        defaultFbaInboundReads.readNoncompliance(request),
+      ...input.fbaInboundReads,
+    };
     const defaultCatalogDemo: FbaCatalogReportsDemoSource = {
       ...catalogReportsDemoSource,
       ...input.catalogDemo,
@@ -2187,12 +2266,13 @@ export class ApiRouter {
     signal?: AbortSignal,
   ): Promise<void> {
     assertBackgroundActive(signal);
-    const mode = usesDemoMode(job.marketplaceId) ? "demo" : "live";
-    const accountScope = await this.vault.getAccountScope(
-      MARKETPLACES[job.marketplaceId].region,
-    );
+    await this.spExecutionContext.assertCurrent(job.context);
     assertBackgroundActive(signal);
-    if (mode !== job.mode || accountScope !== job.accountScope) {
+    if (
+      job.context.marketplaceId !== job.marketplaceId ||
+      job.context.mode !== job.mode ||
+      job.context.accountScope !== job.accountScope
+    ) {
       throw new SpApiError("FBA 入庫貨件工作與目前帳號、站點或模式不一致。", {
         status: 409,
         code: "INBOUND_SHIPMENT_JOB_MISMATCH",
@@ -2236,55 +2316,15 @@ export class ApiRouter {
   private async loadInboundIssueReport(
     job: InboundShipmentJob,
     signal: AbortSignal,
-  ): Promise<Readonly<{
-    parsed: ParsedInboundNoncomplianceReport;
-    fetchedAt: string;
-  }>> {
+  ): Promise<FbaInboundNoncomplianceReadResult> {
     await this.assertInboundShipmentJobContext(job, signal);
-    const plan = {
-      intent: "inbound-noncompliance" as const,
+    return this.fbaInboundReads.readNoncompliance({
       marketplaceId: job.marketplaceId,
-      signal,
-    };
-    let report = await this.reportsRuntime.start(plan, {
       explicitRetry: job.retryIssueReport,
-      freshCompleted: job.retryIssueReport,
+      expectedContext: job.context,
+      signal,
+      onProgress: () => this.touchInboundShipmentJob(job),
     });
-    this.touchInboundShipmentJob(job);
-    for (let attempt = 0; !report.ready && attempt < 150; attempt += 1) {
-      if (report.status !== "IN_QUEUE" && report.status !== "IN_PROGRESS") {
-        throw new SpApiError("Amazon 未能完成每日 FBA 入庫瑕疵報表。", {
-          status: 502,
-          code: "INBOUND_NONCOMPLIANCE_UNAVAILABLE",
-        });
-      }
-      await waitMilliseconds(2_000, signal);
-      await this.assertInboundShipmentJobContext(job, signal);
-      report = await this.reportsRuntime.status(plan, report.reportId);
-      this.touchInboundShipmentJob(job);
-    }
-    if (!report.ready || !report.documentId || report.mode !== job.mode) {
-      throw new SpApiError("Amazon 每日 FBA 入庫瑕疵報表仍在準備中。", {
-        status: 504,
-        code: "INBOUND_NONCOMPLIANCE_PENDING",
-      });
-    }
-    await this.assertInboundShipmentJobContext(job, signal);
-    const document = await this.reportsRuntime.readDocument(plan, {
-      reportId: report.reportId,
-      documentId: report.documentId,
-    });
-    await this.assertInboundShipmentJobContext(job, signal);
-    if (document.mode !== job.mode) {
-      throw new SpApiError("FBA 入庫瑕疵報表模式已改變。", {
-        status: 409,
-        code: "REPORT_MODE_CHANGED",
-      });
-    }
-    return {
-      parsed: parseInboundNoncomplianceReport(document.text),
-      fetchedAt: new Date().toISOString(),
-    };
   }
 
   private inboundJobFailure(error: unknown): Readonly<{
@@ -2369,14 +2409,21 @@ export class ApiRouter {
     try {
       await this.assertInboundShipmentJobContext(job, signal);
       let shipmentSnapshot: FbaInboundShipmentSnapshot;
+      let shipmentState: "complete" | "partial";
       if (job.shipmentSeed) {
         shipmentSnapshot = job.shipmentSeed;
+        shipmentState =
+          shipmentSnapshot.shipmentListScope === "selected-date-range" &&
+            shipmentSnapshot.coverage.state === "complete"
+            ? "complete"
+            : "partial";
         job.shipmentSeed = null;
       } else {
-        shipmentSnapshot = await this.inboundShipments.snapshot({
+        const shipmentResult = await this.fbaInboundReads.readShipments({
             marketplaceId: job.marketplaceId,
             startDate: job.startDate,
             endDate: job.endDate,
+            expectedContext: job.context,
             signal,
             onProgress: (progress) => {
               if (
@@ -2397,6 +2444,8 @@ export class ApiRouter {
               this.touchInboundShipmentJob(job);
             },
           });
+        shipmentSnapshot = shipmentResult.snapshot;
+        shipmentState = shipmentResult.state;
       }
       await this.assertInboundShipmentJobContext(job, signal);
       job.progress = { phase: "issues", completed: 0, total: 1 };
@@ -2419,8 +2468,7 @@ export class ApiRouter {
         issueReport,
       };
       const partial =
-        shipmentSnapshot.shipmentListScope !== "selected-date-range" ||
-        shipmentSnapshot.coverage.state === "partial" ||
+        shipmentState === "partial" ||
         issueReport.state !== "completed";
       job.state = partial ? "partial" : "completed";
       job.notice = `${shipmentSnapshot.notice} ${issueReport.notice}`;
@@ -2481,10 +2529,11 @@ export class ApiRouter {
       return invalid("FBA 入庫貨件結束日期不可晚於目前 Amazon 站點日期。");
     }
     this.pruneInboundShipmentJobs();
-    const mode = usesDemoMode(marketplaceId) ? "demo" : "live";
-    const accountScope = await this.vault.getAccountScope(MARKETPLACES[marketplaceId].region);
+    const context = await this.spExecutionContext.capture(marketplaceId);
+    const { accountScope, mode } = context;
     const selection = stableFingerprint({
       accountScope,
+      generation: context.generation,
       marketplaceId,
       mode,
       startDate,
@@ -2535,6 +2584,7 @@ export class ApiRouter {
     const controller = new AbortController();
     const job: InboundShipmentJob = {
       jobId: randomUUID(),
+      context,
       marketplaceId,
       accountScope,
       mode,

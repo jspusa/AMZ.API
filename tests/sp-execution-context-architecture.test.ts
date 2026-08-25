@@ -35,6 +35,14 @@ const EXTRACTED_FBA_INVENTORY_REPLENISHMENT_MODULES = [
   "src/main/amazon/replenishment-audit.ts",
 ] as const;
 
+const EXTRACTED_FBA_INBOUND_MODULES = [
+  "src/main/amazon/fba-inbound-shipments.ts",
+  "src/main/amazon/fba-inbound-modern.ts",
+  "src/main/amazon/inbound-noncompliance.ts",
+  "src/main/amazon/fba-inbound-reads.ts",
+  "src/main/amazon/fba-inbound-reads-production.ts",
+] as const;
+
 const EXTRACTED_VARIATION_CATALOG_MODULES = [
   "src/main/amazon/variation-family-reads.ts",
   "src/main/amazon/variation-relationship-evidence.ts",
@@ -93,6 +101,20 @@ const SUPERSEDED_REVENUE_ROUTER_WIRING = [
   "SalesAndTrafficReportGateway",
   "brandSalesReports",
   "salesAndTrafficReports",
+] as const;
+
+const SUPERSEDED_FBA_INBOUND_FACADES = [
+  "getFbaInboundShipmentSnapshot",
+  "startInboundNoncomplianceReport",
+  "getInboundNoncomplianceReportStatus",
+  "getInboundNoncomplianceReportDocument",
+] as const;
+
+const SUPERSEDED_FBA_INBOUND_ROUTER_WIRING = [
+  "InboundShipmentGateway",
+  "InboundNoncomplianceReportGateway",
+  "inboundShipments",
+  "inboundNoncomplianceReports",
 ] as const;
 
 const FORBIDDEN_CATALOG_MODULE_DEPENDENCIES = new Set([
@@ -428,6 +450,13 @@ describe("SP execution-context architecture", () => {
     },
   );
 
+  it.each(EXTRACTED_FBA_INBOUND_MODULES)(
+    "%s stays independent from legacy runtime modules",
+    (entryPath) => {
+      expect(legacyDependencies(entryPath)).toEqual([]);
+    },
+  );
+
   it.each(EXTRACTED_VARIATION_CATALOG_MODULES)(
     "%s stays independent from legacy runtime modules",
     (entryPath) => {
@@ -532,6 +561,34 @@ describe("SP execution-context architecture", () => {
     }
     expect(source).toContain("new SalesAndTrafficReports({");
     expect(source).toContain("new FbaRevenueReports({");
+  });
+
+  it("removes superseded FBA Inbound production facades from the SP facade", () => {
+    const source = readFileSync(
+      absolutePath("src/main/amazon/sp-api.ts"),
+      "utf8",
+    );
+    for (const symbol of SUPERSEDED_FBA_INBOUND_FACADES) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).not.toContain("FBA_INBOUND_READ_INTERVAL_MS");
+    expect(source).toContain("createFbaInboundReadsProductionAdapter({");
+  });
+
+  it("routes FBA Inbound only through its semantic read owner", () => {
+    const source = readFileSync(
+      absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    for (const symbol of [
+      ...SUPERSEDED_FBA_INBOUND_FACADES,
+      ...SUPERSEDED_FBA_INBOUND_ROUTER_WIRING,
+    ]) {
+      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(source).toContain("new FbaInboundReads({");
+    expect(source).toContain("expectedContext: job.context");
+    expect(source).toContain("this.spExecutionContext.capture(marketplaceId)");
   });
 
   it("keeps report documents behind the FBA catalog coordinator", () => {

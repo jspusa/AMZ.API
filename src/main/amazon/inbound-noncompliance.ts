@@ -44,6 +44,29 @@ export class InboundNoncomplianceFormatError extends Error {
   }
 }
 
+export const DEMO_INBOUND_NONCOMPLIANCE_DOCUMENT = [
+  "issue-reported-date",
+  "shipment-creation-date",
+  "fba-shipment-id",
+  "fba-carton-id",
+  "fulfillment-center-id",
+  "sku",
+  "fnsku",
+  "asin",
+  "product-name",
+  "problem-type",
+  "problem-quantity",
+  "expected-quantity",
+  "received-quantity",
+  "performance-measurement-unit",
+  "coaching-level",
+  "fee-type",
+  "currency",
+  "fee-total",
+  "problem-level",
+  "alert-status",
+].join("\t");
+
 const MAX_REPORT_CHARACTERS = 64 * 1024 * 1024;
 const MAX_REPORT_ROWS = 250_000;
 const MAX_REPORT_COLUMNS = 256;

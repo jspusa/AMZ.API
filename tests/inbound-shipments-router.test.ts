@@ -4,11 +4,17 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import {
-  getFbaInboundShipmentSnapshot,
   SpApiError,
-  type FbaInboundShipmentSnapshot,
   type ListingReportStatus,
 } from "../src/main/amazon/sp-api";
+import type { FbaInboundReads } from
+  "../src/main/amazon/fba-inbound-reads";
+import type { FbaInboundShipmentSnapshot } from
+  "../src/main/amazon/fba-inbound-shipments";
+import type {
+  SpExecutionContext,
+  SpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -203,11 +209,15 @@ describe("FBA inbound shipment router job", () => {
   });
 
   function router(input: {
-    snapshot?: (input: Parameters<typeof getFbaInboundShipmentSnapshot>[0]) => Promise<FbaInboundShipmentSnapshot>;
+    snapshot?: (
+      input: Parameters<FbaInboundReads["readShipments"]>[0],
+    ) => Promise<FbaInboundShipmentSnapshot>;
     document?: string;
     reportDocument?: () => Promise<string>;
     reportStartError?: Error;
     reportStart?: () => Promise<ListingReportStatus>;
+    readNoncompliance?: FbaInboundReads["readNoncompliance"];
+    spExecutionContext?: SpExecutionContextAdapter;
     onAccountScope?: () => void;
     onReportStart?: () => void;
   } = {}): ApiRouter {
@@ -220,14 +230,31 @@ describe("FBA inbound shipment router job", () => {
         },
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      inboundShipments: {
-        snapshot: input.snapshot ?? (async ({ startDate, endDate, onProgress }) => {
+      fbaInboundReads: {
+        readShipments: async (request) => {
+          const snapshot = await (input.snapshot ?? (async ({
+            startDate,
+            endDate,
+            onProgress,
+          }) => {
           onProgress?.({ phase: "shipments", completed: 1, total: 1 });
           onProgress?.({ phase: "items", completed: 1, total: 1 });
           return inboundSnapshot(startDate, endDate);
-        }),
+          }))(request);
+          return {
+            state:
+              snapshot.shipmentListScope === "selected-date-range" &&
+                snapshot.coverage.state === "complete"
+                ? "complete"
+                : "partial",
+            snapshot,
+          };
+        },
+        ...(input.readNoncompliance
+          ? { readNoncompliance: input.readNoncompliance }
+          : {}),
       },
-      inboundNoncomplianceReports: {
+      inboundNoncomplianceDemoReports: {
         start: async () => {
           input.onReportStart?.();
           if (input.reportStart) return input.reportStart();
@@ -253,6 +280,7 @@ describe("FBA inbound shipment router job", () => {
           ? input.reportDocument()
           : input.document ?? issueDocument(),
       },
+      spExecutionContext: input.spExecutionContext,
     });
   }
 
@@ -303,6 +331,58 @@ describe("FBA inbound shipment router job", () => {
     expect(serialized).not.toContain(accountScope);
     expect(serialized).not.toContain("demo-inbound-report");
     expect(serialized).not.toContain("demo-inbound-document");
+  });
+
+  it("captures one execution context and shares it across both inbound read legs", async () => {
+    const fixedContext = Object.freeze({
+      marketplaceId: MARKETPLACE_ID,
+      region: "na",
+      mode: "demo",
+      accountScope: "shared-inbound-context",
+      generation: 0,
+    }) as unknown as SpExecutionContext;
+    const contextAdapter: SpExecutionContextAdapter = {
+      capture: vi.fn(async () => fixedContext),
+      assertCurrent: vi.fn(async (context) => {
+        expect(context).toBe(fixedContext);
+      }),
+      invalidate: vi.fn(),
+    };
+    const observedContexts: SpExecutionContext[] = [];
+    const app = router({
+      spExecutionContext: contextAdapter,
+      snapshot: async (input) => {
+        observedContexts.push(input.expectedContext);
+        return inboundSnapshot(input.startDate, input.endDate);
+      },
+      readNoncompliance: async (input) => {
+        observedContexts.push(input.expectedContext);
+        return {
+          parsed: {
+            issues: [],
+            incompleteRowCount: 0,
+            incompleteRows: [],
+            latestIssueReportedDate: null,
+          },
+          fetchedAt: "2026-08-21T12:00:00.000Z",
+        };
+      },
+    });
+
+    const started = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    })));
+    expect((await terminalJob(app, String(started.jobId))).state).toBe(
+      "completed",
+    );
+
+    expect(contextAdapter.capture).toHaveBeenCalledTimes(1);
+    expect(observedContexts).toEqual([fixedContext, fixedContext]);
   });
 
   it("marks an active-status fallback partial even when returned quantities and issues are complete", async () => {
@@ -368,7 +448,7 @@ describe("FBA inbound shipment router job", () => {
     };
     const pending: PendingSnapshot[] = [];
     const snapshot = vi.fn(
-      (input: Parameters<typeof getFbaInboundShipmentSnapshot>[0]) =>
+      (input: Parameters<FbaInboundReads["readShipments"]>[0]) =>
         new Promise<FbaInboundShipmentSnapshot>((resolve, reject) => {
           if (!input.signal) throw new Error("router must bind an AbortSignal");
           const signal = input.signal;
@@ -1027,7 +1107,9 @@ describe("FBA inbound shipment router job", () => {
 
   it("revalidates account scope on GET and invalidates the old background job", async () => {
     const observed: { signal: AbortSignal | null } = { signal: null };
-    const snapshot = vi.fn(async (input: Parameters<typeof getFbaInboundShipmentSnapshot>[0]) => {
+    const snapshot = vi.fn(async (
+      input: Parameters<FbaInboundReads["readShipments"]>[0],
+    ) => {
       observed.signal = input.signal ?? null;
       await new Promise<void>((_resolve, reject) => {
         input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
@@ -1043,6 +1125,7 @@ describe("FBA inbound shipment router job", () => {
         endDate: "2026-08-20",
       },
     })));
+    await vi.waitFor(() => expect(observed.signal).not.toBeNull());
     accountScope = "inbound-account-b";
     const response = await app.handle(apiRequest({
       method: "GET",
@@ -1134,7 +1217,7 @@ describe("FBA inbound shipment router job", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-20T12:00:00.000Z"));
     type ProgressCallback = NonNullable<
-      Parameters<typeof getFbaInboundShipmentSnapshot>[0]["onProgress"]
+      Parameters<FbaInboundReads["readShipments"]>[0]["onProgress"]
     >;
     const observed: {
       progress: ProgressCallback | null;

@@ -21,20 +21,6 @@ import {
   type FbaSubscriptionAuditHistorySnapshot,
 } from "./replenishment-audit";
 import {
-  buildDemoFbaInboundShipmentSnapshot,
-  collectFbaInboundShipmentSnapshot,
-  FbaInboundSnapshotError,
-  type FbaInboundProgress,
-  type FbaInboundShipmentSnapshot,
-  type FbaInboundTransportRequest,
-  type FbaInboundTransportResult,
-} from "./fba-inbound-shipments";
-import {
-  collectModernFbaInboundShipmentList,
-  type ModernFbaInboundTransportRequest,
-  type ModernFbaInboundTransportResult,
-} from "./fba-inbound-modern";
-import {
   dedupeFbaReviewCandidates,
   type DedupedFbaReviewCandidate,
   type ReviewAuditFetchResult,
@@ -58,7 +44,6 @@ import {
 import { spApiUserAgent } from "./sp-api-runtime";
 import {
   isDateOnly,
-  marketplaceCalendar,
 } from "./marketplace-calendar";
 import {
   FbaSalesPlanningError,
@@ -88,6 +73,7 @@ import {
   type SubscribeAndSaveOfferSnapshot,
 } from "./fba-inventory-replenishment";
 import { createFbaInventoryReplenishmentProductionAdapter } from "./fba-inventory-replenishment-production";
+import { createFbaInboundReadsProductionAdapter } from "./fba-inbound-reads-production";
 import { createReportsRuntimeProductionAdapter } from "./reports-runtime-production";
 import type { ReportsAdapter } from "./reports-runtime";
 import type { FbaCatalogReportsDemoSource } from "./fba-catalog-reports";
@@ -160,14 +146,6 @@ export {
   sellerSkuFromAsinSearchPayload,
 } from "./variation-catalog-reads";
 
-export type {
-  FbaInboundCoverageIssue,
-  FbaInboundProgress,
-  FbaInboundShipmentItem,
-  FbaInboundShipmentRow,
-  FbaInboundShipmentSnapshot,
-  FbaInboundUnitTotals,
-} from "./fba-inbound-shipments";
 import {
   buildAllVariationFamilyRows,
   classifyUnboundVariationEvidence,
@@ -1089,8 +1067,6 @@ type TokenCacheEntry = {
 
 const tokenCache = new Map<SpApiRegion, TokenCacheEntry>();
 const tokenRequests = new Map<SpApiRegion, Promise<TokenCacheEntry>>();
-const fbaInboundReadTails = new Map<SpApiRegion, Promise<void>>();
-const fbaInboundLastStartedAt = new Map<SpApiRegion, number>();
 const aplusContentReadTails = new Map<SpApiRegion, Promise<void>>();
 const aplusContentLastStartedAt = new Map<SpApiRegion, number>();
 const aplusContentRequestIntervals = new Map<SpApiRegion, number>();
@@ -1695,6 +1671,12 @@ export const catalogListingsReadAdapterProduction:
 
 const fbaInventoryReplenishmentAdapter =
   createFbaInventoryReplenishmentProductionAdapter({
+    getAccessToken: requestAccessToken,
+    invalidateAccessToken: (region) => tokenCache.delete(region),
+  });
+
+export const fbaInboundExternalReadAdapterProduction =
+  createFbaInboundReadsProductionAdapter({
     getAccessToken: requestAccessToken,
     invalidateAccessToken: (region) => tokenCache.delete(region),
   });
@@ -5887,499 +5869,6 @@ function throwFbaSalesFacadeError(error: unknown): never {
   throw error;
 }
 
-const FBA_INBOUND_READ_INTERVAL_MS = 500;
-
-async function paceFbaInboundRead(
-  region: SpApiRegion,
-  signal?: AbortSignal,
-): Promise<void> {
-  assertNotAborted(signal);
-  const previous = fbaInboundReadTails.get(region) ?? Promise.resolve();
-  const current = previous.catch(() => undefined).then(async () => {
-    assertNotAborted(signal);
-    const lastStartedAt = fbaInboundLastStartedAt.get(region) ?? 0;
-    const delay = Math.max(
-      0,
-      lastStartedAt + FBA_INBOUND_READ_INTERVAL_MS - Date.now(),
-    );
-    await wait(delay, signal);
-    assertNotAborted(signal);
-    fbaInboundLastStartedAt.set(region, Date.now());
-  });
-  fbaInboundReadTails.set(region, current.then(() => undefined, () => undefined));
-  await current;
-}
-
-async function callFbaInboundV0(
-  request: FbaInboundTransportRequest,
-  forceTokenRefresh = false,
-  signal?: AbortSignal,
-): Promise<Response> {
-  assertNotAborted(signal);
-  const marketplace = MARKETPLACES[request.marketplaceId];
-  const token = await requestAccessToken(
-    marketplace.region,
-    forceTokenRefresh,
-  );
-  assertNotAborted(signal);
-  await paceFbaInboundRead(marketplace.region, signal);
-  assertNotAborted(signal);
-
-  let path: string;
-  const query = new URLSearchParams();
-  if (request.kind === "shipments") {
-    path = "/fba/inbound/v0/shipments";
-    query.set("QueryType", request.queryType);
-    query.set("MarketplaceId", request.marketplaceId);
-    if (request.queryType === "DATE_RANGE") {
-      query.set("LastUpdatedAfter", request.lastUpdatedAfter);
-      query.set("LastUpdatedBefore", request.lastUpdatedBefore);
-    } else if (request.queryType === "SHIPMENT") {
-      query.set("ShipmentStatusList", request.shipmentStatuses.join(","));
-    } else {
-      query.set("NextToken", request.nextToken);
-    }
-  } else if (request.queryType === "SHIPMENT") {
-    path = `/fba/inbound/v0/shipments/${encodeURIComponent(
-      request.shipmentId,
-    )}/items`;
-    // MarketplaceId is deprecated for this operation. The shipment ID came
-    // from the exact-marketplace list request, so do not send the obsolete
-    // parameter or permit the renderer to choose an upstream path.
-  } else {
-    path = "/fba/inbound/v0/shipmentItems";
-    query.set("QueryType", "NEXT_TOKEN");
-    query.set("NextToken", request.nextToken);
-    query.set("MarketplaceId", request.marketplaceId);
-  }
-
-  const controller = new AbortController();
-  const stopForwardingAbort = forwardAbort(controller, signal);
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  const queryText = query.toString();
-  try {
-    return await fetch(
-      `${REGION_ENDPOINTS[marketplace.region]}${path}${
-        queryText ? `?${queryText}` : ""
-      }`,
-      {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          "x-amz-access-token": token,
-          "x-amz-date": toAmzDate(),
-          "user-agent": spApiUserAgent(),
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    assertNotAborted(signal);
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError(
-        "Amazon FBA 入庫貨件唯讀查詢逾時，已停止這次讀取。",
-        {
-          status: 504,
-          code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
-        },
-      );
-    }
-    throw new SpApiError("目前無法連線至 Amazon Fulfillment Inbound API。", {
-      status: 502,
-      code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
-    stopForwardingAbort();
-  }
-}
-
-async function executeFbaInboundV0(
-  request: FbaInboundTransportRequest,
-  signal?: AbortSignal,
-): Promise<Response> {
-  assertNotAborted(signal);
-  let response = await callFbaInboundV0(request, false, signal);
-  let refreshedUnauthorized = false;
-  let transientRetries = 0;
-  while (true) {
-    assertNotAborted(signal);
-    if (response.status === 401 && !refreshedUnauthorized) {
-      refreshedUnauthorized = true;
-      tokenCache.delete(MARKETPLACES[request.marketplaceId].region);
-      assertNotAborted(signal);
-      response = await callFbaInboundV0(request, true, signal);
-      continue;
-    }
-    if (
-      [429, 500, 502, 503, 504].includes(response.status) &&
-      transientRetries < 2
-    ) {
-      await wait(retryDelayMs(response, transientRetries), signal);
-      transientRetries += 1;
-      assertNotAborted(signal);
-      response = await callFbaInboundV0(request, false, signal);
-      continue;
-    }
-    break;
-  }
-  return response;
-}
-
-async function callModernFbaInboundRead(
-  marketplaceId: MarketplaceId,
-  request: ModernFbaInboundTransportRequest,
-  forceTokenRefresh = false,
-  signal?: AbortSignal,
-): Promise<Response> {
-  assertNotAborted(signal);
-  const marketplace = MARKETPLACES[marketplaceId];
-  const token = await requestAccessToken(
-    marketplace.region,
-    forceTokenRefresh,
-  );
-  assertNotAborted(signal);
-  await paceFbaInboundRead(marketplace.region, signal);
-  assertNotAborted(signal);
-  let path = "/inbound/fba/2024-03-20/inboundPlans";
-  const query = new URLSearchParams();
-  if (request.kind === "plans") {
-    query.set("sortBy", "LAST_UPDATED_TIME");
-    query.set("sortOrder", "DESC");
-    query.set("pageSize", "30");
-    if (request.paginationToken) {
-      query.set("paginationToken", request.paginationToken);
-    }
-  } else {
-    path += `/${encodeURIComponent(request.inboundPlanId)}`;
-    if (request.kind === "shipment") {
-      path += `/shipments/${encodeURIComponent(request.shipmentId)}`;
-    }
-  }
-  const controller = new AbortController();
-  const stopForwardingAbort = forwardAbort(controller, signal);
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  const queryText = query.toString();
-  try {
-    return await fetch(
-      `${REGION_ENDPOINTS[marketplace.region]}${path}${
-        queryText ? `?${queryText}` : ""
-      }`,
-      {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          "x-amz-access-token": token,
-          "x-amz-date": toAmzDate(),
-          "user-agent": spApiUserAgent(),
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    assertNotAborted(signal);
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError(
-        "Amazon 新版 FBA 入庫唯讀查詢逾時，已停止這次讀取。",
-        { status: 504, code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE" },
-      );
-    }
-    throw new SpApiError("目前無法連線至 Amazon 新版 FBA 入庫 API。", {
-      status: 502,
-      code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
-    });
-  } finally {
-    clearTimeout(timeout);
-    stopForwardingAbort();
-  }
-}
-
-async function fetchModernFbaInboundTransport(
-  marketplaceId: MarketplaceId,
-  request: ModernFbaInboundTransportRequest,
-  signal?: AbortSignal,
-): Promise<ModernFbaInboundTransportResult> {
-  assertNotAborted(signal);
-  let response = await callModernFbaInboundRead(
-    marketplaceId,
-    request,
-    false,
-    signal,
-  );
-  let refreshedUnauthorized = false;
-  let transientRetries = 0;
-  while (true) {
-    assertNotAborted(signal);
-    if (response.status === 401 && !refreshedUnauthorized) {
-      refreshedUnauthorized = true;
-      tokenCache.delete(MARKETPLACES[marketplaceId].region);
-      response = await callModernFbaInboundRead(
-        marketplaceId,
-        request,
-        true,
-        signal,
-      );
-      continue;
-    }
-    if (
-      [429, 500, 502, 503, 504].includes(response.status) &&
-      transientRetries < 2
-    ) {
-      await wait(retryDelayMs(response, transientRetries), signal);
-      transientRetries += 1;
-      response = await callModernFbaInboundRead(
-        marketplaceId,
-        request,
-        false,
-        signal,
-      );
-      continue;
-    }
-    break;
-  }
-  assertNotAborted(signal);
-  if (!response.ok) return throwFbaInboundReadError(response);
-  const payload = await parseResponseJson<unknown>(response);
-  assertNotAborted(signal);
-  if (payload === null) {
-    throw new SpApiError(
-      "Amazon 回傳了無法辨識的新版 FBA 入庫 JSON。",
-      {
-        status: 502,
-        code: "FBA_INBOUND_FORMAT_UNSUPPORTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  return {
-    payload,
-    requestId: response.headers.get("x-amzn-requestid"),
-  };
-}
-
-async function throwFbaInboundReadError(response: Response): Promise<never> {
-  const message =
-    response.status === 401 || response.status === 403
-      ? "Amazon 拒絕 FBA 入庫貨件查詢。請確認 Private SP-API App 已具備 Amazon Fulfillment 角色並重新授權。"
-      : response.status === 429
-        ? "Amazon Fulfillment Inbound API 持續限流；已在有限次唯讀重試後停止。"
-        : response.status === 400 || response.status === 422
-          ? "Amazon 無法驗證這次 FBA 入庫貨件唯讀請求。"
-          : "Amazon 暫時無法完成 FBA 入庫貨件查詢。";
-  throw new SpApiError(message, {
-    status: response.status,
-    code:
-      response.status === 401 || response.status === 403
-        ? "FBA_INBOUND_UNAUTHORIZED"
-        : response.status === 429
-          ? "RATE_LIMITED"
-          : "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
-    requestId: response.headers.get("x-amzn-requestid"),
-    retryAfter: response.headers.get("retry-after"),
-  });
-}
-
-async function fetchFbaInboundTransport(
-  request: FbaInboundTransportRequest,
-  signal?: AbortSignal,
-): Promise<FbaInboundTransportResult> {
-  assertNotAborted(signal);
-  const response = await executeFbaInboundV0(request, signal);
-  assertNotAborted(signal);
-  if (!response.ok) return throwFbaInboundReadError(response);
-  const payload = await parseResponseJson<unknown>(response);
-  assertNotAborted(signal);
-  if (payload === null) {
-    throw new SpApiError(
-      "Amazon 回傳了無法辨識的 FBA 入庫貨件 JSON。",
-      {
-        status: 502,
-        code: "FBA_INBOUND_FORMAT_UNSUPPORTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  return {
-    payload,
-    requestId: response.headers.get("x-amzn-requestid"),
-  };
-}
-
-function invalidFbaInboundRange(message: string): never {
-  throw new SpApiError(message, {
-    status: 400,
-    code: "INVALID_FBA_INBOUND_RANGE",
-  });
-}
-
-function buildFbaInboundDateWindow(input: {
-  marketplaceId: MarketplaceId;
-  startDate: string;
-  endDate: string;
-  now: Date;
-}): { startAt: string; endAt: string } {
-  if (
-    Number.isNaN(input.now.getTime()) ||
-    !isDateOnly(input.startDate) ||
-    !isDateOnly(input.endDate)
-  ) {
-    invalidFbaInboundRange("FBA 入庫貨件日期必須使用有效的 YYYY-MM-DD 格式。");
-  }
-  const calendar = marketplaceCalendar(input.marketplaceId);
-  const dayCount = calendar.inclusiveDayCount(input.startDate, input.endDate);
-  if (dayCount < 1 || dayCount > 180) {
-    invalidFbaInboundRange("FBA 入庫貨件日期範圍必須介於 1 到 180 天。");
-  }
-  const todayKey = calendar.dayAt(input.now);
-  if (input.endDate > todayKey) {
-    invalidFbaInboundRange("FBA 入庫貨件結束日期不可晚於目前 Amazon 站點日期。");
-  }
-  return {
-    startAt: calendar.formatInstant(calendar.midnight(input.startDate)),
-    endAt: input.endDate === todayKey
-      ? calendar.formatInstant(input.now)
-      : calendar.formatInstant(
-          calendar.midnight(calendar.shiftDate(input.endDate, 1)),
-        ),
-  };
-}
-
-export async function getFbaInboundShipmentSnapshot(input: {
-  marketplaceId: MarketplaceId;
-  startDate: string;
-  endDate: string;
-  signal?: AbortSignal;
-  onProgress?: (progress: FbaInboundProgress) => void;
-}): Promise<FbaInboundShipmentSnapshot> {
-  assertNotAborted(input.signal);
-  const now = new Date();
-  const window = buildFbaInboundDateWindow({
-    marketplaceId: input.marketplaceId,
-    startDate: input.startDate,
-    endDate: input.endDate,
-    now,
-  });
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    return buildDemoFbaInboundShipmentSnapshot({
-      marketplaceId: input.marketplaceId,
-      startDate: input.startDate,
-      endDate: input.endDate,
-      lastUpdatedAfter: window.startAt,
-      lastUpdatedBefore: window.endAt,
-      now,
-    });
-  }
-  try {
-    const firstRequest: FbaInboundTransportRequest = {
-      kind: "shipments",
-      marketplaceId: input.marketplaceId,
-      queryType: "DATE_RANGE",
-      lastUpdatedAfter: window.startAt,
-      lastUpdatedBefore: window.endAt,
-      nextToken: null,
-    };
-    let firstShipmentPage: FbaInboundTransportResult;
-    let shipmentListSource: FbaInboundShipmentSnapshot["dataSource"]["shipmentList"] =
-      "GET /fba/inbound/v0/shipments";
-    try {
-      firstShipmentPage = await fetchFbaInboundTransport(
-        firstRequest,
-        input.signal,
-      );
-    } catch (error) {
-      if (
-        !(error instanceof SpApiError) ||
-        (error.status !== 400 && error.status !== 422)
-      ) {
-        throw error;
-      }
-      try {
-        firstShipmentPage = await fetchFbaInboundTransport(
-          {
-            kind: "shipments",
-            marketplaceId: input.marketplaceId,
-            queryType: "SHIPMENT",
-            shipmentStatuses: [
-              "WORKING",
-              "READY_TO_SHIP",
-              "SHIPPED",
-              "IN_TRANSIT",
-              "DELIVERED",
-              "CHECKED_IN",
-              "RECEIVING",
-              "ERROR",
-            ],
-            lastUpdatedAfter: null,
-            lastUpdatedBefore: null,
-            nextToken: null,
-          },
-          input.signal,
-        );
-        shipmentListSource =
-          "GET /fba/inbound/v0/shipments?QueryType=SHIPMENT (active-status fallback)";
-      } catch (fallbackError) {
-        if (
-          !(fallbackError instanceof SpApiError) ||
-          (fallbackError.status !== 400 && fallbackError.status !== 422)
-        ) {
-          throw fallbackError;
-        }
-        firstShipmentPage = await collectModernFbaInboundShipmentList({
-          marketplaceId: input.marketplaceId,
-          startAt: window.startAt,
-          endAt: window.endAt,
-          signal: input.signal,
-          onProgress: (completed) =>
-            input.onProgress?.({ phase: "shipments", completed, total: null }),
-          transport: (request) =>
-            fetchModernFbaInboundTransport(
-              input.marketplaceId,
-              request,
-              input.signal,
-            ),
-        });
-        shipmentListSource =
-          "GET /inbound/fba/2024-03-20/inboundPlans + getInboundPlan/getShipment";
-      }
-    }
-    let firstShipmentPagePending = true;
-    return await collectFbaInboundShipmentSnapshot({
-      marketplaceId: input.marketplaceId,
-      startDate: input.startDate,
-      endDate: input.endDate,
-      lastUpdatedAfter: window.startAt,
-      lastUpdatedBefore: window.endAt,
-      signal: input.signal,
-      onProgress: input.onProgress,
-      shipmentListSource,
-      transport: (request) => {
-        if (request.kind === "shipments" && request.queryType === "DATE_RANGE") {
-          if (!firstShipmentPagePending) {
-            throw new SpApiError(
-              "FBA 入庫貨件第一頁被重複請求，已停止同步。",
-              { status: 409, code: "PAGINATION_CHANGED" },
-            );
-          }
-          firstShipmentPagePending = false;
-          return Promise.resolve(firstShipmentPage);
-        }
-        return fetchFbaInboundTransport(request, input.signal);
-      },
-    });
-  } catch (error) {
-    if (error instanceof FbaInboundSnapshotError) {
-      throw new SpApiError(error.message, {
-        status: error.status,
-        code: error.code,
-        requestId: error.requestId,
-      });
-    }
-    throw error;
-  }
-}
-
 function isoHoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3_600_000).toISOString();
 }
@@ -8222,8 +7711,7 @@ export async function updateListingContent(
 
 type ReportsPurpose =
   | "listings"
-  | "aged-inventory"
-  | "inbound-noncompliance";
+  | "aged-inventory";
 
 function assertReportsDocumentMode(
   mode: "live" | "demo",
@@ -8278,16 +7766,12 @@ async function callReportsApi(input: ReportsRequestInput): Promise<Response> {
   } catch (error) {
     assertNotAborted(input.signal);
     if (error instanceof Error && error.name === "AbortError") {
-      throw new SpApiError(input.purpose === "inbound-noncompliance"
-        ? "Amazon FBA 入庫瑕疵報表查詢逾時，請稍後再試。"
-        : "Amazon 全商品報表查詢逾時，請稍後再試。", {
+      throw new SpApiError("Amazon 全商品報表查詢逾時，請稍後再試。", {
         status: 504,
         code: "UPSTREAM_UNAVAILABLE",
       });
     }
-    throw new SpApiError(input.purpose === "inbound-noncompliance"
-      ? "目前無法連線至 Amazon Reports API，FBA 入庫瑕疵報表建立或查詢結果未知。"
-      : "目前無法連線至 Amazon Reports API。", {
+    throw new SpApiError("目前無法連線至 Amazon Reports API。", {
       status: 502,
       code: "UPSTREAM_UNAVAILABLE",
     });
@@ -8334,9 +7818,7 @@ async function throwReportsError(
   )?.message;
   const subject = purpose === "aged-inventory"
     ? "FBA 庫齡報表"
-    : purpose === "inbound-noncompliance"
-      ? "FBA 入庫瑕疵報表"
-      : "全商品報表";
+    : "全商品報表";
   const message =
     response.status === 429
       ? `Amazon 正在限制${subject}請求頻率，請稍後再試。`
@@ -8346,207 +7828,13 @@ async function throwReportsError(
           : `Amazon 拒絕${subject}查詢，請確認 app 已有 Amazon Fulfillment 角色並重新授權。`
         : `Amazon 無法完成${subject}。`;
   throw new SpApiError(
-    purpose === "inbound-noncompliance"
-      ? message
-      : upstreamMessage ? `${message}（${upstreamMessage}）` : message,
+    upstreamMessage ? `${message}（${upstreamMessage}）` : message,
     {
       status: response.status,
       code: response.status === 429 ? "RATE_LIMITED" : "REPORT_FAILED",
       requestId: response.headers.get("x-amzn-requestid"),
       retryAfter: response.headers.get("retry-after"),
     },
-  );
-}
-
-const FBA_INBOUND_NONCOMPLIANCE_REPORT_TYPE =
-  "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA";
-
-function demoInboundNoncomplianceReportId(
-  marketplaceId: MarketplaceId,
-): string {
-  return `demo-inbound-noncompliance-${marketplaceId}`;
-}
-
-export async function startInboundNoncomplianceReport(input: {
-  marketplaceId: MarketplaceId;
-  signal?: AbortSignal;
-}): Promise<ListingReportStatus> {
-  assertNotAborted(input.signal);
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const reportId = demoInboundNoncomplianceReportId(input.marketplaceId);
-    return {
-      mode: "demo",
-      ready: true,
-      reportId,
-      documentId: reportId,
-      status: "DONE",
-      notice: "展示用 FBA 入庫瑕疵報表已準備完成。",
-    };
-  }
-  const response = await executeReportsRequest({
-    marketplaceId: input.marketplaceId,
-    path: "/reports",
-    method: "POST",
-    signal: input.signal,
-    purpose: "inbound-noncompliance",
-    body: {
-      reportType: FBA_INBOUND_NONCOMPLIANCE_REPORT_TYPE,
-      marketplaceIds: [input.marketplaceId],
-    },
-  });
-  if (!response.ok) {
-    return throwReportsError(response, "inbound-noncompliance");
-  }
-  const payload = await parseResponseJson<AmazonReport>(response);
-  if (!payload?.reportId) {
-    throw new SpApiError("Amazon 沒有回傳有效的 FBA 入庫瑕疵報表編號。", {
-      status: 502,
-      code: "REPORT_FAILED",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  return {
-    mode: "live",
-    ready: false,
-    reportId: payload.reportId,
-    documentId: null,
-    status: "IN_QUEUE",
-    notice: "Amazon 正在準備每日 FBA 入庫瑕疵報表。",
-  };
-}
-
-export async function getInboundNoncomplianceReportStatus(input: {
-  marketplaceId: MarketplaceId;
-  reportId: string;
-  signal?: AbortSignal;
-}): Promise<ListingReportStatus> {
-  assertNotAborted(input.signal);
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const reportId = demoInboundNoncomplianceReportId(input.marketplaceId);
-    if (input.reportId !== reportId) {
-      throw new SpApiError("展示報表編號與目前站點不一致。", {
-        status: 409,
-        code: "REPORT_MISMATCH",
-      });
-    }
-    return {
-      mode: "demo",
-      ready: true,
-      reportId,
-      documentId: reportId,
-      status: "DONE",
-      notice: "展示用 FBA 入庫瑕疵報表已準備完成。",
-    };
-  }
-  const response = await executeReportsRequest({
-    marketplaceId: input.marketplaceId,
-    path: `/reports/${encodeURIComponent(input.reportId)}`,
-    signal: input.signal,
-    purpose: "inbound-noncompliance",
-  });
-  if (!response.ok) {
-    return throwReportsError(response, "inbound-noncompliance");
-  }
-  const payload = await parseResponseJson<AmazonReport>(response);
-  if (
-    payload?.reportId !== input.reportId ||
-    payload.reportType !== FBA_INBOUND_NONCOMPLIANCE_REPORT_TYPE ||
-    !Array.isArray(payload.marketplaceIds) ||
-    payload.marketplaceIds.length !== 1 ||
-    payload.marketplaceIds[0] !== input.marketplaceId
-  ) {
-    throw new SpApiError(
-      "這份 Amazon 報表不屬於目前站點或 FBA 入庫瑕疵類型，已停止下載。",
-      {
-        status: 409,
-        code: "REPORT_MISMATCH",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  const status = payload.processingStatus;
-  if (!status) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 FBA 入庫瑕疵報表狀態。", {
-      status: 502,
-      code: "REPORT_FAILED",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  if (status === "CANCELLED" || status === "FATAL") {
-    throw new SpApiError("Amazon 未能產生 FBA 入庫瑕疵報表。", {
-      status: 422,
-      code: status === "CANCELLED" ? "REPORT_CANCELLED" : "REPORT_FATAL",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const ready = status === "DONE" && Boolean(payload.reportDocumentId);
-  return {
-    mode: "live",
-    ready,
-    reportId: input.reportId,
-    documentId: payload.reportDocumentId ?? null,
-    status,
-    notice: ready
-      ? "Amazon 每日 FBA 入庫瑕疵報表已就緒。"
-      : "Amazon 正在準備每日 FBA 入庫瑕疵報表。",
-  };
-}
-
-export async function getInboundNoncomplianceReportDocument(input: {
-  marketplaceId: MarketplaceId;
-  reportId: string;
-  documentId: string;
-  signal?: AbortSignal;
-}): Promise<string> {
-  assertNotAborted(input.signal);
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const reportId = demoInboundNoncomplianceReportId(input.marketplaceId);
-    if (input.reportId !== reportId || input.documentId !== reportId) {
-      throw new SpApiError("展示報表文件與目前站點不一致。", {
-        status: 409,
-        code: "REPORT_MISMATCH",
-      });
-    }
-    return [
-      "issue-reported-date",
-      "shipment-creation-date",
-      "fba-shipment-id",
-      "fba-carton-id",
-      "fulfillment-center-id",
-      "sku",
-      "fnsku",
-      "asin",
-      "product-name",
-      "problem-type",
-      "problem-quantity",
-      "expected-quantity",
-      "received-quantity",
-      "performance-measurement-unit",
-      "coaching-level",
-      "fee-type",
-      "currency",
-      "fee-total",
-      "problem-level",
-      "alert-status",
-    ].join("\t");
-  }
-  const status = await getInboundNoncomplianceReportStatus({
-    marketplaceId: input.marketplaceId,
-    reportId: input.reportId,
-    signal: input.signal,
-  });
-  assertNotAborted(input.signal);
-  if (!status.ready || status.documentId !== input.documentId) {
-    throw new SpApiError(
-      "FBA 入庫瑕疵報表尚未完成，或文件編號已改變。",
-      { status: 409, code: "REPORT_NOT_READY" },
-    );
-  }
-  return downloadReportDocument(
-    input.marketplaceId,
-    input.documentId,
-    input.signal,
-    "inbound-noncompliance",
   );
 }
 
