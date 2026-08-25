@@ -22,8 +22,6 @@ import {
 } from "./amazon/review-audit";
 import {
   auditListingContentRows,
-  type ContentQualityAudit,
-  type ContentQualityRow,
 } from "./amazon/content-quality";
 import {
   IMAGE_AUDIT_MINIMUM_IMAGES,
@@ -220,15 +218,7 @@ import {
   ReplenishmentAuditError,
   subscriptionAuditDiscountBucket,
 } from "./amazon/replenishment-audit";
-import { createSubscriptionAuditWorkbook } from "./amazon/subscription-audit-xlsx";
-import { createBusinessPricingAuditWorkbook } from "./amazon/business-pricing-audit-xlsx";
 import { createReviewAuditWorkbook } from "./amazon/review-audit-xlsx";
-import {
-  createAgedInventoryWorkbook,
-  createImageAuditWorkbook,
-  createListingsWorkbook,
-  createUnboundVariationWorkbook,
-} from "./amazon/xlsx";
 import {
   ContentAuditWorkbookError,
   parseContentAuditWorkbook,
@@ -273,6 +263,35 @@ import {
   type StandaloneAuditJobGateway,
   type StandaloneAuditKind,
 } from "./amazon/standalone-audit-job";
+import {
+  BusinessPricingAudit,
+  type BusinessPricingAuditPort,
+} from "./amazon/business-pricing-audit";
+import {
+  SubscriptionAuditOwner,
+  type SubscriptionAuditOwnerPort,
+} from "./amazon/subscription-audit-owner";
+import {
+  UnboundVariationAuditOwner,
+  type UnboundVariationAuditOwnerPort,
+} from "./amazon/unbound-variation-audit-owner";
+import {
+  AgedInventoryAudit,
+  type AgedInventoryAuditPort,
+} from "./amazon/aged-inventory-audit";
+import {
+  ContentAuditOwner,
+  contentAuditEvidenceRowDigest,
+  type ContentAuditOwnerPort,
+} from "./amazon/content-audit-owner";
+import {
+  ImageAuditOwner,
+  type ImageAuditOwnerPort,
+} from "./amazon/image-audit-owner";
+import {
+  ListingsExport,
+  type ListingsExportPort,
+} from "./amazon/listings-export";
 import {
   type DurableReportGatewayStatus,
   type DurableReportStatus,
@@ -319,15 +338,6 @@ type PreviewTicket = {
   fingerprint: string;
   expiresAt: number;
   reserved: boolean;
-};
-
-type ContentAuditVariationGrouping = {
-  variationRole: "parent" | "child" | "standalone" | "unknown";
-  variationParentSku: string | null;
-  variationFamilyKey: string | null;
-  variationTheme: string | null;
-  relationshipStatus: "complete" | "incomplete";
-  relationshipMessage: string | null;
 };
 
 type ContentBatchChange = {
@@ -740,26 +750,8 @@ const MARKETPLACE_CODES = Object.fromEntries(
   ]),
 ) as Record<MarketplaceId, string>;
 
-const SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
-const UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
-const IMAGE_AUDIT_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
 const CONTENT_BATCH_PREVIEW_TTL_MS = 15 * 60 * 1_000;
 const CONTENT_BATCH_MAX_CHANGED_SKUS = 500;
-const CONTENT_AUDIT_STANDALONE_FAMILY_KEY = "STANDALONE";
-const CONTENT_AUDIT_INCOMPLETE_FAMILY_KEY = "DATA_INCOMPLETE";
-
-function contentAuditRowValues(row: ContentQualityRow): ParsedContentAuditValues {
-  return {
-    title: row.title,
-    itemHighlight: row.itemHighlight,
-    bulletPoints: Array.from(
-      { length: 5 },
-      (_value, index) => row.bulletPoints[index] ?? "",
-    ),
-    productDescription: row.productDescription,
-    ingredients: row.ingredients,
-  };
-}
 
 function sameContentAuditValues(
   left: ParsedContentAuditValues,
@@ -771,55 +763,6 @@ function sameContentAuditValues(
     left.ingredients === right.ingredients &&
     left.bulletPoints.length === right.bulletPoints.length &&
     left.bulletPoints.every((value, index) => value === right.bulletPoints[index]);
-}
-
-function contentAuditWorkbookFamilyKey(
-  row: ContentQualityRow & ContentAuditVariationGrouping,
-): string {
-  if (row.variationRole === "standalone" && row.relationshipStatus === "complete") {
-    return CONTENT_AUDIT_STANDALONE_FAMILY_KEY;
-  }
-  if (
-    row.variationRole === "child" &&
-    row.relationshipStatus === "complete" &&
-    row.variationFamilyKey
-  ) {
-    return row.variationFamilyKey;
-  }
-  return CONTENT_AUDIT_INCOMPLETE_FAMILY_KEY;
-}
-
-function contentAuditSnapshotRowDigest(input: {
-  accountScope: string;
-  marketplaceId: MarketplaceId;
-  mode: "live" | "demo";
-  exportId: string;
-  fetchedAt: string;
-  sellerSku: string;
-  asin: string;
-  productType: string;
-  variationFamilyKey: string;
-  values: ParsedContentAuditValues;
-  readStatus: "complete" | "incomplete";
-}): string {
-  return stableFingerprint([
-    "content-audit-snapshot-row-v1",
-    input.accountScope,
-    input.marketplaceId,
-    input.mode,
-    input.exportId,
-    input.fetchedAt,
-    input.sellerSku,
-    input.asin,
-    input.productType,
-    input.variationFamilyKey,
-    input.values.title,
-    input.values.itemHighlight,
-    input.values.bulletPoints,
-    input.values.productDescription,
-    input.values.ingredients,
-    input.readStatus,
-  ]);
 }
 
 const CONTENT_AUDIT_LEGACY_LINE_BREAK_CANDIDATES = [
@@ -1050,7 +993,6 @@ function aplusAuditFenceAbort(): Error {
   return error;
 }
 
-type ImageAuditSnapshot = ReturnType<typeof auditListingImageRows>;
 type AuditSuiteListingsData = FbaCatalogExport;
 const AUDIT_SUITE_LISTINGS_RESOURCE = createAuditSuiteResourceKey<{
   reportId: string;
@@ -1551,39 +1493,19 @@ export class ApiRouter {
   private readonly catalogListings: CatalogListingsReadAdapter;
   private readonly fbaCatalogReports: FbaCatalogReports;
   private readonly brandSalesCoordinator: BrandSalesCoordinatorPort;
+  private readonly businessPricingAuditOwner: BusinessPricingAuditPort;
+  private readonly subscriptionAuditOwner: SubscriptionAuditOwnerPort;
+  private readonly unboundVariationAuditOwner: UnboundVariationAuditOwnerPort;
+  private readonly agedInventoryAuditOwner: AgedInventoryAuditPort;
+  private readonly contentAuditOwner: ContentAuditOwnerPort;
+  private readonly imageAuditOwner: ImageAuditOwnerPort;
+  private readonly listingsExportOwner: ListingsExportPort;
   private readonly advertising: AdvertisingGateway | null;
   private readonly auditSuite: AuditSuiteCoordinator;
   private readonly aplusAuditJobs: AplusAuditJobCoordinator;
   private readonly standaloneAuditJobs: StandaloneAuditJobCoordinator;
   private readonly previews = new Map<string, PreviewTicket>();
   private readonly listingAttributeWriteReservations = new Map<string, string>();
-  private readonly subscriptionAuditSnapshots = new Map<
-    string,
-    {
-      context: SpExecutionContext;
-      marketplaceId: MarketplaceId;
-      expiresAt: number;
-      snapshot: SubscriptionAuditSnapshot;
-    }
-  >();
-  private readonly unboundVariationAuditSnapshots = new Map<
-    string,
-    {
-      context: SpExecutionContext;
-      marketplaceId: MarketplaceId;
-      expiresAt: number;
-      snapshot: UnboundVariationAuditSnapshot;
-    }
-  >();
-  private readonly imageAuditSnapshots = new Map<
-    string,
-    {
-      context: SpExecutionContext;
-      marketplaceId: MarketplaceId;
-      expiresAt: number;
-      snapshot: ImageAuditSnapshot;
-    }
-  >();
   private readonly contentBatchPlans = new Map<string, ContentBatchPlan>();
   private readonly reviewAuditJobs = new Map<string, ReviewAuditJob>();
   private readonly reviewAuditPollFlights = new Map<string, Promise<ApiResponse>>();
@@ -1619,6 +1541,13 @@ export class ApiRouter {
     fbaSalesMetricsRoutes?: FbaSalesMetricsRoutesPort;
     brandSalesCoordinator?: BrandSalesCoordinatorPort;
     fbaInboundCoordinator?: FbaInboundCoordinatorPort;
+    businessPricingAudit?: BusinessPricingAuditPort;
+    subscriptionAudit?: SubscriptionAuditOwnerPort;
+    unboundVariationAudit?: UnboundVariationAuditOwnerPort;
+    agedInventoryAudit?: AgedInventoryAuditPort;
+    contentAudit?: ContentAuditOwnerPort;
+    imageAudit?: ImageAuditOwnerPort;
+    listingsExport?: ListingsExportPort;
     advertisingStrategyWait?: typeof waitMilliseconds;
     fbaInboundReads?: Partial<FbaInboundReadsPort>;
     inboundNoncomplianceDemoReports?: Partial<
@@ -1753,6 +1682,66 @@ export class ApiRouter {
       demo: defaultCatalogDemo,
       pace: input.catalogPace,
       now: input.catalogNow,
+    });
+    this.subscriptionAuditOwner = input.subscriptionAudit ??
+      new SubscriptionAuditOwner({
+        context: this.spExecutionContext,
+        readSnapshot: async ({ marketplaceId, months, signal }) =>
+          getFbaSubscriptionAudit({ marketplaceId, months, signal }),
+      });
+    this.unboundVariationAuditOwner = input.unboundVariationAudit ??
+      new UnboundVariationAuditOwner({
+        context: this.spExecutionContext,
+        source: {
+          begin: (request) => this.fbaCatalogReports.begin({
+            purpose: "catalog",
+            ...request,
+          }),
+          status: (request) => this.fbaCatalogReports.status(request),
+          read: (request) => this.getSharedUnboundVariationAuditData(request),
+        },
+      });
+    this.businessPricingAuditOwner = input.businessPricingAudit ??
+      new BusinessPricingAudit({
+        context: this.spExecutionContext,
+        startReport: (request) => this.fbaCatalogReports.begin({
+          purpose: "business-pricing-audit",
+          ...request,
+        }),
+        statusReport: (request) => this.fbaCatalogReports.status(request),
+        readReport: (request) => this.getSharedBusinessPricingAuditData(request),
+        getStandaloneJob: (request) => this.standaloneAuditJobs.get(request),
+      });
+    this.agedInventoryAuditOwner = input.agedInventoryAudit ??
+      new AgedInventoryAudit({
+        context: this.spExecutionContext,
+        beginReport: (request) => this.agedInventoryReads.begin(request),
+        statusReport: (request) => this.agedInventoryReads.status(request),
+        readReport: (request) => this.agedInventoryReads.read(request),
+      });
+    this.listingsExportOwner = input.listingsExport ?? new ListingsExport({
+      context: this.spExecutionContext,
+      startReport: (request) => this.fbaCatalogReports.begin({
+        purpose: "catalog",
+        ...request,
+      }),
+      statusReport: (request) => this.fbaCatalogReports.status(request),
+      readReport: (request) => this.fbaCatalogReports.read({
+        view: "export",
+        ...request,
+      }),
+    });
+    this.contentAuditOwner = input.contentAudit ?? new ContentAuditOwner({
+      context: this.spExecutionContext,
+      readGrouping: (request) => getFbaVariationGroupingData(request),
+      evidence: {
+        saveContentAuditSnapshotEvidence: (evidence) =>
+          this.store.saveContentAuditSnapshotEvidence(evidence),
+      },
+    });
+    this.imageAuditOwner = input.imageAudit ?? new ImageAuditOwner({
+      context: this.spExecutionContext,
+      readGrouping: (request) => getFbaVariationGroupingData(request),
     });
     this.brandSalesCoordinator = input.brandSalesCoordinator ??
       createBrandSalesCoordinator({
@@ -1896,13 +1885,17 @@ export class ApiRouter {
     this.contextStateRevision += 1;
     this.reportBroker.clear();
     this.brandSalesCoordinator.clear();
+    this.businessPricingAuditOwner.clear();
+    this.subscriptionAuditOwner.clear();
+    this.unboundVariationAuditOwner.clear();
+    this.agedInventoryAuditOwner.clear();
+    this.contentAuditOwner.clear();
+    this.imageAuditOwner.clear();
+    this.listingsExportOwner.clear();
     this.aplusAuditJobs.clear();
     this.standaloneAuditJobs.clear();
     this.previews.clear();
     this.listingAttributeWriteReservations.clear();
-    this.subscriptionAuditSnapshots.clear();
-    this.unboundVariationAuditSnapshots.clear();
-    this.imageAuditSnapshots.clear();
     this.contentBatchPlans.clear();
     for (const jobId of [...this.reviewAuditJobs.keys()]) {
       this.deleteReviewAuditJob(jobId);
@@ -2063,11 +2056,11 @@ export class ApiRouter {
       case "PATCH /api/sp-api/listings":
         return this.commitPrice(request);
       case "POST /api/sp-api/business-pricing-audit":
-        return this.startBusinessPricingAudit(request);
+        return this.businessPricingAuditOwner.start(request);
       case "GET /api/sp-api/business-pricing-audit":
-        return this.businessPricingAuditStatusOrData(request);
+        return this.businessPricingAuditOwner.statusOrData(request);
       case "GET /api/sp-api/business-pricing-audit/export":
-        return this.businessPricingAuditExport(request);
+        return this.businessPricingAuditOwner.download(request);
       case "GET /api/sp-api/business-pricing":
         return this.businessPricing(request);
       case "POST /api/sp-api/business-pricing":
@@ -2099,9 +2092,9 @@ export class ApiRouter {
       case "GET /api/sp-api/subscribe-save":
         return this.statelessCapabilities.subscribeSave(request);
       case "GET /api/sp-api/subscription-audit":
-        return this.subscriptionAudit(request);
+        return this.subscriptionAuditOwner.read(request);
       case "GET /api/sp-api/subscription-audit/export":
-        return this.subscriptionAuditExport(request);
+        return this.subscriptionAuditOwner.download(request);
       case "GET /api/sp-api/accounting/capabilities":
         return this.planningCapabilities.accountingCapabilities(request);
       case "POST /api/sp-api/accounting/access-plan":
@@ -2119,15 +2112,15 @@ export class ApiRouter {
       case "GET /api/sp-api/replenishment-plan":
         return this.fbaSalesMetricsRoutes.replenishment(request);
       case "POST /api/sp-api/aged-inventory":
-        return this.startAgedInventory(request);
+        return this.agedInventoryAuditOwner.start(request);
       case "GET /api/sp-api/aged-inventory":
-        return this.agedInventoryStatusOrData(request);
+        return this.agedInventoryAuditOwner.statusDataOrDownload(request);
       case "GET /api/sp-api/variation-family":
         return this.statelessCapabilities.variationFamily(request);
       case "POST /api/sp-api/variation-audit":
-        return this.startUnboundVariationAudit(request);
+        return this.unboundVariationAuditOwner.start(request);
       case "GET /api/sp-api/variation-audit":
-        return this.unboundVariationAuditStatusDataOrDownload(request);
+        return this.unboundVariationAuditOwner.statusDataOrDownload(request);
       case "GET /api/sp-api/variation-move":
         return this.variationMovePreparation(request);
       case "POST /api/sp-api/variation-move":
@@ -2230,27 +2223,37 @@ export class ApiRouter {
       reportId: string;
       documentId: string;
       signal?: AbortSignal;
+      expectedContext?: SpExecutionContext;
     }>,
   ): Promise<UnboundVariationAuditSnapshot> {
-    const context = await this.spExecutionContext.capture(input.marketplaceId);
+    const context = input.expectedContext ??
+      await this.spExecutionContext.capture(input.marketplaceId);
+    if (input.expectedContext) {
+      await this.spExecutionContext.assertCurrent(input.expectedContext);
+    }
     const seeds = await this.fbaCatalogReports.read({
       view: "seeds",
       marketplaceId: input.marketplaceId,
       reportId: input.reportId,
       documentId: input.documentId,
       signal: input.signal,
+      expectedContext: context,
     });
     if (context.mode === "demo") {
-      return getDemoUnboundVariationAuditData({
+      const snapshot = await getDemoUnboundVariationAuditData({
         marketplaceId: input.marketplaceId,
         signal: input.signal,
       });
+      await this.spExecutionContext.assertCurrent(context);
+      return snapshot;
     }
-    return readUnboundVariationAudit(this.catalogListings, {
+    const snapshot = await readUnboundVariationAudit(this.catalogListings, {
       marketplaceId: input.marketplaceId,
       seeds,
       signal: input.signal,
     });
+    await this.spExecutionContext.assertCurrent(context);
+    return snapshot;
   }
 
   private async getSharedBusinessPricingAuditData(
@@ -2260,6 +2263,7 @@ export class ApiRouter {
       documentId: string;
       signal?: AbortSignal;
       heartbeat?: () => void;
+      expectedContext?: SpExecutionContext;
     }>,
   ): Promise<BusinessPricingAuditSnapshot> {
     return this.fbaCatalogReports.read({
@@ -2269,6 +2273,7 @@ export class ApiRouter {
       documentId: input.documentId,
       signal: input.signal,
       heartbeat: input.heartbeat,
+      expectedContext: input.expectedContext,
     });
   }
 
@@ -2294,123 +2299,6 @@ export class ApiRouter {
       return json(snapshot);
     } catch (error) {
       return apiError(error, "查詢 SKU 價格時發生未預期的錯誤。");
-    }
-  }
-
-  private async startBusinessPricingAudit(
-    request: ApiRequest,
-  ): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    if (
-      !body ||
-      Object.keys(body).length !== 1 ||
-      !("marketplaceId" in body)
-    ) {
-      return invalid(
-        "B2B 價格健檢只接受 marketplaceId；帳號與報表身分由主程序綁定。",
-      );
-    }
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    if (!marketplaceId) return invalid("請選擇要健檢的 Amazon 站點。");
-    try {
-      const status = await this.startSharedAllListingsReport(
-        marketplaceId,
-        true,
-        undefined,
-        { purpose: "business-pricing-audit" },
-      );
-      return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
-    } catch (error) {
-      return apiError(error, "開始建立 B2B 價格健檢報表時發生未預期的錯誤。");
-    }
-  }
-
-  private async businessPricingAuditStatusOrData(
-    request: ApiRequest,
-  ): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const reportId = this.reportIdentifier(request.query.reportId);
-    if (!marketplaceId || !reportId) {
-      return invalid("B2B 價格健檢報表資訊無效，請重新掃描。");
-    }
-    if (request.query.data !== "1") {
-      try {
-        const status = await this.getSharedAllListingsReportStatus({
-          marketplaceId,
-          reportId,
-        });
-        return json({ ...status, message: status.notice });
-      } catch (error) {
-        return apiError(error, "查詢 B2B 價格健檢進度時發生未預期的錯誤。");
-      }
-    }
-    const documentId = this.reportIdentifier(request.query.documentId);
-    if (!documentId) {
-      return invalid("B2B 價格健檢文件資訊無效，請重新掃描。");
-    }
-    try {
-      return json(await this.getSharedBusinessPricingAuditData({
-        marketplaceId,
-        reportId,
-        documentId,
-      }));
-    } catch (error) {
-      return apiError(error, "整理 B2B 價格健檢資料時發生未預期的錯誤。");
-    }
-  }
-
-  private async businessPricingAuditExport(
-    request: ApiRequest,
-  ): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const mode = request.query.mode === "live" || request.query.mode === "demo"
-      ? request.query.mode
-      : null;
-    const jobId = this.reportIdentifier(request.query.jobId);
-    const contextId = this.reportIdentifier(request.query.contextId);
-    if (!marketplaceId || !mode || !jobId || !contextId) {
-      return invalid("B2B 價格 Excel 工作資訊無效，請重新執行健檢。");
-    }
-    try {
-      const receipt = await this.standaloneAuditJobs.get({
-        kind: "businessPricing",
-        marketplaceId,
-        mode,
-        jobId,
-        contextId,
-      });
-      if (!receipt.ready || receipt.status !== "completed") {
-        return invalid(
-          "B2B 價格健檢尚未完成，不能匯出不完整快照。",
-          409,
-          "SNAPSHOT_NOT_READY",
-        );
-      }
-      const snapshot = receipt.snapshot as BusinessPricingAuditSnapshot;
-      const marketplace = MARKETPLACES[marketplaceId];
-      const workbook = createBusinessPricingAuditWorkbook({
-        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
-        snapshot,
-      });
-      const date = snapshot.fetchedAt.slice(0, 10);
-      const filename = `amazon-fba-business-pricing-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
-      const localizedFilename = `FBA-B2B價格健檢-${marketplace.shortLabel}-${date}.xlsx`;
-      return bytes(
-        workbook,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        {
-          "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(localizedFilename)}`,
-          "x-exported-fba-sku-count": String(snapshot.summary.totalFbaSkuCount),
-          "x-b2b-price-mismatch-count": String(
-            snapshot.summary.recommendedPriceMismatch,
-          ),
-          "x-b2b-tier-mismatch-count": String(
-            snapshot.summary.recommendedQuantityDiscountMismatch,
-          ),
-        },
-      );
-    } catch (error) {
-      return apiError(error, "建立 B2B 價格健檢 Excel 時發生未預期的錯誤。");
     }
   }
 
@@ -2676,124 +2564,6 @@ export class ApiRouter {
       return json(result);
     } catch (error) {
       return apiError(error, "送出 Amazon Business 價格更新時發生未預期的錯誤。");
-    }
-  }
-
-  private pruneUnboundVariationAuditSnapshots(now = Date.now()): void {
-    for (const [id, entry] of this.unboundVariationAuditSnapshots) {
-      if (entry.expiresAt <= now) this.unboundVariationAuditSnapshots.delete(id);
-    }
-  }
-
-  private async startUnboundVariationAudit(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    const marketplaceId = parseMarketplace(body?.marketplaceId);
-    if (!body || !marketplaceId) {
-      return invalid("請選擇要健檢未綁變體的 Amazon 站點。");
-    }
-    try {
-      const status = await this.startSharedAllListingsReport(marketplaceId, true);
-      return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
-    } catch (error) {
-      return apiError(error, "開始建立未綁變體健檢報表時發生未預期的錯誤。");
-    }
-  }
-
-  private async unboundVariationAuditStatusDataOrDownload(
-    request: ApiRequest,
-  ): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    if (!marketplaceId) return invalid("未綁變體健檢站點無效，請重新掃描。");
-    if (request.query.download === "1") {
-      const exportId = this.reportIdentifier(request.query.exportId);
-      if (!exportId) {
-        return invalid("未綁變體 Excel 快照資訊無效，請重新掃描。");
-      }
-      this.pruneUnboundVariationAuditSnapshots();
-      const stored = this.unboundVariationAuditSnapshots.get(exportId);
-      if (!stored || stored.marketplaceId !== marketplaceId) {
-        return invalid(
-          "未綁變體健檢快照已過期或站點不符，請重新掃描。",
-          410,
-          "SNAPSHOT_EXPIRED",
-        );
-      }
-      const context = await this.spExecutionContext.capture(marketplaceId);
-      try {
-        await this.spExecutionContext.assertCurrent(stored.context);
-      } catch (error) {
-        this.unboundVariationAuditSnapshots.delete(exportId);
-        if (error instanceof SpExecutionContextError) {
-          return invalid(
-            error.code === "ACCOUNT_SCOPE_CHANGED"
-              ? "Amazon 帳號範圍已改變，舊未綁變體快照不可匯出。"
-              : error.message,
-            409,
-            error.code,
-          );
-        }
-        throw error;
-      }
-      try {
-        const marketplace = MARKETPLACES[marketplaceId];
-        const workbook = createUnboundVariationWorkbook({
-          marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
-          fetchedAt: stored.snapshot.fetchedAt,
-          rows: stored.snapshot.rows,
-          incompleteRows: stored.snapshot.incompleteRows,
-          allVariationRows: stored.snapshot.allVariationRows,
-        });
-        const date = stored.snapshot.fetchedAt.slice(0, 10);
-        const filename = `amazon-fba-unbound-variation-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
-        const localizedFilename = `FBA-未綁變體健檢-${marketplace.shortLabel}-${date}.xlsx`;
-        return bytes(
-          workbook,
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          {
-            "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(localizedFilename)}`,
-            "x-exported-unbound-fba-sku-count": String(stored.snapshot.rows.length),
-            "x-exported-incomplete-sku-count": String(
-              stored.snapshot.incompleteRows.length,
-            ),
-          },
-        );
-      } catch (error) {
-        return apiError(error, "建立未綁變體健檢 Excel 時發生未預期的錯誤。");
-      }
-    }
-
-    const reportId = this.reportIdentifier(request.query.reportId);
-    if (!reportId) return invalid("未綁變體報表資訊無效，請重新掃描。");
-    if (request.query.data !== "1") {
-      try {
-        const status = await this.getSharedAllListingsReportStatus({ marketplaceId, reportId });
-        return json({ ...status, message: status.notice });
-      } catch (error) {
-        return apiError(error, "查詢未綁變體報表狀態時發生未預期的錯誤。");
-      }
-    }
-    const documentId = this.reportIdentifier(request.query.documentId);
-    if (!documentId) return invalid("未綁變體報表文件資訊無效，請重新掃描。");
-    try {
-      const { context, value: snapshot } = await this.runContextBoundWork(
-        marketplaceId,
-        () => this.getSharedUnboundVariationAuditData({
-          marketplaceId,
-          reportId,
-          documentId,
-        }),
-      );
-      const exportId = randomUUID();
-      this.pruneUnboundVariationAuditSnapshots();
-      this.unboundVariationAuditSnapshots.set(exportId, {
-        context,
-        marketplaceId,
-        expiresAt: Date.now() + UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS,
-        snapshot: structuredClone(snapshot),
-      });
-      return json({ ...snapshot, exportId });
-    } catch (error) {
-      return apiError(error, "整理未綁變體健檢資料時發生未預期的錯誤。");
     }
   }
 
@@ -3411,7 +3181,7 @@ export class ApiRouter {
           values: ParsedContentAuditValues,
           readStatus: "complete" | "incomplete",
         ) =>
-          contentAuditSnapshotRowDigest({
+          contentAuditEvidenceRowDigest({
             accountScope,
             marketplaceId,
             mode,
@@ -4222,154 +3992,6 @@ export class ApiRouter {
     ]);
   }
 
-  private pruneSubscriptionAuditSnapshots(now = Date.now()): void {
-    for (const [id, entry] of this.subscriptionAuditSnapshots) {
-      if (entry.expiresAt <= now) this.subscriptionAuditSnapshots.delete(id);
-    }
-  }
-
-  private async subscriptionAudit(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const requestedMonths = integer(request.query.months, 6, 1, 23);
-    const months = requestedMonths !== null && [6, 12, 23].includes(requestedMonths)
-      ? requestedMonths
-      : null;
-    if (!marketplaceId || months === null) {
-      return invalid("請選擇支援的站點；月度歷史只能選最近 6、12 或 23 個完整月份。");
-    }
-    try {
-      const { context, value: snapshot } = await this.runContextBoundWork(
-        marketplaceId,
-        () => getFbaSubscriptionAudit({ marketplaceId, months }),
-      );
-      const exportId = randomUUID();
-      this.pruneSubscriptionAuditSnapshots();
-      this.subscriptionAuditSnapshots.set(exportId, {
-        context,
-        marketplaceId,
-        expiresAt: Date.now() + SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS,
-        snapshot: structuredClone(snapshot),
-      });
-      return json({
-        ...snapshot,
-        offers: snapshot.offers.map((offer) => ({
-          ...offer,
-          monthlySeries: offer.monthlySeries.map((metric) => ({
-            month: metric.interval.month,
-            subscriptionRevenue: metric.subscriptionRevenue,
-            shippedSubscriptionUnits: metric.shippedSubscriptionUnits,
-            activeSubscriptionsAtPeriodEnd: metric.activeSubscriptionsAtPeriodEnd,
-            currencyCode: metric.currencyCode,
-          })),
-        })),
-        exportId,
-      });
-    } catch (error) {
-      return apiError(error, "載入全站 FBA Subscribe & Save 健檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async subscriptionAuditExport(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const snapshotId = this.reportIdentifier(
-      request.query.exportId ?? request.query.snapshotId,
-    );
-    if (!marketplaceId || !snapshotId) {
-      return invalid("Subscribe & Save 匯出資訊無效，請重新執行健檢。");
-    }
-    this.pruneSubscriptionAuditSnapshots();
-    const stored = this.subscriptionAuditSnapshots.get(snapshotId);
-    if (!stored || stored.marketplaceId !== marketplaceId) {
-      return invalid(
-        "Subscribe & Save 健檢快照已過期或站點不符，請重新同步。",
-        410,
-        "SNAPSHOT_EXPIRED",
-      );
-    }
-    await this.spExecutionContext.capture(marketplaceId);
-    try {
-      await this.spExecutionContext.assertCurrent(stored.context);
-    } catch (error) {
-      this.subscriptionAuditSnapshots.delete(snapshotId);
-      if (error instanceof SpExecutionContextError) {
-        return invalid(
-          error.code === "ACCOUNT_SCOPE_CHANGED"
-            ? "Amazon 帳號範圍已改變，舊健檢快照不可匯出。"
-            : error.message,
-          409,
-          error.code,
-        );
-      }
-      throw error;
-    }
-    const snapshot = stored.snapshot;
-    const metricMonths = snapshot.intervals.map((interval) => interval.month);
-    if (!metricMonths.length) {
-      return invalid("健檢快照缺少官方完整月份，請重新同步。", 409, "SNAPSHOT_INVALID");
-    }
-    const problems = snapshot.offers.map((offer) => {
-      const rawDiscount = offer.sellerFundedBaseDiscount;
-      const exactBucket = subscriptionAuditDiscountBucket(rawDiscount);
-      return {
-        bucket: exactBucket,
-        problem: rawDiscount === null
-          ? "Amazon 未回傳 Seller 基礎折扣；只列入問題 SKU，並非 0%。"
-          : exactBucket === null
-            ? `Amazon 回傳非標準 Seller 基礎折扣 ${rawDiscount}%；只列入問題 SKU。`
-            : `${exactBucket}% Seller 基礎折扣組`,
-        sellerSku: offer.sellerSku,
-        asin: offer.asin,
-        currentPrice: offer.price.amount,
-        currencyCode: offer.price.currencyCode,
-        sellerFundedBaseDiscount: offer.sellerFundedBaseDiscount,
-        sellerFundedTieredDiscount: offer.sellerFundedTieredDiscount,
-        currentActiveSubscriptions: offer.currentActiveSubscriptions,
-        monthlySeries: offer.monthlySeries.map((metric) => ({
-          month: metric.interval.month,
-          revenueCurrencyCode: metric.currencyCode,
-          subscriptionRevenue: metric.subscriptionRevenue,
-          shippedSubscriptionUnits: metric.shippedSubscriptionUnits,
-          activeSubscriptionsAtPeriodEnd: metric.activeSubscriptionsAtPeriodEnd,
-        })),
-        forecastDeliveries: offer.forecastDeliveries,
-        fbaEvidence: offer.fbaEvidence,
-      };
-    });
-    try {
-      const marketplace = MARKETPLACES[marketplaceId];
-      const workbook = createSubscriptionAuditWorkbook({
-        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
-        generatedAt: snapshot.fetchedAt,
-        metricMonths,
-        currentActiveSubscriptions: snapshot.summary.currentActiveSubscriptions,
-        provenSubscriptionRevenue: snapshot.summary.provenSubscriptionRevenue,
-        revenueCurrencyCode: snapshot.summary.revenueCurrencyCode,
-        revenueCoverage: snapshot.summary.revenueCoverage,
-        inventoryEvidence: snapshot.inventoryEvidence,
-        upstreamCoverage: snapshot.upstreamCoverage,
-        excluded: snapshot.excluded.flatMap((row) =>
-          row.reason === "FBA_NOT_PROVEN" ? [] : [{
-            sellerSku: row.sellerSku,
-            fbaEvidence: row.fbaEvidence,
-            reason: row.reason,
-          }]),
-        problems,
-      });
-      const filename = `amazon-fba-subscribe-save-audit-${marketplace.shortLabel.toLowerCase()}-${snapshot.fetchedAt.slice(0, 10)}.xlsx`;
-      return bytes(
-        workbook,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        {
-          "content-disposition": `attachment; filename="${filename}"`,
-          "x-exported-fba-offer-count": String(snapshot.offers.length),
-          "x-subscription-audit-months": String(snapshot.requestedMonths),
-        },
-      );
-    } catch (error) {
-      return apiError(error, "建立 Subscribe & Save 健檢 Excel 時發生未預期的錯誤。");
-    }
-  }
-
   private pruneReviewAuditJobs(now = Date.now()): void {
     for (const [jobId, job] of this.reviewAuditJobs) {
       if (job.signal.aborted) {
@@ -4505,7 +4127,7 @@ export class ApiRouter {
     }
     try {
       const context = await this.spExecutionContext.capture(marketplaceId);
-      const status = await this.startSharedAllListingsReport(marketplaceId, true);
+      const status = await this.listingsExportOwner.start({ marketplaceId });
       await this.spExecutionContext.assertCurrent(context);
       if (status.mode !== context.mode) {
         return invalid(
@@ -4779,94 +4401,10 @@ export class ApiRouter {
     const marketplaceId = parseMarketplace(body?.marketplaceId);
     if (!body || !marketplaceId) return invalid("請選擇要匯出的 Amazon 站點。");
     try {
-      const status = await this.startSharedAllListingsReport(marketplaceId, true);
+      const status = await this.listingsExportOwner.start({ marketplaceId });
       return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
     } catch (error) {
       return apiError(error, "開始建立全商品 Excel 時發生未預期的錯誤。");
-    }
-  }
-
-  private async startAgedInventory(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    const marketplaceId = parseMarketplace(body?.marketplaceId);
-    if (!body || !marketplaceId) {
-      return invalid("請選擇要查詢庫齡的 Amazon 站點。");
-    }
-    try {
-      const status = await this.agedInventoryReads.begin({
-        marketplaceId,
-        explicitRetry: true,
-        freshCompleted: true,
-      });
-      return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
-    } catch (error) {
-      return apiError(error, "開始建立 FBA 庫齡報表時發生未預期的錯誤。");
-    }
-  }
-
-  private async agedInventoryStatusOrData(
-    request: ApiRequest,
-  ): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const reportId = this.reportIdentifier(request.query.reportId);
-    if (!marketplaceId || !reportId) {
-      return invalid("FBA 庫齡報表查詢資訊無效，請重新同步。");
-    }
-    const dataRequested = request.query.data === "1";
-    const downloadRequested = request.query.download === "1";
-    if (!dataRequested && !downloadRequested) {
-      try {
-        const status = await this.agedInventoryReads.status({
-          marketplaceId,
-          reportId,
-        });
-        return json({ ...status, message: status.notice });
-      } catch (error) {
-        return apiError(error, "查詢 FBA 庫齡報表狀態時發生未預期的錯誤。");
-      }
-    }
-    const documentId = this.reportIdentifier(request.query.documentId);
-    if (!documentId) {
-      return invalid("FBA 庫齡報表文件資訊無效，請重新同步。");
-    }
-    try {
-      const snapshot = await this.agedInventoryReads.read({
-        marketplaceId,
-        reportId,
-        documentId,
-      });
-      if (!downloadRequested) return json(snapshot);
-      const marketplace = MARKETPLACES[marketplaceId];
-      const workbook = createAgedInventoryWorkbook({
-        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
-        fetchedAt: snapshot.fetchedAt,
-        rows: snapshot.rows,
-        excessAvailability: snapshot.summary.excessAvailability,
-        excessReportedSkuCount: snapshot.summary.excessReportedSkuCount,
-        storageCostAvailability: snapshot.summary.storageCostAvailability,
-        storageCostReportedSkuCount: snapshot.summary.storageCostReportedSkuCount,
-        agedSurchargeAvailability: snapshot.summary.agedSurchargeAvailability,
-        agedSurchargeReportedSkuCount: snapshot.summary.agedSurchargeReportedSkuCount,
-        expirationNotice: snapshot.expiration.notice,
-      });
-      const date = snapshot.fetchedAt.slice(0, 10);
-      const filename = `amazon-fba-inventory-age-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
-      return bytes(
-        workbook,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        {
-          "content-disposition": `attachment; filename="${filename}"`,
-          "x-exported-fba-sku-count": String(snapshot.rows.length),
-        },
-      );
-    } catch (error) {
-      return apiError(error, "整理或匯出 FBA 庫齡資料時發生未預期的錯誤。");
-    }
-  }
-
-  private pruneImageAuditSnapshots(now = Date.now()): void {
-    for (const [exportId, entry] of this.imageAuditSnapshots) {
-      if (entry.expiresAt <= now) this.imageAuditSnapshots.delete(exportId);
     }
   }
 
@@ -4878,58 +4416,6 @@ export class ApiRouter {
     }
   }
 
-  private async downloadImageAuditSnapshot(
-    marketplaceId: MarketplaceId,
-    exportId: string,
-  ): Promise<ApiResponse> {
-    this.pruneImageAuditSnapshots();
-    const stored = this.imageAuditSnapshots.get(exportId);
-    if (!stored || stored.marketplaceId !== marketplaceId) {
-      return invalid(
-        "圖片健檢 Excel 快照已過期或站點不符，請重新掃描。",
-        410,
-        "SNAPSHOT_EXPIRED",
-      );
-    }
-    await this.spExecutionContext.capture(marketplaceId);
-    try {
-      await this.spExecutionContext.assertCurrent(stored.context);
-    } catch (error) {
-      this.imageAuditSnapshots.delete(exportId);
-      if (error instanceof SpExecutionContextError) {
-        return invalid(
-          error.code === "ACCOUNT_SCOPE_CHANGED"
-            ? "Amazon 帳號範圍已改變，舊圖片健檢快照不可匯出。"
-            : error.message,
-          409,
-          error.code,
-        );
-      }
-      throw error;
-    }
-    const marketplace = MARKETPLACES[marketplaceId];
-    const snapshot = stored.snapshot;
-    const workbook = createImageAuditWorkbook({
-      marketplaceId,
-      marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
-      fetchedAt: snapshot.fetchedAt,
-      minimumImages: snapshot.minimumImages,
-      rows: snapshot.rows,
-    });
-    const date = snapshot.fetchedAt.slice(0, 10);
-    const filename = `amazon-fba-image-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
-    return bytes(
-      workbook,
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      {
-        "content-disposition": `attachment; filename="${filename}"`,
-        "x-exported-fba-sku-count": String(snapshot.summary.total),
-        "x-image-audit-under-minimum-count": String(snapshot.summary.underMinimum),
-        "x-image-audit-incomplete-count": String(snapshot.summary.incomplete),
-      },
-    );
-  }
-
   private async exportStatusOrDownload(request: ApiRequest): Promise<ApiResponse> {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     const auditRequested = request.query.audit === "1";
@@ -4938,13 +4424,24 @@ export class ApiRouter {
     if (auditRequested && imageAuditRequested) {
       return invalid("一次只能執行一種全站健檢。");
     }
+    if (auditRequested && request.query.download === "1") {
+      const exportId = this.reportIdentifier(request.query.exportId);
+      if (!exportId) {
+        return invalid("文案健檢 Excel 快照資訊無效，請重新掃描。");
+      }
+      try {
+        return await this.contentAuditOwner.download({ marketplaceId, exportId });
+      } catch (error) {
+        return apiError(error, "建立文案健檢 Excel 時發生未預期的錯誤。");
+      }
+    }
     if (imageAuditRequested && request.query.download === "1") {
       const exportId = this.reportIdentifier(request.query.exportId);
       if (!exportId) {
         return invalid("圖片健檢 Excel 快照資訊無效，請重新掃描。");
       }
       try {
-        return await this.downloadImageAuditSnapshot(marketplaceId, exportId);
+        return await this.imageAuditOwner.download({ marketplaceId, exportId });
       } catch (error) {
         return apiError(error, "建立圖片健檢 Excel 時發生未預期的錯誤。");
       }
@@ -4953,7 +4450,10 @@ export class ApiRouter {
     if (!reportId) return invalid("報表查詢資訊無效，請重新匯出。");
     if (request.query.download !== "1" && !auditRequested && !imageAuditRequested) {
       try {
-        const status = await this.getSharedAllListingsReportStatus({ marketplaceId, reportId });
+        const status = await this.listingsExportOwner.status({
+          marketplaceId,
+          reportId,
+        });
         return json({ ...status, message: status.notice });
       } catch (error) {
         return apiError(error, "查詢全商品報表狀態時發生未預期的錯誤。");
@@ -4962,130 +4462,30 @@ export class ApiRouter {
     const documentId = this.reportIdentifier(request.query.documentId);
     if (!documentId) return invalid("報表文件資訊無效，請重新匯出。");
     try {
-      const { context, value: data } = await this.runContextBoundWork(
+      const captured = await this.listingsExportOwner.capture({
         marketplaceId,
-        () => this.getSharedAllListingsExportData({
-          marketplaceId,
-          reportId,
-          documentId,
-        }),
-      );
-      if (auditRequested) {
-        const { value: grouping } = await this.runContextBoundWork(
-          marketplaceId,
-          () => getFbaVariationGroupingData({
+        reportId,
+        documentId,
+      });
+      const { context, snapshot: data } = captured;
+      if (auditRequested || imageAuditRequested) {
+        if (auditRequested) {
+          return json(await this.contentAuditOwner.captureFromListings({
+            context,
             marketplaceId,
-            rows: data.rows,
-          }),
-        );
-        const groupingBySku = new Map(
-          grouping.rows.map((row) => [row.sellerSku, row] as const),
-        );
-        const auditableRows = grouping.rows.filter((row) => row.role !== "parent");
-        const audit = auditListingContentRows({
-          marketplaceId,
-          fetchedAt: data.fetchedAt,
-          rows: auditableRows,
-        });
-        const exportId = randomUUID();
-        const snapshot = {
-          ...audit,
-          exportId,
-          rows: audit.rows.map((row) => {
-            const relationship = groupingBySku.get(row.sellerSku);
-            return {
-              ...row,
-              variationRole: relationship?.role ?? "unknown",
-              variationParentSku: relationship?.parentSku ?? null,
-              variationFamilyKey: relationship?.familyKey ?? row.sellerSku,
-              variationTheme: relationship?.theme ?? null,
-              relationshipStatus: relationship?.status ?? "incomplete",
-              relationshipMessage: relationship?.message ??
-                "Amazon relationships 未與文案列完整對齊；本列不會被猜入任一變體 family。",
-            };
-          }),
-        };
-        const { accountScope, mode } = context;
-        await this.store.saveContentAuditSnapshotEvidence({
-          exportId,
-          marketplaceId,
-          accountScope,
-          mode,
-          fetchedAt: snapshot.fetchedAt,
-          rowDigests: snapshot.rows.map((row) =>
-            contentAuditSnapshotRowDigest({
-              accountScope,
-              marketplaceId,
-              mode,
-              exportId,
-              fetchedAt: snapshot.fetchedAt,
-              sellerSku: row.sellerSku,
-              asin: row.asin,
-              productType: row.productType,
-              variationFamilyKey: contentAuditWorkbookFamilyKey(row),
-              values: contentAuditRowValues(row),
-              readStatus: row.readStatus,
-            })),
-        });
-        return json(snapshot);
-      }
-      if (imageAuditRequested) {
-        const snapshot = auditListingImageRows({
-          marketplaceId,
-          fetchedAt: data.fetchedAt,
-          rows: data.rows.map((row) => ({
-            sellerSku: row.sellerSku,
-            asin: row.asin,
-            productType: row.productType,
-            title: row.title,
-            imageUrls: row.imageUrls,
-            readStatus: row.readStatus,
-            readErrors: row.readErrors,
-          })),
-          minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
-        });
-        const exportId = randomUUID();
-        this.pruneImageAuditSnapshots();
-        this.imageAuditSnapshots.set(exportId, {
+            listings: data,
+          }));
+        }
+        return json(await this.imageAuditOwner.captureFromListings({
           context,
           marketplaceId,
-          expiresAt: Date.now() + IMAGE_AUDIT_SNAPSHOT_TTL_MS,
-          snapshot: structuredClone(snapshot),
-        });
-        return json({ ...snapshot, exportId });
+          listings: data,
+        }));
       }
-      const marketplace = MARKETPLACES[marketplaceId];
-      const workbook = createListingsWorkbook({
-        marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
-        fetchedAt: data.fetchedAt,
-        rows: data.rows.map((row) => ({
-          marketplaceLabel: row.marketplace,
-          sku: row.sellerSku,
-          asin: row.asin,
-          productType: row.productType,
-          title: row.title,
-          bulletPoints: row.bulletPoints,
-          ingredients: row.ingredients,
-          status: row.status,
-          lastUpdated: row.updatedAt || null,
-        })),
-        errors: data.errors.map((error) => ({
-          sku: error.sellerSku,
-          type: error.kind,
-          description: error.message,
-        })),
+      return await this.listingsExportOwner.download({
+        marketplaceId,
+        exportId: captured.exportId,
       });
-      const date = data.fetchedAt.slice(0, 10);
-      const filename = `amazon-listing-content-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
-      return bytes(
-        workbook,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        {
-          "content-disposition": `attachment; filename="${filename}"`,
-          "x-exported-listing-count": String(data.rows.length),
-          "x-export-warning-count": String(data.errors.length),
-        },
-      );
     } catch (error) {
       return apiError(error, "建立全商品 Excel 時發生未預期的錯誤。");
     }
@@ -5262,129 +4662,28 @@ export class ApiRouter {
     return current;
   }
 
-  private async standaloneListingReport(input: Readonly<{
-    context: StandaloneAuditJobBoundContext;
-    signal: AbortSignal;
-    heartbeat(): void;
-    updateProgress: Parameters<StandaloneAuditJobGateway["run"]>[0]["updateProgress"];
-  }>, purpose: FbaCatalogReportsPurpose = "catalog"): Promise<{
-    reportId: string;
-    documentId: string;
-  }> {
-    const marketplaceId = await this.assertStandaloneAuditContext(
-      input.context,
-      input.signal,
-    );
-    input.updateProgress({
-      stage: "amazon_report",
-      message: "Amazon 正在準備 FBA 全商品報表。",
-      completedUnits: 0,
-      totalUnits: 1,
-    });
-    let status = await this.startSharedAllListingsReport(
-      marketplaceId,
-      false,
-      input.signal,
-      { purpose },
-    );
-    input.heartbeat();
-    for (let attempt = 0; !status.ready && attempt < 180; attempt += 1) {
-      if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
-        throw new Error("Amazon 未能產生本次單項健檢所需的 FBA 全商品報表。");
-      }
-      input.heartbeat();
-      await waitMilliseconds(1_000, input.signal);
-      status = await this.getSharedAllListingsReportStatus({
-        marketplaceId,
-        reportId: status.reportId,
-        signal: input.signal,
-      });
-      input.heartbeat();
-    }
-    if (
-      !status.ready ||
-      !status.reportId ||
-      !status.documentId ||
-      status.mode !== input.context.mode
-    ) {
-      throw new Error("Amazon FBA 全商品報表未完成或 context 已改變。");
-    }
-    return { reportId: status.reportId, documentId: status.documentId };
-  }
-
   private async standaloneListings(input: Readonly<{
     context: StandaloneAuditJobBoundContext;
     signal: AbortSignal;
     heartbeat(): void;
     updateProgress: Parameters<StandaloneAuditJobGateway["run"]>[0]["updateProgress"];
   }>): Promise<{
-    reportId: string;
-    documentId: string;
+    exportId: string;
+    context: SpExecutionContext;
     data: AuditSuiteListingsData;
   }> {
-    const marketplaceId = await this.assertStandaloneAuditContext(
-      input.context,
-      input.signal,
-    );
-    const report = await this.standaloneListingReport(input);
+    const captured = await this.listingsExportOwner.runStandalone(input);
     input.updateProgress({
       stage: "listing_rows",
-      message: "正在下載並核對 FBA 商品資料。",
-      completedUnits: 0,
-      totalUnits: 1,
-    });
-    const data = await this.getSharedAllListingsExportData({
-      marketplaceId,
-      reportId: report.reportId,
-      documentId: report.documentId,
-      signal: input.signal,
-      onProgress: () => input.heartbeat(),
-    });
-    await this.assertStandaloneAuditContext(input.context, input.signal);
-    input.updateProgress({
-      stage: "listing_rows",
-      message: `已取得 ${data.rows.length.toLocaleString()} 個 FBA 商品，正在執行健檢。`,
+      message: `已取得 ${captured.snapshot.rows.length.toLocaleString()} 個 FBA 商品，正在執行健檢。`,
       completedUnits: 1,
       totalUnits: 1,
     });
     return {
-      ...report,
-      data,
+      exportId: captured.exportId,
+      context: captured.context,
+      data: captured.snapshot,
     };
-  }
-
-  private async standaloneGrouping(input: Readonly<{
-    context: StandaloneAuditJobBoundContext;
-    signal: AbortSignal;
-    heartbeat(): void;
-    updateProgress: Parameters<StandaloneAuditJobGateway["run"]>[0]["updateProgress"];
-  }>): Promise<{
-    reportId: string;
-    documentId: string;
-    data: AuditSuiteListingsData;
-    grouping: FbaVariationGroupingData;
-  }> {
-    const listing = await this.standaloneListings(input);
-    const marketplaceId = input.context.marketplaceId as MarketplaceId;
-    input.updateProgress({
-      stage: "relationships",
-      message: "正在核對 FBA parent／child relationships。",
-      completedUnits: 0,
-      totalUnits: null,
-    });
-    const grouping = await getFbaVariationGroupingData({
-      marketplaceId,
-      rows: listing.data.rows,
-      signal: input.signal,
-      onProgress: ({ completedBatches, totalBatches }) => input.updateProgress({
-        stage: "relationships",
-        message: `正在核對 FBA relationships（${completedBatches}／${totalBatches} 批）。`,
-        completedUnits: completedBatches,
-        totalUnits: totalBatches,
-      }),
-    });
-    await this.assertStandaloneAuditContext(input.context, input.signal);
-    return { ...listing, grouping };
   }
 
   private async runStandaloneAudit(
@@ -5401,22 +4700,15 @@ export class ApiRouter {
         completedUnits: 0,
         totalUnits: null,
       });
-      const snapshot = await getFbaSubscriptionAudit({
-        marketplaceId,
-        months: input.options.months ?? 6,
-        signal: input.signal,
-      });
-      const exportId = randomUUID();
       const context = await this.captureStandaloneSnapshotContext(
         input.context,
         input.signal,
       );
-      this.pruneSubscriptionAuditSnapshots();
-      this.subscriptionAuditSnapshots.set(exportId, {
-        context,
+      const snapshot = await this.subscriptionAuditOwner.runStandalone({
         marketplaceId,
-        expiresAt: Date.now() + SUBSCRIPTION_AUDIT_SNAPSHOT_TTL_MS,
-        snapshot: structuredClone(snapshot),
+        months: input.options.months ?? 6,
+        signal: input.signal,
+        expectedContext: context,
       });
       input.updateProgress({
         stage: "complete",
@@ -5424,133 +4716,33 @@ export class ApiRouter {
         completedUnits: snapshot.offers.length,
         totalUnits: snapshot.offers.length,
       });
-      return {
-        ...snapshot,
-        offers: snapshot.offers.map((offer) => ({
-          ...offer,
-          monthlySeries: offer.monthlySeries.map((metric) => ({
-            month: metric.interval.month,
-            subscriptionRevenue: metric.subscriptionRevenue,
-            shippedSubscriptionUnits: metric.shippedSubscriptionUnits,
-            activeSubscriptionsAtPeriodEnd: metric.activeSubscriptionsAtPeriodEnd,
-            currencyCode: metric.currencyCode,
-          })),
-        })),
-        exportId,
-      };
-    }
-
-    if (input.kind === "agedInventory") {
-      const agedInventoryContext = await this.spExecutionContext.capture(
-        marketplaceId,
-      );
-      if (
-        agedInventoryContext.accountScope !== input.context.accountScope ||
-        agedInventoryContext.mode !== input.context.mode ||
-        agedInventoryContext.marketplaceId !== input.context.marketplaceId
-      ) {
-        throw new Error(
-          "FBA 庫齡工作與目前帳號或展示／真實模式不一致。",
-        );
-      }
-      input.updateProgress({
-        stage: "amazon_report",
-        message: "Amazon 正在準備 FBA 庫齡報表。",
-        completedUnits: 0,
-        totalUnits: 1,
-      });
-      let status = await this.agedInventoryReads.begin({
-        marketplaceId,
-        explicitRetry: false,
-        signal: input.signal,
-        expectedContext: agedInventoryContext,
-      });
-      for (let attempt = 0; !status.ready && attempt < 900; attempt += 1) {
-        if (status.status !== "IN_QUEUE" && status.status !== "IN_PROGRESS") {
-          throw new Error("Amazon 未能產生本次 FBA 庫齡報表。");
-        }
-        input.heartbeat();
-        await waitMilliseconds(2_000, input.signal);
-        status = await this.agedInventoryReads.status({
-          marketplaceId,
-          reportId: status.reportId,
-          signal: input.signal,
-          expectedContext: agedInventoryContext,
-        });
-      }
-      if (
-        !status.ready ||
-        !status.reportId ||
-        !status.documentId ||
-        status.mode !== input.context.mode
-      ) {
-        throw new Error("Amazon FBA 庫齡報表未完成或 context 已改變。");
-      }
-      const snapshot = await this.agedInventoryReads.read({
-        marketplaceId,
-        reportId: status.reportId,
-        documentId: status.documentId,
-        signal: input.signal,
-        expectedContext: agedInventoryContext,
-      });
-      await this.assertStandaloneAuditContext(input.context, input.signal);
-      input.updateProgress({
-        stage: "complete",
-        message: "FBA 庫齡健檢完成。",
-        completedUnits: snapshot.rows.length,
-        totalUnits: snapshot.rows.length,
-      });
       return snapshot;
     }
 
+    if (input.kind === "agedInventory") {
+      return this.agedInventoryAuditOwner.runStandalone(input);
+    }
+
     if (input.kind === "content") {
-      const listing = await this.standaloneGrouping(input);
-      const groupingBySku = new Map(
-        listing.grouping.rows.map((row) => [row.sellerSku, row] as const),
-      );
-      const audit = auditListingContentRows({
-        marketplaceId,
-        fetchedAt: listing.data.fetchedAt,
-        rows: listing.grouping.rows.filter((row) => row.role !== "parent"),
+      const listing = await this.standaloneListings(input);
+      input.updateProgress({
+        stage: "relationships",
+        message: "正在核對 FBA parent／child relationships。",
+        completedUnits: 0,
+        totalUnits: null,
       });
-      const exportId = randomUUID();
-      const snapshot = {
-        ...audit,
-        exportId,
-        rows: audit.rows.map((row) => {
-          const relationship = groupingBySku.get(row.sellerSku);
-          return {
-            ...row,
-            variationRole: relationship?.role ?? "unknown",
-            variationParentSku: relationship?.parentSku ?? null,
-            variationFamilyKey: relationship?.familyKey ?? row.sellerSku,
-            variationTheme: relationship?.theme ?? null,
-            relationshipStatus: relationship?.status ?? "incomplete",
-            relationshipMessage: relationship?.message ??
-              "Amazon relationships 未與文案列完整對齊；本列不會被猜入任一變體 family。",
-          };
-        }),
-      };
-      await this.store.saveContentAuditSnapshotEvidence({
-        exportId,
+      const snapshot = await this.contentAuditOwner.captureStandaloneFromListings({
+        context: listing.context,
         marketplaceId,
-        accountScope: input.context.accountScope,
-        mode: input.context.mode,
-        fetchedAt: snapshot.fetchedAt,
-        rowDigests: snapshot.rows.map((row) =>
-          contentAuditSnapshotRowDigest({
-            accountScope: input.context.accountScope,
-            marketplaceId,
-            mode: input.context.mode,
-            exportId,
-            fetchedAt: snapshot.fetchedAt,
-            sellerSku: row.sellerSku,
-            asin: row.asin,
-            productType: row.productType,
-            variationFamilyKey: contentAuditWorkbookFamilyKey(row),
-            values: contentAuditRowValues(row),
-            readStatus: row.readStatus,
-          })),
+        listings: listing.data,
+        signal: input.signal,
+        onGroupingProgress: ({ completedBatches, totalBatches }) =>
+          input.updateProgress({
+            stage: "relationships",
+            message: `正在核對 FBA relationships（${completedBatches}／${totalBatches} 批）。`,
+            completedUnits: completedBatches,
+            totalUnits: totalBatches,
+          }),
       });
       input.updateProgress({
         stage: "complete",
@@ -5562,39 +4754,25 @@ export class ApiRouter {
     }
 
     if (input.kind === "image") {
-      const listing = await this.standaloneGrouping(input);
-      const auditable = new Set(
-        listing.grouping.rows
-          .filter((row) => row.role !== "parent")
-          .map((row) => row.sellerSku),
-      );
-      const snapshot = auditListingImageRows({
-        marketplaceId,
-        fetchedAt: listing.data.fetchedAt,
-        rows: listing.data.rows
-          .filter((row) => auditable.has(row.sellerSku))
-          .map((row) => ({
-            sellerSku: row.sellerSku,
-            asin: row.asin,
-            productType: row.productType,
-            title: row.title,
-            imageUrls: row.imageUrls,
-            readStatus: row.readStatus,
-            readErrors: row.readErrors,
-          })),
-        minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
+      const listing = await this.standaloneListings(input);
+      input.updateProgress({
+        stage: "relationships",
+        message: "正在核對 FBA parent／child relationships。",
+        completedUnits: 0,
+        totalUnits: null,
       });
-      const exportId = randomUUID();
-      const context = await this.captureStandaloneSnapshotContext(
-        input.context,
-        input.signal,
-      );
-      this.pruneImageAuditSnapshots();
-      this.imageAuditSnapshots.set(exportId, {
-        context,
+      const snapshot = await this.imageAuditOwner.captureStandaloneFromListings({
+        context: listing.context,
         marketplaceId,
-        expiresAt: Date.now() + IMAGE_AUDIT_SNAPSHOT_TTL_MS,
-        snapshot: structuredClone(snapshot),
+        listings: listing.data,
+        signal: input.signal,
+        onGroupingProgress: ({ completedBatches, totalBatches }) =>
+          input.updateProgress({
+            stage: "relationships",
+            message: `正在核對 FBA relationships（${completedBatches}／${totalBatches} 批）。`,
+            completedUnits: completedBatches,
+            totalUnits: totalBatches,
+          }),
       });
       input.updateProgress({
         stage: "complete",
@@ -5602,71 +4780,25 @@ export class ApiRouter {
         completedUnits: snapshot.rows.length,
         totalUnits: snapshot.rows.length,
       });
-      return { ...snapshot, exportId };
+      return snapshot;
     }
 
     if (input.kind === "variation") {
-      const report = await this.standaloneListingReport(input);
-      input.updateProgress({
-        stage: "relationships",
-        message: "正在核對未綁變體與完整變體 family。",
-        completedUnits: 0,
-        totalUnits: null,
-      });
-      const snapshot = await this.getSharedUnboundVariationAuditData({
-        marketplaceId,
-        reportId: report.reportId,
-        documentId: report.documentId,
-        signal: input.signal,
-      });
-      await this.assertStandaloneAuditContext(input.context, input.signal);
-      const exportId = randomUUID();
       const context = await this.captureStandaloneSnapshotContext(
         input.context,
         input.signal,
       );
-      this.pruneUnboundVariationAuditSnapshots();
-      this.unboundVariationAuditSnapshots.set(exportId, {
-        context,
+      return this.unboundVariationAuditOwner.runStandalone({
         marketplaceId,
-        expiresAt: Date.now() + UNBOUND_VARIATION_AUDIT_SNAPSHOT_TTL_MS,
-        snapshot: structuredClone(snapshot),
+        signal: input.signal,
+        expectedContext: context,
+        heartbeat: input.heartbeat,
+        updateProgress: (progress) => input.updateProgress(progress),
       });
-      input.updateProgress({
-        stage: "complete",
-        message: "未綁變體健檢完成。",
-        completedUnits: snapshot.allVariationRows.length,
-        totalUnits: snapshot.allVariationRows.length,
-      });
-      return { ...snapshot, exportId };
     }
 
     if (input.kind === "businessPricing") {
-      const report = await this.standaloneListingReport(
-        input,
-        "business-pricing-audit",
-      );
-      input.updateProgress({
-        stage: "business_pricing",
-        message: "正在核對全部 FBA 商品的 B2B 價格與數量折扣。",
-        completedUnits: 0,
-        totalUnits: null,
-      });
-      const snapshot = await this.getSharedBusinessPricingAuditData({
-        marketplaceId,
-        reportId: report.reportId,
-        documentId: report.documentId,
-        signal: input.signal,
-        heartbeat: input.heartbeat,
-      });
-      await this.assertStandaloneAuditContext(input.context, input.signal);
-      input.updateProgress({
-        stage: "complete",
-        message: "B2B 價格健檢完成。",
-        completedUnits: snapshot.rows.length,
-        totalUnits: snapshot.rows.length,
-      });
-      return snapshot;
+      return this.businessPricingAuditOwner.runStandalone(input);
     }
 
     if (input.kind === "advertising") {

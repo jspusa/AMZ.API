@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { downloadApiWorkbookResponse } from "../api-workbook-download";
 import { auditExportFilename } from "../audit-export-filename";
 import {
   pollStandaloneAuditJob,
@@ -10,14 +11,6 @@ import {
   type StandaloneAuditJob,
   type StandaloneAuditMode,
 } from "../standalone-audit";
-
-type ReportReply = {
-  ready: boolean;
-  reportId: string | null;
-  documentId: string | null;
-  status: string | null;
-  message: string;
-};
 
 type AgedInventoryRow = {
   sellerSku: string;
@@ -76,6 +69,7 @@ type AgedInventorySnapshot = {
   mode: "live" | "demo";
   marketplaceId: string;
   fetchedAt: string;
+  exportId: string;
   rows: AgedInventoryRow[];
   summary: {
     skuCount: number;
@@ -107,6 +101,18 @@ type ApiProblem = { message?: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+export function agedInventoryWorkbookDownloadUrl(
+  marketplaceId: string,
+  exportId: string,
+): string {
+  const params = new URLSearchParams({
+    marketplaceId,
+    exportId,
+    download: "1",
+  });
+  return `/api/sp-api/aged-inventory?${params}`;
 }
 
 function nonNegativeInteger(value: unknown): value is number {
@@ -269,22 +275,6 @@ export function aggregateAgedSurchargeBuckets(
   });
 }
 
-function reportReply(value: unknown): ReportReply {
-  if (!isRecord(value)) throw new Error("FBA 庫齡報表回應格式無效。");
-  return {
-    ready: value.ready === true,
-    reportId: typeof value.reportId === "string" ? value.reportId : null,
-    documentId: typeof value.documentId === "string" ? value.documentId : null,
-    status: typeof value.status === "string" ? value.status : null,
-    message:
-      typeof value.message === "string"
-        ? value.message
-        : typeof value.notice === "string"
-          ? value.notice
-          : "",
-  };
-}
-
 export function parseAgedInventorySnapshot(
   value: unknown,
   marketplaceId: string,
@@ -295,6 +285,8 @@ export function parseAgedInventorySnapshot(
     (value.mode !== "live" && value.mode !== "demo") ||
     typeof value.fetchedAt !== "string" ||
     Number.isNaN(Date.parse(value.fetchedAt)) ||
+    typeof value.exportId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,200}$/u.test(value.exportId) ||
     typeof value.notice !== "string" ||
     !Array.isArray(value.rows) ||
     value.rows.length > 20_000 ||
@@ -569,6 +561,7 @@ export function parseAgedInventorySnapshot(
     mode: value.mode,
     marketplaceId,
     fetchedAt: value.fetchedAt,
+    exportId: value.exportId,
     rows,
     summary: {
       skuCount: rows.length,
@@ -767,10 +760,6 @@ export default function AgedInventoryPanel({
   const [exporting, setExporting] = useState(false);
   const [view, setView] = useState<"aged" | "excess" | "all">("aged");
   const [error, setError] = useState<string | null>(null);
-  const [reportReference, setReportReference] = useState<{
-    reportId: string;
-    documentId: string;
-  } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const observerJobIdRef = useRef<string | null>(null);
   const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
@@ -782,7 +771,6 @@ export default function AgedInventoryPanel({
     setLoading(false);
     setExporting(false);
     setView("aged");
-    setReportReference(null);
     setError(null);
   }, [marketplaceId]);
 
@@ -803,31 +791,19 @@ export default function AgedInventoryPanel({
     const raw = completedJob.snapshot;
     const next = parseAgedInventorySnapshot(raw, marketplaceId);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    const reference = isRecord(raw) &&
-        typeof raw.reportId === "string" &&
-        typeof raw.documentId === "string"
-      ? { reportId: raw.reportId, documentId: raw.documentId }
-      : null;
-    if (!reference) throw new Error("FBA 庫齡快照缺少可核對的 Excel 匯出 reference。");
     setSnapshot(next);
-    setReportReference(reference);
     setStatus(`最後同步 ${next.fetchedAt.slice(0, 16).replace("T", " ")}`);
   };
 
   const downloadExcel = async () => {
-    if (!reportReference || !snapshot || exporting) return;
+    if (!snapshot || exporting) return;
     setExporting(true);
     setError(null);
     try {
-      const params = new URLSearchParams({
-        marketplaceId,
-        reportId: reportReference.reportId,
-        documentId: reportReference.documentId,
-        download: "1",
-      });
-      const response = await fetch(`/api/sp-api/aged-inventory?${params}`, {
-        cache: "no-store",
-      });
+      const response = await fetch(
+        agedInventoryWorkbookDownloadUrl(marketplaceId, snapshot.exportId),
+        { cache: "no-store" },
+      );
       if (!response.ok) {
         let message = "FBA 庫齡 Excel 下載失敗，請重新同步。";
         try {
@@ -838,19 +814,14 @@ export default function AgedInventoryPanel({
         }
         throw new Error(message);
       }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = auditExportFilename({
-        kind: "inventory",
-        marketplaceShort,
-        fetchedAt: snapshot.fetchedAt,
-      });
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      await downloadApiWorkbookResponse(
+        response,
+        auditExportFilename({
+          kind: "inventory",
+          marketplaceShort,
+          fetchedAt: snapshot.fetchedAt,
+        }),
+      );
     } catch (downloadError) {
       setError(
         downloadError instanceof Error
@@ -985,7 +956,7 @@ export default function AgedInventoryPanel({
           <small>{status}</small>
         </div>
         <div className="aged-inventory-actions">
-          {snapshot && reportReference && (
+          {snapshot && (
             <button type="button" className="secondary" onClick={() => void downloadExcel()} disabled={loading || exporting}>
               {exporting ? "匯出中…" : "匯出 Excel"}
             </button>

@@ -839,16 +839,29 @@ describe("SP execution-context architecture", () => {
     expect(source).not.toContain("ReportsPurpose");
   });
 
-  it("routes Aged Inventory only through its semantic read owner", () => {
-    const source = readFileSync(
+  it("routes Aged Inventory through one audit owner over the semantic read owner", () => {
+    const router = readFileSync(
       absolutePath("src/main/api-router.ts"),
       "utf8",
     );
+    const owner = readFileSync(
+      absolutePath("src/main/amazon/aged-inventory-audit.ts"),
+      "utf8",
+    );
     for (const symbol of SUPERSEDED_AGED_INVENTORY_ROUTER_WIRING) {
-      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+      expect(router).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
     }
-    expect(source).toContain("new AgedInventoryReads({");
-    expect(source).toContain("expectedContext: agedInventoryContext");
+    expect(router).toContain("new AgedInventoryReads({");
+    expect(router).toContain("new AgedInventoryAudit({");
+    expect(router).toContain("this.agedInventoryAuditOwner.start(request)");
+    expect(router).toContain(
+      "this.agedInventoryAuditOwner.statusDataOrDownload(request)",
+    );
+    expect(router).toContain("this.agedInventoryAuditOwner.clear()");
+    expect(owner).toContain("expectedContext: input.context");
+    expect(owner).not.toContain("new FixedReportBroker(");
+    expect(owner).not.toContain("LocalStore");
+    expect(owner).not.toContain("CredentialVault");
   });
 
   it("keeps A+ Content behind one semantic read and one closed page adapter", () => {

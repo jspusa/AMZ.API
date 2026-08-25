@@ -1,6 +1,12 @@
 import { strFromU8, unzipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
+import { getFbaSubscriptionAudit } from "../src/main/amazon/sp-api";
+import {
+  createScriptedSpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
+import { SubscriptionAuditOwner } from
+  "../src/main/amazon/subscription-audit-owner";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
@@ -205,6 +211,38 @@ describe("FBA Subscribe & Save audit routes", () => {
   });
 
   it("keeps a null Seller base discount out of 0% and visible once in the problem sheet", async () => {
+    router.dispose();
+    const spExecutionContext = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: "test-account-scope",
+      }),
+    );
+    const subscriptionAudit = new SubscriptionAuditOwner({
+      context: spExecutionContext,
+      readSnapshot: async ({ marketplaceId, months, signal }) => {
+        const snapshot = await getFbaSubscriptionAudit({
+          marketplaceId,
+          months,
+          signal,
+        });
+        return {
+          ...snapshot,
+          offers: snapshot.offers.map((offer, index) => index === 0
+            ? { ...offer, sellerFundedBaseDiscount: null }
+            : offer),
+        };
+      },
+    });
+    router = new ApiRouter({
+      store: {} as LocalStore,
+      vault,
+      approveWrite: async () => undefined,
+      spExecutionContext,
+      subscriptionAudit,
+    });
+
     const audit = await router.handle(
       get("/api/sp-api/subscription-audit", {
         marketplaceId: "ATVPDKIKX0DER",
@@ -213,15 +251,6 @@ describe("FBA Subscribe & Save audit routes", () => {
     );
     if (audit.body.kind !== "json") throw new Error("Expected JSON");
     const exportId = (audit.body.value as { exportId: string }).exportId;
-    const snapshots = (router as unknown as {
-      subscriptionAuditSnapshots: Map<
-        string,
-        { snapshot: { offers: Array<{ sellerFundedBaseDiscount: number | null }> } }
-      >;
-    }).subscriptionAuditSnapshots;
-    const stored = snapshots.get(exportId);
-    if (!stored) throw new Error("Expected stored audit snapshot");
-    stored.snapshot.offers[0]!.sellerFundedBaseDiscount = null;
 
     const response = await router.handle(
       get("/api/sp-api/subscription-audit/export", {

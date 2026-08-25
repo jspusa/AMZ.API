@@ -318,7 +318,7 @@ describe("main-owned standalone audit route", () => {
     });
   });
 
-  it("lets variation and B2B enrichment download the report document exactly once", () => {
+  it("delegates variation and B2B standalone assembly to their extracted owners", () => {
     const source = readFileSync(
       new URL("../src/main/api-router.ts", import.meta.url),
       "utf8",
@@ -341,12 +341,15 @@ describe("main-owned standalone audit route", () => {
     expect(variationStart).toBeGreaterThan(-1);
     expect(businessPricingStart).toBeGreaterThan(variationStart);
     expect(advertisingStart).toBeGreaterThan(businessPricingStart);
-    expect(variationBranch).toContain("standaloneListingReport(input)");
-    expect(variationBranch).toContain("getSharedUnboundVariationAuditData({");
-    expect(variationBranch).not.toContain("standaloneListings(input)");
-    expect(businessPricingBranch).toContain("standaloneListingReport(");
-    expect(businessPricingBranch).toContain('"business-pricing-audit"');
-    expect(businessPricingBranch).toContain("getSharedBusinessPricingAuditData({");
-    expect(businessPricingBranch).not.toContain("standaloneListings(input)");
+    expect(variationBranch).toContain(
+      "this.unboundVariationAuditOwner.runStandalone({",
+    );
+    expect(variationBranch).not.toContain("standaloneListingReport(");
+    expect(variationBranch).not.toContain("getSharedUnboundVariationAuditData(");
+    expect(businessPricingBranch).toContain(
+      "this.businessPricingAuditOwner.runStandalone(input)",
+    );
+    expect(businessPricingBranch).not.toContain("standaloneListingReport(");
+    expect(businessPricingBranch).not.toContain("getSharedBusinessPricingAuditData(");
   });
 });

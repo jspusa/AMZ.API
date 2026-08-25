@@ -1450,7 +1450,12 @@ export default function Dashboard({
     currentContentAuditJob,
   );
   const imageAuditCacheMatchesJob = standaloneAuditSnapshotMatchesJob(
-    currentImageAudit?.snapshot ?? null,
+    currentImageAudit
+      ? {
+          ...currentImageAudit.snapshot,
+          exportId: currentImageAudit.exportId,
+        }
+      : null,
     currentImageAuditJob,
   );
   const variationAuditCacheMatchesJob = standaloneAuditSnapshotMatchesJob(
@@ -1535,9 +1540,7 @@ export default function Dashboard({
           <small>{outcome === "success"
             ? "點開查看並載入本次結果"
             : outcome === "partial"
-              ? job.kind === "content"
-                ? "點開完成本機字典檢查並查看已核對結果"
-                : "點開查看已核對結果與未完成範圍"
+              ? "點開查看已核對結果與未完成範圍"
               : job.status === "completed"
                 ? "本次結果格式未能完整辨識"
                 : job.error.message}</small>

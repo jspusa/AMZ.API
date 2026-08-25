@@ -4,13 +4,19 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { AdvertisingGateway } from "../src/main/amazon/ads-api";
+import type { ImageAuditOwnerPort } from
+  "../src/main/amazon/image-audit-owner";
 import {
   createScriptedSpExecutionContextAdapter,
   type SpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
+import type { SubscriptionAuditOwnerPort } from
+  "../src/main/amazon/subscription-audit-owner";
+import type { UnboundVariationAuditOwnerPort } from
+  "../src/main/amazon/unbound-variation-audit-owner";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
-import type { ApiRequest } from "../src/shared/contracts";
+import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 import type { MarketplaceId } from "../src/shared/marketplaces";
 
 const US = "ATVPDKIKX0DER" as const;
@@ -217,10 +223,6 @@ describe("ApiRouter SP execution context", () => {
       });
       expect((router as unknown as {
         previews: Map<string, unknown>;
-        subscriptionAuditSnapshots: Map<string, unknown>;
-      }).subscriptionAuditSnapshots.size).toBe(0);
-      expect((router as unknown as {
-        previews: Map<string, unknown>;
       }).previews.size).toBe(0);
       router.dispose();
     } finally {
@@ -390,62 +392,67 @@ describe("ApiRouter SP execution context", () => {
     }
   });
 
-  it("preserves the legacy two-field account-drift DTO for snapshot exports", async () => {
-    const storedAdapter = createScriptedSpExecutionContextAdapter(
-      (marketplaceId) => ({
-        marketplaceId,
-        mode: "demo",
-        accountScope: "opaque-snapshot-account-a",
-      }),
-    );
-    const storedContext = await storedAdapter.capture(US);
+  it("preserves the legacy two-field account-drift DTO from snapshot owners", async () => {
+    const accountDrift = (message: string): ApiResponse => ({
+      status: 409,
+      headers: {},
+      body: {
+        kind: "json",
+        value: { code: "ACCOUNT_SCOPE_CHANGED", message },
+      },
+    });
+    const subscriptionMessage =
+      "Amazon 帳號範圍已改變，舊健檢快照不可匯出。";
+    const variationMessage =
+      "Amazon 帳號範圍已改變，舊未綁變體快照不可匯出。";
+    const imageMessage =
+      "Amazon 帳號範圍已改變，舊圖片健檢快照不可匯出。";
+    const subscriptionDownload = vi.fn(async () =>
+      accountDrift(subscriptionMessage));
+    const variationDownload = vi.fn(async () =>
+      accountDrift(variationMessage));
+    const imageDownload = vi.fn(async () => accountDrift(imageMessage));
+    const notCalled = async (): Promise<never> => {
+      throw new Error("Unrelated snapshot owner method must not run.");
+    };
+    const subscriptionAudit: SubscriptionAuditOwnerPort = {
+      read: vi.fn(notCalled),
+      download: subscriptionDownload,
+      runStandalone: vi.fn(notCalled),
+      clear: vi.fn(),
+    };
+    const unboundVariationAudit: UnboundVariationAuditOwnerPort = {
+      start: vi.fn(notCalled),
+      statusDataOrDownload: variationDownload,
+      runStandalone: vi.fn(notCalled),
+      clear: vi.fn(),
+    };
+    const imageAudit: ImageAuditOwnerPort = {
+      captureFromListings: vi.fn(notCalled),
+      captureStandaloneFromListings: vi.fn(notCalled),
+      read: vi.fn(notCalled),
+      download: imageDownload,
+      clear: vi.fn(),
+    };
     const router = new ApiRouter({
       store: {} as LocalStore,
       vault: {} as CredentialVault,
       approveWrite: async () => undefined,
-      spExecutionContext: createScriptedSpExecutionContextAdapter(
-        (marketplaceId) => ({
-          marketplaceId,
-          mode: "demo",
-          accountScope: "opaque-snapshot-account-b",
-        }),
-      ),
-    });
-    const expiresAt = Date.now() + 60_000;
-    const snapshots = router as unknown as {
-      subscriptionAuditSnapshots: Map<string, unknown>;
-      unboundVariationAuditSnapshots: Map<string, unknown>;
-      imageAuditSnapshots: Map<string, unknown>;
-    };
-    snapshots.subscriptionAuditSnapshots.set("subscription-export", {
-      context: storedContext,
-      marketplaceId: US,
-      expiresAt,
-      snapshot: {},
-    });
-    snapshots.unboundVariationAuditSnapshots.set("variation-export", {
-      context: storedContext,
-      marketplaceId: US,
-      expiresAt,
-      snapshot: {},
-    });
-    snapshots.imageAuditSnapshots.set("image-export", {
-      context: storedContext,
-      marketplaceId: US,
-      expiresAt,
-      snapshot: {},
+      subscriptionAudit,
+      unboundVariationAudit,
+      imageAudit,
     });
 
     const requests = [
       {
         path: "/api/sp-api/subscription-audit/export",
         query: { marketplaceId: US, exportId: "subscription-export" },
-        message: "Amazon 帳號範圍已改變，舊健檢快照不可匯出。",
+        message: subscriptionMessage,
       },
       {
         path: "/api/sp-api/variation-audit",
         query: { marketplaceId: US, download: "1", exportId: "variation-export" },
-        message: "Amazon 帳號範圍已改變，舊未綁變體快照不可匯出。",
+        message: variationMessage,
       },
       {
         path: "/api/sp-api/listing-content/export",
@@ -455,7 +462,7 @@ describe("ApiRouter SP execution context", () => {
           download: "1",
           exportId: "image-export",
         },
-        message: "Amazon 帳號範圍已改變，舊圖片健檢快照不可匯出。",
+        message: imageMessage,
       },
     ] as const;
     for (const [index, request] of requests.entries()) {
@@ -475,6 +482,26 @@ describe("ApiRouter SP execution context", () => {
         },
       });
     }
+    expect(subscriptionDownload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/api/sp-api/subscription-audit/export",
+        query: { marketplaceId: US, exportId: "subscription-export" },
+      }),
+    );
+    expect(variationDownload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/api/sp-api/variation-audit",
+        query: {
+          marketplaceId: US,
+          download: "1",
+          exportId: "variation-export",
+        },
+      }),
+    );
+    expect(imageDownload).toHaveBeenCalledWith({
+      marketplaceId: US,
+      exportId: "image-export",
+    });
     router.dispose();
   });
 

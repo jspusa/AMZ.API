@@ -729,7 +729,7 @@ describe("FBA subscription audit renderer", () => {
     expect(markup.match(/<button[^>]*disabled=""/g)).toHaveLength(4);
   });
 
-  it("releases the busy state when a marketplace change aborts the old request", async () => {
+  it("clears visible problem rows and busy state when marketplace or mode changes", async () => {
     const source = await readFile(
       new URL(
         "../src/renderer/src/components/subscription-audit-panel.tsx",
@@ -738,7 +738,7 @@ describe("FBA subscription audit renderer", () => {
       "utf8",
     );
     expect(source).toMatch(
-      /useEffect\(\(\) => \{[\s\S]*?abortRef\.current\?\.abort\(\);[\s\S]*?setBusy\(null\);[\s\S]*?\}, \[marketplaceId\]\);/u,
+      /useEffect\(\(\) => \{[\s\S]*?abortRef\.current\?\.abort\(\);[\s\S]*?setSnapshot\(null\);[\s\S]*?setSelectedSku\(null\);[\s\S]*?setBusy\(null\);[\s\S]*?\}, \[marketplaceId, mode\]\);/u,
     );
     expect(source).toMatch(
       /setSelectedSku\(\(current\) =>\s*current === offer\.sellerSku \? null : offer\.sellerSku\)/u,

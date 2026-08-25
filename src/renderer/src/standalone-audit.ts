@@ -379,22 +379,50 @@ export function parseStandaloneAuditJob(
 }
 
 export function standaloneAuditSnapshotMatchesJob(
-  snapshot: Readonly<{ fetchedAt: string; marketplaceId: string }> | null,
+  snapshot: Readonly<{
+    fetchedAt: string;
+    marketplaceId: string;
+    exportId?: string;
+    mode?: StandaloneAuditMode;
+  }> | null,
   job: StandaloneAuditJob | null,
 ): boolean {
-  if (!job) return Boolean(snapshot);
+  if (!job) return false;
   if (!job.ready || job.status !== "completed") return false;
   const value = job.snapshot;
+  const owned = value && typeof value === "object" && !Array.isArray(value)
+    ? value as {
+        fetchedAt?: unknown;
+        marketplaceId?: unknown;
+        exportId?: unknown;
+        mode?: unknown;
+      }
+    : null;
+  const cachedExportId = snapshot?.exportId;
+  const ownedExportId = owned?.exportId;
+  const exportIdRequired = job.kind === "content" ||
+    job.kind === "image" ||
+    job.kind === "variation";
+  const exportIdMatches = exportIdRequired
+    ? typeof cachedExportId === "string" &&
+      typeof ownedExportId === "string" &&
+      cachedExportId === ownedExportId
+    : cachedExportId === undefined ||
+      ownedExportId === undefined ||
+      typeof cachedExportId === "string" &&
+        typeof ownedExportId === "string" &&
+        cachedExportId === ownedExportId;
   return Boolean(
     snapshot &&
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    typeof (value as { fetchedAt?: unknown }).fetchedAt === "string" &&
-    typeof (value as { marketplaceId?: unknown }).marketplaceId === "string" &&
+    owned &&
+    typeof owned.fetchedAt === "string" &&
+    typeof owned.marketplaceId === "string" &&
     snapshot.marketplaceId === job.marketplaceId &&
-    (value as { marketplaceId: string }).marketplaceId === job.marketplaceId &&
-    snapshot.fetchedAt === (value as { fetchedAt: string }).fetchedAt
+    owned.marketplaceId === job.marketplaceId &&
+    snapshot.fetchedAt === owned.fetchedAt &&
+    (snapshot.mode === undefined || snapshot.mode === job.mode) &&
+    (owned.mode === undefined || owned.mode === job.mode) &&
+    exportIdMatches
   );
 }
 
@@ -571,6 +599,39 @@ export type StandaloneAuditTerminalOutcome =
   | "partial"
   | "failed";
 
+function contentTerminalOutcome(
+  value: unknown,
+  marketplaceId: string,
+): StandaloneAuditTerminalOutcome {
+  const snapshot = record(value, "文案健檢快照");
+  const summary = record(snapshot.summary, "文案健檢摘要");
+  if (
+    snapshot.marketplaceId !== marketplaceId ||
+    typeof snapshot.fetchedAt !== "string" ||
+    !Number.isFinite(Date.parse(snapshot.fetchedAt)) ||
+    typeof snapshot.exportId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      snapshot.exportId,
+    ) ||
+    !Array.isArray(snapshot.rows)
+  ) {
+    return "partial";
+  }
+  const total = countOrNull(summary.total, "文案商品總數");
+  const completed = countOrNull(summary.completed, "文案完成數");
+  const incomplete = countOrNull(summary.incomplete, "文案未完成數");
+  if (
+    total === null ||
+    completed === null ||
+    incomplete === null ||
+    total !== snapshot.rows.length ||
+    completed + incomplete !== total
+  ) {
+    return "partial";
+  }
+  return incomplete > 0 ? "partial" : "success";
+}
+
 /**
  * Keeps the home card honest before its drawer caches the terminal snapshot.
  * A completed transport job is only "success" after the audit-specific parser
@@ -582,9 +643,11 @@ export function standaloneAuditTerminalOutcome(
   if (!job.ready) return null;
   if (job.status !== "completed") return "failed";
   try {
-    if (job.kind === "content" || job.kind === "agedInventory") {
-      // Content still needs the deterministic browser dictionary pass. Aged
-      // inventory is outside the seven-card run-all flow and parses in drawer.
+    if (job.kind === "content") {
+      return contentTerminalOutcome(job.snapshot, job.marketplaceId);
+    }
+    if (job.kind === "agedInventory") {
+      // Aged inventory is outside the seven-card run-all flow and parses in drawer.
       return "partial";
     }
     if (job.kind === "image") {

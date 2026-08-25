@@ -54,7 +54,7 @@ describe("renderer-owned FBA audit export filenames", () => {
   });
 
   it.each([
-    ["content-audit-excel.ts", "content"],
+    ["components/content-audit-panel.tsx", "content"],
     ["components/image-audit-panel.tsx", "image"],
     ["components/unbound-variation-audit-panel.tsx", "variation"],
     ["components/aged-inventory-panel.tsx", "inventory"],

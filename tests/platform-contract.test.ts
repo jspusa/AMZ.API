@@ -47,7 +47,7 @@ describe("release and desktop platform contracts", () => {
       readFile(new URL("../src/preload/index.ts", import.meta.url), "utf8"),
       readFile(new URL("../src/shared/contracts.ts", import.meta.url), "utf8"),
       readFile(
-        new URL("../src/renderer/src/content-spelling-rules.ts", import.meta.url),
+        new URL("../src/shared/content-spelling-rules.ts", import.meta.url),
         "utf8",
       ),
     ]);
@@ -59,6 +59,7 @@ describe("release and desktop platform contracts", () => {
     expect(contracts).not.toContain("SpellcheckWordResult");
     expect(contracts).not.toMatch(/\bspellcheck\s*:/u);
     expect(spellingRules).toContain("createNSpell");
+    expect(spellingRules).not.toContain("../renderer/");
   });
 
   it("has no unused bundled-renderer protocol or obsolete launcher implementation", async () => {

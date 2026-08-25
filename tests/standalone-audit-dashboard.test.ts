@@ -127,6 +127,7 @@ describe("dashboard audit background observation", () => {
   });
 
   it("shows a cached count only when terminal time and marketplace match", () => {
+    const exportId = "11111111-1111-4111-8111-111111111111";
     const job = parseStandaloneAuditJob({
       jobId: "84ec9cda-e878-4e87-984e-65c8c5652cee",
       contextId: "94ec9cda-e878-4e87-984e-65c8c5652cef",
@@ -145,6 +146,7 @@ describe("dashboard audit background observation", () => {
       snapshot: {
         marketplaceId: "ATVPDKIKX0DER",
         fetchedAt: "2026-08-23T03:00:00.000Z",
+        exportId,
       },
     }, {
       kind: "content",
@@ -155,15 +157,58 @@ describe("dashboard audit background observation", () => {
     expect(standaloneAuditSnapshotMatchesJob({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-23T03:00:00.000Z",
+      exportId,
     }, job)).toBe(true);
     expect(standaloneAuditSnapshotMatchesJob({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-22T03:00:00.000Z",
+      exportId,
     }, job)).toBe(false);
     expect(standaloneAuditSnapshotMatchesJob({
       marketplaceId: "A2EUQ1WTGCTBG2",
       fetchedAt: "2026-08-23T03:00:00.000Z",
+      exportId,
     }, job)).toBe(false);
+  });
+
+  it("does not reuse an audit cache without the exact current owned snapshot", () => {
+    const fetchedAt = "2026-08-23T03:00:00.000Z";
+    const exportId = "11111111-1111-4111-8111-111111111111";
+    const job = completedJob("variation", {
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+      fetchedAt,
+      exportId,
+    });
+    const wrongMode = {
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo" as const,
+      fetchedAt,
+      exportId,
+    };
+    const wrongExport = {
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live" as const,
+      fetchedAt,
+      exportId: "22222222-2222-4222-8222-222222222222",
+    };
+
+    expect(standaloneAuditSnapshotMatchesJob(wrongMode, job)).toBe(false);
+    expect(standaloneAuditSnapshotMatchesJob(wrongExport, job)).toBe(false);
+    expect(standaloneAuditSnapshotMatchesJob(wrongMode, null)).toBe(false);
+
+    const legacyBusinessCache = {
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live" as const,
+      fetchedAt,
+    };
+    expect(standaloneAuditSnapshotMatchesJob(
+      legacyBusinessCache,
+      completedJob("businessPricing", {
+        ...legacyBusinessCache,
+        exportId,
+      }),
+    )).toBe(true);
   });
 
   it("keeps terminal home status fail-honest before a drawer parses the snapshot", () => {
@@ -171,6 +216,17 @@ describe("dashboard audit background observation", () => {
       marketplaceId: "ATVPDKIKX0DER",
       rows: [],
     }))).toBe("partial");
+    expect(standaloneAuditTerminalOutcome(completedJob("content", {
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-23T03:00:00.000Z",
+      exportId: "11111111-1111-4111-8111-111111111111",
+      rows: [],
+      summary: {
+        total: 0,
+        completed: 0,
+        incomplete: 0,
+      },
+    }))).toBe("success");
     expect(standaloneAuditTerminalOutcome(completedJob("image", {
       marketplaceId: "ATVPDKIKX0DER",
       summary: { incomplete: 0 },
@@ -248,6 +304,7 @@ describe("dashboard audit background observation", () => {
     expect(source).toContain("onCoverageAuditJobChange={cacheStandaloneAuditJob}");
     expect(source).toContain("已完成");
     expect(source).toContain("點開查看並載入本次結果");
+    expect(source).not.toContain("點開完成本機字典檢查並查看已核對結果");
 
     // A+ remains its specialized main-owned coordinator but uses the same
     // home-observer handoff behavior.

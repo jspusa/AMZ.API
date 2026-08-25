@@ -1,5 +1,3 @@
-import { createImageAuditWorkbook } from "../../main/amazon/xlsx";
-
 const IMAGE_AUDIT_MINIMUM_IMAGES = 6 as const;
 
 export type ImageAuditReadError = {
@@ -157,33 +155,4 @@ export function imageAuditAttentionRows(
     (row) =>
       row.readStatus === "incomplete" || row.imageCount < snapshot.minimumImages,
   );
-}
-
-const XLSX_CONTENT_TYPE =
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-
-export function downloadImageAuditWorkbook(
-  snapshot: ImageAuditSnapshot,
-  marketplaceLabel: string,
-  filename: string,
-): void {
-  const bytes = createImageAuditWorkbook({
-    marketplaceId: snapshot.marketplaceId,
-    marketplaceLabel,
-    fetchedAt: snapshot.fetchedAt,
-    minimumImages: snapshot.minimumImages,
-    rows: snapshot.rows,
-  });
-  const copiedBytes = new Uint8Array(bytes.byteLength);
-  copiedBytes.set(bytes);
-  const url = URL.createObjectURL(
-    new Blob([copiedBytes.buffer], { type: XLSX_CONTENT_TYPE }),
-  );
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }

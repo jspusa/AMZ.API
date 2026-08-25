@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const ROOT = new URL(
-  "../src/renderer/src/vendor/spellcheck/",
+  "../src/shared/vendor/spellcheck/",
   import.meta.url,
 );
 const LICENSE_ROOT = new URL(

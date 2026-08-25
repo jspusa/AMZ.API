@@ -227,6 +227,7 @@ describe("FBA aged inventory renderer and read-only route", () => {
       mode: "live",
       marketplaceId: MARKETPLACE_ID,
       fetchedAt: "2026-08-08T00:00:00.000Z",
+      exportId: "11111111-1111-4111-8111-111111111111",
       rows: [
         {
           sellerSku: "AGED-FBA-01",
@@ -297,6 +298,7 @@ describe("FBA aged inventory renderer and read-only route", () => {
     };
 
     expect(parseAgedInventorySnapshot(raw, MARKETPLACE_ID)).toMatchObject({
+      exportId: "11111111-1111-4111-8111-111111111111",
       summary: {
         skuCount: 1,
         totalAgedUnits: 50,
@@ -306,6 +308,12 @@ describe("FBA aged inventory renderer and read-only route", () => {
         estimatedAgedSurcharge: 3.6,
       },
     });
+    expect(() => parseAgedInventorySnapshot({
+      ...raw,
+      exportId: undefined,
+      reportId: "amazon-report-id-is-not-an-export-capability",
+      documentId: "amazon-document-id-is-not-an-export-capability",
+    }, MARKETPLACE_ID)).toThrow("FBA 庫齡資料不完整");
     expect(() =>
       parseAgedInventorySnapshot(
         { ...raw, summary: { ...raw.summary, agedOver180: 30 } },

@@ -484,7 +484,7 @@ export default function SubscriptionAuditPanel({
     setFilter("all");
     setError(null);
     setBusy(null);
-  }, [marketplaceId]);
+  }, [marketplaceId, mode]);
 
   const selectedOffer = useMemo(
     () => snapshot?.offers.find(({ sellerSku }) => sellerSku === selectedSku) ?? null,
