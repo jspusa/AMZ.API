@@ -11,9 +11,11 @@ import type { FbaInboundReads } from
   "../src/main/amazon/fba-inbound-reads";
 import type { FbaInboundShipmentSnapshot } from
   "../src/main/amazon/fba-inbound-shipments";
-import type {
-  SpExecutionContext,
-  SpExecutionContextAdapter,
+import {
+  SpExecutionContextAfterAdapterError,
+  SpExecutionContextError,
+  type SpExecutionContext,
+  type SpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -385,6 +387,122 @@ describe("FBA inbound shipment router job", () => {
     expect(observedContexts).toEqual([fixedContext, fixedContext]);
   });
 
+  it("does not let a context capture that settles after dispose resurrect a job", async () => {
+    const fixedContext = Object.freeze({
+      marketplaceId: MARKETPLACE_ID,
+      region: "na",
+      mode: "demo",
+      accountScope: "capture-after-dispose",
+      generation: 0,
+    }) as unknown as SpExecutionContext;
+    let resolveCapture!: (context: SpExecutionContext) => void;
+    const captureGate = new Promise<SpExecutionContext>((resolve) => {
+      resolveCapture = resolve;
+    });
+    const snapshot = vi.fn(async ({ startDate, endDate }) =>
+      inboundSnapshot(startDate, endDate));
+    const readNoncompliance = vi.fn(async () => ({
+      parsed: {
+        issues: [],
+        incompleteRowCount: 0,
+        incompleteRows: [],
+        latestIssueReportedDate: null,
+      },
+      fetchedAt: "2026-08-21T12:00:00.000Z",
+    }));
+    const contextAdapter: SpExecutionContextAdapter = {
+      capture: vi.fn(() => captureGate),
+      assertCurrent: vi.fn(async () => undefined),
+      invalidate: vi.fn(),
+    };
+    const app = router({
+      snapshot,
+      readNoncompliance,
+      spExecutionContext: contextAdapter,
+    });
+
+    const startFlight = app.handle(apiRequest({
+      method: "POST",
+      body: {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    }));
+    await vi.waitFor(() => expect(contextAdapter.capture).toHaveBeenCalledOnce());
+
+    app.dispose();
+    resolveCapture(fixedContext);
+    const response = await startFlight;
+
+    expect(response.status).toBe(409);
+    expect(jsonValue(response)).toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(readNoncompliance).not.toHaveBeenCalled();
+  });
+
+  it("does not return a stale job after dispose wins a pending status fence", async () => {
+    const fixedContext = Object.freeze({
+      marketplaceId: MARKETPLACE_ID,
+      region: "na",
+      mode: "demo",
+      accountScope: "status-after-dispose",
+      generation: 0,
+    }) as unknown as SpExecutionContext;
+    let deferAssertions = false;
+    const pendingAssertions: Array<() => void> = [];
+    const contextAdapter: SpExecutionContextAdapter = {
+      capture: vi.fn(async () => fixedContext),
+      assertCurrent: vi.fn(() => {
+        if (!deferAssertions) return Promise.resolve();
+        return new Promise<void>((resolve) => pendingAssertions.push(resolve));
+      }),
+      invalidate: vi.fn(),
+    };
+    const snapshot = vi.fn(() => new Promise<FbaInboundShipmentSnapshot>(() => undefined));
+    const readNoncompliance = vi.fn(
+      () => new Promise<Awaited<ReturnType<FbaInboundReads["readNoncompliance"]>>>(
+        () => undefined,
+      ),
+    );
+    const app = router({
+      snapshot,
+      readNoncompliance,
+      spExecutionContext: contextAdapter,
+    });
+    const started = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    })));
+    await vi.waitFor(() => {
+      expect(snapshot).toHaveBeenCalledOnce();
+      expect(readNoncompliance).toHaveBeenCalledOnce();
+    });
+    deferAssertions = true;
+
+    const statusFlight = app.handle(apiRequest({
+      method: "GET",
+      query: {
+        marketplaceId: MARKETPLACE_ID,
+        jobId: String(started.jobId),
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    }));
+    await vi.waitFor(() => expect(pendingAssertions).toHaveLength(1));
+
+    app.dispose();
+    pendingAssertions[0]?.();
+    const response = await statusFlight;
+
+    expect(response.status).toBe(409);
+    expect(jsonValue(response)).toMatchObject({ code: "JOB_MISMATCH" });
+  });
+
   it("marks an active-status fallback partial even when returned quantities and issues are complete", async () => {
     const app = router({
       snapshot: async ({ startDate, endDate }) => ({
@@ -513,6 +631,120 @@ describe("FBA inbound shipment router job", () => {
     expect(snapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("does not let abort-ignoring A to B to A flights replace the fresh selection", async () => {
+    type PendingSnapshot = {
+      signal: AbortSignal;
+      startDate: string;
+      endDate: string;
+      progress: NonNullable<
+        Parameters<FbaInboundReads["readShipments"]>[0]["onProgress"]
+      >;
+      resolve: (value: FbaInboundShipmentSnapshot) => void;
+    };
+    const pending: PendingSnapshot[] = [];
+    const snapshot = vi.fn(
+      (input: Parameters<FbaInboundReads["readShipments"]>[0]) =>
+        new Promise<FbaInboundShipmentSnapshot>((resolve) => {
+          if (!input.signal || !input.onProgress) {
+            throw new Error("coordinator must bind progress and AbortSignal");
+          }
+          pending.push({
+            signal: input.signal,
+            startDate: input.startDate,
+            endDate: input.endDate,
+            progress: input.onProgress,
+            resolve,
+          });
+          // Deliberately ignore abort to emulate an adapter that settles late.
+        }),
+    );
+    const app = router({ snapshot });
+    const rangeA = {
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-20",
+    };
+    const rangeB = {
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-07-01",
+      endDate: "2026-07-31",
+    };
+
+    const staleA = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: rangeA,
+    })));
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    const staleB = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: rangeB,
+    })));
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    expect(pending[0]?.signal.aborted).toBe(true);
+
+    const freshA = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: rangeA,
+    })));
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    expect(pending[1]?.signal.aborted).toBe(true);
+    expect(freshA.jobId).not.toBe(staleA.jobId);
+
+    pending[0]?.progress({ phase: "items", completed: 999, total: 999 });
+    pending[0]?.resolve({
+      ...inboundSnapshot(rangeA.startDate, rangeA.endDate),
+      notice: "stale A1 must not publish",
+    });
+    pending[1]?.progress({ phase: "items", completed: 888, total: 888 });
+    pending[1]?.resolve({
+      ...inboundSnapshot(rangeB.startDate, rangeB.endDate),
+      notice: "stale B must not publish",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const joinedA = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: rangeA,
+    })));
+    expect(joinedA.jobId).toBe(freshA.jobId);
+    expect(snapshot).toHaveBeenCalledTimes(3);
+    for (const [stale, range] of [
+      [staleA, rangeA],
+      [staleB, rangeB],
+    ] as const) {
+      const gone = await app.handle(apiRequest({
+        method: "GET",
+        query: {
+          marketplaceId: MARKETPLACE_ID,
+          jobId: String(stale.jobId),
+          startDate: range.startDate,
+          endDate: range.endDate,
+        },
+      }));
+      expect(gone.status).toBe(404);
+    }
+
+    pending[2]?.resolve({
+      ...inboundSnapshot(rangeA.startDate, rangeA.endDate),
+      notice: "fresh A2 publishes",
+    });
+    const completed = await terminalJob(app, String(freshA.jobId));
+    expect(completed).toMatchObject({
+      state: "completed",
+      dateRange: {
+        startDate: rangeA.startDate,
+        endDate: rangeA.endDate,
+      },
+      snapshot: {
+        notice: "fresh A2 publishes",
+      },
+    });
+    expect(JSON.stringify(completed)).not.toContain("stale A1");
+    expect(JSON.stringify(completed)).not.toContain("stale B");
+    expect(snapshot).toHaveBeenCalledTimes(3);
+  });
+
   it("evicts older terminal ranges only within the same account, mode and marketplace", async () => {
     const jpMarketplaceId = "A1VC38T7YXB528";
     const snapshot = vi.fn(async ({ marketplaceId, startDate, endDate }) => ({
@@ -597,14 +829,21 @@ describe("FBA inbound shipment router job", () => {
       },
     })));
     await terminalJob(app, String(started.jobId));
-    const internalJobs = (
-      app as unknown as { inboundShipmentJobs: Map<string, unknown> }
-    ).inboundShipmentJobs;
-    expect(internalJobs.has(String(started.jobId))).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
 
     await vi.advanceTimersByTimeAsync(30 * 60 * 1_000 + 1);
 
-    expect(internalJobs.has(String(started.jobId))).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    const expired = await app.handle(apiRequest({
+      method: "GET",
+      query: {
+        marketplaceId: MARKETPLACE_ID,
+        jobId: String(started.jobId),
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    }));
+    expect(expired.status).toBe(404);
   });
 
   it("keeps shipment quantities as a partial snapshot when the daily issue report is unavailable", async () => {
@@ -636,6 +875,100 @@ describe("FBA inbound shipment router job", () => {
       },
     });
     expect(completed.notice).toContain("不能拿缺值冒充");
+  });
+
+  it.each([
+    [
+      "direct context fence",
+      () => new SpExecutionContextError(
+        "ACCOUNT_SCOPE_CHANGED",
+        "hostile private account detail",
+      ),
+    ],
+    [
+      "post-adapter context fence",
+      () => new SpExecutionContextAfterAdapterError(
+        new SpExecutionContextError(
+          "ACCOUNT_SCOPE_CHANGED",
+          "hostile private account detail",
+        ),
+      ),
+    ],
+  ])("does not downgrade a noncompliance %s to an unavailable partial", async (
+    _case,
+    contextError,
+  ) => {
+    const app = router({
+      readNoncompliance: async () => {
+        throw contextError();
+      },
+    });
+    const started = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    })));
+
+    const terminal = await terminalJob(app, String(started.jobId));
+
+    expect(terminal).toMatchObject({
+      state: "failed",
+      snapshot: null,
+      notice: "FBA 入庫貨件同步未完成，Notebook Key 無法安全判定原因；請不要連續重試。Amazon 沒有收到任何寫入。",
+      failure: {
+        code: "ACCOUNT_SCOPE_CHANGED",
+        requestId: null,
+      },
+    });
+    expect(JSON.stringify(terminal)).not.toContain("hostile private account");
+    expect(JSON.stringify(terminal)).not.toContain("issueReport");
+  });
+
+  it("keeps a known noncompliance context failure ahead of a sibling abort", async () => {
+    let markIssueAttempted!: () => void;
+    const issueAttempted = new Promise<void>((resolve) => {
+      markIssueAttempted = resolve;
+    });
+    const app = router({
+      readNoncompliance: async () => {
+        markIssueAttempted();
+        throw new SpExecutionContextError(
+          "ACCOUNT_SCOPE_CHANGED",
+          "hostile private account detail",
+        );
+      },
+      snapshot: async () => {
+        await issueAttempted;
+        await Promise.resolve();
+        const error = new Error("sibling shipment aborted");
+        error.name = "AbortError";
+        throw error;
+      },
+    });
+    const started = jsonValue(await app.handle(apiRequest({
+      method: "POST",
+      body: {
+        marketplaceId: MARKETPLACE_ID,
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    })));
+
+    const terminal = await terminalJob(app, String(started.jobId));
+
+    expect(terminal).toMatchObject({
+      state: "failed",
+      snapshot: null,
+      failure: {
+        code: "ACCOUNT_SCOPE_CHANGED",
+        requestId: null,
+      },
+    });
+    expect(JSON.stringify(terminal)).not.toContain("hostile private account");
+    expect(JSON.stringify(terminal)).not.toContain("sibling shipment aborted");
   });
 
   it("maps hostile issue gateway errors to a fixed public notice", async () => {
@@ -855,11 +1188,6 @@ describe("FBA inbound shipment router job", () => {
     expect(guardedTerminal.notice).toContain("安全間隔");
     expect(reportStart).toHaveBeenCalledTimes(1);
     expect(snapshot).toHaveBeenCalledTimes(2);
-    expect((
-      app as unknown as {
-        inboundShipmentJobs: Map<string, { shipmentSeed: unknown }>;
-      }
-    ).inboundShipmentJobs.get(String(guardedRetry.jobId))?.shipmentSeed).toBeNull();
 
     now += 30 * 60 * 1_000 + 1;
     const allowedRetry = jsonValue(await app.handle(apiRequest({
@@ -1077,11 +1405,6 @@ describe("FBA inbound shipment router job", () => {
     expect(JSON.stringify(completed)).not.toContain("done-inbound-report-2");
     expect(JSON.stringify(completed)).not.toContain("done-inbound-document-2");
     expect(JSON.stringify(completed)).not.toContain("shipmentSeed");
-    expect((
-      app as unknown as {
-        inboundShipmentJobs: Map<string, { shipmentSeed: unknown }>;
-      }
-    ).inboundShipmentJobs.get(String(explicit.jobId))?.shipmentSeed).toBeNull();
   });
 
   it("marks row-level issue schema drift partial instead of hiding valid shipment data", async () => {
@@ -1316,8 +1639,28 @@ describe("FBA inbound shipment router job", () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(jsonValue(response).state).toBe("failed");
+    expect(jsonValue(response)).toMatchObject({
+      state: "failed",
+      snapshot: null,
+      notice: "FBA 入庫貨件背景工作等待逾時；Amazon 沒有收到任何寫入。",
+      failure: {
+        code: "INBOUND_SHIPMENT_JOB_TIMEOUT",
+        requestId: null,
+      },
+    });
     expect(observed.signal?.aborted).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1_000 + 1);
+    const expired = await app.handle(apiRequest({
+      method: "GET",
+      query: {
+        marketplaceId: MARKETPLACE_ID,
+        jobId: String(started.jobId),
+        startDate: "2026-08-01",
+        endDate: "2026-08-20",
+      },
+    }));
+    expect(expired.status).toBe(404);
   });
 
   it("requires status polls to match the exact job range without cancelling the valid job", async () => {

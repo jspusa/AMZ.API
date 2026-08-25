@@ -36,12 +36,15 @@ const EXTRACTED_FBA_INVENTORY_REPLENISHMENT_MODULES = [
 ] as const;
 
 const EXTRACTED_FBA_INBOUND_MODULES = [
+  "src/main/fba-inbound-coordinator.ts",
   "src/main/amazon/fba-inbound-shipments.ts",
   "src/main/amazon/fba-inbound-modern.ts",
   "src/main/amazon/inbound-noncompliance.ts",
   "src/main/amazon/fba-inbound-reads.ts",
   "src/main/amazon/fba-inbound-reads-production.ts",
 ] as const;
+
+const FBA_INBOUND_COORDINATOR = "src/main/fba-inbound-coordinator.ts";
 
 const EXTRACTED_VARIATION_CATALOG_MODULES = [
   "src/main/amazon/variation-family-reads.ts",
@@ -149,6 +152,28 @@ const SUPERSEDED_FBA_INBOUND_ROUTER_WIRING = [
   "InboundNoncomplianceReportGateway",
   "inboundShipments",
   "inboundNoncomplianceReports",
+] as const;
+
+const SUPERSEDED_FBA_INBOUND_ROUTER_STATE = [
+  "InboundShipmentProgress",
+  "InboundShipmentJobState",
+  "InboundShipmentFailure",
+  "InboundShipmentResultSnapshot",
+  "InboundShipmentJob",
+  "inboundShipmentJobs",
+  "inboundShipmentSelections",
+  "removeInboundShipmentJob",
+  "touchInboundShipmentJob",
+  "retainInboundShipmentTerminalJob",
+  "pruneInboundShipmentJobs",
+  "inboundShipmentJobReply",
+  "assertInboundShipmentJobContext",
+  "unavailableInboundIssueReport",
+  "loadInboundIssueReport",
+  "inboundJobFailure",
+  "runInboundShipmentJob",
+  "startInboundShipments",
+  "inboundShipmentsStatus",
 ] as const;
 
 const SUPERSEDED_AGED_INVENTORY_FACADES = [
@@ -765,20 +790,41 @@ describe("SP execution-context architecture", () => {
     expect(source).toContain("createFbaInboundReadsProductionAdapter({");
   });
 
-  it("routes FBA Inbound only through its semantic read owner", () => {
-    const source = readFileSync(
+  it("keeps the FBA Inbound coordinator interface closed to three operations", () => {
+    expect(exportedTypePropertyNames(
+      absolutePath(FBA_INBOUND_COORDINATOR),
+      "FbaInboundCoordinatorPort",
+    )).toEqual(["clear", "start", "status"]);
+  });
+
+  it("routes FBA Inbound only through its complete stateful coordinator", () => {
+    const router = readFileSync(
       absolutePath("src/main/api-router.ts"),
+      "utf8",
+    );
+    const coordinator = readFileSync(
+      absolutePath(FBA_INBOUND_COORDINATOR),
       "utf8",
     );
     for (const symbol of [
       ...SUPERSEDED_FBA_INBOUND_FACADES,
       ...SUPERSEDED_FBA_INBOUND_ROUTER_WIRING,
     ]) {
-      expect(source).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+      expect(router).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
     }
-    expect(source).toContain("new FbaInboundReads({");
-    expect(source).toContain("expectedContext: job.context");
-    expect(source).toContain("this.spExecutionContext.capture(marketplaceId)");
+    for (const symbol of SUPERSEDED_FBA_INBOUND_ROUTER_STATE) {
+      expect(router).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
+    }
+    expect(router).toContain("new FbaInboundReads({");
+    expect(router).toContain("new FbaInboundCoordinator({");
+    expect(router).toContain("this.fbaInboundCoordinator.start(request)");
+    expect(router).toContain("this.fbaInboundCoordinator.status(request)");
+    expect(router).toContain("this.fbaInboundCoordinator.clear()");
+    expect(coordinator).toContain("expectedContext: job.context");
+    expect(coordinator).toContain("this.context.capture(marketplaceId)");
+    expect(coordinator).not.toContain("new FixedReportBroker(");
+    expect(coordinator).not.toContain("LocalStore");
+    expect(coordinator).not.toContain("CredentialVault");
   });
 
   it("removes superseded Aged Inventory facades and duplicate Reports transport from the SP facade", () => {
