@@ -427,6 +427,64 @@ describe("AgedInventoryReads", () => {
     });
   });
 
+  it("rejects malformed numeric grammar instead of inventing zero evidence", async () => {
+    const malformedInteger = reportText(GLOBAL_AGE_HEADERS, [
+      globalAgeRecord("BAD-INTEGER", {
+        "inv-age-0-to-90-days": "1,2",
+      }),
+    ]);
+    await expect(readLive(malformedInteger)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("不是有效數量"),
+    });
+
+    const malformedZeroBasis = reportText(
+      [
+        ...GLOBAL_AGE_HEADERS,
+        "storage-volume",
+        "estimated-storage-cost-next-month",
+      ],
+      [globalAgeRecord("BAD-ZERO-BASIS", {
+        "storage-volume": "0x0",
+      })],
+    );
+    await expect(readLive(malformedZeroBasis)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("不是有效數字"),
+    });
+
+    const exponentCost = reportText(
+      [...GLOBAL_AGE_HEADERS, "currency", "estimated-storage-cost-next-month"],
+      [globalAgeRecord("BAD-EXPONENT", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "1e2",
+      })],
+    );
+    await expect(readLive(exponentCost)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("不是有效數字"),
+    });
+
+    const groupedNumbers = reportText(
+      [
+        ...GLOBAL_AGE_HEADERS,
+        "currency",
+        "estimated-storage-cost-next-month",
+      ],
+      [globalAgeRecord("GROUPED-NUMBERS", {
+        "inv-age-0-to-90-days": "1,234",
+        currency: "JPY",
+        "estimated-storage-cost-next-month": "1,234.56",
+      })],
+    );
+    await expect(readLive(groupedNumbers)).resolves.toMatchObject({
+      snapshot: {
+        rows: [{ totalAgedUnits: 1_234 }],
+        summary: { estimatedStorageCostNextMonth: 1_234.56 },
+      },
+    });
+  });
+
   it("rejects duplicate normalized headers instead of selecting a false zero", async () => {
     const headers = [
       ...GLOBAL_AGE_HEADERS,
@@ -498,6 +556,78 @@ describe("AgedInventoryReads", () => {
     await expect(readLive(tooManyRows)).rejects.toMatchObject({
       code: "REPORT_FORMAT_UNSUPPORTED",
       message: expect.stringContaining("資料列數超過安全上限"),
+    });
+  });
+
+  it("rejects a document beyond the main-side character budget", async () => {
+    const oversizedDocument = "X".repeat(64 * 1024 * 1024 + 1);
+
+    await expect(readLive(oversizedDocument)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("內容超過安全大小上限"),
+    });
+  });
+
+  it("fails closed when row or marketplace integer totals are unsafe", async () => {
+    const rowOverflow = reportText(GLOBAL_AGE_HEADERS, [
+      globalAgeRecord("ROW-OVERFLOW", {
+        "inv-age-0-to-90-days": Number.MAX_SAFE_INTEGER,
+        "inv-age-91-to-180-days": 1,
+      }),
+    ]);
+    await expect(readLive(rowOverflow)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("庫齡數量加總超出安全範圍"),
+    });
+
+    const marketplaceAgeOverflow = reportText(GLOBAL_AGE_HEADERS, [
+      globalAgeRecord("AGE-MAX", {
+        "inv-age-0-to-90-days": Number.MAX_SAFE_INTEGER,
+      }),
+      globalAgeRecord("AGE-ONE"),
+    ]);
+    await expect(readLive(marketplaceAgeOverflow)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("全站庫齡數量加總超出安全範圍"),
+    });
+
+    const excessHeaders = [...GLOBAL_AGE_HEADERS, "estimated-excess-quantity"];
+    const marketplaceExcessOverflow = reportText(excessHeaders, [
+      globalAgeRecord("EXCESS-MAX", {
+        "inv-age-0-to-90-days": 0,
+        "estimated-excess-quantity": Number.MAX_SAFE_INTEGER,
+      }),
+      globalAgeRecord("EXCESS-ONE", {
+        "inv-age-0-to-90-days": 0,
+        "estimated-excess-quantity": 1,
+      }),
+    ]);
+    await expect(readLive(marketplaceExcessOverflow)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("全站預估冗餘數量加總超出安全範圍"),
+    });
+  });
+
+  it("fails closed when decimal marketplace totals are non-finite", async () => {
+    const headers = [
+      ...GLOBAL_AGE_HEADERS,
+      "currency",
+      "estimated-storage-cost-next-month",
+    ];
+    const document = reportText(headers, [
+      globalAgeRecord("COST-A", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": `1${"0".repeat(308)}`,
+      }),
+      globalAgeRecord("COST-B", {
+        currency: "JPY",
+        "estimated-storage-cost-next-month": `1${"0".repeat(308)}`,
+      }),
+    ]);
+
+    await expect(readLive(document)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("全站下月預估倉儲成本加總超出安全範圍"),
     });
   });
 
