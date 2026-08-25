@@ -11,8 +11,6 @@ import {
   SpApiError,
   SpApiPreCommitError,
 } from "../src/main/amazon/sp-api-error";
-import { StandaloneAuditJobCoordinatorError } from
-  "../src/main/amazon/standalone-audit-job";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -214,26 +212,23 @@ describe("public SP-API error mapping", () => {
 
   it("preserves safe coordinator and unknown error envelopes", async () => {
     const cases = [
-      ...[
-        new StandaloneAuditJobCoordinatorError("工作 context 已改變。", {
+      {
+        error: new AuditSuiteCoordinatorError("Audit Suite context 已改變。", {
           status: 409,
           code: "JOB_MISMATCH",
         }),
-        new AuditSuiteCoordinatorError("Audit Suite context 已改變。", {
-          status: 409,
-          code: "JOB_MISMATCH",
-        }),
-      ].map((error) => ({
-        error,
         expected: {
           status: 409,
           headers: JSON_HEADERS,
           body: {
             kind: "json" as const,
-            value: { code: "JOB_MISMATCH", message: error.message },
+            value: {
+              code: "JOB_MISMATCH",
+              message: "Audit Suite context 已改變。",
+            },
           },
         },
-      })),
+      },
       {
         error: new ReplenishmentAuditError(
           "REQUEST_INVALID",
@@ -281,16 +276,6 @@ describe("public SP-API error mapping", () => {
       "hostile-text\u202e\u0000",
     ].join(" ");
     const cases = [
-      {
-        error: new StandaloneAuditJobCoordinatorError(hostile, {
-          status: 302,
-          code: "BAD\nCODE",
-        }),
-        expectedValue: {
-          code: "UPSTREAM_UNAVAILABLE",
-          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
-        },
-      },
       {
         error: new AuditSuiteCoordinatorError(hostile, {
           status: 302,

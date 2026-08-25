@@ -104,6 +104,10 @@ describe("R10 read-only Amazon Ads coordinator public seam", () => {
       new URL("../src/main/advertising-read-coordinator.ts", import.meta.url),
       "utf8",
     );
+    const standaloneSource = readFileSync(
+      new URL("../src/main/standalone-audit-coordinator.ts", import.meta.url),
+      "utf8",
+    );
     const clearStart = routerSource.indexOf(
       "private clearContextBoundState(): void",
     );
@@ -122,8 +126,11 @@ describe("R10 read-only Amazon Ads coordinator public seam", () => {
     expect(coordinatorClear).toBeGreaterThan(-1);
     expect(brokerClear).toBeLessThan(coordinatorClear);
     expect(coordinatorSource).not.toContain("this.reportBroker.clear()");
-    expect(routerSource).toContain(
-      "return this.advertisingCoordinator.runStandalone(input)",
+    expect(standaloneSource).toContain(
+      "return this.advertising.runStandalone(input)",
+    );
+    expect(routerSource).not.toContain(
+      "this.advertisingCoordinator.runStandalone(input)",
     );
     expect(routerSource).toContain(
       "this.advertisingCoordinator.runAuditSuite(context, control)",

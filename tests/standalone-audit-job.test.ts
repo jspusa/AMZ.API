@@ -509,4 +509,53 @@ describe("standalone audit background job coordinator", () => {
       code: "STANDALONE_AUDIT_JOB_EXPIRED",
     }));
   });
+
+  it("keeps an expired active job aborted when its owner ignores abort and resolves late", async () => {
+    const late = deferred<{ rows: string[] }>();
+    let jobSignal: AbortSignal | null = null;
+    const coordinator = new StandaloneAuditJobCoordinator({
+      ttlMs: 1_000,
+      gateway: gateway({
+        run: async ({ signal }) => {
+          jobSignal = signal;
+          return late.promise;
+        },
+      }),
+    });
+    const started = await coordinator.start({
+      kind: "content",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((jobSignal as AbortSignal | null)?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect((jobSignal as AbortSignal | null)?.aborted).toBe(true);
+    await expect(coordinator.get({
+      jobId: started.jobId,
+      contextId: started.contextId,
+      kind: "content",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+    })).resolves.toMatchObject({
+      ready: true,
+      status: "aborted",
+      error: { code: "STANDALONE_AUDIT_ABORTED" },
+    });
+
+    late.resolve({ rows: ["must-not-publish"] });
+    await flushBackgroundJob();
+    await expect(coordinator.get({
+      jobId: started.jobId,
+      contextId: started.contextId,
+      kind: "content",
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+    })).resolves.toMatchObject({
+      ready: true,
+      status: "aborted",
+      error: { code: "STANDALONE_AUDIT_ABORTED" },
+    });
+  });
 });

@@ -48,7 +48,6 @@ describe("R11 standalone audit coordinator seam", () => {
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       standaloneAuditCoordinator,
-      standaloneAudit: { run: async () => ({}) },
     } as ConstructorParameters<typeof ApiRouter>[0]);
 
     const startRequest = request({

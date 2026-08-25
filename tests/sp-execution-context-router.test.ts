@@ -16,6 +16,8 @@ import type { UnboundVariationAuditOwnerPort } from
   "../src/main/amazon/unbound-variation-audit-owner";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
+import type { StandaloneAuditCoordinatorPort } from
+  "../src/main/standalone-audit-coordinator";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 import type { MarketplaceId } from "../src/shared/marketplaces";
 
@@ -349,7 +351,35 @@ describe("ApiRouter SP execution context", () => {
           return context;
         },
       };
-      const standaloneRun = vi.fn(async () => ({}));
+      const standaloneAuditClear = vi.fn();
+      const standaloneAuditCoordinator: StandaloneAuditCoordinatorPort = {
+        start: vi.fn(async () => {
+          await (router as unknown as {
+            spExecutionContext: SpExecutionContextAdapter;
+          }).spExecutionContext.capture(US);
+          await new Promise<void>((resolve) => queueMicrotask(resolve));
+          return {
+            status: 202,
+            headers: { "retry-after": "1" },
+            body: {
+              kind: "json" as const,
+              value: { ready: false, status: "queued" },
+            },
+          };
+        }),
+        observe: vi.fn(async () => ({
+          status: 410,
+          headers: {},
+          body: {
+            kind: "json" as const,
+            value: { code: "STANDALONE_AUDIT_JOB_EXPIRED" },
+          },
+        })),
+        getJob: vi.fn(async () => {
+          throw new Error("Unexpected Standalone Audit receipt read.");
+        }),
+        clear: standaloneAuditClear,
+      };
       const aPlusAuditClear = vi.fn();
       const aPlusAuditCoordinator = {
         start: vi.fn(async () => {
@@ -381,7 +411,7 @@ describe("ApiRouter SP execution context", () => {
         vault: {} as CredentialVault,
         approveWrite: async () => undefined,
         spExecutionContext,
-        standaloneAudit: { run: standaloneRun },
+        standaloneAuditCoordinator,
         aPlusAuditCoordinator,
       });
 
@@ -399,13 +429,11 @@ describe("ApiRouter SP execution context", () => {
       expect(response.body.kind === "json" ? response.body.value : null).toMatchObject({
         code: "SP_CONTEXT_INVALIDATED",
       });
-      expect(standaloneRun, candidate.label).not.toHaveBeenCalled();
+      expect(standaloneAuditClear, candidate.label).toHaveBeenCalled();
       expect(aPlusAuditClear, candidate.label).toHaveBeenCalled();
       const state = router as unknown as {
-        standaloneAuditJobs: { jobs: Map<string, unknown> };
         auditSuite: { jobs: Map<string, unknown> };
       };
-      expect(state.standaloneAuditJobs.jobs.size, candidate.label).toBe(0);
       expect(state.auditSuite.jobs.size, candidate.label).toBe(0);
       router.dispose();
     }
