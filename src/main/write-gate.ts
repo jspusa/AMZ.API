@@ -40,6 +40,9 @@ export type WriteBinding = Readonly<{
 }>;
 
 export type MainWriteAttemptControl<T> = Readonly<{
+  /** Saves recoverable target evidence without claiming upstream acceptance. */
+  recordDurableEvidence?(response: T): Promise<void>;
+  /** Compatibility alias for domains that call this only after ACCEPTED. */
   recordAccepted(response: T): Promise<void>;
   assertCurrent(): Promise<void>;
 }>;
@@ -374,6 +377,7 @@ export class MainWriteGate implements MainWriteGatePort {
             try {
               await this.context.assertCurrent(input.binding.context);
               return await attempt.execute({
+                recordDurableEvidence: recordAccepted,
                 recordAccepted,
                 assertCurrent: () =>
                   this.context.assertCurrent(input.binding.context),
