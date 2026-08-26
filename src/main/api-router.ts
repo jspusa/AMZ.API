@@ -83,6 +83,8 @@ import {
   createVariationMoveMutations,
   type VariationMoveMutationsPort,
 } from "./variation-move-mutations";
+import type { BusinessPricingMutationsPort } from
+  "./business-pricing-mutations";
 import {
   FbaSalesMetricsRoutes,
   type FbaSalesMetricsRoutesPort,
@@ -905,6 +907,7 @@ export class ApiRouter {
   private readonly priceMutations: ListingPriceMutationsPort;
   private readonly listingImageMutations: ListingImageMutationsPort;
   private readonly variationMoveMutations: VariationMoveMutationsPort;
+  private readonly businessPricingMutations: BusinessPricingMutationsPort;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly aplusContentReads: AplusContentReadsPort;
@@ -998,6 +1001,7 @@ export class ApiRouter {
     priceMutations?: ListingPriceMutationsPort;
     listingImageMutations?: ListingImageMutationsPort;
     variationMoveMutations?: VariationMoveMutationsPort;
+    businessPricingMutations?: BusinessPricingMutationsPort;
   }) {
     this.store = input.store;
     this.vault = input.vault;
@@ -1034,6 +1038,9 @@ export class ApiRouter {
         writeGate: this.writeGate,
         gateway: variationMoveGatewayProduction,
       });
+    this.businessPricingMutations = input.businessPricingMutations ?? {
+      handle: ({ request }) => this.businessPricing(request),
+    };
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
       start: (request) => startDemoFixedReport({
@@ -1540,7 +1547,10 @@ export class ApiRouter {
       case "GET /api/sp-api/business-pricing-audit/export":
         return this.businessPricingAuditOwner.download(request);
       case "GET /api/sp-api/business-pricing":
-        return this.businessPricing(request);
+        return this.businessPricingMutations.handle({
+          operation: "read",
+          request,
+        });
       case "POST /api/sp-api/business-pricing":
         return this.previewBusinessPricing(request);
       case "PATCH /api/sp-api/business-pricing":
