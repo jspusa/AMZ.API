@@ -69,7 +69,7 @@ type AgedInventorySnapshot = {
   mode: "live" | "demo";
   marketplaceId: string;
   fetchedAt: string;
-  exportId: string;
+  workbookDownloadUrl: string;
   rows: AgedInventoryRow[];
   summary: {
     skuCount: number;
@@ -110,6 +110,39 @@ export function agedInventoryWorkbookDownloadUrl(
   const params = new URLSearchParams({
     marketplaceId,
     exportId,
+    download: "1",
+  });
+  return `/api/sp-api/aged-inventory?${params}`;
+}
+
+const REPORT_IDENTIFIER = /^[A-Za-z0-9._-]{1,200}$/u;
+
+function agedInventoryWorkbookDownloadUrlFromSnapshot(
+  value: Record<string, unknown>,
+  marketplaceId: string,
+): string | null {
+  if (value.exportId !== undefined) {
+    if (
+      typeof value.exportId !== "string" ||
+      !REPORT_IDENTIFIER.test(value.exportId)
+    ) {
+      return null;
+    }
+    return agedInventoryWorkbookDownloadUrl(marketplaceId, value.exportId);
+  }
+
+  if (
+    typeof value.reportId !== "string" ||
+    !REPORT_IDENTIFIER.test(value.reportId) ||
+    typeof value.documentId !== "string" ||
+    !REPORT_IDENTIFIER.test(value.documentId)
+  ) {
+    return null;
+  }
+  const params = new URLSearchParams({
+    marketplaceId,
+    reportId: value.reportId,
+    documentId: value.documentId,
     download: "1",
   });
   return `/api/sp-api/aged-inventory?${params}`;
@@ -279,14 +312,16 @@ export function parseAgedInventorySnapshot(
   value: unknown,
   marketplaceId: string,
 ): AgedInventorySnapshot {
+  const workbookDownloadUrl = isRecord(value)
+    ? agedInventoryWorkbookDownloadUrlFromSnapshot(value, marketplaceId)
+    : null;
   if (
     !isRecord(value) ||
     value.marketplaceId !== marketplaceId ||
     (value.mode !== "live" && value.mode !== "demo") ||
     typeof value.fetchedAt !== "string" ||
     Number.isNaN(Date.parse(value.fetchedAt)) ||
-    typeof value.exportId !== "string" ||
-    !/^[A-Za-z0-9._-]{1,200}$/u.test(value.exportId) ||
+    !workbookDownloadUrl ||
     typeof value.notice !== "string" ||
     !Array.isArray(value.rows) ||
     value.rows.length > 20_000 ||
@@ -561,7 +596,7 @@ export function parseAgedInventorySnapshot(
     mode: value.mode,
     marketplaceId,
     fetchedAt: value.fetchedAt,
-    exportId: value.exportId,
+    workbookDownloadUrl,
     rows,
     summary: {
       skuCount: rows.length,
@@ -801,7 +836,7 @@ export default function AgedInventoryPanel({
     setError(null);
     try {
       const response = await fetch(
-        agedInventoryWorkbookDownloadUrl(marketplaceId, snapshot.exportId),
+        snapshot.workbookDownloadUrl,
         { cache: "no-store" },
       );
       if (!response.ok) {

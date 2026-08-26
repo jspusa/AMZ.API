@@ -222,7 +222,7 @@ describe("FBA aged inventory renderer and read-only route", () => {
     })]);
   });
 
-  it("validates every row and the server summary before displaying it", () => {
+  it("validates every row, accepts the installed old-main export reference, and verifies the server summary", () => {
     const raw = {
       mode: "live",
       marketplaceId: MARKETPLACE_ID,
@@ -298,7 +298,8 @@ describe("FBA aged inventory renderer and read-only route", () => {
     };
 
     expect(parseAgedInventorySnapshot(raw, MARKETPLACE_ID)).toMatchObject({
-      exportId: "11111111-1111-4111-8111-111111111111",
+      workbookDownloadUrl:
+        "/api/sp-api/aged-inventory?marketplaceId=ATVPDKIKX0DER&exportId=11111111-1111-4111-8111-111111111111&download=1",
       summary: {
         skuCount: 1,
         totalAgedUnits: 50,
@@ -308,12 +309,18 @@ describe("FBA aged inventory renderer and read-only route", () => {
         estimatedAgedSurcharge: 3.6,
       },
     });
-    expect(() => parseAgedInventorySnapshot({
+    const installedMainSnapshot = parseAgedInventorySnapshot({
       ...raw,
       exportId: undefined,
-      reportId: "amazon-report-id-is-not-an-export-capability",
-      documentId: "amazon-document-id-is-not-an-export-capability",
-    }, MARKETPLACE_ID)).toThrow("FBA 庫齡資料不完整");
+      reportId: "legacy-report-1",
+      documentId: "amzn1.spdoc.legacy-document-1",
+    }, MARKETPLACE_ID);
+    expect(installedMainSnapshot).toMatchObject({
+      workbookDownloadUrl:
+        "/api/sp-api/aged-inventory?marketplaceId=ATVPDKIKX0DER&reportId=legacy-report-1&documentId=amzn1.spdoc.legacy-document-1&download=1",
+    });
+    expect(installedMainSnapshot).not.toHaveProperty("reportId");
+    expect(installedMainSnapshot).not.toHaveProperty("documentId");
     expect(() =>
       parseAgedInventorySnapshot(
         { ...raw, summary: { ...raw.summary, agedOver180: 30 } },
