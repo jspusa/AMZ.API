@@ -750,6 +750,55 @@ function submissionId(payload: Record<string, unknown>): string | null {
     : null;
 }
 
+async function commitListingPricePatch(
+  gateway: ListingPriceGateway,
+  patch: ListingPricePatch,
+  fence: ListingWriteExecutionFence,
+  messages: Readonly<{
+    unrecognizedResponse: string;
+    unknownStatus: string;
+    rejected: string;
+  }>,
+) {
+  const reply = await gateway.commitOnce(patch, fence);
+  if (!reply.ok) {
+    return throwGatewayError(reply, "write", "patchListingsItem");
+  }
+  if (!isRecord(reply.payload)) {
+    throw new SpApiError(messages.unrecognizedResponse, {
+      status: 502,
+      code: "UPDATE_STATUS_UNKNOWN",
+      requestId: reply.requestId,
+    });
+  }
+  const issues = normalizeListingIssues(reply.payload.issues);
+  if (reply.payload.status !== "ACCEPTED") {
+    if (reply.payload.status !== "INVALID") {
+      throw new SpApiError(messages.unknownStatus, {
+        status: 503,
+        code: "UPDATE_STATUS_UNKNOWN",
+        requestId: reply.requestId,
+        issues,
+      });
+    }
+    throw new SpApiError(
+      issues.find((issue) => issue.severity === "ERROR")?.message ||
+        messages.rejected,
+      {
+        status: 422,
+        code: "UPDATE_REJECTED",
+        requestId: reply.requestId,
+        issues,
+      },
+    );
+  }
+  return {
+    submissionId: submissionId(reply.payload),
+    requestId: reply.requestId,
+    issues,
+  };
+}
+
 export function createListingPriceMutationOperations(
   gateway: ListingPriceGateway,
 ): ListingPriceMutationOperations {
@@ -820,44 +869,18 @@ export function createListingPriceMutationOperations(
         () => prepareLivePriceUpdate(gateway, input),
         "價格正式寫入前的重新讀取或 Validation Preview 失敗。",
       );
-      const reply = await gateway.commitOnce(prepared.patch, fence);
-      if (!reply.ok) {
-        return throwGatewayError(reply, "write", "patchListingsItem");
-      }
-      if (!isRecord(reply.payload)) {
-        throw new SpApiError(
-          "Amazon 已收到請求，但回應無法辨識。請重新查詢 SKU 確認價格。",
-          {
-            status: 502,
-            code: "UPDATE_STATUS_UNKNOWN",
-            requestId: reply.requestId,
-          },
-        );
-      }
-      const issues = normalizeListingIssues(reply.payload.issues);
-      if (reply.payload.status !== "ACCEPTED") {
-        if (reply.payload.status !== "INVALID") {
-          throw new SpApiError(
+      const receipt = await commitListingPricePatch(
+        gateway,
+        prepared.patch,
+        fence,
+        {
+          unrecognizedResponse:
+            "Amazon 已收到請求，但回應無法辨識。請重新查詢 SKU 確認價格。",
+          unknownStatus:
             "Amazon 已收到價格更新，但沒有回傳可確認的 ACCEPTED 或 INVALID 狀態。系統已禁止重送，請先回查 SKU。",
-            {
-              status: 503,
-              code: "UPDATE_STATUS_UNKNOWN",
-              requestId: reply.requestId,
-              issues,
-            },
-          );
-        }
-        throw new SpApiError(
-          issues.find((issue) => issue.severity === "ERROR")?.message ||
-            "Amazon 未接受這次價格更新。",
-          {
-            status: 422,
-            code: "UPDATE_REJECTED",
-            requestId: reply.requestId,
-            issues,
-          },
-        );
-      }
+          rejected: "Amazon 未接受這次價格更新。",
+        },
+      );
       return {
         mode: "live",
         status: "ACCEPTED",
@@ -866,9 +889,9 @@ export function createListingPriceMutationOperations(
         previousPrice: prepared.previousPrice,
         requestedPrice: prepared.requestedPrice,
         acceptedAt: new Date().toISOString(),
-        submissionId: submissionId(reply.payload),
-        requestId: reply.requestId,
-        issues,
+        submissionId: receipt.submissionId,
+        requestId: receipt.requestId,
+        issues: receipt.issues,
         notice:
           "Amazon 已接受調價請求，正在處理；重新查詢確認後才代表價格已生效。",
       };
@@ -941,44 +964,18 @@ export function createListingPriceMutationOperations(
         () => prepareLiveSalePriceUpdate(gateway, input),
         "折扣正式寫入前的重新讀取或 Validation Preview 失敗。",
       );
-      const reply = await gateway.commitOnce(prepared.patch, fence);
-      if (!reply.ok) {
-        return throwGatewayError(reply, "write", "patchListingsItem");
-      }
-      if (!isRecord(reply.payload)) {
-        throw new SpApiError(
-          "Amazon 已收到請求，但回應無法辨識。請重新查詢 SKU 確認折扣。",
-          {
-            status: 502,
-            code: "UPDATE_STATUS_UNKNOWN",
-            requestId: reply.requestId,
-          },
-        );
-      }
-      const issues = normalizeListingIssues(reply.payload.issues);
-      if (reply.payload.status !== "ACCEPTED") {
-        if (reply.payload.status !== "INVALID") {
-          throw new SpApiError(
+      const receipt = await commitListingPricePatch(
+        gateway,
+        prepared.patch,
+        fence,
+        {
+          unrecognizedResponse:
+            "Amazon 已收到請求，但回應無法辨識。請重新查詢 SKU 確認折扣。",
+          unknownStatus:
             "Amazon 已收到折扣更新，但沒有回傳可確認的 ACCEPTED 或 INVALID 狀態。系統已禁止重送，請先回查 SKU。",
-            {
-              status: 503,
-              code: "UPDATE_STATUS_UNKNOWN",
-              requestId: reply.requestId,
-              issues,
-            },
-          );
-        }
-        throw new SpApiError(
-          issues.find((issue) => issue.severity === "ERROR")?.message ||
-            "Amazon 未接受這次折扣更新。",
-          {
-            status: 422,
-            code: "UPDATE_REJECTED",
-            requestId: reply.requestId,
-            issues,
-          },
-        );
-      }
+          rejected: "Amazon 未接受這次折扣更新。",
+        },
+      );
       return {
         mode: "live",
         status: "ACCEPTED",
@@ -989,9 +986,9 @@ export function createListingPriceMutationOperations(
         previousDiscountedPrice: prepared.listing.discountedPrice,
         requestedDiscountedPrice: prepared.requestedDiscountedPrice,
         acceptedAt: new Date().toISOString(),
-        submissionId: submissionId(reply.payload),
-        requestId: reply.requestId,
-        issues,
+        submissionId: receipt.submissionId,
+        requestId: receipt.requestId,
+        issues: receipt.issues,
         notice: input.action === "cancel"
           ? "Amazon 已接受取消折扣，正在處理；重新查詢確認後才代表完成。"
           : "Amazon 已接受限時折扣，正在處理；重新查詢看到新折扣後才代表生效。",
