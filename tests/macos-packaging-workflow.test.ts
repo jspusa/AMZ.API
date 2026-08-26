@@ -1,12 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
+function normalizeWorkflowText(source: string): string {
+  return source.replace(/\r\n?/g, "\n");
+}
+
 describe("macOS unsigned packaging workflow", () => {
   it("bounds the exact packaged app process-tree shutdown before DMG creation", async () => {
-    const workflow = await readFile(
+    const workflowSource = await readFile(
       new URL("../.github/workflows/mac-dev.yml", import.meta.url),
       "utf8",
     );
+    const workflow = normalizeWorkflowText(workflowSource);
+    expect(
+      normalizeWorkflowText(workflowSource.replace(/\r?\n/g, "\r\n")),
+    ).toBe(workflow);
     const smokeStart = workflow.indexOf(
       "      - name: Ad-hoc sign and verify test app",
     );
