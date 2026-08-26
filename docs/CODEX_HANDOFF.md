@@ -3,6 +3,17 @@
 最後更新：2026-08-26
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
+
+### 2026-08-26 S01–R12 current-main integration（Draft PR #138）
+
+分支 `codex/r12-main-integration` 以當時 `origin/main` exact SHA `4812326297de33fe871acfbb34d76611e3cbeeb5` 為 current-main 基線，並由 true merge commit `0864c8d` 把 R12 exact head `7ca8c43bc9a9ba31319dd37a99fec6943987ff93` 與 current main 整合；current main 的 WebGate、受保護下載與 v0.1.31 release 行為均保留。獨立 Standards／Spec integration review 先抓到 GitHub Pages 與已安裝 v0.1.31 Bridge 的 aged-inventory version skew：舊 main 仍回 `reportId`／`documentId`，且 partial summary 保留已知列小計、0-SKU complete total 為 `null`、Amazon money row／AIS tier 可含 sub-cent raw evidence，AIS row total 只有 quantity＋charge 全完整才成立。
+
+public-seam RED 先在 `npx vitest run tests/aged-inventory.test.tsx` 以 1/5 fail 重現；fix heads `18115cb` 與 `0b7997b` 讓 renderer 優先使用 current opaque `exportId`，只在缺少 exportId 時接受 exact-safe legacy IDs 並立即正規化為固定 workbook URL，不把 raw IDs 留在 parsed snapshot。legacy partial total 會先依 v0.1.31 producer 逐列驗證再對 UI 正規化為 `null`；legacy raw decimal evidence 保持原值，完整 summary 與 tier 顯示用明確 `legacy-decimal` whole-total rounding，`0.004 + 0.004 = 0.01`；current `exportId` 仍固定 strict-cent 與 safe-range fail closed。quantity 缺值不會產生 AIS row total，hostile 假合計會被拒絕。
+
+最終 focused gate 為 2 檔／8 tests，local `npm run check` 為 188 個測試檔／1,933 項測試、typecheck 與 production build 全綠，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean；三位獨立 reviewer 最終均無剩餘 P0–P3。implementation head `0b7997b` 的 Validate run `32929571894`／job `98059061437` 與 Windows x64 run `32929571928`／job `98059061470` 均成功；Windows 包含 runner validation、unsigned package、ASAR addon boundary 與 packaged Bridge smoke，PR workflow 依規則跳過 artifact upload。本次證據回填會形成新的 docs-only final head，仍須讓兩條 CI 在該 exact head 重跑後才可把 PR 標為 ready 或合併。
+
+PR #138 目前以 `Closes #70` 至 `Closes #96` 連結前置 tickets；在 PR 實際合併前，#70–#96 仍應保持 OPEN，#97 仍受 native blockers 約束。兩個既有 user-owned untracked duplicate files仍未追蹤且排除。本段只有 local／static／fixture／scripted／demo／test／build／PR CI 證據，沒有部署、安裝、Notebook Key、live Amazon、Pages、真實裝置、Validation Preview、PATCH、readback 或 Amazon mutation。
+
 目前正式基線：`v0.1.31` 已發布、部署並由 exact release-code main macOS artifact 安裝為 `/Applications/AMZ.API.app`；原 v0.1.30 保留為 `/Applications/AMZ.API-v0.1.30-backup.app`，更舊備份、原 userData 與既有 encrypted vault file 均未清除。live Pages 的 HTML、主 JS、CSS 與文案規則 chunk 均與 exact main production output byte-for-byte 相同；已安裝 App 的版本／build、bundle、雙架構、deep strict codesign、ASAR header integrity 與 `app.asar` 均匹配 artifact。v0.1.31 主程序已啟動且沒有啟動即崩潰；正式 A+ 唯讀 canary 尚待 Mac 解鎖後完成，沒有執行 Touch ID／Windows Hello、Validation Preview、PATCH、readback 或任何 Amazon mutation。受保護員工下載頁的 Mac DMG 與 Windows NSIS installer 兩張卡已更新為 exact v0.1.31 artifact；Windows 仍沒有真實 Windows Hello／DPAPI 硬體驗證。
 
 目前工作樹：v0.1.31 release code 已由 PR #67 squash merge，唯一 release code main SHA 為 `fd02266279414e4e716316dbedfe7a507079bb10`；同一 SHA 的 Validate、Pages、macOS universal 與 Windows x64 workflows 均成功，source、CI、Pages、Mac／Windows artifacts 與 exact Mac 安裝已完成。v0.1.30 的正式 US 唯讀 canary 已證明 B2B canonical quantity tiers 與 `父變體橫排`，並暴露 A+ 全數 incomplete；同形 fixture 鎖定跨文件 conflict poisoning 核心缺口。v0.1.31 讓任一 exact `CONTENT_PUBLISHED` 保持正向權威，另一文件的 negative／malformed relation 只能把完整度降為 partial，且未使用的 optional `contentReferenceKeySet` 畸形不再丟棄合法 badge。沒有任何 positive 時仍 fail closed。v0.1.31 A+ 正式唯讀 canary 尚待 Mac 解鎖；任何 PATCH／readback、文案或圖片 mutation，以及真實 Windows Hello／DPAPI 裝置矩陣仍未執行。
