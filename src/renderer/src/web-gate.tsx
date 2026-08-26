@@ -1,36 +1,10 @@
 import { useState } from "react";
+import packageJson from "../../../package.json";
 import BrandGlyph from "./components/brand-glyph";
-
-export type NotebookKeyDownload = Readonly<{
-  platform: "macos" | "windows";
-  label: string;
-  detail: string;
-  version: string | null;
-  href: string | null;
-  warning?: string;
-}>;
 
 export const PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL =
   "https://supply-boss.brave-prawn-0848.chatgpt.site/downloads";
-
-export const DEFAULT_NOTEBOOK_KEY_DOWNLOADS: readonly NotebookKeyDownload[] = [
-  {
-    platform: "macos",
-    label: "Mac Notebook 鑰匙",
-    detail: "macOS · Universal",
-    version: "0.1.16",
-    href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
-    warning: "需先通過內部下載密碼驗證；安全下載頁會提供 DMG 大小與 SHA-256。",
-  },
-  {
-    platform: "windows",
-    label: "Windows Notebook 鑰匙",
-    detail: "Windows 11 x64",
-    version: "0.1.16",
-    href: PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
-    warning: "內部未簽章版可能顯示 Microsoft SmartScreen；請從安全下載頁取得並核對 SHA-256。",
-  },
-] as const;
+export const APP_DOWNLOAD_VERSION = packageJson.version;
 
 export function safeNotebookDownloadHref(href: string | null): string | null {
   if (!href) return null;
@@ -43,11 +17,12 @@ export function safeNotebookDownloadHref(href: string | null): string | null {
 }
 
 export default function WebGate({
-  downloads = DEFAULT_NOTEBOOK_KEY_DOWNLOADS,
+  downloadHref = PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
 }: {
-  downloads?: readonly NotebookKeyDownload[];
+  downloadHref?: string | null;
 }) {
   const [launching, setLaunching] = useState(false);
+  const safeDownloadHref = safeNotebookDownloadHref(downloadHref);
 
   return (
     <main className="web-gate">
@@ -97,30 +72,20 @@ export default function WebGate({
           <div className="web-gate-install-heading">
             <div>
               <p>NOTEBOOK KEY DOWNLOAD</p>
-              <h2 id="notebook-key-download-title">在這台電腦安全開啟</h2>
+              <h2 id="notebook-key-download-title">下載 AMZ.API App {APP_DOWNLOAD_VERSION}</h2>
             </div>
-            <small>一般瀏覽器永遠不會取得 Bridge 或 Amazon API 權限。</small>
-          </div>
-          <div className="web-gate-platform-grid">
-            {downloads.map((download) => {
-              const href = safeNotebookDownloadHref(download.href);
-              const actionLabel = `安全登入下載 ${download.label}`;
-              return (
-                <article className={`web-gate-platform is-${download.platform}`} key={`${download.platform}-${download.label}`}>
-                  <span aria-hidden="true">{download.platform === "macos" ? "⌘" : "▣"}</span>
-                  <div>
-                    <strong>{download.label}</strong>
-                    <small>{download.detail}{download.version ? ` · v${download.version}` : " · 最新發布版"}</small>
-                    {download.warning && <p>{download.warning}</p>}
-                  </div>
-                  {href ? (
-                    <a href={href} target="_blank" rel="noopener noreferrer">{actionLabel}<i aria-hidden="true">↓</i></a>
-                  ) : (
-                    <span className="web-gate-download-pending" aria-disabled="true">下載準備中</span>
-                  )}
-                </article>
-              );
-            })}
+            {safeDownloadHref ? (
+              <a
+                className="web-gate-download"
+                href={safeDownloadHref}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                安全登入下載 Mac／Windows App<i aria-hidden="true">↓</i>
+              </a>
+            ) : (
+              <span className="web-gate-download-pending" aria-disabled="true">下載準備中</span>
+            )}
           </div>
         </section>
       </section>
