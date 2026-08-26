@@ -9,6 +9,14 @@ import type { AdvertisingGateway } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
 import {
+  MainWriteGate,
+  MainWriteGateError,
+  type MainWriteGatePort,
+  type WriteBinding,
+  type WriteOperation,
+  type WritePreviewFamily,
+} from "./write-gate";
+import {
   publicSpApiError,
   SpApiError,
   SpApiPreCommitError,
@@ -268,18 +276,9 @@ import {
 
 type WriteApproval = (reason: string) => Promise<void>;
 
-type PreviewTicket = {
-  path: string;
-  context: SpExecutionContext;
-  fingerprint: string;
-  expiresAt: number;
-  reserved: boolean;
-};
-
 type ContentBatchChange = {
   input: UpdateListingContentInput;
-  fingerprint: string;
-  ledgerKey: string;
+  proposalFingerprint: string;
   validation: ListingContentValidationResult;
 };
 
@@ -840,6 +839,12 @@ function apiError(error: unknown, fallback: string): ApiResponse {
   return json({ code: "INTERNAL_ERROR", message: fallback }, 500);
 }
 
+function writeApiError(error: unknown, fallback: string): ApiResponse {
+  return error instanceof MainWriteGateError
+    ? invalid(error.message, error.status, error.code)
+    : apiError(error, fallback);
+}
+
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isPlainRecord(value) &&
     Object.values(value).every((entry) => typeof entry === "string");
@@ -984,8 +989,8 @@ function stableFingerprint(value: unknown): string {
 export class ApiRouter {
   private readonly store: LocalStore;
   private readonly vault: CredentialVault;
-  private readonly approveWrite: WriteApproval;
   private readonly spExecutionContext: RouterRequestContextAdapter;
+  private readonly writeGate: MainWriteGatePort;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly aplusContentReads: AplusContentReadsPort;
@@ -1018,8 +1023,6 @@ export class ApiRouter {
     AuditSuiteCompatibilityCoordinatorPort;
   private readonly aPlusAuditCoordinator: AplusAuditCoordinatorPort;
   private readonly standaloneAuditCoordinator: StandaloneAuditCoordinatorPort;
-  private readonly previews = new Map<string, PreviewTicket>();
-  private readonly listingAttributeWriteReservations = new Map<string, string>();
   private readonly contentBatchPlans = new Map<string, ContentBatchPlan>();
   private contextStateRevision = 0;
 
@@ -1077,10 +1080,10 @@ export class ApiRouter {
     legacyAuditSuiteCompatibility?: AuditSuiteCompatibilityCoordinatorPort;
     advertising?: AdvertisingGateway;
     spExecutionContext?: SpExecutionContextAdapter;
+    writeGate?: MainWriteGatePort;
   }) {
     this.store = input.store;
     this.vault = input.vault;
-    this.approveWrite = input.approveWrite;
     const baseSpExecutionContext = input.spExecutionContext
       ?? createProductionSpExecutionContextAdapter({
         getOpaqueAccountScope: (region) => this.vault.getAccountScope(region),
@@ -1092,6 +1095,11 @@ export class ApiRouter {
     this.spExecutionContext = createRouterRequestContextAdapter(
       baseSpExecutionContext,
     );
+    this.writeGate = input.writeGate ?? new MainWriteGate({
+      store: this.store,
+      context: this.spExecutionContext,
+      approveWrite: input.approveWrite,
+    });
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
       start: (request) => startDemoFixedReport({
@@ -1209,7 +1217,7 @@ export class ApiRouter {
           begin: (request) => this.fbaCatalogReports.begin({
             purpose: "catalog",
             ...request,
-          }),
+        }),
           status: (request) => this.fbaCatalogReports.status(request),
           read: (request) => this.getSharedUnboundVariationAuditData(request),
         },
@@ -1267,7 +1275,7 @@ export class ApiRouter {
           ...createBrandSalesDemoSource({
             listings: ({ marketplaceId, signal }) =>
               defaultCatalogDemo.seeds({ marketplaceId, signal }),
-          }),
+        }),
           ...input.brandSalesDemo,
         },
       });
@@ -1427,8 +1435,7 @@ export class ApiRouter {
     this.aPlusAuditCoordinator.clear();
     this.listingsExportOwner.clear();
     this.standaloneAuditCoordinator.clear();
-    this.previews.clear();
-    this.listingAttributeWriteReservations.clear();
+    this.writeGate.clearEphemeral();
     this.contentBatchPlans.clear();
     this.fbaInboundCoordinator.clear();
     this.legacyAuditSuiteCompatibility.clear();
@@ -1970,19 +1977,20 @@ export class ApiRouter {
         input.marketplaceId,
         () => previewBusinessPriceUpdate(input),
       );
-      const scoped = this.scopedFingerprintForContext(
+      await this.stageWritePreview(this.writeBinding({
+        family: "business-price",
+        operation: "business_price",
         context,
-        this.businessPricingFingerprint(input, result),
-      );
-      await this.issuePreview(
-        request.path,
-        input.idempotencyKey,
-        scoped.fingerprint,
-        context,
-      );
+        sellerSku: input.sellerSku,
+        idempotencyKey: input.idempotencyKey,
+        proposalFingerprint: this.businessPricingFingerprint(input, result),
+      }));
       return json(result);
     } catch (error) {
-      return apiError(error, "Amazon Business 價格預檢時發生未預期的錯誤。");
+      return writeApiError(
+        error,
+        "Amazon Business 價格預檢時發生未預期的錯誤。",
+      );
     }
   }
 
@@ -2004,40 +2012,38 @@ export class ApiRouter {
         "正式確認前重新執行 Amazon Business 價格預檢時發生未預期的錯誤。",
       );
     }
-    const scoped = this.scopedFingerprintForContext(
+    const binding = this.writeBinding({
+      family: "business-price",
+      operation: "business_price",
       context,
-      this.businessPricingFingerprint(input, evidence),
-    );
-    const ticketError = await this.approveReservedPreview(
-      request.path,
-      input.idempotencyKey,
-      scoped.fingerprint,
-      scoped.context,
-      `確認 B2B 調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${MARKETPLACES[input.marketplaceId].currency}｜數量折扣 ${evidence.quantityDiscountPlanChange === "preserve" ? "維持原方案" : `${evidence.previousQuantityDiscountPlan ? `${evidence.previousQuantityDiscountPlan.discountType} ${evidence.previousQuantityDiscountPlan.levels.map((level) => `${level.lowerBound}件=${level.value}`).join("、")}` : "未設定"} → ${evidence.requestedQuantityDiscountPlan?.levels.map((level) => `${level.lowerBound}件=${level.value}%`).join("、") ?? "未設定"}`}`,
-    );
-    if (ticketError) return ticketError;
+      sellerSku: input.sellerSku,
+      idempotencyKey: input.idempotencyKey,
+      proposalFingerprint: this.businessPricingFingerprint(input, evidence),
+    });
     try {
-      const result = await this.store.runIdempotentOperation({
-        idempotencyKey: input.idempotencyKey,
-        operationType: "business_price",
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-        accountScope: scoped.accountScope,
-        fingerprint: scoped.fingerprint,
-        execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateBusinessPrice(input, evidence, {
-            assertCurrent: () =>
-              this.spExecutionContext.assertCurrent(scoped.context),
-          }),
-          onAccepted: recordAccepted,
-          assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
-          read: () => getBusinessPricing(input),
-          decide: businessPriceReadbackDecision,
+      const result = await this.writeGate.execute({
+        binding,
+        approvalReason: `確認 B2B 調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${MARKETPLACES[input.marketplaceId].currency}｜數量折扣 ${evidence.quantityDiscountPlanChange === "preserve" ? "維持原方案" : `${evidence.previousQuantityDiscountPlan ? `${evidence.previousQuantityDiscountPlan.discountType} ${evidence.previousQuantityDiscountPlan.levels.map((level) => `${level.lowerBound}件=${level.value}`).join("、")}` : "未設定"} → ${evidence.requestedQuantityDiscountPlan?.levels.map((level) => `${level.lowerBound}件=${level.value}%`).join("、") ?? "未設定"}`}`,
+        run: (session) => session.attempt({
+          intentId: "primary",
+          execute: ({ recordAccepted, assertCurrent }) =>
+            commitWithCanonicalReadback({
+              commit: () => updateBusinessPrice(input, evidence, {
+                assertCurrent,
+              }),
+              onAccepted: recordAccepted,
+              assertCurrent,
+              read: () => getBusinessPricing(input),
+              decide: businessPriceReadbackDecision,
+            }),
         }),
       });
       return json(result);
     } catch (error) {
-      return apiError(error, "送出 Amazon Business 價格更新時發生未預期的錯誤。");
+      return writeApiError(
+        error,
+        "送出 Amazon Business 價格更新時發生未預期的錯誤。",
+      );
     }
   }
 
@@ -2165,19 +2171,19 @@ export class ApiRouter {
         input.marketplaceId,
         () => previewVariationMove(input),
       );
-      const scoped = this.scopedFingerprintForContext(
+      await this.stageWritePreview(this.writeBinding({
+        family: "variation-move",
+        operation: input.action === "detach"
+          ? "variation_detach"
+          : "variation_attach",
         context,
-        this.variationMoveFingerprint(input),
-      );
-      await this.issuePreview(
-        request.path,
-        input.idempotencyKey,
-        scoped.fingerprint,
-        context,
-      );
+        sellerSku: input.sellerSku,
+        idempotencyKey: input.idempotencyKey,
+        proposalFingerprint: this.variationMoveFingerprint(input),
+      }));
       return json(result);
     } catch (error) {
-      return apiError(error, "Amazon 變體預檢時發生未預期的錯誤。");
+      return writeApiError(error, "Amazon 變體預檢時發生未預期的錯誤。");
     }
   }
 
@@ -2186,37 +2192,37 @@ export class ApiRouter {
     if ("status" in input) return input;
     const key = idempotencyKey(input.idempotencyKey);
     if (!key) return invalid("這次變體預檢確認資訊已失效，請重新執行。");
-    const scoped = await this.scopedFingerprint(
-      input.marketplaceId,
-      this.variationMoveFingerprint(input),
-    );
+    const context = await this.spExecutionContext.capture(input.marketplaceId);
+    const binding = this.writeBinding({
+      family: "variation-move",
+      operation: input.action === "detach"
+        ? "variation_detach"
+        : "variation_attach",
+      context,
+      sellerSku: input.sellerSku,
+      idempotencyKey: key,
+      proposalFingerprint: this.variationMoveFingerprint(input),
+    });
     const reason = input.action === "detach"
       ? `確認解除變體｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜原 parent ${input.expectedSourceParentSku}`
       : `確認加入變體｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku} → ${input.targetParentSku}｜${input.variationTheme}`;
-    const ticketError = await this.approveReservedPreview(
-      request.path,
-      key,
-      scoped.fingerprint,
-      scoped.context,
-      reason,
-    );
-    if (ticketError) return ticketError;
     try {
-      const result = await this.store.runIdempotentOperation({
-        idempotencyKey: key,
-        operationType: input.action === "detach" ? "variation_detach" : "variation_attach",
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-        accountScope: scoped.accountScope,
-        fingerprint: scoped.fingerprint,
-        execute: () => updateVariationMove(input, {
-          assertCurrent: () =>
-            this.spExecutionContext.assertCurrent(scoped.context),
+      const result = await this.writeGate.execute({
+        binding,
+        approvalReason: reason,
+        run: (session) => session.attempt({
+          intentId: "primary",
+          execute: ({ assertCurrent }) => updateVariationMove(input, {
+            assertCurrent,
+          }),
         }),
       });
       return json(result);
     } catch (error) {
-      return apiError(error, "Amazon 變體寫入或回查時發生未預期的錯誤。");
+      return writeApiError(
+        error,
+        "Amazon 變體寫入或回查時發生未預期的錯誤。",
+      );
     }
   }
 
@@ -2267,19 +2273,17 @@ export class ApiRouter {
         input.marketplaceId,
         () => previewListingPriceUpdate(input),
       );
-      const scoped = this.scopedFingerprintForContext(
+      await this.stageWritePreview(this.writeBinding({
+        family: "standard-price",
+        operation: "price",
         context,
-        this.priceFingerprint(input),
-      );
-      await this.issuePreview(
-        request.path,
-        input.idempotencyKey,
-        scoped.fingerprint,
-        context,
-      );
+        sellerSku: input.sellerSku,
+        idempotencyKey: input.idempotencyKey,
+        proposalFingerprint: this.priceFingerprint(input),
+      }));
       return json(result);
     } catch (error) {
-      return apiError(error, "價格預檢時發生未預期的錯誤。");
+      return writeApiError(error, "價格預檢時發生未預期的錯誤。");
     }
   }
 
@@ -2292,41 +2296,34 @@ export class ApiRouter {
     if (changeRatio >= 0.2 && input.confirmationSku !== input.sellerSku) {
       return invalid("價格變動達 20%，請重新輸入完整 SKU 才能送出。", 400, "CONFIRMATION_REQUIRED");
     }
-    const scoped = await this.scopedFingerprint(
-      input.marketplaceId,
-      this.priceFingerprint(input),
-    );
-    const fingerprint = scoped.fingerprint;
-    const ticketError = await this.approveReservedPreview(
-      request.path,
-      key,
-      fingerprint,
-      scoped.context,
-      `確認調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.newPrice} ${MARKETPLACES[input.marketplaceId].currency}`,
-    );
-    if (ticketError) return ticketError;
+    const context = await this.spExecutionContext.capture(input.marketplaceId);
+    const binding = this.writeBinding({
+      family: "standard-price",
+      operation: "price",
+      context,
+      sellerSku: input.sellerSku,
+      idempotencyKey: key,
+      proposalFingerprint: this.priceFingerprint(input),
+    });
     try {
-      const result = await this.store.runIdempotentOperation({
-        idempotencyKey: key,
-        operationType: "price",
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-        accountScope: scoped.accountScope,
-        fingerprint,
-        execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateListingPrice(input, {
-            assertCurrent: () =>
-              this.spExecutionContext.assertCurrent(scoped.context),
-          }),
-          onAccepted: recordAccepted,
-          assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
-          read: () => getListingPrice(input),
-          decide: priceReadbackDecision,
+      const result = await this.writeGate.execute({
+        binding,
+        approvalReason: `確認調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.newPrice} ${MARKETPLACES[input.marketplaceId].currency}`,
+        run: (session) => session.attempt({
+          intentId: "primary",
+          execute: ({ recordAccepted, assertCurrent }) =>
+            commitWithCanonicalReadback({
+              commit: () => updateListingPrice(input, { assertCurrent }),
+              onAccepted: recordAccepted,
+              assertCurrent,
+              read: () => getListingPrice(input),
+              decide: priceReadbackDecision,
+            }),
         }),
       });
       return json(result);
     } catch (error) {
-      return apiError(error, "送出價格更新時發生未預期的錯誤。");
+      return writeApiError(error, "送出價格更新時發生未預期的錯誤。");
     }
   }
 
@@ -2436,19 +2433,17 @@ export class ApiRouter {
         input.marketplaceId,
         () => previewListingContentUpdate(input),
       );
-      const scoped = this.scopedFingerprintForContext(
+      await this.stageWritePreview(this.writeBinding({
+        family: "content",
+        operation: "content",
         context,
-        this.contentFingerprint(input),
-      );
-      await this.issuePreview(
-        request.path,
-        input.idempotencyKey,
-        scoped.fingerprint,
-        context,
-      );
+        sellerSku: input.sellerSku,
+        idempotencyKey: input.idempotencyKey,
+        proposalFingerprint: this.contentFingerprint(input),
+      }));
       return json(result);
     } catch (error) {
-      return apiError(error, "商品內容預檢時發生未預期的錯誤。");
+      return writeApiError(error, "商品內容預檢時發生未預期的錯誤。");
     }
   }
 
@@ -2457,19 +2452,16 @@ export class ApiRouter {
     if ("status" in input) return input;
     const key = idempotencyKey(input.idempotencyKey);
     if (!key) return invalid("這次預檢已失效，請重新預檢。");
-    const reservationOwner = randomUUID();
-    const reservationError = this.reserveListingAttributeWrites(
-      input.marketplaceId,
-      [input.sellerSku],
-      reservationOwner,
-    );
-    if (reservationError) return reservationError;
+    const context = await this.spExecutionContext.capture(input.marketplaceId);
+    const binding = this.writeBinding({
+      family: "content",
+      operation: "content",
+      context,
+      sellerSku: input.sellerSku,
+      idempotencyKey: key,
+      proposalFingerprint: this.contentFingerprint(input),
+    });
     try {
-      const scoped = await this.scopedFingerprint(
-        input.marketplaceId,
-        this.contentFingerprint(input),
-      );
-      const fingerprint = scoped.fingerprint;
       const changedFields = [
         input.title !== input.expectedTitle ? "產品名稱" : null,
         input.itemHighlight !== input.expectedItemHighlight ? "產品亮點" : null,
@@ -2481,43 +2473,25 @@ export class ApiRouter {
           : null,
         input.ingredients !== input.expectedIngredients ? "成分" : null,
       ].filter(Boolean).join("、");
-      const ticketError = await this.approveReservedPreview(
-        request.path,
-        key,
-        fingerprint,
-        scoped.context,
-        `確認文案｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${changedFields}｜驗證碼 ${fingerprint.slice(0, 12)}`,
-      );
-      if (ticketError) return ticketError;
-      try {
-        const result = await this.store.runIdempotentOperation({
-          idempotencyKey: key,
-          operationType: "content",
-          marketplaceId: input.marketplaceId,
-          sellerSku: input.sellerSku,
-          accountScope: scoped.accountScope,
-          fingerprint,
-          execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-            commit: () => updateListingContent(input, {
-              assertCurrent: () =>
-                this.spExecutionContext.assertCurrent(scoped.context),
+      const result = await this.writeGate.execute({
+        binding,
+        approvalReason: (verificationCode) =>
+          `確認文案｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${changedFields}｜驗證碼 ${verificationCode}`,
+        run: (session) => session.attempt({
+          intentId: "primary",
+          execute: ({ recordAccepted, assertCurrent }) =>
+            commitWithCanonicalReadback({
+              commit: () => updateListingContent(input, { assertCurrent }),
+              onAccepted: recordAccepted,
+              assertCurrent,
+              read: () => getListingContent(input),
+              decide: contentReadbackDecision,
             }),
-            onAccepted: recordAccepted,
-            assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
-            read: () => getListingContent(input),
-            decide: contentReadbackDecision,
-          }),
-        });
-        return json(result);
-      } catch (error) {
-        return apiError(error, "送出商品內容時發生未預期的錯誤。");
-      }
-    } finally {
-      this.releaseListingAttributeWrites(
-        input.marketplaceId,
-        [input.sellerSku],
-        reservationOwner,
-      );
+        }),
+      });
+      return json(result);
+    } catch (error) {
+      return writeApiError(error, "送出商品內容時發生未預期的錯誤。");
     }
   }
 
@@ -2831,18 +2805,10 @@ export class ApiRouter {
         try {
           await this.spExecutionContext.assertCurrent(context);
           const validation = await previewListingContentUpdate(input);
-          const fingerprint = stableFingerprint([
-            accountScope,
-            this.contentFingerprint(input),
-          ]);
+          const proposalFingerprint = this.contentFingerprint(input);
           changes.push({
             input,
-            fingerprint,
-            ledgerKey: `content-batch-${stableFingerprint([
-              key,
-              input.sellerSku,
-              fingerprint,
-            ]).slice(0, 56)}`,
+            proposalFingerprint,
             validation,
           });
         } catch (error) {
@@ -2878,7 +2844,7 @@ export class ApiRouter {
         key,
         changes.map((change) => [
           change.input.sellerSku,
-          change.fingerprint,
+          stableFingerprint([accountScope, change.proposalFingerprint]),
           change.validation.changedFields,
         ]),
       ]);
@@ -2912,6 +2878,7 @@ export class ApiRouter {
         state: "ready",
         result: null,
       };
+      await this.stageWritePreview(this.contentBatchWriteBinding(plan));
       this.contentBatchPlans.set(plan.previewId, plan);
       return json(this.contentBatchPreviewPayload(plan));
     } catch (error) {
@@ -2983,180 +2950,127 @@ export class ApiRouter {
       );
     }
 
-    const ownerToken = randomUUID();
     const sellerSkus = plan.changes.map((change) => change.input.sellerSku);
-    const reservationError = this.reserveListingAttributeWrites(
-      marketplaceId,
-      sellerSkus,
-      ownerToken,
-    );
-    if (reservationError) return reservationError;
+    const shownSkus = sellerSkus.slice(0, 5).join("、");
+    const remaining = Math.max(0, sellerSkus.length - 5);
+    let preflightResponse: ApiResponse | null = null;
     plan.state = "committing";
     try {
-      await this.store.assertIdempotentOperationsAvailable(
-        plan.changes.map((change) => ({
-          idempotencyKey: change.ledgerKey,
-          operationType: "content" as const,
-          marketplaceId,
-          sellerSku: change.input.sellerSku,
-          accountScope,
-          fingerprint: change.fingerprint,
-        })),
-      );
-
-      try {
-        for (const change of plan.changes) {
-          await this.spExecutionContext.assertCurrent(context);
-          change.validation = await previewListingContentUpdate(change.input);
-        }
-      } catch (error) {
-        this.contentBatchPlans.delete(previewId);
-        const response = apiError(
-          error,
-          "整批送出前的 Amazon 重新讀取或 Validation Preview 失敗。",
-        );
-        if (response.body.kind === "json" && isPlainRecord(response.body.value)) {
-          return json({
-            ...response.body.value,
-            message:
-              `${String(response.body.value.message ?? "整批重新預檢失敗。")} Amazon 寫入數為 0，請重新上傳 Excel。`,
-            writeCount: 0,
-          }, response.status, response.headers);
-        }
-        return response;
-      }
-
-      await this.spExecutionContext.assertCurrent(context);
-      try {
-        const shownSkus = sellerSkus.slice(0, 5).join("、");
-        const remaining = Math.max(0, sellerSkus.length - 5);
-        await this.approveWrite(
+      const result = await this.writeGate.execute<ContentBatchCommitResult>({
+        binding: this.contentBatchWriteBinding(plan),
+        approvalReason:
           `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} 個 SKU｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}｜驗證碼 ${plan.fingerprint.slice(0, 12)}`,
-        );
-      } catch {
-        plan.state = "ready";
-        return invalid(
-          "操作已取消；Amazon 沒有收到任何文案變更。",
-          409,
-          "ACTION_CANCELLED",
-        );
-      }
-
-      await this.spExecutionContext.assertCurrent(context);
-
-      const rows: ContentBatchRowResult[] = plan.changes.map((change) => ({
-        sellerSku: change.input.sellerSku,
-        state: "not-started",
-        result: null,
-        error: null,
-      }));
-      let status: ContentBatchCommitResult["status"] = "COMPLETED";
-      for (let index = 0; index < plan.changes.length; index += 1) {
-        const change = plan.changes[index]!;
-        await this.spExecutionContext.assertCurrent(context);
-        try {
-          const result = await this.store.runIdempotentOperation<
-            ListingContentUpdateResult
-          >({
-            idempotencyKey: change.ledgerKey,
-            operationType: "content",
-            marketplaceId,
+        cancellationMessage: "操作已取消；Amazon 沒有收到任何文案變更。",
+        beforeApproval: async () => {
+          try {
+            for (const change of plan.changes) {
+              await this.spExecutionContext.assertCurrent(context);
+              change.validation = await previewListingContentUpdate(change.input);
+            }
+          } catch (error) {
+            this.contentBatchPlans.delete(previewId);
+            const response = apiError(
+              error,
+              "整批送出前的 Amazon 重新讀取或 Validation Preview 失敗。",
+            );
+            preflightResponse = response.body.kind === "json" &&
+                isPlainRecord(response.body.value)
+              ? json({
+                  ...response.body.value,
+                  message:
+                    `${String(response.body.value.message ?? "整批重新預檢失敗。")} Amazon 寫入數為 0，請重新上傳 Excel。`,
+                  writeCount: 0,
+                }, response.status, response.headers)
+              : response;
+            throw error;
+          }
+        },
+        run: async (session) => {
+          const rows: ContentBatchRowResult[] = plan.changes.map((change) => ({
             sellerSku: change.input.sellerSku,
-            accountScope,
-            fingerprint: change.fingerprint,
-            execute: async ({ recordAccepted }) => {
-              try {
-                return await commitWithCanonicalReadback({
-                  commit: () => updateListingContent(change.input, {
-                    assertCurrent: () =>
-                      this.spExecutionContext.assertCurrent(context),
-                  }),
-                  onAccepted: recordAccepted,
-                  assertCurrent: () => this.spExecutionContext.assertCurrent(context),
-                  read: () => getListingContent(change.input),
-                  decide: contentReadbackDecision,
-                });
-              } catch (error) {
-                if (
-                  error instanceof SpApiError &&
-                  !(error instanceof SpApiPreCommitError) &&
-                  [401, 429].includes(error.status) &&
-                  error.code !== "UPDATE_STATUS_UNKNOWN"
-                ) {
-                  throw new SpApiError(
-                    `${error.message} Amazon 可能已收到這筆 PATCH；系統已禁止重送，請先回查。`,
-                    {
-                      status: error.status,
-                      code: "UPDATE_STATUS_UNKNOWN",
-                      requestId: error.requestId,
-                      retryAfter: error.retryAfter,
-                      issues: error.issues,
-                      operation: error.operation,
-                      upstreamCode: error.upstreamCode,
-                    },
-                  );
-                }
-                throw error;
-              }
-            },
-          });
-          rows[index] = {
-            sellerSku: change.input.sellerSku,
-            state: result.mode === "demo" ? "simulated" : "verified",
-            result,
-            error: null,
-          };
-        } catch (error) {
-          const unknown =
-            !(error instanceof SpApiPreCommitError) &&
-            (!(error instanceof SpApiError) ||
-              error.code === "UPDATE_STATUS_UNKNOWN" ||
-              error.status >= 500 ||
-              [401, 429].includes(error.status));
-          const publicError = error instanceof SpApiError
-            ? publicSpApiError(
-                error,
-                unknown
-                  ? "Amazon 寫入結果尚未確認。"
-                  : "Amazon 拒絕這筆商品內容變更。",
-              )
-            : null;
-          rows[index] = {
-            sellerSku: change.input.sellerSku,
-            state: unknown ? "unknown" : "rejected",
+            state: "not-started",
             result: null,
-            error: {
-              code: publicError?.code ?? "UPDATE_STATUS_UNKNOWN",
-              message: publicError?.message ?? "Amazon 寫入結果尚未確認。",
-              requestId: publicError?.requestId ?? null,
-            },
+            error: null,
+          }));
+          let status: ContentBatchCommitResult["status"] = "COMPLETED";
+          for (let index = 0; index < plan.changes.length; index += 1) {
+            const change = plan.changes[index]!;
+            await this.spExecutionContext.assertCurrent(context);
+            try {
+              const rowResult = await session.attempt<ListingContentUpdateResult>({
+                intentId: change.input.sellerSku,
+                execute: ({ recordAccepted, assertCurrent }) =>
+                  commitWithCanonicalReadback({
+                    commit: () => updateListingContent(change.input, {
+                      assertCurrent,
+                    }),
+                    onAccepted: recordAccepted,
+                    assertCurrent,
+                    read: () => getListingContent(change.input),
+                    decide: contentReadbackDecision,
+                  }),
+              });
+              rows[index] = {
+                sellerSku: change.input.sellerSku,
+                state: rowResult.mode === "demo" ? "simulated" : "verified",
+                result: rowResult,
+                error: null,
+              };
+            } catch (error) {
+              const unknown =
+                !(error instanceof SpApiPreCommitError) &&
+                (!(error instanceof SpApiError) ||
+                  error.code === "UPDATE_STATUS_UNKNOWN" ||
+                  error.status >= 500 ||
+                  [401, 429].includes(error.status));
+              const publicError = error instanceof SpApiError
+                ? publicSpApiError(
+                    error,
+                    unknown
+                      ? "Amazon 寫入結果尚未確認。"
+                      : "Amazon 拒絕這筆商品內容變更。",
+                  )
+                : null;
+              rows[index] = {
+                sellerSku: change.input.sellerSku,
+                state: unknown ? "unknown" : "rejected",
+                result: null,
+                error: {
+                  code: publicError?.code ?? "UPDATE_STATUS_UNKNOWN",
+                  message: publicError?.message ?? "Amazon 寫入結果尚未確認。",
+                  requestId: publicError?.requestId ?? null,
+                },
+              };
+              status = unknown ? "STOPPED_UNKNOWN" : "STOPPED_REJECTED";
+              break;
+            }
+          }
+          const completedCount = rows.filter((row) =>
+            row.state === "verified" || row.state === "simulated").length;
+          return {
+            previewId,
+            marketplaceId,
+            status,
+            rows,
+            completedAt: new Date().toISOString(),
+            notice: status === "COMPLETED"
+              ? `已完成 ${completedCount.toLocaleString()} 個 SKU；每筆皆經正式回讀或展示模擬核對。`
+              : status === "STOPPED_UNKNOWN"
+                ? `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆結果不明後已停止，後續 SKU 沒有送出。請先回查 Amazon，勿重送。`
+                : `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆已知拒絕後已停止，後續 SKU 沒有送出。`,
           };
-          status = unknown ? "STOPPED_UNKNOWN" : "STOPPED_REJECTED";
-          break;
-        }
-      }
-      const completedCount = rows.filter((row) =>
-        row.state === "verified" || row.state === "simulated").length;
-      const result: ContentBatchCommitResult = {
-        previewId,
-        marketplaceId,
-        status,
-        rows,
-        completedAt: new Date().toISOString(),
-        notice: status === "COMPLETED"
-          ? `已完成 ${completedCount.toLocaleString()} 個 SKU；每筆皆經正式回讀或展示模擬核對。`
-          : status === "STOPPED_UNKNOWN"
-            ? `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆結果不明後已停止，後續 SKU 沒有送出。請先回查 Amazon，勿重送。`
-            : `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆已知拒絕後已停止，後續 SKU 沒有送出。`,
-      };
+        },
+      });
       plan.result = result;
       plan.state = "completed";
       return json(result);
     } catch (error) {
       if (plan.state === "committing") plan.state = "ready";
-      return apiError(error, "Excel 批次文案更新時發生未預期的錯誤。");
-    } finally {
-      this.releaseListingAttributeWrites(marketplaceId, sellerSkus, ownerToken);
+      if (preflightResponse) return preflightResponse;
+      return writeApiError(
+        error,
+        "Excel 批次文案更新時發生未預期的錯誤。",
+      );
     }
   }
 
@@ -3216,19 +3130,17 @@ export class ApiRouter {
         input.marketplaceId,
         () => previewListingImageUpdate(input),
       );
-      const scoped = this.scopedFingerprintForContext(
+      await this.stageWritePreview(this.writeBinding({
+        family: "images",
+        operation: "images",
         context,
-        this.imageFingerprint(input),
-      );
-      await this.issuePreview(
-        request.path,
-        input.idempotencyKey,
-        scoped.fingerprint,
-        context,
-      );
+        sellerSku: input.sellerSku,
+        idempotencyKey: input.idempotencyKey,
+        proposalFingerprint: this.imageFingerprint(input),
+      }));
       return json(result);
     } catch (error) {
-      return apiError(error, "商品圖片預檢時發生未預期的錯誤。");
+      return writeApiError(error, "商品圖片預檢時發生未預期的錯誤。");
     }
   }
 
@@ -3240,59 +3152,38 @@ export class ApiRouter {
     if (input.confirmationSku !== input.sellerSku) {
       return invalid("送出圖片前，請重新輸入完整 SKU。", 400, "CONFIRMATION_REQUIRED");
     }
-    const reservationOwner = randomUUID();
-    const reservationError = this.reserveListingAttributeWrites(
-      input.marketplaceId,
-      [input.sellerSku],
-      reservationOwner,
-    );
-    if (reservationError) return reservationError;
+    const context = await this.spExecutionContext.capture(input.marketplaceId);
+    const binding = this.writeBinding({
+      family: "images",
+      operation: "images",
+      context,
+      sellerSku: input.sellerSku,
+      idempotencyKey: key,
+      proposalFingerprint: this.imageFingerprint(input),
+    });
     try {
-      const scoped = await this.scopedFingerprint(
-        input.marketplaceId,
-        this.imageFingerprint(input),
-      );
-      const fingerprint = scoped.fingerprint;
       const changedSlots = input.urls
         .map((value, index) => (value !== input.expectedUrls[index] ? index + 1 : null))
         .filter((value): value is number => value !== null);
-      const ticketError = await this.approveReservedPreview(
-        request.path,
-        key,
-        fingerprint,
-        scoped.context,
-        `確認圖片｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${fingerprint.slice(0, 12)}`,
-      );
-      if (ticketError) return ticketError;
-      try {
-        const result = await this.store.runIdempotentOperation({
-          idempotencyKey: key,
-          operationType: "images",
-          marketplaceId: input.marketplaceId,
-          sellerSku: input.sellerSku,
-          accountScope: scoped.accountScope,
-          fingerprint,
-          execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-            commit: () => updateListingImages(input, {
-              assertCurrent: () =>
-                this.spExecutionContext.assertCurrent(scoped.context),
+      const result = await this.writeGate.execute({
+        binding,
+        approvalReason: (verificationCode) =>
+          `確認圖片｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${verificationCode}`,
+        run: (session) => session.attempt({
+          intentId: "primary",
+          execute: ({ recordAccepted, assertCurrent }) =>
+            commitWithCanonicalReadback({
+              commit: () => updateListingImages(input, { assertCurrent }),
+              onAccepted: recordAccepted,
+              assertCurrent,
+              read: () => getListingImages(input),
+              decide: imageReadbackDecision,
             }),
-            onAccepted: recordAccepted,
-            assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
-            read: () => getListingImages(input),
-            decide: imageReadbackDecision,
-          }),
-        });
-        return json(result);
-      } catch (error) {
-        return apiError(error, "送出商品圖片時發生未預期的錯誤。");
-      }
-    } finally {
-      this.releaseListingAttributeWrites(
-        input.marketplaceId,
-        [input.sellerSku],
-        reservationOwner,
-      );
+        }),
+      });
+      return json(result);
+    } catch (error) {
+      return writeApiError(error, "送出商品圖片時發生未預期的錯誤。");
     }
   }
 
@@ -3374,19 +3265,17 @@ export class ApiRouter {
         input.marketplaceId,
         () => previewListingSalePriceUpdate(input),
       );
-      const scoped = this.scopedFingerprintForContext(
+      await this.stageWritePreview(this.writeBinding({
+        family: "sale-price",
+        operation: "sale_price",
         context,
-        this.saleFingerprint(input),
-      );
-      await this.issuePreview(
-        request.path,
-        input.idempotencyKey,
-        scoped.fingerprint,
-        context,
-      );
+        sellerSku: input.sellerSku,
+        idempotencyKey: input.idempotencyKey,
+        proposalFingerprint: this.saleFingerprint(input),
+      }));
       return json(result);
     } catch (error) {
-      return apiError(error, "折扣預檢時發生未預期的錯誤。");
+      return writeApiError(error, "折扣預檢時發生未預期的錯誤。");
     }
   }
 
@@ -3411,43 +3300,36 @@ export class ApiRouter {
         "CONFIRMATION_REQUIRED",
       );
     }
-    const scoped = await this.scopedFingerprint(
-      input.marketplaceId,
-      this.saleFingerprint(input),
-    );
-    const fingerprint = scoped.fingerprint;
-    const ticketError = await this.approveReservedPreview(
-      request.path,
-      key,
-      fingerprint,
-      scoped.context,
-      input.action === "cancel"
-        ? `確認取消折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜目前 ${input.expectedDiscountedPrice ?? "—"}`
-        : `確認折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.salePrice} ${MARKETPLACES[input.marketplaceId].currency}｜${input.startAt}～${input.endAt}`,
-    );
-    if (ticketError) return ticketError;
+    const context = await this.spExecutionContext.capture(input.marketplaceId);
+    const binding = this.writeBinding({
+      family: "sale-price",
+      operation: "sale_price",
+      context,
+      sellerSku: input.sellerSku,
+      idempotencyKey: key,
+      proposalFingerprint: this.saleFingerprint(input),
+    });
     try {
-      const result = await this.store.runIdempotentOperation({
-        idempotencyKey: key,
-        operationType: "sale_price",
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-        accountScope: scoped.accountScope,
-        fingerprint,
-        execute: ({ recordAccepted }) => commitWithCanonicalReadback({
-          commit: () => updateListingSalePrice(input, {
-            assertCurrent: () =>
-              this.spExecutionContext.assertCurrent(scoped.context),
-          }),
-          onAccepted: recordAccepted,
-          assertCurrent: () => this.spExecutionContext.assertCurrent(scoped.context),
-          read: () => getListingPrice(input),
-          decide: salePriceReadbackDecision,
+      const result = await this.writeGate.execute({
+        binding,
+        approvalReason: input.action === "cancel"
+          ? `確認取消折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜目前 ${input.expectedDiscountedPrice ?? "—"}`
+          : `確認折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.salePrice} ${MARKETPLACES[input.marketplaceId].currency}｜${input.startAt}～${input.endAt}`,
+        run: (session) => session.attempt({
+          intentId: "primary",
+          execute: ({ recordAccepted, assertCurrent }) =>
+            commitWithCanonicalReadback({
+              commit: () => updateListingSalePrice(input, { assertCurrent }),
+              onAccepted: recordAccepted,
+              assertCurrent,
+              read: () => getListingPrice(input),
+              decide: salePriceReadbackDecision,
+            }),
         }),
       });
       return json(result);
     } catch (error) {
-      return apiError(error, "送出折扣更新時發生未預期的錯誤。");
+      return writeApiError(error, "送出折扣更新時發生未預期的錯誤。");
     }
   }
 
@@ -3565,31 +3447,52 @@ export class ApiRouter {
     return reportIdentifier(value);
   }
 
-  private async scopedFingerprint(
-    marketplaceId: MarketplaceId,
-    operationFingerprint: string,
-  ): Promise<{
+  private writeBinding(input: Readonly<{
+    family: WritePreviewFamily;
+    operation: WriteOperation;
     context: SpExecutionContext;
-    accountScope: string;
-    fingerprint: string;
-  }> {
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    return this.scopedFingerprintForContext(context, operationFingerprint);
+    sellerSku: string;
+    idempotencyKey: string;
+    proposalFingerprint: string;
+  }>): WriteBinding {
+    return {
+      family: input.family,
+      previewKey: input.idempotencyKey,
+      context: input.context,
+      intents: [{
+        intentId: "primary",
+        operation: input.operation,
+        marketplaceId: input.context.marketplaceId,
+        sellerSku: input.sellerSku,
+        idempotencyKey: input.idempotencyKey,
+        proposalFingerprint: input.proposalFingerprint,
+      }],
+    };
   }
 
-  private scopedFingerprintForContext(
-    context: SpExecutionContext,
-    operationFingerprint: string,
-  ): {
-    context: SpExecutionContext;
-    accountScope: string;
-    fingerprint: string;
-  } {
-    const { accountScope } = context;
+  private async stageWritePreview(binding: WriteBinding): Promise<void> {
+    if (binding.intents.some((intent) => !idempotencyKey(intent.idempotencyKey))) {
+      return;
+    }
+    await this.writeGate.stagePreview(binding);
+  }
+
+  private contentBatchWriteBinding(plan: ContentBatchPlan): WriteBinding {
+    const intents = plan.changes.map((change) => ({
+      intentId: change.input.sellerSku,
+      operation: "content" as const,
+      marketplaceId: plan.marketplaceId,
+      sellerSku: change.input.sellerSku,
+      idempotencyKey: plan.idempotencyKey,
+      proposalFingerprint: change.proposalFingerprint,
+    }));
+    const first = intents[0];
+    if (!first) throw new Error("Content batch plan has no write intents.");
     return {
-      context,
-      accountScope,
-      fingerprint: stableFingerprint([accountScope, operationFingerprint]),
+      family: "content-batch",
+      previewKey: plan.previewId,
+      context: plan.context,
+      intents: [first, ...intents.slice(1)],
     };
   }
 
@@ -3603,290 +3506,66 @@ export class ApiRouter {
     return { context, value };
   }
 
-  private reserveListingAttributeWrites(
-    marketplaceId: MarketplaceId,
-    sellerSkus: readonly string[],
-    ownerToken: string,
-  ): ApiResponse | null {
-    const keys = sellerSkus.map((sellerSku) => `${marketplaceId}\u0000${sellerSku}`);
-    if (new Set(keys).size !== keys.length) {
-      return invalid(
-        "批次包含重複 SKU，已停止送出。",
-        409,
-        "IDEMPOTENCY_CONFLICT",
-      );
-    }
-    if (keys.some((key) => this.listingAttributeWriteReservations.has(key))) {
-      return invalid(
-        "同一 SKU 的商品內容或圖片正在處理，系統已阻止重疊送出。",
-        409,
-        "OPERATION_IN_PROGRESS",
-      );
-    }
-    keys.forEach((key) => this.listingAttributeWriteReservations.set(key, ownerToken));
-    return null;
-  }
-
-  private releaseListingAttributeWrites(
-    marketplaceId: MarketplaceId,
-    sellerSkus: readonly string[],
-    ownerToken: string,
-  ): void {
-    for (const sellerSku of sellerSkus) {
-      const key = `${marketplaceId}\u0000${sellerSku}`;
-      if (this.listingAttributeWriteReservations.get(key) === ownerToken) {
-        this.listingAttributeWriteReservations.delete(key);
-      }
-    }
-  }
-
   private async reconcilePriceWrites(
     snapshot: ListingPriceSnapshot,
     context: SpExecutionContext,
   ): Promise<void> {
-    try {
-      if (context.marketplaceId !== snapshot.marketplaceId) return;
-      await this.store.reconcileIdempotentOperations({
-        operationTypes: ["price", "sale_price"],
-        marketplaceId: snapshot.marketplaceId,
-        sellerSku: snapshot.sellerSku,
-        accountScope: context.accountScope,
-        reconcile: (response, operationType) => operationType === "price"
-          ? reconcilePriceWrite(response, snapshot)
-          : reconcileSalePriceWrite(response, snapshot),
-      });
-    } catch {
-      // Reconciliation is fail-closed: the GET result remains useful, while a
-      // ledger entry that cannot be proven stays locked instead of being reset.
-    }
+    await this.writeGate.reconcile({
+      context,
+      marketplaceId: snapshot.marketplaceId,
+      sellerSku: snapshot.sellerSku,
+      operations: ["price", "sale_price"],
+      snapshot,
+      project: (response, operationType, canonical) =>
+        operationType === "price"
+          ? reconcilePriceWrite(response, canonical)
+          : reconcileSalePriceWrite(response, canonical),
+    });
   }
 
   private async reconcileBusinessPriceWrites(
     snapshot: BusinessPricingListingSnapshot,
     context: SpExecutionContext,
   ): Promise<void> {
-    try {
-      if (context.marketplaceId !== snapshot.marketplaceId) return;
-      await this.store.reconcileIdempotentOperations({
-        operationTypes: ["business_price"],
-        marketplaceId: snapshot.marketplaceId,
-        sellerSku: snapshot.sellerSku,
-        accountScope: context.accountScope,
-        reconcile: (response) => reconcileBusinessPriceWrite(response, snapshot),
-      });
-    } catch {
-      // Keep unresolved Business-price evidence locked unless an exact
-      // canonical B2B readback proves both the target and every guard field.
-    }
+    await this.writeGate.reconcile({
+      context,
+      marketplaceId: snapshot.marketplaceId,
+      sellerSku: snapshot.sellerSku,
+      operations: ["business_price"],
+      snapshot,
+      project: (response, _operationType, canonical) =>
+        reconcileBusinessPriceWrite(response, canonical),
+    });
   }
 
   private async reconcileContentWrites(
     snapshot: ListingContentSnapshot,
     context: SpExecutionContext,
   ): Promise<void> {
-    try {
-      if (context.marketplaceId !== snapshot.marketplaceId) return;
-      await this.store.reconcileIdempotentOperations({
-        operationTypes: ["content"],
-        marketplaceId: snapshot.marketplaceId,
-        sellerSku: snapshot.sellerSku,
-        accountScope: context.accountScope,
-        reconcile: (response) => reconcileContentWrite(response, snapshot),
-      });
-    } catch {
-      // Keep unresolved evidence locked when canonical reconciliation fails.
-    }
+    await this.writeGate.reconcile({
+      context,
+      marketplaceId: snapshot.marketplaceId,
+      sellerSku: snapshot.sellerSku,
+      operations: ["content"],
+      snapshot,
+      project: (response, _operationType, canonical) =>
+        reconcileContentWrite(response, canonical),
+    });
   }
 
   private async reconcileImageWrites(
     snapshot: ListingImageSnapshot,
     context: SpExecutionContext,
   ): Promise<void> {
-    try {
-      if (context.marketplaceId !== snapshot.marketplaceId) return;
-      await this.store.reconcileIdempotentOperations({
-        operationTypes: ["images"],
-        marketplaceId: snapshot.marketplaceId,
-        sellerSku: snapshot.sellerSku,
-        accountScope: context.accountScope,
-        reconcile: (response) => reconcileImageWrite(response, snapshot),
-      });
-    } catch {
-      // Keep unresolved evidence locked when canonical reconciliation fails.
-    }
-  }
-
-  private samePreviewContext(
-    left: SpExecutionContext,
-    right: SpExecutionContext,
-  ): boolean {
-    return left.marketplaceId === right.marketplaceId &&
-      left.region === right.region &&
-      left.mode === right.mode &&
-      left.accountScope === right.accountScope &&
-      left.generation === right.generation;
-  }
-
-  private async issuePreview(
-    path: string,
-    rawKey: string,
-    fingerprint: string,
-    context: SpExecutionContext,
-  ): Promise<void> {
-    const key = idempotencyKey(rawKey);
-    if (!key) return;
-    const stateRevision = this.contextStateRevision;
-    await this.spExecutionContext.assertCurrent(context);
-    if (stateRevision !== this.contextStateRevision) {
-      throw new SpExecutionContextError(
-        "SP_CONTEXT_INVALIDATED",
-        "Amazon 執行環境已更新；請重新開始這次操作。",
-      );
-    }
-    const now = Date.now();
-    for (const [ticketKey, value] of this.previews) {
-      if (value.expiresAt < now) this.previews.delete(ticketKey);
-    }
-    this.previews.set(`${path}:${key}`, {
-      path,
+    await this.writeGate.reconcile({
       context,
-      fingerprint,
-      expiresAt: now + 2 * 60_000,
-      reserved: false,
+      marketplaceId: snapshot.marketplaceId,
+      sellerSku: snapshot.sellerSku,
+      operations: ["images"],
+      snapshot,
+      project: (response, _operationType, canonical) =>
+        reconcileImageWrite(response, canonical),
     });
   }
 
-  private async approveReservedPreview(
-    path: string,
-    key: string,
-    fingerprint: string,
-    context: SpExecutionContext,
-    reason: string,
-  ): Promise<ApiResponse | null> {
-    const stateRevision = this.contextStateRevision;
-    const reservationError = this.reservePreview(
-      path,
-      key,
-      fingerprint,
-      context,
-    );
-    if (reservationError) return reservationError;
-    try {
-      await this.approveWrite(reason);
-    } catch {
-      this.releasePreview(path, key, fingerprint, context);
-      return invalid(
-        "操作已取消；Amazon 沒有收到任何變更。",
-        409,
-        "ACTION_CANCELLED",
-      );
-    }
-    await this.spExecutionContext.assertCurrent(context);
-    if (stateRevision !== this.contextStateRevision) {
-      throw new SpExecutionContextError(
-        "SP_CONTEXT_INVALIDATED",
-        "Amazon 執行環境已更新；請重新開始這次操作。",
-      );
-    }
-    return this.consumePreview(path, key, fingerprint, context);
-  }
-
-  private reservePreview(
-    path: string,
-    key: string,
-    fingerprint: string,
-    context: SpExecutionContext,
-  ): ApiResponse | null {
-    const ticket = this.previews.get(`${path}:${key}`);
-    if (!ticket || ticket.path !== path || ticket.expiresAt < Date.now()) {
-      return invalid(
-        "這次 Amazon 預檢已過期，請重新預檢後再送出。",
-        409,
-        "PREVIEW_EXPIRED",
-      );
-    }
-    if (!this.samePreviewContext(ticket.context, context)) {
-      return invalid(
-        "這次 Amazon 預檢已過期，請重新預檢後再送出。",
-        409,
-        "PREVIEW_EXPIRED",
-      );
-    }
-    if (ticket.fingerprint !== fingerprint) {
-      return invalid(
-        "預檢後的內容已改變，系統已停止送出；請重新預檢。",
-        409,
-        "PREVIEW_CHANGED",
-      );
-    }
-    if (ticket.reserved) {
-      return invalid(
-        "同一筆操作正在等待本機確認，系統已阻止重複送出。",
-        409,
-        "OPERATION_IN_PROGRESS",
-      );
-    }
-    ticket.reserved = true;
-    return null;
-  }
-
-  private releasePreview(
-    path: string,
-    key: string,
-    fingerprint: string,
-    context: SpExecutionContext,
-  ): void {
-    const ticketKey = `${path}:${key}`;
-    const ticket = this.previews.get(ticketKey);
-    if (
-      !ticket ||
-      ticket.fingerprint !== fingerprint ||
-      !this.samePreviewContext(ticket.context, context)
-    ) return;
-    if (ticket.expiresAt < Date.now()) this.previews.delete(ticketKey);
-    else ticket.reserved = false;
-  }
-
-  private consumePreview(
-    path: string,
-    key: string,
-    fingerprint: string,
-    context: SpExecutionContext,
-  ): ApiResponse | null {
-    const ticketKey = `${path}:${key}`;
-    const ticket = this.previews.get(ticketKey);
-    if (!ticket || ticket.path !== path || ticket.expiresAt < Date.now()) {
-      if (ticket?.expiresAt && ticket.expiresAt < Date.now()) {
-        this.previews.delete(ticketKey);
-      }
-      return invalid(
-        "這次 Amazon 預檢已過期，請重新預檢後再送出。",
-        409,
-        "PREVIEW_EXPIRED",
-      );
-    }
-    if (!this.samePreviewContext(ticket.context, context)) {
-      return invalid(
-        "這次 Amazon 預檢已過期，請重新預檢後再送出。",
-        409,
-        "PREVIEW_EXPIRED",
-      );
-    }
-    this.previews.delete(ticketKey);
-    if (ticket.fingerprint !== fingerprint) {
-      return invalid(
-        "預檢後的內容已改變，系統已停止送出；請重新預檢。",
-        409,
-        "PREVIEW_CHANGED",
-      );
-    }
-    if (!ticket.reserved) {
-      return invalid(
-        "這次 Amazon 預檢尚未完成本機確認。",
-        409,
-        "PREVIEW_NOT_RESERVED",
-      );
-    }
-    return null;
-  }
 }

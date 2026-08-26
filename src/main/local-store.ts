@@ -848,6 +848,16 @@ function resultMayBeUnknown(error: unknown): boolean {
   );
 }
 
+function sameLedgerIdentity(
+  entry: LedgerEntry,
+  input: IdempotentOperationAvailabilityInput,
+): boolean {
+  return entry.operationType === input.operationType &&
+    entry.marketplaceId === input.marketplaceId &&
+    entry.sellerSku === input.sellerSku &&
+    entry.accountScope === input.accountScope;
+}
+
 export class LocalStore {
   readonly filePath: string;
   private data: StoreData | null = null;
@@ -1399,7 +1409,10 @@ export class LocalStore {
       }
       const existing = data.ledger[input.idempotencyKey];
       if (existing) {
-        if (existing.fingerprint !== fingerprint) {
+        if (
+          existing.fingerprint !== fingerprint ||
+          !sameLedgerIdentity(existing, input)
+        ) {
           throw new SpApiError("這個確認碼已用於另一筆操作。", {
             status: 409,
             code: "IDEMPOTENCY_CONFLICT",
@@ -1520,8 +1533,8 @@ export class LocalStore {
   }
 
   /**
-   * Checks a bounded group before its first Amazon write. The API router holds
-   * the matching in-memory SKU reservations while this runs, so no other
+   * Checks a bounded group before its first Amazon write. The main Write Gate
+   * holds the matching in-memory SKU reservations while this runs, so no other
    * renderer request can enter a conflicting listing-attribute write between
    * this check and the batch claims. This method deliberately does not create
    * durable pending entries: a pending ledger row must only exist once its
@@ -1569,7 +1582,10 @@ export class LocalStore {
           .digest("hex");
         const existing = data.ledger[input.idempotencyKey];
         if (existing) {
-          if (existing.fingerprint !== fingerprint) {
+          if (
+            existing.fingerprint !== fingerprint ||
+            !sameLedgerIdentity(existing, input)
+          ) {
             throw new SpApiError("這個確認碼已用於另一筆操作。", {
               status: 409,
               code: "IDEMPOTENCY_CONFLICT",
