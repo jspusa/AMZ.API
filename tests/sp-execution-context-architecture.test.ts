@@ -555,27 +555,88 @@ function exportedTypePropertyNames(
   sourcePath: string,
   exportedTypeName: string,
 ): string[] {
-  const program = ts.createProgram([sourcePath], {
-    target: ts.ScriptTarget.Latest,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    skipLibCheck: true,
-  });
-  const checker = program.getTypeChecker();
-  const source = program.getSourceFile(sourcePath);
-  if (!source) throw new Error(`Source file not found: ${sourcePath}`);
-  const moduleSymbol = checker.getSymbolAtLocation(source);
-  if (!moduleSymbol) throw new Error(`Module symbol not found: ${sourcePath}`);
-  const exportedType = checker
-    .getExportsOfModule(moduleSymbol)
-    .find((symbol) => symbol.name === exportedTypeName);
-  if (!exportedType) {
+  const source = ts.createSourceFile(
+    sourcePath,
+    readFileSync(sourcePath, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const declarations = source.statements.filter(
+    (statement): statement is
+      | ts.InterfaceDeclaration
+      | ts.TypeAliasDeclaration =>
+      (ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement)) &&
+      statement.name.text === exportedTypeName &&
+      ts.canHaveModifiers(statement) &&
+      (ts.getModifiers(statement)?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      ) ?? false),
+  );
+  if (declarations.length === 0) {
     throw new Error(`Exported type not found: ${exportedTypeName}`);
   }
-  return checker
-    .getPropertiesOfType(checker.getDeclaredTypeOfSymbol(exportedType))
-    .map((property) => property.name)
-    .sort();
+
+  const propertyName = (member: ts.TypeElement): string => {
+    if (!ts.isPropertySignature(member) && !ts.isMethodSignature(member)) {
+      throw new Error(
+        `${exportedTypeName} contains an unsupported non-property capability`,
+      );
+    }
+    const name = member.name;
+    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) ||
+      ts.isNumericLiteral(name)) {
+      return name.text;
+    }
+    throw new Error(
+      `${exportedTypeName} contains an unsupported computed property`,
+    );
+  };
+
+  const pickPropertyNames = (type: ts.TypeNode): string[] => {
+    if (
+      !ts.isTypeReferenceNode(type) ||
+      !ts.isIdentifier(type.typeName) ||
+      type.typeName.text !== "Pick" ||
+      type.typeArguments?.length !== 2
+    ) {
+      throw new Error(
+        `${exportedTypeName} must be an interface or a direct Pick type`,
+      );
+    }
+
+    const keys = type.typeArguments[1];
+    const keyTypes = ts.isUnionTypeNode(keys) ? keys.types : [keys];
+    return keyTypes.map((keyType) => {
+      if (
+        !ts.isLiteralTypeNode(keyType) ||
+        !ts.isStringLiteralLike(keyType.literal)
+      ) {
+        throw new Error(
+          `${exportedTypeName} Pick keys must be explicit string literals`,
+        );
+      }
+      return keyType.literal.text;
+    });
+  };
+
+  const names = declarations.flatMap((declaration) => {
+    if (ts.isTypeAliasDeclaration(declaration)) {
+      if (declarations.length !== 1) {
+        throw new Error(`${exportedTypeName} has ambiguous declarations`);
+      }
+      return pickPropertyNames(declaration.type);
+    }
+    if (declaration.heritageClauses?.length) {
+      throw new Error(
+        `${exportedTypeName} must declare its capabilities directly`,
+      );
+    }
+    return declaration.members.map(propertyName);
+  });
+
+  return [...new Set(names)].sort();
 }
 
 function sourceFiles(directory: string): string[] {
@@ -728,9 +789,6 @@ describe("SP execution-context architecture", () => {
         "CatalogListingsReadAdapter",
       )).toEqual(["readItem", "searchItems"]);
     },
-    // The first TypeScript AST contract assertion cold-loads the full source
-    // program and can exceed Vitest's 5s default under full-suite contention.
-    15_000,
   );
 
   it("removes superseded catalog and B2B helper declarations from the SP facade", () => {
