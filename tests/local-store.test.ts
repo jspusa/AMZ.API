@@ -165,6 +165,36 @@ describe("local durable safety store", () => {
     ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
   });
 
+  it.each([
+    ["operation", { operationType: "sale_price" as const }],
+    ["marketplace", { marketplaceId: "A1F83G8C2ARO7P" }],
+    ["seller SKU", { sellerSku: "OTHER-SKU" }],
+    ["account scope", { accountScope: "account-b" }],
+  ])("binds a completed idempotency key to the original %s", async (
+    _label,
+    changed,
+  ) => {
+    const store = await testStore();
+    const original = {
+      idempotencyKey: "exact-ledger-binding-123",
+      operationType: "price" as const,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "SAFE-SKU-1",
+      accountScope: "account-a",
+      fingerprint: "same-proposal-fingerprint",
+    };
+    await store.runIdempotentOperation({
+      ...original,
+      execute: async () => ({ source: "original" }),
+    });
+
+    await expect(store.runIdempotentOperation({
+      ...original,
+      ...changed,
+      execute: async () => ({ source: "changed" }),
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
+  });
+
   it("locks a pending variation SKU across different fingerprints and targets", async () => {
     const store = await testStore();
     let release!: () => void;

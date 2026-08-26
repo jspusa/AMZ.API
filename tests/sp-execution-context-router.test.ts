@@ -8,6 +8,7 @@ import type { ImageAuditOwnerPort } from
   "../src/main/amazon/image-audit-owner";
 import {
   createScriptedSpExecutionContextAdapter,
+  SpExecutionContextError,
   type SpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
 import type { SubscriptionAuditOwnerPort } from
@@ -223,9 +224,6 @@ describe("ApiRouter SP execution context", () => {
           upstreamCode: null,
         },
       });
-      expect((router as unknown as {
-        previews: Map<string, unknown>;
-      }).previews.size).toBe(0);
       router.dispose();
     } finally {
       if (previousMode === undefined) delete process.env.SP_API_MODE;
@@ -285,9 +283,6 @@ describe("ApiRouter SP execution context", () => {
       expect(preview.body.kind === "json" ? preview.body.value : null).toMatchObject({
         code: "SP_CONTEXT_INVALIDATED",
       });
-      expect((router as unknown as {
-        previews: Map<string, unknown>;
-      }).previews.size).toBe(0);
 
       const commit = await router.handle({
         requestId: "router-context-preview-race-commit",
@@ -302,9 +297,86 @@ describe("ApiRouter SP execution context", () => {
         code: "PREVIEW_EXPIRED",
       });
       expect(approveWrite).not.toHaveBeenCalled();
-      expect((router as unknown as {
-        previews: Map<string, unknown>;
-      }).previews.size).toBe(0);
+      router.dispose();
+    } finally {
+      if (previousMode === undefined) delete process.env.SP_API_MODE;
+      else process.env.SP_API_MODE = previousMode;
+    }
+  });
+
+  it("releases a preview claim when the post-approval fence fails before the ledger claim", async () => {
+    const previousMode = process.env.SP_API_MODE;
+    process.env.SP_API_MODE = "demo";
+    try {
+      const base = createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: "opaque-write-gate-release-account",
+      }));
+      let failNextFence = false;
+      const spExecutionContext: SpExecutionContextAdapter = {
+        capture: base.capture,
+        invalidate: base.invalidate,
+        async assertCurrent(context) {
+          if (failNextFence) {
+            failNextFence = false;
+            throw new SpExecutionContextError(
+              "SP_CONTEXT_INVALIDATED",
+              "Amazon 執行環境已更新；請重新開始這次操作。",
+            );
+          }
+          await base.assertCurrent(context);
+        },
+      };
+      let approvalCount = 0;
+      const approveWrite = vi.fn(async () => {
+        approvalCount += 1;
+        if (approvalCount === 1) failNextFence = true;
+      });
+      const runIdempotentOperation = vi.fn(async () => ({
+        mode: "demo",
+        status: "SIMULATED",
+        sellerSku: "AFA-TRKY-4OZ",
+      }));
+      const router = new ApiRouter({
+        store: { runIdempotentOperation } as unknown as LocalStore,
+        vault: {} as CredentialVault,
+        approveWrite,
+        spExecutionContext,
+      });
+      const body = {
+        kind: "json",
+        value: {
+          marketplaceId: US,
+          sellerSku: "AFA-TRKY-4OZ",
+          expectedPrice: 13.99,
+          newPrice: 14.99,
+          confirmationSku: "AFA-TRKY-4OZ",
+          idempotencyKey: "write-gate-release-preview-001",
+        },
+      } as const;
+      const request = (requestId: string, method: "POST" | "PATCH"): ApiRequest => ({
+        requestId,
+        method,
+        path: "/api/sp-api/listings",
+        query: {},
+        headers: {},
+        body,
+      });
+
+      expect((await router.handle(request("write-gate-release-preview", "POST"))).status)
+        .toBe(200);
+      const fenced = await router.handle(request("write-gate-release-fenced", "PATCH"));
+      expect(fenced.status).toBe(409);
+      expect(fenced.body.kind === "json" ? fenced.body.value : null).toMatchObject({
+        code: "SP_CONTEXT_INVALIDATED",
+      });
+      expect(runIdempotentOperation).not.toHaveBeenCalled();
+
+      const retried = await router.handle(request("write-gate-release-retry", "PATCH"));
+      expect(retried.status).toBe(200);
+      expect(approveWrite).toHaveBeenCalledTimes(2);
+      expect(runIdempotentOperation).toHaveBeenCalledOnce();
       router.dispose();
     } finally {
       if (previousMode === undefined) delete process.env.SP_API_MODE;
