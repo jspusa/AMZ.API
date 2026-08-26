@@ -1,16 +1,13 @@
 import { abortableDelay, throwIfAborted } from "../abort-utils";
+import { isPricingListingError } from "./business-pricing-evidence";
 import { SpApiError } from "./sp-api-error";
-import {
-  isPricingListingError,
-  type BusinessPricingListingSnapshot,
-  type BusinessPriceUpdateResult,
-  type ListingContentSnapshot,
-  type ListingContentUpdateResult,
-  type ListingImageSnapshot,
-  type ListingImageUpdateResult,
-  type ListingPriceSnapshot,
-  type PriceUpdateResult,
-  type SalePriceUpdateResult,
+import type {
+  BusinessPricingListingSnapshot,
+  BusinessPriceUpdateResult,
+  ListingContentSnapshot,
+  ListingContentUpdateResult,
+  ListingImageSnapshot,
+  ListingImageUpdateResult,
 } from "./sp-api";
 
 export type ListingWriteLifecycleEvidence = Readonly<{
@@ -203,12 +200,6 @@ function canonicalImageUrl(value: string | null): string | null {
   }
 }
 
-function canonicalDate(value: string | null): string | null {
-  if (value === null) return null;
-  const match = /^(\d{4}-\d{2}-\d{2})(?:T.*)?$/u.exec(value);
-  return match?.[1] ?? null;
-}
-
 function changedFieldHasError(
   snapshot: ListingContentSnapshot,
   changedFields: ListingContentUpdateResult["changedFields"],
@@ -233,34 +224,6 @@ function changedFieldHasError(
     (issue.attributeNames.length === 0 ||
       issue.attributeNames.some((name) => attributes.has(name))),
   );
-}
-
-function offerFieldHasError(snapshot: ListingPriceSnapshot): boolean {
-  const offerAttributes = new Set([
-    "purchasable_offer",
-    "our_price",
-    "discounted_price",
-    "quantity_discount_plan",
-    "audience",
-    "currency",
-  ]);
-  return snapshot.issues.some((issue) =>
-    issue.severity === "ERROR" &&
-    (issue.attributeNames.length === 0 ||
-      issue.attributeNames.some((name) => offerAttributes.has(name))),
-  );
-}
-
-export function priceReadbackDecision(
-  result: PriceUpdateResult,
-  snapshot: ListingPriceSnapshot,
-): ReadbackDecision {
-  return exactIdentity(result, snapshot) &&
-      snapshot.purchasableOfferPresence === "present" &&
-      !offerFieldHasError(snapshot) &&
-      sameMoney(result.requestedPrice, snapshot.standardPrice)
-    ? "verified"
-    : "pending";
 }
 
 export function businessPriceReadbackDecision(
@@ -291,35 +254,6 @@ export function businessPriceReadbackDecision(
       : "pending";
   }
   return result.businessOfferGuardHash === snapshot.businessOfferGuardHash
-    ? "verified"
-    : "pending";
-}
-
-export function salePriceReadbackDecision(
-  result: SalePriceUpdateResult,
-  snapshot: ListingPriceSnapshot,
-): ReadbackDecision {
-  if (!exactIdentity(result, snapshot) || offerFieldHasError(snapshot)) {
-    return "pending";
-  }
-  if (snapshot.purchasableOfferPresence !== "present" ||
-      !sameMoney(result.standardPrice, snapshot.standardPrice)) {
-    return "pending";
-  }
-  if (result.action === "cancel") {
-    return snapshot.discountedPricePresence === "absent" &&
-        snapshot.hasDiscountedPrice === false &&
-        snapshot.discountedPrice === null
-      ? "verified"
-      : "pending";
-  }
-  const requested = result.requestedDiscountedPrice;
-  const actual = snapshot.discountedPrice;
-  return requested &&
-      actual &&
-      sameMoney(requested.price, actual.price) &&
-      canonicalDate(requested.startAt) === canonicalDate(actual.startAt) &&
-      canonicalDate(requested.endAt) === canonicalDate(actual.endAt)
     ? "verified"
     : "pending";
 }
@@ -395,23 +329,6 @@ export function imageReadbackDecision(
     : "pending";
 }
 
-export function reconcilePriceWrite(
-  response: unknown,
-  snapshot: ListingPriceSnapshot,
-  now: () => Date = () => new Date(),
-): unknown | null {
-  if (!acceptedBase(response) ||
-      !validMoney(response.previousPrice) ||
-      !validMoney(response.requestedPrice) ||
-      typeof response.acceptedAt !== "string") {
-    return null;
-  }
-  const result = response as unknown as PriceUpdateResult;
-  return priceReadbackDecision(result, snapshot) === "verified"
-    ? verifiedResult(result, 0, now)
-    : null;
-}
-
 export function reconcileBusinessPriceWrite(
   response: unknown,
   snapshot: BusinessPricingListingSnapshot,
@@ -450,25 +367,6 @@ export function reconcileBusinessPriceWrite(
   }
   const result = response as unknown as BusinessPriceUpdateResult;
   return businessPriceReadbackDecision(result, snapshot) === "verified"
-    ? verifiedResult(result, 0, now)
-    : null;
-}
-
-export function reconcileSalePriceWrite(
-  response: unknown,
-  snapshot: ListingPriceSnapshot,
-  now: () => Date = () => new Date(),
-): unknown | null {
-  if (!acceptedBase(response) ||
-      (response.action !== "set" && response.action !== "cancel") ||
-      !validMoney(response.standardPrice) ||
-      typeof response.acceptedAt !== "string" ||
-      !(response.requestedDiscountedPrice === null ||
-        isRecord(response.requestedDiscountedPrice))) {
-    return null;
-  }
-  const result = response as unknown as SalePriceUpdateResult;
-  return salePriceReadbackDecision(result, snapshot) === "verified"
     ? verifiedResult(result, 0, now)
     : null;
 }

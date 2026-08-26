@@ -2,14 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getListingContent,
   getListingImages,
-  getListingPrice,
   invalidateSpApiCredentialCaches,
+  listingPriceGatewayProduction,
   previewListingContentUpdate,
   SpApiError,
-  updateListingPrice,
   verifyListingsAccess,
 } from "../src/main/amazon/sp-api";
 import { SpExecutionContextError } from "../src/main/amazon/sp-execution-context";
+import { createListingPriceMutationOperations } from
+  "../src/main/listing-price-mutations";
+
+const priceOperations = createListingPriceMutationOperations(
+  listingPriceGatewayProduction,
+);
+const getListingPrice = priceOperations.read;
+const updateListingPrice = priceOperations.commitStandard;
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const FAKE_SELLER_ID = "FAKE_SELLER_ID_NA";
