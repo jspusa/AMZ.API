@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import {
-  getAgedInventoryReportStatus,
-  invalidateSpApiCredentialCaches,
-  parseAgedInventoryReportData,
-  parseAgedInventoryReportDocument,
-  startAgedInventoryReport,
-} from "../src/main/amazon/sp-api";
+import { invalidateSpApiCredentialCaches } from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import AgedInventoryPanel, {
@@ -23,7 +17,6 @@ import AgedInventoryPanel, {
 import type { ApiRequest } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
-const REPORT_ID = "TEST_AGED_REPORT_ID";
 const savedSpEnvironment = new Map(
   Object.keys(process.env)
     .filter((key) => key.startsWith("SP_API_"))
@@ -34,17 +27,6 @@ function clearSpEnvironment(): void {
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("SP_API_")) delete process.env[key];
   }
-}
-
-function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
-function requestUrl(input: Parameters<typeof fetch>[0]): URL {
-  return new URL(input instanceof Request ? input.url : String(input));
 }
 
 function request(input: {
@@ -61,715 +43,6 @@ function request(input: {
     body: input.body ? { kind: "json", value: input.body } : undefined,
   };
 }
-
-const DETAILED_AGE_HEADERS = [
-  "inv-age-0-to-30-days",
-  "inv-age-31-to-60-days",
-  "inv-age-61-to-90-days",
-  "inv-age-91-to-180-days",
-  "inv-age-181-to-270-days",
-  "inv-age-271-to-365-days",
-  "inv-age-366-to-455-days",
-  "inv-age-456-plus-days",
-] as const;
-
-const COMMON_AIS_KEYS = [
-  "181-210",
-  "211-240",
-  "241-270",
-  "271-300",
-  "301-330",
-  "331-365",
-] as const;
-const REGIONAL_AIS_KEYS = [...COMMON_AIS_KEYS, "366-455", "456-plus"] as const;
-
-function reportText(
-  headers: readonly string[],
-  records: Array<Record<string, string | number>>,
-): string {
-  return [
-    headers.join("\t"),
-    ...records.map((record) =>
-      headers.map((header) => String(record[header] ?? "")).join("\t"),
-    ),
-  ].join("\n");
-}
-
-describe("official FBA 180+ day inventory report", () => {
-  beforeEach(() => {
-    clearSpEnvironment();
-    invalidateSpApiCredentialCaches();
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    clearSpEnvironment();
-    for (const [key, value] of savedSpEnvironment) {
-      if (value !== undefined) process.env[key] = value;
-    }
-    invalidateSpApiCredentialCaches();
-  });
-
-  it("parses every non-overlapping age bucket and official fee field without dropping fresh FBA rows", () => {
-    const headers = [
-      "seller-sku",
-      "fnsku",
-      "asin",
-      "product-name",
-      "condition",
-      "available",
-      "inv-age-0-to-90-days",
-      ...DETAILED_AGE_HEADERS,
-      "inv-age-181-to-330-days",
-      "inv-age-331-to-365-days",
-      "inv-age-365-plus-days",
-      "estimated-excess-quantity",
-      "recommended-removal-quantity",
-      "days-of-supply",
-      "currency",
-      "estimated-storage-cost-next-month",
-      ...REGIONAL_AIS_KEYS.flatMap((key) => [
-        `quantity-to-be-charged-ais-${key}-days`,
-        `estimated-ais-${key}-days`,
-      ]),
-      "alert",
-      "recommended-action",
-      "snapshot-date",
-    ];
-    const aged: Record<string, string | number> = {
-      "seller-sku": "AGED-FBA-01",
-      fnsku: "X001AGED01",
-      asin: "B0AGED0001",
-      "product-name": "Aged FBA product",
-      condition: "New",
-      available: 240,
-      "inv-age-0-to-90-days": 999,
-      "inv-age-0-to-30-days": 80,
-      "inv-age-31-to-60-days": 30,
-      "inv-age-61-to-90-days": 22,
-      "inv-age-91-to-180-days": 9,
-      "inv-age-181-to-270-days": 12,
-      "inv-age-271-to-365-days": 10,
-      "inv-age-366-to-455-days": 7,
-      "inv-age-456-plus-days": 2,
-      "inv-age-181-to-330-days": 999,
-      "inv-age-331-to-365-days": 999,
-      "inv-age-365-plus-days": 999,
-      "estimated-excess-quantity": 25,
-      "recommended-removal-quantity": 5,
-      "days-of-supply": 220.5,
-      currency: "USD",
-      "estimated-storage-cost-next-month": 15.25,
-      alert: "Amazon raw alert",
-      "recommended-action": "Create sale",
-      "snapshot-date": "2026-08-07",
-    };
-    const fresh: Record<string, string | number> = {
-      "seller-sku": "FRESH-FBA-01",
-      fnsku: "X001FRESH1",
-      asin: "B0FRESH001",
-      "product-name": "Fresh FBA product",
-      condition: "New",
-      available: 80,
-      "inv-age-0-to-90-days": 999,
-      "inv-age-0-to-30-days": 80,
-      "inv-age-31-to-60-days": 0,
-      "inv-age-61-to-90-days": 0,
-      "inv-age-91-to-180-days": 0,
-      "inv-age-181-to-270-days": 0,
-      "inv-age-271-to-365-days": 0,
-      "inv-age-366-to-455-days": 0,
-      "inv-age-456-plus-days": 0,
-      "inv-age-181-to-330-days": 999,
-      "inv-age-331-to-365-days": 999,
-      "inv-age-365-plus-days": 999,
-      "estimated-excess-quantity": 0,
-      "recommended-removal-quantity": 0,
-      "days-of-supply": 35,
-      currency: "USD",
-      "estimated-storage-cost-next-month": 5,
-      alert: "",
-      "recommended-action": "",
-      "snapshot-date": "2026-08-07",
-    };
-    REGIONAL_AIS_KEYS.forEach((key, index) => {
-      aged[`quantity-to-be-charged-ais-${key}-days`] = index + 1;
-      aged[`estimated-ais-${key}-days`] = (index + 1) / 10;
-      fresh[`quantity-to-be-charged-ais-${key}-days`] = 0;
-      fresh[`estimated-ais-${key}-days`] = 0;
-    });
-
-    const parsed = parseAgedInventoryReportData(
-      reportText(headers, [aged, fresh]),
-    );
-
-    expect(parsed).toMatchObject({
-      ageBucketKeys: [
-        "0-30",
-        "31-60",
-        "61-90",
-        "91-180",
-        "181-270",
-        "271-365",
-        "366-455",
-        "456-plus",
-      ],
-      agedSurchargeBucketKeys: REGIONAL_AIS_KEYS,
-      excessAvailability: "complete",
-      storageCostAvailability: "complete",
-      agedSurchargeAvailability: "complete",
-      currencyCode: "USD",
-    });
-    expect(parsed.rows).toHaveLength(2);
-    expect(parsed.rows[0]).toMatchObject({
-      sellerSku: "AGED-FBA-01",
-      available: 240,
-      totalAgedUnits: 172,
-      agedOver180: 31,
-      estimatedExcessQuantity: 25,
-      recommendedRemovalQuantity: 5,
-      daysOfSupply: 220.5,
-      estimatedStorageCostNextMonth: 15.25,
-      estimatedAgedSurcharge: 3.6,
-      alert: "Amazon raw alert",
-    });
-    expect(parsed.rows[0].ageBuckets).toEqual([
-      { key: "0-30", label: "0–30 天", units: 80, over180: false },
-      { key: "31-60", label: "31–60 天", units: 30, over180: false },
-      { key: "61-90", label: "61–90 天", units: 22, over180: false },
-      { key: "91-180", label: "91–180 天", units: 9, over180: false },
-      { key: "181-270", label: "181–270 天", units: 12, over180: true },
-      { key: "271-365", label: "271–365 天", units: 10, over180: true },
-      { key: "366-455", label: "366–455 天", units: 7, over180: true },
-      { key: "456-plus", label: "456 天以上", units: 2, over180: true },
-    ]);
-    expect(parsed.rows[1]).toMatchObject({
-      sellerSku: "FRESH-FBA-01",
-      totalAgedUnits: 80,
-      agedOver180: 0,
-    });
-  });
-
-  it("selects one complete Amazon column generation instead of double-counting overlaps", () => {
-    const headers = [
-        "sku",
-        "inv-age-0-to-90-days",
-        "inv-age-91-to-180-days",
-        "inv-age-181-to-270-days",
-        "inv-age-271-to-365-days",
-        "inv-age-366-to-455-days",
-        "inv-age-456-plus-days",
-        "inv-age-181-to-330-days",
-        "inv-age-331-to-365-days",
-        "inv-age-365-plus-days",
-      ];
-    const report = reportText(headers, [
-      {
-        sku: "AGED-FBA-02",
-        "inv-age-0-to-90-days": 5,
-        "inv-age-91-to-180-days": 6,
-        "inv-age-181-to-270-days": 4,
-        "inv-age-271-to-365-days": 3,
-        "inv-age-366-to-455-days": 2,
-        "inv-age-456-plus-days": 1,
-        "inv-age-181-to-330-days": 999,
-        "inv-age-331-to-365-days": 999,
-        "inv-age-365-plus-days": 999,
-      },
-    ]);
-
-    expect(parseAgedInventoryReportDocument(report)[0]).toMatchObject({
-      totalAgedUnits: 21,
-      agedOver180: 10,
-      ageBuckets: [
-        { key: "0-90", label: "0–90 天", units: 5, over180: false },
-        { key: "91-180", label: "91–180 天", units: 6, over180: false },
-        { key: "181-270", label: "181–270 天", units: 4, over180: true },
-        { key: "271-365", label: "271–365 天", units: 3, over180: true },
-        { key: "366-455", label: "366–455 天", units: 2, over180: true },
-        { key: "456-plus", label: "456 天以上", units: 1, over180: true },
-      ],
-    });
-    expect(() =>
-      parseAgedInventoryReportDocument(
-        reportText(
-          [
-            "sku",
-            "inv-age-0-to-90-days",
-            "inv-age-91-to-180-days",
-            "inv-age-181-to-270-days",
-            "inv-age-271-to-365-days",
-            "inv-age-365-plus-days",
-          ],
-          [
-            {
-              sku: "BAD",
-              "inv-age-0-to-90-days": 0,
-              "inv-age-91-to-180-days": 0,
-              "inv-age-181-to-270-days": -1,
-              "inv-age-271-to-365-days": 0,
-              "inv-age-365-plus-days": 0,
-            },
-          ],
-        ),
-      ),
-    ).toThrow("不是有效數量");
-  });
-
-  it("keeps non-US 365-plus units when the regional tail columns are unavailable", () => {
-    const report = reportText(
-      [
-        "sku",
-        "inv-age-0-to-90-days",
-        "inv-age-91-to-180-days",
-        "inv-age-181-to-270-days",
-        "inv-age-271-to-365-days",
-        "inv-age-365-plus-days",
-        "estimated-excess-quantity",
-      ],
-      [
-        {
-          sku: "NON-US-AGED-01",
-          "inv-age-0-to-90-days": 4,
-          "inv-age-91-to-180-days": 3,
-          "inv-age-181-to-270-days": 0,
-          "inv-age-271-to-365-days": 0,
-          "inv-age-365-plus-days": 11,
-          "estimated-excess-quantity": 7,
-        },
-      ],
-    );
-
-    expect(parseAgedInventoryReportDocument(report)).toEqual([
-      expect.objectContaining({
-        sellerSku: "NON-US-AGED-01",
-        agedOver180: 11,
-        estimatedExcessQuantity: 7,
-        ageBuckets: [
-          { key: "0-90", label: "0–90 天", units: 4, over180: false },
-          { key: "91-180", label: "91–180 天", units: 3, over180: false },
-          { key: "181-270", label: "181–270 天", units: 0, over180: true },
-          { key: "271-365", label: "271–365 天", units: 0, over180: true },
-          {
-            key: "365-plus",
-            label: "365 天以上（Amazon 欄位）",
-            units: 11,
-            over180: true,
-          },
-        ],
-      }),
-    ]);
-    expect(
-      parseAgedInventoryReportDocument(report, "A1VC38T7YXB528"),
-    ).toHaveLength(1);
-    expect(() =>
-      parseAgedInventoryReportDocument(report, MARKETPLACE_ID),
-    ).toThrow("區域庫齡欄位與目前站點不一致");
-  });
-
-  it("fails closed when a selected age bucket is blank instead of assuming zero", () => {
-    expect(() =>
-      parseAgedInventoryReportDocument(
-        reportText(
-          [
-            "sku",
-            "inv-age-0-to-90-days",
-            "inv-age-91-to-180-days",
-            "inv-age-181-to-270-days",
-            "inv-age-271-to-365-days",
-            "inv-age-365-plus-days",
-          ],
-          [
-            {
-              sku: "MISSING-BUCKET-01",
-              "inv-age-0-to-90-days": 1,
-              "inv-age-91-to-180-days": 0,
-              "inv-age-181-to-270-days": 0,
-              "inv-age-271-to-365-days": 0,
-            },
-          ],
-        ),
-      ),
-    ).toThrow("「365 天以上（Amazon 欄位）」缺值");
-  });
-
-  it("marks estimated excess partial when Amazon leaves any SKU blank", () => {
-    const parsed = parseAgedInventoryReportData(
-      reportText(
-        [
-          "sku",
-          "inv-age-0-to-90-days",
-          "inv-age-91-to-180-days",
-          "inv-age-181-to-270-days",
-          "inv-age-271-to-365-days",
-          "inv-age-365-plus-days",
-          "estimated-excess-quantity",
-        ],
-        [
-          {
-            sku: "EXCESS-KNOWN",
-            "inv-age-0-to-90-days": 1,
-            "inv-age-91-to-180-days": 0,
-            "inv-age-181-to-270-days": 0,
-            "inv-age-271-to-365-days": 0,
-            "inv-age-365-plus-days": 0,
-            "estimated-excess-quantity": 7,
-          },
-          {
-            sku: "EXCESS-UNKNOWN",
-            "inv-age-0-to-90-days": 1,
-            "inv-age-91-to-180-days": 0,
-            "inv-age-181-to-270-days": 0,
-            "inv-age-271-to-365-days": 0,
-            "inv-age-365-plus-days": 0,
-          },
-        ],
-      ),
-    );
-
-    expect(parsed.excessAvailability).toBe("partial");
-    expect(parsed.rows.map((row) => row.estimatedExcessQuantity)).toEqual([
-      7,
-      null,
-    ]);
-  });
-
-  it("treats blank official fees as zero only when the same row has a zero charge basis", () => {
-    const aisKeys = [...COMMON_AIS_KEYS, "365-plus"] as const;
-    const headers = [
-      "sku",
-      "inv-age-0-to-90-days",
-      "inv-age-91-to-180-days",
-      "inv-age-181-to-270-days",
-      "inv-age-271-to-365-days",
-      "inv-age-365-plus-days",
-      "storage-volume",
-      "estimated-storage-cost-next-month",
-      ...aisKeys.flatMap((key) => [
-        `quantity-to-be-charged-ais-${key}-days`,
-        `estimated-ais-${key}-days`,
-      ]),
-    ];
-    const record: Record<string, string | number> = {
-      sku: "ZERO-BASIS-FBA",
-      "inv-age-0-to-90-days": 8,
-      "inv-age-91-to-180-days": 0,
-      "inv-age-181-to-270-days": 0,
-      "inv-age-271-to-365-days": 0,
-      "inv-age-365-plus-days": 0,
-      "storage-volume": 0,
-    };
-    for (const key of aisKeys) {
-      record[`quantity-to-be-charged-ais-${key}-days`] = 0;
-    }
-
-    const parsed = parseAgedInventoryReportData(reportText(headers, [record]));
-    expect(parsed.storageCostAvailability).toBe("complete");
-    expect(parsed.agedSurchargeAvailability).toBe("complete");
-    expect(parsed.rows[0]).toMatchObject({
-      estimatedStorageCostNextMonth: 0,
-      estimatedAgedSurcharge: 0,
-      currencyCode: null,
-    });
-    expect(parsed.rows[0]!.agedSurchargeBuckets).toEqual(
-      aisKeys.map((key) =>
-        expect.objectContaining({ key, quantity: 0, estimatedCharge: 0 }),
-      ),
-    );
-    expect(formatAgedInventoryMoney(0, null)).toBe("0");
-  });
-
-  it("preserves a missing available quantity instead of inventing zero", () => {
-    const parsed = parseAgedInventoryReportData(
-      reportText(
-        [
-          "sku",
-          "available",
-          "inv-age-0-to-90-days",
-          "inv-age-91-to-180-days",
-          "inv-age-181-to-270-days",
-          "inv-age-271-to-365-days",
-          "inv-age-365-plus-days",
-        ],
-        [
-          {
-            sku: "MISSING-AVAILABLE",
-            "inv-age-0-to-90-days": 1,
-            "inv-age-91-to-180-days": 0,
-            "inv-age-181-to-270-days": 0,
-            "inv-age-271-to-365-days": 0,
-            "inv-age-365-plus-days": 0,
-          },
-        ],
-      ),
-    );
-
-    expect(parsed.rows[0]?.available).toBeNull();
-  });
-
-  it("rejects Seller SKU whitespace instead of rewriting report identity", () => {
-    expect(() =>
-      parseAgedInventoryReportData(
-        reportText(
-          [
-            "sku",
-            "inv-age-0-to-90-days",
-            "inv-age-91-to-180-days",
-            "inv-age-181-to-270-days",
-            "inv-age-271-to-365-days",
-            "inv-age-365-plus-days",
-          ],
-          [
-            {
-              sku: " PADDED-SKU",
-              "inv-age-0-to-90-days": 1,
-              "inv-age-91-to-180-days": 0,
-              "inv-age-181-to-270-days": 0,
-              "inv-age-271-to-365-days": 0,
-              "inv-age-365-plus-days": 0,
-            },
-          ],
-        ),
-      ),
-    ).toThrow("無法原樣辨識 Seller SKU");
-  });
-
-  it("does not infer storage or AIS rates when the charge basis is positive or missing", () => {
-    const aisKeys = [...COMMON_AIS_KEYS, "365-plus"] as const;
-    const headers = [
-      "sku",
-      "inv-age-0-to-90-days",
-      "inv-age-91-to-180-days",
-      "inv-age-181-to-270-days",
-      "inv-age-271-to-365-days",
-      "inv-age-365-plus-days",
-      "currency",
-      "storage-volume",
-      "estimated-storage-cost-next-month",
-      ...aisKeys.flatMap((key) => [
-        `quantity-to-be-charged-ais-${key}-days`,
-        `estimated-ais-${key}-days`,
-      ]),
-    ];
-    const record: Record<string, string | number> = {
-      sku: "UNKNOWN-RATE-FBA",
-      "inv-age-0-to-90-days": 0,
-      "inv-age-91-to-180-days": 0,
-      "inv-age-181-to-270-days": 1,
-      "inv-age-271-to-365-days": 0,
-      "inv-age-365-plus-days": 0,
-      currency: "USD",
-      "storage-volume": 1.25,
-      "quantity-to-be-charged-ais-181-210-days": 1,
-    };
-    for (const key of aisKeys.slice(1)) {
-      record[`quantity-to-be-charged-ais-${key}-days`] = 0;
-    }
-
-    const parsed = parseAgedInventoryReportData(reportText(headers, [record]));
-    expect(parsed.storageCostAvailability).toBe("partial");
-    expect(parsed.agedSurchargeAvailability).toBe("partial");
-    expect(parsed.rows[0]).toMatchObject({
-      estimatedStorageCostNextMonth: null,
-      estimatedAgedSurcharge: null,
-    });
-    expect(parsed.rows[0]!.agedSurchargeBuckets[0]).toMatchObject({
-      quantity: 1,
-      estimatedCharge: null,
-    });
-  });
-
-  it("fails closed when an Amazon report omits every complete long-age tail", () => {
-    expect(() =>
-      parseAgedInventoryReportDocument(
-        [
-          "sku\tinv-age-0-to-90-days\tinv-age-91-to-180-days\tinv-age-181-to-270-days\tinv-age-271-to-365-days",
-          "INCOMPLETE-AGED-01\t0\t0\t2\t3",
-        ].join("\n"),
-      ),
-    ).toThrow("缺少完整且不重疊的庫齡區間");
-  });
-
-  it("fails closed instead of summing an incomplete AIS column generation", () => {
-    expect(() =>
-      parseAgedInventoryReportDocument(
-        reportText(
-          [
-            "sku",
-            "inv-age-0-to-90-days",
-            "inv-age-91-to-180-days",
-            "inv-age-181-to-270-days",
-            "inv-age-271-to-365-days",
-            "inv-age-365-plus-days",
-            "quantity-to-be-charged-ais-181-210-days",
-          ],
-          [
-            {
-              sku: "INCOMPLETE-AIS-01",
-              "inv-age-0-to-90-days": 0,
-              "inv-age-91-to-180-days": 0,
-              "inv-age-181-to-270-days": 2,
-              "inv-age-271-to-365-days": 3,
-              "inv-age-365-plus-days": 4,
-              "quantity-to-be-charged-ais-181-210-days": 1,
-            },
-          ],
-        ),
-      ),
-    ).toThrow("AIS 預估附加費欄位不完整");
-  });
-
-  it("fails closed when official fee rows mix currencies", () => {
-    const headers = [
-      "sku",
-      "inv-age-0-to-90-days",
-      "inv-age-91-to-180-days",
-      "inv-age-181-to-270-days",
-      "inv-age-271-to-365-days",
-      "inv-age-365-plus-days",
-      "currency",
-      "estimated-storage-cost-next-month",
-    ];
-    expect(() =>
-      parseAgedInventoryReportDocument(
-        reportText(headers, [
-          {
-            sku: "USD-FBA-01",
-            "inv-age-0-to-90-days": 1,
-            "inv-age-91-to-180-days": 0,
-            "inv-age-181-to-270-days": 0,
-            "inv-age-271-to-365-days": 0,
-            "inv-age-365-plus-days": 0,
-            currency: "USD",
-            "estimated-storage-cost-next-month": 1,
-          },
-          {
-            sku: "CAD-FBA-01",
-            "inv-age-0-to-90-days": 1,
-            "inv-age-91-to-180-days": 0,
-            "inv-age-181-to-270-days": 0,
-            "inv-age-271-to-365-days": 0,
-            "inv-age-365-plus-days": 0,
-            currency: "CAD",
-            "estimated-storage-cost-next-month": 1,
-          },
-        ]),
-      ),
-    ).toThrow("包含多種幣別");
-  });
-
-  it("requests GET_FBA_INVENTORY_PLANNING_DATA for exactly one marketplace", async () => {
-    process.env.SP_API_MODE = "live";
-    process.env.SP_API_LWA_CLIENT_ID = "TEST_CLIENT_ID";
-    process.env.SP_API_LWA_CLIENT_SECRET = "TEST_CLIENT_SECRET";
-    process.env.SP_API_REFRESH_TOKEN_NA = "TEST_REFRESH_TOKEN";
-    process.env.SP_API_SELLER_ID_NA = "TEST_SELLER_ID";
-    invalidateSpApiCredentialCaches();
-    let reportRequest: Record<string, unknown> | null = null;
-    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
-      const url = requestUrl(input);
-      if (url.origin === "https://api.amazon.com") {
-        return jsonResponse(200, {
-          access_token: "TEST_ACCESS_TOKEN",
-          expires_in: 3_600,
-        });
-      }
-      if (url.pathname === "/reports/2021-06-30/reports") {
-        reportRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return jsonResponse(202, { reportId: REPORT_ID });
-      }
-      throw new Error(`Unexpected request: ${url.href}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await startAgedInventoryReport({ marketplaceId: MARKETPLACE_ID });
-
-    expect(result).toMatchObject({
-      mode: "live",
-      ready: false,
-      reportId: REPORT_ID,
-      status: "IN_QUEUE",
-    });
-    expect(reportRequest).toEqual({
-      reportType: "GET_FBA_INVENTORY_PLANNING_DATA",
-      marketplaceIds: [MARKETPLACE_ID],
-    });
-  });
-
-  it("fails closed when Amazon returns a different report type or marketplace", async () => {
-    process.env.SP_API_MODE = "live";
-    process.env.SP_API_LWA_CLIENT_ID = "TEST_CLIENT_ID";
-    process.env.SP_API_LWA_CLIENT_SECRET = "TEST_CLIENT_SECRET";
-    process.env.SP_API_REFRESH_TOKEN_NA = "TEST_REFRESH_TOKEN";
-    process.env.SP_API_SELLER_ID_NA = "TEST_SELLER_ID";
-    invalidateSpApiCredentialCaches();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn<typeof fetch>(async (input) => {
-        const url = requestUrl(input);
-        if (url.origin === "https://api.amazon.com") {
-          return jsonResponse(200, {
-            access_token: "TEST_ACCESS_TOKEN",
-            expires_in: 3_600,
-          });
-        }
-        if (url.pathname === `/reports/2021-06-30/reports/${REPORT_ID}`) {
-          return jsonResponse(200, {
-            reportId: REPORT_ID,
-            reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
-            marketplaceIds: [MARKETPLACE_ID],
-            processingStatus: "DONE",
-            reportDocumentId: "WRONG_DOCUMENT",
-          });
-        }
-        throw new Error(`Unexpected request: ${url.href}`);
-      }),
-    );
-
-    await expect(
-      getAgedInventoryReportStatus({
-        marketplaceId: MARKETPLACE_ID,
-        reportId: REPORT_ID,
-      }),
-    ).rejects.toMatchObject({ code: "REPORT_MISMATCH", status: 409 });
-  });
-
-  it("does not retry a report-status 401 after lifecycle cleanup aborts the run", async () => {
-    process.env.SP_API_MODE = "live";
-    process.env.SP_API_LWA_CLIENT_ID = "TEST_CLIENT_ID";
-    process.env.SP_API_LWA_CLIENT_SECRET = "TEST_CLIENT_SECRET";
-    process.env.SP_API_REFRESH_TOKEN_NA = "TEST_REFRESH_TOKEN";
-    process.env.SP_API_SELLER_ID_NA = "TEST_SELLER_ID";
-    invalidateSpApiCredentialCaches();
-    const controller = new AbortController();
-    let tokenCalls = 0;
-    let reportCalls = 0;
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
-      const url = requestUrl(input);
-      if (url.origin === "https://api.amazon.com") {
-        tokenCalls += 1;
-        return jsonResponse(200, {
-          access_token: `TEST_ACCESS_TOKEN_${tokenCalls}`,
-          expires_in: 3_600,
-        });
-      }
-      if (url.pathname === `/reports/2021-06-30/reports/${REPORT_ID}`) {
-        reportCalls += 1;
-        controller.abort(new Error("lifecycle cleanup"));
-        return jsonResponse(401, { errors: [{ message: "expired" }] });
-      }
-      throw new Error(`Unexpected request: ${url.href}`);
-    }));
-
-    await expect(getAgedInventoryReportStatus({
-      marketplaceId: MARKETPLACE_ID,
-      reportId: REPORT_ID,
-      signal: controller.signal,
-    })).rejects.toThrow(/lifecycle cleanup/u);
-    expect(tokenCalls).toBe(1);
-    expect(reportCalls).toBe(1);
-  });
-});
 
 describe("FBA aged inventory renderer and read-only route", () => {
   let router: ApiRouter;
@@ -806,7 +79,10 @@ describe("FBA aged inventory renderer and read-only route", () => {
     expect(markup).toContain("FBA 庫齡、冗餘與官方預估費用");
     expect(markup).toContain("開始 FBA 180 天以上庫齡健檢");
     expect(markup).toContain("全部非重疊庫齡桶");
-    expect(markup).toContain("費用缺欄或缺值時不套費率、不推算");
+    expect(markup).toContain(
+      "任一 SKU 缺值時只保留逐列證據，不顯示部分全站合計",
+    );
+    expect(formatAgedInventoryMoney(1.5, "JPY")).toMatch(/1[.,]5/u);
   });
 
   it("aggregates every US age and AIS tier while preserving partial quantity and fee coverage", () => {
@@ -885,10 +161,17 @@ describe("FBA aged inventory renderer and read-only route", () => {
     expect(surchargeOverview[1]).toEqual({
       key: "211-240",
       label: "AIS 211–240 天",
-      quantity: 1,
+      quantity: null,
       quantityReportedSkuCount: 1,
       estimatedCharge: null,
       chargeReportedSkuCount: 0,
+      totalSkuCount: 2,
+    });
+    expect(surchargeOverview[2]).toMatchObject({
+      quantity: null,
+      quantityReportedSkuCount: 1,
+      estimatedCharge: null,
+      chargeReportedSkuCount: 1,
       totalSkuCount: 2,
     });
 
@@ -899,14 +182,52 @@ describe("FBA aged inventory renderer and read-only route", () => {
     expect(markup).toContain("AIS 官方預估計費分層");
     expect(markup).toContain("已回傳 1／2 SKU");
     expect(markup).toContain("不反推或猜測每件費率");
+    expect(markup).toContain("部分回傳只保留逐 SKU 證據與回傳筆數");
     expect(markup).toContain("US$2.00");
   });
 
-  it("validates every row and the server summary before displaying it", () => {
+  it("fails closed on unsafe complete tier aggregates", () => {
+    const surchargeRow = (
+      quantity: number | null,
+      estimatedCharge: number | null,
+    ) => ({
+      agedSurchargeBuckets: [{
+        key: "181-210",
+        label: "AIS 181–210 天",
+        quantity,
+        estimatedCharge,
+      }],
+    });
+
+    expect(() => aggregateAgedSurchargeBuckets([
+      surchargeRow(Number.MAX_SAFE_INTEGER, 0),
+      surchargeRow(1, 0),
+    ])).toThrow("安全範圍");
+
+    expect(() => aggregateAgedSurchargeBuckets([
+      surchargeRow(0, 90_071_992_547_409),
+      surchargeRow(0, 0.01),
+    ])).toThrow("安全範圍");
+
+    expect(aggregateAgedSurchargeBuckets([
+      surchargeRow(Number.MAX_SAFE_INTEGER, 90_071_992_547_409),
+      surchargeRow(1, 1),
+      surchargeRow(null, null),
+    ])).toEqual([expect.objectContaining({
+      quantity: null,
+      quantityReportedSkuCount: 2,
+      estimatedCharge: null,
+      chargeReportedSkuCount: 2,
+      totalSkuCount: 3,
+    })]);
+  });
+
+  it("validates every row, accepts the installed old-main export reference, and verifies the server summary", () => {
     const raw = {
       mode: "live",
       marketplaceId: MARKETPLACE_ID,
       fetchedAt: "2026-08-08T00:00:00.000Z",
+      exportId: "11111111-1111-4111-8111-111111111111",
       rows: [
         {
           sellerSku: "AGED-FBA-01",
@@ -977,6 +298,8 @@ describe("FBA aged inventory renderer and read-only route", () => {
     };
 
     expect(parseAgedInventorySnapshot(raw, MARKETPLACE_ID)).toMatchObject({
+      workbookDownloadUrl:
+        "/api/sp-api/aged-inventory?marketplaceId=ATVPDKIKX0DER&exportId=11111111-1111-4111-8111-111111111111&download=1",
       summary: {
         skuCount: 1,
         totalAgedUnits: 50,
@@ -984,6 +307,54 @@ describe("FBA aged inventory renderer and read-only route", () => {
         estimatedExcessQuantity: 25,
         estimatedStorageCostNextMonth: 15.25,
         estimatedAgedSurcharge: 3.6,
+      },
+    });
+    const installedMainSnapshot = parseAgedInventorySnapshot({
+      ...raw,
+      exportId: undefined,
+      reportId: "legacy-report-1",
+      documentId: "amzn1.spdoc.legacy-document-1",
+    }, MARKETPLACE_ID);
+    expect(installedMainSnapshot).toMatchObject({
+      workbookDownloadUrl:
+        "/api/sp-api/aged-inventory?marketplaceId=ATVPDKIKX0DER&reportId=legacy-report-1&documentId=amzn1.spdoc.legacy-document-1&download=1",
+    });
+    expect(installedMainSnapshot).not.toHaveProperty("reportId");
+    expect(installedMainSnapshot).not.toHaveProperty("documentId");
+    const installedMainEmptySnapshot = parseAgedInventorySnapshot(
+      {
+        ...raw,
+        exportId: undefined,
+        reportId: "legacy-report-empty",
+        documentId: "amzn1.spdoc.legacy-document-empty",
+        rows: [],
+        summary: {
+          ...raw.summary,
+          skuCount: 0,
+          agedOver180SkuCount: 0,
+          totalAgedUnits: 0,
+          agedOver180: 0,
+          estimatedExcessQuantity: null,
+          excessReportedSkuCount: 0,
+          currencyCode: null,
+          estimatedStorageCostNextMonth: null,
+          storageCostReportedSkuCount: 0,
+          estimatedAgedSurcharge: null,
+          agedSurchargeReportedSkuCount: 0,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(installedMainEmptySnapshot).toMatchObject({
+      rows: [],
+      summary: {
+        skuCount: 0,
+        excessAvailability: "complete",
+        estimatedExcessQuantity: null,
+        storageCostAvailability: "complete",
+        estimatedStorageCostNextMonth: null,
+        agedSurchargeAvailability: "complete",
+        estimatedAgedSurcharge: null,
       },
     });
     expect(() =>
@@ -1001,6 +372,25 @@ describe("FBA aged inventory renderer and read-only route", () => {
         MARKETPLACE_ID,
       ),
     ).toThrow("AIS 預估附加費分層與合計不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...raw,
+          rows: [
+            {
+              ...raw.rows[0],
+              agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+                (bucket, index) => ({
+                  ...bucket,
+                  quantity: index === 0 ? null : bucket.quantity,
+                }),
+              ),
+            },
+          ],
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("AIS 預估附加費分層與合計不一致");
 
     const partialExcess = {
       ...raw,
@@ -1012,6 +402,14 @@ describe("FBA aged inventory renderer and read-only route", () => {
           fnSku: "X001UNKNOWN",
           asin: "B0UNKNOWN01",
           estimatedExcessQuantity: null,
+          estimatedStorageCostNextMonth: null,
+          estimatedAgedSurcharge: null,
+          agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+            (bucket, index) => ({
+              ...bucket,
+              estimatedCharge: index === 0 ? null : bucket.estimatedCharge,
+            }),
+          ),
         },
       ],
       summary: {
@@ -1021,27 +419,325 @@ describe("FBA aged inventory renderer and read-only route", () => {
         totalAgedUnits: 100,
         agedOver180: 62,
         excessAvailability: "partial",
-        estimatedExcessQuantity: 25,
+        estimatedExcessQuantity: null,
         excessReportedSkuCount: 1,
-        estimatedStorageCostNextMonth: 30.5,
-        storageCostReportedSkuCount: 2,
-        estimatedAgedSurcharge: 7.2,
-        agedSurchargeReportedSkuCount: 2,
+        storageCostAvailability: "partial",
+        estimatedStorageCostNextMonth: null,
+        storageCostReportedSkuCount: 1,
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+        agedSurchargeReportedSkuCount: 1,
       },
     };
     expect(parseAgedInventorySnapshot(partialExcess, MARKETPLACE_ID)).toMatchObject({
       summary: {
         excessAvailability: "partial",
-        estimatedExcessQuantity: 25,
+        estimatedExcessQuantity: null,
+        storageCostAvailability: "partial",
+        estimatedStorageCostNextMonth: null,
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
       },
     });
+    const partialQuantity = {
+      ...partialExcess,
+      rows: [
+        partialExcess.rows[0],
+        {
+          ...partialExcess.rows[1],
+          agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+            (bucket, index) => ({
+              ...bucket,
+              quantity: index === 0 ? null : bucket.quantity,
+            }),
+          ),
+        },
+      ],
+    };
+    expect(parseAgedInventorySnapshot(partialQuantity, MARKETPLACE_ID)).toMatchObject({
+      rows: [
+        { estimatedAgedSurcharge: 3.6 },
+        { estimatedAgedSurcharge: null },
+      ],
+      summary: {
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+        agedSurchargeReportedSkuCount: 1,
+      },
+    });
+    expect(
+      parseAgedInventorySnapshot(
+        {
+          ...partialQuantity,
+          exportId: undefined,
+          reportId: "legacy-report-quantity-partial",
+          documentId: "amzn1.spdoc.legacy-document-quantity-partial",
+          summary: {
+            ...partialQuantity.summary,
+            estimatedExcessQuantity: 25,
+            estimatedStorageCostNextMonth: 15.25,
+            estimatedAgedSurcharge: 3.6,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toMatchObject({
+      rows: [
+        { estimatedAgedSurcharge: 3.6 },
+        { estimatedAgedSurcharge: null },
+      ],
+      summary: {
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+      },
+    });
+    const installedMainPartialSnapshot = parseAgedInventorySnapshot(
+      {
+        ...partialExcess,
+        exportId: undefined,
+        reportId: "legacy-report-partial",
+        documentId: "amzn1.spdoc.legacy-document-partial",
+        summary: {
+          ...partialExcess.summary,
+          estimatedExcessQuantity: 25,
+          estimatedStorageCostNextMonth: 15.25,
+          estimatedAgedSurcharge: 3.6,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(installedMainPartialSnapshot).toMatchObject({
+      workbookDownloadUrl:
+        "/api/sp-api/aged-inventory?marketplaceId=ATVPDKIKX0DER&reportId=legacy-report-partial&documentId=amzn1.spdoc.legacy-document-partial&download=1",
+      rows: [
+        { estimatedExcessQuantity: 25 },
+        { estimatedExcessQuantity: null },
+      ],
+      summary: {
+        excessAvailability: "partial",
+        estimatedExcessQuantity: null,
+        storageCostAvailability: "partial",
+        estimatedStorageCostNextMonth: null,
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+      },
+    });
+    expect(installedMainPartialSnapshot).not.toHaveProperty("reportId");
+    expect(installedMainPartialSnapshot).not.toHaveProperty("documentId");
+    expect(installedMainPartialSnapshot).not.toHaveProperty("exportId");
+    const installedMainSubCentSnapshot = parseAgedInventorySnapshot(
+      {
+        ...partialExcess,
+        exportId: undefined,
+        reportId: "legacy-report-sub-cent",
+        documentId: "amzn1.spdoc.legacy-document-sub-cent",
+        rows: [
+          {
+            ...partialExcess.rows[0],
+            estimatedStorageCostNextMonth: 15.255,
+            estimatedAgedSurcharge: 3.58,
+            agedSurchargeBuckets: [
+              {
+                ...partialExcess.rows[0].agedSurchargeBuckets[0],
+                estimatedCharge: 1.234,
+              },
+              {
+                ...partialExcess.rows[0].agedSurchargeBuckets[1],
+                estimatedCharge: 2.345,
+              },
+            ],
+          },
+          partialExcess.rows[1],
+        ],
+        summary: {
+          ...partialExcess.summary,
+          estimatedExcessQuantity: 25,
+          estimatedStorageCostNextMonth: 15.26,
+          estimatedAgedSurcharge: 3.58,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(installedMainSubCentSnapshot.rows[0]).toMatchObject({
+      estimatedStorageCostNextMonth: 15.255,
+      estimatedAgedSurcharge: 3.58,
+      agedSurchargeBuckets: [
+        { estimatedCharge: 1.234 },
+        { estimatedCharge: 2.345 },
+      ],
+    });
+    expect(installedMainSubCentSnapshot).toMatchObject({
+      summary: {
+        storageCostAvailability: "partial",
+        estimatedStorageCostNextMonth: null,
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+      },
+    });
+    const legacyCarrySnapshot = parseAgedInventorySnapshot(
+      {
+        ...raw,
+        exportId: undefined,
+        reportId: "legacy-report-carry",
+        documentId: "amzn1.spdoc.legacy-document-carry",
+        rows: [
+          {
+            ...raw.rows[0],
+            estimatedStorageCostNextMonth: 0.004,
+            estimatedAgedSurcharge: 0,
+            agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+              (bucket, index) => ({
+                ...bucket,
+                estimatedCharge: index === 0 ? 0.004 : 0,
+              }),
+            ),
+          },
+          {
+            ...raw.rows[0],
+            sellerSku: "AGED-FBA-CARRY",
+            fnSku: "X001CARRY",
+            asin: "B0CARRY001",
+            estimatedStorageCostNextMonth: 0.004,
+            estimatedAgedSurcharge: 0,
+            agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+              (bucket, index) => ({
+                ...bucket,
+                estimatedCharge: index === 0 ? 0.004 : 0,
+              }),
+            ),
+          },
+        ],
+        summary: {
+          ...raw.summary,
+          skuCount: 2,
+          agedOver180SkuCount: 2,
+          totalAgedUnits: 100,
+          agedOver180: 62,
+          estimatedExcessQuantity: 50,
+          excessReportedSkuCount: 2,
+          estimatedStorageCostNextMonth: 0.01,
+          storageCostReportedSkuCount: 2,
+          estimatedAgedSurcharge: 0,
+          agedSurchargeReportedSkuCount: 2,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(legacyCarrySnapshot.rows.map(
+      (row) => row.estimatedStorageCostNextMonth,
+    )).toEqual([0.004, 0.004]);
+    expect(legacyCarrySnapshot.moneyPrecision).toBe("legacy-decimal");
+    expect(legacyCarrySnapshot.summary.estimatedStorageCostNextMonth).toBe(0.01);
+    expect(
+      aggregateAgedSurchargeBuckets(
+        legacyCarrySnapshot.rows,
+        "legacy-decimal",
+      )[0],
+    ).toMatchObject({ estimatedCharge: 0.01 });
+    expect(renderToStaticMarkup(
+      <AgedInventoryTierOverview
+        rows={legacyCarrySnapshot.rows}
+        currencyCode="USD"
+        moneyPrecision={legacyCarrySnapshot.moneyPrecision}
+      />,
+    )).toContain("US$0.01");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          rows: [
+            {
+              ...partialExcess.rows[0],
+              estimatedStorageCostNextMonth: 15.255,
+            },
+            partialExcess.rows[1],
+          ],
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("安全貨幣精度");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          exportId: undefined,
+          reportId: "legacy-report-partial",
+          documentId: "amzn1.spdoc.legacy-document-partial",
+          summary: {
+            ...partialExcess.summary,
+            estimatedExcessQuantity: 24,
+            estimatedStorageCostNextMonth: 15.25,
+            estimatedAgedSurcharge: 3.6,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          exportId: undefined,
+          reportId: "legacy-report-partial",
+          documentId: "amzn1.spdoc.legacy-document-partial",
+          summary: {
+            ...partialExcess.summary,
+            estimatedExcessQuantity: 25,
+            estimatedStorageCostNextMonth: 15.24,
+            estimatedAgedSurcharge: 3.6,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          exportId: undefined,
+          reportId: "legacy-report-partial",
+          documentId: "amzn1.spdoc.legacy-document-partial",
+          summary: {
+            ...partialExcess.summary,
+            estimatedExcessQuantity: 25,
+            estimatedStorageCostNextMonth: 15.25,
+            estimatedAgedSurcharge: 3.59,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
     expect(() =>
       parseAgedInventorySnapshot(
         {
           ...partialExcess,
           summary: {
             ...partialExcess.summary,
-            estimatedExcessQuantity: 24,
+            estimatedExcessQuantity: 25,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          summary: {
+            ...partialExcess.summary,
+            estimatedStorageCostNextMonth: 15.25,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          summary: {
+            ...partialExcess.summary,
+            estimatedAgedSurcharge: 3.6,
           },
         },
         MARKETPLACE_ID,

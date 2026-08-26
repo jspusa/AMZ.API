@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api";
+import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
 
 export type SupplyRoute = "DIRECT_FBA" | "AWD_TO_FBA";
 
@@ -82,7 +82,10 @@ export type DurableReportLeg = {
 // Public compatibility aliases: brand jobs and generic Reports API leases use
 // the same durable state machine. New generic code should use DurableReportLeg.
 export type BrandSalesReportLegStatus = DurableReportLegStatus;
-export type BrandSalesReportLeg = DurableReportLeg;
+export type BrandSalesReportLeg = DurableReportLeg & {
+  leaseBinding?: string | null;
+  handleBinding?: string | null;
+};
 
 export type BrandSalesJobRecord = {
   jobId: string;
@@ -139,14 +142,19 @@ export type SharedReportType =
   | "GET_MERCHANT_LISTINGS_DATA"
   | "GET_FBA_INVENTORY_PLANNING_DATA"
   | "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA"
+  | "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA"
   | "GET_SALES_AND_TRAFFIC_REPORT"
   | "ADS_SP_ADVERTISED_PRODUCT";
+
+export type SharedFbaShipmentSalesOptionsKey =
+  `marketplaceIds=selected;shipment-sales;start=${string};end=${string};dataStartTime=${string};dataEndTime=${string};windowCreatedAt=${number}`;
 
 export type SharedReportOptionsKey =
   | "preferredReportDocumentLocale=en_US"
   | "marketplaceIds=selected"
   | "marketplaceIds=selected;daily-inbound-noncompliance"
   | `dateGranularity=DAY;asinGranularity=SKU;start=${string};end=${string}`
+  | SharedFbaShipmentSalesOptionsKey
   | `reportTypeId=spAdvertisedProduct;timeUnit=SUMMARY;version=1;start=${string};end=${string}`;
 
 export type SharedReportLease = {
@@ -311,7 +319,58 @@ function sharedReportKey(input: {
   reportType: SharedReportType;
   optionsKey: SharedReportOptionsKey;
 }): string {
+  return JSON.stringify([
+    input.accountScope,
+    input.marketplaceId,
+    input.reportType,
+    input.optionsKey,
+  ]);
+}
+
+function legacySharedReportKey(input: {
+  accountScope: string;
+  marketplaceId: string;
+  reportType: SharedReportType;
+  optionsKey: SharedReportOptionsKey;
+}): string {
   return `${input.accountScope}:${input.marketplaceId}:${input.reportType}:${input.optionsKey}`;
+}
+
+function persistedSharedReports(
+  reports: StoreData["sharedAllListingsReports"],
+): StoreData["sharedAllListingsReports"] {
+  const persisted: StoreData["sharedAllListingsReports"] = {};
+  const legacyOwners = new Map<string, string>();
+  for (const [key, report] of Object.entries(reports)) {
+    const canonicalKey = sharedReportKey(report);
+    if (key !== canonicalKey) {
+      throw new Error("Non-canonical shared report identity");
+    }
+    persisted[canonicalKey] = report;
+    const legacyKey = legacySharedReportKey(report);
+    const owner = legacyOwners.get(legacyKey);
+    if (owner && owner !== canonicalKey) {
+      // A v2 reader cannot distinguish two identities that collapse to the
+      // same colon-delimited key. Refuse the atomic write instead of choosing
+      // one tombstone and making a rollback capable of replaying the other.
+      throw new Error("Ambiguous legacy shared report identity");
+    }
+    legacyOwners.set(legacyKey, canonicalKey);
+    persisted[legacyKey] = report;
+  }
+  return persisted;
+}
+
+function persistedStore(data: StoreData): StoreData {
+  return {
+    ...data,
+    // Keep collision-safe tuple keys for current readers and a v2 alias for
+    // the immediately previous App. Current read() collapses both copies back
+    // to one canonical in-memory lease.
+    sharedAllListingsReports: persistedSharedReports(
+      data.sharedAllListingsReports,
+    ),
+  };
 }
 
 function isCanonicalIsoTimestamp(value: unknown): value is string {
@@ -509,6 +568,22 @@ function parseDurableReportLeg(value: unknown): DurableReportLeg {
   };
 }
 
+function parseBrandSalesReportLeg(value: unknown): BrandSalesReportLeg {
+  const report = parseDurableReportLeg(value);
+  const raw = value as Record<string, unknown>;
+  return {
+    ...report,
+    leaseBinding: typeof raw.leaseBinding === "string" &&
+        /^[a-f0-9]{64}$/u.test(raw.leaseBinding)
+      ? raw.leaseBinding
+      : null,
+    handleBinding: typeof raw.handleBinding === "string" &&
+        /^[a-f0-9]{64}$/u.test(raw.handleBinding)
+      ? raw.handleBinding
+      : null,
+  };
+}
+
 function parseBrandSalesJobBase(
   value: unknown,
 ): {
@@ -544,8 +619,8 @@ function parseBrandSalesJobBase(
       startDate: raw.startDate as string,
       endDate: raw.endDate as string,
       mode: raw.mode,
-      listing: parseDurableReportLeg(raw.listing),
-      shipment: parseDurableReportLeg(raw.shipment),
+      listing: parseBrandSalesReportLeg(raw.listing),
+      shipment: parseBrandSalesReportLeg(raw.shipment),
       createdAt: Number(raw.createdAt),
       updatedAt: Number(raw.updatedAt),
       expiresAt: Number(raw.expiresAt),
@@ -620,6 +695,53 @@ function validDatedReportOptions(
   return validReportDate(startDate) && validReportDate(endDate) && startDate <= endDate;
 }
 
+function validFixedReportTimestamp(value: string): boolean {
+  return value.length <= 64 &&
+    /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/u.test(value) &&
+    Number.isFinite(Date.parse(value));
+}
+
+export function sharedFbaShipmentSalesOptionsKey(input: {
+  startDate: string;
+  endDate: string;
+  dataStartTime: string;
+  dataEndTime: string;
+  windowCreatedAt: number;
+}): SharedFbaShipmentSalesOptionsKey {
+  if (
+    !validReportDate(input.startDate) ||
+    !validReportDate(input.endDate) ||
+    input.startDate > input.endDate ||
+    !validFixedReportTimestamp(input.dataStartTime) ||
+    !validFixedReportTimestamp(input.dataEndTime) ||
+    Date.parse(input.dataEndTime) <= Date.parse(input.dataStartTime) ||
+    !Number.isSafeInteger(input.windowCreatedAt) ||
+    input.windowCreatedAt < 0
+  ) {
+    throw new Error("Invalid fixed FBA shipment-sales report window");
+  }
+  return `marketplaceIds=selected;shipment-sales;start=${input.startDate};end=${input.endDate};dataStartTime=${encodeURIComponent(input.dataStartTime)};dataEndTime=${encodeURIComponent(input.dataEndTime)};windowCreatedAt=${input.windowCreatedAt}`;
+}
+
+function validFbaShipmentSalesOptions(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = /^marketplaceIds=selected;shipment-sales;start=(\d{4}-\d{2}-\d{2});end=(\d{4}-\d{2}-\d{2});dataStartTime=([^;]+);dataEndTime=([^;]+);windowCreatedAt=(\d+)$/u.exec(
+    value,
+  );
+  if (!match) return false;
+  try {
+    return sharedFbaShipmentSalesOptionsKey({
+      startDate: match[1],
+      endDate: match[2],
+      dataStartTime: decodeURIComponent(match[3]),
+      dataEndTime: decodeURIComponent(match[4]),
+      windowCreatedAt: Number(match[5]),
+    }) === value;
+  } catch {
+    return false;
+  }
+}
+
 function parseSharedReport(
   value: unknown,
 ): SharedReportLease {
@@ -636,6 +758,8 @@ function parseSharedReport(
       raw.optionsKey === "marketplaceIds=selected") ||
     (raw.reportType === "GET_FBA_FULFILLMENT_INBOUND_NONCOMPLIANCE_DATA" &&
       raw.optionsKey === "marketplaceIds=selected;daily-inbound-noncompliance") ||
+    (raw.reportType === "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA" &&
+      validFbaShipmentSalesOptions(raw.optionsKey)) ||
     (raw.reportType === "GET_SALES_AND_TRAFFIC_REPORT" &&
       validDatedReportOptions(
         raw.optionsKey,
@@ -999,34 +1123,6 @@ export class LocalStore {
     return value ? structuredClone(value) : null;
   }
 
-  async findBrandSalesListingCandidate(input: {
-    accountScope: string;
-    marketplaceId: string;
-    now?: number;
-  }): Promise<BrandSalesJobRecord | null> {
-    const now = input.now ?? Date.now();
-    const data = await this.read();
-    const value = Object.values(data.brandSalesJobs)
-      .filter(
-        (candidate): candidate is BrandSalesJobRecord =>
-          !isBrandSalesIncompatibleJob(candidate),
-      )
-      .filter(
-        (candidate) =>
-          candidate.accountScope === input.accountScope &&
-          candidate.marketplaceId === input.marketplaceId &&
-          candidate.expiresAt > now &&
-          candidate.listing.status !== "NOT_STARTED" &&
-          candidate.listing.status !== "CREATE_FAILED",
-      )
-      .sort(
-        (left, right) =>
-          (right.listing.createdAt ?? right.createdAt) -
-          (left.listing.createdAt ?? left.createdAt),
-      )[0];
-    return value ? structuredClone(value) : null;
-  }
-
   async getSharedAllListingsReport(input: {
     accountScope: string;
     marketplaceId: string;
@@ -1122,6 +1218,15 @@ export class LocalStore {
       if (existing) {
         selected = existing;
         return;
+      }
+      const legacyKey = legacySharedReportKey(input);
+      const legacyCollision = Object.values(data.sharedAllListingsReports).find(
+        (candidate) =>
+          legacySharedReportKey(candidate) === legacyKey &&
+          sharedReportKey(candidate) !== key,
+      );
+      if (legacyCollision) {
+        throw new Error("Ambiguous legacy shared report identity");
       }
       selected = parseSharedReport(input);
       data.sharedAllListingsReports[key] = selected;
@@ -1251,7 +1356,7 @@ export class LocalStore {
           candidate.jobId === input.jobId && !isBrandSalesIncompatibleJob(candidate),
       );
       if (!entry) throw new Error("Persisted brand-sales job not found");
-      entry[input.leg] = parseDurableReportLeg(input.value);
+      entry[input.leg] = parseBrandSalesReportLeg(input.value);
       entry.updatedAt = Math.max(input.updatedAt, entry.updatedAt + 1);
       if (input.expiresAt !== undefined) {
         if (
@@ -1585,8 +1690,9 @@ export class LocalStore {
             ([key, report]) => {
               try {
                 const parsed = parseSharedReport(report);
-                return sharedReportKey(parsed) === key
-                  ? [[key, parsed]]
+                const canonicalKey = sharedReportKey(parsed);
+                return canonicalKey === key || legacySharedReportKey(parsed) === key
+                  ? [[canonicalKey, parsed]]
                   : [];
               } catch {
                 return [];
@@ -1628,7 +1734,8 @@ export class LocalStore {
       mutator(data);
       await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
       const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
-      await writeFile(temporaryPath, `${JSON.stringify(data, null, 2)}\n`, {
+      const serialized = persistedStore(data);
+      await writeFile(temporaryPath, `${JSON.stringify(serialized, null, 2)}\n`, {
         encoding: "utf8",
         mode: 0o600,
         flag: "wx",

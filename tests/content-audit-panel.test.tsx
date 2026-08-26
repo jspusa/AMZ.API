@@ -12,8 +12,37 @@ import ContentAuditPanel, {
   quickEditFocusForRow,
   resolveContentAuditQuickEditFocus,
 } from "../src/renderer/src/components/content-audit-panel";
-import type { ContentAuditRow } from "../src/renderer/src/content-quality";
+import type {
+  ContentAuditRow,
+  ContentAuditSnapshot,
+} from "../src/renderer/src/content-quality";
 import { contentLookupErrorMessage } from "../src/renderer/src/components/sku-operations-drawer";
+import { parseStandaloneAuditJob } from "../src/renderer/src/standalone-audit";
+
+function completedContentJob(snapshot: ContentAuditSnapshot) {
+  snapshot.exportId ??= "11111111-1111-4111-8111-111111111111";
+  return parseStandaloneAuditJob({
+    jobId: "84ec9cda-e878-4e87-984e-65c8c5652cee",
+    contextId: "94ec9cda-e878-4e87-984e-65c8c5652cef",
+    kind: "content",
+    marketplaceId: snapshot.marketplaceId,
+    mode: "live",
+    options: {},
+    ready: true,
+    status: "completed",
+    progress: {
+      stage: "complete",
+      message: "完成",
+      completedUnits: snapshot.rows.length,
+      totalUnits: snapshot.rows.length,
+    },
+    snapshot,
+  }, {
+    kind: "content",
+    marketplaceId: snapshot.marketplaceId,
+    mode: "live",
+  });
+}
 
 function quickEditRow(
   overrides: Partial<ContentAuditRow> = {},
@@ -155,8 +184,8 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("產品亮點少於 110");
     expect(markup).toContain("產品要點少於 150 或超過 200");
     expect(markup).toContain("產品敘述少於 1,800");
-    expect(markup).toContain("Amazon 唯讀＋GitHub Pages 共用英文辭典");
-    expect(markup).toContain("Mac 與 Windows 一致");
+    expect(markup).toContain("Amazon 唯讀＋AMZ.API 共用英文辭典");
+    expect(markup).toContain("Mac／Windows Notebook Key Bridge 在本機套用");
     expect(markup).toContain("文案不會送到第三方");
     expect(markup).toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("FBM 不會加入");
@@ -172,7 +201,7 @@ describe("global FBA content audit panel", () => {
       "utf8",
     );
     const dictionarySource = await readFile(
-      new URL("../src/renderer/src/content-spelling-rules.ts", import.meta.url),
+      new URL("../src/shared/content-spelling-rules.ts", import.meta.url),
       "utf8",
     );
 
@@ -181,11 +210,12 @@ describe("global FBA content audit panel", () => {
     expect(source).toContain("成分未驗證");
     expect(source).toContain("CONTENT_SPELLING_DICTIONARY_VERSION");
     expect(source).toContain("CONTENT_SPELLING_DICTIONARY_LANGUAGE");
-    expect(source).toContain("GitHub Pages 共用美式英文辭典");
-    expect(source).toContain("await import(\"../content-spelling-rules\")");
-    expect(source).toContain("addPagesDictionarySpellingIssues(editableRows)");
-    expect(source).not.toContain("addPagesDictionarySpellingIssues(base.rows)");
-    expect(source).toContain("本次不會冒充已完成一般英文拼字檢查");
+    expect(source).toContain("AMZ.API 共用美式英文辭典");
+    expect(source).toContain(
+      "await import(\"../../../shared/content-spelling-metadata\")",
+    );
+    expect(source).not.toContain("addPagesDictionarySpellingIssues(");
+    expect(source).toContain("可匯出快照仍是唯一結果來源");
     expect(source).not.toContain("window.fbaOS.spellcheck");
     expect(dictionarySource).toContain("en_US.aff?raw");
     expect(dictionarySource).toContain("en_US.dic?raw");
@@ -203,7 +233,7 @@ describe("global FBA content audit panel", () => {
           sellerSku: "AFA12AM",
           asin: "B09S5VY2JS",
           productType: "PET_FOOD",
-          title: "Turkey Tendons",
+          title: "Trukey Tendons",
           bulletPoints: ["One"],
           ingredients: "Turkey",
           readStatus: "complete",
@@ -220,6 +250,14 @@ describe("global FBA content audit panel", () => {
               field: "bulletPoints",
               message: "目前只有 1 個非空白賣點，少於 5 個。",
             },
+            {
+              kind: "SUSPECTED_TYPO",
+              field: "title",
+              token: "Trukey",
+              suggestion: "Turkey",
+              source: "pages-dictionary",
+              message: "標題疑似有錯字「Trukey」，可檢查是否為「Turkey」。",
+            },
           ],
         },
       ],
@@ -230,6 +268,7 @@ describe("global FBA content audit panel", () => {
         marketplaceId="ATVPDKIKX0DER"
         marketplaceShort="US"
         onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
           filter: "all",
@@ -248,6 +287,10 @@ describe("global FBA content audit panel", () => {
     expect(markup).not.toContain("本次錯誤原因");
     expect(markup).toContain('aria-label="待修原因"');
     expect(occurrenceCount(markup, "目前只有 1 個非空白賣點，少於 5 個。")).toBe(1);
+    expect(occurrenceCount(
+      markup,
+      "標題疑似有錯字「Trukey」，可檢查是否為「Turkey」。",
+    )).toBe(1);
     expect(markup).toContain('class="kind-missing_bullets"');
     expect(markup).toContain("完整編輯");
     expect(snapshot.exportId).toBe("content-audit-export-001");
@@ -261,7 +304,7 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("先預覽 Excel 變更（不寫入）");
     expect(markup).toContain("Touch ID／Windows Hello");
     expect(markup).toContain("若任一筆結果不明會停止後續且不盲目重送");
-    expect(markup.indexOf("Amazon 唯讀＋GitHub Pages 共用英文辭典")).toBeLessThan(
+    expect(markup.indexOf("Amazon 唯讀＋AMZ.API 共用英文辭典")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
     );
     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
@@ -593,6 +636,7 @@ describe("global FBA content audit panel", () => {
         marketplaceId="ATVPDKIKX0DER"
         marketplaceShort="US"
         onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
           filter: "TITLE_BELOW_TARGET",
@@ -645,6 +689,7 @@ describe("global FBA content audit panel", () => {
         marketplaceId="ATVPDKIKX0DER"
         marketplaceShort="US"
         onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
           filter: "all",
@@ -685,6 +730,7 @@ describe("global FBA content audit panel", () => {
         marketplaceId="ATVPDKIKX0DER"
         marketplaceShort="US"
         onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
           filter: "all",
@@ -1189,6 +1235,7 @@ describe("global FBA content audit panel", () => {
         marketplaceId="ATVPDKIKX0DER"
         marketplaceShort="US"
         onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
           filter: "all",
@@ -1276,6 +1323,7 @@ describe("global FBA content audit panel", () => {
         marketplaceId="ATVPDKIKX0DER"
         marketplaceShort="US"
         onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
           filter: "all",

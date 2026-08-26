@@ -1,7 +1,8 @@
 # Vendored cross-platform spellchecker
 
-These files are renderer-only assets used by the GitHub Pages content audit.
-They do not run in the Notebook Key main or preload process.
+These shared assets run only inside the trusted Notebook Key main process to
+build the content-audit snapshot. The renderer receives the resulting issues
+and lightweight version metadata; it does not execute a second spellcheck.
 
 - `nspell-2.1.5.js`: browser ESM bundle of
   [`nspell@2.1.5`](https://www.npmjs.com/package/nspell/v/2.1.5) and its
@@ -17,5 +18,5 @@ They do not run in the Notebook Key main or preload process.
 
 The complete upstream notices are preserved in
 `src/renderer/public/licenses/spellcheck/`; Vite copies that directory into
-the published Pages artifact. Update the version, hashes, assets, notices,
-and spelling regressions together.
+the Pages artifact and packaged Notebook Key output. Update the version,
+hashes, assets, notices, metadata, and spelling regressions together.

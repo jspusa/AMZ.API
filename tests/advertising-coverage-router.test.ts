@@ -1,8 +1,13 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdvertisingGateway } from "../src/main/amazon/ads-api";
+import type { ReportsAdapter } from "../src/main/amazon/reports-runtime";
+import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
-import type { LocalStore } from "../src/main/local-store";
+import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const previousMode = process.env.SP_API_MODE;
@@ -29,17 +34,25 @@ function useLiveSpMode(): void {
 }
 
 describe("advertising coverage route boundary", () => {
-  const router = new ApiRouter({
-    store: {} as LocalStore,
-    vault: {} as CredentialVault,
-    approveWrite: async () => undefined,
-  });
+  let store: LocalStore;
+  let router: ApiRouter;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
+    const directory = await mkdtemp(join(tmpdir(), "amz-ad-coverage-router-"));
+    store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    router = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "demo-account-scope",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
   });
 
   afterEach(() => {
+    router.dispose();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
     if (previousClientId === undefined) delete process.env.SP_API_LWA_CLIENT_ID;
@@ -93,8 +106,10 @@ describe("advertising coverage route boundary", () => {
       invalidate: vi.fn(),
     };
     const demoRouter = new ApiRouter({
-      store: {} as LocalStore,
-      vault: {} as CredentialVault,
+      store,
+      vault: {
+        getAccountScope: async () => "demo-account-scope",
+      } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       advertising,
     });
@@ -131,8 +146,10 @@ describe("advertising coverage route boundary", () => {
       invalidate: vi.fn(),
     };
     const liveRouter = new ApiRouter({
-      store: {} as LocalStore,
-      vault: {} as CredentialVault,
+      store,
+      vault: {
+        getAccountScope: async () => "live-account-scope",
+      } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       advertising,
     });
@@ -149,5 +166,137 @@ describe("advertising coverage route boundary", () => {
       writeEnabled: false,
       coverageAuditAvailable: true,
     });
+  });
+
+  it("does not turn the legacy coverage data GET into a report create or retry", async () => {
+    useLiveSpMode();
+    const advertising: AdvertisingGateway = {
+      getCredentialSummary: vi.fn(async () => ({
+        encryptionAvailable: true,
+        hasVault: true,
+        configured: true,
+        lwaConfigured: true,
+        refreshTokenConfigured: true,
+        oauthRegion: "na" as const,
+        updatedAt: "2026-08-25T00:00:00.000Z",
+      })),
+      probeMarketplace: vi.fn(),
+      listEnabledSponsoredProductCampaigns: vi.fn(async () => []),
+      invalidate: vi.fn(),
+    };
+    const create = vi.fn<ReportsAdapter["create"]>(async (request) => {
+      const { operation: _operation, signal: _signal, ...identity } = request;
+      return {
+        identity,
+        mode: "live",
+        ready: false,
+        reportId: "must-not-be-created",
+        documentId: null,
+        status: "IN_QUEUE",
+        notice: "pending",
+      };
+    });
+    const reportsAdapter: ReportsAdapter = {
+      create,
+      status: vi.fn<ReportsAdapter["status"]>(async (request) => {
+        const {
+          operation: _operation,
+          reportId,
+          signal: _signal,
+          ...identity
+        } = request;
+        return {
+          identity,
+          mode: "live",
+          ready: false,
+          reportId,
+          documentId: null,
+          status: "IN_QUEUE",
+          notice: "pending",
+        };
+      }),
+      readDocument: vi.fn(async () => {
+        throw new Error("A missing lease must not be downloaded.");
+      }),
+    };
+    const liveRouter = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "live-account-scope",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      advertising,
+      reportsAdapter,
+    });
+
+    const coverage = await liveRouter.handle(request("/api/amazon-ads/coverage"));
+
+    expect(coverage.status).toBe(409);
+    expect(coverage.body.kind).toBe("json");
+    if (coverage.body.kind !== "json") throw new Error("Expected problem JSON");
+    expect(coverage.body.value).toMatchObject({ code: "REPORT_NOT_READY" });
+    expect(create).not.toHaveBeenCalled();
+    expect(reportsAdapter.status).not.toHaveBeenCalled();
+    expect(reportsAdapter.readDocument).not.toHaveBeenCalled();
+    expect(advertising.listEnabledSponsoredProductCampaigns).not.toHaveBeenCalled();
+    liveRouter.dispose();
+  });
+
+  it("fails closed when the account context changes during an Ads status read", async () => {
+    useLiveSpMode();
+    let accountScope = "ads-status-account-a";
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    let releaseSummary!: () => void;
+    const summaryReleased = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const advertising: AdvertisingGateway = {
+      getCredentialSummary: vi.fn(async () => {
+        signalStarted();
+        await summaryReleased;
+        return {
+          encryptionAvailable: true,
+          hasVault: true,
+          configured: true,
+          lwaConfigured: true,
+          refreshTokenConfigured: true,
+          oauthRegion: "na" as const,
+          updatedAt: "2026-08-25T00:00:00.000Z",
+        };
+      }),
+      probeMarketplace: vi.fn(),
+      listEnabledSponsoredProductCampaigns: vi.fn(),
+      invalidate: vi.fn(),
+    };
+    const liveRouter = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => accountScope,
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      advertising,
+      spExecutionContext: createScriptedSpExecutionContextAdapter(() => ({
+        marketplaceId: MARKETPLACE_ID,
+        mode: "live",
+        accountScope,
+      })),
+    });
+
+    const responsePromise = liveRouter.handle(request("/api/amazon-ads/status"));
+    await started;
+    accountScope = "ads-status-account-b";
+    releaseSummary();
+
+    const response = await responsePromise;
+    expect(response.status).toBe(409);
+    expect(response.body.kind).toBe("json");
+    if (response.body.kind !== "json") throw new Error("Expected problem JSON");
+    expect(response.body.value).toMatchObject({ code: "ACCOUNT_SCOPE_CHANGED" });
+    expect(advertising.probeMarketplace).not.toHaveBeenCalled();
+    expect(advertising.invalidate).toHaveBeenCalledOnce();
+    liveRouter.dispose();
   });
 });

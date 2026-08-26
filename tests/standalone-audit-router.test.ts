@@ -7,6 +7,14 @@ import { strFromU8, unzipSync } from "fflate";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
+import {
+  StandaloneAuditCoordinator,
+  type StandaloneAuditCoordinatorPort,
+} from "../src/main/standalone-audit-coordinator";
+import { createScriptedSpExecutionContextAdapter } from
+  "../src/main/amazon/sp-execution-context";
+import { StandaloneAuditJobCoordinatorError } from
+  "../src/main/amazon/standalone-audit-job";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER";
@@ -61,68 +69,121 @@ describe("main-owned standalone audit route", () => {
     const directory = await mkdtemp(join(tmpdir(), "standalone-audit-router-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
+    const spExecutionContext = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope,
+      }),
+    );
+    const fixtureContext = await spExecutionContext.capture(US);
+    const businessPricingSnapshot = {
+      kind: "businessPricing",
+      mode: "demo",
+      marketplaceId: US,
+      fetchedAt: "2026-08-23T10:00:00.000Z",
+      rows: [{
+        sellerSku: "MAIN-SNAPSHOT-SKU",
+        asin: "B000000001",
+        title: "Main-owned B2B snapshot",
+        productType: "PET_FOOD",
+        standardPrice: { amount: 20, currencyCode: "USD" },
+        businessPrice: { amount: 17.5, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "absent",
+        recommendedPriceMismatch: true,
+        recommendedQuantityDiscountMismatch: true,
+        status: "configured",
+        editable: false,
+        reason: "Main process evidence.",
+      }],
+      summary: {
+        totalFbaSkuCount: 1,
+        configured: 1,
+        aboveStandard: 0,
+        missing: 0,
+        unsupported: 0,
+        incomplete: 0,
+        recommendedPriceMismatch: 1,
+        recommendedQuantityDiscountMismatch: 1,
+      },
+      notice: "Main-owned fixture.",
+    };
+    const standaloneAuditCoordinator = new StandaloneAuditCoordinator({
+      context: spExecutionContext,
+      subscription: {
+        runStandalone: async ({ marketplaceId, months }) => ({
+          kind: "subscription",
+          marketplaceId,
+          months: months ?? null,
+          offers: [],
+          rows: [],
+        } as never),
+      },
+      agedInventory: {
+        runStandalone: async ({ context }) => ({
+          kind: "agedInventory",
+          marketplaceId: context.marketplaceId,
+          rows: [],
+        } as never),
+      },
+      listingsExport: {
+        runStandalone: async () => ({
+          exportId: "11111111-1111-4111-8111-111111111111",
+          context: fixtureContext,
+          snapshot: {
+            fetchedAt: "2026-08-23T10:00:00.000Z",
+            rows: [],
+            errors: [],
+          },
+        }),
+      },
+      content: {
+        captureStandaloneFromListings: async ({ marketplaceId }) => ({
+          kind: "content",
+          marketplaceId,
+          rows: [],
+        } as never),
+      },
+      image: {
+        captureStandaloneFromListings: async ({ marketplaceId }) => ({
+          kind: "image",
+          marketplaceId,
+          rows: [],
+        } as never),
+      },
+      variation: {
+        runStandalone: async ({ marketplaceId }) => ({
+          kind: "variation",
+          marketplaceId,
+          rows: [],
+        } as never),
+      },
+      businessPricing: {
+        runStandalone: async () => businessPricingSnapshot as never,
+      },
+      advertising: {
+        runStandalone: async ({ context }) => ({
+          kind: "advertising",
+          marketplaceId: context.marketplaceId,
+          rows: [],
+        }),
+      },
+    });
     router = new ApiRouter({
       store,
       vault: {
         getAccountScope: async () => accountScope,
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      standaloneAudit: {
-        run: async ({ kind, options, context, updateProgress }) => {
-          updateProgress({
-            stage: "complete",
-            message: `${kind} 完成`,
-            completedUnits: 1,
-            totalUnits: 1,
-          });
-          if (kind === "businessPricing") {
-            return {
-              kind,
-              mode: context.mode,
-              marketplaceId: context.marketplaceId,
-              fetchedAt: "2026-08-23T10:00:00.000Z",
-              rows: [{
-                sellerSku: "MAIN-SNAPSHOT-SKU",
-                asin: "B000000001",
-                title: "Main-owned B2B snapshot",
-                productType: "PET_FOOD",
-                standardPrice: { amount: 20, currencyCode: "USD" },
-                businessPrice: { amount: 17.5, currencyCode: "USD" },
-                businessOfferPresence: "present",
-                quantityDiscountPlan: null,
-                quantityDiscountPlanPresence: "absent",
-                recommendedPriceMismatch: true,
-                recommendedQuantityDiscountMismatch: true,
-                status: "configured",
-                editable: false,
-                reason: "Main process evidence.",
-              }],
-              summary: {
-                totalFbaSkuCount: 1,
-                configured: 1,
-                aboveStandard: 0,
-                missing: 0,
-                unsupported: 0,
-                incomplete: 0,
-                recommendedPriceMismatch: 1,
-                recommendedQuantityDiscountMismatch: 1,
-              },
-              notice: "Main-owned fixture.",
-            };
-          }
-          return {
-            kind,
-            marketplaceId: context.marketplaceId,
-            months: options.months ?? null,
-            rows: [],
-          };
-        },
-      },
+      spExecutionContext,
+      standaloneAuditCoordinator,
     });
   });
 
   afterEach(() => {
-    router?.clearPreviews();
+    router?.dispose();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
   });
@@ -161,6 +222,48 @@ describe("main-owned standalone audit route", () => {
         },
       });
       expect(JSON.stringify(payload(completed))).not.toContain(accountScope);
+    }
+  });
+
+  it("keeps Amazon report and document identifiers out of the completed aged-inventory snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "standalone-aged-runtime-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const runtimeRouter = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "standalone-aged-account",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+    });
+
+    try {
+      const started = await runtimeRouter.handle(request("POST", {
+        kind: "agedInventory",
+        marketplaceId: US,
+        mode: "demo",
+      }));
+      expect(started.status).toBe(202);
+
+      const completed = await terminal(runtimeRouter, payload(started));
+      expect(completed.status).toBe(200);
+      const receipt = payload(completed);
+      expect(receipt).toMatchObject({
+        kind: "agedInventory",
+        marketplaceId: US,
+        mode: "demo",
+        ready: true,
+        status: "completed",
+        snapshot: {
+          marketplaceId: US,
+          rows: expect.any(Array),
+        },
+      });
+      expect(JSON.stringify(receipt.snapshot)).not.toMatch(
+        /reportId|documentId|signedUrl|amazonaws\.com|cloudfront\.net/u,
+      );
+    } finally {
+      runtimeRouter.dispose();
     }
   });
 
@@ -276,9 +379,76 @@ describe("main-owned standalone audit route", () => {
     });
   });
 
-  it("lets variation and B2B enrichment download the report document exactly once", () => {
-    const source = readFileSync(
+  it("sanitizes hostile standalone-job errors on the B2B workbook route", async () => {
+    const hostile = [
+      "Bearer example-access-token",
+      "accountScope=private-account",
+      "reportId=private-report",
+      "documentId=private-document",
+      "https://example.invalid/private?client_secret=example-secret",
+      "hostile-text\u202e\u0000",
+    ].join(" ");
+    const directory = await mkdtemp(join(tmpdir(), "standalone-b2b-error-"));
+    const store = new LocalStore(join(directory, "data.json"));
+    await store.initialize();
+    const standaloneAuditCoordinator: StandaloneAuditCoordinatorPort = {
+      async start() {
+        throw new Error("Standalone start must not run for B2B export.");
+      },
+      async observe() {
+        throw new Error("Standalone observe must not run for B2B export.");
+      },
+      async getJob() {
+        throw new StandaloneAuditJobCoordinatorError(hostile, {
+          status: 409,
+          code: "ACCOUNT_SCOPE_CHANGED",
+        });
+      },
+      clear() {},
+    };
+    const hostileRouter = new ApiRouter({
+      store,
+      vault: {
+        getAccountScope: async () => "standalone-b2b-error-account",
+      } as unknown as CredentialVault,
+      approveWrite: async () => undefined,
+      standaloneAuditCoordinator,
+    });
+
+    try {
+      const response = await hostileRouter.handle({
+        requestId: crypto.randomUUID(),
+        method: "GET",
+        path: "/api/sp-api/business-pricing-audit/export",
+        query: {
+          marketplaceId: US,
+          mode: "demo",
+          jobId: "11111111-1111-4111-8111-111111111111",
+          contextId: "22222222-2222-4222-8222-222222222222",
+        },
+        headers: {},
+      });
+      const serialized = JSON.stringify(response);
+      expect(response.status).toBe(409);
+      expect(payload(response)).toEqual({
+        code: "ACCOUNT_SCOPE_CHANGED",
+        message: "建立 B2B 價格健檢 Excel 時發生未預期的錯誤。",
+      });
+      expect(serialized).not.toMatch(
+        /Bearer|access.?token|client.?secret|accountScope|reportId|documentId|https?:|hostile-text|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
+      );
+    } finally {
+      hostileRouter.dispose();
+    }
+  });
+
+  it("keeps standalone orchestration on the deep owner without duplicating report lifecycle", () => {
+    const routerSource = readFileSync(
       new URL("../src/main/api-router.ts", import.meta.url),
+      "utf8",
+    );
+    const source = readFileSync(
+      new URL("../src/main/standalone-audit-coordinator.ts", import.meta.url),
       "utf8",
     );
     const variationStart = source.indexOf('if (input.kind === "variation")');
@@ -299,11 +469,22 @@ describe("main-owned standalone audit route", () => {
     expect(variationStart).toBeGreaterThan(-1);
     expect(businessPricingStart).toBeGreaterThan(variationStart);
     expect(advertisingStart).toBeGreaterThan(businessPricingStart);
-    expect(variationBranch).toContain("standaloneListingReport(input)");
-    expect(variationBranch).toContain("getUnboundVariationAuditData({");
-    expect(variationBranch).not.toContain("standaloneListings(input)");
-    expect(businessPricingBranch).toContain("standaloneListingReport(input)");
-    expect(businessPricingBranch).toContain("getBusinessPricingAuditData({");
-    expect(businessPricingBranch).not.toContain("standaloneListings(input)");
+    expect(variationBranch).toContain(
+      "this.variation.runStandalone({",
+    );
+    expect(variationBranch).not.toContain("standaloneListingReport(");
+    expect(variationBranch).not.toContain("getSharedUnboundVariationAuditData(");
+    expect(businessPricingBranch).toContain(
+      "this.businessPricing.runStandalone(input)",
+    );
+    expect(businessPricingBranch).not.toContain("standaloneListingReport(");
+    expect(businessPricingBranch).not.toContain("getSharedBusinessPricingAuditData(");
+    expect(source).toContain("new StandaloneAuditJobCoordinator({");
+    expect(source).not.toMatch(
+      /FixedReportBroker|ReportsRuntime|DurableReportLifecycle|FbaCatalogReports/u,
+    );
+    expect(routerSource).not.toMatch(
+      /runStandaloneAudit|standaloneListings|standaloneAuditJobs/u,
+    );
   });
 });

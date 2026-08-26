@@ -29,10 +29,18 @@ function jsonResponse(
   });
 }
 
+function asinForSku(sku: string): string {
+  let value = 0;
+  for (const character of sku) {
+    value = (value * 31 + character.codePointAt(0)!) % 1_000_000_000;
+  }
+  return `B${String(value).padStart(9, "0")}`;
+}
+
 function childPayload(
   sku: string,
   channel = "AMAZON_NA",
-  asin = `ASIN-${sku}`,
+  asin = asinForSku(sku),
 ) {
   return {
     sku,
@@ -79,10 +87,12 @@ function parentPayload() {
     summaries: [
       {
         marketplaceId: MARKETPLACE_ID,
+        asin: asinForSku(PARENT_SKU),
         productType: "PET_FOOD",
         itemName: "Variation parent",
       },
     ],
+    productTypes: [{ marketplaceId: MARKETPLACE_ID, productType: "PET_FOOD" }],
     attributes: {
       parentage_level: [{ value: "parent" }],
       variation_theme: [{ name: "SIZE_NAME" }],
@@ -349,6 +359,36 @@ describe("SP-API variation family wire contract", () => {
         sellerSku: SOURCE_SKU,
       }),
     ).rejects.toMatchObject({ status: 422, code: "FBA_ONLY" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed before family follow-ups when Amazon returns another Seller SKU", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(
+          200,
+          { access_token: "FAKE_ACCESS", expires_in: 3_600 },
+          "TOKEN-REQUEST",
+        );
+      }
+      const payload = childPayload(
+        SOURCE_SKU,
+        "AMAZON_NA",
+        "B000000001",
+      );
+      payload.sku = "OTHER-SKU";
+      return jsonResponse(200, payload, "WRONG-SKU");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getVariationFamilyPlanner({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SOURCE_SKU,
+    })).rejects.toMatchObject({
+      status: 409,
+      code: "LISTING_IDENTITY_MISMATCH",
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

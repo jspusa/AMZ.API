@@ -6,7 +6,7 @@ import {
 import type {
   BusinessPricingAuditRow,
   BusinessPricingAuditSnapshot,
-} from "./sp-api";
+} from "./catalog-report-reads";
 
 const XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
 const MAX_CELL_CHARACTERS = 32_767;

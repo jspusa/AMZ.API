@@ -1,13 +1,121 @@
 import { describe, expect, it } from "vitest";
 import {
+  AplusContentReads,
   buildAplusAuditSeedsFromFbaGrouping,
-  runAplusAudit,
-  type AplusContentDocumentRelationFetchInput,
-  type AplusPublishRecordFetchInput,
-} from "../src/main/amazon/a-plus-audit";
+  type AplusAuditProgress,
+  type AplusAuditSeed,
+  type AplusAuditSnapshot,
+  type AplusContentPageAdapter,
+} from "../src/main/amazon/a-plus-content-reads";
+import { createScriptedSpExecutionContextAdapter } from
+  "../src/main/amazon/sp-execution-context";
 import { parseAplusAuditSnapshot } from "../src/renderer/src/a-plus-audit";
 
-const MARKETPLACE_ID = "ATVPDKIKX0DER";
+const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
+
+type AplusPublishRecordFetchInput = Readonly<{
+  marketplaceId: string;
+  asin: string;
+  pageToken?: string;
+  signal?: AbortSignal;
+}>;
+
+type AplusContentDocumentFetchInput = Readonly<{
+  marketplaceId: string;
+  pageToken?: string;
+  signal?: AbortSignal;
+}>;
+
+type AplusContentDocumentRelationFetchInput = Readonly<{
+  marketplaceId: string;
+  contentReferenceKey: string;
+  pageToken?: string;
+  signal?: AbortSignal;
+}>;
+
+type LegacyPageResult = Readonly<{
+  status: number;
+  payload: unknown;
+  requestId?: string | null;
+}>;
+
+async function runAplusAudit(input: Readonly<{
+  mode: "live" | "demo";
+  marketplaceId: typeof MARKETPLACE_ID;
+  fetchedAt: string;
+  fbaSnapshotId: string;
+  rows: readonly AplusAuditSeed[];
+  fetchPublishRecords(
+    request: AplusPublishRecordFetchInput,
+  ): Promise<LegacyPageResult>;
+  fetchContentDocuments?(
+    request: AplusContentDocumentFetchInput,
+  ): Promise<LegacyPageResult>;
+  fetchContentDocumentAsinRelations?(
+    request: AplusContentDocumentRelationFetchInput,
+  ): Promise<LegacyPageResult>;
+  signal?: AbortSignal;
+  onProgress?: (
+    progress: AplusAuditProgress,
+  ) => void | Promise<void>;
+}>): Promise<AplusAuditSnapshot> {
+  const context = createScriptedSpExecutionContextAdapter(() => ({
+    marketplaceId: input.marketplaceId,
+    mode: input.mode,
+    accountScope: "a-plus-content-reads-test",
+  }));
+  const expectedContext = await context.capture(input.marketplaceId);
+  const adapter: AplusContentPageAdapter = {
+    async read(plan) {
+      let result: LegacyPageResult;
+      if (plan.operation === "publish-records") {
+        result = await input.fetchPublishRecords({
+          marketplaceId: plan.marketplaceId,
+          asin: plan.asin,
+          pageToken: plan.pageToken,
+          signal: plan.signal,
+        });
+      } else if (
+        plan.operation === "content-documents" &&
+        input.fetchContentDocuments &&
+        input.fetchContentDocumentAsinRelations
+      ) {
+        result = await input.fetchContentDocuments({
+          marketplaceId: plan.marketplaceId,
+          pageToken: plan.pageToken,
+          signal: plan.signal,
+        });
+      } else if (
+        plan.operation === "document-relations" &&
+        input.fetchContentDocuments &&
+        input.fetchContentDocumentAsinRelations
+      ) {
+        result = await input.fetchContentDocumentAsinRelations({
+          marketplaceId: plan.marketplaceId,
+          contentReferenceKey: plan.contentReferenceKey,
+          pageToken: plan.pageToken,
+          signal: plan.signal,
+        });
+      } else {
+        result = { status: 403, payload: null };
+      }
+      return { ...result, requestId: result.requestId ?? null };
+    },
+  };
+  return new AplusContentReads({
+    context,
+    live: adapter,
+    demo: adapter,
+  }).read({
+    marketplaceId: input.marketplaceId,
+    expectedContext,
+    fetchedAt: input.fetchedAt,
+    fbaSnapshotId: input.fbaSnapshotId,
+    rows: input.rows,
+    signal: input.signal,
+    onProgress: input.onProgress,
+  });
+}
 
 describe("A+ FBA audit core", () => {
   it("uses exact document relations for relationship-incomplete FBA ASINs without direct publish queries", async () => {

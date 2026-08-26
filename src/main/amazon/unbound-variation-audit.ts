@@ -137,7 +137,10 @@ function isRelationshipEntry(value: unknown): value is Record<string, unknown> {
   return [parentSkus, childSkus].every(
     (skus) =>
       skus === undefined ||
-      (Array.isArray(skus) && skus.length > 0 && skus.every(isExactIdentifier)),
+      (Array.isArray(skus) &&
+        skus.length > 0 &&
+        skus.every(isExactIdentifier) &&
+        new Set(skus).size === skus.length),
   );
 }
 
@@ -205,7 +208,33 @@ export function classifyUnboundVariationEvidence(
         : "Amazon 同時回傳多個目前站點的 relationships 群組，無法唯一判定。",
     };
   }
-  if (input.role === "parent") return { kind: "parent-container" };
-  if (input.role === "child") return { kind: "bound-child" };
+  const relationshipEntries = relevantGroups.flatMap((group) =>
+    group.relationships as Record<string, unknown>[]
+  );
+  const parentSkus = new Set(
+    relationshipEntries.flatMap((relationship) =>
+      Array.isArray(relationship.parentSkus)
+        ? relationship.parentSkus as string[]
+        : []
+    ),
+  );
+  const childSkus = new Set(
+    relationshipEntries.flatMap((relationship) =>
+      Array.isArray(relationship.childSkus)
+        ? relationship.childSkus as string[]
+        : []
+    ),
+  );
+  if (parentSkus.size > 1 || (parentSkus.size > 0 && childSkus.size > 0)) {
+    return invalidRelationshipResponse();
+  }
+  const relationshipRole = parentSkus.size > 0
+    ? "child"
+    : childSkus.size > 0
+      ? "parent"
+      : "standalone";
+  if (input.role !== relationshipRole) return invalidRelationshipResponse();
+  if (relationshipRole === "parent") return { kind: "parent-container" };
+  if (relationshipRole === "child") return { kind: "bound-child" };
   return { kind: "unbound" };
 }

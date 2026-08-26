@@ -2,18 +2,27 @@ import { createHash } from "node:crypto";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createContentAuditWorkbookV2 } from "../src/main/amazon/xlsx";
+import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import { SpApiError } from "../src/main/amazon/sp-api";
+import {
+  createScriptedSpExecutionContextAdapter,
+  SpExecutionContextError,
+  type SpExecutionContextAdapter,
+} from
+  "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type {
   ContentAuditSnapshotEvidence,
   ContentAuditSnapshotEvidenceInput,
   LocalStore,
+  SharedReportLease,
 } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const ACCOUNT_SCOPE = "a".repeat(64);
+const REPORT_LEASE_ID = "content-audit-batch-router";
 const MEDIA_TYPE =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
@@ -44,18 +53,57 @@ type AuditReply = {
   }>;
 };
 
-function auditRequest(): ApiRequest {
+function auditRequest(reportId: string, documentId: string): ApiRequest {
   return {
     requestId: "content-batch-audit-001",
     method: "GET",
     path: "/api/sp-api/listing-content/export",
     query: {
       marketplaceId: MARKETPLACE_ID,
-      reportId: `demo-${MARKETPLACE_ID}`,
-      documentId: `demo-${MARKETPLACE_ID}`,
+      reportId,
+      documentId,
       audit: "1",
     },
     headers: {},
+  };
+}
+
+async function issuedAllListingsHandles(router: ApiRouter): Promise<{
+  reportId: string;
+  documentId: string;
+}> {
+  const broker = (router as unknown as { reportBroker: FixedReportBroker })
+    .reportBroker;
+  const leg = await broker.projectDurableLeg({
+    intent: "all-listings",
+    marketplaceId: MARKETPLACE_ID,
+  });
+  if (!leg?.reportId || !leg.documentId) {
+    throw new Error("Expected broker-issued completed All Listings handles");
+  }
+  return { reportId: leg.reportId, documentId: leg.documentId };
+}
+
+function completedAllListingsLease(): SharedReportLease {
+  const now = Date.now();
+  return {
+    leaseId: REPORT_LEASE_ID,
+    accountScope: ACCOUNT_SCOPE,
+    marketplaceId: MARKETPLACE_ID,
+    mode: "demo",
+    reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+    optionsKey: "preferredReportDocumentLocale=en_US",
+    report: {
+      reportId: "synthetic-all-listings-report",
+      documentId: "synthetic-all-listings-document",
+      status: "DONE",
+      createdAt: now,
+      terminal: null,
+      terminalAt: null,
+    },
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: Number.MAX_SAFE_INTEGER,
   };
 }
 
@@ -254,33 +302,40 @@ describe("content audit Excel batch router", () => {
     }
     return { status: "available" as const, evidence: structuredClone(evidence) };
   });
-  const router = new ApiRouter({
+  const createRouter = () => new ApiRouter({
     store: {
       assertIdempotentOperationsAvailable,
       runIdempotentOperation,
       saveContentAuditSnapshotEvidence,
       getContentAuditSnapshotEvidence,
+      getSharedReport: vi.fn(async () => completedAllListingsLease()),
     } as unknown as LocalStore,
     vault: {
       getAccountScope: async () => ACCOUNT_SCOPE,
     } as unknown as CredentialVault,
     approveWrite,
   });
+  let router: ApiRouter;
+  let reportHandle: string;
+  let documentHandle: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
-    router.clearPreviews();
     contentAuditEvidence.clear();
     approveWrite.mockClear();
     assertIdempotentOperationsAvailable.mockClear();
     runIdempotentOperation.mockClear();
     saveContentAuditSnapshotEvidence.mockClear();
     getContentAuditSnapshotEvidence.mockClear();
+    router = createRouter();
+    ({ reportId: reportHandle, documentId: documentHandle } =
+      await issuedAllListingsHandles(router));
   });
 
   afterEach(() => {
+    router.dispose();
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
@@ -290,7 +345,7 @@ describe("content audit Excel batch router", () => {
   });
 
   async function audit(): Promise<AuditReply> {
-    const response = await router.handle(auditRequest());
+    const response = await router.handle(auditRequest(reportHandle, documentHandle));
     expect(response.status).toBe(200);
     return responseValue(response) as unknown as AuditReply;
   }
@@ -580,5 +635,135 @@ describe("content audit Excel batch router", () => {
     const repeated = await router.handle(commitRequest(previewId, key));
     expect(responseValue(repeated)).toEqual(responseValue(response));
     expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops before the next SKU when the router context is invalidated mid-batch", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(workbook(snapshot, 3));
+    const key = "content-batch-context-fence-001";
+    const contextRouter = new ApiRouter({
+      store: {
+        assertIdempotentOperationsAvailable,
+        runIdempotentOperation,
+        saveContentAuditSnapshotEvidence,
+        getContentAuditSnapshotEvidence,
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: {} as CredentialVault,
+      approveWrite,
+      spExecutionContext: createScriptedSpExecutionContextAdapter(
+        (marketplaceId) => ({
+          marketplaceId,
+          mode: "demo",
+          accountScope: ACCOUNT_SCOPE,
+        }),
+      ),
+    });
+    const preview = await contextRouter.handle(importRequest(edited, key));
+    expect(preview.status).toBe(200);
+    const previewId = String(responseValue(preview).previewId);
+    let enterFirstRow!: () => void;
+    const firstRowEntered = new Promise<void>((resolve) => {
+      enterFirstRow = resolve;
+    });
+    let releaseFirstRow!: () => void;
+    const firstRowReleased = new Promise<void>((resolve) => {
+      releaseFirstRow = resolve;
+    });
+    runIdempotentOperation.mockImplementationOnce(async () => {
+      enterFirstRow();
+      await firstRowReleased;
+      return {
+        mode: "demo",
+        status: "SIMULATED",
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: "first",
+      };
+    });
+
+    const pending = contextRouter.handle(commitRequest(previewId, key));
+    await firstRowEntered;
+    contextRouter.invalidateContext("lock-screen");
+    releaseFirstRow();
+    const response = await pending;
+
+    expect(response.status).toBe(409);
+    expect(responseValue(response)).toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    expect(runIdempotentOperation).toHaveBeenCalledOnce();
+    const repeated = await contextRouter.handle(commitRequest(previewId, key));
+    expect(repeated.status).toBe(410);
+    expect(runIdempotentOperation).toHaveBeenCalledOnce();
+    contextRouter.dispose();
+  });
+
+  it("preserves the canonical context error before native batch approval", async () => {
+    let assertions = 0;
+    let armed = false;
+    const context = Object.freeze({
+      marketplaceId: MARKETPLACE_ID,
+      region: "na" as const,
+      mode: "demo" as const,
+      accountScope: ACCOUNT_SCOPE as never,
+      generation: 0,
+    });
+    const spExecutionContext = {
+      capture: vi.fn(async () => context),
+      assertCurrent: vi.fn(async () => {
+        assertions += 1;
+        if (armed && assertions === 3) {
+          throw new SpExecutionContextError(
+            "SP_CONTEXT_INVALIDATED",
+            "Amazon 執行環境已更新；請重新開始這次操作。",
+          );
+        }
+      }),
+      invalidate: vi.fn(),
+    } satisfies SpExecutionContextAdapter;
+    const contextRouter = new ApiRouter({
+      store: {
+        assertIdempotentOperationsAvailable,
+        runIdempotentOperation,
+        saveContentAuditSnapshotEvidence,
+        getContentAuditSnapshotEvidence,
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: {} as CredentialVault,
+      approveWrite,
+      spExecutionContext,
+    });
+    const contextHandles = await issuedAllListingsHandles(contextRouter);
+    const snapshot = await (async (): Promise<AuditReply> => {
+      const response = await contextRouter.handle(auditRequest(
+        contextHandles.reportId,
+        contextHandles.documentId,
+      ));
+      expect(response.status).toBe(200);
+      return responseValue(response) as unknown as AuditReply;
+    })();
+    const key = "content-batch-pre-approval-context-001";
+    const preview = await contextRouter.handle(importRequest(
+      replaceCell(workbook(snapshot), "E2", "Context-safe title"),
+      key,
+    ));
+    expect(preview.status).toBe(200);
+    assertions = 0;
+    armed = true;
+
+    const response = await contextRouter.handle(commitRequest(
+      String(responseValue(preview).previewId),
+      key,
+    ));
+
+    expect(response.status).toBe(409);
+    expect(responseValue(response)).toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+      message: "Amazon 執行環境已更新；請重新開始這次操作。",
+    });
+    expect(responseValue(response)).not.toMatchObject({ code: "ACTION_CANCELLED" });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+    contextRouter.dispose();
   });
 });

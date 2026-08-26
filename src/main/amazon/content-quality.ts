@@ -27,6 +27,7 @@ export type ContentQualityIssue = {
   message: string;
   token?: string;
   suggestion?: string;
+  source?: "amazon-content" | "pages-dictionary";
   bulletIndex?: number;
   actualLength?: number;
   minLength?: number;
@@ -308,15 +309,51 @@ function auditRow(source: ContentQualitySourceRow): ContentQualityRow {
   };
 }
 
+export function summarizeContentQualityRows(
+  rows: readonly ContentQualityRow[],
+): ContentQualitySummary {
+  const rowHas = (row: ContentQualityRow, kind: ContentQualityIssueKind) =>
+    row.issues.some((issue) => issue.kind === kind);
+  return {
+    total: rows.length,
+    completed: rows.filter((row) => row.readStatus === "complete").length,
+    incomplete: rows.filter((row) => row.readStatus === "incomplete").length,
+    withIssues: rows.filter((row) => row.issues.length > 0).length,
+    suspectedTypos: rows.filter((row) => rowHas(row, "SUSPECTED_TYPO")).length,
+    missingBullets: rows.filter((row) => rowHas(row, "MISSING_BULLETS")).length,
+    missingIngredients: rows.filter((row) =>
+      rowHas(row, "MISSING_INGREDIENTS"),
+    ).length,
+    ingredientsUnverified: rows.filter((row) =>
+      rowHas(row, "INGREDIENTS_UNVERIFIED"),
+    ).length,
+    titleBelowTarget: rows.filter((row) =>
+      rowHas(row, "TITLE_BELOW_TARGET"),
+    ).length,
+    highlightBelowTarget: rows.filter((row) =>
+      rowHas(row, "HIGHLIGHT_BELOW_TARGET"),
+    ).length,
+    bulletBelowTarget: rows.filter((row) =>
+      rowHas(row, "BULLET_BELOW_TARGET"),
+    ).length,
+    bulletAboveTarget: rows.filter((row) =>
+      rowHas(row, "BULLET_ABOVE_TARGET"),
+    ).length,
+    descriptionBelowTarget: rows.filter((row) =>
+      rowHas(row, "DESCRIPTION_BELOW_TARGET"),
+    ).length,
+    singleIngredientMismatch: rows.filter((row) =>
+      rowHas(row, "SINGLE_INGREDIENT_MISMATCH"),
+    ).length,
+  };
+}
+
 export function auditListingContentRows(input: {
   marketplaceId: string;
   fetchedAt: string;
   rows: readonly ContentQualitySourceRow[];
 }): ContentQualityAudit {
   const rows = input.rows.map(auditRow);
-  const rowHas = (row: ContentQualityRow, kind: ContentQualityIssueKind) =>
-    row.issues.some((issue) => issue.kind === kind);
-
   return {
     marketplaceId: input.marketplaceId,
     fetchedAt: input.fetchedAt,
@@ -327,37 +364,6 @@ export function auditListingContentRows(input: {
         ...error,
       })),
     ),
-    summary: {
-      total: rows.length,
-      completed: rows.filter((row) => row.readStatus === "complete").length,
-      incomplete: rows.filter((row) => row.readStatus === "incomplete").length,
-      withIssues: rows.filter((row) => row.issues.length > 0).length,
-      suspectedTypos: rows.filter((row) => rowHas(row, "SUSPECTED_TYPO")).length,
-      missingBullets: rows.filter((row) => rowHas(row, "MISSING_BULLETS")).length,
-      missingIngredients: rows.filter((row) =>
-        rowHas(row, "MISSING_INGREDIENTS"),
-      ).length,
-      ingredientsUnverified: rows.filter((row) =>
-        rowHas(row, "INGREDIENTS_UNVERIFIED"),
-      ).length,
-      titleBelowTarget: rows.filter((row) =>
-        rowHas(row, "TITLE_BELOW_TARGET"),
-      ).length,
-      highlightBelowTarget: rows.filter((row) =>
-        rowHas(row, "HIGHLIGHT_BELOW_TARGET"),
-      ).length,
-      bulletBelowTarget: rows.filter((row) =>
-        rowHas(row, "BULLET_BELOW_TARGET"),
-      ).length,
-      bulletAboveTarget: rows.filter((row) =>
-        rowHas(row, "BULLET_ABOVE_TARGET"),
-      ).length,
-      descriptionBelowTarget: rows.filter((row) =>
-        rowHas(row, "DESCRIPTION_BELOW_TARGET"),
-      ).length,
-      singleIngredientMismatch: rows.filter((row) =>
-        rowHas(row, "SINGLE_INGREDIENT_MISMATCH"),
-      ).length,
-    },
+    summary: summarizeContentQualityRows(rows),
   };
 }

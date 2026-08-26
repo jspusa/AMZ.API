@@ -2,17 +2,18 @@ import { randomUUID } from "node:crypto";
 import {
   AUDIT_SUITE_SCHEMA_VERSION,
   AUDIT_SUITE_SECTION_IDS,
-  type AuditSuiteContext,
   type AuditSuiteMode,
   type AuditSuiteRunDto,
   type AuditSuiteRunStatus,
   type AuditSuiteSectionId,
   type AuditSuiteSectionProgress,
 } from "../../shared/audit-suite";
+import type { AuditSuiteContext } from "./audit-suite-context";
 import type {
   AuditSuiteWorkbookInput,
   ValidatedAuditSuiteSnapshot,
 } from "./audit-suite-xlsx";
+import { publicSpApiError, SpApiError } from "./sp-api-error";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
 
@@ -98,13 +99,167 @@ function aggregateStatus(
 }
 
 function safeFailureNotice(error: unknown): string {
+  const fallback = "此項健檢未能建立可核對快照。";
   const message = error instanceof Error
     ? error.message
     : typeof error === "string"
       ? error
-      : "此項健檢未能建立可核對快照。";
-  const normalized = message.replace(/[\u0000-\u001f\u007f]/gu, " ").trim().slice(0, 1_500);
-  return normalized || "此項健檢未能建立可核對快照。";
+      : fallback;
+  return safeSnapshotText(
+    error instanceof SpApiError ? error.message : message,
+    fallback,
+  ) || fallback;
+}
+
+function safeSnapshotText(
+  value: unknown,
+  fallback = "此欄位含不可公開資訊，已隱藏。",
+): string {
+  if (value === "") return "";
+  const message = typeof value === "string" ? value : fallback;
+  const normalized = publicSpApiError(
+    new SpApiError(message),
+    fallback,
+  ).message.trim().slice(0, 1_500);
+  return normalized || fallback;
+}
+
+type SnapshotPayload<K extends AuditSuiteSectionId> = Extract<
+  SnapshotFor<K>,
+  Readonly<{ status: "completed" | "partial" }>
+>["payload"];
+
+function sanitizeSnapshotPayload(
+  id: AuditSuiteSectionId,
+  payload: unknown,
+): unknown {
+  if (!Array.isArray(payload)) {
+    throw new Error("此項健檢未能建立可核對快照。");
+  }
+  switch (id) {
+    case "content": {
+      const rows = payload as SnapshotPayload<"content">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        problemType: safeSnapshotText(row.problemType),
+        field: safeSnapshotText(row.field),
+        originalText: row.originalText,
+        description: safeSnapshotText(row.description),
+      }));
+    }
+    case "image": {
+      const rows = payload as SnapshotPayload<"image">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        imageCount: row.imageCount,
+        finding: safeSnapshotText(row.finding),
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "aplus": {
+      const rows = payload as SnapshotPayload<"aplus">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        finding: safeSnapshotText(row.finding),
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "variation": {
+      const rows = payload as SnapshotPayload<"variation">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        productType: row.productType,
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "subscription": {
+      const rows = payload as SnapshotPayload<"subscription">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        anomaly: safeSnapshotText(row.anomaly),
+        sellerFundedBaseDiscountPercent:
+          row.sellerFundedBaseDiscountPercent,
+        currentActiveSubscriptions: row.currentActiveSubscriptions,
+        currentPrice: row.currentPrice,
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "businessPricing": {
+      const rows = payload as SnapshotPayload<"businessPricing">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        standardPrice: row.standardPrice,
+        businessPrice: row.businessPrice,
+        currencyCode: row.currencyCode,
+        finding: safeSnapshotText(row.finding),
+        editable: row.editable,
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+    case "advertising": {
+      const rows = payload as SnapshotPayload<"advertising">;
+      return rows.map((row) => ({
+        sellerSku: row.sellerSku,
+        title: row.title,
+        asin: row.asin,
+        finding: safeSnapshotText(row.finding),
+        evidence: safeSnapshotText(row.evidence),
+        notice: safeSnapshotText(row.notice),
+      }));
+    }
+  }
+}
+
+function sanitizeSnapshot<K extends AuditSuiteSectionId>(
+  id: K,
+  snapshot: SnapshotFor<K>,
+): SnapshotFor<K> {
+  if (
+    snapshot.status !== "completed" &&
+    snapshot.status !== "partial" &&
+    snapshot.status !== "failed"
+  ) {
+    throw new Error("此項健檢未能建立可核對快照。");
+  }
+  const notice = safeSnapshotText(snapshot.notice);
+  const context = {
+    runId: snapshot.runId,
+    marketplaceId: snapshot.marketplaceId,
+    accountScope: snapshot.accountScope,
+    generation: snapshot.generation,
+    mode: snapshot.mode,
+  };
+  if (snapshot.status === "failed") {
+    return {
+      ...context,
+      status: "failed",
+      fetchedAt: null,
+      notice: notice || "此項健檢未能建立可核對快照。",
+      payload: null,
+    } as SnapshotFor<K>;
+  }
+  if (typeof snapshot.fetchedAt !== "string" || !snapshot.fetchedAt) {
+    throw new Error("此項健檢未能建立可核對快照。");
+  }
+  return {
+    ...context,
+    status: snapshot.status,
+    fetchedAt: snapshot.fetchedAt,
+    notice,
+    payload: sanitizeSnapshotPayload(id, snapshot.payload),
+  } as unknown as SnapshotFor<K>;
 }
 
 export class AuditSuiteCoordinator {
@@ -127,12 +282,14 @@ export class AuditSuiteCoordinator {
   start(input: {
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
   }): { run: AuditSuiteRunDto; reused: boolean } {
     this.prune();
     const existing = [...this.jobs.values()].find((job) =>
       job.context.marketplaceId === input.marketplaceId &&
       job.context.accountScope === input.accountScope &&
+      job.context.generation === input.generation &&
       job.context.mode === input.mode &&
       !terminal(aggregateStatus(job.progress)),
     );
@@ -157,6 +314,7 @@ export class AuditSuiteCoordinator {
         runId,
         marketplaceId: input.marketplaceId,
         accountScope: input.accountScope,
+        generation: input.generation,
         mode: input.mode,
       },
       contextId,
@@ -184,6 +342,7 @@ export class AuditSuiteCoordinator {
     contextId: string;
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
   }): AuditSuiteRunDto {
     return this.dto(this.authorize(input));
@@ -194,6 +353,7 @@ export class AuditSuiteCoordinator {
     contextId: string;
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
     marketplaceLabel: string;
     generatedAt?: string | Date;
@@ -219,6 +379,7 @@ export class AuditSuiteCoordinator {
     contextId: string;
     marketplaceId: string;
     accountScope: string;
+    generation: number;
     mode: AuditSuiteMode;
   }): AuditSuiteRuntimeJob {
     this.prune();
@@ -234,6 +395,13 @@ export class AuditSuiteCoordinator {
       throw new AuditSuiteCoordinatorError(
         "Amazon 帳號範圍已改變，舊綜合健檢不可讀取或匯出。",
         { status: 409, code: "ACCOUNT_SCOPE_CHANGED" },
+      );
+    }
+    if (job.context.generation !== input.generation) {
+      this.deleteJob(input.runId);
+      throw new AuditSuiteCoordinatorError(
+        "Amazon 執行環境已更新，舊綜合健檢不可讀取或匯出。",
+        { status: 409, code: "SP_CONTEXT_INVALIDATED" },
       );
     }
     if (job.context.mode !== input.mode) {
@@ -280,10 +448,12 @@ export class AuditSuiteCoordinator {
         snapshot.runId !== job.context.runId ||
         snapshot.marketplaceId !== job.context.marketplaceId ||
         snapshot.accountScope !== job.context.accountScope ||
+        snapshot.generation !== job.context.generation ||
         snapshot.mode !== job.context.mode
       ) {
         throw new Error(`${id} 健檢回傳 context 不一致。`);
       }
+      snapshot = sanitizeSnapshot(id, snapshot);
     } catch (error) {
       snapshot = {
         ...job.context,

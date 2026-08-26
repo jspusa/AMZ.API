@@ -4,8 +4,28 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import { SpApiError } from "../src/main/amazon/sp-api";
+import {
+  buildBrandSalesSnapshot,
+  type BrandSalesSnapshot,
+} from "../src/main/amazon/brand-sales";
+import type { DurableReportGatewayStatus } from "../src/main/amazon/report-lifecycle";
+import type { MarketplaceId } from "../src/shared/marketplaces";
+import {
+  reportsAdapterIdentity,
+  type ReportsAdapter,
+} from "../src/main/amazon/reports-runtime";
 import type { CredentialVault } from "../src/main/credential-vault";
-import { LocalStore } from "../src/main/local-store";
+import {
+  createScriptedSpExecutionContextAdapter,
+  type SpExecutionContext,
+  type SpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
+import { planFbaShipmentSalesWindow } from
+  "../src/main/amazon/revenue-report-windows";
+import {
+  LocalStore,
+  sharedFbaShipmentSalesOptionsKey,
+} from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -89,9 +109,124 @@ async function legacyWindowStore(
   return value;
 }
 
-type GatewayOverrides = NonNullable<
-  ConstructorParameters<typeof ApiRouter>[0]["brandSalesReports"]
->;
+type ShipmentStatus = DurableReportGatewayStatus & {
+  dataStartTime: string;
+  dataEndTime: string;
+};
+
+type GatewayOverrides = {
+  spExecutionContext?: SpExecutionContextAdapter;
+  startListing?(input: {
+    marketplaceId: MarketplaceId;
+    signal?: AbortSignal;
+  }): Promise<DurableReportGatewayStatus>;
+  getListingStatus?(input: {
+    marketplaceId: MarketplaceId;
+    reportId: string;
+    signal?: AbortSignal;
+  }): Promise<DurableReportGatewayStatus>;
+  startShipment?(input: {
+    marketplaceId: MarketplaceId;
+    startDate: string;
+    endDate: string;
+    dataStartTime: string;
+    dataEndTime: string;
+    windowCreatedAt: number;
+    signal?: AbortSignal;
+  }): Promise<ShipmentStatus>;
+  getShipmentStatus?(input: {
+    marketplaceId: MarketplaceId;
+    reportId: string;
+    startDate: string;
+    endDate: string;
+    dataStartTime: string;
+    dataEndTime: string;
+    windowCreatedAt: number;
+    signal?: AbortSignal;
+  }): Promise<ShipmentStatus>;
+  getDataFromDocuments?(input: {
+    marketplaceId: MarketplaceId;
+    mode: "demo";
+    startDate: string;
+    endDate: string;
+    shipmentDataStartTime: string;
+    shipmentDataEndTime: string;
+    windowCreatedAt: number;
+    listingDocument: string;
+    shipmentDocument: string;
+    signal?: AbortSignal;
+  }): Promise<BrandSalesSnapshot>;
+};
+
+function liveReportsAdapter(overrides: GatewayOverrides): ReportsAdapter {
+  return {
+    async create(request) {
+      const result = request.intent === "all-listings"
+        ? await overrides.startListing?.({
+            marketplaceId: request.marketplaceId,
+            signal: request.signal,
+          })
+        : request.intent === "fba-shipment-sales"
+          ? await overrides.startShipment?.({
+              marketplaceId: request.marketplaceId,
+              startDate: request.startDate,
+              endDate: request.endDate,
+              dataStartTime: request.dataStartTime,
+              dataEndTime: request.dataEndTime,
+              windowCreatedAt: request.windowCreatedAt,
+              signal: request.signal,
+            })
+          : null;
+      if (!result) throw new Error(`Unexpected live Reports intent: ${request.intent}`);
+      const identity = reportsAdapterIdentity(request, result.mode);
+      return {
+        ...result,
+        identity: request.intent === "fba-shipment-sales"
+          ? {
+              ...identity,
+              dataStartTime: "dataStartTime" in result ? String(result.dataStartTime) : "",
+              dataEndTime: "dataEndTime" in result ? String(result.dataEndTime) : "",
+            }
+          : identity,
+      };
+    },
+    async status(request) {
+      const result = request.intent === "all-listings"
+        ? await overrides.getListingStatus?.({
+            marketplaceId: request.marketplaceId,
+            reportId: request.reportId,
+            signal: request.signal,
+          })
+        : request.intent === "fba-shipment-sales"
+          ? await overrides.getShipmentStatus?.({
+              marketplaceId: request.marketplaceId,
+              reportId: request.reportId,
+              startDate: request.startDate,
+              endDate: request.endDate,
+              dataStartTime: request.dataStartTime,
+              dataEndTime: request.dataEndTime,
+              windowCreatedAt: request.windowCreatedAt,
+              signal: request.signal,
+            })
+          : null;
+      if (!result) throw new Error(`Unexpected live Reports status: ${request.intent}`);
+      const identity = reportsAdapterIdentity(request, result.mode);
+      return {
+        ...result,
+        identity: request.intent === "fba-shipment-sales"
+          ? {
+              ...identity,
+              dataStartTime: "dataStartTime" in result ? String(result.dataStartTime) : "",
+              dataEndTime: "dataEndTime" in result ? String(result.dataEndTime) : "",
+            }
+          : identity,
+      };
+    },
+    async readDocument(request) {
+      throw new Error(`Unexpected live Reports document: ${request.intent}`);
+    },
+  };
+}
 
 function router(localStore: LocalStore, overrides: GatewayOverrides = {}): ApiRouter {
   return new ApiRouter({
@@ -100,7 +235,27 @@ function router(localStore: LocalStore, overrides: GatewayOverrides = {}): ApiRo
       getAccountScope: async () => ACCOUNT_SCOPE,
     } as unknown as CredentialVault,
     approveWrite: async () => undefined,
-    brandSalesReports: overrides,
+    spExecutionContext: overrides.spExecutionContext,
+    demoReportsAdapter: liveReportsAdapter(overrides),
+    ...(overrides.getDataFromDocuments
+      ? {
+          brandSalesDemo: {
+            read: (window) => overrides.getDataFromDocuments!({
+              marketplaceId: window.marketplaceId,
+              mode: "demo",
+              startDate: window.startDate,
+              endDate: window.endDate,
+              shipmentDataStartTime: window.dataStartTime,
+              shipmentDataEndTime: window.dataEndTime,
+              windowCreatedAt: window.windowCreatedAt,
+              listingDocument: "",
+              shipmentDocument: "",
+              signal: window.signal,
+            }),
+          },
+        }
+      : {}),
+    reportsAdapter: liveReportsAdapter(overrides),
   });
 }
 
@@ -144,6 +299,26 @@ function queuedShipment(index: number) {
   };
 }
 
+function demoBrandSnapshot(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  startDate: string;
+  endDate: string;
+  shipmentDataEndTime: string;
+}>): BrandSalesSnapshot {
+  return buildBrandSalesSnapshot({
+    mode: "demo",
+    marketplaceId: input.marketplaceId,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    currencyCode: "USD",
+    listings: [],
+    sales: [],
+    dataThrough: input.shipmentDataEndTime,
+    rangeFreshness: "complete-days",
+    fetchedAt: "2026-08-09T00:00:00.000Z",
+  });
+}
+
 describe("durable brand-sales report dedupe", () => {
   beforeEach(() => {
     process.env.SP_API_MODE = "demo";
@@ -163,6 +338,140 @@ describe("durable brand-sales report dedupe", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  });
+
+  it("rebinds persisted report handles across broker clear and process restart", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const overrides: GatewayOverrides = {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async () => queuedListing(listingStarts),
+      getShipmentStatus: async () => queuedShipment(shipmentStarts),
+    };
+    const firstRouter = router(localStore, overrides);
+    const first = await brandStart(firstRouter);
+    expect(first.status).toBe(202);
+
+    firstRouter.dispose();
+    const reboundAfterClear = await brandStart(firstRouter);
+    expect(reboundAfterClear.status).toBe(202);
+    expect(body(reboundAfterClear).jobId).toBe(body(first).jobId);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+
+    firstRouter.dispose();
+    const restartedStore = new LocalStore(localStore.filePath);
+    await restartedStore.initialize();
+    const restartedRouter = router(restartedStore, overrides);
+    const reboundAfterRestart = await brandStart(restartedRouter);
+    expect(reboundAfterRestart.status).toBe(202);
+    expect(body(reboundAfterRestart).jobId).toBe(body(first).jobId);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
+  it("migrates an R02 raw lease handle once without creating another report", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const overrides: GatewayOverrides = {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async () => queuedListing(listingStarts),
+      getShipmentStatus: async () => queuedShipment(shipmentStarts),
+    };
+    const firstRouter = router(localStore, overrides);
+    expect((await brandStart(firstRouter)).status).toBe(202);
+    const persisted = await localStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    const listingLease = await localStore.getSharedReport({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
+      optionsKey: "preferredReportDocumentLocale=en_US",
+    });
+    if (!persisted || !listingLease) {
+      throw new Error("Expected persisted Brand job and All Listings lease");
+    }
+    await localStore.updateBrandSalesJobLeg({
+      jobId: persisted.jobId,
+      leg: "listing",
+      value: {
+        ...persisted.listing,
+        reportId: `report-lease.${listingLease.leaseId}`,
+        documentId: null,
+        leaseBinding: null,
+        handleBinding: null,
+      },
+      updatedAt: persisted.updatedAt + 1,
+    });
+    firstRouter.dispose();
+    const restartedStore = new LocalStore(localStore.filePath);
+    await restartedStore.initialize();
+
+    const response = await brandStart(router(restartedStore, overrides));
+    const migrated = await restartedStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+
+    expect(response.status).toBe(202);
+    expect(migrated?.listing.reportId).toMatch(/^report-lease\.broker\./u);
+    expect(migrated?.listing.leaseBinding).toMatch(/^[a-f0-9]{64}$/u);
+    expect(migrated?.listing.handleBinding).toMatch(/^[a-f0-9]{64}$/u);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
+  it("fails closed when a persisted broker handle loses its main-only bindings", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const overrides: GatewayOverrides = {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async () => queuedListing(listingStarts),
+      getShipmentStatus: async () => queuedShipment(shipmentStarts),
+    };
+    const firstRouter = router(localStore, overrides);
+    const started = await brandStart(firstRouter);
+    expect(started.status).toBe(202);
+    const persisted = await localStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    if (!persisted) throw new Error("Expected persisted brand job");
+    expect(persisted.listing.reportId).toMatch(/^report-lease\.broker\./u);
+    await localStore.updateBrandSalesJobLeg({
+      jobId: persisted.jobId,
+      leg: "listing",
+      value: {
+        ...persisted.listing,
+        leaseBinding: null,
+        handleBinding: null,
+      },
+      updatedAt: persisted.updatedAt + 1,
+    });
+
+    firstRouter.dispose();
+    const restartedStore = new LocalStore(localStore.filePath);
+    await restartedStore.initialize();
+    const response = await brandStart(router(restartedStore, overrides));
+
+    expect(response.status).toBe(409);
+    expect(body(response).code).toBe("REPORT_MISMATCH");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
   });
 
   it("keeps legacy missing-window active, done, and unknown jobs as fail-closed tombstones", async () => {
@@ -283,6 +592,257 @@ describe("durable brand-sales report dedupe", () => {
     expect(shipmentStarts).toBe(1);
   });
 
+  it("keeps the public status poll at 202 while either report leg is pending", async () => {
+    const localStore = await store();
+    const app = router(localStore, {
+      startListing: async () => queuedListing(1),
+      startShipment: async () => queuedShipment(1),
+      getListingStatus: async ({ reportId }) => ({
+        ...queuedListing(1),
+        reportId,
+      }),
+      getShipmentStatus: async ({ reportId }) => ({
+        ...queuedShipment(1),
+        reportId,
+      }),
+    });
+    const started = await brandStart(app);
+
+    const status = await app.handle(request({
+      method: "GET",
+      path: "/api/sp-api/brand-sales",
+      query: {
+        marketplaceId: MARKETPLACE_ID,
+        jobId: String(body(started).jobId),
+      },
+    }));
+
+    expect(status.status).toBe(202);
+    expect(body(status)).toMatchObject({ ready: false, status: "IN_QUEUE" });
+  });
+
+  it("does not return a reusable job after the captured execution context is invalidated", async () => {
+    const localStore = await store();
+    const context = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      }),
+    );
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const app = router(localStore, {
+      spExecutionContext: context,
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+    });
+    expect((await brandStart(app)).status).toBe(202);
+    const readStored = localStore.getBrandSalesJob.bind(localStore);
+    vi.spyOn(localStore, "getBrandSalesJob").mockImplementationOnce(
+      async (identity) => {
+        const stored = await readStored(identity);
+        context.invalidate("account-changed");
+        return stored;
+      },
+    );
+
+    const reused = await brandStart(app);
+
+    expect(reused.status).toBe(409);
+    expect(body(reused).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
+  it("does not start or mirror either report leg after the captured context is invalidated", async () => {
+    const localStore = await store();
+    const context = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      }),
+    );
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const app = router(localStore, {
+      spExecutionContext: context,
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+    });
+    const readStored = localStore.getBrandSalesJob.bind(localStore);
+    vi.spyOn(localStore, "getBrandSalesJob").mockImplementationOnce(
+      async (identity) => {
+        const stored = await readStored(identity);
+        context.invalidate("account-changed");
+        return stored;
+      },
+    );
+
+    const response = await brandStart(app);
+
+    expect(response.status).toBe(409);
+    expect(body(response).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(listingStarts).toBe(0);
+    expect(shipmentStarts).toBe(0);
+    const persisted = await readStored({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    expect(persisted).toBeNull();
+  });
+
+  it("does not mirror another account's compatible lease after a start-time context switch", async () => {
+    const localStore = await store();
+    const otherScope = `${ACCOUNT_SCOPE}-other`;
+    let accountScope = otherScope;
+    let switchDuringCreate = false;
+    let switched = false;
+    const context = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope,
+      }),
+    );
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const switchAccount = () => {
+      if (!switchDuringCreate || switched) return;
+      switched = true;
+      accountScope = otherScope;
+      context.invalidate("account-changed");
+    };
+    const app = router(localStore, {
+      spExecutionContext: context,
+      startListing: async () => {
+        listingStarts += 1;
+        switchAccount();
+        return queuedListing(listingStarts);
+      },
+      startShipment: async () => {
+        shipmentStarts += 1;
+        switchAccount();
+        return queuedShipment(shipmentStarts);
+      },
+    });
+    expect((await brandStart(app)).status).toBe(202);
+    const otherJob = await localStore.getBrandSalesJob({
+      accountScope: otherScope,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    if (!otherJob) throw new Error("Expected other-account brand job");
+
+    accountScope = ACCOUNT_SCOPE;
+    context.invalidate("account-changed");
+    switchDuringCreate = true;
+    const response = await brandStart(app);
+
+    expect(response.status).toBe(409);
+    expect(body(response).code).toBe("SP_CONTEXT_INVALIDATED");
+    const currentJob = await localStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    expect(currentJob?.listing.reportId).toBeNull();
+    expect(currentJob?.shipment.reportId).toBeNull();
+    expect(currentJob?.listing.reportId).not.toBe(otherJob.listing.reportId);
+    expect(currentJob?.shipment.reportId).not.toBe(otherJob.shipment.reportId);
+  });
+
+  it("does not adopt legacy raw handles into another account during normalization", async () => {
+    const localStore = await store();
+    const otherScope = `${ACCOUNT_SCOPE}-other`;
+    const window = planFbaShipmentSalesWindow({
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+      now: new Date(Date.now()),
+    });
+    await localStore.createBrandSalesJobIfAbsent({
+      jobId: "legacy-raw-brand-job",
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+      mode: "demo",
+      shipmentDataStartTime: window.dataStartTime,
+      shipmentDataEndTime: window.dataEndTime,
+      listing: {
+        reportId: "legacy-listing-report-a",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: window.windowCreatedAt,
+        terminal: null,
+        terminalAt: null,
+      },
+      shipment: {
+        reportId: "legacy-shipment-report-a",
+        documentId: null,
+        status: "IN_QUEUE",
+        createdAt: window.windowCreatedAt,
+        terminal: null,
+        terminalAt: null,
+      },
+      createdAt: window.windowCreatedAt,
+      updatedAt: window.windowCreatedAt,
+      expiresAt: window.windowCreatedAt + 60 * 60 * 1_000,
+    }, window.windowCreatedAt);
+    let accountScope = ACCOUNT_SCOPE;
+    const base = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({ marketplaceId, mode: "demo", accountScope }),
+    );
+    let captureCalls = 0;
+    let assertCalls = 0;
+    let switched = false;
+    const switchAccount = () => {
+      if (switched) return;
+      switched = true;
+      accountScope = otherScope;
+      base.invalidate("account-changed");
+    };
+    const context: SpExecutionContextAdapter = {
+      async capture(marketplaceId) {
+        captureCalls += 1;
+        if (captureCalls === 2) switchAccount();
+        return base.capture(marketplaceId);
+      },
+      async assertCurrent(captured: SpExecutionContext) {
+        assertCalls += 1;
+        if (assertCalls === 2) switchAccount();
+        return base.assertCurrent(captured);
+      },
+      invalidate: (reason) => base.invalidate(reason),
+    };
+    const app = router(localStore, { spExecutionContext: context });
+
+    const response = await brandStart(app);
+
+    expect(response.status).toBe(409);
+    expect(body(response).code).toBe("SP_CONTEXT_INVALIDATED");
+    const raw = JSON.parse(await readFile(localStore.filePath, "utf8")) as {
+      sharedAllListingsReports: Record<string, { accountScope: string }>;
+    };
+    expect(Object.values(raw.sharedAllListingsReports).filter(
+      (lease) => lease.accountScope === otherScope,
+    )).toHaveLength(0);
+    const persisted = await localStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    expect(persisted?.listing.reportId).toBe("legacy-listing-report-a");
+    expect(persisted?.shipment.reportId).toBe("legacy-shipment-report-a");
+  });
+
   it("reuses the account-scoped exact range when switching A to B and back to A", async () => {
     const localStore = await store();
     let listingStarts = 0;
@@ -292,14 +852,6 @@ describe("durable brand-sales report dedupe", () => {
       startShipment: async ({ startDate }) => ({
         ...queuedShipment(++shipmentStarts),
         reportId: `shipment-${startDate}`,
-        dataStartTime: startDate === "2026-07-01"
-          ? "2026-07-01T00:00:00-07:00"
-          : "2026-08-01T00:00:00-07:00",
-        dataEndTime: startDate === "2026-07-01"
-          ? "2026-07-08T00:00:00-07:00"
-          : "2026-08-08T00:00:00-07:00",
-      }),
-      reportWindow: ({ startDate }) => ({
         dataStartTime: startDate === "2026-07-01"
           ? "2026-07-01T00:00:00-07:00"
           : "2026-08-01T00:00:00-07:00",
@@ -383,7 +935,8 @@ describe("durable brand-sales report dedupe", () => {
     const [brand, audit] = await Promise.all([automatic, explicitAudit]);
     expect(brand.status).toBe(202);
     expect(audit.status).toBe(202);
-    expect(body(audit).reportId).toBe("listing-report-1");
+    expect(body(audit).reportId).toMatch(/^report-lease\./u);
+    expect(body(audit).reportId).not.toBe("listing-report-1");
   });
 
   it("reuses active report IDs after an ApiRouter/App-main restart", async () => {
@@ -410,14 +963,6 @@ describe("durable brand-sales report dedupe", () => {
       startShipment: async ({ startDate }) => ({
         ...queuedShipment(++shipmentStarts),
         reportId: `shipment-${startDate}`,
-        dataStartTime: startDate === "2026-07-01"
-          ? "2026-07-01T00:00:00-07:00"
-          : "2026-08-01T00:00:00-07:00",
-        dataEndTime: startDate === "2026-07-01"
-          ? "2026-07-08T00:00:00-07:00"
-          : "2026-08-08T00:00:00-07:00",
-      }),
-      reportWindow: ({ startDate }) => ({
         dataStartTime: startDate === "2026-07-01"
           ? "2026-07-01T00:00:00-07:00"
           : "2026-08-01T00:00:00-07:00",
@@ -636,12 +1181,54 @@ describe("durable brand-sales report dedupe", () => {
       endDate: "2026-08-07",
     });
     expect(persisted?.shipment).toMatchObject({
-      reportId: "shipment-report-1",
       status: "CREATION_UNKNOWN",
       terminal: "CREATION_UNKNOWN",
     });
+    expect(persisted?.shipment.reportId).toMatch(/^report-lease\./u);
+    expect(persisted?.shipment.reportId).not.toBe("shipment-report-1");
     expect(body(await brandStart(app, { retry: true })).code).toBe("REPORT_RETRY_WAIT");
     expect(shipmentStarts).toBe(1);
+  });
+
+  it("rejects a bound handle changed to a raw-looking ID with a sanitized DTO", async () => {
+    const localStore = await store();
+    const overrides: GatewayOverrides = {
+      startListing: async () => queuedListing(1),
+      startShipment: async () => queuedShipment(1),
+    };
+    const started = await brandStart(router(localStore, overrides));
+    const persisted = await localStore.getBrandSalesJob({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: "2026-08-01",
+      endDate: "2026-08-07",
+    });
+    if (!persisted) throw new Error("Expected persisted brand job");
+    await localStore.updateBrandSalesJobLeg({
+      jobId: persisted.jobId,
+      leg: "listing",
+      value: {
+        ...persisted.listing,
+        reportId: "listing-report-tampered",
+      },
+      updatedAt: persisted.updatedAt + 1,
+    });
+
+    const response = await brandStart(router(localStore, overrides));
+
+    expect(started.status).toBe(202);
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      kind: "json",
+      value: {
+        code: "REPORT_MISMATCH",
+        message: "品牌營收工作與 Reports runtime 不一致。",
+        requestId: null,
+        issues: [],
+        operation: null,
+        upstreamCode: null,
+      },
+    });
   });
 
   it("keeps an expired CREATION_UNKNOWN tombstone until an explicit retry", async () => {
@@ -812,7 +1399,21 @@ describe("durable brand-sales report dedupe", () => {
       startShipment: async () => queuedShipment(1),
       getListingStatus,
       getShipmentStatus,
-      getData: async () => ({ schemaVersion: 1, responseKind: "data" }) as never,
+      getDataFromDocuments: async (input) => {
+        const snapshot = demoBrandSnapshot(input);
+        return {
+          ...snapshot,
+          internalOnly: "must-not-cross",
+          segments: snapshot.segments.map((segment) => ({
+            ...segment,
+            internalOnly: "must-not-cross",
+          })),
+          summary: {
+            ...snapshot.summary,
+            internalOnly: "must-not-cross",
+          },
+        } as never;
+      },
     });
     const started = await brandStart(app);
     const jobId = String(body(started).jobId);
@@ -837,11 +1438,331 @@ describe("durable brand-sales report dedupe", () => {
     });
     const [statusResponse, dataResponse] = await Promise.all([statusFlight, dataFlight]);
     expect(body(statusResponse)).toMatchObject({ jobId, ready: true });
-    expect(body(statusResponse).responseKind).toBeUndefined();
+    expect(body(statusResponse).schemaVersion).toBeUndefined();
     expect(body(dataResponse)).toMatchObject({
-      schemaVersion: 1,
-      responseKind: "data",
+      schemaVersion: 2,
+      source: "FBA_CUSTOMER_SHIPMENT_SALES_REPORT",
     });
+    expect(body(dataResponse).internalOnly).toBeUndefined();
+    expect((body(dataResponse).segments as Array<Record<string, unknown>>)[0]
+      ?.internalOnly).toBeUndefined();
+    expect((body(dataResponse).summary as Record<string, unknown>).internalOnly)
+      .toBeUndefined();
+  });
+
+  it("aborts disposed start flights without joining or reposting them in the fresh lifecycle", async () => {
+    const localStore = await store();
+    let releaseListing!: () => void;
+    let releaseShipment!: () => void;
+    const listingGate = new Promise<void>((resolve) => {
+      releaseListing = resolve;
+    });
+    const shipmentGate = new Promise<void>((resolve) => {
+      releaseShipment = resolve;
+    });
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const listingSignals: AbortSignal[] = [];
+    const shipmentSignals: AbortSignal[] = [];
+    const app = router(localStore, {
+      startListing: async ({ signal }) => {
+        listingStarts += 1;
+        if (signal) listingSignals.push(signal);
+        await listingGate;
+        return queuedListing(listingStarts);
+      },
+      startShipment: async ({ signal }) => {
+        shipmentStarts += 1;
+        if (signal) shipmentSignals.push(signal);
+        await shipmentGate;
+        return queuedShipment(shipmentStarts);
+      },
+    });
+
+    const stale = brandStart(app);
+    await vi.waitFor(() => {
+      expect(listingStarts).toBe(1);
+      expect(shipmentStarts).toBe(1);
+    });
+    app.dispose();
+
+    const cancelled = await stale;
+    expect(cancelled.status).toBe(409);
+    expect(body(cancelled).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(listingSignals[0]?.aborted).toBe(true);
+    expect(shipmentSignals[0]?.aborted).toBe(true);
+
+    const fresh = await brandStart(app);
+    expect(fresh.status).toBe(409);
+    expect(body(fresh).code).toBe("BRAND_REPORT_RETRY_REQUIRED");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+
+    releaseListing();
+    releaseShipment();
+    await vi.advanceTimersByTimeAsync(1);
+    const afterStaleSettlement = await brandStart(app);
+    expect(afterStaleSettlement.status).toBe(409);
+    expect(body(afterStaleSettlement).code).toBe("BRAND_REPORT_RETRY_REQUIRED");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+  });
+
+  it("aborts a disposed poll flight without losing the fresh single-flight", async () => {
+    const localStore = await store();
+    let releaseStale!: () => void;
+    let releaseFresh!: () => void;
+    const staleGate = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
+    const freshGate = new Promise<void>((resolve) => {
+      releaseFresh = resolve;
+    });
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    let shipmentPolls = 0;
+    const shipmentSignals: AbortSignal[] = [];
+    const app = router(localStore, {
+      startListing: async () => queuedListing(++listingStarts),
+      startShipment: async () => queuedShipment(++shipmentStarts),
+      getListingStatus: async ({ reportId }) => ({
+        ...queuedListing(1),
+        ready: true,
+        reportId,
+        documentId: "listing-document-1",
+        status: "DONE",
+      }),
+      getShipmentStatus: async ({ reportId, signal }) => {
+        shipmentPolls += 1;
+        const call = shipmentPolls;
+        if (signal) shipmentSignals.push(signal);
+        await (call === 1 ? staleGate : freshGate);
+        return {
+          ...queuedShipment(1),
+          ready: true,
+          reportId,
+          documentId: call === 1
+            ? "stale-shipment-document"
+            : "fresh-shipment-document",
+          status: "DONE",
+        };
+      },
+    });
+    const started = await brandStart(app);
+    const jobId = String(body(started).jobId);
+    const observe = () => app.handle(request({
+      method: "GET",
+      path: "/api/sp-api/brand-sales",
+      query: { marketplaceId: MARKETPLACE_ID, jobId },
+    }));
+
+    const stale = observe();
+    await vi.waitFor(() => expect(shipmentPolls).toBe(1));
+    app.dispose();
+
+    const cancelled = await stale;
+    expect(cancelled.status).toBe(409);
+    expect(body(cancelled).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(shipmentSignals[0]?.aborted).toBe(true);
+
+    const fresh = observe();
+    await vi.waitFor(() => expect(shipmentPolls).toBe(2));
+    expect(shipmentSignals[1]?.aborted).toBe(false);
+
+    releaseStale();
+    await vi.advanceTimersByTimeAsync(1);
+    const joined = observe();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(shipmentPolls).toBe(2);
+
+    releaseFresh();
+    const [freshResponse, joinedResponse] = await Promise.all([fresh, joined]);
+    expect(freshResponse.status).toBe(200);
+    expect(joinedResponse.status).toBe(200);
+    expect(body(freshResponse)).toMatchObject({ jobId, ready: true });
+    expect(body(joinedResponse)).toMatchObject({ jobId, ready: true });
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+    expect(shipmentPolls).toBe(2);
+    const persisted = await localStore.getBrandSalesJobById(jobId);
+    if (!persisted) throw new Error("Expected the fresh Brand job to persist");
+    const shipmentLease = await localStore.getSharedReport({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      reportType: "GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA",
+      optionsKey: sharedFbaShipmentSalesOptionsKey({
+        startDate: persisted.startDate,
+        endDate: persisted.endDate,
+        dataStartTime: persisted.shipmentDataStartTime,
+        dataEndTime: persisted.shipmentDataEndTime,
+        windowCreatedAt: persisted.createdAt,
+      }),
+    });
+    expect(shipmentLease?.report.documentId).toBe("fresh-shipment-document");
+  });
+
+  it("aborts a disposed data flight without joining or caching it in the fresh lifecycle", async () => {
+    const localStore = await store();
+    let releaseStale!: () => void;
+    const staleGate = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    let reads = 0;
+    const signals: AbortSignal[] = [];
+    const app = router(localStore, {
+      startListing: async () => ({
+        ...queuedListing(++listingStarts),
+        ready: true,
+        documentId: "listing-document-1",
+        status: "DONE",
+      }),
+      startShipment: async () => ({
+        ...queuedShipment(++shipmentStarts),
+        ready: true,
+        documentId: "shipment-document-1",
+        status: "DONE",
+      }),
+      getDataFromDocuments: async (input) => {
+        reads += 1;
+        if (input.signal) signals.push(input.signal);
+        if (reads === 1) await staleGate;
+        return demoBrandSnapshot(input);
+      },
+    });
+    const started = await brandStart(app);
+    const jobId = String(body(started).jobId);
+    const readData = () => app.handle(request({
+      method: "GET",
+      path: "/api/sp-api/brand-sales",
+      query: { marketplaceId: MARKETPLACE_ID, jobId, data: "1" },
+    }));
+
+    const stale = readData();
+    await vi.waitFor(() => expect(reads).toBe(1));
+    app.dispose();
+
+    const cancelled = await stale;
+    expect(cancelled.status).toBe(409);
+    expect(body(cancelled).code).toBe("SP_CONTEXT_INVALIDATED");
+    expect(signals[0]?.aborted).toBe(true);
+
+    const fresh = await readData();
+    expect(fresh.status).toBe(200);
+    expect(reads).toBe(2);
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
+
+    releaseStale();
+    await Promise.resolve();
+    const cached = await readData();
+    expect(cached.status).toBe(200);
+    expect(reads).toBe(2);
+  });
+
+  it("rejects a reader snapshot whose identity is not bound to the fixed job window", async () => {
+    const localStore = await store();
+    const app = router(localStore, {
+      startListing: async () => queuedListing(1),
+      startShipment: async () => queuedShipment(1),
+      getListingStatus: async ({ reportId }) => ({
+        ...queuedListing(1),
+        ready: true,
+        reportId,
+        documentId: "listing-document-1",
+        status: "DONE",
+      }),
+      getShipmentStatus: async ({ reportId }) => ({
+        ...queuedShipment(1),
+        ready: true,
+        reportId,
+        documentId: "shipment-document-1",
+        status: "DONE",
+      }),
+      getDataFromDocuments: async (input) => ({
+        ...demoBrandSnapshot(input),
+        schemaVersion: 1,
+      }) as never,
+    });
+    const started = await brandStart(app);
+
+    const response = await app.handle(request({
+      method: "GET",
+      path: "/api/sp-api/brand-sales",
+      query: {
+        marketplaceId: MARKETPLACE_ID,
+        jobId: String(body(started).jobId),
+        data: "1",
+      },
+    }));
+
+    expect(response.status).toBe(502);
+    expect(body(response).code).toBe("REPORT_FORMAT_UNSUPPORTED");
+  });
+
+  it("does not let a new context generation join or reuse an in-flight stale snapshot", async () => {
+    const localStore = await store();
+    const context = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      }),
+    );
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let reads = 0;
+    const app = router(localStore, {
+      spExecutionContext: context,
+      startListing: async () => queuedListing(1),
+      startShipment: async () => queuedShipment(1),
+      getListingStatus: async ({ reportId }) => ({
+        ...queuedListing(1),
+        ready: true,
+        reportId,
+        documentId: "listing-document-1",
+        status: "DONE",
+      }),
+      getShipmentStatus: async ({ reportId }) => ({
+        ...queuedShipment(1),
+        ready: true,
+        reportId,
+        documentId: "shipment-document-1",
+        status: "DONE",
+      }),
+      getDataFromDocuments: async (input) => {
+        reads += 1;
+        if (reads === 1) await gate;
+        return demoBrandSnapshot(input);
+      },
+    });
+    const started = await brandStart(app);
+    const dataRequest = () => app.handle(request({
+      method: "GET",
+      path: "/api/sp-api/brand-sales",
+      query: {
+        marketplaceId: MARKETPLACE_ID,
+        jobId: String(body(started).jobId),
+        data: "1",
+      },
+    }));
+    const oldGeneration = dataRequest();
+    await vi.waitFor(() => expect(reads).toBe(1));
+    context.invalidate("account-changed");
+    const newGenerationJoined = dataRequest();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reads).toBe(1);
+    release();
+
+    const joined = await Promise.all([oldGeneration, newGenerationJoined]);
+    expect(joined.map((response) => body(response).code)).toEqual([
+      "SP_CONTEXT_INVALIDATED",
+      "SP_CONTEXT_INVALIDATED",
+    ]);
+    const fresh = await dataRequest();
+    expect(fresh.status).toBe(200);
+    expect(reads).toBe(2);
   });
 
   it("discards demo report IDs before creating a live-mode job", async () => {
@@ -874,6 +1795,9 @@ describe("durable brand-sales report dedupe", () => {
     }));
     expect(body(oldStatus).code).toBe("REPORT_MODE_CHANGED");
 
+    const transition = await brandStart(app);
+    expect(transition.status).toBe(409);
+    expect(body(transition).code).toBe("REPORT_MODE_CHANGED");
     const live = await brandStart(app);
     expect(live.status).toBe(202);
     expect(body(live).jobId).not.toBe(demoJobId);

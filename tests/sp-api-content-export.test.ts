@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  getAllListingsExportData,
+  catalogListingsReadAdapterProduction,
   invalidateSpApiCredentialCaches,
 } from "../src/main/amazon/sp-api";
+import {
+  readFbaCatalogExport,
+  type CatalogExportProgress,
+} from "../src/main/amazon/catalog-report-reads";
+import { downloadMockReportDocument } from "./catalog-report-test-support";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const REPORT_ID = "FAKE_REPORT_ID";
@@ -14,6 +19,26 @@ const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
 const savedEnvironment = new Map(
   SP_ENV_KEYS.map((key) => [key, process.env[key]]),
 );
+
+async function getAllListingsExportData(input: Readonly<{
+  marketplaceId: typeof MARKETPLACE_ID;
+  reportId: string;
+  documentId: string;
+  signal?: AbortSignal;
+  onProgress?: (
+    progress: CatalogExportProgress,
+  ) => void | Promise<void>;
+}>) {
+  const document = await downloadMockReportDocument(input);
+  return readFbaCatalogExport(catalogListingsReadAdapterProduction, {
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    document,
+    signal: input.signal,
+    onProgress: input.onProgress,
+    pace: async () => undefined,
+  });
+}
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -53,7 +78,7 @@ describe("FBA listing content export completeness", () => {
   it("keeps report-proven FBA rows incomplete when Listings omits fulfillment evidence", async () => {
     const report = [
       "seller-sku\tasin\titem-name\tfulfillment-channel",
-      "NO-AVAIL\tASIN-1\tReport availability title\tAMAZON_NA",
+      "NO-AVAIL\tB0AVAIL001\tReport availability title\tAMAZON_NA",
     ].join("\n");
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const url = requestUrl(input);
@@ -84,7 +109,7 @@ describe("FBA listing content export completeness", () => {
               summaries: [
                 {
                   marketplaceId: MARKETPLACE_ID,
-                  asin: "ASIN-1",
+                  asin: "B0AVAIL001",
                   productType: "PET_FOOD",
                   itemName: "Listings availability title",
                 },
@@ -166,7 +191,6 @@ describe("FBA listing content export completeness", () => {
       ]),
     );
     expect(progress).toEqual([
-      { phase: "report-ready", completedUnits: 1, totalUnits: 1 },
       { phase: "report-downloaded", completedUnits: 1, totalUnits: 1 },
       { phase: "listings", completedUnits: 1, totalUnits: 1 },
     ]);
@@ -175,7 +199,7 @@ describe("FBA listing content export completeness", () => {
   it("marks a successful Listings response without attributes incomplete", async () => {
     const report = [
       "seller-sku\tasin\titem-name\tfulfillment-channel",
-      "NO-ATTR\tASIN-2\tReport attributes title\tAFN",
+      "NO-ATTR\tB0ATTR0002\tReport attributes title\tAFN",
     ].join("\n");
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const url = requestUrl(input);
@@ -206,7 +230,7 @@ describe("FBA listing content export completeness", () => {
               summaries: [
                 {
                   marketplaceId: MARKETPLACE_ID,
-                  asin: "ASIN-2",
+                  asin: "B0ATTR0002",
                   productType: "PET_FOOD",
                   itemName: "Listings attributes title",
                 },

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { strFromU8, unzipSync } from "fflate";
 import {
   AuditSuiteCoordinator,
   AuditSuiteCoordinatorError,
@@ -8,6 +9,7 @@ import {
   type AuditSuiteRunControl,
   type AuditSuiteSectionRunners,
 } from "../src/main/amazon/audit-suite-coordinator";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import {
   createAuditSuiteState,
   parseAuditSuiteRun,
@@ -15,8 +17,11 @@ import {
 } from "../src/renderer/src/audit-suite";
 import {
   AUDIT_SUITE_SECTION_IDS,
-  type AuditSuiteContext,
 } from "../src/shared/audit-suite";
+import type { AuditSuiteContext } from
+  "../src/main/amazon/audit-suite-context";
+import { createAuditSuiteWorkbook } from
+  "../src/main/amazon/audit-suite-xlsx";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const FETCHED_AT = "2026-08-17T00:00:00.000Z";
@@ -70,6 +75,7 @@ function identity(run: ReturnType<AuditSuiteCoordinator["start"]>["run"]) {
     contextId: run.contextId,
     marketplaceId: run.marketplaceId,
     accountScope: "account-one",
+    generation: 0,
     mode: run.mode,
   } as const;
 }
@@ -102,6 +108,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -111,6 +118,69 @@ describe("AuditSuiteCoordinator run ownership", () => {
     expect(coordinator.get(identity(started.run))).toMatchObject({
       schemaVersion: 3,
       status: "completed",
+    });
+  });
+
+  it("does not reuse or authorize a run from an older execution generation", () => {
+    const coordinator = new AuditSuiteCoordinator({ runners: sectionRunners() });
+    const first = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    const second = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 1,
+      mode: "demo",
+    });
+
+    expect(second.reused).toBe(false);
+    expect(second.run.runId).not.toBe(first.run.runId);
+    expect(() => coordinator.get({
+      ...identity(first.run),
+      generation: 1,
+    })).toThrowError(expect.objectContaining({
+      status: 409,
+      code: "SP_CONTEXT_INVALIDATED",
+    }));
+    expect(coordinator.get({
+      ...identity(second.run),
+      generation: 1,
+    })).toMatchObject({ runId: second.run.runId, status: "queued" });
+  });
+
+  it("rejects a section snapshot returned from an older execution generation", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: async (context) => completed({
+          ...context,
+          generation: context.generation - 1,
+        }, []),
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 1,
+      mode: "demo",
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    expect(coordinator.get({
+      ...identity(started.run),
+      generation: 1,
+    })).toMatchObject({
+      status: "partial",
+      sections: {
+        advertising: {
+          status: "failed",
+          message: "advertising 健檢回傳 context 不一致。",
+        },
+      },
     });
   });
 
@@ -134,6 +204,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -202,6 +273,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -257,6 +329,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const first = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -267,6 +340,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const second = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -302,6 +376,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const first = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -320,11 +395,207 @@ describe("AuditSuiteCoordinator run ownership", () => {
     coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
     await flushCoordinator();
     expect(loads).toBe(2);
+  });
+
+  it("sanitizes a failed section before its notice crosses to the renderer", async () => {
+    const hostile = [
+      "Bearer private-access-token",
+      "accountScope=private-account",
+      "reportId=private-report",
+      "https://example.invalid/private?client_secret=private-secret",
+      "HOSTILE-CANARY\u202e\u0000",
+    ].join(" ");
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        content: async () => {
+          throw new SpApiError(hostile, {
+            requestId: "Atza|private-token",
+          });
+        },
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const serialized = JSON.stringify(run.sections.content);
+    expect(run.sections.content).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    expect(serialized).not.toMatch(
+      /Bearer|access.?token|accountScope|reportId|client.?secret|https?:|HOSTILE-CANARY|Atza|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
+    );
+  });
+
+  it("keeps an empty runner failure exportable with the fixed public fallback", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        content: async () => {
+          throw new Error("");
+        },
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    expect(run.sections.content).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    const input = coordinator.workbookInput({
+      ...identity(started.run),
+      marketplaceLabel: "US · United States",
+    });
+    expect(() => createAuditSuiteWorkbook(input)).not.toThrow();
+  });
+
+  it("fails a non-array section payload closed before public publication", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: (async (context: AuditSuiteContext) => ({
+          ...context,
+          status: "partial",
+          fetchedAt: FETCHED_AT,
+          notice: "partial",
+          payload: {
+            rows: [],
+            reportId: "private-report.NON_ARRAY_PAYLOAD_CANARY",
+          },
+        })) as unknown as AuditSuiteSectionRunners["advertising"],
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const serialized = JSON.stringify(run.sections.advertising);
+    expect(run.sections.advertising).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    expect(serialized).not.toContain("NON_ARRAY_PAYLOAD_CANARY");
+  });
+
+  it("fails an unknown runtime section status closed before GET publication", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: (async (context: AuditSuiteContext) => ({
+          ...context,
+          status: "Bearer STATUS_CANARY",
+          fetchedAt: FETCHED_AT,
+          notice: "unexpected runtime status",
+          payload: [],
+        })) as unknown as AuditSuiteSectionRunners["advertising"],
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const serialized = JSON.stringify(run.sections.advertising);
+    expect(run.sections.advertising).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    expect(serialized).not.toContain("STATUS_CANARY");
+  });
+
+  it("sanitizes a partial section notice and message fields before GET or XLSX publication", async () => {
+    const hostile = [
+      "Bearer private-access-token",
+      "accountScope=private-account",
+      "reportId=private-report",
+      "documentId=private-document",
+      "https://example.invalid/private?client_secret=private-secret",
+      "PARTIAL-HOSTILE-CANARY\u202e\u0000",
+    ].join(" ");
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: async (context) => ({
+          ...context,
+          status: "partial",
+          fetchedAt: FETCHED_AT,
+          notice: hostile,
+          payload: [{
+            sellerSku: "SAFE-SKU",
+            title: "Safe title",
+            asin: "B000000001",
+            finding: "資料未完成",
+            evidence: hostile,
+            notice: hostile,
+          }],
+        }),
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const workbookInput = coordinator.workbookInput({
+      ...identity(started.run),
+      marketplaceLabel: "US · United States",
+    });
+    const workbook = createAuditSuiteWorkbook(workbookInput);
+    const xlsxText = Object.values(unzipSync(workbook))
+      .map((file) => strFromU8(file))
+      .join("\n");
+    const publicStatus = JSON.stringify(run.sections.advertising);
+
+    expect(run).toMatchObject({
+      status: "partial",
+      sections: { advertising: { status: "partial" } },
+    });
+    expect(publicStatus).not.toMatch(
+      /Bearer|access.?token|accountScope|reportId|documentId|client.?secret|https?:|PARTIAL-HOSTILE-CANARY|[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/iu,
+    );
+    for (const canary of [
+      "private-access-token",
+      "private-account",
+      "private-report",
+      "private-document",
+      "private-secret",
+      "PARTIAL-HOSTILE-CANARY",
+    ]) {
+      expect(xlsxText).not.toContain(canary);
+    }
   });
 
   it("aborts active run controls when lifecycle cleanup clears the coordinator", async () => {
@@ -340,6 +611,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const started = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -383,6 +655,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const oldRun = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -393,6 +666,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     const currentRun = coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);
@@ -435,6 +709,7 @@ describe("AuditSuiteCoordinator run ownership", () => {
     coordinator.start({
       marketplaceId: MARKETPLACE_ID,
       accountScope: "account-one",
+      generation: 0,
       mode: "demo",
     });
     await vi.advanceTimersByTimeAsync(0);

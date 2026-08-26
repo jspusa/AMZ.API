@@ -1,6 +1,12 @@
 import { strFromU8, unzipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
+import { getFbaSubscriptionAudit } from "../src/main/amazon/sp-api";
+import {
+  createScriptedSpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
+import { SubscriptionAuditOwner } from
+  "../src/main/amazon/subscription-audit-owner";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
@@ -35,6 +41,66 @@ describe("FBA Subscribe & Save audit routes", () => {
   afterEach(() => {
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
+  });
+
+  it("preserves the single-SKU Subscribe & Save route and DTO contract", async () => {
+    const response = await router.handle(
+      get("/api/sp-api/subscribe-save", {
+        marketplaceId: "ATVPDKIKX0DER",
+        sku: "AFA-TRKY-4OZ",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body.kind).toBe("json");
+    if (response.body.kind !== "json") throw new Error("Expected JSON");
+    expect(response.body.value).toMatchObject({
+      mode: "demo",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "AFA-TRKY-4OZ",
+      found: true,
+      writable: false,
+      requestId: null,
+      rateLimit: "1 request/second",
+    });
+    expect(Object.keys(response.body.value as Record<string, unknown>).sort())
+      .toEqual([
+        "amazonFundedBaseDiscount",
+        "amazonFundedTieredDiscount",
+        "asin",
+        "autoEnrollment",
+        "deliveryConditions",
+        "eligibility",
+        "enrollmentMethod",
+        "fetchedAt",
+        "forecastDeliveries",
+        "found",
+        "inventory",
+        "marketplaceId",
+        "mode",
+        "notice",
+        "price",
+        "rateLimit",
+        "requestId",
+        "sellerFundedBaseDiscount",
+        "sellerFundedTieredDiscount",
+        "sellerSku",
+        "stockRisk",
+        "subscriptions",
+        "writable",
+      ].sort());
+
+    const unsupported = await router.handle(
+      get("/api/sp-api/subscribe-save", {
+        marketplaceId: "A19VAU5U5O7RUS",
+        sku: "AFA-TRKY-4OZ",
+      }),
+    );
+    expect(unsupported.status).toBe(422);
+    expect(unsupported.body.kind).toBe("json");
+    if (unsupported.body.kind !== "json") throw new Error("Expected JSON");
+    expect(unsupported.body.value).toMatchObject({
+      code: "REPLENISHMENT_MARKETPLACE_UNSUPPORTED",
+    });
   });
 
   it("returns a server snapshot with selected-month totals and omitted missing points", async () => {
@@ -145,6 +211,38 @@ describe("FBA Subscribe & Save audit routes", () => {
   });
 
   it("keeps a null Seller base discount out of 0% and visible once in the problem sheet", async () => {
+    router.dispose();
+    const spExecutionContext = createScriptedSpExecutionContextAdapter(
+      (marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: "test-account-scope",
+      }),
+    );
+    const subscriptionAudit = new SubscriptionAuditOwner({
+      context: spExecutionContext,
+      readSnapshot: async ({ marketplaceId, months, signal }) => {
+        const snapshot = await getFbaSubscriptionAudit({
+          marketplaceId,
+          months,
+          signal,
+        });
+        return {
+          ...snapshot,
+          offers: snapshot.offers.map((offer, index) => index === 0
+            ? { ...offer, sellerFundedBaseDiscount: null }
+            : offer),
+        };
+      },
+    });
+    router = new ApiRouter({
+      store: {} as LocalStore,
+      vault,
+      approveWrite: async () => undefined,
+      spExecutionContext,
+      subscriptionAudit,
+    });
+
     const audit = await router.handle(
       get("/api/sp-api/subscription-audit", {
         marketplaceId: "ATVPDKIKX0DER",
@@ -153,15 +251,6 @@ describe("FBA Subscribe & Save audit routes", () => {
     );
     if (audit.body.kind !== "json") throw new Error("Expected JSON");
     const exportId = (audit.body.value as { exportId: string }).exportId;
-    const snapshots = (router as unknown as {
-      subscriptionAuditSnapshots: Map<
-        string,
-        { snapshot: { offers: Array<{ sellerFundedBaseDiscount: number | null }> } }
-      >;
-    }).subscriptionAuditSnapshots;
-    const stored = snapshots.get(exportId);
-    if (!stored) throw new Error("Expected stored audit snapshot");
-    stored.snapshot.offers[0]!.sellerFundedBaseDiscount = null;
 
     const response = await router.handle(
       get("/api/sp-api/subscription-audit/export", {

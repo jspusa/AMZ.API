@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import type { AplusAuditJobGateway } from "../src/main/amazon/a-plus-audit-job";
+import { AplusAuditCoordinator } from
+  "../src/main/a-plus-audit-coordinator";
+import type { AplusAuditSeed, AplusContentReadsPort } from
+  "../src/main/amazon/a-plus-content-reads";
+import {
+  createScriptedSpExecutionContextAdapter,
+  type SpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -53,49 +60,139 @@ async function terminal(
 describe("main-owned A+ audit routes", () => {
   let router: ApiRouter;
   let accountScope: string;
-  let fetchPublishRecords: AplusAuditJobGateway["fetchPublishRecords"];
+  let readAplus: AplusContentReadsPort["read"];
 
   beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
     accountScope = "account-scope-a-plus-one";
-    fetchPublishRecords = vi.fn(async ({ request: item }) => ({
-      status: 200,
-      payload: {
-        publishRecordList: [{
-          marketplaceId: US,
-          asin: item.asin,
-          contentReferenceKey: "internal-record-key-must-not-leak",
-          contentType: "EBC",
-          locale: "en-US",
-        }],
-      },
-    }));
+    readAplus = vi.fn(async (input) => {
+      const context = input.expectedContext;
+      if (!context) throw new Error("Expected one bound A+ execution context.");
+      const seed = input;
+      await input.onProgress?.({ completedAsins: 1, totalAsins: 1 });
+      const rows = seed.rows.map((row: AplusAuditSeed) => ({
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        title: row.title,
+        marketplaceId: context.marketplaceId,
+        status: row.asin ? "published" as const : "incomplete" as const,
+        sourceCompleteness: row.asin ? "complete" as const : "partial" as const,
+        publishedRecordCount: row.asin ? 1 : null,
+        contentTypes: row.asin ? ["EBC" as const] : [],
+        locales: row.asin ? ["en-US"] : [],
+        documents: [],
+        documentEvidenceCompleteness: row.asin
+          ? "complete" as const
+          : "unavailable" as const,
+        reasonCode: row.asin
+          ? "PUBLISHED_RECORD_FOUND" as const
+          : "FBA_IDENTITY_INCOMPLETE" as const,
+        reason: row.asin ? "Published." : "Incomplete identity.",
+      }));
+      const summary = {
+        eligibleFbaSkus: rows.length,
+        uniqueAsins: 1,
+        published: 2,
+        missing: 0,
+        incomplete: 1,
+        unavailable: 0,
+      };
+      return {
+        mode: context.mode,
+        marketplaceId: context.marketplaceId,
+        fetchedAt: seed.fetchedAt,
+        fbaSnapshotId: seed.fbaSnapshotId,
+        totals: summary,
+        summary,
+        rows,
+        notice: "Read-only A+ route snapshot.",
+      };
+    });
     const directory = await mkdtemp(join(tmpdir(), "a-plus-router-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
+    const spExecutionContext: SpExecutionContextAdapter =
+      createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope,
+      }));
+    const reportId = "report-a-plus-router-001";
+    const documentId = "document-a-plus-router-001";
+    const aPlusAuditCoordinator = new AplusAuditCoordinator({
+      context: spExecutionContext,
+      listingsExport: {
+        startReusable: async () => ({
+          mode: "demo",
+          ready: true,
+          reportId,
+          documentId,
+          status: "DONE",
+          notice: "A+ router fixture ready.",
+        }),
+        status: async () => ({
+          mode: "demo",
+          ready: true,
+          reportId,
+          documentId,
+          status: "DONE",
+          notice: "A+ router fixture ready.",
+        }),
+        data: async () => ({
+          fetchedAt: "2026-08-23T09:00:00.000Z",
+          rows: [
+            { sellerSku: "A-PLUS-SKU-1", asin: "B000000001", title: "One" },
+            { sellerSku: "A-PLUS-SKU-2", asin: "B000000001", title: "Two" },
+            { sellerSku: "A-PLUS-SKU-3", asin: "", title: "Unknown" },
+          ].map((row) => ({
+            marketplace: "US",
+            productType: "PET_FOOD",
+            itemHighlight: "",
+            bulletPoints: [],
+            productDescription: "",
+            ingredients: "",
+            imageUrls: [],
+            status: "Active",
+            updatedAt: "",
+            readStatus: "complete" as const,
+            readErrors: [],
+            ...row,
+          })),
+          errors: [],
+        }),
+      },
+      readGrouping: async (input) => ({
+        marketplaceId: input.marketplaceId,
+        fetchedAt: "2026-08-23T09:00:00.000Z",
+        rows: input.rows.map((row, index) => ({
+          ...row,
+          role: index < 2 ? "child" as const : "unknown" as const,
+          parentSku: index < 2 ? "A-PLUS-PARENT-1" : null,
+          familyKey: index < 2 ? "A-PLUS-PARENT-1" : row.sellerSku,
+          theme: index < 2 ? "SIZE_NAME" : null,
+          status: index < 2 ? "complete" as const : "incomplete" as const,
+          message: index < 2
+            ? "Relationship verified."
+            : "Relationship unavailable.",
+        })),
+        notice: "Fixture relationship evidence.",
+      }),
+      contentReads: { read: readAplus },
+      wait: async () => undefined,
+    });
     router = new ApiRouter({
       store,
       vault: {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      aplusAudit: {
-        loadFbaSeeds: async () => ({
-          fetchedAt: "2026-08-23T09:00:00.000Z",
-          fbaSnapshotId: "internal-fba-snapshot-must-not-leak",
-          rows: [
-            { sellerSku: "A-PLUS-SKU-1", asin: "B000000001", title: "One" },
-            { sellerSku: "A-PLUS-SKU-2", asin: "B000000001", title: "Two" },
-            { sellerSku: "A-PLUS-SKU-3", asin: null, title: "Unknown" },
-          ],
-        }),
-        fetchPublishRecords,
-      },
+      spExecutionContext,
+      aPlusAuditCoordinator,
     });
   });
 
   afterEach(() => {
-    router?.clearPreviews();
+    router?.dispose();
     vi.unstubAllGlobals();
     if (previousMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousMode;
@@ -129,7 +226,7 @@ describe("main-owned A+ audit routes", () => {
         summary: { published: 2, incomplete: 1, uniqueAsins: 1 },
       },
     });
-    expect(fetchPublishRecords).toHaveBeenCalledTimes(1);
+    expect(readAplus).toHaveBeenCalledTimes(1);
     const serialized = JSON.stringify(payload(completed));
     expect(serialized).not.toMatch(/account-scope|fba-snapshot|record-key|reportId/iu);
   });
@@ -175,7 +272,7 @@ describe("main-owned A+ audit routes", () => {
       marketplaceId: US,
       mode: "demo",
     }));
-    router.clearPreviews();
+    router.dispose();
     const response = await router.handle(request("GET", {
       marketplaceId: US,
       mode: "demo",
@@ -191,7 +288,7 @@ describe("main-owned A+ audit routes", () => {
     const directory = await mkdtemp(join(tmpdir(), "a-plus-router-demo-"));
     const store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
-    router.clearPreviews();
+    router.dispose();
     router = new ApiRouter({
       store,
       vault: {

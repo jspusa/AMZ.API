@@ -10,6 +10,34 @@ import {
   imageAuditAttentionRows,
   parseImageAuditSnapshot,
 } from "../src/renderer/src/image-audit";
+import { parseStandaloneAuditJob } from "../src/renderer/src/standalone-audit";
+
+function completedImageJob(
+  snapshot: ReturnType<typeof parseImageAuditSnapshot>,
+  exportId: string,
+) {
+  return parseStandaloneAuditJob({
+    jobId: "84ec9cda-e878-4e87-984e-65c8c5652cee",
+    contextId: "94ec9cda-e878-4e87-984e-65c8c5652cef",
+    kind: "image",
+    marketplaceId: "ATVPDKIKX0DER",
+    mode: "live",
+    options: {},
+    ready: true,
+    status: "completed",
+    progress: {
+      stage: "complete",
+      message: "完成",
+      completedUnits: 1,
+      totalUnits: 1,
+    },
+    snapshot: { ...snapshot, exportId },
+  }, {
+    kind: "image",
+    marketplaceId: "ATVPDKIKX0DER",
+    mode: "live",
+  });
+}
 
 describe("FBA image audit parsing", () => {
   it("requires the short-lived main-process export snapshot id", () => {
@@ -158,6 +186,7 @@ describe("FBA image audit parsing", () => {
         marketplaceId: "ATVPDKIKX0DER",
         marketplaceShort: "US",
         onOpenSku: () => undefined,
+        initialJob: completedImageJob(snapshot, "demo-export-1234"),
         cachedResult: {
           snapshot,
           query: "",
@@ -204,6 +233,7 @@ describe("FBA image audit parsing", () => {
             exportId: "demo-export-1234",
           },
         },
+        auditJob: completedImageJob(snapshot, "demo-export-1234"),
         onClose: () => undefined,
       }),
     );

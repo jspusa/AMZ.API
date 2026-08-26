@@ -1,14 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
-  runAplusAudit,
   type AplusAuditSnapshot,
   type AplusAuditProgress,
   type AplusAuditSeed,
-  type AplusContentDocumentFetchInput,
-  type AplusContentDocumentRelationFetchInput,
-  type AplusPublishRecordFetchInput,
-  type AplusPublishRecordFetchResult,
-} from "./a-plus-audit";
+} from "./a-plus-content-reads";
+import { SpExecutionContextError } from "./sp-execution-context";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
 
@@ -16,6 +12,7 @@ export type AplusAuditJobMode = "live" | "demo";
 
 export type AplusAuditJobBoundContext = Readonly<{
   accountScope: string;
+  generation: number;
   marketplaceId: string;
   mode: AplusAuditJobMode;
 }>;
@@ -36,21 +33,13 @@ export type AplusAuditJobGateway = Readonly<{
     signal: AbortSignal;
     heartbeat(): void;
   }>): Promise<AplusAuditFbaSeedSnapshot>;
-  fetchPublishRecords(input: Readonly<{
+  read(input: Readonly<{
     context: AplusAuditJobBoundContext;
-    request: AplusPublishRecordFetchInput;
+    seed: AplusAuditFbaSeedSnapshot;
+    signal: AbortSignal;
     heartbeat(): void;
-  }>): Promise<AplusPublishRecordFetchResult>;
-  fetchContentDocuments?(input: Readonly<{
-    context: AplusAuditJobBoundContext;
-    request: AplusContentDocumentFetchInput;
-    heartbeat(): void;
-  }>): Promise<AplusPublishRecordFetchResult>;
-  fetchContentDocumentAsinRelations?(input: Readonly<{
-    context: AplusAuditJobBoundContext;
-    request: AplusContentDocumentRelationFetchInput;
-    heartbeat(): void;
-  }>): Promise<AplusPublishRecordFetchResult>;
+    onProgress(progress: AplusAuditProgress): void;
+  }>): Promise<AplusAuditSnapshot>;
 }>;
 
 export type AplusAuditJobPendingReceipt = Readonly<{
@@ -123,6 +112,7 @@ function validAccountScope(value: string): boolean {
 function scopeKey(context: AplusAuditJobBoundContext): string {
   return JSON.stringify([
     context.accountScope,
+    context.generation,
     context.marketplaceId,
     context.mode,
   ]);
@@ -238,6 +228,7 @@ export class AplusAuditJobCoordinator {
     }
     if (
       context.accountScope !== job.context.accountScope ||
+      context.generation !== job.context.generation ||
       context.marketplaceId !== job.context.marketplaceId ||
       context.mode !== job.context.mode
     ) {
@@ -273,42 +264,11 @@ export class AplusAuditJobCoordinator {
       )).size;
       job.progress = { completedAsins: 0, totalAsins };
       this.touchActive(job);
-      const snapshot = await runAplusAudit({
-        mode: job.context.mode,
-        marketplaceId: job.context.marketplaceId,
-        fetchedAt: seed.fetchedAt,
-        fbaSnapshotId: seed.fbaSnapshotId,
-        rows: seed.rows,
+      const snapshot = await this.gateway.read({
+        context: job.context,
+        seed,
         signal: job.controller.signal,
-        fetchPublishRecords: async (request) => {
-          await this.assertJobContext(job);
-          return this.gateway.fetchPublishRecords({
-            context: job.context,
-            request,
-            heartbeat: () => this.touchActive(job),
-          });
-        },
-        fetchContentDocuments: this.gateway.fetchContentDocuments
-          ? async (request) => {
-              await this.assertJobContext(job);
-              return this.gateway.fetchContentDocuments!({
-                context: job.context,
-                request,
-                heartbeat: () => this.touchActive(job),
-              });
-            }
-          : undefined,
-        fetchContentDocumentAsinRelations:
-          this.gateway.fetchContentDocumentAsinRelations
-            ? async (request) => {
-                await this.assertJobContext(job);
-                return this.gateway.fetchContentDocumentAsinRelations!({
-                  context: job.context,
-                  request,
-                  heartbeat: () => this.touchActive(job),
-                });
-              }
-            : undefined,
+        heartbeat: () => this.touchActive(job),
         onProgress: (progress) => {
           if (
             this.jobs.get(job.jobId) === job &&
@@ -403,7 +363,13 @@ export class AplusAuditJobCoordinator {
     let context: AplusAuditJobBoundContext;
     try {
       context = await this.gateway.bindContext(input);
-    } catch {
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) {
+        throw new AplusAuditJobCoordinatorError(error.message, {
+          status: error.status,
+          code: error.code,
+        });
+      }
       throw new AplusAuditJobCoordinatorError(
         "A+ 健檢無法安全綁定目前 Notebook 鑰匙 context。",
         { status: 503, code: "A_PLUS_AUDIT_CONTEXT_UNAVAILABLE" },
@@ -412,7 +378,9 @@ export class AplusAuditJobCoordinator {
     if (
       context.marketplaceId !== input.marketplaceId ||
       context.mode !== input.mode ||
-      !validAccountScope(context.accountScope)
+      !validAccountScope(context.accountScope) ||
+      !Number.isSafeInteger(context.generation) ||
+      context.generation < 0
     ) {
       throw new AplusAuditJobCoordinatorError(
         "A+ 健檢的帳號、站點或模式 context 已改變。",
@@ -421,6 +389,7 @@ export class AplusAuditJobCoordinator {
     }
     return {
       accountScope: context.accountScope,
+      generation: context.generation,
       marketplaceId: context.marketplaceId,
       mode: context.mode,
     };
@@ -437,7 +406,10 @@ export class AplusAuditJobCoordinator {
       marketplaceId: job.context.marketplaceId,
       mode: job.context.mode,
     });
-    if (current.accountScope !== job.context.accountScope) {
+    if (
+      current.accountScope !== job.context.accountScope ||
+      current.generation !== job.context.generation
+    ) {
       throw new AplusAuditJobCoordinatorError(
         "A+ 健檢的帳號 context 已改變。",
         { status: 409, code: "ACCOUNT_SCOPE_CHANGED" },

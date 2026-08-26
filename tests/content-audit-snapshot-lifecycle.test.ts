@@ -44,15 +44,29 @@ type AuditReply = {
   }>;
 };
 
-function auditRequest(): ApiRequest {
+function auditStartRequest(): ApiRequest {
+  return {
+    requestId: "content-audit-durable-start",
+    method: "POST",
+    path: "/api/sp-api/listing-content/export",
+    query: {},
+    headers: { "content-type": "application/json" },
+    body: {
+      kind: "json",
+      value: { marketplaceId: MARKETPLACE_ID },
+    },
+  };
+}
+
+function auditRequest(reportId: string, documentId: string): ApiRequest {
   return {
     requestId: "content-audit-durable-scan",
     method: "GET",
     path: "/api/sp-api/listing-content/export",
     query: {
       marketplaceId: MARKETPLACE_ID,
-      reportId: `demo-${MARKETPLACE_ID}`,
-      documentId: `demo-${MARKETPLACE_ID}`,
+      reportId,
+      documentId,
       audit: "1",
     },
     headers: {},
@@ -154,7 +168,16 @@ function replaceProposedTitle(bytes: Uint8Array, value: string): Uint8Array {
 }
 
 async function scan(router: ApiRouter): Promise<AuditReply> {
-  const response = await router.handle(auditRequest());
+  const started = await router.handle(auditStartRequest());
+  expect(started.status, JSON.stringify(responseValue(started))).toBe(200);
+  const reference = responseValue(started) as {
+    reportId: string;
+    documentId: string;
+  };
+  const response = await router.handle(auditRequest(
+    reference.reportId,
+    reference.documentId,
+  ));
   expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
   return responseValue(response) as unknown as AuditReply;
 }
@@ -177,7 +200,7 @@ describe("durable content-audit snapshot lifecycle", () => {
     }
   });
 
-  it("survives clearPreviews and a new Router/LocalStore but rejects account and mode changes", async () => {
+  it("survives Router disposal and a new Router/LocalStore but rejects account and mode changes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "content-audit-lifecycle-"));
     const filePath = join(directory, "data.json");
     const store = new LocalStore(filePath);
@@ -198,13 +221,13 @@ describe("durable content-audit snapshot lifecycle", () => {
       workbook(snapshot),
       "Batch-safe durable product title",
     );
-    router.clearPreviews();
+    router.dispose();
     const afterClear = await router.handle(
       importRequest(edited, "durable-after-clear-001"),
     );
     expect(afterClear.status, JSON.stringify(responseValue(afterClear))).toBe(200);
 
-    router.clearPreviews();
+    router.dispose();
     const restartedStore = new LocalStore(filePath);
     await restartedStore.initialize();
     const restartedRouter = createRouter(restartedStore);

@@ -4,13 +4,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  downloadImageAuditWorkbook,
   imageAuditAttentionRows,
   parseImageAuditSnapshot,
   summarizeImageAudit,
   type ImageAuditSnapshot,
 } from "../image-audit";
 import { auditExportFilename } from "../audit-export-filename";
+import { downloadApiWorkbookResponse } from "../api-workbook-download";
 import {
   pollStandaloneAuditJob,
   shouldResumeStandaloneAuditJob,
@@ -58,6 +58,19 @@ function reportReply(raw: Record<string, unknown>): ReportReply {
 function problemMessage(payload: ApiProblem, fallback: string): string {
   const requestId = payload.requestId ? `（Request ID: ${payload.requestId}）` : "";
   return `${payload.message || fallback}${requestId}`;
+}
+
+export function imageAuditWorkbookDownloadUrl(
+  marketplaceId: string,
+  exportId: string,
+): string {
+  const params = new URLSearchParams({
+    marketplaceId,
+    exportId,
+    imageAudit: "1",
+    download: "1",
+  });
+  return `/api/sp-api/listing-content/export?${params}`;
 }
 
 export function parseImageAuditExportId(raw: unknown): string {
@@ -112,7 +125,10 @@ export default function ImageAuditPanel({
     ? cachedResult
     : null;
   const initialCache = candidateInitialCache && standaloneAuditSnapshotMatchesJob(
-    candidateInitialCache.snapshot,
+    {
+      ...candidateInitialCache.snapshot,
+      exportId: candidateInitialCache.exportId,
+    },
     matchingInitialJob,
   ) ? candidateInitialCache : null;
   const initialJobError = matchingInitialJob?.ready &&
@@ -164,7 +180,10 @@ export default function ImageAuditPanel({
       : null);
     if (
       cachedResult?.snapshot.marketplaceId === marketplaceId &&
-      standaloneAuditSnapshotMatchesJob(cachedResult.snapshot, matchingJob)
+      standaloneAuditSnapshotMatchesJob({
+        ...cachedResult.snapshot,
+        exportId: cachedResult.exportId,
+      }, matchingJob)
     ) {
       setState("done");
       setSnapshot(cachedResult.snapshot);
@@ -232,14 +251,11 @@ export default function ImageAuditPanel({
     setExporting(true);
     setError(null);
     try {
-      const params = new URLSearchParams({
-        marketplaceId,
-        exportId: reportReference.exportId,
-        imageAudit: "1",
-        download: "1",
-      });
       const response = await fetch(
-        `/api/sp-api/listing-content/export?${params}`,
+        imageAuditWorkbookDownloadUrl(
+          marketplaceId,
+          reportReference.exportId,
+        ),
         { cache: "no-store" },
       );
       if (!response.ok) {
@@ -254,12 +270,8 @@ export default function ImageAuditPanel({
         }
         throw new Error(message);
       }
-      // Main revalidates the short-lived, account-scoped audit snapshot first.
-      // The renderer then generates the workbook from the same filtered rows
-      // shown on screen, so relationships-proven parent containers stay out.
-      downloadImageAuditWorkbook(
-        snapshot,
-        marketplaceShort,
+      await downloadApiWorkbookResponse(
+        response,
         auditExportFilename({
           kind: "image",
           marketplaceShort,

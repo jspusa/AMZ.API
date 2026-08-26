@@ -163,32 +163,6 @@ function validSku(value: string): boolean {
   );
 }
 
-export function parseCurrentFbaListingTitles(text: string): BrandSalesListing[] {
-  const rows = parseDelimited(text);
-  const headers = rows[0] ?? [];
-  const skuIndex = requiredColumn(headers, ["seller-sku", "sku"], "Seller SKU");
-  const titleIndex = requiredColumn(headers, ["item-name", "title"], "商品名稱");
-  const fulfillmentIndex = requiredColumn(
-    headers,
-    ["fulfillment-channel", "fulfillment-channel-code"],
-    "履約管道",
-  );
-  const seen = new Set<string>();
-  const listings: BrandSalesListing[] = [];
-  for (const row of rows.slice(1)) {
-    const fulfillment = row[fulfillmentIndex]?.trim() ?? "";
-    if (!/^(?:AMAZON|AFN)(?:[_-].*)?$/iu.test(fulfillment)) continue;
-    const sellerSku = row[skuIndex] ?? "";
-    const title = row[titleIndex]?.trim() ?? "";
-    if (!validSku(sellerSku) || seen.has(sellerSku)) {
-      throw new Error("Amazon 全商品報表含有無法安全辨識或重複的 FBA SKU。");
-    }
-    seen.add(sellerSku);
-    listings.push({ sellerSku, title });
-  }
-  return listings;
-}
-
 function nonNegativeNumber(value: string, label: string): number {
   const normalized = value.trim().replace(/,/gu, "");
   if (!/^(?:\d+|\d+\.\d+)$/u.test(normalized)) {

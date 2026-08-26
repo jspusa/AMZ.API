@@ -5,34 +5,35 @@ import { createReviewAuditWorkbook } from "../src/main/amazon/review-audit-xlsx"
 
 const US = "ATVPDKIKX0DER";
 
-function topicResponse(asin: string) {
+function topicEvidence() {
   return {
-    asin,
-    marketplaceId: US,
     dateRange: {
       startDate: "2026-01-01T00:00:00.000Z",
       endDate: "2026-07-01T00:00:00.000Z",
     },
-    topics: {
-      positiveTopics: [
-        {
-          topic: "Taste",
-          asinMetrics: { numberOfMentions: 12, occurrencePercentage: 20, starRatingImpact: 4.6 },
-          parentAsinMetrics: { numberOfMentions: 9999, occurrencePercentage: 99, starRatingImpact: 99 },
-          reviewSnippets: ["Dogs love it"],
-        },
-        {
-          topic: "Texture",
-          asinMetrics: { numberOfMentions: 6, occurrencePercentage: 10, starRatingImpact: 3.2 },
-          reviewSnippets: ["Good chew"],
-        },
-      ],
-      negativeTopics: [{
-        topic: "Smell",
-        asinMetrics: { numberOfMentions: 3, occurrencePercentage: 5, starRatingImpact: -2.4 },
-        reviewSnippets: ["Strong smell"],
-      }],
-    },
+    positiveTopics: [
+      {
+        topic: "Taste",
+        numberOfMentions: 12,
+        occurrencePercentage: 20,
+        starRatingImpact: 4.6,
+        reviewSnippets: ["Dogs love it"],
+      },
+      {
+        topic: "Texture",
+        numberOfMentions: 6,
+        occurrencePercentage: 10,
+        starRatingImpact: 3.2,
+        reviewSnippets: ["Good chew"],
+      },
+    ],
+    negativeTopics: [{
+      topic: "Smell",
+      numberOfMentions: 3,
+      occurrencePercentage: 5,
+      starRatingImpact: -2.4,
+      reviewSnippets: ["Strong smell"],
+    }],
   };
 }
 
@@ -67,7 +68,7 @@ describe("review topic audit Excel", () => {
             relationshipRole: "child",
             evidence: "FBA_LISTING_REPORT_RELATIONSHIPS_NON_PARENT_ASIN",
           },
-          response: topicResponse("B000000001"),
+          evidence: topicEvidence(),
         },
         {
           candidate: {
@@ -77,7 +78,6 @@ describe("review topic audit Excel", () => {
             relationshipRole: "standalone",
             evidence: "FBA_LISTING_REPORT_RELATIONSHIPS_NON_PARENT_ASIN",
           },
-          response: null,
           error: { message: "Role unavailable", requestId: "req-403" },
         },
       ],
@@ -144,7 +144,7 @@ describe("review topic audit Excel", () => {
           relationshipRole: "child",
           evidence: "FBA_LISTING_REPORT_RELATIONSHIPS_NON_PARENT_ASIN",
         },
-        response: topicResponse("B000000001"),
+        evidence: topicEvidence(),
       }],
     });
     const archive = unzipSync(createReviewAuditWorkbook({

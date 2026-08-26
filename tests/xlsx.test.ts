@@ -119,6 +119,55 @@ describe("FBA aged inventory Excel export", () => {
     );
     expect(notesSheet).toContain("不猜費率");
   });
+
+  it("keeps partial fee evidence row-level and refuses partial marketplace totals", () => {
+    const workbook = createAgedInventoryWorkbook({
+      marketplaceLabel: "US · Amazon.com",
+      fetchedAt: "2026-08-08T00:00:00.000Z",
+      excessAvailability: "partial",
+      excessReportedSkuCount: 0,
+      storageCostAvailability: "partial",
+      storageCostReportedSkuCount: 0,
+      agedSurchargeAvailability: "partial",
+      agedSurchargeReportedSkuCount: 0,
+      expirationNotice: "Current FC lot expiration is unavailable.",
+      rows: [{
+        sellerSku: "PARTIAL-EVIDENCE-01",
+        fnSku: "",
+        asin: "",
+        title: "Partial evidence",
+        condition: "New",
+        available: null,
+        totalAgedUnits: 0,
+        agedOver180: 0,
+        ageBuckets: [],
+        estimatedExcessQuantity: null,
+        recommendedRemovalQuantity: null,
+        daysOfSupply: null,
+        currencyCode: null,
+        estimatedStorageCostNextMonth: null,
+        estimatedAgedSurcharge: null,
+        agedSurchargeBuckets: [],
+        alert: "",
+        recommendedAction: "",
+        snapshotDate: null,
+      }],
+    });
+    const archive = unzipSync(workbook);
+    const inventorySheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet1.xml"],
+    );
+    const notesSheet = new TextDecoder().decode(
+      archive["xl/worksheets/sheet2.xml"],
+    );
+
+    expect(inventorySheet).toContain("PARTIAL-EVIDENCE-01");
+    expect(notesSheet).toContain("已回傳 0/1 SKU");
+    expect(notesSheet).toContain("逐列已回傳值與空白原樣保留");
+    expect(notesSheet).toContain("不計算或顯示部分全站合計");
+    expect(notesSheet).toContain("不計算或顯示部分全站費用");
+    expect(notesSheet).not.toContain("可加總已回傳");
+  });
 });
 
 describe("FBA image audit Excel export", () => {

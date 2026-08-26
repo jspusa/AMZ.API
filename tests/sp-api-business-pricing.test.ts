@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  getBusinessPricingAuditData,
-  getBusinessPricingActiveListingsReportStatus,
+  catalogListingsReadAdapterProduction,
+  catalogReportsDemoSource,
   getBusinessPricing,
   invalidateSpApiCredentialCaches,
-  parseFbaListingReportSeeds,
   previewBusinessPriceUpdate,
   updateBusinessPrice,
 } from "../src/main/amazon/sp-api";
+import {
+  readFbaBusinessPricingAudit,
+  readFbaCatalogSeeds as parseFbaListingReportSeeds,
+} from "../src/main/amazon/catalog-report-reads";
+import { downloadMockReportDocument } from "./catalog-report-test-support";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const SELLER_ID = "FAKE_B2B_SELLER_NA";
@@ -25,12 +29,66 @@ const savedEnvironment = new Map(
     .map((key) => [key, process.env[key]]),
 );
 
+async function getBusinessPricingAuditData(input: Readonly<{
+  marketplaceId: typeof MARKETPLACE_ID;
+  reportId: string;
+  documentId: string;
+  activeListingsReport?: Readonly<{
+    reportId: string;
+    documentId: string;
+  }> | null;
+  signal?: AbortSignal;
+}>) {
+  if (process.env.SP_API_MODE === "demo") {
+    const expected = `demo-${input.marketplaceId}`;
+    if (input.reportId !== expected || input.documentId !== expected) {
+      throw new Error("Demo catalog handles do not match the marketplace.");
+    }
+    return catalogReportsDemoSource.businessPricingAudit({
+      marketplaceId: input.marketplaceId,
+      signal: input.signal,
+    });
+  }
+  const allListingsDocument = await downloadMockReportDocument(input);
+  let activeListingsDocument: string | null = null;
+  if (input.activeListingsReport) {
+    try {
+      activeListingsDocument = await downloadMockReportDocument(
+        input.activeListingsReport,
+      );
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
+    }
+  }
+  return readFbaBusinessPricingAudit(catalogListingsReadAdapterProduction, {
+    marketplaceId: input.marketplaceId,
+    mode: "live",
+    allListingsDocument,
+    activeListingsDocument,
+    signal: input.signal,
+    pace: async () => undefined,
+  });
+}
+
 function jsonResponse(
   status: number,
   body: unknown,
   headers: Record<string, string> = {},
 ): Response {
-  return new Response(JSON.stringify(body), {
+  const definitionFixture =
+    status >= 200 &&
+    status < 300 &&
+    body !== null &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    ("schema" in body || "productType" in body)
+      ? {
+          productType: "PET_FOOD",
+          marketplaceIds: [MARKETPLACE_ID],
+          ...body,
+        }
+      : body;
+  return new Response(JSON.stringify(definitionFixture), {
     status,
     headers: { "content-type": "application/json", ...headers },
   });
@@ -3606,31 +3664,6 @@ describe("Amazon Business pricing SP-API contract", () => {
     },
   );
 
-  it("rejects Active Listings status evidence from a different report identity", async () => {
-    const reportId = "B2B-ACTIVE-IDENTITY-MISMATCH";
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
-      const url = urlOf(input);
-      if (url.origin === "https://api.amazon.com") {
-        return jsonResponse(200, { access_token: "TOKEN", expires_in: 3_600 });
-      }
-      if (url.pathname === `/reports/2021-06-30/reports/${reportId}`) {
-        return jsonResponse(200, {
-          reportId,
-          reportType: "GET_MERCHANT_LISTINGS_ALL_DATA",
-          marketplaceIds: [MARKETPLACE_ID],
-          processingStatus: "DONE",
-          reportDocumentId: "WRONG-ACTIVE-DOCUMENT",
-        });
-      }
-      throw new Error(`Unexpected request: ${url.href}`);
-    }));
-
-    await expect(getBusinessPricingActiveListingsReportStatus({
-      marketplaceId: MARKETPLACE_ID,
-      reportId,
-    })).rejects.toMatchObject({ code: "REPORT_MISMATCH" });
-  });
-
   it("keeps positive all-listings evidence when Active status is temporarily unavailable", async () => {
     const reportId = "B2B-REPORT-EVIDENCE-AUDIT";
     const documentId = "B2B-REPORT-EVIDENCE-DOCUMENT";
@@ -3902,6 +3935,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       }
       if (url.pathname.endsWith("/productTypes/OTHER")) {
         return jsonResponse(200, {
+          productType: "OTHER",
           schema: {
             link: { resource: unsupportedSchemaUrl, verb: "GET" },
             checksum: unsupportedChecksum,

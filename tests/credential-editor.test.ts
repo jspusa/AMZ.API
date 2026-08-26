@@ -73,9 +73,7 @@ describe("local-only SP-API/R2/Skill credential editor", () => {
     expect(saveHandler).toContain("credentialsChangeInFlight");
     expect(saveHandler).toContain("confirmSensitiveAction");
     expect(saveHandler.indexOf("confirmSensitiveAction")).toBeLessThan(saveHandler.indexOf("credentialVault.save"));
-    expect(saveHandler).toContain("invalidateSpApiCredentialCaches");
-    expect(saveHandler).toContain("advertisingApi?.invalidate()");
-    expect(saveHandler).toContain("apiRouter?.clearPreviews()");
+    expect(saveHandler).toContain('invalidateAmazonSecurityContext("credentials-saved")');
 
     expect(connectionSource).not.toContain("type FormState");
     expect(connectionSource).not.toContain("CredentialInput");

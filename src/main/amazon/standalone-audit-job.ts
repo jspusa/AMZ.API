@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SpExecutionContextError } from "./sp-execution-context";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
 
@@ -18,6 +19,7 @@ export type StandaloneAuditJobOptions = Readonly<{ months?: 6 | 12 | 23 }>;
 
 export type StandaloneAuditJobBoundContext = Readonly<{
   accountScope: string;
+  generation: number;
   marketplaceId: string;
   mode: StandaloneAuditJobMode;
 }>;
@@ -136,10 +138,11 @@ function selectionKey(input: Readonly<{
 }>): string {
   return JSON.stringify([
     input.context.accountScope,
+    input.context.generation,
     input.context.marketplaceId,
     input.context.mode,
     input.kind,
-    input.options.months ?? null,
+    input.kind === "subscription" ? input.options.months ?? 6 : null,
   ]);
 }
 
@@ -180,6 +183,7 @@ export class StandaloneAuditJobCoordinator {
   private readonly runnerTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly ttlMs: number;
+  private lifecycleRevision = 0;
 
   constructor(input: Readonly<{
     gateway: StandaloneAuditJobGateway;
@@ -193,6 +197,7 @@ export class StandaloneAuditJobCoordinator {
   }
 
   clear(): void {
+    this.lifecycleRevision += 1;
     for (const jobId of [...this.jobs.keys()]) this.deleteJob(jobId);
     this.selections.clear();
   }
@@ -203,6 +208,7 @@ export class StandaloneAuditJobCoordinator {
     mode: StandaloneAuditJobMode;
     options?: StandaloneAuditJobOptions;
   }>): Promise<StandaloneAuditJobPendingReceipt> {
+    const revision = this.lifecycleRevision;
     this.prune();
     if (
       !isAuditKind(input.kind) ||
@@ -213,6 +219,7 @@ export class StandaloneAuditJobCoordinator {
     }
     const options = canonicalOptions(input.kind, input.options);
     const context = await this.bindContext(input);
+    this.assertLifecycleRevision(revision);
     this.prune();
     const selection = selectionKey({ context, kind: input.kind, options });
     const existingJobId = this.selections.get(selection);
@@ -258,6 +265,7 @@ export class StandaloneAuditJobCoordinator {
     marketplaceId: string;
     mode: StandaloneAuditJobMode;
   }>): Promise<StandaloneAuditJobReceipt> {
+    const revision = this.lifecycleRevision;
     this.prune();
     const job = this.jobs.get(input.jobId);
     if (
@@ -272,10 +280,20 @@ export class StandaloneAuditJobCoordinator {
         { status: 410, code: "STANDALONE_AUDIT_JOB_EXPIRED" },
       );
     }
-    const context = await this.bindContext({
-      marketplaceId: input.marketplaceId,
-      mode: input.mode,
-    });
+    let context: StandaloneAuditJobBoundContext;
+    try {
+      context = await this.bindContext({
+        marketplaceId: input.marketplaceId,
+        mode: input.mode,
+      });
+    } catch (error) {
+      if (
+        error instanceof StandaloneAuditJobCoordinatorError &&
+        error.status === 409
+      ) this.deleteJob(job.jobId);
+      throw error;
+    }
+    this.assertLifecycleRevision(revision);
     this.prune();
     if (this.jobs.get(job.jobId) !== job) {
       throw new StandaloneAuditJobCoordinatorError(
@@ -283,15 +301,18 @@ export class StandaloneAuditJobCoordinator {
         { status: 410, code: "STANDALONE_AUDIT_JOB_EXPIRED" },
       );
     }
-    if (
-      context.accountScope !== job.context.accountScope ||
-      context.marketplaceId !== job.context.marketplaceId ||
-      context.mode !== job.context.mode
-    ) {
+    if (context.accountScope !== job.context.accountScope) {
       this.deleteJob(job.jobId);
       throw new StandaloneAuditJobCoordinatorError(
-        "單項健檢工作與目前帳號、站點或模式不一致。",
+        "單項健檢工作與目前帳號範圍不一致。",
         { status: 409, code: "ACCOUNT_SCOPE_CHANGED" },
+      );
+    }
+    if (context.generation !== job.context.generation) {
+      this.deleteJob(job.jobId);
+      throw new StandaloneAuditJobCoordinatorError(
+        "單項健檢的執行環境已更新；請重新開始這次操作。",
+        { status: 409, code: "SP_CONTEXT_INVALIDATED" },
       );
     }
     return this.receipt(job);
@@ -319,6 +340,7 @@ export class StandaloneAuditJobCoordinator {
           if (
             this.jobs.get(job.jobId) !== job ||
             job.controller.signal.aborted ||
+            job.status !== "running" ||
             !validProgress(progress)
           ) return;
           job.progress = { ...progress };
@@ -327,6 +349,11 @@ export class StandaloneAuditJobCoordinator {
       });
       if (this.jobs.get(job.jobId) !== job || job.controller.signal.aborted) return;
       await this.assertJobContext(job);
+      if (
+        this.jobs.get(job.jobId) !== job ||
+        job.controller.signal.aborted ||
+        job.status !== "running"
+      ) return;
       job.snapshot = structuredClone(snapshot);
       job.status = "completed";
       if (job.progress.stage !== "complete") {
@@ -398,16 +425,34 @@ export class StandaloneAuditJobCoordinator {
     let context: StandaloneAuditJobBoundContext;
     try {
       context = await this.gateway.bindContext(input);
-    } catch {
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) {
+        throw new StandaloneAuditJobCoordinatorError(error.message, {
+          status: error.status,
+          code: error.code,
+        });
+      }
       throw new StandaloneAuditJobCoordinatorError(
         "單項健檢無法安全綁定目前 Notebook 鑰匙 context。",
         { status: 503, code: "STANDALONE_AUDIT_CONTEXT_UNAVAILABLE" },
       );
     }
+    if (context.marketplaceId !== input.marketplaceId) {
+      throw new StandaloneAuditJobCoordinatorError(
+        "單項健檢的站點 context 已改變。",
+        { status: 409, code: "SP_CONTEXT_INVALIDATED" },
+      );
+    }
+    if (context.mode !== input.mode) {
+      throw new StandaloneAuditJobCoordinatorError(
+        "App 展示／真實模式已改變；本次操作已停止。",
+        { status: 409, code: "REPORT_MODE_CHANGED" },
+      );
+    }
     if (
-      context.marketplaceId !== input.marketplaceId ||
-      context.mode !== input.mode ||
-      !validAccountScope(context.accountScope)
+      !validAccountScope(context.accountScope) ||
+      !Number.isSafeInteger(context.generation) ||
+      context.generation < 0
     ) {
       throw new StandaloneAuditJobCoordinatorError(
         "單項健檢的帳號、站點或模式 context 已改變。",
@@ -424,16 +469,47 @@ export class StandaloneAuditJobCoordinator {
         { status: 410, code: "STANDALONE_AUDIT_JOB_EXPIRED" },
       );
     }
-    const current = await this.bindContext({
-      marketplaceId: job.context.marketplaceId,
-      mode: job.context.mode,
-    });
+    let current: StandaloneAuditJobBoundContext;
+    try {
+      current = await this.bindContext({
+        marketplaceId: job.context.marketplaceId,
+        mode: job.context.mode,
+      });
+    } catch (error) {
+      if (
+        error instanceof StandaloneAuditJobCoordinatorError &&
+        error.status === 409
+      ) this.deleteJob(job.jobId);
+      throw error;
+    }
+    if (this.jobs.get(job.jobId) !== job || job.controller.signal.aborted) {
+      throw new StandaloneAuditJobCoordinatorError(
+        "單項健檢工作已停止。",
+        { status: 410, code: "STANDALONE_AUDIT_JOB_EXPIRED" },
+      );
+    }
     if (current.accountScope !== job.context.accountScope) {
+      this.deleteJob(job.jobId);
       throw new StandaloneAuditJobCoordinatorError(
         "單項健檢的帳號 context 已改變。",
         { status: 409, code: "ACCOUNT_SCOPE_CHANGED" },
       );
     }
+    if (current.generation !== job.context.generation) {
+      this.deleteJob(job.jobId);
+      throw new StandaloneAuditJobCoordinatorError(
+        "單項健檢的執行環境已更新；請重新開始這次操作。",
+        { status: 409, code: "SP_CONTEXT_INVALIDATED" },
+      );
+    }
+  }
+
+  private assertLifecycleRevision(expected: number): void {
+    if (expected === this.lifecycleRevision) return;
+    throw new StandaloneAuditJobCoordinatorError(
+      "單項健檢的執行環境已更新；請重新開始這次操作。",
+      { status: 409, code: "SP_CONTEXT_INVALIDATED" },
+    );
   }
 
   private deleteJob(jobId: string): void {

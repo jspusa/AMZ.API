@@ -1,9 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  parseFbaListingReportSeeds,
+  readFbaCatalogSeeds as parseFbaListingReportSeeds,
+} from "../src/main/amazon/catalog-report-reads";
+import {
+  createScriptedListingsReadAdapter,
+} from "../src/main/amazon/listings-reads";
+import {
+  getDemoFbaReviewAuditCandidates,
   verifyFbaReviewAuditSeeds,
   type FbaReviewAuditSeed,
-} from "../src/main/amazon/sp-api";
+} from "../src/main/amazon/variation-catalog-reads";
 
 const US = "ATVPDKIKX0DER";
 
@@ -44,7 +50,50 @@ function item(
   };
 }
 
+function searchStep(
+  status: number,
+  payload: unknown,
+  requestId: string | null,
+) {
+  return {
+    operation: "search" as const,
+    result: {
+      status,
+      envelope: payload,
+      requestId,
+      rateLimit: null,
+      retryAfter: null,
+      profile: "variation" as const,
+    },
+  };
+}
+
 describe("review-audit non-parent relationship proof", () => {
+  it("keeps deterministic demo candidates inside the relationship owner", () => {
+    const snapshot = getDemoFbaReviewAuditCandidates({ marketplaceId: US });
+
+    expect(snapshot).toMatchObject({
+      mode: "demo",
+      marketplaceId: US,
+      sourceCandidateCount: 6,
+      coverage: {
+        sourceFbaListings: 6,
+        verifiedNonParentListings: 6,
+        verifiedChildListings: 3,
+        verifiedStandaloneListings: 3,
+        excludedParentContainers: 0,
+        relationshipIncomplete: 0,
+      },
+    });
+    expect(snapshot.candidates).toHaveLength(6);
+    expect(snapshot.candidates.every(({ relationshipRole }) =>
+      relationshipRole === "child" || relationshipRole === "standalone"
+    )).toBe(true);
+    expect(() => getDemoFbaReviewAuditCandidates({
+      marketplaceId: "A2EUQ1WTGCTBG2",
+    })).toThrow(/尚不支援此站點/u);
+  });
+
   it("includes verified child and standalone, excludes parent, and keeps missing/conflicting evidence incomplete", async () => {
     const seeds = [
       seed(1, { sellerSku: "CHILD" }),
@@ -56,10 +105,8 @@ describe("review-audit non-parent relationship proof", () => {
       seed(7, { sellerSku: "MISSING-MARKETPLACE-ID" }),
       seed(8, { sellerSku: "DUPLICATE-CURRENT-MARKETPLACE" }),
     ];
-    const searchBatch = vi.fn(async () => ({
-      status: 200,
-      requestId: "request-proof",
-      payload: {
+    const adapter = createScriptedListingsReadAdapter([
+      searchStep(200, {
         numberOfResults: 8,
         pagination: {},
         items: [
@@ -95,13 +142,12 @@ describe("review-audit non-parent relationship proof", () => {
             ],
           }),
         ],
-      },
-    }));
+      }, "request-proof"),
+    ]);
 
-    const result = await verifyFbaReviewAuditSeeds({
+    const result = await verifyFbaReviewAuditSeeds(adapter, {
       marketplaceId: US,
       seeds,
-      searchBatch,
       pace: async () => undefined,
     });
 
@@ -125,7 +171,7 @@ describe("review-audit non-parent relationship proof", () => {
       excludedParentContainers: 1,
       relationshipIncomplete: 5,
     });
-    expect(searchBatch).toHaveBeenCalledTimes(1);
+    expect(adapter.requests).toHaveLength(1);
   });
 
   it("does not merge the same ASIN when Listings returns conflicting non-parent roles", async () => {
@@ -133,18 +179,16 @@ describe("review-audit non-parent relationship proof", () => {
       seed(1, { sellerSku: "SHARED-CHILD", asin: "B000000001" }),
       seed(2, { sellerSku: "SHARED-STANDALONE", asin: "B000000001" }),
     ];
-    const result = await verifyFbaReviewAuditSeeds({
+    const adapter = createScriptedListingsReadAdapter([
+      searchStep(200, {
+        numberOfResults: 2,
+        pagination: {},
+        items: [item(seeds[0]!, "child"), item(seeds[1]!, "standalone")],
+      }, "request-role-conflict"),
+    ]);
+    const result = await verifyFbaReviewAuditSeeds(adapter, {
       marketplaceId: US,
       seeds,
-      searchBatch: async () => ({
-        status: 200,
-        requestId: "request-role-conflict",
-        payload: {
-          numberOfResults: 2,
-          pagination: {},
-          items: [item(seeds[0]!, "child"), item(seeds[1]!, "standalone")],
-        },
-      }),
       pace: async () => undefined,
     });
 
@@ -162,26 +206,24 @@ describe("review-audit non-parent relationship proof", () => {
 
   it("uses the unique current-market relationship group without importing another market's parent", async () => {
     const source = seed(1, { sellerSku: "MIXED-MARKET-STANDALONE" });
-    const result = await verifyFbaReviewAuditSeeds({
+    const adapter = createScriptedListingsReadAdapter([
+      searchStep(200, {
+        numberOfResults: 1,
+        pagination: {},
+        items: [item(source, "standalone", {
+          relationships: [
+            { marketplaceId: US, relationships: [] },
+            {
+              marketplaceId: "A2EUQ1WTGCTBG2",
+              relationships: [{ parentSkus: ["CANADA-PARENT"] }],
+            },
+          ],
+        })],
+      }, "request-mixed-market"),
+    ]);
+    const result = await verifyFbaReviewAuditSeeds(adapter, {
       marketplaceId: US,
       seeds: [source],
-      searchBatch: async () => ({
-        status: 200,
-        requestId: "request-mixed-market",
-        payload: {
-          numberOfResults: 1,
-          pagination: {},
-          items: [item(source, "standalone", {
-            relationships: [
-              { marketplaceId: US, relationships: [] },
-              {
-                marketplaceId: "A2EUQ1WTGCTBG2",
-                relationships: [{ parentSkus: ["CANADA-PARENT"] }],
-              },
-            ],
-          })],
-        },
-      }),
       pace: async () => undefined,
     });
 
@@ -194,32 +236,33 @@ describe("review-audit non-parent relationship proof", () => {
 
   it("uses 20-SKU batches, continues after one failed batch, and never falls back per SKU", async () => {
     const seeds = Array.from({ length: 45 }, (_, index) => seed(index + 1));
-    const calls: string[][] = [];
     const pauses: number[] = [];
-    const result = await verifyFbaReviewAuditSeeds({
+    const firstBatch = seeds.slice(0, 20);
+    const finalBatch = seeds.slice(40);
+    const adapter = createScriptedListingsReadAdapter([
+      searchStep(200, {
+        numberOfResults: firstBatch.length,
+        pagination: {},
+        items: firstBatch.map((candidate) => item(candidate, "standalone")),
+      }, "request-1"),
+      searchStep(400, null, "request-400"),
+      searchStep(200, {
+        numberOfResults: finalBatch.length,
+        pagination: {},
+        items: finalBatch.map((candidate) => item(candidate, "standalone")),
+      }, "request-3"),
+    ]);
+    const result = await verifyFbaReviewAuditSeeds(adapter, {
       marketplaceId: US,
       seeds,
-      searchBatch: async (sellerSkus) => {
-        calls.push(sellerSkus);
-        if (calls.length === 2) {
-          return { status: 400, payload: null, requestId: "request-400" };
-        }
-        const selected = sellerSkus.map((sellerSku) =>
-          seeds.find((candidate) => candidate.sellerSku === sellerSku)!);
-        return {
-          status: 200,
-          requestId: `request-${calls.length}`,
-          payload: {
-            numberOfResults: selected.length,
-            pagination: {},
-            items: selected.map((candidate) => item(candidate, "standalone")),
-          },
-        };
-      },
       pace: async (milliseconds) => { pauses.push(milliseconds); },
     });
 
-    expect(calls.map(({ length }) => length)).toEqual([20, 20, 5]);
+    expect(adapter.requests.map((request) =>
+      request.operation === "search" && request.intent === "variation-sku-batch"
+        ? request.sellerSkus.length
+        : 0
+    )).toEqual([20, 20, 5]);
     expect(pauses).toEqual([220, 220]);
     expect(result.candidates).toHaveLength(25);
     expect(result.relationshipIncompleteRows).toHaveLength(20);
@@ -231,50 +274,52 @@ describe("review-audit non-parent relationship proof", () => {
   it("does not start another relationship batch after lifecycle cleanup aborts the run", async () => {
     const seeds = Array.from({ length: 45 }, (_, index) => seed(index + 1));
     const controller = new AbortController();
-    const searchBatch = vi.fn(async (sellerSkus: string[]) => {
-      const selected = sellerSkus.map((sellerSku) =>
-        seeds.find((candidate) => candidate.sellerSku === sellerSku)!);
-      controller.abort(new Error("lifecycle cleanup"));
-      return {
-        status: 200,
-        requestId: "request-before-abort",
-        payload: {
-          numberOfResults: selected.length,
-          pagination: {},
-          items: selected.map((candidate) => item(candidate, "standalone")),
-        },
-      };
-    });
+    const firstBatch = seeds.slice(0, 20);
+    const scripted = createScriptedListingsReadAdapter([
+      searchStep(200, {
+        numberOfResults: firstBatch.length,
+        pagination: {},
+        items: firstBatch.map((candidate) => item(candidate, "standalone")),
+      }, "request-before-abort"),
+    ]);
+    const adapter = {
+      ...scripted,
+      async searchItems(
+        plan: Parameters<typeof scripted.searchItems>[0],
+      ) {
+        const result = await scripted.searchItems(plan);
+        controller.abort(new Error("lifecycle cleanup"));
+        return result;
+      },
+    };
 
-    await expect(verifyFbaReviewAuditSeeds({
+    await expect(verifyFbaReviewAuditSeeds(adapter, {
       marketplaceId: US,
       seeds,
-      searchBatch,
       pace: async () => undefined,
       signal: controller.signal,
     })).rejects.toThrow(/lifecycle cleanup/u);
-    expect(searchBatch).toHaveBeenCalledTimes(1);
+    expect(scripted.requests).toHaveLength(1);
   });
 
   it("marks invalid ASIN and unqueryable SKU incomplete without any Listings request", async () => {
-    const searchBatch = vi.fn();
+    const adapter = createScriptedListingsReadAdapter([]);
     const [rawPaddedAsin] = parseFbaListingReportSeeds([
       "item-name\tseller-sku\tasin1\tfulfillment-channel",
       "Padded ASIN\tPADDED-ASIN\t B000000003\tAMAZON",
     ].join("\n"));
     expect(rawPaddedAsin?.asin).toBe(" B000000003");
-    const result = await verifyFbaReviewAuditSeeds({
+    const result = await verifyFbaReviewAuditSeeds(adapter, {
       marketplaceId: US,
       seeds: [
         seed(1, { sellerSku: "BAD-ASIN", asin: "" }),
         seed(2, { sellerSku: "SKU,COMMA" }),
         rawPaddedAsin!,
       ],
-      searchBatch,
       pace: async () => undefined,
     });
 
-    expect(searchBatch).not.toHaveBeenCalled();
+    expect(adapter.requests).toEqual([]);
     expect(result.candidates).toEqual([]);
     expect(result.relationshipIncompleteRows).toMatchObject([
       { sellerSku: "BAD-ASIN", code: "REPORT_ASIN_INVALID" },

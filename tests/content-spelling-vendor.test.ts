@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const ROOT = new URL(
-  "../src/renderer/src/vendor/spellcheck/",
+  "../src/shared/vendor/spellcheck/",
   import.meta.url,
 );
 const LICENSE_ROOT = new URL(
@@ -18,6 +18,18 @@ function sha256(path: string): string {
 }
 
 describe("vendored Pages spellchecker", () => {
+  it("keeps hash-pinned vendor bytes free of checkout EOL conversion", () => {
+    const attributes = readFileSync(
+      new URL("../.gitattributes", import.meta.url),
+      "utf8",
+    );
+    for (const path of ["nspell-2.1.5.js", "en_US.aff", "en_US.dic"]) {
+      expect(attributes).toContain(
+        `src/shared/vendor/spellcheck/${path} -text`,
+      );
+    }
+  });
+
   it.each([
     [
       "nspell-2.1.5.js",

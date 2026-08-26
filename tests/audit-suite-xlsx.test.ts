@@ -5,12 +5,14 @@ import {
   type AuditSuiteWorkbookInput,
   type ValidatedAuditSuiteSnapshot,
 } from "../src/main/amazon/audit-suite-xlsx";
-import type { AuditSuiteContext } from "../src/shared/audit-suite";
+import type { AuditSuiteContext } from
+  "../src/main/amazon/audit-suite-context";
 
 const CONTEXT: AuditSuiteContext = {
   runId: "suite-run-0001",
   marketplaceId: "ATVPDKIKX0DER",
   accountScope: "a".repeat(64),
+  generation: 0,
   mode: "live",
 };
 
@@ -136,7 +138,12 @@ describe("combined FBA audit suite Excel", () => {
     expect(allXml).not.toContain("<v>0</v>");
     expect(allXml).not.toContain("<f>");
     expect(allXml).not.toContain("<f ");
-    expect(allXml).not.toContain(CONTEXT.accountScope);
+    const allEntries = Object.entries(archive)
+      .map(([name, bytes]) => `${name}\n${strFromU8(bytes)}`)
+      .join("\n");
+    expect(allEntries).not.toContain(CONTEXT.accountScope);
+    expect(allEntries).not.toMatch(/\baccountScope\b/u);
+    expect(allEntries).not.toMatch(/\bgeneration\b/u);
   });
 
   it("writes formula-like source text as inert inline text and never creates formulas", () => {
@@ -166,7 +173,7 @@ describe("combined FBA audit suite Excel", () => {
     expect(contentSheet).toContain('fitToWidth="1"');
   });
 
-  it("fails closed when any supplied snapshot has the wrong marketplace, account or mode", () => {
+  it("fails closed when any supplied snapshot has the wrong marketplace, account, generation or mode", () => {
     const input = completedInput();
     const subscription = input.sections.subscription!;
     expect(() => createAuditSuiteWorkbook({
@@ -181,6 +188,13 @@ describe("combined FBA audit suite Excel", () => {
       sections: {
         ...input.sections,
         subscription: { ...subscription, accountScope: "b".repeat(64) },
+      },
+    })).toThrow(/context 不一致/u);
+    expect(() => createAuditSuiteWorkbook({
+      ...input,
+      sections: {
+        ...input.sections,
+        subscription: { ...subscription, generation: CONTEXT.generation + 1 },
       },
     })).toThrow(/context 不一致/u);
     expect(() => createAuditSuiteWorkbook({

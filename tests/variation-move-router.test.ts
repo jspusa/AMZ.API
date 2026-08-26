@@ -72,7 +72,7 @@ describe("variation move preview and Touch ID routes", () => {
     approveWrite.mockReset();
     approveWrite.mockResolvedValue(undefined);
     runIdempotentOperation.mockClear();
-    router.clearPreviews();
+    router.dispose();
   });
 
   afterEach(() => {

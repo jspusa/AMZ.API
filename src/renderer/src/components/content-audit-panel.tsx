@@ -17,8 +17,9 @@ import {
 } from "../content-quality";
 import {
   contentAuditAttentionRows,
-  downloadContentAuditWorkbook,
 } from "../content-audit-excel";
+import { auditExportFilename } from "../audit-export-filename";
+import { downloadApiWorkbookResponse } from "../api-workbook-download";
 import {
   pollStandaloneAuditJob,
   shouldResumeStandaloneAuditJob,
@@ -174,6 +175,19 @@ type FreshListingForQuickEdit = {
 function problemMessage(payload: ApiProblem, fallback: string): string {
   const requestId = payload.requestId ? `（Request ID: ${payload.requestId}）` : "";
   return `${payload.message || fallback}${requestId}`;
+}
+
+export function contentAuditWorkbookDownloadUrl(
+  marketplaceId: string,
+  exportId: string,
+): string {
+  const params = new URLSearchParams({
+    marketplaceId,
+    exportId,
+    audit: "1",
+    download: "1",
+  });
+  return `/api/sp-api/listing-content/export?${params}`;
 }
 
 function parseContentWorkbookValues(raw: unknown): ContentWorkbookValues {
@@ -1634,6 +1648,7 @@ export default function ContentAuditPanel({
   const [filter, setFilter] = useState<AuditFilter>(initialCache?.filter ?? "all");
   const [query, setQuery] = useState(initialCache?.query ?? "");
   const [error, setError] = useState<string | null>(initialJobError);
+  const [exporting, setExporting] = useState(false);
   const [spellcheckNote, setSpellcheckNote] = useState<string | null>(
     initialCache?.spellcheckNote ?? null,
   );
@@ -1659,6 +1674,7 @@ export default function ContentAuditPanel({
     abortRef.current?.abort();
     setReply(null);
     setJob(null);
+    setExporting(false);
     const matchingJob = initialJob?.kind === "content" &&
         initialJob.marketplaceId === marketplaceId &&
         initialJob.mode === mode
@@ -1750,18 +1766,17 @@ export default function ContentAuditPanel({
     );
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const editableRows = base.rows;
-    let rows = editableRows;
+    const rows = editableRows;
     const parentNote =
       "Amazon relationships 已在 Notebook 鑰匙背景工作中核對；已證明的 parent 容器不列為文案錯誤，也不提供編輯。";
     let nextSpellcheckNote: string;
     try {
-      const spelling = await import("../content-spelling-rules");
-      rows = spelling.addPagesDictionarySpellingIssues(editableRows);
+      const spelling = await import("../../../shared/content-spelling-metadata");
       nextSpellcheckNote =
-        `${parentNote}${parentNote ? " " : ""}GitHub Pages 共用美式英文辭典 ${spelling.CONTENT_SPELLING_DICTIONARY_VERSION}（${spelling.CONTENT_SPELLING_DICTIONARY_LANGUAGE}）已套用，並保留 ${spelling.CONTENT_SPELLING_ALLOWLIST_COUNT.toLocaleString()} 項品牌、成分與 Amazon 合法字詞。Mac 與 Windows 使用同一份結果；只會提示，不會自動改字。`;
+        `${parentNote}${parentNote ? " " : ""}AMZ.API 共用美式英文辭典 ${spelling.CONTENT_SPELLING_DICTIONARY_VERSION}（${spelling.CONTENT_SPELLING_DICTIONARY_LANGUAGE}）由 Notebook 鑰匙主程式產生可匯出快照，並保留 ${spelling.CONTENT_SPELLING_ALLOWLIST_COUNT.toLocaleString()} 項品牌、成分與 Amazon 合法字詞。介面只顯示快照中已有的提示，不會另外重算或自動改字。`;
     } catch {
       nextSpellcheckNote =
-        `${parentNote}${parentNote ? " " : ""}GitHub Pages 共用英文辭典目前無法載入；已保留文案字數、缺賣點、缺成分、不可見字元與 Amazon 已回傳的明確問題，但本次不會冒充已完成一般英文拼字檢查。`;
+        `${parentNote}${parentNote ? " " : ""}共用英文辭典版本說明目前無法載入；Notebook 鑰匙主程式回傳的可匯出快照仍是唯一結果來源，介面不會另外重算或冒充其他拼字檢查。`;
     }
     const completed = {
       ...base,
@@ -1948,13 +1963,45 @@ export default function ContentAuditPanel({
     }
   };
 
-  const exportAttentionRows = () => {
-    if (!snapshot || attentionRows.length === 0) return;
+  const exportAttentionRows = async () => {
+    if (!snapshot || !snapshot.exportId || attentionRows.length === 0 || exporting) {
+      return;
+    }
+    setExporting(true);
+    setError(null);
     try {
-      downloadContentAuditWorkbook(snapshot, marketplaceShort);
-      setError(null);
-    } catch {
-        setError("目前無法建立文案健檢 Excel，請重新掃描後再試。");
+      const response = await fetch(
+        contentAuditWorkbookDownloadUrl(marketplaceId, snapshot.exportId),
+        { cache: "no-store" },
+      );
+      if (!response.ok) {
+        let message = "文案健檢 Excel 下載失敗，請重新掃描。";
+        try {
+          message = problemMessage(
+            (await response.json()) as ApiProblem,
+            message,
+          );
+        } catch {
+          // A failed binary response is not guaranteed to contain JSON.
+        }
+        throw new Error(message);
+      }
+      await downloadApiWorkbookResponse(
+        response,
+        auditExportFilename({
+          kind: "content",
+          marketplaceShort,
+          fetchedAt: snapshot.fetchedAt,
+        }),
+      );
+    } catch (downloadError) {
+      setError(
+        downloadError instanceof Error
+          ? downloadError.message
+          : "文案健檢 Excel 下載失敗，請重新掃描。",
+      );
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -2045,18 +2092,20 @@ export default function ContentAuditPanel({
         一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic，資料未完成時不推測。
       </p>
       <div className="content-export-note content-audit-privacy">
-        <strong>Amazon 唯讀＋GitHub Pages 共用英文辭典</strong>
-        <p>美式英文辭典直接包在 GitHub Pages 介面內，Mac 與 Windows 一致；文案不會送到第三方，疑似錯字仍由你判斷。</p>
+        <strong>Amazon 唯讀＋AMZ.API 共用英文辭典</strong>
+        <p>美式英文辭典由 Mac／Windows Notebook Key Bridge 在本機套用，顯示與 Excel 共用同一份快照；文案不會送到第三方，疑似錯字仍由你判斷。</p>
       </div>
       {state === "done" && snapshot && summary && (
         <button
           className="content-audit-export-primary"
           type="button"
-          onClick={exportAttentionRows}
-          disabled={attentionRows.length === 0}
+          onClick={() => void exportAttentionRows()}
+          disabled={attentionRows.length === 0 || !snapshot.exportId || exporting}
         >
           <span aria-hidden="true">↓</span>
-          <strong>匯出全部 {attentionRows.length.toLocaleString()} 個待確認項目 Excel</strong>
+          <strong>{exporting
+            ? "匯出中…"
+            : `匯出全部 ${attentionRows.length.toLocaleString()} 個待確認項目 Excel`}</strong>
           <small>只在這台電腦建立，不會上傳商品文案</small>
         </button>
       )}

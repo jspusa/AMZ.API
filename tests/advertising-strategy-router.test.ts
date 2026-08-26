@@ -8,6 +8,19 @@ import {
   type AdvertisingGateway,
   type SponsoredProductsAdvertisedProductReportReference,
 } from "../src/main/amazon/ads-api";
+import {
+  reportsAdapterIdentity,
+  type ReportsAdapter,
+} from "../src/main/amazon/reports-runtime";
+import type {
+  SalesAndTrafficSnapshot,
+} from "../src/main/amazon/sales-and-traffic-reads";
+import type {
+  FbaCatalogIdentitySnapshot as FbaListingIdentitySnapshot,
+} from "../src/main/amazon/catalog-report-reads";
+import {
+  type SpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -69,7 +82,7 @@ describe("FBA advertising strategy router job", () => {
   });
 
   afterEach(() => {
-    routers.forEach((router) => router.clearPreviews());
+    routers.forEach((router) => router.dispose());
     vi.restoreAllMocks();
     if (previousEnvironment.mode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = previousEnvironment.mode;
@@ -82,25 +95,34 @@ describe("FBA advertising strategy router job", () => {
   });
 
   function buildRouter(input: {
-    createAdsReport?: () => Promise<SponsoredProductsAdvertisedProductReportReference>;
+    createAdsReport?: AdvertisingGateway["createSponsoredProductsAdvertisedProductReport"];
     getAdsStatus?: AdvertisingGateway["getSponsoredProductsAdvertisedProductReportStatus"];
     onStrategyWait?: (milliseconds: number) => void;
     onScope?: () => void;
+    onAdsIdentity?: () => void;
     secondSalesChildAsin?: string;
+    spExecutionContext?: SpExecutionContextAdapter;
   } = {}): {
     router: ApiRouter;
     createAdsReport: ReturnType<typeof vi.fn>;
+    getAdsIdentity: ReturnType<typeof vi.fn>;
     startListing: ReturnType<typeof vi.fn>;
+    startSales: ReturnType<typeof vi.fn>;
   } {
-    const adsReference = (): SponsoredProductsAdvertisedProductReportReference => ({
-      reportId: "ads-report-main-only-1",
+    const adsReference = (range: {
+      startDate?: string;
+      endDate?: string;
+    } = {}): SponsoredProductsAdvertisedProductReportReference => ({
+      reportId: `ads-report-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
       marketplaceId: MARKETPLACE_ID,
       combinedAccountScope: adsScope,
-      startDate: START_DATE,
-      endDate: END_DATE,
+      startDate: range.startDate ?? START_DATE,
+      endDate: range.endDate ?? END_DATE,
       configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
     });
-    const createAdsReport = vi.fn(input.createAdsReport ?? (async () => adsReference()));
+    const createAdsReport = vi.fn(
+      input.createAdsReport ?? (async (request) => adsReference(request)),
+    );
     const startListing = vi.fn(async () => ({
       mode: "live" as const,
       ready: true,
@@ -109,6 +131,40 @@ describe("FBA advertising strategy router job", () => {
       status: "DONE" as const,
       notice: "ready",
     }));
+    const getListingStatus = vi.fn(async () => ({
+      mode: "live" as const,
+      ready: true,
+      reportId: "fba-listings-report-main-only",
+      documentId: "fba-listings-document-main-only",
+      status: "DONE" as const,
+      notice: "ready",
+    }));
+    const startSales = vi.fn(async (range: {
+      startDate?: string;
+      endDate?: string;
+    } = {}) => ({
+      mode: "live" as const,
+      ready: true,
+      reportId: `sales-report-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
+      documentId: `sales-document-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
+      status: "DONE" as const,
+      notice: "ready",
+    }));
+    const getSalesStatus = vi.fn(async (range: {
+      startDate?: string;
+      endDate?: string;
+    } = {}) => ({
+      mode: "live" as const,
+      ready: true,
+      reportId: `sales-report-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
+      documentId: `sales-document-main-only-${range.startDate ?? START_DATE}-${range.endDate ?? END_DATE}`,
+      status: "DONE" as const,
+      notice: "ready",
+    }));
+    const getAdsIdentity = vi.fn(async () => {
+      input.onAdsIdentity?.();
+      return { combinedAccountScope: adsScope, adsProfileFingerprint };
+    });
     const advertising: AdvertisingGateway = {
       getCredentialSummary: vi.fn(async () => ({
         encryptionAvailable: true,
@@ -123,10 +179,7 @@ describe("FBA advertising strategy router job", () => {
         input.onScope?.();
         return adsScope;
       }),
-      getCombinedAccountIdentity: vi.fn(async () => {
-        input.onScope?.();
-        return { combinedAccountScope: adsScope, adsProfileFingerprint };
-      }),
+      getCombinedAccountIdentity: getAdsIdentity,
       probeMarketplace: vi.fn(async () => ({
         ok: true,
         testedAt: "2026-08-21T00:00:00.000Z",
@@ -176,6 +229,98 @@ describe("FBA advertising strategy router job", () => {
       })),
       invalidate: vi.fn(),
     };
+    const fbaListings = async (): Promise<FbaListingIdentitySnapshot> => ({
+      mode: "live" as const,
+      marketplaceId: MARKETPLACE_ID,
+      fetchedAt: "2026-08-21T12:00:02.000Z",
+      rows: [
+        { sellerSku: "SAFE-SKU-1", asin: "B000000001", title: "Synthetic Dog Treat One" },
+        { sellerSku: "SAFE-SKU-2", asin: "B000000002", title: "Synthetic Dog Treat Two" },
+      ],
+      notice: "synthetic FBA",
+    });
+    const salesData = async (): Promise<SalesAndTrafficSnapshot> => ({
+      mode: "live" as const,
+      marketplaceId: MARKETPLACE_ID,
+      startDate: START_DATE,
+      endDate: END_DATE,
+      fetchedAt: "2026-08-21T12:00:03.000Z",
+      rows: [
+        {
+          sellerSku: "SAFE-SKU-1",
+          childAsin: "B000000001",
+          unitsOrdered: 10,
+          orderedProductSales: 100,
+          currencyCode: "USD",
+        },
+        {
+          sellerSku: "SAFE-SKU-2",
+          childAsin: input.secondSalesChildAsin ?? "B000000002",
+          unitsOrdered: 5,
+          orderedProductSales: 25,
+          currencyCode: "USD",
+        },
+      ],
+      notice: "synthetic sales",
+    });
+    const reportsAdapter: ReportsAdapter = {
+      async create(request) {
+        const result = request.intent === "all-listings"
+          ? await startListing()
+          : request.intent === "sales-and-traffic-daily-sku"
+            ? await startSales(request)
+            : null;
+        if (!result) {
+          throw new Error(`Unexpected Reports create intent: ${request.intent}`);
+        }
+        return {
+          ...result,
+          identity: reportsAdapterIdentity(request, request.mode),
+        };
+      },
+      async status(request) {
+        const result = request.intent === "all-listings"
+          ? await getListingStatus()
+          : request.intent === "sales-and-traffic-daily-sku"
+            ? await getSalesStatus(request)
+            : null;
+        if (!result || result.reportId !== request.reportId) {
+          throw new Error(`Unexpected Reports status intent: ${request.intent}`);
+        }
+        return {
+          ...result,
+          identity: reportsAdapterIdentity(request, request.mode),
+        };
+      },
+      async readDocument(request) {
+        const expected = request.intent === "all-listings"
+          ? {
+              reportId: "fba-listings-report-main-only",
+              documentId: "fba-listings-document-main-only",
+              text: "synthetic all-listings document",
+            }
+          : request.intent === "sales-and-traffic-daily-sku"
+            ? {
+                reportId: `sales-report-main-only-${request.startDate}-${request.endDate}`,
+                documentId: `sales-document-main-only-${request.startDate}-${request.endDate}`,
+                text: "synthetic sales-and-traffic document",
+              }
+            : null;
+        if (
+          !expected ||
+          expected.reportId !== request.reportId ||
+          expected.documentId !== request.documentId
+        ) {
+          throw new Error(`Unexpected Reports document intent: ${request.intent}`);
+        }
+        return {
+          identity: reportsAdapterIdentity(request, request.mode),
+          reportId: expected.reportId,
+          documentId: expected.documentId,
+          text: expected.text,
+        };
+      },
+    };
     const router = new ApiRouter({
       store,
       vault: {
@@ -186,62 +331,19 @@ describe("FBA advertising strategy router job", () => {
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
       advertising,
-      brandSalesReports: {
-        startListing,
-      },
+      reportsAdapter,
       advertisingStrategySources: {
-        fbaListings: async () => ({
-          mode: "live",
-          marketplaceId: MARKETPLACE_ID,
-          fetchedAt: "2026-08-21T12:00:02.000Z",
-          rows: [
-            { sellerSku: "SAFE-SKU-1", asin: "B000000001", title: "Synthetic Dog Treat One" },
-            { sellerSku: "SAFE-SKU-2", asin: "B000000002", title: "Synthetic Dog Treat Two" },
-          ],
-          notice: "synthetic FBA",
-        }),
+        fbaListings,
       },
       advertisingStrategyWait: async (milliseconds, signal) => {
         if (signal?.aborted) throw new DOMException("aborted", "AbortError");
         input.onStrategyWait?.(milliseconds);
       },
-      salesAndTrafficReports: {
-        start: async () => ({
-          mode: "live",
-          ready: true,
-          reportId: "sales-report-main-only",
-          documentId: "sales-document-main-only",
-          status: "DONE",
-          notice: "ready",
-        }),
-        data: async () => ({
-          mode: "live",
-          marketplaceId: MARKETPLACE_ID,
-          startDate: START_DATE,
-          endDate: END_DATE,
-          fetchedAt: "2026-08-21T12:00:03.000Z",
-          rows: [
-            {
-              sellerSku: "SAFE-SKU-1",
-              childAsin: "B000000001",
-              unitsOrdered: 10,
-              orderedProductSales: 100,
-              currencyCode: "USD",
-            },
-            {
-              sellerSku: "SAFE-SKU-2",
-              childAsin: input.secondSalesChildAsin ?? "B000000002",
-              unitsOrdered: 5,
-              orderedProductSales: 25,
-              currencyCode: "USD",
-            },
-          ],
-          notice: "synthetic sales",
-        }),
-      },
+      salesAndTrafficRead: salesData,
+      spExecutionContext: input.spExecutionContext,
     });
     routers.push(router);
-    return { router, createAdsReport, startListing };
+    return { router, createAdsReport, getAdsIdentity, startListing, startSales };
   }
 
   async function start(router: ApiRouter, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
@@ -256,26 +358,34 @@ describe("FBA advertising strategy router job", () => {
     })));
   }
 
-  async function getJob(router: ApiRouter, jobId: string): Promise<ApiResponse> {
+  async function getJob(
+    router: ApiRouter,
+    jobId: string,
+    range: { startDate?: string; endDate?: string } = {},
+  ): Promise<ApiResponse> {
     return router.handle(apiRequest({
       method: "GET",
       query: {
         marketplaceId: MARKETPLACE_ID,
         jobId,
-        startDate: START_DATE,
-        endDate: END_DATE,
+        startDate: range.startDate ?? START_DATE,
+        endDate: range.endDate ?? END_DATE,
       },
     }));
   }
 
-  async function terminal(router: ApiRouter, jobId: string): Promise<Record<string, unknown>> {
+  async function terminal(
+    router: ApiRouter,
+    jobId: string,
+    range: { startDate?: string; endDate?: string } = {},
+  ): Promise<Record<string, unknown>> {
     let last: Record<string, unknown> | null = null;
     // A loaded CI runner can take longer than 200 ms to advance all four
     // background phases. Keep fast local polling, but allow a bounded two
     // seconds before declaring the job stuck.
     for (let attempt = 0; attempt < 200; attempt += 1) {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      const response = await getJob(router, jobId);
+      const response = await getJob(router, jobId, range);
       const value = jsonValue(response);
       last = value;
       if (value.state !== "running") return value;
@@ -302,9 +412,26 @@ describe("FBA advertising strategy router job", () => {
         schemaVersion: 1,
         marketplaceId: MARKETPLACE_ID,
         currencyCode: "USD",
+        sourceFetchedAt: {
+          sales: "2026-08-21T12:00:03.000Z",
+        },
         rows: [
-          { sellerSku: "SAFE-SKU-1", salesTier: "T1", spSpend: 12 },
-          { sellerSku: "SAFE-SKU-2", salesTier: "T3", spSpend: 5 },
+          {
+            sellerSku: "SAFE-SKU-1",
+            asin: "B000000001",
+            unitsSold: 10,
+            salesAmount: 100,
+            salesTier: "T1",
+            spSpend: 12,
+          },
+          {
+            sellerSku: "SAFE-SKU-2",
+            asin: "B000000002",
+            unitsSold: 5,
+            salesAmount: 25,
+            salesTier: "T3",
+            spSpend: 5,
+          },
         ],
       },
     });
@@ -344,12 +471,13 @@ describe("FBA advertising strategy router job", () => {
   });
 
   it("single-flights the same running selection", async () => {
-    const { router, createAdsReport } = buildRouter();
+    const { router, createAdsReport, startSales } = buildRouter();
     const first = await start(router);
     const second = await start(router);
     expect(second.jobId).toBe(first.jobId);
     await terminal(router, String(first.jobId));
     expect(createAdsReport).toHaveBeenCalledTimes(1);
+    expect(startSales).toHaveBeenCalledTimes(1);
   });
 
   it("keeps polling the same Ads report beyond thirty minutes", async () => {
@@ -383,6 +511,27 @@ describe("FBA advertising strategy router job", () => {
     await terminal(built.router, String(refreshed.jobId));
 
     expect(built.startListing).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses compatible Sales & Traffic reports when the date selection returns A to B to A", async () => {
+    const built = buildRouter();
+    const rangeB = { startDate: "2026-07-01", endDate: "2026-07-20" };
+
+    const rangeA = await start(built.router);
+    await terminal(built.router, String(rangeA.jobId));
+    const rangeBJob = await start(built.router, { ...rangeB, refresh: true });
+    await terminal(built.router, String(rangeBJob.jobId), rangeB);
+    const rangeAAgain = await start(built.router, { refresh: true });
+    await terminal(built.router, String(rangeAAgain.jobId));
+
+    expect(built.startSales).toHaveBeenCalledTimes(2);
+    expect(built.startSales.mock.calls.map(([request]) => ({
+      startDate: request.startDate,
+      endDate: request.endDate,
+    }))).toEqual([
+      { startDate: START_DATE, endDate: END_DATE },
+      rangeB,
+    ]);
   });
 
   it("rejects future dates before reading account scope or creating reports", async () => {
@@ -425,6 +574,25 @@ describe("FBA advertising strategy router job", () => {
     expect(JSON.stringify(jsonValue(response))).not.toMatch(/[ab]{64}/u);
   });
 
+  it("does not POST when the broker account binding changes after the runner fence", async () => {
+    let identityReads = 0;
+    const built = buildRouter({
+      onAdsIdentity: () => {
+        identityReads += 1;
+        if (identityReads === 3) {
+          adsScope = "ads-account-scope-b:sp-account-scope-a";
+          adsProfileFingerprint = "b".repeat(64);
+        }
+      },
+    });
+
+    const started = await start(built.router);
+    const result = await terminal(built.router, String(started.jobId));
+
+    expect(built.createAdsReport).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ code: "JOB_MISMATCH" });
+  });
+
   it("does not repeat an ambiguous Ads report POST on automatic rerun", async () => {
     const createAdsReport = vi.fn(async (): Promise<SponsoredProductsAdvertisedProductReportReference> => {
       throw new AdvertisingApiError("temporary upstream ambiguity", {
@@ -447,6 +615,46 @@ describe("FBA advertising strategy router job", () => {
       errorCode: "REPORT_RETRY_REQUIRED",
     });
     expect(createAdsReport).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an accepted Ads create whose returned selection mismatches", async () => {
+    const createAdsReport = vi.fn(async (
+      input: Parameters<NonNullable<
+        AdvertisingGateway["createSponsoredProductsAdvertisedProductReport"]
+      >>[0],
+    ): Promise<SponsoredProductsAdvertisedProductReportReference> => ({
+      reportId: "ads-report-accepted-selection-mismatch",
+      marketplaceId: input.marketplaceId,
+      combinedAccountScope: adsScope,
+      startDate: "2026-08-02",
+      endDate: input.endDate,
+      configurationId: SP_ADVERTISED_PRODUCT_REPORT_CONFIGURATION_ID,
+    }));
+    const built = buildRouter({ createAdsReport });
+
+    const first = await start(built.router);
+    expect(await terminal(built.router, String(first.jobId))).toMatchObject({
+      state: "failed",
+    });
+    expect(createAdsReport).toHaveBeenCalledTimes(1);
+
+    const guarded = await start(built.router, { refresh: true });
+    expect(await terminal(built.router, String(guarded.jobId))).toMatchObject({
+      state: "failed",
+      errorCode: "REPORT_RETRY_REQUIRED",
+    });
+    expect(createAdsReport).toHaveBeenCalledTimes(1);
+
+    const explicit = await start(built.router, {
+      refresh: true,
+      explicitRetry: true,
+    });
+    const explicitTerminal = await terminal(built.router, String(explicit.jobId));
+    expect(createAdsReport).toHaveBeenCalledTimes(1);
+    expect(explicitTerminal).toMatchObject({
+      state: "failed",
+      errorCode: "REPORT_RETRY_WAIT",
+    });
   });
 
   it("allows one explicit retry only after the durable retry guard expires", async () => {

@@ -125,30 +125,51 @@ describe("shared marketplace metadata", () => {
   });
 
   it("keeps main domain overlays explicit while removing duplicated configured IDs", async () => {
-    const mainFiles = [
-      "../src/main/amazon/accounting-capabilities.ts",
-      "../src/main/amazon/ads-api.ts",
-      "../src/main/amazon/replenishment-audit.ts",
-      "../src/main/amazon/report-library.ts",
-      "../src/main/amazon/sp-api.ts",
-      "../src/main/credential-vault.ts",
-    ];
-    const sources = await Promise.all(
-      mainFiles.map((path) => readFile(new URL(path, import.meta.url), "utf8")),
-    );
+    const mainFiles = {
+      accounting: "../src/main/amazon/accounting-capabilities.ts",
+      ads: "../src/main/amazon/ads-api.ts",
+      replenishment: "../src/main/amazon/replenishment-audit.ts",
+      inventory: "../src/main/amazon/fba-inventory-replenishment.ts",
+      inventoryProduction:
+        "../src/main/amazon/fba-inventory-replenishment-production.ts",
+      reports: "../src/main/amazon/report-library.ts",
+      customerFeedback: "../src/main/amazon/customer-feedback-reads.ts",
+      customerFeedbackProduction:
+        "../src/main/amazon/customer-feedback-reads-production.ts",
+      demoFbaCatalog: "../src/main/amazon/demo-fba-catalog.ts",
+      orders: "../src/main/amazon/orders-reads.ts",
+      ordersProduction: "../src/main/amazon/orders-reads-production.ts",
+      spApi: "../src/main/amazon/sp-api.ts",
+      vault: "../src/main/credential-vault.ts",
+    } as const;
+    const sources = Object.fromEntries(await Promise.all(
+      Object.entries(mainFiles).map(async ([name, path]) => [
+        name,
+        await readFile(new URL(path, import.meta.url), "utf8"),
+      ]),
+    )) as Record<keyof typeof mainFiles, string>;
 
-    for (const source of sources) {
+    for (const source of Object.values(sources)) {
       expect(source).toContain("shared/marketplaces");
       for (const marketplaceId of EXPECTED_IDS) {
         expect(source).not.toContain(marketplaceId);
       }
     }
-    expect(sources[1]).toContain('UK: "GB"');
-    expect(sources[2]).toContain("OTHER_OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES");
-    expect(sources[3]).toContain("CUSTOMER_FEEDBACK_STORES");
-    expect(sources[4]).toContain("SELLER_REPLENISHMENT_MARKETPLACE_CODES");
-    expect(sources[4]).toContain("CUSTOMER_FEEDBACK_MARKETPLACE_CODES");
-    expect(sources[4]).toContain('UK: "GB"');
+    expect(sources.ads).toContain('UK: "GB"');
+    expect(sources.replenishment).toContain(
+      "OTHER_OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES",
+    );
+    expect(sources.inventory).toContain(
+      "OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES",
+    );
+    expect(sources.reports).toContain("CUSTOMER_FEEDBACK_STORES");
+    expect(sources.customerFeedback).toContain(
+      "customerFeedbackMarketplaceSupported",
+    );
+    expect(sources.customerFeedbackProduction).toContain(
+      "customerFeedbackMarketplaceSupported",
+    );
+    expect(sources.spApi).toContain("customerFeedbackPageAdapterProduction");
   });
 
   it("keeps renderer marketplace selectors dependent on the shared source", async () => {
