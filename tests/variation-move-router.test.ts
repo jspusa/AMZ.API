@@ -52,12 +52,12 @@ function detachBody() {
 
 describe("variation move preview and Touch ID routes", () => {
   const approveWrite = vi.fn(async (_reason: string) => undefined);
-  const runIdempotentOperation = vi.fn(async (input: { operationType: string }) => ({
-    mode: "demo",
-    action: input.operationType === "variation_detach" ? "detach" : "attach",
-    status: "SIMULATED",
-    verified: true,
-  }));
+  const runIdempotentOperation = vi.fn(async (input: {
+    operationType: string;
+    execute(control: Readonly<{
+      recordAccepted(value: unknown): Promise<void>;
+    }>): Promise<unknown>;
+  }) => input.execute({ recordAccepted: async () => undefined }));
   const router = new ApiRouter({
     store: { runIdempotentOperation } as unknown as LocalStore,
     vault: {

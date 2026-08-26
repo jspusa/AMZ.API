@@ -80,6 +80,10 @@ import {
   type ListingImageMutationsPort,
 } from "./listing-image-mutations";
 import {
+  createVariationMoveMutations,
+  type VariationMoveMutationsPort,
+} from "./variation-move-mutations";
+import {
   FbaSalesMetricsRoutes,
   type FbaSalesMetricsRoutesPort,
 } from "./fba-sales-metrics-routes";
@@ -109,21 +113,19 @@ import {
   getDemoUnboundVariationAuditData,
   getSubscribeAndSaveOffer,
   getVariationFamilyPlanner,
-  getVariationMovePreparation,
   isMarketplaceId,
   invalidateSpApiCredentialCaches,
   listingImageGatewayProduction,
   listingPriceGatewayProduction,
+  variationMoveGatewayProduction,
   previewListingContentUpdate,
   previewBusinessPriceUpdate,
-  previewVariationMove,
   fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
   ordersPageAdapterProduction,
   searchListingsBySku,
   updateListingContent,
   updateBusinessPrice,
-  updateVariationMove,
   usesDemoMode,
   verifyListingsAccess,
   type ListingContentSnapshot,
@@ -135,7 +137,6 @@ import {
   type MarketplaceId,
   type UpdateListingContentInput,
   type UpdateBusinessPriceInput,
-  type VariationMoveInput,
 } from "./amazon/sp-api";
 import {
   AgedInventoryReads,
@@ -886,63 +887,6 @@ function parseBullets(value: unknown): string[] | null {
   return result;
 }
 
-function parseVariationDimensionNames(value: unknown): string[] | null {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 6) return null;
-  const names: string[] = [];
-  for (const item of value) {
-    if (
-      typeof item !== "string" ||
-      !/^[a-z][a-z0-9_]{0,79}$/.test(item) ||
-      names.includes(item)
-    ) {
-      return null;
-    }
-    names.push(item);
-  }
-  return names;
-}
-
-function variationJsonSafe(value: unknown, depth = 0): boolean {
-  if (depth > 8) return false;
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return typeof value !== "string" ||
-      (value.length <= 5_000 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value));
-  }
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) {
-    return value.length <= 30 && value.every((item) => variationJsonSafe(item, depth + 1));
-  }
-  if (!isPlainRecord(value) || Object.keys(value).length > 30) return false;
-  return Object.entries(value).every(
-    ([key, child]) =>
-      /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(key) &&
-      !["__proto__", "constructor", "prototype"].includes(key) &&
-      variationJsonSafe(child, depth + 1),
-  );
-}
-
-function parseVariationDimensionValues(
-  value: unknown,
-  dimensionNames: string[],
-): Record<string, unknown> | null {
-  if (!isPlainRecord(value)) return null;
-  const keys = Object.keys(value).sort();
-  const expected = [...dimensionNames].sort();
-  if (
-    keys.length !== expected.length ||
-    !keys.every((key, index) => key === expected[index]) ||
-    !variationJsonSafe(value)
-  ) {
-    return null;
-  }
-  const serialized = JSON.stringify(value);
-  return serialized.length <= 64_000 ? structuredClone(value) : null;
-}
-
 function idempotencyKey(value: unknown): string | null {
   return typeof value === "string" && /^[A-Za-z0-9-]{8,80}$/.test(value)
     ? value
@@ -960,6 +904,7 @@ export class ApiRouter {
   private readonly writeGate: MainWriteGatePort;
   private readonly priceMutations: ListingPriceMutationsPort;
   private readonly listingImageMutations: ListingImageMutationsPort;
+  private readonly variationMoveMutations: VariationMoveMutationsPort;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly aplusContentReads: AplusContentReadsPort;
@@ -1052,6 +997,7 @@ export class ApiRouter {
     writeGate?: MainWriteGatePort;
     priceMutations?: ListingPriceMutationsPort;
     listingImageMutations?: ListingImageMutationsPort;
+    variationMoveMutations?: VariationMoveMutationsPort;
   }) {
     this.store = input.store;
     this.vault = input.vault;
@@ -1081,6 +1027,12 @@ export class ApiRouter {
         context: this.spExecutionContext,
         writeGate: this.writeGate,
         gateway: listingImageGatewayProduction,
+      });
+    this.variationMoveMutations = input.variationMoveMutations ??
+      createVariationMoveMutations({
+        context: this.spExecutionContext,
+        writeGate: this.writeGate,
+        gateway: variationMoveGatewayProduction,
       });
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
@@ -1665,11 +1617,20 @@ export class ApiRouter {
       case "GET /api/sp-api/variation-audit":
         return this.unboundVariationAuditOwner.statusDataOrDownload(request);
       case "GET /api/sp-api/variation-move":
-        return this.variationMovePreparation(request);
+        return this.variationMoveMutations.handle({
+          operation: "prepare",
+          request,
+        });
       case "POST /api/sp-api/variation-move":
-        return this.previewVariationMove(request);
+        return this.variationMoveMutations.handle({
+          operation: "preview",
+          request,
+        });
       case "PATCH /api/sp-api/variation-move":
-        return this.commitVariationMove(request);
+        return this.variationMoveMutations.handle({
+          operation: "commit",
+          request,
+        });
       case "GET /api/sp-api/sku-command":
         return this.skuCommandRoute.skuCommand(request);
       case "GET /api/product-master":
@@ -2041,185 +2002,6 @@ export class ApiRouter {
       return writeApiError(
         error,
         "送出 Amazon Business 價格更新時發生未預期的錯誤。",
-      );
-    }
-  }
-
-  private async variationMovePreparation(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const sellerSku = parseSellerSku(request.query.sku);
-    const targetParentSku = parseSellerSku(request.query.targetSku);
-    if (!marketplaceId || !sellerSku || !targetParentSku) {
-      return invalid("請選擇站點並提供來源 SKU 與目標 parent SKU。");
-    }
-    if (sellerSku === targetParentSku) {
-      return invalid("來源 SKU 與目標 parent 不能相同。");
-    }
-    try {
-      const { value } = await this.runContextBoundWork(
-        marketplaceId,
-        () => getVariationMovePreparation({
-          marketplaceId,
-          sellerSku,
-          targetParentSku,
-        }),
-      );
-      return json(value);
-    } catch (error) {
-      return apiError(error, "準備變體必要欄位時發生未預期的錯誤。");
-    }
-  }
-
-  private variationMoveInput(request: ApiRequest):
-    | (VariationMoveInput & { idempotencyKey: string })
-    | ApiResponse {
-    const body = bodyRecord(request);
-    if (!body) {
-      return invalid("變體請求必須使用 JSON。", 415, "UNSUPPORTED_MEDIA_TYPE");
-    }
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const sellerSku = parseSellerSku(body.sellerSku);
-    const action = body.action === "detach" || body.action === "attach"
-      ? body.action
-      : null;
-    if (!marketplaceId || !sellerSku || !action) {
-      return invalid("變體請求缺少有效的站點、Seller SKU 或操作階段。");
-    }
-    const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : "";
-    if (action === "detach") {
-      const expectedSourceParentSku = parseSellerSku(body.expectedSourceParentSku);
-      if (
-        !expectedSourceParentSku ||
-        sellerSku === expectedSourceParentSku ||
-        body.targetParentSku !== null ||
-        body.variationTheme !== null ||
-        !Array.isArray(body.dimensionNames) ||
-        body.dimensionNames.length !== 0 ||
-        !isPlainRecord(body.dimensionValues) ||
-        Object.keys(body.dimensionValues).length !== 0
-      ) {
-        return invalid(
-          "解除變體請求必須只包含查詢時核對的舊 parent，不可夾帶目標 family 資料。",
-        );
-      }
-      return {
-        action,
-        marketplaceId,
-        sellerSku,
-        expectedSourceParentSku,
-        targetParentSku: null,
-        variationTheme: null,
-        dimensionNames: [],
-        dimensionValues: {},
-        idempotencyKey: key,
-      };
-    }
-    const targetParentSku = parseSellerSku(body.targetParentSku);
-    const variationTheme = typeof body.variationTheme === "string" &&
-      body.variationTheme.trim().length > 0 &&
-      body.variationTheme.trim().length <= 120 &&
-      !/[\u0000-\u001f\u007f]/.test(body.variationTheme)
-      ? body.variationTheme.trim()
-      : null;
-    const dimensionNames = parseVariationDimensionNames(body.dimensionNames);
-    const dimensionValues = dimensionNames
-      ? parseVariationDimensionValues(body.dimensionValues, dimensionNames)
-      : null;
-    if (
-      !targetParentSku ||
-      !variationTheme ||
-      !dimensionNames ||
-      !dimensionValues ||
-      sellerSku === targetParentSku ||
-      body.expectedSourceParentSku !== null
-    ) {
-      return invalid("綁定變體請求缺少有效的目標 parent、theme 或必要維度資料。");
-    }
-    return {
-      action,
-      marketplaceId,
-      sellerSku,
-      expectedSourceParentSku: null,
-      targetParentSku,
-      variationTheme,
-      dimensionNames,
-      dimensionValues,
-      idempotencyKey: key,
-    };
-  }
-
-  private variationMoveFingerprint(input: VariationMoveInput): string {
-    return stableFingerprint([
-      input.action,
-      input.marketplaceId,
-      input.sellerSku,
-      input.expectedSourceParentSku,
-      input.targetParentSku,
-      input.variationTheme,
-      [...input.dimensionNames].sort(),
-      input.dimensionValues,
-    ]);
-  }
-
-  private async previewVariationMove(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.variationMoveInput(request);
-    if ("status" in input) return input;
-    try {
-      const { context, value: result } = await this.runContextBoundWork(
-        input.marketplaceId,
-        () => previewVariationMove(input),
-      );
-      await this.stageWritePreview(this.writeBinding({
-        family: "variation-move",
-        operation: input.action === "detach"
-          ? "variation_detach"
-          : "variation_attach",
-        context,
-        sellerSku: input.sellerSku,
-        idempotencyKey: input.idempotencyKey,
-        proposalFingerprint: this.variationMoveFingerprint(input),
-      }));
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "Amazon 變體預檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async commitVariationMove(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.variationMoveInput(request);
-    if ("status" in input) return input;
-    const key = idempotencyKey(input.idempotencyKey);
-    if (!key) return invalid("這次變體預檢確認資訊已失效，請重新執行。");
-    const context = await this.spExecutionContext.capture(input.marketplaceId);
-    const binding = this.writeBinding({
-      family: "variation-move",
-      operation: input.action === "detach"
-        ? "variation_detach"
-        : "variation_attach",
-      context,
-      sellerSku: input.sellerSku,
-      idempotencyKey: key,
-      proposalFingerprint: this.variationMoveFingerprint(input),
-    });
-    const reason = input.action === "detach"
-      ? `確認解除變體｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜原 parent ${input.expectedSourceParentSku}`
-      : `確認加入變體｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku} → ${input.targetParentSku}｜${input.variationTheme}`;
-    try {
-      const result = await this.writeGate.execute({
-        binding,
-        approvalReason: reason,
-        run: (session) => session.attempt({
-          intentId: "primary",
-          execute: ({ assertCurrent }) => updateVariationMove(input, {
-            assertCurrent,
-          }),
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return writeApiError(
-        error,
-        "Amazon 變體寫入或回查時發生未預期的錯誤。",
       );
     }
   }

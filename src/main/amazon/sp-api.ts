@@ -4,17 +4,6 @@ import {
   type VariationFamilySnapshot,
 } from "./variation-family";
 import {
-  assertVariationAttached,
-  assertVariationDetached,
-  buildVariationAttachBody,
-  buildVariationDetachBody,
-  variationDimensionSignature,
-  variationFieldDescriptors,
-  VariationUpdateValidationError,
-  type VariationFieldDescriptor,
-  type VariationPatchBody,
-} from "./variation-update";
-import {
   assertReplenishmentRequestBody,
   fetchFbaSubscriptionAuditHistory,
   officialCompleteMonthlyIntervals,
@@ -110,9 +99,7 @@ import {
   classifyUnboundVariationSearchBatch,
   completeVariationGroupingRow,
   readFbaVariationGroupingData as readLiveFbaVariationGroupingData,
-  readVariationChildren,
   readVariationFamily,
-  readVariationItem,
   resolveVariationSellerSkuByAsin,
   sellerSkuFromAsinSearchPayload,
   type FbaVariationGroupingData as VariationGroupingData,
@@ -121,7 +108,6 @@ import {
   type UnboundVariationAuditIncompleteRow,
   type UnboundVariationAuditRow,
   type UnboundVariationAuditSnapshot,
-  type VariationItemReadResult,
 } from "./variation-catalog-reads";
 import {
   SpApiError,
@@ -137,6 +123,11 @@ import type {
 } from "./listing-price-types";
 import type { ListingWriteExecutionFence } from
   "./listing-write-execution-fence";
+import type {
+  VariationMoveGateway,
+} from "./variation-move-gateway";
+import { createVariationMoveGatewayProduction } from
+  "./variation-move-gateway-production";
 import {
   listingPricePatchBody,
   type ListingPriceGateway,
@@ -177,6 +168,16 @@ export type {
   UpdateListingSalePriceInput,
 } from "./listing-price-types";
 export type {
+  VariationAttachInput,
+  VariationDetachInput,
+  VariationMoveAction,
+  VariationMoveExecutionFence,
+  VariationMoveInput,
+  VariationMovePreparation,
+  VariationMovePreview,
+  VariationMoveResult,
+} from "./variation-move-types";
+export type {
   ListingImageFieldCapability,
   ListingImageIdentity,
   ListingImageSnapshot,
@@ -192,7 +193,6 @@ export {
 
 import {
   buildAllVariationFamilyRows,
-  classifyUnboundVariationEvidence,
   type VerifiedVariationFamilyMember,
 } from "./unbound-variation-audit";
 
@@ -378,83 +378,6 @@ export type ListingContentUpdateResult = {
   issues: ListingIssue[];
   notice: string;
 };
-
-export type VariationMoveAction = "detach" | "attach";
-
-export type VariationDetachInput = {
-  action: "detach";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  expectedSourceParentSku: string;
-  targetParentSku: null;
-  variationTheme: null;
-  dimensionNames: [];
-  dimensionValues: Record<string, never>;
-};
-
-export type VariationAttachInput = {
-  action: "attach";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  expectedSourceParentSku: null;
-  targetParentSku: string;
-  variationTheme: string;
-  dimensionNames: string[];
-  dimensionValues: Record<string, unknown>;
-};
-
-export type VariationMoveInput = VariationDetachInput | VariationAttachInput;
-
-export type VariationMovePreparation = {
-  mode: "live" | "demo";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  sourceParentSku: string | null;
-  targetParentSku: string;
-  productType: string;
-  variationTheme: string;
-  dimensionNames: string[];
-  fields: VariationFieldDescriptor[];
-  preparedAt: string;
-  requestIds: string[];
-  writable: boolean;
-  blockers: string[];
-  warnings: string[];
-  notice: string;
-};
-
-export type VariationMovePreview = {
-  mode: "live" | "demo";
-  action: VariationMoveAction;
-  status: "VALID" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  sourceParentSku: string | null;
-  targetParentSku: string | null;
-  variationTheme: string | null;
-  validatedAt: string;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type VariationMoveResult = {
-  mode: "live" | "demo";
-  action: VariationMoveAction;
-  status: "ACCEPTED" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  sourceParentSku: string | null;
-  targetParentSku: string | null;
-  variationTheme: string | null;
-  verified: true;
-  completedAt: string;
-  submissionId: string | null;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type VariationMoveExecutionFence = ListingWriteExecutionFence;
 
 export type ListingReportStatus = {
   mode: "live" | "demo";
@@ -730,7 +653,13 @@ type ListingsWriteRequestInput = {
   validationPreview?: boolean;
   validationPreviewIdentifiers?: boolean;
   assertBeforeSend?: () => Promise<void>;
+  recordBeforeSend?: () => Promise<void>;
+  captureResponseJson?: boolean;
 };
+
+const LISTINGS_WRITE_DEADLINE_MS = 12_000;
+const LISTINGS_WRITE_RESPONSE_MAX_BYTES = 1_048_576;
+const listingsWriteResponsePayloads = new WeakMap<Response, unknown | null>();
 
 export type UpdateBusinessPriceInput = {
   marketplaceId: MarketplaceId;
@@ -1162,6 +1091,90 @@ function retryDelayMs(response: Response, attempt: number): number {
   return Math.min(500 * 2 ** attempt + Math.random() * 250, 5_000);
 }
 
+async function readListingsWriteResponseJson(
+  response: Response,
+  signal: AbortSignal,
+  isCommit: boolean,
+): Promise<unknown | null> {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let totalBytes = 0;
+  let rejectAborted: ((reason: Error) => void) | null = null;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAborted = reject;
+  });
+  const onAbort = () => rejectAborted?.(new Error("Listings write aborted"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  try {
+    while (true) {
+      const chunk = await Promise.race([reader.read(), aborted]);
+      if (chunk.done) break;
+      totalBytes += chunk.value.byteLength;
+      if (totalBytes > LISTINGS_WRITE_RESPONSE_MAX_BYTES) {
+        throw new SpApiError(
+          isCommit
+            ? "Amazon Listing 更新回應超過安全上限，送出結果無法確認。請先回查 SKU。"
+            : "Amazon Listings API 回應超過安全上限。",
+          {
+            status: isCommit ? 503 : 502,
+            code: isCommit
+              ? "UPDATE_STATUS_UNKNOWN"
+              : "UPSTREAM_UNAVAILABLE",
+            operation: "patchListingsItem",
+          },
+        );
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    if (!text.trim()) return null;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return null;
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => undefined);
+    if (error instanceof SpApiError) throw error;
+    throw new SpApiError(
+      signal.aborted
+        ? isCommit
+          ? "Amazon Listing 更新請求逾時，結果可能仍在處理。請先重新查詢 SKU，不要直接重送。"
+          : "Amazon Listings API 回應逾時，請稍後再試。"
+        : isCommit
+          ? "Amazon Listing 更新回應中斷，結果可能仍在處理。請先重新查詢 SKU。"
+          : "Amazon Listings API 回應中斷，請稍後再試。",
+      {
+        status: signal.aborted ? 504 : 502,
+        code: isCommit ? "UPDATE_STATUS_UNKNOWN" : "UPSTREAM_UNAVAILABLE",
+        operation: "patchListingsItem",
+      },
+    );
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function assertListingsWriteBeforeSend(
+  assertion: (() => Promise<void>) | undefined,
+): Promise<void> {
+  if (!assertion) return;
+  try {
+    await assertion();
+  } catch (error) {
+    const cause = error instanceof SpApiError
+      ? error
+      : new SpApiError(
+          "Amazon 執行環境在正式 Listing PATCH 前改變，已停止送出。",
+          { status: 409, code: "SP_CONTEXT_INVALIDATED" },
+        );
+    throw new SpApiPreCommitError(cause);
+  }
+}
+
 async function callListingsWriteApi(
   input: ListingsWriteRequestInput,
   forceTokenRefresh = false,
@@ -1191,23 +1204,25 @@ async function callListingsWriteApi(
   const url = `${REGION_ENDPOINTS[region]}/listings/2021-08-01/items/${encodeURIComponent(
     sellerId,
   )}/${encodeURIComponent(input.sellerSku)}?${query}`;
-  if (input.assertBeforeSend) {
+  await assertListingsWriteBeforeSend(input.assertBeforeSend);
+  if (input.recordBeforeSend) {
     try {
-      await input.assertBeforeSend();
-    } catch (error) {
-      const cause = error instanceof SpApiError
-        ? error
-        : new SpApiError(
-            "Amazon 執行環境在正式 Listing PATCH 前改變，已停止送出。",
-            { status: 409, code: "SP_CONTEXT_INVALIDATED" },
-          );
-      throw new SpApiPreCommitError(cause);
+      await input.recordBeforeSend();
+    } catch {
+      throw new SpApiPreCommitError(new SpApiError(
+        "正式 Listing PATCH 送出前無法保存防重送證據，已停止送出。",
+        { status: 500, code: "PRECOMMIT_FAILED" },
+      ));
     }
   }
+  await assertListingsWriteBeforeSend(input.assertBeforeSend);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    LISTINGS_WRITE_DEADLINE_MS,
+  );
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       method: "PATCH",
       headers: {
         accept: "application/json",
@@ -1218,10 +1233,23 @@ async function callListingsWriteApi(
       },
       body: JSON.stringify(input.body),
       cache: "no-store",
+      redirect: "error",
       signal: controller.signal,
     });
+    if (input.captureResponseJson) {
+      listingsWriteResponsePayloads.set(
+        response,
+        await readListingsWriteResponseJson(
+          response,
+          controller.signal,
+          !input.validationPreview,
+        ),
+      );
+    }
+    return response;
   } catch (error) {
     const isCommit = !input.validationPreview;
+    if (error instanceof SpApiError) throw error;
     if (error instanceof Error && error.name === "AbortError") {
       throw new SpApiError(
         isCommit
@@ -3496,49 +3524,6 @@ async function fetchBusinessPricingCapability(
   return capability;
 }
 
-async function fetchVariationChildSchema(
-  marketplaceId: MarketplaceId,
-  productType: string,
-): Promise<{
-  schema: JsonRecord;
-  checksum: string | null;
-  requestId: string | null;
-}> {
-  const result = await readProductTypeDefinition(listingsReadAdapter, {
-    intent: "variation-child",
-    marketplaceId,
-    productType,
-  });
-  if (result.status < 200 || result.status >= 300) {
-    return throwListingsReadError(result, "getDefinitionsProductType");
-  }
-  const definition = isRecord(result.envelope)
-    ? result.envelope as AmazonProductTypeDefinition
-    : null;
-  const schemaUrl = definition?.schema?.link?.resource;
-  if (!schemaUrl) {
-    throw new SpApiError("Amazon CHILD PTD 沒有回傳可用的 schema。", {
-      status: 502,
-      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
-      requestId: result.requestId,
-      operation: "getDefinitionsProductType",
-    });
-  }
-  if (!isRecord(result.schemaEnvelope) ||
-    !isRecord(result.schemaEnvelope.properties)) {
-    throw new SpApiError("Amazon CHILD PTD schema 格式無法辨識。", {
-      status: 502,
-      code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE",
-      operation: "getDefinitionsProductType",
-    });
-  }
-  return {
-    schema: result.schemaEnvelope,
-    checksum: definition.schema?.checksum ?? null,
-    requestId: result.requestId,
-  };
-}
-
 function normalizeListingContent(
   payload: AmazonListingItem,
   marketplaceId: MarketplaceId,
@@ -3799,778 +3784,62 @@ async function fetchLiveListingBatch(
   };
 }
 
-function assertExplicitStandaloneVariationSource(
-  sourceResult: VariationItemReadResult,
-  marketplaceId: MarketplaceId,
-): void {
-  const evidence = classifyUnboundVariationEvidence({
-    marketplaceId,
-    profile: sourceResult.profile,
-    relationships: sourceResult.payload.relationships,
-    role: sourceResult.member.role,
-    listingFulfillmentEvidence: sourceResult.member.fba ? "FBA" : "OTHER",
-  });
-  if (
-    evidence.kind !== "unbound" ||
-    sourceResult.member.role !== "standalone" ||
-    sourceResult.member.parentSku !== null
-  ) {
-    throw new SpApiError(
-      "Amazon relationships 尚未同時證明來源 SKU 為 standalone 且 parentSku 為空；已停止加入新 parent。",
-      {
-        status: 409,
-        code: "VARIATION_NOT_DETACHED",
-        requestId: sourceResult.requestId,
-      },
-    );
-  }
-}
-
-function throwVariationValidation(error: unknown): never {
-  if (error instanceof VariationUpdateValidationError) {
-    const conflictCodes = new Set([
-      "VARIATION_RELATIONSHIP_CHANGED",
-      "VARIATION_RELATIONSHIP_CONFLICT",
-      "VARIATION_NOT_DETACHED",
-      "VARIATION_DETACH_NOT_VERIFIED",
-      "VARIATION_ATTACH_NOT_VERIFIED",
-    ]);
-    throw new SpApiError(error.message, {
-      status: conflictCodes.has(error.code) ? 409 : 422,
-      code: error.code,
-    });
-  }
-  throw error;
-}
-
-function exactDimensionNames(left: string[], right: string[]): boolean {
-  const normalize = (values: string[]) => [...new Set(values.map((value) => value.trim()))]
-    .filter(Boolean)
-    .sort();
-  const a = normalize(left);
-  const b = normalize(right);
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function variationTargetParent(
-  family: VariationFamilySnapshot,
-): VariationFamilyMember | null {
-  return family.queried.role === "parent" ? family.queried : family.parent;
-}
-
-async function prepareLiveVariationContext(input: {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  targetParentSku: string;
-}, options: { requireStandaloneSource?: boolean } = {}): Promise<{
-  sourceResult: VariationItemReadResult;
-  sourceFamily: VariationFamilySnapshot;
-  targetFamily: VariationFamilySnapshot;
-  targetParent: VariationFamilyMember;
-  variationTheme: string;
-  dimensionNames: string[];
-  fields: VariationFieldDescriptor[];
-  schemaChecksum: string | null;
-  requestIds: string[];
-}> {
-  const [sourceResult, sourceFamily, targetFamily] = await Promise.all([
-    readVariationItem(listingsReadAdapter, {
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-    }),
-    readVariationFamily(listingsReadAdapter, {
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-    }),
-    readVariationFamily(listingsReadAdapter, {
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.targetParentSku,
-    }),
-  ]);
-  const source = sourceResult.member;
-  const targetParent = variationTargetParent(targetFamily);
-  if (source.role === "parent") {
-    throw new SpApiError("Parent 是不可售容器，不能移動成另一個 parent 的 child。", {
-      status: 422,
-      code: "VARIATION_PARENT_NOT_MOVABLE",
-    });
-  }
-  if (!source.fba) {
-    throw new SpApiError("來源 SKU 無法確認為 FBA；變體工具不會加入 FBM。", {
-      status: 422,
-      code: "FBA_ONLY",
-      requestId: sourceResult.requestId,
-    });
-  }
-  if (options.requireStandaloneSource) {
-    assertExplicitStandaloneVariationSource(sourceResult, input.marketplaceId);
-  }
-  if (!sourceFamily.familyComplete || !targetFamily.familyComplete) {
-    throw new SpApiError("來源或目標 family 清單不完整，已停止變體寫入準備。", {
-      status: 409,
-      code: "VARIATION_FAMILY_INCOMPLETE",
-    });
-  }
-  if (!targetParent || targetParent.sellerSku !== input.targetParentSku) {
-    throw new SpApiError("目標 SKU 不是可核對的 parent 容器。", {
-      status: 422,
-      code: "VARIATION_TARGET_NOT_PARENT",
-    });
-  }
-  if (
-    !source.productType ||
-    !targetParent.productType ||
-    source.productType === "PRODUCT" ||
-    targetParent.productType === "PRODUCT" ||
-    source.productType !== targetParent.productType
-  ) {
-    throw new SpApiError("來源 child 與目標 parent 的 Amazon product type 無法確認完全一致。", {
-      status: 422,
-      code: "VARIATION_PRODUCT_TYPE_MISMATCH",
-    });
-  }
-  if (source.parentSku === targetParent.sellerSku) {
-    throw new SpApiError("此 child 已屬於目標 parent，沒有可執行的變體改掛。", {
-      status: 409,
-      code: "VARIATION_UNCHANGED",
-    });
-  }
-  const variationTheme = targetParent.variationTheme ?? targetFamily.variationTheme;
-  const dimensionNames = targetFamily.dimensionNames;
-  if (!variationTheme || !dimensionNames.length) {
-    throw new SpApiError("目標 parent 缺少可核對的 variation theme 或必要維度。", {
-      status: 422,
-      code: "VARIATION_DIMENSIONS_UNKNOWN",
-    });
-  }
-  const childSchema = await fetchVariationChildSchema(
-    input.marketplaceId,
-    source.productType,
-  );
-  let fields: VariationFieldDescriptor[];
-  try {
-    fields = variationFieldDescriptors({
-      productTypeDefinition: childSchema.schema,
-      dimensionNames,
-      attributes: sourceResult.payload.attributes,
-      marketplaceId: input.marketplaceId,
-    });
-  } catch (error) {
-    return throwVariationValidation(error);
-  }
-  const readOnlyField = fields.find((field) => !field.editable);
-  if (readOnlyField) {
-    throw new SpApiError(
-      `Amazon CHILD PTD 將 ${readOnlyField.name} 標示為唯讀，不能安全改掛此 SKU。`,
-      { status: 422, code: "VARIATION_FIELD_READ_ONLY" },
-    );
-  }
-  return {
-    sourceResult,
-    sourceFamily,
-    targetFamily,
-    targetParent,
-    variationTheme,
-    dimensionNames,
-    fields,
-    schemaChecksum: childSchema.checksum,
-    requestIds: [
-      sourceResult.requestId,
-      childSchema.requestId,
-      ...sourceFamily.requestIds,
-      ...targetFamily.requestIds,
-    ].filter((value): value is string => Boolean(value)),
-  };
-}
-
-function getDemoVariationMovePreparation(input: {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  targetParentSku: string;
-}): VariationMovePreparation {
-  const sourceFamily = getDemoVariationFamily(input.marketplaceId, input.sellerSku);
-  const targetFamily = getDemoVariationFamily(input.marketplaceId, input.targetParentSku);
-  const source = sourceFamily.queried;
-  const parent = variationTargetParent(targetFamily);
-  if (!parent) {
-    throw new SpApiError("展示資料找不到目標 parent。", {
-      status: 422,
-      code: "VARIATION_TARGET_NOT_PARENT",
-    });
-  }
-  const dimensionNames = targetFamily.dimensionNames;
-  const fields: VariationFieldDescriptor[] = dimensionNames.map((name) => {
-    const current = source.dimensions.find((dimension) => dimension.name === name)?.values[0] ?? null;
-    return {
-      name,
-      label: name.split("_").map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join(" "),
-      editable: true,
-      values: current ? [{ value: current, marketplace_id: input.marketplaceId }] : [],
-      leaves: [{
-        path: ["value"],
-        label: "Value",
-        type: "string",
-        required: true,
-        enumValues: [],
-        currentValue: current,
-      }],
-      jsonFallback: false,
-    };
-  });
-  return {
-    mode: "demo",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    sourceParentSku: source.parentSku,
-    targetParentSku: parent.sellerSku,
-    productType: source.productType,
-    variationTheme: targetFamily.variationTheme ?? "SIZE_NAME",
-    dimensionNames,
-    fields,
-    preparedAt: new Date().toISOString(),
-    requestIds: [],
-    writable: false,
-    blockers: ["目前為展示模式；只能檢視流程，Amazon 不會收到變體寫入。"],
-    warnings: ["正式模式會分成解除與加入兩個非原子階段。"],
-    notice: "展示資料模擬 CHILD PTD 欄位；不會寫入 Amazon。",
-  };
-}
-
-export async function getVariationMovePreparation(input: {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  targetParentSku: string;
-}): Promise<VariationMovePreparation> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    return getDemoVariationMovePreparation(input);
-  }
-  const context = await prepareLiveVariationContext(input);
-  return {
-    mode: "live",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    sourceParentSku: context.sourceResult.member.parentSku,
-    targetParentSku: context.targetParent.sellerSku,
-    productType: context.sourceResult.member.productType,
-    variationTheme: context.variationTheme,
-    dimensionNames: context.dimensionNames,
-    fields: context.fields,
-    preparedAt: new Date().toISOString(),
-    requestIds: [...new Set(context.requestIds)],
-    writable: true,
-    blockers: [],
-    warnings: [
-      context.sourceResult.member.parentSku
-        ? "解除舊 parent 與加入新 parent 是兩個非原子階段；每階段都會獨立預檢、Notebook 鑰匙（Touch ID／Windows Hello）確認與回查。"
-        : "此 SKU 目前沒有 parent；加入新 parent 前仍會重新確認為獨立 FBA SKU。",
-      `必要欄位來自 Amazon CHILD PTD${context.schemaChecksum ? `（schema ${context.schemaChecksum.slice(0, 12)}…）` : ""}。`,
-    ],
-    notice: "已核對來源與目標 family、FBA 證據、product type、variation theme 與 CHILD PTD。",
-  };
-}
-
-function valuesForDimensions(
-  payload: AmazonListingItem,
-  marketplaceId: MarketplaceId,
-  dimensionNames: string[],
-): Record<string, unknown> {
-  return Object.fromEntries(
-    dimensionNames.map((name) => [
-      name,
-      attributeObjects(payload, name, marketplaceId),
-    ]),
-  );
-}
-
-async function assertNoDuplicateTargetDimensions(input: VariationMoveInput): Promise<void> {
-  if (input.action !== "attach") return;
-  const children = await readVariationChildren(listingsReadAdapter, {
-    marketplaceId: input.marketplaceId,
-    parentSku: input.targetParentSku,
-  });
-  if (!children.familyComplete) {
-    throw new SpApiError("目標 family 分頁未完整回傳，無法安全檢查重複變體維度。", {
-      status: 409,
-      code: "VARIATION_FAMILY_INCOMPLETE",
-    });
-  }
-  let requestedSignature: string;
-  try {
-    requestedSignature = variationDimensionSignature({
-      dimensionNames: input.dimensionNames,
-      dimensionValues: input.dimensionValues,
-      marketplaceId: input.marketplaceId,
-    });
-  } catch (error) {
-    return throwVariationValidation(error);
-  }
-  for (const row of children.rows) {
-    if (row.member.sellerSku === input.sellerSku) continue;
-    let existingSignature: string;
-    try {
-      existingSignature = variationDimensionSignature({
-        dimensionNames: input.dimensionNames,
-        dimensionValues: valuesForDimensions(
-          row.payload,
-          input.marketplaceId,
-          input.dimensionNames,
-        ),
-        marketplaceId: input.marketplaceId,
-      });
-    } catch {
-      throw new SpApiError(
-        `目標 family 的 ${row.member.sellerSku} 缺少可核對的必要維度，已停止避免重複 child。`,
-        { status: 409, code: "VARIATION_TARGET_DIMENSIONS_INCOMPLETE" },
-      );
-    }
-    if (existingSignature === requestedSignature) {
-      throw new SpApiError(
-        `目標 family 的 ${row.member.sellerSku} 已有相同變體維度值。`,
-        { status: 409, code: "VARIATION_DUPLICATE_DIMENSIONS" },
-      );
-    }
-  }
-}
-
-async function prepareLiveVariationDetach(input: VariationDetachInput): Promise<{
-  body: VariationPatchBody;
-  issues: ListingIssue[];
-  sourceParentSku: string;
-  targetParentSku: null;
-  variationTheme: null;
-}> {
-  const [sourceResult, sourceFamily] = await Promise.all([
-    readVariationItem(listingsReadAdapter, {
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-    }),
-    readVariationFamily(listingsReadAdapter, {
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-    }),
-  ]);
-  const source = sourceResult.member;
-  if (source.role === "parent") {
-    throw new SpApiError("Parent 是不可售容器，不能移入解除變體存放區。", {
-      status: 422,
-      code: "VARIATION_PARENT_NOT_MOVABLE",
-    });
-  }
-  if (!source.fba) {
-    throw new SpApiError("來源 SKU 無法確認為 FBA；變體工具不會加入 FBM。", {
-      status: 422,
-      code: "FBA_ONLY",
-      requestId: sourceResult.requestId,
-    });
-  }
-  if (!sourceFamily.familyComplete) {
-    throw new SpApiError("來源 family 清單不完整，已停止解除變體。", {
-      status: 409,
-      code: "VARIATION_FAMILY_INCOMPLETE",
-    });
-  }
-  if (
-    source.role !== "child" ||
-    !source.parentSku ||
-    source.parentSku !== input.expectedSourceParentSku
-  ) {
-    throw new SpApiError("來源 child 的 parent 已在查詢後變更，請重新讀取。", {
-      status: 409,
-      code: "VARIATION_RELATIONSHIP_CHANGED",
-      requestId: sourceResult.requestId,
-    });
-  }
-  if (!source.productType || source.productType === "PRODUCT") {
-    throw new SpApiError("來源 child 的 Amazon product type 無法確認，已停止解除變體。", {
-      status: 422,
-      code: "VARIATION_PRODUCT_TYPE_UNKNOWN",
-      requestId: sourceResult.requestId,
-    });
-  }
-  let body: VariationPatchBody;
-  try {
-    body = buildVariationDetachBody({
-      productType: source.productType,
-      marketplaceId: input.marketplaceId,
-      expectedParentSku: input.expectedSourceParentSku,
-      attributes: sourceResult.payload.attributes,
-    });
-  } catch (error) {
-    return throwVariationValidation(error);
-  }
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body,
-    validationPreview: true,
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "read", "patchListingsItemPreview");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError("Amazon 變體預檢回應無法辨識，已停止送出。", {
-      status: 502,
-      code: "VALIDATION_STATUS_UNKNOWN",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (payload.status !== "VALID" || issues.some((issue) => issue.severity === "ERROR")) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 解除變體 Validation Preview 未通過，尚未寫入任何關係。",
-      {
-        status: 422,
-        code: "VALIDATION_FAILED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  return {
-    body,
-    issues,
-    sourceParentSku: input.expectedSourceParentSku,
-    targetParentSku: null,
-    variationTheme: null,
-  };
-}
-
-async function prepareLiveVariationAction(input: VariationMoveInput): Promise<{
-  body: VariationPatchBody;
-  issues: ListingIssue[];
-  sourceParentSku: string | null;
-  targetParentSku: string | null;
-  variationTheme: string | null;
-}> {
-  if (input.action === "detach") {
-    return prepareLiveVariationDetach(input);
-  }
-  const context = await prepareLiveVariationContext(input, {
-    requireStandaloneSource: true,
-  });
-  if (
-    context.targetParent.sellerSku !== input.targetParentSku ||
-    context.variationTheme !== input.variationTheme ||
-    !exactDimensionNames(context.dimensionNames, input.dimensionNames)
-  ) {
-    throw new SpApiError("目標 family 的 parent、theme 或必要維度已在準備後變更。", {
-      status: 409,
-      code: "VARIATION_TARGET_CHANGED",
-    });
-  }
-  let body: VariationPatchBody;
-  try {
-    assertVariationDetached({
-      marketplaceId: input.marketplaceId,
-      attributes: context.sourceResult.payload.attributes,
-    });
-    variationFieldDescriptors({
-      productTypeDefinition: (await fetchVariationChildSchema(
-        input.marketplaceId,
-        context.sourceResult.member.productType,
-      )).schema,
-      dimensionNames: input.dimensionNames,
-      attributes: context.sourceResult.payload.attributes,
-      marketplaceId: input.marketplaceId,
-    });
-    await assertNoDuplicateTargetDimensions(input);
-    body = buildVariationAttachBody({
-      productType: context.sourceResult.member.productType,
-      marketplaceId: input.marketplaceId,
-      targetParentSku: input.targetParentSku,
-      variationTheme: input.variationTheme,
-      dimensionNames: input.dimensionNames,
-      dimensionValues: input.dimensionValues,
-      existingAttributes: context.sourceResult.payload.attributes,
-    });
-  } catch (error) {
-    return throwVariationValidation(error);
-  }
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body,
-    validationPreview: true,
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "read", "patchListingsItemPreview");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError("Amazon 變體預檢回應無法辨識，已停止送出。", {
-      status: 502,
-      code: "VALIDATION_STATUS_UNKNOWN",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (payload.status !== "VALID" || issues.some((issue) => issue.severity === "ERROR")) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 變體 Validation Preview 未通過，尚未寫入任何關係。",
-      {
-        status: 422,
-        code: "VALIDATION_FAILED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  return {
-    body,
-    issues,
-    sourceParentSku: input.expectedSourceParentSku,
-    targetParentSku: input.targetParentSku,
-    variationTheme: input.variationTheme,
-  };
-}
-
-function throwVariationPreCommitFailure(error: unknown): never {
-  const cause = error instanceof SpApiError
-    ? error
-    : new SpApiError("變體正式寫入前的重新讀取或 Validation Preview 失敗。", {
-        status: 500,
-        code: "PRECOMMIT_FAILED",
-        operation: "patchListingsItemPreview",
-      });
-  throw new SpApiPreCommitError(cause);
-}
-
-export async function previewVariationMove(
-  input: VariationMoveInput,
-): Promise<VariationMovePreview> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    if (input.action === "detach") {
-      const source = getDemoVariationFamily(
-        input.marketplaceId,
-        input.sellerSku,
-      ).queried;
-      if (
-        source.role !== "child" ||
-        !source.parentSku ||
-        source.parentSku !== input.expectedSourceParentSku ||
-        !source.fba
-      ) {
-        throw new SpApiError("展示 child 的來源 parent 已變更，請重新讀取。", {
-          status: 409,
-          code: "VARIATION_RELATIONSHIP_CHANGED",
-        });
-      }
-    } else {
-      await getVariationMovePreparation({
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-        targetParentSku: input.targetParentSku,
-      });
-    }
-    return {
-      mode: "demo",
-      action: input.action,
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      sourceParentSku: input.expectedSourceParentSku,
-      targetParentSku: input.action === "attach" ? input.targetParentSku : null,
-      variationTheme: input.action === "attach" ? input.variationTheme : null,
-      validatedAt: new Date().toISOString(),
-      issues: [],
-      notice: "展示模式預檢完成；Amazon 不會收到變體寫入。",
-    };
-  }
-  const prepared = await prepareLiveVariationAction(input);
-  return {
-    mode: "live",
-    action: input.action,
-    status: "VALID",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    sourceParentSku: prepared.sourceParentSku,
-    targetParentSku: prepared.targetParentSku,
-    variationTheme: prepared.variationTheme,
-    validatedAt: new Date().toISOString(),
-    issues: prepared.issues,
-    notice: `Amazon 已通過${input.action === "detach" ? "解除舊 parent" : "加入新 parent"}預檢；尚未寫入。`,
-  };
-}
-
-async function assertVariationMovePostWriteContext(
-  fence: VariationMoveExecutionFence | undefined,
-  requestId: string | null = null,
-): Promise<void> {
-  if (!fence) return;
-  try {
-    await fence.assertCurrent();
-  } catch {
-    throw new SpApiError(
-      "Amazon 可能已接受變體請求，但執行環境在安全回查前改變；系統已禁止重送，請重新讀取 Amazon 確認。",
-      {
-        status: 503,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId,
-        operation: "patchListingsItem",
-      },
-    );
-  }
-}
-
-async function verifyVariationMoveReadback(
-  input: VariationMoveInput,
-  fence?: VariationMoveExecutionFence,
-): Promise<void> {
-  let lastMismatch: unknown = null;
-  for (let attempt = 0; attempt < 7; attempt += 1) {
-    if (attempt > 0) await wait(Math.min(700 + attempt * 300, 2_000));
-    await assertVariationMovePostWriteContext(fence);
-    let latest: VariationItemReadResult;
-    try {
-      latest = await readVariationItem(listingsReadAdapter, {
-        marketplaceId: input.marketplaceId,
-        sellerSku: input.sellerSku,
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? `（${error.message}）` : "";
-      throw new SpApiError(
-        `Amazon 已接受變體請求，但唯讀回查無法完成${detail}。系統已禁止直接重送。`,
-        {
-          status: 503,
-          code: "UPDATE_STATUS_UNKNOWN",
-          requestId: error instanceof SpApiError ? error.requestId : null,
-          operation: "getListingsItem",
-        },
-      );
-    }
-    await assertVariationMovePostWriteContext(fence);
-    try {
-      if (input.action === "detach") {
-        assertExplicitStandaloneVariationSource(latest, input.marketplaceId);
-        assertVariationDetached({
+export const variationMoveGatewayProduction: VariationMoveGateway =
+  createVariationMoveGatewayProduction({
+    listings: listingsReadAdapter,
+    resolveMode: (marketplaceId) =>
+      shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+    credentialGeneration: () => credentialGeneration,
+    readDemoFamily: getDemoVariationFamily,
+    write: async (input) => {
+      let response: Response;
+      try {
+        response = await executeListingsWriteRequest({
           marketplaceId: input.marketplaceId,
-          attributes: latest.payload.attributes,
+          sellerSku: input.sellerSku,
+          method: "PATCH",
+          body: input.body,
+          validationPreview: input.validationPreview,
+          captureResponseJson: true,
+          ...(input.fence
+            ? { assertBeforeSend: () => input.fence!.assertCurrent() }
+            : {}),
+          ...(input.recordBeforeSend
+            ? { recordBeforeSend: input.recordBeforeSend }
+            : {}),
         });
-      } else {
-        assertVariationAttached({
-          marketplaceId: input.marketplaceId,
-          targetParentSku: input.targetParentSku,
-          variationTheme: input.variationTheme,
-          dimensionNames: input.dimensionNames,
-          dimensionValues: input.dimensionValues,
-          attributes: latest.payload.attributes,
-        });
+      } catch (error) {
+        if (
+          input.validationPreview ||
+          error instanceof SpApiPreCommitError ||
+          (error instanceof SpApiError &&
+            error.code === "UPDATE_STATUS_UNKNOWN")
+        ) {
+          throw error;
+        }
+        const cause = error instanceof SpApiError
+          ? error
+          : new SpApiError(
+            "變體正式 PATCH 送出前的 Amazon transport 準備失敗。",
+            {
+              status: 500,
+              code: "PRECOMMIT_FAILED",
+              operation: "patchListingsItem",
+            },
+          );
+        throw new SpApiPreCommitError(cause);
       }
-      return;
-    } catch (error) {
-      lastMismatch = error;
-    }
-  }
-  const detail = lastMismatch instanceof Error ? `（${lastMismatch.message}）` : "";
-  throw new SpApiError(
-    `Amazon 已接受變體請求，但回查尚未證明完成${detail}。系統已禁止直接重送。`,
-    { status: 409, code: "UPDATE_STATUS_UNKNOWN" },
-  );
-}
-
-export async function updateVariationMove(
-  input: VariationMoveInput,
-  fence?: VariationMoveExecutionFence,
-): Promise<VariationMoveResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    await fence?.assertCurrent();
-    await previewVariationMove(input);
-    await fence?.assertCurrent();
-    return {
-      mode: "demo",
-      action: input.action,
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      sourceParentSku: input.expectedSourceParentSku,
-      targetParentSku: input.action === "attach" ? input.targetParentSku : null,
-      variationTheme: input.action === "attach" ? input.variationTheme : null,
-      verified: true,
-      completedAt: new Date().toISOString(),
-      submissionId: null,
-      requestId: null,
-      issues: [],
-      notice: "展示模式完成；Amazon 真實變體關係沒有變更。",
-    };
-  }
-  let prepared: Awaited<ReturnType<typeof prepareLiveVariationAction>>;
-  try {
-    await fence?.assertCurrent();
-    prepared = await prepareLiveVariationAction(input);
-    await fence?.assertCurrent();
-  } catch (error) {
-    return throwVariationPreCommitFailure(error);
-  }
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body: prepared.body,
-    ...(fence
-      ? { assertBeforeSend: () => fence.assertCurrent() }
-      : {}),
+      return {
+        ok: response.ok,
+        status: response.status,
+        requestId: response.headers.get("x-amzn-requestid"),
+        retryAfter: response.headers.get("retry-after"),
+        payload: listingsWriteResponsePayloads.has(response)
+          ? listingsWriteResponsePayloads.get(response) ?? null
+          : null,
+      };
+    },
   });
-  await assertVariationMovePostWriteContext(
-    fence,
-    response.headers.get("x-amzn-requestid"),
-  );
-  if (!response.ok) {
-    return throwListingsError(response, "write", "patchListingsItem");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  await assertVariationMovePostWriteContext(
-    fence,
-    response.headers.get("x-amzn-requestid"),
-  );
-  if (!payload) {
-    throw new SpApiError(
-      "Amazon 已收到變體請求，但回應無法辨識。請先重新讀取，不要直接重送。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (payload.status !== "ACCEPTED" || issues.some((issue) => issue.severity === "ERROR")) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 未接受這次變體關係更新。",
-      {
-        status: 422,
-        code: "UPDATE_REJECTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  await verifyVariationMoveReadback(input, fence);
-  return {
-    mode: "live",
-    action: input.action,
-    status: "ACCEPTED",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    sourceParentSku: input.expectedSourceParentSku,
-    targetParentSku: input.action === "attach" ? input.targetParentSku : null,
-    variationTheme: input.action === "attach" ? input.variationTheme : null,
-    verified: true,
-    completedAt: new Date().toISOString(),
-    submissionId: payload.submissionId ?? null,
-    requestId: response.headers.get("x-amzn-requestid"),
-    issues,
-    notice: input.action === "detach"
-      ? "Amazon 已接受解除，且唯讀回查確認 parent 關係欄位已移除。"
-      : `Amazon 已接受加入，且唯讀回查確認 parent 為 ${input.targetParentSku}、theme 與必要維度一致。`,
-  };
-}
-
 function buildBusinessPricePatch(
   listing: BusinessPricingListingSnapshot,
   input: UpdateBusinessPriceInput,

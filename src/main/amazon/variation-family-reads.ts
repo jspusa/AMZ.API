@@ -488,11 +488,27 @@ export async function readVariationChildren(
   };
 }
 
-export async function readVariationFamily(
+async function assembleVariationFamily(
   adapter: ListingsReadAdapter,
   input: VariationFamilyReadInput,
-): Promise<VariationFamilySnapshot> {
-  const queriedResult = await readVariationItem(adapter, input);
+  queriedResult: VariationItemReadResult,
+): Promise<Readonly<{
+  family: VariationFamilySnapshot;
+  childRows: readonly Readonly<{
+    payload: VariationListingPayload;
+    member: VariationFamilyMember;
+  }>[];
+}>> {
+  if (queriedResult.member.sellerSku !== input.sellerSku) {
+    throw new SpApiError(
+      "Amazon family 快照的查詢 SKU 與已綁定 Listing read 不一致。",
+      {
+        status: 409,
+        code: "VARIATION_RELATIONSHIP_CONFLICT",
+        requestId: queriedResult.requestId,
+      },
+    );
+  }
   let queried = queriedResult.member;
   if (queried.role === "child" && !queried.parentSku) {
     throw new SpApiError(
@@ -651,7 +667,7 @@ export async function readVariationFamily(
     queriedResult.profile === "attributes" ||
     parentResult?.profile === "attributes" ||
     childrenResult?.usedCompatibilityFallback;
-  return {
+  const family: VariationFamilySnapshot = {
     mode: "live",
     marketplaceId: input.marketplaceId,
     queriedSku: input.sellerSku,
@@ -683,6 +699,46 @@ export async function readVariationFamily(
     notice: compatibilityFallback
       ? "Amazon 拒絕 relationships 資料集；目前以 Listing attributes 與 variationParentSku 唯讀結果交叉整理。"
       : "關係取自 Listings Items relationships、attributes 與 variationParentSku 唯讀查詢。",
+  };
+  return {
+    family,
+    childRows: rawChildren.map((row) => ({
+      payload: structuredClone(row.payload),
+      member: structuredClone(row.member),
+    })),
+  };
+}
+
+export async function readVariationFamily(
+  adapter: ListingsReadAdapter,
+  input: VariationFamilyReadInput,
+): Promise<VariationFamilySnapshot> {
+  const item = await readVariationItem(adapter, input);
+  return (await assembleVariationFamily(adapter, input, item)).family;
+}
+
+/**
+ * Closed composite seam for callers that need the exact queried Listing item
+ * and its family projection from one bound source read. Raw item results cannot
+ * be injected across adapters or marketplaces.
+ */
+export async function readVariationItemAndFamily(
+  adapter: ListingsReadAdapter,
+  input: VariationFamilyReadInput,
+): Promise<Readonly<{
+  item: VariationItemReadResult;
+  family: VariationFamilySnapshot;
+  childRows: readonly Readonly<{
+    payload: VariationListingPayload;
+    member: VariationFamilyMember;
+  }>[];
+}>> {
+  const item = await readVariationItem(adapter, input);
+  const assembled = await assembleVariationFamily(adapter, input, item);
+  return {
+    item,
+    family: assembled.family,
+    childRows: assembled.childRows,
   };
 }
 
