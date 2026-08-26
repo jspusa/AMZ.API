@@ -19,7 +19,12 @@ describe("macOS unsigned packaging workflow", () => {
       "      - name: Ad-hoc sign and verify test app",
     );
     const dmgStart = workflow.indexOf("      - name: Create test DMG and ZIP");
+    const checksumsStart = workflow.indexOf(
+      "      - name: Record checksums",
+      dmgStart,
+    );
     const smokeStep = workflow.slice(smokeStart, dmgStart);
+    const dmgStep = workflow.slice(dmgStart, checksumsStart);
     const launch = smokeStep.indexOf(
       'python3 - "$app_path/Contents/MacOS/$executable"',
     );
@@ -47,6 +52,11 @@ describe("macOS unsigned packaging workflow", () => {
 
     expect(smokeStart).toBeGreaterThanOrEqual(0);
     expect(dmgStart).toBeGreaterThan(smokeStart);
+    expect(checksumsStart).toBeGreaterThan(dmgStart);
+    expect(dmgStep).toContain(
+      '/bin/bash scripts/create-macos-test-artifacts.sh "$app_path" "$version" release',
+    );
+    expect(dmgStep).not.toContain("hdiutil create");
     expect(smokeStep).toContain(
       'app_path="$(cd "$(dirname "$app_path")" && pwd -P)/$(basename "$app_path")"',
     );

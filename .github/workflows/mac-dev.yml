@@ -220,11 +220,7 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           app_path="$(find release -type d -name 'AMZ.API.app' -print -quit)"
-          stage="$(mktemp -d)"
-          cp -R "$app_path" "$stage/AMZ.API.app"
-          ln -s /Applications "$stage/Applications"
-          hdiutil create -volname "AMZ.API $version" -srcfolder "$stage" -ov -format UDZO "release/AMZ.API-$version-universal.dmg"
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" "release/AMZ.API-$version-universal.zip"
+          /bin/bash scripts/create-macos-test-artifacts.sh "$app_path" "$version" release
       - name: Record checksums
         run: shasum -a 256 release/*.dmg release/*.zip > release/SHA256SUMS.txt
       - name: Upload internal test installer
