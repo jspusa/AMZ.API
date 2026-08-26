@@ -57,44 +57,170 @@ jobs:
           set -euo pipefail
           app_path="$(find release -type d -name 'AMZ.API.app' -print -quit)"
           test -n "$app_path"
+          app_path="$(cd "$(dirname "$app_path")" && pwd -P)/$(basename "$app_path")"
+          app_contents_path="$app_path/Contents/"
           codesign --force --deep --sign - "$app_path"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
           smoke_log="$(mktemp)"
-          "$app_path/Contents/MacOS/$executable" >"$smoke_log" 2>&1 &
+          app_pid=""
+          group_ready=false
+          pid_live() {
+            [[ -n "${app_pid:-}" ]] || return 1
+            ps -o stat= -p "$app_pid" 2>/dev/null |
+              awk '$1 !~ /^Z/ { found=1 } END { exit(found ? 0 : 1) }'
+          }
+          group_live() {
+            [[ -n "${app_pid:-}" ]] || return 1
+            ps -axo pgid=,stat= |
+              awk -v pg="$app_pid" '$1 == pg && $2 !~ /^Z/ { found=1 } END { exit(found ? 0 : 1) }'
+          }
+          bundle_processes_live() {
+            local process_snapshot process_line process_stat
+            if ! process_snapshot="$(ps -wwaxo stat=,command=)"; then
+              return 2
+            fi
+            while IFS= read -r process_line; do
+              process_line="${process_line#"${process_line%%[![:space:]]*}"}"
+              [[ -n "$process_line" ]] || continue
+              process_stat="${process_line%%[[:space:]]*}"
+              case "$process_stat" in
+                Z*) continue ;;
+              esac
+              case "$process_line" in
+                *"$app_contents_path"*) return 0 ;;
+              esac
+            done <<< "$process_snapshot"
+            return 1
+          }
+          stop_launcher() {
+            [[ -n "${app_pid:-}" ]] || return 0
+            if pid_live; then
+              kill -TERM "$app_pid" 2>/dev/null || true
+              attempt=0
+              while pid_live && [[ "$attempt" -lt 10 ]]; do
+                sleep 1
+                attempt=$((attempt + 1))
+              done
+            fi
+            if pid_live; then
+              kill -KILL "$app_pid" 2>/dev/null || true
+              attempt=0
+              while pid_live && [[ "$attempt" -lt 5 ]]; do
+                sleep 1
+                attempt=$((attempt + 1))
+              done
+            fi
+            if pid_live; then
+              echo "Packaged Mac app launcher did not stop." >&2
+              return 1
+            fi
+            wait "$app_pid" 2>/dev/null || true
+            app_pid=""
+          }
+          cleanup_app() {
+            if [[ -n "${app_pid:-}" ]]; then
+              if [[ "$group_ready" == true ]]; then
+                kill -TERM -- "-$app_pid" 2>/dev/null || true
+                attempt=0
+                while group_live && [[ "$attempt" -lt 15 ]]; do
+                  sleep 1
+                  attempt=$((attempt + 1))
+                done
+                if group_live; then
+                  kill -KILL -- "-$app_pid" 2>/dev/null || true
+                  attempt=0
+                  while group_live && [[ "$attempt" -lt 5 ]]; do
+                    sleep 1
+                    attempt=$((attempt + 1))
+                  done
+                fi
+                if group_live; then
+                  echo "Packaged Mac app process group did not stop." >&2
+                  return 1
+                fi
+              fi
+              if pid_live; then
+                stop_launcher || return 1
+              else
+                wait "$app_pid" 2>/dev/null || true
+                app_pid=""
+              fi
+              group_ready=false
+            fi
+            bundle_scan_status=0
+            bundle_processes_live || bundle_scan_status=$?
+            if [[ "$bundle_scan_status" -eq 0 ]]; then
+              echo "Packaged Mac app bundle still has a live process." >&2
+              return 1
+            fi
+            if [[ "$bundle_scan_status" -ne 1 ]]; then
+              echo "Could not verify that packaged Mac app processes stopped." >&2
+              return 1
+            fi
+          }
+          trap cleanup_app EXIT
+          python3 - "$app_path/Contents/MacOS/$executable" >"$smoke_log" 2>&1 <<'PY' &
+          import os
+          import sys
+
+          os.setsid()
+          os.execv(sys.argv[1], sys.argv[1:])
+          PY
           app_pid="$!"
+          launch_pgid=""
+          for _ in {1..5}; do
+            launch_pgid="$(ps -o pgid= -p "$app_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+            if [[ "$launch_pgid" == "$app_pid" ]]; then
+              group_ready=true
+              break
+            fi
+            if ! pid_live; then
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$group_ready" != true ]]; then
+            cat "$smoke_log"
+            echo "Packaged app process group was not established."
+            exit 1
+          fi
           bridge_ready=false
           for _ in {1..30}; do
             if grep -q 'AMZ_API_BRIDGE_READY' "$smoke_log"; then
               bridge_ready=true
               break
             fi
-            if ! kill -0 "$app_pid" 2>/dev/null; then
+            if ! pid_live || ! group_live; then
               cat "$smoke_log"
-              wait "$app_pid"
+              echo "Mac Bridge launcher or process group exited before readiness."
               exit 1
             fi
             sleep 1
           done
           if [[ "$bridge_ready" != true ]]; then
             cat "$smoke_log"
-            kill "$app_pid" 2>/dev/null || true
-            wait "$app_pid" || true
             echo "Mac Bridge did not become ready within 30 seconds."
             exit 1
           fi
-          kill "$app_pid"
-          wait "$app_pid" || true
+          sleep 1
+          if ! pid_live || ! group_live; then
+            cat "$smoke_log"
+            echo "Mac Bridge became ready but its launcher or process group exited."
+            exit 1
+          fi
+          cleanup_status=0
+          cleanup_app || cleanup_status=$?
+          trap - EXIT
+          if [[ "$cleanup_status" -ne 0 ]]; then
+            exit "$cleanup_status"
+          fi
       - name: Create test DMG and ZIP
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           app_path="$(find release -type d -name 'AMZ.API.app' -print -quit)"
-          stage="$(mktemp -d)"
-          cp -R "$app_path" "$stage/AMZ.API.app"
-          ln -s /Applications "$stage/Applications"
-          hdiutil create -volname "AMZ.API $version" -srcfolder "$stage" -ov -format UDZO "release/AMZ.API-$version-universal.dmg"
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" "release/AMZ.API-$version-universal.zip"
+          /bin/bash scripts/create-macos-test-artifacts.sh "$app_path" "$version" release
       - name: Record checksums
         run: shasum -a 256 release/*.dmg release/*.zip > release/SHA256SUMS.txt
       - name: Upload internal test installer

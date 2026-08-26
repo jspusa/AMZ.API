@@ -3,14 +3,22 @@ import {
   getBusinessPricing,
   getListingContent,
   getListingImages,
-  getListingPrice,
   invalidateSpApiCredentialCaches,
-  previewListingPriceUpdate,
-  previewListingSalePriceUpdate,
+  listingPriceGatewayProduction,
   updateBusinessPrice,
   updateListingImages,
-  updateListingPrice,
 } from "../src/main/amazon/sp-api";
+import { createListingPriceMutationOperations } from
+  "../src/main/listing-price-mutations";
+
+const priceOperations = createListingPriceMutationOperations(
+  listingPriceGatewayProduction,
+);
+const getListingPrice = priceOperations.read;
+const previewListingPriceUpdate = priceOperations.previewStandard;
+const previewListingSalePriceUpdate = priceOperations.previewSale;
+const updateListingPrice = priceOperations.commitStandard;
+const currentFence = { assertCurrent: async () => undefined } as const;
 
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) => key.startsWith("SP_API_"));
 const savedEnvironment = new Map(SP_ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -55,7 +63,7 @@ describe("SP-API demo safety boundary", () => {
       sellerSku: current.sellerSku,
       expectedPrice,
       newPrice,
-    });
+    }, currentFence);
     expect(result.status).toBe("SIMULATED");
     expect(result.previousPrice.amount).toBe(expectedPrice);
     expect(result.requestedPrice.amount).toBe(newPrice);
@@ -72,7 +80,7 @@ describe("SP-API demo safety boundary", () => {
       ...identity,
       expectedPrice,
       newPrice: expectedPrice + 3,
-    });
+    }, currentFence);
     expect((await getListingPrice(identity)).standardPrice?.amount).toBe(expectedPrice + 3);
 
     invalidateSpApiCredentialCaches();

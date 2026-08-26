@@ -99,7 +99,10 @@ export type SkuCommandDependencies = Readonly<{
     }>): Promise<ProductMasterState>;
   }>;
   reads: Readonly<{
-    price(identity: SkuCommandIdentity): Promise<ListingPriceSnapshot>;
+    price(
+      identity: SkuCommandIdentity,
+      context: SpExecutionContext,
+    ): Promise<ListingPriceSnapshot>;
     content(identity: SkuCommandIdentity): Promise<ListingContentSnapshot>;
     images(identity: SkuCommandIdentity): Promise<ListingImageSnapshot>;
     subscribeSave(
@@ -298,7 +301,7 @@ export class SkuCommand {
     const effectiveLead = profile.leadTimeDays +
       (profile.supplyRoute === "AWD_TO_FBA" ? profile.awdBufferDays : 0);
     const settled = await Promise.allSettled([
-      this.reads.price(identity),
+      this.reads.price(identity, context),
       this.reads.content(identity),
       this.reads.images(identity),
       this.reads.subscribeSave(identity),

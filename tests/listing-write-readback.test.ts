@@ -4,9 +4,11 @@ import {
   commitWithCanonicalReadback,
   contentReadbackDecision,
   imageReadbackDecision,
+} from "../src/main/amazon/listing-write-readback";
+import {
   priceReadbackDecision,
   salePriceReadbackDecision,
-} from "../src/main/amazon/listing-write-readback";
+} from "../src/main/listing-price-mutations";
 import { SpExecutionContextError } from "../src/main/amazon/sp-execution-context";
 
 const identity = {

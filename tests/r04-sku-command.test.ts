@@ -182,7 +182,7 @@ describe("R04 SKU command semantic owner", () => {
       SELLER_SKU,
     );
     const identity = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU };
-    expect(subject.price).toHaveBeenCalledWith(identity);
+    expect(subject.price).toHaveBeenCalledWith(identity, context);
     expect(subject.content).toHaveBeenCalledWith(identity);
     expect(subject.images).toHaveBeenCalledWith(identity);
     expect(subject.subscribeSave).toHaveBeenCalledWith(identity);

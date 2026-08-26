@@ -129,6 +129,17 @@ import {
   type ListingIssue,
   type SpApiOperation,
 } from "./sp-api-error";
+import type {
+  FulfillmentAvailability,
+  ListingPriceSnapshot,
+  ListingWriteExecutionFence,
+  Money,
+  SalePriceSchedule,
+} from "./listing-price-types";
+import {
+  listingPricePatchBody,
+  type ListingPriceGateway,
+} from "./listing-price-gateway";
 
 export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
 export { SpApiError, SpApiPreCommitError } from "./sp-api-error";
@@ -139,6 +150,19 @@ export type {
   SalesTrendWindow,
 } from "./fba-sales-calendar";
 export type { ListingIssue, SpApiOperation } from "./sp-api-error";
+export type {
+  FulfillmentAvailability,
+  ListingPriceSnapshot,
+  ListingWriteExecutionFence,
+  Money,
+  PriceUpdateResult,
+  PriceValidationResult,
+  SalePriceSchedule,
+  SalePriceUpdateResult,
+  SalePriceValidationResult,
+  UpdateListingPriceInput,
+  UpdateListingSalePriceInput,
+} from "./listing-price-types";
 export type { SubscribeAndSaveOfferSnapshot } from "./fba-inventory-replenishment";
 export {
   buildUnboundVariationSearchBatches,
@@ -161,11 +185,6 @@ export type {
 
 export type SpApiRegion = MarketplaceRegion;
 export type { MarketplaceId } from "../../shared/marketplaces";
-
-export type Money = {
-  amount: number;
-  currencyCode: string;
-};
 
 export type SalesTrendDays = SalesTrendPresetDays;
 
@@ -191,39 +210,6 @@ export type SubscriptionAuditSnapshot = Omit<
     unverifiedFbaSkuCount: number;
   };
   notice: string;
-};
-
-export type FulfillmentAvailability = {
-  channelCode: string;
-  quantity: number | null;
-  fulfillment: "FBA" | "OTHER";
-  editable: boolean;
-};
-
-export type ListingPriceSnapshot = {
-  mode: "live" | "demo";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  asin: string | null;
-  title: string;
-  productType: string;
-  status: string[];
-  createdAt: string | null;
-  updatedAt: string | null;
-  standardPrice: Money | null;
-  effectivePrice: Money | null;
-  minimumPrice: Money | null;
-  maximumPrice: Money | null;
-  purchasableOfferPresence: "absent" | "present" | "ambiguous";
-  discountedPrice: SalePriceSchedule | null;
-  discountedPricePresence: "absent" | "valid" | "invalid";
-  hasDiscountedPrice: boolean;
-  hasAutomatedPricing: boolean;
-  fetchedAt: string;
-  requestId: string | null;
-  issues: ListingIssue[];
-  fulfillmentAvailability: FulfillmentAvailability[];
-  notice: string | null;
 };
 
 export type BusinessPricingCapability = {
@@ -256,12 +242,6 @@ export type BusinessPricingListingSnapshot = ListingPriceSnapshot & {
   businessOfferGuardHash: string;
   businessOfferProtectedHash: string;
   businessPricingCapability: BusinessPricingCapability;
-};
-
-export type SalePriceSchedule = {
-  price: Money;
-  startAt: string | null;
-  endAt: string | null;
 };
 
 export type ListingBatchSnapshot = {
@@ -505,10 +485,6 @@ export type VariationMoveResult = {
   notice: string;
 };
 
-export type ListingWriteExecutionFence = Readonly<{
-  assertCurrent(): Promise<void>;
-}>;
-
 export type VariationMoveExecutionFence = ListingWriteExecutionFence;
 
 export type ListingReportStatus = {
@@ -527,32 +503,6 @@ export type {
   UnboundVariationAuditRow,
   UnboundVariationAuditSnapshot,
 } from "./variation-catalog-reads";
-
-export type PriceUpdateResult = {
-  mode: "live" | "demo";
-  status: "ACCEPTED" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  previousPrice: Money;
-  requestedPrice: Money;
-  acceptedAt: string;
-  submissionId: string | null;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type PriceValidationResult = {
-  mode: "live" | "demo";
-  status: "VALID" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  previousPrice: Money;
-  requestedPrice: Money;
-  validatedAt: string;
-  issues: ListingIssue[];
-  notice: string;
-};
 
 export type BusinessPriceValidationResult = {
   mode: "live" | "demo";
@@ -609,36 +559,6 @@ export type BusinessPriceUpdateResult = {
   businessOfferGuardHash: string;
   businessOfferProtectedHash: string;
   schemaChecksum: string;
-  acceptedAt: string;
-  submissionId: string | null;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type SalePriceValidationResult = {
-  mode: "live" | "demo";
-  status: "VALID" | "SIMULATED";
-  action: "set" | "cancel";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  standardPrice: Money;
-  previousDiscountedPrice: SalePriceSchedule | null;
-  requestedDiscountedPrice: SalePriceSchedule | null;
-  validatedAt: string;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type SalePriceUpdateResult = {
-  mode: "live" | "demo";
-  status: "ACCEPTED" | "SIMULATED";
-  action: "set" | "cancel";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  standardPrice: Money;
-  previousDiscountedPrice: SalePriceSchedule | null;
-  requestedDiscountedPrice: SalePriceSchedule | null;
   acceptedAt: string;
   submissionId: string | null;
   requestId: string | null;
@@ -843,13 +763,6 @@ type ListingsWriteRequestInput = {
   assertBeforeSend?: () => Promise<void>;
 };
 
-type UpdateListingPriceInput = {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  newPrice: number;
-  expectedPrice: number;
-};
-
 export type UpdateBusinessPriceInput = {
   marketplaceId: MarketplaceId;
   sellerSku: string;
@@ -861,19 +774,6 @@ export type UpdateBusinessPriceInput = {
     lowerBound: number;
     percent: number;
   }>;
-};
-
-export type UpdateListingSalePriceInput = {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  action: "set" | "cancel";
-  expectedPrice: number;
-  expectedDiscountedPrice: number | null;
-  expectedStartAt: string | null;
-  expectedEndAt: string | null;
-  salePrice: number | null;
-  startAt: string | null;
-  endAt: string | null;
 };
 
 type TokenCacheEntry = {
@@ -4702,154 +4602,6 @@ export async function updateVariationMove(
   };
 }
 
-function buildPricePatch(
-  listing: ListingPriceSnapshot,
-  newPrice: number,
-): { productType: string; patches: unknown[] } {
-  const marketplace = MARKETPLACES[listing.marketplaceId];
-  return {
-    productType: listing.productType || "PRODUCT",
-    patches: [
-      {
-        op: "merge",
-        path: "/attributes/purchasable_offer",
-        value: [
-          {
-            marketplace_id: listing.marketplaceId,
-            currency: marketplace.currency,
-            audience: "ALL",
-            our_price: [
-              {
-                schedule: [{ value_with_tax: newPrice }],
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  };
-}
-
-function verifyPriceChange(
-  listing: ListingPriceSnapshot,
-  input: UpdateListingPriceInput,
-): Money {
-  const standardPrice = listing.standardPrice;
-  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
-
-  if (!standardPrice) {
-    throw new SpApiError(
-      "這個 Listing 沒有可核對的標準售價，為避免誤改，本次不允許直接寫入。",
-      { status: 422, code: "PRICE_UNAVAILABLE" },
-    );
-  }
-  if (standardPrice.currencyCode !== currencyCode) {
-    throw new SpApiError("Listing 幣別與站點幣別不一致，已停止調價。", {
-      status: 409,
-      code: "CURRENCY_MISMATCH",
-    });
-  }
-  if (!samePrice(standardPrice.amount, input.expectedPrice, currencyCode)) {
-    throw new SpApiError(
-      "目前價格已在查詢後發生變動。請重新查詢 SKU，再確認一次新價格。",
-      { status: 409, code: "PRICE_CHANGED" },
-    );
-  }
-  if (samePrice(standardPrice.amount, input.newPrice, currencyCode)) {
-    throw new SpApiError("新價格與目前標準售價相同。", {
-      status: 400,
-      code: "PRICE_UNCHANGED",
-    });
-  }
-  if (
-    listing.minimumPrice &&
-    input.newPrice < listing.minimumPrice.amount
-  ) {
-    throw new SpApiError("新價格低於此 Listing 的最低允許售價。", {
-      status: 422,
-      code: "BELOW_MINIMUM_PRICE",
-    });
-  }
-  if (
-    listing.maximumPrice &&
-    input.newPrice > listing.maximumPrice.amount
-  ) {
-    throw new SpApiError("新價格高於此 Listing 的最高允許售價。", {
-      status: 422,
-      code: "ABOVE_MAXIMUM_PRICE",
-    });
-  }
-
-  return standardPrice;
-}
-
-async function prepareLivePriceUpdate(input: UpdateListingPriceInput): Promise<{
-  listing: ListingPriceSnapshot;
-  previousPrice: Money;
-  requestedPrice: Money;
-  body: { productType: string; patches: unknown[] };
-  issues: ListingIssue[];
-}> {
-  const listing = await fetchLiveListingPrice(
-    input.marketplaceId,
-    input.sellerSku,
-  );
-  const previousPrice = verifyPriceChange(listing, input);
-  const requestedPrice = {
-    amount: input.newPrice,
-    currencyCode: MARKETPLACES[input.marketplaceId].currency,
-  };
-  const body = buildPricePatch(listing, input.newPrice);
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body,
-    validationPreview: true,
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "read", "patchListingsItemPreview");
-  }
-
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError("Amazon 回傳了無法辨識的價格預檢結果。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status === "INVALID" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 價格預檢未通過，尚未寫入任何變更。",
-      {
-        status: 422,
-        code: "VALIDATION_FAILED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  if (payload.status !== "VALID") {
-    throw new SpApiError(
-      "Amazon 價格預檢沒有回傳明確的 VALID 狀態，為避免誤改，已停止送出。",
-      {
-        status: 502,
-        code: "VALIDATION_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-
-  return { listing, previousPrice, requestedPrice, body, issues };
-}
-
 function buildBusinessPricePatch(
   listing: BusinessPricingListingSnapshot,
   input: UpdateBusinessPriceInput,
@@ -5295,242 +5047,6 @@ async function prepareLiveBusinessPriceUpdate(
     assertBusinessPricePrecommitEvidence(evidence, expectedEvidence);
   }
   return { listing, ...verified, body, issues, evidence };
-}
-
-function saleScheduleMatches(
-  current: SalePriceSchedule | null,
-  input: UpdateListingSalePriceInput,
-  currencyCode: string,
-): boolean {
-  if (!current) {
-    return (
-      input.expectedDiscountedPrice === null &&
-      input.expectedStartAt === null &&
-      input.expectedEndAt === null
-    );
-  }
-  return (
-    input.expectedDiscountedPrice !== null &&
-    samePrice(
-      current.price.amount,
-      input.expectedDiscountedPrice,
-      currencyCode,
-    ) &&
-    current.startAt === input.expectedStartAt &&
-    current.endAt === input.expectedEndAt
-  );
-}
-
-function verifySalePriceChange(
-  listing: ListingPriceSnapshot,
-  input: UpdateListingSalePriceInput,
-): Money {
-  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
-  const standardPrice = listing.standardPrice;
-  if (!standardPrice) {
-    throw new SpApiError(
-      "這個 Listing 沒有可核對的標準售價，為避免誤設折扣，本次不允許寫入。",
-      { status: 422, code: "PRICE_UNAVAILABLE" },
-    );
-  }
-  if (standardPrice.currencyCode !== currencyCode) {
-    throw new SpApiError("Listing 幣別與站點幣別不一致，已停止建立折扣。", {
-      status: 409,
-      code: "CURRENCY_MISMATCH",
-    });
-  }
-  if (!samePrice(standardPrice.amount, input.expectedPrice, currencyCode)) {
-    throw new SpApiError(
-      "標準售價已在查詢後發生變動。請重新查詢 SKU，再確認一次折扣。",
-      { status: 409, code: "PRICE_CHANGED" },
-    );
-  }
-  if (!saleScheduleMatches(listing.discountedPrice, input, currencyCode)) {
-    throw new SpApiError(
-      "目前限時折扣已在查詢後發生變動。請重新查詢 SKU，避免覆蓋其他活動。",
-      { status: 409, code: "SALE_PRICE_CHANGED" },
-    );
-  }
-
-  if (input.action === "cancel") {
-    if (!listing.discountedPrice) {
-      throw new SpApiError("這個 SKU 目前沒有可取消的限時折扣。", {
-        status: 400,
-        code: "SALE_PRICE_UNAVAILABLE",
-      });
-    }
-    return standardPrice;
-  }
-
-  if (
-    input.salePrice === null ||
-    !isDateOnly(input.startAt) ||
-    !isDateOnly(input.endAt)
-  ) {
-    throw new SpApiError("請提供有效的折扣價、開始日期與結束日期。", {
-      status: 400,
-      code: "INVALID_SALE_PRICE",
-    });
-  }
-  if (input.endAt <= input.startAt) {
-    throw new SpApiError("折扣結束日期必須晚於開始日期。", {
-      status: 400,
-      code: "INVALID_SALE_DATES",
-    });
-  }
-  if (input.salePrice >= standardPrice.amount) {
-    throw new SpApiError("限時折扣價必須低於標準售價。", {
-      status: 422,
-      code: "SALE_PRICE_NOT_LOWER",
-    });
-  }
-  if (listing.minimumPrice && input.salePrice < listing.minimumPrice.amount) {
-    throw new SpApiError("限時折扣價低於此 Listing 的最低允許售價。", {
-      status: 422,
-      code: "BELOW_MINIMUM_PRICE",
-    });
-  }
-  if (
-    listing.discountedPrice &&
-    samePrice(listing.discountedPrice.price.amount, input.salePrice, currencyCode) &&
-    listing.discountedPrice.startAt === input.startAt &&
-    listing.discountedPrice.endAt === input.endAt
-  ) {
-    throw new SpApiError("新折扣設定與目前限時折扣相同。", {
-      status: 400,
-      code: "SALE_PRICE_UNCHANGED",
-    });
-  }
-  return standardPrice;
-}
-
-function requestedSaleSchedule(
-  input: UpdateListingSalePriceInput,
-): SalePriceSchedule | null {
-  if (
-    input.action === "cancel" ||
-    input.salePrice === null ||
-    !input.startAt ||
-    !input.endAt
-  ) {
-    return null;
-  }
-  return {
-    price: {
-      amount: input.salePrice,
-      currencyCode: MARKETPLACES[input.marketplaceId].currency,
-    },
-    startAt: input.startAt,
-    endAt: input.endAt,
-  };
-}
-
-function buildSalePricePatch(
-  listing: ListingPriceSnapshot,
-  input: UpdateListingSalePriceInput,
-): { productType: string; patches: unknown[] } {
-  const marketplace = MARKETPLACES[input.marketplaceId];
-  const nextSale = requestedSaleSchedule(input);
-  return {
-    productType: listing.productType || "PRODUCT",
-    patches: [
-      {
-        op: "merge",
-        path: "/attributes/purchasable_offer",
-        value: [
-          {
-            marketplace_id: input.marketplaceId,
-            currency: marketplace.currency,
-            audience: "ALL",
-            discounted_price: nextSale
-              ? [
-                  {
-                    schedule: [
-                      {
-                        start_at: nextSale.startAt,
-                        end_at: nextSale.endAt,
-                        value_with_tax: nextSale.price.amount,
-                      },
-                    ],
-                  },
-                ]
-              : null,
-          },
-        ],
-      },
-    ],
-  };
-}
-
-async function prepareLiveSalePriceUpdate(
-  input: UpdateListingSalePriceInput,
-): Promise<{
-  listing: ListingPriceSnapshot;
-  standardPrice: Money;
-  requestedDiscountedPrice: SalePriceSchedule | null;
-  body: { productType: string; patches: unknown[] };
-  issues: ListingIssue[];
-}> {
-  const listing = await fetchLiveListingPrice(
-    input.marketplaceId,
-    input.sellerSku,
-  );
-  const standardPrice = verifySalePriceChange(listing, input);
-  const requestedDiscountedPrice = requestedSaleSchedule(input);
-  const body = buildSalePricePatch(listing, input);
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body,
-    validationPreview: true,
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "read", "patchListingsItemPreview");
-  }
-
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError("Amazon 回傳了無法辨識的折扣預檢結果。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status === "INVALID" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 折扣預檢未通過，尚未寫入任何變更。",
-      {
-        status: 422,
-        code: "VALIDATION_FAILED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  if (payload.status !== "VALID") {
-    throw new SpApiError(
-      "Amazon 折扣預檢沒有回傳明確的 VALID 狀態，為避免誤改，已停止送出。",
-      {
-        status: 502,
-        code: "VALIDATION_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  return {
-    listing,
-    standardPrice,
-    requestedDiscountedPrice,
-    body,
-    issues,
-  };
 }
 
 function invalidSalesTrendRange(message: string): never {
@@ -6191,7 +5707,7 @@ export async function getFbaSubscriptionAudit(input: {
   };
 }
 
-export async function getListingPrice(input: {
+async function readListingPrice(input: {
   marketplaceId: MarketplaceId;
   sellerSku: string;
 }): Promise<ListingPriceSnapshot> {
@@ -6200,6 +5716,62 @@ export async function getListingPrice(input: {
   }
   return fetchLiveListingPrice(input.marketplaceId, input.sellerSku);
 }
+
+export const listingPriceGatewayProduction: ListingPriceGateway = {
+  mode: (marketplaceId) =>
+    shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+  read: readListingPrice,
+  setDemoStandardPrice: (input) => {
+    demoPriceOverrides.set(
+      demoPriceKey(input.marketplaceId, input.sellerSku),
+      input.amount,
+    );
+  },
+  setDemoSalePrice: (input) => {
+    demoSalePriceOverrides.set(
+      demoPriceKey(input.marketplaceId, input.sellerSku),
+      input.schedule
+        ? {
+            amount: input.schedule.price.amount,
+            startAt: input.schedule.startAt ?? "",
+            endAt: input.schedule.endAt ?? "",
+          }
+        : null,
+    );
+  },
+  validationPreview: async (input) => {
+    const response = await executeListingsWriteRequest({
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+      method: "PATCH",
+      body: listingPricePatchBody(input),
+      validationPreview: true,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      requestId: response.headers.get("x-amzn-requestid"),
+      retryAfter: response.headers.get("retry-after"),
+      payload: await parseResponseJson<unknown>(response),
+    };
+  },
+  commitOnce: async (input, fence) => {
+    const response = await executeListingsWriteRequest({
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+      method: "PATCH",
+      body: listingPricePatchBody(input),
+      assertBeforeSend: () => fence.assertCurrent(),
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      requestId: response.headers.get("x-amzn-requestid"),
+      retryAfter: response.headers.get("retry-after"),
+      payload: await parseResponseJson<unknown>(response),
+    };
+  },
+};
 
 async function fetchLiveBusinessPricing(
   input: { marketplaceId: MarketplaceId; sellerSku: string },
@@ -7578,146 +7150,6 @@ export function getDemoUnboundVariationAuditData(input: {
   return demoUnboundVariationAuditSnapshot(input);
 }
 
-export async function previewListingSalePriceUpdate(
-  input: UpdateListingSalePriceInput,
-): Promise<SalePriceValidationResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
-    const standardPrice = verifySalePriceChange(listing, input);
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      action: input.action,
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      standardPrice,
-      previousDiscountedPrice: listing.discountedPrice,
-      requestedDiscountedPrice: requestedSaleSchedule(input),
-      validatedAt: new Date().toISOString(),
-      issues: [],
-      notice: "展示預檢已通過；最終按鈕只會模擬，不會寫入 Amazon。",
-    };
-  }
-  const prepared = await prepareLiveSalePriceUpdate(input);
-  return {
-    mode: "live",
-    status: "VALID",
-    action: input.action,
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    standardPrice: prepared.standardPrice,
-    previousDiscountedPrice: prepared.listing.discountedPrice,
-    requestedDiscountedPrice: prepared.requestedDiscountedPrice,
-    validatedAt: new Date().toISOString(),
-    issues: prepared.issues,
-    notice: prepared.issues.length
-      ? "Amazon 預檢通過，但有警告需要確認。"
-      : "Amazon 預檢通過，尚未建立或取消折扣。",
-  };
-}
-
-export async function updateListingSalePrice(
-  input: UpdateListingSalePriceInput,
-  fence?: ListingWriteExecutionFence,
-): Promise<SalePriceUpdateResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
-    const standardPrice = verifySalePriceChange(listing, input);
-    const requestedDiscountedPrice = requestedSaleSchedule(input);
-    demoSalePriceOverrides.set(
-      demoPriceKey(input.marketplaceId, input.sellerSku),
-      requestedDiscountedPrice
-        ? {
-            amount: requestedDiscountedPrice.price.amount,
-            startAt: requestedDiscountedPrice.startAt ?? "",
-            endAt: requestedDiscountedPrice.endAt ?? "",
-          }
-        : null,
-    );
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      action: input.action,
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      standardPrice,
-      previousDiscountedPrice: listing.discountedPrice,
-      requestedDiscountedPrice,
-      acceptedAt: new Date().toISOString(),
-      submissionId: null,
-      requestId: null,
-      issues: [],
-      notice:
-        input.action === "cancel"
-          ? "模擬取消折扣完成；Amazon 真實活動沒有變更。"
-          : "模擬限時折扣建立完成；Amazon 真實活動沒有變更。",
-    };
-  }
-
-  const prepared = await prepareListingCommit(
-    () => prepareLiveSalePriceUpdate(input),
-    "折扣正式寫入前的重新讀取或 Validation Preview 失敗。",
-  );
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body: prepared.body,
-    ...(fence
-      ? { assertBeforeSend: () => fence.assertCurrent() }
-      : {}),
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "write", "patchListingsItem");
-  }
-
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError(
-      "Amazon 已收到請求，但回應無法辨識。請重新查詢 SKU 確認折扣。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status !== "ACCEPTED" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 未接受這次折扣更新。",
-      {
-        status: 422,
-        code: "UPDATE_REJECTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  return {
-    mode: "live",
-    status: "ACCEPTED",
-    action: input.action,
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    standardPrice: prepared.standardPrice,
-    previousDiscountedPrice: prepared.listing.discountedPrice,
-    requestedDiscountedPrice: prepared.requestedDiscountedPrice,
-    acceptedAt: new Date().toISOString(),
-    submissionId: payload.submissionId ?? null,
-    requestId: response.headers.get("x-amzn-requestid"),
-    issues,
-    notice:
-      input.action === "cancel"
-        ? "Amazon 已接受取消折扣，正在處理；重新查詢確認後才代表完成。"
-        : "Amazon 已接受限時折扣，正在處理；重新查詢看到新折扣後才代表生效。",
-  };
-}
-
 export async function previewBusinessPriceUpdate(
   input: UpdateBusinessPriceInput,
 ): Promise<BusinessPriceValidationResult> {
@@ -7922,134 +7354,6 @@ export async function updateBusinessPrice(
     issues,
     notice:
       "Amazon 已接受 B2B 調價請求，正在處理；重新查詢確認後才代表 Business Price 已生效。",
-  };
-}
-
-export async function previewListingPriceUpdate(
-  input: UpdateListingPriceInput,
-): Promise<PriceValidationResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
-    const previousPrice = verifyPriceChange(listing, input);
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      previousPrice,
-      requestedPrice: {
-        amount: input.newPrice,
-        currencyCode: MARKETPLACES[input.marketplaceId].currency,
-      },
-      validatedAt: new Date().toISOString(),
-      issues: [],
-      notice: "展示預檢已通過；最終按鈕只會模擬，不會寫入 Amazon。",
-    };
-  }
-
-  const prepared = await prepareLivePriceUpdate(input);
-  return {
-    mode: "live",
-    status: "VALID",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    previousPrice: prepared.previousPrice,
-    requestedPrice: prepared.requestedPrice,
-    validatedAt: new Date().toISOString(),
-    issues: prepared.issues,
-    notice: prepared.issues.length
-      ? "Amazon 預檢通過，但有警告需要確認。"
-      : "Amazon 預檢通過，尚未寫入價格。",
-  };
-}
-
-export async function updateListingPrice(
-  input: UpdateListingPriceInput,
-  fence?: ListingWriteExecutionFence,
-): Promise<PriceUpdateResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingPrice(input.marketplaceId, input.sellerSku);
-    const previousPrice = verifyPriceChange(listing, input);
-    demoPriceOverrides.set(
-      demoPriceKey(input.marketplaceId, input.sellerSku),
-      input.newPrice,
-    );
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      previousPrice,
-      requestedPrice: {
-        amount: input.newPrice,
-        currencyCode: MARKETPLACES[input.marketplaceId].currency,
-      },
-      acceptedAt: new Date().toISOString(),
-      submissionId: null,
-      requestId: null,
-      issues: [],
-      notice: "模擬調價完成；Amazon 真實價格沒有變更。",
-    };
-  }
-
-  const prepared = await prepareListingCommit(
-    () => prepareLivePriceUpdate(input),
-    "價格正式寫入前的重新讀取或 Validation Preview 失敗。",
-  );
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body: prepared.body,
-    ...(fence
-      ? { assertBeforeSend: () => fence.assertCurrent() }
-      : {}),
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "write", "patchListingsItem");
-  }
-
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError(
-      "Amazon 已收到請求，但回應無法辨識。請重新查詢 SKU 確認價格。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status !== "ACCEPTED" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 未接受這次價格更新。",
-      {
-        status: 422,
-        code: "UPDATE_REJECTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-
-  return {
-    mode: "live",
-    status: "ACCEPTED",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    previousPrice: prepared.previousPrice,
-    requestedPrice: prepared.requestedPrice,
-    acceptedAt: new Date().toISOString(),
-    submissionId: payload.submissionId ?? null,
-    requestId: response.headers.get("x-amzn-requestid"),
-    issues,
-    notice:
-      "Amazon 已接受調價請求，正在處理；重新查詢確認後才代表價格已生效。",
   };
 }
 

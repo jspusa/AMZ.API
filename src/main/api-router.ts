@@ -62,7 +62,6 @@ import {
   integer,
   isPlainRecord,
   multiLineText,
-  optionalDate,
   optionalInteger,
   parseAsin,
   parseMarketplace,
@@ -72,6 +71,10 @@ import {
   type JsonRecord,
 } from "./route-input";
 import { invalid, json, routeError } from "./route-response";
+import {
+  createListingPriceMutations,
+  type ListingPriceMutationsPort,
+} from "./listing-price-mutations";
 import {
   FbaSalesMetricsRoutes,
   type FbaSalesMetricsRoutesPort,
@@ -93,7 +96,6 @@ import {
   getFbaVariationGroupingData,
   getListingContent,
   getListingImages,
-  getListingPrice,
   getBusinessPricing,
   aplusContentPageAdapterProduction,
   customerFeedbackPageAdapterProduction,
@@ -107,11 +109,10 @@ import {
   getVariationMovePreparation,
   isMarketplaceId,
   invalidateSpApiCredentialCaches,
+  listingPriceGatewayProduction,
   previewListingContentUpdate,
   previewBusinessPriceUpdate,
   previewListingImageUpdate,
-  previewListingPriceUpdate,
-  previewListingSalePriceUpdate,
   previewVariationMove,
   fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
@@ -120,8 +121,6 @@ import {
   updateListingContent,
   updateBusinessPrice,
   updateListingImages,
-  updateListingPrice,
-  updateListingSalePrice,
   updateVariationMove,
   usesDemoMode,
   verifyListingsAccess,
@@ -132,11 +131,9 @@ import {
   type ListingContentValidationResult,
   type ListingContentUpdateResult,
   type ListingImageSnapshot,
-  type ListingPriceSnapshot,
   type MarketplaceId,
   type UpdateListingContentInput,
   type UpdateBusinessPriceInput,
-  type UpdateListingSalePriceInput,
   type VariationMoveInput,
 } from "./amazon/sp-api";
 import {
@@ -257,13 +254,9 @@ import {
   commitWithCanonicalReadback,
   contentReadbackDecision,
   imageReadbackDecision,
-  priceReadbackDecision,
   reconcileContentWrite,
   reconcileBusinessPriceWrite,
   reconcileImageWrite,
-  reconcilePriceWrite,
-  reconcileSalePriceWrite,
-  salePriceReadbackDecision,
 } from "./amazon/listing-write-readback";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
@@ -876,12 +869,6 @@ function parsePrice(value: unknown, currencyCode: string): number | null {
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
-function optionalPrice(value: unknown, currency: string): number | null | undefined {
-  if (value === null || value === "" || value === undefined) return null;
-  const parsed = parsePrice(value, currency);
-  return parsed === null ? undefined : parsed;
-}
-
 function parseText(value: unknown, maximum: number): string | null {
   if (typeof value !== "string" || value.length > maximum) return null;
   return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
@@ -991,6 +978,7 @@ export class ApiRouter {
   private readonly vault: CredentialVault;
   private readonly spExecutionContext: RouterRequestContextAdapter;
   private readonly writeGate: MainWriteGatePort;
+  private readonly priceMutations: ListingPriceMutationsPort;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly aplusContentReads: AplusContentReadsPort;
@@ -1081,6 +1069,7 @@ export class ApiRouter {
     advertising?: AdvertisingGateway;
     spExecutionContext?: SpExecutionContextAdapter;
     writeGate?: MainWriteGatePort;
+    priceMutations?: ListingPriceMutationsPort;
   }) {
     this.store = input.store;
     this.vault = input.vault;
@@ -1099,6 +1088,11 @@ export class ApiRouter {
       store: this.store,
       context: this.spExecutionContext,
       approveWrite: input.approveWrite,
+    });
+    this.priceMutations = input.priceMutations ?? createListingPriceMutations({
+      context: this.spExecutionContext,
+      writeGate: this.writeGate,
+      gateway: listingPriceGatewayProduction,
     });
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
@@ -1368,7 +1362,8 @@ export class ApiRouter {
           syncIdentity: (identity) => this.store.syncProductIdentity(identity),
         },
         reads: {
-          price: getListingPrice,
+          price: (identity, context) =>
+            this.priceMutations.read(identity, context),
           content: getListingContent,
           images: getListingImages,
           subscribeSave: getSubscribeAndSaveOffer,
@@ -1580,11 +1575,23 @@ export class ApiRouter {
       case "GET /api/sp-api/inbound-shipments":
         return this.fbaInboundCoordinator.status(request);
       case "GET /api/sp-api/listings":
-        return this.listingPrice(request);
+        return this.priceMutations.handle({
+          family: "standard-price",
+          operation: "read",
+          request,
+        });
       case "POST /api/sp-api/listings":
-        return this.previewPrice(request);
+        return this.priceMutations.handle({
+          family: "standard-price",
+          operation: "preview",
+          request,
+        });
       case "PATCH /api/sp-api/listings":
-        return this.commitPrice(request);
+        return this.priceMutations.handle({
+          family: "standard-price",
+          operation: "commit",
+          request,
+        });
       case "POST /api/sp-api/business-pricing-audit":
         return this.businessPricingAuditOwner.start(request);
       case "GET /api/sp-api/business-pricing-audit":
@@ -1616,9 +1623,17 @@ export class ApiRouter {
       case "PATCH /api/sp-api/listing-images":
         return this.commitImages(request);
       case "POST /api/sp-api/sale-price":
-        return this.previewSalePrice(request);
+        return this.priceMutations.handle({
+          family: "sale-price",
+          operation: "preview",
+          request,
+        });
       case "PATCH /api/sp-api/sale-price":
-        return this.commitSalePrice(request);
+        return this.priceMutations.handle({
+          family: "sale-price",
+          operation: "commit",
+          request,
+        });
       case "GET /api/sp-api/subscribe-save":
         return this.statelessCapabilities.subscribeSave(request);
       case "GET /api/sp-api/subscription-audit":
@@ -1768,21 +1783,6 @@ export class ApiRouter {
       : invalid("請選擇站點並輸入完整 SKU。");
   }
 
-  private async listingPrice(request: ApiRequest): Promise<ApiResponse> {
-    const identity = this.listingIdentity(request);
-    if ("status" in identity) return identity;
-    try {
-      const { context, value: snapshot } = await this.runContextBoundWork(
-        identity.marketplaceId,
-        () => getListingPrice(identity),
-      );
-      await this.reconcilePriceWrites(snapshot, context);
-      return json(snapshot);
-    } catch (error) {
-      return apiError(error, "查詢 SKU 價格時發生未預期的錯誤。");
-    }
-  }
-
   private async businessPricing(request: ApiRequest): Promise<ApiResponse> {
     const identity = this.listingIdentity(request);
     if ("status" in identity) return identity;
@@ -1791,7 +1791,7 @@ export class ApiRouter {
         identity.marketplaceId,
         () => getBusinessPricing(identity),
       );
-      await this.reconcilePriceWrites(snapshot, context);
+      await this.priceMutations.observeCanonical(identity, snapshot, context);
       await this.reconcileBusinessPriceWrites(snapshot, context);
       return json(snapshot);
     } catch (error) {
@@ -2224,121 +2224,6 @@ export class ApiRouter {
         "Amazon 變體寫入或回查時發生未預期的錯誤。",
       );
     }
-  }
-
-  private priceInput(request: ApiRequest):
-    | {
-        marketplaceId: MarketplaceId;
-        sellerSku: string;
-        newPrice: number;
-        expectedPrice: number;
-        confirmationSku: string;
-        idempotencyKey: string;
-      }
-    | ApiResponse {
-    const body = bodyRecord(request);
-    if (!body) return invalid("價格請求必須使用 JSON。", 415, "UNSUPPORTED_MEDIA_TYPE");
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const sellerSku = parseSellerSku(body.sellerSku);
-    if (!marketplaceId || !sellerSku) {
-      return invalid("請提供有效的 Amazon 站點與完整 SKU。");
-    }
-    const currency = MARKETPLACES[marketplaceId].currency;
-    const newPrice = parsePrice(body.newPrice, currency);
-    const expectedPrice = parsePrice(body.expectedPrice, currency);
-    if (newPrice === null || expectedPrice === null) {
-      return invalid(
-        currency === "JPY"
-          ? "日圓價格必須是大於 0 的整數。"
-          : "價格必須大於 0，且最多只能有兩位小數。",
-        400,
-        "INVALID_PRICE",
-      );
-    }
-    return {
-      marketplaceId,
-      sellerSku,
-      newPrice,
-      expectedPrice,
-      confirmationSku: typeof body.confirmationSku === "string" ? body.confirmationSku : "",
-      idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
-    };
-  }
-
-  private async previewPrice(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.priceInput(request);
-    if ("status" in input) return input;
-    try {
-      const { context, value: result } = await this.runContextBoundWork(
-        input.marketplaceId,
-        () => previewListingPriceUpdate(input),
-      );
-      await this.stageWritePreview(this.writeBinding({
-        family: "standard-price",
-        operation: "price",
-        context,
-        sellerSku: input.sellerSku,
-        idempotencyKey: input.idempotencyKey,
-        proposalFingerprint: this.priceFingerprint(input),
-      }));
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "價格預檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async commitPrice(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.priceInput(request);
-    if ("status" in input) return input;
-    const key = idempotencyKey(input.idempotencyKey);
-    if (!key) return invalid("這次調價的確認資訊已失效，請重新預檢。");
-    const changeRatio = Math.abs(input.newPrice - input.expectedPrice) / input.expectedPrice;
-    if (changeRatio >= 0.2 && input.confirmationSku !== input.sellerSku) {
-      return invalid("價格變動達 20%，請重新輸入完整 SKU 才能送出。", 400, "CONFIRMATION_REQUIRED");
-    }
-    const context = await this.spExecutionContext.capture(input.marketplaceId);
-    const binding = this.writeBinding({
-      family: "standard-price",
-      operation: "price",
-      context,
-      sellerSku: input.sellerSku,
-      idempotencyKey: key,
-      proposalFingerprint: this.priceFingerprint(input),
-    });
-    try {
-      const result = await this.writeGate.execute({
-        binding,
-        approvalReason: `確認調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.newPrice} ${MARKETPLACES[input.marketplaceId].currency}`,
-        run: (session) => session.attempt({
-          intentId: "primary",
-          execute: ({ recordAccepted, assertCurrent }) =>
-            commitWithCanonicalReadback({
-              commit: () => updateListingPrice(input, { assertCurrent }),
-              onAccepted: recordAccepted,
-              assertCurrent,
-              read: () => getListingPrice(input),
-              decide: priceReadbackDecision,
-            }),
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "送出價格更新時發生未預期的錯誤。");
-    }
-  }
-
-  private priceFingerprint(input: {
-    marketplaceId: MarketplaceId;
-    sellerSku: string;
-    newPrice: number;
-    expectedPrice: number;
-  }): string {
-    return stableFingerprint([
-      input.marketplaceId,
-      input.sellerSku,
-      input.expectedPrice,
-      input.newPrice,
-    ]);
   }
 
   private contentInput(request: ApiRequest):
@@ -3201,153 +3086,6 @@ export class ApiRouter {
     ]);
   }
 
-  private salePriceInput(request: ApiRequest):
-    | (UpdateListingSalePriceInput & {
-        confirmationSku: string;
-        idempotencyKey: string;
-      })
-    | ApiResponse {
-    const body = bodyRecord(request);
-    if (!body) return invalid("折扣請求必須使用 JSON。", 415, "UNSUPPORTED_MEDIA_TYPE");
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const sellerSku = parseSellerSku(body.sellerSku);
-    const action = body.action === "set" || body.action === "cancel" ? body.action : null;
-    if (!marketplaceId || !sellerSku || !action) {
-      return invalid("請提供有效的站點、SKU 與折扣操作。");
-    }
-    const currency = MARKETPLACES[marketplaceId].currency;
-    const expectedPrice = parsePrice(body.expectedPrice, currency);
-    const expectedDiscountedPrice = optionalPrice(body.expectedDiscountedPrice, currency);
-    const expectedStartAt = optionalDate(body.expectedStartAt);
-    const expectedEndAt = optionalDate(body.expectedEndAt);
-    const salePrice = optionalPrice(body.salePrice, currency);
-    const startAt = optionalDate(body.startAt);
-    const endAt = optionalDate(body.endAt);
-    if (
-      expectedPrice === null ||
-      expectedDiscountedPrice === undefined ||
-      expectedStartAt === undefined ||
-      expectedEndAt === undefined ||
-      salePrice === undefined ||
-      startAt === undefined ||
-      endAt === undefined
-    ) {
-      return invalid(
-        currency === "JPY"
-          ? "請確認折扣金額為整數，且日期格式正確。"
-          : "請確認折扣金額最多兩位小數，且日期格式正確。",
-      );
-    }
-    if (action === "set" && (salePrice === null || !startAt || !endAt)) {
-      return invalid("建立折扣需要折扣價、開始日與結束日。");
-    }
-    return {
-      marketplaceId,
-      sellerSku,
-      action,
-      expectedPrice,
-      expectedDiscountedPrice,
-      expectedStartAt,
-      expectedEndAt,
-      salePrice: action === "set" ? salePrice : null,
-      startAt: action === "set" ? startAt : null,
-      endAt: action === "set" ? endAt : null,
-      confirmationSku: typeof body.confirmationSku === "string" ? body.confirmationSku : "",
-      idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
-    };
-  }
-
-  private async previewSalePrice(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.salePriceInput(request);
-    if ("status" in input) return input;
-    try {
-      const { context, value: result } = await this.runContextBoundWork(
-        input.marketplaceId,
-        () => previewListingSalePriceUpdate(input),
-      );
-      await this.stageWritePreview(this.writeBinding({
-        family: "sale-price",
-        operation: "sale_price",
-        context,
-        sellerSku: input.sellerSku,
-        idempotencyKey: input.idempotencyKey,
-        proposalFingerprint: this.saleFingerprint(input),
-      }));
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "折扣預檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async commitSalePrice(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.salePriceInput(request);
-    if ("status" in input) return input;
-    const key = idempotencyKey(input.idempotencyKey);
-    if (!key) return invalid("這次折扣的確認資訊已失效，請重新預檢。");
-    const discountRatio =
-      input.action === "set" && input.salePrice !== null
-        ? (input.expectedPrice - input.salePrice) / input.expectedPrice
-        : 0;
-    if (
-      (input.action === "cancel" || discountRatio >= 0.2) &&
-      input.confirmationSku !== input.sellerSku
-    ) {
-      return invalid(
-        input.action === "cancel"
-          ? "取消折扣前，請重新輸入完整 SKU。"
-          : "折扣達 20%，請重新輸入完整 SKU 才能送出。",
-        400,
-        "CONFIRMATION_REQUIRED",
-      );
-    }
-    const context = await this.spExecutionContext.capture(input.marketplaceId);
-    const binding = this.writeBinding({
-      family: "sale-price",
-      operation: "sale_price",
-      context,
-      sellerSku: input.sellerSku,
-      idempotencyKey: key,
-      proposalFingerprint: this.saleFingerprint(input),
-    });
-    try {
-      const result = await this.writeGate.execute({
-        binding,
-        approvalReason: input.action === "cancel"
-          ? `確認取消折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜目前 ${input.expectedDiscountedPrice ?? "—"}`
-          : `確認折扣｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${input.expectedPrice} → ${input.salePrice} ${MARKETPLACES[input.marketplaceId].currency}｜${input.startAt}～${input.endAt}`,
-        run: (session) => session.attempt({
-          intentId: "primary",
-          execute: ({ recordAccepted, assertCurrent }) =>
-            commitWithCanonicalReadback({
-              commit: () => updateListingSalePrice(input, { assertCurrent }),
-              onAccepted: recordAccepted,
-              assertCurrent,
-              read: () => getListingPrice(input),
-              decide: salePriceReadbackDecision,
-            }),
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "送出折扣更新時發生未預期的錯誤。");
-    }
-  }
-
-  private saleFingerprint(input: UpdateListingSalePriceInput): string {
-    return stableFingerprint([
-      input.marketplaceId,
-      input.sellerSku,
-      input.action,
-      input.expectedPrice,
-      input.expectedDiscountedPrice,
-      input.expectedStartAt,
-      input.expectedEndAt,
-      input.salePrice,
-      input.startAt,
-      input.endAt,
-    ]);
-  }
-
   private async startExport(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
@@ -3504,23 +3242,6 @@ export class ApiRouter {
     const value = await work();
     await this.spExecutionContext.assertCurrent(context);
     return { context, value };
-  }
-
-  private async reconcilePriceWrites(
-    snapshot: ListingPriceSnapshot,
-    context: SpExecutionContext,
-  ): Promise<void> {
-    await this.writeGate.reconcile({
-      context,
-      marketplaceId: snapshot.marketplaceId,
-      sellerSku: snapshot.sellerSku,
-      operations: ["price", "sale_price"],
-      snapshot,
-      project: (response, operationType, canonical) =>
-        operationType === "price"
-          ? reconcilePriceWrite(response, canonical)
-          : reconcileSalePriceWrite(response, canonical),
-    });
   }
 
   private async reconcileBusinessPriceWrites(
