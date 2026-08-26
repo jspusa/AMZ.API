@@ -3,7 +3,6 @@ import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import { marketplaceById, type MarketplaceId } from "../shared/marketplaces";
 import type {
   ListingPriceSnapshot,
-  ListingWriteExecutionFence,
   PriceUpdateResult,
   PriceValidationResult,
   SalePriceUpdateResult,
@@ -11,6 +10,8 @@ import type {
   UpdateListingPriceInput,
   UpdateListingSalePriceInput,
 } from "./amazon/listing-price-types";
+import type { ListingWriteExecutionFence } from
+  "./amazon/listing-write-execution-fence";
 import type {
   ListingPriceGateway,
   ListingPriceGatewayReply,

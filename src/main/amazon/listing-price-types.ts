@@ -1,6 +1,9 @@
 import type { MarketplaceId } from "../../shared/marketplaces";
 import type { ListingIssue } from "./sp-api-error";
 
+export type { ListingWriteExecutionFence } from
+  "./listing-write-execution-fence";
+
 export type Money = {
   amount: number;
   currencyCode: string;
@@ -44,10 +47,6 @@ export type ListingPriceSnapshot = {
   fulfillmentAvailability: FulfillmentAvailability[];
   notice: string | null;
 };
-
-export type ListingWriteExecutionFence = Readonly<{
-  assertCurrent(): Promise<void>;
-}>;
 
 export type UpdateListingPriceInput = {
   marketplaceId: MarketplaceId;

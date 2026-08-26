@@ -6,8 +6,6 @@ import type {
   BusinessPriceUpdateResult,
   ListingContentSnapshot,
   ListingContentUpdateResult,
-  ListingImageSnapshot,
-  ListingImageUpdateResult,
 } from "./sp-api";
 
 export type ListingWriteLifecycleEvidence = Readonly<{
@@ -191,15 +189,6 @@ function canonicalText(value: string): string {
   return value.replace(/\r\n?/gu, "\n").trim();
 }
 
-function canonicalImageUrl(value: string | null): string | null {
-  if (value === null) return null;
-  try {
-    return new URL(value).toString();
-  } catch {
-    return null;
-  }
-}
-
 function changedFieldHasError(
   snapshot: ListingContentSnapshot,
   changedFields: ListingContentUpdateResult["changedFields"],
@@ -306,29 +295,6 @@ export function contentReadbackDecision(
   return "verified";
 }
 
-export function imageReadbackDecision(
-  result: ListingImageUpdateResult,
-  snapshot: ListingImageSnapshot,
-): ReadbackDecision {
-  if (!exactIdentity(result, snapshot) ||
-      !snapshot.attributesPresent ||
-      snapshot.issues.some((issue) => issue.severity === "ERROR")) {
-    return "pending";
-  }
-  return result.changedSlots.every((index) => {
-    const actual = snapshot.images[index]?.url ?? null;
-    const requested = result.requestedUrls[index] ?? null;
-    if (requested === null) return actual === null;
-    const canonicalActual = canonicalImageUrl(actual);
-    const canonicalRequested = canonicalImageUrl(requested);
-    return canonicalActual !== null &&
-      canonicalRequested !== null &&
-      canonicalActual === canonicalRequested;
-  })
-    ? "verified"
-    : "pending";
-}
-
 export function reconcileBusinessPriceWrite(
   response: unknown,
   snapshot: BusinessPricingListingSnapshot,
@@ -396,26 +362,6 @@ export function reconcileContentWrite(
   }
   const result = response as unknown as ListingContentUpdateResult;
   return contentReadbackDecision(result, snapshot) === "verified"
-    ? verifiedResult(result, 0, now)
-    : null;
-}
-
-export function reconcileImageWrite(
-  response: unknown,
-  snapshot: ListingImageSnapshot,
-  now: () => Date = () => new Date(),
-): unknown | null {
-  if (!acceptedBase(response) ||
-      typeof response.completedAt !== "string" ||
-      !Array.isArray(response.requestedUrls) ||
-      !response.requestedUrls.every(stringOrNull) ||
-      !Array.isArray(response.changedSlots) ||
-      !response.changedSlots.every((value) =>
-        Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) < 9)) {
-    return null;
-  }
-  const result = response as unknown as ListingImageUpdateResult;
-  return imageReadbackDecision(result, snapshot) === "verified"
     ? verifiedResult(result, 0, now)
     : null;
 }

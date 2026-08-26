@@ -3,7 +3,6 @@ import {
   businessPriceReadbackDecision,
   commitWithCanonicalReadback,
   contentReadbackDecision,
-  imageReadbackDecision,
 } from "../src/main/amazon/listing-write-readback";
 import {
   priceReadbackDecision,
@@ -501,44 +500,4 @@ describe("main-owned listing write readback", () => {
     expect(priceReadbackDecision(price as never, snapshot as never)).toBe("pending");
   });
 
-  it("checks only changed image slots using canonical URLs", () => {
-    const result = {
-      ...identity,
-      changedSlots: [1],
-      requestedUrls: ["https://example.com/main.jpg", "https://EXAMPLE.com/b.jpg?q=1"],
-    };
-    const snapshot = {
-      ...identity,
-      attributesPresent: true,
-      issues: [],
-      images: [
-        { url: "https://different.example/main.jpg" },
-        { url: "https://example.com/b.jpg?q=1" },
-      ],
-    };
-    expect(imageReadbackDecision(result as never, snapshot as never)).toBe("verified");
-    expect(imageReadbackDecision(
-      {
-        ...result,
-        changedSlots: [1],
-        requestedUrls: [null, null],
-      } as never,
-      {
-        ...snapshot,
-        attributesPresent: false,
-        images: snapshot.images.map(() => ({ url: null })),
-      } as never,
-    )).toBe("pending");
-    expect(imageReadbackDecision(
-      {
-        ...result,
-        changedSlots: [1],
-        requestedUrls: [null, null],
-      } as never,
-      {
-        ...snapshot,
-        images: [snapshot.images[0], { url: "not-a-valid-url" }],
-      } as never,
-    )).toBe("pending");
-  });
 });

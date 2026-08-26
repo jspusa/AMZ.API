@@ -76,6 +76,10 @@ import {
   type ListingPriceMutationsPort,
 } from "./listing-price-mutations";
 import {
+  createListingImageMutations,
+  type ListingImageMutationsPort,
+} from "./listing-image-mutations";
+import {
   FbaSalesMetricsRoutes,
   type FbaSalesMetricsRoutesPort,
 } from "./fba-sales-metrics-routes";
@@ -95,7 +99,6 @@ import {
   catalogReportsDemoSource,
   getFbaVariationGroupingData,
   getListingContent,
-  getListingImages,
   getBusinessPricing,
   aplusContentPageAdapterProduction,
   customerFeedbackPageAdapterProduction,
@@ -109,10 +112,10 @@ import {
   getVariationMovePreparation,
   isMarketplaceId,
   invalidateSpApiCredentialCaches,
+  listingImageGatewayProduction,
   listingPriceGatewayProduction,
   previewListingContentUpdate,
   previewBusinessPriceUpdate,
-  previewListingImageUpdate,
   previewVariationMove,
   fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
@@ -120,7 +123,6 @@ import {
   searchListingsBySku,
   updateListingContent,
   updateBusinessPrice,
-  updateListingImages,
   updateVariationMove,
   usesDemoMode,
   verifyListingsAccess,
@@ -130,7 +132,6 @@ import {
   type BusinessPriceValidationResult,
   type ListingContentValidationResult,
   type ListingContentUpdateResult,
-  type ListingImageSnapshot,
   type MarketplaceId,
   type UpdateListingContentInput,
   type UpdateBusinessPriceInput,
@@ -253,10 +254,8 @@ import {
   businessPriceReadbackDecision,
   commitWithCanonicalReadback,
   contentReadbackDecision,
-  imageReadbackDecision,
   reconcileContentWrite,
   reconcileBusinessPriceWrite,
-  reconcileImageWrite,
 } from "./amazon/listing-write-readback";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
@@ -887,25 +886,6 @@ function parseBullets(value: unknown): string[] | null {
   return result;
 }
 
-function parseUrls(value: unknown): Array<string | null> | null {
-  if (!Array.isArray(value) || value.length > 9) return null;
-  const urls: Array<string | null> = [];
-  for (const item of value) {
-    if (item === null || item === "") {
-      urls.push(null);
-    } else if (
-      typeof item === "string" &&
-      item.length <= 2_000 &&
-      !/[\u0000-\u001f\u007f]/.test(item)
-    ) {
-      urls.push(item.trim() || null);
-    } else {
-      return null;
-    }
-  }
-  return urls;
-}
-
 function parseVariationDimensionNames(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > 6) return null;
   const names: string[] = [];
@@ -979,6 +959,7 @@ export class ApiRouter {
   private readonly spExecutionContext: RouterRequestContextAdapter;
   private readonly writeGate: MainWriteGatePort;
   private readonly priceMutations: ListingPriceMutationsPort;
+  private readonly listingImageMutations: ListingImageMutationsPort;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly aplusContentReads: AplusContentReadsPort;
@@ -1070,6 +1051,7 @@ export class ApiRouter {
     spExecutionContext?: SpExecutionContextAdapter;
     writeGate?: MainWriteGatePort;
     priceMutations?: ListingPriceMutationsPort;
+    listingImageMutations?: ListingImageMutationsPort;
   }) {
     this.store = input.store;
     this.vault = input.vault;
@@ -1094,6 +1076,12 @@ export class ApiRouter {
       writeGate: this.writeGate,
       gateway: listingPriceGatewayProduction,
     });
+    this.listingImageMutations = input.listingImageMutations ??
+      createListingImageMutations({
+        context: this.spExecutionContext,
+        writeGate: this.writeGate,
+        gateway: listingImageGatewayProduction,
+      });
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
       start: (request) => startDemoFixedReport({
@@ -1365,7 +1353,8 @@ export class ApiRouter {
           price: (identity, context) =>
             this.priceMutations.read(identity, context),
           content: getListingContent,
-          images: getListingImages,
+          images: (identity, context) =>
+            this.listingImageMutations.read(identity, context),
           subscribeSave: getSubscribeAndSaveOffer,
           restock: getRestockPlan,
         },
@@ -1617,11 +1606,20 @@ export class ApiRouter {
       case "PATCH /api/sp-api/listing-content/import":
         return this.commitContentWorkbookImport(request);
       case "GET /api/sp-api/listing-images":
-        return this.listingImages(request);
+        return this.listingImageMutations.handle({
+          operation: "read",
+          request,
+        });
       case "POST /api/sp-api/listing-images":
-        return this.previewImages(request);
+        return this.listingImageMutations.handle({
+          operation: "preview",
+          request,
+        });
       case "PATCH /api/sp-api/listing-images":
-        return this.commitImages(request);
+        return this.listingImageMutations.handle({
+          operation: "commit",
+          request,
+        });
       case "POST /api/sp-api/sale-price":
         return this.priceMutations.handle({
           family: "sale-price",
@@ -2959,133 +2957,6 @@ export class ApiRouter {
     }
   }
 
-  private imageInput(request: ApiRequest):
-    | {
-        marketplaceId: MarketplaceId;
-        sellerSku: string;
-        expectedUrls: Array<string | null>;
-        urls: Array<string | null>;
-        confirmationSku: string;
-        idempotencyKey: string;
-      }
-    | ApiResponse {
-    const body = bodyRecord(request);
-    if (!body) return invalid("商品圖片請求必須使用 JSON。", 415, "UNSUPPORTED_MEDIA_TYPE");
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const sellerSku = parseSellerSku(body.sellerSku);
-    const expectedUrls = parseUrls(body.expectedUrls);
-    const urls = parseUrls(body.urls);
-    if (!marketplaceId || !sellerSku || !expectedUrls || !urls) {
-      return invalid("請提供有效的站點、SKU 與最多九個圖片 URL。");
-    }
-    const populated = urls.filter((value): value is string => Boolean(value));
-    if (new Set(populated).size !== populated.length) {
-      return invalid("同一個圖片網址不能重複放在不同位置。", 422, "DUPLICATE_IMAGE_URL");
-    }
-    return {
-      marketplaceId,
-      sellerSku,
-      expectedUrls,
-      urls,
-      confirmationSku: typeof body.confirmationSku === "string" ? body.confirmationSku : "",
-      idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
-    };
-  }
-
-  private async listingImages(request: ApiRequest): Promise<ApiResponse> {
-    const identity = this.listingIdentity(request);
-    if ("status" in identity) return identity;
-    try {
-      const { context, value: snapshot } = await this.runContextBoundWork(
-        identity.marketplaceId,
-        () => getListingImages(identity),
-      );
-      await this.reconcileImageWrites(snapshot, context);
-      return json(snapshot);
-    } catch (error) {
-      return apiError(error, "查詢商品圖片時發生未預期的錯誤。");
-    }
-  }
-
-  private async previewImages(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.imageInput(request);
-    if ("status" in input) return input;
-    try {
-      const { context, value: result } = await this.runContextBoundWork(
-        input.marketplaceId,
-        () => previewListingImageUpdate(input),
-      );
-      await this.stageWritePreview(this.writeBinding({
-        family: "images",
-        operation: "images",
-        context,
-        sellerSku: input.sellerSku,
-        idempotencyKey: input.idempotencyKey,
-        proposalFingerprint: this.imageFingerprint(input),
-      }));
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "商品圖片預檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async commitImages(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.imageInput(request);
-    if ("status" in input) return input;
-    const key = idempotencyKey(input.idempotencyKey);
-    if (!key) return invalid("這次預檢已失效，請重新預檢。");
-    if (input.confirmationSku !== input.sellerSku) {
-      return invalid("送出圖片前，請重新輸入完整 SKU。", 400, "CONFIRMATION_REQUIRED");
-    }
-    const context = await this.spExecutionContext.capture(input.marketplaceId);
-    const binding = this.writeBinding({
-      family: "images",
-      operation: "images",
-      context,
-      sellerSku: input.sellerSku,
-      idempotencyKey: key,
-      proposalFingerprint: this.imageFingerprint(input),
-    });
-    try {
-      const changedSlots = input.urls
-        .map((value, index) => (value !== input.expectedUrls[index] ? index + 1 : null))
-        .filter((value): value is number => value !== null);
-      const result = await this.writeGate.execute({
-        binding,
-        approvalReason: (verificationCode) =>
-          `確認圖片｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${verificationCode}`,
-        run: (session) => session.attempt({
-          intentId: "primary",
-          execute: ({ recordAccepted, assertCurrent }) =>
-            commitWithCanonicalReadback({
-              commit: () => updateListingImages(input, { assertCurrent }),
-              onAccepted: recordAccepted,
-              assertCurrent,
-              read: () => getListingImages(input),
-              decide: imageReadbackDecision,
-            }),
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "送出商品圖片時發生未預期的錯誤。");
-    }
-  }
-
-  private imageFingerprint(input: {
-    marketplaceId: MarketplaceId;
-    sellerSku: string;
-    expectedUrls: Array<string | null>;
-    urls: Array<string | null>;
-  }): string {
-    return stableFingerprint([
-      input.marketplaceId,
-      input.sellerSku,
-      input.expectedUrls,
-      input.urls,
-    ]);
-  }
-
   private async startExport(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
@@ -3271,21 +3142,6 @@ export class ApiRouter {
       snapshot,
       project: (response, _operationType, canonical) =>
         reconcileContentWrite(response, canonical),
-    });
-  }
-
-  private async reconcileImageWrites(
-    snapshot: ListingImageSnapshot,
-    context: SpExecutionContext,
-  ): Promise<void> {
-    await this.writeGate.reconcile({
-      context,
-      marketplaceId: snapshot.marketplaceId,
-      sellerSku: snapshot.sellerSku,
-      operations: ["images"],
-      snapshot,
-      project: (response, _operationType, canonical) =>
-        reconcileImageWrite(response, canonical),
     });
   }
 
