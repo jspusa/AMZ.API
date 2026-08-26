@@ -1,7 +1,7 @@
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 
 export type BusinessPricingMutationCommand = Readonly<{
-  operation: "read";
+  operation: "read" | "preview";
   request: ApiRequest;
 }>;
 

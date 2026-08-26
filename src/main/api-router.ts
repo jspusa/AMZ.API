@@ -1039,7 +1039,9 @@ export class ApiRouter {
         gateway: variationMoveGatewayProduction,
       });
     this.businessPricingMutations = input.businessPricingMutations ?? {
-      handle: ({ request }) => this.businessPricing(request),
+      handle: ({ operation, request }) => operation === "read"
+        ? this.businessPricing(request)
+        : this.previewBusinessPricing(request),
     };
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
@@ -1552,7 +1554,10 @@ export class ApiRouter {
           request,
         });
       case "POST /api/sp-api/business-pricing":
-        return this.previewBusinessPricing(request);
+        return this.businessPricingMutations.handle({
+          operation: "preview",
+          request,
+        });
       case "PATCH /api/sp-api/business-pricing":
         return this.commitBusinessPricing(request);
       case "POST /api/sp-api/listings/batch":
