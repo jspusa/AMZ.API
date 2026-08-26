@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import { AuditSuiteCoordinatorError } from
-  "../src/main/amazon/audit-suite-coordinator";
 import { ReplenishmentAuditError } from
   "../src/main/amazon/replenishment-audit";
 import {
@@ -210,25 +208,8 @@ describe("public SP-API error mapping", () => {
     expect(JSON.stringify(response)).not.toContain("commitPatchSent");
   });
 
-  it("preserves safe coordinator and unknown error envelopes", async () => {
+  it("preserves safe replenishment and unknown error envelopes", async () => {
     const cases = [
-      {
-        error: new AuditSuiteCoordinatorError("Audit Suite context 已改變。", {
-          status: 409,
-          code: "JOB_MISMATCH",
-        }),
-        expected: {
-          status: 409,
-          headers: JSON_HEADERS,
-          body: {
-            kind: "json" as const,
-            value: {
-              code: "JOB_MISMATCH",
-              message: "Audit Suite context 已改變。",
-            },
-          },
-        },
-      },
       {
         error: new ReplenishmentAuditError(
           "REQUEST_INVALID",
@@ -276,16 +257,6 @@ describe("public SP-API error mapping", () => {
       "hostile-text\u202e\u0000",
     ].join(" ");
     const cases = [
-      {
-        error: new AuditSuiteCoordinatorError(hostile, {
-          status: 302,
-          code: "BAD\nCODE",
-        }),
-        expectedValue: {
-          code: "UPSTREAM_UNAVAILABLE",
-          message: "執行本機 Amazon 操作時發生未預期的錯誤。",
-        },
-      },
       {
         error: new ReplenishmentAuditError("REQUEST_INVALID", hostile),
         expectedStatus: 422,

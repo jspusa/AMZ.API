@@ -12,6 +12,11 @@ import { integer, parseMarketplace, reportIdentifier } from
 import { invalid, json, routeError } from "../route-response";
 import { ContextBoundAuditSnapshotStore } from
   "./context-bound-audit-snapshot";
+import type { AuditSuiteContext } from "./audit-suite-context";
+import type {
+  AuditSuiteRunControl,
+  AuditSuiteSectionRunners,
+} from "./audit-suite-coordinator";
 import {
   ReplenishmentAuditError,
   subscriptionAuditDiscountBucket,
@@ -102,6 +107,7 @@ export interface SubscriptionAuditOwnerPort {
   runStandalone(
     input: SubscriptionAuditStandaloneInput,
   ): Promise<SubscriptionAuditPublicSnapshot>;
+  runAuditSuite: AuditSuiteSectionRunners["subscription"];
   clear(): void;
 }
 
@@ -183,6 +189,81 @@ function subscriptionRouteError(error: unknown, fallback: string): ApiResponse {
     );
   }
   return routeError(error, fallback);
+}
+
+function buildAuditSuiteRows(snapshot: SubscriptionAuditSnapshot) {
+  const problemsBySku = new Map(
+    snapshot.upstreamCoverage.problemSkuRows.map((problem) => {
+      if (problem.fbaEvidence !== "CURRENT_FBA_SKU_SET") {
+        throw new Error("訂閱問題 SKU 缺少同次 CURRENT_FBA 證據。");
+      }
+      return [problem.sellerSku, problem] as const;
+    }),
+  );
+  const emittedSkus = new Set<string>();
+  const offerRows = snapshot.offers.map((offer) => {
+    emittedSkus.add(offer.sellerSku);
+    const problem = problemsBySku.get(offer.sellerSku);
+    const bucket = subscriptionAuditDiscountBucket(
+      offer.sellerFundedBaseDiscount,
+    );
+    const anomaly = problem
+      ? `上游問題：${problem.problem}`
+      : offer.sellerFundedBaseDiscount === null
+        ? "Amazon 未回傳 Seller 基礎折扣"
+        : bucket === null
+          ? `非標準 Seller 基礎折扣 ${offer.sellerFundedBaseDiscount}%`
+          : `${bucket}% Seller 基礎折扣組`;
+    return {
+      sellerSku: offer.sellerSku,
+      title: "",
+      asin: offer.asin,
+      anomaly,
+      sellerFundedBaseDiscountPercent: offer.sellerFundedBaseDiscount,
+      currentActiveSubscriptions: offer.currentActiveSubscriptions,
+      currentPrice: offer.price.amount,
+      notice: problem
+        ? "此 exact SKU 具同次 CURRENT_FBA 證據；問題列已隔離，對應月份未補 0 或重複加總。"
+        : snapshot.notice,
+    };
+  });
+  const excludedRows = snapshot.excluded.flatMap((row) => {
+    if (row.reason === "FBA_NOT_PROVEN") return [];
+    if (row.fbaEvidence !== "CURRENT_FBA_SKU_SET") {
+      throw new Error("訂閱未納入 SKU 缺少同次 CURRENT_FBA 證據。");
+    }
+    if (problemsBySku.has(row.sellerSku) || emittedSkus.has(row.sellerSku)) {
+      return [];
+    }
+    emittedSkus.add(row.sellerSku);
+    return [{
+      sellerSku: row.sellerSku,
+      title: "",
+      asin: "",
+      anomaly: `未納入：${row.reason}`,
+      sellerFundedBaseDiscountPercent: null,
+      currentActiveSubscriptions: null,
+      currentPrice: null,
+      notice: "此 exact SKU 具同次 CURRENT_FBA 證據，但訂閱 offer／metric identity 無法安全合併。",
+    }];
+  });
+  const problemOnlyRows = snapshot.upstreamCoverage.problemSkuRows.flatMap(
+    (problem) => {
+      if (emittedSkus.has(problem.sellerSku)) return [];
+      emittedSkus.add(problem.sellerSku);
+      return [{
+        sellerSku: problem.sellerSku,
+        title: "",
+        asin: "",
+        anomaly: `上游問題：${problem.problem}`,
+        sellerFundedBaseDiscountPercent: null,
+        currentActiveSubscriptions: null,
+        currentPrice: null,
+        notice: "此 exact SKU 具同次 CURRENT_FBA 證據；問題 offer 已排除，其他商品仍已完成。",
+      }];
+    },
+  );
+  return [...offerRows, ...excludedRows, ...problemOnlyRows];
 }
 
 /**
@@ -371,6 +452,62 @@ export class SubscriptionAuditOwner implements SubscriptionAuditOwnerPort {
     return publicSnapshot(captured.snapshot, captured.exportId);
   }
 
+  async runAuditSuite(
+    bound: AuditSuiteContext,
+    parentControl: AuditSuiteRunControl,
+  ): ReturnType<AuditSuiteSectionRunners["subscription"]> {
+    const marketplace = marketplaceById(bound.marketplaceId);
+    if (!marketplace) throw contextInvalidated();
+    const revision = this.lifecycleRevision;
+    const control = new AbortController();
+    const unlinkCaller = forwardAbort(control, parentControl.signal);
+    this.controls.add(control);
+    let context: SpExecutionContext | null = null;
+    try {
+      throwIfAborted(control.signal);
+      context = await this.context.capture(marketplace.id);
+      this.assertLifecycleCurrent(revision);
+      throwIfAborted(control.signal);
+      this.assertAuditSuiteContext(bound, context);
+      await this.context.assertCurrent(context);
+      this.assertLifecycleCurrent(revision);
+      throwIfAborted(control.signal);
+      this.assertAuditSuiteContext(bound, context);
+      const snapshot = await this.readSnapshot({
+        marketplaceId: marketplace.id,
+        months: 6,
+        signal: control.signal,
+        expectedContext: context,
+      });
+      throwIfAborted(control.signal);
+      await this.context.assertCurrent(context);
+      this.assertLifecycleCurrent(revision);
+      this.assertAuditSuiteContext(bound, context);
+      this.assertSnapshotIdentity(snapshot, context, 6);
+      const partial = snapshot.inventoryEvidence.coverage !== "complete" ||
+        snapshot.upstreamCoverage.status !== "complete" ||
+        snapshot.summary.revenueCoverage.status !== "complete";
+      return {
+        ...bound,
+        status: partial ? "partial" : "completed",
+        fetchedAt: snapshot.fetchedAt,
+        notice: partial
+          ? `訂閱資料範圍未完整。${snapshot.notice}`
+          : snapshot.notice,
+        payload: buildAuditSuiteRows(snapshot),
+      };
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) throw error;
+      if (context) await this.context.assertCurrent(context);
+      this.assertLifecycleCurrent(revision);
+      throwIfAborted(control.signal);
+      throw error;
+    } finally {
+      unlinkCaller();
+      this.controls.delete(control);
+    }
+  }
+
   private async captureAndPublish(input: Readonly<{
     marketplaceId: MarketplaceId;
     months: SubscriptionAuditMonths;
@@ -458,6 +595,30 @@ export class SubscriptionAuditOwner implements SubscriptionAuditOwnerPort {
         status: 409,
         code: "SNAPSHOT_INVALID",
       });
+    }
+  }
+
+  private assertAuditSuiteContext(
+    bound: AuditSuiteContext,
+    current: SpExecutionContext,
+  ): void {
+    if (
+      bound.marketplaceId !== current.marketplaceId ||
+      bound.generation !== current.generation
+    ) {
+      throw contextInvalidated();
+    }
+    if (bound.accountScope !== String(current.accountScope)) {
+      throw new SpExecutionContextError(
+        "ACCOUNT_SCOPE_CHANGED",
+        "Amazon 帳號範圍已改變；本次操作已停止。",
+      );
+    }
+    if (bound.mode !== current.mode) {
+      throw new SpExecutionContextError(
+        "REPORT_MODE_CHANGED",
+        "App 展示／真實模式已改變；本次操作已停止。",
+      );
     }
   }
 

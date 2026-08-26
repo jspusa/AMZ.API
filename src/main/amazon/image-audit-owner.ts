@@ -6,6 +6,12 @@ import {
 } from "../../shared/marketplaces";
 import { forwardAbort, throwIfAborted } from "../abort-utils";
 import type {
+  AuditSuiteRunControl,
+  AuditSuiteSectionRunners,
+} from "./audit-suite-coordinator";
+import type { AuditSuiteContext } from "./audit-suite-context";
+import type { AuditSuiteListingsResource } from "./audit-suite-resources";
+import type {
   CatalogExportRow,
   FbaCatalogExport,
 } from "./catalog-report-reads";
@@ -71,6 +77,11 @@ export type ImageAuditGroupingReader = (input: Readonly<{
 }>) => Promise<FbaVariationGroupingData<CatalogExportRow>>;
 
 export interface ImageAuditOwnerPort {
+  runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    listings: AuditSuiteListingsResource;
+  }>): ReturnType<AuditSuiteSectionRunners["image"]>;
   captureFromListings(
     input: ImageAuditListingsInput,
   ): Promise<ImageAuditSnapshot>;
@@ -167,6 +178,59 @@ export class ImageAuditOwner implements ImageAuditOwnerPort {
       expiredMessage:
         "圖片健檢 Excel 快照已過期或站點不符，請重新掃描。",
     });
+  }
+
+  async runAuditSuite(
+    input: Parameters<ImageAuditOwnerPort["runAuditSuite"]>[0],
+  ): ReturnType<AuditSuiteSectionRunners["image"]> {
+    const revision = this.lifecycleRevision;
+    const operation = new AbortController();
+    const unlinkCaller = forwardAbort(operation, input.control.signal);
+    this.controls.add(operation);
+    try {
+      throwIfAborted(operation.signal);
+      this.assertLifecycleCurrent(revision);
+      const audit = auditListingImageRows({
+        marketplaceId: input.context.marketplaceId,
+        fetchedAt: input.listings.data.fetchedAt,
+        rows: input.listings.data.rows,
+        minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
+      });
+      const rows = audit.rows
+        .filter((row) =>
+          row.readStatus === "incomplete" || row.imageCount < audit.minimumImages
+        )
+        .map((row) => ({
+          sellerSku: row.sellerSku,
+          title: row.title,
+          asin: row.asin,
+          imageCount: row.readStatus === "complete" ? row.imageCount : null,
+          finding: row.readStatus === "complete"
+            ? `少於 ${audit.minimumImages} 張`
+            : "讀取未完成",
+          notice: row.readErrors.map((error) => error.message).join("；") ||
+            `已核對圖片 ${row.imageCount} 張。`,
+        }));
+      throwIfAborted(operation.signal);
+      this.assertLifecycleCurrent(revision);
+      return {
+        ...input.context,
+        status: audit.summary.incomplete ? "partial" : "completed",
+        fetchedAt: audit.fetchedAt,
+        notice: audit.summary.incomplete
+          ? `${audit.summary.incomplete} 個 SKU 圖片讀取未完成；圖片數保持未知。`
+          : `已核對 ${audit.summary.total} 個 FBA SKU 的圖片數。`,
+        payload: rows,
+      };
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) throw error;
+      this.assertLifecycleCurrent(revision);
+      throwIfAborted(operation.signal);
+      throw error;
+    } finally {
+      unlinkCaller();
+      this.controls.delete(operation);
+    }
   }
 
   async captureFromListings(

@@ -899,6 +899,10 @@ describe("SP execution-context architecture", () => {
       absolutePath("src/main/api-router.ts"),
       "utf8",
     );
+    const compatibility = readFileSync(
+      absolutePath("src/main/audit-suite-compatibility-coordinator.ts"),
+      "utf8",
+    );
     const coordinator = readFileSync(
       absolutePath("src/main/a-plus-audit-coordinator.ts"),
       "utf8",
@@ -910,8 +914,13 @@ describe("SP execution-context architecture", () => {
     expect(router).toContain("new AplusContentReads({");
     expect(router).toContain("new AplusAuditCoordinator({");
     expect(router).not.toContain("input.aplusAudit");
-    expect(router.match(/this\.aplusContentReads\.read\(/gu)).toHaveLength(1);
-    expect(coordinator).toContain("this.contentReads.read({");
+    expect(router).toContain("contentReads: this.aplusContentReads");
+    expect(router).toContain("aplus: this.aPlusAuditCoordinator");
+    expect(router).not.toContain("this.aplusContentReads.read(");
+    expect(compatibility).not.toContain("this.aplus.read(");
+    expect(compatibility.match(/this\.aplus\.runAuditSuite\(/gu))
+      .toHaveLength(1);
+    expect(coordinator.match(/this\.contentReads\.read\(/gu)).toHaveLength(2);
     expect(coordinator).toContain("this.listingsExport.startReusable({");
     expect(coordinator).toContain("expectedContext: exact.context");
   });

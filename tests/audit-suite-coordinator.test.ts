@@ -440,6 +440,98 @@ describe("AuditSuiteCoordinator run ownership", () => {
     );
   });
 
+  it("keeps an empty runner failure exportable with the fixed public fallback", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        content: async () => {
+          throw new Error("");
+        },
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    expect(run.sections.content).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    const input = coordinator.workbookInput({
+      ...identity(started.run),
+      marketplaceLabel: "US · United States",
+    });
+    expect(() => createAuditSuiteWorkbook(input)).not.toThrow();
+  });
+
+  it("fails a non-array section payload closed before public publication", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: (async (context: AuditSuiteContext) => ({
+          ...context,
+          status: "partial",
+          fetchedAt: FETCHED_AT,
+          notice: "partial",
+          payload: {
+            rows: [],
+            reportId: "private-report.NON_ARRAY_PAYLOAD_CANARY",
+          },
+        })) as unknown as AuditSuiteSectionRunners["advertising"],
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const serialized = JSON.stringify(run.sections.advertising);
+    expect(run.sections.advertising).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    expect(serialized).not.toContain("NON_ARRAY_PAYLOAD_CANARY");
+  });
+
+  it("fails an unknown runtime section status closed before GET publication", async () => {
+    const coordinator = new AuditSuiteCoordinator({
+      runners: sectionRunners({
+        advertising: (async (context: AuditSuiteContext) => ({
+          ...context,
+          status: "Bearer STATUS_CANARY",
+          fetchedAt: FETCHED_AT,
+          notice: "unexpected runtime status",
+          payload: [],
+        })) as unknown as AuditSuiteSectionRunners["advertising"],
+      }),
+    });
+    const started = coordinator.start({
+      marketplaceId: MARKETPLACE_ID,
+      accountScope: "account-one",
+      generation: 0,
+      mode: "demo",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushCoordinator();
+
+    const run = coordinator.get(identity(started.run));
+    const serialized = JSON.stringify(run.sections.advertising);
+    expect(run.sections.advertising).toMatchObject({
+      status: "failed",
+      message: "此項健檢未能建立可核對快照。",
+    });
+    expect(serialized).not.toContain("STATUS_CANARY");
+  });
+
   it("sanitizes a partial section notice and message fields before GET or XLSX publication", async () => {
     const hostile = [
       "Bearer private-access-token",

@@ -8,6 +8,14 @@ import {
   ContentAuditOwner,
   type ContentAuditEvidencePort,
 } from "../src/main/amazon/content-audit-owner";
+import type {
+  AuditSuiteResourceKey,
+  AuditSuiteRunControl,
+} from "../src/main/amazon/audit-suite-coordinator";
+import type { AuditSuiteContext } from
+  "../src/main/amazon/audit-suite-context";
+import type { AuditSuiteListingsResource } from
+  "../src/main/amazon/audit-suite-resources";
 import { parseContentAuditWorkbook } from
   "../src/main/amazon/content-audit-workbook-parser";
 import { ContextBoundAuditSnapshotStore } from
@@ -115,7 +123,93 @@ function workbookXml(bytes: Uint8Array): string {
     .join("\n");
 }
 
+function auditSuiteContext(): AuditSuiteContext {
+  return {
+    runId: "r08-owner-audit-suite-run",
+    marketplaceId: US,
+    accountScope: ACCOUNT_SCOPE,
+    generation: 0,
+    mode: "demo",
+  };
+}
+
+function auditSuiteControl(
+  controller = new AbortController(),
+): AuditSuiteRunControl {
+  return {
+    signal: controller.signal,
+    heartbeat: vi.fn(),
+    resource: async <T>(
+      _key: AuditSuiteResourceKey<T>,
+      _load: () => Promise<T>,
+    ): Promise<T> => {
+      throw new Error("Audit owner must use the supplied Listings resource.");
+    },
+  };
+}
+
 describe("R08 content audit owner", () => {
+  it("projects the legacy Content section from supplied shared Listings without creating owner state", async () => {
+    const contextAdapter = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: ACCOUNT_SCOPE,
+    }));
+    const readGrouping = vi.fn();
+    const saveContentAuditSnapshotEvidence = vi.fn(async () => undefined);
+    const createId = vi.fn(() => CONTENT_EXPORT_ID);
+    const owner = new ContentAuditOwner({
+      context: contextAdapter,
+      evidence: { saveContentAuditSnapshotEvidence },
+      readGrouping,
+      createId,
+    });
+    const title = `cocount ${"a".repeat(60)}`;
+    const listings: AuditSuiteListingsResource = {
+      reportId: "report-lease.r08-content-owner",
+      documentId: "report-document.r08-content-owner",
+      data: {
+        fetchedAt: FETCHED_AT,
+        errors: [],
+        rows: [listingRow("LEGACY-CONTENT", {
+          title,
+          itemHighlight: "h".repeat(110),
+          bulletPoints: Array.from({ length: 5 }, () => "b".repeat(150)),
+          productDescription: "d".repeat(1_800),
+          ingredients: "Chicken",
+        })],
+      },
+    };
+    const context = auditSuiteContext();
+
+    const result = await owner.runAuditSuite({
+      context,
+      control: auditSuiteControl(),
+      listings,
+    });
+
+    expect(result).toEqual({
+      ...context,
+      status: "partial",
+      fetchedAt: FETCHED_AT,
+      notice:
+        "Amazon 基礎文案欄位已完成讀取。 本機字典錯字結果需個別文案健檢補充",
+      payload: [{
+        sellerSku: "LEGACY-CONTENT",
+        title,
+        asin: "B0LEGACY-CONTENT",
+        problemType: "疑似錯字",
+        field: "產品名稱",
+        originalText: title,
+        description:
+          "發現明確的常見拼字「cocount」，請人工確認。 建議：coconut",
+      }],
+    });
+    expect(readGrouping).not.toHaveBeenCalled();
+    expect(saveContentAuditSnapshotEvidence).not.toHaveBeenCalled();
+    expect(createId).not.toHaveBeenCalled();
+  });
+
   it("aborts relationship acquisition on clear and starts fresh without publishing the stale flight", async () => {
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: US,
@@ -383,6 +477,76 @@ describe("R08 content audit owner", () => {
 });
 
 describe("R08 image audit owner", () => {
+  it("projects the legacy Image section from supplied shared Listings without creating owner state", async () => {
+    const contextAdapter = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: ACCOUNT_SCOPE,
+    }));
+    const readGrouping = vi.fn();
+    const createId = vi.fn(() => IMAGE_EXPORT_ID);
+    const owner = new ImageAuditOwner({
+      context: contextAdapter,
+      readGrouping,
+      createId,
+    });
+    const listings: AuditSuiteListingsResource = {
+      reportId: "report-lease.r08-image-owner",
+      documentId: "report-document.r08-image-owner",
+      data: {
+        fetchedAt: FETCHED_AT,
+        errors: [],
+        rows: [
+          listingRow("IMAGE-INCOMPLETE", {
+            imageUrls: ["https://images.example.invalid/unverified.jpg"],
+            readStatus: "incomplete",
+            readErrors: [{
+              code: "LISTING_CONTENT_NOT_RETURNED",
+              message: "Amazon image unavailable.",
+            }],
+          }),
+          listingRow("IMAGE-LOW", {
+            imageUrls: ["https://images.example.invalid/one.jpg"],
+          }),
+        ],
+      },
+    };
+    const context = auditSuiteContext();
+
+    const result = await owner.runAuditSuite({
+      context,
+      control: auditSuiteControl(),
+      listings,
+    });
+
+    expect(result).toEqual({
+      ...context,
+      status: "partial",
+      fetchedAt: FETCHED_AT,
+      notice: "1 個 SKU 圖片讀取未完成；圖片數保持未知。",
+      payload: [
+        {
+          sellerSku: "IMAGE-INCOMPLETE",
+          title: "IMAGE-INCOMPLETE title",
+          asin: "B0IMAGE-INCOMPLETE",
+          imageCount: null,
+          finding: "讀取未完成",
+          notice: "Amazon image unavailable.",
+        },
+        {
+          sellerSku: "IMAGE-LOW",
+          title: "IMAGE-LOW title",
+          asin: "B0IMAGE-LOW",
+          imageCount: 1,
+          finding: "少於 6 張",
+          notice: "已核對圖片 1 張。",
+        },
+      ],
+    });
+    expect(readGrouping).not.toHaveBeenCalled();
+    expect(createId).not.toHaveBeenCalled();
+  });
+
   it("aborts relationship acquisition on clear and never reuses the stale flight", async () => {
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: US,

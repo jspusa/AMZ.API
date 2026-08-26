@@ -5,7 +5,14 @@ import {
 } from "../src/main/amazon/unbound-variation-audit-owner";
 import {
   createScriptedSpExecutionContextAdapter,
+  type SpExecutionContext,
+  type SpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
+import type {
+  AuditSuiteRunControl,
+} from "../src/main/amazon/audit-suite-coordinator";
+import type { AuditSuiteGroupingResource } from
+  "../src/main/amazon/audit-suite-resources";
 import type { UnboundVariationAuditSnapshot } from
   "../src/main/amazon/variation-catalog-reads";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
@@ -92,6 +99,202 @@ function readyReceipt() {
 }
 
 describe("UnboundVariationAuditOwner", () => {
+  it("projects the supplied Audit Suite grouping without report or snapshot work", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "variation-owner-account",
+    }));
+    const expected = await context.capture(US);
+    const source = {
+      begin: vi.fn(async () => readyReceipt()),
+      status: vi.fn(async () => readyReceipt()),
+      read: vi.fn(async () => snapshot()),
+    } satisfies UnboundVariationAuditSource;
+    const createId = vi.fn(() => DIRECT_EXPORT_ID);
+    const owner = new UnboundVariationAuditOwner({
+      context,
+      source,
+      createId,
+    });
+    const control = {
+      signal: new AbortController().signal,
+      heartbeat: vi.fn(),
+      resource: vi.fn(),
+    } as unknown as AuditSuiteRunControl;
+    const grouping = {
+      reportId: "report-lease.shared-listings",
+      documentId: "report-document.shared-listings",
+      data: {
+        fetchedAt: "2026-08-26T00:00:00.000Z",
+        errors: [],
+        rows: [],
+      },
+      grouping: {
+        marketplaceId: US,
+        fetchedAt: "2026-08-26T00:00:00.000Z",
+        notice: "Shared relationships evidence.",
+        rows: [{
+          sellerSku: "UNBOUND-AUDIT-SUITE-SKU",
+          asin: "B000000003",
+          title: "Audit Suite standalone",
+          productType: "PET_FOOD",
+          role: "standalone",
+          parentSku: null,
+          familyKey: "UNBOUND-AUDIT-SUITE-SKU",
+          theme: null,
+          status: "complete",
+          message: "Amazon relationships prove no parent.",
+        }, {
+          sellerSku: "INCOMPLETE-AUDIT-SUITE-SKU",
+          asin: "B000000004",
+          title: "Audit Suite unknown",
+          productType: "PET_FOOD",
+          role: "unknown",
+          parentSku: null,
+          familyKey: "INCOMPLETE-AUDIT-SUITE-SKU",
+          theme: null,
+          status: "incomplete",
+          message: "Relationships remain unknown.",
+        }],
+      },
+    } as unknown as AuditSuiteGroupingResource;
+
+    const result = await owner.runAuditSuite({
+      context: {
+        runId: "variation-audit-suite-run",
+        marketplaceId: US,
+        accountScope: String(expected.accountScope),
+        generation: expected.generation,
+        mode: expected.mode,
+      },
+      control,
+      grouping,
+    });
+
+    expect(result).toEqual({
+      runId: "variation-audit-suite-run",
+      marketplaceId: US,
+      accountScope: String(expected.accountScope),
+      generation: expected.generation,
+      mode: "demo",
+      status: "partial",
+      fetchedAt: "2026-08-26T00:00:00.000Z",
+      notice:
+        "1 個 SKU relationships 無法安全判定；只列已驗證未綁變體。Shared relationships evidence.",
+      payload: [{
+        sellerSku: "UNBOUND-AUDIT-SUITE-SKU",
+        title: "Audit Suite standalone",
+        asin: "B000000003",
+        productType: "PET_FOOD",
+        notice: "Amazon relationships prove no parent.",
+      }],
+    });
+    expect(source.begin).not.toHaveBeenCalled();
+    expect(source.status).not.toHaveBeenCalled();
+    expect(source.read).not.toHaveBeenCalled();
+    expect(control.resource).not.toHaveBeenCalled();
+    expect(createId).not.toHaveBeenCalled();
+  });
+
+  it("rejects Audit Suite context drift before projecting supplied grouping", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "variation-owner-current-account",
+    }));
+    const expected = await context.capture(US);
+    const source = {
+      begin: vi.fn(async () => readyReceipt()),
+      status: vi.fn(async () => readyReceipt()),
+      read: vi.fn(async () => snapshot()),
+    } satisfies UnboundVariationAuditSource;
+    const owner = new UnboundVariationAuditOwner({ context, source });
+
+    await expect(owner.runAuditSuite({
+      context: {
+        runId: "variation-audit-suite-drift-run",
+        marketplaceId: US,
+        accountScope: "variation-owner-stale-account",
+        generation: expected.generation,
+        mode: expected.mode,
+      },
+      control: {
+        signal: new AbortController().signal,
+        heartbeat: () => undefined,
+        resource: <Value>(_key: unknown, load: () => Promise<Value>) => load(),
+      } as AuditSuiteRunControl,
+      grouping: {
+        grouping: { marketplaceId: US, fetchedAt: "", notice: "", rows: [] },
+      } as unknown as AuditSuiteGroupingResource,
+    })).rejects.toMatchObject({ code: "ACCOUNT_SCOPE_CHANGED" });
+    expect(source.begin).not.toHaveBeenCalled();
+    expect(source.status).not.toHaveBeenCalled();
+    expect(source.read).not.toHaveBeenCalled();
+  });
+
+  it("lets owner clear dominate a deferred Audit Suite context fence", async () => {
+    const exact = {
+      marketplaceId: US,
+      region: "na",
+      mode: "demo",
+      accountScope: "variation-owner-account",
+      generation: 0,
+    } as SpExecutionContext;
+    let releaseFence: (() => void) | undefined;
+    const deferredFence = new Promise<void>((resolve) => {
+      releaseFence = resolve;
+    });
+    const context = {
+      capture: vi.fn(async () => exact),
+      assertCurrent: vi.fn(() => deferredFence),
+      invalidate: vi.fn(),
+    } satisfies SpExecutionContextAdapter;
+    const source = {
+      begin: vi.fn(async () => readyReceipt()),
+      status: vi.fn(async () => readyReceipt()),
+      read: vi.fn(async () => snapshot()),
+    } satisfies UnboundVariationAuditSource;
+    const createId = vi.fn(() => DIRECT_EXPORT_ID);
+    const owner = new UnboundVariationAuditOwner({ context, source, createId });
+    const parent = new AbortController();
+    const running = owner.runAuditSuite({
+      context: {
+        runId: "variation-audit-suite-clear-run",
+        marketplaceId: US,
+        accountScope: String(exact.accountScope),
+        generation: exact.generation,
+        mode: exact.mode,
+      },
+      control: {
+        signal: parent.signal,
+        heartbeat: () => undefined,
+        resource: <Value>(_key: unknown, load: () => Promise<Value>) => load(),
+      } as AuditSuiteRunControl,
+      grouping: {
+        grouping: {
+          marketplaceId: US,
+          fetchedAt: "2026-08-26T00:00:00.000Z",
+          notice: "Shared relationships evidence.",
+          rows: [],
+        },
+      } as unknown as AuditSuiteGroupingResource,
+    });
+    await vi.waitFor(() => expect(context.assertCurrent).toHaveBeenCalledOnce());
+
+    owner.clear();
+    releaseFence?.();
+
+    expect(parent.signal.aborted).toBe(false);
+    await expect(running).rejects.toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    expect(source.begin).not.toHaveBeenCalled();
+    expect(source.status).not.toHaveBeenCalled();
+    expect(source.read).not.toHaveBeenCalled();
+    expect(createId).not.toHaveBeenCalled();
+  });
+
   it("uses one source and captured context across direct and standalone publish paths", async () => {
     let now = 100;
     const ids = [DIRECT_EXPORT_ID, STANDALONE_EXPORT_ID];

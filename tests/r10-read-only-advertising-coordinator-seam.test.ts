@@ -108,6 +108,13 @@ describe("R10 read-only Amazon Ads coordinator public seam", () => {
       new URL("../src/main/standalone-audit-coordinator.ts", import.meta.url),
       "utf8",
     );
+    const compatibilitySource = readFileSync(
+      new URL(
+        "../src/main/audit-suite-compatibility-coordinator.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
     const clearStart = routerSource.indexOf(
       "private clearContextBoundState(): void",
     );
@@ -132,8 +139,9 @@ describe("R10 read-only Amazon Ads coordinator public seam", () => {
     expect(routerSource).not.toContain(
       "this.advertisingCoordinator.runStandalone(input)",
     );
-    expect(routerSource).toContain(
-      "this.advertisingCoordinator.runAuditSuite(context, control)",
+    expect(routerSource).not.toContain("runAuditSuite(");
+    expect(compatibilitySource).toContain(
+      "this.advertising.runAuditSuite(context, control)",
     );
   });
 });

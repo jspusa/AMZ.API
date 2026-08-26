@@ -12,6 +12,12 @@ import { bodyRecord, parseMarketplace, reportIdentifier } from "../route-input";
 import { invalid, json, routeError } from "../route-response";
 import { createBusinessPricingAuditWorkbook } from
   "./business-pricing-audit-xlsx";
+import type { AuditSuiteContext } from "./audit-suite-context";
+import type {
+  AuditSuiteRunControl,
+  AuditSuiteSectionRunners,
+} from "./audit-suite-coordinator";
+import type { AuditSuiteListingsResource } from "./audit-suite-resources";
 import type { BusinessPricingAuditSnapshot } from
   "./catalog-report-reads";
 import { ContextBoundAuditSnapshotStore } from
@@ -96,6 +102,11 @@ export interface BusinessPricingAuditPort {
   runStandalone(
     input: BusinessPricingAuditStandaloneInput,
   ): Promise<BusinessPricingAuditStandaloneSnapshot>;
+  runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    loadListings(): Promise<AuditSuiteListingsResource>;
+  }>): ReturnType<AuditSuiteSectionRunners["businessPricing"]>;
   clear(): void;
 }
 
@@ -539,6 +550,107 @@ export class BusinessPricingAudit implements BusinessPricingAuditPort {
         "App 展示／真實模式已改變；本次操作已停止。",
       );
     }
+  }
+
+  async runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    loadListings(): Promise<AuditSuiteListingsResource>;
+  }>): ReturnType<AuditSuiteSectionRunners["businessPricing"]> {
+    const marketplace = marketplaceById(input.context.marketplaceId);
+    if (!marketplace) throw contextInvalidated();
+    return this.execute(
+      { marketplaceId: marketplace.id, signal: input.control.signal },
+      async (context, signal, revision) => {
+        this.assertStandaloneContext(input.context, context);
+        this.assertRevision(revision);
+        input.control.heartbeat({
+          message:
+            "Amazon 正在準備 B2B 健檢所需的全商品與 Active Listings 報表。",
+        });
+        const started = await this.startReport({
+          marketplaceId: marketplace.id,
+          explicitRetry: false,
+          signal,
+          expectedContext: context,
+        });
+        await this.context.assertCurrent(context);
+        this.assertRevision(revision);
+        throwIfAborted(signal);
+        if (started.mode !== context.mode) {
+          throw new SpExecutionContextError(
+            "REPORT_MODE_CHANGED",
+            "App 展示／真實模式已改變；本次綜合健檢已停止。",
+          );
+        }
+        input.control.heartbeat({
+          message: "正在沿用本次綜合健檢的 FBA 全商品快照。",
+        });
+        const listings = await input.loadListings();
+        await this.context.assertCurrent(context);
+        this.assertRevision(revision);
+        throwIfAborted(signal);
+        const snapshot = await this.readReport({
+          marketplaceId: marketplace.id,
+          reportId: listings.reportId,
+          documentId: listings.documentId,
+          signal,
+          expectedContext: context,
+          heartbeat: () => {
+            this.assertRevision(revision);
+            throwIfAborted(signal);
+            input.control.heartbeat({
+              message:
+                "Amazon 正在讀取既有 Active Listings Business Price 報表。",
+            });
+          },
+        });
+        await this.context.assertCurrent(context);
+        this.assertRevision(revision);
+        throwIfAborted(signal);
+        this.assertStandaloneContext(input.context, context);
+        this.assertSnapshotContext(snapshot, context);
+        const rows = snapshot.rows
+          .filter((row) =>
+            row.status !== "configured" ||
+            row.recommendedPriceMismatch ||
+            row.recommendedQuantityDiscountMismatch
+          )
+          .map((row) => ({
+            sellerSku: row.sellerSku,
+            title: row.title,
+            asin: row.asin,
+            standardPrice: row.standardPrice?.amount ?? null,
+            businessPrice: row.businessPrice?.amount ?? null,
+            currencyCode: row.businessPrice?.currencyCode ??
+              row.standardPrice?.currencyCode ?? null,
+            finding: [
+              ...(row.status === "above_standard"
+                ? ["B2B 價格高於一般售價"]
+                : row.status === "missing"
+                  ? ["尚未設定 B2B 價格"]
+                  : row.status === "unsupported"
+                    ? ["請至 Amazon 後台確認"]
+                    : row.status === "incomplete" ? ["資料未完成"] : []),
+              ...(row.recommendedPriceMismatch
+                ? ["不符建議 B2B 價格"]
+                : []),
+              ...(row.recommendedQuantityDiscountMismatch
+                ? ["未正確設定階梯折扣"]
+                : []),
+            ].join("；"),
+            editable: row.editable,
+            notice: row.reason,
+          }));
+        return {
+          ...input.context,
+          status: snapshot.summary.incomplete ? "partial" : "completed",
+          fetchedAt: snapshot.fetchedAt,
+          notice: snapshot.notice,
+          payload: rows,
+        };
+      },
+    );
   }
 
   async runStandalone(

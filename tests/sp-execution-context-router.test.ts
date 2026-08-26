@@ -404,7 +404,34 @@ describe("ApiRouter SP execution context", () => {
             value: { code: "A_PLUS_AUDIT_JOB_EXPIRED" },
           },
         })),
+        runAuditSuite: vi.fn(async () => {
+          throw new Error("Unexpected A+ Audit Suite run.");
+        }),
         clear: aPlusAuditClear,
+      };
+      const legacyAuditSuiteClear = vi.fn();
+      const legacyAuditSuiteCompatibility = {
+        start: vi.fn(async () => {
+          await (router as unknown as {
+            spExecutionContext: SpExecutionContextAdapter;
+          }).spExecutionContext.capture(US);
+          await new Promise<void>((resolve) => queueMicrotask(resolve));
+          return {
+            status: 202,
+            headers: { "retry-after": "1" },
+            body: {
+              kind: "json" as const,
+              value: { ready: false, status: "queued" },
+            },
+          };
+        }),
+        observe: vi.fn(async () => {
+          throw new Error("Unexpected legacy Audit Suite receipt read.");
+        }),
+        download: vi.fn(async () => {
+          throw new Error("Unexpected legacy Audit Suite workbook read.");
+        }),
+        clear: legacyAuditSuiteClear,
       };
       router = new ApiRouter({
         store: {} as LocalStore,
@@ -413,6 +440,7 @@ describe("ApiRouter SP execution context", () => {
         spExecutionContext,
         standaloneAuditCoordinator,
         aPlusAuditCoordinator,
+        legacyAuditSuiteCompatibility,
       });
 
       const response = await router.handle({
@@ -431,10 +459,7 @@ describe("ApiRouter SP execution context", () => {
       });
       expect(standaloneAuditClear, candidate.label).toHaveBeenCalled();
       expect(aPlusAuditClear, candidate.label).toHaveBeenCalled();
-      const state = router as unknown as {
-        auditSuite: { jobs: Map<string, unknown> };
-      };
-      expect(state.auditSuite.jobs.size, candidate.label).toBe(0);
+      expect(legacyAuditSuiteClear, candidate.label).toHaveBeenCalled();
       router.dispose();
     }
   });
@@ -466,12 +491,14 @@ describe("ApiRouter SP execution context", () => {
       read: vi.fn(notCalled),
       download: subscriptionDownload,
       runStandalone: vi.fn(notCalled),
+      runAuditSuite: vi.fn(notCalled),
       clear: vi.fn(),
     };
     const unboundVariationAudit: UnboundVariationAuditOwnerPort = {
       start: vi.fn(notCalled),
       statusDataOrDownload: variationDownload,
       runStandalone: vi.fn(notCalled),
+      runAuditSuite: vi.fn(notCalled),
       clear: vi.fn(),
     };
     const imageAudit: ImageAuditOwnerPort = {
@@ -479,6 +506,7 @@ describe("ApiRouter SP execution context", () => {
       captureStandaloneFromListings: vi.fn(notCalled),
       read: vi.fn(notCalled),
       download: imageDownload,
+      runAuditSuite: vi.fn(notCalled),
       clear: vi.fn(),
     };
     const router = new ApiRouter({

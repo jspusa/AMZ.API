@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
@@ -82,5 +83,104 @@ describe("R12 legacy Audit Suite compatibility public seam", () => {
       downloadResponse,
     ]);
     expect(legacyAuditSuiteCompatibility.clear).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the fixed seven-section legacy implementation out of Router", () => {
+    const routerSource = readFileSync(
+      new URL("../src/main/api-router.ts", import.meta.url),
+      "utf8",
+    );
+    const compatibilitySource = readFileSync(
+      new URL(
+        "../src/main/audit-suite-compatibility-coordinator.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const legacyRouterSymbols = [
+      "AuditSuiteCoordinator",
+      "AuditSuiteCoordinatorError",
+      "AuditSuiteRunControl",
+      "createAuditSuiteResourceKey",
+      "createAuditSuiteWorkbook",
+      "ValidatedAuditSuiteSnapshot",
+      "assertAuditSuiteActive",
+      "suiteSnapshot",
+      "buildAplusAuditSuiteResult",
+      "buildSubscriptionAuditSuiteRows",
+      "AUDIT_SUITE_LISTINGS_RESOURCE",
+      "AUDIT_SUITE_FBA_GROUPING_RESOURCE",
+      "auditSuiteListings",
+      "auditSuiteFbaGrouping",
+      "runAuditSuiteContent",
+      "runAuditSuiteImage",
+      "runAuditSuiteAplus",
+      "runAuditSuiteVariation",
+      "runAuditSuiteSubscription",
+      "runAuditSuiteBusinessPricing",
+    ] as const;
+
+    for (const symbol of legacyRouterSymbols) {
+      expect(routerSource, `${symbol} must be owned outside Router`).not.toMatch(
+        new RegExp(`\\b${symbol}\\b`, "u"),
+      );
+    }
+
+    const runners = compatibilitySource.match(
+      /runners:\s*\{(?<body>[\s\S]*?)^\s*\},\s*\n\s*ttlMs:/mu,
+    );
+    expect(runners?.groups?.body).toBeDefined();
+    const sectionIds = [...(runners?.groups?.body ?? "").matchAll(
+      /^\s{8}([A-Za-z]+):/gmu,
+    )].map((match) => match[1]);
+    expect(sectionIds).toEqual([
+      "content",
+      "image",
+      "aplus",
+      "variation",
+      "subscription",
+      "businessPricing",
+      "advertising",
+    ]);
+
+    for (const owner of [
+      "content",
+      "image",
+      "aplus",
+      "variation",
+      "subscription",
+      "businessPricing",
+      "advertising",
+    ] as const) {
+      expect(
+        compatibilitySource,
+        `${owner} must delegate to its semantic owner`,
+      ).toContain(`this.${owner}.runAuditSuite(`);
+    }
+
+    for (const binding of [
+      "content: this.contentAuditOwner",
+      "image: this.imageAuditOwner",
+      "aplus: this.aPlusAuditCoordinator",
+      "variation: this.unboundVariationAuditOwner",
+      "subscription: this.subscriptionAuditOwner",
+      "businessPricing: this.businessPricingAuditOwner",
+      "advertising: this.advertisingCoordinator",
+    ] as const) {
+      expect(
+        routerSource,
+        `${binding} must be wired into the production compatibility owner`,
+      ).toContain(binding);
+    }
+
+    const importSpecifiers = [...compatibilitySource.matchAll(
+      /\bfrom\s+["']([^"']+)["']/gmu,
+    )].map((match) => match[1]);
+    expect(
+      importSpecifiers.filter((specifier) =>
+        /(?:api-router|vault|store|write)/iu.test(specifier) ||
+        /(?:^|\/)sp-api$/u.test(specifier)
+      ),
+    ).toEqual([]);
   });
 });

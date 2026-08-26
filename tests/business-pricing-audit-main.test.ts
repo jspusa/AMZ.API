@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { BusinessPricingAudit } from
   "../src/main/amazon/business-pricing-audit";
+import type { AuditSuiteContext } from
+  "../src/main/amazon/audit-suite-context";
+import type { AuditSuiteRunControl } from
+  "../src/main/amazon/audit-suite-coordinator";
+import type { AuditSuiteListingsResource } from
+  "../src/main/amazon/audit-suite-resources";
 import type { BusinessPricingAuditSnapshot } from
   "../src/main/amazon/catalog-report-reads";
 import {
@@ -77,6 +83,116 @@ async function boundContext(
 }
 
 describe("BusinessPricingAudit main owner", () => {
+  it("projects the legacy B2B suite section from shared Listings without polling or publishing another snapshot", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "b2b-suite-scope",
+    }));
+    const calls: string[] = [];
+    const startReport = vi.fn(async () => {
+      calls.push("start-active");
+      return {
+        mode: "demo" as const,
+        ready: false,
+        reportId: "private-active-listings-report",
+        documentId: null,
+        status: "IN_QUEUE" as const,
+        notice: "Active Listings is being prepared.",
+      };
+    });
+    const statusReport = vi.fn(async () => {
+      throw new Error("Audit Suite must not poll a second report lifecycle.");
+    });
+    const readReport = vi.fn(async () => {
+      calls.push("read-business-pricing");
+      return snapshot();
+    });
+    const createId = vi.fn(() => "must-not-publish-an-export-id");
+    const owner = new BusinessPricingAudit({
+      context,
+      startReport,
+      statusReport,
+      readReport,
+      getStandaloneJob: vi.fn(),
+      createId,
+    });
+    const exact = await context.capture(US);
+    const suiteContext: AuditSuiteContext = {
+      runId: "audit-suite-run-b2b",
+      marketplaceId: US,
+      accountScope: String(exact.accountScope),
+      generation: exact.generation,
+      mode: exact.mode,
+    };
+    const listings: AuditSuiteListingsResource = {
+      reportId: "report-lease.shared-all-listings",
+      documentId: "report-document.shared-all-listings",
+      data: {
+        fetchedAt: "2026-08-26T00:00:00.000Z",
+        rows: [],
+        errors: [],
+      },
+    };
+    const loadListings = vi.fn(async () => {
+      calls.push("load-shared-listings");
+      return listings;
+    });
+    const heartbeat = vi.fn();
+    const control: AuditSuiteRunControl = {
+      signal: new AbortController().signal,
+      heartbeat,
+      resource: vi.fn(async (_key, load) => load()),
+    };
+
+    const result = await owner.runAuditSuite({
+      context: suiteContext,
+      control,
+      loadListings,
+    });
+
+    expect(result).toEqual({
+      ...suiteContext,
+      status: "completed",
+      fetchedAt: "2026-08-26T00:00:00.000Z",
+      notice: "FBA only",
+      payload: [{
+        sellerSku: "FBA-B2B-01",
+        title: "FBA item",
+        asin: "B000000001",
+        standardPrice: 20,
+        businessPrice: 19,
+        currencyCode: "USD",
+        finding: "未正確設定階梯折扣",
+        editable: false,
+        notice: "B2B tier missing",
+      }],
+    });
+    expect(calls).toEqual([
+      "start-active",
+      "load-shared-listings",
+      "read-business-pricing",
+    ]);
+    expect(startReport).toHaveBeenCalledWith(expect.objectContaining({
+      marketplaceId: US,
+      explicitRetry: false,
+      expectedContext: exact,
+      signal: expect.any(AbortSignal),
+    }));
+    expect(loadListings).toHaveBeenCalledTimes(1);
+    expect(statusReport).not.toHaveBeenCalled();
+    expect(readReport).toHaveBeenCalledWith(expect.objectContaining({
+      marketplaceId: US,
+      reportId: listings.reportId,
+      documentId: listings.documentId,
+      expectedContext: exact,
+      signal: expect.any(AbortSignal),
+    }));
+    expect(heartbeat).toHaveBeenCalled();
+    expect(createId).not.toHaveBeenCalled();
+    owner.clear();
+  });
+
   it("preserves direct route responses while status and data never create a report", async () => {
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: US,

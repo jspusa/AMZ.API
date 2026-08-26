@@ -5,6 +5,12 @@ import {
   type AplusAuditGroupingReader,
 } from
   "../src/main/a-plus-audit-coordinator";
+import type { AuditSuiteContext } from
+  "../src/main/amazon/audit-suite-context";
+import type { AuditSuiteRunControl } from
+  "../src/main/amazon/audit-suite-coordinator";
+import type { AuditSuiteGroupingResource } from
+  "../src/main/amazon/audit-suite-resources";
 import type {
   AplusContentReadsPort,
 } from "../src/main/amazon/a-plus-content-reads";
@@ -125,6 +131,227 @@ async function terminal(
 }
 
 describe("R09 A+ audit coordinator", () => {
+  it("projects the legacy A+ suite section from the caller's shared grouping without starting another job or report", async () => {
+    const context = executionContext();
+    const contextPort = {
+      capture: vi.fn(async () => context),
+      assertCurrent: vi.fn(async () => undefined),
+      invalidate: vi.fn(),
+    } satisfies SpExecutionContextAdapter;
+    const dependencies = unreachableDependencies(contextPort);
+    const heartbeat = vi.fn();
+    const readContent = vi.fn<AplusContentReadsPort["read"]>(async (input) => {
+      input.onControlledWait?.("publish-records");
+      await input.onProgress?.({ completedAsins: 1, totalAsins: 1 });
+      const summary = {
+        eligibleFbaSkus: 1,
+        uniqueAsins: 1,
+        published: 0,
+        missing: 0,
+        incomplete: 1,
+        unavailable: 0,
+      };
+      return {
+        mode: "live",
+        marketplaceId: input.marketplaceId,
+        fetchedAt: input.fetchedAt,
+        fbaSnapshotId: input.fbaSnapshotId,
+        totals: summary,
+        summary,
+        rows: [{
+          sellerSku: "A-PLUS-SUITE-SKU",
+          asin: "B000000009",
+          title: "Warning-only A+ evidence",
+          marketplaceId: input.marketplaceId,
+          status: "incomplete",
+          sourceCompleteness: "partial",
+          publishedRecordCount: null,
+          contentTypes: [],
+          locales: [],
+          documents: [],
+          documentEvidenceCompleteness: "unavailable",
+          reasonCode: "A_PLUS_WARNING_PRESENT",
+          reason: "Amazon A+ response was incomplete.",
+        }],
+        notice: "Only exact A+ evidence is reported.",
+      };
+    });
+    const coordinator = new AplusAuditCoordinator({
+      ...dependencies,
+      contentReads: { read: readContent },
+    });
+    const suiteContext: AuditSuiteContext = {
+      runId: "audit-suite-run-a-plus",
+      marketplaceId: US,
+      accountScope: String(context.accountScope),
+      generation: context.generation,
+      mode: context.mode,
+    };
+    const grouping: AuditSuiteGroupingResource = {
+      reportId: "report-lease.shared-a-plus",
+      documentId: "report-document.shared-a-plus",
+      data: {
+        fetchedAt: "2026-08-26T01:00:00.000Z",
+        rows: [{
+          marketplace: "US",
+          sellerSku: "A-PLUS-SUITE-SKU",
+          asin: "B000000009",
+          productType: "PET_FOOD",
+          title: "Warning-only A+ evidence",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+          imageUrls: [],
+          status: "Active",
+          updatedAt: "",
+          readStatus: "complete",
+          readErrors: [],
+        }],
+        errors: [],
+      },
+      grouping: {
+        marketplaceId: US,
+        fetchedAt: "2026-08-26T01:00:00.000Z",
+        rows: [{
+          marketplace: "US",
+          sellerSku: "A-PLUS-SUITE-SKU",
+          asin: "B000000009",
+          productType: "PET_FOOD",
+          title: "Warning-only A+ evidence",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+          imageUrls: [],
+          status: "complete",
+          updatedAt: "",
+          readStatus: "complete",
+          readErrors: [],
+          role: "child",
+          parentSku: "A-PLUS-PARENT",
+          familyKey: "A-PLUS-PARENT",
+          theme: "SIZE_NAME",
+          message: "Amazon relationships completed.",
+        }],
+        notice: "Only exact relationships evidence is used.",
+      },
+    };
+    const control: AuditSuiteRunControl = {
+      signal: new AbortController().signal,
+      heartbeat,
+      resource: vi.fn(async (_key, load) => load()),
+    };
+
+    const result = await coordinator.runAuditSuite({
+      context: suiteContext,
+      control,
+      grouping,
+    });
+
+    expect(result).toEqual({
+      ...suiteContext,
+      status: "partial",
+      fetchedAt: "2026-08-26T01:00:00.000Z",
+      notice: "Only exact A+ evidence is reported.",
+      payload: [{
+        sellerSku: "A-PLUS-SUITE-SKU",
+        title: "Warning-only A+ evidence",
+        asin: "B000000009",
+        finding: "Amazon 回應警告，請到 A+ 管理員確認",
+        notice: "Amazon A+ response was incomplete.",
+      }],
+    });
+    expect(readContent).toHaveBeenCalledWith(expect.objectContaining({
+      marketplaceId: US,
+      expectedContext: context,
+      fetchedAt: "2026-08-26T01:00:00.000Z",
+      rows: [{
+        sellerSku: "A-PLUS-SUITE-SKU",
+        asin: "B000000009",
+        title: "Warning-only A+ evidence",
+      }],
+      signal: expect.any(AbortSignal),
+      fbaSnapshotId: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    }));
+    expect(readContent.mock.calls[0]?.[0].signal).not.toBe(control.signal);
+    expect(heartbeat).toHaveBeenCalledWith(expect.objectContaining({
+      completedUnits: 1,
+      totalUnits: 1,
+    }));
+    expect(dependencies.listingsExport.startReusable).not.toHaveBeenCalled();
+    expect(dependencies.listingsExport.status).not.toHaveBeenCalled();
+    expect(dependencies.listingsExport.data).not.toHaveBeenCalled();
+    expect(dependencies.readGrouping).not.toHaveBeenCalled();
+    coordinator.clear();
+  });
+
+  it("aborts an active legacy A+ suite read when the owner lifecycle clears", async () => {
+    const context = executionContext();
+    const contextPort = {
+      capture: vi.fn(async () => context),
+      assertCurrent: vi.fn(async () => undefined),
+      invalidate: vi.fn(),
+    } satisfies SpExecutionContextAdapter;
+    const dependencies = unreachableDependencies(contextPort);
+    const observed: { signal?: AbortSignal } = {};
+    const readContent = vi.fn<AplusContentReadsPort["read"]>(async (input) => {
+      const signal = input.signal;
+      if (!signal) throw new Error("A+ suite read requires an AbortSignal.");
+      observed.signal = signal;
+      return await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+    });
+    const coordinator = new AplusAuditCoordinator({
+      ...dependencies,
+      contentReads: { read: readContent },
+    });
+    const parent = new AbortController();
+    const control: AuditSuiteRunControl = {
+      signal: parent.signal,
+      heartbeat: vi.fn(),
+      resource: vi.fn(async (_key, load) => load()),
+    };
+    const pending = coordinator.runAuditSuite({
+      context: {
+        runId: "audit-suite-run-a-plus-clear",
+        marketplaceId: US,
+        accountScope: String(context.accountScope),
+        generation: context.generation,
+        mode: context.mode,
+      },
+      control,
+      grouping: {
+        reportId: "report-lease.shared-a-plus-clear",
+        documentId: "report-document.shared-a-plus-clear",
+        data: {
+          fetchedAt: "2026-08-26T01:00:00.000Z",
+          rows: [],
+          errors: [],
+        },
+        grouping: {
+          marketplaceId: US,
+          fetchedAt: "2026-08-26T01:00:00.000Z",
+          rows: [],
+          notice: "No eligible rows.",
+        },
+      },
+    });
+    await eventually(() => expect(readContent).toHaveBeenCalledTimes(1));
+
+    coordinator.clear();
+    const ownerAborted = observed.signal?.aborted ?? false;
+    parent.abort(new DOMException("Test cleanup", "AbortError"));
+
+    await expect(pending).rejects.toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    expect(ownerAborted).toBe(true);
+  });
+
   it("owns one exact-context FBA report-to-A+ workflow behind start and observe", async () => {
     const context = executionContext();
     const contextPort = {

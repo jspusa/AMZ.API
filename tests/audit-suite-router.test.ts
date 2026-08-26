@@ -2,10 +2,9 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ApiRouter,
-  buildAplusAuditSuiteResult,
-} from "../src/main/api-router";
+import { ApiRouter } from "../src/main/api-router";
+import { buildAplusAuditSuiteResult } from
+  "../src/main/a-plus-audit-coordinator";
 import { buildAdvertisingAuditSuiteResult } from
   "../src/main/advertising-read-coordinator";
 import type { CredentialVault } from "../src/main/credential-vault";

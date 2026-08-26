@@ -99,15 +99,16 @@ function aggregateStatus(
 }
 
 function safeFailureNotice(error: unknown): string {
+  const fallback = "此項健檢未能建立可核對快照。";
   const message = error instanceof Error
     ? error.message
     : typeof error === "string"
       ? error
-      : "此項健檢未能建立可核對快照。";
+      : fallback;
   return safeSnapshotText(
     error instanceof SpApiError ? error.message : message,
-    "此項健檢未能建立可核對快照。",
-  );
+    fallback,
+  ) || fallback;
 }
 
 function safeSnapshotText(
@@ -132,7 +133,9 @@ function sanitizeSnapshotPayload(
   id: AuditSuiteSectionId,
   payload: unknown,
 ): unknown {
-  if (!Array.isArray(payload)) return payload;
+  if (!Array.isArray(payload)) {
+    throw new Error("此項健檢未能建立可核對快照。");
+  }
   switch (id) {
     case "content": {
       const rows = payload as SnapshotPayload<"content">;
@@ -223,12 +226,37 @@ function sanitizeSnapshot<K extends AuditSuiteSectionId>(
   id: K,
   snapshot: SnapshotFor<K>,
 ): SnapshotFor<K> {
+  if (
+    snapshot.status !== "completed" &&
+    snapshot.status !== "partial" &&
+    snapshot.status !== "failed"
+  ) {
+    throw new Error("此項健檢未能建立可核對快照。");
+  }
   const notice = safeSnapshotText(snapshot.notice);
+  const context = {
+    runId: snapshot.runId,
+    marketplaceId: snapshot.marketplaceId,
+    accountScope: snapshot.accountScope,
+    generation: snapshot.generation,
+    mode: snapshot.mode,
+  };
   if (snapshot.status === "failed") {
-    return { ...snapshot, notice } as SnapshotFor<K>;
+    return {
+      ...context,
+      status: "failed",
+      fetchedAt: null,
+      notice: notice || "此項健檢未能建立可核對快照。",
+      payload: null,
+    } as SnapshotFor<K>;
+  }
+  if (typeof snapshot.fetchedAt !== "string" || !snapshot.fetchedAt) {
+    throw new Error("此項健檢未能建立可核對快照。");
   }
   return {
-    ...snapshot,
+    ...context,
+    status: snapshot.status,
+    fetchedAt: snapshot.fetchedAt,
     notice,
     payload: sanitizeSnapshotPayload(id, snapshot.payload),
   } as unknown as SnapshotFor<K>;

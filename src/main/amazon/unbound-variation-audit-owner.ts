@@ -16,6 +16,12 @@ import {
 import { invalid, json, routeError } from "../route-response";
 import { ContextBoundAuditSnapshotStore } from
   "./context-bound-audit-snapshot";
+import type { AuditSuiteContext } from "./audit-suite-context";
+import type {
+  AuditSuiteRunControl,
+  AuditSuiteSectionRunners,
+} from "./audit-suite-coordinator";
+import type { AuditSuiteGroupingResource } from "./audit-suite-resources";
 import type { ReportsRuntimeReceipt } from "./reports-runtime";
 import { SpApiError } from "./sp-api-error";
 import {
@@ -82,6 +88,11 @@ export interface UnboundVariationAuditOwnerPort {
   runStandalone(
     input: UnboundVariationAuditStandaloneInput,
   ): Promise<UnboundVariationAuditPublicSnapshot>;
+  runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    grouping: AuditSuiteGroupingResource;
+  }>): ReturnType<AuditSuiteSectionRunners["variation"]>;
   clear(): void;
 }
 
@@ -377,6 +388,51 @@ export class UnboundVariationAuditOwner
     );
   }
 
+  async runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    grouping: AuditSuiteGroupingResource;
+  }>): ReturnType<AuditSuiteSectionRunners["variation"]> {
+    const marketplace = marketplaceById(input.context.marketplaceId);
+    if (!marketplace) throw contextInvalidated();
+    return this.execute(
+      {
+        marketplaceId: marketplace.id,
+        signal: input.control.signal,
+      },
+      async (current, signal) => {
+        throwIfAborted(signal);
+        this.assertAuditSuiteContext(input.context, current);
+        if (input.grouping.grouping.marketplaceId !== current.marketplaceId) {
+          throw contextInvalidated();
+        }
+        const incompleteRows = input.grouping.grouping.rows.filter((row) =>
+          row.status === "incomplete"
+        );
+        const rows = input.grouping.grouping.rows.filter((row) =>
+          row.status === "complete" && row.role === "standalone"
+        );
+        throwIfAborted(signal);
+        this.assertAuditSuiteContext(input.context, current);
+        return {
+          ...input.context,
+          status: incompleteRows.length ? "partial" : "completed",
+          fetchedAt: input.grouping.grouping.fetchedAt,
+          notice: incompleteRows.length
+            ? `${incompleteRows.length} 個 SKU relationships 無法安全判定；只列已驗證未綁變體。${input.grouping.grouping.notice}`
+            : input.grouping.grouping.notice,
+          payload: rows.map((row) => ({
+            sellerSku: row.sellerSku,
+            title: row.title,
+            asin: row.asin,
+            productType: row.productType,
+            notice: row.message,
+          })),
+        };
+      },
+    );
+  }
+
   private async download(
     marketplaceId: MarketplaceId,
     exportIdValue: unknown,
@@ -522,6 +578,30 @@ export class UnboundVariationAuditOwner
       );
     }
     if (snapshot.mode !== context.mode) {
+      throw new SpExecutionContextError(
+        "REPORT_MODE_CHANGED",
+        "App 展示／真實模式已改變；本次操作已停止。",
+      );
+    }
+  }
+
+  private assertAuditSuiteContext(
+    bound: AuditSuiteContext,
+    current: SpExecutionContext,
+  ): void {
+    if (
+      bound.marketplaceId !== current.marketplaceId ||
+      bound.generation !== current.generation
+    ) {
+      throw contextInvalidated();
+    }
+    if (bound.accountScope !== String(current.accountScope)) {
+      throw new SpExecutionContextError(
+        "ACCOUNT_SCOPE_CHANGED",
+        "Amazon 帳號範圍已改變；本次操作已停止。",
+      );
+    }
+    if (bound.mode !== current.mode) {
       throw new SpExecutionContextError(
         "REPORT_MODE_CHANGED",
         "App 展示／真實模式已改變；本次操作已停止。",

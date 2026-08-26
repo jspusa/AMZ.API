@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import type { MarketplaceId } from "../shared/marketplaces";
-import { abortableDelay, throwIfAborted } from "./abort-utils";
+import {
+  abortableDelay,
+  forwardAbort,
+  throwIfAborted,
+} from "./abort-utils";
 import {
   AplusAuditJobCoordinator,
   AplusAuditJobCoordinatorError,
@@ -9,12 +13,21 @@ import {
   type AplusAuditJobBoundContext,
   type AplusAuditJobMode,
 } from "./amazon/a-plus-audit-job";
+import type { AuditSuiteContext } from "./amazon/audit-suite-context";
+import type {
+  AuditSuiteRunControl,
+  AuditSuiteSectionRunners,
+} from "./amazon/audit-suite-coordinator";
+import type { AuditSuiteGroupingResource } from
+  "./amazon/audit-suite-resources";
 import {
   buildAplusAuditSeedsFromFbaGrouping,
   type AplusAuditProgress,
   type AplusAuditSnapshot,
+  type AplusContentPageOperation,
   type AplusContentReadsPort,
 } from "./amazon/a-plus-content-reads";
+import type { APlusAuditProblemRow } from "./amazon/audit-suite-xlsx";
 import type { CatalogExportRow } from "./amazon/catalog-report-reads";
 import type { ListingsExportPort } from "./amazon/listings-export";
 import { publicSpApiError, SpApiError } from "./amazon/sp-api-error";
@@ -53,6 +66,11 @@ export type AplusAuditGroupingReader = (input: Readonly<{
 export interface AplusAuditCoordinatorPort {
   start(request: ApiRequest): Promise<ApiResponse>;
   observe(request: ApiRequest): Promise<ApiResponse>;
+  runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    grouping: AuditSuiteGroupingResource;
+  }>): ReturnType<AuditSuiteSectionRunners["aplus"]>;
   clear(): void;
 }
 
@@ -97,11 +115,47 @@ function coordinatorError(error: unknown, fallback: string): ApiResponse {
   return routeError(error, fallback);
 }
 
+export function buildAplusAuditSuiteResult(
+  snapshot: AplusAuditSnapshot,
+): Readonly<{
+  status: "completed" | "partial";
+  fetchedAt: string;
+  notice: string;
+  payload: readonly APlusAuditProblemRow[];
+}> {
+  const payload = snapshot.rows
+    .filter((row) => row.status !== "published")
+    .map((row): APlusAuditProblemRow => ({
+      sellerSku: row.sellerSku,
+      title: row.title,
+      asin: row.asin ?? "",
+      finding: row.status === "missing"
+        ? "未找到已發布 A+"
+        : row.status === "unavailable"
+          ? "A+ API 權限不可用"
+          : row.reasonCode === "A_PLUS_WARNING_PRESENT"
+            ? "Amazon 回應警告，請到 A+ 管理員確認"
+            : "資料未完成",
+      notice: row.reason,
+    }));
+  const partial = snapshot.summary.incomplete > 0 ||
+    snapshot.summary.unavailable > 0 ||
+    snapshot.rows.some((row) =>
+      row.status !== "published" && row.sourceCompleteness === "partial"
+    );
+  return {
+    status: partial ? "partial" : "completed",
+    fetchedAt: snapshot.fetchedAt,
+    notice: snapshot.notice,
+    payload,
+  };
+}
+
 /**
  * Renderer-facing owner of the complete long-running A+ audit workflow.
  * Route DTOs, exact execution context, one FBA catalog report lifecycle,
  * relationship-proven seeds, A+ pagination, heartbeat and job retention stay
- * behind the three-method interface.
+ * behind the four-method interface.
  */
 export class AplusAuditCoordinator implements AplusAuditCoordinatorPort {
   private readonly context: SpExecutionContextAdapter;
@@ -112,6 +166,7 @@ export class AplusAuditCoordinator implements AplusAuditCoordinatorPort {
   private readonly pollLimit: number;
   private readonly jobs: AplusAuditJobCoordinator;
   private readonly contexts = new Map<string, SpExecutionContext>();
+  private readonly auditSuiteControls = new Set<AbortController>();
   private lifecycleRevision = 0;
 
   constructor(input: AplusAuditCoordinatorDependencies) {
@@ -146,6 +201,9 @@ export class AplusAuditCoordinator implements AplusAuditCoordinatorPort {
 
   clear(): void {
     this.lifecycleRevision += 1;
+    const reason = contextInvalidated();
+    for (const control of this.auditSuiteControls) control.abort(reason);
+    this.auditSuiteControls.clear();
     this.jobs.clear();
     this.contexts.clear();
   }
@@ -225,6 +283,62 @@ export class AplusAuditCoordinator implements AplusAuditCoordinatorPort {
     if (this.contexts.get(contextKey(this.boundContext(context))) !== context) {
       throw contextInvalidated();
     }
+  }
+
+  private assertAuditSuiteContext(
+    bound: AuditSuiteContext,
+    exact: SpExecutionContext,
+  ): void {
+    if (
+      bound.marketplaceId !== exact.marketplaceId ||
+      bound.generation !== exact.generation
+    ) {
+      throw contextInvalidated();
+    }
+    if (bound.accountScope !== String(exact.accountScope)) {
+      throw new SpExecutionContextError(
+        "ACCOUNT_SCOPE_CHANGED",
+        "Amazon 帳號範圍已改變；本次綜合健檢已停止。",
+      );
+    }
+    if (bound.mode !== exact.mode) {
+      throw new SpExecutionContextError(
+        "REPORT_MODE_CHANGED",
+        "App 展示／真實模式已改變；本次綜合健檢已停止。",
+      );
+    }
+  }
+
+  private async captureAuditSuiteContext(
+    bound: AuditSuiteContext,
+    signal: AbortSignal,
+    revision: number,
+  ): Promise<SpExecutionContext> {
+    throwIfAborted(signal);
+    const marketplaceId = parseMarketplace(bound.marketplaceId);
+    if (!marketplaceId) throw contextInvalidated();
+    const exact = await this.context.capture(marketplaceId);
+    this.assertLifecycleCurrent(revision);
+    throwIfAborted(signal);
+    this.assertAuditSuiteContext(bound, exact);
+    await this.context.assertCurrent(exact);
+    this.assertLifecycleCurrent(revision);
+    throwIfAborted(signal);
+    this.assertAuditSuiteContext(bound, exact);
+    return exact;
+  }
+
+  private async fenceAuditSuiteContext(
+    bound: AuditSuiteContext,
+    exact: SpExecutionContext,
+    signal: AbortSignal,
+    revision: number,
+  ): Promise<void> {
+    this.assertAuditSuiteContext(bound, exact);
+    await this.context.assertCurrent(exact);
+    this.assertLifecycleCurrent(revision);
+    throwIfAborted(signal);
+    this.assertAuditSuiteContext(bound, exact);
   }
 
   private async loadFbaSeeds(
@@ -339,6 +453,119 @@ export class AplusAuditCoordinator implements AplusAuditCoordinatorPort {
     await this.fence(exact.context, exact.revision, signal);
     heartbeat();
     return snapshot;
+  }
+
+  async runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    grouping: AuditSuiteGroupingResource;
+  }>): ReturnType<AuditSuiteSectionRunners["aplus"]> {
+    const revision = this.lifecycleRevision;
+    const operation = new AbortController();
+    const unlinkCaller = forwardAbort(operation, input.control.signal);
+    this.auditSuiteControls.add(operation);
+    const ownedInput = {
+      ...input,
+      control: {
+        signal: operation.signal,
+        heartbeat: (update) => input.control.heartbeat(update),
+        resource: (key, load) => input.control.resource(key, load),
+      } satisfies AuditSuiteRunControl,
+    };
+    try {
+      const result = await this.runAuditSuiteOwned(ownedInput, revision);
+      this.assertLifecycleCurrent(revision);
+      throwIfAborted(operation.signal);
+      return result;
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) throw error;
+      this.assertLifecycleCurrent(revision);
+      throwIfAborted(operation.signal);
+      throw error;
+    } finally {
+      unlinkCaller();
+      this.auditSuiteControls.delete(operation);
+    }
+  }
+
+  private async runAuditSuiteOwned(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    grouping: AuditSuiteGroupingResource;
+  }>, revision: number): ReturnType<AuditSuiteSectionRunners["aplus"]> {
+    const exact = await this.captureAuditSuiteContext(
+      input.context,
+      input.control.signal,
+      revision,
+    );
+    if (input.grouping.grouping.marketplaceId !== exact.marketplaceId) {
+      throw contextInvalidated();
+    }
+    const fbaSnapshotId = createHash("sha256").update(JSON.stringify([
+      input.context.accountScope,
+      exact.marketplaceId,
+      input.grouping.reportId,
+      input.grouping.documentId,
+      input.grouping.data.fetchedAt,
+    ])).digest("hex");
+    const controlledWaitMessages: Record<AplusContentPageOperation, string> = {
+      "publish-records":
+        "Amazon A+ API 要求延後重試；Notebook 鑰匙仍在受控等待。",
+      "content-documents":
+        "Amazon A+ API 要求延後文件讀取；Notebook 鑰匙仍在受控等待。",
+      "document-relations":
+        "Amazon A+ API 要求延後關聯讀取；Notebook 鑰匙仍在受控等待。",
+    };
+    let snapshot: AplusAuditSnapshot;
+    try {
+      snapshot = await this.contentReads.read({
+        marketplaceId: exact.marketplaceId,
+        expectedContext: exact,
+        fetchedAt: input.grouping.data.fetchedAt,
+        fbaSnapshotId,
+        rows: buildAplusAuditSeedsFromFbaGrouping(input.grouping.grouping.rows),
+        signal: input.control.signal,
+        onControlledWait: (operation) => {
+          this.assertLifecycleCurrent(revision);
+          throwIfAborted(input.control.signal);
+          input.control.heartbeat({ message: controlledWaitMessages[operation] });
+        },
+        onProgress: (progress) => {
+          this.assertLifecycleCurrent(revision);
+          throwIfAborted(input.control.signal);
+          input.control.heartbeat({
+            message:
+              `正在核對 A+ publish records（${progress.completedAsins}／${progress.totalAsins} ASIN）。`,
+            completedUnits: progress.completedAsins,
+            totalUnits: progress.totalAsins,
+          });
+        },
+      });
+    } catch (error) {
+      await this.fenceAuditSuiteContext(
+        input.context,
+        exact,
+        input.control.signal,
+        revision,
+      );
+      throw error;
+    }
+    await this.fenceAuditSuiteContext(
+      input.context,
+      exact,
+      input.control.signal,
+      revision,
+    );
+    if (
+      snapshot.mode !== exact.mode ||
+      snapshot.marketplaceId !== exact.marketplaceId
+    ) {
+      throw contextInvalidated();
+    }
+    return {
+      ...input.context,
+      ...buildAplusAuditSuiteResult(snapshot),
+    };
   }
 
   async start(request: ApiRequest): Promise<ApiResponse> {

@@ -8,6 +8,12 @@ import { addPagesDictionarySpellingIssues } from
   "../../shared/content-spelling-rules";
 import { forwardAbort, throwIfAborted } from "../abort-utils";
 import type {
+  AuditSuiteRunControl,
+  AuditSuiteSectionRunners,
+} from "./audit-suite-coordinator";
+import type { AuditSuiteContext } from "./audit-suite-context";
+import type { AuditSuiteListingsResource } from "./audit-suite-resources";
+import type {
   CatalogExportRow,
   FbaCatalogExport,
 } from "./catalog-report-reads";
@@ -115,6 +121,11 @@ export type ContentAuditGroupingReader = (input: Readonly<{
 }>) => Promise<FbaVariationGroupingData<CatalogExportRow>>;
 
 export interface ContentAuditOwnerPort {
+  runAuditSuite(input: Readonly<{
+    context: AuditSuiteContext;
+    control: AuditSuiteRunControl;
+    listings: AuditSuiteListingsResource;
+  }>): ReturnType<AuditSuiteSectionRunners["content"]>;
   captureFromListings(
     input: ContentAuditListingsInput,
   ): Promise<ContentAuditSnapshot>;
@@ -608,6 +619,69 @@ export class ContentAuditOwner implements ContentAuditOwnerPort {
       now: input.now,
       expiredMessage: "文案健檢快照已過期或站點不符，請重新掃描。",
     });
+  }
+
+  async runAuditSuite(
+    input: Parameters<ContentAuditOwnerPort["runAuditSuite"]>[0],
+  ): ReturnType<AuditSuiteSectionRunners["content"]> {
+    const revision = this.lifecycleRevision;
+    const operation = new AbortController();
+    const unlinkCaller = forwardAbort(operation, input.control.signal);
+    this.controls.add(operation);
+    try {
+      throwIfAborted(operation.signal);
+      this.assertLifecycleCurrent(revision);
+      const audit = auditListingContentRows({
+        marketplaceId: input.context.marketplaceId,
+        fetchedAt: input.listings.data.fetchedAt,
+        rows: input.listings.data.rows,
+      });
+      const rows = audit.rows.flatMap((row) =>
+        row.issues.map((issue) => ({
+          sellerSku: row.sellerSku,
+          title: row.title,
+          asin: row.asin,
+          problemType: issue.kind === "SUSPECTED_TYPO"
+            ? "疑似錯字"
+            : issue.message,
+          field: fieldLabel(issue.field),
+          originalText: issue.field === "title"
+            ? row.title
+            : issue.field === "itemHighlight"
+              ? row.itemHighlight
+              : issue.field === "bulletPoints"
+                ? issue.bulletIndex === undefined
+                  ? row.bulletPoints.join("\n")
+                  : row.bulletPoints[issue.bulletIndex] ?? ""
+                : issue.field === "productDescription"
+                  ? row.productDescription
+                  : row.ingredients,
+          description: issue.suggestion
+            ? `${issue.message} 建議：${issue.suggestion}`
+            : issue.message,
+        }))
+      );
+      throwIfAborted(operation.signal);
+      this.assertLifecycleCurrent(revision);
+      const scopeNotice = audit.summary.incomplete
+        ? `另有 ${audit.summary.incomplete} 個 SKU 文案讀取未完成；未知不視為無問題。`
+        : "Amazon 基礎文案欄位已完成讀取。";
+      return {
+        ...input.context,
+        status: "partial",
+        fetchedAt: audit.fetchedAt,
+        notice: `${scopeNotice} 本機字典錯字結果需個別文案健檢補充`,
+        payload: rows,
+      };
+    } catch (error) {
+      if (error instanceof SpExecutionContextError) throw error;
+      this.assertLifecycleCurrent(revision);
+      throwIfAborted(operation.signal);
+      throw error;
+    } finally {
+      unlinkCaller();
+      this.controls.delete(operation);
+    }
   }
 
   async captureFromListings(

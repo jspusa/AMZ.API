@@ -7,6 +7,9 @@ import {
 import {
   createScriptedSpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
+import type {
+  AuditSuiteRunControl,
+} from "../src/main/amazon/audit-suite-coordinator";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER" as const;
@@ -110,6 +113,137 @@ function snapshot(): SubscriptionAuditSnapshot {
 }
 
 describe("SubscriptionAuditOwner", () => {
+  it("runs the fixed six-month Audit Suite projection without publishing another snapshot", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "subscription-owner-account",
+    }));
+    const expected = await context.capture(US);
+    const readSnapshot = vi.fn(async (
+      _input: Parameters<SubscriptionAuditSnapshotReader>[0],
+    ) => snapshot());
+    const createId = vi.fn(() => DIRECT_EXPORT_ID);
+    const owner = new SubscriptionAuditOwner({
+      context,
+      readSnapshot,
+      createId,
+    });
+    const control = {
+      signal: new AbortController().signal,
+      heartbeat: vi.fn(),
+      resource: vi.fn(),
+    } as unknown as AuditSuiteRunControl;
+
+    const result = await owner.runAuditSuite({
+      runId: "subscription-audit-suite-run",
+      marketplaceId: US,
+      accountScope: String(expected.accountScope),
+      generation: expected.generation,
+      mode: expected.mode,
+    }, control);
+
+    expect(result).toMatchObject({
+      runId: "subscription-audit-suite-run",
+      marketplaceId: US,
+      status: "completed",
+      fetchedAt: "2026-08-26T00:00:00.000Z",
+      notice: "FBA only.",
+      payload: [{
+        sellerSku: "SUBSCRIPTION-OWNER-SKU",
+        asin: "B000000001",
+        anomaly: "Amazon 未回傳 Seller 基礎折扣",
+        sellerFundedBaseDiscountPercent: null,
+        currentActiveSubscriptions: 3,
+        currentPrice: 12.5,
+      }],
+    });
+    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(readSnapshot.mock.calls[0]?.[0]).toMatchObject({
+      marketplaceId: US,
+      months: 6,
+      expectedContext: expected,
+    });
+    expect(createId).not.toHaveBeenCalled();
+  });
+
+  it("lets owner clear abort an Audit Suite semantic read without publishing", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "subscription-owner-account",
+    }));
+    const expected = await context.capture(US);
+    let ownerSignal: AbortSignal | undefined;
+    let release: ((value: SubscriptionAuditSnapshot) => void) | undefined;
+    const pending = new Promise<SubscriptionAuditSnapshot>((resolve) => {
+      release = resolve;
+    });
+    const readSnapshot = vi.fn((
+      input: Parameters<SubscriptionAuditSnapshotReader>[0],
+    ) => {
+      ownerSignal = input.signal;
+      return pending;
+    });
+    const createId = vi.fn(() => DIRECT_EXPORT_ID);
+    const owner = new SubscriptionAuditOwner({
+      context,
+      readSnapshot,
+      createId,
+    });
+    const parent = new AbortController();
+    const running = owner.runAuditSuite({
+      runId: "subscription-audit-suite-clear-run",
+      marketplaceId: US,
+      accountScope: String(expected.accountScope),
+      generation: expected.generation,
+      mode: expected.mode,
+    }, {
+      signal: parent.signal,
+      heartbeat: () => undefined,
+      resource: <Value>(_key: unknown, load: () => Promise<Value>) => load(),
+    } as AuditSuiteRunControl);
+    await vi.waitFor(() => expect(readSnapshot).toHaveBeenCalledOnce());
+
+    owner.clear();
+    release?.(snapshot());
+
+    expect(ownerSignal).toBeInstanceOf(AbortSignal);
+    expect(ownerSignal).not.toBe(parent.signal);
+    expect(ownerSignal?.aborted).toBe(true);
+    expect(parent.signal.aborted).toBe(false);
+    await expect(running).rejects.toMatchObject({
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    expect(createId).not.toHaveBeenCalled();
+  });
+
+  it("rejects Audit Suite account drift before the semantic read", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "subscription-owner-current-account",
+    }));
+    const expected = await context.capture(US);
+    const readSnapshot = vi.fn(async () => snapshot());
+    const owner = new SubscriptionAuditOwner({ context, readSnapshot });
+
+    await expect(owner.runAuditSuite({
+      runId: "subscription-audit-suite-drift-run",
+      marketplaceId: US,
+      accountScope: "subscription-owner-stale-account",
+      generation: expected.generation,
+      mode: expected.mode,
+    }, {
+      signal: new AbortController().signal,
+      heartbeat: () => undefined,
+      resource: <Value>(_key: unknown, load: () => Promise<Value>) => load(),
+    } as AuditSuiteRunControl)).rejects.toMatchObject({
+      code: "ACCOUNT_SCOPE_CHANGED",
+    });
+    expect(readSnapshot).not.toHaveBeenCalled();
+  });
+
   it("uses one capture/publish source for direct and standalone snapshots with distinct retention", async () => {
     let now = 100;
     const ids = [DIRECT_EXPORT_ID, STANDALONE_EXPORT_ID];
