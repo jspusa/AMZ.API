@@ -17,6 +17,10 @@ function sourceFilePaths(directory: string): string[] {
 
 const MAIN_ROOT = fileURLToPath(new URL("../src/main/", import.meta.url));
 
+function portablePath(value: string): string {
+  return value.replace(/\\/gu, "/");
+}
+
 function importSpecifiers(value: string): string[] {
   return [...value.matchAll(/\bfrom\s+["']([^"']+)["']/gmu)].map(
     (match) => match[1]!,
@@ -232,16 +236,17 @@ describe("W02 Listing Price mutation architecture", () => {
       .filter((path) => readFileSync(path, "utf8").includes(
         "listingPriceGatewayProduction",
       ))
-      .map((path) => relative(MAIN_ROOT, path))
+      .map((path) => portablePath(relative(MAIN_ROOT, path)))
       .sort();
     const directOperationsConsumers = files
       .filter((path) => readFileSync(path, "utf8").includes(
         "createListingPriceMutationOperations",
       ))
-      .map((path) => relative(MAIN_ROOT, path))
+      .map((path) => portablePath(relative(MAIN_ROOT, path)))
       .sort();
     const router = source("../src/main/api-router.ts");
 
+    expect(portablePath("amazon\\sp-api.ts")).toBe("amazon/sp-api.ts");
     expect(gatewayConsumers).toEqual([
       "amazon/sp-api.ts",
       "api-router.ts",
