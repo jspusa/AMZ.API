@@ -2,22 +2,30 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   getBusinessPricing,
   getListingContent,
-  getListingImages,
   invalidateSpApiCredentialCaches,
+  listingImageGatewayProduction,
   listingPriceGatewayProduction,
   updateBusinessPrice,
-  updateListingImages,
 } from "../src/main/amazon/sp-api";
+import { createListingImageMutationOperations } from
+  "../src/main/listing-image-mutations";
 import { createListingPriceMutationOperations } from
   "../src/main/listing-price-mutations";
 
 const priceOperations = createListingPriceMutationOperations(
   listingPriceGatewayProduction,
 );
+const imageOperations = createListingImageMutationOperations(
+  listingImageGatewayProduction,
+);
 const getListingPrice = priceOperations.read;
+const getListingImages = async (
+  input: Parameters<typeof imageOperations.read>[0],
+) => (await imageOperations.read(input)).snapshot;
 const previewListingPriceUpdate = priceOperations.previewStandard;
 const previewListingSalePriceUpdate = priceOperations.previewSale;
 const updateListingPrice = priceOperations.commitStandard;
+const updateListingImages = imageOperations.commit;
 const currentFence = { assertCurrent: async () => undefined } as const;
 
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) => key.startsWith("SP_API_"));
@@ -161,11 +169,14 @@ describe("SP-API demo safety boundary", () => {
     };
     const before = await getListingImages(identity);
     const expectedUrls = before.images.map((image) => image.url);
-    const update = updateListingImages({
-      ...identity,
-      expectedUrls,
-      urls: ["https://example.com/main.jpg", ...expectedUrls.slice(1)],
-    });
+    const update = updateListingImages(
+      {
+        ...identity,
+        expectedUrls,
+        urls: ["https://example.com/main.jpg", ...expectedUrls.slice(1)],
+      },
+      currentFence,
+    );
 
     invalidateSpApiCredentialCaches();
 

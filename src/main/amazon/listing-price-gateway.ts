@@ -1,9 +1,10 @@
 import type { MarketplaceId } from "../../shared/marketplaces";
 import type {
   ListingPriceSnapshot,
-  ListingWriteExecutionFence,
   SalePriceSchedule,
 } from "./listing-price-types";
+import type { ListingWriteExecutionFence } from
+  "./listing-write-execution-fence";
 
 export type ListingPriceIdentity = Readonly<{
   marketplaceId: MarketplaceId;

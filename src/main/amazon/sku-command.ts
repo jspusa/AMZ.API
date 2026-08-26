@@ -104,7 +104,10 @@ export type SkuCommandDependencies = Readonly<{
       context: SpExecutionContext,
     ): Promise<ListingPriceSnapshot>;
     content(identity: SkuCommandIdentity): Promise<ListingContentSnapshot>;
-    images(identity: SkuCommandIdentity): Promise<ListingImageSnapshot>;
+    images(
+      identity: SkuCommandIdentity,
+      context: SpExecutionContext,
+    ): Promise<ListingImageSnapshot>;
     subscribeSave(
       identity: SkuCommandIdentity,
     ): Promise<SubscribeAndSaveOfferSnapshot>;
@@ -303,7 +306,7 @@ export class SkuCommand {
     const settled = await Promise.allSettled([
       this.reads.price(identity, context),
       this.reads.content(identity),
-      this.reads.images(identity),
+      this.reads.images(identity, context),
       this.reads.subscribeSave(identity),
       this.reads.restock({
         marketplaceId,

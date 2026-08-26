@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getListingContent,
-  getListingImages,
   invalidateSpApiCredentialCaches,
+  listingImageGatewayProduction,
   listingPriceGatewayProduction,
   previewListingContentUpdate,
   SpApiError,
@@ -284,6 +285,248 @@ describe("SP-API live wire contracts", () => {
     expectGetListingsItemUrl(urls[1]);
   });
 
+  it("mints W03 image mutation evidence through the production gateway", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input) => {
+        const url = requestUrl(input);
+        if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+        if (url.href === FAKE_SCHEMA_URL) {
+          return jsonResponse(200, fakeContentSchema());
+        }
+        if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+          return fakeContentDefinitionResponse();
+        }
+        return fakeListingItemResponse();
+      }),
+    );
+
+    const observation = await listingImageGatewayProduction.read(
+      { marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU },
+      "mutation",
+    );
+
+    expect(observation).toMatchObject({
+      fulfillment: "FBA",
+      snapshot: {
+        mode: "live",
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: FAKE_SKU,
+      },
+    });
+    expect(observation.sourceEvidence).toBeTruthy();
+  });
+
+  it("keeps raw delete locator evidence inside the W03 production gateway", async () => {
+    const envelope = await fakeListingItemResponse().json() as {
+      attributes: Record<string, unknown[]>;
+    };
+    envelope.attributes.main_product_image_locator = [{
+      media_location: "https://images.example.test/main.jpg",
+      marketplace_id: MARKETPLACE_ID,
+    }];
+    envelope.attributes.other_product_image_locator_1 = [{
+      media_location: "https://images.example.test/alternate-1.jpg",
+      marketplace_id: MARKETPLACE_ID,
+      media_content_type: "image/jpeg",
+      vendor_extra_locator: "must-stay-adapter-private",
+    }];
+    let previewBody: unknown = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init) => {
+        const url = requestUrl(input);
+        if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+        if (init?.method === "PATCH") {
+          previewBody = JSON.parse(String(init.body));
+          return jsonResponse(200, { status: "VALID", issues: [] });
+        }
+        if (url.href === FAKE_SCHEMA_URL) {
+          return jsonResponse(200, fakeContentSchema());
+        }
+        if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+          return fakeContentDefinitionResponse();
+        }
+        return jsonResponse(200, envelope);
+      }),
+    );
+    const identity = { marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU };
+    const observation = await listingImageGatewayProduction.read(
+      identity,
+      "mutation",
+    );
+    const previousUrls = observation.snapshot.images.map((image) => image.url) as [
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+    ];
+    const requestedUrls = [...previousUrls] as typeof previousUrls;
+    requestedUrls[1] = null;
+    const descriptor = {
+      ...identity,
+      asin: observation.snapshot.asin!,
+      productType: observation.snapshot.productType,
+      expectedOldHash: createHash("sha256")
+        .update(JSON.stringify(previousUrls))
+        .digest("hex"),
+      previousUrls,
+      requestedUrls,
+      changes: [{
+        slot: 1 as const,
+        previousUrl: previousUrls[1],
+        requestedUrl: null,
+      }],
+      sourceEvidence: observation.sourceEvidence,
+    };
+
+    await listingImageGatewayProduction.validationPreview(descriptor);
+
+    expect(JSON.stringify(descriptor)).not.toContain(
+      "must-stay-adapter-private",
+    );
+    expect(previewBody).toMatchObject({
+      productType: "FAKE_PRODUCT_TYPE",
+      patches: [{
+        op: "delete",
+        path: "/attributes/other_product_image_locator_1",
+        value: [{
+          media_location: "https://images.example.test/alternate-1.jpg",
+          marketplace_id: MARKETPLACE_ID,
+          media_content_type: "image/jpeg",
+          vendor_extra_locator: "must-stay-adapter-private",
+        }],
+      }],
+    });
+  });
+
+  it.each([
+    {
+      label: "non-canonical marketplace image locator evidence",
+      conflictingMarketplaceId: ` ${MARKETPLACE_ID} `,
+    },
+    {
+      label: "duplicate same-market image locator evidence",
+      conflictingMarketplaceId: MARKETPLACE_ID,
+    },
+  ])("rejects $label before any PATCH", async ({ conflictingMarketplaceId }) => {
+    const envelope = await fakeListingItemResponse().json() as {
+      attributes: Record<string, unknown[]>;
+    };
+    envelope.attributes.main_product_image_locator = [
+      {
+        media_location: "https://images.example.test/requested-main.jpg",
+        marketplace_id: MARKETPLACE_ID,
+      },
+      {
+        media_location: "https://images.example.test/conflicting-main.jpg",
+        marketplace_id: conflictingMarketplaceId,
+      },
+    ];
+    let patchCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init) => {
+        const url = requestUrl(input);
+        if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+        if (init?.method === "PATCH") {
+          patchCount += 1;
+          return jsonResponse(200, { status: "VALID", issues: [] });
+        }
+        if (url.href === FAKE_SCHEMA_URL) {
+          return jsonResponse(200, fakeContentSchema());
+        }
+        if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+          return fakeContentDefinitionResponse();
+        }
+        return jsonResponse(200, envelope);
+      }),
+    );
+
+    await expect(listingImageGatewayProduction.read(
+      { marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU },
+      "mutation",
+    )).rejects.toMatchObject({
+      status: 409,
+      code: "LISTING_IMAGE_EVIDENCE_AMBIGUOUS",
+    });
+    expect(patchCount).toBe(0);
+  });
+
+  it("does not send a W03 image commit PATCH when the final execution fence fails", async () => {
+    let commitPatches = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init) => {
+        const url = requestUrl(input);
+        if (url.origin === "https://api.amazon.com") return fakeTokenResponse();
+        if (init?.method === "PATCH") {
+          commitPatches += 1;
+          return jsonResponse(200, { status: "ACCEPTED", issues: [] });
+        }
+        if (url.href === FAKE_SCHEMA_URL) {
+          return jsonResponse(200, fakeContentSchema());
+        }
+        if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+          return fakeContentDefinitionResponse();
+        }
+        return fakeListingItemResponse();
+      }),
+    );
+    const identity = { marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU };
+    const observation = await listingImageGatewayProduction.read(
+      identity,
+      "mutation",
+    );
+    const previousUrls = observation.snapshot.images.map((image) => image.url) as [
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+    ];
+    const requestedUrls = [...previousUrls] as typeof previousUrls;
+    requestedUrls[0] = "https://images.example.test/new-main.jpg";
+    const descriptor = {
+      ...identity,
+      asin: observation.snapshot.asin!,
+      productType: observation.snapshot.productType,
+      expectedOldHash: createHash("sha256")
+        .update(JSON.stringify(previousUrls))
+        .digest("hex"),
+      previousUrls,
+      requestedUrls,
+      changes: [{
+        slot: 0 as const,
+        previousUrl: previousUrls[0],
+        requestedUrl: requestedUrls[0],
+      }],
+      sourceEvidence: observation.sourceEvidence,
+    };
+
+    await expect(listingImageGatewayProduction.commitOnce(descriptor, {
+      assertCurrent: async () => {
+        throw new SpExecutionContextError(
+          "SP_CONTEXT_INVALIDATED",
+          "Amazon 執行環境已更新；請重新開始這次操作。",
+        );
+      },
+    })).rejects.toMatchObject({
+      status: 409,
+      code: "SP_CONTEXT_INVALIDATED",
+    });
+    expect(commitPatches).toBe(0);
+  });
+
   it("does not send a commit PATCH after context changes during price precommit", async () => {
     let contextCurrent = true;
     let previewPatches = 0;
@@ -406,7 +649,10 @@ describe("SP-API live wire contracts", () => {
     );
 
     await expect(
-      getListingImages({ marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU }),
+      listingImageGatewayProduction.read(
+        { marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU },
+        "read-only",
+      ),
     ).rejects.toMatchObject({
       status: 409,
       code: "LISTING_IDENTITY_MISMATCH",

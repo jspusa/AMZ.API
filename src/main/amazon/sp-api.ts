@@ -132,14 +132,27 @@ import {
 import type {
   FulfillmentAvailability,
   ListingPriceSnapshot,
-  ListingWriteExecutionFence,
   Money,
   SalePriceSchedule,
 } from "./listing-price-types";
+import type { ListingWriteExecutionFence } from
+  "./listing-write-execution-fence";
 import {
   listingPricePatchBody,
   type ListingPriceGateway,
 } from "./listing-price-gateway";
+import type {
+  ListingImageFieldCapability,
+  ListingImageSnapshot,
+} from "./listing-image-types";
+import type {
+  ListingImageGateway,
+  ListingImageGatewayRead,
+  ListingImageGatewayReply,
+  ListingImagePatchDescriptor,
+  ListingImageSourceEvidence,
+  ListingImageUrlVector,
+} from "./listing-image-gateway";
 
 export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
 export { SpApiError, SpApiPreCommitError } from "./sp-api-error";
@@ -163,6 +176,13 @@ export type {
   UpdateListingPriceInput,
   UpdateListingSalePriceInput,
 } from "./listing-price-types";
+export type {
+  ListingImageFieldCapability,
+  ListingImageIdentity,
+  ListingImageSnapshot,
+  ListingImageUpdateResult,
+  UpdateListingImagesInput,
+} from "./listing-image-types";
 export type { SubscribeAndSaveOfferSnapshot } from "./fba-inventory-replenishment";
 export {
   buildUnboundVariationSearchBatches,
@@ -275,57 +295,6 @@ export type ListingContentField =
   | "bulletPoints"
   | "productDescription"
   | "ingredients";
-
-export type ListingImageFieldCapability = {
-  attributeName: string;
-  label: string;
-  supported: boolean;
-  editable: boolean;
-  required: boolean;
-  reason: string | null;
-};
-
-export type ListingImageSnapshot = {
-  mode: "live" | "demo";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  asin: string | null;
-  productType: string;
-  title: string;
-  attributesPresent: boolean;
-  images: Array<{
-    attributeName: string;
-    label: string;
-    url: string | null;
-    capability: ListingImageFieldCapability;
-  }>;
-  fetchedAt: string;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type UpdateListingImagesInput = {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  expectedUrls: Array<string | null>;
-  urls: Array<string | null>;
-};
-
-export type ListingImageUpdateResult = {
-  mode: "live" | "demo";
-  status: "VALID" | "ACCEPTED" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  previousUrls: Array<string | null>;
-  requestedUrls: Array<string | null>;
-  changedSlots: number[];
-  completedAt: string;
-  submissionId: string | null;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string;
-};
 
 export type ListingContentSnapshot = {
   mode: "live" | "demo";
@@ -6429,10 +6398,44 @@ function listingImageUrl(
   attributeName: string,
   marketplaceId: MarketplaceId,
 ): string | null {
-  const value = attributeObjects(payload, attributeName, marketplaceId)
-    .map((item) => item.media_location)
-    .find((item): item is string => typeof item === "string" && Boolean(item.trim()));
-  return value?.trim() || null;
+  const raw = payload.attributes?.[attributeName];
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) {
+    throw new SpApiError(
+      "Amazon 圖片欄位不是可精確核對的 current-market locator 陣列，已停止使用。",
+      { status: 409, code: "LISTING_IMAGE_EVIDENCE_AMBIGUOUS" },
+    );
+  }
+  const currentMarket: string[] = [];
+  for (const item of raw) {
+    if (!isRecord(item) ||
+        typeof item.marketplace_id !== "string" ||
+        !item.marketplace_id.trim() ||
+        item.marketplace_id !== item.marketplace_id.trim() ||
+        !marketplaceById(item.marketplace_id)) {
+      throw new SpApiError(
+        "Amazon 圖片欄位含有無法確認站點的 locator，已停止使用。",
+        { status: 409, code: "LISTING_IMAGE_EVIDENCE_AMBIGUOUS" },
+      );
+    }
+    if (item.marketplace_id !== marketplaceId) continue;
+    if (typeof item.media_location !== "string" ||
+        !item.media_location.trim() ||
+        item.media_location !== item.media_location.trim()) {
+      throw new SpApiError(
+        "Amazon 圖片欄位含有無法精確核對的 locator，已停止使用。",
+        { status: 409, code: "LISTING_IMAGE_EVIDENCE_AMBIGUOUS" },
+      );
+    }
+    currentMarket.push(item.media_location);
+  }
+  if (currentMarket.length > 1) {
+    throw new SpApiError(
+      "Amazon 同一圖片位置回傳多個 current-market locator，已停止預檢與回查。",
+      { status: 409, code: "LISTING_IMAGE_EVIDENCE_AMBIGUOUS" },
+    );
+  }
+  return currentMarket[0] ?? null;
 }
 
 function normalizeImageUrls(values: Array<string | null>): Array<string | null> {
@@ -6440,39 +6443,6 @@ function normalizeImageUrls(values: Array<string | null>): Array<string | null> 
     const value = values[index];
     return typeof value === "string" && value.trim() ? value.trim() : null;
   });
-}
-
-function assertImageUrl(value: string, label: string): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new SpApiError(`${label}不是有效的圖片 URL。`, {
-      status: 422,
-      code: "INVALID_IMAGE_URL",
-    });
-  }
-  if (url.protocol !== "https:" && url.protocol !== "s3:") {
-    throw new SpApiError(`${label}必須使用 HTTPS 或已授權的 S3 URL。`, {
-      status: 422,
-      code: "INVALID_IMAGE_URL",
-    });
-  }
-  if (value.length > 2_000) {
-    throw new SpApiError(`${label} URL 過長。`, {
-      status: 422,
-      code: "INVALID_IMAGE_URL",
-    });
-  }
-}
-
-function imageUrlsEqual(
-  left: Array<string | null>,
-  right: Array<string | null>,
-): boolean {
-  const a = normalizeImageUrls(left);
-  const b = normalizeImageUrls(right);
-  return a.every((value, index) => value === b[index]);
 }
 
 function imageSnapshotFromContext(
@@ -6520,292 +6490,226 @@ function imageSnapshotFromContext(
   };
 }
 
-export async function getListingImages(input: {
+type ProductionListingImageEvidence = Readonly<{
+  mode: "live" | "demo";
+  purpose: "read-only" | "mutation";
   marketplaceId: MarketplaceId;
   sellerSku: string;
-}): Promise<ListingImageSnapshot> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    return imageSnapshotFromContext(
-      getDemoListingContent(input.marketplaceId, input.sellerSku),
-    );
-  }
-  const context = await fetchLiveListingContentContext(
-    input.marketplaceId,
-    input.sellerSku,
-    true,
-  );
-  return imageSnapshotFromContext(context.listing, context.payload);
+  asin: string | null;
+  productType: string;
+  previousUrls: ListingImageUrlVector;
+  generation: number;
+  payload: AmazonListingItem | null;
+}>;
+
+const listingImageEvidence = new WeakMap<object, ProductionListingImageEvidence>();
+
+function imageUrlVector(
+  values: readonly (string | null)[],
+): ListingImageUrlVector {
+  return normalizeImageUrls([...values]) as unknown as ListingImageUrlVector;
 }
 
-function verifyImageChange(
-  snapshot: ListingImageSnapshot,
-  input: UpdateListingImagesInput,
-): {
-  previousUrls: Array<string | null>;
-  requestedUrls: Array<string | null>;
-  changedSlots: number[];
-} {
-  const previousUrls = snapshot.images.map((item) => item.url);
-  const expectedUrls = normalizeImageUrls(input.expectedUrls);
-  if (!imageUrlsEqual(previousUrls, expectedUrls)) {
-    throw new SpApiError(
-      "Amazon 圖片已被其他人更新。請重新查詢 SKU，再套用這次排序。",
-      { status: 409, code: "STALE_LISTING" },
-    );
-  }
-  const requestedUrls = normalizeImageUrls(input.urls);
-  if (!requestedUrls[0]) {
-    throw new SpApiError("主圖不可留空。請先上傳或貼上主圖 URL。", {
-      status: 422,
-      code: "MAIN_IMAGE_REQUIRED",
-    });
-  }
-  requestedUrls.forEach((url, index) => {
-    if (url) assertImageUrl(url, index === 0 ? "主圖" : `副圖 ${index}`);
-  });
-  const changedSlots = requestedUrls.flatMap((url, index) =>
-    url === previousUrls[index] ? [] : [index],
-  );
-  if (!changedSlots.length) {
-    throw new SpApiError("圖片與 Amazon 目前內容相同，沒有需要送出的變更。", {
-      status: 422,
-      code: "NO_CHANGES",
-    });
-  }
-  for (const index of changedSlots) {
-    const capability = snapshot.images[index]?.capability;
-    if (!capability?.supported || !capability.editable) {
-      throw new SpApiError(
-        capability?.reason || `${index === 0 ? "主圖" : `副圖 ${index}`}不可由 API 修改。`,
-        { status: 422, code: "IMAGE_FIELD_READ_ONLY" },
-      );
-    }
-    if (!requestedUrls[index] && capability.required) {
-      throw new SpApiError(`${capability.label}是 Amazon 必填欄位，不能清除。`, {
-        status: 422,
-        code: "MAIN_IMAGE_REQUIRED",
-      });
-    }
-  }
-  return { previousUrls, requestedUrls, changedSlots };
+function imageExpectedOldHash(values: ListingImageUrlVector): string {
+  return createHash("sha256").update(JSON.stringify(values)).digest("hex");
 }
 
-function buildImagePatchBody(
+function mintListingImageEvidence(
+  evidence: ProductionListingImageEvidence,
+): ListingImageSourceEvidence {
+  const token = Object.freeze(Object.create(null)) as object;
+  listingImageEvidence.set(token, evidence);
+  return token as ListingImageSourceEvidence;
+}
+
+function listingImageGatewayObservation(
   snapshot: ListingImageSnapshot,
-  verified: ReturnType<typeof verifyImageChange>,
-  payload: AmazonListingItem,
-) {
+  input: Readonly<{
+    purpose: "read-only" | "mutation";
+    payload: AmazonListingItem | null;
+  }>,
+): ListingImageGatewayRead {
+  const previousUrls = imageUrlVector(
+    snapshot.images.map((image) => image.url),
+  );
   return {
-    productType: snapshot.productType,
-    patches: verified.changedSlots.map((index) => {
-      const attributeName = snapshot.images[index].attributeName;
-      const requested = verified.requestedUrls[index];
-      const previous = verified.previousUrls[index];
-      if (!requested) {
-        const existing = attributeObjects(
-          payload,
-          attributeName,
-          snapshot.marketplaceId,
-        );
+    snapshot,
+    fulfillment: "FBA",
+    sourceEvidence: mintListingImageEvidence({
+      mode: snapshot.mode,
+      purpose: input.purpose,
+      marketplaceId: snapshot.marketplaceId,
+      sellerSku: snapshot.sellerSku,
+      asin: snapshot.asin,
+      productType: snapshot.productType,
+      previousUrls,
+      generation: credentialGeneration,
+      payload: input.payload,
+    }),
+  };
+}
+
+function exactImagePatchChanges(
+  patch: ListingImagePatchDescriptor,
+): boolean {
+  if (patch.previousUrls.length !== IMAGE_ATTRIBUTE_NAMES.length ||
+      patch.requestedUrls.length !== IMAGE_ATTRIBUTE_NAMES.length ||
+      !patch.previousUrls.every((value) =>
+        value === null || typeof value === "string") ||
+      !patch.requestedUrls.every((value) =>
+        value === null || typeof value === "string") ||
+      patch.changes.length === 0) return false;
+  const expectedSlots = patch.requestedUrls.flatMap((url, index) =>
+    url === patch.previousUrls[index] ? [] : [index]
+  );
+  return patch.changes.length === expectedSlots.length &&
+    patch.changes.every((change, index) =>
+      change.slot === expectedSlots[index] &&
+      change.previousUrl === patch.previousUrls[change.slot] &&
+      change.requestedUrl === patch.requestedUrls[change.slot]
+    );
+}
+
+function resolveListingImageEvidence(
+  patch: ListingImagePatchDescriptor,
+  expectedMode: "live" | "demo",
+): ProductionListingImageEvidence {
+  const evidence = listingImageEvidence.get(patch.sourceEvidence as object);
+  if (evidence && evidence.generation !== credentialGeneration) {
+    throw new SpApiError(
+      "Amazon 執行環境已在商品圖片操作期間改變；舊證據已丟棄。",
+      { status: 409, code: "CREDENTIALS_CHANGED" },
+    );
+  }
+  if (!evidence ||
+      evidence.purpose !== "mutation" ||
+      evidence.mode !== expectedMode ||
+      evidence.marketplaceId !== patch.marketplaceId ||
+      evidence.sellerSku !== patch.sellerSku ||
+      evidence.asin !== patch.asin ||
+      evidence.productType !== patch.productType ||
+      patch.expectedOldHash !== imageExpectedOldHash(evidence.previousUrls) ||
+      JSON.stringify(patch.previousUrls) !==
+        JSON.stringify(evidence.previousUrls) ||
+      !exactImagePatchChanges(patch)) {
+    throw new SpApiError(
+      "商品圖片來源證據已失效或與這次 SKU／圖片位置不一致，請重新預檢。",
+      { status: 409, code: "LISTING_IMAGE_EVIDENCE_INVALID" },
+    );
+  }
+  return evidence;
+}
+
+function listingImageGatewayPatchBody(
+  patch: ListingImagePatchDescriptor,
+  evidence: ProductionListingImageEvidence,
+): Readonly<{ productType: string; patches: unknown[] }> {
+  return {
+    productType: patch.productType,
+    patches: patch.changes.map((change) => {
+      const attributeName = IMAGE_ATTRIBUTE_NAMES[change.slot];
+      if (change.requestedUrl === null) {
+        const existing = evidence.payload
+          ? attributeObjects(
+              evidence.payload,
+              attributeName,
+              patch.marketplaceId,
+            )
+          : [];
         return {
           op: "delete",
           path: `/attributes/${attributeName}`,
           value: existing.length
             ? existing
-            : [{ media_location: previous, marketplace_id: snapshot.marketplaceId }],
+            : [{
+                media_location: change.previousUrl,
+                marketplace_id: patch.marketplaceId,
+              }],
         };
       }
       return {
-        op: previous ? "replace" : "add",
+        op: change.previousUrl ? "replace" : "add",
         path: `/attributes/${attributeName}`,
-        value: [
-          {
-            media_location: requested,
-            marketplace_id: snapshot.marketplaceId,
-          },
-        ],
+        value: [{
+          media_location: change.requestedUrl,
+          marketplace_id: patch.marketplaceId,
+        }],
       };
     }),
   };
 }
 
-async function prepareLiveImageUpdate(input: UpdateListingImagesInput) {
-  const context = await fetchLiveListingContentContext(
-    input.marketplaceId,
-    input.sellerSku,
-  );
-  const snapshot = imageSnapshotFromContext(context.listing, context.payload);
-  const verified = verifyImageChange(snapshot, input);
-  const body = buildImagePatchBody(snapshot, verified, context.payload);
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body,
-    validationPreview: true,
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "write", "patchListingsItemPreview");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError("Amazon 圖片預檢回應無法辨識，已停止送出。", {
-      status: 502,
-      code: "VALIDATION_STATUS_UNKNOWN",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status !== "VALID" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 圖片預檢未通過，尚未寫入任何變更。",
-      {
-        status: 422,
-        code: "VALIDATION_FAILED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  return { snapshot, verified, body, issues };
-}
-
-export async function previewListingImageUpdate(
-  input: UpdateListingImagesInput,
-): Promise<ListingImageUpdateResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const snapshot = await getListingImages(input);
-    const verified = verifyImageChange(snapshot, input);
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      ...verified,
-      completedAt: new Date().toISOString(),
-      submissionId: null,
-      requestId: null,
-      issues: [],
-      notice: "展示預檢已通過；最終送出只會模擬。",
-    };
-  }
-  const prepared = await prepareLiveImageUpdate(input);
+async function listingImageGatewayReply(
+  response: Response,
+): Promise<ListingImageGatewayReply> {
   return {
-    mode: "live",
-    status: "VALID",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    ...prepared.verified,
-    completedAt: new Date().toISOString(),
-    submissionId: null,
-    requestId: null,
-    issues: prepared.issues,
-    notice: "Amazon 圖片預檢通過；尚未寫入 Listing。",
+    ok: response.ok,
+    status: response.status,
+    requestId: response.headers.get("x-amzn-requestid"),
+    retryAfter: response.headers.get("retry-after"),
+    payload: await parseResponseJson<unknown>(response),
   };
 }
 
-export async function updateListingImages(
-  input: UpdateListingImagesInput,
-  fence?: ListingWriteExecutionFence,
-): Promise<ListingImageUpdateResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const startedGeneration = credentialGeneration;
-    const snapshot = await getListingImages(input);
-    const verified = verifyImageChange(snapshot, input);
-    if (startedGeneration !== credentialGeneration) {
+export const listingImageGatewayProduction: ListingImageGateway = {
+  mode: (marketplaceId) =>
+    shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+  read: async (identity, purpose) => {
+    if (shouldUseDemoMode(identity.marketplaceId)) {
+      return listingImageGatewayObservation(
+        imageSnapshotFromContext(
+          getDemoListingContent(identity.marketplaceId, identity.sellerSku),
+        ),
+        { purpose, payload: null },
+      );
+    }
+    const context = await fetchLiveListingContentContext(
+      identity.marketplaceId,
+      identity.sellerSku,
+      purpose === "read-only",
+    );
+    return listingImageGatewayObservation(
+      imageSnapshotFromContext(context.listing, context.payload),
+      { purpose, payload: context.payload },
+    );
+  },
+  validationPreview: async (patch) => {
+    const evidence = resolveListingImageEvidence(patch, "live");
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: listingImageGatewayPatchBody(patch, evidence),
+      validationPreview: true,
+    });
+    return listingImageGatewayReply(response);
+  },
+  commitOnce: async (patch, fence) => {
+    const evidence = resolveListingImageEvidence(patch, "live");
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: listingImageGatewayPatchBody(patch, evidence),
+      assertBeforeSend: () => fence.assertCurrent(),
+    });
+    return listingImageGatewayReply(response);
+  },
+  replaceDemoImages: async (patch, fence) => {
+    const evidence = resolveListingImageEvidence(patch, "demo");
+    await fence.assertCurrent();
+    if (evidence.generation !== credentialGeneration) {
       throw new SpApiError(
-        "Amazon 憑證已在展示圖片更新期間改變；舊結果已丟棄。",
+        "Amazon 執行環境已在展示圖片更新期間改變；舊結果已丟棄。",
         { status: 409, code: "CREDENTIALS_CHANGED" },
       );
     }
     demoImageOverrides.set(
-      demoPriceKey(input.marketplaceId, input.sellerSku),
-      verified.requestedUrls,
+      demoPriceKey(patch.marketplaceId, patch.sellerSku),
+      [...patch.requestedUrls],
     );
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      ...verified,
-      completedAt: new Date().toISOString(),
-      submissionId: null,
-      requestId: null,
-      issues: [],
-      notice: "模擬圖片更新完成；Amazon 真實圖片沒有變更。",
-    };
-  }
-  const prepared = await prepareListingCommit(
-    () => prepareLiveImageUpdate(input),
-    "圖片正式寫入前的重新讀取或 Validation Preview 失敗。",
-  );
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body: prepared.body,
-    ...(fence
-      ? { assertBeforeSend: () => fence.assertCurrent() }
-      : {}),
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "write", "patchListingsItem");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError(
-      "Amazon 已收到圖片請求，但回應無法辨識。請重新查詢 SKU，不要直接重送。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  if (!listingSubmissionIssuesAreWellFormed(payload.issues)) {
-    throw new SpApiError(
-      "Amazon 已回傳圖片接受狀態，但 issues 格式無法辨識。請重新查詢確認，勿盲目重送。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        operation: "patchListingsItem",
-      },
-    );
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status !== "ACCEPTED" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 未接受這次圖片更新。",
-      {
-        status: 422,
-        code: "UPDATE_REJECTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  return {
-    mode: "live",
-    status: "ACCEPTED",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    ...prepared.verified,
-    completedAt: new Date().toISOString(),
-    submissionId: payload.submissionId ?? null,
-    requestId: response.headers.get("x-amzn-requestid"),
-    issues,
-    notice: "Amazon 已接受圖片更新；圖片下載與審核完成前，買家頁可能仍顯示舊圖。",
-  };
-}
+  },
+};
 
 export async function previewListingContentUpdate(
   input: UpdateListingContentInput,
