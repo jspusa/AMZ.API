@@ -321,6 +321,42 @@ describe("FBA aged inventory renderer and read-only route", () => {
     });
     expect(installedMainSnapshot).not.toHaveProperty("reportId");
     expect(installedMainSnapshot).not.toHaveProperty("documentId");
+    const installedMainEmptySnapshot = parseAgedInventorySnapshot(
+      {
+        ...raw,
+        exportId: undefined,
+        reportId: "legacy-report-empty",
+        documentId: "amzn1.spdoc.legacy-document-empty",
+        rows: [],
+        summary: {
+          ...raw.summary,
+          skuCount: 0,
+          agedOver180SkuCount: 0,
+          totalAgedUnits: 0,
+          agedOver180: 0,
+          estimatedExcessQuantity: null,
+          excessReportedSkuCount: 0,
+          currencyCode: null,
+          estimatedStorageCostNextMonth: null,
+          storageCostReportedSkuCount: 0,
+          estimatedAgedSurcharge: null,
+          agedSurchargeReportedSkuCount: 0,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(installedMainEmptySnapshot).toMatchObject({
+      rows: [],
+      summary: {
+        skuCount: 0,
+        excessAvailability: "complete",
+        estimatedExcessQuantity: null,
+        storageCostAvailability: "complete",
+        estimatedStorageCostNextMonth: null,
+        agedSurchargeAvailability: "complete",
+        estimatedAgedSurcharge: null,
+      },
+    });
     expect(() =>
       parseAgedInventorySnapshot(
         { ...raw, summary: { ...raw.summary, agedOver180: 30 } },
@@ -332,6 +368,25 @@ describe("FBA aged inventory renderer and read-only route", () => {
         {
           ...raw,
           rows: [{ ...raw.rows[0], estimatedAgedSurcharge: 3.5 }],
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("AIS 預估附加費分層與合計不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...raw,
+          rows: [
+            {
+              ...raw.rows[0],
+              agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+                (bucket, index) => ({
+                  ...bucket,
+                  quantity: index === 0 ? null : bucket.quantity,
+                }),
+              ),
+            },
+          ],
         },
         MARKETPLACE_ID,
       ),
@@ -384,6 +439,274 @@ describe("FBA aged inventory renderer and read-only route", () => {
         estimatedAgedSurcharge: null,
       },
     });
+    const partialQuantity = {
+      ...partialExcess,
+      rows: [
+        partialExcess.rows[0],
+        {
+          ...partialExcess.rows[1],
+          agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+            (bucket, index) => ({
+              ...bucket,
+              quantity: index === 0 ? null : bucket.quantity,
+            }),
+          ),
+        },
+      ],
+    };
+    expect(parseAgedInventorySnapshot(partialQuantity, MARKETPLACE_ID)).toMatchObject({
+      rows: [
+        { estimatedAgedSurcharge: 3.6 },
+        { estimatedAgedSurcharge: null },
+      ],
+      summary: {
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+        agedSurchargeReportedSkuCount: 1,
+      },
+    });
+    expect(
+      parseAgedInventorySnapshot(
+        {
+          ...partialQuantity,
+          exportId: undefined,
+          reportId: "legacy-report-quantity-partial",
+          documentId: "amzn1.spdoc.legacy-document-quantity-partial",
+          summary: {
+            ...partialQuantity.summary,
+            estimatedExcessQuantity: 25,
+            estimatedStorageCostNextMonth: 15.25,
+            estimatedAgedSurcharge: 3.6,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toMatchObject({
+      rows: [
+        { estimatedAgedSurcharge: 3.6 },
+        { estimatedAgedSurcharge: null },
+      ],
+      summary: {
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+      },
+    });
+    const installedMainPartialSnapshot = parseAgedInventorySnapshot(
+      {
+        ...partialExcess,
+        exportId: undefined,
+        reportId: "legacy-report-partial",
+        documentId: "amzn1.spdoc.legacy-document-partial",
+        summary: {
+          ...partialExcess.summary,
+          estimatedExcessQuantity: 25,
+          estimatedStorageCostNextMonth: 15.25,
+          estimatedAgedSurcharge: 3.6,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(installedMainPartialSnapshot).toMatchObject({
+      workbookDownloadUrl:
+        "/api/sp-api/aged-inventory?marketplaceId=ATVPDKIKX0DER&reportId=legacy-report-partial&documentId=amzn1.spdoc.legacy-document-partial&download=1",
+      rows: [
+        { estimatedExcessQuantity: 25 },
+        { estimatedExcessQuantity: null },
+      ],
+      summary: {
+        excessAvailability: "partial",
+        estimatedExcessQuantity: null,
+        storageCostAvailability: "partial",
+        estimatedStorageCostNextMonth: null,
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+      },
+    });
+    expect(installedMainPartialSnapshot).not.toHaveProperty("reportId");
+    expect(installedMainPartialSnapshot).not.toHaveProperty("documentId");
+    expect(installedMainPartialSnapshot).not.toHaveProperty("exportId");
+    const installedMainSubCentSnapshot = parseAgedInventorySnapshot(
+      {
+        ...partialExcess,
+        exportId: undefined,
+        reportId: "legacy-report-sub-cent",
+        documentId: "amzn1.spdoc.legacy-document-sub-cent",
+        rows: [
+          {
+            ...partialExcess.rows[0],
+            estimatedStorageCostNextMonth: 15.255,
+            estimatedAgedSurcharge: 3.58,
+            agedSurchargeBuckets: [
+              {
+                ...partialExcess.rows[0].agedSurchargeBuckets[0],
+                estimatedCharge: 1.234,
+              },
+              {
+                ...partialExcess.rows[0].agedSurchargeBuckets[1],
+                estimatedCharge: 2.345,
+              },
+            ],
+          },
+          partialExcess.rows[1],
+        ],
+        summary: {
+          ...partialExcess.summary,
+          estimatedExcessQuantity: 25,
+          estimatedStorageCostNextMonth: 15.26,
+          estimatedAgedSurcharge: 3.58,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(installedMainSubCentSnapshot.rows[0]).toMatchObject({
+      estimatedStorageCostNextMonth: 15.255,
+      estimatedAgedSurcharge: 3.58,
+      agedSurchargeBuckets: [
+        { estimatedCharge: 1.234 },
+        { estimatedCharge: 2.345 },
+      ],
+    });
+    expect(installedMainSubCentSnapshot).toMatchObject({
+      summary: {
+        storageCostAvailability: "partial",
+        estimatedStorageCostNextMonth: null,
+        agedSurchargeAvailability: "partial",
+        estimatedAgedSurcharge: null,
+      },
+    });
+    const legacyCarrySnapshot = parseAgedInventorySnapshot(
+      {
+        ...raw,
+        exportId: undefined,
+        reportId: "legacy-report-carry",
+        documentId: "amzn1.spdoc.legacy-document-carry",
+        rows: [
+          {
+            ...raw.rows[0],
+            estimatedStorageCostNextMonth: 0.004,
+            estimatedAgedSurcharge: 0,
+            agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+              (bucket, index) => ({
+                ...bucket,
+                estimatedCharge: index === 0 ? 0.004 : 0,
+              }),
+            ),
+          },
+          {
+            ...raw.rows[0],
+            sellerSku: "AGED-FBA-CARRY",
+            fnSku: "X001CARRY",
+            asin: "B0CARRY001",
+            estimatedStorageCostNextMonth: 0.004,
+            estimatedAgedSurcharge: 0,
+            agedSurchargeBuckets: raw.rows[0].agedSurchargeBuckets.map(
+              (bucket, index) => ({
+                ...bucket,
+                estimatedCharge: index === 0 ? 0.004 : 0,
+              }),
+            ),
+          },
+        ],
+        summary: {
+          ...raw.summary,
+          skuCount: 2,
+          agedOver180SkuCount: 2,
+          totalAgedUnits: 100,
+          agedOver180: 62,
+          estimatedExcessQuantity: 50,
+          excessReportedSkuCount: 2,
+          estimatedStorageCostNextMonth: 0.01,
+          storageCostReportedSkuCount: 2,
+          estimatedAgedSurcharge: 0,
+          agedSurchargeReportedSkuCount: 2,
+        },
+      },
+      MARKETPLACE_ID,
+    );
+    expect(legacyCarrySnapshot.rows.map(
+      (row) => row.estimatedStorageCostNextMonth,
+    )).toEqual([0.004, 0.004]);
+    expect(legacyCarrySnapshot.moneyPrecision).toBe("legacy-decimal");
+    expect(legacyCarrySnapshot.summary.estimatedStorageCostNextMonth).toBe(0.01);
+    expect(
+      aggregateAgedSurchargeBuckets(
+        legacyCarrySnapshot.rows,
+        "legacy-decimal",
+      )[0],
+    ).toMatchObject({ estimatedCharge: 0.01 });
+    expect(renderToStaticMarkup(
+      <AgedInventoryTierOverview
+        rows={legacyCarrySnapshot.rows}
+        currencyCode="USD"
+        moneyPrecision={legacyCarrySnapshot.moneyPrecision}
+      />,
+    )).toContain("US$0.01");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          rows: [
+            {
+              ...partialExcess.rows[0],
+              estimatedStorageCostNextMonth: 15.255,
+            },
+            partialExcess.rows[1],
+          ],
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("安全貨幣精度");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          exportId: undefined,
+          reportId: "legacy-report-partial",
+          documentId: "amzn1.spdoc.legacy-document-partial",
+          summary: {
+            ...partialExcess.summary,
+            estimatedExcessQuantity: 24,
+            estimatedStorageCostNextMonth: 15.25,
+            estimatedAgedSurcharge: 3.6,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          exportId: undefined,
+          reportId: "legacy-report-partial",
+          documentId: "amzn1.spdoc.legacy-document-partial",
+          summary: {
+            ...partialExcess.summary,
+            estimatedExcessQuantity: 25,
+            estimatedStorageCostNextMonth: 15.24,
+            estimatedAgedSurcharge: 3.6,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
+    expect(() =>
+      parseAgedInventorySnapshot(
+        {
+          ...partialExcess,
+          exportId: undefined,
+          reportId: "legacy-report-partial",
+          documentId: "amzn1.spdoc.legacy-document-partial",
+          summary: {
+            ...partialExcess.summary,
+            estimatedExcessQuantity: 25,
+            estimatedStorageCostNextMonth: 15.25,
+            estimatedAgedSurcharge: 3.59,
+          },
+        },
+        MARKETPLACE_ID,
+      ),
+    ).toThrow("摘要與商品列不一致");
     expect(() =>
       parseAgedInventorySnapshot(
         {
