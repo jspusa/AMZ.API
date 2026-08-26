@@ -4,7 +4,7 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-26 W02 Standard／Sale Price mutation domains（issue #98，PR 待建立）
+### 2026-08-26 W02 Standard／Sale Price mutation domains（issue #98，PR #140）
 
 分支 `codex/w02-price-mutations` 以已合併 W01 的 current main exact SHA `8f60e455bbe3d28c9c0ce9f863a882b9fc974f11` 為基線。最高 public seam RED 先在 `tests/w02-price-mutations-route-seam.test.ts` 以五條 exact route 全數仍落入 Router legacy implementation 的預期原因失敗；修正後 `GET／POST／PATCH /api/sp-api/listings` 與 `POST／PATCH /api/sp-api/sale-price` 只把封閉 command 交給 main-only `ListingPriceMutations`。Router 不再擁有 Standard／Sale Price input parsing、幣別／日期／幅度規則、expected-old guard、proposal fingerprint、preview／commit orchestration 或 price／sale reconciliation；SKU Command 與 Business Pricing 會把已捕捉的同一份 `SpExecutionContext` 交回 domain 做 canonical observation，不會再捕捉第二份 context。
 
@@ -12,7 +12,11 @@ domain 以 neutral `listing-price-types.ts` 保持既有 public DTO type compati
 
 commit 仍只經 central `MainWriteGate`：matching Preview Ticket → native confirmation → durable attempt → formal fresh read／canonical diff／Validation Preview → final fence → one PATCH → canonical GET readback。明確 `INVALID` 才是可證明的拒絕；不明 2xx status 轉為 durable `UPDATE_STATUS_UNKNOWN` 並禁止重送，`ACCEPTED` 即使同時帶矛盾 issue 也保留 accepted target，交由 canonical read 決定是否完成。公開 seam 測試以 real `LocalStore`／Write Gate 證明不明成功回應不能再次 PATCH；另一測試證明 accepted unknown 可由日後 exact canonical read 結清，之後同 key 只回 durable verified result、不重送。取消、高幅度缺 full SKU、stale expected-old、post-read demo drift 與 live pre-send context drift均證明零 commit PATCH。
 
-W02 local focused gate 為 14 個測試檔／398 tests；最終 `npm run check` 通過 195 個測試檔／1,987 項測試、typecheck 與 production build，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。W01 merge 後 macOS Intel main workflow 兩次在 `sp-execution-context-architecture.test.ts` 的不同 assertion 超過 Vitest 5 秒；根因是八個呼叫點反覆建立完整 TypeScript Program／checker，不是 assertion mismatch。W02 以 fail-closed declaration AST reader 取代該重工，整檔 77／77 約 1.1 秒，並已在 macOS Intel CI 的完整 Validate 階段連續通過。#98 仍 OPEN，Draft PR #140 已建立；最終 exact-head CI 仍待 macOS packaged-process bounded cleanup 修正驗證，#99–#103 尚未開始。上述只有 local／static／fixture／scripted／demo／test／build／CI 證據，沒有部署、安裝、Pages、Notebook Key、live Amazon、真實 Touch ID／Windows Hello、Validation Preview、PATCH、readback 或任何 Amazon mutation。
+W02 local focused gate 為 14 個測試檔／398 tests；最終 `npm run check` 通過 195 個測試檔／1,987 項測試、typecheck 與 production build，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。W01 merge 後 macOS Intel main workflow 兩次在 `sp-execution-context-architecture.test.ts` 的不同 assertion 超過 Vitest 5 秒；根因是八個呼叫點反覆建立完整 TypeScript Program／checker，不是 assertion mismatch。W02 以 fail-closed declaration AST reader 取代該重工，整檔 77／77 約 1.1 秒，並已在 macOS Intel CI 的完整 Validate 階段連續通過。
+
+W02 implementation／test exact head `a1e30b3392f71e301987e99b578a1c4ea3f6b5ec` 的 Validate run `32948322052`／job `98113841021`、Windows x64 run `32948322037`／job `98113840966`、macOS Intel universal run `32948360013`／job `98113960920` 均成功。Windows 包含完整 runner validation、unsigned x64 package、ASAR addon boundary 與 packaged Bridge smoke，PR 規則下 artifact upload 正常 skipped；macOS 包含完整 validation、universal package、ad-hoc codesign、Bridge ready、bounded launcher／process-group shutdown、exact `.app/Contents/` residual-process fail-closed scan、DMG／ZIP、checksums 與 artifact upload。
+
+CI closure history：早期 Windows run `32943274991` 證明 architecture contract 的相對路徑必須正規化 `\\`；macOS run `32943610771` 首次在 DMG 建立回 `Resource busy`，同 head rerun 又在 packaged App shutdown 無限等待，因而新增 bounded PGID handshake、TERM／KILL fallback 與 bundle process scan；後續 head `991acbd75a7f199b075844dd00142103b298c29d` 的 macOS run `32947339915` 已完整成功，但 Windows 只因新 static contract 未正規化 CRLF 而失敗，最後以模擬 CRLF RED 鎖定並在上述 `a1e30b3` exact head 結清。獨立 Standards、Spec、mutation-safety 與 macOS cleanup reviews 均無剩餘 P0–P3。#98 仍 OPEN；PR #140 的 ready／merge 只能依 current exact-head checks 判定，merge 仍需使用者另行明確批准；#99–#103 尚未開始。上述只有 local／static／fixture／scripted／demo／test／build／CI 證據，沒有部署、安裝、Pages、Notebook Key、live Amazon、真實 Touch ID／Windows Hello、Validation Preview、PATCH、readback 或任何 Amazon mutation。
 
 ### 2026-08-26 W01 main-owned Write Gate（PR #139 已合併）
 
