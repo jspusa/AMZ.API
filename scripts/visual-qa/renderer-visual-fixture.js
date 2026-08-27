@@ -1,6 +1,8 @@
 /* Shared fixed-time, local-only renderer data for visual regression runs. */
 (() => {
   const params = new URLSearchParams(window.location.search);
+  const css03 = params.get("css03") === "1";
+  const salesLoading = params.get("sales-loading") === "1";
   try {
     window.localStorage.setItem("fba-os-auto-sync", "off");
     window.localStorage.setItem(
@@ -200,7 +202,38 @@
     relationshipSources: ["relationships"],
   });
   const sourceChild = member("SOURCE-4OZ", "B000000001", "SOURCE-PARENT", "4 oz");
-  const sourceParent = parent("SOURCE-PARENT", ["SOURCE-4OZ"]);
+  const sourceChildren = css03
+    ? [
+        sourceChild,
+        ...Array.from({ length: 11 }, (_, index) => {
+          const sequence = String(index + 1).padStart(2, "0");
+          return {
+            ...member(
+              `CSS03-LONG-FBA-VARIATION-CHILD-${sequence}`,
+              `B03VIS${String(index + 1).padStart(4, "0")}`,
+              "SOURCE-PARENT",
+              `Extra-long CSS03 package configuration ${sequence} with descriptive dimension text`,
+            ),
+            title:
+              `CSS03 fixed visual fixture child ${sequence} with an intentionally long ` +
+              "FBA product title that must wrap safely inside the Variation drawer",
+            dimensions: [
+              {
+                name: "size_name",
+                label: "Size Name / Package Configuration / FBA Variation Dimension",
+                values: [
+                  `Extra-long CSS03 package configuration ${sequence} with descriptive dimension text`,
+                ],
+              },
+            ],
+          };
+        }),
+      ]
+    : [sourceChild];
+  const sourceParent = parent(
+    "SOURCE-PARENT",
+    sourceChildren.map(({ sellerSku }) => sellerSku),
+  );
   const sourceFamily = {
     mode: "demo",
     marketplaceId,
@@ -208,7 +241,7 @@
     queriedRole: "child",
     queried: sourceChild,
     parent: sourceParent,
-    children: [sourceChild],
+    children: sourceChildren,
     excludedChildren: [],
     variationTheme: "SIZE_NAME",
     dimensionNames: ["size_name"],
@@ -509,6 +542,7 @@
     oauthRegion: "na",
     updatedAt: null,
   };
+  let salesRequestCount = 0;
 
   window.__rendererVisualRequests = [];
   window.__rendererVisualUnexpected = [];
@@ -524,6 +558,10 @@
           query: { ...request.query },
         });
         if (request.path === "/api/sp-api/sales-trend" && request.method === "GET") {
+          salesRequestCount += 1;
+          if (css03 && salesLoading && salesRequestCount > 1) {
+            return new Promise(() => {});
+          }
           return json(sales);
         }
         if (request.path === "/api/system/health" && request.method === "GET") {

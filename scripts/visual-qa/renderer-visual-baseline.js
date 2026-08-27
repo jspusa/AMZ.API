@@ -1,6 +1,7 @@
 async (page) => {
   const controllerHash = await page.evaluate(() => window.location.hash);
   const css02Extra = controllerHash.includes("css02-extra");
+  const css03Extra = controllerHash.includes("css03-extra");
   const allPhases = [
     { name: "before", baseUrl: "http://127.0.0.1:4173" },
     { name: "after", baseUrl: "http://127.0.0.1:4174" },
@@ -21,9 +22,18 @@ async (page) => {
     ? allProfiles.filter(({ name }) =>
       ["desktop-standard", "compact-390-large", "desktop-reduced"].includes(name),
     )
-    : controllerHash.includes("single-profile")
-      ? allProfiles.slice(0, 1)
-      : allProfiles;
+    : css03Extra
+      ? allProfiles.filter(({ name }) =>
+        [
+          "desktop-standard",
+          "compact-390-large",
+          "compact-320-large",
+          "desktop-reduced",
+        ].includes(name),
+      )
+      : controllerHash.includes("single-profile")
+        ? allProfiles.slice(0, 1)
+        : allProfiles;
   const results = [];
   const externalRequests = [];
   const consoleErrors = [];
@@ -93,12 +103,34 @@ async (page) => {
     surface,
     scopeSelector,
     dialogSelector = null,
+    closeSelector = ".drawer-header > button",
     allowedScrollers = [],
+    requiredScrollers = [],
+    strictScrollers = false,
+    requireScopeContainment = false,
+    expectedPage = null,
+    stickySelector = null,
+    focusSelector = null,
+    verticalScrollerSelector = null,
+    verticalLastItemSelector = null,
+    motionSelector = null,
     reduced = false,
     font,
   }) => {
     const metrics = await page.evaluate(
-      ({ scopeSelector, dialogSelector, allowedScrollers, reduced, font }) => {
+      ({
+        scopeSelector,
+        dialogSelector,
+        closeSelector,
+        allowedScrollers,
+        requiredScrollers,
+        stickySelector,
+        focusSelector,
+        verticalScrollerSelector,
+        verticalLastItemSelector,
+        motionSelector,
+        reduced,
+      }) => {
         const root = document.documentElement;
         const scope = document.querySelector(scopeSelector);
         if (!(scope instanceof HTMLElement)) {
@@ -130,13 +162,27 @@ async (page) => {
             allowed: allowedScrollers.some((selector) => element.matches(selector)),
             clientWidth: element.clientWidth,
             scrollWidth: element.scrollWidth,
+            scrollLeft: element.scrollLeft,
           }));
+        const requiredScrollerMetrics = requiredScrollers.map((selector) => {
+          const element = document.querySelector(selector);
+          if (!(element instanceof HTMLElement)) return { selector, missing: true };
+          const style = getComputedStyle(element);
+          return {
+            selector,
+            missing: false,
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+            scrollLeft: element.scrollLeft,
+            overflowX: style.overflowX,
+          };
+        });
         let dialog = null;
         if (dialogSelector) {
           const element = document.querySelector(dialogSelector);
           if (element instanceof HTMLElement) {
             const rect = element.getBoundingClientRect();
-            const close = element.querySelector(".drawer-header > button");
+            const close = element.querySelector(closeSelector);
             const closeRect =
               close instanceof HTMLElement ? close.getBoundingClientRect() : null;
             dialog = {
@@ -151,6 +197,68 @@ async (page) => {
             };
           }
         }
+        let sticky = null;
+        if (stickySelector) {
+          const element = document.querySelector(stickySelector);
+          if (element instanceof HTMLElement) {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            sticky = {
+              position: style.position,
+              top: rect.top,
+              bottom: rect.bottom,
+              visible: visible(element),
+              scrollY: window.scrollY,
+            };
+          }
+        }
+        let focus = null;
+        if (focusSelector) {
+          const active = document.activeElement;
+          if (active instanceof HTMLElement || active instanceof SVGElement) {
+            const style = getComputedStyle(active);
+            focus = {
+              matches: active.matches(focusSelector),
+              outlineStyle: style.outlineStyle,
+              outlineWidth: style.outlineWidth,
+              boxShadow: style.boxShadow,
+            };
+          }
+        }
+        let verticalScroller = null;
+        if (verticalScrollerSelector) {
+          const element = document.querySelector(verticalScrollerSelector);
+          const lastItem = verticalLastItemSelector
+            ? document.querySelector(verticalLastItemSelector)
+            : null;
+          if (element instanceof HTMLElement) {
+            const elementRect = element.getBoundingClientRect();
+            const lastRect = lastItem instanceof HTMLElement
+              ? lastItem.getBoundingClientRect()
+              : null;
+            verticalScroller = {
+              clientHeight: element.clientHeight,
+              scrollHeight: element.scrollHeight,
+              scrollTop: element.scrollTop,
+              horizontalOverflow: element.scrollWidth - element.clientWidth,
+              lastItemVisible: lastRect
+                ? lastRect.bottom <= elementRect.bottom + 1 &&
+                  lastRect.top >= elementRect.top - 1
+                : null,
+            };
+          }
+        }
+        let motion = null;
+        if (motionSelector) {
+          const element = document.querySelector(motionSelector);
+          if (element instanceof HTMLElement) {
+            const style = getComputedStyle(element);
+            motion = {
+              animationName: style.animationName,
+              animationDuration: style.animationDuration,
+            };
+          }
+        }
         const skater = document.querySelector(".sales-skater");
         const skaterStyle = skater ? getComputedStyle(skater) : null;
         return {
@@ -162,6 +270,12 @@ async (page) => {
           },
           dialog,
           scrollOwners,
+          requiredScrollers: requiredScrollerMetrics,
+          scopeHorizontalOverflow: scope.scrollWidth - scope.clientWidth,
+          sticky,
+          focus,
+          verticalScroller,
+          motion,
           font: root.dataset.uiFontSize ?? null,
           reduced: {
             requested: reduced,
@@ -171,7 +285,19 @@ async (page) => {
           },
         };
       },
-      { scopeSelector, dialogSelector, allowedScrollers, reduced, font },
+      {
+        scopeSelector,
+        dialogSelector,
+        closeSelector,
+        allowedScrollers,
+        requiredScrollers,
+        stickySelector,
+        focusSelector,
+        verticalScrollerSelector,
+        verticalLastItemSelector,
+        motionSelector,
+        reduced,
+      },
     );
     ensure(!metrics.missingScope, `${surface}: missing ${metrics.missingScope}`);
     ensure(metrics.font === font, `${surface}: expected ${font} font, received ${metrics.font}`);
@@ -191,6 +317,86 @@ async (page) => {
         Math.abs(metrics.dialog.close.width - 36) <= 0.25 &&
           Math.abs(metrics.dialog.close.height - 36) <= 0.25,
         `${surface}: close target is ${metrics.dialog.close.width}×${metrics.dialog.close.height}`,
+      );
+    }
+    if (expectedPage) {
+      ensure(
+        metrics.page.clientWidth === expectedPage.clientWidth &&
+          metrics.page.scrollWidth === expectedPage.scrollWidth,
+        `${surface}: page geometry is ${metrics.page.clientWidth}/${metrics.page.scrollWidth}, expected ${expectedPage.clientWidth}/${expectedPage.scrollWidth}`,
+      );
+    }
+    if (strictScrollers) {
+      const unexpectedScrollers = metrics.scrollOwners.filter(({ allowed }) => !allowed);
+      ensure(
+        unexpectedScrollers.length === 0,
+        `${surface}: unexpected horizontal scrollers ${JSON.stringify(unexpectedScrollers)}`,
+      );
+      if (requireScopeContainment) {
+        ensure(
+          metrics.scopeHorizontalOverflow <= 1,
+          `${surface}: scope horizontal overflow is ${metrics.scopeHorizontalOverflow}`,
+        );
+      }
+    }
+    for (const requiredScroller of metrics.requiredScrollers) {
+      ensure(!requiredScroller.missing, `${surface}: missing required scroller ${requiredScroller.selector}`);
+      ensure(
+        requiredScroller.scrollWidth > requiredScroller.clientWidth + 1,
+        `${surface}: ${requiredScroller.selector} does not overflow internally`,
+      );
+      ensure(
+        requiredScroller.overflowX === "auto" || requiredScroller.overflowX === "scroll",
+        `${surface}: ${requiredScroller.selector} overflow-x is ${requiredScroller.overflowX}`,
+      );
+    }
+    if (stickySelector) {
+      ensure(metrics.sticky, `${surface}: sticky geometry unavailable`);
+      ensure(metrics.sticky.position === "sticky", `${surface}: sticky position is ${metrics.sticky.position}`);
+      ensure(metrics.sticky.scrollY > 0, `${surface}: page was not scrolled`);
+      ensure(
+        Math.abs(metrics.sticky.top) <= 0.5 && metrics.sticky.bottom > 0 && metrics.sticky.visible,
+        `${surface}: sticky header is not pinned and visible ${JSON.stringify(metrics.sticky)}`,
+      );
+    }
+    if (focusSelector) {
+      ensure(metrics.focus?.matches, `${surface}: keyboard focus is not on ${focusSelector}`);
+      const outlineVisible =
+        metrics.focus.outlineStyle !== "none" && parseFloat(metrics.focus.outlineWidth) > 0;
+      const shadowVisible = metrics.focus.boxShadow !== "none";
+      ensure(
+        outlineVisible || shadowVisible,
+        `${surface}: ${focusSelector} has no visible keyboard focus indicator`,
+      );
+    }
+    if (verticalScrollerSelector) {
+      ensure(metrics.verticalScroller, `${surface}: vertical scroller is unavailable`);
+      ensure(
+        metrics.verticalScroller.scrollHeight > metrics.verticalScroller.clientHeight + 1,
+        `${surface}: ${verticalScrollerSelector} does not overflow vertically`,
+      );
+      ensure(
+        Math.abs(
+          metrics.verticalScroller.scrollTop -
+            (metrics.verticalScroller.scrollHeight - metrics.verticalScroller.clientHeight),
+        ) <= 1,
+        `${surface}: ${verticalScrollerSelector} did not reach the end`,
+      );
+      ensure(
+        metrics.verticalScroller.horizontalOverflow <= 1,
+        `${surface}: ${verticalScrollerSelector} horizontal overflow is ${metrics.verticalScroller.horizontalOverflow}`,
+      );
+      ensure(
+        metrics.verticalScroller.lastItemVisible,
+        `${surface}: final Variation child is not reachable`,
+      );
+    }
+    if (motionSelector) {
+      ensure(metrics.motion, `${surface}: motion target ${motionSelector} is missing`);
+      ensure(
+        metrics.motion.animationName === "none" ||
+          metrics.motion.animationDuration.split(",").every((value) => parseFloat(value) === 0),
+        `${surface}: reduced-motion animation remains ${JSON.stringify(metrics.motion)}`,
       );
     }
     ensure(
@@ -218,7 +424,17 @@ async (page) => {
     surface,
     scopeSelector,
     dialogSelector = null,
+    closeSelector = ".drawer-header > button",
     allowedScrollers = [],
+    requiredScrollers = [],
+    strictScrollers = false,
+    requireScopeContainment = false,
+    expectedPage = null,
+    stickySelector = null,
+    focusSelector = null,
+    verticalScrollerSelector = null,
+    verticalLastItemSelector = null,
+    motionSelector = null,
   }) => {
     currentState = `${phase.name}/${profile.name}/${surface}`;
     await settle();
@@ -226,7 +442,17 @@ async (page) => {
       surface: currentState,
       scopeSelector,
       dialogSelector,
+      closeSelector,
       allowedScrollers,
+      requiredScrollers,
+      strictScrollers,
+      requireScopeContainment,
+      expectedPage,
+      stickySelector,
+      focusSelector,
+      verticalScrollerSelector,
+      verticalLastItemSelector,
+      motionSelector,
       reduced: profile.reduced,
       font: profile.font,
     });
@@ -235,6 +461,12 @@ async (page) => {
       page: metrics.page,
       dialog: metrics.dialog,
       scrollOwners: metrics.scrollOwners,
+      requiredScrollers: metrics.requiredScrollers,
+      scopeHorizontalOverflow: metrics.scopeHorizontalOverflow,
+      sticky: metrics.sticky,
+      focus: metrics.focus,
+      verticalScroller: metrics.verticalScroller,
+      motion: metrics.motion,
     };
     if (phase.name === "before") {
       beforeMetrics[comparisonKey] = comparisonMetrics;
@@ -245,7 +477,11 @@ async (page) => {
         `${comparisonKey}: layout metrics changed from ${JSON.stringify(beforeMetrics[comparisonKey])} to ${JSON.stringify(comparisonMetrics)}`,
       );
     }
-    const evidenceDirectory = css02Extra ? "css02-extra" : "css01";
+    const evidenceDirectory = css03Extra
+      ? "css03-extra"
+      : css02Extra
+        ? "css02-extra"
+        : "css01";
     const path = `output/playwright/${evidenceDirectory}/${phase.name}/${profile.name}/${surface}.png`;
     await page.screenshot({
       path,
@@ -262,6 +498,84 @@ async (page) => {
     const menu = page.getByRole("menu", { name: menuName });
     await menu.getByRole("menuitem", { name: itemName }).click();
   };
+
+  const focusWithKeyboard = async (selector) => {
+    const target = page.locator(selector).first();
+    await target.waitFor();
+    await target.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    ensure(
+      await target.evaluate((element) => document.activeElement === element),
+      `${currentState}: Tab did not return focus to ${selector}`,
+    );
+  };
+
+  const exerciseHorizontalScroller = async (selector, shouldOverflow) => {
+    const geometry = await page.evaluate(async ({ selector }) => {
+      const root = document.documentElement;
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement)) return { missing: true };
+      const pageBefore = { clientWidth: root.clientWidth, scrollWidth: root.scrollWidth };
+      element.scrollLeft = 0;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const start = element.scrollLeft;
+      const maximum = element.scrollWidth - element.clientWidth;
+      element.scrollLeft = maximum;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return {
+        missing: false,
+        start,
+        end: element.scrollLeft,
+        maximum,
+        pageBefore,
+        pageAfter: { clientWidth: root.clientWidth, scrollWidth: root.scrollWidth },
+      };
+    }, { selector });
+    ensure(!geometry.missing, `${currentState}: missing ${selector}`);
+    ensure(
+      JSON.stringify(geometry.pageBefore) === JSON.stringify(geometry.pageAfter),
+      `${currentState}: page width changed while scrolling ${selector}`,
+    );
+    if (shouldOverflow) {
+      ensure(geometry.maximum > 1, `${currentState}: ${selector} has no horizontal range`);
+      ensure(geometry.start === 0, `${currentState}: ${selector} did not start at zero`);
+      ensure(
+        geometry.end > 1 && Math.abs(geometry.end - geometry.maximum) <= 1,
+        `${currentState}: ${selector} did not reach its horizontal end ${JSON.stringify(geometry)}`,
+      );
+    } else {
+      ensure(
+        geometry.maximum <= 1 && geometry.end <= 1,
+        `${currentState}: ${selector} unexpectedly scrolls ${JSON.stringify(geometry)}`,
+      );
+    }
+  };
+
+  const exerciseVerticalScroller = async (selector) => {
+    const geometry = await page.evaluate(async ({ selector }) => {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement)) return { missing: true };
+      element.scrollTop = 0;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const start = element.scrollTop;
+      const maximum = element.scrollHeight - element.clientHeight;
+      element.scrollTop = maximum;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return { missing: false, start, end: element.scrollTop, maximum };
+    }, { selector });
+    ensure(!geometry.missing, `${currentState}: missing ${selector}`);
+    ensure(geometry.maximum > 1, `${currentState}: ${selector} has no vertical range`);
+    ensure(geometry.start === 0, `${currentState}: ${selector} did not start at zero`);
+    ensure(
+      geometry.end > 1 && Math.abs(geometry.end - geometry.maximum) <= 1,
+      `${currentState}: ${selector} did not reach its vertical end ${JSON.stringify(geometry)}`,
+    );
+  };
+
+  const expectedPageFor = (profile) => profile.name === "compact-320-large"
+    ? { clientWidth: 320, scrollWidth: 352 }
+    : { clientWidth: profile.width, scrollWidth: profile.width };
 
   const auditRequests = async (phase, profile) => {
     const requestAudit = await page.evaluate(() => ({
@@ -344,6 +658,178 @@ async (page) => {
           .click();
 
         await auditRequests(phase, profile);
+        continue;
+      }
+
+      if (css03Extra) {
+        const compact = profile.width <= 390;
+        const compact320 = profile.name === "compact-320-large";
+        const expectedPage = expectedPageFor(profile);
+        currentState = `${phase.name}/${profile.name}/css03-load`;
+        await page.goto(`${phase.baseUrl}/?font=${profile.font}&css03=1`, {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        });
+        await page.locator(".commerce-os").waitFor();
+        await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
+        await page.locator(".sales-trend-line.is-current").waitFor();
+
+        await page.evaluate(() => {
+          const maximum = document.documentElement.scrollHeight - window.innerHeight;
+          window.scrollTo({ top: Math.min(640, maximum), behavior: "instant" });
+        });
+        await page.waitForFunction(() => window.scrollY > 0);
+        currentState = `${phase.name}/${profile.name}/sticky-nav`;
+        await focusWithKeyboard(".workspace-primary-menu-trigger");
+        await capture({
+          phase,
+          profile,
+          surface: "sticky-nav",
+          scopeSelector: ".workspace-header",
+          expectedPage,
+          stickySelector: ".workspace-header",
+          focusSelector: ".workspace-primary-menu-trigger",
+        });
+
+        await page.locator("section.sales-trend").scrollIntoViewIfNeeded();
+        currentState = `${phase.name}/${profile.name}/chart-scrolled`;
+        await focusWithKeyboard(".sales-trend svg");
+        await exerciseHorizontalScroller(".sales-trend-plot-scroll", compact);
+        await capture({
+          phase,
+          profile,
+          surface: "chart-scrolled",
+          scopeSelector: "section.sales-trend",
+          allowedScrollers: [".sales-trend-plot-scroll"],
+          requiredScrollers: compact ? [".sales-trend-plot-scroll"] : [],
+          strictScrollers: true,
+          expectedPage,
+          focusSelector: ".sales-trend svg",
+        });
+
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+        await openMenuItem("產品區", /變體/u);
+        const variationDialog = page.getByRole("dialog", { name: "變體規劃與改掛" });
+        await variationDialog.waitFor();
+        await variationDialog.getByLabel("來源 Seller SKU").fill("SOURCE-4OZ");
+        await variationDialog.locator('[data-variation-lookup="source"]').click();
+        await variationDialog
+          .locator(".variation-family-summary", { hasText: "SOURCE-PARENT" })
+          .waitFor();
+        await variationDialog.getByLabel("目標 Parent SKU").fill("TARGET-PARENT");
+        await variationDialog.locator('[data-variation-lookup="target"]').click();
+        await variationDialog
+          .locator(".variation-target-details", { hasText: "TARGET-PARENT" })
+          .waitFor();
+        await variationDialog
+          .locator(".variation-child-card", { hasText: "SOURCE-4OZ" })
+          .getByRole("button", { name: "放入解除變體存放區" })
+          .click();
+        await variationDialog
+          .locator(".variation-staged-card", { hasText: "SOURCE-4OZ" })
+          .waitFor();
+        ensure(
+          await variationDialog
+            .getByRole("button", { name: "確認解除變體" })
+            .isDisabled(),
+          `${phase.name}/${profile.name}/variation: demo write action became enabled`,
+        );
+
+        currentState = `${phase.name}/${profile.name}/variation-long`;
+        await exerciseVerticalScroller(".variation-child-list");
+        await capture({
+          phase,
+          profile,
+          surface: "variation-long",
+          scopeSelector: ".variation-planner-drawer",
+          dialogSelector: ".variation-planner-drawer",
+          strictScrollers: true,
+          requireScopeContainment: true,
+          expectedPage,
+          verticalScrollerSelector: ".variation-child-list",
+          verticalLastItemSelector: ".variation-child-list .variation-child-card:last-child",
+        });
+
+        currentState = `${phase.name}/${profile.name}/variation-focus`;
+        await focusWithKeyboard(".variation-planner-drawer .drawer-header > button");
+        await page.evaluate(() => {
+          window.scrollTo({ top: 0, behavior: "instant" });
+          const drawer = document.querySelector(".variation-planner-drawer");
+          if (drawer instanceof HTMLElement) drawer.scrollTop = 0;
+        });
+        await capture({
+          phase,
+          profile,
+          surface: "variation-focus",
+          scopeSelector: ".variation-planner-drawer",
+          dialogSelector: ".variation-planner-drawer",
+          strictScrollers: true,
+          requireScopeContainment: true,
+          expectedPage,
+          focusSelector: ".variation-planner-drawer .drawer-header > button",
+        });
+        await page.keyboard.press("Escape");
+        await variationDialog.waitFor({ state: "detached" });
+
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+        const connectionButton = page.getByRole("button", {
+          name: /開啟本機安全連線設定/u,
+        });
+        await connectionButton.focus();
+        await page.keyboard.press("Enter");
+        const bridgeDialog = page.getByRole("dialog", { name: "Notebook 安全連線" });
+        await bridgeDialog.waitFor();
+        currentState = `${phase.name}/${profile.name}/bridge-focus`;
+        await focusWithKeyboard(".connection-panel > header > button");
+        await page.evaluate(() => {
+          window.scrollTo({ top: 0, behavior: "instant" });
+          const panel = document.querySelector(".connection-panel");
+          if (panel instanceof HTMLElement) {
+            panel.scrollTop = 0;
+            panel.scrollLeft = 0;
+          }
+        });
+        await capture({
+          phase,
+          profile,
+          surface: "bridge-focus",
+          scopeSelector: ".connection-panel",
+          dialogSelector: ".connection-panel",
+          closeSelector: ".connection-panel > header > button",
+          allowedScrollers: compact320 ? [".connection-panel"] : [],
+          requiredScrollers: compact320 ? [".connection-panel"] : [],
+          strictScrollers: true,
+          requireScopeContainment: !compact320,
+          expectedPage,
+          focusSelector: ".connection-panel > header > button",
+        });
+        await page.keyboard.press("Escape");
+        await bridgeDialog.waitFor({ state: "detached" });
+        await auditRequests(phase, profile);
+
+        if (profile.reduced) {
+          currentState = `${phase.name}/${profile.name}/reduced-loading-load`;
+          await page.goto(
+            `${phase.baseUrl}/?font=${profile.font}&css03=1&sales-loading=1`,
+            { waitUntil: "domcontentloaded", timeout: 30_000 },
+          );
+          await page.locator(".commerce-os").waitFor();
+          await page
+            .getByRole("group", { name: "銷售趨勢日期範圍" })
+            .getByRole("button", { name: "30 天", exact: true })
+            .click();
+          await page.locator(".sales-trend-loading span").waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "reduced-loading",
+            scopeSelector: "section.sales-trend",
+            strictScrollers: true,
+            expectedPage,
+            motionSelector: ".sales-trend-loading span",
+          });
+          await auditRequests(phase, profile);
+        }
         continue;
       }
 
@@ -525,20 +1011,34 @@ async (page) => {
     }
   }
 
-  const surfaces = css02Extra
-    ? ["content", "subscription", "accounting"]
-    : [
-      "webgate",
-      "home",
-      "sales",
-      "brand",
-      "system-info",
-      "variation",
-      "b2b",
-      "reports",
-      "inbound",
-    ];
-  const expectedCaptures = phases.length * profiles.length * surfaces.length;
+  const surfaces = css03Extra
+    ? [
+      "sticky-nav",
+      "chart-scrolled",
+      "variation-long",
+      "variation-focus",
+      "bridge-focus",
+      "reduced-loading",
+    ]
+    : css02Extra
+      ? ["content", "subscription", "accounting"]
+      : [
+        "webgate",
+        "home",
+        "sales",
+        "brand",
+        "system-info",
+        "variation",
+        "b2b",
+        "reports",
+        "inbound",
+      ];
+  const expectedCaptures = css03Extra
+    ? phases.length * profiles.reduce(
+      (count, profile) => count + 5 + (profile.reduced ? 1 : 0),
+      0,
+    )
+    : phases.length * profiles.length * surfaces.length;
   ensure(
     results.length === expectedCaptures,
     `expected ${expectedCaptures} screenshots, captured ${results.length}`,

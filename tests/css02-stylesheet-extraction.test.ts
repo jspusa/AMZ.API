@@ -1,22 +1,50 @@
 import { createHash } from "node:crypto";
-import { relative, sep } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RENDERER_STYLESHEET_CONTRACT } from "../scripts/renderer-stylesheet-contract.mjs";
 import { verifyStylesheetComposition } from "../scripts/stylesheet-composition.mjs";
 
-const CSS02_ORDERED_FILES = [
+const CSS02_ORDERED_PREFIX = [
   "styles/index.css",
   "styles/foundation.css",
   "styles/legacy-shell-drawers.css",
   "styles/subscription-accounting.css",
   "styles/content.css",
   "styles/business-pricing.css",
-  "app" + ".css",
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
   "7ddb84bf404826a4ce1af22a1f2bb7abd43d103d9474be75c6647882173f583c";
+
+const CSS02_PAYLOAD_EVIDENCE = [
+  {
+    path: "styles/foundation.css",
+    bytes: 16_544,
+    sha256: "94d757af80a20d64e204ab2661360b5ae5e91e7120679e2c12067ee1f24a4ce9",
+  },
+  {
+    path: "styles/legacy-shell-drawers.css",
+    bytes: 37_904,
+    sha256: "c0f45e2b59a254de9d334228581dccf2d28ee7cd839c673d84f0a250eb674b45",
+  },
+  {
+    path: "styles/subscription-accounting.css",
+    bytes: 10_798,
+    sha256: "a64414f03e2429307f2ad106c165b12b56c0aeb3d6b74b347686b032b71ad8cd",
+  },
+  {
+    path: "styles/content.css",
+    bytes: 4_847,
+    sha256: "bfce82381b3bfa34e4960ca858a3ffee914e32188498d2edb433a079420ae18d",
+  },
+  {
+    path: "styles/business-pricing.css",
+    bytes: 12_944,
+    sha256: "4f1694cecfd8b8ef4853e4a3dcb4b397c0fa85f184b2472e80f8de73e77b2667",
+  },
+] as const;
 
 describe("CSS02 historical stylesheet extraction", () => {
   it("composes the first historical epochs once in their accepted byte order", async () => {
@@ -28,15 +56,30 @@ describe("CSS02 historical stylesheet extraction", () => {
         new URL("../src/renderer/src/styles/index.css", import.meta.url),
       ),
       rootDirectory,
-      expectedFiles: CSS02_ORDERED_FILES,
+      expectedFiles: RENDERER_STYLESHEET_CONTRACT.expectedFiles,
       expectedFingerprint: RENDERER_STYLESHEET_CONTRACT.fingerprint,
     });
 
+    const orderedFiles = composition.files.map((file) =>
+      relative(rootDirectory, file).split(sep).join("/"),
+    );
+    expect(orderedFiles.slice(0, CSS02_ORDERED_PREFIX.length)).toEqual(
+      CSS02_ORDERED_PREFIX,
+    );
     expect(
-      composition.files.map((file) =>
-        relative(rootDirectory, file).split(sep).join("/"),
+      await Promise.all(
+        CSS02_PAYLOAD_EVIDENCE.map(async ({ path }) => {
+          const source = (
+            await readFile(join(rootDirectory, path), "utf8")
+          ).replace(/\r\n?/gu, "\n");
+          return {
+            path,
+            bytes: Buffer.byteLength(source),
+            sha256: createHash("sha256").update(source).digest("hex"),
+          };
+        }),
       ),
-    ).toEqual(CSS02_ORDERED_FILES);
+    ).toEqual(CSS02_PAYLOAD_EVIDENCE);
     expect(
       createHash("sha256")
         .update(composition.css.replace(/\r\n?/gu, "\n"))
