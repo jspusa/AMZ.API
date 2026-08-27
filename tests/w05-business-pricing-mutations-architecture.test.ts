@@ -153,7 +153,13 @@ describe("W05 Business Pricing mutation architecture", () => {
       expect(spApi).not.toMatch(new RegExp(`\\b${symbol}\\b`, "u"));
     }
     expect(spApi).toMatch(
-      /export\s+const\s+businessPricingGatewayProduction:\s*BusinessPricingGateway\s*=/u,
+      /const\s+businessPricingGatewayRuntime\s*=\s*createBusinessPricingGatewayProduction\(\{/u,
+    );
+    expect(spApi).toMatch(
+      /export\s+const\s+businessPricingGatewayProduction\s*=\s*businessPricingGatewayRuntime\.gateway/u,
+    );
+    expect(spApi).not.toMatch(
+      /\b(?:fetchLiveBusinessPricing|demoBusinessPricing|demoBusinessPriceOverrides|demoBusinessQuantityDiscountOverrides|businessPricingPatchBody)\b/u,
     );
   });
 
@@ -206,12 +212,17 @@ describe("W05 Business Pricing mutation architecture", () => {
     );
   });
 
-  it("keeps production transport mapping at the composition root and audit reads isolated", () => {
-    const spApi = source("../src/main/amazon/sp-api.ts");
+  it("keeps gateway mapping at the root and fixed transport in its production owner", () => {
+    const production = source(
+      "../src/main/amazon/business-pricing-gateway-production.ts",
+    );
+    const transport = source(
+      "../src/main/amazon/listings-write-production.ts",
+    );
     const productionGateway = section(
-      spApi,
-      "export const businessPricingGatewayProduction: BusinessPricingGateway = {",
-      "\n};",
+      production,
+      "  const gateway: BusinessPricingGateway = {",
+      "\n  };",
     );
     const files = sourceFilePaths(MAIN_ROOT);
     const productionConsumers = files
@@ -226,6 +237,13 @@ describe("W05 Business Pricing mutation architecture", () => {
       "amazon/sp-api.ts",
       "api-router.ts",
     ]);
+    const factoryOwners = files
+      .filter((path) => /\bcreateBusinessPricingGatewayProduction\(\{/u.test(
+        readFileSync(path, "utf8"),
+      ))
+      .map((path) => portablePath(relative(MAIN_ROOT, path)))
+      .sort();
+    expect(factoryOwners).toEqual(["amazon/sp-api.ts"]);
     expect(productionGateway).toMatch(
       /commitOnce:\s*async\s*\(patch,\s*fence,\s*recordDispatch\)\s*=>/u,
     );
@@ -235,6 +253,22 @@ describe("W05 Business Pricing mutation architecture", () => {
     expect(productionGateway).toMatch(
       /recordBeforeSend:\s*recordDispatch/u,
     );
+    const send = section(transport, "  const send = async (", "\n  };");
+    const firstFence = send.indexOf(
+      "await assertBeforeSend(command.assertBeforeSend);",
+    );
+    const record = send.indexOf("await command.recordBeforeSend();");
+    const secondFence = send.indexOf(
+      "await assertBeforeSend(command.assertBeforeSend);",
+      firstFence + 1,
+    );
+    const fixedPatch = send.indexOf("method: \"PATCH\"");
+    expect([firstFence, record, secondFence, fixedPatch].every(
+      (index) => index >= 0,
+    )).toBe(true);
+    expect(firstFence).toBeLessThan(record);
+    expect(record).toBeLessThan(secondFence);
+    expect(secondFence).toBeLessThan(fixedPatch);
 
     for (const auditPath of [
       "../src/main/amazon/business-pricing-audit.ts",

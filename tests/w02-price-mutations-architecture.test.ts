@@ -221,6 +221,10 @@ describe("W02 Listing Price mutation architecture", () => {
 
   it("keeps the fixed transport gateway free of arbitrary request controls", () => {
     const gateway = source("../src/main/amazon/listing-price-gateway.ts");
+    const production = source(
+      "../src/main/amazon/listing-price-gateway-production.ts",
+    );
+    const spApi = source("../src/main/amazon/sp-api.ts");
     const port = methodBody(
       gateway,
       "export interface ListingPriceGateway {",
@@ -239,6 +243,15 @@ describe("W02 Listing Price mutation architecture", () => {
       /commitOnce\s*\(\s*input:\s*ListingPricePatch,\s*fence:\s*ListingWriteExecutionFence/u,
     );
     expect(port).not.toMatch(/fence\?:\s*ListingWriteExecutionFence/u);
+    expect(production).toMatch(
+      /const gateway:\s*ListingPriceGateway\s*=\s*\{/u,
+    );
+    expect(production).toMatch(/\blistingPricePatchBody\s*\(/u);
+    expect(production).toMatch(/\bstandardPriceOverrides\s*=\s*new Map/u);
+    expect(production).toMatch(/\bsalePriceOverrides\s*=\s*new Map/u);
+    expect(spApi).not.toMatch(
+      /\b(?:demoPriceOverrides|demoSalePriceOverrides|getDemoListingPrice)\b/u,
+    );
   });
 
   it("keeps the production gateway and direct operations factory behind the composition root", () => {
@@ -255,6 +268,22 @@ describe("W02 Listing Price mutation architecture", () => {
       ))
       .map((path) => portablePath(relative(MAIN_ROOT, path)))
       .sort();
+    const productionFactoryConsumers = files
+      .filter((path) =>
+        /\bcreateListingPriceGatewayProduction\s*\(\s*\{/u.test(
+          readFileSync(path, "utf8"),
+        )
+      )
+      .map((path) => portablePath(relative(MAIN_ROOT, path)))
+      .sort();
+    const gatewayImplementationOwners = files
+      .filter((path) =>
+        /\bconst gateway:\s*ListingPriceGateway\s*=\s*\{/u.test(
+          readFileSync(path, "utf8"),
+        )
+      )
+      .map((path) => portablePath(relative(MAIN_ROOT, path)))
+      .sort();
     const router = source("../src/main/api-router.ts");
 
     expect(portablePath("amazon\\sp-api.ts")).toBe("amazon/sp-api.ts");
@@ -264,6 +293,10 @@ describe("W02 Listing Price mutation architecture", () => {
     ]);
     expect(directOperationsConsumers).toEqual([
       "listing-price-mutations.ts",
+    ]);
+    expect(productionFactoryConsumers).toEqual(["amazon/sp-api.ts"]);
+    expect(gatewayImplementationOwners).toEqual([
+      "amazon/listing-price-gateway-production.ts",
     ]);
     expect(router).not.toMatch(
       /listingPriceGatewayProduction\.(?:validationPreview|commitOnce)/u,

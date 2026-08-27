@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   SpApiError,
   SpApiPreCommitError,
-} from "../src/main/amazon/sp-api";
+} from "../src/main/amazon/sp-api-error";
 import {
   CONTENT_AUDIT_SNAPSHOT_TTL_MS,
   LocalStore,

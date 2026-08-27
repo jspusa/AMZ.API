@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  SpApiError as FacadeSpApiError,
-  SpApiPreCommitError as FacadeSpApiPreCommitError,
-} from "../src/main/amazon/sp-api";
-import {
   publicSpApiError,
   SpApiError,
   SpApiPreCommitError,
@@ -12,12 +8,9 @@ import {
 } from "../src/main/amazon/sp-api-error";
 
 describe("SP-API error leaf seam", () => {
-  it("keeps the legacy facade on the one canonical constructor", () => {
-    expect(FacadeSpApiError).toBe(SpApiError);
-    expect(FacadeSpApiPreCommitError).toBe(SpApiPreCommitError);
-
+  it("constructs the canonical error as a standard Error", () => {
     const error = new SpApiError("Amazon 暫時無法使用。");
-    expect(error).toBeInstanceOf(FacadeSpApiError);
+    expect(error).toBeInstanceOf(SpApiError);
     expect(error).toBeInstanceOf(Error);
   });
 
@@ -43,7 +36,7 @@ describe("SP-API error leaf seam", () => {
       marketplaceIds: ["ATVPDKIKX0DER"],
     }];
     const operation: SpApiOperation = "patchListingsItemPreview";
-    const error = new FacadeSpApiError("Amazon Validation Preview 失敗。", {
+    const error = new SpApiError("Amazon Validation Preview 失敗。", {
       status: 429,
       code: "RATE_LIMITED",
       requestId: "request-id-safe-for-test",
@@ -84,7 +77,7 @@ describe("SP-API error leaf seam", () => {
     const error = new SpApiPreCommitError(cause);
 
     expect(error).toBeInstanceOf(SpApiError);
-    expect(error).toBeInstanceOf(FacadeSpApiPreCommitError);
+    expect(error).toBeInstanceOf(SpApiPreCommitError);
     expect(error).toMatchObject({
       name: "SpApiPreCommitError",
       message:

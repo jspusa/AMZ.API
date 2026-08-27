@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const ROUTER_SOURCE = readFileSync(
@@ -21,6 +23,28 @@ const IMAGE_GATEWAY_SOURCE = readFileSync(
   new URL("../src/main/amazon/listing-image-gateway.ts", import.meta.url),
   "utf8",
 );
+const IMAGE_PRODUCTION_SOURCE = readFileSync(
+  new URL(
+    "../src/main/amazon/listing-image-gateway-production.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
+const MAIN_ROOT = fileURLToPath(new URL("../src/main/", import.meta.url));
+
+function sourceFilePaths(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFilePaths(path);
+    if (!entry.isFile() || !/\.tsx?$/u.test(entry.name)) return [];
+    return / 2\.tsx?$/u.test(entry.name) ? [] : [path];
+  });
+}
+
+function portablePath(value: string): string {
+  return value.replace(/\\/gu, "/");
+}
 
 describe("W03 Listing Images mutation architecture", () => {
   it("keeps ApiRouter as dispatch/composition instead of a legacy image owner", () => {
@@ -67,6 +91,15 @@ describe("W03 Listing Images mutation architecture", () => {
     );
     expect(IMAGE_OWNER_SOURCE).not.toMatch(/listing-price-(?:types|gateway)/u);
     expect(IMAGE_GATEWAY_SOURCE).not.toMatch(/listing-price-(?:types|gateway)/u);
+    expect(SP_API_SOURCE).toMatch(
+      /const\s+listingImageGatewayRuntime\s*=\s*createListingImageGatewayProduction\(\{/u,
+    );
+    expect(SP_API_SOURCE).toMatch(
+      /export\s+const\s+listingImageGatewayProduction\s*=\s*listingImageGatewayRuntime\.gateway/u,
+    );
+    expect(SP_API_SOURCE).not.toMatch(
+      /\b(?:listingImageUrl|imageSnapshotFromContext|listingImageEvidence|resolveListingImageEvidence|listingImageGatewayPatchBody|demoImageOverrides)\b/u,
+    );
   });
 
   it("keeps the image gateway closed and requires a final execution fence", () => {
@@ -88,6 +121,34 @@ describe("W03 Listing Images mutation architecture", () => {
     expect(port).not.toMatch(/fence\?:\s*ListingWriteExecutionFence/u);
     expect(port).not.toMatch(
       /\b(?:url|endpoint|method|headers|sellerId|accessToken|retryCount|body|patches)\s*:/u,
+    );
+  });
+
+  it("keeps one production factory and fixed Listings write transport", () => {
+    const files = sourceFilePaths(MAIN_ROOT);
+    const factoryOwners = files
+      .filter((path) => /\bcreateListingImageGatewayProduction\(\{/u.test(
+        readFileSync(path, "utf8"),
+      ))
+      .map((path) => portablePath(relative(MAIN_ROOT, path)))
+      .sort();
+
+    expect(factoryOwners).toEqual(["amazon/sp-api.ts"]);
+    expect(IMAGE_PRODUCTION_SOURCE).toContain(
+      "const listingImageEvidence = new WeakMap",
+    );
+    expect(IMAGE_PRODUCTION_SOURCE).toContain(
+      "contentReads: ListingContentReadProduction",
+    );
+    expect(IMAGE_PRODUCTION_SOURCE).toMatch(
+      /dependencies\.write\.validationPreview\(\{/u,
+    );
+    expect(IMAGE_PRODUCTION_SOURCE).toMatch(
+      /dependencies\.write\.commitOnce\(\{[\s\S]*assertBeforeSend:\s*\(\)\s*=>\s*fence\.assertCurrent\(\)/u,
+    );
+    expect(IMAGE_PRODUCTION_SOURCE).not.toMatch(/\bfetch\s*\(/u);
+    expect(IMAGE_PRODUCTION_SOURCE).not.toMatch(
+      /\b(?:accessToken|sellerId|retryCount|endpoint)\s*[:=(]/u,
     );
   });
 });

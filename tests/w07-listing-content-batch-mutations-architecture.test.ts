@@ -80,7 +80,7 @@ describe("W07 Listing Content batch mutation architecture", () => {
     expect(forbidden).toEqual([]);
     expect(router).toMatch(/createListingContentBatchMutations\s*\(/u);
     expect(router).toMatch(
-      /createListingContentBatchMutations\(\{(?=[^}]*\bevidence:\s*this\.store)(?=[^}]*\bcontext:\s*this\.spExecutionContext)(?=[^}]*\bwriteGate:\s*this\.writeGate)(?=[^}]*\bcontent:\s*this\.listingContentMutations)[^}]*\}\)/su,
+      /createListingContentBatchMutations\(\{(?=[^}]*\bevidence:\s*store)(?=[^}]*\bcontext:\s*this\.spExecutionContext)(?=[^}]*\bwriteGate:\s*this\.writeGate)(?=[^}]*\bcontent:\s*this\.listingContentMutations)[^}]*\}\)/su,
     );
     expect(router).toMatch(/this\.listingContentBatchMutations\.clear\(\)/u);
   });
@@ -120,6 +120,8 @@ describe("W07 Listing Content batch mutation architecture", () => {
     )].map((match) => match[1]))];
     const forbidden = [
       "listingContentGatewayProduction",
+      "createListingContentGatewayProduction",
+      "ListingsWriteProduction",
       "commitOnce",
       "replaceDemoContent",
       "contentReadbackDecision",
@@ -129,6 +131,9 @@ describe("W07 Listing Content batch mutation architecture", () => {
 
     expect(ownerCalls).toEqual(["previewOne", "attemptOne"]);
     expect(forbidden).toEqual([]);
+    expect(importSpecifiers(owner)).not.toContain(
+      "./amazon/listing-content-gateway-production",
+    );
     expect(owner).toMatch(/writeGate:\s*MainWriteGatePort/u);
     expect(owner).toMatch(/this\.writeGate\.execute<ContentBatchCommitResult>/u);
     expect(owner).toMatch(/family:\s*"content-batch"/u);
@@ -177,17 +182,17 @@ describe("W07 Listing Content batch mutation architecture", () => {
     expect(forbidden).toEqual([]);
   });
 
-  it("still classifies the import PATCH as an Amazon write", () => {
+  it("uses one request barrier without duplicate write-only tracking", () => {
     const main = source("../src/main/index.ts");
-    const classifier = section(
+    const handler = section(
       main,
-      "const isAmazonWrite =",
-      "apiRequestsInFlight += 1",
+      'ipcMain.handle("fba:api-request"',
+      'ipcMain.on("fba:api-cancel"',
     );
 
-    expect(classifier).toMatch(/input\?\.method === "PATCH"/u);
-    expect(classifier).toContain(
-      '"/api/sp-api/listing-content/import"',
-    );
+    expect(handler.match(/apiRequestsInFlight \+= 1/gu)).toHaveLength(1);
+    expect(handler.match(/apiRequestsInFlight -= 1/gu)).toHaveLength(1);
+    expect(main).not.toMatch(/\bamazonWritesInFlight\b/u);
+    expect(main).not.toMatch(/\bisAmazonWrite\b/u);
   });
 });

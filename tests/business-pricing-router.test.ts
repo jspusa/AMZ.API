@@ -6,14 +6,18 @@ import { ApiRouter } from "../src/main/api-router";
 import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import {
   invalidateSpApiCredentialCaches,
-  type BusinessPricePrecommitEvidence,
-  type BusinessPriceValidationResult,
-  type BusinessPricingListingSnapshot,
-  type UpdateBusinessPriceInput,
 } from "../src/main/amazon/sp-api";
+import type {
+  BusinessPricePrecommitEvidence,
+  BusinessPriceValidationResult,
+  BusinessPricingListingSnapshot,
+  UpdateBusinessPriceInput,
+} from "../src/main/amazon/business-pricing-types";
 import {
   BusinessPricingMutations,
 } from "../src/main/business-pricing-mutations";
+import { createDemoReportsAdapter } from
+  "../src/main/amazon/reports-runtime-demo";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type {
@@ -420,10 +424,12 @@ describe("Amazon Business pricing audit routes", () => {
         getAccountScope: async () => "business-pricing-get-only-scope",
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      businessPricingActiveListingsReports: {
-        start: startActive,
-        status: statusActive,
-      },
+      demoReportsAdapter: createDemoReportsAdapter({
+        businessPricingActiveListingsReports: {
+          start: startActive,
+          status: statusActive,
+        },
+      }),
     });
     const reportBroker = (router as unknown as {
       reportBroker: FixedReportBroker;
@@ -504,7 +510,9 @@ describe("Amazon Business pricing audit routes", () => {
         getAccountScope: async () => "business-pricing-unknown-scope",
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      businessPricingActiveListingsReports: { start: startActive },
+      demoReportsAdapter: createDemoReportsAdapter({
+        businessPricingActiveListingsReports: { start: startActive },
+      }),
     });
     const startRequest = (requestId: string): ApiRequest => ({
       requestId,

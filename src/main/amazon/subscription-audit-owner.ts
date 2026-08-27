@@ -20,8 +20,9 @@ import type {
 import {
   ReplenishmentAuditError,
   subscriptionAuditDiscountBucket,
-  type FbaSubscriptionAuditHistorySnapshot,
 } from "./replenishment-audit";
+import type { SubscriptionAuditSnapshot } from
+  "./fba-inventory-replenishment";
 import {
   publicSpApiError,
   SpApiError,
@@ -44,25 +45,8 @@ export const SUBSCRIPTION_AUDIT_STANDALONE_TTL_MS = 30 * 60 * 1_000;
 
 export type SubscriptionAuditMonths = 6 | 12 | 23;
 
-export type SubscriptionAuditSnapshot = Omit<
-  FbaSubscriptionAuditHistorySnapshot,
-  "marketplaceId"
-> & Readonly<{
-  mode: "live" | "demo";
-  marketplaceId: MarketplaceId;
-  requestedMonths: number;
-  fetchedAt: string;
-  inventoryEvidence: Readonly<{
-    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION";
-    coverage: "complete" | "partial";
-    returnedInventoryRows: number;
-    provenSkuCount: number;
-    unrecognizedSellerSkuRows: number;
-    verifiableReplenishmentOfferCount: number;
-    unverifiedFbaSkuCount: number;
-  }>;
-  notice: string;
-}>;
+export type { SubscriptionAuditSnapshot } from
+  "./fba-inventory-replenishment";
 
 export type SubscriptionAuditSnapshotReader = (
   input: Readonly<{

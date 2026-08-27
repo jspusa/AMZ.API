@@ -24,10 +24,10 @@ import { ApiRouter } from "./api-router";
 import { AdvertisingApiClient } from "./amazon/ads-api";
 import {
   invalidateSpApiCredentialCaches,
-  isMarketplaceId,
   reportsRuntimeProductionAdapter,
   usesDemoMode,
 } from "./amazon/sp-api";
+import { isMarketplaceId } from "./amazon/sp-marketplaces";
 import type { SpExecutionContextInvalidationReason } from "./amazon/sp-execution-context";
 import { AdvertisingCredentialVault } from "./advertising-credential-vault";
 import {
@@ -100,7 +100,6 @@ let credentialVault: CredentialVault | null = null;
 let advertisingCredentialVault: AdvertisingCredentialVault | null = null;
 let advertisingApi: AdvertisingApiClient | null = null;
 let updateStatus: UpdateStatus = { state: "idle" };
-let amazonWritesInFlight = 0;
 let apiRequestsInFlight = 0;
 let credentialsChangeInFlight = false;
 const nativeConfirmationGate = new NativeConfirmationGate();
@@ -520,24 +519,11 @@ function registerIpc(): void {
     if (credentialsChangeInFlight) {
       throw new Error("本機憑證正在更新；完成後請重新執行查詢。");
     }
-    const isAmazonWrite =
-      input?.method === "PATCH" &&
-      [
-        "/api/sp-api/listings",
-        "/api/sp-api/listing-content",
-        "/api/sp-api/listing-content/import",
-        "/api/sp-api/listing-images",
-        "/api/sp-api/sale-price",
-        "/api/sp-api/business-pricing",
-        "/api/sp-api/variation-move",
-      ].includes(input.path);
     apiRequestsInFlight += 1;
-    if (isAmazonWrite) amazonWritesInFlight += 1;
     try {
       return await apiRouter.handle(input);
     } finally {
       apiRequestsInFlight -= 1;
-      if (isAmazonWrite) amazonWritesInFlight -= 1;
     }
   });
   ipcMain.on("fba:api-cancel", (event, requestId: string) => {

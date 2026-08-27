@@ -7,7 +7,7 @@ import {
   type DurableReportIdentity,
   type DurableReportStatus,
 } from "../src/main/amazon/report-lifecycle";
-import { SpApiError } from "../src/main/amazon/sp-api";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import { LocalStore } from "../src/main/local-store";
 
 const identity: DurableReportIdentity = {

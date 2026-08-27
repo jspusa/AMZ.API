@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  SpApiError,
   getSalesTrend,
   invalidateSpApiCredentialCaches,
 } from "../src/main/amazon/sp-api";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const NOW = new Date("2026-03-10T12:00:00.000Z");

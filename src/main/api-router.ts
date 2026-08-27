@@ -2,28 +2,22 @@ import type {
   ApiRequest,
   ApiResponse,
   ConnectionTestResult,
-  CredentialSummary,
 } from "../shared/contracts";
+import type { MarketplaceId } from "../shared/marketplaces";
 import type { AdvertisingGateway } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
 import {
   MainWriteGate,
-  MainWriteGateError,
   type MainWriteGatePort,
-  type WriteBinding,
-  type WriteOperation,
-  type WritePreviewFamily,
 } from "./write-gate";
 import {
   publicSpApiError,
   SpApiError,
-  SpApiPreCommitError,
 } from "./amazon/sp-api-error";
 import {
   createProductionSpExecutionContextAdapter,
   SpExecutionContextError,
-  type SpExecutionContext,
   type SpExecutionContextAdapter,
   type SpExecutionContextInvalidationReason,
 } from "./amazon/sp-execution-context";
@@ -56,19 +50,7 @@ import {
   SkuCommandRoute,
   type SkuCommandRoutePort,
 } from "./sku-command-route";
-import {
-  bodyRecord,
-  integer,
-  isPlainRecord,
-  multiLineText,
-  optionalInteger,
-  parseAsin,
-  parseMarketplace,
-  parseSellerSku,
-  reportIdentifier,
-  shortText,
-  type JsonRecord,
-} from "./route-input";
+import { isPlainRecord } from "./route-input";
 import { invalid, json, routeError } from "./route-response";
 import {
   createListingPriceMutations,
@@ -103,13 +85,7 @@ import {
   type BrandSalesCoordinatorPort,
   type BrandSalesDemoSource,
 } from "./brand-sales-coordinator";
-export {
-  parseAsin,
-  parseMarketplace,
-  parseSellerSku,
-} from "./route-input";
 import {
-  MARKETPLACES,
   catalogListingsReadAdapterProduction,
   catalogReportsDemoSource,
   getFbaVariationGroupingData,
@@ -120,10 +96,8 @@ import {
   getRestockPlan,
   getSalesTrend,
   getFbaSubscriptionAudit,
-  getDemoUnboundVariationAuditData,
   getSubscribeAndSaveOffer,
   getVariationFamilyPlanner,
-  isMarketplaceId,
   invalidateSpApiCredentialCaches,
   listingImageGatewayProduction,
   listingContentGatewayProduction,
@@ -135,7 +109,6 @@ import {
   searchListingsBySku,
   usesDemoMode,
   verifyListingsAccess,
-  type MarketplaceId,
 } from "./amazon/sp-api";
 import {
   AgedInventoryReads,
@@ -173,23 +146,17 @@ import {
   FbaCatalogReports,
   type FbaCatalogReportsDemoSource,
 } from "./amazon/fba-catalog-reports";
-import type {
-  BusinessPricingAuditSnapshot,
-  CatalogListingsReadAdapter,
-} from "./amazon/catalog-report-reads";
+import type { CatalogListingsReadAdapter } from
+  "./amazon/catalog-report-reads";
 import {
   getDemoFbaReviewAuditCandidates,
-  readUnboundVariationAudit,
   verifyFbaReviewAuditSeeds,
-  type UnboundVariationAuditSnapshot,
 } from "./amazon/variation-catalog-reads";
 import {
   CustomerFeedbackReads,
   type CustomerFeedbackReadsPort,
 } from "./amazon/customer-feedback-reads";
 import { OrdersReads, type OrdersReadsPort } from "./amazon/orders-reads";
-import { DEMO_INBOUND_NONCOMPLIANCE_DOCUMENT } from
-  "./amazon/inbound-noncompliance";
 import { ReplenishmentAuditError } from "./amazon/replenishment-audit";
 import {
   AplusContentReads,
@@ -234,312 +201,18 @@ import {
   type ListingsExportPort,
 } from "./amazon/listings-export";
 import {
-  type DurableReportGatewayStatus,
-  type DurableReportStatus,
-} from "./amazon/report-lifecycle";
-import {
-  reportsAdapterIdentity,
-  type ReportsAdapter,
-  type ReportsIntentPlan,
-} from "./amazon/reports-runtime";
+  ListingsExportRoutes,
+  type ListingsExportRoutesPort,
+} from "./listings-export-routes";
+import type { ReportsAdapter } from "./amazon/reports-runtime";
+import { createDemoReportsAdapter } from
+  "./amazon/reports-runtime-demo";
 import { FixedReportBroker } from "./amazon/report-broker";
 import { testRegionConnections } from "./amazon/connection-health";
 import { marketplaceByCode } from "../shared/marketplaces";
-import {
-  abortableDelay as waitMilliseconds,
-  throwIfAborted as assertBackgroundActive,
-} from "./abort-utils";
+import { abortableDelay as waitMilliseconds } from "./abort-utils";
 
 type WriteApproval = (reason: string) => Promise<void>;
-
-type DemoFixedReportStart = (input: Readonly<{
-  marketplaceId: MarketplaceId;
-  signal?: AbortSignal;
-}>) => Promise<DurableReportGatewayStatus>;
-
-type DemoFixedReportStatus = (input: Readonly<{
-  marketplaceId: MarketplaceId;
-  reportId: string;
-  signal?: AbortSignal;
-}>) => Promise<DurableReportGatewayStatus>;
-
-type DemoAllListingsReportGateway = {
-  start: DemoFixedReportStart;
-  status: DemoFixedReportStatus;
-};
-
-type BusinessPricingActiveListingsReportGateway = {
-  start: DemoFixedReportStart;
-  status: DemoFixedReportStatus;
-};
-
-type InboundNoncomplianceDemoReportGateway = {
-  start(input: Readonly<{
-    marketplaceId: MarketplaceId;
-    signal?: AbortSignal;
-  }>): Promise<DurableReportGatewayStatus>;
-  status(input: Readonly<{
-    marketplaceId: MarketplaceId;
-    reportId: string;
-    signal?: AbortSignal;
-  }>): Promise<DurableReportGatewayStatus>;
-  document(input: Readonly<{
-    marketplaceId: MarketplaceId;
-    reportId: string;
-    documentId: string;
-    signal?: AbortSignal;
-  }>): Promise<string>;
-};
-
-function demoReportReference(
-  intent: "all-listings" | "active-business-listings" | "aged-inventory",
-  marketplaceId: MarketplaceId,
-): string {
-  switch (intent) {
-    case "all-listings":
-      return `demo-${marketplaceId}`;
-    case "active-business-listings":
-      return `demo-b2b-active-${marketplaceId}`;
-    case "aged-inventory":
-      return `demo-aged-${marketplaceId}`;
-  }
-}
-
-async function startDemoFixedReport(input: Readonly<{
-  intent: "all-listings" | "active-business-listings" | "aged-inventory";
-  marketplaceId: MarketplaceId;
-  signal?: AbortSignal;
-}>): Promise<DurableReportGatewayStatus> {
-  assertBackgroundActive(input.signal);
-  const reference = demoReportReference(input.intent, input.marketplaceId);
-  return {
-    mode: "demo",
-    ready: true,
-    reportId: reference,
-    documentId: reference,
-    status: "DONE",
-    notice: input.intent === "all-listings"
-      ? "展示報表已準備完成。"
-      : input.intent === "active-business-listings"
-        ? "展示 Active Listings 報表已準備完成。"
-        : "展示用 FBA 庫齡報表已準備完成。",
-  };
-}
-
-async function statusDemoFixedReport(input: Readonly<{
-  intent: "all-listings" | "active-business-listings" | "aged-inventory";
-  marketplaceId: MarketplaceId;
-  reportId: string;
-  signal?: AbortSignal;
-}>): Promise<DurableReportGatewayStatus> {
-  assertBackgroundActive(input.signal);
-  return {
-    mode: "demo",
-    ready: true,
-    reportId: input.reportId,
-    documentId: demoReportReference(input.intent, input.marketplaceId),
-    status: "DONE",
-    notice: input.intent === "all-listings"
-      ? "展示報表已準備完成。"
-      : input.intent === "active-business-listings"
-        ? "展示 Active Listings 報表已準備完成。"
-        : "展示用 FBA 庫齡報表已準備完成。",
-  };
-}
-
-function assertDemoReportsRequest(request: Readonly<{ mode: "live" | "demo" }>): void {
-  if (request.mode !== "demo") {
-    throw new SpApiError("展示 Reports adapter 不接受正式 Amazon 請求。", {
-      status: 409,
-      code: "REPORT_MODE_CHANGED",
-    });
-  }
-}
-
-function demoRevenueReportReference(
-  request: Extract<
-    ReportsIntentPlan,
-    { intent: "fba-shipment-sales" | "sales-and-traffic-daily-sku" }
-  >,
-): string {
-  return request.intent === "fba-shipment-sales"
-    ? `demo-brand-${request.marketplaceId}-${request.startDate}-${request.endDate}`
-    : `demo-sales-traffic-${request.marketplaceId}-${request.startDate}-${request.endDate}`;
-}
-
-function demoRevenueReportStatus(
-  request: Extract<
-    ReportsIntentPlan,
-    { intent: "fba-shipment-sales" | "sales-and-traffic-daily-sku" }
-  >,
-  reportId?: string,
-): DurableReportGatewayStatus {
-  const reference = demoRevenueReportReference(request);
-  if (reportId !== undefined && reportId !== reference) {
-    throw new SpApiError("展示營收報表與目前站點或日期不一致。", {
-      status: 409,
-      code: "REPORT_MISMATCH",
-    });
-  }
-  return {
-    mode: "demo",
-    ready: true,
-    reportId: reference,
-    documentId: reference,
-    status: "DONE",
-    notice: request.intent === "fba-shipment-sales"
-      ? "展示用 FBA 品牌出貨報表已準備完成。"
-      : "展示用銷售與流量報表已準備完成。",
-  };
-}
-
-function demoInboundNoncomplianceReference(
-  marketplaceId: MarketplaceId,
-): string {
-  return `demo-inbound-noncompliance-${marketplaceId}`;
-}
-
-async function startDemoInboundNoncomplianceReport(input: Readonly<{
-  marketplaceId: MarketplaceId;
-  signal?: AbortSignal;
-}>): Promise<DurableReportGatewayStatus> {
-  assertBackgroundActive(input.signal);
-  const reference = demoInboundNoncomplianceReference(input.marketplaceId);
-  return {
-    mode: "demo",
-    ready: true,
-    reportId: reference,
-    documentId: reference,
-    status: "DONE",
-    notice: "展示用 FBA 入庫瑕疵報表已準備完成。",
-  };
-}
-
-async function statusDemoInboundNoncomplianceReport(input: Readonly<{
-  marketplaceId: MarketplaceId;
-  reportId: string;
-  signal?: AbortSignal;
-}>): Promise<DurableReportGatewayStatus> {
-  assertBackgroundActive(input.signal);
-  const reference = demoInboundNoncomplianceReference(input.marketplaceId);
-  if (input.reportId !== reference) {
-    throw new SpApiError("展示報表編號與目前站點不一致。", {
-      status: 409,
-      code: "REPORT_MISMATCH",
-    });
-  }
-  return startDemoInboundNoncomplianceReport(input);
-}
-
-async function readDemoInboundNoncomplianceDocument(input: Readonly<{
-  marketplaceId: MarketplaceId;
-  reportId: string;
-  documentId: string;
-  signal?: AbortSignal;
-}>): Promise<string> {
-  assertBackgroundActive(input.signal);
-  const reference = demoInboundNoncomplianceReference(input.marketplaceId);
-  if (input.reportId !== reference || input.documentId !== reference) {
-    throw new SpApiError("展示報表文件與目前站點不一致。", {
-      status: 409,
-      code: "REPORT_MISMATCH",
-    });
-  }
-  return DEMO_INBOUND_NONCOMPLIANCE_DOCUMENT;
-}
-
-function routerDemoReportsAdapter(input: Readonly<{
-  allListings: DemoAllListingsReportGateway;
-  activeBusiness: BusinessPricingActiveListingsReportGateway;
-  inboundNoncompliance: InboundNoncomplianceDemoReportGateway;
-}>): ReportsAdapter {
-  const identity = (
-    request: ReportsIntentPlan & { mode: "live" | "demo" },
-    result?: Readonly<{ mode: "live" | "demo" }>,
-  ) =>
-    reportsAdapterIdentity(
-      request as unknown as ReportsIntentPlan,
-      result?.mode ?? request.mode,
-    );
-  return {
-    async create(request) {
-      assertDemoReportsRequest(request);
-      const result = request.intent === "all-listings"
-        ? await input.allListings.start({
-            marketplaceId: request.marketplaceId,
-            signal: request.signal,
-          })
-        : request.intent === "active-business-listings"
-          ? await input.activeBusiness.start({
-              marketplaceId: request.marketplaceId,
-              signal: request.signal,
-            })
-          : request.intent === "aged-inventory"
-            ? await startDemoFixedReport({
-                intent: "aged-inventory",
-                marketplaceId: request.marketplaceId,
-                signal: request.signal,
-              })
-            : request.intent === "inbound-noncompliance"
-              ? await input.inboundNoncompliance.start({
-                  marketplaceId: request.marketplaceId,
-                  signal: request.signal,
-                })
-              : request.intent === "sales-and-traffic-daily-sku"
-                ? demoRevenueReportStatus(request)
-                : demoRevenueReportStatus(request);
-      return { ...result, identity: identity(request, result) };
-    },
-    async status(request) {
-      assertDemoReportsRequest(request);
-      const result = request.intent === "all-listings"
-        ? await input.allListings.status({
-            marketplaceId: request.marketplaceId,
-            reportId: request.reportId,
-            signal: request.signal,
-          })
-        : request.intent === "active-business-listings"
-          ? await input.activeBusiness.status({
-              marketplaceId: request.marketplaceId,
-              reportId: request.reportId,
-              signal: request.signal,
-            })
-          : request.intent === "aged-inventory"
-            ? await statusDemoFixedReport({
-                intent: "aged-inventory",
-                marketplaceId: request.marketplaceId,
-                reportId: request.reportId,
-                signal: request.signal,
-              })
-            : request.intent === "inbound-noncompliance"
-              ? await input.inboundNoncompliance.status({
-                  marketplaceId: request.marketplaceId,
-                  reportId: request.reportId,
-                  signal: request.signal,
-                })
-              : request.intent === "sales-and-traffic-daily-sku"
-                ? demoRevenueReportStatus(request, request.reportId)
-                : demoRevenueReportStatus(request, request.reportId);
-      return { ...result, identity: identity(request, result) };
-    },
-    async readDocument(request) {
-      assertDemoReportsRequest(request);
-      return {
-        identity: identity(request),
-        reportId: request.reportId,
-        documentId: request.documentId,
-        text: request.intent === "inbound-noncompliance"
-          ? await input.inboundNoncompliance.document({
-              marketplaceId: request.marketplaceId,
-              reportId: request.reportId,
-              documentId: request.documentId,
-              signal: request.signal,
-            })
-          : "",
-      };
-    },
-  };
-}
 
 function publicRouterError(
   error: Readonly<{
@@ -582,12 +255,6 @@ function apiError(error: unknown, fallback: string): ApiResponse {
   return json({ code: "INTERNAL_ERROR", message: fallback }, 500);
 }
 
-function writeApiError(error: unknown, fallback: string): ApiResponse {
-  return error instanceof MainWriteGateError
-    ? invalid(error.message, error.status, error.code)
-    : apiError(error, fallback);
-}
-
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isPlainRecord(value) &&
     Object.values(value).every((entry) => typeof entry === "string");
@@ -611,7 +278,6 @@ function validApiBody(value: unknown): boolean {
 }
 
 export class ApiRouter {
-  private readonly store: LocalStore;
   private readonly vault: CredentialVault;
   private readonly spExecutionContext: RouterRequestContextAdapter;
   private readonly writeGate: MainWriteGatePort;
@@ -622,11 +288,6 @@ export class ApiRouter {
     ListingContentBatchMutationsPort;
   private readonly variationMoveMutations: VariationMoveMutationsPort;
   private readonly businessPricingMutations: BusinessPricingMutationsPort;
-  private readonly allListingsDemoReports: DemoAllListingsReportGateway;
-  private readonly agedInventoryReads: AgedInventoryReadsPort;
-  private readonly aplusContentReads: AplusContentReadsPort;
-  private readonly businessPricingActiveListingsReports:
-    BusinessPricingActiveListingsReportGateway;
   private readonly ordersReads: OrdersReadsPort;
   private readonly statelessCapabilities: StatelessCapabilityRoutesPort;
   private readonly imageUpload: LocalImageUploadPort;
@@ -637,9 +298,6 @@ export class ApiRouter {
   private readonly fbaSalesMetricsRoutes: FbaSalesMetricsRoutesPort;
   private readonly fbaInboundCoordinator: FbaInboundCoordinatorPort;
   private readonly reportBroker: FixedReportBroker;
-  private readonly salesAndTraffic: SalesAndTrafficReports;
-  private readonly catalogListings: CatalogListingsReadAdapter;
-  private readonly fbaCatalogReports: FbaCatalogReports;
   private readonly brandSalesCoordinator: BrandSalesCoordinatorPort;
   private readonly businessPricingAuditOwner: BusinessPricingAuditPort;
   private readonly subscriptionAuditOwner: SubscriptionAuditOwnerPort;
@@ -648,6 +306,7 @@ export class ApiRouter {
   private readonly contentAuditOwner: ContentAuditOwnerPort;
   private readonly imageAuditOwner: ImageAuditOwnerPort;
   private readonly listingsExportOwner: ListingsExportPort;
+  private readonly listingsExportRoutes: ListingsExportRoutesPort;
   private readonly reviewAuditCoordinator: ReviewAuditCoordinatorPort;
   private readonly advertisingCoordinator: AdvertisingCoordinatorPort;
   private readonly legacyAuditSuiteCompatibility:
@@ -660,11 +319,7 @@ export class ApiRouter {
     store: LocalStore;
     vault: CredentialVault;
     approveWrite: WriteApproval;
-    allListingsDemoReports?: Partial<DemoAllListingsReportGateway>;
     agedInventoryReads?: AgedInventoryReadsPort;
-    businessPricingActiveListingsReports?: Partial<
-      BusinessPricingActiveListingsReportGateway
-    >;
     salesAndTrafficRead?: SalesAndTrafficDocumentReader;
     salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
@@ -689,11 +344,9 @@ export class ApiRouter {
     contentAudit?: ContentAuditOwnerPort;
     imageAudit?: ImageAuditOwnerPort;
     listingsExport?: ListingsExportPort;
+    listingsExportRoutes?: ListingsExportRoutesPort;
     advertisingStrategyWait?: typeof waitMilliseconds;
     fbaInboundReads?: Partial<FbaInboundReadsPort>;
-    inboundNoncomplianceDemoReports?: Partial<
-      InboundNoncomplianceDemoReportGateway
-    >;
     reportsAdapter?: ReportsAdapter;
     demoReportsAdapter?: ReportsAdapter;
     catalogListings?: CatalogListingsReadAdapter;
@@ -718,7 +371,7 @@ export class ApiRouter {
     variationMoveMutations?: VariationMoveMutationsPort;
     businessPricingMutations?: BusinessPricingMutationsPort;
   }) {
-    this.store = input.store;
+    const store = input.store;
     this.vault = input.vault;
     const baseSpExecutionContext = input.spExecutionContext
       ?? createProductionSpExecutionContextAdapter({
@@ -732,7 +385,7 @@ export class ApiRouter {
       baseSpExecutionContext,
     );
     this.writeGate = input.writeGate ?? new MainWriteGate({
-      store: this.store,
+      store,
       context: this.spExecutionContext,
       approveWrite: input.approveWrite,
     });
@@ -755,7 +408,7 @@ export class ApiRouter {
       });
     this.listingContentBatchMutations = input.listingContentBatchMutations ??
       createListingContentBatchMutations({
-        evidence: this.store,
+        evidence: store,
         context: this.spExecutionContext,
         writeGate: this.writeGate,
         content: this.listingContentMutations,
@@ -772,61 +425,30 @@ export class ApiRouter {
         writeGate: this.writeGate,
         priceObserver: this.priceMutations,
         gateway: businessPricingGatewayProduction,
-      });
-    const advertising = input.advertising ?? null;
-    this.allListingsDemoReports = {
-      start: (request) => startDemoFixedReport({
-        intent: "all-listings",
-        ...request,
-      }),
-      status: (request) => statusDemoFixedReport({
-        intent: "all-listings",
-        ...request,
-      }),
-      ...input.allListingsDemoReports,
-    };
-    this.businessPricingActiveListingsReports = {
-      start: (request) => startDemoFixedReport({
-        intent: "active-business-listings",
-        ...request,
-      }),
-      status: (request) => statusDemoFixedReport({
-        intent: "active-business-listings",
-        ...request,
-      }),
-      ...input.businessPricingActiveListingsReports,
-    };
-    const inboundNoncomplianceDemoReports = {
-      start: startDemoInboundNoncomplianceReport,
-      status: statusDemoInboundNoncomplianceReport,
-      document: readDemoInboundNoncomplianceDocument,
-      ...input.inboundNoncomplianceDemoReports,
-    };
-    const compatibilityReportsAdapter = input.demoReportsAdapter ?? routerDemoReportsAdapter({
-      allListings: this.allListingsDemoReports,
-      activeBusiness: this.businessPricingActiveListingsReports,
-      inboundNoncompliance: inboundNoncomplianceDemoReports,
     });
+    const advertising = input.advertising ?? null;
+    const demoReportsAdapter = input.demoReportsAdapter ??
+      createDemoReportsAdapter();
     const liveReportsAdapter = input.reportsAdapter ??
       reportsRuntimeProductionAdapter;
     const reportsAdapter: ReportsAdapter = {
       create: (request) => (request.mode === "live"
         ? liveReportsAdapter
-        : compatibilityReportsAdapter).create(request),
+        : demoReportsAdapter).create(request),
       status: (request) => (request.mode === "live"
         ? liveReportsAdapter
-        : compatibilityReportsAdapter).status(request),
+        : demoReportsAdapter).status(request),
       readDocument: (request) => (request.mode === "live"
         ? liveReportsAdapter
-        : compatibilityReportsAdapter).readDocument(request),
+        : demoReportsAdapter).readDocument(request),
     };
     this.reportBroker = new FixedReportBroker({
-      store: this.store,
+      store,
       context: this.spExecutionContext,
       reportsAdapter,
       advertising,
     });
-    this.agedInventoryReads = input.agedInventoryReads ?? new AgedInventoryReads({
+    const agedInventoryReads = input.agedInventoryReads ?? new AgedInventoryReads({
       reports: this.reportBroker,
       context: this.spExecutionContext,
     });
@@ -850,7 +472,7 @@ export class ApiRouter {
       ...catalogReportsDemoSource,
       ...input.catalogDemo,
     };
-    this.salesAndTraffic = new SalesAndTrafficReports({
+    const salesAndTraffic = new SalesAndTrafficReports({
       reports: this.reportBroker,
       context: this.spExecutionContext,
       liveReader: input.salesAndTrafficRead,
@@ -862,19 +484,19 @@ export class ApiRouter {
         ...input.salesAndTrafficDemo,
       },
     });
-    this.catalogListings = input.catalogListings ??
+    const catalogListings = input.catalogListings ??
       catalogListingsReadAdapterProduction;
-    this.fbaCatalogReports = new FbaCatalogReports({
+    const fbaCatalogReports = new FbaCatalogReports({
       reports: this.reportBroker,
       context: this.spExecutionContext,
-      listings: this.catalogListings,
+      listings: catalogListings,
       demo: defaultCatalogDemo,
       pace: input.catalogPace,
       now: input.catalogNow,
     });
     const auditSuiteResources = new AuditSuiteCatalogResources({
       context: this.spExecutionContext,
-      catalog: this.fbaCatalogReports,
+      catalog: fbaCatalogReports,
       readGrouping: (request) => getFbaVariationGroupingData(request),
     });
     this.subscriptionAuditOwner = input.subscriptionAudit ??
@@ -887,41 +509,47 @@ export class ApiRouter {
       new UnboundVariationAuditOwner({
         context: this.spExecutionContext,
         source: {
-          begin: (request) => this.fbaCatalogReports.begin({
+          begin: (request) => fbaCatalogReports.begin({
             purpose: "catalog",
             ...request,
-        }),
-          status: (request) => this.fbaCatalogReports.status(request),
-          read: (request) => this.getSharedUnboundVariationAuditData(request),
+          }),
+          status: (request) => fbaCatalogReports.status(request),
+          read: (request) => fbaCatalogReports.read({
+            view: "unbound-variation-audit",
+            ...request,
+          }),
         },
       });
     this.businessPricingAuditOwner = input.businessPricingAudit ??
       new BusinessPricingAudit({
         context: this.spExecutionContext,
-        startReport: (request) => this.fbaCatalogReports.begin({
+        startReport: (request) => fbaCatalogReports.begin({
           purpose: "business-pricing-audit",
           ...request,
         }),
-        statusReport: (request) => this.fbaCatalogReports.status(request),
-        readReport: (request) => this.getSharedBusinessPricingAuditData(request),
+        statusReport: (request) => fbaCatalogReports.status(request),
+        readReport: (request) => fbaCatalogReports.read({
+          view: "business-pricing-audit",
+          ...request,
+        }),
         getStandaloneJob: (request) =>
           this.standaloneAuditCoordinator.getJob(request),
       });
     this.agedInventoryAuditOwner = input.agedInventoryAudit ??
       new AgedInventoryAudit({
         context: this.spExecutionContext,
-        beginReport: (request) => this.agedInventoryReads.begin(request),
-        statusReport: (request) => this.agedInventoryReads.status(request),
-        readReport: (request) => this.agedInventoryReads.read(request),
+        beginReport: (request) => agedInventoryReads.begin(request),
+        statusReport: (request) => agedInventoryReads.status(request),
+        readReport: (request) => agedInventoryReads.read(request),
       });
     this.listingsExportOwner = input.listingsExport ?? new ListingsExport({
       context: this.spExecutionContext,
-      startReport: (request) => this.fbaCatalogReports.begin({
+      startReport: (request) => fbaCatalogReports.begin({
         purpose: "catalog",
         ...request,
       }),
-      statusReport: (request) => this.fbaCatalogReports.status(request),
-      readReport: (request) => this.fbaCatalogReports.read({
+      statusReport: (request) => fbaCatalogReports.status(request),
+      readReport: (request) => fbaCatalogReports.read({
         view: "export",
         ...request,
       }),
@@ -931,18 +559,24 @@ export class ApiRouter {
       readGrouping: (request) => getFbaVariationGroupingData(request),
       evidence: {
         saveContentAuditSnapshotEvidence: (evidence) =>
-          this.store.saveContentAuditSnapshotEvidence(evidence),
+          store.saveContentAuditSnapshotEvidence(evidence),
       },
     });
     this.imageAuditOwner = input.imageAudit ?? new ImageAuditOwner({
       context: this.spExecutionContext,
       readGrouping: (request) => getFbaVariationGroupingData(request),
     });
+    this.listingsExportRoutes = input.listingsExportRoutes ??
+      new ListingsExportRoutes({
+        listingsExport: this.listingsExportOwner,
+        contentAudit: this.contentAuditOwner,
+        imageAudit: this.imageAuditOwner,
+      });
     this.brandSalesCoordinator = input.brandSalesCoordinator ??
       createBrandSalesCoordinator({
-        store: this.store,
+        store,
         reports: this.reportBroker,
-        catalog: this.fbaCatalogReports,
+        catalog: fbaCatalogReports,
         context: this.spExecutionContext,
         demo: {
           ...createBrandSalesDemoSource({
@@ -957,13 +591,13 @@ export class ApiRouter {
         context: this.spExecutionContext,
         advertising,
         reports: this.reportBroker,
-        catalog: this.fbaCatalogReports,
-        salesAndTraffic: this.salesAndTraffic,
+        catalog: fbaCatalogReports,
+        salesAndTraffic,
         listingsExport: this.listingsExportOwner,
         loadAuditSuiteListings: (context, control) =>
           auditSuiteResources.listings(context, control),
         strategySources: {
-          fbaListings: (request) => this.fbaCatalogReports.read({
+          fbaListings: (request) => fbaCatalogReports.read({
             view: "identity",
             ...request,
           }),
@@ -977,7 +611,7 @@ export class ApiRouter {
             marketplaceId: request.marketplaceId,
             signal: request.signal,
           })
-        : verifyFbaReviewAuditSeeds(this.catalogListings, {
+        : verifyFbaReviewAuditSeeds(catalogListings, {
             marketplaceId: request.marketplaceId,
             seeds: request.seeds,
             signal: request.signal,
@@ -993,7 +627,7 @@ export class ApiRouter {
         resolveMode: (marketplaceId) =>
           usesDemoMode(marketplaceId) ? "demo" : "live",
         listings: this.listingsExportOwner,
-        readCatalogSeeds: (request) => this.fbaCatalogReports.read({
+        readCatalogSeeds: (request) => fbaCatalogReports.read({
           view: "seeds",
           ...request,
         }),
@@ -1026,19 +660,19 @@ export class ApiRouter {
     this.productMasterRoutes = input.productMasterRoutes ??
       new ProductMasterRoutes({
         context: this.spExecutionContext,
-        store: this.store,
+        store,
       });
     this.skuCommandRoute = input.skuCommandRoute ?? new SkuCommandRoute({
       command: new SkuCommand({
         context: this.spExecutionContext,
         productMaster: {
           get: (accountScope, marketplaceId, sellerSku) =>
-            this.store.getProductMaster(
+            store.getProductMaster(
               accountScope,
               marketplaceId,
               sellerSku,
             ),
-          syncIdentity: (identity) => this.store.syncProductIdentity(identity),
+          syncIdentity: (identity) => store.syncProductIdentity(identity),
         },
         reads: {
           price: (identity, context) =>
@@ -1058,7 +692,7 @@ export class ApiRouter {
         salesTrend: getSalesTrend,
         replenishment: getRestockPlan,
       });
-    this.aplusContentReads = input.aplusContentReads ?? new AplusContentReads({
+    const aplusContentReads = input.aplusContentReads ?? new AplusContentReads({
       context: this.spExecutionContext,
       live: aplusContentPageAdapterProduction,
     });
@@ -1067,7 +701,7 @@ export class ApiRouter {
         context: this.spExecutionContext,
         listingsExport: this.listingsExportOwner,
         readGrouping: (request) => getFbaVariationGroupingData(request),
-        contentReads: this.aplusContentReads,
+        contentReads: aplusContentReads,
       });
     this.standaloneAuditCoordinator = input.standaloneAuditCoordinator ??
       new StandaloneAuditCoordinator({
@@ -1404,9 +1038,9 @@ export class ApiRouter {
       case "POST /api/uploads/listing-images":
         return this.imageUpload.uploadImage(request);
       case "POST /api/sp-api/listing-content/export":
-        return this.startExport(request);
+        return this.listingsExportRoutes.start(request);
       case "GET /api/sp-api/listing-content/export":
-        return this.exportStatusOrDownload(request);
+        return this.listingsExportRoutes.observe(request);
       case "GET /api/system/health":
         return this.health.systemHealth(request);
       case "GET /api/amazon-ads/status":
@@ -1434,180 +1068,6 @@ export class ApiRouter {
       default:
         return invalid("此 App 版本不支援這個操作。", 404, "NOT_FOUND");
     }
-  }
-
-  private async getSharedUnboundVariationAuditData(
-    input: Readonly<{
-      marketplaceId: MarketplaceId;
-      reportId: string;
-      documentId: string;
-      signal?: AbortSignal;
-      expectedContext?: SpExecutionContext;
-    }>,
-  ): Promise<UnboundVariationAuditSnapshot> {
-    const context = input.expectedContext ??
-      await this.spExecutionContext.capture(input.marketplaceId);
-    if (input.expectedContext) {
-      await this.spExecutionContext.assertCurrent(input.expectedContext);
-    }
-    const seeds = await this.fbaCatalogReports.read({
-      view: "seeds",
-      marketplaceId: input.marketplaceId,
-      reportId: input.reportId,
-      documentId: input.documentId,
-      signal: input.signal,
-      expectedContext: context,
-    });
-    if (context.mode === "demo") {
-      const snapshot = await getDemoUnboundVariationAuditData({
-        marketplaceId: input.marketplaceId,
-        signal: input.signal,
-      });
-      await this.spExecutionContext.assertCurrent(context);
-      return snapshot;
-    }
-    const snapshot = await readUnboundVariationAudit(this.catalogListings, {
-      marketplaceId: input.marketplaceId,
-      seeds,
-      signal: input.signal,
-    });
-    await this.spExecutionContext.assertCurrent(context);
-    return snapshot;
-  }
-
-  private async getSharedBusinessPricingAuditData(
-    input: Readonly<{
-      marketplaceId: MarketplaceId;
-      reportId: string;
-      documentId: string;
-      signal?: AbortSignal;
-      heartbeat?: () => void;
-      expectedContext?: SpExecutionContext;
-    }>,
-  ): Promise<BusinessPricingAuditSnapshot> {
-    return this.fbaCatalogReports.read({
-      view: "business-pricing-audit",
-      marketplaceId: input.marketplaceId,
-      reportId: input.reportId,
-      documentId: input.documentId,
-      signal: input.signal,
-      heartbeat: input.heartbeat,
-      expectedContext: input.expectedContext,
-    });
-  }
-
-  private async startExport(request: ApiRequest): Promise<ApiResponse> {
-    const body = bodyRecord(request);
-    const marketplaceId = parseMarketplace(body?.marketplaceId);
-    if (!body || !marketplaceId) return invalid("請選擇要匯出的 Amazon 站點。");
-    try {
-      const status = await this.listingsExportOwner.start({ marketplaceId });
-      return json({ ...status, message: status.notice }, status.ready ? 200 : 202);
-    } catch (error) {
-      return apiError(error, "開始建立全商品 Excel 時發生未預期的錯誤。");
-    }
-  }
-
-  private async exportStatusOrDownload(request: ApiRequest): Promise<ApiResponse> {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const auditRequested = request.query.audit === "1";
-    const imageAuditRequested = request.query.imageAudit === "1";
-    if (!marketplaceId) return invalid("報表站點資訊無效，請重新匯出。");
-    if (auditRequested && imageAuditRequested) {
-      return invalid("一次只能執行一種全站健檢。");
-    }
-    if (auditRequested && request.query.download === "1") {
-      const exportId = this.reportIdentifier(request.query.exportId);
-      if (!exportId) {
-        return invalid("文案健檢 Excel 快照資訊無效，請重新掃描。");
-      }
-      try {
-        return await this.contentAuditOwner.download({ marketplaceId, exportId });
-      } catch (error) {
-        return apiError(error, "建立文案健檢 Excel 時發生未預期的錯誤。");
-      }
-    }
-    if (imageAuditRequested && request.query.download === "1") {
-      const exportId = this.reportIdentifier(request.query.exportId);
-      if (!exportId) {
-        return invalid("圖片健檢 Excel 快照資訊無效，請重新掃描。");
-      }
-      try {
-        return await this.imageAuditOwner.download({ marketplaceId, exportId });
-      } catch (error) {
-        return apiError(error, "建立圖片健檢 Excel 時發生未預期的錯誤。");
-      }
-    }
-    const reportId = this.reportIdentifier(request.query.reportId);
-    if (!reportId) return invalid("報表查詢資訊無效，請重新匯出。");
-    if (request.query.download !== "1" && !auditRequested && !imageAuditRequested) {
-      try {
-        const status = await this.listingsExportOwner.status({
-          marketplaceId,
-          reportId,
-        });
-        return json({ ...status, message: status.notice });
-      } catch (error) {
-        return apiError(error, "查詢全商品報表狀態時發生未預期的錯誤。");
-      }
-    }
-    const documentId = this.reportIdentifier(request.query.documentId);
-    if (!documentId) return invalid("報表文件資訊無效，請重新匯出。");
-    try {
-      const captured = await this.listingsExportOwner.capture({
-        marketplaceId,
-        reportId,
-        documentId,
-      });
-      const { context, snapshot: data } = captured;
-      if (auditRequested || imageAuditRequested) {
-        if (auditRequested) {
-          return json(await this.contentAuditOwner.captureFromListings({
-            context,
-            marketplaceId,
-            listings: data,
-          }));
-        }
-        return json(await this.imageAuditOwner.captureFromListings({
-          context,
-          marketplaceId,
-          listings: data,
-        }));
-      }
-      return await this.listingsExportOwner.download({
-        marketplaceId,
-        exportId: captured.exportId,
-      });
-    } catch (error) {
-      return apiError(error, "建立全商品 Excel 時發生未預期的錯誤。");
-    }
-  }
-
-  private reportIdentifier(value: unknown): string | null {
-    return reportIdentifier(value);
-  }
-
-  private writeBinding(input: Readonly<{
-    family: WritePreviewFamily;
-    operation: WriteOperation;
-    context: SpExecutionContext;
-    sellerSku: string;
-    idempotencyKey: string;
-    proposalFingerprint: string;
-  }>): WriteBinding {
-    return {
-      family: input.family,
-      previewKey: input.idempotencyKey,
-      context: input.context,
-      intents: [{
-        intentId: "primary",
-        operation: input.operation,
-        marketplaceId: input.context.marketplaceId,
-        sellerSku: input.sellerSku,
-        idempotencyKey: input.idempotencyKey,
-        proposalFingerprint: input.proposalFingerprint,
-      }],
-    };
   }
 
 }

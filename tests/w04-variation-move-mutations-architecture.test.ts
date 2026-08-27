@@ -1,8 +1,25 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 function source(path: string): string {
   return readFileSync(new URL(path, import.meta.url), "utf8");
+}
+
+const MAIN_ROOT = fileURLToPath(new URL("../src/main/", import.meta.url));
+
+function sourceFilePaths(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFilePaths(path);
+    if (!entry.isFile() || !/\.tsx?$/u.test(entry.name)) return [];
+    return / 2\.tsx?$/u.test(entry.name) ? [] : [path];
+  });
+}
+
+function portablePath(value: string): string {
+  return value.replace(/\\/gu, "/");
 }
 
 describe("W04 Variation Move mutation architecture", () => {
@@ -63,5 +80,38 @@ describe("W04 Variation Move mutation architecture", () => {
       "export function createVariationMoveGatewayProduction",
     );
     expect(productionGateway).toContain("new WeakMap");
+    expect(spApi).toMatch(
+      /createVariationMoveGatewayProduction\(\{[\s\S]*write:\s*listingsWriteProduction,[\s\S]*\}\)/u,
+    );
+    expect(spApi).not.toMatch(
+      /\b(?:ListingsWriteReceipt|SpApiPreCommitError|UPDATE_STATUS_UNKNOWN|PRECOMMIT_FAILED)\b/u,
+    );
+  });
+
+  it("keeps one production factory and maps the closed patch through fixed Listings writes", () => {
+    const files = sourceFilePaths(MAIN_ROOT);
+    const production = source(
+      "../src/main/amazon/variation-move-gateway-production.ts",
+    );
+    const factoryOwners = files
+      .filter((path) => /\bcreateVariationMoveGatewayProduction\(\{/u.test(
+        readFileSync(path, "utf8"),
+      ))
+      .map((path) => portablePath(relative(MAIN_ROOT, path)))
+      .sort();
+
+    expect(factoryOwners).toEqual(["amazon/sp-api.ts"]);
+    expect(production).toMatch(
+      /\bwrite:\s*ListingsWriteProduction\s*;/u,
+    );
+    expect(production).toMatch(
+      /dependencies\.write\.validationPreview\(\{[\s\S]*patchBody:\s*patchBody\(descriptor\)/u,
+    );
+    expect(production).toMatch(
+      /dependencies\.write\.commitOnce\(\{[\s\S]*patchBody:\s*body,[\s\S]*assertBeforeSend:\s*\(\)\s*=>\s*fence\.assertCurrent\(\),[\s\S]*recordBeforeSend:/u,
+    );
+    expect(production).toContain("error.code === \"UPDATE_STATUS_UNKNOWN\"");
+    expect(production).toContain("new SpApiPreCommitError(cause)");
+    expect(production).not.toMatch(/\bfetch\s*\(/u);
   });
 });

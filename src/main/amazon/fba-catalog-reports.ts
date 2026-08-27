@@ -21,6 +21,10 @@ import type {
   SpExecutionContext,
   SpExecutionContextAdapter,
 } from "./sp-execution-context";
+import {
+  readUnboundVariationAudit,
+  type UnboundVariationAuditSnapshot,
+} from "./variation-catalog-reads";
 
 export type FbaCatalogReportsPurpose =
   | "catalog"
@@ -43,6 +47,10 @@ export interface FbaCatalogReportsDemoSource {
     marketplaceId: MarketplaceId;
     signal?: AbortSignal;
   }>): BusinessPricingAuditSnapshot | Promise<BusinessPricingAuditSnapshot>;
+  unboundVariationAudit?(input: Readonly<{
+    marketplaceId: MarketplaceId;
+    signal?: AbortSignal;
+  }>): UnboundVariationAuditSnapshot | Promise<UnboundVariationAuditSnapshot>;
 }
 
 export type FbaCatalogExistingExport =
@@ -74,7 +82,8 @@ export type FbaCatalogReportsReadInput =
   | CatalogReadBase & Readonly<{
       view: "business-pricing-audit";
       heartbeat?: () => void;
-    }>;
+    }>
+  | CatalogReadBase & Readonly<{ view: "unbound-variation-audit" }>;
 
 function isIdentityFenceError(error: unknown): boolean {
   return error instanceof SpApiError && [
@@ -101,7 +110,7 @@ function rethrowReadFence(error: unknown): void {
 /**
  * Main-process coordinator for the fixed All Listings and Active Listings
  * read families. It owns no HTTP transport, credential, workbook or write
- * capability; those stay in ReportsRuntime, ListingsReadAdapter and ApiRouter.
+ * capability; those stay in ReportsRuntime and ListingsReadAdapter.
  */
 export class FbaCatalogReports {
   private readonly reports: ReportsPort;
@@ -292,12 +301,16 @@ export class FbaCatalogReports {
     }>,
   ): Promise<BusinessPricingAuditSnapshot>;
   async read(
+    input: CatalogReadBase & Readonly<{ view: "unbound-variation-audit" }>,
+  ): Promise<UnboundVariationAuditSnapshot>;
+  async read(
     input: FbaCatalogReportsReadInput,
   ): Promise<
     | FbaCatalogExport
     | FbaCatalogIdentitySnapshot
     | FbaCatalogSeed[]
     | BusinessPricingAuditSnapshot
+    | UnboundVariationAuditSnapshot
   > {
     const context = await this.executionContext(
       input.marketplaceId,
@@ -327,13 +340,24 @@ export class FbaCatalogReports {
         marketplaceId: input.marketplaceId,
         signal: input.signal,
       };
+      if (
+        input.view === "unbound-variation-audit" &&
+        !this.demo.unboundVariationAudit
+      ) {
+        throw new SpApiError("展示用未綁變體資料來源未設定。", {
+          status: 500,
+          code: "UPSTREAM_UNAVAILABLE",
+        });
+      }
       const result = input.view === "export"
         ? await this.demo.export(demoInput)
         : input.view === "identity"
           ? await this.demo.identity(demoInput)
           : input.view === "seeds"
             ? await this.demo.seeds(demoInput)
-            : await this.demo.businessPricingAudit(demoInput);
+            : input.view === "business-pricing-audit"
+              ? await this.demo.businessPricingAudit(demoInput)
+              : await this.demo.unboundVariationAudit!(demoInput);
       await this.context.assertCurrent(context);
       return result;
     }
@@ -376,6 +400,17 @@ export class FbaCatalogReports {
     }
     if (input.view === "seeds") {
       const result = readFbaCatalogSeeds(document.text, input.signal);
+      await this.context.assertCurrent(context);
+      return result;
+    }
+    if (input.view === "unbound-variation-audit") {
+      const result = await readUnboundVariationAudit(this.listings, {
+        marketplaceId: input.marketplaceId,
+        seeds: readFbaCatalogSeeds(document.text, input.signal),
+        signal: input.signal,
+        pace: (milliseconds) => this.pace(milliseconds, input.signal),
+        now: this.now,
+      });
       await this.context.assertCurrent(context);
       return result;
     }

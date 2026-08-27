@@ -5,9 +5,9 @@ import {
   listingContentGatewayProduction,
   listingImageGatewayProduction,
   listingPriceGatewayProduction,
-  SpApiError,
   verifyListingsAccess,
 } from "../src/main/amazon/sp-api";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import type { UpdateListingContentInput } from
   "../src/main/amazon/listing-content-types";
 import {

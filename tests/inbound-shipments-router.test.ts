@@ -3,14 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import {
-  SpApiError,
-  type ListingReportStatus,
-} from "../src/main/amazon/sp-api";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import type { FbaInboundReads } from
   "../src/main/amazon/fba-inbound-reads";
 import type { FbaInboundShipmentSnapshot } from
   "../src/main/amazon/fba-inbound-shipments";
+import type { DurableReportGatewayStatus } from
+  "../src/main/amazon/report-lifecycle";
+import { createDemoReportsAdapter } from
+  "../src/main/amazon/reports-runtime-demo";
 import {
   SpExecutionContextAfterAdapterError,
   SpExecutionContextError,
@@ -217,7 +218,7 @@ describe("FBA inbound shipment router job", () => {
     document?: string;
     reportDocument?: () => Promise<string>;
     reportStartError?: Error;
-    reportStart?: () => Promise<ListingReportStatus>;
+    reportStart?: () => Promise<DurableReportGatewayStatus>;
     readNoncompliance?: FbaInboundReads["readNoncompliance"];
     spExecutionContext?: SpExecutionContextAdapter;
     onAccountScope?: () => void;
@@ -256,32 +257,34 @@ describe("FBA inbound shipment router job", () => {
           ? { readNoncompliance: input.readNoncompliance }
           : {}),
       },
-      inboundNoncomplianceDemoReports: {
-        start: async () => {
-          input.onReportStart?.();
-          if (input.reportStart) return input.reportStart();
-          if (input.reportStartError) throw input.reportStartError;
-          return {
+      demoReportsAdapter: createDemoReportsAdapter({
+        inboundNoncomplianceDemoReports: {
+          start: async () => {
+            input.onReportStart?.();
+            if (input.reportStart) return input.reportStart();
+            if (input.reportStartError) throw input.reportStartError;
+            return {
+              mode: "demo",
+              ready: true,
+              reportId: "demo-inbound-report",
+              documentId: "demo-inbound-document",
+              status: "DONE",
+              notice: "ready",
+            };
+          },
+          status: async () => ({
             mode: "demo",
             ready: true,
             reportId: "demo-inbound-report",
             documentId: "demo-inbound-document",
             status: "DONE",
             notice: "ready",
-          };
+          }),
+          document: async () => input.reportDocument
+            ? input.reportDocument()
+            : input.document ?? issueDocument(),
         },
-        status: async () => ({
-          mode: "demo",
-          ready: true,
-          reportId: "demo-inbound-report",
-          documentId: "demo-inbound-document",
-          status: "DONE",
-          notice: "ready",
-        }),
-        document: async () => input.reportDocument
-          ? input.reportDocument()
-          : input.document ?? issueDocument(),
-      },
+      }),
       spExecutionContext: input.spExecutionContext,
     });
   }
@@ -1123,7 +1126,7 @@ describe("FBA inbound shipment router job", () => {
   it("requires a private explicit intent and the retry guard before recreating an ambiguous issue report", async () => {
     let now = Date.parse("2026-08-20T12:00:00.000Z");
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
-    const reportStart = vi.fn<() => Promise<ListingReportStatus>>()
+    const reportStart = vi.fn<() => Promise<DurableReportGatewayStatus>>()
       .mockRejectedValueOnce(new Error("connection closed after report POST"))
       .mockResolvedValueOnce({
         mode: "demo",
@@ -1301,7 +1304,7 @@ describe("FBA inbound shipment router job", () => {
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     const snapshot = vi.fn(async ({ startDate, endDate }) =>
       inboundSnapshot(startDate, endDate));
-    const reportStart = vi.fn<() => Promise<ListingReportStatus>>()
+    const reportStart = vi.fn<() => Promise<DurableReportGatewayStatus>>()
       .mockRejectedValueOnce(new Error("connection closed after report POST"))
       .mockResolvedValueOnce({
         mode: "demo",
@@ -1348,7 +1351,7 @@ describe("FBA inbound shipment router job", () => {
   it("creates one fresh report after a DONE document failure only on explicit retry", async () => {
     const snapshot = vi.fn(async ({ startDate, endDate }) =>
       inboundSnapshot(startDate, endDate));
-    const reportStart = vi.fn<() => Promise<ListingReportStatus>>()
+    const reportStart = vi.fn<() => Promise<DurableReportGatewayStatus>>()
       .mockResolvedValueOnce({
         mode: "demo",
         ready: true,

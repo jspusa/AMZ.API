@@ -4,7 +4,17 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-27 W07 Listing Content Excel batch mutation domain（issue #103，進行中）
+### 2026-08-27 C01 Contract facade／composition root convergence（issue #104，進行中）
+
+分支 `codex/c01-contract-facade` 以 W07 已合併的 current main exact SHA `83ec09c7c29fb480fae623327cc449debcf8fc94` 為基線。最高 public seam RED commit `1ee2649` 先證明 `GET /api/sp-api/listing-content/export` 仍在 Router 執行 legacy workflow而不委派新 owner；修正後 `POST／GET /api/sp-api/listing-content/export` 只交給 main-only `ListingsExportRoutes`，由既有 Listings export、Content Audit與Image Audit semantic owners持續擁有report lifecycle、snapshot與workbook。`ApiRouter.handle()`仍是唯一公開入口，保留exact envelope validation、單一method＋path key、人工盤點的63-case exact switch、canonical error translation、connection tests與context invalidation；Router不再實作Listings export workflow、Reports demo lifecycle或其他已抽離domain helper。
+
+`sp-api.ts` 已由 W07 的6,126行降為306行，只負責用固定semantic ports組裝長生命週期runtime、匯出窄化capability及統一credential cache invalidation；它不再宣告domain DTO、重匯出type barrel、持有Map／timer／demo資料、讀取env、建立任意URL／transport、解析Amazon payload／schema或產生workbook。SP credential／LWA／Seller ID與demo-mode state收斂到`sp-credential-runtime.ts`；marketplace metadata移至`sp-marketplaces.ts`；Listings item projection/read、content/B2B capability、price/content/image/B2B／Variation Move production gateways、共用fixed Listings write transport、variation demo/query/grouping、catalog/report demo source、subscription、restock與sales-trend各自回到main-only deep module。Advertising public DTO另移到`src/shared/advertising-strategy.ts`，renderer不再反向匯入main。
+
+正式Listings mutation仍只走`listings-write-production.ts`的固定官方PATCH seam：Validation Preview可以依既有bounded規則安全重試，正式commit保留final fence、record-before-send、單次送出、body／deadline界線與no-blind-retry；Price、B2B、Content、Images與Variation Move gateway只接受封閉descriptor與adapter-minted evidence。C01 AST architecture gate逐一鎖定每個factory只能在`sp-api.ts`建構一次且只收到allowlisted semantic ports，並禁止facade state、raw payload／schema／workbook、dynamic dispatch、任意transport、renderer／preload／shared反向依賴、domain回匯Router／facade及第二套report lifecycle。
+
+目前`api-router.ts`為1,073行，exact route inventory仍為63組；排除user-owned `* 2.*`後，`src`內TS／TSX／CSS／HTML physical lines合計119,304行，因此這次是ownership與檔案結構瘦身，不冒充整體功能碼大量刪除。final local `npm run check`通過234個測試檔／2,274 tests、TypeScript typecheck與production build；`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。獨立Spec與mutation-safety終審無P0–P3；Standards review唯一P3發現prototype inherited key可能被`in`誤認成Marketplace ID，已先以`constructor／toString／__proto__`及Seller ID regression重現，再改為`Object.hasOwn`，複查聚焦gate通過。Price／Image在crash後仍只保留既有generic durable pending而可能需要人工恢復，且共用write transport的request body bound仍依賴各closed domain builder；兩者皆不會blind resend，列為非阻擋後續深化。原工作樹exact 160個user-owned `* 2.*`未追蹤副本保持未修改／未納入，TypeScript與architecture scanner只排除這些精確副本名稱。implementation commit、PR與exact-head CI仍待完成；未部署、未安裝、未使用Notebook Key、未呼叫live Amazon、未做真實Touch ID／Windows Hello、Validation Preview、PATCH、readback或任何Amazon mutation。
+
+### 2026-08-27 W07 Listing Content Excel batch mutation domain（issue #103，PR #145 已合併）
 
 分支 `codex/w07-listing-content-batch` 以 W06 已合併的 current main exact SHA `14cbe2702c7d728054bd222c48beca9a71bb44f5` 為基線。最高 public seam RED commit `aaf2aa2` 先證明 `POST／PATCH /api/sp-api/listing-content/import` 雖可注入新 owner，仍落入 Router legacy implementation；修正後兩條 exact route 只把封閉 `preview／commit` command 交給 main-only `ListingContentBatchMutations`。owner 的 public port 僅有 `handle()` 與 `clear()`；Router 不再擁有 workbook parsing、batch plan、TTL、整批 preflight、native approval、逐 SKU commit、terminal replay或公開投影。新 owner 不取得 Listings gateway／raw PATCH，只能呼叫 W06 的 `previewOne／attemptOne`；Content Audit 與 batch mutation 透過中立 `content-audit-snapshot-evidence.ts` 的 reader／writer ports 共享 main-owned snapshot evidence，沒有 renderer／preload／shared 反向依賴。
 
@@ -12,7 +22,7 @@ trusted workbook schema、row digest、bounded legacy line-break recovery、tamp
 
 authorization plan固定最多15分鐘且不超過24小時 Content Audit snapshot evidence；post-stage、pre-approval、post-preflight與run入口都有fresh expiry fence。clear revision、scoped build-claim token、committing ownership與第二次 conflict prune防止late preview復活、同key雙建、過期in-flight plan被另一個commit刪除或長預檢回傳舊plan。完成結果改用獨立24小時bounded in-memory retention，因此長批次可以跨authorization TTL完成並在同account／mode下重播既有terminal result；process重啟後aggregate receipt不保留，但每個SKU的durable ledger仍禁止重送。W06 `attemptOne` 另在公開前exact驗證durable envelope、verified write lifecycle、internal evidence、input與result identity；W07在進到下一個SKU前再驗公開result，任何舊版／損壞cache都轉為`UPDATE_STATUS_UNKNOWN`。
 
-公開 preview／terminal DTO均逐欄深拷貝且不含account scope、generation、owner token、proposal fingerprint、precommit evidence或`_writeEvidence`。目前 `sp-api.ts` 為6,126行、`api-router.ts`為1,613行、W07 owner為1,191行。W07聚焦gate為6個測試檔／63 tests，全數通過；implementation／review-fix head `c173cd2351acf04f93ebc795c6b22ef42817e7f6` 的local `npm run check`通過214個測試檔／2,152 tests、TypeScript typecheck與production build，`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。獨立Standards、Spec與mutation-safety終審均無P0–P3；先前找出的workbook identity、TTL／replay race與malformed durable result全部已補RED並確認resolved。非阻擋後續可再為24小時volatile cache加count／byte quota、封住Content Audit evidence writer在clear後的late save，或另設bounded durable aggregate receipt；都不改變目前每SKU durable no-resend安全性。原工作樹約160個user-owned `* 2.*`未追蹤副本保持未修改／未納入。PR #145 已發布並轉為Ready；evidence head `f5f764f9477fc90e8d4889feacfe46c7b787aeea` 的Validate run `33040666392`／job `98413283672`與Windows x64 run `33040666382`／job `98413283687`均成功，Windows包含runner validation、unsigned x64 package、ASAR addon boundary與packaged Bridge smoke。本次交接回填會形成新的docs-only final head，仍須讓兩條CI在該head重跑；#103保持OPEN並等待使用者另行批准合併。未部署、未安裝、未使用Notebook Key、未呼叫live Amazon、未做真實Touch ID／Windows Hello、Validation Preview、PATCH、readback或任何Amazon mutation。
+公開 preview／terminal DTO均逐欄深拷貝且不含account scope、generation、owner token、proposal fingerprint、precommit evidence或`_writeEvidence`。W07完成時 `sp-api.ts` 為6,126行、`api-router.ts`為1,613行、W07 owner為1,191行。W07聚焦gate為6個測試檔／63 tests，全數通過；implementation／review-fix head `c173cd2351acf04f93ebc795c6b22ef42817e7f6` 的local `npm run check`通過214個測試檔／2,152 tests、TypeScript typecheck與production build，`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean。獨立Standards、Spec與mutation-safety終審均無P0–P3；先前找出的workbook identity、TTL／replay race與malformed durable result全部已補RED並確認resolved。非阻擋後續可再為24小時volatile cache加count／byte quota、封住Content Audit evidence writer在clear後的late save，或另設bounded durable aggregate receipt；都不改變目前每SKU durable no-resend安全性。原工作樹約160個user-owned `* 2.*`未追蹤副本保持未修改／未納入。PR #145 final head `04a4c27b402f2b269a0889bbeef5c72867404d42` 的Validate run `33041014081`／job `98414395867`與Windows x64 run `33041014057`／job `98414392570`均成功，Windows包含runner validation、unsigned x64 package、ASAR addon boundary與packaged Bridge smoke。使用者批准後，PR #145 已於2026-08-27 merge並以`Closes #103`關閉issue；current main exact SHA為`83ec09c7c29fb480fae623327cc449debcf8fc94`，#104 blocker已解除並由上方C01接續。未部署、未安裝、未使用Notebook Key、未呼叫live Amazon、未做真實Touch ID／Windows Hello、Validation Preview、PATCH、readback或任何Amazon mutation。
 
 ### 2026-08-27 W06 Listing Content mutation domain（issue #102，PR #144 已合併）
 
@@ -754,7 +764,7 @@ Amazon App：
 8. `src/main/credential-vault.ts` — Keychain-backed secret vault。
 9. `src/main/amazon/sp-execution-context.ts` — 不可變 marketplace／region／mode／account generation 與失效契約。
 10. `src/main/amazon/sp-api-error.ts` — canonical SP error vocabulary 與 renderer-boundary sanitizer。
-11. `src/main/api-router.ts` — 所有 UI API 路由、preview／commit 與輸入驗證。
+11. `src/main/api-router.ts` — 唯一公開request envelope、63條exact route switch、error translation、connection tests、production composition與context invalidation wiring；domain workflow只委派main-only owner。
 12. `src/main/amazon/listings-reads.ts` — 封閉的 Listings／PTD item、search、definition 語意與 scripted adapter。
 13. `src/main/amazon/listings-reads-production.ts` — 固定 GET endpoint、token／retry／fallback 與 PTD schema 外部 seam。
 14. `src/main/amazon/listings-response-error.ts` — Listings read／write 共用 status、issue 與 upstream error mapping。
@@ -794,14 +804,16 @@ Amazon App：
 48. `src/main/amazon/fba-inventory-replenishment.ts` — FBA Inventory／Replenishment 封閉語意、evidence、audit 與 scripted adapter。
 49. `src/main/amazon/fba-inventory-replenishment-production.ts` — 固定官方 request、token refresh 與 intent-specific retry／no-replay 外部 seam。
 50. `src/main/amazon/replenishment-audit.ts` — offers／metrics strict normalization、分頁、月份與 coverage 規則。
-51. `src/main/amazon/sp-api.ts` — 尚未抽離的 Listings write／legacy demo facade與production adapter composition；Orders read語意已移除。
-52. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
-53. `src/preload/index.ts` — 窄化 Bridge。
-54. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
-55. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
-56. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
-57. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
-58. `tests/*.test.ts` — 已建立的安全與回歸契約。
+51. `src/main/amazon/sp-api.ts` — 窄化SP composition root，只建立／連接固定semantic runtime與統一清除credential-bound cache，不含domain DTO、state、任意transport或Amazon payload規則。
+52. `src/main/amazon/sp-credential-runtime.ts` — SP credential、LWA token、Seller ID、demo mode與credential generation的唯一runtime owner。
+53. `src/main/amazon/listings-write-production.ts` — Price／B2B／Content／Images／Variation Move共用的固定Listings Validation Preview／單次commit transport與no-blind-retry boundary。
+54. `src/main/local-store.ts` — 商品主檔與 idempotency ledger。
+55. `src/preload/index.ts` — 窄化 Bridge。
+56. `src/renderer/src/connection-panel.tsx` — Notebook Key 安全連線與 API SOP。
+57. `src/renderer/src/components/sku-operations-drawer.tsx` — 文案與 Excel。
+58. 其他 `src/renderer/src/components/*drawer.tsx` — 價格、促銷、圖片、補貨、廣告。
+59. `.github/workflows/*.yml` — Validate、Pages、macOS 與 Windows build／release。
+60. `tests/*.test.ts` — 已建立的安全與回歸契約。
 
 ---
 

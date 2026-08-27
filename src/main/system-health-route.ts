@@ -7,7 +7,7 @@ import {
   DEFAULT_MARKETPLACE_ID,
   type MarketplaceId,
 } from "../shared/marketplaces";
-import { MARKETPLACES } from "./amazon/sp-api";
+import { MARKETPLACES } from "./amazon/sp-marketplaces";
 import { parseMarketplace } from "./route-input";
 import { invalid, json } from "./route-response";
 

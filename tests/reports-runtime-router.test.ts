@@ -9,6 +9,8 @@ import {
   reportsAdapterIdentity,
   type ReportsAdapter,
 } from "../src/main/amazon/reports-runtime";
+import { createDemoReportsAdapter } from
+  "../src/main/amazon/reports-runtime-demo";
 import {
   createScriptedSpExecutionContextAdapter,
   SpExecutionContextError,
@@ -205,10 +207,12 @@ describe("Reports runtime router wiring", () => {
         accountScope: "opaque-live-account",
       })),
       reportsAdapter,
-      allListingsDemoReports: {
-        start: legacyStart as never,
-        status: legacyStatus as never,
-      },
+      demoReportsAdapter: createDemoReportsAdapter({
+        allListingsDemoReports: {
+          start: legacyStart as never,
+          status: legacyStatus as never,
+        },
+      }),
     });
 
     const started = await router.handle(request({
@@ -498,38 +502,22 @@ describe("Reports runtime router wiring", () => {
       }),
     });
     const handles = await issuedBusinessPricingHandles(router);
-    const controller = new AbortController();
-    const getAuditData = (router as unknown as {
-      getSharedBusinessPricingAuditData(input: Readonly<{
-        marketplaceId: typeof US;
-        reportId: string;
-        documentId: string;
-        activeListingsReport: Readonly<{
-          reportId: string;
-          documentId: string;
-        }>;
-        signal: AbortSignal;
-      }>): Promise<unknown>;
-    }).getSharedBusinessPricingAuditData.bind(router);
-
-    const pending = getAuditData({
-      marketplaceId: US,
-      reportId: handles.allListingsReportId,
-      documentId: handles.allListingsDocumentId,
-      activeListingsReport: {
-        reportId: handles.activeListingsReportId,
-        documentId: handles.activeListingsDocumentId,
+    const pending = router.handle(request({
+      method: "GET",
+      path: "/api/sp-api/business-pricing-audit",
+      query: {
+        marketplaceId: US,
+        reportId: handles.allListingsReportId,
+        documentId: handles.allListingsDocumentId,
+        data: "1",
       },
-      signal: controller.signal,
-    });
+    }));
     await activeStarted;
     router.invalidateContext("account-changed");
-    controller.abort(new Error("context cleanup aborted the document read"));
 
-    await expect(pending).rejects.toMatchObject({
-      status: 409,
-      code: "SP_CONTEXT_INVALIDATED",
-    });
+    const response = await pending;
+    expect(response.status).toBe(409);
+    expect(body(response)).toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
   });
 
   it("does not degrade a Reports context invalidation to missing Active Business evidence", async () => {

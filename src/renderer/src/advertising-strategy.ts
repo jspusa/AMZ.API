@@ -1,17 +1,20 @@
-import type {
-  AdvertisingStrategyRow,
-  AdvertisingStrategySnapshot,
-  AdvertisingStrategyTier,
-  AdvertisingStrategyUnresolvedCode,
-  AdvertisingStrategyUnresolvedRow,
-} from "../../main/amazon/advertising-strategy";
+import {
+  ADVERTISING_STRATEGY_PRESETS,
+  ADVERTISING_STRATEGY_RULE,
+  ADVERTISING_STRATEGY_UNRESOLVED_MESSAGES,
+  type AdvertisingStrategyRow,
+  type AdvertisingStrategySnapshot,
+  type AdvertisingStrategyTier,
+  type AdvertisingStrategyUnresolvedCode,
+  type AdvertisingStrategyUnresolvedRow,
+} from "../../shared/advertising-strategy";
 
 export type {
   AdvertisingStrategyRow,
   AdvertisingStrategySnapshot,
   AdvertisingStrategyTier,
   AdvertisingStrategyUnresolvedRow,
-};
+} from "../../shared/advertising-strategy";
 
 export type AdvertisingStrategySnapshotExpectation = {
   marketplaceId: string;
@@ -20,27 +23,8 @@ export type AdvertisingStrategySnapshotExpectation = {
   currencyCode?: string;
 };
 
-const PRESETS = {
-  T1: { dailyBudget: 300, targetAcos: 0.35 },
-  T2: { dailyBudget: 100, targetAcos: 0.30 },
-  T3: { dailyBudget: 50, targetAcos: 0.30 },
-  T4: { dailyBudget: 50, targetAcos: 0.50 },
-} as const;
-
-const MANUAL_FIELDS = [
-  "specification",
-  "sbSales",
-  "sbSalesAcos",
-  "sbAttack",
-  "sbAttackAcos",
-  "sdAttack",
-  "sdAttackAcos",
-  "sdDefense",
-  "sdDefenseAcos",
-  "sdRemarketing",
-  "sdRemarketingAcos",
-  "otherAdvertising",
-] as const;
+const PRESETS = ADVERTISING_STRATEGY_PRESETS;
+const MANUAL_FIELDS = ADVERTISING_STRATEGY_RULE.manualFields;
 
 const COVERAGE_KEYS = [
   "currentFbaSkuCount",
@@ -66,13 +50,6 @@ const UNRESOLVED_CODES = new Set<AdvertisingStrategyUnresolvedCode>([
   "sp-invalid-asin",
   "sp-sku-asin-mismatch",
 ]);
-
-const UNRESOLVED_MESSAGES: Record<AdvertisingStrategyUnresolvedCode, string> = {
-  "sales-sku-asin-mismatch": "銷售報表的 Seller SKU 與 child ASIN 不屬於同一目前 FBA 商品，未分攤也未歸屬。",
-  "sales-duplicate-sku": "SKU 粒度銷售報表重複回傳同一 Seller SKU，全部重複列均未歸屬。",
-  "sp-invalid-asin": "SP advertised-product 列含無效 ASIN，未歸屬。",
-  "sp-sku-asin-mismatch": "SP advertised-product 的 Seller SKU 與 ASIN 不屬於同一目前 FBA 商品，未歸屬。",
-};
 
 const MAX_METRIC = 1_000_000_000_000;
 const MAX_CURRENT_FBA_ROWS = 100_000;
@@ -194,11 +171,12 @@ function parseRule(value: unknown): AdvertisingStrategySnapshot["rule"] {
     }
   }
   return {
-    salesTierMethod: "reported-sales-desc-sku-asc-ceil-20-50-80",
-    adsAttributionMethod: "exact-sku-or-unique-current-fba-asin",
-    missingReportMethod: "null-not-reported-never-zero",
-    unprovenSourceMethod: "anonymous-count-only-no-identifiers-or-metrics",
-    suggestionIsOverrideable: true,
+    salesTierMethod: ADVERTISING_STRATEGY_RULE.salesTierMethod,
+    adsAttributionMethod: ADVERTISING_STRATEGY_RULE.adsAttributionMethod,
+    missingReportMethod: ADVERTISING_STRATEGY_RULE.missingReportMethod,
+    unprovenSourceMethod: ADVERTISING_STRATEGY_RULE.unprovenSourceMethod,
+    suggestionIsOverrideable:
+      ADVERTISING_STRATEGY_RULE.suggestionIsOverrideable,
     presets: PRESETS,
     manualFields: MANUAL_FIELDS,
   };
@@ -335,7 +313,9 @@ function parseUnresolved(value: unknown): AdvertisingStrategyUnresolvedRow {
     !(row.asin === null || validAsin(row.asin)) ||
     typeof row.code !== "string" ||
     !UNRESOLVED_CODES.has(row.code as AdvertisingStrategyUnresolvedCode) ||
-    row.message !== UNRESOLVED_MESSAGES[row.code as AdvertisingStrategyUnresolvedCode] ||
+    row.message !== ADVERTISING_STRATEGY_UNRESOLVED_MESSAGES[
+      row.code as AdvertisingStrategyUnresolvedCode
+    ] ||
     !metric(row.amount)
   ) {
     fail("廣告策略未完成明細無法安全辨識。");

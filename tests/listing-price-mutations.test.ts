@@ -24,7 +24,7 @@ import type { ApiRequest } from "../src/shared/contracts";
 import type {
   ListingPriceSnapshot,
   PriceUpdateResult,
-} from "../src/main/amazon/sp-api";
+} from "../src/main/amazon/listing-price-types";
 
 const US = "ATVPDKIKX0DER" as const;
 

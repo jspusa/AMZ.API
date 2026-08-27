@@ -6,13 +6,16 @@ import {
   type SpExecutionContext,
 } from "../src/main/amazon/sp-execution-context";
 import { SpApiError } from "../src/main/amazon/sp-api-error";
+import type { ListingContentSnapshot } from
+  "../src/main/amazon/listing-content-types";
+import type { ListingImageSnapshot } from
+  "../src/main/amazon/listing-image-types";
+import type { ListingPriceSnapshot } from
+  "../src/main/amazon/listing-price-types";
 import type {
-  ListingContentSnapshot,
-  ListingImageSnapshot,
-  ListingPriceSnapshot,
   RestockPlanSnapshot,
   SubscribeAndSaveOfferSnapshot,
-} from "../src/main/amazon/sp-api";
+} from "../src/main/amazon/fba-inventory-replenishment";
 import type { ProductMasterState } from "../src/main/local-store";
 import type { MarketplaceId } from "../src/shared/marketplaces";
 
