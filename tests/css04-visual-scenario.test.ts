@@ -51,6 +51,11 @@ describe("CSS04 visual baseline scenario", () => {
     expect(source).toContain("reportCategoryButtons.count()");
     expect(source).toContain('name: "稅務", exact: true');
     expect(source).toContain('hasText: "CSS04 TAX"');
+    expect(source).toContain("scrollTargetSelector = null");
+    expect(source).toContain("viewportTargetSelector = null");
+    expect(source).toContain('scrollTargetSelector: "section.brand-sales-card"');
+    expect(source).toContain('viewportTargetSelector: ".brand-sales-pie-stage"');
+    expect(source).not.toContain("windowScrollTop: 600");
     expect(source).toContain('requiredScrollers: compact ? [".inbound-item-table-scroll"] : []');
     expect(source).toContain('motionSelector: ".sales-skater.is-jumping"');
   });
