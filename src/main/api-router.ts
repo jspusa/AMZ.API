@@ -107,8 +107,8 @@ import {
   catalogReportsDemoSource,
   getFbaVariationGroupingData,
   getListingContent,
-  getBusinessPricing,
   aplusContentPageAdapterProduction,
+  businessPricingGatewayProduction,
   customerFeedbackPageAdapterProduction,
   isConfiguredForMarketplace,
   getRestockPlan,
@@ -123,13 +123,11 @@ import {
   listingPriceGatewayProduction,
   variationMoveGatewayProduction,
   previewListingContentUpdate,
-  previewBusinessPriceUpdate,
   fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
   ordersPageAdapterProduction,
   searchListingsBySku,
   updateListingContent,
-  updateBusinessPrice,
   usesDemoMode,
   verifyListingsAccess,
   type ListingContentSnapshot,
@@ -1030,12 +1028,7 @@ export class ApiRouter {
         context: this.spExecutionContext,
         writeGate: this.writeGate,
         priceObserver: this.priceMutations,
-        operations: {
-          read: (identity) => getBusinessPricing(identity),
-          preview: (proposal) => previewBusinessPriceUpdate(proposal),
-          commit: (proposal, evidence, fence) =>
-            updateBusinessPrice(proposal, evidence, fence),
-        },
+        gateway: businessPricingGatewayProduction,
       });
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {

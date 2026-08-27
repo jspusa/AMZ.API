@@ -154,6 +154,10 @@ import type {
   ListingImageSourceEvidence,
   ListingImageUrlVector,
 } from "./listing-image-gateway";
+import {
+  businessPricingPatchBody,
+  type BusinessPricingGateway,
+} from "./business-pricing-gateway";
 
 export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
 export { SpApiError, SpApiPreCommitError } from "./sp-api-error";
@@ -5043,6 +5047,100 @@ export async function getBusinessPricing(input: {
 
   return fetchLiveBusinessPricing(input);
 }
+
+export const businessPricingGatewayProduction: BusinessPricingGateway = {
+  mode: (marketplaceId) =>
+    shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+  read: (identity, purpose) => shouldUseDemoMode(identity.marketplaceId)
+    ? Promise.resolve(demoBusinessPricing(
+        identity.marketplaceId,
+        identity.sellerSku,
+      ))
+    : fetchLiveBusinessPricing(identity, {
+        forceCapabilityRefresh: purpose === "mutation",
+      }),
+  quantityDiscountPlanSupported: (input) => {
+    if (shouldUseDemoMode(input.marketplaceId)) return true;
+    const schema = cachedBusinessPricingSchema(
+      input.marketplaceId,
+      input.productType,
+      input.schemaChecksum,
+    );
+    if (!schema) return false;
+    return businessPricingCapabilityFromSchema(
+      schema,
+      input.schemaChecksum,
+      {
+        audience: "B2B",
+        marketplaceId: input.marketplaceId,
+        currencyCode: MARKETPLACES[input.marketplaceId].currency,
+      },
+      input.plan.levels,
+    ).quantityDiscountsEditable;
+  },
+  validationPreview: async (patch) => {
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: businessPricingPatchBody(patch),
+      validationPreview: true,
+      validationPreviewIdentifiers: true,
+      captureResponseJson: true,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      requestId: response.headers.get("x-amzn-requestid"),
+      retryAfter: response.headers.get("retry-after"),
+      payload: listingsWriteResponsePayloads.get(response) ?? null,
+    };
+  },
+  commitOnce: async (patch, fence, recordDispatch) => {
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: businessPricingPatchBody(patch),
+      assertBeforeSend: () => fence.assertCurrent(),
+      recordBeforeSend: recordDispatch,
+      captureResponseJson: true,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      requestId: response.headers.get("x-amzn-requestid"),
+      retryAfter: response.headers.get("retry-after"),
+      payload: listingsWriteResponsePayloads.get(response) ?? null,
+    };
+  },
+  replaceDemoContribution: async (patch, fence) => {
+    const startedGeneration = credentialGeneration;
+    await fence.assertCurrent();
+    if (startedGeneration !== credentialGeneration) {
+      throw new SpApiError(
+        "Amazon 憑證已在展示 B2B 價格更新期間改變；舊結果已丟棄。",
+        { status: 409, code: "CREDENTIALS_CHANGED" },
+      );
+    }
+    demoBusinessPriceOverrides.set(
+      demoPriceKey(patch.marketplaceId, patch.sellerSku),
+      patch.amount,
+    );
+    if (patch.kind === "combined") {
+      demoBusinessQuantityDiscountOverrides.set(
+        demoPriceKey(patch.marketplaceId, patch.sellerSku),
+        {
+          discountType: "percent",
+          levels: patch.quantityDiscountPlan.levels.map((level) => ({
+            lowerBound: level.lowerBound,
+            value: level.value,
+          })),
+        },
+      );
+    }
+  },
+};
 
 function demoBusinessPricingAuditData(
   marketplaceId: MarketplaceId,
