@@ -18,6 +18,7 @@ const TWO_RULE_FINGERPRINT =
   "01ebc53fa12e8215f8d9e93328698f47fedc8c26f4b4550f3dd74f06e8dcd991";
 const MULTILINE_SELECTOR_FINGERPRINT =
   "12e71dfa26f353d10fbac14a99383084f0be86aa69d631738e66fad191b9cf52";
+const RETIRED_STYLESHEET = ["app", "css"].join(".");
 
 function byteLengthWithLfLineEndings(source: string): number {
   return Buffer.byteLength(source.replace(/\r\n?/gu, "\n"));
@@ -81,7 +82,11 @@ describe("CSS01 renderer stylesheet composition", () => {
         '@import "./notebook-key-bridge.css";',
         '@import "./variation.css";',
         '@import "./experience.css";',
-        '@import "../app.css";',
+        '@import "./image-home-audits.css";',
+        '@import "./brand-ads.css";',
+        '@import "./reports-reviews.css";',
+        '@import "./final-overrides.css";',
+        '@import "./fba-inbound.css";',
         "",
       ].join("\n"),
     );
@@ -112,14 +117,14 @@ describe("CSS01 renderer stylesheet composition", () => {
 
   it("treats checkout line endings as formatting in the logical stream", async () => {
     const directory = await createFixture({
-      "index.css": '@import "./app.css";\r\n',
-      "app.css": "button,\r\ninput { color: red; }\r\n",
+      "index.css": '@import "./payload.css";\r\n',
+      "payload.css": "button,\r\ninput { color: red; }\r\n",
     });
 
     const composition = await verifyStylesheetComposition({
       entryPath: join(directory, "index.css"),
       rootDirectory: directory,
-      expectedFiles: ["index.css", "app.css"],
+      expectedFiles: ["index.css", "payload.css"],
       expectedFingerprint: MULTILINE_SELECTOR_FINGERPRINT,
     });
 
@@ -216,13 +221,18 @@ describe("CSS01 renderer stylesheet composition", () => {
     const testDirectory = join(projectRoot, "tests");
     const bypasses: string[] = [];
     const currentTestPath = fileURLToPath(import.meta.url);
+    const retirementContractPath = join(
+      testDirectory,
+      "css04-stylesheet-extraction.test.ts",
+    );
     for (const file of (await listFiles(testDirectory)).filter(
       (path) =>
         /\.tsx?$/u.test(path) &&
         !basename(path).includes(" 2.") &&
-        path !== currentTestPath,
+        path !== currentTestPath &&
+        path !== retirementContractPath,
     )) {
-      if ((await readFile(file, "utf8")).includes("app.css")) {
+      if ((await readFile(file, "utf8")).includes(RETIRED_STYLESHEET)) {
         bypasses.push(relative(testDirectory, file).split(sep).join("/"));
       }
     }

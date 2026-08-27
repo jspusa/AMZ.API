@@ -33,6 +33,7 @@ const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
   "7ddb84bf404826a4ce1af22a1f2bb7abd43d103d9474be75c6647882173f583c";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
   "df09c6c8f0f7ad18c6ff0e7d263a2272215a68bae9ae39198c9ae36eb019ecfb";
+const RETIRED_STYLESHEET = ["app", "css"].join(".");
 
 const CSS04_PAYLOAD_EVIDENCE = [
   {
@@ -112,7 +113,9 @@ describe("CSS04 final stylesheet extraction", () => {
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);
 
-    await expect(stat(join(rootDirectory, "app.css"))).rejects.toMatchObject({
+    await expect(
+      stat(join(rootDirectory, RETIRED_STYLESHEET)),
+    ).rejects.toMatchObject({
       code: "ENOENT",
     });
 
@@ -121,11 +124,14 @@ describe("CSS04 final stylesheet extraction", () => {
       ["ls-files", "-z", "src/renderer/src", "scripts", "tests"],
       { cwd: repositoryDirectory, encoding: "utf8" },
     );
-    const thisTest = "tests/css04-stylesheet-extraction.test.ts";
     const retiredReferences: string[] = [];
     for (const path of stdout.split("\0").filter(Boolean)) {
-      if (path === thisTest) continue;
-      if (/app\.css/u.test(await readFile(join(repositoryDirectory, path), "utf8"))) {
+      if (path === `src/renderer/src/${RETIRED_STYLESHEET}`) continue;
+      if (
+        (await readFile(join(repositoryDirectory, path), "utf8")).includes(
+          RETIRED_STYLESHEET,
+        )
+      ) {
         retiredReferences.push(path);
       }
     }
