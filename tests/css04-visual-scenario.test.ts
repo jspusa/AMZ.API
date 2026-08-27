@@ -47,6 +47,10 @@ describe("CSS04 visual baseline scenario", () => {
     expect(source).toContain("count + 10 + (profile.reduced ? 1 : 0)");
     expect(source).toContain('scopeSelector: ".health-audit-home-grid"');
     expect(source).toContain('requiredScrollers: compact ? [".report-library-toolbar nav"] : []');
+    expect(source).toContain("expectedReportCategoryLabels");
+    expect(source).toContain("reportCategoryButtons.count()");
+    expect(source).toContain('name: "稅務", exact: true');
+    expect(source).toContain('hasText: "CSS04 TAX"');
     expect(source).toContain('requiredScrollers: compact ? [".inbound-item-table-scroll"] : []');
     expect(source).toContain('motionSelector: ".sales-skater.is-jumping"');
   });
