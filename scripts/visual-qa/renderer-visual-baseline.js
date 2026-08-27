@@ -1,7 +1,5 @@
 async (page) => {
   const controllerHash = await page.evaluate(() => window.location.hash);
-  const css02Extra = controllerHash.includes("css02-extra");
-  const css03Extra = controllerHash.includes("css03-extra");
   const allPhases = [
     { name: "before", baseUrl: "http://127.0.0.1:4173" },
     { name: "after", baseUrl: "http://127.0.0.1:4174" },
@@ -13,27 +11,72 @@ async (page) => {
     { name: "compact-320-large", width: 320, height: 568, font: "large", reduced: false },
     { name: "desktop-reduced", width: 1440, height: 1000, font: "standard", reduced: true },
   ];
+  const visualScenarios = [
+    {
+      key: "css03",
+      marker: "css03-extra",
+      evidenceDirectory: "css03-extra",
+      profileNames: [
+        "desktop-standard",
+        "compact-390-large",
+        "compact-320-large",
+        "desktop-reduced",
+      ],
+      surfaces: [
+        "sticky-nav",
+        "chart-scrolled",
+        "variation-long",
+        "variation-focus",
+        "bridge-focus",
+        "reduced-loading",
+      ],
+      expectedCaptures: ({ phases, profiles }) => phases.length * profiles.reduce(
+        (count, profile) => count + 5 + (profile.reduced ? 1 : 0),
+        0,
+      ),
+    },
+    {
+      key: "css02",
+      marker: "css02-extra",
+      evidenceDirectory: "css02-extra",
+      profileNames: ["desktop-standard", "compact-390-large", "desktop-reduced"],
+      surfaces: ["content", "subscription", "accounting"],
+      expectedCaptures: ({ phases, profiles, surfaces }) =>
+        phases.length * profiles.length * surfaces.length,
+    },
+    {
+      key: "css01",
+      marker: null,
+      evidenceDirectory: "css01",
+      profileNames: controllerHash.includes("single-profile")
+        ? ["desktop-standard"]
+        : null,
+      surfaces: [
+        "webgate",
+        "home",
+        "sales",
+        "brand",
+        "system-info",
+        "variation",
+        "b2b",
+        "reports",
+        "inbound",
+      ],
+      expectedCaptures: ({ phases, profiles, surfaces }) =>
+        phases.length * profiles.length * surfaces.length,
+    },
+  ];
+  const visualScenario = visualScenarios.find(
+    ({ marker }) => marker === null || controllerHash.includes(marker),
+  );
   const phases = controllerHash.includes("before-only")
     ? allPhases.slice(0, 1)
     : controllerHash.includes("after-only")
       ? allPhases.slice(1)
       : allPhases;
-  const profiles = css02Extra
-    ? allProfiles.filter(({ name }) =>
-      ["desktop-standard", "compact-390-large", "desktop-reduced"].includes(name),
-    )
-    : css03Extra
-      ? allProfiles.filter(({ name }) =>
-        [
-          "desktop-standard",
-          "compact-390-large",
-          "compact-320-large",
-          "desktop-reduced",
-        ].includes(name),
-      )
-      : controllerHash.includes("single-profile")
-        ? allProfiles.slice(0, 1)
-        : allProfiles;
+  const profiles = visualScenario.profileNames
+    ? allProfiles.filter(({ name }) => visualScenario.profileNames.includes(name))
+    : allProfiles;
   const results = [];
   const externalRequests = [];
   const consoleErrors = [];
@@ -477,12 +520,7 @@ async (page) => {
         `${comparisonKey}: layout metrics changed from ${JSON.stringify(beforeMetrics[comparisonKey])} to ${JSON.stringify(comparisonMetrics)}`,
       );
     }
-    const evidenceDirectory = css03Extra
-      ? "css03-extra"
-      : css02Extra
-        ? "css02-extra"
-        : "css01";
-    const path = `output/playwright/${evidenceDirectory}/${phase.name}/${profile.name}/${surface}.png`;
+    const path = `output/playwright/${visualScenario.evidenceDirectory}/${phase.name}/${profile.name}/${surface}.png`;
     await page.screenshot({
       path,
       fullPage: false,
@@ -601,444 +639,428 @@ async (page) => {
         reducedMotion: profile.reduced ? "reduce" : "no-preference",
       });
 
-      if (css02Extra) {
-        currentState = `${phase.name}/${profile.name}/css02-load`;
-        await page.goto(`${phase.baseUrl}/?font=${profile.font}`, {
-          waitUntil: "domcontentloaded",
-          timeout: 30_000,
-        });
-        await page.locator(".commerce-os").waitFor();
-
-        await openMenuItem("產品區", /文案/u);
-        const contentDialog = page.getByRole("dialog", { name: "商品內容" });
-        await contentDialog.waitFor();
-        await contentDialog.getByRole("tab", { name: "全站文案健檢" }).click();
-        await contentDialog
-          .getByRole("region", { name: "全站 FBA 文案健檢" })
-          .waitFor();
-        await capture({
-          phase,
-          profile,
-          surface: "content",
-          scopeSelector: ".sku-ops-drawer",
-          dialogSelector: ".sku-ops-drawer",
-        });
-        await contentDialog
-          .getByRole("button", { name: "關閉商品內容工具" })
-          .click();
-
-        await openMenuItem("價格區", /訂閱價格健檢/u);
-        const subscriptionDialog = page.getByRole("dialog", {
-          name: "全站訂閱價格健檢",
-        });
-        await subscriptionDialog.waitFor();
-        await capture({
-          phase,
-          profile,
-          surface: "subscription",
-          scopeSelector: ".subscription-audit-drawer",
-          dialogSelector: ".subscription-audit-drawer",
-        });
-        await subscriptionDialog
-          .getByRole("button", { name: "關閉全站訂閱省健檢" })
-          .click();
-
-        await openMenuItem("營運區", /^帳務/u);
-        const accountingDialog = page.getByRole("dialog", { name: "帳務" });
-        await accountingDialog.waitFor();
-        await capture({
-          phase,
-          profile,
-          surface: "accounting",
-          scopeSelector: ".accounting-drawer",
-          dialogSelector: ".accounting-drawer",
-        });
-        await accountingDialog
-          .getByRole("button", { name: "關閉帳務" })
-          .click();
-
-        await auditRequests(phase, profile);
-        continue;
-      }
-
-      if (css03Extra) {
-        const compact = profile.width <= 390;
-        const compact320 = profile.name === "compact-320-large";
-        const expectedPage = expectedPageFor(profile);
-        currentState = `${phase.name}/${profile.name}/css03-load`;
-        await page.goto(`${phase.baseUrl}/?font=${profile.font}&css03=1`, {
-          waitUntil: "domcontentloaded",
-          timeout: 30_000,
-        });
-        await page.locator(".commerce-os").waitFor();
-        await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
-        await page.locator(".sales-trend-line.is-current").waitFor();
-
-        await page.evaluate(() => {
-          const maximum = document.documentElement.scrollHeight - window.innerHeight;
-          window.scrollTo({ top: Math.min(640, maximum), behavior: "instant" });
-        });
-        await page.waitForFunction(() => window.scrollY > 0);
-        currentState = `${phase.name}/${profile.name}/sticky-nav`;
-        await focusWithKeyboard(".workspace-primary-menu-trigger");
-        await capture({
-          phase,
-          profile,
-          surface: "sticky-nav",
-          scopeSelector: ".workspace-header",
-          expectedPage,
-          stickySelector: ".workspace-header",
-          focusSelector: ".workspace-primary-menu-trigger",
-        });
-
-        await page.locator("section.sales-trend").scrollIntoViewIfNeeded();
-        currentState = `${phase.name}/${profile.name}/chart-scrolled`;
-        await focusWithKeyboard(".sales-trend svg");
-        await exerciseHorizontalScroller(".sales-trend-plot-scroll", compact);
-        await capture({
-          phase,
-          profile,
-          surface: "chart-scrolled",
-          scopeSelector: "section.sales-trend",
-          allowedScrollers: [".sales-trend-plot-scroll"],
-          requiredScrollers: compact ? [".sales-trend-plot-scroll"] : [],
-          strictScrollers: true,
-          expectedPage,
-          focusSelector: ".sales-trend svg",
-        });
-
-        await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
-        await openMenuItem("產品區", /變體/u);
-        const variationDialog = page.getByRole("dialog", { name: "變體規劃與改掛" });
-        await variationDialog.waitFor();
-        await variationDialog.getByLabel("來源 Seller SKU").fill("SOURCE-4OZ");
-        await variationDialog.locator('[data-variation-lookup="source"]').click();
-        await variationDialog
-          .locator(".variation-family-summary", { hasText: "SOURCE-PARENT" })
-          .waitFor();
-        await variationDialog.getByLabel("目標 Parent SKU").fill("TARGET-PARENT");
-        await variationDialog.locator('[data-variation-lookup="target"]').click();
-        await variationDialog
-          .locator(".variation-target-details", { hasText: "TARGET-PARENT" })
-          .waitFor();
-        await variationDialog
-          .locator(".variation-child-card", { hasText: "SOURCE-4OZ" })
-          .getByRole("button", { name: "放入解除變體存放區" })
-          .click();
-        await variationDialog
-          .locator(".variation-staged-card", { hasText: "SOURCE-4OZ" })
-          .waitFor();
-        ensure(
-          await variationDialog
-            .getByRole("button", { name: "確認解除變體" })
-            .isDisabled(),
-          `${phase.name}/${profile.name}/variation: demo write action became enabled`,
-        );
-
-        currentState = `${phase.name}/${profile.name}/variation-long`;
-        await exerciseVerticalScroller(".variation-child-list");
-        await capture({
-          phase,
-          profile,
-          surface: "variation-long",
-          scopeSelector: ".variation-planner-drawer",
-          dialogSelector: ".variation-planner-drawer",
-          strictScrollers: true,
-          requireScopeContainment: true,
-          expectedPage,
-          verticalScrollerSelector: ".variation-child-list",
-          verticalLastItemSelector: ".variation-child-list .variation-child-card:last-child",
-        });
-
-        currentState = `${phase.name}/${profile.name}/variation-focus`;
-        await focusWithKeyboard(".variation-planner-drawer .drawer-header > button");
-        await page.evaluate(() => {
-          window.scrollTo({ top: 0, behavior: "instant" });
-          const drawer = document.querySelector(".variation-planner-drawer");
-          if (drawer instanceof HTMLElement) drawer.scrollTop = 0;
-        });
-        await capture({
-          phase,
-          profile,
-          surface: "variation-focus",
-          scopeSelector: ".variation-planner-drawer",
-          dialogSelector: ".variation-planner-drawer",
-          strictScrollers: true,
-          requireScopeContainment: true,
-          expectedPage,
-          focusSelector: ".variation-planner-drawer .drawer-header > button",
-        });
-        await page.keyboard.press("Escape");
-        await variationDialog.waitFor({ state: "detached" });
-
-        await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
-        const connectionButton = page.getByRole("button", {
-          name: /開啟本機安全連線設定/u,
-        });
-        await connectionButton.focus();
-        await page.keyboard.press("Enter");
-        const bridgeDialog = page.getByRole("dialog", { name: "Notebook 安全連線" });
-        await bridgeDialog.waitFor();
-        currentState = `${phase.name}/${profile.name}/bridge-focus`;
-        await focusWithKeyboard(".connection-panel > header > button");
-        await page.evaluate(() => {
-          window.scrollTo({ top: 0, behavior: "instant" });
-          const panel = document.querySelector(".connection-panel");
-          if (panel instanceof HTMLElement) {
-            panel.scrollTop = 0;
-            panel.scrollLeft = 0;
-          }
-        });
-        await capture({
-          phase,
-          profile,
-          surface: "bridge-focus",
-          scopeSelector: ".connection-panel",
-          dialogSelector: ".connection-panel",
-          closeSelector: ".connection-panel > header > button",
-          allowedScrollers: compact320 ? [".connection-panel"] : [],
-          requiredScrollers: compact320 ? [".connection-panel"] : [],
-          strictScrollers: true,
-          requireScopeContainment: !compact320,
-          expectedPage,
-          focusSelector: ".connection-panel > header > button",
-        });
-        await page.keyboard.press("Escape");
-        await bridgeDialog.waitFor({ state: "detached" });
-        await auditRequests(phase, profile);
-
-        if (profile.reduced) {
-          currentState = `${phase.name}/${profile.name}/reduced-loading-load`;
-          await page.goto(
-            `${phase.baseUrl}/?font=${profile.font}&css03=1&sales-loading=1`,
-            { waitUntil: "domcontentloaded", timeout: 30_000 },
-          );
+      switch (visualScenario.key) {
+        case "css02": {
+          currentState = `${phase.name}/${profile.name}/css02-load`;
+          await page.goto(`${phase.baseUrl}/?font=${profile.font}`, {
+            waitUntil: "domcontentloaded",
+            timeout: 30_000,
+          });
           await page.locator(".commerce-os").waitFor();
-          await page
-            .getByRole("group", { name: "銷售趨勢日期範圍" })
-            .getByRole("button", { name: "30 天", exact: true })
-            .click();
-          await page.locator(".sales-trend-loading span").waitFor();
+
+          await openMenuItem("產品區", /文案/u);
+          const contentDialog = page.getByRole("dialog", { name: "商品內容" });
+          await contentDialog.waitFor();
+          await contentDialog.getByRole("tab", { name: "全站文案健檢" }).click();
+          await contentDialog
+            .getByRole("region", { name: "全站 FBA 文案健檢" })
+            .waitFor();
           await capture({
             phase,
             profile,
-            surface: "reduced-loading",
+            surface: "content",
+            scopeSelector: ".sku-ops-drawer",
+            dialogSelector: ".sku-ops-drawer",
+          });
+          await contentDialog
+            .getByRole("button", { name: "關閉商品內容工具" })
+            .click();
+
+          await openMenuItem("價格區", /訂閱價格健檢/u);
+          const subscriptionDialog = page.getByRole("dialog", {
+            name: "全站訂閱價格健檢",
+          });
+          await subscriptionDialog.waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "subscription",
+            scopeSelector: ".subscription-audit-drawer",
+            dialogSelector: ".subscription-audit-drawer",
+          });
+          await subscriptionDialog
+            .getByRole("button", { name: "關閉全站訂閱省健檢" })
+            .click();
+
+          await openMenuItem("營運區", /^帳務/u);
+          const accountingDialog = page.getByRole("dialog", { name: "帳務" });
+          await accountingDialog.waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "accounting",
+            scopeSelector: ".accounting-drawer",
+            dialogSelector: ".accounting-drawer",
+          });
+          await accountingDialog
+            .getByRole("button", { name: "關閉帳務" })
+            .click();
+
+          await auditRequests(phase, profile);
+          break;
+        }
+        case "css03": {
+          const compact = profile.width <= 390;
+          const compact320 = profile.name === "compact-320-large";
+          const expectedPage = expectedPageFor(profile);
+          currentState = `${phase.name}/${profile.name}/css03-load`;
+          await page.goto(`${phase.baseUrl}/?font=${profile.font}&css03=1`, {
+            waitUntil: "domcontentloaded",
+            timeout: 30_000,
+          });
+          await page.locator(".commerce-os").waitFor();
+          await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
+          await page.locator(".sales-trend-line.is-current").waitFor();
+
+          await page.evaluate(() => {
+            const maximum = document.documentElement.scrollHeight - window.innerHeight;
+            window.scrollTo({ top: Math.min(640, maximum), behavior: "instant" });
+          });
+          await page.waitForFunction(() => window.scrollY > 0);
+          currentState = `${phase.name}/${profile.name}/sticky-nav`;
+          await focusWithKeyboard(".workspace-primary-menu-trigger");
+          await capture({
+            phase,
+            profile,
+            surface: "sticky-nav",
+            scopeSelector: ".workspace-header",
+            expectedPage,
+            stickySelector: ".workspace-header",
+            focusSelector: ".workspace-primary-menu-trigger",
+          });
+
+          await page.locator("section.sales-trend").scrollIntoViewIfNeeded();
+          currentState = `${phase.name}/${profile.name}/chart-scrolled`;
+          await focusWithKeyboard(".sales-trend svg");
+          await exerciseHorizontalScroller(".sales-trend-plot-scroll", compact);
+          await capture({
+            phase,
+            profile,
+            surface: "chart-scrolled",
             scopeSelector: "section.sales-trend",
+            allowedScrollers: [".sales-trend-plot-scroll"],
+            requiredScrollers: compact ? [".sales-trend-plot-scroll"] : [],
             strictScrollers: true,
             expectedPage,
-            motionSelector: ".sales-trend-loading span",
+            focusSelector: ".sales-trend svg",
           });
+
+          await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+          await openMenuItem("產品區", /變體/u);
+          const variationDialog = page.getByRole("dialog", { name: "變體規劃與改掛" });
+          await variationDialog.waitFor();
+          await variationDialog.getByLabel("來源 Seller SKU").fill("SOURCE-4OZ");
+          await variationDialog.locator('[data-variation-lookup="source"]').click();
+          await variationDialog
+            .locator(".variation-family-summary", { hasText: "SOURCE-PARENT" })
+            .waitFor();
+          await variationDialog.getByLabel("目標 Parent SKU").fill("TARGET-PARENT");
+          await variationDialog.locator('[data-variation-lookup="target"]').click();
+          await variationDialog
+            .locator(".variation-target-details", { hasText: "TARGET-PARENT" })
+            .waitFor();
+          await variationDialog
+            .locator(".variation-child-card", { hasText: "SOURCE-4OZ" })
+            .getByRole("button", { name: "放入解除變體存放區" })
+            .click();
+          await variationDialog
+            .locator(".variation-staged-card", { hasText: "SOURCE-4OZ" })
+            .waitFor();
+          ensure(
+            await variationDialog
+              .getByRole("button", { name: "確認解除變體" })
+              .isDisabled(),
+            `${phase.name}/${profile.name}/variation: demo write action became enabled`,
+          );
+
+          currentState = `${phase.name}/${profile.name}/variation-long`;
+          await exerciseVerticalScroller(".variation-child-list");
+          await capture({
+            phase,
+            profile,
+            surface: "variation-long",
+            scopeSelector: ".variation-planner-drawer",
+            dialogSelector: ".variation-planner-drawer",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+            verticalScrollerSelector: ".variation-child-list",
+            verticalLastItemSelector: ".variation-child-list .variation-child-card:last-child",
+          });
+
+          currentState = `${phase.name}/${profile.name}/variation-focus`;
+          await focusWithKeyboard(".variation-planner-drawer .drawer-header > button");
+          await page.evaluate(() => {
+            window.scrollTo({ top: 0, behavior: "instant" });
+            const drawer = document.querySelector(".variation-planner-drawer");
+            if (drawer instanceof HTMLElement) drawer.scrollTop = 0;
+          });
+          await capture({
+            phase,
+            profile,
+            surface: "variation-focus",
+            scopeSelector: ".variation-planner-drawer",
+            dialogSelector: ".variation-planner-drawer",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+            focusSelector: ".variation-planner-drawer .drawer-header > button",
+          });
+          await page.keyboard.press("Escape");
+          await variationDialog.waitFor({ state: "detached" });
+
+          await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+          const connectionButton = page.getByRole("button", {
+            name: /開啟本機安全連線設定/u,
+          });
+          await connectionButton.focus();
+          await page.keyboard.press("Enter");
+          const bridgeDialog = page.getByRole("dialog", { name: "Notebook 安全連線" });
+          await bridgeDialog.waitFor();
+          currentState = `${phase.name}/${profile.name}/bridge-focus`;
+          await focusWithKeyboard(".connection-panel > header > button");
+          await page.evaluate(() => {
+            window.scrollTo({ top: 0, behavior: "instant" });
+            const panel = document.querySelector(".connection-panel");
+            if (panel instanceof HTMLElement) {
+              panel.scrollTop = 0;
+              panel.scrollLeft = 0;
+            }
+          });
+          await capture({
+            phase,
+            profile,
+            surface: "bridge-focus",
+            scopeSelector: ".connection-panel",
+            dialogSelector: ".connection-panel",
+            closeSelector: ".connection-panel > header > button",
+            allowedScrollers: compact320 ? [".connection-panel"] : [],
+            requiredScrollers: compact320 ? [".connection-panel"] : [],
+            strictScrollers: true,
+            requireScopeContainment: !compact320,
+            expectedPage,
+            focusSelector: ".connection-panel > header > button",
+          });
+          await page.keyboard.press("Escape");
+          await bridgeDialog.waitFor({ state: "detached" });
           await auditRequests(phase, profile);
+
+          if (profile.reduced) {
+            currentState = `${phase.name}/${profile.name}/reduced-loading-load`;
+            await page.goto(
+              `${phase.baseUrl}/?font=${profile.font}&css03=1&sales-loading=1`,
+              { waitUntil: "domcontentloaded", timeout: 30_000 },
+            );
+            await page.locator(".commerce-os").waitFor();
+            await page
+              .getByRole("group", { name: "銷售趨勢日期範圍" })
+              .getByRole("button", { name: "30 天", exact: true })
+              .click();
+            await page.locator(".sales-trend-loading span").waitFor();
+            await capture({
+              phase,
+              profile,
+              surface: "reduced-loading",
+              scopeSelector: "section.sales-trend",
+              strictScrollers: true,
+              expectedPage,
+              motionSelector: ".sales-trend-loading span",
+            });
+            await auditRequests(phase, profile);
+          }
+          break;
         }
-        continue;
+        case "css01": {
+          currentState = `${phase.name}/${profile.name}/webgate-load`;
+          await page.goto(
+            `${phase.baseUrl}/?gate=1&font=${profile.font}`,
+            { waitUntil: "domcontentloaded", timeout: 30_000 },
+          );
+          await page.locator("main.web-gate").waitFor();
+          await page
+            .locator('.web-gate-primary[href="amz-api://launch"]')
+            .waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "webgate",
+            scopeSelector: "main.web-gate",
+          });
+
+          currentState = `${phase.name}/${profile.name}/home-load`;
+          await page.goto(
+            `${phase.baseUrl}/?font=${profile.font}`,
+            { waitUntil: "domcontentloaded", timeout: 30_000 },
+          );
+          await page.locator(".commerce-os").waitFor();
+          await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
+          await page.locator(".sales-trend-line.is-current").waitFor();
+          await page.locator(".sales-trend-line.is-comparison").waitFor();
+          await page.locator('section.brand-sales-card[aria-busy="false"]').waitFor();
+          await page.waitForFunction(
+            () => document.querySelectorAll(".brand-sales-pie-slice").length === 6,
+          );
+          await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+          await capture({
+            phase,
+            profile,
+            surface: "home",
+            scopeSelector: "main#workspace-top",
+            allowedScrollers: [".sales-trend-plot-scroll"],
+          });
+
+          await page.locator("section.operations-pulse").scrollIntoViewIfNeeded();
+          await capture({
+            phase,
+            profile,
+            surface: "sales",
+            scopeSelector: "section.operations-pulse",
+            allowedScrollers: [".sales-trend-plot-scroll"],
+          });
+
+          await page.locator("section.brand-sales-card").scrollIntoViewIfNeeded();
+          await capture({
+            phase,
+            profile,
+            surface: "brand",
+            scopeSelector: "section.brand-sales-card",
+          });
+
+          await page.getByRole("button", { name: "開啟系統資訊" }).click();
+          const systemDialog = page.getByRole("dialog", { name: "進階與系統資訊" });
+          await systemDialog.waitFor();
+          await systemDialog.getByText("目前本機 App 0.1.31").waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "system-info",
+            scopeSelector: ".system-health-drawer",
+            dialogSelector: ".system-health-drawer",
+          });
+          await systemDialog
+            .getByRole("button", { name: "關閉進階與系統資訊" })
+            .click();
+
+          await openMenuItem("產品區", /變體/u);
+          const variationDialog = page.getByRole("dialog", { name: "變體規劃與改掛" });
+          await variationDialog.waitFor();
+          await variationDialog.getByLabel("來源 Seller SKU").fill("SOURCE-4OZ");
+          await variationDialog.locator('[data-variation-lookup="source"]').click();
+          await variationDialog
+            .locator(".variation-family-summary", { hasText: "SOURCE-PARENT" })
+            .waitFor();
+          await variationDialog.getByLabel("目標 Parent SKU").fill("TARGET-PARENT");
+          await variationDialog.locator('[data-variation-lookup="target"]').click();
+          await variationDialog
+            .locator(".variation-target-details", { hasText: "TARGET-PARENT" })
+            .waitFor();
+          await variationDialog
+            .locator(".variation-child-card", { hasText: "SOURCE-4OZ" })
+            .getByRole("button", { name: "放入解除變體存放區" })
+            .click();
+          await variationDialog
+            .locator(".variation-staged-card", { hasText: "SOURCE-4OZ" })
+            .waitFor();
+          ensure(
+            await variationDialog
+              .getByRole("button", { name: "確認解除變體" })
+              .isDisabled(),
+            `${phase.name}/${profile.name}/variation: demo write action became enabled`,
+          );
+          await capture({
+            phase,
+            profile,
+            surface: "variation",
+            scopeSelector: ".variation-planner-drawer",
+            dialogSelector: ".variation-planner-drawer",
+          });
+          await variationDialog.getByRole("button", { name: "關閉變體規劃" }).click();
+
+          await openMenuItem("價格區", /B2B 價格健檢/u);
+          const b2bDialog = page.getByRole("dialog", { name: "全站 B2B 價格健檢" });
+          await b2bDialog.waitFor();
+          await b2bDialog
+            .getByRole("button", { name: "開始全站 B2B 價格健檢" })
+            .click();
+          await b2bDialog
+            .getByRole("group", { name: "B2B 價格健檢摘要與篩選" })
+            .waitFor();
+          await b2bDialog
+            .getByRole("listitem")
+            .filter({ hasText: "B2B-DEMO-01" })
+            .waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "b2b",
+            scopeSelector: ".business-pricing-audit-drawer",
+            dialogSelector: ".business-pricing-audit-drawer",
+          });
+          await b2bDialog
+            .getByRole("button", { name: "關閉全站 B2B 價格健檢" })
+            .click();
+
+          await openMenuItem("報表區", /^Amazon API 文件庫/u);
+          const reportsDialog = page.getByRole("dialog", { name: "報表區" });
+          await reportsDialog.waitFor();
+          await reportsDialog
+            .getByRole("heading", { name: "Amazon 有的報表類型" })
+            .waitFor();
+          await reportsDialog.locator(".report-library-report").waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "reports",
+            scopeSelector: ".report-library-drawer",
+            dialogSelector: ".report-library-drawer",
+            allowedScrollers: [".report-library-toolbar nav"],
+          });
+          await reportsDialog
+            .getByRole("button", { name: "關閉 Amazon API 文件庫" })
+            .click();
+
+          await openMenuItem("報表區", /^入庫貨件/u);
+          const inboundDialog = page.getByRole("dialog", {
+            name: "FBA 入庫貨件追蹤",
+          });
+          await inboundDialog.waitFor();
+          await inboundDialog.getByLabel("開始日期").fill("2026-05-24");
+          await inboundDialog.getByLabel("結束日期").fill("2026-08-21");
+          await inboundDialog
+            .getByRole("button", { name: "同步 US 貨件與全部商品" })
+            .click();
+          await inboundDialog.locator(".inbound-summary").waitFor();
+          const shipment = inboundDialog
+            .locator("details.inbound-shipment")
+            .filter({ hasText: "FBA15VISUAL001" });
+          await shipment.waitFor();
+          await shipment.locator("summary").click();
+          await shipment.locator(".inbound-item-table-scroll").waitFor();
+          await capture({
+            phase,
+            profile,
+            surface: "inbound",
+            scopeSelector: ".inbound-shipments-drawer",
+            dialogSelector: ".inbound-shipments-drawer",
+            allowedScrollers: [".inbound-item-table-scroll"],
+          });
+
+          await auditRequests(phase, profile);
+          break;
+        }
+        default: {
+          fail(`unknown visual scenario ${visualScenario.key}`);
+        }
       }
-
-      currentState = `${phase.name}/${profile.name}/webgate-load`;
-      await page.goto(
-        `${phase.baseUrl}/?gate=1&font=${profile.font}`,
-        { waitUntil: "domcontentloaded", timeout: 30_000 },
-      );
-      await page.locator("main.web-gate").waitFor();
-      await page
-        .locator('.web-gate-primary[href="amz-api://launch"]')
-        .waitFor();
-      await capture({
-        phase,
-        profile,
-        surface: "webgate",
-        scopeSelector: "main.web-gate",
-      });
-
-      currentState = `${phase.name}/${profile.name}/home-load`;
-      await page.goto(
-        `${phase.baseUrl}/?font=${profile.font}`,
-        { waitUntil: "domcontentloaded", timeout: 30_000 },
-      );
-      await page.locator(".commerce-os").waitFor();
-      await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
-      await page.locator(".sales-trend-line.is-current").waitFor();
-      await page.locator(".sales-trend-line.is-comparison").waitFor();
-      await page.locator('section.brand-sales-card[aria-busy="false"]').waitFor();
-      await page.waitForFunction(
-        () => document.querySelectorAll(".brand-sales-pie-slice").length === 6,
-      );
-      await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
-      await capture({
-        phase,
-        profile,
-        surface: "home",
-        scopeSelector: "main#workspace-top",
-        allowedScrollers: [".sales-trend-plot-scroll"],
-      });
-
-      await page.locator("section.operations-pulse").scrollIntoViewIfNeeded();
-      await capture({
-        phase,
-        profile,
-        surface: "sales",
-        scopeSelector: "section.operations-pulse",
-        allowedScrollers: [".sales-trend-plot-scroll"],
-      });
-
-      await page.locator("section.brand-sales-card").scrollIntoViewIfNeeded();
-      await capture({
-        phase,
-        profile,
-        surface: "brand",
-        scopeSelector: "section.brand-sales-card",
-      });
-
-      await page.getByRole("button", { name: "開啟系統資訊" }).click();
-      const systemDialog = page.getByRole("dialog", { name: "進階與系統資訊" });
-      await systemDialog.waitFor();
-      await systemDialog.getByText("目前本機 App 0.1.31").waitFor();
-      await capture({
-        phase,
-        profile,
-        surface: "system-info",
-        scopeSelector: ".system-health-drawer",
-        dialogSelector: ".system-health-drawer",
-      });
-      await systemDialog
-        .getByRole("button", { name: "關閉進階與系統資訊" })
-        .click();
-
-      await openMenuItem("產品區", /變體/u);
-      const variationDialog = page.getByRole("dialog", { name: "變體規劃與改掛" });
-      await variationDialog.waitFor();
-      await variationDialog.getByLabel("來源 Seller SKU").fill("SOURCE-4OZ");
-      await variationDialog.locator('[data-variation-lookup="source"]').click();
-      await variationDialog
-        .locator(".variation-family-summary", { hasText: "SOURCE-PARENT" })
-        .waitFor();
-      await variationDialog.getByLabel("目標 Parent SKU").fill("TARGET-PARENT");
-      await variationDialog.locator('[data-variation-lookup="target"]').click();
-      await variationDialog
-        .locator(".variation-target-details", { hasText: "TARGET-PARENT" })
-        .waitFor();
-      await variationDialog
-        .locator(".variation-child-card", { hasText: "SOURCE-4OZ" })
-        .getByRole("button", { name: "放入解除變體存放區" })
-        .click();
-      await variationDialog
-        .locator(".variation-staged-card", { hasText: "SOURCE-4OZ" })
-        .waitFor();
-      ensure(
-        await variationDialog
-          .getByRole("button", { name: "確認解除變體" })
-          .isDisabled(),
-        `${phase.name}/${profile.name}/variation: demo write action became enabled`,
-      );
-      await capture({
-        phase,
-        profile,
-        surface: "variation",
-        scopeSelector: ".variation-planner-drawer",
-        dialogSelector: ".variation-planner-drawer",
-      });
-      await variationDialog.getByRole("button", { name: "關閉變體規劃" }).click();
-
-      await openMenuItem("價格區", /B2B 價格健檢/u);
-      const b2bDialog = page.getByRole("dialog", { name: "全站 B2B 價格健檢" });
-      await b2bDialog.waitFor();
-      await b2bDialog
-        .getByRole("button", { name: "開始全站 B2B 價格健檢" })
-        .click();
-      await b2bDialog
-        .getByRole("group", { name: "B2B 價格健檢摘要與篩選" })
-        .waitFor();
-      await b2bDialog
-        .getByRole("listitem")
-        .filter({ hasText: "B2B-DEMO-01" })
-        .waitFor();
-      await capture({
-        phase,
-        profile,
-        surface: "b2b",
-        scopeSelector: ".business-pricing-audit-drawer",
-        dialogSelector: ".business-pricing-audit-drawer",
-      });
-      await b2bDialog
-        .getByRole("button", { name: "關閉全站 B2B 價格健檢" })
-        .click();
-
-      await openMenuItem("報表區", /^Amazon API 文件庫/u);
-      const reportsDialog = page.getByRole("dialog", { name: "報表區" });
-      await reportsDialog.waitFor();
-      await reportsDialog
-        .getByRole("heading", { name: "Amazon 有的報表類型" })
-        .waitFor();
-      await reportsDialog.locator(".report-library-report").waitFor();
-      await capture({
-        phase,
-        profile,
-        surface: "reports",
-        scopeSelector: ".report-library-drawer",
-        dialogSelector: ".report-library-drawer",
-        allowedScrollers: [".report-library-toolbar nav"],
-      });
-      await reportsDialog
-        .getByRole("button", { name: "關閉 Amazon API 文件庫" })
-        .click();
-
-      await openMenuItem("報表區", /^入庫貨件/u);
-      const inboundDialog = page.getByRole("dialog", {
-        name: "FBA 入庫貨件追蹤",
-      });
-      await inboundDialog.waitFor();
-      await inboundDialog.getByLabel("開始日期").fill("2026-05-24");
-      await inboundDialog.getByLabel("結束日期").fill("2026-08-21");
-      await inboundDialog
-        .getByRole("button", { name: "同步 US 貨件與全部商品" })
-        .click();
-      await inboundDialog.locator(".inbound-summary").waitFor();
-      const shipment = inboundDialog
-        .locator("details.inbound-shipment")
-        .filter({ hasText: "FBA15VISUAL001" });
-      await shipment.waitFor();
-      await shipment.locator("summary").click();
-      await shipment.locator(".inbound-item-table-scroll").waitFor();
-      await capture({
-        phase,
-        profile,
-        surface: "inbound",
-        scopeSelector: ".inbound-shipments-drawer",
-        dialogSelector: ".inbound-shipments-drawer",
-        allowedScrollers: [".inbound-item-table-scroll"],
-      });
-
-      await auditRequests(phase, profile);
     }
   }
 
-  const surfaces = css03Extra
-    ? [
-      "sticky-nav",
-      "chart-scrolled",
-      "variation-long",
-      "variation-focus",
-      "bridge-focus",
-      "reduced-loading",
-    ]
-    : css02Extra
-      ? ["content", "subscription", "accounting"]
-      : [
-        "webgate",
-        "home",
-        "sales",
-        "brand",
-        "system-info",
-        "variation",
-        "b2b",
-        "reports",
-        "inbound",
-      ];
-  const expectedCaptures = css03Extra
-    ? phases.length * profiles.reduce(
-      (count, profile) => count + 5 + (profile.reduced ? 1 : 0),
-      0,
-    )
-    : phases.length * profiles.length * surfaces.length;
+  const surfaces = visualScenario.surfaces;
+  const expectedCaptures = visualScenario.expectedCaptures({
+    phases,
+    profiles,
+    surfaces,
+  });
   ensure(
     results.length === expectedCaptures,
     `expected ${expectedCaptures} screenshots, captured ${results.length}`,
