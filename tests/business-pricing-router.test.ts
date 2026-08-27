@@ -8,10 +8,19 @@ import {
   getBusinessPricing,
   invalidateSpApiCredentialCaches,
   type BusinessPricePrecommitEvidence,
+  type BusinessPriceValidationResult,
   type UpdateBusinessPriceInput,
 } from "../src/main/amazon/sp-api";
+import {
+  BusinessPricingMutations,
+  type BusinessPricingMutationOperations,
+} from "../src/main/business-pricing-mutations";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
+import type {
+  MainWriteGatePort,
+  WriteBinding,
+} from "../src/main/write-gate";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -173,15 +182,7 @@ describe("Amazon Business pricing routes", () => {
     expect(runIdempotentOperation).not.toHaveBeenCalled();
   });
 
-  it("binds the preview ticket to every precommit evidence hash", () => {
-    const fingerprint = (
-      router as unknown as {
-        businessPricingFingerprint: (
-          input: UpdateBusinessPriceInput,
-          evidence: BusinessPricePrecommitEvidence,
-        ) => string;
-      }
-    ).businessPricingFingerprint.bind(router);
+  it("binds the preview ticket to every precommit evidence hash", async () => {
     const input: UpdateBusinessPriceInput = {
       marketplaceId: MARKETPLACE_ID,
       sellerSku: SELLER_SKU,
@@ -200,26 +201,109 @@ describe("Amazon Business pricing routes", () => {
       canonicalPatchHash: "c".repeat(64),
       validationIssuesHash: "d".repeat(64),
     };
-    const baseline = fingerprint(input, evidence);
+    const validation = (
+      nextEvidence: BusinessPricePrecommitEvidence,
+      proposal: UpdateBusinessPriceInput = input,
+    ): BusinessPriceValidationResult => ({
+      mode: "live",
+      status: "VALID",
+      marketplaceId: proposal.marketplaceId,
+      sellerSku: proposal.sellerSku,
+      ...nextEvidence,
+      standardPrice: { amount: 30, currencyCode: "USD" },
+      previousBusinessPrice: { amount: 28, currencyCode: "USD" },
+      requestedBusinessPrice: {
+        amount: proposal.newBusinessPrice,
+        currencyCode: "USD",
+      },
+      previousQuantityDiscountPlan: null,
+      requestedQuantityDiscountPlan: proposal.quantityDiscountTiers
+        ? {
+            discountType: "percent",
+            levels: proposal.quantityDiscountTiers.map((tier) => ({
+              lowerBound: tier.lowerBound,
+              value: tier.percent,
+            })),
+          }
+        : null,
+      quantityDiscountPlanChange: proposal.quantityDiscountTiers
+        ? "replace"
+        : "preserve",
+      validatedAt: "2026-08-27T00:00:00.000Z",
+      issues: [],
+      notice: "fixture",
+    });
+    let currentValidation = validation(evidence);
+    const operations = {
+      read: vi.fn(),
+      preview: vi.fn(async () => currentValidation),
+      commit: vi.fn(),
+    } as unknown as BusinessPricingMutationOperations;
+    const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
+    const owner = new BusinessPricingMutations({
+      context: {
+        capture: async (marketplaceId) => ({
+          marketplaceId,
+          region: "na",
+          mode: "live",
+          accountScope: "business-pricing-fingerprint-scope" as never,
+          generation: 0,
+        }),
+        assertCurrent: async () => undefined,
+        invalidate: () => undefined,
+      },
+      writeGate: {
+        stagePreview,
+      } as unknown as MainWriteGatePort,
+      operations,
+      priceObserver: {
+        observeCanonical: async () => undefined,
+      },
+    });
+    const previewFingerprint = async (
+      proposal: UpdateBusinessPriceInput,
+    ): Promise<string> => {
+      const response = await owner.handle({
+        operation: "preview",
+        request: request("POST", {
+          ...proposal,
+          idempotencyKey: IDEMPOTENCY_KEY,
+        }),
+      });
+      expect(response.status).toBe(200);
+      const binding = stagePreview.mock.calls.at(-1)?.[0];
+      const fingerprint = binding?.intents[0]?.proposalFingerprint;
+      if (!fingerprint) throw new Error("Expected staged B2B fingerprint");
+      return fingerprint;
+    };
+    const baseline = await previewFingerprint(input);
     for (const field of [
       "businessOfferProtectedHash",
       "fbaEvidenceHash",
       "canonicalPatchHash",
       "validationIssuesHash",
     ] as const) {
-      expect(fingerprint(input, { ...evidence, [field]: "f".repeat(64) }))
-        .not.toBe(baseline);
+      currentValidation = validation({
+        ...evidence,
+        [field]: "f".repeat(64),
+      });
+      expect(await previewFingerprint(input)).not.toBe(baseline);
     }
     const combined: UpdateBusinessPriceInput = {
       ...input,
       expectedQuantityDiscountPlanHash: null,
       quantityDiscountTiers: [{ lowerBound: 5, percent: 5 }],
     };
-    expect(fingerprint(combined, evidence)).not.toBe(baseline);
-    expect(fingerprint({
+    currentValidation = validation(evidence, combined);
+    const combinedFingerprint = await previewFingerprint(combined);
+    expect(combinedFingerprint).not.toBe(baseline);
+    const changedCombined = {
       ...combined,
       quantityDiscountTiers: [{ lowerBound: 6, percent: 5 }],
-    }, evidence)).not.toBe(fingerprint(combined, evidence));
+    };
+    currentValidation = validation(evidence, changedCombined);
+    expect(await previewFingerprint(changedCombined))
+      .not.toBe(combinedFingerprint);
   });
 });
 

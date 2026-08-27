@@ -139,26 +139,30 @@ describe("W02 Listing Price mutation architecture", () => {
   });
 
   it("routes a captured Business Pricing snapshot through canonical price observation", () => {
-    const router = source("../src/main/api-router.ts");
-    const businessPricing = methodBody(
-      router,
-      "private async businessPricing(request: ApiRequest)",
-      "private businessPricingInput(request: ApiRequest)",
+    const owner = source("../src/main/business-pricing-mutations.ts");
+    const readRoute = methodBody(
+      owner,
+      "private async readRoute(request: ApiRequest)",
+      "private routeInput(request: ApiRequest)",
     );
-    const capturedRead = businessPricing.search(
-      /const\s+\{\s*context,\s*value:\s*snapshot\s*\}\s*=\s*await\s+this\.runContextBoundWork\s*\(/u,
+    const capturedContext = readRoute.indexOf(
+      "const context = await this.context.capture(marketplaceId);",
     );
-    const canonicalObservation = businessPricing.indexOf(
-      "await this.priceMutations.observeCanonical(identity, snapshot, context);",
+    const canonicalRead = readRoute.indexOf(
+      "const snapshot = await this.operations.read(identity);",
     );
-    const businessReconciliation = businessPricing.indexOf(
-      "await this.reconcileBusinessPriceWrites(snapshot, context);",
+    const canonicalObservation = readRoute.indexOf(
+      "await this.priceObserver.observeCanonical(identity, snapshot, context);",
+    );
+    const businessReconciliation = readRoute.indexOf(
+      "await this.writeGate.reconcile({",
     );
 
-    expect(capturedRead).toBeGreaterThanOrEqual(0);
-    expect(canonicalObservation).toBeGreaterThan(capturedRead);
+    expect(capturedContext).toBeGreaterThanOrEqual(0);
+    expect(canonicalRead).toBeGreaterThan(capturedContext);
+    expect(canonicalObservation).toBeGreaterThan(canonicalRead);
     expect(businessReconciliation).toBeGreaterThan(canonicalObservation);
-    expect(businessPricing).not.toMatch(/\breconcilePriceWrites\s*\(/u);
+    expect(readRoute).not.toMatch(/\breconcilePriceWrites\s*\(/u);
   });
 
   it("keeps the owner main-only and dependent on the central Write Gate port", () => {
