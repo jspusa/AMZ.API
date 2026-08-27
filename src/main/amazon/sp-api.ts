@@ -5051,14 +5051,26 @@ export async function getBusinessPricing(input: {
 export const businessPricingGatewayProduction: BusinessPricingGateway = {
   mode: (marketplaceId) =>
     shouldUseDemoMode(marketplaceId) ? "demo" : "live",
-  read: (identity, purpose) => shouldUseDemoMode(identity.marketplaceId)
-    ? Promise.resolve(demoBusinessPricing(
-        identity.marketplaceId,
-        identity.sellerSku,
-      ))
-    : fetchLiveBusinessPricing(identity, {
+  read: async (identity, purpose) => {
+    if (!shouldUseDemoMode(identity.marketplaceId)) {
+      return fetchLiveBusinessPricing(identity, {
         forceCapabilityRefresh: purpose === "mutation",
-      }),
+      });
+    }
+    const startedGeneration = credentialGeneration;
+    const snapshot = demoBusinessPricing(
+      identity.marketplaceId,
+      identity.sellerSku,
+    );
+    await Promise.resolve();
+    if (startedGeneration !== credentialGeneration) {
+      throw new SpApiError(
+        "Amazon 憑證已在展示 B2B 價格讀取期間改變；舊結果已丟棄。",
+        { status: 409, code: "CREDENTIALS_CHANGED" },
+      );
+    }
+    return snapshot;
+  },
   quantityDiscountPlanSupported: (input) => {
     if (shouldUseDemoMode(input.marketplaceId)) return true;
     const schema = cachedBusinessPricingSchema(

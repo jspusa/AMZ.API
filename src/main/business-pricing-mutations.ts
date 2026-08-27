@@ -19,6 +19,7 @@ import {
   type BusinessPricingGateway,
 } from "./amazon/business-pricing-gateway";
 import {
+  isPricingListingError,
   listingSubmissionIssuesAreWellFormed,
 } from "./amazon/business-pricing-evidence";
 import type { ListingWriteExecutionFence } from
@@ -34,9 +35,7 @@ import {
   type ListingIssue,
 } from "./amazon/sp-api-error";
 import {
-  businessPriceReadbackDecision,
   commitWithCanonicalReadback,
-  reconcileBusinessPriceWrite,
 } from "./amazon/listing-write-readback";
 import type {
   SpExecutionContext,
@@ -74,8 +73,11 @@ export interface BusinessPricingMutationOperations {
   ): Promise<BusinessPriceValidationResult>;
   commit(
     input: UpdateBusinessPriceInput,
-    evidence: BusinessPricePrecommitEvidence,
-    fence: ListingWriteExecutionFence,
+    control: Readonly<{
+      expectedEvidence?: BusinessPricePrecommitEvidence;
+      fence: ListingWriteExecutionFence;
+      recordDurableEvidence(result: BusinessPriceDurableResult): Promise<void>;
+    }>,
   ): Promise<BusinessPriceUpdateResult>;
 }
 
@@ -626,14 +628,37 @@ type BusinessPriceWriteEvidence = Readonly<{
   sellerSku: string;
   asin: string;
   productType: string;
+  fulfillment: "FBA";
   standardPrice: Money;
+  previousBusinessPrice: Money | null;
   requestedBusinessPrice: Money;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  previousQuantityDiscountPlanHash: string | null;
   requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
   businessOfferProtectedHash: string;
   schemaChecksum: string;
 }>;
+
+const BUSINESS_PRICE_WRITE_EVIDENCE_KEYS = [
+  "asin",
+  "businessOfferGuardHash",
+  "businessOfferProtectedHash",
+  "fulfillment",
+  "marketplaceId",
+  "previousBusinessPrice",
+  "previousQuantityDiscountPlan",
+  "previousQuantityDiscountPlanHash",
+  "productType",
+  "quantityDiscountPlanChange",
+  "requestedBusinessPrice",
+  "requestedQuantityDiscountPlan",
+  "schemaChecksum",
+  "sellerSku",
+  "standardPrice",
+  "version",
+] as const;
 
 type BusinessPriceAcceptedDurableResult = BusinessPriceUpdateResult & Readonly<{
   _writeEvidence: BusinessPriceWriteEvidence;
@@ -654,10 +679,19 @@ function writeEvidence(
     sellerSku: prepared.patch.sellerSku,
     asin: prepared.patch.asin,
     productType: prepared.patch.productType,
+    fulfillment: "FBA",
     standardPrice: structuredClone(prepared.verified.standardPrice),
+    previousBusinessPrice: structuredClone(
+      prepared.verified.previousBusinessPrice,
+    ),
     requestedBusinessPrice: structuredClone(
       prepared.verified.requestedBusinessPrice,
     ),
+    previousQuantityDiscountPlan: structuredClone(
+      prepared.verified.previousQuantityDiscountPlan,
+    ),
+    previousQuantityDiscountPlanHash:
+      prepared.verified.previousQuantityDiscountPlanHash,
     requestedQuantityDiscountPlan: structuredClone(
       prepared.verified.requestedQuantityDiscountPlan,
     ),
@@ -693,6 +727,298 @@ function durableResult(
     issues: input.issues,
     notice: input.notice,
     _writeEvidence: writeEvidence(prepared),
+  };
+}
+
+function dispatchedResult(
+  prepared: PreparedBusinessPriceMutation,
+): BusinessPriceDurableResult {
+  return durableResult(prepared, {
+    status: "DISPATCHED",
+    acceptedAt: new Date().toISOString(),
+    submissionId: null,
+    requestId: null,
+    issues: [],
+    notice:
+      "Amazon 正式 B2B PATCH 已進入送出邊界；等待 receipt 與 canonical readback。",
+  });
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function validSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function validIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value;
+}
+
+function validMoney(value: unknown, currencyCode: string): value is Money {
+  return isRecord(value) &&
+    typeof value.amount === "number" &&
+    Number.isFinite(value.amount) &&
+    value.amount > 0 &&
+    value.currencyCode === currencyCode;
+}
+
+function validQuantityDiscountPlan(value: unknown): boolean {
+  if (value === null) return true;
+  if (
+    !isRecord(value) ||
+    (value.discountType !== "percent" && value.discountType !== "fixed") ||
+    !Array.isArray(value.levels) ||
+    value.levels.length < 1 ||
+    value.levels.length > 5
+  ) return false;
+  let previousLowerBound = 0;
+  let previousValue: number | null = null;
+  for (const level of value.levels) {
+    if (
+      !isRecord(level) ||
+      !Number.isSafeInteger(level.lowerBound) ||
+      Number(level.lowerBound) <= previousLowerBound ||
+      typeof level.value !== "number" ||
+      !Number.isFinite(level.value) ||
+      level.value <= 0 ||
+      (value.discountType === "percent" && level.value >= 100) ||
+      (previousValue !== null &&
+        (value.discountType === "percent"
+          ? level.value <= previousValue
+          : level.value >= previousValue))
+    ) return false;
+    previousLowerBound = Number(level.lowerBound);
+    previousValue = level.value;
+  }
+  return true;
+}
+
+function sameMoney(
+  left: Money | null,
+  right: Money | null,
+): boolean {
+  return left !== null && right !== null &&
+    left.currencyCode === right.currencyCode &&
+    left.amount === right.amount;
+}
+
+function sameQuantityDiscountPlan(
+  left: BusinessQuantityDiscountPlan | null,
+  right: BusinessQuantityDiscountPlan | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.discountType === right.discountType &&
+    left.levels.length === right.levels.length &&
+    left.levels.every((level, index) => {
+      const actual = right.levels[index];
+      return actual?.lowerBound === level.lowerBound &&
+        actual.value === level.value;
+    });
+}
+
+export function businessPriceReadbackDecision(
+  result: BusinessPriceUpdateResult,
+  snapshot: BusinessPricingListingSnapshot,
+): "verified" | "pending" {
+  if (
+    result.quantityDiscountPlanChange !== "preserve" &&
+    result.quantityDiscountPlanChange !== "replace"
+  ) return "pending";
+  const common = result.mode === "live" &&
+    snapshot.mode === "live" &&
+    result.marketplaceId === snapshot.marketplaceId &&
+    result.sellerSku === snapshot.sellerSku &&
+    result.asin === snapshot.asin &&
+    result.productType === snapshot.productType &&
+    snapshot.businessOfferPresence === "present" &&
+    !snapshot.issues.some((issue) =>
+      isPricingListingError(issue, snapshot.marketplaceId)
+    ) &&
+    sameMoney(result.standardPrice, snapshot.standardPrice) &&
+    sameMoney(result.requestedBusinessPrice, snapshot.businessPrice);
+  if (!common) return "pending";
+  if (result.quantityDiscountPlanChange === "replace") {
+    return snapshot.quantityDiscountPlanPresence === "canonical" &&
+        result.businessOfferProtectedHash ===
+          snapshot.businessOfferProtectedHash &&
+        sameQuantityDiscountPlan(
+          result.requestedQuantityDiscountPlan,
+          snapshot.quantityDiscountPlan,
+        )
+      ? "verified"
+      : "pending";
+  }
+  return result.businessOfferGuardHash === snapshot.businessOfferGuardHash
+    ? "verified"
+    : "pending";
+}
+
+function exactWriteEvidence(
+  value: unknown,
+): value is BusinessPriceWriteEvidence {
+  if (!isRecord(value) ||
+      !hasExactKeys(value, BUSINESS_PRICE_WRITE_EVIDENCE_KEYS)) return false;
+  const marketplace = typeof value.marketplaceId === "string"
+    ? marketplaceById(value.marketplaceId)
+    : null;
+  if (!marketplace) return false;
+  const previousPlan = value.previousQuantityDiscountPlan;
+  const requestedPlan = value.requestedQuantityDiscountPlan;
+  return value.version === 1 &&
+    typeof value.sellerSku === "string" &&
+    parseSellerSku(value.sellerSku) === value.sellerSku &&
+    typeof value.asin === "string" &&
+    /^[A-Z0-9]{10}$/u.test(value.asin) &&
+    typeof value.productType === "string" &&
+    value.productType.length > 0 &&
+    value.productType === value.productType.trim() &&
+    value.productType.toUpperCase() !== "PRODUCT" &&
+    value.fulfillment === "FBA" &&
+    validMoney(value.standardPrice, marketplace.currency) &&
+    (value.previousBusinessPrice === null ||
+      validMoney(value.previousBusinessPrice, marketplace.currency)) &&
+    validMoney(value.requestedBusinessPrice, marketplace.currency) &&
+    validQuantityDiscountPlan(previousPlan) &&
+    validQuantityDiscountPlan(requestedPlan) &&
+    (value.previousQuantityDiscountPlanHash === null ||
+      validSha256(value.previousQuantityDiscountPlanHash)) &&
+    (previousPlan === null) ===
+      (value.previousQuantityDiscountPlanHash === null) &&
+    (value.quantityDiscountPlanChange === "preserve" ||
+      value.quantityDiscountPlanChange === "replace") &&
+    (value.quantityDiscountPlanChange !== "preserve" ||
+      JSON.stringify(previousPlan) === JSON.stringify(requestedPlan)) &&
+    (value.quantityDiscountPlanChange !== "replace" ||
+      (isRecord(requestedPlan) &&
+        requestedPlan.discountType === "percent")) &&
+    validSha256(value.businessOfferGuardHash) &&
+    validSha256(value.businessOfferProtectedHash) &&
+    typeof value.schemaChecksum === "string" &&
+    value.schemaChecksum.length > 0 &&
+    value.schemaChecksum === value.schemaChecksum.trim();
+}
+
+function safeOptionalIdentifier(value: unknown): value is string | null {
+  return value === null ||
+    (typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= 256 &&
+      value === value.trim() &&
+      !/[\u0000-\u001f\u007f]/u.test(value));
+}
+
+function canonicalMatchesWriteEvidence(
+  evidence: BusinessPriceWriteEvidence,
+  snapshot: BusinessPricingListingSnapshot,
+): boolean {
+  if (
+    snapshot.mode !== "live" ||
+    snapshot.marketplaceId !== evidence.marketplaceId ||
+    snapshot.sellerSku !== evidence.sellerSku ||
+    snapshot.asin !== evidence.asin ||
+    snapshot.productType !== evidence.productType ||
+    !snapshot.fulfillmentAvailability.some((entry) =>
+      entry.fulfillment === evidence.fulfillment
+    )
+  ) return false;
+  return businessPriceReadbackDecision({
+    mode: "live",
+    status: "ACCEPTED",
+    marketplaceId: evidence.marketplaceId,
+    sellerSku: evidence.sellerSku,
+    asin: evidence.asin,
+    productType: evidence.productType,
+    standardPrice: structuredClone(evidence.standardPrice),
+    previousBusinessPrice: structuredClone(evidence.previousBusinessPrice),
+    requestedBusinessPrice: structuredClone(evidence.requestedBusinessPrice),
+    previousQuantityDiscountPlan: structuredClone(
+      evidence.previousQuantityDiscountPlan,
+    ),
+    previousQuantityDiscountPlanHash:
+      evidence.previousQuantityDiscountPlanHash,
+    requestedQuantityDiscountPlan: structuredClone(
+      evidence.requestedQuantityDiscountPlan,
+    ),
+    quantityDiscountPlanChange: evidence.quantityDiscountPlanChange,
+    businessOfferGuardHash: evidence.businessOfferGuardHash,
+    businessOfferProtectedHash: evidence.businessOfferProtectedHash,
+    schemaChecksum: evidence.schemaChecksum,
+    acceptedAt: new Date(0).toISOString(),
+    submissionId: null,
+    requestId: null,
+    issues: [],
+    notice: "internal canonical comparison",
+  }, snapshot) === "verified";
+}
+
+export function reconcileBusinessPriceWrite(
+  response: unknown,
+  snapshot: BusinessPricingListingSnapshot,
+  now: () => Date = () => new Date(),
+): unknown | null {
+  if (!isRecord(response) ||
+      (response.status !== "DISPATCHED" && response.status !== "ACCEPTED") ||
+      response.mode !== "live" ||
+      !exactWriteEvidence(response._writeEvidence) ||
+      response.marketplaceId !== response._writeEvidence.marketplaceId ||
+      response.sellerSku !== response._writeEvidence.sellerSku ||
+      !validIsoTimestamp(response.acceptedAt) ||
+      !safeOptionalIdentifier(response.submissionId) ||
+      !safeOptionalIdentifier(response.requestId) ||
+      !Array.isArray(response.issues) ||
+      !listingSubmissionIssuesAreWellFormed(response.issues) ||
+      !canonicalMatchesWriteEvidence(response._writeEvidence, snapshot)) {
+    return null;
+  }
+  const evidence = response._writeEvidence;
+  const verifiedAt = now().toISOString();
+  return {
+    mode: "live",
+    status: "ACCEPTED",
+    marketplaceId: evidence.marketplaceId,
+    sellerSku: evidence.sellerSku,
+    asin: evidence.asin,
+    productType: evidence.productType,
+    standardPrice: structuredClone(evidence.standardPrice),
+    previousBusinessPrice: structuredClone(evidence.previousBusinessPrice),
+    requestedBusinessPrice: structuredClone(evidence.requestedBusinessPrice),
+    previousQuantityDiscountPlan: structuredClone(
+      evidence.previousQuantityDiscountPlan,
+    ),
+    previousQuantityDiscountPlanHash:
+      evidence.previousQuantityDiscountPlanHash,
+    requestedQuantityDiscountPlan: structuredClone(
+      evidence.requestedQuantityDiscountPlan,
+    ),
+    quantityDiscountPlanChange: evidence.quantityDiscountPlanChange,
+    businessOfferGuardHash: evidence.businessOfferGuardHash,
+    businessOfferProtectedHash: evidence.businessOfferProtectedHash,
+    schemaChecksum: evidence.schemaChecksum,
+    acceptedAt: response.acceptedAt,
+    submissionId: response.submissionId,
+    requestId: response.requestId,
+    issues: normalizeListingIssues(response.issues),
+    notice:
+      "Amazon Business 價格已由主程序唯讀回查確認；未重新送出 PATCH。",
+    _writeEvidence: structuredClone(evidence),
+    writeLifecycle: {
+      state: "verified",
+      verified: true,
+      authoritative: true,
+      acceptedAt: response.acceptedAt,
+      verifiedAt,
+      attempts: 0,
+    },
   };
 }
 
@@ -746,12 +1072,16 @@ export function createBusinessPricingMutationOperations(
             : "Amazon B2B 價格 Validation Preview 已通過，尚未寫入。",
       };
     },
-    commit: async (input, expectedEvidence, fence) => {
+    commit: async (input, control) => {
       const prepared = await prepareCommit(() =>
-        prepareBusinessPriceMutation(gateway, input, expectedEvidence)
+        prepareBusinessPriceMutation(
+          gateway,
+          input,
+          control.expectedEvidence,
+        )
       );
       if (prepared.listing.mode === "demo") {
-        await gateway.replaceDemoContribution(prepared.patch, fence);
+        await gateway.replaceDemoContribution(prepared.patch, control.fence);
         return durableResult(prepared, {
           status: "SIMULATED",
           acceptedAt: new Date().toISOString(),
@@ -763,8 +1093,8 @@ export function createBusinessPricingMutationOperations(
       }
       const reply = await gateway.commitOnce(
         prepared.patch,
-        fence,
-        async () => undefined,
+        control.fence,
+        () => control.recordDurableEvidence(dispatchedResult(prepared)),
       );
       if (!reply.ok) {
         return throwListingsPayloadError({
@@ -1110,13 +1440,16 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
         approvalReason: `確認 B2B 調價｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${marketplace.currency}｜數量折扣 ${evidence.quantityDiscountPlanChange === "preserve" ? "維持原方案" : `${evidence.previousQuantityDiscountPlan ? `${evidence.previousQuantityDiscountPlan.discountType} ${evidence.previousQuantityDiscountPlan.levels.map((level) => `${level.lowerBound}件=${level.value}`).join("、")}` : "未設定"} → ${evidence.requestedQuantityDiscountPlan?.levels.map((level) => `${level.lowerBound}件=${level.value}%`).join("、") ?? "未設定"}`}`,
         run: (session) => session.attempt({
           intentId: "primary",
-          execute: ({ recordAccepted, assertCurrent }) =>
+          execute: (control) =>
             commitWithCanonicalReadback({
-              commit: () => this.operations.commit(input, evidence, {
-                assertCurrent,
+              commit: () => this.operations.commit(input, {
+                expectedEvidence: evidence,
+                fence: { assertCurrent: control.assertCurrent },
+                recordDurableEvidence:
+                  control.recordDurableEvidence ?? control.recordAccepted,
               }),
-              onAccepted: recordAccepted,
-              assertCurrent,
+              onAccepted: control.recordAccepted,
+              assertCurrent: control.assertCurrent,
               read: () => this.operations.read({
                 marketplaceId: input.marketplaceId,
                 sellerSku: input.sellerSku,
@@ -1125,7 +1458,7 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
             }),
         }),
       });
-      return json(result);
+      return json(publicBusinessPriceResult(result));
     } catch (error) {
       return writeError(
         error,
