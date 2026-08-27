@@ -23,7 +23,11 @@ import {
   createListingContentMutations,
 } from "../src/main/listing-content-mutations";
 import { LocalStore } from "../src/main/local-store";
-import { MainWriteGate } from "../src/main/write-gate";
+import {
+  MainWriteGate,
+  type MainWriteGatePort,
+  type MainWriteGateSession,
+} from "../src/main/write-gate";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -151,6 +155,79 @@ function bodyValue(response: ApiResponse): Record<string, unknown> {
 }
 
 describe("W06 Listing Content mutation owner", () => {
+  it("rejects a malformed durable replay before exposing it to batch callers", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "demo",
+      accountScope: "w06-content-malformed-replay-account",
+    }));
+    const gateway: ListingContentGateway = {
+      mode: () => "demo",
+      read: async () => gatewayRead(contentSnapshot("demo")),
+      validationPreview: async () => ({
+        status: "VALID",
+        canonicalPatchHash: sha256Fixture("d"),
+        requestId: "REQ-W06-MALFORMED-PREVIEW",
+        issues: [],
+      }),
+      commitOnce: vi.fn(),
+      replaceDemoContent: vi.fn(async () => undefined),
+    };
+    const owner = createListingContentMutations({
+      context,
+      writeGate: {} as MainWriteGatePort,
+      gateway,
+    });
+    const input: UpdateListingContentInput = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      title: "Updated title",
+      expectedTitle: "Original title",
+      itemHighlight: "Original highlight",
+      expectedItemHighlight: "Original highlight",
+      bulletPoints: ["Original bullet"],
+      expectedBulletPoints: ["Original bullet"],
+      productDescription: "Original description",
+      expectedProductDescription: "Original description",
+      ingredients: "Turkey",
+      expectedIngredients: "Turkey",
+    };
+    const prepared = await owner.previewOne(input);
+    const session = {
+      attempt: vi.fn(async () => ({
+        mode: "demo",
+        status: "SIMULATED",
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+        previous: structuredClone(prepared.previous),
+        requested: structuredClone(prepared.requested),
+        changedFields: [...prepared.changedFields],
+        acceptedAt: new Date(0).toISOString(),
+        submissionId: null,
+        requestId: null,
+        issues: [],
+        notice: "raw durable receipt without canonical lifecycle proof",
+        _writeEvidence: {
+          ...structuredClone(prepared.evidence),
+          previous: structuredClone(prepared.previous),
+          requested: structuredClone(prepared.requested),
+          proposalFingerprint: prepared.proposalFingerprint,
+        },
+      })),
+    } as unknown as MainWriteGateSession;
+
+    await expect(owner.attemptOne(
+      input,
+      prepared.evidence,
+      session,
+      "primary",
+    )).rejects.toMatchObject({
+      status: 503,
+      code: "UPDATE_STATUS_UNKNOWN",
+    });
+    expect(session.attempt).toHaveBeenCalledOnce();
+  });
+
   it("tolerates legacy confirmationSku and stops before dispatch when native approval is cancelled", async () => {
     const storePath = join(
       await mkdtemp(join(tmpdir(), "amz-api-w06-content-")),

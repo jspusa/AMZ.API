@@ -44,6 +44,10 @@ const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
 const savedEnvironment = new Map(
   SP_ENV_KEYS.map((key) => [key, process.env[key]]),
 );
+const preparedIdentityBySku = new Map<
+  string,
+  Readonly<{ asin: string; productType: string }>
+>();
 
 type AuditReply = {
   marketplaceId: string;
@@ -173,7 +177,13 @@ function canonicalSha256(value: unknown): string {
 
 function preparedPreview(
   input: UpdateListingContentInput,
+  identity?: Readonly<{
+    asin: string;
+    productType: string;
+  }>,
 ): ListingContentPreparedPreview {
+  const resolvedIdentity = identity ?? preparedIdentityBySku.get(input.sellerSku) ??
+    { asin: "B000000001", productType: "PET_FOOD" };
   const previous = {
     title: input.expectedTitle,
     itemHighlight: input.expectedItemHighlight,
@@ -193,8 +203,8 @@ function preparedPreview(
     version: 1 as const,
     marketplaceId: input.marketplaceId,
     sellerSku: input.sellerSku,
-    asin: "B000000001",
-    productType: "DOG_FOOD",
+    asin: resolvedIdentity.asin,
+    productType: resolvedIdentity.productType,
     languageTag: "en_US",
     fulfillment: "FBA" as const,
     expectedOldHash: canonicalSha256(previous),
@@ -485,6 +495,7 @@ describe("content audit Excel batch router", () => {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
     contentAuditEvidence.clear();
+    preparedIdentityBySku.clear();
     approveWrite.mockClear();
     assertIdempotentOperationsAvailable.mockClear();
     runIdempotentOperation.mockReset();
@@ -509,7 +520,14 @@ describe("content audit Excel batch router", () => {
   async function audit(): Promise<AuditReply> {
     const response = await router.handle(auditRequest(reportHandle, documentHandle));
     expect(response.status).toBe(200);
-    return responseValue(response) as unknown as AuditReply;
+    const snapshot = responseValue(response) as unknown as AuditReply;
+    for (const row of snapshot.rows) {
+      preparedIdentityBySku.set(row.sellerSku, {
+        asin: row.asin,
+        productType: row.productType,
+      });
+    }
+    return snapshot;
   }
 
   it("previews with zero writes, asks once, and returns cached batch result", async () => {
@@ -1020,6 +1038,56 @@ describe("content audit Excel batch router", () => {
     expect(stagePreview).not.toHaveBeenCalled();
   });
 
+  it("does not publish a plan when snapshot evidence expires while staging", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Snapshot must remain live after staging",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    let now = 1_800_000_000_000;
+    stored.createdAt = now - 1_000;
+    stored.expiresAt = now + 1;
+    const stagePreview = vi.fn(async () => {
+      now = stored.expiresAt;
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(input)),
+        attemptOne: vi.fn(),
+      },
+      now: () => now,
+      randomUUID: () => "content-batch-expired-while-staging",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, "content-batch-expired-staging-001"),
+    });
+
+    expect(response.status).toBe(410);
+    expect(responseValue(response)).toMatchObject({ code: "PREVIEW_EXPIRED" });
+    expect(stagePreview).toHaveBeenCalledOnce();
+  });
+
   it("never extends the main-owned snapshot evidence TTL", async () => {
     const snapshot = await audit();
     const edited = replaceCell(
@@ -1083,6 +1151,206 @@ describe("content audit Excel batch router", () => {
     expect(response.status).toBe(410);
     expect(responseValue(response)).toMatchObject({ code: "PREVIEW_EXPIRED" });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not begin SKU attempts if the snapshot expires around approval", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Expired approval must remain zero-write",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    let now = 1_800_000_000_000;
+    stored.createdAt = now - 1_000;
+    stored.expiresAt = now + 100;
+    const attemptOne = vi.fn(async (input: UpdateListingContentInput) =>
+      simulatedUpdateResult(input));
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute: vi.fn(async (input) => {
+          await input.beforeApproval?.();
+          now = stored.expiresAt;
+          return input.run({} as never);
+        }),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(input)),
+        attemptOne,
+      },
+      now: () => now,
+      randomUUID: () => "content-batch-expired-at-approval",
+    });
+    const key = "content-batch-expired-at-approval-001";
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    expect(preview.status).toBe(200);
+
+    const response = await batch.handle({
+      operation: "commit",
+      request: commitRequest(String(responseValue(preview).previewId), key),
+    });
+
+    expect(response.status).toBe(410);
+    expect(responseValue(response)).toMatchObject({ code: "PREVIEW_EXPIRED" });
+    expect(attemptOne).not.toHaveBeenCalled();
+  });
+
+  it("does not let a second commit delete an expired in-flight plan", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "In-flight plan retains lifecycle ownership",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    let now = 1_800_000_000_000;
+    stored.createdAt = now - 1_000;
+    stored.expiresAt = now + 100;
+    let enterExecute!: () => void;
+    const executeEntered = new Promise<void>((resolve) => {
+      enterExecute = resolve;
+    });
+    let releaseExecute!: () => void;
+    const executeReleased = new Promise<void>((resolve) => {
+      releaseExecute = resolve;
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute: vi.fn(async (input) => {
+          enterExecute();
+          await executeReleased;
+          return {
+            previewId: input.binding.previewKey,
+            marketplaceId: MARKETPLACE_ID,
+            status: "COMPLETED",
+            rows: [],
+            completedAt: new Date(now).toISOString(),
+            notice: "test-only completed result",
+          };
+        }),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(input)),
+        attemptOne: vi.fn(),
+      },
+      now: () => now,
+      randomUUID: () => "content-batch-expired-in-flight",
+    });
+    const key = "content-batch-expired-in-flight-001";
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    const previewId = String(responseValue(preview).previewId);
+    const firstPending = batch.handle({
+      operation: "commit",
+      request: commitRequest(previewId, key),
+    });
+    await executeEntered;
+    now = stored.expiresAt;
+
+    const second = await batch.handle({
+      operation: "commit",
+      request: commitRequest(previewId, key),
+    });
+    releaseExecute();
+    await firstPending;
+
+    expect(second.status).toBe(409);
+    expect(responseValue(second)).toMatchObject({
+      code: "OPERATION_IN_PROGRESS",
+    });
+  });
+
+  it("replays a completed result after the authorization TTL elapses", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Completed result retains bounded replay",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    let now = 1_800_000_000_000;
+    stored.createdAt = now - 1_000;
+    stored.expiresAt = now + 100;
+    const attemptOne = vi.fn(async (input: UpdateListingContentInput) => {
+      now = stored.expiresAt + 1;
+      return simulatedUpdateResult(input);
+    });
+    const execute = vi.fn(async (input) => {
+      await input.beforeApproval?.();
+      return input.run({} as never);
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute,
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(input)),
+        attemptOne,
+      },
+      now: () => now,
+      randomUUID: () => "content-batch-completed-retention",
+    });
+    const key = "content-batch-completed-retention-001";
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    const request = commitRequest(String(responseValue(preview).previewId), key);
+
+    const first = await batch.handle({ operation: "commit", request });
+    const replay = await batch.handle({ operation: "commit", request });
+
+    expect(first.status).toBe(200);
+    expect(responseValue(replay)).toEqual(responseValue(first));
+    expect(execute).toHaveBeenCalledOnce();
+    expect(attemptOne).toHaveBeenCalledOnce();
   });
 
   it("does not resurrect a preview plan after the batch owner is cleared", async () => {
@@ -1230,6 +1498,64 @@ describe("content audit Excel batch router", () => {
     expect(stagePreview).toHaveBeenCalledOnce();
   });
 
+  it("prunes a ready plan that expires during a repeated preview build", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Expired repeated plan must be replaced",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    let now = stored.createdAt + 1;
+    let advanceDuringPreview = false;
+    let firstExpiresAt = 0;
+    let nextPreviewId = 0;
+    const stagePreview = vi.fn(async () => undefined);
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => {
+          if (advanceDuringPreview) now = firstExpiresAt;
+          return preparedPreview(input);
+        }),
+        attemptOne: vi.fn(),
+      },
+      now: () => now,
+      randomUUID: () => `content-batch-repeated-${++nextPreviewId}`,
+    });
+    const key = "content-batch-repeated-expiry-001";
+    const request = importRequest(edited, key);
+    const first = await batch.handle({ operation: "preview", request });
+    expect(first.status).toBe(200);
+    firstExpiresAt = Date.parse(String(responseValue(first).expiresAt));
+    now = firstExpiresAt - 1;
+    advanceDuringPreview = true;
+
+    const repeated = await batch.handle({ operation: "preview", request });
+
+    expect(repeated.status).toBe(200);
+    expect(responseValue(repeated).previewId).not.toBe(
+      responseValue(first).previewId,
+    );
+    expect(stagePreview).toHaveBeenCalledTimes(2);
+  });
+
   it("fails closed when the W06 preview crosses the captured execution identity", async () => {
     const snapshot = await audit();
     const edited = replaceCell(
@@ -1277,6 +1603,57 @@ describe("content audit Excel batch router", () => {
     expect(responseValue(response)).toMatchObject({
       code: "CONTENT_BATCH_VALIDATION_FAILED",
       rows: [expect.objectContaining({ code: "PREVIEW_CHANGED" })],
+      writeCount: 0,
+    });
+    expect(stagePreview).not.toHaveBeenCalled();
+  });
+
+  it("rejects a W06 preview rebound to a different ASIN or product type", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Rebound SKU identity must be rejected",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    const stagePreview = vi.fn(async () => undefined);
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(input, {
+          asin: "B000000009",
+          productType: "CAT_FOOD",
+        })),
+        attemptOne: vi.fn(),
+      },
+      randomUUID: () => "content-batch-rebound-identity",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, "content-batch-rebound-identity-001"),
+    });
+
+    expect(response.status).toBe(422);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_BATCH_VALIDATION_FAILED",
+      rows: [expect.objectContaining({ code: "LISTING_IDENTITY_MISMATCH" })],
       writeCount: 0,
     });
     expect(stagePreview).not.toHaveBeenCalled();
@@ -1463,6 +1840,74 @@ describe("content audit Excel batch router", () => {
     const repeated = await router.handle(commitRequest(previewId, key));
     expect(responseValue(repeated)).toEqual(responseValue(response));
     expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops after an unbound W06 result before attempting later SKUs", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Malformed cached result title",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    const attemptOne = vi.fn(async (input: UpdateListingContentInput) => ({
+      ...simulatedUpdateResult(input),
+      sellerSku: "WRONG-SKU",
+    }));
+    const execute = vi.fn(async (input) => {
+      await input.beforeApproval?.();
+      return input.run({} as never);
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute,
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(input)),
+        attemptOne,
+      },
+      randomUUID: () => "content-batch-unbound-result",
+    });
+    const key = "content-batch-unbound-result-001";
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    expect(preview.status).toBe(200);
+
+    const response = await batch.handle({
+      operation: "commit",
+      request: commitRequest(String(responseValue(preview).previewId), key),
+    });
+
+    expect(response.status).toBe(200);
+    expect(responseValue(response)).toMatchObject({
+      status: "STOPPED_UNKNOWN",
+      rows: [
+        expect.objectContaining({
+          state: "unknown",
+          result: null,
+          error: expect.objectContaining({ code: "UPDATE_STATUS_UNKNOWN" }),
+        }),
+        expect.objectContaining({ state: "not-started" }),
+        expect.objectContaining({ state: "not-started" }),
+      ],
+    });
+    expect(attemptOne).toHaveBeenCalledOnce();
+    expectNoPrivateBatchKeys(responseValue(response));
   });
 
   it("stops before the next SKU when the router context is invalidated mid-batch", async () => {

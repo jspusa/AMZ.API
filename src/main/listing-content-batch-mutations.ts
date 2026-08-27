@@ -34,6 +34,7 @@ import {
 } from "./amazon/sp-execution-context";
 import {
   assertListingContentPreparedPreviewBinding,
+  assertListingContentUpdateResultBinding,
   type ListingContentMutationsPort,
   type ListingContentPreparedPreview,
 } from "./listing-content-mutations";
@@ -74,9 +75,15 @@ export type ListingContentBatchMutationsDependencies = Readonly<{
 
 type ContentBatchChange = {
   input: UpdateListingContentInput;
+  sourceIdentity: ContentBatchSourceIdentity;
   proposalFingerprint: string;
   validation: ListingContentPreparedPreview;
 };
+
+type ContentBatchSourceIdentity = Readonly<{
+  asin: string;
+  productType: string;
+}>;
 
 type ContentBatchRowResult = {
   sellerSku: string;
@@ -104,6 +111,7 @@ type ContentBatchPlan = {
   fingerprint: string;
   changes: ContentBatchChange[];
   expiresAt: number;
+  completedExpiresAt: number | null;
   state: "ready" | "committing" | "completed";
   result: ContentBatchCommitResult | null;
 };
@@ -116,6 +124,19 @@ function publicContentValues(value: ListingContentValues): ListingContentValues 
     productDescription: value.productDescription,
     ingredients: value.ingredients,
   };
+}
+
+function assertContentBatchSourceIdentity(
+  validation: ListingContentPreparedPreview,
+  sourceIdentity: ContentBatchSourceIdentity,
+): void {
+  if (validation.evidence.asin !== sourceIdentity.asin ||
+      validation.evidence.productType !== sourceIdentity.productType) {
+    throw new SpApiError(
+      "Amazon 上的 SKU 已換綁到另一個 ASIN 或商品類型；整批已停止，請重新執行全站健檢。",
+      { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
+    );
+  }
 }
 
 function publicListingIssues(issues: readonly ListingIssue[]): ListingIssue[] {
@@ -182,6 +203,7 @@ const MARKETPLACE_CODES = Object.fromEntries(
 ) as Record<MarketplaceId, string>;
 
 const CONTENT_BATCH_PREVIEW_TTL_MS = 15 * 60 * 1_000;
+const CONTENT_BATCH_TERMINAL_REPLAY_TTL_MS = 24 * 60 * 60 * 1_000;
 const CONTENT_BATCH_MAX_CHANGED_SKUS = 500;
 
 function sameContentAuditValues(
@@ -458,6 +480,18 @@ export class ListingContentBatchMutations
     );
   }
 
+  private assertPlanLive(plan: ContentBatchPlan): void {
+    if (plan.expiresAt > this.now()) return;
+    throw new SpApiError(
+      "Excel 批次預檢已過期，請重新上傳並預檢。",
+      { status: 410, code: "PREVIEW_EXPIRED" },
+    );
+  }
+
+  private planIsCommitting(plan: ContentBatchPlan): boolean {
+    return plan.state === "committing";
+  }
+
   private previewPayload(plan: ContentBatchPlan) {
     return {
       previewId: plan.previewId,
@@ -555,7 +589,10 @@ export class ListingContentBatchMutations
       }
 
       const rowDigests = new Set(stored.rowDigests);
-      const inputRows: UpdateListingContentInput[] = [];
+      const inputRows: Array<Readonly<{
+        input: UpdateListingContentInput;
+        sourceIdentity: ContentBatchSourceIdentity;
+      }>> = [];
       let legacyRecoveredRows = 0;
       let legacyCandidateWork = 0;
       let legacyHashWork = 0;
@@ -701,18 +738,24 @@ export class ListingContentBatchMutations
           );
         }
         inputRows.push({
-          marketplaceId,
-          sellerSku: row.sellerSku,
-          title,
-          expectedTitle,
-          itemHighlight,
-          expectedItemHighlight,
-          bulletPoints,
-          expectedBulletPoints,
-          productDescription,
-          expectedProductDescription,
-          ingredients,
-          expectedIngredients,
+          input: {
+            marketplaceId,
+            sellerSku: row.sellerSku,
+            title,
+            expectedTitle,
+            itemHighlight,
+            expectedItemHighlight,
+            bulletPoints,
+            expectedBulletPoints,
+            productDescription,
+            expectedProductDescription,
+            ingredients,
+            expectedIngredients,
+          },
+          sourceIdentity: {
+            asin: row.asin,
+            productType: row.productType,
+          },
         });
       }
       if (!inputRows.length) {
@@ -755,7 +798,7 @@ export class ListingContentBatchMutations
         message: string;
         requestId: string | null;
       }> = [];
-      for (const input of inputRows) {
+      for (const { input, sourceIdentity } of inputRows) {
         try {
           await this.context.assertCurrent(context);
           this.assertLifecycleCurrent(revision);
@@ -766,8 +809,10 @@ export class ListingContentBatchMutations
             input,
             context,
           );
+          assertContentBatchSourceIdentity(validation, sourceIdentity);
           changes.push({
             input,
+            sourceIdentity,
             proposalFingerprint: validation.proposalFingerprint,
             validation,
           });
@@ -816,6 +861,7 @@ export class ListingContentBatchMutations
           change.validation.changedFields,
         ]),
       ]);
+      this.prunePlans();
       const conflictingPlan = [...this.plans.values()].find(
         (plan) =>
           plan.accountScope === accountScope &&
@@ -846,12 +892,14 @@ export class ListingContentBatchMutations
           stored.expiresAt,
           this.now() + CONTENT_BATCH_PREVIEW_TTL_MS,
         ),
+        completedExpiresAt: null,
         state: "ready",
         result: null,
       };
       this.assertLifecycleCurrent(revision);
       await this.stagePreview(this.writeBinding(plan));
       this.assertLifecycleCurrent(revision);
+      this.assertPlanLive(plan);
       this.plans.set(plan.previewId, plan);
       return json(this.previewPayload(plan));
     } catch (error) {
@@ -888,8 +936,7 @@ export class ListingContentBatchMutations
     }
     this.prunePlans();
     const plan = this.plans.get(previewId);
-    if (!plan || plan.expiresAt <= this.now()) {
-      this.plans.delete(previewId);
+    if (!plan) {
       return invalid(
         "Excel 批次預檢已過期，請重新上傳並預檢。",
         410,
@@ -904,6 +951,13 @@ export class ListingContentBatchMutations
         "Excel 批次預檢與目前的站點或確認碼不一致。",
         409,
         "PREVIEW_CHANGED",
+      );
+    }
+    if (this.planIsCommitting(plan)) {
+      return invalid(
+        "這份 Excel 批次正在處理，已阻止重複送出。",
+        409,
+        "OPERATION_IN_PROGRESS",
       );
     }
     const context = await this.context.capture(marketplaceId);
@@ -925,7 +979,15 @@ export class ListingContentBatchMutations
     if (plan.state === "completed" && plan.result) {
       return json(publicBatchCommitResult(plan.result));
     }
-    if (plan.state === "committing") {
+    if (plan.expiresAt <= this.now()) {
+      this.plans.delete(previewId);
+      return invalid(
+        "Excel 批次預檢已過期，請重新上傳並預檢。",
+        410,
+        "PREVIEW_EXPIRED",
+      );
+    }
+    if (this.planIsCommitting(plan)) {
       return invalid(
         "這份 Excel 批次正在處理，已阻止重複送出。",
         409,
@@ -948,6 +1010,7 @@ export class ListingContentBatchMutations
         beforeApproval: async () => {
           try {
             this.assertLifecycleCurrent(revision);
+            this.assertPlanLive(plan);
             const revalidated: ContentBatchChange[] = [];
             for (const change of plan.changes) {
               await this.context.assertCurrent(context);
@@ -963,10 +1026,12 @@ export class ListingContentBatchMutations
                   proposalFingerprint: change.proposalFingerprint,
                 },
               );
+              assertContentBatchSourceIdentity(fresh, change.sourceIdentity);
               revalidated.push({ ...change, validation: fresh });
             }
             await this.context.assertCurrent(context);
             this.assertLifecycleCurrent(revision);
+            this.assertPlanLive(plan);
             plan.changes = revalidated;
           } catch (error) {
             this.plans.delete(previewId);
@@ -987,6 +1052,8 @@ export class ListingContentBatchMutations
           }
         },
         run: async (session) => {
+          this.assertLifecycleCurrent(revision);
+          this.assertPlanLive(plan);
           const rows: ContentBatchRowResult[] = plan.changes.map((change) => ({
             sellerSku: change.input.sellerSku,
             state: "not-started",
@@ -1007,6 +1074,11 @@ export class ListingContentBatchMutations
                 change.input.sellerSku,
               );
               this.assertLifecycleCurrent(revision);
+              assertListingContentUpdateResultBinding(
+                rowResult,
+                change.input,
+                context,
+              );
               rows[index] = {
                 sellerSku: change.input.sellerSku,
                 state: rowResult.mode === "demo" ? "simulated" : "verified",
@@ -1061,6 +1133,8 @@ export class ListingContentBatchMutations
       this.assertLifecycleCurrent(revision);
       plan.result = publicBatchCommitResult(result);
       plan.state = "completed";
+      plan.completedExpiresAt =
+        this.now() + CONTENT_BATCH_TERMINAL_REPLAY_TTL_MS;
       return json(publicBatchCommitResult(plan.result));
     } catch (error) {
       if (plan.state === "committing") plan.state = "ready";
@@ -1074,7 +1148,10 @@ export class ListingContentBatchMutations
 
   private prunePlans(now = this.now()): void {
     for (const [previewId, plan] of this.plans) {
-      if (plan.expiresAt <= now && plan.state !== "committing") {
+      const expired = plan.state === "completed"
+        ? plan.completedExpiresAt !== null && plan.completedExpiresAt <= now
+        : plan.state !== "committing" && plan.expiresAt <= now;
+      if (expired) {
         this.plans.delete(previewId);
       }
     }
