@@ -1,23 +1,58 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  getListingContent,
   invalidateSpApiCredentialCaches,
+  listingContentGatewayProduction,
   listingImageGatewayProduction,
   listingPriceGatewayProduction,
-  previewListingContentUpdate,
   SpApiError,
   verifyListingsAccess,
 } from "../src/main/amazon/sp-api";
-import { SpExecutionContextError } from "../src/main/amazon/sp-execution-context";
+import type { UpdateListingContentInput } from
+  "../src/main/amazon/listing-content-types";
+import {
+  createScriptedSpExecutionContextAdapter,
+  SpExecutionContextError,
+} from "../src/main/amazon/sp-execution-context";
+import { createListingContentMutations } from
+  "../src/main/listing-content-mutations";
 import { createListingPriceMutationOperations } from
   "../src/main/listing-price-mutations";
+import type {
+  MainWriteGateExecuteInput,
+  MainWriteGatePort,
+} from "../src/main/write-gate";
 
 const priceOperations = createListingPriceMutationOperations(
   listingPriceGatewayProduction,
 );
 const getListingPrice = priceOperations.read;
 const updateListingPrice = priceOperations.commitStandard;
+const readListingContentSnapshot = async (
+  input: Parameters<typeof listingContentGatewayProduction.read>[0],
+) => (await listingContentGatewayProduction.read(input, "read-only")).snapshot;
+
+const contentPreviewWriteGate: MainWriteGatePort = {
+  stagePreview: async () => undefined,
+  execute: async <T>(_input: MainWriteGateExecuteInput<T>): Promise<T> => {
+    throw new Error("Wire-level content preview must not execute the Write Gate.");
+  },
+  reconcile: async () => undefined,
+  clearEphemeral: () => undefined,
+};
+
+async function previewListingContent(input: UpdateListingContentInput) {
+  const context = createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+    marketplaceId,
+    mode: listingContentGatewayProduction.mode(marketplaceId),
+    accountScope: "sp-api-live-content-preview-contract",
+  }));
+  return createListingContentMutations({
+    context,
+    writeGate: contentPreviewWriteGate,
+    gateway: listingContentGatewayProduction,
+  }).previewOne(input);
+}
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const FAKE_SELLER_ID = "FAKE_SELLER_ID_NA";
@@ -618,7 +653,10 @@ describe("SP-API live wire contracts", () => {
     );
 
     await expect(
-      getListingContent({ marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU }),
+      readListingContentSnapshot({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: FAKE_SKU,
+      }),
     ).rejects.toMatchObject({
       status: 409,
       code: "LISTING_IDENTITY_MISMATCH",
@@ -755,7 +793,10 @@ describe("SP-API live wire contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const error = await captureSpApiError(() =>
-      getListingContent({ marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU }),
+      readListingContentSnapshot({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: FAKE_SKU,
+      }),
     );
 
     expect(urls).toHaveLength(4);
@@ -816,7 +857,10 @@ describe("SP-API live wire contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const error = await captureSpApiError(() =>
-      getListingContent({ marketplaceId: MARKETPLACE_ID, sellerSku: FAKE_SKU }),
+      readListingContentSnapshot({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: FAKE_SKU,
+      }),
     );
 
     expect(urls).toHaveLength(4);
@@ -848,7 +892,7 @@ describe("SP-API live wire contracts", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const listing = await getListingContent({
+    const listing = await readListingContentSnapshot({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: FAKE_SKU,
     });
@@ -911,13 +955,22 @@ describe("SP-API live wire contracts", () => {
         url.searchParams.get("mode") === "VALIDATION_PREVIEW"
       ) {
         previewBody = JSON.parse(String(init?.body));
-        return jsonResponse(200, { status: "VALID", issues: [] });
+        return jsonResponse(200, {
+          sku: FAKE_SKU,
+          status: "VALID",
+          submissionId: "FAKE_CONTENT_PREVIEW_SUBMISSION",
+          identifiers: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin: "B000000001",
+          }],
+          issues: [],
+        });
       }
       throw new Error(`Unexpected request: ${method} ${url.href}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const preview = await previewListingContentUpdate({
+    const preview = await previewListingContent({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: FAKE_SKU,
       expectedTitle: "Fake FBA item",
@@ -999,7 +1052,7 @@ describe("SP-API live wire contracts", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const listing = await getListingContent({
+    const listing = await readListingContentSnapshot({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: FAKE_SKU,
     });
@@ -1062,7 +1115,7 @@ describe("SP-API live wire contracts", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const stale = getListingContent({
+    const stale = readListingContentSnapshot({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: FAKE_SKU,
     });
@@ -1073,7 +1126,7 @@ describe("SP-API live wire contracts", () => {
     const discarded = await stale;
     expect(discarded.capabilities.schemaChecksum).toBeNull();
     expect(discarded.capabilities.title.editable).toBe(false);
-    await expect(getListingContent({
+    await expect(readListingContentSnapshot({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: FAKE_SKU,
     })).resolves.toMatchObject({
@@ -1114,7 +1167,7 @@ describe("SP-API live wire contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const error = await captureSpApiError(() =>
-      previewListingContentUpdate({
+      previewListingContent({
         marketplaceId: MARKETPLACE_ID,
         sellerSku: FAKE_SKU,
         expectedTitle: "Fake FBA item",

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import { getListingContent } from "../src/main/amazon/sp-api";
+import { listingContentGatewayProduction } from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
@@ -27,6 +27,14 @@ function request(
     headers: { "content-type": "application/json" },
     body: { kind: "json", value: body },
   };
+}
+
+async function readListingContentSnapshot(input: Readonly<{
+  marketplaceId: "ATVPDKIKX0DER";
+  sellerSku: string;
+}>) {
+  return (await listingContentGatewayProduction.read(input, "read-only"))
+    .snapshot;
 }
 
 describe("listing content Touch ID commit route", () => {
@@ -64,7 +72,7 @@ describe("listing content Touch ID commit route", () => {
   });
 
   it("commits after native approval without a confirmationSku field", async () => {
-    const listing = await getListingContent({
+    const listing = await readListingContentSnapshot({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: SELLER_SKU,
     });
@@ -95,7 +103,7 @@ describe("listing content Touch ID commit route", () => {
   });
 
   it("rejects content changed after preview before requesting native approval", async () => {
-    const listing = await getListingContent({
+    const listing = await readListingContentSnapshot({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: SELLER_SKU,
     });
@@ -129,7 +137,7 @@ describe("listing content Touch ID commit route", () => {
   });
 
   it("does not commit when native approval is cancelled", async () => {
-    const listing = await getListingContent({
+    const listing = await readListingContentSnapshot({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: SELLER_SKU,
     });
