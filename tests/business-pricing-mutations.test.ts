@@ -38,11 +38,12 @@ function previewRequest(): ApiRequest {
 
 function validationResult(
   sellerSku: string,
+  marketplaceId = MARKETPLACE_ID,
 ): BusinessPriceValidationResult {
   return {
     mode: "live",
     status: "VALID",
-    marketplaceId: MARKETPLACE_ID,
+    marketplaceId,
     sellerSku,
     asin: "B012345678",
     productType: "PET_FOOD",
@@ -66,7 +67,13 @@ function validationResult(
 }
 
 describe("W05 Business Pricing mutation owner", () => {
-  it("rejects a preview result for another SKU before staging a Business Price ticket", async () => {
+  it.each([
+    ["another SKU", validationResult("A-DIFFERENT-SKU")],
+    [
+      "another marketplace",
+      validationResult(SELLER_SKU, "A1F83G8C2ARO7P"),
+    ],
+  ])("rejects a preview result for %s before staging a Business Price ticket", async (_scenario, mismatchedResult) => {
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const execute = vi.fn(async () => {
       throw new Error("Write Gate execute must not run during preview");
@@ -75,7 +82,7 @@ describe("W05 Business Pricing mutation owner", () => {
     const observeCanonical = vi.fn(async () => undefined);
     const operations = {
       read: vi.fn(),
-      preview: vi.fn(async () => validationResult("A-DIFFERENT-SKU")),
+      preview: vi.fn(async () => mismatchedResult),
       commit,
     } as unknown as BusinessPricingMutationOperations;
     const owner = new BusinessPricingMutations({
