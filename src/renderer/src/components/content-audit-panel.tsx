@@ -91,12 +91,7 @@ export type ContentWorkbookBatchFailure = {
     changedFields: ContentAuditField[];
     previous: ContentWorkbookValues;
     requested: ContentWorkbookValues;
-    issues: Array<{
-      code: string | null;
-      severity: string;
-      message: string;
-      attributeNames: string[];
-    }>;
+    issues: ContentWorkbookBatchIssue[];
     overrideAllowed: boolean;
   }>;
 };
@@ -277,6 +272,53 @@ function sameContentWorkbookField(
   return previous[field] === requested[field];
 }
 
+function parseContentWorkbookBatchDiff(
+  raw: unknown,
+  invalidStructureMessage: string,
+  invalidDiffMessage: string,
+): Readonly<{
+  sellerSku: string;
+  changedFields: ContentAuditField[];
+  previous: ContentWorkbookValues;
+  requested: ContentWorkbookValues;
+}> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(invalidStructureMessage);
+  }
+  const candidate = raw as Record<string, unknown>;
+  if (
+    typeof candidate.sellerSku !== "string" ||
+    !candidate.sellerSku ||
+    candidate.sellerSku.length > 100 ||
+    !Array.isArray(candidate.changedFields)
+  ) {
+    throw new Error(invalidStructureMessage);
+  }
+  const changedFields = candidate.changedFields.filter(
+    (field): field is ContentAuditField => CONTENT_AUDIT_FIELDS.has(field),
+  );
+  const previous = parseContentWorkbookValues(candidate.previous);
+  const requested = parseContentWorkbookValues(candidate.requested);
+  const actualChangedFields = CONTENT_WORKBOOK_FIELDS.filter(
+    (field) => !sameContentWorkbookField(field, previous, requested),
+  );
+  if (
+    !changedFields.length ||
+    changedFields.length !== candidate.changedFields.length ||
+    new Set(changedFields).size !== changedFields.length ||
+    changedFields.length !== actualChangedFields.length ||
+    !actualChangedFields.every((field) => changedFields.includes(field))
+  ) {
+    throw new Error(invalidDiffMessage);
+  }
+  return {
+    sellerSku: candidate.sellerSku,
+    changedFields,
+    previous,
+    requested,
+  };
+}
+
 function parseContentWorkbookBatchIssue(
   raw: unknown,
   invalidMessage: string,
@@ -302,8 +344,7 @@ function parseContentWorkbookBatchIssue(
     (issue.code !== null &&
       (typeof issue.code !== "string" || !issue.code || issue.code.length > 128)) ||
     typeof issue.severity !== "string" ||
-    !issue.severity ||
-    issue.severity.length > 32 ||
+    !["ERROR", "WARNING", "INFO"].includes(issue.severity) ||
     typeof issue.message !== "string" ||
     !issue.message ||
     issue.message.length > 10_000
@@ -347,14 +388,14 @@ export function parseContentWorkbookBatchPreview(
   ) {
     throw new Error("Excel 預檢缺少可核對的站點或變更清單。");
   }
-  const changes = value.changes.map((candidate) => {
+  const changes = value.changes.map((rawCandidate) => {
+    const diff = parseContentWorkbookBatchDiff(
+      rawCandidate,
+      "Excel 預檢含有無法核對的 SKU 變更。",
+      "Excel 預檢的欄位清單與前後內容不一致。",
+    );
+    const candidate = rawCandidate as Record<string, unknown>;
     if (
-      !candidate ||
-      typeof candidate !== "object" ||
-      typeof candidate.sellerSku !== "string" ||
-      !candidate.sellerSku ||
-      candidate.sellerSku.length > 100 ||
-      !Array.isArray(candidate.changedFields) ||
       !Array.isArray(candidate.issues) ||
       candidate.issues.length > 100 ||
       (candidate.validationStatus !== "VALID" &&
@@ -363,23 +404,6 @@ export function parseContentWorkbookBatchPreview(
       typeof candidate.overrideAllowed !== "boolean"
     ) {
       throw new Error("Excel 預檢含有無法核對的 SKU 變更。");
-    }
-    const changedFields = candidate.changedFields.filter(
-      (field): field is ContentAuditField => CONTENT_AUDIT_FIELDS.has(field),
-    );
-    const previous = parseContentWorkbookValues(candidate.previous);
-    const requested = parseContentWorkbookValues(candidate.requested);
-    const actualChangedFields = CONTENT_WORKBOOK_FIELDS.filter(
-      (field) => !sameContentWorkbookField(field, previous, requested),
-    );
-    if (
-      !changedFields.length ||
-      changedFields.length !== candidate.changedFields.length ||
-      new Set(changedFields).size !== changedFields.length ||
-      changedFields.length !== actualChangedFields.length ||
-      !actualChangedFields.every((field) => changedFields.includes(field))
-    ) {
-      throw new Error("Excel 預檢的欄位清單與前後內容不一致。");
     }
     const issues = candidate.issues.map((issue) =>
       parseContentWorkbookBatchIssue(
@@ -395,13 +419,11 @@ export function parseContentWorkbookBatchPreview(
       throw new Error("Excel 預檢的強制送出狀態不一致。");
     }
     return {
-      sellerSku: candidate.sellerSku,
-      changedFields,
-      previous,
-      requested,
+      ...diff,
       issues,
-      validationStatus: candidate.validationStatus,
-      overrideAllowed: candidate.overrideAllowed,
+      validationStatus: candidate.validationStatus as
+        ContentWorkbookBatchPreview["changes"][number]["validationStatus"],
+      overrideAllowed: candidate.overrideAllowed as boolean,
     };
   });
   if (new Set(changes.map((change) => change.sellerSku)).size !== changes.length) {
@@ -486,13 +508,14 @@ export function parseContentWorkbookBatchFailure(
   ) {
     throw new Error("Excel 預檢失敗回應缺少可核對的 SKU 明細。");
   }
-  const rows = value.rows.map((candidate) => {
+  const rows = value.rows.map((rawCandidate) => {
+    const diff = parseContentWorkbookBatchDiff(
+      rawCandidate,
+      "Excel 預檢失敗回應含有無法核對的 SKU 狀態。",
+      "Excel 預檢失敗明細的欄位與前後內容不一致。",
+    );
+    const candidate = rawCandidate as Record<string, unknown>;
     if (
-      !candidate ||
-      typeof candidate !== "object" ||
-      typeof candidate.sellerSku !== "string" ||
-      !candidate.sellerSku ||
-      candidate.sellerSku.length > 100 ||
       typeof candidate.code !== "string" ||
       !candidate.code ||
       candidate.code.length > 128 ||
@@ -502,65 +525,25 @@ export function parseContentWorkbookBatchFailure(
       (candidate.requestId !== null &&
         (typeof candidate.requestId !== "string" ||
           candidate.requestId.length > 128)) ||
-      !Array.isArray(candidate.changedFields) ||
       !Array.isArray(candidate.issues) ||
-      typeof candidate.overrideAllowed !== "boolean"
+      candidate.issues.length > 100 ||
+      candidate.overrideAllowed !== false
     ) {
       throw new Error("Excel 預檢失敗回應含有無法核對的 SKU 狀態。");
     }
-    const changedFields = candidate.changedFields.filter(
-      (field): field is ContentAuditField => CONTENT_AUDIT_FIELDS.has(field),
+    const issues = candidate.issues.map((issue) =>
+      parseContentWorkbookBatchIssue(
+        issue,
+        "Excel 預檢失敗明細含有無法顯示的 Amazon issue。",
+      )
     );
-    const previous = parseContentWorkbookValues(candidate.previous);
-    const requested = parseContentWorkbookValues(candidate.requested);
-    const actualChangedFields = CONTENT_WORKBOOK_FIELDS.filter(
-      (field) => !sameContentWorkbookField(field, previous, requested),
-    );
-    if (
-      !changedFields.length ||
-      changedFields.length !== candidate.changedFields.length ||
-      new Set(changedFields).size !== changedFields.length ||
-      changedFields.length !== actualChangedFields.length ||
-      !actualChangedFields.every((field) => changedFields.includes(field))
-    ) {
-      throw new Error("Excel 預檢失敗明細的欄位與前後內容不一致。");
-    }
-    const issues = candidate.issues.map((issue) => {
-      if (
-        !issue ||
-        typeof issue !== "object" ||
-        (issue.code !== null &&
-          (typeof issue.code !== "string" || issue.code.length > 128)) ||
-        typeof issue.severity !== "string" ||
-        !issue.severity ||
-        issue.severity.length > 32 ||
-        typeof issue.message !== "string" ||
-        !issue.message ||
-        issue.message.length > 10_000 ||
-        !Array.isArray(issue.attributeNames) ||
-        issue.attributeNames.some((attribute) =>
-          typeof attribute !== "string" || attribute.length > 128
-        )
-      ) {
-        throw new Error("Excel 預檢失敗明細含有無法顯示的 Amazon issue。");
-      }
-      return {
-        code: issue.code,
-        severity: issue.severity,
-        message: issue.message,
-        attributeNames: [...issue.attributeNames],
-      };
-    });
     return {
-      sellerSku: candidate.sellerSku,
-      code: candidate.code,
-      message: candidate.message,
-      requestId: candidate.requestId,
-      changedFields,
-      previous,
-      requested,
+      ...diff,
+      code: candidate.code as string,
+      message: candidate.message as string,
+      requestId: candidate.requestId as string | null,
       issues,
-      overrideAllowed: candidate.overrideAllowed,
+      overrideAllowed: false as const,
     };
   });
   return {
