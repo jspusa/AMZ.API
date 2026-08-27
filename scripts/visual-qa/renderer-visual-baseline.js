@@ -167,6 +167,8 @@ async (page) => {
     await page.waitForTimeout(280);
     await page.evaluate(async () => {
       await document.fonts.ready;
+      document.documentElement.style.overflowAnchor = "none";
+      document.body.style.overflowAnchor = "none";
       await new Promise((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       );
@@ -186,6 +188,21 @@ async (page) => {
     });
   };
 
+  const pinWindowOrigin = async () => {
+    const position = await page.evaluate(async () => {
+      for (let index = 0; index < 2; index += 1) {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      return { left: window.scrollX, top: window.scrollY };
+    });
+    ensure(
+      position.left === 0 && position.top === 0,
+      `${currentState}: window origin did not stabilize ${JSON.stringify(position)}`,
+    );
+  };
+
   const inspectLayout = async ({
     surface,
     scopeSelector,
@@ -201,6 +218,7 @@ async (page) => {
     verticalScrollerSelector = null,
     verticalLastItemSelector = null,
     motionSelector = null,
+    viewportTargetSelector = null,
     reduced = false,
     font,
   }) => {
@@ -216,6 +234,7 @@ async (page) => {
         verticalScrollerSelector,
         verticalLastItemSelector,
         motionSelector,
+        viewportTargetSelector,
         reduced,
       }) => {
         const root = document.documentElement;
@@ -233,6 +252,38 @@ async (page) => {
             rect.height > 0
           );
         };
+        let viewportTarget = null;
+        if (viewportTargetSelector) {
+          const element = document.querySelector(viewportTargetSelector);
+          if (element instanceof Element) {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            viewportTarget = {
+              selector: viewportTargetSelector,
+              missing: false,
+              left: rect.left,
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+              width: rect.width,
+              height: rect.height,
+              fullyVisible:
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                rect.width > 0 &&
+                rect.height > 0 &&
+                rect.left >= -0.5 &&
+                rect.top >= -0.5 &&
+                rect.right <= window.innerWidth + 0.5 &&
+                rect.bottom <= window.innerHeight + 0.5,
+            };
+          } else {
+            viewportTarget = {
+              selector: viewportTargetSelector,
+              missing: true,
+            };
+          }
+        }
         const scrollOwners = [scope, ...scope.querySelectorAll("*")]
           .filter((element) => element instanceof HTMLElement && visible(element))
           .filter((element) => {
@@ -363,6 +414,7 @@ async (page) => {
           scrollOwners,
           requiredScrollers: requiredScrollerMetrics,
           scopeHorizontalOverflow: scope.scrollWidth - scope.clientWidth,
+          viewportTarget,
           sticky,
           focus,
           verticalScroller,
@@ -387,6 +439,7 @@ async (page) => {
         verticalScrollerSelector,
         verticalLastItemSelector,
         motionSelector,
+        viewportTargetSelector,
         reduced,
       },
     );
@@ -415,6 +468,16 @@ async (page) => {
         metrics.page.clientWidth === expectedPage.clientWidth &&
           metrics.page.scrollWidth === expectedPage.scrollWidth,
         `${surface}: page geometry is ${metrics.page.clientWidth}/${metrics.page.scrollWidth}, expected ${expectedPage.clientWidth}/${expectedPage.scrollWidth}`,
+      );
+    }
+    if (viewportTargetSelector) {
+      ensure(
+        metrics.viewportTarget && !metrics.viewportTarget.missing,
+        `${surface}: viewport target ${viewportTargetSelector} is missing`,
+      );
+      ensure(
+        metrics.viewportTarget.fullyVisible,
+        `${surface}: viewport target is not fully visible ${JSON.stringify(metrics.viewportTarget)}`,
       );
     }
     if (strictScrollers) {
@@ -527,22 +590,55 @@ async (page) => {
     verticalScrollerSelector = null,
     verticalLastItemSelector = null,
     motionSelector = null,
-    windowScrollTop = null,
+    scrollTargetSelector = null,
+    scrollTargetViewportTop = 160,
+    viewportTargetSelector = null,
   }) => {
     currentState = `${phase.name}/${profile.name}/${surface}`;
     await settle();
-    if (windowScrollTop !== null) {
-      await page.evaluate(({ windowScrollTop }) => {
-        window.scrollTo({ top: windowScrollTop, left: 0, behavior: "instant" });
-      }, { windowScrollTop });
+    if (scrollTargetSelector) {
+      const targetScroll = await page.evaluate(
+        async ({ scrollTargetSelector, scrollTargetViewportTop }) => {
+          const element = document.querySelector(scrollTargetSelector);
+          if (!(element instanceof HTMLElement)) return { missing: true };
+          const absoluteTop = window.scrollY + element.getBoundingClientRect().top;
+          const maximum = document.documentElement.scrollHeight - window.innerHeight;
+          const requestedTop = Math.max(
+            0,
+            Math.min(maximum, Math.round(absoluteTop - scrollTargetViewportTop)),
+          );
+          window.scrollTo({ top: requestedTop, left: 0, behavior: "instant" });
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          for (let index = 0; index < 2; index += 1) {
+            const correction = Math.round(
+              element.getBoundingClientRect().top - scrollTargetViewportTop,
+            );
+            if (correction === 0) break;
+            window.scrollBy({ top: correction, left: 0, behavior: "instant" });
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          return {
+            missing: false,
+            top: window.scrollY,
+            viewportTop: element.getBoundingClientRect().top,
+          };
+        },
+        { scrollTargetSelector, scrollTargetViewportTop },
+      );
+      ensure(
+        !targetScroll.missing,
+        `${currentState}: missing scroll target ${scrollTargetSelector}`,
+      );
+      ensure(
+        Math.round(targetScroll.viewportTop) === scrollTargetViewportTop,
+        `${currentState}: scroll target did not stabilize ${JSON.stringify(targetScroll)}`,
+      );
       await page.waitForFunction(
-        ({ windowScrollTop }) =>
-          window.scrollX === 0 && window.scrollY === windowScrollTop,
-        { windowScrollTop },
+        ({ top }) => window.scrollX === 0 && window.scrollY === top,
+        { top: targetScroll.top },
       );
     } else if (dialogSelector) {
-      await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: "instant" }));
-      await page.waitForFunction(() => window.scrollX === 0 && window.scrollY === 0);
+      await pinWindowOrigin();
     }
     const metrics = await inspectLayout({
       surface: currentState,
@@ -559,18 +655,21 @@ async (page) => {
       verticalScrollerSelector,
       verticalLastItemSelector,
       motionSelector,
+      viewportTargetSelector,
       reduced: profile.reduced,
       font: profile.font,
     });
     const comparisonKey = `${profile.name}/${surface}`;
     const comparisonMetrics = {
       page: metrics.page,
-      windowScroll: metrics.windowScroll,
+      windowScroll:
+        scrollTargetSelector || dialogSelector ? null : metrics.windowScroll,
       scopeScroll: metrics.scopeScroll,
       dialog: metrics.dialog,
       scrollOwners: metrics.scrollOwners,
       requiredScrollers: metrics.requiredScrollers,
       scopeHorizontalOverflow: metrics.scopeHorizontalOverflow,
+      viewportTarget: metrics.viewportTarget,
       sticky: metrics.sticky,
       focus: metrics.focus,
       verticalScroller: metrics.verticalScroller,
@@ -586,6 +685,7 @@ async (page) => {
       );
     }
     const path = `output/playwright/${visualScenario.evidenceDirectory}/${phase.name}/${profile.name}/${surface}.png`;
+    if (dialogSelector) await pinWindowOrigin();
     await page.screenshot({
       path,
       fullPage: false,
@@ -954,13 +1054,6 @@ async (page) => {
             brandLayout.legendColumns.split(" ").length === 2,
             `${currentState}: brand legend is not two columns ${brandLayout.legendColumns}`,
           );
-          const brandScroll = await page.evaluate(() => ({
-            maximum: document.documentElement.scrollHeight - window.innerHeight,
-          }));
-          ensure(
-            brandScroll.maximum >= 600,
-            `${currentState}: brand fixture cannot reach deterministic scroll ${JSON.stringify(brandScroll)}`,
-          );
           currentState = `${phase.name}/${profile.name}/brand-interactive`;
           await capture({
             phase,
@@ -971,7 +1064,8 @@ async (page) => {
             requireScopeContainment: true,
             expectedPage,
             focusSelector: ".brand-sales-pie-slice",
-            windowScrollTop: 600,
+            scrollTargetSelector: "section.brand-sales-card",
+            viewportTargetSelector: ".brand-sales-pie-stage",
           });
 
           await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));

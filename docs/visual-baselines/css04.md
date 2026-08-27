@@ -82,8 +82,15 @@ The harness proves all of the following:
 
 - Home cards, audit results, report/review drawers, Brand charts, Ads coverage
   and strategy results, and FBA inbound states preserve exact before/after
-  page, dialog, viewport, window-scroll, scope-scroll, and internal-scroller
-  geometry;
+  page, dialog, scope-scroll, and internal-scroller geometry. Ordinary captures
+  also compare window scroll exactly; dialog captures pin the viewport origin
+  immediately before the screenshot instead of treating the browser's
+  background scroll-restoration value as evidence;
+- Brand interaction is positioned relative to `section.brand-sales-card` only
+  after fonts and animations settle. The harness requires the exact
+  `.brand-sales-pie-stage` rectangle to match before/after and requires every
+  edge of that target to remain inside the viewport, so a screenshot cannot
+  pass while showing only the legend or the following Home content;
 - menus, drawer close targets, Brand SVG controls, switches, report category
   navigation, and tested keyboard targets retain visible focus and the expected
   interaction state;
@@ -115,34 +122,48 @@ stabilization rather than reusing earlier output:
 | **Total** | **126** | **252** | **0** | **0** | **0** |
 
 Every before/after geometry comparison passed. Screenshot capture waits for
-fonts and two animation frames, finishes finite animations, freezes infinite
-animations at time zero, and hides the caret. These controls remove state and
-capture timing as confounders while leaving the production stylesheet under
-test unchanged.
+fonts and two animation frames, disables browser scroll anchoring in the test
+document, finishes finite animations, freezes infinite animations at time
+zero, stabilizes target-relative or dialog positioning, and hides the caret.
+These controls remove state and capture timing as confounders while leaving the
+production stylesheet under test unchanged.
 
 ## Pixel comparison and visual review
 
 The final inherited matrices were nearly entirely pixel-exact: CSS01 was
-44/45 exact, CSS02 was 9/9 exact, and CSS03 was 19/21 exact. Their remaining
+43/45 exact, CSS02 was 9/9 exact, and CSS03 was 14/21 exact. Their remaining
 pixels were bounded text/raster noise: maximum channel deltas were 1 and 8 for
-CSS01 and CSS03 respectively, with no geometry difference.
+CSS01 and CSS03 respectively, with no geometry difference. CSS01's largest
+non-exact pair changed 126 pixels／0.008750% with MAE 0.000040; CSS03's largest
+non-exact pair changed 78 pixels／0.005417% with MAE 0.000061.
 
-In the focused CSS04 matrix, 45 of 51 pairs were pixel-exact. The six remaining
-pairs were bounded browser text/raster noise:
+In the focused CSS04 matrix, 37 of 51 pairs were pixel-exact. The fourteen
+remaining pairs were bounded browser text/raster noise:
 
 | Profile / surface | Changed pixels | Changed area | Max channel delta | Mean absolute channel error |
 | --- | ---: | ---: | ---: | ---: |
-| desktop-standard / Home primary | 50 | 0.003472% | 8 | 0.000068 |
-| desktop-large / Reviews | 132 | 0.009167% | 1 | 0.000047 |
-| desktop-large / Reports | 118 | 0.008194% | 1 | 0.000043 |
-| desktop-large / Brand interaction | 18 | 0.001250% | 3 | 0.000016 |
 | compact-320-large / Image results | 1 | 0.000550% | 1 | 0.000006 |
 | compact-320-large / Missing bullets | 1 | 0.000550% | 1 | 0.000002 |
+| compact-390-large / Reports | 15 | 0.004557% | 1 | 0.000017 |
+| compact-390-large / Reviews | 15 | 0.004557% | 1 | 0.000017 |
+| desktop-large / Reports | 118 | 0.008194% | 1 | 0.000043 |
+| desktop-large / Reviews | 132 | 0.009167% | 1 | 0.000047 |
+| desktop-reduced / Brand interaction | 18 | 0.001250% | 3 | 0.000016 |
+| desktop-reduced / Image results | 5 | 0.000347% | 1 | 0.000001 |
+| desktop-reduced / Reports | 1 | 0.000069% | 1 | <0.000001 |
+| desktop-reduced / Reviews | 11 | 0.000764% | 1 | 0.000003 |
+| desktop-standard / Brand interaction | 18 | 0.001250% | 3 | 0.000016 |
+| desktop-standard / Home primary | 50 | 0.003472% | 8 | 0.000068 |
+| desktop-standard / Reports | 117 | 0.008125% | 1 | 0.000044 |
+| desktop-standard / Reviews | 153 | 0.010625% | 1 | 0.000054 |
 
 Representative desktop, large-font, 390-pixel, 320-pixel, reduced-motion,
 report, audit, Ads, Brand, and inbound captures, plus both Report Library
-before/after pairs, were inspected. No layout change, missing control, clipping,
-focus regression, or presentation drift was observed.
+before/after pairs, were inspected. The final desktop-standard and
+desktop-large Brand captures visibly contain the focused pie, selected value,
+and legend; the compact-390 Report pair shares the same top edge. No layout
+change, missing control, clipping, focus regression, or presentation drift was
+observed.
 
 ## Pre-existing observations
 
