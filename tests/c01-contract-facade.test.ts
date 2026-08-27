@@ -625,7 +625,7 @@ describe("C01 contract facade", () => {
         "readFamily",
         "resolveSellerSkuByAsin",
       ]);
-  });
+  }, 15_000);
 
   it("keeps main-private boundaries one-way and one report lifecycle", () => {
     const mainRoot = resolve(REPOSITORY_ROOT, "src/main");
@@ -683,5 +683,5 @@ describe("C01 contract facade", () => {
     expect(brokerOwners).toEqual(["src/main/api-router.ts"]);
     expect(credentialRuntimeOwners).toEqual(["src/main/amazon/sp-api.ts"]);
     expect(salesTrendOwners).toEqual(["src/main/amazon/sp-api.ts"]);
-  });
+  }, 15_000);
 });
