@@ -335,6 +335,20 @@ describe("W05 Business Pricing mutation owner", () => {
       },
     });
 
+    expect((await owner.handle({
+      operation: "preview",
+      request: mutationRequest("POST", idempotencyKey),
+    })).status).toBe(200);
+    const blockedReplay = await owner.handle({
+      operation: "commit",
+      request: mutationRequest("PATCH", idempotencyKey),
+    });
+    expect(blockedReplay.status).toBe(409);
+    expect(bodyValue(blockedReplay)).toMatchObject({
+      code: "UPDATE_STATUS_UNKNOWN",
+    });
+    expect(gateway.commitCalls).toBe(1);
+
     gateway.businessPriceAmount = 27;
     const restarted = await durableHarness(gateway, storePath);
     expect((await restarted.handle({

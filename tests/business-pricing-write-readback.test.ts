@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { businessPriceReadbackDecision } from "../src/main/business-pricing-mutations";
+import {
+  businessPriceReadbackDecision,
+  reconcileBusinessPriceWrite,
+} from "../src/main/business-pricing-mutations";
 
 const identity = {
   mode: "live" as const,
@@ -185,5 +188,72 @@ describe("business pricing write readback", () => {
       ...snapshot,
       businessOfferProtectedHash: "unrelated-offer-drifted",
     } as never)).toBe("pending");
+  });
+
+  it("refuses malformed durable evidence and non-FBA canonical snapshots", () => {
+    const evidence = {
+      version: 1,
+      marketplaceId: identity.marketplaceId,
+      sellerSku: identity.sellerSku,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      fulfillment: "FBA",
+      standardPrice: { amount: 30, currencyCode: "USD" },
+      previousBusinessPrice: { amount: 28, currencyCode: "USD" },
+      requestedBusinessPrice: { amount: 27, currencyCode: "USD" },
+      previousQuantityDiscountPlan: null,
+      previousQuantityDiscountPlanHash: null,
+      requestedQuantityDiscountPlan: null,
+      quantityDiscountPlanChange: "preserve",
+      businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "b".repeat(64),
+      schemaChecksum: "seller-specific-checksum",
+    };
+    const durable = {
+      ...identity,
+      status: "DISPATCHED",
+      asin: evidence.asin,
+      productType: evidence.productType,
+      standardPrice: evidence.standardPrice,
+      previousBusinessPrice: evidence.previousBusinessPrice,
+      requestedBusinessPrice: evidence.requestedBusinessPrice,
+      previousQuantityDiscountPlan: null,
+      previousQuantityDiscountPlanHash: null,
+      requestedQuantityDiscountPlan: null,
+      quantityDiscountPlanChange: "preserve",
+      businessOfferGuardHash: evidence.businessOfferGuardHash,
+      businessOfferProtectedHash: evidence.businessOfferProtectedHash,
+      schemaChecksum: evidence.schemaChecksum,
+      acceptedAt: "2026-08-27T00:00:00.000Z",
+      submissionId: null,
+      requestId: null,
+      issues: [],
+      notice: "durable fixture",
+      _writeEvidence: evidence,
+    };
+    const canonical = {
+      ...identity,
+      asin: evidence.asin,
+      productType: evidence.productType,
+      standardPrice: evidence.standardPrice,
+      businessPrice: evidence.requestedBusinessPrice,
+      businessOfferPresence: "present",
+      businessOfferGuardHash: evidence.businessOfferGuardHash,
+      issues: [],
+      fulfillmentAvailability: [{ fulfillment: "FBA" }],
+    };
+
+    expect(reconcileBusinessPriceWrite(
+      durable,
+      canonical as never,
+    )).toMatchObject({ status: "ACCEPTED" });
+    expect(reconcileBusinessPriceWrite({
+      ...durable,
+      _writeEvidence: { ...evidence, unexpected: true },
+    }, canonical as never)).toBeNull();
+    expect(reconcileBusinessPriceWrite(durable, {
+      ...canonical,
+      fulfillmentAvailability: [{ fulfillment: "MFN" }],
+    } as never)).toBeNull();
   });
 });
