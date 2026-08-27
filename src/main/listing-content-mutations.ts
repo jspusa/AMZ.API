@@ -199,6 +199,45 @@ const DURABLE_RESULT_KEYS = [
   "submissionId",
 ] as const;
 
+const PREPARED_PREVIEW_KEYS = [
+  "changedFields",
+  "evidence",
+  "issues",
+  "marketplaceId",
+  "mode",
+  "notice",
+  "previous",
+  "proposalFingerprint",
+  "requested",
+  "sellerSku",
+  "status",
+  "validatedAt",
+] as const;
+
+const PUBLIC_UPDATE_RESULT_KEYS = [
+  "acceptedAt",
+  "changedFields",
+  "issues",
+  "marketplaceId",
+  "mode",
+  "notice",
+  "previous",
+  "requestId",
+  "requested",
+  "sellerSku",
+  "status",
+  "submissionId",
+] as const;
+
+const WRITE_LIFECYCLE_KEYS = [
+  "acceptedAt",
+  "attempts",
+  "authoritative",
+  "state",
+  "verified",
+  "verifiedAt",
+] as const;
+
 const NORMALIZED_ISSUE_KEYS = [
   "attributeNames",
   "categories",
@@ -1027,6 +1066,204 @@ function validContentValues(value: unknown): value is ListingContentValues {
     validContentText(value.ingredients, 20_000);
 }
 
+/**
+ * Runtime-check the narrow W06 -> W07 seam without exposing another mutation
+ * method on ListingContentMutationsPort. The batch owner may only retain a
+ * preview that is exactly bound to its captured execution context and input.
+ */
+export function assertListingContentPreparedPreviewBinding(
+  value: unknown,
+  input: UpdateListingContentInput,
+  context: Pick<SpExecutionContext, "marketplaceId" | "mode">,
+  expected?: Pick<
+    ListingContentPreparedPreview,
+    "evidence" | "proposalFingerprint"
+  >,
+): asserts value is ListingContentPreparedPreview {
+  const previous = isRecord(value) ? value.previous : null;
+  const requested = isRecord(value) ? value.requested : null;
+  const evidence = isRecord(value) ? value.evidence : null;
+  const expectedPrevious = normalizeContentValues({
+    title: input.expectedTitle,
+    itemHighlight: input.expectedItemHighlight,
+    bulletPoints: input.expectedBulletPoints,
+    productDescription: input.expectedProductDescription,
+    ingredients: input.expectedIngredients,
+  });
+  const expectedRequested = normalizeContentValues(input);
+  if (!isRecord(value) ||
+      !hasExactKeys(value, PREPARED_PREVIEW_KEYS) ||
+      value.mode !== context.mode ||
+      value.status !== (context.mode === "demo" ? "SIMULATED" : "VALID") ||
+      context.marketplaceId !== input.marketplaceId ||
+      value.marketplaceId !== input.marketplaceId ||
+      value.sellerSku !== input.sellerSku ||
+      !validContentValues(previous) ||
+      !sameContentValues(previous, expectedPrevious) ||
+      !validContentValues(requested) ||
+      !sameContentValues(requested, expectedRequested) ||
+      !exactChangedFields(value.changedFields, previous, requested) ||
+      !validIsoTimestamp(value.validatedAt) ||
+      !exactDurableIssues(value.issues) ||
+      !safeNotice(value.notice) ||
+      !validPrecommitEvidence(evidence) ||
+      evidence.marketplaceId !== input.marketplaceId ||
+      evidence.sellerSku !== input.sellerSku ||
+      evidence.expectedOldHash !== canonicalSha256(previous) ||
+      JSON.stringify(evidence.changedFields) !==
+        JSON.stringify(value.changedFields) ||
+      evidence.validationIssuesHash !==
+        canonicalSha256(sortedIssues(value.issues)) ||
+      !validSha256(value.proposalFingerprint) ||
+      value.proposalFingerprint !==
+        proposalFingerprint(previous, requested, evidence) ||
+      (expected &&
+        (value.proposalFingerprint !== expected.proposalFingerprint ||
+          canonicalSha256(evidence) !==
+            canonicalSha256(expected.evidence)))) {
+    throw new SpApiError(
+      "Amazon 商品內容預檢的執行模式、SKU、FBA 或證據身分不一致；整批已停止，請重新預檢。",
+      { status: 409, code: "PREVIEW_CHANGED" },
+    );
+  }
+}
+
+function validWriteLifecycle(
+  value: unknown,
+  acceptedAt: string,
+): boolean {
+  return isRecord(value) &&
+    hasExactKeys(value, WRITE_LIFECYCLE_KEYS) &&
+    value.state === "verified" &&
+    value.verified === true &&
+    value.authoritative === true &&
+    value.acceptedAt === acceptedAt &&
+    validIsoTimestamp(value.acceptedAt) &&
+    validIsoTimestamp(value.verifiedAt) &&
+    Number.isSafeInteger(value.attempts) &&
+    Number(value.attempts) >= 0;
+}
+
+function hasExactUpdateResultKeys(value: Record<string, unknown>): boolean {
+  return hasExactKeys(value, PUBLIC_UPDATE_RESULT_KEYS) ||
+    hasExactKeys(value, [...PUBLIC_UPDATE_RESULT_KEYS, "writeLifecycle"]);
+}
+
+/**
+ * Runtime-check the public W06 write result before W07 classifies the row and
+ * advances to another SKU. A malformed durable replay is an unknown result,
+ * never evidence that this row completed.
+ */
+export function assertListingContentUpdateResultBinding(
+  value: unknown,
+  input: UpdateListingContentInput,
+  context?: Pick<SpExecutionContext, "marketplaceId" | "mode">,
+): asserts value is ListingContentUpdateResult {
+  const previous = isRecord(value) ? value.previous : null;
+  const requested = isRecord(value) ? value.requested : null;
+  const expectedPrevious = normalizeContentValues({
+    title: input.expectedTitle,
+    itemHighlight: input.expectedItemHighlight,
+    bulletPoints: input.expectedBulletPoints,
+    productDescription: input.expectedProductDescription,
+    ingredients: input.expectedIngredients,
+  });
+  const expectedRequested = normalizeContentValues(input);
+  const verifiedLifecycle = isRecord(value) &&
+    typeof value.acceptedAt === "string" &&
+    "writeLifecycle" in value &&
+    validWriteLifecycle(value.writeLifecycle, value.acceptedAt);
+  const validStatus = isRecord(value) &&
+    ((value.mode === "demo" &&
+        value.status === "SIMULATED" &&
+        value.submissionId === null &&
+        value.requestId === null &&
+        Array.isArray(value.issues) &&
+        value.issues.length === 0) ||
+      (value.mode === "live" &&
+        value.status === "ACCEPTED" &&
+        typeof value.submissionId === "string" &&
+        safeOptionalIdentifier(value.submissionId) &&
+        safeOptionalIdentifier(value.requestId) &&
+        exactDurableIssues(value.issues)) ||
+      (value.mode === "live" &&
+        value.status === "ACCEPTED" &&
+        value.submissionId === null &&
+        value.requestId === null &&
+        Array.isArray(value.issues) &&
+        value.issues.length === 0 &&
+        verifiedLifecycle));
+  if (!isRecord(value) ||
+      !hasExactUpdateResultKeys(value) ||
+      !validStatus ||
+      value.marketplaceId !== input.marketplaceId ||
+      value.sellerSku !== input.sellerSku ||
+      (context &&
+        (context.marketplaceId !== input.marketplaceId ||
+          value.mode !== context.mode)) ||
+      !validContentValues(previous) ||
+      !sameContentValues(previous, expectedPrevious) ||
+      !validContentValues(requested) ||
+      !sameContentValues(requested, expectedRequested) ||
+      !exactChangedFields(value.changedFields, previous, requested) ||
+      !validIsoTimestamp(value.acceptedAt) ||
+      !exactDurableIssues(value.issues) ||
+      !safeNotice(value.notice) ||
+      ("writeLifecycle" in value &&
+        !verifiedLifecycle)) {
+    throw new SpApiError(
+      "Amazon 商品內容寫入結果無法證明屬於這次 SKU、模式或要求；已停止後續 SKU，請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+}
+
+function assertDurableContentResultBinding(
+  value: unknown,
+  input: UpdateListingContentInput,
+  expectedEvidence: ListingContentPrecommitEvidence,
+): asserts value is ListingContentDurableResult {
+  if (!isRecord(value)) {
+    throw new SpApiError(
+      "Amazon 商品內容防重送結果已損壞；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+  if (typeof value.acceptedAt !== "string" ||
+      !validWriteLifecycle(value.writeLifecycle, value.acceptedAt)) {
+    throw new SpApiError(
+      "Amazon 商品內容防重送結果缺少正式回查證據；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+  const publicValue = publicUpdateResult(value);
+  try {
+    assertListingContentUpdateResultBinding(publicValue, input);
+  } catch {
+    throw new SpApiError(
+      "Amazon 商品內容防重送結果與這次要求不一致；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+  const durableEvidence = value._writeEvidence;
+  if (!exactWriteEvidence(durableEvidence)) {
+    throw new SpApiError(
+      "Amazon 商品內容防重送證據與這次要求不一致；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+  if (canonicalSha256(Object.fromEntries(
+        PRECOMMIT_EVIDENCE_KEYS.map((key) => [key, durableEvidence[key]]),
+      )) !==
+        canonicalSha256(expectedEvidence) ||
+      !durableEnvelopeMatchesEvidence(value, durableEvidence)) {
+    throw new SpApiError(
+      "Amazon 商品內容防重送證據與這次要求不一致；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+}
+
 function exactWriteEvidence(
   value: unknown,
 ): value is ListingContentWriteEvidence {
@@ -1335,6 +1572,7 @@ export class ListingContentMutations implements ListingContentMutationsPort {
         { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
       );
     }
+    assertDurableContentResultBinding(result, input, expectedEvidence);
     return publicUpdateResult(result);
   }
 

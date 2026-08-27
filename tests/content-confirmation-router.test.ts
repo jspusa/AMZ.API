@@ -39,11 +39,14 @@ async function readListingContentSnapshot(input: Readonly<{
 
 describe("listing content Touch ID commit route", () => {
   const approveWrite = vi.fn(async (_reason: string) => undefined);
-  const runIdempotentOperation = vi.fn(async () => ({
-    mode: "demo",
-    status: "SIMULATED",
-    sellerSku: SELLER_SKU,
-  }));
+  const runIdempotentOperation = vi.fn(async (rawInput: unknown) => {
+    const input = rawInput as Readonly<{
+      execute(control: Readonly<{
+        recordAccepted(response: unknown): Promise<void>;
+      }>): Promise<unknown>;
+    }>;
+    return input.execute({ recordAccepted: async () => undefined });
+  });
   const router = new ApiRouter({
     store: { runIdempotentOperation } as unknown as LocalStore,
     vault: {

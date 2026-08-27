@@ -298,13 +298,9 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
 
   it("keeps the W07 batch bridge on owner preview and attempt operations only", () => {
     const router = source("../src/main/api-router.ts");
-    const batch = section(
-      router,
-      "  private contentBatchPreviewPayload(",
-      "  private async startExport(",
-    );
+    const batch = source("../src/main/listing-content-batch-mutations.ts");
     const ownerCalls = [...new Set([...batch.matchAll(
-      /this\.listingContentMutations\.([A-Za-z][A-Za-z0-9]*)\s*\(/gmu,
+      /this\.content\.([A-Za-z][A-Za-z0-9]*)\s*\(/gmu,
     )].map((match) => match[1]))];
     const forbidden = [
       ...LEGACY_SP_FACADES,
@@ -314,8 +310,9 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
       "reconcileContentWrite",
     ].filter((symbol) => new RegExp(`\\b${symbol}\\b`, "u").test(batch));
 
-    expect(batch, "the content batch compatibility section must exist").not
-      .toBe("");
+    expect(router).not.toContain("private contentBatchPreviewPayload");
+    expect(router).not.toContain("private previewContentWorkbookImport");
+    expect(router).not.toContain("private commitContentWorkbookImport");
     expect(ownerCalls).toEqual(["previewOne", "attemptOne"]);
     expect(forbidden).toEqual([]);
   });
