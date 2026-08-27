@@ -1,3 +1,4 @@
+/* Shared fixed-time, local-only renderer data for visual regression runs. */
 (() => {
   const params = new URLSearchParams(window.location.search);
   try {
@@ -509,14 +510,14 @@
     updatedAt: null,
   };
 
-  window.__css01Requests = [];
-  window.__css01Unexpected = [];
+  window.__rendererVisualRequests = [];
+  window.__rendererVisualUnexpected = [];
   window.fbaOS = {
     api: {
       request: async (request) => {
         const body =
           request.body?.kind === "json" ? request.body.value : null;
-        window.__css01Requests.push({
+        window.__rendererVisualRequests.push({
           body,
           method: request.method,
           path: request.path,
@@ -564,7 +565,7 @@
         if (request.path === "/api/sp-api/inbound-shipments" && request.method === "POST") {
           return json(inboundJob);
         }
-        window.__css01Unexpected.push({
+        window.__rendererVisualUnexpected.push({
           body,
           method: request.method,
           path: request.path,
@@ -572,15 +573,15 @@
         });
         return json(
           {
-            code: "CSS01_UNHANDLED_FIXTURE_ROUTE",
-            message: `No CSS01 fixture for ${request.method} ${request.path}`,
+            code: "RENDERER_VISUAL_UNHANDLED_FIXTURE_ROUTE",
+            message: `No renderer visual fixture for ${request.method} ${request.path}`,
             requestId: null,
           },
           404,
         );
       },
       cancel: (requestId) => {
-        window.__css01Requests.push({
+        window.__rendererVisualRequests.push({
           body: null,
           method: "CANCEL",
           path: requestId,

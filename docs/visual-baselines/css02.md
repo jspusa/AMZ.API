@@ -70,10 +70,11 @@ Inbound. That is 45 before/after pairs and 90 screenshots.
 
 The CSS02-specific harness adds Content, Subscription, and Accounting at
 desktop-standard, compact-390-large, and desktop-reduced: another nine
-before/after pairs and 18 screenshots. It lives at
-`scripts/visual-qa/css02-baseline.js`; its deterministic bridge/API fixture is
-`scripts/visual-qa/css01-bridge-fixture.js`. Generated screenshots stay under
-the ignored `output/playwright/` evidence directory and are not release assets.
+before/after pairs and 18 screenshots. It runs the `#css02-extra` mode of the
+shared `scripts/visual-qa/renderer-visual-baseline.js` harness with the shared
+`scripts/visual-qa/renderer-visual-fixture.js` bridge/API fixture. Generated
+screenshots stay under the ignored `output/playwright/` evidence directory and
+are not release assets.
 
 Both harnesses passed all assertions:
 

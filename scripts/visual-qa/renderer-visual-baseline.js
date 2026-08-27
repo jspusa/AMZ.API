@@ -1,5 +1,6 @@
 async (page) => {
   const controllerHash = await page.evaluate(() => window.location.hash);
+  const css02Extra = controllerHash.includes("css02-extra");
   const allPhases = [
     { name: "before", baseUrl: "http://127.0.0.1:4173" },
     { name: "after", baseUrl: "http://127.0.0.1:4174" },
@@ -16,9 +17,13 @@ async (page) => {
     : controllerHash.includes("after-only")
       ? allPhases.slice(1)
       : allPhases;
-  const profiles = controllerHash.includes("single-profile")
-    ? allProfiles.slice(0, 1)
-    : allProfiles;
+  const profiles = css02Extra
+    ? allProfiles.filter(({ name }) =>
+      ["desktop-standard", "compact-390-large", "desktop-reduced"].includes(name),
+    )
+    : controllerHash.includes("single-profile")
+      ? allProfiles.slice(0, 1)
+      : allProfiles;
   const results = [];
   const externalRequests = [];
   const consoleErrors = [];
@@ -27,7 +32,7 @@ async (page) => {
   let currentState = "setup";
 
   const fail = (message) => {
-    throw new Error(`CSS01 visual baseline rejected: ${message}`);
+    throw new Error(`Renderer visual baseline rejected: ${message}`);
   };
   const ensure = (condition, message) => {
     if (!condition) fail(message);
@@ -71,7 +76,7 @@ async (page) => {
   });
   await page.clock.setFixedTime(new Date("2026-08-21T12:00:00.000Z"));
   await page.addInitScript({
-    path: "scripts/visual-qa/css01-bridge-fixture.js",
+    path: "scripts/visual-qa/renderer-visual-fixture.js",
   });
 
   const settle = async () => {
@@ -240,7 +245,8 @@ async (page) => {
         `${comparisonKey}: layout metrics changed from ${JSON.stringify(beforeMetrics[comparisonKey])} to ${JSON.stringify(comparisonMetrics)}`,
       );
     }
-    const path = `output/playwright/css01/${phase.name}/${profile.name}/${surface}.png`;
+    const evidenceDirectory = css02Extra ? "css02-extra" : "css01";
+    const path = `output/playwright/${evidenceDirectory}/${phase.name}/${profile.name}/${surface}.png`;
     await page.screenshot({
       path,
       fullPage: false,
@@ -257,12 +263,89 @@ async (page) => {
     await menu.getByRole("menuitem", { name: itemName }).click();
   };
 
+  const auditRequests = async (phase, profile) => {
+    const requestAudit = await page.evaluate(() => ({
+      unexpected: window.__rendererVisualUnexpected ?? [],
+      dangerous: (window.__rendererVisualRequests ?? []).filter((request) =>
+        ["PUT", "PATCH", "DELETE"].includes(request.method),
+      ),
+    }));
+    ensure(
+      requestAudit.unexpected.length === 0,
+      `${phase.name}/${profile.name}: unhandled fixture routes ${JSON.stringify(requestAudit.unexpected)}`,
+    );
+    ensure(
+      requestAudit.dangerous.length === 0,
+      `${phase.name}/${profile.name}: write requests ${JSON.stringify(requestAudit.dangerous)}`,
+    );
+  };
+
   for (const phase of phases) {
     for (const profile of profiles) {
       await page.setViewportSize({ width: profile.width, height: profile.height });
       await page.emulateMedia({
         reducedMotion: profile.reduced ? "reduce" : "no-preference",
       });
+
+      if (css02Extra) {
+        currentState = `${phase.name}/${profile.name}/css02-load`;
+        await page.goto(`${phase.baseUrl}/?font=${profile.font}`, {
+          waitUntil: "domcontentloaded",
+          timeout: 30_000,
+        });
+        await page.locator(".commerce-os").waitFor();
+
+        await openMenuItem("產品區", /文案/u);
+        const contentDialog = page.getByRole("dialog", { name: "商品內容" });
+        await contentDialog.waitFor();
+        await contentDialog.getByRole("tab", { name: "全站文案健檢" }).click();
+        await contentDialog
+          .getByRole("region", { name: "全站 FBA 文案健檢" })
+          .waitFor();
+        await capture({
+          phase,
+          profile,
+          surface: "content",
+          scopeSelector: ".sku-ops-drawer",
+          dialogSelector: ".sku-ops-drawer",
+        });
+        await contentDialog
+          .getByRole("button", { name: "關閉商品內容工具" })
+          .click();
+
+        await openMenuItem("價格區", /訂閱價格健檢/u);
+        const subscriptionDialog = page.getByRole("dialog", {
+          name: "全站訂閱價格健檢",
+        });
+        await subscriptionDialog.waitFor();
+        await capture({
+          phase,
+          profile,
+          surface: "subscription",
+          scopeSelector: ".subscription-audit-drawer",
+          dialogSelector: ".subscription-audit-drawer",
+        });
+        await subscriptionDialog
+          .getByRole("button", { name: "關閉全站訂閱省健檢" })
+          .click();
+
+        await openMenuItem("營運區", /^帳務/u);
+        const accountingDialog = page.getByRole("dialog", { name: "帳務" });
+        await accountingDialog.waitFor();
+        await capture({
+          phase,
+          profile,
+          surface: "accounting",
+          scopeSelector: ".accounting-drawer",
+          dialogSelector: ".accounting-drawer",
+        });
+        await accountingDialog
+          .getByRole("button", { name: "關閉帳務" })
+          .click();
+
+        await auditRequests(phase, profile);
+        continue;
+      }
 
       currentState = `${phase.name}/${profile.name}/webgate-load`;
       await page.goto(
@@ -438,26 +521,27 @@ async (page) => {
         allowedScrollers: [".inbound-item-table-scroll"],
       });
 
-      const requestAudit = await page.evaluate(() => ({
-        unexpected: window.__css01Unexpected ?? [],
-        dangerous: (window.__css01Requests ?? []).filter((request) =>
-          ["PUT", "PATCH", "DELETE"].includes(request.method),
-        ),
-      }));
-      ensure(
-        requestAudit.unexpected.length === 0,
-        `${phase.name}/${profile.name}: unhandled fixture routes ${JSON.stringify(requestAudit.unexpected)}`,
-      );
-      ensure(
-        requestAudit.dangerous.length === 0,
-        `${phase.name}/${profile.name}: write requests ${JSON.stringify(requestAudit.dangerous)}`,
-      );
+      await auditRequests(phase, profile);
     }
   }
 
+  const surfaces = css02Extra
+    ? ["content", "subscription", "accounting"]
+    : [
+      "webgate",
+      "home",
+      "sales",
+      "brand",
+      "system-info",
+      "variation",
+      "b2b",
+      "reports",
+      "inbound",
+    ];
+  const expectedCaptures = phases.length * profiles.length * surfaces.length;
   ensure(
-    results.length === phases.length * profiles.length * 9,
-    `expected 90 screenshots, captured ${results.length}`,
+    results.length === expectedCaptures,
+    `expected ${expectedCaptures} screenshots, captured ${results.length}`,
   );
   ensure(
     externalRequests.length === 0,
@@ -469,17 +553,7 @@ async (page) => {
     captures: results.length,
     phases: phases.map((phase) => phase.name),
     profiles: profiles.map((profile) => profile.name),
-    surfaces: [
-      "webgate",
-      "home",
-      "sales",
-      "brand",
-      "system-info",
-      "variation",
-      "b2b",
-      "reports",
-      "inbound",
-    ],
+    surfaces,
     externalRequestCount: externalRequests.length,
     consoleErrorCount: consoleErrors.length,
     pageErrorCount: pageErrors.length,

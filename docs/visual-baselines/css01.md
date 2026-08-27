@@ -31,11 +31,11 @@ Five display profiles cover every one of the nine representative surfaces, for
 The covered surfaces are WebGate, Home, Sales, Brand, System Info modal,
 Variation, B2B, Reports, and Inbound.
 
-The deterministic browser harness is
-`scripts/visual-qa/css01-baseline.js`. Its bridge and API fixture is
-`scripts/visual-qa/css01-bridge-fixture.js`. Generated screenshots and contact
-sheets stay under the ignored `output/playwright/css01/` evidence directory and
-are not release assets.
+The deterministic shared browser harness is
+`scripts/visual-qa/renderer-visual-baseline.js`. Its shared bridge and API
+fixture is `scripts/visual-qa/renderer-visual-fixture.js`. Generated screenshots
+and contact sheets stay under the ignored `output/playwright/css01/` evidence
+directory and are not release assets.
 
 ## Automated assertions
 
