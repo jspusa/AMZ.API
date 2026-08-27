@@ -4,7 +4,17 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-27 CSS03 workspace／operations／Bridge／Variation／experience stylesheet extraction（issue #107，進行中）
+### 2026-08-27 CSS04 final renderer stylesheet extraction（issue #108，進行中）
+
+分支`codex/css04-audit-report-inbound`以CSS03已合併的current main exact SHA `b70ec317f8546cb18f858b1b67380a2d603e0a44`為基線。composition RED commit `40d7487`先鎖定16檔ordered manifest、五段final payload證據、完整source roundtrip與舊monolith必須消失，production move前按預期失敗；GREEN commit `46747b8`再將residual `app.css`的4,064行／84,289 bytes依完整PostCSS root node邊界原樣搬成`image-home-audits.css` 839行、`brand-ads.css` 1,361行、`reports-reviews.css` 586行、`final-overrides.css` 299行與`fba-inbound.css` 979行，並正式移除`app.css`。沒有改selector、declaration、at-rule、media、specificity、formatting或dead rule，也沒有相對resource hazard；tracked source／scripts／tests已無舊檔引用。
+
+15個payload仍exact重組為13,394行／293,971 bytes，source raw SHA-256仍為`7ddb84bf404826a4ce1af22a1f2bb7abd43d103d9474be75c6647882173f583c`；最後五段合計SHA-256為`df09c6c8f0f7ad18c6ff0e7d263a2272215a68bae9ae39198c9ae36eb019ecfb`。source與production logical rule stream皆為`735f076b23747729e7840d11a316ffd6e5c4a4c907784d6d1af2d83c94e0ca41`；Vite output為293,957 bytes，只移除15個payload之間的14個歷史空白seam，postbuild verifier已通過。
+
+visual RED commit `eb9c450`先要求CSS04場景descriptor與專用fixture，production支援前按預期2 tests皆失敗。共用harness現以`#css04-extra`在desktop standard／large、390px large、320px large及desktop reduced-motion覆蓋Home primary／low-frequency、Image、Aged Inventory、Brand、Ads、Reports、Reviews、missing bullets Content、Inbound及reduced Sales skater，共102張／51組before-after。menu／final-Tab focus／Escape detach／switch／SVG focus、compact內部捲動、15類report、reduced motion與exact read-only route allowlist均被實際操作；0 external request、0未處理fixture route、0 `PUT／PATCH／DELETE`、0 console error、0 page error，所有page／dialog／viewport／window-scroll／scope-scroll／internal-scroller geometry exact。CSS01／02／03也在最終harness後重新跑出90／18／42張；四套合計252張／126組。CSS01、CSS02、CSS03分別44／45、8／9、18／21組pixel-exact，其餘只剩最大delta 1／2／8的raster noise。CSS04為42／51組pixel-exact；Report Library兩組的差異經exact geometry、dialog區域分析及before／after人工複查確認是`backdrop-filter`合成與一個1px raster-origin偏移，校正後large profile最大delta 15、mean error 0.037645，沒有presentation regression。完整證據見`docs/visual-baselines/css04.md`。
+
+目前final local `npm run check`通過241個測試檔／2,330 tests、TypeScript typecheck與production build，`npm audit --omit=dev`為0 vulnerabilities，`git diff --check` clean；focused stylesheet contracts為7檔／56 tests，代表功能行為為10檔／110 tests。尚待雙軸終審、PR與exact-head CI；未合併、未部署、未安裝、未使用Notebook Key、未呼叫live Amazon或任何Amazon mutation。199個既有user-owned untracked `* 2.*` duplicate files仍完整保留、未追蹤且排除。
+
+### 2026-08-27 CSS03 workspace／operations／Bridge／Variation／experience stylesheet extraction（issue #107，PR #149 已合併）
 
 分支`codex/css03-workspace-operations-bridge-variation`以CSS02已合併的current main exact SHA `90aab1f469ed521ec9b2c4d4674ac10c8a12edb2`為基線。最高stable composition seam的RED commit `7e9d7dd`先鎖定ordered manifest必須擴為12檔；production move前實際只收到CSS02的7檔manifest而按預期失敗。修正後依原始cascade連續抽出`workspace-sales.css` 1,173行、`operations.css` 1,844行、`notebook-key-bridge.css` 596行、`variation.css` 443行與`experience.css` 840行，residual `app.css`由8,960行降為4,064行。五個boundary皆位於完整PostCSS root node之間；每段保留原始bytes與分隔空白歸屬，沒有改selector、declaration、media、specificity、formatting或dead rule，也沒有相對resource hazard。
 
