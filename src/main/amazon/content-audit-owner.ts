@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { ApiResponse } from "../../shared/contracts";
 import {
   marketplaceById,
@@ -25,6 +25,11 @@ import {
   type ContentQualityIssueKind,
   type ContentQualityRow,
 } from "./content-quality";
+import {
+  contentAuditEvidenceRowDigest,
+  type ContentAuditSnapshotEvidenceInput,
+  type ContentAuditSnapshotEvidenceWriter,
+} from "./content-audit-snapshot-evidence";
 import { ContextBoundAuditSnapshotStore } from
   "./context-bound-audit-snapshot";
 import { SpApiError } from "./sp-api-error";
@@ -79,20 +84,8 @@ export type ContentAuditSnapshot = Readonly<{
   summary: ReturnType<typeof auditListingContentRows>["summary"];
 }>;
 
-export type ContentAuditEvidenceInput = Readonly<{
-  exportId: string;
-  accountScope: string;
-  marketplaceId: MarketplaceId;
-  mode: "live" | "demo";
-  fetchedAt: string;
-  rowDigests: string[];
-}>;
-
-export interface ContentAuditEvidencePort {
-  saveContentAuditSnapshotEvidence(
-    input: ContentAuditEvidenceInput,
-  ): Promise<unknown>;
-}
+export type ContentAuditEvidenceInput = ContentAuditSnapshotEvidenceInput;
+export type ContentAuditEvidencePort = ContentAuditSnapshotEvidenceWriter;
 
 type ContentAuditProjectionInput = Readonly<{
   context: SpExecutionContext;
@@ -241,45 +234,6 @@ function contentAuditWorkbookFamilyKey(row: ContentAuditRow): string {
     return row.variationFamilyKey;
   }
   return CONTENT_AUDIT_INCOMPLETE_FAMILY_KEY;
-}
-
-export function contentAuditEvidenceRowDigest(input: Readonly<{
-  accountScope: string;
-  marketplaceId: MarketplaceId;
-  mode: "live" | "demo";
-  exportId: string;
-  fetchedAt: string;
-  sellerSku: string;
-  asin: string;
-  productType: string;
-  variationFamilyKey: string;
-  values: Readonly<{
-    title: string;
-    itemHighlight: string;
-    bulletPoints: readonly string[];
-    productDescription: string;
-    ingredients: string;
-  }>;
-  readStatus: "complete" | "incomplete";
-}>): string {
-  return createHash("sha256").update(JSON.stringify([
-    "content-audit-snapshot-row-v1",
-    input.accountScope,
-    input.marketplaceId,
-    input.mode,
-    input.exportId,
-    input.fetchedAt,
-    input.sellerSku,
-    input.asin,
-    input.productType,
-    input.variationFamilyKey,
-    input.values.title,
-    input.values.itemHighlight,
-    input.values.bulletPoints,
-    input.values.productDescription,
-    input.values.ingredients,
-    input.readStatus,
-  ])).digest("hex");
 }
 
 function issueLabel(kind: ContentQualityIssueKind): string {

@@ -1,7 +1,18 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import type {
+  ContentAuditSnapshotEvidence,
+  ContentAuditSnapshotEvidenceInput,
+  ContentAuditSnapshotLookup,
+} from "./amazon/content-audit-snapshot-evidence";
 import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
+
+export type {
+  ContentAuditSnapshotEvidence,
+  ContentAuditSnapshotEvidenceInput,
+  ContentAuditSnapshotLookup,
+} from "./amazon/content-audit-snapshot-evidence";
 
 export type SupplyRoute = "DIRECT_FBA" | "AWD_TO_FBA";
 
@@ -174,48 +185,6 @@ export type SharedAllListingsReportLease = SharedReportLease & {
   reportType: "GET_MERCHANT_LISTINGS_ALL_DATA";
   optionsKey: "preferredReportDocumentLocale=en_US";
 };
-
-/**
- * Durable evidence for one exported content-audit workbook.
- *
- * The row digests bind the exact marketplace, SKU/ASIN/product type/family,
- * canonical source content, and read status without persisting the source
- * Seller SKUs or listing copy in the local store. The account scope is already
- * a one-way SHA-256 value produced by CredentialVault; it is not a Seller ID.
- */
-export type ContentAuditSnapshotEvidence = {
-  schemaVersion: 1;
-  exportId: string;
-  accountScope: string;
-  marketplaceId: string;
-  mode: "live" | "demo";
-  fetchedAt: string;
-  rowDigests: string[];
-  createdAt: number;
-  expiresAt: number;
-};
-
-export type ContentAuditSnapshotLookup =
-  | { status: "available"; evidence: ContentAuditSnapshotEvidence }
-  | {
-      status:
-        | "not-found"
-        | "expired"
-        | "marketplace-changed"
-        | "mode-changed"
-        | "account-scope-changed";
-      evidence: null;
-    };
-
-export type ContentAuditSnapshotEvidenceInput = Pick<
-  ContentAuditSnapshotEvidence,
-  | "exportId"
-  | "accountScope"
-  | "marketplaceId"
-  | "mode"
-  | "fetchedAt"
-  | "rowDigests"
->;
 
 type StoreData = {
   version: 2;

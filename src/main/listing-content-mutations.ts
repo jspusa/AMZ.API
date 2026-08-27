@@ -199,6 +199,21 @@ const DURABLE_RESULT_KEYS = [
   "submissionId",
 ] as const;
 
+const PREPARED_PREVIEW_KEYS = [
+  "changedFields",
+  "evidence",
+  "issues",
+  "marketplaceId",
+  "mode",
+  "notice",
+  "previous",
+  "proposalFingerprint",
+  "requested",
+  "sellerSku",
+  "status",
+  "validatedAt",
+] as const;
+
 const NORMALIZED_ISSUE_KEYS = [
   "attributeNames",
   "categories",
@@ -1025,6 +1040,68 @@ function validContentValues(value: unknown): value is ListingContentValues {
     value.bulletPoints.every((bullet) => validContentText(bullet, 5_000)) &&
     validContentText(value.productDescription, 50_000) &&
     validContentText(value.ingredients, 20_000);
+}
+
+/**
+ * Runtime-check the narrow W06 -> W07 seam without exposing another mutation
+ * method on ListingContentMutationsPort. The batch owner may only retain a
+ * preview that is exactly bound to its captured execution context and input.
+ */
+export function assertListingContentPreparedPreviewBinding(
+  value: unknown,
+  input: UpdateListingContentInput,
+  context: Pick<SpExecutionContext, "marketplaceId" | "mode">,
+  expected?: Pick<
+    ListingContentPreparedPreview,
+    "evidence" | "proposalFingerprint"
+  >,
+): asserts value is ListingContentPreparedPreview {
+  const previous = isRecord(value) ? value.previous : null;
+  const requested = isRecord(value) ? value.requested : null;
+  const evidence = isRecord(value) ? value.evidence : null;
+  const expectedPrevious = normalizeContentValues({
+    title: input.expectedTitle,
+    itemHighlight: input.expectedItemHighlight,
+    bulletPoints: input.expectedBulletPoints,
+    productDescription: input.expectedProductDescription,
+    ingredients: input.expectedIngredients,
+  });
+  const expectedRequested = normalizeContentValues(input);
+  if (!isRecord(value) ||
+      !hasExactKeys(value, PREPARED_PREVIEW_KEYS) ||
+      value.mode !== context.mode ||
+      value.status !== (context.mode === "demo" ? "SIMULATED" : "VALID") ||
+      context.marketplaceId !== input.marketplaceId ||
+      value.marketplaceId !== input.marketplaceId ||
+      value.sellerSku !== input.sellerSku ||
+      !validContentValues(previous) ||
+      !sameContentValues(previous, expectedPrevious) ||
+      !validContentValues(requested) ||
+      !sameContentValues(requested, expectedRequested) ||
+      !exactChangedFields(value.changedFields, previous, requested) ||
+      !validIsoTimestamp(value.validatedAt) ||
+      !exactDurableIssues(value.issues) ||
+      !safeNotice(value.notice) ||
+      !validPrecommitEvidence(evidence) ||
+      evidence.marketplaceId !== input.marketplaceId ||
+      evidence.sellerSku !== input.sellerSku ||
+      evidence.expectedOldHash !== canonicalSha256(previous) ||
+      JSON.stringify(evidence.changedFields) !==
+        JSON.stringify(value.changedFields) ||
+      evidence.validationIssuesHash !==
+        canonicalSha256(sortedIssues(value.issues)) ||
+      !validSha256(value.proposalFingerprint) ||
+      value.proposalFingerprint !==
+        proposalFingerprint(previous, requested, evidence) ||
+      (expected &&
+        (value.proposalFingerprint !== expected.proposalFingerprint ||
+          canonicalSha256(evidence) !==
+            canonicalSha256(expected.evidence)))) {
+    throw new SpApiError(
+      "Amazon 商品內容預檢的執行模式、SKU、FBA 或證據身分不一致；整批已停止，請重新預檢。",
+      { status: 409, code: "PREVIEW_CHANGED" },
+    );
+  }
 }
 
 function exactWriteEvidence(
