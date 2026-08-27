@@ -4,7 +4,15 @@
  * remains historical provenance and is not the current renderer rule stream.
  */
 export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
-  expectedFiles: Object.freeze(["styles/index.css", "app.css"]),
+  expectedFiles: Object.freeze([
+    "styles/index.css",
+    "styles/foundation.css",
+    "styles/legacy-shell-drawers.css",
+    "styles/subscription-accounting.css",
+    "styles/content.css",
+    "styles/business-pricing.css",
+    "app.css",
+  ]),
   fingerprint:
     "735f076b23747729e7840d11a316ffd6e5c4a4c907784d6d1af2d83c94e0ca41",
 });

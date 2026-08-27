@@ -1,3 +1,4 @@
+/* Shared fixed-time, local-only renderer data for visual regression runs. */
 (() => {
   const params = new URLSearchParams(window.location.search);
   try {
@@ -346,6 +347,52 @@
     },
     notice: "FBA-only · CSS01 固定視覺 fixture",
   };
+  const accountingSnapshot = {
+    marketplaceId,
+    fetchedAt: fixedTime,
+    capabilities: [
+      {
+        id: "FBA_STORAGE_FEES",
+        label: "FBA 每月倉儲費估算",
+        artifact: "TAB_DELIMITED_REPORT",
+        access: "CREATE_PUBLIC_REPORT",
+        roles: ["Pricing", "Amazon Fulfillment"],
+        availability: "CONFIGURED_FBA_MARKETPLACES",
+        fbaSafety: "OFFICIAL_FBA_ONLY",
+        reportType: "GET_FBA_STORAGE_FEE_CHARGES_DATA",
+        officialSource: "https://developer-docs.amazon.com/sp-api/docs/report-type-values-fba",
+        notice: "可請求或排程；內容是估算，不是發票。",
+        state: "READY_CREATE_REPORT",
+      },
+      {
+        id: "FINANCIAL_HOLDS",
+        label: "日期區間財務保留款",
+        artifact: "TAB_DELIMITED_REPORT",
+        access: "SELLER_CENTRAL_PREREQUISITE",
+        roles: ["Finance and Accounting"],
+        availability: "CONFIGURED_FBA_MARKETPLACES",
+        fbaSafety: "ACCOUNT_WIDE_NOT_FBA_SAFE",
+        reportType: "GET_DATE_RANGE_FINANCIAL_HOLDS_DATA",
+        officialSource: "https://developer-docs.amazon.com/sp-api/docs/report-type-values",
+        notice: "需先確認帳號與 FBA 安全範圍。",
+        state: "MANUAL_PREREQUISITE",
+      },
+      {
+        id: "GENERIC_MARKETPLACE_INVOICES",
+        label: "一般站點 Amazon 發票",
+        artifact: "NONE",
+        access: "UNAVAILABLE_PUBLIC_API",
+        roles: [],
+        availability: "NONE",
+        fbaSafety: "NO_PUBLIC_DATA",
+        reportType: null,
+        officialSource: "https://developer-docs.amazon.com/sp-api/docs/invoices-api",
+        notice: "公開 API 不提供這項下載。",
+        state: "UNAVAILABLE",
+      },
+    ],
+    notice: "CSS02 固定唯讀 fixture；未連線 Amazon。",
+  };
   const inboundSnapshot = {
     schemaVersion: 1,
     mode: "demo",
@@ -463,14 +510,14 @@
     updatedAt: null,
   };
 
-  window.__css01Requests = [];
-  window.__css01Unexpected = [];
+  window.__rendererVisualRequests = [];
+  window.__rendererVisualUnexpected = [];
   window.fbaOS = {
     api: {
       request: async (request) => {
         const body =
           request.body?.kind === "json" ? request.body.value : null;
-        window.__css01Requests.push({
+        window.__rendererVisualRequests.push({
           body,
           method: request.method,
           path: request.path,
@@ -512,10 +559,13 @@
         if (request.path === "/api/sp-api/report-library" && request.method === "GET") {
           return json(reportLibrary);
         }
+        if (request.path === "/api/sp-api/accounting/capabilities" && request.method === "GET") {
+          return json(accountingSnapshot);
+        }
         if (request.path === "/api/sp-api/inbound-shipments" && request.method === "POST") {
           return json(inboundJob);
         }
-        window.__css01Unexpected.push({
+        window.__rendererVisualUnexpected.push({
           body,
           method: request.method,
           path: request.path,
@@ -523,15 +573,15 @@
         });
         return json(
           {
-            code: "CSS01_UNHANDLED_FIXTURE_ROUTE",
-            message: `No CSS01 fixture for ${request.method} ${request.path}`,
+            code: "RENDERER_VISUAL_UNHANDLED_FIXTURE_ROUTE",
+            message: `No renderer visual fixture for ${request.method} ${request.path}`,
             requestId: null,
           },
           404,
         );
       },
       cancel: (requestId) => {
-        window.__css01Requests.push({
+        window.__rendererVisualRequests.push({
           body: null,
           method: "CANCEL",
           path: requestId,
