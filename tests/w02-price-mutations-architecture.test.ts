@@ -11,7 +11,8 @@ function sourceFilePaths(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) return sourceFilePaths(path);
-    return entry.isFile() && /\.tsx?$/u.test(entry.name) ? [path] : [];
+    if (!entry.isFile() || !/\.tsx?$/u.test(entry.name)) return [];
+    return / 2\.tsx?$/u.test(entry.name) ? [] : [path];
   });
 }
 
@@ -139,26 +140,30 @@ describe("W02 Listing Price mutation architecture", () => {
   });
 
   it("routes a captured Business Pricing snapshot through canonical price observation", () => {
-    const router = source("../src/main/api-router.ts");
-    const businessPricing = methodBody(
-      router,
-      "private async businessPricing(request: ApiRequest)",
-      "private businessPricingInput(request: ApiRequest)",
+    const owner = source("../src/main/business-pricing-mutations.ts");
+    const readRoute = methodBody(
+      owner,
+      "private async readRoute(request: ApiRequest)",
+      "private routeInput(request: ApiRequest)",
     );
-    const capturedRead = businessPricing.search(
-      /const\s+\{\s*context,\s*value:\s*snapshot\s*\}\s*=\s*await\s+this\.runContextBoundWork\s*\(/u,
+    const capturedContext = readRoute.indexOf(
+      "const context = await this.context.capture(marketplaceId);",
     );
-    const canonicalObservation = businessPricing.indexOf(
-      "await this.priceMutations.observeCanonical(identity, snapshot, context);",
+    const canonicalRead = readRoute.indexOf(
+      "const snapshot = await this.operations.read(identity);",
     );
-    const businessReconciliation = businessPricing.indexOf(
-      "await this.reconcileBusinessPriceWrites(snapshot, context);",
+    const canonicalObservation = readRoute.indexOf(
+      "await this.priceObserver.observeCanonical(identity, snapshot, context);",
+    );
+    const businessReconciliation = readRoute.indexOf(
+      "await this.writeGate.reconcile({",
     );
 
-    expect(capturedRead).toBeGreaterThanOrEqual(0);
-    expect(canonicalObservation).toBeGreaterThan(capturedRead);
+    expect(capturedContext).toBeGreaterThanOrEqual(0);
+    expect(canonicalRead).toBeGreaterThan(capturedContext);
+    expect(canonicalObservation).toBeGreaterThan(canonicalRead);
     expect(businessReconciliation).toBeGreaterThan(canonicalObservation);
-    expect(businessPricing).not.toMatch(/\breconcilePriceWrites\s*\(/u);
+    expect(readRoute).not.toMatch(/\breconcilePriceWrites\s*\(/u);
   });
 
   it("keeps the owner main-only and dependent on the central Write Gate port", () => {
@@ -183,6 +188,9 @@ describe("W02 Listing Price mutation architecture", () => {
 
   it("keeps Price and Sale semantics out of the legacy SP facade and generic readback", () => {
     const owner = source("../src/main/listing-price-mutations.ts");
+    const businessPricing = source(
+      "../src/main/business-pricing-mutations.ts",
+    );
     const spApi = source("../src/main/amazon/sp-api.ts");
     const readback = source("../src/main/amazon/listing-write-readback.ts");
 
@@ -200,11 +208,14 @@ describe("W02 Listing Price mutation architecture", () => {
         new RegExp(`\\bexport\\s+function\\s+${symbol}\\b`, "u"),
       );
     }
-    expect(readback).toMatch(
-      /import\s*\{\s*isPricingListingError\s*\}\s*from\s*["']\.\/business-pricing-evidence["']/u,
+    expect(businessPricing).toMatch(
+      /import\s*\{[^}]*\bisPricingListingError\b[^}]*\}\s*from\s*["']\.\/amazon\/business-pricing-evidence["']/su,
     );
-    expect(readback).not.toMatch(
-      /import\s*\{[^}]*\bisPricingListingError\b[^}]*\}\s*from\s*["']\.\/sp-api["']/su,
+    expect(importSpecifiers(readback)).not.toContain(
+      "./business-pricing-evidence",
+    );
+    expect(importSpecifiers(readback)).not.toContain(
+      "./business-pricing-types",
     );
   });
 

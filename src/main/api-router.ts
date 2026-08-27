@@ -84,6 +84,10 @@ import {
   type VariationMoveMutationsPort,
 } from "./variation-move-mutations";
 import {
+  createBusinessPricingMutations,
+  type BusinessPricingMutationsPort,
+} from "./business-pricing-mutations";
+import {
   FbaSalesMetricsRoutes,
   type FbaSalesMetricsRoutesPort,
 } from "./fba-sales-metrics-routes";
@@ -103,8 +107,8 @@ import {
   catalogReportsDemoSource,
   getFbaVariationGroupingData,
   getListingContent,
-  getBusinessPricing,
   aplusContentPageAdapterProduction,
+  businessPricingGatewayProduction,
   customerFeedbackPageAdapterProduction,
   isConfiguredForMarketplace,
   getRestockPlan,
@@ -119,24 +123,18 @@ import {
   listingPriceGatewayProduction,
   variationMoveGatewayProduction,
   previewListingContentUpdate,
-  previewBusinessPriceUpdate,
   fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
   ordersPageAdapterProduction,
   searchListingsBySku,
   updateListingContent,
-  updateBusinessPrice,
   usesDemoMode,
   verifyListingsAccess,
   type ListingContentSnapshot,
-  type BusinessPricingListingSnapshot,
-  type BusinessPricePrecommitEvidence,
-  type BusinessPriceValidationResult,
   type ListingContentValidationResult,
   type ListingContentUpdateResult,
   type MarketplaceId,
   type UpdateListingContentInput,
-  type UpdateBusinessPriceInput,
 } from "./amazon/sp-api";
 import {
   AgedInventoryReads,
@@ -252,11 +250,9 @@ import {
 import { FixedReportBroker } from "./amazon/report-broker";
 import { testRegionConnections } from "./amazon/connection-health";
 import {
-  businessPriceReadbackDecision,
   commitWithCanonicalReadback,
   contentReadbackDecision,
   reconcileContentWrite,
-  reconcileBusinessPriceWrite,
 } from "./amazon/listing-write-readback";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
@@ -860,15 +856,6 @@ function validApiBody(value: unknown): boolean {
   );
 }
 
-function parsePrice(value: unknown, currencyCode: string): number | null {
-  const text = typeof value === "number" ? String(value) : value;
-  if (typeof text !== "string") return null;
-  const pattern = currencyCode === "JPY" ? /^\d{1,9}$/ : /^\d{1,9}(?:\.\d{1,2})?$/;
-  if (!pattern.test(text)) return null;
-  const amount = Number(text);
-  return Number.isFinite(amount) && amount > 0 ? amount : null;
-}
-
 function parseText(value: unknown, maximum: number): string | null {
   if (typeof value !== "string" || value.length > maximum) return null;
   return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
@@ -905,6 +892,7 @@ export class ApiRouter {
   private readonly priceMutations: ListingPriceMutationsPort;
   private readonly listingImageMutations: ListingImageMutationsPort;
   private readonly variationMoveMutations: VariationMoveMutationsPort;
+  private readonly businessPricingMutations: BusinessPricingMutationsPort;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
   private readonly agedInventoryReads: AgedInventoryReadsPort;
   private readonly aplusContentReads: AplusContentReadsPort;
@@ -998,6 +986,7 @@ export class ApiRouter {
     priceMutations?: ListingPriceMutationsPort;
     listingImageMutations?: ListingImageMutationsPort;
     variationMoveMutations?: VariationMoveMutationsPort;
+    businessPricingMutations?: BusinessPricingMutationsPort;
   }) {
     this.store = input.store;
     this.vault = input.vault;
@@ -1033,6 +1022,13 @@ export class ApiRouter {
         context: this.spExecutionContext,
         writeGate: this.writeGate,
         gateway: variationMoveGatewayProduction,
+      });
+    this.businessPricingMutations = input.businessPricingMutations ??
+      createBusinessPricingMutations({
+        context: this.spExecutionContext,
+        writeGate: this.writeGate,
+        priceObserver: this.priceMutations,
+        gateway: businessPricingGatewayProduction,
       });
     const advertising = input.advertising ?? null;
     this.allListingsDemoReports = {
@@ -1540,11 +1536,20 @@ export class ApiRouter {
       case "GET /api/sp-api/business-pricing-audit/export":
         return this.businessPricingAuditOwner.download(request);
       case "GET /api/sp-api/business-pricing":
-        return this.businessPricing(request);
+        return this.businessPricingMutations.handle({
+          operation: "read",
+          request,
+        });
       case "POST /api/sp-api/business-pricing":
-        return this.previewBusinessPricing(request);
+        return this.businessPricingMutations.handle({
+          operation: "preview",
+          request,
+        });
       case "PATCH /api/sp-api/business-pricing":
-        return this.commitBusinessPricing(request);
+        return this.businessPricingMutations.handle({
+          operation: "commit",
+          request,
+        });
       case "POST /api/sp-api/listings/batch":
         return this.statelessCapabilities.batchListings(request);
       case "GET /api/sp-api/listing-content":
@@ -1740,270 +1745,6 @@ export class ApiRouter {
     return marketplaceId && sellerSku
       ? { marketplaceId, sellerSku }
       : invalid("請選擇站點並輸入完整 SKU。");
-  }
-
-  private async businessPricing(request: ApiRequest): Promise<ApiResponse> {
-    const identity = this.listingIdentity(request);
-    if ("status" in identity) return identity;
-    try {
-      const { context, value: snapshot } = await this.runContextBoundWork(
-        identity.marketplaceId,
-        () => getBusinessPricing(identity),
-      );
-      await this.priceMutations.observeCanonical(identity, snapshot, context);
-      await this.reconcileBusinessPriceWrites(snapshot, context);
-      return json(snapshot);
-    } catch (error) {
-      return apiError(error, "查詢 Amazon Business 價格時發生未預期的錯誤。");
-    }
-  }
-
-  private businessPricingInput(request: ApiRequest):
-    | (UpdateBusinessPriceInput & { idempotencyKey: string })
-    | ApiResponse {
-    const body = bodyRecord(request);
-    if (!body) {
-      return invalid(
-        "B2B 價格請求必須使用 JSON。",
-        415,
-        "UNSUPPORTED_MEDIA_TYPE",
-      );
-    }
-    const allowedKeys = new Set([
-      "marketplaceId",
-      "sellerSku",
-      "expectedStandardPrice",
-      "expectedBusinessPrice",
-      "newBusinessPrice",
-      "expectedQuantityDiscountPlanHash",
-      "quantityDiscountTiers",
-      "idempotencyKey",
-    ]);
-    if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
-      return invalid("B2B 價格請求包含不支援的欄位。");
-    }
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const sellerSku = parseSellerSku(body.sellerSku);
-    const key = idempotencyKey(body.idempotencyKey);
-    if (!marketplaceId || !sellerSku || !key) {
-      return invalid("請提供有效的 Amazon 站點、完整 SKU 與預檢識別碼。");
-    }
-    const currency = MARKETPLACES[marketplaceId].currency;
-    const expectedStandardPrice = parsePrice(
-      body.expectedStandardPrice,
-      currency,
-    );
-    const expectedBusinessPrice = body.expectedBusinessPrice === null
-      ? null
-      : parsePrice(body.expectedBusinessPrice, currency);
-    const newBusinessPrice = parsePrice(body.newBusinessPrice, currency);
-    if (
-      expectedStandardPrice === null ||
-      (body.expectedBusinessPrice !== null && expectedBusinessPrice === null) ||
-      newBusinessPrice === null
-    ) {
-      return invalid(
-        currency === "JPY"
-          ? "一般售價與 B2B 價格必須是大於 0 的整數。"
-          : "一般售價與 B2B 價格必須大於 0，且最多只能有兩位小數。",
-        400,
-        "INVALID_PRICE",
-      );
-    }
-    const hasExpectedPlanHash = Object.prototype.hasOwnProperty.call(
-      body,
-      "expectedQuantityDiscountPlanHash",
-    );
-    const hasTiers = Object.prototype.hasOwnProperty.call(
-      body,
-      "quantityDiscountTiers",
-    );
-    if (hasExpectedPlanHash !== hasTiers) {
-      return invalid(
-        "數量折扣更新必須同時提供舊方案 hash 與完整 tiers；省略兩者才代表價格-only 並保留原方案。",
-        400,
-        "INVALID_QUANTITY_DISCOUNT",
-      );
-    }
-    let expectedQuantityDiscountPlanHash: string | null | undefined;
-    let quantityDiscountTiers: UpdateBusinessPriceInput["quantityDiscountTiers"];
-    if (hasTiers) {
-      expectedQuantityDiscountPlanHash = body.expectedQuantityDiscountPlanHash ===
-          null
-        ? null
-        : typeof body.expectedQuantityDiscountPlanHash === "string" &&
-            /^[a-f0-9]{64}$/u.test(body.expectedQuantityDiscountPlanHash)
-          ? body.expectedQuantityDiscountPlanHash
-          : undefined;
-      if (
-        expectedQuantityDiscountPlanHash === undefined ||
-        !Array.isArray(body.quantityDiscountTiers) ||
-        body.quantityDiscountTiers.length < 1 ||
-        body.quantityDiscountTiers.length > 5
-      ) {
-        return invalid(
-          "數量折扣必須提供 1–5 階完整方案與可核對的舊方案 hash。",
-          400,
-          "INVALID_QUANTITY_DISCOUNT",
-        );
-      }
-      const parsedTiers: NonNullable<
-        UpdateBusinessPriceInput["quantityDiscountTiers"]
-      > = [];
-      for (const rawTier of body.quantityDiscountTiers) {
-        if (!isPlainRecord(rawTier) ||
-            Object.keys(rawTier).length !== 2 ||
-            !("lowerBound" in rawTier) || !("percent" in rawTier)) {
-          return invalid(
-            "每一階數量折扣只能包含 lowerBound 與 percent。",
-            400,
-            "INVALID_QUANTITY_DISCOUNT",
-          );
-        }
-        const lowerBound = rawTier.lowerBound;
-        const percent = rawTier.percent;
-        const previous = parsedTiers.at(-1);
-        if (
-          !Number.isSafeInteger(lowerBound) || Number(lowerBound) <= 0 ||
-          Number(lowerBound) > 999_999_999 ||
-          typeof percent !== "number" || !Number.isFinite(percent) ||
-          percent <= 0 || percent >= 100 ||
-          Number(percent.toFixed(2)) !== percent ||
-          (previous !== undefined &&
-            (Number(lowerBound) <= previous.lowerBound ||
-              percent <= previous.percent))
-        ) {
-          return invalid(
-            "數量折扣件數與百分比必須合法且逐階嚴格遞增（百分比最多兩位小數）。",
-            400,
-            "INVALID_QUANTITY_DISCOUNT",
-          );
-        }
-        parsedTiers.push({ lowerBound: Number(lowerBound), percent });
-      }
-      quantityDiscountTiers = parsedTiers;
-    }
-    return {
-      marketplaceId,
-      sellerSku,
-      expectedStandardPrice,
-      expectedBusinessPrice,
-      newBusinessPrice,
-      ...(hasTiers ? {
-        expectedQuantityDiscountPlanHash,
-        quantityDiscountTiers,
-      } : {}),
-      idempotencyKey: key,
-    };
-  }
-
-  private businessPricingFingerprint(
-    input: UpdateBusinessPriceInput,
-    evidence: BusinessPricePrecommitEvidence,
-  ): string {
-    return stableFingerprint([
-      input.marketplaceId,
-      input.sellerSku,
-      input.expectedStandardPrice,
-      input.expectedBusinessPrice,
-      input.newBusinessPrice,
-      input.quantityDiscountTiers === undefined
-        ? "quantity-discount:preserve"
-        : `quantity-discount:replace:${input.expectedQuantityDiscountPlanHash ?? "absent"}`,
-      input.quantityDiscountTiers === undefined
-        ? null
-        : input.quantityDiscountTiers.map((tier) => [
-          tier.lowerBound,
-          tier.percent,
-        ]),
-      evidence.asin,
-      evidence.productType,
-      evidence.businessOfferGuardHash,
-      evidence.businessOfferProtectedHash,
-      evidence.previousQuantityDiscountPlanHash,
-      evidence.schemaChecksum,
-      evidence.fbaEvidenceHash,
-      evidence.canonicalPatchHash,
-      evidence.validationIssuesHash,
-    ]);
-  }
-
-  private async previewBusinessPricing(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.businessPricingInput(request);
-    if ("status" in input) return input;
-    try {
-      const { context, value: result } = await this.runContextBoundWork(
-        input.marketplaceId,
-        () => previewBusinessPriceUpdate(input),
-      );
-      await this.stageWritePreview(this.writeBinding({
-        family: "business-price",
-        operation: "business_price",
-        context,
-        sellerSku: input.sellerSku,
-        idempotencyKey: input.idempotencyKey,
-        proposalFingerprint: this.businessPricingFingerprint(input, result),
-      }));
-      return json(result);
-    } catch (error) {
-      return writeApiError(
-        error,
-        "Amazon Business 價格預檢時發生未預期的錯誤。",
-      );
-    }
-  }
-
-  private async commitBusinessPricing(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.businessPricingInput(request);
-    if ("status" in input) return input;
-    let evidence: BusinessPriceValidationResult;
-    let context: SpExecutionContext;
-    try {
-      const bound = await this.runContextBoundWork(
-        input.marketplaceId,
-        () => previewBusinessPriceUpdate(input),
-      );
-      context = bound.context;
-      evidence = bound.value;
-    } catch (error) {
-      return apiError(
-        error,
-        "正式確認前重新執行 Amazon Business 價格預檢時發生未預期的錯誤。",
-      );
-    }
-    const binding = this.writeBinding({
-      family: "business-price",
-      operation: "business_price",
-      context,
-      sellerSku: input.sellerSku,
-      idempotencyKey: input.idempotencyKey,
-      proposalFingerprint: this.businessPricingFingerprint(input, evidence),
-    });
-    try {
-      const result = await this.writeGate.execute({
-        binding,
-        approvalReason: `確認 B2B 調價｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜一般售價維持 ${input.expectedStandardPrice}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${MARKETPLACES[input.marketplaceId].currency}｜數量折扣 ${evidence.quantityDiscountPlanChange === "preserve" ? "維持原方案" : `${evidence.previousQuantityDiscountPlan ? `${evidence.previousQuantityDiscountPlan.discountType} ${evidence.previousQuantityDiscountPlan.levels.map((level) => `${level.lowerBound}件=${level.value}`).join("、")}` : "未設定"} → ${evidence.requestedQuantityDiscountPlan?.levels.map((level) => `${level.lowerBound}件=${level.value}%`).join("、") ?? "未設定"}`}`,
-        run: (session) => session.attempt({
-          intentId: "primary",
-          execute: ({ recordAccepted, assertCurrent }) =>
-            commitWithCanonicalReadback({
-              commit: () => updateBusinessPrice(input, evidence, {
-                assertCurrent,
-              }),
-              onAccepted: recordAccepted,
-              assertCurrent,
-              read: () => getBusinessPricing(input),
-              decide: businessPriceReadbackDecision,
-            }),
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return writeApiError(
-        error,
-        "送出 Amazon Business 價格更新時發生未預期的錯誤。",
-      );
-    }
   }
 
   private contentInput(request: ApiRequest):
@@ -2895,21 +2636,6 @@ export class ApiRouter {
     const value = await work();
     await this.spExecutionContext.assertCurrent(context);
     return { context, value };
-  }
-
-  private async reconcileBusinessPriceWrites(
-    snapshot: BusinessPricingListingSnapshot,
-    context: SpExecutionContext,
-  ): Promise<void> {
-    await this.writeGate.reconcile({
-      context,
-      marketplaceId: snapshot.marketplaceId,
-      sellerSku: snapshot.sellerSku,
-      operations: ["business_price"],
-      snapshot,
-      project: (response, _operationType, canonical) =>
-        reconcileBusinessPriceWrite(response, canonical),
-    });
   }
 
   private async reconcileContentWrites(

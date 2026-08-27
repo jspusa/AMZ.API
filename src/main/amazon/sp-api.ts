@@ -121,6 +121,12 @@ import type {
   Money,
   SalePriceSchedule,
 } from "./listing-price-types";
+import type {
+  BusinessPricingCapability,
+  BusinessPricingListingSnapshot,
+  BusinessQuantityDiscountLevel,
+  BusinessQuantityDiscountPlan,
+} from "./business-pricing-types";
 import type { ListingWriteExecutionFence } from
   "./listing-write-execution-fence";
 import type {
@@ -144,6 +150,10 @@ import type {
   ListingImageSourceEvidence,
   ListingImageUrlVector,
 } from "./listing-image-gateway";
+import {
+  businessPricingPatchBody,
+  type BusinessPricingGateway,
+} from "./business-pricing-gateway";
 
 export { MAX_SALES_TREND_DAY_COUNT } from "./fba-sales-calendar";
 export { SpApiError, SpApiPreCommitError } from "./sp-api-error";
@@ -167,6 +177,16 @@ export type {
   UpdateListingPriceInput,
   UpdateListingSalePriceInput,
 } from "./listing-price-types";
+export type {
+  BusinessPricePrecommitEvidence,
+  BusinessPriceUpdateResult,
+  BusinessPriceValidationResult,
+  BusinessPricingCapability,
+  BusinessPricingListingSnapshot,
+  BusinessQuantityDiscountLevel,
+  BusinessQuantityDiscountPlan,
+  UpdateBusinessPriceInput,
+} from "./business-pricing-types";
 export type {
   VariationAttachInput,
   VariationDetachInput,
@@ -230,38 +250,6 @@ export type SubscriptionAuditSnapshot = Omit<
     unverifiedFbaSkuCount: number;
   };
   notice: string;
-};
-
-export type BusinessPricingCapability = {
-  supported: boolean;
-  editable: boolean;
-  reason: string | null;
-  quantityDiscountsSupported: boolean;
-  quantityDiscountsEditable: boolean;
-  quantityDiscountsReason: string | null;
-  schemaChecksum: string | null;
-};
-
-export type BusinessQuantityDiscountLevel = {
-  lowerBound: number;
-  value: number;
-};
-
-export type BusinessQuantityDiscountPlan = {
-  discountType: "percent" | "fixed";
-  levels: BusinessQuantityDiscountLevel[];
-};
-
-export type BusinessPricingListingSnapshot = ListingPriceSnapshot & {
-  businessPrice: Money | null;
-  businessOfferPresence: "absent" | "present" | "ambiguous";
-  businessPricingManagedByAutomation: boolean;
-  quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
-  quantityDiscountPlanHash: string | null;
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  businessPricingCapability: BusinessPricingCapability;
 };
 
 export type ListingBatchSnapshot = {
@@ -395,68 +383,6 @@ export type {
   UnboundVariationAuditRow,
   UnboundVariationAuditSnapshot,
 } from "./variation-catalog-reads";
-
-export type BusinessPriceValidationResult = {
-  mode: "live" | "demo";
-  status: "VALID" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  asin: string;
-  productType: string;
-  standardPrice: Money;
-  previousBusinessPrice: Money | null;
-  requestedBusinessPrice: Money;
-  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  previousQuantityDiscountPlanHash: string | null;
-  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanChange: "preserve" | "replace";
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  schemaChecksum: string;
-  fbaEvidenceHash: string;
-  canonicalPatchHash: string;
-  validationIssuesHash: string;
-  validatedAt: string;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type BusinessPricePrecommitEvidence = Pick<
-  BusinessPriceValidationResult,
-  | "asin"
-  | "productType"
-  | "businessOfferGuardHash"
-  | "businessOfferProtectedHash"
-  | "previousQuantityDiscountPlanHash"
-  | "schemaChecksum"
-  | "fbaEvidenceHash"
-  | "canonicalPatchHash"
-  | "validationIssuesHash"
->;
-
-export type BusinessPriceUpdateResult = {
-  mode: "live" | "demo";
-  status: "ACCEPTED" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  asin: string;
-  productType: string;
-  standardPrice: Money;
-  previousBusinessPrice: Money | null;
-  requestedBusinessPrice: Money;
-  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  previousQuantityDiscountPlanHash: string | null;
-  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanChange: "preserve" | "replace";
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  schemaChecksum: string;
-  acceptedAt: string;
-  submissionId: string | null;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string;
-};
 
 export type RestockPlanSnapshot = {
   mode: "live" | "demo";
@@ -660,19 +586,6 @@ type ListingsWriteRequestInput = {
 const LISTINGS_WRITE_DEADLINE_MS = 12_000;
 const LISTINGS_WRITE_RESPONSE_MAX_BYTES = 1_048_576;
 const listingsWriteResponsePayloads = new WeakMap<Response, unknown | null>();
-
-export type UpdateBusinessPriceInput = {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  expectedStandardPrice: number;
-  expectedBusinessPrice: number | null;
-  newBusinessPrice: number;
-  expectedQuantityDiscountPlanHash?: string | null;
-  quantityDiscountTiers?: Array<{
-    lowerBound: number;
-    percent: number;
-  }>;
-};
 
 type TokenCacheEntry = {
   accessToken: string;
@@ -957,12 +870,6 @@ function finitePercentage(value: unknown): number | null {
   return number !== null && number >= 0 && number <= 100
     ? number
     : null;
-}
-
-function samePrice(left: number, right: number, currencyCode: string): boolean {
-  const precision = currencyCode === "JPY" ? 0 : 2;
-  const factor = 10 ** precision;
-  return Math.round(left * factor) === Math.round(right * factor);
 }
 
 async function requestAccessToken(
@@ -3840,453 +3747,6 @@ export const variationMoveGatewayProduction: VariationMoveGateway =
       };
     },
   });
-function buildBusinessPricePatch(
-  listing: BusinessPricingListingSnapshot,
-  input: UpdateBusinessPriceInput,
-): { productType: string; patches: unknown[] } {
-  const marketplace = MARKETPLACES[listing.marketplaceId];
-  const requestedQuantityDiscountPlan = requestedBusinessQuantityDiscountPlan(
-    listing,
-    input,
-  );
-  return {
-    productType: listing.productType,
-    patches: [{
-      op: "merge",
-      path: "/attributes/purchasable_offer",
-      value: [{
-        marketplace_id: listing.marketplaceId,
-        currency: marketplace.currency,
-        audience: "B2B",
-        our_price: [{ schedule: [{ value_with_tax: input.newBusinessPrice }] }],
-        ...(requestedQuantityDiscountPlan
-          ? {
-              quantity_discount_plan: [{
-                schedule: [{
-                  discount_type: "percent",
-                  levels: requestedQuantityDiscountPlan.levels.map((level) => ({
-                    lower_bound: level.lowerBound,
-                    value: level.value,
-                  })),
-                }],
-              }],
-            }
-          : {}),
-      }],
-    }],
-  };
-}
-
-function requestedBusinessQuantityDiscountPlan(
-  listing: BusinessPricingListingSnapshot,
-  input: UpdateBusinessPriceInput,
-): BusinessQuantityDiscountPlan | null {
-  const tiers = input.quantityDiscountTiers;
-  if (tiers === undefined) {
-    if (input.expectedQuantityDiscountPlanHash !== undefined) {
-      throw new SpApiError(
-        "只調整 Business Price 時不可夾帶數量折扣 hash。",
-        { status: 400, code: "INVALID_QUANTITY_DISCOUNT" },
-      );
-    }
-    return null;
-  }
-  if (
-    !listing.businessPricingCapability.quantityDiscountsSupported ||
-    !listing.businessPricingCapability.quantityDiscountsEditable
-  ) {
-    throw new SpApiError(
-      listing.businessPricingCapability.quantityDiscountsReason ||
-        "Amazon seller-specific PTD 未開放 B2B 數量折扣寫入。",
-      { status: 422, code: "BUSINESS_QUANTITY_DISCOUNTS_UNSUPPORTED" },
-    );
-  }
-  if (
-    listing.quantityDiscountPlanPresence === "ambiguous" ||
-    tiers.length < 1 || tiers.length > 5 ||
-    input.expectedQuantityDiscountPlanHash === undefined ||
-    input.expectedQuantityDiscountPlanHash !== listing.quantityDiscountPlanHash
-  ) {
-    throw new SpApiError(
-      "目前數量折扣不明、已改變，或請求未明確綁定舊方案。",
-      { status: 409, code: "QUANTITY_DISCOUNT_CHANGED" },
-    );
-  }
-  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
-  const precision = currencyCode === "JPY" ? 0 : 2;
-  const levels: BusinessQuantityDiscountLevel[] = [];
-  for (const tier of tiers) {
-    const previous = levels.at(-1);
-    if (
-      !Number.isSafeInteger(tier.lowerBound) || tier.lowerBound <= 0 ||
-      !Number.isFinite(tier.percent) || tier.percent <= 0 ||
-      tier.percent >= 100 ||
-      Math.round(tier.percent * 100) / 100 !== tier.percent ||
-      (previous &&
-        (tier.lowerBound <= previous.lowerBound ||
-          tier.percent <= previous.value))
-    ) {
-      throw new SpApiError(
-        "數量折扣必須是 1–5 階；件數為正整數，件數與百分比需嚴格遞增，百分比須大於 0 且小於 100。",
-        { status: 400, code: "INVALID_QUANTITY_DISCOUNT" },
-      );
-    }
-    const unitPrice = Number((
-      input.newBusinessPrice * (1 - tier.percent / 100)
-    ).toFixed(precision));
-    const previousUnitPrice = previous
-      ? Number((
-        input.newBusinessPrice * (1 - previous.value / 100)
-      ).toFixed(precision))
-      : input.newBusinessPrice;
-    if (unitPrice <= 0 || unitPrice >= previousUnitPrice) {
-      throw new SpApiError(
-        "數量折扣依站點幣別精度換算後，必須逐階產生更低且大於 0 的單價。",
-        { status: 400, code: "INVALID_QUANTITY_DISCOUNT" },
-      );
-    }
-    levels.push({ lowerBound: tier.lowerBound, value: tier.percent });
-  }
-  return { discountType: "percent", levels };
-}
-
-function verifyBusinessPriceChange(
-  listing: BusinessPricingListingSnapshot,
-  input: UpdateBusinessPriceInput,
-): {
-  standardPrice: Money;
-  previousBusinessPrice: Money | null;
-  requestedBusinessPrice: Money;
-  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  previousQuantityDiscountPlanHash: string | null;
-  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanChange: "preserve" | "replace";
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  schemaChecksum: string;
-} {
-  const currencyCode = MARKETPLACES[input.marketplaceId].currency;
-  const precision = currencyCode === "JPY" ? 0 : 2;
-  const factor = 10 ** precision;
-  if (
-    !Number.isFinite(input.newBusinessPrice) ||
-    input.newBusinessPrice <= 0 ||
-    Math.round(input.newBusinessPrice * factor) / factor !==
-      input.newBusinessPrice
-  ) {
-    throw new SpApiError("請提供符合站點幣別精度的 Amazon Business 價格。", {
-      status: 400,
-      code: "INVALID_PRICE",
-    });
-  }
-  if (!listing.standardPrice) {
-    throw new SpApiError("此 SKU 沒有可核對的標準售價，已停止 B2B 調價。", {
-      status: 422,
-      code: "PRICE_UNAVAILABLE",
-    });
-  }
-  if (listing.standardPrice.currencyCode !== currencyCode) {
-    throw new SpApiError("標準售價幣別與站點不一致，已停止 B2B 調價。", {
-      status: 409,
-      code: "CURRENCY_MISMATCH",
-    });
-  }
-  if (!samePrice(
-    listing.standardPrice.amount,
-    input.expectedStandardPrice,
-    currencyCode,
-  )) {
-    throw new SpApiError("標準售價已改變，請重新讀取後再預檢。", {
-      status: 409,
-      code: "PRICE_CHANGED",
-    });
-  }
-  if (
-    !listing.businessPricingCapability.supported ||
-    !listing.businessPricingCapability.editable ||
-    !listing.businessPricingCapability.schemaChecksum
-  ) {
-    throw new SpApiError(
-      listing.businessPricingCapability.reason ||
-        "Amazon seller-specific PTD 未開放 B2B 價格寫入。",
-      { status: 422, code: "BUSINESS_PRICING_UNSUPPORTED" },
-    );
-  }
-  if (listing.businessOfferPresence === "ambiguous") {
-    throw new SpApiError("目前 B2B offer 不唯一或無法解析，已停止覆蓋。", {
-      status: 409,
-      code: "BUSINESS_PRICE_AMBIGUOUS",
-    });
-  }
-  if (listing.businessPricingManagedByAutomation) {
-    throw new SpApiError(
-      "此 B2B contribution 由 Amazon Automate Pricing 管理；為避免 static value 被規則覆蓋，請先在 Seller Central 處理自動定價規則。",
-      { status: 409, code: "BUSINESS_PRICING_MANAGED_BY_AUTOMATION" },
-    );
-  }
-  const requestedQuantityDiscountPlan = requestedBusinessQuantityDiscountPlan(
-    listing,
-    input,
-  );
-  if (listing.businessOfferPresence === "absent") {
-    if (input.expectedBusinessPrice !== null) {
-      throw new SpApiError("目前尚未設定 B2B 價格，舊值核對不一致。", {
-        status: 409,
-        code: "BUSINESS_PRICE_CHANGED",
-      });
-    }
-  } else {
-    if (
-      !listing.businessPrice ||
-      input.expectedBusinessPrice === null ||
-      listing.businessPrice.currencyCode !== currencyCode ||
-      !samePrice(
-        listing.businessPrice.amount,
-        input.expectedBusinessPrice,
-        currencyCode,
-      )
-    ) {
-      throw new SpApiError("Amazon Business 價格已改變，請重新讀取後再預檢。", {
-        status: 409,
-        code: "BUSINESS_PRICE_CHANGED",
-      });
-    }
-    const sameBusinessPrice = samePrice(
-      listing.businessPrice.amount,
-      input.newBusinessPrice,
-      currencyCode,
-    );
-    const sameQuantityDiscountPlan = requestedQuantityDiscountPlan !== null &&
-      canonicalSha256(requestedQuantityDiscountPlan) ===
-        listing.quantityDiscountPlanHash;
-    if (sameBusinessPrice &&
-        (!requestedQuantityDiscountPlan || sameQuantityDiscountPlan)) {
-      throw new SpApiError("新 B2B contribution 與目前價格及數量折扣相同。", {
-        status: 400,
-        code: "BUSINESS_PRICE_UNCHANGED",
-      });
-    }
-  }
-  return {
-    standardPrice: listing.standardPrice,
-    previousBusinessPrice: listing.businessPrice,
-    requestedBusinessPrice: {
-      amount: input.newBusinessPrice,
-      currencyCode,
-    },
-    previousQuantityDiscountPlan: listing.quantityDiscountPlan,
-    previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
-    requestedQuantityDiscountPlan: requestedQuantityDiscountPlan ??
-      listing.quantityDiscountPlan,
-    quantityDiscountPlanChange: requestedQuantityDiscountPlan
-      ? "replace"
-      : "preserve",
-    businessOfferGuardHash: listing.businessOfferGuardHash,
-    businessOfferProtectedHash: listing.businessOfferProtectedHash,
-    schemaChecksum: listing.businessPricingCapability.schemaChecksum,
-  };
-}
-
-function businessPricePrecommitEvidence(
-  listing: BusinessPricingListingSnapshot,
-  body: { productType: string; patches: unknown[] },
-  issues: readonly ListingIssue[],
-): BusinessPricePrecommitEvidence {
-  if (!listing.asin || !listing.productType) {
-    throw new SpApiError(
-      "Amazon B2B 價格缺少可綁定預檢的 ASIN 或商品類型。",
-      { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
-    );
-  }
-  const schemaChecksum = listing.businessPricingCapability.schemaChecksum;
-  if (!schemaChecksum) {
-    throw new SpApiError(
-      "Amazon B2B 價格缺少可綁定預檢的 PTD checksum。",
-      { status: 409, code: "BUSINESS_PRICING_UNSUPPORTED" },
-    );
-  }
-  return {
-    asin: listing.asin,
-    productType: listing.productType,
-    businessOfferGuardHash: listing.businessOfferGuardHash,
-    businessOfferProtectedHash: listing.businessOfferProtectedHash,
-    previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
-    schemaChecksum,
-    fbaEvidenceHash: canonicalSha256(
-      listing.fulfillmentAvailability
-        .filter((entry) => entry.fulfillment === "FBA")
-        .map((entry) => entry.channelCode)
-        .sort(),
-    ),
-    canonicalPatchHash: canonicalSha256(body),
-    validationIssuesHash: canonicalSha256(
-      issues
-        .map((issue) => ({
-          ...issue,
-          attributeNames: [...issue.attributeNames].sort(),
-        }))
-        .sort((left, right) =>
-          JSON.stringify(canonicalJsonValue(left)).localeCompare(
-            JSON.stringify(canonicalJsonValue(right)),
-          )
-        ),
-    ),
-  };
-}
-
-function assertBusinessPricePrecommitEvidence(
-  actual: BusinessPricePrecommitEvidence,
-  expected: BusinessPricePrecommitEvidence,
-): void {
-  if (
-    actual.asin !== expected.asin ||
-    actual.productType !== expected.productType ||
-    actual.businessOfferGuardHash !== expected.businessOfferGuardHash ||
-    actual.businessOfferProtectedHash !== expected.businessOfferProtectedHash ||
-    actual.previousQuantityDiscountPlanHash !==
-      expected.previousQuantityDiscountPlanHash ||
-    actual.schemaChecksum !== expected.schemaChecksum ||
-    actual.fbaEvidenceHash !== expected.fbaEvidenceHash ||
-    actual.canonicalPatchHash !== expected.canonicalPatchHash ||
-    actual.validationIssuesHash !== expected.validationIssuesHash
-  ) {
-    throw new SpApiError(
-      "Amazon B2B 預檢後的身分、FBA、offer、PTD、patch 或警告證據已改變，請重新預檢。",
-      { status: 409, code: "PREVIEW_CHANGED" },
-    );
-  }
-}
-
-async function prepareLiveBusinessPriceUpdate(
-  input: UpdateBusinessPriceInput,
-  expectedEvidence?: BusinessPricePrecommitEvidence,
-): Promise<{
-  listing: BusinessPricingListingSnapshot;
-  standardPrice: Money;
-  previousBusinessPrice: Money | null;
-  requestedBusinessPrice: Money;
-  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  previousQuantityDiscountPlanHash: string | null;
-  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanChange: "preserve" | "replace";
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  schemaChecksum: string;
-  body: { productType: string; patches: unknown[] };
-  issues: ListingIssue[];
-  evidence: BusinessPricePrecommitEvidence;
-}> {
-  const listing = await fetchLiveBusinessPricing(input, {
-    forceCapabilityRefresh: true,
-  });
-  const verified = verifyBusinessPriceChange(listing, input);
-  if (verified.quantityDiscountPlanChange === "replace") {
-    const schema = cachedBusinessPricingSchema(
-      input.marketplaceId,
-      listing.productType,
-      verified.schemaChecksum,
-    );
-    if (!schema || !verified.requestedQuantityDiscountPlan) {
-      throw new SpApiError(
-        "Amazon seller-specific PTD 證據無法核對自訂數量折扣，已停止預檢。",
-        { status: 502, code: "PRODUCT_TYPE_SCHEMA_UNAVAILABLE" },
-      );
-    }
-    const proposalCapability = businessPricingCapabilityFromSchema(
-      schema,
-      verified.schemaChecksum,
-      {
-        audience: "B2B",
-        marketplaceId: input.marketplaceId,
-        currencyCode: MARKETPLACES[input.marketplaceId].currency,
-      },
-      verified.requestedQuantityDiscountPlan.levels,
-    );
-    if (!proposalCapability.quantityDiscountsEditable) {
-      throw new SpApiError(
-        "自訂數量折扣不符合 exact B2B seller-specific PTD 的件數或折扣數值限制。",
-        { status: 422, code: "INVALID_QUANTITY_DISCOUNT" },
-      );
-    }
-  }
-  const body = buildBusinessPricePatch(listing, input);
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body,
-    validationPreview: true,
-    validationPreviewIdentifiers: true,
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "read", "patchListingsItemPreview");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError("Amazon 回傳了無法辨識的 B2B 價格預檢結果。", {
-      status: 502,
-      code: "VALIDATION_STATUS_UNKNOWN",
-      requestId: response.headers.get("x-amzn-requestid"),
-      operation: "patchListingsItemPreview",
-    });
-  }
-  if (!listingSubmissionIssuesAreWellFormed(payload.issues)) {
-    throw new SpApiError(
-      "Amazon B2B 價格預檢的 issues 證據格式無法辨識，尚未寫入。",
-      {
-        status: 502,
-        code: "VALIDATION_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        operation: "patchListingsItemPreview",
-      },
-    );
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status === "INVALID" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon B2B 價格 Validation Preview 未通過。",
-      {
-        status: 422,
-        code: "VALIDATION_FAILED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-        operation: "patchListingsItemPreview",
-      },
-    );
-  }
-  const identifiers = payload.identifiers ?? [];
-  if (
-    payload.status !== "VALID" ||
-    payload.sku !== input.sellerSku ||
-    typeof payload.submissionId !== "string" ||
-    !payload.submissionId.trim() ||
-    !listing.asin ||
-    identifiers.length !== 1 ||
-    identifiers[0]?.marketplaceId !== input.marketplaceId ||
-    identifiers[0]?.asin !== listing.asin
-  ) {
-    throw new SpApiError(
-      "Amazon B2B 價格預檢沒有回傳 exact SKU／ASIN／站點的 VALID 證據。",
-      {
-        status: 502,
-        code: "VALIDATION_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-        operation: "patchListingsItemPreview",
-      },
-    );
-  }
-  const evidence = businessPricePrecommitEvidence(listing, body, issues);
-  if (expectedEvidence) {
-    assertBusinessPricePrecommitEvidence(evidence, expectedEvidence);
-  }
-  return { listing, ...verified, body, issues, evidence };
-}
-
 function invalidSalesTrendRange(message: string): never {
   throw new SpApiError(message, {
     status: 400,
@@ -5120,16 +4580,111 @@ function demoBusinessPricing(
   };
 }
 
-export async function getBusinessPricing(input: {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-}): Promise<BusinessPricingListingSnapshot> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    return demoBusinessPricing(input.marketplaceId, input.sellerSku);
-  }
-
-  return fetchLiveBusinessPricing(input);
-}
+export const businessPricingGatewayProduction: BusinessPricingGateway = {
+  mode: (marketplaceId) =>
+    shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+  read: async (identity, purpose) => {
+    if (!shouldUseDemoMode(identity.marketplaceId)) {
+      return fetchLiveBusinessPricing(identity, {
+        forceCapabilityRefresh: purpose === "mutation",
+      });
+    }
+    const startedGeneration = credentialGeneration;
+    const snapshot = demoBusinessPricing(
+      identity.marketplaceId,
+      identity.sellerSku,
+    );
+    await Promise.resolve();
+    if (startedGeneration !== credentialGeneration) {
+      throw new SpApiError(
+        "Amazon 憑證已在展示 B2B 價格讀取期間改變；舊結果已丟棄。",
+        { status: 409, code: "CREDENTIALS_CHANGED" },
+      );
+    }
+    return snapshot;
+  },
+  quantityDiscountPlanSupported: (input) => {
+    if (shouldUseDemoMode(input.marketplaceId)) return true;
+    const schema = cachedBusinessPricingSchema(
+      input.marketplaceId,
+      input.productType,
+      input.schemaChecksum,
+    );
+    if (!schema) return false;
+    return businessPricingCapabilityFromSchema(
+      schema,
+      input.schemaChecksum,
+      {
+        audience: "B2B",
+        marketplaceId: input.marketplaceId,
+        currencyCode: MARKETPLACES[input.marketplaceId].currency,
+      },
+      input.plan.levels,
+    ).quantityDiscountsEditable;
+  },
+  validationPreview: async (patch) => {
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: businessPricingPatchBody(patch),
+      validationPreview: true,
+      validationPreviewIdentifiers: true,
+      captureResponseJson: true,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      requestId: response.headers.get("x-amzn-requestid"),
+      retryAfter: response.headers.get("retry-after"),
+      payload: listingsWriteResponsePayloads.get(response) ?? null,
+    };
+  },
+  commitOnce: async (patch, fence, recordDispatch) => {
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: businessPricingPatchBody(patch),
+      assertBeforeSend: () => fence.assertCurrent(),
+      recordBeforeSend: recordDispatch,
+      captureResponseJson: true,
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      requestId: response.headers.get("x-amzn-requestid"),
+      retryAfter: response.headers.get("retry-after"),
+      payload: listingsWriteResponsePayloads.get(response) ?? null,
+    };
+  },
+  replaceDemoContribution: async (patch, fence) => {
+    const startedGeneration = credentialGeneration;
+    await fence.assertCurrent();
+    if (startedGeneration !== credentialGeneration) {
+      throw new SpApiError(
+        "Amazon 憑證已在展示 B2B 價格更新期間改變；舊結果已丟棄。",
+        { status: 409, code: "CREDENTIALS_CHANGED" },
+      );
+    }
+    demoBusinessPriceOverrides.set(
+      demoPriceKey(patch.marketplaceId, patch.sellerSku),
+      patch.amount,
+    );
+    if (patch.kind === "combined") {
+      demoBusinessQuantityDiscountOverrides.set(
+        demoPriceKey(patch.marketplaceId, patch.sellerSku),
+        {
+          discountType: "percent",
+          levels: patch.quantityDiscountPlan.levels.map((level) => ({
+            lowerBound: level.lowerBound,
+            value: level.value,
+          })),
+        },
+      );
+    }
+  },
+};
 
 function demoBusinessPricingAuditData(
   marketplaceId: MarketplaceId,
@@ -6321,213 +5876,6 @@ export function getDemoUnboundVariationAuditData(input: {
   signal?: AbortSignal;
 }): UnboundVariationAuditSnapshot {
   return demoUnboundVariationAuditSnapshot(input);
-}
-
-export async function previewBusinessPriceUpdate(
-  input: UpdateBusinessPriceInput,
-): Promise<BusinessPriceValidationResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = await getBusinessPricing(input);
-    const verified = verifyBusinessPriceChange(listing, input);
-    const body = buildBusinessPricePatch(listing, input);
-    const evidence = businessPricePrecommitEvidence(listing, body, []);
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      ...evidence,
-      ...verified,
-      validatedAt: new Date().toISOString(),
-      issues: [],
-      notice:
-        "展示 B2B 價格預檢已通過；尚未寫入 Amazon，最終按鈕只會模擬。",
-    };
-  }
-  const prepared = await prepareLiveBusinessPriceUpdate(input);
-  return {
-    mode: "live",
-    status: "VALID",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    ...prepared.evidence,
-    standardPrice: prepared.standardPrice,
-    previousBusinessPrice: prepared.previousBusinessPrice,
-    requestedBusinessPrice: prepared.requestedBusinessPrice,
-    previousQuantityDiscountPlan: prepared.previousQuantityDiscountPlan,
-    previousQuantityDiscountPlanHash:
-      prepared.previousQuantityDiscountPlanHash,
-    requestedQuantityDiscountPlan: prepared.requestedQuantityDiscountPlan,
-    quantityDiscountPlanChange: prepared.quantityDiscountPlanChange,
-    businessOfferGuardHash: prepared.businessOfferGuardHash,
-    businessOfferProtectedHash: prepared.businessOfferProtectedHash,
-    schemaChecksum: prepared.schemaChecksum,
-    validatedAt: new Date().toISOString(),
-    issues: prepared.issues,
-    notice: prepared.issues.length
-      ? "Amazon B2B 價格預檢通過，但有警告需要確認；尚未寫入。"
-      : "Amazon B2B 價格 Validation Preview 已通過，尚未寫入。",
-  };
-}
-
-export async function updateBusinessPrice(
-  input: UpdateBusinessPriceInput,
-  expectedEvidence?: BusinessPricePrecommitEvidence,
-  fence?: ListingWriteExecutionFence,
-): Promise<BusinessPriceUpdateResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const startedGeneration = credentialGeneration;
-    const listing = await getBusinessPricing(input);
-    const verified = verifyBusinessPriceChange(listing, input);
-    const body = buildBusinessPricePatch(listing, input);
-    const evidence = businessPricePrecommitEvidence(listing, body, []);
-    if (expectedEvidence) {
-      assertBusinessPricePrecommitEvidence(evidence, expectedEvidence);
-    }
-    if (startedGeneration !== credentialGeneration) {
-      throw new SpApiError(
-        "Amazon 憑證已在展示 B2B 價格更新期間改變；舊結果已丟棄。",
-        { status: 409, code: "CREDENTIALS_CHANGED" },
-      );
-    }
-    demoBusinessPriceOverrides.set(
-      demoPriceKey(input.marketplaceId, input.sellerSku),
-      input.newBusinessPrice,
-    );
-    if (verified.quantityDiscountPlanChange === "replace" &&
-        verified.requestedQuantityDiscountPlan) {
-      demoBusinessQuantityDiscountOverrides.set(
-        demoPriceKey(input.marketplaceId, input.sellerSku),
-        structuredClone(verified.requestedQuantityDiscountPlan),
-      );
-    }
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      asin: evidence.asin,
-      productType: evidence.productType,
-      ...verified,
-      acceptedAt: new Date().toISOString(),
-      submissionId: null,
-      requestId: null,
-      issues: [],
-      notice: "模擬 Amazon Business 調價完成；Amazon 真實價格沒有變更。",
-    };
-  }
-
-  const prepared = await prepareListingCommit(
-    () => prepareLiveBusinessPriceUpdate(input, expectedEvidence),
-    "B2B 價格正式寫入前的重新讀取、PTD 或 Validation Preview 失敗。",
-  );
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body: prepared.body,
-    ...(fence
-      ? { assertBeforeSend: () => fence.assertCurrent() }
-      : {}),
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "write", "patchListingsItem");
-  }
-
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError(
-      "Amazon 已收到 B2B 價格請求，但回應無法辨識。請重新查詢 SKU 確認，勿盲目重送。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        operation: "patchListingsItem",
-      },
-    );
-  }
-  if (!listingSubmissionIssuesAreWellFormed(payload.issues)) {
-    throw new SpApiError(
-      "Amazon 已回傳 B2B 價格接受狀態，但 issues 格式無法辨識。請重新查詢確認，勿盲目重送。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        operation: "patchListingsItem",
-      },
-    );
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.sku !== input.sellerSku ||
-    typeof payload.submissionId !== "string" ||
-    !payload.submissionId.trim()
-  ) {
-    throw new SpApiError(
-      "Amazon 已回傳 B2B 價格接受狀態，但 SKU 或 submissionId 缺失／不一致。請重新查詢確認，勿盲目重送。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-        operation: "patchListingsItem",
-      },
-    );
-  }
-  if (payload.status === "INVALID") {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 未接受這次 B2B 價格更新。",
-      {
-        status: 422,
-        code: "UPDATE_REJECTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-        operation: "patchListingsItem",
-      },
-    );
-  }
-  if (
-    payload.status !== "ACCEPTED" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      "Amazon B2B 價格正式回應的狀態互相矛盾或無法辨識。請重新查詢確認，勿盲目重送。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-        operation: "patchListingsItem",
-      },
-    );
-  }
-
-  return {
-    mode: "live",
-    status: "ACCEPTED",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    asin: prepared.listing.asin!,
-    productType: prepared.listing.productType,
-    standardPrice: prepared.standardPrice,
-    previousBusinessPrice: prepared.previousBusinessPrice,
-    requestedBusinessPrice: prepared.requestedBusinessPrice,
-    previousQuantityDiscountPlan: prepared.previousQuantityDiscountPlan,
-    previousQuantityDiscountPlanHash:
-      prepared.previousQuantityDiscountPlanHash,
-    requestedQuantityDiscountPlan: prepared.requestedQuantityDiscountPlan,
-    quantityDiscountPlanChange: prepared.quantityDiscountPlanChange,
-    businessOfferGuardHash: prepared.businessOfferGuardHash,
-    businessOfferProtectedHash: prepared.businessOfferProtectedHash,
-    schemaChecksum: prepared.schemaChecksum,
-    acceptedAt: new Date().toISOString(),
-    submissionId: payload.submissionId,
-    requestId: response.headers.get("x-amzn-requestid"),
-    issues,
-    notice:
-      "Amazon 已接受 B2B 調價請求，正在處理；重新查詢確認後才代表 Business Price 已生效。",
-  };
 }
 
 export async function getSalesTrend(input: {
