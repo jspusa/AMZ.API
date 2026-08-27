@@ -2518,7 +2518,7 @@ export default function ContentAuditPanel({
             <strong>回傳同一份 Excel 批次更新</strong>
             <p>
               只編輯淺藍或黃色的「更新…」欄位後，把原檔選回來。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。
-              預檢通過後才會要求一次 Touch ID／Windows Hello；若任一筆結果不明會停止後續且不盲目重送。
+              預檢全部通過，或你明確核對符合條件的 INVALID SKU 後，才會要求一次 Touch ID／Windows Hello；這不代表 INVALID 已通過，若任一筆遭拒或結果不明會停止後續且不盲目重送。
             </p>
           </div>
           <ContentAuditWorkbookFilePicker

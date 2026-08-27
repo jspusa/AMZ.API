@@ -23,9 +23,11 @@ import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { createListingContentBatchMutations } from
   "../src/main/listing-content-batch-mutations";
-import type {
-  ListingContentMutationsPort,
-  ListingContentPreparedPreview,
+import {
+  LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+  type ListingContentPreviewOptions,
+  type ListingContentMutationsPort,
+  type ListingContentPreparedPreview,
 } from
   "../src/main/listing-content-mutations";
 import type {
@@ -1813,6 +1815,16 @@ describe("content audit Excel batch router", () => {
       categories: [],
       marketplaceIds: [],
     };
+    const additionalValidationIssues = ["9001", "9002", "9003"].map(
+      (code) => ({
+        code,
+        severity: "ERROR",
+        message: `Amazon Validation Preview error ${code}.`,
+        attributeNames: ["item_name"],
+        categories: [],
+        marketplaceIds: [],
+      }),
+    );
     const privateValidationIssue = {
       code: "PRIVATE-UPSTREAM-CONTEXT",
       severity: "ERROR",
@@ -1824,13 +1836,20 @@ describe("content audit Excel batch router", () => {
     };
     const previewOne = vi.fn(async (
       input: UpdateListingContentInput,
-      options?: { allowAmazonValidationFailure?: boolean },
+      options?: ListingContentPreviewOptions,
     ) => {
-      expect(options).toEqual({ allowAmazonValidationFailure: true });
+      expect(options).toEqual({
+        validationOverrideAuthority:
+          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+      });
       return preparedPreview(input, undefined, {
         mode: "live",
         status: "INVALID",
-        issues: [validationIssue, privateValidationIssue],
+        issues: [
+          validationIssue,
+          ...additionalValidationIssues,
+          privateValidationIssue,
+        ],
       });
     });
     const attemptOne = vi.fn(async (input: UpdateListingContentInput) => ({
@@ -1868,8 +1887,9 @@ describe("content audit Excel batch router", () => {
         "Amazon Validation Preview 明確 INVALID；仍只嘗試一次",
       );
       expect(input.approvalReason("654321")).toContain(
-        `${snapshot.rows[0]!.sellerSku}（8541）`,
+        `${snapshot.rows[0]!.sellerSku}（8541／9001／9002／9003）`,
       );
+      expect(input.approvalReason("654321")).not.toContain("等另");
       return input.run({} as never);
     });
     const batch = createListingContentBatchMutations({
@@ -1909,7 +1929,7 @@ describe("content audit Excel batch router", () => {
         sellerSku,
         validationStatus: "INVALID",
         overrideAllowed: true,
-        issues: [validationIssue],
+        issues: [validationIssue, ...additionalValidationIssues],
       }],
       validationOverride: {
         required: true,
@@ -1918,7 +1938,7 @@ describe("content audit Excel batch router", () => {
     });
     expect(
       (previewBody.changes as Array<Record<string, unknown>>)[0]!.issues,
-    ).toEqual([validationIssue]);
+    ).toEqual([validationIssue, ...additionalValidationIssues]);
 
     const blocked = await batch.handle({
       operation: "commit",
@@ -1983,7 +2003,10 @@ describe("content audit Excel batch router", () => {
       expect.anything(),
       expect.anything(),
       sellerSku,
-      { allowAmazonValidationFailure: true },
+      {
+        validationOverrideAuthority:
+          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+      },
     );
     expect(execute).toHaveBeenCalledOnce();
   });

@@ -21,6 +21,7 @@ import {
 } from "../src/main/amazon/sp-execution-context";
 import {
   createListingContentMutations,
+  LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
 } from "../src/main/listing-content-mutations";
 import { LocalStore } from "../src/main/local-store";
 import {
@@ -222,7 +223,8 @@ describe("W06 Listing Content mutation owner", () => {
     });
 
     const forced = await owner.previewOne(input, {
-      allowAmazonValidationFailure: true,
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
     });
 
     expect(forced).toMatchObject({
@@ -280,7 +282,8 @@ describe("W06 Listing Content mutation owner", () => {
     };
 
     await expect(owner.previewOne(input, {
-      allowAmazonValidationFailure: true,
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
     })).rejects.toMatchObject({
       status: 422,
       code: "VALIDATION_FAILED",
@@ -356,7 +359,8 @@ describe("W06 Listing Content mutation owner", () => {
     };
 
     await expect(owner.previewOne(input, {
-      allowAmazonValidationFailure: true,
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
     })).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
     expect(gateway.commitOnce).not.toHaveBeenCalled();
   });
@@ -422,7 +426,8 @@ describe("W06 Listing Content mutation owner", () => {
       expectedIngredients: "Turkey",
     };
     const prepared = await owner.previewOne(input, {
-      allowAmazonValidationFailure: true,
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
     });
     const session = {
       attempt: vi.fn(async ({ execute }) => execute({
@@ -445,7 +450,10 @@ describe("W06 Listing Content mutation owner", () => {
       prepared.evidence,
       session,
       "primary",
-      { allowAmazonValidationFailure: true },
+      {
+        validationOverrideAuthority:
+          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+      },
     );
 
     expect(result).toMatchObject({

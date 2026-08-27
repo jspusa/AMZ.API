@@ -37,8 +37,10 @@ import {
 import {
   assertListingContentPreparedPreviewBinding,
   assertListingContentUpdateResultBinding,
+  LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
   type ListingContentMutationsPort,
   type ListingContentPreparedPreview,
+  type ListingContentPreviewOptions,
 } from "./listing-content-mutations";
 import {
   bodyRecord,
@@ -195,6 +197,17 @@ function publicListingIssues(issues: readonly ListingIssue[]): ListingIssue[] {
       ? { marketplaceIds: [...issue.marketplaceIds] }
       : {}),
   }));
+}
+
+function validationOverrideOptions(
+  required: boolean,
+): ListingContentPreviewOptions {
+  return required
+    ? {
+        validationOverrideAuthority:
+          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+      }
+    : {};
 }
 
 function publicUpdateResult(
@@ -889,16 +902,17 @@ export class ListingContentBatchMutations
         try {
           await this.context.assertCurrent(context);
           this.assertLifecycleCurrent(revision);
-          const validation = await this.content.previewOne(input, {
-            allowAmazonValidationFailure: true,
-          });
+          const validation = await this.content.previewOne(
+            input,
+            validationOverrideOptions(true),
+          );
           this.assertLifecycleCurrent(revision);
           assertListingContentPreparedPreviewBinding(
             validation,
             input,
             context,
             undefined,
-            { allowAmazonValidationFailure: true },
+            validationOverrideOptions(true),
           );
           if (
             validation.status === "INVALID" &&
@@ -1147,17 +1161,16 @@ export class ListingContentBatchMutations
     const overrideCount = requiredOverrideSellerSkus.length;
     const shownSkus = sellerSkus.slice(0, 5).join("、");
     const remaining = Math.max(0, sellerSkus.length - 5);
-    const shownOverrideSkus = requiredOverrideChanges.slice(0, 5)
+    const shownOverrideSkus = requiredOverrideChanges
       .map((change) => {
-        const codes = publicListingIssues(change.validation.issues)
-          .filter((issue) => issue.severity === "ERROR")
-          .map((issue) => issue.code ?? "無代碼")
-          .slice(0, 3)
-          .join("／");
+        const codes = [...new Set(
+          publicListingIssues(change.validation.issues)
+            .filter((issue) => issue.severity === "ERROR")
+            .map((issue) => issue.code ?? "無代碼"),
+        )].join("／");
         return `${change.input.sellerSku}（${codes}）`;
       })
       .join("、");
-    const remainingOverrideSkus = Math.max(0, overrideCount - 5);
     let preflightResponse: ApiResponse | null = null;
     plan.state = "committing";
     try {
@@ -1167,7 +1180,7 @@ export class ListingContentBatchMutations
         approvalReason: (verificationCode) =>
           `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} 個 SKU${
             overrideCount
-              ? `｜Amazon Validation Preview 明確 INVALID；仍只嘗試一次｜強制送出 ${overrideCount} 個 Amazon 預檢未通過 SKU：${shownOverrideSkus}${remainingOverrideSkus ? ` 等另 ${remainingOverrideSkus} 個` : ""}`
+              ? `｜Amazon Validation Preview 明確 INVALID；仍只嘗試一次｜強制送出 ${overrideCount} 個 Amazon 預檢未通過 SKU：${shownOverrideSkus}`
               : `｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}`
           }｜驗證碼 ${verificationCode}`,
         cancellationMessage: "操作已取消；Amazon 沒有收到任何文案變更。",
@@ -1179,10 +1192,12 @@ export class ListingContentBatchMutations
             for (const change of plan.changes) {
               await this.context.assertCurrent(context);
               this.assertLifecycleCurrent(revision);
-              const fresh = await this.content.previewOne(change.input, {
-                allowAmazonValidationFailure:
+              const fresh = await this.content.previewOne(
+                change.input,
+                validationOverrideOptions(
                   change.validationOverrideRequired,
-              });
+                ),
+              );
               this.assertLifecycleCurrent(revision);
               assertListingContentPreparedPreviewBinding(
                 fresh,
@@ -1193,10 +1208,9 @@ export class ListingContentBatchMutations
                   proposalFingerprint: change.proposalFingerprint,
                   status: change.validation.status,
                 },
-                {
-                  allowAmazonValidationFailure:
-                    change.validationOverrideRequired,
-                },
+                validationOverrideOptions(
+                  change.validationOverrideRequired,
+                ),
               );
               assertContentBatchSourceIdentity(fresh, change.sourceIdentity);
               revalidated.push({ ...change, validation: fresh });
@@ -1244,10 +1258,9 @@ export class ListingContentBatchMutations
                 change.validation.evidence,
                 session,
                 change.input.sellerSku,
-                {
-                  allowAmazonValidationFailure:
-                    change.validationOverrideRequired,
-                },
+                validationOverrideOptions(
+                  change.validationOverrideRequired,
+                ),
               );
               this.assertLifecycleCurrent(revision);
               assertListingContentUpdateResultBinding(

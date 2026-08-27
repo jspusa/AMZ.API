@@ -304,7 +304,9 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("回傳同一份 Excel 批次更新");
     expect(markup).toContain("先預覽 Excel 變更（不寫入）");
     expect(markup).toContain("Touch ID／Windows Hello");
-    expect(markup).toContain("若任一筆結果不明會停止後續且不盲目重送");
+    expect(markup).toContain("全部通過，或你明確核對符合條件的 INVALID SKU 後");
+    expect(markup).not.toContain("預檢通過後才會要求一次 Touch ID／Windows Hello");
+    expect(markup).toContain("若任一筆遭拒或結果不明會停止後續且不盲目重送");
     expect(markup.indexOf("Amazon 唯讀＋AMZ.API 共用英文辭典")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
     );

@@ -79,8 +79,13 @@ export type ListingContentPreparedPreview =
     proposalFingerprint: string;
   }>;
 
+export const LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY = Symbol(
+  "listing-content-batch-validation-override",
+);
+
 export type ListingContentPreviewOptions = Readonly<{
-  allowAmazonValidationFailure?: boolean;
+  validationOverrideAuthority?:
+    typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
 }>;
 
 export interface ListingContentMutationsPort {
@@ -150,7 +155,8 @@ interface ListingContentMutationOperations {
     input: UpdateListingContentInput,
     control: Readonly<{
       expectedEvidence?: ListingContentPrecommitEvidence;
-      allowAmazonValidationFailure?: boolean;
+      validationOverrideAuthority?:
+        typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
       fence: ListingWriteExecutionFence;
       recordDurableEvidence(
         result: ListingContentDurableResult,
@@ -837,7 +843,8 @@ async function prepareContentMutation(
     (issue) => issue.severity === "ERROR",
   );
   const acceptedValidationOverride =
-    options.allowAmazonValidationFailure === true &&
+    options.validationOverrideAuthority ===
+      LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY &&
     observation.snapshot.mode === "live" &&
     receipt.status === "INVALID" &&
     hasValidationError &&
@@ -1009,8 +1016,8 @@ function createListingContentMutationOperations(
           input,
           control.expectedEvidence,
           {
-            allowAmazonValidationFailure:
-              control.allowAmazonValidationFailure,
+            validationOverrideAuthority:
+              control.validationOverrideAuthority,
           },
         )
       );
@@ -1137,7 +1144,8 @@ export function assertListingContentPreparedPreviewBinding(
     (context.mode === "demo" && value.status === "SIMULATED") ||
     (context.mode === "live" && value.status === "VALID") ||
     (context.mode === "live" &&
-      options.allowAmazonValidationFailure === true &&
+      options.validationOverrideAuthority ===
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY &&
       value.status === "INVALID" &&
       Array.isArray(value.issues) &&
       value.issues.some(
@@ -1609,8 +1617,8 @@ export class ListingContentMutations implements ListingContentMutationsPort {
         commitWithCanonicalReadback({
           commit: () => this.operations.commitOne(input, {
             expectedEvidence,
-            allowAmazonValidationFailure:
-              options.allowAmazonValidationFailure,
+            validationOverrideAuthority:
+              options.validationOverrideAuthority,
             fence: { assertCurrent: control.assertCurrent },
             recordDurableEvidence:
               control.recordDurableEvidence ?? control.recordAccepted,
