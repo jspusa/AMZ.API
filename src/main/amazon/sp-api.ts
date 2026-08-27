@@ -150,6 +150,21 @@ import type {
   ListingImageSourceEvidence,
   ListingImageUrlVector,
 } from "./listing-image-gateway";
+import type {
+  ListingContentField,
+  ListingContentFieldCapability,
+  ListingContentSnapshot,
+  ListingContentValues,
+} from "./listing-content-types";
+import type {
+  ListingContentCommitReceipt,
+  ListingContentGateway,
+  ListingContentGatewayRead,
+  ListingContentPatchDescriptor,
+  ListingContentPtdEvidence,
+  ListingContentSourceEvidence,
+  ListingContentValidationReceipt,
+} from "./listing-content-gateway";
 import {
   businessPricingPatchBody,
   type BusinessPricingGateway,
@@ -204,6 +219,15 @@ export type {
   ListingImageUpdateResult,
   UpdateListingImagesInput,
 } from "./listing-image-types";
+export type {
+  ListingContentField,
+  ListingContentFieldCapability,
+  ListingContentSnapshot,
+  ListingContentValues,
+  ListingContentValidationResult,
+  ListingContentUpdateResult,
+  UpdateListingContentInput,
+} from "./listing-content-types";
 export type { SubscribeAndSaveOfferSnapshot } from "./fba-inventory-replenishment";
 export {
   buildUnboundVariationSearchBatches,
@@ -262,109 +286,6 @@ export type ListingBatchSnapshot = {
   requestId: string | null;
   rateLimit: string | null;
   notice: string | null;
-};
-
-export type ListingContentFieldCapability = {
-  supported: boolean;
-  editable: boolean;
-  required: boolean;
-  minItems: number | null;
-  maxItems: number | null;
-  minLength: number | null;
-  maxLength: number | null;
-  maxUtf8Bytes: number | null;
-  languageTags: string[];
-  reason: string | null;
-};
-
-export type ListingContentField =
-  | "title"
-  | "itemHighlight"
-  | "bulletPoints"
-  | "productDescription"
-  | "ingredients";
-
-export type ListingContentSnapshot = {
-  mode: "live" | "demo";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  asin: string | null;
-  productType: string;
-  status: string[];
-  title: string;
-  itemHighlight: string;
-  bulletPoints: string[];
-  productDescription: string;
-  ingredients: string;
-  languageTag: string;
-  attributePresence: {
-    title: boolean;
-    itemHighlight: boolean;
-    bulletPoints: boolean;
-    productDescription: boolean;
-    ingredients: boolean;
-  };
-  capabilities: {
-    title: ListingContentFieldCapability;
-    itemHighlight: ListingContentFieldCapability;
-    bulletPoints: ListingContentFieldCapability;
-    productDescription: ListingContentFieldCapability;
-    ingredients: ListingContentFieldCapability;
-    images: ListingImageFieldCapability[];
-    schemaChecksum: string | null;
-  };
-  createdAt: string | null;
-  updatedAt: string | null;
-  fetchedAt: string;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string | null;
-};
-
-export type ListingContentValues = {
-  title: string;
-  itemHighlight: string;
-  bulletPoints: string[];
-  productDescription: string;
-  ingredients: string;
-};
-
-export type UpdateListingContentInput = ListingContentValues & {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  expectedTitle: string;
-  expectedItemHighlight: string;
-  expectedBulletPoints: string[];
-  expectedProductDescription: string;
-  expectedIngredients: string;
-};
-
-export type ListingContentValidationResult = {
-  mode: "live" | "demo";
-  status: "VALID" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  previous: ListingContentValues;
-  requested: ListingContentValues;
-  changedFields: ListingContentField[];
-  validatedAt: string;
-  issues: ListingIssue[];
-  notice: string;
-};
-
-export type ListingContentUpdateResult = {
-  mode: "live" | "demo";
-  status: "ACCEPTED" | "SIMULATED";
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-  previous: ListingContentValues;
-  requested: ListingContentValues;
-  changedFields: ListingContentField[];
-  acceptedAt: string;
-  submissionId: string | null;
-  requestId: string | null;
-  issues: ListingIssue[];
-  notice: string;
 };
 
 export type ListingReportStatus = {
@@ -554,14 +475,6 @@ type AmazonListingSearchResponse = {
   pagination?: { nextToken?: string; previousToken?: string };
 };
 
-type AmazonListingSubmission = {
-  sku?: string;
-  status?: string;
-  submissionId?: string;
-  issues?: AmazonListingIssue[];
-  identifiers?: Array<{ marketplaceId?: string; asin?: string }>;
-};
-
 type AmazonProductTypeDefinition = {
   schema?: {
     link?: { resource?: string };
@@ -635,25 +548,6 @@ const CONTENT_TEXT_ATTRIBUTE_NAMES = [
 ] as const;
 
 type ListingContentAttributeName = typeof CONTENT_TEXT_ATTRIBUTE_NAMES[number];
-
-async function prepareListingCommit<T>(
-  prepare: () => Promise<T>,
-  fallbackMessage: string,
-): Promise<T> {
-  try {
-    return await prepare();
-  } catch (error) {
-    if (error instanceof SpApiPreCommitError) throw error;
-    const cause = error instanceof SpApiError
-      ? error
-      : new SpApiError(fallbackMessage, {
-          status: 500,
-          code: "PRECOMMIT_FAILED",
-          operation: "patchListingsItemPreview",
-        });
-    throw new SpApiPreCommitError(cause);
-  }
-}
 
 function getRefreshToken(region: SpApiRegion): string | undefined {
   const regionalKey = `SP_API_REFRESH_TOKEN_${region.toUpperCase()}`;
@@ -1899,12 +1793,15 @@ function imageCapability(
 async function fetchContentCapabilities(
   marketplaceId: MarketplaceId,
   productType: string,
-  options: { allowGenericFallback?: boolean } = {},
+  options: {
+    allowGenericFallback?: boolean;
+    forceRefresh?: boolean;
+  } = {},
 ): Promise<ContentCapabilityResult> {
   const startedGeneration = credentialGeneration;
   const cacheKey = `${startedGeneration}:${marketplaceId}:${productType}`;
   const cached = productTypeCapabilityCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!options.forceRefresh && cached && cached.expiresAt > Date.now()) {
     return { capabilities: cached.capabilities, degradedReason: null };
   }
 
@@ -3520,18 +3417,11 @@ function normalizeListingContent(
   };
 }
 
-async function fetchLiveListingContent(
-  marketplaceId: MarketplaceId,
-  sellerSku: string,
-): Promise<ListingContentSnapshot> {
-  return (await fetchLiveListingContentContext(marketplaceId, sellerSku, true))
-    .listing;
-}
-
 async function fetchLiveListingContentContext(
   marketplaceId: MarketplaceId,
   sellerSku: string,
   allowReadOnlySchema = false,
+  forceCapabilityRefresh = false,
 ): Promise<{
   listing: ListingContentSnapshot;
   payload: AmazonListingItem;
@@ -3547,7 +3437,10 @@ async function fetchLiveListingContentContext(
     capabilityResult = await fetchContentCapabilities(
       marketplaceId,
       productType,
-      { allowGenericFallback: allowReadOnlySchema },
+      {
+        allowGenericFallback: allowReadOnlySchema,
+        forceRefresh: forceCapabilityRefresh,
+      },
     );
   } catch (error) {
     if (!allowReadOnlySchema || !(error instanceof SpApiError)) throw error;
@@ -4846,377 +4739,6 @@ export async function searchListingsBySku(input: {
   return fetchLiveListingBatch(input.marketplaceId, input.sellerSkus);
 }
 
-function normalizeContentText(value: string): string {
-  return value.replace(/\r\n?/g, "\n").trim();
-}
-
-function normalizeContentValues(values: ListingContentValues): ListingContentValues {
-  return {
-    title: normalizeContentText(values.title),
-    itemHighlight: normalizeContentText(values.itemHighlight),
-    bulletPoints: values.bulletPoints
-      .map(normalizeContentText)
-      .filter(Boolean)
-      .slice(0, 5),
-    productDescription: normalizeContentText(values.productDescription),
-    ingredients: normalizeContentText(values.ingredients),
-  };
-}
-
-function sameTextArray(left: string[], right: string[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
-  );
-}
-
-function verifyContentLength(
-  label: string,
-  value: string,
-  capability: ListingContentFieldCapability,
-) {
-  if (capability.minLength !== null && value.length < capability.minLength) {
-    throw new SpApiError(`${label}至少需要 ${capability.minLength} 個字元。`, {
-      status: 422,
-      code: "CONTENT_LIMIT_EXCEEDED",
-    });
-  }
-  if (capability.maxLength !== null && value.length > capability.maxLength) {
-    throw new SpApiError(`${label}最多可輸入 ${capability.maxLength} 個字元。`, {
-      status: 422,
-      code: "CONTENT_LIMIT_EXCEEDED",
-    });
-  }
-  if (
-    capability.maxUtf8Bytes !== null &&
-    new TextEncoder().encode(value).byteLength > capability.maxUtf8Bytes
-  ) {
-    throw new SpApiError(
-      `${label}超過 Amazon 允許的 ${capability.maxUtf8Bytes} UTF-8 bytes。`,
-      { status: 422, code: "CONTENT_LIMIT_EXCEEDED" },
-    );
-  }
-}
-
-function assertContentEditable(
-  label: string,
-  capability: ListingContentFieldCapability,
-) {
-  if (!capability.supported || !capability.editable) {
-    throw new SpApiError(
-      capability.reason || `${label}不支援由 API 修改。`,
-      { status: 422, code: "CONTENT_FIELD_READ_ONLY" },
-    );
-  }
-}
-
-function verifyContentChange(
-  listing: ListingContentSnapshot,
-  input: UpdateListingContentInput,
-): {
-  previous: ListingContentValues;
-  requested: ListingContentValues;
-  changedFields: ListingContentField[];
-} {
-  const previous = normalizeContentValues({
-    title: listing.title,
-    itemHighlight: listing.itemHighlight,
-    bulletPoints: listing.bulletPoints,
-    productDescription: listing.productDescription,
-    ingredients: listing.ingredients,
-  });
-  const expected = normalizeContentValues({
-    title: input.expectedTitle,
-    itemHighlight: input.expectedItemHighlight,
-    bulletPoints: input.expectedBulletPoints,
-    productDescription: input.expectedProductDescription,
-    ingredients: input.expectedIngredients,
-  });
-  const requested = normalizeContentValues(input);
-  if (
-    previous.title !== expected.title ||
-    previous.itemHighlight !== expected.itemHighlight ||
-    !sameTextArray(previous.bulletPoints, expected.bulletPoints) ||
-    previous.productDescription !== expected.productDescription ||
-    previous.ingredients !== expected.ingredients
-  ) {
-    throw new SpApiError(
-      "商品內容已在查詢後發生變動。請重新查詢 SKU，再確認一次。",
-      { status: 409, code: "CONTENT_CHANGED" },
-    );
-  }
-
-  const changedFields: ListingContentField[] = [];
-  if (requested.title !== previous.title) changedFields.push("title");
-  if (requested.itemHighlight !== previous.itemHighlight) {
-    changedFields.push("itemHighlight");
-  }
-  if (!sameTextArray(requested.bulletPoints, previous.bulletPoints)) {
-    changedFields.push("bulletPoints");
-  }
-  if (requested.productDescription !== previous.productDescription) {
-    changedFields.push("productDescription");
-  }
-  if (requested.ingredients !== previous.ingredients) {
-    changedFields.push("ingredients");
-  }
-  if (!changedFields.length) {
-    throw new SpApiError("商品名稱、產品亮點、產品要點、產品敘述與成分都沒有變更。", {
-      status: 400,
-      code: "CONTENT_UNCHANGED",
-    });
-  }
-
-  if (changedFields.includes("title")) {
-    assertContentEditable("商品標題", listing.capabilities.title);
-    if (!requested.title) {
-      throw new SpApiError("商品標題不可留白。", {
-        status: 422,
-        code: "CONTENT_REQUIRED",
-      });
-    }
-    verifyContentLength("商品標題", requested.title, listing.capabilities.title);
-  }
-  if (changedFields.includes("itemHighlight")) {
-    const capability = listing.capabilities.itemHighlight;
-    assertContentEditable("產品亮點", capability);
-    if (!requested.itemHighlight) {
-      throw new SpApiError("產品亮點不可直接清空；請輸入更新後內容。", {
-        status: 422,
-        code: "CONTENT_REQUIRED",
-      });
-    }
-    verifyContentLength("產品亮點", requested.itemHighlight, capability);
-  }
-  if (changedFields.includes("bulletPoints")) {
-    const capability = listing.capabilities.bulletPoints;
-    assertContentEditable("五大賣點", capability);
-    const minimum = Math.max(1, capability.minItems ?? 1);
-    const maximum = Math.min(5, capability.maxItems ?? 5);
-    if (
-      requested.bulletPoints.length < minimum ||
-      requested.bulletPoints.length > maximum
-    ) {
-      throw new SpApiError(
-        `此商品類型需要 ${minimum} 到 ${maximum} 個賣點。`,
-        { status: 422, code: "CONTENT_LIMIT_EXCEEDED" },
-      );
-    }
-    requested.bulletPoints.forEach((value, index) =>
-      verifyContentLength(`賣點 ${index + 1}`, value, capability));
-  }
-  if (changedFields.includes("productDescription")) {
-    const capability = listing.capabilities.productDescription;
-    assertContentEditable("產品敘述", capability);
-    if (!requested.productDescription) {
-      throw new SpApiError("產品敘述不可直接清空；請輸入更新後內容。", {
-        status: 422,
-        code: "CONTENT_REQUIRED",
-      });
-    }
-    verifyContentLength("產品敘述", requested.productDescription, capability);
-  }
-  if (changedFields.includes("ingredients")) {
-    const capability = listing.capabilities.ingredients;
-    assertContentEditable("成分", capability);
-    if (!requested.ingredients) {
-      throw new SpApiError(
-        "為避免誤刪法規相關資料，成分不可直接清空；請輸入更新後內容。",
-        { status: 422, code: "CONTENT_REQUIRED" },
-      );
-    }
-    verifyContentLength("成分", requested.ingredients, capability);
-  }
-  return { previous, requested, changedFields };
-}
-
-function buildContentPatch(
-  payload: AmazonListingItem,
-  listing: ListingContentSnapshot,
-  requested: ListingContentValues,
-  changedFields: ListingContentField[],
-): { productType: string; patches: unknown[] } {
-  const value = (text: string) => ({
-    value: text,
-    language_tag: listing.languageTag,
-    marketplace_id: listing.marketplaceId,
-  });
-  const attributeValue = (
-    attributeName: ListingContentAttributeName,
-    label: string,
-    texts: string[],
-  ) => {
-    const existing = attributeObjects(
-      payload,
-      attributeName,
-      listing.marketplaceId,
-    );
-    if (
-      existing.some(
-        (item) =>
-          typeof item.language_tag !== "string" || !item.language_tag.trim(),
-      )
-    ) {
-      throw new SpApiError(
-        `${label}的現有語系標記不完整，為避免覆蓋其他內容，請先到 Seller Central 檢查。`,
-        { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
-      );
-    }
-    const selectedLanguageValues = existing.filter(
-      (item) => item.language_tag === listing.languageTag,
-    );
-    if (
-      attributeName === "bullet_point" &&
-      selectedLanguageValues.length > 5
-    ) {
-      throw new SpApiError(
-        "此語系目前有超過 5 個賣點，簡易編輯器不會自動刪除多出的內容；請先到 Seller Central 檢查。",
-        { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
-      );
-    }
-    const preservedLanguages = existing.filter(
-      (item) => item.language_tag !== listing.languageTag,
-    );
-    return {
-      exists: existing.length > 0,
-      values: [...preservedLanguages, ...texts.map(value)],
-    };
-  };
-  const patches: unknown[] = [];
-  if (changedFields.includes("title")) {
-    const next = attributeValue("item_name", "商品標題", [requested.title]);
-    patches.push({
-      op: next.exists ? "replace" : "add",
-      path: "/attributes/item_name",
-      value: next.values,
-    });
-  }
-  if (changedFields.includes("itemHighlight")) {
-    const next = attributeValue(
-      "title_differentiation",
-      "產品亮點",
-      [requested.itemHighlight],
-    );
-    patches.push({
-      op: next.exists ? "replace" : "add",
-      path: "/attributes/title_differentiation",
-      value: next.values,
-    });
-  }
-  if (changedFields.includes("bulletPoints")) {
-    const next = attributeValue(
-      "bullet_point",
-      "五大賣點",
-      requested.bulletPoints,
-    );
-    patches.push({
-      op: next.exists ? "replace" : "add",
-      path: "/attributes/bullet_point",
-      value: next.values,
-    });
-  }
-  if (changedFields.includes("productDescription")) {
-    const next = attributeValue(
-      "product_description",
-      "產品敘述",
-      [requested.productDescription],
-    );
-    patches.push({
-      op: next.exists ? "replace" : "add",
-      path: "/attributes/product_description",
-      value: next.values,
-    });
-  }
-  if (changedFields.includes("ingredients")) {
-    const next = attributeValue("ingredients", "成分", [requested.ingredients]);
-    patches.push({
-      op: next.exists ? "replace" : "add",
-      path: "/attributes/ingredients",
-      value: next.values,
-    });
-  }
-  return { productType: listing.productType, patches };
-}
-
-async function prepareLiveContentUpdate(
-  input: UpdateListingContentInput,
-): Promise<{
-  listing: ListingContentSnapshot;
-  previous: ListingContentValues;
-  requested: ListingContentValues;
-  changedFields: ListingContentField[];
-  body: { productType: string; patches: unknown[] };
-  issues: ListingIssue[];
-}> {
-  const context = await fetchLiveListingContentContext(
-    input.marketplaceId,
-    input.sellerSku,
-  );
-  const listing = context.listing;
-  const verified = verifyContentChange(listing, input);
-  const body = buildContentPatch(
-    context.payload,
-    listing,
-    verified.requested,
-    verified.changedFields,
-  );
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body,
-    validationPreview: true,
-  });
-  if (!response.ok) {
-    return throwListingsError(response, "read", "patchListingsItemPreview");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError("Amazon 回傳了無法辨識的商品內容預檢結果。", {
-      status: 502,
-      code: "UPSTREAM_UNAVAILABLE",
-      requestId: response.headers.get("x-amzn-requestid"),
-    });
-  }
-  const issues = normalizeListingIssues(payload.issues);
-  if (
-    payload.status === "INVALID" ||
-    issues.some((issue) => issue.severity === "ERROR")
-  ) {
-    throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 商品內容預檢未通過，尚未寫入任何變更。",
-      {
-        status: 422,
-        code: "VALIDATION_FAILED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  if (payload.status !== "VALID") {
-    throw new SpApiError(
-      "Amazon 預檢沒有回傳明確的 VALID 狀態，已停止送出。",
-      {
-        status: 502,
-        code: "VALIDATION_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
-    );
-  }
-  return { listing, ...verified, body, issues };
-}
-
-export async function getListingContent(input: {
-  marketplaceId: MarketplaceId;
-  sellerSku: string;
-}): Promise<ListingContentSnapshot> {
-  return shouldUseDemoMode(input.marketplaceId)
-    ? getDemoListingContent(input.marketplaceId, input.sellerSku)
-    : fetchLiveListingContent(input.marketplaceId, input.sellerSku);
-}
-
 function listingImageUrl(
   payload: AmazonListingItem,
   attributeName: string,
@@ -5535,124 +5057,637 @@ export const listingImageGatewayProduction: ListingImageGateway = {
   },
 };
 
-export async function previewListingContentUpdate(
-  input: UpdateListingContentInput,
-): Promise<ListingContentValidationResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingContent(input.marketplaceId, input.sellerSku);
-    const verified = verifyContentChange(listing, input);
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      ...verified,
-      validatedAt: new Date().toISOString(),
-      issues: [],
-      notice: "展示預檢已通過；最終按鈕只會模擬，不會寫入 Amazon。",
-    };
-  }
-  const prepared = await prepareLiveContentUpdate(input);
-  return {
-    mode: "live",
-    status: "VALID",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    previous: prepared.previous,
-    requested: prepared.requested,
-    changedFields: prepared.changedFields,
-    validatedAt: new Date().toISOString(),
-    issues: prepared.issues,
-    notice: prepared.issues.length
-      ? "Amazon 預檢通過，但有警告需要確認。"
-      : "Amazon 預檢通過，尚未寫入商品內容。",
-  };
+const LISTING_CONTENT_FIELDS = [
+  "title",
+  "itemHighlight",
+  "bulletPoints",
+  "productDescription",
+  "ingredients",
+] as const satisfies readonly ListingContentField[];
+
+type ListingContentRawAttributes = Readonly<
+  Record<ListingContentAttributeName, readonly JsonRecord[]>
+>;
+
+type ProductionListingContentSourceEvidence = Readonly<{
+  nonce: object;
+  mode: "live" | "demo";
+  purpose: "read-only" | "mutation";
+  generation: number;
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  asin: string | null;
+  productType: string;
+  languageTag: string;
+  rawContentGuardHash: string;
+  capabilityGuardHash: string;
+  fbaEvidenceHash: string;
+  rawAttributes: ListingContentRawAttributes;
+  payload: AmazonListingItem;
+}>;
+
+type ProductionListingContentPtdEvidence = Readonly<{
+  nonce: object;
+  mode: "live" | "demo";
+  purpose: "read-only" | "mutation";
+  generation: number;
+  marketplaceId: MarketplaceId;
+  productType: string;
+  schemaChecksum: string | null;
+  capabilityGuardHash: string;
+}>;
+
+const listingContentSourceEvidence = new WeakMap<
+  object,
+  ProductionListingContentSourceEvidence
+>();
+const listingContentPtdEvidence = new WeakMap<
+  object,
+  ProductionListingContentPtdEvidence
+>();
+
+function listingContentRawAttributes(
+  payload: AmazonListingItem,
+): ListingContentRawAttributes {
+  const entries = CONTENT_TEXT_ATTRIBUTE_NAMES.map((attributeName) => {
+    const raw = payload.attributes?.[attributeName];
+    if (raw === undefined) return [attributeName, []] as const;
+    if (!Array.isArray(raw) || !raw.every(isRecord)) {
+      throw new SpApiError(
+        "Amazon 商品內容欄位不是可精確核對的 attribute 陣列，已停止使用。",
+        { status: 409, code: "CONTENT_SELECTOR_UNSAFE" },
+      );
+    }
+    return [
+      attributeName,
+      raw.map((item) => structuredClone(item)),
+    ] as const;
+  });
+  return Object.fromEntries(entries) as ListingContentRawAttributes;
 }
 
-export async function updateListingContent(
-  input: UpdateListingContentInput,
-  fence?: ListingWriteExecutionFence,
-): Promise<ListingContentUpdateResult> {
-  if (shouldUseDemoMode(input.marketplaceId)) {
-    const listing = getDemoListingContent(input.marketplaceId, input.sellerSku);
-    const verified = verifyContentChange(listing, input);
-    demoContentOverrides.set(
-      demoPriceKey(input.marketplaceId, input.sellerSku),
-      verified.requested,
-    );
-    return {
-      mode: "demo",
-      status: "SIMULATED",
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      ...verified,
-      acceptedAt: new Date().toISOString(),
-      submissionId: null,
-      requestId: null,
-      issues: [],
-      notice: "模擬商品內容更新完成；Amazon 真實內容沒有變更。",
-    };
-  }
-
-  const prepared = await prepareListingCommit(
-    () => prepareLiveContentUpdate(input),
-    "商品內容正式寫入前的重新讀取或 Validation Preview 失敗。",
-  );
-  const response = await executeListingsWriteRequest({
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    method: "PATCH",
-    body: prepared.body,
-    ...(fence
-      ? { assertBeforeSend: () => fence.assertCurrent() }
-      : {}),
+function listingContentCapabilityGuardHash(
+  snapshot: ListingContentSnapshot,
+): string {
+  return canonicalSha256({
+    schemaChecksum: snapshot.capabilities.schemaChecksum,
+    title: snapshot.capabilities.title,
+    itemHighlight: snapshot.capabilities.itemHighlight,
+    bulletPoints: snapshot.capabilities.bulletPoints,
+    productDescription: snapshot.capabilities.productDescription,
+    ingredients: snapshot.capabilities.ingredients,
   });
-  if (!response.ok) {
-    return throwListingsError(response, "write", "patchListingsItem");
-  }
-  const payload = await parseResponseJson<AmazonListingSubmission>(response);
-  if (!payload) {
-    throw new SpApiError(
-      "Amazon 已收到請求，但回應無法辨識。請重新查詢 SKU 確認商品內容。",
-      {
-        status: 502,
-        code: "UPDATE_STATUS_UNKNOWN",
-        requestId: response.headers.get("x-amzn-requestid"),
-      },
-    );
-  }
-  const issues = normalizeListingIssues(payload.issues);
+}
+
+function listingContentFbaEvidenceHash(payload: AmazonListingItem): string {
+  const availability = payload.fulfillmentAvailability;
   if (
-    payload.status !== "ACCEPTED" ||
-    issues.some((issue) => issue.severity === "ERROR")
+    !Array.isArray(availability) ||
+    !availability.length ||
+    !availability.every((entry) =>
+      isRecord(entry) &&
+      typeof entry.fulfillmentChannelCode === "string" &&
+      Boolean(entry.fulfillmentChannelCode.trim()) &&
+      entry.fulfillmentChannelCode === entry.fulfillmentChannelCode.trim() &&
+      (entry.quantity === undefined ||
+        (typeof entry.quantity === "number" &&
+          Number.isFinite(entry.quantity) && entry.quantity >= 0))
+    ) ||
+    !payloadHasFbaAvailability(payload)
   ) {
     throw new SpApiError(
-      issues.find((issue) => issue.severity === "ERROR")?.message ||
-        "Amazon 未接受這次商品內容更新。",
-      {
-        status: 422,
-        code: "UPDATE_REJECTED",
-        requestId: response.headers.get("x-amzn-requestid"),
-        issues,
-      },
+      "Amazon 商品內容回應缺少可精確核對的 FBA fulfillment evidence。",
+      { status: 409, code: "FBA_ONLY" },
     );
   }
+  return canonicalSha256(availability);
+}
+
+function demoListingContentPayload(
+  snapshot: ListingContentSnapshot,
+): AmazonListingItem {
+  const value = (text: string) => ({
+    value: text,
+    language_tag: snapshot.languageTag,
+    marketplace_id: snapshot.marketplaceId,
+  });
   return {
-    mode: "live",
-    status: "ACCEPTED",
-    marketplaceId: input.marketplaceId,
-    sellerSku: input.sellerSku,
-    previous: prepared.previous,
-    requested: prepared.requested,
-    changedFields: prepared.changedFields,
-    acceptedAt: new Date().toISOString(),
-    submissionId: payload.submissionId ?? null,
-    requestId: response.headers.get("x-amzn-requestid"),
-    issues,
-    notice:
-      "Amazon 已接受商品內容更新；重新查詢看到新內容且沒有 ERROR 才代表完成。",
+    sku: snapshot.sellerSku,
+    summaries: [{
+      marketplaceId: snapshot.marketplaceId,
+      asin: snapshot.asin ?? undefined,
+      productType: snapshot.productType,
+      status: [...snapshot.status],
+      itemName: snapshot.title,
+      createdDate: snapshot.createdAt ?? undefined,
+      lastUpdatedDate: snapshot.updatedAt ?? undefined,
+    }],
+    productTypes: [{
+      marketplaceId: snapshot.marketplaceId,
+      productType: snapshot.productType,
+    }],
+    attributes: {
+      item_name: [value(snapshot.title)],
+      title_differentiation: [value(snapshot.itemHighlight)],
+      bullet_point: snapshot.bulletPoints.map(value),
+      product_description: [value(snapshot.productDescription)],
+      ingredients: [value(snapshot.ingredients)],
+    },
+    fulfillmentAvailability: [{
+      fulfillmentChannelCode: "AMAZON_DEMO",
+      quantity: 1,
+    }],
+    issues: [],
   };
 }
+
+function mintListingContentSourceEvidence(
+  evidence: ProductionListingContentSourceEvidence,
+): ListingContentSourceEvidence {
+  const token = Object.freeze(Object.create(null)) as object;
+  listingContentSourceEvidence.set(token, evidence);
+  return token as ListingContentSourceEvidence;
+}
+
+function mintListingContentPtdEvidence(
+  evidence: ProductionListingContentPtdEvidence,
+): ListingContentPtdEvidence {
+  const token = Object.freeze(Object.create(null)) as object;
+  listingContentPtdEvidence.set(token, evidence);
+  return token as ListingContentPtdEvidence;
+}
+
+function listingContentGatewayObservation(
+  snapshot: ListingContentSnapshot,
+  payload: AmazonListingItem,
+  purpose: "read-only" | "mutation",
+): ListingContentGatewayRead {
+  const capturedPayload = structuredClone(payload);
+  const rawAttributes = listingContentRawAttributes(capturedPayload);
+  const rawContentGuardHash = canonicalSha256(rawAttributes);
+  const capabilityGuardHash = listingContentCapabilityGuardHash(snapshot);
+  const fbaEvidenceHash = listingContentFbaEvidenceHash(capturedPayload);
+  const nonce = Object.freeze(Object.create(null)) as object;
+  const generation = credentialGeneration;
+  const sourceEvidence = mintListingContentSourceEvidence({
+    nonce,
+    mode: snapshot.mode,
+    purpose,
+    generation,
+    marketplaceId: snapshot.marketplaceId,
+    sellerSku: snapshot.sellerSku,
+    asin: snapshot.asin,
+    productType: snapshot.productType,
+    languageTag: snapshot.languageTag,
+    rawContentGuardHash,
+    capabilityGuardHash,
+    fbaEvidenceHash,
+    rawAttributes,
+    payload: capturedPayload,
+  });
+  const ptdEvidence = mintListingContentPtdEvidence({
+    nonce,
+    mode: snapshot.mode,
+    purpose,
+    generation,
+    marketplaceId: snapshot.marketplaceId,
+    productType: snapshot.productType,
+    schemaChecksum: snapshot.capabilities.schemaChecksum,
+    capabilityGuardHash,
+  });
+  return {
+    snapshot,
+    fulfillment: "FBA",
+    rawContentGuardHash,
+    capabilityGuardHash,
+    fbaEvidenceHash,
+    sourceEvidence,
+    ptdEvidence,
+  };
+}
+
+function validListingContentValues(value: ListingContentValues): boolean {
+  return typeof value.title === "string" &&
+    typeof value.itemHighlight === "string" &&
+    Array.isArray(value.bulletPoints) &&
+    value.bulletPoints.length <= 5 &&
+    value.bulletPoints.every((bullet) => typeof bullet === "string") &&
+    typeof value.productDescription === "string" &&
+    typeof value.ingredients === "string";
+}
+
+function sameListingContentField(
+  field: ListingContentField,
+  left: ListingContentValues,
+  right: ListingContentValues,
+): boolean {
+  if (field !== "bulletPoints") return left[field] === right[field];
+  return left.bulletPoints.length === right.bulletPoints.length &&
+    left.bulletPoints.every((value, index) => value === right.bulletPoints[index]);
+}
+
+function exactListingContentChanges(
+  patch: ListingContentPatchDescriptor,
+): boolean {
+  if (!validListingContentValues(patch.previous) ||
+      !validListingContentValues(patch.requested)) return false;
+  const expected = LISTING_CONTENT_FIELDS.filter((field) =>
+    !sameListingContentField(field, patch.previous, patch.requested)
+  );
+  return expected.length > 0 &&
+    expected.length === patch.changedFields.length &&
+    expected.every((field, index) => patch.changedFields[index] === field);
+}
+
+function resolveListingContentEvidence(
+  patch: ListingContentPatchDescriptor,
+  expectedMode: "live" | "demo",
+): Readonly<{
+  source: ProductionListingContentSourceEvidence;
+  ptd: ProductionListingContentPtdEvidence;
+}> {
+  const source = listingContentSourceEvidence.get(
+    patch.sourceEvidence as object,
+  );
+  const ptd = listingContentPtdEvidence.get(patch.ptdEvidence as object);
+  if (
+    (source && source.generation !== credentialGeneration) ||
+    (ptd && ptd.generation !== credentialGeneration)
+  ) {
+    throw new SpApiError(
+      "Amazon 執行環境已在商品內容操作期間改變；舊證據已丟棄。",
+      { status: 409, code: "CREDENTIALS_CHANGED" },
+    );
+  }
+  if (
+    !source ||
+    !ptd ||
+    source.nonce !== ptd.nonce ||
+    source.purpose !== "mutation" ||
+    ptd.purpose !== "mutation" ||
+    source.mode !== expectedMode ||
+    ptd.mode !== expectedMode ||
+    source.marketplaceId !== patch.marketplaceId ||
+    ptd.marketplaceId !== patch.marketplaceId ||
+    source.sellerSku !== patch.sellerSku ||
+    source.asin !== patch.asin ||
+    !/^[A-Z0-9]{10}$/u.test(patch.asin) ||
+    source.productType !== patch.productType ||
+    ptd.productType !== patch.productType ||
+    !patch.productType ||
+    patch.productType !== patch.productType.trim() ||
+    patch.productType.toUpperCase() === "PRODUCT" ||
+    source.languageTag !== patch.languageTag ||
+    !patch.languageTag ||
+    ptd.schemaChecksum !== patch.schemaChecksum ||
+    !patch.schemaChecksum ||
+    source.capabilityGuardHash !== ptd.capabilityGuardHash ||
+    source.rawContentGuardHash !== canonicalSha256(source.rawAttributes) ||
+    source.fbaEvidenceHash !== listingContentFbaEvidenceHash(source.payload) ||
+    patch.expectedOldHash !== canonicalSha256(patch.previous) ||
+    !exactListingContentChanges(patch)
+  ) {
+    throw new SpApiError(
+      "商品內容來源或 seller-specific PTD 證據已失效，或與這次 SKU／內容變更不一致，請重新預檢。",
+      { status: 409, code: "LISTING_CONTENT_EVIDENCE_INVALID" },
+    );
+  }
+  return { source, ptd };
+}
+
+function currentMarketplaceContentAttributes(
+  evidence: ProductionListingContentSourceEvidence,
+  attributeName: ListingContentAttributeName,
+): readonly JsonRecord[] {
+  return evidence.rawAttributes[attributeName].filter((item) => {
+    const marketplaceId = item.marketplace_id;
+    return typeof marketplaceId !== "string" ||
+      !marketplaceId ||
+      marketplaceId === evidence.marketplaceId;
+  });
+}
+
+function listingContentPatchField(
+  field: ListingContentField,
+  requested: ListingContentValues,
+): Readonly<{
+  attributeName: ListingContentAttributeName;
+  label: string;
+  texts: readonly string[];
+}> {
+  if (field === "title") {
+    return { attributeName: "item_name", label: "商品標題", texts: [requested.title] };
+  }
+  if (field === "itemHighlight") {
+    return {
+      attributeName: "title_differentiation",
+      label: "產品亮點",
+      texts: [requested.itemHighlight],
+    };
+  }
+  if (field === "bulletPoints") {
+    return {
+      attributeName: "bullet_point",
+      label: "五大賣點",
+      texts: requested.bulletPoints,
+    };
+  }
+  if (field === "productDescription") {
+    return {
+      attributeName: "product_description",
+      label: "產品敘述",
+      texts: [requested.productDescription],
+    };
+  }
+  return {
+    attributeName: "ingredients",
+    label: "成分",
+    texts: [requested.ingredients],
+  };
+}
+
+function listingContentGatewayPatchBody(
+  patch: ListingContentPatchDescriptor,
+  evidence: ProductionListingContentSourceEvidence,
+): Readonly<{ productType: string; patches: readonly unknown[] }> {
+  const patches = patch.changedFields.map((field) => {
+    const { attributeName, label, texts } = listingContentPatchField(
+      field,
+      patch.requested,
+    );
+    const existing = currentMarketplaceContentAttributes(
+      evidence,
+      attributeName,
+    );
+    if (
+      existing.some((item) =>
+        typeof item.language_tag !== "string" || !item.language_tag.trim()
+      )
+    ) {
+      throw new SpApiError(
+        `${label}的現有語系標記不完整，為避免覆蓋其他內容，請先到 Seller Central 檢查。`,
+        { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
+      );
+    }
+    const selectedLanguageValues = existing.filter(
+      (item) => item.language_tag === patch.languageTag,
+    );
+    if (
+      attributeName === "bullet_point" &&
+      selectedLanguageValues.length > 5
+    ) {
+      throw new SpApiError(
+        "此語系目前有超過 5 個賣點，簡易編輯器不會自動刪除多出的內容；請先到 Seller Central 檢查。",
+        { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
+      );
+    }
+    const preservedLanguages = existing.filter(
+      (item) => item.language_tag !== patch.languageTag,
+    );
+    return {
+      op: existing.length ? "replace" : "add",
+      path: `/attributes/${attributeName}`,
+      value: [
+        ...preservedLanguages,
+        ...texts.map((text) => ({
+          value: text,
+          language_tag: patch.languageTag,
+          marketplace_id: patch.marketplaceId,
+        })),
+      ],
+    };
+  });
+  return { productType: patch.productType, patches };
+}
+
+function prepareListingContentGatewayPatch(
+  patch: ListingContentPatchDescriptor,
+  expectedMode: "live" | "demo",
+  phase: "preview" | "commit",
+): Readonly<{
+  evidence: ProductionListingContentSourceEvidence;
+  body: Readonly<{ productType: string; patches: readonly unknown[] }>;
+  canonicalPatchHash: string;
+}> {
+  const { source } = resolveListingContentEvidence(patch, expectedMode);
+  const body = listingContentGatewayPatchBody(patch, source);
+  const canonicalPatchHash = canonicalSha256(body);
+  const expectedHash = patch.expectedCanonicalPatchHash;
+  if (
+    (phase === "preview" && expectedHash !== null) ||
+    (phase === "commit" &&
+      (typeof expectedHash !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(expectedHash) ||
+        expectedHash !== canonicalPatchHash))
+  ) {
+    throw new SpApiError(
+      "商品內容 canonical PATCH 已在預檢後改變，已停止送出。",
+      { status: 409, code: "CONTENT_CHANGED" },
+    );
+  }
+  return { evidence: source, body, canonicalPatchHash };
+}
+
+function capturedListingContentPayload(response: Response): JsonRecord | null {
+  const payload = listingsWriteResponsePayloads.get(response) ?? null;
+  return isRecord(payload) ? payload : null;
+}
+
+function throwListingContentTransportError(
+  response: Response,
+  operation: "read" | "write",
+): never {
+  return throwListingsPayloadError({
+    status: response.status,
+    operation,
+    apiOperation: operation === "read"
+      ? "patchListingsItemPreview"
+      : "patchListingsItem",
+    requestId: response.headers.get("x-amzn-requestid"),
+    retryAfter: response.headers.get("retry-after"),
+    payload: capturedListingContentPayload(response),
+  });
+}
+
+function safeListingSubmissionId(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    value === value.trim() &&
+    !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function exactListingContentPreviewIdentity(
+  payload: JsonRecord,
+  patch: ListingContentPatchDescriptor,
+): boolean {
+  if (payload.sku !== patch.sellerSku ||
+      !safeListingSubmissionId(payload.submissionId) ||
+      !Array.isArray(payload.identifiers) || payload.identifiers.length !== 1) {
+    return false;
+  }
+  const identifier = payload.identifiers[0];
+  return isRecord(identifier) &&
+    identifier.marketplaceId === patch.marketplaceId &&
+    identifier.asin === patch.asin;
+}
+
+function listingContentValidationReceipt(
+  response: Response,
+  patch: ListingContentPatchDescriptor,
+  canonicalPatchHash: string,
+): ListingContentValidationReceipt {
+  const payload = capturedListingContentPayload(response);
+  const wellFormed = payload !== null &&
+    listingSubmissionIssuesAreWellFormed(payload.issues);
+  const issues = wellFormed ? normalizeListingIssues(payload.issues) : [];
+  let status: ListingContentValidationReceipt["status"] = "UNKNOWN";
+  if (wellFormed && payload.status === "VALID" &&
+      exactListingContentPreviewIdentity(payload, patch)) {
+    status = "VALID";
+  } else if (wellFormed && payload.status === "INVALID" &&
+      payload.sku === patch.sellerSku) {
+    status = "INVALID";
+  }
+  return {
+    status,
+    canonicalPatchHash,
+    requestId: response.headers.get("x-amzn-requestid"),
+    issues,
+  };
+}
+
+function listingContentCommitReceipt(
+  response: Response,
+  patch: ListingContentPatchDescriptor,
+): ListingContentCommitReceipt {
+  const payload = capturedListingContentPayload(response);
+  const wellFormed = payload !== null &&
+    listingSubmissionIssuesAreWellFormed(payload.issues);
+  const issues = wellFormed ? normalizeListingIssues(payload.issues) : [];
+  const hasError = issues.some((issue) => issue.severity === "ERROR");
+  let status: ListingContentCommitReceipt["status"] = "UNKNOWN";
+  if (response.ok && wellFormed && !hasError &&
+      payload.status === "ACCEPTED" &&
+      payload.sku === patch.sellerSku &&
+      safeListingSubmissionId(payload.submissionId)) {
+    status = "ACCEPTED";
+  } else if (wellFormed && hasError &&
+      [400, 413, 415, 422].includes(response.status) &&
+      payload.status === "INVALID" &&
+      payload.sku === patch.sellerSku) {
+    status = "INVALID";
+  }
+  return {
+    status,
+    submissionId: safeListingSubmissionId(payload?.submissionId)
+      ? payload.submissionId
+      : null,
+    requestId: response.headers.get("x-amzn-requestid"),
+    issues,
+  };
+}
+
+export const listingContentGatewayProduction: ListingContentGateway = {
+  mode: (marketplaceId) =>
+    shouldUseDemoMode(marketplaceId) ? "demo" : "live",
+  read: async (identity, purpose) => {
+    if (shouldUseDemoMode(identity.marketplaceId)) {
+      const snapshot = getDemoListingContent(
+        identity.marketplaceId,
+        identity.sellerSku,
+      );
+      return listingContentGatewayObservation(
+        snapshot,
+        demoListingContentPayload(snapshot),
+        purpose,
+      );
+    }
+    const context = await fetchLiveListingContentContext(
+      identity.marketplaceId,
+      identity.sellerSku,
+      purpose === "read-only",
+      purpose === "mutation",
+    );
+    return listingContentGatewayObservation(
+      context.listing,
+      context.payload,
+      purpose,
+    );
+  },
+  validationPreview: async (patch) => {
+    const mode = shouldUseDemoMode(patch.marketplaceId) ? "demo" : "live";
+    const prepared = prepareListingContentGatewayPatch(
+      patch,
+      mode,
+      "preview",
+    );
+    if (mode === "demo") {
+      return {
+        status: "VALID",
+        canonicalPatchHash: prepared.canonicalPatchHash,
+        requestId: null,
+        issues: [],
+      };
+    }
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: prepared.body,
+      validationPreview: true,
+      validationPreviewIdentifiers: true,
+      captureResponseJson: true,
+    });
+    if (!response.ok) return throwListingContentTransportError(response, "read");
+    return listingContentValidationReceipt(
+      response,
+      patch,
+      prepared.canonicalPatchHash,
+    );
+  },
+  commitOnce: async (patch, fence, recordDispatch) => {
+    const prepared = prepareListingContentGatewayPatch(
+      patch,
+      "live",
+      "commit",
+    );
+    const response = await executeListingsWriteRequest({
+      marketplaceId: patch.marketplaceId,
+      sellerSku: patch.sellerSku,
+      method: "PATCH",
+      body: prepared.body,
+      assertBeforeSend: () => fence.assertCurrent(),
+      recordBeforeSend: recordDispatch,
+      captureResponseJson: true,
+    });
+    return listingContentCommitReceipt(response, patch);
+  },
+  replaceDemoContent: async (patch, fence) => {
+    const prepared = prepareListingContentGatewayPatch(
+      patch,
+      "demo",
+      "commit",
+    );
+    await fence.assertCurrent();
+    if (prepared.evidence.generation !== credentialGeneration) {
+      throw new SpApiError(
+        "Amazon 執行環境已在展示商品內容更新期間改變；舊結果已丟棄。",
+        { status: 409, code: "CREDENTIALS_CHANGED" },
+      );
+    }
+    demoContentOverrides.set(
+      demoPriceKey(patch.marketplaceId, patch.sellerSku),
+      {
+        title: patch.requested.title,
+        itemHighlight: patch.requested.itemHighlight,
+        bulletPoints: [...patch.requested.bulletPoints],
+        productDescription: patch.requested.productDescription,
+        ingredients: patch.requested.ingredients,
+      },
+    );
+  },
+};
 
 function demoAllListingsExportData(
   marketplaceId: MarketplaceId,

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   businessPricingGatewayProduction,
-  getListingContent,
   invalidateSpApiCredentialCaches,
+  listingContentGatewayProduction,
   listingImageGatewayProduction,
   listingPriceGatewayProduction,
 } from "../src/main/amazon/sp-api";
@@ -40,6 +40,9 @@ const getListingPrice = priceOperations.read;
 const getListingImages = async (
   input: Parameters<typeof imageOperations.read>[0],
 ) => (await imageOperations.read(input)).snapshot;
+const readListingContentSnapshot = async (
+  input: Parameters<typeof listingContentGatewayProduction.read>[0],
+) => (await listingContentGatewayProduction.read(input, "read-only")).snapshot;
 const previewListingPriceUpdate = priceOperations.previewStandard;
 const previewListingSalePriceUpdate = priceOperations.previewSale;
 const updateListingPrice = priceOperations.commitStandard;
@@ -270,7 +273,7 @@ describe("SP-API demo safety boundary", () => {
       sellerSku: "AFA-TRKY-4OZ",
     };
     const [content, images] = await Promise.all([
-      getListingContent(identity),
+      readListingContentSnapshot(identity),
       getListingImages(identity),
     ]);
     expect(content.mode).toBe("demo");

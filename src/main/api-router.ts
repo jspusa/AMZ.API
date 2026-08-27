@@ -88,6 +88,11 @@ import {
   type BusinessPricingMutationsPort,
 } from "./business-pricing-mutations";
 import {
+  createListingContentMutations,
+  type ListingContentMutationsPort,
+  type ListingContentPreparedPreview,
+} from "./listing-content-mutations";
+import {
   FbaSalesMetricsRoutes,
   type FbaSalesMetricsRoutesPort,
 } from "./fba-sales-metrics-routes";
@@ -106,7 +111,6 @@ import {
   catalogListingsReadAdapterProduction,
   catalogReportsDemoSource,
   getFbaVariationGroupingData,
-  getListingContent,
   aplusContentPageAdapterProduction,
   businessPricingGatewayProduction,
   customerFeedbackPageAdapterProduction,
@@ -120,22 +124,21 @@ import {
   isMarketplaceId,
   invalidateSpApiCredentialCaches,
   listingImageGatewayProduction,
+  listingContentGatewayProduction,
   listingPriceGatewayProduction,
   variationMoveGatewayProduction,
-  previewListingContentUpdate,
   fbaInboundExternalReadAdapterProduction,
   reportsRuntimeProductionAdapter,
   ordersPageAdapterProduction,
   searchListingsBySku,
-  updateListingContent,
   usesDemoMode,
   verifyListingsAccess,
-  type ListingContentSnapshot,
-  type ListingContentValidationResult,
-  type ListingContentUpdateResult,
   type MarketplaceId,
-  type UpdateListingContentInput,
 } from "./amazon/sp-api";
+import type {
+  ListingContentUpdateResult,
+  UpdateListingContentInput,
+} from "./amazon/listing-content-types";
 import {
   AgedInventoryReads,
   type AgedInventoryReadsPort,
@@ -250,11 +253,6 @@ import {
 import { FixedReportBroker } from "./amazon/report-broker";
 import { testRegionConnections } from "./amazon/connection-health";
 import {
-  commitWithCanonicalReadback,
-  contentReadbackDecision,
-  reconcileContentWrite,
-} from "./amazon/listing-write-readback";
-import {
   MARKETPLACES as MARKETPLACE_METADATA,
   marketplaceByCode,
 } from "../shared/marketplaces";
@@ -268,7 +266,7 @@ type WriteApproval = (reason: string) => Promise<void>;
 type ContentBatchChange = {
   input: UpdateListingContentInput;
   proposalFingerprint: string;
-  validation: ListingContentValidationResult;
+  validation: ListingContentPreparedPreview;
 };
 
 type ContentBatchRowResult = {
@@ -891,6 +889,7 @@ export class ApiRouter {
   private readonly writeGate: MainWriteGatePort;
   private readonly priceMutations: ListingPriceMutationsPort;
   private readonly listingImageMutations: ListingImageMutationsPort;
+  private readonly listingContentMutations: ListingContentMutationsPort;
   private readonly variationMoveMutations: VariationMoveMutationsPort;
   private readonly businessPricingMutations: BusinessPricingMutationsPort;
   private readonly allListingsDemoReports: DemoAllListingsReportGateway;
@@ -985,6 +984,7 @@ export class ApiRouter {
     writeGate?: MainWriteGatePort;
     priceMutations?: ListingPriceMutationsPort;
     listingImageMutations?: ListingImageMutationsPort;
+    listingContentMutations?: ListingContentMutationsPort;
     variationMoveMutations?: VariationMoveMutationsPort;
     businessPricingMutations?: BusinessPricingMutationsPort;
   }) {
@@ -1016,6 +1016,12 @@ export class ApiRouter {
         context: this.spExecutionContext,
         writeGate: this.writeGate,
         gateway: listingImageGatewayProduction,
+      });
+    this.listingContentMutations = input.listingContentMutations ??
+      createListingContentMutations({
+        context: this.spExecutionContext,
+        writeGate: this.writeGate,
+        gateway: listingContentGatewayProduction,
       });
     this.variationMoveMutations = input.variationMoveMutations ??
       createVariationMoveMutations({
@@ -1300,7 +1306,8 @@ export class ApiRouter {
         reads: {
           price: (identity, context) =>
             this.priceMutations.read(identity, context),
-          content: getListingContent,
+          content: (identity, context) =>
+            this.listingContentMutations.readOne(identity, context),
           images: (identity, context) =>
             this.listingImageMutations.read(identity, context),
           subscribeSave: getSubscribeAndSaveOffer,
@@ -1553,11 +1560,20 @@ export class ApiRouter {
       case "POST /api/sp-api/listings/batch":
         return this.statelessCapabilities.batchListings(request);
       case "GET /api/sp-api/listing-content":
-        return this.listingContent(request);
+        return this.listingContentMutations.handle({
+          operation: "read",
+          request,
+        });
       case "POST /api/sp-api/listing-content":
-        return this.previewContent(request);
+        return this.listingContentMutations.handle({
+          operation: "preview",
+          request,
+        });
       case "PATCH /api/sp-api/listing-content":
-        return this.commitContent(request);
+        return this.listingContentMutations.handle({
+          operation: "commit",
+          request,
+        });
       case "POST /api/sp-api/listing-content/import":
         return this.previewContentWorkbookImport(request);
       case "PATCH /api/sp-api/listing-content/import":
@@ -1735,200 +1751,6 @@ export class ApiRouter {
       heartbeat: input.heartbeat,
       expectedContext: input.expectedContext,
     });
-  }
-
-  private listingIdentity(request: ApiRequest):
-    | { marketplaceId: MarketplaceId; sellerSku: string }
-    | ApiResponse {
-    const marketplaceId = parseMarketplace(request.query.marketplaceId);
-    const sellerSku = parseSellerSku(request.query.sku);
-    return marketplaceId && sellerSku
-      ? { marketplaceId, sellerSku }
-      : invalid("請選擇站點並輸入完整 SKU。");
-  }
-
-  private contentInput(request: ApiRequest):
-    | {
-        marketplaceId: MarketplaceId;
-        sellerSku: string;
-        title: string;
-        expectedTitle: string;
-        itemHighlight: string;
-        expectedItemHighlight: string;
-        bulletPoints: string[];
-        expectedBulletPoints: string[];
-        productDescription: string;
-        expectedProductDescription: string;
-        ingredients: string;
-        expectedIngredients: string;
-        idempotencyKey: string;
-      }
-    | ApiResponse {
-    const body = bodyRecord(request);
-    if (!body) return invalid("商品內容請求必須使用 JSON。", 415, "UNSUPPORTED_MEDIA_TYPE");
-    const marketplaceId = parseMarketplace(body.marketplaceId);
-    const sellerSku = parseSellerSku(body.sellerSku);
-    const title = parseText(body.title, 2_000);
-    const expectedTitle = parseText(body.expectedTitle, 2_000);
-    const itemHighlight = parseText(body.itemHighlight, 2_000);
-    const expectedItemHighlight = parseText(body.expectedItemHighlight, 2_000);
-    const bulletPoints = parseBullets(body.bulletPoints);
-    const expectedBulletPoints = parseBullets(body.expectedBulletPoints);
-    const productDescription = parseText(body.productDescription, 50_000);
-    const expectedProductDescription = parseText(
-      body.expectedProductDescription,
-      50_000,
-    );
-    const ingredients = parseText(body.ingredients, 20_000);
-    const expectedIngredients = parseText(body.expectedIngredients, 20_000);
-    if (
-      !marketplaceId ||
-      !sellerSku ||
-      title === null ||
-      expectedTitle === null ||
-      itemHighlight === null ||
-      expectedItemHighlight === null ||
-      bulletPoints === null ||
-      expectedBulletPoints === null ||
-      productDescription === null ||
-      expectedProductDescription === null ||
-      ingredients === null ||
-      expectedIngredients === null
-    ) {
-      return invalid(
-        "請提供有效的站點、SKU、產品名稱、產品亮點、最多五個產品要點、產品敘述與成分。",
-      );
-    }
-    return {
-      marketplaceId,
-      sellerSku,
-      title,
-      expectedTitle,
-      itemHighlight,
-      expectedItemHighlight,
-      bulletPoints,
-      expectedBulletPoints,
-      productDescription,
-      expectedProductDescription,
-      ingredients,
-      expectedIngredients,
-      idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
-    };
-  }
-
-  private async listingContent(request: ApiRequest): Promise<ApiResponse> {
-    const identity = this.listingIdentity(request);
-    if ("status" in identity) return identity;
-    try {
-      const { context, value: snapshot } = await this.runContextBoundWork(
-        identity.marketplaceId,
-        () => getListingContent(identity),
-      );
-      await this.reconcileContentWrites(snapshot, context);
-      return json(snapshot);
-    } catch (error) {
-      return apiError(error, "查詢商品內容時發生未預期的錯誤。");
-    }
-  }
-
-  private async previewContent(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.contentInput(request);
-    if ("status" in input) return input;
-    try {
-      const { context, value: result } = await this.runContextBoundWork(
-        input.marketplaceId,
-        () => previewListingContentUpdate(input),
-      );
-      await this.stageWritePreview(this.writeBinding({
-        family: "content",
-        operation: "content",
-        context,
-        sellerSku: input.sellerSku,
-        idempotencyKey: input.idempotencyKey,
-        proposalFingerprint: this.contentFingerprint(input),
-      }));
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "商品內容預檢時發生未預期的錯誤。");
-    }
-  }
-
-  private async commitContent(request: ApiRequest): Promise<ApiResponse> {
-    const input = this.contentInput(request);
-    if ("status" in input) return input;
-    const key = idempotencyKey(input.idempotencyKey);
-    if (!key) return invalid("這次預檢已失效，請重新預檢。");
-    const context = await this.spExecutionContext.capture(input.marketplaceId);
-    const binding = this.writeBinding({
-      family: "content",
-      operation: "content",
-      context,
-      sellerSku: input.sellerSku,
-      idempotencyKey: key,
-      proposalFingerprint: this.contentFingerprint(input),
-    });
-    try {
-      const changedFields = [
-        input.title !== input.expectedTitle ? "產品名稱" : null,
-        input.itemHighlight !== input.expectedItemHighlight ? "產品亮點" : null,
-        JSON.stringify(input.bulletPoints) !== JSON.stringify(input.expectedBulletPoints)
-          ? "產品要點"
-          : null,
-        input.productDescription !== input.expectedProductDescription
-          ? "產品敘述"
-          : null,
-        input.ingredients !== input.expectedIngredients ? "成分" : null,
-      ].filter(Boolean).join("、");
-      const result = await this.writeGate.execute({
-        binding,
-        approvalReason: (verificationCode) =>
-          `確認文案｜${MARKETPLACE_CODES[input.marketplaceId]} ${input.sellerSku}｜${changedFields}｜驗證碼 ${verificationCode}`,
-        run: (session) => session.attempt({
-          intentId: "primary",
-          execute: ({ recordAccepted, assertCurrent }) =>
-            commitWithCanonicalReadback({
-              commit: () => updateListingContent(input, { assertCurrent }),
-              onAccepted: recordAccepted,
-              assertCurrent,
-              read: () => getListingContent(input),
-              decide: contentReadbackDecision,
-            }),
-        }),
-      });
-      return json(result);
-    } catch (error) {
-      return writeApiError(error, "送出商品內容時發生未預期的錯誤。");
-    }
-  }
-
-  private contentFingerprint(input: {
-    marketplaceId: MarketplaceId;
-    sellerSku: string;
-    title: string;
-    expectedTitle: string;
-    itemHighlight: string;
-    expectedItemHighlight: string;
-    bulletPoints: string[];
-    expectedBulletPoints: string[];
-    productDescription: string;
-    expectedProductDescription: string;
-    ingredients: string;
-    expectedIngredients: string;
-  }): string {
-    return stableFingerprint([
-      input.marketplaceId,
-      input.sellerSku,
-      input.expectedTitle,
-      input.expectedItemHighlight,
-      input.expectedBulletPoints,
-      input.expectedProductDescription,
-      input.expectedIngredients,
-      input.title,
-      input.itemHighlight,
-      input.bulletPoints,
-      input.productDescription,
-      input.ingredients,
-    ]);
   }
 
   private contentBatchPreviewPayload(plan: ContentBatchPlan) {
@@ -2210,8 +2032,8 @@ export class ApiRouter {
       for (const input of inputRows) {
         try {
           await this.spExecutionContext.assertCurrent(context);
-          const validation = await previewListingContentUpdate(input);
-          const proposalFingerprint = this.contentFingerprint(input);
+          const validation = await this.listingContentMutations.previewOne(input);
+          const proposalFingerprint = validation.proposalFingerprint;
           changes.push({
             input,
             proposalFingerprint,
@@ -2371,7 +2193,16 @@ export class ApiRouter {
           try {
             for (const change of plan.changes) {
               await this.spExecutionContext.assertCurrent(context);
-              change.validation = await previewListingContentUpdate(change.input);
+              const fresh = await this.listingContentMutations.previewOne(
+                change.input,
+              );
+              if (fresh.proposalFingerprint !== change.proposalFingerprint) {
+                throw new SpApiError(
+                  "Amazon 商品內容或能力證據已在批次預檢後改變；整批仍為零寫入，請重新上傳並預檢。",
+                  { status: 409, code: "PREVIEW_CHANGED" },
+                );
+              }
+              change.validation = fresh;
             }
           } catch (error) {
             this.contentBatchPlans.delete(previewId);
@@ -2403,19 +2234,12 @@ export class ApiRouter {
             const change = plan.changes[index]!;
             await this.spExecutionContext.assertCurrent(context);
             try {
-              const rowResult = await session.attempt<ListingContentUpdateResult>({
-                intentId: change.input.sellerSku,
-                execute: ({ recordAccepted, assertCurrent }) =>
-                  commitWithCanonicalReadback({
-                    commit: () => updateListingContent(change.input, {
-                      assertCurrent,
-                    }),
-                    onAccepted: recordAccepted,
-                    assertCurrent,
-                    read: () => getListingContent(change.input),
-                    decide: contentReadbackDecision,
-                  }),
-              });
+              const rowResult = await this.listingContentMutations.attemptOne(
+                change.input,
+                change.validation.evidence,
+                session,
+                change.input.sellerSku,
+              );
               rows[index] = {
                 sellerSku: change.input.sellerSku,
                 state: rowResult.mode === "demo" ? "simulated" : "verified",
@@ -2626,31 +2450,6 @@ export class ApiRouter {
       context: plan.context,
       intents: [first, ...intents.slice(1)],
     };
-  }
-
-  private async runContextBoundWork<T>(
-    marketplaceId: MarketplaceId,
-    work: () => Promise<T>,
-  ): Promise<{ context: SpExecutionContext; value: T }> {
-    const context = await this.spExecutionContext.capture(marketplaceId);
-    const value = await work();
-    await this.spExecutionContext.assertCurrent(context);
-    return { context, value };
-  }
-
-  private async reconcileContentWrites(
-    snapshot: ListingContentSnapshot,
-    context: SpExecutionContext,
-  ): Promise<void> {
-    await this.writeGate.reconcile({
-      context,
-      marketplaceId: snapshot.marketplaceId,
-      sellerSku: snapshot.sellerSku,
-      operations: ["content"],
-      snapshot,
-      project: (response, _operationType, canonical) =>
-        reconcileContentWrite(response, canonical),
-    });
   }
 
 }

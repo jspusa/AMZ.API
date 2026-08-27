@@ -6,12 +6,12 @@ import {
   type SpApiOperation,
 } from "./sp-api-error";
 import type {
-  ListingContentSnapshot,
   ListingImageSnapshot,
   ListingPriceSnapshot,
   RestockPlanSnapshot,
   SubscribeAndSaveOfferSnapshot,
 } from "./sp-api";
+import type { ListingContentSnapshot } from "./listing-content-types";
 import type {
   OpaqueAccountScope,
   SpExecutionContext,
@@ -103,7 +103,10 @@ export type SkuCommandDependencies = Readonly<{
       identity: SkuCommandIdentity,
       context: SpExecutionContext,
     ): Promise<ListingPriceSnapshot>;
-    content(identity: SkuCommandIdentity): Promise<ListingContentSnapshot>;
+    content(
+      identity: SkuCommandIdentity,
+      context: SpExecutionContext,
+    ): Promise<ListingContentSnapshot>;
     images(
       identity: SkuCommandIdentity,
       context: SpExecutionContext,
@@ -305,7 +308,7 @@ export class SkuCommand {
       (profile.supplyRoute === "AWD_TO_FBA" ? profile.awdBufferDays : 0);
     const settled = await Promise.allSettled([
       this.reads.price(identity, context),
-      this.reads.content(identity),
+      this.reads.content(identity, context),
       this.reads.images(identity, context),
       this.reads.subscribeSave(identity),
       this.reads.restock({

@@ -252,13 +252,22 @@ function normalizeAllU2028ToLf(bytes: Uint8Array): Uint8Array {
 }
 
 describe("content audit Excel batch router", () => {
+  type MockIdempotentResult = Record<string, unknown> & Readonly<{
+    mode: string;
+    status: string;
+    marketplaceId: string;
+    sellerSku: string;
+  }>;
+
   const contentAuditEvidence = new Map<
     string,
     ContentAuditSnapshotEvidence
   >();
   const approveWrite = vi.fn(async (_reason: string) => undefined);
   const assertIdempotentOperationsAvailable = vi.fn(async () => undefined);
-  const runIdempotentOperation = vi.fn(async () => ({
+  const runIdempotentOperation = vi.fn(async (
+    _input?: unknown,
+  ): Promise<MockIdempotentResult> => ({
     mode: "demo",
     status: "SIMULATED",
     marketplaceId: MARKETPLACE_ID,
@@ -370,12 +379,27 @@ describe("content audit Excel batch router", () => {
     expect(runIdempotentOperation).not.toHaveBeenCalled();
 
     const previewId = String(previewBody.previewId);
+    runIdempotentOperation.mockImplementationOnce(async (rawInput) => {
+      const input = rawInput as Readonly<{
+        execute(control: Readonly<{
+          recordAccepted(response: MockIdempotentResult): Promise<void>;
+        }>): Promise<MockIdempotentResult>;
+      }>;
+      const rawResult = await input.execute({
+        recordAccepted: async () => undefined,
+      });
+      expect(rawResult).toHaveProperty("_writeEvidence");
+      return rawResult;
+    });
     const commit = await router.handle(commitRequest(previewId, key));
     expect(commit.status).toBe(200);
     expect(responseValue(commit)).toMatchObject({
       status: "COMPLETED",
       rows: [expect.objectContaining({ state: "simulated" })],
     });
+    expect(JSON.stringify(responseValue(commit))).not.toContain(
+      "_writeEvidence",
+    );
     expect(approveWrite).toHaveBeenCalledOnce();
     expect(assertIdempotentOperationsAvailable).toHaveBeenCalledOnce();
     expect(runIdempotentOperation).toHaveBeenCalledOnce();

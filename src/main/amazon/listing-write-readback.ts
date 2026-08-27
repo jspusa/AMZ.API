@@ -1,9 +1,5 @@
 import { abortableDelay, throwIfAborted } from "../abort-utils";
 import { SpApiError } from "./sp-api-error";
-import type {
-  ListingContentSnapshot,
-  ListingContentUpdateResult,
-} from "./sp-api";
 
 export type ListingWriteLifecycleEvidence = Readonly<{
   state: "verified";
@@ -60,31 +56,6 @@ const DEFAULT_READBACK_DELAYS_MS = [
   30_000,
 ] as const;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringOrNull(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
-}
-
-function acceptedBase(value: unknown): value is Record<string, unknown> & {
-  mode: "live";
-  status: "ACCEPTED";
-  marketplaceId: string;
-  sellerSku: string;
-} {
-  return isRecord(value) &&
-    value.mode === "live" &&
-    value.status === "ACCEPTED" &&
-    typeof value.marketplaceId === "string" &&
-    typeof value.sellerSku === "string" &&
-    stringOrNull(value.submissionId) &&
-    stringOrNull(value.requestId) &&
-    Array.isArray(value.issues) &&
-    typeof value.notice === "string";
-}
-
 function verifiedResult<T extends {
   acceptedAt?: string;
   completedAt?: string;
@@ -110,123 +81,6 @@ function verifiedResult<T extends {
       attempts,
     },
   };
-}
-
-function exactIdentity(
-  result: { mode: "live" | "demo"; marketplaceId: string; sellerSku: string },
-  snapshot: { mode: "live" | "demo"; marketplaceId: string; sellerSku: string },
-): boolean {
-  return result.mode === "live" &&
-    snapshot.mode === "live" &&
-    result.marketplaceId === snapshot.marketplaceId &&
-    result.sellerSku === snapshot.sellerSku;
-}
-
-function canonicalText(value: string): string {
-  return value.replace(/\r\n?/gu, "\n").trim();
-}
-
-function changedFieldHasError(
-  snapshot: ListingContentSnapshot,
-  changedFields: ListingContentUpdateResult["changedFields"],
-): boolean {
-  const attributes = new Set(
-    changedFields.flatMap((field) => {
-      if (field === "title") return ["item_name", "title"];
-      if (field === "itemHighlight") {
-        return ["title_differentiation", "itemHighlight"];
-      }
-      if (field === "bulletPoints") {
-        return ["bullet_point", "bulletPoints"];
-      }
-      if (field === "productDescription") {
-        return ["product_description", "productDescription"];
-      }
-      return ["ingredients"];
-    }),
-  );
-  return snapshot.issues.some((issue) =>
-    issue.severity === "ERROR" &&
-    (issue.attributeNames.length === 0 ||
-      issue.attributeNames.some((name) => attributes.has(name))),
-  );
-}
-
-export function contentReadbackDecision(
-  result: ListingContentUpdateResult,
-  snapshot: ListingContentSnapshot,
-): ReadbackDecision {
-  if (!exactIdentity(result, snapshot) ||
-      changedFieldHasError(snapshot, result.changedFields)) {
-    return "pending";
-  }
-  for (const field of result.changedFields) {
-    if (field === "title") {
-      if (!snapshot.attributePresence.title ||
-          canonicalText(snapshot.title) !== canonicalText(result.requested.title)) {
-        return "pending";
-      }
-    }
-    if (field === "itemHighlight") {
-      if (!snapshot.attributePresence.itemHighlight ||
-          canonicalText(snapshot.itemHighlight) !==
-            canonicalText(result.requested.itemHighlight)) {
-        return "pending";
-      }
-    }
-    if (field === "ingredients") {
-      if (!snapshot.attributePresence.ingredients ||
-          canonicalText(snapshot.ingredients) !== canonicalText(result.requested.ingredients)) {
-        return "pending";
-      }
-    }
-    if (field === "productDescription") {
-      if (!snapshot.attributePresence.productDescription ||
-          canonicalText(snapshot.productDescription) !==
-            canonicalText(result.requested.productDescription)) {
-        return "pending";
-      }
-    }
-    if (field === "bulletPoints") {
-      if (!snapshot.attributePresence.bulletPoints) return "pending";
-      const actual = snapshot.bulletPoints.map(canonicalText);
-      const requested = result.requested.bulletPoints.map(canonicalText);
-      if (actual.length !== requested.length ||
-          actual.some((value, index) => value !== requested[index])) {
-        return "pending";
-      }
-    }
-  }
-  return "verified";
-}
-
-export function reconcileContentWrite(
-  response: unknown,
-  snapshot: ListingContentSnapshot,
-  now: () => Date = () => new Date(),
-): unknown | null {
-  if (!acceptedBase(response) ||
-      typeof response.acceptedAt !== "string" ||
-      !isRecord(response.requested) ||
-      typeof response.requested.title !== "string" ||
-      typeof response.requested.itemHighlight !== "string" ||
-      !Array.isArray(response.requested.bulletPoints) ||
-      !response.requested.bulletPoints.every((value) => typeof value === "string") ||
-      typeof response.requested.productDescription !== "string" ||
-      typeof response.requested.ingredients !== "string" ||
-      !Array.isArray(response.changedFields) ||
-      !response.changedFields.every((value) =>
-        value === "title" ||
-        value === "itemHighlight" ||
-        value === "bulletPoints" ||
-        value === "productDescription" ||
-        value === "ingredients")) {
-    return null;
-  }
-  const result = response as unknown as ListingContentUpdateResult;
-  return contentReadbackDecision(result, snapshot) === "verified"
-    ? verifiedResult(result, 0, now)
-    : null;
 }
 
 /**

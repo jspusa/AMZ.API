@@ -1,19 +1,191 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   commitWithCanonicalReadback,
-  contentReadbackDecision,
 } from "../src/main/amazon/listing-write-readback";
+import type {
+  ListingContentGateway,
+  ListingContentGatewayRead,
+  ListingContentPtdEvidence,
+  ListingContentSourceEvidence,
+} from "../src/main/amazon/listing-content-gateway";
+import type {
+  ListingContentSnapshot,
+  ListingContentValues,
+} from "../src/main/amazon/listing-content-types";
+import {
+  createScriptedSpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
+import {
+  contentReadbackDecision,
+  createListingContentMutations,
+  type ListingContentPreparedPreview,
+} from "../src/main/listing-content-mutations";
 import {
   priceReadbackDecision,
   salePriceReadbackDecision,
 } from "../src/main/listing-price-mutations";
 import { SpExecutionContextError } from "../src/main/amazon/sp-execution-context";
+import type {
+  MainWriteGateExecuteInput,
+  MainWriteGatePort,
+} from "../src/main/write-gate";
 
 const identity = {
   mode: "live" as const,
   marketplaceId: "ATVPDKIKX0DER" as const,
   sellerSku: "SKU-1",
 };
+
+const contentWritableCapability = {
+  supported: true,
+  editable: true,
+  required: false,
+  minItems: null,
+  maxItems: null,
+  minLength: 1,
+  maxLength: 2_000,
+  maxUtf8Bytes: 8_000,
+  languageTags: ["en_US"],
+  reason: null,
+};
+
+const contentSourceSnapshot: ListingContentSnapshot = {
+  ...identity,
+  asin: "B000000001",
+  productType: "PET_FOOD",
+  status: ["BUYABLE"],
+  title: "Old",
+  itemHighlight: "Old highlight",
+  bulletPoints: ["Old A", "Old B"],
+  productDescription: "Old description",
+  ingredients: "Old",
+  languageTag: "en_US",
+  attributePresence: {
+    title: true,
+    itemHighlight: true,
+    bulletPoints: true,
+    productDescription: true,
+    ingredients: true,
+  },
+  capabilities: {
+    title: { ...contentWritableCapability },
+    itemHighlight: { ...contentWritableCapability },
+    bulletPoints: {
+      ...contentWritableCapability,
+      minItems: 1,
+      maxItems: 5,
+    },
+    productDescription: { ...contentWritableCapability },
+    ingredients: { ...contentWritableCapability },
+    images: [],
+    schemaChecksum: "content-readback-schema-checksum",
+  },
+  createdAt: "2026-08-01T00:00:00.000Z",
+  updatedAt: "2026-08-18T00:00:00.000Z",
+  fetchedAt: "2026-08-18T00:00:01.000Z",
+  requestId: "content-readback-source-request",
+  issues: [],
+  notice: null,
+};
+
+const contentGuardHashes = {
+  rawContentGuardHash: "a".repeat(64),
+  capabilityGuardHash: "b".repeat(64),
+  fbaEvidenceHash: "c".repeat(64),
+} as const;
+
+function contentObservation(
+  snapshot: ListingContentSnapshot = contentSourceSnapshot,
+): ListingContentGatewayRead {
+  return {
+    snapshot,
+    fulfillment: "FBA",
+    ...contentGuardHashes,
+    sourceEvidence: {} as ListingContentSourceEvidence,
+    ptdEvidence: {} as ListingContentPtdEvidence,
+  };
+}
+
+const contentFixtureGateway: ListingContentGateway = {
+  mode: () => "live",
+  read: async () => contentObservation(),
+  validationPreview: async () => ({
+    status: "VALID",
+    canonicalPatchHash: "d".repeat(64),
+    requestId: "content-readback-preview-request",
+    issues: [],
+  }),
+  commitOnce: async () => {
+    throw new Error("Readback decision fixture must not send a write.");
+  },
+  replaceDemoContent: async () => {
+    throw new Error("Readback decision fixture must not mutate demo content.");
+  },
+};
+
+const contentFixtureWriteGate: MainWriteGatePort = {
+  stagePreview: async () => undefined,
+  execute: async <T>(_input: MainWriteGateExecuteInput<T>): Promise<T> => {
+    throw new Error("Readback decision fixture must not execute the Write Gate.");
+  },
+  reconcile: async () => undefined,
+  clearEphemeral: () => undefined,
+};
+
+const contentFixtureOwner = createListingContentMutations({
+  context: createScriptedSpExecutionContextAdapter(() => ({
+    marketplaceId: identity.marketplaceId,
+    mode: "live",
+    accountScope: "content-readback-fixture-scope",
+  })),
+  writeGate: contentFixtureWriteGate,
+  gateway: contentFixtureGateway,
+});
+
+async function prepareContentResult(
+  requestedChanges: Partial<ListingContentValues>,
+) {
+  const requested = {
+    title: contentSourceSnapshot.title,
+    itemHighlight: contentSourceSnapshot.itemHighlight,
+    bulletPoints: [...contentSourceSnapshot.bulletPoints],
+    productDescription: contentSourceSnapshot.productDescription,
+    ingredients: contentSourceSnapshot.ingredients,
+    ...requestedChanges,
+  };
+  const preview = await contentFixtureOwner.previewOne({
+    marketplaceId: identity.marketplaceId,
+    sellerSku: identity.sellerSku,
+    expectedTitle: contentSourceSnapshot.title,
+    expectedItemHighlight: contentSourceSnapshot.itemHighlight,
+    expectedBulletPoints: [...contentSourceSnapshot.bulletPoints],
+    expectedProductDescription: contentSourceSnapshot.productDescription,
+    expectedIngredients: contentSourceSnapshot.ingredients,
+    ...requested,
+  });
+  return contentDurableResult(preview);
+}
+
+function contentDurableResult(preview: ListingContentPreparedPreview) {
+  return {
+    ...identity,
+    status: "ACCEPTED" as const,
+    previous: preview.previous,
+    requested: preview.requested,
+    changedFields: preview.changedFields,
+    acceptedAt: "2026-08-18T00:00:00.000Z",
+    submissionId: "content-readback-submission",
+    requestId: "content-readback-request",
+    issues: [],
+    notice: "accepted",
+    _writeEvidence: {
+      ...preview.evidence,
+      previous: preview.previous,
+      requested: preview.requested,
+      proposalFingerprint: preview.proposalFingerprint,
+    },
+  };
+}
 
 describe("main-owned listing write readback", () => {
   it("commits exactly once and completes only after a canonical GET match", async () => {
@@ -151,78 +323,65 @@ describe("main-owned listing write readback", () => {
     expect(result.writeLifecycle.verified).toBe(true);
   });
 
-  it("compares only changed content fields and preserves bullet order", () => {
-    const result = {
-      ...identity,
-      status: "ACCEPTED" as const,
-      previous: {
-        title: "Old",
-        itemHighlight: "Old highlight",
-        bulletPoints: ["A", "B"],
-        productDescription: "Old description",
-        ingredients: "Old",
-      },
-      requested: {
-        title: "New\r\nTitle",
-        itemHighlight: "New highlight",
-        bulletPoints: ["A", "B"],
-        productDescription: "New description",
-        ingredients: "New",
-      },
-      changedFields: ["title"] as const,
-    };
+  it("compares only changed content fields and preserves bullet order", async () => {
+    const titleResult = await prepareContentResult({ title: "New\r\nTitle" });
+    const bulletResult = await prepareContentResult({
+      bulletPoints: ["A", "B"],
+    });
+    const highlightResult = await prepareContentResult({
+      itemHighlight: "New highlight",
+    });
+    const descriptionResult = await prepareContentResult({
+      productDescription: "New description",
+    });
     const snapshot = {
-      ...identity,
+      ...contentSourceSnapshot,
       title: " New\nTitle ",
       itemHighlight: "New highlight",
       bulletPoints: ["different"],
       productDescription: "New description",
       ingredients: "different",
-      attributePresence: {
-        title: true,
-        itemHighlight: true,
-        bulletPoints: true,
-        productDescription: true,
-        ingredients: true,
-      },
       issues: [],
     };
-    expect(contentReadbackDecision(result as never, snapshot as never)).toBe("verified");
     expect(contentReadbackDecision(
-      { ...result, changedFields: ["bulletPoints"] } as never,
-      { ...snapshot, bulletPoints: ["B", "A"] } as never,
-    )).toBe("pending");
-    expect(contentReadbackDecision(
-      result as never,
-      {
-        ...snapshot,
-        attributePresence: { ...snapshot.attributePresence, title: false },
-      } as never,
-    )).toBe("pending");
-    expect(contentReadbackDecision(
-      { ...result, changedFields: ["itemHighlight"] } as never,
-      { ...snapshot, itemHighlight: "different" } as never,
-    )).toBe("pending");
-    expect(contentReadbackDecision(
-      { ...result, changedFields: ["productDescription"] } as never,
-      {
-        ...snapshot,
-        productDescription: " New description\r\n",
-      } as never,
+      titleResult as never,
+      contentObservation(snapshot),
     )).toBe("verified");
     expect(contentReadbackDecision(
-      { ...result, changedFields: ["productDescription"] } as never,
-      {
+      bulletResult as never,
+      contentObservation({ ...snapshot, bulletPoints: ["B", "A"] }),
+    )).toBe("pending");
+    expect(contentReadbackDecision(
+      titleResult as never,
+      contentObservation({
+        ...snapshot,
+        attributePresence: { ...snapshot.attributePresence, title: false },
+      }),
+    )).toBe("pending");
+    expect(contentReadbackDecision(
+      highlightResult as never,
+      contentObservation({ ...snapshot, itemHighlight: "different" }),
+    )).toBe("pending");
+    expect(contentReadbackDecision(
+      descriptionResult as never,
+      contentObservation({
+        ...snapshot,
+        productDescription: " New description\r\n",
+      }),
+    )).toBe("verified");
+    expect(contentReadbackDecision(
+      descriptionResult as never,
+      contentObservation({
         ...snapshot,
         attributePresence: {
           ...snapshot.attributePresence,
           productDescription: false,
         },
-      } as never,
+      }),
     )).toBe("pending");
     expect(contentReadbackDecision(
-      { ...result, changedFields: ["itemHighlight"] } as never,
-      {
+      highlightResult as never,
+      contentObservation({
         ...snapshot,
         issues: [{
           code: "INVALID_HIGHLIGHT",
@@ -230,7 +389,7 @@ describe("main-owned listing write readback", () => {
           message: "invalid highlight",
           attributeNames: ["title_differentiation"],
         }],
-      } as never,
+      }),
     )).toBe("pending");
   });
 
