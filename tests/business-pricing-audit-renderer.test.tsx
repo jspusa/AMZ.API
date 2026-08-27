@@ -21,6 +21,7 @@ import { parseStandaloneAuditJob } from "../src/renderer/src/standalone-audit";
 import {
   openSellerCentralInventoryHandoff,
 } from "../src/renderer/src/seller-central-handoff";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 function payload(): Record<string, unknown> {
   return {
@@ -553,7 +554,7 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).not.toContain("因此只提供唯讀");
   });
 
-  it("uses one clickable B2B summary as the filter instead of repeating the counts", () => {
+  it("uses one clickable B2B summary as the filter instead of repeating the counts", async () => {
     const snapshot = parseBusinessPricingAuditSnapshot(payload());
     const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
       marketplaceId: "ATVPDKIKX0DER",
@@ -576,20 +577,14 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).not.toContain(
       'class="content-audit-export-primary">匯出 B2B 價格 Excel',
     );
-    const css = readFileSync(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const css = await readRendererStylesheet();
     expect(css).toMatch(
       /\.business-pricing-summary\s*\{[^}]*minmax\(104px,\s*1fr\)/su,
     );
   });
 
-  it("lays out current quantity discounts as readable desktop tiers", () => {
-    const css = readFileSync(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+  it("lays out current quantity discounts as readable desktop tiers", async () => {
+    const css = await readRendererStylesheet();
 
     expect(css).toMatch(
       /\.business-pricing-quantity-cell\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/su,

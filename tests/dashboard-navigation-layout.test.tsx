@@ -5,6 +5,7 @@ import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
   businessPricingAttentionCount,
 } from "../src/renderer/src/components/dashboard";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("dashboard top navigation layout", () => {
   it("counts each B2B attention row once when recommendation categories overlap", () => {
@@ -239,10 +240,7 @@ describe("dashboard top navigation layout", () => {
   });
 
   it("keeps the header centered and makes the tool row horizontally reachable", async () => {
-    const css = await readFile(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const css = await readRendererStylesheet();
 
     expect(css).toMatch(
       /\.workspace-header\s*\{[\s\S]*?position:\s*sticky;/,

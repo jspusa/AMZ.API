@@ -9,6 +9,7 @@ import {
   type VariationFamilyView,
   type VariationMemberView,
 } from "../src/renderer/src/variation-planner";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 
@@ -296,7 +297,7 @@ describe("variation planner", () => {
     expect(plan.warnings.join(" ")).toContain("正式預檢仍會重新檢查並阻擋重複");
   });
 
-  it("keeps family reads GET-only and limits writes to the dedicated preview/commit route", () => {
+  it("keeps family reads GET-only and limits writes to the dedicated preview/commit route", async () => {
     const source = readFileSync(
       new URL(
         "../src/renderer/src/components/variation-planner-drawer.tsx",
@@ -317,10 +318,7 @@ describe("variation planner", () => {
     );
     expect(source).toContain('className="variation-family-panel source source-children"');
     expect(source).toContain("紅色解除區會固定在上方");
-    const css = readFileSync(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const css = await readRendererStylesheet();
     expect(css).toMatch(/\.variation-child-list\s*\{[^}]*max-height:\s*clamp\(/s);
     expect(css).toMatch(/\.variation-detach-stage\s*\{[^}]*position:\s*sticky/s);
     expect(css).toContain("#fff7f7");
