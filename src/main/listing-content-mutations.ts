@@ -25,6 +25,7 @@ import {
   normalizeListingIssues,
 } from "./amazon/listings-response-error";
 import {
+  publicSpApiListingIssues,
   SpApiError,
   SpApiPreCommitError,
   type ListingIssue,
@@ -78,6 +79,15 @@ export type ListingContentPreparedPreview =
     proposalFingerprint: string;
   }>;
 
+export const LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY = Symbol(
+  "listing-content-batch-validation-override",
+);
+
+export type ListingContentPreviewOptions = Readonly<{
+  validationOverrideAuthority?:
+    typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
+}>;
+
 export interface ListingContentMutationsPort {
   handle(command: ListingContentMutationCommand): Promise<ApiResponse>;
   readOne(
@@ -86,12 +96,14 @@ export interface ListingContentMutationsPort {
   ): Promise<ListingContentSnapshot>;
   previewOne(
     input: UpdateListingContentInput,
+    options?: ListingContentPreviewOptions,
   ): Promise<ListingContentPreparedPreview>;
   attemptOne(
     input: UpdateListingContentInput,
     expectedEvidence: ListingContentPrecommitEvidence,
     session: MainWriteGateSession,
     intentId: string,
+    options?: ListingContentPreviewOptions,
   ): Promise<ListingContentUpdateResult>;
 }
 
@@ -137,11 +149,14 @@ interface ListingContentMutationOperations {
   read(identity: ListingContentIdentity): Promise<ListingContentGatewayRead>;
   preview(
     input: UpdateListingContentInput,
+    options?: ListingContentPreviewOptions,
   ): Promise<ListingContentPreparedPreview>;
   commitOne(
     input: UpdateListingContentInput,
     control: Readonly<{
       expectedEvidence?: ListingContentPrecommitEvidence;
+      validationOverrideAuthority?:
+        typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
       fence: ListingWriteExecutionFence;
       recordDurableEvidence(
         result: ListingContentDurableResult,
@@ -781,6 +796,7 @@ async function prepareContentMutation(
   gateway: ListingContentGateway,
   input: UpdateListingContentInput,
   expectedEvidence?: ListingContentPrecommitEvidence,
+  options: ListingContentPreviewOptions = {},
 ): Promise<PreparedContentMutation> {
   const observation = await gateway.read(input, "mutation");
   assertCanonicalObservation(gateway, observation, input);
@@ -820,9 +836,22 @@ async function prepareContentMutation(
       },
     );
   }
+  const hasValidationError = issues.some(
+    (issue) => issue.severity === "ERROR",
+  );
+  const hasPublicValidationError = publicSpApiListingIssues(issues).some(
+    (issue) => issue.severity === "ERROR",
+  );
+  const acceptedValidationOverride =
+    options.validationOverrideAuthority ===
+      LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY &&
+    observation.snapshot.mode === "live" &&
+    receipt.status === "INVALID" &&
+    hasValidationError &&
+    hasPublicValidationError;
   if (
-    receipt.status === "INVALID" ||
-    issues.some((issue) => issue.severity === "ERROR")
+    !acceptedValidationOverride &&
+    (receipt.status === "INVALID" || hasValidationError)
   ) {
     throw new SpApiError(
       issues.find((issue) => issue.severity === "ERROR")?.message ||
@@ -836,7 +865,7 @@ async function prepareContentMutation(
       },
     );
   }
-  if (receipt.status !== "VALID") {
+  if (receipt.status !== "VALID" && !acceptedValidationOverride) {
     throw new SpApiError(
       "Amazon 預檢沒有回傳明確的 VALID 狀態，已停止送出。",
       {
@@ -947,12 +976,21 @@ function createListingContentMutationOperations(
       assertCanonicalObservation(gateway, observation, identity);
       return observation;
     },
-    preview: async (input) => {
-      const prepared = await prepareContentMutation(gateway, input);
+    preview: async (input, options) => {
+      const prepared = await prepareContentMutation(
+        gateway,
+        input,
+        undefined,
+        options,
+      );
       const mode = prepared.observation.snapshot.mode;
       return {
         mode,
-        status: mode === "demo" ? "SIMULATED" : "VALID",
+        status: mode === "demo"
+          ? "SIMULATED"
+          : prepared.issues.some((issue) => issue.severity === "ERROR")
+            ? "INVALID"
+            : "VALID",
         marketplaceId: input.marketplaceId,
         sellerSku: input.sellerSku,
         previous: structuredClone(prepared.verified.previous),
@@ -962,6 +1000,8 @@ function createListingContentMutationOperations(
         issues: normalizeListingIssues(prepared.issues),
         notice: mode === "demo"
           ? "展示預檢已通過；最終按鈕只會模擬，不會寫入 Amazon。"
+          : prepared.issues.some((issue) => issue.severity === "ERROR")
+            ? "Amazon Validation Preview 未通過；只有逐項顯示原因並由使用者明確強制確認的批次流程可繼續。"
           : prepared.issues.length
             ? "Amazon 預檢通過，但有警告需要確認。"
             : "Amazon 預檢通過，尚未寫入商品內容。",
@@ -971,7 +1011,15 @@ function createListingContentMutationOperations(
     },
     commitOne: async (input, control) => {
       const prepared = await prepareCommit(() =>
-        prepareContentMutation(gateway, input, control.expectedEvidence)
+        prepareContentMutation(
+          gateway,
+          input,
+          control.expectedEvidence,
+          {
+            validationOverrideAuthority:
+              control.validationOverrideAuthority,
+          },
+        )
       );
       if (prepared.observation.snapshot.mode === "demo") {
         await gateway.replaceDemoContent(prepared.patch, control.fence);
@@ -1077,8 +1125,9 @@ export function assertListingContentPreparedPreviewBinding(
   context: Pick<SpExecutionContext, "marketplaceId" | "mode">,
   expected?: Pick<
     ListingContentPreparedPreview,
-    "evidence" | "proposalFingerprint"
+    "evidence" | "proposalFingerprint" | "status"
   >,
+  options: ListingContentPreviewOptions = {},
 ): asserts value is ListingContentPreparedPreview {
   const previous = isRecord(value) ? value.previous : null;
   const requested = isRecord(value) ? value.requested : null;
@@ -1091,10 +1140,22 @@ export function assertListingContentPreparedPreviewBinding(
     ingredients: input.expectedIngredients,
   });
   const expectedRequested = normalizeContentValues(input);
+  const validPreviewStatus = isRecord(value) && (
+    (context.mode === "demo" && value.status === "SIMULATED") ||
+    (context.mode === "live" && value.status === "VALID") ||
+    (context.mode === "live" &&
+      options.validationOverrideAuthority ===
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY &&
+      value.status === "INVALID" &&
+      Array.isArray(value.issues) &&
+      value.issues.some(
+        (issue) => isRecord(issue) && issue.severity === "ERROR",
+      ))
+  );
   if (!isRecord(value) ||
       !hasExactKeys(value, PREPARED_PREVIEW_KEYS) ||
       value.mode !== context.mode ||
-      value.status !== (context.mode === "demo" ? "SIMULATED" : "VALID") ||
+      !validPreviewStatus ||
       context.marketplaceId !== input.marketplaceId ||
       value.marketplaceId !== input.marketplaceId ||
       value.sellerSku !== input.sellerSku ||
@@ -1118,7 +1179,8 @@ export function assertListingContentPreparedPreviewBinding(
       value.proposalFingerprint !==
         proposalFingerprint(previous, requested, evidence) ||
       (expected &&
-        (value.proposalFingerprint !== expected.proposalFingerprint ||
+        (value.status !== expected.status ||
+          value.proposalFingerprint !== expected.proposalFingerprint ||
           canonicalSha256(evidence) !==
             canonicalSha256(expected.evidence)))) {
     throw new SpApiError(
@@ -1537,8 +1599,9 @@ export class ListingContentMutations implements ListingContentMutationsPort {
 
   async previewOne(
     input: UpdateListingContentInput,
+    options?: ListingContentPreviewOptions,
   ): Promise<ListingContentPreparedPreview> {
-    return this.operations.preview(input);
+    return this.operations.preview(input, options);
   }
 
   async attemptOne(
@@ -1546,6 +1609,7 @@ export class ListingContentMutations implements ListingContentMutationsPort {
     expectedEvidence: ListingContentPrecommitEvidence,
     session: MainWriteGateSession,
     intentId: string,
+    options: ListingContentPreviewOptions = {},
   ): Promise<ListingContentUpdateResult> {
     const result = await session.attempt<ListingContentDurableResult>({
       intentId,
@@ -1553,6 +1617,8 @@ export class ListingContentMutations implements ListingContentMutationsPort {
         commitWithCanonicalReadback({
           commit: () => this.operations.commitOne(input, {
             expectedEvidence,
+            validationOverrideAuthority:
+              options.validationOverrideAuthority,
             fence: { assertCurrent: control.assertCurrent },
             recordDurableEvidence:
               control.recordDurableEvidence ?? control.recordAccepted,

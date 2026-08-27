@@ -1,8 +1,16 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-08-27
+最後更新：2026-08-28
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
+
+### 2026-08-28 Excel 文案批次 Amazon `INVALID` 明確嘗試契約（實作中）
+
+目前核准的產品契約只放寬一種可辨識情況，不把 Amazon 預檢失敗改稱通過：一般 hard preflight failure 仍在第一筆 PATCH 前停止整批並保持零寫入，介面必須顯示 exact Seller SKU、changed-field diff、Excel 內記錄的 Amazon 原值／Excel 更新值、公開 code／message 與 sanitized Amazon `ERROR`。只有 live Amazon Validation Preview 回傳 well-formed exact `INVALID` 且至少含一項 sanitized public `ERROR` 時，main-owned plan 才能標為 `REQUIRES_VALIDATION_OVERRIDE`；Amazon 仍可能在正式 PATCH 拒絕，UI 不得顯示「已通過預檢」。
+
+使用者必須明確勾選由 main 建立的 exact override SKU set，renderer 不得新增、刪減或改寫集合。commit 在 native approval 前逐 SKU 重做 fresh read／identity／FBA／PTD／schema／canonical diff／Validation Preview，並 exact 比對 status、issues、evidence 與 proposal fingerprint；任一 drift 仍整批零寫入。完全相符後，原生摘要必須列出 override SKU／code，再只要求一次 Touch ID／Windows Hello；每個 SKU 仍各自建立 ledger claim、最多單次 PATCH attempt 與 canonical readback，known rejection 或 unknown 立即停止剩餘 SKU 且不得 blind retry。
+
+不可 override 的情況固定包含 workbook tamper／formula／macro／external link、完整讀取失敗、identity／FBA／PTD／schema／context／account／marketplace／mode drift、auth、rate limit、`5xx`、timeout、malformed／unknown receipt，以及任何 post-write uncertainty。這項契約尚未形成版本／CI／Pages／artifact／安裝或 live Amazon 證據；下方既有版本紀錄保持歷史原貌。
 
 ### 2026-08-27 CSS04 final renderer stylesheet extraction（issue #108，進行中）
 
@@ -956,7 +964,7 @@ npm audit --omit=dev
 - 首頁 run-all 精確包含文案、圖片、A+、未綁變體、訂閱省、B2B 價格、廣告覆蓋七項；七項在背景並行執行，名稱與一般健檢卡完全一致並固定依此順序顯示。任一失敗要保留自己的終局狀態，不能把「全部結束」冒充成功。
 - 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；文案門檻精確為產品名稱 60、產品亮點 110、每項產品要點 150–200、產品敘述 1,800 Unicode 字元，圖片 0–5 張列不足、6 張通過，讀取未完成不推論。原因只能顯示一次，摘要數字本身可直接篩選，立即修改要聚焦並保留相符原因。成分宣稱只在完整且非空的 Amazon ingredients 證據下核對：至少兩個不同成分才可否定 single ingredient，Tendon／Tendons 需有同詞成分，ingredients 含 Chicken 時標示 hypoallergenic 待核對；括號逗號與不完整讀取不得誤判。
 - 文案 Excel 可按鈕選檔或 drag/drop，且只含 FBA 商品；schema v2 必須含「說明與索引」、已證明的變體 family 分頁、「未綁變體」與 fail-closed「資料未完成」，並保留原始／更新欄、問題顏色與「類型／說明」。CR／U+0085／U+2028／U+2029 必須無損 round trip；舊檔只能用 main-owned 唯一完整 digest bounded recovery。
-- 回傳文案健檢 Excel 時，無變更、篡改、過期、跨站點／帳號、公式／巨集／外部連結與任何 SKU 預檢失敗都必須在第一筆 Amazon PATCH 前停止；通過後一次 native confirmation 只授權該 main-owned batch，逐 SKU ledger／readback 與遇不明停止後續不得放寬。
+- 回傳文案健檢 Excel 時，無變更、篡改、過期、跨站點／帳號、公式／巨集／外部連結，以及讀取、identity、FBA、PTD、schema、context、auth、rate limit、`5xx`、timeout、malformed／unknown 等 hard preflight failure，都必須在第一筆 Amazon PATCH 前停止並保持整批零寫入；介面必須顯示 exact SKU／diff／公開原因。唯一例外是 well-formed live Amazon exact `INVALID`＋至少一項 sanitized public `ERROR` 可標為 `REQUIRES_VALIDATION_OVERRIDE`：使用者明確勾選 main-owned exact SKU set 後，main 仍須在 native approval 前重做並 exact 比對 evidence，原生摘要列出 override SKU／code，再以一次 Touch ID／Windows Hello 授權該 batch。這不代表 Amazon 驗證通過；每 SKU 仍只有自己的 ledgered single PATCH attempt／readback，Amazon 拒絕或任一不明結果立即停止後續且不得重送。
 - A+ 全站健檢必須以同次完整 FBA all-listings 證明 exact Seller SKU／ASIN，並用 relationships 排除已證明的 parent。完整 child／standalone 依 marketplace＋ASIN 去重讀取全部官方 publish-record pages；relationship 未完成列保留 exact FBA ASIN 只作 account-wide Content Documents／ASIN relations 的 match target，不得發該 ASIN 的 publish-record request，也不得以空結果誤標 missing。只有 exact publish record 或文件關聯的 schema-valid `CONTENT_PUBLISHED` 可證明已發布；文件存在或 APPROVED 本身不能冒充發布證據。同一 ASIN＋document relation 只要含 published positive 就必須保留，即使另有重複／較舊的 `CONTENT_NOT_PUBLISHED` 或 malformed row 也只能把證據完整度降為 partial；完全沒有 published positive 的 malformed／negative 關聯仍 fail closed。同一文件的重複 metadata 採最新 display data、標為 partial 並繼續遍歷 relations。只有 warning-free、完整分頁的 publish-record 空清單，且 Content Documents 與每份文件的 ASIN relations 亦完整覆蓋時才可標沒有 A+；任一 exact positive record 必須保留，即使 optional warnings envelope 無法解析也不得丟失。403、warning-only 空清單、文件／關聯覆蓋未完成、沒有 published positive 的 schema／identity 衝突、分頁缺口保持 unavailable／incomplete；介面可顯示官方文件名稱、文件審核狀態與關聯狀態，不建立公開 API 無法證明的 theme 或內容類型欄位。
 - Subscribe & Save 全站健檢能以完整 FBA Inventory 分頁證明 SKU，正確顯示目前有效訂閱、最多 23 個已完成月份與缺月；開啟顯示全站歷史並能切換／取消單一 SKU。Excel 必須產生 0／5／10／15／20% 五張無問題工作表與獨立「問題 SKU」工作表；未知折扣、問題列與缺值不得冒充 0 或完整總額。
 - FBA 冗餘庫存只依 Amazon `estimated excess quantity`，庫齡不會被列為冗餘；storage cost／AIS 缺值不會產生假的 0 或部分全站總額。
@@ -968,6 +976,6 @@ npm audit --omit=dev
 - B2B 全站健檢必須用同次完整 all-listings 證明 FBA 範圍，exact 核對 Seller SKU／ASIN／marketplace，並把 configured／missing／above-standard／incomplete 分開；`不符建議 B2B 價格` 與 `未正確設定階梯折扣` 是獨立且可重疊的問題，USD 建議價為一般售價少 US$1.00，percent tiers 固定 5／5%、10／10%、15／15%、20／20%。audit 全部固定唯讀，只提供 Seller Central handoff，不顯示 PTD／唯讀／不支援篩選或內部編輯器；完成 snapshot 的 Excel 必須由 main 綁 account／mode／marketplace／job／context 並固定五張工作表。Active Listings report 必須經 main-owned、account／marketplace／mode／type／options 綁定的 durable lifecycle single-flight 建立與沿用；data GET 不得隱含 POST。一般售價／Buy Box ERROR 與 Business Price／數量折扣證據分開；Active Listings 的 exact `Business Price` 可覆蓋較舊 Listings contribution，canonical `Quantity Price Type`＋連續成對的 `Quantity Lower Bound 1–5`／`Quantity Price 1–5` 可補足尚未同步的 `quantity_discount_plan`。Active 與 Listings 兩邊 canonical plan 相同才合併；衝突、duplicate headers／rows、缺口、斷層、malformed value、ASIN／身分衝突一律 ambiguous，不能被第三個 positive 洗掉；Active quantity 欄完全不可用時也不能抹除 Listings canonical plan。unknown evidence 不能冒充 mismatch，只有完整負面證據才可標未設定。獨立單 SKU 真實更新仍必須先由帶目前 Seller ID 的 seller-specific PTD 明確開放 exact B2B price path，再呈現一般價與 B2B canonical diff，只 merge `audience=B2B` contribution 並保留一般 `ALL` 與其他 audiences。price-only 必須省略並守住既有 `quantity_discount_plan`；combined 只有在使用者明確選用、canonical 1–5 階 percent tiers 與完整 QDP PTD path 都可證明時才可帶 plan。兩者都要經 fresh read、Validation Preview、native confirmation、idempotency、單次 PATCH 與 price／tiers canonical readback；不明結果禁止重送。
 - 會計中心只把公開 capability 與安全 access plan 標為完成；除非日後另行實作並驗證 report lifecycle，不得宣稱已下載報表、一般發票或 Seller Central 帳單。
 - Variation family 與 CHILD PTD 必須先通過真實唯讀驗證；目前 mutation 只能標為 mock/demo 已驗證。只有在使用者另行明確授權指定 SKU，且 detach 與 attach 各自完成 preview、Touch ID、單次 PATCH 與唯讀回查後，才可對該次操作宣稱真實寫入成功。
-- 寫入前顯示 canonical diff、通過 Amazon Validation Preview、要求本機確認／Touch ID／Windows Hello。
+- 寫入前顯示 canonical diff 與 exact Amazon Validation Preview 結果；一般流程必須通過 Preview。只有上述 Excel batch 的 well-formed live `INVALID`＋public `ERROR` 可在 exact SKU acknowledgment、main-side evidence re-preview 與明示風險後進入一次本機確認／Touch ID／Windows Hello，且不得標示為預檢通過。
 - 寫入後回查；結果不確定時阻止盲目重送。
 - Secret 仍只存在各 Notebook Key 的本機加密 vault：macOS Keychain 或目前 Windows 使用者的 DPAPI，不進 Pages、renderer、GitHub、日誌或回覆。

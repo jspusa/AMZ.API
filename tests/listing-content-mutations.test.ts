@@ -21,6 +21,7 @@ import {
 } from "../src/main/amazon/sp-execution-context";
 import {
   createListingContentMutations,
+  LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
 } from "../src/main/listing-content-mutations";
 import { LocalStore } from "../src/main/local-store";
 import {
@@ -155,6 +156,314 @@ function bodyValue(response: ApiResponse): Record<string, unknown> {
 }
 
 describe("W06 Listing Content mutation owner", () => {
+  it("exposes an INVALID Amazon preview only to an explicit batch override caller", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "w06-content-validation-override-account",
+    }));
+    const issue = {
+      code: "8541",
+      severity: "ERROR",
+      message: "Amazon Validation Preview rejected the requested title.",
+      attributeNames: ["item_name"],
+    };
+    const gateway: ListingContentGateway = {
+      mode: () => "live",
+      read: async () => gatewayRead(),
+      validationPreview: async () => ({
+        status: "INVALID",
+        canonicalPatchHash: sha256Fixture("d"),
+        requestId: "REQ-W06-INVALID-PREVIEW",
+        issues: [issue],
+      }),
+      commitOnce: vi.fn(),
+      replaceDemoContent: vi.fn(async () => undefined),
+    };
+    const owner = createListingContentMutations({
+      context,
+      writeGate: {} as MainWriteGatePort,
+      gateway,
+    });
+    const input: UpdateListingContentInput = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      title: "Updated title",
+      expectedTitle: "Original title",
+      itemHighlight: "Original highlight",
+      expectedItemHighlight: "Original highlight",
+      bulletPoints: ["Original bullet"],
+      expectedBulletPoints: ["Original bullet"],
+      productDescription: "Original description",
+      expectedProductDescription: "Original description",
+      ingredients: "Turkey",
+      expectedIngredients: "Turkey",
+    };
+
+    await expect(owner.previewOne(input)).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_FAILED",
+    });
+
+    const forgedRouteRequest = mutationRequest(
+      "POST",
+      "content-route-cannot-force-preview",
+    );
+    if (forgedRouteRequest.body?.kind !== "json") {
+      throw new Error("Expected JSON route body");
+    }
+    forgedRouteRequest.body.value.allowAmazonValidationFailure = true;
+    const forgedRouteResponse = await owner.handle({
+      operation: "preview",
+      request: forgedRouteRequest,
+    });
+    expect(forgedRouteResponse.status).toBe(422);
+    expect(bodyValue(forgedRouteResponse)).toMatchObject({
+      code: "VALIDATION_FAILED",
+    });
+
+    const forced = await owner.previewOne(input, {
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+    });
+
+    expect(forced).toMatchObject({
+      status: "INVALID",
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      issues: [issue],
+    });
+    expect(forced.evidence.validationIssuesHash).toHaveLength(64);
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it("refuses an INVALID override when every ERROR is removed by the public sanitizer", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "w06-content-private-validation-error-account",
+    }));
+    const gateway: ListingContentGateway = {
+      mode: () => "live",
+      read: async () => gatewayRead(),
+      validationPreview: async () => ({
+        status: "INVALID",
+        canonicalPatchHash: sha256Fixture("d"),
+        requestId: "REQ-W06-PRIVATE-INVALID-PREVIEW",
+        issues: [{
+          code: "8541",
+          severity: "ERROR",
+          message:
+            "See https://sellercentral.amazon.com/?seller_id=A1SELLERID1234",
+          attributeNames: ["item_name"],
+        }],
+      }),
+      commitOnce: vi.fn(),
+      replaceDemoContent: vi.fn(async () => undefined),
+    };
+    const owner = createListingContentMutations({
+      context,
+      writeGate: {} as MainWriteGatePort,
+      gateway,
+    });
+    const input: UpdateListingContentInput = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      title: "Updated title",
+      expectedTitle: "Original title",
+      itemHighlight: "Original highlight",
+      expectedItemHighlight: "Original highlight",
+      bulletPoints: ["Original bullet"],
+      expectedBulletPoints: ["Original bullet"],
+      productDescription: "Original description",
+      expectedProductDescription: "Original description",
+      ingredients: "Turkey",
+      expectedIngredients: "Turkey",
+    };
+
+    await expect(owner.previewOne(input, {
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+    })).rejects.toMatchObject({
+      status: 422,
+      code: "VALIDATION_FAILED",
+    });
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "INVALID without an ERROR",
+      mode: "live" as const,
+      status: "INVALID" as const,
+      issues: [],
+    },
+    {
+      label: "VALID with an ERROR",
+      mode: "live" as const,
+      status: "VALID" as const,
+      issues: [{
+        code: "8541",
+        severity: "ERROR",
+        message: "Amazon rejected the requested title.",
+        attributeNames: ["item_name"],
+      }],
+    },
+    {
+      label: "demo INVALID",
+      mode: "demo" as const,
+      status: "INVALID" as const,
+      issues: [{
+        code: "8541",
+        severity: "ERROR",
+        message: "Amazon rejected the requested title.",
+        attributeNames: ["item_name"],
+      }],
+    },
+  ])("hard-stops a forced $label receipt", async ({ mode, status, issues }) => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode,
+      accountScope: `w06-content-${mode}-invalid-shape-account`,
+    }));
+    const gateway: ListingContentGateway = {
+      mode: () => mode,
+      read: async () => gatewayRead(contentSnapshot(mode)),
+      validationPreview: async () => ({
+        status,
+        canonicalPatchHash: sha256Fixture("d"),
+        requestId: "REQ-W06-UNSAFE-OVERRIDE-PREVIEW",
+        issues,
+      }),
+      commitOnce: vi.fn(),
+      replaceDemoContent: vi.fn(async () => undefined),
+    };
+    const owner = createListingContentMutations({
+      context,
+      writeGate: {} as MainWriteGatePort,
+      gateway,
+    });
+    const input: UpdateListingContentInput = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      title: "Updated title",
+      expectedTitle: "Original title",
+      itemHighlight: "Original highlight",
+      expectedItemHighlight: "Original highlight",
+      bulletPoints: ["Original bullet"],
+      expectedBulletPoints: ["Original bullet"],
+      productDescription: "Original description",
+      expectedProductDescription: "Original description",
+      ingredients: "Turkey",
+      expectedIngredients: "Turkey",
+    };
+
+    await expect(owner.previewOne(input, {
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+    })).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it("uses an exact INVALID preview for one explicit single-shot batch attempt", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "w06-content-validation-override-attempt-account",
+    }));
+    let snapshot = contentSnapshot();
+    const validationIssue = {
+      code: "8541",
+      severity: "ERROR",
+      message: "Amazon Validation Preview rejected the requested title.",
+      attributeNames: ["item_name"],
+    };
+    const commitOnce = vi.fn(async (
+      patch: ListingContentPatchDescriptor,
+      fence: ListingWriteExecutionFence,
+      recordDispatch: () => Promise<void>,
+    ) => {
+      expect(patch.expectedCanonicalPatchHash).toBe(sha256Fixture("d"));
+      await fence.assertCurrent();
+      await recordDispatch();
+      snapshot = { ...snapshot, title: "Updated title" };
+      return {
+        status: "ACCEPTED" as const,
+        submissionId: "W06-OVERRIDE-SUBMISSION",
+        requestId: "REQ-W06-OVERRIDE-COMMIT",
+        issues: [],
+      };
+    });
+    const gateway: ListingContentGateway = {
+      mode: () => "live",
+      read: async () => gatewayRead(snapshot),
+      validationPreview: async () => ({
+        status: "INVALID",
+        canonicalPatchHash: sha256Fixture("d"),
+        requestId: "REQ-W06-INVALID-PREVIEW",
+        issues: [validationIssue],
+      }),
+      commitOnce,
+      replaceDemoContent: vi.fn(async () => undefined),
+    };
+    const owner = createListingContentMutations({
+      context,
+      writeGate: {} as MainWriteGatePort,
+      gateway,
+    });
+    const input: UpdateListingContentInput = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      title: "Updated title",
+      expectedTitle: "Original title",
+      itemHighlight: "Original highlight",
+      expectedItemHighlight: "Original highlight",
+      bulletPoints: ["Original bullet"],
+      expectedBulletPoints: ["Original bullet"],
+      productDescription: "Original description",
+      expectedProductDescription: "Original description",
+      ingredients: "Turkey",
+      expectedIngredients: "Turkey",
+    };
+    const prepared = await owner.previewOne(input, {
+      validationOverrideAuthority:
+        LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+    });
+    const session = {
+      attempt: vi.fn(async ({ execute }) => execute({
+        assertCurrent: async () => undefined,
+        recordAccepted: async () => undefined,
+        recordDurableEvidence: async () => undefined,
+      })),
+    } as unknown as MainWriteGateSession;
+
+    await expect(owner.attemptOne(
+      input,
+      prepared.evidence,
+      session,
+      "primary",
+    )).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+    expect(commitOnce).not.toHaveBeenCalled();
+
+    const result = await owner.attemptOne(
+      input,
+      prepared.evidence,
+      session,
+      "primary",
+      {
+        validationOverrideAuthority:
+          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "ACCEPTED",
+      sellerSku: SELLER_SKU,
+      requested: { title: "Updated title" },
+    });
+    expect(commitOnce).toHaveBeenCalledOnce();
+  });
+
   it("rejects a malformed durable replay before exposing it to batch callers", async () => {
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: MARKETPLACE_ID,

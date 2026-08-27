@@ -1238,7 +1238,7 @@
       }),
     },
     app: {
-      version: async () => "0.1.31",
+      version: async () => "0.1.32",
       platform: async () => "darwin",
       openExternal: async () => {},
       openSellerCentralInventory: async () => {},

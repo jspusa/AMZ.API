@@ -18,7 +18,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 策劃 | 全部 FBA 非重疊庫齡桶、Amazon 預估冗餘、下月倉儲成本與 AIS 預估附加費、Excel | Amazon 報表唯讀 |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID／Windows Hello／系統確認 |
 | 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值、成分宣稱核對與逐項原因） | Amazon 唯讀掃描；依明確 ingredients 證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic 宣稱；原因不重複，立刻修改會在對應欄位旁顯示；Excel 依已證明的變體 family 分頁，問題欄著色 |
-| 產品 | 將同一份文案健檢 Excel 以選檔或拖放回傳，逐欄核對完整 Amazon 原值／Excel 更新值後批次更新 | 同檔 round trip 保留原始文案特殊換行；掃描證據可安全跨鎖屏／重啟保留 24 小時；全批零寫入預檢 → 一次 Touch ID／Windows Hello → 每 SKU 單次 PATCH＋回讀；不明即停止且不盲目重送 |
+| 產品 | 將同一份文案健檢 Excel 以選檔或拖放回傳，逐欄核對完整 Amazon 原值／Excel 更新值後批次更新 | 同檔 round trip 保留原始文案特殊換行；掃描證據可安全跨鎖屏／重啟保留 24 小時；預檢失敗會顯示 exact SKU、欄位差異與公開原因。一般失敗整批零寫入；只有格式完整的 live Amazon `INVALID`＋`ERROR` 可在明確勾選 exact SKU 後嘗試一次，仍須 Touch ID／Windows Hello、每 SKU ledgered 單次 PATCH＋回讀；Amazon 仍可能拒絕，不明即停止且不盲目重送 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於六張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
 | 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；任一 exact 文件／ASIN 關聯只要含 schema-valid `CONTENT_PUBLISHED` 就保留已發布正向證據，不會被同 ASIN 另一文件的 negative／malformed 關聯抹除；未使用的 optional `contentReferenceKeySet` 畸形只把完整度降為 partial；沒有任何 published positive 的 malformed／negative 關聯仍 fail closed；文件存在或 APPROVED 本身不會被猜成已發布 |
@@ -87,9 +87,9 @@ Amazon 寫入固定經過：
 
 `讀取舊值 → Amazon Validation Preview → 兩分鐘本機預檢票證 → 必要的 SKU／幅度防呆 → Touch ID／Windows Hello／系統確認 → 再核對舊值 → Idempotency 帳本 → 單次寫入 → 只讀回查`
 
-文案更新在 Validation Preview 後直接跳本機身分確認，不再要求重打 SKU；Excel 批次文案先對整批重新讀取與 Validation Preview，全部通過才要求一次本機身分確認，之後仍以每 SKU 各自的 idempotency 與回讀結果處理。價格、圖片與 Sale Price 保留各自既定的額外防呆。
+文案更新在 Validation Preview 後直接跳本機身分確認，不再要求重打 SKU。Excel 批次文案先對整批重新讀取與 Validation Preview；一般預檢失敗仍整批零寫入，介面必須顯示 exact SKU、Amazon 原值／Excel 更新值差異與清理過的公開原因。唯一窄例外是 live Amazon 回傳格式完整的 exact `INVALID`，且至少含一項已清理的公開 `ERROR`：App 將它標為 `REQUIRES_VALIDATION_OVERRIDE`，使用者可明確核對並勾選 main-owned exact SKU 集合後，選擇「仍要嘗試上傳更新」。這不代表已通過 Amazon 驗證；main 會在一次 Touch ID／Windows Hello 前重做相同 evidence 的預檢，原生摘要列出 override SKU／code，之後每 SKU 仍只有一次 ledgered PATCH 嘗試與回讀，Amazon 仍可能拒絕。工作簿篡改、讀取不完整、身分／FBA／PTD／schema／context／帳號／站點／模式 drift、auth／rate limit／`5xx`／逾時、malformed／unknown 或寫入後不確定狀態都不可 override。價格、圖片與 Sale Price 保留各自既定的額外防呆。
 
-寫入不會因為 `429`、逾時或 `5xx` 自動重送。真正 PATCH 前的重新讀取／PTD／Validation Preview 若失敗，會明示尚未送出並安全釋放 claim；真正 PATCH 已送或 Amazon 已接受後結果不確定時，帳本才會標記 `unknown` 並阻止同一確認碼重送。
+寫入不會因為 `429`、逾時或 `5xx` 自動重送。真正 PATCH 前的重新讀取／PTD／Validation Preview 若發生不可 override 的失敗，或 Excel narrow override 的 exact evidence 已漂移，會明示尚未送出並安全釋放 claim；真正 PATCH 已送或 Amazon 已接受後結果不確定時，帳本才會標記 `unknown` 並阻止同一確認碼重送。
 
 ## 開發與驗證
 

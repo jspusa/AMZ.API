@@ -73,7 +73,7 @@ output="\${!#}"
   );
   const result = spawnSync(
     "/bin/bash",
-    [scriptPath, appPath, "0.1.31", outputDirectory],
+    [scriptPath, appPath, "0.1.32", outputDirectory],
     {
       encoding: "utf8",
       env: {
@@ -169,12 +169,12 @@ fi
     expect(attemptOutputs.every((path) => !existsSync(path))).toBe(true);
     expect(
       existsSync(
-        join(harness.outputDirectory, "AMZ.API-0.1.31-universal.dmg"),
+        join(harness.outputDirectory, "AMZ.API-0.1.32-universal.dmg"),
       ),
     ).toBe(true);
     expect(
       existsSync(
-        join(harness.outputDirectory, "AMZ.API-0.1.31-universal.zip"),
+        join(harness.outputDirectory, "AMZ.API-0.1.32-universal.zip"),
       ),
     ).toBe(true);
   });
@@ -190,12 +190,12 @@ exit 9
     expect(readFileSync(harness.attemptFile, "utf8")).toBe("1");
     expect(
       existsSync(
-        join(harness.outputDirectory, "AMZ.API-0.1.31-universal.dmg"),
+        join(harness.outputDirectory, "AMZ.API-0.1.32-universal.dmg"),
       ),
     ).toBe(false);
     expect(
       existsSync(
-        join(harness.outputDirectory, "AMZ.API-0.1.31-universal.zip"),
+        join(harness.outputDirectory, "AMZ.API-0.1.32-universal.zip"),
       ),
     ).toBe(false);
   });
@@ -211,12 +211,12 @@ exit 1
     expect(readFileSync(harness.attemptFile, "utf8")).toBe("3");
     expect(
       existsSync(
-        join(harness.outputDirectory, "AMZ.API-0.1.31-universal.dmg"),
+        join(harness.outputDirectory, "AMZ.API-0.1.32-universal.dmg"),
       ),
     ).toBe(false);
     expect(
       existsSync(
-        join(harness.outputDirectory, "AMZ.API-0.1.31-universal.zip"),
+        join(harness.outputDirectory, "AMZ.API-0.1.32-universal.zip"),
       ),
     ).toBe(false);
   });
