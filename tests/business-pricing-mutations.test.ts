@@ -74,6 +74,14 @@ describe("W05 Business Pricing mutation owner", () => {
       "another marketplace",
       validationResult(SELLER_SKU, "A1F83G8C2ARO7P"),
     ],
+    [
+      "another execution mode",
+      {
+        ...validationResult(SELLER_SKU),
+        mode: "demo" as const,
+        status: "SIMULATED" as const,
+      },
+    ],
   ])("rejects a preview result for %s before staging a Business Price ticket", async (_scenario, mismatchedResult) => {
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const execute = vi.fn(async () => {
