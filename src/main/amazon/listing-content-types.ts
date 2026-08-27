@@ -79,7 +79,7 @@ export type UpdateListingContentInput = ListingContentValues & {
 
 export type ListingContentValidationResult = {
   mode: "live" | "demo";
-  status: "VALID" | "SIMULATED";
+  status: "VALID" | "INVALID" | "SIMULATED";
   marketplaceId: MarketplaceId;
   sellerSku: string;
   previous: ListingContentValues;

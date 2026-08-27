@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createContentAuditWorkbookV2 } from "../src/main/amazon/xlsx";
+import { parseContentAuditWorkbook } from
+  "../src/main/amazon/content-audit-workbook-parser";
+import { contentAuditEvidenceRowDigest } from
+  "../src/main/amazon/content-audit-snapshot-evidence";
 import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import { SpApiError } from "../src/main/amazon/sp-api-error";
 import type {
@@ -156,6 +160,20 @@ function commitRequest(previewId: string, idempotencyKey: string): ApiRequest {
   };
 }
 
+function forcedCommitRequest(
+  previewId: string,
+  idempotencyKey: string,
+  sellerSkus: string[],
+): ApiRequest {
+  const request = commitRequest(previewId, idempotencyKey);
+  if (request.body?.kind !== "json") throw new Error("Expected JSON commit body");
+  request.body.value.validationOverride = {
+    acknowledged: true,
+    sellerSkus,
+  };
+  return request;
+}
+
 function canonicalJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJsonValue);
   if (value && typeof value === "object") {
@@ -181,6 +199,11 @@ function preparedPreview(
     asin: string;
     productType: string;
   }>,
+  options: Readonly<{
+    mode?: "live" | "demo";
+    status?: "VALID" | "INVALID" | "SIMULATED";
+    issues?: ListingContentPreparedPreview["issues"];
+  }> = {},
 ): ListingContentPreparedPreview {
   const resolvedIdentity = identity ?? preparedIdentityBySku.get(input.sellerSku) ??
     { asin: "B000000001", productType: "PET_FOOD" };
@@ -199,6 +222,7 @@ function preparedPreview(
     ingredients: input.ingredients,
   };
   const changedFields = ["title" as const];
+  const issues = options.issues ?? [];
   const evidence = {
     version: 1 as const,
     marketplaceId: input.marketplaceId,
@@ -213,19 +237,19 @@ function preparedPreview(
     fbaEvidenceHash: "4".repeat(64),
     schemaChecksum: "schema-v1",
     canonicalPatchHash: "5".repeat(64),
-    validationIssuesHash: canonicalSha256([]),
+    validationIssuesHash: canonicalSha256(issues),
     changedFields,
   };
   return {
-    mode: "demo",
-    status: "SIMULATED",
+    mode: options.mode ?? "demo",
+    status: options.status ?? "SIMULATED",
     marketplaceId: input.marketplaceId,
     sellerSku: input.sellerSku,
     previous,
     requested,
     changedFields,
     validatedAt: new Date(0).toISOString(),
-    issues: [],
+    issues: [...issues],
     notice: "test-only demo preview",
     proposalFingerprint: canonicalSha256([
       evidence.marketplaceId,
@@ -528,6 +552,33 @@ describe("content audit Excel batch router", () => {
       });
     }
     return snapshot;
+  }
+
+  function liveEvidenceForWorkbook(
+    snapshot: AuditReply,
+    bytes: Uint8Array,
+  ): ContentAuditSnapshotEvidence {
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    const parsed = parseContentAuditWorkbook({
+      bytes,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    stored.mode = "live";
+    stored.rowDigests = parsed.rows.map((row) => contentAuditEvidenceRowDigest({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      exportId: parsed.metadata.exportId,
+      fetchedAt: parsed.metadata.fetchedAt,
+      sellerSku: row.sellerSku,
+      asin: row.asin,
+      productType: row.productType,
+      variationFamilyKey: row.variationFamilyKey,
+      values: row.original,
+      readStatus: "complete",
+    }));
+    return stored;
   }
 
   it("previews with zero writes, asks once, and returns cached batch result", async () => {
@@ -1606,6 +1657,335 @@ describe("content audit Excel batch router", () => {
       writeCount: 0,
     });
     expect(stagePreview).not.toHaveBeenCalled();
+  });
+
+  it("returns the exact SKU diff and sanitized Amazon issues for a hard preflight failure", async () => {
+    const snapshot = await audit();
+    const requestedTitle = "Detailed failure title from Excel";
+    const edited = replaceCell(workbook(snapshot), "E2", requestedTitle);
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    const stagePreview = vi.fn(async () => undefined);
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async () => {
+          throw new SpApiError("Amazon 預檢證據已改變。", {
+            status: 409,
+            code: "PREVIEW_CHANGED",
+            requestId: "REQ-DETAILED-FAILURE",
+            issues: [{
+              code: "8541",
+              severity: "ERROR",
+              message: "Amazon 拒絕這個產品名稱。",
+              attributeNames: ["item_name"],
+            }],
+            operation: "patchListingsItemPreview",
+          });
+        }),
+        attemptOne: vi.fn(),
+      },
+      randomUUID: () => "content-batch-detailed-failure",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, "content-batch-detailed-failure-001"),
+    });
+
+    expect(response.status).toBe(422);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_BATCH_VALIDATION_FAILED",
+      writeCount: 0,
+      rows: [{
+        sellerSku: snapshot.rows[0]!.sellerSku,
+        code: "PREVIEW_CHANGED",
+        message: "Amazon 預檢證據已改變。",
+        requestId: "REQ-DETAILED-FAILURE",
+        changedFields: ["title"],
+        previous: { title: snapshot.rows[0]!.title },
+        requested: { title: requestedTitle },
+        issues: [{
+          code: "8541",
+          severity: "ERROR",
+          message: "Amazon 拒絕這個產品名稱。",
+          attributeNames: ["item_name"],
+        }],
+        overrideAllowed: false,
+      }],
+    });
+    expect(stagePreview).not.toHaveBeenCalled();
+  });
+
+  it("does not offer an INVALID override when no ERROR survives public sanitization", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Unsafe private issue must remain blocked",
+    );
+    const stored = liveEvidenceForWorkbook(snapshot, edited);
+    const stagePreview = vi.fn(async () => undefined);
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "live",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(input, undefined, {
+          mode: "live",
+          status: "INVALID",
+          issues: [{
+            code: "PRIVATE-UPSTREAM-CONTEXT",
+            severity: "ERROR",
+            message:
+              "See https://sellercentral.amazon.com/?seller_id=A1SELLERID1234",
+            attributeNames: ["item_name"],
+            categories: [],
+            marketplaceIds: [],
+          }],
+        })),
+        attemptOne: vi.fn(),
+      },
+      randomUUID: () => "content-batch-private-invalid",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, "content-batch-private-invalid-001"),
+    });
+
+    expect(response.status).toBe(422);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_BATCH_VALIDATION_FAILED",
+      writeCount: 0,
+      rows: [{
+        sellerSku: snapshot.rows[0]!.sellerSku,
+        code: "VALIDATION_FAILED",
+        issues: [],
+        overrideAllowed: false,
+      }],
+    });
+    expect(stagePreview).not.toHaveBeenCalled();
+  });
+
+  it("requires an exact acknowledgement before one INVALID Amazon preview can be attempted", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Explicitly forced title from Excel",
+    );
+    const stored = liveEvidenceForWorkbook(snapshot, edited);
+    const validationIssue = {
+      code: "8541",
+      severity: "ERROR",
+      message: "Amazon Validation Preview rejected the requested title.",
+      attributeNames: ["item_name"],
+      categories: [],
+      marketplaceIds: [],
+    };
+    const privateValidationIssue = {
+      code: "PRIVATE-UPSTREAM-CONTEXT",
+      severity: "ERROR",
+      message:
+        "See https://sellercentral.amazon.com/?seller_id=A1SELLERID1234",
+      attributeNames: ["item_name"],
+      categories: [],
+      marketplaceIds: [],
+    };
+    const previewOne = vi.fn(async (
+      input: UpdateListingContentInput,
+      options?: { allowAmazonValidationFailure?: boolean },
+    ) => {
+      expect(options).toEqual({ allowAmazonValidationFailure: true });
+      return preparedPreview(input, undefined, {
+        mode: "live",
+        status: "INVALID",
+        issues: [validationIssue, privateValidationIssue],
+      });
+    });
+    const attemptOne = vi.fn(async (input: UpdateListingContentInput) => ({
+      mode: "live" as const,
+      status: "ACCEPTED" as const,
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+      previous: {
+        title: input.expectedTitle,
+        itemHighlight: input.expectedItemHighlight,
+        bulletPoints: [...input.expectedBulletPoints],
+        productDescription: input.expectedProductDescription,
+        ingredients: input.expectedIngredients,
+      },
+      requested: {
+        title: input.title,
+        itemHighlight: input.itemHighlight,
+        bulletPoints: [...input.bulletPoints],
+        productDescription: input.productDescription,
+        ingredients: input.ingredients,
+      },
+      changedFields: ["title" as const],
+      acceptedAt: new Date(0).toISOString(),
+      submissionId: "OVERRIDE-SUBMISSION-001",
+      requestId: "REQ-OVERRIDE-COMMIT-001",
+      issues: [],
+      notice: "Amazon accepted the explicit override attempt.",
+    }));
+    const execute = vi.fn(async (input) => {
+      await input.beforeApproval?.();
+      expect(input.approvalReason("654321")).toContain(
+        "強制送出 1 個 Amazon 預檢未通過 SKU",
+      );
+      expect(input.approvalReason("654321")).toContain(
+        "Amazon Validation Preview 明確 INVALID；仍只嘗試一次",
+      );
+      expect(input.approvalReason("654321")).toContain(
+        `${snapshot.rows[0]!.sellerSku}（8541）`,
+      );
+      return input.run({} as never);
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "live",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute,
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: { previewOne, attemptOne },
+      randomUUID: () => "content-batch-validation-override",
+    });
+    const key = "content-batch-validation-override-001";
+
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    const previewBody = responseValue(preview);
+    const sellerSku = snapshot.rows[0]!.sellerSku;
+
+    expect(preview.status, JSON.stringify(previewBody)).toBe(200);
+    expect(previewBody).toMatchObject({
+      status: "REQUIRES_VALIDATION_OVERRIDE",
+      changes: [{
+        sellerSku,
+        validationStatus: "INVALID",
+        overrideAllowed: true,
+        issues: [validationIssue],
+      }],
+      validationOverride: {
+        required: true,
+        sellerSkus: [sellerSku],
+      },
+    });
+    expect(
+      (previewBody.changes as Array<Record<string, unknown>>)[0]!.issues,
+    ).toEqual([validationIssue]);
+
+    const blocked = await batch.handle({
+      operation: "commit",
+      request: commitRequest(String(previewBody.previewId), key),
+    });
+    expect(blocked.status).toBe(422);
+    expect(responseValue(blocked)).toMatchObject({
+      code: "VALIDATION_OVERRIDE_REQUIRED",
+      writeCount: 0,
+      sellerSkus: [sellerSku],
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(attemptOne).not.toHaveBeenCalled();
+
+    const extraSku = await batch.handle({
+      operation: "commit",
+      request: forcedCommitRequest(
+        String(previewBody.previewId),
+        key,
+        [sellerSku, "EXTRA-SKU"],
+      ),
+    });
+    expect(extraSku.status).toBe(422);
+    expect(responseValue(extraSku)).toMatchObject({
+      code: "VALIDATION_OVERRIDE_REQUIRED",
+      writeCount: 0,
+      sellerSkus: [sellerSku],
+    });
+
+    const duplicateSku = await batch.handle({
+      operation: "commit",
+      request: forcedCommitRequest(
+        String(previewBody.previewId),
+        key,
+        [sellerSku, sellerSku],
+      ),
+    });
+    expect(duplicateSku.status).toBe(422);
+    expect(responseValue(duplicateSku)).toMatchObject({
+      code: "VALIDATION_OVERRIDE_REQUIRED",
+      writeCount: 0,
+    });
+    expect(execute).not.toHaveBeenCalled();
+
+    const committed = await batch.handle({
+      operation: "commit",
+      request: forcedCommitRequest(
+        String(previewBody.previewId),
+        key,
+        [sellerSku],
+      ),
+    });
+
+    expect(committed.status).toBe(200);
+    expect(responseValue(committed)).toMatchObject({
+      status: "COMPLETED",
+      rows: [{ sellerSku, state: "verified" }],
+    });
+    expect(previewOne).toHaveBeenCalledTimes(2);
+    expect(attemptOne).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      sellerSku,
+      { allowAmazonValidationFailure: true },
+    );
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it("rejects a W06 preview rebound to a different ASIN or product type", async () => {

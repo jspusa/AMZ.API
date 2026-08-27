@@ -3,9 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
   ContentAuditWorkbookFilePicker,
+  ContentWorkbookBatchFailureCard,
   ContentWorkbookBatchPreviewCard,
+  contentWorkbookBatchCommitBody,
   consumeContentAuditWorkbookInput,
   contentAuditWorkbookSelection,
+  parseContentWorkbookBatchFailure,
   parseContentWorkbookBatchPreview,
   parseContentAuditSnapshot,
   quickEditAvailabilityForRow,
@@ -315,6 +318,7 @@ describe("global FBA content audit panel", () => {
       previewId: "preview-content-001",
       marketplaceId: "ATVPDKIKX0DER",
       expiresAt: "2026-08-22T10:00:00.000Z",
+      status: "READY",
       changes: [{
         sellerSku: "DIFF-SKU-001",
         changedFields: ["title", "bulletPoints", "productDescription"],
@@ -332,8 +336,16 @@ describe("global FBA content audit panel", () => {
           productDescription: "Requested full description",
           ingredients: "Turkey",
         },
-        issues: [{ message: "Amazon 提醒：請再次確認產品敘述。" }],
+        issues: [{
+          code: "WARN-001",
+          severity: "WARNING",
+          message: "Amazon 提醒：請再次確認產品敘述。",
+          attributeNames: ["product_description"],
+        }],
+        validationStatus: "VALID",
+        overrideAllowed: false,
       }],
+      validationOverride: { required: false, sellerSkus: [] },
       notice: "預檢完成，尚未寫入。",
     }, "ATVPDKIKX0DER");
 
@@ -342,7 +354,9 @@ describe("global FBA content audit panel", () => {
         preview={preview}
         busy={false}
         acknowledged={false}
+        overrideAcknowledged={false}
         onAcknowledgedChange={vi.fn()}
+        onOverrideAcknowledgedChange={vi.fn()}
         onCommit={vi.fn()}
       />,
     );
@@ -355,13 +369,26 @@ describe("global FBA content audit panel", () => {
     expect(locked).toContain("Amazon Validation Preview 提醒");
     expect(locked).toContain("我已核對上述每個 SKU 的完整原值、更新值與 Amazon 提醒");
     expect(locked).toContain('class="price-primary-button" disabled=""');
+    expect(locked).not.toContain("預檢未通過，仍要上傳更新");
+    expect(preview.status).toBe("READY");
+    expect(contentWorkbookBatchCommitBody(
+      preview,
+      "ATVPDKIKX0DER",
+      "content-batch-key-ready-001",
+    )).toEqual({
+      marketplaceId: "ATVPDKIKX0DER",
+      previewId: "preview-content-001",
+      idempotencyKey: "content-batch-key-ready-001",
+    });
 
     const unlocked = renderToStaticMarkup(
       <ContentWorkbookBatchPreviewCard
         preview={preview}
         busy={false}
         acknowledged
+        overrideAcknowledged={false}
         onAcknowledgedChange={vi.fn()}
+        onOverrideAcknowledgedChange={vi.fn()}
         onCommit={vi.fn()}
       />,
     );
@@ -375,6 +402,177 @@ describe("global FBA content audit panel", () => {
         changedFields: ["title"],
       }],
     }, "ATVPDKIKX0DER")).toThrow("欄位清單與前後內容不一致");
+  });
+
+  it("requires an exact separate acknowledgement for an INVALID Amazon preview", () => {
+    const raw = {
+      previewId: "preview-content-invalid-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      expiresAt: "2026-08-22T10:00:00.000Z",
+      status: "REQUIRES_VALIDATION_OVERRIDE",
+      changes: [{
+        sellerSku: "INVALID-SKU-001",
+        changedFields: ["title"],
+        previous: {
+          title: "Amazon original title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Original bullet"],
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        requested: {
+          title: "Excel requested title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Original bullet"],
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        issues: [{
+          code: "8541",
+          severity: "ERROR",
+          message: "Amazon 拒絕這個產品名稱。",
+          attributeNames: ["item_name"],
+        }],
+        validationStatus: "INVALID",
+        overrideAllowed: true,
+      }],
+      validationOverride: {
+        required: true,
+        sellerSkus: ["INVALID-SKU-001"],
+      },
+      notice: "1 個 SKU 的 Amazon Validation Preview 明確未通過；目前仍為零寫入。",
+    } as const;
+    const preview = parseContentWorkbookBatchPreview(raw, "ATVPDKIKX0DER");
+
+    expect(preview.status).toBe("REQUIRES_VALIDATION_OVERRIDE");
+    expect(preview.changes[0]).toMatchObject({
+      sellerSku: "INVALID-SKU-001",
+      validationStatus: "INVALID",
+      overrideAllowed: true,
+      issues: [{
+        code: "8541",
+        severity: "ERROR",
+        message: "Amazon 拒絕這個產品名稱。",
+        attributeNames: ["item_name"],
+      }],
+    });
+    expect(preview.validationOverride).toEqual({
+      required: true,
+      sellerSkus: ["INVALID-SKU-001"],
+    });
+
+    const locked = renderToStaticMarkup(
+      <ContentWorkbookBatchPreviewCard
+        preview={preview}
+        busy={false}
+        acknowledged
+        overrideAcknowledged={false}
+        onAcknowledgedChange={vi.fn()}
+        onOverrideAcknowledgedChange={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+    expect(locked).toContain("INVALID-SKU-001");
+    expect(locked).toContain("Amazon original title");
+    expect(locked).toContain("Excel requested title");
+    expect(locked).toContain("Amazon Validation Preview：INVALID（未通過）");
+    expect(locked).toContain("8541");
+    expect(locked).toContain("Amazon 拒絕這個產品名稱");
+    expect(locked).toContain("強制送出不代表預檢通過");
+    expect(locked).toContain("預檢未通過，仍要上傳更新");
+    expect(locked).toContain('<details open="">');
+    expect(locked).toContain('class="price-primary-button" disabled=""');
+
+    const unlocked = renderToStaticMarkup(
+      <ContentWorkbookBatchPreviewCard
+        preview={preview}
+        busy={false}
+        acknowledged
+        overrideAcknowledged
+        onAcknowledgedChange={vi.fn()}
+        onOverrideAcknowledgedChange={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+    expect(unlocked).not.toContain('class="price-primary-button" disabled=""');
+    expect(contentWorkbookBatchCommitBody(
+      preview,
+      "ATVPDKIKX0DER",
+      "content-batch-key-001",
+    )).toEqual({
+      marketplaceId: "ATVPDKIKX0DER",
+      previewId: "preview-content-invalid-001",
+      idempotencyKey: "content-batch-key-001",
+      validationOverride: {
+        acknowledged: true,
+        sellerSkus: ["INVALID-SKU-001"],
+      },
+    });
+
+    expect(() => parseContentWorkbookBatchPreview({
+      ...raw,
+      validationOverride: {
+        required: true,
+        sellerSkus: ["SOME-OTHER-SKU"],
+      },
+    }, "ATVPDKIKX0DER")).toThrow("強制送出 SKU 清單不一致");
+    expect(() => parseContentWorkbookBatchPreview({
+      ...raw,
+      changes: [{
+        ...raw.changes[0],
+        overrideAllowed: false,
+      }],
+    }, "ATVPDKIKX0DER")).toThrow("強制送出狀態不一致");
+  });
+
+  it("shows the exact SKU, field diff, and reason when batch preflight fails", () => {
+    const failure = parseContentWorkbookBatchFailure({
+      code: "CONTENT_BATCH_VALIDATION_FAILED",
+      message: "1 個 SKU 未通過預檢；整批仍為零寫入。",
+      writeCount: 0,
+      rows: [{
+        sellerSku: "FAILED-SKU-001",
+        code: "PREVIEW_CHANGED",
+        message: "Amazon 商品內容預檢證據已改變，請重新預檢。",
+        requestId: null,
+        changedFields: ["title"],
+        previous: {
+          title: "Amazon original title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Original bullet"],
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        requested: {
+          title: "Excel requested title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Original bullet"],
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        issues: [{
+          code: "8541",
+          severity: "ERROR",
+          message: "Amazon 拒絕這個產品名稱。",
+          attributeNames: ["item_name"],
+        }],
+        overrideAllowed: false,
+      }],
+    });
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchFailureCard failure={failure} />,
+    );
+
+    expect(markup).toContain("FAILED-SKU-001");
+    expect(markup).toContain("產品名稱");
+    expect(markup).toContain("Amazon original title");
+    expect(markup).toContain("Excel requested title");
+    expect(markup).toContain("PREVIEW_CHANGED");
+    expect(markup).toContain("Amazon 商品內容預檢證據已改變");
+    expect(markup).toContain("Amazon 拒絕這個產品名稱");
+    expect(markup).toContain("此失敗不可強制略過");
+    expect(markup).not.toContain("仍要上傳更新");
   });
 
   it("uses a whole-card yellow cue only when a visible missing-bullets issue exists", async () => {

@@ -1625,7 +1625,7 @@ async (page) => {
           await page.getByRole("button", { name: "開啟系統資訊" }).click();
           const systemDialog = page.getByRole("dialog", { name: "進階與系統資訊" });
           await systemDialog.waitFor();
-          await systemDialog.getByText("目前本機 App 0.1.31").waitFor();
+          await systemDialog.getByText("目前本機 App 0.1.32").waitFor();
           await capture({
             phase,
             profile,
