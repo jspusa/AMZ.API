@@ -354,11 +354,12 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
       const context = await this.context.capture(input.marketplaceId);
       const result = await this.operations.preview(input);
       if (
+        result.mode !== context.mode ||
         result.marketplaceId !== input.marketplaceId ||
         result.sellerSku !== input.sellerSku
       ) {
         throw new SpApiError(
-          "Amazon B2B 預檢結果不屬於這次要求的站點或 Seller SKU，已停止使用。",
+          "Amazon B2B 預檢結果不屬於這次要求的執行模式、站點或 Seller SKU，已停止使用。",
           { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
         );
       }
