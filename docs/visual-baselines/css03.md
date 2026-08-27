@@ -106,6 +106,15 @@ Subscription, and Accounting matrix passed across three profiles: another nine
 pairs and 18 screenshots. Across all final runs, the shared harness produced
 150 screenshots and 75 exact geometry comparisons.
 
+After final standards review, the harness's previously distributed CSS01,
+CSS02, and CSS03 mode checks were consolidated into one `visualScenarios`
+descriptor. Each scenario now owns its marker, profiles, evidence directory,
+surfaces, and capture accounting, with one keyed runner dispatch. An
+architecture test first failed against the old distributed seam. All three
+matrices were then rerun through the registry and retained the same 90, 18, and
+42 screenshot counts with zero external requests, console errors, or page
+errors.
+
 ## Pixel comparison and visual review
 
 In the focused CSS03 matrix, 16 of 21 pairs were pixel-exact. The five remaining
