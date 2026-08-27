@@ -63,7 +63,7 @@ export interface BusinessPricingMutationsPort {
   handle(command: BusinessPricingMutationCommand): Promise<ApiResponse>;
 }
 
-export interface BusinessPricingMutationOperations {
+interface BusinessPricingMutationOperations {
   read(input: Readonly<{
     marketplaceId: MarketplaceId;
     sellerSku: string;
@@ -1045,7 +1045,7 @@ async function prepareCommit(
   }
 }
 
-export function createBusinessPricingMutationOperations(
+function createBusinessPricingMutationOperations(
   gateway: BusinessPricingGateway,
 ): BusinessPricingMutationOperations {
   return {

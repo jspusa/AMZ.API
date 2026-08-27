@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type {
   BusinessPricingListingSnapshot,
-  BusinessPriceValidationResult,
 } from "../src/main/amazon/business-pricing-types";
 import type {
   BusinessPricePatch,
@@ -18,9 +17,7 @@ import {
   createScriptedSpExecutionContextAdapter,
 } from "../src/main/amazon/sp-execution-context";
 import {
-  BusinessPricingMutations,
   createBusinessPricingMutations,
-  type BusinessPricingMutationOperations,
   type BusinessPricingMutationsPort,
 } from "../src/main/business-pricing-mutations";
 import { LocalStore } from "../src/main/local-store";
@@ -52,37 +49,6 @@ function previewRequest(): ApiRequest {
         idempotencyKey: "w05-preview-identity-001",
       },
     },
-  };
-}
-
-function validationResult(
-  sellerSku: string,
-  marketplaceId: BusinessPriceValidationResult["marketplaceId"] =
-    MARKETPLACE_ID,
-): BusinessPriceValidationResult {
-  return {
-    mode: "live",
-    status: "VALID",
-    marketplaceId,
-    sellerSku,
-    asin: "B012345678",
-    productType: "PET_FOOD",
-    standardPrice: { amount: 30, currencyCode: "USD" },
-    previousBusinessPrice: { amount: 28, currencyCode: "USD" },
-    requestedBusinessPrice: { amount: 27, currencyCode: "USD" },
-    previousQuantityDiscountPlan: null,
-    previousQuantityDiscountPlanHash: null,
-    requestedQuantityDiscountPlan: null,
-    quantityDiscountPlanChange: "preserve",
-    businessOfferGuardHash: "a".repeat(64),
-    businessOfferProtectedHash: "b".repeat(64),
-    schemaChecksum: "seller-specific-checksum",
-    fbaEvidenceHash: "c".repeat(64),
-    canonicalPatchHash: "d".repeat(64),
-    validationIssuesHash: "e".repeat(64),
-    validatedAt: "2026-08-27T00:00:00.000Z",
-    issues: [],
-    notice: "fixture",
   };
 }
 
@@ -191,6 +157,7 @@ class DurableDispatchGateway implements BusinessPricingGateway {
   constructor(
     private readonly storePath: string,
     private readonly idempotencyKey: string,
+    private readonly failAfterDispatch = true,
   ) {}
 
   mode(): "live" {
@@ -242,7 +209,22 @@ class DurableDispatchGateway implements BusinessPricingGateway {
       durable.response?.status === "DISPATCHED" &&
       typeof durable.response?._writeEvidence === "object";
     this.commitCalls += 1;
-    throw new Error("simulated transport close after dispatch");
+    if (this.failAfterDispatch) {
+      throw new Error("simulated transport close after dispatch");
+    }
+    this.businessPriceAmount = 27;
+    return {
+      ok: true,
+      status: 202,
+      requestId: "REQ-W05-COMMIT",
+      retryAfter: null,
+      payload: {
+        sku: SELLER_SKU,
+        status: "ACCEPTED",
+        submissionId: "W05-COMMIT-SUBMISSION",
+        issues: [],
+      },
+    };
   }
 
   async replaceDemoContribution(): Promise<void> {
@@ -274,6 +256,45 @@ async function durableHarness(
 }
 
 describe("W05 Business Pricing mutation owner", () => {
+  it("keeps durable write evidence in the ledger but out of the public response", async () => {
+    const idempotencyKey = "w05-private-durable-evidence";
+    const storePath = join(
+      await mkdtemp(join(tmpdir(), "amz-api-w05-business-price-")),
+      "store.json",
+    );
+    const gateway = new DurableDispatchGateway(
+      storePath,
+      idempotencyKey,
+      false,
+    );
+    const owner = await durableHarness(gateway, storePath);
+
+    expect((await owner.handle({
+      operation: "preview",
+      request: mutationRequest("POST", idempotencyKey),
+    })).status).toBe(200);
+    const committed = await owner.handle({
+      operation: "commit",
+      request: mutationRequest("PATCH", idempotencyKey),
+    });
+
+    expect(committed.status).toBe(200);
+    expect(JSON.stringify(bodyValue(committed))).not.toContain("_writeEvidence");
+    expect(gateway.durableBeforeTransport).toBe(true);
+    expect(gateway.commitCalls).toBe(1);
+
+    const stored = JSON.parse(await readFile(storePath, "utf8")) as {
+      ledger: Record<string, {
+        state: string;
+        response: Record<string, unknown> | null;
+      }>;
+    };
+    expect(stored.ledger[idempotencyKey]?.state).toBe("completed");
+    expect(stored.ledger[idempotencyKey]?.response).toHaveProperty(
+      "_writeEvidence",
+    );
+  });
+
   it("persists dispatch evidence before transport and reconciles it after restart without a second PATCH", async () => {
     const idempotencyKey = "w05-durable-before-transport";
     const storePath = join(
@@ -329,32 +350,37 @@ describe("W05 Business Pricing mutation owner", () => {
   });
 
   it.each([
-    ["another SKU", validationResult("A-DIFFERENT-SKU")],
+    ["another SKU", { sellerSku: "A-DIFFERENT-SKU" }],
     [
       "another marketplace",
-      validationResult(SELLER_SKU, "A1F83G8C2ARO7P"),
+      { marketplaceId: "A1F83G8C2ARO7P" as const },
     ],
     [
       "another execution mode",
-      {
-        ...validationResult(SELLER_SKU),
-        mode: "demo" as const,
-        status: "SIMULATED" as const,
-      },
+      { mode: "demo" as const },
     ],
-  ])("rejects a preview result for %s before staging a Business Price ticket", async (_scenario, mismatchedResult) => {
+  ])("rejects a preview result for %s before staging a Business Price ticket", async (_scenario, snapshotPatch) => {
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const execute = vi.fn(async () => {
       throw new Error("Write Gate execute must not run during preview");
     });
-    const commit = vi.fn();
+    const commitOnce = vi.fn();
     const observeCanonical = vi.fn(async () => undefined);
-    const operations = {
-      read: vi.fn(),
-      preview: vi.fn(async () => mismatchedResult),
-      commit,
-    } as unknown as BusinessPricingMutationOperations;
-    const owner = new BusinessPricingMutations({
+    const snapshot = {
+      ...businessPricingSnapshot(),
+      ...snapshotPatch,
+    };
+    const gateway: BusinessPricingGateway = {
+      mode: () => snapshot.mode,
+      read: async () => snapshot,
+      quantityDiscountPlanSupported: () => true,
+      validationPreview: async () => {
+        throw new Error("Validation Preview must not run for this fixture");
+      },
+      commitOnce,
+      replaceDemoContribution: async () => undefined,
+    };
+    const owner = createBusinessPricingMutations({
       context: {
         capture: async (marketplaceId) => ({
           marketplaceId,
@@ -372,7 +398,7 @@ describe("W05 Business Pricing mutation owner", () => {
         reconcile: async () => undefined,
         clearEphemeral: () => undefined,
       } as unknown as MainWriteGatePort,
-      operations,
+      gateway,
       priceObserver: { observeCanonical },
     });
 
@@ -389,7 +415,7 @@ describe("W05 Business Pricing mutation owner", () => {
     });
     expect(stagePreview).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
-    expect(commit).not.toHaveBeenCalled();
+    expect(commitOnce).not.toHaveBeenCalled();
     expect(observeCanonical).not.toHaveBeenCalled();
   });
 });

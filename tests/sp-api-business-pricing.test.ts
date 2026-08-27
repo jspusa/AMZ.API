@@ -1,17 +1,37 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  businessPricingGatewayProduction,
   catalogListingsReadAdapterProduction,
   catalogReportsDemoSource,
-  getBusinessPricing,
   invalidateSpApiCredentialCaches,
-  previewBusinessPriceUpdate,
-  updateBusinessPrice,
 } from "../src/main/amazon/sp-api";
+import type {
+  BusinessPricePrecommitEvidence,
+  BusinessPriceUpdateResult,
+  BusinessPriceValidationResult,
+  BusinessPricingListingSnapshot,
+  UpdateBusinessPriceInput,
+} from "../src/main/amazon/business-pricing-types";
+import type { ListingWriteExecutionFence } from
+  "../src/main/amazon/listing-write-execution-fence";
+import {
+  createScriptedSpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
 import {
   readFbaBusinessPricingAudit,
   readFbaCatalogSeeds as parseFbaListingReportSeeds,
 } from "../src/main/amazon/catalog-report-reads";
+import {
+  createBusinessPricingMutations,
+} from "../src/main/business-pricing-mutations";
+import {
+  MainWriteGateError,
+  type MainWriteGateExecuteInput,
+  type MainWriteGatePort,
+  type MainWriteGateSession,
+} from "../src/main/write-gate";
+import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 import { downloadMockReportDocument } from "./catalog-report-test-support";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
@@ -28,6 +48,188 @@ const savedEnvironment = new Map(
     .filter((key) => key.startsWith("SP_API_"))
     .map((key) => [key, process.env[key]]),
 );
+
+let businessPricingOperationSequence = 0;
+
+function businessPricingProposalFingerprint(
+  input: UpdateBusinessPriceInput,
+  evidence: BusinessPricePrecommitEvidence,
+): string {
+  return createHash("sha256").update(JSON.stringify([
+    input.marketplaceId,
+    input.sellerSku,
+    input.expectedStandardPrice,
+    input.expectedBusinessPrice,
+    input.newBusinessPrice,
+    input.quantityDiscountTiers === undefined
+      ? "quantity-discount:preserve"
+      : `quantity-discount:replace:${input.expectedQuantityDiscountPlanHash ?? "absent"}`,
+    input.quantityDiscountTiers === undefined
+      ? null
+      : input.quantityDiscountTiers.map((tier) => [
+          tier.lowerBound,
+          tier.percent,
+        ]),
+    evidence.asin,
+    evidence.productType,
+    evidence.businessOfferGuardHash,
+    evidence.businessOfferProtectedHash,
+    evidence.previousQuantityDiscountPlanHash,
+    evidence.schemaChecksum,
+    evidence.fbaEvidenceHash,
+    evidence.canonicalPatchHash,
+    evidence.validationIssuesHash,
+  ])).digest("hex");
+}
+
+function businessPricingRequest(
+  method: "GET" | "POST" | "PATCH",
+  input: Readonly<{
+    marketplaceId: typeof MARKETPLACE_ID;
+    sellerSku: string;
+  }> | UpdateBusinessPriceInput,
+  idempotencyKey: string,
+): ApiRequest {
+  return {
+    requestId: `business-pricing-owner-${++businessPricingOperationSequence}`,
+    method,
+    path: "/api/sp-api/business-pricing",
+    query: method === "GET"
+      ? {
+          marketplaceId: input.marketplaceId,
+          sku: input.sellerSku,
+        }
+      : {},
+    headers: method === "GET" ? {} : { "content-type": "application/json" },
+    ...(method === "GET"
+      ? {}
+      : {
+          body: {
+            kind: "json",
+            value: { ...input, idempotencyKey },
+          } as const,
+        }),
+  };
+}
+
+function businessPricingResponseValue<T>(response: ApiResponse): T {
+  if (response.body.kind !== "json") {
+    throw new Error("Expected Business Pricing JSON response.");
+  }
+  if (response.status >= 400) {
+    const value = response.body.value as Record<string, unknown>;
+    throw Object.assign(
+      new Error(
+        typeof value.message === "string"
+          ? value.message
+          : "Business Pricing route failed.",
+      ),
+      {
+        status: response.status,
+        ...value,
+        ...(response.headers["retry-after"]
+          ? { retryAfter: response.headers["retry-after"] }
+          : {}),
+        ...(value.code === "PREVIEW_CHANGED"
+          ? { commitPatchSent: false }
+          : {}),
+      },
+    );
+  }
+  return response.body.value as T;
+}
+
+function wireBusinessPricingOwner(input: Readonly<{
+  expectedEvidence?: BusinessPricePrecommitEvidence;
+  expectedInput?: UpdateBusinessPriceInput;
+  idempotencyKey: string;
+  fence?: ListingWriteExecutionFence;
+}> = { idempotencyKey: "business-owner-default" }) {
+  const context = createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+    marketplaceId,
+    mode: businessPricingGatewayProduction.mode(marketplaceId),
+    accountScope: "business-pricing-owner-test-scope",
+  }));
+  const writeGate: MainWriteGatePort = {
+    stagePreview: async () => undefined,
+    execute: async <T>(executeInput: MainWriteGateExecuteInput<T>): Promise<T> => {
+      if (input.expectedEvidence && input.expectedInput) {
+        const expectedFingerprint = businessPricingProposalFingerprint(
+          input.expectedInput,
+          input.expectedEvidence,
+        );
+        if (
+          executeInput.binding.previewKey !== input.idempotencyKey ||
+          executeInput.binding.intents[0]?.proposalFingerprint !==
+            expectedFingerprint
+        ) {
+          throw new MainWriteGateError("PREVIEW_CHANGED");
+        }
+      }
+      const session: MainWriteGateSession = {
+        attempt: async (attempt) => attempt.execute({
+          recordDurableEvidence: async () => undefined,
+          recordAccepted: async () => undefined,
+          assertCurrent: async () => {
+            await input.fence?.assertCurrent();
+          },
+        }),
+      };
+      return executeInput.run(session);
+    },
+    reconcile: async () => undefined,
+    clearEphemeral: () => undefined,
+  };
+  return createBusinessPricingMutations({
+    context,
+    writeGate,
+    gateway: businessPricingGatewayProduction,
+    priceObserver: {
+      observeCanonical: async () => undefined,
+    },
+  });
+}
+
+async function getBusinessPricing(input: Readonly<{
+  marketplaceId: typeof MARKETPLACE_ID;
+  sellerSku: string;
+}>): Promise<BusinessPricingListingSnapshot> {
+  const idempotencyKey = `business-read-${businessPricingOperationSequence + 1}`;
+  const owner = wireBusinessPricingOwner({ idempotencyKey });
+  return businessPricingResponseValue(await owner.handle({
+    operation: "read",
+    request: businessPricingRequest("GET", input, idempotencyKey),
+  }));
+}
+
+async function previewBusinessPriceUpdate(
+  input: UpdateBusinessPriceInput,
+): Promise<BusinessPriceValidationResult> {
+  const idempotencyKey = `business-preview-${businessPricingOperationSequence + 1}`;
+  const owner = wireBusinessPricingOwner({ idempotencyKey });
+  return businessPricingResponseValue(await owner.handle({
+    operation: "preview",
+    request: businessPricingRequest("POST", input, idempotencyKey),
+  }));
+}
+
+async function updateBusinessPrice(
+  input: UpdateBusinessPriceInput,
+  expectedEvidence?: BusinessPricePrecommitEvidence,
+  fence?: ListingWriteExecutionFence,
+): Promise<BusinessPriceUpdateResult> {
+  const idempotencyKey = `business-commit-${businessPricingOperationSequence + 1}`;
+  const owner = wireBusinessPricingOwner({
+    idempotencyKey,
+    expectedEvidence,
+    expectedInput: input,
+    fence,
+  });
+  return businessPricingResponseValue(await owner.handle({
+    operation: "commit",
+    request: businessPricingRequest("PATCH", input, idempotencyKey),
+  }));
+}
 
 async function getBusinessPricingAuditData(input: Readonly<{
   marketplaceId: typeof MARKETPLACE_ID;
@@ -4731,6 +4933,7 @@ describe("Amazon Business pricing SP-API contract", () => {
 
   it("sends the formal B2B PATCH exactly once after a fresh preview", async () => {
     let commitCount = 0;
+    let committed = false;
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
       const url = urlOf(input);
       const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -4747,7 +4950,19 @@ describe("Amazon Business pricing SP-API contract", () => {
         });
       }
       if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
-        return listingResponse();
+        const payload = await listingResponse().json() as {
+          attributes: { purchasable_offer: Array<Record<string, unknown>> };
+        };
+        if (committed) {
+          const businessOffer = payload.attributes.purchasable_offer.find(
+            (offer) => offer.audience === "B2B",
+          );
+          if (!businessOffer) throw new Error("Expected B2B offer fixture");
+          businessOffer.our_price = [{
+            schedule: [{ value_with_tax: 27.5 }],
+          }];
+        }
+        return jsonResponse(200, payload);
       }
       if (
         url.pathname.startsWith("/listings/2021-08-01/") &&
@@ -4764,6 +4979,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       }
       if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
         commitCount += 1;
+        committed = true;
         expect(url.searchParams.has("mode")).toBe(false);
         return jsonResponse(200, {
           sku: SELLER_SKU,

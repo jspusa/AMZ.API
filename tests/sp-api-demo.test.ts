@@ -1,16 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  getBusinessPricing,
+  businessPricingGatewayProduction,
   getListingContent,
   invalidateSpApiCredentialCaches,
   listingImageGatewayProduction,
   listingPriceGatewayProduction,
-  updateBusinessPrice,
 } from "../src/main/amazon/sp-api";
+import type {
+  BusinessPriceUpdateResult,
+  BusinessPricingListingSnapshot,
+  UpdateBusinessPriceInput,
+} from "../src/main/amazon/business-pricing-types";
+import type { ListingWriteExecutionFence } from
+  "../src/main/amazon/listing-write-execution-fence";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
+import {
+  createScriptedSpExecutionContextAdapter,
+} from "../src/main/amazon/sp-execution-context";
 import { createListingImageMutationOperations } from
   "../src/main/listing-image-mutations";
 import { createListingPriceMutationOperations } from
   "../src/main/listing-price-mutations";
+import { createBusinessPricingMutations } from
+  "../src/main/business-pricing-mutations";
+import type {
+  MainWriteGateExecuteInput,
+  MainWriteGatePort,
+  MainWriteGateSession,
+} from "../src/main/write-gate";
+import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const priceOperations = createListingPriceMutationOperations(
   listingPriceGatewayProduction,
@@ -30,6 +48,109 @@ const currentFence = { assertCurrent: async () => undefined } as const;
 
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) => key.startsWith("SP_API_"));
 const savedEnvironment = new Map(SP_ENV_KEYS.map((key) => [key, process.env[key]]));
+let businessPricingOperationSequence = 0;
+
+function businessPricingResponseValue<T>(response: ApiResponse): T {
+  if (response.body.kind !== "json") {
+    throw new Error("Expected Business Pricing JSON response.");
+  }
+  if (response.status >= 400) {
+    const value = response.body.value as Record<string, unknown>;
+    throw Object.assign(
+      new Error(
+        typeof value.message === "string"
+          ? value.message
+          : "Business Pricing route failed.",
+      ),
+      { status: response.status, ...value },
+    );
+  }
+  return response.body.value as T;
+}
+
+function businessPricingRequest(
+  method: "GET" | "PATCH",
+  input: Readonly<{
+    marketplaceId: "ATVPDKIKX0DER";
+    sellerSku: string;
+  }> | UpdateBusinessPriceInput,
+  idempotencyKey: string,
+): ApiRequest {
+  return {
+    requestId: `demo-business-owner-${++businessPricingOperationSequence}`,
+    method,
+    path: "/api/sp-api/business-pricing",
+    query: method === "GET"
+      ? { marketplaceId: input.marketplaceId, sku: input.sellerSku }
+      : {},
+    headers: method === "GET" ? {} : { "content-type": "application/json" },
+    ...(method === "GET"
+      ? {}
+      : {
+          body: {
+            kind: "json",
+            value: { ...input, idempotencyKey },
+          } as const,
+        }),
+  };
+}
+
+function wireBusinessPricingOwner(
+  fence?: ListingWriteExecutionFence,
+) {
+  const context = createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+    marketplaceId,
+    mode: businessPricingGatewayProduction.mode(marketplaceId),
+    accountScope: "demo-business-pricing-owner-scope",
+  }));
+  const writeGate: MainWriteGatePort = {
+    stagePreview: async () => undefined,
+    execute: async <T>(input: MainWriteGateExecuteInput<T>): Promise<T> => {
+      const session: MainWriteGateSession = {
+        attempt: async (attempt) => attempt.execute({
+          recordDurableEvidence: async () => undefined,
+          recordAccepted: async () => undefined,
+          assertCurrent: async () => {
+            await fence?.assertCurrent();
+          },
+        }),
+      };
+      return input.run(session);
+    },
+    reconcile: async () => undefined,
+    clearEphemeral: () => undefined,
+  };
+  return createBusinessPricingMutations({
+    context,
+    writeGate,
+    gateway: businessPricingGatewayProduction,
+    priceObserver: { observeCanonical: async () => undefined },
+  });
+}
+
+async function getBusinessPricing(input: Readonly<{
+  marketplaceId: "ATVPDKIKX0DER";
+  sellerSku: string;
+}>): Promise<BusinessPricingListingSnapshot> {
+  const idempotencyKey = `demo-business-read-${businessPricingOperationSequence + 1}`;
+  const owner = wireBusinessPricingOwner();
+  return businessPricingResponseValue(await owner.handle({
+    operation: "read",
+    request: businessPricingRequest("GET", input, idempotencyKey),
+  }));
+}
+
+async function updateBusinessPrice(
+  input: UpdateBusinessPriceInput,
+  fence?: ListingWriteExecutionFence,
+): Promise<BusinessPriceUpdateResult> {
+  const idempotencyKey = `demo-business-commit-${businessPricingOperationSequence + 1}`;
+  const owner = wireBusinessPricingOwner(fence);
+  return businessPricingResponseValue(await owner.handle({
+    operation: "commit",
+    request: businessPricingRequest("PATCH", input, idempotencyKey),
+  }));
+}
 
 describe("SP-API demo safety boundary", () => {
   beforeEach(() => {
@@ -192,13 +313,24 @@ describe("SP-API demo safety boundary", () => {
     };
     const before = await getBusinessPricing(identity);
     if (!before.standardPrice) throw new Error("Expected demo standard price");
+    let contextCurrent = true;
     const update = updateBusinessPrice({
       ...identity,
       expectedStandardPrice: before.standardPrice.amount,
       expectedBusinessPrice: before.businessPrice?.amount ?? null,
       newBusinessPrice: Number((before.standardPrice.amount - 1).toFixed(2)),
+    }, {
+      assertCurrent: async () => {
+        if (!contextCurrent) {
+          throw new SpApiError(
+            "Amazon 憑證已在展示 B2B 價格更新期間改變；舊結果已丟棄。",
+            { status: 409, code: "CREDENTIALS_CHANGED" },
+          );
+        }
+      },
     });
 
+    contextCurrent = false;
     invalidateSpApiCredentialCaches();
 
     await expect(update).rejects.toMatchObject({ code: "CREDENTIALS_CHANGED" });

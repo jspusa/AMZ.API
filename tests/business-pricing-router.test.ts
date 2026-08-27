@@ -5,15 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import {
-  getBusinessPricing,
   invalidateSpApiCredentialCaches,
   type BusinessPricePrecommitEvidence,
   type BusinessPriceValidationResult,
+  type BusinessPricingListingSnapshot,
   type UpdateBusinessPriceInput,
 } from "../src/main/amazon/sp-api";
 import {
   BusinessPricingMutations,
-  type BusinessPricingMutationOperations,
 } from "../src/main/business-pricing-mutations";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
@@ -79,10 +78,11 @@ describe("Amazon Business pricing routes", () => {
   });
 
   async function writeBody(): Promise<Record<string, unknown>> {
-    const snapshot = await getBusinessPricing({
-      marketplaceId: MARKETPLACE_ID,
-      sellerSku: SELLER_SKU,
-    });
+    const response = await router.handle(request("GET"));
+    if (response.status !== 200 || response.body.kind !== "json") {
+      throw new Error("Expected Business Pricing route snapshot");
+    }
+    const snapshot = response.body.value as BusinessPricingListingSnapshot;
     return {
       marketplaceId: MARKETPLACE_ID,
       sellerSku: SELLER_SKU,
@@ -238,7 +238,7 @@ describe("Amazon Business pricing routes", () => {
       read: vi.fn(),
       preview: vi.fn(async () => currentValidation),
       commit: vi.fn(),
-    } as unknown as BusinessPricingMutationOperations;
+    };
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const owner = new BusinessPricingMutations({
       context: {
