@@ -13,6 +13,7 @@ import type {
 } from "./amazon/sp-api";
 import type { ListingWriteExecutionFence } from
   "./amazon/listing-write-execution-fence";
+import { SpApiError } from "./amazon/sp-api-error";
 import {
   businessPriceReadbackDecision,
   commitWithCanonicalReadback,
@@ -352,6 +353,12 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
     try {
       const context = await this.context.capture(input.marketplaceId);
       const result = await this.operations.preview(input);
+      if (result.sellerSku !== input.sellerSku) {
+        throw new SpApiError(
+          "Amazon B2B 預檢結果不屬於這次要求的 Seller SKU，已停止使用。",
+          { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
+        );
+      }
       await this.context.assertCurrent(context);
       await this.writeGate.stagePreview(this.binding(input, result, context));
       return json(result);
