@@ -19,6 +19,10 @@ const TWO_RULE_FINGERPRINT =
 const MULTILINE_SELECTOR_FINGERPRINT =
   "12e71dfa26f353d10fbac14a99383084f0be86aa69d631738e66fad191b9cf52";
 
+function byteLengthWithLfLineEndings(source: string): number {
+  return Buffer.byteLength(source.replace(/\r\n?/gu, "\n"));
+}
+
 async function createFixture(files: Readonly<Record<string, string>>) {
   const directory = await mkdtemp(join(tmpdir(), "amz-api-css01-"));
   temporaryDirectories.push(directory);
@@ -134,7 +138,7 @@ describe("CSS01 renderer stylesheet composition", () => {
       ),
     ).toEqual(RENDERER_STYLESHEET_CONTRACT.expectedFiles);
     expect(composition.canonicalJson).toHaveLength(438_225);
-    expect(Buffer.byteLength(composition.css)).toBe(293_971);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(293_971);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
@@ -163,6 +167,8 @@ describe("CSS01 renderer stylesheet composition", () => {
     });
 
     expect(composition.css).toContain("\r\n");
+    expect(Buffer.byteLength(composition.css)).toBe(307_365);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(293_971);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
