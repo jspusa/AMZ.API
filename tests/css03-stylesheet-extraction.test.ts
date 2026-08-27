@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { RENDERER_STYLESHEET_CONTRACT } from "../scripts/renderer-stylesheet-contract.mjs";
 import { verifyStylesheetComposition } from "../scripts/stylesheet-composition.mjs";
 
-const CSS03_ORDERED_FILES = [
+const CSS03_ORDERED_PREFIX = [
   "styles/index.css",
   "styles/foundation.css",
   "styles/legacy-shell-drawers.css",
@@ -18,7 +18,6 @@ const CSS03_ORDERED_FILES = [
   "styles/notebook-key-bridge.css",
   "styles/variation.css",
   "styles/experience.css",
-  "app" + ".css",
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
@@ -50,11 +49,6 @@ const CSS03_PAYLOAD_EVIDENCE = [
     bytes: 15_760,
     sha256: "d9b1a5a63620f0a3d2e72df1440a6ce0d972a1b6ff4a6e03ff844346a4e3c520",
   },
-  {
-    path: "app" + ".css",
-    bytes: 84_289,
-    sha256: "df09c6c8f0f7ad18c6ff0e7d263a2272215a68bae9ae39198c9ae36eb019ecfb",
-  },
 ] as const;
 
 describe("CSS03 historical stylesheet extraction", () => {
@@ -67,15 +61,16 @@ describe("CSS03 historical stylesheet extraction", () => {
         new URL("../src/renderer/src/styles/index.css", import.meta.url),
       ),
       rootDirectory,
-      expectedFiles: CSS03_ORDERED_FILES,
+      expectedFiles: RENDERER_STYLESHEET_CONTRACT.expectedFiles,
       expectedFingerprint: RENDERER_STYLESHEET_CONTRACT.fingerprint,
     });
 
-    expect(
-      composition.files.map((file) =>
-        relative(rootDirectory, file).split(sep).join("/"),
-      ),
-    ).toEqual(CSS03_ORDERED_FILES);
+    const orderedFiles = composition.files.map((file) =>
+      relative(rootDirectory, file).split(sep).join("/"),
+    );
+    expect(orderedFiles.slice(0, CSS03_ORDERED_PREFIX.length)).toEqual(
+      CSS03_ORDERED_PREFIX,
+    );
     expect(
       await Promise.all(
         CSS03_PAYLOAD_EVIDENCE.map(async ({ path }) => {

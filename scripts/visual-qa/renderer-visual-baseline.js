@@ -13,6 +13,35 @@ async (page) => {
   ];
   const visualScenarios = [
     {
+      key: "css04",
+      marker: "css04-extra",
+      evidenceDirectory: "css04-extra",
+      profileNames: [
+        "desktop-standard",
+        "desktop-large",
+        "compact-390-large",
+        "compact-320-large",
+        "desktop-reduced",
+      ],
+      surfaces: [
+        "home-primary",
+        "home-low-frequency",
+        "image-results",
+        "aged-switch",
+        "brand-interactive",
+        "ads-results",
+        "reports",
+        "reviews",
+        "missing-bullets",
+        "inbound-issues",
+        "reduced-skater",
+      ],
+      expectedCaptures: ({ phases, profiles }) => phases.length * profiles.reduce(
+        (count, profile) => count + 10 + (profile.reduced ? 1 : 0),
+        0,
+      ),
+    },
+    {
       key: "css03",
       marker: "css03-extra",
       evidenceDirectory: "css03-extra",
@@ -90,6 +119,8 @@ async (page) => {
   const ensure = (condition, message) => {
     if (!condition) fail(message);
   };
+  const durationsEffectivelyNone = (value) =>
+    value.split(",").every((duration) => parseFloat(duration) <= 0.00001);
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push({ state: currentState, text: message.text() });
@@ -136,10 +167,40 @@ async (page) => {
     await page.waitForTimeout(280);
     await page.evaluate(async () => {
       await document.fonts.ready;
+      document.documentElement.style.overflowAnchor = "none";
+      document.body.style.overflowAnchor = "none";
       await new Promise((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       );
+      for (const animation of document.getAnimations()) {
+        const iterations = animation.effect?.getComputedTiming().iterations;
+        try {
+          if (iterations === Infinity) {
+            animation.currentTime = 0;
+            animation.pause();
+          } else if (animation.playState !== "finished") {
+            animation.finish();
+          }
+        } catch {
+          // A detached animation is already irrelevant to the captured frame.
+        }
+      }
     });
+  };
+
+  const pinWindowOrigin = async () => {
+    const position = await page.evaluate(async () => {
+      for (let index = 0; index < 2; index += 1) {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      return { left: window.scrollX, top: window.scrollY };
+    });
+    ensure(
+      position.left === 0 && position.top === 0,
+      `${currentState}: window origin did not stabilize ${JSON.stringify(position)}`,
+    );
   };
 
   const inspectLayout = async ({
@@ -157,6 +218,7 @@ async (page) => {
     verticalScrollerSelector = null,
     verticalLastItemSelector = null,
     motionSelector = null,
+    viewportTargetSelector = null,
     reduced = false,
     font,
   }) => {
@@ -172,6 +234,7 @@ async (page) => {
         verticalScrollerSelector,
         verticalLastItemSelector,
         motionSelector,
+        viewportTargetSelector,
         reduced,
       }) => {
         const root = document.documentElement;
@@ -189,6 +252,38 @@ async (page) => {
             rect.height > 0
           );
         };
+        let viewportTarget = null;
+        if (viewportTargetSelector) {
+          const element = document.querySelector(viewportTargetSelector);
+          if (element instanceof Element) {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            viewportTarget = {
+              selector: viewportTargetSelector,
+              missing: false,
+              left: rect.left,
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+              width: rect.width,
+              height: rect.height,
+              fullyVisible:
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                rect.width > 0 &&
+                rect.height > 0 &&
+                rect.left >= -0.5 &&
+                rect.top >= -0.5 &&
+                rect.right <= window.innerWidth + 0.5 &&
+                rect.bottom <= window.innerHeight + 0.5,
+            };
+          } else {
+            viewportTarget = {
+              selector: viewportTargetSelector,
+              missing: true,
+            };
+          }
+        }
         const scrollOwners = [scope, ...scope.querySelectorAll("*")]
           .filter((element) => element instanceof HTMLElement && visible(element))
           .filter((element) => {
@@ -265,6 +360,8 @@ async (page) => {
               outlineStyle: style.outlineStyle,
               outlineWidth: style.outlineWidth,
               boxShadow: style.boxShadow,
+              filter: style.filter,
+              transform: style.transform,
             };
           }
         }
@@ -311,10 +408,13 @@ async (page) => {
             clientWidth: root.clientWidth,
             scrollWidth: root.scrollWidth,
           },
+          windowScroll: { left: window.scrollX, top: window.scrollY },
+          scopeScroll: { left: scope.scrollLeft, top: scope.scrollTop },
           dialog,
           scrollOwners,
           requiredScrollers: requiredScrollerMetrics,
           scopeHorizontalOverflow: scope.scrollWidth - scope.clientWidth,
+          viewportTarget,
           sticky,
           focus,
           verticalScroller,
@@ -339,6 +439,7 @@ async (page) => {
         verticalScrollerSelector,
         verticalLastItemSelector,
         motionSelector,
+        viewportTargetSelector,
         reduced,
       },
     );
@@ -367,6 +468,16 @@ async (page) => {
         metrics.page.clientWidth === expectedPage.clientWidth &&
           metrics.page.scrollWidth === expectedPage.scrollWidth,
         `${surface}: page geometry is ${metrics.page.clientWidth}/${metrics.page.scrollWidth}, expected ${expectedPage.clientWidth}/${expectedPage.scrollWidth}`,
+      );
+    }
+    if (viewportTargetSelector) {
+      ensure(
+        metrics.viewportTarget && !metrics.viewportTarget.missing,
+        `${surface}: viewport target ${viewportTargetSelector} is missing`,
+      );
+      ensure(
+        metrics.viewportTarget.fullyVisible,
+        `${surface}: viewport target is not fully visible ${JSON.stringify(metrics.viewportTarget)}`,
       );
     }
     if (strictScrollers) {
@@ -407,8 +518,9 @@ async (page) => {
       const outlineVisible =
         metrics.focus.outlineStyle !== "none" && parseFloat(metrics.focus.outlineWidth) > 0;
       const shadowVisible = metrics.focus.boxShadow !== "none";
+      const filterVisible = metrics.focus.filter !== "none";
       ensure(
-        outlineVisible || shadowVisible,
+        outlineVisible || shadowVisible || filterVisible,
         `${surface}: ${focusSelector} has no visible keyboard focus indicator`,
       );
     }
@@ -453,7 +565,7 @@ async (page) => {
       );
       if (metrics.reduced.skaterTransitionDuration !== null) {
         ensure(
-          metrics.reduced.skaterTransitionDuration === "0s",
+          durationsEffectivelyNone(metrics.reduced.skaterTransitionDuration),
           `${surface}: sales skater transition is ${metrics.reduced.skaterTransitionDuration}`,
         );
       }
@@ -478,9 +590,56 @@ async (page) => {
     verticalScrollerSelector = null,
     verticalLastItemSelector = null,
     motionSelector = null,
+    scrollTargetSelector = null,
+    scrollTargetViewportTop = 160,
+    viewportTargetSelector = null,
   }) => {
     currentState = `${phase.name}/${profile.name}/${surface}`;
     await settle();
+    if (scrollTargetSelector) {
+      const targetScroll = await page.evaluate(
+        async ({ scrollTargetSelector, scrollTargetViewportTop }) => {
+          const element = document.querySelector(scrollTargetSelector);
+          if (!(element instanceof HTMLElement)) return { missing: true };
+          const absoluteTop = window.scrollY + element.getBoundingClientRect().top;
+          const maximum = document.documentElement.scrollHeight - window.innerHeight;
+          const requestedTop = Math.max(
+            0,
+            Math.min(maximum, Math.round(absoluteTop - scrollTargetViewportTop)),
+          );
+          window.scrollTo({ top: requestedTop, left: 0, behavior: "instant" });
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          for (let index = 0; index < 2; index += 1) {
+            const correction = Math.round(
+              element.getBoundingClientRect().top - scrollTargetViewportTop,
+            );
+            if (correction === 0) break;
+            window.scrollBy({ top: correction, left: 0, behavior: "instant" });
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+          }
+          return {
+            missing: false,
+            top: window.scrollY,
+            viewportTop: element.getBoundingClientRect().top,
+          };
+        },
+        { scrollTargetSelector, scrollTargetViewportTop },
+      );
+      ensure(
+        !targetScroll.missing,
+        `${currentState}: missing scroll target ${scrollTargetSelector}`,
+      );
+      ensure(
+        Math.round(targetScroll.viewportTop) === scrollTargetViewportTop,
+        `${currentState}: scroll target did not stabilize ${JSON.stringify(targetScroll)}`,
+      );
+      await page.waitForFunction(
+        ({ top }) => window.scrollX === 0 && window.scrollY === top,
+        { top: targetScroll.top },
+      );
+    } else if (dialogSelector) {
+      await pinWindowOrigin();
+    }
     const metrics = await inspectLayout({
       surface: currentState,
       scopeSelector,
@@ -496,16 +655,21 @@ async (page) => {
       verticalScrollerSelector,
       verticalLastItemSelector,
       motionSelector,
+      viewportTargetSelector,
       reduced: profile.reduced,
       font: profile.font,
     });
     const comparisonKey = `${profile.name}/${surface}`;
     const comparisonMetrics = {
       page: metrics.page,
+      windowScroll:
+        scrollTargetSelector || dialogSelector ? null : metrics.windowScroll,
+      scopeScroll: metrics.scopeScroll,
       dialog: metrics.dialog,
       scrollOwners: metrics.scrollOwners,
       requiredScrollers: metrics.requiredScrollers,
       scopeHorizontalOverflow: metrics.scopeHorizontalOverflow,
+      viewportTarget: metrics.viewportTarget,
       sticky: metrics.sticky,
       focus: metrics.focus,
       verticalScroller: metrics.verticalScroller,
@@ -521,10 +685,11 @@ async (page) => {
       );
     }
     const path = `output/playwright/${visualScenario.evidenceDirectory}/${phase.name}/${profile.name}/${surface}.png`;
+    if (dialogSelector) await pinWindowOrigin();
     await page.screenshot({
       path,
       fullPage: false,
-      animations: "disabled",
+      animations: "allow",
       caret: "hide",
       scale: "css",
     });
@@ -546,6 +711,54 @@ async (page) => {
     ensure(
       await target.evaluate((element) => document.activeElement === element),
       `${currentState}: Tab did not return focus to ${selector}`,
+    );
+  };
+
+  const closeDrawerWithKeyboard = async (dialog, closeSelector) => {
+    currentState = `${currentState}/keyboard-close`;
+    await focusWithKeyboard(closeSelector);
+    const focusVisible = await page.evaluate(({ closeSelector }) => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !active.matches(closeSelector)) {
+        return { matches: false, visible: false };
+      }
+      const style = getComputedStyle(active);
+      return {
+        matches: true,
+        visible:
+          (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0) ||
+          style.boxShadow !== "none",
+      };
+    }, { closeSelector });
+    ensure(
+      focusVisible.matches && focusVisible.visible,
+      `${currentState}: drawer close has no visible keyboard focus`,
+    );
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+  };
+
+  const exercisePrimaryMenuKeyboard = async () => {
+    const trigger = page.getByRole("button", { name: "產品區", exact: true });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("menu", { name: "產品區" }).waitFor();
+    await page.keyboard.press("ArrowDown");
+    await page.waitForFunction(() =>
+      document.activeElement?.getAttribute("role") === "menuitem",
+    );
+    await page.keyboard.press("End");
+    const lastMenuItemFocused = await page.evaluate(() =>
+      document.activeElement?.getAttribute("role") === "menuitem",
+    );
+    ensure(lastMenuItemFocused, `${currentState}: End did not focus a menu item`);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() =>
+      document.activeElement?.getAttribute("aria-label") === "產品區",
+    );
+    ensure(
+      await trigger.evaluate((element) => document.activeElement === element),
+      `${currentState}: Escape did not return focus to 產品區`,
     );
   };
 
@@ -621,6 +834,15 @@ async (page) => {
       dangerous: (window.__rendererVisualRequests ?? []).filter((request) =>
         ["PUT", "PATCH", "DELETE"].includes(request.method),
       ),
+      unexpectedPosts: (window.__rendererVisualRequests ?? []).filter((request) =>
+        request.method === "POST" && ![
+          "/api/amazon-ads/strategy",
+          "/api/sp-api/brand-sales",
+          "/api/sp-api/inbound-shipments",
+          "/api/sp-api/review-audit",
+          "/api/sp-api/standalone-audit",
+        ].includes(request.path),
+      ),
     }));
     ensure(
       requestAudit.unexpected.length === 0,
@@ -629,6 +851,10 @@ async (page) => {
     ensure(
       requestAudit.dangerous.length === 0,
       `${phase.name}/${profile.name}: write requests ${JSON.stringify(requestAudit.dangerous)}`,
+    );
+    ensure(
+      requestAudit.unexpectedPosts.length === 0,
+      `${phase.name}/${profile.name}: non-allowlisted POST requests ${JSON.stringify(requestAudit.unexpectedPosts)}`,
     );
   };
 
@@ -640,6 +866,466 @@ async (page) => {
       });
 
       switch (visualScenario.key) {
+        case "css04": {
+          const compact = profile.width <= 390;
+          const compact320 = profile.name === "compact-320-large";
+          const expectedPage = expectedPageFor(profile);
+          const expectedReportCategoryLabels = [
+            "全部",
+            "Amazon Business",
+            "品牌與分析",
+            "B2B 機會",
+            "目錄分類",
+            "Easy Ship（非 FBA）",
+            "FBA",
+            "商品與庫存",
+            "發票資料",
+            "訂單",
+            "款項",
+            "績效與促銷",
+            "法規與 EPR",
+            "退貨",
+            "結算",
+            "稅務",
+          ];
+          currentState = `${phase.name}/${profile.name}/css04-load`;
+          await page.goto(`${phase.baseUrl}/?font=${profile.font}&css04=1`, {
+            waitUntil: "domcontentloaded",
+            timeout: 30_000,
+          });
+          await page.locator(".commerce-os").waitFor();
+          await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
+          await page.locator('section.brand-sales-card[aria-busy="false"]').waitFor();
+          await page.locator(".audit-suite-home-card").waitFor();
+
+          currentState = `${phase.name}/${profile.name}/home-primary`;
+          await exercisePrimaryMenuKeyboard();
+          await page.locator(".health-audit-home-grid").first().scrollIntoViewIfNeeded();
+          const homeLayout = await page.evaluate(({ compact }) => {
+            const grid = document.querySelector(".health-audit-home-grid");
+            const chevrons = [...document.querySelectorAll(".workspace-primary-menu-chevron")];
+            return {
+              columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(" ").length : 0,
+              cardCount: grid?.querySelectorAll(".content-audit-home-card").length ?? 0,
+              imageShortcut: Boolean(document.querySelector('[aria-label="全站圖片健檢捷徑"]')),
+              chevronCount: chevrons.length,
+              chevronsClear: chevrons.every((element) =>
+                ["none", '""'].includes(getComputedStyle(element, "::after").content),
+              ),
+              expectedColumns: compact ? 1 : 2,
+            };
+          }, { compact });
+          ensure(
+            homeLayout.columns === homeLayout.expectedColumns,
+            `${currentState}: home grid has ${homeLayout.columns} columns`,
+          );
+          ensure(homeLayout.cardCount >= 7, `${currentState}: one-click audit cards are incomplete`);
+          ensure(homeLayout.imageShortcut, `${currentState}: image audit shortcut is missing`);
+          ensure(
+            homeLayout.chevronCount === 4 && homeLayout.chevronsClear,
+            `${currentState}: primary menu chevrons regressed ${JSON.stringify(homeLayout)}`,
+          );
+          await capture({
+            phase,
+            profile,
+            surface: "home-primary",
+            scopeSelector: ".health-audit-home-grid",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+
+          currentState = `${phase.name}/${profile.name}/home-low-frequency`;
+          const lowFrequency = page.locator("details.low-frequency-audits");
+          await lowFrequency.locator(":scope > summary").click();
+          await lowFrequency.locator('[aria-label="FBA 180 天以上庫齡健檢捷徑"]').waitFor();
+          await lowFrequency.scrollIntoViewIfNeeded();
+          await capture({
+            phase,
+            profile,
+            surface: "home-low-frequency",
+            scopeSelector: "details.low-frequency-audits",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+
+          await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+          await openMenuItem("產品區", /圖片/u);
+          const imageDialog = page.getByRole("dialog", { name: "商品圖片" });
+          await imageDialog.waitFor();
+          await imageDialog.getByRole("tab", { name: "全站圖片健檢" }).click();
+          await imageDialog
+            .getByRole("button", { name: "掃描 US 全部 FBA 圖片" })
+            .click();
+          await imageDialog.locator(".image-audit-summary").waitFor();
+          await imageDialog.locator(".image-audit-row", { hasText: "CSS04-IMAGE-MISSING" }).waitFor();
+          await imageDialog.getByLabel("搜尋圖片健檢結果").fill("CSS04");
+          currentState = `${phase.name}/${profile.name}/image-results`;
+          await capture({
+            phase,
+            profile,
+            surface: "image-results",
+            scopeSelector: ".image-workspace-drawer",
+            dialogSelector: ".image-workspace-drawer",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+          await closeDrawerWithKeyboard(
+            imageDialog,
+            ".image-workspace-drawer .drawer-header > button",
+          );
+
+          await lowFrequency.locator(":scope > summary").click();
+          await lowFrequency.locator(":scope > summary").click();
+          await lowFrequency
+            .getByRole("button", { name: "開始 FBA 180 天以上庫齡健檢" })
+            .click();
+          const agedDialog = page.getByRole("dialog", {
+            name: "FBA 庫齡與預估冗餘健檢",
+          });
+          await agedDialog.waitFor();
+          await agedDialog
+            .getByRole("button", { name: "開始 FBA 180 天以上庫齡健檢" })
+            .click();
+          await agedDialog.locator(".aged-inventory-summary").waitFor();
+          const agedSwitch = agedDialog.getByRole("group", {
+            name: "FBA 庫存健檢顯示範圍",
+          });
+          await agedSwitch.getByRole("button", { name: /Amazon 預估冗餘（獨立）/u }).click();
+          await agedSwitch.getByRole("button", { name: /已逾 180 天/u }).click();
+          await agedSwitch.getByRole("button", { name: /Amazon 預估冗餘（獨立）/u }).click();
+          if (compact320) {
+            currentState = `${phase.name}/${profile.name}/aged-switch-scroll`;
+            await exerciseHorizontalScroller(".aged-inventory-list", true);
+          }
+          currentState = `${phase.name}/${profile.name}/aged-switch`;
+          await capture({
+            phase,
+            profile,
+            surface: "aged-switch",
+            scopeSelector: ".aged-inventory-audit-drawer",
+            dialogSelector: ".aged-inventory-audit-drawer",
+            allowedScrollers: compact320 ? [".aged-inventory-list"] : [],
+            requiredScrollers: compact320 ? [".aged-inventory-list"] : [],
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+          await closeDrawerWithKeyboard(
+            agedDialog,
+            ".aged-inventory-audit-drawer .drawer-header > button",
+          );
+
+          await page.locator("section.brand-sales-card").scrollIntoViewIfNeeded();
+          const brandCard = page.locator("section.brand-sales-card");
+          await brandCard
+            .getByRole("group", { name: "營收占比分類方式" })
+            .getByRole("button", { name: "品類", exact: true })
+            .click();
+          currentState = `${phase.name}/${profile.name}/brand-interactive-keyboard`;
+          await focusWithKeyboard("section.brand-sales-card .brand-sales-pie-slice");
+          const brandLayout = await brandCard.evaluate((card) => {
+            const visual = card.querySelector(".brand-sales-visual");
+            const pie = card.querySelector(".brand-sales-pie-stage");
+            const legend = card.querySelector(".brand-sales-legend");
+            return {
+              active: document.activeElement?.classList.contains("brand-sales-pie-slice") ?? false,
+              pieBeforeLegend: Boolean(
+                pie && legend &&
+                (pie.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING),
+              ),
+              visualColumns: visual ? getComputedStyle(visual).gridTemplateColumns : "",
+              legendColumns: legend ? getComputedStyle(legend).gridTemplateColumns : "",
+              slices: card.querySelectorAll(".brand-sales-pie-slice").length,
+              selection:
+                card.querySelector(".brand-sales-selection small")?.textContent ?? "",
+            };
+          });
+          ensure(
+            brandLayout.active &&
+              brandLayout.pieBeforeLegend &&
+              brandLayout.slices >= 7 &&
+              brandLayout.selection !== "FBA 已出貨",
+            `${currentState}: brand interaction evidence is incomplete ${JSON.stringify(brandLayout)}`,
+          );
+          ensure(
+            brandLayout.legendColumns.split(" ").length === 2,
+            `${currentState}: brand legend is not two columns ${brandLayout.legendColumns}`,
+          );
+          currentState = `${phase.name}/${profile.name}/brand-interactive`;
+          await capture({
+            phase,
+            profile,
+            surface: "brand-interactive",
+            scopeSelector: "section.brand-sales-card",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+            focusSelector: ".brand-sales-pie-slice",
+            scrollTargetSelector: "section.brand-sales-card",
+            viewportTargetSelector: ".brand-sales-pie-stage",
+          });
+
+          await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+          await openMenuItem("營運區", /廣告/u);
+          const adsDialog = page.getByRole("dialog", { name: "廣告" });
+          await adsDialog.waitFor();
+          await adsDialog.getByText("Ads Profiles／Campaign query 已驗證").waitFor();
+          await adsDialog.getByLabel("開始日").fill("2026-08-01");
+          await adsDialog.getByLabel("結束日").fill("2026-08-07");
+          await adsDialog.getByRole("button", { name: "產生 FBA 廣告策略" }).click();
+          await adsDialog.locator(".advertising-strategy-result").waitFor();
+          await adsDialog.getByRole("button", { name: "掃描全部 FBA SKU" }).click();
+          await adsDialog.locator(".ads-coverage-summary").waitFor();
+          await adsDialog.locator(".ads-coverage-summary").scrollIntoViewIfNeeded();
+          currentState = `${phase.name}/${profile.name}/ads-results`;
+          await capture({
+            phase,
+            profile,
+            surface: "ads-results",
+            scopeSelector: ".ads-drawer",
+            dialogSelector: ".ads-drawer",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+          await closeDrawerWithKeyboard(
+            adsDialog,
+            ".ads-drawer .drawer-header > button",
+          );
+
+          await openMenuItem("報表區", /^Amazon API 文件庫/u);
+          const reportsDialog = page.getByRole("dialog", { name: "報表區" });
+          await reportsDialog.waitFor();
+          await reportsDialog.locator(".report-library-report").first().waitFor();
+          const reportCategoryNav = reportsDialog.getByRole("navigation", {
+            name: "報表分類",
+          });
+          const reportCategoryButtons = reportCategoryNav.getByRole("button");
+          const reportCategoryLabels = (await reportCategoryButtons.allTextContents())
+            .map((label) => label.trim());
+          ensure(
+            await reportCategoryButtons.count() === expectedReportCategoryLabels.length &&
+              JSON.stringify(reportCategoryLabels) ===
+                JSON.stringify(expectedReportCategoryLabels),
+            `${currentState}: report categories changed ${JSON.stringify(reportCategoryLabels)}`,
+          );
+          if (compact) {
+            currentState = `${phase.name}/${profile.name}/reports-scroll`;
+            await exerciseHorizontalScroller(".report-library-toolbar nav", true);
+          }
+          await reportCategoryNav
+            .getByRole("button", { name: "稅務", exact: true })
+            .click();
+          await reportsDialog
+            .locator(".report-library-report", { hasText: "CSS04 TAX" })
+            .waitFor();
+          await reportCategoryNav
+            .getByRole("button", { name: "FBA", exact: true })
+            .click();
+          await reportsDialog
+            .getByPlaceholder("搜尋名稱、reportType 或角色")
+            .fill("FBA");
+          await reportsDialog.locator(".report-library-report", { hasText: "AFN 庫存" }).waitFor();
+          await reportsDialog.evaluate((dialog) => {
+            dialog.scrollTop = 0;
+          });
+          currentState = `${phase.name}/${profile.name}/reports`;
+          await capture({
+            phase,
+            profile,
+            surface: "reports",
+            scopeSelector: ".report-library-drawer",
+            dialogSelector: ".report-library-drawer",
+            allowedScrollers: [".report-library-toolbar nav"],
+            requiredScrollers: compact ? [".report-library-toolbar nav"] : [],
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+          await closeDrawerWithKeyboard(
+            reportsDialog,
+            ".report-library-drawer .drawer-header > button",
+          );
+
+          await page
+            .locator('[aria-label="FBA 評論主題健檢捷徑"]')
+            .getByRole("button")
+            .click();
+          const reviewsDialog = page.getByRole("dialog", { name: "評論健檢" });
+          await reviewsDialog.waitFor();
+          await reviewsDialog
+            .getByRole("button", { name: "掃描全站 FBA 評論主題" })
+            .click();
+          await reviewsDialog.locator(".review-audit-summary").waitFor();
+          await reviewsDialog.locator(".review-audit-rankings article").first().waitFor();
+          currentState = `${phase.name}/${profile.name}/reviews`;
+          await capture({
+            phase,
+            profile,
+            surface: "reviews",
+            scopeSelector: ".review-audit-drawer",
+            dialogSelector: ".review-audit-drawer",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+          await closeDrawerWithKeyboard(
+            reviewsDialog,
+            ".review-audit-drawer .drawer-header > button",
+          );
+
+          await openMenuItem("產品區", /文案/u);
+          const contentDialog = page.getByRole("dialog", { name: "商品內容" });
+          await contentDialog.waitFor();
+          await contentDialog.getByRole("tab", { name: "全站文案健檢" }).click();
+          await contentDialog
+            .getByRole("button", { name: "掃描 US 全部 FBA 文案" })
+            .click();
+          await contentDialog.locator(".kind-missing_bullets").waitFor();
+          const bulletCardEvidence = await contentDialog.evaluate((dialog) => {
+            const cards = [...dialog.querySelectorAll(".content-audit-list > article")];
+            const target = cards.find((card) => card.querySelector(".kind-missing_bullets"));
+            const targetStyle = target ? getComputedStyle(target) : null;
+            const comparisonStyles = cards
+              .filter((card) => !card.querySelector(".kind-missing_bullets"))
+              .map((card) => getComputedStyle(card).backgroundColor);
+            return {
+              cards: cards.length,
+              background: targetStyle?.backgroundColor ?? null,
+              border: targetStyle?.borderTopColor ?? null,
+              comparisonStyles,
+            };
+          });
+          ensure(
+            bulletCardEvidence.cards >= 3 &&
+              bulletCardEvidence.background === "rgb(255, 249, 223)" &&
+              bulletCardEvidence.border === "rgb(229, 204, 132)" &&
+              bulletCardEvidence.comparisonStyles.every(
+                (value) => value !== "rgb(255, 249, 223)",
+              ),
+            `${currentState}: missing-bullets card cue is not exclusive ${JSON.stringify(bulletCardEvidence)}`,
+          );
+          currentState = `${phase.name}/${profile.name}/missing-bullets`;
+          await capture({
+            phase,
+            profile,
+            surface: "missing-bullets",
+            scopeSelector: ".sku-ops-drawer",
+            dialogSelector: ".sku-ops-drawer",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+          await closeDrawerWithKeyboard(
+            contentDialog,
+            ".sku-ops-drawer .drawer-header > button",
+          );
+
+          await openMenuItem("報表區", /^入庫貨件/u);
+          const inboundDialog = page.getByRole("dialog", {
+            name: "FBA 入庫貨件追蹤",
+          });
+          await inboundDialog.waitFor();
+          await inboundDialog.getByLabel("開始日期").fill("2026-05-24");
+          await inboundDialog.getByLabel("結束日期").fill("2026-08-21");
+          await inboundDialog
+            .getByRole("button", { name: "同步 US 貨件與全部商品" })
+            .click();
+          await inboundDialog.locator(".inbound-summary").waitFor();
+          const shipment = inboundDialog
+            .locator("details.inbound-shipment")
+            .filter({ hasText: "FBA15VISUAL001" });
+          await shipment.locator("summary").click();
+          await shipment.locator(".inbound-item-table-scroll").waitFor();
+          await inboundDialog.getByText("只看差異", { exact: true }).click();
+          if (compact) {
+            currentState = `${phase.name}/${profile.name}/inbound-scroll`;
+            await exerciseHorizontalScroller(".inbound-item-table-scroll", true);
+          }
+          await inboundDialog.locator(".inbound-issue-levels").scrollIntoViewIfNeeded();
+          await inboundDialog.locator(".inbound-issue-row").last().waitFor();
+          currentState = `${phase.name}/${profile.name}/inbound-issues`;
+          await capture({
+            phase,
+            profile,
+            surface: "inbound-issues",
+            scopeSelector: ".inbound-shipments-drawer",
+            dialogSelector: ".inbound-shipments-drawer",
+            allowedScrollers: [".inbound-item-table-scroll"],
+            requiredScrollers: compact ? [".inbound-item-table-scroll"] : [],
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
+          await closeDrawerWithKeyboard(
+            inboundDialog,
+            ".inbound-shipments-drawer .drawer-header > button",
+          );
+          await auditRequests(phase, profile);
+
+          if (profile.reduced) {
+            currentState = `${phase.name}/${profile.name}/reduced-skater-load`;
+            await page.goto(`${phase.baseUrl}/?font=${profile.font}&css04=1`, {
+              waitUntil: "domcontentloaded",
+              timeout: 30_000,
+            });
+            await page.locator(".commerce-os").waitFor();
+            await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
+            await page.getByRole("button", { name: "迷你滑板" }).click();
+            const skaterControls = page.getByRole("group", { name: /迷你滑板控制/u });
+            await skaterControls.getByRole("button", { name: /滑板向右/u }).click();
+            await skaterControls.getByRole("button", { name: /滑板跳躍/u }).click();
+            await page.locator(".sales-skater.is-jumping").waitFor();
+            const reducedSkater = await page.evaluate(() => {
+              const skater = document.querySelector(".sales-skater.is-jumping");
+              const board = document.querySelector(".sales-skater-board");
+              return {
+                rolling: skater?.classList.contains("is-rolling") ?? false,
+                transition: skater ? getComputedStyle(skater).transitionDuration : null,
+                jump: skater ? getComputedStyle(skater).animationName : null,
+                wheelBefore: board
+                  ? {
+                      name: getComputedStyle(board, "::before").animationName,
+                      duration: getComputedStyle(board, "::before").animationDuration,
+                    }
+                  : null,
+                wheelAfter: board
+                  ? {
+                      name: getComputedStyle(board, "::after").animationName,
+                      duration: getComputedStyle(board, "::after").animationDuration,
+                    }
+                  : null,
+              };
+            });
+            ensure(
+              reducedSkater.rolling &&
+                durationsEffectivelyNone(reducedSkater.transition) &&
+                reducedSkater.jump === "none" &&
+                reducedSkater.wheelBefore?.name === "none" &&
+                durationsEffectivelyNone(reducedSkater.wheelBefore.duration) &&
+                reducedSkater.wheelAfter?.name === "none" &&
+                durationsEffectivelyNone(reducedSkater.wheelAfter.duration),
+              `${currentState}: reduced skater motion remains ${JSON.stringify(reducedSkater)}`,
+            );
+            currentState = `${phase.name}/${profile.name}/reduced-skater`;
+            await capture({
+              phase,
+              profile,
+              surface: "reduced-skater",
+              scopeSelector: "section.sales-trend",
+              allowedScrollers: [".sales-trend-plot-scroll"],
+              strictScrollers: true,
+              requireScopeContainment: true,
+              expectedPage,
+              motionSelector: ".sales-skater.is-jumping",
+            });
+            await auditRequests(phase, profile);
+          }
+          break;
+        }
         case "css02": {
           currentState = `${phase.name}/${profile.name}/css02-load`;
           await page.goto(`${phase.baseUrl}/?font=${profile.font}`, {
@@ -775,6 +1461,16 @@ async (page) => {
 
           currentState = `${phase.name}/${profile.name}/variation-long`;
           await exerciseVerticalScroller(".variation-child-list");
+          await page.evaluate(() => {
+            const drawer = document.querySelector(".variation-planner-drawer");
+            const list = document.querySelector(".variation-child-list");
+            if (!(drawer instanceof HTMLElement) || !(list instanceof HTMLElement)) return;
+            drawer.scrollTop = 0;
+            drawer.scrollTop = Math.max(
+              0,
+              list.getBoundingClientRect().top - drawer.getBoundingClientRect().top - 84,
+            );
+          });
           await capture({
             phase,
             profile,
@@ -967,6 +1663,9 @@ async (page) => {
               .isDisabled(),
             `${phase.name}/${profile.name}/variation: demo write action became enabled`,
           );
+          await variationDialog.evaluate((dialog) => {
+            dialog.scrollTop = 0;
+          });
           await capture({
             phase,
             profile,

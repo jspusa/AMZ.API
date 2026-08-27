@@ -2,6 +2,7 @@
 (() => {
   const params = new URLSearchParams(window.location.search);
   const css03 = params.get("css03") === "1";
+  const css04 = params.get("css04") === "1";
   const salesLoading = params.get("sales-loading") === "1";
   try {
     window.localStorage.setItem("fba-os-auto-sync", "off");
@@ -323,12 +324,573 @@
     },
     snapshot: b2bSnapshot,
   };
+  const standaloneJob = (kind, jobId, contextId, snapshot) => ({
+    jobId,
+    contextId,
+    kind,
+    marketplaceId,
+    mode: "demo",
+    options: {},
+    ready: true,
+    status: "completed",
+    progress: {
+      stage: "complete",
+      message: "CSS04 固定唯讀健檢完成",
+      completedUnits: snapshot.rows?.length ?? 1,
+      totalUnits: snapshot.rows?.length ?? 1,
+    },
+    snapshot,
+  });
+  const css04ImageSnapshot = {
+    marketplaceId,
+    fetchedAt: fixedTime,
+    exportId: "31000000-0000-4100-8100-000000000001",
+    minimumImages: 6,
+    rows: [
+      {
+        sellerSku: "CSS04-IMAGE-MISSING",
+        asin: "B04IMG0001",
+        productType: "PET_FOOD",
+        title: "CSS04 turkey tendon image audit row with fewer than six images",
+        imageUrls: [
+          "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Crect width='90' height='90' fill='%23f3e5cf'/%3E%3Ctext x='45' y='51' text-anchor='middle' font-size='18'%3E1%3C/text%3E%3C/svg%3E",
+        ],
+        imageCount: 1,
+        readStatus: "complete",
+        readErrors: [],
+      },
+      {
+        sellerSku: "CSS04-IMAGE-COMPLETE",
+        asin: "B04IMG0002",
+        productType: "PET_FOOD",
+        title: "CSS04 image-complete comparison row",
+        imageUrls: Array.from({ length: 6 }, (_, index) =>
+          `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Crect width='90' height='90' fill='%23edf4ef'/%3E%3Ctext x='45' y='51' text-anchor='middle' font-size='18'%3E${index + 1}%3C/text%3E%3C/svg%3E`,
+        ),
+        imageCount: 6,
+        readStatus: "complete",
+        readErrors: [],
+      },
+      {
+        sellerSku: "CSS04-IMAGE-INCOMPLETE",
+        asin: "B04IMG0003",
+        productType: "PET_FOOD",
+        title: "CSS04 fail-visible image read",
+        imageUrls: [],
+        imageCount: 0,
+        readStatus: "incomplete",
+        readErrors: [{
+          code: "LISTING_CONTENT_NOT_RETURNED",
+          message: "Amazon fixture 未回傳可驗證圖片 attributes；不判定為零張。",
+        }],
+      },
+    ],
+    summary: { total: 3, completed: 2, incomplete: 1, underMinimum: 1 },
+  };
+  const css04ImageJob = standaloneJob(
+    "image",
+    "31000000-0000-4100-8100-000000000002",
+    "31000000-0000-4100-8100-000000000003",
+    css04ImageSnapshot,
+  );
+  const css04AgedInventorySnapshot = {
+    mode: "demo",
+    marketplaceId,
+    fetchedAt: fixedTime,
+    exportId: "32000000-0000-4200-8200-000000000001",
+    rows: [{
+      sellerSku: "CSS04-AGED-FBA-01",
+      fnSku: "X04AGED001",
+      asin: "B04AGED001",
+      title: "CSS04 aged FBA inventory with independent excess evidence",
+      condition: "New",
+      available: 240,
+      totalAgedUnits: 50,
+      agedOver180: 31,
+      ageBuckets: [
+        { key: "0-90", label: "0–90 天", units: 10, over180: false },
+        { key: "91-180", label: "91–180 天", units: 9, over180: false },
+        { key: "181-270", label: "181–270 天", units: 12, over180: true },
+        { key: "271-365", label: "271–365 天", units: 10, over180: true },
+        { key: "366-455", label: "366–455 天", units: 7, over180: true },
+        { key: "456-plus", label: "456 天以上", units: 2, over180: true },
+      ],
+      estimatedExcessQuantity: 25,
+      recommendedRemovalQuantity: 5,
+      daysOfSupply: 220.5,
+      currencyCode: "USD",
+      estimatedStorageCostNextMonth: 15.25,
+      estimatedAgedSurcharge: 3.6,
+      agedSurchargeBuckets: [
+        { key: "181-210", label: "AIS 181–210 天", quantity: 3, estimatedCharge: 1.2 },
+        { key: "211-240", label: "AIS 211–240 天", quantity: 4, estimatedCharge: 2.4 },
+      ],
+      alert: "CSS04 fixed Amazon alert evidence",
+      recommendedAction: "Review removal or promotion options",
+      snapshotDate: "2026-08-20",
+    }],
+    summary: {
+      skuCount: 1,
+      agedOver180SkuCount: 1,
+      totalAgedUnits: 50,
+      agedOver180: 31,
+      excessAvailability: "complete",
+      estimatedExcessQuantity: 25,
+      excessReportedSkuCount: 1,
+      currencyCode: "USD",
+      storageCostAvailability: "complete",
+      estimatedStorageCostNextMonth: 15.25,
+      storageCostReportedSkuCount: 1,
+      agedSurchargeAvailability: "complete",
+      estimatedAgedSurcharge: 3.6,
+      agedSurchargeReportedSkuCount: 1,
+    },
+    expiration: {
+      currentFbaExpirationDatesAvailable: false,
+      nearExpiryUnits: null,
+      expiredUnits: null,
+      inboundPlanExpirationDatesAvailable: true,
+      notice: "CSS04 fixture preserves the current-FC expiration boundary.",
+    },
+    notice: "CSS04 固定唯讀 FBA 庫齡資料；未連線 Amazon。",
+  };
+  const css04AgedInventoryJob = standaloneJob(
+    "agedInventory",
+    "32000000-0000-4200-8200-000000000002",
+    "32000000-0000-4200-8200-000000000003",
+    css04AgedInventorySnapshot,
+  );
+  const css04AdvertisingSnapshot = {
+    schemaVersion: 1,
+    mode: "demo",
+    marketplaceId,
+    marketplaceCode: "US",
+    fetchedAt: fixedTime,
+    rows: [
+      {
+        sellerSku: "CSS04-ADS-COVERED",
+        asin: "B04ADS0001",
+        title: "CSS04 covered FBA advertising row",
+        covered: true,
+        evidence: {
+          kind: "seller-sku",
+          campaignId: "coverage-evidence.css04.1",
+          campaignName: "[ProductAI] US-B04ADS0001-CSS04-ADS-COVERED-SP-PAT-Aug202026",
+          campaignSellerSku: "CSS04-ADS-COVERED",
+        },
+      },
+      {
+        sellerSku: "CSS04-ADS-UNCOVERED",
+        asin: "B04ADS0002",
+        title: "CSS04 uncovered FBA advertising row with long wrapping evidence",
+        covered: false,
+        evidence: null,
+      },
+    ],
+    uncovered: [{
+      sellerSku: "CSS04-ADS-UNCOVERED",
+      asin: "B04ADS0002",
+      title: "CSS04 uncovered FBA advertising row with long wrapping evidence",
+      covered: false,
+      evidence: null,
+    }],
+    summary: {
+      currentFbaSkuCount: 2,
+      coveredSkuCount: 1,
+      directSkuCount: 1,
+      sameAsinCount: 0,
+      uncoveredSkuCount: 1,
+      eligibleCampaignCount: 1,
+      ignoredInactiveCampaignCount: 0,
+      ignoredMalformedCampaignCount: 0,
+    },
+    rule: "CSS04 固定資料只計 ENABLED Sponsored Products。",
+    notice: "CSS04 固定唯讀 Ads 覆蓋資料；未連線 Amazon。",
+  };
+  const css04AdvertisingJob = standaloneJob(
+    "advertising",
+    "33000000-0000-4300-8300-000000000001",
+    "33000000-0000-4300-8300-000000000002",
+    css04AdvertisingSnapshot,
+  );
+  const css04ContentSnapshot = {
+    marketplaceId,
+    fetchedAt: fixedTime,
+    exportId: "34000000-0000-4400-8400-000000000001",
+    rows: [
+      {
+        sellerSku: "CSS04-MISSING-BULLETS",
+        asin: "B04COPY001",
+        productType: "PET_FOOD",
+        title: "Trukey tendon missing bullet fixture",
+        bulletPoints: ["Only one concise benefit"],
+        ingredients: "Turkey",
+        readStatus: "complete",
+        readErrors: [],
+        variationRole: "child",
+        variationParentSku: "CSS04-PARENT",
+        variationFamilyKey: "CSS04-PARENT",
+        variationTheme: "SIZE_NAME",
+        relationshipStatus: "complete",
+        relationshipMessage: "CSS04 fixture relationship proof complete.",
+        issues: [
+          {
+            kind: "MISSING_BULLETS",
+            field: "bulletPoints",
+            message: "目前只有 1 個非空白賣點，少於 5 個。",
+          },
+          {
+            kind: "SUSPECTED_TYPO",
+            field: "title",
+            token: "Trukey",
+            suggestion: "Turkey",
+            source: "pages-dictionary",
+            message: "標題疑似有錯字 Trukey。",
+          },
+        ],
+      },
+      {
+        sellerSku: "CSS04-TYPO-ONLY",
+        asin: "B04COPY002",
+        productType: "PET_FOOD",
+        title: "Naturall turkey treats typo-only fixture",
+        bulletPoints: ["One", "Two", "Three", "Four", "Five"],
+        ingredients: "Turkey",
+        readStatus: "complete",
+        readErrors: [],
+        variationRole: "standalone",
+        relationshipStatus: "complete",
+        issues: [{
+          kind: "SUSPECTED_TYPO",
+          field: "title",
+          token: "Naturall",
+          suggestion: "Natural",
+          source: "pages-dictionary",
+          message: "標題疑似有錯字 Naturall。",
+        }],
+      },
+      {
+        sellerSku: "CSS04-READ-INCOMPLETE",
+        asin: "B04COPY003",
+        productType: "PET_FOOD",
+        title: "",
+        bulletPoints: [],
+        ingredients: "",
+        readStatus: "incomplete",
+        readErrors: [{
+          code: "LISTING_CONTENT_NOT_RETURNED",
+          message: "CSS04 fixture preserves an incomplete read without inventing missing content.",
+        }],
+        variationRole: "unknown",
+        relationshipStatus: "incomplete",
+        issues: [],
+      },
+    ],
+    summary: { total: 3 },
+  };
+  const css04ContentJob = standaloneJob(
+    "content",
+    "34000000-0000-4400-8400-000000000002",
+    "34000000-0000-4400-8400-000000000003",
+    css04ContentSnapshot,
+  );
+  const css04AdvertisingStrategySnapshot = {
+    schemaVersion: 1,
+    marketplaceId,
+    marketplaceCode: "US",
+    dateRange: { startDate: "2026-08-01", endDate: "2026-08-07" },
+    currencyCode: "USD",
+    fetchedAt: "2026-08-08T03:00:00.000Z",
+    sourceFetchedAt: {
+      fba: "2026-08-08T02:00:00.000Z",
+      sales: "2026-08-08T02:15:00.000Z",
+      ads: "2026-08-08T02:30:00.000Z",
+    },
+    rows: [{
+      sellerSku: "CSS04-STRATEGY-01",
+      asin: "B04STR0001",
+      title: "CSS04 deterministic FBA advertising strategy row with wrapping copy",
+      price: null,
+      salesStatus: "reported",
+      unitsSold: 10,
+      salesAmount: 200,
+      salesRank: 1,
+      salesTier: "T1",
+      suggestedSpDailyBudget: 300,
+      suggestedSpTargetAcos: 0.35,
+      suggestion: "overrideable-default",
+      spStatus: "reported",
+      spSpend: 35,
+      spSales14d: 100,
+      spActualAcos: 0.35,
+      spActualAcosStatus: "reported",
+      spPurchases14d: 2,
+      spSpendRank: 1,
+      spAttribution: "seller-sku",
+      specification: null,
+      sbSales: null,
+      sbSalesAcos: null,
+      sbAttack: null,
+      sbAttackAcos: null,
+      sdAttack: null,
+      sdAttackAcos: null,
+      sdDefense: null,
+      sdDefenseAcos: null,
+      sdRemarketing: null,
+      sdRemarketingAcos: null,
+      otherAdvertising: null,
+    }],
+    unresolved: [],
+    coverage: {
+      currentFbaSkuCount: 1,
+      salesSourceRowCount: 1,
+      salesResolvedSourceRowCount: 1,
+      salesUnresolvedSourceRowCount: 0,
+      salesAnonymousUnprovenSourceRowCount: 0,
+      salesReportedSkuCount: 1,
+      salesNotReportedSkuCount: 0,
+      spSourceRowCount: 1,
+      spResolvedSourceRowCount: 1,
+      spUnresolvedSourceRowCount: 0,
+      spAnonymousUnprovenSourceRowCount: 0,
+      spReportedSkuCount: 1,
+      spNotReportedSkuCount: 0,
+      spDirectSourceRowCount: 1,
+      spUniqueAsinSourceRowCount: 0,
+    },
+    summary: {
+      tierCounts: { T1: 1, T2: 0, T3: 0, T4: 0 },
+      reportedUnitsSold: 10,
+      unresolvedUnitsSold: 0,
+      sourceUnitsSold: 10,
+      reportedSalesAmount: 200,
+      unresolvedSalesAmount: 0,
+      sourceSalesAmount: 200,
+      reportedSpSpend: 35,
+      unresolvedSpSpend: 0,
+      sourceSpSpend: 35,
+      suggestedSpDailyBudget: 300,
+    },
+    rule: {
+      salesTierMethod: "reported-sales-desc-sku-asc-ceil-20-50-80",
+      adsAttributionMethod: "exact-sku-or-unique-current-fba-asin",
+      missingReportMethod: "null-not-reported-never-zero",
+      unprovenSourceMethod: "anonymous-count-only-no-identifiers-or-metrics",
+      suggestionIsOverrideable: true,
+      presets: {
+        T1: { dailyBudget: 300, targetAcos: 0.35 },
+        T2: { dailyBudget: 100, targetAcos: 0.3 },
+        T3: { dailyBudget: 50, targetAcos: 0.3 },
+        T4: { dailyBudget: 50, targetAcos: 0.5 },
+      },
+      manualFields: [
+        "specification",
+        "sbSales",
+        "sbSalesAcos",
+        "sbAttack",
+        "sbAttackAcos",
+        "sdAttack",
+        "sdAttackAcos",
+        "sdDefense",
+        "sdDefenseAcos",
+        "sdRemarketing",
+        "sdRemarketingAcos",
+        "otherAdvertising",
+      ],
+    },
+    notice: "CSS04 固定唯讀策略資料；建議可覆寫，但不建立、不修改、不啟用 campaign。",
+  };
+  const css04AdvertisingStrategyJob = {
+    schemaVersion: 1,
+    jobId: "css04-strategy-job-0001",
+    marketplaceId,
+    marketplaceCode: "US",
+    dateRange: { startDate: "2026-08-01", endDate: "2026-08-07" },
+    state: "completed",
+    progress: { phase: "building", completed: 4, total: 4 },
+    notice: "CSS04 固定唯讀 FBA 廣告策略已完成。",
+    snapshot: css04AdvertisingStrategySnapshot,
+    errorCode: null,
+  };
+  const css04ReviewSnapshot = {
+    schemaVersion: 2,
+    mode: "demo",
+    marketplaceId,
+    fetchedAt: fixedTime,
+    exportId: "css04-review-export-0001",
+    rows: [
+      {
+        sellerSkus: ["CSS04-REVIEW-CHILD"],
+        asin: "B04REV0001",
+        title: "CSS04 child product with long positive and negative review topics",
+        relationshipRole: "child",
+        status: "COMPLETE",
+        positiveTopics: [{
+          topic: "Dogs enthusiastically return for the texture and natural turkey aroma",
+          numberOfMentions: 18,
+          occurrencePercentage: 42.5,
+          starRatingImpact: 4.75,
+          reviewSnippets: ["Fixture positive topic snippet"],
+        }],
+        negativeTopics: [{
+          topic: "Package size expectations require clearer comparison information",
+          numberOfMentions: 5,
+          occurrencePercentage: 11.75,
+          starRatingImpact: -1.85,
+          reviewSnippets: ["Fixture negative topic snippet"],
+        }],
+        incompleteReason: null,
+        averageProductRating: null,
+        totalReviewCount: null,
+        fullReviewTextAvailable: false,
+      },
+      {
+        sellerSkus: ["CSS04-REVIEW-STANDALONE"],
+        asin: "B04REV0002",
+        title: "CSS04 standalone FBA product with deterministic ranking evidence",
+        relationshipRole: "standalone",
+        status: "COMPLETE",
+        positiveTopics: [{
+          topic: "Ingredient simplicity is repeatedly appreciated by pet owners",
+          numberOfMentions: 12,
+          occurrencePercentage: 31.25,
+          starRatingImpact: 3.6,
+          reviewSnippets: ["Second fixture positive topic"],
+        }],
+        negativeTopics: [{
+          topic: "Some customers request a more compact resealable package",
+          numberOfMentions: 3,
+          occurrencePercentage: 7.5,
+          starRatingImpact: -0.9,
+          reviewSnippets: ["Second fixture negative topic"],
+        }],
+        incompleteReason: null,
+        averageProductRating: null,
+        totalReviewCount: null,
+        fullReviewTextAvailable: false,
+      },
+    ],
+    relationshipIncompleteRows: [],
+    topFivePositive: [
+      {
+        sellerSkus: ["CSS04-REVIEW-CHILD"],
+        asin: "B04REV0001",
+        title: "CSS04 child product with long positive and negative review topics",
+        topic: "Dogs enthusiastically return for the texture and natural turkey aroma",
+        numberOfMentions: 18,
+        occurrencePercentage: 42.5,
+        starRatingImpact: 4.75,
+        metricLabel: "NON_PARENT_ASIN_TOPIC_STAR_RATING_IMPACT",
+      },
+      {
+        sellerSkus: ["CSS04-REVIEW-STANDALONE"],
+        asin: "B04REV0002",
+        title: "CSS04 standalone FBA product with deterministic ranking evidence",
+        topic: "Ingredient simplicity is repeatedly appreciated by pet owners",
+        numberOfMentions: 12,
+        occurrencePercentage: 31.25,
+        starRatingImpact: 3.6,
+        metricLabel: "NON_PARENT_ASIN_TOPIC_STAR_RATING_IMPACT",
+      },
+    ],
+    bottomFiveNegative: [
+      {
+        sellerSkus: ["CSS04-REVIEW-CHILD"],
+        asin: "B04REV0001",
+        title: "CSS04 child product with long positive and negative review topics",
+        topic: "Package size expectations require clearer comparison information",
+        numberOfMentions: 5,
+        occurrencePercentage: 11.75,
+        starRatingImpact: -1.85,
+        metricLabel: "NON_PARENT_ASIN_TOPIC_STAR_RATING_IMPACT",
+      },
+      {
+        sellerSkus: ["CSS04-REVIEW-STANDALONE"],
+        asin: "B04REV0002",
+        title: "CSS04 standalone FBA product with deterministic ranking evidence",
+        topic: "Some customers request a more compact resealable package",
+        numberOfMentions: 3,
+        occurrencePercentage: 7.5,
+        starRatingImpact: -0.9,
+        metricLabel: "NON_PARENT_ASIN_TOPIC_STAR_RATING_IMPACT",
+      },
+    ],
+    summary: {
+      sourceFbaListings: 2,
+      verifiedNonParentListings: 2,
+      uniqueFbaNonParentAsins: 2,
+      verifiedChildListings: 1,
+      verifiedStandaloneListings: 1,
+      excludedParentContainers: 0,
+      relationshipIncomplete: 0,
+      completed: 2,
+      noTopics: 0,
+      feedbackIncomplete: 0,
+      totalIncomplete: 0,
+      incomplete: 0,
+      duplicateSkuAsinsCollapsed: 0,
+    },
+    notice: "CSS04 固定評論主題影響值；負數不是商品負星等。",
+  };
+  const css04ReviewJob = {
+    jobId: "css04-review-job-0001",
+    marketplaceId,
+    mode: "demo",
+    ready: false,
+    status: "READING_NON_PARENT_TOPICS",
+    progress: { completed: 0, total: 2, percent: 0 },
+    message: "CSS04 正在讀取非 parent ASIN 主題。",
+    capabilityNotice: "CSS04 固定唯讀評論主題資料。",
+  };
+  const reportCategories = css04
+    ? [
+        "FBA",
+        "AMAZON_BUSINESS",
+        "ANALYTICS",
+        "B2B_OPPORTUNITIES",
+        "BROWSE_TREE",
+        "EASY_SHIP",
+        "INVENTORY",
+        "INVOICE_DATA",
+        "ORDER",
+        "PAYMENT",
+        "PERFORMANCE",
+        "REGULATORY",
+        "RETURNS",
+        "SETTLEMENT",
+        "TAX",
+      ]
+    : ["FBA"];
+  const reportRows = reportCategories.map((category, index) => ({
+    reportType: index === 0 ? "GET_AFN_INVENTORY_DATA" : `GET_CSS04_${category}_DATA`,
+    label: index === 0 ? "AFN 庫存" : `CSS04 ${category} 固定報表`,
+    description: index === 0
+      ? "FBA 固定庫存摘要。"
+      : `CSS04 ${category} 唯讀視覺分類資料。`,
+    categories: [category],
+    party: "SELLER",
+    fbaScope: category === "EASY_SHIP" ? "OUT_OF_FBA_SCOPE" : "FBA_ONLY",
+    lifecycle: "REQUEST",
+    output: "TAB_DELIMITED",
+    restrictedData: "NONE",
+    roles: ["Amazon Fulfillment"],
+    marketplaceAvailability: "US FBA sellers",
+    prerequisites: [],
+    deprecated: false,
+    officialSource: "https://developer-docs.amazon.com/sp-api/docs/report-type-values-fba",
+    state: category === "EASY_SHIP" ? "OUT_OF_FBA_SCOPE" : "READY_TO_PLAN",
+    amazonPublicArtifactAvailable: true,
+    appDownloadImplemented: false,
+    stateNotice: category === "EASY_SHIP"
+      ? "非 FBA 範圍，固定 fixture 只顯示邊界。"
+      : "Amazon 有此文件，App 尚未接線。",
+  }));
   const reportLibrary = {
     schemaVersion: 1,
     marketplaceId,
     fetchedAt: "2026-08-21T08:00:00.000Z",
     officialCatalog: {
-      uniqueReportTypeCount: 1,
+      uniqueReportTypeCount: reportRows.length,
       verifiedAt: "2026-08-21",
       officialPageUpdatedLabel: "CSS01 deterministic fixture",
       source: "https://developer-docs.amazon.com/sp-api/docs/report-type-values",
@@ -343,28 +905,7 @@
         availability: "AVAILABLE_AFTER_AUDIT",
       },
     ],
-    reports: [
-      {
-        reportType: "GET_AFN_INVENTORY_DATA",
-        label: "AFN 庫存",
-        description: "FBA 庫存摘要。",
-        categories: ["FBA"],
-        party: "SELLER",
-        fbaScope: "FBA_ONLY",
-        lifecycle: "REQUEST",
-        output: "TAB_DELIMITED",
-        restrictedData: "NONE",
-        roles: ["Amazon Fulfillment"],
-        marketplaceAvailability: "US FBA sellers",
-        prerequisites: [],
-        deprecated: false,
-        officialSource: "https://developer-docs.amazon.com/sp-api/docs/report-type-values-fba",
-        state: "READY_TO_PLAN",
-        amazonPublicArtifactAvailable: true,
-        appDownloadImplemented: false,
-        stateNotice: "Amazon 有此文件，App 尚未接線。",
-      },
-    ],
+    reports: reportRows,
     unavailableDocuments: [],
     reviewAuditCapability: {
       supportedForMarketplace: true,
@@ -567,6 +1108,47 @@
         if (request.path === "/api/system/health" && request.method === "GET") {
           return json(health);
         }
+        if (
+          css04 &&
+          request.path === "/api/amazon-ads/status" &&
+          request.method === "GET"
+        ) {
+          return json({
+            marketplaceCode: "US",
+            configured: true,
+            verified: true,
+            lwaConfigured: true,
+            profileConfigured: true,
+            writeEnabled: false,
+            coverageAuditAvailable: true,
+            coverageAuditNotice: "CSS04 固定唯讀 Ads 覆蓋 fixture 已就緒。",
+            testedAt: fixedTime,
+            requiredPermission: "Campaign manager Viewer",
+            permissionVerified: false,
+            notice: "CSS04 固定本機 Ads Profiles／Campaign query 驗證資料。",
+          });
+        }
+        if (
+          css04 &&
+          request.path === "/api/amazon-ads/strategy" &&
+          request.method === "POST"
+        ) {
+          return json(css04AdvertisingStrategyJob);
+        }
+        if (
+          css04 &&
+          request.path === "/api/sp-api/review-audit" &&
+          request.method === "POST"
+        ) {
+          return json(css04ReviewJob, 202);
+        }
+        if (
+          css04 &&
+          request.path === "/api/sp-api/review-audit" &&
+          request.method === "GET"
+        ) {
+          return json(css04ReviewSnapshot);
+        }
         if (request.path === "/api/sp-api/brand-sales" && request.method === "POST") {
           return json({
             jobId: "css01-brand-job-001",
@@ -592,6 +1174,14 @@
           if (request.query.sku === "TARGET-PARENT") return json(targetFamily);
         }
         if (request.path === "/api/sp-api/standalone-audit" && request.method === "POST") {
+          if (css04 && body?.kind === "image") return json(css04ImageJob);
+          if (css04 && body?.kind === "agedInventory") {
+            return json(css04AgedInventoryJob);
+          }
+          if (css04 && body?.kind === "advertising") {
+            return json(css04AdvertisingJob);
+          }
+          if (css04 && body?.kind === "content") return json(css04ContentJob);
           if (body?.kind === "businessPricing") return json(b2bJob);
         }
         if (request.path === "/api/sp-api/report-library" && request.method === "GET") {
