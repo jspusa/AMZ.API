@@ -38,7 +38,8 @@ function previewRequest(): ApiRequest {
 
 function validationResult(
   sellerSku: string,
-  marketplaceId = MARKETPLACE_ID,
+  marketplaceId: BusinessPriceValidationResult["marketplaceId"] =
+    MARKETPLACE_ID,
 ): BusinessPriceValidationResult {
   return {
     mode: "live",
