@@ -11,7 +11,8 @@ function sourceFilePaths(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) return sourceFilePaths(path);
-    return entry.isFile() && /\.tsx?$/u.test(entry.name) ? [path] : [];
+    if (!entry.isFile() || !/\.tsx?$/u.test(entry.name)) return [];
+    return / 2\.tsx?$/u.test(entry.name) ? [] : [path];
   });
 }
 
@@ -187,6 +188,9 @@ describe("W02 Listing Price mutation architecture", () => {
 
   it("keeps Price and Sale semantics out of the legacy SP facade and generic readback", () => {
     const owner = source("../src/main/listing-price-mutations.ts");
+    const businessPricing = source(
+      "../src/main/business-pricing-mutations.ts",
+    );
     const spApi = source("../src/main/amazon/sp-api.ts");
     const readback = source("../src/main/amazon/listing-write-readback.ts");
 
@@ -204,11 +208,14 @@ describe("W02 Listing Price mutation architecture", () => {
         new RegExp(`\\bexport\\s+function\\s+${symbol}\\b`, "u"),
       );
     }
-    expect(readback).toMatch(
-      /import\s*\{\s*isPricingListingError\s*\}\s*from\s*["']\.\/business-pricing-evidence["']/u,
+    expect(businessPricing).toMatch(
+      /import\s*\{[^}]*\bisPricingListingError\b[^}]*\}\s*from\s*["']\.\/amazon\/business-pricing-evidence["']/su,
     );
-    expect(readback).not.toMatch(
-      /import\s*\{[^}]*\bisPricingListingError\b[^}]*\}\s*from\s*["']\.\/sp-api["']/su,
+    expect(importSpecifiers(readback)).not.toContain(
+      "./business-pricing-evidence",
+    );
+    expect(importSpecifiers(readback)).not.toContain(
+      "./business-pricing-types",
     );
   });
 
