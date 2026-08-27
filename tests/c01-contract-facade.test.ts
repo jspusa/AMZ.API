@@ -54,6 +54,10 @@ function sourceFile(sourcePath: string): ts.SourceFile {
   return parsed;
 }
 
+function portablePath(value: string): string {
+  return value.replace(/\\/gu, "/");
+}
+
 function importSpecifiers(sourcePath: string): string[] {
   const specifiers: string[] = [];
   function visit(node: ts.Node): void {
@@ -122,7 +126,9 @@ function constructorOwners(
       ts.forEachChild(node, visit);
     }
     visit(sourceFile(sourcePath));
-    return found ? [relative(REPOSITORY_ROOT, sourcePath)] : [];
+    return found
+      ? [portablePath(relative(REPOSITORY_ROOT, sourcePath))]
+      : [];
   });
 }
 
@@ -140,7 +146,9 @@ function factoryCallOwners(root: string, factoryName: string): string[] {
       ts.forEachChild(node, visit);
     }
     visit(sourceFile(sourcePath));
-    return found ? [relative(REPOSITORY_ROOT, sourcePath)] : [];
+    return found
+      ? [portablePath(relative(REPOSITORY_ROOT, sourcePath))]
+      : [];
   });
 }
 
@@ -212,7 +220,7 @@ function sourcePosition(
   const { line, character } = source.getLineAndCharacterOfPosition(
     node.getStart(source),
   );
-  return `${relative(REPOSITORY_ROOT, source.fileName)}:${line + 1}:${character + 1}`;
+  return `${portablePath(relative(REPOSITORY_ROOT, source.fileName))}:${line + 1}:${character + 1}`;
 }
 
 function rootIdentifier(expression: ts.Expression): string | null {
@@ -472,6 +480,8 @@ describe("C01 contract facade", () => {
   it("constructs each extracted runtime once with only its fixed semantic ports", () => {
     const mainRoot = resolve(REPOSITORY_ROOT, "src/main");
     const expectedOwner = "src/main/amazon/sp-api.ts";
+    expect(portablePath("src\\main\\amazon\\sp-api.ts"))
+      .toBe(expectedOwner);
     const expectedComposition = {
       createSpCredentialRuntime: null,
       createFbaSalesTrend: [
@@ -603,7 +613,8 @@ describe("C01 contract facade", () => {
     )) {
       const sites = factoryCallSites(mainRoot, factoryName);
       expect(sites.map(({ sourcePath }) =>
-        relative(REPOSITORY_ROOT, sourcePath))).toEqual([expectedOwner]);
+        portablePath(relative(REPOSITORY_ROOT, sourcePath))))
+        .toEqual([expectedOwner]);
       expect(sites.every(({ call }) => !isInsideFunction(call))).toBe(true);
       if (expectedProperties === null) {
         expect(sites[0]?.call.arguments).toHaveLength(0);
@@ -640,7 +651,7 @@ describe("C01 contract facade", () => {
       importSpecifiers(sourcePath).flatMap((specifier) => {
         const dependency = localImport(sourcePath, specifier);
         return dependency?.startsWith(`${mainRoot}/`)
-          ? [`${relative(REPOSITORY_ROOT, sourcePath)} -> ${relative(REPOSITORY_ROOT, dependency)}`]
+          ? [`${portablePath(relative(REPOSITORY_ROOT, sourcePath))} -> ${portablePath(relative(REPOSITORY_ROOT, dependency))}`]
           : [];
       })
     );
@@ -655,7 +666,7 @@ describe("C01 contract facade", () => {
           const dependency = localImport(sourcePath, specifier);
           return dependency === routerPath || dependency === spApiPath
             ? [
-                `${relative(REPOSITORY_ROOT, sourcePath)} -> ${relative(REPOSITORY_ROOT, dependency)}`,
+                `${portablePath(relative(REPOSITORY_ROOT, sourcePath))} -> ${portablePath(relative(REPOSITORY_ROOT, dependency))}`,
               ]
             : [];
         })
