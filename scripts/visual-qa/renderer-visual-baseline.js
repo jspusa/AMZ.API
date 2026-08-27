@@ -527,10 +527,20 @@ async (page) => {
     verticalScrollerSelector = null,
     verticalLastItemSelector = null,
     motionSelector = null,
+    windowScrollTop = null,
   }) => {
     currentState = `${phase.name}/${profile.name}/${surface}`;
     await settle();
-    if (dialogSelector) {
+    if (windowScrollTop !== null) {
+      await page.evaluate(({ windowScrollTop }) => {
+        window.scrollTo({ top: windowScrollTop, left: 0, behavior: "instant" });
+      }, { windowScrollTop });
+      await page.waitForFunction(
+        ({ windowScrollTop }) =>
+          window.scrollX === 0 && window.scrollY === windowScrollTop,
+        { windowScrollTop },
+      );
+    } else if (dialogSelector) {
       await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: "instant" }));
       await page.waitForFunction(() => window.scrollX === 0 && window.scrollY === 0);
     }
@@ -760,6 +770,24 @@ async (page) => {
           const compact = profile.width <= 390;
           const compact320 = profile.name === "compact-320-large";
           const expectedPage = expectedPageFor(profile);
+          const expectedReportCategoryLabels = [
+            "全部",
+            "Amazon Business",
+            "品牌與分析",
+            "B2B 機會",
+            "目錄分類",
+            "Easy Ship（非 FBA）",
+            "FBA",
+            "商品與庫存",
+            "發票資料",
+            "訂單",
+            "款項",
+            "績效與促銷",
+            "法規與 EPR",
+            "退貨",
+            "結算",
+            "稅務",
+          ];
           currentState = `${phase.name}/${profile.name}/css04-load`;
           await page.goto(`${phase.baseUrl}/?font=${profile.font}&css04=1`, {
             waitUntil: "domcontentloaded",
@@ -926,10 +954,13 @@ async (page) => {
             brandLayout.legendColumns.split(" ").length === 2,
             `${currentState}: brand legend is not two columns ${brandLayout.legendColumns}`,
           );
-          await brandCard.evaluate((card) => {
-            const top = window.scrollY + card.getBoundingClientRect().top;
-            window.scrollTo({ top: Math.max(0, Math.round(top - 112)), behavior: "instant" });
-          });
+          const brandScroll = await page.evaluate(() => ({
+            maximum: document.documentElement.scrollHeight - window.innerHeight,
+          }));
+          ensure(
+            brandScroll.maximum >= 600,
+            `${currentState}: brand fixture cannot reach deterministic scroll ${JSON.stringify(brandScroll)}`,
+          );
           currentState = `${phase.name}/${profile.name}/brand-interactive`;
           await capture({
             phase,
@@ -940,6 +971,7 @@ async (page) => {
             requireScopeContainment: true,
             expectedPage,
             focusSelector: ".brand-sales-pie-slice",
+            windowScrollTop: 600,
           });
 
           await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
@@ -974,10 +1006,31 @@ async (page) => {
           const reportsDialog = page.getByRole("dialog", { name: "報表區" });
           await reportsDialog.waitFor();
           await reportsDialog.locator(".report-library-report").first().waitFor();
+          const reportCategoryNav = reportsDialog.getByRole("navigation", {
+            name: "報表分類",
+          });
+          const reportCategoryButtons = reportCategoryNav.getByRole("button");
+          const reportCategoryLabels = (await reportCategoryButtons.allTextContents())
+            .map((label) => label.trim());
+          ensure(
+            await reportCategoryButtons.count() === expectedReportCategoryLabels.length &&
+              JSON.stringify(reportCategoryLabels) ===
+                JSON.stringify(expectedReportCategoryLabels),
+            `${currentState}: report categories changed ${JSON.stringify(reportCategoryLabels)}`,
+          );
           if (compact) {
             currentState = `${phase.name}/${profile.name}/reports-scroll`;
             await exerciseHorizontalScroller(".report-library-toolbar nav", true);
           }
+          await reportCategoryNav
+            .getByRole("button", { name: "稅務", exact: true })
+            .click();
+          await reportsDialog
+            .locator(".report-library-report", { hasText: "CSS04 TAX" })
+            .waitFor();
+          await reportCategoryNav
+            .getByRole("button", { name: "FBA", exact: true })
+            .click();
           await reportsDialog
             .getByPlaceholder("搜尋名稱、reportType 或角色")
             .fill("FBA");

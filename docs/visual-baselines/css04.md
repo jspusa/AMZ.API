@@ -42,7 +42,8 @@ and SHA-256
 The moved ranges contain no relative resource reference whose resolution could
 change. No selector, declaration, at-rule, specificity, media block,
 formatting, or dead rule was edited or removed. The former `app.css` file and
-all tracked references to it are absent.
+all active tracked source, script, and test references to it are absent;
+historical evidence documents intentionally retain its name.
 
 ## Composition and production checks
 
@@ -86,8 +87,9 @@ The harness proves all of the following:
 - menus, drawer close targets, Brand SVG controls, switches, report category
   navigation, and tested keyboard targets retain visible focus and the expected
   interaction state;
-- Report Library covers all fifteen categories and Review is reached through
-  its intended Home shortcut rather than being invented as a report-menu item;
+- Report Library proves the exact All-plus-fifteen category controls, operates
+  a Tax-to-FBA filter switch, and Review is reached through its intended Home
+  shortcut rather than being invented as a report-menu item;
 - compact report navigation and inbound tables exercise their intended internal
   horizontal ranges without silently allowing unrelated overflow;
 - reduced motion disables the Sales skater jump and wheel animations, including
@@ -121,22 +123,21 @@ test unchanged.
 ## Pixel comparison and visual review
 
 The final inherited matrices were nearly entirely pixel-exact: CSS01 was
-44/45 exact, CSS02 was 8/9 exact, and CSS03 was 18/21 exact. Their remaining
-pixels were bounded text/raster noise: maximum channel deltas were 1, 2, and 8
-respectively, with no geometry difference.
+44/45 exact, CSS02 was 9/9 exact, and CSS03 was 19/21 exact. Their remaining
+pixels were bounded text/raster noise: maximum channel deltas were 1 and 8 for
+CSS01 and CSS03 respectively, with no geometry difference.
 
-In the focused CSS04 matrix, 42 of 51 pairs were pixel-exact. Seven of the nine
-remaining pairs changed no more than 153 pixels, with maximum channel delta 3
-and maximum mean absolute channel error 0.000054. The two Report Library pairs
-exercise a blurred backdrop:
+In the focused CSS04 matrix, 45 of 51 pairs were pixel-exact. The six remaining
+pairs were bounded browser text/raster noise:
 
-- desktop-standard changed 3.647986% of viewport pixels, but mean absolute
-  channel error was only 0.089059 and the dialog itself changed just 318 pixels;
-  almost all variation was in the browser-composited blurred backdrop;
-- desktop-large used a one-pixel vertical raster origin offset despite exact
-  DOM, viewport, and scroll metrics. Aligning that capture by one pixel reduced
-  mean absolute channel error from 3.063360 to 0.037645, maximum channel delta
-  from 238 to 15, and left only low-amplitude antialias/compositor noise.
+| Profile / surface | Changed pixels | Changed area | Max channel delta | Mean absolute channel error |
+| --- | ---: | ---: | ---: | ---: |
+| desktop-standard / Home primary | 50 | 0.003472% | 8 | 0.000068 |
+| desktop-large / Reviews | 132 | 0.009167% | 1 | 0.000047 |
+| desktop-large / Reports | 118 | 0.008194% | 1 | 0.000043 |
+| desktop-large / Brand interaction | 18 | 0.001250% | 3 | 0.000016 |
+| compact-320-large / Image results | 1 | 0.000550% | 1 | 0.000006 |
+| compact-320-large / Missing bullets | 1 | 0.000550% | 1 | 0.000002 |
 
 Representative desktop, large-font, 390-pixel, 320-pixel, reduced-motion,
 report, audit, Ads, Brand, and inbound captures, plus both Report Library
