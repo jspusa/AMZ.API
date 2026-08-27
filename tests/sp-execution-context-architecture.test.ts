@@ -643,7 +643,10 @@ function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) return sourceFiles(path);
-    return /\.(?:ts|tsx)$/u.test(entry.name) ? [path] : [];
+    if (!/\.(?:ts|tsx)$/u.test(entry.name) || / 2\.(?:ts|tsx)$/u.test(entry.name)) {
+      return [];
+    }
+    return [path];
   });
 }
 
