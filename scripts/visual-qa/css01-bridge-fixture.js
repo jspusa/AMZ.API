@@ -346,6 +346,52 @@
     },
     notice: "FBA-only · CSS01 固定視覺 fixture",
   };
+  const accountingSnapshot = {
+    marketplaceId,
+    fetchedAt: fixedTime,
+    capabilities: [
+      {
+        id: "FBA_STORAGE_FEES",
+        label: "FBA 每月倉儲費估算",
+        artifact: "TAB_DELIMITED_REPORT",
+        access: "CREATE_PUBLIC_REPORT",
+        roles: ["Pricing", "Amazon Fulfillment"],
+        availability: "CONFIGURED_FBA_MARKETPLACES",
+        fbaSafety: "OFFICIAL_FBA_ONLY",
+        reportType: "GET_FBA_STORAGE_FEE_CHARGES_DATA",
+        officialSource: "https://developer-docs.amazon.com/sp-api/docs/report-type-values-fba",
+        notice: "可請求或排程；內容是估算，不是發票。",
+        state: "READY_CREATE_REPORT",
+      },
+      {
+        id: "FINANCIAL_HOLDS",
+        label: "日期區間財務保留款",
+        artifact: "TAB_DELIMITED_REPORT",
+        access: "SELLER_CENTRAL_PREREQUISITE",
+        roles: ["Finance and Accounting"],
+        availability: "CONFIGURED_FBA_MARKETPLACES",
+        fbaSafety: "ACCOUNT_WIDE_NOT_FBA_SAFE",
+        reportType: "GET_DATE_RANGE_FINANCIAL_HOLDS_DATA",
+        officialSource: "https://developer-docs.amazon.com/sp-api/docs/report-type-values",
+        notice: "需先確認帳號與 FBA 安全範圍。",
+        state: "MANUAL_PREREQUISITE",
+      },
+      {
+        id: "GENERIC_MARKETPLACE_INVOICES",
+        label: "一般站點 Amazon 發票",
+        artifact: "NONE",
+        access: "UNAVAILABLE_PUBLIC_API",
+        roles: [],
+        availability: "NONE",
+        fbaSafety: "NO_PUBLIC_DATA",
+        reportType: null,
+        officialSource: "https://developer-docs.amazon.com/sp-api/docs/invoices-api",
+        notice: "公開 API 不提供這項下載。",
+        state: "UNAVAILABLE",
+      },
+    ],
+    notice: "CSS02 固定唯讀 fixture；未連線 Amazon。",
+  };
   const inboundSnapshot = {
     schemaVersion: 1,
     mode: "demo",
@@ -511,6 +557,9 @@
         }
         if (request.path === "/api/sp-api/report-library" && request.method === "GET") {
           return json(reportLibrary);
+        }
+        if (request.path === "/api/sp-api/accounting/capabilities" && request.method === "GET") {
+          return json(accountingSnapshot);
         }
         if (request.path === "/api/sp-api/inbound-shipments" && request.method === "POST") {
           return json(inboundJob);

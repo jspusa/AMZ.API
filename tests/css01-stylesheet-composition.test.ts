@@ -66,7 +66,15 @@ describe("CSS01 renderer stylesheet composition", () => {
       "utf8",
     );
     expect(entrySource.replace(/\r\n?/gu, "\n")).toBe(
-      '@import "../app.css";\n',
+      [
+        '@import "./foundation.css";',
+        '@import "./legacy-shell-drawers.css";',
+        '@import "./subscription-accounting.css";',
+        '@import "./content.css";',
+        '@import "./business-pricing.css";',
+        '@import "../app.css";',
+        "",
+      ].join("\n"),
     );
   });
 
@@ -109,12 +117,9 @@ describe("CSS01 renderer stylesheet composition", () => {
     expect(composition.fingerprint).toBe(MULTILINE_SELECTOR_FINGERPRINT);
   });
 
-  it("pins the accepted current renderer rule stream and preserves its raw CSS", async () => {
+  it("pins the accepted current renderer rule stream through the ordered modules", async () => {
     const rootDirectory = fileURLToPath(
       new URL("../src/renderer/src/", import.meta.url),
-    );
-    const appCssPath = fileURLToPath(
-      new URL("../src/renderer/src/app.css", import.meta.url),
     );
     const composition = await verifyStylesheetComposition({
       entryPath: join(rootDirectory, "styles", "index.css"),
@@ -127,9 +132,9 @@ describe("CSS01 renderer stylesheet composition", () => {
       composition.files.map((file) =>
         relative(rootDirectory, file).split(sep).join("/"),
       ),
-    ).toEqual(["styles/index.css", "app.css"]);
+    ).toEqual(RENDERER_STYLESHEET_CONTRACT.expectedFiles);
     expect(composition.canonicalJson).toHaveLength(438_225);
-    expect(composition.css).toBe(await readFile(appCssPath, "utf8"));
+    expect(Buffer.byteLength(composition.css)).toBe(293_971);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
@@ -139,16 +144,16 @@ describe("CSS01 renderer stylesheet composition", () => {
     const rendererRoot = fileURLToPath(
       new URL("../src/renderer/src/", import.meta.url),
     );
-    const entrySource = await readFile(
-      join(rendererRoot, "styles", "index.css"),
-      "utf8",
-    );
-    const appSource = await readFile(join(rendererRoot, "app.css"), "utf8");
     const toCrLf = (source: string) => source.replace(/\r?\n/gu, "\r\n");
-    const directory = await createFixture({
-      "styles/index.css": toCrLf(entrySource),
-      "app.css": toCrLf(appSource),
-    });
+    const crLfFiles = Object.fromEntries(
+      await Promise.all(
+        RENDERER_STYLESHEET_CONTRACT.expectedFiles.map(async (path) => [
+          path,
+          toCrLf(await readFile(join(rendererRoot, path), "utf8")),
+        ]),
+      ),
+    );
+    const directory = await createFixture(crLfFiles);
 
     const composition = await verifyStylesheetComposition({
       entryPath: join(directory, "styles", "index.css"),
