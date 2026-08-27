@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { testRegionConnections } from "../src/main/amazon/connection-health";
-import { SpApiError } from "../src/main/amazon/sp-api";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 
 describe("SP-API connection health", () => {
   it("attributes an Orders authorization failure to Orders and skips Listings", async () => {

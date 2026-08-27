@@ -42,6 +42,7 @@ describe("FBA catalog Reports coordinator", () => {
         identity: vi.fn(),
         seeds: vi.fn(),
         businessPricingAudit: vi.fn(),
+        unboundVariationAudit: vi.fn(),
       },
     });
 
@@ -82,6 +83,7 @@ describe("FBA catalog Reports coordinator", () => {
         identity: vi.fn(),
         seeds: vi.fn(),
         businessPricingAudit: vi.fn(),
+        unboundVariationAudit: vi.fn(),
       },
     });
 
@@ -130,6 +132,7 @@ describe("FBA catalog Reports coordinator", () => {
         identity: vi.fn(),
         seeds: vi.fn(),
         businessPricingAudit: vi.fn(),
+        unboundVariationAudit: vi.fn(),
       },
     });
 
@@ -204,6 +207,7 @@ describe("FBA catalog Reports coordinator", () => {
         identity: vi.fn(),
         seeds: vi.fn(),
         businessPricingAudit: vi.fn(),
+        unboundVariationAudit: vi.fn(),
       },
     });
 
@@ -244,6 +248,7 @@ describe("FBA catalog Reports coordinator", () => {
         identity: vi.fn(),
         seeds: vi.fn(),
         businessPricingAudit: vi.fn(),
+        unboundVariationAudit: vi.fn(),
       },
     });
 
@@ -272,6 +277,7 @@ describe("FBA catalog Reports coordinator", () => {
       identity: vi.fn(),
       seeds: vi.fn(),
       businessPricingAudit: vi.fn(),
+      unboundVariationAudit: vi.fn(),
     };
     const coordinator = new FbaCatalogReports({
       reports: reports as unknown as Pick<
@@ -334,6 +340,7 @@ describe("FBA catalog Reports coordinator", () => {
         identity: vi.fn(),
         seeds: vi.fn(),
         businessPricingAudit: vi.fn(),
+        unboundVariationAudit: vi.fn(),
       },
     });
 
@@ -391,6 +398,147 @@ describe("FBA catalog Reports coordinator", () => {
     );
   });
 
+  it("reads an unbound-variation audit from the existing All Listings document without create", async () => {
+    const start = vi.fn();
+    const readDocument = vi.fn(async () => ({
+      mode: "live" as const,
+      text: [
+        "seller-sku\tasin\titem-name\tfulfillment-channel",
+        "STANDALONE-SKU\tB000000011\tStandalone listing\tAMAZON_NA",
+      ].join("\n"),
+    }));
+    const listings = createScriptedListingsReadAdapter([{
+      operation: "search",
+      result: {
+        status: 200,
+        envelope: {
+          numberOfResults: 1,
+          pagination: {},
+          items: [{
+            sku: "STANDALONE-SKU",
+            summaries: [{
+              marketplaceId: US,
+              asin: "B000000011",
+              productType: "PET_FOOD",
+              itemName: "Standalone listing",
+            }],
+            productTypes: [{ marketplaceId: US, productType: "PET_FOOD" }],
+            relationships: [],
+            attributes: {},
+            fulfillmentAvailability: [{
+              fulfillmentChannelCode: "AMAZON_NA",
+              quantity: 1,
+            }],
+            issues: [],
+          }],
+        },
+        requestId: "variation-batch-request",
+        rateLimit: null,
+        retryAfter: null,
+        profile: "variation",
+      },
+    }]);
+    const coordinator = new FbaCatalogReports({
+      reports: {
+        start,
+        read: vi.fn(),
+        status: vi.fn(),
+        readDocument,
+      } as unknown as Pick<
+        ReportsRuntime,
+        "start" | "read" | "status" | "readDocument"
+      >,
+      context: createScriptedSpExecutionContextAdapter(() => ({
+        marketplaceId: US,
+        mode: "live",
+        accountScope: "opaque-catalog-account",
+      })),
+      listings,
+      demo: {
+        export: vi.fn(),
+        identity: vi.fn(),
+        seeds: vi.fn(),
+        businessPricingAudit: vi.fn(),
+        unboundVariationAudit: vi.fn(),
+      },
+      pace: async () => undefined,
+      now: () => new Date("2026-08-27T00:00:00.000Z"),
+    });
+
+    const snapshot = await coordinator.read({
+      view: "unbound-variation-audit",
+      marketplaceId: US,
+      reportId: "report-lease.all",
+      documentId: "report-document.all",
+    });
+
+    expect(snapshot).toMatchObject({
+      mode: "live",
+      marketplaceId: US,
+      fetchedAt: "2026-08-27T00:00:00.000Z",
+      rows: [{ sellerSku: "STANDALONE-SKU", asin: "B000000011" }],
+      summary: {
+        totalFbaListings: 1,
+        completed: 1,
+        unbound: 1,
+        incomplete: 0,
+      },
+    });
+    expect(start).not.toHaveBeenCalled();
+    expect(readDocument).toHaveBeenCalledOnce();
+    expect(listings.requests).toEqual([{
+      operation: "search",
+      intent: "variation-sku-batch",
+      marketplaceId: US,
+      sellerSkus: ["STANDALONE-SKU"],
+    }]);
+  });
+
+  it("fails closed when a legacy demo source has no unbound-variation reader", async () => {
+    const readDocument = vi.fn();
+    const coordinator = new FbaCatalogReports({
+      reports: {
+        start: vi.fn(),
+        read: vi.fn(async () => ({
+          mode: "demo" as const,
+          ready: true,
+          reportId: "report-lease.demo",
+          documentId: "report-document.demo",
+          status: "DONE" as const,
+          notice: "done",
+        })),
+        status: vi.fn(),
+        readDocument,
+      } as unknown as Pick<
+        ReportsRuntime,
+        "start" | "read" | "status" | "readDocument"
+      >,
+      context: createScriptedSpExecutionContextAdapter(() => ({
+        marketplaceId: US,
+        mode: "demo",
+        accountScope: "opaque-demo-account",
+      })),
+      listings: createScriptedListingsReadAdapter([]),
+      demo: {
+        export: vi.fn(),
+        identity: vi.fn(),
+        seeds: vi.fn(),
+        businessPricingAudit: vi.fn(),
+      },
+    });
+
+    await expect(coordinator.read({
+      view: "unbound-variation-audit",
+      marketplaceId: US,
+      reportId: "report-lease.demo",
+      documentId: "report-document.demo",
+    })).rejects.toMatchObject({
+      status: 500,
+      code: "UPSTREAM_UNAVAILABLE",
+    });
+    expect(readDocument).not.toHaveBeenCalled();
+  });
+
   it("validates a demo lease without asking the document adapter for text", async () => {
     const readDocument = vi.fn(async () => {
       throw new Error("demo must not read a runtime document");
@@ -405,6 +553,7 @@ describe("FBA catalog Reports coordinator", () => {
       identity: vi.fn(),
       seeds: vi.fn(async () => demoSeeds),
       businessPricingAudit: vi.fn(),
+      unboundVariationAudit: vi.fn(),
     };
     const coordinator = new FbaCatalogReports({
       reports: {

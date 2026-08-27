@@ -33,6 +33,66 @@ export type FbaInventorySummary = {
   };
 };
 
+export type RestockPlanSnapshot = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  asin: string | null;
+  fnSku: string | null;
+  title: string;
+  targetDays: number;
+  leadTimeDays: number;
+  safetyDays: number;
+  casePack: number;
+  inventory: {
+    fulfillable: number;
+    reserved: number;
+    inboundWorking: number;
+    inboundShipped: number;
+    inboundReceiving: number;
+    unfulfillable: number;
+    researching: number;
+    inventoryPosition: number;
+  };
+  demand: {
+    lookbackDays: number;
+    units: number;
+    averageDailyUnits: number;
+    ordersScanned: number;
+    partial: boolean;
+  };
+  daysOfCover: number | null;
+  reorderPoint: number;
+  recommendedUnits: number;
+  forecastStockoutAt: string | null;
+  action: "RESTOCK_NOW" | "WATCH" | "HEALTHY" | "NO_DEMAND";
+  fetchedAt: string;
+  requestId: string | null;
+  rateLimit: string | null;
+  notice: string;
+  skillConnected: boolean;
+};
+
+export type SubscriptionAuditSnapshot = Omit<
+  FbaSubscriptionAuditHistorySnapshot,
+  "marketplaceId"
+> & Readonly<{
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  requestedMonths: number;
+  fetchedAt: string;
+  inventoryEvidence: Readonly<{
+    source: "FBA_INVENTORY_API_COMPLETE_PAGINATION";
+    coverage: "complete" | "partial";
+    returnedInventoryRows: number;
+    provenSkuCount: number;
+    unrecognizedSellerSkuRows: number;
+    verifiableReplenishmentOfferCount: number;
+    unverifiedFbaSkuCount: number;
+  }>;
+  notice: string;
+}>;
+
 export type FbaInventoryReadPlan =
   | Readonly<{
       intent: "item";

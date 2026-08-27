@@ -187,9 +187,9 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
       );
     }
     expect(duplicateTypes).toEqual([]);
-    expect(
-      /from\s+["']\.\/listing-content-types["']/u.test(spApi),
-    ).toBe(true);
+    expect(spApi).not.toMatch(
+      /(?:from|export\s+type\s*\{[^}]*\}\s*from)\s+["']\.\/listing-content-types["']/u,
+    );
   });
 
   it("keeps a fixed gateway with opaque source and PTD evidence", () => {
@@ -257,11 +257,16 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
   });
 
   it("records dispatch before the fixed live transport call", () => {
-    const spApi = source("../src/main/amazon/sp-api.ts");
+    const production = source(
+      "../src/main/amazon/listing-content-gateway-production.ts",
+    );
+    const transport = source(
+      "../src/main/amazon/listings-write-production.ts",
+    );
     const productionGateway = section(
-      spApi,
-      "export const listingContentGatewayProduction: ListingContentGateway = {",
-      "\n};",
+      production,
+      "  const gateway: ListingContentGateway = {",
+      "\n  };",
     );
 
     expect(productionGateway).not.toBe("");
@@ -274,6 +279,68 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
     expect(productionGateway).toMatch(
       /recordBeforeSend:\s*recordDispatch/u,
     );
+    const send = section(transport, "  const send = async (", "\n  };");
+    const firstFence = send.indexOf(
+      "await assertBeforeSend(command.assertBeforeSend);",
+    );
+    const record = send.indexOf("await command.recordBeforeSend();");
+    const secondFence = send.indexOf(
+      "await assertBeforeSend(command.assertBeforeSend);",
+      firstFence + 1,
+    );
+    const fixedPatch = send.indexOf("method: \"PATCH\"");
+    expect([firstFence, record, secondFence, fixedPatch].every(
+      (index) => index >= 0,
+    )).toBe(true);
+    expect(firstFence).toBeLessThan(record);
+    expect(record).toBeLessThan(secondFence);
+    expect(secondFence).toBeLessThan(fixedPatch);
+  });
+
+  it("keeps one production factory and the fixed transport behind it", () => {
+    const files = sourceFilePaths(SRC_ROOT);
+    const spApi = source("../src/main/amazon/sp-api.ts");
+    const productionPath = portablePath(fileURLToPath(new URL(
+      "../src/main/amazon/listing-content-gateway-production.ts",
+      import.meta.url,
+    )));
+    const production = readFileSync(productionPath, "utf8");
+    const unexpectedFactoryCallers = files.flatMap((filename) => {
+      const portableFilename = portablePath(filename);
+      if (
+        portableFilename === productionPath ||
+        portableFilename.endsWith("/main/amazon/sp-api.ts")
+      ) return [];
+      return /\bcreateListingContentGatewayProduction\s*\(/u.test(
+          readFileSync(filename, "utf8"),
+        )
+        ? [portablePath(relative(SRC_ROOT, filename))]
+        : [];
+    });
+
+    expect(unexpectedFactoryCallers).toEqual([]);
+    expect(
+      spApi.match(/\bcreateListingContentGatewayProduction\s*\(/gu),
+    ).toHaveLength(1);
+    expect(spApi).toMatch(
+      /export const listingContentGatewayProduction\s*=\s*\n?\s*listingContentGatewayRuntime\.gateway/u,
+    );
+    expect(production).toMatch(/write:\s*ListingsWriteProduction/u);
+    expect(production).toMatch(
+      /recordBeforeSend:\s*recordDispatch/u,
+    );
+    expect(production).not.toMatch(
+      /\bfetch\s*\(|https?:\/\/|requestAccessToken|invalidateAccessToken|sellerId/u,
+    );
+    for (const superseded of [
+      "ProductionListingContentSourceEvidence",
+      "listingContentGatewayPatchBody",
+      "listingContentValidationReceipt",
+      "demoContentOverrides",
+    ]) {
+      expect(spApi).not.toMatch(new RegExp(`\\b${superseded}\\b`, "u"));
+      expect(production).toMatch(new RegExp(`\\b${superseded}\\b`, "u"));
+    }
   });
 
   it("keeps renderer, preload, audits and exports outside the write gateway", () => {

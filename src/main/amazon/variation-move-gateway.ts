@@ -2,7 +2,6 @@ import type { MarketplaceId } from "../../shared/marketplaces";
 import type { ListingWriteExecutionFence } from
   "./listing-write-execution-fence";
 import type { ListingIssue } from "./sp-api-error";
-import type { VariationFieldDescriptor } from "./variation-update";
 
 declare const variationMoveSourceEvidenceBrand: unique symbol;
 declare const variationMoveTargetEvidenceBrand: unique symbol;

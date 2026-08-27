@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
-import { SpApiError } from "../src/main/amazon/sp-api";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import {
   buildBrandSalesSnapshot,
   type BrandSalesSnapshot,

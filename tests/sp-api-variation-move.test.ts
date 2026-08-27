@@ -6,8 +6,9 @@ import { ApiRouter } from "../src/main/api-router";
 import {
   invalidateSpApiCredentialCaches,
   variationMoveGatewayProduction,
-  type VariationMoveInput,
 } from "../src/main/amazon/sp-api";
+import type { VariationMoveInput } from
+  "../src/main/amazon/variation-move-types";
 import type { ListingWriteExecutionFence } from
   "../src/main/amazon/listing-write-execution-fence";
 import {

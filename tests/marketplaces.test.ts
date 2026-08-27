@@ -10,7 +10,10 @@ import {
 import { ACCOUNTING_MARKETPLACES } from "../src/main/amazon/accounting-capabilities";
 import { REPORT_LIBRARY_MARKETPLACES } from "../src/main/amazon/report-library";
 import { OFFICIAL_SELLER_REPLENISHMENT_MARKETPLACES } from "../src/main/amazon/replenishment-audit";
-import { MARKETPLACES as SP_API_MARKETPLACES } from "../src/main/amazon/sp-api";
+import {
+  isMarketplaceId,
+  MARKETPLACES as SP_API_MARKETPLACES,
+} from "../src/main/amazon/sp-marketplaces";
 import { isSubscriptionAuditMarketplaceSupported } from "../src/renderer/src/subscription-audit";
 
 const EXPECTED_IDS = [
@@ -90,6 +93,7 @@ describe("shared marketplace metadata", () => {
   it("derives main-process neutral fields without changing domain representations", () => {
     const accountingRegion = { na: "NA", fe: "FE", eu: "EU" } as const;
     for (const marketplace of MARKETPLACES) {
+      expect(isMarketplaceId(marketplace.id)).toBe(true);
       expect(SP_API_MARKETPLACES[marketplace.id]).toEqual({
         label: marketplace.label.replace(/站$/u, ""),
         shortLabel: marketplace.shortLabel,
@@ -107,6 +111,9 @@ describe("shared marketplace metadata", () => {
         code: marketplace.code,
         label: marketplace.label.replace(/站$/u, ""),
       });
+    }
+    for (const inheritedName of ["constructor", "toString", "__proto__"]) {
+      expect(isMarketplaceId(inheritedName)).toBe(false);
     }
 
     for (const supportedCode of ["US", "CA", "JP", "UK", "DE"] as const) {
@@ -139,7 +146,7 @@ describe("shared marketplace metadata", () => {
       demoFbaCatalog: "../src/main/amazon/demo-fba-catalog.ts",
       orders: "../src/main/amazon/orders-reads.ts",
       ordersProduction: "../src/main/amazon/orders-reads-production.ts",
-      spApi: "../src/main/amazon/sp-api.ts",
+      spMarketplaces: "../src/main/amazon/sp-marketplaces.ts",
       vault: "../src/main/credential-vault.ts",
     } as const;
     const sources = Object.fromEntries(await Promise.all(
@@ -169,7 +176,12 @@ describe("shared marketplace metadata", () => {
     expect(sources.customerFeedbackProduction).toContain(
       "customerFeedbackMarketplaceSupported",
     );
-    expect(sources.spApi).toContain("customerFeedbackPageAdapterProduction");
+    const spApi = await readFile(
+      new URL("../src/main/amazon/sp-api.ts", import.meta.url),
+      "utf8",
+    );
+    expect(spApi).toContain('from "./sp-marketplaces"');
+    expect(spApi).toContain("customerFeedbackPageAdapterProduction");
   });
 
   it("keeps renderer marketplace selectors dependent on the shared source", async () => {

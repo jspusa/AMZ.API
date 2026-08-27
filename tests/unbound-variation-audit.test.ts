@@ -6,7 +6,7 @@ import {
 import {
   buildUnboundVariationSearchBatches,
   classifyUnboundVariationSearchBatch,
-} from "../src/main/amazon/sp-api";
+} from "../src/main/amazon/variation-catalog-reads";
 import {
   readFbaCatalogSeeds as parseFbaListingReportSeeds,
 } from "../src/main/amazon/catalog-report-reads";

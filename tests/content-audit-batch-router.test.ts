@@ -3,7 +3,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createContentAuditWorkbookV2 } from "../src/main/amazon/xlsx";
 import type { FixedReportBroker } from "../src/main/amazon/report-broker";
-import { SpApiError } from "../src/main/amazon/sp-api";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import type {
   ListingContentUpdateResult,
   UpdateListingContentInput,

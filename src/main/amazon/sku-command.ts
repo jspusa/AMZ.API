@@ -6,12 +6,12 @@ import {
   type SpApiOperation,
 } from "./sp-api-error";
 import type {
-  ListingImageSnapshot,
-  ListingPriceSnapshot,
   RestockPlanSnapshot,
   SubscribeAndSaveOfferSnapshot,
-} from "./sp-api";
+} from "./fba-inventory-replenishment";
 import type { ListingContentSnapshot } from "./listing-content-types";
+import type { ListingImageSnapshot } from "./listing-image-types";
+import type { ListingPriceSnapshot } from "./listing-price-types";
 import type {
   OpaqueAccountScope,
   SpExecutionContext,

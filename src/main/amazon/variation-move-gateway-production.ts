@@ -8,7 +8,6 @@ import {
   listingSubmissionIssuesAreWellFormed,
 } from "./business-pricing-evidence";
 import {
-  readVariationFamily,
   readVariationItem,
   readVariationItemAndFamily,
   type VariationItemReadResult,
@@ -30,10 +29,12 @@ import {
   SpApiPreCommitError,
   type ListingIssue,
 } from "./sp-api-error";
+import type {
+  ListingsWriteProduction,
+  ListingsWriteReceipt,
+} from "./listings-write-production";
 import { classifyUnboundVariationEvidence } from
   "./unbound-variation-audit";
-import type { ListingWriteExecutionFence } from
-  "./listing-write-execution-fence";
 import {
   assertVariationDetached,
   buildVariationAttachBody,
@@ -61,13 +62,7 @@ import type {
   VariationMoveValidationReceipt,
 } from "./variation-move-gateway";
 
-type VariationMoveTransportReply = Readonly<{
-  ok: boolean;
-  status: number;
-  requestId: string | null;
-  retryAfter: string | null;
-  payload: unknown;
-}>;
+type VariationMoveTransportReply = ListingsWriteReceipt;
 
 export type VariationMoveGatewayProductionDependencies = Readonly<{
   listings: ListingsReadAdapter;
@@ -77,14 +72,7 @@ export type VariationMoveGatewayProductionDependencies = Readonly<{
     marketplaceId: MarketplaceId,
     sellerSku: string,
   ): VariationFamilySnapshot;
-  write(input: Readonly<{
-    marketplaceId: MarketplaceId;
-    sellerSku: string;
-    body: VariationPatchBody;
-    validationPreview: boolean;
-    fence?: ListingWriteExecutionFence;
-    recordBeforeSend?: () => Promise<void>;
-  }>): Promise<VariationMoveTransportReply>;
+  write: ListingsWriteProduction;
 }>;
 
 type EvidenceBase = Readonly<{
@@ -1070,11 +1058,10 @@ export function createVariationMoveGatewayProduction(
         ? observeDemo(descriptor)
         : observeLive(descriptor),
     validationPreview: async (descriptor) => {
-      const reply = await dependencies.write({
+      const reply = await dependencies.write.validationPreview({
         marketplaceId: descriptor.marketplaceId,
         sellerSku: descriptor.sellerSku,
-        body: patchBody(descriptor),
-        validationPreview: true,
+        patchBody: patchBody(descriptor),
       });
       if (!reply.ok) return throwTransportError(reply, "read");
       return validationReceipt(reply);
@@ -1084,17 +1071,37 @@ export function createVariationMoveGatewayProduction(
       let dispatchEvidenceSaved = false;
       try {
         const body = patchBody(descriptor);
-        reply = await dependencies.write({
-          marketplaceId: descriptor.marketplaceId,
-          sellerSku: descriptor.sellerSku,
-          body,
-          validationPreview: false,
-          fence,
-          recordBeforeSend: async () => {
-            await recordDispatch();
-            dispatchEvidenceSaved = true;
-          },
-        });
+        try {
+          reply = await dependencies.write.commitOnce({
+            marketplaceId: descriptor.marketplaceId,
+            sellerSku: descriptor.sellerSku,
+            patchBody: body,
+            assertBeforeSend: () => fence.assertCurrent(),
+            recordBeforeSend: async () => {
+              await recordDispatch();
+              dispatchEvidenceSaved = true;
+            },
+          });
+        } catch (error) {
+          if (
+            error instanceof SpApiPreCommitError ||
+            (error instanceof SpApiError &&
+              error.code === "UPDATE_STATUS_UNKNOWN")
+          ) {
+            throw error;
+          }
+          const cause = error instanceof SpApiError
+            ? error
+            : new SpApiError(
+                "變體正式 PATCH 送出前的 Amazon transport 準備失敗。",
+                {
+                  status: 500,
+                  code: "PRECOMMIT_FAILED",
+                  operation: "patchListingsItem",
+                },
+              );
+          throw new SpApiPreCommitError(cause);
+        }
       } catch (error) {
         if (
           dispatchEvidenceSaved &&

@@ -8,7 +8,7 @@ import {
   type OrderFulfillmentStatus,
   type OrdersReadsPort,
 } from "./amazon/orders-reads";
-import { MARKETPLACES } from "./amazon/sp-api";
+import { MARKETPLACES } from "./amazon/sp-marketplaces";
 import type { RouterRequestContextAdapter } from "./router-request-context";
 import {
   bodyRecord,

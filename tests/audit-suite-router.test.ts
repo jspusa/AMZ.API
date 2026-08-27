@@ -11,6 +11,10 @@ import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { SpExecutionContextAdapter } from
   "../src/main/amazon/sp-execution-context";
+import {
+  createDemoReportsAdapter,
+  type DemoAllListingsReportGateway,
+} from "../src/main/amazon/reports-runtime-demo";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER";
@@ -20,9 +24,7 @@ const previousClientId = process.env.SP_API_LWA_CLIENT_ID;
 const previousClientSecret = process.env.SP_API_LWA_CLIENT_SECRET;
 const previousRefreshToken = process.env.SP_API_REFRESH_TOKEN_NA;
 type RouterInput = ConstructorParameters<typeof ApiRouter>[0];
-type DemoListingStart = NonNullable<
-  NonNullable<RouterInput["allListingsDemoReports"]>["start"]
->;
+type DemoListingStart = DemoAllListingsReportGateway["start"];
 type AgedInventoryReadsInput = NonNullable<RouterInput["agedInventoryReads"]>;
 type AgedInventoryBegin = AgedInventoryReadsInput["begin"];
 
@@ -111,7 +113,9 @@ describe("main-owned audit suite routes", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      allListingsDemoReports: { start: startListing },
+      demoReportsAdapter: createDemoReportsAdapter({
+        allListingsDemoReports: { start: startListing },
+      }),
       agedInventoryReads,
     });
   });
@@ -214,9 +218,11 @@ describe("main-owned audit suite routes", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      allListingsDemoReports: {
-        start: startListing,
-      },
+      demoReportsAdapter: createDemoReportsAdapter({
+        allListingsDemoReports: {
+          start: startListing,
+        },
+      }),
       agedInventoryReads,
     });
 
@@ -276,7 +282,9 @@ describe("main-owned audit suite routes", () => {
       vault: {} as CredentialVault,
       approveWrite: async () => undefined,
       spExecutionContext: hostileContext,
-      allListingsDemoReports: { start: startListing },
+      demoReportsAdapter: createDemoReportsAdapter({
+        allListingsDemoReports: { start: startListing },
+      }),
       agedInventoryReads,
     });
 
@@ -383,10 +391,12 @@ describe("main-owned audit suite routes", () => {
         getAccountScope: vi.fn(async () => accountScope),
       } as unknown as CredentialVault,
       approveWrite: async () => undefined,
-      allListingsDemoReports: {
-        start: startListing,
-        status: getListingStatus,
-      },
+      demoReportsAdapter: createDemoReportsAdapter({
+        allListingsDemoReports: {
+          start: startListing,
+          status: getListingStatus,
+        },
+      }),
     });
     await router.handle(request("POST", "/api/sp-api/audit-suite", {
       marketplaceId: US,

@@ -975,7 +975,7 @@ describe("SP execution-context architecture", () => {
     expect(router).toContain("new AplusContentReads({");
     expect(router).toContain("new AplusAuditCoordinator({");
     expect(router).not.toContain("input.aplusAudit");
-    expect(router).toContain("contentReads: this.aplusContentReads");
+    expect(router).toContain("contentReads: aplusContentReads");
     expect(router).toContain("aplus: this.aPlusAuditCoordinator");
     expect(router).not.toContain("this.aplusContentReads.read(");
     expect(compatibility).not.toContain("this.aplus.read(");
@@ -1175,6 +1175,10 @@ describe("SP execution-context architecture", () => {
       absolutePath("src/main/api-router.ts"),
       "utf8",
     );
+    const demoRuntimeSource = readFileSync(
+      absolutePath("src/main/amazon/reports-runtime-demo.ts"),
+      "utf8",
+    );
     for (const helper of [
       "getBusinessPricingAuditDataFromDocuments",
       "getFbaReviewAuditCandidatesFromDocument",
@@ -1184,8 +1188,9 @@ describe("SP execution-context architecture", () => {
     ]) {
       expect(routerSource).not.toMatch(new RegExp(`\\b${helper}\\b`, "u"));
     }
-    expect(routerSource).toContain("function routerDemoReportsAdapter");
-    expect(routerSource).toContain("assertDemoReportsRequest(request)");
+    expect(routerSource).toContain("createDemoReportsAdapter()");
+    expect(routerSource).not.toContain("function routerDemoReportsAdapter");
+    expect(demoRuntimeSource).toContain("assertDemoReportsRequest(request)");
     expect(routerSource).not.toMatch(/\brouterReportsAdapter\b/u);
   });
 
