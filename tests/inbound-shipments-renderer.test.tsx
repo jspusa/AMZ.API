@@ -26,6 +26,7 @@ import {
   inboundShipmentSnapshotFixture,
   US_MARKETPLACE_ID,
 } from "./inbound-shipments-fixture";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 const RANGE = { startDate: "2026-05-24", endDate: "2026-08-21" };
 
@@ -600,7 +601,7 @@ describe("FBA inbound shipment renderer contract", () => {
     const [dashboard, panel, css] = await Promise.all([
       readFile(new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url), "utf8"),
       readFile(new URL("../src/renderer/src/components/inbound-shipments-panel.tsx", import.meta.url), "utf8"),
-      readFile(new URL("../src/renderer/src/app.css", import.meta.url), "utf8"),
+      readRendererStylesheet(),
     ]);
     expect(dashboard).toContain('inbound: { label: "入庫貨件", symbol: "⇣", group: "reports" }');
     expect(dashboard).toContain('tools: ["inbound"]');

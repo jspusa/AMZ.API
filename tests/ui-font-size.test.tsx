@@ -8,6 +8,7 @@ import {
   saveUiFontSize,
   UI_FONT_SIZE_STORAGE_KEY,
 } from "../src/renderer/src/ui-font-size";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("local UI font-size preference", () => {
   it("is SSR safe and exposes the preference inside system information", async () => {
@@ -32,10 +33,7 @@ describe("local UI font-size preference", () => {
     expect(source).toContain('role="radiogroup"');
     expect(source).toContain('aria-checked={fontSize === option.value}');
 
-    const css = await readFile(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const css = await readRendererStylesheet();
     expect(css).not.toContain("zoom: var(--ui-font-zoom)");
     expect(css).toContain('--ui-font-size-adjust: 0.62');
     expect(css).toContain('--ui-font-size-adjust: 0.69');

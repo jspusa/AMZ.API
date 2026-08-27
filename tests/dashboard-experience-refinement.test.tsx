@@ -7,6 +7,7 @@ import SkuCommandCenter, {
 } from "../src/renderer/src/components/sku-command-center";
 import SystemHealthControl from "../src/renderer/src/components/system-health-control";
 import BrandGlyph from "../src/renderer/src/components/brand-glyph";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("dashboard experience refinement", () => {
   it("presents system health as neutral advanced information", () => {
@@ -70,7 +71,7 @@ describe("dashboard experience refinement", () => {
 
   it("keeps every centered workspace close control square and top-aligned", async () => {
     const [css, imageSource, healthSource, connectionSource] = await Promise.all([
-      readFile(new URL("../src/renderer/src/app.css", import.meta.url), "utf8"),
+      readRendererStylesheet(),
       readFile(
         new URL("../src/renderer/src/components/image-workspace-drawer.tsx", import.meta.url),
         "utf8",

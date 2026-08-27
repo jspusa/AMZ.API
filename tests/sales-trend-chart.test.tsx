@@ -15,6 +15,7 @@ import SalesTrendChart, {
   type SalesTrendSnapshot,
   type TrendRangeSelection,
 } from "../src/renderer/src/components/sales-trend-chart";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 function dateKeys(startDate: string, count: number): string[] {
   const [year, month, day] = startDate.split("-").map(Number);
@@ -181,7 +182,7 @@ describe("sales trend comparison chart", () => {
         new URL("../src/renderer/src/components/sales-trend-chart.tsx", import.meta.url),
         "utf8",
       ),
-      readFile(new URL("../src/renderer/src/app.css", import.meta.url), "utf8"),
+      readRendererStylesheet(),
     ]);
 
     expect(source).toContain("active ?? skaterCoordinate");
@@ -382,10 +383,7 @@ describe("sales trend comparison chart", () => {
   });
 
   it("keeps mobile plot text readable and the zero-state overlay pointer-transparent", async () => {
-    const css = await readFile(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const css = await readRendererStylesheet();
 
     expect(css).toContain(".sales-trend-plot-scroll");
     expect(css).toContain(".sales-trend-plot { min-width: 640px; }");

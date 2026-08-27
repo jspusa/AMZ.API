@@ -8,6 +8,7 @@ import WebGate, {
   safeNotebookDownloadHref,
 } from "../src/renderer/src/web-gate";
 import packageJson from "../package.json";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("Notebook Key WebGate", () => {
   it("shows one concise protected App 0.1.31 download action", () => {
@@ -38,10 +39,7 @@ describe("Notebook Key WebGate", () => {
 
   it("uses two stable desktop heading rows without nested inline layout", async () => {
     const markup = renderToStaticMarkup(<WebGate />);
-    const css = await readFile(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const css = await readRendererStylesheet();
 
     expect(markup).toContain(
       '<span class="web-gate-heading-line">控制台已就緒。</span>',
@@ -106,7 +104,7 @@ describe("Notebook Key WebGate", () => {
       />,
     );
     const [css, connectionSource] = await Promise.all([
-      readFile(new URL("../src/renderer/src/app.css", import.meta.url), "utf8"),
+      readRendererStylesheet(),
       readFile(new URL("../src/renderer/src/connection-panel.tsx", import.meta.url), "utf8"),
     ]);
 
@@ -131,10 +129,7 @@ describe("Notebook Key WebGate", () => {
   });
 
   it("stacks WebGate explanations and download action on narrow screens", async () => {
-    const css = await readFile(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const css = await readRendererStylesheet();
 
     expect(css).toMatch(
       /@media \(max-width:\s*720px\)[\s\S]*?\.web-gate-copy,[\s\S]*?\.web-gate-install-heading\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\);/,

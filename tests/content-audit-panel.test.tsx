@@ -18,6 +18,7 @@ import type {
 } from "../src/renderer/src/content-quality";
 import { contentLookupErrorMessage } from "../src/renderer/src/components/sku-operations-drawer";
 import { parseStandaloneAuditJob } from "../src/renderer/src/standalone-audit";
+import { readRendererStylesheet } from "./renderer-stylesheet";
 
 function completedContentJob(snapshot: ContentAuditSnapshot) {
   snapshot.exportId ??= "11111111-1111-4111-8111-111111111111";
@@ -119,10 +120,7 @@ describe("global FBA content audit panel", () => {
         onSelect={vi.fn()}
       />,
     );
-    const stylesheet = await readFile(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const stylesheet = await readRendererStylesheet();
 
     expect(occurrenceCount(markup, fileName)).toBe(1);
     expect(markup).toContain('type="file"');
@@ -380,10 +378,7 @@ describe("global FBA content audit panel", () => {
   });
 
   it("uses a whole-card yellow cue only when a visible missing-bullets issue exists", async () => {
-    const stylesheet = await readFile(
-      new URL("../src/renderer/src/app.css", import.meta.url),
-      "utf8",
-    );
+    const stylesheet = await readRendererStylesheet();
 
     expect(stylesheet).toContain(
       ".content-audit-list > article:has(.content-audit-issues .kind-missing_bullets)",

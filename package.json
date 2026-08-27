@@ -19,6 +19,8 @@
     "icons": "node scripts/generate-icons.mjs",
     "prebuild": "npm run icons",
     "build": "electron-vite build",
+    "postbuild": "npm run verify:styles:build",
+    "verify:styles:build": "node scripts/verify-renderer-stylesheet-build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run build",
@@ -46,6 +48,7 @@
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "node-gyp": "12.4.0",
+    "postcss": "8.5.25",
     "typescript": "5.9.3",
     "vite": "7.3.6",
     "vitest": "4.0.18"
