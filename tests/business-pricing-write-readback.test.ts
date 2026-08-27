@@ -251,6 +251,27 @@ describe("business pricing write readback", () => {
       ...durable,
       _writeEvidence: { ...evidence, unexpected: true },
     }, canonical as never)).toBeNull();
+    expect(reconcileBusinessPriceWrite({
+      ...durable,
+      unexpected: true,
+    }, canonical as never)).toBeNull();
+    expect(reconcileBusinessPriceWrite({
+      ...durable,
+      asin: "B087654321",
+    }, canonical as never)).toBeNull();
+    expect(reconcileBusinessPriceWrite({
+      ...durable,
+      standardPrice: { amount: 31, currencyCode: "USD" },
+    }, canonical as never)).toBeNull();
+    expect(reconcileBusinessPriceWrite({
+      ...durable,
+      submissionId: "fabricated-before-acceptance",
+    }, canonical as never)).toBeNull();
+    expect(reconcileBusinessPriceWrite({
+      ...durable,
+      status: "ACCEPTED",
+      submissionId: null,
+    }, canonical as never)).toBeNull();
     expect(reconcileBusinessPriceWrite(durable, {
       ...canonical,
       fulfillmentAvailability: [{ fulfillment: "MFN" }],

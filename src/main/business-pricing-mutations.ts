@@ -660,6 +660,31 @@ const BUSINESS_PRICE_WRITE_EVIDENCE_KEYS = [
   "version",
 ] as const;
 
+const BUSINESS_PRICE_DURABLE_RESULT_KEYS = [
+  "_writeEvidence",
+  "acceptedAt",
+  "asin",
+  "businessOfferGuardHash",
+  "businessOfferProtectedHash",
+  "issues",
+  "marketplaceId",
+  "mode",
+  "notice",
+  "previousBusinessPrice",
+  "previousQuantityDiscountPlan",
+  "previousQuantityDiscountPlanHash",
+  "productType",
+  "quantityDiscountPlanChange",
+  "requestId",
+  "requestedBusinessPrice",
+  "requestedQuantityDiscountPlan",
+  "schemaChecksum",
+  "sellerSku",
+  "standardPrice",
+  "status",
+  "submissionId",
+] as const;
+
 type BusinessPriceAcceptedDurableResult = BusinessPriceUpdateResult & Readonly<{
   _writeEvidence: BusinessPriceWriteEvidence;
 }>;
@@ -766,16 +791,20 @@ function validIsoTimestamp(value: unknown): value is string {
 
 function validMoney(value: unknown, currencyCode: string): value is Money {
   return isRecord(value) &&
+    hasExactKeys(value, ["amount", "currencyCode"]) &&
     typeof value.amount === "number" &&
     Number.isFinite(value.amount) &&
     value.amount > 0 &&
     value.currencyCode === currencyCode;
 }
 
-function validQuantityDiscountPlan(value: unknown): boolean {
+function validQuantityDiscountPlan(
+  value: unknown,
+): value is BusinessQuantityDiscountPlan | null {
   if (value === null) return true;
   if (
     !isRecord(value) ||
+    !hasExactKeys(value, ["discountType", "levels"]) ||
     (value.discountType !== "percent" && value.discountType !== "fixed") ||
     !Array.isArray(value.levels) ||
     value.levels.length < 1 ||
@@ -786,6 +815,7 @@ function validQuantityDiscountPlan(value: unknown): boolean {
   for (const level of value.levels) {
     if (
       !isRecord(level) ||
+      !hasExactKeys(level, ["lowerBound", "value"]) ||
       !Number.isSafeInteger(level.lowerBound) ||
       Number(level.lowerBound) <= previousLowerBound ||
       typeof level.value !== "number" ||
@@ -824,6 +854,23 @@ function sameQuantityDiscountPlan(
       return actual?.lowerBound === level.lowerBound &&
         actual.value === level.value;
     });
+}
+
+function exactMoneyMatches(
+  value: unknown,
+  expected: Money | null,
+): boolean {
+  if (value === null || expected === null) return value === expected;
+  return validMoney(value, expected.currencyCode) &&
+    value.amount === expected.amount;
+}
+
+function exactQuantityDiscountPlanMatches(
+  value: unknown,
+  expected: BusinessQuantityDiscountPlan | null,
+): boolean {
+  return validQuantityDiscountPlan(value) &&
+    sameQuantityDiscountPlan(value, expected);
 }
 
 export function businessPriceReadbackDecision(
@@ -917,6 +964,66 @@ function safeOptionalIdentifier(value: unknown): value is string | null {
       !/[\u0000-\u001f\u007f]/u.test(value));
 }
 
+function safeNotice(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 2_000 &&
+    value === value.trim() &&
+    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
+}
+
+function durableEnvelopeMatchesWriteEvidence(
+  response: Record<string, unknown>,
+  evidence: BusinessPriceWriteEvidence,
+): boolean {
+  return response.marketplaceId === evidence.marketplaceId &&
+    response.sellerSku === evidence.sellerSku &&
+    response.asin === evidence.asin &&
+    response.productType === evidence.productType &&
+    exactMoneyMatches(response.standardPrice, evidence.standardPrice) &&
+    exactMoneyMatches(
+      response.previousBusinessPrice,
+      evidence.previousBusinessPrice,
+    ) &&
+    exactMoneyMatches(
+      response.requestedBusinessPrice,
+      evidence.requestedBusinessPrice,
+    ) &&
+    exactQuantityDiscountPlanMatches(
+      response.previousQuantityDiscountPlan,
+      evidence.previousQuantityDiscountPlan,
+    ) &&
+    response.previousQuantityDiscountPlanHash ===
+      evidence.previousQuantityDiscountPlanHash &&
+    exactQuantityDiscountPlanMatches(
+      response.requestedQuantityDiscountPlan,
+      evidence.requestedQuantityDiscountPlan,
+    ) &&
+    response.quantityDiscountPlanChange ===
+      evidence.quantityDiscountPlanChange &&
+    response.businessOfferGuardHash === evidence.businessOfferGuardHash &&
+    response.businessOfferProtectedHash ===
+      evidence.businessOfferProtectedHash &&
+    response.schemaChecksum === evidence.schemaChecksum;
+}
+
+function validDurableStatusMetadata(
+  response: Record<string, unknown>,
+): boolean {
+  if (response.status === "DISPATCHED") {
+    return response.submissionId === null &&
+      response.requestId === null &&
+      Array.isArray(response.issues) &&
+      response.issues.length === 0;
+  }
+  return response.status === "ACCEPTED" &&
+    typeof response.submissionId === "string" &&
+    safeOptionalIdentifier(response.submissionId) &&
+    safeOptionalIdentifier(response.requestId) &&
+    Array.isArray(response.issues) &&
+    listingSubmissionIssuesAreWellFormed(response.issues);
+}
+
 function canonicalMatchesWriteEvidence(
   evidence: BusinessPriceWriteEvidence,
   snapshot: BusinessPricingListingSnapshot,
@@ -967,16 +1074,17 @@ export function reconcileBusinessPriceWrite(
   now: () => Date = () => new Date(),
 ): unknown | null {
   if (!isRecord(response) ||
+      !hasExactKeys(response, BUSINESS_PRICE_DURABLE_RESULT_KEYS) ||
       (response.status !== "DISPATCHED" && response.status !== "ACCEPTED") ||
       response.mode !== "live" ||
       !exactWriteEvidence(response._writeEvidence) ||
-      response.marketplaceId !== response._writeEvidence.marketplaceId ||
-      response.sellerSku !== response._writeEvidence.sellerSku ||
+      !durableEnvelopeMatchesWriteEvidence(
+        response,
+        response._writeEvidence,
+      ) ||
       !validIsoTimestamp(response.acceptedAt) ||
-      !safeOptionalIdentifier(response.submissionId) ||
-      !safeOptionalIdentifier(response.requestId) ||
-      !Array.isArray(response.issues) ||
-      !listingSubmissionIssuesAreWellFormed(response.issues) ||
+      !safeNotice(response.notice) ||
+      !validDurableStatusMetadata(response) ||
       !canonicalMatchesWriteEvidence(response._writeEvidence, snapshot)) {
     return null;
   }
