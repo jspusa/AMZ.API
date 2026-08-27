@@ -10,7 +10,7 @@ import type {
   BusinessPriceValidationResult,
   BusinessPricingListingSnapshot,
   UpdateBusinessPriceInput,
-} from "./amazon/sp-api";
+} from "./amazon/business-pricing-types";
 import type { ListingWriteExecutionFence } from
   "./amazon/listing-write-execution-fence";
 import { SpApiError } from "./amazon/sp-api-error";

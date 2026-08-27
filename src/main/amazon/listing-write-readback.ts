@@ -4,6 +4,8 @@ import { SpApiError } from "./sp-api-error";
 import type {
   BusinessPricingListingSnapshot,
   BusinessPriceUpdateResult,
+} from "./business-pricing-types";
+import type {
   ListingContentSnapshot,
   ListingContentUpdateResult,
 } from "./sp-api";
