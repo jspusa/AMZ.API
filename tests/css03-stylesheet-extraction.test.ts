@@ -6,48 +6,59 @@ import { describe, expect, it } from "vitest";
 import { RENDERER_STYLESHEET_CONTRACT } from "../scripts/renderer-stylesheet-contract.mjs";
 import { verifyStylesheetComposition } from "../scripts/stylesheet-composition.mjs";
 
-const CSS02_ORDERED_PREFIX = [
+const CSS03_ORDERED_FILES = [
   "styles/index.css",
   "styles/foundation.css",
   "styles/legacy-shell-drawers.css",
   "styles/subscription-accounting.css",
   "styles/content.css",
   "styles/business-pricing.css",
+  "styles/workspace-sales.css",
+  "styles/operations.css",
+  "styles/notebook-key-bridge.css",
+  "styles/variation.css",
+  "styles/experience.css",
+  "app" + ".css",
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
   "7ddb84bf404826a4ce1af22a1f2bb7abd43d103d9474be75c6647882173f583c";
 
-const CSS02_PAYLOAD_EVIDENCE = [
+const CSS03_PAYLOAD_EVIDENCE = [
   {
-    path: "styles/foundation.css",
-    bytes: 16_544,
-    sha256: "94d757af80a20d64e204ab2661360b5ae5e91e7120679e2c12067ee1f24a4ce9",
+    path: "styles/workspace-sales.css",
+    bytes: 21_280,
+    sha256: "53055734cf601a8303e6c266e275b4925fb74e7e201e03a403ec576ef3f98685",
   },
   {
-    path: "styles/legacy-shell-drawers.css",
-    bytes: 37_904,
-    sha256: "c0f45e2b59a254de9d334228581dccf2d28ee7cd839c673d84f0a250eb674b45",
+    path: "styles/operations.css",
+    bytes: 54_287,
+    sha256: "89904d95ce60c0c0ca27026ef1f71ae519757dadf9313df826e6c926926aa456",
   },
   {
-    path: "styles/subscription-accounting.css",
-    bytes: 10_798,
-    sha256: "a64414f03e2429307f2ad106c165b12b56c0aeb3d6b74b347686b032b71ad8cd",
+    path: "styles/notebook-key-bridge.css",
+    bytes: 22_162,
+    sha256: "afa613f87fc4ae42ad78161711fea658a14fa68535e043005401168979d23ad1",
   },
   {
-    path: "styles/content.css",
-    bytes: 4_847,
-    sha256: "bfce82381b3bfa34e4960ca858a3ffee914e32188498d2edb433a079420ae18d",
+    path: "styles/variation.css",
+    bytes: 13_156,
+    sha256: "e9c8a884b44584704438ba428958a498d8e8ae118ed0e382768565248781b1f6",
   },
   {
-    path: "styles/business-pricing.css",
-    bytes: 12_944,
-    sha256: "4f1694cecfd8b8ef4853e4a3dcb4b397c0fa85f184b2472e80f8de73e77b2667",
+    path: "styles/experience.css",
+    bytes: 15_760,
+    sha256: "d9b1a5a63620f0a3d2e72df1440a6ce0d972a1b6ff4a6e03ff844346a4e3c520",
+  },
+  {
+    path: "app" + ".css",
+    bytes: 84_289,
+    sha256: "df09c6c8f0f7ad18c6ff0e7d263a2272215a68bae9ae39198c9ae36eb019ecfb",
   },
 ] as const;
 
-describe("CSS02 historical stylesheet extraction", () => {
-  it("composes the first historical epochs once in their accepted byte order", async () => {
+describe("CSS03 historical stylesheet extraction", () => {
+  it("composes the workspace through experience epochs once in accepted byte order", async () => {
     const rootDirectory = fileURLToPath(
       new URL("../src/renderer/src/", import.meta.url),
     );
@@ -56,19 +67,18 @@ describe("CSS02 historical stylesheet extraction", () => {
         new URL("../src/renderer/src/styles/index.css", import.meta.url),
       ),
       rootDirectory,
-      expectedFiles: RENDERER_STYLESHEET_CONTRACT.expectedFiles,
+      expectedFiles: CSS03_ORDERED_FILES,
       expectedFingerprint: RENDERER_STYLESHEET_CONTRACT.fingerprint,
     });
 
-    const orderedFiles = composition.files.map((file) =>
-      relative(rootDirectory, file).split(sep).join("/"),
-    );
-    expect(orderedFiles.slice(0, CSS02_ORDERED_PREFIX.length)).toEqual(
-      CSS02_ORDERED_PREFIX,
-    );
+    expect(
+      composition.files.map((file) =>
+        relative(rootDirectory, file).split(sep).join("/"),
+      ),
+    ).toEqual(CSS03_ORDERED_FILES);
     expect(
       await Promise.all(
-        CSS02_PAYLOAD_EVIDENCE.map(async ({ path }) => {
+        CSS03_PAYLOAD_EVIDENCE.map(async ({ path }) => {
           const source = (
             await readFile(join(rootDirectory, path), "utf8")
           ).replace(/\r\n?/gu, "\n");
@@ -79,7 +89,7 @@ describe("CSS02 historical stylesheet extraction", () => {
           };
         }),
       ),
-    ).toEqual(CSS02_PAYLOAD_EVIDENCE);
+    ).toEqual(CSS03_PAYLOAD_EVIDENCE);
     expect(
       createHash("sha256")
         .update(composition.css.replace(/\r\n?/gu, "\n"))

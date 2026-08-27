@@ -11,6 +11,11 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/subscription-accounting.css",
     "styles/content.css",
     "styles/business-pricing.css",
+    "styles/workspace-sales.css",
+    "styles/operations.css",
+    "styles/notebook-key-bridge.css",
+    "styles/variation.css",
+    "styles/experience.css",
     "app.css",
   ]),
   fingerprint:
