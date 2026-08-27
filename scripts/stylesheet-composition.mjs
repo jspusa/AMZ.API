@@ -58,23 +58,32 @@ function localImportSpecifier(params, importingFile) {
   return specifier;
 }
 
+function canonicalCssText(value) {
+  return value.replace(/\r\n?/gu, "\n");
+}
+
 function canonicalNode(node) {
   if (node.type === "comment") return null;
   if (node.type === "decl") {
-    return ["decl", node.prop, node.value, node.important];
+    return [
+      "decl",
+      canonicalCssText(node.prop),
+      canonicalCssText(node.value),
+      node.important,
+    ];
   }
   if (node.type === "rule") {
     return [
       "rule",
-      node.selector,
+      canonicalCssText(node.selector),
       node.nodes.map(canonicalNode).filter(Boolean),
     ];
   }
   if (node.type === "atrule") {
     return [
       "atrule",
-      node.name,
-      node.params,
+      canonicalCssText(node.name),
+      canonicalCssText(node.params),
       node.nodes ? node.nodes.map(canonicalNode).filter(Boolean) : null,
     ];
   }

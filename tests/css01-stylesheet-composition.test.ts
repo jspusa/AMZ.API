@@ -16,6 +16,8 @@ import { verifyStylesheetComposition } from "../scripts/stylesheet-composition.m
 const temporaryDirectories: string[] = [];
 const TWO_RULE_FINGERPRINT =
   "01ebc53fa12e8215f8d9e93328698f47fedc8c26f4b4550f3dd74f06e8dcd991";
+const MULTILINE_SELECTOR_FINGERPRINT =
+  "12e71dfa26f353d10fbac14a99383084f0be86aa69d631738e66fad191b9cf52";
 
 async function createFixture(files: Readonly<Record<string, string>>) {
   const directory = await mkdtemp(join(tmpdir(), "amz-api-css01-"));
@@ -63,7 +65,9 @@ describe("CSS01 renderer stylesheet composition", () => {
       new URL("../src/renderer/src/styles/index.css", import.meta.url),
       "utf8",
     );
-    expect(entrySource).toBe('@import "../app.css";\n');
+    expect(entrySource.replace(/\r\n?/gu, "\n")).toBe(
+      '@import "../app.css";\n',
+    );
   });
 
   it("recursively composes local styles in order and pins the logical stream", async () => {
@@ -89,6 +93,22 @@ describe("CSS01 renderer stylesheet composition", () => {
     expect(composition.fingerprint).toBe(TWO_RULE_FINGERPRINT);
   });
 
+  it("treats checkout line endings as formatting in the logical stream", async () => {
+    const directory = await createFixture({
+      "index.css": '@import "./app.css";\r\n',
+      "app.css": "button,\r\ninput { color: red; }\r\n",
+    });
+
+    const composition = await verifyStylesheetComposition({
+      entryPath: join(directory, "index.css"),
+      rootDirectory: directory,
+      expectedFiles: ["index.css", "app.css"],
+      expectedFingerprint: MULTILINE_SELECTOR_FINGERPRINT,
+    });
+
+    expect(composition.fingerprint).toBe(MULTILINE_SELECTOR_FINGERPRINT);
+  });
+
   it("pins the accepted current renderer rule stream and preserves its raw CSS", async () => {
     const rootDirectory = fileURLToPath(
       new URL("../src/renderer/src/", import.meta.url),
@@ -110,6 +130,34 @@ describe("CSS01 renderer stylesheet composition", () => {
     ).toEqual(["styles/index.css", "app.css"]);
     expect(composition.canonicalJson).toHaveLength(438_225);
     expect(composition.css).toBe(await readFile(appCssPath, "utf8"));
+    expect(composition.fingerprint).toBe(
+      RENDERER_STYLESHEET_CONTRACT.fingerprint,
+    );
+  });
+
+  it("keeps the logical renderer fingerprint stable across Git checkout line endings", async () => {
+    const rendererRoot = fileURLToPath(
+      new URL("../src/renderer/src/", import.meta.url),
+    );
+    const entrySource = await readFile(
+      join(rendererRoot, "styles", "index.css"),
+      "utf8",
+    );
+    const appSource = await readFile(join(rendererRoot, "app.css"), "utf8");
+    const toCrLf = (source: string) => source.replace(/\r?\n/gu, "\r\n");
+    const directory = await createFixture({
+      "styles/index.css": toCrLf(entrySource),
+      "app.css": toCrLf(appSource),
+    });
+
+    const composition = await verifyStylesheetComposition({
+      entryPath: join(directory, "styles", "index.css"),
+      rootDirectory: directory,
+      expectedFiles: RENDERER_STYLESHEET_CONTRACT.expectedFiles,
+      expectedFingerprint: RENDERER_STYLESHEET_CONTRACT.fingerprint,
+    });
+
+    expect(composition.css).toContain("\r\n");
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
