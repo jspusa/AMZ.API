@@ -43,8 +43,8 @@ const bridge: DesktopBridge = Object.freeze({
     openEditor: () => ipcRenderer.invoke("fba:credentials-open-editor") as Promise<void>,
     clear: () =>
       ipcRenderer.invoke("fba:credentials-clear") as Promise<CredentialSummary>,
-    test: () =>
-      ipcRenderer.invoke("fba:credentials-test") as Promise<ConnectionTestResult>,
+    test: (marketplaceId?: string) =>
+      ipcRenderer.invoke("fba:credentials-test", marketplaceId) as Promise<ConnectionTestResult>,
   }),
   advertisingCredentials: Object.freeze({
     status: () =>

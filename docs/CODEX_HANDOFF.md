@@ -4,6 +4,14 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-08-28 v0.1.33 Sales Day 尾段與站點連線證據修正（發布中）
+
+本版修正兩個互相獨立的唯讀問題。Sales API `granularity=Day` 在目前尚未完成的 Marketplace Day 可以把最後一個 bucket 結束時間表示成下一個站點午夜；舊 normalizer 卻只接受查詢 cutoff 的當下時間，因此把 Amazon 的合法 partial-day 回應誤判為無法辨識。新契約仍要求 exact planned start，end 只接受 exact cutoff，或僅限 window 最後一個 `partialDateKey` 的 exact 下一個 Marketplace midnight；午夜依站點 IANA 時區計算，包含 DST，超過一秒或任何 completed-day 邊界仍 fail closed。固定 `Day／All／AFN`、FBA-only、缺日補零、currency／identity／duplicate 驗證與 no-retry 邊界均未放寬。
+
+首頁右上角不再只能等待 Sales Trend 成功才顯示綠燈。Desktop Bridge 的既有 Orders-first＋Listings 唯讀連線測試新增可選的 exact marketplace；trusted IPC 先驗證 marketplace ID，main 只對目前選中的站點執行兩個 probe，並在 context／account revision fence 後回傳綁定該站點的結果。Dashboard 在本機 health 顯示 live 設定、且同站點尚無本次成功 Sales read 時才要求這個 exact probe；既有 probe 綠燈會先降回「尚未驗證」，只有新回傳 marketplace 完全相同、所屬 region 成功且整體成功時才重新標示「Amazon 已連線」。因此失敗不保留 stale green、成功 Sales 不重複多打兩個 probe、US 證據不會誤亮 CA，demo 也不會冒充 live。這些 probe 都是唯讀，不要求 Touch ID／Windows Hello，也沒有 Amazon mutation。
+
+目前分支為 `codex/v0.1.33-sales-trend-connection-evidence`，package 已升為 0.1.33。Sales 三個新回歸涵蓋美國 DST 23 小時日、current＋previous-year partial tail，以及 next-midnight＋1 秒拒絕；連線回歸涵蓋 exact CA 而非 NA representative、結果 marketplace binding、失敗不亮綠、stale probe evidence 降級、成功 Sales evidence 保留、pending Sales 不重複 probe、renderer 呼叫 trusted Bridge 與 main IPC validation。本機完整 `npm run check` 通過 241 個測試檔／2,350 tests、TypeScript 與 production build，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過；獨立 review、PR／CI、Pages、Mac／Windows artifacts、Mac 安裝、live Amazon 唯讀 canary與受保護 Supply Boss 下載替換仍待本輪後續完成，未完成前不得宣稱 v0.1.33 已發布。
+
 ### 2026-08-28 v0.1.32 Excel 文案批次 Amazon `INVALID` 明確嘗試契約（已發布）
 
 目前核准的產品契約只放寬一種可辨識情況，不把 Amazon 預檢失敗改稱通過：一般 hard preflight failure 仍在第一筆 PATCH 前停止整批並保持零寫入，介面必須顯示 exact Seller SKU、changed-field diff、Excel 內記錄的 Amazon 原值／Excel 更新值、公開 code／message 與 sanitized Amazon `ERROR`。只有 live Amazon Validation Preview 回傳 well-formed exact `INVALID` 且至少含一項 sanitized public `ERROR` 時，main-owned plan 才能標為 `REQUIRES_VALIDATION_OVERRIDE`；Amazon 仍可能在正式 PATCH 拒絕，UI 不得顯示「已通過預檢」。

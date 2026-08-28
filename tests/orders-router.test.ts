@@ -7,6 +7,7 @@ import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const US = "ATVPDKIKX0DER" as const;
+const CA = "A2EUQ1WTGCTBG2" as const;
 
 describe("Orders public read route", () => {
   it("delegates one 30-day FBA page through the Orders domain interface", async () => {
@@ -191,6 +192,53 @@ describe("Orders public read route", () => {
       },
     });
     expect(result.regions.na?.message).toContain("Orders 驗證失敗");
+  });
+
+  it("binds a dashboard connection probe to the exact selected marketplace", async () => {
+    const read = vi.fn(async () => {
+      throw new SpApiError("Amazon 拒絕了這次請求。", {
+        status: 403,
+        code: "UNAUTHORIZED",
+        requestId: "ca-orders-probe-request",
+      });
+    });
+    const vault = {
+      getAccountScope: vi.fn(async () => "ca-probe-scope"),
+      getSummary: vi.fn(async () => ({
+        encryptionAvailable: true,
+        hasVault: true,
+        lwaConfigured: true,
+        regions: {
+          na: {
+            configured: true,
+            refreshTokenHint: "configured",
+            sellerIdHint: "configured",
+          },
+          fe: { configured: false, refreshTokenHint: null, sellerIdHint: null },
+          eu: { configured: false, refreshTokenHint: null, sellerIdHint: null },
+        },
+        imageStorageConfigured: false,
+        imagePublicBaseUrl: null,
+        replenishmentSkillConfigured: false,
+        updatedAt: null,
+      })),
+    } as unknown as CredentialVault;
+    const router = new ApiRouter({
+      store: {} as LocalStore,
+      vault,
+      approveWrite: async () => undefined,
+      ordersReads: { read },
+    });
+
+    const result = await router.testConnections(CA);
+
+    expect(read).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith({
+      intent: "connection-probe",
+      marketplaceId: CA,
+    });
+    expect(result.marketplaceId).toBe(CA);
+    expect(Object.keys(result.regions)).toEqual(["na"]);
   });
 
   it("stops a connection test invalidated while its credential summary is loading", async () => {

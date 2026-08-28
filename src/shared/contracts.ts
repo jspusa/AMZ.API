@@ -104,6 +104,7 @@ export type CredentialSummary = {
 export type ConnectionTestResult = {
   ok: boolean;
   testedAt: string;
+  marketplaceId: string | null;
   regions: Partial<
     Record<SpApiRegion, { ok: boolean; message: string; requestId: string | null }>
   >;
@@ -140,7 +141,7 @@ export type DesktopBridge = {
     status(): Promise<CredentialSummary>;
     openEditor(): Promise<void>;
     clear(): Promise<CredentialSummary>;
-    test(): Promise<ConnectionTestResult>;
+    test(marketplaceId?: string): Promise<ConnectionTestResult>;
   };
   advertisingCredentials: {
     status(): Promise<AdvertisingCredentialSummary>;

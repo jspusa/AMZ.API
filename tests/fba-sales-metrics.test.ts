@@ -11,6 +11,7 @@ import {
   planCompletedFbaSalesVelocity,
   planFbaSalesTrend,
 } from "../src/main/amazon/fba-sales-calendar";
+import { marketplaceCalendar } from "../src/main/amazon/marketplace-calendar";
 import { createDeterministicFbaSalesMetricsDemoAdapter } from "../src/main/amazon/fba-sales-metrics-demo";
 import { createFbaSalesMetricsProductionAdapter } from "../src/main/amazon/fba-sales-metrics-production";
 
@@ -115,6 +116,125 @@ describe("FBA Sales Metrics", () => {
     expect(snapshot.points).toHaveLength(7);
     expect(snapshot.points[1].totalSales.amount).toBe(0);
     expect(snapshot.points[6].partial).toBe(true);
+  });
+
+  it("accepts Amazon Day granularity ending the current partial Marketplace Day at next midnight", async () => {
+    const dstNow = new Date("2026-03-08T12:00:00.000Z");
+    const planned = planFbaSalesTrend(
+      { marketplaceId: MARKETPLACE_ID, days: 7 },
+      dstNow,
+    );
+    const calendar = marketplaceCalendar(MARKETPLACE_ID);
+    const partialDate = planned.window.partialDateKey!;
+    const startAt = planned.window.intervals.at(-1)!.split("--")[0];
+    const nextMidnight = calendar.formatInstant(
+      calendar.midnight(calendar.shiftDate(partialDate, 1)),
+    );
+    const amazonDailyInterval = `${startAt}--${nextMidnight}`;
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        envelope: { payload: [metric(amazonDailyInterval, "53.97", 3)] },
+        requestId: "request-current-partial-day",
+        rateLimit: "0.5",
+      },
+    ]);
+
+    const snapshot = await readFbaSalesTrend(
+      { marketplaceId: MARKETPLACE_ID, days: 7 },
+      { adapter, mode: "live", clock: () => new Date(dstNow.getTime()) },
+    );
+
+    expect(snapshot.points.at(-1)).toMatchObject({
+      date: partialDate,
+      interval: amazonDailyInterval,
+      partial: true,
+      totalSales: { amount: 53.97, currencyCode: "USD" },
+    });
+  });
+
+  it("accepts next-midnight Day intervals for both current and previous-year partial tails", async () => {
+    const planned = planFbaSalesTrend(
+      {
+        marketplaceId: MARKETPLACE_ID,
+        days: 7,
+        comparison: "previous-year",
+      },
+      NOW,
+    );
+    const calendar = marketplaceCalendar(MARKETPLACE_ID);
+    const dailyTail = (window: NonNullable<typeof planned.comparisonWindow>) => {
+      const date = window.partialDateKey!;
+      const startAt = window.intervals.at(-1)!.split("--")[0];
+      const nextMidnight = calendar.formatInstant(
+        calendar.midnight(calendar.shiftDate(date, 1)),
+      );
+      return `${startAt}--${nextMidnight}`;
+    };
+    const currentInterval = dailyTail(planned.window);
+    const previousInterval = dailyTail(planned.comparisonWindow!);
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        envelope: { payload: [metric(currentInterval, "53.97", 3)] },
+        requestId: "request-current-partial-day",
+        rateLimit: "0.5",
+      },
+      {
+        envelope: { payload: [metric(previousInterval, "35.98", 2)] },
+        requestId: "request-previous-partial-day",
+        rateLimit: "0.5",
+      },
+    ]);
+
+    const snapshot = await readFbaSalesTrend(
+      {
+        marketplaceId: MARKETPLACE_ID,
+        days: 7,
+        comparison: "previous-year",
+      },
+      { adapter, mode: "live", clock: () => new Date(NOW) },
+    );
+
+    expect(snapshot.points.at(-1)).toMatchObject({
+      interval: currentInterval,
+      partial: true,
+    });
+    expect(snapshot.comparison?.points.at(-1)).toMatchObject({
+      interval: previousInterval,
+    });
+  });
+
+  it("still rejects a current partial Day interval extending beyond next marketplace midnight", async () => {
+    const planned = planFbaSalesTrend(
+      { marketplaceId: MARKETPLACE_ID, days: 7 },
+      NOW,
+    );
+    const calendar = marketplaceCalendar(MARKETPLACE_ID);
+    const partialDate = planned.window.partialDateKey!;
+    const startAt = planned.window.intervals.at(-1)!.split("--")[0];
+    const afterNextMidnight = calendar.formatInstant(
+      new Date(
+        calendar.midnight(calendar.shiftDate(partialDate, 1)).getTime() + 1_000,
+      ),
+    );
+    const adapter = new ScriptedFbaSalesMetricsAdapter([
+      {
+        envelope: {
+          payload: [metric(`${startAt}--${afterNextMidnight}`, "53.97", 3)],
+        },
+        requestId: "request-invalid-partial-day",
+        rateLimit: null,
+      },
+    ]);
+
+    await expect(
+      readFbaSalesTrend(
+        { marketplaceId: MARKETPLACE_ID, days: 7 },
+        { adapter, mode: "live", clock: () => new Date(NOW) },
+      ),
+    ).rejects.toMatchObject({
+      name: "FbaSalesMetricsError",
+      code: "UPSTREAM_UNAVAILABLE",
+    });
   });
 
   it("normalizes equivalent UTC intervals through the public Trend operation", async () => {

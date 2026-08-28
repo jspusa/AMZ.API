@@ -43,6 +43,14 @@ describe("main Amazon execution context lifecycle", () => {
       clear.indexOf("credentialVault.clear"),
     );
 
+    const connectionTest = block(
+      source,
+      'ipcMain.handle("fba:credentials-test"',
+      'ipcMain.handle("fba:ads-credentials-status"',
+    );
+    expect(connectionTest).toContain("isMarketplaceId(marketplaceId)");
+    expect(connectionTest).toContain("apiRouter.testConnections(marketplaceId)");
+
     const advertisingSave = block(
       source,
       '"fba:ads-credentials-save"',

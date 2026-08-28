@@ -3,11 +3,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
+  connectionEvidenceAfterHealthRefresh,
+  connectionEvidenceFromConnectionTest,
   connectionEvidenceFromHealth,
   connectionEvidenceFromSales,
   dashboardConnectionBadgeCopy,
   isSalesTrendSnapshotForSelection,
   salesTrendQuery,
+  shouldRunExactConnectionProbe,
 } from "../src/renderer/src/components/dashboard";
 import type {
   SalesTrendPoint,
@@ -486,6 +489,67 @@ describe("dashboard operations pulse data flow", () => {
     expect(connectionEvidenceFromSales("demo")).toBe("demo");
     expect(connectionEvidenceFromHealth(null, "demo")).toBe("demo");
     expect(dashboardConnectionBadgeCopy("demo", false).title).toBe("展示資料");
+  });
+
+  it("accepts only an exact-marketplace successful main-process connection probe", () => {
+    const result = {
+      ok: true,
+      testedAt: "2026-08-28T00:00:00.000Z",
+      marketplaceId: DEFAULT_MARKETPLACE_ID,
+      regions: {
+        na: {
+          ok: true,
+          message: "Orders 與 Listings 連線成功。",
+          requestId: "connection-request-id",
+        },
+      },
+    } as const;
+
+    expect(
+      connectionEvidenceFromConnectionTest(result, DEFAULT_MARKETPLACE_ID),
+    ).toBe("verified-live");
+    expect(
+      connectionEvidenceFromConnectionTest(result, "A2EUQ1WTGCTBG2"),
+    ).toBeNull();
+    expect(
+      connectionEvidenceFromConnectionTest(
+        {
+          ...result,
+          regions: { na: { ...result.regions.na, ok: false } },
+        },
+        DEFAULT_MARKETPLACE_ID,
+      ),
+    ).toBeNull();
+  });
+
+  it("demotes stale probe evidence while preserving a successful live Sales read", () => {
+    expect(
+      connectionEvidenceAfterHealthRefresh("verified-live", "live", false),
+    ).toBe("configured-live");
+    expect(
+      connectionEvidenceAfterHealthRefresh("verified-live", "live", true),
+    ).toBe("verified-live");
+    expect(
+      connectionEvidenceAfterHealthRefresh("verified-live", "demo", true),
+    ).toBe("demo");
+  });
+
+  it("waits for a pending Sales attempt before using the fallback probe", () => {
+    expect(shouldRunExactConnectionProbe("live", false, true)).toBe(false);
+    expect(shouldRunExactConnectionProbe("live", false, false)).toBe(true);
+    expect(shouldRunExactConnectionProbe("live", true, false)).toBe(false);
+    expect(shouldRunExactConnectionProbe("demo", false, false)).toBe(false);
+  });
+
+  it("asks the trusted Notebook bridge to verify the selected marketplace", async () => {
+    const dashboardSource = await readFile(
+      new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(dashboardSource).toContain(
+      "window.fbaOS.credentials.test(targetMarketplaceId)",
+    );
   });
 
   it("places the FBA brand mix beside sales and binds it to the visible range", () => {
