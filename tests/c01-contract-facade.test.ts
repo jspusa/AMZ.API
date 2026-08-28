@@ -24,6 +24,10 @@ const DELEGATED_RESPONSE: ApiResponse = {
 const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SOURCE_PATH_CACHE = new Map<string, string[]>();
 const SOURCE_FILE_CACHE = new Map<string, ts.SourceFile>();
+const FACTORY_CALL_SITE_INDEX_CACHE = new Map<
+  string,
+  ReadonlyMap<string, readonly FactoryCallSite[]>
+>();
 
 function sourceFiles(root: string): string[] {
   const cached = SOURCE_PATH_CACHE.get(root);
@@ -160,22 +164,27 @@ type FactoryCallSite = Readonly<{
 function factoryCallSites(
   root: string,
   factoryName: string,
-): FactoryCallSite[] {
-  return sourceFiles(root).flatMap((sourcePath) => {
-    const calls: FactoryCallSite[] = [];
+): readonly FactoryCallSite[] {
+  const cached = FACTORY_CALL_SITE_INDEX_CACHE.get(root);
+  if (cached) return cached.get(factoryName) ?? [];
+
+  const callsByFactory = new Map<string, FactoryCallSite[]>();
+  for (const sourcePath of sourceFiles(root)) {
     function visit(node: ts.Node): void {
       if (
         ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === factoryName
+        ts.isIdentifier(node.expression)
       ) {
+        const calls = callsByFactory.get(node.expression.text) ?? [];
         calls.push({ sourcePath, call: node });
+        callsByFactory.set(node.expression.text, calls);
       }
       ts.forEachChild(node, visit);
     }
     visit(sourceFile(sourcePath));
-    return calls;
-  });
+  }
+  FACTORY_CALL_SITE_INDEX_CACHE.set(root, callsByFactory);
+  return callsByFactory.get(factoryName) ?? [];
 }
 
 function propertyNameText(name: ts.PropertyName | undefined): string {
