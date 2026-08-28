@@ -10,6 +10,7 @@ import Dashboard, {
   dashboardConnectionBadgeCopy,
   isSalesTrendSnapshotForSelection,
   salesTrendQuery,
+  shouldRunExactConnectionProbe,
 } from "../src/renderer/src/components/dashboard";
 import type {
   SalesTrendPoint,
@@ -533,6 +534,13 @@ describe("dashboard operations pulse data flow", () => {
     ).toBe("demo");
   });
 
+  it("waits for a pending Sales attempt before using the fallback probe", () => {
+    expect(shouldRunExactConnectionProbe("live", false, true)).toBe(false);
+    expect(shouldRunExactConnectionProbe("live", false, false)).toBe(true);
+    expect(shouldRunExactConnectionProbe("live", true, false)).toBe(false);
+    expect(shouldRunExactConnectionProbe("demo", false, false)).toBe(false);
+  });
+
   it("asks the trusted Notebook bridge to verify the selected marketplace", async () => {
     const dashboardSource = await readFile(
       new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
@@ -540,7 +548,7 @@ describe("dashboard operations pulse data flow", () => {
     );
 
     expect(dashboardSource).toContain(
-      "window.fbaOS.credentials.test(marketplaceId)",
+      "window.fbaOS.credentials.test(targetMarketplaceId)",
     );
   });
 

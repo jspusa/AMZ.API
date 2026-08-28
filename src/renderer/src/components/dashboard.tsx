@@ -176,6 +176,14 @@ export function connectionEvidenceFromConnectionTest(
   return "verified-live";
 }
 
+export function shouldRunExactConnectionProbe(
+  mode: "live" | "demo",
+  hasSuccessfulLiveSales: boolean,
+  salesRequestPending: boolean,
+): boolean {
+  return mode === "live" && !hasSuccessfulLiveSales && !salesRequestPending;
+}
+
 export function businessPricingAttentionCount(
   snapshot: BusinessPricingAuditSnapshot | null,
 ): number {
@@ -725,6 +733,10 @@ export default function Dashboard({
         : [],
     ),
   );
+  const salesTrendPendingMarketplaceRef = useRef<string | null>(null);
+  const connectionModeRef = useRef<
+    Record<string, "live" | "demo" | undefined>
+  >({});
   const salesTrendAbortRef = useRef<AbortController | null>(null);
   const connectionAbortRef = useRef<AbortController | null>(null);
   const primaryNavRef = useRef<HTMLElement | null>(null);
@@ -733,10 +745,41 @@ export default function Dashboard({
     salesTrendRequestKey(startingMarketplaceId, startingSelection),
   );
 
+  const verifyMarketplaceConnection = useCallback(
+    async (targetMarketplaceId: string, isCurrent: () => boolean) => {
+      if (!isCurrent()) return;
+      setConnectionChecking(true);
+      setConnectionEvidence((current) => ({
+        ...current,
+        [targetMarketplaceId]: "configured-live",
+      }));
+      try {
+        const result = await window.fbaOS.credentials.test(targetMarketplaceId);
+        if (!isCurrent()) return;
+        const evidence = connectionEvidenceFromConnectionTest(
+          result,
+          targetMarketplaceId,
+        );
+        if (evidence) {
+          setConnectionEvidence((current) => ({
+            ...current,
+            [targetMarketplaceId]: evidence,
+          }));
+        }
+      } catch {
+        // A failed exact probe leaves the selected marketplace unverified.
+      } finally {
+        if (isCurrent()) setConnectionChecking(false);
+      }
+    },
+    [],
+  );
+
   const loadSalesTrend = useCallback(async () => {
     salesTrendAbortRef.current?.abort();
     const controller = new AbortController();
     salesTrendAbortRef.current = controller;
+    salesTrendPendingMarketplaceRef.current = marketplaceId;
     setSalesTrendLoading(true);
     setSalesTrendError(null);
     setSalesTrend((current) =>
@@ -775,6 +818,7 @@ export default function Dashboard({
         );
       }
       if (salesTrendAbortRef.current === controller) {
+        salesTrendPendingMarketplaceRef.current = null;
         if (payload.mode === "live") {
           liveSalesConnectionRef.current.add(marketplaceId);
         } else {
@@ -789,17 +833,35 @@ export default function Dashboard({
     } catch (requestError) {
       if (requestError instanceof Error && requestError.name === "AbortError") return;
       if (salesTrendAbortRef.current === controller) {
+        salesTrendPendingMarketplaceRef.current = null;
         setSalesTrend(null);
         setSalesTrendError(
           requestError instanceof Error
             ? requestError.message
             : "目前無法載入 FBA 銷售趨勢。",
         );
+        const mode = connectionModeRef.current[marketplaceId];
+        if (
+          mode &&
+          shouldRunExactConnectionProbe(
+            mode,
+            liveSalesConnectionRef.current.has(marketplaceId),
+            false,
+          )
+        ) {
+          void verifyMarketplaceConnection(
+            marketplaceId,
+            () => salesTrendAbortRef.current === controller,
+          );
+        }
       }
     } finally {
-      if (salesTrendAbortRef.current === controller) setSalesTrendLoading(false);
+      if (salesTrendAbortRef.current === controller) {
+        salesTrendPendingMarketplaceRef.current = null;
+        setSalesTrendLoading(false);
+      }
     }
-  }, [marketplaceId, trendSelection]);
+  }, [marketplaceId, trendSelection, verifyMarketplaceConnection]);
 
   useEffect(
     () => () => {
@@ -831,30 +893,30 @@ export default function Dashboard({
         ) {
           throw new Error("Amazon 連線狀態回應無法辨識。");
         }
+        if (connectionAbortRef.current !== controller) return;
         const hasSuccessfulLiveSales =
           liveSalesConnectionRef.current.has(marketplaceId);
-        if (connectionAbortRef.current === controller) {
-          setConnectionEvidence((current) => ({
-            ...current,
-            [marketplaceId]: connectionEvidenceAfterHealthRefresh(
-              current[marketplaceId] ?? null,
-              payload.mode as "live" | "demo",
-              hasSuccessfulLiveSales,
-            ),
-          }));
-        }
-        if (payload.mode !== "live" || hasSuccessfulLiveSales) return;
-        const result = await window.fbaOS.credentials.test(marketplaceId);
-        if (connectionAbortRef.current !== controller) return;
-        const evidence = connectionEvidenceFromConnectionTest(
-          result,
-          marketplaceId,
-        );
-        if (evidence) {
-          setConnectionEvidence((current) => ({
-            ...current,
-            [marketplaceId]: evidence,
-          }));
+        const mode = payload.mode as "live" | "demo";
+        connectionModeRef.current[marketplaceId] = mode;
+        setConnectionEvidence((current) => ({
+          ...current,
+          [marketplaceId]: connectionEvidenceAfterHealthRefresh(
+            current[marketplaceId] ?? null,
+            mode,
+            hasSuccessfulLiveSales,
+          ),
+        }));
+        if (
+          shouldRunExactConnectionProbe(
+            mode,
+            hasSuccessfulLiveSales,
+            salesTrendPendingMarketplaceRef.current === marketplaceId,
+          )
+        ) {
+          await verifyMarketplaceConnection(
+            marketplaceId,
+            () => connectionAbortRef.current === controller,
+          );
         }
       })
       .catch((error) => {
@@ -865,7 +927,7 @@ export default function Dashboard({
         if (connectionAbortRef.current === controller) setConnectionChecking(false);
       });
     return () => controller.abort();
-  }, [marketplaceId]);
+  }, [marketplaceId, verifyMarketplaceConnection]);
 
   useEffect(() => {
     const requestKey = salesTrendRequestKey(marketplaceId, trendSelection);
