@@ -376,6 +376,25 @@ describe("Business Pricing capability owner", () => {
     });
   });
 
+  it("fails a malformed seller PTD root editability annotation closed", async () => {
+    const schema = businessSchema();
+    schema.editable = null;
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: false,
+      quantityDiscountsEditable: false,
+    });
+  });
+
   it("re-evaluates a proposed QDP only against the exact current cached schema", async () => {
     const subject = fixture();
     const capability = await subject.owner.read({

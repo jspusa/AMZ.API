@@ -871,8 +871,7 @@ function businessOfferAttributeSchemas(
       Object.keys(node).some((key) =>
         !BUSINESS_ATTRIBUTE_ROOT_SCHEMA_KEYS.has(key)
       ) ||
-      node.editable === false ||
-      node.readOnly === true ||
+      directEditableFlags(node).includes(false) ||
       ("properties" in node && !isRecord(node.properties)) ||
       ("required" in node &&
         (!Array.isArray(node.required) ||
