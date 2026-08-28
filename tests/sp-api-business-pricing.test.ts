@@ -1162,7 +1162,7 @@ describe("Amazon Business pricing SP-API contract", () => {
     ]);
   });
 
-  it("does not infer write access when the relevant PTD branch omits editable", async () => {
+  it("uses schema acceptance and Amazon Preview when the relevant PTD branch omits editable", async () => {
     const schema = businessSchema() as Record<string, unknown> & {
       properties: {
         purchasable_offer: {
@@ -1219,7 +1219,7 @@ describe("Amazon Business pricing SP-API contract", () => {
     });
     expect(snapshot.businessPricingCapability).toMatchObject({
       supported: true,
-      editable: false,
+      editable: true,
     });
   });
 

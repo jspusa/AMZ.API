@@ -13,6 +13,20 @@ const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const PRODUCT_TYPE = "PET_FOOD";
 const SELLER_ID = "TEST_B2B_SELLER";
 
+function recordAt(value: unknown, ...path: string[]): Record<string, unknown> {
+  let current = value;
+  for (const part of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      throw new Error(`Expected object at ${path.join(".")}`);
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  if (!current || typeof current !== "object" || Array.isArray(current)) {
+    throw new Error(`Expected object at ${path.join(".")}`);
+  }
+  return current as Record<string, unknown>;
+}
+
 function businessSchema(): Record<string, unknown> {
   return {
     type: "object",
@@ -212,6 +226,173 @@ describe("Business Pricing capability owner", () => {
       productType: PRODUCT_TYPE,
     });
     expect(subject.readCount).toBe(3);
+  });
+
+  it("allows Amazon Validation Preview when a seller PTD accepts B2B fields without positive editable annotations", async () => {
+    const schema = JSON.parse(JSON.stringify(
+      businessSchema(),
+      (key, value) => key === "editable" ? undefined : value,
+    )) as Record<string, unknown>;
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: true,
+      reason: null,
+      quantityDiscountsSupported: true,
+      quantityDiscountsEditable: true,
+      quantityDiscountsReason: null,
+    });
+    expect(subject.owner.quantityDiscountPlanSupported({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+      schemaChecksum: capability.schemaChecksum!,
+      levels: [{ lowerBound: 5, value: 5 }],
+    })).toBe(true);
+  });
+
+  it("keeps an explicit seller PTD Business Price prohibition read-only", async () => {
+    const schema = businessSchema();
+    recordAt(
+      schema,
+      "properties",
+      "purchasable_offer",
+      "items",
+      "properties",
+      "our_price",
+      "items",
+      "properties",
+      "schedule",
+      "items",
+      "properties",
+      "value_with_tax",
+    ).editable = false;
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: false,
+      quantityDiscountsEditable: false,
+    });
+  });
+
+  it("keeps an explicit seller PTD quantity-discount prohibition read-only", async () => {
+    const schema = businessSchema();
+    recordAt(
+      schema,
+      "properties",
+      "purchasable_offer",
+      "items",
+      "properties",
+      "quantity_discount_plan",
+    ).readOnly = true;
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: true,
+      quantityDiscountsSupported: true,
+      quantityDiscountsEditable: false,
+    });
+  });
+
+  it("fails a malformed seller PTD Business Price editability annotation closed", async () => {
+    const schema = businessSchema();
+    recordAt(
+      schema,
+      "properties",
+      "purchasable_offer",
+      "items",
+      "properties",
+      "our_price",
+      "items",
+      "properties",
+      "schedule",
+      "items",
+      "properties",
+      "value_with_tax",
+    ).editable = "false";
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: false,
+      quantityDiscountsEditable: false,
+    });
+  });
+
+  it("fails a malformed seller PTD quantity-discount readOnly annotation closed", async () => {
+    const schema = businessSchema();
+    recordAt(
+      schema,
+      "properties",
+      "purchasable_offer",
+      "items",
+      "properties",
+      "quantity_discount_plan",
+    ).readOnly = "true";
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: true,
+      quantityDiscountsSupported: true,
+      quantityDiscountsEditable: false,
+    });
+  });
+
+  it("fails a malformed seller PTD root editability annotation closed", async () => {
+    const schema = businessSchema();
+    schema.editable = null;
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: false,
+      quantityDiscountsEditable: false,
+    });
   });
 
   it("re-evaluates a proposed QDP only against the exact current cached schema", async () => {

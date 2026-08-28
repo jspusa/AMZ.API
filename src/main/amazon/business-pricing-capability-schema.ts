@@ -98,8 +98,11 @@ function reserveBusinessSchemaCollection(
 
 function directEditableFlags(node: unknown): boolean[] {
   if (!isRecord(node)) return [];
-  const flags = typeof node.editable === "boolean" ? [node.editable] : [];
-  if (node.readOnly === true) flags.push(false);
+  const flags: boolean[] = [];
+  if ("editable" in node) {
+    flags.push(typeof node.editable === "boolean" ? node.editable : false);
+  }
+  if ("readOnly" in node && node.readOnly !== false) flags.push(false);
   return flags;
 }
 
@@ -868,8 +871,7 @@ function businessOfferAttributeSchemas(
       Object.keys(node).some((key) =>
         !BUSINESS_ATTRIBUTE_ROOT_SCHEMA_KEYS.has(key)
       ) ||
-      node.editable === false ||
-      node.readOnly === true ||
+      directEditableFlags(node).includes(false) ||
       ("properties" in node && !isRecord(node.properties)) ||
       ("required" in node &&
         (!Array.isArray(node.required) ||
@@ -1174,8 +1176,11 @@ function businessPriceBranchEditable(
   pathNodes.push(...leaf.nodes);
   if (!leaf.safe || !traversal.safe) return false;
   const flags = pathNodes.flatMap(directEditableFlags);
-  const leafFlags = leaf.nodes.flatMap(directEditableFlags);
-  return leafFlags.includes(true) && !flags.includes(false);
+  // Amazon's PTD vocabulary uses an explicit negative annotation for fields
+  // that cannot be edited. A missing positive `editable` annotation is not a
+  // prohibition: the structurally valid proposal must still be decided by the
+  // Listings Items Validation Preview before any write can proceed.
+  return !flags.includes(false);
 }
 
 function businessQuantityDiscountBranchEditable(
@@ -1282,11 +1287,7 @@ function businessQuantityDiscountBranchEditable(
     )
   ) return false;
   const flags = pathNodes.flatMap(directEditableFlags);
-  const discountFlags = discountType.nodes.flatMap(directEditableFlags);
-  const lowerBoundFlags = lowerBound.nodes.flatMap(directEditableFlags);
-  const valueFlags = value.nodes.flatMap(directEditableFlags);
-  return discountFlags.includes(true) && lowerBoundFlags.includes(true) &&
-    valueFlags.includes(true) && !flags.includes(false);
+  return !flags.includes(false);
 }
 
 export function evaluateBusinessPricingCapabilitySchema(
