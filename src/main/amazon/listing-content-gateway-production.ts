@@ -331,18 +331,6 @@ function listingContentGatewayPatchBody(
         { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
       );
     }
-    const selectedLanguageValues = existing.filter(
-      (item) => item.language_tag === patch.languageTag,
-    );
-    if (
-      attributeName === "bullet_point" &&
-      selectedLanguageValues.length > 5
-    ) {
-      throw new SpApiError(
-        "此語系目前有超過 5 個賣點，簡易編輯器不會自動刪除多出的內容；請先到 Seller Central 檢查。",
-        { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
-      );
-    }
     const preservedLanguages = existing.filter(
       (item) => item.language_tag !== patch.languageTag,
     );

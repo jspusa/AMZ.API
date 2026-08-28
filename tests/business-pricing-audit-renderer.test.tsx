@@ -462,13 +462,14 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("高於一般售價");
     expect(markup).toContain("百分比折扣");
     expect(markup).toContain("Amazon Business 可用，但尚未設定 B2B 價格。");
-    expect(markup).not.toContain(">設定 B2B 價格<");
-    expect(markup).not.toContain(">調整 B2B 價格<");
+    expect(markup.match(/>設定 B2B 價格<\/button>/gu)).toHaveLength(2);
+    expect(markup.match(/>調整 B2B 價格<\/button>/gu)).toHaveLength(2);
     expect(markup).not.toContain("唯讀／不支援");
     expect(markup).not.toContain("seller-specific PTD");
     expect(markup).not.toContain("因此只提供唯讀");
-    expect(markup).toContain("本報表全程唯讀，不會修改 Amazon");
-    expect(markup).toContain("需要調整 Business Price 或數量折扣時");
+    expect(markup).toContain("Amazon Validation Preview");
+    expect(markup).toContain("預設只改 Business Price");
+    expect(markup).toContain("完整保留現有階梯折扣");
     expect(markup).not.toContain("不可直接修改");
     expect(markup).toContain("建議 B2B 價格");
     expect(markup).toContain("US 一般售價 – USD 1.00");
@@ -484,7 +485,6 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("Notebook Key 需更新後才能安全開啟指定 SKU");
     expect(markup).toContain("舊版不會改開 Seller Central 首頁");
     expect(markup.match(/>前往 Amazon 後台 ↗<\/button>/g)).toHaveLength(4);
-    expect(markup).not.toContain("Amazon Validation Preview");
     const panelSource = readFileSync(
       new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
       "utf8",
@@ -495,11 +495,11 @@ describe("FBA business pricing audit renderer", () => {
     expect(panelSource).toContain("pollStandaloneAuditJob");
     expect(panelSource).toContain("onJobChange?.(current)");
     expect(panelSource).not.toContain('fetch("/api/sp-api/business-pricing-audit"');
-    expect(panelSource).not.toContain("business-pricing-editor");
-    expect(panelSource).not.toContain("openEditor");
-    expect(panelSource).not.toContain("/api/sp-api/business-pricing?");
-    expect(panelSource).not.toContain('method: "POST"');
-    expect(panelSource).not.toContain('method: "PATCH"');
+    expect(panelSource).toContain("business-pricing-editor");
+    expect(panelSource).toContain("openEditor");
+    expect(panelSource).toContain("/api/sp-api/business-pricing?");
+    expect(panelSource).toContain('method: "POST"');
+    expect(panelSource).toContain('method: "PATCH"');
   });
 
   it("shows exact incomplete reasons for AFA135AM and TRPL03 without exposing PTD capability prose", () => {
@@ -595,15 +595,15 @@ describe("FBA business pricing audit renderer", () => {
     expect(css).toMatch(/\.business-pricing-quantity-tier\s*\{/u);
   });
 
-  it("keeps the audit panel read-only without removing the isolated write helpers", () => {
+  it("keeps audit evidence read-only while wiring rows to the isolated write helpers", () => {
     const panelSource = readFileSync(
       new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
       "utf8",
     );
 
-    expect(panelSource).not.toContain("BusinessPricingListingSnapshot");
-    expect(panelSource).not.toContain("SubmittedBusinessPricePreview");
-    expect(panelSource).not.toContain("applyVerifiedBusinessPriceToAuditSnapshot");
+    expect(panelSource).toContain("BusinessPricingListingSnapshot");
+    expect(panelSource).toContain("SubmittedBusinessPricePreview");
+    expect(panelSource).toContain("applyVerifiedBusinessPriceToAuditSnapshot");
     expect(typeof parseBusinessPricingListingSnapshot).toBe("function");
     expect(typeof createSubmittedBusinessPricePreview).toBe("function");
     expect(typeof parseBusinessPriceUpdate).toBe("function");

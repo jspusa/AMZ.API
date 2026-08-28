@@ -4,6 +4,14 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-08-28 v0.1.34 B2B 商品列安全編輯與 Excel 賣點完整取代（issue #154，進行中）
+
+分支 `codex/v0.1.34-b2b-editor-content-bullets` 以 current main `cdb79b397f54aee0f364f5a829f957c5f23b793d` 為基線，package 已升為 0.1.34。全站 B2B audit owner／snapshot 仍固定唯讀；renderer 在每個商品列保留「前往 Amazon 後台」，並另加「設定／調整 B2B 價格」以啟動既有獨立單 SKU 安全流程。按下後必須 fresh GET exact SKU，再依目前 Seller ID 的 seller-specific PTD 判斷能力；預設 `price_only`，POST／PATCH body 不含 `quantity_discount_plan` 並完整保留既有階梯折扣。只有使用者明確切換 combined，才可提出、編輯及送出 1–5 階 canonical percent tiers；後端既有 Validation Preview、native Touch ID／Windows Hello、idempotency ledger、單次 PATCH、canonical readback 與 no-blind-retry 邊界沒有放寬。
+
+文案批次的 `CONTENT_SELECTOR_UNSAFE` 根因已由可重現 RED 鎖定：production gateway 在 raw exact 語系已有超過 5 個 `bullet_point` 時，於 Amazon Validation Preview 前自行拒絕，因此像 `1ABRD001A0` 的同檔 Excel 更新即使提供完整 5 筆新值也無法進預檢。修正後，Excel 的 1–5 個非空賣點是 exact marketplace／language tag 的完整 requested set；舊資料即使有 6–10 筆同語系賣點，attribute replacement 只留下 Excel 值並清除多出的舊值，同時保留其他語系。任何現有 contribution 缺 language tag 或 selector 不明仍以 `CONTENT_SELECTOR_UNSAFE` fail closed；requested values 仍受 seller-specific PTD 與既有內容驗證約束。
+
+兩個原始 RED 均已轉綠；本機完整 `npm run check` 通過 241 個測試檔／2,351 tests、TypeScript 與 production build，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` 通過。雙軸 review、PR／CI、Pages、Mac／Windows artifacts、Mac 安裝與員工下載卡更新仍待完成。尚未連線 live Amazon 執行本版 Validation Preview、Touch ID／Windows Hello、PATCH 或 readback；未取得 exact SKU／欄位／價格或階梯的另行明確授權前不得代替使用者送出任何 Amazon mutation。
+
 ### 2026-08-28 v0.1.33 Sales Day 尾段與站點連線證據修正（發布中）
 
 本版修正兩個互相獨立的唯讀問題。Sales API `granularity=Day` 在目前尚未完成的 Marketplace Day 可以把最後一個 bucket 結束時間表示成下一個站點午夜；舊 normalizer 卻只接受查詢 cutoff 的當下時間，因此把 Amazon 的合法 partial-day 回應誤判為無法辨識。新契約仍要求 exact planned start，end 只接受 exact cutoff，或僅限 window 最後一個 `partialDateKey` 的 exact 下一個 Marketplace midnight；午夜依站點 IANA 時區計算，包含 DST，超過一秒或任何 completed-day 邊界仍 fail closed。固定 `Day／All／AFN`、FBA-only、缺日補零、currency／identity／duplicate 驗證與 no-retry 邊界均未放寬。

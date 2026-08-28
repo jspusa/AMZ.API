@@ -43,7 +43,9 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function listingEnvelope(): Record<string, unknown> {
+function listingEnvelope(options: Readonly<{
+  bulletPoints?: readonly Readonly<{ text: string; languageTag?: string }>[];
+}> = {}): Record<string, unknown> {
   const value = (text: string, languageTag = "en_US") => ({
     value: text,
     language_tag: languageTag,
@@ -64,7 +66,9 @@ function listingEnvelope(): Record<string, unknown> {
         value("既存の商品名", "ja_JP"),
       ],
       title_differentiation: [value("Original highlight")],
-      bullet_point: [value("Original bullet")],
+      bullet_point: options.bulletPoints?.map((bullet) =>
+        value(bullet.text, bullet.languageTag)
+      ) ?? [value("Original bullet")],
       product_description: [value("Original description")],
       ingredients: [value("Turkey")],
     },
@@ -344,5 +348,104 @@ describe("W06 Listing Content production gateway receipts", () => {
   ])("classifies $name without retrying the commit", async (testCase) => {
     const receipt = await exerciseCommitReceipt(testCase);
     expect(receipt.requestId).toBe("W06-RECEIPT-REQUEST");
+  });
+
+  it("lets an Excel batch replace more than five exact-language bullets while preserving other languages", async () => {
+    let previewBody: unknown = null;
+    const existingBullets = [
+      ...Array.from({ length: 10 }, (_, index) => ({
+        text: `Legacy English bullet ${index + 1}`,
+        languageTag: "en_US",
+      })),
+      { text: "既存の日本語箇条書き", languageTag: "ja_JP" },
+    ];
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? (input instanceof Request
+        ? input.method
+        : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, {
+          access_token: "FAKE_W06_ACCESS_TOKEN",
+          expires_in: 3_600,
+        });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, contentSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, definitionEnvelope());
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") &&
+          method === "GET") {
+        return jsonResponse(200, listingEnvelope({
+          bulletPoints: existingBullets,
+        }));
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") &&
+          method === "PATCH" &&
+          url.searchParams.get("mode") === "VALIDATION_PREVIEW") {
+        previewBody = JSON.parse(String(init?.body));
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "VALID",
+          submissionId: "W06-BULLET-REPLACEMENT-PREVIEW",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
+          issues: [],
+        });
+      }
+      throw new Error(`Unexpected W06 request: ${method} ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const observation = await listingContentGatewayProduction.read({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    }, "mutation");
+    const previous = {
+      title: observation.snapshot.title,
+      itemHighlight: observation.snapshot.itemHighlight,
+      bulletPoints: [...observation.snapshot.bulletPoints],
+      productDescription: observation.snapshot.productDescription,
+      ingredients: observation.snapshot.ingredients,
+    };
+    const requestedBullets = Array.from(
+      { length: 5 },
+      (_, index) => `Excel English bullet ${index + 1}`,
+    );
+    const preview = await listingContentGatewayProduction.validationPreview({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      asin: ASIN,
+      productType: PRODUCT_TYPE,
+      languageTag: "en_US",
+      schemaChecksum: SCHEMA_CHECKSUM,
+      expectedOldHash: canonicalSha256(previous),
+      expectedCanonicalPatchHash: null,
+      previous,
+      requested: { ...previous, bulletPoints: requestedBullets },
+      changedFields: ["bulletPoints"],
+      sourceEvidence: observation.sourceEvidence,
+      ptdEvidence: observation.ptdEvidence,
+    });
+
+    expect(preview.status).toBe("VALID");
+    expect(previewBody).toEqual({
+      productType: PRODUCT_TYPE,
+      patches: [{
+        op: "replace",
+        path: "/attributes/bullet_point",
+        value: [
+          {
+            value: "既存の日本語箇条書き",
+            language_tag: "ja_JP",
+            marketplace_id: MARKETPLACE_ID,
+          },
+          ...requestedBullets.map((text) => ({
+            value: text,
+            language_tag: "en_US",
+            marketplace_id: MARKETPLACE_ID,
+          })),
+        ],
+      }],
+    });
   });
 });
