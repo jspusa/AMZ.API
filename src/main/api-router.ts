@@ -209,7 +209,7 @@ import { createDemoReportsAdapter } from
   "./amazon/reports-runtime-demo";
 import { FixedReportBroker } from "./amazon/report-broker";
 import { testRegionConnections } from "./amazon/connection-health";
-import { marketplaceByCode } from "../shared/marketplaces";
+import { marketplaceByCode, marketplaceById } from "../shared/marketplaces";
 import { abortableDelay as waitMilliseconds } from "./abort-utils";
 
 type WriteApproval = (reason: string) => Promise<void>;
@@ -818,7 +818,9 @@ export class ApiRouter {
     }
   }
 
-  async testConnections(): Promise<ConnectionTestResult> {
+  async testConnections(
+    marketplaceId?: MarketplaceId,
+  ): Promise<ConnectionTestResult> {
     const operationStateRevision = this.contextStateRevision;
     const summary = await this.vault.getSummary();
     this.assertContextStateRevision(operationStateRevision);
@@ -830,21 +832,34 @@ export class ApiRouter {
     const result: ConnectionTestResult = {
       ok: false,
       testedAt: new Date().toISOString(),
+      marketplaceId: marketplaceId ?? null,
       regions: {},
     };
-    for (const region of ["na", "fe", "eu"] as const) {
+    const selectedMarketplace = marketplaceId
+      ? marketplaceById(marketplaceId)
+      : undefined;
+    if (marketplaceId && !selectedMarketplace) {
+      throw new TypeError("Amazon 站點無效。");
+    }
+    const targets = selectedMarketplace
+      ? [{ region: selectedMarketplace.region, marketplaceId: selectedMarketplace.id }]
+      : (["na", "fe", "eu"] as const).map((region) => ({
+          region,
+          marketplaceId: representatives[region],
+        }));
+    for (const target of targets) {
       this.assertContextStateRevision(operationStateRevision);
+      const { region } = target;
       if (!summary.regions[region].configured) continue;
       result.regions[region] = await this.spExecutionContext.runOperation(async () => {
         this.assertContextStateRevision(operationStateRevision);
-        const marketplaceId = representatives[region];
-        const context = await this.spExecutionContext.capture(marketplaceId);
+        const context = await this.spExecutionContext.capture(target.marketplaceId);
         const regionResult = await testRegionConnections({
           orders: () => this.ordersReads.read({
             intent: "connection-probe",
-            marketplaceId,
+            marketplaceId: target.marketplaceId,
           }),
-          listings: () => verifyListingsAccess(marketplaceId),
+          listings: () => verifyListingsAccess(target.marketplaceId),
         });
         await this.spExecutionContext.assertCurrent(context);
         this.assertContextStateRevision(operationStateRevision);

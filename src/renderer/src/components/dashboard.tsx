@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import type { ConnectionTestResult } from "../../../shared/contracts";
 import {
   DEFAULT_MARKETPLACE_ID,
   MARKETPLACES as MARKETPLACE_OPTIONS,
@@ -146,6 +147,22 @@ export function connectionEvidenceFromSales(
   mode: "live" | "demo",
 ): DashboardConnectionEvidence {
   return mode === "live" ? "verified-live" : "demo";
+}
+
+export function connectionEvidenceFromConnectionTest(
+  result: ConnectionTestResult,
+  marketplaceId: string,
+): DashboardConnectionEvidence | null {
+  const marketplace = marketplaceById(marketplaceId);
+  if (
+    !marketplace ||
+    !result.ok ||
+    result.marketplaceId !== marketplaceId ||
+    result.regions[marketplace.region]?.ok !== true
+  ) {
+    return null;
+  }
+  return "verified-live";
 }
 
 export function businessPricingAttentionCount(
@@ -798,6 +815,19 @@ export default function Dashboard({
               current[marketplaceId] ?? null,
               payload.mode as "live" | "demo",
             ),
+          }));
+        }
+        if (payload.mode !== "live") return;
+        const result = await window.fbaOS.credentials.test(marketplaceId);
+        if (connectionAbortRef.current !== controller) return;
+        const evidence = connectionEvidenceFromConnectionTest(
+          result,
+          marketplaceId,
+        );
+        if (evidence) {
+          setConnectionEvidence((current) => ({
+            ...current,
+            [marketplaceId]: evidence,
           }));
         }
       })

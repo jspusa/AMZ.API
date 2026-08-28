@@ -222,6 +222,23 @@ function metricInterval(
   };
 }
 
+function matchesExpectedDailyInterval(input: {
+  parsed: { date: string; startTime: number; endTime: number };
+  expected: { startTime: number; endTime: number };
+  window: SalesTrendWindow;
+  marketplaceId: MarketplaceId;
+}): boolean {
+  if (input.parsed.startTime !== input.expected.startTime) return false;
+  if (input.parsed.endTime === input.expected.endTime) return true;
+  if (input.parsed.date !== input.window.partialDateKey) return false;
+  if (input.parsed.date !== input.window.dateKeys.at(-1)) return false;
+  const calendar = marketplaceCalendar(input.marketplaceId);
+  const nextMidnight = calendar.midnight(
+    calendar.shiftDate(input.parsed.date, 1),
+  );
+  return input.parsed.endTime === nextMidnight.getTime();
+}
+
 function totalSalesTrendPoints(
   points: SalesTrendPoint[],
   currencyCode: string,
@@ -303,13 +320,22 @@ function normalizeFbaSalesDailyEnvelope(input: {
     const unitCount = finiteNonNegativeInteger(rawMetric.unitCount);
     const orderItemCount = finiteNonNegativeInteger(rawMetric.orderItemCount);
     const orderCount = finiteNonNegativeInteger(rawMetric.orderCount);
+    const intervalMatches = Boolean(
+      parsedInterval &&
+        expectedInterval &&
+        matchesExpectedDailyInterval({
+          parsed: parsedInterval,
+          expected: expectedInterval,
+          window: input.window,
+          marketplaceId: input.marketplaceId,
+        }),
+    );
     if (
       !date ||
       !expectedDates.has(date) ||
       !parsedInterval ||
       !expectedInterval ||
-      parsedInterval.startTime !== expectedInterval.startTime ||
-      parsedInterval.endTime !== expectedInterval.endTime ||
+      !intervalMatches ||
       byDate.has(date) ||
       amount === null ||
       amount < 0 ||

@@ -584,13 +584,19 @@ function registerIpc(): void {
       credentialsChangeInFlight = false;
     }
   });
-  ipcMain.handle("fba:credentials-test", async (event) => {
+  ipcMain.handle("fba:credentials-test", async (event, marketplaceId?: unknown) => {
     assertTrustedFrame(event);
     if (!apiRouter) throw new Error("APP_NOT_READY");
     if (credentialsChangeInFlight) throw new Error("本機憑證正在更新。");
+    if (
+      marketplaceId !== undefined &&
+      (typeof marketplaceId !== "string" || !isMarketplaceId(marketplaceId))
+    ) {
+      throw new TypeError("Amazon 站點無效。");
+    }
     apiRequestsInFlight += 1;
     try {
-      return await apiRouter.testConnections();
+      return await apiRouter.testConnections(marketplaceId);
     } finally {
       apiRequestsInFlight -= 1;
     }
