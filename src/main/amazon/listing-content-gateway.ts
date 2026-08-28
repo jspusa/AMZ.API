@@ -11,6 +11,10 @@ import type { ListingIssue } from "./sp-api-error";
 declare const listingContentSourceEvidenceBrand: unique symbol;
 declare const listingContentPtdEvidenceBrand: unique symbol;
 
+export const LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY = Symbol(
+  "listing-content-batch-exact-bullet-replacement",
+);
+
 /** Adapter-minted capability bound to one exact raw Listing content read. */
 export type ListingContentSourceEvidence = Readonly<{
   [listingContentSourceEvidenceBrand]: "listing-content-source-evidence";
@@ -52,6 +56,9 @@ export type ListingContentPatchDescriptor = ListingContentIdentity & Readonly<{
   previous: ListingContentValues;
   requested: ListingContentValues;
   changedFields: readonly ListingContentField[];
+  /** Main-only Excel batch authority: replace the exact locale bullet set. */
+  exactLanguageBulletReplacementAuthority?:
+    typeof LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
   sourceEvidence: ListingContentSourceEvidence;
   ptdEvidence: ListingContentPtdEvidence;
 }>;

@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListingContentPatchDescriptor } from
   "../src/main/amazon/listing-content-gateway";
 import {
+  LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+} from "../src/main/amazon/listing-content-gateway";
+import {
   invalidateSpApiCredentialCaches,
   listingContentGatewayProduction,
 } from "../src/main/amazon/sp-api";
@@ -423,6 +426,8 @@ describe("W06 Listing Content production gateway receipts", () => {
       previous,
       requested: { ...previous, bulletPoints: requestedBullets },
       changedFields: ["bulletPoints"],
+      exactLanguageBulletReplacementAuthority:
+        LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
       sourceEvidence: observation.sourceEvidence,
       ptdEvidence: observation.ptdEvidence,
     });
@@ -447,5 +452,69 @@ describe("W06 Listing Content production gateway receipts", () => {
         ],
       }],
     });
+  });
+
+  it("keeps the overflow guard for ordinary single-SKU bullet edits", async () => {
+    const existingBullets = Array.from({ length: 6 }, (_, index) => ({
+      text: `Legacy English bullet ${index + 1}`,
+      languageTag: "en_US",
+    }));
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? (input instanceof Request
+        ? input.method
+        : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, {
+          access_token: "FAKE_W06_ACCESS_TOKEN",
+          expires_in: 3_600,
+        });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, contentSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, definitionEnvelope());
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") &&
+          method === "GET") {
+        return jsonResponse(200, listingEnvelope({
+          bulletPoints: existingBullets,
+        }));
+      }
+      throw new Error(`Unexpected W06 request: ${method} ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const observation = await listingContentGatewayProduction.read({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    }, "mutation");
+    const previous = {
+      title: observation.snapshot.title,
+      itemHighlight: observation.snapshot.itemHighlight,
+      bulletPoints: [...observation.snapshot.bulletPoints],
+      productDescription: observation.snapshot.productDescription,
+      ingredients: observation.snapshot.ingredients,
+    };
+
+    await expect(
+      listingContentGatewayProduction.validationPreview({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+        asin: ASIN,
+        productType: PRODUCT_TYPE,
+        languageTag: "en_US",
+        schemaChecksum: SCHEMA_CHECKSUM,
+        expectedOldHash: canonicalSha256(previous),
+        expectedCanonicalPatchHash: null,
+        previous,
+        requested: {
+          ...previous,
+          bulletPoints: ["Ordinary editor bullet"],
+        },
+        changedFields: ["bulletPoints"],
+        sourceEvidence: observation.sourceEvidence,
+        ptdEvidence: observation.ptdEvidence,
+      }),
+    ).rejects.toMatchObject({ code: "CONTENT_SELECTOR_UNSAFE" });
   });
 });

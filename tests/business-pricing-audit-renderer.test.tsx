@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingRowMatchesFilter,
@@ -109,6 +110,142 @@ function payload(): Record<string, unknown> {
   };
 }
 
+const interactiveListing = {
+  mode: "live",
+  marketplaceId: "ATVPDKIKX0DER",
+  sellerSku: "FBA-MISSING",
+  asin: "B000000001",
+  title: "Missing business price",
+  productType: "PET_FOOD",
+  standardPrice: { amount: 19.99, currencyCode: "USD" },
+  businessPrice: null,
+  businessOfferPresence: "absent",
+  businessPricingManagedByAutomation: false,
+  quantityDiscountPlan: {
+    discountType: "percent",
+    levels: [
+      { lowerBound: 5, value: 3 },
+      { lowerBound: 10, value: 6 },
+    ],
+  },
+  quantityDiscountPlanPresence: "canonical",
+  quantityDiscountPlanHash: "f".repeat(64),
+  businessOfferGuardHash: "a".repeat(64),
+  businessOfferProtectedHash: "e".repeat(64),
+  businessPricingCapability: {
+    supported: true,
+    editable: true,
+    reason: null,
+    schemaChecksum: "seller-schema-checksum",
+    quantityDiscountsSupported: true,
+    quantityDiscountsEditable: true,
+    quantityDiscountsReason: null,
+  },
+  fetchedAt: "2026-08-22T12:00:00.000Z",
+  notice: null,
+} as const;
+
+async function previewBodyFromRowInteraction(
+  mode: "price_only" | "combined",
+): Promise<Record<string, unknown>> {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+  let submittedBody: Record<string, unknown> | null = null;
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const method = init?.method ?? "GET";
+    if (method === "GET") {
+      return new Response(JSON.stringify(interactiveListing), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (method !== "POST") {
+      throw new Error(`Unexpected B2B interaction request: ${method}`);
+    }
+    submittedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const tiers = Array.isArray(submittedBody.quantityDiscountTiers)
+      ? submittedBody.quantityDiscountTiers as Array<{
+          lowerBound: number;
+          percent: number;
+        }>
+      : null;
+    return new Response(JSON.stringify({
+      mode: "live",
+      status: "VALID",
+      marketplaceId: interactiveListing.marketplaceId,
+      sellerSku: interactiveListing.sellerSku,
+      asin: interactiveListing.asin,
+      productType: interactiveListing.productType,
+      standardPrice: interactiveListing.standardPrice,
+      previousBusinessPrice: null,
+      requestedBusinessPrice: {
+        amount: submittedBody.newBusinessPrice,
+        currencyCode: "USD",
+      },
+      previousQuantityDiscountPlan: interactiveListing.quantityDiscountPlan,
+      previousQuantityDiscountPlanHash:
+        interactiveListing.quantityDiscountPlanHash,
+      requestedQuantityDiscountPlan: tiers
+        ? {
+            discountType: "percent",
+            levels: tiers.map((tier) => ({
+              lowerBound: tier.lowerBound,
+              value: tier.percent,
+            })),
+          }
+        : interactiveListing.quantityDiscountPlan,
+      quantityDiscountPlanChange: tiers ? "replace" : "preserve",
+      businessOfferGuardHash: interactiveListing.businessOfferGuardHash,
+      businessOfferProtectedHash:
+        interactiveListing.businessOfferProtectedHash,
+      schemaChecksum:
+        interactiveListing.businessPricingCapability.schemaChecksum,
+      fbaEvidenceHash: "b".repeat(64),
+      canonicalPatchHash: "c".repeat(64),
+      validationIssuesHash: "d".repeat(64),
+      validatedAt: "2026-08-22T12:01:00.000Z",
+      issues: [],
+      notice: "Amazon Validation Preview 已通過。",
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  let renderer: ReactTestRenderer | null = null;
+  await act(async () => {
+    renderer = create(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+    }));
+  });
+  const root = renderer!.root;
+  const buttonNamed = (name: string) => root.findAllByType("button").find(
+    (button) => button.children.join("") === name,
+  );
+  await act(async () => {
+    buttonNamed("設定 B2B 價格")!.props.onClick();
+  });
+  if (mode === "combined") {
+    await act(async () => {
+      buttonNamed("明確一併更新階梯折扣")!.props.onClick();
+    });
+  }
+  await act(async () => {
+    root.findByType("form").props.onSubmit({ preventDefault: () => undefined });
+  });
+  await act(async () => renderer!.unmount());
+  if (!submittedBody) throw new Error("Expected one B2B preview body");
+  return submittedBody;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT;
+});
+
 describe("Seller Central SKU Pages-first handoff", () => {
   it("does not silently open the Seller Central root in a legacy Notebook Key", async () => {
     const destinations: string[] = [];
@@ -141,6 +278,31 @@ describe("Seller Central SKU Pages-first handoff", () => {
 });
 
 describe("FBA business pricing audit renderer", () => {
+  it("sends no tiers by default and sends percent tiers only after the row editor explicitly switches modes", async () => {
+    const priceOnlyBody = await previewBodyFromRowInteraction("price_only");
+    expect(priceOnlyBody).toMatchObject({
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "FBA-MISSING",
+      expectedBusinessPrice: null,
+      newBusinessPrice: 18.99,
+    });
+    expect(priceOnlyBody).not.toHaveProperty("quantityDiscountTiers");
+    expect(priceOnlyBody).not.toHaveProperty(
+      "expectedQuantityDiscountPlanHash",
+    );
+
+    const combinedBody = await previewBodyFromRowInteraction("combined");
+    expect(combinedBody).toMatchObject({
+      expectedQuantityDiscountPlanHash: "f".repeat(64),
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 10, percent: 10 },
+        { lowerBound: 15, percent: 15 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    });
+  });
+
   it("resumes a newer completed job over an older cache without duplicating an active observer", () => {
     const cachedSnapshot = parseBusinessPricingAuditSnapshot(payload());
     const newerPayload = payload();
@@ -489,6 +651,10 @@ describe("FBA business pricing audit renderer", () => {
       new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
       "utf8",
     );
+    const editorSource = readFileSync(
+      new URL("../src/renderer/src/components/business-pricing-editor.tsx", import.meta.url),
+      "utf8",
+    );
     expect(panelSource).toContain("openSellerCentralInventoryHandoff");
     expect(panelSource).not.toContain('window.fbaOS.app.openExternal("seller-central")');
     expect(panelSource).toContain('kind: "businessPricing"');
@@ -498,8 +664,8 @@ describe("FBA business pricing audit renderer", () => {
     expect(panelSource).toContain("business-pricing-editor");
     expect(panelSource).toContain("openEditor");
     expect(panelSource).toContain("/api/sp-api/business-pricing?");
-    expect(panelSource).toContain('method: "POST"');
-    expect(panelSource).toContain('method: "PATCH"');
+    expect(editorSource).toContain('method: "POST"');
+    expect(editorSource).toContain('method: "PATCH"');
   });
 
   it("shows exact incomplete reasons for AFA135AM and TRPL03 without exposing PTD capability prose", () => {
@@ -600,10 +766,17 @@ describe("FBA business pricing audit renderer", () => {
       new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
       "utf8",
     );
+    const editorSource = readFileSync(
+      new URL("../src/renderer/src/components/business-pricing-editor.tsx", import.meta.url),
+      "utf8",
+    );
 
     expect(panelSource).toContain("BusinessPricingListingSnapshot");
-    expect(panelSource).toContain("SubmittedBusinessPricePreview");
     expect(panelSource).toContain("applyVerifiedBusinessPriceToAuditSnapshot");
+    expect(panelSource).toContain("BusinessPricingEditor");
+    expect(editorSource).toContain("SubmittedBusinessPricePreview");
+    expect(editorSource).toContain("createSubmittedBusinessPricePreview");
+    expect(editorSource).toContain("parseBusinessPriceUpdate");
     expect(typeof parseBusinessPricingListingSnapshot).toBe("function");
     expect(typeof createSubmittedBusinessPricePreview).toBe("function");
     expect(typeof parseBusinessPriceUpdate).toBe("function");

@@ -8,6 +8,10 @@ import { contentAuditEvidenceRowDigest } from
   "../src/main/amazon/content-audit-snapshot-evidence";
 import type { FixedReportBroker } from "../src/main/amazon/report-broker";
 import { SpApiError } from "../src/main/amazon/sp-api-error";
+import {
+  invalidateSpApiCredentialCaches,
+  listingContentGatewayProduction,
+} from "../src/main/amazon/sp-api";
 import type {
   ListingContentUpdateResult,
   UpdateListingContentInput,
@@ -24,7 +28,9 @@ import type { CredentialVault } from "../src/main/credential-vault";
 import { createListingContentBatchMutations } from
   "../src/main/listing-content-batch-mutations";
 import {
+  LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
   LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+  createListingContentMutations,
   type ListingContentPreviewOptions,
   type ListingContentMutationsPort,
   type ListingContentPreparedPreview,
@@ -223,7 +229,19 @@ function preparedPreview(
     productDescription: input.productDescription,
     ingredients: input.ingredients,
   };
-  const changedFields = ["title" as const];
+  const changedFields = [
+    ...(previous.title !== requested.title ? ["title" as const] : []),
+    ...(previous.itemHighlight !== requested.itemHighlight
+      ? ["itemHighlight" as const]
+      : []),
+    "bulletPoints" as const,
+    ...(previous.productDescription !== requested.productDescription
+      ? ["productDescription" as const]
+      : []),
+    ...(previous.ingredients !== requested.ingredients
+      ? ["ingredients" as const]
+      : []),
+  ];
   const issues = options.issues ?? [];
   const evidence = {
     version: 1 as const,
@@ -593,11 +611,17 @@ describe("content audit Excel batch router", () => {
     const key = "content-batch-roundtrip-001";
     const preview = await router.handle(importRequest(edited, key));
 
-    expect(preview.status).toBe(200);
+    expect(preview.status, JSON.stringify(responseValue(preview))).toBe(200);
     const previewBody = responseValue(preview);
     expect(previewBody).toMatchObject({ marketplaceId: MARKETPLACE_ID });
     expect(previewBody.changes).toEqual([
-      expect.objectContaining({ changedFields: ["title"] }),
+      expect.objectContaining({
+        changedFields: ["title", "bulletPoints"],
+        requested: expect.objectContaining({
+          title: "Batch-safe updated product title",
+          bulletPoints: snapshot.rows[0]!.bulletPoints,
+        }),
+      }),
     ]);
     expectNoPrivateBatchKeys(previewBody);
     expect(approveWrite).not.toHaveBeenCalled();
@@ -648,6 +672,214 @@ describe("content audit Excel batch router", () => {
     expect(repeatedBody.rows[0]!.result).not.toBe(exposedResult);
     expect(approveWrite).toHaveBeenCalledOnce();
     expect(runIdempotentOperation).toHaveBeenCalledOnce();
+  });
+
+  it("lets the public Excel route authoritatively replace 6-10 same-locale bullets, preserves other languages, and still blocks selector ambiguity", async () => {
+    const snapshot = await audit();
+    const sourceRow = snapshot.rows[0]!;
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Public route exact-locale replacement title",
+    );
+    const stored = liveEvidenceForWorkbook(snapshot, edited);
+    let ambiguousSelector = false;
+    const previewBodies: Array<Record<string, unknown>> = [];
+    const schemaUrl = "https://schemas.example.test/content-batch-public.json";
+    const attribute = (value: string, languageTag?: string) => ({
+      value,
+      ...(languageTag === undefined ? {} : { language_tag: languageTag }),
+      marketplace_id: MARKETPLACE_ID,
+    });
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = init?.method ?? (input instanceof Request
+        ? input.method
+        : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return new Response(JSON.stringify({
+          access_token: "FAKE_CONTENT_BATCH_ACCESS_TOKEN",
+          expires_in: 3_600,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.href === schemaUrl) {
+        const textAttribute = (maximum: number, maximumItems = 1) => ({
+          type: "array",
+          editable: true,
+          minItems: 0,
+          maxItems: maximumItems,
+          items: {
+            type: "object",
+            properties: {
+              value: { type: "string", minLength: 1, maxLength: maximum },
+              language_tag: { type: "string", enum: ["en_US", "ja_JP"] },
+              marketplace_id: { type: "string" },
+            },
+          },
+        });
+        return new Response(JSON.stringify({
+          type: "object",
+          required: ["item_name"],
+          properties: {
+            item_name: textAttribute(200),
+            title_differentiation: textAttribute(500),
+            bullet_point: textAttribute(2_000, 5),
+            product_description: textAttribute(10_000),
+            ingredients: textAttribute(10_000),
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return new Response(JSON.stringify({
+          productType: sourceRow.productType,
+          marketplaceIds: [MARKETPLACE_ID],
+          schema: {
+            link: { resource: schemaUrl, verb: "GET" },
+            checksum: "content-batch-public-schema",
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") &&
+          method === "GET") {
+        const legacyBullets = [
+          ...sourceRow.bulletPoints,
+          ...Array.from(
+            { length: 5 },
+            (_, index) => `Legacy overflow English bullet ${index + 6}`,
+          ),
+        ].map((bullet, index) => attribute(
+          bullet,
+          ambiguousSelector && index === 5 ? undefined : "en_US",
+        ));
+        return new Response(JSON.stringify({
+          sku: sourceRow.sellerSku,
+          summaries: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin: sourceRow.asin,
+            productType: sourceRow.productType,
+            status: ["BUYABLE"],
+            itemName: sourceRow.title,
+          }],
+          attributes: {
+            item_name: [attribute(sourceRow.title, "en_US")],
+            title_differentiation: [
+              attribute(sourceRow.itemHighlight, "en_US"),
+            ],
+            bullet_point: [
+              ...legacyBullets,
+              attribute("既存の日本語箇条書き", "ja_JP"),
+            ],
+            product_description: [
+              attribute(sourceRow.productDescription, "en_US"),
+            ],
+            ingredients: [attribute(sourceRow.ingredients, "en_US")],
+          },
+          fulfillmentAvailability: [{
+            fulfillmentChannelCode: "AMAZON_NA",
+            quantity: 5,
+          }],
+          issues: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") &&
+          method === "PATCH" &&
+          url.searchParams.get("mode") === "VALIDATION_PREVIEW") {
+        previewBodies.push(
+          JSON.parse(String(init?.body)) as Record<string, unknown>,
+        );
+        return new Response(JSON.stringify({
+          sku: sourceRow.sellerSku,
+          status: "VALID",
+          submissionId: "CONTENT-BATCH-PUBLIC-PREVIEW",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: sourceRow.asin }],
+          issues: [],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected public content batch request: ${method} ${url.href}`);
+    });
+
+    process.env.SP_API_MODE = "live";
+    process.env.SP_API_LWA_CLIENT_ID = "FAKE_CONTENT_BATCH_CLIENT_ID";
+    process.env.SP_API_LWA_CLIENT_SECRET = "FAKE_CONTENT_BATCH_CLIENT_SECRET";
+    process.env.SP_API_REFRESH_TOKEN_NA = "FAKE_CONTENT_BATCH_REFRESH_TOKEN";
+    process.env.SP_API_SELLER_ID_NA = "FAKE_CONTENT_BATCH_SELLER_ID";
+    invalidateSpApiCredentialCaches();
+    vi.stubGlobal("fetch", fetchMock);
+    const context = createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+      marketplaceId,
+      mode: "live",
+      accountScope: ACCOUNT_SCOPE,
+    }));
+    const writeGate = {
+      stagePreview: vi.fn(async () => undefined),
+      execute: vi.fn(),
+      reconcile: vi.fn(async () => undefined),
+      clearEphemeral: vi.fn(),
+    } as unknown as MainWriteGatePort;
+    const content = createListingContentMutations({
+      context,
+      writeGate,
+      gateway: listingContentGatewayProduction,
+    });
+    const liveRouter = new ApiRouter({
+      store: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: {
+        getAccountScope: async () => ACCOUNT_SCOPE,
+      } as unknown as CredentialVault,
+      approveWrite,
+      spExecutionContext: context,
+      writeGate,
+      listingContentMutations: content,
+    });
+    try {
+      const response = await liveRouter.handle(importRequest(
+        edited,
+        "content-batch-public-overflow-001",
+      ));
+      expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
+      expect(responseValue(response)).toMatchObject({
+        changes: [{
+          sellerSku: sourceRow.sellerSku,
+          changedFields: ["title", "bulletPoints"],
+        }],
+      });
+      const patches = previewBodies.at(-1)?.patches as Array<{
+        path: string;
+        value: Array<Record<string, unknown>>;
+      }>;
+      const bulletPatch = patches.find(
+        (patch) => patch.path === "/attributes/bullet_point",
+      );
+      expect(bulletPatch?.value).toEqual([
+        attribute("既存の日本語箇条書き", "ja_JP"),
+        ...sourceRow.bulletPoints.map((bullet) => attribute(bullet, "en_US")),
+      ]);
+
+      ambiguousSelector = true;
+      const blocked = await liveRouter.handle(importRequest(
+        edited,
+        "content-batch-public-ambiguous-001",
+      ));
+      expect(blocked.status).toBe(422);
+      expect(responseValue(blocked)).toMatchObject({
+        code: "CONTENT_BATCH_VALIDATION_FAILED",
+        rows: [{
+          sellerSku: sourceRow.sellerSku,
+          code: "CONTENT_SELECTOR_UNSAFE",
+        }],
+        writeCount: 0,
+      });
+    } finally {
+      liveRouter.dispose();
+      vi.unstubAllGlobals();
+      invalidateSpApiCredentialCaches();
+    }
   });
 
   it("does not expose main-owned preview values through nested references", async () => {
@@ -1719,7 +1951,7 @@ describe("content audit Excel batch router", () => {
         code: "PREVIEW_CHANGED",
         message: "Amazon 預檢證據已改變。",
         requestId: "REQ-DETAILED-FAILURE",
-        changedFields: ["title"],
+        changedFields: ["title", "bulletPoints"],
         previous: { title: snapshot.rows[0]!.title },
         requested: { title: requestedTitle },
         issues: [{
@@ -1841,6 +2073,8 @@ describe("content audit Excel batch router", () => {
       expect(options).toEqual({
         validationOverrideAuthority:
           LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+        exactBulletReplacementAuthority:
+          LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
       });
       return preparedPreview(input, undefined, {
         mode: "live",
@@ -1871,7 +2105,7 @@ describe("content audit Excel batch router", () => {
         productDescription: input.productDescription,
         ingredients: input.ingredients,
       },
-      changedFields: ["title" as const],
+      changedFields: ["title" as const, "bulletPoints" as const],
       acceptedAt: new Date(0).toISOString(),
       submissionId: "OVERRIDE-SUBMISSION-001",
       requestId: "REQ-OVERRIDE-COMMIT-001",
@@ -2006,6 +2240,8 @@ describe("content audit Excel batch router", () => {
       {
         validationOverrideAuthority:
           LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+        exactBulletReplacementAuthority:
+          LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
       },
     );
     expect(execute).toHaveBeenCalledOnce();
