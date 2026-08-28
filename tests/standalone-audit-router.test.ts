@@ -45,7 +45,8 @@ async function terminal(
   router: ApiRouter,
   receipt: Record<string, unknown>,
 ): Promise<ApiResponse> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
     const response = await router.handle(request("GET", {
       marketplaceId: String(receipt.marketplaceId),
       mode: String(receipt.mode),
@@ -62,6 +63,36 @@ async function terminal(
 describe("main-owned standalone audit route", () => {
   let router: ApiRouter;
   let accountScope: string;
+
+  it("waits for a slow but completing audit beyond one hundred polls", async () => {
+    let calls = 0;
+    const slowRouter = {
+      handle: async (): Promise<ApiResponse> => {
+        calls += 1;
+        return {
+          status: calls > 100 ? 200 : 202,
+          headers: {},
+          body: {
+            kind: "json",
+            value: calls > 100
+              ? { ready: true, status: "completed" }
+              : { ready: false, status: "running" },
+          },
+        };
+      },
+    } as unknown as ApiRouter;
+
+    const completed = await terminal(slowRouter, {
+      marketplaceId: US,
+      mode: "demo",
+      kind: "agedInventory",
+      jobId: "slow-job",
+      contextId: "slow-context",
+    });
+
+    expect(completed.status).toBe(200);
+    expect(calls).toBe(101);
+  });
 
   beforeEach(async () => {
     process.env.SP_API_MODE = "demo";
