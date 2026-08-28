@@ -18,6 +18,7 @@ import BusinessPricingAuditPanel, {
   shouldResumeBusinessPricingAuditJob,
 } from "../src/renderer/src/components/business-pricing-audit-panel";
 import BusinessPricingAuditDrawer from "../src/renderer/src/components/business-pricing-audit-drawer";
+import BusinessPricingEditor from "../src/renderer/src/components/business-pricing-editor";
 import { parseStandaloneAuditJob } from "../src/renderer/src/standalone-audit";
 import {
   openSellerCentralInventoryHandoff,
@@ -229,7 +230,7 @@ async function previewBodyFromRowInteraction(
   });
   if (mode === "combined") {
     await act(async () => {
-      buttonNamed("明確一併更新階梯折扣")!.props.onClick();
+      buttonNamed("一併更新預填階梯折扣")!.props.onClick();
     });
   }
   await act(async () => {
@@ -278,6 +279,60 @@ describe("Seller Central SKU Pages-first handoff", () => {
 });
 
 describe("FBA business pricing audit renderer", () => {
+  it("prefills the suggested price and four visible tiers while keeping quantity tiers opt-in", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingEditor, {
+        listing: parseBusinessPricingListingSnapshot(interactiveListing),
+        onClose: () => undefined,
+        onVerified: () => undefined,
+        onError: () => undefined,
+        onBusyChange: () => undefined,
+      }));
+    });
+    const root = renderer!.root;
+    expect(root.findByProps({ id: "business-price-input" }).props.value)
+      .toBe("18.99");
+    expect(root.findByProps({ id: "business-tier-bound-0" }).props.value)
+      .toBe("5");
+    expect(root.findByProps({ id: "business-tier-percent-0" }).props.value)
+      .toBe("5");
+    expect(root.findByProps({ id: "business-tier-bound-3" }).props.value)
+      .toBe("20");
+    expect(root.findByProps({ id: "business-tier-percent-3" }).props.value)
+      .toBe("20");
+    expect(root.findByType("fieldset").props.disabled).toBe(true);
+    expect(root.findAllByType("button").find(
+      (button) => button.children.join("") === "只改價格並保留原數量折扣",
+    )?.props["aria-pressed"]).toBe(true);
+
+    await act(async () => {
+      root.findAllByType("button").find(
+        (button) => button.children.join("") === "一併更新預填階梯折扣",
+      )!.props.onClick();
+    });
+    expect(root.findByType("fieldset").props.disabled).toBe(false);
+    expect(root.findByProps({ id: "business-tier-bound-0" }).props.value)
+      .toBe("5");
+
+    await act(async () => {
+      root.findByProps({ id: "business-tier-percent-0" }).props.onChange({
+        target: { value: "6" },
+      });
+      root.findAllByType("button").find(
+        (button) => button.children.join("") === "只改價格並保留原數量折扣",
+      )!.props.onClick();
+      root.findAllByType("button").find(
+        (button) => button.children.join("") === "一併更新預填階梯折扣",
+      )!.props.onClick();
+    });
+    expect(root.findByProps({ id: "business-tier-percent-0" }).props.value)
+      .toBe("6");
+    await act(async () => renderer!.unmount());
+  });
+
   it("sends no tiers by default and sends percent tiers only after the row editor explicitly switches modes", async () => {
     const priceOnlyBody = await previewBodyFromRowInteraction("price_only");
     expect(priceOnlyBody).toMatchObject({

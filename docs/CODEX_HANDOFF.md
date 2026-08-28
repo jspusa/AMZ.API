@@ -4,6 +4,12 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-08-28 v0.1.37 B2B 建議價格／階梯預填（實作完成；發布驗證進行中）
+
+商品列的「設定／調整 B2B 價格」仍先做同一個 fresh exact-SKU read 與 seller-specific PTD 能力判定。安全編輯器現在開啟時即將 Jasper 建議的 Business Price（US 一般售價減 USD 1.00）與四組 percent 階梯（5 件 5%、10 件 10%、15 件 15%、20 件 20%）填入並顯示。預設模式仍是 price-only：預填階梯欄位停用、POST／PATCH 不帶 `quantity_discount_plan`，完整保留目前 Amazon 階梯；只有使用者明確按「一併更新預填階梯折扣」後，欄位才啟用並納入預檢與正式寫入。模式來回切換不會清掉已調整的草稿。
+
+renderer RED 先證明原本 price-only 開窗找不到任何階梯輸入；GREEN 後同一 interaction test 鎖定開窗立即顯示 `18.99` 與 `5/5、10/10、15/15、20/20`，price-only body 仍沒有 tier／old-plan hash，combined body 才帶 exact 四階，且切換模式保留使用者修改。package 已升為 0.1.37；尚未執行 Amazon Validation Preview、native confirmation、PATCH 或任何 Amazon mutation。完整 release、CI、Pages、macOS／Windows artifact 與安裝證據待本次發布完成後回填；Supply Boss 上傳需要 v0.1.37 的新精確 Keychain 授權，不沿用舊版授權。
+
 ### 2026-08-28 v0.1.36 live PTD 組合與 B2B offer projection 修正（已發布；同 SKU 桌面唯讀核對待解鎖）
 
 使用者在已安裝的 v0.1.35 對 exact FBA SKU `1ABRD002A0` 再次遇到「Amazon seller-specific PTD 未能明確證明 B2B 價格可編輯」與「數量折扣不可直接修改」。本輪先確認執行中的 `/Applications/AMZ.API.app` 確為 exact v0.1.35，再以全站 B2B 唯讀 audit 重現同列同時有一般售價 US$19.99、Business Price US$17.99 與 fixed 3 件以上每件 US$16，但 fresh 單 SKU editor 卻顯示 B2B `—`／QDP `未設定`。這證明不是 stale App 或 Amazon 未設定，而是兩個獨立讀取缺口；全程沒有執行 Amazon Validation Preview、Touch ID／Windows Hello、PATCH 或任何 mutation。
