@@ -7,6 +7,7 @@ import { isDateOnly } from "./marketplace-calendar";
 import {
   canonicalBusinessStandardPrice as canonicalBusinessStandardPriceEvidence,
   normalizeBusinessOfferReadEvidence,
+  type BusinessOfferReadEvidence,
 } from "./business-pricing-evidence";
 import type { BusinessPricingListingSnapshot } from
   "./business-pricing-types";
@@ -90,6 +91,13 @@ export type AmazonListingItem = {
       amount?: string | number;
     };
     audience?: { value?: string; displayName?: string };
+    quantityDiscountPlan?: {
+      discountType?: string;
+      levels?: Array<{
+        lowerBound?: string | number;
+        value?: string | number;
+      }>;
+    };
   }>;
   issues?: AmazonListingIssue[];
   relationships?: Array<{
@@ -269,21 +277,193 @@ export function businessOfferSnapshot(
   | "businessOfferProtectedHash"
 > {
   const allOffers = payload.attributes?.purchasable_offer ?? [];
-  const evidence = normalizeBusinessOfferReadEvidence(
+  const attributeEvidence = normalizeBusinessOfferReadEvidence(
     payload.attributes?.purchasable_offer,
     marketplaceId,
+  );
+  const summaryEvidence = businessOfferSummaryEvidence(
+    payload.offers,
+    marketplaceId,
+  );
+  const evidence = reconcileBusinessOfferEvidence(
+    attributeEvidence,
+    summaryEvidence,
   );
   return {
     ...evidence,
     quantityDiscountPlanHash: evidence.quantityDiscountPlan
       ? canonicalSha256(evidence.quantityDiscountPlan)
       : null,
-    businessOfferGuardHash: businessOfferGuardHash(allOffers, marketplaceId),
+    businessOfferGuardHash: businessOfferGuardHash(
+      allOffers,
+      payload.offers,
+      marketplaceId,
+    ),
     businessOfferProtectedHash: businessOfferProtectedHash(
       allOffers,
+      payload.offers,
       marketplaceId,
     ),
   };
+}
+
+function ambiguousBusinessOfferEvidence(): BusinessOfferReadEvidence {
+  return {
+    businessPrice: null,
+    businessOfferPresence: "ambiguous",
+    businessPricingManagedByAutomation: false,
+    quantityDiscountPlan: null,
+    quantityDiscountPlanPresence: "ambiguous",
+  };
+}
+
+function exactSummaryToken(value: unknown): value is string {
+  return typeof value === "string" && Boolean(value) && value === value.trim();
+}
+
+function malformedSummaryQuantityDiscount(): unknown[] {
+  return [{ schedule: [{}] }];
+}
+
+function summaryQuantityDiscountContribution(value: unknown): unknown[] {
+  if (!isRecord(value) ||
+      Object.keys(value).some((key) =>
+        key !== "discountType" && key !== "levels"
+      ) || !exactSummaryToken(value.discountType) ||
+      !Array.isArray(value.levels)) {
+    return malformedSummaryQuantityDiscount();
+  }
+  const discountType = value.discountType.toLowerCase();
+  if (discountType !== "fixed" && discountType !== "percent") {
+    return malformedSummaryQuantityDiscount();
+  }
+  const levels: Array<{ lower_bound: unknown; value: unknown }> = [];
+  for (const level of value.levels) {
+    if (!isRecord(level) ||
+        Object.keys(level).some((key) =>
+          key !== "lowerBound" && key !== "value"
+        ) || !("lowerBound" in level) || !("value" in level)) {
+      return malformedSummaryQuantityDiscount();
+    }
+    levels.push({ lower_bound: level.lowerBound, value: level.value });
+  }
+  return [{ schedule: [{ discount_type: discountType, levels }] }];
+}
+
+function businessOfferSummaryEvidence(
+  rawOffers: AmazonListingItem["offers"],
+  marketplaceId: MarketplaceId,
+): BusinessOfferReadEvidence | null {
+  const marketplace = marketplaceById(marketplaceId);
+  if (!marketplace || rawOffers === undefined) return null;
+  if (!Array.isArray(rawOffers) || !rawOffers.every(isRecord)) {
+    return ambiguousBusinessOfferEvidence();
+  }
+  // The official Listings Items offer projection proves only the current
+  // single-unit price. Amazon's richer seller response additionally carries
+  // quantityDiscountPlan. Use that richer row as migration fallback only when
+  // the extension is actually present; otherwise attributes remain the
+  // contribution truth and derived/IVP rows cannot create a writable B2B view.
+  const richOffers = rawOffers.filter((offer) =>
+    Object.prototype.hasOwnProperty.call(offer, "quantityDiscountPlan")
+  );
+  if (richOffers.length === 0) return null;
+  const possibleBusinessOffers = richOffers.filter((offer) =>
+    offer.offerType === "B2B" || offer.audience?.value === "B2B"
+  );
+  if (possibleBusinessOffers.some((offer) =>
+    offer.offerType !== "B2B" || offer.audience?.value !== "B2B" ||
+    !exactSummaryToken(offer.marketplaceId)
+  )) {
+    return ambiguousBusinessOfferEvidence();
+  }
+  const matching = possibleBusinessOffers.filter((offer) =>
+    offer.marketplaceId === marketplaceId
+  );
+  if (matching.length === 0) return null;
+  if (matching.length !== 1) return ambiguousBusinessOfferEvidence();
+  const offer = matching[0]!;
+  const currencyCode = listingOfferCurrencyCode(offer.price);
+  const amount = finiteNumericValue(offer.price?.amount);
+  if (currencyCode !== marketplace.currency || amount === null || amount <= 0) {
+    return ambiguousBusinessOfferEvidence();
+  }
+  const syntheticOffer: AmazonPurchasableOffer = {
+    marketplace_id: marketplaceId,
+    currency: marketplace.currency,
+    audience: "B2B",
+    our_price: [{ schedule: [{ value_with_tax: amount }] }],
+    quantity_discount_plan: summaryQuantityDiscountContribution(
+      offer.quantityDiscountPlan,
+    ) as AmazonQuantityDiscountPlan[],
+  };
+  return normalizeBusinessOfferReadEvidence(
+    [syntheticOffer],
+    marketplaceId,
+  );
+}
+
+function sameBusinessOfferPrice(
+  left: BusinessOfferReadEvidence,
+  right: BusinessOfferReadEvidence,
+): boolean {
+  return Boolean(
+    left.businessPrice && right.businessPrice &&
+    left.businessPrice.currencyCode === right.businessPrice.currencyCode &&
+    left.businessPrice.amount === right.businessPrice.amount,
+  );
+}
+
+function sameBusinessOfferPlan(
+  left: BusinessOfferReadEvidence,
+  right: BusinessOfferReadEvidence,
+): boolean {
+  const leftPlan = left.quantityDiscountPlan;
+  const rightPlan = right.quantityDiscountPlan;
+  return Boolean(
+    leftPlan && rightPlan &&
+    leftPlan.discountType === rightPlan.discountType &&
+    leftPlan.levels.length === rightPlan.levels.length &&
+    leftPlan.levels.every((level, index) => {
+      const other = rightPlan.levels[index];
+      return other?.lowerBound === level.lowerBound &&
+        other.value === level.value;
+    }),
+  );
+}
+
+function reconcileBusinessOfferEvidence(
+  attributes: BusinessOfferReadEvidence,
+  summary: BusinessOfferReadEvidence | null,
+): BusinessOfferReadEvidence {
+  if (!summary) return attributes;
+  if (attributes.businessOfferPresence === "ambiguous" ||
+      summary.businessOfferPresence === "ambiguous") {
+    return ambiguousBusinessOfferEvidence();
+  }
+  if (attributes.businessOfferPresence === "absent") return summary;
+  if (summary.businessOfferPresence === "absent") return attributes;
+  if (!sameBusinessOfferPrice(attributes, summary)) {
+    return ambiguousBusinessOfferEvidence();
+  }
+  if (
+    attributes.quantityDiscountPlanPresence === "canonical" &&
+    summary.quantityDiscountPlanPresence === "canonical" &&
+    !sameBusinessOfferPlan(attributes, summary)
+  ) {
+    return ambiguousBusinessOfferEvidence();
+  }
+  if (
+    attributes.quantityDiscountPlanPresence === "absent" &&
+    summary.quantityDiscountPlanPresence === "canonical"
+  ) {
+    return {
+      ...attributes,
+      quantityDiscountPlan: summary.quantityDiscountPlan,
+      quantityDiscountPlanPresence: "canonical",
+    };
+  }
+  return attributes;
 }
 
 export function assertExactListingIdentity(
@@ -510,6 +690,7 @@ function listingOfferCurrencyCode(
 
 function businessOfferGuardHash(
   offers: readonly AmazonPurchasableOffer[],
+  summaryOffers: AmazonListingItem["offers"],
   marketplaceId: MarketplaceId,
 ): string {
   const protectedOffers = offers
@@ -530,13 +711,22 @@ function businessOfferGuardHash(
     .sort((left, right) =>
       JSON.stringify(left).localeCompare(JSON.stringify(right))
     );
+  const protectedSummaryOffers = businessSummaryProtectedOffers(
+    summaryOffers,
+    marketplaceId,
+    false,
+  );
   return createHash("sha256")
-    .update(JSON.stringify(protectedOffers))
+    .update(JSON.stringify({
+      attributeOffers: protectedOffers,
+      summaryOffers: protectedSummaryOffers,
+    }))
     .digest("hex");
 }
 
 function businessOfferProtectedHash(
   offers: readonly AmazonPurchasableOffer[],
+  summaryOffers: AmazonListingItem["offers"],
   marketplaceId: MarketplaceId,
 ): string {
   const protectedOffers = offers
@@ -561,7 +751,46 @@ function businessOfferProtectedHash(
     .sort((left, right) =>
       JSON.stringify(left).localeCompare(JSON.stringify(right))
     );
-  return canonicalSha256(protectedOffers);
+  return canonicalSha256({
+    attributeOffers: protectedOffers,
+    summaryOffers: businessSummaryProtectedOffers(
+      summaryOffers,
+      marketplaceId,
+      true,
+    ),
+  });
+}
+
+function businessSummaryProtectedOffers(
+  offers: AmazonListingItem["offers"],
+  marketplaceId: MarketplaceId,
+  excludeQuantityDiscounts: boolean,
+): unknown[] {
+  return (offers ?? [])
+    .map((offer) => {
+      if (
+        offer.marketplaceId !== marketplaceId ||
+        offer.offerType !== "B2B" ||
+        offer.audience?.value !== "B2B"
+      ) return offer;
+      const {
+        price: _targetBusinessPrice,
+        quantityDiscountPlan: targetQuantityDiscounts,
+        ...protectedOffer
+      } = offer;
+      return excludeQuantityDiscounts
+        ? protectedOffer
+        : {
+            ...protectedOffer,
+            ...(targetQuantityDiscounts === undefined
+              ? {}
+              : { quantityDiscountPlan: targetQuantityDiscounts }),
+          };
+    })
+    .map(canonicalJsonValue)
+    .sort((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right))
+    );
 }
 
 function parseDiscountedPrice(

@@ -4,6 +4,14 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-08-28 v0.1.36 live PTD 組合與 B2B offer projection 修正（驗證中）
+
+使用者在已安裝的 v0.1.35 對 exact FBA SKU `1ABRD002A0` 再次遇到「Amazon seller-specific PTD 未能明確證明 B2B 價格可編輯」與「數量折扣不可直接修改」。本輪先確認執行中的 `/Applications/AMZ.API.app` 確為 exact v0.1.35，再以全站 B2B 唯讀 audit 重現同列同時有一般售價 US$19.99、Business Price US$17.99 與 fixed 3 件以上每件 US$16，但 fresh 單 SKU editor 卻顯示 B2B `—`／QDP `未設定`。這證明不是 stale App 或 Amazon 未設定，而是兩個獨立讀取缺口；全程沒有執行 Amazon Validation Preview、Touch ID／Windows Hello、PATCH 或任何 mutation。
+
+第一個 RED 以最小 seller-specific PTD 保留 live 根因：Amazon 在直接宣告的 `purchasable_offer` 之外，以 root `allOf` 加上 B2B 必須有 `our_price`、percent tier value 最大 99、B2B QDP 最多一組等條件；v0.1.35 把任何 root `allOf` 一律視為未組合限制，所以即使 exact price／QDP leaf 明示 `editable:true` 仍誤擋。v0.1.36 新增 bounded concrete constraint evaluator，只對 exact B2B price-only／combined proposal 組合判讀 root `allOf` 的已知 `properties`／`required`／array bounds／numeric bounds／`contains`／`if-then-else`／`allOf-anyOf-oneOf-not`／local ref；未知或 malformed keyword、明示 `editable:false`／`readOnly:true`、不相容 selector 或限制仍 fail closed。擷取的完整 108,632-byte live PTD 已在本機以 exact proposed tiers 驗證 price 與 QDP capability 均為 true；原始檔與所有 debug instrumentation 隨後移除。
+
+第二個 RED 保留 live Listings Items 形狀：`attributes.purchasable_offer` 只含 `audience=ALL` 的 US$19.99，但同次 `includedData=offers` 有 exact marketplace／`offerType=B2B`／`audience.value=B2B` 的 US$17.99，並帶 seller response 的 canonical `quantityDiscountPlan` fixed 3／US$16。projection 現在只在該 richer quantity plan extension 明確存在、B2B selector 唯一、currency／price／1–5 tiers 全部 canonical 時，才補足尚未同步的 attributes；一般 derived offer、IVP audience、其他 marketplace、duplicate、malformed 或與 attributes 衝突仍不會變成可寫 evidence。price-only guard hash 納入該 raw current plan，combined protected hash排除 target plan；QDP 無法完整辨識時連 price-only preview 也停止，避免聲稱保留卻無法綁定舊階梯。分支為 `codex/v0.1.36-b2b-live-ptd`，package 已升為 0.1.36；focused 4 檔／141 tests 與一次完整 `npm run check` 的 241 檔／2,367 tests、TypeScript／production build均通過，`npm audit --omit=dev` 為 0 vulnerabilities。修正後同 SKU 的 live 開發版唯讀 UI、final full check、review、PR／CI、Pages、Mac／Windows artifact、Mac 安裝及 Supply Boss v0.1.36 替換仍待完成；Supply Boss Keychain 授權只涵蓋先前 v0.1.35，不得沿用於 v0.1.36。
+
 ### 2026-08-28 v0.1.35 B2B PTD 缺省 editability 改由 Amazon Preview 判定（已發布）
 
 v0.1.34 安裝後的 live App 精確顯示「Amazon seller-specific PTD 未能明確證明 B2B 價格可編輯」及「Amazon seller-specific PTD 未能明確證明數量折扣可編輯」，因此商品列雖已恢復編輯入口，實際仍被本機 capability owner 在 Amazon Validation Preview 前誤擋。最小 RED 使用 seller-scoped、checksum 正確、完整包含唯一 B2B `purchasable_offer`／`our_price`／`quantity_discount_plan` 結構但省略正面 `editable:true` 註記的 PTD，並精確重現兩個 capability 均為 false；根因是 evaluator 額外要求價格及三個階梯 leaf 必須各自出現正面 editability 註記。

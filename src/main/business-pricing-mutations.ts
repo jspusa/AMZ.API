@@ -332,6 +332,12 @@ function verifyBusinessPriceChange(
       { status: 409, code: "BUSINESS_PRICING_MANAGED_BY_AUTOMATION" },
     );
   }
+  if (listing.quantityDiscountPlanPresence === "ambiguous") {
+    throw new SpApiError(
+      "目前數量折扣無法完整辨識；為避免只調價時誤覆蓋既有階梯，請重新讀取後再預檢。",
+      { status: 409, code: "QUANTITY_DISCOUNT_CHANGED" },
+    );
+  }
   const requestedPlan = requestedQuantityDiscountPlan(listing, input);
   if (listing.businessOfferPresence === "absent") {
     if (input.expectedBusinessPrice !== null) {

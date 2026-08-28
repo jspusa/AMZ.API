@@ -120,6 +120,108 @@ function businessSchema(): Record<string, unknown> {
   };
 }
 
+function sellerPtdWithLiveOfferConstraints(): Record<string, unknown> {
+  const schema = businessSchema();
+  schema.allOf = [{
+    properties: {
+      purchasable_offer: {
+        items: {
+          if: {
+            required: ["audience"],
+            properties: {
+              audience: { enum: ["B2B"] },
+            },
+          },
+          then: {
+            required: ["our_price"],
+            properties: {
+              our_price: { minItems: 1 },
+            },
+          },
+        },
+      },
+    },
+  }, {
+    if: {
+      properties: {
+        purchasable_offer: {
+          contains: {
+            required: ["quantity_discount_plan"],
+            properties: {
+              quantity_discount_plan: {
+                contains: {
+                  required: ["schedule"],
+                  properties: {
+                    schedule: {
+                      contains: {
+                        required: ["discount_type"],
+                        properties: {
+                          discount_type: { enum: ["percent"] },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    then: {
+      properties: {
+        purchasable_offer: {
+          items: {
+            properties: {
+              quantity_discount_plan: {
+                items: {
+                  properties: {
+                    schedule: {
+                      items: {
+                        properties: {
+                          levels: {
+                            items: {
+                              properties: {
+                                value: { maximum: 99 },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, {
+    properties: {
+      purchasable_offer: {
+        items: {
+          if: {
+            required: ["audience"],
+            properties: {
+              audience: { enum: ["B2B"] },
+            },
+          },
+          then: {
+            properties: {
+              quantity_discount_plan: { maxItems: 1 },
+            },
+          },
+          else: {
+            not: { required: ["quantity_discount_plan"] },
+          },
+        },
+      },
+    },
+  }];
+  return schema;
+}
+
 function definitionResult(
   schema: Record<string, unknown>,
   options: Readonly<{
@@ -256,6 +358,83 @@ describe("Business Pricing capability owner", () => {
       schemaChecksum: capability.schemaChecksum!,
       levels: [{ lowerBound: 5, value: 5 }],
     })).toBe(true);
+  });
+
+  it("composes the live seller PTD offer constraints before allowing B2B preview", async () => {
+    const schema = sellerPtdWithLiveOfferConstraints();
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    const capability = await subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    });
+
+    expect(capability).toMatchObject({
+      supported: true,
+      editable: true,
+      reason: null,
+      quantityDiscountsSupported: true,
+      quantityDiscountsEditable: true,
+      quantityDiscountsReason: null,
+    });
+    expect(subject.owner.quantityDiscountPlanSupported({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+      schemaChecksum: capability.schemaChecksum!,
+      levels: [{ lowerBound: 5, value: 100 }],
+    })).toBe(false);
+  });
+
+  it("fails an unknown relevant root constraint closed", async () => {
+    const schema = sellerPtdWithLiveOfferConstraints();
+    (schema.allOf as unknown[]).push({
+      properties: {
+        purchasable_offer: {
+          items: {
+            dependentSchemas: {
+              audience: { required: ["our_price"] },
+            },
+          },
+        },
+      },
+    });
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    await expect(subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    })).resolves.toMatchObject({
+      supported: true,
+      editable: false,
+      quantityDiscountsEditable: false,
+    });
+  });
+
+  it("applies a root additionalProperties restriction without a properties map", async () => {
+    const schema = sellerPtdWithLiveOfferConstraints();
+    (schema.allOf as unknown[]).push({
+      properties: {
+        purchasable_offer: {
+          items: { additionalProperties: false },
+        },
+      },
+    });
+    const subject = fixture({
+      readDefinition: async () => definitionResult(schema),
+    });
+
+    await expect(subject.owner.read({
+      marketplaceId: MARKETPLACE_ID,
+      productType: PRODUCT_TYPE,
+    })).resolves.toMatchObject({
+      supported: true,
+      editable: false,
+      quantityDiscountsEditable: false,
+    });
   });
 
   it("keeps an explicit seller PTD Business Price prohibition read-only", async () => {
