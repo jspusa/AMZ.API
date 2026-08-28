@@ -4,7 +4,7 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-28 v0.1.35 B2B PTD 缺省 editability 改由 Amazon Preview 判定（進行中）
+### 2026-08-28 v0.1.35 B2B PTD 缺省 editability 改由 Amazon Preview 判定（已發布）
 
 v0.1.34 安裝後的 live App 精確顯示「Amazon seller-specific PTD 未能明確證明 B2B 價格可編輯」及「Amazon seller-specific PTD 未能明確證明數量折扣可編輯」，因此商品列雖已恢復編輯入口，實際仍被本機 capability owner 在 Amazon Validation Preview 前誤擋。最小 RED 使用 seller-scoped、checksum 正確、完整包含唯一 B2B `purchasable_offer`／`our_price`／`quantity_discount_plan` 結構但省略正面 `editable:true` 註記的 PTD，並精確重現兩個 capability 均為 false；根因是 evaluator 額外要求價格及三個階梯 leaf 必須各自出現正面 editability 註記。
 
@@ -20,7 +20,7 @@ macOS artifact `9677707112` 名稱為 `AMZ.API-unsigned-24b05b850a4faa17616acd13
 
 Windows artifact `9677716236` 名稱為 `AMZ.API-Notebook-Key-Windows-x64-24b05b850a4faa17616acd138721a126a6656a6b`，244,823,679 bytes，GitHub digest `sha256:8ef4a8bc061fa615a5cb109a2fc3a872d249354eeb8a3cfbdd4eca33a706cc12`。Setup `AMZ.API-Notebook-Key-Windows-x64-Setup.exe` 為 101,795,066 bytes、SHA-256 `18a1abefaab88275334c96c1d305093336db111f687c0ed2c89acc0a86956aeb`；portable ZIP 為 143,027,917 bytes、SHA-256 `9992a112c1bb43cd61b2b144a278fc1a71e58074a88504e28bc450b2987466fd`，ZIP CRC、workflow ASAR addon boundary 與 packaged Bridge smoke 均通過。這仍只有 Windows CI，不是真實 Windows Hello／DPAPI 實機證據。
 
-Supply Boss 目前仍是已完成原子上傳的 v0.1.34 兩張下載卡。使用者先前對 Mac Keychain `AMZ.API Supply Boss Upload` 的明確管理密鑰讀取／外傳授權精確指定 v0.1.34；v0.1.35 上傳嘗試在密鑰讀取前由安全審核拒絕，沒有讀取密鑰、沒有上傳任何 v0.1.35 bytes，也沒有改動 manifest。必須取得使用者另行精確授權 v0.1.35 後，才能替換 Mac DMG／Windows Setup，並在員工登入後以受保護短效連結完整重下載比較上述 size／SHA-256。尚未連線 live Amazon 執行本版 Validation Preview、Touch ID／Windows Hello、PATCH 或 readback；未取得 exact SKU／欄位／價格或階梯的另行明確授權前不得代替使用者送出任何 Amazon mutation。
+使用者已另行精確授權讀取 Mac Keychain `AMZ.API Supply Boss Upload` 的既有管理密鑰並將 v0.1.35 Mac DMG／Windows Setup 上傳至 Supply Boss；兩個 multipart upload 均完成，管理密鑰未顯示、未寫入檔案或回覆。登入後的受保護下載頁已直接核對兩張卡均為 v0.1.35：Mac `AMZ.API-0.1.35-universal.dmg` 為 246,414,544 bytes、SHA-256 `e394c2c58e7f89f785f952f7703df71a061862d52ea0c6e4b454ed425e071329`；Windows `AMZ.API-Notebook-Key-Windows-x64-Setup.exe` 為 101,795,066 bytes、SHA-256 `18a1abefaab88275334c96c1d305093336db111f687c0ed2c89acc0a86956aeb`。兩份檔案皆已由登入中的頁面透過受保護短效連結完整重新下載至本機 `Downloads`，重新計算的 size／SHA-256 與卡片及 release artifact 完全一致，並以 byte-for-byte `cmp` 通過；登入密碼由使用者自行輸入，未被讀取或保存。尚未連線 live Amazon 執行本版 Validation Preview、Touch ID／Windows Hello、PATCH 或 readback；未取得 exact SKU／欄位／價格或階梯的另行明確授權前不得代替使用者送出任何 Amazon mutation。
 
 ### 2026-08-28 v0.1.34 B2B 商品列安全編輯與 Excel 賣點完整取代（issue #154，已發布並由 v0.1.35 熱修）
 
