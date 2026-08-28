@@ -4,11 +4,19 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-28 v0.1.37 B2B 建議價格／階梯預填（實作完成；發布驗證進行中）
+### 2026-08-28 v0.1.37 B2B 建議價格／階梯預填（已發布；已安裝，桌面唯讀 UI 核對待解鎖）
 
 商品列的「設定／調整 B2B 價格」仍先做同一個 fresh exact-SKU read 與 seller-specific PTD 能力判定。安全編輯器現在開啟時即將 Jasper 建議的 Business Price（US 一般售價減 USD 1.00）與四組 percent 階梯（5 件 5%、10 件 10%、15 件 15%、20 件 20%）填入並顯示。預設模式仍是 price-only：預填階梯欄位停用、POST／PATCH 不帶 `quantity_discount_plan`，完整保留目前 Amazon 階梯；只有使用者明確按「一併更新預填階梯折扣」後，欄位才啟用並納入預檢與正式寫入。模式來回切換不會清掉已調整的草稿。
 
-renderer RED 先證明原本 price-only 開窗找不到任何階梯輸入；GREEN 後同一 interaction test 鎖定開窗立即顯示 `18.99` 與 `5/5、10/10、15/15、20/20`，price-only body 仍沒有 tier／old-plan hash，combined body 才帶 exact 四階，且切換模式保留使用者修改。package 已升為 0.1.37；尚未執行 Amazon Validation Preview、native confirmation、PATCH 或任何 Amazon mutation。完整 release、CI、Pages、macOS／Windows artifact 與安裝證據待本次發布完成後回填；Supply Boss 上傳需要 v0.1.37 的新精確 Keychain 授權，不沿用舊版授權。
+renderer RED 先證明原本 price-only 開窗找不到任何階梯輸入；GREEN 後同一 interaction test 鎖定開窗立即顯示 `18.99` 與 `5/5、10/10、15/15、20/20`，price-only body 仍沒有 tier／old-plan hash，combined body 才帶 exact 四階，且切換模式保留使用者修改。package 已升為 0.1.37；final local `npm run check` 通過 241 個測試檔／2,369 tests、TypeScript／production build與stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。
+
+PR #163 已 squash merge；唯一綁定本次發版程式碼的 main SHA 為 `0eb4baf8a21c774f0fc51ecee52a535488ff904c`。PR Validate／Windows runs `33182222114`／`33182222094` 均成功；exact-main Validate／Pages／Windows／macOS runs `33182775848`／`33182775961`／`33182775912`／`33182775835` 亦全部成功。live Pages 已重新下載核對：HTML／JS／CSS 分別為 917／1,785,200／293,957 bytes，SHA-256 為 `30c6b905020549943e1ffe85a30ea6cfd38fbd73847f7740a17dc1fb75fa2d3a`／`c6cd5be86768fc252f2cca0d05d340797e157980a34f145f6f4a51c40b6046c5`／`df1f4dff95db688dc1918c39a2d2dc8c2b3477431653ba55e77ffa2e524bc2fc`；live 載入 `assets/index-DD5ArLYz.js`，與 exact production output byte-for-byte 相同，包含 0.1.37、四階預填與 explicit combined 文案，且沒有 0.1.36。
+
+macOS artifact `9690683852` 名稱為 `AMZ.API-unsigned-0eb4baf8a21c774f0fc51ecee52a535488ff904c`，468,244,738 bytes，GitHub digest `sha256:925223e62ecb9164b5184326abde9b38e7d5c0177c297ccb08a1d1904a9ddc7e`。DMG `AMZ.API-0.1.37-universal.dmg` 為 246,416,310 bytes、SHA-256 `99e91e44959127d25c41f1d5a929f58dbf9415787c806ab6893e886a5cc7200b`；universal ZIP 為 221,827,784 bytes、SHA-256 `dd00396f89e3da0bbacadddfa1fe3d45664d55a1e4b14d7a7a955fb897ef536f`。兩者匹配內附 checksum；DMG integrity、version／build 0.1.37、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過，`app.asar` SHA-256 為 `c803e76d520d92dcd28488c746feddd87ce9a8217f233935971340c07c046422`。exact App 已安裝到 `/Applications/AMZ.API.app`，安裝後 `app.asar` 與 DMG 完全一致；原 v0.1.36 保留為 `/Applications/AMZ.API-v0.1.36-backup.app`，既有 userData／Keychain 未清除或重建。
+
+Windows artifact `9690604467` 名稱為 `AMZ.API-Notebook-Key-Windows-x64-0eb4baf8a21c774f0fc51ecee52a535488ff904c`，244,829,117 bytes，GitHub digest `sha256:99ec7146e9e3f7730b99466f684e99bfeb62c90eb162300d632969bf08efb044`。Setup `AMZ.API-Notebook-Key-Windows-x64-Setup.exe` 為 101,797,473 bytes、SHA-256 `3cae189e29cbe5496eb23e123c8256644e6b0978cefe9519547bdf2c37d1dd49`；portable ZIP 為 143,030,948 bytes、SHA-256 `c01a840d46e310c82b3a21f368b227b81f8c926303601c5b85f6b43918a43410`，兩者匹配內附 checksum，ZIP CRC、workflow ASAR addon boundary 與 packaged Bridge smoke 均通過。這仍只有 Windows CI，不是真實 Windows Hello／DPAPI 實機證據。
+
+已安裝 v0.1.37 的唯讀 UI 核對因 Mac 鎖定而待使用者解鎖；不得按 Preview／native confirmation 或觸發 PATCH。Supply Boss 下載卡仍是舊版，既有 Keychain 授權不得沿用於 v0.1.37；上傳 v0.1.37 Mac／Windows 成品需要新的精確授權。全程未執行 Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 Amazon mutation。
 
 ### 2026-08-28 v0.1.36 live PTD 組合與 B2B offer projection 修正（已發布；同 SKU 桌面唯讀核對待解鎖）
 
