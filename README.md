@@ -124,11 +124,14 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 
 ## 發布與更新
 
-- 推送 `main`：驗證程式、自動部署 GitHub 控制台，並分別建立 macOS universal 與 Windows x64 內部測試 artifact。
-- 建立和 `package.json` 完全相同的 tag（例如 `v0.1.0`）：簽章、公證、驗證後發布 GitHub Release。
-- macOS 正式更新仍會建立 `.zip`、`latest-mac.yml` 與 `.dmg`；Windows 目前仍會產生 NSIS `.exe`、portable ZIP 與 `SHA256SUMS.txt` 供內部驗證，但尚未建立已簽章自動更新鏈，因此 Windows App 內更新會明確停用。員工可見的 [Notebook Key 安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads) 只顯示 Mac DMG 與 Windows NSIS installer 兩張卡，並在卡片內提供 SHA-256。
-- 未簽章測試版只供內部測試，Gatekeeper 會警告，也不能當正式自動更新來源。
-- Windows 內部 artifact 也未做 Authenticode 簽章，SmartScreen 顯示未知發行者是預期邊界；CI 會明確拒絕把它標成已簽章或 Windows Hello 實機通過。
+- 一般 renderer 變更推送到 `main` 後由 GitHub Pages 自動發布 Control Console Release，不需要提高桌機版本，也不需要員工重新下載 Notebook Key。
+- 新增本機 Amazon 寫入、憑證、安全確認或其他 main／preload 能力時，提高一次 `package.json` 版本並建立完全相同的 tag。單一 `desktop-release.yml` 會先驗證共用程式碼，再分別建立 Developer ID＋公證的 Mac universal DMG／ZIP／`latest-mac.yml`，以及 Authenticode 的 Windows x64 NSIS／ZIP／`latest.yml`；兩邊全部通過才可發布同一個 Notebook Key Release。
+- 正式簽章包會被工作流注入 `publisher-signed-v1`；未簽章測試包固定保留 `disabled`，因此不能檢查、下載或安裝正式更新，也不能冒充正式發布。
+- 正式 Notebook Key 啟動後約 15 秒背景檢查，之後每 6 小時重查；有新版會在背景下載並顯示小滑板人進度。下載完成後不會自行關閉程式，只顯示一次「更新並重啟」。Amazon／憑證安全操作尚未結束時會拒絕重啟；按下後立即關閉憑證編輯器、停止接受新的 Amazon／憑證操作，再以 Windows 靜默 NSIS 或 macOS updater 安裝並重開。若 installer 當場拋錯或稍後發出 error，操作 gate 與按鈕狀態都會回復，不會把 App 永久鎖住。
+- GitHub Pages renderer 會先偵測目前 Notebook Key 是否已有新的 updater bridge；舊版仍可正常載入頁面，但只顯示「需先安裝簽章版」，不會呼叫不存在的 IPC。這個 Bootstrap 相容層是讓既有使用者安全走完最後一次手動安裝，不是繞過簽章。
+- 現有未簽章／不同簽章身分的安裝無法憑空加入可信更新鏈；Mac 與 Windows 都必須最後手動安裝一次 Bootstrap Notebook Key。之後例行桌機能力更新不再需要回到網站，例外只剩首次安裝、修復或簽章身分遷移。
+- 員工可見的 [Notebook Key 安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads) 仍只顯示 Mac DMG 與 Windows NSIS installer 兩張卡。自動更新若採 GitHub provider，Release 資產技術上是公開下載來源；發布 job 因此要求 `desktop-release` environment 的 `PUBLIC_DESKTOP_UPDATE_FEED=approved`，未取得明確核准不得發布。
+- 未簽章測試版只供內部測試。CI 不能冒充 Gatekeeper／SmartScreen reputation、Touch ID、Windows Hello 或真實裝置更新已通過。
 
 正式 Release 需要 GitHub `mac-release` protected environment 與：
 
@@ -137,6 +140,13 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 - `APPLE_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 - `APPLE_TEAM_ID`
+
+GitHub `windows-release` protected environment 另需要同一個穩定 Windows publisher identity 的：
+
+- `WIN_CSC_LINK`
+- `WIN_CSC_KEY_PASSWORD`
+
+兩平台簽章檔驗證完成後，`desktop-release` protected environment 才能核准公開更新來源。Release tag 必須精確對應 workflow SHA，且該 commit 必須已進入 `origin/main`；Mac 與 Windows runner 各自在自己的環境重新安裝依賴與建置，不能沿用另一台 runner 的輸出。台灣公司目前不一定符合 Microsoft Artifact Signing Public Trust 的申請地區；若所選憑證由 cloud HSM／hardware token 保管，需把 Windows job 改接該發行商的 CI signer，不能把不可匯出的 private key 假裝成 `WIN_CSC_LINK`。
 
 ## GitHub Pages
 

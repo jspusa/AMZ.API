@@ -1,8 +1,20 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-08-28
+最後更新：2026-08-29
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
+
+### 2026-08-29 v0.1.38 publisher-signed 背景更新（本機完成；尚未發布／簽章／安裝）
+
+工作分支 `codex/signed-background-updates` 以 exact `origin/main`／`67063681719e94dfc6e1fe6decbcf952ae93efde` 為基線，package 已升為 0.1.38。Control Console Release 與 Notebook Key Release 已正式拆開：一般 renderer／GitHub Pages 介面更新不要求重裝桌機；只有新增或改動 main／preload、本機 vault、native confirmation、Windows Hello 或 Amazon SP-API 寫入能力時才發布 Notebook Key。這個分工與一次性 bootstrap 已記錄於 root `CONTEXT.md` 及 ADR `docs/adr/0001-separate-console-and-notebook-key-releases.md`。
+
+新的 main-only `DesktopUpdater` 在正式簽章 App 啟動 15 秒後檢查，之後每 6 小時檢查；若有新版會在背景下載，但固定 `autoInstallOnAppQuit=false`，不因一般關閉 App 自動安裝。renderer 會先訂閱 live status 再讀目前狀態，避免初始化競態；若目前 v0.1.37 Bridge 尚無 `updates.current`，新版 Pages 會 feature-detect 並只顯示最後一次 Supply Boss 安裝提示，不會呼叫不存在的 IPC。下載中顯示沿用業績圖 `sales-skater-person`／`sales-skater-board` 的小滑板人與 0–100% 無障礙進度條，桌面 1440×1000 與 compact 390×844 都已用實際 production renderer 視覺核對，未超出卡片或遮住按鈕。下載完成後只出現「更新並重啟」；重複點擊只交接一次，Amazon API 或憑證保存仍在進行時會阻擋退出。交接開始後 main 立即關閉兩個憑證編輯器、dispose router 並拒絕新的 Amazon／憑證 IPC；Windows 使用 silent NSIS handoff，若 installer 同步拋錯或稍後發出 error，會 rollback gate、install-started 與 renderer busy state，既有 renderer／preload／main trust boundary、write preview、native confirmation、idempotency ledger 與 no-blind-retry 均未放寬。
+
+source package 的 `amzApiUpdateChannel` 固定為 `disabled`。只有新的正式 release workflow 在 Mac／Windows 各自 `forceCodeSigning` 成功時，才把 exact `publisher-signed-v1` marker 注入 packaged `app.asar/package.json`；main 只對 packaged macOS／Windows 且 exact marker 開啟 updater。實際 local packaged extraction 已證明：帶 `extraMetadata` 的 0.1.38 ASAR 為 `publisher-signed-v1`，一般 build 仍為 `disabled`。Windows verifier 現在明確分成預設 `Unsigned` 與正式 `Signed` 模式；正式模式要求 App／NSIS installer 均 Authenticode Valid、同一 signer thumbprint與可信 timestamp，並解析 `app-update.yml`、要求唯一 publisher name 與 certificate simple name 做 ordinal exact comparison，再在 ZIP 與安裝後 App 驗同一 signer，防止原 unsigned CI verifier 誤擋正式 build、raw YAML substring 偽裝或不一致 publisher 被當成功。
+
+`.github/workflows/desktop-release.yml` 是同一 tag 的唯一正式桌機發布工作流：quality job 會核對 tag 精確指向 workflow SHA 且該 commit 已進入 `origin/main`，再在 Ubuntu 完成 `npm run check`／production audit；`macos-15-intel` 會在自己的 runner 重新 build 後建立 Developer ID、notarized、stapled universal DMG＋ZIP，`windows-2025` 建立 Windows Hello x64、Authenticode NSIS＋ZIP。兩平台 signature、架構、packaged smoke、metadata 與 checksum 全部成功後，publish job 才能建立 GitHub Release。公開 GitHub update feed 另有 `desktop-release` environment 變數 `PUBLIC_DESKTOP_UPDATE_FEED=approved` 的 exact fail-closed gate；在 Jasper 明確選擇公開 signed payload 前不會發布。若選擇私有更新，必須另建每台 Notebook Key 可撤銷且保存在 OS vault 的裝置授權，不能把 Supply Boss 管理密鑰或共用 GitHub token 寫進 App。舊 `.github/workflows/mac-release.yml` 已移除，避免同一 tag 產生兩套相衝突的 release。
+
+final local `npm run check` 通過 244 個測試檔／2,379 tests、TypeScript、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，workflow YAML parse 與 `git diff --check` 通過。GitHub 官方目前仍列出 `macos-15-intel` 與 `windows-2025` runner labels；但本機 Keychain 沒有有效 Developer ID identity，repository 目前也只有 `github-pages` environment，尚無 Mac／Windows signing secrets。因此本段只有 local／static／fixture／production-renderer／unsigned-package metadata evidence；只有本機 feature commit，沒有 push／PR／merge／tag／GitHub Actions release、正式 Apple notarization、Windows Authenticode、公開或私有 update feed、Supply Boss 上傳、`/Applications` 安裝、Windows 實機、live Amazon 或任何 Amazon mutation。現有 v0.1.37 也不含此 bootstrap trust marker，所以完成一次性簽章設定後，仍須由使用者最後手動安裝 v0.1.38 一次；從下一版起，Notebook Key 新功能才可背景下載並最多按一次「更新並重啟」。
 
 ### 2026-08-28 v0.1.37 B2B 建議價格／階梯預填（已發布；已安裝，桌面唯讀 UI 核對待解鎖）
 

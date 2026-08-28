@@ -20,7 +20,7 @@ describe("Windows x64 Notebook Key packaging", () => {
       };
     };
 
-    expect(packageJson.version).toBe("0.1.37");
+    expect(packageJson.version).toBe("0.1.38");
     expect(packageJson.description).toContain("macOS and Windows 11 Notebook Key");
     expect(packageJson.devDependencies.electron).toBe("43.3.0");
     expect(packageJson.devDependencies["node-gyp"]).toBe("12.4.0");

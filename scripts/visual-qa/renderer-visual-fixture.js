@@ -1244,6 +1244,14 @@
       openSellerCentralInventory: async () => {},
     },
     updates: {
+      current: async () =>
+        globalThis.location.hash === "#desktop-updater-progress"
+          ? { state: "downloading", version: "0.1.38", percent: 49 }
+          : {
+              state: "not-available",
+              version: "0.1.32",
+              message: "CSS01 fixture only",
+            },
       check: async () => ({ state: "not-available", message: "CSS01 fixture only" }),
       install: async () => {},
       onStatus: () => () => {},

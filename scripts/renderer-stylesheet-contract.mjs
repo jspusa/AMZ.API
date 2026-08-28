@@ -18,10 +18,11 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/experience.css",
     "styles/image-home-audits.css",
     "styles/brand-ads.css",
+    "styles/desktop-updater.css",
     "styles/reports-reviews.css",
     "styles/final-overrides.css",
     "styles/fba-inbound.css",
   ]),
   fingerprint:
-    "735f076b23747729e7840d11a316ffd6e5c4a4c907784d6d1af2d83c94e0ca41",
+    "5a2413a51877cc7bfe6a5999f527807cdc8da2d271966d1f8541790dc7ae9830",
 });

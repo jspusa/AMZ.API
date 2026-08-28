@@ -44,7 +44,9 @@
 - Electron fuses：停用 RunAsNode、Node options／inspect，啟用 cookie encryption；embedded ASAR integrity 僅在 macOS 生效
 - Hardened Runtime、Developer ID、notarization 與 stapling release workflow
 - Windows x64 NSIS／ZIP 內部 build 驗證 addon 與 ASAR manifest 雜湊一致、packed／unpacked 邊界、Electron fuses、穩定 artifact 檔名、SHA-256 與無憑證 packaged smoke；這不等於 Authenticode、SmartScreen reputation 或 Windows Hello 實機驗證
-- Windows 未建立 publisher-bound Authenticode 更新鏈前，main 必須停用 App 內更新檢查與安裝；使用者只能從 repository 的固定 `notebook-key-windows` Release 手動下載並核對 `SHA256SUMS.txt`
+- macOS／Windows App 內更新只接受正式工作流注入 exact `publisher-signed-v1` marker 的 packaged build；一般 source／未簽章 CI package 固定為 `disabled`，main 不得只因作業系統或 packaged 狀態就開啟更新
+- Notebook Key Release 必須由同一 tag 的 Mac Developer ID＋notarization 與穩定 Windows Authenticode publisher identity 分別驗證，且兩平台 metadata／安裝檔都存在後才可發布；tag commit 必須已進入 `origin/main`，各 runner 必須自行建置，不得跨 runner 信任未傳遞的輸出。Windows verifier 必須解析 `app-update.yml` 並將唯一 `publisherName` 與實際 Authenticode certificate simple name 做 ordinal exact comparison，不得用 raw YAML substring 冒充綁定。更新只背景下載，安裝仍由使用者明確按「更新並重啟」；既有 Amazon／憑證操作進行中不得退出，交接開始後 main 必須先關閉本機憑證編輯器並 gate 所有新的 renderer Amazon／憑證 IPC；installer 同步拋錯或稍後發出 error 時必須回復 gate、install-started 與 renderer busy state
+- Supply Boss 的受保護初裝邊界不得默默改成公開更新來源；GitHub Release provider 只有在 `desktop-release` environment 明確設定 `PUBLIC_DESKTOP_UPDATE_FEED=approved` 時才能發布。若需私有 payload，必須另建每台 Notebook Key 可撤銷、保存在 OS vault 的裝置授權，不能把共用下載密鑰或 GitHub token 嵌入 App
 
 ## 不在 renderer 或 repository 保存
 

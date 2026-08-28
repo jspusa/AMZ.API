@@ -11,6 +11,7 @@ import {
   type IpcMainInvokeEvent,
 } from "electron";
 import electronUpdater from "electron-updater";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -39,6 +40,7 @@ import {
   isCredentialEditorFrame,
 } from "./credential-editor";
 import { CredentialVault } from "./credential-vault";
+import { DesktopInstallGate, DesktopUpdater } from "./desktop-updater";
 import { LocalStore } from "./local-store";
 import { sellerCentralInventoryUrl } from "./seller-central-inventory";
 import { NativeConfirmationGate, requestNativeConfirmation } from "./native-confirmation";
@@ -47,7 +49,10 @@ import {
   REMOTE_CONSOLE_URL,
   isTrustedRendererDocument,
 } from "./renderer-trust";
-import { desktopUpdatePolicy } from "./update-policy";
+import {
+  desktopUpdateChannelFromPackageMetadata,
+  desktopUpdatePolicy,
+} from "./update-policy";
 import {
   createWindowsHelloAdapter,
   preflightWindowsHelloAddon,
@@ -99,10 +104,12 @@ let apiRouter: ApiRouter | null = null;
 let credentialVault: CredentialVault | null = null;
 let advertisingCredentialVault: AdvertisingCredentialVault | null = null;
 let advertisingApi: AdvertisingApiClient | null = null;
+let desktopUpdater: DesktopUpdater | null = null;
 let updateStatus: UpdateStatus = { state: "idle" };
 let apiRequestsInFlight = 0;
 let credentialsChangeInFlight = false;
 const nativeConfirmationGate = new NativeConfirmationGate();
+const desktopInstallGate = new DesktopInstallGate();
 let appInitialized = false;
 let initializationPromise: Promise<void> | null = null;
 
@@ -172,6 +179,7 @@ function isTrustedFrame(event: IpcMainInvokeEvent | IpcMainEvent): boolean {
 
 function assertTrustedFrame(event: IpcMainInvokeEvent | IpcMainEvent): void {
   if (!isTrustedFrame(event)) throw new Error("UNTRUSTED_RENDERER");
+  desktopInstallGate.assertOperationAllowed();
 }
 
 async function confirmSensitiveAction(reason: string): Promise<void> {
@@ -239,45 +247,48 @@ function setUpdateStatus(status: UpdateStatus): UpdateStatus {
   return status;
 }
 
+function packagedUpdateChannel() {
+  if (!app.isPackaged) return "disabled" as const;
+  try {
+    const metadata = JSON.parse(
+      readFileSync(resolve(app.getAppPath(), "package.json"), "utf8"),
+    ) as unknown;
+    return desktopUpdateChannelFromPackageMetadata(metadata);
+  } catch {
+    return "disabled" as const;
+  }
+}
+
 function configureUpdater(): void {
   const policy = desktopUpdatePolicy({
     platform: process.platform,
     packaged: app.isPackaged,
+    updateChannel: packagedUpdateChannel(),
   });
-  if (!policy.enabled) {
-    setUpdateStatus({
-      state: "not-available",
-      version: app.getVersion(),
-      message: policy.message ?? undefined,
-    });
-    return;
-  }
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-  autoUpdater.on("checking-for-update", () =>
-    setUpdateStatus({ state: "checking" }),
-  );
-  autoUpdater.on("update-available", (info) =>
-    setUpdateStatus({ state: "available", version: info.version }),
-  );
-  autoUpdater.on("update-not-available", (info) =>
-    setUpdateStatus({ state: "not-available", version: info.version }),
-  );
-  autoUpdater.on("download-progress", (progress) =>
-    setUpdateStatus({
-      state: "downloading",
-      percent: Math.round(progress.percent),
-    }),
-  );
-  autoUpdater.on("update-downloaded", (info) =>
-    setUpdateStatus({ state: "downloaded", version: info.version }),
-  );
-  autoUpdater.on("error", () =>
-    setUpdateStatus({
-      state: "error",
-      message: "目前無法檢查更新，既有 App 仍可正常使用。",
-    }),
-  );
+  desktopUpdater?.stop();
+  desktopUpdater = new DesktopUpdater({
+    adapter: autoUpdater,
+    currentVersion: app.getVersion(),
+    policy,
+    publishStatus: setUpdateStatus,
+    installBlockReason: () =>
+      apiRequestsInFlight > 0 || credentialsChangeInFlight
+        ? "Amazon／本機安全操作仍在處理；完成後才能安裝更新。"
+        : null,
+    prepareInstall: () => {
+      const rollbackInstall = desktopInstallGate.begin();
+      try {
+        closeCredentialEditor();
+        closeAdvertisingCredentialEditor();
+        apiRouter?.dispose();
+        return rollbackInstall;
+      } catch (error) {
+        rollbackInstall();
+        throw error;
+      }
+    },
+  });
+  desktopUpdater.start();
 }
 
 function configureMainSession(): void {
@@ -546,6 +557,7 @@ function registerIpc(): void {
     if (!isCredentialEditorFrame(event, credentialEditorWindow)) {
       throw new Error("UNTRUSTED_CREDENTIAL_EDITOR");
     }
+    desktopInstallGate.assertOperationAllowed();
     if (!credentialVault) throw new Error("APP_NOT_READY");
     if (apiRequestsInFlight > 0) {
       throw new Error("Amazon 查詢或寫入仍在處理；完成後再更新憑證。");
@@ -617,6 +629,7 @@ function registerIpc(): void {
       if (!isAdvertisingCredentialEditorFrame(event, advertisingCredentialEditorWindow)) {
         throw new Error("UNTRUSTED_ADS_CREDENTIAL_EDITOR");
       }
+      desktopInstallGate.assertOperationAllowed();
       if (!advertisingCredentialVault || !advertisingApi) throw new Error("APP_NOT_READY");
       if (apiRequestsInFlight > 0) {
         throw new Error("Amazon 查詢或寫入仍在處理；完成後再更新 Ads 憑證。");
@@ -707,36 +720,17 @@ function registerIpc(): void {
   );
   ipcMain.handle("fba:update-check", async (event) => {
     assertTrustedFrame(event);
-    const policy = desktopUpdatePolicy({
-      platform: process.platform,
-      packaged: app.isPackaged,
-    });
-    if (!policy.enabled) {
-      return setUpdateStatus({
-        state: "not-available",
-        version: app.getVersion(),
-        message: policy.message ?? undefined,
-      });
-    }
-    const result = await autoUpdater.checkForUpdates();
-    if (result?.updateInfo && result.updateInfo.version !== app.getVersion()) {
-      await autoUpdater.downloadUpdate();
-    }
-    return updateStatus;
+    if (!desktopUpdater) throw new Error("APP_NOT_READY");
+    return desktopUpdater.check();
+  });
+  ipcMain.handle("fba:update-current", (event) => {
+    assertTrustedFrame(event);
+    return desktopUpdater?.currentStatus() ?? updateStatus;
   });
   ipcMain.handle("fba:update-install", async (event) => {
     assertTrustedFrame(event);
-    const policy = desktopUpdatePolicy({
-      platform: process.platform,
-      packaged: app.isPackaged,
-    });
-    if (!policy.enabled) throw new Error("APP_UPDATE_DISABLED_FOR_PLATFORM");
-    if (updateStatus.state !== "downloaded") throw new Error("UPDATE_NOT_READY");
-    if (apiRequestsInFlight > 0 || credentialsChangeInFlight) {
-      throw new Error("Amazon／本機安全操作仍在處理；完成後才能安裝更新。");
-    }
-    apiRouter?.dispose();
-    autoUpdater.quitAndInstall(false, true);
+    if (!desktopUpdater) throw new Error("APP_NOT_READY");
+    desktopUpdater.install();
   });
 }
 
