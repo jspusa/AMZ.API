@@ -89,13 +89,19 @@ export default function BusinessPricingEditor({
   onBusyChange: (busy: boolean) => void;
 }>) {
   const priceOnlyProposal = businessPricingEditorProposal(listing, "price_only");
+  const combinedProposal = businessPricingEditorProposal(listing, "combined");
   const [newPrice, setNewPrice] = useState(
     priceOnlyProposal?.businessPrice.toFixed(2) ??
       listing.businessPrice?.amount.toString() ?? "",
   );
   const [editorMode, setEditorMode] =
     useState<BusinessPricingEditorMode>("price_only");
-  const [tierDrafts, setTierDrafts] = useState<readonly TierDraft[]>([]);
+  const [tierDrafts, setTierDrafts] = useState<readonly TierDraft[]>(
+    combinedProposal?.quantityDiscountTiers?.map((tier) => ({
+      lowerBound: String(tier.lowerBound),
+      percent: String(tier.percent),
+    })) ?? [],
+  );
   const [submittedPreview, setSubmittedPreview] =
     useState<SubmittedBusinessPricePreview | null>(null);
   const [result, setResult] = useState<BusinessPriceUpdate | null>(null);
@@ -114,6 +120,7 @@ export default function BusinessPricingEditor({
     ? parseTierDrafts(tierDrafts)
     : undefined;
   const tierInputInvalid = editorMode === "combined" && parsedTiers === null;
+  const noRequestedChange = unchanged && editorMode === "price_only";
   const canReplaceQuantityDiscounts = Boolean(
     listing.businessPricingCapability.quantityDiscountsEditable &&
     listing.quantityDiscountPlanPresence !== "ambiguous" &&
@@ -134,22 +141,13 @@ export default function BusinessPricingEditor({
     if (nextMode === "combined" && !canReplaceQuantityDiscounts) return;
     resetPreview();
     setEditorMode(nextMode);
-    if (nextMode === "combined") {
-      const proposal = businessPricingEditorProposal(listing, "combined");
-      setTierDrafts(proposal?.quantityDiscountTiers?.map((tier) => ({
-        lowerBound: String(tier.lowerBound),
-        percent: String(tier.percent),
-      })) ?? []);
-    } else {
-      setTierDrafts([]);
-    }
   };
 
   const previewPrice = async (event: FormEvent) => {
     event.preventDefault();
     if (
       parsedNewPrice === null ||
-      (unchanged && tierDrafts.length === 0) ||
+      noRequestedChange ||
       parsedTiers === null
     ) return;
     const submittedPrice = parsedNewPrice;
@@ -305,89 +303,96 @@ export default function BusinessPricingEditor({
               aria-pressed={editorMode === "combined"}
               onClick={() => chooseEditorMode("combined")}
               disabled={loading}
-            >明確一併更新階梯折扣</button>
+            >一併更新預填階梯折扣</button>
           </div>
-          {editorMode === "price_only" ? (
+          {editorMode === "price_only" && (
             <div className="price-warning compact">
               <strong>Price-only</strong>
-              <p>本次預檢與正式 PATCH 都不帶 quantity_discount_plan，完整保留現有階梯折扣。</p>
+              <p>下方已預填建議階梯，但尚未包含在本次更新；目前仍會完整保留現有階梯折扣。</p>
             </div>
-          ) : (
-            <fieldset className="business-pricing-tier-fieldset" disabled={loading}>
-              <legend>新數量折扣（1–5 階 percent）</legend>
-              <div className="business-pricing-tier-grid">
-                {tierDrafts.map((tier, index) => (
-                  <div className="business-pricing-tier-card" key={index}>
-                    <strong>第 {index + 1} 階</strong>
-                    <label htmlFor={`business-tier-bound-${index}`}>
-                      <span>門檻件數</span>
-                      <input
-                        id={`business-tier-bound-${index}`}
-                        inputMode="numeric"
-                        value={tier.lowerBound}
-                        onChange={(event) => {
-                          resetPreview();
-                          setTierDrafts((current) => current.map(
-                            (entry, entryIndex) => entryIndex === index
-                              ? { ...entry, lowerBound: event.target.value }
-                              : entry,
-                          ));
-                        }}
-                      />
-                    </label>
-                    <label htmlFor={`business-tier-percent-${index}`}>
-                      <span>折扣百分比</span>
-                      <input
-                        id={`business-tier-percent-${index}`}
-                        inputMode="decimal"
-                        value={tier.percent}
-                        onChange={(event) => {
-                          resetPreview();
-                          setTierDrafts((current) => current.map(
-                            (entry, entryIndex) => entryIndex === index
-                              ? { ...entry, percent: event.target.value }
-                              : entry,
-                          ));
-                        }}
-                      />
-                    </label>
-                    {tierDrafts.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          resetPreview();
-                          setTierDrafts((current) => current.filter(
-                            (_, entryIndex) => entryIndex !== index,
-                          ));
-                        }}
-                      >刪除此階</button>
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div className="business-pricing-tier-actions">
-                {tierDrafts.length < 5 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      resetPreview();
-                      const last = tierDrafts.at(-1);
-                      setTierDrafts((current) => [...current, {
-                        lowerBound: String((Number(last?.lowerBound) || 0) + 5),
-                        percent: String(Math.min(
-                          (Number(last?.percent) || 0) + 5,
-                          99,
-                        )),
-                      }]);
-                    }}
-                  >＋ 新增一階</button>
-                )}
-                {tierInputInvalid && (
-                  <small role="alert">件數與百分比必須合法且逐階嚴格遞增；百分比需大於 0、小於 100。</small>
-                )}
-              </div>
-            </fieldset>
           )}
+          <fieldset
+            className="business-pricing-tier-fieldset"
+            disabled={loading || editorMode === "price_only"}
+          >
+            <legend>預填建議數量折扣（1–5 階 percent）</legend>
+            <p className="business-pricing-notice">
+              {editorMode === "combined"
+                ? "已明確選擇一併更新；你可直接預檢，或先調整下列建議值。"
+                : "5 件 5%、10 件 10%、15 件 15%、20 件 20%；選擇一併更新後才會送出。"}
+            </p>
+            <div className="business-pricing-tier-grid">
+              {tierDrafts.map((tier, index) => (
+                <div className="business-pricing-tier-card" key={index}>
+                  <strong>第 {index + 1} 階</strong>
+                  <label htmlFor={`business-tier-bound-${index}`}>
+                    <span>門檻件數</span>
+                    <input
+                      id={`business-tier-bound-${index}`}
+                      inputMode="numeric"
+                      value={tier.lowerBound}
+                      onChange={(event) => {
+                        resetPreview();
+                        setTierDrafts((current) => current.map(
+                          (entry, entryIndex) => entryIndex === index
+                            ? { ...entry, lowerBound: event.target.value }
+                            : entry,
+                        ));
+                      }}
+                    />
+                  </label>
+                  <label htmlFor={`business-tier-percent-${index}`}>
+                    <span>折扣百分比</span>
+                    <input
+                      id={`business-tier-percent-${index}`}
+                      inputMode="decimal"
+                      value={tier.percent}
+                      onChange={(event) => {
+                        resetPreview();
+                        setTierDrafts((current) => current.map(
+                          (entry, entryIndex) => entryIndex === index
+                            ? { ...entry, percent: event.target.value }
+                            : entry,
+                        ));
+                      }}
+                    />
+                  </label>
+                  {tierDrafts.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetPreview();
+                        setTierDrafts((current) => current.filter(
+                          (_, entryIndex) => entryIndex !== index,
+                        ));
+                      }}
+                    >刪除此階</button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="business-pricing-tier-actions">
+              {tierDrafts.length < 5 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetPreview();
+                    const last = tierDrafts.at(-1);
+                    setTierDrafts((current) => [...current, {
+                      lowerBound: String((Number(last?.lowerBound) || 0) + 5),
+                      percent: String(Math.min(
+                        (Number(last?.percent) || 0) + 5,
+                        99,
+                      )),
+                    }]);
+                  }}
+                >＋ 新增一階</button>
+              )}
+              {tierInputInvalid && (
+                <small role="alert">件數與百分比必須合法且逐階嚴格遞增；百分比需大於 0、小於 100。</small>
+              )}
+            </div>
+          </fieldset>
         </div>
       ) : (
         <div className="price-warning compact">
@@ -448,7 +453,7 @@ export default function BusinessPricingEditor({
             loading ||
             parsedNewPrice === null ||
             tierInputInvalid ||
-            (unchanged && tierDrafts.length === 0)
+            noRequestedChange
           }
         >{loading
           ? "Amazon 預檢中…"
