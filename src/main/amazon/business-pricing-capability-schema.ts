@@ -1174,8 +1174,11 @@ function businessPriceBranchEditable(
   pathNodes.push(...leaf.nodes);
   if (!leaf.safe || !traversal.safe) return false;
   const flags = pathNodes.flatMap(directEditableFlags);
-  const leafFlags = leaf.nodes.flatMap(directEditableFlags);
-  return leafFlags.includes(true) && !flags.includes(false);
+  // Amazon's PTD vocabulary uses an explicit negative annotation for fields
+  // that cannot be edited. A missing positive `editable` annotation is not a
+  // prohibition: the structurally valid proposal must still be decided by the
+  // Listings Items Validation Preview before any write can proceed.
+  return !flags.includes(false);
 }
 
 function businessQuantityDiscountBranchEditable(
@@ -1282,11 +1285,7 @@ function businessQuantityDiscountBranchEditable(
     )
   ) return false;
   const flags = pathNodes.flatMap(directEditableFlags);
-  const discountFlags = discountType.nodes.flatMap(directEditableFlags);
-  const lowerBoundFlags = lowerBound.nodes.flatMap(directEditableFlags);
-  const valueFlags = value.nodes.flatMap(directEditableFlags);
-  return discountFlags.includes(true) && lowerBoundFlags.includes(true) &&
-    valueFlags.includes(true) && !flags.includes(false);
+  return !flags.includes(false);
 }
 
 export function evaluateBusinessPricingCapabilitySchema(
