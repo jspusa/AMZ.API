@@ -240,6 +240,143 @@ describe("Business Pricing production gateway", () => {
     }]);
   });
 
+  it("uses the exact live B2B offer projection when attributes only contain the ALL offer", async () => {
+    const state = harness();
+    state.setMode("live");
+    state.setPayload(livePayload({
+      attributes: {
+        purchasable_offer: [{
+          audience: "ALL",
+          currency: "USD",
+          marketplace_id: MARKETPLACE_ID,
+          our_price: [{ schedule: [{ value_with_tax: 19.99 }] }],
+        }],
+      },
+      offers: [{
+        marketplaceId: MARKETPLACE_ID,
+        offerType: "B2C",
+        price: { currencyCode: "USD", amount: "19.99" },
+        audience: { value: "ALL", displayName: "Sell on Amazon" },
+      }, {
+        marketplaceId: MARKETPLACE_ID,
+        offerType: "B2B",
+        price: { currencyCode: "USD", amount: "17.99" },
+        audience: {
+          value: "B2B",
+          displayName: "Amazon Business (B2B)",
+        },
+        quantityDiscountPlan: {
+          discountType: "FIXED",
+          levels: [{ lowerBound: 3, value: "16" }],
+        },
+      }] as unknown as AmazonListingItem["offers"],
+    }));
+
+    await expect(state.runtime.gateway.read(IDENTITY, "mutation"))
+      .resolves.toMatchObject({
+        standardPrice: { amount: 19.99, currencyCode: "USD" },
+        businessPrice: { amount: 17.99, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: {
+          discountType: "fixed",
+          levels: [{ lowerBound: 3, value: 16 }],
+        },
+        quantityDiscountPlanPresence: "canonical",
+      });
+  });
+
+  it("fails rich B2B offer projection conflicts and malformed tiers closed", async () => {
+    const state = harness();
+    state.setMode("live");
+    const conflict = livePayload();
+    conflict.offers = [{
+      marketplaceId: MARKETPLACE_ID,
+      offerType: "B2B",
+      price: { currencyCode: "USD", amount: "28.00" },
+      audience: { value: "B2B" },
+      quantityDiscountPlan: {
+        discountType: "FIXED",
+        levels: [{ lowerBound: 5, value: "24" }],
+      },
+    }];
+    state.setPayload(conflict);
+    await expect(state.runtime.gateway.read(IDENTITY, "mutation"))
+      .resolves.toMatchObject({
+        businessPrice: null,
+        businessOfferPresence: "ambiguous",
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "ambiguous",
+      });
+
+    const malformed = livePayload({
+      attributes: {
+        purchasable_offer: [{
+          audience: "ALL",
+          currency: "USD",
+          marketplace_id: MARKETPLACE_ID,
+          our_price: [{ schedule: [{ value_with_tax: 30 }] }],
+        }],
+      },
+      offers: [{
+        marketplaceId: MARKETPLACE_ID,
+        offerType: "B2B",
+        price: { currencyCode: "USD", amount: "28.00" },
+        audience: { value: "B2B" },
+        quantityDiscountPlan: {
+          discountType: "FIXED",
+          levels: [{ lowerBound: 3, value: "not-a-price" }],
+        },
+      }],
+    });
+    state.setPayload(malformed);
+    await expect(state.runtime.gateway.read(IDENTITY, "mutation"))
+      .resolves.toMatchObject({
+        businessPrice: { amount: 28, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "ambiguous",
+      });
+  });
+
+  it("guards rich current quantity discounts while excluding them from combined protection", async () => {
+    const state = harness();
+    state.setMode("live");
+    const firstPayload = livePayload({
+      attributes: {
+        purchasable_offer: [{
+          audience: "ALL",
+          currency: "USD",
+          marketplace_id: MARKETPLACE_ID,
+          our_price: [{ schedule: [{ value_with_tax: 19.99 }] }],
+        }],
+      },
+      offers: [{
+        marketplaceId: MARKETPLACE_ID,
+        offerType: "B2B",
+        price: { currencyCode: "USD", amount: "17.99" },
+        audience: { value: "B2B" },
+        quantityDiscountPlan: {
+          discountType: "FIXED",
+          levels: [{ lowerBound: 3, value: "16" }],
+        },
+      }],
+    });
+    state.setPayload(firstPayload);
+    const before = await state.runtime.gateway.read(IDENTITY, "mutation");
+
+    const changed = structuredClone(firstPayload);
+    changed.offers![0]!.quantityDiscountPlan!.levels![0]!.value = "15";
+    state.setPayload(changed);
+    const after = await state.runtime.gateway.read(IDENTITY, "mutation");
+
+    expect(after.businessOfferGuardHash).not.toBe(
+      before.businessOfferGuardHash,
+    );
+    expect(after.businessOfferProtectedHash).toBe(
+      before.businessOfferProtectedHash,
+    );
+  });
+
   it("fails closed on identity, fulfillment, FBA and standard-price evidence", async () => {
     const state = harness();
     state.setMode("live");

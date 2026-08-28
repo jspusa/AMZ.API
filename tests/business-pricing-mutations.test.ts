@@ -432,4 +432,56 @@ describe("W05 Business Pricing mutation owner", () => {
     expect(commitOnce).not.toHaveBeenCalled();
     expect(observeCanonical).not.toHaveBeenCalled();
   });
+
+  it("stops price-only preview when current quantity discounts are ambiguous", async () => {
+    const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
+    const validationPreview = vi.fn();
+    const snapshot: BusinessPricingListingSnapshot = {
+      ...businessPricingSnapshot(),
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      quantityDiscountPlanHash: null,
+    };
+    const gateway: BusinessPricingGateway = {
+      mode: () => "live",
+      read: async () => snapshot,
+      quantityDiscountPlanSupported: () => true,
+      validationPreview,
+      commitOnce: vi.fn(),
+      replaceDemoContribution: async () => undefined,
+    };
+    const owner = createBusinessPricingMutations({
+      context: {
+        capture: async (marketplaceId) => ({
+          marketplaceId,
+          region: "na",
+          mode: "live",
+          accountScope: "opaque-w05-ambiguous-qdp" as never,
+          generation: 0,
+        }),
+        assertCurrent: async () => undefined,
+        invalidate: () => undefined,
+      },
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: async () => undefined,
+        clearEphemeral: () => undefined,
+      } as unknown as MainWriteGatePort,
+      gateway,
+      priceObserver: { observeCanonical: vi.fn() },
+    });
+
+    const response = await owner.handle({
+      operation: "preview",
+      request: previewRequest(),
+    });
+
+    expect(response.status).toBe(409);
+    expect(bodyValue(response)).toMatchObject({
+      code: "QUANTITY_DISCOUNT_CHANGED",
+    });
+    expect(validationPreview).not.toHaveBeenCalled();
+    expect(stagePreview).not.toHaveBeenCalled();
+  });
 });

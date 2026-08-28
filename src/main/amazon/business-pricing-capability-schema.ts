@@ -249,6 +249,7 @@ const BUSINESS_ATTRIBUTE_ROOT_SCHEMA_KEYS = new Set([
   ...BUSINESS_REF_ANNOTATION_KEYS,
   "$defs",
   "additionalProperties",
+  "allOf",
   "definitions",
   "editable",
   "hidden",
@@ -910,18 +911,9 @@ function businessOfferAttributeSchemas(
         );
       }
     }
-    if ("allOf" in node) {
+    if ("allOf" in node && !Array.isArray(node.allOf)) {
       safe = false;
       traversal.safe = false;
-    }
-    if (Array.isArray(node.allOf)) {
-      if (!reserveBusinessSchemaCollection(traversal, node.allOf.length)) {
-        return;
-      }
-      for (const branch of node.allOf) {
-        if (traversal.exhausted) break;
-        walk(branch, new Set(seenRefs), depth + 1);
-      }
     }
     if (Array.isArray(node.oneOf) || Array.isArray(node.anyOf)) {
       safe = false;
@@ -1123,6 +1115,467 @@ function businessNumericSchemaAccepts(
     }
   }
   return true;
+}
+
+type BusinessConcreteSchemaEvaluation = boolean | null;
+
+const BUSINESS_CONCRETE_SCHEMA_KEYS = new Set([
+  ...BUSINESS_REF_ANNOTATION_KEYS,
+  "$defs",
+  "additionalProperties",
+  "allOf",
+  "anyOf",
+  "const",
+  "contains",
+  "else",
+  "enum",
+  "exclusiveMaximum",
+  "exclusiveMinimum",
+  "if",
+  "items",
+  "maxContains",
+  "maximum",
+  "maxItems",
+  "maxLength",
+  "maxProperties",
+  "maxUniqueItems",
+  "maxUtf8ByteLength",
+  "minContains",
+  "minimum",
+  "minItems",
+  "minLength",
+  "minProperties",
+  "minUniqueItems",
+  "minUtf8ByteLength",
+  "multipleOf",
+  "not",
+  "oneOf",
+  "pattern",
+  "properties",
+  "required",
+  "then",
+  "type",
+  "uniqueItems",
+]);
+
+function businessConcreteAnd(
+  evaluations: readonly BusinessConcreteSchemaEvaluation[],
+): BusinessConcreteSchemaEvaluation {
+  if (evaluations.includes(false)) return false;
+  return evaluations.includes(null) ? null : true;
+}
+
+function businessConcreteJsonEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) =>
+      businessConcreteJsonEqual(value, right[index])
+    );
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) =>
+      key === rightKeys[index] &&
+      businessConcreteJsonEqual(left[key], right[key])
+    );
+}
+
+function businessConcreteTypeMatches(value: unknown, type: string): boolean {
+  if (type === "null") return value === null;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return isRecord(value);
+  if (type === "integer") return typeof value === "number" &&
+    Number.isSafeInteger(value);
+  if (type === "number") return typeof value === "number" &&
+    Number.isFinite(value);
+  return typeof value === type;
+}
+
+// Evaluates only a concrete proposed B2B contribution against the PTD root
+// constraints. Unknown or malformed keywords return null and therefore keep
+// the capability read-only. This is deliberately separate from attribute
+// discovery: root allOf branches commonly add conditional restrictions to a
+// directly declared purchasable_offer without defining a second contribution.
+function evaluateBusinessConcreteSchema(
+  root: JsonRecord,
+  node: unknown,
+  value: unknown,
+  traversal: BusinessSchemaTraversal,
+  seenRefs = new Set<string>(),
+  depth = 0,
+): BusinessConcreteSchemaEvaluation {
+  if (!consumeBusinessSchemaNode(traversal, depth)) return null;
+  if (node === true) return true;
+  if (node === false) return false;
+  if (!isRecord(node)) {
+    traversal.safe = false;
+    return null;
+  }
+  if (Object.keys(node).some((key) => !BUSINESS_CONCRETE_SCHEMA_KEYS.has(key))) {
+    traversal.safe = false;
+    return null;
+  }
+  if (directEditableFlags(node).includes(false)) return false;
+
+  const evaluations: BusinessConcreteSchemaEvaluation[] = [];
+  if ("type" in node) {
+    const types = Array.isArray(node.type) ? node.type : [node.type];
+    evaluations.push(
+      types.length > 0 && types.every((type) => typeof type === "string")
+        ? types.some((type) => businessConcreteTypeMatches(value, type))
+        : null,
+    );
+  }
+  if ("const" in node) {
+    evaluations.push(businessConcreteJsonEqual(value, node.const));
+  }
+  if ("enum" in node) {
+    evaluations.push(Array.isArray(node.enum)
+      ? node.enum.some((entry) => businessConcreteJsonEqual(value, entry))
+      : null);
+  }
+
+  if (typeof node.$ref === "string") {
+    if (seenRefs.has(node.$ref)) {
+      traversal.exhausted = true;
+      traversal.safe = false;
+      evaluations.push(null);
+    } else {
+      evaluations.push(evaluateBusinessConcreteSchema(
+        root,
+        jsonPointer(root, node.$ref),
+        value,
+        traversal,
+        new Set(seenRefs).add(node.$ref),
+        depth + 1,
+      ));
+    }
+  }
+
+  if (isRecord(value)) {
+    const required = "required" in node ? node.required : [];
+    if (!Array.isArray(required) ||
+        required.some((entry) => typeof entry !== "string")) {
+      evaluations.push(null);
+    } else {
+      evaluations.push(required.every((entry) => entry in value));
+    }
+    const propertyCount = Object.keys(value).length;
+    for (const [key, predicate] of [
+      ["minProperties", (limit: number) => propertyCount >= limit],
+      ["maxProperties", (limit: number) => propertyCount <= limit],
+    ] as const) {
+      if (!(key in node)) continue;
+      const limit = node[key];
+      evaluations.push(typeof limit === "number" &&
+          Number.isSafeInteger(limit) && limit >= 0
+        ? predicate(limit)
+        : null);
+    }
+    const properties = isRecord(node.properties) ? node.properties : null;
+    if ("properties" in node && properties === null) {
+      evaluations.push(null);
+    } else if (properties) {
+      for (const [propertyName, propertySchema] of
+        Object.entries(properties)) {
+        if (!(propertyName in value)) continue;
+        evaluations.push(evaluateBusinessConcreteSchema(
+          root,
+          propertySchema,
+          value[propertyName],
+          traversal,
+          new Set(seenRefs),
+          depth + 1,
+        ));
+      }
+    }
+    const extras = Object.keys(value).filter((key) =>
+      !properties || !(key in properties)
+    );
+    if (node.additionalProperties === false && extras.length > 0) {
+      evaluations.push(false);
+    } else if (isRecord(node.additionalProperties)) {
+      for (const key of extras) {
+        evaluations.push(evaluateBusinessConcreteSchema(
+          root,
+          node.additionalProperties,
+          value[key],
+          traversal,
+          new Set(seenRefs),
+          depth + 1,
+        ));
+      }
+    } else if (
+      "additionalProperties" in node &&
+      typeof node.additionalProperties !== "boolean"
+    ) {
+      evaluations.push(null);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const [key, predicate] of [
+      ["minItems", (limit: number) => value.length >= limit],
+      ["maxItems", (limit: number) => value.length <= limit],
+    ] as const) {
+      if (!(key in node)) continue;
+      const limit = node[key];
+      evaluations.push(typeof limit === "number" &&
+          Number.isSafeInteger(limit) && limit >= 0
+        ? predicate(limit)
+        : null);
+    }
+    const uniqueCount = value.filter((entry, index) =>
+      value.findIndex((candidate) =>
+        businessConcreteJsonEqual(candidate, entry)
+      ) === index
+    ).length;
+    for (const [key, predicate] of [
+      ["minUniqueItems", (limit: number) => uniqueCount >= limit],
+      ["maxUniqueItems", (limit: number) => uniqueCount <= limit],
+    ] as const) {
+      if (!(key in node)) continue;
+      const limit = node[key];
+      evaluations.push(typeof limit === "number" &&
+          Number.isSafeInteger(limit) && limit >= 0
+        ? predicate(limit)
+        : null);
+    }
+    if ("uniqueItems" in node) {
+      evaluations.push(typeof node.uniqueItems === "boolean"
+        ? !node.uniqueItems || uniqueCount === value.length
+        : null);
+    }
+    if ("items" in node) {
+      if (Array.isArray(node.items)) {
+        evaluations.push(null);
+      } else {
+        for (const item of value) {
+          evaluations.push(evaluateBusinessConcreteSchema(
+            root,
+            node.items,
+            item,
+            traversal,
+            new Set(seenRefs),
+            depth + 1,
+          ));
+        }
+      }
+    }
+    if ("contains" in node) {
+      const results = value.map((item) => evaluateBusinessConcreteSchema(
+        root,
+        node.contains,
+        item,
+        traversal,
+        new Set(seenRefs),
+        depth + 1,
+      ));
+      const minimum = "minContains" in node ? node.minContains : 1;
+      const maximum = "maxContains" in node
+        ? node.maxContains
+        : Number.POSITIVE_INFINITY;
+      if (
+        typeof minimum !== "number" || !Number.isSafeInteger(minimum) ||
+        minimum < 0 || typeof maximum !== "number" ||
+        (maximum !== Number.POSITIVE_INFINITY &&
+          (!Number.isSafeInteger(maximum) || maximum < 0))
+      ) {
+        evaluations.push(null);
+      } else {
+        const matches = results.filter((result) => result === true).length;
+        const unknown = results.filter((result) => result === null).length;
+        evaluations.push(
+          matches > maximum || matches + unknown < minimum
+            ? false
+            : unknown === 0 ||
+                (matches >= minimum && matches + unknown <= maximum)
+              ? true
+              : null,
+        );
+      }
+    }
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    for (const [key, predicate] of [
+      ["minimum", (limit: number) => value >= limit],
+      ["exclusiveMinimum", (limit: number) => value > limit],
+      ["maximum", (limit: number) => value <= limit],
+      ["exclusiveMaximum", (limit: number) => value < limit],
+    ] as const) {
+      if (!(key in node)) continue;
+      const limit = node[key];
+      evaluations.push(typeof limit === "number" && Number.isFinite(limit)
+        ? predicate(limit)
+        : null);
+    }
+    if ("multipleOf" in node) {
+      const multiple = node.multipleOf;
+      if (typeof multiple !== "number" || !Number.isFinite(multiple) ||
+          multiple <= 0) {
+        evaluations.push(null);
+      } else {
+        const quotient = value / multiple;
+        evaluations.push(
+          Math.abs(quotient - Math.round(quotient)) <=
+            Number.EPSILON * Math.max(1, Math.abs(quotient)) * 4,
+        );
+      }
+    }
+  }
+
+  if (typeof value === "string") {
+    const codePoints = Array.from(value).length;
+    const utf8Bytes = new TextEncoder().encode(value).byteLength;
+    for (const [key, actual, predicate] of [
+      ["minLength", codePoints, (left: number, right: number) => left >= right],
+      ["maxLength", codePoints, (left: number, right: number) => left <= right],
+      ["minUtf8ByteLength", utf8Bytes,
+        (left: number, right: number) => left >= right],
+      ["maxUtf8ByteLength", utf8Bytes,
+        (left: number, right: number) => left <= right],
+    ] as const) {
+      if (!(key in node)) continue;
+      const limit = node[key];
+      evaluations.push(typeof limit === "number" &&
+          Number.isSafeInteger(limit) && limit >= 0
+        ? predicate(actual, limit)
+        : null);
+    }
+    if ("pattern" in node) {
+      try {
+        evaluations.push(typeof node.pattern === "string"
+          ? new RegExp(node.pattern, "u").test(value)
+          : null);
+      } catch {
+        evaluations.push(null);
+      }
+    }
+  }
+
+  if ("allOf" in node) {
+    if (!Array.isArray(node.allOf) ||
+        !reserveBusinessSchemaCollection(traversal, node.allOf.length)) {
+      evaluations.push(null);
+    } else {
+      evaluations.push(businessConcreteAnd(node.allOf.map((branch) =>
+        evaluateBusinessConcreteSchema(
+          root,
+          branch,
+          value,
+          traversal,
+          new Set(seenRefs),
+          depth + 1,
+        )
+      )));
+    }
+  }
+  for (const key of ["anyOf", "oneOf"] as const) {
+    if (!(key in node)) continue;
+    if (!Array.isArray(node[key]) ||
+        !reserveBusinessSchemaCollection(traversal, node[key].length)) {
+      evaluations.push(null);
+      continue;
+    }
+    const results = node[key].map((branch) =>
+      evaluateBusinessConcreteSchema(
+        root,
+        branch,
+        value,
+        traversal,
+        new Set(seenRefs),
+        depth + 1,
+      )
+    );
+    const matches = results.filter((result) => result === true).length;
+    const unknown = results.some((result) => result === null);
+    evaluations.push(key === "oneOf"
+      ? unknown ? null : matches === 1
+      : matches > 0 ? true : unknown ? null : false);
+  }
+  if ("not" in node) {
+    const result = evaluateBusinessConcreteSchema(
+      root,
+      node.not,
+      value,
+      traversal,
+      new Set(seenRefs),
+      depth + 1,
+    );
+    evaluations.push(result === null ? null : !result);
+  }
+  if ("if" in node) {
+    const condition = evaluateBusinessConcreteSchema(
+      root,
+      node.if,
+      value,
+      traversal,
+      new Set(seenRefs),
+      depth + 1,
+    );
+    if (condition === null) {
+      evaluations.push(null);
+    } else if (condition && "then" in node) {
+      evaluations.push(evaluateBusinessConcreteSchema(
+        root,
+        node.then,
+        value,
+        traversal,
+        new Set(seenRefs),
+        depth + 1,
+      ));
+    } else if (!condition && "else" in node) {
+      evaluations.push(evaluateBusinessConcreteSchema(
+        root,
+        node.else,
+        value,
+        traversal,
+        new Set(seenRefs),
+        depth + 1,
+      ));
+    }
+  } else if ("then" in node || "else" in node) {
+    evaluations.push(null);
+  }
+
+  return businessConcreteAnd(evaluations.length > 0 ? evaluations : [true]);
+}
+
+function businessRootOfferConstraintsAccept(
+  schema: JsonRecord,
+  selector: BusinessOfferSelector,
+  proposedLevels?: readonly BusinessQuantityDiscountLevel[],
+): boolean {
+  if (!("allOf" in schema)) return true;
+  if (!Array.isArray(schema.allOf)) return false;
+  const offer: JsonRecord = {
+    marketplace_id: selector.marketplaceId,
+    currency: selector.currencyCode,
+    audience: selector.audience,
+    our_price: [{ schedule: [{ value_with_tax: 1 }] }],
+  };
+  if (proposedLevels) {
+    offer.quantity_discount_plan = [{
+      schedule: [{
+        discount_type: "percent",
+        levels: proposedLevels.map((level) => ({
+          lower_bound: level.lowerBound,
+          value: level.value,
+        })),
+      }],
+    }];
+  }
+  const traversal = newBusinessSchemaTraversal();
+  const result = evaluateBusinessConcreteSchema(
+    schema,
+    { allOf: schema.allOf },
+    { purchasable_offer: [offer] },
+    traversal,
+  );
+  return result === true && traversal.safe && !traversal.exhausted;
 }
 
 function businessPriceBranchEditable(
@@ -1348,8 +1801,13 @@ export function evaluateBusinessPricingCapabilitySchema(
     branchesByAttribute.some((attributeBranches) =>
       attributeBranches.length === 0
     );
+  const priceRootConstraintsAccepted = businessRootOfferConstraintsAccept(
+    schema,
+    selector,
+  );
   const editable = attributes.safe && traversal.safe && !traversal.exhausted &&
     !rootFlags.includes(false) && !hasUncomposedAttributeConstraint &&
+    priceRootConstraintsAccepted &&
     branches.every((branch) =>
       businessOfferAllowsExactProperties(
         branch.offerSchema,
@@ -1360,7 +1818,18 @@ export function evaluateBusinessPricingCapabilitySchema(
   const quantityDiscountsSupported = branches.every((branch) =>
     isRecord(branch.quantityDiscountPlan)
   );
+  const quantityRootConstraintsAccepted = businessRootOfferConstraintsAccept(
+    schema,
+    selector,
+    proposedQuantityDiscountLevels ?? [
+      { lowerBound: 5, value: 5 },
+      { lowerBound: 10, value: 10 },
+      { lowerBound: 15, value: 15 },
+      { lowerBound: 20, value: 20 },
+    ],
+  );
   const quantityDiscountsEditable = editable && quantityDiscountsSupported &&
+    quantityRootConstraintsAccepted &&
     branches.every((branch) =>
       businessOfferAllowsExactProperties(
         branch.offerSchema,
