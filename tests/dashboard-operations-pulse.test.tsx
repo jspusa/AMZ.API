@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
+  connectionEvidenceAfterHealthRefresh,
   connectionEvidenceFromConnectionTest,
   connectionEvidenceFromHealth,
   connectionEvidenceFromSales,
@@ -518,6 +519,18 @@ describe("dashboard operations pulse data flow", () => {
         DEFAULT_MARKETPLACE_ID,
       ),
     ).toBeNull();
+  });
+
+  it("demotes stale probe evidence while preserving a successful live Sales read", () => {
+    expect(
+      connectionEvidenceAfterHealthRefresh("verified-live", "live", false),
+    ).toBe("configured-live");
+    expect(
+      connectionEvidenceAfterHealthRefresh("verified-live", "live", true),
+    ).toBe("verified-live");
+    expect(
+      connectionEvidenceAfterHealthRefresh("verified-live", "demo", true),
+    ).toBe("demo");
   });
 
   it("asks the trusted Notebook bridge to verify the selected marketplace", async () => {

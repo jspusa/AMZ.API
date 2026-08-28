@@ -143,6 +143,17 @@ export function connectionEvidenceFromHealth(
   return current === "verified-live" ? current : "configured-live";
 }
 
+export function connectionEvidenceAfterHealthRefresh(
+  current: DashboardConnectionEvidence | null,
+  mode: "live" | "demo",
+  hasSuccessfulLiveSales: boolean,
+): DashboardConnectionEvidence {
+  if (mode === "demo") return "demo";
+  return hasSuccessfulLiveSales
+    ? connectionEvidenceFromHealth(current, mode)
+    : "configured-live";
+}
+
 export function connectionEvidenceFromSales(
   mode: "live" | "demo",
 ): DashboardConnectionEvidence {
@@ -707,6 +718,13 @@ export default function Dashboard({
       : {},
   );
   const [connectionChecking, setConnectionChecking] = useState(false);
+  const liveSalesConnectionRef = useRef(
+    new Set(
+      initialSalesTrend?.mode === "live"
+        ? [initialSalesTrend.marketplaceId]
+        : [],
+    ),
+  );
   const salesTrendAbortRef = useRef<AbortController | null>(null);
   const connectionAbortRef = useRef<AbortController | null>(null);
   const primaryNavRef = useRef<HTMLElement | null>(null);
@@ -757,6 +775,11 @@ export default function Dashboard({
         );
       }
       if (salesTrendAbortRef.current === controller) {
+        if (payload.mode === "live") {
+          liveSalesConnectionRef.current.add(marketplaceId);
+        } else {
+          liveSalesConnectionRef.current.delete(marketplaceId);
+        }
         setSalesTrend(payload);
         setConnectionEvidence((current) => ({
           ...current,
@@ -808,16 +831,19 @@ export default function Dashboard({
         ) {
           throw new Error("Amazon 連線狀態回應無法辨識。");
         }
+        const hasSuccessfulLiveSales =
+          liveSalesConnectionRef.current.has(marketplaceId);
         if (connectionAbortRef.current === controller) {
           setConnectionEvidence((current) => ({
             ...current,
-            [marketplaceId]: connectionEvidenceFromHealth(
+            [marketplaceId]: connectionEvidenceAfterHealthRefresh(
               current[marketplaceId] ?? null,
               payload.mode as "live" | "demo",
+              hasSuccessfulLiveSales,
             ),
           }));
         }
-        if (payload.mode !== "live") return;
+        if (payload.mode !== "live" || hasSuccessfulLiveSales) return;
         const result = await window.fbaOS.credentials.test(marketplaceId);
         if (connectionAbortRef.current !== controller) return;
         const evidence = connectionEvidenceFromConnectionTest(
