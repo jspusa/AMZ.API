@@ -98,8 +98,11 @@ function reserveBusinessSchemaCollection(
 
 function directEditableFlags(node: unknown): boolean[] {
   if (!isRecord(node)) return [];
-  const flags = typeof node.editable === "boolean" ? [node.editable] : [];
-  if (node.readOnly === true) flags.push(false);
+  const flags: boolean[] = [];
+  if ("editable" in node) {
+    flags.push(typeof node.editable === "boolean" ? node.editable : false);
+  }
+  if ("readOnly" in node && node.readOnly !== false) flags.push(false);
   return flags;
 }
 
