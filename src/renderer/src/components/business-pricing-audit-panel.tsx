@@ -7,12 +7,16 @@ import {
   useState,
 } from "react";
 import {
+  applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingRowMatchesFilter,
   parseBusinessPricingAuditSnapshot,
+  parseBusinessPricingListingSnapshot,
   type BusinessPricingAuditFilter,
   type BusinessPricingAuditRow,
   type BusinessPricingAuditSnapshot,
+  type BusinessPricingListingSnapshot,
   type BusinessPricingMoney,
+  type BusinessPriceUpdate,
   type BusinessQuantityDiscountPlan,
 } from "../business-pricing-audit";
 import {
@@ -27,6 +31,8 @@ import {
   supportsFixedSellerCentralHandoffs,
 } from "../seller-central-handoff";
 import { auditExportFilename } from "../audit-export-filename";
+import { publicProblemMessage } from "../write-request";
+import BusinessPricingEditor from "./business-pricing-editor";
 
 const FILTERS: readonly Readonly<{
   value: BusinessPricingAuditFilter;
@@ -196,6 +202,9 @@ export default function BusinessPricingAuditPanel({
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  const [selected, setSelected] =
+    useState<BusinessPricingListingSnapshot | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
   const [job, setJob] = useState<StandaloneAuditJob | null>(
     initialJob?.kind === "businessPricing" &&
       initialJob.marketplaceId === marketplaceId &&
@@ -205,6 +214,7 @@ export default function BusinessPricingAuditPanel({
   );
   const abortRef = useRef<AbortController | null>(null);
   const observerJobIdRef = useRef<string | null>(null);
+  const editorRevisionRef = useRef(0);
 
   const visibleSnapshot = useMemo(() => {
     if (!snapshot || loading) return null;
@@ -264,6 +274,8 @@ export default function BusinessPricingAuditPanel({
     setError(null);
     setSnapshot(null);
     setProgress("正在建立 Amazon FBA 全商品清單…");
+    editorRevisionRef.current += 1;
+    setSelected(null);
     try {
       let current = await startStandaloneAuditJob({
         kind: "businessPricing",
@@ -382,6 +394,56 @@ export default function BusinessPricingAuditPanel({
     }
   };
 
+  const openEditor = async (row: BusinessPricingAuditRow) => {
+    const revision = ++editorRevisionRef.current;
+    setEditLoading(true);
+    setError(null);
+    setSelected(null);
+    try {
+      const params = new URLSearchParams({
+        marketplaceId,
+        sku: row.sellerSku,
+      });
+      const response = await fetch(`/api/sp-api/business-pricing?${params}`, {
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(publicProblemMessage(
+          payload,
+          "無法重新讀取此 SKU 的 B2B 價格。",
+        ));
+      }
+      const fresh = parseBusinessPricingListingSnapshot(payload);
+      if (
+        fresh.marketplaceId !== marketplaceId ||
+        fresh.sellerSku !== row.sellerSku
+      ) {
+        throw new Error("Amazon 回傳的 B2B 價格識別與所選 SKU 不一致。");
+      }
+      if (editorRevisionRef.current !== revision) return;
+      setSelected(fresh);
+    } catch (requestError) {
+      if (editorRevisionRef.current === revision) {
+        setError(requestError instanceof Error
+          ? requestError.message
+          : "無法開啟 B2B 價格編輯。");
+      }
+    } finally {
+      if (editorRevisionRef.current === revision) setEditLoading(false);
+    }
+  };
+
+  const applyVerifiedPrice = (nextResult: BusinessPriceUpdate) => {
+    if (!snapshot) return;
+    const nextSnapshot = applyVerifiedBusinessPriceToAuditSnapshot(
+      snapshot,
+      nextResult,
+    );
+    setSnapshot(nextSnapshot);
+    onSnapshotChange?.(nextSnapshot);
+  };
+
   const exportExcel = async () => {
     if (
       !visibleSnapshot ||
@@ -440,9 +502,9 @@ export default function BusinessPricingAuditPanel({
         <div>
           <span>{marketplaceShort} · FBA ONLY</span>
           <h3>找出未設定或高於一般售價的企業價格</h3>
-          <p>同時核對 Business Price 與數量折扣；需要調整時可從商品列直接開啟 Amazon 後台。</p>
+          <p>同時核對 Business Price 與數量折扣；商品列可直接安全預檢，或前往 Amazon 後台。</p>
         </div>
-        <button type="button" className="price-primary-button" onClick={() => void runAudit()} disabled={loading}>
+        <button type="button" className="price-primary-button" onClick={() => void runAudit()} disabled={loading || editLoading}>
           {loading ? "健檢中…" : snapshot ? "重新健檢" : "開始全站 B2B 價格健檢"}
         </button>
       </div>
@@ -451,7 +513,7 @@ export default function BusinessPricingAuditPanel({
         <span>US 一般售價 – USD 1.00</span>
         <span>數量折扣：5 件 5%・10 件 10%・15 件 15%・20 件 20%</span>
       </div>
-      <p className="business-pricing-safety-note">本報表全程唯讀，不會修改 Amazon；需要調整 Business Price 或數量折扣時，請從商品列前往 Amazon 後台。</p>
+      <p className="business-pricing-safety-note">編輯前會重新核對指定 SKU、你帳號的 Amazon 可編輯規則，並執行 Amazon Validation Preview（零寫入）；預設只改 Business Price、完整保留現有階梯折扣。只有你明確選擇時，才會一併更新 1–5 階 percent 折扣；正式送出仍需 Touch ID／Windows Hello。</p>
       {(job && !job.ready ? job.progress.message : progress) && (
         <div className="business-pricing-progress" role="status">
           {job && !job.ready ? job.progress.message : progress}
@@ -552,6 +614,11 @@ export default function BusinessPricingAuditPanel({
                 <div className="business-pricing-row-actions">
                   <button
                     type="button"
+                    onClick={() => void openEditor(row)}
+                    disabled={editLoading || loading}
+                  >{row.status === "missing" ? "設定 B2B 價格" : "調整 B2B 價格"}</button>
+                  <button
+                    type="button"
                     className="business-pricing-seller-central"
                     onClick={() => void openSellerCentralInventory(row.sellerSku)}
                     disabled={!fixedSellerCentralHandoffs}
@@ -564,6 +631,20 @@ export default function BusinessPricingAuditPanel({
         </>
       )}
 
+      {selected && (
+        <BusinessPricingEditor
+          key={`${selected.sellerSku}-${selected.fetchedAt}`}
+          listing={selected}
+          onClose={() => {
+            editorRevisionRef.current += 1;
+            setSelected(null);
+            setEditLoading(false);
+          }}
+          onVerified={applyVerifiedPrice}
+          onError={setError}
+          onBusyChange={setEditLoading}
+        />
+      )}
     </section>
   );
 }

@@ -37,6 +37,7 @@ import {
 import {
   assertListingContentPreparedPreviewBinding,
   assertListingContentUpdateResultBinding,
+  LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
   LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
   type ListingContentMutationsPort,
   type ListingContentPreparedPreview,
@@ -164,6 +165,16 @@ function batchInputValues(input: UpdateListingContentInput): Readonly<{
   ) {
     changedFields.push("bulletPoints");
   }
+  if (!changedFields.includes("bulletPoints")) {
+    const insertAt = changedFields.findIndex((field) =>
+      field === "productDescription" || field === "ingredients"
+    );
+    changedFields.splice(
+      insertAt < 0 ? changedFields.length : insertAt,
+      0,
+      "bulletPoints",
+    );
+  }
   if (previous.productDescription !== requested.productDescription) {
     changedFields.push("productDescription");
   }
@@ -199,15 +210,19 @@ function publicListingIssues(issues: readonly ListingIssue[]): ListingIssue[] {
   }));
 }
 
-function validationOverrideOptions(
+function batchPreviewOptions(
   required: boolean,
 ): ListingContentPreviewOptions {
-  return required
-    ? {
-        validationOverrideAuthority:
-          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
-      }
-    : {};
+  return {
+    ...(required
+      ? {
+          validationOverrideAuthority:
+            LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
+        }
+      : {}),
+    exactBulletReplacementAuthority:
+      LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+  };
 }
 
 function publicUpdateResult(
@@ -904,7 +919,7 @@ export class ListingContentBatchMutations
           this.assertLifecycleCurrent(revision);
           const validation = await this.content.previewOne(
             input,
-            validationOverrideOptions(true),
+            batchPreviewOptions(true),
           );
           this.assertLifecycleCurrent(revision);
           assertListingContentPreparedPreviewBinding(
@@ -912,7 +927,7 @@ export class ListingContentBatchMutations
             input,
             context,
             undefined,
-            validationOverrideOptions(true),
+            batchPreviewOptions(true),
           );
           if (
             validation.status === "INVALID" &&
@@ -1194,7 +1209,7 @@ export class ListingContentBatchMutations
               this.assertLifecycleCurrent(revision);
               const fresh = await this.content.previewOne(
                 change.input,
-                validationOverrideOptions(
+                batchPreviewOptions(
                   change.validationOverrideRequired,
                 ),
               );
@@ -1208,7 +1223,7 @@ export class ListingContentBatchMutations
                   proposalFingerprint: change.proposalFingerprint,
                   status: change.validation.status,
                 },
-                validationOverrideOptions(
+                batchPreviewOptions(
                   change.validationOverrideRequired,
                 ),
               );
@@ -1258,7 +1273,7 @@ export class ListingContentBatchMutations
                 change.validation.evidence,
                 session,
                 change.input.sellerSku,
-                validationOverrideOptions(
+                batchPreviewOptions(
                   change.validationOverrideRequired,
                 ),
               );
@@ -1267,6 +1282,7 @@ export class ListingContentBatchMutations
                 rowResult,
                 change.input,
                 context,
+                batchPreviewOptions(change.validationOverrideRequired),
               );
               rows[index] = {
                 sellerSku: change.input.sellerSku,

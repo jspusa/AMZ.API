@@ -10,6 +10,9 @@ import type {
   ListingContentIdentity,
   ListingContentPatchDescriptor,
 } from "./amazon/listing-content-gateway";
+import {
+  LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+} from "./amazon/listing-content-gateway";
 import type {
   ListingContentField,
   ListingContentFieldCapability,
@@ -83,9 +86,13 @@ export const LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY = Symbol(
   "listing-content-batch-validation-override",
 );
 
+export { LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY };
+
 export type ListingContentPreviewOptions = Readonly<{
   validationOverrideAuthority?:
     typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
+  exactBulletReplacementAuthority?:
+    typeof LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
 }>;
 
 export interface ListingContentMutationsPort {
@@ -157,6 +164,8 @@ interface ListingContentMutationOperations {
       expectedEvidence?: ListingContentPrecommitEvidence;
       validationOverrideAuthority?:
         typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
+      exactBulletReplacementAuthority?:
+        typeof LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
       fence: ListingWriteExecutionFence;
       recordDurableEvidence(
         result: ListingContentDurableResult,
@@ -400,14 +409,44 @@ function changedContentFields(
   return changed;
 }
 
+function exactLanguageBulletReplacement(
+  options: ListingContentPreviewOptions,
+): boolean {
+  return options.exactBulletReplacementAuthority ===
+    LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
+}
+
+function mutationChangedFields(
+  previous: ListingContentValues,
+  requested: ListingContentValues,
+  allowExactLanguageBulletReplacement = false,
+): ListingContentField[] {
+  const changed = changedContentFields(previous, requested);
+  if (
+    allowExactLanguageBulletReplacement &&
+    !changed.includes("bulletPoints")
+  ) {
+    const insertAt = changed.findIndex((field) =>
+      field === "productDescription" || field === "ingredients"
+    );
+    changed.splice(insertAt < 0 ? changed.length : insertAt, 0, "bulletPoints");
+  }
+  return changed;
+}
+
 function exactChangedFields(
   value: unknown,
   previous: ListingContentValues,
   requested: ListingContentValues,
+  allowExactLanguageBulletReplacement = false,
 ): value is readonly ListingContentField[] {
   if (!Array.isArray(value) || !value.length ||
       value.some((field) => !CONTENT_FIELDS.includes(field))) return false;
-  const expected = changedContentFields(previous, requested);
+  const expected = mutationChangedFields(
+    previous,
+    requested,
+    allowExactLanguageBulletReplacement,
+  );
   return value.length === expected.length &&
     value.every((field, index) => field === expected[index]);
 }
@@ -578,6 +617,7 @@ function assertContentEditable(
 function verifyContentChange(
   listing: ListingContentSnapshot,
   input: UpdateListingContentInput,
+  options: ListingContentPreviewOptions = {},
 ): VerifiedContentChange {
   const previous = contentValuesFromSnapshot(listing);
   const expected = normalizeContentValues({
@@ -594,7 +634,11 @@ function verifyContentChange(
       { status: 409, code: "CONTENT_CHANGED" },
     );
   }
-  const changedFields = changedContentFields(previous, requested);
+  const changedFields = mutationChangedFields(
+    previous,
+    requested,
+    exactLanguageBulletReplacement(options),
+  );
   if (!changedFields.length) {
     throw new SpApiError(
       "商品名稱、產品亮點、產品要點、產品敘述與成分都沒有變更。",
@@ -807,7 +851,7 @@ async function prepareContentMutation(
       { status: 422, code: "CONTENT_FIELD_READ_ONLY" },
     );
   }
-  const verified = verifyContentChange(snapshot, input);
+  const verified = verifyContentChange(snapshot, input, options);
   const previewPatch: ListingContentPatchDescriptor = {
     marketplaceId: input.marketplaceId,
     sellerSku: input.sellerSku,
@@ -820,6 +864,12 @@ async function prepareContentMutation(
     previous: structuredClone(verified.previous),
     requested: structuredClone(verified.requested),
     changedFields: [...verified.changedFields],
+    ...(exactLanguageBulletReplacement(options)
+      ? {
+          exactLanguageBulletReplacementAuthority:
+            LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+        }
+      : {}),
     sourceEvidence: observation.sourceEvidence,
     ptdEvidence: observation.ptdEvidence,
   };
@@ -1018,6 +1068,8 @@ function createListingContentMutationOperations(
           {
             validationOverrideAuthority:
               control.validationOverrideAuthority,
+            exactBulletReplacementAuthority:
+              control.exactBulletReplacementAuthority,
           },
         )
       );
@@ -1163,7 +1215,12 @@ export function assertListingContentPreparedPreviewBinding(
       !sameContentValues(previous, expectedPrevious) ||
       !validContentValues(requested) ||
       !sameContentValues(requested, expectedRequested) ||
-      !exactChangedFields(value.changedFields, previous, requested) ||
+      !exactChangedFields(
+        value.changedFields,
+        previous,
+        requested,
+        exactLanguageBulletReplacement(options),
+      ) ||
       !validIsoTimestamp(value.validatedAt) ||
       !exactDurableIssues(value.issues) ||
       !safeNotice(value.notice) ||
@@ -1220,6 +1277,7 @@ export function assertListingContentUpdateResultBinding(
   value: unknown,
   input: UpdateListingContentInput,
   context?: Pick<SpExecutionContext, "marketplaceId" | "mode">,
+  options: ListingContentPreviewOptions = {},
 ): asserts value is ListingContentUpdateResult {
   const previous = isRecord(value) ? value.previous : null;
   const requested = isRecord(value) ? value.requested : null;
@@ -1267,7 +1325,12 @@ export function assertListingContentUpdateResultBinding(
       !sameContentValues(previous, expectedPrevious) ||
       !validContentValues(requested) ||
       !sameContentValues(requested, expectedRequested) ||
-      !exactChangedFields(value.changedFields, previous, requested) ||
+      !exactChangedFields(
+        value.changedFields,
+        previous,
+        requested,
+        exactLanguageBulletReplacement(options),
+      ) ||
       !validIsoTimestamp(value.acceptedAt) ||
       !exactDurableIssues(value.issues) ||
       !safeNotice(value.notice) ||
@@ -1300,7 +1363,35 @@ function assertDurableContentResultBinding(
   }
   const publicValue = publicUpdateResult(value);
   try {
-    assertListingContentUpdateResultBinding(publicValue, input);
+    const previous = normalizeContentValues({
+      title: input.expectedTitle,
+      itemHighlight: input.expectedItemHighlight,
+      bulletPoints: input.expectedBulletPoints,
+      productDescription: input.expectedProductDescription,
+      ingredients: input.expectedIngredients,
+    });
+    const requested = normalizeContentValues(input);
+    const options: ListingContentPreviewOptions = exactChangedFields(
+        expectedEvidence.changedFields,
+        previous,
+        requested,
+        true,
+      ) && !exactChangedFields(
+        expectedEvidence.changedFields,
+        previous,
+        requested,
+      )
+      ? {
+          exactBulletReplacementAuthority:
+            LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+        }
+      : {};
+    assertListingContentUpdateResultBinding(
+      publicValue,
+      input,
+      undefined,
+      options,
+    );
   } catch {
     throw new SpApiError(
       "Amazon 商品內容防重送結果與這次要求不一致；請先回查 Amazon，勿重送。",
@@ -1338,10 +1429,18 @@ function exactWriteEvidence(
   if (!validPrecommitEvidence(precommit) ||
       !validContentValues(value.previous) ||
       !validContentValues(value.requested) ||
-      !exactChangedFields(
-        precommit.changedFields,
-        value.previous,
-        value.requested,
+      !(
+        exactChangedFields(
+          precommit.changedFields,
+          value.previous,
+          value.requested,
+        ) ||
+        exactChangedFields(
+          precommit.changedFields,
+          value.previous,
+          value.requested,
+          true,
+        )
       ) ||
       precommit.expectedOldHash !== canonicalSha256(value.previous) ||
       !validSha256(value.proposalFingerprint)) {
@@ -1458,10 +1557,18 @@ function durableEnvelopeMatchesEvidence(
     sameContentValues(response.previous, evidence.previous) &&
     validContentValues(response.requested) &&
     sameContentValues(response.requested, evidence.requested) &&
-    exactChangedFields(
-      response.changedFields,
-      evidence.previous,
-      evidence.requested,
+    (
+      exactChangedFields(
+        response.changedFields,
+        evidence.previous,
+        evidence.requested,
+      ) ||
+      exactChangedFields(
+        response.changedFields,
+        evidence.previous,
+        evidence.requested,
+        true,
+      )
     ) &&
     JSON.stringify(response.changedFields) ===
       JSON.stringify(evidence.changedFields);
@@ -1619,6 +1726,8 @@ export class ListingContentMutations implements ListingContentMutationsPort {
             expectedEvidence,
             validationOverrideAuthority:
               options.validationOverrideAuthority,
+            exactBulletReplacementAuthority:
+              options.exactBulletReplacementAuthority,
             fence: { assertCurrent: control.assertCurrent },
             recordDurableEvidence:
               control.recordDurableEvidence ?? control.recordAccepted,

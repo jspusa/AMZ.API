@@ -16,6 +16,9 @@ import type {
   ListingContentValidationReceipt,
   ListingContentCommitReceipt,
 } from "./listing-content-gateway";
+import {
+  LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+} from "./listing-content-gateway";
 import type { ListingContentReadProduction } from
   "./listing-content-read-production";
 import type {
@@ -248,6 +251,20 @@ function exactListingContentChanges(
   const expected = LISTING_CONTENT_FIELDS.filter((field) =>
     !sameListingContentField(field, patch.previous, patch.requested)
   );
+  if (
+    patch.exactLanguageBulletReplacementAuthority ===
+      LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY &&
+    !expected.includes("bulletPoints")
+  ) {
+    const insertAt = expected.findIndex((field) =>
+      field === "productDescription" || field === "ingredients"
+    );
+    expected.splice(
+      insertAt < 0 ? expected.length : insertAt,
+      0,
+      "bulletPoints",
+    );
+  }
   return expected.length > 0 &&
     expected.length === patch.changedFields.length &&
     expected.every((field, index) => patch.changedFields[index] === field);
@@ -335,11 +352,13 @@ function listingContentGatewayPatchBody(
       (item) => item.language_tag === patch.languageTag,
     );
     if (
-      attributeName === "bullet_point" &&
+      field === "bulletPoints" &&
+      patch.exactLanguageBulletReplacementAuthority !==
+        LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY &&
       selectedLanguageValues.length > 5
     ) {
       throw new SpApiError(
-        "此語系目前有超過 5 個賣點，簡易編輯器不會自動刪除多出的內容；請先到 Seller Central 檢查。",
+        "此語系目前有超過 5 個賣點，簡易編輯器不會猜測要刪除哪些舊內容；請使用全站文案 Excel 批次更新，或先到 Seller Central 整理。",
         { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
       );
     }
