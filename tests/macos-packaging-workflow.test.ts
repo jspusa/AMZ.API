@@ -6,6 +6,20 @@ function normalizeWorkflowText(source: string): string {
 }
 
 describe("macOS unsigned packaging workflow", () => {
+  it("removes inherited Finder metadata from only the freshly packed Mac app", async () => {
+    const afterPack = await readFile(
+      new URL("../scripts/after-pack.mjs", import.meta.url),
+      "utf8",
+    );
+
+    expect(afterPack).toContain('execFileAsync("/usr/bin/xattr"');
+    expect(afterPack).toContain('["-cr", appBundle]');
+    expect(afterPack).toContain(
+      'context.electronPlatformName === "darwin"',
+    );
+    expect(afterPack).not.toContain("exec(");
+  });
+
   it("bounds the exact packaged app process-tree shutdown before DMG creation", async () => {
     const workflowSource = await readFile(
       new URL("../.github/workflows/mac-dev.yml", import.meta.url),

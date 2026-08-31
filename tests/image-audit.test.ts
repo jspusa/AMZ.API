@@ -202,6 +202,9 @@ describe("FBA image audit parsing", () => {
     expect(markup).toContain("目前 5 張 · 還差 1 張達到 6 張");
     expect(markup).toContain("匯出 Excel");
     expect(markup).toContain("開啟圖片工作台");
+    expect(markup).toContain("顯示詳細說明");
+    expect(markup).toContain("圖片門檻、資料來源與人工判斷範圍");
+    expect(markup).not.toContain('audit-details-disclosure" open=""');
   });
 
   it("opens cached audit results inside the existing image workspace", () => {

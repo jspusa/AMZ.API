@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import UnboundVariationAuditPanel from "../src/renderer/src/components/unbound-variation-audit-panel";
 import { parseUnboundVariationAuditSnapshot } from "../src/renderer/src/unbound-variation-audit";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
@@ -127,6 +130,19 @@ describe("unbound variation audit renderer parser", () => {
       ...snapshot(),
       exportId: " audit-export-0001",
     }, MARKETPLACE_ID)).toThrow(/Excel 匯出 ID 格式無法精確辨識/);
+  });
+
+  it("keeps relationship rules in one collapsed public disclosure", () => {
+    const markup = renderToStaticMarkup(createElement(UnboundVariationAuditPanel, {
+      marketplaceId: MARKETPLACE_ID,
+      marketplaceShort: "US",
+      onOpenSku: () => undefined,
+    }));
+
+    expect(markup).toContain("顯示詳細說明");
+    expect(markup).toContain("relationship 判定、未完成隔離與唯讀範圍");
+    expect(markup).toContain("Amazon 唯讀＋Fail closed");
+    expect(markup).not.toContain('audit-details-disclosure" open=""');
   });
 
   it("uses the dedicated read-only lifecycle and account-scoped Excel export", () => {

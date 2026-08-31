@@ -8,6 +8,7 @@ import { NATIVE_CONFIRMATION_REASON_MAX_LENGTH } from
   "../shared/native-confirmation-limits";
 import type {
   BusinessPricePrecommitEvidence,
+  BusinessPriceWriteStatus,
   BusinessPriceUpdateResult,
   BusinessPriceValidationResult,
   BusinessPricingListingSnapshot,
@@ -54,6 +55,7 @@ import {
 import { invalid, json, routeError } from "./route-response";
 import {
   MainWriteGateError,
+  type MainWriteGateInspection,
   type MainWriteGatePort,
   type WriteBinding,
 } from "./write-gate";
@@ -91,14 +93,6 @@ interface BusinessPricingMutationOperations {
       recordDurableEvidence(result: MinimumPriceDurableResult): Promise<void>;
     }>,
   ): Promise<MinimumPriceUpdateResult>;
-  commitAfterMinimumPrice(
-    input: UpdateBusinessPriceInput,
-    control: Readonly<{
-      expectedEvidence: BusinessPriceValidationResult;
-      fence: ListingWriteExecutionFence;
-      recordDurableEvidence(result: BusinessPriceDurableResult): Promise<void>;
-    }>,
-  ): Promise<BusinessPriceUpdateResult>;
   minimumPriceReadbackDecision(
     result: MinimumPriceUpdateResult,
     snapshot: BusinessPricingListingSnapshot,
@@ -962,151 +956,6 @@ async function prepareBusinessPriceMutation(
   return { listing, patch, minimumPricePatch, verified, issues, evidence };
 }
 
-async function preparePostMinimumBusinessPriceMutation(
-  gateway: BusinessPricingGateway,
-  input: UpdateBusinessPriceInput,
-  expected: BusinessPriceValidationResult,
-): Promise<PreparedBusinessPriceMutation> {
-  if (
-    expected.minimumPriceChange !== "lower" ||
-    !expected.previousMinimumPrice ||
-    !expected.requestedMinimumPrice ||
-    !expected.lowestTierUnitPrice ||
-    !expected.minimumPriceProtectedHash ||
-    !expected.minimumPriceCanonicalPatchHash ||
-    expected.businessPriceValidation !== "final-state-validated"
-  ) {
-    throw new SpApiError(
-      "最低價完成後的 B2B 寫入缺少原始預檢證據。",
-      { status: 409, code: "PREVIEW_CHANGED" },
-    );
-  }
-  const listing = await gateway.read(input, "mutation");
-  assertCanonicalSnapshot(gateway, listing, input);
-  if (
-    listing.minimumPricePresence !== "canonical" ||
-    !sameMoney(expected.requestedMinimumPrice, listing.minimumPrice) ||
-    gateway.minimumPriceProtectedHash(listing) !==
-      expected.minimumPriceProtectedHash
-  ) {
-    throw new SpApiError(
-      "最低允許售價雖已送出，但回查後的目標值或其他 offer 證據不一致；B2B 尚未寫入。",
-      { status: 409, code: "BUSINESS_PRICE_PARTIAL_UPDATE" },
-    );
-  }
-  const verifiedCurrent = verifyBusinessPriceChange(listing, {
-    ...input,
-    expectedMinimumPrice: expected.requestedMinimumPrice.amount,
-  });
-  if (
-    verifiedCurrent.minimumPriceChange !== "preserve" ||
-    !sameMoney(verifiedCurrent.standardPrice, expected.standardPrice) ||
-    !sameOptionalMoney(
-      verifiedCurrent.previousBusinessPrice,
-      expected.previousBusinessPrice,
-    ) ||
-    !sameMoney(
-      verifiedCurrent.requestedBusinessPrice,
-      expected.requestedBusinessPrice,
-    ) ||
-    !sameOptionalMoney(
-      verifiedCurrent.lowestTierUnitPrice,
-      expected.lowestTierUnitPrice,
-    ) ||
-    verifiedCurrent.previousQuantityDiscountPlanHash !==
-      expected.previousQuantityDiscountPlanHash ||
-    !sameQuantityDiscountPlan(
-      verifiedCurrent.previousQuantityDiscountPlan,
-      expected.previousQuantityDiscountPlan,
-    ) ||
-    !sameQuantityDiscountPlan(
-      verifiedCurrent.requestedQuantityDiscountPlan,
-      expected.requestedQuantityDiscountPlan,
-    ) ||
-    verifiedCurrent.quantityDiscountPlanChange !==
-      expected.quantityDiscountPlanChange ||
-    verifiedCurrent.schemaChecksum !== expected.schemaChecksum
-  ) {
-    throw new SpApiError(
-      "最低價完成後，B2B 價格、階梯、PTD 或原 offer 已改變；B2B 尚未寫入。",
-      { status: 409, code: "BUSINESS_PRICE_PARTIAL_UPDATE" },
-    );
-  }
-  const patch = patchDescriptor(listing, verifiedCurrent);
-  if (
-    patch.kind === "combined" &&
-    !gateway.quantityDiscountPlanSupported({
-      marketplaceId: patch.marketplaceId,
-      productType: patch.productType,
-      schemaChecksum: verifiedCurrent.schemaChecksum,
-      plan: patch.quantityDiscountPlan,
-    })
-  ) {
-    throw new SpApiError(
-      "最低價已完成並回查，但 exact B2B PTD 已不再接受這組階梯；B2B 尚未寫入。",
-      { status: 422, code: "BUSINESS_PRICE_PARTIAL_UPDATE" },
-    );
-  }
-  let issues: ListingIssue[] = [];
-  if (listing.mode === "live") {
-    issues = validatedPreviewIssues(
-      await gateway.validationPreview(patch),
-      listing,
-      input,
-      "B2B 價格",
-    );
-    const shownIssueKeys = new Set(expected.issues.map((issue) =>
-      JSON.stringify(canonicalJsonValue(issue))
-    ));
-    const newIssue = issues.find((issue) =>
-      !shownIssueKeys.has(JSON.stringify(canonicalJsonValue(issue)))
-    );
-    if (newIssue) {
-      throw new SpApiError(
-        `最低價已完成並回查，但 B2B 正式寫入前出現新的 Amazon ${newIssue.severity}：${newIssue.message}；B2B 尚未寫入。`,
-        {
-          status: 409,
-          code: "BUSINESS_PRICE_PARTIAL_UPDATE",
-          issues,
-          operation: "patchListingsItemPreview",
-        },
-      );
-    }
-  }
-  const verified: VerifiedBusinessPriceChange = {
-    ...verifiedCurrent,
-    previousMinimumPrice: structuredClone(expected.previousMinimumPrice),
-    requestedMinimumPrice: structuredClone(expected.requestedMinimumPrice),
-    lowestTierUnitPrice: structuredClone(expected.lowestTierUnitPrice),
-    minimumPriceChange: "lower",
-  };
-  const currentEvidence = precommitEvidence(listing, patch, null, issues);
-  if (
-    currentEvidence.canonicalPatchHash !== expected.canonicalPatchHash ||
-    currentEvidence.fbaEvidenceHash !== expected.fbaEvidenceHash
-  ) {
-    throw new SpApiError(
-      "最低價完成後的 B2B patch 或 FBA 證據已改變；B2B 尚未寫入。",
-      { status: 409, code: "BUSINESS_PRICE_PARTIAL_UPDATE" },
-    );
-  }
-  const evidence: BusinessPricePrecommitEvidence = {
-    ...currentEvidence,
-    minimumPriceProtectedHash: expected.minimumPriceProtectedHash,
-    minimumPriceCanonicalPatchHash:
-      expected.minimumPriceCanonicalPatchHash,
-    businessPriceValidation: "validated",
-  };
-  return {
-    listing,
-    patch,
-    minimumPricePatch: null,
-    verified,
-    issues,
-    evidence,
-  };
-}
-
 function minimumPriceWriteEvidence(
   prepared: PreparedBusinessPriceMutation,
 ): MinimumPriceWriteEvidence {
@@ -1712,6 +1561,7 @@ function durableEnvelopeMatchesWriteEvidence(
 
 function validDurableStatusMetadata(
   response: Record<string, unknown>,
+  allowReconciledDispatch = false,
 ): boolean {
   if (response.status === "DISPATCHED") {
     return response.submissionId === null &&
@@ -1719,8 +1569,15 @@ function validDurableStatusMetadata(
       Array.isArray(response.issues) &&
       response.issues.length === 0;
   }
-  return response.status === "ACCEPTED" &&
-    typeof response.submissionId === "string" &&
+  if (response.status !== "ACCEPTED") return false;
+  if (
+    allowReconciledDispatch &&
+    response.submissionId === null &&
+    response.requestId === null &&
+    Array.isArray(response.issues) &&
+    response.issues.length === 0
+  ) return true;
+  return typeof response.submissionId === "string" &&
     safeOptionalIdentifier(response.submissionId) &&
     safeOptionalIdentifier(response.requestId) &&
     Array.isArray(response.issues) &&
@@ -2015,8 +1872,228 @@ export function reconcileBusinessPriceWrite(
 
 function publicBusinessPriceResult<T>(value: T): T {
   if (!isRecord(value)) return value;
-  const { _writeEvidence: _internal, ...publicValue } = value;
+  const {
+    _writeEvidence: _businessPriceInternal,
+    _minimumWriteEvidence: _minimumPriceInternal,
+    ...publicValue
+  } = value;
   return publicValue as T;
+}
+
+function processingBusinessPriceStatus(
+  result: BusinessPriceUpdateResult,
+): BusinessPriceWriteStatus {
+  return {
+    mode: "live",
+    status: "PROCESSING",
+    stage: "business_price",
+    marketplaceId: result.marketplaceId,
+    sellerSku: result.sellerSku,
+    asin: result.asin,
+    productType: result.productType,
+    acceptedAt: result.acceptedAt,
+    verifiedAt: null,
+    requestId: result.requestId,
+    submissionId: result.submissionId,
+    verified: false,
+    authoritative: false,
+    canResend: false,
+    businessPriceSubmitted: true,
+    previousBusinessPrice: structuredClone(result.previousBusinessPrice),
+    requestedBusinessPrice: structuredClone(result.requestedBusinessPrice),
+    previousMinimumPrice: structuredClone(result.previousMinimumPrice),
+    requestedMinimumPrice: structuredClone(result.requestedMinimumPrice),
+    lowestTierUnitPrice: structuredClone(result.lowestTierUnitPrice),
+    previousQuantityDiscountPlan: structuredClone(
+      result.previousQuantityDiscountPlan,
+    ),
+    requestedQuantityDiscountPlan: structuredClone(
+      result.requestedQuantityDiscountPlan,
+    ),
+    quantityDiscountPlanChange: result.quantityDiscountPlanChange,
+    notice:
+      "Amazon 已接受 B2B 價格更新，正在同步。這不是失敗，也尚未代表前台已生效；系統不會自動重送。",
+  };
+}
+
+function processingMinimumPriceStatus(
+  result: MinimumPriceUpdateResult,
+  expected?: BusinessPriceValidationResult,
+): BusinessPriceWriteStatus {
+  return {
+    mode: "live",
+    status: "PROCESSING",
+    stage: "minimum_price",
+    marketplaceId: result.marketplaceId,
+    sellerSku: result.sellerSku,
+    asin: result.asin,
+    productType: result.productType,
+    acceptedAt: result.acceptedAt,
+    verifiedAt: null,
+    requestId: result.requestId,
+    submissionId: result.submissionId,
+    verified: false,
+    authoritative: false,
+    canResend: false,
+    businessPriceSubmitted: false,
+    previousBusinessPrice: structuredClone(result.previousBusinessPrice),
+    requestedBusinessPrice: expected
+      ? structuredClone(expected.requestedBusinessPrice)
+      : null,
+    previousMinimumPrice: structuredClone(result.previousMinimumPrice),
+    requestedMinimumPrice: structuredClone(result.requestedMinimumPrice),
+    lowestTierUnitPrice: structuredClone(result.lowestTierUnitPrice),
+    previousQuantityDiscountPlan: structuredClone(
+      result.previousQuantityDiscountPlan,
+    ),
+    requestedQuantityDiscountPlan: expected
+      ? structuredClone(expected.requestedQuantityDiscountPlan)
+      : null,
+    quantityDiscountPlanChange:
+      expected?.quantityDiscountPlanChange ?? null,
+    notice:
+      "Amazon 已接受最低價更新，正在同步；B2B 價格與階梯尚未送出。最低價確認後請重新預檢，系統不會背景續送或重送。",
+  };
+}
+
+function exactVerifiedLifecycle(
+  value: unknown,
+  acceptedAt: string,
+): string | null {
+  if (!isRecord(value) ||
+      value.state !== "verified" ||
+      value.verified !== true ||
+      value.authoritative !== true ||
+      value.acceptedAt !== acceptedAt ||
+      !validIsoTimestamp(value.verifiedAt) ||
+      !Number.isSafeInteger(value.attempts) ||
+      Number(value.attempts) < 0 ||
+      Number(value.attempts) > 100) {
+    return null;
+  }
+  return value.verifiedAt;
+}
+
+function businessPriceWriteStatusFromInspection(
+  inspection: MainWriteGateInspection,
+): BusinessPriceWriteStatus | null {
+  if (inspection.operationType !== "business_price" ||
+      !isRecord(inspection.response)) return null;
+  const response = inspection.response;
+  const { writeLifecycle, ...durableResponse } = response;
+  const verifiedAt = inspection.state === "completed" &&
+      typeof response.acceptedAt === "string"
+    ? exactVerifiedLifecycle(writeLifecycle, response.acceptedAt)
+    : null;
+  if (!hasExactKeys(durableResponse, BUSINESS_PRICE_DURABLE_RESULT_KEYS) ||
+      response.status !== "ACCEPTED" ||
+      response.mode !== "live" ||
+      !exactWriteEvidence(response._writeEvidence) ||
+      !durableEnvelopeMatchesWriteEvidence(
+        durableResponse,
+        response._writeEvidence,
+      ) ||
+      !validIsoTimestamp(response.acceptedAt) ||
+      !safeNotice(response.notice) ||
+      !validDurableStatusMetadata(response, verifiedAt !== null)) {
+    return null;
+  }
+  const processing = processingBusinessPriceStatus(
+    response as unknown as BusinessPriceUpdateResult,
+  );
+  if (inspection.state !== "completed") return processing;
+  if (!verifiedAt) return null;
+  return {
+    ...processing,
+    status: "VERIFIED",
+    verifiedAt,
+    verified: true,
+    authoritative: true,
+    notice:
+      "Amazon Business 價格已由 Notebook Key 唯讀回查確認；沒有重新送出 PATCH。",
+  };
+}
+
+function minimumPriceWriteStatusFromInspection(
+  inspection: MainWriteGateInspection,
+): BusinessPriceWriteStatus | null {
+  if (inspection.operationType !== "price" ||
+      !isRecord(inspection.response)) return null;
+  const response = inspection.response;
+  const { writeLifecycle, ...durableResponse } = response;
+  const verifiedAt = inspection.state === "completed" &&
+      typeof response.acceptedAt === "string"
+    ? exactVerifiedLifecycle(writeLifecycle, response.acceptedAt)
+    : null;
+  if (!hasExactKeys(durableResponse, MINIMUM_PRICE_DURABLE_RESULT_KEYS) ||
+      response.status !== "ACCEPTED" ||
+      response.mode !== "live" ||
+      !exactMinimumPriceWriteEvidence(response._minimumWriteEvidence) ||
+      !durableMinimumEnvelopeMatchesEvidence(
+        durableResponse,
+        response._minimumWriteEvidence,
+      ) ||
+      !validIsoTimestamp(response.acceptedAt) ||
+      !safeNotice(response.notice) ||
+      !validDurableStatusMetadata(response, verifiedAt !== null)) {
+    return null;
+  }
+  const processing = processingMinimumPriceStatus(
+    response as unknown as MinimumPriceUpdateResult,
+  );
+  if (inspection.state !== "completed") return processing;
+  if (!verifiedAt) return null;
+  return {
+    ...processing,
+    status: "VERIFIED",
+    verifiedAt,
+    verified: true,
+    authoritative: true,
+    notice:
+      "最低價已由 Notebook Key 唯讀回查確認；B2B 價格與階梯尚未送出，請重新預檢後再確認。",
+  };
+}
+
+function writeStatusFromInspection(
+  inspection: MainWriteGateInspection,
+): BusinessPriceWriteStatus | null {
+  return inspection.operationType === "business_price"
+    ? businessPriceWriteStatusFromInspection(inspection)
+    : minimumPriceWriteStatusFromInspection(inspection);
+}
+
+function latestWriteStatusProjection(
+  inspection: MainWriteGateInspection,
+): Readonly<{ writeStatus: BusinessPriceWriteStatus | null }> | null {
+  try {
+    const writeStatus = writeStatusFromInspection(inspection);
+    if (writeStatus) return { writeStatus };
+    return inspection.state === "completed" ? null : { writeStatus: null };
+  } catch {
+    return inspection.state === "completed" ? null : { writeStatus: null };
+  }
+}
+
+function writeStatusStillMatchesCanonical(
+  status: BusinessPriceWriteStatus,
+  snapshot: BusinessPricingListingSnapshot,
+): boolean {
+  if (status.status === "PROCESSING") return true;
+  if (status.stage === "minimum_price") {
+    return snapshot.minimumPricePresence === "canonical" &&
+      sameMoney(status.requestedMinimumPrice, snapshot.minimumPrice);
+  }
+  return snapshot.businessOfferPresence === "present" &&
+    sameMoney(status.requestedBusinessPrice, snapshot.businessPrice) &&
+    (status.requestedMinimumPrice === null ||
+      (snapshot.minimumPricePresence === "canonical" &&
+        sameMoney(status.requestedMinimumPrice, snapshot.minimumPrice))) &&
+    (status.quantityDiscountPlanChange !== "replace" ||
+      (snapshot.quantityDiscountPlanPresence === "canonical" &&
+        sameQuantityDiscountPlan(
+          status.requestedQuantityDiscountPlan,
+          snapshot.quantityDiscountPlan,
+        )));
 }
 
 type AcceptedListingSubmission = Readonly<{
@@ -2245,16 +2322,6 @@ function createBusinessPricingMutationOperations(
           "Amazon 已接受最低允許售價更新；完成唯讀回查前不會送出 B2B 價格。",
       }) as MinimumPriceAcceptedDurableResult;
     },
-    commitAfterMinimumPrice: async (input, control) => {
-      const prepared = await prepareCommit(() =>
-        preparePostMinimumBusinessPriceMutation(
-          gateway,
-          input,
-          control.expectedEvidence,
-        )
-      );
-      return commitPreparedBusinessPrice(gateway, prepared, control);
-    },
     minimumPriceReadbackDecision: (result, snapshot) =>
       minimumPriceReadbackDecision(gateway, result, snapshot),
   };
@@ -2309,7 +2376,22 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
             ? reconcileMinimumPriceWrite(response, canonical)
             : reconcileBusinessPriceWrite(response, canonical),
       });
-      return json(snapshot);
+      const writeStatuses = await this.writeGate.inspect?.({
+        context,
+        marketplaceId,
+        sellerSku,
+        operations: ["price", "business_price"],
+        project: latestWriteStatusProjection,
+      }) ?? [];
+      await this.context.assertCurrent(context);
+      const latestWriteStatus = writeStatuses[0]?.writeStatus ?? null;
+      return json({
+        ...snapshot,
+        writeStatus: latestWriteStatus &&
+            writeStatusStillMatchesCanonical(latestWriteStatus, snapshot)
+          ? latestWriteStatus
+          : null,
+      });
     } catch (error) {
       return routeError(
         error,
@@ -2496,7 +2578,7 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
       evidence.minimumPriceProtectedHash,
     );
     const businessPriceIntent = {
-      intentId: hasMinimumPriceIntent ? "business-price" : "primary",
+      intentId: "primary",
       operation: duplicateRepair
         ? "business_price_repair" as const
         : "business_price" as const,
@@ -2518,7 +2600,7 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
             evidence.minimumPriceProtectedHash,
             evidence.minimumPriceCanonicalPatchHash,
           ]),
-        }, businessPriceIntent] as const
+        }] as const
       : [businessPriceIntent] as const;
     return {
       family: "business-price",
@@ -2580,7 +2662,7 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
     const minimumPriceSummary = evidence.minimumPriceChange === "lower" &&
         evidence.previousMinimumPrice && evidence.requestedMinimumPrice &&
         evidence.lowestTierUnitPrice
-      ? `${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜最低價 ${evidence.previousMinimumPrice.amount} → ${evidence.requestedMinimumPrice.amount} ${marketplace.currency}（ALL；影響一般售價／自動定價）｜最低階單價 ${evidence.lowestTierUnitPrice.amount} ${marketplace.currency}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${marketplace.currency}`
+      ? `確認只調整最低價｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜最低價 ${evidence.previousMinimumPrice.amount} → ${evidence.requestedMinimumPrice.amount} ${marketplace.currency}（ALL；影響一般售價／自動定價）｜最低階單價 ${evidence.lowestTierUnitPrice.amount} ${marketplace.currency}｜B2B 價格與數量折扣本次尚未送出`
       : "";
     if (
       minimumPriceSummary.length > NATIVE_CONFIRMATION_REASON_MAX_LENGTH
@@ -2588,15 +2670,16 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
       return json({
         code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
         message:
-          "最低價與 B2B 的高風險原生確認摘要超過 Notebook Key 可完整顯示的上限，App 無法安全送出；請改到 Seller Central 人工處理。Amazon 寫入數為 0。",
+          "最低價的高風險原生確認摘要超過 Notebook Key 可完整顯示的上限，App 無法安全送出；請改到 Seller Central 人工處理。Amazon 寫入數為 0。",
         sellerSkus: [input.sellerSku],
         writeCount: 0,
       }, 422);
     }
     const approvalReason = minimumPriceSummary
-      ? `${minimumPriceSummary}｜一般售價維持 ${input.expectedStandardPrice}｜數量折扣 ${quantityDiscountSummary}`
+      ? minimumPriceSummary
       : `確認 B2B 調價｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜B2B ${input.expectedBusinessPrice ?? "未設定"} → ${input.newBusinessPrice} ${marketplace.currency}｜一般售價維持 ${input.expectedStandardPrice}｜數量折扣 ${quantityDiscountSummary}`;
-    let minimumPriceVerified = false;
+    let acceptedMinimumPrice: MinimumPriceUpdateResult | null = null;
+    let acceptedBusinessPrice: BusinessPriceUpdateResult | null = null;
     try {
       const result = await this.writeGate.execute({
         binding: this.binding(input, evidence, context),
@@ -2607,12 +2690,19 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
               intentId: "primary",
               execute: (control) =>
                 commitWithCanonicalReadback({
-                  commit: () => this.operations.commit(input, {
-                    expectedEvidence: evidence,
-                    fence: { assertCurrent: control.assertCurrent },
-                    recordDurableEvidence:
-                      control.recordDurableEvidence ?? control.recordAccepted,
-                  }),
+                  commit: async () => {
+                    const accepted = await this.operations.commit(input, {
+                      expectedEvidence: evidence,
+                      fence: { assertCurrent: control.assertCurrent },
+                      recordDurableEvidence:
+                        control.recordDurableEvidence ?? control.recordAccepted,
+                    });
+                    if (accepted.mode === "live" &&
+                        accepted.status === "ACCEPTED") {
+                      acceptedBusinessPrice = accepted;
+                    }
+                    return accepted;
+                  },
                   onAccepted: control.recordAccepted,
                   assertCurrent: control.assertCurrent,
                   read: () => this.operations.read({
@@ -2620,20 +2710,32 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
                     sellerSku: input.sellerSku,
                   }),
                   decide: businessPriceReadbackDecision,
+                  delaysMs: [],
                 }),
             });
           }
           try {
-            await session.attempt({
+            return await session.attempt({
               intentId: "minimum-price",
               execute: (control) =>
                 commitWithCanonicalReadback({
-                  commit: () => this.operations.commitMinimumPrice(input, {
-                    expectedEvidence: evidence,
-                    fence: { assertCurrent: control.assertCurrent },
-                    recordDurableEvidence:
-                      control.recordDurableEvidence ?? control.recordAccepted,
-                  }),
+                  commit: async () => {
+                    const accepted = await this.operations.commitMinimumPrice(
+                      input,
+                      {
+                        expectedEvidence: evidence,
+                        fence: { assertCurrent: control.assertCurrent },
+                        recordDurableEvidence:
+                          control.recordDurableEvidence ??
+                            control.recordAccepted,
+                      },
+                    );
+                    if (accepted.mode === "live" &&
+                        accepted.status === "ACCEPTED") {
+                      acceptedMinimumPrice = accepted;
+                    }
+                    return accepted;
+                  },
                   onAccepted: control.recordAccepted,
                   assertCurrent: control.assertCurrent,
                   read: () => this.operations.read({
@@ -2641,9 +2743,9 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
                     sellerSku: input.sellerSku,
                   }),
                   decide: this.operations.minimumPriceReadbackDecision,
+                  delaysMs: [],
                 }),
             });
-            minimumPriceVerified = true;
           } catch (error) {
             if (error instanceof SpApiError &&
                 error.code === "UPDATE_STATUS_UNKNOWN") {
@@ -2662,103 +2764,29 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
             }
             throw error;
           }
-          try {
-            return await session.attempt({
-              intentId: "business-price",
-              execute: (control) =>
-                commitWithCanonicalReadback({
-                  commit: () => this.operations.commitAfterMinimumPrice(
-                    input,
-                    {
-                      expectedEvidence: evidence,
-                      fence: { assertCurrent: control.assertCurrent },
-                      recordDurableEvidence:
-                        control.recordDurableEvidence ?? control.recordAccepted,
-                    },
-                  ),
-                  onAccepted: control.recordAccepted,
-                  assertCurrent: control.assertCurrent,
-                  read: () => this.operations.read({
-                    marketplaceId: input.marketplaceId,
-                    sellerSku: input.sellerSku,
-                  }),
-                  decide: businessPriceReadbackDecision,
-                }),
-            });
-          } catch (error) {
-            const oldAmount = evidence.previousMinimumPrice?.amount;
-            const newAmount = evidence.requestedMinimumPrice?.amount;
-            if (error instanceof SpApiError &&
-                error.code === "UPDATE_STATUS_UNKNOWN") {
-              throw new SpApiError(
-                `最低價已從 ${oldAmount} 降至 ${newAmount} ${marketplace.currency} 並完成回查；B2B 價格與階梯折扣的寫入結果尚未確認。系統已禁止自動重送，請先重新讀取 Amazon。`,
-                {
-                  status: error.status,
-                  code: error.code,
-                  requestId: error.requestId,
-                  retryAfter: error.retryAfter,
-                  issues: error.issues,
-                  operation: error.operation,
-                  upstreamCode: error.upstreamCode,
-                },
-              );
-            }
-            throw new SpApiError(
-              `最低價已從 ${oldAmount} 降至 ${newAmount} ${marketplace.currency} 並完成回查，但 B2B 價格與階梯折扣尚未寫入。請重新讀取 Amazon 後再預檢；系統不會自動重送。${error instanceof Error ? `（${error.message}）` : ""}`,
-              {
-                status: 409,
-                code: "BUSINESS_PRICE_PARTIAL_UPDATE",
-                requestId: error instanceof SpApiError
-                  ? error.requestId
-                  : null,
-                issues: error instanceof SpApiError ? error.issues : [],
-                operation: error instanceof SpApiError
-                  ? error.operation
-                  : null,
-              },
-            );
-          }
         },
       });
       return json(publicBusinessPriceResult(result));
     } catch (error) {
-      const response = writeError(
+      if (error instanceof SpApiError &&
+          error.code === "UPDATE_STATUS_UNKNOWN") {
+        if (acceptedBusinessPrice) {
+          return json(
+            processingBusinessPriceStatus(acceptedBusinessPrice),
+            202,
+          );
+        }
+        if (acceptedMinimumPrice) {
+          return json(
+            processingMinimumPriceStatus(acceptedMinimumPrice, evidence),
+            202,
+          );
+        }
+      }
+      return writeError(
         error,
         "送出 Amazon Business 價格更新時發生未預期的錯誤。",
       );
-      if (
-        minimumPriceVerified &&
-        evidence.previousMinimumPrice &&
-        evidence.requestedMinimumPrice &&
-        evidence.lowestTierUnitPrice &&
-        response.body.kind === "json" &&
-        isRecord(response.body.value) &&
-        (response.body.value.code === "BUSINESS_PRICE_PARTIAL_UPDATE" ||
-          response.body.value.code === "UPDATE_STATUS_UNKNOWN")
-      ) {
-        return {
-          ...response,
-          body: {
-            kind: "json",
-            value: {
-              ...response.body.value,
-              minimumPriceUpdate: {
-                status: "verified",
-                previousMinimumPrice: structuredClone(
-                  evidence.previousMinimumPrice,
-                ),
-                requestedMinimumPrice: structuredClone(
-                  evidence.requestedMinimumPrice,
-                ),
-                lowestTierUnitPrice: structuredClone(
-                  evidence.lowestTierUnitPrice,
-                ),
-              },
-            },
-          },
-        };
-      }
-      return response;
     }
   }
 }

@@ -659,6 +659,118 @@
   scroll-margin-top: 132px;
 }
 
+/* One quiet, keyboard-native disclosure keeps audit rules available without
+   making every drawer start with a wall of explanatory text. */
+.audit-details-disclosure {
+  margin: 0;
+  border-color: #e3e3e7;
+  background: #fafafd;
+}
+
+.content-audit-panel > .audit-details-disclosure,
+.image-audit-panel > .audit-details-disclosure,
+.subscription-audit-panel > .audit-details-disclosure {
+  margin-bottom: 14px;
+}
+
+.audit-details-disclosure > summary {
+  min-height: 52px;
+  padding: 10px 13px;
+}
+
+.audit-details-disclosure > summary:focus-visible {
+  outline: 3px solid rgba(0, 113, 227, 0.22);
+  outline-offset: -3px;
+}
+
+.audit-details-body {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+}
+
+.audit-details-body .automation-summary,
+.audit-details-body .price-intro,
+.audit-details-body .content-export-note,
+.audit-details-body .subscription-history-boundary,
+.audit-details-body .ads-coverage-rule {
+  margin: 0;
+}
+
+.audit-details-body .price-intro {
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.audit-details-body .content-export-note,
+.audit-details-body .subscription-history-boundary,
+.audit-details-body .ads-coverage-rule {
+  border-color: #e5e5e8;
+  background: #fff;
+  color: #55555b;
+}
+
+/* Attention-only and full-template workbooks intentionally use different
+   semantic colors so their scopes cannot be mistaken for one another. */
+.content-audit-export-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 11px 0 7px;
+}
+
+.content-audit-export-grid .content-audit-export-primary {
+  height: 100%;
+  margin: 0;
+}
+
+.content-audit-export-attention {
+  border-color: #edc985;
+  background: linear-gradient(135deg, #fff9eb, #fff2d6);
+  color: #87550a;
+  box-shadow: 0 8px 24px rgba(161, 102, 13, 0.09);
+}
+
+.content-audit-export-attention > span {
+  background: #c47a10;
+}
+
+.content-audit-export-attention > small {
+  color: #8b672e;
+}
+
+.content-audit-export-attention:hover:not(:disabled) {
+  border-color: #dca846;
+  background: linear-gradient(135deg, #fff6df, #ffeac1);
+}
+
+.content-audit-export-all {
+  border-color: #b9d5ef;
+  background: linear-gradient(135deg, #f2f8ff, #e5f2ff);
+  color: #245f91;
+  box-shadow: 0 8px 24px rgba(36, 95, 145, 0.09);
+}
+
+.content-audit-export-all > span {
+  background: #347fba;
+}
+
+.content-audit-export-all > small {
+  color: #557b9c;
+}
+
+.content-audit-export-all:hover:not(:disabled) {
+  border-color: #8ab9df;
+  background: linear-gradient(135deg, #eaf5ff, #d9ecff);
+}
+
+.content-audit-export-local-note {
+  margin: 0 2px 14px;
+  color: #77777d;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
 .content-audit-panel .content-audit-privacy,
 .content-audit-panel .content-audit-invisible-guide,
 .image-audit-panel .content-export-note {
@@ -806,6 +918,10 @@
 
   .home-section-heading > p {
     line-height: 1.5;
+  }
+
+  .content-audit-export-grid {
+    grid-template-columns: 1fr;
   }
 
   .health-audit-home-grid .content-audit-home-card {

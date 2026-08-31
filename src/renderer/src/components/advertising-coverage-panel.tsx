@@ -13,6 +13,7 @@ import {
   type StandaloneAuditJob,
   type StandaloneAuditMode,
 } from "../standalone-audit";
+import AuditDetailsDisclosure from "./audit-details-disclosure";
 
 export default function AdvertisingCoveragePanel({
   marketplaceId,
@@ -148,16 +149,23 @@ export default function AdvertisingCoveragePanel({
         <div>
           <p className="eyebrow">FBA AD COVERAGE</p>
           <h3>全站廣告覆蓋健檢</h3>
-          <p>依 ProductAI 活動名稱核對 Seller SKU；同一 ASIN 的其他 FBA SKU 也視為已覆蓋。</p>
+          <p>核對哪些 FBA SKU 已有 ENABLED Sponsored Products 覆蓋。</p>
         </div>
         <button type="button" onClick={() => void runAudit()} disabled={!available || busy}>
           {busy ? "掃描中…" : snapshot ? "重新掃描" : "掃描全部 FBA SKU"}
         </button>
       </header>
-      <div className="ads-coverage-rule">
-        <code>[ProductAI] US-B092384873-AFA33AM-SP-PAT-Jul242026</code>
-        <p>只計 ENABLED Sponsored Products；PAUSED／ARCHIVED、錯站點、錯 ASIN 或無法對應目前 FBA SKU 的活動都不會算。</p>
-      </div>
+      <AuditDetailsDisclosure summary="ProductAI 命名、覆蓋規則與唯讀範圍">
+        <p className="price-intro">SP 正式操作繼續交給 Helium 10；Ads API 連線後，這裡可核對全站 FBA 覆蓋，並把品項銷售與 SP 報表整理成可覆寫策略表，不會寫入 campaign。</p>
+        <div className="automation-summary compact">
+          <span className="automation-badge automatic">自動</span><p>系統自動檢查 Ads 連線與 ENABLED SP 覆蓋；你按下產生後，Notebook 鑰匙才會在背景整理唯讀策略資料。</p>
+          <span className="automation-badge manual">需人工</span><p>SP 建議可覆寫；SB／SD 的素材、預算、目標與正式啟用仍需人工確認，避免誤燒廣告費。</p>
+        </div>
+        <div className="ads-coverage-rule">
+          <code>[ProductAI] US-B092384873-AFA33AM-SP-PAT-Jul242026</code>
+          <p>依 ProductAI 活動名稱核對 Seller SKU；同一 ASIN 的其他 FBA SKU 也視為已覆蓋。只計 ENABLED Sponsored Products；PAUSED／ARCHIVED、錯站點、錯 ASIN 或無法對應目前 FBA SKU 的活動都不會算。</p>
+        </div>
+      </AuditDetailsDisclosure>
       {!available && <div className="ads-coverage-unavailable"><strong>功能已備妥，等待 Ads API</strong><p>{unavailableNotice}</p></div>}
       {error && <div className="price-error" role="alert">{error}</div>}
       {snapshot && (

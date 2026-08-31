@@ -129,6 +129,39 @@ export type BusinessPriceUpdateResult = {
   notice: string;
 };
 
+/**
+ * Public, redacted lifecycle projection for a previously authorized Business
+ * Pricing write. `PROCESSING` proves Amazon returned an ACCEPTED receipt but
+ * does not claim the requested values are live yet. `VERIFIED` is emitted only
+ * after a later canonical GET matches the durable target exactly.
+ */
+export type BusinessPriceWriteStatus = {
+  mode: "live";
+  status: "PROCESSING" | "VERIFIED";
+  stage: "minimum_price" | "business_price";
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  acceptedAt: string;
+  verifiedAt: string | null;
+  requestId: string | null;
+  submissionId: string | null;
+  verified: boolean;
+  authoritative: boolean;
+  canResend: false;
+  businessPriceSubmitted: boolean;
+  previousBusinessPrice: Money | null;
+  requestedBusinessPrice: Money | null;
+  previousMinimumPrice: Money | null;
+  requestedMinimumPrice: Money | null;
+  lowestTierUnitPrice: Money | null;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace" | null;
+  notice: string;
+};
+
 export type UpdateBusinessPriceInput = {
   marketplaceId: MarketplaceId;
   sellerSku: string;

@@ -58,6 +58,7 @@ describe("Amazon Business pricing routes", () => {
   const router = new ApiRouter({
     store: {
       runIdempotentOperation,
+      assertIdempotentOperationsAvailable: async () => undefined,
       reconcileIdempotentOperations: async () => [],
     } as unknown as LocalStore,
     vault: {

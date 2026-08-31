@@ -20,6 +20,7 @@ import {
   type StandaloneAuditJob,
   type StandaloneAuditMode,
 } from "../standalone-audit";
+import AuditDetailsDisclosure from "./audit-details-disclosure";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 
@@ -652,23 +653,25 @@ export default function SubscriptionAuditPanel({
 
   return (
     <section className="subscription-audit-panel" aria-label="全站 FBA Subscribe & Save 健檢">
-      <p className="price-intro">{marketplaceSupported
-        ? "一次讀取所選站點全部可證明為目前 FBA 的 Subscribe & Save offer，核對 Amazon offer 目前價格、Seller 折扣與目前有效訂閱；折扣分開顯示，不推算個別顧客的最終結帳價。"
-        : `${marketplaceShort} 站不在 Amazon 官方 Seller Replenishment API 支援清單；本頁不會送出全站 Subscribe & Save 掃描。`}</p>
       {!marketplaceSupported && (
         <div className="content-export-note" role="status">
           <strong>Amazon 官方 API 目前不支援 {marketplaceShort}</strong>
           <p>可切換 US、JP、CA、UK 或 DE 使用全站健檢；這不是憑證錯誤，也不會改用 Seller Central 私有接口。</p>
         </div>
       )}
-      <div className="content-export-note">
-        <strong>「目前有效訂閱」是查詢當下快照</strong>
-        <p>不是過去一個月新增、歷史最高、配送次數或唯一顧客數；月度折線使用每個完整月底的 active subscriptions。</p>
-      </div>
-      <div className="subscription-history-boundary">
-        <strong>Amazon 公開 API 最多提供 23 個完整月</strong>
-        <p>沒有「從加入日起」的無限歷史。當月尚未完成所以不納入；Amazon 未回傳的月份保持缺值，不補 0。</p>
-      </div>
+      <AuditDetailsDisclosure summary="訂閱快照定義、折扣口徑與 23 個月邊界">
+        <p className="price-intro">{marketplaceSupported
+          ? "一次讀取所選站點全部可證明為目前 FBA 的 Subscribe & Save offer，核對 Amazon offer 目前價格、Seller 折扣與目前有效訂閱；折扣分開顯示，不推算個別顧客的最終結帳價。"
+          : `${marketplaceShort} 站不在 Amazon 官方 Seller Replenishment API 支援清單；本頁不會送出全站 Subscribe & Save 掃描。`}</p>
+        <div className="content-export-note">
+          <strong>「目前有效訂閱」是查詢當下快照</strong>
+          <p>不是過去一個月新增、歷史最高、配送次數或唯一顧客數；月度折線使用每個完整月底的 active subscriptions。</p>
+        </div>
+        <div className="subscription-history-boundary">
+          <strong>Amazon 公開 API 最多提供 23 個完整月</strong>
+          <p>沒有「從加入日起」的無限歷史。當月尚未完成所以不納入；Amazon 未回傳的月份保持缺值，不補 0。</p>
+        </div>
+      </AuditDetailsDisclosure>
       <div className="subscription-audit-controls" aria-label="訂閱歷史月份">
         {([6, 12, 23] as const).map((value) => (
           <button key={value} type="button" className={months === value ? "active" : ""} onClick={() => void load(value)} disabled={Boolean(busy) || !marketplaceSupported}>

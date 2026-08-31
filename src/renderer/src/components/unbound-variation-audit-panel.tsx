@@ -15,6 +15,7 @@ import {
   type StandaloneAuditJob,
   type StandaloneAuditMode,
 } from "../standalone-audit";
+import AuditDetailsDisclosure from "./audit-details-disclosure";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -339,13 +340,15 @@ export default function UnboundVariationAuditPanel({
 
   return (
     <section className="image-audit-panel" aria-label="全站 FBA 未綁變體健檢">
-      <p className="price-intro">
-        一次掃描所選站點全部可由報表證明為 FBA 的 SKU；只有 Amazon relationships 明確完整且沒有 parent，才列為未綁變體。
-      </p>
-      <div className="content-export-note">
-        <strong>Amazon 唯讀＋Fail closed</strong>
-        <p>relationships 缺少、相容降級、履約衝突或查詢失敗都獨立列為未完成，不會誤判為未綁；健檢不會修改 Amazon。</p>
-      </div>
+      <AuditDetailsDisclosure summary="relationship 判定、未完成隔離與唯讀範圍">
+        <p className="price-intro">
+          一次掃描所選站點全部可由報表證明為 FBA 的 SKU；只有 Amazon relationships 明確完整且沒有 parent，才列為未綁變體。
+        </p>
+        <div className="content-export-note">
+          <strong>Amazon 唯讀＋Fail closed</strong>
+          <p>relationships 缺少、相容降級、履約衝突或查詢失敗都獨立列為未完成，不會誤判為未綁；健檢不會修改 Amazon。</p>
+        </div>
+      </AuditDetailsDisclosure>
       {error && <div className="price-error" role="alert">{error}</div>}
       {statusText && (
         <div className="validation-status demo" role="status" aria-live="polite">

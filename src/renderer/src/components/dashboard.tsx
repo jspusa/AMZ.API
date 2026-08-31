@@ -1904,7 +1904,7 @@ export default function Dashboard({
               <div>
                 <p className="eyebrow">FBA CONTENT HEALTH</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.content}</h2>
-                <p>一次找出全部 FBA SKU 的疑似錯字、賣點不足與缺成分；結果在這次 App 使用期間會保留。</p>
+                <p>找出需要你確認的 FBA 商品文案。</p>
               </div>
               {currentContentLaunchFailure
                 ? auditLaunchFailureStatus(currentContentLaunchFailure)
@@ -1938,7 +1938,7 @@ export default function Dashboard({
               <div>
                 <p className="eyebrow">FBA IMAGE HEALTH</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.image}</h2>
-                <p>一次找出少於六張 Listing 圖片與讀取未完成的 FBA SKU；關閉後仍可繼續上次結果。</p>
+                <p>找出少於 6 張圖片或讀取未完成的商品。</p>
               </div>
               {currentImageLaunchFailure
                 ? auditLaunchFailureStatus(currentImageLaunchFailure)
@@ -1971,7 +1971,7 @@ export default function Dashboard({
               <div>
                 <p className="eyebrow">FBA A+ CONTENT</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.aplus}</h2>
-                <p>逐一核對全部 FBA ASIN 是否有官方 A+ 發布紀錄。</p>
+                <p>核對每個 FBA ASIN 是否已有官方 A+。</p>
               </div>
               {currentAplusLaunchFailure &&
                 auditLaunchFailureStatus(currentAplusLaunchFailure)}
@@ -2026,7 +2026,7 @@ export default function Dashboard({
               <div>
                 <p className="eyebrow">VARIATION RELATIONSHIPS</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.variation}</h2>
-                <p>一次核對全部 FBA SKU；只有 Amazon relationships 明確完整且沒有 parent，才列為未綁變體。</p>
+                <p>找出已確認沒有 parent 的 FBA SKU。</p>
               </div>
               {currentVariationLaunchFailure
                 ? auditLaunchFailureStatus(currentVariationLaunchFailure)
@@ -2065,7 +2065,7 @@ export default function Dashboard({
                 <p className="eyebrow">FBA SUBSCRIBE &amp; SAVE</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.subscription}</h2>
                 <p>{subscriptionAuditSupported
-                  ? "一次核對全部 FBA Subscribe & Save SKU 的目前訂閱折扣與價格趨勢；不會自動修改 Amazon。"
+                  ? "查看訂閱折扣、有效訂閱與價格趨勢。"
                   : `${marketplace.shortLabel} 目前先顯示能力邊界；不會用其他站點資料代替。`}</p>
               </div>
               {currentSubscriptionLaunchFailure
@@ -2089,7 +2089,7 @@ export default function Dashboard({
               <div>
                 <p className="eyebrow">FBA AMAZON BUSINESS</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.businessPricing}</h2>
-                <p>找出未設定或高於一般售價的 Amazon Business 價格；可安全編輯時提供一般售價減 1 美元與四階數量折扣預設。</p>
+                <p>找出未設定或不符建議的企業價格。</p>
               </div>
               {currentBusinessPricingLaunchFailure
                 ? auditLaunchFailureStatus(currentBusinessPricingLaunchFailure)
@@ -2122,7 +2122,7 @@ export default function Dashboard({
               <div>
                 <p className="eyebrow">ADS COVERAGE</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.advertising}</h2>
-                <p>將依 SKU 優先、ASIN 補充比對 SP 活動；Amazon Ads API 尚未連線前不顯示推測結果。</p>
+                <p>核對哪些 FBA SKU 已有 ENABLED SP 覆蓋。</p>
               </div>
               {currentAdvertisingLaunchFailure
                 ? auditLaunchFailureStatus(currentAdvertisingLaunchFailure)

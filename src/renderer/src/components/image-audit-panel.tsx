@@ -20,6 +20,7 @@ import {
   type StandaloneAuditJob,
   type StandaloneAuditMode,
 } from "../standalone-audit";
+import AuditDetailsDisclosure from "./audit-details-disclosure";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -399,13 +400,20 @@ export default function ImageAuditPanel({
 
   return (
     <section className="image-audit-panel" aria-label="全站 FBA 圖片健檢">
-      <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有圖片工作台的 parent 容器，再列出少於六張 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
-      </p>
-      <div className="content-export-note">
-        <strong>Amazon 唯讀圖片健檢</strong>
-        <p>只讀取 Listings attributes；不會下載原圖、不會修改 Amazon，也不會納入 FBM。</p>
-      </div>
+      <AuditDetailsDisclosure summary="圖片門檻、資料來源與人工判斷範圍">
+        <div className="automation-summary compact">
+          <span className="automation-badge automatic">自動</span><p>全站圖片健檢會找出少於六張圖片與讀取未完成的 FBA SKU；單一 SKU 的格式、像素、PTD 與回查由系統處理。</p>
+          <span className="automation-badge one_click">一鍵</span><p>健檢會自動建立及輪詢報表；圖片排序完成後可安全預檢並送出。</p>
+          <span className="automation-badge manual">需人工</span><p>選圖、排序與主圖位置必須由你判斷。</p>
+        </div>
+        <p className="price-intro">
+          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有圖片工作台的 parent 容器，再列出少於六張 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
+        </p>
+        <div className="content-export-note">
+          <strong>Amazon 唯讀圖片健檢</strong>
+          <p>只讀取 Listings attributes；不會下載原圖、不會修改 Amazon，也不會納入 FBM。</p>
+        </div>
+      </AuditDetailsDisclosure>
       {error && <div className="price-error" role="alert">{error}</div>}
       {statusText && (
         <div className="validation-status demo" role="status" aria-live="polite">

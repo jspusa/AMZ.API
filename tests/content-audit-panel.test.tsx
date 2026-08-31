@@ -194,6 +194,9 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("Amazon 唯讀＋AMZ.API 共用英文辭典");
     expect(markup).toContain("Mac／Windows Notebook Key Bridge 在本機套用");
     expect(markup).toContain("文案不會送到第三方");
+    expect(markup).toContain('<details class="health-advanced-details audit-details-disclosure">');
+    expect(markup).toContain("顯示詳細說明");
+    expect(markup).not.toContain('audit-details-disclosure" open=""');
     expect(markup).toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("FBM 不會加入");
     expect(markup).not.toContain("全站內容健檢");
@@ -345,9 +348,14 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(markup).toContain("完成讀取");
-    expect(markup).toContain("匯出 1 個待確認項目 Excel");
-    expect(markup).toContain("匯出全部 2 個商品文案 Excel（完整模板）");
-    expect(markup).toContain("只在這台電腦建立，不會上傳商品文案；可當作完整模板");
+    expect(markup).toContain("待確認清單 · 匯出 1 項 Excel");
+    expect(markup).toContain("只含有問題或讀取未完成的商品");
+    expect(markup).toContain("完整模板 · 匯出全部 2 個商品 Excel");
+    expect(markup).toContain("包含正常商品，可直接當批次更新模板");
+    expect(markup).toContain("兩份都只在這台電腦建立；任一份都可回傳更新");
+    expect(markup).toContain('data-export-scope="attention"');
+    expect(markup).toContain('data-export-scope="all"');
+    expect(occurrenceCount(markup, "顯示詳細說明")).toBe(1);
     expect(markup).toContain("重新掃描");
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("content-audit-export-primary");

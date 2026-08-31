@@ -4,11 +4,14 @@ import { useRef, useState, type FormEvent } from "react";
 import {
   businessPricingEditorProposal,
   createSubmittedBusinessPricePreview,
+  parseBusinessPriceProcessing,
   parseBusinessPriceUpdate,
+  parseBusinessPricingListingSnapshot,
   type BusinessPricingEditorMode,
   type BusinessPricingListingSnapshot,
   type BusinessPricingMoney,
   type BusinessPriceUpdate,
+  type BusinessPriceWriteStatus,
   type BusinessQuantityDiscountPlan,
   type BusinessQuantityDiscountTier,
   type SubmittedBusinessPricePreview,
@@ -42,6 +45,20 @@ function formatMinimumPriceEvidence(
   return listing.minimumPricePresence === "absent"
     ? "未設定"
     : "Amazon 無法確認";
+}
+
+function formatSubmittedAt(value: string): string {
+  try {
+    return new Intl.DateTimeFormat("zh-TW", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
 }
 
 function exactProblemMoney(
@@ -158,18 +175,23 @@ function quantityDiscountLowerBounds(
 }
 
 export default function BusinessPricingEditor({
-  listing,
+  listing: initialListing,
   onClose,
   onVerified,
+  onCanonicalListingVerified,
   onError,
   onBusyChange,
 }: Readonly<{
   listing: BusinessPricingListingSnapshot;
   onClose: () => void;
   onVerified: (result: BusinessPriceUpdate) => void;
+  onCanonicalListingVerified?: (
+    listing: BusinessPricingListingSnapshot,
+  ) => void;
   onError: (message: string | null) => void;
   onBusyChange: (busy: boolean) => void;
 }>) {
+  const [listing, setListing] = useState(initialListing);
   const priceOnlyProposal = businessPricingEditorProposal(listing, "price_only");
   const combinedProposal = businessPricingEditorProposal(listing, "combined");
   const repairableDuplicateQuantityDiscounts =
@@ -206,6 +228,12 @@ export default function BusinessPricingEditor({
   const [submittedPreview, setSubmittedPreview] =
     useState<SubmittedBusinessPricePreview | null>(null);
   const [result, setResult] = useState<BusinessPriceUpdate | null>(null);
+  const [writeStatus, setWriteStatus] = useState<BusinessPriceWriteStatus | null>(
+    initialListing.writeStatus,
+  );
+  const [submissionStartedAt, setSubmissionStartedAt] =
+    useState<string | null>(null);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
   const [verifiedPartialMinimumPrice, setVerifiedPartialMinimumPrice] =
     useState<BusinessPricingMoney | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
@@ -213,6 +241,7 @@ export default function BusinessPricingEditor({
   const [loading, setLoading] = useState(false);
   const revisionRef = useRef(0);
   const validation = submittedPreview?.validation ?? null;
+  const writeInFlight = writeStatus?.status === "PROCESSING";
   const displayedBusinessPrice = result?.requestedBusinessPrice ??
     listing.businessPrice;
   const displayedMinimumPrice = result?.requestedMinimumPrice ??
@@ -251,7 +280,8 @@ export default function BusinessPricingEditor({
     onError(null);
   };
   const chooseEditorMode = (nextMode: BusinessPricingEditorMode) => {
-    if (nextMode === "combined" && !canReplaceQuantityDiscounts) return;
+    if (writeInFlight ||
+        (nextMode === "combined" && !canReplaceQuantityDiscounts)) return;
     resetPreview();
     setEditorMode(nextMode);
   };
@@ -261,7 +291,8 @@ export default function BusinessPricingEditor({
     if (
       parsedNewPrice === null ||
       noRequestedChange ||
-      parsedTiers === null
+      parsedTiers === null ||
+      writeStatus?.status === "PROCESSING"
     ) return;
     const submittedPrice = parsedNewPrice;
     const idempotencyKey = createRendererIdempotencyKey("business-price");
@@ -325,6 +356,7 @@ export default function BusinessPricingEditor({
     const submitted = submittedPreview;
     if (!submitted) return;
     setBusy(true);
+    setSubmissionStartedAt(new Date().toISOString());
     onError(null);
     setEditorError(null);
     try {
@@ -343,8 +375,19 @@ export default function BusinessPricingEditor({
           "Amazon 未能確認 B2B 價格更新。",
         ));
       }
+      if (response.status === 202) {
+        const processing = parseBusinessPriceProcessing(payload, submitted);
+        setWriteStatus(processing);
+        setResult(null);
+        setVerifiedPartialMinimumPrice(null);
+        setSubmittedPreview(null);
+        setEditorError(null);
+        setCommitFailed(false);
+        return;
+      }
       const nextResult = parseBusinessPriceUpdate(payload, submitted);
       setResult(nextResult);
+      setWriteStatus(null);
       setVerifiedPartialMinimumPrice(null);
       setSubmittedPreview(null);
       setEditorError(null);
@@ -357,7 +400,56 @@ export default function BusinessPricingEditor({
       setEditorError(message);
       setCommitFailed(true);
     } finally {
+      setSubmissionStartedAt(null);
       setBusy(false);
+    }
+  };
+
+  const refreshWriteStatus = async () => {
+    if (!writeStatus || refreshingStatus) return;
+    setRefreshingStatus(true);
+    setEditorError(null);
+    try {
+      const params = new URLSearchParams({
+        marketplaceId: listing.marketplaceId,
+        sku: listing.sellerSku,
+      });
+      const response = await fetch(`/api/sp-api/business-pricing?${params}`, {
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(publicProblemMessage(
+          payload,
+          "目前無法重新確認 Amazon 同步狀態。",
+        ));
+      }
+      const fresh = parseBusinessPricingListingSnapshot(payload);
+      if (
+        fresh.marketplaceId !== listing.marketplaceId ||
+        fresh.sellerSku !== listing.sellerSku ||
+        fresh.asin !== listing.asin
+      ) {
+        throw new Error("Amazon 回傳的 B2B 價格識別與目前 SKU 不一致。");
+      }
+      setListing(fresh);
+      if (fresh.writeStatus) {
+        setWriteStatus(fresh.writeStatus);
+        if (fresh.writeStatus.status === "VERIFIED") {
+          setSubmittedPreview(null);
+          setCommitFailed(false);
+          setVerifiedPartialMinimumPrice(null);
+          if (fresh.writeStatus.stage === "business_price") {
+            onCanonicalListingVerified?.(fresh);
+          }
+        }
+      }
+    } catch (requestError) {
+      setEditorError(requestError instanceof Error
+        ? requestError.message
+        : "目前無法重新確認 Amazon 同步狀態。");
+    } finally {
+      setRefreshingStatus(false);
     }
   };
 
@@ -397,6 +489,115 @@ export default function BusinessPricingEditor({
           <dd>{formatQuantityDiscountPlan(displayedQuantityDiscountPlan)}</dd>
         </div>
       </dl>
+      {submissionStartedAt && loading && (
+        <div
+          className="business-pricing-write-status is-submitting"
+          role="status"
+          aria-live="polite"
+        >
+          <strong>已按下送出，Notebook Key 正在提交</strong>
+          <p>
+            已記錄操作時間 {formatSubmittedAt(submissionStartedAt)}。正在等 Amazon
+            回覆是否接受；請勿重複送出。
+          </p>
+        </div>
+      )}
+      {writeStatus && (
+        <div
+          className={`business-pricing-write-status ${
+            writeStatus.status === "VERIFIED"
+              ? "is-verified"
+              : "is-processing"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          <strong>{writeStatus.status === "VERIFIED"
+            ? writeStatus.stage === "business_price"
+              ? "Amazon 已完成同步並確認"
+              : "最低價已確認；B2B 尚未送出"
+            : writeStatus.stage === "business_price"
+            ? "Amazon 已接受，正在同步"
+            : "Amazon 已接受最低價，正在同步"}</strong>
+          <p>{writeStatus.notice}</p>
+          <div className="business-pricing-write-meta">
+            <span>送出時間 {formatSubmittedAt(writeStatus.acceptedAt)}</span>
+            <span>Request ID：{writeStatus.requestId ?? "Amazon 未提供"}</span>
+          </div>
+          {writeStatus.stage === "business_price" &&
+            writeStatus.requestedBusinessPrice && (
+            <div className="business-pricing-diff-row">
+              <span className="business-pricing-diff-label">B2B 價格</span>
+              <span className="business-pricing-diff-old">
+                {formatMoney(writeStatus.previousBusinessPrice)}
+              </span>
+              <span className="business-pricing-diff-arrow">→</span>
+              <span className="business-pricing-diff-new">
+                {formatMoney(writeStatus.requestedBusinessPrice)}
+              </span>
+            </div>
+          )}
+          {writeStatus.stage === "minimum_price" &&
+            writeStatus.requestedMinimumPrice && (
+            <div className="business-pricing-diff-row">
+              <span className="business-pricing-diff-label">最低價限制</span>
+              <span className="business-pricing-diff-old">
+                {formatMoney(writeStatus.previousMinimumPrice)}
+              </span>
+              <span className="business-pricing-diff-arrow">→</span>
+              <span className="business-pricing-diff-new">
+                {formatMoney(writeStatus.requestedMinimumPrice)}
+              </span>
+              </div>
+            )}
+          {writeStatus.stage === "business_price" &&
+            writeStatus.quantityDiscountPlanChange === "replace" &&
+            writeStatus.requestedQuantityDiscountPlan && (
+            <div className="business-pricing-tier-diffs">
+              <strong>本次送出的數量折扣</strong>
+              {quantityDiscountLowerBounds(
+                writeStatus.previousQuantityDiscountPlan,
+                writeStatus.requestedQuantityDiscountPlan,
+              ).map((lowerBound) => (
+                <div className="business-pricing-diff-row" key={lowerBound}>
+                  <span className="business-pricing-diff-label">
+                    {lowerBound} 件
+                  </span>
+                  <span className="business-pricing-diff-old">
+                    {quantityDiscountValueAt(
+                      writeStatus.previousQuantityDiscountPlan,
+                      lowerBound,
+                    )}
+                  </span>
+                  <span className="business-pricing-diff-arrow">→</span>
+                  <span className="business-pricing-diff-new">
+                    {quantityDiscountValueAt(
+                      writeStatus.requestedQuantityDiscountPlan,
+                      lowerBound,
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {writeStatus.status === "PROCESSING" && (
+            <button
+              type="button"
+              className="business-pricing-refresh-status"
+              onClick={() => void refreshWriteStatus()}
+              disabled={refreshingStatus}
+            >{refreshingStatus
+                ? "正在重新讀取 Amazon…"
+                : "重新確認 Amazon 狀態"}</button>
+          )}
+          {writeStatus.status === "VERIFIED" &&
+            writeStatus.stage === "minimum_price" && (
+            <p className="business-pricing-next-step">
+              下方已套用 Amazon 的最新最低價。請重新預檢 B2B 價格與階梯，確認後才會進行第二次送出。
+            </p>
+          )}
+        </div>
+      )}
       {!listing.businessPricingCapability.editable ? (
         <div className="price-error">
           {listing.businessPricingCapability.reason ??
@@ -412,7 +613,7 @@ export default function BusinessPricingEditor({
               resetPreview();
               setNewPrice(event.target.value);
             }}
-            disabled={loading || writeBlockedByQuantityEvidence ||
+            disabled={loading || writeInFlight || writeBlockedByQuantityEvidence ||
               repairableDuplicateQuantityDiscounts}
             inputMode={listing.standardPrice?.currencyCode === "JPY"
               ? "numeric"
@@ -433,14 +634,15 @@ export default function BusinessPricingEditor({
                 type="button"
                 aria-pressed={editorMode === "price_only"}
                 onClick={() => chooseEditorMode("price_only")}
-                disabled={loading}
+                disabled={loading || writeInFlight}
               >只改價格並保留原數量折扣</button>
             )}
             <button
               type="button"
               aria-pressed={editorMode === "combined"}
               onClick={() => chooseEditorMode("combined")}
-              disabled={loading || repairableDuplicateQuantityDiscounts}
+              disabled={loading || writeInFlight ||
+                repairableDuplicateQuantityDiscounts}
             >{repairableDuplicateQuantityDiscounts
                 ? "修復重複數量折扣"
                 : "一併更新預填階梯折扣"}</button>
@@ -454,7 +656,8 @@ export default function BusinessPricingEditor({
           {editorMode === "combined" && (
             <fieldset
               className="business-pricing-tier-fieldset"
-              disabled={loading || repairableDuplicateQuantityDiscounts}
+              disabled={loading || writeInFlight ||
+                repairableDuplicateQuantityDiscounts}
             >
               <legend>{repairableDuplicateQuantityDiscounts
                 ? "目前數量折扣（將去除重複）"
@@ -550,13 +753,17 @@ export default function BusinessPricingEditor({
         </div>
       ) : (
         <div className="price-warning compact">
-          <strong>數量折扣不可直接修改</strong>
-          <p>{listing.businessPricingManagedByAutomation
+          <strong>{writeInFlight
+            ? "Amazon 正在同步，暫停再次編輯"
+            : "數量折扣不可直接修改"}</strong>
+          <p>{writeInFlight
+            ? "這個 SKU 已有 Amazon 接受的更新正在處理；暫時看到多份價格或階梯不代表寫入失敗，請使用上方按鈕稍後重新確認。"
+            : listing.businessPricingManagedByAutomation
             ? "此 contribution 由 Amazon Automate Pricing 管理；請先在 Seller Central 處理規則。"
             : listing.minimumPricePresence === "ambiguous"
             ? "Amazon 無法確認目前最低價；仍可只改 B2B 價格，但不會送出階梯或調整最低價。"
             : listing.quantityDiscountPlanPresence === "ambiguous"
-            ? "Amazon 回傳的 quantity_discount_plan 內容不一致或無法辨識；價格與數量折扣都先停止修改，避免覆蓋未知方案。"
+            ? "Amazon 回傳的數量折扣目前不唯一或尚未同步完成；價格與折扣先停止修改，避免覆蓋未知方案。"
             : listing.quantityDiscountPlanPresence === "duplicate"
             ? "Amazon 回傳重複的固定單價折扣方案；目前介面只能安全修復 percent 階梯，請先至 Seller Central 核對。"
             : listing.businessPricingCapability.quantityDiscountsReason ??
@@ -610,7 +817,7 @@ export default function BusinessPricingEditor({
               >
                 <strong>會先調低 Amazon 最低價限制</strong>
                 <p>
-                  最低價是 ALL audience 的價格護欄，也可能影響一般售價／自動定價；系統會先寫入並回查最低價，確認成功後才送出 B2B 價格與階梯。
+                  最低價是 ALL audience 的價格護欄，也可能影響一般售價／自動定價；本次只送出最低價。稍後請手動重新確認 Amazon 狀態，確認完成後重新預檢，並第二次使用 Touch ID／Windows Hello 才會送出 B2B 價格與階梯。
                 </p>
               </div>
             </>
@@ -668,7 +875,7 @@ export default function BusinessPricingEditor({
             onClick={() => void commitPrice()}
             disabled={loading || commitFailed}
           >{loading
-            ? "送出並回查中…"
+            ? "送出中，等待 Amazon 接受…"
             : commitFailed
             ? "請重新讀取 Amazon 後再預檢"
             : "Touch ID／Windows Hello 確認並送出"}</button>
@@ -698,12 +905,16 @@ export default function BusinessPricingEditor({
           className="price-primary-button"
           disabled={
             loading ||
+            writeInFlight ||
             parsedNewPrice === null ||
             tierInputInvalid ||
             noRequestedChange
           }
         >{loading
           ? "Amazon 預檢中…"
+          : writeStatus?.status === "VERIFIED" &&
+              writeStatus.stage === "minimum_price"
+          ? "重新預檢 B2B 價格與階梯（不寫入）"
           : editorMode === "combined"
           ? "先預檢 B2B 價格與階梯折扣（不寫入）"
           : "先預檢 B2B 價格並保留原數量折扣（不寫入）"}</button>

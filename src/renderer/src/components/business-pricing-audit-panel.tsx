@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import {
+  applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingRowMatchesFilter,
   parseBusinessPricingAuditSnapshot,
@@ -32,6 +33,7 @@ import {
 } from "../seller-central-handoff";
 import { auditExportFilename } from "../audit-export-filename";
 import { publicProblemMessage } from "../write-request";
+import AuditDetailsDisclosure from "./audit-details-disclosure";
 import BusinessPricingEditor from "./business-pricing-editor";
 
 const FILTERS: readonly Readonly<{
@@ -183,6 +185,8 @@ export default function BusinessPricingAuditPanel({
   initialJob = null,
   onSnapshotChange,
   onJobChange,
+  onEditorOpenChange,
+  onEditorBusyChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
@@ -192,6 +196,8 @@ export default function BusinessPricingAuditPanel({
   initialJob?: StandaloneAuditJob | null;
   onSnapshotChange?: (snapshot: BusinessPricingAuditSnapshot) => void;
   onJobChange?: (job: StandaloneAuditJob) => void;
+  onEditorOpenChange?: (open: boolean) => void;
+  onEditorBusyChange?: (busy: boolean) => void;
 }) {
   const [snapshot, setSnapshot] = useState<BusinessPricingAuditSnapshot | null>(
     initialSnapshot ?? cachedSnapshot,
@@ -215,6 +221,8 @@ export default function BusinessPricingAuditPanel({
   const abortRef = useRef<AbortController | null>(null);
   const observerJobIdRef = useRef<string | null>(null);
   const editorRevisionRef = useRef(0);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const auditScrollTopRef = useRef(0);
 
   const visibleSnapshot = useMemo(() => {
     if (!snapshot || loading) return null;
@@ -236,6 +244,16 @@ export default function BusinessPricingAuditPanel({
   );
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    onEditorOpenChange?.(selected !== null);
+  }, [onEditorOpenChange, selected]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    panel.scrollTop = selected ? 0 : auditScrollTopRef.current;
+  }, [selected]);
 
   const visibleRows = useMemo(
     () => visibleSnapshot?.rows.filter((row) =>
@@ -395,6 +413,7 @@ export default function BusinessPricingAuditPanel({
   };
 
   const openEditor = async (row: BusinessPricingAuditRow) => {
+    auditScrollTopRef.current = panelRef.current?.scrollTop ?? 0;
     const revision = ++editorRevisionRef.current;
     setEditLoading(true);
     setError(null);
@@ -434,11 +453,31 @@ export default function BusinessPricingAuditPanel({
     }
   };
 
+  const closeEditor = () => {
+    if (editLoading) return;
+    editorRevisionRef.current += 1;
+    setSelected(null);
+    setEditLoading(false);
+    onEditorBusyChange?.(false);
+  };
+
   const applyVerifiedPrice = (nextResult: BusinessPriceUpdate) => {
     if (!snapshot) return;
     const nextSnapshot = applyVerifiedBusinessPriceToAuditSnapshot(
       snapshot,
       nextResult,
+    );
+    setSnapshot(nextSnapshot);
+    onSnapshotChange?.(nextSnapshot);
+  };
+
+  const applyVerifiedListing = (
+    nextListing: BusinessPricingListingSnapshot,
+  ) => {
+    if (!snapshot) return;
+    const nextSnapshot = applyVerifiedBusinessPricingListingToAuditSnapshot(
+      snapshot,
+      nextListing,
     );
     setSnapshot(nextSnapshot);
     onSnapshotChange?.(nextSnapshot);
@@ -497,8 +536,47 @@ export default function BusinessPricingAuditPanel({
   };
 
   return (
-    <section className="business-pricing-audit-panel" aria-label="全站 FBA Amazon Business 價格健檢">
-      <div className="business-pricing-audit-intro">
+    <section
+      ref={panelRef}
+      className={`business-pricing-audit-panel ${
+        selected ? "is-editor-view" : "is-audit-view"
+      }`}
+      data-business-pricing-view={selected ? "editor" : "audit"}
+      aria-label={selected
+        ? `${selected.sellerSku} B2B 價格編輯`
+        : "全站 FBA Amazon Business 價格健檢"}
+    >
+      {selected ? (
+        <div className="business-pricing-detail-view">
+          <div className="business-pricing-detail-toolbar">
+            <button
+              type="button"
+              onClick={closeEditor}
+              disabled={editLoading}
+              aria-label="返回全站 B2B 價格健檢"
+              autoFocus
+            >← 返回健檢結果</button>
+            <div>
+              <span>安全調整 B2B 價格</span>
+              <strong>{selected.sellerSku}</strong>
+            </div>
+          </div>
+          <BusinessPricingEditor
+            key={`${selected.sellerSku}-${selected.fetchedAt}`}
+            listing={selected}
+            onClose={closeEditor}
+            onVerified={applyVerifiedPrice}
+            onCanonicalListingVerified={applyVerifiedListing}
+            onError={setError}
+            onBusyChange={(busy) => {
+              setEditLoading(busy);
+              onEditorBusyChange?.(busy);
+            }}
+          />
+        </div>
+      ) : (
+        <>
+          <div className="business-pricing-audit-intro">
         <div>
           <span>{marketplaceShort} · FBA ONLY</span>
           <h3>找出未設定或高於一般售價的企業價格</h3>
@@ -508,12 +586,14 @@ export default function BusinessPricingAuditPanel({
           {loading ? "健檢中…" : snapshot ? "重新健檢" : "開始全站 B2B 價格健檢"}
         </button>
       </div>
-      <div className="business-pricing-recommendation" aria-label="B2B 價格建議規則">
-        <strong>Jasper US 建議規則</strong>
-        <span>US 一般售價 – USD 1.00</span>
-        <span>數量折扣：5 件 5%・10 件 10%・15 件 15%・20 件 20%</span>
-      </div>
-      <p className="business-pricing-safety-note">編輯前會重新核對指定 SKU、你帳號的 Amazon 可編輯規則，並執行 Amazon Validation Preview（零寫入）；若 Amazon 規則允許安全更新階梯，預設一併帶入 Business Price 與 1–5 階 percent 建議折扣。你仍可明確切換為只改 Business Price，該模式會完整保留現有階梯折扣；正式送出仍需 Touch ID／Windows Hello。</p>
+      <AuditDetailsDisclosure summary="查看詳細規則">
+        <div className="business-pricing-recommendation" aria-label="B2B 價格建議規則">
+          <strong>Jasper US 建議規則</strong>
+          <span>US 一般售價 – USD 1.00</span>
+          <span>數量折扣：5 件 5%・10 件 10%・15 件 15%・20 件 20%</span>
+        </div>
+        <p className="business-pricing-safety-note">編輯前會重新核對指定 SKU、你帳號的 Amazon 可編輯規則，並執行 Amazon Validation Preview（零寫入）；若 Amazon 規則允許安全更新階梯，預設一併帶入 Business Price 與 1–5 階 percent 建議折扣。你仍可明確切換為只改 Business Price，該模式會完整保留現有階梯折扣；正式送出仍需 Touch ID／Windows Hello。</p>
+      </AuditDetailsDisclosure>
       {(job && !job.ready ? job.progress.message : progress) && (
         <div className="business-pricing-progress" role="status">
           {job && !job.ready ? job.progress.message : progress}
@@ -631,19 +711,7 @@ export default function BusinessPricingAuditPanel({
         </>
       )}
 
-      {selected && (
-        <BusinessPricingEditor
-          key={`${selected.sellerSku}-${selected.fetchedAt}`}
-          listing={selected}
-          onClose={() => {
-            editorRevisionRef.current += 1;
-            setSelected(null);
-            setEditLoading(false);
-          }}
-          onVerified={applyVerifiedPrice}
-          onError={setError}
-          onBusyChange={setEditLoading}
-        />
+        </>
       )}
     </section>
   );

@@ -339,7 +339,10 @@ describe("ApiRouter SP execution context", () => {
         sellerSku: "AFA-TRKY-4OZ",
       }));
       const router = new ApiRouter({
-        store: { runIdempotentOperation } as unknown as LocalStore,
+        store: {
+          runIdempotentOperation,
+          assertIdempotentOperationsAvailable: async () => undefined,
+        } as unknown as LocalStore,
         vault: {} as CredentialVault,
         approveWrite,
         spExecutionContext,

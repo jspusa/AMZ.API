@@ -727,6 +727,116 @@ describe("local durable safety store", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("inspects only exact durable operations through a bounded detached snapshot", async () => {
+    const store = await testStore();
+    const accepted = {
+      status: "ACCEPTED",
+      targetPrice: 18.99,
+      nested: { evidence: "must-stay-private-to-main" },
+    };
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "inspect-exact-unknown",
+      operationType: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "INSPECT-SKU",
+      accountScope: "account-a",
+      fingerprint: "business-price-target",
+      execute: async ({ recordAccepted }) => {
+        await recordAccepted(accepted);
+        throw new SpApiError("readback timed out", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    for (const [idempotencyKey, accountScope, sellerSku] of [
+      ["inspect-other-account", "account-b", "INSPECT-SKU"],
+      ["inspect-other-sku", "account-a", "OTHER-SKU"],
+    ] as const) {
+      await store.runIdempotentOperation({
+        idempotencyKey,
+        operationType: "business_price",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku,
+        accountScope,
+        fingerprint: idempotencyKey,
+        execute: async () => ({ status: "COMPLETED", idempotencyKey }),
+      });
+    }
+    await store.runIdempotentOperation({
+      idempotencyKey: "inspect-other-operation",
+      operationType: "content",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "INSPECT-SKU",
+      accountScope: "account-a",
+      fingerprint: "content-target",
+      execute: async () => ({ status: "COMPLETED" }),
+    });
+
+    const first = await store.inspectIdempotentOperations({
+      operationTypes: ["business_price"],
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "INSPECT-SKU",
+      accountScope: "account-a",
+    });
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({
+      operationType: "business_price",
+      state: "unknown",
+      response: accepted,
+    });
+    expect(first[0].createdAt).toBeTypeOf("number");
+    expect(first[0].updatedAt).toBeGreaterThanOrEqual(first[0].createdAt);
+    expect(first[0].expiresAt).toBeGreaterThan(first[0].createdAt);
+
+    (first[0].response as typeof accepted).nested.evidence = "mutated-by-caller";
+    const second = await store.inspectIdempotentOperations({
+      operationTypes: ["business_price"],
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "INSPECT-SKU",
+      accountScope: "account-a",
+    });
+    expect(second[0].response).toEqual(accepted);
+    await expect(store.inspectIdempotentOperations({
+      operationTypes: ["business_price"],
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "INSPECT-SKU",
+      accountScope: "account-b",
+    })).resolves.toHaveLength(1);
+    await expect(store.inspectIdempotentOperations({
+      operationTypes: ["business_price"],
+      marketplaceId: "A1F83G8C2ARO7P",
+      sellerSku: "INSPECT-SKU",
+      accountScope: "account-a",
+    })).resolves.toEqual([]);
+  });
+
+  it("bounds durable operation inspections to the newest 32 exact entries", async () => {
+    const store = await testStore();
+    for (let ordinal = 0; ordinal < 36; ordinal += 1) {
+      await store.runIdempotentOperation({
+        idempotencyKey: `bounded-inspection-${ordinal}`,
+        operationType: "content",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "BOUNDED-SKU",
+        accountScope: "account-a",
+        fingerprint: `content-${ordinal}`,
+        execute: async () => ({ ordinal }),
+      });
+    }
+
+    const inspected = await store.inspectIdempotentOperations({
+      operationTypes: ["content"],
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "BOUNDED-SKU",
+      accountScope: "account-a",
+    });
+    expect(inspected).toHaveLength(32);
+    expect(inspected.map((entry) => (entry.response as { ordinal: number }).ordinal))
+      .toEqual(Array.from({ length: 32 }, (_, index) => 35 - index));
+  });
+
   it("locks content and image PATCHes as one listing-attribute resource", async () => {
     const store = await testStore();
     let release!: () => void;
