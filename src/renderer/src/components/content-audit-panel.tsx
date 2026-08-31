@@ -1659,6 +1659,9 @@ export function ContentWorkbookBatchPreviewCard({
       <small>
         會先重新預檢整批，再要求一次本機生物辨識；Amazon 沒有跨 SKU 交易，若任一筆遭拒或結果不明會停止後續且不盲目重送。
       </small>
+      <small>
+        大量批次時，Touch ID／Windows Hello 只顯示總 SKU 數、高風險數、刪除總數、INVALID 數與驗證碼；完整 SKU、原值與更新值以本畫面上方逐項核對清單為準。
+      </small>
     </div>
   );
 }

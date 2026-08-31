@@ -458,6 +458,9 @@ describe("global FBA content audit panel", () => {
     expect(locked).toContain(
       "我已核對上述每個將寫入 SKU 的完整原值、更新值、Amazon 提醒與會被刪除的第 6 項後產品要點",
     );
+    expect(locked).toContain(
+      "大量批次時，Touch ID／Windows Hello 只顯示總 SKU 數、高風險數、刪除總數、INVALID 數與驗證碼",
+    );
     expect(locked).toContain('class="price-primary-button" disabled=""');
     expect(locked).not.toContain("預檢未通過，仍要上傳更新");
     expect(preview.status).toBe("READY");

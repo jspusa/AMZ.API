@@ -1516,19 +1516,24 @@ describe("content audit Excel batch router", () => {
       readOne: vi.fn(async () => {
         throw new Error("Read route is outside this batch test.");
       }),
-      previewOne: vi.fn(async (input: UpdateListingContentInput) =>
-        preparedPreview(input, undefined, {
+      previewOne: vi.fn(async (input: UpdateListingContentInput) => {
+        const removedOverflowBulletPoints =
+          input.sellerSku === "NATIVE-RISK-SKU-01" ||
+            input.sellerSku === "NATIVE-RISK-SKU-02"
+            ? hiddenBullets.slice(0, 1)
+            : hiddenBullets;
+        return preparedPreview(input, undefined, {
           exactBulletReplacement: {
             languageTag: "en_US",
             currentExactLanguageBulletPoints: [
               ...input.expectedBulletPoints,
-              ...hiddenBullets,
+              ...removedOverflowBulletPoints,
             ],
             requestedExactLanguageBulletPoints: [...input.bulletPoints],
-            removedOverflowBulletPoints: hiddenBullets,
+            removedOverflowBulletPoints,
           },
-        })
-      ),
+        });
+      }),
       attemptOne: vi.fn(async () => {
         throw new Error("Mock Write Gate does not enter the attempt phase.");
       }),
@@ -1590,7 +1595,7 @@ describe("content audit Excel batch router", () => {
     expect(approvalReason).toContain("驗證碼 gate-owned-123");
 
     const oversizedKey = "content-batch-native-summary-too-long-001";
-    const oversizedRows = Array.from({ length: 4 }, (_, index) => ({
+    const oversizedRows = Array.from({ length: 8 }, (_, index) => ({
       ...structuredClone(snapshot.rows[0]!),
       sellerSku: `NATIVE-RISK-SKU-${String(index + 1).padStart(2, "0")}`,
       asin: `B${String(index + 1).padStart(9, "0")}`,
@@ -1636,20 +1641,21 @@ describe("content audit Excel batch router", () => {
     const oversizedSkus = (
       oversizedBody.changes as Array<{ sellerSku: string }>
     ).map((change) => change.sellerSku);
-    const blockedOversizedCommit = await gateRouter.handle(
+    const oversizedCommit = await gateRouter.handle(
       exactBulletReplacementCommitRequest(
         String(oversizedBody.previewId),
         oversizedKey,
         oversizedSkus,
       ),
     );
-    expect(blockedOversizedCommit.status).toBe(422);
-    expect(responseValue(blockedOversizedCommit)).toMatchObject({
-      code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
-      sellerSkus: oversizedSkus,
-      writeCount: 0,
-    });
-    expect(writeGate.execute).toHaveBeenCalledOnce();
+    expect(oversizedCommit.status).toBe(200);
+    expect(writeGate.execute).toHaveBeenCalledTimes(2);
+    expect(approvalReason).toContain("8 SKU");
+    expect(approvalReason).toContain("高風險 8 SKU");
+    expect(approvalReason).toContain("刪除要點 14 項");
+    expect(approvalReason).toContain("INVALID 0 SKU");
+    expect(approvalReason).toContain("驗證碼 gate-owned-123");
+    expect(approvalReason.length).toBeLessThanOrEqual(120);
 
     const maximumLengthSku = "S".repeat(40);
     const maximumLengthRow = {
@@ -1704,8 +1710,46 @@ describe("content audit Excel batch router", () => {
       ),
     );
     expect(maximumLengthCommit.status).toBe(200);
-    expect(writeGate.execute).toHaveBeenCalledTimes(2);
+    expect(writeGate.execute).toHaveBeenCalledTimes(3);
     expect(approvalReason).toContain(maximumLengthSku);
+    expect(approvalReason.length).toBeLessThanOrEqual(120);
+
+    content.previewOne.mockImplementation(async (input) =>
+      preparedPreview(input)
+    );
+    oversizedEvidence.rowDigests = parsedOversizedWorkbook.rows.map((row) =>
+      contentAuditEvidenceRowDigest({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        mode: "demo",
+        exportId: parsedOversizedWorkbook.metadata.exportId,
+        fetchedAt: parsedOversizedWorkbook.metadata.fetchedAt,
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        productType: row.productType,
+        variationFamilyKey: row.variationFamilyKey,
+        values: row.original,
+        readStatus: "complete",
+      })
+    );
+    const safeLargeKey = "content-batch-safe-large-summary-001";
+    const safeLargePreview = await gateRouter.handle(importRequest(
+      oversizedEdited,
+      safeLargeKey,
+    ));
+    expect(safeLargePreview.status).toBe(200);
+    const safeLargeBody = responseValue(safeLargePreview);
+    const safeLargeCommit = await gateRouter.handle(commitRequest(
+      String(safeLargeBody.previewId),
+      safeLargeKey,
+    ));
+    expect(safeLargeCommit.status).toBe(200);
+    expect(writeGate.execute).toHaveBeenCalledTimes(4);
+    expect(approvalReason).toContain("8 SKU");
+    expect(approvalReason).toContain("高風險 0 SKU");
+    expect(approvalReason).toContain("刪除要點 0 項");
+    expect(approvalReason).toContain("INVALID 0 SKU");
+    expect(approvalReason).toContain("驗證碼 gate-owned-123");
     expect(approvalReason.length).toBeLessThanOrEqual(120);
     gateRouter.dispose();
   });
@@ -2766,7 +2810,22 @@ describe("content audit Excel batch router", () => {
       snapshot,
       oversizedEdited,
     );
-    const oversizedExecute = vi.fn();
+    let oversizedApprovalReason = "";
+    const oversizedExecute = vi.fn(async (input) => {
+      await input.beforeApproval?.();
+      oversizedApprovalReason = typeof input.approvalReason === "function"
+        ? input.approvalReason("123456789012")
+        : input.approvalReason;
+      return {
+        previewId: input.binding.previewKey,
+        marketplaceId: MARKETPLACE_ID,
+        status: "COMPLETED" as const,
+        rows: [],
+        blockedChanges: [],
+        completedAt: new Date(0).toISOString(),
+        notice: "test",
+      };
+    });
     const oversizedPreviewOne = vi.fn(previewOne);
     const oversizedBatch = createListingContentBatchMutations({
       evidence: {
@@ -2807,16 +2866,32 @@ describe("content audit Excel batch router", () => {
         oversizedOverrideSkus,
       ),
     });
-    expect(oversizedCommit.status).toBe(422);
-    expect(responseValue(oversizedCommit)).toMatchObject({
-      code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
-      sellerSkus: oversizedOverrideSkus,
-      writeCount: 0,
-    });
-    expect(oversizedExecute).not.toHaveBeenCalled();
+    expect(oversizedCommit.status).toBe(200);
+    expect(oversizedExecute).toHaveBeenCalledOnce();
+    expect(oversizedApprovalReason).toContain("3 SKU");
+    expect(oversizedApprovalReason).toContain("高風險 3 SKU");
+    expect(oversizedApprovalReason).toContain("刪除要點 0 項");
+    expect(oversizedApprovalReason).toContain("INVALID 3 SKU");
+    expect(oversizedApprovalReason).toContain("驗證碼 123456789012");
+    expect(oversizedApprovalReason.length).toBeLessThanOrEqual(120);
 
     const undisplayableCode = "X".repeat(128);
-    const manualExecute = vi.fn();
+    let manualApprovalReason = "";
+    const manualExecute = vi.fn(async (input) => {
+      await input.beforeApproval?.();
+      manualApprovalReason = typeof input.approvalReason === "function"
+        ? input.approvalReason("123456789012")
+        : input.approvalReason;
+      return {
+        previewId: input.binding.previewKey,
+        marketplaceId: MARKETPLACE_ID,
+        status: "COMPLETED" as const,
+        rows: [],
+        blockedChanges: [],
+        completedAt: new Date(0).toISOString(),
+        notice: "test",
+      };
+    });
     const manualBatch = createListingContentBatchMutations({
       evidence: {
         getContentAuditSnapshotEvidence: vi.fn(async () => ({
@@ -2864,16 +2939,14 @@ describe("content audit Excel batch router", () => {
         [sellerSku],
       ),
     });
-    expect(manualCommit.status).toBe(422);
-    expect(responseValue(manualCommit)).toMatchObject({
-      code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
-      sellerSkus: [sellerSku],
-      writeCount: 0,
-    });
-    expect(String(responseValue(manualCommit).message)).toContain(
-      "Seller Central 人工處理",
-    );
-    expect(manualExecute).not.toHaveBeenCalled();
+    expect(manualCommit.status).toBe(200);
+    expect(manualExecute).toHaveBeenCalledOnce();
+    expect(manualApprovalReason).toContain("高風險 1 SKU");
+    expect(manualApprovalReason).toContain("刪除要點 0 項");
+    expect(manualApprovalReason).toContain("INVALID 1 SKU");
+    expect(manualApprovalReason).not.toContain(undisplayableCode);
+    expect(manualApprovalReason).toContain("驗證碼 123456789012");
+    expect(manualApprovalReason.length).toBeLessThanOrEqual(120);
   });
 
   it("merges a maximum-length SKU's destructive and INVALID risks into one native entry", async () => {
