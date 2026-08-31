@@ -9,6 +9,8 @@ import ContentAuditPanel, {
   ContentWorkbookBatchResultCard,
   contentWorkbookBatchCommitBody,
   consumeContentAuditWorkbookInput,
+  assertContentAuditWorkbookDownloadEvidence,
+  contentAuditWorkbookDownloadUrl,
   contentAuditWorkbookSelection,
   parseContentWorkbookBatchBlockedFailure,
   parseContentWorkbookBatchFailure,
@@ -197,6 +199,46 @@ describe("global FBA content audit panel", () => {
     expect(markup).not.toContain("全站內容健檢");
   });
 
+  it("fails loudly instead of saving an attention-only workbook as the full template", () => {
+    const legacyAttentionResponse = new Response(new Uint8Array([1]), {
+      headers: { "x-exported-fba-sku-count": "1" },
+    });
+    expect(() => assertContentAuditWorkbookDownloadEvidence(
+      legacyAttentionResponse,
+      "all",
+      2,
+    )).toThrow("Notebook Key 尚未支援「全部商品文案」Excel");
+
+    const wrongCountResponse = new Response(new Uint8Array([1]), {
+      headers: {
+        "x-content-audit-export-scope": "all",
+        "x-exported-fba-sku-count": "1",
+      },
+    });
+    expect(() => assertContentAuditWorkbookDownloadEvidence(
+      wrongCountResponse,
+      "all",
+      2,
+    )).toThrow("Notebook Key 尚未支援「全部商品文案」Excel");
+
+    const fullResponse = new Response(new Uint8Array([1]), {
+      headers: {
+        "x-content-audit-export-scope": "all",
+        "x-exported-fba-sku-count": "2",
+      },
+    });
+    expect(() => assertContentAuditWorkbookDownloadEvidence(
+      fullResponse,
+      "all",
+      2,
+    )).not.toThrow();
+    expect(() => assertContentAuditWorkbookDownloadEvidence(
+      legacyAttentionResponse,
+      "attention",
+      1,
+    )).not.toThrow();
+  });
+
   it("discloses fail-closed reads, PTD uncertainty and the shared Pages dictionary", async () => {
     const source = await readFile(
       new URL(
@@ -265,8 +307,27 @@ describe("global FBA content audit panel", () => {
             },
           ],
         },
+        {
+          sellerSku: "CLEAN-SKU",
+          asin: "B000000002",
+          productType: "PET_FOOD",
+          title: "C".repeat(60),
+          itemHighlight: "H".repeat(110),
+          bulletPoints: Array.from({ length: 5 }, () => "B".repeat(150)),
+          productDescription: "D".repeat(1_800),
+          ingredients: "Turkey",
+          readStatus: "complete",
+          readErrors: [],
+          variationRole: "standalone",
+          variationParentSku: null,
+          variationFamilyKey: "CLEAN-SKU",
+          variationTheme: null,
+          relationshipStatus: "complete",
+          relationshipMessage: "Amazon relationships 已完成核對。",
+          issues: [],
+        },
       ],
-      summary: { total: 1 },
+      summary: { total: 2 },
     });
     const markup = renderToStaticMarkup(
       <ContentAuditPanel
@@ -284,7 +345,9 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(markup).toContain("完成讀取");
-    expect(markup).toContain("匯出全部 1 個待確認項目 Excel");
+    expect(markup).toContain("匯出 1 個待確認項目 Excel");
+    expect(markup).toContain("匯出全部 2 個商品文案 Excel（完整模板）");
+    expect(markup).toContain("只在這台電腦建立，不會上傳商品文案；可當作完整模板");
     expect(markup).toContain("重新掃描");
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("content-audit-export-primary");
@@ -305,7 +368,7 @@ describe("global FBA content audit panel", () => {
       variationFamilyKey: "PARENT-001",
       relationshipStatus: "complete",
     });
-    expect(markup).toContain("回傳同一份 Excel 批次更新");
+    expect(markup).toContain("回傳任一份 Excel 批次更新");
     expect(markup).toContain("先預覽 Excel 變更（不寫入）");
     expect(markup).toContain("Touch ID／Windows Hello");
     expect(markup).toContain("全部通過，或你明確核對符合條件的 INVALID SKU 後");
@@ -317,6 +380,16 @@ describe("global FBA content audit panel", () => {
     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
       markup.indexOf("content-audit-summary"),
     );
+    expect(contentAuditWorkbookDownloadUrl(
+      "ATVPDKIKX0DER",
+      "content-audit-export-001",
+      "attention",
+    )).toContain("scope=attention");
+    expect(contentAuditWorkbookDownloadUrl(
+      "ATVPDKIKX0DER",
+      "content-audit-export-001",
+      "all",
+    )).toContain("scope=all");
   });
 
   it("shows the complete before/after workbook diff before batch approval", () => {
