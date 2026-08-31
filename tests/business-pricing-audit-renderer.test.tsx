@@ -1112,6 +1112,104 @@ describe("FBA business pricing audit renderer", () => {
     });
   });
 
+  it("parses identical duplicate tiers and prefills their exact values for repair", () => {
+    const listing = parseBusinessPricingListingSnapshot({
+      mode: "live",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "FBA-DUPLICATE-TIERS",
+      asin: "B000000004",
+      title: "Duplicate quantity tiers",
+      productType: "PET_FOOD",
+      standardPrice: { amount: 19.99, currencyCode: "USD" },
+      businessPrice: { amount: 17.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      businessPricingManagedByAutomation: false,
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 3, value: 4 },
+          { lowerBound: 9, value: 8 },
+        ],
+      },
+      quantityDiscountPlanPresence: "duplicate",
+      quantityDiscountPlanHash: "f".repeat(64),
+      businessOfferGuardHash: "a".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
+      businessPricingCapability: {
+        supported: true,
+        editable: true,
+        reason: null,
+        schemaChecksum: "seller-schema-checksum",
+        quantityDiscountsSupported: true,
+        quantityDiscountsEditable: true,
+        quantityDiscountsReason: null,
+      },
+      fetchedAt: "2026-08-31T05:00:00.000Z",
+      notice: null,
+    });
+
+    expect(defaultBusinessPricingProposal(listing)).toEqual({
+      businessPrice: 17.99,
+      tiers: [
+        { lowerBound: 3, percent: 4 },
+        { lowerBound: 9, percent: 8 },
+      ],
+    });
+  });
+
+  it("locks duplicate percent tiers to the combined repair UI", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const listing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      businessPrice: { amount: 17.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 3, value: 4 },
+          { lowerBound: 9, value: 8 },
+        ],
+      },
+      quantityDiscountPlanPresence: "duplicate",
+      quantityDiscountPlanHash: "f".repeat(64),
+    });
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingEditor, {
+        listing,
+        onClose: () => undefined,
+        onVerified: () => undefined,
+        onError: () => undefined,
+        onBusyChange: () => undefined,
+      }));
+    });
+    const root = renderer!.root;
+    const rendered = JSON.stringify(renderer!.toJSON());
+    expect(rendered).toContain("將修復重複數量折扣");
+    expect(rendered).toContain("目前數量折扣（將去除重複）");
+    expect(root.findByProps({ id: "business-price-input" }).props.value)
+      .toBe("17.99");
+    expect(root.findByProps({ id: "business-price-input" }).props.disabled)
+      .toBe(true);
+    expect(root.findByProps({ id: "business-tier-bound-0" }).props.value)
+      .toBe("3");
+    expect(root.findByProps({ id: "business-tier-bound-0" }).props.disabled)
+      .toBe(true);
+    expect(root.findByProps({ id: "business-tier-percent-0" }).props.value)
+      .toBe("4");
+    expect(root.findAllByType("button").some((button) =>
+      button.children.join("") === "只改價格並保留原數量折扣"
+    )).toBe(false);
+    expect(root.findAllByType("button").some((button) =>
+      button.children.join("") === "修復重複數量折扣"
+    )).toBe(true);
+    expect(rendered).toContain("本次不會變更售價或折扣內容");
+    expect(rendered).not.toContain("刪除此階");
+    expect(rendered).not.toContain("＋ 新增一階");
+    await act(async () => renderer!.unmount());
+  });
+
   it("keeps the USD standard-minus-one default available for price-only edits", () => {
     const proposal = defaultBusinessPricingProposal(
       parseBusinessPricingListingSnapshot({

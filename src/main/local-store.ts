@@ -68,6 +68,8 @@ type LedgerEntry = {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+  /** Optional v0.1.42 marker; older Apps still see operationType=business_price. */
+  businessPriceDuplicateRepair?: true;
 };
 
 export type DurableReportLegStatus =
@@ -222,6 +224,7 @@ type OperationInput<T> = {
   sellerSku: string;
   accountScope: string;
   fingerprint: string;
+  businessPriceDuplicateRepair?: boolean;
   execute: (control: Readonly<{
     recordAccepted(response: T): Promise<void>;
   }>) => Promise<T>;
@@ -235,9 +238,11 @@ export type IdempotentOperationAvailabilityInput = Pick<
   | "sellerSku"
   | "accountScope"
   | "fingerprint"
+  | "businessPriceDuplicateRepair"
 >;
 
 const OPERATION_TTL_MS = 24 * 60 * 60 * 1_000;
+const PERMANENT_OPERATION_EXPIRY = Number.MAX_SAFE_INTEGER;
 export const CONTENT_AUDIT_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1_000;
 const MAX_CONTENT_AUDIT_SNAPSHOT_ROWS = 25_000;
 const MAX_CONTENT_AUDIT_SNAPSHOT_BYTES = 4 * 1024 * 1024;
@@ -824,7 +829,15 @@ function sameLedgerIdentity(
   return entry.operationType === input.operationType &&
     entry.marketplaceId === input.marketplaceId &&
     entry.sellerSku === input.sellerSku &&
-    entry.accountScope === input.accountScope;
+    entry.accountScope === input.accountScope &&
+    Boolean(entry.businessPriceDuplicateRepair) ===
+      Boolean(input.businessPriceDuplicateRepair);
+}
+
+function businessPriceRepairTombstoneKey(idempotencyKey: string): string {
+  return `business-price-repair-tombstone:${createHash("sha256")
+    .update(idempotencyKey)
+    .digest("hex")}`;
 }
 
 export class LocalStore {
@@ -1364,15 +1377,24 @@ export class LocalStore {
       .update(input.fingerprint)
       .digest("hex");
     const ownerToken = randomUUID();
+    const repairTombstoneKey = input.businessPriceDuplicateRepair
+      ? businessPriceRepairTombstoneKey(input.idempotencyKey)
+      : null;
     let cachedResult: T | undefined;
     let claimed = false;
     await this.mutate((data) => {
       const now = Date.now();
       for (const [key, value] of Object.entries(data.ledger)) {
-        // Only a canonically completed operation may age out. A pending or
-        // unknown write can mean the App stopped after Amazon received the
-        // PATCH; deleting that evidence would permit a blind duplicate write.
-        if (value.state === "completed" && value.expiresAt < now) {
+        // Only an ordinary canonically completed operation may age out. A
+        // pending or unknown write can mean the App stopped after Amazon
+        // received the PATCH; deleting that evidence would permit a blind
+        // duplicate write. A duplicate-repair marker is a permanent tombstone
+        // because that exceptional bypass must be available at most once.
+        if (
+          value.state === "completed" &&
+          value.businessPriceDuplicateRepair !== true &&
+          value.expiresAt < now
+        ) {
           delete data.ledger[key];
         }
       }
@@ -1408,16 +1430,38 @@ export class LocalStore {
         }
       }
       if (OFFER_OPERATION_TYPES.has(input.operationType)) {
-        const activeOfferWrite = Object.values(data.ledger).find(
+        const matchingOfferWrites = Object.values(data.ledger).filter(
           (entry) =>
             OFFER_OPERATION_TYPES.has(entry.operationType) &&
             entry.marketplaceId === input.marketplaceId &&
             entry.sellerSku === input.sellerSku &&
-            entry.state !== "completed" &&
             (entry.accountScope === input.accountScope ||
               entry.accountScope === "legacy-unknown"),
         );
-        if (activeOfferWrite) throw operationError(activeOfferWrite.state);
+        const activeOfferWrites = matchingOfferWrites.filter(
+          (entry) => entry.state !== "completed",
+        );
+        // A previous v0.1.41 Business Price PATCH may be durably unknown after
+        // Amazon retained two identical quantity_discount_plan contributions.
+        // The main mutation owner can designate one exact duplicate cleanup as
+        // a repair operation. It may bypass only one UNKNOWN business_price
+        // predecessor, never a pending write, another offer family, or any
+        // earlier repair attempt (including a completed repair awaiting the
+        // next canonical reconciliation).
+        const mayRepairOneUnknownBusinessPrice =
+          input.operationType === "business_price" &&
+          input.businessPriceDuplicateRepair === true &&
+          !matchingOfferWrites.some((entry) =>
+            entry.businessPriceDuplicateRepair === true
+          ) &&
+          activeOfferWrites.length === 1 &&
+          activeOfferWrites[0]?.operationType === "business_price" &&
+          activeOfferWrites[0].state === "unknown" &&
+          activeOfferWrites[0].accountScope === input.accountScope;
+        const blockingOfferWrite = activeOfferWrites[0];
+        if (blockingOfferWrite && !mayRepairOneUnknownBusinessPrice) {
+          throw operationError(blockingOfferWrite.state);
+        }
       }
       if (LISTING_ATTRIBUTE_OPERATION_TYPES.has(input.operationType)) {
         const activeAttributeWrite = Object.values(data.ledger).find(
@@ -1446,8 +1490,31 @@ export class LocalStore {
         response: null,
         createdAt: sequenceAt,
         updatedAt: sequenceAt,
-        expiresAt: now + OPERATION_TTL_MS,
+        expiresAt: input.businessPriceDuplicateRepair
+          ? PERMANENT_OPERATION_EXPIRY
+          : now + OPERATION_TTL_MS,
+        ...(input.businessPriceDuplicateRepair
+          ? { businessPriceDuplicateRepair: true as const }
+          : {}),
       };
+      if (repairTombstoneKey) {
+        data.ledger[repairTombstoneKey] = {
+          operationType: "business_price",
+          marketplaceId: input.marketplaceId,
+          sellerSku: input.sellerSku,
+          accountScope: input.accountScope,
+          fingerprint: createHash("sha256")
+            .update(`duplicate-repair-tombstone\0${input.fingerprint}`)
+            .digest("hex"),
+          ownerToken,
+          state: "completed",
+          response: { businessPriceDuplicateRepairTombstone: true },
+          createdAt: sequenceAt + 1,
+          updatedAt: sequenceAt + 1,
+          expiresAt: PERMANENT_OPERATION_EXPIRY,
+          businessPriceDuplicateRepair: true,
+        };
+      }
       claimed = true;
     });
     if (!claimed) return cachedResult as T;
@@ -1491,6 +1558,7 @@ export class LocalStore {
           entry.updatedAt = Date.now();
         } else {
           delete data.ledger[input.idempotencyKey];
+          if (repairTombstoneKey) delete data.ledger[repairTombstoneKey];
         }
       });
       if (error instanceof SpApiError) throw error;
@@ -1541,7 +1609,11 @@ export class LocalStore {
     await this.mutate((data) => {
       const now = Date.now();
       for (const [key, value] of Object.entries(data.ledger)) {
-        if (value.state === "completed" && value.expiresAt < now) {
+        if (
+          value.state === "completed" &&
+          value.businessPriceDuplicateRepair !== true &&
+          value.expiresAt < now
+        ) {
           delete data.ledger[key];
         }
       }
@@ -1613,7 +1685,9 @@ export class LocalStore {
         entry.state = "completed";
         entry.response = structuredClone(result);
         entry.updatedAt = now;
-        entry.expiresAt = now + OPERATION_TTL_MS;
+        entry.expiresAt = entry.businessPriceDuplicateRepair
+          ? PERMANENT_OPERATION_EXPIRY
+          : now + OPERATION_TTL_MS;
         reconciled += 1;
       }
     });

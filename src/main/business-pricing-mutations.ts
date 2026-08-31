@@ -137,6 +137,8 @@ function proposalFingerprint(
     evidence.businessOfferGuardHash,
     evidence.businessOfferProtectedHash,
     evidence.previousQuantityDiscountPlanHash,
+    evidence.quantityDiscountPlanPresence,
+    evidence.quantityDiscountPlanChange,
     evidence.schemaChecksum,
     evidence.fbaEvidenceHash,
     evidence.canonicalPatchHash,
@@ -209,6 +211,8 @@ function requestedQuantityDiscountPlan(
   }
   if (
     listing.quantityDiscountPlanPresence === "ambiguous" ||
+    (listing.quantityDiscountPlanPresence === "duplicate" &&
+      listing.quantityDiscountPlan?.discountType !== "percent") ||
     tiers.length < 1 || tiers.length > 5 ||
     input.expectedQuantityDiscountPlanHash === undefined ||
     input.expectedQuantityDiscountPlanHash !== listing.quantityDiscountPlanHash
@@ -332,9 +336,15 @@ function verifyBusinessPriceChange(
       { status: 409, code: "BUSINESS_PRICING_MANAGED_BY_AUTOMATION" },
     );
   }
-  if (listing.quantityDiscountPlanPresence === "ambiguous") {
+  if (
+    listing.quantityDiscountPlanPresence === "ambiguous" ||
+    (listing.quantityDiscountPlanPresence === "duplicate" &&
+      input.quantityDiscountTiers === undefined)
+  ) {
     throw new SpApiError(
-      "目前數量折扣無法完整辨識；為避免只調價時誤覆蓋既有階梯，請重新讀取後再預檢。",
+      listing.quantityDiscountPlanPresence === "duplicate"
+        ? "Amazon 回傳多份內容相同的數量折扣；本次必須一併送出目前階梯，才能用單一 contribution 修復，不能只改價格。"
+        : "目前數量折扣無法完整辨識；為避免覆蓋既有階梯，價格與折扣都已停止修改。",
       { status: 409, code: "QUANTITY_DISCOUNT_CHANGED" },
     );
   }
@@ -369,7 +379,20 @@ function verifyBusinessPriceChange(
     );
     const samePlan = requestedPlan !== null &&
       canonicalSha256(requestedPlan) === listing.quantityDiscountPlanHash;
-    if (sameBusinessPrice && (!requestedPlan || samePlan)) {
+    if (
+      listing.quantityDiscountPlanPresence === "duplicate" &&
+      (!sameBusinessPrice || !samePlan)
+    ) {
+      throw new SpApiError(
+        "重複數量折扣修復只能重送目前 B2B 價格與完全相同的目前階梯；已停止任何價格或折扣變更。",
+        { status: 409, code: "DUPLICATE_REPAIR_CHANGED" },
+      );
+    }
+    if (
+      sameBusinessPrice &&
+      (!requestedPlan || samePlan) &&
+      listing.quantityDiscountPlanPresence !== "duplicate"
+    ) {
       throw new SpApiError("新 B2B contribution 與目前價格及數量折扣相同。", {
         status: 400,
         code: "BUSINESS_PRICE_UNCHANGED",
@@ -422,7 +445,13 @@ function patchDescriptor(
       },
     };
   }
-  return { ...base, kind: "price-only", quantityDiscountPlan: null };
+  return {
+    ...base,
+    kind: "price-only",
+    quantityDiscountPlan: verified.previousQuantityDiscountPlan
+      ? structuredClone(verified.previousQuantityDiscountPlan)
+      : null,
+  };
 }
 
 type PreparedBusinessPriceMutation = Readonly<{
@@ -457,6 +486,10 @@ function precommitEvidence(
     businessOfferGuardHash: listing.businessOfferGuardHash,
     businessOfferProtectedHash: listing.businessOfferProtectedHash,
     previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
+    quantityDiscountPlanPresence: listing.quantityDiscountPlanPresence,
+    quantityDiscountPlanChange: patch.kind === "combined"
+      ? "replace"
+      : "preserve",
     schemaChecksum,
     fbaEvidenceHash: canonicalSha256(
       listing.fulfillmentAvailability
@@ -491,6 +524,10 @@ function assertPrecommitEvidence(
     actual.businessOfferProtectedHash !== expected.businessOfferProtectedHash ||
     actual.previousQuantityDiscountPlanHash !==
       expected.previousQuantityDiscountPlanHash ||
+    actual.quantityDiscountPlanPresence !==
+      expected.quantityDiscountPlanPresence ||
+    actual.quantityDiscountPlanChange !==
+      expected.quantityDiscountPlanChange ||
     actual.schemaChecksum !== expected.schemaChecksum ||
     actual.fbaEvidenceHash !== expected.fbaEvidenceHash ||
     actual.canonicalPatchHash !== expected.canonicalPatchHash ||
@@ -1493,13 +1530,18 @@ export class BusinessPricingMutations implements BusinessPricingMutationsPort {
     evidence: BusinessPricePrecommitEvidence,
     context: SpExecutionContext,
   ): WriteBinding {
+    const duplicateRepair =
+      evidence.quantityDiscountPlanPresence === "duplicate" &&
+      evidence.quantityDiscountPlanChange === "replace";
     return {
       family: "business-price",
       previewKey: input.idempotencyKey,
       context,
       intents: [{
         intentId: "primary",
-        operation: "business_price",
+        operation: duplicateRepair
+          ? "business_price_repair"
+          : "business_price",
         marketplaceId: input.marketplaceId,
         sellerSku: input.sellerSku,
         idempotencyKey: input.idempotencyKey,

@@ -11,6 +11,8 @@ import type {
   BusinessPricingGateway,
   BusinessPricingGatewayReply,
 } from "../src/main/amazon/business-pricing-gateway";
+import { canonicalSha256 } from
+  "../src/main/amazon/listing-item-projection";
 import type { ListingWriteExecutionFence } from
   "../src/main/amazon/listing-write-execution-fence";
 import {
@@ -610,5 +612,138 @@ describe("W05 Business Pricing mutation owner", () => {
     });
     expect(validationPreview).not.toHaveBeenCalled();
     expect(stagePreview).not.toHaveBeenCalled();
+  });
+
+  it("stages an exact same-price and same-tier duplicate cleanup as a repair write", async () => {
+    const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
+    const plan = {
+      discountType: "percent" as const,
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+      ],
+    };
+    const snapshot: BusinessPricingListingSnapshot = {
+      ...businessPricingSnapshot(),
+      quantityDiscountPlan: plan,
+      quantityDiscountPlanPresence: "duplicate",
+      quantityDiscountPlanHash: canonicalSha256(plan),
+    };
+    const validationPreview = vi.fn(async () => ({
+      ok: true as const,
+      status: 200,
+      requestId: "REQ-W05-DUPLICATE-REPAIR-PREVIEW",
+      retryAfter: null,
+      payload: {
+        sku: SELLER_SKU,
+        status: "VALID",
+        submissionId: "W05-DUPLICATE-REPAIR-PREVIEW",
+        issues: [],
+        identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: snapshot.asin }],
+      },
+    }));
+    const gateway: BusinessPricingGateway = {
+      mode: () => "live",
+      read: async () => snapshot,
+      quantityDiscountPlanSupported: () => true,
+      validationPreview,
+      commitOnce: vi.fn(),
+      replaceDemoContribution: async () => undefined,
+    };
+    const owner = createBusinessPricingMutations({
+      context: {
+        capture: async (marketplaceId) => ({
+          marketplaceId,
+          region: "na",
+          mode: "live",
+          accountScope: "opaque-w05-duplicate-repair" as never,
+          generation: 0,
+        }),
+        assertCurrent: async () => undefined,
+        invalidate: () => undefined,
+      },
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: async () => undefined,
+        clearEphemeral: () => undefined,
+      } as unknown as MainWriteGatePort,
+      gateway,
+      priceObserver: { observeCanonical: vi.fn() },
+    });
+    const request = mutationRequest("POST", "w05-duplicate-repair-001");
+    if (request.body?.kind !== "json") throw new Error("Expected JSON body");
+    request.body.value = {
+      ...request.body.value,
+      newBusinessPrice: snapshot.businessPrice!.amount,
+      expectedQuantityDiscountPlanHash: snapshot.quantityDiscountPlanHash,
+      quantityDiscountTiers: plan.levels.map((level) => ({
+        lowerBound: level.lowerBound,
+        percent: level.value,
+      })),
+    };
+
+    const response = await owner.handle({ operation: "preview", request });
+
+    expect(response.status).toBe(200);
+    expect(validationPreview).toHaveBeenCalledOnce();
+    expect(stagePreview).toHaveBeenCalledWith(expect.objectContaining({
+      family: "business-price",
+      intents: [expect.objectContaining({
+        operation: "business_price_repair",
+      })],
+    }));
+
+    const changedPriceRequest = mutationRequest(
+      "POST",
+      "w05-duplicate-repair-changed-price",
+    );
+    if (changedPriceRequest.body?.kind !== "json") {
+      throw new Error("Expected JSON body");
+    }
+    changedPriceRequest.body.value = {
+      ...changedPriceRequest.body.value,
+      newBusinessPrice: snapshot.businessPrice!.amount - 1,
+      expectedQuantityDiscountPlanHash: snapshot.quantityDiscountPlanHash,
+      quantityDiscountTiers: plan.levels.map((level) => ({
+        lowerBound: level.lowerBound,
+        percent: level.value,
+      })),
+    };
+    const changedPrice = await owner.handle({
+      operation: "preview",
+      request: changedPriceRequest,
+    });
+    expect(changedPrice.status).toBe(409);
+    expect(bodyValue(changedPrice)).toMatchObject({
+      code: "DUPLICATE_REPAIR_CHANGED",
+    });
+
+    const changedTiersRequest = mutationRequest(
+      "POST",
+      "w05-duplicate-repair-changed-tiers",
+    );
+    if (changedTiersRequest.body?.kind !== "json") {
+      throw new Error("Expected JSON body");
+    }
+    changedTiersRequest.body.value = {
+      ...changedTiersRequest.body.value,
+      newBusinessPrice: snapshot.businessPrice!.amount,
+      expectedQuantityDiscountPlanHash: snapshot.quantityDiscountPlanHash,
+      quantityDiscountTiers: plan.levels.map((level, index) => ({
+        lowerBound: level.lowerBound,
+        percent: level.value + (index === 0 ? 1 : 0),
+      })),
+    };
+    const changedTiers = await owner.handle({
+      operation: "preview",
+      request: changedTiersRequest,
+    });
+    expect(changedTiers.status).toBe(409);
+    expect(bodyValue(changedTiers)).toMatchObject({
+      code: "DUPLICATE_REPAIR_CHANGED",
+    });
+    expect(validationPreview).toHaveBeenCalledOnce();
+    expect(stagePreview).toHaveBeenCalledOnce();
   });
 });

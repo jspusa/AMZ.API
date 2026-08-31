@@ -179,6 +179,10 @@ describe("business pricing write readback", () => {
       .toBe("verified");
     expect(businessPriceReadbackDecision(result as never, {
       ...snapshot,
+      quantityDiscountPlanPresence: "duplicate",
+    } as never)).toBe("pending");
+    expect(businessPriceReadbackDecision(result as never, {
+      ...snapshot,
       quantityDiscountPlan: {
         ...requestedPlan,
         levels: requestedPlan.levels.slice(0, 3),

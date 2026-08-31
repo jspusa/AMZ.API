@@ -134,7 +134,11 @@ export type BusinessPricingAuditRow = {
   businessPrice: Money | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
   quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
   recommendedPriceMismatch: boolean;
   recommendedQuantityDiscountMismatch: boolean;
   status:
@@ -791,7 +795,8 @@ function reconcileListingsAndReportQuantityDiscountEvidence(
       };
     }
     if (
-      listings.quantityDiscountPlanPresence === "canonical" &&
+      (listings.quantityDiscountPlanPresence === "canonical" ||
+        listings.quantityDiscountPlanPresence === "duplicate") &&
       listings.quantityDiscountPlan &&
       sameBusinessQuantityDiscountPlan(
         report.plan,
@@ -800,7 +805,8 @@ function reconcileListingsAndReportQuantityDiscountEvidence(
     ) {
       return {
         quantityDiscountPlan: report.plan,
-        quantityDiscountPlanPresence: "canonical",
+        quantityDiscountPlanPresence:
+          listings.quantityDiscountPlanPresence,
       };
     }
     return {

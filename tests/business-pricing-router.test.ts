@@ -200,6 +200,8 @@ describe("Amazon Business pricing routes", () => {
       businessOfferGuardHash: "a".repeat(64),
       businessOfferProtectedHash: "e".repeat(64),
       previousQuantityDiscountPlanHash: null,
+      quantityDiscountPlanPresence: "absent",
+      quantityDiscountPlanChange: "preserve",
       schemaChecksum: "seller-schema-checksum",
       fbaEvidenceHash: "b".repeat(64),
       canonicalPatchHash: "c".repeat(64),

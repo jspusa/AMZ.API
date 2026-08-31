@@ -61,9 +61,10 @@ export function recommendedBusinessPriceMismatch(input: Readonly<{
 
 export function recommendedQuantityDiscountMismatch(input: Readonly<{
   plan: QuantityDiscountPlan | null;
-  presence: "absent" | "canonical" | "ambiguous";
+  presence: "absent" | "canonical" | "duplicate" | "ambiguous";
 }>): boolean {
   if (input.presence === "ambiguous") return false;
+  if (input.presence === "duplicate") return true;
   if (input.presence === "absent") return true;
   const plan = input.plan;
   if (
@@ -83,7 +84,11 @@ export function businessPricingRecommendationFlags(input: Readonly<{
   standardPrice: Money | null;
   businessPrice: Money | null;
   quantityDiscountPlan: QuantityDiscountPlan | null;
-  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
 }>): Readonly<{
   recommendedPriceMismatch: boolean;
   recommendedQuantityDiscountMismatch: boolean;

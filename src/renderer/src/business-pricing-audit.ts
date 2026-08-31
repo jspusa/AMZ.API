@@ -33,7 +33,11 @@ export type BusinessPricingAuditRow = Readonly<{
   businessPrice: BusinessPricingMoney | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
   quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
   recommendedPriceMismatch: boolean;
   recommendedQuantityDiscountMismatch: boolean;
   status: BusinessPricingAuditStatus;
@@ -96,7 +100,11 @@ export type BusinessPricingListingSnapshot = Readonly<{
   businessOfferPresence: "absent" | "present" | "ambiguous";
   businessPricingManagedByAutomation: boolean;
   quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
   quantityDiscountPlanHash: string | null;
   businessOfferGuardHash: string;
   businessOfferProtectedHash: string;
@@ -134,6 +142,11 @@ export type BusinessPriceValidation = Readonly<{
   previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   previousQuantityDiscountPlanHash: string | null;
   requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
   quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
   businessOfferProtectedHash: string;
@@ -553,10 +566,10 @@ function parseAuditQuantityDiscountPlan(
   presence: unknown,
 ): {
   plan: BusinessQuantityDiscountPlan | null;
-  presence: "absent" | "canonical" | "ambiguous";
+  presence: "absent" | "canonical" | "duplicate" | "ambiguous";
 } {
   if (presence !== "absent" && presence !== "canonical" &&
-      presence !== "ambiguous") {
+      presence !== "duplicate" && presence !== "ambiguous") {
     throw new Error("B2B 數量折扣證據無效。");
   }
   if (presence === "absent" || presence === "ambiguous") {
@@ -574,11 +587,11 @@ function parseQuantityDiscountPlan(
   hash: unknown,
 ): {
   plan: BusinessQuantityDiscountPlan | null;
-  presence: "absent" | "canonical" | "ambiguous";
+  presence: "absent" | "canonical" | "duplicate" | "ambiguous";
   hash: string | null;
 } {
   const parsed = parseAuditQuantityDiscountPlan(value, presence);
-  if (parsed.presence !== "canonical") {
+  if (parsed.presence === "absent" || parsed.presence === "ambiguous") {
     if (hash !== null) {
       throw new Error("B2B 數量折扣空值證據不一致。");
     }
@@ -715,12 +728,23 @@ export function defaultBusinessPricingProposal(
   ) return null;
   const canReplaceQuantityDiscounts =
     listing.quantityDiscountPlanPresence !== "ambiguous" &&
+    (listing.quantityDiscountPlanPresence !== "duplicate" ||
+      listing.quantityDiscountPlan?.discountType === "percent") &&
     listing.businessPricingCapability.quantityDiscountsSupported &&
     listing.businessPricingCapability.quantityDiscountsEditable;
+  const duplicateTiers = listing.quantityDiscountPlanPresence === "duplicate" &&
+      listing.quantityDiscountPlan?.discountType === "percent"
+    ? listing.quantityDiscountPlan.levels.map((level) => Object.freeze({
+        lowerBound: level.lowerBound,
+        percent: level.value,
+      }))
+    : null;
   return Object.freeze({
-    businessPrice: Number((standard.amount - 1).toFixed(2)),
+    businessPrice: duplicateTiers && listing.businessPrice
+      ? listing.businessPrice.amount
+      : Number((standard.amount - 1).toFixed(2)),
     tiers: Object.freeze(canReplaceQuantityDiscounts
-      ? [
+      ? duplicateTiers ?? [
           Object.freeze({ lowerBound: 5, percent: 5 }),
           Object.freeze({ lowerBound: 10, percent: 10 }),
           Object.freeze({ lowerBound: 15, percent: 15 }),
@@ -846,6 +870,15 @@ export function parseBusinessPriceValidation(
     "預檢新數量折扣",
   );
   const quantityDiscountPlanChange = source.quantityDiscountPlanChange;
+  const quantityDiscountPlanPresence =
+    source.quantityDiscountPlanPresence === "absent" ||
+      source.quantityDiscountPlanPresence === "canonical" ||
+      source.quantityDiscountPlanPresence === "duplicate" ||
+      source.quantityDiscountPlanPresence === "ambiguous"
+      ? source.quantityDiscountPlanPresence
+      : previousQuantityDiscountPlan === null
+        ? "absent"
+        : "canonical";
   const previousQuantityDiscountPlanHash = source.previousQuantityDiscountPlanHash ===
       null
     ? null
@@ -890,6 +923,7 @@ export function parseBusinessPriceValidation(
     previousQuantityDiscountPlan,
     previousQuantityDiscountPlanHash,
     requestedQuantityDiscountPlan,
+    quantityDiscountPlanPresence,
     quantityDiscountPlanChange,
     businessOfferGuardHash: exactHash(
       source.businessOfferGuardHash,
@@ -933,9 +967,18 @@ export function createSubmittedBusinessPricePreview(input: {
   }
   const tiers = input.quantityDiscountTiers;
   let requestedPlan: BusinessQuantityDiscountPlan | null = null;
+  if (
+    tiers === undefined &&
+    (input.listing.quantityDiscountPlanPresence === "ambiguous" ||
+      input.listing.quantityDiscountPlanPresence === "duplicate")
+  ) {
+    throw new Error("目前 B2B 數量折扣不能安全地只改價格。");
+  }
   if (tiers !== undefined) {
     if (
       input.listing.quantityDiscountPlanPresence === "ambiguous" ||
+      (input.listing.quantityDiscountPlanPresence === "duplicate" &&
+        input.listing.quantityDiscountPlan?.discountType !== "percent") ||
       !input.listing.businessPricingCapability.quantityDiscountsSupported ||
       !input.listing.businessPricingCapability.quantityDiscountsEditable ||
       tiers.length < 1 || tiers.length > 5
@@ -1013,6 +1056,8 @@ export function createSubmittedBusinessPricePreview(input: {
     ) ||
     validation.previousQuantityDiscountPlanHash !==
       input.listing.quantityDiscountPlanHash ||
+    validation.quantityDiscountPlanPresence !==
+      input.listing.quantityDiscountPlanPresence ||
     validation.quantityDiscountPlanChange !==
       (tiers === undefined ? "preserve" : "replace") ||
     !sameQuantityDiscountPlan(

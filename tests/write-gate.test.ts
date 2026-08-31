@@ -85,6 +85,25 @@ function runOne<T>(
 }
 
 describe("main-owned Amazon write gate", () => {
+  it("accepts the narrowly-scoped Business Price duplicate repair operation", async () => {
+    const store = await testStore();
+    const contextAdapter = scriptedContext();
+    const context = await contextAdapter.capture(US);
+    const gate = new MainWriteGate({
+      store,
+      context: contextAdapter,
+      approveWrite: async () => undefined,
+    });
+    const binding = writeBinding(context, {
+      family: "business-price",
+      operation: "business_price_repair",
+      previewKey: "business-price-duplicate-repair-preview",
+      idempotencyKey: "business-price-duplicate-repair-write",
+    });
+
+    await expect(gate.stagePreview(binding)).resolves.toBeUndefined();
+  });
+
   it("releases a native-cancelled preview so retry executes exactly once", async () => {
     const store = await testStore();
     const contextAdapter = scriptedContext();

@@ -111,13 +111,24 @@ export default function BusinessPricingEditor({
 }>) {
   const priceOnlyProposal = businessPricingEditorProposal(listing, "price_only");
   const combinedProposal = businessPricingEditorProposal(listing, "combined");
+  const repairableDuplicateQuantityDiscounts =
+    listing.quantityDiscountPlanPresence === "duplicate" &&
+    listing.quantityDiscountPlan?.discountType === "percent";
   const canReplaceQuantityDiscounts = Boolean(
     listing.businessPricingCapability.quantityDiscountsEditable &&
     listing.quantityDiscountPlanPresence !== "ambiguous" &&
+    (listing.quantityDiscountPlanPresence !== "duplicate" ||
+      repairableDuplicateQuantityDiscounts) &&
     !listing.businessPricingManagedByAutomation,
   );
+  const writeBlockedByQuantityEvidence =
+    listing.quantityDiscountPlanPresence === "ambiguous" ||
+    (listing.quantityDiscountPlanPresence === "duplicate" &&
+      !repairableDuplicateQuantityDiscounts);
   const [newPrice, setNewPrice] = useState(
-    priceOnlyProposal?.businessPrice.toFixed(2) ??
+    (repairableDuplicateQuantityDiscounts
+      ? listing.businessPrice?.amount.toFixed(2)
+      : priceOnlyProposal?.businessPrice.toFixed(2)) ??
       listing.businessPrice?.amount.toString() ?? "",
   );
   const [editorMode, setEditorMode] =
@@ -306,7 +317,8 @@ export default function BusinessPricingEditor({
               resetPreview();
               setNewPrice(event.target.value);
             }}
-            disabled={loading}
+            disabled={loading || writeBlockedByQuantityEvidence ||
+              repairableDuplicateQuantityDiscounts}
             inputMode={listing.standardPrice?.currencyCode === "JPY"
               ? "numeric"
               : "decimal"}
@@ -321,18 +333,22 @@ export default function BusinessPricingEditor({
             role="group"
             aria-label="B2B 數量折扣更新方式"
           >
-            <button
-              type="button"
-              aria-pressed={editorMode === "price_only"}
-              onClick={() => chooseEditorMode("price_only")}
-              disabled={loading}
-            >只改價格並保留原數量折扣</button>
+            {!repairableDuplicateQuantityDiscounts && (
+              <button
+                type="button"
+                aria-pressed={editorMode === "price_only"}
+                onClick={() => chooseEditorMode("price_only")}
+                disabled={loading}
+              >只改價格並保留原數量折扣</button>
+            )}
             <button
               type="button"
               aria-pressed={editorMode === "combined"}
               onClick={() => chooseEditorMode("combined")}
-              disabled={loading}
-            >一併更新預填階梯折扣</button>
+              disabled={loading || repairableDuplicateQuantityDiscounts}
+            >{repairableDuplicateQuantityDiscounts
+                ? "修復重複數量折扣"
+                : "一併更新預填階梯折扣"}</button>
           </div>
           {editorMode === "price_only" && (
             <div className="price-warning compact">
@@ -343,11 +359,21 @@ export default function BusinessPricingEditor({
           {editorMode === "combined" && (
             <fieldset
               className="business-pricing-tier-fieldset"
-              disabled={loading}
+              disabled={loading || repairableDuplicateQuantityDiscounts}
             >
-              <legend>預填建議數量折扣（1–5 階 percent）</legend>
+              <legend>{repairableDuplicateQuantityDiscounts
+                ? "目前數量折扣（將去除重複）"
+                : "預填建議數量折扣（1–5 階 percent）"}</legend>
+              {repairableDuplicateQuantityDiscounts && (
+                <div className="price-warning compact" role="status">
+                  <strong>將修復重複數量折扣</strong>
+                  <p>Amazon 回傳多份內容相同的 quantity_discount_plan；已預填目前階梯。預檢通過後，正式送出會以單一 B2B contribution 取代重複資料。</p>
+                </div>
+              )}
               <p className="business-pricing-notice">
-                已選擇一併更新；你可直接預檢，或先調整下列建議值。
+                {repairableDuplicateQuantityDiscounts
+                  ? "修復模式會固定使用目前 B2B 價格與目前階梯；本次不會變更售價或折扣內容。"
+                  : "已選擇一併更新；你可直接預檢，或先調整下列建議值。"}
               </p>
               <div className="business-pricing-tier-grid">
                 {tierDrafts.map((tier, index) => (
@@ -359,6 +385,7 @@ export default function BusinessPricingEditor({
                         id={`business-tier-bound-${index}`}
                         inputMode="numeric"
                         value={tier.lowerBound}
+                        disabled={repairableDuplicateQuantityDiscounts}
                         onChange={(event) => {
                           resetPreview();
                           setTierDrafts((current) => current.map(
@@ -375,6 +402,7 @@ export default function BusinessPricingEditor({
                         id={`business-tier-percent-${index}`}
                         inputMode="decimal"
                         value={tier.percent}
+                        disabled={repairableDuplicateQuantityDiscounts}
                         onChange={(event) => {
                           resetPreview();
                           setTierDrafts((current) => current.map(
@@ -385,7 +413,8 @@ export default function BusinessPricingEditor({
                         }}
                       />
                     </label>
-                    {tierDrafts.length > 1 && (
+                    {!repairableDuplicateQuantityDiscounts &&
+                      tierDrafts.length > 1 && (
                       <button
                         type="button"
                         onClick={() => {
@@ -400,7 +429,8 @@ export default function BusinessPricingEditor({
                 ))}
               </div>
               <div className="business-pricing-tier-actions">
-                {tierDrafts.length < 5 && (
+                {!repairableDuplicateQuantityDiscounts &&
+                  tierDrafts.length < 5 && (
                   <button
                     type="button"
                     onClick={() => {
@@ -429,7 +459,9 @@ export default function BusinessPricingEditor({
           <p>{listing.businessPricingManagedByAutomation
             ? "此 contribution 由 Amazon Automate Pricing 管理；請先在 Seller Central 處理規則。"
             : listing.quantityDiscountPlanPresence === "ambiguous"
-            ? "Amazon 回傳的 quantity_discount_plan 不唯一；本次只允許 price-only 並保留原方案。"
+            ? "Amazon 回傳的 quantity_discount_plan 內容不一致或無法辨識；價格與數量折扣都先停止修改，避免覆蓋未知方案。"
+            : listing.quantityDiscountPlanPresence === "duplicate"
+            ? "Amazon 回傳重複的固定單價折扣方案；目前介面只能安全修復 percent 階梯，請先至 Seller Central 核對。"
             : listing.businessPricingCapability.quantityDiscountsReason ??
               "seller-specific PTD 未開放 quantity_discount_plan。"}</p>
         </div>
@@ -529,6 +561,7 @@ export default function BusinessPricingEditor({
       )}
       {!validation &&
         !result &&
+        !writeBlockedByQuantityEvidence &&
         listing.businessPricingCapability.editable && (
         <button
           type="submit"
