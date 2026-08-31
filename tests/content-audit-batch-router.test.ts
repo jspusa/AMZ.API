@@ -24,6 +24,8 @@ import {
 } from
   "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
+import { parseContentWorkbookBatchPreview } from
+  "../src/renderer/src/components/content-audit-panel";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { createListingContentBatchMutations } from
   "../src/main/listing-content-batch-mutations";
@@ -182,6 +184,20 @@ function forcedCommitRequest(
   return request;
 }
 
+function exactBulletReplacementCommitRequest(
+  previewId: string,
+  idempotencyKey: string,
+  sellerSkus: string[],
+): ApiRequest {
+  const request = commitRequest(previewId, idempotencyKey);
+  if (request.body?.kind !== "json") throw new Error("Expected JSON commit body");
+  request.body.value.exactBulletReplacement = {
+    acknowledged: true,
+    sellerSkus,
+  };
+  return request;
+}
+
 function canonicalJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJsonValue);
   if (value && typeof value === "object") {
@@ -211,6 +227,8 @@ function preparedPreview(
     mode?: "live" | "demo";
     status?: "VALID" | "INVALID" | "SIMULATED";
     issues?: ListingContentPreparedPreview["issues"];
+    exactBulletReplacement?:
+      ListingContentPreparedPreview["exactBulletReplacement"];
   }> = {},
 ): ListingContentPreparedPreview {
   const resolvedIdentity = identity ?? preparedIdentityBySku.get(input.sellerSku) ??
@@ -271,6 +289,7 @@ function preparedPreview(
     validatedAt: new Date(0).toISOString(),
     issues: [...issues],
     notice: "test-only demo preview",
+    exactBulletReplacement: options.exactBulletReplacement ?? null,
     proposalFingerprint: canonicalSha256([
       evidence.marketplaceId,
       evidence.sellerSku,
@@ -674,6 +693,255 @@ describe("content audit Excel batch router", () => {
     expect(runIdempotentOperation).toHaveBeenCalledOnce();
   });
 
+  it("skips edited incomplete rows without blocking safe Excel changes", async () => {
+    const snapshot = await audit();
+    const sourceWorkbook = workbook(snapshot, 2);
+    const parsed = parseContentAuditWorkbook({
+      bytes: sourceWorkbook,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    expect(parsed.rows).toHaveLength(2);
+    const blockedSellerSku = parsed.rows[0]!.sellerSku;
+    const safeSellerSku = parsed.rows[1]!.sellerSku;
+    const stored = contentAuditEvidence.get(snapshot.exportId)!;
+    stored.rowDigests = parsed.rows.map((row, index) =>
+      contentAuditEvidenceRowDigest({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        mode: "demo",
+        exportId: parsed.metadata.exportId,
+        fetchedAt: parsed.metadata.fetchedAt,
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        productType: row.productType,
+        variationFamilyKey: row.variationFamilyKey,
+        values: row.original,
+        readStatus: index === 0 ? "incomplete" : "complete",
+      })
+    );
+    const edited = replaceEveryProposedTitle(
+      sourceWorkbook,
+      "Mixed-read-status title",
+    );
+    const key = "content-batch-incomplete-row-isolation-001";
+
+    const preview = await router.handle(importRequest(edited, key));
+    const body = responseValue(preview);
+
+    expect(preview.status, JSON.stringify(body)).toBe(200);
+    expect(body.changes).toEqual([
+      expect.objectContaining({ sellerSku: safeSellerSku }),
+    ]);
+    expect(body.blockedChanges).toEqual([
+      expect.objectContaining({
+        sellerSku: blockedSellerSku,
+        code: "CONTENT_READ_INCOMPLETE",
+        changedFields: ["title"],
+        message: expect.stringMatching(/未納入本次更新|不會寫入/u),
+      }),
+    ]);
+    expect(() => parseContentWorkbookBatchPreview(body, MARKETPLACE_ID))
+      .not.toThrow();
+    expect(approveWrite).not.toHaveBeenCalled();
+
+    const committed = await router.handle(
+      commitRequest(String(body.previewId), key),
+    );
+    expect(committed.status).toBe(200);
+    const committedBody = responseValue(committed);
+    expect(committedBody.rows).toEqual([
+      expect.objectContaining({ sellerSku: safeSellerSku }),
+    ]);
+    expect(committedBody.blockedChanges).toEqual([
+      expect.objectContaining({
+        sellerSku: blockedSellerSku,
+        changedFields: ["title"],
+      }),
+    ]);
+    expect(committedBody.notice).toMatch(/1 個原掃描未完整的 SKU 已略過且未寫入/u);
+    expect(approveWrite).toHaveBeenCalledOnce();
+  });
+
+  it("keeps blocked incomplete rows visible when another edited row fails preflight", async () => {
+    const snapshot = await audit();
+    const sourceWorkbook = workbook(snapshot, 2);
+    const parsed = parseContentAuditWorkbook({
+      bytes: sourceWorkbook,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const blockedRow = parsed.rows[0]!;
+    const failedRow = parsed.rows[1]!;
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    stored.rowDigests = parsed.rows.map((row, index) =>
+      contentAuditEvidenceRowDigest({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        mode: "demo",
+        exportId: parsed.metadata.exportId,
+        fetchedAt: parsed.metadata.fetchedAt,
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        productType: row.productType,
+        variationFamilyKey: row.variationFamilyKey,
+        values: row.original,
+        readStatus: index === 0 ? "incomplete" : "complete",
+      })
+    );
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(),
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async () => {
+          throw new SpApiError("Amazon 預檢證據已改變。", {
+            status: 409,
+            code: "PREVIEW_CHANGED",
+            requestId: "REQ-MIXED-FAILURE",
+            operation: "patchListingsItemPreview",
+          });
+        }),
+        attemptOne: vi.fn(),
+      },
+      randomUUID: () => "content-batch-mixed-failure",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(
+        replaceEveryProposedTitle(sourceWorkbook, "Mixed failure title"),
+        "content-batch-mixed-failure-001",
+      ),
+    });
+    const body = responseValue(response);
+
+    expect(response.status).toBe(422);
+    expect(body).toMatchObject({
+      code: "CONTENT_BATCH_VALIDATION_FAILED",
+      writeCount: 0,
+      rows: [expect.objectContaining({
+        sellerSku: failedRow.sellerSku,
+        code: "PREVIEW_CHANGED",
+        requestId: "REQ-MIXED-FAILURE",
+      })],
+      blockedChanges: [expect.objectContaining({
+        sellerSku: blockedRow.sellerSku,
+        code: "CONTENT_READ_INCOMPLETE",
+      })],
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("keeps an all-incomplete edited workbook at zero writes", async () => {
+    const snapshot = await audit();
+    const sourceWorkbook = workbook(snapshot);
+    const parsed = parseContentAuditWorkbook({
+      bytes: sourceWorkbook,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const row = parsed.rows[0]!;
+    const stored = contentAuditEvidence.get(snapshot.exportId)!;
+    stored.rowDigests = [contentAuditEvidenceRowDigest({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      mode: "demo",
+      exportId: parsed.metadata.exportId,
+      fetchedAt: parsed.metadata.fetchedAt,
+      sellerSku: row.sellerSku,
+      asin: row.asin,
+      productType: row.productType,
+      variationFamilyKey: row.variationFamilyKey,
+      values: row.original,
+      readStatus: "incomplete",
+    })];
+    const edited = replaceCell(
+      sourceWorkbook,
+      "E2",
+      "This incomplete row must remain unwritten",
+    );
+
+    const response = await router.handle(importRequest(
+      edited,
+      "content-batch-all-incomplete-001",
+    ));
+    const body = responseValue(response);
+
+    expect(response.status).toBe(422);
+    expect(body).toMatchObject({
+      code: "CONTENT_READ_INCOMPLETE",
+      writeCount: 0,
+      blockedChanges: [expect.objectContaining({
+        sellerSku: row.sellerSku,
+        code: "CONTENT_READ_INCOMPLETE",
+      })],
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(assertIdempotentOperationsAvailable).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("enforces the 500-row cap even when every edited row is incomplete", async () => {
+    const snapshot = await audit();
+    const template = snapshot.rows[0]!;
+    const rows = Array.from({ length: 501 }, (_, index) => ({
+      ...structuredClone(template),
+      sellerSku: `BLOCKED-LIMIT-${String(index + 1).padStart(3, "0")}`,
+      asin: `B${String(index + 1).padStart(9, "0")}`,
+      title: `Blocked limit source title ${index + 1}`,
+    }));
+    const oversizedSnapshot: AuditReply = { ...snapshot, rows };
+    const sourceWorkbook = workbook(oversizedSnapshot, rows.length);
+    const parsed = parseContentAuditWorkbook({
+      bytes: sourceWorkbook,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const stored = contentAuditEvidence.get(snapshot.exportId)!;
+    stored.rowDigests = parsed.rows.map((row) => contentAuditEvidenceRowDigest({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+      mode: "demo",
+      exportId: parsed.metadata.exportId,
+      fetchedAt: parsed.metadata.fetchedAt,
+      sellerSku: row.sellerSku,
+      asin: row.asin,
+      productType: row.productType,
+      variationFamilyKey: row.variationFamilyKey,
+      values: row.original,
+      readStatus: "incomplete",
+    }));
+
+    const response = await router.handle(importRequest(
+      replaceEveryProposedTitle(sourceWorkbook, "Blocked limit title"),
+      "content-batch-all-incomplete-limit-001",
+    ));
+
+    expect(response.status).toBe(413);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_BATCH_TOO_LARGE",
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(assertIdempotentOperationsAvailable).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
   it("lets the public Excel route authoritatively replace 6-10 same-locale bullets, preserves other languages, and still blocks selector ambiguity", async () => {
     const snapshot = await audit();
     const sourceRow = snapshot.rows[0]!;
@@ -847,6 +1115,21 @@ describe("content audit Excel batch router", () => {
         changes: [{
           sellerSku: sourceRow.sellerSku,
           changedFields: ["title", "bulletPoints"],
+          exactBulletReplacement: {
+            languageTag: "en_US",
+            currentExactLanguageBulletPoints: [
+              ...sourceRow.bulletPoints,
+              ...Array.from(
+                { length: 5 },
+                (_, index) => `Legacy overflow English bullet ${index + 6}`,
+              ),
+            ],
+            requestedExactLanguageBulletPoints: sourceRow.bulletPoints,
+            removedOverflowBulletPoints: Array.from(
+              { length: 5 },
+              (_, index) => `Legacy overflow English bullet ${index + 6}`,
+            ),
+          },
         }],
       });
       const patches = previewBodies.at(-1)?.patches as Array<{
@@ -1139,9 +1422,8 @@ describe("content audit Excel batch router", () => {
 
   it("uses the central Write Gate verification code in the one batch approval", async () => {
     const snapshot = await audit();
-    const edited = replaceCell(
-      workbook(snapshot),
-      "E2",
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 2),
       "Gate-owned verification code title",
     );
     let approvalReasonKind = "not-called";
@@ -1159,6 +1441,7 @@ describe("content audit Excel batch router", () => {
           marketplaceId: MARKETPLACE_ID,
           status: "COMPLETED",
           rows: [],
+          blockedChanges: [],
           completedAt: new Date(0).toISOString(),
           notice: "test",
         };
@@ -1166,6 +1449,34 @@ describe("content audit Excel batch router", () => {
       reconcile: vi.fn(async () => undefined),
       clearEphemeral: vi.fn(),
     } as unknown as MainWriteGatePort;
+    const hiddenBullets = [
+      "Hidden Amazon bullet 6",
+      "Hidden Amazon bullet 7",
+    ];
+    const content = {
+      handle: vi.fn(async () => {
+        throw new Error("Single-SKU route is outside this batch test.");
+      }),
+      readOne: vi.fn(async () => {
+        throw new Error("Read route is outside this batch test.");
+      }),
+      previewOne: vi.fn(async (input: UpdateListingContentInput) =>
+        preparedPreview(input, undefined, {
+          exactBulletReplacement: {
+            languageTag: "en_US",
+            currentExactLanguageBulletPoints: [
+              ...input.expectedBulletPoints,
+              ...hiddenBullets,
+            ],
+            requestedExactLanguageBulletPoints: [...input.bulletPoints],
+            removedOverflowBulletPoints: hiddenBullets,
+          },
+        })
+      ),
+      attemptOne: vi.fn(async () => {
+        throw new Error("Mock Write Gate does not enter the attempt phase.");
+      }),
+    } satisfies ListingContentMutationsPort;
     const gateRouter = new ApiRouter({
       store: {
         saveContentAuditSnapshotEvidence,
@@ -1177,19 +1488,169 @@ describe("content audit Excel batch router", () => {
       } as unknown as CredentialVault,
       approveWrite,
       writeGate,
+      listingContentMutations: content,
     });
     const key = "content-batch-gate-code-001";
     const preview = await gateRouter.handle(importRequest(edited, key));
     expect(preview.status).toBe(200);
+    const previewBody = responseValue(preview);
+    const previewId = String(previewBody.previewId);
+    const affectedSkus = (previewBody.changes as Array<{ sellerSku: string }>)
+      .map((change) => change.sellerSku);
+    expect(affectedSkus).toHaveLength(2);
 
-    const response = await gateRouter.handle(commitRequest(
-      String(responseValue(preview).previewId),
-      key,
-    ));
+    const missingAcknowledgement = await gateRouter.handle(
+      commitRequest(previewId, key),
+    );
+    expect(missingAcknowledgement.status).toBe(422);
+    expect(responseValue(missingAcknowledgement)).toMatchObject({
+      code: "EXACT_BULLET_REPLACEMENT_ACKNOWLEDGEMENT_REQUIRED",
+      sellerSkus: affectedSkus,
+      writeCount: 0,
+    });
+    const wrongAcknowledgement = await gateRouter.handle(
+      exactBulletReplacementCommitRequest(previewId, key, ["WRONG-SKU"]),
+    );
+    expect(wrongAcknowledgement.status).toBe(422);
+    expect(responseValue(wrongAcknowledgement)).toMatchObject({
+      code: "EXACT_BULLET_REPLACEMENT_ACKNOWLEDGEMENT_REQUIRED",
+      sellerSkus: affectedSkus,
+      writeCount: 0,
+    });
+    expect(writeGate.execute).not.toHaveBeenCalled();
+
+    const response = await gateRouter.handle(
+      exactBulletReplacementCommitRequest(previewId, key, affectedSkus),
+    );
 
     expect(response.status).toBe(200);
+    expect(writeGate.execute).toHaveBeenCalledOnce();
     expect(approvalReasonKind).toBe("function");
+    expect(approvalReason).toContain("高風險");
+    for (const sellerSku of affectedSkus) {
+      expect(approvalReason).toContain(`${sellerSku}（要點 7→5／刪2）`);
+    }
+    expect(approvalReason).not.toContain("等另");
     expect(approvalReason).toContain("驗證碼 gate-owned-123");
+
+    const oversizedKey = "content-batch-native-summary-too-long-001";
+    const oversizedRows = Array.from({ length: 4 }, (_, index) => ({
+      ...structuredClone(snapshot.rows[0]!),
+      sellerSku: `NATIVE-RISK-SKU-${String(index + 1).padStart(2, "0")}`,
+      asin: `B${String(index + 1).padStart(9, "0")}`,
+    }));
+    const oversizedSnapshot: AuditReply = { ...snapshot, rows: oversizedRows };
+    const oversizedEdited = replaceEveryProposedTitle(
+      workbook(oversizedSnapshot, oversizedRows.length),
+      "Too many destructive bullet disclosures",
+    );
+    const parsedOversizedWorkbook = parseContentAuditWorkbook({
+      bytes: oversizedEdited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const oversizedEvidence = contentAuditEvidence.get(snapshot.exportId)!;
+    oversizedEvidence.rowDigests = parsedOversizedWorkbook.rows.map((row) =>
+      contentAuditEvidenceRowDigest({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        mode: "demo",
+        exportId: parsedOversizedWorkbook.metadata.exportId,
+        fetchedAt: parsedOversizedWorkbook.metadata.fetchedAt,
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        productType: row.productType,
+        variationFamilyKey: row.variationFamilyKey,
+        values: row.original,
+        readStatus: "complete",
+      })
+    );
+    for (const row of oversizedRows) {
+      preparedIdentityBySku.set(row.sellerSku, {
+        asin: row.asin,
+        productType: row.productType,
+      });
+    }
+    const oversizedPreview = await gateRouter.handle(importRequest(
+      oversizedEdited,
+      oversizedKey,
+    ));
+    expect(oversizedPreview.status).toBe(200);
+    const oversizedBody = responseValue(oversizedPreview);
+    const oversizedSkus = (
+      oversizedBody.changes as Array<{ sellerSku: string }>
+    ).map((change) => change.sellerSku);
+    const blockedOversizedCommit = await gateRouter.handle(
+      exactBulletReplacementCommitRequest(
+        String(oversizedBody.previewId),
+        oversizedKey,
+        oversizedSkus,
+      ),
+    );
+    expect(blockedOversizedCommit.status).toBe(422);
+    expect(responseValue(blockedOversizedCommit)).toMatchObject({
+      code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
+      sellerSkus: oversizedSkus,
+      writeCount: 0,
+    });
+    expect(writeGate.execute).toHaveBeenCalledOnce();
+
+    const maximumLengthSku = "S".repeat(40);
+    const maximumLengthRow = {
+      ...structuredClone(snapshot.rows[0]!),
+      sellerSku: maximumLengthSku,
+    };
+    const maximumLengthSnapshot: AuditReply = {
+      ...snapshot,
+      rows: [maximumLengthRow],
+    };
+    const maximumLengthEdited = replaceEveryProposedTitle(
+      workbook(maximumLengthSnapshot),
+      "Maximum length SKU native summary",
+    );
+    const parsedMaximumLengthWorkbook = parseContentAuditWorkbook({
+      bytes: maximumLengthEdited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const maximumLengthEvidence = contentAuditEvidence.get(snapshot.exportId)!;
+    maximumLengthEvidence.rowDigests = parsedMaximumLengthWorkbook.rows.map(
+      (row) => contentAuditEvidenceRowDigest({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        mode: "demo",
+        exportId: parsedMaximumLengthWorkbook.metadata.exportId,
+        fetchedAt: parsedMaximumLengthWorkbook.metadata.fetchedAt,
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        productType: row.productType,
+        variationFamilyKey: row.variationFamilyKey,
+        values: row.original,
+        readStatus: "complete",
+      }),
+    );
+    preparedIdentityBySku.set(maximumLengthSku, {
+      asin: maximumLengthRow.asin,
+      productType: maximumLengthRow.productType,
+    });
+    const maximumLengthKey = "content-batch-maximum-sku-summary-001";
+    const maximumLengthPreview = await gateRouter.handle(importRequest(
+      maximumLengthEdited,
+      maximumLengthKey,
+    ));
+    expect(maximumLengthPreview.status).toBe(200);
+    const maximumLengthBody = responseValue(maximumLengthPreview);
+    const maximumLengthCommit = await gateRouter.handle(
+      exactBulletReplacementCommitRequest(
+        String(maximumLengthBody.previewId),
+        maximumLengthKey,
+        [maximumLengthSku],
+      ),
+    );
+    expect(maximumLengthCommit.status).toBe(200);
+    expect(writeGate.execute).toHaveBeenCalledTimes(2);
+    expect(approvalReason).toContain(maximumLengthSku);
+    expect(approvalReason.length).toBeLessThanOrEqual(120);
     gateRouter.dispose();
   });
 
@@ -2114,14 +2575,9 @@ describe("content audit Excel batch router", () => {
     }));
     const execute = vi.fn(async (input) => {
       await input.beforeApproval?.();
+      expect(input.approvalReason("654321")).toContain("高風險");
       expect(input.approvalReason("654321")).toContain(
-        "強制送出 1 個 Amazon 預檢未通過 SKU",
-      );
-      expect(input.approvalReason("654321")).toContain(
-        "Amazon Validation Preview 明確 INVALID；仍只嘗試一次",
-      );
-      expect(input.approvalReason("654321")).toContain(
-        `${snapshot.rows[0]!.sellerSku}（8541／9001／9002／9003）`,
+        `${snapshot.rows[0]!.sellerSku}（INVALID 8541／9001／9002／9003）`,
       );
       expect(input.approvalReason("654321")).not.toContain("等另");
       return input.run({} as never);
@@ -2245,6 +2701,238 @@ describe("content audit Excel batch router", () => {
       },
     );
     expect(execute).toHaveBeenCalledOnce();
+
+    const oversizedEdited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Override-only native summary overflow",
+    );
+    const oversizedStored = liveEvidenceForWorkbook(
+      snapshot,
+      oversizedEdited,
+    );
+    const oversizedExecute = vi.fn();
+    const oversizedPreviewOne = vi.fn(previewOne);
+    const oversizedBatch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(oversizedStored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "live",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute: oversizedExecute,
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: { previewOne: oversizedPreviewOne, attemptOne: vi.fn() },
+      randomUUID: () => "content-batch-override-summary-overflow",
+    });
+    const oversizedKey = "content-batch-override-summary-overflow-001";
+    const oversizedPreview = await oversizedBatch.handle({
+      operation: "preview",
+      request: importRequest(oversizedEdited, oversizedKey),
+    });
+    expect(oversizedPreview.status).toBe(200);
+    const oversizedPreviewBody = responseValue(oversizedPreview);
+    const oversizedOverrideSkus = (
+      oversizedPreviewBody.changes as Array<{ sellerSku: string }>
+    ).map((change) => change.sellerSku);
+    const oversizedCommit = await oversizedBatch.handle({
+      operation: "commit",
+      request: forcedCommitRequest(
+        String(oversizedPreviewBody.previewId),
+        oversizedKey,
+        oversizedOverrideSkus,
+      ),
+    });
+    expect(oversizedCommit.status).toBe(422);
+    expect(responseValue(oversizedCommit)).toMatchObject({
+      code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
+      sellerSkus: oversizedOverrideSkus,
+      writeCount: 0,
+    });
+    expect(oversizedExecute).not.toHaveBeenCalled();
+
+    const undisplayableCode = "X".repeat(128);
+    const manualExecute = vi.fn();
+    const manualBatch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "live",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute: manualExecute,
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(
+          input,
+          undefined,
+          {
+            mode: "live",
+            status: "INVALID",
+            issues: [{ ...validationIssue, code: undisplayableCode }],
+          },
+        )),
+        attemptOne: vi.fn(),
+      },
+      randomUUID: () => "content-batch-single-undisplayable-code",
+    });
+    const manualKey = "content-batch-single-undisplayable-code-001";
+    const manualPreview = await manualBatch.handle({
+      operation: "preview",
+      request: importRequest(edited, manualKey),
+    });
+    expect(manualPreview.status).toBe(200);
+    const manualPreviewBody = responseValue(manualPreview);
+    const manualCommit = await manualBatch.handle({
+      operation: "commit",
+      request: forcedCommitRequest(
+        String(manualPreviewBody.previewId),
+        manualKey,
+        [sellerSku],
+      ),
+    });
+    expect(manualCommit.status).toBe(422);
+    expect(responseValue(manualCommit)).toMatchObject({
+      code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
+      sellerSkus: [sellerSku],
+      writeCount: 0,
+    });
+    expect(String(responseValue(manualCommit).message)).toContain(
+      "Seller Central 人工處理",
+    );
+    expect(manualExecute).not.toHaveBeenCalled();
+  });
+
+  it("merges a maximum-length SKU's destructive and INVALID risks into one native entry", async () => {
+    const snapshot = await audit();
+    const sellerSku = "C".repeat(40);
+    const sourceRow = {
+      ...structuredClone(snapshot.rows[0]!),
+      sellerSku,
+    };
+    const combinedSnapshot: AuditReply = { ...snapshot, rows: [sourceRow] };
+    const edited = replaceEveryProposedTitle(
+      workbook(combinedSnapshot),
+      "Combined destructive and invalid risk",
+    );
+    const stored = liveEvidenceForWorkbook(snapshot, edited);
+    preparedIdentityBySku.set(sellerSku, {
+      asin: sourceRow.asin,
+      productType: sourceRow.productType,
+    });
+    const validationIssue = {
+      code: "8541",
+      severity: "ERROR",
+      message: "Amazon Validation Preview rejected the requested title.",
+      attributeNames: ["item_name"],
+      categories: [],
+      marketplaceIds: [],
+    };
+    let approvalReason = "";
+    const execute = vi.fn(async (input) => {
+      await input.beforeApproval?.();
+      approvalReason = typeof input.approvalReason === "function"
+        ? input.approvalReason("123456789012")
+        : input.approvalReason;
+      return {
+        previewId: input.binding.previewKey,
+        marketplaceId: MARKETPLACE_ID,
+        status: "COMPLETED",
+        rows: [],
+        blockedChanges: [],
+        completedAt: new Date(0).toISOString(),
+        notice: "test",
+      };
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "live",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute,
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => preparedPreview(
+          input,
+          undefined,
+          {
+            mode: "live",
+            status: "INVALID",
+            issues: [validationIssue],
+            exactBulletReplacement: {
+              languageTag: "en_US",
+              currentExactLanguageBulletPoints: [
+                ...input.expectedBulletPoints,
+                "Hidden Amazon bullet 6",
+                "Hidden Amazon bullet 7",
+              ],
+              requestedExactLanguageBulletPoints: [...input.bulletPoints],
+              removedOverflowBulletPoints: [
+                "Hidden Amazon bullet 6",
+                "Hidden Amazon bullet 7",
+              ],
+            },
+          },
+        )),
+        attemptOne: vi.fn(),
+      },
+      randomUUID: () => "content-batch-combined-native-risk",
+    });
+    const key = "content-batch-combined-native-risk-001";
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    expect(preview.status).toBe(200);
+    const previewBody = responseValue(preview);
+    const request = forcedCommitRequest(
+      String(previewBody.previewId),
+      key,
+      [sellerSku],
+    );
+    if (request.body?.kind !== "json") throw new Error("Expected JSON body");
+    request.body.value.exactBulletReplacement = {
+      acknowledged: true,
+      sellerSkus: [sellerSku],
+    };
+
+    const committed = await batch.handle({ operation: "commit", request });
+
+    expect(committed.status).toBe(200);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(approvalReason.split(sellerSku)).toHaveLength(2);
+    expect(approvalReason).toContain("要點 7→5／刪2");
+    expect(approvalReason).toContain("INVALID 8541");
+    expect(approvalReason).toContain("驗證碼 123456789012");
+    expect(approvalReason.length).toBeLessThanOrEqual(120);
   });
 
   it("rejects a W06 preview rebound to a different ASIN or product type", async () => {
@@ -2360,6 +3048,89 @@ describe("content audit Excel batch router", () => {
     const response = await batch.handle({
       operation: "commit",
       request: commitRequest(String(responseValue(preview).previewId), key),
+    });
+
+    expect(response.status).toBe(409);
+    expect(responseValue(response)).toMatchObject({
+      code: "PREVIEW_CHANGED",
+      writeCount: 0,
+    });
+    expect(passedPreapproval).toBe(false);
+    expect(attemptOne).not.toHaveBeenCalled();
+  });
+
+  it("stops before native approval when a hidden overflow bullet changes after preview", async () => {
+    const snapshot = await audit();
+    const edited = replaceCell(
+      workbook(snapshot),
+      "E2",
+      "Hidden overflow drift must stop this batch",
+    );
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    let previewCalls = 0;
+    let passedPreapproval = false;
+    const attemptOne = vi.fn();
+    const execute = vi.fn(async (input) => {
+      await input.beforeApproval?.();
+      passedPreapproval = true;
+      return input.run({} as never);
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview: vi.fn(async () => undefined),
+        execute,
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: {
+        previewOne: vi.fn(async (input) => {
+          previewCalls += 1;
+          const hidden = previewCalls === 1
+            ? "Hidden Amazon bullet 6"
+            : "Hidden Amazon bullet 6 changed after preview";
+          return preparedPreview(input, undefined, {
+            exactBulletReplacement: {
+              languageTag: "en_US",
+              currentExactLanguageBulletPoints: [
+                ...input.expectedBulletPoints,
+                hidden,
+              ],
+              requestedExactLanguageBulletPoints: [...input.bulletPoints],
+              removedOverflowBulletPoints: [hidden],
+            },
+          });
+        }),
+        attemptOne,
+      },
+      randomUUID: () => "content-batch-hidden-bullet-drift",
+    });
+    const key = "content-batch-hidden-bullet-drift-001";
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    expect(preview.status).toBe(200);
+    const previewId = String(responseValue(preview).previewId);
+    const sellerSku = snapshot.rows[0]!.sellerSku;
+
+    const response = await batch.handle({
+      operation: "commit",
+      request: exactBulletReplacementCommitRequest(
+        previewId,
+        key,
+        [sellerSku],
+      ),
     });
 
     expect(response.status).toBe(409);

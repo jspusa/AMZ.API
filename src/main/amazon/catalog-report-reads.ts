@@ -1418,6 +1418,20 @@ function readFailureMessage(error: unknown): string {
   }。`;
 }
 
+function canRecoverCatalogBatchWithExactReads(error: unknown): boolean {
+  if (!(error instanceof SpApiError)) return false;
+  if (error.code === "LISTING_IDENTITY_MISMATCH") return true;
+  return [400, 404, 413, 415, 422].includes(error.status) &&
+    ["INVALID_LISTING_REQUEST", "SKU_NOT_FOUND"].includes(error.code);
+}
+
+function canContinueCatalogExactRecovery(error: unknown): boolean {
+  if (!(error instanceof SpApiError)) return false;
+  if (error.code === "LISTING_IDENTITY_MISMATCH") return true;
+  return [400, 404, 422].includes(error.status) &&
+    ["INVALID_LISTING_REQUEST", "SKU_NOT_FOUND"].includes(error.code);
+}
+
 function listingEnvelope(value: unknown): ListingEnvelope {
   if (!isRecord(value)) {
     throw new SpApiError("Amazon 回傳了無法辨識的 Listing 商品資料。", {
@@ -1548,36 +1562,93 @@ async function fetchCatalogRows(
     throwIfAborted(input.signal);
     return result;
   };
+  const clearProvisionalListingErrors = (sellerSku: string): void => {
+    bySku.delete(sellerSku);
+    readErrorsBySku.delete(sellerSku);
+    for (let index = errors.length - 1; index >= 0; index -= 1) {
+      const error = errors[index]!;
+      if (
+        error.sellerSku === sellerSku &&
+        ["身分不一致", "履約資料未回傳", "內容未回傳", "查詢失敗"].includes(
+          error.kind,
+        )
+      ) {
+        errors.splice(index, 1);
+      }
+    }
+  };
+  const recoverExactListings = async (
+    sellerSkus: readonly string[],
+  ): Promise<void> => {
+    for (let index = 0; index < sellerSkus.length; index += 1) {
+      const sellerSku = sellerSkus[index]!;
+      throwIfAborted(input.signal);
+      try {
+        const listing = await readOne(sellerSku);
+        clearProvisionalListingErrors(sellerSku);
+        excludedNonFbaSkus.delete(sellerSku);
+        recordListing(listing);
+      } catch (error) {
+        rethrowCatalogReadFence(error, input.signal);
+        const message = readFailureMessage(error);
+        errors.push({ sellerSku, kind: "查詢失敗", message });
+        recordReadError(sellerSku, message);
+        if (!canContinueCatalogExactRecovery(error)) {
+          const stoppedMessage =
+            "前一筆精確補讀遇到系統性錯誤，因此已停止其餘補讀；此 SKU 未送出 Listings Items request。";
+          for (const unrecoveredSku of sellerSkus.slice(index + 1)) {
+            errors.push({
+              sellerSku: unrecoveredSku,
+              kind: "補讀已停止",
+              message: stoppedMessage,
+            });
+            recordReadError(unrecoveredSku, stoppedMessage);
+          }
+          return;
+        }
+      }
+    }
+  };
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
     const sellerSkus = batches[batchIndex]!;
+    const usesExactItemRead =
+      sellerSkus.length === 1 && sellerSkus[0]!.includes(",");
     throwIfAborted(input.signal);
     try {
-      if (sellerSkus.length === 1 && sellerSkus[0]!.includes(",")) {
+      if (usesExactItemRead) {
         recordListing(await readOne(sellerSkus[0]!));
       } else {
         const result = await readBatch(sellerSkus);
         if (result.status === 400) {
-          for (const sellerSku of sellerSkus) {
-            throwIfAborted(input.signal);
-            try {
-              recordListing(await readOne(sellerSku));
-            } catch (error) {
-              rethrowCatalogReadFence(error, input.signal);
-              const message = readFailureMessage(error);
-              errors.push({ sellerSku, kind: "查詢失敗", message });
-              recordReadError(sellerSku, message);
-            }
-          }
+          await recoverExactListings(sellerSkus);
         } else {
           if (result.status < 200 || result.status >= 300) {
             throwListingsReadError(result, "searchListingsItems");
           }
           for (const listing of searchItems(result)) recordListing(listing);
+          const incompleteSellerSkus = sellerSkus.filter((sellerSku) =>
+            !excludedNonFbaSkus.has(sellerSku) &&
+            (!bySku.has(sellerSku) || bySku.get(sellerSku)?.readStatus === "incomplete")
+          );
+          if (incompleteSellerSkus.length) {
+            await recoverExactListings(incompleteSellerSkus);
+          }
         }
       }
     } catch (error) {
       rethrowCatalogReadFence(error, input.signal);
+      if (!usesExactItemRead && canRecoverCatalogBatchWithExactReads(error)) {
+        await recoverExactListings(sellerSkus);
+        throwIfAborted(input.signal);
+        await input.onProgress?.({
+          phase: "listings",
+          completedUnits: batchIndex + 1,
+          totalUnits: batches.length,
+        });
+        throwIfAborted(input.signal);
+        continue;
+      }
       const message = readFailureMessage(error);
       for (const sellerSku of sellerSkus) {
         errors.push({ sellerSku, kind: "查詢失敗", message });
@@ -1598,6 +1669,11 @@ async function fetchCatalogRows(
     if (excludedNonFbaSkus.has(seed.sellerSku)) return [];
     const found = bySku.get(seed.sellerSku);
     if (found) {
+      const readErrors = readErrorsBySku.get(seed.sellerSku) ?? [];
+      if (readErrors.length) {
+        found.readStatus = "incomplete";
+        found.readErrors = [...readErrors];
+      }
       if (found.readStatus === "complete" && !found.ingredients) {
         errors.push({
           sellerSku: seed.sellerSku,

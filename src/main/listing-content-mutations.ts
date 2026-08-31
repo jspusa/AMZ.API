@@ -7,6 +7,7 @@ import {
 import type {
   ListingContentGateway,
   ListingContentGatewayRead,
+  ListingContentExactBulletReplacement,
   ListingContentIdentity,
   ListingContentPatchDescriptor,
 } from "./amazon/listing-content-gateway";
@@ -78,6 +79,7 @@ export type ListingContentPrecommitEvidence = Readonly<{
 
 export type ListingContentPreparedPreview =
   ListingContentValidationResult & Readonly<{
+    exactBulletReplacement: ListingContentExactBulletReplacement | null;
     evidence: ListingContentPrecommitEvidence;
     proposalFingerprint: string;
   }>;
@@ -129,6 +131,7 @@ type PreparedContentMutation = Readonly<{
   patch: ListingContentPatchDescriptor;
   verified: VerifiedContentChange;
   issues: readonly ListingIssue[];
+  exactBulletReplacement: ListingContentExactBulletReplacement | null;
   evidence: ListingContentPrecommitEvidence;
   proposalFingerprint: string;
 }>;
@@ -226,6 +229,7 @@ const DURABLE_RESULT_KEYS = [
 const PREPARED_PREVIEW_KEYS = [
   "changedFields",
   "evidence",
+  "exactBulletReplacement",
   "issues",
   "marketplaceId",
   "mode",
@@ -386,6 +390,85 @@ function sameContentValues(
     sameTextArray(left.bulletPoints, right.bulletPoints) &&
     left.productDescription === right.productDescription &&
     left.ingredients === right.ingredients;
+}
+
+function sameStringArray(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length &&
+    left.every((entry, index) => entry === right[index]);
+}
+
+function validExactBulletReplacement(
+  value: unknown,
+  previous: ListingContentValues,
+  requested: ListingContentValues,
+  authorityGranted: boolean,
+): value is ListingContentExactBulletReplacement | null {
+  if (value === null) return true;
+  if (
+    !authorityGranted ||
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "currentExactLanguageBulletPoints",
+      "languageTag",
+      "removedOverflowBulletPoints",
+      "requestedExactLanguageBulletPoints",
+    ]) ||
+    typeof value.languageTag !== "string" ||
+    !value.languageTag ||
+    value.languageTag.length > 64 ||
+    value.languageTag !== value.languageTag.trim() ||
+    !Array.isArray(value.currentExactLanguageBulletPoints) ||
+    value.currentExactLanguageBulletPoints.length <= 5 ||
+    value.currentExactLanguageBulletPoints.length > 100 ||
+    !value.currentExactLanguageBulletPoints.every((bullet) =>
+      validContentText(bullet, 5_000)
+    ) ||
+    !Array.isArray(value.requestedExactLanguageBulletPoints) ||
+    value.requestedExactLanguageBulletPoints.length > 5 ||
+    !value.requestedExactLanguageBulletPoints.every((bullet) =>
+      validContentText(bullet, 5_000)
+    ) ||
+    !Array.isArray(value.removedOverflowBulletPoints) ||
+    !value.removedOverflowBulletPoints.every((bullet) =>
+      validContentText(bullet, 5_000)
+    )
+  ) {
+    return false;
+  }
+  const current = value.currentExactLanguageBulletPoints as string[];
+  const replacement = value.requestedExactLanguageBulletPoints as string[];
+  const removed = value.removedOverflowBulletPoints as string[];
+  return sameStringArray(current.slice(0, 5), previous.bulletPoints) &&
+    sameStringArray(replacement, requested.bulletPoints) &&
+    sameStringArray(removed, current.slice(5));
+}
+
+function cloneExactBulletReplacement(
+  value: ListingContentExactBulletReplacement | null,
+): ListingContentExactBulletReplacement | null {
+  return value
+    ? {
+        languageTag: value.languageTag,
+        currentExactLanguageBulletPoints: [
+          ...value.currentExactLanguageBulletPoints,
+        ],
+        requestedExactLanguageBulletPoints: [
+          ...value.requestedExactLanguageBulletPoints,
+        ],
+        removedOverflowBulletPoints: [...value.removedOverflowBulletPoints],
+      }
+    : null;
+}
+
+function exactBulletReplacementLanguageMatches(
+  value: unknown,
+  languageTag: unknown,
+): boolean {
+  return value === null ||
+    (isRecord(value) && value.languageTag === languageTag);
 }
 
 function changedContentFields(
@@ -875,9 +958,21 @@ async function prepareContentMutation(
   };
   const receipt = await gateway.validationPreview(previewPatch);
   const issues = normalizedReceiptIssues(receipt.issues);
-  if (!issues || !validSha256(receipt.canonicalPatchHash)) {
+  const exactReplacementGranted = exactLanguageBulletReplacement(options);
+  if (
+    !issues ||
+    !validSha256(receipt.canonicalPatchHash) ||
+    !validExactBulletReplacement(
+      receipt.exactBulletReplacement,
+      verified.previous,
+      verified.requested,
+      exactReplacementGranted,
+    ) ||
+    (receipt.exactBulletReplacement !== null &&
+      receipt.exactBulletReplacement.languageTag !== snapshot.languageTag)
+  ) {
     throw new SpApiError(
-      "Amazon 商品內容預檢的 patch 或 issues 證據格式無法辨識，尚未寫入。",
+      "Amazon 商品內容預檢的 patch、issues 或產品要點刪除揭露格式無法辨識，尚未寫入。",
       {
         status: 502,
         code: "VALIDATION_STATUS_UNKNOWN",
@@ -938,6 +1033,9 @@ async function prepareContentMutation(
     patch,
     verified,
     issues,
+    exactBulletReplacement: cloneExactBulletReplacement(
+      receipt.exactBulletReplacement,
+    ),
     evidence,
     proposalFingerprint: proposalFingerprint(
       verified.previous,
@@ -1046,6 +1144,9 @@ function createListingContentMutationOperations(
         previous: structuredClone(prepared.verified.previous),
         requested: structuredClone(prepared.verified.requested),
         changedFields: [...prepared.verified.changedFields],
+        exactBulletReplacement: cloneExactBulletReplacement(
+          prepared.exactBulletReplacement,
+        ),
         validatedAt: new Date().toISOString(),
         issues: normalizeListingIssues(prepared.issues),
         notice: mode === "demo"
@@ -1177,7 +1278,10 @@ export function assertListingContentPreparedPreviewBinding(
   context: Pick<SpExecutionContext, "marketplaceId" | "mode">,
   expected?: Pick<
     ListingContentPreparedPreview,
-    "evidence" | "proposalFingerprint" | "status"
+    | "evidence"
+    | "exactBulletReplacement"
+    | "proposalFingerprint"
+    | "status"
   >,
   options: ListingContentPreviewOptions = {},
 ): asserts value is ListingContentPreparedPreview {
@@ -1221,10 +1325,20 @@ export function assertListingContentPreparedPreviewBinding(
         requested,
         exactLanguageBulletReplacement(options),
       ) ||
+      !validExactBulletReplacement(
+        value.exactBulletReplacement,
+        previous,
+        requested,
+        exactLanguageBulletReplacement(options),
+      ) ||
       !validIsoTimestamp(value.validatedAt) ||
       !exactDurableIssues(value.issues) ||
       !safeNotice(value.notice) ||
       !validPrecommitEvidence(evidence) ||
+      !exactBulletReplacementLanguageMatches(
+        value.exactBulletReplacement,
+        evidence.languageTag,
+      ) ||
       evidence.marketplaceId !== input.marketplaceId ||
       evidence.sellerSku !== input.sellerSku ||
       evidence.expectedOldHash !== canonicalSha256(previous) ||
@@ -1237,6 +1351,8 @@ export function assertListingContentPreparedPreviewBinding(
         proposalFingerprint(previous, requested, evidence) ||
       (expected &&
         (value.status !== expected.status ||
+          canonicalSha256(value.exactBulletReplacement) !==
+            canonicalSha256(expected.exactBulletReplacement) ||
           value.proposalFingerprint !== expected.proposalFingerprint ||
           canonicalSha256(evidence) !==
             canonicalSha256(expected.evidence)))) {
@@ -1634,6 +1750,7 @@ function publicPreviewResult(
 ): ListingContentValidationResult {
   const {
     evidence: _internalEvidence,
+    exactBulletReplacement: _batchOnlyExactBulletReplacement,
     proposalFingerprint: _internalFingerprint,
     ...publicValue
   } = value;

@@ -9,6 +9,7 @@ import {
 import type {
   ListingContentGateway,
   ListingContentGatewayRead,
+  ListingContentExactBulletReplacement,
   ListingContentIdentity,
   ListingContentPatchDescriptor,
   ListingContentPtdEvidence,
@@ -57,6 +58,8 @@ const LISTING_CONTENT_FIELDS = [
 ] as const satisfies readonly ListingContentField[];
 
 const JP_MARKETPLACE_ID = marketplaceByCode("JP").id;
+const EXACT_BULLET_UNSAFE_DISPLAY_TEXT =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u0084\u0086-\u009f\u00ad\u034f\u061c\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/u;
 
 type ListingContentRawAttributes = Readonly<
   Record<ListingContentAttributeName, readonly JsonRecord[]>
@@ -381,6 +384,61 @@ function listingContentGatewayPatchBody(
   return { productType: patch.productType, patches };
 }
 
+function listingContentExactBulletReplacement(
+  patch: ListingContentPatchDescriptor,
+  evidence: ProductionListingContentSourceEvidence,
+): ListingContentExactBulletReplacement | null {
+  if (
+    patch.exactLanguageBulletReplacementAuthority !==
+      LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY ||
+    !patch.changedFields.includes("bulletPoints")
+  ) {
+    return null;
+  }
+  const selectedLanguageValues = currentMarketplaceContentAttributes(
+    evidence,
+    "bullet_point",
+  ).filter((item) => item.language_tag === patch.languageTag);
+  if (selectedLanguageValues.length <= 5) return null;
+  if (
+    selectedLanguageValues.length > 100 ||
+    selectedLanguageValues.some((item) =>
+      typeof item.value !== "string" ||
+      !item.value.trim() ||
+      item.value !== item.value.trim() ||
+      item.value.length > 5_000 ||
+      EXACT_BULLET_UNSAFE_DISPLAY_TEXT.test(item.value)
+    )
+  ) {
+    throw new SpApiError(
+      "此語系第 6 項後的產品要點無法完整安全顯示，為避免未揭露刪除，已停止 Excel 預檢。請先到 Seller Central 整理產品要點。",
+      { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
+    );
+  }
+  const currentExactLanguageBulletPoints = selectedLanguageValues.map(
+    (item) => item.value as string,
+  );
+  if (
+    patch.previous.bulletPoints.length !== 5 ||
+    patch.previous.bulletPoints.some(
+      (bullet, index) =>
+        bullet !== currentExactLanguageBulletPoints[index],
+    )
+  ) {
+    throw new SpApiError(
+      "Excel 預檢顯示的前五項產品要點與 Amazon 完整同語系原值不一致，已停止送出。",
+      { status: 409, code: "CONTENT_CHANGED" },
+    );
+  }
+  return {
+    languageTag: patch.languageTag,
+    currentExactLanguageBulletPoints,
+    requestedExactLanguageBulletPoints: [...patch.requested.bulletPoints],
+    removedOverflowBulletPoints:
+      currentExactLanguageBulletPoints.slice(5),
+  };
+}
+
 function capturedListingContentPayload(
   receipt: ListingsWriteReceipt,
 ): JsonRecord | null {
@@ -430,6 +488,7 @@ function listingContentValidationReceipt(
   receipt: ListingsWriteReceipt,
   patch: ListingContentPatchDescriptor,
   canonicalPatchHash: string,
+  exactBulletReplacement: ListingContentExactBulletReplacement | null,
 ): ListingContentValidationReceipt {
   const payload = capturedListingContentPayload(receipt);
   const wellFormed = payload !== null &&
@@ -446,6 +505,7 @@ function listingContentValidationReceipt(
   return {
     status,
     canonicalPatchHash,
+    exactBulletReplacement,
     requestId: receipt.requestId,
     issues,
   };
@@ -714,10 +774,15 @@ export function createListingContentGatewayProduction(
     evidence: ProductionListingContentSourceEvidence;
     body: Readonly<{ productType: string; patches: readonly unknown[] }>;
     canonicalPatchHash: string;
+    exactBulletReplacement: ListingContentExactBulletReplacement | null;
   }> {
     const { source } = resolveListingContentEvidence(patch, expectedMode);
     const body = listingContentGatewayPatchBody(patch, source);
     const canonicalPatchHash = canonicalSha256(body);
+    const exactBulletReplacement = listingContentExactBulletReplacement(
+      patch,
+      source,
+    );
     const expectedHash = patch.expectedCanonicalPatchHash;
     if (
       (phase === "preview" && expectedHash !== null) ||
@@ -731,7 +796,12 @@ export function createListingContentGatewayProduction(
         { status: 409, code: "CONTENT_CHANGED" },
       );
     }
-    return { evidence: source, body, canonicalPatchHash };
+    return {
+      evidence: source,
+      body,
+      canonicalPatchHash,
+      exactBulletReplacement,
+    };
   }
 
   const gateway: ListingContentGateway = {
@@ -768,6 +838,7 @@ export function createListingContentGatewayProduction(
         return {
           status: "VALID",
           canonicalPatchHash: prepared.canonicalPatchHash,
+          exactBulletReplacement: prepared.exactBulletReplacement,
           requestId: null,
           issues: [],
         };
@@ -785,6 +856,7 @@ export function createListingContentGatewayProduction(
         receipt,
         patch,
         prepared.canonicalPatchHash,
+        prepared.exactBulletReplacement,
       );
     },
     commitOnce: async (patch, fence, recordDispatch) => {

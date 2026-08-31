@@ -1,3 +1,5 @@
+import { NATIVE_CONFIRMATION_REASON_MAX_LENGTH } from "../shared/native-confirmation-limits";
+
 export const NATIVE_CONFIRMATION_CANCELLED_MESSAGE =
   "本機身分驗證已取消或未通過；Amazon 沒有收到任何變更。";
 export const WINDOWS_HELLO_REQUIRED_MESSAGE =
@@ -38,7 +40,10 @@ export async function requestNativeConfirmation(
   if (method) {
     let result: "verified" | "unavailable";
     try {
-      result = await adapter.promptBiometric(method, reason.slice(0, 120));
+      result = await adapter.promptBiometric(
+        method,
+        reason.slice(0, NATIVE_CONFIRMATION_REASON_MAX_LENGTH),
+      );
     } catch {
       throw new Error(NATIVE_CONFIRMATION_CANCELLED_MESSAGE);
     }

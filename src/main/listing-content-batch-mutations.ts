@@ -3,6 +3,7 @@ import {
   randomUUID as nodeRandomUUID,
 } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
+import { NATIVE_CONFIRMATION_REASON_MAX_LENGTH } from "../shared/native-confirmation-limits";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
   type MarketplaceId,
@@ -22,6 +23,9 @@ import type {
   ListingContentUpdateResult,
   UpdateListingContentInput,
 } from "./amazon/listing-content-types";
+import type {
+  ListingContentExactBulletReplacement,
+} from "./amazon/listing-content-gateway";
 import {
   publicSpApiError,
   publicSpApiListingIssues,
@@ -87,6 +91,15 @@ type ContentBatchChange = {
   validationOverrideRequired: boolean;
 };
 
+type ContentBatchBlockedChange = Readonly<{
+  sellerSku: string;
+  code: "CONTENT_READ_INCOMPLETE";
+  message: string;
+  changedFields: ListingContentField[];
+  previous: ListingContentValues;
+  requested: ListingContentValues;
+}>;
+
 type ContentBatchSourceIdentity = Readonly<{
   asin: string;
   productType: string;
@@ -104,6 +117,7 @@ type ContentBatchCommitResult = {
   marketplaceId: MarketplaceId;
   status: "COMPLETED" | "STOPPED_REJECTED" | "STOPPED_UNKNOWN";
   rows: ContentBatchRowResult[];
+  blockedChanges: ContentBatchBlockedChange[];
   completedAt: string;
   notice: string;
 };
@@ -117,6 +131,7 @@ type ContentBatchPlan = {
   idempotencyKey: string;
   fingerprint: string;
   changes: ContentBatchChange[];
+  blockedChanges: ContentBatchBlockedChange[];
   expiresAt: number;
   completedExpiresAt: number | null;
   state: "ready" | "committing" | "completed";
@@ -131,6 +146,23 @@ function publicContentValues(value: ListingContentValues): ListingContentValues 
     productDescription: value.productDescription,
     ingredients: value.ingredients,
   };
+}
+
+function publicExactBulletReplacement(
+  value: ListingContentExactBulletReplacement | null,
+): ListingContentExactBulletReplacement | null {
+  return value
+    ? {
+        languageTag: value.languageTag,
+        currentExactLanguageBulletPoints: [
+          ...value.currentExactLanguageBulletPoints,
+        ],
+        requestedExactLanguageBulletPoints: [
+          ...value.requestedExactLanguageBulletPoints,
+        ],
+        removedOverflowBulletPoints: [...value.removedOverflowBulletPoints],
+      }
+    : null;
 }
 
 function batchInputValues(input: UpdateListingContentInput): Readonly<{
@@ -182,6 +214,27 @@ function batchInputValues(input: UpdateListingContentInput): Readonly<{
     changedFields.push("ingredients");
   }
   return { previous, requested, changedFields };
+}
+
+function blockedBatchInputValues(input: UpdateListingContentInput): Readonly<{
+  previous: ListingContentValues;
+  requested: ListingContentValues;
+  changedFields: ListingContentField[];
+}> {
+  const values = batchInputValues(input);
+  return {
+    ...values,
+    // W07 intentionally grants every writable row exact bullet replacement
+    // authority, even when its bullets are unchanged. A blocked row can never
+    // write, so its public diff must describe only literal workbook edits.
+    changedFields: values.changedFields.filter((field) =>
+      field !== "bulletPoints" ||
+      values.previous.bulletPoints.length !== values.requested.bulletPoints.length ||
+      values.previous.bulletPoints.some(
+        (bullet, index) => bullet !== values.requested.bulletPoints[index],
+      )
+    ),
+  };
 }
 
 function assertContentBatchSourceIdentity(
@@ -262,6 +315,14 @@ function publicBatchCommitResult(
             requestId: row.error.requestId,
           }
         : null,
+    })),
+    blockedChanges: result.blockedChanges.map((change) => ({
+      sellerSku: change.sellerSku,
+      code: change.code,
+      message: change.message,
+      changedFields: [...change.changedFields],
+      previous: publicContentValues(change.previous),
+      requested: publicContentValues(change.requested),
     })),
     completedAt: result.completedAt,
     notice: result.notice,
@@ -490,7 +551,7 @@ function idempotencyKey(value: unknown): string | null {
     : null;
 }
 
-function validationOverrideSellerSkus(value: unknown): string[] | null {
+function acknowledgedSellerSkus(value: unknown): string[] | null {
   if (!isPlainRecord(value) ||
       Object.keys(value).some((key) =>
         key !== "acknowledged" && key !== "sellerSkus"
@@ -601,17 +662,34 @@ export class ListingContentBatchMutations
         changedFields: [...change.validation.changedFields],
         previous: publicContentValues(change.validation.previous),
         requested: publicContentValues(change.validation.requested),
+        exactBulletReplacement: publicExactBulletReplacement(
+          change.validation.exactBulletReplacement,
+        ),
         issues: publicListingIssues(change.validation.issues),
         validationStatus: change.validation.status,
         overrideAllowed: change.validationOverrideRequired,
+      })),
+      blockedChanges: plan.blockedChanges.map((change) => ({
+        sellerSku: change.sellerSku,
+        code: change.code,
+        message: change.message,
+        changedFields: [...change.changedFields],
+        previous: publicContentValues(change.previous),
+        requested: publicContentValues(change.requested),
       })),
       validationOverride: {
         required: overrideSellerSkus.length > 0,
         sellerSkus: overrideSellerSkus,
       },
-      notice: overrideSellerSkus.length
-        ? `${overrideSellerSkus.length.toLocaleString()} 個 SKU 的 Amazon Validation Preview 明確未通過；目前仍為零寫入。逐項核對原因後，可明確選擇強制送出一次。`
-        : `已逐 SKU 完成 Amazon Validation Preview；${plan.changes.length.toLocaleString()} 個 SKU 尚未寫入。`,
+      notice: `${
+        overrideSellerSkus.length
+          ? `${overrideSellerSkus.length.toLocaleString()} 個 SKU 的 Amazon Validation Preview 明確未通過；目前仍為零寫入。逐項核對原因後，可明確選擇強制送出一次。`
+          : `已逐 SKU 完成 Amazon Validation Preview；${plan.changes.length.toLocaleString()} 個 SKU 尚未寫入。`
+      }${
+        plan.blockedChanges.length
+          ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個 SKU 因原掃描未完整而未納入本次更新，且不會寫入 Amazon。`
+          : ""
+      }`,
     };
   }
 
@@ -698,6 +776,7 @@ export class ListingContentBatchMutations
         input: UpdateListingContentInput;
         sourceIdentity: ContentBatchSourceIdentity;
       }>> = [];
+      const blockedChanges: ContentBatchBlockedChange[] = [];
       let legacyRecoveredRows = 0;
       let legacyCandidateWork = 0;
       let legacyHashWork = 0;
@@ -804,13 +883,6 @@ export class ListingContentBatchMutations
           proposed: row.proposed,
         });
         if (sameContentAuditValues(sourceOriginal, proposed)) continue;
-        if (sourceReadStatus !== "complete") {
-          return invalid(
-            `SKU ${row.sellerSku} 的 Amazon 文案讀取未完成，不可由 Excel 回寫。`,
-            422,
-            "CONTENT_READ_INCOMPLETE",
-          );
-        }
         const title = parseText(proposed.title, 2_000);
         const expectedTitle = parseText(sourceOriginal.title, 2_000);
         const itemHighlight = parseText(proposed.itemHighlight, 2_000);
@@ -842,39 +914,65 @@ export class ListingContentBatchMutations
             "CONTENT_INVALID",
           );
         }
-        inputRows.push({
-          input: {
-            marketplaceId,
+        const input: UpdateListingContentInput = {
+          marketplaceId,
+          sellerSku: row.sellerSku,
+          title,
+          expectedTitle,
+          itemHighlight,
+          expectedItemHighlight,
+          bulletPoints,
+          expectedBulletPoints,
+          productDescription,
+          expectedProductDescription,
+          ingredients,
+          expectedIngredients,
+        };
+        if (sourceReadStatus !== "complete") {
+          const values = blockedBatchInputValues(input);
+          blockedChanges.push({
             sellerSku: row.sellerSku,
-            title,
-            expectedTitle,
-            itemHighlight,
-            expectedItemHighlight,
-            bulletPoints,
-            expectedBulletPoints,
-            productDescription,
-            expectedProductDescription,
-            ingredients,
-            expectedIngredients,
-          },
+            code: "CONTENT_READ_INCOMPLETE",
+            message:
+              `SKU ${row.sellerSku} 的 Amazon 原文在健檢時未完整讀取；此列未納入本次更新且不會寫入 Amazon。請先用「完整編輯」確認，或重新掃描後再回傳 Excel。`,
+            changedFields: [...values.changedFields],
+            previous: publicContentValues(values.previous),
+            requested: publicContentValues(values.requested),
+          });
+          continue;
+        }
+        inputRows.push({
+          input,
           sourceIdentity: {
             asin: row.asin,
             productType: row.productType,
           },
         });
       }
-      if (!inputRows.length) {
-        return invalid(
-          "Excel 完整性核對通過；更新欄位與原始值相同，沒有需要預檢的變更。請只在「更新…」欄位填入新文案後再試。",
-          422,
-          "CONTENT_UNCHANGED",
-        );
-      }
-      if (inputRows.length > CONTENT_BATCH_MAX_CHANGED_SKUS) {
+      if (
+        inputRows.length + blockedChanges.length >
+          CONTENT_BATCH_MAX_CHANGED_SKUS
+      ) {
         return invalid(
           `一次最多更新 ${CONTENT_BATCH_MAX_CHANGED_SKUS} 個 SKU；請先保留本批要更新的列。`,
           413,
           "CONTENT_BATCH_TOO_LARGE",
+        );
+      }
+      if (!inputRows.length) {
+        if (blockedChanges.length) {
+          return json({
+            code: "CONTENT_READ_INCOMPLETE",
+            message:
+              `${blockedChanges.length.toLocaleString()} 個已編輯 SKU 的 Amazon 原文在健檢時未完整讀取，因此全部略過且沒有任何列會寫入。請先用「完整編輯」確認，或重新掃描後再回傳 Excel。`,
+            blockedChanges,
+            writeCount: 0,
+          }, 422);
+        }
+        return invalid(
+          "Excel 完整性核對通過；更新欄位與原始值相同，沒有需要預檢的變更。請只在「更新…」欄位填入新文案後再試。",
+          422,
+          "CONTENT_UNCHANGED",
         );
       }
 
@@ -981,6 +1079,7 @@ export class ListingContentBatchMutations
             message:
               `${validationErrors.length.toLocaleString()} 個 SKU 未通過預檢；整批仍為零寫入。`,
             rows: validationErrors,
+            blockedChanges,
             writeCount: 0,
           },
           422,
@@ -1002,7 +1101,15 @@ export class ListingContentBatchMutations
           change.input.sellerSku,
           stableFingerprint([accountScope, change.proposalFingerprint]),
           change.validation.changedFields,
+          change.validation.exactBulletReplacement,
           change.validation.status,
+        ]),
+        blockedChanges.map((change) => [
+          change.sellerSku,
+          change.code,
+          change.changedFields,
+          change.previous,
+          change.requested,
         ]),
       ]);
       this.prunePlans();
@@ -1032,6 +1139,7 @@ export class ListingContentBatchMutations
         idempotencyKey: key,
         fingerprint: batchFingerprint,
         changes,
+        blockedChanges,
         expiresAt: Math.min(
           stored.expiresAt,
           this.now() + CONTENT_BATCH_PREVIEW_TTL_MS,
@@ -1147,7 +1255,7 @@ export class ListingContentBatchMutations
     );
     const suppliedOverrideSellerSkus = body.validationOverride === undefined
       ? []
-      : validationOverrideSellerSkus(body.validationOverride);
+      : acknowledgedSellerSkus(body.validationOverride);
     if (suppliedOverrideSellerSkus === null) {
       return json({
         code: "VALIDATION_OVERRIDE_REQUIRED",
@@ -1172,32 +1280,101 @@ export class ListingContentBatchMutations
       }, 422);
     }
 
+    const exactBulletReplacementChanges = plan.changes.filter(
+      (change) => change.validation.exactBulletReplacement !== null,
+    );
+    const exactBulletReplacementSellerSkus =
+      exactBulletReplacementChanges.map((change) => change.input.sellerSku);
+    const suppliedExactBulletReplacementSellerSkus =
+      body.exactBulletReplacement === undefined
+        ? []
+        : acknowledgedSellerSkus(body.exactBulletReplacement);
+    if (suppliedExactBulletReplacementSellerSkus === null) {
+      return json({
+        code: "EXACT_BULLET_REPLACEMENT_ACKNOWLEDGEMENT_REQUIRED",
+        message:
+          "Amazon 第 6 項後產品要點的刪除確認格式無效；Amazon 寫入數為 0。",
+        sellerSkus: exactBulletReplacementSellerSkus,
+        writeCount: 0,
+      }, 422);
+    }
+    if (
+      exactBulletReplacementSellerSkus.length !==
+        suppliedExactBulletReplacementSellerSkus.length ||
+      exactBulletReplacementSellerSkus.some(
+        (sellerSku, index) =>
+          sellerSku !== suppliedExactBulletReplacementSellerSkus[index],
+      )
+    ) {
+      return json({
+        code: "EXACT_BULLET_REPLACEMENT_ACKNOWLEDGEMENT_REQUIRED",
+        message: exactBulletReplacementSellerSkus.length
+          ? "必須逐項核對並明確確認所有會刪除 Amazon 第 6 項後產品要點的 SKU，才可繼續；Amazon 寫入數為 0。"
+          : "這份批次沒有需要刪除第 6 項後產品要點的 SKU；Amazon 寫入數為 0。",
+        sellerSkus: exactBulletReplacementSellerSkus,
+        writeCount: 0,
+      }, 422);
+    }
+
     const sellerSkus = plan.changes.map((change) => change.input.sellerSku);
-    const overrideCount = requiredOverrideSellerSkus.length;
     const shownSkus = sellerSkus.slice(0, 5).join("、");
     const remaining = Math.max(0, sellerSkus.length - 5);
-    const shownOverrideSkus = requiredOverrideChanges
+    const nativeRiskChanges = plan.changes.filter((change) =>
+      change.validation.exactBulletReplacement !== null ||
+      change.validationOverrideRequired
+    );
+    const nativeRiskSummary = nativeRiskChanges
       .map((change) => {
-        const codes = [...new Set(
-          publicListingIssues(change.validation.issues)
-            .filter((issue) => issue.severity === "ERROR")
-            .map((issue) => issue.code ?? "無代碼"),
-        )].join("／");
-        return `${change.input.sellerSku}（${codes}）`;
+        const risks: string[] = [];
+        const disclosure = change.validation.exactBulletReplacement;
+        if (disclosure) {
+          risks.push(
+            `要點 ${disclosure.currentExactLanguageBulletPoints.length}→${disclosure.requestedExactLanguageBulletPoints.length}／刪${disclosure.removedOverflowBulletPoints.length}`,
+          );
+        }
+        if (change.validationOverrideRequired) {
+          const codes = [...new Set(
+            publicListingIssues(change.validation.issues)
+              .filter((issue) => issue.severity === "ERROR")
+              .map((issue) => issue.code ?? "無代碼"),
+          )].join("／");
+          risks.push(`INVALID ${codes}`);
+        }
+        return `${change.input.sellerSku}（${risks.join("；")}）`;
       })
       .join("、");
+    const approvalReason = (verificationCode: string): string =>
+      `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
+        nativeRiskChanges.length
+          ? `｜高風險：${nativeRiskSummary}`
+          : `｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}`
+      }｜驗證碼 ${verificationCode}`;
+    const nativeApprovalSellerSkus = nativeRiskChanges.map(
+      (change) => change.input.sellerSku,
+    );
+    if (
+      nativeApprovalSellerSkus.length &&
+      approvalReason("0".repeat(12)).length >
+        NATIVE_CONFIRMATION_REASON_MAX_LENGTH
+    ) {
+      return json({
+        code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
+        message: nativeApprovalSellerSkus.length === 1
+          ? "此 SKU 的高風險原生確認摘要超過 Notebook Key 可完整顯示的上限，App 無法安全送出；請改到 Seller Central 人工處理。Amazon 寫入數為 0。"
+          : exactBulletReplacementChanges.length
+            ? "會刪除 Amazon 第 6 項後產品要點或要求強制嘗試的 SKU 太多，無法在 Notebook Key 原生確認視窗完整列出；請拆成較小批次後重新預檢。Amazon 寫入數為 0。"
+            : "要求強制嘗試的 Amazon 預檢未通過 SKU 太多，無法在 Notebook Key 原生確認視窗完整列出；請拆成較小批次後重新預檢。Amazon 寫入數為 0。",
+        sellerSkus: nativeApprovalSellerSkus,
+        writeCount: 0,
+      }, 422);
+    }
     let preflightResponse: ApiResponse | null = null;
     plan.state = "committing";
     try {
       this.assertLifecycleCurrent(revision);
       const result = await this.writeGate.execute<ContentBatchCommitResult>({
         binding: this.writeBinding(plan),
-        approvalReason: (verificationCode) =>
-          `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} 個 SKU${
-            overrideCount
-              ? `｜Amazon Validation Preview 明確 INVALID；仍只嘗試一次｜強制送出 ${overrideCount} 個 Amazon 預檢未通過 SKU：${shownOverrideSkus}`
-              : `｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}`
-          }｜驗證碼 ${verificationCode}`,
+        approvalReason,
         cancellationMessage: "操作已取消；Amazon 沒有收到任何文案變更。",
         beforeApproval: async () => {
           try {
@@ -1220,6 +1397,8 @@ export class ListingContentBatchMutations
                 context,
                 {
                   evidence: change.validation.evidence,
+                  exactBulletReplacement:
+                    change.validation.exactBulletReplacement,
                   proposalFingerprint: change.proposalFingerprint,
                   status: change.validation.status,
                 },
@@ -1326,12 +1505,32 @@ export class ListingContentBatchMutations
             marketplaceId,
             status,
             rows,
+            blockedChanges: plan.blockedChanges.map((change) => ({
+              sellerSku: change.sellerSku,
+              code: change.code,
+              message: change.message,
+              changedFields: [...change.changedFields],
+              previous: publicContentValues(change.previous),
+              requested: publicContentValues(change.requested),
+            })),
             completedAt: new Date(this.now()).toISOString(),
             notice: status === "COMPLETED"
-              ? `已完成 ${completedCount.toLocaleString()} 個 SKU；每筆皆經正式回讀或展示模擬核對。`
+              ? `已完成 ${completedCount.toLocaleString()} 個 SKU；每筆皆經正式回讀或展示模擬核對。${
+                plan.blockedChanges.length
+                  ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
+                  : ""
+              }`
               : status === "STOPPED_UNKNOWN"
-                ? `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆結果不明後已停止，後續 SKU 沒有送出。請先回查 Amazon，勿重送。`
-                : `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆已知拒絕後已停止，後續 SKU 沒有送出。`,
+                ? `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆結果不明後已停止，後續 SKU 沒有送出。請先回查 Amazon，勿重送。${
+                  plan.blockedChanges.length
+                    ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
+                    : ""
+                }`
+                : `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆已知拒絕後已停止，後續 SKU 沒有送出。${
+                  plan.blockedChanges.length
+                    ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
+                    : ""
+                }`,
           };
         },
       });

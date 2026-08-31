@@ -67,8 +67,22 @@ export type ListingContentValidationReceipt = Readonly<{
   status: "VALID" | "INVALID" | "UNKNOWN";
   /** Hash of the exact fixed Listings body built inside the adapter. */
   canonicalPatchHash: string;
+  /**
+   * Main-safe disclosure for the Excel-only exact-locale bullet replacement.
+   * The ordinary editor never receives this authority. When legacy same-locale
+   * bullets 6+ would be removed, the adapter returns every removed value so the
+   * user can see the destructive scope before native approval.
+   */
+  exactBulletReplacement: ListingContentExactBulletReplacement | null;
   requestId: string | null;
   issues: readonly ListingIssue[];
+}>;
+
+export type ListingContentExactBulletReplacement = Readonly<{
+  languageTag: string;
+  currentExactLanguageBulletPoints: readonly string[];
+  requestedExactLanguageBulletPoints: readonly string[];
+  removedOverflowBulletPoints: readonly string[];
 }>;
 
 export type ListingContentCommitReceipt = Readonly<{

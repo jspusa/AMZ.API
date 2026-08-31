@@ -710,6 +710,11 @@ body {
   font-size: 10px;
 }
 
+.content-audit-exact-bullet-removals {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .content-audit-batch-acknowledgement {
   display: flex;
   align-items: flex-start;

@@ -112,6 +112,7 @@ const contentFixtureGateway: ListingContentGateway = {
   validationPreview: async () => ({
     status: "VALID",
     canonicalPatchHash: "d".repeat(64),
+    exactBulletReplacement: null,
     requestId: "content-readback-preview-request",
     issues: [],
   }),

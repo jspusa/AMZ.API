@@ -433,6 +433,18 @@ describe("W06 Listing Content production gateway receipts", () => {
     });
 
     expect(preview.status).toBe("VALID");
+    expect(preview.exactBulletReplacement).toEqual({
+      languageTag: "en_US",
+      currentExactLanguageBulletPoints: Array.from(
+        { length: 10 },
+        (_, index) => `Legacy English bullet ${index + 1}`,
+      ),
+      requestedExactLanguageBulletPoints: requestedBullets,
+      removedOverflowBulletPoints: Array.from(
+        { length: 5 },
+        (_, index) => `Legacy English bullet ${index + 6}`,
+      ),
+    });
     expect(previewBody).toEqual({
       productType: PRODUCT_TYPE,
       patches: [{
@@ -516,5 +528,91 @@ describe("W06 Listing Content production gateway receipts", () => {
         ptdEvidence: observation.ptdEvidence,
       }),
     ).rejects.toMatchObject({ code: "CONTENT_SELECTOR_UNSAFE" });
+  });
+
+  it.each([
+    ["zero-width", "\u200b"],
+    ["bidirectional override", "\u202e"],
+  ])("rejects %s controls before disclosing or previewing hidden bullets", async (
+    _label,
+    unsafeControl,
+  ) => {
+    const existingBullets = Array.from({ length: 6 }, (_, index) => ({
+      text: index === 5
+        ? `Hidden${unsafeControl}Amazon bullet 6`
+        : `Legacy English bullet ${index + 1}`,
+      languageTag: "en_US",
+    }));
+    let validationPatchCalls = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? (input instanceof Request
+        ? input.method
+        : "GET");
+      if (url.origin === "https://api.amazon.com") {
+        return jsonResponse(200, {
+          access_token: "FAKE_W06_ACCESS_TOKEN",
+          expires_in: 3_600,
+        });
+      }
+      if (url.href === SCHEMA_URL) return jsonResponse(200, contentSchema());
+      if (url.pathname.startsWith("/definitions/2020-09-01/")) {
+        return jsonResponse(200, definitionEnvelope());
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") &&
+          method === "GET") {
+        return jsonResponse(200, listingEnvelope({
+          bulletPoints: existingBullets,
+        }));
+      }
+      if (url.pathname.startsWith("/listings/2021-08-01/") &&
+          method === "PATCH") {
+        validationPatchCalls += 1;
+        return jsonResponse(200, {
+          sku: SELLER_SKU,
+          status: "VALID",
+          identifiers: [{ marketplaceId: MARKETPLACE_ID, asin: ASIN }],
+          issues: [],
+        });
+      }
+      throw new Error(`Unexpected W06 request: ${method} ${url.href}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const observation = await listingContentGatewayProduction.read({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    }, "mutation");
+    const previous = {
+      title: observation.snapshot.title,
+      itemHighlight: observation.snapshot.itemHighlight,
+      bulletPoints: [...observation.snapshot.bulletPoints],
+      productDescription: observation.snapshot.productDescription,
+      ingredients: observation.snapshot.ingredients,
+    };
+
+    await expect(
+      listingContentGatewayProduction.validationPreview({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+        asin: ASIN,
+        productType: PRODUCT_TYPE,
+        languageTag: "en_US",
+        schemaChecksum: SCHEMA_CHECKSUM,
+        expectedOldHash: canonicalSha256(previous),
+        expectedCanonicalPatchHash: null,
+        previous,
+        requested: {
+          ...previous,
+          bulletPoints: ["Excel replacement bullet"],
+        },
+        changedFields: ["bulletPoints"],
+        exactLanguageBulletReplacementAuthority:
+          LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+        sourceEvidence: observation.sourceEvidence,
+        ptdEvidence: observation.ptdEvidence,
+      }),
+    ).rejects.toMatchObject({ code: "CONTENT_SELECTOR_UNSAFE" });
+    expect(validationPatchCalls).toBe(0);
   });
 });
