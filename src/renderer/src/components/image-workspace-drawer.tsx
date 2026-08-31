@@ -21,6 +21,9 @@ import type {
   StandaloneAuditJob,
   StandaloneAuditMode,
 } from "../standalone-audit";
+import AuditWorkspaceShell, {
+  type AuditSurfacePresentation,
+} from "./audit-workspace-shell";
 
 export type ImageWorkspaceTab = "single" | "audit";
 
@@ -116,6 +119,7 @@ export default function ImageWorkspaceDrawer({
   auditJob = null,
   onAuditJobChange,
   onContextResolved,
+  presentation = "dialog",
   onClose,
 }: {
   initialMarketplaceId: string;
@@ -127,6 +131,7 @@ export default function ImageWorkspaceDrawer({
   auditJob?: StandaloneAuditJob | null;
   onAuditJobChange?: (job: StandaloneAuditJob) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
+  presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
@@ -190,12 +195,13 @@ export default function ImageWorkspaceDrawer({
   }, [hasChanges, onClose, phase]);
 
   useEffect(() => {
+    if (presentation !== "dialog") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !actionLoading) closeDrawer();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [actionLoading, closeDrawer]);
+  }, [actionLoading, closeDrawer, presentation]);
 
   const reset = (nextMarketplaceId: string) => {
     setMarketplaceId(nextMarketplaceId);
@@ -519,17 +525,15 @@ export default function ImageWorkspaceDrawer({
   }, [idempotencyKey, phase, recheckImages, result, verified]);
 
   return (
-    <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget && !actionLoading) closeDrawer();
-    }}>
-      <aside className="order-drawer image-workspace-drawer" role="dialog" aria-modal="true" aria-labelledby="image-workspace-title">
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">LISTING MEDIA · FBA ONLY</p>
-            <h2 id="image-workspace-title">商品圖片</h2>
-          </div>
-          <button type="button" onClick={closeDrawer} disabled={actionLoading} aria-label="關閉圖片工作區">×</button>
-        </div>
+    <AuditWorkspaceShell
+      presentation={presentation}
+      eyebrow="LISTING MEDIA · FBA ONLY"
+      title={tab === "audit" ? "全站圖片健檢" : "商品圖片"}
+      closeLabel="關閉圖片工作區"
+      surfaceClassName="image-workspace-drawer"
+      busy={actionLoading}
+      onBack={closeDrawer}
+    >
 
         {phase === "edit" && (
           <>
@@ -723,7 +727,6 @@ export default function ImageWorkspaceDrawer({
         )}
 
         <div className="drawer-api-footnote">Listings Items v2021-08-01 · Product Type Definitions · Local validation · Optional R2 · FBA only</div>
-      </aside>
-    </div>
+    </AuditWorkspaceShell>
   );
 }

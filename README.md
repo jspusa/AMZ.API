@@ -35,8 +35,8 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 營運 | Amazon Ads Profile 自動發現、Sponsored Products 活動唯讀查詢與全站 FBA 廣告覆蓋健檢；任何 Listing 身分缺口都整次停止 | 獨立 Ads LWA＋唯讀；無 Ads 寫入 route |
 | 營運 | FBA 廣告策略表：同一日期範圍整合目前 FBA SKU、SKU 粒度品項銷售與 Sponsored Products advertised-product 報表，產生 T1–T4、可覆寫 SP 預算／目標 ACoS、實際花費／歸因銷售／購買次數與中文 Excel | 三份 main-owned 唯讀報表；缺值不補 0；SB／SD／規格與價格保持人工留白 |
 | 報表 | 文件庫列出 Amazon 官方 109 個唯一公開 report types、用途、角色、FBA 邊界與 App 接線狀態；Vendor 類型不顯示，並可依可用性快速篩選 | 公開文件＋唯讀規劃 |
-| 健檢 | 首頁一鍵直接啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B 價格、廣告覆蓋七張既有卡片的 main-owned 工作，名稱與順序完全共用；各抽屜優先顯示摘要、進度、操作與結果，判定規則、資料來源及安全範圍統一收在可展開的「顯示詳細說明」 | 全部唯讀；執行中工作會沿用，啟動或執行失敗各自在原卡片 fail honest |
-| 健檢 | 從任一單項卡啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B、廣告覆蓋、庫齡或評論後，可關閉抽屜繼續在 Notebook Key 主程序執行，首頁持續顯示該站點進度並可重新接回結果 | renderer 只觀察 main-owned、account／mode／marketplace-scoped 工作；關閉畫面不會取消工作，切換安全 context 會失效 |
+| 健檢 | 首頁一鍵直接啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B 價格、廣告覆蓋七張既有卡片的 main-owned 工作，名稱與順序完全共用；首頁入口改用同一個寬版單層工作區，優先顯示摘要、進度、操作與結果，不再把結果限制在小型 modal；判定規則、資料來源及安全範圍只在低調的「詳細說明 ›」展開後顯示 | 全部唯讀；執行中工作會沿用，啟動或執行失敗各自在原卡片 fail honest |
+| 健檢 | 從任一單項卡啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B、廣告覆蓋、庫齡或評論後，可返回首頁並讓 Notebook Key 主程序繼續執行，首頁持續顯示該站點進度並可重新接回結果；非首頁工具仍可保留既有 drawer | renderer 只觀察 main-owned、account／mode／marketplace-scoped 工作；離開工作區不會取消工作，切換安全 context 會失效；B2B 寫入處理中仍禁止離開 |
 | 健檢 | FBA 180 天以上庫齡／預估冗餘與評論主題依此順序收在首頁預設折疊的「低頻健檢」，各自獨立執行 | 不納入一鍵全部，避免低頻或長時間工作阻塞常用健檢 |
 | 系統 | 作業系統安全儲存密文、防重送帳本、預檢票證、自我檢查、字級、API 版本更新建議、公開會計 API 能力與安全下載規劃 | 自動／能力邊界 |
 
@@ -89,7 +89,7 @@ Amazon 寫入固定經過：
 
 文案更新在 Validation Preview 後直接跳本機身分確認，不再要求重打 SKU。Excel 批次文案先核對每列的 main-owned 掃描證據；被編輯但原文讀取未完整的列會在進入寫入計畫前隔離，預覽明列 exact SKU／差異並標示本次略過、不會寫入，其餘安全列仍可繼續。進入計畫的列仍會整批重新讀取與 Validation Preview；一般預檢失敗仍整批零寫入，介面必須顯示 exact SKU、Amazon 原值／Excel 更新值差異與清理過的公開原因。Excel 對同語系產品要點採完整取代時，adapter 若看到第 6 項後舊值，必須把所有將刪內容及語系帶進 main-owned 預檢；renderer 逐字顯示並回傳完全相同且有序的 SKU acknowledgement，main fresh revalidation 也必須逐字相同。原生確認會先嘗試列出逐 SKU 風險；超過 120 字時改用不含任意 Amazon 文字的 bounded 摘要，固定顯示總 SKU 數、高風險 SKU 數、刪除總數、`INVALID` SKU 數（含 0）與 Write Gate 對完整批次產生的 12 字驗證碼，因此大量更新不必拆檔。缺少 disclosure 欄位的舊 Notebook Key 回應仍會明示必須更新，不會把缺欄位當成沒有刪除。唯一窄例外是 live Amazon 回傳格式完整的 exact `INVALID`，且至少含一項已清理的公開 `ERROR`：App 將它標為 `REQUIRES_VALIDATION_OVERRIDE`，使用者可明確核對並勾選 main-owned exact SKU 集合後，選擇「仍要嘗試上傳更新」。這不代表已通過 Amazon 驗證；main 會在一次 Touch ID／Windows Hello 前重做相同 evidence 的預檢，原生摘要以明細或上述 bounded `INVALID` 計數＋驗證碼確認同一批次，之後每 SKU 仍只有一次 ledgered PATCH 嘗試與回讀，Amazon 仍可能拒絕。工作簿篡改、可寫列的 fresh read 不完整、身分／FBA／PTD／schema／context／帳號／站點／模式 drift、auth／rate limit／`5xx`／逾時、malformed／unknown 或寫入後不確定狀態都不可 override。價格、圖片與 Sale Price 保留各自既定的額外防呆。
 
-寫入不會因為 `429`、逾時或 `5xx` 自動重送。真正 PATCH 前的重新讀取／PTD／Validation Preview 若發生不可 override 的失敗，或 Excel narrow override 的 exact evidence 已漂移，會明示尚未送出並安全釋放 claim；真正 PATCH 已送或 Amazon 已接受後結果不確定時，帳本才會標記 `unknown` 並阻止同一確認碼重送。B2B route 一取得 Amazon accepted receipt 就立刻回 HTTP `202` 與 `PROCESSING`，同一次 PATCH 呼叫不做 canonical GET；editor 會保留送出時間、Request ID 與差異，讓使用者稍後手動重新讀取。只有後續明確 GET 取得的 exact SKU／ASIN／站點／價格／最低價／階梯全部相符，才能把 durable 狀態轉成 `VERIFIED`；重新讀取本身不會重送 PATCH。
+寫入不會因為 `429`、逾時或 `5xx` 自動重送。真正 PATCH 前的重新讀取／PTD／Validation Preview 若發生不可 override 的失敗，或 Excel narrow override 的 exact evidence 已漂移，會明示尚未送出並安全釋放 claim；真正 PATCH 已送或 Amazon 已接受後結果不確定時，帳本才會標記 `unknown` 並阻止同一確認碼重送。B2B route 一取得 Amazon accepted receipt 就立刻回 HTTP `202` 與 `PROCESSING`，同一次 PATCH 呼叫不做 canonical GET；editor 會保留送出時間、Request ID 與差異，讓使用者稍後手動重新讀取。B2B 階段只有後續明確 GET 取得的 exact SKU／ASIN／站點／Business Price／最低價與本次要求的階梯全部相符，才能把 durable 狀態轉成 `VERIFIED`。最低價階段只以 exact SKU／ASIN／站點／Product Type／FBA 與 canonical 目標最低價確認；Amazon 在同步期間正規化的一般售價、B2B contribution、階梯或 protected hash 不會讓已命中的最低價永久卡住，因為第二階段仍必須使用最新 Listing 重新預檢並再次確認。重新讀取本身不會重送 PATCH。
 
 ## 開發與驗證
 

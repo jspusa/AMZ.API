@@ -548,6 +548,116 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("disabled");
   });
 
+  it("unlocks the same editor after a manual GET verifies the minimum price", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const fixedPlan = {
+      discountType: "fixed" as const,
+      levels: [{ lowerBound: 3, value: 16.14 }],
+    };
+    const processing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      sellerSku: "1GCRD004A0",
+      businessPrice: { amount: 16.15, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      minimumPrice: { amount: 16.14, currencyCode: "USD" },
+      quantityDiscountPlan: fixedPlan,
+      quantityDiscountPlanHash: "1".repeat(64),
+      writeStatus: {
+        mode: "live",
+        status: "PROCESSING",
+        stage: "minimum_price",
+        marketplaceId: interactiveListing.marketplaceId,
+        sellerSku: "1GCRD004A0",
+        asin: interactiveListing.asin,
+        productType: interactiveListing.productType,
+        acceptedAt: "2026-09-01T00:01:55.000Z",
+        verifiedAt: null,
+        requestId: "45d0afd0-999b-47a4-a9f5-e248edf4fc40",
+        submissionId: "submission-minimum-price",
+        verified: false,
+        authoritative: false,
+        canResend: false,
+        businessPriceSubmitted: false,
+        previousBusinessPrice: { amount: 16.15, currencyCode: "USD" },
+        requestedBusinessPrice: { amount: 15.99, currencyCode: "USD" },
+        previousMinimumPrice: { amount: 16.14, currencyCode: "USD" },
+        requestedMinimumPrice: { amount: 14.19, currencyCode: "USD" },
+        lowestTierUnitPrice: { amount: 15.19, currencyCode: "USD" },
+        previousQuantityDiscountPlan: fixedPlan,
+        requestedQuantityDiscountPlan: {
+          discountType: "percent",
+          levels: [
+            { lowerBound: 5, value: 5 },
+            { lowerBound: 10, value: 10 },
+            { lowerBound: 15, value: 15 },
+            { lowerBound: 20, value: 20 },
+          ],
+        },
+        quantityDiscountPlanChange: "replace",
+        notice:
+          "Amazon 已接受最低價更新，正在同步；B2B 價格與階梯尚未送出。",
+      },
+    });
+    const verified = {
+      ...processing,
+      minimumPrice: { amount: 14.19, currencyCode: "USD" },
+      minimumPriceProtectedHash: "9".repeat(64),
+      writeStatus: {
+        ...processing.writeStatus,
+        status: "VERIFIED",
+        verifiedAt: "2026-09-01T00:12:00.000Z",
+        verified: true,
+        authoritative: true,
+        notice:
+          "最低價已由 Notebook Key 唯讀回查確認；B2B 價格與階梯尚未送出，請重新預檢後再確認。",
+      },
+    };
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method === "PATCH") {
+        throw new Error("Manual minimum-price reconciliation must not PATCH");
+      }
+      return new Response(JSON.stringify(verified), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingEditor, {
+        listing: processing,
+        onClose: () => undefined,
+        onVerified: () => undefined,
+        onError: () => undefined,
+        onBusyChange: () => undefined,
+      }));
+    });
+
+    const root = renderer!.root;
+    expect(root.findByProps({ id: "business-price-input" }).props.disabled)
+      .toBe(true);
+    await act(async () => {
+      root.findAllByType("button").find((button) =>
+        button.children.join("") === "重新確認 Amazon 狀態"
+      )!.props.onClick();
+    });
+
+    expect(JSON.stringify(renderer!.toJSON()))
+      .toContain("最低價已確認；B2B 尚未送出");
+    expect(root.findByProps({ id: "business-price-input" }).props.disabled)
+      .toBe(false);
+    const preview = root.findAllByType("button").find((button) =>
+      button.children.join("") === "重新預檢 B2B 價格與階梯（不寫入）"
+    );
+    expect(preview).toBeDefined();
+    expect(preview!.props.disabled).toBe(false);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"))
+      .toBe(false);
+    await act(async () => renderer!.unmount());
+  });
+
   it("replaces the audit list with one in-drawer editor view and returns to the audit", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
@@ -1705,6 +1815,16 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("全站 B2B 價格健檢");
     expect(markup).toContain("AMAZON BUSINESS · FBA ONLY");
     expect(markup).toContain('role="dialog"');
+
+    const workspace = renderToStaticMarkup(createElement(BusinessPricingAuditDrawer, {
+      presentation: "workspace",
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      onClose: () => undefined,
+    }));
+    expect(workspace).toContain('data-audit-workspace="true"');
+    expect(workspace).not.toContain('role="dialog"');
+    expect(workspace).not.toContain("drawer-backdrop");
   });
 
   it("keeps the B2B drawer open while the editor is processing a request", async () => {
@@ -1757,6 +1877,35 @@ describe("FBA business pricing audit renderer", () => {
       panel.props.onEditorBusyChange(false);
     });
     keydownHandler?.({ key: "Escape" } as KeyboardEvent);
+    expect(onClose).toHaveBeenCalledOnce();
+    await act(async () => renderer!.unmount());
+  });
+
+  it("keeps the B2B workspace back action locked while the editor is busy", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const onClose = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditDrawer, {
+        presentation: "workspace",
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        cachedSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+        onClose,
+      }));
+    });
+    const root = renderer!.root;
+    const panel = root.findByType(BusinessPricingAuditPanel);
+    await act(async () => panel.props.onEditorBusyChange(true));
+
+    const back = root.findByProps({ className: "audit-workspace-back" });
+    expect(back.props.disabled).toBe(true);
+    back.props.onClick();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => panel.props.onEditorBusyChange(false));
+    root.findByProps({ className: "audit-workspace-back" }).props.onClick();
     expect(onClose).toHaveBeenCalledOnce();
     await act(async () => renderer!.unmount());
   });

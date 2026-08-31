@@ -132,6 +132,7 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain("開始全站訂閱價格健檢");
     expect(markup).toContain("全站 B2B 價格健檢");
     expect(markup).toContain("開始全站 B2B 價格健檢");
+    expect(markup.match(/data-audit-workspace-launch=/g)).toHaveLength(7);
     expect(markup).toContain("評論健檢");
     expect(markup).toContain("Listings relationships 已證明的 child 與 standalone ASIN");
     expect(markup).toContain("開始全站評論健檢");
@@ -197,7 +198,14 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain('event.key !== "Escape"');
     expect(source).toContain("unboundVariationAuditCache");
     expect(source).toContain("onCachedResultChange={cacheUnboundVariationAudit}");
-    expect(source).toContain("setUnboundVariationAuditOpen(true)");
+    expect(source).toContain("setActiveAuditWorkspace(\"variation\")");
+    expect(source).toContain('presentation="workspace"');
+    expect(source).toContain("activeAuditWorkspace ? auditWorkspaceView");
+    expect(source).toContain("auditWorkspaceReturnRef");
+    expect(source).toContain("data-audit-workspace-launch");
+    expect(source).toContain("returnTarget.scrollY");
+    expect(source).toContain("focus({ preventScroll: true })");
+    expect(source).toContain("disabled={Boolean(activeAuditWorkspace)}");
     expect(source).toContain("setAgedInventoryOpen(true)");
     expect(source).toContain("agedInventoryOpen && createPortal");
     expect(source).toContain("reportMenuEntries");
@@ -276,6 +284,9 @@ describe("dashboard top navigation layout", () => {
     expect(css).toMatch(/\.content-audit-export-attention\s*\{[\s\S]*?background:/);
     expect(css).toMatch(/\.content-audit-export-all\s*\{[\s\S]*?background:/);
     expect(css).toMatch(/\.audit-details-disclosure\s*>\s*summary:focus-visible\s*\{/);
+    expect(css).toMatch(/\.workspace-content\.workspace-content-audit\s*\{[\s\S]*?width:\s*min\(1440px,/);
+    expect(css).toMatch(/\.audit-workspace-header\s*\{[\s\S]*?position:\s*sticky;/);
+    expect(css).toMatch(/\.audit-details-disclosure:not\(\[open\]\)\s*\{[\s\S]*?width:\s*max-content;/);
     expect(css).toMatch(
       /@media \(max-width: 680px\)[\s\S]*?\.content-audit-export-grid\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
     );

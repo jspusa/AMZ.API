@@ -470,7 +470,19 @@ describe("W05 Business Pricing mutation owner", () => {
       ...businessPricingSnapshot(),
       minimumPrice: { amount: minimumAmount, currencyCode: "USD" },
       minimumPricePresence: "canonical",
-      minimumPriceProtectedHash: "7".repeat(64),
+      minimumPriceProtectedHash: minimumAmount === 18
+        ? "7".repeat(64)
+        : "9".repeat(64),
+      ...(minimumAmount === 18 ? {} : {
+        standardPrice: { amount: 29.99, currencyCode: "USD" },
+        effectivePrice: { amount: 29.99, currencyCode: "USD" },
+        businessPrice: { amount: 16.15, currencyCode: "USD" },
+        quantityDiscountPlan: {
+          discountType: "fixed" as const,
+          levels: [{ lowerBound: 3, value: 16.14 }],
+        },
+        quantityDiscountPlanPresence: "canonical" as const,
+      }),
     });
     const minimumPatch = {
       marketplaceId: MARKETPLACE_ID,

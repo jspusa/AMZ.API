@@ -11,12 +11,9 @@ export default function AuditDetailsDisclosure({
 }) {
   return (
     <details className="health-advanced-details audit-details-disclosure">
-      <summary>
-        <span>
-          <strong>顯示詳細說明</strong>
-          <small>{summary}</small>
-        </span>
-        <i aria-hidden="true">＋</i>
+      <summary aria-label={`詳細說明：${summary}`}>
+        <strong>詳細說明</strong>
+        <i aria-hidden="true">›</i>
       </summary>
       <div className="health-advanced-body audit-details-body">{children}</div>
     </details>

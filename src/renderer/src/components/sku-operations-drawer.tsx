@@ -24,6 +24,9 @@ import type {
   StandaloneAuditJob,
   StandaloneAuditMode,
 } from "../standalone-audit";
+import AuditWorkspaceShell, {
+  type AuditSurfacePresentation,
+} from "./audit-workspace-shell";
 
 export type ContentWorkspaceTab = "single" | "audit" | "export";
 
@@ -553,6 +556,7 @@ export default function SkuOperationsDrawer({
   auditJob = null,
   onAuditJobChange,
   onContextResolved,
+  presentation = "dialog",
   onClose,
 }: {
   initialMarketplaceId: string;
@@ -564,6 +568,7 @@ export default function SkuOperationsDrawer({
   auditJob?: StandaloneAuditJob | null;
   onAuditJobChange?: (job: StandaloneAuditJob) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
+  presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<ContentWorkspaceTab>(initialTab);
@@ -881,6 +886,7 @@ export default function SkuOperationsDrawer({
   }, [hasChanges, onClose, phase]);
 
   useEffect(() => {
+    if (presentation !== "dialog") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || actionLoading) return;
       if (phase === "confirm") {
@@ -892,7 +898,7 @@ export default function SkuOperationsDrawer({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [actionLoading, closeDrawer, phase]);
+  }, [actionLoading, closeDrawer, phase, presentation]);
 
   useEffect(
     () => () => {
@@ -1308,34 +1314,19 @@ export default function SkuOperationsDrawer({
           : "";
 
   return (
-    <div
-      className="drawer-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) closeDrawer();
-      }}
+    <AuditWorkspaceShell
+      presentation={presentation}
+      eyebrow="FBA LISTING CONTENT"
+      title={tab === "audit"
+        ? "全站文案健檢"
+        : tab === "export"
+          ? "全部商品文案 Excel"
+          : "商品內容"}
+      closeLabel="關閉商品內容工具"
+      surfaceClassName="sku-ops-drawer"
+      busy={busy}
+      onBack={closeDrawer}
     >
-      <aside
-        className="order-drawer sku-ops-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="sku-ops-title"
-      >
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">FBA LISTING CONTENT</p>
-            <h2 id="sku-ops-title">商品內容</h2>
-          </div>
-          <button
-            type="button"
-            onClick={closeDrawer}
-            disabled={busy}
-            aria-label="關閉商品內容工具"
-          >
-            ×
-          </button>
-        </div>
-
         <div className="sku-ops-tabs" role="tablist" aria-label="商品內容工具">
           <button
             id="content-single-tab"
@@ -1901,7 +1892,6 @@ export default function SkuOperationsDrawer({
         <div className="privacy-footnote price-footnote">
           這個工具只處理 FBA 商品內容。所有憑證留在這台電腦的系統安全儲存區；寫入前會先跑 Amazon 預檢、舊值衝突檢查與 Notebook 鑰匙（Touch ID／Windows Hello）確認。
         </div>
-      </aside>
-    </div>
+    </AuditWorkspaceShell>
   );
 }

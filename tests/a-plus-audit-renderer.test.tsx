@@ -444,9 +444,17 @@ describe("A+ FBA audit renderer", () => {
       cachedSnapshot: snapshot,
       onClose: () => undefined,
     }));
+    const workspaceMarkup = renderToStaticMarkup(createElement(AplusAuditDrawer, {
+      presentation: "workspace",
+      marketplaceId: MARKETPLACE_ID,
+      marketplaceShort: "US",
+      mode: "live",
+      cachedSnapshot: snapshot,
+      onClose: () => undefined,
+    }));
 
     expect(panelMarkup).toContain("核對 A+ 發布狀態");
-    expect(panelMarkup).toContain("顯示詳細說明");
+    expect(panelMarkup).toContain("詳細說明");
     expect(panelMarkup).toContain("A+ 文件、ASIN 關聯與唯讀範圍");
     expect(panelMarkup).not.toContain('audit-details-disclosure" open=""');
     expect(panelMarkup).toContain("未找到已發布 A+");
@@ -461,6 +469,9 @@ describe("A+ FBA audit renderer", () => {
     expect(panelMarkup).not.toContain("Brand Story");
     expect(drawerMarkup).toContain('role="dialog"');
     expect(drawerMarkup).toContain("全站 A+ 健檢");
+    expect(workspaceMarkup).toContain('data-audit-workspace="true"');
+    expect(workspaceMarkup).not.toContain('role="dialog"');
+    expect(workspaceMarkup).not.toContain("drawer-backdrop");
   });
 
   it("shows A+ document names plus Chinese document and relation states", () => {

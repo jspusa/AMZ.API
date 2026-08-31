@@ -529,5 +529,17 @@ describe("advertising strategy renderer", () => {
     expect(drawer.indexOf("FBA 廣告策略建議")).toBeLessThan(
       drawer.indexOf("全站廣告覆蓋健檢"),
     );
+
+    const workspace = renderToStaticMarkup(
+      <AdsDrawer
+        presentation="workspace"
+        initialMarketplaceId={US}
+        onClose={() => undefined}
+      />,
+    );
+    expect(workspace).toContain('data-audit-workspace="true"');
+    expect(workspace).toContain("廣告覆蓋健檢");
+    expect(workspace).not.toContain("FBA 廣告策略建議");
+    expect(workspace).not.toContain('role="dialog"');
   });
 });

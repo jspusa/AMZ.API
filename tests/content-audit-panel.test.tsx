@@ -195,7 +195,7 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("Mac／Windows Notebook Key Bridge 在本機套用");
     expect(markup).toContain("文案不會送到第三方");
     expect(markup).toContain('<details class="health-advanced-details audit-details-disclosure">');
-    expect(markup).toContain("顯示詳細說明");
+    expect(markup).toContain("詳細說明");
     expect(markup).not.toContain('audit-details-disclosure" open=""');
     expect(markup).toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("FBM 不會加入");
@@ -355,7 +355,7 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("兩份都只在這台電腦建立；任一份都可回傳更新");
     expect(markup).toContain('data-export-scope="attention"');
     expect(markup).toContain('data-export-scope="all"');
-    expect(occurrenceCount(markup, "顯示詳細說明")).toBe(1);
+    expect(occurrenceCount(markup, "<strong>詳細說明</strong>")).toBe(1);
     expect(markup).toContain("重新掃描");
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("content-audit-export-primary");

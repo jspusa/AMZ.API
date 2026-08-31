@@ -1,0 +1,271 @@
+/* The seven primary audits use one page-level workspace. Dialog presentation
+   remains available to the product navigation without leaking modal layout
+   constraints into the dashboard route. */
+.workspace-content.workspace-content-audit {
+  width: min(1440px, calc(100% - 48px));
+  padding-top: 22px;
+}
+
+.audit-workspace {
+  min-width: 0;
+  min-height: calc(100dvh - 188px);
+}
+
+.audit-workspace-header {
+  position: sticky;
+  z-index: 20;
+  top: 115px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, .075);
+  background: rgba(245, 245, 247, .94);
+  backdrop-filter: blur(22px) saturate(165%);
+}
+
+.audit-workspace-back {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #d9d9de;
+  border-radius: 11px;
+  background: #fff;
+  color: #4d4d53;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.audit-workspace-back:hover {
+  border-color: #c7c7cd;
+  color: #1d1d1f;
+}
+
+.audit-workspace-back:focus-visible {
+  outline: 3px solid rgba(0, 113, 227, .22);
+  outline-offset: 2px;
+}
+
+.audit-workspace-back:disabled {
+  cursor: wait;
+  opacity: .48;
+}
+
+.commerce-os:has(.audit-workspace) .workspace-header :is(button, input, select):disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+.audit-workspace-heading {
+  min-width: 0;
+}
+
+.audit-workspace-heading .eyebrow {
+  margin: 0 0 3px;
+}
+
+.audit-workspace-heading h1 {
+  margin: 0;
+  outline: 0;
+  font-size: clamp(24px, 3vw, 36px);
+  letter-spacing: -.045em;
+}
+
+.audit-workspace-body {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  margin-top: 20px;
+  padding: 24px;
+  overflow: visible;
+  border: 1px solid rgba(0, 0, 0, .06);
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 14px 42px rgba(0, 0, 0, .035);
+}
+
+.audit-workspace-body.sku-ops-drawer,
+.audit-workspace-body.image-workspace-drawer,
+.audit-workspace-body.subscription-audit-drawer,
+.audit-workspace-body.business-pricing-audit-drawer,
+.audit-workspace-body.unbound-variation-audit-drawer,
+.audit-workspace-body.ads-drawer {
+  width: 100%;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.audit-workspace-body.sku-ops-drawer {
+  padding: 24px;
+}
+
+.audit-workspace-body .sku-ops-tabs {
+  margin-top: 0;
+}
+
+.audit-workspace-body .business-pricing-audit-panel {
+  min-height: 0;
+  overflow: visible;
+  padding-right: 0;
+}
+
+.audit-workspace-body .business-pricing-detail-toolbar,
+.audit-workspace-body .business-pricing-editor {
+  width: 100%;
+  min-width: 0;
+}
+
+.audit-workspace-body .business-pricing-editor {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.audit-workspace-body .business-pricing-editor > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.audit-workspace-body .subscription-audit-panel {
+  margin-top: 0;
+}
+
+/* Audit explanations stay available, but the closed control is intentionally
+   a quiet helper link instead of another card competing with the primary job. */
+.audit-details-disclosure,
+.audit-details-disclosure:not([open]) {
+  width: max-content;
+  max-width: 100%;
+  margin: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.content-audit-panel > .audit-details-disclosure,
+.image-audit-panel > .audit-details-disclosure,
+.subscription-audit-panel > .audit-details-disclosure {
+  margin-bottom: 10px;
+}
+
+.audit-details-disclosure[open] {
+  width: 100%;
+}
+
+.audit-details-disclosure > summary {
+  display: inline-flex;
+  width: max-content;
+  min-height: 30px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 0 2px;
+  border-radius: 6px;
+  background: transparent;
+  color: #76767d;
+}
+
+.audit-details-disclosure > summary:hover {
+  color: #333338;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.audit-details-disclosure > summary:focus-visible {
+  outline: 3px solid rgba(0, 113, 227, .22);
+  outline-offset: 2px;
+}
+
+.audit-details-disclosure > summary strong {
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.audit-details-disclosure > summary i {
+  color: currentColor;
+  font-size: 13px;
+  line-height: 1;
+  transform: none;
+}
+
+.audit-details-disclosure[open] > summary i {
+  transform: rotate(90deg);
+}
+
+.audit-details-disclosure .audit-details-body {
+  margin-top: 6px;
+  padding: 14px;
+  border: 1px solid #e7e7ea;
+  border-radius: 14px;
+  background: #fafafd;
+}
+
+@media (max-width: 900px) {
+  .workspace-content.workspace-content-audit {
+    width: min(100% - 24px, 1440px);
+    padding-top: 12px;
+  }
+
+  .audit-workspace-header {
+    position: static;
+    grid-template-columns: 1fr;
+    gap: 11px;
+    padding: 10px 0 14px;
+  }
+
+  .audit-workspace-back {
+    width: max-content;
+  }
+
+  .audit-workspace-body,
+  .audit-workspace-body.sku-ops-drawer {
+    margin-top: 12px;
+    padding: 16px;
+    border-radius: 17px;
+  }
+}
+
+@media (max-width: 520px) {
+  .commerce-os:has(.audit-workspace) .workspace-primary-nav {
+    visibility: hidden;
+    overflow: hidden;
+  }
+
+  .commerce-os:has(.audit-workspace) .workspace-context-shell {
+    display: none;
+  }
+
+  .workspace-content.workspace-content-audit {
+    width: min(100% - 16px, 1440px);
+  }
+
+  .audit-workspace-body,
+  .audit-workspace-body.sku-ops-drawer {
+    padding: 12px;
+  }
+
+  .audit-workspace-body .business-pricing-write-status {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .audit-workspace-body .business-pricing-write-meta > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .audit-workspace-body .business-pricing-diff-row {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .audit-workspace-body .business-pricing-diff-label {
+    grid-column: 1 / -1;
+  }
+}
