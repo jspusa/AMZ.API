@@ -1653,6 +1653,7 @@ describe("content audit Excel batch router", () => {
     expect(approvalReason).toContain("8 SKU");
     expect(approvalReason).toContain("高風險 8 SKU");
     expect(approvalReason).toContain("刪除要點 14 項");
+    expect(approvalReason).toContain("INVALID 0 SKU");
     expect(approvalReason).toContain("驗證碼 gate-owned-123");
     expect(approvalReason.length).toBeLessThanOrEqual(120);
 
@@ -1711,6 +1712,44 @@ describe("content audit Excel batch router", () => {
     expect(maximumLengthCommit.status).toBe(200);
     expect(writeGate.execute).toHaveBeenCalledTimes(3);
     expect(approvalReason).toContain(maximumLengthSku);
+    expect(approvalReason.length).toBeLessThanOrEqual(120);
+
+    content.previewOne.mockImplementation(async (input) =>
+      preparedPreview(input)
+    );
+    oversizedEvidence.rowDigests = parsedOversizedWorkbook.rows.map((row) =>
+      contentAuditEvidenceRowDigest({
+        accountScope: ACCOUNT_SCOPE,
+        marketplaceId: MARKETPLACE_ID,
+        mode: "demo",
+        exportId: parsedOversizedWorkbook.metadata.exportId,
+        fetchedAt: parsedOversizedWorkbook.metadata.fetchedAt,
+        sellerSku: row.sellerSku,
+        asin: row.asin,
+        productType: row.productType,
+        variationFamilyKey: row.variationFamilyKey,
+        values: row.original,
+        readStatus: "complete",
+      })
+    );
+    const safeLargeKey = "content-batch-safe-large-summary-001";
+    const safeLargePreview = await gateRouter.handle(importRequest(
+      oversizedEdited,
+      safeLargeKey,
+    ));
+    expect(safeLargePreview.status).toBe(200);
+    const safeLargeBody = responseValue(safeLargePreview);
+    const safeLargeCommit = await gateRouter.handle(commitRequest(
+      String(safeLargeBody.previewId),
+      safeLargeKey,
+    ));
+    expect(safeLargeCommit.status).toBe(200);
+    expect(writeGate.execute).toHaveBeenCalledTimes(4);
+    expect(approvalReason).toContain("8 SKU");
+    expect(approvalReason).toContain("高風險 0 SKU");
+    expect(approvalReason).toContain("刪除要點 0 項");
+    expect(approvalReason).toContain("INVALID 0 SKU");
+    expect(approvalReason).toContain("驗證碼 gate-owned-123");
     expect(approvalReason.length).toBeLessThanOrEqual(120);
     gateRouter.dispose();
   });
@@ -2831,6 +2870,7 @@ describe("content audit Excel batch router", () => {
     expect(oversizedExecute).toHaveBeenCalledOnce();
     expect(oversizedApprovalReason).toContain("3 SKU");
     expect(oversizedApprovalReason).toContain("高風險 3 SKU");
+    expect(oversizedApprovalReason).toContain("刪除要點 0 項");
     expect(oversizedApprovalReason).toContain("INVALID 3 SKU");
     expect(oversizedApprovalReason).toContain("驗證碼 123456789012");
     expect(oversizedApprovalReason.length).toBeLessThanOrEqual(120);
@@ -2902,6 +2942,7 @@ describe("content audit Excel batch router", () => {
     expect(manualCommit.status).toBe(200);
     expect(manualExecute).toHaveBeenCalledOnce();
     expect(manualApprovalReason).toContain("高風險 1 SKU");
+    expect(manualApprovalReason).toContain("刪除要點 0 項");
     expect(manualApprovalReason).toContain("INVALID 1 SKU");
     expect(manualApprovalReason).not.toContain(undisplayableCode);
     expect(manualApprovalReason).toContain("驗證碼 123456789012");

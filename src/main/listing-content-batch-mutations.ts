@@ -1351,16 +1351,10 @@ export class ListingContentBatchMutations
       0,
     );
     const compactNativeRiskSummary = [
-      nativeRiskChanges.length
-        ? `高風險 ${nativeRiskChanges.length} SKU`
-        : null,
-      removedOverflowBulletCount
-        ? `刪除要點 ${removedOverflowBulletCount} 項`
-        : null,
-      requiredOverrideChanges.length
-        ? `INVALID ${requiredOverrideChanges.length} SKU`
-        : null,
-    ].filter((entry): entry is string => entry !== null).join("／");
+      `高風險 ${nativeRiskChanges.length} SKU`,
+      `刪除要點 ${removedOverflowBulletCount} 項`,
+      `INVALID ${requiredOverrideChanges.length} SKU`,
+    ].join("／");
     const detailedApprovalReason = (verificationCode: string): string =>
       `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
         nativeRiskChanges.length
@@ -1368,9 +1362,7 @@ export class ListingContentBatchMutations
           : `｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}`
       }｜驗證碼 ${verificationCode}`;
     const compactApprovalReason = (verificationCode: string): string =>
-      `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
-        compactNativeRiskSummary ? `｜${compactNativeRiskSummary}` : ""
-      }｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
+      `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU｜${compactNativeRiskSummary}｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
     const approvalReason = (verificationCode: string): string => {
       const detailed = detailedApprovalReason(verificationCode);
       return detailed.length <= NATIVE_CONFIRMATION_REASON_MAX_LENGTH
