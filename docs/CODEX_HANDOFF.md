@@ -12,7 +12,7 @@ v0.1.46 將兩階段責任重新收斂。最低價階段仍要求同一 live mar
 
 首頁七個主要健檢入口同步改為共用的寬版單層 audit workspace：文案、圖片、A+、未綁變體、Subscribe & Save、B2B 與廣告覆蓋不再被限制在帶 backdrop 的小型 modal。共同工作區提供 sticky 返回列、單一頁面捲動、進入標題焦點、返回卡片焦點／捲動恢復與 B2B busy 離開護欄；非首頁工具仍可保留既有 drawer presentation。各 panel 的長篇規則仍使用原生 disclosure，但收合控制改成低調的「詳細說明 ›」輔助連結，只有展開後才顯示內容，不再佔據主要資訊區塊。
 
-package 已升為 0.1.46。新增 regression 分別覆蓋 pure minimum-price reconcile、真實 `LocalStore + MainWriteGate` 在一般售價／B2B／QDP／protected-hash 漂移後仍只以 exact 最低價完成、以及 renderer 手動 GET 後同頁解鎖且零 PATCH。本機 `npm run check` 已通過 245 個測試檔／2,455 tests、typecheck、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。四種 1440／390／320px production fixture profile 亦已證明無 backdrop／dialog／nested scroller／水平溢位，手動 refresh 後 input 與 fresh Preview 解鎖、每 profile 只有兩次 B2B GET 且 B2B POST／PATCH 為 0。雙軸 review、Pages、macOS／Windows exact-main artifacts、Mac 安裝與 live asset/hash 證據仍待本節後續補上；在此之前不可把本機／fixture 結果描述成已上線或 live Amazon 證據。本次工程工作不呼叫 Amazon Validation Preview、Touch ID／Windows Hello、PATCH 或任何 mutation。
+package 已升為 0.1.46。新增 regression 分別覆蓋 pure minimum-price reconcile、真實 `LocalStore + MainWriteGate` 在一般售價／B2B／QDP／protected-hash 漂移後仍只以 exact 最低價完成、renderer 手動 GET 後同頁解鎖且零 PATCH，以及七個首頁入口逐一開啟正確非 modal workspace、取得焦點並在返回後恢復卡片與捲動位置。本機 `npm run check` 已通過 246 個測試檔／2,456 tests、typecheck、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。四種 1440／390／320px production fixture profile 亦已證明無 backdrop／dialog／nested scroller／水平溢位，手動 refresh 後 input 與 fresh Preview 解鎖、每 profile 只有兩次 B2B GET 且 B2B POST／PATCH 為 0。雙軸 review、Pages、macOS／Windows exact-main artifacts、Mac 安裝與 live asset/hash 證據仍待本節後續補上；在此之前不可把本機／fixture 結果描述成已上線或 live Amazon 證據。本次工程工作不呼叫 Amazon Validation Preview、Touch ID／Windows Hello、PATCH 或任何 mutation。
 
 ### 2026-08-31 v0.1.45 大量 Excel 文案批次原生確認摘要（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
@@ -974,7 +974,7 @@ Amazon App：
 3. v0.1.14 的真實 US 6 個月 Subscribe & Save 已證明單列問題可隔離、其他 offer 繼續；它只能保留為舊版歷史快照，不能自動證明 v0.1.15 的新篩選、全站／SKU 折線或五張正常表加一張問題表。這些仍待 6／12／23 個月追加唯讀重測。
 4. 全庫齡層級、AIS tier、評論首頁背景 observer、長 variation family、滑板動畫、36×36 關閉控制與健檢狀態 pill 已通過 production build、測試與 1280px／390px 假 Bridge 視覺驗收；不能以 mock 數值冒充 live Amazon。
 5. 評論負向數值必須保持原始負號並標示為 impact；公開 API 仍不提供商品總星等、總評論數或完整 review 全文。v0.1.12 的 23,765 件品牌出貨、257 個 non-parent review candidates，以及 v0.1.14 的 S&S aggregate 都只是各自時間點快照，不得當作恆定現值。
-6. v0.1.45 保留文案 drag/drop、逐欄原因／立即修改、同檔 Excel round trip、成分宣稱核對、exact SKU／欄位／公開原因與窄化 `INVALID` override，並允許大量高風險 batch 以 bounded native summary 完成一次確認而不要求拆檔。v0.1.46 的完整本機回歸為 2,455 tests；這些不是 live Amazon 文案 mutation 或 Windows Hello 實機證據。
+6. v0.1.45 保留文案 drag/drop、逐欄原因／立即修改、同檔 Excel round trip、成分宣稱核對、exact SKU／欄位／公開原因與窄化 `INVALID` override，並允許大量高風險 batch 以 bounded native summary 完成一次確認而不要求拆檔。v0.1.46 的完整本機回歸為 2,456 tests；這些不是 live Amazon 文案 mutation 或 Windows Hello 實機證據。
 7. v0.1.30 的全站 B2B audit 已由真實 274 列 US read 證明可讀 canonical fixed／percentage quantity tiers；`父變體橫排` 亦由真實 274 列匯出證明。後續使用者授權的單 SKU B2B／最低價流程曾取得 Amazon accepted，該歷史 live activity 不能冒充 v0.1.46 工程驗證。v0.1.46 要求 exact `1GCRD004A0` 手動 refresh 只做 GET：目標最低價 14.19 canonical 後同 editor 轉 VERIFIED／解鎖，不重跑全站健檢且零 PATCH；任何後續 B2B Preview／寫入都必須是另外明確發起的 fresh Preview、新 native confirmation 與 ledgered single attempt。
 8. 報表文件庫列的是 109 個官方公開 report types 與能力說明，不代表 App 已建立 109 種通用下載器；廣告策略 Reporting v3 已接線但尚未設定真實 Ads LWA，既有廣告覆蓋 Live Ads API 也未因此自動完成，FBA 帳務中心未接線能力仍須保持 unavailable／plan-only。
 9. 目前仍是內部 App：Mac 為 ad-hoc、尚無 Apple Developer ID 簽章／公證；Windows fixed prerelease 為 unsigned、尚無 publisher-bound Authenticode，SmartScreen 可能警告且 in-app updater 已停用。所有新增驗證必須保持 FBA-only；任何寫入只限使用者明確授權的 exact SKU／欄位，且不得使用 Seller Central 私有接口。
@@ -1129,7 +1129,7 @@ npm audit --omit=dev
 
 ### A. v0.1.46 發布與 live 證據
 
-1. 本機 `npm run check` 為 245 files／2,455 passed；typecheck、production build、stylesheet parity、audit 0 與 diff check 已完成。PR、release-code SHA、四個 exact-main Actions、live Pages bytes/hash、macOS artifact／安裝仍待發布後回填；後續 docs-only main SHA 只代表證據文件更新，不得冒充新的 release code 或 artifact SHA。
+1. 本機 `npm run check` 為 246 files／2,456 passed；typecheck、production build、stylesheet parity、audit 0 與 diff check 已完成。PR、release-code SHA、四個 exact-main Actions、live Pages bytes/hash、macOS artifact／安裝仍待發布後回填；後續 docs-only main SHA 只代表證據文件更新，不得冒充新的 release code 或 artifact SHA。
 2. v0.1.46 最低價 reconcile 只在 exact marketplace／SKU／ASIN／PTD／FBA／目標金額與幣別相符且沒有 price-scoped issue 時 verified；一般售價、舊 B2B、QDP 或 protected hash 漂移只迫使下一階段 fresh Preview，不再永久鎖住同 editor。手動 refresh 為 GET-only，不沿用 preview／approval，也不自動 PATCH。
 3. 目前 exact v0.1.45 App 已安裝，v0.1.44 備份與既有 Amazon vault 均保留；v0.1.46 安裝後必須保留 v0.1.45 backup 並核對正式路徑、版本、簽章、ASAR 與啟動程序。未完成前不能把工作樹 build 冒充已安裝新版。
 4. v0.1.46 安裝後只以 exact `1GCRD004A0` 做一次使用者明確觸發的 GET canary，核對同頁 VERIFIED／解鎖與零 PATCH。沒有另行明確授權 fresh Preview、exact 變更值與第二次本機確認前不得送 B2B；任何不明結果立即停止，不盲目重送。

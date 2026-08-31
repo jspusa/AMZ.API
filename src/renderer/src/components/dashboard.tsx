@@ -2064,6 +2064,7 @@ export default function Dashboard({
         <main
           id="workspace-top"
           className={`workspace-content ${activeAuditWorkspace ? "workspace-content-audit" : ""}`}
+          data-audit-workspace-section={activeAuditWorkspace ?? undefined}
           tabIndex={-1}
         >
           {activeAuditWorkspace ? auditWorkspaceView : <>
