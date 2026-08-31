@@ -4,7 +4,7 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-31 v0.1.45 大量 Excel 文案批次原生確認摘要（工作樹；尚未發布／安裝；未執行 Amazon 寫入）
+### 2026-08-31 v0.1.45 大量 Excel 文案批次原生確認摘要（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
 使用者回傳「全部商品文案完整模板」後，8 個 SKU 已通過零寫入 Amazon Validation Preview，但其中 14 項第 6 項後產品要點會被完整取代流程刪除。v0.1.44 因為把每個高風險 SKU 與刪除範圍都塞進 Touch ID／Windows Hello 的 120 字原生提示，在真正 Write Gate 前回 `NATIVE_APPROVAL_SUMMARY_TOO_LONG`，要求拆小批次並保持 Amazon 寫入數為 0。這是原生視窗承載方式的限制，不是該 Excel、Amazon Preview 或 8 個 SKU 的內容不安全；使用者明確要求大量刪除與大量 SKU 可在同一份 Excel 完成，不要為了原生提示長度拆檔。
 
@@ -12,7 +12,15 @@ v0.1.45 保留 App 內既有的完整逐項核對：exact SKU、所有欄位原�
 
 唯一改動是原生確認摘要的呈現方式。若逐 SKU 明細可在 120 字內，仍顯示原本的詳細摘要；超過時改由 main 依已鎖定計畫計算 bounded aggregate，只顯示總 SKU 數、高風險 SKU 數、將刪產品要點總數、`INVALID` SKU 數、「已在 App 逐項核對」與 Write Gate verification code，不接受 renderer 提供的計數，也不帶任意 Amazon 文字。使用者的 exact 8 SKU／14 項刪除情境已有 regression，證明 commit 會進入一次 Write Gate 原生確認而不再回 422；大量 `INVALID` 與單一超長公開 code 也改用相同 bounded summary。每 SKU ledgered single PATCH、known rejection／unknown 即停與 no-blind-retry 均未放寬。
 
-package 已升為 0.1.45。聚焦測試已通過文案 batch router、renderer、native confirmation 與 Write Gate 共 5 檔／106 tests；完整 `npm run check` 通過 244 個測試檔／2,448 tests、TypeScript、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Standards review 找到的 active 文件衝突與 compact summary 省略 0 計數已修正並新增大型全零風險 regression；Spec／Standards 最終複查均無剩餘 P0／P1／P2／P3。PR／CI、Pages、macOS／Windows artifacts 與 Mac 安裝仍待本輪後續完成。本輪尚未呼叫 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 mutation。
+package 已升為 0.1.45。聚焦測試已通過文案 batch router、renderer、native confirmation 與 Write Gate 共 5 檔／106 tests；完整 `npm run check` 通過 244 個測試檔／2,448 tests、TypeScript、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Standards review 找到的 active 文件衝突與 compact summary 省略 0 計數已修正並新增大型全零風險 regression；Spec／Standards 最終複查均無剩餘 P0／P1／P2／P3。
+
+PR #177 已 squash merge；唯一綁定本次 v0.1.45 程式碼、Pages 與安裝成品的 main SHA 為 `40ff3a597a008eb0bb3dc60a2f51d0457111b92c`。exact-main macOS／Pages／Validate／Windows runs 為 `33408731880`／`33408731906`／`33408731881`／`33408731897`，成功 jobs 分別為 `99544612248`（attempt 2）／`99542718301`／`99542717953`／`99542718086`。macOS attempt 1 job `99542717891` 的唯一失敗是既有 `sp-execution-context-architecture` 掃描在慢 runner 超過 5 秒，沒有 assertion failure；同一 run、同一 SHA 的 attempt 2 完整通過 Validate、universal package、ad-hoc sign、DMG／ZIP、checksum 與 upload。Windows workflow 只證明 unsigned package、ASAR addon boundary 與 packaged Bridge smoke，不是真實 Windows 11 Hello／DPAPI 實機證據。
+
+live Pages 已直接下載核對：HTML／JS／CSS 分別為 917／1,851,209／302,371 bytes，SHA-256 為 `55b5f5aaeaf2be79e8d124a656713eed48ccbeedf5680908a12a8b7796014963`／`08734669f01d07bae0f0ba3aeacd441a2e992cc1e0490018c887df1676a5f666`／`319c7fb55cff8b7c0e2b0a6d43482894ff4941c213edd974f44aa450bd8c98e9`；live 載入 `assets/index-ME34sgHS.js` 與 `assets/index-BlSusPne.css`，三個檔案均和上述 exact-main production output byte-for-byte 相同。
+
+macOS artifact `9764724951` 名稱為 `AMZ.API-unsigned-40ff3a597a008eb0bb3dc60a2f51d0457111b92c`，468,598,358 bytes，GitHub digest／下載 outer ZIP SHA-256 同為 `c86199cda5c45c08204fecd173e29b4d49e3dc999171f520effc6d90c46ac856`。DMG `AMZ.API-0.1.45-universal.dmg` 為 246,744,588 bytes、SHA-256 `89262e391357c7afde9367295aceb039280d3bcac94d51dfeb0fe8c222c5de97`；universal ZIP 為 221,853,126 bytes、SHA-256 `e6fe1d4f9e4a2218f2d0329a85a914c2b9152ae4ba5736963e5fecbea23404a0`，均匹配內附 checksum。outer／inner ZIP CRC、DMG integrity、version／build 0.1.45、bundle `com.jspusa.amz-api`、executable `AMZ.API`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過；DMG／ZIP 內 `app.asar` SHA-256 同為 `c17de0a1a11bd4db0e2e5dbe61efc7153670eadad39e13da20608118ce23f511`，ASAR header SHA-256 `71df74727149b9a09492348bb6356d861d103fec83ad36a1a06597094e1bf02c` 亦與 `ElectronAsarIntegrity` 相符，packaged update channel 維持 `disabled`。
+
+exact App 已安裝到 `/Applications/AMZ.API.app`，安裝後再次通過版本、bundle、雙架構、簽章、完整 ASAR 與 header hash 核對，且正在執行的主程序來自正式路徑並回報 0.1.45。原 v0.1.44 可復原地保留為 `/Applications/AMZ.API-v0.1.44-backup.app`，既有 v0.1.43 backup、userData 與 Keychain vault 未清除或重建。本節仍沒有 Apple Developer ID／notarization、Windows Authenticode、正式 GitHub desktop release、公開或私有 update feed、Supply Boss 上傳、Windows 實機或 live v0.1.45 Amazon Validation Preview／Touch ID／Windows Hello／PATCH／readback。發布、安裝與單純啟動沒有觸發 Amazon 健檢、預檢或任何 mutation；使用者必須在新版重新選取原 Excel 並重新預檢，舊版短效 preview 不會跨版本沿用。
 
 ### 2026-08-31 v0.1.44 B2B accepted／verified 收斂與健檢介面整理（已合併／Pages 上線／Mac 安裝；未執行新的 Amazon 寫入）
 
