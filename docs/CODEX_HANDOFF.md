@@ -4,13 +4,19 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-31 v0.1.40 B2B Validation Preview／預設階梯與紅綠差異修正（製作中）
+### 2026-08-31 v0.1.40 B2B Validation Preview／預設階梯與紅綠差異修正（已合併／Pages 上線／Mac 安裝；Amazon live 待驗證）
 
 使用者在已安裝 v0.1.39 按「先預檢 B2B 價格與階梯折扣（不寫入）」時，Amazon 以 Request ID `31e8647b-0be0-410b-a13a-fd04a2e39933` 回覆 `Merge operation is not allowed for VALIDATION_PREVIEW requests`。根因是 Business Pricing gateway 把同一份 `op:merge` body 同時交給 Validation Preview 與正式 commit。修正後，只有 `mode=VALIDATION_PREVIEW` 的等價 B2B contribution 改用 `op:replace`；正式 commit 仍固定使用 `op:merge`，因此不會用 B2B 更新取代 `audience:ALL` 或其他 audience。canonical commit patch hash、fresh exact read、seller-specific PTD、Write Gate、native confirmation、final fence、一次 PATCH、canonical readback 與 no-blind-retry 均維持不變。
 
 Business Pricing editor 在可安全編輯 quantity discount 且有 USD 建議值時，現在預設選取「一併更新預填階梯折扣」並送出四組建議 tiers；使用者仍可明確切到 price-only。price-only 模式完全不渲染「預填建議數量折扣」fieldset，只明示現有折扣保持不變。Amazon Preview 通過後，畫面新增逐欄差異：目前 B2B 價格與每個門檻的目前折扣以紅色顯示、箭頭後的新價格／新折扣以綠色顯示；未設定的 percent tier 顯示為 `0%`，既有 fixed plan 則顯示 exact 固定單價，不會假裝成 percent。
 
-RED 先精確重現 preview command 仍是 `merge`、editor 預設 price-only、price-only 仍顯示預填 tiers，以及預檢結果沒有價格／折扣紅綠差異；GREEN 後 B2B 聚焦 4 檔／150 tests 全數通過。package 已升為 0.1.40；final local `npm run check` 通過 244 個測試檔／2,400 tests、TypeScript、production build與stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。這一節目前只有 local／fixture／scripted／test／build 證據；尚未部署、安裝，也未執行 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback或任何 Amazon mutation。已安裝 `/Applications/AMZ.API.app` 暫時仍是 v0.1.39。
+RED 先精確重現 preview command 仍是 `merge`、editor 預設 price-only、price-only 仍顯示預填 tiers，以及預檢結果沒有價格／折扣紅綠差異；GREEN 後 B2B 聚焦 4 檔／150 tests 全數通過。package 已升為 0.1.40；final local `npm run check` 通過 244 個測試檔／2,400 tests、TypeScript、production build與stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。
+
+PR #167 已 squash merge；唯一綁定本次 v0.1.40 程式碼的 main SHA 為 `31c45256d4bb087e97db2ea060677e0122390228`。PR Validate／Windows runs `33354743845`／`33354743857` 成功；exact-main Validate／Pages／macOS／Windows runs `33355070230`／`33355070231`／`33355070240`／`33355070223` 亦全部成功。Windows artifact `9744941097` 名稱為 `AMZ.API-Notebook-Key-Windows-x64-31c45256d4bb087e97db2ea060677e0122390228`，244,844,167 bytes，GitHub digest `sha256:68b62e0575f2dd3771f8496886e5d5987477ea39a9e8e0eda9c7a0b033dbe7d3`；workflow 已通過 unsigned package、ASAR addon boundary 與 packaged Bridge smoke，但仍不是真實 Windows 11 Hello／DPAPI 實機證據。
+
+macOS artifact `9744953237` 名稱為 `AMZ.API-unsigned-31c45256d4bb087e97db2ea060677e0122390228`，468,054,643 bytes，GitHub digest `sha256:9158400981beea02a53ebb046cc6cf69259f84bb8029bf6615c9cc3458ec1249`。DMG `AMZ.API-0.1.40-universal.dmg` 為 246,217,375 bytes、SHA-256 `c0674b73ff8ce5df208a509cf0dff4eeacff4ee2e098fb895662f930bc734e4e`；universal ZIP 為 221,836,624 bytes、SHA-256 `252e04ddea876b86ccae661c6aa7e6b30fe58a48f77328113a1027452be37379`，兩者匹配內附 checksum。DMG integrity、ZIP CRC、version／build 0.1.40、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過，`app.asar` SHA-256 為 `beb8b5bebdbd92949758dcca316e093fa4b85e9dadb8c8b784e42a1944aef9fa`，且 unsigned package 的 `amzApiUpdateChannel` 正確保持 `disabled`。exact App 已安裝到 `/Applications/AMZ.API.app`，安裝後 `app.asar` 與 DMG 完全一致且主程序成功啟動；原 v0.1.39 可復原地保留為 `/Applications/AMZ.API-v0.1.39-backup.app`，既有 userData／Keychain vault 未清除或重建。
+
+本節仍沒有 Apple Developer ID／notarization、Windows Authenticode、正式 GitHub desktop release、公開或私有 update feed、Supply Boss 上傳、Windows 實機、live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 Amazon mutation。使用者須在已安裝 v0.1.40 以明確 SKU／欄位／數值另做 Amazon live Validation Preview，才能確認 Amazon 當下接受 `replace` preview body；未經新的逐次確認不得送出正式 B2B PATCH。
 
 ### 2026-08-31 v0.1.39 全站文案 20-SKU 批次隔離與 Excel 安全列續行（已合併／Pages 上線／Mac 安裝；Amazon live 待驗證）
 
