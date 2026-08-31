@@ -139,7 +139,7 @@ const GATE_ERRORS: Readonly<
 
 type MainWriteGateMessageOverride =
   | MainWriteGateCancellationMessage
-  | "同一 SKU 的商品內容或圖片正在處理，系統已阻止重疊送出。";
+  | "同一 SKU 的商品內容、圖片或價格正在處理，系統已阻止重疊送出。";
 
 export class MainWriteGateError extends Error {
   readonly status: number;
@@ -196,7 +196,11 @@ const CONTENT_BATCH_PREVIEW_TTL_MS = 15 * 60_000;
 const OPERATIONS_BY_FAMILY: Readonly<
   Record<WritePreviewFamily, ReadonlySet<WriteOperation>>
 > = {
-  "business-price": new Set(["business_price", "business_price_repair"]),
+  "business-price": new Set([
+    "price",
+    "business_price",
+    "business_price_repair",
+  ]),
   "variation-move": new Set(["variation_detach", "variation_attach"]),
   "standard-price": new Set(["price"]),
   content: new Set(["content"]),
@@ -249,7 +253,10 @@ function listingAttributeReservationKey(intent: WriteIntent): string {
 }
 
 function usesListingAttributeReservations(family: WritePreviewFamily): boolean {
-  return family === "content" ||
+  return family === "business-price" ||
+    family === "standard-price" ||
+    family === "sale-price" ||
+    family === "content" ||
     family === "images" ||
     family === "content-batch";
 }
@@ -460,7 +467,7 @@ export class MainWriteGate implements MainWriteGatePort {
   clearEphemeral(): void {
     this.ephemeralGeneration += 1;
     this.tickets.clear();
-    // Active listing-attribute claims belong to in-flight execute calls. Their
+    // Active listing mutation claims belong to in-flight execute calls. Their
     // finally blocks release them; clearing them here could permit overlap.
   }
 
@@ -565,16 +572,20 @@ export class MainWriteGate implements MainWriteGatePort {
     ownerToken: string,
   ): readonly string[] {
     if (!usesListingAttributeReservations(binding.family)) return [];
-    const keys = binding.intents.map(listingAttributeReservationKey);
-    if (new Set(keys).size !== keys.length) {
+    const requestedKeys = binding.intents.map(listingAttributeReservationKey);
+    if (
+      binding.family !== "business-price" &&
+      new Set(requestedKeys).size !== requestedKeys.length
+    ) {
       this.releaseTicket(previewTicketKey(binding), ownerToken);
       throw new MainWriteGateError("IDEMPOTENCY_CONFLICT");
     }
+    const keys = [...new Set(requestedKeys)];
     if (keys.some((key) => this.listingAttributeReservations.has(key))) {
       this.releaseTicket(previewTicketKey(binding), ownerToken);
       throw new MainWriteGateError(
         "OPERATION_IN_PROGRESS",
-        "同一 SKU 的商品內容或圖片正在處理，系統已阻止重疊送出。",
+        "同一 SKU 的商品內容、圖片或價格正在處理，系統已阻止重疊送出。",
       );
     }
     for (const key of keys) {

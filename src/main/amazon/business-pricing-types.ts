@@ -23,6 +23,8 @@ export type BusinessQuantityDiscountPlan = {
 };
 
 export type BusinessPricingListingSnapshot = ListingPriceSnapshot & {
+  minimumPricePresence?: "absent" | "canonical" | "ambiguous";
+  minimumPriceProtectedHash?: string;
   businessPrice: Money | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
   businessPricingManagedByAutomation: boolean;
@@ -48,6 +50,16 @@ export type BusinessPriceValidationResult = {
   standardPrice: Money;
   previousBusinessPrice: Money | null;
   requestedBusinessPrice: Money;
+  previousMinimumPrice: Money | null;
+  requestedMinimumPrice: Money | null;
+  lowestTierUnitPrice: Money | null;
+  minimumPriceChange: "preserve" | "lower";
+  minimumPriceProtectedHash: string | null;
+  minimumPriceCanonicalPatchHash: string | null;
+  businessPriceValidation:
+    | "validated"
+    | "final-state-validated"
+    | "deferred-until-minimum-price";
   previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   previousQuantityDiscountPlanHash: string | null;
   requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
@@ -74,6 +86,9 @@ export type BusinessPricePrecommitEvidence = Pick<
   | "productType"
   | "businessOfferGuardHash"
   | "businessOfferProtectedHash"
+  | "minimumPriceProtectedHash"
+  | "minimumPriceCanonicalPatchHash"
+  | "businessPriceValidation"
   | "previousQuantityDiscountPlanHash"
   | "quantityDiscountPlanPresence"
   | "quantityDiscountPlanChange"
@@ -93,6 +108,13 @@ export type BusinessPriceUpdateResult = {
   standardPrice: Money;
   previousBusinessPrice: Money | null;
   requestedBusinessPrice: Money;
+  previousMinimumPrice: Money | null;
+  requestedMinimumPrice: Money | null;
+  lowestTierUnitPrice: Money | null;
+  minimumPriceChange: "preserve" | "lower";
+  minimumPriceProtectedHash: string | null;
+  minimumPriceCanonicalPatchHash: string | null;
+  businessPriceValidation: "validated";
   previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   previousQuantityDiscountPlanHash: string | null;
   requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
@@ -113,6 +135,7 @@ export type UpdateBusinessPriceInput = {
   expectedStandardPrice: number;
   expectedBusinessPrice: number | null;
   newBusinessPrice: number;
+  expectedMinimumPrice?: number | null;
   expectedQuantityDiscountPlanHash?: string | null;
   quantityDiscountTiers?: Array<{
     lowerBound: number;

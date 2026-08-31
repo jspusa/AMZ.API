@@ -2736,6 +2736,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       expectedStandardPrice: before.standardPrice.amount,
       expectedBusinessPrice: before.businessPrice?.amount ?? null,
       newBusinessPrice: firstPrice,
+      expectedMinimumPrice: before.minimumPrice?.amount ?? null,
       expectedQuantityDiscountPlanHash: null,
       quantityDiscountTiers: tiers,
     });
@@ -2802,6 +2803,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       expectedStandardPrice: before.standardPrice.amount,
       expectedBusinessPrice: priceOnly.businessPrice!.amount,
       newBusinessPrice: priceOnly.businessPrice!.amount,
+      expectedMinimumPrice: priceOnly.minimumPrice?.amount ?? null,
       expectedQuantityDiscountPlanHash: priceOnly.quantityDiscountPlanHash,
       quantityDiscountTiers: tiers,
     })).rejects.toMatchObject({ code: "BUSINESS_PRICE_UNCHANGED" });
@@ -4494,6 +4496,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       expectedStandardPrice: 30,
       expectedBusinessPrice: 28,
       newBusinessPrice: 29,
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash,
       quantityDiscountTiers: [
         { lowerBound: 5, percent: 5 },
@@ -4628,6 +4631,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       expectedStandardPrice: 30,
       expectedBusinessPrice: 28,
       newBusinessPrice: 29,
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash,
       quantityDiscountTiers: [{ lowerBound: 6, percent: 7 }],
     })).rejects.toMatchObject({
@@ -4693,6 +4697,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       expectedStandardPrice: 30,
       expectedBusinessPrice: 28,
       newBusinessPrice: 29,
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash,
       quantityDiscountTiers: [{ lowerBound: 5, percent: 5 }],
     })).rejects.toMatchObject({
@@ -4860,6 +4865,9 @@ describe("Amazon Business pricing SP-API contract", () => {
       productType: "PET_FOOD",
       businessOfferGuardHash: "preview-bound-guard-that-no-longer-matches",
       businessOfferProtectedHash: "preview-protected-offer",
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated",
       previousQuantityDiscountPlanHash: null,
       quantityDiscountPlanPresence: "absent",
       quantityDiscountPlanChange: "preserve",

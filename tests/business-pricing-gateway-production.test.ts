@@ -612,4 +612,111 @@ describe("Business Pricing production gateway", () => {
     expect(fence.assertCurrent).toHaveBeenCalledTimes(1);
     expect(recordDispatch).toHaveBeenCalledTimes(1);
   });
+
+  it("mints an opaque minimum-price patch and previews the exact final ALL plus B2B state", async () => {
+    const state = harness();
+    state.setMode("live");
+    const payload = livePayload();
+    payload.attributes!.purchasable_offer![0]!
+      .minimum_seller_allowed_price = [{
+        schedule: [{ value_with_tax: 18 }],
+      }];
+    state.setPayload(payload);
+    const snapshot = await state.runtime.gateway.read(IDENTITY, "mutation");
+
+    const minimumPatch = state.runtime.gateway.mintMinimumPricePatch(
+      snapshot,
+      13.39,
+    );
+    expect(minimumPatch).not.toBeNull();
+    await state.runtime.gateway.finalStateValidationPreview(
+      combinedPatch(),
+      minimumPatch!,
+    );
+
+    expect(state.previewCommands.at(-1)?.patchBody).toEqual({
+      productType: "PET_FOOD",
+      patches: [{
+        op: "replace",
+        path: "/attributes/purchasable_offer",
+        value: [{
+          audience: "ALL",
+          currency: "USD",
+          marketplace_id: MARKETPLACE_ID,
+          our_price: [{ schedule: [{ value_with_tax: 30 }] }],
+          minimum_seller_allowed_price: [{
+            schedule: [{ value_with_tax: 13.39 }],
+          }],
+        }, {
+          marketplace_id: MARKETPLACE_ID,
+          currency: "USD",
+          audience: "B2B",
+          our_price: [{ schedule: [{ value_with_tax: 80 }] }],
+          quantity_discount_plan: [{
+            schedule: [{
+              discount_type: "percent",
+              levels: [
+                { lower_bound: 2, value: 5 },
+                { lower_bound: 5, value: 10 },
+              ],
+            }],
+          }],
+        }],
+      }],
+    });
+  });
+
+  it("rejects a minimum-price descriptor paired with another Seller SKU", async () => {
+    const state = harness();
+    state.setMode("live");
+    const payload = livePayload({ sku: "BB" });
+    payload.attributes!.purchasable_offer![0]!
+      .minimum_seller_allowed_price = [{
+        schedule: [{ value_with_tax: 18 }],
+      }];
+    state.setPayload(payload);
+    const snapshot = await state.runtime.gateway.read({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: "BB",
+    }, "mutation");
+    const minimumPatch = state.runtime.gateway.mintMinimumPricePatch(
+      snapshot,
+      13.39,
+    );
+
+    await expect(state.runtime.gateway.finalStateValidationPreview(
+      combinedPatch(),
+      minimumPatch!,
+    )).rejects.toMatchObject({
+      code: "PREVIEW_CHANGED",
+      status: 409,
+    });
+    expect(state.previewCommands).toHaveLength(0);
+    expect(state.commitCommands).toHaveLength(0);
+  });
+
+  it("keeps a non-canonical minimum price ambiguous and refuses to mint a write", async () => {
+    const state = harness();
+    state.setMode("live");
+    const payload = livePayload();
+    payload.attributes!.purchasable_offer![0]!
+      .minimum_seller_allowed_price = [{
+        schedule: [
+          { value_with_tax: 18 },
+          { value_with_tax: 17 },
+        ],
+      }];
+    state.setPayload(payload);
+
+    const snapshot = await state.runtime.gateway.read(IDENTITY, "mutation");
+
+    expect(snapshot).toMatchObject({
+      minimumPrice: null,
+      minimumPricePresence: "ambiguous",
+    });
+    expect(state.runtime.gateway.mintMinimumPricePatch(snapshot, 13.39))
+      .toBeNull();
+    expect(state.previewCommands).toHaveLength(0);
+    expect(state.commitCommands).toHaveLength(0);
+  });
 });

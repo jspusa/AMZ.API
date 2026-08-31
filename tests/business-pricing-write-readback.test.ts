@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   businessPriceReadbackDecision,
   reconcileBusinessPriceWrite,
+  reconcileMinimumPriceWrite,
 } from "../src/main/business-pricing-mutations";
 
 const identity = {
@@ -20,6 +21,13 @@ describe("business pricing write readback", () => {
       standardPrice: { amount: 30, currencyCode: "USD" },
       previousBusinessPrice: { amount: 28, currencyCode: "USD" },
       requestedBusinessPrice: { amount: 27.5, currencyCode: "USD" },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      minimumPriceChange: "preserve" as const,
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated" as const,
       previousQuantityDiscountPlan: null,
       previousQuantityDiscountPlanHash: null,
       requestedQuantityDiscountPlan: null,
@@ -33,6 +41,7 @@ describe("business pricing write readback", () => {
       productType: "PET_FOOD",
       issues: [],
       standardPrice: { amount: 30, currencyCode: "USD" },
+      minimumPrice: null,
       businessPrice: { amount: 27.5, currencyCode: "USD" },
       businessOfferPresence: "present" as const,
       businessOfferGuardHash: "quantity-discounts-before-write",
@@ -150,6 +159,13 @@ describe("business pricing write readback", () => {
       standardPrice: { amount: 30, currencyCode: "USD" },
       previousBusinessPrice: { amount: 28, currencyCode: "USD" },
       requestedBusinessPrice: { amount: 29, currencyCode: "USD" },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      minimumPriceChange: "preserve" as const,
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated" as const,
       previousQuantityDiscountPlan: {
         discountType: "fixed" as const,
         levels: [{ lowerBound: 5, value: 25 }],
@@ -166,6 +182,7 @@ describe("business pricing write readback", () => {
       productType: "PET_FOOD",
       issues: [],
       standardPrice: { amount: 30, currencyCode: "USD" },
+      minimumPrice: null,
       businessPrice: { amount: 29, currencyCode: "USD" },
       businessOfferPresence: "present" as const,
       quantityDiscountPlan: requestedPlan,
@@ -205,6 +222,13 @@ describe("business pricing write readback", () => {
       standardPrice: { amount: 30, currencyCode: "USD" },
       previousBusinessPrice: { amount: 28, currencyCode: "USD" },
       requestedBusinessPrice: { amount: 27, currencyCode: "USD" },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      minimumPriceChange: "preserve",
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated",
       previousQuantityDiscountPlan: null,
       previousQuantityDiscountPlanHash: null,
       requestedQuantityDiscountPlan: null,
@@ -221,6 +245,13 @@ describe("business pricing write readback", () => {
       standardPrice: evidence.standardPrice,
       previousBusinessPrice: evidence.previousBusinessPrice,
       requestedBusinessPrice: evidence.requestedBusinessPrice,
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      minimumPriceChange: "preserve",
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated",
       previousQuantityDiscountPlan: null,
       previousQuantityDiscountPlanHash: null,
       requestedQuantityDiscountPlan: null,
@@ -240,6 +271,7 @@ describe("business pricing write readback", () => {
       asin: evidence.asin,
       productType: evidence.productType,
       standardPrice: evidence.standardPrice,
+      minimumPrice: null,
       businessPrice: evidence.requestedBusinessPrice,
       businessOfferPresence: "present",
       businessOfferGuardHash: evidence.businessOfferGuardHash,
@@ -280,5 +312,84 @@ describe("business pricing write readback", () => {
       ...canonical,
       fulfillmentAvailability: [{ fulfillment: "MFN" }],
     } as never)).toBeNull();
+  });
+
+  it("reconciles a dispatched minimum-price write only from exact canonical evidence", () => {
+    const plan = {
+      discountType: "percent" as const,
+      levels: [{ lowerBound: 5, value: 5 }],
+    };
+    const evidence = {
+      version: 1,
+      marketplaceId: identity.marketplaceId,
+      sellerSku: identity.sellerSku,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      fulfillment: "FBA",
+      standardPrice: { amount: 19.99, currencyCode: "USD" },
+      previousMinimumPrice: { amount: 18, currencyCode: "USD" },
+      requestedMinimumPrice: { amount: 14.19, currencyCode: "USD" },
+      lowestTierUnitPrice: { amount: 15.19, currencyCode: "USD" },
+      previousBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousQuantityDiscountPlan: plan,
+      previousQuantityDiscountPlanHash: "f".repeat(64),
+      minimumPriceProtectedHash: "7".repeat(64),
+      minimumPriceCanonicalPatchHash: "8".repeat(64),
+    };
+    const durable = {
+      ...identity,
+      status: "DISPATCHED",
+      asin: evidence.asin,
+      productType: evidence.productType,
+      standardPrice: evidence.standardPrice,
+      previousMinimumPrice: evidence.previousMinimumPrice,
+      requestedMinimumPrice: evidence.requestedMinimumPrice,
+      lowestTierUnitPrice: evidence.lowestTierUnitPrice,
+      previousBusinessPrice: evidence.previousBusinessPrice,
+      previousQuantityDiscountPlan: evidence.previousQuantityDiscountPlan,
+      previousQuantityDiscountPlanHash:
+        evidence.previousQuantityDiscountPlanHash,
+      minimumPriceProtectedHash: evidence.minimumPriceProtectedHash,
+      minimumPriceCanonicalPatchHash:
+        evidence.minimumPriceCanonicalPatchHash,
+      acceptedAt: "2026-08-31T00:00:00.000Z",
+      submissionId: null,
+      requestId: null,
+      issues: [],
+      notice: "durable minimum-price fixture",
+      _minimumWriteEvidence: evidence,
+    };
+    const canonical = {
+      ...identity,
+      asin: evidence.asin,
+      productType: evidence.productType,
+      standardPrice: evidence.standardPrice,
+      minimumPrice: evidence.requestedMinimumPrice,
+      minimumPricePresence: "canonical",
+      minimumPriceProtectedHash: evidence.minimumPriceProtectedHash,
+      businessPrice: evidence.previousBusinessPrice,
+      quantityDiscountPlan: plan,
+      issues: [],
+      fulfillmentAvailability: [{ fulfillment: "FBA" }],
+    };
+
+    expect(reconcileMinimumPriceWrite(durable, canonical as never))
+      .toMatchObject({
+        status: "ACCEPTED",
+        requestedMinimumPrice: evidence.requestedMinimumPrice,
+        writeLifecycle: { verified: true, authoritative: true },
+      });
+    expect(reconcileMinimumPriceWrite(durable, {
+      ...canonical,
+      minimumPrice: { amount: 14.2, currencyCode: "USD" },
+    } as never)).toBeNull();
+    expect(reconcileMinimumPriceWrite(durable, {
+      ...canonical,
+      minimumPriceProtectedHash: "9".repeat(64),
+    } as never)).toBeNull();
+    expect(reconcileMinimumPriceWrite({
+      ...durable,
+      unexpected: true,
+    }, canonical as never)).toBeNull();
   });
 });

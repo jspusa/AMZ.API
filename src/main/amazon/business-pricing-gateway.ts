@@ -12,6 +12,24 @@ export type BusinessPricingIdentity = Readonly<{
   sellerSku: string;
 }>;
 
+/**
+ * Opaque, main-owned descriptor for changing only the canonical ALL-audience
+ * minimum price. The production gateway keeps the complete Amazon
+ * contribution in private memory; callers can neither inspect nor construct
+ * an arbitrary Listings body from this descriptor.
+ */
+export type BusinessMinimumPricePatch = Readonly<{
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  currencyCode: string;
+  previousAmount: number;
+  amount: number;
+  protectedHash: string;
+  canonicalPatchHash: string;
+}>;
+
 export type BusinessPercentQuantityDiscountPlan = Readonly<{
   discountType: "percent";
   levels: readonly BusinessQuantityDiscountLevel[];
@@ -110,16 +128,39 @@ export interface BusinessPricingGateway {
     schemaChecksum: string;
     plan: BusinessPercentQuantityDiscountPlan;
   }>): boolean;
+  mintMinimumPricePatch(
+    snapshot: BusinessPricingListingSnapshot,
+    amount: number,
+  ): BusinessMinimumPricePatch | null;
+  minimumPriceProtectedHash(
+    snapshot: BusinessPricingListingSnapshot,
+  ): string | null;
   validationPreview(
     patch: BusinessPricePatch,
+  ): Promise<BusinessPricingGatewayReply>;
+  finalStateValidationPreview(
+    patch: BusinessPricePatch,
+    minimumPricePatch: BusinessMinimumPricePatch,
+  ): Promise<BusinessPricingGatewayReply>;
+  minimumPriceValidationPreview(
+    patch: BusinessMinimumPricePatch,
   ): Promise<BusinessPricingGatewayReply>;
   commitOnce(
     patch: BusinessPricePatch,
     fence: ListingWriteExecutionFence,
     recordDispatch: () => Promise<void>,
   ): Promise<BusinessPricingGatewayReply>;
+  commitMinimumPriceOnce(
+    patch: BusinessMinimumPricePatch,
+    fence: ListingWriteExecutionFence,
+    recordDispatch: () => Promise<void>,
+  ): Promise<BusinessPricingGatewayReply>;
   replaceDemoContribution(
     patch: BusinessPricePatch,
+    fence: ListingWriteExecutionFence,
+  ): Promise<void>;
+  replaceDemoMinimumPrice(
+    patch: BusinessMinimumPricePatch,
     fence: ListingWriteExecutionFence,
   ): Promise<void>;
 }

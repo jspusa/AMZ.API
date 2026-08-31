@@ -834,6 +834,40 @@ function sameLedgerIdentity(
       Boolean(input.businessPriceDuplicateRepair);
 }
 
+function blockingOfferWrite(
+  ledger: Readonly<Record<string, LedgerEntry>>,
+  input: IdempotentOperationAvailabilityInput,
+): LedgerEntry | undefined {
+  if (!OFFER_OPERATION_TYPES.has(input.operationType)) return undefined;
+  const matchingOfferWrites = Object.values(ledger).filter(
+    (entry) =>
+      OFFER_OPERATION_TYPES.has(entry.operationType) &&
+      entry.marketplaceId === input.marketplaceId &&
+      entry.sellerSku === input.sellerSku &&
+      (entry.accountScope === input.accountScope ||
+        entry.accountScope === "legacy-unknown"),
+  );
+  const activeOfferWrites = matchingOfferWrites.filter(
+    (entry) => entry.state !== "completed",
+  );
+  // A previous v0.1.41 Business Price PATCH may be durably unknown after
+  // Amazon retained two identical quantity_discount_plan contributions. The
+  // one exact repair exception is shared by availability checks and formal
+  // claims so a native confirmation can never be shown for a write that the
+  // durable ledger will reject moments later.
+  const mayRepairOneUnknownBusinessPrice =
+    input.operationType === "business_price" &&
+    input.businessPriceDuplicateRepair === true &&
+    !matchingOfferWrites.some((entry) =>
+      entry.businessPriceDuplicateRepair === true
+    ) &&
+    activeOfferWrites.length === 1 &&
+    activeOfferWrites[0]?.operationType === "business_price" &&
+    activeOfferWrites[0].state === "unknown" &&
+    activeOfferWrites[0].accountScope === input.accountScope;
+  return mayRepairOneUnknownBusinessPrice ? undefined : activeOfferWrites[0];
+}
+
 function businessPriceRepairTombstoneKey(idempotencyKey: string): string {
   return `business-price-repair-tombstone:${createHash("sha256")
     .update(idempotencyKey)
@@ -1430,37 +1464,9 @@ export class LocalStore {
         }
       }
       if (OFFER_OPERATION_TYPES.has(input.operationType)) {
-        const matchingOfferWrites = Object.values(data.ledger).filter(
-          (entry) =>
-            OFFER_OPERATION_TYPES.has(entry.operationType) &&
-            entry.marketplaceId === input.marketplaceId &&
-            entry.sellerSku === input.sellerSku &&
-            (entry.accountScope === input.accountScope ||
-              entry.accountScope === "legacy-unknown"),
-        );
-        const activeOfferWrites = matchingOfferWrites.filter(
-          (entry) => entry.state !== "completed",
-        );
-        // A previous v0.1.41 Business Price PATCH may be durably unknown after
-        // Amazon retained two identical quantity_discount_plan contributions.
-        // The main mutation owner can designate one exact duplicate cleanup as
-        // a repair operation. It may bypass only one UNKNOWN business_price
-        // predecessor, never a pending write, another offer family, or any
-        // earlier repair attempt (including a completed repair awaiting the
-        // next canonical reconciliation).
-        const mayRepairOneUnknownBusinessPrice =
-          input.operationType === "business_price" &&
-          input.businessPriceDuplicateRepair === true &&
-          !matchingOfferWrites.some((entry) =>
-            entry.businessPriceDuplicateRepair === true
-          ) &&
-          activeOfferWrites.length === 1 &&
-          activeOfferWrites[0]?.operationType === "business_price" &&
-          activeOfferWrites[0].state === "unknown" &&
-          activeOfferWrites[0].accountScope === input.accountScope;
-        const blockingOfferWrite = activeOfferWrites[0];
-        if (blockingOfferWrite && !mayRepairOneUnknownBusinessPrice) {
-          throw operationError(blockingOfferWrite.state);
+        const blocking = blockingOfferWrite(data.ledger, input);
+        if (blocking) {
+          throw operationError(blocking.state);
         }
       }
       if (LISTING_ATTRIBUTE_OPERATION_TYPES.has(input.operationType)) {
@@ -1634,6 +1640,10 @@ export class LocalStore {
           }
           if (existing.state !== "completed") throw operationError(existing.state);
           continue;
+        }
+        if (OFFER_OPERATION_TYPES.has(input.operationType)) {
+          const blocking = blockingOfferWrite(data.ledger, input);
+          if (blocking) throw operationError(blocking.state);
         }
         if (LISTING_ATTRIBUTE_OPERATION_TYPES.has(input.operationType)) {
           const activeAttributeWrite = Object.values(data.ledger).find(

@@ -99,6 +99,29 @@ function bodyValue(response: ApiResponse): Record<string, unknown> {
   return response.body.value as Record<string, unknown>;
 }
 
+const unsupportedMinimumPriceGateway = {
+  mintMinimumPricePatch: () => null,
+  minimumPriceProtectedHash: () => null,
+  finalStateValidationPreview: async () => {
+    throw new Error("minimum-price final preview is not expected");
+  },
+  minimumPriceValidationPreview: async () => {
+    throw new Error("minimum-price preview is not expected");
+  },
+  commitMinimumPriceOnce: async () => {
+    throw new Error("minimum-price commit is not expected");
+  },
+  replaceDemoMinimumPrice: async () => undefined,
+} satisfies Pick<
+  BusinessPricingGateway,
+  | "mintMinimumPricePatch"
+  | "minimumPriceProtectedHash"
+  | "finalStateValidationPreview"
+  | "minimumPriceValidationPreview"
+  | "commitMinimumPriceOnce"
+  | "replaceDemoMinimumPrice"
+>;
+
 function businessPricingSnapshot(
   businessPriceAmount = 28,
 ): BusinessPricingListingSnapshot {
@@ -115,6 +138,7 @@ function businessPricingSnapshot(
     standardPrice: { amount: 30, currencyCode: "USD" },
     effectivePrice: { amount: 30, currencyCode: "USD" },
     minimumPrice: null,
+    minimumPricePresence: "absent",
     maximumPrice: null,
     purchasableOfferPresence: "present",
     discountedPrice: null,
@@ -173,6 +197,28 @@ class DurableDispatchGateway implements BusinessPricingGateway {
   quantityDiscountPlanSupported(): boolean {
     return true;
   }
+
+  mintMinimumPricePatch() {
+    return null;
+  }
+
+  minimumPriceProtectedHash() {
+    return null;
+  }
+
+  async finalStateValidationPreview(): Promise<never> {
+    throw new Error("minimum-price final preview is not expected");
+  }
+
+  async minimumPriceValidationPreview(): Promise<never> {
+    throw new Error("minimum-price preview is not expected");
+  }
+
+  async commitMinimumPriceOnce(): Promise<never> {
+    throw new Error("minimum-price commit is not expected");
+  }
+
+  async replaceDemoMinimumPrice(): Promise<void> {}
 
   async validationPreview(): Promise<BusinessPricingGatewayReply> {
     return {
@@ -387,6 +433,7 @@ describe("W05 Business Pricing mutation owner", () => {
       ...snapshotPatch,
     };
     const gateway: BusinessPricingGateway = {
+      ...unsupportedMinimumPriceGateway,
       mode: () => snapshot.mode,
       read: async () => snapshot,
       quantityDiscountPlanSupported: () => true,
@@ -444,6 +491,7 @@ describe("W05 Business Pricing mutation owner", () => {
       const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
       const snapshot = businessPricingSnapshot();
       const gateway: BusinessPricingGateway = {
+        ...unsupportedMinimumPriceGateway,
         mode: () => "live",
         read: async () => snapshot,
         quantityDiscountPlanSupported: () => true,
@@ -505,6 +553,7 @@ describe("W05 Business Pricing mutation owner", () => {
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const snapshot = businessPricingSnapshot();
     const gateway: BusinessPricingGateway = {
+      ...unsupportedMinimumPriceGateway,
       mode: () => "live",
       read: async () => snapshot,
       quantityDiscountPlanSupported: () => true,
@@ -572,6 +621,7 @@ describe("W05 Business Pricing mutation owner", () => {
       quantityDiscountPlanHash: null,
     };
     const gateway: BusinessPricingGateway = {
+      ...unsupportedMinimumPriceGateway,
       mode: () => "live",
       read: async () => snapshot,
       quantityDiscountPlanSupported: () => true,
@@ -614,6 +664,422 @@ describe("W05 Business Pricing mutation owner", () => {
     expect(stagePreview).not.toHaveBeenCalled();
   });
 
+  it("previews the USD minimum-price write and the exact final B2B state", async () => {
+    const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
+    const snapshot: BusinessPricingListingSnapshot = {
+      ...businessPricingSnapshot(),
+      minimumPrice: { amount: 18, currencyCode: "USD" },
+      minimumPricePresence: "canonical",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "absent",
+      quantityDiscountPlanHash: null,
+    };
+    const minimumPatch = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      asin: snapshot.asin!,
+      productType: snapshot.productType,
+      currencyCode: "USD",
+      previousAmount: 18,
+      amount: 15,
+      protectedHash: "7".repeat(64),
+      canonicalPatchHash: "8".repeat(64),
+    } as const;
+    const mintMinimumPricePatch = vi.fn(() => minimumPatch);
+    const minimumPriceValidationPreview = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      requestId: "REQ-W05-MINIMUM-PREVIEW",
+      retryAfter: null,
+      payload: {
+        sku: SELLER_SKU,
+        status: "VALID",
+        submissionId: "W05-MINIMUM-PREVIEW",
+        issues: [],
+        identifiers: [{
+          marketplaceId: MARKETPLACE_ID,
+          asin: snapshot.asin,
+        }],
+      },
+    }));
+    const validationPreview = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      requestId: "REQ-W05-FINAL-STATE-PREVIEW",
+      retryAfter: null,
+      payload: {
+        sku: SELLER_SKU,
+        status: "VALID",
+        submissionId: "W05-FINAL-STATE-PREVIEW",
+        issues: [],
+        identifiers: [{
+          marketplaceId: MARKETPLACE_ID,
+          asin: snapshot.asin,
+        }],
+      },
+    }));
+    const gateway: BusinessPricingGateway = {
+      ...unsupportedMinimumPriceGateway,
+      mode: () => "live",
+      read: async () => snapshot,
+      quantityDiscountPlanSupported: () => true,
+      mintMinimumPricePatch,
+      minimumPriceValidationPreview,
+      finalStateValidationPreview: validationPreview,
+      validationPreview,
+      commitOnce: vi.fn(),
+      commitMinimumPriceOnce: vi.fn(),
+      replaceDemoContribution: async () => undefined,
+      replaceDemoMinimumPrice: async () => undefined,
+    };
+    const owner = createBusinessPricingMutations({
+      context: {
+        capture: async (marketplaceId) => ({
+          marketplaceId,
+          region: "na",
+          mode: "live",
+          accountScope: "opaque-w05-minimum-preview" as never,
+          generation: 0,
+        }),
+        assertCurrent: async () => undefined,
+        invalidate: () => undefined,
+      },
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: async () => undefined,
+        clearEphemeral: () => undefined,
+      } as unknown as MainWriteGatePort,
+      gateway,
+      priceObserver: { observeCanonical: vi.fn() },
+    });
+    const request = mutationRequest("POST", "w05-minimum-first-001");
+    if (request.body?.kind !== "json") throw new Error("Expected JSON body");
+    request.body.value = {
+      ...request.body.value,
+      newBusinessPrice: 20,
+      expectedMinimumPrice: 18,
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    };
+
+    const response = await owner.handle({ operation: "preview", request });
+
+    expect(response.status).toBe(200);
+    expect(bodyValue(response)).toMatchObject({
+      previousMinimumPrice: { amount: 18, currencyCode: "USD" },
+      requestedMinimumPrice: { amount: 15, currencyCode: "USD" },
+      lowestTierUnitPrice: { amount: 16, currencyCode: "USD" },
+      minimumPriceChange: "lower",
+      minimumPriceProtectedHash: "7".repeat(64),
+      minimumPriceCanonicalPatchHash: "8".repeat(64),
+      businessPriceValidation: "final-state-validated",
+    });
+    expect(mintMinimumPricePatch).toHaveBeenCalledWith(snapshot, 15);
+    expect(minimumPriceValidationPreview).toHaveBeenCalledWith(minimumPatch);
+    expect(validationPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "combined" }),
+      minimumPatch,
+    );
+    expect(stagePreview).toHaveBeenCalledWith(expect.objectContaining({
+      family: "business-price",
+      intents: [
+        expect.objectContaining({ intentId: "minimum-price", operation: "price" }),
+        expect.objectContaining({
+          intentId: "business-price",
+          operation: "business_price",
+        }),
+      ],
+    }));
+  });
+
+  it("commits and verifies the minimum price before previewing and writing B2B", async () => {
+    const events: string[] = [];
+    let minimumAmount = 18;
+    let businessAmount = 28;
+    let appliedPlan = false;
+    let rejectPostMinimumPreview = false;
+    const snapshot = (): BusinessPricingListingSnapshot => ({
+      ...businessPricingSnapshot(businessAmount),
+      minimumPrice: { amount: minimumAmount, currencyCode: "USD" },
+      minimumPricePresence: "canonical",
+      quantityDiscountPlan: appliedPlan
+        ? {
+            discountType: "percent",
+            levels: [
+              { lowerBound: 5, value: 5 },
+              { lowerBound: 20, value: 20 },
+            ],
+          }
+        : null,
+      quantityDiscountPlanPresence: appliedPlan ? "canonical" : "absent",
+      quantityDiscountPlanHash: appliedPlan
+        ? canonicalSha256({
+            discountType: "percent",
+            levels: [
+              { lowerBound: 5, value: 5 },
+              { lowerBound: 20, value: 20 },
+            ],
+          })
+        : null,
+      businessOfferGuardHash: appliedPlan
+        ? "c".repeat(64)
+        : minimumAmount === 15
+        ? "d".repeat(64)
+        : "a".repeat(64),
+      businessOfferProtectedHash: minimumAmount === 15
+        ? "e".repeat(64)
+        : "b".repeat(64),
+    });
+    const minimumPatch = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      currencyCode: "USD",
+      previousAmount: 18,
+      amount: 15,
+      protectedHash: "7".repeat(64),
+      canonicalPatchHash: "8".repeat(64),
+    } as const;
+    const validReply = (label: string): BusinessPricingGatewayReply => ({
+      ok: true,
+      status: 200,
+      requestId: `REQ-${label}`,
+      retryAfter: null,
+      payload: {
+        sku: SELLER_SKU,
+        status: "VALID",
+        submissionId: `SUB-${label}`,
+        issues: [],
+        identifiers: [{
+          marketplaceId: MARKETPLACE_ID,
+          asin: "B012345678",
+        }],
+      },
+    });
+    const gateway: BusinessPricingGateway = {
+      ...unsupportedMinimumPriceGateway,
+      mode: () => "live",
+      read: async () => snapshot(),
+      quantityDiscountPlanSupported: () => true,
+      mintMinimumPricePatch: (_listing, amount) =>
+        minimumAmount === 18 && amount === 15 ? minimumPatch : null,
+      minimumPriceProtectedHash: () => "7".repeat(64),
+      minimumPriceValidationPreview: async () => {
+        events.push("minimum-preview");
+        return validReply("MINIMUM-PREVIEW");
+      },
+      finalStateValidationPreview: async () => {
+        events.push("final-state-preview");
+        return validReply("FINAL-STATE-PREVIEW");
+      },
+      validationPreview: async () => {
+        events.push("b2b-preview");
+        if (rejectPostMinimumPreview && minimumAmount === 15) {
+          return {
+            ...validReply("B2B-PREVIEW-REJECTED"),
+            payload: {
+              sku: SELLER_SKU,
+              status: "INVALID",
+              submissionId: "SUB-B2B-PREVIEW-REJECTED",
+              issues: [{
+                code: "19037",
+                severity: "ERROR",
+                message: "B2B tier is below the minimum price.",
+                attributeNames: ["purchasable_offer"],
+              }],
+              identifiers: [{
+                marketplaceId: MARKETPLACE_ID,
+                asin: "B012345678",
+              }],
+            },
+          };
+        }
+        return validReply("B2B-PREVIEW");
+      },
+      commitMinimumPriceOnce: async (_patch, fence, recordDispatch) => {
+        events.push("minimum-commit");
+        await fence.assertCurrent();
+        await recordDispatch();
+        minimumAmount = 15;
+        return {
+          ok: true,
+          status: 202,
+          requestId: "REQ-MINIMUM-COMMIT",
+          retryAfter: null,
+          payload: {
+            sku: SELLER_SKU,
+            status: "ACCEPTED",
+            submissionId: "SUB-MINIMUM-COMMIT",
+            issues: [],
+          },
+        };
+      },
+      commitOnce: async (_patch, fence, recordDispatch) => {
+        events.push("b2b-commit");
+        await fence.assertCurrent();
+        await recordDispatch();
+        businessAmount = 20;
+        appliedPlan = true;
+        return {
+          ok: true,
+          status: 202,
+          requestId: "REQ-B2B-COMMIT",
+          retryAfter: null,
+          payload: {
+            sku: SELLER_SKU,
+            status: "ACCEPTED",
+            submissionId: "SUB-B2B-COMMIT",
+            issues: [],
+          },
+        };
+      },
+      replaceDemoContribution: async () => undefined,
+      replaceDemoMinimumPrice: async () => undefined,
+    };
+    let approvalReason = "";
+    const writeGate: MainWriteGatePort = {
+      stagePreview: async () => undefined,
+      execute: async (input) => {
+        approvalReason = typeof input.approvalReason === "function"
+          ? input.approvalReason("VERIFY-CODE")
+          : input.approvalReason;
+        events.push("approval");
+        return input.run({
+          attempt: async ({ intentId, execute }) => {
+            events.push(`attempt:${intentId}`);
+            return execute({
+              recordDurableEvidence: async () => undefined,
+              recordAccepted: async () => undefined,
+              assertCurrent: async () => undefined,
+            });
+          },
+        });
+      },
+      reconcile: async () => undefined,
+      clearEphemeral: () => undefined,
+    };
+    const owner = createBusinessPricingMutations({
+      context: {
+        capture: async (marketplaceId) => ({
+          marketplaceId,
+          region: "na",
+          mode: "live",
+          accountScope: "opaque-w05-minimum-commit" as never,
+          generation: 0,
+        }),
+        assertCurrent: async () => undefined,
+        invalidate: () => undefined,
+      },
+      writeGate,
+      gateway,
+      priceObserver: { observeCanonical: vi.fn() },
+    });
+    const request = mutationRequest("POST", "w05-minimum-commit-001");
+    if (request.body?.kind !== "json") throw new Error("Expected JSON body");
+    request.body.value = {
+      ...request.body.value,
+      newBusinessPrice: 20,
+      expectedMinimumPrice: 18,
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    };
+
+    expect((await owner.handle({ operation: "preview", request })).status)
+      .toBe(200);
+    const committed = await owner.handle({
+      operation: "commit",
+      request: { ...request, method: "PATCH" },
+    });
+
+    expect(committed.status).toBe(200);
+    expect(events).toEqual([
+      "minimum-preview",
+      "final-state-preview",
+      "minimum-preview",
+      "final-state-preview",
+      "approval",
+      "attempt:minimum-price",
+      "minimum-preview",
+      "final-state-preview",
+      "minimum-commit",
+      "attempt:business-price",
+      "b2b-preview",
+      "b2b-commit",
+    ]);
+    expect(approvalReason).toContain("最低價 18 → 15 USD");
+    expect(approvalReason).toContain("最低階單價 16 USD");
+    expect(approvalReason).toContain("一般售價／自動定價");
+    expect(approvalReason.slice(0, 120)).toContain("最低價 18 → 15 USD");
+    expect(approvalReason.slice(0, 120)).toContain("一般售價／自動定價");
+    expect(approvalReason.slice(0, 120)).toContain(SELLER_SKU);
+    expect(approvalReason.slice(0, 120)).toContain("B2B 28 → 20 USD");
+    expect(bodyValue(committed)).toMatchObject({
+      status: "ACCEPTED",
+      previousMinimumPrice: { amount: 18, currencyCode: "USD" },
+      requestedMinimumPrice: { amount: 15, currencyCode: "USD" },
+      lowestTierUnitPrice: { amount: 16, currencyCode: "USD" },
+      minimumPriceChange: "lower",
+      businessOfferGuardHash: "d".repeat(64),
+      businessOfferProtectedHash: "e".repeat(64),
+      businessPriceValidation: "validated",
+    });
+
+    events.length = 0;
+    minimumAmount = 18;
+    businessAmount = 28;
+    appliedPlan = false;
+    rejectPostMinimumPreview = true;
+    const partialRequest = mutationRequest(
+      "POST",
+      "w05-minimum-partial-001",
+    );
+    if (partialRequest.body?.kind !== "json") {
+      throw new Error("Expected JSON body");
+    }
+    partialRequest.body.value = {
+      ...partialRequest.body.value,
+      newBusinessPrice: 20,
+      expectedMinimumPrice: 18,
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    };
+    expect((await owner.handle({
+      operation: "preview",
+      request: partialRequest,
+    })).status).toBe(200);
+    const partial = await owner.handle({
+      operation: "commit",
+      request: { ...partialRequest, method: "PATCH" },
+    });
+    expect(partial.status).toBe(409);
+    expect(bodyValue(partial)).toMatchObject({
+      code: "BUSINESS_PRICE_PARTIAL_UPDATE",
+      message: expect.stringContaining(
+        "最低價已從 18 降至 15 USD 並完成回查，但 B2B 價格與階梯折扣尚未寫入",
+      ),
+      minimumPriceUpdate: {
+        status: "verified",
+        previousMinimumPrice: { amount: 18, currencyCode: "USD" },
+        requestedMinimumPrice: { amount: 15, currencyCode: "USD" },
+        lowestTierUnitPrice: { amount: 16, currencyCode: "USD" },
+      },
+    });
+    expect(minimumAmount).toBe(15);
+    expect(businessAmount).toBe(28);
+    expect(events).not.toContain("b2b-commit");
+  });
+
   it("stages an exact same-price and same-tier duplicate cleanup as a repair write", async () => {
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const plan = {
@@ -643,6 +1109,7 @@ describe("W05 Business Pricing mutation owner", () => {
       },
     }));
     const gateway: BusinessPricingGateway = {
+      ...unsupportedMinimumPriceGateway,
       mode: () => "live",
       read: async () => snapshot,
       quantityDiscountPlanSupported: () => true,
@@ -676,6 +1143,7 @@ describe("W05 Business Pricing mutation owner", () => {
     request.body.value = {
       ...request.body.value,
       newBusinessPrice: snapshot.businessPrice!.amount,
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash: snapshot.quantityDiscountPlanHash,
       quantityDiscountTiers: plan.levels.map((level) => ({
         lowerBound: level.lowerBound,
@@ -704,6 +1172,7 @@ describe("W05 Business Pricing mutation owner", () => {
     changedPriceRequest.body.value = {
       ...changedPriceRequest.body.value,
       newBusinessPrice: snapshot.businessPrice!.amount - 1,
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash: snapshot.quantityDiscountPlanHash,
       quantityDiscountTiers: plan.levels.map((level) => ({
         lowerBound: level.lowerBound,
@@ -729,6 +1198,7 @@ describe("W05 Business Pricing mutation owner", () => {
     changedTiersRequest.body.value = {
       ...changedTiersRequest.body.value,
       newBusinessPrice: snapshot.businessPrice!.amount,
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash: snapshot.quantityDiscountPlanHash,
       quantityDiscountTiers: plan.levels.map((level, index) => ({
         lowerBound: level.lowerBound,

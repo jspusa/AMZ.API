@@ -136,6 +136,7 @@ describe("Amazon Business pricing routes", () => {
   it("accepts only an explicit complete tier plan and shows it in native approval", async () => {
     const body = {
       ...await writeBody(),
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash: null,
       quantityDiscountTiers: [
         { lowerBound: 5, percent: 5 },
@@ -199,6 +200,9 @@ describe("Amazon Business pricing routes", () => {
       productType: "PET_FOOD",
       businessOfferGuardHash: "a".repeat(64),
       businessOfferProtectedHash: "e".repeat(64),
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated",
       previousQuantityDiscountPlanHash: null,
       quantityDiscountPlanPresence: "absent",
       quantityDiscountPlanChange: "preserve",
@@ -222,6 +226,12 @@ describe("Amazon Business pricing routes", () => {
         amount: proposal.newBusinessPrice,
         currencyCode: "USD",
       },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: proposal.quantityDiscountTiers
+        ? { amount: 25.65, currencyCode: "USD" }
+        : null,
+      minimumPriceChange: "preserve",
       previousQuantityDiscountPlan: null,
       requestedQuantityDiscountPlan: proposal.quantityDiscountTiers
         ? {
@@ -244,6 +254,9 @@ describe("Amazon Business pricing routes", () => {
       read: vi.fn(),
       preview: vi.fn(async () => currentValidation),
       commit: vi.fn(),
+      commitMinimumPrice: vi.fn(),
+      commitAfterMinimumPrice: vi.fn(),
+      minimumPriceReadbackDecision: vi.fn(() => "pending" as const),
     };
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const owner = new BusinessPricingMutations({
@@ -297,6 +310,7 @@ describe("Amazon Business pricing routes", () => {
     }
     const combined: UpdateBusinessPriceInput = {
       ...input,
+      expectedMinimumPrice: null,
       expectedQuantityDiscountPlanHash: null,
       quantityDiscountTiers: [{ lowerBound: 5, percent: 5 }],
     };

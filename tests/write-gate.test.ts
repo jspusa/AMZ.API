@@ -323,6 +323,167 @@ describe("main-owned Amazon write gate", () => {
     expect(approveWrite).toHaveBeenCalledTimes(2);
   });
 
+  it("reserves one SKU across the complete two-stage B2B offer workflow", async () => {
+    const store = await testStore();
+    const contextAdapter = scriptedContext();
+    const context = await contextAdapter.capture(US);
+    const approveWrite = vi.fn(async () => undefined);
+    const gate = new MainWriteGate({ store, context: contextAdapter, approveWrite });
+    const sellerSku = "TWO-STAGE-OFFER-SKU";
+    const business: WriteBinding = {
+      family: "business-price",
+      previewKey: "two-stage-business-preview",
+      context,
+      intents: [
+        {
+          intentId: "minimum-price",
+          operation: "price",
+          marketplaceId: US,
+          sellerSku,
+          idempotencyKey: "two-stage-minimum-price",
+          proposalFingerprint: "minimum-price-18-to-14.19",
+        },
+        {
+          intentId: "business-price",
+          operation: "business_price",
+          marketplaceId: US,
+          sellerSku,
+          idempotencyKey: "two-stage-business-price",
+          proposalFingerprint: "business-price-and-tiers",
+        },
+      ],
+    };
+    const standard = writeBinding(context, {
+      family: "standard-price",
+      operation: "price",
+      previewKey: "overlapping-standard-preview",
+      sellerSku,
+      idempotencyKey: "overlapping-standard-price",
+      proposalFingerprint: "standard-price-overlap",
+    });
+    let releaseBusiness!: () => void;
+    const businessRelease = new Promise<void>((resolve) => {
+      releaseBusiness = resolve;
+    });
+    let businessReserved!: () => void;
+    const reservation = new Promise<void>((resolve) => {
+      businessReserved = resolve;
+    });
+    const standardSend = vi.fn(async () => ({ status: "standard-verified" }));
+
+    await gate.stagePreview(business);
+    await gate.stagePreview(standard);
+    const first = gate.execute({
+      binding: business,
+      approvalReason: "Confirm the two-stage B2B write",
+      beforeApproval: async () => {
+        businessReserved();
+        await businessRelease;
+      },
+      run: async (session) => {
+        await session.attempt({
+          intentId: "minimum-price",
+          execute: async () => ({ status: "minimum-verified" }),
+        });
+        return session.attempt({
+          intentId: "business-price",
+          execute: async () => ({ status: "business-verified" }),
+        });
+      },
+    });
+    await reservation;
+
+    try {
+      await expect(runOne(gate, standard, standardSend)).rejects.toMatchObject({
+        code: "OPERATION_IN_PROGRESS",
+        status: 409,
+      });
+      expect(standardSend).not.toHaveBeenCalled();
+    } finally {
+      releaseBusiness();
+    }
+    await expect(first).resolves.toEqual({ status: "business-verified" });
+    await expect(runOne(gate, standard, standardSend)).resolves.toEqual({
+      status: "standard-verified",
+    });
+    expect(standardSend).toHaveBeenCalledOnce();
+  });
+
+  it("blocks a two-stage B2B workflow before native approval when another offer write is durably unknown", async () => {
+    const store = await testStore();
+    const contextAdapter = scriptedContext();
+    const context = await contextAdapter.capture(US);
+    const sellerSku = "DURABLE-OFFER-COLLISION-SKU";
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "older-unknown-sale-price",
+      operationType: "sale_price",
+      marketplaceId: US,
+      sellerSku,
+      accountScope: context.accountScope,
+      fingerprint: "older-sale-price-proposal",
+      execute: async ({ recordAccepted }) => {
+        await recordAccepted({ status: "accepted" });
+        throw new SpApiError("Amazon accepted the earlier offer write", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({
+      code: "UPDATE_STATUS_UNKNOWN",
+    });
+
+    const approveWrite = vi.fn(async () => undefined);
+    const gate = new MainWriteGate({ store, context: contextAdapter, approveWrite });
+    const binding: WriteBinding = {
+      family: "business-price",
+      previewKey: "blocked-two-stage-business-preview",
+      context,
+      intents: [
+        {
+          intentId: "minimum-price",
+          operation: "price",
+          marketplaceId: US,
+          sellerSku,
+          idempotencyKey: "blocked-two-stage-minimum-price",
+          proposalFingerprint: "minimum-price-18-to-14.19",
+        },
+        {
+          intentId: "business-price",
+          operation: "business_price",
+          marketplaceId: US,
+          sellerSku,
+          idempotencyKey: "blocked-two-stage-business-price",
+          proposalFingerprint: "business-price-and-tiers",
+        },
+      ],
+    };
+    const minimumSend = vi.fn(async () => ({ status: "minimum-verified" }));
+    const businessSend = vi.fn(async () => ({ status: "business-verified" }));
+
+    await gate.stagePreview(binding);
+    await expect(gate.execute({
+      binding,
+      approvalReason: "Must never request native approval",
+      run: async (session) => {
+        await session.attempt({
+          intentId: "minimum-price",
+          execute: minimumSend,
+        });
+        return session.attempt({
+          intentId: "business-price",
+          execute: businessSend,
+        });
+      },
+    })).rejects.toMatchObject({
+      code: "UPDATE_STATUS_UNKNOWN",
+      status: 409,
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(minimumSend).not.toHaveBeenCalled();
+    expect(businessSend).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       label: "operation",
