@@ -4,6 +4,14 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-08-31 v0.1.40 B2B Validation Preview／預設階梯與紅綠差異修正（製作中）
+
+使用者在已安裝 v0.1.39 按「先預檢 B2B 價格與階梯折扣（不寫入）」時，Amazon 以 Request ID `31e8647b-0be0-410b-a13a-fd04a2e39933` 回覆 `Merge operation is not allowed for VALIDATION_PREVIEW requests`。根因是 Business Pricing gateway 把同一份 `op:merge` body 同時交給 Validation Preview 與正式 commit。修正後，只有 `mode=VALIDATION_PREVIEW` 的等價 B2B contribution 改用 `op:replace`；正式 commit 仍固定使用 `op:merge`，因此不會用 B2B 更新取代 `audience:ALL` 或其他 audience。canonical commit patch hash、fresh exact read、seller-specific PTD、Write Gate、native confirmation、final fence、一次 PATCH、canonical readback 與 no-blind-retry 均維持不變。
+
+Business Pricing editor 在可安全編輯 quantity discount 且有 USD 建議值時，現在預設選取「一併更新預填階梯折扣」並送出四組建議 tiers；使用者仍可明確切到 price-only。price-only 模式完全不渲染「預填建議數量折扣」fieldset，只明示現有折扣保持不變。Amazon Preview 通過後，畫面新增逐欄差異：目前 B2B 價格與每個門檻的目前折扣以紅色顯示、箭頭後的新價格／新折扣以綠色顯示；未設定的 percent tier 顯示為 `0%`，既有 fixed plan 則顯示 exact 固定單價，不會假裝成 percent。
+
+RED 先精確重現 preview command 仍是 `merge`、editor 預設 price-only、price-only 仍顯示預填 tiers，以及預檢結果沒有價格／折扣紅綠差異；GREEN 後 B2B 聚焦 4 檔／150 tests 全數通過。package 已升為 0.1.40；final local `npm run check` 通過 244 個測試檔／2,400 tests、TypeScript、production build與stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。這一節目前只有 local／fixture／scripted／test／build 證據；尚未部署、安裝，也未執行 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback或任何 Amazon mutation。已安裝 `/Applications/AMZ.API.app` 暫時仍是 v0.1.39。
+
 ### 2026-08-31 v0.1.39 全站文案 20-SKU 批次隔離與 Excel 安全列續行（已合併／Pages 上線／Mac 安裝；Amazon live 待驗證）
 
 使用者的全站文案健檢顯示 264／284 完成，20 個連續 SKU 共用同一個 Amazon Request ID，且每列同時出現「商品內容查詢失敗」與「未回傳完整 attributes」。根因在 `catalog-report-reads.ts`：文案內容固定 20 SKU 一批；batch 只要有一列 semantic identity 不完整，`searchListingsItems` 便在 batch boundary 拋錯，catch 再把同一錯誤複製到整批。成功 batch 漏回 SKU 時也沒有 exact rescue。這不能證明缺貨本身不可讀；App 的「完整編輯」本來就走 exact `getListingsItem`，使用者也已證明受影響 SKU 可由該路徑讀取。

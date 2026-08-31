@@ -75,6 +75,27 @@ function formatQuantityDiscountPlan(
     .join("、")}`;
 }
 
+function quantityDiscountValueAt(
+  plan: BusinessQuantityDiscountPlan | null,
+  lowerBound: number,
+): string {
+  const level = plan?.levels.find((entry) => entry.lowerBound === lowerBound);
+  if (!level) return plan?.discountType === "fixed" ? "未設定" : "0%";
+  return plan?.discountType === "percent"
+    ? `${level.value}%`
+    : `固定單價 ${level.value}`;
+}
+
+function quantityDiscountLowerBounds(
+  previous: BusinessQuantityDiscountPlan | null,
+  requested: BusinessQuantityDiscountPlan,
+): readonly number[] {
+  return [...new Set([
+    ...(previous?.levels.map((level) => level.lowerBound) ?? []),
+    ...requested.levels.map((level) => level.lowerBound),
+  ])].sort((left, right) => left - right);
+}
+
 export default function BusinessPricingEditor({
   listing,
   onClose,
@@ -90,12 +111,19 @@ export default function BusinessPricingEditor({
 }>) {
   const priceOnlyProposal = businessPricingEditorProposal(listing, "price_only");
   const combinedProposal = businessPricingEditorProposal(listing, "combined");
+  const canReplaceQuantityDiscounts = Boolean(
+    listing.businessPricingCapability.quantityDiscountsEditable &&
+    listing.quantityDiscountPlanPresence !== "ambiguous" &&
+    !listing.businessPricingManagedByAutomation,
+  );
   const [newPrice, setNewPrice] = useState(
     priceOnlyProposal?.businessPrice.toFixed(2) ??
       listing.businessPrice?.amount.toString() ?? "",
   );
   const [editorMode, setEditorMode] =
-    useState<BusinessPricingEditorMode>("price_only");
+    useState<BusinessPricingEditorMode>(
+      canReplaceQuantityDiscounts && combinedProposal ? "combined" : "price_only",
+    );
   const [tierDrafts, setTierDrafts] = useState<readonly TierDraft[]>(
     combinedProposal?.quantityDiscountTiers?.map((tier) => ({
       lowerBound: String(tier.lowerBound),
@@ -121,12 +149,6 @@ export default function BusinessPricingEditor({
     : undefined;
   const tierInputInvalid = editorMode === "combined" && parsedTiers === null;
   const noRequestedChange = unchanged && editorMode === "price_only";
-  const canReplaceQuantityDiscounts = Boolean(
-    listing.businessPricingCapability.quantityDiscountsEditable &&
-    listing.quantityDiscountPlanPresence !== "ambiguous" &&
-    !listing.businessPricingManagedByAutomation,
-  );
-
   const setBusy = (busy: boolean) => {
     setLoading(busy);
     onBusyChange(busy);
@@ -308,91 +330,91 @@ export default function BusinessPricingEditor({
           {editorMode === "price_only" && (
             <div className="price-warning compact">
               <strong>Price-only</strong>
-              <p>下方已預填建議階梯，但尚未包含在本次更新；目前仍會完整保留現有階梯折扣。</p>
+              <p>本次只會更新 B2B 價格；現有數量折扣會完整保留。</p>
             </div>
           )}
-          <fieldset
-            className="business-pricing-tier-fieldset"
-            disabled={loading || editorMode === "price_only"}
-          >
-            <legend>預填建議數量折扣（1–5 階 percent）</legend>
-            <p className="business-pricing-notice">
-              {editorMode === "combined"
-                ? "已明確選擇一併更新；你可直接預檢，或先調整下列建議值。"
-                : "5 件 5%、10 件 10%、15 件 15%、20 件 20%；選擇一併更新後才會送出。"}
-            </p>
-            <div className="business-pricing-tier-grid">
-              {tierDrafts.map((tier, index) => (
-                <div className="business-pricing-tier-card" key={index}>
-                  <strong>第 {index + 1} 階</strong>
-                  <label htmlFor={`business-tier-bound-${index}`}>
-                    <span>門檻件數</span>
-                    <input
-                      id={`business-tier-bound-${index}`}
-                      inputMode="numeric"
-                      value={tier.lowerBound}
-                      onChange={(event) => {
-                        resetPreview();
-                        setTierDrafts((current) => current.map(
-                          (entry, entryIndex) => entryIndex === index
-                            ? { ...entry, lowerBound: event.target.value }
-                            : entry,
-                        ));
-                      }}
-                    />
-                  </label>
-                  <label htmlFor={`business-tier-percent-${index}`}>
-                    <span>折扣百分比</span>
-                    <input
-                      id={`business-tier-percent-${index}`}
-                      inputMode="decimal"
-                      value={tier.percent}
-                      onChange={(event) => {
-                        resetPreview();
-                        setTierDrafts((current) => current.map(
-                          (entry, entryIndex) => entryIndex === index
-                            ? { ...entry, percent: event.target.value }
-                            : entry,
-                        ));
-                      }}
-                    />
-                  </label>
-                  {tierDrafts.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        resetPreview();
-                        setTierDrafts((current) => current.filter(
-                          (_, entryIndex) => entryIndex !== index,
-                        ));
-                      }}
-                    >刪除此階</button>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="business-pricing-tier-actions">
-              {tierDrafts.length < 5 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    resetPreview();
-                    const last = tierDrafts.at(-1);
-                    setTierDrafts((current) => [...current, {
-                      lowerBound: String((Number(last?.lowerBound) || 0) + 5),
-                      percent: String(Math.min(
-                        (Number(last?.percent) || 0) + 5,
-                        99,
-                      )),
-                    }]);
-                  }}
-                >＋ 新增一階</button>
-              )}
-              {tierInputInvalid && (
-                <small role="alert">件數與百分比必須合法且逐階嚴格遞增；百分比需大於 0、小於 100。</small>
-              )}
-            </div>
-          </fieldset>
+          {editorMode === "combined" && (
+            <fieldset
+              className="business-pricing-tier-fieldset"
+              disabled={loading}
+            >
+              <legend>預填建議數量折扣（1–5 階 percent）</legend>
+              <p className="business-pricing-notice">
+                已選擇一併更新；你可直接預檢，或先調整下列建議值。
+              </p>
+              <div className="business-pricing-tier-grid">
+                {tierDrafts.map((tier, index) => (
+                  <div className="business-pricing-tier-card" key={index}>
+                    <strong>第 {index + 1} 階</strong>
+                    <label htmlFor={`business-tier-bound-${index}`}>
+                      <span>門檻件數</span>
+                      <input
+                        id={`business-tier-bound-${index}`}
+                        inputMode="numeric"
+                        value={tier.lowerBound}
+                        onChange={(event) => {
+                          resetPreview();
+                          setTierDrafts((current) => current.map(
+                            (entry, entryIndex) => entryIndex === index
+                              ? { ...entry, lowerBound: event.target.value }
+                              : entry,
+                          ));
+                        }}
+                      />
+                    </label>
+                    <label htmlFor={`business-tier-percent-${index}`}>
+                      <span>折扣百分比</span>
+                      <input
+                        id={`business-tier-percent-${index}`}
+                        inputMode="decimal"
+                        value={tier.percent}
+                        onChange={(event) => {
+                          resetPreview();
+                          setTierDrafts((current) => current.map(
+                            (entry, entryIndex) => entryIndex === index
+                              ? { ...entry, percent: event.target.value }
+                              : entry,
+                          ));
+                        }}
+                      />
+                    </label>
+                    {tierDrafts.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetPreview();
+                          setTierDrafts((current) => current.filter(
+                            (_, entryIndex) => entryIndex !== index,
+                          ));
+                        }}
+                      >刪除此階</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="business-pricing-tier-actions">
+                {tierDrafts.length < 5 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetPreview();
+                      const last = tierDrafts.at(-1);
+                      setTierDrafts((current) => [...current, {
+                        lowerBound: String((Number(last?.lowerBound) || 0) + 5),
+                        percent: String(Math.min(
+                          (Number(last?.percent) || 0) + 5,
+                          99,
+                        )),
+                      }]);
+                    }}
+                  >＋ 新增一階</button>
+                )}
+                {tierInputInvalid && (
+                  <small role="alert">件數與百分比必須合法且逐階嚴格遞增；百分比需大於 0、小於 100。</small>
+                )}
+              </div>
+            </fieldset>
+          )}
         </div>
       ) : (
         <div className="price-warning compact">
@@ -416,12 +438,54 @@ export default function BusinessPricingEditor({
       {validation && (
         <div className="business-pricing-validation">
           <strong>{validation.notice}</strong>
-          <p>舊數量折扣：{formatQuantityDiscountPlan(
-            validation.previousQuantityDiscountPlan,
-          )}</p>
-          <p>新數量折扣：{formatQuantityDiscountPlan(
-            validation.requestedQuantityDiscountPlan,
-          )}</p>
+          <div className="business-pricing-diff-row">
+            <span className="business-pricing-diff-label">B2B 價格</span>
+            <span className="business-pricing-diff-old">
+              {validation.previousBusinessPrice
+                ? formatMoney(validation.previousBusinessPrice)
+                : "未設定"}
+            </span>
+            <span className="business-pricing-diff-arrow">→</span>
+            <span className="business-pricing-diff-new">
+              {formatMoney(validation.requestedBusinessPrice)}
+            </span>
+          </div>
+          {validation.quantityDiscountPlanChange === "replace" &&
+            validation.requestedQuantityDiscountPlan ? (
+              <div className="business-pricing-tier-diffs">
+                <strong>數量折扣</strong>
+                {quantityDiscountLowerBounds(
+                  validation.previousQuantityDiscountPlan,
+                  validation.requestedQuantityDiscountPlan,
+                ).map((lowerBound) => (
+                  <div
+                    className="business-pricing-diff-row"
+                    key={lowerBound}
+                  >
+                    <span className="business-pricing-diff-label">
+                      {lowerBound} 件
+                    </span>
+                    <span className="business-pricing-diff-old">
+                      {quantityDiscountValueAt(
+                        validation.previousQuantityDiscountPlan,
+                        lowerBound,
+                      )}
+                    </span>
+                    <span className="business-pricing-diff-arrow">→</span>
+                    <span className="business-pricing-diff-new">
+                      {quantityDiscountValueAt(
+                        validation.requestedQuantityDiscountPlan,
+                        lowerBound,
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p>數量折扣保持不變：{formatQuantityDiscountPlan(
+                validation.previousQuantityDiscountPlan,
+              )}</p>
+            )}
           {validation.issues.map((issue, index) => (
             <p key={`${issue.severity}-${index}`}>
               {issue.severity} · {issue.message}

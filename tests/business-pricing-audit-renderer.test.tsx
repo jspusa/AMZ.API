@@ -228,9 +228,9 @@ async function previewBodyFromRowInteraction(
   await act(async () => {
     buttonNamed("設定 B2B 價格")!.props.onClick();
   });
-  if (mode === "combined") {
+  if (mode === "price_only") {
     await act(async () => {
-      buttonNamed("一併更新預填階梯折扣")!.props.onClick();
+      buttonNamed("只改價格並保留原數量折扣")!.props.onClick();
     });
   }
   await act(async () => {
@@ -279,7 +279,7 @@ describe("Seller Central SKU Pages-first handoff", () => {
 });
 
 describe("FBA business pricing audit renderer", () => {
-  it("prefills the suggested price and four visible tiers while keeping quantity tiers opt-in", async () => {
+  it("defaults to the combined suggested tiers and hides them entirely in price-only mode", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     let renderer: ReactTestRenderer | null = null;
@@ -303,37 +303,33 @@ describe("FBA business pricing audit renderer", () => {
       .toBe("20");
     expect(root.findByProps({ id: "business-tier-percent-3" }).props.value)
       .toBe("20");
-    expect(root.findByType("fieldset").props.disabled).toBe(true);
+    expect(root.findByType("fieldset").props.disabled).toBe(false);
     expect(root.findAllByType("button").find(
-      (button) => button.children.join("") === "只改價格並保留原數量折扣",
+      (button) => button.children.join("") === "一併更新預填階梯折扣",
     )?.props["aria-pressed"]).toBe(true);
 
     await act(async () => {
       root.findAllByType("button").find(
-        (button) => button.children.join("") === "一併更新預填階梯折扣",
-      )!.props.onClick();
-    });
-    expect(root.findByType("fieldset").props.disabled).toBe(false);
-    expect(root.findByProps({ id: "business-tier-bound-0" }).props.value)
-      .toBe("5");
-
-    await act(async () => {
-      root.findByProps({ id: "business-tier-percent-0" }).props.onChange({
-        target: { value: "6" },
-      });
-      root.findAllByType("button").find(
         (button) => button.children.join("") === "只改價格並保留原數量折扣",
       )!.props.onClick();
+    });
+    expect(root.findAllByType("fieldset")).toHaveLength(0);
+    expect(root.findAllByProps({ id: "business-tier-bound-0" }))
+      .toHaveLength(0);
+    expect(root.findAll((node) => node.children.join("") ===
+      "預填建議數量折扣（1–5 階 percent）")).toHaveLength(0);
+
+    await act(async () => {
       root.findAllByType("button").find(
         (button) => button.children.join("") === "一併更新預填階梯折扣",
       )!.props.onClick();
     });
     expect(root.findByProps({ id: "business-tier-percent-0" }).props.value)
-      .toBe("6");
+      .toBe("5");
     await act(async () => renderer!.unmount());
   });
 
-  it("sends no tiers by default and sends percent tiers only after the row editor explicitly switches modes", async () => {
+  it("sends percent tiers by default and omits them only after explicitly choosing price-only", async () => {
     const priceOnlyBody = await previewBodyFromRowInteraction("price_only");
     expect(priceOnlyBody).toMatchObject({
       marketplaceId: "ATVPDKIKX0DER",
@@ -356,6 +352,104 @@ describe("FBA business pricing audit renderer", () => {
         { lowerBound: 20, percent: 20 },
       ],
     });
+  });
+
+  it("shows the Amazon-validated price and tier changes as red old values to green new values", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const listing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      standardPrice: { amount: 18.99, currencyCode: "USD" },
+      businessPrice: { amount: 18.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [{ lowerBound: 3, value: 2 }],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlanHash: "1".repeat(64),
+    });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        mode: "live",
+        status: "VALID",
+        marketplaceId: listing.marketplaceId,
+        sellerSku: listing.sellerSku,
+        asin: listing.asin,
+        productType: listing.productType,
+        standardPrice: listing.standardPrice,
+        previousBusinessPrice: listing.businessPrice,
+        requestedBusinessPrice: {
+          amount: body.newBusinessPrice,
+          currencyCode: "USD",
+        },
+        previousQuantityDiscountPlan: listing.quantityDiscountPlan,
+        previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
+        requestedQuantityDiscountPlan: {
+          discountType: "percent",
+          levels: (body.quantityDiscountTiers as Array<{
+            lowerBound: number;
+            percent: number;
+          }>).map((tier) => ({
+            lowerBound: tier.lowerBound,
+            value: tier.percent,
+          })),
+        },
+        quantityDiscountPlanChange: "replace",
+        businessOfferGuardHash: listing.businessOfferGuardHash,
+        businessOfferProtectedHash: listing.businessOfferProtectedHash,
+        schemaChecksum: listing.businessPricingCapability.schemaChecksum,
+        fbaEvidenceHash: "b".repeat(64),
+        canonicalPatchHash: "c".repeat(64),
+        validationIssuesHash: "d".repeat(64),
+        validatedAt: "2026-08-31T12:01:00.000Z",
+        issues: [],
+        notice: "Amazon Validation Preview 已通過。",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingEditor, {
+        listing,
+        onClose: () => undefined,
+        onVerified: () => undefined,
+        onError: () => undefined,
+        onBusyChange: () => undefined,
+      }));
+    });
+    const root = renderer!.root;
+    await act(async () => {
+      root.findByType("form").props.onSubmit({ preventDefault: () => undefined });
+    });
+
+    const oldValues = root.findAllByProps({
+      className: "business-pricing-diff-old",
+    }).map((node) => node.children.join(""));
+    const newValues = root.findAllByProps({
+      className: "business-pricing-diff-new",
+    }).map((node) => node.children.join(""));
+    expect(oldValues.some((value) => value.includes("18.99"))).toBe(true);
+    expect(newValues.some((value) => value.includes("17.99"))).toBe(true);
+    expect(oldValues).toContain("0%");
+    expect(newValues).toContain("5%");
+    expect(oldValues).toContain("2%");
+    expect(newValues).toContain("0%");
+    expect(root.findAllByProps({
+      className: "business-pricing-diff-arrow",
+    }).length).toBeGreaterThanOrEqual(2);
+    await act(async () => renderer!.unmount());
+
+    const css = await readRendererStylesheet();
+    expect(css).toMatch(
+      /\.business-pricing-diff-old\s*\{[^}]*color:\s*#b12e3b/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-diff-new\s*\{[^}]*color:\s*#187244/su,
+    );
   });
 
   it("resumes a newer completed job over an older cache without duplicating an active observer", () => {

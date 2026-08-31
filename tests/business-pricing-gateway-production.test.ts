@@ -540,7 +540,13 @@ describe("Business Pricing production gateway", () => {
     expect(state.previewCommands).toEqual([{
       marketplaceId: MARKETPLACE_ID,
       sellerSku: IDENTITY.sellerSku,
-      patchBody: businessPricingPatchBody(patch),
+      patchBody: {
+        ...businessPricingPatchBody(patch),
+        patches: [{
+          ...(businessPricingPatchBody(patch).patches[0] as object),
+          op: "replace",
+        }],
+      },
       includeIdentifiers: true,
     }]);
     const commit = state.commitCommands[0];

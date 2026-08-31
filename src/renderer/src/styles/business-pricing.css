@@ -590,6 +590,42 @@
 .business-pricing-validation strong,
 .business-pricing-validation p,
 .business-pricing-result p { margin: 0; font-size: 12px; line-height: 1.5; }
+.business-pricing-tier-diffs {
+  display: grid;
+  gap: 7px;
+}
+.business-pricing-diff-row {
+  display: grid;
+  grid-template-columns: minmax(70px, .8fr) minmax(88px, 1fr) auto minmax(88px, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.business-pricing-diff-label {
+  color: #66666e;
+  font-size: 11px;
+  font-weight: 800;
+}
+.business-pricing-diff-old,
+.business-pricing-diff-new {
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 900;
+  text-align: center;
+}
+.business-pricing-diff-old {
+  background: #fff0f1;
+  color: #b12e3b;
+}
+.business-pricing-diff-new {
+  background: #eaf8ef;
+  color: #187244;
+}
+.business-pricing-diff-arrow {
+  color: #777780;
+  font-size: 15px;
+  font-weight: 900;
+}
 .business-pricing-result { background: #edf8f1; color: #28583d; }
 
 @media (max-width: 820px) {
