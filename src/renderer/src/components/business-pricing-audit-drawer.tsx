@@ -71,6 +71,7 @@ export default function BusinessPricingAuditDrawer({
         marketplaceId={marketplaceId}
         marketplaceShort={marketplaceShort}
         mode={mode}
+        presentation={presentation}
         cachedSnapshot={cachedSnapshot}
         initialJob={initialJob}
         onSnapshotChange={onSnapshotChange}

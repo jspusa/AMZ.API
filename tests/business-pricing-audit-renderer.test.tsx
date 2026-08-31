@@ -719,6 +719,118 @@ describe("FBA business pricing audit renderer", () => {
     await act(async () => renderer!.unmount());
   });
 
+  it("uses the dialog panel as the B2B list and editor scroll owner", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method && init.method !== "GET") {
+        throw new Error(`Unexpected B2B write request: ${init.method}`);
+      }
+      return new Response(JSON.stringify(interactiveListing), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const panelNode = { scrollTop: 760 };
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        presentation: "dialog",
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+      }), {
+        createNodeMock: (element) =>
+          element.props["data-business-pricing-view"] ? panelNode : null,
+      });
+    });
+    const root = renderer!.root;
+    await act(async () => {
+      root.findAllByType("button").find(
+        (button) => button.children.join("") === "設定 B2B 價格",
+      )!.props.onClick();
+    });
+    expect(panelNode.scrollTop).toBe(0);
+
+    panelNode.scrollTop = 280;
+    await act(async () => {
+      root.findByProps({
+        "aria-label": "返回全站 B2B 價格健檢",
+      }).props.onClick();
+    });
+    expect(panelNode.scrollTop).toBe(760);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.some(([, init]) =>
+      init?.method && init.method !== "GET"
+    )).toBe(false);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("uses the window as the workspace B2B list and editor scroll owner", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method && init.method !== "GET") {
+        throw new Error(`Unexpected B2B write request: ${init.method}`);
+      }
+      return new Response(JSON.stringify(interactiveListing), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const scrollTo = vi.fn();
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    const rootElement = { style: { scrollBehavior: "smooth" } };
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", {
+      fbaOS: undefined,
+      scrollY: 1_640,
+      scrollTo,
+      requestAnimationFrame,
+      cancelAnimationFrame: vi.fn(),
+    });
+    vi.stubGlobal("document", { documentElement: rootElement });
+    const panelNode = { scrollTop: 760 };
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        presentation: "workspace",
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+      }), {
+        createNodeMock: (element) =>
+          element.props["data-business-pricing-view"] ? panelNode : null,
+      });
+    });
+    const root = renderer!.root;
+    await act(async () => {
+      root.findAllByType("button").find(
+        (button) => button.children.join("") === "設定 B2B 價格",
+      )!.props.onClick();
+    });
+    expect(scrollTo).toHaveBeenLastCalledWith(0, 0);
+    expect(panelNode.scrollTop).toBe(760);
+    expect(rootElement.style.scrollBehavior).toBe("smooth");
+
+    await act(async () => {
+      root.findByProps({
+        "aria-label": "返回全站 B2B 價格健檢",
+      }).props.onClick();
+    });
+    expect(scrollTo).toHaveBeenLastCalledWith(0, 1_640);
+    expect(panelNode.scrollTop).toBe(760);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.some(([, init]) =>
+      init?.method && init.method !== "GET"
+    )).toBe(false);
+    await act(async () => renderer!.unmount());
+  });
+
   it("keeps a manually verified canonical value in the audit row after returning", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;

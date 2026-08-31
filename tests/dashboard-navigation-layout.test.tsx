@@ -1,13 +1,54 @@
 import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
   businessPricingAttentionCount,
+  scheduleAuditWorkspaceTopScroll,
 } from "../src/renderer/src/components/dashboard";
 import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("dashboard top navigation layout", () => {
+  it("moves a newly rendered audit workspace to the page top after focus settles", () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 1;
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      const id = nextFrameId;
+      nextFrameId += 1;
+      frames.set(id, callback);
+      return id;
+    });
+    const cancelAnimationFrame = vi.fn((id: number) => frames.delete(id));
+    const scrollTo = vi.fn();
+    const root = { style: { scrollBehavior: "smooth" } };
+    vi.stubGlobal("window", {
+      requestAnimationFrame,
+      cancelAnimationFrame,
+      scrollTo,
+    });
+    vi.stubGlobal("document", { documentElement: root });
+
+    const runNextFrame = () => {
+      const entry = [...frames.entries()].sort(([left], [right]) => left - right)[0];
+      if (!entry) throw new Error("Expected a pending animation frame");
+      frames.delete(entry[0]);
+      entry[1](0);
+    };
+
+    const cleanup = scheduleAuditWorkspaceTopScroll();
+    expect(scrollTo).not.toHaveBeenCalled();
+    runNextFrame();
+    expect(scrollTo).not.toHaveBeenCalled();
+    runNextFrame();
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+    expect(root.style.scrollBehavior).toBe("auto");
+    runNextFrame();
+    expect(root.style.scrollBehavior).toBe("smooth");
+
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
   it("counts each B2B attention row once when recommendation categories overlap", () => {
     const attentionRow = {
       sellerSku: "BOTH-MISMATCH",

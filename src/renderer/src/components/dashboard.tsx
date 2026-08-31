@@ -325,6 +325,43 @@ export function dashboardConnectionBadgeCopy(
   };
 }
 
+export function scheduleAuditWorkspaceTopScroll(): () => void {
+  let secondFrame: number | null = null;
+  let restoreFrame: number | null = null;
+  let scrollRoot: HTMLElement | null = null;
+  let previousScrollBehavior: string | null = null;
+  const firstFrame = window.requestAnimationFrame(() => {
+    secondFrame = window.requestAnimationFrame(() => {
+      try {
+        scrollRoot = document.documentElement;
+        previousScrollBehavior = scrollRoot.style.scrollBehavior;
+        // AuditWorkspaceShell focuses its heading after render. Move the page
+        // only after that focus settles so a launch from a deep home card
+        // always opens at the start of the workspace.
+        scrollRoot.style.scrollBehavior = "auto";
+        window.scrollTo(0, 0);
+        restoreFrame = window.requestAnimationFrame(() => {
+          if (scrollRoot && previousScrollBehavior !== null) {
+            scrollRoot.style.scrollBehavior = previousScrollBehavior;
+          }
+          scrollRoot = null;
+          previousScrollBehavior = null;
+        });
+      } catch {
+        // Embedded test browsers may not implement scrolling.
+      }
+    });
+  });
+  return () => {
+    window.cancelAnimationFrame(firstFrame);
+    if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+    if (restoreFrame !== null) window.cancelAnimationFrame(restoreFrame);
+    if (scrollRoot && previousScrollBehavior !== null) {
+      scrollRoot.style.scrollBehavior = previousScrollBehavior;
+    }
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -1024,6 +1061,11 @@ export default function Dashboard({
     setOpenTool(null);
     setActiveAuditWorkspace(sectionId);
   }, []);
+
+  useEffect(() => {
+    if (!activeAuditWorkspace) return;
+    return scheduleAuditWorkspaceTopScroll();
+  }, [activeAuditWorkspace]);
 
   const closeAuditWorkspace = useCallback(() => {
     const returnTarget = auditWorkspaceReturnRef.current;
