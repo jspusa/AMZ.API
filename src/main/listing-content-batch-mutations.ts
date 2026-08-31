@@ -1343,31 +1343,40 @@ export class ListingContentBatchMutations
         return `${change.input.sellerSku}（${risks.join("；")}）`;
       })
       .join("、");
-    const approvalReason = (verificationCode: string): string =>
+    const removedOverflowBulletCount = exactBulletReplacementChanges.reduce(
+      (total, change) =>
+        total +
+        (change.validation.exactBulletReplacement
+          ?.removedOverflowBulletPoints.length ?? 0),
+      0,
+    );
+    const compactNativeRiskSummary = [
+      nativeRiskChanges.length
+        ? `高風險 ${nativeRiskChanges.length} SKU`
+        : null,
+      removedOverflowBulletCount
+        ? `刪除要點 ${removedOverflowBulletCount} 項`
+        : null,
+      requiredOverrideChanges.length
+        ? `INVALID ${requiredOverrideChanges.length} SKU`
+        : null,
+    ].filter((entry): entry is string => entry !== null).join("／");
+    const detailedApprovalReason = (verificationCode: string): string =>
       `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
         nativeRiskChanges.length
           ? `｜高風險：${nativeRiskSummary}`
           : `｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}`
       }｜驗證碼 ${verificationCode}`;
-    const nativeApprovalSellerSkus = nativeRiskChanges.map(
-      (change) => change.input.sellerSku,
-    );
-    if (
-      nativeApprovalSellerSkus.length &&
-      approvalReason("0".repeat(12)).length >
-        NATIVE_CONFIRMATION_REASON_MAX_LENGTH
-    ) {
-      return json({
-        code: "NATIVE_APPROVAL_SUMMARY_TOO_LONG",
-        message: nativeApprovalSellerSkus.length === 1
-          ? "此 SKU 的高風險原生確認摘要超過 Notebook Key 可完整顯示的上限，App 無法安全送出；請改到 Seller Central 人工處理。Amazon 寫入數為 0。"
-          : exactBulletReplacementChanges.length
-            ? "會刪除 Amazon 第 6 項後產品要點或要求強制嘗試的 SKU 太多，無法在 Notebook Key 原生確認視窗完整列出；請拆成較小批次後重新預檢。Amazon 寫入數為 0。"
-            : "要求強制嘗試的 Amazon 預檢未通過 SKU 太多，無法在 Notebook Key 原生確認視窗完整列出；請拆成較小批次後重新預檢。Amazon 寫入數為 0。",
-        sellerSkus: nativeApprovalSellerSkus,
-        writeCount: 0,
-      }, 422);
-    }
+    const compactApprovalReason = (verificationCode: string): string =>
+      `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
+        compactNativeRiskSummary ? `｜${compactNativeRiskSummary}` : ""
+      }｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
+    const approvalReason = (verificationCode: string): string => {
+      const detailed = detailedApprovalReason(verificationCode);
+      return detailed.length <= NATIVE_CONFIRMATION_REASON_MAX_LENGTH
+        ? detailed
+        : compactApprovalReason(verificationCode);
+    };
     let preflightResponse: ApiResponse | null = null;
     plan.state = "committing";
     try {
