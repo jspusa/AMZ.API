@@ -24,6 +24,11 @@ export type BusinessPricingMoney = Readonly<{
   currencyCode: string;
 }>;
 
+export type BusinessMinimumPricePresence =
+  | "absent"
+  | "canonical"
+  | "ambiguous";
+
 export type BusinessPricingAuditRow = Readonly<{
   sellerSku: string;
   asin: string;
@@ -96,6 +101,8 @@ export type BusinessPricingListingSnapshot = Readonly<{
   title: string;
   productType: string;
   standardPrice: BusinessPricingMoney | null;
+  minimumPrice: BusinessPricingMoney | null;
+  minimumPricePresence: BusinessMinimumPricePresence;
   businessPrice: BusinessPricingMoney | null;
   businessOfferPresence: "absent" | "present" | "ambiguous";
   businessPricingManagedByAutomation: boolean;
@@ -119,6 +126,7 @@ export type BusinessPriceWriteBody = Readonly<{
   expectedStandardPrice: number;
   expectedBusinessPrice: number | null;
   newBusinessPrice: number;
+  expectedMinimumPrice?: number | null;
   expectedQuantityDiscountPlanHash?: string | null;
   quantityDiscountTiers?: readonly BusinessQuantityDiscountTier[];
   idempotencyKey: string;
@@ -139,6 +147,16 @@ export type BusinessPriceValidation = Readonly<{
   standardPrice: BusinessPricingMoney;
   previousBusinessPrice: BusinessPricingMoney | null;
   requestedBusinessPrice: BusinessPricingMoney;
+  previousMinimumPrice: BusinessPricingMoney | null;
+  requestedMinimumPrice: BusinessPricingMoney | null;
+  lowestTierUnitPrice: BusinessPricingMoney | null;
+  minimumPriceChange: "preserve" | "lower";
+  minimumPriceProtectedHash: string | null;
+  minimumPriceCanonicalPatchHash: string | null;
+  businessPriceValidation:
+    | "validated"
+    | "final-state-validated"
+    | "deferred-until-minimum-price";
   previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   previousQuantityDiscountPlanHash: string | null;
   requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
@@ -174,6 +192,13 @@ export type BusinessPriceUpdate = Readonly<{
   standardPrice: BusinessPricingMoney;
   previousBusinessPrice: BusinessPricingMoney | null;
   requestedBusinessPrice: BusinessPricingMoney;
+  previousMinimumPrice: BusinessPricingMoney | null;
+  requestedMinimumPrice: BusinessPricingMoney | null;
+  lowestTierUnitPrice: BusinessPricingMoney | null;
+  minimumPriceChange: "preserve" | "lower";
+  minimumPriceProtectedHash: string | null;
+  minimumPriceCanonicalPatchHash: string | null;
+  businessPriceValidation: "validated";
   previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   previousQuantityDiscountPlanHash: string | null;
   requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
@@ -518,6 +543,10 @@ function exactHash(value: unknown, label: string): string {
   return value;
 }
 
+function optionalExactHash(value: unknown, label: string): string | null {
+  return value === null ? null : exactHash(value, label);
+}
+
 function parseCanonicalQuantityDiscountPlan(
   value: unknown,
 ): BusinessQuantityDiscountPlan {
@@ -603,6 +632,35 @@ function parseQuantityDiscountPlan(
   };
 }
 
+function parseMinimumPriceEvidence(
+  value: unknown,
+  presence: unknown,
+): Readonly<{
+  minimumPrice: BusinessPricingMoney | null;
+  minimumPricePresence: BusinessMinimumPricePresence;
+}> {
+  const minimumPrice = value === undefined
+    ? null
+    : money(value, "最低允許售價");
+  const minimumPricePresence = presence === undefined
+    ? minimumPrice === null ? "ambiguous" : "canonical"
+    : presence;
+  if (
+    minimumPricePresence !== "absent" &&
+    minimumPricePresence !== "canonical" &&
+    minimumPricePresence !== "ambiguous"
+  ) {
+    throw new Error("B2B 價格的最低允許售價證據無效。");
+  }
+  if (
+    (minimumPricePresence === "canonical" && minimumPrice === null) ||
+    (minimumPricePresence !== "canonical" && minimumPrice !== null)
+  ) {
+    throw new Error("B2B 價格的最低允許售價與證據不一致。");
+  }
+  return Object.freeze({ minimumPrice, minimumPricePresence });
+}
+
 export function parseBusinessPricingListingSnapshot(
   value: unknown,
 ): BusinessPricingListingSnapshot {
@@ -616,6 +674,10 @@ export function parseBusinessPricingListingSnapshot(
   }
   const standardPrice = money(source.standardPrice, "標準售價");
   const businessPrice = money(source.businessPrice, "B2B 價格");
+  const minimumPriceEvidence = parseMinimumPriceEvidence(
+    source.minimumPrice,
+    source.minimumPricePresence,
+  );
   const quantityDiscount = parseQuantityDiscountPlan(
     source.quantityDiscountPlan,
     source.quantityDiscountPlanPresence,
@@ -625,7 +687,13 @@ export function parseBusinessPricingListingSnapshot(
     (presence === "present" && !businessPrice) ||
     (presence === "absent" && businessPrice !== null) ||
     (standardPrice && businessPrice &&
-      standardPrice.currencyCode !== businessPrice.currencyCode)
+      standardPrice.currencyCode !== businessPrice.currencyCode) ||
+    (standardPrice && minimumPriceEvidence.minimumPrice &&
+      standardPrice.currencyCode !==
+        minimumPriceEvidence.minimumPrice.currencyCode) ||
+    (businessPrice && minimumPriceEvidence.minimumPrice &&
+      businessPrice.currencyCode !==
+        minimumPriceEvidence.minimumPrice.currencyCode)
   ) {
     throw new Error("B2B 價格與 offer 證據不一致。");
   }
@@ -682,6 +750,8 @@ export function parseBusinessPricingListingSnapshot(
     title: displayText(source.title, "商品名稱", 2_000, true),
     productType: exactText(source.productType, "商品類型", 120),
     standardPrice,
+    minimumPrice: minimumPriceEvidence.minimumPrice,
+    minimumPricePresence: minimumPriceEvidence.minimumPricePresence,
     businessPrice,
     businessOfferPresence: presence,
     businessPricingManagedByAutomation:
@@ -764,7 +834,13 @@ export function businessPricingEditorProposal(
   quantityDiscountTiers?: readonly BusinessQuantityDiscountTier[];
 }> | null {
   const proposal = defaultBusinessPricingProposal(listing);
-  if (!proposal || (mode === "combined" && proposal.tiers.length === 0)) {
+  if (
+    !proposal ||
+    (mode === "combined" && (
+      proposal.tiers.length === 0 ||
+      listing.minimumPricePresence === "ambiguous"
+    ))
+  ) {
     return null;
   }
   return Object.freeze({
@@ -790,6 +866,80 @@ function sameMoney(
     : right !== null &&
       left.amount === right.amount &&
       left.currencyCode === right.currencyCode;
+}
+
+function usdPercentTierAmount(
+  businessPrice: number,
+  percent: number,
+): number {
+  const businessCents = Math.round(businessPrice * 100);
+  const percentBasisPoints = Math.round(percent * 100);
+  return Math.round(
+    businessCents * (10_000 - percentBasisPoints) / 10_000,
+  ) / 100;
+}
+
+function validateMinimumPriceTransition(input: Readonly<{
+  previousMinimumPrice: BusinessPricingMoney | null;
+  requestedMinimumPrice: BusinessPricingMoney | null;
+  lowestTierUnitPrice: BusinessPricingMoney | null;
+  minimumPriceChange: unknown;
+  minimumPriceProtectedHash: string | null;
+  minimumPriceCanonicalPatchHash: string | null;
+  businessPriceValidation: unknown;
+}>, completed = false): asserts input is Readonly<{
+  previousMinimumPrice: BusinessPricingMoney | null;
+  requestedMinimumPrice: BusinessPricingMoney | null;
+  lowestTierUnitPrice: BusinessPricingMoney | null;
+  minimumPriceChange: "preserve" | "lower";
+  minimumPriceProtectedHash: string | null;
+  minimumPriceCanonicalPatchHash: string | null;
+  businessPriceValidation:
+    | "validated"
+    | "final-state-validated"
+    | "deferred-until-minimum-price";
+}> {
+  const validation = input.businessPriceValidation;
+  if (
+    validation !== "validated" &&
+    validation !== "final-state-validated" &&
+    validation !== "deferred-until-minimum-price"
+  ) {
+    throw new Error("B2B 價格的最低價預檢證據無效。");
+  }
+  if (input.minimumPriceChange === "preserve") {
+    if (
+      !sameMoney(input.previousMinimumPrice, input.requestedMinimumPrice) ||
+      input.minimumPriceProtectedHash !== null ||
+      input.minimumPriceCanonicalPatchHash !== null ||
+      validation !== "validated"
+    ) {
+      throw new Error("B2B 價格的最低價保留證據不一致。");
+    }
+    return;
+  }
+  if (input.minimumPriceChange !== "lower") {
+    throw new Error("B2B 價格的最低價操作無效。");
+  }
+  const previous = input.previousMinimumPrice;
+  const requested = input.requestedMinimumPrice;
+  const lowest = input.lowestTierUnitPrice;
+  if (
+    !previous ||
+    !requested ||
+    !lowest ||
+    previous.currencyCode !== "USD" ||
+    requested.currencyCode !== "USD" ||
+    lowest.currencyCode !== "USD" ||
+    requested.amount >= previous.amount ||
+    Math.round(requested.amount * 100) !==
+      Math.round(lowest.amount * 100) - 100 ||
+    !input.minimumPriceProtectedHash ||
+    !input.minimumPriceCanonicalPatchHash ||
+    validation !== (completed ? "validated" : "final-state-validated")
+  ) {
+    throw new Error("B2B 價格的最低價調整證據不一致。");
+  }
 }
 
 function exactIso(value: unknown, label: string): string {
@@ -861,6 +1011,36 @@ export function parseBusinessPriceValidation(
   if (!/^[A-Z0-9]{10}$/u.test(asin)) {
     throw new Error("B2B 價格預檢 ASIN 無效。");
   }
+  const previousMinimumPrice = money(
+    source.previousMinimumPrice,
+    "預檢舊最低允許售價",
+  );
+  const requestedMinimumPrice = money(
+    source.requestedMinimumPrice,
+    "預檢新最低允許售價",
+  );
+  const lowestTierUnitPrice = money(
+    source.lowestTierUnitPrice,
+    "預檢最低階梯實際單價",
+  );
+  const minimumPriceProtectedHash = optionalExactHash(
+    source.minimumPriceProtectedHash,
+    "預檢最低價 protected offer",
+  );
+  const minimumPriceCanonicalPatchHash = optionalExactHash(
+    source.minimumPriceCanonicalPatchHash,
+    "預檢最低價 patch",
+  );
+  const minimumPriceTransition = {
+    previousMinimumPrice,
+    requestedMinimumPrice,
+    lowestTierUnitPrice,
+    minimumPriceChange: source.minimumPriceChange,
+    minimumPriceProtectedHash,
+    minimumPriceCanonicalPatchHash,
+    businessPriceValidation: source.businessPriceValidation,
+  };
+  validateMinimumPriceTransition(minimumPriceTransition);
   const previousQuantityDiscountPlan = responseQuantityDiscountPlan(
     source.previousQuantityDiscountPlan,
     "預檢舊數量折扣",
@@ -920,6 +1100,7 @@ export function parseBusinessPriceValidation(
       source.requestedBusinessPrice,
       "預檢新 B2B 價格",
     ),
+    ...minimumPriceTransition,
     previousQuantityDiscountPlan,
     previousQuantityDiscountPlanHash,
     requestedQuantityDiscountPlan,
@@ -965,6 +1146,7 @@ export function createSubmittedBusinessPricePreview(input: {
   ) {
     throw new Error("B2B 價格預檢送出資料無效。");
   }
+  const currency = input.listing.standardPrice.currencyCode;
   const tiers = input.quantityDiscountTiers;
   let requestedPlan: BusinessQuantityDiscountPlan | null = null;
   if (
@@ -976,6 +1158,7 @@ export function createSubmittedBusinessPricePreview(input: {
   }
   if (tiers !== undefined) {
     if (
+      input.listing.minimumPricePresence === "ambiguous" ||
       input.listing.quantityDiscountPlanPresence === "ambiguous" ||
       (input.listing.quantityDiscountPlanPresence === "duplicate" &&
         input.listing.quantityDiscountPlan?.discountType !== "percent") ||
@@ -998,14 +1181,18 @@ export function createSubmittedBusinessPricePreview(input: {
       ) {
         throw new Error("B2B 數量折扣必須是 1–5 階，件數與折扣需嚴格遞增。");
       }
-      const unitPrice = Number((
-        input.newBusinessPrice * (1 - tier.percent / 100)
-      ).toFixed(2));
+      const unitPrice = currency === "USD"
+        ? usdPercentTierAmount(input.newBusinessPrice, tier.percent)
+        : Number((
+            input.newBusinessPrice * (1 - tier.percent / 100)
+          ).toFixed(currency === "JPY" ? 0 : 2));
       const previousUnitPrice = previous === undefined
         ? input.newBusinessPrice
+        : currency === "USD"
+        ? usdPercentTierAmount(input.newBusinessPrice, previous.percent)
         : Number((
-          input.newBusinessPrice * (1 - previous.percent / 100)
-        ).toFixed(2));
+            input.newBusinessPrice * (1 - previous.percent / 100)
+          ).toFixed(currency === "JPY" ? 0 : 2));
       if (unitPrice <= 0 || unitPrice >= previousUnitPrice) {
         throw new Error("B2B 數量折扣在 USD 兩位小數後必須逐階降低單價。");
       }
@@ -1019,6 +1206,32 @@ export function createSubmittedBusinessPricePreview(input: {
       levels: Object.freeze(levels),
     });
   }
+  const expectedLowestTierUnitPrice = tiers === undefined
+    ? null
+    : Object.freeze({
+        amount: currency === "USD"
+          ? usdPercentTierAmount(
+              input.newBusinessPrice,
+              tiers.at(-1)!.percent,
+            )
+          : Number((
+              input.newBusinessPrice *
+              (1 - tiers.at(-1)!.percent / 100)
+            ).toFixed(currency === "JPY" ? 0 : 2)),
+        currencyCode: currency,
+      });
+  const shouldLowerMinimumPrice = Boolean(
+    expectedLowestTierUnitPrice &&
+    input.listing.minimumPrice &&
+    input.listing.minimumPrice.amount > expectedLowestTierUnitPrice.amount,
+  );
+  const expectedRequestedMinimumPrice = shouldLowerMinimumPrice
+    ? Object.freeze({
+        amount: (Math.round(expectedLowestTierUnitPrice!.amount * 100) - 100) /
+          100,
+        currencyCode: currency,
+      })
+    : input.listing.minimumPrice;
   const body = Object.freeze({
     marketplaceId: input.listing.marketplaceId,
     sellerSku: input.listing.sellerSku,
@@ -1026,6 +1239,7 @@ export function createSubmittedBusinessPricePreview(input: {
     expectedBusinessPrice: input.listing.businessPrice?.amount ?? null,
     newBusinessPrice: input.newBusinessPrice,
     ...(tiers === undefined ? {} : {
+      expectedMinimumPrice: input.listing.minimumPrice?.amount ?? null,
       expectedQuantityDiscountPlanHash:
         input.listing.quantityDiscountPlanHash,
       quantityDiscountTiers: Object.freeze(tiers.map((tier) =>
@@ -1035,7 +1249,6 @@ export function createSubmittedBusinessPricePreview(input: {
     idempotencyKey: input.idempotencyKey,
   });
   const validation = parseBusinessPriceValidation(input.response);
-  const currency = input.listing.standardPrice.currencyCode;
   if (
     validation.marketplaceId !== body.marketplaceId ||
     validation.sellerSku !== body.sellerSku ||
@@ -1048,6 +1261,19 @@ export function createSubmittedBusinessPricePreview(input: {
       input.listing.businessPricingCapability.schemaChecksum ||
     !sameMoney(validation.standardPrice, input.listing.standardPrice) ||
     !sameMoney(validation.previousBusinessPrice, input.listing.businessPrice) ||
+    !sameMoney(validation.previousMinimumPrice, input.listing.minimumPrice) ||
+    !sameMoney(
+      validation.requestedMinimumPrice,
+      expectedRequestedMinimumPrice,
+    ) ||
+    !sameMoney(
+      validation.lowestTierUnitPrice,
+      expectedLowestTierUnitPrice,
+    ) ||
+    validation.minimumPriceChange !==
+      (shouldLowerMinimumPrice ? "lower" : "preserve") ||
+    validation.businessPriceValidation !==
+      (shouldLowerMinimumPrice ? "final-state-validated" : "validated") ||
     validation.requestedBusinessPrice.amount !== body.newBusinessPrice ||
     validation.requestedBusinessPrice.currencyCode !== currency ||
     !sameQuantityDiscountPlan(
@@ -1102,6 +1328,39 @@ export function parseBusinessPriceUpdate(
     source.requestedBusinessPrice,
     "更新新 B2B 價格",
   );
+  const previousMinimumPrice = money(
+    source.previousMinimumPrice,
+    "更新舊最低允許售價",
+  );
+  const requestedMinimumPrice = money(
+    source.requestedMinimumPrice,
+    "更新新最低允許售價",
+  );
+  const lowestTierUnitPrice = money(
+    source.lowestTierUnitPrice,
+    "更新最低階梯實際單價",
+  );
+  const minimumPriceProtectedHash = optionalExactHash(
+    source.minimumPriceProtectedHash,
+    "更新最低價 protected offer",
+  );
+  const minimumPriceCanonicalPatchHash = optionalExactHash(
+    source.minimumPriceCanonicalPatchHash,
+    "更新最低價 patch",
+  );
+  const minimumPriceTransition = {
+    previousMinimumPrice,
+    requestedMinimumPrice,
+    lowestTierUnitPrice,
+    minimumPriceChange: source.minimumPriceChange,
+    minimumPriceProtectedHash,
+    minimumPriceCanonicalPatchHash,
+    businessPriceValidation: source.businessPriceValidation,
+  };
+  validateMinimumPriceTransition(minimumPriceTransition, true);
+  if (minimumPriceTransition.businessPriceValidation !== "validated") {
+    throw new Error("B2B 價格更新尚未完成正式回查驗證。");
+  }
   const previousQuantityDiscountPlan = responseQuantityDiscountPlan(
     source.previousQuantityDiscountPlan,
     "更新舊數量折扣",
@@ -1170,11 +1429,21 @@ export function parseBusinessPriceUpdate(
     source.sellerSku !== submitted.body.sellerSku ||
     asin !== validation.asin ||
     source.productType !== validation.productType ||
-    businessOfferGuardHash !== validation.businessOfferGuardHash ||
-    businessOfferProtectedHash !== validation.businessOfferProtectedHash ||
+    (validation.minimumPriceChange === "preserve" &&
+      (businessOfferGuardHash !== validation.businessOfferGuardHash ||
+        businessOfferProtectedHash !==
+          validation.businessOfferProtectedHash)) ||
     schemaChecksum !== validation.schemaChecksum ||
     !sameMoney(standardPrice, validation.standardPrice) ||
     !sameMoney(previousBusinessPrice, validation.previousBusinessPrice) ||
+    !sameMoney(previousMinimumPrice, validation.previousMinimumPrice) ||
+    !sameMoney(requestedMinimumPrice, validation.requestedMinimumPrice) ||
+    !sameMoney(lowestTierUnitPrice, validation.lowestTierUnitPrice) ||
+    minimumPriceTransition.minimumPriceChange !==
+      validation.minimumPriceChange ||
+    minimumPriceProtectedHash !== validation.minimumPriceProtectedHash ||
+    minimumPriceCanonicalPatchHash !==
+      validation.minimumPriceCanonicalPatchHash ||
     requestedBusinessPrice.amount !== submitted.body.newBusinessPrice ||
     requestedBusinessPrice.currencyCode !== standardPrice.currencyCode ||
     !sameQuantityDiscountPlan(
@@ -1201,6 +1470,8 @@ export function parseBusinessPriceUpdate(
     standardPrice,
     previousBusinessPrice,
     requestedBusinessPrice,
+    ...minimumPriceTransition,
+    businessPriceValidation: "validated" as const,
     previousQuantityDiscountPlan,
     previousQuantityDiscountPlanHash,
     requestedQuantityDiscountPlan,

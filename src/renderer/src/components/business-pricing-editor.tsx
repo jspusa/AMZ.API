@@ -33,6 +33,67 @@ function formatMoney(value: BusinessPricingMoney | null): string {
   }
 }
 
+function formatMinimumPriceEvidence(
+  listing: BusinessPricingListingSnapshot,
+): string {
+  if (listing.minimumPricePresence === "canonical") {
+    return formatMoney(listing.minimumPrice);
+  }
+  return listing.minimumPricePresence === "absent"
+    ? "未設定"
+    : "Amazon 無法確認";
+}
+
+function exactProblemMoney(
+  value: unknown,
+  expected: BusinessPricingMoney,
+): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const source = value as Record<string, unknown>;
+  return Object.keys(source).length === 2 &&
+    source.amount === expected.amount &&
+    source.currencyCode === expected.currencyCode;
+}
+
+function verifiedMinimumPriceFromProblem(
+  value: unknown,
+  submitted: SubmittedBusinessPricePreview,
+): BusinessPricingMoney | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (
+    source.code !== "BUSINESS_PRICE_PARTIAL_UPDATE" &&
+    source.code !== "UPDATE_STATUS_UNKNOWN"
+  ) return null;
+  const evidence = source.minimumPriceUpdate;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    return null;
+  }
+  const update = evidence as Record<string, unknown>;
+  const validation = submitted.validation;
+  if (
+    Object.keys(update).length !== 4 ||
+    update.status !== "verified" ||
+    validation.minimumPriceChange !== "lower" ||
+    !validation.previousMinimumPrice ||
+    !validation.requestedMinimumPrice ||
+    !validation.lowestTierUnitPrice ||
+    !exactProblemMoney(
+      update.previousMinimumPrice,
+      validation.previousMinimumPrice,
+    ) ||
+    !exactProblemMoney(
+      update.requestedMinimumPrice,
+      validation.requestedMinimumPrice,
+    ) ||
+    !exactProblemMoney(
+      update.lowestTierUnitPrice,
+      validation.lowestTierUnitPrice,
+    )
+  ) return null;
+  return validation.requestedMinimumPrice;
+}
+
 function priceNumber(value: string, currencyCode: string): number | null {
   if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/u.test(value)) return null;
   const parsed = Number(value);
@@ -116,6 +177,7 @@ export default function BusinessPricingEditor({
     listing.quantityDiscountPlan?.discountType === "percent";
   const canReplaceQuantityDiscounts = Boolean(
     listing.businessPricingCapability.quantityDiscountsEditable &&
+    listing.minimumPricePresence !== "ambiguous" &&
     listing.quantityDiscountPlanPresence !== "ambiguous" &&
     (listing.quantityDiscountPlanPresence !== "duplicate" ||
       repairableDuplicateQuantityDiscounts) &&
@@ -144,10 +206,24 @@ export default function BusinessPricingEditor({
   const [submittedPreview, setSubmittedPreview] =
     useState<SubmittedBusinessPricePreview | null>(null);
   const [result, setResult] = useState<BusinessPriceUpdate | null>(null);
+  const [verifiedPartialMinimumPrice, setVerifiedPartialMinimumPrice] =
+    useState<BusinessPricingMoney | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
+  const [commitFailed, setCommitFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const revisionRef = useRef(0);
   const validation = submittedPreview?.validation ?? null;
+  const displayedBusinessPrice = result?.requestedBusinessPrice ??
+    listing.businessPrice;
+  const displayedMinimumPrice = result?.requestedMinimumPrice ??
+    verifiedPartialMinimumPrice ?? listing.minimumPrice;
+  const displayedMinimumPricePresence = result
+    ? displayedMinimumPrice ? "canonical" as const : listing.minimumPricePresence
+    : listing.minimumPricePresence;
+  const displayedQuantityDiscountPlan = result?.quantityDiscountPlanChange ===
+      "replace"
+    ? result.requestedQuantityDiscountPlan
+    : listing.quantityDiscountPlan;
   const parsedNewPrice = listing.standardPrice
     ? priceNumber(newPrice, listing.standardPrice.currencyCode)
     : null;
@@ -169,7 +245,9 @@ export default function BusinessPricingEditor({
     revisionRef.current += 1;
     setSubmittedPreview(null);
     setResult(null);
+    setVerifiedPartialMinimumPrice(null);
     setEditorError(null);
+    setCommitFailed(false);
     onError(null);
   };
   const chooseEditorMode = (nextMode: BusinessPricingEditorMode) => {
@@ -194,6 +272,7 @@ export default function BusinessPricingEditor({
       expectedBusinessPrice: listing.businessPrice?.amount ?? null,
       newBusinessPrice: submittedPrice,
       ...(parsedTiers === undefined ? {} : {
+        expectedMinimumPrice: listing.minimumPrice?.amount ?? null,
         expectedQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
         quantityDiscountTiers: parsedTiers,
       }),
@@ -203,7 +282,9 @@ export default function BusinessPricingEditor({
     setBusy(true);
     onError(null);
     setEditorError(null);
+    setCommitFailed(false);
     setResult(null);
+    setVerifiedPartialMinimumPrice(null);
     setSubmittedPreview(null);
     try {
       const response = await fetch("/api/sp-api/business-pricing", {
@@ -254,6 +335,9 @@ export default function BusinessPricingEditor({
       });
       const payload = await response.json();
       if (!response.ok) {
+        setVerifiedPartialMinimumPrice(
+          verifiedMinimumPriceFromProblem(payload, submitted),
+        );
         throw new Error(publicProblemMessage(
           payload,
           "Amazon 未能確認 B2B 價格更新。",
@@ -261,14 +345,17 @@ export default function BusinessPricingEditor({
       }
       const nextResult = parseBusinessPriceUpdate(payload, submitted);
       setResult(nextResult);
+      setVerifiedPartialMinimumPrice(null);
       setSubmittedPreview(null);
       setEditorError(null);
+      setCommitFailed(false);
       onVerified(nextResult);
     } catch (requestError) {
       const message = requestError instanceof Error
         ? requestError.message
         : "Amazon 未能確認 B2B 價格更新。";
       setEditorError(message);
+      setCommitFailed(true);
     } finally {
       setBusy(false);
     }
@@ -296,10 +383,18 @@ export default function BusinessPricingEditor({
       </div>
       <dl>
         <div><dt>目前一般售價</dt><dd>{formatMoney(listing.standardPrice)}</dd></div>
-        <div><dt>目前 B2B 價格</dt><dd>{formatMoney(listing.businessPrice)}</dd></div>
+        <div><dt>目前 B2B 價格</dt><dd>{formatMoney(displayedBusinessPrice)}</dd></div>
+        <div>
+          <dt>目前最低價</dt>
+          <dd>{formatMinimumPriceEvidence({
+            ...listing,
+            minimumPrice: displayedMinimumPrice,
+            minimumPricePresence: displayedMinimumPricePresence,
+          })}</dd>
+        </div>
         <div>
           <dt>目前數量折扣</dt>
-          <dd>{formatQuantityDiscountPlan(listing.quantityDiscountPlan)}</dd>
+          <dd>{formatQuantityDiscountPlan(displayedQuantityDiscountPlan)}</dd>
         </div>
       </dl>
       {!listing.businessPricingCapability.editable ? (
@@ -458,6 +553,8 @@ export default function BusinessPricingEditor({
           <strong>數量折扣不可直接修改</strong>
           <p>{listing.businessPricingManagedByAutomation
             ? "此 contribution 由 Amazon Automate Pricing 管理；請先在 Seller Central 處理規則。"
+            : listing.minimumPricePresence === "ambiguous"
+            ? "Amazon 無法確認目前最低價；仍可只改 B2B 價格，但不會送出階梯或調整最低價。"
             : listing.quantityDiscountPlanPresence === "ambiguous"
             ? "Amazon 回傳的 quantity_discount_plan 內容不一致或無法辨識；價格與數量折扣都先停止修改，避免覆蓋未知方案。"
             : listing.quantityDiscountPlanPresence === "duplicate"
@@ -493,6 +590,37 @@ export default function BusinessPricingEditor({
               {formatMoney(validation.requestedBusinessPrice)}
             </span>
           </div>
+          {validation.minimumPriceChange === "lower" && (
+            <>
+              <div className="business-pricing-diff-row">
+                <span className="business-pricing-diff-label">
+                  最低價限制
+                </span>
+                <span className="business-pricing-diff-old">
+                  {formatMoney(validation.previousMinimumPrice)}
+                </span>
+                <span className="business-pricing-diff-arrow">→</span>
+                <span className="business-pricing-diff-new">
+                  {formatMoney(validation.requestedMinimumPrice)}
+                </span>
+              </div>
+              <div
+                className="price-warning compact"
+                role="alert"
+              >
+                <strong>會先調低 Amazon 最低價限制</strong>
+                <p>
+                  最低價是 ALL audience 的價格護欄，也可能影響一般售價／自動定價；系統會先寫入並回查最低價，確認成功後才送出 B2B 價格與階梯。
+                </p>
+              </div>
+            </>
+          )}
+          {validation.lowestTierUnitPrice && (
+            <div className="business-pricing-quantity-tier">
+              <strong>最低階梯實際單價</strong>
+              <span>{formatMoney(validation.lowestTierUnitPrice)}</span>
+            </div>
+          )}
           {validation.quantityDiscountPlanChange === "replace" &&
             validation.requestedQuantityDiscountPlan ? (
               <div className="business-pricing-tier-diffs">
@@ -538,9 +666,11 @@ export default function BusinessPricingEditor({
             type="button"
             className="price-primary-button"
             onClick={() => void commitPrice()}
-            disabled={loading}
+            disabled={loading || commitFailed}
           >{loading
             ? "送出並回查中…"
+            : commitFailed
+            ? "請重新讀取 Amazon 後再預檢"
             : "Touch ID／Windows Hello 確認並送出"}</button>
         </div>
       )}

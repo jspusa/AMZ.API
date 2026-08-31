@@ -119,6 +119,8 @@ const interactiveListing = {
   title: "Missing business price",
   productType: "PET_FOOD",
   standardPrice: { amount: 19.99, currencyCode: "USD" },
+  minimumPrice: { amount: 18, currencyCode: "USD" },
+  minimumPricePresence: "canonical",
   businessPrice: null,
   businessOfferPresence: "absent",
   businessPricingManagedByAutomation: false,
@@ -183,6 +185,19 @@ async function previewBodyFromRowInteraction(
         amount: submittedBody.newBusinessPrice,
         currencyCode: "USD",
       },
+      previousMinimumPrice: interactiveListing.minimumPrice,
+      requestedMinimumPrice: tiers
+        ? { amount: 14.19, currencyCode: "USD" }
+        : interactiveListing.minimumPrice,
+      lowestTierUnitPrice: tiers
+        ? { amount: 15.19, currencyCode: "USD" }
+        : null,
+      minimumPriceChange: tiers ? "lower" : "preserve",
+      minimumPriceProtectedHash: tiers ? "7".repeat(64) : null,
+      minimumPriceCanonicalPatchHash: tiers ? "8".repeat(64) : null,
+      businessPriceValidation: tiers
+        ? "final-state-validated"
+        : "validated",
       previousQuantityDiscountPlan: interactiveListing.quantityDiscountPlan,
       previousQuantityDiscountPlanHash:
         interactiveListing.quantityDiscountPlanHash,
@@ -387,9 +402,11 @@ describe("FBA business pricing audit renderer", () => {
     expect(priceOnlyBody).not.toHaveProperty(
       "expectedQuantityDiscountPlanHash",
     );
+    expect(priceOnlyBody).not.toHaveProperty("expectedMinimumPrice");
 
     const combinedBody = await previewBodyFromRowInteraction("combined");
     expect(combinedBody).toMatchObject({
+      expectedMinimumPrice: 18,
       expectedQuantityDiscountPlanHash: "f".repeat(64),
       quantityDiscountTiers: [
         { lowerBound: 5, percent: 5 },
@@ -400,6 +417,50 @@ describe("FBA business pricing audit renderer", () => {
     });
   });
 
+  it("shows canonical, absent and ambiguous minimum-price evidence distinctly", () => {
+    const canonical = parseBusinessPricingListingSnapshot(interactiveListing);
+    const absent = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      minimumPrice: null,
+      minimumPricePresence: "absent",
+    });
+    const ambiguous = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      minimumPrice: null,
+      minimumPricePresence: "ambiguous",
+    });
+    const legacyUnknown = { ...interactiveListing } as Record<string, unknown>;
+    delete legacyUnknown.minimumPrice;
+    delete legacyUnknown.minimumPricePresence;
+
+    expect(canonical.minimumPrice).toEqual({
+      amount: 18,
+      currencyCode: "USD",
+    });
+    expect(canonical.minimumPricePresence).toBe("canonical");
+    expect(absent.minimumPrice).toBeNull();
+    expect(absent.minimumPricePresence).toBe("absent");
+    expect(ambiguous.minimumPrice).toBeNull();
+    expect(ambiguous.minimumPricePresence).toBe("ambiguous");
+    expect(parseBusinessPricingListingSnapshot(legacyUnknown))
+      .toMatchObject({ minimumPrice: null, minimumPricePresence: "ambiguous" });
+
+    const editorMarkup = (listing: typeof canonical) =>
+      renderToStaticMarkup(createElement(BusinessPricingEditor, {
+        listing,
+        onClose: () => undefined,
+        onVerified: () => undefined,
+        onError: () => undefined,
+        onBusyChange: () => undefined,
+      }));
+    expect(editorMarkup(canonical)).toContain("目前最低價");
+    expect(editorMarkup(canonical)).toMatch(/目前最低價[\s\S]*?18\.00/u);
+    expect(editorMarkup(absent)).toMatch(/目前最低價[\s\S]*?未設定/u);
+    expect(editorMarkup(ambiguous)).toMatch(
+      /目前最低價[\s\S]*?Amazon 無法確認/u,
+    );
+  });
+
   it("shows the Amazon-validated price and tier changes as red old values to green new values", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
@@ -408,6 +469,8 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 18.99, currencyCode: "USD" },
       businessPrice: { amount: 18.99, currencyCode: "USD" },
       businessOfferPresence: "present",
+      minimumPrice: { amount: 18, currencyCode: "USD" },
+      minimumPricePresence: "canonical",
       quantityDiscountPlan: {
         discountType: "percent",
         levels: [{ lowerBound: 3, value: 2 }],
@@ -416,6 +479,23 @@ describe("FBA business pricing audit renderer", () => {
       quantityDiscountPlanHash: "1".repeat(64),
     });
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method === "PATCH") {
+        return new Response(JSON.stringify({
+          code: "BUSINESS_PRICE_PARTIAL_UPDATE",
+          message:
+            "最低價已從 18 降至 13.39 USD 並完成回查，但 B2B 價格與階梯折扣尚未寫入。請重新讀取 Amazon 後再預檢；系統不會自動重送。",
+          requestId: "REQ-PARTIAL-B2B",
+          minimumPriceUpdate: {
+            status: "verified",
+            previousMinimumPrice: { amount: 18, currencyCode: "USD" },
+            requestedMinimumPrice: { amount: 13.39, currencyCode: "USD" },
+            lowestTierUnitPrice: { amount: 14.39, currencyCode: "USD" },
+          },
+        }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        });
+      }
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return new Response(JSON.stringify({
         mode: "live",
@@ -430,6 +510,13 @@ describe("FBA business pricing audit renderer", () => {
           amount: body.newBusinessPrice,
           currencyCode: "USD",
         },
+        previousMinimumPrice: listing.minimumPrice,
+        requestedMinimumPrice: { amount: 13.39, currencyCode: "USD" },
+        lowestTierUnitPrice: { amount: 14.39, currencyCode: "USD" },
+        minimumPriceChange: "lower",
+        minimumPriceProtectedHash: "7".repeat(64),
+        minimumPriceCanonicalPatchHash: "8".repeat(64),
+        businessPriceValidation: "final-state-validated",
         previousQuantityDiscountPlan: listing.quantityDiscountPlan,
         previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
         requestedQuantityDiscountPlan: {
@@ -458,11 +545,12 @@ describe("FBA business pricing audit renderer", () => {
       });
     }));
     let renderer: ReactTestRenderer | null = null;
+    const onVerified = vi.fn();
     await act(async () => {
       renderer = create(createElement(BusinessPricingEditor, {
         listing,
         onClose: () => undefined,
-        onVerified: () => undefined,
+        onVerified,
         onError: () => undefined,
         onBusyChange: () => undefined,
       }));
@@ -480,6 +568,8 @@ describe("FBA business pricing audit renderer", () => {
     }).map((node) => node.children.join(""));
     expect(oldValues.some((value) => value.includes("18.99"))).toBe(true);
     expect(newValues.some((value) => value.includes("17.99"))).toBe(true);
+    expect(oldValues.some((value) => value.includes("18.00"))).toBe(true);
+    expect(newValues.some((value) => value.includes("13.39"))).toBe(true);
     expect(oldValues).toContain("0%");
     expect(newValues).toContain("5%");
     expect(oldValues).toContain("2%");
@@ -490,6 +580,26 @@ describe("FBA business pricing audit renderer", () => {
     expect(root.findByProps({
       className: "business-pricing-validation",
     }).props).toMatchObject({ role: "status", "aria-live": "polite" });
+    const rendered = JSON.stringify(renderer!.toJSON());
+    expect(rendered).toContain("最低階梯實際單價");
+    expect(rendered).toContain("14.39");
+    expect(rendered).toContain("ALL audience");
+    expect(rendered).toContain("一般售價／自動定價");
+    await act(async () => {
+      root.findAllByType("button").find((button) =>
+        button.children.join("") === "Touch ID／Windows Hello 確認並送出"
+      )!.props.onClick();
+    });
+    const partialRendered = JSON.stringify(renderer!.toJSON());
+    expect(partialRendered).toContain("最低價已從 18 降至 13.39 USD");
+    expect(partialRendered).toContain("REQ-PARTIAL-B2B");
+    expect(root.findAllByType("dd").map((node) => node.children.join("")))
+      .toEqual(expect.arrayContaining([expect.stringContaining("13.39")]));
+    const retryButton = root.findAllByType("button").find((button) =>
+      button.children.join("") === "請重新讀取 Amazon 後再預檢"
+    );
+    expect(retryButton?.props.disabled).toBe(true);
+    expect(onVerified).not.toHaveBeenCalled();
     await act(async () => renderer!.unmount());
 
     const css = await readRendererStylesheet();
@@ -499,6 +609,120 @@ describe("FBA business pricing audit renderer", () => {
     expect(css).toMatch(
       /\.business-pricing-diff-new\s*\{[^}]*color:\s*#187244/su,
     );
+  });
+
+  it("accepts post-minimum offer hashes and shows the verified minimum as current", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const listing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      standardPrice: { amount: 18.99, currencyCode: "USD" },
+      businessPrice: { amount: 18.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      minimumPrice: { amount: 18, currencyCode: "USD" },
+      minimumPricePresence: "canonical",
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [{ lowerBound: 3, value: 2 }],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      quantityDiscountPlanHash: "1".repeat(64),
+    });
+    const requestedPlan = {
+      discountType: "percent" as const,
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+        { lowerBound: 15, value: 15 },
+        { lowerBound: 20, value: 20 },
+      ],
+    };
+    const validation = {
+      mode: "live",
+      status: "VALID",
+      marketplaceId: listing.marketplaceId,
+      sellerSku: listing.sellerSku,
+      asin: listing.asin,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      previousBusinessPrice: listing.businessPrice,
+      requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousMinimumPrice: listing.minimumPrice,
+      requestedMinimumPrice: { amount: 13.39, currencyCode: "USD" },
+      lowestTierUnitPrice: { amount: 14.39, currencyCode: "USD" },
+      minimumPriceChange: "lower",
+      minimumPriceProtectedHash: "7".repeat(64),
+      minimumPriceCanonicalPatchHash: "8".repeat(64),
+      businessPriceValidation: "final-state-validated",
+      previousQuantityDiscountPlan: listing.quantityDiscountPlan,
+      previousQuantityDiscountPlanHash: listing.quantityDiscountPlanHash,
+      requestedQuantityDiscountPlan: requestedPlan,
+      quantityDiscountPlanChange: "replace",
+      businessOfferGuardHash: listing.businessOfferGuardHash,
+      businessOfferProtectedHash: listing.businessOfferProtectedHash,
+      schemaChecksum: listing.businessPricingCapability.schemaChecksum,
+      fbaEvidenceHash: "b".repeat(64),
+      canonicalPatchHash: "c".repeat(64),
+      validationIssuesHash: "d".repeat(64),
+      validatedAt: "2026-08-31T12:01:00.000Z",
+      issues: [],
+      notice: "Amazon Validation Preview 已通過。",
+    };
+    const update = {
+      ...validation,
+      status: "ACCEPTED",
+      businessPriceValidation: "validated",
+      businessOfferGuardHash: "9".repeat(64),
+      businessOfferProtectedHash: "6".repeat(64),
+      acceptedAt: "2026-08-31T12:02:00.000Z",
+      submissionId: "submission-post-minimum",
+      requestId: "request-post-minimum",
+      notice: "最低價與 B2B 階梯已完成回查。",
+      writeLifecycle: {
+        state: "verified",
+        verified: true,
+        authoritative: true,
+        acceptedAt: "2026-08-31T12:02:00.000Z",
+        verifiedAt: "2026-08-31T12:02:05.000Z",
+        attempts: 2,
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (_input, init) =>
+      new Response(JSON.stringify(init?.method === "PATCH"
+        ? update
+        : validation), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })));
+    const onVerified = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingEditor, {
+        listing,
+        onClose: () => undefined,
+        onVerified,
+        onError: () => undefined,
+        onBusyChange: () => undefined,
+      }));
+    });
+    const root = renderer!.root;
+    await act(async () => {
+      root.findByType("form").props.onSubmit({ preventDefault: () => undefined });
+    });
+    await act(async () => {
+      root.findAllByType("button").find((button) =>
+        button.children.join("") === "Touch ID／Windows Hello 確認並送出"
+      )!.props.onClick();
+    });
+
+    expect(onVerified).toHaveBeenCalledOnce();
+    expect(root.findAllByType("dd").map((node) => node.children.join("")))
+      .toEqual(expect.arrayContaining([
+        expect.stringContaining("17.99"),
+        expect.stringContaining("13.39"),
+      ]));
+    expect(JSON.stringify(renderer!.toJSON())).toContain("已完成並回查");
+    await act(async () => renderer!.unmount());
   });
 
   it("resumes a newer completed job over an older cache without duplicating an active observer", () => {
@@ -1002,6 +1226,8 @@ describe("FBA business pricing audit renderer", () => {
       title: "Missing business price",
       productType: "PET_FOOD",
       standardPrice: { amount: 19.99, currencyCode: "USD" },
+      minimumPrice: null,
+      minimumPricePresence: "absent",
       businessPrice: null,
       businessOfferPresence: "absent",
       businessPricingManagedByAutomation: false,
@@ -1032,6 +1258,13 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 19.99, currencyCode: "USD" },
       previousBusinessPrice: null,
       requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      minimumPriceChange: "preserve",
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated",
       previousQuantityDiscountPlan: null,
       previousQuantityDiscountPlanHash: null,
       requestedQuantityDiscountPlan: null,
@@ -1079,6 +1312,8 @@ describe("FBA business pricing audit renderer", () => {
         title: "Missing business price",
         productType: "PET_FOOD",
         standardPrice: { amount: 19.99, currencyCode: "USD" },
+        minimumPrice: null,
+        minimumPricePresence: "absent",
         businessPrice: null,
         businessOfferPresence: "absent",
         businessPricingManagedByAutomation: false,
@@ -1121,6 +1356,8 @@ describe("FBA business pricing audit renderer", () => {
       title: "Duplicate quantity tiers",
       productType: "PET_FOOD",
       standardPrice: { amount: 19.99, currencyCode: "USD" },
+      minimumPrice: null,
+      minimumPricePresence: "absent",
       businessPrice: { amount: 17.99, currencyCode: "USD" },
       businessOfferPresence: "present",
       businessPricingManagedByAutomation: false,
@@ -1220,6 +1457,8 @@ describe("FBA business pricing audit renderer", () => {
         title: "Price-only business listing",
         productType: "PET_FOOD",
         standardPrice: { amount: 19.99, currencyCode: "USD" },
+        minimumPrice: null,
+        minimumPricePresence: "absent",
         businessPrice: null,
         businessOfferPresence: "absent",
         businessPricingManagedByAutomation: false,
@@ -1254,6 +1493,8 @@ describe("FBA business pricing audit renderer", () => {
       title: "Explicit quantity tiers",
       productType: "PET_FOOD",
       standardPrice: { amount: 19.99, currencyCode: "USD" },
+      minimumPrice: null,
+      minimumPricePresence: "absent",
       businessPrice: { amount: 19.5, currencyCode: "USD" },
       businessOfferPresence: "present",
       businessPricingManagedByAutomation: false,
@@ -1310,6 +1551,8 @@ describe("FBA business pricing audit renderer", () => {
       title: "Missing business price",
       productType: "PET_FOOD",
       standardPrice: { amount: 19.99, currencyCode: "USD" },
+      minimumPrice: null,
+      minimumPricePresence: "absent",
       businessPrice: null,
       businessOfferPresence: "absent",
       businessPricingManagedByAutomation: false,
@@ -1345,6 +1588,13 @@ describe("FBA business pricing audit renderer", () => {
         standardPrice: { amount: 19.99, currencyCode: "USD" },
         previousBusinessPrice: null,
         requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+        previousMinimumPrice: null,
+        requestedMinimumPrice: null,
+        lowestTierUnitPrice: { amount: 15.19, currencyCode: "USD" },
+        minimumPriceChange: "preserve",
+        minimumPriceProtectedHash: null,
+        minimumPriceCanonicalPatchHash: null,
+        businessPriceValidation: "validated",
         previousQuantityDiscountPlan: null,
         previousQuantityDiscountPlanHash: null,
         requestedQuantityDiscountPlan: {
@@ -1388,6 +1638,13 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 19.99, currencyCode: "USD" },
       previousBusinessPrice: null,
       requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: { amount: 15.19, currencyCode: "USD" },
+      minimumPriceChange: "preserve",
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated",
       previousQuantityDiscountPlan: null,
       previousQuantityDiscountPlanHash: null,
       requestedQuantityDiscountPlan: submitted.validation.requestedQuantityDiscountPlan,
@@ -1429,6 +1686,8 @@ describe("FBA business pricing audit renderer", () => {
       title: "Missing business price",
       productType: "PET_FOOD",
       standardPrice: { amount: 19.99, currencyCode: "USD" },
+      minimumPrice: null,
+      minimumPricePresence: "absent",
       businessPrice: null,
       businessOfferPresence: "absent",
       businessPricingManagedByAutomation: false,
@@ -1463,6 +1722,13 @@ describe("FBA business pricing audit renderer", () => {
         standardPrice: { amount: 19.99, currencyCode: "USD" },
         previousBusinessPrice: null,
         requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+        previousMinimumPrice: null,
+        requestedMinimumPrice: null,
+        lowestTierUnitPrice: null,
+        minimumPriceChange: "preserve",
+        minimumPriceProtectedHash: null,
+        minimumPriceCanonicalPatchHash: null,
+        businessPriceValidation: "validated",
         previousQuantityDiscountPlan: null,
         previousQuantityDiscountPlanHash: null,
         requestedQuantityDiscountPlan: null,
@@ -1488,6 +1754,13 @@ describe("FBA business pricing audit renderer", () => {
       standardPrice: { amount: 19.99, currencyCode: "USD" },
       previousBusinessPrice: null,
       requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      minimumPriceChange: "preserve",
+      minimumPriceProtectedHash: null,
+      minimumPriceCanonicalPatchHash: null,
+      businessPriceValidation: "validated",
       previousQuantityDiscountPlan: null,
       previousQuantityDiscountPlanHash: null,
       requestedQuantityDiscountPlan: null,
