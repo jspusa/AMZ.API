@@ -178,12 +178,14 @@ function businessPricingSnapshot(
 class DurableDispatchGateway implements BusinessPricingGateway {
   businessPriceAmount = 28;
   commitCalls = 0;
+  readCalls = 0;
   durableBeforeTransport = false;
 
   constructor(
     private readonly storePath: string,
     private readonly idempotencyKey: string,
     private readonly failAfterDispatch = true,
+    private readonly delayCanonicalVisibility = false,
   ) {}
 
   mode(): "live" {
@@ -191,6 +193,7 @@ class DurableDispatchGateway implements BusinessPricingGateway {
   }
 
   async read(): Promise<BusinessPricingListingSnapshot> {
+    this.readCalls += 1;
     return businessPricingSnapshot(this.businessPriceAmount);
   }
 
@@ -260,7 +263,7 @@ class DurableDispatchGateway implements BusinessPricingGateway {
     if (this.failAfterDispatch) {
       throw new Error("simulated transport close after dispatch");
     }
-    this.businessPriceAmount = 27;
+    if (!this.delayCanonicalVisibility) this.businessPriceAmount = 27;
     return {
       ok: true,
       status: 202,
@@ -326,10 +329,18 @@ describe("W05 Business Pricing mutation owner", () => {
       request: mutationRequest("PATCH", idempotencyKey),
     });
 
-    expect(committed.status).toBe(200);
+    expect(committed.status).toBe(202);
+    expect(bodyValue(committed)).toMatchObject({
+      status: "PROCESSING",
+      stage: "business_price",
+      requestId: "REQ-W05-COMMIT",
+      verified: false,
+      canResend: false,
+    });
     expect(JSON.stringify(bodyValue(committed))).not.toContain("_writeEvidence");
     expect(gateway.durableBeforeTransport).toBe(true);
     expect(gateway.commitCalls).toBe(1);
+    expect(gateway.readCalls).toBe(3);
 
     const stored = JSON.parse(await readFile(storePath, "utf8")) as {
       ledger: Record<string, {
@@ -337,10 +348,29 @@ describe("W05 Business Pricing mutation owner", () => {
         response: Record<string, unknown> | null;
       }>;
     };
-    expect(stored.ledger[idempotencyKey]?.state).toBe("completed");
+    expect(stored.ledger[idempotencyKey]?.state).toBe("unknown");
     expect(stored.ledger[idempotencyKey]?.response).toHaveProperty(
       "_writeEvidence",
     );
+
+    const verified = await owner.handle({
+      operation: "read",
+      request: readRequest(),
+    });
+    expect(verified.status).toBe(200);
+    expect(bodyValue(verified)).toMatchObject({
+      writeStatus: {
+        status: "VERIFIED",
+        stage: "business_price",
+        requestId: "REQ-W05-COMMIT",
+      },
+    });
+    expect(gateway.readCalls).toBe(4);
+
+    const reconciled = JSON.parse(await readFile(storePath, "utf8")) as {
+      ledger: Record<string, { state: string }>;
+    };
+    expect(reconciled.ledger[idempotencyKey]?.state).toBe("completed");
   });
 
   it("persists dispatch evidence before transport and reconciles it after restart without a second PATCH", async () => {
@@ -399,15 +429,378 @@ describe("W05 Business Pricing mutation owner", () => {
 
     gateway.businessPriceAmount = 27;
     const restarted = await durableHarness(gateway, storePath);
-    expect((await restarted.handle({
+    const verified = await restarted.handle({
       operation: "read",
       request: readRequest(),
-    })).status).toBe(200);
+    });
+    expect(verified.status).toBe(200);
+    expect(bodyValue(verified)).toMatchObject({
+      writeStatus: {
+        status: "VERIFIED",
+        stage: "business_price",
+        requestId: null,
+        submissionId: null,
+      },
+    });
 
     const reconciledStore = JSON.parse(await readFile(storePath, "utf8")) as {
       ledger: Record<string, { state: string }>;
     };
     expect(reconciledStore.ledger[idempotencyKey]?.state).toBe("completed");
+    expect(gateway.commitCalls).toBe(1);
+  });
+
+  it("reconciles a dispatched minimum-price transport close without a second PATCH", async () => {
+    const idempotencyKey = "w05-minimum-dispatched-reconcile";
+    const storePath = join(
+      await mkdtemp(join(tmpdir(), "amz-api-w05-minimum-price-")),
+      "store.json",
+    );
+    const store = new LocalStore(storePath);
+    await store.initialize();
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "w05-minimum-dispatched-account",
+    }));
+    let minimumAmount = 18;
+    let minimumCommitCalls = 0;
+    let businessCommitCalls = 0;
+    const listing = (): BusinessPricingListingSnapshot => ({
+      ...businessPricingSnapshot(),
+      minimumPrice: { amount: minimumAmount, currencyCode: "USD" },
+      minimumPricePresence: "canonical",
+      minimumPriceProtectedHash: "7".repeat(64),
+    });
+    const minimumPatch = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      asin: "B012345678",
+      productType: "PET_FOOD",
+      currencyCode: "USD",
+      previousAmount: 18,
+      amount: 15,
+      protectedHash: "7".repeat(64),
+      canonicalPatchHash: "8".repeat(64),
+    } as const;
+    const validReply = (label: string): BusinessPricingGatewayReply => ({
+      ok: true,
+      status: 200,
+      requestId: `REQ-${label}`,
+      retryAfter: null,
+      payload: {
+        sku: SELLER_SKU,
+        status: "VALID",
+        submissionId: `SUB-${label}`,
+        issues: [],
+        identifiers: [{
+          marketplaceId: MARKETPLACE_ID,
+          asin: "B012345678",
+        }],
+      },
+    });
+    const gateway: BusinessPricingGateway = {
+      mode: () => "live",
+      read: async () => listing(),
+      quantityDiscountPlanSupported: () => true,
+      mintMinimumPricePatch: (_listing, amount) =>
+        minimumAmount === 18 && amount === 15 ? minimumPatch : null,
+      minimumPriceProtectedHash: () => "7".repeat(64),
+      minimumPriceValidationPreview: async () =>
+        validReply("MINIMUM-DISPATCHED-PREVIEW"),
+      finalStateValidationPreview: async () =>
+        validReply("MINIMUM-DISPATCHED-FINAL-STATE"),
+      validationPreview: async () => validReply("UNEXPECTED-B2B-PREVIEW"),
+      commitMinimumPriceOnce: async (_patch, fence, recordDispatch) => {
+        minimumCommitCalls += 1;
+        await fence.assertCurrent();
+        await recordDispatch();
+        minimumAmount = 15;
+        throw new Error("simulated minimum-price transport close");
+      },
+      commitOnce: async () => {
+        businessCommitCalls += 1;
+        throw new Error("B2B PATCH must not run during minimum-price recovery");
+      },
+      replaceDemoContribution: async () => undefined,
+      replaceDemoMinimumPrice: async () => undefined,
+    };
+    const owner = createBusinessPricingMutations({
+      context,
+      writeGate: new MainWriteGate({
+        store,
+        context,
+        approveWrite: async () => undefined,
+      }),
+      gateway,
+      priceObserver: { observeCanonical: async () => undefined },
+    });
+    const request = mutationRequest("POST", idempotencyKey);
+    if (request.body?.kind !== "json") throw new Error("Expected JSON body");
+    request.body.value = {
+      ...request.body.value,
+      newBusinessPrice: 20,
+      expectedMinimumPrice: 18,
+      expectedQuantityDiscountPlanHash: null,
+      quantityDiscountTiers: [
+        { lowerBound: 5, percent: 5 },
+        { lowerBound: 20, percent: 20 },
+      ],
+    };
+
+    expect((await owner.handle({ operation: "preview", request })).status)
+      .toBe(200);
+    const uncertain = await owner.handle({
+      operation: "commit",
+      request: { ...request, method: "PATCH" },
+    });
+    expect(uncertain.status).toBe(503);
+    expect(bodyValue(uncertain)).toMatchObject({
+      code: "UPDATE_STATUS_UNKNOWN",
+    });
+    expect(minimumCommitCalls).toBe(1);
+    expect(businessCommitCalls).toBe(0);
+
+    const restarted = createBusinessPricingMutations({
+      context,
+      writeGate: new MainWriteGate({
+        store,
+        context,
+        approveWrite: async () => undefined,
+      }),
+      gateway,
+      priceObserver: { observeCanonical: async () => undefined },
+    });
+    const verified = await restarted.handle({
+      operation: "read",
+      request: readRequest(),
+    });
+    expect(verified.status).toBe(200);
+    expect(bodyValue(verified)).toMatchObject({
+      writeStatus: {
+        status: "VERIFIED",
+        stage: "minimum_price",
+        requestId: null,
+        submissionId: null,
+        businessPriceSubmitted: false,
+      },
+    });
+    expect(minimumCommitCalls).toBe(1);
+    expect(businessCommitCalls).toBe(0);
+  });
+
+  it("returns an accepted B2B write as processing until a later GET canonically verifies it", async () => {
+    vi.useFakeTimers();
+    try {
+      const idempotencyKey = "w05-accepted-processing";
+      const storePath = join(
+        await mkdtemp(join(tmpdir(), "amz-api-w05-business-price-")),
+        "store.json",
+      );
+      const gateway = new DurableDispatchGateway(
+        storePath,
+        idempotencyKey,
+        false,
+        true,
+      );
+      const owner = await durableHarness(gateway, storePath);
+
+      expect((await owner.handle({
+        operation: "preview",
+        request: mutationRequest("POST", idempotencyKey),
+      })).status).toBe(200);
+      const commitPromise = owner.handle({
+        operation: "commit",
+        request: mutationRequest("PATCH", idempotencyKey),
+      });
+      await vi.runAllTimersAsync();
+      const processing = await commitPromise;
+
+      expect(processing.status).toBe(202);
+      expect(bodyValue(processing)).toMatchObject({
+        status: "PROCESSING",
+        stage: "business_price",
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+        requestedBusinessPrice: { amount: 27, currencyCode: "USD" },
+        verified: false,
+        canResend: false,
+        requestId: "REQ-W05-COMMIT",
+      });
+      expect(JSON.stringify(bodyValue(processing))).not.toContain(
+        "_writeEvidence",
+      );
+      expect(gateway.commitCalls).toBe(1);
+
+      const stale = await owner.handle({
+        operation: "read",
+        request: readRequest(),
+      });
+      expect(stale.status).toBe(200);
+      expect(bodyValue(stale)).toMatchObject({
+        writeStatus: {
+          status: "PROCESSING",
+          stage: "business_price",
+          verified: false,
+          canResend: false,
+        },
+      });
+
+      gateway.businessPriceAmount = 27;
+      const verified = await owner.handle({
+        operation: "read",
+        request: readRequest(),
+      });
+      expect(verified.status).toBe(200);
+      expect(bodyValue(verified)).toMatchObject({
+        writeStatus: {
+          status: "VERIFIED",
+          stage: "business_price",
+          verified: true,
+          canResend: false,
+          requestId: "REQ-W05-COMMIT",
+        },
+      });
+      expect(gateway.commitCalls).toBe(1);
+
+      gateway.businessPriceAmount = 26;
+      const externallyChanged = await owner.handle({
+        operation: "read",
+        request: readRequest(),
+      });
+      expect(externallyChanged.status).toBe(200);
+      expect(bodyValue(externallyChanged)).toMatchObject({
+        businessPrice: { amount: 26, currencyCode: "USD" },
+        writeStatus: null,
+      });
+      expect(gateway.commitCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips a newer completed duplicate-repair tombstone while preserving the repair status", async () => {
+    const originalKey = "w05-duplicate-repair-original";
+    const repairKey = "w05-duplicate-repair-status";
+    const storePath = join(
+      await mkdtemp(join(tmpdir(), "amz-api-w05-business-price-")),
+      "store.json",
+    );
+    const store = new LocalStore(storePath);
+    await store.initialize();
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "w05-durable-account",
+    }));
+    const gateway = new DurableDispatchGateway(
+      storePath,
+      originalKey,
+      false,
+      true,
+    );
+    const owner = createBusinessPricingMutations({
+      context,
+      writeGate: new MainWriteGate({
+        store,
+        context,
+        approveWrite: async () => undefined,
+      }),
+      gateway,
+      priceObserver: { observeCanonical: async () => undefined },
+    });
+
+    expect((await owner.handle({
+      operation: "preview",
+      request: mutationRequest("POST", originalKey),
+    })).status).toBe(200);
+    expect((await owner.handle({
+      operation: "commit",
+      request: mutationRequest("PATCH", originalKey),
+    })).status).toBe(202);
+
+    const persisted = JSON.parse(await readFile(storePath, "utf8")) as {
+      ledger: Record<string, { response: Record<string, unknown> | null }>;
+    };
+    const originalResponse = persisted.ledger[originalKey]?.response;
+    if (!originalResponse) throw new Error("Expected durable accepted response");
+    const repairResponse = {
+      ...structuredClone(originalResponse),
+      requestId: "REQ-W05-DUPLICATE-REPAIR",
+      submissionId: "SUB-W05-DUPLICATE-REPAIR",
+    };
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: repairKey,
+      operationType: "business_price",
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      accountScope: "w05-durable-account",
+      fingerprint: "replace-identical-duplicate-tiers-once",
+      businessPriceDuplicateRepair: true,
+      execute: async ({ recordAccepted }) => {
+        await recordAccepted(repairResponse);
+        throw new Error("repair accepted and awaiting canonical GET");
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    const processing = await owner.handle({
+      operation: "read",
+      request: readRequest(),
+    });
+    expect(bodyValue(processing)).toMatchObject({
+      writeStatus: {
+        status: "PROCESSING",
+        requestId: "REQ-W05-DUPLICATE-REPAIR",
+      },
+    });
+
+    gateway.businessPriceAmount = 27;
+    const verified = await owner.handle({
+      operation: "read",
+      request: readRequest(),
+    });
+    expect(bodyValue(verified)).toMatchObject({
+      writeStatus: {
+        status: "VERIFIED",
+        requestId: "REQ-W05-DUPLICATE-REPAIR",
+      },
+    });
+    expect(gateway.commitCalls).toBe(1);
+
+    const dispatchedResponse = {
+      ...structuredClone(repairResponse),
+      status: "DISPATCHED",
+      requestId: null,
+      submissionId: null,
+      requestedBusinessPrice: { amount: 26, currencyCode: "USD" },
+      _writeEvidence: {
+        ...((repairResponse as Record<string, unknown>)._writeEvidence as
+          Record<string, unknown>),
+        requestedBusinessPrice: { amount: 26, currencyCode: "USD" },
+      },
+    };
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "w05-newer-dispatched-status",
+      operationType: "business_price",
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      accountScope: "w05-durable-account",
+      fingerprint: "newer-dispatched-business-price",
+      execute: async ({ recordAccepted }) => {
+        await recordAccepted(dispatchedResponse);
+        throw new Error("transport stopped after dispatch evidence");
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    const newestUnknown = await owner.handle({
+      operation: "read",
+      request: readRequest(),
+    });
+    expect(bodyValue(newestUnknown)).toMatchObject({
+      businessPrice: { amount: 27, currencyCode: "USD" },
+      writeStatus: null,
+    });
     expect(gateway.commitCalls).toBe(1);
   });
 
@@ -788,20 +1181,16 @@ describe("W05 Business Pricing mutation owner", () => {
       family: "business-price",
       intents: [
         expect.objectContaining({ intentId: "minimum-price", operation: "price" }),
-        expect.objectContaining({
-          intentId: "business-price",
-          operation: "business_price",
-        }),
       ],
     }));
+    expect(stagePreview.mock.calls[0]?.[0].intents).toHaveLength(1);
   });
 
-  it("commits and verifies the minimum price before previewing and writing B2B", async () => {
+  it("stops after Amazon accepts the minimum price and waits for a later exact GET", async () => {
     const events: string[] = [];
     let minimumAmount = 18;
     let businessAmount = 28;
     let appliedPlan = false;
-    let rejectPostMinimumPreview = false;
     const snapshot = (): BusinessPricingListingSnapshot => ({
       ...businessPricingSnapshot(businessAmount),
       minimumPrice: { amount: minimumAmount, currencyCode: "USD" },
@@ -879,26 +1268,6 @@ describe("W05 Business Pricing mutation owner", () => {
       },
       validationPreview: async () => {
         events.push("b2b-preview");
-        if (rejectPostMinimumPreview && minimumAmount === 15) {
-          return {
-            ...validReply("B2B-PREVIEW-REJECTED"),
-            payload: {
-              sku: SELLER_SKU,
-              status: "INVALID",
-              submissionId: "SUB-B2B-PREVIEW-REJECTED",
-              issues: [{
-                code: "19037",
-                severity: "ERROR",
-                message: "B2B tier is below the minimum price.",
-                attributeNames: ["purchasable_offer"],
-              }],
-              identifiers: [{
-                marketplaceId: MARKETPLACE_ID,
-                asin: "B012345678",
-              }],
-            },
-          };
-        }
         return validReply("B2B-PREVIEW");
       },
       commitMinimumPriceOnce: async (_patch, fence, recordDispatch) => {
@@ -999,7 +1368,7 @@ describe("W05 Business Pricing mutation owner", () => {
       request: { ...request, method: "PATCH" },
     });
 
-    expect(committed.status).toBe(200);
+    expect(committed.status).toBe(202);
     expect(events).toEqual([
       "minimum-preview",
       "final-state-preview",
@@ -1010,9 +1379,6 @@ describe("W05 Business Pricing mutation owner", () => {
       "minimum-preview",
       "final-state-preview",
       "minimum-commit",
-      "attempt:business-price",
-      "b2b-preview",
-      "b2b-commit",
     ]);
     expect(approvalReason).toContain("最低價 18 → 15 USD");
     expect(approvalReason).toContain("最低階單價 16 USD");
@@ -1020,63 +1386,23 @@ describe("W05 Business Pricing mutation owner", () => {
     expect(approvalReason.slice(0, 120)).toContain("最低價 18 → 15 USD");
     expect(approvalReason.slice(0, 120)).toContain("一般售價／自動定價");
     expect(approvalReason.slice(0, 120)).toContain(SELLER_SKU);
-    expect(approvalReason.slice(0, 120)).toContain("B2B 28 → 20 USD");
+    expect(approvalReason).toContain("B2B 價格與數量折扣本次尚未送出");
+    expect(approvalReason).not.toContain("B2B 28 → 20 USD");
     expect(bodyValue(committed)).toMatchObject({
-      status: "ACCEPTED",
+      status: "PROCESSING",
+      stage: "minimum_price",
+      verified: false,
+      canResend: false,
+      businessPriceSubmitted: false,
       previousMinimumPrice: { amount: 18, currencyCode: "USD" },
       requestedMinimumPrice: { amount: 15, currencyCode: "USD" },
       lowestTierUnitPrice: { amount: 16, currencyCode: "USD" },
-      minimumPriceChange: "lower",
-      businessOfferGuardHash: "d".repeat(64),
-      businessOfferProtectedHash: "e".repeat(64),
-      businessPriceValidation: "validated",
-    });
-
-    events.length = 0;
-    minimumAmount = 18;
-    businessAmount = 28;
-    appliedPlan = false;
-    rejectPostMinimumPreview = true;
-    const partialRequest = mutationRequest(
-      "POST",
-      "w05-minimum-partial-001",
-    );
-    if (partialRequest.body?.kind !== "json") {
-      throw new Error("Expected JSON body");
-    }
-    partialRequest.body.value = {
-      ...partialRequest.body.value,
-      newBusinessPrice: 20,
-      expectedMinimumPrice: 18,
-      expectedQuantityDiscountPlanHash: null,
-      quantityDiscountTiers: [
-        { lowerBound: 5, percent: 5 },
-        { lowerBound: 20, percent: 20 },
-      ],
-    };
-    expect((await owner.handle({
-      operation: "preview",
-      request: partialRequest,
-    })).status).toBe(200);
-    const partial = await owner.handle({
-      operation: "commit",
-      request: { ...partialRequest, method: "PATCH" },
-    });
-    expect(partial.status).toBe(409);
-    expect(bodyValue(partial)).toMatchObject({
-      code: "BUSINESS_PRICE_PARTIAL_UPDATE",
-      message: expect.stringContaining(
-        "最低價已從 18 降至 15 USD 並完成回查，但 B2B 價格與階梯折扣尚未寫入",
-      ),
-      minimumPriceUpdate: {
-        status: "verified",
-        previousMinimumPrice: { amount: 18, currencyCode: "USD" },
-        requestedMinimumPrice: { amount: 15, currencyCode: "USD" },
-        lowestTierUnitPrice: { amount: 16, currencyCode: "USD" },
-      },
+      requestedBusinessPrice: { amount: 20, currencyCode: "USD" },
+      requestId: "REQ-MINIMUM-COMMIT",
     });
     expect(minimumAmount).toBe(15);
     expect(businessAmount).toBe(28);
+    expect(events).not.toContain("attempt:business-price");
     expect(events).not.toContain("b2b-commit");
   });
 

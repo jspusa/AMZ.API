@@ -484,6 +484,52 @@ describe("main-owned Amazon write gate", () => {
     expect(businessSend).not.toHaveBeenCalled();
   });
 
+  it("blocks a single B2B intent before native approval while an earlier price write is durably unknown", async () => {
+    const store = await testStore();
+    const contextAdapter = scriptedContext();
+    const context = await contextAdapter.capture(US);
+    const sellerSku = "SINGLE-B2B-AFTER-UNKNOWN-PRICE";
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "unknown-minimum-price-before-single-b2b",
+      operationType: "price",
+      marketplaceId: US,
+      sellerSku,
+      accountScope: context.accountScope,
+      fingerprint: "minimum-price-18-to-14.19",
+      execute: async ({ recordAccepted }) => {
+        await recordAccepted({ status: "accepted" });
+        throw new SpApiError("Amazon accepted the earlier price write", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({
+      code: "UPDATE_STATUS_UNKNOWN",
+    });
+
+    const approveWrite = vi.fn(async () => undefined);
+    const gate = new MainWriteGate({ store, context: contextAdapter, approveWrite });
+    const binding = writeBinding(context, {
+      family: "business-price",
+      operation: "business_price",
+      previewKey: "single-business-price-after-unknown-price-preview",
+      intentId: "primary",
+      sellerSku,
+      idempotencyKey: "single-business-price-after-unknown-price",
+      proposalFingerprint: "business-price-and-tiers-after-minimum-price",
+    });
+    const send = vi.fn(async () => ({ status: "business-verified" }));
+
+    await gate.stagePreview(binding);
+    await expect(runOne(gate, binding, send)).rejects.toMatchObject({
+      code: "UPDATE_STATUS_UNKNOWN",
+      status: 409,
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       label: "operation",
@@ -634,5 +680,79 @@ describe("main-owned Amazon write gate", () => {
     await expect(runOne(gate, binding, mustNotReplay)).resolves.toEqual(verified);
     expect(send).toHaveBeenCalledOnce();
     expect(mustNotReplay).not.toHaveBeenCalled();
+  });
+
+  it("projects exact durable write evidence through a context-bound inspection", async () => {
+    const store = await testStore();
+    const contextAdapter = scriptedContext();
+    const context = await contextAdapter.capture(US);
+    const gate = new MainWriteGate({
+      store,
+      context: contextAdapter,
+      approveWrite: async () => undefined,
+    });
+    const binding = writeBinding(context, {
+      previewKey: "inspection-preview",
+      sellerSku: "INSPECTION-SKU",
+      idempotencyKey: "inspection-key",
+      proposalFingerprint: "price-17.99-to-18.99",
+    });
+    const accepted = {
+      status: "ACCEPTED",
+      targetPrice: 18.99,
+      privateReceipt: "must-not-leave-main",
+    } as const;
+
+    await gate.stagePreview(binding);
+    await expect(runOne(gate, binding, async (control) => {
+      await control.recordAccepted(accepted);
+      throw new SpApiError("canonical readback timed out", {
+        status: 503,
+        code: "UPDATE_STATUS_UNKNOWN",
+      });
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    const projected = await gate.inspect({
+      context,
+      marketplaceId: US,
+      sellerSku: "INSPECTION-SKU",
+      operations: ["price"],
+      project: (entry) => ({
+        state: entry.state,
+        targetPrice: (entry.response as typeof accepted).targetPrice,
+        submittedAt: entry.updatedAt,
+      }),
+    });
+    expect(projected).toEqual([{
+      state: "unknown",
+      targetPrice: 18.99,
+      submittedAt: expect.any(Number),
+    }]);
+    expect(projected[0]).not.toHaveProperty("privateReceipt");
+    await expect(gate.inspect({
+      context,
+      marketplaceId: US,
+      sellerSku: "OTHER-SKU",
+      operations: ["price"],
+      project: () => ({ leaked: true }),
+    })).resolves.toEqual([]);
+
+    await expect(gate.inspect({
+      context,
+      marketplaceId: US,
+      sellerSku: "INSPECTION-SKU",
+      operations: ["price"],
+      project: () => {
+        contextAdapter.invalidate("account-changed");
+        return { leaked: true };
+      },
+    })).resolves.toEqual([]);
+    await expect(gate.inspect({
+      context,
+      marketplaceId: US,
+      sellerSku: "INSPECTION-SKU",
+      operations: ["price"],
+      project: () => ({ leaked: true }),
+    })).resolves.toEqual([]);
   });
 });

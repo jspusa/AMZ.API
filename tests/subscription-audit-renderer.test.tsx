@@ -700,6 +700,9 @@ describe("FBA subscription audit renderer", () => {
     expect(markup).not.toContain("全站訂閱價格健檢");
     expect(markup).toContain("目前有效訂閱」是查詢當下快照");
     expect(markup).toContain("最多提供 23 個完整月");
+    expect(markup).toContain("顯示詳細說明");
+    expect(markup).toContain("訂閱快照定義、折扣口徑與 23 個月邊界");
+    expect(markup).not.toContain('audit-details-disclosure" open=""');
     expect(markup).toContain("同步 US 全部 FBA S&amp;S");
   });
 

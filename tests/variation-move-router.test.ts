@@ -59,7 +59,10 @@ describe("variation move preview and Touch ID routes", () => {
     }>): Promise<unknown>;
   }) => input.execute({ recordAccepted: async () => undefined }));
   const router = new ApiRouter({
-    store: { runIdempotentOperation } as unknown as LocalStore,
+    store: {
+      runIdempotentOperation,
+      assertIdempotentOperationsAvailable: async () => undefined,
+    } as unknown as LocalStore,
     vault: {
       getAccountScope: async () => "variation-move-test-scope",
     } as unknown as CredentialVault,

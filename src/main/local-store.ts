@@ -56,6 +56,22 @@ export type LedgerOperationType =
   | "variation_detach"
   | "variation_attach";
 
+export type IdempotentOperationInspectionInput = Readonly<{
+  operationTypes: readonly LedgerOperationType[];
+  marketplaceId: string;
+  sellerSku: string;
+  accountScope: string;
+}>;
+
+export type IdempotentOperationInspection = Readonly<{
+  operationType: LedgerOperationType;
+  state: LedgerState;
+  response: unknown | null;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}>;
+
 type LedgerEntry = {
   operationType: LedgerOperationType;
   marketplaceId: string;
@@ -243,6 +259,7 @@ export type IdempotentOperationAvailabilityInput = Pick<
 
 const OPERATION_TTL_MS = 24 * 60 * 60 * 1_000;
 const PERMANENT_OPERATION_EXPIRY = Number.MAX_SAFE_INTEGER;
+const MAX_IDEMPOTENT_OPERATION_INSPECTIONS = 32;
 export const CONTENT_AUDIT_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1_000;
 const MAX_CONTENT_AUDIT_SNAPSHOT_ROWS = 25_000;
 const MAX_CONTENT_AUDIT_SNAPSHOT_BYTES = 4 * 1024 * 1024;
@@ -1702,6 +1719,43 @@ export class LocalStore {
       }
     });
     return reconciled;
+  }
+
+  async inspectIdempotentOperations(
+    input: IdempotentOperationInspectionInput,
+  ): Promise<readonly IdempotentOperationInspection[]> {
+    let inspected: IdempotentOperationInspection[] = [];
+    const operationTypes = new Set(input.operationTypes);
+    const task = this.mutationQueue.then(async () => {
+      const data = await this.read();
+      inspected = Object.entries(data.ledger)
+        .filter(([, entry]) =>
+          entry.accountScope === input.accountScope &&
+          entry.marketplaceId === input.marketplaceId &&
+          entry.sellerSku === input.sellerSku &&
+          operationTypes.has(entry.operationType))
+        .sort(([keyA, entryA], [keyB, entryB]) => {
+          const recencyA = Math.max(entryA.createdAt, entryA.updatedAt);
+          const recencyB = Math.max(entryB.createdAt, entryB.updatedAt);
+          return (
+            recencyB - recencyA ||
+            entryB.createdAt - entryA.createdAt ||
+            keyA.localeCompare(keyB)
+          );
+        })
+        .slice(0, MAX_IDEMPOTENT_OPERATION_INSPECTIONS)
+        .map(([, entry]) => structuredClone({
+          operationType: entry.operationType,
+          state: entry.state,
+          response: entry.response,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+          expiresAt: entry.expiresAt,
+        }));
+    });
+    this.mutationQueue = task.catch(() => undefined);
+    await task;
+    return structuredClone(inspected);
   }
 
   private async read(): Promise<StoreData> {

@@ -4,12 +4,15 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingRowMatchesFilter,
   businessPricingEditorProposal,
   createSubmittedBusinessPricePreview,
   defaultBusinessPricingProposal,
+  parseBusinessPriceProcessing,
   parseBusinessPriceUpdate,
+  parseBusinessPriceWriteStatus,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
   type BusinessPriceUpdate,
@@ -344,6 +347,407 @@ describe("FBA business pricing audit renderer", () => {
     await act(async () => renderer!.unmount());
   });
 
+  it("keeps an accepted B2B write visible and manually reconciles it without another PATCH", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const processingStatus = {
+      mode: "live",
+      status: "PROCESSING",
+      stage: "business_price",
+      marketplaceId: interactiveListing.marketplaceId,
+      sellerSku: interactiveListing.sellerSku,
+      asin: interactiveListing.asin,
+      productType: interactiveListing.productType,
+      acceptedAt: "2026-08-31T12:02:00.000Z",
+      verifiedAt: null,
+      requestId: "request-delayed-business-price",
+      submissionId: "submission-delayed-business-price",
+      verified: false,
+      authoritative: false,
+      canResend: false,
+      businessPriceSubmitted: true,
+      previousBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+      requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousMinimumPrice: interactiveListing.minimumPrice,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      previousQuantityDiscountPlan: interactiveListing.quantityDiscountPlan,
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+        ],
+      },
+      quantityDiscountPlanChange: "replace",
+      notice:
+        "Amazon 已接受 B2B 價格更新，正在同步。這不是失敗，也尚未代表前台已生效；系統不會自動重送。",
+    } as const;
+    const processingListing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      businessPrice: { amount: 18.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      writeStatus: processingStatus,
+    });
+    const verifiedListing = {
+      ...interactiveListing,
+      businessPrice: { amount: 17.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: processingStatus.requestedQuantityDiscountPlan,
+      fetchedAt: "2026-08-31T12:12:00.000Z",
+      writeStatus: {
+        ...processingStatus,
+        status: "VERIFIED",
+        verifiedAt: "2026-08-31T12:12:00.000Z",
+        verified: true,
+        authoritative: true,
+        notice:
+          "Amazon Business 價格已由 Notebook Key 唯讀回查確認；沒有重新送出 PATCH。",
+      },
+    } as const;
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method === "PATCH") {
+        throw new Error("Manual reconciliation must never send another PATCH");
+      }
+      return new Response(JSON.stringify(verifiedListing), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onVerified = vi.fn();
+    const onCanonicalListingVerified = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingEditor, {
+        listing: processingListing,
+        onClose: () => undefined,
+        onVerified,
+        onCanonicalListingVerified,
+        onError: () => undefined,
+        onBusyChange: () => undefined,
+      }));
+    });
+
+    const root = renderer!.root;
+    const processingCard = root.findByProps({
+      className: "business-pricing-write-status is-processing",
+    });
+    expect(processingCard).toBeDefined();
+    const processingText = JSON.stringify(renderer!.toJSON());
+    expect(processingText).toContain("Amazon 已接受，正在同步");
+    expect(processingText).toContain("送出時間");
+    expect(processingText).toContain("request-delayed-business-price");
+    expect(processingText).toContain("18.99");
+    expect(processingText).toContain("17.99");
+    expect(processingText).toContain("本次送出的數量折扣");
+    expect(processingText).toContain("5 件");
+    expect(processingText).toContain("3%");
+    expect(processingText).toContain("5%");
+    expect(processingText).toContain("10 件");
+    expect(processingText).toContain("6%");
+    expect(processingText).toContain("10%");
+    expect(root.findByProps({ id: "business-price-input" }).props.disabled)
+      .toBe(true);
+    expect(root.findByType("fieldset").props.disabled).toBe(true);
+    expect(root.findAllByType("button").filter((button) =>
+      button.children.join("") === "只改價格並保留原數量折扣" ||
+      button.children.join("") === "一併更新預填階梯折扣"
+    ).every((button) => button.props.disabled)).toBe(true);
+
+    await act(async () => {
+      root.findAllByType("button").find((button) =>
+        button.children.join("") === "重新確認 Amazon 狀態"
+      )!.props.onClick();
+    });
+
+    const verifiedCard = root.findByProps({
+      className: "business-pricing-write-status is-verified",
+    });
+    expect(verifiedCard).toBeDefined();
+    expect(JSON.stringify(renderer!.toJSON()))
+      .toContain("Amazon 已完成同步並確認");
+    expect(root.findAllByType("button").some((button) =>
+      button.children.join("") === "重新確認 Amazon 狀態"
+    )).toBe(false);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0]))
+      .toContain("/api/sp-api/business-pricing?");
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"))
+      .toBe(false);
+    expect(onVerified).not.toHaveBeenCalled();
+    expect(onCanonicalListingVerified).toHaveBeenCalledOnce();
+    expect(onCanonicalListingVerified).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sellerSku: interactiveListing.sellerSku,
+        businessPrice: { amount: 17.99, currencyCode: "USD" },
+        writeStatus: expect.objectContaining({ status: "VERIFIED" }),
+      }),
+    );
+
+    const css = await readRendererStylesheet();
+    expect(css).toMatch(
+      /\.business-pricing-write-status\.is-verified\s*\{[^}]*color:\s*#28583d/su,
+    );
+    await act(async () => renderer!.unmount());
+  });
+
+  it("states that B2B was not sent while an accepted minimum-price change is processing", () => {
+    const minimumPriceProcessing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      businessPrice: { amount: 18.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      writeStatus: {
+        mode: "live",
+        status: "PROCESSING",
+        stage: "minimum_price",
+        marketplaceId: interactiveListing.marketplaceId,
+        sellerSku: interactiveListing.sellerSku,
+        asin: interactiveListing.asin,
+        productType: interactiveListing.productType,
+        acceptedAt: "2026-08-31T12:02:00.000Z",
+        verifiedAt: null,
+        requestId: "request-delayed-minimum-price",
+        submissionId: "submission-delayed-minimum-price",
+        verified: false,
+        authoritative: false,
+        canResend: false,
+        businessPriceSubmitted: false,
+        previousBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+        requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+        previousMinimumPrice: { amount: 18, currencyCode: "USD" },
+        requestedMinimumPrice: { amount: 13.39, currencyCode: "USD" },
+        lowestTierUnitPrice: { amount: 14.39, currencyCode: "USD" },
+        previousQuantityDiscountPlan: interactiveListing.quantityDiscountPlan,
+        requestedQuantityDiscountPlan: {
+          discountType: "percent",
+          levels: [
+            { lowerBound: 5, value: 5 },
+            { lowerBound: 10, value: 10 },
+          ],
+        },
+        quantityDiscountPlanChange: "replace",
+        notice:
+          "Amazon 已接受最低價更新，正在同步；B2B 價格與階梯尚未送出。最低價確認後請重新預檢，系統不會背景續送或重送。",
+      },
+    });
+
+    const markup = renderToStaticMarkup(createElement(BusinessPricingEditor, {
+      listing: minimumPriceProcessing,
+      onClose: () => undefined,
+      onVerified: () => undefined,
+      onError: () => undefined,
+      onBusyChange: () => undefined,
+    }));
+    expect(markup).toContain("Amazon 已接受最低價，正在同步");
+    expect(markup).toContain("B2B 價格與階梯尚未送出");
+    expect(markup).toContain("最低價限制");
+    expect(markup).toContain("13.39");
+    expect(markup).not.toContain("17.99");
+    expect(markup).toContain("request-delayed-minimum-price");
+    expect(markup).toContain("disabled");
+  });
+
+  it("replaces the audit list with one in-drawer editor view and returns to the audit", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(interactiveListing), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })));
+    const onEditorOpenChange = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+        onEditorOpenChange,
+      }));
+    });
+    const root = renderer!.root;
+    expect(root.findByProps({
+      "data-business-pricing-view": "audit",
+    })).toBeDefined();
+    expect(root.findAllByProps({
+      "aria-label": "FBA B2B 價格商品",
+    })).toHaveLength(1);
+
+    await act(async () => {
+      root.findAllByType("button").find(
+        (button) => button.children.join("") === "設定 B2B 價格",
+      )!.props.onClick();
+    });
+
+    expect(root.findByProps({
+      "data-business-pricing-view": "editor",
+    })).toBeDefined();
+    expect(root.findAllByProps({
+      "aria-label": "FBA B2B 價格商品",
+    })).toHaveLength(0);
+    expect(root.findAllByType("form")).toHaveLength(1);
+    expect(root.findByProps({
+      "aria-label": "返回全站 B2B 價格健檢",
+    }).children.join("")).toBe("← 返回健檢結果");
+    expect(onEditorOpenChange).toHaveBeenLastCalledWith(true);
+
+    await act(async () => {
+      root.findByProps({
+        "aria-label": "返回全站 B2B 價格健檢",
+      }).props.onClick();
+    });
+
+    expect(root.findByProps({
+      "data-business-pricing-view": "audit",
+    })).toBeDefined();
+    expect(root.findAllByProps({
+      "aria-label": "FBA B2B 價格商品",
+    })).toHaveLength(1);
+    expect(root.findAllByType("form")).toHaveLength(0);
+    expect(onEditorOpenChange).toHaveBeenLastCalledWith(false);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("keeps a manually verified canonical value in the audit row after returning", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(interactiveListing), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })));
+    const verifiedListing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      businessPrice: { amount: 18.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      fetchedAt: "2026-08-31T12:12:00.000Z",
+      writeStatus: {
+        mode: "live",
+        status: "VERIFIED",
+        stage: "business_price",
+        marketplaceId: interactiveListing.marketplaceId,
+        sellerSku: interactiveListing.sellerSku,
+        asin: interactiveListing.asin,
+        productType: interactiveListing.productType,
+        acceptedAt: "2026-08-31T12:02:00.000Z",
+        verifiedAt: "2026-08-31T12:12:00.000Z",
+        requestId: "request-manual-price-only",
+        submissionId: "submission-manual-price-only",
+        verified: true,
+        authoritative: true,
+        canResend: false,
+        businessPriceSubmitted: true,
+        previousBusinessPrice: null,
+        requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+        previousMinimumPrice: interactiveListing.minimumPrice,
+        requestedMinimumPrice: interactiveListing.minimumPrice,
+        lowestTierUnitPrice: null,
+        previousQuantityDiscountPlan: interactiveListing.quantityDiscountPlan,
+        requestedQuantityDiscountPlan: interactiveListing.quantityDiscountPlan,
+        quantityDiscountPlanChange: "preserve",
+        notice: "Amazon Business 價格已由 Notebook Key 唯讀回查確認。",
+      },
+    });
+    const onSnapshotChange = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+        onSnapshotChange,
+      }));
+    });
+    const root = renderer!.root;
+    await act(async () => {
+      root.findAllByType("button").find(
+        (button) => button.children.join("") === "設定 B2B 價格",
+      )!.props.onClick();
+    });
+    await act(async () => {
+      root.findByType(BusinessPricingEditor).props
+        .onCanonicalListingVerified(verifiedListing);
+    });
+
+    expect(onSnapshotChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      rows: expect.arrayContaining([
+        expect.objectContaining({
+          sellerSku: "FBA-MISSING",
+          businessPrice: { amount: 18.99, currencyCode: "USD" },
+          status: "configured",
+        }),
+      ]),
+      summary: expect.objectContaining({ configured: 3, missing: 1 }),
+    }));
+
+    await act(async () => {
+      root.findByProps({
+        "aria-label": "返回全站 B2B 價格健檢",
+      }).props.onClick();
+    });
+    const updatedRow = root.findAllByType("article").find((article) =>
+      article.findAllByType("small").some((small) =>
+        small.children.join("").includes("FBA-MISSING")
+      )
+    )!;
+    expect(updatedRow.findByType("dl").findAllByType("dd")[1]
+      ?.children.join("")).toContain("18.99");
+    const summary = root.findByProps({
+      "aria-label": "B2B 價格健檢摘要與篩選",
+    });
+    const configured = summary.findAllByType("button").find((button) =>
+      button.findByType("span").children.join("") === "已設定"
+    )!;
+    expect(configured.findByType("strong").children.join("")).toBe("3");
+    await act(async () => renderer!.unmount());
+  });
+
+  it("uses one B2B drawer scroller and a non-overlay editor surface", () => {
+    const css = readFileSync(
+      new URL("../src/renderer/src/styles/business-pricing.css", import.meta.url),
+      "utf8",
+    );
+
+    expect(css).toMatch(
+      /\.order-drawer\.business-pricing-audit-drawer\s*\{[^}]*display:\s*flex[^}]*overflow:\s*hidden/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-audit-panel\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-detail-toolbar\s*\{[^}]*position:\s*sticky[^}]*top:\s*0/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-editor\s*\{[^}]*position:\s*static[^}]*box-shadow:\s*none/su,
+    );
+    expect(css).not.toMatch(
+      /\.business-pricing-editor\s*\{[^}]*position:\s*sticky/su,
+    );
+  });
+
+  it("keeps the short B2B intro visible and collapses the detailed rules by default", () => {
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+    }));
+    const details = markup.match(
+      /<details class="health-advanced-details audit-details-disclosure"[^>]*>[\s\S]*?<\/details>/u,
+    )?.[0];
+
+    expect(markup).toContain(
+      "同時核對 Business Price 與數量折扣；商品列可直接安全預檢，或前往 Amazon 後台。",
+    );
+    expect(details).toBeDefined();
+    expect(details).toContain("查看詳細規則");
+    expect(details).toContain("Jasper US 建議規則");
+    expect(details).toContain("Amazon Validation Preview");
+    expect(details).not.toMatch(/^<details[^>]*\sopen(?:=|>)/u);
+    expect(markup.indexOf("同時核對 Business Price"))
+      .toBeLessThan(markup.indexOf("<details"));
+  });
+
   it("keeps a failed Amazon preview and Request ID visible inside the open editor", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
@@ -585,6 +989,10 @@ describe("FBA business pricing audit renderer", () => {
     expect(rendered).toContain("14.39");
     expect(rendered).toContain("ALL audience");
     expect(rendered).toContain("一般售價／自動定價");
+    expect(rendered).toContain("本次只送出最低價");
+    expect(rendered).toContain("手動重新確認 Amazon 狀態");
+    expect(rendered).toContain("第二次使用 Touch ID／Windows Hello");
+    expect(rendered).not.toContain("先寫入並回查最低價");
     await act(async () => {
       root.findAllByType("button").find((button) =>
         button.children.join("") === "Touch ID／Windows Hello 確認並送出"
@@ -1025,6 +1433,80 @@ describe("FBA business pricing audit renderer", () => {
     });
   });
 
+  it("applies a manually verified canonical listing to the audit row and summary", () => {
+    const snapshot = parseBusinessPricingAuditSnapshot(payload());
+    const requestedPlan = {
+      discountType: "percent" as const,
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+        { lowerBound: 15, value: 15 },
+        { lowerBound: 20, value: 20 },
+      ],
+    };
+    const listing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      businessPrice: { amount: 18.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      minimumPrice: { amount: 14.19, currencyCode: "USD" },
+      quantityDiscountPlan: requestedPlan,
+      quantityDiscountPlanHash: "2".repeat(64),
+      fetchedAt: "2026-08-31T12:12:00.000Z",
+      writeStatus: {
+        mode: "live",
+        status: "VERIFIED",
+        stage: "business_price",
+        marketplaceId: interactiveListing.marketplaceId,
+        sellerSku: interactiveListing.sellerSku,
+        asin: interactiveListing.asin,
+        productType: interactiveListing.productType,
+        acceptedAt: "2026-08-31T12:02:00.000Z",
+        verifiedAt: "2026-08-31T12:12:00.000Z",
+        requestId: "request-manual-canonical",
+        submissionId: "submission-manual-canonical",
+        verified: true,
+        authoritative: true,
+        canResend: false,
+        businessPriceSubmitted: true,
+        previousBusinessPrice: null,
+        requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+        previousMinimumPrice: interactiveListing.minimumPrice,
+        requestedMinimumPrice: { amount: 14.19, currencyCode: "USD" },
+        lowestTierUnitPrice: { amount: 15.19, currencyCode: "USD" },
+        previousQuantityDiscountPlan: interactiveListing.quantityDiscountPlan,
+        requestedQuantityDiscountPlan: requestedPlan,
+        quantityDiscountPlanChange: "replace",
+        notice: "Amazon Business 價格已由 Notebook Key 唯讀回查確認。",
+      },
+    });
+
+    const next = applyVerifiedBusinessPricingListingToAuditSnapshot(
+      snapshot,
+      listing,
+    );
+
+    expect(next.rows[0]).toMatchObject({
+      sellerSku: "FBA-MISSING",
+      status: "configured",
+      businessPrice: { amount: 18.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: requestedPlan,
+      quantityDiscountPlanPresence: "canonical",
+      recommendedPriceMismatch: false,
+      recommendedQuantityDiscountMismatch: false,
+    });
+    expect(next.summary).toEqual({
+      totalFbaSkuCount: 4,
+      configured: 3,
+      aboveStandard: 0,
+      missing: 1,
+      unsupported: 0,
+      incomplete: 0,
+      recommendedPriceMismatch: 2,
+      recommendedQuantityDiscountMismatch: 2,
+    });
+  });
+
   it("renders actionable recommendations, quantity-discount evidence and Seller Central handoff", () => {
     const source = payload();
     const rows = source.rows as Array<Record<string, unknown>>;
@@ -1197,10 +1679,18 @@ describe("FBA business pricing audit renderer", () => {
 
     expect(panelSource).toContain("BusinessPricingListingSnapshot");
     expect(panelSource).toContain("applyVerifiedBusinessPriceToAuditSnapshot");
+    expect(panelSource).toContain(
+      "applyVerifiedBusinessPricingListingToAuditSnapshot",
+    );
+    expect(panelSource).toContain(
+      "onCanonicalListingVerified={applyVerifiedListing}",
+    );
     expect(panelSource).toContain("BusinessPricingEditor");
     expect(editorSource).toContain("SubmittedBusinessPricePreview");
     expect(editorSource).toContain("createSubmittedBusinessPricePreview");
     expect(editorSource).toContain("parseBusinessPriceUpdate");
+    expect(editorSource).toContain("送出中，等待 Amazon 接受…");
+    expect(editorSource).not.toContain("送出並回查中…");
     expect(typeof parseBusinessPricingListingSnapshot).toBe("function");
     expect(typeof createSubmittedBusinessPricePreview).toBe("function");
     expect(typeof parseBusinessPriceUpdate).toBe("function");
@@ -1215,6 +1705,60 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("全站 B2B 價格健檢");
     expect(markup).toContain("AMAZON BUSINESS · FBA ONLY");
     expect(markup).toContain('role="dialog"');
+  });
+
+  it("keeps the B2B drawer open while the editor is processing a request", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    let keydownHandler: ((event: KeyboardEvent) => void) | null = null;
+    vi.stubGlobal("window", {
+      fbaOS: undefined,
+      addEventListener: vi.fn((type: string, listener: EventListener) => {
+        if (type === "keydown") {
+          keydownHandler = listener as (event: KeyboardEvent) => void;
+        }
+      }),
+      removeEventListener: vi.fn(),
+    });
+    const onClose = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditDrawer, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        cachedSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+        onClose,
+      }));
+    });
+    const root = renderer!.root;
+    const panel = root.findByType(BusinessPricingAuditPanel);
+    await act(async () => {
+      panel.props.onEditorOpenChange(true);
+      panel.props.onEditorBusyChange(true);
+    });
+
+    expect(root.findByProps({ role: "dialog" }).props["aria-busy"]).toBe(true);
+    expect(root.findByProps({
+      "aria-label": "關閉全站 B2B 價格健檢",
+    }).props.disabled).toBe(true);
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "Notebook Key 正在處理這次要求",
+    );
+    const backdrop = root.findByProps({ role: "presentation" });
+    const backdropNode = {};
+    backdrop.props.onMouseDown({
+      target: backdropNode,
+      currentTarget: backdropNode,
+    });
+    keydownHandler?.({ key: "Escape" } as KeyboardEvent);
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      panel.props.onEditorBusyChange(false);
+    });
+    keydownHandler?.({ key: "Escape" } as KeyboardEvent);
+    expect(onClose).toHaveBeenCalledOnce();
+    await act(async () => renderer!.unmount());
   });
 
   it("freezes the exact submitted body and rejects a mismatched preview", () => {
@@ -1792,5 +2336,46 @@ describe("FBA business pricing audit renderer", () => {
       ...update,
       sellerSku: "ANOTHER-SKU",
     }, submitted)).toThrow(/識別/u);
+
+    const processing = {
+      mode: "live",
+      status: "PROCESSING",
+      stage: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "FBA-MISSING",
+      asin: "B000000001",
+      productType: "PET_FOOD",
+      acceptedAt: "2026-08-22T12:02:00.000Z",
+      verifiedAt: null,
+      requestId: "request-1",
+      submissionId: "submission-1",
+      verified: false,
+      authoritative: false,
+      canResend: false,
+      businessPriceSubmitted: true,
+      previousBusinessPrice: null,
+      requestedBusinessPrice: { amount: 17.99, currencyCode: "USD" },
+      previousMinimumPrice: null,
+      requestedMinimumPrice: null,
+      lowestTierUnitPrice: null,
+      previousQuantityDiscountPlan: null,
+      requestedQuantityDiscountPlan: null,
+      quantityDiscountPlanChange: "preserve",
+      notice: "Amazon 已接受，正在同步；不會自動重送。",
+    };
+    expect(parseBusinessPriceProcessing(processing, submitted)).toMatchObject({
+      status: "PROCESSING",
+      verified: false,
+      canResend: false,
+      requestId: "request-1",
+    });
+    expect(() => parseBusinessPriceWriteStatus({
+      ...processing,
+      verified: true,
+    })).toThrow(/回查證據/u);
+    expect(() => parseBusinessPriceProcessing({
+      ...processing,
+      requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+    }, submitted)).toThrow(/送出快照/u);
   });
 });

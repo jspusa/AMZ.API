@@ -4947,9 +4947,11 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(formalCommitCount).toBe(0);
   });
 
-  it("sends the formal B2B PATCH exactly once after a fresh preview", async () => {
+  it("returns processing immediately after one accepted B2B PATCH", async () => {
     let commitCount = 0;
     let committed = false;
+    let listingGetCount = 0;
+    let listingGetsAtCommit = 0;
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
       const url = urlOf(input);
       const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -4966,6 +4968,7 @@ describe("Amazon Business pricing SP-API contract", () => {
         });
       }
       if (url.pathname.startsWith("/listings/2021-08-01/") && method === "GET") {
+        listingGetCount += 1;
         const payload = await listingResponse().json() as {
           attributes: { purchasable_offer: Array<Record<string, unknown>> };
         };
@@ -4996,6 +4999,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       if (url.pathname.startsWith("/listings/2021-08-01/") && method === "PATCH") {
         commitCount += 1;
         committed = true;
+        listingGetsAtCommit = listingGetCount;
         expect(url.searchParams.has("mode")).toBe(false);
         return jsonResponse(200, {
           sku: SELLER_SKU,
@@ -5018,16 +5022,18 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(commitCount).toBe(1);
     expect(result).toMatchObject({
       mode: "live",
-      status: "ACCEPTED",
+      status: "PROCESSING",
+      stage: "business_price",
       marketplaceId: MARKETPLACE_ID,
       sellerSku: SELLER_SKU,
-      standardPrice: { amount: 30, currencyCode: "USD" },
       previousBusinessPrice: { amount: 28, currencyCode: "USD" },
       requestedBusinessPrice: { amount: 27.5, currencyCode: "USD" },
-      schemaChecksum: SCHEMA_CHECKSUM,
       submissionId: "B2B-SUBMISSION-1",
       requestId: "B2B-COMMIT-REQUEST-1",
+      verified: false,
+      canResend: false,
     });
+    expect(listingGetCount).toBe(listingGetsAtCommit);
   });
 
   it("treats malformed issues in an ACCEPTED B2B receipt as unknown", async () => {

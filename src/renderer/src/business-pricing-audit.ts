@@ -118,6 +118,7 @@ export type BusinessPricingListingSnapshot = Readonly<{
   businessPricingCapability: BusinessPricingCapability;
   fetchedAt: string;
   notice: string | null;
+  writeStatus: BusinessPriceWriteStatus | null;
 }>;
 
 export type BusinessPriceWriteBody = Readonly<{
@@ -208,6 +209,33 @@ export type BusinessPriceUpdate = Readonly<{
   schemaChecksum: string;
   acceptedAt: string;
   issues: readonly BusinessPriceIssue[];
+  notice: string;
+}>;
+
+export type BusinessPriceWriteStatus = Readonly<{
+  mode: "live";
+  status: "PROCESSING" | "VERIFIED";
+  stage: "minimum_price" | "business_price";
+  marketplaceId: string;
+  sellerSku: string;
+  asin: string;
+  productType: string;
+  acceptedAt: string;
+  verifiedAt: string | null;
+  requestId: string | null;
+  submissionId: string | null;
+  verified: boolean;
+  authoritative: boolean;
+  canResend: false;
+  businessPriceSubmitted: boolean;
+  previousBusinessPrice: BusinessPricingMoney | null;
+  requestedBusinessPrice: BusinessPricingMoney | null;
+  previousMinimumPrice: BusinessPricingMoney | null;
+  requestedMinimumPrice: BusinessPricingMoney | null;
+  lowestTierUnitPrice: BusinessPricingMoney | null;
+  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanChange: "preserve" | "replace" | null;
   notice: string;
 }>;
 
@@ -528,6 +556,73 @@ export function applyVerifiedBusinessPriceToAuditSnapshot(
   };
 }
 
+export function applyVerifiedBusinessPricingListingToAuditSnapshot(
+  snapshot: BusinessPricingAuditSnapshot,
+  listing: BusinessPricingListingSnapshot,
+): BusinessPricingAuditSnapshot {
+  if (
+    listing.mode !== "live" ||
+    snapshot.mode !== listing.mode ||
+    snapshot.marketplaceId !== listing.marketplaceId ||
+    !listing.asin ||
+    !listing.standardPrice ||
+    !listing.businessPrice ||
+    listing.businessOfferPresence !== "present" ||
+    listing.writeStatus?.status !== "VERIFIED" ||
+    listing.writeStatus.stage !== "business_price" ||
+    snapshot.rows.filter((row) => row.sellerSku === listing.sellerSku).length !== 1
+  ) {
+    throw new Error("B2B 價格 canonical 回查與目前健檢快照不一致。");
+  }
+  const aboveStandard =
+    listing.businessPrice.currencyCode === listing.standardPrice.currencyCode &&
+    listing.businessPrice.amount > listing.standardPrice.amount;
+  const rows = snapshot.rows.map((row) => {
+    if (row.sellerSku !== listing.sellerSku) return row;
+    const recommendationFlags = businessPricingRecommendationFlags({
+      standardPrice: listing.standardPrice,
+      businessPrice: listing.businessPrice,
+      quantityDiscountPlan: listing.quantityDiscountPlan,
+      quantityDiscountPlanPresence: listing.quantityDiscountPlanPresence,
+    });
+    return {
+      ...row,
+      asin: listing.asin!,
+      title: listing.title,
+      productType: listing.productType,
+      standardPrice: listing.standardPrice,
+      businessPrice: listing.businessPrice,
+      businessOfferPresence: "present" as const,
+      quantityDiscountPlan: listing.quantityDiscountPlan,
+      quantityDiscountPlanPresence: listing.quantityDiscountPlanPresence,
+      editable: listing.businessPricingCapability.editable,
+      ...recommendationFlags,
+      status: aboveStandard ? "above_standard" as const : "configured" as const,
+      reason: aboveStandard
+        ? "Amazon Business 價格仍高於一般售價；主程序已唯讀回查確認。"
+        : "已設定 Amazon Business 價格，且主程序唯讀回查確認。",
+    };
+  });
+  return {
+    ...snapshot,
+    rows,
+    summary: {
+      totalFbaSkuCount: rows.length,
+      configured: rows.filter((row) => row.status === "configured").length,
+      aboveStandard: rows.filter((row) => row.status === "above_standard").length,
+      missing: rows.filter((row) => row.status === "missing").length,
+      unsupported: rows.filter((row) => row.status === "unsupported").length,
+      incomplete: rows.filter((row) => row.status === "incomplete").length,
+      recommendedPriceMismatch: rows.filter((row) =>
+        row.recommendedPriceMismatch
+      ).length,
+      recommendedQuantityDiscountMismatch: rows.filter((row) =>
+        row.recommendedQuantityDiscountMismatch
+      ).length,
+    },
+  };
+}
+
 function optionalExactText(
   value: unknown,
   label: string,
@@ -668,6 +763,8 @@ export function parseBusinessPricingListingSnapshot(
   if (source.mode !== "live" && source.mode !== "demo") {
     throw new Error("B2B 價格資料模式無效。");
   }
+  const marketplaceId = exactText(source.marketplaceId, "站點", 32);
+  const sellerSku = exactText(source.sellerSku, "Seller SKU", 40);
   const presence = source.businessOfferPresence;
   if (presence !== "absent" && presence !== "present" && presence !== "ambiguous") {
     throw new Error("B2B 價格 offer 證據無效。");
@@ -742,10 +839,46 @@ export function parseBusinessPricingListingSnapshot(
   if (asin !== null && !/^[A-Z0-9]{10}$/u.test(asin)) {
     throw new Error("B2B 價格 ASIN 無效。");
   }
+  const writeStatus = source.writeStatus === undefined ||
+      source.writeStatus === null
+    ? null
+    : parseBusinessPriceWriteStatus(source.writeStatus);
+  if (writeStatus && (
+    source.mode !== "live" ||
+    writeStatus.marketplaceId !== marketplaceId ||
+    writeStatus.sellerSku !== sellerSku ||
+    writeStatus.asin !== asin ||
+    writeStatus.productType !== source.productType
+  )) {
+    throw new Error("B2B 價格送出狀態與目前商品識別不一致。");
+  }
+  if (writeStatus?.status === "VERIFIED" && (
+    writeStatus.stage === "business_price"
+      ? presence !== "present" ||
+        !sameMoney(businessPrice, writeStatus.requestedBusinessPrice) ||
+        (writeStatus.requestedMinimumPrice !== null &&
+          !sameMoney(
+            minimumPriceEvidence.minimumPrice,
+            writeStatus.requestedMinimumPrice,
+          )) ||
+        (writeStatus.quantityDiscountPlanChange === "replace" &&
+          (quantityDiscount.presence !== "canonical" ||
+            !sameQuantityDiscountPlan(
+              quantityDiscount.plan,
+              writeStatus.requestedQuantityDiscountPlan,
+            )))
+      : minimumPriceEvidence.minimumPricePresence !== "canonical" ||
+        !sameMoney(
+          minimumPriceEvidence.minimumPrice,
+          writeStatus.requestedMinimumPrice,
+        )
+  )) {
+    throw new Error("B2B 價格已確認狀態與目前 Amazon 值不一致。");
+  }
   return Object.freeze({
     mode: source.mode,
-    marketplaceId: exactText(source.marketplaceId, "站點", 32),
-    sellerSku: exactText(source.sellerSku, "Seller SKU", 40),
+    marketplaceId,
+    sellerSku,
     asin,
     title: displayText(source.title, "商品名稱", 2_000, true),
     productType: exactText(source.productType, "商品類型", 120),
@@ -778,6 +911,7 @@ export function parseBusinessPricingListingSnapshot(
     }),
     fetchedAt,
     notice: optionalExactText(source.notice, "說明", 4_000),
+    writeStatus,
   });
 }
 
@@ -977,6 +1111,128 @@ function responseQuantityDiscountPlan(
   } catch {
     throw new Error(`B2B 價格的${label}無法安全辨識。`);
   }
+}
+
+export function parseBusinessPriceWriteStatus(
+  value: unknown,
+): BusinessPriceWriteStatus {
+  const source = record(value);
+  if (source.mode !== "live" ||
+      (source.status !== "PROCESSING" && source.status !== "VERIFIED") ||
+      (source.stage !== "minimum_price" &&
+        source.stage !== "business_price") ||
+      source.canResend !== false ||
+      typeof source.verified !== "boolean" ||
+      typeof source.authoritative !== "boolean" ||
+      typeof source.businessPriceSubmitted !== "boolean") {
+    throw new Error("B2B 價格送出狀態無法安全辨識。");
+  }
+  const verifiedAt = source.verifiedAt === null
+    ? null
+    : exactIso(source.verifiedAt, "回查完成時間");
+  if (
+    (source.status === "PROCESSING" &&
+      (source.verified || source.authoritative || verifiedAt !== null)) ||
+    (source.status === "VERIFIED" &&
+      (!source.verified || !source.authoritative || verifiedAt === null)) ||
+    source.businessPriceSubmitted !== (source.stage === "business_price")
+  ) {
+    throw new Error("B2B 價格送出狀態與回查證據不一致。");
+  }
+  const previousBusinessPrice = money(
+    source.previousBusinessPrice,
+    "送出前 B2B 價格",
+  );
+  const requestedBusinessPrice = money(
+    source.requestedBusinessPrice,
+    "送出目標 B2B 價格",
+  );
+  const previousMinimumPrice = money(
+    source.previousMinimumPrice,
+    "送出前最低價",
+  );
+  const requestedMinimumPrice = money(
+    source.requestedMinimumPrice,
+    "送出目標最低價",
+  );
+  const lowestTierUnitPrice = money(
+    source.lowestTierUnitPrice,
+    "送出最低階梯單價",
+  );
+  const previousQuantityDiscountPlan = responseQuantityDiscountPlan(
+    source.previousQuantityDiscountPlan,
+    "送出前數量折扣",
+  );
+  const requestedQuantityDiscountPlan = responseQuantityDiscountPlan(
+    source.requestedQuantityDiscountPlan,
+    "送出目標數量折扣",
+  );
+  const quantityDiscountPlanChange = source.quantityDiscountPlanChange;
+  if (
+    quantityDiscountPlanChange !== null &&
+    quantityDiscountPlanChange !== "preserve" &&
+    quantityDiscountPlanChange !== "replace"
+  ) {
+    throw new Error("B2B 價格送出的數量折扣狀態無效。");
+  }
+  if (
+    (source.stage === "business_price" && !requestedBusinessPrice) ||
+    (source.stage === "minimum_price" && !requestedMinimumPrice) ||
+    (quantityDiscountPlanChange === "preserve" &&
+      !sameQuantityDiscountPlan(
+        previousQuantityDiscountPlan,
+        requestedQuantityDiscountPlan,
+      )) ||
+    (quantityDiscountPlanChange === "replace" &&
+      requestedQuantityDiscountPlan?.discountType !== "percent")
+  ) {
+    throw new Error("B2B 價格送出的目標值證據不一致。");
+  }
+  const currencyCodes = [
+    previousBusinessPrice,
+    requestedBusinessPrice,
+    previousMinimumPrice,
+    requestedMinimumPrice,
+    lowestTierUnitPrice,
+  ].filter((entry): entry is BusinessPricingMoney => entry !== null)
+    .map((entry) => entry.currencyCode);
+  if (new Set(currencyCodes).size > 1) {
+    throw new Error("B2B 價格送出狀態的幣別不一致。");
+  }
+  const asin = exactText(source.asin, "送出 ASIN", 10);
+  if (!/^[A-Z0-9]{10}$/u.test(asin)) {
+    throw new Error("B2B 價格送出 ASIN 無效。");
+  }
+  return Object.freeze({
+    mode: "live",
+    status: source.status,
+    stage: source.stage,
+    marketplaceId: exactText(source.marketplaceId, "送出站點", 32),
+    sellerSku: exactText(source.sellerSku, "送出 Seller SKU", 40),
+    asin,
+    productType: exactText(source.productType, "送出商品類型", 120),
+    acceptedAt: exactIso(source.acceptedAt, "Amazon 接受時間"),
+    verifiedAt,
+    requestId: optionalExactText(source.requestId, "送出 Request ID", 512),
+    submissionId: optionalExactText(
+      source.submissionId,
+      "送出 Submission ID",
+      512,
+    ),
+    verified: source.verified,
+    authoritative: source.authoritative,
+    canResend: false,
+    businessPriceSubmitted: source.businessPriceSubmitted,
+    previousBusinessPrice,
+    requestedBusinessPrice,
+    previousMinimumPrice,
+    requestedMinimumPrice,
+    lowestTierUnitPrice,
+    previousQuantityDiscountPlan,
+    requestedQuantityDiscountPlan,
+    quantityDiscountPlanChange,
+    notice: displayText(source.notice, "送出狀態說明", 4_000),
+  });
 }
 
 function sameQuantityDiscountPlan(
@@ -1483,4 +1739,39 @@ export function parseBusinessPriceUpdate(
     issues: parseIssues(source.issues),
     notice: displayText(source.notice, "更新說明", 4_000),
   });
+}
+
+export function parseBusinessPriceProcessing(
+  value: unknown,
+  submitted: SubmittedBusinessPricePreview,
+): BusinessPriceWriteStatus {
+  const status = parseBusinessPriceWriteStatus(value);
+  const validation = submitted.validation;
+  if (
+    status.status !== "PROCESSING" ||
+    status.marketplaceId !== submitted.body.marketplaceId ||
+    status.sellerSku !== submitted.body.sellerSku ||
+    status.asin !== validation.asin ||
+    status.productType !== validation.productType ||
+    !sameMoney(status.previousBusinessPrice, validation.previousBusinessPrice) ||
+    !sameMoney(status.requestedBusinessPrice, validation.requestedBusinessPrice) ||
+    !sameMoney(status.previousMinimumPrice, validation.previousMinimumPrice) ||
+    !sameMoney(status.requestedMinimumPrice, validation.requestedMinimumPrice) ||
+    !sameMoney(status.lowestTierUnitPrice, validation.lowestTierUnitPrice) ||
+    !sameQuantityDiscountPlan(
+      status.previousQuantityDiscountPlan,
+      validation.previousQuantityDiscountPlan,
+    ) ||
+    !sameQuantityDiscountPlan(
+      status.requestedQuantityDiscountPlan,
+      validation.requestedQuantityDiscountPlan,
+    ) ||
+    status.quantityDiscountPlanChange !==
+      validation.quantityDiscountPlanChange ||
+    (status.stage === "minimum_price" &&
+      validation.minimumPriceChange !== "lower")
+  ) {
+    throw new Error("Amazon B2B 價格處理狀態與送出快照不一致。");
+  }
+  return status;
 }

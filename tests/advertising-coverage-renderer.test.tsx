@@ -70,6 +70,9 @@ describe("advertising coverage renderer", () => {
     expect(html).toContain("全站廣告覆蓋健檢");
     expect(html).toContain("功能已備妥，等待 Ads API");
     expect(html).toContain("ProductAI");
+    expect(html).toContain("顯示詳細說明");
+    expect(html).toContain("ProductAI 命名、覆蓋規則與唯讀範圍");
+    expect(html).not.toContain('audit-details-disclosure" open=""');
     expect(html).toContain("disabled");
     expect(html).not.toMatch(/client secret|refresh token|seller id/iu);
   });

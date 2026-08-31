@@ -445,7 +445,10 @@ describe("A+ FBA audit renderer", () => {
       onClose: () => undefined,
     }));
 
-    expect(panelMarkup).toContain("全站 FBA A+ 健檢");
+    expect(panelMarkup).toContain("核對 A+ 發布狀態");
+    expect(panelMarkup).toContain("顯示詳細說明");
+    expect(panelMarkup).toContain("A+ 文件、ASIN 關聯與唯讀範圍");
+    expect(panelMarkup).not.toContain('audit-details-disclosure" open=""');
     expect(panelMarkup).toContain("未找到已發布 A+");
     expect(panelMarkup).toContain("Missing A plus");
     expect(panelMarkup).toContain("前往 Amazon A+ 管理員");

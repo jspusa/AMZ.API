@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { BusinessPricingAuditSnapshot } from "../business-pricing-audit";
 import type {
   StandaloneAuditJob,
@@ -27,20 +27,26 @@ export default function BusinessPricingAuditDrawer({
   onJobChange?: (job: StandaloneAuditJob) => void;
   onClose: () => void;
 }) {
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const requestClose = () => {
+    if (!editorBusy) onClose();
+  };
+
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !editorBusy) onClose();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
+  }, [editorBusy, onClose]);
 
   return (
     <div
       className="drawer-backdrop"
       role="presentation"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) requestClose();
       }}
     >
       <aside
@@ -48,13 +54,33 @@ export default function BusinessPricingAuditDrawer({
         role="dialog"
         aria-modal="true"
         aria-labelledby="business-pricing-audit-title"
+        aria-busy={editorBusy}
       >
         <div className="drawer-header">
           <div>
-            <p className="eyebrow">AMAZON BUSINESS · FBA ONLY</p>
-            <h2 id="business-pricing-audit-title">全站 B2B 價格健檢</h2>
+            <p className="eyebrow">
+              {editorOpen
+                ? "AMAZON BUSINESS · SKU DETAIL"
+                : "AMAZON BUSINESS · FBA ONLY"}
+            </p>
+            <h2 id="business-pricing-audit-title">
+              {editorOpen ? "單一 SKU B2B 價格編輯" : "全站 B2B 價格健檢"}
+            </h2>
+            {editorBusy && (
+              <p
+                className="business-pricing-drawer-status"
+                role="status"
+                aria-live="polite"
+              >Notebook Key 正在處理這次要求，請勿關閉或重複送出。</p>
+            )}
           </div>
-          <button type="button" onClick={onClose} aria-label="關閉全站 B2B 價格健檢" autoFocus>×</button>
+          <button
+            type="button"
+            onClick={requestClose}
+            aria-label="關閉全站 B2B 價格健檢"
+            disabled={editorBusy}
+            autoFocus
+          >×</button>
         </div>
         <BusinessPricingAuditPanel
           marketplaceId={marketplaceId}
@@ -64,6 +90,8 @@ export default function BusinessPricingAuditDrawer({
           initialJob={initialJob}
           onSnapshotChange={onSnapshotChange}
           onJobChange={onJobChange}
+          onEditorOpenChange={setEditorOpen}
+          onEditorBusyChange={setEditorBusy}
         />
       </aside>
     </div>

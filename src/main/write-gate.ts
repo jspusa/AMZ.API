@@ -81,9 +81,29 @@ export type MainWriteGateReconcileInput<TSnapshot> = Readonly<{
   ): unknown | null;
 }>;
 
+export type MainWriteGateInspection = Readonly<{
+  operationType: LedgerOperationType;
+  state: "pending" | "completed" | "unknown";
+  response: unknown | null;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}>;
+
+export type MainWriteGateInspectInput<TResult> = Readonly<{
+  context: SpExecutionContext;
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  operations: readonly LedgerOperationType[];
+  project(inspection: MainWriteGateInspection): TResult | null;
+}>;
+
 export interface MainWriteGatePort {
   stagePreview(binding: WriteBinding): Promise<void>;
   execute<T>(input: MainWriteGateExecuteInput<T>): Promise<T>;
+  inspect?<TResult>(
+    input: MainWriteGateInspectInput<TResult>,
+  ): Promise<readonly TResult[]>;
   reconcile<TSnapshot>(
     input: MainWriteGateReconcileInput<TSnapshot>,
   ): Promise<void>;
@@ -162,7 +182,7 @@ type WriteLedgerPort = Pick<
   | "runIdempotentOperation"
   | "assertIdempotentOperationsAvailable"
   | "reconcileIdempotentOperations"
->;
+> & Partial<Pick<LocalStore, "inspectIdempotentOperations">>;
 
 export type MainWriteGateDependencies = Readonly<{
   store: WriteLedgerPort;
@@ -402,15 +422,10 @@ export class MainWriteGate implements MainWriteGatePort {
     };
 
     try {
-      if (
-        input.binding.family === "content-batch" ||
-        input.binding.intents.length > 1
-      ) {
-        await this.store.assertIdempotentOperationsAvailable(
-          [...durableIntents.values()].map((durable) =>
-            this.availabilityInput(input.binding, durable)),
-        );
-      }
+      await this.store.assertIdempotentOperationsAvailable(
+        [...durableIntents.values()].map((durable) =>
+          this.availabilityInput(input.binding, durable)),
+      );
       this.assertOwnedTicketCurrent(ticketKey, ticket, ownerToken);
       await this.context.assertCurrent(input.binding.context);
 
@@ -437,6 +452,40 @@ export class MainWriteGate implements MainWriteGatePort {
       sessionClosed = true;
       if (!ticketConsumed) this.releaseTicket(ticketKey, ownerToken);
       this.releaseListingAttributeReservations(reservationKeys, ownerToken);
+    }
+  }
+
+  async inspect<TResult>(
+    input: MainWriteGateInspectInput<TResult>,
+  ): Promise<readonly TResult[]> {
+    try {
+      if (
+        input.context.marketplaceId !== input.marketplaceId ||
+        !this.store.inspectIdempotentOperations
+      ) {
+        return [];
+      }
+      await this.context.assertCurrent(input.context);
+      const inspected = await this.store.inspectIdempotentOperations({
+        operationTypes: input.operations,
+        marketplaceId: input.marketplaceId,
+        sellerSku: input.sellerSku,
+        accountScope: input.context.accountScope,
+      });
+      const projected: TResult[] = [];
+      for (const entry of inspected) {
+        try {
+          const result = input.project(structuredClone(entry));
+          if (result !== null) projected.push(structuredClone(result));
+        } catch {
+          // A malformed or uncloneable domain projection is not evidence.
+        }
+      }
+      await this.context.assertCurrent(input.context);
+      return projected;
+    } catch {
+      // Fail closed: never reveal evidence for a stale or unverified account.
+      return [];
     }
   }
 

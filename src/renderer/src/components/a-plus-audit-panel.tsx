@@ -18,6 +18,7 @@ import {
   openAplusManagerHandoff,
   supportsFixedSellerCentralHandoffs,
 } from "../seller-central-handoff";
+import AuditDetailsDisclosure from "./audit-details-disclosure";
 
 export type AplusAuditObservableJob = AplusAuditJobReceipt | AplusAuditJobTerminal;
 
@@ -478,8 +479,7 @@ export default function AplusAuditPanel({
       <div className="business-pricing-audit-intro">
         <div>
           <span>{marketplaceShort} · A+ CONTENT · FBA ONLY</span>
-          <h3>全站 FBA A+ 健檢</h3>
-          <p>核對官方 A+ 發布紀錄、文件名稱與文件–ASIN 關聯；同 ASIN 多個 Seller SKU 只查一次。</p>
+          <h3>核對 A+ 發布狀態</h3>
         </div>
         <button
           type="button"
@@ -490,6 +490,13 @@ export default function AplusAuditPanel({
           {loading || observingBackgroundJob ? "A+ 健檢中…" : snapshot ? "重新健檢" : "開始全站 A+ 健檢"}
         </button>
       </div>
+      <AuditDetailsDisclosure summary="A+ 文件、ASIN 關聯與唯讀範圍">
+        <p className="price-intro">核對官方 A+ 發布紀錄、文件名稱與文件–ASIN 關聯；同 ASIN 多個 Seller SKU 只查一次。</p>
+        <div className="content-export-note">
+          <strong>Amazon 唯讀 A+ 健檢</strong>
+          <p>只核對 Amazon 回傳的發布與文件關聯證據，不會建立、修改或發布 A+ 內容。</p>
+        </div>
+      </AuditDetailsDisclosure>
       {(loading || observingBackgroundJob) && (
         <div className="business-pricing-progress" role="status">
           {job && !job.ready && job.progress.totalAsins > 0

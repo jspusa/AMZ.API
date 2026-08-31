@@ -104,7 +104,14 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain("開始全站圖片健檢");
     expect(markup).toContain("全站 A+ 健檢");
     expect(markup).toContain("開始全站 A+ 健檢");
-    expect(markup).toContain("逐一核對全部 FBA ASIN 是否有官方 A+ 發布紀錄");
+    expect(markup).toContain("找出需要你確認的 FBA 商品文案");
+    expect(markup).toContain("找出少於 6 張圖片或讀取未完成的商品");
+    expect(markup).toContain("核對每個 FBA ASIN 是否已有官方 A+");
+    expect(markup).toContain("找出已確認沒有 parent 的 FBA SKU");
+    expect(markup).toContain("查看訂閱折扣、有效訂閱與價格趨勢");
+    expect(markup).toContain("找出未設定或不符建議的企業價格");
+    expect(markup).toContain("核對哪些 FBA SKU 已有 ENABLED SP 覆蓋");
+    expect(markup).not.toContain("逐一核對全部 FBA ASIN 是否有官方 A+ 發布紀錄");
     expect(markup).not.toContain("From the brand");
     expect(markup).not.toContain("Brand Story");
     expect(markup).toContain('<details class="low-frequency-audits">');
@@ -120,7 +127,7 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain("未綁變體健檢");
     expect(markup).toContain("開始未綁變體健檢");
     expect(markup).toContain("查看健檢能力與連線");
-    expect(markup).toContain("Amazon Ads API 尚未連線前不顯示推測結果");
+    expect(markup).not.toContain("Amazon Ads API 尚未連線前不顯示推測結果");
     expect(markup).toContain("全站訂閱價格健檢");
     expect(markup).toContain("開始全站訂閱價格健檢");
     expect(markup).toContain("全站 B2B 價格健檢");
@@ -262,6 +269,15 @@ describe("dashboard top navigation layout", () => {
     );
     expect(css).toMatch(
       /\.health-audit-home-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(css).toMatch(
+      /\.content-audit-export-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(css).toMatch(/\.content-audit-export-attention\s*\{[\s\S]*?background:/);
+    expect(css).toMatch(/\.content-audit-export-all\s*\{[\s\S]*?background:/);
+    expect(css).toMatch(/\.audit-details-disclosure\s*>\s*summary:focus-visible\s*\{/);
+    expect(css).toMatch(
+      /@media \(max-width: 680px\)[\s\S]*?\.content-audit-export-grid\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
     );
     expect(css).toMatch(/\.low-frequency-audits\s*\{[\s\S]*?border:/);
     expect(css).toMatch(/\.low-frequency-audits\s*>\s*summary\s*\{[\s\S]*?cursor:\s*pointer;/);

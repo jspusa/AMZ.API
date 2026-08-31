@@ -34,6 +34,7 @@ import {
   contentClaimTokens,
   provenIngredientItems,
 } from "../../../shared/content-claims";
+import AuditDetailsDisclosure from "./audit-details-disclosure";
 
 type ApiProblem = {
   code?: string;
@@ -2947,49 +2948,62 @@ export default function ContentAuditPanel({
 
   return (
     <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
-      <p className="price-intro">
-        一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic，資料未完成時不推測。
-      </p>
-      <div className="content-export-note content-audit-privacy">
-        <strong>Amazon 唯讀＋AMZ.API 共用英文辭典</strong>
-        <p>美式英文辭典由 Mac／Windows Notebook Key Bridge 在本機套用，顯示與 Excel 共用同一份快照；文案不會送到第三方，疑似錯字仍由你判斷。</p>
-      </div>
+      <AuditDetailsDisclosure summary="文案門檻、英文辭典與 Excel 更新防呆">
+        <div className="automation-summary compact">
+          <span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p>
+          <span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Notebook 鑰匙（Touch ID／Windows Hello）。</p>
+          <span className="automation-badge manual">需人工</span><p>疑似錯字、產品名稱、產品亮點、五大賣點、產品敘述與成分內容由你決定。</p>
+        </div>
+        <p className="price-intro">
+          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic，資料未完成時不推測。
+        </p>
+        <div className="content-export-note content-audit-privacy">
+          <strong>Amazon 唯讀＋AMZ.API 共用英文辭典</strong>
+          <p>美式英文辭典由 Mac／Windows Notebook Key Bridge 在本機套用，顯示與 Excel 共用同一份快照；文案不會送到第三方，疑似錯字仍由你判斷。</p>
+        </div>
+        <div className="content-export-note content-audit-batch-safety">
+          <strong>Excel 批次更新安全流程</strong>
+          <p>「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺藍或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。預檢全部通過，或你明確核對符合條件的 INVALID SKU 後，才會要求一次 Touch ID／Windows Hello；這不代表 INVALID 已通過，若任一筆遭拒或結果不明會停止後續且不盲目重送。</p>
+        </div>
+      </AuditDetailsDisclosure>
       {state === "done" && snapshot && summary && (
         <>
-          <button
-            className="content-audit-export-primary content-audit-export-attention"
-            type="button"
-            onClick={() => void exportWorkbook("attention")}
-            disabled={attentionRows.length === 0 || !snapshot.exportId || Boolean(exporting)}
-          >
-            <span aria-hidden="true">↓</span>
-            <strong>{exporting === "attention"
-              ? "匯出中…"
-              : `匯出 ${attentionRows.length.toLocaleString()} 個待確認項目 Excel`}</strong>
-            <small>只在這台電腦建立，不會上傳商品文案</small>
-          </button>
-          <button
-            className="content-audit-export-primary content-audit-export-all"
-            type="button"
-            onClick={() => void exportWorkbook("all")}
-            disabled={snapshot.rows.length === 0 || !snapshot.exportId || Boolean(exporting)}
-          >
-            <span aria-hidden="true">↓</span>
-            <strong>{exporting === "all"
-              ? "匯出中…"
-              : `匯出全部 ${snapshot.rows.length.toLocaleString()} 個商品文案 Excel（完整模板）`}</strong>
-            <small>只在這台電腦建立，不會上傳商品文案；可當作完整模板</small>
-          </button>
+          <div className="content-audit-export-grid" aria-label="選擇文案 Excel 匯出範圍">
+            <button
+              className="content-audit-export-primary content-audit-export-attention"
+              type="button"
+              data-export-scope="attention"
+              onClick={() => void exportWorkbook("attention")}
+              disabled={attentionRows.length === 0 || !snapshot.exportId || Boolean(exporting)}
+            >
+              <span aria-hidden="true">待</span>
+              <strong>{exporting === "attention"
+                ? "正在匯出待確認清單…"
+                : `待確認清單 · 匯出 ${attentionRows.length.toLocaleString()} 項 Excel`}</strong>
+              <small>只含有問題或讀取未完成的商品</small>
+            </button>
+            <button
+              className="content-audit-export-primary content-audit-export-all"
+              type="button"
+              data-export-scope="all"
+              onClick={() => void exportWorkbook("all")}
+              disabled={snapshot.rows.length === 0 || !snapshot.exportId || Boolean(exporting)}
+            >
+              <span aria-hidden="true">全</span>
+              <strong>{exporting === "all"
+                ? "正在匯出完整模板…"
+                : `完整模板 · 匯出全部 ${snapshot.rows.length.toLocaleString()} 個商品 Excel`}</strong>
+              <small>包含正常商品，可直接當批次更新模板</small>
+            </button>
+          </div>
+          <p className="content-audit-export-local-note">兩份都只在這台電腦建立；任一份都可回傳更新。</p>
         </>
       )}
       {state === "done" && snapshot && summary && (
         <section className="content-audit-roundtrip" aria-label="回傳 Excel 批次更新文案">
           <div>
             <strong>回傳任一份 Excel 批次更新</strong>
-            <p>
-              「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺藍或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。
-              預檢全部通過，或你明確核對符合條件的 INVALID SKU 後，才會要求一次 Touch ID／Windows Hello；這不代表 INVALID 已通過，若任一筆遭拒或結果不明會停止後續且不盲目重送。
-            </p>
+            <p>選擇剛才匯出的任一份 .xlsx，先預覽變更，不會立即寫入 Amazon。</p>
           </div>
           <ContentAuditWorkbookFilePicker
             fileName={workbookFile?.name ?? null}
