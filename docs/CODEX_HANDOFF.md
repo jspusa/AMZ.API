@@ -4,7 +4,7 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-31 v0.1.44 B2B accepted／verified 收斂與健檢介面整理（工作樹；尚未發布／安裝；未執行新的 Amazon 寫入）
+### 2026-08-31 v0.1.44 B2B accepted／verified 收斂與健檢介面整理（已合併／Pages 上線／Mac 安裝；未執行新的 Amazon 寫入）
 
 使用者以 Seller Central 獨立核對先前對 exact US FBA SKU `1ABRD003A0` 送出的 B2B 更新：Business Price 與四階 percent 折扣最終均已出現在後台，但重新整理接近 10 分鐘才看見結果。這證明前版把短時間 canonical readback 尚未相符顯示為「更新未完成」太早；Amazon accepted receipt 只能證明已受理，不能同時冒充失敗或 live verified。接近 10 分鐘是本次觀察，不是 Amazon 保證的同步時限。v0.1.44 的工程工作本身沒有呼叫 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH 或任何 mutation。
 
@@ -16,7 +16,15 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 
 Renderer 同步整理資訊層級。B2B audit 清單與單 SKU editor 成為同一 drawer 內互斥的兩個內容 view，editor 自己捲動、固定提供返回健檢結果，並保留清單位置，不再疊第二個 modal。文案、圖片、A+、未綁變體、訂閱、B2B 與廣告健檢優先顯示摘要、進度、主要操作與結果，長篇判定規則／資料來源／安全範圍統一收進「顯示詳細說明」。文案 Excel 的「待確認清單」與「全部商品完整模板」維持同一 main-owned snapshot／round-trip 證據與共用回傳入口，但下載按鈕改用不同名稱、色彩與視覺層級，避免把兩種 scope 看成同一份檔案。
 
-package 已升為 0.1.44；本機完整 `npm run check` 通過 244 個測試檔／2,448 tests、TypeScript、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Spec／Standards 最終複查均沒有剩餘 P0／P1／P2。arm64 本機 App directory package 已核對版本／build `0.1.44`、bundle `com.jspusa.amz-api` 與 deep strict ad-hoc codesign；`app.asar` SHA-256 為 `b052a7c3c66f406c0d845363715af9ae7f25ee3353fe04c65b4a2d076f48c1c3`。這些只證明 v0.1.44 工作樹、scripted adapter 與本機 package；尚未在此宣稱 PR、CI、Pages、正式 universal／Windows artifact、安裝或 live v0.1.44 行為已完成。完成後必須把 exact SHA、artifact／Pages／安裝證據補到本節；CI 與 scripted adapter 仍不能冒充 Amazon 實際同步或 Windows Hello 實機。
+package 已升為 0.1.44；本機完整 `npm run check` 通過 244 個測試檔／2,448 tests、TypeScript、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Spec／Standards 最終複查均沒有剩餘 P0／P1／P2。
+
+PR #175 已 squash merge；唯一綁定本次 v0.1.44 程式碼、Pages 與安裝成品的 main SHA 為 `336afc95d3a55957f6a57701d02d54cf68be407e`。exact-main Validate／Pages／macOS／Windows runs `33401401793`／`33401401810`／`33401401817`／`33401401848` 均成功，對應 jobs 為 `99518312518`／`99518312447`／`99518312053`／`99518312559`。Windows workflow 只證明 unsigned package、ASAR addon boundary 與 packaged Bridge smoke，不是真實 Windows 11 Hello／DPAPI 實機證據。
+
+live Pages 已直接下載核對：HTML／JS／CSS 分別為 917／1,850,937／302,371 bytes，SHA-256 為 `c381afc7f05dc703eb5db60f202650a9f40a133c48e1a23637605a6f54c8e95a`／`797c4f3ae3c38e19d7a57ffd8ed18aec49c2909800b0877672f9f69fa0ee2207`／`319c7fb55cff8b7c0e2b0a6d43482894ff4941c213edd974f44aa450bd8c98e9`；live 載入 `assets/index-D7FRFHcV.js` 與 `assets/index-BlSusPne.css`，三個檔案都和 exact production output byte-for-byte 相同。
+
+macOS artifact `9761619596` 名稱為 `AMZ.API-unsigned-336afc95d3a55957f6a57701d02d54cf68be407e`，468,118,545 bytes，GitHub digest 為 `sha256:801ea2cfacc24a1aa115d71ee735044899e22a3e31e26e759904b68c62d4ae1e`。DMG `AMZ.API-0.1.44-universal.dmg` 為 246,264,754 bytes、SHA-256 `56cc01a528c70d6f330665ac35ab9b6edcc76e05b349862817556673ee1229da`；universal ZIP 為 221,853,147 bytes、SHA-256 `399ccd5c83187614d7afe286c95d9ee8e2e1b96b7fd8e09d965489625f6a1f85`，兩者均匹配內附 checksum。ZIP CRC、DMG integrity、version／build 0.1.44、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過；DMG／ZIP 內 `app.asar` SHA-256 同為 `ed45029a873d3f205d28b41b87749db1cd29f71510f4b78ea796575ebd0af098`。exact App 已安裝到 `/Applications/AMZ.API.app`，安裝後版本、簽章與 `app.asar` 再次匹配，且正在執行的 App 回報 0.1.44；原 v0.1.43 可復原地保留為 `/Applications/AMZ.API-v0.1.43-backup.app`，既有 userData／Keychain vault 未清除或重建。
+
+本節仍沒有 Apple Developer ID／notarization、Windows Authenticode、正式 GitHub desktop release、公開或私有 update feed、Supply Boss 上傳、Windows 實機或 live v0.1.44 Amazon Validation Preview／Touch ID／Windows Hello／PATCH／readback。安裝與啟動沒有觸發 Amazon 健檢或寫入；使用者在 Seller Central 看見先前 exact SKU `1ABRD003A0` 的 Business Price 13.99 與 5／10／15／20% 階梯實際單價 13.29／12.59／11.89／11.19，是前一版既有一次 accepted mutation 約 10 分鐘後同步完成的獨立實際證據，不是本次開發或安裝另行重送。
 
 ### 2026-08-31 v0.1.43 B2B 最低價護欄自動下調（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
