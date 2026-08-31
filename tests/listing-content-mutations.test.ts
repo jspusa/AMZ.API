@@ -174,6 +174,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "INVALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-INVALID-PREVIEW",
         issues: [issue],
       }),
@@ -249,6 +250,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "INVALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-PRIVATE-INVALID-PREVIEW",
         issues: [{
           code: "8541",
@@ -332,6 +334,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status,
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-UNSAFE-OVERRIDE-PREVIEW",
         issues,
       }),
@@ -400,6 +403,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "INVALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-INVALID-PREVIEW",
         issues: [validationIssue],
       }),
@@ -476,6 +480,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "VALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-MALFORMED-PREVIEW",
         issues: [],
       }),
@@ -565,6 +570,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "VALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-PREVIEW",
         issues: [],
       }),
@@ -584,10 +590,23 @@ describe("W06 Listing Content mutation owner", () => {
     });
     const idempotencyKey = "w06-content-native-cancel";
 
-    expect((await owner.handle({
+    const previewResponse = await owner.handle({
       operation: "preview",
       request: mutationRequest("POST", idempotencyKey),
-    })).status).toBe(200);
+    });
+    expect(previewResponse.status).toBe(200);
+    expect(Object.keys(bodyValue(previewResponse)).sort()).toEqual([
+      "changedFields",
+      "issues",
+      "marketplaceId",
+      "mode",
+      "notice",
+      "previous",
+      "requested",
+      "sellerSku",
+      "status",
+      "validatedAt",
+    ].sort());
     const response = await owner.handle({
       operation: "commit",
       request: mutationRequest("PATCH", idempotencyKey),
@@ -632,6 +651,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "VALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-PREVIEW",
         issues: [],
       }),
@@ -697,6 +717,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "VALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-PREVIEW",
         issues: [],
       }),
@@ -759,6 +780,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "VALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-RESTART-PREVIEW",
         issues: [],
       }),
@@ -933,6 +955,7 @@ describe("W06 Listing Content mutation owner", () => {
       validationPreview: async () => ({
         status: "VALID",
         canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
         requestId: "REQ-W06-PREVIEW",
         issues: [],
       }),

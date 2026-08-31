@@ -8,6 +8,7 @@ import type {
   UpdateStatus,
 } from "../../shared/contracts";
 import { MARKETPLACES } from "../../shared/marketplaces";
+import NotebookUpdateProgress from "./components/notebook-update-progress";
 
 const REGION_LABELS: Record<SpApiRegion, string> = {
   na: "北美 NA",
@@ -74,6 +75,11 @@ export default function ConnectionPanel({
   const [adsTest, setAdsTest] = useState<AdvertisingConnectionTestResult | null>(null);
   const [version, setVersion] = useState<string>("—");
   const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
+  const [supportsBackgroundUpdates] = useState(
+    () =>
+      typeof window === "undefined" ||
+      typeof window.fbaOS.updates.current === "function",
+  );
 
   const refreshSummary = useCallback(async () => {
     const [nextSummary, nextAdsSummary, nextVersion] = await Promise.all([
@@ -87,8 +93,26 @@ export default function ConnectionPanel({
   }, []);
 
   useEffect(() => {
+    let receivedLiveStatus = false;
+    const stopListening = window.fbaOS.updates.onStatus((status) => {
+      receivedLiveStatus = true;
+      setUpdate(status);
+      if (status.state === "error") {
+        setBusy((currentBusy) =>
+          currentBusy === "update" ? null : currentBusy,
+        );
+      }
+    });
     void refreshSummary().catch((loadError) => setError(cleanError(loadError)));
-    return window.fbaOS.updates.onStatus(setUpdate);
+    const currentStatus = window.fbaOS.updates.current?.();
+    if (currentStatus) {
+      void currentStatus
+        .then((status) => {
+          if (!receivedLiveStatus) setUpdate(status);
+        })
+        .catch((loadError) => setError(cleanError(loadError)));
+    }
+    return stopListening;
   }, [refreshSummary]);
 
   useEffect(() => {
@@ -224,6 +248,17 @@ export default function ConnectionPanel({
     }
   };
 
+  const installUpdate = async () => {
+    setBusy("update");
+    setError(null);
+    try {
+      await window.fbaOS.updates.install();
+    } catch (installError) {
+      setError(cleanError(installError));
+      setBusy(null);
+    }
+  };
+
   return (
     <>
       {showTrigger && (
@@ -331,9 +366,45 @@ export default function ConnectionPanel({
             </div>
 
             <footer className="connection-panel-footer">
-              <div className="connection-panel-release"><strong>Notebook 鑰匙版本</strong><small>{update.state === "downloaded" ? `安全更新 v${update.version} 已下載` : update.message ?? `v${version} · GitHub 介面自動保持最新；本機憑證不會隨介面更新上傳。`}</small></div>
+              <div className="connection-panel-release">
+                <strong>Notebook 鑰匙版本</strong>
+                <small>
+                  {!supportsBackgroundUpdates
+                    ? `v${version} · 請先從 Supply Boss 完成最後一次安全安裝；之後才會背景更新。`
+                    : update.state === "downloaded"
+                    ? `安全更新 v${update.version} 已下載，等你決定何時重啟。`
+                    : update.state === "checking"
+                      ? `v${version} · 正在背景檢查安全更新…`
+                      : update.state === "available"
+                        ? `找到安全更新 v${update.version}，正在準備背景下載…`
+                        : update.state === "downloading"
+                          ? `v${version} · 安全更新 v${update.version ?? "新版"} 正在背景下載。`
+                          : update.message ?? `v${version} · GitHub 介面自動保持最新；本機憑證不會隨介面更新上傳。`}
+                </small>
+                <NotebookUpdateProgress status={update} />
+              </div>
               <div className="connection-panel-footer-actions">
-                {update.state === "downloaded" ? <button type="button" onClick={() => void window.fbaOS.updates.install()}>更新並重啟</button> : <button type="button" onClick={() => void checkUpdate()} disabled={busy === "update"}>{busy === "update" ? "檢查中…" : "檢查 Notebook 鑰匙更新"}</button>}
+                {!supportsBackgroundUpdates ? (
+                  <button type="button" disabled>
+                    需先安裝簽章版
+                  </button>
+                ) : update.state === "downloaded" ? (
+                  <button type="button" onClick={() => void installUpdate()} disabled={busy === "update"}>
+                    {busy === "update" ? "正在安全重啟…" : "更新並重啟"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void checkUpdate()}
+                    disabled={busy === "update" || update.state === "checking" || update.state === "available" || update.state === "downloading"}
+                  >
+                    {update.state === "downloading"
+                      ? "背景下載中…"
+                      : update.state === "checking" || update.state === "available" || busy === "update"
+                        ? "檢查中…"
+                        : "立即檢查更新"}
+                  </button>
+                )}
                 {summary?.hasVault && <button type="button" className="danger-link" onClick={() => void clearCredentials()} disabled={Boolean(busy)}>清除本機憑證</button>}
               </div>
             </footer>

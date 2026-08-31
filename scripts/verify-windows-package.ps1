@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param()
+param(
+  [ValidateSet("Unsigned", "Signed")]
+  [string]$SignatureMode = "Unsigned"
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -9,6 +12,7 @@ $releaseDirectory = Join-Path $repositoryRoot "release"
 $unpackedDirectory = Join-Path $releaseDirectory "win-unpacked"
 $appExecutable = Join-Path $unpackedDirectory "AMZ.API.exe"
 $asarPath = Join-Path $unpackedDirectory "resources\app.asar"
+$appUpdatePath = Join-Path $unpackedDirectory "resources\app-update.yml"
 $installerPath = Join-Path $releaseDirectory "AMZ.API-Notebook-Key-Windows-x64-Setup.exe"
 $zipPath = Join-Path $releaseDirectory "AMZ.API-Notebook-Key-Windows-x64.zip"
 $checksumsPath = Join-Path $releaseDirectory "SHA256SUMS.txt"
@@ -56,10 +60,72 @@ if (-not $productVersion.StartsWith($package.version, [StringComparison]::Ordina
   throw "Packaged app version '$productVersion' does not match package version '$($package.version)'."
 }
 
-foreach ($unsignedExecutable in @($appExecutable, $addonPath, $installerPath)) {
-  $signature = Get-AuthenticodeSignature -FilePath $unsignedExecutable
-  if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
-    throw "Internal Windows artifact must remain explicitly unsigned; $unsignedExecutable reported $($signature.Status)."
+$publisherThumbprint = $null
+if ($SignatureMode -eq "Unsigned") {
+  foreach ($unsignedExecutable in @($appExecutable, $addonPath, $installerPath)) {
+    $signature = Get-AuthenticodeSignature -FilePath $unsignedExecutable
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
+      throw "Internal Windows artifact must remain explicitly unsigned; $unsignedExecutable reported $($signature.Status)."
+    }
+  }
+}
+else {
+  $signedArtifacts = @($appExecutable, $installerPath)
+  $publisherSignatures = foreach ($signedArtifact in $signedArtifacts) {
+    $signature = Get-AuthenticodeSignature -FilePath $signedArtifact
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+      throw "Publisher-signed artifact is not Authenticode-valid: $signedArtifact reported $($signature.Status)."
+    }
+    if ($null -eq $signature.SignerCertificate) {
+      throw "Publisher-signed artifact has no signer certificate: $signedArtifact"
+    }
+    if ($null -eq $signature.TimeStamperCertificate) {
+      throw "Publisher-signed artifact has no trusted timestamp: $signedArtifact"
+    }
+    $signature
+  }
+  $publisherThumbprints = @(
+    $publisherSignatures |
+      ForEach-Object { $_.SignerCertificate.Thumbprint } |
+      Sort-Object -Unique
+  )
+  if ($publisherThumbprints.Count -ne 1) {
+    throw "App and installer must use one exact Authenticode publisher identity."
+  }
+  $publisherThumbprint = $publisherThumbprints[0]
+
+  if (-not (Test-Path -LiteralPath $appUpdatePath -PathType Leaf)) {
+    throw "Publisher-signed package is missing app-update.yml."
+  }
+  $publisherName = $publisherSignatures[0].SignerCertificate.GetNameInfo(
+    [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+    $false
+  )
+  $readPublisherScript = @'
+const fs = require("node:fs");
+const yaml = require("js-yaml");
+const document = yaml.load(fs.readFileSync(process.argv[1], "utf8"));
+process.stdout.write(JSON.stringify(document?.publisherName ?? null));
+'@
+  $publisherJson = & node -e $readPublisherScript $appUpdatePath
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to parse app-update.yml publisher metadata."
+  }
+  try {
+    $metadataPublisherNames = @($publisherJson | ConvertFrom-Json)
+  }
+  catch {
+    throw "app-update.yml publisher metadata is malformed."
+  }
+  if (
+    $metadataPublisherNames.Count -ne 1 -or
+    -not [string]::Equals(
+      [string]$metadataPublisherNames[0],
+      $publisherName,
+      [System.StringComparison]::Ordinal
+    )
+  ) {
+    throw "app-update.yml is not bound to the exact Authenticode publisher name."
   }
 }
 
@@ -135,11 +201,27 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "Unable to extract the Windows Hello manifest from app.asar."
   }
+  $packagedMetadataRaw = @(
+    & $nodePath $extractScriptPath $asarModulePath $asarPath "package.json"
+  ) -join ""
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to extract package metadata from app.asar."
+  }
 }
 finally {
   Remove-Item -LiteralPath $extractScriptPath -Force -ErrorAction SilentlyContinue
 }
 $manifest = $manifestRaw | ConvertFrom-Json
+$packagedMetadata = $packagedMetadataRaw | ConvertFrom-Json
+$expectedUpdateChannel = if ($SignatureMode -eq "Signed") {
+  "publisher-signed-v1"
+}
+else {
+  "disabled"
+}
+if ($packagedMetadata.amzApiUpdateChannel -cne $expectedUpdateChannel) {
+  throw "Packaged update channel must be '$expectedUpdateChannel' for $SignatureMode verification."
+}
 $manifestProperties = @($manifest.PSObject.Properties.Name)
 if (
   $manifestProperties.Count -ne 2 -or
@@ -273,6 +355,15 @@ $archiveExecutable = Get-ChildItem -LiteralPath $archiveDirectory `
 if ($null -eq $archiveExecutable) {
   throw "Portable ZIP does not contain AMZ.API.exe."
 }
+if ($SignatureMode -eq "Signed") {
+  $archiveSignature = Get-AuthenticodeSignature -FilePath $archiveExecutable.FullName
+  if (
+    $archiveSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+    $archiveSignature.SignerCertificate.Thumbprint -cne $publisherThumbprint
+  ) {
+    throw "Portable ZIP app is not signed by the verified publisher identity."
+  }
+}
 
 Invoke-PackagedSmoke -Executable $appExecutable -Name "win-unpacked"
 Invoke-PackagedSmoke -Executable $archiveExecutable.FullName -Name "zip"
@@ -296,6 +387,15 @@ if (-not (Test-Path -LiteralPath $installedExecutable -PathType Leaf)) {
 $installedVersion = (Get-Item -LiteralPath $installedExecutable).VersionInfo.ProductVersion
 if (-not $installedVersion.StartsWith($package.version, [StringComparison]::Ordinal)) {
   throw "Installed app version '$installedVersion' does not match package version '$($package.version)'."
+}
+if ($SignatureMode -eq "Signed") {
+  $installedSignature = Get-AuthenticodeSignature -FilePath $installedExecutable
+  if (
+    $installedSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+    $installedSignature.SignerCertificate.Thumbprint -cne $publisherThumbprint
+  ) {
+    throw "Installed app is not signed by the verified publisher identity."
+  }
 }
 $uninstaller = Get-ChildItem -LiteralPath $installDirectory `
   -File `
@@ -332,6 +432,6 @@ $checksumLines = @($installerPath, $zipPath) |
   (New-Object System.Text.UTF8Encoding($false))
 )
 
-Write-Host "Windows x64 win-unpacked, ZIP and installed NSIS Bridge/addon smoke passed without credentials."
+Write-Host "Windows x64 $SignatureMode win-unpacked, ZIP and installed NSIS Bridge/addon smoke passed without Amazon credentials."
 Write-Host "Windows Hello AMD64 N-API export and packed SHA-256 manifest were verified."
 Write-Host "CI did not prove a real Windows Hello prompt or Windows 11 Pro user-device result."

@@ -148,6 +148,42 @@ describe("FBA listing content export completeness", () => {
           ],
         });
       }
+      if (
+        url.pathname ===
+          "/listings/2021-08-01/items/FAKE_SELLER_ID_NA/NO-AVAIL"
+      ) {
+        return jsonResponse(200, {
+          sku: "NO-AVAIL",
+          summaries: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin: "B0AVAIL001",
+            productType: "PET_FOOD",
+            itemName: "Listings availability title",
+          }],
+          attributes: {
+            item_name: [{
+              marketplace_id: MARKETPLACE_ID,
+              language_tag: "en_US",
+              value: "Listings availability title",
+            }],
+            title_differentiation: [{
+              marketplace_id: MARKETPLACE_ID,
+              language_tag: "en_US",
+              value: "Listings item highlight",
+            }],
+            bullet_point: [{
+              marketplace_id: MARKETPLACE_ID,
+              language_tag: "en_US",
+              value: "Listings bullet point",
+            }],
+            product_description: [{
+              marketplace_id: MARKETPLACE_ID,
+              language_tag: "en_US",
+              value: "Listings product description",
+            }],
+          },
+        });
+      }
       throw new Error(`Unexpected request: ${url.href}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -239,6 +275,23 @@ describe("FBA listing content export completeness", () => {
                 { fulfillmentChannelCode: "AMAZON_NA", quantity: 3 },
               ],
             },
+          ],
+        });
+      }
+      if (
+        url.pathname ===
+          "/listings/2021-08-01/items/FAKE_SELLER_ID_NA/NO-ATTR"
+      ) {
+        return jsonResponse(200, {
+          sku: "NO-ATTR",
+          summaries: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin: "B0ATTR0002",
+            productType: "PET_FOOD",
+            itemName: "Listings attributes title",
+          }],
+          fulfillmentAvailability: [
+            { fulfillmentChannelCode: "AMAZON_NA", quantity: 3 },
           ],
         });
       }

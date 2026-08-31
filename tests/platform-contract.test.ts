@@ -2,9 +2,9 @@ import { access, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("release and desktop platform contracts", () => {
-  it("pins the signed macOS release actions and audits before signing or publishing", async () => {
+  it("uses one pinned publisher-signed release workflow for both desktop platforms", async () => {
     const workflow = await readFile(
-      new URL("../.github/workflows/mac-release.yml", import.meta.url),
+      new URL("../.github/workflows/desktop-release.yml", import.meta.url),
       "utf8",
     );
 
@@ -17,12 +17,9 @@ describe("release and desktop platform contracts", () => {
     expect(workflow).not.toContain("actions/checkout@v6");
     expect(workflow).not.toContain("actions/setup-node@v6");
 
-    const validate = workflow.indexOf("npm run check");
-    const audit = workflow.indexOf("npm audit --omit=dev");
-    const signAndPublish = workflow.indexOf("Sign, notarize and upload draft release");
-    expect(validate).toBeGreaterThan(-1);
-    expect(audit).toBeGreaterThan(validate);
-    expect(signAndPublish).toBeGreaterThan(audit);
+    await expect(
+      access(new URL("../.github/workflows/mac-release.yml", import.meta.url)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("uses Node 24 as the repository and lockfile runtime contract", async () => {
@@ -39,6 +36,39 @@ describe("release and desktop platform contracts", () => {
     expect(packageJson.engines.node).toBe("24.x");
     expect(packageLock.packages[""].engines.node).toBe("24.x");
     expect(readme).toContain("需求：Node.js 24");
+  });
+
+  it("keeps the Pages console compatible with a pre-bootstrap Notebook Key", async () => {
+    const [contracts, connectionPanel] = await Promise.all([
+      readFile(new URL("../src/shared/contracts.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL("../src/renderer/src/connection-panel.tsx", import.meta.url),
+        "utf8",
+      ),
+    ]);
+
+    expect(contracts).toContain("current?(): Promise<UpdateStatus>");
+    expect(connectionPanel).toContain(
+      'typeof window.fbaOS.updates.current === "function"',
+    );
+    expect(connectionPanel).toContain("需先安裝簽章版");
+    expect(connectionPanel).toContain("完成最後一次安全安裝");
+    expect(connectionPanel).toContain('status.state === "error"');
+    expect(connectionPanel).toContain(
+      'currentBusy === "update" ? null : currentBusy',
+    );
+  });
+
+  it("closes protected IPC operations before handing off an update install", async () => {
+    const main = await readFile(
+      new URL("../src/main/index.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(main).toContain("desktopInstallGate.begin()");
+    expect(
+      main.match(/desktopInstallGate\.assertOperationAllowed\(\);/gu),
+    ).toHaveLength(3);
   });
 
   it("does not expose the retired operating-system spellchecker bridge", async () => {

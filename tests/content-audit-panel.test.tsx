@@ -3,13 +3,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
   ContentAuditWorkbookFilePicker,
+  ContentWorkbookBatchBlockedFailureCard,
   ContentWorkbookBatchFailureCard,
   ContentWorkbookBatchPreviewCard,
+  ContentWorkbookBatchResultCard,
   contentWorkbookBatchCommitBody,
   consumeContentAuditWorkbookInput,
   contentAuditWorkbookSelection,
+  parseContentWorkbookBatchBlockedFailure,
   parseContentWorkbookBatchFailure,
   parseContentWorkbookBatchPreview,
+  parseContentWorkbookBatchResult,
   parseContentAuditSnapshot,
   quickEditAvailabilityForRow,
   quickEditFocusForRow,
@@ -344,6 +348,7 @@ describe("global FBA content audit panel", () => {
           message: "Amazon 提醒：請再次確認產品敘述。",
           attributeNames: ["product_description"],
         }],
+        exactBulletReplacement: null,
         validationStatus: "VALID",
         overrideAllowed: false,
       }],
@@ -369,7 +374,9 @@ describe("global FBA content audit panel", () => {
     expect(locked).toContain("Original bullet two");
     expect(locked).toContain("Requested full description");
     expect(locked).toContain("Amazon Validation Preview 提醒");
-    expect(locked).toContain("我已核對上述每個 SKU 的完整原值、更新值與 Amazon 提醒");
+    expect(locked).toContain(
+      "我已核對上述每個將寫入 SKU 的完整原值、更新值、Amazon 提醒與會被刪除的第 6 項後產品要點",
+    );
     expect(locked).toContain('class="price-primary-button" disabled=""');
     expect(locked).not.toContain("預檢未通過，仍要上傳更新");
     expect(preview.status).toBe("READY");
@@ -406,6 +413,338 @@ describe("global FBA content audit panel", () => {
     }, "ATVPDKIKX0DER")).toThrow("欄位清單與前後內容不一致");
   });
 
+  it("shows every hidden same-language bullet byte-exactly when an Excel update will remove it", async () => {
+    const firstFive = [
+      "A".repeat(2_001),
+      "B".repeat(5_000),
+      "Visible Amazon bullet 3",
+      "Visible Amazon bullet 4",
+      "Visible Amazon bullet 5",
+    ];
+    const hidden = [
+      "Hidden  Amazon\tbullet\n6",
+      ...Array.from(
+        { length: 4 },
+        (_, index) => `Hidden legacy Amazon bullet ${index + 7}`,
+      ),
+    ];
+    const raw = {
+      previewId: "preview-content-overflow-disclosure-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      expiresAt: "2026-08-31T10:00:00.000Z",
+      status: "READY",
+      changes: [{
+        sellerSku: "OVERFLOW-SKU-001",
+        changedFields: ["title", "bulletPoints"],
+        previous: {
+          title: "Amazon original title",
+          itemHighlight: "Original highlight",
+          bulletPoints: firstFive,
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        requested: {
+          title: "Excel requested title",
+          itemHighlight: "Original highlight",
+          bulletPoints: firstFive,
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        exactBulletReplacement: {
+          languageTag: "en_US",
+          currentExactLanguageBulletPoints: [...firstFive, ...hidden],
+          requestedExactLanguageBulletPoints: firstFive,
+          removedOverflowBulletPoints: hidden,
+        },
+        issues: [],
+        validationStatus: "VALID",
+        overrideAllowed: false,
+      }],
+      blockedChanges: [],
+      validationOverride: { required: false, sellerSkus: [] },
+      notice: "預檢完成，尚未寫入。",
+    };
+    const preview = parseContentWorkbookBatchPreview(
+      raw,
+      "ATVPDKIKX0DER",
+    );
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchPreviewCard
+        preview={preview}
+        busy={false}
+        acknowledged={false}
+        overrideAcknowledged={false}
+        onAcknowledgedChange={vi.fn()}
+        onOverrideAcknowledgedChange={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+    const stylesheet = await readRendererStylesheet();
+
+    expect(markup).toContain("本次會刪除 Amazon 目前第 6 項後");
+    expect(markup).toContain("第 6–10 項 en_US 產品要點");
+    hidden.forEach((bullet) => expect(markup).toContain(bullet));
+    expect(markup).toContain(
+      'class="content-audit-exact-bullet-removals"',
+    );
+    expect(stylesheet).toMatch(
+      /\.content-audit-exact-bullet-removals\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*pre-wrap;/su,
+    );
+    expect(markup).toContain("Amazon 原值（第 1–5 項）");
+    expect(markup).toContain("會被刪除的第 6 項後產品要點");
+    expect(contentWorkbookBatchCommitBody(
+      preview,
+      "ATVPDKIKX0DER",
+      "content-batch-overflow-ack-001",
+    )).toEqual({
+      marketplaceId: "ATVPDKIKX0DER",
+      previewId: "preview-content-overflow-disclosure-001",
+      idempotencyKey: "content-batch-overflow-ack-001",
+      exactBulletReplacement: {
+        acknowledged: true,
+        sellerSkus: ["OVERFLOW-SKU-001"],
+      },
+    });
+
+    expect(() => parseContentWorkbookBatchPreview({
+      ...raw,
+      changes: [{
+        ...raw.changes[0],
+        exactBulletReplacement: {
+          ...raw.changes[0]!.exactBulletReplacement,
+          removedOverflowBulletPoints: hidden.slice(1),
+        },
+      }],
+    }, "ATVPDKIKX0DER")).toThrow("刪除明細與前後內容不一致");
+    const legacyChange = { ...raw.changes[0] } as Record<string, unknown>;
+    delete legacyChange.exactBulletReplacement;
+    expect(() => parseContentWorkbookBatchPreview({
+      ...raw,
+      changes: [legacyChange],
+    }, "ATVPDKIKX0DER")).toThrow(/Notebook Key.*更新/u);
+    for (const unsafeControl of ["\u200b", "\u202e"]) {
+      const unsafeHidden = [...hidden];
+      unsafeHidden[0] = `Hidden${unsafeControl}Amazon bullet 6`;
+      expect(() => parseContentWorkbookBatchPreview({
+        ...raw,
+        changes: [{
+          ...raw.changes[0],
+          exactBulletReplacement: {
+            ...raw.changes[0]!.exactBulletReplacement,
+            currentExactLanguageBulletPoints: [
+              ...firstFive,
+              ...unsafeHidden,
+            ],
+            removedOverflowBulletPoints: unsafeHidden,
+          },
+        }],
+      }, "ATVPDKIKX0DER")).toThrow("產品要點刪除明細格式無效");
+    }
+    const overMaximum = "X".repeat(5_001);
+    expect(() => parseContentWorkbookBatchPreview({
+      ...raw,
+      changes: [{
+        ...raw.changes[0],
+        previous: {
+          ...raw.changes[0]!.previous,
+          bulletPoints: [overMaximum, ...firstFive.slice(1)],
+        },
+        requested: {
+          ...raw.changes[0]!.requested,
+          bulletPoints: [overMaximum, ...firstFive.slice(1)],
+        },
+        exactBulletReplacement: {
+          ...raw.changes[0]!.exactBulletReplacement,
+          currentExactLanguageBulletPoints: [
+            overMaximum,
+            ...firstFive.slice(1),
+            ...hidden,
+          ],
+          requestedExactLanguageBulletPoints: [
+            overMaximum,
+            ...firstFive.slice(1),
+          ],
+        },
+      }],
+    }, "ATVPDKIKX0DER")).toThrow("原值或更新值格式無效");
+  });
+
+  it("shows incomplete Excel edits as explicit non-writing rows while safe changes remain actionable", () => {
+    const preview = parseContentWorkbookBatchPreview({
+      previewId: "preview-content-partial-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      expiresAt: "2026-08-31T10:00:00.000Z",
+      status: "READY",
+      changes: [{
+        sellerSku: "SAFE-SKU-001",
+        changedFields: ["title", "bulletPoints"],
+        previous: {
+          title: "Safe original title",
+          itemHighlight: "Safe highlight",
+          bulletPoints: ["Safe bullet"],
+          productDescription: "Safe description",
+          ingredients: "Turkey",
+        },
+        requested: {
+          title: "Safe requested title",
+          itemHighlight: "Safe highlight",
+          bulletPoints: ["Safe bullet"],
+          productDescription: "Safe description",
+          ingredients: "Turkey",
+        },
+        issues: [],
+        exactBulletReplacement: null,
+        validationStatus: "VALID",
+        overrideAllowed: false,
+      }],
+      blockedChanges: [{
+        sellerSku: "OUT-OF-STOCK-SKU",
+        code: "CONTENT_READ_INCOMPLETE",
+        message: "此列未納入本次更新且不會寫入 Amazon。",
+        changedFields: ["title"],
+        previous: {
+          title: "Incomplete scan title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        requested: {
+          title: "Requested but skipped title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+      }],
+      validationOverride: { required: false, sellerSkus: [] },
+      notice: "1 個 SKU 尚未寫入；另有 1 個 SKU 已略過。",
+    }, "ATVPDKIKX0DER");
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchPreviewCard
+        preview={preview}
+        busy={false}
+        acknowledged
+        overrideAcknowledged={false}
+        onAcknowledgedChange={vi.fn()}
+        onOverrideAcknowledgedChange={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain("已略過 1 個原掃描未完整的 SKU");
+    expect(markup).toContain("OUT-OF-STOCK-SKU");
+    expect(markup).toContain("健檢取得的原值");
+    expect(markup).toContain("Excel 更新值（本次略過）");
+    expect(markup).toContain("Requested but skipped title");
+    expect(markup).toContain("一次確認並更新 1 個 SKU");
+    expect(markup).toContain("其餘已納入預檢的 SKU 可依上方結果繼續核對");
+    expect(contentWorkbookBatchCommitBody(
+      preview,
+      "ATVPDKIKX0DER",
+      "content-batch-key-partial-001",
+    )).toEqual({
+      marketplaceId: "ATVPDKIKX0DER",
+      previewId: "preview-content-partial-001",
+      idempotencyKey: "content-batch-key-partial-001",
+    });
+
+    expect(() => parseContentWorkbookBatchPreview({
+      ...preview,
+      blockedChanges: [{
+        ...preview.blockedChanges[0],
+        sellerSku: "SAFE-SKU-001",
+      }],
+    }, "ATVPDKIKX0DER")).toThrow("更新與略過 SKU 清單重複");
+    expect(() => parseContentWorkbookBatchPreview({
+      ...preview,
+      blockedChanges: [{
+        ...preview.blockedChanges[0],
+        changedFields: ["title", "bulletPoints"],
+      }],
+    }, "ATVPDKIKX0DER")).toThrow("略過欄位清單與前後內容不一致");
+  });
+
+  it("shows exact skipped diffs when every edited Excel row is incomplete", () => {
+    const failure = parseContentWorkbookBatchBlockedFailure({
+      code: "CONTENT_READ_INCOMPLETE",
+      message: "1 個已編輯 SKU 的 Amazon 原文在健檢時未完整讀取。",
+      writeCount: 0,
+      blockedChanges: [{
+        sellerSku: "ALL-BLOCKED-SKU",
+        code: "CONTENT_READ_INCOMPLETE",
+        message: "此列未納入本次更新且不會寫入 Amazon。",
+        changedFields: ["title"],
+        previous: {
+          title: "Incomplete scan title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        requested: {
+          title: "Requested but skipped title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+      }],
+    });
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchBlockedFailureCard failure={failure} />,
+    );
+
+    expect(markup).toContain("全部略過且沒有寫入 Amazon");
+    expect(markup).toContain("ALL-BLOCKED-SKU");
+    expect(markup).toContain("Incomplete scan title");
+    expect(markup).toContain("Requested but skipped title");
+    expect(markup).not.toContain("一次確認並更新");
+  });
+
+  it("keeps skipped SKU evidence in the terminal batch receipt", () => {
+    const result = parseContentWorkbookBatchResult({
+      previewId: "preview-terminal-skipped-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      status: "COMPLETED",
+      rows: [{ sellerSku: "SAFE-SKU-001", state: "verified", error: null }],
+      blockedChanges: [{
+        sellerSku: "TERMINAL-BLOCKED-SKU",
+        code: "CONTENT_READ_INCOMPLETE",
+        message: "此列未納入本次更新且不會寫入 Amazon。",
+        changedFields: ["title"],
+        previous: {
+          title: "Terminal skipped original",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        requested: {
+          title: "Terminal skipped request",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+      }],
+      notice: "已完成 1 個 SKU；另有 1 個 SKU 已略過且未寫入。",
+    }, "ATVPDKIKX0DER");
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchResultCard result={result} />,
+    );
+
+    expect(markup).toContain("批次處理完成");
+    expect(markup).toContain("SAFE-SKU-001");
+    expect(markup).toContain("已由 Amazon 回讀驗證");
+    expect(markup).toContain("TERMINAL-BLOCKED-SKU");
+    expect(markup).toContain("原掃描未完整的 SKU 已略過且未寫入");
+    expect(markup).toContain("Terminal skipped request");
+  });
+
   it("requires an exact separate acknowledgement for an INVALID Amazon preview", () => {
     const raw = {
       previewId: "preview-content-invalid-001",
@@ -435,6 +774,7 @@ describe("global FBA content audit panel", () => {
           message: "Amazon 拒絕這個產品名稱。",
           attributeNames: ["item_name"],
         }],
+        exactBulletReplacement: null,
         validationStatus: "INVALID",
         overrideAllowed: true,
       }],
@@ -449,6 +789,7 @@ describe("global FBA content audit panel", () => {
     expect(preview.status).toBe("REQUIRES_VALIDATION_OVERRIDE");
     expect(preview.changes[0]).toMatchObject({
       sellerSku: "INVALID-SKU-001",
+      exactBulletReplacement: null,
       validationStatus: "INVALID",
       overrideAllowed: true,
       issues: [{
@@ -537,7 +878,7 @@ describe("global FBA content audit panel", () => {
         code: "PREVIEW_CHANGED",
         message: "Amazon 商品內容預檢證據已改變，請重新預檢。",
         requestId: null,
-        changedFields: ["title"],
+        changedFields: ["title", "bulletPoints"],
         previous: {
           title: "Amazon original title",
           itemHighlight: "Original highlight",
@@ -575,6 +916,84 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("Amazon 拒絕這個產品名稱");
     expect(markup).toContain("此失敗不可強制略過");
     expect(markup).not.toContain("仍要上傳更新");
+    expect(failure.blockedChanges).toEqual([]);
+  });
+
+  it("shows both hard preflight failures and skipped incomplete rows", () => {
+    const failure = parseContentWorkbookBatchFailure({
+      code: "CONTENT_BATCH_VALIDATION_FAILED",
+      message: "1 個 SKU 未通過預檢；整批仍為零寫入。",
+      writeCount: 0,
+      rows: [{
+        sellerSku: "FAILED-SKU-001",
+        code: "PREVIEW_CHANGED",
+        message: "Amazon 商品內容預檢證據已改變。",
+        requestId: null,
+        changedFields: ["title"],
+        previous: {
+          title: "Failed original title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Original bullet"],
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        requested: {
+          title: "Failed requested title",
+          itemHighlight: "Original highlight",
+          bulletPoints: ["Original bullet"],
+          productDescription: "Original description",
+          ingredients: "Turkey",
+        },
+        issues: [],
+        overrideAllowed: false,
+      }],
+      blockedChanges: [{
+        sellerSku: "BLOCKED-SKU-001",
+        code: "CONTENT_READ_INCOMPLETE",
+        message: "此列未納入本次更新且不會寫入 Amazon。",
+        changedFields: ["title"],
+        previous: {
+          title: "Incomplete original title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        requested: {
+          title: "Skipped requested title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+      }],
+    });
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchFailureCard failure={failure} />,
+    );
+
+    expect(markup).toContain("FAILED-SKU-001");
+    expect(markup).toContain("BLOCKED-SKU-001");
+    expect(markup).toContain("另有 1 個原掃描未完整的 SKU 已略過");
+    expect(markup).toContain("Incomplete original title");
+    expect(markup).toContain("Skipped requested title");
+
+    expect(() => parseContentWorkbookBatchFailure({
+      ...failure,
+      blockedChanges: [{
+        ...failure.blockedChanges[0],
+        sellerSku: "FAILED-SKU-001",
+      }],
+    })).toThrow("失敗與略過 SKU 清單重複");
+
+    expect(() => parseContentWorkbookBatchFailure({
+      ...failure,
+      blockedChanges: Array.from({ length: 500 }, (_, index) => ({
+        ...failure.blockedChanges[0],
+        sellerSku: `BLOCKED-LIMIT-${index + 1}`,
+      })),
+    })).toThrow("SKU 清單超過安全上限");
   });
 
   it("uses a whole-card yellow cue only when a visible missing-bullets issue exists", async () => {

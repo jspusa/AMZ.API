@@ -1,0 +1,76 @@
+.notebook-update-progress {
+  display: grid;
+  gap: 7px;
+  margin-top: 11px;
+  padding: 10px 11px 9px;
+  border: 1px solid #e4d8bd;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fffaf0, #fffdf9);
+}
+
+.notebook-update-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.connection-panel > footer .notebook-update-progress-heading strong {
+  color: #5b4931;
+  font-size: 8px;
+}
+
+.notebook-update-progress-heading span {
+  color: #a15d00;
+  font-size: 8px;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+}
+
+.notebook-update-progress-track {
+  position: relative;
+  height: 7px;
+  margin: 15px 18px 3px;
+  border-radius: 999px;
+  background: #e7e1d5;
+  box-shadow: inset 0 1px 2px rgba(70, 53, 28, .12);
+}
+
+.notebook-update-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #d77b00, #ffad2f);
+  transition: width 260ms ease;
+}
+
+.notebook-update-skater {
+  position: absolute;
+  z-index: 2;
+  bottom: 2px;
+  width: 46px;
+  height: 45px;
+  transform: translateX(-50%) scale(.58);
+  transform-origin: 50% 100%;
+  transition: left 320ms cubic-bezier(.22, .75, .24, 1);
+  pointer-events: none;
+}
+
+.notebook-update-skater.is-rolling .sales-skater-board::before,
+.notebook-update-skater.is-rolling .sales-skater-board::after {
+  animation: sales-skater-wheel 280ms linear infinite;
+}
+
+.connection-panel > footer .notebook-update-progress > small {
+  margin: 0;
+  color: #8a765d;
+  font-size: 7px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notebook-update-progress-fill,
+  .notebook-update-skater { transition: none; }
+
+  .notebook-update-skater.is-rolling .sales-skater-board::before,
+  .notebook-update-skater.is-rolling .sales-skater-board::after { animation: none; }
+}

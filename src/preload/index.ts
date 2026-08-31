@@ -67,6 +67,7 @@ const bridge: DesktopBridge = Object.freeze({
       ) as Promise<void>,
   }),
   updates: Object.freeze({
+    current: () => ipcRenderer.invoke("fba:update-current") as Promise<UpdateStatus>,
     check: () => ipcRenderer.invoke("fba:update-check") as Promise<UpdateStatus>,
     install: () => ipcRenderer.invoke("fba:update-install") as Promise<void>,
     onStatus: (listener: (status: UpdateStatus) => void) => {

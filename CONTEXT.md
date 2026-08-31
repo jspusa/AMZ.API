@@ -31,3 +31,15 @@ _Avoid_: Commit token, write receipt
 **Unknown Write Result**:
 A durable outcome meaning Amazon may have received a mutation but canonical evidence cannot yet prove success or rejection, so resend remains forbidden.
 _Avoid_: Failed write, retryable error
+
+**Control Console Release**:
+A GitHub Pages publication that changes the operator interface without changing the Notebook Key's local Amazon or security capabilities.
+_Avoid_: App update, desktop release
+
+**Notebook Key Release**:
+One versioned, publisher-signed desktop capability release built from the same source for macOS and Windows.
+_Avoid_: UI deployment, patch pack
+
+**Bootstrap Notebook Key**:
+The one manually installed publisher-signed Notebook Key that establishes the stable signing identity required for later background updates.
+_Avoid_: Every update, web reinstall

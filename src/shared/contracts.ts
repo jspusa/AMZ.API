@@ -156,6 +156,7 @@ export type DesktopBridge = {
     openSellerCentralInventory?(sellerSku: string): Promise<void>;
   };
   updates: {
+    current?(): Promise<UpdateStatus>;
     check(): Promise<UpdateStatus>;
     install(): Promise<void>;
     onStatus(listener: (status: UpdateStatus) => void): () => void;
