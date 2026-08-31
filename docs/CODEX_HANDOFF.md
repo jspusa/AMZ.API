@@ -12,7 +12,7 @@ v0.1.45 保留 App 內既有的完整逐項核對：exact SKU、所有欄位原�
 
 唯一改動是原生確認摘要的呈現方式。若逐 SKU 明細可在 120 字內，仍顯示原本的詳細摘要；超過時改由 main 依已鎖定計畫計算 bounded aggregate，只顯示總 SKU 數、高風險 SKU 數、將刪產品要點總數、`INVALID` SKU 數、「已在 App 逐項核對」與 Write Gate verification code，不接受 renderer 提供的計數，也不帶任意 Amazon 文字。使用者的 exact 8 SKU／14 項刪除情境已有 regression，證明 commit 會進入一次 Write Gate 原生確認而不再回 422；大量 `INVALID` 與單一超長公開 code 也改用相同 bounded summary。每 SKU ledgered single PATCH、known rejection／unknown 即停與 no-blind-retry 均未放寬。
 
-package 已升為 0.1.45。聚焦測試已通過文案 batch router、renderer、native confirmation 與 Write Gate 共 5 檔／106 tests；完整 `npm run check` 通過 244 個測試檔／2,448 tests、TypeScript、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Spec／Standards review、PR／CI、Pages、macOS／Windows artifacts 與 Mac 安裝仍待本輪後續完成。本輪尚未呼叫 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 mutation。
+package 已升為 0.1.45。聚焦測試已通過文案 batch router、renderer、native confirmation 與 Write Gate 共 5 檔／106 tests；完整 `npm run check` 通過 244 個測試檔／2,448 tests、TypeScript、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Standards review 找到的 active 文件衝突與 compact summary 省略 0 計數已修正並新增大型全零風險 regression；Spec／Standards 最終複查均無剩餘 P0／P1／P2／P3。PR／CI、Pages、macOS／Windows artifacts 與 Mac 安裝仍待本輪後續完成。本輪尚未呼叫 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 mutation。
 
 ### 2026-08-31 v0.1.44 B2B accepted／verified 收斂與健檢介面整理（已合併／Pages 上線／Mac 安裝；未執行新的 Amazon 寫入）
 
