@@ -236,12 +236,52 @@ describe("C01 Listings export route owner", () => {
     const owner = auditFlag === "audit"
       ? subject.contentDownload
       : subject.imageDownload;
-    expect(owner).toHaveBeenCalledWith({
-      marketplaceId: US,
-      exportId: CAPTURED.exportId,
-    });
+    expect(owner).toHaveBeenCalledWith(auditFlag === "audit"
+      ? {
+          marketplaceId: US,
+          exportId: CAPTURED.exportId,
+          scope: "attention",
+        }
+      : {
+          marketplaceId: US,
+          exportId: CAPTURED.exportId,
+        });
     expect(subject.capture).not.toHaveBeenCalled();
     expect(response).toBe(expected);
+  });
+
+  it("passes the explicit all-SKU content workbook scope to the content owner", async () => {
+    const subject = harness();
+
+    const response = await subject.routes.observe(request("GET", {
+      marketplaceId: US,
+      audit: "1",
+      download: "1",
+      exportId: CAPTURED.exportId,
+      scope: "all",
+    }));
+
+    expect(subject.contentDownload).toHaveBeenCalledWith({
+      marketplaceId: US,
+      exportId: CAPTURED.exportId,
+      scope: "all",
+    });
+    expect(response).toBe(CONTENT_DOWNLOAD);
+  });
+
+  it("rejects an unknown content workbook scope before calling the owner", async () => {
+    const subject = harness();
+
+    const response = await subject.routes.observe(request("GET", {
+      marketplaceId: US,
+      audit: "1",
+      download: "1",
+      exportId: CAPTURED.exportId,
+      scope: "everything",
+    }));
+
+    expect(response.status).toBe(400);
+    expect(subject.contentDownload).not.toHaveBeenCalled();
   });
 
   it.each([

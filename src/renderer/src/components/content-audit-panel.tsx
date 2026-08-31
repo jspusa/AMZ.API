@@ -244,14 +244,32 @@ function problemMessage(payload: ApiProblem, fallback: string): string {
 export function contentAuditWorkbookDownloadUrl(
   marketplaceId: string,
   exportId: string,
+  scope: "attention" | "all",
 ): string {
   const params = new URLSearchParams({
     marketplaceId,
     exportId,
     audit: "1",
     download: "1",
+    scope,
   });
   return `/api/sp-api/listing-content/export?${params}`;
+}
+
+export function assertContentAuditWorkbookDownloadEvidence(
+  response: Response,
+  scope: "attention" | "all",
+  expectedRowCount: number,
+): void {
+  if (scope !== "all") return;
+  if (
+    response.headers.get("x-content-audit-export-scope") !== "all" ||
+    response.headers.get("x-exported-fba-sku-count") !== String(expectedRowCount)
+  ) {
+    throw new Error(
+      "目前的 Notebook Key 尚未支援「全部商品文案」Excel；請先更新 AMZ.API App。",
+    );
+  }
 }
 
 function parseContentWorkbookValues(raw: unknown): ContentWorkbookValues {
@@ -2443,7 +2461,8 @@ export default function ContentAuditPanel({
   const [filter, setFilter] = useState<AuditFilter>(initialCache?.filter ?? "all");
   const [query, setQuery] = useState(initialCache?.query ?? "");
   const [error, setError] = useState<string | null>(initialJobError);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] =
+    useState<"attention" | "all" | null>(null);
   const [spellcheckNote, setSpellcheckNote] = useState<string | null>(
     initialCache?.spellcheckNote ?? null,
   );
@@ -2475,7 +2494,7 @@ export default function ContentAuditPanel({
     abortRef.current?.abort();
     setReply(null);
     setJob(null);
-    setExporting(false);
+    setExporting(null);
     const matchingJob = initialJob?.kind === "content" &&
         initialJob.marketplaceId === marketplaceId &&
         initialJob.mode === mode
@@ -2769,15 +2788,20 @@ export default function ContentAuditPanel({
     }
   };
 
-  const exportAttentionRows = async () => {
-    if (!snapshot || !snapshot.exportId || attentionRows.length === 0 || exporting) {
+  const exportWorkbook = async (scope: "attention" | "all") => {
+    const rowCount = scope === "all" ? snapshot?.rows.length : attentionRows.length;
+    if (!snapshot || !snapshot.exportId || !rowCount || exporting) {
       return;
     }
-    setExporting(true);
+    setExporting(scope);
     setError(null);
     try {
       const response = await fetch(
-        contentAuditWorkbookDownloadUrl(marketplaceId, snapshot.exportId),
+        contentAuditWorkbookDownloadUrl(
+          marketplaceId,
+          snapshot.exportId,
+          scope,
+        ),
         { cache: "no-store" },
       );
       if (!response.ok) {
@@ -2792,6 +2816,7 @@ export default function ContentAuditPanel({
         }
         throw new Error(message);
       }
+      assertContentAuditWorkbookDownloadEvidence(response, scope, rowCount);
       await downloadApiWorkbookResponse(
         response,
         auditExportFilename({
@@ -2807,7 +2832,7 @@ export default function ContentAuditPanel({
           : "文案健檢 Excel 下載失敗，請重新掃描。",
       );
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   };
 
@@ -2930,25 +2955,39 @@ export default function ContentAuditPanel({
         <p>美式英文辭典由 Mac／Windows Notebook Key Bridge 在本機套用，顯示與 Excel 共用同一份快照；文案不會送到第三方，疑似錯字仍由你判斷。</p>
       </div>
       {state === "done" && snapshot && summary && (
-        <button
-          className="content-audit-export-primary"
-          type="button"
-          onClick={() => void exportAttentionRows()}
-          disabled={attentionRows.length === 0 || !snapshot.exportId || exporting}
-        >
-          <span aria-hidden="true">↓</span>
-          <strong>{exporting
-            ? "匯出中…"
-            : `匯出全部 ${attentionRows.length.toLocaleString()} 個待確認項目 Excel`}</strong>
-          <small>只在這台電腦建立，不會上傳商品文案</small>
-        </button>
+        <>
+          <button
+            className="content-audit-export-primary content-audit-export-attention"
+            type="button"
+            onClick={() => void exportWorkbook("attention")}
+            disabled={attentionRows.length === 0 || !snapshot.exportId || Boolean(exporting)}
+          >
+            <span aria-hidden="true">↓</span>
+            <strong>{exporting === "attention"
+              ? "匯出中…"
+              : `匯出 ${attentionRows.length.toLocaleString()} 個待確認項目 Excel`}</strong>
+            <small>只在這台電腦建立，不會上傳商品文案</small>
+          </button>
+          <button
+            className="content-audit-export-primary content-audit-export-all"
+            type="button"
+            onClick={() => void exportWorkbook("all")}
+            disabled={snapshot.rows.length === 0 || !snapshot.exportId || Boolean(exporting)}
+          >
+            <span aria-hidden="true">↓</span>
+            <strong>{exporting === "all"
+              ? "匯出中…"
+              : `匯出全部 ${snapshot.rows.length.toLocaleString()} 個商品文案 Excel（完整模板）`}</strong>
+            <small>只在這台電腦建立，不會上傳商品文案；可當作完整模板</small>
+          </button>
+        </>
       )}
       {state === "done" && snapshot && summary && (
         <section className="content-audit-roundtrip" aria-label="回傳 Excel 批次更新文案">
           <div>
-            <strong>回傳同一份 Excel 批次更新</strong>
+            <strong>回傳任一份 Excel 批次更新</strong>
             <p>
-              只編輯淺藍或黃色的「更新…」欄位後，把原檔選回來。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。
+              「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺藍或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。
               預檢全部通過，或你明確核對符合條件的 INVALID SKU 後，才會要求一次 Touch ID／Windows Hello；這不代表 INVALID 已通過，若任一筆遭拒或結果不明會停止後續且不盲目重送。
             </p>
           </div>

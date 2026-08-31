@@ -149,6 +149,85 @@ function auditSuiteControl(
 }
 
 describe("R08 content audit owner", () => {
+  it("exports either attention rows or every editable SKU from one importable snapshot", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: ACCOUNT_SCOPE,
+    }));
+    const source = catalogFixture();
+    const clean = listingRow("CLEAN", {
+      asin: "B000CLEAN0",
+      title: "C".repeat(60),
+      itemHighlight: "H".repeat(110),
+      bulletPoints: Array.from({ length: 5 }, () => "B".repeat(150)),
+      productDescription: "D".repeat(1_800),
+      ingredients: "Turkey",
+    });
+    const owner = new ContentAuditOwner({
+      context,
+      evidence: { saveContentAuditSnapshotEvidence: async () => undefined },
+      readGrouping: async () => ({
+        ...source.grouping,
+        rows: [...source.grouping.rows, {
+          ...clean,
+          role: "standalone",
+          parentSku: null,
+          familyKey: "CLEAN",
+          theme: null,
+          status: "complete",
+          message: "Verified standalone.",
+        }],
+      }),
+      createId: () => CONTENT_EXPORT_ID,
+      now: () => Date.parse(FETCHED_AT),
+    });
+    await owner.captureFromListings({
+      context: await context.capture(US),
+      marketplaceId: US,
+      listings: {
+        ...source.listings,
+        rows: [...source.listings.rows, clean],
+      },
+    });
+
+    const attention = await owner.download({
+      marketplaceId: US,
+      exportId: CONTENT_EXPORT_ID,
+      scope: "attention",
+    });
+    const all = await owner.download({
+      marketplaceId: US,
+      exportId: CONTENT_EXPORT_ID,
+      scope: "all",
+    });
+    if (attention.body.kind !== "bytes" || all.body.kind !== "bytes") {
+      throw new Error("Expected content workbooks");
+    }
+    const attentionWorkbook = parseContentAuditWorkbook({
+      bytes: attention.body.value,
+      fileName: "attention.xlsx",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const allWorkbook = parseContentAuditWorkbook({
+      bytes: all.body.value,
+      fileName: "all.xlsx",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    expect(attentionWorkbook.rows.map((row) => row.sellerSku))
+      .toEqual(["CHILD", "SOLO"]);
+    expect(allWorkbook.rows.map((row) => row.sellerSku))
+      .toEqual(["CHILD", "CLEAN", "SOLO"]);
+    expect(attentionWorkbook.metadata.exportId).toBe(CONTENT_EXPORT_ID);
+    expect(allWorkbook.metadata.exportId).toBe(CONTENT_EXPORT_ID);
+    expect(attention.headers["x-content-audit-export-scope"])
+      .toBe("attention");
+    expect(all.headers["x-content-audit-export-scope"]).toBe("all");
+  });
+
   it("projects the legacy Content section from supplied shared Listings without creating owner state", async () => {
     const contextAdapter = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: US,
@@ -335,6 +414,7 @@ describe("R08 content audit owner", () => {
     const response = await owner.download({
       marketplaceId: US,
       exportId: CONTENT_EXPORT_ID,
+      scope: "attention",
     });
     expect(response.headers).toMatchObject({
       "x-exported-fba-sku-count": "2",
@@ -409,6 +489,7 @@ describe("R08 content audit owner", () => {
     const response = await owner.download({
       marketplaceId: US,
       exportId: CONTENT_EXPORT_ID,
+      scope: "attention",
     });
     expect(response.status).toBe(200);
     expect(response.headers).toMatchObject({

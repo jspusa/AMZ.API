@@ -79,8 +79,12 @@ export class ListingsExportRoutes implements ListingsExportRoutesPort {
       if (!exportId) {
         return invalid("文案健檢 Excel 快照資訊無效，請重新掃描。");
       }
+      const scope = request.query.scope || "attention";
+      if (scope !== "attention" && scope !== "all") {
+        return invalid("文案健檢 Excel 匯出範圍無效，請重新選擇。");
+      }
       try {
-        return await this.contentAudit.download({ marketplaceId, exportId });
+        return await this.contentAudit.download({ marketplaceId, exportId, scope });
       } catch (error) {
         return routeError(error, "建立文案健檢 Excel 時發生未預期的錯誤。");
       }

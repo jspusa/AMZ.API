@@ -133,6 +133,7 @@ export default function BusinessPricingEditor({
   const [submittedPreview, setSubmittedPreview] =
     useState<SubmittedBusinessPricePreview | null>(null);
   const [result, setResult] = useState<BusinessPriceUpdate | null>(null);
+  const [editorError, setEditorError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const revisionRef = useRef(0);
   const validation = submittedPreview?.validation ?? null;
@@ -157,6 +158,7 @@ export default function BusinessPricingEditor({
     revisionRef.current += 1;
     setSubmittedPreview(null);
     setResult(null);
+    setEditorError(null);
     onError(null);
   };
   const chooseEditorMode = (nextMode: BusinessPricingEditorMode) => {
@@ -189,6 +191,7 @@ export default function BusinessPricingEditor({
     const revision = ++revisionRef.current;
     setBusy(true);
     onError(null);
+    setEditorError(null);
     setResult(null);
     setSubmittedPreview(null);
     try {
@@ -216,9 +219,10 @@ export default function BusinessPricingEditor({
       if (revisionRef.current === revision) setSubmittedPreview(submitted);
     } catch (requestError) {
       if (revisionRef.current === revision) {
-        onError(requestError instanceof Error
+        const message = requestError instanceof Error
           ? requestError.message
-          : "Amazon B2B 價格預檢未通過。");
+          : "Amazon B2B 價格預檢未通過。";
+        setEditorError(message);
       }
     } finally {
       if (revisionRef.current === revision) setBusy(false);
@@ -230,6 +234,7 @@ export default function BusinessPricingEditor({
     if (!submitted) return;
     setBusy(true);
     onError(null);
+    setEditorError(null);
     try {
       const response = await fetch("/api/sp-api/business-pricing", {
         method: "PATCH",
@@ -246,11 +251,13 @@ export default function BusinessPricingEditor({
       const nextResult = parseBusinessPriceUpdate(payload, submitted);
       setResult(nextResult);
       setSubmittedPreview(null);
+      setEditorError(null);
       onVerified(nextResult);
     } catch (requestError) {
-      onError(requestError instanceof Error
+      const message = requestError instanceof Error
         ? requestError.message
-        : "Amazon 未能確認 B2B 價格更新。");
+        : "Amazon 未能確認 B2B 價格更新。";
+      setEditorError(message);
     } finally {
       setBusy(false);
     }
@@ -436,7 +443,11 @@ export default function BusinessPricingEditor({
         </div>
       )}
       {validation && (
-        <div className="business-pricing-validation">
+        <div
+          className="business-pricing-validation"
+          role="status"
+          aria-live="polite"
+        >
           <strong>{validation.notice}</strong>
           <div className="business-pricing-diff-row">
             <span className="business-pricing-diff-label">B2B 價格</span>
@@ -499,6 +510,15 @@ export default function BusinessPricingEditor({
           >{loading
             ? "送出並回查中…"
             : "Touch ID／Windows Hello 確認並送出"}</button>
+        </div>
+      )}
+      {editorError && (
+        <div
+          className="price-error business-pricing-editor-error"
+          role="alert"
+        >
+          <strong>Amazon 預檢／更新未完成</strong>
+          <p>{editorError}</p>
         </div>
       )}
       {result && (

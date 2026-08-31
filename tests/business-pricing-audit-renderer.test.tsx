@@ -329,6 +329,52 @@ describe("FBA business pricing audit renderer", () => {
     await act(async () => renderer!.unmount());
   });
 
+  it("keeps a failed Amazon preview and Request ID visible inside the open editor", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({
+        code: "VALIDATION_STATUS_UNKNOWN",
+        message:
+          "Amazon B2B 價格預檢沒有回傳 exact SKU／ASIN／站點的 VALID 證據。",
+        requestId: "94de6604-0b85-446c-960b-df46a737f27c",
+      }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      })));
+    let renderer: ReactTestRenderer | null = null;
+    const onError = vi.fn();
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingEditor, {
+        listing: parseBusinessPricingListingSnapshot(interactiveListing),
+        onClose: () => undefined,
+        onVerified: () => undefined,
+        onError,
+        onBusyChange: () => undefined,
+      }));
+    });
+
+    const root = renderer!.root;
+    await act(async () => {
+      root.findByType("form").props.onSubmit({ preventDefault: () => undefined });
+    });
+
+    expect(root.findAllByType("form")).toHaveLength(1);
+    expect(root.findAllByProps({
+      className: "price-error business-pricing-editor-error",
+    })).toHaveLength(1);
+    const rendered = JSON.stringify(renderer!.toJSON());
+    expect(rendered).toContain("Amazon B2B 價格預檢沒有回傳 exact SKU");
+    expect(rendered).toContain("94de6604-0b85-446c-960b-df46a737f27c");
+    expect(onError).not.toHaveBeenCalledWith(expect.stringContaining(
+      "94de6604-0b85-446c-960b-df46a737f27c",
+    ));
+    expect(root.findAllByType("button").some((button) =>
+      button.children.join("").includes("先預檢 B2B 價格與階梯折扣")
+    )).toBe(true);
+    await act(async () => renderer!.unmount());
+  });
+
   it("sends percent tiers by default and omits them only after explicitly choosing price-only", async () => {
     const priceOnlyBody = await previewBodyFromRowInteraction("price_only");
     expect(priceOnlyBody).toMatchObject({
@@ -441,6 +487,9 @@ describe("FBA business pricing audit renderer", () => {
     expect(root.findAllByProps({
       className: "business-pricing-diff-arrow",
     }).length).toBeGreaterThanOrEqual(2);
+    expect(root.findByProps({
+      className: "business-pricing-validation",
+    }).props).toMatchObject({ role: "status", "aria-live": "polite" });
     await act(async () => renderer!.unmount());
 
     const css = await readRendererStylesheet();
@@ -779,8 +828,10 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).not.toContain("seller-specific PTD");
     expect(markup).not.toContain("因此只提供唯讀");
     expect(markup).toContain("Amazon Validation Preview");
-    expect(markup).toContain("預設只改 Business Price");
+    expect(markup).toContain("預設一併帶入 Business Price");
+    expect(markup).toContain("你仍可明確切換為只改 Business Price");
     expect(markup).toContain("完整保留現有階梯折扣");
+    expect(markup).not.toContain("預設只改 Business Price");
     expect(markup).not.toContain("不可直接修改");
     expect(markup).toContain("建議 B2B 價格");
     expect(markup).toContain("US 一般售價 – USD 1.00");

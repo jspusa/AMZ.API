@@ -433,6 +433,133 @@ describe("W05 Business Pricing mutation owner", () => {
     expect(observeCanonical).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["omitted", undefined],
+    ["empty", []],
+  ] as const)(
+    "accepts a request-bound VALID preview when optional identifiers are %s",
+    async (_scenario, identifiers) => {
+      const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
+      const snapshot = businessPricingSnapshot();
+      const gateway: BusinessPricingGateway = {
+        mode: () => "live",
+        read: async () => snapshot,
+        quantityDiscountPlanSupported: () => true,
+        validationPreview: async () => ({
+          ok: true,
+          status: 200,
+          requestId: "REQ-W05-PREVIEW-OPTIONAL-IDENTIFIERS",
+          retryAfter: null,
+          payload: {
+            sku: SELLER_SKU,
+            status: "VALID",
+            submissionId: "W05-PREVIEW-OPTIONAL-IDENTIFIERS",
+            issues: [],
+            ...(identifiers === undefined ? {} : { identifiers }),
+          },
+        }),
+        commitOnce: vi.fn(),
+        replaceDemoContribution: async () => undefined,
+      };
+      const owner = createBusinessPricingMutations({
+        context: {
+          capture: async (marketplaceId) => ({
+            marketplaceId,
+            region: "na",
+            mode: "live",
+            accountScope: "opaque-w05-request-bound-preview" as never,
+            generation: 0,
+          }),
+          assertCurrent: async () => undefined,
+          invalidate: () => undefined,
+        },
+        writeGate: {
+          stagePreview,
+          execute: vi.fn(),
+          reconcile: async () => undefined,
+          clearEphemeral: () => undefined,
+        } as unknown as MainWriteGatePort,
+        gateway,
+        priceObserver: { observeCanonical: vi.fn() },
+      });
+
+      const response = await owner.handle({
+        operation: "preview",
+        request: previewRequest(),
+      });
+
+      expect(response.status).toBe(200);
+      expect(bodyValue(response)).toMatchObject({
+        status: "VALID",
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+        asin: snapshot.asin,
+      });
+      expect(stagePreview).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("rejects contradictory non-empty preview identifiers before staging", async () => {
+    const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
+    const snapshot = businessPricingSnapshot();
+    const gateway: BusinessPricingGateway = {
+      mode: () => "live",
+      read: async () => snapshot,
+      quantityDiscountPlanSupported: () => true,
+      validationPreview: async () => ({
+        ok: true,
+        status: 200,
+        requestId: "REQ-W05-PREVIEW-CONTRADICTORY-IDENTIFIERS",
+        retryAfter: null,
+        payload: {
+          sku: SELLER_SKU,
+          status: "VALID",
+          submissionId: "W05-PREVIEW-CONTRADICTORY-IDENTIFIERS",
+          issues: [],
+          identifiers: [{
+            marketplaceId: MARKETPLACE_ID,
+            asin: "B000WRONG01",
+          }],
+        },
+      }),
+      commitOnce: vi.fn(),
+      replaceDemoContribution: async () => undefined,
+    };
+    const owner = createBusinessPricingMutations({
+      context: {
+        capture: async (marketplaceId) => ({
+          marketplaceId,
+          region: "na",
+          mode: "live",
+          accountScope: "opaque-w05-contradictory-preview" as never,
+          generation: 0,
+        }),
+        assertCurrent: async () => undefined,
+        invalidate: () => undefined,
+      },
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: async () => undefined,
+        clearEphemeral: () => undefined,
+      } as unknown as MainWriteGatePort,
+      gateway,
+      priceObserver: { observeCanonical: vi.fn() },
+    });
+
+    const response = await owner.handle({
+      operation: "preview",
+      request: previewRequest(),
+    });
+
+    expect(response.status).toBe(502);
+    expect(bodyValue(response)).toMatchObject({
+      code: "VALIDATION_STATUS_UNKNOWN",
+      requestId: "REQ-W05-PREVIEW-CONTRADICTORY-IDENTIFIERS",
+    });
+    expect(stagePreview).not.toHaveBeenCalled();
+  });
+
   it("stops price-only preview when current quantity discounts are ambiguous", async () => {
     const stagePreview = vi.fn(async (_binding: WriteBinding) => undefined);
     const validationPreview = vi.fn();

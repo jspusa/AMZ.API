@@ -4,6 +4,16 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-08-31 v0.1.41 全商品文案模板／B2B Preview 證據與視窗內結果修正（製作中；Amazon live 待驗證）
+
+使用者需要保留既有「待確認項目 Excel」，同時匯出本次文案快照內全部可健檢 FBA SKU，作為完整商品文案模板；兩種原始 Excel 都必須能選回同一個批次預覽／更新流程。v0.1.41 的 Content owner 因此新增明確 `attention／all` scope：前者只含讀取未完成或有問題的列，後者包含同一快照的全部列；兩者保留相同 export ID、站點、原值與 durable digest 證據，使用不同檔名與 scope response header。Renderer 顯示兩個獨立下載入口，並明示任一份都可選回；full download 另要求 response 必須明確回傳 `scope=all` 與 exact row count，避免新版 Pages 搭配舊 Bridge 時把 attention-only workbook 靜默存成完整模板，舊版會直接提示先更新 App。既有 incomplete edit 隔離、500 列上限、fresh read／FBA／PTD／Amazon Validation Preview、一次原生確認、ledger、readback 與 no-blind-retry 邊界不變。
+
+同時，已安裝 v0.1.40 的 B2B Validation Preview 會以 Request ID `94de6604-0b85-446c-960b-df46a737f27c` 被本機誤判為「沒有回傳 exact SKU／ASIN／站點的 VALID 證據」。Amazon 官方 Listings Items response model 只把 `sku`、`status`、`submissionId` 列為必填，`identifiers` 是 optional；舊程式卻額外要求 exact 一筆 identifiers。修正後只有在 `status=VALID`、response SKU 與 request exact 相同、submission ID 非空、且 fresh exact listing 已綁定 marketplace／SKU／ASIN 時，才接受省略或空 identifiers；若 Amazon 有回傳任何 non-empty identifiers，仍必須唯一且 exact matching，矛盾 ASIN／站點或 malformed evidence 一律 fail closed。Preview／commit 錯誤與 Request ID 現在只保留在仍開啟的「調整 B2B 價格」表單內，不再重複成外層 stale alert；成功 validation／紅舊值→綠新值與完成回查也維持在同一表單，不必退出才看得到。Audit 上方說明同步改為實際的 combined 預設，並明示仍可切到 price-only 完整保留現有階梯。
+
+RED 先精確重現兩種合法 optional-identifiers 回應被誤擋、錯誤只送到 editor 外層，以及下載 owner／route 固定 attention scope；GREEN 後 6 個聚焦測試檔／144 tests 通過，包含兩種 owner 產生的原始 workbook 都能重新匯入預覽、full workbook 確實包含 clean SKU、舊 Bridge full-download mismatch／invalid scope 拒絕，以及 contradictory non-empty ASIN 證據不會 stage Write Gate。package 已升為 0.1.41；final local `npm run check` 通過 244 個測試檔／2,410 tests、TypeScript、production build與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。
+
+本節尚未合併、部署 Pages、產生 macOS／Windows CI artifact或安裝。也沒有呼叫 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 Amazon mutation；本機與 scripted 測試只能證明誤判已修正，仍需安裝後由使用者以明確 SKU／值自行執行零寫入 Preview 才能取得 Amazon 當下證據。
+
 ### 2026-08-31 v0.1.40 B2B Validation Preview／預設階梯與紅綠差異修正（已合併／Pages 上線／Mac 安裝；Amazon live 待驗證）
 
 使用者在已安裝 v0.1.39 按「先預檢 B2B 價格與階梯折扣（不寫入）」時，Amazon 以 Request ID `31e8647b-0be0-410b-a13a-fd04a2e39933` 回覆 `Merge operation is not allowed for VALIDATION_PREVIEW requests`。根因是 Business Pricing gateway 把同一份 `op:merge` body 同時交給 Validation Preview 與正式 commit。修正後，只有 `mode=VALIDATION_PREVIEW` 的等價 B2B contribution 改用 `op:replace`；正式 commit 仍固定使用 `op:merge`，因此不會用 B2B 更新取代 `audience:ALL` 或其他 audience。canonical commit patch hash、fresh exact read、seller-specific PTD、Write Gate、native confirmation、final fence、一次 PATCH、canonical readback 與 no-blind-retry 均維持不變。

@@ -24,7 +24,7 @@ afterEach(() => {
 describe("R08 renderer main-owned workbook downloads", () => {
   it("addresses every snapshot only by its opaque export capability", () => {
     const content = new URL(
-      contentAuditWorkbookDownloadUrl(MARKETPLACE_ID, EXPORT_ID),
+      contentAuditWorkbookDownloadUrl(MARKETPLACE_ID, EXPORT_ID, "attention"),
       "https://pages.example.invalid",
     );
     expect(content.pathname).toBe("/api/sp-api/listing-content/export");
@@ -33,6 +33,7 @@ describe("R08 renderer main-owned workbook downloads", () => {
       exportId: EXPORT_ID,
       audit: "1",
       download: "1",
+      scope: "attention",
     });
 
     const image = new URL(

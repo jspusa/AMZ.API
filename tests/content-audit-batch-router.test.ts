@@ -99,6 +99,25 @@ function auditRequest(reportId: string, documentId: string): ApiRequest {
   };
 }
 
+function auditWorkbookDownloadRequest(
+  exportId: string,
+  scope: "attention" | "all",
+): ApiRequest {
+  return {
+    requestId: `content-batch-download-${scope}`,
+    method: "GET",
+    path: "/api/sp-api/listing-content/export",
+    query: {
+      marketplaceId: MARKETPLACE_ID,
+      exportId,
+      audit: "1",
+      download: "1",
+      scope,
+    },
+    headers: {},
+  };
+}
+
 async function issuedAllListingsHandles(router: ApiRouter): Promise<{
   reportId: string;
   documentId: string;
@@ -619,6 +638,43 @@ describe("content audit Excel batch router", () => {
     }));
     return stored;
   }
+
+  it.each(["attention", "all"] as const)(
+    "accepts the original %s export back as a batch-update workbook",
+    async (scope) => {
+      const snapshot = await audit();
+      const download = await router.handle(auditWorkbookDownloadRequest(
+        snapshot.exportId,
+        scope,
+      ));
+      expect(download.status).toBe(200);
+      if (download.body.kind !== "bytes") {
+        throw new Error("Expected downloaded content workbook");
+      }
+      const edited = replaceCell(
+        download.body.value,
+        "E2",
+        `Batch-safe ${scope} export title`,
+      );
+
+      const preview = await router.handle(importRequest(
+        edited,
+        `content-batch-${scope}-export-roundtrip`,
+      ));
+
+      expect(preview.status, JSON.stringify(responseValue(preview))).toBe(200);
+      expect(responseValue(preview)).toMatchObject({
+        marketplaceId: MARKETPLACE_ID,
+        changes: [expect.objectContaining({
+          requested: expect.objectContaining({
+            title: `Batch-safe ${scope} export title`,
+          }),
+        })],
+      });
+      expect(approveWrite).not.toHaveBeenCalled();
+      expect(runIdempotentOperation).not.toHaveBeenCalled();
+    },
+  );
 
   it("previews with zero writes, asks once, and returns cached batch result", async () => {
     const snapshot = await audit();

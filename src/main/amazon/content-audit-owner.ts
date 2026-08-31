@@ -113,6 +113,8 @@ export type ContentAuditGroupingReader = (input: Readonly<{
   onProgress?: ContentAuditListingsInput["onGroupingProgress"];
 }>) => Promise<FbaVariationGroupingData<CatalogExportRow>>;
 
+export type ContentAuditWorkbookScope = "attention" | "all";
+
 export interface ContentAuditOwnerPort {
   runAuditSuite(input: Readonly<{
     context: AuditSuiteContext;
@@ -132,6 +134,7 @@ export interface ContentAuditOwnerPort {
   download(input: Readonly<{
     marketplaceId: MarketplaceId;
     exportId: string;
+    scope: ContentAuditWorkbookScope;
   }>): Promise<ApiResponse>;
   clear(): void;
 }
@@ -804,28 +807,33 @@ export class ContentAuditOwner implements ContentAuditOwnerPort {
   async download(input: Readonly<{
     marketplaceId: MarketplaceId;
     exportId: string;
+    scope: ContentAuditWorkbookScope;
   }>): Promise<ApiResponse> {
     const snapshot = await this.read(input);
     const marketplace = marketplaceById(input.marketplaceId);
     if (!marketplace) throw new Error("Amazon marketplace is unsupported.");
     const attentionRows = snapshot.rows.filter((row) =>
       row.readStatus === "incomplete" || row.issues.length > 0);
+    const exportRows = input.scope === "all" ? snapshot.rows : attentionRows;
     const workbook = this.createWorkbook({
       marketplaceId: input.marketplaceId,
       marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
       exportId: snapshot.exportId,
       fetchedAt: snapshot.fetchedAt,
-      rows: attentionRows.map(workbookRow),
+      rows: exportRows.map(workbookRow),
     });
     const date = snapshotDate(snapshot.fetchedAt);
-    const filename =
-      `amazon-fba-content-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
-    const localizedFilename =
-      `FBA-文案健檢-${marketplace.shortLabel}-${date}.xlsx`;
+    const filename = input.scope === "all"
+      ? `amazon-fba-all-product-content-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`
+      : `amazon-fba-content-audit-${marketplace.shortLabel.toLowerCase()}-${date}.xlsx`;
+    const localizedFilename = input.scope === "all"
+      ? `FBA-全部商品文案-${marketplace.shortLabel}-${date}.xlsx`
+      : `FBA-文案健檢-${marketplace.shortLabel}-${date}.xlsx`;
     return bytes(workbook, {
       "content-disposition":
         `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(localizedFilename)}`,
-      "x-exported-fba-sku-count": String(attentionRows.length),
+      "x-exported-fba-sku-count": String(exportRows.length),
+      "x-content-audit-export-scope": input.scope,
       "x-content-audit-incomplete-count": String(snapshot.summary.incomplete),
       "x-content-audit-with-issues-count": String(snapshot.summary.withIssues),
     });

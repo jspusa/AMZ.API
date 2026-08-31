@@ -597,19 +597,22 @@ async function prepareBusinessPriceMutation(
         },
       );
     }
-    const identifiers = Array.isArray(payload.identifiers)
-      ? payload.identifiers
-      : [];
-    const identifier = identifiers[0];
+    const identifiersMatch = payload.identifiers === undefined ||
+      (Array.isArray(payload.identifiers) && (
+        payload.identifiers.length === 0 ||
+        (
+          payload.identifiers.length === 1 &&
+          isRecord(payload.identifiers[0]) &&
+          payload.identifiers[0].marketplaceId === input.marketplaceId &&
+          payload.identifiers[0].asin === listing.asin
+        )
+      ));
     if (
       payload.status !== "VALID" ||
       payload.sku !== input.sellerSku ||
       typeof payload.submissionId !== "string" ||
       !payload.submissionId.trim() ||
-      identifiers.length !== 1 ||
-      !isRecord(identifier) ||
-      identifier.marketplaceId !== input.marketplaceId ||
-      identifier.asin !== listing.asin
+      !identifiersMatch
     ) {
       throw new SpApiError(
         "Amazon B2B 價格預檢沒有回傳 exact SKU／ASIN／站點的 VALID 證據。",

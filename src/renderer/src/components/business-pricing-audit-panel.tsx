@@ -513,7 +513,7 @@ export default function BusinessPricingAuditPanel({
         <span>US 一般售價 – USD 1.00</span>
         <span>數量折扣：5 件 5%・10 件 10%・15 件 15%・20 件 20%</span>
       </div>
-      <p className="business-pricing-safety-note">編輯前會重新核對指定 SKU、你帳號的 Amazon 可編輯規則，並執行 Amazon Validation Preview（零寫入）；預設只改 Business Price、完整保留現有階梯折扣。只有你明確選擇時，才會一併更新 1–5 階 percent 折扣；正式送出仍需 Touch ID／Windows Hello。</p>
+      <p className="business-pricing-safety-note">編輯前會重新核對指定 SKU、你帳號的 Amazon 可編輯規則，並執行 Amazon Validation Preview（零寫入）；若 Amazon 規則允許安全更新階梯，預設一併帶入 Business Price 與 1–5 階 percent 建議折扣。你仍可明確切換為只改 Business Price，該模式會完整保留現有階梯折扣；正式送出仍需 Touch ID／Windows Hello。</p>
       {(job && !job.ready ? job.progress.message : progress) && (
         <div className="business-pricing-progress" role="status">
           {job && !job.ready ? job.progress.message : progress}
