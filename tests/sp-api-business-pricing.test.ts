@@ -4363,7 +4363,7 @@ describe("Amazon Business pricing SP-API contract", () => {
     )?.reason).toBe("已設定 Amazon Business 價格。");
   });
 
-  it("previews an exact B2B-only replace and validates the returned identifier", async () => {
+  it("previews an exact B2B-only replace that explicitly preserves canonical tiers", async () => {
     let previewBody: unknown = null;
     const previewUrls: URL[] = [];
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
@@ -4434,6 +4434,12 @@ describe("Amazon Business pricing SP-API contract", () => {
           currency: "USD",
           audience: "B2B",
           our_price: [{ schedule: [{ value_with_tax: 27.5 }] }],
+          quantity_discount_plan: [{
+            schedule: [{
+              discount_type: "fixed",
+              levels: [{ lower_bound: 5, value: 25 }],
+            }],
+          }],
         }],
       }],
     });
@@ -4855,6 +4861,8 @@ describe("Amazon Business pricing SP-API contract", () => {
       businessOfferGuardHash: "preview-bound-guard-that-no-longer-matches",
       businessOfferProtectedHash: "preview-protected-offer",
       previousQuantityDiscountPlanHash: null,
+      quantityDiscountPlanPresence: "absent",
+      quantityDiscountPlanChange: "preserve",
       schemaChecksum: SCHEMA_CHECKSUM,
       fbaEvidenceHash: "preview-fba-evidence",
       canonicalPatchHash: "preview-patch-evidence",

@@ -302,6 +302,309 @@ describe("local durable safety store", () => {
     }
   });
 
+  it("allows one explicit duplicate-tier repair over an unknown Business Price write", async () => {
+    const store = await testStore();
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "business-price-unknown-before-duplicate-repair",
+      operationType: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-DUPLICATE-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "accepted-merge-with-duplicate-tiers",
+      execute: async () => {
+        throw new SpApiError("accepted but duplicate readback", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "business-price-duplicate-repair",
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-DUPLICATE-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "replace-identical-duplicate-tiers-once",
+      execute: async () => ({ repaired: true }),
+    })).resolves.toEqual({ repaired: true });
+
+    const persisted = JSON.parse(await readFile(store.filePath, "utf8")) as {
+      ledger: Record<string, {
+        operationType: string;
+        businessPriceDuplicateRepair?: boolean;
+      }>;
+    };
+    expect(persisted.ledger["business-price-duplicate-repair"]).toMatchObject({
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+    });
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "business-price-duplicate-repair",
+      operationType: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-DUPLICATE-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "replace-identical-duplicate-tiers-once",
+      execute: async () => ({ shouldNotReplayAsNormalWrite: true }),
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "price-after-unreconciled-business-repair",
+      operationType: "price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-DUPLICATE-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "must-remain-blocked-until-canonical-reconcile",
+      execute: async () => ({ shouldNotRun: true }),
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 409 });
+  });
+
+  it("does not allow a duplicate-tier repair over a pending or prior repair write", async () => {
+    const store = await testStore();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const didStart = new Promise<void>((resolve) => { started = resolve; });
+    const pending = store.runIdempotentOperation({
+      idempotencyKey: "business-price-pending-before-repair",
+      operationType: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-PENDING-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "pending-business-price",
+      execute: async () => {
+        started();
+        await gate;
+        return { ok: true };
+      },
+    });
+    await didStart;
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "repair-while-business-price-pending",
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-PENDING-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "must-not-overlap-pending",
+      execute: async () => ({ shouldNotRun: true }),
+    })).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS", status: 409 });
+
+    release();
+    await expect(pending).resolves.toEqual({ ok: true });
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "first-unknown-repair",
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-REPAIR-UNKNOWN",
+      accountScope: "account-a",
+      fingerprint: "first-repair",
+      execute: async () => {
+        throw new SpApiError("repair result unknown", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "second-repair-after-unknown-repair",
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-REPAIR-UNKNOWN",
+      accountScope: "account-a",
+      fingerprint: "must-not-blindly-repair-again",
+      execute: async () => ({ shouldNotRun: true }),
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 409 });
+  });
+
+  it("never bypasses a legacy unknown-account offer write for duplicate repair", async () => {
+    const store = await testStore();
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "legacy-account-business-price-unknown",
+      operationType: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-LEGACY-ACCOUNT-UNKNOWN",
+      accountScope: "legacy-unknown",
+      fingerprint: "legacy-account-unknown-write",
+      execute: async () => {
+        throw new SpApiError("legacy write result unknown", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "repair-over-legacy-account-unknown",
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-LEGACY-ACCOUNT-UNKNOWN",
+      accountScope: "current-account",
+      fingerprint: "must-not-cross-account-boundary",
+      execute: async () => ({ shouldNotRun: true }),
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 409 });
+  });
+
+  it("keeps a repair tombstone through old reconciliation and pruning", async () => {
+    const originalNow = Date.now();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(originalNow));
+    const store = await testStore();
+    try {
+      await expect(store.runIdempotentOperation({
+        idempotencyKey: "unknown-before-permanent-repair-marker",
+        operationType: "business_price",
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "B2B-PERMANENT-REPAIR-MARKER",
+        accountScope: "account-a",
+        fingerprint: "unknown-before-repair",
+        execute: async () => {
+          throw new SpApiError("accepted but duplicate readback", {
+            status: 503,
+            code: "UPDATE_STATUS_UNKNOWN",
+          });
+        },
+      })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+      await expect(store.runIdempotentOperation({
+        idempotencyKey: "permanent-completed-repair-marker",
+        operationType: "business_price",
+        businessPriceDuplicateRepair: true,
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "B2B-PERMANENT-REPAIR-MARKER",
+        accountScope: "account-a",
+        fingerprint: "repair-once-only",
+        execute: async ({ recordAccepted }) => {
+          await recordAccepted({ status: "DISPATCHED" });
+          throw new SpApiError("repair accepted but readback unknown", {
+            status: 503,
+            code: "UPDATE_STATUS_UNKNOWN",
+          });
+        },
+      })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+      vi.setSystemTime(new Date(originalNow + 60 * 60 * 1_000));
+      const rollbackData = JSON.parse(
+        await readFile(store.filePath, "utf8"),
+      ) as {
+        ledger: Record<string, {
+          state: string;
+          expiresAt: number;
+          businessPriceDuplicateRepair?: boolean;
+        }>;
+      };
+      const shadowTombstone = Object.entries(rollbackData.ledger).find(
+        ([key, entry]) =>
+          key.startsWith("business-price-repair-tombstone:") &&
+          entry.businessPriceDuplicateRepair === true,
+      );
+      expect(shadowTombstone?.[1]).toMatchObject({
+        state: "completed",
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      });
+      // Simulate v0.1.41 reconciling the unknown repair as an ordinary
+      // business_price write. The old code overwrites that receipt's expiry,
+      // but cannot touch the already-completed permanent shadow tombstone.
+      const oldRepairReceipt =
+        rollbackData.ledger["permanent-completed-repair-marker"]!;
+      expect(oldRepairReceipt).toMatchObject({
+        state: "unknown",
+        businessPriceDuplicateRepair: true,
+      });
+      oldRepairReceipt.state = "completed";
+      oldRepairReceipt.expiresAt = Date.now() + 24 * 60 * 60 * 1_000;
+      vi.setSystemTime(new Date(originalNow + 72 * 60 * 60 * 1_000));
+      // Simulate v0.1.41's old completed-entry prune after that reconciliation.
+      for (const [key, entry] of Object.entries(rollbackData.ledger)) {
+        if (entry.state === "completed" && entry.expiresAt < Date.now()) {
+          delete rollbackData.ledger[key];
+        }
+      }
+      await writeFile(store.filePath, `${JSON.stringify(rollbackData, null, 2)}\n`);
+      expect(rollbackData.ledger["permanent-completed-repair-marker"])
+        .toBeUndefined();
+      expect(rollbackData.ledger[shadowTombstone![0]]).toBeDefined();
+      const restarted = new LocalStore(store.filePath);
+      await restarted.initialize();
+      await expect(restarted.runIdempotentOperation({
+        idempotencyKey: "second-repair-after-marker-ttl",
+        operationType: "business_price",
+        businessPriceDuplicateRepair: true,
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "B2B-PERMANENT-REPAIR-MARKER",
+        accountScope: "account-a",
+        fingerprint: "must-never-repair-twice",
+        execute: async () => ({ shouldNotRun: true }),
+      })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN", status: 409 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("removes the repair tombstone when commit transport definitely did not start", async () => {
+    const store = await testStore();
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "unknown-before-precommit-repair",
+      operationType: "business_price",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-PRECOMMIT-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "unknown-before-precommit-repair",
+      execute: async () => {
+        throw new SpApiError("accepted but duplicate readback", {
+          status: 503,
+          code: "UPDATE_STATUS_UNKNOWN",
+        });
+      },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "repair-that-stops-before-transport",
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-PRECOMMIT-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "precommit-repair",
+      execute: async () => {
+        throw new SpApiPreCommitError(new SpApiError(
+          "Final fence stopped the commit before transport.",
+          { status: 409, code: "PREVIEW_CHANGED" },
+        ));
+      },
+    })).rejects.toMatchObject({
+      code: "PREVIEW_CHANGED",
+      commitPatchSent: false,
+    });
+
+    const persisted = JSON.parse(await readFile(store.filePath, "utf8")) as {
+      ledger: Record<string, { businessPriceDuplicateRepair?: boolean }>;
+    };
+    expect(Object.values(persisted.ledger).filter(
+      (entry) => entry.businessPriceDuplicateRepair === true,
+    )).toHaveLength(0);
+
+    await expect(store.runIdempotentOperation({
+      idempotencyKey: "repair-after-known-precommit-stop",
+      operationType: "business_price",
+      businessPriceDuplicateRepair: true,
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "B2B-PRECOMMIT-REPAIR",
+      accountScope: "account-a",
+      fingerprint: "safe-repair-after-precommit-stop",
+      execute: async () => ({ repaired: true }),
+    })).resolves.toEqual({ repaired: true });
+  });
+
   it("locks standard and sale price writes while a Business Price write is pending", async () => {
     const store = await testStore();
     let release!: () => void;

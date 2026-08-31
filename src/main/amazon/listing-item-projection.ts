@@ -447,7 +447,8 @@ function reconcileBusinessOfferEvidence(
     return ambiguousBusinessOfferEvidence();
   }
   if (
-    attributes.quantityDiscountPlanPresence === "canonical" &&
+    (attributes.quantityDiscountPlanPresence === "canonical" ||
+      attributes.quantityDiscountPlanPresence === "duplicate") &&
     summary.quantityDiscountPlanPresence === "canonical" &&
     !sameBusinessOfferPlan(attributes, summary)
   ) {

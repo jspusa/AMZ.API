@@ -195,10 +195,15 @@ describe("W05 Business Pricing mutation architecture", () => {
     );
 
     expect(gateway).toMatch(/kind:\s*"price-only"/u);
-    expect(gateway).toMatch(/quantityDiscountPlan:\s*null/u);
+    expect(gateway).toMatch(
+      /quantityDiscountPlan:\s*BusinessQuantityDiscountPlan\s*\|\s*null/u,
+    );
     expect(gateway).toMatch(/kind:\s*"combined"/u);
     expect(gateway).toMatch(/audience:\s*"B2B"/u);
-    expect(gateway).toMatch(/patch\.kind\s*===\s*"combined"/u);
+    expect(gateway).toMatch(/patch\.quantityDiscountPlan/u);
+    expect(gateway).toMatch(
+      /businessPricingPatchBodyWithOperation\(patch,\s*"replace"\)/u,
+    );
     expect(port).toMatch(/\bvalidationPreview\s*\(/u);
     expect(port).toMatch(
       /commitOnce\s*\(\s*patch:\s*BusinessPricePatch,\s*fence:\s*ListingWriteExecutionFence,\s*recordDispatch:\s*\(\)\s*=>\s*Promise<void>/su,

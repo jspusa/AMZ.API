@@ -21,7 +21,11 @@ export type BusinessOfferReadEvidence = {
   businessOfferPresence: "absent" | "present" | "ambiguous";
   businessPricingManagedByAutomation: boolean;
   quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -266,15 +270,10 @@ export function canonicalBusinessStandardPrice(
     : { amount, currencyCode: marketplace.currency };
 }
 
-function canonicalBusinessQuantityDiscountPlan(value: unknown): {
-  plan: BusinessQuantityDiscountPlan | null;
-  presence: "absent" | "canonical" | "ambiguous";
-} {
-  if (value === undefined) return { plan: null, presence: "absent" };
-  if (!Array.isArray(value) || value.length !== 1) {
-    return { plan: null, presence: "ambiguous" };
-  }
-  const plan = value[0];
+function canonicalBusinessQuantityDiscountPlanEntry(
+  value: unknown,
+): BusinessQuantityDiscountPlan | null {
+  const plan = value;
   if (
     !isRecord(plan) ||
     Object.keys(plan).length !== 1 ||
@@ -282,7 +281,7 @@ function canonicalBusinessQuantityDiscountPlan(value: unknown): {
     !Array.isArray(plan.schedule) ||
     plan.schedule.length !== 1
   ) {
-    return { plan: null, presence: "ambiguous" };
+    return null;
   }
   const schedule = plan.schedule[0];
   if (
@@ -296,7 +295,7 @@ function canonicalBusinessQuantityDiscountPlan(value: unknown): {
     schedule.levels.length < 1 ||
     schedule.levels.length > 5
   ) {
-    return { plan: null, presence: "ambiguous" };
+    return null;
   }
 
   const levels: BusinessQuantityDiscountPlan["levels"] = [];
@@ -307,7 +306,7 @@ function canonicalBusinessQuantityDiscountPlan(value: unknown): {
       !("lower_bound" in rawLevel) ||
       !("value" in rawLevel)
     ) {
-      return { plan: null, presence: "ambiguous" };
+      return null;
     }
     const lowerBound = finiteNumericValue(rawLevel.lower_bound);
     const levelValue = finiteNumericValue(rawLevel.value);
@@ -319,7 +318,7 @@ function canonicalBusinessQuantityDiscountPlan(value: unknown): {
       levelValue <= 0 ||
       (schedule.discount_type === "percent" && levelValue >= 100)
     ) {
-      return { plan: null, presence: "ambiguous" };
+      return null;
     }
     const previous = levels.at(-1);
     if (
@@ -329,13 +328,32 @@ function canonicalBusinessQuantityDiscountPlan(value: unknown): {
           ? levelValue <= previous.value
           : levelValue >= previous.value))
     ) {
-      return { plan: null, presence: "ambiguous" };
+      return null;
     }
     levels.push({ lowerBound, value: levelValue });
   }
+  return { discountType: schedule.discount_type, levels };
+}
+
+function canonicalBusinessQuantityDiscountPlan(value: unknown): {
+  plan: BusinessQuantityDiscountPlan | null;
+  presence: "absent" | "canonical" | "duplicate" | "ambiguous";
+} {
+  if (value === undefined) return { plan: null, presence: "absent" };
+  if (!Array.isArray(value) || value.length < 1) {
+    return { plan: null, presence: "ambiguous" };
+  }
+  const plans = value.map(canonicalBusinessQuantityDiscountPlanEntry);
+  const plan = plans[0];
+  if (
+    !plan ||
+    plans.some((candidate) =>
+      !candidate || !sameBusinessQuantityDiscountPlan(plan, candidate)
+    )
+  ) return { plan: null, presence: "ambiguous" };
   return {
-    plan: { discountType: schedule.discount_type, levels },
-    presence: "canonical",
+    plan,
+    presence: plans.length === 1 ? "canonical" : "duplicate",
   };
 }
 

@@ -3,6 +3,7 @@ import type { BusinessPricingCapabilitiesPort } from
   "../src/main/amazon/business-pricing-capabilities";
 import {
   businessPricingPatchBody,
+  businessPricingValidationPreviewBody,
   type BusinessPricePatch,
 } from "../src/main/amazon/business-pricing-gateway";
 import {
@@ -338,6 +339,53 @@ describe("Business Pricing production gateway", () => {
       });
   });
 
+  it("keeps identical duplicate quantity plans visible for one-shot repair", async () => {
+    const state = harness();
+    state.setMode("live");
+    const payload = livePayload();
+    const businessOffer = payload.attributes!.purchasable_offer!.find(
+      (offer) => offer.audience === "B2B",
+    )!;
+    const plan = structuredClone(businessOffer.quantity_discount_plan![0]!);
+    businessOffer.quantity_discount_plan = [plan, structuredClone(plan)];
+    state.setPayload(payload);
+
+    await expect(state.runtime.gateway.read(IDENTITY, "mutation"))
+      .resolves.toMatchObject({
+        businessPrice: { amount: 28, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: {
+          discountType: "fixed",
+          levels: [{ lowerBound: 5, value: 25 }],
+        },
+        quantityDiscountPlanPresence: "duplicate",
+      });
+  });
+
+  it("keeps conflicting duplicate quantity plans fully ambiguous", async () => {
+    const state = harness();
+    state.setMode("live");
+    const payload = livePayload();
+    const businessOffer = payload.attributes!.purchasable_offer!.find(
+      (offer) => offer.audience === "B2B",
+    )!;
+    const original = structuredClone(businessOffer.quantity_discount_plan![0]!);
+    const conflict = structuredClone(original);
+    const conflictingLevel = conflict.schedule?.[0]?.levels?.[0];
+    if (!conflictingLevel) throw new Error("Expected quantity discount fixture");
+    conflictingLevel.value = 24;
+    businessOffer.quantity_discount_plan = [original, conflict];
+    state.setPayload(payload);
+
+    await expect(state.runtime.gateway.read(IDENTITY, "mutation"))
+      .resolves.toMatchObject({
+        businessPrice: { amount: 28, currencyCode: "USD" },
+        businessOfferPresence: "present",
+        quantityDiscountPlan: null,
+        quantityDiscountPlanPresence: "ambiguous",
+      });
+  });
+
   it("guards rich current quantity discounts while excluding them from combined protection", async () => {
     const state = harness();
     state.setMode("live");
@@ -516,7 +564,7 @@ describe("Business Pricing production gateway", () => {
     }]);
   });
 
-  it("uses only the fixed preview and durable commit write commands", async () => {
+  it("uses the same B2B-only replace for preview and durable commit", async () => {
     const state = harness();
     const patch = combinedPatch();
     const events: string[] = [];
@@ -553,8 +601,11 @@ describe("Business Pricing production gateway", () => {
     expect(commit).toMatchObject({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: IDENTITY.sellerSku,
-      patchBody: businessPricingPatchBody(patch),
+      patchBody: businessPricingValidationPreviewBody(patch),
     });
+    expect(businessPricingPatchBody(patch)).toEqual(
+      businessPricingValidationPreviewBody(patch),
+    );
     await commit.assertBeforeSend();
     await commit.recordBeforeSend?.();
     expect(events).toEqual(["fence", "record"]);

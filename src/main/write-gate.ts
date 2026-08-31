@@ -12,7 +12,7 @@ import {
 } from "./amazon/sp-execution-context";
 import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
 
-export type WriteOperation = LedgerOperationType;
+export type WriteOperation = LedgerOperationType | "business_price_repair";
 
 export type WritePreviewFamily =
   | "business-price"
@@ -72,11 +72,11 @@ export type MainWriteGateReconcileInput<TSnapshot> = Readonly<{
   context: SpExecutionContext;
   marketplaceId: MarketplaceId;
   sellerSku: string;
-  operations: readonly WriteOperation[];
+  operations: readonly LedgerOperationType[];
   snapshot: TSnapshot;
   project(
     response: unknown,
-    operation: WriteOperation,
+    operation: LedgerOperationType,
     snapshot: TSnapshot,
   ): unknown | null;
 }>;
@@ -186,6 +186,8 @@ type DurableIntent = Readonly<{
   intent: WriteIntent;
   idempotencyKey: string;
   fingerprint: string;
+  operationType: LedgerOperationType;
+  businessPriceDuplicateRepair: boolean;
 }>;
 
 const STANDARD_PREVIEW_TTL_MS = 2 * 60_000;
@@ -194,7 +196,7 @@ const CONTENT_BATCH_PREVIEW_TTL_MS = 15 * 60_000;
 const OPERATIONS_BY_FAMILY: Readonly<
   Record<WritePreviewFamily, ReadonlySet<WriteOperation>>
 > = {
-  "business-price": new Set(["business_price"]),
+  "business-price": new Set(["business_price", "business_price_repair"]),
   "variation-move": new Set(["variation_detach", "variation_attach"]),
   "standard-price": new Set(["price"]),
   content: new Set(["content"]),
@@ -368,11 +370,13 @@ export class MainWriteGate implements MainWriteGatePort {
         consumeTicket();
         return this.store.runIdempotentOperation<TResult>({
           idempotencyKey: durable.idempotencyKey,
-          operationType: durable.intent.operation,
+          operationType: durable.operationType,
           marketplaceId: durable.intent.marketplaceId,
           sellerSku: durable.intent.sellerSku,
           accountScope: input.binding.context.accountScope,
           fingerprint: durable.fingerprint,
+          businessPriceDuplicateRepair:
+            durable.businessPriceDuplicateRepair,
           execute: async ({ recordAccepted }) => {
             try {
               await this.context.assertCurrent(input.binding.context);
@@ -605,7 +609,16 @@ export class MainWriteGate implements MainWriteGatePort {
         fingerprint,
       ]).slice(0, 56)}`
       : intent.idempotencyKey;
-    return { intent, idempotencyKey, fingerprint };
+    return {
+      intent,
+      idempotencyKey,
+      fingerprint,
+      operationType: intent.operation === "business_price_repair"
+        ? "business_price"
+        : intent.operation,
+      businessPriceDuplicateRepair:
+        intent.operation === "business_price_repair",
+    };
   }
 
   private availabilityInput(
@@ -614,11 +627,13 @@ export class MainWriteGate implements MainWriteGatePort {
   ): IdempotentOperationAvailabilityInput {
     return {
       idempotencyKey: durable.idempotencyKey,
-      operationType: durable.intent.operation,
+      operationType: durable.operationType,
       marketplaceId: durable.intent.marketplaceId,
       sellerSku: durable.intent.sellerSku,
       accountScope: binding.context.accountScope,
       fingerprint: durable.fingerprint,
+      businessPriceDuplicateRepair:
+        durable.businessPriceDuplicateRepair,
     };
   }
 

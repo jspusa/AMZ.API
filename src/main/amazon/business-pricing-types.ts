@@ -27,7 +27,11 @@ export type BusinessPricingListingSnapshot = ListingPriceSnapshot & {
   businessOfferPresence: "absent" | "present" | "ambiguous";
   businessPricingManagedByAutomation: boolean;
   quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence: "absent" | "canonical" | "ambiguous";
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
   quantityDiscountPlanHash: string | null;
   businessOfferGuardHash: string;
   businessOfferProtectedHash: string;
@@ -47,6 +51,11 @@ export type BusinessPriceValidationResult = {
   previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
   previousQuantityDiscountPlanHash: string | null;
   requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
   quantityDiscountPlanChange: "preserve" | "replace";
   businessOfferGuardHash: string;
   businessOfferProtectedHash: string;
@@ -66,6 +75,8 @@ export type BusinessPricePrecommitEvidence = Pick<
   | "businessOfferGuardHash"
   | "businessOfferProtectedHash"
   | "previousQuantityDiscountPlanHash"
+  | "quantityDiscountPlanPresence"
+  | "quantityDiscountPlanChange"
   | "schemaChecksum"
   | "fbaEvidenceHash"
   | "canonicalPatchHash"
