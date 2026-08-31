@@ -4,7 +4,7 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-31 v0.1.41 全商品文案模板／B2B Preview 證據與視窗內結果修正（製作中；Amazon live 待驗證）
+### 2026-08-31 v0.1.41 全商品文案模板／B2B Preview 證據與視窗內結果修正（已合併／Pages 上線／Mac 安裝；Amazon live 待驗證）
 
 使用者需要保留既有「待確認項目 Excel」，同時匯出本次文案快照內全部可健檢 FBA SKU，作為完整商品文案模板；兩種原始 Excel 都必須能選回同一個批次預覽／更新流程。v0.1.41 的 Content owner 因此新增明確 `attention／all` scope：前者只含讀取未完成或有問題的列，後者包含同一快照的全部列；兩者保留相同 export ID、站點、原值與 durable digest 證據，使用不同檔名與 scope response header。Renderer 顯示兩個獨立下載入口，並明示任一份都可選回；full download 另要求 response 必須明確回傳 `scope=all` 與 exact row count，避免新版 Pages 搭配舊 Bridge 時把 attention-only workbook 靜默存成完整模板，舊版會直接提示先更新 App。既有 incomplete edit 隔離、500 列上限、fresh read／FBA／PTD／Amazon Validation Preview、一次原生確認、ledger、readback 與 no-blind-retry 邊界不變。
 
@@ -12,7 +12,11 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 
 RED 先精確重現兩種合法 optional-identifiers 回應被誤擋、錯誤只送到 editor 外層，以及下載 owner／route 固定 attention scope；GREEN 後 6 個聚焦測試檔／144 tests 通過，包含兩種 owner 產生的原始 workbook 都能重新匯入預覽、full workbook 確實包含 clean SKU、舊 Bridge full-download mismatch／invalid scope 拒絕，以及 contradictory non-empty ASIN 證據不會 stage Write Gate。package 已升為 0.1.41；final local `npm run check` 通過 244 個測試檔／2,410 tests、TypeScript、production build與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。
 
-本節尚未合併、部署 Pages、產生 macOS／Windows CI artifact或安裝。也沒有呼叫 live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 Amazon mutation；本機與 scripted 測試只能證明誤判已修正，仍需安裝後由使用者以明確 SKU／值自行執行零寫入 Preview 才能取得 Amazon 當下證據。
+PR #169 已 squash merge；唯一綁定本次 v0.1.41 程式碼與安裝成品的 main SHA 為 `c0c86db129d89822342ab6465432b7bd6f27f78b`。PR Validate／Windows runs `33357612297`／`33357612335` 成功；exact-main Validate／Pages／macOS／Windows runs `33357969405`／`33357969393`／`33357969420`／`33357969407` 亦全部成功。Windows workflow 只證明 unsigned package、ASAR addon boundary 與 packaged Bridge smoke，不是真實 Windows 11 Hello／DPAPI 實機證據。
+
+macOS artifact `9745829664` 名稱為 `AMZ.API-unsigned-c0c86db129d89822342ab6465432b7bd6f27f78b`，468,257,104 bytes，artifact ZIP SHA-256 為 `f9132054961d71cc0c57d31eaa20f9540ba58af925f94101a2dcfde87bd7c237`。DMG `AMZ.API-0.1.41-universal.dmg` 為 246,419,165 bytes、SHA-256 `b5af3579466a9f68e714ca846be16c3b7d5d1966c7749955aa37fd2ff67c4d78`；universal ZIP 為 221,837,295 bytes、SHA-256 `e9fff8ac647a6ab3733796edc4571cab666c5dd427c22a10988680f709a9bb02`，兩者匹配內附 checksum。DMG integrity、ZIP CRC、version／build 0.1.41、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過；packaged `app.asar` SHA-256 為 `099c6272cca68b040199a2da5f59c058d6435e3e507a6cbe06ca024dd7ce054a`，`amzApiUpdateChannel` 正確保持 `disabled`。exact App 已安裝到 `/Applications/AMZ.API.app`，安裝後 `app.asar` 與 DMG 完全一致且主程序成功啟動；原 v0.1.40 可復原地保留為 `/Applications/AMZ.API-v0.1.40-backup.app`，既有 userData／Keychain vault 未清除或重建。
+
+本節仍沒有 Apple Developer ID／notarization、Windows Authenticode、正式 GitHub desktop release、公開或私有 update feed、Supply Boss 上傳、Windows 實機、live Amazon Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 Amazon mutation。使用者可在已安裝 v0.1.41 以明確 SKU／欄位／數值自行執行零寫入 Preview，確認 Amazon 當下是否回傳 `VALID`；未經新的逐次確認不得送出正式 B2B 或商品文案 PATCH。
 
 ### 2026-08-31 v0.1.40 B2B Validation Preview／預設階梯與紅綠差異修正（已合併／Pages 上線／Mac 安裝；Amazon live 待驗證）
 
