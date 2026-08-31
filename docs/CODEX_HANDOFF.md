@@ -4,7 +4,7 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-09-01 v0.1.46 B2B 最低價手動確認解鎖與寬版健檢工作區（實作／發布驗證中；未執行 Amazon 寫入）
+### 2026-09-01 v0.1.46 B2B 最低價手動確認解鎖與寬版健檢工作區（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
 使用者在 exact US FBA SKU `1GCRD004A0` 的最低價已由 Seller Central 與 fresh Listing 顯示為目標 `14.19 USD` 後，單 SKU editor 仍停在黃色「Amazon 已接受最低價，正在同步」，使「先預檢 B2B 價格與階梯折扣」維持 disabled。既有路徑沒有要求重跑全站 B2B 健檢，問題是最低價 durable reconcile 把寫入前的一般售價、B2B contribution、數量折扣與 `minimumPriceProtectedHash` 都錯當成 post-write 完成條件；Amazon 同步期間只要正規化任一非目標欄位，exact 目標最低價已可見仍無法轉成 `VERIFIED`。
 
@@ -12,7 +12,17 @@ v0.1.46 將兩階段責任重新收斂。最低價階段仍要求同一 live mar
 
 首頁七個主要健檢入口同步改為共用的寬版單層 audit workspace：文案、圖片、A+、未綁變體、Subscribe & Save、B2B 與廣告覆蓋不再被限制在帶 backdrop 的小型 modal。共同工作區提供 sticky 返回列、單一頁面捲動、進入標題焦點、返回卡片焦點／捲動恢復與 B2B busy 離開護欄；非首頁工具仍可保留既有 drawer presentation。各 panel 的長篇規則仍使用原生 disclosure，但收合控制改成低調的「詳細說明 ›」輔助連結，只有展開後才顯示內容，不再佔據主要資訊區塊。
 
-package 已升為 0.1.46。新增 regression 分別覆蓋 pure minimum-price reconcile、真實 `LocalStore + MainWriteGate` 在一般售價／B2B／QDP／protected-hash 漂移後仍只以 exact 最低價完成、renderer 手動 GET 後同頁解鎖且零 PATCH，以及七個首頁入口逐一開啟正確非 modal workspace、取得焦點並在返回後恢復卡片與捲動位置。本機 `npm run check` 已通過 246 個測試檔／2,456 tests、typecheck、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。四種 1440／390／320px production fixture profile 亦已證明無 backdrop／dialog／nested scroller／水平溢位，手動 refresh 後 input 與 fresh Preview 解鎖、每 profile 只有兩次 B2B GET 且 B2B POST／PATCH 為 0。獨立 Standards／Spec 最終複查均無剩餘 P0／P1／P2／P3；Pages、macOS／Windows exact-main artifacts、Mac 安裝與 live asset/hash 證據仍待本節後續補上。在這些發布證據完成前，不可把本機／fixture 結果描述成已上線或 live Amazon 證據。本次工程工作不呼叫 Amazon Validation Preview、Touch ID／Windows Hello、PATCH 或任何 mutation。
+package 已升為 0.1.46。新增 regression 分別覆蓋 pure minimum-price reconcile、真實 `LocalStore + MainWriteGate` 在一般售價／B2B／QDP／protected-hash 漂移後仍只以 exact 最低價完成、renderer 手動 GET 後同頁解鎖且零 PATCH，以及七個首頁入口逐一開啟正確非 modal workspace、取得焦點並在返回後恢復卡片與捲動位置。本機 `npm run check` 已通過 246 個測試檔／2,456 tests、typecheck、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。四種 1440／390／320px production fixture profile 亦已證明無 backdrop／dialog／nested scroller／水平溢位，手動 refresh 後 input 與 fresh Preview 解鎖、每 profile 只有兩次 B2B GET 且 B2B POST／PATCH 為 0。獨立 Standards／Spec 最終複查均無剩餘 P0／P1／P2／P3。本次工程、發布、安裝與單純啟動都沒有呼叫 Amazon Validation Preview、Touch ID／Windows Hello、PATCH、live readback 或任何 mutation。
+
+PR #179 已 squash merge；唯一綁定本次 v0.1.46 程式碼、Pages 與安裝成品的 release-code main SHA 為 `5f436fe11d55b7d9488281804fbfddb8d8ff3862`。exact-main macOS／Validate／Windows／Pages runs 為 `33425157159`／`33425155817`／`33425155883`／`33425156001`，成功 jobs 為 `99596826304`／`99596821651`／`99596822607`／`99596822698`，全為 attempt 1。macOS 完成完整 Validate、universal package、ad-hoc sign、DMG／ZIP、checksum 與 upload；Windows 完成 runner validation、unsigned x64 package、ASAR addon boundary、artifacts 與 packaged Bridge smoke，但不能冒充真實 Windows 11 Hello／DPAPI 實機證據。
+
+live Pages 已直接下載核對：HTML／JS／CSS 分別為 917／1,858,976／308,124 bytes，SHA-256 為 `f1a47a5822e09787f2c610f0504d491650440944610e74d32e5adec76b6d18a4`／`2357ed36cdd113b155d2ddbbcd552eea043fe5c7caa0cc69bac33d67b4f1d63a`／`310780b77770eaf19e52e26d8b1a666e75ad162e8cee107c5c326fdf3981fd20`；live 載入 `assets/index-Bd2lnogq.js` 與 `assets/index-Bje27vgz.css`，三個檔案均與 exact release-code main 的 production output byte-for-byte 相同。
+
+macOS artifact `9770629277` 名稱為 `AMZ.API-unsigned-5f436fe11d55b7d9488281804fbfddb8d8ff3862`，468,333,375 bytes，GitHub digest／下載 outer ZIP SHA-256 同為 `f0a58940a77900b399e05850adc58b308894447e3a46d436f5cdf5da753bb117`。DMG `AMZ.API-0.1.46-universal.dmg` 為 246,476,752 bytes、SHA-256 `1a7052d2d25dd12b7c6d0635d03ad2a6e1498907078964c1b8c1a84ba7b29982`；universal ZIP 為 221,855,979 bytes、SHA-256 `b885ad8d44837cd31ecb9d47c3ac7ba118d238ec98777066c3a26ca192895567`；`SHA256SUMS.txt` SHA-256 為 `422e832455c0011d460bc3f84600d69c7f2584093797471dc095eb4e6a36cdde`，兩個 payload 均與 manifest 相符。outer／inner ZIP CRC、DMG integrity、version／build 0.1.46、bundle `com.jspusa.amz-api`、executable `AMZ.API`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 全通過；DMG／ZIP 內 19,191,146-byte `app.asar` SHA-256 同為 `310e5e355c4d9a1d47c8a6553c5b3be3be9e9385ab80f8f08b5ee75c4f57cdf7`，ASAR header SHA-256 `949be5f0b1ddb83ef2090afa6ecb8f0bf29a46ab29b895292da6b408d7b97f73` 亦與 `ElectronAsarIntegrity` 相符；packaged name／version 為 `amz-api`／0.1.46，update channel 維持 `disabled`。
+
+Windows artifact `9770631143` 名稱為 `AMZ.API-Notebook-Key-Windows-x64-5f436fe11d55b7d9488281804fbfddb8d8ff3862`，244,877,212 bytes，GitHub digest 為 `sha256:5c0ad2efc216fce7144c4b4b039c67cdca2406c6fe6c65ef3a3a0070003dc12d`。這只證明 exact-main CI artifact，不是受保護員工下載卡、Windows 實機安裝或 Windows Hello／DPAPI 通過。
+
+exact v0.1.46 App 已從上述 DMG 可復原地安裝到 `/Applications/AMZ.API.app`；安裝後再次通過版本、bundle、雙架構、簽章、完整 ASAR 與 header hash 核對，且執行中的主程序來自正式路徑並回報 0.1.46。原 v0.1.45 完整保留為 `/Applications/AMZ.API-v0.1.45-backup.app`，其 `app.asar` 仍匹配既有 SHA-256 `c17de0a1a11bd4db0e2e5dbe61efc7153670eadad39e13da20608118ce23f511`；既有 userData／Amazon Keychain vault 與更舊備份未清除或重建。受保護員工下載卡仍是 v0.1.32，這次沒有授權更新 Supply Boss。正式 `1GCRD004A0` 手動 GET canary 尚待使用者在新版明確按「重新確認 Amazon 狀態」；發布與安裝證據不能冒充這個 live Amazon 結果。
 
 ### 2026-08-31 v0.1.45 大量 Excel 文案批次原生確認摘要（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
@@ -967,10 +977,10 @@ Amazon App：
 
 ### 已完成與仍待真實 Windows／Mac／Amazon 驗證
 
-目前已發布／安裝的正式基線是 v0.1.45；v0.1.46 的 B2B 最低價手動確認解鎖與七項寬版工作區仍是本機已驗證、尚待合併／Pages／artifact／安裝的候選。受保護員工下載站則仍停在 v0.1.32，除非另行明確授權上傳，不得宣稱已同步到 v0.1.45 或 v0.1.46。v0.1.30 的 B2B／未綁變體唯讀 canary、後續使用者授權的單 SKU B2B／最低價 accepted activity 與各版工程／發布證據必須分開理解；v0.1.46 工程與本機驗證沒有呼叫 Amazon Preview、Touch ID／Windows Hello、PATCH 或 live readback，且尚未在員工真實 Windows 11 Pro 裝置做人機驗證。下列範圍必須分開理解：
+目前已發布／安裝的正式基線是 v0.1.46；B2B 最低價手動確認解鎖與七項寬版工作區的 source、Pages、macOS／Windows artifacts 與 Mac 安裝證據已補齊。受保護員工下載站仍停在 v0.1.32，除非另行明確授權上傳，不得宣稱已同步到 v0.1.45 或 v0.1.46。v0.1.30 的 B2B／未綁變體唯讀 canary、後續使用者授權的單 SKU B2B／最低價 accepted activity、v0.1.46 工程／發布／安裝證據與仍待執行的新版 `1GCRD004A0` 手動 GET canary 必須分開理解；本次發布沒有呼叫 Amazon Preview、Touch ID／Windows Hello、PATCH 或 live readback，且尚未在員工真實 Windows 11 Pro 裝置做人機驗證。下列範圍必須分開理解：
 
-1. v0.1.45 的 source／Pages／Mac／Windows artifact／Mac 安裝證據已補齊；目前 `/Applications/AMZ.API.app` 仍是 exact v0.1.45。受保護員工下載頁的 Mac／Windows 卡則仍是 v0.1.32，兩者不可互相冒充。Windows runner 只證明封裝、Bridge 與 addon 可載入，不得冒充真實 Windows Hello 指紋／臉部／PIN 或 DPAPI 跨使用者驗證。
-2. v0.1.30 已顯示 `Amazon 已連線`、US／Live，並完成 274 列 B2B 與 274 列 variation 唯讀 canary；A+ 的 273 列全數 incomplete 是 live 失敗證據，不是可沿用的通過證據。v0.1.45 已完成 exact App 安裝與主程序啟動；v0.1.46 的 `1GCRD004A0` 手動 GET 後同 editor 解鎖仍待新版安裝後由使用者以真實 Notebook Key 觀察。更早歷史版本的品牌／品類與「狀態收斂進度」只能作各自時間點證據，不得冒充目前 live 完成。
+1. v0.1.46 的 source／Pages／Mac／Windows artifact／Mac 安裝證據已補齊；目前 `/Applications/AMZ.API.app` 是 exact v0.1.46，v0.1.45 保留為可復原備份。受保護員工下載頁的 Mac／Windows 卡則仍是 v0.1.32，兩者不可互相冒充。Windows runner 只證明封裝、Bridge 與 addon 可載入，不得冒充真實 Windows Hello 指紋／臉部／PIN 或 DPAPI 跨使用者驗證。
+2. v0.1.30 已顯示 `Amazon 已連線`、US／Live，並完成 274 列 B2B 與 274 列 variation 唯讀 canary；A+ 的 273 列全數 incomplete 是 live 失敗證據，不是可沿用的通過證據。v0.1.46 已完成 exact App 安裝、主程序啟動與版本回報；`1GCRD004A0` 手動 GET 後同 editor 解鎖仍待使用者在真實 Notebook Key 明確按下重新確認後觀察。更早歷史版本的品牌／品類與「狀態收斂進度」只能作各自時間點證據，不得冒充目前 live 完成。
 3. v0.1.14 的真實 US 6 個月 Subscribe & Save 已證明單列問題可隔離、其他 offer 繼續；它只能保留為舊版歷史快照，不能自動證明 v0.1.15 的新篩選、全站／SKU 折線或五張正常表加一張問題表。這些仍待 6／12／23 個月追加唯讀重測。
 4. 全庫齡層級、AIS tier、評論首頁背景 observer、長 variation family、滑板動畫、36×36 關閉控制與健檢狀態 pill 已通過 production build、測試與 1280px／390px 假 Bridge 視覺驗收；不能以 mock 數值冒充 live Amazon。
 5. 評論負向數值必須保持原始負號並標示為 impact；公開 API 仍不提供商品總星等、總評論數或完整 review 全文。v0.1.12 的 23,765 件品牌出貨、257 個 non-parent review candidates，以及 v0.1.14 的 S&S aggregate 都只是各自時間點快照，不得當作恆定現值。
@@ -992,7 +1002,7 @@ Amazon App：
 
 ## 6. 目前安裝檔
 
-- 目前 `/Applications/AMZ.API.app` 的正式基線是 v0.1.45；來源為 release code main `40ff3a597a008eb0bb3dc60a2f51d0457111b92c` 的 macOS artifact `9764724951`。版本／build 0.1.45、bundle `com.jspusa.amz-api`、雙架構、deep strict ad-hoc codesign、ASAR header integrity 與 `app.asar` 已逐項匹配；原 v0.1.44 保留於 `/Applications/AMZ.API-v0.1.44-backup.app`，既有 userData／Amazon Keychain vault 與更舊備份未清除或重建。v0.1.46 候選尚未安裝；其發布後必須先把 v0.1.45 可復原地保留為 `/Applications/AMZ.API-v0.1.45-backup.app`。受保護員工下載卡仍是 v0.1.32，沒有因本機版本更新而自動替換。
+- 目前 `/Applications/AMZ.API.app` 的正式基線是 v0.1.46；來源為 release-code main `5f436fe11d55b7d9488281804fbfddb8d8ff3862` 的 macOS artifact `9770629277`。版本／build 0.1.46、bundle `com.jspusa.amz-api`、`x86_64`／`arm64`、deep strict ad-hoc codesign、ASAR header integrity 與 `app.asar` 已逐項匹配，正式路徑主程序已啟動並回報 0.1.46；原 v0.1.45 保留於 `/Applications/AMZ.API-v0.1.45-backup.app`，既有 userData／Amazon Keychain vault 與更舊備份未清除或重建。受保護員工下載卡仍是 v0.1.32，沒有因本機版本更新而自動替換。
 - v0.1.20 main macOS workflow run：`32561974803`；artifact：`9473081924`，名稱 `AMZ.API-unsigned-7425b8e49e027028efdfac6b101bb8d7480e5b02`；GitHub metadata digest：`sha256:fb5c205b7f23b1fa18f8075f51db72ec6ba7c04b8d1f711fe3b34321a4322757`。DMG 為 `AMZ.API-0.1.20-universal.dmg`（246,861,081 bytes；SHA-256 `89e3e1aa35e6878018aa09c06ec80e22eb369d4be418aacc0fc71aafa6c4e9d4`）；ZIP 為 `AMZ.API-0.1.20-universal.zip`（221,569,042 bytes；SHA-256 `8228d8a735a24af5b613d6defbe2c2b31b56e12b9393f6b4a3e44cbc22551009`）；`SHA256SUMS.txt` SHA-256 為 `fa5e91e6b1ad85bceb7fbf289e0c6644e17a59b36eb58df2d89d78e671f728c9`。
 - v0.1.20 曾作為 universal 內部測試 App 完成版本／build、bundle ID、executable、雙架構與 deep strict ad-hoc codesign 核對；這是歷史 artifact 紀錄，不是目前安裝版本。
 - v0.1.19 main macOS workflow run：`32560390832`；artifact：`9472647652`，名稱 `AMZ.API-unsigned-cae2bd51cfeebc3bc9a8a4e77deaabd5af4e4bc1`；GitHub metadata digest：`sha256:22a3beb9243dae7cf2bda76dc3235422de1325e271d5da6e62301a1e31a45781`。DMG SHA-256 為 `bf9cc3931e20236357b348cc2e7f6e389ad07908a152aba5b59d177da83813f1`；ZIP SHA-256 為 `ff3837763485fcd9b49cf073bccbf104a86d0f38b54ebf1fa2068ee6bf83ecf8`，均與 artifact 內 checksum manifest 一致。
@@ -1101,7 +1111,7 @@ npm audit --omit=dev
 
 注意：
 
-- 目前已發布／安裝的 release code main 是 v0.1.45 `40ff3a597a008eb0bb3dc60a2f51d0457111b92c`（PR #177）；v0.1.46 仍是待發布候選。受保護員工下載卡另維持 v0.1.32 `68821a3e3fa1ef000106d81f90b9d52f784975ec`，除非另行授權更新，不得把卡片版本說成 v0.1.45／v0.1.46。開始新工作前仍須 `git fetch origin` 並核對 merge base；後續 docs-only main commit 不得冒充 release artifact SHA，也不得把本機 `out/` 或未受信任 PR artifact 誤認成已發布 App。
+- 目前已發布／安裝的 release-code main 是 v0.1.46 `5f436fe11d55b7d9488281804fbfddb8d8ff3862`（PR #179）。受保護員工下載卡另維持 v0.1.32 `68821a3e3fa1ef000106d81f90b9d52f784975ec`，除非另行授權更新，不得把卡片版本說成 v0.1.45／v0.1.46。開始新工作前仍須 `git fetch origin` 並核對 merge base；後續 docs-only main commit 不得冒充 release artifact SHA，也不得把本機 `out/` 或未受信任 PR artifact 誤認成已發布 App。
 - 工作區可能存在使用者或其他 agent 的變更；不得 `git reset --hard`、`git checkout --` 或直接覆蓋。
 - 修改後應建立修復分支／PR，通過 Actions 再合併。
 - 真實 Amazon 驗證只能由使用者在自己的 Notebook Key 本機加密憑證環境執行；Linux／CI 不得假裝已測過 SP-API live，Windows runner 也不得假裝已完成員工裝置的 Windows Hello／DPAPI 人工驗證。
@@ -1125,14 +1135,14 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-下一個安全任務是完成 v0.1.46 的 PR／exact-main CI／Pages／artifact 驗證與可復原 Mac 安裝；之後由使用者在已安裝 Notebook Key 的原 B2B editor 對 exact US FBA SKU `1GCRD004A0` 明確按一次「重新確認 Amazon 狀態」。該 canary 只允許 GET＋reconcile：若 canonical 最低價為 14.19，必須同頁顯示「最低價已確認；B2B 尚未送出」並解鎖 fresh Preview，不重跑全站健檢也不 PATCH；若仍未相符就保留 PROCESSING。任何 B2B Preview、Touch ID／Windows Hello 或寫入都屬另一個需要另外明確發起與授權的步驟。不要清除或重建既有 vault，也不要把 fixture／CI 冒充 live Amazon 通過。
+下一個安全任務是由使用者在已安裝的 v0.1.46 Notebook Key 原 B2B editor，對 exact US FBA SKU `1GCRD004A0` 明確按一次「重新確認 Amazon 狀態」。該 canary 只允許 GET＋reconcile：若 canonical 最低價為 14.19，必須同頁顯示「最低價已確認；B2B 尚未送出」並解鎖 fresh Preview，不重跑全站健檢也不 PATCH；若仍未相符就保留 PROCESSING。任何 B2B Preview、Touch ID／Windows Hello 或寫入都屬另一個需要另外明確發起與授權的步驟。不要清除或重建既有 vault，也不要把 fixture／CI／安裝成功冒充 live Amazon 通過。
 
 ### A. v0.1.46 發布與 live 證據
 
-1. 本機 `npm run check` 為 246 files／2,456 passed；typecheck、production build、stylesheet parity、audit 0 與 diff check 已完成。PR、release-code SHA、四個 exact-main Actions、live Pages bytes/hash、macOS artifact／安裝仍待發布後回填；後續 docs-only main SHA 只代表證據文件更新，不得冒充新的 release code 或 artifact SHA。
+1. 本機 `npm run check` 為 246 files／2,456 passed；typecheck、production build、stylesheet parity、audit 0 與 diff check 已完成。PR #179、release-code SHA `5f436fe11d55b7d9488281804fbfddb8d8ff3862`、四個 exact-main Actions、live Pages bytes/hash、macOS／Windows artifacts 與可復原 Mac 安裝證據已回填於最上方 v0.1.46 節；本次 docs-only main SHA 只代表證據文件更新，不得冒充新的 release code 或 artifact SHA。
 2. v0.1.46 最低價 reconcile 只在 exact marketplace／SKU／ASIN／PTD／FBA／目標金額與幣別相符且沒有 price-scoped issue 時 verified；一般售價、舊 B2B、QDP 或 protected hash 漂移只迫使下一階段 fresh Preview，不再永久鎖住同 editor。手動 refresh 為 GET-only，不沿用 preview／approval，也不自動 PATCH。
-3. 目前 exact v0.1.45 App 已安裝，v0.1.44 備份與既有 Amazon vault 均保留；v0.1.46 安裝後必須保留 v0.1.45 backup 並核對正式路徑、版本、簽章、ASAR 與啟動程序。未完成前不能把工作樹 build 冒充已安裝新版。
-4. v0.1.46 安裝後只以 exact `1GCRD004A0` 做一次使用者明確觸發的 GET canary，核對同頁 VERIFIED／解鎖與零 PATCH。沒有另行明確授權 fresh Preview、exact 變更值與第二次本機確認前不得送 B2B；任何不明結果立即停止，不盲目重送。
+3. exact v0.1.46 App 已安裝並從正式路徑啟動，v0.1.45 backup 與既有 Amazon vault 均保留；版本、簽章、雙架構、完整 ASAR、header integrity 與啟動程序已重新核對。這是安裝證據，不是 live Amazon readback 證據。
+4. 只以 exact `1GCRD004A0` 做一次使用者明確觸發的 GET canary，核對同頁 VERIFIED／解鎖與零 PATCH。沒有另行明確授權 fresh Preview、exact 變更值與第二次本機確認前不得送 B2B；任何不明結果立即停止，不盲目重送。
 5. Windows CI 不能替代真實 Windows 11 Pro 的 DPAPI／Windows Hello 驗證；員工下載卡仍是 v0.1.32，這次沒有授權更新受保護下載站。
 
 ### B. 廣告策略 live 待辦
@@ -1150,8 +1160,8 @@ npm audit --omit=dev
 
 ### D. 接回目前 Mac App
 
-1. 目前安裝的是 exact main artifact v0.1.45；v0.1.44 備份、更舊備份與原 userData／Amazon Keychain vault 均保留。不要以工作樹 build 覆蓋目前安裝檔；只在 exact v0.1.46 main artifact 完整驗證後，才以 staging → v0.1.45 backup → canonical 的可復原順序替換。
-2. 目前 App 主程序來自正式 `/Applications/AMZ.API.app`。v0.1.46 安裝與單純啟動不得觸發 Amazon 健檢、Preview 或寫入；不要清除 Keychain item、encrypted vault 或冒充 Windows Hello。
+1. 目前安裝的是 exact release-code main artifact v0.1.46；v0.1.45 備份、更舊備份與原 userData／Amazon Keychain vault 均保留。不要以工作樹 build 覆蓋目前安裝檔；若需回復，先重新核對 `/Applications/AMZ.API-v0.1.45-backup.app` 的版本與既有 ASAR hash，再採可復原替換。
+2. 目前 App 主程序來自正式 `/Applications/AMZ.API.app` 並回報 0.1.46。安裝與單純啟動沒有觸發 Amazon 健檢、Preview 或寫入；不要清除 Keychain item、encrypted vault 或冒充 Windows Hello。
 
 ### E. 依序完成既有新功能的真實唯讀證據
 
