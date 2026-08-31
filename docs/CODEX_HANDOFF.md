@@ -4,17 +4,25 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-08-31 v0.1.43 B2B 最低價護欄自動下調（準備發布；未執行 Amazon 寫入）
+### 2026-08-31 v0.1.43 B2B 最低價護欄自動下調（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
 使用者指出 combined B2B percent 階梯的最低單價有時低於 Seller Central 既有最低允許售價，導致 B2B 更新失敗；需要在調價畫面同時顯示目前最低價，並在 exact US／USD canonical 最低價確實擋住本次階梯時，先把護欄降到「最低階實際單價再少 US$1.00」，確認後才送 B2B 價格與階梯。price-only 必須保留原最低價；缺少、重複或 malformed 的最低價不得自動建立或猜測。
 
-本 working tree 新增窄化的兩階段安全流程。fresh Listing 只接受唯一 current-market `ALL` contribution 與唯一 `minimum_seller_allowed_price[0].schedule[0].value_with_tax`；main-owned WeakMap 保存完整原 `ALL` contribution，公開 domain 只能取得 frozen opaque descriptor。USD 全程以 cents／basis points 計算最低階單價與 `-100 cents` 目標。預檢先分別要求最低價-only 與 ALL＋B2B final-state 的 exact VALID receipt；一次 Touch ID／Windows Hello 摘要把最低價 old→new、`ALL` 對一般／自動定價的影響與最低階單價放在 120 字截斷前。核准後在同一 marketplace＋SKU offer reservation 內依序執行最低價 ledgered single PATCH、canonical readback、fresh B2B-only Preview、B2B ledgered single PATCH 與 canonical readback。最低價未 verified 前不送 B2B；最低價已完成但後段 known failure 明確回 partial，任何已送出結果不明保留 durable unknown 且禁止盲目重送。
+v0.1.43 新增窄化的兩階段安全流程。fresh Listing 只接受唯一 current-market `ALL` contribution 與唯一 `minimum_seller_allowed_price[0].schedule[0].value_with_tax`；main-owned WeakMap 保存完整原 `ALL` contribution，公開 domain 只能取得 frozen opaque descriptor。USD 全程以 cents／basis points 計算最低階單價與 `-100 cents` 目標。預檢先分別要求最低價-only 與 ALL＋B2B final-state 的 exact VALID receipt；一次 Touch ID／Windows Hello 摘要把最低價 old→new、`ALL` 對一般／自動定價的影響與最低階單價放在 120 字截斷前。核准後在同一 marketplace＋SKU offer reservation 內依序執行最低價 ledgered single PATCH、canonical readback、fresh B2B-only Preview、B2B ledgered single PATCH 與 canonical readback。最低價未 verified 前不送 B2B；最低價已完成但後段 known failure 明確回 partial，任何已送出結果不明保留 durable unknown 且禁止盲目重送。
 
 最低價 protected hash 只排除這次獲授權變動的 exact `ALL.minimum_seller_allowed_price`，其餘 ALL／B2B／其他 audience、身分、FBA、一般售價與 QDP drift 均停止。B2B offer guard 本身會因合法最低價變更而改變，post-min 流程因此改採上述 protected hash 驗證其他欄位，再以 fresh post-min B2B hashes 綁定後段寫入／回查；不能錯把合法最低價變動判為競爭寫入。opaque final-state Preview 另逐欄核對 marketplace、Seller SKU、ASIN、Product Type 與 currency，拒絕跨 SKU descriptor 配對。
 
-Renderer 永遠顯示「目前最低價」的 exact 金額、未設定或 Amazon 無法確認；Preview 以紅色舊值→綠色新值顯示最低價與 B2B，另列最低階實際單價及 ALL 警告。成功回查後同一個仍開啟的 editor 立即把 verified B2B、最低價與階梯顯示為目前值；最低價已 verified 而 B2B partial／unknown 時，main 回傳與 immutable submitted Preview 精確綁定的結構化證據，editor 同樣把新最低價顯示為目前值、保留 Request ID 並停用舊 Preview 的送出按鈕，要求重新讀取。此功能擴張既有 `ALL` 不可寫硬邊界的唯一窄例外，因此 README、SECURITY 與 ARCHITECTURE 已同步更新；package 已升為 0.1.43，準備沿用內部 unsigned 完整 App 發布／安裝流程，不建立需要付費發行憑證與公開更新來源核准的正式 signed tag。本 working tree 尚未合併、安裝或執行任何 live Amazon Preview／PATCH／生物辨識。
+Renderer 永遠顯示「目前最低價」的 exact 金額、未設定或 Amazon 無法確認；Preview 以紅色舊值→綠色新值顯示最低價與 B2B，另列最低階實際單價及 ALL 警告。成功回查後同一個仍開啟的 editor 立即把 verified B2B、最低價與階梯顯示為目前值；最低價已 verified 而 B2B partial／unknown 時，main 回傳與 immutable submitted Preview 精確綁定的結構化證據，editor 同樣把新最低價顯示為目前值、保留 Request ID 並停用舊 Preview 的送出按鈕，要求重新讀取。此功能擴張既有 `ALL` 不可寫硬邊界的唯一窄例外，因此 README、SECURITY 與 ARCHITECTURE 已同步更新；package 已升為 0.1.43，沿用內部 unsigned 完整 App 發布／安裝流程，未建立需要付費發行憑證與公開更新來源核准的正式 signed tag。
 
 修後本機證據：`npm run check` 通過 244 個測試檔／2,431 tests、TypeScript、production build 與 stylesheet parity；B2B／Write Gate 聚焦 7 檔／194 tests 通過，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。Ask Matt 的規格／標準雙重審查曾抓出 post-min hash 不可能 invariant、120 字原生摘要截斷、offer-family reservation、opaque descriptor 跨 SKU 配對、partial 後目前最低價呈現、durable offer collision 檢查時機與 active 文件契約缺口，皆先新增 RED regression 或精準修正再複審；兩軸最終複審均無剩餘 P0／P1／P2。這些仍是 fixture、scripted adapter 與 local build 證據，不是 packaged Bridge、Windows Hello 實機或 live Amazon 證據。
+
+PR #173 已 squash merge；唯一綁定本次 v0.1.43 程式碼、Pages 與安裝成品的 main SHA 為 `bf8872180626c9474ceb261116265668627d024c`。PR Windows／Validate runs `33380765343`／`33380765353` 成功；exact-main Validate／Pages／macOS／Windows runs `33381331499`／`33381338198`／`33381331508`／`33381331554` 亦全部成功。Windows workflow 只證明 unsigned package、ASAR addon boundary 與 packaged Bridge smoke，不是真實 Windows 11 Hello／DPAPI 實機證據。
+
+live Pages 已直接下載核對：HTML／JS／CSS 分別為 917／1,825,819／296,591 bytes，SHA-256 為 `b20d1e8755eaea222e09d3d630bb4d4fbef45f9bab8208baae4e01256c334bd7`／`b5e1c77acbee0366c5b103efafbc4223433fc7ec2ea853120ecac323f31fd294`／`da07d4a8f010741a39c1edad1dff67267d9097decad46f97828096ef7f9dfe7f`；live 載入 `assets/index-CFXu8q_P.js` 與 `assets/index-BThQ2-X_.css`，三個檔案都和 exact production output byte-for-byte 相同。
+
+macOS artifact `9754065705` 名稱為 `AMZ.API-unsigned-bf8872180626c9474ceb261116265668627d024c`，468,319,068 bytes，GitHub digest 與下載 outer ZIP SHA-256 同為 `920b97a9657a7a1721c3457a4674871d2c8a80a1e8913762fd332d013462e41a`。DMG `AMZ.API-0.1.43-universal.dmg` 為 246,471,002 bytes、SHA-256 `9f0f9c0599f3d14babf877d7380d71ce78f22bda3af204d3e8cfd03112e8d3a4`；universal ZIP 為 221,847,422 bytes、SHA-256 `1b1d47423d06eaaf7d12f9e9cde6b43e892883c97b967bddc27d316964e7cd2b`，兩者匹配內附 checksum。outer／inner ZIP CRC、DMG integrity、version／build 0.1.43、bundle `com.jspusa.amz-api`、`x86_64`／`arm64` 與 deep strict ad-hoc codesign 均通過；DMG／ZIP 內 `app.asar` SHA-256 同為 `0d6a5266c77f8a0b7772cc2c0c8dac982514a5f3a808f0ae1292c0542d690ada`，`amzApiUpdateChannel` 保持 `disabled`。exact App 已安裝到 `/Applications/AMZ.API.app`，安裝後版本、簽章與 `app.asar` 再次匹配且正在執行的 App 回報 0.1.43；原 v0.1.42 可復原地保留為 `/Applications/AMZ.API-v0.1.42-backup.app`，既有 userData／Keychain vault 未清除或重建。
+
+本節仍沒有 Apple Developer ID／notarization、Windows Authenticode、正式 GitHub desktop release、公開或私有 update feed、Supply Boss 上傳、Windows 實機或 live Amazon Validation Preview／Touch ID／Windows Hello／PATCH／readback。安裝與啟動沒有觸發 Amazon 健檢或寫入；真正調整任一 SKU 時仍須重新讀取、完成兩段 Validation Preview，並由使用者親自通過原生確認。
 
 ### 2026-08-31 v0.1.42 B2B accepted-write 重複階梯回查與一次性修復（已合併／Pages 上線／Mac 安裝；未執行新的 Amazon 寫入）
 
