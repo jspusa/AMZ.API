@@ -6,6 +6,7 @@ import type { BusinessPricingCapabilitiesPort } from
   "./business-pricing-capabilities";
 import {
   businessPricingPatchBody,
+  businessPricingValidationPreviewBody,
   type BusinessPricingGateway,
   type BusinessPricingIdentity,
 } from "./business-pricing-gateway";
@@ -240,7 +241,7 @@ export function createBusinessPricingGatewayProduction(
       dependencies.write.validationPreview({
         marketplaceId: patch.marketplaceId,
         sellerSku: patch.sellerSku,
-        patchBody: businessPricingPatchBody(patch),
+        patchBody: businessPricingValidationPreviewBody(patch),
         includeIdentifiers: true,
       }),
     commitOnce: async (patch, fence, recordDispatch) =>

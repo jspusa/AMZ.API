@@ -11,7 +11,7 @@ import packageJson from "../package.json";
 import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("Notebook Key WebGate", () => {
-  it("shows one concise protected App 0.1.39 download action", () => {
+  it("shows one concise protected App 0.1.40 download action", () => {
     const markup = renderToStaticMarkup(<WebGate />);
 
     expect(markup).toContain("LOCAL KEY REQUIRED");

@@ -41,13 +41,14 @@ export type BusinessPricingGatewayReply = Readonly<{
   payload: unknown;
 }>;
 
-export function businessPricingPatchBody(
+function businessPricingPatchBodyWithOperation(
   patch: BusinessPricePatch,
+  operation: "merge" | "replace",
 ): Readonly<{ productType: string; patches: readonly unknown[] }> {
   return {
     productType: patch.productType,
     patches: [{
-      op: "merge",
+      op: operation,
       path: "/attributes/purchasable_offer",
       value: [{
         marketplace_id: patch.marketplaceId,
@@ -70,6 +71,24 @@ export function businessPricingPatchBody(
       }],
     }],
   };
+}
+
+export function businessPricingPatchBody(
+  patch: BusinessPricePatch,
+): Readonly<{ productType: string; patches: readonly unknown[] }> {
+  return businessPricingPatchBodyWithOperation(patch, "merge");
+}
+
+/**
+ * Amazon accepts merge for the persisted Listings Items mutation, but rejects
+ * merge when mode=VALIDATION_PREVIEW. Preview the exact proposed B2B
+ * contribution with replace, then keep the persisted mutation on merge so ALL
+ * and other audience contributions are not replaced.
+ */
+export function businessPricingValidationPreviewBody(
+  patch: BusinessPricePatch,
+): Readonly<{ productType: string; patches: readonly unknown[] }> {
+  return businessPricingPatchBodyWithOperation(patch, "replace");
 }
 
 /**

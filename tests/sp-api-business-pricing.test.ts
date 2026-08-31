@@ -4363,7 +4363,7 @@ describe("Amazon Business pricing SP-API contract", () => {
     )?.reason).toBe("已設定 Amazon Business 價格。");
   });
 
-  it("previews an exact B2B-only merge and validates the returned identifier", async () => {
+  it("previews an exact B2B-only replace and validates the returned identifier", async () => {
     let previewBody: unknown = null;
     const previewUrls: URL[] = [];
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => {
@@ -4427,7 +4427,7 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(previewBody).toEqual({
       productType: "PET_FOOD",
       patches: [{
-        op: "merge",
+        op: "replace",
         path: "/attributes/purchasable_offer",
         value: [{
           marketplace_id: MARKETPLACE_ID,
@@ -4516,7 +4516,7 @@ describe("Amazon Business pricing SP-API contract", () => {
     expect(previewBody).toEqual({
       productType: "PET_FOOD",
       patches: [{
-        op: "merge",
+        op: "replace",
         path: "/attributes/purchasable_offer",
         value: [{
           marketplace_id: MARKETPLACE_ID,
