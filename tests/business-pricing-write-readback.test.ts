@@ -314,7 +314,7 @@ describe("business pricing write readback", () => {
     } as never)).toBeNull();
   });
 
-  it("reconciles a dispatched minimum-price write only from exact canonical evidence", () => {
+  it("reconciles an exact minimum-price target despite unrelated offer normalization", () => {
     const plan = {
       discountType: "percent" as const,
       levels: [{ lowerBound: 5, value: 5 }],
@@ -386,6 +386,33 @@ describe("business pricing write readback", () => {
     expect(reconcileMinimumPriceWrite(durable, {
       ...canonical,
       minimumPriceProtectedHash: "9".repeat(64),
+      businessPrice: { amount: 16.15, currencyCode: "USD" },
+      quantityDiscountPlan: {
+        discountType: "fixed",
+        levels: [{ lowerBound: 3, value: 16.14 }],
+      },
+    } as never)).toMatchObject({
+      status: "ACCEPTED",
+      requestedMinimumPrice: evidence.requestedMinimumPrice,
+      writeLifecycle: { verified: true, authoritative: true },
+    });
+    expect(reconcileMinimumPriceWrite(durable, {
+      ...canonical,
+      minimumPriceProtectedHash: "9".repeat(64),
+    } as never)).toMatchObject({
+      status: "ACCEPTED",
+      writeLifecycle: { verified: true, authoritative: true },
+    });
+    expect(reconcileMinimumPriceWrite(durable, {
+      ...canonical,
+      standardPrice: { amount: 20.99, currencyCode: "USD" },
+    } as never)).toMatchObject({
+      status: "ACCEPTED",
+      writeLifecycle: { verified: true, authoritative: true },
+    });
+    expect(reconcileMinimumPriceWrite(durable, {
+      ...canonical,
+      asin: "B087654321",
     } as never)).toBeNull();
     expect(reconcileMinimumPriceWrite({
       ...durable,

@@ -17,6 +17,7 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/variation.css",
     "styles/experience.css",
     "styles/image-home-audits.css",
+    "styles/audit-workspace.css",
     "styles/brand-ads.css",
     "styles/desktop-updater.css",
     "styles/reports-reviews.css",
@@ -24,5 +25,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/fba-inbound.css",
   ]),
   fingerprint:
-    "3ac7538f681ed1d3376503d1ad33cd4dbe70bd0ef18fd4306468215725e8352d",
+    "b0a5aba9a90f4af8e377b4c06f14c62f9478b9662f6b4f88d20c2369ef3a9949",
 });

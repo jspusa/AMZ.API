@@ -1663,6 +1663,13 @@ function canonicalMatchesMinimumPriceEvidence(
   evidence: MinimumPriceWriteEvidence,
   snapshot: BusinessPricingListingSnapshot,
 ): boolean {
+  // The minimum-price PATCH targets the ALL contribution only. Amazon may
+  // normalize or independently update the B2B contribution while that PATCH
+  // is becoming visible. Those unrelated B2B fields are rebound by the next
+  // fresh B2B preview, so they must not keep an exact, canonical minimum-price
+  // target stuck in PROCESSING. The immutable identity, FBA evidence and
+  // requested minimum remain mandatory; the next preview rebinds the current
+  // standard price and every B2B field before any second write is authorized.
   return snapshot.mode === "live" &&
     snapshot.marketplaceId === evidence.marketplaceId &&
     snapshot.sellerSku === evidence.sellerSku &&
@@ -1672,15 +1679,7 @@ function canonicalMatchesMinimumPriceEvidence(
       entry.fulfillment === evidence.fulfillment
     ) &&
     snapshot.minimumPricePresence === "canonical" &&
-    sameMoney(evidence.standardPrice, snapshot.standardPrice) &&
     sameMoney(evidence.requestedMinimumPrice, snapshot.minimumPrice) &&
-    sameOptionalMoney(evidence.previousBusinessPrice, snapshot.businessPrice) &&
-    sameQuantityDiscountPlan(
-      evidence.previousQuantityDiscountPlan,
-      snapshot.quantityDiscountPlan,
-    ) &&
-    evidence.minimumPriceProtectedHash ===
-      snapshot.minimumPriceProtectedHash &&
     !snapshot.issues.some((issue) =>
       isPricingListingError(issue, snapshot.marketplaceId)
     );

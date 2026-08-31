@@ -7,6 +7,9 @@ import type {
   StandaloneAuditMode,
 } from "../standalone-audit";
 import BusinessPricingAuditPanel from "./business-pricing-audit-panel";
+import AuditWorkspaceShell, {
+  type AuditSurfacePresentation,
+} from "./audit-workspace-shell";
 
 export default function BusinessPricingAuditDrawer({
   marketplaceId,
@@ -16,6 +19,7 @@ export default function BusinessPricingAuditDrawer({
   initialJob = null,
   onSnapshotChange,
   onJobChange,
+  presentation = "dialog",
   onClose,
 }: {
   marketplaceId: string;
@@ -25,6 +29,7 @@ export default function BusinessPricingAuditDrawer({
   initialJob?: StandaloneAuditJob | null;
   onSnapshotChange?: (snapshot: BusinessPricingAuditSnapshot) => void;
   onJobChange?: (job: StandaloneAuditJob) => void;
+  presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
   const [editorOpen, setEditorOpen] = useState(false);
@@ -34,66 +39,46 @@ export default function BusinessPricingAuditDrawer({
   };
 
   useEffect(() => {
+    if (presentation !== "dialog") return;
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !editorBusy) onClose();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [editorBusy, onClose]);
+  }, [editorBusy, onClose, presentation]);
 
   return (
-    <div
-      className="drawer-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) requestClose();
-      }}
+    <AuditWorkspaceShell
+      presentation={presentation}
+      eyebrow={editorOpen
+        ? "AMAZON BUSINESS · SKU DETAIL"
+        : "AMAZON BUSINESS · FBA ONLY"}
+      title={editorOpen ? "單一 SKU B2B 價格編輯" : "全站 B2B 價格健檢"}
+      closeLabel="關閉全站 B2B 價格健檢"
+      surfaceClassName="business-pricing-audit-drawer"
+      busy={editorBusy}
+      busyStatus={editorBusy ? (
+        <p
+          className="business-pricing-drawer-status"
+          role="status"
+          aria-live="polite"
+        >Notebook Key 正在處理這次要求，請勿關閉或重複送出。</p>
+      ) : null}
+      onBack={requestClose}
+      autoFocusClose
     >
-      <aside
-        className="order-drawer business-pricing-audit-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="business-pricing-audit-title"
-        aria-busy={editorBusy}
-      >
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">
-              {editorOpen
-                ? "AMAZON BUSINESS · SKU DETAIL"
-                : "AMAZON BUSINESS · FBA ONLY"}
-            </p>
-            <h2 id="business-pricing-audit-title">
-              {editorOpen ? "單一 SKU B2B 價格編輯" : "全站 B2B 價格健檢"}
-            </h2>
-            {editorBusy && (
-              <p
-                className="business-pricing-drawer-status"
-                role="status"
-                aria-live="polite"
-              >Notebook Key 正在處理這次要求，請勿關閉或重複送出。</p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={requestClose}
-            aria-label="關閉全站 B2B 價格健檢"
-            disabled={editorBusy}
-            autoFocus
-          >×</button>
-        </div>
-        <BusinessPricingAuditPanel
-          marketplaceId={marketplaceId}
-          marketplaceShort={marketplaceShort}
-          mode={mode}
-          cachedSnapshot={cachedSnapshot}
-          initialJob={initialJob}
-          onSnapshotChange={onSnapshotChange}
-          onJobChange={onJobChange}
-          onEditorOpenChange={setEditorOpen}
-          onEditorBusyChange={setEditorBusy}
-        />
-      </aside>
-    </div>
+      <BusinessPricingAuditPanel
+        marketplaceId={marketplaceId}
+        marketplaceShort={marketplaceShort}
+        mode={mode}
+        presentation={presentation}
+        cachedSnapshot={cachedSnapshot}
+        initialJob={initialJob}
+        onSnapshotChange={onSnapshotChange}
+        onJobChange={onJobChange}
+        onEditorOpenChange={setEditorOpen}
+        onEditorBusyChange={setEditorBusy}
+      />
+    </AuditWorkspaceShell>
   );
 }

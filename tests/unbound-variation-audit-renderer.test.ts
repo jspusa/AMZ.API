@@ -139,7 +139,7 @@ describe("unbound variation audit renderer parser", () => {
       onOpenSku: () => undefined,
     }));
 
-    expect(markup).toContain("顯示詳細說明");
+    expect(markup).toContain("詳細說明");
     expect(markup).toContain("relationship 判定、未完成隔離與唯讀範圍");
     expect(markup).toContain("Amazon 唯讀＋Fail closed");
     expect(markup).not.toContain('audit-details-disclosure" open=""');

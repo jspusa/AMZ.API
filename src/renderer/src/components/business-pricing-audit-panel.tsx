@@ -34,6 +34,7 @@ import {
 import { auditExportFilename } from "../audit-export-filename";
 import { publicProblemMessage } from "../write-request";
 import AuditDetailsDisclosure from "./audit-details-disclosure";
+import type { AuditSurfacePresentation } from "./audit-workspace-shell";
 import BusinessPricingEditor from "./business-pricing-editor";
 
 const FILTERS: readonly Readonly<{
@@ -180,6 +181,7 @@ export default function BusinessPricingAuditPanel({
   marketplaceId,
   marketplaceShort,
   mode = "live",
+  presentation = "dialog",
   initialSnapshot = null,
   cachedSnapshot = null,
   initialJob = null,
@@ -191,6 +193,7 @@ export default function BusinessPricingAuditPanel({
   marketplaceId: string;
   marketplaceShort: string;
   mode?: StandaloneAuditMode;
+  presentation?: AuditSurfacePresentation;
   initialSnapshot?: BusinessPricingAuditSnapshot | null;
   cachedSnapshot?: BusinessPricingAuditSnapshot | null;
   initialJob?: StandaloneAuditJob | null;
@@ -223,6 +226,7 @@ export default function BusinessPricingAuditPanel({
   const editorRevisionRef = useRef(0);
   const panelRef = useRef<HTMLElement | null>(null);
   const auditScrollTopRef = useRef(0);
+  const editorOpenRef = useRef(false);
 
   const visibleSnapshot = useMemo(() => {
     if (!snapshot || loading) return null;
@@ -250,10 +254,44 @@ export default function BusinessPricingAuditPanel({
   }, [onEditorOpenChange, selected]);
 
   useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel) return;
-    panel.scrollTop = selected ? 0 : auditScrollTopRef.current;
-  }, [selected]);
+    const editorOpen = selected !== null;
+    if (editorOpenRef.current === editorOpen) return;
+    editorOpenRef.current = editorOpen;
+    const targetScrollTop = editorOpen ? 0 : auditScrollTopRef.current;
+    if (presentation === "dialog") {
+      const panel = panelRef.current;
+      if (panel) panel.scrollTop = targetScrollTop;
+      return;
+    }
+
+    let restoreFrame: number | null = null;
+    let scrollRoot: HTMLElement | null = null;
+    let previousScrollBehavior: string | null = null;
+    try {
+      scrollRoot = document.documentElement;
+      previousScrollBehavior = scrollRoot.style.scrollBehavior;
+      // The workspace presentation has no panel scroller: the browser window
+      // owns the audit-list position. Disable global smooth scrolling for this
+      // state restoration so the editor and the originating row land exactly.
+      scrollRoot.style.scrollBehavior = "auto";
+      window.scrollTo(0, targetScrollTop);
+      restoreFrame = window.requestAnimationFrame(() => {
+        if (scrollRoot && previousScrollBehavior !== null) {
+          scrollRoot.style.scrollBehavior = previousScrollBehavior;
+        }
+        scrollRoot = null;
+        previousScrollBehavior = null;
+      });
+    } catch {
+      // Embedded test browsers may not implement scrolling.
+    }
+    return () => {
+      if (restoreFrame !== null) window.cancelAnimationFrame(restoreFrame);
+      if (scrollRoot && previousScrollBehavior !== null) {
+        scrollRoot.style.scrollBehavior = previousScrollBehavior;
+      }
+    };
+  }, [presentation, selected]);
 
   const visibleRows = useMemo(
     () => visibleSnapshot?.rows.filter((row) =>
@@ -413,7 +451,9 @@ export default function BusinessPricingAuditPanel({
   };
 
   const openEditor = async (row: BusinessPricingAuditRow) => {
-    auditScrollTopRef.current = panelRef.current?.scrollTop ?? 0;
+    auditScrollTopRef.current = presentation === "workspace"
+      ? window.scrollY
+      : panelRef.current?.scrollTop ?? 0;
     const revision = ++editorRevisionRef.current;
     setEditLoading(true);
     setError(null);

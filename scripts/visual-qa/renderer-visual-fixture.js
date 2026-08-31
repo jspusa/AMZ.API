@@ -3,6 +3,7 @@
   const params = new URLSearchParams(window.location.search);
   const css03 = params.get("css03") === "1";
   const css04 = params.get("css04") === "1";
+  const auditWorkspace = params.get("audit-workspace") === "1";
   const salesLoading = params.get("sales-loading") === "1";
   try {
     window.localStorage.setItem("fba-os-auto-sync", "off");
@@ -273,40 +274,161 @@
     boundaries: ["FBA only", "read only"],
     notice: "CSS01 固定唯讀 fixture。",
   };
-  const b2bSnapshot = {
-    mode: "demo",
-    marketplaceId,
-    fetchedAt: fixedTime,
-    rows: [
-      {
-        sellerSku: "B2B-DEMO-01",
-        asin: "B000000003",
-        title: "Fixture Business Price",
-        productType: "PET_FOOD",
-        standardPrice: { amount: 19.99, currencyCode: "USD" },
-        businessPrice: null,
-        businessOfferPresence: "absent",
-        quantityDiscountPlan: null,
-        quantityDiscountPlanPresence: "absent",
-        recommendedPriceMismatch: false,
-        recommendedQuantityDiscountMismatch: true,
-        status: "missing",
-        editable: false,
-        reason: "尚未設定 Amazon Business 價格。",
-      },
-    ],
-    summary: {
-      totalFbaSkuCount: 1,
-      configured: 0,
-      aboveStandard: 0,
-      missing: 1,
-      unsupported: 0,
-      incomplete: 0,
-      recommendedPriceMismatch: 0,
-      recommendedQuantityDiscountMismatch: 1,
-    },
-    notice: "CSS01 固定唯讀 fixture。",
+  const auditWorkspacePlan = {
+    discountType: "fixed",
+    levels: [{ lowerBound: 3, value: 16.14 }],
   };
+  const auditWorkspaceWriteStatus = {
+    mode: "live",
+    status: "PROCESSING",
+    stage: "minimum_price",
+    marketplaceId,
+    sellerSku: "1GCRD004A0",
+    asin: "B0G11QT31B",
+    productType: "PET_FOOD",
+    acceptedAt: "2026-09-01T00:01:55.000Z",
+    verifiedAt: null,
+    requestId: "45d0afd0-999b-47a4-a9f5-e248edf4fc40",
+    submissionId: "audit-workspace-minimum-price",
+    verified: false,
+    authoritative: false,
+    canResend: false,
+    businessPriceSubmitted: false,
+    previousBusinessPrice: { amount: 16.15, currencyCode: "USD" },
+    requestedBusinessPrice: { amount: 18.99, currencyCode: "USD" },
+    previousMinimumPrice: { amount: 16.14, currencyCode: "USD" },
+    requestedMinimumPrice: { amount: 14.19, currencyCode: "USD" },
+    lowestTierUnitPrice: { amount: 15.19, currencyCode: "USD" },
+    previousQuantityDiscountPlan: auditWorkspacePlan,
+    requestedQuantityDiscountPlan: {
+      discountType: "percent",
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+        { lowerBound: 15, value: 15 },
+        { lowerBound: 20, value: 20 },
+      ],
+    },
+    quantityDiscountPlanChange: "replace",
+    notice:
+      "Amazon 已接受最低價更新，正在同步；B2B 價格與階梯尚未送出。",
+  };
+  const auditWorkspaceProcessingListing = {
+    mode: "live",
+    marketplaceId,
+    sellerSku: "1GCRD004A0",
+    asin: "B0G11QT31B",
+    title: "Audit Workspace Turkey Tendon",
+    productType: "PET_FOOD",
+    standardPrice: { amount: 19.99, currencyCode: "USD" },
+    minimumPrice: { amount: 16.14, currencyCode: "USD" },
+    minimumPricePresence: "canonical",
+    businessPrice: { amount: 16.15, currencyCode: "USD" },
+    businessOfferPresence: "present",
+    businessPricingManagedByAutomation: false,
+    quantityDiscountPlan: auditWorkspacePlan,
+    quantityDiscountPlanPresence: "canonical",
+    quantityDiscountPlanHash: "1".repeat(64),
+    businessOfferGuardHash: "2".repeat(64),
+    businessOfferProtectedHash: "3".repeat(64),
+    minimumPriceProtectedHash: "4".repeat(64),
+    businessPricingCapability: {
+      supported: true,
+      editable: true,
+      reason: null,
+      schemaChecksum: "audit-workspace-schema",
+      quantityDiscountsSupported: true,
+      quantityDiscountsEditable: true,
+      quantityDiscountsReason: null,
+    },
+    fetchedAt: "2026-09-01T00:02:00.000Z",
+    notice: null,
+    writeStatus: auditWorkspaceWriteStatus,
+  };
+  const auditWorkspaceVerifiedListing = {
+    ...auditWorkspaceProcessingListing,
+    minimumPrice: { amount: 14.19, currencyCode: "USD" },
+    minimumPriceProtectedHash: "9".repeat(64),
+    fetchedAt: "2026-09-01T00:12:00.000Z",
+    writeStatus: {
+      ...auditWorkspaceWriteStatus,
+      status: "VERIFIED",
+      verifiedAt: "2026-09-01T00:12:00.000Z",
+      verified: true,
+      authoritative: true,
+      notice:
+        "最低價已由 Notebook Key 唯讀回查確認；B2B 價格與階梯尚未送出，請重新預檢後再確認。",
+    },
+  };
+  const b2bSnapshot = auditWorkspace
+    ? {
+        mode: "demo",
+        marketplaceId,
+        fetchedAt: fixedTime,
+        rows: [
+          {
+            sellerSku: "1GCRD004A0",
+            asin: "B0G11QT31B",
+            title: "Audit Workspace Turkey Tendon",
+            productType: "PET_FOOD",
+            standardPrice: { amount: 19.99, currencyCode: "USD" },
+            businessPrice: { amount: 16.15, currencyCode: "USD" },
+            businessOfferPresence: "present",
+            quantityDiscountPlan: auditWorkspacePlan,
+            quantityDiscountPlanPresence: "canonical",
+            recommendedPriceMismatch: true,
+            recommendedQuantityDiscountMismatch: true,
+            status: "configured",
+            editable: true,
+            reason: "可安全重新讀取並預檢 Amazon Business 價格。",
+          },
+        ],
+        summary: {
+          totalFbaSkuCount: 1,
+          configured: 1,
+          aboveStandard: 0,
+          missing: 0,
+          unsupported: 0,
+          incomplete: 0,
+          recommendedPriceMismatch: 1,
+          recommendedQuantityDiscountMismatch: 1,
+        },
+        notice: "Audit workspace 固定唯讀 fixture；不會呼叫 Amazon。",
+      }
+    : {
+        mode: "demo",
+        marketplaceId,
+        fetchedAt: fixedTime,
+        rows: [
+          {
+            sellerSku: "B2B-DEMO-01",
+            asin: "B000000003",
+            title: "Fixture Business Price",
+            productType: "PET_FOOD",
+            standardPrice: { amount: 19.99, currencyCode: "USD" },
+            businessPrice: null,
+            businessOfferPresence: "absent",
+            quantityDiscountPlan: null,
+            quantityDiscountPlanPresence: "absent",
+            recommendedPriceMismatch: false,
+            recommendedQuantityDiscountMismatch: true,
+            status: "missing",
+            editable: false,
+            reason: "尚未設定 Amazon Business 價格。",
+          },
+        ],
+        summary: {
+          totalFbaSkuCount: 1,
+          configured: 0,
+          aboveStandard: 0,
+          missing: 1,
+          unsupported: 0,
+          incomplete: 0,
+          recommendedPriceMismatch: 0,
+          recommendedQuantityDiscountMismatch: 1,
+        },
+        notice: "CSS01 固定唯讀 fixture。",
+      };
   const b2bJob = {
     jobId: "11111111-1111-4111-8111-111111111111",
     contextId: "22222222-2222-4222-8222-222222222222",
@@ -1084,6 +1206,7 @@
     updatedAt: null,
   };
   let salesRequestCount = 0;
+  let auditWorkspaceListingRequestCount = 0;
 
   window.__rendererVisualRequests = [];
   window.__rendererVisualUnexpected = [];
@@ -1107,6 +1230,18 @@
         }
         if (request.path === "/api/system/health" && request.method === "GET") {
           return json(health);
+        }
+        if (
+          auditWorkspace &&
+          request.path === "/api/sp-api/business-pricing" &&
+          request.method === "GET"
+        ) {
+          auditWorkspaceListingRequestCount += 1;
+          return json(
+            auditWorkspaceListingRequestCount === 1
+              ? auditWorkspaceProcessingListing
+              : auditWorkspaceVerifiedListing,
+          );
         }
         if (
           css04 &&

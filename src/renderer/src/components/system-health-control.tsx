@@ -90,11 +90,13 @@ export default function SystemHealthControl({
   marketplaceId,
   autoSync = true,
   auditPreference = null,
+  disabled = false,
   onAutoSyncChange,
 }: {
   marketplaceId: string;
   autoSync?: boolean;
   auditPreference?: AuditPreference;
+  disabled?: boolean;
   onAutoSyncChange?: (enabled: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -217,6 +219,7 @@ export default function SystemHealthControl({
         className="system-health-trigger neutral"
         type="button"
         onClick={() => setOpen(true)}
+        disabled={disabled}
         aria-haspopup="dialog"
         aria-label="開啟系統資訊"
       >

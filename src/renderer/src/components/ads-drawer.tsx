@@ -12,6 +12,9 @@ import type {
   StandaloneAuditJob,
   StandaloneAuditMode,
 } from "../standalone-audit";
+import AuditWorkspaceShell, {
+  type AuditSurfacePresentation,
+} from "./audit-workspace-shell";
 
 type AdsStatus = {
   marketplaceCode: string;
@@ -33,12 +36,14 @@ export default function AdsDrawer({
   auditMode = "live",
   coverageAuditJob = null,
   onCoverageAuditJobChange,
+  presentation = "dialog",
   onClose,
 }: {
   initialMarketplaceId: string;
   auditMode?: StandaloneAuditMode;
   coverageAuditJob?: StandaloneAuditJob | null;
   onCoverageAuditJobChange?: (job: StandaloneAuditJob) => void;
+  presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
@@ -66,32 +71,33 @@ export default function AdsDrawer({
   }, [marketplaceId]);
 
   useEffect(() => {
+    if (presentation !== "dialog") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [onClose, presentation]);
 
   return (
-    <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}>
-      <aside className="order-drawer ads-drawer" role="dialog" aria-modal="true" aria-labelledby="ads-title">
-        <div className="drawer-header">
-          <div><p className="eyebrow">AMAZON ADS · SEPARATE API</p><h2 id="ads-title">廣告</h2></div>
-          <button type="button" onClick={onClose} aria-label="關閉廣告區">×</button>
-        </div>
+    <AuditWorkspaceShell
+      presentation={presentation}
+      eyebrow="AMAZON ADS · SEPARATE API"
+      title={presentation === "workspace" ? "廣告覆蓋健檢" : "廣告"}
+      closeLabel="關閉廣告區"
+      surfaceClassName="ads-drawer"
+      onBack={onClose}
+    >
         <label className="ads-marketplace"><span>Amazon Ads 站點</span><select value={marketplaceId} onChange={(event) => { setLoading(true); setError(null); setStatus(null); setMarketplaceId(event.target.value); }}>{MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}</select></label>
 
         {error && <div className="price-error" role="alert">{error}</div>}
 
-        <section className="helium-lane">
+        {presentation === "dialog" && <section className="helium-lane">
           <div className="helium-icon">H10</div>
           <div><strong>Sponsored Products</strong><p>主要操作、規則與關鍵字繼續由 Helium 10 管理。</p></div>
           <span className="capability-pill external">外部管理</span>
           <a href="https://members.helium10.com/" target="_blank" rel="noreferrer">打開 Helium 10 ↗</a>
-        </section>
+        </section>}
 
         <section className="ads-connection-card">
           <div className="ads-connection-heading"><div><span className={`connection-light ${status?.verified ? "connected" : ""}`} /><div><strong>{loading ? "檢查 Ads 設定…" : status?.verified ? "Ads Profiles／Campaign query 已驗證" : status?.configured ? "Ads 憑證已設定 · 這個站點尚未驗證" : "Amazon Ads 尚未設定"}</strong><p>{status?.notice ?? "正在由本機主程序驗證獨立 Ads LWA 與 Seller Profile。"}</p></div></div><span className="capability-pill separate">不同於 SP-API</span></div>
@@ -105,7 +111,7 @@ export default function AdsDrawer({
           )}
         </section>
 
-        <AdvertisingStrategyPanel
+        {presentation === "dialog" && <AdvertisingStrategyPanel
           key={marketplaceId}
           marketplaceId={marketplaceId}
           marketplaceCode={marketplace.code}
@@ -115,7 +121,7 @@ export default function AdsDrawer({
           unavailableNotice={loading
             ? "正在由 Notebook 鑰匙確認這個站點的 Amazon Ads 連線。"
             : status?.notice ?? "Amazon Ads API 尚未連線；目前不會用展示結果冒充真實策略。"}
-        />
+        />}
 
         <AdvertisingCoveragePanel
           marketplaceId={marketplaceId}
@@ -126,6 +132,7 @@ export default function AdsDrawer({
           onJobChange={onCoverageAuditJobChange}
         />
 
+        {presentation === "dialog" && <>
         <section className="ads-product-grid">
           <article>
             <div className="ads-product-icon sb">SB</div>
@@ -146,7 +153,7 @@ export default function AdsDrawer({
           <a className="primary" href="https://advertising.amazon.com/" target="_blank" rel="noreferrer">開啟 Amazon Ads ↗</a>
         </div>
         <div className="drawer-api-footnote">Amazon Ads Profiles／Campaign query · Ads Reporting v3 · Viewer · Profile 自動發現 · writes false</div>
-      </aside>
-    </div>
+        </>}
+    </AuditWorkspaceShell>
   );
 }

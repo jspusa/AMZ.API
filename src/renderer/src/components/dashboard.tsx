@@ -23,6 +23,7 @@ import { AccountingCenterDrawer } from "./accounting-center-panel";
 import AdsDrawer from "./ads-drawer";
 import AgedInventoryPanel from "./aged-inventory-panel";
 import AuditSuiteHomeCard from "./audit-suite-home-card";
+import AuditWorkspaceShell from "./audit-workspace-shell";
 import AplusAuditDrawer from "./a-plus-audit-drawer";
 import {
   observeAplusAuditJob,
@@ -321,6 +322,43 @@ export function dashboardConnectionBadgeCopy(
     detail: "狀態未知 · 本機安全連線",
     ariaLabel: checking ? "正在檢查 Amazon 連線" : "Amazon 連線狀態尚未確認",
     className: "unavailable",
+  };
+}
+
+export function scheduleAuditWorkspaceTopScroll(): () => void {
+  let secondFrame: number | null = null;
+  let restoreFrame: number | null = null;
+  let scrollRoot: HTMLElement | null = null;
+  let previousScrollBehavior: string | null = null;
+  const firstFrame = window.requestAnimationFrame(() => {
+    secondFrame = window.requestAnimationFrame(() => {
+      try {
+        scrollRoot = document.documentElement;
+        previousScrollBehavior = scrollRoot.style.scrollBehavior;
+        // AuditWorkspaceShell focuses its heading after render. Move the page
+        // only after that focus settles so a launch from a deep home card
+        // always opens at the start of the workspace.
+        scrollRoot.style.scrollBehavior = "auto";
+        window.scrollTo(0, 0);
+        restoreFrame = window.requestAnimationFrame(() => {
+          if (scrollRoot && previousScrollBehavior !== null) {
+            scrollRoot.style.scrollBehavior = previousScrollBehavior;
+          }
+          scrollRoot = null;
+          previousScrollBehavior = null;
+        });
+      } catch {
+        // Embedded test browsers may not implement scrolling.
+      }
+    });
+  });
+  return () => {
+    window.cancelAnimationFrame(firstFrame);
+    if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+    if (restoreFrame !== null) window.cancelAnimationFrame(restoreFrame);
+    if (scrollRoot && previousScrollBehavior !== null) {
+      scrollRoot.style.scrollBehavior = previousScrollBehavior;
+    }
   };
 }
 
@@ -684,7 +722,9 @@ export default function Dashboard({
   const [unboundVariationAuditCache, setUnboundVariationAuditCache] = useState<
     Record<string, UnboundVariationAuditCache>
   >({});
-  const [unboundVariationAuditOpen, setUnboundVariationAuditOpen] = useState(false);
+  const [activeAuditWorkspace, setActiveAuditWorkspace] = useState<
+    AuditSuiteSectionId | null
+  >(null);
   const [agedInventoryOpen, setAgedInventoryOpen] = useState(false);
   const [reportLibraryOpen, setReportLibraryOpen] = useState(false);
   const [reviewAuditOpen, setReviewAuditOpen] = useState(false);
@@ -741,6 +781,10 @@ export default function Dashboard({
   const connectionAbortRef = useRef<AbortController | null>(null);
   const primaryNavRef = useRef<HTMLElement | null>(null);
   const menuTriggerRefs = useRef<Partial<Record<NavigationGroup, HTMLButtonElement>>>({});
+  const auditWorkspaceReturnRef = useRef<{
+    sectionId: AuditSuiteSectionId;
+    scrollY: number;
+  } | null>(null);
   const lastAutomaticRequestKey = useRef(
     salesTrendRequestKey(startingMarketplaceId, startingSelection),
   );
@@ -955,6 +999,7 @@ export default function Dashboard({
       if (
         document.visibilityState === "visible" &&
         !openTool &&
+        !activeAuditWorkspace &&
         !commandOpen &&
         !salesTrendLoading
       ) {
@@ -962,7 +1007,7 @@ export default function Dashboard({
       }
     }, 5 * 60 * 1_000);
     return () => window.clearInterval(interval);
-  }, [autoSync, commandOpen, loadSalesTrend, openTool, salesTrendLoading]);
+  }, [activeAuditWorkspace, autoSync, commandOpen, loadSalesTrend, openTool, salesTrendLoading]);
 
   useEffect(() => {
     if (!openToolMenu) return;
@@ -987,15 +1032,6 @@ export default function Dashboard({
   }, [openToolMenu]);
 
   useEffect(() => {
-    if (!unboundVariationAuditOpen) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setUnboundVariationAuditOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [unboundVariationAuditOpen]);
-
-  useEffect(() => {
     if (!agedInventoryOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setAgedInventoryOpen(false);
@@ -1015,9 +1051,56 @@ export default function Dashboard({
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [reportLibraryOpen, reviewAuditOpen]);
 
+  const openAuditWorkspace = useCallback((sectionId: AuditSuiteSectionId) => {
+    auditWorkspaceReturnRef.current = {
+      sectionId,
+      scrollY: window.scrollY,
+    };
+    setOpenToolMenu(null);
+    setCommandOpen(false);
+    setOpenTool(null);
+    setActiveAuditWorkspace(sectionId);
+  }, []);
+
+  useEffect(() => {
+    if (!activeAuditWorkspace) return;
+    return scheduleAuditWorkspaceTopScroll();
+  }, [activeAuditWorkspace]);
+
+  const closeAuditWorkspace = useCallback(() => {
+    const returnTarget = auditWorkspaceReturnRef.current;
+    setActiveAuditWorkspace(null);
+    window.setTimeout(() => {
+      if (!returnTarget) return;
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLButtonElement>(
+            `[data-audit-workspace-launch="${returnTarget.sectionId}"]`,
+          )?.focus({ preventScroll: true });
+          try {
+            const root = document.documentElement;
+            const previousScrollBehavior = root.style.scrollBehavior;
+            // This return is state restoration, not navigation animation.
+            // Temporarily override the global smooth-scroll rule so compact
+            // screens cannot be left halfway back to their launch card.
+            root.style.scrollBehavior = "auto";
+            window.scrollTo(0, returnTarget.scrollY);
+            window.requestAnimationFrame(() => {
+              root.style.scrollBehavior = previousScrollBehavior;
+            });
+          } catch {
+            // Embedded test browsers may not implement scrolling.
+          }
+        });
+      });
+    }, 0);
+  }, []);
+
   const launch = (tool: Tool) => {
     setOpenToolMenu(null);
     setCommandOpen(false);
+    setActiveAuditWorkspace(null);
+    auditWorkspaceReturnRef.current = null;
     if (tool === "a-plus" && !connectionEvidence[marketplaceId]) {
       onOpenConnection?.();
       return;
@@ -1079,7 +1162,7 @@ export default function Dashboard({
     setCommandOpen(false);
     setAuditPreference("content");
     setContentWorkspaceTab("audit");
-    setOpenTool("copy");
+    openAuditWorkspace("content");
   };
 
   const cacheContentAudit = useCallback((cache: ContentAuditCache) => {
@@ -1093,7 +1176,7 @@ export default function Dashboard({
     setCommandOpen(false);
     setAuditPreference("images");
     setImageWorkspaceTab("audit");
-    setOpenTool("images");
+    openAuditWorkspace("image");
   };
 
   const cacheImageAudit = useCallback((cache: ImageAuditCache) => {
@@ -1354,7 +1437,7 @@ export default function Dashboard({
 
   const openUnboundVariationSku = (sellerSku: string) => {
     setGlobalSku(sellerSku);
-    setUnboundVariationAuditOpen(false);
+    setActiveAuditWorkspace(null);
     setReturnToUnboundVariationAudit(true);
     setOpenTool("variations");
   };
@@ -1551,11 +1634,12 @@ export default function Dashboard({
         setAgedInventoryOpen(true);
         break;
       case "SUBSCRIPTION_AUDIT_XLSX":
-        launch("subscriptions");
+        setAuditPreference("subscriptions");
+        openAuditWorkspace("subscription");
         break;
       case "UNBOUND_VARIATION_AUDIT_XLSX":
         setAuditPreference("variations");
-        setUnboundVariationAuditOpen(true);
+        openAuditWorkspace("variation");
         break;
       case "REVIEW_TOPIC_AUDIT_XLSX":
         setReviewAuditOpen(true);
@@ -1685,6 +1769,124 @@ export default function Dashboard({
     );
   };
 
+  const auditWorkspaceView = (() => {
+    switch (activeAuditWorkspace) {
+      case "content":
+        return (
+          <SkuOperationsDrawer
+            presentation="workspace"
+            initialMarketplaceId={marketplaceId}
+            initialSellerSku={globalSku}
+            initialTab="audit"
+            auditCacheByMarketplace={contentAuditCacheForDrawer}
+            onAuditCacheChange={cacheContentAudit}
+            auditMode={currentStandaloneMode}
+            auditJob={currentContentDrawerJob}
+            onAuditJobChange={cacheStandaloneAuditJob}
+            onContextResolved={resolveGlobalContext}
+            onClose={closeAuditWorkspace}
+          />
+        );
+      case "image":
+        return (
+          <ImageWorkspaceDrawer
+            presentation="workspace"
+            initialMarketplaceId={marketplaceId}
+            initialSellerSku={globalSku}
+            initialTab="audit"
+            auditCacheByMarketplace={imageAuditCacheForDrawer}
+            onAuditCacheChange={cacheImageAudit}
+            auditMode={currentStandaloneMode}
+            auditJob={currentImageDrawerJob}
+            onAuditJobChange={cacheStandaloneAuditJob}
+            onContextResolved={resolveGlobalContext}
+            onClose={closeAuditWorkspace}
+          />
+        );
+      case "aplus":
+        return (
+          <AplusAuditDrawer
+            presentation="workspace"
+            marketplaceId={marketplaceId}
+            marketplaceShort={marketplace.shortLabel}
+            mode={currentAplusMode ?? "live"}
+            cachedSnapshot={aplusAuditForDrawer}
+            job={currentAplusDrawerJob}
+            onJobChange={cacheAplusAuditJob}
+            onSnapshotChange={(snapshot) => setAplusAuditCache((current) => ({
+              ...current,
+              [snapshot.marketplaceId]: snapshot,
+            }))}
+            onClose={closeAuditWorkspace}
+          />
+        );
+      case "variation":
+        return (
+          <AuditWorkspaceShell
+            presentation="workspace"
+            eyebrow="FBA · READ ONLY"
+            title="未綁變體健檢"
+            closeLabel="關閉未綁變體健檢"
+            surfaceClassName="unbound-variation-audit-drawer"
+            onBack={closeAuditWorkspace}
+          >
+            <UnboundVariationAuditPanel
+              marketplaceId={marketplaceId}
+              marketplaceShort={marketplace.shortLabel}
+              mode={currentStandaloneMode}
+              onOpenSku={openUnboundVariationSku}
+              cachedResult={variationAuditForDrawer}
+              onCachedResultChange={cacheUnboundVariationAudit}
+              initialJob={currentVariationDrawerJob}
+              onJobChange={cacheStandaloneAuditJob}
+            />
+          </AuditWorkspaceShell>
+        );
+      case "subscription":
+        return (
+          <SubscriptionAuditDrawer
+            presentation="workspace"
+            marketplaceId={marketplaceId}
+            marketplaceShort={marketplace.shortLabel}
+            mode={currentStandaloneMode}
+            initialJob={currentSubscriptionDrawerJob}
+            onJobChange={cacheStandaloneAuditJob}
+            onClose={closeAuditWorkspace}
+          />
+        );
+      case "businessPricing":
+        return (
+          <BusinessPricingAuditDrawer
+            presentation="workspace"
+            marketplaceId={marketplaceId}
+            marketplaceShort={marketplace.shortLabel}
+            mode={currentStandaloneMode}
+            initialJob={currentBusinessPricingDrawerJob}
+            onJobChange={cacheStandaloneAuditJob}
+            cachedSnapshot={businessPricingAuditForDrawer}
+            onSnapshotChange={(snapshot) => setBusinessPricingAuditCache((current) => ({
+              ...current,
+              [snapshot.marketplaceId]: snapshot,
+            }))}
+            onClose={closeAuditWorkspace}
+          />
+        );
+      case "advertising":
+        return (
+          <AdsDrawer
+            presentation="workspace"
+            initialMarketplaceId={marketplaceId}
+            auditMode={currentStandaloneMode}
+            coverageAuditJob={currentAdvertisingDrawerJob}
+            onCoverageAuditJobChange={cacheStandaloneAuditJob}
+            onClose={closeAuditWorkspace}
+          />
+        );
+      default:
+        return null;
+    }
+  })();
+
   const changeMarketplace = (nextMarketplaceId: string) => {
     if (!marketplaceById(nextMarketplaceId) || salesTrendLoading) return;
     setSalesTrend(null);
@@ -1734,6 +1936,7 @@ export default function Dashboard({
                     aria-haspopup="menu"
                     aria-expanded={openToolMenu === section.group}
                     aria-label={section.label}
+                    disabled={Boolean(activeAuditWorkspace)}
                     onClick={() => setOpenToolMenu((current) =>
                       current === section.group ? null : section.group,
                     )}
@@ -1830,6 +2033,7 @@ export default function Dashboard({
                 type="button"
                 className={`mode-badge workspace-connection-status ${connectionBadge.className}`}
                 onClick={onOpenConnection}
+                disabled={Boolean(activeAuditWorkspace)}
                 aria-label={`${connectionBadge.ariaLabel}；開啟本機安全連線設定`}
                 aria-haspopup="dialog"
               >
@@ -1843,20 +2047,27 @@ export default function Dashboard({
 
           <div className="workspace-context-shell">
             <div className="workspace-contextbar">
-              <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" /></label>
-              <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)}><span aria-hidden="true">✦</span>SKU 總覽</button>
-              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
+              <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace)} /></label>
+              <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)} disabled={Boolean(activeAuditWorkspace)}><span aria-hidden="true">✦</span>SKU 總覽</button>
+              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace)} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
               <SystemHealthControl
                 marketplaceId={marketplaceId}
                 autoSync={autoSync}
                 auditPreference={auditPreference}
+                disabled={Boolean(activeAuditWorkspace)}
                 onAutoSyncChange={setAutoSyncPreference}
               />
             </div>
           </div>
         </header>
 
-        <main id="workspace-top" className="workspace-content" tabIndex={-1}>
+        <main
+          id="workspace-top"
+          className={`workspace-content ${activeAuditWorkspace ? "workspace-content-audit" : ""}`}
+          data-audit-workspace-section={activeAuditWorkspace ?? undefined}
+          tabIndex={-1}
+        >
+          {activeAuditWorkspace ? auditWorkspaceView : <>
           <h1 className="visually-hidden">AMZ.API FBA 營運首頁</h1>
 
           {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
@@ -1919,7 +2130,11 @@ export default function Dashboard({
                   <small>{currentAuditAttentionCount.toLocaleString()} 個待確認項目</small>
                 </span>
               )}
-              <button type="button" onClick={launchContentAudit}>
+              <button
+                type="button"
+                data-audit-workspace-launch="content"
+                onClick={launchContentAudit}
+              >
                 {currentContentLaunchFailure
                   ? "重新開啟文案健檢"
                   : currentContentAuditJob
@@ -1953,7 +2168,11 @@ export default function Dashboard({
                   <small>{currentImageAuditAttentionCount.toLocaleString()} 個需補圖／確認</small>
                 </span>
               )}
-              <button type="button" onClick={launchImageAudit}>
+              <button
+                type="button"
+                data-audit-workspace-launch="image"
+                onClick={launchImageAudit}
+              >
                 {currentImageLaunchFailure
                   ? "重新開啟圖片健檢"
                   : currentImageAuditJob
@@ -2008,7 +2227,17 @@ export default function Dashboard({
                   <small>{currentAplusAuditAttentionCount.toLocaleString()} 個缺 A+／待確認</small>
                 </span>
               )}
-              <button type="button" onClick={() => launch("a-plus")}>
+              <button
+                type="button"
+                data-audit-workspace-launch="aplus"
+                onClick={() => {
+                  if (!connectionEvidence[marketplaceId]) {
+                    onOpenConnection?.();
+                    return;
+                  }
+                  openAuditWorkspace("aplus");
+                }}
+              >
                 {currentAplusLaunchFailure
                   ? "重新開啟 A+ 健檢"
                   : currentAplusJob
@@ -2043,9 +2272,9 @@ export default function Dashboard({
                   <small>{currentUnboundVariationAudit.snapshot.summary.unbound.toLocaleString()} 個確定未綁</small>
                 </span>
               )}
-              <button type="button" onClick={() => {
+              <button type="button" data-audit-workspace-launch="variation" onClick={() => {
                 setAuditPreference("variations");
-                setUnboundVariationAuditOpen(true);
+                openAuditWorkspace("variation");
               }}>
                 {currentVariationLaunchFailure
                   ? "重新開啟未綁變體健檢"
@@ -2071,7 +2300,14 @@ export default function Dashboard({
               {currentSubscriptionLaunchFailure
                 ? auditLaunchFailureStatus(currentSubscriptionLaunchFailure)
                 : standaloneProgressStatus(currentSubscriptionAuditJob)}
-              <button type="button" onClick={() => launch("subscriptions")}>
+              <button
+                type="button"
+                data-audit-workspace-launch="subscription"
+                onClick={() => {
+                  setAuditPreference("subscriptions");
+                  openAuditWorkspace("subscription");
+                }}
+              >
                 {currentSubscriptionLaunchFailure
                   ? "重新開啟訂閱價格健檢"
                   : currentSubscriptionAuditJob
@@ -2104,7 +2340,11 @@ export default function Dashboard({
                   <small>{currentBusinessPricingAttentionCount.toLocaleString()} 個需調整／確認</small>
                 </span>
               )}
-              <button type="button" onClick={() => launch("business-pricing")}>
+              <button
+                type="button"
+                data-audit-workspace-launch="businessPricing"
+                onClick={() => openAuditWorkspace("businessPricing")}
+              >
                 {currentBusinessPricingLaunchFailure
                   ? "重新開啟 B2B 價格健檢"
                   : currentBusinessPricingAuditJob
@@ -2127,7 +2367,11 @@ export default function Dashboard({
               {currentAdvertisingLaunchFailure
                 ? auditLaunchFailureStatus(currentAdvertisingLaunchFailure)
                 : standaloneProgressStatus(currentAdvertisingAuditJob)}
-              <button type="button" onClick={() => launch("ads")}>
+              <button
+                type="button"
+                data-audit-workspace-launch="advertising"
+                onClick={() => openAuditWorkspace("advertising")}
+              >
                 {currentAdvertisingLaunchFailure
                   ? "重新開啟廣告覆蓋健檢"
                   : currentAdvertisingAuditJob
@@ -2209,7 +2453,7 @@ export default function Dashboard({
               </section>
             </div>
           </details>
-
+          </>}
         </main>
         <footer className="os-footer"><span>AMZ.API · GitHub UI / Local Key</span><span>FBA only · No FBM · No buyer PII</span></footer>
       </div>
@@ -2244,7 +2488,7 @@ export default function Dashboard({
         setOpenTool(null);
         if (returnToUnboundVariationAudit) {
           setReturnToUnboundVariationAudit(false);
-          setUnboundVariationAuditOpen(true);
+          setActiveAuditWorkspace("variation");
         }
       }} />}
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
@@ -2267,38 +2511,6 @@ export default function Dashboard({
       )}
       {openTool === "accounting" && <AccountingCenterDrawer marketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
       {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}
-      {unboundVariationAuditOpen && createPortal(
-        <div
-          className="drawer-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setUnboundVariationAuditOpen(false);
-          }}
-        >
-          <aside
-            className="order-drawer unbound-variation-audit-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="unbound-variation-audit-title"
-          >
-            <div className="drawer-header">
-              <div><p className="eyebrow">FBA · READ ONLY</p><h2 id="unbound-variation-audit-title">未綁變體健檢</h2></div>
-              <button type="button" onClick={() => setUnboundVariationAuditOpen(false)} autoFocus aria-label="關閉未綁變體健檢">×</button>
-            </div>
-            <UnboundVariationAuditPanel
-              marketplaceId={marketplaceId}
-              marketplaceShort={marketplace.shortLabel}
-              mode={currentStandaloneMode}
-              onOpenSku={openUnboundVariationSku}
-              cachedResult={variationAuditForDrawer}
-              onCachedResultChange={cacheUnboundVariationAudit}
-              initialJob={currentVariationDrawerJob}
-              onJobChange={cacheStandaloneAuditJob}
-            />
-          </aside>
-        </div>,
-        document.body,
-      )}
       {agedInventoryOpen && createPortal(
         <div
           className="drawer-backdrop"

@@ -700,7 +700,7 @@ describe("FBA subscription audit renderer", () => {
     expect(markup).not.toContain("全站訂閱價格健檢");
     expect(markup).toContain("目前有效訂閱」是查詢當下快照");
     expect(markup).toContain("最多提供 23 個完整月");
-    expect(markup).toContain("顯示詳細說明");
+    expect(markup).toContain("詳細說明");
     expect(markup).toContain("訂閱快照定義、折扣口徑與 23 個月邊界");
     expect(markup).not.toContain('audit-details-disclosure" open=""');
     expect(markup).toContain("同步 US 全部 FBA S&amp;S");
@@ -713,6 +713,15 @@ describe("FBA subscription audit renderer", () => {
       onClose: () => undefined,
     }));
     expect(markup.match(/全站訂閱價格健檢/gu)).toHaveLength(1);
+
+    const workspace = renderToStaticMarkup(createElement(SubscriptionAuditDrawer, {
+      presentation: "workspace",
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      onClose: () => undefined,
+    }));
+    expect(workspace).toContain('data-audit-workspace="true"');
+    expect(workspace).not.toContain('role="dialog"');
   });
 
   it("shows SG and AU as unsupported before a request and disables every scan control", () => {

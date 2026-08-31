@@ -6,6 +6,9 @@ import AplusAuditPanel, {
   type AplusAuditObservableJob,
   type AplusAuditRequester,
 } from "./a-plus-audit-panel";
+import AuditWorkspaceShell, {
+  type AuditSurfacePresentation,
+} from "./audit-workspace-shell";
 
 export default function AplusAuditDrawer({
   marketplaceId,
@@ -16,6 +19,7 @@ export default function AplusAuditDrawer({
   job = null,
   onJobChange,
   requestAudit,
+  presentation = "dialog",
   onClose,
 }: {
   marketplaceId: string;
@@ -26,48 +30,38 @@ export default function AplusAuditDrawer({
   job?: AplusAuditObservableJob | null;
   onJobChange?: (job: AplusAuditObservableJob) => void;
   requestAudit?: AplusAuditRequester;
+  presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
   useEffect(() => {
+    if (presentation !== "dialog") return;
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
+  }, [onClose, presentation]);
 
   return (
-    <div
-      className="drawer-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+    <AuditWorkspaceShell
+      presentation={presentation}
+      eyebrow="A+ CONTENT · FBA ONLY · READ ONLY"
+      title="全站 A+ 健檢"
+      closeLabel="關閉全站 A+ 健檢"
+      surfaceClassName="business-pricing-audit-drawer a-plus-audit-surface"
+      onBack={onClose}
+      autoFocusClose
     >
-      <aside
-        className="order-drawer business-pricing-audit-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="a-plus-audit-title"
-      >
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">A+ CONTENT · FBA ONLY · READ ONLY</p>
-            <h2 id="a-plus-audit-title">全站 A+ 健檢</h2>
-          </div>
-          <button type="button" onClick={onClose} aria-label="關閉全站 A+ 健檢" autoFocus>×</button>
-        </div>
-        <AplusAuditPanel
-          marketplaceId={marketplaceId}
-          marketplaceShort={marketplaceShort}
-          mode={mode}
-          cachedSnapshot={cachedSnapshot}
-          onSnapshotChange={onSnapshotChange}
-          job={job}
-          onJobChange={onJobChange}
-          requestAudit={requestAudit}
-        />
-      </aside>
-    </div>
+      <AplusAuditPanel
+        marketplaceId={marketplaceId}
+        marketplaceShort={marketplaceShort}
+        mode={mode}
+        cachedSnapshot={cachedSnapshot}
+        onSnapshotChange={onSnapshotChange}
+        job={job}
+        onJobChange={onJobChange}
+        requestAudit={requestAudit}
+      />
+    </AuditWorkspaceShell>
   );
 }

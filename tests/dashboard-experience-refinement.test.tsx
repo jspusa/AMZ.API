@@ -70,10 +70,14 @@ describe("dashboard experience refinement", () => {
   });
 
   it("keeps every centered workspace close control square and top-aligned", async () => {
-    const [css, imageSource, healthSource, connectionSource] = await Promise.all([
+    const [css, imageSource, auditShellSource, healthSource, connectionSource] = await Promise.all([
       readRendererStylesheet(),
       readFile(
         new URL("../src/renderer/src/components/image-workspace-drawer.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../src/renderer/src/components/audit-workspace-shell.tsx", import.meta.url),
         "utf8",
       ),
       readFile(
@@ -83,8 +87,9 @@ describe("dashboard experience refinement", () => {
       readFile(new URL("../src/renderer/src/connection-panel.tsx", import.meta.url), "utf8"),
     ]);
 
-    expect(imageSource).toContain('className="drawer-header"');
-    expect(imageSource).toContain('aria-label="關閉圖片工作區"');
+    expect(imageSource).toContain('closeLabel="關閉圖片工作區"');
+    expect(auditShellSource).toContain('className="drawer-header"');
+    expect(auditShellSource).toContain("aria-label={closeLabel}");
     expect(healthSource).toContain('className="drawer-header"');
     expect(healthSource).toContain('aria-label="關閉進階與系統資訊"');
     expect(connectionSource).toContain('className="connection-panel"');

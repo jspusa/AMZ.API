@@ -1,13 +1,54 @@
 import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
   businessPricingAttentionCount,
+  scheduleAuditWorkspaceTopScroll,
 } from "../src/renderer/src/components/dashboard";
 import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("dashboard top navigation layout", () => {
+  it("moves a newly rendered audit workspace to the page top after focus settles", () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 1;
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      const id = nextFrameId;
+      nextFrameId += 1;
+      frames.set(id, callback);
+      return id;
+    });
+    const cancelAnimationFrame = vi.fn((id: number) => frames.delete(id));
+    const scrollTo = vi.fn();
+    const root = { style: { scrollBehavior: "smooth" } };
+    vi.stubGlobal("window", {
+      requestAnimationFrame,
+      cancelAnimationFrame,
+      scrollTo,
+    });
+    vi.stubGlobal("document", { documentElement: root });
+
+    const runNextFrame = () => {
+      const entry = [...frames.entries()].sort(([left], [right]) => left - right)[0];
+      if (!entry) throw new Error("Expected a pending animation frame");
+      frames.delete(entry[0]);
+      entry[1](0);
+    };
+
+    const cleanup = scheduleAuditWorkspaceTopScroll();
+    expect(scrollTo).not.toHaveBeenCalled();
+    runNextFrame();
+    expect(scrollTo).not.toHaveBeenCalled();
+    runNextFrame();
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+    expect(root.style.scrollBehavior).toBe("auto");
+    runNextFrame();
+    expect(root.style.scrollBehavior).toBe("smooth");
+
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
   it("counts each B2B attention row once when recommendation categories overlap", () => {
     const attentionRow = {
       sellerSku: "BOTH-MISMATCH",
@@ -132,6 +173,7 @@ describe("dashboard top navigation layout", () => {
     expect(markup).toContain("開始全站訂閱價格健檢");
     expect(markup).toContain("全站 B2B 價格健檢");
     expect(markup).toContain("開始全站 B2B 價格健檢");
+    expect(markup.match(/data-audit-workspace-launch=/g)).toHaveLength(7);
     expect(markup).toContain("評論健檢");
     expect(markup).toContain("Listings relationships 已證明的 child 與 standalone ASIN");
     expect(markup).toContain("開始全站評論健檢");
@@ -197,7 +239,14 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain('event.key !== "Escape"');
     expect(source).toContain("unboundVariationAuditCache");
     expect(source).toContain("onCachedResultChange={cacheUnboundVariationAudit}");
-    expect(source).toContain("setUnboundVariationAuditOpen(true)");
+    expect(source).toContain("setActiveAuditWorkspace(\"variation\")");
+    expect(source).toContain('presentation="workspace"');
+    expect(source).toContain("activeAuditWorkspace ? auditWorkspaceView");
+    expect(source).toContain("auditWorkspaceReturnRef");
+    expect(source).toContain("data-audit-workspace-launch");
+    expect(source).toContain("returnTarget.scrollY");
+    expect(source).toContain("focus({ preventScroll: true })");
+    expect(source).toContain("disabled={Boolean(activeAuditWorkspace)}");
     expect(source).toContain("setAgedInventoryOpen(true)");
     expect(source).toContain("agedInventoryOpen && createPortal");
     expect(source).toContain("reportMenuEntries");
@@ -276,6 +325,9 @@ describe("dashboard top navigation layout", () => {
     expect(css).toMatch(/\.content-audit-export-attention\s*\{[\s\S]*?background:/);
     expect(css).toMatch(/\.content-audit-export-all\s*\{[\s\S]*?background:/);
     expect(css).toMatch(/\.audit-details-disclosure\s*>\s*summary:focus-visible\s*\{/);
+    expect(css).toMatch(/\.workspace-content\.workspace-content-audit\s*\{[\s\S]*?width:\s*min\(1440px,/);
+    expect(css).toMatch(/\.audit-workspace-header\s*\{[\s\S]*?position:\s*sticky;/);
+    expect(css).toMatch(/\.audit-details-disclosure:not\(\[open\]\)\s*\{[\s\S]*?width:\s*max-content;/);
     expect(css).toMatch(
       /@media \(max-width: 680px\)[\s\S]*?\.content-audit-export-grid\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
     );
