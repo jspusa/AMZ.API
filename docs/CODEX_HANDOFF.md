@@ -22,7 +22,7 @@ macOS artifact `9770629277` 名稱為 `AMZ.API-unsigned-5f436fe11d55b7d948828180
 
 Windows artifact `9770631143` 名稱為 `AMZ.API-Notebook-Key-Windows-x64-5f436fe11d55b7d9488281804fbfddb8d8ff3862`，244,877,212 bytes，GitHub digest 為 `sha256:5c0ad2efc216fce7144c4b4b039c67cdca2406c6fe6c65ef3a3a0070003dc12d`。這只證明 exact-main CI artifact，不是受保護員工下載卡、Windows 實機安裝或 Windows Hello／DPAPI 通過。
 
-exact v0.1.46 App 已從上述 DMG 可復原地安裝到 `/Applications/AMZ.API.app`；安裝後再次通過版本、bundle、雙架構、簽章、完整 ASAR 與 header hash 核對，且執行中的主程序來自正式路徑並回報 0.1.46。原 v0.1.45 完整保留為 `/Applications/AMZ.API-v0.1.45-backup.app`，其 `app.asar` 仍匹配既有 SHA-256 `c17de0a1a11bd4db0e2e5dbe61efc7153670eadad39e13da20608118ce23f511`；既有 userData／Amazon Keychain vault 與更舊備份未清除或重建。受保護員工下載卡仍是 v0.1.32，這次沒有授權更新 Supply Boss。正式 `1GCRD004A0` 手動 GET canary 尚待使用者在新版明確按「重新確認 Amazon 狀態」；發布與安裝證據不能冒充這個 live Amazon 結果。
+exact v0.1.46 App 已從上述 DMG 可復原地安裝到 `/Applications/AMZ.API.app`；安裝後再次通過版本、bundle、雙架構、簽章、完整 ASAR 與 header hash 核對，且執行中的主程序來自正式路徑並回報 0.1.46。原 v0.1.45 完整保留為 `/Applications/AMZ.API-v0.1.45-backup.app`，其 `app.asar` 仍匹配既有 SHA-256 `c17de0a1a11bd4db0e2e5dbe61efc7153670eadad39e13da20608118ce23f511`；既有 userData／Amazon Keychain vault 與更舊備份未清除或重建。2026-09-01 經使用者明確授權後，受保護 Supply Boss 下載站的 Mac／Windows 員工下載卡已更新為 v0.1.46：Mac DMG 為 246,476,752 bytes、SHA-256 `1a7052d2d25dd12b7c6d0635d03ad2a6e1498907078964c1b8c1a84ba7b29982`；Windows NSIS installer 為 101,818,256 bytes、SHA-256 `514568d11fdac6c1f5a121ea33b5615143f1959acfb95bc77de7c931abea92ca`。兩個 multipart upload 均收到完成回應，入口頁亦可正常載入；由於本次沒有讀取或代填員工下載密碼，登入後卡片畫面與短效連結的完整重新下載／byte-for-byte 核對仍待使用者登入後完成。正式 `1GCRD004A0` 手動 GET canary 尚待使用者在新版明確按「重新確認 Amazon 狀態」；發布與安裝證據不能冒充這個 live Amazon 結果。
 
 ### 2026-08-31 v0.1.45 大量 Excel 文案批次原生確認摘要（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
@@ -1002,14 +1002,15 @@ Amazon App：
 
 ## 6. 目前安裝檔
 
-- 目前 `/Applications/AMZ.API.app` 的正式基線是 v0.1.46；來源為 release-code main `5f436fe11d55b7d9488281804fbfddb8d8ff3862` 的 macOS artifact `9770629277`。版本／build 0.1.46、bundle `com.jspusa.amz-api`、`x86_64`／`arm64`、deep strict ad-hoc codesign、ASAR header integrity 與 `app.asar` 已逐項匹配，正式路徑主程序已啟動並回報 0.1.46；原 v0.1.45 保留於 `/Applications/AMZ.API-v0.1.45-backup.app`，既有 userData／Amazon Keychain vault 與更舊備份未清除或重建。受保護員工下載卡仍是 v0.1.32，沒有因本機版本更新而自動替換。
+- 目前 `/Applications/AMZ.API.app` 的正式基線是 v0.1.46；來源為 release-code main `5f436fe11d55b7d9488281804fbfddb8d8ff3862` 的 macOS artifact `9770629277`。版本／build 0.1.46、bundle `com.jspusa.amz-api`、`x86_64`／`arm64`、deep strict ad-hoc codesign、ASAR header integrity 與 `app.asar` 已逐項匹配，正式路徑主程序已啟動並回報 0.1.46；原 v0.1.45 保留於 `/Applications/AMZ.API-v0.1.45-backup.app`，既有 userData／Amazon Keychain vault 與更舊備份未清除或重建。受保護員工下載卡亦已於 2026-09-01 經另行明確授權更新為 v0.1.46；這是獨立的 portal upload，不是本機安裝自動替換。
 - v0.1.20 main macOS workflow run：`32561974803`；artifact：`9473081924`，名稱 `AMZ.API-unsigned-7425b8e49e027028efdfac6b101bb8d7480e5b02`；GitHub metadata digest：`sha256:fb5c205b7f23b1fa18f8075f51db72ec6ba7c04b8d1f711fe3b34321a4322757`。DMG 為 `AMZ.API-0.1.20-universal.dmg`（246,861,081 bytes；SHA-256 `89e3e1aa35e6878018aa09c06ec80e22eb369d4be418aacc0fc71aafa6c4e9d4`）；ZIP 為 `AMZ.API-0.1.20-universal.zip`（221,569,042 bytes；SHA-256 `8228d8a735a24af5b613d6defbe2c2b31b56e12b9393f6b4a3e44cbc22551009`）；`SHA256SUMS.txt` SHA-256 為 `fa5e91e6b1ad85bceb7fbf289e0c6644e17a59b36eb58df2d89d78e671f728c9`。
 - v0.1.20 曾作為 universal 內部測試 App 完成版本／build、bundle ID、executable、雙架構與 deep strict ad-hoc codesign 核對；這是歷史 artifact 紀錄，不是目前安裝版本。
 - v0.1.19 main macOS workflow run：`32560390832`；artifact：`9472647652`，名稱 `AMZ.API-unsigned-cae2bd51cfeebc3bc9a8a4e77deaabd5af4e4bc1`；GitHub metadata digest：`sha256:22a3beb9243dae7cf2bda76dc3235422de1325e271d5da6e62301a1e31a45781`。DMG SHA-256 為 `bf9cc3931e20236357b348cc2e7f6e389ad07908a152aba5b59d177da83813f1`；ZIP SHA-256 為 `ff3837763485fcd9b49cf073bccbf104a86d0f38b54ebf1fa2068ee6bf83ecf8`，均與 artifact 內 checksum manifest 一致。
 - v0.1.19 已由本次安裝保留為 `/Applications/AMZ.API-v0.1.19-backup.app`。曾手工重包的臨時 canary 會被 macOS 終止且出現「重新打開／報告」對話框，已完全排除為正式安裝來源；不得再使用該臨時 App。
 - v0.1.17 main macOS workflow run：`32455530465`；artifact：`9437191218`，名稱 `AMZ.API-unsigned-ef5bd04a8c87bf51743fe72e95e3a59073f14b4f`；GitHub metadata digest：`sha256:6ee034932ca5043774ea5110bd6c7133d93b72fd9b7c90dc434a9aa756209ea1`，保存至 `2026-09-04T06:47:01Z`。DMG 為 `AMZ.API-0.1.17-universal.dmg`（246,079,435 bytes；SHA-256 `1f01c0455d0f7ca506a537e889be5d3de2443e571e27cfc59d332e0c1e8b3ab2`）；ZIP 為 `AMZ.API-0.1.17-universal.zip`（221,564,636 bytes；SHA-256 `1267d63573ccb54e825ca9cf3cc8d510fa2c100694de9d3abca8741859b24c82`）；`SHA256SUMS.txt` 自身 SHA-256 為 `05afb64ef24c5291126ef815c3b8f439a505f35d8b2572bf7f0a30bd0475ce13`，兩個 payload hash 均完全一致。
 - 2026-08-28 受保護的 Supply Boss API v4 下載站維持只顯示 Mac DMG 與 Windows NSIS installer 兩個員工入口，兩張卡均已更新為 `v0.1.32`。Mac 檔為 `AMZ.API-0.1.32-universal.dmg`（246,709,846 bytes；SHA-256 `9050088357ab197834b4e973c425979ebbad35c884eead85387f85b5c77a3b47`）；Windows 檔為 `AMZ.API-Notebook-Key-Windows-x64-Setup.exe`（101,788,143 bytes；SHA-256 `6227acd2b945932931f89d8d9a2bd94220544ceaf7695d12842ceaf37075db52`）。兩檔各自匹配 release-code main `68821a3e3fa1ef000106d81f90b9d52f784975ec` 的 exact Actions artifact；private R2 multipart upload 完成後才原子替換 manifest，並從員工登入後的短效連結實際重下載完整 bytes 核對。管理上傳密鑰已輪替並只保存於 Sites secret 環境與 Mac Keychain；員工下載密碼與 session 規則未更改。portable ZIP 與 checksum manifest 仍只作內部驗證 artifact，不顯示成員工下載卡。
-- Windows v0.1.16 固定 prerelease 是歷史下載來源：`https://github.com/jspusa/AMZ.API/releases/tag/notebook-key-windows`。該版 NSIS 與 portable ZIP 的既有驗證紀錄保留於下方，但員工可見的受保護 Windows 卡現已改為上方 v0.1.32 NSIS。v0.1.32 仍未簽章；員工安裝前必須核對下載頁 SHA-256，並預期 SmartScreen 警告。
+- 2026-09-01 經使用者另行明確授權，兩張員工下載卡已再更新為 `v0.1.46`。Mac 檔為 `AMZ.API-0.1.46-universal.dmg`（246,476,752 bytes；SHA-256 `1a7052d2d25dd12b7c6d0635d03ad2a6e1498907078964c1b8c1a84ba7b29982`）；Windows 檔為 `AMZ.API-Notebook-Key-Windows-x64-Setup.exe`（101,818,256 bytes；SHA-256 `514568d11fdac6c1f5a121ea33b5615143f1959acfb95bc77de7c931abea92ca`）。兩檔均先和 release-code main `5f436fe11d55b7d9488281804fbfddb8d8ff3862` 的 exact Actions artifact／內附 checksum 重新比對，再依 Mac→Windows 順序以 Keychain-to-stdin multipart upload 原子替換 manifest；兩次完成回應均成功。入口頁可正常載入，但本次沒有取得員工下載密碼，因此登入後卡片與短效連結的實際完整下載／byte-for-byte 核對仍明確待辦。
+- Windows v0.1.16 固定 prerelease 是歷史下載來源：`https://github.com/jspusa/AMZ.API/releases/tag/notebook-key-windows`。該版 NSIS 與 portable ZIP 的既有驗證紀錄保留於下方，但員工可見的受保護 Windows 卡現已改為上方 v0.1.46 NSIS。v0.1.46 仍未簽章；員工安裝前必須核對下載頁 SHA-256，並預期 SmartScreen 警告。
 - v0.1.16 main Windows workflow run：`31351732415`；artifact：`9049261782`，名稱 `AMZ.API-Notebook-Key-Windows-x64-654d70c0ed554b1b9cdd078fc0587d15274c2500`；GitHub artifact digest：`sha256:3902fb2eeec61b3e081391a4e7dcd43d02a9beec314a3c267b7187c277fe3c6d`，保存至 `2026-08-24T03:13:10Z`。用於固定 prerelease 的 trusted workflow run 為 `31351186684`，artifact `9049090358`，digest `sha256:684aa093428ff63df64d2e51c74ae3c086bbe74658b9ce0afa164c92b7035005`；其三個實檔已下載並逐一核對。
 - v0.1.16 main macOS workflow run：`31351732405`；artifact：`9049246734`，名稱 `AMZ.API-unsigned-654d70c0ed554b1b9cdd078fc0587d15274c2500`；GitHub artifact digest：`sha256:303773960c146c94cf2f883381297c93c8051dd78eac642e8869be55bab3bb7f`。該版後來確實成為本次安裝前的 `/Applications/AMZ.API.app`，並已原樣移到 `/Applications/AMZ.API-v0.1.16-backup.app`；更舊備份若仍存在，也不得在未核對版本前覆蓋。
 - v0.1.15 main macOS workflow run：`31325158197`；artifact：`9041374594`，名稱 `AMZ.API-unsigned-ac5c18b2319061bcb06600967d4acec84c55d5f3`；GitHub artifact digest：`sha256:1f13c1284c75942e15d9029bf2720ef0519a4a8786bc256bdff0b63c2ad1644d`，保存至 `2026-08-23T17:03:27Z`。DMG SHA-256：`3f3d52d7bcd2d33b973c81365308e011b56addfcb1e5c28676466fcc74bf1b9f`；ZIP SHA-256：`1acc5e3d36586d1091e604a9e2ce08aa96db338df84948c0f89de1f4c2a23695`；兩者均與 artifact 內 `SHA256SUMS.txt` 一致。
@@ -1111,7 +1112,7 @@ npm audit --omit=dev
 
 注意：
 
-- 目前已發布／安裝的 release-code main 是 v0.1.46 `5f436fe11d55b7d9488281804fbfddb8d8ff3862`（PR #179）。受保護員工下載卡另維持 v0.1.32 `68821a3e3fa1ef000106d81f90b9d52f784975ec`，除非另行授權更新，不得把卡片版本說成 v0.1.45／v0.1.46。開始新工作前仍須 `git fetch origin` 並核對 merge base；後續 docs-only main commit 不得冒充 release artifact SHA，也不得把本機 `out/` 或未受信任 PR artifact 誤認成已發布 App。
+- 目前已發布／安裝的 release-code main 是 v0.1.46 `5f436fe11d55b7d9488281804fbfddb8d8ff3862`（PR #179），受保護員工下載卡也已在另一次明確授權下更新為同一版。開始新工作前仍須 `git fetch origin` 並核對 merge base；後續 docs-only main commit 不得冒充 release artifact SHA，也不得把本機 `out/` 或未受信任 PR artifact 誤認成已發布 App。登入後卡片與短效連結的完整重新下載仍須以使用者控制的員工密碼補做。
 - 工作區可能存在使用者或其他 agent 的變更；不得 `git reset --hard`、`git checkout --` 或直接覆蓋。
 - 修改後應建立修復分支／PR，通過 Actions 再合併。
 - 真實 Amazon 驗證只能由使用者在自己的 Notebook Key 本機加密憑證環境執行；Linux／CI 不得假裝已測過 SP-API live，Windows runner 也不得假裝已完成員工裝置的 Windows Hello／DPAPI 人工驗證。
@@ -1143,7 +1144,7 @@ npm audit --omit=dev
 2. v0.1.46 最低價 reconcile 只在 exact marketplace／SKU／ASIN／PTD／FBA／目標金額與幣別相符且沒有 price-scoped issue 時 verified；一般售價、舊 B2B、QDP 或 protected hash 漂移只迫使下一階段 fresh Preview，不再永久鎖住同 editor。手動 refresh 為 GET-only，不沿用 preview／approval，也不自動 PATCH。
 3. exact v0.1.46 App 已安裝並從正式路徑啟動，v0.1.45 backup 與既有 Amazon vault 均保留；版本、簽章、雙架構、完整 ASAR、header integrity 與啟動程序已重新核對。這是安裝證據，不是 live Amazon readback 證據。
 4. 只以 exact `1GCRD004A0` 做一次使用者明確觸發的 GET canary，核對同頁 VERIFIED／解鎖與零 PATCH。沒有另行明確授權 fresh Preview、exact 變更值與第二次本機確認前不得送 B2B；任何不明結果立即停止，不盲目重送。
-5. Windows CI 不能替代真實 Windows 11 Pro 的 DPAPI／Windows Hello 驗證；員工下載卡仍是 v0.1.32，這次沒有授權更新受保護下載站。
+5. Windows CI 不能替代真實 Windows 11 Pro 的 DPAPI／Windows Hello 驗證；員工下載卡已更新為 v0.1.46，但登入後實際下載與 Windows 實機安裝仍是不同且待完成的證據。
 
 ### B. 廣告策略 live 待辦
 
@@ -1153,7 +1154,7 @@ npm audit --omit=dev
 ### C. Windows 11 Pro x64 實機驗證
 
 1. 只從受保護的 AMZ.API Notebook Key 安全下載頁取得 Windows NSIS installer，安裝前依卡片顯示值核對 SHA-256。不要改抓 PR／fork／過期 Actions artifact。
-2. 在一台員工 Windows 11 Pro x64 筆電核對 SmartScreen 警告、NSIS 安裝／移除、版本 0.1.32、Notebook Key Bridge ready、WebGate 開啟與一般瀏覽器無 Bridge 的鎖定狀態。Windows unsigned 版不得啟用 in-app updater。
+2. 在一台員工 Windows 11 Pro x64 筆電核對 SmartScreen 警告、NSIS 安裝／移除、版本 0.1.46、Notebook Key Bridge ready、WebGate 開啟與一般瀏覽器無 Bridge 的鎖定狀態。Windows unsigned 版不得啟用 in-app updater。
 3. 使用 main-owned 本機安全 editor；不得把 Client Secret、Refresh Token 或完整 Seller ID 貼到聊天、Pages 或瀏覽器。核對保存後 renderer 只看到 redacted status，另一個 Windows 使用者不能解密原使用者的 DPAPI vault。
 4. 以 Windows Hello 實測成功、取消、未設定／不可用與 Windows 提供的 PIN fallback；記錄的只能是通過／拒絕與安全錯誤碼，不得記錄生物特徵種類或憑證。測試停在敏感操作授權邊界，不執行 Amazon mutation。
 5. CI 已證明 addon 可載入、HWND 屬於目前程序且三種 package 可啟動；它沒有證明實際指紋／臉部／PIN UI。只有上述實機矩陣完成後，才能把 Windows Notebook Key 標為已完成員工驗收。
