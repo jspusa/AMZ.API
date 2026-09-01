@@ -314,6 +314,28 @@ describe("content audit workbook parser", () => {
     expect(message).not.toMatch(/Range_9|Range_10/u);
   });
 
+  it("removes bidi isolates and invisible controls from Defined Name diagnostics", () => {
+    const source = workbook([auditRow("CHILD-1")]);
+    const definedName = mutateArchive(source, (archive) => {
+      replacePart(archive, "xl/workbook.xml", (xml) =>
+        xml.replace(
+          "</workbook>",
+          '<definedNames><definedName name="Safe&#x2066;Name&#x2069;&#xAD;&#x34F;&#x61C;" localSheetId="1">F001!&#x2066;$A$1&#x2069;</definedName></definedNames></workbook>',
+        ));
+    });
+
+    expect(() => parse(definedName)).toThrowError(
+      /工作表「F001」｜名稱「Safe Name」｜指向「F001! \$A\$1」/u,
+    );
+    try {
+      parse(definedName);
+    } catch (error) {
+      expect((error as Error).message).not.toMatch(
+        /[\u00ad\u034f\u061c\u2066-\u2069]/u,
+      );
+    }
+  });
+
   it("rejects unknown columns and duplicate SKUs", () => {
     const source = workbook([
       auditRow("CHILD-1"),

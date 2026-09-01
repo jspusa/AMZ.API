@@ -442,7 +442,10 @@ function rejectDefinedNames(workbook: Document): void {
 
 function safeDefinedNameField(value: string): string {
   const normalized = value
-    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/gu, " ")
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/gu,
+      " ",
+    )
     .replace(/[「」]/gu, (character) => (character === "「" ? "‹" : "›"))
     .replace(/\s+/gu, " ")
     .trim();
