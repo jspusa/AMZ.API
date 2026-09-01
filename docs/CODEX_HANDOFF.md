@@ -4,6 +4,18 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-09-01 v0.1.46 B2B 健檢外層寫入進度（已合併／Pages 上線；renderer-only、不需重裝、未呼叫 Amazon）
+
+使用者確認最低價兩階段流程已可成功完成，但既有寫入狀態只在單 SKU editor 內可見；返回全站 B2B 健檢後，無法分辨哪些商品正在等待 Amazon、哪些最低價已確認而應繼續預檢 B2B，也容易反覆打開同一列。這次把已觀察到的 exact write lifecycle 投影到外層清單：本次 App 使用期間內有調整的 SKU 置頂，摘要顯示「等待 Amazon／待送 B2B／已完成」計數，每列顯示「送出最低價格 → 已回查最低價格 → 送出 B2B 價格 → 已回查 B2B 價格」四階段及下一個安全操作。完成列在預設「需處理」篩選下仍保留，讓使用者不必進入 editor 才能確認剛才已完成；若最低價已 verified 但 B2B 尚未送出，列上直接顯示「繼續預檢 B2B」。
+
+進度只保存 renderer 本次 App session 已親自觀察的公開狀態，並以 exact marketplace＋Seller SKU＋ASIN＋Product Type 綁定；重新健檢只保留身分完全一致的活動，不會把舊 ASIN／PTD 或另一站點的狀態套到目前商品。最低價 PROCESSING → VERIFIED → B2B PROCESSING → VERIFIED 的歷史會累積保留，不因後一階段覆蓋前一階段；展示 cache 的 observer callback 已隔離，外層介面例外不得把 Amazon accepted／verified 結果改判為寫入失敗。這次沒有新增背景輪詢、Amazon API、PATCH、retry、preload 或 main process 能力；全新 App session 無法自動列舉過去 durable ledger，必須重新開啟 exact SKU 一次才會將當下公開狀態帶回外層清單。
+
+TDD 先以外層完全沒有 lifecycle、歷史被覆蓋、身分錯綁、完成列被篩掉、observer 例外污染 accepted result 與 stale ASIN 開啟 editor 的 RED 鎖定問題，再逐一修正。最終本機 `npm run check` 通過 246 個測試檔／2,461 tests、TypeScript、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities。1440px 與 390px production CSS 視覺核對均無 clipping／水平溢位，browser console 為 0 error／0 warning；獨立 Standards／Spec final review 均無 findings。本輪工程、測試、發布與核對沒有發出 Amazon GET、Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 mutation。
+
+PR #182 已 squash merge 到 exact main `1b4978585576630a199d0117601cb9cdb42f271a`。Pages run `33470944316`、job `99740402888` 已成功；live HTML／JS／CSS 分別為 917／1,869,450／311,688 bytes，SHA-256 為 `d24623ed5a55d495c50d05d0002eef6b39107c5635288cbb6bb424fc3f322ad5`／`82e6f810a5b15c1dc33062d722a287ccc05331099df20f68017d0e8bad091572`／`450ec7e5c84e194e91fdb4072f718c03bac94921e467c0e5b702309a01148a58`；live 載入 `assets/index-s727Y6Ks.js` 與 `assets/index-D9LiGAyY.css`，三個檔案均與 exact main production output byte-for-byte 相同，JS 亦直接包含「已調整商品進度」「繼續預檢 B2B」與四階段標籤。
+
+這是 GitHub Pages renderer-only hotfix，package 版本與 Notebook Key Bridge 均維持 v0.1.46；Mac／Windows 不需重新安裝，受保護 Supply Boss 下載卡也不應為相同 Bridge 重複換檔。使用者只需重新整理或重新開啟既有 AMZ.API 介面即可取得新版；重新安裝只適用於之後真正改動 main／preload／Bridge 或 package 版本的發行。
+
 ### 2026-09-01 v0.1.46 B2B 最低價手動確認解鎖與寬版健檢工作區（已合併／Pages 上線／Mac 安裝；未執行 Amazon 寫入）
 
 使用者在 exact US FBA SKU `1GCRD004A0` 的最低價已由 Seller Central 與 fresh Listing 顯示為目標 `14.19 USD` 後，單 SKU editor 仍停在黃色「Amazon 已接受最低價，正在同步」，使「先預檢 B2B 價格與階梯折扣」維持 disabled。既有路徑沒有要求重跑全站 B2B 健檢，問題是最低價 durable reconcile 把寫入前的一般售價、B2B contribution、數量折扣與 `minimumPriceProtectedHash` 都錯當成 post-write 完成條件；Amazon 同步期間只要正規化任一非目標欄位，exact 目標最低價已可見仍無法轉成 `VERIFIED`。
