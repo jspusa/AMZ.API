@@ -148,7 +148,8 @@ describe("main-owned content audit workbook", () => {
     expect(workbook).toContain('sheet name="資料未完成"');
     expect(index).toContain("Schema Version");
     expect(index).toContain("content-audit-v2");
-    expect(index).toContain("只能編輯淺藍色");
+    expect(index).toContain("只能編輯「更新...」欄位");
+    expect(index).toContain("淺綠色＝未發現問題的可編輯更新值");
     expect(index).toContain("PARENT-A");
     expect(index).toContain("PARENT-B");
     expect(index).toContain("STANDALONE");
@@ -159,11 +160,13 @@ describe("main-owned content audit workbook", () => {
     expect(incomplete).toContain("UNKNOWN-RELATIONSHIP");
     expect(familyA).toMatch(/<c r="H2" s="6" t="inlineStr">/u);
     expect(familyA).toMatch(/<c r="I2" s="5" t="inlineStr">/u);
+    expect(familyA).toMatch(/<c r="E2" s="7" t="inlineStr">/u);
     expect(familyB).toMatch(/<c r="D2" s="6" t="inlineStr">/u);
     expect(familyB).toMatch(/<c r="E2" s="5" t="inlineStr">/u);
     expect(styles).toContain('<fgColor rgb="FFFFF2CC"/>');
     expect(styles).toContain('<fgColor rgb="FFE7E6E6"/>');
-    expect(styles).toContain('<fgColor rgb="FFDDEBF7"/>');
+    expect(styles).toContain('<fgColor rgb="FFE2F0D9"/>');
+    expect(styles).not.toContain('<fgColor rgb="FFDDEBF7"/>');
 
     const parsed = parseContentAuditWorkbook({
       bytes,

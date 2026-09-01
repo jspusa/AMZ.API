@@ -1,8 +1,20 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-09-01
+最後更新：2026-09-02
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
+
+### 2026-09-02 v0.1.48 營運公布欄／即期倒數／促銷月曆與 Excel 正常色（本機工程；未合併／未部署／未安裝）
+
+本機工作樹新增位於「一鍵執行全部 FBA 健檢」之前、可收折的「營運公布欄」，並和原本想要的即期品專區合併。即期品以密集單列呈現 exact marketplace、Seller SKU、人工效期、備註、只出現一次的天數倒數、目前 FBA fulfillable quantity、有效售價與同步時間；促銷可選是否出現在首頁倒數。七個星期欄固定等寬，標題使用無文字 SVG icon、移除淡黃色底；同一個月曆同時標示促銷與 SKU 到期日，每格最多顯示兩筆後以 `+N` 收斂，完整日程與最多 100 筆即期品各自使用 bounded 內部捲動。即期列與月曆標籤都顯示站點短碼；真實時鐘會在台北午夜重算今天與倒數，測試注入日期則保持 deterministic。文案健檢 Excel 原本代表無問題的淡藍色已改為淡綠色，不更動問題判定或匯入授權語意。
+
+共享內容固定為 public base 下的 `operations-board/v1.json`；最多 100 個 exact-schema UUID 項目，人工效期不冒充 Amazon FC lot-expiry evidence，也不把價格、庫存、token 或管理密碼寫進 JSON。一般讀者只需固定公開 HTTPS base，該值保存於獨立 safeStorage sidecar `operations-board-reader.enc`，既有 `credentials.enc` 維持 v0.1.47 exact schema並有 downgrade regression。sidecar 必須和主 vault 的更新版本戳相同才生效，舊版 clear／resave 後的孤兒網址不會在升版時復活；optional sidecar 損壞不會阻塞 Amazon 主 vault 更新，但正式公布欄讀取會明確停用而不會靜默切到 writer URL；current clear 若刪除主 vault 失敗會還原 sidecar。main reader 固定 object key、拒絕 redirect、限制 128 KiB、10 秒 timeout、SDK `maxAttempts=1`，只有已驗證成功 snapshot 可成為 last-known-good。writer 先 fresh-read revision／ETag，使用 `If-Match` 或首次 `If-None-Match:*` 單次 Put；衝突、timeout、429、`5xx`、network 或未知結果一律不自動重送。
+
+新增／刪除／改日期只存在 main-owned、no-network、memory-only data-URL editor，所有 privileged IPC 核對 exact BrowserWindow main frame。獨立 `operations-board-admin.enc` 只保存 safeStorage 密文內的帳號、random salt 與 scrypt verifier，不保存密碼；管理帳密或可用的 Touch ID／Windows Hello 任一種通過即可解鎖，不會串成 AND，原生路徑也禁止一般 message fallback。帳密輪替必須重新驗證目前帳密；密碼欄在每次操作與 pagehide 清空，session 在關窗、鎖屏、睡眠或 installer handoff 失效。只有明確按「確認並發布」才更新共享內容；revision 衝突拒絕覆寫。
+
+目前庫存與價格使用新增的 bounded `POST /api/sp-api/operations-board-facts`：一次最多 100 項、exact identity 去重、owner-global 最多三個唯讀 SP permits、single-flight cancellation、context capture／terminal fence與 structured drain。SKU-not-found 只讓該欄 unavailable；auth、throttle、network、server 或 context failure 會停止整批。demo facts 明確回 `mode=demo`，renderer 顯示「展示庫存／展示價格／展示資料」，不得冒充 Amazon 現值。
+
+最終本機 `npm run check` 通過 TypeScript、253 個測試檔／2,521 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean，使用者提供的測試密碼在本輪檔案 0 命中。Codex in-app browser 以 production output 與固定 no-network fixture 複核 1440×1000／390×844：桌面七欄 header／cell 都為 77.3px、spread 0、`table-layout: fixed`；公布欄為白底、標題 icon 是 1 個 SVG 且無文字；SKU 單列 99px 且只顯示一組倒數，效期項目存在月曆；390px 頁面與 viewport 同寬、月曆 client／scroll width 同為 292px，console 0 error／0 warning。這次只完成 source、scripted／fixture／local build 與本機視覺證據；沒有呼叫 live Amazon、沒有 Amazon mutation、沒有真實 R2 發布、沒有 Touch ID／Windows Hello 實機、沒有 Pages／PR／Actions／artifact／portal 更新，也沒有替換目前正式 v0.1.47 App。
 
 ### 2026-09-01 v0.1.47 文案 Excel Defined Names 精確定位（已合併／Pages 上線／Mac 安裝／員工下載更新；未執行 Amazon 寫入）
 
@@ -1017,7 +1029,7 @@ Amazon App：
 
 ### 已完成與仍待真實 Windows／Mac／Amazon 驗證
 
-目前已發布／安裝的正式基線是 v0.1.47；Defined Names 精確定位的 source、Pages、macOS／Windows artifacts、Mac 安裝與受保護員工下載卡證據已補齊。v0.1.30 的 B2B／未綁變體唯讀 canary、後續使用者授權的單 SKU B2B／最低價 accepted activity、v0.1.46 B2B 工程證據與 v0.1.47 Excel 安全匯入工程證據必須分開理解；本次 v0.1.47 發布沒有操作 Amazon Preview、Touch ID／Windows Hello、PATCH 或 mutation，且尚未在員工真實 Windows 11 Pro 裝置做人機驗證。下列範圍必須分開理解：
+目前已發布／安裝的正式基線是 v0.1.47；v0.1.48 公布欄與 Excel 正常色只存在本機工作樹，尚未合併、部署、封裝或安裝，不得把兩者混為同一證據。Defined Names 精確定位的 v0.1.47 source、Pages、macOS／Windows artifacts、Mac 安裝與受保護員工下載卡證據已補齊。v0.1.30 的 B2B／未綁變體唯讀 canary、後續使用者授權的單 SKU B2B／最低價 accepted activity、v0.1.46 B2B 工程證據與 v0.1.47 Excel 安全匯入工程證據必須分開理解；本次 v0.1.47 發布沒有操作 Amazon Preview、Touch ID／Windows Hello、PATCH 或 mutation，且尚未在員工真實 Windows 11 Pro 裝置做人機驗證。下列範圍必須分開理解：
 
 1. v0.1.47 的 source／Pages／Mac／Windows artifact／Mac 安裝與 portal upload 證據已補齊；目前 `/Applications/AMZ.API.app` 是 exact v0.1.47，v0.1.46 保留為可復原備份。受保護員工下載頁的 Mac／Windows 卡亦已更新為 v0.1.47，但登入後短效連結重下載與本機安裝是不同證據。Windows runner 只證明封裝、Bridge 與 addon 可載入，不得冒充真實 Windows Hello 指紋／臉部／PIN 或 DPAPI 跨使用者驗證。
 2. v0.1.30 已顯示 `Amazon 已連線`、US／Live，並完成 274 列 B2B 與 274 列 variation 唯讀 canary；A+ 的 273 列全數 incomplete 是 live 失敗證據，不是可沿用的通過證據。v0.1.47 已完成 exact App 安裝、主程序啟動與版本回報；真實 Defined Names 定位仍待使用者重新選取原工作簿後觀察。更早歷史版本的品牌／品類與「狀態收斂進度」只能作各自時間點證據，不得冒充目前 live 完成。
@@ -1083,10 +1095,14 @@ Amazon App：
 5. `package.json` — 版本、scripts、Electron build 設定。
 6. `src/shared/contracts.ts` — Renderer／Preload／Main 的資料合約。
 7. `src/main/index.ts` — App 啟動、視窗、IPC、更新與請求協調。
-8. `src/main/credential-vault.ts` — Keychain-backed secret vault。
+8. `src/main/credential-vault.ts` — Keychain-backed secret vault；公布欄 public base 使用獨立 sidecar，主 Amazon vault schema 維持降版相容。
+   - `src/shared/operations-board.ts` — shared snapshot、facts、admin 與 editor typed contract。
+   - `src/main/operations-board.ts` — 固定 public JSON reader、last-known-good 與 conditional R2 writer。
+   - `src/main/operations-board-admin-vault.ts`／`src/main/operations-board-editor.ts` — 本機 salted verifier 與 no-network exact-frame editor。
+   - `src/main/operations-board-facts.ts` — bounded SKU price／FBA inventory read owner、single-flight cancellation 與 context fence。
 9. `src/main/amazon/sp-execution-context.ts` — 不可變 marketplace／region／mode／account generation 與失效契約。
 10. `src/main/amazon/sp-api-error.ts` — canonical SP error vocabulary 與 renderer-boundary sanitizer。
-11. `src/main/api-router.ts` — 唯一公開request envelope、63條exact route switch、error translation、connection tests、production composition與context invalidation wiring；domain workflow只委派main-only owner。
+11. `src/main/api-router.ts` — 唯一公開request envelope、65條exact route switch、error translation、connection tests、production composition與context invalidation wiring；domain workflow只委派main-only owner。
 12. `src/main/amazon/listings-reads.ts` — 封閉的 Listings／PTD item、search、definition 語意與 scripted adapter。
 13. `src/main/amazon/listings-reads-production.ts` — 固定 GET endpoint、token／retry／fallback 與 PTD schema 外部 seam。
 14. `src/main/amazon/listings-response-error.ts` — Listings read／write 共用 status、issue 與 upstream error mapping。
@@ -1153,7 +1169,7 @@ npm audit --omit=dev
 
 注意：
 
-- 目前已發布／安裝的 release-code main 是 v0.1.47 `03d2e7961d8710e276329f6fee43d3804a0d19a1`（PR #186），受保護員工下載卡也已依本次明確上線要求更新為同一版。開始新工作前仍須 `git fetch origin` 並核對 merge base；後續 docs-only main commit 不得冒充 release artifact SHA，也不得把本機 `out/` 或未受信任 PR artifact 誤認成已發布 App。登入後卡片與短效連結的完整重新下載仍須以使用者控制的員工密碼補做。
+- 目前已發布／安裝的 release-code main 是 v0.1.47 `03d2e7961d8710e276329f6fee43d3804a0d19a1`（PR #186），受保護員工下載卡也已依本次明確上線要求更新為同一版；本機 package v0.1.48 公布欄工作尚未進入任何 release evidence。開始新工作前仍須 `git fetch origin` 並核對 merge base；後續 docs-only main commit 不得冒充 release artifact SHA，也不得把本機 `out/` 或未受信任 PR artifact 誤認成已發布 App。登入後卡片與短效連結的完整重新下載仍須以使用者控制的員工密碼補做。
 - 工作區可能存在使用者或其他 agent 的變更；不得 `git reset --hard`、`git checkout --` 或直接覆蓋。
 - 修改後應建立修復分支／PR，通過 Actions 再合併。
 - 真實 Amazon 驗證只能由使用者在自己的 Notebook Key 本機加密憑證環境執行；Linux／CI 不得假裝已測過 SP-API live，Windows runner 也不得假裝已完成員工裝置的 Windows Hello／DPAPI 人工驗證。
@@ -1177,7 +1193,7 @@ npm audit --omit=dev
 
 ## 10. 交接後建議的第一個任務
 
-下一個安全任務是由使用者在已安裝的 v0.1.47 Notebook Key，把原本被 Defined Names 擋下的同一份文案 Excel 再選一次。若工作簿仍含名稱，錯誤必須在任何 Amazon Preview／寫入前顯示工作表或整份活頁簿、名稱與指向範圍；修正後另存再重選，才繼續既有零寫入預檢。不要清除或重建既有 vault，也不要把 fixture／CI／安裝成功冒充真實工作簿已驗證。
+若要接續本機 v0.1.48，下一個安全任務是先在目前工作樹完成 final review 與 before／after production visual evidence，再由使用者另行決定是否建立 PR、部署 Pages、封裝並可復原安裝；這些步驟不得因 source 測試通過就冒充已完成。既有 live 待辦仍是由使用者在已安裝的 v0.1.47 Notebook Key，把原本被 Defined Names 擋下的同一份文案 Excel 再選一次。若工作簿仍含名稱，錯誤必須在任何 Amazon Preview／寫入前顯示工作表或整份活頁簿、名稱與指向範圍；修正後另存再重選，才繼續既有零寫入預檢。不要清除或重建既有 vault，也不要把 fixture／CI／安裝成功冒充真實工作簿已驗證。
 
 ### A. v0.1.47 發布與 live 證據
 

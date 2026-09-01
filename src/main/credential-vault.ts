@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { safeStorage } from "electron";
 import type {
   CredentialInput,
@@ -24,6 +24,12 @@ type StoredCredentials = {
   regions: Record<SpApiRegion, StoredRegionCredentials>;
   imageStorage: StoredImageStorageCredentials | null;
   replenishmentSkillUrl: string;
+  updatedAt: string;
+};
+
+type StoredOperationsBoardReader = {
+  version: 1;
+  publicBaseUrl: string;
   updatedAt: string;
 };
 
@@ -116,7 +122,14 @@ function validateCredentialInput(input: unknown): asserts input is CredentialInp
   if (!isPlainRecord(input)) throw new Error("憑證輸入格式無效。");
   assertOnlyKeys(
     input,
-    ["lwaClientId", "lwaClientSecret", "regions", "imageStorage", "replenishmentSkillUrl"],
+    [
+      "lwaClientId",
+      "lwaClientSecret",
+      "regions",
+      "imageStorage",
+      "operationsBoardPublicBaseUrl",
+      "replenishmentSkillUrl",
+    ],
     "憑證輸入",
   );
   if (input.regions !== undefined) {
@@ -156,6 +169,27 @@ function requireHttps(value: string, label: string): string {
     throw new Error(`${label} 必須是沒有帳密或錨點的 HTTPS 網址。`);
   }
   return parsed.toString().replace(/\/$/, "");
+}
+
+function requireOperationsBoardPublicBaseUrl(value: string): string {
+  if (!value) return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("公布欄唯讀網址必須是有效的 HTTPS 網址。");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("公布欄唯讀網址必須是不含帳密、連接埠、查詢或錨點的 HTTPS 網址。");
+  }
+  return parsed.toString().replace(/\/$/u, "");
 }
 
 function hint(value: string): string | null {
@@ -239,6 +273,24 @@ function safeParse(value: string): StoredCredentials {
   return result;
 }
 
+function safeParseOperationsBoardReader(value: string): StoredOperationsBoardReader {
+  const raw: unknown = JSON.parse(value);
+  if (!isPlainRecord(raw) || raw.version !== 1) {
+    throw new Error("公布欄唯讀設定保存格式無效。");
+  }
+  assertExactKeys(raw, ["version", "publicBaseUrl", "updatedAt"], "公布欄唯讀設定");
+  if (typeof raw.publicBaseUrl !== "string" || typeof raw.updatedAt !== "string") {
+    throw new Error("公布欄唯讀設定保存格式無效。");
+  }
+  return {
+    version: 1,
+    publicBaseUrl: requireOperationsBoardPublicBaseUrl(
+      cleanText(raw.publicBaseUrl, 2_000),
+    ),
+    updatedAt: cleanText(raw.updatedAt, 64),
+  };
+}
+
 function validateCompleteness(value: StoredCredentials): void {
   if (Boolean(value.lwaClientId) !== Boolean(value.lwaClientSecret)) {
     throw new Error("LWA Client ID 與 Client Secret 必須一起填寫。");
@@ -271,10 +323,12 @@ function validateCompleteness(value: StoredCredentials): void {
 
 export class CredentialVault {
   readonly filePath: string;
+  readonly operationsBoardFilePath: string;
   private cache: StoredCredentials | null = null;
 
   constructor(filePath: string) {
     this.filePath = filePath;
+    this.operationsBoardFilePath = join(dirname(filePath), "operations-board-reader.enc");
   }
 
   async encryptionAvailable(): Promise<boolean> {
@@ -356,6 +410,18 @@ export class CredentialVault {
       };
       next.imageStorage = Object.values(merged).some(Boolean) ? merged : null;
     }
+    const operationsBoardPublicBaseUrl = requireOperationsBoardPublicBaseUrl(
+      cleanText(input.operationsBoardPublicBaseUrl, 2_000),
+    );
+    const currentOperationsBoardReader =
+      !operationsBoardPublicBaseUrl && current.updatedAt
+        ? await this.loadOperationsBoardReaderOrNull()
+        : null;
+    const preservedOperationsBoardPublicBaseUrl =
+      current.updatedAt &&
+      currentOperationsBoardReader?.updatedAt === current.updatedAt
+        ? currentOperationsBoardReader.publicBaseUrl
+        : "";
     const skillUrl = requireHttps(
       cleanText(input.replenishmentSkillUrl, 2_000),
       "補貨 Skill 網址",
@@ -363,17 +429,53 @@ export class CredentialVault {
     if (skillUrl) next.replenishmentSkillUrl = skillUrl;
     next.updatedAt = new Date().toISOString();
     validateCompleteness(next);
-    await this.writeEncrypted(next);
+    const nextOperationsBoardPublicBaseUrl =
+      operationsBoardPublicBaseUrl || preservedOperationsBoardPublicBaseUrl;
+    if (nextOperationsBoardPublicBaseUrl) {
+      await this.writeCredentialsAndOperationsBoardReader(next, {
+        version: 1,
+        publicBaseUrl: nextOperationsBoardPublicBaseUrl,
+        updatedAt: next.updatedAt,
+      });
+    } else {
+      await this.writeEncrypted(next);
+    }
     this.cache = next;
     this.applyToEnvironment(next);
     return this.summary(next, true);
   }
 
   async clear(): Promise<CredentialSummary> {
+    const readerBackupPath =
+      `${this.operationsBoardFilePath}.${crypto.randomUUID()}.clear-backup`;
+    let readerBackedUp = false;
     try {
-      await unlink(this.filePath);
+      try {
+        await rename(this.operationsBoardFilePath, readerBackupPath);
+        readerBackedUp = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      try {
+        await unlink(this.filePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (readerBackedUp) {
+        try {
+          await rename(readerBackupPath, this.operationsBoardFilePath);
+        } catch (restoreError) {
+          throw new AggregateError(
+            [error, restoreError],
+            "清除主憑證失敗，且公布欄唯讀設定無法還原。",
+          );
+        }
+      }
+      throw error;
+    }
+    if (readerBackedUp) {
+      await unlink(readerBackupPath).catch(() => undefined);
     }
     this.cache = null;
     this.applyToEnvironment(emptyCredentials());
@@ -388,6 +490,20 @@ export class CredentialVault {
     const value = await this.load();
     return value.imageStorage && Object.values(value.imageStorage).every(Boolean)
       ? structuredClone(value.imageStorage)
+      : null;
+  }
+
+  async getOperationsBoardPublicBaseUrl(): Promise<string | null> {
+    const value = await this.load();
+    const reader = value.updatedAt
+      ? await this.loadOperationsBoardReader()
+      : null;
+    const publicBaseUrl =
+      (reader?.updatedAt === value.updatedAt ? reader.publicBaseUrl : "") ||
+      value.imageStorage?.publicBaseUrl ||
+      "";
+    return publicBaseUrl
+      ? requireOperationsBoardPublicBaseUrl(publicBaseUrl)
       : null;
   }
 
@@ -409,13 +525,109 @@ export class CredentialVault {
   }
 
   private async writeEncrypted(value: StoredCredentials): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
+    await this.writeEncryptedJson(this.filePath, value);
+  }
+
+  private async writeOperationsBoardReader(
+    value: StoredOperationsBoardReader,
+  ): Promise<void> {
+    await this.writeEncryptedJson(this.operationsBoardFilePath, value);
+  }
+
+  private async writeEncryptedJson(filePath: string, value: unknown): Promise<void> {
+    const temporaryPath = await this.prepareEncryptedJson(filePath, value);
+    try {
+      await rename(temporaryPath, filePath);
+    } catch (error) {
+      await unlink(temporaryPath).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async prepareEncryptedJson(filePath: string, value: unknown): Promise<string> {
+    await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
     const encrypted = await safeStorage.encryptStringAsync(JSON.stringify(value));
-    const temporaryPath = `${this.filePath}.${crypto.randomUUID()}.tmp`;
+    const temporaryPath = `${filePath}.${crypto.randomUUID()}.tmp`;
     await writeFile(temporaryPath, encrypted, { mode: 0o600, flag: "wx" });
     await chmod(temporaryPath, 0o600);
-    await rename(temporaryPath, this.filePath);
-    await chmod(this.filePath, 0o600);
+    return temporaryPath;
+  }
+
+  private async writeCredentialsAndOperationsBoardReader(
+    credentials: StoredCredentials,
+    reader: StoredOperationsBoardReader,
+  ): Promise<void> {
+    const credentialsTemporaryPath = await this.prepareEncryptedJson(
+      this.filePath,
+      credentials,
+    );
+    let readerTemporaryPath: string;
+    try {
+      readerTemporaryPath = await this.prepareEncryptedJson(
+        this.operationsBoardFilePath,
+        reader,
+      );
+    } catch (error) {
+      await unlink(credentialsTemporaryPath).catch(() => undefined);
+      throw error;
+    }
+
+    const readerBackupPath =
+      `${this.operationsBoardFilePath}.${crypto.randomUUID()}.backup`;
+    let readerBackedUp = false;
+    let readerCommitted = false;
+    try {
+      try {
+        await rename(this.operationsBoardFilePath, readerBackupPath);
+        readerBackedUp = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      await rename(readerTemporaryPath, this.operationsBoardFilePath);
+      readerCommitted = true;
+      await rename(credentialsTemporaryPath, this.filePath);
+    } catch (error) {
+      if (readerCommitted) {
+        await unlink(this.operationsBoardFilePath).catch(() => undefined);
+      }
+      if (readerBackedUp) {
+        await rename(readerBackupPath, this.operationsBoardFilePath)
+          .catch(() => undefined);
+      }
+      await Promise.all([
+        unlink(credentialsTemporaryPath).catch(() => undefined),
+        unlink(readerTemporaryPath).catch(() => undefined),
+      ]);
+      throw error;
+    }
+    if (readerBackedUp) {
+      await unlink(readerBackupPath).catch(() => undefined);
+    }
+  }
+
+  private async loadOperationsBoardReader(): Promise<StoredOperationsBoardReader | null> {
+    let encrypted: Buffer;
+    try {
+      encrypted = await readFile(this.operationsBoardFilePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    if (!(await this.encryptionAvailable())) {
+      throw new Error("本機系統安全儲存區目前無法使用，因此系統拒絕解密公布欄設定。");
+    }
+    const decrypted = await safeStorage.decryptStringAsync(encrypted);
+    const parsed = safeParseOperationsBoardReader(decrypted.result);
+    if (decrypted.shouldReEncrypt) await this.writeOperationsBoardReader(parsed);
+    return parsed;
+  }
+
+  private async loadOperationsBoardReaderOrNull(): Promise<StoredOperationsBoardReader | null> {
+    try {
+      return await this.loadOperationsBoardReader();
+    } catch {
+      return null;
+    }
   }
 
   private applyToEnvironment(value: StoredCredentials): void {

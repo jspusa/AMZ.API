@@ -80,6 +80,7 @@ export type CredentialInput = {
   lwaClientSecret?: string;
   regions?: Partial<Record<SpApiRegion, RegionCredentialInput>>;
   imageStorage?: ImageStorageCredentialInput;
+  operationsBoardPublicBaseUrl?: string;
   replenishmentSkillUrl?: string;
 };
 
@@ -149,6 +150,10 @@ export type DesktopBridge = {
     clear(): Promise<AdvertisingCredentialSummary>;
     test(marketplaceId: string): Promise<AdvertisingConnectionTestResult>;
   };
+  operationsBoard: {
+    openEditor(): Promise<void>;
+    onUpdated(listener: () => void): () => void;
+  };
   app: {
     version(): Promise<string>;
     platform(): Promise<string>;
@@ -172,3 +177,6 @@ export type AdvertisingCredentialEditorBridge = Readonly<{
   save(input: AdvertisingCredentialInput): Promise<AdvertisingCredentialSummary>;
   close(): Promise<void>;
 }>;
+
+export type { OperationsBoardEditorBridge } from "./operations-board";
+import type { OperationsBoardEditorBridge } from "./operations-board";

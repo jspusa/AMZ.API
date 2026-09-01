@@ -68,7 +68,7 @@ describe("release and desktop platform contracts", () => {
     expect(main).toContain("desktopInstallGate.begin()");
     expect(
       main.match(/desktopInstallGate\.assertOperationAllowed\(\);/gu),
-    ).toHaveLength(3);
+    ).toHaveLength(10);
   });
 
   it("does not expose the retired operating-system spellchecker bridge", async () => {

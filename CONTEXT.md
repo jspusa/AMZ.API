@@ -43,3 +43,11 @@ _Avoid_: UI deployment, patch pack
 **Bootstrap Notebook Key**:
 The one manually installed publisher-signed Notebook Key that establishes the stable signing identity required for later background updates.
 _Avoid_: Every update, web reinstall
+
+**Operations Bulletin Board**:
+The revisioned shared R2 document that contains manually maintained expiry notices and Amazon promotion dates; readers need only its fixed public HTTPS base, while only a writer-configured local Notebook Key editor may replace it conditionally.
+_Avoid_: Amazon expiry report, public editor
+
+**Manual Expiry Date**:
+An operator-entered SKU date used for the bulletin countdown and calendar marker; it is not Amazon FC lot-expiry evidence and remains separate from live inventory and price reads.
+_Avoid_: Amazon expiry date, aged-inventory evidence

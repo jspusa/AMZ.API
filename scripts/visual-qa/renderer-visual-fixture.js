@@ -18,6 +18,42 @@
 
   const marketplaceId = "ATVPDKIKX0DER";
   const fixedTime = "2026-08-21T12:00:00.000Z";
+  const operationsBoardSnapshot = {
+    snapshot: {
+      schemaVersion: 1,
+      revision: 4,
+      updatedAt: fixedTime,
+      items: [
+        {
+          id: "d16379cb-a461-459f-8120-79d54c2d8e4d",
+          type: "expiry",
+          marketplaceId,
+          sellerSku: "VISUAL-EXPIRY-SKU",
+          expiryDate: "2026-09-05",
+          note: "先安排舊批次出庫，並在促銷前重新核對庫存。",
+        },
+        {
+          id: "8bf4791c-3c0b-4587-a47d-31454feb88c9",
+          type: "promotion",
+          date: "2026-09-10",
+          title: "Visual Prime 檔期",
+          note: "確認 Coupon、廣告與安全庫存。",
+          countdown: true,
+        },
+        {
+          id: "77bfa25f-929e-47dd-93f3-fc71862231a4",
+          type: "promotion",
+          date: "2026-09-22",
+          title: "秋季 Deal 提報截止",
+          note: "不需首頁倒數，保留在月曆。",
+          countdown: false,
+        },
+      ],
+    },
+    source: "shared",
+    stale: false,
+    status: "ready",
+  };
   const json = (value, status = 200) => ({
     status,
     headers: {
@@ -1228,6 +1264,28 @@
           }
           return json(sales);
         }
+        if (request.path === "/api/operations-board" && request.method === "GET") {
+          return json(operationsBoardSnapshot);
+        }
+        if (
+          request.path === "/api/sp-api/operations-board-facts" &&
+          request.method === "POST"
+        ) {
+          return json({
+            facts: (body?.items ?? []).map((item) => ({
+              id: item.id,
+              marketplaceId: item.marketplaceId,
+              sellerSku: item.sellerSku,
+              mode: "live",
+              inventory: { state: "ready", value: 84 },
+              price: {
+                state: "ready",
+                value: { amount: 22.99, currencyCode: "USD" },
+              },
+              fetchedAt: fixedTime,
+            })),
+          });
+        }
         if (request.path === "/api/system/health" && request.method === "GET") {
           return json(health);
         }
@@ -1371,6 +1429,10 @@
         message: "CSS01 fixture only",
         requestId: null,
       }),
+    },
+    operationsBoard: {
+      openEditor: async () => {},
+      onUpdated: () => () => {},
     },
     app: {
       version: async () => "0.1.32",

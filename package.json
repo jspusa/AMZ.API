@@ -1,6 +1,6 @@
 {
   "name": "amz-api",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "amzApiUpdateChannel": "disabled",
   "description": "A private, local-first Amazon FBA operations console for macOS and Windows 11 Notebook Key.",
   "private": true,
