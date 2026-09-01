@@ -14,6 +14,7 @@ import {
   businessPricingRowMatchesFilter,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
+  retainBusinessPricingWorkflowActivities,
   type BusinessPricingAuditFilter,
   type BusinessPricingAuditRow,
   type BusinessPricingAuditSnapshot,
@@ -357,7 +358,10 @@ export default function BusinessPricingAuditPanel({
       ]),
     );
     return visibleSnapshot.rows
-      .filter((row) => businessPricingRowMatchesFilter(row, filter))
+      .filter((row) =>
+        businessPricingRowMatchesFilter(row, filter) ||
+        (filter === "problem" && activityOrder.has(row.sellerSku))
+      )
       .map((row, index) => ({ row, index }))
       .sort((left, right) => {
         const leftActivity = activityOrder.get(left.row.sellerSku);
@@ -376,7 +380,7 @@ export default function BusinessPricingAuditPanel({
 
   const workflowActivities = visibleSnapshot?.workflowActivities ?? [];
   const workflowCounts = workflowActivities.reduce((counts, activity) => {
-    const state = businessPricingWorkflowProgress(activity.writeStatus).state;
+    const state = businessPricingWorkflowProgress(activity).state;
     counts[state] += 1;
     return counts;
   }, { waiting_amazon: 0, waiting_b2b: 0, complete: 0 });
@@ -398,8 +402,9 @@ export default function BusinessPricingAuditPanel({
     }
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const previousActivities = snapshotRef.current?.workflowActivities ?? [];
-    const retainedActivities = previousActivities.filter((activity) =>
-      next.rows.some((row) => row.sellerSku === activity.sellerSku)
+    const retainedActivities = retainBusinessPricingWorkflowActivities(
+      next,
+      previousActivities,
     );
     publishSnapshot(retainedActivities.length > 0
       ? { ...next, workflowActivities: retainedActivities }
@@ -807,7 +812,7 @@ export default function BusinessPricingAuditPanel({
                 candidate.sellerSku === row.sellerSku
               );
               const rowWorkflow = activity
-                ? businessPricingWorkflowProgress(activity.writeStatus)
+                ? businessPricingWorkflowProgress(activity)
                 : null;
               return (
                 <article

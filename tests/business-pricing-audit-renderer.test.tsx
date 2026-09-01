@@ -4,8 +4,10 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  applyBusinessPriceWriteStatusToAuditSnapshot,
   applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
+  businessPricingWorkflowProgress,
   businessPricingRowMatchesFilter,
   businessPricingEditorProposal,
   createSubmittedBusinessPricePreview,
@@ -15,7 +17,9 @@ import {
   parseBusinessPriceWriteStatus,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
+  retainBusinessPricingWorkflowActivities,
   type BusinessPriceUpdate,
+  type BusinessPriceWriteStatus,
 } from "../src/renderer/src/business-pricing-audit";
 import BusinessPricingAuditPanel, {
   shouldResumeBusinessPricingAuditJob,
@@ -150,6 +154,52 @@ const interactiveListing = {
   fetchedAt: "2026-08-22T12:00:00.000Z",
   notice: null,
 } as const;
+
+function workflowWriteStatus(
+  overrides: Partial<BusinessPriceWriteStatus> = {},
+): BusinessPriceWriteStatus {
+  return parseBusinessPriceWriteStatus({
+    mode: "live",
+    status: "PROCESSING",
+    stage: "minimum_price",
+    marketplaceId: "ATVPDKIKX0DER",
+    sellerSku: "FBA-CONFIGURED",
+    asin: "B000000002",
+    productType: "PET_FOOD",
+    acceptedAt: "2026-09-01T03:10:19.000Z",
+    verifiedAt: null,
+    requestId: "request-workflow",
+    submissionId: "submission-workflow",
+    verified: false,
+    authoritative: false,
+    canResend: false,
+    businessPriceSubmitted: false,
+    previousBusinessPrice: { amount: 22.49, currencyCode: "USD" },
+    requestedBusinessPrice: { amount: 23.99, currencyCode: "USD" },
+    previousMinimumPrice: { amount: 23.49, currencyCode: "USD" },
+    requestedMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+    lowestTierUnitPrice: { amount: 19.19, currencyCode: "USD" },
+    previousQuantityDiscountPlan: {
+      discountType: "percent",
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+      ],
+    },
+    requestedQuantityDiscountPlan: {
+      discountType: "percent",
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+        { lowerBound: 15, value: 15 },
+        { lowerBound: 20, value: 20 },
+      ],
+    },
+    quantityDiscountPlanChange: "replace",
+    notice: "Amazon 正在同步。",
+    ...overrides,
+  });
+}
 
 async function previewBodyFromRowInteraction(
   mode: "price_only" | "combined",
@@ -805,6 +855,173 @@ describe("FBA business pricing audit renderer", () => {
     expect(fetchMock.mock.calls.every(([, init]) =>
       !init?.method || init.method === "GET"
     )).toBe(true);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("preserves completed minimum-price steps through the full B2B lifecycle", () => {
+    let snapshot = parseBusinessPricingAuditSnapshot(payload());
+    const minimumProcessing = workflowWriteStatus();
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      minimumProcessing,
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps.map((step) => step.state)).toEqual([
+      "complete",
+      "current",
+      "pending",
+      "pending",
+    ]);
+
+    const minimumVerified = workflowWriteStatus({
+      status: "VERIFIED",
+      verifiedAt: "2026-09-01T03:18:00.000Z",
+      verified: true,
+      authoritative: true,
+    });
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      minimumVerified,
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps.map((step) => step.state)).toEqual([
+      "complete",
+      "complete",
+      "current",
+      "pending",
+    ]);
+
+    const businessProcessing = workflowWriteStatus({
+      stage: "business_price",
+      acceptedAt: "2026-09-01T03:20:00.000Z",
+      businessPriceSubmitted: true,
+      previousMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      requestedMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+    });
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      businessProcessing,
+    );
+    expect(snapshot.workflowActivities![0]!.minimumPriceProgress).toBe(
+      "verified",
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps.map((step) => step.state)).toEqual([
+      "complete",
+      "complete",
+      "complete",
+      "current",
+    ]);
+
+    const businessVerified = workflowWriteStatus({
+      ...businessProcessing,
+      status: "VERIFIED",
+      verifiedAt: "2026-09-01T03:28:00.000Z",
+      verified: true,
+      authoritative: true,
+    });
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      businessVerified,
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps.map((step) => step.state)).toEqual([
+      "complete",
+      "complete",
+      "complete",
+      "complete",
+    ]);
+  });
+
+  it("binds progress to the exact SKU, ASIN and product type", () => {
+    const snapshot = parseBusinessPricingAuditSnapshot(payload());
+    expect(() => applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      workflowWriteStatus({ asin: "B000000099" }),
+    )).toThrow("B2B 價格處理進度與目前健檢快照不一致");
+    expect(() => applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      workflowWriteStatus({ productType: "OTHER" }),
+    )).toThrow("B2B 價格處理進度與目前健檢快照不一致");
+
+    const withActivity = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      workflowWriteStatus(),
+    );
+    const driftedSnapshot = {
+      ...snapshot,
+      rows: snapshot.rows.map((row) => row.sellerSku === "FBA-CONFIGURED"
+        ? { ...row, asin: "B000000099" }
+        : row),
+    };
+    expect(retainBusinessPricingWorkflowActivities(
+      driftedSnapshot,
+      withActivity.workflowActivities ?? [],
+    )).toEqual([]);
+  });
+
+  it("keeps a completed adjusted SKU visible under the default problem filter", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const original = parseBusinessPricingAuditSnapshot(payload());
+    const corrected = {
+      ...original,
+      rows: original.rows.map((row) => row.sellerSku === "FBA-CONFIGURED"
+        ? {
+            ...row,
+            businessPrice: { amount: 23.99, currencyCode: "USD" },
+            quantityDiscountPlan: {
+              discountType: "percent" as const,
+              levels: [
+                { lowerBound: 5, value: 5 },
+                { lowerBound: 10, value: 10 },
+                { lowerBound: 15, value: 15 },
+                { lowerBound: 20, value: 20 },
+              ],
+            },
+            recommendedPriceMismatch: false,
+            recommendedQuantityDiscountMismatch: false,
+          }
+        : row),
+    };
+    const completed = applyBusinessPriceWriteStatusToAuditSnapshot(
+      corrected,
+      workflowWriteStatus({
+        status: "VERIFIED",
+        stage: "business_price",
+        acceptedAt: "2026-09-01T03:20:00.000Z",
+        verifiedAt: "2026-09-01T03:28:00.000Z",
+        verified: true,
+        authoritative: true,
+        businessPriceSubmitted: true,
+        previousMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+        requestedMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      }),
+    );
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: completed,
+      }));
+    });
+    const adjustedRow = renderer!.root.findAllByType("article").find(
+      (article) => article.findAllByType("small").some((small) =>
+        small.children.join("") === "FBA-CONFIGURED · B000000002"
+      ),
+    );
+    expect(adjustedRow).toBeDefined();
+    expect(adjustedRow!.findAllByType("button").some((button) =>
+      button.children.join("") === "查看完成結果"
+    )).toBe(true);
+    expect(adjustedRow!.findAllByProps({
+      "aria-label": "B2B 調整進度：B2B 價格已回查確認",
+    })).toHaveLength(1);
     await act(async () => renderer!.unmount());
   });
 

@@ -193,7 +193,7 @@
 
 .business-pricing-activity-summary > div > span {
   color: #55738d;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 750;
 }
 
@@ -213,7 +213,7 @@
 
 .business-pricing-activity-summary dt,
 .business-pricing-activity-summary dd { margin: 0; }
-.business-pricing-activity-summary dt { color: #6e7e8c; font-size: 9px; font-weight: 750; }
+.business-pricing-activity-summary dt { color: #6e7e8c; font-size: 10px; font-weight: 750; }
 .business-pricing-activity-summary dd { margin-top: 3px; color: #174f7c; font-size: 17px; font-weight: 900; }
 
 .business-pricing-summary {
@@ -421,7 +421,7 @@
   border-radius: 999px;
   background: #dcebf8;
   color: #285d87;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 850;
 }
 
@@ -463,11 +463,11 @@
 
 .business-pricing-workflow li span {
   overflow-wrap: anywhere;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 850;
 }
 
-.business-pricing-workflow li small { font-size: 8px; }
+.business-pricing-workflow li small { font-size: 10px; }
 .business-pricing-workflow li.is-complete { border-color: #c7e2d1; color: #28583d; }
 .business-pricing-workflow li.is-complete i { background: #d8f0e1; color: #187244; }
 .business-pricing-workflow li.is-current { border-color: #e4bd6e; color: #755016; box-shadow: inset 0 0 0 1px #f1d79d; }

@@ -243,6 +243,7 @@ export type BusinessPriceWriteStatus = Readonly<{
 export type BusinessPricingWorkflowActivity = Readonly<{
   sellerSku: string;
   writeStatus: BusinessPriceWriteStatus;
+  minimumPriceProgress: "not_required" | "submitted" | "verified";
 }>;
 
 export type BusinessPricingWorkflowStepState =
@@ -270,9 +271,27 @@ function minimumPriceWasChanged(status: BusinessPriceWriteStatus): boolean {
   );
 }
 
-export function businessPricingWorkflowProgress(
+function nextMinimumPriceProgress(
   status: BusinessPriceWriteStatus,
+  previous: BusinessPricingWorkflowActivity | undefined,
+): BusinessPricingWorkflowActivity["minimumPriceProgress"] {
+  if (status.stage === "minimum_price") {
+    return status.status === "VERIFIED" ? "verified" : "submitted";
+  }
+  if (
+    previous?.minimumPriceProgress === "verified" ||
+    previous?.minimumPriceProgress === "submitted" ||
+    minimumPriceWasChanged(status)
+  ) {
+    return "verified";
+  }
+  return "not_required";
+}
+
+export function businessPricingWorkflowProgress(
+  activity: BusinessPricingWorkflowActivity,
 ): BusinessPricingWorkflowProgress {
+  const status = activity.writeStatus;
   if (status.stage === "minimum_price") {
     const minimumVerified = status.status === "VERIFIED";
     return {
@@ -295,8 +314,9 @@ export function businessPricingWorkflowProgress(
     };
   }
 
-  const minimumChanged = minimumPriceWasChanged(status);
   const businessVerified = status.status === "VERIFIED";
+  const minimumSubmitted = activity.minimumPriceProgress !== "not_required";
+  const minimumVerified = activity.minimumPriceProgress === "verified";
   return {
     state: businessVerified ? "complete" : "waiting_amazon",
     headline: businessVerified
@@ -305,11 +325,15 @@ export function businessPricingWorkflowProgress(
     steps: [
       {
         label: "送出最低價格",
-        state: minimumChanged ? "complete" : "skipped",
+        state: minimumSubmitted ? "complete" : "skipped",
       },
       {
         label: "已回查最低價格",
-        state: minimumChanged ? "complete" : "skipped",
+        state: minimumVerified
+          ? "complete"
+          : minimumSubmitted
+          ? "current"
+          : "skipped",
       },
       { label: "送出 B2B 價格", state: "complete" },
       {
@@ -324,16 +348,30 @@ export function applyBusinessPriceWriteStatusToAuditSnapshot(
   snapshot: BusinessPricingAuditSnapshot,
   writeStatus: BusinessPriceWriteStatus,
 ): BusinessPricingAuditSnapshot {
+  const matchingRows = snapshot.rows.filter((row) =>
+    row.sellerSku === writeStatus.sellerSku &&
+    row.asin === writeStatus.asin &&
+    row.productType === writeStatus.productType
+  );
   if (
     snapshot.mode !== writeStatus.mode ||
     snapshot.marketplaceId !== writeStatus.marketplaceId ||
-    snapshot.rows.filter((row) => row.sellerSku === writeStatus.sellerSku)
-        .length !== 1
+    matchingRows.length !== 1
   ) {
     throw new Error("B2B 價格處理進度與目前健檢快照不一致。");
   }
+  const previousActivity = (snapshot.workflowActivities ?? []).find(
+    (activity) => activity.sellerSku === writeStatus.sellerSku &&
+      activity.writeStatus.asin === writeStatus.asin &&
+      activity.writeStatus.productType === writeStatus.productType &&
+      activity.writeStatus.marketplaceId === writeStatus.marketplaceId,
+  );
+  const minimumPriceProgress = nextMinimumPriceProgress(
+    writeStatus,
+    previousActivity,
+  );
   const workflowActivities = [
-    { sellerSku: writeStatus.sellerSku, writeStatus },
+    { sellerSku: writeStatus.sellerSku, writeStatus, minimumPriceProgress },
     ...(snapshot.workflowActivities ?? []).filter((activity) =>
       activity.sellerSku !== writeStatus.sellerSku
     ),
@@ -342,6 +380,23 @@ export function applyBusinessPriceWriteStatusToAuditSnapshot(
       Date.parse(left.writeStatus.acceptedAt)
   );
   return { ...snapshot, workflowActivities };
+}
+
+export function retainBusinessPricingWorkflowActivities(
+  snapshot: BusinessPricingAuditSnapshot,
+  activities: readonly BusinessPricingWorkflowActivity[],
+): readonly BusinessPricingWorkflowActivity[] {
+  return activities.filter((activity) => {
+    const status = activity.writeStatus;
+    return activity.sellerSku === status.sellerSku &&
+      status.mode === snapshot.mode &&
+      status.marketplaceId === snapshot.marketplaceId &&
+      snapshot.rows.filter((row) =>
+        row.sellerSku === status.sellerSku &&
+        row.asin === status.asin &&
+        row.productType === status.productType
+      ).length === 1;
+  });
 }
 
 function record(value: unknown): Record<string, unknown> {
