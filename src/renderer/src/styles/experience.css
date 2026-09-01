@@ -497,6 +497,11 @@ body {
   line-height: 1.55;
 }
 
+.content-audit-roundtrip > .price-error {
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
 .content-audit-file-picker {
   position: relative;
   display: grid;

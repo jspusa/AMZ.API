@@ -18,6 +18,8 @@ const MAX_WORKSHEETS = 501;
 const MAX_TOTAL_ROWS = 25_500;
 const MAX_TOTAL_CELLS = 750_000;
 const MAX_CELL_CHARACTERS = 32_767;
+const MAX_DEFINED_NAME_DIAGNOSTICS = 8;
+const MAX_DEFINED_NAME_FIELD_CHARACTERS = 160;
 
 export type ContentAuditWorkbookErrorStatus = 400 | 413 | 415 | 422;
 
@@ -327,12 +329,7 @@ function parseWorkbookSheets(
     requirePart(archive, "xl/workbook.xml"),
     "xl/workbook.xml",
   );
-  if (
-    descendants(workbook, "definedNames").length ||
-    descendants(workbook, "definedName").length
-  ) {
-    unsafeError("Excel 含有 Defined Names；此匯入格式不允許名稱或公式。");
-  }
+  rejectDefinedNames(workbook);
   if (descendants(workbook, "externalReferences").length) {
     unsafeError("Excel 含有 External References。");
   }
@@ -398,6 +395,61 @@ function parseWorkbookSheets(
     schemaError(`含有未知工作表「${unknownSheet.name}」。`);
   }
   return sheets;
+}
+
+function rejectDefinedNames(workbook: Document): void {
+  const containers = descendants(workbook, "definedNames");
+  const names = descendants(workbook, "definedName");
+  if (!containers.length && !names.length) return;
+
+  const sheetNames = descendants(workbook, "sheet").map((sheet) =>
+    safeDefinedNameField(sheet.getAttribute("name") ?? ""));
+  const diagnostics = names
+    .slice(0, MAX_DEFINED_NAME_DIAGNOSTICS)
+    .map((definedName, index) => {
+      const localSheetId = definedName.hasAttribute("localSheetId")
+        ? definedName.getAttribute("localSheetId")
+        : null;
+      let location = "整份活頁簿";
+      if (localSheetId !== null) {
+        const sheetIndex = /^\d+$/u.test(localSheetId)
+          ? Number(localSheetId)
+          : Number.NaN;
+        const sheetName = Number.isSafeInteger(sheetIndex)
+          ? sheetNames[sheetIndex]
+          : undefined;
+        location = sheetName
+          ? `工作表「${sheetName}」`
+          : `工作表索引「${safeDefinedNameField(localSheetId) || "空白"}」（無法對應）`;
+      }
+      const name =
+        safeDefinedNameField(definedName.getAttribute("name") ?? "") ||
+        "未命名";
+      const reference =
+        safeDefinedNameField(definedName.textContent ?? "") || "空白";
+      return `${index + 1}. ${location}｜名稱「${name}」｜指向「${reference}」`;
+    });
+  const omitted = names.length - diagnostics.length;
+  const detail = diagnostics.length
+    ? `\n${diagnostics.join("\n")}${
+        omitted > 0 ? `\n另有 ${omitted.toLocaleString()} 個未列出。` : ""
+      }`
+    : "\nDefined Names 區塊存在，但其中沒有可安全辨識的名稱項目。";
+  unsafeError(
+    `Excel 含有 ${names.length.toLocaleString()} 個 Defined Name；此匯入格式不允許名稱或公式。${detail}\n請在 Excel 的「公式 > 名稱管理員」刪除上述項目後另存新檔。`,
+  );
+}
+
+function safeDefinedNameField(value: string): string {
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/gu, " ")
+    .replace(/[「」]/gu, (character) => (character === "「" ? "‹" : "›"))
+    .replace(/\s+/gu, " ")
+    .trim();
+  const characters = Array.from(normalized);
+  return characters.length <= MAX_DEFINED_NAME_FIELD_CHARACTERS
+    ? normalized
+    : `${characters.slice(0, MAX_DEFINED_NAME_FIELD_CHARACTERS - 1).join("")}…`;
 }
 
 function resolveWorkbookTarget(target: string): string {

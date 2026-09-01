@@ -676,6 +676,35 @@ describe("content audit Excel batch router", () => {
     },
   );
 
+  it("returns exact Defined Name locations from the public Excel import route", async () => {
+    const snapshot = await audit();
+    const archive = unzipSync(workbook(snapshot));
+    const workbookXml = archive["xl/workbook.xml"];
+    if (!workbookXml) throw new Error("Missing workbook XML");
+    archive["xl/workbook.xml"] = strToU8(
+      strFromU8(workbookXml).replace(
+        "</workbook>",
+        '<definedNames><definedName name="_xlnm._FilterDatabase" hidden="1" localSheetId="1">F001!$A$1:$W$2</definedName></definedNames></workbook>',
+      ),
+    );
+
+    const response = await router.handle(importRequest(
+      zipSync(archive, { level: 6 }),
+      "content-batch-defined-name-location",
+    ));
+
+    expect(response.status).toBe(422);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_AUDIT_WORKBOOK_UNSAFE",
+      message: expect.stringMatching(
+        /工作表「F001」.*名稱「_xlnm\._FilterDatabase」.*指向「F001!\$A\$1:\$W\$2」/u,
+      ),
+    });
+    expect(getContentAuditSnapshotEvidence).not.toHaveBeenCalled();
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
   it("previews with zero writes, asks once, and returns cached batch result", async () => {
     const snapshot = await audit();
     const edited = replaceCell(
