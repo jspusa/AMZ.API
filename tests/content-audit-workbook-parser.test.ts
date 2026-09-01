@@ -271,6 +271,71 @@ describe("content audit workbook parser", () => {
     });
   });
 
+  it("identifies the worksheet, name and reference for rejected Defined Names", () => {
+    const source = workbook([auditRow("CHILD-1")]);
+    const definedName = mutateArchive(source, (archive) => {
+      replacePart(archive, "xl/workbook.xml", (xml) =>
+        xml.replace(
+          "</workbook>",
+          '<definedNames><definedName name="_xlnm._FilterDatabase" hidden="1" localSheetId="1">F001!$A$1:$W$2</definedName></definedNames></workbook>',
+        ));
+    });
+
+    expect(() => parse(definedName)).toThrowError(
+      /工作表「F001」.*名稱「_xlnm\._FilterDatabase」.*指向「F001!\$A\$1:\$W\$2」/u,
+    );
+  });
+
+  it("bounds Defined Name diagnostics and identifies workbook-scoped names", () => {
+    const source = workbook([auditRow("CHILD-1")]);
+    const names = Array.from({ length: 10 }, (_, index) =>
+      `<definedName name="Range_${index + 1}"${
+        index === 0 ? "" : ' localSheetId="1"'
+      }>${index === 0 ? "F001!$A$1" : `F001!$A$${index + 1}`}</definedName>`
+    ).join("");
+    const definedNames = mutateArchive(source, (archive) => {
+      replacePart(archive, "xl/workbook.xml", (xml) =>
+        xml.replace(
+          "</workbook>",
+          `<definedNames>${names}</definedNames></workbook>`,
+        ));
+    });
+
+    let message = "";
+    try {
+      parse(definedNames);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ContentAuditWorkbookError);
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(
+      /10 個 Defined Name.*1\. 整份活頁簿｜名稱「Range_1」.*8\. 工作表「F001」｜名稱「Range_8」.*另有 2 個未列出.*公式 > 名稱管理員/su,
+    );
+    expect(message).not.toMatch(/Range_9|Range_10/u);
+  });
+
+  it("removes bidi isolates and invisible controls from Defined Name diagnostics", () => {
+    const source = workbook([auditRow("CHILD-1")]);
+    const definedName = mutateArchive(source, (archive) => {
+      replacePart(archive, "xl/workbook.xml", (xml) =>
+        xml.replace(
+          "</workbook>",
+          '<definedNames><definedName name="Safe&#x2066;Name&#x2069;&#xAD;&#x34F;&#x61C;" localSheetId="1">F001!&#x2066;$A$1&#x2069;</definedName></definedNames></workbook>',
+        ));
+    });
+
+    expect(() => parse(definedName)).toThrowError(
+      /工作表「F001」｜名稱「Safe Name」｜指向「F001! \$A\$1」/u,
+    );
+    try {
+      parse(definedName);
+    } catch (error) {
+      expect((error as Error).message).not.toMatch(
+        /[\u00ad\u034f\u061c\u2066-\u2069]/u,
+      );
+    }
+  });
+
   it("rejects unknown columns and duplicate SKUs", () => {
     const source = workbook([
       auditRow("CHILD-1"),

@@ -4,6 +4,14 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-09-01 v0.1.47 文案 Excel Defined Names 精確定位（待合併／待發布；未呼叫 Amazon）
+
+使用者回傳任一份文案健檢 Excel 時，安全匯入層正確拒絕含有 Defined Names 的工作簿，但舊版只顯示「Excel 含有 Defined Names；此匯入格式不允許名稱或公式」，沒有指出是哪個名稱或哪張工作表，必須人工檢查整份 Excel。v0.1.47 保留原本的整批 fail-closed 規則，不允許 Defined Names、公式、巨集或外部連結，也不解析或執行任何公式；唯一改動是拒絕時從已解析的 `xl/workbook.xml` 產生 bounded 本機診斷，逐項顯示工作表或整份活頁簿範圍、Defined Name 名稱及其指向範圍，並提示到 Excel「公式 > 名稱管理員」刪除後另存新檔。
+
+公開錯誤範例為 `工作表「F001」｜名稱「_xlnm._FilterDatabase」｜指向「F001!$A$1:$W$2」`。診斷最多列出前 8 個名稱，超過時只顯示剩餘計數；每個欄位會移除控制字元、方向控制字元並限制 160 個 Unicode 字元，避免不受信任工作簿撐大或改寫介面。main-owned public import route 的 regression 已證明完整定位文字會到達 renderer、錯誤仍為 `CONTENT_AUDIT_WORKBOOK_UNSAFE / 422`，且在 snapshot evidence、原生確認與任何 Amazon 寫入前停止。文案 Excel 錯誤區另以 `white-space: pre-line` 保留逐項換行，長範圍可安全換行。
+
+因解析器位於 Notebook Key main process，本次不是 renderer-only Control Console Release，package 已升為 0.1.47；只更新 GitHub Pages 無法讓既有 v0.1.46 主程式產生位置資訊，必須安裝新的 Mac／Windows Notebook Key。TDD 先以公開 parser seam 重現固定一句錯誤，再鎖定單一工作表、workbook-scoped、多筆上限與 public route 零寫入投影。最終本機 `npm run check` 通過 246 個測試檔／2,468 tests、TypeScript、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Standards review 找到的 Unicode bidi isolate 缺口已以完整不可見字元集合與紅→綠 regression 修正，Standards／Spec 最終複查均無剩餘 P0／P1／P2／P3。本輪開發與測試沒有發出 Amazon GET、Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 mutation。
+
 ### 2026-09-01 v0.1.46 B2B 回查金額與立即查詢回饋（已合併／Pages 上線；renderer-only、不需重裝、未呼叫 Amazon）
 
 使用者指出外層 B2B 四階段進度雖然已經取得一次最低價回查，仍只顯示黃色「目前步驟」，無法分辨 Amazon 目前值與目標值，也無法確認何時已由 main-owned durable lifecycle 正式標成 verified；外層「查看／重新確認」的 fresh GET 又可能等待較久，點下後沒有立即回饋，容易重複點擊。這次將 canonical read 的目前最低價／B2B 價格保存於本次 renderer audit snapshot，但不以 renderer 自行比價冒充成功：PROCESSING 且已讀到值時保持黃色，明列「目標」與「Amazon 回查」，未相符顯示「已回查，尚未相符」，金額相符但 durable status 尚未 verified 則顯示「已回查，等待 Amazon 確認」；只有 Notebook Key 公開狀態為 authoritative `VERIFIED` 才轉成綠色「回查成功」，並同時顯示目標與 Amazon 回查金額。B2B 第四階段採相同規則。
