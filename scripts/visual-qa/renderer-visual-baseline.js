@@ -24,6 +24,7 @@ async (page) => {
         "desktop-reduced",
       ],
       surfaces: [
+        "operations-bulletin",
         "home-primary",
         "home-low-frequency",
         "image-results",
@@ -37,7 +38,7 @@ async (page) => {
         "reduced-skater",
       ],
       expectedCaptures: ({ phases, profiles }) => phases.length * profiles.reduce(
-        (count, profile) => count + 10 + (profile.reduced ? 1 : 0),
+        (count, profile) => count + 11 + (profile.reduced ? 1 : 0),
         0,
       ),
     },
@@ -841,6 +842,7 @@ async (page) => {
           "/api/sp-api/inbound-shipments",
           "/api/sp-api/review-audit",
           "/api/sp-api/standalone-audit",
+          "/api/sp-api/operations-board-facts",
         ].includes(request.path),
       ),
     }));
@@ -897,6 +899,64 @@ async (page) => {
           await page.locator('section.sales-trend[aria-busy="false"]').waitFor();
           await page.locator('section.brand-sales-card[aria-busy="false"]').waitFor();
           await page.locator(".audit-suite-home-card").waitFor();
+          await page.locator(".operations-bulletin .bulletin-fact-sync").waitFor();
+
+          currentState = `${phase.name}/${profile.name}/operations-bulletin`;
+          await page.locator(".operations-bulletin").scrollIntoViewIfNeeded();
+          await page.getByRole("button", { name: "下個月" }).click();
+          const bulletinLayout = await page.evaluate(() => {
+            const bulletin = document.querySelector(".operations-bulletin");
+            const widths = [...document.querySelectorAll(".bulletin-calendar thead th")]
+              .map((cell) => cell.getBoundingClientRect().width);
+            const calendarScroll = document.querySelector(".bulletin-calendar-scroll");
+            const expiry = document.querySelector(".bulletin-expiry-item");
+            const icon = document.querySelector(".operations-bulletin-icon");
+            return {
+              exists: Boolean(bulletin),
+              weekdayCount: widths.length,
+              weekdaySpread: widths.length
+                ? Math.max(...widths) - Math.min(...widths)
+                : Number.POSITIVE_INFINITY,
+              calendarOverflow: calendarScroll instanceof HTMLElement
+                ? calendarScroll.scrollWidth - calendarScroll.clientWidth
+                : Number.POSITIVE_INFINITY,
+              expiryHeight: expiry?.getBoundingClientRect().height ?? Number.POSITIVE_INFINITY,
+              iconText: icon?.textContent?.trim() ?? "missing",
+              hasSvgIcon: Boolean(icon?.querySelector("svg")),
+              hasExpiryInCalendar: [...document.querySelectorAll(".bulletin-calendar li.is-expiry")]
+                .some((entry) => entry.textContent?.includes("US · VISUAL-EXPIRY-SKU 到期")),
+            };
+          });
+          ensure(bulletinLayout.exists, `${currentState}: bulletin missing`);
+          ensure(
+            bulletinLayout.weekdayCount === 7 && bulletinLayout.weekdaySpread < 1,
+            `${currentState}: weekday columns uneven ${JSON.stringify(bulletinLayout)}`,
+          );
+          ensure(
+            bulletinLayout.calendarOverflow <= 1,
+            `${currentState}: calendar overflow ${JSON.stringify(bulletinLayout)}`,
+          );
+          ensure(
+            bulletinLayout.expiryHeight <= (compact ? 135 : 110),
+            `${currentState}: expiry row too tall ${JSON.stringify(bulletinLayout)}`,
+          );
+          ensure(
+            bulletinLayout.iconText === "" && bulletinLayout.hasSvgIcon,
+            `${currentState}: bulletin icon regressed ${JSON.stringify(bulletinLayout)}`,
+          );
+          ensure(
+            bulletinLayout.hasExpiryInCalendar,
+            `${currentState}: expiry date missing from calendar ${JSON.stringify(bulletinLayout)}`,
+          );
+          await capture({
+            phase,
+            profile,
+            surface: "operations-bulletin",
+            scopeSelector: ".operations-bulletin",
+            strictScrollers: true,
+            requireScopeContainment: true,
+            expectedPage,
+          });
 
           currentState = `${phase.name}/${profile.name}/home-primary`;
           await exercisePrimaryMenuKeyboard();

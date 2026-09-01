@@ -7,6 +7,8 @@ import {
 } from "./restock-plan";
 import { createSubscriptionReads } from "./subscription-reads";
 import { createFbaInventoryReplenishmentProductionAdapter } from "./fba-inventory-replenishment-production";
+import { readReplenishmentInventoryInputs } from "./fba-inventory-replenishment";
+import type { MarketplaceId } from "../../shared/marketplaces";
 import { createFbaInboundReadsProductionAdapter } from "./fba-inbound-reads-production";
 import { createReportsRuntimeProductionAdapter } from "./reports-runtime-production";
 import type { ReportsAdapter } from "./reports-runtime";
@@ -230,6 +232,14 @@ const fbaInventoryReplenishmentAdapter =
     getAccessToken: credentialRuntime.requestAccessToken,
     invalidateAccessToken: credentialRuntime.invalidateAccessToken,
   });
+
+export const getOperationsBoardFbaInventory = async (input: Readonly<{
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  signal?: AbortSignal;
+}>): Promise<number> => (await readReplenishmentInventoryInputs(input, {
+    adapter: fbaInventoryReplenishmentAdapter,
+  })).inventory.fulfillable;
 
 const subscriptionReads = createSubscriptionReads({
   resolveMode: (marketplaceId) =>

@@ -23,6 +23,7 @@ const CSS04_ORDERED_FILES = [
   "styles/variation.css",
   "styles/experience.css",
   "styles/image-home-audits.css",
+  "styles/operations-bulletin.css",
   "styles/audit-workspace.css",
   "styles/brand-ads.css",
   "styles/desktop-updater.css",
@@ -32,9 +33,9 @@ const CSS04_ORDERED_FILES = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "e43c365ddde7450cd18644b4b92d0ba70d9aabe5cdbb2ba63e8f2ce2c07bbfa6";
+  "b9410fb7890d9e0194cc047abcf0fc5703b78590a8d5f535930e4cb6686069b1";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
-  "111da51af0a89b0bbe9adb9940e9cb64552aaa8596ae5f94f3793bad7f370495";
+  "53aa77736da19bcfa54208818c8861194a26bc35aa3fefc8fffbf675adc90c45";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
 
 const CSS04_PAYLOAD_EVIDENCE = [
@@ -42,6 +43,11 @@ const CSS04_PAYLOAD_EVIDENCE = [
     path: "styles/image-home-audits.css",
     bytes: 18_935,
     sha256: "515db75ed46655d52a6a6d85a0b1af935d23e29d1972ad12ad48d13647527c38",
+  },
+  {
+    path: "styles/operations-bulletin.css",
+    bytes: 13_658,
+    sha256: "ee2d3a661e72b09e97e1057086b0de8b150b5c723f409374642b430d5dc9396f",
   },
   {
     path: "styles/audit-workspace.css",
@@ -108,14 +114,14 @@ describe("CSS04 final stylesheet extraction", () => {
     ).toEqual(CSS04_PAYLOAD_EVIDENCE);
 
     const css04Payload = payloads.map(({ source }) => source).join("");
-    expect(Buffer.byteLength(css04Payload)).toBe(92_690);
+    expect(Buffer.byteLength(css04Payload)).toBe(106_348);
     expect(createHash("sha256").update(css04Payload).digest("hex")).toBe(
       ACCEPTED_CSS04_PAYLOAD_FINGERPRINT,
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(14_234);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(312_196);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(15_001);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(325_854);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);

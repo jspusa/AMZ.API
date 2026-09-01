@@ -55,6 +55,15 @@ const bridge: DesktopBridge = Object.freeze({
     test: (marketplaceId: string) =>
       ipcRenderer.invoke("fba:ads-credentials-test", marketplaceId) as Promise<AdvertisingConnectionTestResult>,
   }),
+  operationsBoard: Object.freeze({
+    openEditor: () =>
+      ipcRenderer.invoke("fba:operations-board-open-editor") as Promise<void>,
+    onUpdated: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on("fba:operations-board-updated", handler);
+      return () => ipcRenderer.removeListener("fba:operations-board-updated", handler);
+    },
+  }),
   app: Object.freeze({
     version: () => ipcRenderer.invoke("fba:app-version") as Promise<string>,
     platform: () => ipcRenderer.invoke("fba:app-platform") as Promise<string>,

@@ -402,9 +402,10 @@ export function createListingsWorkbook({
 
 /**
  * Creates the editable, round-trip-safe content-audit workbook. Every listing
- * value is written twice: an immutable-looking grey source cell and a blue
- * proposed cell that the user may edit. The importer never trusts the styles;
- * the duplicated source values are the evidence used for a fresh Amazon
+ * value is written twice: an immutable-looking grey source cell and an
+ * editable proposed cell. Clean proposed cells are pale green; fields caught
+ * by the audit are pale yellow. The importer never trusts the styles; the
+ * duplicated source values are the evidence used for a fresh Amazon
  * compare-before-write check.
  */
 export function createContentAuditWorkbookV2({
@@ -504,14 +505,14 @@ export function createContentAuditWorkbookV2({
     [
       textCell("使用說明"),
       textCell(
-        "只能編輯淺藍色「更新...」欄位。灰色「原始...」欄位是匯出快照，回傳時會重新向 Amazon 核對；請勿修改 SKU、ASIN、Product Type 或工作表結構。",
+        "只能編輯「更新...」欄位。灰色「原始...」欄位是匯出快照，回傳時會重新向 Amazon 核對；請勿修改 SKU、ASIN、Product Type 或工作表結構。",
       ),
       ...emptyCells(4),
     ],
     [
       textCell("顏色說明"),
       textCell(
-        "淺藍色＝可編輯更新值；灰色＝原始值；黃色＝此欄位被健檢抓到；紅字＝疑似錯字或不可見字元。",
+        "淺綠色＝未發現問題的可編輯更新值；灰色＝原始值；黃色＝被健檢抓到的可編輯更新值；紅字＝疑似錯字或不可見字元。",
       ),
       ...emptyCells(4),
     ],
@@ -1658,7 +1659,7 @@ function buildStyles(): string {
     <fill><patternFill patternType="solid"><fgColor rgb="FF17324D"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/><bgColor indexed="64"/></patternFill></fill>
-    <fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFEAF4FB"/><bgColor indexed="64"/></patternFill></fill>
     <fill><patternFill patternType="solid"><fgColor rgb="FFF8FBFE"/><bgColor indexed="64"/></patternFill></fill>
   </fills>

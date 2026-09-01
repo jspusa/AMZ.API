@@ -98,6 +98,7 @@ import {
   getFbaSubscriptionAudit,
   getSubscribeAndSaveOffer,
   getVariationFamilyPlanner,
+  getOperationsBoardFbaInventory,
   invalidateSpApiCredentialCaches,
   listingImageGatewayProduction,
   listingContentGatewayProduction,
@@ -211,6 +212,14 @@ import { FixedReportBroker } from "./amazon/report-broker";
 import { testRegionConnections } from "./amazon/connection-health";
 import { marketplaceByCode, marketplaceById } from "../shared/marketplaces";
 import { abortableDelay as waitMilliseconds } from "./abort-utils";
+import {
+  OperationsBoard,
+  type OperationsBoardPort,
+} from "./operations-board";
+import {
+  OperationsBoardFacts,
+  type OperationsBoardFactsPort,
+} from "./operations-board-facts";
 
 type WriteApproval = (reason: string) => Promise<void>;
 
@@ -295,6 +304,8 @@ export class ApiRouter {
   private readonly planningCapabilities: PlanningCapabilityRoutesPort;
   private readonly productMasterRoutes: ProductMasterRoutesPort;
   private readonly skuCommandRoute: SkuCommandRoutePort;
+  private readonly operationsBoard: OperationsBoardPort;
+  private readonly operationsBoardFacts: OperationsBoardFactsPort;
   private readonly fbaSalesMetricsRoutes: FbaSalesMetricsRoutesPort;
   private readonly fbaInboundCoordinator: FbaInboundCoordinatorPort;
   private readonly reportBroker: FixedReportBroker;
@@ -334,6 +345,8 @@ export class ApiRouter {
     planningCapabilities?: PlanningCapabilityRoutesPort;
     productMasterRoutes?: ProductMasterRoutesPort;
     skuCommandRoute?: SkuCommandRoutePort;
+    operationsBoard?: OperationsBoardPort;
+    operationsBoardFacts?: OperationsBoardFactsPort;
     fbaSalesMetricsRoutes?: FbaSalesMetricsRoutesPort;
     brandSalesCoordinator?: BrandSalesCoordinatorPort;
     fbaInboundCoordinator?: FbaInboundCoordinatorPort;
@@ -373,6 +386,7 @@ export class ApiRouter {
   }) {
     const store = input.store;
     this.vault = input.vault;
+    this.operationsBoard = input.operationsBoard ?? new OperationsBoard({ vault: input.vault });
     const baseSpExecutionContext = input.spExecutionContext
       ?? createProductionSpExecutionContextAdapter({
         getOpaqueAccountScope: (region) => this.vault.getAccountScope(region),
@@ -393,6 +407,12 @@ export class ApiRouter {
       context: this.spExecutionContext,
       writeGate: this.writeGate,
       gateway: listingPriceGatewayProduction,
+    });
+    this.operationsBoardFacts = input.operationsBoardFacts ?? new OperationsBoardFacts({
+      context: baseSpExecutionContext,
+      readPrice: (identity, context) => this.priceMutations.read(identity, context),
+      readLiveInventory: (identity, _context, signal) =>
+        getOperationsBoardFbaInventory({ ...identity, signal }),
     });
     this.listingImageMutations = input.listingImageMutations ??
       createListingImageMutations({
@@ -767,6 +787,10 @@ export class ApiRouter {
     this.invalidateContextBoundState(reason, false);
   }
 
+  cancel(requestId: string): void {
+    this.operationsBoardFacts.cancel(requestId);
+  }
+
   dispose(): void {
     this.clearContextBoundState();
   }
@@ -1046,6 +1070,10 @@ export class ApiRouter {
         });
       case "GET /api/sp-api/sku-command":
         return this.skuCommandRoute.skuCommand(request);
+      case "GET /api/operations-board":
+        return json(await this.operationsBoard.read());
+      case "POST /api/sp-api/operations-board-facts":
+        return this.operationsBoardFacts.handle(request);
       case "GET /api/product-master":
         return this.productMasterRoutes.getProductMaster(request);
       case "PUT /api/product-master":

@@ -36,6 +36,7 @@ import ImageWorkspaceDrawer, {
 } from "./image-workspace-drawer";
 import type { ImageAuditCache } from "./image-audit-panel";
 import InboundShipmentsDrawer from "./inbound-shipments-drawer";
+import OperationsBulletinCard from "./operations-bulletin-card";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
@@ -2089,6 +2090,8 @@ export default function Dashboard({
               </aside>
             )}
           </div>
+
+          <OperationsBulletinCard />
 
           <AuditSuiteHomeCard
             marketplaceId={marketplaceId}

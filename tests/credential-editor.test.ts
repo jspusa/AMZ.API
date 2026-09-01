@@ -31,7 +31,7 @@ describe("local-only SP-API/R2/Skill credential editor", () => {
       "lwaClientId", "lwaClientSecret", "naRefreshToken", "naSellerId",
       "feRefreshToken", "feSellerId", "euRefreshToken", "euSellerId",
       "r2AccountId", "r2AccessKeyId", "r2SecretAccessKey", "r2Bucket",
-      "r2PublicBaseUrl", "replenishmentSkillUrl",
+      "r2PublicBaseUrl", "operationsBoardPublicBaseUrl", "replenishmentSkillUrl",
     ]) {
       expect(CREDENTIAL_EDITOR_HTML).toContain(`id="${id}"`);
     }

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
+import type { OperationsBoardPort } from "../src/main/operations-board";
 import type {
   ApiMethod,
   ApiRequest,
@@ -69,6 +70,8 @@ const REVIEWED_ROUTES = [
   { method: "POST", path: "/api/sp-api/variation-move" },
   { method: "PATCH", path: "/api/sp-api/variation-move" },
   { method: "GET", path: "/api/sp-api/sku-command" },
+  { method: "GET", path: "/api/operations-board" },
+  { method: "POST", path: "/api/sp-api/operations-board-facts" },
   { method: "GET", path: "/api/product-master" },
   { method: "PUT", path: "/api/product-master" },
   { method: "POST", path: "/api/uploads/listing-images" },
@@ -385,6 +388,13 @@ const DIRECT_HANDLE_CASES: readonly DirectHandleCase[] = [
     expected: invalidResponse("INVALID_INPUT", "請選擇站點並輸入完整 SKU。"),
   },
   {
+    label: "Operations Board SKU facts",
+    method: "POST",
+    path: "/api/sp-api/operations-board-facts",
+    body: { kind: "json", value: { items: [] } },
+    expected: invalidResponse("INVALID_INPUT", "請提供 1–100 個有效的公布欄 SKU。"),
+  },
+  {
     label: "Product Master read",
     method: "GET",
     path: "/api/product-master",
@@ -410,20 +420,24 @@ const DIRECT_HANDLE_CASES: readonly DirectHandleCase[] = [
   },
 ];
 
-function contractRouter(approveWrite = vi.fn(async () => undefined)): ApiRouter {
+function contractRouter(
+  approveWrite = vi.fn(async () => undefined),
+  operationsBoard?: OperationsBoardPort,
+): ApiRouter {
   return new ApiRouter({
     store: {} as LocalStore,
     vault: {} as CredentialVault,
     approveWrite,
+    operationsBoard,
   } as ConstructorParameters<typeof ApiRouter>[0]);
 }
 
 describe("ApiRouter public contract", () => {
-  it("matches one reviewed 63-pair matrix to the raw central switch inventory", () => {
+  it("matches one reviewed 65-pair matrix to the raw central switch inventory", () => {
     const reviewed = REVIEWED_ROUTES.map(routeKey);
     const production = productionRouteInventory();
 
-    expect(REVIEWED_ROUTES).toHaveLength(63);
+    expect(REVIEWED_ROUTES).toHaveLength(65);
     expect(new Set(reviewed).size).toBe(reviewed.length);
     expect(production.statementCount).toBe(2);
     expect(production.keyDeclarationIsExact).toBe(true);
@@ -431,9 +445,42 @@ describe("ApiRouter public contract", () => {
     expect(production.switchExpressionIsKey).toBe(true);
     expect(production.defaultCount).toBe(1);
     expect(production.defaultIsExactNotFound).toBe(true);
-    expect(production.cases).toHaveLength(63);
+    expect(production.cases).toHaveLength(65);
     expect(new Set(production.cases).size).toBe(production.cases.length);
     expect([...production.cases].sort()).toEqual([...reviewed].sort());
+  });
+
+  it("serves the read-only shared operations board through its injected main owner", async () => {
+    const board = {
+      read: vi.fn(async () => ({
+        snapshot: {
+          schemaVersion: 1 as const,
+          revision: 0,
+          updatedAt: "1970-01-01T00:00:00.000Z",
+          items: [],
+        },
+        source: "empty" as const,
+        stale: false,
+        status: "ready" as const,
+      })),
+      replace: vi.fn(),
+    } satisfies OperationsBoardPort;
+
+    const response = await contractRouter(vi.fn(async () => undefined), board).handle({
+      requestId: "operations-board-read-001",
+      method: "GET",
+      path: "/api/operations-board",
+      query: {},
+      headers: {},
+    });
+
+    expect(response).toEqual({
+      status: 200,
+      headers: JSON_HEADERS,
+      body: { kind: "json", value: await board.read.mock.results[0]?.value },
+    });
+    expect(board.read).toHaveBeenCalledOnce();
+    expect(board.replace).not.toHaveBeenCalled();
   });
 
   it("rejects a malformed JSON body at the public handle envelope", async () => {

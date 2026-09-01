@@ -10,6 +10,7 @@ macOS / Windows 11 Notebook Key Bridge
   ├─ preload: frozen, typed, allowlisted bridge（只在 App 視窗存在）
   └─ main
       ├─ credential vault → macOS Keychain / Windows DPAPI / safeStorage
+      ├─ operations-board admin vault → local salted verifier ciphertext
       ├─ native confirmation → Touch ID / Windows Hello；其他平台才使用 fail-closed dialog
       ├─ Ads credential vault → 獨立 `ads-credentials.enc`
       ├─ API router → strict route and payload validation
@@ -17,7 +18,8 @@ macOS / Windows 11 Notebook Key Bridge
       ├─ Amazon SP-API client → fixed regional endpoints
       ├─ Amazon Ads client → fixed token / profiles / query endpoints
       ├─ local store → product master + idempotency ledger + report leases
-      └─ optional R2 client → user's own public image bucket
+      ├─ optional R2 image client → user's own public image bucket
+      └─ operations board owner → fixed public JSON read + conditional R2 write
 ```
 
 ## 為什麼控制台在 App 視窗中解鎖
@@ -26,11 +28,15 @@ HTTPS GitHub 網頁直接呼叫 `http://127.0.0.1` 會受到 Local Network Acces
 
 GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸入邊界。SP-API／R2／Skill 與 Ads 的敏感欄位只能在 main process 建立的 modal child BrowserWindow 輸入；本機 sheet 載入 packaged static data HTML、使用獨立非持久 session，CSP 禁止所有 network，各 save IPC 只接受對應 sheet 的 exact main frame。Pages 只能開啟 sheet、讀取 redacted status、測試或清除，直接呼叫 save 會被 main 拒絕。保存後 input 立即清空並關閉 sheet；Secret、access token、Profile ID 與完整帳號識別碼永遠不回傳 Pages renderer。
 
+公布欄沿用相同 trust split，但不屬於 Amazon Write Gate。首頁透過唯一 read-only `GET /api/operations-board` 取得 main 已從固定 public base＋固定 `operations-board/v1.json` 讀取、大小／content-type／schema 驗證後的 DTO；renderer 不取得或指定 R2 credential、bucket、key 或 URL。一般讀者的 public base 保存在獨立 `operations-board-reader.enc` safeStorage sidecar，既有 `credentials.enc` 保持 v0.1.47 exact schema；main 將網址解析為不含帳密、連接埠、query 或 hash 的 HTTPS URL，read adapter 只收到 exact object key 與完整公開 URL，不接觸 writer credential。新增／刪除／改日期只存在 main-owned packaged data-URL modal，該視窗使用與憑證 sheet 相同的 no-network preload package，但每個 IPC 都另外核對 exact board data URL 與 exact BrowserWindow，credential sheet 不能冒用。第一次 enrollment 只在 OS safeStorage 可用、完整 writer 設定存在且 writer 的有效 public base 與公布欄唯讀 public base 完全一致時，建立 random salt＋scrypt verifier；密碼不落檔。後續帳密或 strict native confirmation 任一種通過即可解鎖，不會把兩種驗證串成 AND；session 只綁該 modal lifetime，關窗、lock、suspend、installer handoff 全部清除。
+
+`OperationsBoard` 是 shared document 的唯一 main owner。v1 snapshot 只接受 exact schema、最多 100 個 UUID 項目與合法 marketplace／Seller SKU／date-only 日期；即期 item 只保存人工效期與備註，促銷 item 保存日期、標題、備註及是否倒數。Amazon 價格、庫存與 token 不寫入共享 JSON。`OperationsBoardFacts` 另以單一 POST 批次取得 exact SKU 的當下 price／FBA fulfillable quantity：最多 100 項、identity 去重、全 owner 共用最多三個 SP read permits、舊 batch 取消後完整 drain、capture／terminal context failure 同樣 abort；demo facts 永遠帶 `mode=demo`。read 失敗或 getter 拋錯時只可顯示本次程序最後一次成功資料並明示 stale；沒有公開網址時顯示 not-configured。replace 先以純 read target fresh-read revision 與 ETag，revision 漂移直接回 conflict；既有物件使用 `If-Match`，首次建立使用 `If-None-Match: *`，只送一次 `PutObject` 且失敗不 blind retry。public R2 URL 是讀取邊界，R2 writer token 才是真正 remote write authority；本機管理帳密是額外裝置 gate，不能取代 bucket-scoped token 管理。
+
 ## API 相容層
 
 控制台的 client components 仍呼叫相對 `/api/**`。只有在 Notebook 鑰匙 App 視窗中，Renderer 才會安裝 fetch adapter，將允許的 JSON／單檔 multipart request 序列化到 preload；一般瀏覽器只渲染鎖定頁。main process router 重建 HTTP-like status、headers、JSON 或 bytes response，全程不啟動 localhost server。
 
-`ApiRouter.handle()` 是唯一公開 dispatch seam：它在執行任何 route 前以 runtime shape 核對 request ID、固定 method、`/api/` path、純字串 query／headers，以及 plain-object JSON 或單檔 multipart body；畸形 envelope 一律回傳 no-store JSON `400 INVALID_REQUEST`。`route()` 固定只有 exact method＋path key 與單一中央 switch；一份 test-owned、人工審閱的 63 組矩陣以 TypeScript AST 獨立盤點 production case，並鎖定 key 宣告、switch 與 exact `404 NOT_FOUND` default，新增、遺漏、重複或在 switch 前加入旁路 dispatch 都會使契約測試失敗。production 不另建第二份 route registry，也不改既有 handler／DTO。SP、pre-commit、coordinator、report、replenishment 與 Ads 的已知錯誤在跨 main／renderer 邊界前共用 canonical sanitizer；不安全的 status、code、message、Request ID 或 Retry-After 會 fail closed，unknown error 只回固定 `500 INTERNAL_ERROR`。
+`ApiRouter.handle()` 是唯一公開 dispatch seam：它在執行任何 route 前以 runtime shape 核對 request ID、固定 method、`/api/` path、純字串 query／headers，以及 plain-object JSON 或單檔 multipart body；畸形 envelope 一律回傳 no-store JSON `400 INVALID_REQUEST`。`route()` 固定只有 exact method＋path key 與單一中央 switch；一份 test-owned、人工審閱的 65 組矩陣以 TypeScript AST 獨立盤點 production case，並鎖定 key 宣告、switch 與 exact `404 NOT_FOUND` default，新增、遺漏、重複或在 switch 前加入旁路 dispatch 都會使契約測試失敗。production 不另建第二份 route registry，也不改既有 handler／DTO。SP、pre-commit、coordinator、report、replenishment 與 Ads 的已知錯誤在跨 main／renderer 邊界前共用 canonical sanitizer；不安全的 status、code、message、Request ID 或 Retry-After 會 fail closed，unknown error 只回固定 `500 INTERNAL_ERROR`。
 
 C01 完成 contract facade convergence 後，`ApiRouter` 只擁有 production composition、上述 envelope／exact switch、公開錯誤翻譯、connection tests與context invalidation wiring；domain job map、timer、snapshot、preview、Amazon payload／schema規則及workbook實作只能存在於注入的main-only semantic owner。Listings export兩條route也只委派`ListingsExportRoutes`，由既有export／Content Audit／Image Audit owners繼續擁有report、snapshot與download。`sp-api.ts`同樣只是一個窄化composition root：每個credential、Listings read／write、price、B2B、content、image、variation、catalog／report demo、subscription、restock與sales-trend runtime只能在此建構一次，且只能收到人工allowlist的semantic ports。facade不得宣告或重匯出domain DTO，不得持有Map／timer／demo資料，不得讀env、解析raw Amazon payload／schema、產生workbook、接受任意transport callback或使用dynamic dispatch；renderer／preload／shared不得匯入main-private module，domain也不得反向匯入Router或facade。AST architecture gate同時鎖定唯一`ReportsRuntime`／`FixedReportBroker` lifecycle，避免新舊架構並存。
 
@@ -130,7 +136,9 @@ Windows 的 native confirmation 不由 renderer 或遠端 Pages 執行。Windows
 ## 儲存
 
 - `credentials.enc`：OS-backed `safeStorage` encrypted vault，只含密文；macOS key 在 Keychain，Windows key 由當前登入使用者的 DPAPI 保護。
+- `operations-board-reader.enc`：公布欄唯讀 HTTPS 基底網址的獨立 `safeStorage` sidecar；以與 `credentials.enc` 相同的更新版本戳綁定，舊版清除或改寫主 vault 後不會讓孤兒網址在升版時復活。
 - `ads-credentials.enc`：獨立的 Ads OS-safeStorage-backed encrypted vault；不改寫 `credentials.enc`，也不改變既有 LocalStore 格式。
+- `operations-board-admin.enc`：獨立的公布欄本機管理者 safeStorage 密文，只含版本、帳號、random salt、scrypt verifier 與更新時間；不含管理密碼、R2 secret 或公布內容。
 - `fba-os-data.json`：商品補貨主檔、idempotency ledger 與不含憑證的短效 report lease/tombstone；維持可由上一版忽略的相容格式。
 - Renderer session 使用非持久 partition；偏好資料不應承載秘密。
 
