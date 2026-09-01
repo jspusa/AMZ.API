@@ -4,6 +4,18 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-09-01 v0.1.46 B2B 回查金額與立即查詢回饋（已合併／Pages 上線；renderer-only、不需重裝、未呼叫 Amazon）
+
+使用者指出外層 B2B 四階段進度雖然已經取得一次最低價回查，仍只顯示黃色「目前步驟」，無法分辨 Amazon 目前值與目標值，也無法確認何時已由 main-owned durable lifecycle 正式標成 verified；外層「查看／重新確認」的 fresh GET 又可能等待較久，點下後沒有立即回饋，容易重複點擊。這次將 canonical read 的目前最低價／B2B 價格保存於本次 renderer audit snapshot，但不以 renderer 自行比價冒充成功：PROCESSING 且已讀到值時保持黃色，明列「目標」與「Amazon 回查」，未相符顯示「已回查，尚未相符」，金額相符但 durable status 尚未 verified 則顯示「已回查，等待 Amazon 確認」；只有 Notebook Key 公開狀態為 authoritative `VERIFIED` 才轉成綠色「回查成功」，並同時顯示目標與 Amazon 回查金額。B2B 第四階段採相同規則。
+
+外層狀態按鈕現在按下即改成 disabled／`aria-busy=true` 的「正在讀取 Amazon…」，待 exact SKU GET 完成才開啟 editor，避免網路等待期間重複送出 GET。讀到的金額與 workflow progress 仍綁定 exact marketplace、Seller SKU、ASIN、Product Type、stage、accepted time、Request ID 與 submission ID；minimum-price verified 只允許延續到緊接的 B2B lifecycle，同一 write 的 PROCESSING→VERIFIED 才保留觀察值。完成一次最低價→B2B 後，之後另一次 price-only B2B submission 不得繼承前次最低價綠色階段或舊回查金額。
+
+TDD 先重現外層缺少 target／observed、按鈕點擊後無 loading、舊 readback 跨 submission，以及完成一輪後下一次 price-only 錯繼承最低價 verified 的 RED，再逐一修正。最終本機 `npm run check` 通過 246 個測試檔／2,464 tests、TypeScript、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities。1440px／390px production CSS 視覺核對均無 clipping／水平溢位，browser console 為 0 error／0 warning；獨立 Standards／Spec final review 均無 findings。本輪沒有發出 Amazon GET、Validation Preview、Touch ID／Windows Hello、PATCH、readback 或 mutation。
+
+PR #184 已 squash merge 到 exact main `915783fb7987d2da33e7e5e21471437d0c5cd8ab`。Pages run `33482642980`、job `99775478452` 成功；exact-main Validate run `33482643092` 亦成功。live HTML／JS／CSS 分別為 917／1,874,367／312,085 bytes，SHA-256 為 `c3cf188238ad619f5e1b6809b27523d9205e4d8bf9217ff63d259132b77fa892`／`79306c3bedf443fcabcb15c117f5e5bfda81497ebcb65f1acebd4c49fdfae413`／`c4d543f93f373669aa5278d5f6288d8d05a9ac375ca379cdc7c55bd4dee84a55`；live 載入 `assets/index-BinN7ohg.js` 與 `assets/index-DkxTI10g.css`，三個檔案均與 exact main production output byte-for-byte 相同，JS 直接包含「回查成功」「已回查，尚未相符」「Amazon 回查」「目標」與「正在讀取 Amazon…」。
+
+這是 GitHub Pages renderer-only hotfix，package 與 Notebook Key Bridge 維持 v0.1.46；Mac／Windows 不需重新安裝，也不更新受保護 Supply Boss 下載卡。使用者只需關閉再開啟既有 AMZ.API 或重新整理即可取得新版。CI、Pages 與本機測試不能冒充使用者的 live Amazon GET 結果；實際黃色→綠色仍須由使用者明確按查詢後，Notebook Key 取得 exact canonical read 並讓 main-owned lifecycle verified。
+
 ### 2026-09-01 v0.1.46 B2B 健檢外層寫入進度（已合併／Pages 上線；renderer-only、不需重裝、未呼叫 Amazon）
 
 使用者確認最低價兩階段流程已可成功完成，但既有寫入狀態只在單 SKU editor 內可見；返回全站 B2B 健檢後，無法分辨哪些商品正在等待 Amazon、哪些最低價已確認而應繼續預檢 B2B，也容易反覆打開同一列。這次把已觀察到的 exact write lifecycle 投影到外層清單：本次 App 使用期間內有調整的 SKU 置頂，摘要顯示「等待 Amazon／待送 B2B／已完成」計數，每列顯示「送出最低價格 → 已回查最低價格 → 送出 B2B 價格 → 已回查 B2B 價格」四階段及下一個安全操作。完成列在預設「需處理」篩選下仍保留，讓使用者不必進入 editor 才能確認剛才已完成；若最低價已 verified 但 B2B 尚未送出，列上直接顯示「繼續預檢 B2B」。
