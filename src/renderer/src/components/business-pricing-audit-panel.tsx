@@ -567,9 +567,13 @@ export default function BusinessPricingAuditPanel({
       const fresh = parseBusinessPricingListingSnapshot(payload);
       if (
         fresh.marketplaceId !== marketplaceId ||
-        fresh.sellerSku !== row.sellerSku
+        fresh.sellerSku !== row.sellerSku ||
+        fresh.asin !== row.asin ||
+        fresh.productType !== row.productType
       ) {
-        throw new Error("Amazon 回傳的 B2B 價格識別與所選 SKU 不一致。");
+        throw new Error(
+          "Amazon 商品身分已變更，請重新健檢後再開啟 B2B 價格編輯。",
+        );
       }
       if (editorRevisionRef.current !== revision) return;
       if (fresh.writeStatus) rememberWriteStatus(fresh.writeStatus);

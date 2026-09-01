@@ -466,7 +466,12 @@ describe("FBA business pricing audit renderer", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const onVerified = vi.fn();
-    const onCanonicalListingVerified = vi.fn();
+    const onWriteStatusChange = vi.fn(() => {
+      throw new Error("outer progress cache rejected the status");
+    });
+    const onCanonicalListingVerified = vi.fn(() => {
+      throw new Error("outer audit cache rejected the canonical listing");
+    });
     let renderer: ReactTestRenderer | null = null;
     await act(async () => {
       renderer = create(createElement(BusinessPricingEditor, {
@@ -474,6 +479,7 @@ describe("FBA business pricing audit renderer", () => {
         onClose: () => undefined,
         onVerified,
         onCanonicalListingVerified,
+        onWriteStatusChange,
         onError: () => undefined,
         onBusyChange: () => undefined,
       }));
@@ -517,6 +523,9 @@ describe("FBA business pricing audit renderer", () => {
     expect(verifiedCard).toBeDefined();
     expect(JSON.stringify(renderer!.toJSON()))
       .toContain("Amazon 已完成同步並確認");
+    expect(JSON.stringify(renderer!.toJSON()))
+      .not.toContain("outer progress cache rejected");
+    expect(onWriteStatusChange).toHaveBeenCalledTimes(1);
     expect(root.findAllByType("button").some((button) =>
       button.children.join("") === "重新確認 Amazon 狀態"
     )).toBe(false);
@@ -539,6 +548,46 @@ describe("FBA business pricing audit renderer", () => {
     expect(css).toMatch(
       /\.business-pricing-write-status\.is-verified\s*\{[^}]*color:\s*#28583d/su,
     );
+    await act(async () => renderer!.unmount());
+  });
+
+  it("rejects stale ASIN or product-type audit rows before opening the editor", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        ...interactiveListing,
+        sellerSku: "FBA-CONFIGURED",
+        asin: "B000000099",
+        title: "Identity changed",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+      }));
+    });
+    const configuredRow = renderer!.root.findAllByType("article").find(
+      (article) => article.findAllByType("small").some((small) =>
+        small.children.join("") === "FBA-CONFIGURED · B000000002"
+      ),
+    )!;
+    await act(async () => {
+      configuredRow.findAllByType("button").find((button) =>
+        button.children.join("") === "調整 B2B 價格"
+      )!.props.onClick();
+    });
+    expect(renderer!.root.findAllByType(BusinessPricingEditor)).toHaveLength(0);
+    expect(renderer!.root.findByProps({ role: "alert" }).children.join(""))
+      .toContain("商品身分已變更，請重新健檢");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     await act(async () => renderer!.unmount());
   });
 
