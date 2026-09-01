@@ -68,6 +68,7 @@ export type BusinessPricingAuditSnapshot = Readonly<{
   rows: readonly BusinessPricingAuditRow[];
   summary: BusinessPricingAuditSummary;
   notice: string;
+  workflowActivities?: readonly BusinessPricingWorkflowActivity[];
 }>;
 
 export type BusinessPricingCapability = Readonly<{
@@ -238,6 +239,110 @@ export type BusinessPriceWriteStatus = Readonly<{
   quantityDiscountPlanChange: "preserve" | "replace" | null;
   notice: string;
 }>;
+
+export type BusinessPricingWorkflowActivity = Readonly<{
+  sellerSku: string;
+  writeStatus: BusinessPriceWriteStatus;
+}>;
+
+export type BusinessPricingWorkflowStepState =
+  | "complete"
+  | "current"
+  | "pending"
+  | "skipped";
+
+export type BusinessPricingWorkflowProgress = Readonly<{
+  state: "waiting_amazon" | "waiting_b2b" | "complete";
+  headline: string;
+  steps: readonly Readonly<{
+    label: string;
+    state: BusinessPricingWorkflowStepState;
+  }>[];
+}>;
+
+function minimumPriceWasChanged(status: BusinessPriceWriteStatus): boolean {
+  return Boolean(
+    status.previousMinimumPrice &&
+    status.requestedMinimumPrice &&
+    (status.previousMinimumPrice.currencyCode !==
+        status.requestedMinimumPrice.currencyCode ||
+      status.previousMinimumPrice.amount !== status.requestedMinimumPrice.amount),
+  );
+}
+
+export function businessPricingWorkflowProgress(
+  status: BusinessPriceWriteStatus,
+): BusinessPricingWorkflowProgress {
+  if (status.stage === "minimum_price") {
+    const minimumVerified = status.status === "VERIFIED";
+    return {
+      state: minimumVerified ? "waiting_b2b" : "waiting_amazon",
+      headline: minimumVerified
+        ? "最低價已確認，待預檢 B2B"
+        : "Amazon 正在同步最低價",
+      steps: [
+        { label: "送出最低價格", state: "complete" },
+        {
+          label: "已回查最低價格",
+          state: minimumVerified ? "complete" : "current",
+        },
+        {
+          label: "送出 B2B 價格",
+          state: minimumVerified ? "current" : "pending",
+        },
+        { label: "已回查 B2B 價格", state: "pending" },
+      ],
+    };
+  }
+
+  const minimumChanged = minimumPriceWasChanged(status);
+  const businessVerified = status.status === "VERIFIED";
+  return {
+    state: businessVerified ? "complete" : "waiting_amazon",
+    headline: businessVerified
+      ? "B2B 價格已回查確認"
+      : "Amazon 正在同步 B2B 價格",
+    steps: [
+      {
+        label: "送出最低價格",
+        state: minimumChanged ? "complete" : "skipped",
+      },
+      {
+        label: "已回查最低價格",
+        state: minimumChanged ? "complete" : "skipped",
+      },
+      { label: "送出 B2B 價格", state: "complete" },
+      {
+        label: "已回查 B2B 價格",
+        state: businessVerified ? "complete" : "current",
+      },
+    ],
+  };
+}
+
+export function applyBusinessPriceWriteStatusToAuditSnapshot(
+  snapshot: BusinessPricingAuditSnapshot,
+  writeStatus: BusinessPriceWriteStatus,
+): BusinessPricingAuditSnapshot {
+  if (
+    snapshot.mode !== writeStatus.mode ||
+    snapshot.marketplaceId !== writeStatus.marketplaceId ||
+    snapshot.rows.filter((row) => row.sellerSku === writeStatus.sellerSku)
+        .length !== 1
+  ) {
+    throw new Error("B2B 價格處理進度與目前健檢快照不一致。");
+  }
+  const workflowActivities = [
+    { sellerSku: writeStatus.sellerSku, writeStatus },
+    ...(snapshot.workflowActivities ?? []).filter((activity) =>
+      activity.sellerSku !== writeStatus.sellerSku
+    ),
+  ].sort((left, right) =>
+    Date.parse(right.writeStatus.acceptedAt) -
+      Date.parse(left.writeStatus.acceptedAt)
+  );
+  return { ...snapshot, workflowActivities };
+}
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

@@ -179,6 +179,7 @@ export default function BusinessPricingEditor({
   onClose,
   onVerified,
   onCanonicalListingVerified,
+  onWriteStatusChange,
   onError,
   onBusyChange,
 }: Readonly<{
@@ -188,6 +189,7 @@ export default function BusinessPricingEditor({
   onCanonicalListingVerified?: (
     listing: BusinessPricingListingSnapshot,
   ) => void;
+  onWriteStatusChange?: (status: BusinessPriceWriteStatus) => void;
   onError: (message: string | null) => void;
   onBusyChange: (busy: boolean) => void;
 }>) {
@@ -378,6 +380,7 @@ export default function BusinessPricingEditor({
       if (response.status === 202) {
         const processing = parseBusinessPriceProcessing(payload, submitted);
         setWriteStatus(processing);
+        onWriteStatusChange?.(processing);
         setResult(null);
         setVerifiedPartialMinimumPrice(null);
         setSubmittedPreview(null);
@@ -435,6 +438,7 @@ export default function BusinessPricingEditor({
       setListing(fresh);
       if (fresh.writeStatus) {
         setWriteStatus(fresh.writeStatus);
+        onWriteStatusChange?.(fresh.writeStatus);
         if (fresh.writeStatus.status === "VERIFIED") {
           setSubmittedPreview(null);
           setCommitFailed(false);

@@ -7,8 +7,10 @@ import {
   useState,
 } from "react";
 import {
+  applyBusinessPriceWriteStatusToAuditSnapshot,
   applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
+  businessPricingWorkflowProgress,
   businessPricingRowMatchesFilter,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
@@ -18,7 +20,9 @@ import {
   type BusinessPricingListingSnapshot,
   type BusinessPricingMoney,
   type BusinessPriceUpdate,
+  type BusinessPriceWriteStatus,
   type BusinessQuantityDiscountPlan,
+  type BusinessPricingWorkflowProgress,
 } from "../business-pricing-audit";
 import {
   pollStandaloneAuditJob,
@@ -139,6 +143,41 @@ function QuantityDiscountPlan({
   );
 }
 
+function WorkflowProgress({
+  progress,
+}: Readonly<{ progress: BusinessPricingWorkflowProgress }>) {
+  const stateLabel = (state: BusinessPricingWorkflowProgress["steps"][number]["state"]): string => {
+    if (state === "complete") return "完成";
+    if (state === "current") return "目前步驟";
+    if (state === "skipped") return "本次不需要";
+    return "尚未開始";
+  };
+  return (
+    <div
+      className={`business-pricing-workflow is-${progress.state.replace("_", "-")}`}
+      aria-label={`B2B 調整進度：${progress.headline}`}
+    >
+      <header>
+        <strong>{progress.headline}</strong>
+        <span>已調整商品</span>
+      </header>
+      <ol>
+        {progress.steps.map((step, index) => (
+          <li className={`is-${step.state}`} key={step.label}>
+            <i aria-hidden="true">{step.state === "complete"
+              ? "✓"
+              : step.state === "current"
+              ? index + 1
+              : "–"}</i>
+            <span>{step.label}</span>
+            <small>{stateLabel(step.state)}</small>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function recommendedBusinessPrice(
   standardPrice: BusinessPricingMoney | null,
 ): BusinessPricingMoney | null {
@@ -227,6 +266,22 @@ export default function BusinessPricingAuditPanel({
   const panelRef = useRef<HTMLElement | null>(null);
   const auditScrollTopRef = useRef(0);
   const editorOpenRef = useRef(false);
+  const snapshotRef = useRef<BusinessPricingAuditSnapshot | null>(snapshot);
+
+  const publishSnapshot = (next: BusinessPricingAuditSnapshot) => {
+    snapshotRef.current = next;
+    setSnapshot(next);
+    onSnapshotChange?.(next);
+  };
+
+  const rememberWriteStatus = (writeStatus: BusinessPriceWriteStatus) => {
+    const current = snapshotRef.current;
+    if (!current) return;
+    publishSnapshot(applyBusinessPriceWriteStatusToAuditSnapshot(
+      current,
+      writeStatus,
+    ));
+  };
 
   const visibleSnapshot = useMemo(() => {
     if (!snapshot || loading) return null;
@@ -293,12 +348,38 @@ export default function BusinessPricingAuditPanel({
     };
   }, [presentation, selected]);
 
-  const visibleRows = useMemo(
-    () => visibleSnapshot?.rows.filter((row) =>
-      businessPricingRowMatchesFilter(row, filter),
-    ) ?? [],
+  const visibleRows = useMemo(() => {
+    if (!visibleSnapshot) return [];
+    const activityOrder = new Map(
+      (visibleSnapshot.workflowActivities ?? []).map((activity, index) => [
+        activity.sellerSku,
+        index,
+      ]),
+    );
+    return visibleSnapshot.rows
+      .filter((row) => businessPricingRowMatchesFilter(row, filter))
+      .map((row, index) => ({ row, index }))
+      .sort((left, right) => {
+        const leftActivity = activityOrder.get(left.row.sellerSku);
+        const rightActivity = activityOrder.get(right.row.sellerSku);
+        if (leftActivity === undefined && rightActivity === undefined) {
+          return left.index - right.index;
+        }
+        if (leftActivity === undefined) return 1;
+        if (rightActivity === undefined) return -1;
+        return leftActivity - rightActivity;
+      })
+      .map(({ row }) => row);
+  },
     [filter, visibleSnapshot],
   );
+
+  const workflowActivities = visibleSnapshot?.workflowActivities ?? [];
+  const workflowCounts = workflowActivities.reduce((counts, activity) => {
+    const state = businessPricingWorkflowProgress(activity.writeStatus).state;
+    counts[state] += 1;
+    return counts;
+  }, { waiting_amazon: 0, waiting_b2b: 0, complete: 0 });
 
   const loadAudit = async (
     completedJob: StandaloneAuditJob,
@@ -316,8 +397,13 @@ export default function BusinessPricingAuditPanel({
       throw new Error("B2B 價格健檢站點與目前選擇不一致。");
     }
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    setSnapshot(next);
-    onSnapshotChange?.(next);
+    const previousActivities = snapshotRef.current?.workflowActivities ?? [];
+    const retainedActivities = previousActivities.filter((activity) =>
+      next.rows.some((row) => row.sellerSku === activity.sellerSku)
+    );
+    publishSnapshot(retainedActivities.length > 0
+      ? { ...next, workflowActivities: retainedActivities }
+      : next);
     setFilter("problem");
     setProgress(null);
   };
@@ -481,6 +567,7 @@ export default function BusinessPricingAuditPanel({
         throw new Error("Amazon 回傳的 B2B 價格識別與所選 SKU 不一致。");
       }
       if (editorRevisionRef.current !== revision) return;
+      if (fresh.writeStatus) rememberWriteStatus(fresh.writeStatus);
       setSelected(fresh);
     } catch (requestError) {
       if (editorRevisionRef.current === revision) {
@@ -502,25 +589,31 @@ export default function BusinessPricingAuditPanel({
   };
 
   const applyVerifiedPrice = (nextResult: BusinessPriceUpdate) => {
-    if (!snapshot) return;
+    const current = snapshotRef.current;
+    if (!current) return;
     const nextSnapshot = applyVerifiedBusinessPriceToAuditSnapshot(
-      snapshot,
+      current,
       nextResult,
     );
-    setSnapshot(nextSnapshot);
-    onSnapshotChange?.(nextSnapshot);
+    publishSnapshot(nextSnapshot);
   };
 
   const applyVerifiedListing = (
     nextListing: BusinessPricingListingSnapshot,
   ) => {
-    if (!snapshot) return;
-    const nextSnapshot = applyVerifiedBusinessPricingListingToAuditSnapshot(
-      snapshot,
+    const current = snapshotRef.current;
+    if (!current) return;
+    let nextSnapshot = applyVerifiedBusinessPricingListingToAuditSnapshot(
+      current,
       nextListing,
     );
-    setSnapshot(nextSnapshot);
-    onSnapshotChange?.(nextSnapshot);
+    if (nextListing.writeStatus) {
+      nextSnapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+        nextSnapshot,
+        nextListing.writeStatus,
+      );
+    }
+    publishSnapshot(nextSnapshot);
   };
 
   const exportExcel = async () => {
@@ -607,6 +700,7 @@ export default function BusinessPricingAuditPanel({
             onClose={closeEditor}
             onVerified={applyVerifiedPrice}
             onCanonicalListingVerified={applyVerifiedListing}
+            onWriteStatusChange={rememberWriteStatus}
             onError={setError}
             onBusyChange={(busy) => {
               setEditLoading(busy);
@@ -651,6 +745,24 @@ export default function BusinessPricingAuditPanel({
 
       {visibleSnapshot && (
         <>
+          {workflowActivities.length > 0 && (
+            <section
+              className="business-pricing-activity-summary"
+              aria-label="已調整商品進度"
+            >
+              <div>
+                <strong>已調整商品進度</strong>
+                <span>
+                  本次 App 使用期間 · {workflowActivities.length} 個已調整 SKU 已置頂
+                </span>
+              </div>
+              <dl>
+                <div><dt>等待 Amazon</dt><dd>{workflowCounts.waiting_amazon}</dd></div>
+                <div><dt>待送 B2B</dt><dd>{workflowCounts.waiting_b2b}</dd></div>
+                <div><dt>已完成</dt><dd>{workflowCounts.complete}</dd></div>
+              </dl>
+            </section>
+          )}
           <div className="business-pricing-summary is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">
             {FILTERS.map((option) => (
               <button
@@ -690,8 +802,15 @@ export default function BusinessPricingAuditPanel({
             )}
           </div>
           <div className="business-pricing-list" role="list" aria-label="FBA B2B 價格商品">
-            {visibleRows.map((row) => (
-              <article
+            {visibleRows.map((row) => {
+              const activity = workflowActivities.find((candidate) =>
+                candidate.sellerSku === row.sellerSku
+              );
+              const rowWorkflow = activity
+                ? businessPricingWorkflowProgress(activity.writeStatus)
+                : null;
+              return (
+                <article
                 key={row.sellerSku}
                 className={`business-pricing-row ${row.status}${
                   row.recommendedPriceMismatch ? " is-price-mismatch" : ""
@@ -699,7 +818,7 @@ export default function BusinessPricingAuditPanel({
                   row.recommendedQuantityDiscountMismatch
                     ? " is-tier-mismatch"
                     : ""
-                }`}
+                }${rowWorkflow ? " has-workflow-progress" : ""}`}
                 role="listitem"
               >
                 <div>
@@ -736,7 +855,15 @@ export default function BusinessPricingAuditPanel({
                     type="button"
                     onClick={() => void openEditor(row)}
                     disabled={editLoading || loading}
-                  >{row.status === "missing" ? "設定 B2B 價格" : "調整 B2B 價格"}</button>
+                  >{rowWorkflow?.state === "waiting_b2b"
+                      ? "繼續預檢 B2B"
+                      : rowWorkflow?.state === "waiting_amazon"
+                      ? "查看／重新確認"
+                      : rowWorkflow?.state === "complete"
+                      ? "查看完成結果"
+                      : row.status === "missing"
+                      ? "設定 B2B 價格"
+                      : "調整 B2B 價格"}</button>
                   <button
                     type="button"
                     className="business-pricing-seller-central"
@@ -744,8 +871,10 @@ export default function BusinessPricingAuditPanel({
                     disabled={!fixedSellerCentralHandoffs}
                   >前往 Amazon 後台 ↗</button>
                 </div>
+                {rowWorkflow && <WorkflowProgress progress={rowWorkflow} />}
               </article>
-            ))}
+              );
+            })}
             {visibleRows.length === 0 && <p className="business-pricing-empty">這個篩選沒有商品。</p>}
           </div>
         </>
