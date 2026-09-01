@@ -10,7 +10,7 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 
 公開錯誤範例為 `工作表「F001」｜名稱「_xlnm._FilterDatabase」｜指向「F001!$A$1:$W$2」`。診斷最多列出前 8 個名稱，超過時只顯示剩餘計數；每個欄位會移除控制字元、方向控制字元並限制 160 個 Unicode 字元，避免不受信任工作簿撐大或改寫介面。main-owned public import route 的 regression 已證明完整定位文字會到達 renderer、錯誤仍為 `CONTENT_AUDIT_WORKBOOK_UNSAFE / 422`，且在 snapshot evidence、原生確認與任何 Amazon 寫入前停止。文案 Excel 錯誤區另以 `white-space: pre-line` 保留逐項換行，長範圍可安全換行。
 
-因解析器位於 Notebook Key main process，本次不是 renderer-only Control Console Release，package 已升為 0.1.47；只更新 GitHub Pages 無法讓既有 v0.1.46 主程式產生位置資訊，必須安裝新的 Mac／Windows Notebook Key。TDD 先以公開 parser seam 重現固定一句錯誤，再鎖定單一工作表、workbook-scoped、多筆上限與 public route 零寫入投影。最終本機 `npm run check` 通過 246 個測試檔／2,467 tests、TypeScript、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。本輪開發與測試沒有發出 Amazon GET、Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 mutation。
+因解析器位於 Notebook Key main process，本次不是 renderer-only Control Console Release，package 已升為 0.1.47；只更新 GitHub Pages 無法讓既有 v0.1.46 主程式產生位置資訊，必須安裝新的 Mac／Windows Notebook Key。TDD 先以公開 parser seam 重現固定一句錯誤，再鎖定單一工作表、workbook-scoped、多筆上限與 public route 零寫入投影。最終本機 `npm run check` 通過 246 個測試檔／2,468 tests、TypeScript、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。獨立 Standards review 找到的 Unicode bidi isolate 缺口已以完整不可見字元集合與紅→綠 regression 修正，Standards／Spec 最終複查均無剩餘 P0／P1／P2／P3。本輪開發與測試沒有發出 Amazon GET、Validation Preview、Touch ID／Windows Hello、PATCH、readback 或任何 mutation。
 
 ### 2026-09-01 v0.1.46 B2B 回查金額與立即查詢回饋（已合併／Pages 上線；renderer-only、不需重裝、未呼叫 Amazon）
 
