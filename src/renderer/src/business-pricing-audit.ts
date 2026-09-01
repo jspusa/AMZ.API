@@ -244,6 +244,8 @@ export type BusinessPricingWorkflowActivity = Readonly<{
   sellerSku: string;
   writeStatus: BusinessPriceWriteStatus;
   minimumPriceProgress: "not_required" | "submitted" | "verified";
+  observedMinimumPrice: BusinessPricingMoney | null;
+  observedBusinessPrice: BusinessPricingMoney | null;
 }>;
 
 export type BusinessPricingWorkflowStepState =
@@ -258,6 +260,9 @@ export type BusinessPricingWorkflowProgress = Readonly<{
   steps: readonly Readonly<{
     label: string;
     state: BusinessPricingWorkflowStepState;
+    statusLabel?: string;
+    target: BusinessPricingMoney | null;
+    observed: BusinessPricingMoney | null;
   }>[];
 }>;
 
@@ -294,22 +299,47 @@ export function businessPricingWorkflowProgress(
   const status = activity.writeStatus;
   if (status.stage === "minimum_price") {
     const minimumVerified = status.status === "VERIFIED";
+    const minimumReadbackLabel = minimumVerified
+      ? "回查成功"
+      : activity.observedMinimumPrice
+      ? sameMoney(
+          activity.observedMinimumPrice,
+          status.requestedMinimumPrice,
+        )
+        ? "已回查，等待 Amazon 確認"
+        : "已回查，尚未相符"
+      : "等待 Amazon 回查";
     return {
       state: minimumVerified ? "waiting_b2b" : "waiting_amazon",
       headline: minimumVerified
         ? "最低價已確認，待預檢 B2B"
         : "Amazon 正在同步最低價",
       steps: [
-        { label: "送出最低價格", state: "complete" },
+        {
+          label: "送出最低價格",
+          state: "complete",
+          target: null,
+          observed: null,
+        },
         {
           label: "已回查最低價格",
           state: minimumVerified ? "complete" : "current",
+          statusLabel: minimumReadbackLabel,
+          target: status.requestedMinimumPrice,
+          observed: activity.observedMinimumPrice,
         },
         {
           label: "送出 B2B 價格",
           state: minimumVerified ? "current" : "pending",
+          target: null,
+          observed: null,
         },
-        { label: "已回查 B2B 價格", state: "pending" },
+        {
+          label: "已回查 B2B 價格",
+          state: "pending",
+          target: null,
+          observed: null,
+        },
       ],
     };
   }
@@ -326,6 +356,8 @@ export function businessPricingWorkflowProgress(
       {
         label: "送出最低價格",
         state: minimumSubmitted ? "complete" : "skipped",
+        target: null,
+        observed: null,
       },
       {
         label: "已回查最低價格",
@@ -334,11 +366,35 @@ export function businessPricingWorkflowProgress(
           : minimumSubmitted
           ? "current"
           : "skipped",
+        ...(minimumVerified
+          ? { statusLabel: "回查成功" }
+          : minimumSubmitted && activity.observedMinimumPrice
+          ? { statusLabel: "已回查，尚未確認" }
+          : {}),
+        target: minimumSubmitted ? status.requestedMinimumPrice : null,
+        observed: minimumSubmitted ? activity.observedMinimumPrice : null,
       },
-      { label: "送出 B2B 價格", state: "complete" },
+      {
+        label: "送出 B2B 價格",
+        state: "complete",
+        target: null,
+        observed: null,
+      },
       {
         label: "已回查 B2B 價格",
         state: businessVerified ? "complete" : "current",
+        statusLabel: businessVerified
+          ? "回查成功"
+          : activity.observedBusinessPrice
+          ? sameMoney(
+              activity.observedBusinessPrice,
+              status.requestedBusinessPrice,
+            )
+            ? "已回查，等待 Amazon 確認"
+            : "已回查，尚未相符"
+          : "等待 Amazon 回查",
+        target: status.requestedBusinessPrice,
+        observed: activity.observedBusinessPrice,
       },
     ],
   };
@@ -371,7 +427,13 @@ export function applyBusinessPriceWriteStatusToAuditSnapshot(
     previousActivity,
   );
   const workflowActivities = [
-    { sellerSku: writeStatus.sellerSku, writeStatus, minimumPriceProgress },
+    {
+      sellerSku: writeStatus.sellerSku,
+      writeStatus,
+      minimumPriceProgress,
+      observedMinimumPrice: previousActivity?.observedMinimumPrice ?? null,
+      observedBusinessPrice: previousActivity?.observedBusinessPrice ?? null,
+    },
     ...(snapshot.workflowActivities ?? []).filter((activity) =>
       activity.sellerSku !== writeStatus.sellerSku
     ),
@@ -380,6 +442,35 @@ export function applyBusinessPriceWriteStatusToAuditSnapshot(
       Date.parse(left.writeStatus.acceptedAt)
   );
   return { ...snapshot, workflowActivities };
+}
+
+export function applyBusinessPricingListingReadToAuditSnapshot(
+  snapshot: BusinessPricingAuditSnapshot,
+  listing: BusinessPricingListingSnapshot,
+): BusinessPricingAuditSnapshot {
+  if (!listing.writeStatus) {
+    throw new Error("B2B 價格回查沒有可顯示的處理進度。");
+  }
+  const withStatus = applyBusinessPriceWriteStatusToAuditSnapshot(
+    snapshot,
+    listing.writeStatus,
+  );
+  return {
+    ...withStatus,
+    workflowActivities: withStatus.workflowActivities?.map((activity) =>
+      activity.sellerSku === listing.sellerSku
+        ? {
+            ...activity,
+            observedMinimumPrice: listing.minimumPricePresence === "canonical"
+              ? listing.minimumPrice
+              : null,
+            observedBusinessPrice: listing.businessOfferPresence === "present"
+              ? listing.businessPrice
+              : null,
+          }
+        : activity
+    ),
+  };
 }
 
 export function retainBusinessPricingWorkflowActivities(

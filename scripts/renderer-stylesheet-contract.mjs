@@ -25,5 +25,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/fba-inbound.css",
   ]),
   fingerprint:
-    "ebbb47b2cecb6f48bb9996dcbabda1711ee1ccd95cc866b90f7af0f27a2b12b0",
+    "1c8fab24941748afbab2ba68fce7644030abdfdde3662658d2674a2ce70662fd",
 });
