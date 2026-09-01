@@ -68,6 +68,7 @@ export type BusinessPricingAuditSnapshot = Readonly<{
   rows: readonly BusinessPricingAuditRow[];
   summary: BusinessPricingAuditSummary;
   notice: string;
+  workflowActivities?: readonly BusinessPricingWorkflowActivity[];
 }>;
 
 export type BusinessPricingCapability = Readonly<{
@@ -238,6 +239,165 @@ export type BusinessPriceWriteStatus = Readonly<{
   quantityDiscountPlanChange: "preserve" | "replace" | null;
   notice: string;
 }>;
+
+export type BusinessPricingWorkflowActivity = Readonly<{
+  sellerSku: string;
+  writeStatus: BusinessPriceWriteStatus;
+  minimumPriceProgress: "not_required" | "submitted" | "verified";
+}>;
+
+export type BusinessPricingWorkflowStepState =
+  | "complete"
+  | "current"
+  | "pending"
+  | "skipped";
+
+export type BusinessPricingWorkflowProgress = Readonly<{
+  state: "waiting_amazon" | "waiting_b2b" | "complete";
+  headline: string;
+  steps: readonly Readonly<{
+    label: string;
+    state: BusinessPricingWorkflowStepState;
+  }>[];
+}>;
+
+function minimumPriceWasChanged(status: BusinessPriceWriteStatus): boolean {
+  return Boolean(
+    status.previousMinimumPrice &&
+    status.requestedMinimumPrice &&
+    (status.previousMinimumPrice.currencyCode !==
+        status.requestedMinimumPrice.currencyCode ||
+      status.previousMinimumPrice.amount !== status.requestedMinimumPrice.amount),
+  );
+}
+
+function nextMinimumPriceProgress(
+  status: BusinessPriceWriteStatus,
+  previous: BusinessPricingWorkflowActivity | undefined,
+): BusinessPricingWorkflowActivity["minimumPriceProgress"] {
+  if (status.stage === "minimum_price") {
+    return status.status === "VERIFIED" ? "verified" : "submitted";
+  }
+  if (
+    previous?.minimumPriceProgress === "verified" ||
+    previous?.minimumPriceProgress === "submitted" ||
+    minimumPriceWasChanged(status)
+  ) {
+    return "verified";
+  }
+  return "not_required";
+}
+
+export function businessPricingWorkflowProgress(
+  activity: BusinessPricingWorkflowActivity,
+): BusinessPricingWorkflowProgress {
+  const status = activity.writeStatus;
+  if (status.stage === "minimum_price") {
+    const minimumVerified = status.status === "VERIFIED";
+    return {
+      state: minimumVerified ? "waiting_b2b" : "waiting_amazon",
+      headline: minimumVerified
+        ? "最低價已確認，待預檢 B2B"
+        : "Amazon 正在同步最低價",
+      steps: [
+        { label: "送出最低價格", state: "complete" },
+        {
+          label: "已回查最低價格",
+          state: minimumVerified ? "complete" : "current",
+        },
+        {
+          label: "送出 B2B 價格",
+          state: minimumVerified ? "current" : "pending",
+        },
+        { label: "已回查 B2B 價格", state: "pending" },
+      ],
+    };
+  }
+
+  const businessVerified = status.status === "VERIFIED";
+  const minimumSubmitted = activity.minimumPriceProgress !== "not_required";
+  const minimumVerified = activity.minimumPriceProgress === "verified";
+  return {
+    state: businessVerified ? "complete" : "waiting_amazon",
+    headline: businessVerified
+      ? "B2B 價格已回查確認"
+      : "Amazon 正在同步 B2B 價格",
+    steps: [
+      {
+        label: "送出最低價格",
+        state: minimumSubmitted ? "complete" : "skipped",
+      },
+      {
+        label: "已回查最低價格",
+        state: minimumVerified
+          ? "complete"
+          : minimumSubmitted
+          ? "current"
+          : "skipped",
+      },
+      { label: "送出 B2B 價格", state: "complete" },
+      {
+        label: "已回查 B2B 價格",
+        state: businessVerified ? "complete" : "current",
+      },
+    ],
+  };
+}
+
+export function applyBusinessPriceWriteStatusToAuditSnapshot(
+  snapshot: BusinessPricingAuditSnapshot,
+  writeStatus: BusinessPriceWriteStatus,
+): BusinessPricingAuditSnapshot {
+  const matchingRows = snapshot.rows.filter((row) =>
+    row.sellerSku === writeStatus.sellerSku &&
+    row.asin === writeStatus.asin &&
+    row.productType === writeStatus.productType
+  );
+  if (
+    snapshot.mode !== writeStatus.mode ||
+    snapshot.marketplaceId !== writeStatus.marketplaceId ||
+    matchingRows.length !== 1
+  ) {
+    throw new Error("B2B 價格處理進度與目前健檢快照不一致。");
+  }
+  const previousActivity = (snapshot.workflowActivities ?? []).find(
+    (activity) => activity.sellerSku === writeStatus.sellerSku &&
+      activity.writeStatus.asin === writeStatus.asin &&
+      activity.writeStatus.productType === writeStatus.productType &&
+      activity.writeStatus.marketplaceId === writeStatus.marketplaceId,
+  );
+  const minimumPriceProgress = nextMinimumPriceProgress(
+    writeStatus,
+    previousActivity,
+  );
+  const workflowActivities = [
+    { sellerSku: writeStatus.sellerSku, writeStatus, minimumPriceProgress },
+    ...(snapshot.workflowActivities ?? []).filter((activity) =>
+      activity.sellerSku !== writeStatus.sellerSku
+    ),
+  ].sort((left, right) =>
+    Date.parse(right.writeStatus.acceptedAt) -
+      Date.parse(left.writeStatus.acceptedAt)
+  );
+  return { ...snapshot, workflowActivities };
+}
+
+export function retainBusinessPricingWorkflowActivities(
+  snapshot: BusinessPricingAuditSnapshot,
+  activities: readonly BusinessPricingWorkflowActivity[],
+): readonly BusinessPricingWorkflowActivity[] {
+  return activities.filter((activity) => {
+    const status = activity.writeStatus;
+    return activity.sellerSku === status.sellerSku &&
+      status.mode === snapshot.mode &&
+      status.marketplaceId === snapshot.marketplaceId &&
+      snapshot.rows.filter((row) =>
+        row.sellerSku === status.sellerSku &&
+        row.asin === status.asin &&
+        row.productType === status.productType
+      ).length === 1;
+  });
+}
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

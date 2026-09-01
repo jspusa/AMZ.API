@@ -170,6 +170,52 @@
   line-height: 1.55;
 }
 
+.business-pricing-activity-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid #b9d4ef;
+  border-radius: 14px;
+  background: #f2f8fd;
+}
+
+.business-pricing-activity-summary > div {
+  display: grid;
+  gap: 4px;
+}
+
+.business-pricing-activity-summary > div > strong {
+  color: #174f7c;
+  font-size: 14px;
+}
+
+.business-pricing-activity-summary > div > span {
+  color: #55738d;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.business-pricing-activity-summary dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(82px, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+
+.business-pricing-activity-summary dl > div {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #fff;
+  text-align: center;
+}
+
+.business-pricing-activity-summary dt,
+.business-pricing-activity-summary dd { margin: 0; }
+.business-pricing-activity-summary dt { color: #6e7e8c; font-size: 10px; font-weight: 750; }
+.business-pricing-activity-summary dd { margin-top: 3px; color: #174f7c; font-size: 17px; font-weight: 900; }
+
 .business-pricing-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
@@ -329,6 +375,104 @@
 .business-pricing-row.is-tier-mismatch {
   border-color: #e7c18d;
 }
+
+.business-pricing-row.has-workflow-progress {
+  border-color: #9fc3e4;
+  box-shadow: 0 7px 18px rgba(30, 94, 147, .08);
+}
+
+.business-pricing-workflow {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 9px;
+  padding: 11px 12px;
+  border: 1px solid #cbdceb;
+  border-radius: 11px;
+  background: #f6faff;
+}
+
+.business-pricing-workflow.is-waiting-b2b {
+  border-color: #abd5ba;
+  background: #f1f9f4;
+}
+
+.business-pricing-workflow.is-complete {
+  border-color: #9fcfb0;
+  background: #edf8f1;
+}
+
+.business-pricing-workflow > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.business-pricing-workflow > header strong {
+  color: #254e70;
+  font-size: 12px;
+}
+
+.business-pricing-workflow.is-waiting-b2b > header strong,
+.business-pricing-workflow.is-complete > header strong { color: #28583d; }
+
+.business-pricing-workflow > header span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #dcebf8;
+  color: #285d87;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.business-pricing-workflow ol {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.business-pricing-workflow li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 7px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e1e5e9;
+  border-radius: 9px;
+  background: #fff;
+  color: #7b7b83;
+}
+
+.business-pricing-workflow li i {
+  grid-row: 1 / 3;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: #eceef1;
+  color: #76767e;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.business-pricing-workflow li span {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.business-pricing-workflow li small { font-size: 10px; }
+.business-pricing-workflow li.is-complete { border-color: #c7e2d1; color: #28583d; }
+.business-pricing-workflow li.is-complete i { background: #d8f0e1; color: #187244; }
+.business-pricing-workflow li.is-current { border-color: #e4bd6e; color: #755016; box-shadow: inset 0 0 0 1px #f1d79d; }
+.business-pricing-workflow li.is-current i { background: #ffe9b9; color: #755016; }
+.business-pricing-workflow li.is-skipped { border-style: dashed; opacity: .72; }
 
 .business-pricing-export {
   display: flex;
@@ -795,6 +939,7 @@
   .business-pricing-row-actions,
   .business-pricing-row-actions button,
   .business-pricing-readonly { width: 100%; }
+  .business-pricing-activity-summary { align-items: stretch; flex-direction: column; }
 }
 
 @media (max-width: 430px) {
@@ -805,6 +950,8 @@
   .business-pricing-audit-intro { padding: 14px; }
   .business-pricing-audit-intro h3 { font-size: 19px; }
   .business-pricing-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .business-pricing-activity-summary dl,
+  .business-pricing-workflow ol { grid-template-columns: 1fr; }
   .business-pricing-row dl,
   .business-pricing-editor dl { grid-template-columns: 1fr; }
   .business-pricing-editor { padding: 0 1px 14px; }

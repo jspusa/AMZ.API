@@ -174,11 +174,21 @@ function quantityDiscountLowerBounds(
   ])].sort((left, right) => left - right);
 }
 
+function notifyRendererObserver(callback: () => void): void {
+  try {
+    callback();
+  } catch {
+    // Outer audit caches are presentation-only observers. They must never
+    // rewrite an accepted or canonically verified Amazon result as a failure.
+  }
+}
+
 export default function BusinessPricingEditor({
   listing: initialListing,
   onClose,
   onVerified,
   onCanonicalListingVerified,
+  onWriteStatusChange,
   onError,
   onBusyChange,
 }: Readonly<{
@@ -188,6 +198,7 @@ export default function BusinessPricingEditor({
   onCanonicalListingVerified?: (
     listing: BusinessPricingListingSnapshot,
   ) => void;
+  onWriteStatusChange?: (status: BusinessPriceWriteStatus) => void;
   onError: (message: string | null) => void;
   onBusyChange: (busy: boolean) => void;
 }>) {
@@ -378,6 +389,7 @@ export default function BusinessPricingEditor({
       if (response.status === 202) {
         const processing = parseBusinessPriceProcessing(payload, submitted);
         setWriteStatus(processing);
+        notifyRendererObserver(() => onWriteStatusChange?.(processing));
         setResult(null);
         setVerifiedPartialMinimumPrice(null);
         setSubmittedPreview(null);
@@ -392,7 +404,7 @@ export default function BusinessPricingEditor({
       setSubmittedPreview(null);
       setEditorError(null);
       setCommitFailed(false);
-      onVerified(nextResult);
+      notifyRendererObserver(() => onVerified(nextResult));
     } catch (requestError) {
       const message = requestError instanceof Error
         ? requestError.message
@@ -428,19 +440,24 @@ export default function BusinessPricingEditor({
       if (
         fresh.marketplaceId !== listing.marketplaceId ||
         fresh.sellerSku !== listing.sellerSku ||
-        fresh.asin !== listing.asin
+        fresh.asin !== listing.asin ||
+        fresh.productType !== listing.productType
       ) {
         throw new Error("Amazon 回傳的 B2B 價格識別與目前 SKU 不一致。");
       }
       setListing(fresh);
-      if (fresh.writeStatus) {
-        setWriteStatus(fresh.writeStatus);
-        if (fresh.writeStatus.status === "VERIFIED") {
+      const freshStatus = fresh.writeStatus;
+      if (freshStatus) {
+        setWriteStatus(freshStatus);
+        notifyRendererObserver(() => onWriteStatusChange?.(freshStatus));
+        if (freshStatus.status === "VERIFIED") {
           setSubmittedPreview(null);
           setCommitFailed(false);
           setVerifiedPartialMinimumPrice(null);
-          if (fresh.writeStatus.stage === "business_price") {
-            onCanonicalListingVerified?.(fresh);
+          if (freshStatus.stage === "business_price") {
+            notifyRendererObserver(() =>
+              onCanonicalListingVerified?.(fresh)
+            );
           }
         }
       }

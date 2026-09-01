@@ -16,7 +16,7 @@ const CSS02_ORDERED_PREFIX = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "200a719f9a04fe2f8664584d5921ddd2f29cad62b6ce0682ff8c2b9a7985c93e";
+  "3d60d9eef32fc5caa6e59022dc37f2e159691cdca3af4c0b4f7400447c08d132";
 
 const CSS02_PAYLOAD_EVIDENCE = [
   {
@@ -41,8 +41,8 @@ const CSS02_PAYLOAD_EVIDENCE = [
   },
   {
     path: "styles/business-pricing.css",
-    bytes: 16_793,
-    sha256: "e450af5b663eecaea006612c93645ed495a295994b294529af71550fec2415d7",
+    bytes: 20_357,
+    sha256: "f70e524bde5416199407f00e3aca69f57c8d822b2ab4a223427c8afc19910baa",
   },
 ] as const;
 
