@@ -1154,6 +1154,41 @@ describe("FBA business pricing audit renderer", () => {
       "complete",
       "complete",
     ]);
+
+    const laterPriceOnlyProcessing = workflowWriteStatus({
+      stage: "business_price",
+      acceptedAt: "2026-09-01T04:20:00.000Z",
+      requestId: "request-later-price-only",
+      submissionId: "submission-later-price-only",
+      businessPriceSubmitted: true,
+      previousBusinessPrice: { amount: 23.99, currencyCode: "USD" },
+      requestedBusinessPrice: { amount: 22.99, currencyCode: "USD" },
+      previousMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      requestedMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      quantityDiscountPlanChange: "preserve",
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+        ],
+      },
+    });
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      laterPriceOnlyProcessing,
+    );
+    expect(snapshot.workflowActivities![0]!.minimumPriceProgress).toBe(
+      "not_required",
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps.map((step) => step.state)).toEqual([
+      "skipped",
+      "skipped",
+      "complete",
+      "current",
+    ]);
   });
 
   it("binds progress to the exact SKU, ASIN and product type", () => {

@@ -276,23 +276,6 @@ function minimumPriceWasChanged(status: BusinessPriceWriteStatus): boolean {
   );
 }
 
-function nextMinimumPriceProgress(
-  status: BusinessPriceWriteStatus,
-  previous: BusinessPricingWorkflowActivity | undefined,
-): BusinessPricingWorkflowActivity["minimumPriceProgress"] {
-  if (status.stage === "minimum_price") {
-    return status.status === "VERIFIED" ? "verified" : "submitted";
-  }
-  if (
-    previous?.minimumPriceProgress === "verified" ||
-    previous?.minimumPriceProgress === "submitted" ||
-    minimumPriceWasChanged(status)
-  ) {
-    return "verified";
-  }
-  return "not_required";
-}
-
 function sameWriteObservationBinding(
   current: BusinessPriceWriteStatus,
   previous: BusinessPriceWriteStatus,
@@ -301,6 +284,47 @@ function sameWriteObservationBinding(
     current.acceptedAt === previous.acceptedAt &&
     current.requestId === previous.requestId &&
     current.submissionId === previous.submissionId;
+}
+
+function continuesVerifiedMinimumIntoBusiness(
+  current: BusinessPriceWriteStatus,
+  previous: BusinessPricingWorkflowActivity | undefined,
+): boolean {
+  return Boolean(
+    previous?.writeStatus.stage === "minimum_price" &&
+    previous.minimumPriceProgress === "verified" &&
+    current.stage === "business_price" &&
+    sameMoney(
+      previous.writeStatus.requestedMinimumPrice,
+      current.previousMinimumPrice,
+    ) &&
+    sameMoney(
+      current.previousMinimumPrice,
+      current.requestedMinimumPrice,
+    ),
+  );
+}
+
+function nextMinimumPriceProgress(
+  status: BusinessPriceWriteStatus,
+  previous: BusinessPricingWorkflowActivity | undefined,
+): BusinessPricingWorkflowActivity["minimumPriceProgress"] {
+  if (status.stage === "minimum_price") {
+    return status.status === "VERIFIED" ? "verified" : "submitted";
+  }
+  if (
+    previous &&
+    sameWriteObservationBinding(status, previous.writeStatus)
+  ) {
+    return previous.minimumPriceProgress;
+  }
+  if (
+    continuesVerifiedMinimumIntoBusiness(status, previous) ||
+    minimumPriceWasChanged(status)
+  ) {
+    return "verified";
+  }
+  return "not_required";
 }
 
 export function businessPricingWorkflowProgress(
@@ -442,18 +466,13 @@ export function applyBusinessPriceWriteStatusToAuditSnapshot(
         previousActivity.writeStatus,
       )
     : false;
-  const continuesVerifiedMinimumIntoBusiness = Boolean(
-    previousActivity?.writeStatus.stage === "minimum_price" &&
-    previousActivity.minimumPriceProgress === "verified" &&
-    writeStatus.stage === "business_price" &&
-    sameMoney(
-      previousActivity.observedMinimumPrice,
-      writeStatus.previousMinimumPrice,
-    ) &&
-    sameMoney(
-      writeStatus.previousMinimumPrice,
-      writeStatus.requestedMinimumPrice,
-    ),
+  const continuesMinimumLifecycle = continuesVerifiedMinimumIntoBusiness(
+    writeStatus,
+    previousActivity,
+  );
+  const canCarryMinimumObservation = continuesMinimumLifecycle && sameMoney(
+    previousActivity?.observedMinimumPrice ?? null,
+    writeStatus.previousMinimumPrice,
   );
   const workflowActivities = [
     {
@@ -461,7 +480,7 @@ export function applyBusinessPriceWriteStatusToAuditSnapshot(
       writeStatus,
       minimumPriceProgress,
       observedMinimumPrice:
-        sameObservationBinding || continuesVerifiedMinimumIntoBusiness
+        sameObservationBinding || canCarryMinimumObservation
           ? previousActivity?.observedMinimumPrice ?? null
           : null,
       observedBusinessPrice:
