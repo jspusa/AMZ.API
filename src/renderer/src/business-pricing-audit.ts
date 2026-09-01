@@ -293,6 +293,16 @@ function nextMinimumPriceProgress(
   return "not_required";
 }
 
+function sameWriteObservationBinding(
+  current: BusinessPriceWriteStatus,
+  previous: BusinessPriceWriteStatus,
+): boolean {
+  return current.stage === previous.stage &&
+    current.acceptedAt === previous.acceptedAt &&
+    current.requestId === previous.requestId &&
+    current.submissionId === previous.submissionId;
+}
+
 export function businessPricingWorkflowProgress(
   activity: BusinessPricingWorkflowActivity,
 ): BusinessPricingWorkflowProgress {
@@ -426,13 +436,38 @@ export function applyBusinessPriceWriteStatusToAuditSnapshot(
     writeStatus,
     previousActivity,
   );
+  const sameObservationBinding = previousActivity
+    ? sameWriteObservationBinding(
+        writeStatus,
+        previousActivity.writeStatus,
+      )
+    : false;
+  const continuesVerifiedMinimumIntoBusiness = Boolean(
+    previousActivity?.writeStatus.stage === "minimum_price" &&
+    previousActivity.minimumPriceProgress === "verified" &&
+    writeStatus.stage === "business_price" &&
+    sameMoney(
+      previousActivity.observedMinimumPrice,
+      writeStatus.previousMinimumPrice,
+    ) &&
+    sameMoney(
+      writeStatus.previousMinimumPrice,
+      writeStatus.requestedMinimumPrice,
+    ),
+  );
   const workflowActivities = [
     {
       sellerSku: writeStatus.sellerSku,
       writeStatus,
       minimumPriceProgress,
-      observedMinimumPrice: previousActivity?.observedMinimumPrice ?? null,
-      observedBusinessPrice: previousActivity?.observedBusinessPrice ?? null,
+      observedMinimumPrice:
+        sameObservationBinding || continuesVerifiedMinimumIntoBusiness
+          ? previousActivity?.observedMinimumPrice ?? null
+          : null,
+      observedBusinessPrice:
+        sameObservationBinding && writeStatus.stage === "business_price"
+          ? previousActivity?.observedBusinessPrice ?? null
+          : null,
     },
     ...(snapshot.workflowActivities ?? []).filter((activity) =>
       activity.sellerSku !== writeStatus.sellerSku

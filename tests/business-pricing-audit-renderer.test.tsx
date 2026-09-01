@@ -1020,6 +1020,61 @@ describe("FBA business pricing audit renderer", () => {
       target: { amount: 18.19, currencyCode: "USD" },
       observed: { amount: 18.19, currencyCode: "USD" },
     }));
+
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      workflowWriteStatus({
+        stage: "business_price",
+        acceptedAt: "2026-09-01T03:20:00.000Z",
+        requestId: "request-business-workflow",
+        submissionId: "submission-business-workflow",
+        businessPriceSubmitted: true,
+        previousMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+        requestedMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      }),
+    );
+    expect(snapshot.workflowActivities![0]!.observedMinimumPrice).toEqual({
+      amount: 18.19,
+      currencyCode: "USD",
+    });
+    expect(snapshot.workflowActivities![0]!.observedBusinessPrice).toBeNull();
+  });
+
+  it("does not carry a prior readback amount into a new write submission", () => {
+    const firstStatus = workflowWriteStatus();
+    const firstRead = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      sellerSku: "FBA-CONFIGURED",
+      asin: "B000000002",
+      title: "Configured business price",
+      minimumPrice: { amount: 23.49, currencyCode: "USD" },
+      writeStatus: firstStatus,
+    });
+    let snapshot = applyBusinessPricingListingReadToAuditSnapshot(
+      parseBusinessPricingAuditSnapshot(payload()),
+      firstRead,
+    );
+    expect(snapshot.workflowActivities![0]!.observedMinimumPrice).toEqual({
+      amount: 23.49,
+      currencyCode: "USD",
+    });
+
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      workflowWriteStatus({
+        acceptedAt: "2026-09-01T04:10:19.000Z",
+        requestId: "request-second-workflow",
+        submissionId: "submission-second-workflow",
+        requestedMinimumPrice: { amount: 17.19, currencyCode: "USD" },
+      }),
+    );
+    expect(snapshot.workflowActivities![0]!.observedMinimumPrice).toBeNull();
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps[1]).toEqual(expect.objectContaining({
+      statusLabel: "等待 Amazon 回查",
+      observed: null,
+    }));
   });
 
   it("preserves completed minimum-price steps through the full B2B lifecycle", () => {
