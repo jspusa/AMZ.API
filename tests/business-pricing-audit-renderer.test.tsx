@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyBusinessPriceWriteStatusToAuditSnapshot,
+  applyBusinessPricingListingReadToAuditSnapshot,
   applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingWorkflowProgress,
@@ -883,6 +884,22 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("最低價已確認，待預檢 B2B");
     expect(markup).toContain("送出最低價格");
     expect(markup).toContain("已回查最低價格");
+    expect(root.findByProps({
+      className: "business-pricing-workflow-values",
+    }).findAllByType("em").map((value) => value.children.join(""))).toEqual([
+      "目標 US$18.19",
+      "Amazon 回查 US$18.19",
+    ]);
+    const verifiedMinimumStep = root.findByProps({
+      "aria-label": "B2B 調整進度：最低價已確認，待預檢 B2B",
+    }).findAllByType("li")[1]!;
+    expect(verifiedMinimumStep.props.className).toBe("is-complete");
+    expect(verifiedMinimumStep.findByType("small").children.join(""))
+      .toBe("回查成功");
+    const css = await readRendererStylesheet();
+    expect(css).toMatch(
+      /\.business-pricing-workflow-values\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/su,
+    );
     expect(markup).toContain("送出 B2B 價格");
     expect(markup).toContain("已回查 B2B 價格");
     expect(markup).toContain("等待 Amazon");
@@ -905,6 +922,159 @@ describe("FBA business pricing audit renderer", () => {
       !init?.method || init.method === "GET"
     )).toBe(true);
     await act(async () => renderer!.unmount());
+  });
+
+  it("acknowledges an outside status check immediately while Amazon is loading", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const processingSnapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      parseBusinessPricingAuditSnapshot(payload()),
+      workflowWriteStatus(),
+    );
+    let resolveFetch!: (response: Response) => void;
+    const fetchMock = vi.fn<typeof fetch>(() => new Promise<Response>(
+      (resolve) => {
+        resolveFetch = resolve;
+      },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: processingSnapshot,
+      }));
+    });
+
+    const findAction = () => renderer!.root.findAllByType("article").find(
+      (article) => article.findAllByType("small").some((small) =>
+        small.children.join("") === "FBA-CONFIGURED · B000000002"
+      ),
+    )!.findAllByType("button")[0]!;
+    expect(findAction().children.join("")).toBe("查看／重新確認");
+    act(() => findAction().props.onClick());
+    expect(findAction().children.join("")).toBe("正在讀取 Amazon…");
+    expect(findAction().props.disabled).toBe(true);
+    expect(findAction().props["aria-busy"]).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      resolveFetch(new Response(JSON.stringify({
+        ...interactiveListing,
+        sellerSku: "FBA-CONFIGURED",
+        asin: "B000000002",
+        title: "Configured business price",
+        writeStatus: workflowWriteStatus(),
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    });
+    await act(async () => renderer!.unmount());
+  });
+
+  it("distinguishes a yellow unmatched readback from a green verified minimum price", () => {
+    const processingStatus = workflowWriteStatus();
+    const processingListing = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      sellerSku: "FBA-CONFIGURED",
+      asin: "B000000002",
+      title: "Configured business price",
+      minimumPrice: { amount: 23.49, currencyCode: "USD" },
+      writeStatus: processingStatus,
+    });
+    let snapshot = applyBusinessPricingListingReadToAuditSnapshot(
+      parseBusinessPricingAuditSnapshot(payload()),
+      processingListing,
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps[1]).toEqual(expect.objectContaining({
+      state: "current",
+      statusLabel: "已回查，尚未相符",
+      target: { amount: 18.19, currencyCode: "USD" },
+      observed: { amount: 23.49, currencyCode: "USD" },
+    }));
+
+    const verifiedListing = parseBusinessPricingListingSnapshot({
+      ...processingListing,
+      minimumPrice: { amount: 18.19, currencyCode: "USD" },
+      writeStatus: {
+        ...processingStatus,
+        status: "VERIFIED",
+        verifiedAt: "2026-09-01T03:18:00.000Z",
+        verified: true,
+        authoritative: true,
+      },
+    });
+    snapshot = applyBusinessPricingListingReadToAuditSnapshot(
+      snapshot,
+      verifiedListing,
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps[1]).toEqual(expect.objectContaining({
+      state: "complete",
+      statusLabel: "回查成功",
+      target: { amount: 18.19, currencyCode: "USD" },
+      observed: { amount: 18.19, currencyCode: "USD" },
+    }));
+
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      workflowWriteStatus({
+        stage: "business_price",
+        acceptedAt: "2026-09-01T03:20:00.000Z",
+        requestId: "request-business-workflow",
+        submissionId: "submission-business-workflow",
+        businessPriceSubmitted: true,
+        previousMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+        requestedMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      }),
+    );
+    expect(snapshot.workflowActivities![0]!.observedMinimumPrice).toEqual({
+      amount: 18.19,
+      currencyCode: "USD",
+    });
+    expect(snapshot.workflowActivities![0]!.observedBusinessPrice).toBeNull();
+  });
+
+  it("does not carry a prior readback amount into a new write submission", () => {
+    const firstStatus = workflowWriteStatus();
+    const firstRead = parseBusinessPricingListingSnapshot({
+      ...interactiveListing,
+      sellerSku: "FBA-CONFIGURED",
+      asin: "B000000002",
+      title: "Configured business price",
+      minimumPrice: { amount: 23.49, currencyCode: "USD" },
+      writeStatus: firstStatus,
+    });
+    let snapshot = applyBusinessPricingListingReadToAuditSnapshot(
+      parseBusinessPricingAuditSnapshot(payload()),
+      firstRead,
+    );
+    expect(snapshot.workflowActivities![0]!.observedMinimumPrice).toEqual({
+      amount: 23.49,
+      currencyCode: "USD",
+    });
+
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      workflowWriteStatus({
+        acceptedAt: "2026-09-01T04:10:19.000Z",
+        requestId: "request-second-workflow",
+        submissionId: "submission-second-workflow",
+        requestedMinimumPrice: { amount: 17.19, currencyCode: "USD" },
+      }),
+    );
+    expect(snapshot.workflowActivities![0]!.observedMinimumPrice).toBeNull();
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps[1]).toEqual(expect.objectContaining({
+      statusLabel: "等待 Amazon 回查",
+      observed: null,
+    }));
   });
 
   it("preserves completed minimum-price steps through the full B2B lifecycle", () => {
@@ -983,6 +1153,41 @@ describe("FBA business pricing audit renderer", () => {
       "complete",
       "complete",
       "complete",
+    ]);
+
+    const laterPriceOnlyProcessing = workflowWriteStatus({
+      stage: "business_price",
+      acceptedAt: "2026-09-01T04:20:00.000Z",
+      requestId: "request-later-price-only",
+      submissionId: "submission-later-price-only",
+      businessPriceSubmitted: true,
+      previousBusinessPrice: { amount: 23.99, currencyCode: "USD" },
+      requestedBusinessPrice: { amount: 22.99, currencyCode: "USD" },
+      previousMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      requestedMinimumPrice: { amount: 18.19, currencyCode: "USD" },
+      quantityDiscountPlanChange: "preserve",
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+        ],
+      },
+    });
+    snapshot = applyBusinessPriceWriteStatusToAuditSnapshot(
+      snapshot,
+      laterPriceOnlyProcessing,
+    );
+    expect(snapshot.workflowActivities![0]!.minimumPriceProgress).toBe(
+      "not_required",
+    );
+    expect(businessPricingWorkflowProgress(
+      snapshot.workflowActivities![0]!,
+    ).steps.map((step) => step.state)).toEqual([
+      "skipped",
+      "skipped",
+      "complete",
+      "current",
     ]);
   });
 

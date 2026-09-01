@@ -188,6 +188,7 @@ export default function BusinessPricingEditor({
   onClose,
   onVerified,
   onCanonicalListingVerified,
+  onCanonicalListingRead,
   onWriteStatusChange,
   onError,
   onBusyChange,
@@ -196,6 +197,9 @@ export default function BusinessPricingEditor({
   onClose: () => void;
   onVerified: (result: BusinessPriceUpdate) => void;
   onCanonicalListingVerified?: (
+    listing: BusinessPricingListingSnapshot,
+  ) => void;
+  onCanonicalListingRead?: (
     listing: BusinessPricingListingSnapshot,
   ) => void;
   onWriteStatusChange?: (status: BusinessPriceWriteStatus) => void;
@@ -450,6 +454,7 @@ export default function BusinessPricingEditor({
       if (freshStatus) {
         setWriteStatus(freshStatus);
         notifyRendererObserver(() => onWriteStatusChange?.(freshStatus));
+        notifyRendererObserver(() => onCanonicalListingRead?.(fresh));
         if (freshStatus.status === "VERIFIED") {
           setSubmittedPreview(null);
           setCommitFailed(false);

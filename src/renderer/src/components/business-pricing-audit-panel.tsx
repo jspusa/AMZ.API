@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   applyBusinessPriceWriteStatusToAuditSnapshot,
+  applyBusinessPricingListingReadToAuditSnapshot,
   applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingWorkflowProgress,
@@ -171,7 +172,15 @@ function WorkflowProgress({
               ? index + 1
               : "–"}</i>
             <span>{step.label}</span>
-            <small>{stateLabel(step.state)}</small>
+            <small>{step.statusLabel ?? stateLabel(step.state)}</small>
+            {(step.target || step.observed) && (
+              <span className="business-pricing-workflow-values">
+                {step.target && <em>目標 {formatMoney(step.target)}</em>}
+                {step.observed && (
+                  <em>Amazon 回查 {formatMoney(step.observed)}</em>
+                )}
+              </span>
+            )}
           </li>
         ))}
       </ol>
@@ -254,6 +263,7 @@ export default function BusinessPricingAuditPanel({
   const [selected, setSelected] =
     useState<BusinessPricingListingSnapshot | null>(null);
   const [editLoading, setEditLoading] = useState(false);
+  const [openingSellerSku, setOpeningSellerSku] = useState<string | null>(null);
   const [job, setJob] = useState<StandaloneAuditJob | null>(
     initialJob?.kind === "businessPricing" &&
       initialJob.marketplaceId === marketplaceId &&
@@ -281,6 +291,15 @@ export default function BusinessPricingAuditPanel({
     publishSnapshot(applyBusinessPriceWriteStatusToAuditSnapshot(
       current,
       writeStatus,
+    ));
+  };
+
+  const rememberListingRead = (listing: BusinessPricingListingSnapshot) => {
+    const current = snapshotRef.current;
+    if (!current || !listing.writeStatus) return;
+    publishSnapshot(applyBusinessPricingListingReadToAuditSnapshot(
+      current,
+      listing,
     ));
   };
 
@@ -547,6 +566,7 @@ export default function BusinessPricingAuditPanel({
       : panelRef.current?.scrollTop ?? 0;
     const revision = ++editorRevisionRef.current;
     setEditLoading(true);
+    setOpeningSellerSku(row.sellerSku);
     setError(null);
     setSelected(null);
     try {
@@ -576,7 +596,7 @@ export default function BusinessPricingAuditPanel({
         );
       }
       if (editorRevisionRef.current !== revision) return;
-      if (fresh.writeStatus) rememberWriteStatus(fresh.writeStatus);
+      if (fresh.writeStatus) rememberListingRead(fresh);
       setSelected(fresh);
     } catch (requestError) {
       if (editorRevisionRef.current === revision) {
@@ -585,7 +605,10 @@ export default function BusinessPricingAuditPanel({
           : "無法開啟 B2B 價格編輯。");
       }
     } finally {
-      if (editorRevisionRef.current === revision) setEditLoading(false);
+      if (editorRevisionRef.current === revision) {
+        setEditLoading(false);
+        setOpeningSellerSku(null);
+      }
     }
   };
 
@@ -594,6 +617,7 @@ export default function BusinessPricingAuditPanel({
     editorRevisionRef.current += 1;
     setSelected(null);
     setEditLoading(false);
+    setOpeningSellerSku(null);
     onEditorBusyChange?.(false);
   };
 
@@ -709,6 +733,7 @@ export default function BusinessPricingAuditPanel({
             onClose={closeEditor}
             onVerified={applyVerifiedPrice}
             onCanonicalListingVerified={applyVerifiedListing}
+            onCanonicalListingRead={rememberListingRead}
             onWriteStatusChange={rememberWriteStatus}
             onError={setError}
             onBusyChange={(busy) => {
@@ -864,7 +889,10 @@ export default function BusinessPricingAuditPanel({
                     type="button"
                     onClick={() => void openEditor(row)}
                     disabled={editLoading || loading}
-                  >{rowWorkflow?.state === "waiting_b2b"
+                    aria-busy={openingSellerSku === row.sellerSku}
+                  >{openingSellerSku === row.sellerSku
+                      ? "正在讀取 Amazon…"
+                      : rowWorkflow?.state === "waiting_b2b"
                       ? "繼續預檢 B2B"
                       : rowWorkflow?.state === "waiting_amazon"
                       ? "查看／重新確認"
