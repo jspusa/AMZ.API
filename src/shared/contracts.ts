@@ -1,3 +1,5 @@
+import type { OperationsBoardPublisherDraft } from "./operations-board";
+
 export type ApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type ApiBody =
@@ -151,7 +153,8 @@ export type DesktopBridge = {
     test(marketplaceId: string): Promise<AdvertisingConnectionTestResult>;
   };
   operationsBoard: {
-    openEditor(): Promise<void>;
+    publish(draft: OperationsBoardPublisherDraft): Promise<void>;
+    manage(itemId: string): Promise<void>;
     onUpdated(listener: () => void): () => void;
   };
   app: {

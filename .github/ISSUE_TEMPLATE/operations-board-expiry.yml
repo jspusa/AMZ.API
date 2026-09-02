@@ -1,0 +1,48 @@
+name: 公布欄｜即期 SKU
+description: 新增一筆會出現在 AMZ.API 首頁與月曆的即期品倒數
+title: "[公布欄｜即期] "
+labels:
+  - operations-board
+  - operations-board-expiry
+body:
+  - type: markdown
+    attributes:
+      value: |
+        這張表單送出後會公開顯示 Seller SKU、人工效期與備註。Amazon 憑證、即時庫存與價格不會寫進 GitHub。
+        只有 AMZ.API 專案擁有者或協作者建立的項目會進入公布欄；關閉 Issue 即可撤下。
+  - type: dropdown
+    id: marketplace
+    attributes:
+      label: Amazon 站點
+      options:
+        - Amazon 美國 — ATVPDKIKX0DER
+        - Amazon 加拿大 — A2EUQ1WTGCTBG2
+        - Amazon 英國 — A1F83G8C2ARO7P
+        - Amazon 德國 — A1PA6795UKMFR9
+        - Amazon 日本 — A1VC38T7YXB528
+        - Amazon 新加坡 — A19VAU5U5O7RUS
+        - Amazon 澳洲 — A39IBJ37TRP1C6
+    validations:
+      required: true
+  - type: input
+    id: seller-sku
+    attributes:
+      label: Seller SKU
+      description: 請輸入 Amazon 使用的精確 Seller SKU，最多 40 個字元。
+      placeholder: ASCL01
+    validations:
+      required: true
+  - type: input
+    id: expiry-date
+    attributes:
+      label: 人工效期
+      description: 使用 YYYY-MM-DD，例如 2026-12-31。
+      placeholder: 2026-12-31
+    validations:
+      required: true
+  - type: textarea
+    id: note
+    attributes:
+      label: 備註
+      description: 選填，最多 500 個字元。
+      placeholder: 優先安排促銷或清庫存

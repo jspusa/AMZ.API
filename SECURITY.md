@@ -7,9 +7,9 @@
 - Renderer 沒有 Node.js、raw IPC、`fetch`／XHR 外連或任意開啟網址能力。
 - LWA、SP-API、R2 與 Amazon Ads API 請求只從 main process 發出；renderer 僅能以 `<img>` 顯示 HTTPS 商品圖片，不會附帶 Amazon 憑證或自訂 headers。
 - SP-API／R2／Skill 與 Ads 敏感欄位只在 main process 建立的 packaged data-URL 本機 sheet 輸入。Sheet 使用 memory-only partition、無網路 CSP、sandbox 與 context isolation；save IPC 只接受 exact editor BrowserWindow 的 main frame。GitHub Pages 沒有 secret input state，也不能直接呼叫 save。
-- 公布欄首頁只經 main-owned `GET /api/operations-board` 讀取固定 `operations-board/v1.json`；renderer 不能指定 R2 host、bucket、key、credential 或任意 URL。公開 R2 URL 的知情者可能讀到 SKU／人工效期／促銷文字，因此資料不得包含密碼、Amazon token、價格或庫存快照。價格與庫存只由每台 Notebook Key 以最多 100 個 exact identity 的 `POST /api/sp-api/operations-board-facts` 補充；owner 去重、全域最多三個唯讀 SP 工作、single-flight 取消與 context fence，auth／throttle／network／server error 會停止整批，SKU-not-found 才只讓該欄 unavailable。demo 值必須明示為展示資料。
-- 公布欄 mutation 不進 public router。Pages 只能開啟 main 建立的 no-network data-URL modal；enroll／帳密解鎖／native 解鎖／change-admin／save IPC 全部只接受該 exact BrowserWindow main frame。獨立 admin vault 只保存 random salt＋scrypt verifier 的 safeStorage 密文，密碼欄在成功、取消與 `pagehide` 清空；三次失敗後 main 逐步節流。管理帳密或可用的 Touch ID／Windows Hello 是 OR，任一種通過即可建立該視窗 session，不會要求帳密路徑再強制第二種生物辨識；只有明確按「確認並發布」才寫入。session 綁 BrowserWindow lifetime，關窗、鎖屏、睡眠或安裝更新即失效。
-- 一般公布欄讀者的公開 HTTPS 基底網址只保存在獨立 safeStorage sidecar `operations-board-reader.enc`，不改既有 `credentials.enc` exact schema，也不保存 R2 account、bucket 或 writer credential；main 讀取 adapter 只收到固定 object key 與解析後的公開 URL。公布欄寫入只由明確配置的編輯電腦使用 vault 內 R2 credential，且有效公開網址必須與公布欄唯讀網址完全一致，才可對固定 key 執行一次 conditional `PutObject`。main 先 fresh-read revision／ETag，使用 `If-Match` 或首次 `If-None-Match: *`；reader body 上限 128 KiB，redirect 禁止，單次 transport 最長 10 秒且 SDK maxAttempts 固定 1。衝突、timeout 或未知結果不自動重送。管理帳密是這台 App 的額外 UI gate，真正遠端寫入權限仍是 bucket-scoped R2 token，不能把共用 writer token 發給一般讀者。
+- 公布欄首頁只經 main-owned `GET /api/operations-board` 讀取固定 GitHub Pages `operations-board/v1.json`；renderer 不能指定 host、path、credential 或任意 URL。Seller SKU／人工效期／促銷文字是公開 GitHub 資料，因此不得包含密碼、Amazon token、價格或庫存快照。價格與庫存只由每台 Notebook Key 以最多 100 個 exact identity 的 `POST /api/sp-api/operations-board-facts` 補充；owner 去重、全域最多三個唯讀 SP 工作、single-flight 取消與 context fence，auth／throttle／network／server error 會停止整批，SKU-not-found 才只讓該欄 unavailable。demo 值必須明示為展示資料。
+- 公布欄沒有 public write API，也不保存 R2 writer、GitHub token或額外管理密碼。Pages 只把 bounded announcement draft 送往 main 的 `publish` IPC；main 固定 repository、template 與 query keys，再由使用者在 GitHub 登入頁做最後發布確認。`manage` 只可從 builder-minted UUID 還原正整數 Issue number。GitHub Actions 只發布 open、正確 label 且 `author_association` 為 owner／member／collaborator 的 Issue；未授權外部使用者即使仿造表單也不會進入 snapshot。close Issue 即撤下。
+- 公布欄 reader body 上限維持 128 KiB，redirect 禁止，單次 transport 最長 10 秒；schema、日期、marketplace、字數、UUID 與重複 ID 全部 fail closed。讀取失敗只保留本次程序的 last-known-good 並明示 stale，不把失敗解讀為清空。已退役的本機 R2 board sidecar與 editor 不再由 Pages preload 開啟，也不影響固定 Pages 來源；圖片 R2 權限仍只服務既有圖片功能。
 - Custom URL 只能顯示／聚焦 App，永遠不能直接執行 Amazon 寫入。
 - GitHub UI 是受信任控制面；repository／Pages 若被入侵，remote UI 可能看到 Bridge 回傳的非 Secret 營運資料，因此寫入路徑、payload、native 摘要、Touch ID 與防重送全部由 main process 強制執行。
 
@@ -58,7 +58,7 @@
 - SP-API Access Token
 - Seller ID 完整值
 - R2 Secret Access Key
-- 公布欄管理密碼或可離線猜測的預設 verifier
+- GitHub 密碼、Personal Access Token 或公布欄額外管理密碼
 - Ads LWA Client Secret
 - Ads Refresh Token、Access Token、Profile ID 與完整 Ads／Seller account identifier
 - Amazon response payload 或 buyer PII
@@ -73,7 +73,7 @@
 6. 測試舊版到新版更新仍能讀取 Keychain vault，且 designated code requirement 不變。
 7. 在乾淨 Windows 11 Pro x64 使用者安裝 NSIS，並從 ZIP 解壓執行；核對 `SHA256SUMS.txt`、ASAR integrity、DPAPI 跨使用者邊界、Hello 成功／取消／未設定／裝置忙碌，並確認任何失敗都沒有 Amazon 寫入。
 8. Windows 未完成 Authenticode 簽章與 SmartScreen reputation 前只能標為內部未簽章版；GitHub-hosted Windows runner 的 compile／package／smoke 不可冒充 Windows 11 Pro 或 Windows Hello 實機通過。
-9. 以兩個 writer 模擬公布欄 revision／ETag 衝突，確認後送者收到衝突且沒有第二次 Put；另測試公開 JSON 斷網、過大、非 JSON、redirect、舊 Notebook Key、帳密錯誤節流、Touch ID／Windows Hello 取消與鎖屏清 session。
+9. 以 owner／collaborator／外部作者 Issue fixture 核對只有授權公告進入 snapshot，並測試 create／edit／close／reopen workflow、公開 JSON 斷網、過大、非 JSON、redirect、舊 Notebook Key 以及固定 GitHub URL／Issue number 驗證。
 
 ## 回報問題
 

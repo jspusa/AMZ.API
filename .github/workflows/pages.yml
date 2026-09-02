@@ -9,11 +9,16 @@ on:
       - "electron.vite.config.ts"
       - "package.json"
       - "package-lock.json"
+      - "scripts/build-github-operations-board.mjs"
+      - ".github/ISSUE_TEMPLATE/operations-board-*.yml"
       - ".github/workflows/pages.yml"
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
   contents: read
+  issues: read
   pages: write
   id-token: write
 
@@ -41,6 +46,10 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Build authorized operations announcements
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/build-github-operations-board.mjs
       - name: Build GitHub control console
         run: npm run build
       - name: Upload control console

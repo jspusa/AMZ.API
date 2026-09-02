@@ -14,7 +14,7 @@ export const CREDENTIAL_EDITOR_HTML = String.raw`<!doctype html>
 </head>
 <body>
   <main>
-    <header><div class="tag">LOCAL NOTEBOOK SHEET</div><h1>SP-API／R2／Skill 本機安全輸入</h1><p>欄位只存在此本機記憶體視窗，並直接送往 Notebook 鑰匙 main process 與系統安全儲存區；不經 GitHub Pages。已保存內容不會回填，留白代表沿用既有值。</p></header>
+    <header><div class="tag">LOCAL NOTEBOOK SHEET</div><h1>SP-API／圖片 R2／Skill 本機安全輸入</h1><p>欄位只存在此本機記憶體視窗，並直接送往 Notebook 鑰匙 main process 與系統安全儲存區；不經 GitHub Pages。已保存內容不會回填，留白代表沿用既有值。營運公布欄不需要在這裡設定。</p></header>
     <section class="section"><h2>SP-API App 身分</h2><small>LWA Client ID 與 Secret 必須成對；若已保存可全部留白。</small><div class="grid">
       <label>LWA Client ID<input id="lwaClientId" type="password" autocomplete="new-password" spellcheck="false"></label>
       <label>LWA Client Secret<input id="lwaClientSecret" type="password" autocomplete="new-password" spellcheck="false"></label>
@@ -38,9 +38,6 @@ export const CREDENTIAL_EDITOR_HTML = String.raw`<!doctype html>
       <label>Secret Access Key<input id="r2SecretAccessKey" type="password" autocomplete="new-password" spellcheck="false"></label>
       <label class="full">公開圖片 HTTPS 網址<input id="r2PublicBaseUrl" type="url" autocomplete="off" spellcheck="false"></label>
     </div></section>
-    <section class="section"><h2>共享公布欄唯讀網址（選配）</h2><small>一般同事的電腦只要填這個公開 HTTPS 基底網址，不需持有 R2 Access Key；負責更新的電腦才需要填上方完整 R2 寫入設定。</small><div class="grid">
-      <label class="full">公布欄公開 HTTPS 基底網址<input id="operationsBoardPublicBaseUrl" type="url" autocomplete="off" spellcheck="false"></label>
-    </div></section>
     <section class="section"><h2>補貨 Skill 接點（選配）</h2><div class="grid"><label class="full">HTTPS Skill URL<input id="replenishmentSkillUrl" type="url" autocomplete="off" spellcheck="false"></label></div></section>
     <div class="note">保存會觸發 Touch ID 或 Windows Hello（指紋／臉部／PIN 由系統決定）。取消、成功或視窗關閉時會立即清空所有欄位；任何 Secret 都不會回傳或顯示。</div>
     <div id="feedback" role="alert"></div>
@@ -48,7 +45,7 @@ export const CREDENTIAL_EDITOR_HTML = String.raw`<!doctype html>
   </main>
   <script>
     (() => {
-      const ids = ["lwaClientId","lwaClientSecret","naRefreshToken","naSellerId","feRefreshToken","feSellerId","euRefreshToken","euSellerId","r2AccountId","r2AccessKeyId","r2SecretAccessKey","r2Bucket","r2PublicBaseUrl","operationsBoardPublicBaseUrl","replenishmentSkillUrl"];
+      const ids = ["lwaClientId","lwaClientSecret","naRefreshToken","naSellerId","feRefreshToken","feSellerId","euRefreshToken","euSellerId","r2AccountId","r2AccessKeyId","r2SecretAccessKey","r2Bucket","r2PublicBaseUrl","replenishmentSkillUrl"];
       const value = (id) => document.getElementById(id).value;
       const clear = () => ids.forEach((id) => { document.getElementById(id).value = ""; });
       const setBusy = (busy) => { document.getElementById("save").disabled = busy; document.getElementById("cancel").disabled = busy; };
@@ -70,7 +67,6 @@ export const CREDENTIAL_EDITOR_HTML = String.raw`<!doctype html>
               secretAccessKey: value("r2SecretAccessKey"), bucket: value("r2Bucket"),
               publicBaseUrl: value("r2PublicBaseUrl"),
             },
-            operationsBoardPublicBaseUrl: value("operationsBoardPublicBaseUrl"),
             replenishmentSkillUrl: value("replenishmentSkillUrl"),
           });
           clear();

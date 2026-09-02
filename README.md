@@ -16,9 +16,9 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 策劃 | FBA 銷售趨勢（7／14／30／90 天、自訂 1–365 天、去年同期、選配迷你滑板）、SB／SD 授權狀態、FBA 補貨計算 | 自動／人工授權 |
 | 策劃 | 依所選日期自動載入 FBA shipment report，以目前 Listing 標題前綴分類品牌營收與未分類列 | Amazon 報表唯讀 |
 | 策劃 | 全部 FBA 非重疊庫齡桶、Amazon 預估冗餘、下月倉儲成本與 AIS 預估附加費、Excel | Amazon 報表唯讀 |
-| 營運 | 首頁可收折重要公布欄：以緊湊單列顯示人工標記的即期 Seller SKU／效期／備註、一次倒數、站點、目前 FBA 可售庫存、有效售價與同步時間；七欄等寬促銷月曆同時標示促銷檔期與 SKU 到期日，促銷可另選首頁倒數 | 公布內容共用固定 R2 JSON；首頁唯讀，新增／刪除／改日期只在 Notebook Key 本機無網路管理視窗完成，管理帳密或 Touch ID／Windows Hello 任一種即可解鎖，revision／ETag 衝突時拒絕覆寫 |
+| 營運 | 首頁可收折重要公布欄：以緊湊單列顯示人工標記的即期 Seller SKU／效期／備註、一次倒數、站點、目前 FBA 可售庫存、有效售價與同步時間；七欄等寬促銷月曆同時標示促銷檔期與 SKU 到期日，促銷可另選首頁倒數 | AMZ.API 內直接按「新增即期品／新增促銷」填白話欄位，再到已完整預填的 GitHub 頁面做最後發布確認；編輯 Issue 即修改，關閉 Issue 即撤下。只發布 owner／member／collaborator 公告，不需 R2、管理密碼或 GitHub token |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID／Windows Hello／系統確認 |
-| 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值、成分宣稱核對與逐項原因） | Amazon 唯讀掃描；依明確 ingredients 證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic 宣稱；摘要與常用操作優先顯示，門檻、辭典與安全範圍收在低調的「詳細說明 ›」；Excel 依已證明的變體 family 分頁，問題欄著色 |
+| 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值、成分宣稱核對與逐項原因） | Amazon 唯讀掃描；依明確 ingredients 證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic 宣稱；摘要與常用操作優先顯示，門檻、辭典與安全範圍收在低調的「詳細說明 ›」；Excel 依已證明的變體 family 分頁，問題欄著色，未發現問題的可編輯欄使用淺綠色 |
 | 產品 | 將同一份文案健檢 Excel 以選檔或拖放回傳，逐欄核對完整 Amazon 原值／Excel 更新值後批次更新 | 同檔 round trip 保留原始文案特殊換行；掃描證據可安全跨鎖屏／重啟保留 24 小時。健檢原文未完整讀取但被編輯的列會明確列為本次略過且不寫入，不再阻擋其他安全列；可寫列的預檢失敗仍顯示 exact SKU、欄位差異與公開原因並整批零寫入。若 Amazon 同語系仍有第 6 項後的舊產品要點，預檢會保留換行／Tab／連續空白逐項列出將刪原值；零寬或雙向文字控制符則停止，避免隱藏或重排。renderer 必須回傳 exact SKU 刪除確認；完整 SKU、原值、更新值、刪除內容與 `INVALID` 原因都留在 App 逐項核對。若逐項原生摘要超過 Touch ID／Windows Hello 的 120 字上限，Notebook Key 會改顯示 main-owned 總 SKU 數、高風險 SKU 數、刪除總數、`INVALID` SKU 數與綁定整份批次的 12 字驗證碼，包含 0 值且不再要求拆批。新版 Pages 遇到缺少刪除 disclosure 的舊 Notebook Key 仍會明確要求更新。只有格式完整的 live Amazon `INVALID`＋`ERROR` 可在明確勾選 exact SKU 後嘗試一次，仍須 Touch ID／Windows Hello、每 SKU ledgered 單次 PATCH＋回讀；Amazon 仍可能拒絕，不明即停止且不盲目重送 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於六張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
@@ -62,7 +62,7 @@ FBA 廣告策略表只會把 Sales & Traffic 的 exact Seller SKU＋ASIN 與目�
    - 各使用區域的 Refresh Token
    - 各區域 Seller ID / Merchant Token
 5. macOS 使用 Touch ID；Windows 11 使用 Windows Hello（指紋／臉部／PIN 由 Windows 決定）。Windows Hello 未設定、取消或失敗時會停止敏感操作，不會降級成一般按鈕放行。
-6. 要讓多台 Notebook Key 看見同一份公布欄，一般讀者只需在本機安全連線填入相同的「公布欄公開 HTTPS 基底網址」，不需要 R2 Access Key。只有負責新增、刪除或改日期的編輯電腦才填完整 R2 account／bucket／writer credentials，而且它的實際公開網址必須與公布欄唯讀網址完全一致；不一致時會在建立管理者或寫入前停止。第一次按「登入並更新公布欄」時，在無網路本機視窗建立管理帳密；密碼只用來產生加鹽驗證值，不會保存或上傳。之後輸入管理帳密，或使用可用的 Touch ID／Windows Hello，任一種通過即可進入編輯；按「確認並發布」才會更新共用公布欄。
+6. 公布欄不需要任何連線設定。按「新增即期品」或「新增促銷」，在 AMZ.API 填完後按「前往 GitHub 確認發布」；GitHub 會開啟已完整預填的表單，只需登入有權限的帳號並按最後的 Submit。每筆公告的「管理」會開啟原始 Issue：直接編輯就是修改，Close issue 就是撤下。GitHub Actions 會自動重新發布，多台 Notebook Key 讀取同一份結果。
 7. 在頂端輸入 Seller SKU，直接進入文案、圖片、定價、促銷或補貨。
 
 SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、歐洲（UK／DE）各自使用區域 Refresh Token 與 Seller ID；同一個 LWA Client 可共用。
@@ -78,8 +78,7 @@ SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、�
 
 - Secret 經 Electron `safeStorage` 的作業系統金鑰保護後，才寫入 App 的 `userData/credentials.enc`；macOS 使用 Keychain，Windows 使用當前登入使用者的 DPAPI。
 - Amazon Ads 使用獨立 `ads-credentials.enc`；兩種憑證都只在 main process 的無網路本機 sheet 輸入，Pages 只能開啟 sheet、讀取遮罩狀態、測試或清除。
-- 一般讀者的公布欄公開網址保存在獨立 `operations-board-reader.enc`；`credentials.enc` 維持 v0.1.47 可讀的 exact schema，回復舊版不會因公布欄新欄位而失去原本 Amazon 憑證。
-- 公布欄管理者使用獨立的 `operations-board-admin.enc`；只保存作業系統加密後的帳號、隨機 salt 與 scrypt verifier，不保存密碼。通過驗證的編輯 session 只活到該本機管理視窗關閉、鎖屏、睡眠或安裝更新。
+- 公布欄使用公開 GitHub Issue 欄位與 Pages JSON，不保存另一組管理帳密、R2 writer 或 GitHub token。Seller SKU、人工效期、促銷名稱與備註會成為公開 repository 資料；Amazon 憑證、即時庫存與價格不得填入公告。
 - 完整 Secret 永不回傳 renderer、永不寫入 GitHub、`.env`、URL、localStorage 或日誌。
 - Amazon Access Token 只在主程序記憶體中短暫快取。
 - 作業系統安全儲存不可用時保存會直接失敗，沒有明文 fallback。Windows DPAPI 保護不同 Windows 使用者之間的存取，不等於隔離同一使用者權限下的其他程式。

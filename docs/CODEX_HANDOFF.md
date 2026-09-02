@@ -4,6 +4,14 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-09-02 v0.1.49 GitHub 公告發布器（本機實作與驗證完成；未發布／未安裝／未上傳員工入口）
+
+使用者不需要再設定 R2 五個欄位或另一組公布欄帳密。首頁直接以白話表單新增即期品或促銷，Notebook Key main process 只能建立固定 `jspusa/AMZ.API` Issue Form 的預填 URL，使用者到 GitHub 以有權限帳號做最後確認。編輯 Issue 即修改，Close Issue 即撤下；GitHub Actions 只會收錄 open、正確 label，且 author association 為 owner／member／collaborator 的公告。
+
+共用 JSON 改為固定 Pages `operations-board/v1.json`，不儲存 GitHub token、R2 writer、公布欄密碼、Amazon 憑證、庫存或價格快照。Seller SKU、人工效期、促銷名稱與備註會成為公開 repository 資料；當下 FBA 庫存與價格仍只由每台 Notebook Key 即時唯讀補上。舊版 R2 board sidecar／editor 保留相容程式，但 Pages preload 已沒有可開啟入口，也不再影響公布欄讀取來源。
+
+已在 GitHub repository 建立並重新查證 `operations-board`、`operations-board-expiry`、`operations-board-promotion` 三個 label。本機 `npm run check` 通過 TypeScript、255 個測試檔／2,529 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean，使用者提供的測試密碼在本輪檔案 0 命中。實際 Electron 開發版已點開「新增即期品」、「新增促銷」並驗證完整收折；沒有按「前往 GitHub 確認發布」、沒有建立公告 Issue、沒有 Amazon Validation Preview、原生確認、PATCH 或 mutation。開發版啟動時沿用既有 vault 並顯示首頁唯讀 Amazon 資料，因此不得把本次紀錄寫成「完全沒有 Amazon read」。
+
 ### 2026-09-02 v0.1.48 營運公布欄／即期倒數／促銷月曆與 Excel 正常色（已合併／Pages 上線／Mac 安裝／員工下載更新；未呼叫 Amazon）
 
 本機工作樹新增位於「一鍵執行全部 FBA 健檢」之前、可收折的「營運公布欄」，並和原本想要的即期品專區合併。即期品以密集單列呈現 exact marketplace、Seller SKU、人工效期、備註、只出現一次的天數倒數、目前 FBA fulfillable quantity、有效售價與同步時間；促銷可選是否出現在首頁倒數。七個星期欄固定等寬，標題使用無文字 SVG icon、移除淡黃色底；同一個月曆同時標示促銷與 SKU 到期日，每格最多顯示兩筆後以 `+N` 收斂，完整日程與最多 100 筆即期品各自使用 bounded 內部捲動。即期列與月曆標籤都顯示站點短碼；真實時鐘會在台北午夜重算今天與倒數，測試注入日期則保持 deterministic。文案健檢 Excel 原本代表無問題的淡藍色已改為淡綠色，不更動問題判定或匯入授權語意。
