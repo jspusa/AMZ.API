@@ -21,7 +21,7 @@
 ## Publication and compatibility
 
 - GitHub Actions regenerates the public JSON snapshot when authorized announcement Issues change and when the Control Console is built.
-- Unaffiliated public Issue events do not start the deployment job and cannot receive the internal approval label. The builder queries only approved announcements, independently rechecks author association across bounded pagination, publishes the newest 100 valid items, and keeps the previous Pages deployment if the safety limit is exhausted.
+- Unaffiliated public Issue events and ordinary engineering Issues do not start the deployment job or receive the internal approval label. The builder queries only approved announcements, independently rechecks author association across bounded pagination, publishes the newest 100 valid items, and keeps the previous Pages deployment if the safety limit is exhausted.
 - The main-owned board reader uses the published GitHub Pages snapshot by default and remains fail-closed for invalid data.
 - A missing published snapshot is unavailable and stale, never a successful empty board.
 - The existing Notebook Key gate and local Amazon credential boundary remain unchanged.

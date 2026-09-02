@@ -30,7 +30,13 @@ jobs:
   deploy:
     if: >
       github.event_name != 'issues' ||
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+      (
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) &&
+        (
+          contains(github.event.issue.labels.*.name, 'operations-board') ||
+          contains(github.event.issue.labels.*.name, 'operations-board-approved')
+        )
+      )
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -52,7 +58,8 @@ jobs:
       - name: Approve authorized operations announcement
         if: >
           github.event_name == 'issues' &&
-          (github.event.action == 'opened' || github.event.action == 'reopened')
+          (github.event.action == 'opened' || github.event.action == 'reopened') &&
+          contains(github.event.issue.labels.*.name, 'operations-board')
         uses: actions/github-script@v9
         with:
           script: |

@@ -102,6 +102,12 @@ describe("GitHub-backed operations board snapshot", () => {
     expect(workflow).toMatch(
       /if:\s*>[\s\S]*github\.event_name != 'issues'[\s\S]*OWNER[\s\S]*MEMBER[\s\S]*COLLABORATOR/u,
     );
+    expect(workflow.match(
+      /contains\(github\.event\.issue\.labels\.\*\.name, 'operations-board'\)/gu,
+    )).toHaveLength(2);
+    expect(workflow).toContain(
+      "contains(github.event.issue.labels.*.name, 'operations-board-approved')",
+    );
     expect(workflow).toContain("node scripts/build-github-operations-board.mjs");
     expect(workflow).toContain("operations-board-approved");
     expect(workflow).toMatch(
