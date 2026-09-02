@@ -2860,6 +2860,73 @@ describe("content audit Excel batch router", () => {
     expect(stagePreview).toHaveBeenCalledOnce();
   });
 
+  it("isolates one exact non-FBA SKU and keeps every independent FBA SKU actionable", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Mixed FBA-only preview title",
+    );
+    const parsed = parseContentAuditWorkbook({
+      bytes: edited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const failedSku = parsed.rows[1]!.sellerSku;
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    const stagePreview = vi.fn(async () => undefined);
+    const previewOne = vi.fn(async (input: UpdateListingContentInput) => {
+      if (input.sellerSku === failedSku) {
+        throw new SpApiError(
+          "Amazon 商品內容回應缺少可精確核對的 FBA fulfillment evidence。",
+          { status: 409, code: "FBA_ONLY" },
+        );
+      }
+      return preparedPreview(input);
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: { previewOne, attemptOne: vi.fn() },
+      randomUUID: () => "content-batch-non-fba-isolated",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, "content-batch-non-fba-isolated-001"),
+    });
+    const body = responseValue(response);
+
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body).toMatchObject({
+      changes: [
+        expect.not.objectContaining({ sellerSku: failedSku }),
+        expect.not.objectContaining({ sellerSku: failedSku }),
+      ],
+      validationFailures: [{
+        sellerSku: failedSku,
+        code: "FBA_ONLY",
+        changedFields: expect.arrayContaining(["title"]),
+      }],
+    });
+    expect(body.notice).toContain("其餘安全 SKU 可繼續");
+    expect(stagePreview).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { status: 401, code: "VALIDATION_FAILED" },
     { status: 403, code: "CONTENT_REQUIRED" },
