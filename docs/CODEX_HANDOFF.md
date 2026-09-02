@@ -4,6 +4,12 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-09-02 公布欄 GitHub 標準預填修正（本機驗證完成；尚未發布／安裝）
+
+使用者以 v0.1.49 新增即期品後，GitHub Issue #192 只留下預填標題，實際 API 回應為空白 body 與 0 個 labels；因此 workflow 不會把它辨識為公布欄公告，首頁同步維持 0 個 SKU。遠端 main 確認兩個 Issue Form 與四個公布欄 labels 都存在，故不是使用者漏填或 repository 缺少設定，而是發布器把完整資料只寄託在 GitHub Issue Form 的 template／自訂欄位預填；該表單未套用時沒有標準 body／labels fallback。
+
+修正後發布器不再依賴 Issue Form 自訂 query 參數，改用 GitHub 官方標準 title／body／labels 預填：即期品直接產生 Amazon 站點、Seller SKU、人工效期、備註與 `operations-board,operations-board-expiry`，促銷直接產生檔期日期、促銷名稱、備註、首頁倒數與 `operations-board,operations-board-promotion`。新增的 publisher-to-builder regression 會把發布網址中的 body／labels 模擬為 GitHub Issue，再要求 builder 還原 exact 公布欄資料；修正前因 body 為 null 穩定失敗，修正後通過。完整 `npm run check` 通過 TypeScript、255 個測試檔／2,535 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。這是 Notebook Key main-process 變更，既有 v0.1.49 不會從 Pages 自動取得；須後續明確升版、封裝與安裝才會生效。Issue #192 未被修改或關閉，且本輪沒有建立／送出新 Issue、沒有 Amazon request 或 mutation。
+
 ### 2026-09-02 v0.1.49 GitHub 公告發布器（本機實作與驗證完成；未發布／未安裝／未上傳員工入口）
 
 使用者不需要再設定 R2 五個欄位或另一組公布欄帳密。首頁直接以白話表單新增即期品或促銷，Notebook Key main process 只能建立固定 `jspusa/AMZ.API` Issue Form 的預填 URL，使用者到 GitHub 以有權限帳號做最後確認。編輯 Issue 即修改，Close Issue 即撤下；GitHub Actions 只會收錄 open、正確 label，且 author association 為 owner／member／collaborator 的公告。

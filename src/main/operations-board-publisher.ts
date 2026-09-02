@@ -64,6 +64,10 @@ function issueFormMarketplaceLabel(marketplaceId: string): string {
   return `Amazon ${marketplace.label.replace(/站$/u, "")} — ${marketplace.id}`;
 }
 
+function issueBody(sections: ReadonlyArray<readonly [string, string]>): string {
+  return sections.map(([heading, value]) => `### ${heading}\n${value}`).join("\n\n");
+}
+
 export function operationsBoardPublisherUrl(
   input: unknown,
 ): string {
@@ -81,15 +85,14 @@ export function operationsBoardPublisherUrl(
       note: boundedText(input.note, 500, "備註"),
       countdown: input.countdown,
     };
-    url.searchParams.set("template", "operations-board-promotion.yml");
     url.searchParams.set("title", `[公布欄｜促銷] ${draft.title}`);
-    url.searchParams.set("promotion-date", draft.date);
-    url.searchParams.set("promotion-title", draft.title);
-    url.searchParams.set("note", draft.note);
-    url.searchParams.set(
-      "countdown",
-      draft.countdown ? "需要顯示倒數" : "只顯示在月曆",
-    );
+    url.searchParams.set("labels", "operations-board,operations-board-promotion");
+    url.searchParams.set("body", issueBody([
+      ["檔期日期", draft.date],
+      ["促銷名稱", draft.title],
+      ["備註", draft.note],
+      ["首頁倒數", draft.countdown ? "需要顯示倒數" : "只顯示在月曆"],
+    ]));
     return url.toString();
   }
   if (input.type !== "expiry") throw new TypeError("公布欄草稿類型無效。");
@@ -101,15 +104,14 @@ export function operationsBoardPublisherUrl(
     expiryDate: calendarDate(input.expiryDate, "人工效期"),
     note: boundedText(input.note, 500, "備註"),
   };
-  url.searchParams.set("template", "operations-board-expiry.yml");
   url.searchParams.set("title", `[公布欄｜即期] ${draft.sellerSku}`);
-  url.searchParams.set(
-    "marketplace",
-    issueFormMarketplaceLabel(draft.marketplaceId),
-  );
-  url.searchParams.set("seller-sku", draft.sellerSku);
-  url.searchParams.set("expiry-date", draft.expiryDate);
-  url.searchParams.set("note", draft.note);
+  url.searchParams.set("labels", "operations-board,operations-board-expiry");
+  url.searchParams.set("body", issueBody([
+    ["Amazon 站點", issueFormMarketplaceLabel(draft.marketplaceId)],
+    ["Seller SKU", draft.sellerSku],
+    ["人工效期", draft.expiryDate],
+    ["備註", draft.note],
+  ]));
   return url.toString();
 }
 
