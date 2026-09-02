@@ -21,7 +21,9 @@
 ## Publication and compatibility
 
 - GitHub Actions regenerates the public JSON snapshot when authorized announcement Issues change and when the Control Console is built.
+- Unaffiliated public Issue events do not start the deployment job. The builder independently rechecks author association across bounded pagination and keeps the previous Pages deployment if the safety limit is exhausted.
 - The main-owned board reader uses the published GitHub Pages snapshot by default and remains fail-closed for invalid data.
+- A missing published snapshot is unavailable and stale, never a successful empty board.
 - The existing Notebook Key gate and local Amazon credential boundary remain unchanged.
 - The obsolete R2 board setup and custom administrator password are removed from the operator flow.
 
@@ -33,5 +35,6 @@
 
 - A public announcement draft produces the expected prefilled GitHub URL without placing secrets or live Amazon values in it.
 - Generated snapshots accept authorized Issue authors and reject unaffiliated public authors.
+- Authorized announcements remain discoverable beyond the first 100 labeled Issues; exhausting the 20-page safety limit fails closed.
 - Expiry notices render in both the compact countdown list and calendar.
 - Passing content-audit workbook cells use the agreed pale-green fill.

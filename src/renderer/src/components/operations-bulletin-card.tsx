@@ -890,7 +890,7 @@ export default function OperationsBulletinCard({
               </label>
             </div>
             <footer>
-              <small>月曆一定會顯示；勾選後才另外顯示倒數。</small>
+              <small>資料會公開到 GitHub；月曆一定會顯示，勾選後才另外顯示倒數。</small>
               <button type="submit" disabled={publisherBusy}>
                 {publisherBusy ? "正在開啟…" : "前往 GitHub 確認發布"}
               </button>

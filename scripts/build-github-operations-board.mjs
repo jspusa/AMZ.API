@@ -7,6 +7,7 @@ export const OPERATIONS_BOARD_EXPIRY_LABEL = "operations-board-expiry";
 export const OPERATIONS_BOARD_PROMOTION_LABEL = "operations-board-promotion";
 
 const AUTHORIZED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const MAX_ISSUE_PAGES = 20;
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const MARKETPLACES = new Map([
   ["Amazon 美國 — ATVPDKIKX0DER", "ATVPDKIKX0DER"],
@@ -158,34 +159,51 @@ export function buildOperationsBoardSnapshot(issues, now = new Date()) {
   };
 }
 
-async function fetchIssues(repository, token) {
+export async function fetchOperationsBoardIssues(
+  repository,
+  token,
+  fetchImpl = fetch,
+) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)) {
     throw new Error("GITHUB_REPOSITORY 格式無效。");
   }
-  const url = new URL(`https://api.github.com/repos/${repository}/issues`);
-  url.searchParams.set("state", "open");
-  url.searchParams.set("labels", OPERATIONS_BOARD_LABEL);
-  url.searchParams.set("per_page", "100");
-  url.searchParams.set("sort", "created");
-  url.searchParams.set("direction", "desc");
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "User-Agent": "AMZ.API-operations-board-builder",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    redirect: "error",
-  });
-  if (!response.ok) throw new Error(`GitHub Issues 讀取失敗（HTTP ${response.status}）。`);
-  return response.json();
+  if (!token) throw new Error("GITHUB_TOKEN 未提供。");
+
+  const issues = [];
+  for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
+    const url = new URL(`https://api.github.com/repos/${repository}/issues`);
+    url.searchParams.set("state", "open");
+    url.searchParams.set("labels", OPERATIONS_BOARD_LABEL);
+    url.searchParams.set("per_page", "100");
+    url.searchParams.set("sort", "created");
+    url.searchParams.set("direction", "desc");
+    url.searchParams.set("page", String(page));
+    const response = await fetchImpl(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "AMZ.API-operations-board-builder",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      redirect: "error",
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub Issues 讀取失敗（HTTP ${response.status}）。`);
+    }
+    const pageIssues = await response.json();
+    if (!Array.isArray(pageIssues)) throw new Error("GitHub Issues 回應格式無效。");
+    issues.push(...pageIssues);
+    if (pageIssues.length < 100) return issues;
+  }
+
+  throw new Error("公布欄 Issue 數量超過安全分頁上限；保留上一版 Pages。");
 }
 
 async function main() {
   const repository = process.env.GITHUB_REPOSITORY ?? "";
   const token = process.env.GITHUB_TOKEN ?? "";
   if (!token) throw new Error("GITHUB_TOKEN 未提供。");
-  const issues = await fetchIssues(repository, token);
+  const issues = await fetchOperationsBoardIssues(repository, token);
   const { snapshot, skipped } = buildOperationsBoardSnapshot(issues);
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const output = process.env.OPERATIONS_BOARD_OUTPUT ||

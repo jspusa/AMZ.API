@@ -500,6 +500,9 @@ describe("operations bulletin home card", () => {
       button.children.join("").includes("新增促銷")
     );
     await act(async () => addPromotion!.props.onClick());
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "資料會公開到 GitHub",
+    );
     const field = (name: string) => renderer!.root.findByProps({ name });
     await act(async () => {
       field("promotionDate").props.onChange({ currentTarget: { value: "2026-10-13" } });

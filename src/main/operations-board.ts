@@ -469,9 +469,18 @@ export class OperationsBoard implements OperationsBoardPort {
           message: "共享公布欄物件目前不存在；暫時保留本次啟動後最後一次成功資料。",
         };
       }
-      const snapshot = remote?.snapshot ?? emptyOperationsBoardSnapshot();
-      if (remote) this.lastKnownGood = snapshot;
-      return { snapshot, source: remote ? "shared" : "empty", stale: false, status: "ready" };
+      if (!remote) {
+        return {
+          snapshot: emptyOperationsBoardSnapshot(),
+          source: "empty",
+          stale: true,
+          status: "unavailable",
+          message: "目前找不到共享公布欄檔案；暫不把它視為公告已清空。",
+        };
+      }
+      const snapshot = remote.snapshot;
+      this.lastKnownGood = snapshot;
+      return { snapshot, source: "shared", stale: false, status: "ready" };
     } catch {
       return {
         snapshot: this.lastKnownGood ?? emptyOperationsBoardSnapshot(),

@@ -225,29 +225,38 @@ describe("shared operations bulletin board", () => {
     await expect(mismatched.isStorageConfigured()).resolves.toBe(false);
   });
 
-  it("needs no R2 and uses a last-known-good value after a read outage", async () => {
+  it("needs no R2 and reports a missing Pages snapshot instead of clearing announcements", async () => {
     const missing = new OperationsBoard({
       vault: vaultWith({ publicBaseUrl: null, storage: null }),
       remote: remoteWith(null),
     });
     await expect(missing.read()).resolves.toMatchObject({
-      status: "ready",
+      status: "unavailable",
       source: "empty",
+      stale: true,
       snapshot: { revision: 0, items: [] },
     });
 
     const freshEmpty = new OperationsBoard({
       vault: vaultWith({}),
-      remote: remoteWith(null),
+      remote: remoteWith({
+        snapshot: {
+          schemaVersion: 1,
+          revision: 0,
+          updatedAt: "1970-01-01T00:00:00.000Z",
+          items: [],
+        },
+        etag: null,
+      }),
     });
     await expect(freshEmpty.read()).resolves.toMatchObject({
       status: "ready",
-      source: "empty",
+      source: "shared",
       stale: false,
     });
     await expect(freshEmpty.read()).resolves.toMatchObject({
       status: "ready",
-      source: "empty",
+      source: "shared",
       stale: false,
     });
 
@@ -291,9 +300,9 @@ describe("shared operations bulletin board", () => {
       remote: remoteWith(null),
     });
     await expect(invalidLegacy.read()).resolves.toMatchObject({
-      status: "ready",
+      status: "unavailable",
       source: "empty",
-      stale: false,
+      stale: true,
     });
   });
 

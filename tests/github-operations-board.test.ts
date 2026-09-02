@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error The production builder is an executable ESM script.
-import { buildOperationsBoardSnapshot } from "../scripts/build-github-operations-board.mjs";
+import * as operationsBoardBuilder from "../scripts/build-github-operations-board.mjs";
+
+const {
+  buildOperationsBoardSnapshot,
+  fetchOperationsBoardIssues,
+} = operationsBoardBuilder;
 
 const labels = (type: "expiry" | "promotion") => [
   { name: "operations-board" },
@@ -92,8 +97,85 @@ describe("GitHub-backed operations board snapshot", () => {
 
     expect(workflow).toMatch(/issues:\s*\n\s*types:\s*\[opened, edited, closed, reopened, labeled, unlabeled\]/u);
     expect(workflow).toMatch(/permissions:[\s\S]*?issues:\s*read/u);
+    expect(workflow).toMatch(
+      /if:\s*>[\s\S]*github\.event_name != 'issues'[\s\S]*OWNER[\s\S]*MEMBER[\s\S]*COLLABORATOR/u,
+    );
     expect(workflow).toContain("node scripts/build-github-operations-board.mjs");
     expect(workflow.indexOf("node scripts/build-github-operations-board.mjs"))
       .toBeLessThan(workflow.indexOf("npm run build"));
+  });
+
+  it("paginates past unaffiliated public Issues before building the authorized snapshot", async () => {
+    const outsiderIssues = Array.from({ length: 100 }, (_, index) => ({
+      number: 1_000 + index,
+      state: "open",
+      author_association: "NONE",
+      labels: labels("expiry"),
+      body: "### Seller SKU\nSHOULD-NOT-PUBLISH",
+    }));
+    const authorizedIssue = {
+      number: 12,
+      state: "open",
+      author_association: "OWNER",
+      labels: labels("expiry"),
+      body: [
+        "### Amazon 站點",
+        "Amazon 美國 — ATVPDKIKX0DER",
+        "",
+        "### Seller SKU",
+        "AUTHORIZED-SKU",
+        "",
+        "### 人工效期",
+        "2026-12-31",
+        "",
+        "### 備註",
+        "合法公告",
+      ].join("\n"),
+    };
+    const requestedPages: number[] = [];
+    const issues = await fetchOperationsBoardIssues(
+      "jspusa/AMZ.API",
+      "test-token",
+      async (input: URL | RequestInfo) => {
+        const url = new URL(String(input));
+        const page = Number(url.searchParams.get("page"));
+        requestedPages.push(page);
+        return new Response(JSON.stringify(
+          page === 1 ? outsiderIssues : [authorizedIssue],
+        ), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    );
+
+    expect(requestedPages).toEqual([1, 2]);
+    expect(buildOperationsBoardSnapshot(issues).snapshot.items).toEqual([
+      expect.objectContaining({ sellerSku: "AUTHORIZED-SKU" }),
+    ]);
+  });
+
+  it("fails closed when the bounded Issue pagination limit is exhausted", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, index) => ({
+      number: 2_000 + index,
+      state: "open",
+      author_association: "NONE",
+      labels: labels("expiry"),
+      body: "### Seller SKU\nSHOULD-NOT-PUBLISH",
+    }));
+    const requestedPages: number[] = [];
+
+    await expect(fetchOperationsBoardIssues(
+      "jspusa/AMZ.API",
+      "test-token",
+      async (input: URL | RequestInfo) => {
+        requestedPages.push(Number(new URL(String(input)).searchParams.get("page")));
+        return new Response(JSON.stringify(fullPage), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    )).rejects.toThrow("超過安全分頁上限");
+    expect(requestedPages).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
   });
 });
