@@ -1,0 +1,44 @@
+name: 公布欄｜促銷檔期
+description: 新增一筆會出現在 AMZ.API 促銷月曆的 Amazon 大檔
+title: "[公布欄｜促銷] "
+labels:
+  - operations-board
+  - operations-board-promotion
+body:
+  - type: markdown
+    attributes:
+      value: |
+        這張表單送出後會公開顯示促銷日期、名稱與備註。Amazon 憑證不會寫進 GitHub。
+        只有 AMZ.API 專案擁有者或協作者建立的項目會進入公布欄；關閉 Issue 即可撤下。
+  - type: input
+    id: promotion-date
+    attributes:
+      label: 檔期日期
+      description: 使用 YYYY-MM-DD，例如 2026-10-13。
+      placeholder: 2026-10-13
+    validations:
+      required: true
+  - type: input
+    id: promotion-title
+    attributes:
+      label: 促銷名稱
+      description: 最多 120 個字元。
+      placeholder: Prime Big Deal Days
+    validations:
+      required: true
+  - type: textarea
+    id: note
+    attributes:
+      label: 備註
+      description: 選填，最多 500 個字元。
+      placeholder: 提前確認折扣、廣告與備貨
+  - type: dropdown
+    id: countdown
+    attributes:
+      label: 首頁倒數
+      description: 月曆一定會顯示；只有選擇需要時才另外顯示首頁倒數。
+      options:
+        - 需要顯示倒數
+        - 只顯示在月曆
+    validations:
+      required: true

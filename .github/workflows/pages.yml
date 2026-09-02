@@ -9,11 +9,16 @@ on:
       - "electron.vite.config.ts"
       - "package.json"
       - "package-lock.json"
+      - "scripts/build-github-operations-board.mjs"
+      - ".github/ISSUE_TEMPLATE/operations-board-*.yml"
       - ".github/workflows/pages.yml"
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
   contents: read
+  issues: write
   pages: write
   id-token: write
 
@@ -23,6 +28,15 @@ concurrency:
 
 jobs:
   deploy:
+    if: >
+      github.event_name != 'issues' ||
+      (
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) &&
+        (
+          contains(github.event.issue.labels.*.name, 'operations-board') ||
+          contains(github.event.issue.labels.*.name, 'operations-board-approved')
+        )
+      )
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -41,6 +55,23 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Approve authorized operations announcement
+        if: >
+          github.event_name == 'issues' &&
+          (github.event.action == 'opened' || github.event.action == 'reopened') &&
+          contains(github.event.issue.labels.*.name, 'operations-board')
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: context.issue.number,
+              labels: ['operations-board-approved']
+            })
+      - name: Build authorized operations announcements
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/build-github-operations-board.mjs
       - name: Build GitHub control console
         run: npm run build
       - name: Upload control console

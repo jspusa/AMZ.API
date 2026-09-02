@@ -33,9 +33,9 @@ const CSS04_ORDERED_FILES = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "b9410fb7890d9e0194cc047abcf0fc5703b78590a8d5f535930e4cb6686069b1";
+  "22aad8e78a982efb6bfbed679b76f75f3e45167ca4168d8df0e756582b4067e3";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
-  "53aa77736da19bcfa54208818c8861194a26bc35aa3fefc8fffbf675adc90c45";
+  "b5f19ddbcfdb43b0c68222355e35e1f6aeff2b678306c5f953afa24ef9318093";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
 
 const CSS04_PAYLOAD_EVIDENCE = [
@@ -46,8 +46,8 @@ const CSS04_PAYLOAD_EVIDENCE = [
   },
   {
     path: "styles/operations-bulletin.css",
-    bytes: 13_658,
-    sha256: "ee2d3a661e72b09e97e1057086b0de8b150b5c723f409374642b430d5dc9396f",
+    bytes: 16_730,
+    sha256: "b70ba6a075049bb51b028a229706256fd0c88f0111772e085b05ab9a46e61e0f",
   },
   {
     path: "styles/audit-workspace.css",
@@ -114,14 +114,14 @@ describe("CSS04 final stylesheet extraction", () => {
     ).toEqual(CSS04_PAYLOAD_EVIDENCE);
 
     const css04Payload = payloads.map(({ source }) => source).join("");
-    expect(Buffer.byteLength(css04Payload)).toBe(106_348);
+    expect(Buffer.byteLength(css04Payload)).toBe(109_420);
     expect(createHash("sha256").update(css04Payload).digest("hex")).toBe(
       ACCEPTED_CSS04_PAYLOAD_FINGERPRINT,
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(15_001);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(325_854);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(15_181);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(328_926);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);

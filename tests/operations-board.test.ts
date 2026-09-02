@@ -151,10 +151,11 @@ describe("shared operations bulletin board", () => {
     expect(unknown.message).not.toContain("socket reset");
   });
 
-  it("reads only the fixed object derived from the main-owned R2 configuration", async () => {
+  it("reads only the fixed GitHub Pages object even if a retired R2 URL remains", async () => {
     const remote = remoteWith({ snapshot: SNAPSHOT, etag: '"v3"' });
+    const vault = vaultWith({});
     const board = new OperationsBoard({
-      vault: vaultWith({}),
+      vault,
       remote,
     });
 
@@ -166,8 +167,9 @@ describe("shared operations bulletin board", () => {
     });
     expect(remote.read).toHaveBeenCalledWith(expect.objectContaining({
       key: OPERATIONS_BOARD_OBJECT_KEY,
-      publicUrl: `https://assets.example.com/public/${OPERATIONS_BOARD_OBJECT_KEY}`,
+      publicUrl: `https://jspusa.github.io/AMZ.API/${OPERATIONS_BOARD_OBJECT_KEY}`,
     }));
+    expect(vault.getOperationsBoardPublicBaseUrl).not.toHaveBeenCalled();
   });
 
   it("lets reader devices use only the public base URL without writer credentials", async () => {
@@ -182,12 +184,31 @@ describe("shared operations bulletin board", () => {
     });
     expect(remote.read).toHaveBeenCalledWith({
       key: OPERATIONS_BOARD_OBJECT_KEY,
-      publicUrl: `https://assets.example.com/public/${OPERATIONS_BOARD_OBJECT_KEY}`,
+      publicUrl: `https://jspusa.github.io/AMZ.API/${OPERATIONS_BOARD_OBJECT_KEY}`,
     });
+    expect(vault.getOperationsBoardPublicBaseUrl).not.toHaveBeenCalled();
     expect(vault.getImageStorage).not.toHaveBeenCalled();
     await expect(board.replace({ baseRevision: 3, items: SNAPSHOT.items }))
       .rejects.toMatchObject({ code: "OPERATIONS_BOARD_NOT_CONFIGURED" });
     expect(remote.put).not.toHaveBeenCalled();
+  });
+
+  it("uses the published GitHub Pages board when the reader has no R2 settings", async () => {
+    const remote = remoteWith({ snapshot: SNAPSHOT, etag: null });
+    const vault = vaultWith({ publicBaseUrl: null, storage: null });
+    const board = new OperationsBoard({ vault, remote });
+
+    await expect(board.read()).resolves.toMatchObject({
+      snapshot: SNAPSHOT,
+      source: "shared",
+      status: "ready",
+    });
+    expect(remote.read).toHaveBeenCalledWith({
+      key: OPERATIONS_BOARD_OBJECT_KEY,
+      publicUrl:
+        "https://jspusa.github.io/AMZ.API/operations-board/v1.json",
+    });
+    expect(vault.getImageStorage).not.toHaveBeenCalled();
   });
 
   it("reports writer storage ready only when its public URL matches the effective board URL", async () => {
@@ -204,29 +225,38 @@ describe("shared operations bulletin board", () => {
     await expect(mismatched.isStorageConfigured()).resolves.toBe(false);
   });
 
-  it("fails closed without R2 and uses a last-known-good value after a read outage", async () => {
+  it("needs no R2 and reports a missing Pages snapshot instead of clearing announcements", async () => {
     const missing = new OperationsBoard({
       vault: vaultWith({ publicBaseUrl: null, storage: null }),
       remote: remoteWith(null),
     });
     await expect(missing.read()).resolves.toMatchObject({
-      status: "not-configured",
+      status: "unavailable",
       source: "empty",
+      stale: true,
       snapshot: { revision: 0, items: [] },
     });
 
     const freshEmpty = new OperationsBoard({
       vault: vaultWith({}),
-      remote: remoteWith(null),
+      remote: remoteWith({
+        snapshot: {
+          schemaVersion: 1,
+          revision: 0,
+          updatedAt: "1970-01-01T00:00:00.000Z",
+          items: [],
+        },
+        etag: null,
+      }),
     });
     await expect(freshEmpty.read()).resolves.toMatchObject({
       status: "ready",
-      source: "empty",
+      source: "shared",
       stale: false,
     });
     await expect(freshEmpty.read()).resolves.toMatchObject({
       status: "ready",
-      source: "empty",
+      source: "shared",
       stale: false,
     });
 

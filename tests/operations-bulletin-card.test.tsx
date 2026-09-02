@@ -279,7 +279,9 @@ describe("operations bulletin home card", () => {
     expect(markup).toContain("Prime 大檔");
     expect(markup).toContain("倒數 7 天");
     expect(markup).toContain("Coupon 更新");
-    expect(markup).toContain("登入並更新公布欄");
+    expect(markup).toContain("新增即期品");
+    expect(markup).toContain("新增促銷");
+    expect(markup).not.toContain("登入並更新公布欄");
     expect(markup).toContain("目前庫存同步中");
     expect(markup).toContain("目前價格同步中");
     expect(markup).toContain("<colgroup>");
@@ -330,10 +332,11 @@ describe("operations bulletin home card", () => {
     expect(unavailableMarkup).not.toContain("1970");
   });
 
-  it("loads expiry facts in one narrow batch, caches unchanged rows, and opens the secure editor", async () => {
+  it("loads expiry facts in one narrow batch and opens a plain-language prefilled publisher", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
-    const openEditor = vi.fn(async () => undefined);
+    const publish = vi.fn(async () => undefined);
+    const manage = vi.fn(async () => undefined);
     let notifyUpdated: (() => void) | null = null;
     const stopListening = vi.fn();
     const onUpdated = vi.fn((listener: () => void) => {
@@ -369,7 +372,7 @@ describe("operations bulletin home card", () => {
     });
     vi.stubGlobal("fetch", request);
     vi.stubGlobal("window", {
-      fbaOS: { operationsBoard: { openEditor, onUpdated } },
+      fbaOS: { operationsBoard: { publish, manage, onUpdated } },
     });
 
     let renderer: ReactTestRenderer | null = null;
@@ -396,14 +399,30 @@ describe("operations bulletin home card", () => {
     )).toHaveLength(1);
     expect(request.mock.calls.some(([url]) => String(url).includes("sku-command"))).toBe(false);
 
-    const edit = renderer!.root.findAllByType("button").find((button) =>
-      button.children.join("").includes("登入並更新公布欄")
+    const addExpiry = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("新增即期品")
     );
-    expect(edit).toBeDefined();
+    expect(addExpiry).toBeDefined();
     await act(async () => {
-      await edit!.props.onClick();
+      await addExpiry!.props.onClick();
     });
-    expect(openEditor).toHaveBeenCalledOnce();
+    const field = (name: string) => renderer!.root.findByProps({ name });
+    await act(async () => {
+      field("sellerSku").props.onChange({ currentTarget: { value: "NEW-SKU" } });
+      field("expiryDate").props.onChange({ currentTarget: { value: "2026-12-31" } });
+      field("note").props.onChange({ currentTarget: { value: "先出舊批次" } });
+    });
+    const form = renderer!.root.findByProps({ "aria-label": "新增即期品公告" });
+    await act(async () => {
+      await form.props.onSubmit({ preventDefault: vi.fn() });
+    });
+    expect(publish).toHaveBeenCalledWith({
+      type: "expiry",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "NEW-SKU",
+      expiryDate: "2026-12-31",
+      note: "先出舊批次",
+    });
     expect(request.mock.calls.filter(([url]) => url === "/api/operations-board"))
       .toHaveLength(0);
     expect(onUpdated).toHaveBeenCalledOnce();
@@ -447,6 +466,67 @@ describe("operations bulletin home card", () => {
     expect(markup).toContain("展示價格");
     expect(markup).toContain("展示資料");
     expect(markup).not.toContain("Amazon 即時資料同步於");
+    await act(async () => renderer!.unmount());
+  });
+
+  it("publishes promotions with one countdown choice and opens source management", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const publish = vi.fn(async () => undefined);
+    const manage = vi.fn(async () => undefined);
+    vi.stubGlobal("window", { fbaOS: { operationsBoard: { publish, manage } } });
+    const promotion = BOARD.snapshot.items.find((item) => item.type === "promotion");
+    if (!promotion || promotion.type !== "promotion") {
+      throw new Error("promotion fixture missing");
+    }
+    const board: OperationsBoardResponse = {
+      ...BOARD,
+      snapshot: {
+        ...BOARD.snapshot,
+        items: [{
+          ...promotion,
+          id: "00000000-0000-4000-8000-000000000123",
+        }],
+      },
+    };
+
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(
+        <OperationsBulletinCard initialResponse={board} todayDateKey="2026-09-01" />,
+      );
+    });
+    const addPromotion = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("新增促銷")
+    );
+    await act(async () => addPromotion!.props.onClick());
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "資料會公開到 GitHub",
+    );
+    const field = (name: string) => renderer!.root.findByProps({ name });
+    await act(async () => {
+      field("promotionDate").props.onChange({ currentTarget: { value: "2026-10-13" } });
+      field("promotionTitle").props.onChange({ currentTarget: { value: "Prime 大檔" } });
+      field("promotionNote").props.onChange({ currentTarget: { value: "確認折扣" } });
+      field("countdown").props.onChange({ currentTarget: { checked: true } });
+    });
+    await act(async () => {
+      await renderer!.root.findByProps({ "aria-label": "新增促銷公告" })
+        .props.onSubmit({ preventDefault: vi.fn() });
+    });
+    expect(publish).toHaveBeenCalledWith({
+      type: "promotion",
+      date: "2026-10-13",
+      title: "Prime 大檔",
+      note: "確認折扣",
+      countdown: true,
+    });
+
+    const manageButton = renderer!.root.findAllByProps({ className: "bulletin-manage" })[0];
+    await act(async () => manageButton.props.onClick());
+    expect(manage).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000123",
+    );
     await act(async () => renderer!.unmount());
   });
 

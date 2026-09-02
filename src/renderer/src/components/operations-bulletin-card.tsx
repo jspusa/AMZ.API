@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type FormEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -11,9 +12,10 @@ import type {
   OperationsBoardExpiryItem,
   OperationsBoardItem,
   OperationsBoardPromotionItem,
+  OperationsBoardPublisherDraft,
   OperationsBoardReadResult,
 } from "../../../shared/operations-board";
-import { marketplaceById } from "../../../shared/marketplaces";
+import { MARKETPLACES, marketplaceById } from "../../../shared/marketplaces";
 
 type Money = Readonly<{
   amount: number;
@@ -57,7 +59,8 @@ type CalendarEntry =
 
 type OperationsBoardDesktopBridge = Readonly<{
   operationsBoard?: Readonly<{
-    openEditor(): Promise<void>;
+    publish(draft: OperationsBoardPublisherDraft): Promise<void>;
+    manage(itemId: string): Promise<void>;
     onUpdated?(listener: () => void): () => void;
   }>;
 }>;
@@ -466,7 +469,20 @@ export default function OperationsBulletinCard({
   );
   const [loading, setLoading] = useState(!initialResponse);
   const [error, setError] = useState<string | null>(null);
-  const [editorBusy, setEditorBusy] = useState(false);
+  const [publisherBusy, setPublisherBusy] = useState(false);
+  const [composer, setComposer] = useState<"expiry" | "promotion" | null>(null);
+  const [expiryDraft, setExpiryDraft] = useState({
+    marketplaceId: "ATVPDKIKX0DER",
+    sellerSku: "",
+    expiryDate: "",
+    note: "",
+  });
+  const [promotionDraft, setPromotionDraft] = useState({
+    date: "",
+    title: "",
+    note: "",
+    countdown: false,
+  });
   const [skuFacts, setSkuFacts] = useState<Record<string, SkuFact>>({});
   const skuFactCache = useRef(new Map<string, SkuFact>());
   const [factRefresh, setFactRefresh] = useState(0);
@@ -582,27 +598,55 @@ export default function OperationsBulletinCard({
     void loadBoard();
   };
 
-  const openEditor = async () => {
-    if (editorBusy) return;
-    setEditorBusy(true);
+  const publishDraft = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!composer || publisherBusy) return;
+    setPublisherBusy(true);
     setError(null);
     try {
       const bridge = window.fbaOS as typeof window.fbaOS &
         OperationsBoardDesktopBridge;
-      if (!bridge.operationsBoard?.openEditor) {
+      if (!bridge.operationsBoard?.publish) {
         throw new Error(
-          "這台電腦上的 AMZ.API Notebook Key 尚未支援公布欄編輯，請先更新 App。",
+          "這台電腦上的 AMZ.API Notebook Key 尚未支援簡易發布，請先更新 App。",
         );
       }
-      await bridge.operationsBoard.openEditor();
-    } catch (editorError) {
+      await bridge.operationsBoard.publish(
+        composer === "expiry"
+          ? { type: "expiry", ...expiryDraft }
+          : { type: "promotion", ...promotionDraft },
+      );
+      setComposer(null);
+    } catch (publisherError) {
       setError(
-        editorError instanceof Error
-          ? editorError.message
-          : "目前無法開啟公布欄安全編輯器。",
+        publisherError instanceof Error
+          ? publisherError.message
+          : "目前無法開啟 GitHub 發布確認。",
       );
     } finally {
-      setEditorBusy(false);
+      setPublisherBusy(false);
+    }
+  };
+
+  const manageAnnouncement = async (itemId: string) => {
+    if (publisherBusy) return;
+    setPublisherBusy(true);
+    setError(null);
+    try {
+      const bridge = window.fbaOS as typeof window.fbaOS &
+        OperationsBoardDesktopBridge;
+      if (!bridge.operationsBoard?.manage) {
+        throw new Error("這台電腦上的 AMZ.API Notebook Key 尚未支援公告管理，請先更新 App。");
+      }
+      await bridge.operationsBoard.manage(itemId);
+    } catch (manageError) {
+      setError(
+        manageError instanceof Error
+          ? manageError.message
+          : "目前無法開啟公告管理。",
+      );
+    } finally {
+      setPublisherBusy(false);
     }
   };
 
@@ -677,17 +721,25 @@ export default function OperationsBulletinCard({
               type="button"
               className="bulletin-refresh"
               onClick={refreshBoardAndFacts}
-              disabled={loading || editorBusy}
+              disabled={loading || publisherBusy}
             >
               {loading ? "同步中…" : "重新同步"}
             </button>
             <button
               type="button"
               className="bulletin-edit"
-              onClick={() => void openEditor()}
-              disabled={editorBusy}
+              onClick={() => setComposer("expiry")}
+              disabled={publisherBusy}
             >
-              {editorBusy ? "安全驗證中…" : "登入並更新公布欄"}
+              新增即期品
+            </button>
+            <button
+              type="button"
+              className="bulletin-add-promotion"
+              onClick={() => setComposer("promotion")}
+              disabled={publisherBusy}
+            >
+              新增促銷
             </button>
           </div>
         </div>
@@ -701,6 +753,150 @@ export default function OperationsBulletinCard({
           <p className="bulletin-source-notice" role="status">{response.message}</p>
         )}
         {error && <p className="bulletin-error" role="alert">{error}</p>}
+
+        {composer === "expiry" && (
+          <form
+            className="bulletin-composer"
+            aria-label="新增即期品公告"
+            onSubmit={(event) => void publishDraft(event)}
+          >
+            <header>
+              <div><small>NEW EXPIRY NOTICE</small><strong>新增即期品</strong></div>
+              <button type="button" onClick={() => setComposer(null)} aria-label="關閉新增即期品表單">×</button>
+            </header>
+            <div className="bulletin-composer-grid">
+              <label>Amazon 站點
+                <select
+                  name="marketplaceId"
+                  value={expiryDraft.marketplaceId}
+                  onChange={(event) => setExpiryDraft((current) => ({
+                    ...current,
+                    marketplaceId: event.currentTarget.value,
+                  }))}
+                >
+                  {MARKETPLACES.map((marketplace) => (
+                    <option key={marketplace.id} value={marketplace.id}>
+                      {marketplace.shortLabel} · {marketplace.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>Seller SKU
+                <input
+                  name="sellerSku"
+                  value={expiryDraft.sellerSku}
+                  maxLength={40}
+                  required
+                  placeholder="例如 ASCL01"
+                  onChange={(event) => setExpiryDraft((current) => ({
+                    ...current,
+                    sellerSku: event.currentTarget.value,
+                  }))}
+                />
+              </label>
+              <label>效期
+                <input
+                  name="expiryDate"
+                  type="date"
+                  value={expiryDraft.expiryDate}
+                  required
+                  onChange={(event) => setExpiryDraft((current) => ({
+                    ...current,
+                    expiryDate: event.currentTarget.value,
+                  }))}
+                />
+              </label>
+              <label className="bulletin-composer-note">備註（選填）
+                <textarea
+                  name="note"
+                  value={expiryDraft.note}
+                  maxLength={500}
+                  placeholder="例如：先出舊批次"
+                  onChange={(event) => setExpiryDraft((current) => ({
+                    ...current,
+                    note: event.currentTarget.value,
+                  }))}
+                />
+              </label>
+            </div>
+            <footer>
+              <small>資料會公開到 GitHub；庫存、價格與 Amazon 憑證不會上傳。</small>
+              <button type="submit" disabled={publisherBusy}>
+                {publisherBusy ? "正在開啟…" : "前往 GitHub 確認發布"}
+              </button>
+            </footer>
+          </form>
+        )}
+
+        {composer === "promotion" && (
+          <form
+            className="bulletin-composer"
+            aria-label="新增促銷公告"
+            onSubmit={(event) => void publishDraft(event)}
+          >
+            <header>
+              <div><small>NEW PROMOTION DATE</small><strong>新增促銷</strong></div>
+              <button type="button" onClick={() => setComposer(null)} aria-label="關閉新增促銷表單">×</button>
+            </header>
+            <div className="bulletin-composer-grid">
+              <label>促銷日期
+                <input
+                  name="promotionDate"
+                  type="date"
+                  value={promotionDraft.date}
+                  required
+                  onChange={(event) => setPromotionDraft((current) => ({
+                    ...current,
+                    date: event.currentTarget.value,
+                  }))}
+                />
+              </label>
+              <label>促銷名稱
+                <input
+                  name="promotionTitle"
+                  value={promotionDraft.title}
+                  maxLength={120}
+                  required
+                  placeholder="例如 Prime Big Deal Days"
+                  onChange={(event) => setPromotionDraft((current) => ({
+                    ...current,
+                    title: event.currentTarget.value,
+                  }))}
+                />
+              </label>
+              <label className="bulletin-composer-note">備註（選填）
+                <textarea
+                  name="promotionNote"
+                  value={promotionDraft.note}
+                  maxLength={500}
+                  placeholder="例如：提前確認折扣與備貨"
+                  onChange={(event) => setPromotionDraft((current) => ({
+                    ...current,
+                    note: event.currentTarget.value,
+                  }))}
+                />
+              </label>
+              <label className="bulletin-composer-check">
+                <input
+                  name="countdown"
+                  type="checkbox"
+                  checked={promotionDraft.countdown}
+                  onChange={(event) => setPromotionDraft((current) => ({
+                    ...current,
+                    countdown: event.currentTarget.checked,
+                  }))}
+                />
+                另外顯示促銷倒數
+              </label>
+            </div>
+            <footer>
+              <small>資料會公開到 GitHub；月曆一定會顯示，勾選後才另外顯示倒數。</small>
+              <button type="submit" disabled={publisherBusy}>
+                {publisherBusy ? "正在開啟…" : "前往 GitHub 確認發布"}
+              </button>
+            </footer>
+          </form>
+        )}
 
         <div className="operations-bulletin-layout">
           <section className="bulletin-expiry-section" aria-labelledby="bulletin-expiry-title">
@@ -718,7 +914,7 @@ export default function OperationsBulletinCard({
             {expiryItems.length === 0 ? (
               <div className="bulletin-empty">
                 <strong>目前沒有即期品公告</strong>
-                <p>需要追蹤時，可登入安全編輯器加入 SKU、效期與備註。</p>
+                <p>按「新增即期品」填入 SKU、效期與備註即可。</p>
               </div>
             ) : (
               <div className="bulletin-expiry-list">
@@ -736,6 +932,12 @@ export default function OperationsBulletinCard({
                           </small>
                           <h4 title={item.sellerSku}>{item.sellerSku}</h4>
                         </div>
+                        <button
+                          type="button"
+                          className="bulletin-manage"
+                          onClick={() => void manageAnnouncement(item.id)}
+                          disabled={publisherBusy}
+                        >管理</button>
                       </div>
                       <div className="bulletin-expiry-meta">
                         <time dateTime={item.expiryDate}>{absoluteDateLabel(item.expiryDate)}</time>
@@ -843,6 +1045,12 @@ export default function OperationsBulletinCard({
                       ) : countdown ? (
                         <span data-countdown-state={countdown.state}>{countdown.label}</span>
                       ) : null}
+                      <button
+                        type="button"
+                        className="bulletin-manage"
+                        onClick={() => void manageAnnouncement(entry.id)}
+                        disabled={publisherBusy}
+                      >管理</button>
                     </article>
                   );
                 })}

@@ -20,6 +20,22 @@ export type OperationsBoardItem =
   | OperationsBoardExpiryItem
   | OperationsBoardPromotionItem;
 
+export type OperationsBoardPublisherDraft =
+  | Readonly<{
+      type: "expiry";
+      marketplaceId: string;
+      sellerSku: string;
+      expiryDate: string;
+      note: string;
+    }>
+  | Readonly<{
+      type: "promotion";
+      date: string;
+      title: string;
+      note: string;
+      countdown: boolean;
+    }>;
+
 export type OperationsBoardSnapshot = Readonly<{
   schemaVersion: 1;
   revision: number;

@@ -31,10 +31,12 @@ describe("local-only SP-API/R2/Skill credential editor", () => {
       "lwaClientId", "lwaClientSecret", "naRefreshToken", "naSellerId",
       "feRefreshToken", "feSellerId", "euRefreshToken", "euSellerId",
       "r2AccountId", "r2AccessKeyId", "r2SecretAccessKey", "r2Bucket",
-      "r2PublicBaseUrl", "operationsBoardPublicBaseUrl", "replenishmentSkillUrl",
+      "r2PublicBaseUrl", "replenishmentSkillUrl",
     ]) {
       expect(CREDENTIAL_EDITOR_HTML).toContain(`id="${id}"`);
     }
+    expect(CREDENTIAL_EDITOR_HTML).not.toContain('id="operationsBoardPublicBaseUrl"');
+    expect(CREDENTIAL_EDITOR_HTML).not.toContain("共享公布欄唯讀網址");
     expect(CREDENTIAL_EDITOR_HTML).toMatch(/id="lwaClientSecret" type="password"/u);
     expect(CREDENTIAL_EDITOR_HTML).toMatch(/id="naSellerId" type="password"/u);
     expect(CREDENTIAL_EDITOR_HTML).toMatch(/id="r2SecretAccessKey" type="password"/u);

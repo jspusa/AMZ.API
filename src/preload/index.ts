@@ -10,6 +10,7 @@ import type {
   ExternalDestination,
   UpdateStatus,
 } from "../shared/contracts";
+import type { OperationsBoardPublisherDraft } from "../shared/operations-board";
 
 const MAX_MULTIPART_BYTES = 15 * 1024 * 1024;
 
@@ -56,8 +57,10 @@ const bridge: DesktopBridge = Object.freeze({
       ipcRenderer.invoke("fba:ads-credentials-test", marketplaceId) as Promise<AdvertisingConnectionTestResult>,
   }),
   operationsBoard: Object.freeze({
-    openEditor: () =>
-      ipcRenderer.invoke("fba:operations-board-open-editor") as Promise<void>,
+    publish: (draft: OperationsBoardPublisherDraft) =>
+      ipcRenderer.invoke("fba:operations-board-publish", draft) as Promise<void>,
+    manage: (itemId: string) =>
+      ipcRenderer.invoke("fba:operations-board-manage", itemId) as Promise<void>,
     onUpdated: (listener: () => void) => {
       const handler = () => listener();
       ipcRenderer.on("fba:operations-board-updated", handler);

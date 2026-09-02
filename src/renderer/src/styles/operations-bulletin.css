@@ -182,6 +182,13 @@
   color: #fff;
 }
 
+.operations-bulletin-actions .bulletin-add-promotion {
+  padding: 0 14px;
+  border-color: #a8cbb7;
+  background: #edf7f0;
+  color: #285b3d;
+}
+
 .bulletin-source-notice,
 .bulletin-error {
   margin: 0 0 13px;
@@ -201,6 +208,142 @@
   border: 1px solid #ecd4d4;
   background: #fff5f5;
   color: #934848;
+}
+
+.bulletin-composer {
+  margin: 0 0 15px;
+  padding: 14px;
+  border: 1px solid #d5e5da;
+  border-radius: 16px;
+  background: #f7fbf8;
+}
+
+.bulletin-composer > header,
+.bulletin-composer > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bulletin-composer > header {
+  margin-bottom: 11px;
+}
+
+.bulletin-composer > header small,
+.bulletin-composer > header strong {
+  display: block;
+}
+
+.bulletin-composer > header small {
+  color: #5f806b;
+  font-size: 6px;
+  font-weight: 850;
+  letter-spacing: .12em;
+}
+
+.bulletin-composer > header strong {
+  margin-top: 2px;
+  color: #2e3f34;
+  font-size: 11px;
+}
+
+.bulletin-composer > header > button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: #e5eee8;
+  color: #4e6355;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.bulletin-composer-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.bulletin-composer label {
+  min-width: 0;
+  color: #506057;
+  font-size: 7px;
+  font-weight: 750;
+}
+
+.bulletin-composer input,
+.bulletin-composer select,
+.bulletin-composer textarea {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 4px;
+  border: 1px solid #cad9cf;
+  border-radius: 9px;
+  background: #fff;
+  color: #27332b;
+  font: inherit;
+  font-size: 8px;
+}
+
+.bulletin-composer input,
+.bulletin-composer select {
+  padding: 0 9px;
+}
+
+.bulletin-composer textarea {
+  min-height: 58px;
+  padding: 9px;
+  resize: vertical;
+}
+
+.bulletin-composer input:focus,
+.bulletin-composer select:focus,
+.bulletin-composer textarea:focus,
+.bulletin-composer button:focus-visible,
+.bulletin-manage:focus-visible {
+  outline: 3px solid rgba(54, 122, 79, .24);
+  outline-offset: 2px;
+}
+
+.bulletin-composer-note {
+  grid-column: 1 / -1;
+}
+
+.bulletin-composer-check {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 7px;
+}
+
+.bulletin-composer-check input {
+  width: 15px;
+  min-height: 15px;
+  margin: 0;
+}
+
+.bulletin-composer > footer {
+  margin-top: 10px;
+}
+
+.bulletin-composer > footer small {
+  color: #718078;
+  font-size: 7px;
+  line-height: 1.45;
+}
+
+.bulletin-composer > footer button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 10px;
+  background: #28613f;
+  color: #fff;
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 800;
 }
 
 .operations-bulletin-layout {
@@ -340,6 +483,29 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.bulletin-expiry-title-row > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.bulletin-manage {
+  flex: 0 0 auto;
+  min-height: 25px;
+  padding: 0 7px;
+  border: 1px solid #d9dfe3;
+  border-radius: 8px;
+  background: #fff;
+  color: #68747b;
+  cursor: pointer;
+  font-size: 6px;
+  font-weight: 750;
+}
+
+.bulletin-manage:disabled {
+  cursor: wait;
+  opacity: .55;
 }
 
 .bulletin-expiry-title-row small {
@@ -601,7 +767,7 @@
 
 .bulletin-calendar-agenda article {
   display: grid;
-  grid-template-columns: 106px minmax(0, 1fr) auto;
+  grid-template-columns: 106px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   padding: 9px 10px;
@@ -724,7 +890,21 @@
 
   .operations-bulletin-actions {
     display: grid;
-    grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .bulletin-composer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bulletin-composer-note,
+  .bulletin-composer-check {
+    grid-column: auto;
+  }
+
+  .bulletin-composer > footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .bulletin-expiry-section,

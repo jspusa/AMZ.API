@@ -11,6 +11,8 @@ import type {
 } from "./credential-vault";
 
 export const OPERATIONS_BOARD_OBJECT_KEY = "operations-board/v1.json";
+export const OPERATIONS_BOARD_DEFAULT_PUBLIC_BASE_URL =
+  "https://jspusa.github.io/AMZ.API";
 export const OPERATIONS_BOARD_MAX_BYTES = 128 * 1024;
 const OPERATIONS_BOARD_WRITE_TIMEOUT_MS = 10_000;
 const MAX_ITEMS = 100;
@@ -455,17 +457,9 @@ export class OperationsBoard implements OperationsBoardPort {
 
   async read(): Promise<OperationsBoardReadResult> {
     try {
-      const publicBaseUrl = await this.vault.getOperationsBoardPublicBaseUrl();
-      if (!publicBaseUrl) {
-        return {
-          snapshot: emptyOperationsBoardSnapshot(),
-          source: "empty",
-          stale: false,
-          status: "not-configured",
-          message: "請先在 Notebook Key 設定共享公布欄唯讀網址。",
-        };
-      }
-      const remote = await this.remote.read(readTargetFromPublicBaseUrl(publicBaseUrl));
+      const remote = await this.remote.read(
+        readTargetFromPublicBaseUrl(OPERATIONS_BOARD_DEFAULT_PUBLIC_BASE_URL),
+      );
       if (!remote && this.lastKnownGood) {
         return {
           snapshot: this.lastKnownGood,
@@ -475,9 +469,18 @@ export class OperationsBoard implements OperationsBoardPort {
           message: "共享公布欄物件目前不存在；暫時保留本次啟動後最後一次成功資料。",
         };
       }
-      const snapshot = remote?.snapshot ?? emptyOperationsBoardSnapshot();
-      if (remote) this.lastKnownGood = snapshot;
-      return { snapshot, source: remote ? "shared" : "empty", stale: false, status: "ready" };
+      if (!remote) {
+        return {
+          snapshot: emptyOperationsBoardSnapshot(),
+          source: "empty",
+          stale: true,
+          status: "unavailable",
+          message: "目前找不到共享公布欄檔案；暫不把它視為公告已清空。",
+        };
+      }
+      const snapshot = remote.snapshot;
+      this.lastKnownGood = snapshot;
+      return { snapshot, source: "shared", stale: false, status: "ready" };
     } catch {
       return {
         snapshot: this.lastKnownGood ?? emptyOperationsBoardSnapshot(),

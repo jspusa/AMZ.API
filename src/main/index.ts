@@ -54,6 +54,10 @@ import {
   OperationsBoard,
   parseOperationsBoardSnapshot,
 } from "./operations-board";
+import {
+  operationsBoardAnnouncementUrl,
+  operationsBoardPublisherUrl,
+} from "./operations-board-publisher";
 import { DesktopInstallGate, DesktopUpdater } from "./desktop-updater";
 import { LocalStore } from "./local-store";
 import { sellerCentralInventoryUrl } from "./seller-central-inventory";
@@ -734,7 +738,7 @@ function recordOperationsBoardUnlockSuccess(): void {
 
 async function verifyRendererBridge(window: BrowserWindow): Promise<void> {
   const ready = await window.webContents.executeJavaScript(
-    "Boolean(globalThis.fbaOS?.api?.request && globalThis.fbaOS?.credentials?.status && globalThis.fbaOS?.advertisingCredentials?.status && globalThis.fbaOS?.operationsBoard?.openEditor)",
+    "Boolean(globalThis.fbaOS?.api?.request && globalThis.fbaOS?.credentials?.status && globalThis.fbaOS?.advertisingCredentials?.status && globalThis.fbaOS?.operationsBoard?.publish && globalThis.fbaOS?.operationsBoard?.manage)",
     true,
   );
   if (ready !== true) {
@@ -914,12 +918,13 @@ function registerIpc(): void {
       apiRequestsInFlight -= 1;
     }
   });
-  ipcMain.handle("fba:operations-board-open-editor", async (event) => {
+  ipcMain.handle("fba:operations-board-publish", async (event, draft: unknown) => {
     assertTrustedFrame(event);
-    if (credentialsChangeInFlight || operationsBoardChangeInFlight) {
-      throw new Error("本機安全設定正在更新，完成後再開啟公布欄管理。");
-    }
-    await openOperationsBoardEditor();
+    await shell.openExternal(operationsBoardPublisherUrl(draft));
+  });
+  ipcMain.handle("fba:operations-board-manage", async (event, itemId: unknown) => {
+    assertTrustedFrame(event);
+    await shell.openExternal(operationsBoardAnnouncementUrl(itemId));
   });
   ipcMain.handle("fba:operations-board-editor-state", async (event) => {
     if (!isOperationsBoardEditorFrame(event, operationsBoardEditorWindow)) {

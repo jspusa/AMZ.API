@@ -45,8 +45,12 @@ The one manually installed publisher-signed Notebook Key that establishes the st
 _Avoid_: Every update, web reinstall
 
 **Operations Bulletin Board**:
-The revisioned shared R2 document that contains manually maintained expiry notices and Amazon promotion dates; readers need only its fixed public HTTPS base, while only a writer-configured local Notebook Key editor may replace it conditionally.
-_Avoid_: Amazon expiry report, public editor
+The shared collection of authorized GitHub announcements that contains manually maintained expiry notices and Amazon promotion dates; AMZ.API provides the operator-friendly form while GitHub provides the final publisher identity check.
+_Avoid_: Amazon expiry report, R2 editor, public anonymous editor
+
+**Board Announcement**:
+One authorized GitHub Issue that becomes either an expiry notice or a promotion date on the Operations Bulletin Board; editing changes the announcement and closing it withdraws the announcement.
+_Avoid_: R2 record, Amazon event, inventory record
 
 **Manual Expiry Date**:
 An operator-entered SKU date used for the bulletin countdown and calendar marker; it is not Amazon FC lot-expiry evidence and remains separate from live inventory and price reads.

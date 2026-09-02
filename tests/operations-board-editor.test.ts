@@ -48,14 +48,21 @@ describe("local-only operations board editor", () => {
       readFile(new URL("../src/shared/contracts.ts", import.meta.url), "utf8"),
     ]);
 
-    expect(remotePreload).toContain('ipcRenderer.invoke("fba:operations-board-open-editor")');
+    expect(remotePreload).not.toContain("fba:operations-board-open-editor");
+    expect(mainSource).not.toContain('ipcMain.handle("fba:operations-board-open-editor"');
     expect(remotePreload).toContain('ipcRenderer.on("fba:operations-board-updated"');
     for (const privileged of ["editor-enroll", "editor-unlock-password", "editor-unlock-native", "editor-change-admin", "editor-save"]) {
       expect(remotePreload).not.toContain(`fba:operations-board-${privileged}`);
       expect(localPreload).toContain(`fba:operations-board-${privileged}`);
     }
     expect(localPreload).toContain('exposeInMainWorld("fbaOperationsBoardEditor"');
-    expect(contracts).toMatch(/operationsBoard:\s*\{[\s\S]*openEditor\(\): Promise<void>;[\s\S]*onUpdated/u);
+    const publicBoardBridge = contracts.slice(
+      contracts.indexOf("operationsBoard: {"),
+      contracts.indexOf("app: {", contracts.indexOf("operationsBoard: {")),
+    );
+    expect(publicBoardBridge).not.toContain("openEditor");
+    expect(publicBoardBridge).toContain("publish(");
+    expect(publicBoardBridge).toContain("manage(");
 
     for (const channel of [
       "fba:operations-board-editor-state",
