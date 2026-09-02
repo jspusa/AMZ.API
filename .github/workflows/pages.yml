@@ -18,7 +18,7 @@ on:
 
 permissions:
   contents: read
-  issues: read
+  issues: write
   pages: write
   id-token: write
 
@@ -49,6 +49,18 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Approve authorized operations announcement
+        if: >
+          github.event_name == 'issues' &&
+          (github.event.action == 'opened' || github.event.action == 'reopened')
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: context.issue.number,
+              labels: ['operations-board-approved']
+            })
       - name: Build authorized operations announcements
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 export const OPERATIONS_BOARD_LABEL = "operations-board";
 export const OPERATIONS_BOARD_EXPIRY_LABEL = "operations-board-expiry";
 export const OPERATIONS_BOARD_PROMOTION_LABEL = "operations-board-promotion";
+export const OPERATIONS_BOARD_APPROVED_LABEL = "operations-board-approved";
 
 const AUTHORIZED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const MAX_ISSUE_PAGES = 20;
@@ -99,6 +100,7 @@ function issueItem(issue) {
   }
   const labels = labelNames(issue);
   if (!labels.has(OPERATIONS_BOARD_LABEL)) throw new Error("不是公布欄 Issue。");
+  if (!labels.has(OPERATIONS_BOARD_APPROVED_LABEL)) throw new Error("公布欄 Issue 尚未核准。");
   const isExpiry = labels.has(OPERATIONS_BOARD_EXPIRY_LABEL);
   const isPromotion = labels.has(OPERATIONS_BOARD_PROMOTION_LABEL);
   if (isExpiry === isPromotion) throw new Error("公布欄類型標籤無效。");
@@ -135,7 +137,7 @@ export function buildOperationsBoardSnapshot(issues, now = new Date()) {
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new Error("公布欄時間無效。");
   const items = [];
   const skipped = [];
-  for (const issue of [...issues].sort((left, right) => Number(left?.number) - Number(right?.number))) {
+  for (const issue of [...issues].sort((left, right) => Number(right?.number) - Number(left?.number))) {
     try {
       items.push(issueItem(issue));
     } catch (error) {
@@ -148,6 +150,7 @@ export function buildOperationsBoardSnapshot(issues, now = new Date()) {
     }
     if (items.length >= 100) break;
   }
+  items.reverse();
   return {
     snapshot: {
       schemaVersion: 1,
@@ -173,7 +176,10 @@ export async function fetchOperationsBoardIssues(
   for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
     const url = new URL(`https://api.github.com/repos/${repository}/issues`);
     url.searchParams.set("state", "open");
-    url.searchParams.set("labels", OPERATIONS_BOARD_LABEL);
+    url.searchParams.set(
+      "labels",
+      `${OPERATIONS_BOARD_LABEL},${OPERATIONS_BOARD_APPROVED_LABEL}`,
+    );
     url.searchParams.set("per_page", "100");
     url.searchParams.set("sort", "created");
     url.searchParams.set("direction", "desc");

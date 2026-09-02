@@ -6,11 +6,13 @@ import * as operationsBoardBuilder from "../scripts/build-github-operations-boar
 const {
   buildOperationsBoardSnapshot,
   fetchOperationsBoardIssues,
+  OPERATIONS_BOARD_APPROVED_LABEL,
 } = operationsBoardBuilder;
 
 const labels = (type: "expiry" | "promotion") => [
   { name: "operations-board" },
   { name: `operations-board-${type}` },
+  { name: OPERATIONS_BOARD_APPROVED_LABEL },
 ];
 
 describe("GitHub-backed operations board snapshot", () => {
@@ -96,11 +98,15 @@ describe("GitHub-backed operations board snapshot", () => {
     );
 
     expect(workflow).toMatch(/issues:\s*\n\s*types:\s*\[opened, edited, closed, reopened, labeled, unlabeled\]/u);
-    expect(workflow).toMatch(/permissions:[\s\S]*?issues:\s*read/u);
+    expect(workflow).toMatch(/permissions:[\s\S]*?issues:\s*write/u);
     expect(workflow).toMatch(
       /if:\s*>[\s\S]*github\.event_name != 'issues'[\s\S]*OWNER[\s\S]*MEMBER[\s\S]*COLLABORATOR/u,
     );
     expect(workflow).toContain("node scripts/build-github-operations-board.mjs");
+    expect(workflow).toContain("operations-board-approved");
+    expect(workflow).toMatch(
+      /github\.event\.action == 'opened'[\s\S]*issues\.addLabels/u,
+    );
     expect(workflow.indexOf("node scripts/build-github-operations-board.mjs"))
       .toBeLessThan(workflow.indexOf("npm run build"));
   });
@@ -138,6 +144,9 @@ describe("GitHub-backed operations board snapshot", () => {
       "test-token",
       async (input: URL | RequestInfo) => {
         const url = new URL(String(input));
+        expect(url.searchParams.get("labels")).toBe(
+          `operations-board,${OPERATIONS_BOARD_APPROVED_LABEL}`,
+        );
         const page = Number(url.searchParams.get("page"));
         requestedPages.push(page);
         return new Response(JSON.stringify(
@@ -177,5 +186,42 @@ describe("GitHub-backed operations board snapshot", () => {
       },
     )).rejects.toThrow("超過安全分頁上限");
     expect(requestedPages).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+  });
+
+  it("publishes the newest 100 valid announcements instead of silently dropping the latest one", () => {
+    const issues = Array.from({ length: 101 }, (_, index) => ({
+      number: index + 1,
+      state: "open",
+      author_association: "OWNER",
+      labels: labels("expiry"),
+      body: [
+        "### Amazon 站點",
+        "Amazon 美國 — ATVPDKIKX0DER",
+        "",
+        "### Seller SKU",
+        `SKU-${String(index + 1).padStart(3, "0")}`,
+        "",
+        "### 人工效期",
+        "2026-12-31",
+        "",
+        "### 備註",
+        "合法公告",
+      ].join("\n"),
+    }));
+
+    const { snapshot } = buildOperationsBoardSnapshot(issues);
+    expect(snapshot.items).toHaveLength(100);
+    expect(snapshot.items.map((item: { sellerSku?: string }) => item.sellerSku)).toEqual(
+      Array.from({ length: 100 }, (_, index) => `SKU-${String(index + 2).padStart(3, "0")}`),
+    );
+  });
+
+  it("keeps the internal approval label out of public Issue Forms", async () => {
+    const [expiryForm, promotionForm] = await Promise.all([
+      readFile(new URL("../.github/ISSUE_TEMPLATE/operations-board-expiry.yml", import.meta.url), "utf8"),
+      readFile(new URL("../.github/ISSUE_TEMPLATE/operations-board-promotion.yml", import.meta.url), "utf8"),
+    ]);
+    expect(expiryForm).not.toContain("operations-board-approved");
+    expect(promotionForm).not.toContain("operations-board-approved");
   });
 });
