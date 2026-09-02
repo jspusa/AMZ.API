@@ -1,7 +1,7 @@
 import {
   businessPricingRecommendationFlags,
-  recommendedBusinessPriceDetermination,
-  recommendedQuantityDiscountMismatch,
+  recommendedBusinessPricingConfigurationState,
+  type RecommendedBusinessPricingConfigurationState,
 } from "../../shared/business-pricing-recommendations";
 
 export type BusinessPricingAuditStatus =
@@ -799,17 +799,13 @@ export function businessPricingRowMatchesFilter(
 export function isBusinessPricingRowCorrectlyConfigured(
   row: BusinessPricingAuditRow,
 ): boolean {
-  return row.status === "configured" &&
-    row.businessOfferPresence === "present" &&
-    recommendedBusinessPriceDetermination({
-      standardPrice: row.standardPrice,
-      businessPrice: row.businessPrice,
-    }) === "matches" &&
-    row.quantityDiscountPlanPresence === "canonical" &&
-    !recommendedQuantityDiscountMismatch({
-      plan: row.quantityDiscountPlan,
-      presence: row.quantityDiscountPlanPresence,
-    });
+  return businessPricingRowConfigurationState(row) === "correct";
+}
+
+export function businessPricingRowConfigurationState(
+  row: BusinessPricingAuditRow,
+): RecommendedBusinessPricingConfigurationState {
+  return recommendedBusinessPricingConfigurationState(row);
 }
 
 export function applyVerifiedBusinessPriceToAuditSnapshot(

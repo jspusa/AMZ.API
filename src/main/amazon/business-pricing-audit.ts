@@ -4,6 +4,10 @@ import {
   type MarketplaceId,
 } from "../../shared/marketplaces";
 import {
+  RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS,
+  recommendedBusinessPricingConfigurationState,
+} from "../../shared/business-pricing-recommendations";
+import {
   abortableDelay,
   forwardAbort,
   throwIfAborted,
@@ -612,36 +616,45 @@ export class BusinessPricingAudit implements BusinessPricingAuditPort {
         this.assertSnapshotContext(snapshot, context);
         const rows = snapshot.rows
           .filter((row) =>
-            row.status !== "configured" ||
-            row.recommendedPriceMismatch ||
-            row.recommendedQuantityDiscountMismatch
+            recommendedBusinessPricingConfigurationState(row) !== "correct"
           )
-          .map((row) => ({
-            sellerSku: row.sellerSku,
-            title: row.title,
-            asin: row.asin,
-            standardPrice: row.standardPrice?.amount ?? null,
-            businessPrice: row.businessPrice?.amount ?? null,
-            currencyCode: row.businessPrice?.currencyCode ??
-              row.standardPrice?.currencyCode ?? null,
-            finding: [
-              ...(row.status === "above_standard"
-                ? ["B2B 價格高於一般售價"]
-                : row.status === "missing"
-                  ? ["尚未設定 B2B 價格"]
-                  : row.status === "unsupported"
-                    ? ["請至 Amazon 後台確認"]
-                    : row.status === "incomplete" ? ["資料未完成"] : []),
-              ...(row.recommendedPriceMismatch
-                ? ["不符建議 B2B 價格"]
-                : []),
-              ...(row.recommendedQuantityDiscountMismatch
-                ? ["未正確設定階梯折扣"]
-                : []),
-            ].join("；"),
-            editable: row.editable,
-            notice: row.reason,
-          }));
+          .map((row) => {
+            const configurationState =
+              recommendedBusinessPricingConfigurationState(row);
+            return {
+              sellerSku: row.sellerSku,
+              title: row.title,
+              asin: row.asin,
+              standardPrice: row.standardPrice?.amount ?? null,
+              businessPrice: row.businessPrice?.amount ?? null,
+              currencyCode: row.businessPrice?.currencyCode ??
+                row.standardPrice?.currencyCode ?? null,
+              finding: [
+                ...(row.status === "above_standard"
+                  ? ["B2B 價格高於一般售價"]
+                  : row.status === "missing"
+                    ? ["尚未設定 B2B 價格"]
+                    : row.status === "unsupported"
+                      ? ["請至 Amazon 後台確認"]
+                      : row.status === "incomplete" ? ["資料未完成"] : []),
+                ...(row.recommendedPriceMismatch
+                  ? ["不符建議 B2B 價格"]
+                  : []),
+                ...(row.recommendedQuantityDiscountMismatch
+                  ? ["未正確設定階梯折扣"]
+                  : []),
+                ...(row.status === "configured" &&
+                    configurationState === "needs_confirmation"
+                  ? [
+                      RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS
+                        .needs_confirmation,
+                    ]
+                  : []),
+              ].join("；"),
+              editable: row.editable,
+              notice: row.reason,
+            };
+          });
         return {
           ...input.context,
           status: snapshot.summary.incomplete ? "partial" : "completed",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   businessPricingRecommendationFlags,
+  recommendedBusinessPricingConfigurationState,
   recommendedBusinessPriceDetermination,
   recommendedBusinessPriceMismatch,
   recommendedQuantityDiscountMismatch,
@@ -78,5 +79,41 @@ describe("Jasper B2B recommendation categories", () => {
       recommendedPriceMismatch: true,
       recommendedQuantityDiscountMismatch: true,
     });
+  });
+
+  it("requires positive price and canonical tier evidence before calling a configuration correct", () => {
+    const exactPlan = {
+      discountType: "percent" as const,
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+        { lowerBound: 15, value: 15 },
+        { lowerBound: 20, value: 20 },
+      ],
+    };
+    expect(recommendedBusinessPricingConfigurationState({
+      status: "configured",
+      businessOfferPresence: "present",
+      standardPrice: { amount: 20, currencyCode: "USD" },
+      businessPrice: { amount: 19, currencyCode: "USD" },
+      quantityDiscountPlan: exactPlan,
+      quantityDiscountPlanPresence: "canonical",
+    })).toBe("correct");
+    expect(recommendedBusinessPricingConfigurationState({
+      status: "configured",
+      businessOfferPresence: "present",
+      standardPrice: null,
+      businessPrice: { amount: 19, currencyCode: "USD" },
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+    })).toBe("needs_confirmation");
+    expect(recommendedBusinessPricingConfigurationState({
+      status: "configured",
+      businessOfferPresence: "present",
+      standardPrice: { amount: 20, currencyCode: "USD" },
+      businessPrice: { amount: 18, currencyCode: "USD" },
+      quantityDiscountPlan: exactPlan,
+      quantityDiscountPlanPresence: "canonical",
+    })).toBe("needs_adjustment");
   });
 });

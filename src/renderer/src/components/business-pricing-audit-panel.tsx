@@ -11,6 +11,7 @@ import {
   applyBusinessPricingListingReadToAuditSnapshot,
   applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
+  businessPricingRowConfigurationState,
   businessPricingWorkflowProgress,
   businessPricingRowMatchesFilter,
   isBusinessPricingRowCorrectlyConfigured,
@@ -27,6 +28,8 @@ import {
   type BusinessQuantityDiscountPlan,
   type BusinessPricingWorkflowProgress,
 } from "../business-pricing-audit";
+import { RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS } from
+  "../../../shared/business-pricing-recommendations";
 import {
   pollStandaloneAuditJob,
   standaloneAuditSnapshotMatchesJob,
@@ -76,11 +79,9 @@ function formatMoney(value: BusinessPricingMoney | null): string {
 
 function statusLabel(row: BusinessPricingAuditRow): string {
   if (row.status === "configured") {
-    if (isBusinessPricingRowCorrectlyConfigured(row)) return "正確設定";
-    return row.recommendedPriceMismatch ||
-        row.recommendedQuantityDiscountMismatch
-      ? "已設定但需調整"
-      : "已設定但待確認";
+    return RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS[
+      businessPricingRowConfigurationState(row)
+    ];
   }
   if (row.status === "above_standard") return "B2B 高於一般售價";
   if (row.status === "missing") return "未設定 B2B 價格";

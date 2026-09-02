@@ -104,9 +104,34 @@ describe("BusinessPricingAudit main owner", () => {
     const statusReport = vi.fn(async () => {
       throw new Error("Audit Suite must not poll a second report lifecycle.");
     });
+    const sourceSnapshot = snapshot();
     const readReport = vi.fn(async () => {
       calls.push("read-business-pricing");
-      return snapshot();
+      return {
+        ...sourceSnapshot,
+        rows: [
+          ...sourceSnapshot.rows,
+          {
+            ...sourceSnapshot.rows[0]!,
+            sellerSku: "FBA-B2B-UNKNOWN",
+            asin: "B000000002",
+            standardPrice: null,
+            businessPrice: { amount: 19, currencyCode: "USD" },
+            businessOfferPresence: "present" as const,
+            quantityDiscountPlan: null,
+            quantityDiscountPlanPresence: "ambiguous" as const,
+            recommendedPriceMismatch: false,
+            recommendedQuantityDiscountMismatch: false,
+            status: "configured" as const,
+            reason: "Business Price 已確認，但建議規則證據仍待核對。",
+          },
+        ],
+        summary: {
+          ...sourceSnapshot.summary,
+          totalFbaSkuCount: 2,
+          configured: 2,
+        },
+      };
     });
     const createId = vi.fn(() => "must-not-publish-an-export-id");
     const owner = new BusinessPricingAudit({
@@ -166,6 +191,16 @@ describe("BusinessPricingAudit main owner", () => {
         finding: "未正確設定階梯折扣",
         editable: false,
         notice: "B2B tier missing",
+      }, {
+        sellerSku: "FBA-B2B-UNKNOWN",
+        title: "FBA item",
+        asin: "B000000002",
+        standardPrice: null,
+        businessPrice: 19,
+        currencyCode: "USD",
+        finding: "已設定但待確認",
+        editable: false,
+        notice: "Business Price 已確認，但建議規則證據仍待核對。",
       }],
     });
     expect(calls).toEqual([

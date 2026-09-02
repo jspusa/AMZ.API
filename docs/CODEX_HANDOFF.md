@@ -10,7 +10,7 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 
 全站 B2B 價格健檢把摘要「已設定」改成「正確設定」。這個數字不再沿用 Amazon 有 Business Price 的原始狀態，而是只計入 Business Price 與建議數量折扣都完全符合的列；已設定但任一建議不符會顯示「已設定但需調整」。預設「需處理」包含所有非 incomplete 且尚未完全合格的列，明確排除「資料未完成」；使用者仍可點獨立的「資料未完成」查看 exact 原因。
 
-針對性回歸共 188 tests；完整 `npm run check` 通過 TypeScript、255 個測試檔／2,560 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。本輪只使用本機 fixture，沒有呼叫 live Amazon、Validation Preview、原生確認、PATCH 或 readback；這些 main／renderer 變更尚未發布或安裝。
+針對性回歸共 189 tests；完整 `npm run check` 通過 TypeScript、255 個測試檔／2,561 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。本輪只使用本機 fixture，沒有呼叫 live Amazon、Validation Preview、原生確認、PATCH 或 readback；這些 main／renderer 變更尚未發布或安裝。
 
 ### 2026-09-02 文案 Excel 全量錯誤回報與逐 SKU 隔離（本機驗證完成；尚未發布／安裝）
 
@@ -18,7 +18,7 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 
 Amazon 預檢與原生確認前的重新預檢也改成 strict allowlist 的逐 SKU 隔離：只有可明確歸屬到該 SKU 的 validation／required／read-only／limit／selector／identity 等已知錯誤會排除該 SKU並讓其他安全 SKU 繼續；Amazon `INVALID` 一律隔離，批次流程不再持有 validation override authority，前台也沒有強制上傳入口。Amazon server、網路、401／403／429、帳號、站點、execution context 或回傳結果綁定失效仍停止整批。正式寫入前，只有 strict allowlist 且低於 500、非 401／403／429，並由 `SpApiPreCommitError` 明確證明 PATCH 尚未送出的列級問題才可隔離；正式送出後，exact known rejection 可隔離單一 SKU。Amazon 已接受、每次 bounded canonical GET 都成功但目標值尚未出現時，readback 才會建立專用 `ListingWriteAcceptedButPendingError`，該 SKU 可隔離並讓後續安全 SKU 繼續，但永遠不自動重送。一般 `UPDATE_STATUS_UNKNOWN`、任何回查 error、server／網路／timeout／auth／rate limit、context 或結果綁定失效仍停止後續，terminal replay 也不會重試。
 
-前台以密集、bounded 捲動清單顯示所有隔離項目；Amazon 有回傳 attribute name 時會直接顯示中文欄位，Amazon 沒回欄位時則誠實標示「Amazon 未提供」，並只列 Excel 實際變更欄位，不會因 W07 的產品要點權限而誤報未修改的「產品要點」。RED regression 先重現 parser 只拋第一列、router 只回單一字串，以及 commit loop 在單一拒絕／結果不明後 `break`；修正後涵蓋同檔多列錯誤、壞欄位與正常列共用同 SKU 時全部隔離、部分安全預檢、INVALID 無強制送出、原生確認前部分失敗、Touch ID 摘要只含仍可寫入 SKU、exact known rejection／trusted accepted-pending 後繼續，以及 401／403／429／server／readback error／結果綁定失效停止後續並禁止重送。完整 `npm run check` 通過 TypeScript、255 個測試檔／2,560 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。本輪沒有呼叫 live Amazon、沒有執行 Validation Preview、原生確認、PATCH 或 readback；這包含 Notebook Key main-process 變更，既有 v0.1.49 必須另行升版並重新安裝後才會生效。
+前台以密集、bounded 捲動清單顯示所有隔離項目；Amazon 有回傳 attribute name 時會直接顯示中文欄位，Amazon 沒回欄位時則誠實標示「Amazon 未提供」，並只列 Excel 實際變更欄位，不會因 W07 的產品要點權限而誤報未修改的「產品要點」。RED regression 先重現 parser 只拋第一列、router 只回單一字串，以及 commit loop 在單一拒絕／結果不明後 `break`；修正後涵蓋同檔多列錯誤、壞欄位與正常列共用同 SKU 時全部隔離、部分安全預檢、INVALID 無強制送出、原生確認前部分失敗、Touch ID 摘要只含仍可寫入 SKU、exact known rejection／trusted accepted-pending 後繼續，以及 401／403／429／server／readback error／結果綁定失效停止後續並禁止重送。完整 `npm run check` 通過 TypeScript、255 個測試檔／2,561 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities，`git diff --check` clean。本輪沒有呼叫 live Amazon、沒有執行 Validation Preview、原生確認、PATCH 或 readback；這包含 Notebook Key main-process 變更，既有 v0.1.49 必須另行升版並重新安裝後才會生效。
 
 ### 2026-09-02 文案 Excel 部分工作表回傳（本機驗證完成；尚未發布／安裝）
 

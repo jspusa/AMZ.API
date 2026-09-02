@@ -20,6 +20,20 @@ type QuantityDiscountPlan = Readonly<{
   }>[];
 }>;
 
+export type RecommendedBusinessPricingConfigurationState =
+  | "correct"
+  | "needs_adjustment"
+  | "needs_confirmation";
+
+export const RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS = {
+  correct: "正確設定",
+  needs_adjustment: "已設定但需調整",
+  needs_confirmation: "已設定但待確認",
+} as const satisfies Record<
+  RecommendedBusinessPricingConfigurationState,
+  string
+>;
+
 function usdCents(value: number): number | null {
   if (!Number.isFinite(value) || value <= 0 || value > 1_000_000_000) {
     return null;
@@ -78,6 +92,46 @@ export function recommendedQuantityDiscountMismatch(input: Readonly<{
       actual.lowerBound !== recommended.lowerBound ||
       actual.value !== recommended.value;
   });
+}
+
+export function recommendedBusinessPricingConfigurationState(input: Readonly<{
+  status:
+    | "configured"
+    | "above_standard"
+    | "missing"
+    | "unsupported"
+    | "incomplete";
+  businessOfferPresence: "absent" | "present" | "ambiguous";
+  standardPrice: Money | null;
+  businessPrice: Money | null;
+  quantityDiscountPlan: QuantityDiscountPlan | null;
+  quantityDiscountPlanPresence:
+    | "absent"
+    | "canonical"
+    | "duplicate"
+    | "ambiguous";
+}>): RecommendedBusinessPricingConfigurationState {
+  if (input.status !== "configured") {
+    return input.status === "missing" || input.status === "above_standard"
+      ? "needs_adjustment"
+      : "needs_confirmation";
+  }
+  if (input.businessOfferPresence !== "present") {
+    return "needs_confirmation";
+  }
+  const price = recommendedBusinessPriceDetermination({
+    standardPrice: input.standardPrice,
+    businessPrice: input.businessPrice,
+  });
+  const quantityMismatch = recommendedQuantityDiscountMismatch({
+    plan: input.quantityDiscountPlan,
+    presence: input.quantityDiscountPlanPresence,
+  });
+  if (price === "mismatch" || quantityMismatch) return "needs_adjustment";
+  return price === "matches" &&
+      input.quantityDiscountPlanPresence === "canonical"
+    ? "correct"
+    : "needs_confirmation";
 }
 
 export function businessPricingRecommendationFlags(input: Readonly<{

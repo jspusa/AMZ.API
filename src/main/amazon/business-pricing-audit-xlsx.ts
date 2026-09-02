@@ -1,8 +1,9 @@
 import { strToU8, zipSync } from "fflate";
 import {
   businessPricingRecommendationFlags,
+  RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS,
+  recommendedBusinessPricingConfigurationState,
   recommendedBusinessPriceDetermination,
-  recommendedQuantityDiscountMismatch,
 } from "../../shared/business-pricing-recommendations";
 import type {
   BusinessPricingAuditRow,
@@ -119,27 +120,14 @@ function quantityDiscountText(row: BusinessPricingAuditRow): string {
 }
 
 function isCorrectlyConfigured(row: BusinessPricingAuditRow): boolean {
-  return row.status === "configured" &&
-    row.businessOfferPresence === "present" &&
-    recommendedBusinessPriceDetermination({
-      standardPrice: row.standardPrice,
-      businessPrice: row.businessPrice,
-    }) === "matches" &&
-    row.quantityDiscountPlanPresence === "canonical" &&
-    !recommendedQuantityDiscountMismatch({
-      plan: row.quantityDiscountPlan,
-      presence: row.quantityDiscountPlanPresence,
-    });
+  return recommendedBusinessPricingConfigurationState(row) === "correct";
 }
 
 function statusLabel(row: BusinessPricingAuditRow): string {
   if (row.status === "configured") {
-    if (isCorrectlyConfigured(row)) return "正確設定";
-    if (
-      row.recommendedPriceMismatch ||
-      row.recommendedQuantityDiscountMismatch
-    ) return "已設定但需調整";
-    return "已設定但待確認";
+    return RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS[
+      recommendedBusinessPricingConfigurationState(row)
+    ];
   }
   if (row.status === "above_standard") return "B2B 高於一般售價";
   if (row.status === "missing") return "未設定 B2B 價格";
