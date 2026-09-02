@@ -769,10 +769,13 @@ export default function OperationsBulletinCard({
                 <select
                   name="marketplaceId"
                   value={expiryDraft.marketplaceId}
-                  onChange={(event) => setExpiryDraft((current) => ({
-                    ...current,
-                    marketplaceId: event.currentTarget.value,
-                  }))}
+                  onChange={(event) => {
+                    const marketplaceId = event.currentTarget.value;
+                    setExpiryDraft((current) => ({
+                      ...current,
+                      marketplaceId,
+                    }));
+                  }}
                 >
                   {MARKETPLACES.map((marketplace) => (
                     <option key={marketplace.id} value={marketplace.id}>
@@ -788,10 +791,13 @@ export default function OperationsBulletinCard({
                   maxLength={40}
                   required
                   placeholder="例如 ASCL01"
-                  onChange={(event) => setExpiryDraft((current) => ({
-                    ...current,
-                    sellerSku: event.currentTarget.value,
-                  }))}
+                  onChange={(event) => {
+                    const sellerSku = event.currentTarget.value;
+                    setExpiryDraft((current) => ({
+                      ...current,
+                      sellerSku,
+                    }));
+                  }}
                 />
               </label>
               <label>效期
@@ -800,10 +806,13 @@ export default function OperationsBulletinCard({
                   type="date"
                   value={expiryDraft.expiryDate}
                   required
-                  onChange={(event) => setExpiryDraft((current) => ({
-                    ...current,
-                    expiryDate: event.currentTarget.value,
-                  }))}
+                  onChange={(event) => {
+                    const expiryDate = event.currentTarget.value;
+                    setExpiryDraft((current) => ({
+                      ...current,
+                      expiryDate,
+                    }));
+                  }}
                 />
               </label>
               <label className="bulletin-composer-note">備註（選填）
@@ -812,10 +821,13 @@ export default function OperationsBulletinCard({
                   value={expiryDraft.note}
                   maxLength={500}
                   placeholder="例如：先出舊批次"
-                  onChange={(event) => setExpiryDraft((current) => ({
-                    ...current,
-                    note: event.currentTarget.value,
-                  }))}
+                  onChange={(event) => {
+                    const note = event.currentTarget.value;
+                    setExpiryDraft((current) => ({
+                      ...current,
+                      note,
+                    }));
+                  }}
                 />
               </label>
             </div>
@@ -845,10 +857,13 @@ export default function OperationsBulletinCard({
                   type="date"
                   value={promotionDraft.date}
                   required
-                  onChange={(event) => setPromotionDraft((current) => ({
-                    ...current,
-                    date: event.currentTarget.value,
-                  }))}
+                  onChange={(event) => {
+                    const date = event.currentTarget.value;
+                    setPromotionDraft((current) => ({
+                      ...current,
+                      date,
+                    }));
+                  }}
                 />
               </label>
               <label>促銷名稱
@@ -858,10 +873,13 @@ export default function OperationsBulletinCard({
                   maxLength={120}
                   required
                   placeholder="例如 Prime Big Deal Days"
-                  onChange={(event) => setPromotionDraft((current) => ({
-                    ...current,
-                    title: event.currentTarget.value,
-                  }))}
+                  onChange={(event) => {
+                    const title = event.currentTarget.value;
+                    setPromotionDraft((current) => ({
+                      ...current,
+                      title,
+                    }));
+                  }}
                 />
               </label>
               <label className="bulletin-composer-note">備註（選填）
@@ -870,10 +888,13 @@ export default function OperationsBulletinCard({
                   value={promotionDraft.note}
                   maxLength={500}
                   placeholder="例如：提前確認折扣與備貨"
-                  onChange={(event) => setPromotionDraft((current) => ({
-                    ...current,
-                    note: event.currentTarget.value,
-                  }))}
+                  onChange={(event) => {
+                    const note = event.currentTarget.value;
+                    setPromotionDraft((current) => ({
+                      ...current,
+                      note,
+                    }));
+                  }}
                 />
               </label>
               <label className="bulletin-composer-check">
@@ -881,10 +902,13 @@ export default function OperationsBulletinCard({
                   name="countdown"
                   type="checkbox"
                   checked={promotionDraft.countdown}
-                  onChange={(event) => setPromotionDraft((current) => ({
-                    ...current,
-                    countdown: event.currentTarget.checked,
-                  }))}
+                  onChange={(event) => {
+                    const countdown = event.currentTarget.checked;
+                    setPromotionDraft((current) => ({
+                      ...current,
+                      countdown,
+                    }));
+                  }}
                 />
                 另外顯示促銷倒數
               </label>

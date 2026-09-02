@@ -530,6 +530,76 @@ describe("operations bulletin home card", () => {
     await act(async () => renderer!.unmount());
   });
 
+  it("keeps both publisher forms rendered after React releases every input event", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("window", {
+      fbaOS: {
+        operationsBoard: {
+          publish: vi.fn(async () => undefined),
+          manage: vi.fn(async () => undefined),
+        },
+      },
+    });
+    const emptyBoard: OperationsBoardResponse = {
+      ...BOARD,
+      snapshot: { ...BOARD.snapshot, items: [] },
+    };
+
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(
+        <OperationsBulletinCard
+          initialResponse={emptyBoard}
+          todayDateKey="2026-09-01"
+        />,
+      );
+    });
+
+    const buttonWithText = (label: string) =>
+      renderer!.root.findAllByType("button").find((button) =>
+        button.children.join("").includes(label)
+      );
+    const changeValue = async (name: string, value: string) => {
+      const inputEvent: { currentTarget: { value: string } | null } = {
+        currentTarget: { value },
+      };
+      await act(async () => {
+        renderer!.root.findByProps({ name }).props.onChange(inputEvent);
+        inputEvent.currentTarget = null;
+        await Promise.resolve();
+      });
+      expect(renderer!.root.findByProps({ name }).props.value).toBe(value);
+    };
+    await act(async () => buttonWithText("新增即期品")!.props.onClick());
+    await changeValue("marketplaceId", "A1F83G8C2ARO7P");
+    await changeValue("sellerSku", "NEW-SKU");
+    await changeValue("expiryDate", "2026-12-31");
+    await changeValue("note", "先出舊批次");
+
+    await act(async () => {
+      renderer!.root.findByProps({ "aria-label": "關閉新增即期品表單" })
+        .props.onClick();
+      buttonWithText("新增促銷")!.props.onClick();
+    });
+    await changeValue("promotionDate", "2026-10-13");
+    await changeValue("promotionTitle", "Prime 大檔");
+    await changeValue("promotionNote", "確認折扣");
+    const promotionEvent: { currentTarget: { checked: boolean } | null } = {
+      currentTarget: { checked: true },
+    };
+    await act(async () => {
+      renderer!.root.findByProps({ name: "countdown" }).props
+        .onChange(promotionEvent);
+      promotionEvent.currentTarget = null;
+      await Promise.resolve();
+    });
+    expect(renderer!.root.findByProps({ name: "countdown" }).props.checked)
+      .toBe(true);
+
+    await act(async () => renderer!.unmount());
+  });
+
   it("keeps the manual countdown visible when Amazon price and inventory fail", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
