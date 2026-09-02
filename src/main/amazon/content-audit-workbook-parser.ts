@@ -6,6 +6,7 @@ import {
   CONTENT_AUDIT_V2_INDEX_HEADERS,
   CONTENT_AUDIT_V2_INDEX_SHEET_NAME,
   CONTENT_AUDIT_V2_SCHEMA_VERSION,
+  CONTENT_AUDIT_PARTIAL_SHEET_MARKER,
 } from "./xlsx";
 
 const XLSX_MEDIA_TYPE =
@@ -95,6 +96,8 @@ type IndexEntry = {
   expectedRows: number;
 };
 
+type EmbeddedSheetMetadata = ParsedContentAuditWorkbook["metadata"] & IndexEntry;
+
 type ParserBudget = {
   rows: number;
   cells: number;
@@ -114,10 +117,15 @@ export function parseContentAuditWorkbook(input: {
     const indexSheet = workbookSheets.find(
       (sheet) => sheet.name === CONTENT_AUDIT_V2_INDEX_SHEET_NAME,
     );
-    if (!indexSheet) {
-      schemaError("找不到「說明與索引」工作表。");
-    }
     const budget: ParserBudget = { rows: 0, cells: 0 };
+    if (!indexSheet) {
+      return parsePartialWorkbook(
+        archive,
+        workbookSheets,
+        sharedStrings,
+        budget,
+      );
+    }
     const indexCells = parseWorksheet(
       requirePart(archive, indexSheet.path),
       indexSheet.path,
@@ -128,17 +136,26 @@ export function parseContentAuditWorkbook(input: {
     const dataSheets = workbookSheets.filter(
       (sheet) => sheet.name !== CONTENT_AUDIT_V2_INDEX_SHEET_NAME,
     );
-    if (entries.length !== dataSheets.length) {
-      schemaError("索引列數與實際資料工作表數量不一致。");
-    }
+    if (!dataSheets.length) schemaError("工作簿沒有可處理的文案資料工作表。");
     const sheetByName = new Map(dataSheets.map((sheet) => [sheet.name, sheet]));
     if (sheetByName.size !== dataSheets.length) {
       schemaError("工作簿含有重複的工作表名稱。");
     }
+    const entryByName = new Map(entries.map((entry) => [entry.sheetName, entry]));
+    if (dataSheets.some((sheet) => !entryByName.has(sheet.name))) {
+      schemaError("工作簿含有未登錄於索引的資料工作表。");
+    }
+    const selectedEntries = entries.filter((entry) =>
+      sheetByName.has(entry.sheetName)
+    );
+    if (selectedEntries.length !== dataSheets.length) {
+      schemaError("索引與實際資料工作表無法精確對應。");
+    }
+    const indexedSubset = selectedEntries.length !== entries.length;
 
     const seenSkus = new Set<string>();
     const parsedRows: ParsedContentAuditWorkbookRow[] = [];
-    for (const entry of entries) {
+    for (const entry of selectedEntries) {
       const sheet = sheetByName.get(entry.sheetName);
       if (!sheet) {
         schemaError(`索引指向不存在的工作表「${entry.sheetName}」。`);
@@ -149,6 +166,12 @@ export function parseContentAuditWorkbook(input: {
         sharedStrings,
         budget,
       );
+      const embedded = indexedSubset
+        ? parseEmbeddedSheetMetadata(cells, entry.sheetName, true)
+        : parseEmbeddedSheetMetadata(cells, entry.sheetName, false);
+      if (embedded) {
+        assertEmbeddedSheetMetadataMatches(embedded, metadata, entry);
+      }
       const rows = parseDataSheet(cells, entry, seenSkus);
       if (rows.length !== entry.expectedRows) {
         schemaError(`工作表「${entry.sheetName}」的問題列數與索引不一致。`);
@@ -579,6 +602,188 @@ function stringContainerText(container: Element): string {
   return output;
 }
 
+function parsePartialWorkbook(
+  archive: Record<string, Uint8Array>,
+  sheets: readonly WorkbookSheet[],
+  sharedStrings: readonly string[],
+  budget: ParserBudget,
+): ParsedContentAuditWorkbook {
+  const seenSkus = new Set<string>();
+  const seenFamilies = new Set<string>();
+  const rows: ParsedContentAuditWorkbookRow[] = [];
+  let metadata: ParsedContentAuditWorkbook["metadata"] | null = null;
+  for (const sheet of sheets) {
+    const cells = parseWorksheet(
+      requirePart(archive, sheet.path),
+      sheet.path,
+      sharedStrings,
+      budget,
+    );
+    const embedded = parseEmbeddedSheetMetadata(cells, sheet.name, true);
+    const currentMetadata = workbookMetadata(embedded);
+    if (metadata && !sameWorkbookMetadata(metadata, currentMetadata)) {
+      schemaError("部分工作簿的工作表不是來自同一次文案健檢匯出。");
+    }
+    metadata ??= currentMetadata;
+    const entry: IndexEntry = {
+      sheetName: embedded.sheetName,
+      variationFamilyKey: embedded.variationFamilyKey,
+      expectedRows: embedded.expectedRows,
+    };
+    if (seenFamilies.has(entry.variationFamilyKey)) {
+      schemaError("部分工作簿含有重複的變體家庭工作表。");
+    }
+    seenFamilies.add(entry.variationFamilyKey);
+    const parsed = parseDataSheet(cells, entry, seenSkus);
+    if (parsed.length !== entry.expectedRows) {
+      schemaError(`工作表「${entry.sheetName}」的問題列數與來源識別不一致。`);
+    }
+    rows.push(...parsed);
+  }
+  if (!metadata) schemaError("部分工作簿沒有可處理的文案工作表。");
+  return { metadata, rows };
+}
+
+function parseEmbeddedSheetMetadata(
+  cells: WorksheetCells,
+  sheetName: string,
+  required: true,
+): EmbeddedSheetMetadata;
+function parseEmbeddedSheetMetadata(
+  cells: WorksheetCells,
+  sheetName: string,
+  required: false,
+): EmbeddedSheetMetadata | null;
+function parseEmbeddedSheetMetadata(
+  cells: WorksheetCells,
+  sheetName: string,
+  required: boolean,
+): EmbeddedSheetMetadata | null {
+  rejectUnknownDataSheetCells(cells, sheetName);
+  const marker = cell(cells, 1, CONTENT_AUDIT_V2_DATA_HEADERS.length + 1);
+  const payload = cell(cells, 1, CONTENT_AUDIT_V2_DATA_HEADERS.length + 2);
+  if (!marker && !payload) {
+    if (required) {
+      schemaError(
+        `工作表「${sheetName}」缺少來源識別；請使用新版 AMZ.API 匯出的工作表。`,
+      );
+    }
+    return null;
+  }
+  if (marker !== CONTENT_AUDIT_PARTIAL_SHEET_MARKER || !payload) {
+    schemaError(`工作表「${sheetName}」的來源識別已被修改。`);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(payload);
+  } catch {
+    schemaError(`工作表「${sheetName}」的來源識別格式無效。`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    schemaError(`工作表「${sheetName}」的來源識別格式無效。`);
+  }
+  const value = raw as Record<string, unknown>;
+  const expectedKeys = [
+    "schemaVersion",
+    "marketplaceId",
+    "exportId",
+    "fetchedAt",
+    "sheetName",
+    "variationFamilyKey",
+    "expectedRows",
+  ];
+  if (
+    Object.keys(value).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !Object.prototype.hasOwnProperty.call(value, key)) ||
+    value.schemaVersion !== 1 ||
+    typeof value.marketplaceId !== "string" ||
+    !/^[A-Z0-9]{1,32}$/u.test(value.marketplaceId) ||
+    typeof value.exportId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,200}$/u.test(value.exportId) ||
+    typeof value.fetchedAt !== "string" ||
+    !validIsoDate(value.fetchedAt) ||
+    value.sheetName !== sheetName ||
+    typeof value.variationFamilyKey !== "string" ||
+    !value.variationFamilyKey ||
+    value.variationFamilyKey.length > 200 ||
+    typeof value.expectedRows !== "number" ||
+    !Number.isSafeInteger(value.expectedRows) ||
+    value.expectedRows < 0 ||
+    value.expectedRows > MAX_TOTAL_ROWS
+  ) {
+    schemaError(`工作表「${sheetName}」的來源識別格式無效。`);
+  }
+  return {
+    schemaVersion: CONTENT_AUDIT_V2_SCHEMA_VERSION,
+    marketplaceId: value.marketplaceId,
+    exportId: value.exportId,
+    fetchedAt: value.fetchedAt,
+    sheetName,
+    variationFamilyKey: value.variationFamilyKey,
+    expectedRows: value.expectedRows,
+  };
+}
+
+function workbookMetadata(
+  value: EmbeddedSheetMetadata,
+): ParsedContentAuditWorkbook["metadata"] {
+  return {
+    schemaVersion: CONTENT_AUDIT_V2_SCHEMA_VERSION,
+    marketplaceId: value.marketplaceId,
+    exportId: value.exportId,
+    fetchedAt: value.fetchedAt,
+  };
+}
+
+function sameWorkbookMetadata(
+  left: ParsedContentAuditWorkbook["metadata"],
+  right: ParsedContentAuditWorkbook["metadata"],
+): boolean {
+  return left.schemaVersion === right.schemaVersion &&
+    left.marketplaceId === right.marketplaceId &&
+    left.exportId === right.exportId &&
+    left.fetchedAt === right.fetchedAt;
+}
+
+function assertEmbeddedSheetMetadataMatches(
+  embedded: EmbeddedSheetMetadata,
+  metadata: ParsedContentAuditWorkbook["metadata"],
+  entry: IndexEntry,
+): void {
+  if (
+    !sameWorkbookMetadata(workbookMetadata(embedded), metadata) ||
+    embedded.sheetName !== entry.sheetName ||
+    embedded.variationFamilyKey !== entry.variationFamilyKey ||
+    embedded.expectedRows !== entry.expectedRows
+  ) {
+    schemaError(`工作表「${entry.sheetName}」的來源識別與索引不一致。`);
+  }
+}
+
+function validIsoDate(value: string): boolean {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function rejectUnknownDataSheetCells(
+  cells: WorksheetCells,
+  sheetName: string,
+): void {
+  const markerColumn = CONTENT_AUDIT_V2_DATA_HEADERS.length + 1;
+  const payloadColumn = markerColumn + 1;
+  for (const [rowNumber, row] of cells) {
+    for (const [column, value] of row) {
+      if (
+        column > CONTENT_AUDIT_V2_DATA_HEADERS.length &&
+        value &&
+        !(rowNumber === 1 && (column === markerColumn || column === payloadColumn))
+      ) {
+        schemaError(`工作表「${sheetName}」含有未知欄位。`);
+      }
+    }
+  }
+}
+
 function parseIndexSheet(cells: WorksheetCells): {
   metadata: ParsedContentAuditWorkbook["metadata"];
   entries: IndexEntry[];
@@ -664,7 +869,7 @@ function parseDataSheet(
   index: IndexEntry,
   seenSkus: Set<string>,
 ): ParsedContentAuditWorkbookRow[] {
-  rejectNonEmptyColumns(cells, CONTENT_AUDIT_V2_DATA_HEADERS.length, index.sheetName);
+  rejectUnknownDataSheetCells(cells, index.sheetName);
   expectHeaderRow(cells, 1, CONTENT_AUDIT_V2_DATA_HEADERS, index.sheetName);
   const rows: ParsedContentAuditWorkbookRow[] = [];
   for (const rowNumber of [...cells.keys()].sort((a, b) => a - b)) {

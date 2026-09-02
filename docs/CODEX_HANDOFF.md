@@ -4,6 +4,12 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-09-02 文案 Excel 部分工作表回傳（本機驗證完成；尚未發布／安裝）
+
+新版全站文案 Excel 會在每張資料工作表的隱藏 X／Y 欄放入 bounded、exact-schema 的本機快照來源識別，因此使用者可在 Excel 只保留／整張複製 `F007`，或只保留 `F007`、`F008` 到一份新 `.xlsx` 再回傳。匯入器沒有「說明與索引」時，只解析 workbook 關係中實際存在的資料工作表；未附上的 family 不讀取、不做 Amazon Validation Preview，也不會加入變更或寫入。多張部分工作表必須來自同一次 export，實際 sheet name、family key、row count、marketplace、export ID 與 fetchedAt 必須和隱藏來源識別一致，後續仍逐列以 main-owned snapshot digest 核對原值、identity、account scope、mode 與 TTL；部分檔不會放寬 Preview、原生確認、idempotency 或 readback 邊界。
+
+舊版 v2 完整活頁簿仍沿用「說明與索引」並保持可匯入；舊版檔若只剩單張資料表，因沒有可安全定位 snapshot 的嵌入識別而 fail closed，提示重新以新版匯出。新版部分檔可只含 F007，也可保留「說明與索引」加 F007；索引中未附上的 family 會安全略過。前台明示可只回傳 F007／F007、F008，且須複製整張工作表分頁而非只複製儲存格；既有安全說明的正常色文字也由過時的淺藍修正為淺綠。紅燈先重現單張 F002 因缺少索引被拒絕，修正後 parser 單張／同 export 多張／索引加單張、legacy 完整相容、legacy 部分拒絕與 public router 單張零寫入預檢均通過。合成 F002-only 成品再以 bundled spreadsheet runtime 匯入：workbook 只有 F002、A:W 可見版面維持原灰／黃／綠樣式、隱藏 X:Y 不干擾畫面，公式錯誤掃描 0 命中。完整 `npm run check` 通過 TypeScript、255 個測試檔／2,541 tests、production build 與 stylesheet parity，`npm audit --omit=dev` 為 0 vulnerabilities。本輪沒有 Amazon request、Validation Preview、原生確認或 mutation；這是 main parser／Excel generator 變更，既有 v0.1.49 必須後續升版並重新安裝才會生效。
+
 ### 2026-09-02 v0.1.49 GitHub 公告發布器（本機實作與驗證完成；未發布／未安裝／未上傳員工入口）
 
 使用者不需要再設定 R2 五個欄位或另一組公布欄帳密。首頁直接以白話表單新增即期品或促銷，Notebook Key main process 只能建立固定 `jspusa/AMZ.API` Issue Form 的預填 URL，使用者到 GitHub 以有權限帳號做最後確認。編輯 Issue 即修改，Close Issue 即撤下；GitHub Actions 只會收錄 open、正確 label，且 author association 為 owner／member／collaborator 的公告。

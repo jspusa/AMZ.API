@@ -43,6 +43,8 @@ const CONTENT_AUDIT_HEADERS = [
 
 export const CONTENT_AUDIT_V2_SCHEMA_VERSION = 2 as const;
 export const CONTENT_AUDIT_V2_INDEX_SHEET_NAME = "說明與索引";
+export const CONTENT_AUDIT_PARTIAL_SHEET_MARKER =
+  "AMZ.API 文案部分工作表 v1";
 export const CONTENT_AUDIT_V2_INDEX_HEADER_ROW = 9;
 export const CONTENT_AUDIT_V2_INDEX_HEADERS = [
   "工作表",
@@ -289,6 +291,7 @@ interface WorksheetOptions {
   dataRowHeight: number;
   freezeRows?: number;
   autoFilter?: string | false;
+  hiddenMetadata?: readonly [marker: string, payload: string];
 }
 
 /**
@@ -560,6 +563,18 @@ export function createContentAuditWorkbookV2({
         ],
         dataRowHeight: 72,
         autoFilter: false,
+        hiddenMetadata: [
+          CONTENT_AUDIT_PARTIAL_SHEET_MARKER,
+          JSON.stringify({
+            schemaVersion: 1,
+            marketplaceId,
+            exportId,
+            fetchedAt: generatedAt.toISOString(),
+            sheetName: family.sheetName,
+            variationFamilyKey: family.familyKey,
+            expectedRows: family.rows.length,
+          }),
+        ],
       }),
     })),
   ];
@@ -1320,12 +1335,14 @@ function buildWorksheet({
   dataRowHeight,
   freezeRows = 1,
   autoFilter,
+  hiddenMetadata,
 }: WorksheetOptions): string {
   if (headers.length === 0 || headers.length !== widths.length) {
     throw new Error("Worksheet headers and widths must be non-empty and aligned.");
   }
 
-  const finalColumn = columnName(headers.length);
+  const metadataStartColumn = headers.length + 1;
+  const finalColumn = columnName(headers.length + (hiddenMetadata ? 2 : 0));
   const finalRow = Math.max(1, rows.length + 1);
   const dimension = `A1:${finalColumn}${finalRow}`;
 
@@ -1334,11 +1351,17 @@ function buildWorksheet({
       (width, index) =>
         `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`,
     )
-    .join("");
+    .join("") + (hiddenMetadata
+      ? `<col min="${metadataStartColumn}" max="${metadataStartColumn + 1}" width="2" customWidth="1" hidden="1"/>`
+      : "");
 
   const headerCells = headers
     .map((header, index) => inlineStringCell(`${columnName(index + 1)}1`, header, 1))
-    .join("");
+    .join("") + (hiddenMetadata
+      ? hiddenMetadata.map((value, index) =>
+        inlineStringCell(`${columnName(metadataStartColumn + index)}1`, value, 3)
+      ).join("")
+      : "");
 
   const dataRows = rows
     .map((row, rowIndex) => {

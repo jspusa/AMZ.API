@@ -377,6 +377,11 @@ describe("global FBA content audit panel", () => {
       relationshipStatus: "complete",
     });
     expect(markup).toContain("回傳任一份 Excel 批次更新");
+    expect(markup).toContain("只保留 F007、F008");
+    expect(markup).toContain("只讀取與預檢實際附上的工作表");
+    expect(markup).toContain("不要只複製儲存格");
+    expect(markup).toContain("淺綠或黃色");
+    expect(markup).not.toContain("淺藍或黃色");
     expect(markup).toContain("先預覽 Excel 變更（不寫入）");
     expect(markup).toContain("Touch ID／Windows Hello");
     expect(markup).toContain("全部通過，或你明確核對符合條件的 INVALID SKU 後");

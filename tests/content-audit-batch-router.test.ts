@@ -433,6 +433,23 @@ function replaceCell(
   return zipSync(archive, { level: 6 });
 }
 
+function keepOnlyWorkbookSheet(
+  bytes: Uint8Array,
+  sheetName: string,
+): Uint8Array {
+  const archive = unzipSync(bytes);
+  const workbookXml = archive["xl/workbook.xml"];
+  if (!workbookXml) throw new Error("Missing workbook XML");
+  const xml = strFromU8(workbookXml);
+  const selected = [...xml.matchAll(/<sheet name="([^"]+)"[^>]*\/>/gu)]
+    .find((match) => match[1] === sheetName)?.[0];
+  if (!selected) throw new Error(`Missing workbook sheet ${sheetName}`);
+  archive["xl/workbook.xml"] = strToU8(
+    xml.replace(/<sheets>.*?<\/sheets>/su, `<sheets>${selected}</sheets>`),
+  );
+  return zipSync(archive, { level: 6 });
+}
+
 function contentSnapshotDigest(input: {
   evidence: ContentAuditSnapshotEvidence;
   row: AuditReply["rows"][number];
@@ -675,6 +692,29 @@ describe("content audit Excel batch router", () => {
       expect(runIdempotentOperation).not.toHaveBeenCalled();
     },
   );
+
+  it("previews a copied single family worksheet without checking omitted sheets", async () => {
+    const snapshot = await audit();
+    const partial = keepOnlyWorkbookSheet(
+      replaceCell(workbook(snapshot), "E2", "Only selected sheet title"),
+      "F001",
+    );
+
+    const preview = await router.handle(importRequest(
+      partial,
+      "content-batch-single-sheet-roundtrip",
+    ));
+
+    expect(preview.status, JSON.stringify(responseValue(preview))).toBe(200);
+    expect(responseValue(preview).changes).toEqual([
+      expect.objectContaining({
+        sellerSku: snapshot.rows[0]!.sellerSku,
+        requested: expect.objectContaining({ title: "Only selected sheet title" }),
+      }),
+    ]);
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
 
   it("returns exact Defined Name locations from the public Excel import route", async () => {
     const snapshot = await audit();

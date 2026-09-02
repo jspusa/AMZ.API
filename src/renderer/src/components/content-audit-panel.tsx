@@ -1765,7 +1765,7 @@ export function ContentAuditWorkbookFilePicker({
       }}
     >
       <span aria-live="polite">
-        {fileName || "選擇原本匯出的 .xlsx"}
+        {fileName || "選擇完整或部分工作表 .xlsx"}
       </span>
       <small>拖放單一 .xlsx 到這裡，或點選檔案</small>
       {selectionError && <small className="content-audit-file-error" role="alert">{selectionError}</small>}
@@ -2966,7 +2966,7 @@ export default function ContentAuditPanel({
         </div>
         <div className="content-export-note content-audit-batch-safety">
           <strong>Excel 批次更新安全流程</strong>
-          <p>「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺藍或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。預檢全部通過，或你明確核對符合條件的 INVALID SKU 後，才會要求一次 Touch ID／Windows Hello；這不代表 INVALID 已通過，若任一筆遭拒或結果不明會停止後續且不盲目重送。</p>
+          <p>「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺綠或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。預檢全部通過，或你明確核對符合條件的 INVALID SKU 後，才會要求一次 Touch ID／Windows Hello；這不代表 INVALID 已通過，若任一筆遭拒或結果不明會停止後續且不盲目重送。</p>
         </div>
       </AuditDetailsDisclosure>
       {state === "done" && snapshot && summary && (
@@ -3006,7 +3006,7 @@ export default function ContentAuditPanel({
         <section className="content-audit-roundtrip" aria-label="回傳 Excel 批次更新文案">
           <div>
             <strong>回傳任一份 Excel 批次更新</strong>
-            <p>選擇剛才匯出的任一份 .xlsx，先預覽變更，不會立即寫入 Amazon。</p>
+            <p>可回傳完整檔，也可只保留 F007，或只保留 F007、F008；系統只讀取與預檢實際附上的工作表，其他商品完全不碰。請複製或保留整張工作表分頁，不要只複製儲存格。</p>
           </div>
           <ContentAuditWorkbookFilePicker
             fileName={workbookFile?.name ?? null}
