@@ -2,6 +2,7 @@ import { strToU8, zipSync } from "fflate";
 import {
   businessPricingRecommendationFlags,
   recommendedBusinessPriceDetermination,
+  recommendedQuantityDiscountMismatch,
 } from "../../shared/business-pricing-recommendations";
 import type {
   BusinessPricingAuditRow,
@@ -117,12 +118,33 @@ function quantityDiscountText(row: BusinessPricingAuditRow): string {
   }).join("、")}`;
 }
 
-function statusLabel(status: BusinessPricingAuditRow["status"]): string {
-  if (status === "configured") return "已設定";
-  if (status === "above_standard") return "B2B 高於一般售價";
-  if (status === "missing") return "未設定 B2B 價格";
-  if (status === "unsupported") return "請至 Amazon 後台確認";
-  if (status === "incomplete") return "資料未完成";
+function isCorrectlyConfigured(row: BusinessPricingAuditRow): boolean {
+  return row.status === "configured" &&
+    row.businessOfferPresence === "present" &&
+    recommendedBusinessPriceDetermination({
+      standardPrice: row.standardPrice,
+      businessPrice: row.businessPrice,
+    }) === "matches" &&
+    row.quantityDiscountPlanPresence === "canonical" &&
+    !recommendedQuantityDiscountMismatch({
+      plan: row.quantityDiscountPlan,
+      presence: row.quantityDiscountPlanPresence,
+    });
+}
+
+function statusLabel(row: BusinessPricingAuditRow): string {
+  if (row.status === "configured") {
+    if (isCorrectlyConfigured(row)) return "正確設定";
+    if (
+      row.recommendedPriceMismatch ||
+      row.recommendedQuantityDiscountMismatch
+    ) return "已設定但需調整";
+    return "已設定但待確認";
+  }
+  if (row.status === "above_standard") return "B2B 高於一般售價";
+  if (row.status === "missing") return "未設定 B2B 價格";
+  if (row.status === "unsupported") return "請至 Amazon 後台確認";
+  if (row.status === "incomplete") return "資料未完成";
   throw new TypeError("B2B Excel 列狀態無效。");
 }
 
@@ -152,7 +174,7 @@ function validatedRows(snapshot: BusinessPricingAuditSnapshot): BusinessPricingA
       row.standardPrice!.currencyCode !== row.businessPrice!.currencyCode
     ) throw new TypeError("B2B Excel 價格幣別不一致。");
     quantityDiscountText(row);
-    statusLabel(row.status);
+    statusLabel(row);
     const flags = businessPricingRecommendationFlags({
       standardPrice: row.standardPrice,
       businessPrice: row.businessPrice,
@@ -196,12 +218,7 @@ function amount(value: number | null, style: Cell["style"]): Cell {
 
 function rowStyle(row: BusinessPricingAuditRow): 3 | 4 | 5 {
   if (row.status === "incomplete" || row.status === "unsupported") return 5;
-  if (
-    row.status !== "configured" ||
-    row.recommendedPriceMismatch ||
-    row.recommendedQuantityDiscountMismatch
-  ) return 4;
-  return 3;
+  return isCorrectlyConfigured(row) ? 3 : 4;
 }
 
 function detailRow(row: BusinessPricingAuditRow): readonly Cell[] {
@@ -239,7 +256,7 @@ function detailRow(row: BusinessPricingAuditRow): readonly Cell[] {
           : "符合建議",
       style,
     ),
-    text(statusLabel(row.status), style),
+    text(statusLabel(row), style),
     text(safeText(row.reason, "說明", 2_000), style),
   ];
 }

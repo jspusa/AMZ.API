@@ -1218,7 +1218,7 @@ describe("FBA business pricing audit renderer", () => {
     )).toEqual([]);
   });
 
-  it("keeps a completed adjusted SKU visible under the default problem filter", async () => {
+  it("keeps completed correct activity out of 需處理 and available under 正確設定", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     const original = parseBusinessPricingAuditSnapshot(payload());
@@ -1264,16 +1264,24 @@ describe("FBA business pricing audit renderer", () => {
         initialSnapshot: completed,
       }));
     });
-    const adjustedRow = renderer!.root.findAllByType("article").find(
+    const adjustedRow = () => renderer!.root.findAllByType("article").find(
       (article) => article.findAllByType("small").some((small) =>
         small.children.join("") === "FBA-CONFIGURED · B000000002"
       ),
     );
-    expect(adjustedRow).toBeDefined();
-    expect(adjustedRow!.findAllByType("button").some((button) =>
+    expect(adjustedRow()).toBeUndefined();
+    const summary = renderer!.root.findByProps({
+      "aria-label": "B2B 價格健檢摘要與篩選",
+    });
+    const correctlyConfigured = summary.findAllByType("button").find((button) =>
+      button.findByType("span").children.join("") === "正確設定"
+    )!;
+    await act(async () => correctlyConfigured.props.onClick());
+    expect(adjustedRow()).toBeDefined();
+    expect(adjustedRow()!.findAllByType("button").some((button) =>
       button.children.join("") === "查看完成結果"
     )).toBe(true);
-    expect(adjustedRow!.findAllByProps({
+    expect(adjustedRow()!.findAllByProps({
       "aria-label": "B2B 調整進度：B2B 價格已回查確認",
     })).toHaveLength(1);
     await act(async () => renderer!.unmount());
@@ -2192,6 +2200,45 @@ describe("FBA business pricing audit renderer", () => {
     )).toHaveLength(3);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "all")))
       .toHaveLength(4);
+  });
+
+  it("does not call configured rows correct when recommendation evidence is unknown", () => {
+    const parsed = parseBusinessPricingAuditSnapshot(payload());
+    const row = {
+      ...parsed.rows[1]!,
+      standardPrice: null,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous" as const,
+      recommendedPriceMismatch: false,
+      recommendedQuantityDiscountMismatch: false,
+      status: "configured" as const,
+      reason: "Business Price 已確認，但一般售價與數量折扣仍待核對。",
+    };
+
+    expect(businessPricingRowMatchesFilter(row, "configured")).toBe(false);
+    expect(businessPricingRowMatchesFilter(row, "problem")).toBe(true);
+
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: {
+        ...parsed,
+        rows: [row],
+        summary: {
+          totalFbaSkuCount: 1,
+          configured: 1,
+          aboveStandard: 0,
+          missing: 0,
+          unsupported: 0,
+          incomplete: 0,
+          recommendedPriceMismatch: 0,
+          recommendedQuantityDiscountMismatch: 0,
+        },
+      },
+    }));
+    expect(markup).toContain("<span>需處理</span><strong>1</strong>");
+    expect(markup).toContain("<span>正確設定</span><strong>0</strong>");
+    expect(markup).toContain("已設定但待確認");
   });
 
   it("treats a B2B price above standard as a read-only problem", () => {

@@ -74,6 +74,17 @@ describe("dashboard top navigation layout", () => {
         ...attentionRow,
         sellerSku: "EXACT-GOOD",
         asin: "B000000002",
+        businessPrice: { amount: 19, currencyCode: "USD" },
+        quantityDiscountPlan: {
+          discountType: "percent" as const,
+          levels: [
+            { lowerBound: 5, value: 5 },
+            { lowerBound: 10, value: 10 },
+            { lowerBound: 15, value: 15 },
+            { lowerBound: 20, value: 20 },
+          ],
+        },
+        quantityDiscountPlanPresence: "canonical" as const,
         recommendedPriceMismatch: false,
         recommendedQuantityDiscountMismatch: false,
         reason: "符合建議。",

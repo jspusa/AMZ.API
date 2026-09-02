@@ -13,6 +13,7 @@ import {
   applyVerifiedBusinessPriceToAuditSnapshot,
   businessPricingWorkflowProgress,
   businessPricingRowMatchesFilter,
+  isBusinessPricingRowCorrectlyConfigured,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
   retainBusinessPricingWorkflowActivities,
@@ -75,10 +76,11 @@ function formatMoney(value: BusinessPricingMoney | null): string {
 
 function statusLabel(row: BusinessPricingAuditRow): string {
   if (row.status === "configured") {
+    if (isBusinessPricingRowCorrectlyConfigured(row)) return "正確設定";
     return row.recommendedPriceMismatch ||
         row.recommendedQuantityDiscountMismatch
       ? "已設定但需調整"
-      : "正確設定";
+      : "已設定但待確認";
   }
   if (row.status === "above_standard") return "B2B 高於一般售價";
   if (row.status === "missing") return "未設定 B2B 價格";
@@ -105,6 +107,7 @@ function rowStatusDetail(row: BusinessPricingAuditRow): string {
   ) {
     return "已找到 Amazon Business 價格，但仍有建議規則需要調整。";
   }
+  if (!isBusinessPricingRowCorrectlyConfigured(row)) return row.reason;
   return "Business Price 與建議數量折扣皆已正確設定。";
 }
 
@@ -388,10 +391,7 @@ export default function BusinessPricingAuditPanel({
       ]),
     );
     return visibleSnapshot.rows
-      .filter((row) =>
-        businessPricingRowMatchesFilter(row, filter) ||
-        (filter === "problem" && activityOrder.has(row.sellerSku))
-      )
+      .filter((row) => businessPricingRowMatchesFilter(row, filter))
       .map((row, index) => ({ row, index }))
       .sort((left, right) => {
         const leftActivity = activityOrder.get(left.row.sellerSku);
