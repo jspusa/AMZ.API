@@ -11,6 +11,7 @@ import {
 import {
   ContentAuditWorkbookError,
   parseContentAuditWorkbook,
+  type ContentAuditWorkbookRowIssue,
   type ParsedContentAuditValues,
 } from "./amazon/content-audit-workbook-parser";
 import {
@@ -100,6 +101,35 @@ type ContentBatchBlockedChange = Readonly<{
   requested: ListingContentValues;
 }>;
 
+type ContentBatchSkippedRow = Readonly<{
+  sellerSku: string | null;
+  sourceSheet: string | null;
+  rowNumber: number | null;
+  stage: "WORKBOOK" | "SOURCE_CHECK" | "LOCAL_VALIDATION" | "AMAZON_PREVIEW";
+  code: string;
+  fields: string[];
+  message: string;
+}>;
+
+type ContentBatchValidationFailure = Readonly<{
+  sellerSku: string;
+  code: string;
+  message: string;
+  requestId: string | null;
+  changedFields: ListingContentField[];
+  previous: ListingContentValues;
+  requested: ListingContentValues;
+  issues: readonly Readonly<{
+    code: string | null;
+    severity: string;
+    message: string;
+    attributeNames: readonly string[];
+    categories?: readonly string[];
+    marketplaceIds?: readonly string[];
+  }>[];
+  overrideAllowed: false;
+}>;
+
 type ContentBatchSourceIdentity = Readonly<{
   asin: string;
   productType: string;
@@ -115,12 +145,45 @@ type ContentBatchRowResult = {
 type ContentBatchCommitResult = {
   previewId: string;
   marketplaceId: MarketplaceId;
-  status: "COMPLETED" | "STOPPED_REJECTED" | "STOPPED_UNKNOWN";
+  status:
+    | "COMPLETED"
+    | "COMPLETED_WITH_ISSUES"
+    | "STOPPED_REJECTED"
+    | "STOPPED_UNKNOWN";
   rows: ContentBatchRowResult[];
   blockedChanges: ContentBatchBlockedChange[];
+  skippedRows: ContentBatchSkippedRow[];
+  validationFailures: ContentBatchValidationFailure[];
   completedAt: string;
   notice: string;
 };
+
+function isIsolatedBatchRowFailure(error: unknown): boolean {
+  if (error instanceof SpApiPreCommitError) return true;
+  return error instanceof SpApiError && [
+    "UPDATE_REJECTED",
+    "VALIDATION_FAILED",
+    "UPDATE_STATUS_UNKNOWN",
+  ].includes(error.code);
+}
+
+const ISOLATED_CONTENT_PREVIEW_CODES = new Set([
+  "CONTENT_CHANGED",
+  "CONTENT_FIELD_READ_ONLY",
+  "CONTENT_LIMIT_EXCEEDED",
+  "CONTENT_REQUIRED",
+  "CONTENT_SELECTOR_UNSAFE",
+  "CONTENT_UNCHANGED",
+  "LISTING_IDENTITY_MISMATCH",
+  "PREVIEW_CHANGED",
+  "VALIDATION_FAILED",
+]);
+
+function isIsolatedContentPreviewFailure(error: unknown): error is SpApiError {
+  return error instanceof SpApiError &&
+    error.status < 500 &&
+    ISOLATED_CONTENT_PREVIEW_CODES.has(error.code);
+}
 
 type ContentBatchPlan = {
   previewId: string;
@@ -132,11 +195,84 @@ type ContentBatchPlan = {
   fingerprint: string;
   changes: ContentBatchChange[];
   blockedChanges: ContentBatchBlockedChange[];
+  skippedRows: ContentBatchSkippedRow[];
+  validationFailures: ContentBatchValidationFailure[];
   expiresAt: number;
   completedExpiresAt: number | null;
   state: "ready" | "committing" | "completed";
   result: ContentBatchCommitResult | null;
 };
+
+function publicSkippedRows(
+  rows: readonly ContentBatchSkippedRow[],
+): ContentBatchSkippedRow[] {
+  return rows.map((row) => ({
+    sellerSku: row.sellerSku,
+    sourceSheet: row.sourceSheet,
+    rowNumber: row.rowNumber,
+    stage: row.stage,
+    code: row.code,
+    fields: [...row.fields],
+    message: row.message,
+  }));
+}
+
+function publicValidationFailures(
+  rows: readonly ContentBatchValidationFailure[],
+): ContentBatchValidationFailure[] {
+  return rows.map((row) => ({
+    sellerSku: row.sellerSku,
+    code: row.code,
+    message: row.message,
+    requestId: row.requestId,
+    changedFields: [...row.changedFields],
+    previous: publicContentValues(row.previous),
+    requested: publicContentValues(row.requested),
+    issues: row.issues.map((issue) => ({
+      code: issue.code,
+      severity: issue.severity,
+      message: issue.message,
+      attributeNames: [...issue.attributeNames],
+      ...(issue.categories
+        ? { categories: [...issue.categories] }
+        : {}),
+      ...(issue.marketplaceIds
+        ? { marketplaceIds: [...issue.marketplaceIds] }
+        : {}),
+    })),
+    overrideAllowed: false,
+  }));
+}
+
+function workbookSkippedRows(
+  issues: readonly ContentAuditWorkbookRowIssue[],
+): ContentBatchSkippedRow[] {
+  const grouped = new Map<string, ContentAuditWorkbookRowIssue[]>();
+  for (const issue of issues) {
+    const key = JSON.stringify([
+      issue.sourceSheet,
+      issue.rowNumber,
+      issue.sellerSku,
+    ]);
+    const matches = grouped.get(key) ?? [];
+    matches.push(issue);
+    grouped.set(key, matches);
+  }
+  return [...grouped.values()].map((matches) => {
+    const first = matches[0]!;
+    return {
+      sellerSku: first.sellerSku,
+      sourceSheet: first.sourceSheet,
+      rowNumber: first.rowNumber,
+      stage: "WORKBOOK" as const,
+      code: matches.map((issue) => issue.code).join("+"),
+      fields: [...new Set(matches.map((issue) => issue.fieldLabel))],
+      message: matches
+        .map((issue) => `${issue.fieldLabel}：${issue.message}`)
+        .join(" "),
+    };
+  });
+}
 
 function publicContentValues(value: ListingContentValues): ListingContentValues {
   return {
@@ -216,6 +352,25 @@ function batchInputValues(input: UpdateListingContentInput): Readonly<{
   return { previous, requested, changedFields };
 }
 
+function contentBatchValidationFailure(
+  input: UpdateListingContentInput,
+  error: SpApiError,
+): ContentBatchValidationFailure {
+  const publicError = publicSpApiError(error, "Amazon 預檢失敗。");
+  const values = batchInputValues(input);
+  return {
+    sellerSku: input.sellerSku,
+    code: publicError.code,
+    message: publicError.message,
+    requestId: publicError.requestId,
+    changedFields: values.changedFields,
+    previous: publicContentValues(values.previous),
+    requested: publicContentValues(values.requested),
+    issues: publicError.issues,
+    overrideAllowed: false,
+  };
+}
+
 function blockedBatchInputValues(input: UpdateListingContentInput): Readonly<{
   previous: ListingContentValues;
   requested: ListingContentValues;
@@ -244,7 +399,7 @@ function assertContentBatchSourceIdentity(
   if (validation.evidence.asin !== sourceIdentity.asin ||
       validation.evidence.productType !== sourceIdentity.productType) {
     throw new SpApiError(
-      "Amazon 上的 SKU 已換綁到另一個 ASIN 或商品類型；整批已停止，請重新執行全站健檢。",
+      "Amazon 上的 SKU 已換綁到另一個 ASIN 或商品類型；此 SKU 已隔離且不會送出，請重新執行全站健檢後再處理。",
       { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
     );
   }
@@ -324,6 +479,10 @@ function publicBatchCommitResult(
       previous: publicContentValues(change.previous),
       requested: publicContentValues(change.requested),
     })),
+    skippedRows: publicSkippedRows(result.skippedRows ?? []),
+    validationFailures: publicValidationFailures(
+      result.validationFailures ?? [],
+    ),
     completedAt: result.completedAt,
     notice: result.notice,
   };
@@ -677,6 +836,8 @@ export class ListingContentBatchMutations
         previous: publicContentValues(change.previous),
         requested: publicContentValues(change.requested),
       })),
+      skippedRows: publicSkippedRows(plan.skippedRows),
+      validationFailures: publicValidationFailures(plan.validationFailures),
       validationOverride: {
         required: overrideSellerSkus.length > 0,
         sellerSkus: overrideSellerSkus,
@@ -688,6 +849,14 @@ export class ListingContentBatchMutations
       }${
         plan.blockedChanges.length
           ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個 SKU 因原掃描未完整而未納入本次更新，且不會寫入 Amazon。`
+          : ""
+      }${
+        plan.skippedRows.length
+          ? ` ${plan.skippedRows.length.toLocaleString()} 個有問題的 SKU 已隔離並略過；上方已一次列出欄位與原因。`
+          : ""
+      }${
+        plan.validationFailures.length
+          ? ` ${plan.validationFailures.length.toLocaleString()} 個 Amazon 預檢失敗 SKU 已隔離且不會送出；其餘安全 SKU 可繼續。`
           : ""
       }`,
     };
@@ -777,6 +946,9 @@ export class ListingContentBatchMutations
         sourceIdentity: ContentBatchSourceIdentity;
       }>> = [];
       const blockedChanges: ContentBatchBlockedChange[] = [];
+      const skippedRows: ContentBatchSkippedRow[] = workbookSkippedRows(
+        parsed.issues,
+      );
       let legacyRecoveredRows = 0;
       let legacyCandidateWork = 0;
       let legacyHashWork = 0;
@@ -841,11 +1013,17 @@ export class ListingContentBatchMutations
           }
         }
         if (sourceMatches.length !== 1) {
-          return invalid(
-            `SKU ${row.sellerSku} 的識別欄、變體分類或原始文案已被修改；已停止整批預檢。`,
-            409,
-            "WORKBOOK_TAMPERED",
-          );
+          skippedRows.push({
+            sellerSku: row.sellerSku,
+            sourceSheet: row.sourceSheet,
+            rowNumber: row.sourceRowNumber,
+            stage: "SOURCE_CHECK",
+            code: "WORKBOOK_TAMPERED",
+            fields: ["Seller SKU／ASIN／Product Type／原始文案"],
+            message:
+              "識別欄、變體分類或 Amazon 原始文案與匯出快照不一致；此 SKU 已隔離且不會送出。",
+          });
+          continue;
         }
         const [{ readStatus: sourceReadStatus, values: sourceOriginal }] =
           sourceMatches;
@@ -871,11 +1049,17 @@ export class ListingContentBatchMutations
             proposed: row.proposed,
           })
         ) {
-          return invalid(
-            `SKU ${row.sellerSku} 的舊版 Excel 換行字元欄位同時被編輯；無法唯一復原原文，請重新匯出 Excel 後再修改。`,
-            409,
-            "WORKBOOK_REEXPORT_REQUIRED",
-          );
+          skippedRows.push({
+            sellerSku: row.sellerSku,
+            sourceSheet: row.sourceSheet,
+            rowNumber: row.sourceRowNumber,
+            stage: "SOURCE_CHECK",
+            code: "WORKBOOK_REEXPORT_REQUIRED",
+            fields: ["原始文案／更新文案"],
+            message:
+              "舊版 Excel 的換行字元欄位同時被編輯，無法唯一復原原文；此 SKU 已隔離，請重新匯出後再修改。",
+          });
+          continue;
         }
         const proposed = contentAuditProposedWithRecoveredSource({
           parsedOriginal: row.original,
@@ -908,11 +1092,17 @@ export class ListingContentBatchMutations
           ingredients === null ||
           expectedIngredients === null
         ) {
-          return invalid(
-            `SKU ${row.sellerSku} 的更新文案含有不支援的控制字元或超過本機安全長度。`,
-            422,
-            "CONTENT_INVALID",
-          );
+          skippedRows.push({
+            sellerSku: row.sellerSku,
+            sourceSheet: row.sourceSheet,
+            rowNumber: row.sourceRowNumber,
+            stage: "LOCAL_VALIDATION",
+            code: "CONTENT_INVALID",
+            fields: ["更新文案"],
+            message:
+              "更新文案含有不支援的控制字元或超過本機安全長度；此 SKU 已隔離且不會送出。",
+          });
+          continue;
         }
         const input: UpdateListingContentInput = {
           marketplaceId,
@@ -950,7 +1140,7 @@ export class ListingContentBatchMutations
         });
       }
       if (
-        inputRows.length + blockedChanges.length >
+        inputRows.length + blockedChanges.length + skippedRows.length >
           CONTENT_BATCH_MAX_CHANGED_SKUS
       ) {
         return invalid(
@@ -960,6 +1150,16 @@ export class ListingContentBatchMutations
         );
       }
       if (!inputRows.length) {
+        if (skippedRows.length) {
+          return json({
+            code: "CONTENT_BATCH_ALL_SKIPPED",
+            message:
+              `${skippedRows.length.toLocaleString()} 個有問題的 SKU 已全部隔離；已一次列出欄位與原因，Amazon 寫入數為 0。`,
+            skippedRows: publicSkippedRows(skippedRows),
+            blockedChanges,
+            writeCount: 0,
+          }, 422);
+        }
         if (blockedChanges.length) {
           return json({
             code: "CONTENT_READ_INCOMPLETE",
@@ -995,22 +1195,7 @@ export class ListingContentBatchMutations
       this.assertLifecycleCurrent(revision);
 
       const changes: ContentBatchChange[] = [];
-      const validationErrors: Array<{
-        sellerSku: string;
-        code: string;
-        message: string;
-        requestId: string | null;
-        changedFields: ListingContentField[];
-        previous: ListingContentValues;
-        requested: ListingContentValues;
-        issues: readonly Readonly<{
-          code: string | null;
-          severity: string;
-          message: string;
-          attributeNames: readonly string[];
-        }>[];
-        overrideAllowed: false;
-      }> = [];
+      const validationErrors: ContentBatchValidationFailure[] = [];
       for (const { input, sourceIdentity } of inputRows) {
         try {
           await this.context.assertCurrent(context);
@@ -1034,7 +1219,7 @@ export class ListingContentBatchMutations
             )
           ) {
             throw new SpApiError(
-              "Amazon Validation Preview 未通過，但沒有可安全顯示並供逐項核對的 ERROR；整批已停止。",
+              "Amazon Validation Preview 未通過，但沒有可安全顯示並供逐項核對的 ERROR；此 SKU 已隔離。",
               {
                 status: 422,
                 code: "VALIDATION_FAILED",
@@ -1053,33 +1238,23 @@ export class ListingContentBatchMutations
           });
         } catch (error) {
           if (error instanceof SpExecutionContextError) throw error;
-          const publicError = error instanceof SpApiError
-            ? publicSpApiError(error, "Amazon 預檢失敗。")
-            : null;
-          const values = batchInputValues(input);
-          validationErrors.push({
-            sellerSku: input.sellerSku,
-            code: publicError?.code ?? "INTERNAL_ERROR",
-            message: publicError?.message ?? "Amazon 預檢失敗。",
-            requestId: publicError?.requestId ?? null,
-            changedFields: values.changedFields,
-            previous: publicContentValues(values.previous),
-            requested: publicContentValues(values.requested),
-            issues: publicError?.issues ?? [],
-            overrideAllowed: false,
-          });
+          if (!isIsolatedContentPreviewFailure(error)) throw error;
+          validationErrors.push(
+            contentBatchValidationFailure(input, error),
+          );
         }
       }
       await this.context.assertCurrent(context);
       this.assertLifecycleCurrent(revision);
-      if (validationErrors.length) {
+      if (validationErrors.length && !changes.length) {
         return json(
           {
             code: "CONTENT_BATCH_VALIDATION_FAILED",
             message:
-              `${validationErrors.length.toLocaleString()} 個 SKU 未通過預檢；整批仍為零寫入。`,
-            rows: validationErrors,
+              `${validationErrors.length.toLocaleString()} 個 SKU 未通過預檢；有問題的 SKU 已全部隔離，Amazon 寫入數為 0。`,
+            rows: publicValidationFailures(validationErrors),
             blockedChanges,
+            skippedRows: publicSkippedRows(skippedRows),
             writeCount: 0,
           },
           422,
@@ -1111,6 +1286,8 @@ export class ListingContentBatchMutations
           change.previous,
           change.requested,
         ]),
+        skippedRows,
+        validationErrors,
       ]);
       this.prunePlans();
       const conflictingPlan = [...this.plans.values()].find(
@@ -1140,6 +1317,8 @@ export class ListingContentBatchMutations
         fingerprint: batchFingerprint,
         changes,
         blockedChanges,
+        skippedRows,
+        validationFailures: validationErrors,
         expiresAt: Math.min(
           stored.expiresAt,
           this.now() + CONTENT_BATCH_PREVIEW_TTL_MS,
@@ -1316,58 +1495,58 @@ export class ListingContentBatchMutations
       }, 422);
     }
 
-    const sellerSkus = plan.changes.map((change) => change.input.sellerSku);
-    const shownSkus = sellerSkus.slice(0, 5).join("、");
-    const remaining = Math.max(0, sellerSkus.length - 5);
-    const nativeRiskChanges = plan.changes.filter((change) =>
-      change.validation.exactBulletReplacement !== null ||
-      change.validationOverrideRequired
-    );
-    const nativeRiskSummary = nativeRiskChanges
-      .map((change) => {
-        const risks: string[] = [];
-        const disclosure = change.validation.exactBulletReplacement;
-        if (disclosure) {
-          risks.push(
-            `要點 ${disclosure.currentExactLanguageBulletPoints.length}→${disclosure.requestedExactLanguageBulletPoints.length}／刪${disclosure.removedOverflowBulletPoints.length}`,
-          );
-        }
-        if (change.validationOverrideRequired) {
-          const codes = [...new Set(
-            publicListingIssues(change.validation.issues)
-              .filter((issue) => issue.severity === "ERROR")
-              .map((issue) => issue.code ?? "無代碼"),
-          )].join("／");
-          risks.push(`INVALID ${codes}`);
-        }
-        return `${change.input.sellerSku}（${risks.join("；")}）`;
-      })
-      .join("、");
-    const removedOverflowBulletCount = exactBulletReplacementChanges.reduce(
-      (total, change) =>
-        total +
-        (change.validation.exactBulletReplacement
-          ?.removedOverflowBulletPoints.length ?? 0),
-      0,
-    );
-    const compactNativeRiskSummary = [
-      `高風險 ${nativeRiskChanges.length} SKU`,
-      `刪除要點 ${removedOverflowBulletCount} 項`,
-      `INVALID ${requiredOverrideChanges.length} SKU`,
-    ].join("／");
-    const detailedApprovalReason = (verificationCode: string): string =>
-      `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
-        nativeRiskChanges.length
-          ? `｜高風險：${nativeRiskSummary}`
-          : `｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}`
-      }｜驗證碼 ${verificationCode}`;
-    const compactApprovalReason = (verificationCode: string): string =>
-      `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU｜${compactNativeRiskSummary}｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
     const approvalReason = (verificationCode: string): string => {
-      const detailed = detailedApprovalReason(verificationCode);
+      // beforeApproval may isolate a row after its fresh Amazon Preview. Build
+      // the native summary lazily so it names only the SKUs still eligible to
+      // write, while the original Write Gate binding remains the conservative
+      // superset reserved before revalidation.
+      const currentChanges = plan.changes;
+      const sellerSkus = currentChanges.map((change) => change.input.sellerSku);
+      const shownSkus = sellerSkus.slice(0, 5).join("、");
+      const remaining = Math.max(0, sellerSkus.length - 5);
+      const nativeRiskChanges = currentChanges.filter((change) =>
+        change.validation.exactBulletReplacement !== null ||
+        change.validationOverrideRequired
+      );
+      const nativeRiskSummary = nativeRiskChanges
+        .map((change) => {
+          const risks: string[] = [];
+          const disclosure = change.validation.exactBulletReplacement;
+          if (disclosure) {
+            risks.push(
+              `要點 ${disclosure.currentExactLanguageBulletPoints.length}→${disclosure.requestedExactLanguageBulletPoints.length}／刪${disclosure.removedOverflowBulletPoints.length}`,
+            );
+          }
+          if (change.validationOverrideRequired) {
+            const codes = [...new Set(
+              publicListingIssues(change.validation.issues)
+                .filter((issue) => issue.severity === "ERROR")
+                .map((issue) => issue.code ?? "無代碼"),
+            )].join("／");
+            risks.push(`INVALID ${codes}`);
+          }
+          return `${change.input.sellerSku}（${risks.join("；")}）`;
+        })
+        .join("、");
+      const removedOverflowBulletCount = currentChanges.reduce(
+        (total, change) =>
+          total +
+          (change.validation.exactBulletReplacement
+            ?.removedOverflowBulletPoints.length ?? 0),
+        0,
+      );
+      const currentOverrideCount = currentChanges.filter(
+        (change) => change.validationOverrideRequired,
+      ).length;
+      const detailed =
+        `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
+          nativeRiskChanges.length
+            ? `｜高風險：${nativeRiskSummary}`
+            : `｜${shownSkus}${remaining ? ` 等另 ${remaining} 個` : ""}`
+        }｜驗證碼 ${verificationCode}`;
       return detailed.length <= NATIVE_CONFIRMATION_REASON_MAX_LENGTH
         ? detailed
-        : compactApprovalReason(verificationCode);
+        : `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU｜高風險 ${nativeRiskChanges.length} SKU／刪除要點 ${removedOverflowBulletCount} 項／INVALID ${currentOverrideCount} SKU｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
     };
     let preflightResponse: ApiResponse | null = null;
     plan.state = "committing";
@@ -1382,53 +1561,84 @@ export class ListingContentBatchMutations
             this.assertLifecycleCurrent(revision);
             this.assertPlanLive(plan);
             const revalidated: ContentBatchChange[] = [];
+            const newlyIsolated: ContentBatchValidationFailure[] = [];
             for (const change of plan.changes) {
-              await this.context.assertCurrent(context);
-              this.assertLifecycleCurrent(revision);
-              const fresh = await this.content.previewOne(
-                change.input,
-                batchPreviewOptions(
-                  change.validationOverrideRequired,
-                ),
-              );
-              this.assertLifecycleCurrent(revision);
-              assertListingContentPreparedPreviewBinding(
-                fresh,
-                change.input,
-                context,
-                {
-                  evidence: change.validation.evidence,
-                  exactBulletReplacement:
-                    change.validation.exactBulletReplacement,
-                  proposalFingerprint: change.proposalFingerprint,
-                  status: change.validation.status,
-                },
-                batchPreviewOptions(
-                  change.validationOverrideRequired,
-                ),
-              );
-              assertContentBatchSourceIdentity(fresh, change.sourceIdentity);
-              revalidated.push({ ...change, validation: fresh });
+              try {
+                await this.context.assertCurrent(context);
+                this.assertLifecycleCurrent(revision);
+                const fresh = await this.content.previewOne(
+                  change.input,
+                  batchPreviewOptions(
+                    change.validationOverrideRequired,
+                  ),
+                );
+                this.assertLifecycleCurrent(revision);
+                assertListingContentPreparedPreviewBinding(
+                  fresh,
+                  change.input,
+                  context,
+                  {
+                    evidence: change.validation.evidence,
+                    exactBulletReplacement:
+                      change.validation.exactBulletReplacement,
+                    proposalFingerprint: change.proposalFingerprint,
+                    status: change.validation.status,
+                  },
+                  batchPreviewOptions(
+                    change.validationOverrideRequired,
+                  ),
+                );
+                assertContentBatchSourceIdentity(fresh, change.sourceIdentity);
+                revalidated.push({ ...change, validation: fresh });
+              } catch (error) {
+                if (error instanceof SpExecutionContextError) throw error;
+                if (!isIsolatedContentPreviewFailure(error)) throw error;
+                newlyIsolated.push(
+                  contentBatchValidationFailure(change.input, error),
+                );
+              }
             }
             await this.context.assertCurrent(context);
             this.assertLifecycleCurrent(revision);
             this.assertPlanLive(plan);
+            plan.validationFailures = [
+              ...plan.validationFailures,
+              ...newlyIsolated,
+            ];
+            if (!revalidated.length) {
+              const message =
+                `${plan.validationFailures.length.toLocaleString()} 個 SKU 在送出前重新預檢時未通過；已全部隔離，Amazon 寫入數為 0。`;
+              preflightResponse = json({
+                code: "CONTENT_BATCH_VALIDATION_FAILED",
+                message,
+                rows: publicValidationFailures(plan.validationFailures),
+                blockedChanges: plan.blockedChanges,
+                skippedRows: publicSkippedRows(plan.skippedRows),
+                writeCount: 0,
+              }, 422);
+              throw new SpApiError(message, {
+                status: 422,
+                code: "CONTENT_BATCH_VALIDATION_FAILED",
+              });
+            }
             plan.changes = revalidated;
           } catch (error) {
             this.plans.delete(previewId);
-            const response = apiError(
-              error,
-              "整批送出前的 Amazon 重新讀取或 Validation Preview 失敗。",
-            );
-            preflightResponse = response.body.kind === "json" &&
-                isPlainRecord(response.body.value)
-              ? json({
-                  ...response.body.value,
-                  message:
-                    `${String(response.body.value.message ?? "整批重新預檢失敗。")} Amazon 寫入數為 0，請重新上傳 Excel。`,
-                  writeCount: 0,
-                }, response.status, response.headers)
-              : response;
+            if (!preflightResponse) {
+              const response = apiError(
+                error,
+                "整批送出前的 Amazon 重新讀取或 Validation Preview 失敗。",
+              );
+              preflightResponse = response.body.kind === "json" &&
+                  isPlainRecord(response.body.value)
+                ? json({
+                    ...response.body.value,
+                    message:
+                      `${String(response.body.value.message ?? "整批重新預檢失敗。")} Amazon 寫入數為 0，請重新上傳 Excel。`,
+                    writeCount: 0,
+                  }, response.status, response.headers)
+                : response;
+            }
             throw error;
           }
         },
@@ -1441,12 +1651,16 @@ export class ListingContentBatchMutations
             result: null,
             error: null,
           }));
-          let status: ContentBatchCommitResult["status"] = "COMPLETED";
+          let status: ContentBatchCommitResult["status"] =
+            plan.validationFailures.length
+              ? "COMPLETED_WITH_ISSUES"
+              : "COMPLETED";
           for (let index = 0; index < plan.changes.length; index += 1) {
             this.assertLifecycleCurrent(revision);
             const change = plan.changes[index]!;
             await this.context.assertCurrent(context);
             this.assertLifecycleCurrent(revision);
+            let returnedUnverifiedResult = false;
             try {
               const rowResult = await this.content.attemptOne(
                 change.input,
@@ -1457,6 +1671,7 @@ export class ListingContentBatchMutations
                   change.validationOverrideRequired,
                 ),
               );
+              returnedUnverifiedResult = true;
               this.assertLifecycleCurrent(revision);
               assertListingContentUpdateResultBinding(
                 rowResult,
@@ -1495,12 +1710,23 @@ export class ListingContentBatchMutations
                   requestId: publicError?.requestId ?? null,
                 },
               };
+              if (
+                !returnedUnverifiedResult &&
+                isIsolatedBatchRowFailure(error)
+              ) {
+                status = "COMPLETED_WITH_ISSUES";
+                continue;
+              }
               status = unknown ? "STOPPED_UNKNOWN" : "STOPPED_REJECTED";
               break;
             }
           }
           const completedCount = rows.filter((row) =>
             row.state === "verified" || row.state === "simulated").length;
+          const rejectedCount = rows.filter((row) =>
+            row.state === "rejected").length;
+          const unknownCount = rows.filter((row) =>
+            row.state === "unknown").length;
           return {
             previewId,
             marketplaceId,
@@ -1514,6 +1740,10 @@ export class ListingContentBatchMutations
               previous: publicContentValues(change.previous),
               requested: publicContentValues(change.requested),
             })),
+            skippedRows: publicSkippedRows(plan.skippedRows),
+            validationFailures: publicValidationFailures(
+              plan.validationFailures,
+            ),
             completedAt: new Date(this.now()).toISOString(),
             notice: status === "COMPLETED"
               ? `已完成 ${completedCount.toLocaleString()} 個 SKU；每筆皆經正式回讀或展示模擬核對。${
@@ -1521,17 +1751,27 @@ export class ListingContentBatchMutations
                   ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
                   : ""
               }`
-              : status === "STOPPED_UNKNOWN"
-                ? `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆結果不明後已停止，後續 SKU 沒有送出。請先回查 Amazon，勿重送。${
+              : status === "COMPLETED_WITH_ISSUES"
+                ? `已完成處理 ${(completedCount + rejectedCount + unknownCount).toLocaleString()} 個 SKU：${completedCount.toLocaleString()} 個成功、${rejectedCount.toLocaleString()} 個未送出或遭拒、${unknownCount.toLocaleString()} 個結果不明；其餘安全 SKU 均已繼續。結果不明的 SKU 請先回查 Amazon，系統不會自動重送。${
+                  plan.validationFailures.length
+                    ? ` 另有 ${plan.validationFailures.length.toLocaleString()} 個 SKU 在 Amazon 預檢時已隔離且未送出。`
+                    : ""
+                }${
                   plan.blockedChanges.length
                     ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
                     : ""
                 }`
-                : `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到一筆已知拒絕後已停止，後續 SKU 沒有送出。${
-                  plan.blockedChanges.length
-                    ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
-                    : ""
-                }`,
+                : status === "STOPPED_UNKNOWN"
+                  ? `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到無法安全隔離的結果後已停止。結果不明的 SKU 請先回查 Amazon，系統不會自動重送。${
+                    plan.blockedChanges.length
+                      ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
+                      : ""
+                  }`
+                  : `已完成 ${completedCount.toLocaleString()} 個 SKU；遇到整批安全條件失效後已停止。${
+                    plan.blockedChanges.length
+                      ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個原掃描未完整的 SKU 已略過且未寫入。`
+                      : ""
+                  }`,
           };
         },
       });

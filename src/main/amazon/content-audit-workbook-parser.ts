@@ -47,6 +47,20 @@ export class ContentAuditWorkbookError extends Error {
   }
 }
 
+export type ContentAuditWorkbookRowIssue = {
+  code:
+    | "SELLER_SKU_INVALID"
+    | "SELLER_SKU_DUPLICATE"
+    | "ASIN_INVALID"
+    | "PRODUCT_TYPE_TOO_LONG";
+  sellerSku: string | null;
+  sourceSheet: string;
+  rowNumber: number;
+  field: "sellerSku" | "asin" | "productType";
+  fieldLabel: "Seller SKU" | "ASIN" | "Product Type";
+  message: string;
+};
+
 export type ParsedContentAuditValues = {
   title: string;
   itemHighlight: string;
@@ -61,6 +75,7 @@ export type ParsedContentAuditWorkbookRow = {
   productType: string;
   variationFamilyKey: string;
   sourceSheet: string;
+  sourceRowNumber: number;
   original: ParsedContentAuditValues;
   proposed: ParsedContentAuditValues;
   /** Proposed-value aliases retained for the listing-content batch seam. */
@@ -81,6 +96,7 @@ export type ParsedContentAuditWorkbook = {
     fetchedAt: string;
   };
   rows: ParsedContentAuditWorkbookRow[];
+  issues: ContentAuditWorkbookRowIssue[];
 };
 
 type WorksheetCells = Map<number, Map<number, string>>;
@@ -101,6 +117,12 @@ type EmbeddedSheetMetadata = ParsedContentAuditWorkbook["metadata"] & IndexEntry
 type ParserBudget = {
   rows: number;
   cells: number;
+};
+
+type ParsedDataSheet = {
+  rows: ParsedContentAuditWorkbookRow[];
+  issues: ContentAuditWorkbookRowIssue[];
+  sourceRowCount: number;
 };
 
 export function parseContentAuditWorkbook(input: {
@@ -153,8 +175,8 @@ export function parseContentAuditWorkbook(input: {
     }
     const indexedSubset = selectedEntries.length !== entries.length;
 
-    const seenSkus = new Set<string>();
     const parsedRows: ParsedContentAuditWorkbookRow[] = [];
+    const rowIssues: ContentAuditWorkbookRowIssue[] = [];
     for (const entry of selectedEntries) {
       const sheet = sheetByName.get(entry.sheetName);
       if (!sheet) {
@@ -172,17 +194,19 @@ export function parseContentAuditWorkbook(input: {
       if (embedded) {
         assertEmbeddedSheetMetadataMatches(embedded, metadata, entry);
       }
-      const rows = parseDataSheet(cells, entry, seenSkus);
-      if (rows.length !== entry.expectedRows) {
+      const parsed = parseDataSheet(cells, entry);
+      if (parsed.sourceRowCount !== entry.expectedRows) {
         schemaError(`工作表「${entry.sheetName}」的問題列數與索引不一致。`);
       }
-      parsedRows.push(...rows);
+      parsedRows.push(...parsed.rows);
+      rowIssues.push(...parsed.issues);
       sheetByName.delete(entry.sheetName);
     }
     if (sheetByName.size) {
       schemaError("工作簿含有未登錄於索引的資料工作表。");
     }
-    return { metadata, rows: parsedRows };
+    const finalized = excludeDuplicateSellerSkus(parsedRows, rowIssues);
+    return { metadata, rows: finalized.rows, issues: finalized.issues };
   } catch (error) {
     if (error instanceof ContentAuditWorkbookError) throw error;
     throw new ContentAuditWorkbookError(
@@ -608,9 +632,9 @@ function parsePartialWorkbook(
   sharedStrings: readonly string[],
   budget: ParserBudget,
 ): ParsedContentAuditWorkbook {
-  const seenSkus = new Set<string>();
   const seenFamilies = new Set<string>();
   const rows: ParsedContentAuditWorkbookRow[] = [];
+  const rowIssues: ContentAuditWorkbookRowIssue[] = [];
   let metadata: ParsedContentAuditWorkbook["metadata"] | null = null;
   for (const sheet of sheets) {
     const cells = parseWorksheet(
@@ -634,14 +658,16 @@ function parsePartialWorkbook(
       schemaError("部分工作簿含有重複的變體家庭工作表。");
     }
     seenFamilies.add(entry.variationFamilyKey);
-    const parsed = parseDataSheet(cells, entry, seenSkus);
-    if (parsed.length !== entry.expectedRows) {
+    const parsed = parseDataSheet(cells, entry);
+    if (parsed.sourceRowCount !== entry.expectedRows) {
       schemaError(`工作表「${entry.sheetName}」的問題列數與來源識別不一致。`);
     }
-    rows.push(...parsed);
+    rows.push(...parsed.rows);
+    rowIssues.push(...parsed.issues);
   }
   if (!metadata) schemaError("部分工作簿沒有可處理的文案工作表。");
-  return { metadata, rows };
+  const finalized = excludeDuplicateSellerSkus(rows, rowIssues);
+  return { metadata, rows: finalized.rows, issues: finalized.issues };
 }
 
 function parseEmbeddedSheetMetadata(
@@ -867,36 +893,69 @@ function parseIndexSheet(cells: WorksheetCells): {
 function parseDataSheet(
   cells: WorksheetCells,
   index: IndexEntry,
-  seenSkus: Set<string>,
-): ParsedContentAuditWorkbookRow[] {
+): ParsedDataSheet {
   rejectUnknownDataSheetCells(cells, index.sheetName);
   expectHeaderRow(cells, 1, CONTENT_AUDIT_V2_DATA_HEADERS, index.sheetName);
   const rows: ParsedContentAuditWorkbookRow[] = [];
+  const issues: ContentAuditWorkbookRowIssue[] = [];
+  let sourceRowCount = 0;
   for (const rowNumber of [...cells.keys()].sort((a, b) => a - b)) {
     if (rowNumber === 1) continue;
     const row = cells.get(rowNumber)!;
     if (![...row.values()].some(Boolean)) continue;
+    sourceRowCount += 1;
     const sellerSku = row.get(1) ?? "";
     const asin = row.get(2) ?? "";
     const productType = row.get(3) ?? "";
-    if (
+    const sellerSkuIsValid = !(
       !sellerSku ||
       sellerSku.length > 40 ||
       sellerSku !== sellerSku.trim() ||
       /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(
         sellerSku,
-      ) ||
-      seenSkus.has(sellerSku)
-    ) {
-      schemaError("Excel 含有缺少、重複或無法精確辨識的 Seller SKU。");
+      )
+    );
+    if (!sellerSkuIsValid) {
+      issues.push({
+        code: "SELLER_SKU_INVALID",
+        sellerSku: null,
+        sourceSheet: index.sheetName,
+        rowNumber,
+        field: "sellerSku",
+        fieldLabel: "Seller SKU",
+        message:
+          "Seller SKU 缺少、前後含空白、超過 40 字元，或含有不可見控制字元。",
+      });
     }
     if (asin && !/^[A-Z0-9]{10}$/u.test(asin)) {
-      schemaError(`SKU ${sellerSku} 的 ASIN 格式無效。`);
+      issues.push({
+        code: "ASIN_INVALID",
+        sellerSku: sellerSkuIsValid ? sellerSku : null,
+        sourceSheet: index.sheetName,
+        rowNumber,
+        field: "asin",
+        fieldLabel: "ASIN",
+        message: "ASIN 格式無效，應為 10 碼英文字母或數字。",
+      });
     }
     if (productType.length > 200) {
-      schemaError(`SKU ${sellerSku} 的 Product Type 過長。`);
+      issues.push({
+        code: "PRODUCT_TYPE_TOO_LONG",
+        sellerSku: sellerSkuIsValid ? sellerSku : null,
+        sourceSheet: index.sheetName,
+        rowNumber,
+        field: "productType",
+        fieldLabel: "Product Type",
+        message: "Product Type 超過 200 字元。",
+      });
     }
-    seenSkus.add(sellerSku);
+    if (
+      !sellerSkuIsValid ||
+      (asin && !/^[A-Z0-9]{10}$/u.test(asin)) ||
+      productType.length > 200
+    ) {
+      continue;
+    }
     const original = contentValues(row, "original");
     const proposed = contentValues(row, "proposed");
     rows.push({
@@ -905,6 +964,7 @@ function parseDataSheet(
       productType,
       variationFamilyKey: index.variationFamilyKey,
       sourceSheet: index.sheetName,
+      sourceRowNumber: rowNumber,
       original,
       proposed,
       title: proposed.title,
@@ -916,7 +976,46 @@ function parseDataSheet(
       auditDescription: row.get(23) ?? "",
     });
   }
-  return rows;
+  return { rows, issues, sourceRowCount };
+}
+
+function excludeDuplicateSellerSkus(
+  rows: readonly ParsedContentAuditWorkbookRow[],
+  existingIssues: readonly ContentAuditWorkbookRowIssue[],
+): {
+  rows: ParsedContentAuditWorkbookRow[];
+  issues: ContentAuditWorkbookRowIssue[];
+} {
+  const rowsBySku = new Map<string, ParsedContentAuditWorkbookRow[]>();
+  for (const row of rows) {
+    const matches = rowsBySku.get(row.sellerSku) ?? [];
+    matches.push(row);
+    rowsBySku.set(row.sellerSku, matches);
+  }
+  const duplicateSkus = new Set(
+    [...rowsBySku.entries()]
+      .filter(([, matches]) => matches.length > 1)
+      .map(([sellerSku]) => sellerSku),
+  );
+  const duplicateIssues = rows
+    .filter((row) => duplicateSkus.has(row.sellerSku))
+    .map((row): ContentAuditWorkbookRowIssue => ({
+      code: "SELLER_SKU_DUPLICATE",
+      sellerSku: row.sellerSku,
+      sourceSheet: row.sourceSheet,
+      rowNumber: row.sourceRowNumber,
+      field: "sellerSku",
+      fieldLabel: "Seller SKU",
+      message: "Seller SKU 在這份 Excel 中重複，所有同名列都已略過。",
+    }));
+  return {
+    rows: rows.filter((row) => !duplicateSkus.has(row.sellerSku)),
+    issues: [...existingIssues, ...duplicateIssues].sort((left, right) =>
+      left.sourceSheet.localeCompare(right.sourceSheet) ||
+      left.rowNumber - right.rowNumber ||
+      left.field.localeCompare(right.field)
+    ),
+  };
 }
 
 function contentValues(

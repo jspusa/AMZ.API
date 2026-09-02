@@ -486,7 +486,7 @@ describe("content audit workbook parser", () => {
     }
   });
 
-  it("rejects unknown columns and duplicate SKUs", () => {
+  it("rejects unknown columns and reports every duplicate SKU row", () => {
     const source = workbook([
       auditRow("CHILD-1"),
       auditRow("CHILD-2", { asin: "B000000002" }),
@@ -507,10 +507,56 @@ describe("content audit workbook parser", () => {
       replacePart(archive, "xl/worksheets/sheet2.xml", (xml) =>
         xml.replace("CHILD-2", "CHILD-1"));
     });
-    expectWorkbookError(() => parse(duplicateSku), {
-      code: "CONTENT_AUDIT_WORKBOOK_SCHEMA_INVALID",
-      status: 422,
-    });
+    const duplicateResult = parse(duplicateSku);
+    expect(duplicateResult.rows).toEqual([]);
+    expect(duplicateResult.issues).toEqual([
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "CHILD-1",
+        rowNumber: 2,
+        fieldLabel: "Seller SKU",
+      }),
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "CHILD-1",
+        rowNumber: 3,
+        fieldLabel: "Seller SKU",
+      }),
+    ]);
+  });
+
+  it("reports every editable row problem with its SKU and field in one pass", () => {
+    const source = workbook([
+      auditRow("BAD-ASIN", { asin: "NOT-AN-ASIN" }),
+      auditRow("BAD-PRODUCT-TYPE", {
+        asin: "B000000002",
+        productType: "P".repeat(201),
+      }),
+    ]);
+
+    const result = parse(source);
+
+    expect(result.rows).toEqual([]);
+    expect(result.issues).toEqual([
+      {
+        code: "ASIN_INVALID",
+        sellerSku: "BAD-ASIN",
+        sourceSheet: "F001",
+        rowNumber: 2,
+        field: "asin",
+        fieldLabel: "ASIN",
+        message: "ASIN 格式無效，應為 10 碼英文字母或數字。",
+      },
+      {
+        code: "PRODUCT_TYPE_TOO_LONG",
+        sellerSku: "BAD-PRODUCT-TYPE",
+        sourceSheet: "F001",
+        rowNumber: 3,
+        field: "productType",
+        fieldLabel: "Product Type",
+        message: "Product Type 超過 200 字元。",
+      },
+    ]);
   });
 
   it("rejects non-xlsx uploads and oversized uncompressed XML", () => {
