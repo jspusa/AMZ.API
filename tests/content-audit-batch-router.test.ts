@@ -11,6 +11,8 @@ import {
   SpApiError,
   SpApiPreCommitError,
 } from "../src/main/amazon/sp-api-error";
+import { ListingWriteAcceptedButPendingError } from
+  "../src/main/amazon/listing-write-readback";
 import {
   invalidateSpApiCredentialCaches,
   listingContentGatewayProduction,
@@ -1407,6 +1409,29 @@ describe("content audit Excel batch router", () => {
     });
     expect(approveWrite).not.toHaveBeenCalled();
     expect(assertIdempotentOperationsAvailable).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("reports the exact Excel field when local text safety rejects a row", async () => {
+    const snapshot = await audit();
+    const oversizedTitle = "T".repeat(2_001);
+    const edited = replaceCell(workbook(snapshot), "E2", oversizedTitle);
+
+    const response = await router.handle(
+      importRequest(edited, "content-batch-local-field-001"),
+    );
+
+    expect(response.status).toBe(422);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_BATCH_ALL_SKIPPED",
+      skippedRows: [expect.objectContaining({
+        stage: "LOCAL_VALIDATION",
+        code: "CONTENT_INVALID",
+        fields: ["產品名稱"],
+      })],
+      writeCount: 0,
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
     expect(runIdempotentOperation).not.toHaveBeenCalled();
   });
 
@@ -2835,6 +2860,72 @@ describe("content audit Excel batch router", () => {
     expect(stagePreview).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { status: 401, code: "VALIDATION_FAILED" },
+    { status: 403, code: "CONTENT_REQUIRED" },
+    { status: 429, code: "CONTENT_LIMIT_EXCEEDED" },
+  ])(
+    "stops the whole preview on global $status failures even when the code looks row-scoped",
+    async ({ status, code }) => {
+      const snapshot = await audit();
+      const edited = replaceEveryProposedTitle(
+        workbook(snapshot, 3),
+        "Global preview failure must stop",
+      );
+      const parsed = parseContentAuditWorkbook({
+        bytes: edited,
+        fileName: "content-audit.xlsx",
+        mediaType: MEDIA_TYPE,
+      });
+      const failedSku = parsed.rows[1]!.sellerSku;
+      const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+      const stagePreview = vi.fn(async () => undefined);
+      const previewOne = vi.fn(async (input: UpdateListingContentInput) => {
+        if (input.sellerSku === failedSku) {
+          throw new SpApiError("Amazon global preview failure.", {
+            status,
+            code,
+            operation: "patchListingsItemPreview",
+          });
+        }
+        return preparedPreview(input);
+      });
+      const batch = createListingContentBatchMutations({
+        evidence: {
+          getContentAuditSnapshotEvidence: vi.fn(async () => ({
+            status: "available" as const,
+            evidence: structuredClone(stored),
+          })),
+        },
+        context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+          marketplaceId,
+          mode: "demo",
+          accountScope: ACCOUNT_SCOPE,
+        })),
+        writeGate: {
+          stagePreview,
+          execute: vi.fn(),
+          reconcile: vi.fn(async () => undefined),
+          clearEphemeral: vi.fn(),
+        } as unknown as MainWriteGatePort,
+        content: { previewOne, attemptOne: vi.fn() },
+        randomUUID: () => `content-batch-global-preview-${status}`,
+      });
+
+      const response = await batch.handle({
+        operation: "preview",
+        request: importRequest(
+          edited,
+          `content-batch-global-preview-${status}-001`,
+        ),
+      });
+
+      expect(response.status).toBe(status);
+      expect(previewOne).toHaveBeenCalledTimes(2);
+      expect(stagePreview).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not offer an INVALID override when no ERROR survives public sanitization", async () => {
     const snapshot = await audit();
     const edited = replaceCell(
@@ -3440,6 +3531,46 @@ describe("content audit Excel batch router", () => {
     expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { status: 401, code: "VALIDATION_FAILED" },
+    { status: 503, code: "UPDATE_REJECTED" },
+    { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+  ])(
+    "stops later SKUs for global $status commit failures even when the code looks row-scoped",
+    async ({ status, code }) => {
+      const snapshot = await audit();
+      const edited = replaceEveryProposedTitle(
+        workbook(snapshot, 3),
+        `Global ${status} ${code} commit must stop`,
+      );
+      const key =
+        `content-batch-global-commit-${status}-${code.toLowerCase().replaceAll("_", "-")}-001`;
+      const preview = await router.handle(importRequest(edited, key));
+      expect(preview.status).toBe(200);
+      expect(responseValue(preview).changes).toHaveLength(3);
+      const previewId = String(responseValue(preview).previewId);
+      runIdempotentOperation
+        .mockImplementationOnce(runPreparedIdempotentOperation)
+        .mockRejectedValueOnce(new SpApiError(
+          "Amazon global commit failure.",
+          { status, code },
+        ));
+
+      const response = await router.handle(commitRequest(previewId, key));
+
+      expect(response.status).toBe(200);
+      expect(responseValue(response)).toMatchObject({
+        status: "STOPPED_UNKNOWN",
+        rows: [
+          expect.objectContaining({ state: "simulated" }),
+          expect.objectContaining({ state: "unknown" }),
+          expect.objectContaining({ state: "not-started" }),
+        ],
+      });
+      expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("isolates an unknown result, continues later SKUs, and does not blindly retry", async () => {
     const snapshot = await audit();
     const edited = replaceEveryProposedTitle(workbook(snapshot, 3));
@@ -3449,10 +3580,7 @@ describe("content audit Excel batch router", () => {
     const previewId = String(responseValue(preview).previewId);
     runIdempotentOperation
       .mockImplementationOnce(runPreparedIdempotentOperation)
-      .mockRejectedValueOnce(new SpApiError(
-        "Amazon 寫入結果尚未確認。",
-        { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
-      ));
+      .mockRejectedValueOnce(new ListingWriteAcceptedButPendingError());
 
     const response = await router.handle(commitRequest(previewId, key));
     expect(response.status).toBe(200);

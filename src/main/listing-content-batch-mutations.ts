@@ -27,6 +27,8 @@ import type {
 import type {
   ListingContentExactBulletReplacement,
 } from "./amazon/listing-content-gateway";
+import { ListingWriteAcceptedButPendingError } from
+  "./amazon/listing-write-readback";
 import {
   publicSpApiError,
   publicSpApiListingIssues,
@@ -174,21 +176,22 @@ const ISOLATED_CONTENT_PRECOMMIT_CODES = new Set([
 ]);
 
 function isIsolatedBatchRowFailure(error: unknown): boolean {
+  if (error instanceof ListingWriteAcceptedButPendingError) return true;
   if (error instanceof SpApiPreCommitError) {
     return error.status < 500 &&
       ![401, 403, 429].includes(error.status) &&
       ISOLATED_CONTENT_PRECOMMIT_CODES.has(error.code);
   }
-  return error instanceof SpApiError && [
-    "UPDATE_REJECTED",
-    "VALIDATION_FAILED",
-    "UPDATE_STATUS_UNKNOWN",
-  ].includes(error.code);
+  return error instanceof SpApiError &&
+    error.status < 500 &&
+    ![401, 403, 429].includes(error.status) &&
+    ["UPDATE_REJECTED", "VALIDATION_FAILED"].includes(error.code);
 }
 
 function isIsolatedContentPreviewFailure(error: unknown): error is SpApiError {
   return error instanceof SpApiError &&
     error.status < 500 &&
+    ![401, 403, 429].includes(error.status) &&
     ISOLATED_CONTENT_PREVIEW_CODES.has(error.code);
 }
 
@@ -1070,6 +1073,25 @@ export class ListingContentBatchMutations
         );
         const ingredients = parseText(proposed.ingredients, 20_000);
         const expectedIngredients = parseText(sourceOriginal.ingredients, 20_000);
+        const invalidLocalFields: string[] = [];
+        if (title === null || expectedTitle === null) {
+          invalidLocalFields.push("產品名稱");
+        }
+        if (itemHighlight === null || expectedItemHighlight === null) {
+          invalidLocalFields.push("產品亮點");
+        }
+        if (bulletPoints === null || expectedBulletPoints === null) {
+          invalidLocalFields.push("產品要點");
+        }
+        if (
+          productDescription === null ||
+          expectedProductDescription === null
+        ) {
+          invalidLocalFields.push("產品敘述");
+        }
+        if (ingredients === null || expectedIngredients === null) {
+          invalidLocalFields.push("成分");
+        }
         if (
           title === null ||
           expectedTitle === null ||
@@ -1088,9 +1110,9 @@ export class ListingContentBatchMutations
             rowNumber: row.sourceRowNumber,
             stage: "LOCAL_VALIDATION",
             code: "CONTENT_INVALID",
-            fields: ["更新文案"],
+            fields: invalidLocalFields,
             message:
-              "更新文案含有不支援的控制字元或超過本機安全長度；此 SKU 已隔離且不會送出。",
+              `${invalidLocalFields.join("、")}含有不支援的控制字元或超過本機安全長度；此 SKU 已隔離且不會送出。`,
           });
           continue;
         }
@@ -1684,7 +1706,7 @@ export class ListingContentBatchMutations
                 (!(error instanceof SpApiError) ||
                   error.code === "UPDATE_STATUS_UNKNOWN" ||
                   error.status >= 500 ||
-                  [401, 429].includes(error.status));
+                  [401, 403, 429].includes(error.status));
               const publicError = error instanceof SpApiError
                 ? publicSpApiError(
                     error,

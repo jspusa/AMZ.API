@@ -504,6 +504,39 @@ describe("renderer content quality helpers", () => {
     ]));
   });
 
+  it("allows concatenated search keywords only in product descriptions", () => {
+    const shopperKeywords = [
+      "airdried",
+      "grainfree",
+      "dogfood",
+      "airdry",
+    ];
+    const checked = addPagesDictionarySpellingIssues(
+      shopperKeywords.map((keyword, index) => ({
+        ...rows[0],
+        sellerSku: `KEYWORD-${index}`,
+        title: keyword,
+        itemHighlight: keyword,
+        bulletPoints: [keyword],
+        productDescription: keyword,
+        ingredients: keyword,
+        issues: [],
+      })),
+    );
+
+    for (const [index, keyword] of shopperKeywords.entries()) {
+      expect(checked[index].issues.map((issue) => issue.field)).toEqual([
+        "title",
+        "itemHighlight",
+        "bulletPoints",
+        "ingredients",
+      ]);
+      expect(checked[index].issues.map((issue) =>
+        issue.token?.toLocaleLowerCase("en-US")
+      )).toEqual([keyword, keyword, keyword, keyword]);
+    }
+  });
+
   it("still applies explicit rules after a very large clean listing", () => {
     const first: ContentAuditRow = {
       ...rows[0],
