@@ -1,6 +1,22 @@
 import { abortableDelay, throwIfAborted } from "../abort-utils";
 import { SpApiError } from "./sp-api-error";
 
+/**
+ * Trusted evidence that one exact write was accepted and every bounded
+ * canonical GET completed successfully, but the target value was not visible
+ * before the readback window ended. Batch owners may isolate this exact intent
+ * without treating an auth, throttling, transport, or server error as local.
+ */
+export class ListingWriteAcceptedButPendingError extends SpApiError {
+  constructor() {
+    super(
+      "Amazon 已接受寫入，但在安全回查期限內尚未取得相符結果。系統已禁止自動重送，請重新讀取 Amazon 確認。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+    this.name = "ListingWriteAcceptedButPendingError";
+  }
+}
+
 export type ListingWriteLifecycleEvidence = Readonly<{
   state: "verified";
   verified: true;
@@ -149,8 +165,11 @@ export async function commitWithCanonicalReadback<TResult extends {
     }
   }
 
+  if (lastError === null) {
+    throw new ListingWriteAcceptedButPendingError();
+  }
   throw new SpApiError(
-    "Amazon 已接受寫入，但在安全回查期限內尚未取得相符結果。系統已禁止自動重送，請重新讀取 Amazon 確認。",
+    "Amazon 已接受寫入，但安全回查遇到無法安全歸屬單一商品的錯誤。系統已禁止自動重送，請重新讀取 Amazon 確認。",
     {
       status: 503,
       code: "UPDATE_STATUS_UNKNOWN",

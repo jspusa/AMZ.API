@@ -120,6 +120,16 @@ const APPROVED_EXACT_TERMS = new Set([
   "cornucopiae",
 ]);
 
+// Jasper intentionally places these concatenated shopper-search forms only in
+// the backend product description. They remain spelling findings everywhere
+// customers can see them: title, highlight, bullets, and ingredients.
+const PRODUCT_DESCRIPTION_SEARCH_TERMS = new Set([
+  "airdried",
+  "grainfree",
+  "dogfood",
+  "airdry",
+]);
+
 if (APPROVED_EXACT_TERMS.size !== CONTENT_SPELLING_ALLOWLIST_COUNT) {
   throw new Error("Content spelling allowlist metadata is out of sync.");
 }
@@ -218,6 +228,12 @@ export function addPagesDictionarySpellingIssues<Row extends ContentSpellingRow>
       for (const token of candidateWords(value)) {
         if (rowIssueCount >= 12 || fieldIssueCount >= 6) break;
         const key = normalizedWord(token);
+        if (
+          field === "productDescription" &&
+          PRODUCT_DESCRIPTION_SEARCH_TERMS.has(key)
+        ) {
+          continue;
+        }
         let spellingMatch = matchCache.get(key);
         if (!matchCache.has(key)) {
           spellingMatch = sharedContentSpellingMatch(token);

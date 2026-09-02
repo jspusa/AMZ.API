@@ -108,6 +108,34 @@ function replaceCell(
   return xml.replace(expression, replacement);
 }
 
+function keepWorkbookSheets(
+  bytes: Uint8Array,
+  sheetNames: readonly string[],
+): Uint8Array {
+  return mutateArchive(bytes, (archive) => {
+    replacePart(archive, "xl/workbook.xml", (xml) => {
+      const selected = [...xml.matchAll(/<sheet name="([^"]+)"[^>]*\/>/gu)]
+        .filter((match) => sheetNames.includes(match[1] ?? ""))
+        .map((match) => match[0]);
+      if (selected.length !== sheetNames.length) {
+        throw new Error("Missing selected workbook sheets");
+      }
+      return xml.replace(
+        /<sheets>.*?<\/sheets>/su,
+        `<sheets>${selected.join("")}</sheets>`,
+      );
+    });
+  });
+}
+
+function removeEmbeddedSheetMetadata(xml: string): string {
+  return xml
+    .replace(/<c r="X1"[^>]*>.*?<\/c>/su, "")
+    .replace(/<c r="Y1"[^>]*>.*?<\/c>/su, "")
+    .replace(/<col min="24" max="25"[^>]*\/>/u, "")
+    .replace(/<dimension ref="A1:Y(\d+)"\/>/u, '<dimension ref="A1:W$1"/>');
+}
+
 function expectWorkbookError(
   action: () => unknown,
   expected: { code: string; status: number },
@@ -227,6 +255,128 @@ describe("content audit workbook parser", () => {
     });
   });
 
+  it("accepts one copied family worksheet and ignores every omitted family", () => {
+    const source = workbook([
+      auditRow("FAMILY-A-1"),
+      auditRow("FAMILY-B-1", {
+        asin: "B000000002",
+        variationParentSku: "PARENT-B",
+        variationFamilyKey: "PARENT-B",
+      }),
+    ]);
+    const partial = mutateArchive(keepWorkbookSheets(source, ["F002"]), (archive) => {
+      replacePart(archive, "xl/worksheets/sheet3.xml", (xml) =>
+        replaceCell(
+          xml,
+          "E2",
+          '<c r="E2" s="7" t="inlineStr"><is><t xml:space="preserve">Only F002 changed</t></is></c>',
+        ));
+    });
+
+    const result = parse(partial);
+
+    expect(result.metadata).toEqual({
+      schemaVersion: 2,
+      marketplaceId: "ATVPDKIKX0DER",
+      exportId: "roundtrip-export-1",
+      fetchedAt: "2026-08-22T01:02:03.000Z",
+    });
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        sellerSku: "FAMILY-B-1",
+        variationFamilyKey: "PARENT-B",
+        sourceSheet: "F002",
+        proposed: expect.objectContaining({ title: "Only F002 changed" }),
+      }),
+    ]);
+  });
+
+  it("accepts the index sheet left beside one selected family worksheet", () => {
+    const source = workbook([
+      auditRow("FAMILY-A-1"),
+      auditRow("FAMILY-B-1", {
+        asin: "B000000002",
+        variationParentSku: "PARENT-B",
+        variationFamilyKey: "PARENT-B",
+      }),
+    ]);
+
+    const result = parse(keepWorkbookSheets(source, ["說明與索引", "F002"]));
+
+    expect(result.rows).toEqual([
+      expect.objectContaining({
+        sellerSku: "FAMILY-B-1",
+        variationFamilyKey: "PARENT-B",
+        sourceSheet: "F002",
+      }),
+    ]);
+  });
+
+  it("accepts two copied family worksheets from the same export", () => {
+    const source = workbook([
+      auditRow("FAMILY-A-1"),
+      auditRow("FAMILY-B-1", {
+        asin: "B000000002",
+        variationParentSku: "PARENT-B",
+        variationFamilyKey: "PARENT-B",
+      }),
+      auditRow("FAMILY-C-1", {
+        asin: "B000000003",
+        variationParentSku: "PARENT-C",
+        variationFamilyKey: "PARENT-C",
+      }),
+    ]);
+
+    const result = parse(keepWorkbookSheets(source, ["F001", "F003"]));
+
+    expect(result.rows.map((row) => row.sourceSheet)).toEqual(["F001", "F003"]);
+    expect(result.rows.map((row) => row.sellerSku)).toEqual([
+      "FAMILY-A-1",
+      "FAMILY-C-1",
+    ]);
+  });
+
+  it("rejects duplicate family identity across partial worksheets", () => {
+    const source = workbook([
+      auditRow("FAMILY-A-1"),
+      auditRow("FAMILY-B-1", {
+        asin: "B000000002",
+        variationParentSku: "PARENT-B",
+        variationFamilyKey: "PARENT-B",
+      }),
+    ]);
+    const duplicated = mutateArchive(
+      keepWorkbookSheets(source, ["F001", "F002"]),
+      (archive) => {
+        replacePart(archive, "xl/worksheets/sheet3.xml", (xml) =>
+          xml.replace("PARENT-B", "PARENT-A"));
+      },
+    );
+
+    expect(() => parse(duplicated)).toThrow(/重複的變體家庭工作表/u);
+  });
+
+  it("keeps accepting complete legacy v2 workbooks without embedded sheet metadata", () => {
+    const legacy = mutateArchive(workbook([auditRow("LEGACY-1")]), (archive) => {
+      replacePart(archive, "xl/worksheets/sheet2.xml", removeEmbeddedSheetMetadata);
+    });
+
+    expect(parse(legacy).rows).toEqual([
+      expect.objectContaining({ sellerSku: "LEGACY-1", sourceSheet: "F001" }),
+    ]);
+  });
+
+  it("rejects a partial legacy sheet that has no safe snapshot identity", () => {
+    const legacyPartial = mutateArchive(
+      keepWorkbookSheets(workbook([auditRow("LEGACY-PARTIAL-1")]), ["F001"]),
+      (archive) => {
+        replacePart(archive, "xl/worksheets/sheet2.xml", removeEmbeddedSheetMetadata);
+      },
+    );
+
+    expect(() => parse(legacyPartial)).toThrow(/缺少來源識別.*新版 AMZ\.API/u);
+  });
+
   it("rejects formulas, macros, external relationships and defined names", () => {
     const source = workbook([auditRow("CHILD-1")]);
     const formula = mutateArchive(source, (archive) => {
@@ -336,7 +486,7 @@ describe("content audit workbook parser", () => {
     }
   });
 
-  it("rejects unknown columns and duplicate SKUs", () => {
+  it("rejects unknown columns and reports every duplicate SKU row", () => {
     const source = workbook([
       auditRow("CHILD-1"),
       auditRow("CHILD-2", { asin: "B000000002" }),
@@ -357,10 +507,89 @@ describe("content audit workbook parser", () => {
       replacePart(archive, "xl/worksheets/sheet2.xml", (xml) =>
         xml.replace("CHILD-2", "CHILD-1"));
     });
-    expectWorkbookError(() => parse(duplicateSku), {
-      code: "CONTENT_AUDIT_WORKBOOK_SCHEMA_INVALID",
-      status: 422,
+    const duplicateResult = parse(duplicateSku);
+    expect(duplicateResult.rows).toEqual([]);
+    expect(duplicateResult.issues).toEqual([
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "CHILD-1",
+        rowNumber: 2,
+        fieldLabel: "Seller SKU",
+      }),
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "CHILD-1",
+        rowNumber: 3,
+        fieldLabel: "Seller SKU",
+      }),
+    ]);
+  });
+
+  it("reports every editable row problem with its SKU and field in one pass", () => {
+    const source = workbook([
+      auditRow("BAD-ASIN", { asin: "NOT-AN-ASIN" }),
+      auditRow("BAD-PRODUCT-TYPE", {
+        asin: "B000000002",
+        productType: "P".repeat(201),
+      }),
+    ]);
+
+    const result = parse(source);
+
+    expect(result.rows).toEqual([]);
+    expect(result.issues).toEqual([
+      {
+        code: "ASIN_INVALID",
+        sellerSku: "BAD-ASIN",
+        sourceSheet: "F001",
+        rowNumber: 2,
+        field: "asin",
+        fieldLabel: "ASIN",
+        message: "ASIN 格式無效，應為 10 碼英文字母或數字。",
+      },
+      {
+        code: "PRODUCT_TYPE_TOO_LONG",
+        sellerSku: "BAD-PRODUCT-TYPE",
+        sourceSheet: "F001",
+        rowNumber: 3,
+        field: "productType",
+        fieldLabel: "Product Type",
+        message: "Product Type 超過 200 字元。",
+      },
+    ]);
+  });
+
+  it("isolates every duplicate occurrence even when one duplicate row has another invalid field", () => {
+    const source = workbook([
+      auditRow("DUPLICATE-WITH-BAD-ASIN", { asin: "NOT-AN-ASIN" }),
+      auditRow("SECOND-SKU", { asin: "B000000002" }),
+    ]);
+    const duplicate = mutateArchive(source, (archive) => {
+      replacePart(archive, "xl/worksheets/sheet2.xml", (xml) =>
+        xml.replace("SECOND-SKU", "DUPLICATE-WITH-BAD-ASIN"));
     });
+
+    const result = parse(duplicate);
+
+    expect(result.rows).toEqual([]);
+    expect(result.issues).toHaveLength(3);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "ASIN_INVALID",
+        sellerSku: "DUPLICATE-WITH-BAD-ASIN",
+        rowNumber: 2,
+      }),
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "DUPLICATE-WITH-BAD-ASIN",
+        rowNumber: 2,
+      }),
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "DUPLICATE-WITH-BAD-ASIN",
+        rowNumber: 3,
+      }),
+    ]));
   });
 
   it("rejects non-xlsx uploads and oversized uncompressed XML", () => {

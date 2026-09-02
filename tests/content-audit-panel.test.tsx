@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
   ContentAuditWorkbookFilePicker,
+  ContentWorkbookBatchAllSkippedFailureCard,
   ContentWorkbookBatchBlockedFailureCard,
   ContentWorkbookBatchFailureCard,
   ContentWorkbookBatchPreviewCard,
@@ -13,6 +14,7 @@ import ContentAuditPanel, {
   contentAuditWorkbookDownloadUrl,
   contentAuditWorkbookSelection,
   parseContentWorkbookBatchBlockedFailure,
+  parseContentWorkbookBatchAllSkippedFailure,
   parseContentWorkbookBatchFailure,
   parseContentWorkbookBatchPreview,
   parseContentWorkbookBatchResult,
@@ -377,11 +379,19 @@ describe("global FBA content audit panel", () => {
       relationshipStatus: "complete",
     });
     expect(markup).toContain("回傳任一份 Excel 批次更新");
+    expect(markup).toContain("只保留 F007、F008");
+    expect(markup).toContain("只讀取與預檢實際附上的工作表");
+    expect(markup).toContain("不要只複製儲存格");
+    expect(markup).toContain("淺綠或黃色");
+    expect(markup).not.toContain("淺藍或黃色");
     expect(markup).toContain("先預覽 Excel 變更（不寫入）");
     expect(markup).toContain("Touch ID／Windows Hello");
-    expect(markup).toContain("全部通過，或你明確核對符合條件的 INVALID SKU 後");
+    expect(markup).toContain(
+      "只有通過 Amazon Validation Preview 且安全綁定一致的 SKU",
+    );
+    expect(markup).toContain("INVALID 或其他單一 SKU 問題會隔離列出");
     expect(markup).not.toContain("預檢通過後才會要求一次 Touch ID／Windows Hello");
-    expect(markup).toContain("若任一筆遭拒或結果不明會停止後續且不盲目重送");
+    expect(markup).toContain("結果不明的 SKU 絕不自動重送");
     expect(markup.indexOf("Amazon 唯讀＋AMZ.API 共用英文辭典")).toBeLessThan(
       markup.indexOf("content-audit-export-primary"),
     );
@@ -442,9 +452,7 @@ describe("global FBA content audit panel", () => {
         preview={preview}
         busy={false}
         acknowledged={false}
-        overrideAcknowledged={false}
         onAcknowledgedChange={vi.fn()}
-        onOverrideAcknowledgedChange={vi.fn()}
         onCommit={vi.fn()}
       />,
     );
@@ -459,7 +467,7 @@ describe("global FBA content audit panel", () => {
       "我已核對上述每個將寫入 SKU 的完整原值、更新值、Amazon 提醒與會被刪除的第 6 項後產品要點",
     );
     expect(locked).toContain(
-      "大量批次時，Touch ID／Windows Hello 只顯示總 SKU 數、高風險數、刪除總數、INVALID 數與驗證碼",
+      "大量批次時，Touch ID／Windows Hello 只顯示實際要寫入的 SKU 數、高風險數、刪除總數與驗證碼",
     );
     expect(locked).toContain('class="price-primary-button" disabled=""');
     expect(locked).not.toContain("預檢未通過，仍要上傳更新");
@@ -479,9 +487,7 @@ describe("global FBA content audit panel", () => {
         preview={preview}
         busy={false}
         acknowledged
-        overrideAcknowledged={false}
         onAcknowledgedChange={vi.fn()}
-        onOverrideAcknowledgedChange={vi.fn()}
         onCommit={vi.fn()}
       />,
     );
@@ -495,6 +501,141 @@ describe("global FBA content audit panel", () => {
         changedFields: ["title"],
       }],
     }, "ATVPDKIKX0DER")).toThrow("欄位清單與前後內容不一致");
+  });
+
+  it("shows every isolated workbook row with SKU, sheet, row, field, and reason while safe SKUs remain actionable", () => {
+    const preview = parseContentWorkbookBatchPreview({
+      previewId: "preview-content-skipped-row-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      expiresAt: "2026-09-02T10:00:00.000Z",
+      status: "READY",
+      changes: [{
+        sellerSku: "SAFE-SKU-001",
+        changedFields: ["title"],
+        previous: {
+          title: "Safe original title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        requested: {
+          title: "Safe requested title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        issues: [],
+        exactBulletReplacement: null,
+        validationStatus: "VALID",
+        overrideAllowed: false,
+      }],
+      skippedRows: [{
+        sellerSku: "BAD-SKU-001",
+        sourceSheet: "F007",
+        rowNumber: 8,
+        stage: "WORKBOOK",
+        code: "ASIN_INVALID+PRODUCT_TYPE_TOO_LONG",
+        fields: ["ASIN", "Product Type"],
+        message: "ASIN：格式無效。 Product Type：超過 200 字元。",
+      }],
+      validationFailures: [{
+        sellerSku: "AMAZON-BAD-SKU",
+        code: "VALIDATION_FAILED",
+        message: "Amazon 拒絕這個產品名稱。",
+        requestId: "REQ-AMAZON-BAD-SKU",
+        changedFields: ["title"],
+        previous: {
+          title: "Rejected original title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        requested: {
+          title: "Rejected requested title",
+          itemHighlight: "",
+          bulletPoints: [],
+          productDescription: "",
+          ingredients: "",
+        },
+        issues: [{
+          code: "8541",
+          severity: "ERROR",
+          message: "產品名稱不符合 Amazon 規則。",
+          attributeNames: [],
+        }],
+        overrideAllowed: false,
+      }],
+      validationOverride: { required: false, sellerSkus: [] },
+      notice: "1 個有問題的 SKU 已隔離；安全 SKU 可繼續。",
+    }, "ATVPDKIKX0DER");
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchPreviewCard
+        preview={preview}
+        busy={false}
+        acknowledged={false}
+        onAcknowledgedChange={vi.fn()}
+        onCommit={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain("BAD-SKU-001");
+    expect(markup).toContain("F007 · Excel 第 8 列");
+    expect(markup).toContain("ASIN、Product Type");
+    expect(markup).toContain("格式無效");
+    expect(markup).toContain("SAFE-SKU-001");
+    expect(markup).toContain("AMAZON-BAD-SKU");
+    expect(markup).toContain(
+      "欄位：Amazon 未提供（本列變更：產品名稱）",
+    );
+    expect(markup).not.toContain("本列變更：產品名稱、產品要點");
+    expect(markup).toContain("Amazon 預檢失敗 SKU 已隔離");
+    expect(markup).toContain("其餘安全 SKU 可繼續");
+    expect(markup).toContain("一次確認並更新 1 個 SKU");
+  });
+
+  it("shows every field when all malformed workbook rows are skipped at zero writes", () => {
+    const failure = parseContentWorkbookBatchAllSkippedFailure({
+      code: "CONTENT_BATCH_ALL_SKIPPED",
+      message: "2 個有問題的 SKU 已全部隔離；Amazon 寫入數為 0。",
+      writeCount: 0,
+      skippedRows: [
+        {
+          sellerSku: "BAD-ASIN",
+          sourceSheet: "F001",
+          rowNumber: 2,
+          stage: "WORKBOOK",
+          code: "ASIN_INVALID",
+          fields: ["ASIN"],
+          message: "ASIN：格式無效。",
+        },
+        {
+          sellerSku: "BAD-TYPE",
+          sourceSheet: "F001",
+          rowNumber: 3,
+          stage: "WORKBOOK",
+          code: "PRODUCT_TYPE_TOO_LONG",
+          fields: ["Product Type"],
+          message: "Product Type：超過 200 字元。",
+        },
+      ],
+      blockedChanges: [],
+    });
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchAllSkippedFailureCard failure={failure} />,
+    );
+
+    expect(markup).toContain("BAD-ASIN");
+    expect(markup).toContain("BAD-TYPE");
+    expect(markup).toContain("Excel 第 2 列");
+    expect(markup).toContain("Excel 第 3 列");
+    expect(markup).toContain("ASIN");
+    expect(markup).toContain("Product Type");
+    expect(markup).toContain("同一次上傳全部列出");
   });
 
   it("shows every hidden same-language bullet byte-exactly when an Excel update will remove it", async () => {
@@ -557,9 +698,7 @@ describe("global FBA content audit panel", () => {
         preview={preview}
         busy={false}
         acknowledged={false}
-        overrideAcknowledged={false}
         onAcknowledgedChange={vi.fn()}
-        onOverrideAcknowledgedChange={vi.fn()}
         onCommit={vi.fn()}
       />,
     );
@@ -710,9 +849,7 @@ describe("global FBA content audit panel", () => {
         preview={preview}
         busy={false}
         acknowledged
-        overrideAcknowledged={false}
         onAcknowledgedChange={vi.fn()}
-        onOverrideAcknowledgedChange={vi.fn()}
         onCommit={vi.fn()}
       />,
     );
@@ -829,7 +966,37 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("Terminal skipped request");
   });
 
-  it("requires an exact separate acknowledgement for an INVALID Amazon preview", () => {
+  it("shows an unknown SKU without hiding the later successful SKU", () => {
+    const result = parseContentWorkbookBatchResult({
+      previewId: "preview-continued-after-unknown-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      status: "COMPLETED_WITH_ISSUES",
+      rows: [
+        { sellerSku: "KTB05AM", state: "unknown", error: {
+          message: "Amazon 已接受寫入，但安全回查期限內尚未取得相符結果。",
+        } },
+        { sellerSku: "KTB05AM-1", state: "verified", error: null },
+      ],
+      blockedChanges: [],
+      skippedRows: [],
+      notice:
+        "已完成處理 2 個 SKU：1 個成功、0 個遭拒、1 個結果不明；其餘安全 SKU 均已繼續。",
+    }, "ATVPDKIKX0DER");
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchResultCard result={result} />,
+    );
+
+    expect(markup).toContain("批次已完成；有問題 SKU 已個別隔離");
+    expect(markup).toContain("KTB05AM");
+    expect(markup).toContain("結果不明");
+    expect(markup).toContain("KTB05AM-1");
+    expect(markup).toContain("已由 Amazon 回讀驗證");
+    expect(markup).toContain("不會自動重送");
+    expect(markup).not.toContain("尚未開始，沒有送出");
+  });
+
+  it("rejects any INVALID override payload before it can render a forced upload", () => {
     const raw = {
       previewId: "preview-content-invalid-001",
       marketplaceId: "ATVPDKIKX0DER",
@@ -866,90 +1033,12 @@ describe("global FBA content audit panel", () => {
         required: true,
         sellerSkus: ["INVALID-SKU-001"],
       },
-      notice: "1 個 SKU 的 Amazon Validation Preview 明確未通過；目前仍為零寫入。",
+      notice: "Amazon Validation Preview 未通過。",
     } as const;
-    const preview = parseContentWorkbookBatchPreview(raw, "ATVPDKIKX0DER");
 
-    expect(preview.status).toBe("REQUIRES_VALIDATION_OVERRIDE");
-    expect(preview.changes[0]).toMatchObject({
-      sellerSku: "INVALID-SKU-001",
-      exactBulletReplacement: null,
-      validationStatus: "INVALID",
-      overrideAllowed: true,
-      issues: [{
-        code: "8541",
-        severity: "ERROR",
-        message: "Amazon 拒絕這個產品名稱。",
-        attributeNames: ["item_name"],
-      }],
-    });
-    expect(preview.validationOverride).toEqual({
-      required: true,
-      sellerSkus: ["INVALID-SKU-001"],
-    });
-
-    const locked = renderToStaticMarkup(
-      <ContentWorkbookBatchPreviewCard
-        preview={preview}
-        busy={false}
-        acknowledged
-        overrideAcknowledged={false}
-        onAcknowledgedChange={vi.fn()}
-        onOverrideAcknowledgedChange={vi.fn()}
-        onCommit={vi.fn()}
-      />,
-    );
-    expect(locked).toContain("INVALID-SKU-001");
-    expect(locked).toContain("Amazon original title");
-    expect(locked).toContain("Excel requested title");
-    expect(locked).toContain("Amazon Validation Preview：INVALID（未通過）");
-    expect(locked).toContain("8541");
-    expect(locked).toContain("Amazon 拒絕這個產品名稱");
-    expect(locked).toContain("強制送出不代表預檢通過");
-    expect(locked).toContain("預檢未通過，仍要上傳更新");
-    expect(locked).toContain('<details open="">');
-    expect(locked).toContain('class="price-primary-button" disabled=""');
-
-    const unlocked = renderToStaticMarkup(
-      <ContentWorkbookBatchPreviewCard
-        preview={preview}
-        busy={false}
-        acknowledged
-        overrideAcknowledged
-        onAcknowledgedChange={vi.fn()}
-        onOverrideAcknowledgedChange={vi.fn()}
-        onCommit={vi.fn()}
-      />,
-    );
-    expect(unlocked).not.toContain('class="price-primary-button" disabled=""');
-    expect(contentWorkbookBatchCommitBody(
-      preview,
-      "ATVPDKIKX0DER",
-      "content-batch-key-001",
-    )).toEqual({
-      marketplaceId: "ATVPDKIKX0DER",
-      previewId: "preview-content-invalid-001",
-      idempotencyKey: "content-batch-key-001",
-      validationOverride: {
-        acknowledged: true,
-        sellerSkus: ["INVALID-SKU-001"],
-      },
-    });
-
-    expect(() => parseContentWorkbookBatchPreview({
-      ...raw,
-      validationOverride: {
-        required: true,
-        sellerSkus: ["SOME-OTHER-SKU"],
-      },
-    }, "ATVPDKIKX0DER")).toThrow("強制送出 SKU 清單不一致");
-    expect(() => parseContentWorkbookBatchPreview({
-      ...raw,
-      changes: [{
-        ...raw.changes[0],
-        overrideAllowed: false,
-      }],
-    }, "ATVPDKIKX0DER")).toThrow("強制送出狀態不一致");
+    expect(() =>
+      parseContentWorkbookBatchPreview(raw, "ATVPDKIKX0DER")
+    ).toThrow("Excel 預檢狀態格式無效");
   });
 
   it("shows the exact SKU, field diff, and reason when batch preflight fails", () => {
@@ -998,6 +1087,7 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("PREVIEW_CHANGED");
     expect(markup).toContain("Amazon 商品內容預檢證據已改變");
     expect(markup).toContain("Amazon 拒絕這個產品名稱");
+    expect(markup).toContain("欄位：產品名稱");
     expect(markup).toContain("此失敗不可強制略過");
     expect(markup).not.toContain("仍要上傳更新");
     expect(failure.blockedChanges).toEqual([]);

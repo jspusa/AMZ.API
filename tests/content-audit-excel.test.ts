@@ -155,6 +155,9 @@ describe("main-owned content audit workbook", () => {
     expect(index).toContain("STANDALONE");
     expect(index).toContain("DATA_INCOMPLETE");
     expect(familyA).toContain("FAMILY-A-CHILD");
+    expect(familyA).toContain("AMZ.API 文案部分工作表 v1");
+    expect(familyA).toContain("&quot;sheetName&quot;:&quot;F001&quot;");
+    expect(familyA).toMatch(/<col min="24" max="25"[^>]*hidden="1"/u);
     expect(familyB).toContain("FAMILY-B-CHILD");
     expect(standalone).toContain("STANDALONE-ISSUE");
     expect(incomplete).toContain("UNKNOWN-RELATIONSHIP");

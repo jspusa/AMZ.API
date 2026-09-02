@@ -7,7 +7,12 @@ import { parseContentAuditWorkbook } from
 import { contentAuditEvidenceRowDigest } from
   "../src/main/amazon/content-audit-snapshot-evidence";
 import type { FixedReportBroker } from "../src/main/amazon/report-broker";
-import { SpApiError } from "../src/main/amazon/sp-api-error";
+import {
+  SpApiError,
+  SpApiPreCommitError,
+} from "../src/main/amazon/sp-api-error";
+import { ListingWriteAcceptedButPendingError } from
+  "../src/main/amazon/listing-write-readback";
 import {
   invalidateSpApiCredentialCaches,
   listingContentGatewayProduction,
@@ -31,7 +36,6 @@ import { createListingContentBatchMutations } from
   "../src/main/listing-content-batch-mutations";
 import {
   LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
-  LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
   createListingContentMutations,
   type ListingContentPreviewOptions,
   type ListingContentMutationsPort,
@@ -433,6 +437,23 @@ function replaceCell(
   return zipSync(archive, { level: 6 });
 }
 
+function keepOnlyWorkbookSheet(
+  bytes: Uint8Array,
+  sheetName: string,
+): Uint8Array {
+  const archive = unzipSync(bytes);
+  const workbookXml = archive["xl/workbook.xml"];
+  if (!workbookXml) throw new Error("Missing workbook XML");
+  const xml = strFromU8(workbookXml);
+  const selected = [...xml.matchAll(/<sheet name="([^"]+)"[^>]*\/>/gu)]
+    .find((match) => match[1] === sheetName)?.[0];
+  if (!selected) throw new Error(`Missing workbook sheet ${sheetName}`);
+  archive["xl/workbook.xml"] = strToU8(
+    xml.replace(/<sheets>.*?<\/sheets>/su, `<sheets>${selected}</sheets>`),
+  );
+  return zipSync(archive, { level: 6 });
+}
+
 function contentSnapshotDigest(input: {
   evidence: ContentAuditSnapshotEvidence;
   row: AuditReply["rows"][number];
@@ -676,6 +697,67 @@ describe("content audit Excel batch router", () => {
     },
   );
 
+  it("previews a copied single family worksheet without checking omitted sheets", async () => {
+    const snapshot = await audit();
+    const partial = keepOnlyWorkbookSheet(
+      replaceCell(workbook(snapshot), "E2", "Only selected sheet title"),
+      "F001",
+    );
+
+    const preview = await router.handle(importRequest(
+      partial,
+      "content-batch-single-sheet-roundtrip",
+    ));
+
+    expect(preview.status, JSON.stringify(responseValue(preview))).toBe(200);
+    expect(responseValue(preview).changes).toEqual([
+      expect.objectContaining({
+        sellerSku: snapshot.rows[0]!.sellerSku,
+        requested: expect.objectContaining({ title: "Only selected sheet title" }),
+      }),
+    ]);
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("isolates a malformed workbook row and previews every other safe SKU", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(workbook(snapshot, 3));
+    const parsed = parseContentAuditWorkbook({
+      bytes: edited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const malformedRow = parsed.rows.find((row) =>
+      row.sourceSheet === "F001" && row.sourceRowNumber === 2
+    );
+    expect(malformedRow).toBeDefined();
+    const malformed = replaceCell(edited, "B2", "NOT-AN-ASIN");
+
+    const response = await router.handle(
+      importRequest(malformed, "content-batch-row-isolation-001"),
+    );
+
+    expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
+    expect(responseValue(response)).toMatchObject({
+      changes: expect.arrayContaining([
+        expect.not.objectContaining({ sellerSku: malformedRow!.sellerSku }),
+      ]),
+      skippedRows: [
+        {
+          sellerSku: malformedRow!.sellerSku,
+          sourceSheet: "F001",
+          rowNumber: 2,
+          stage: "WORKBOOK",
+          code: "ASIN_INVALID",
+          fields: ["ASIN"],
+          message: "ASIN：ASIN 格式無效，應為 10 碼英文字母或數字。",
+        },
+      ],
+    });
+    expect((responseValue(response).changes as unknown[])).toHaveLength(2);
+  });
+
   it("returns exact Defined Name locations from the public Excel import route", async () => {
     const snapshot = await audit();
     const archive = unzipSync(workbook(snapshot));
@@ -822,7 +904,7 @@ describe("content audit Excel batch router", () => {
       expect.objectContaining({
         sellerSku: blockedSellerSku,
         code: "CONTENT_READ_INCOMPLETE",
-        changedFields: ["title"],
+        changedFields: expect.arrayContaining(["title"]),
         message: expect.stringMatching(/未納入本次更新|不會寫入/u),
       }),
     ]);
@@ -1308,17 +1390,48 @@ describe("content audit Excel batch router", () => {
     expect(runIdempotentOperation).not.toHaveBeenCalled();
   });
 
-  it("rejects original-cell tampering before Amazon validation", async () => {
+  it("isolates original-cell tampering before Amazon validation", async () => {
     const snapshot = await audit();
     const tampered = replaceCell(workbook(snapshot), "D2", "Tampered source");
     const response = await router.handle(
       importRequest(tampered, "content-batch-tamper-001"),
     );
 
-    expect(response.status).toBe(409);
-    expect(responseValue(response)).toMatchObject({ code: "WORKBOOK_TAMPERED" });
+    expect(response.status).toBe(422);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_BATCH_ALL_SKIPPED",
+      skippedRows: [expect.objectContaining({
+        stage: "SOURCE_CHECK",
+        code: "WORKBOOK_TAMPERED",
+        fields: ["Seller SKU／ASIN／Product Type／原始文案"],
+      })],
+      writeCount: 0,
+    });
     expect(approveWrite).not.toHaveBeenCalled();
     expect(assertIdempotentOperationsAvailable).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it("reports the exact Excel field when local text safety rejects a row", async () => {
+    const snapshot = await audit();
+    const oversizedTitle = "T".repeat(2_001);
+    const edited = replaceCell(workbook(snapshot), "E2", oversizedTitle);
+
+    const response = await router.handle(
+      importRequest(edited, "content-batch-local-field-001"),
+    );
+
+    expect(response.status).toBe(422);
+    expect(responseValue(response)).toMatchObject({
+      code: "CONTENT_BATCH_ALL_SKIPPED",
+      skippedRows: [expect.objectContaining({
+        stage: "LOCAL_VALIDATION",
+        code: "CONTENT_INVALID",
+        fields: ["產品名稱"],
+      })],
+      writeCount: 0,
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
     expect(runIdempotentOperation).not.toHaveBeenCalled();
   });
 
@@ -1365,9 +1478,14 @@ describe("content audit Excel batch router", () => {
         "content-batch-legacy-line-same-field-001",
       ),
     );
-    expect(editedRecoveredReply.status).toBe(409);
+    expect(editedRecoveredReply.status).toBe(422);
     expect(responseValue(editedRecoveredReply)).toMatchObject({
-      code: "WORKBOOK_REEXPORT_REQUIRED",
+      code: "CONTENT_BATCH_ALL_SKIPPED",
+      skippedRows: [expect.objectContaining({
+        code: "WORKBOOK_REEXPORT_REQUIRED",
+        fields: ["原始文案／更新文案"],
+      })],
+      writeCount: 0,
     });
 
     const edited = replaceCell(
@@ -1439,9 +1557,13 @@ describe("content audit Excel batch router", () => {
     const ambiguousReply = await router.handle(
       importRequest(ambiguous, "content-batch-legacy-ambiguous-001"),
     );
-    expect(ambiguousReply.status).toBe(409);
+    expect(ambiguousReply.status).toBe(422);
     expect(responseValue(ambiguousReply)).toMatchObject({
-      code: "WORKBOOK_TAMPERED",
+      code: "CONTENT_BATCH_ALL_SKIPPED",
+      skippedRows: [expect.objectContaining({
+        code: "WORKBOOK_TAMPERED",
+      })],
+      writeCount: 0,
     });
 
     const manySeparators = Array.from({ length: 66 }, () => "Line")
@@ -1471,9 +1593,13 @@ describe("content audit Excel batch router", () => {
     const overBudgetReply = await router.handle(
       importRequest(overBudget, "content-batch-legacy-budget-001"),
     );
-    expect(overBudgetReply.status).toBe(409);
+    expect(overBudgetReply.status).toBe(422);
     expect(responseValue(overBudgetReply)).toMatchObject({
-      code: "WORKBOOK_TAMPERED",
+      code: "CONTENT_BATCH_ALL_SKIPPED",
+      skippedRows: [expect.objectContaining({
+        code: "WORKBOOK_TAMPERED",
+      })],
+      writeCount: 0,
     });
     expect(approveWrite).not.toHaveBeenCalled();
     expect(runIdempotentOperation).not.toHaveBeenCalled();
@@ -1682,7 +1808,7 @@ describe("content audit Excel batch router", () => {
     expect(approvalReason).toContain("8 SKU");
     expect(approvalReason).toContain("高風險 8 SKU");
     expect(approvalReason).toContain("刪除要點 14 項");
-    expect(approvalReason).toContain("INVALID 0 SKU");
+    expect(approvalReason).not.toContain("INVALID");
     expect(approvalReason).toContain("驗證碼 gate-owned-123");
     expect(approvalReason.length).toBeLessThanOrEqual(120);
 
@@ -1777,7 +1903,7 @@ describe("content audit Excel batch router", () => {
     expect(approvalReason).toContain("8 SKU");
     expect(approvalReason).toContain("高風險 0 SKU");
     expect(approvalReason).toContain("刪除要點 0 項");
-    expect(approvalReason).toContain("INVALID 0 SKU");
+    expect(approvalReason).not.toContain("INVALID");
     expect(approvalReason).toContain("驗證碼 gate-owned-123");
     expect(approvalReason.length).toBeLessThanOrEqual(120);
     gateRouter.dispose();
@@ -1860,6 +1986,106 @@ describe("content audit Excel batch router", () => {
     expect(localApproveWrite).toHaveBeenCalledOnce();
     expect(assertIdempotentOperationsAvailable).toHaveBeenCalledOnce();
     expect(runIdempotentOperation).toHaveBeenCalledTimes(3);
+  });
+
+  it("isolates one proven row-scoped revalidation failure before approval and continues safe SKUs", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Revalidation isolation title",
+    );
+    const events: string[] = [];
+    const previewCounts = new Map<string, number>();
+    const localApproveWrite = vi.fn(async () => {
+      events.push("approval");
+    });
+    let failedSku = "";
+    const content = {
+      handle: vi.fn(),
+      readOne: vi.fn(),
+      previewOne: vi.fn(async (input: UpdateListingContentInput) => {
+        const count = (previewCounts.get(input.sellerSku) ?? 0) + 1;
+        previewCounts.set(input.sellerSku, count);
+        events.push(`preview:${input.sellerSku}`);
+        if (input.sellerSku === failedSku && count === 2) {
+          throw new SpApiError("Amazon 原值已改變。", {
+            status: 409,
+            code: "PREVIEW_CHANGED",
+            requestId: "REQ-REVALIDATION-ISOLATED",
+          });
+        }
+        return preparedPreview(input);
+      }),
+      attemptOne: vi.fn(async (
+        input: UpdateListingContentInput,
+        _evidence: ListingContentPreparedPreview["evidence"],
+        session: Parameters<ListingContentMutationsPort["attemptOne"]>[2],
+        intentId: string,
+      ) => {
+        events.push(`attempt:${input.sellerSku}`);
+        return session.attempt<ListingContentUpdateResult>({
+          intentId,
+          execute: async ({ recordAccepted }) => {
+            const result = simulatedUpdateResult(input);
+            await recordAccepted(result);
+            return result;
+          },
+        });
+      }),
+    } satisfies ListingContentMutationsPort;
+    const integrationRouter = new ApiRouter({
+      store: {
+        assertIdempotentOperationsAvailable,
+        runIdempotentOperation,
+        saveContentAuditSnapshotEvidence,
+        getContentAuditSnapshotEvidence,
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: { getAccountScope: async () => ACCOUNT_SCOPE } as unknown as CredentialVault,
+      approveWrite: localApproveWrite,
+      listingContentMutations: content,
+    });
+    const key = "content-batch-revalidation-isolation-001";
+    const preview = await integrationRouter.handle(importRequest(edited, key));
+    const sellerSkus = (
+      responseValue(preview).changes as Array<{ sellerSku: string }>
+    ).map((change) => change.sellerSku);
+    expect(sellerSkus).toHaveLength(3);
+    failedSku = sellerSkus[1]!;
+    events.length = 0;
+
+    const response = await integrationRouter.handle(commitRequest(
+      String(responseValue(preview).previewId),
+      key,
+    ));
+    integrationRouter.dispose();
+
+    expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
+    expect(responseValue(response)).toMatchObject({
+      status: "COMPLETED_WITH_ISSUES",
+      rows: [
+        expect.objectContaining({ sellerSku: sellerSkus[0], state: "simulated" }),
+        expect.objectContaining({ sellerSku: sellerSkus[2], state: "simulated" }),
+      ],
+      validationFailures: [expect.objectContaining({
+        sellerSku: failedSku,
+        code: "PREVIEW_CHANGED",
+        requestId: "REQ-REVALIDATION-ISOLATED",
+      })],
+    });
+    expect(events).toEqual([
+      `preview:${sellerSkus[0]}`,
+      `preview:${failedSku}`,
+      `preview:${sellerSkus[2]}`,
+      "approval",
+      `attempt:${sellerSkus[0]}`,
+      `attempt:${sellerSkus[2]}`,
+    ]);
+    expect(localApproveWrite).toHaveBeenCalledOnce();
+    expect(localApproveWrite).toHaveBeenCalledWith(
+      expect.stringContaining("2 SKU"),
+    );
+    expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
   });
 
   it("does not stage a plan when snapshot evidence expires during preview", async () => {
@@ -2433,13 +2659,17 @@ describe("content audit Excel batch router", () => {
 
   it("fails closed when the W06 preview crosses the captured execution identity", async () => {
     const snapshot = await audit();
-    const edited = replaceCell(
-      workbook(snapshot),
-      "E2",
-      "Cross-context preview must be rejected",
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Cross-context preview must stop the batch",
     );
     const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
     const stagePreview = vi.fn(async () => undefined);
+    const previewOne = vi.fn(async (input: UpdateListingContentInput) => ({
+      ...preparedPreview(input),
+      mode: "live" as const,
+      status: "VALID" as const,
+    }));
     const batch = createListingContentBatchMutations({
       evidence: {
         getContentAuditSnapshotEvidence: vi.fn(async () => ({
@@ -2459,11 +2689,7 @@ describe("content audit Excel batch router", () => {
         clearEphemeral: vi.fn(),
       } as unknown as MainWriteGatePort,
       content: {
-        previewOne: vi.fn(async (input) => ({
-          ...preparedPreview(input),
-          mode: "live" as const,
-          status: "VALID" as const,
-        })),
+        previewOne,
         attemptOne: vi.fn(),
       },
       randomUUID: () => "content-batch-cross-context",
@@ -2474,12 +2700,11 @@ describe("content audit Excel batch router", () => {
       request: importRequest(edited, "content-batch-cross-context-001"),
     });
 
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(409);
     expect(responseValue(response)).toMatchObject({
-      code: "CONTENT_BATCH_VALIDATION_FAILED",
-      rows: [expect.objectContaining({ code: "PREVIEW_CHANGED" })],
-      writeCount: 0,
+      code: "PREVIEW_CHANGED",
     });
+    expect(previewOne).toHaveBeenCalledOnce();
     expect(stagePreview).not.toHaveBeenCalled();
   });
 
@@ -2541,7 +2766,7 @@ describe("content audit Excel batch router", () => {
         code: "PREVIEW_CHANGED",
         message: "Amazon 預檢證據已改變。",
         requestId: "REQ-DETAILED-FAILURE",
-        changedFields: ["title", "bulletPoints"],
+        changedFields: ["title"],
         previous: { title: snapshot.rows[0]!.title },
         requested: { title: requestedTitle },
         issues: [{
@@ -2555,6 +2780,218 @@ describe("content audit Excel batch router", () => {
     });
     expect(stagePreview).not.toHaveBeenCalled();
   });
+
+  it("isolates one proven row-scoped Amazon preview failure and keeps every safe SKU actionable", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Mixed safe preview title",
+    );
+    const parsed = parseContentAuditWorkbook({
+      bytes: edited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const failedSku = parsed.rows[1]!.sellerSku;
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    const stagePreview = vi.fn(async () => undefined);
+    const previewOne = vi.fn(async (input: UpdateListingContentInput) => {
+      if (input.sellerSku === failedSku) {
+        throw new SpApiError("Amazon 拒絕這個產品名稱。", {
+          status: 422,
+          code: "VALIDATION_FAILED",
+          requestId: "REQ-ISOLATED-PREVIEW",
+          issues: [{
+            code: "8541",
+            severity: "ERROR",
+            message: "產品名稱不符合 Amazon 規則。",
+            attributeNames: ["item_name"],
+          }],
+          operation: "patchListingsItemPreview",
+        });
+      }
+      return preparedPreview(input);
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: { previewOne, attemptOne: vi.fn() },
+      randomUUID: () => "content-batch-isolated-preview",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, "content-batch-isolated-preview-001"),
+    });
+    const body = responseValue(response);
+
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body).toMatchObject({
+      changes: [
+        expect.not.objectContaining({ sellerSku: failedSku }),
+        expect.not.objectContaining({ sellerSku: failedSku }),
+      ],
+      validationFailures: [{
+        sellerSku: failedSku,
+        code: "VALIDATION_FAILED",
+        requestId: "REQ-ISOLATED-PREVIEW",
+        changedFields: expect.arrayContaining(["title"]),
+        issues: [expect.objectContaining({
+          attributeNames: ["item_name"],
+        })],
+      }],
+    });
+    expect(body.notice).toContain("其餘安全 SKU 可繼續");
+    expect(stagePreview).toHaveBeenCalledOnce();
+  });
+
+  it("isolates one exact non-FBA SKU and keeps every independent FBA SKU actionable", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Mixed FBA-only preview title",
+    );
+    const parsed = parseContentAuditWorkbook({
+      bytes: edited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const failedSku = parsed.rows[1]!.sellerSku;
+    const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+    const stagePreview = vi.fn(async () => undefined);
+    const previewOne = vi.fn(async (input: UpdateListingContentInput) => {
+      if (input.sellerSku === failedSku) {
+        throw new SpApiError(
+          "Amazon 商品內容回應缺少可精確核對的 FBA fulfillment evidence。",
+          { status: 409, code: "FBA_ONLY" },
+        );
+      }
+      return preparedPreview(input);
+    });
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "demo",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate: {
+        stagePreview,
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => undefined),
+        clearEphemeral: vi.fn(),
+      } as unknown as MainWriteGatePort,
+      content: { previewOne, attemptOne: vi.fn() },
+      randomUUID: () => "content-batch-non-fba-isolated",
+    });
+
+    const response = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, "content-batch-non-fba-isolated-001"),
+    });
+    const body = responseValue(response);
+
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body).toMatchObject({
+      changes: [
+        expect.not.objectContaining({ sellerSku: failedSku }),
+        expect.not.objectContaining({ sellerSku: failedSku }),
+      ],
+      validationFailures: [{
+        sellerSku: failedSku,
+        code: "FBA_ONLY",
+        changedFields: expect.arrayContaining(["title"]),
+      }],
+    });
+    expect(body.notice).toContain("其餘安全 SKU 可繼續");
+    expect(stagePreview).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { status: 401, code: "VALIDATION_FAILED" },
+    { status: 403, code: "CONTENT_REQUIRED" },
+    { status: 429, code: "CONTENT_LIMIT_EXCEEDED" },
+  ])(
+    "stops the whole preview on global $status failures even when the code looks row-scoped",
+    async ({ status, code }) => {
+      const snapshot = await audit();
+      const edited = replaceEveryProposedTitle(
+        workbook(snapshot, 3),
+        "Global preview failure must stop",
+      );
+      const parsed = parseContentAuditWorkbook({
+        bytes: edited,
+        fileName: "content-audit.xlsx",
+        mediaType: MEDIA_TYPE,
+      });
+      const failedSku = parsed.rows[1]!.sellerSku;
+      const stored = structuredClone(contentAuditEvidence.get(snapshot.exportId)!);
+      const stagePreview = vi.fn(async () => undefined);
+      const previewOne = vi.fn(async (input: UpdateListingContentInput) => {
+        if (input.sellerSku === failedSku) {
+          throw new SpApiError("Amazon global preview failure.", {
+            status,
+            code,
+            operation: "patchListingsItemPreview",
+          });
+        }
+        return preparedPreview(input);
+      });
+      const batch = createListingContentBatchMutations({
+        evidence: {
+          getContentAuditSnapshotEvidence: vi.fn(async () => ({
+            status: "available" as const,
+            evidence: structuredClone(stored),
+          })),
+        },
+        context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+          marketplaceId,
+          mode: "demo",
+          accountScope: ACCOUNT_SCOPE,
+        })),
+        writeGate: {
+          stagePreview,
+          execute: vi.fn(),
+          reconcile: vi.fn(async () => undefined),
+          clearEphemeral: vi.fn(),
+        } as unknown as MainWriteGatePort,
+        content: { previewOne, attemptOne: vi.fn() },
+        randomUUID: () => `content-batch-global-preview-${status}`,
+      });
+
+      const response = await batch.handle({
+        operation: "preview",
+        request: importRequest(
+          edited,
+          `content-batch-global-preview-${status}-001`,
+        ),
+      });
+
+      expect(response.status).toBe(status);
+      expect(previewOne).toHaveBeenCalledTimes(2);
+      expect(stagePreview).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not offer an INVALID override when no ERROR survives public sanitization", async () => {
     const snapshot = await audit();
@@ -2584,19 +3021,25 @@ describe("content audit Excel batch router", () => {
         clearEphemeral: vi.fn(),
       } as unknown as MainWriteGatePort,
       content: {
-        previewOne: vi.fn(async (input) => preparedPreview(input, undefined, {
-          mode: "live",
-          status: "INVALID",
-          issues: [{
-            code: "PRIVATE-UPSTREAM-CONTEXT",
-            severity: "ERROR",
-            message:
-              "See https://sellercentral.amazon.com/?seller_id=A1SELLERID1234",
-            attributeNames: ["item_name"],
-            categories: [],
-            marketplaceIds: [],
-          }],
-        })),
+        previewOne: vi.fn(async () => {
+          throw new SpApiError(
+            "Amazon Validation Preview 未通過。",
+            {
+              status: 422,
+              code: "VALIDATION_FAILED",
+              operation: "patchListingsItemPreview",
+              issues: [{
+                code: "PRIVATE-UPSTREAM-CONTEXT",
+                severity: "ERROR",
+                message:
+                  "See https://sellercentral.amazon.com/?seller_id=A1SELLERID1234",
+                attributeNames: ["item_name"],
+                categories: [],
+                marketplaceIds: [],
+              }],
+            },
+          );
+        }),
         attemptOne: vi.fn(),
       },
       randomUUID: () => "content-batch-private-invalid",
@@ -2621,14 +3064,19 @@ describe("content audit Excel batch router", () => {
     expect(stagePreview).not.toHaveBeenCalled();
   });
 
-  it("requires an exact acknowledgement before one INVALID Amazon preview can be attempted", async () => {
+  it("isolates an INVALID Amazon preview and never offers a forced upload", async () => {
     const snapshot = await audit();
-    const edited = replaceCell(
-      workbook(snapshot),
-      "E2",
-      "Explicitly forced title from Excel",
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Invalid SKU must be isolated",
     );
     const stored = liveEvidenceForWorkbook(snapshot, edited);
+    const parsed = parseContentAuditWorkbook({
+      bytes: edited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    });
+    const failedSku = parsed.rows[1]!.sellerSku;
     const validationIssue = {
       code: "8541",
       severity: "ERROR",
@@ -2637,79 +3085,29 @@ describe("content audit Excel batch router", () => {
       categories: [],
       marketplaceIds: [],
     };
-    const additionalValidationIssues = ["9001", "9002", "9003"].map(
-      (code) => ({
-        code,
-        severity: "ERROR",
-        message: `Amazon Validation Preview error ${code}.`,
-        attributeNames: ["item_name"],
-        categories: [],
-        marketplaceIds: [],
-      }),
-    );
-    const privateValidationIssue = {
-      code: "PRIVATE-UPSTREAM-CONTEXT",
-      severity: "ERROR",
-      message:
-        "See https://sellercentral.amazon.com/?seller_id=A1SELLERID1234",
-      attributeNames: ["item_name"],
-      categories: [],
-      marketplaceIds: [],
-    };
+    const stagePreview = vi.fn(async () => undefined);
+    const execute = vi.fn();
     const previewOne = vi.fn(async (
       input: UpdateListingContentInput,
       options?: ListingContentPreviewOptions,
     ) => {
       expect(options).toEqual({
-        validationOverrideAuthority:
-          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
         exactBulletReplacementAuthority:
           LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
       });
+      if (input.sellerSku === failedSku) {
+        throw new SpApiError(validationIssue.message, {
+          status: 422,
+          code: "VALIDATION_FAILED",
+          requestId: "REQ-INVALID-ISOLATED",
+          issues: [validationIssue],
+          operation: "patchListingsItemPreview",
+        });
+      }
       return preparedPreview(input, undefined, {
         mode: "live",
-        status: "INVALID",
-        issues: [
-          validationIssue,
-          ...additionalValidationIssues,
-          privateValidationIssue,
-        ],
+        status: "VALID",
       });
-    });
-    const attemptOne = vi.fn(async (input: UpdateListingContentInput) => ({
-      mode: "live" as const,
-      status: "ACCEPTED" as const,
-      marketplaceId: input.marketplaceId,
-      sellerSku: input.sellerSku,
-      previous: {
-        title: input.expectedTitle,
-        itemHighlight: input.expectedItemHighlight,
-        bulletPoints: [...input.expectedBulletPoints],
-        productDescription: input.expectedProductDescription,
-        ingredients: input.expectedIngredients,
-      },
-      requested: {
-        title: input.title,
-        itemHighlight: input.itemHighlight,
-        bulletPoints: [...input.bulletPoints],
-        productDescription: input.productDescription,
-        ingredients: input.ingredients,
-      },
-      changedFields: ["title" as const, "bulletPoints" as const],
-      acceptedAt: new Date(0).toISOString(),
-      submissionId: "OVERRIDE-SUBMISSION-001",
-      requestId: "REQ-OVERRIDE-COMMIT-001",
-      issues: [],
-      notice: "Amazon accepted the explicit override attempt.",
-    }));
-    const execute = vi.fn(async (input) => {
-      await input.beforeApproval?.();
-      expect(input.approvalReason("654321")).toContain("高風險");
-      expect(input.approvalReason("654321")).toContain(
-        `${snapshot.rows[0]!.sellerSku}（INVALID 8541／9001／9002／9003）`,
-      );
-      expect(input.approvalReason("654321")).not.toContain("等另");
-      return input.run({} as never);
     });
     const batch = createListingContentBatchMutations({
       evidence: {
@@ -2724,261 +3122,62 @@ describe("content audit Excel batch router", () => {
         accountScope: ACCOUNT_SCOPE,
       })),
       writeGate: {
-        stagePreview: vi.fn(async () => undefined),
+        stagePreview,
         execute,
         reconcile: vi.fn(async () => undefined),
         clearEphemeral: vi.fn(),
       } as unknown as MainWriteGatePort,
-      content: { previewOne, attemptOne },
-      randomUUID: () => "content-batch-validation-override",
+      content: { previewOne, attemptOne: vi.fn() },
+      randomUUID: () => "content-batch-invalid-isolated",
     });
-    const key = "content-batch-validation-override-001";
+    const key = "content-batch-invalid-isolated-001";
 
     const preview = await batch.handle({
       operation: "preview",
       request: importRequest(edited, key),
     });
     const previewBody = responseValue(preview);
-    const sellerSku = snapshot.rows[0]!.sellerSku;
 
     expect(preview.status, JSON.stringify(previewBody)).toBe(200);
     expect(previewBody).toMatchObject({
-      status: "REQUIRES_VALIDATION_OVERRIDE",
-      changes: [{
-        sellerSku,
-        validationStatus: "INVALID",
-        overrideAllowed: true,
-        issues: [validationIssue, ...additionalValidationIssues],
+      status: "READY",
+      changes: [
+        expect.not.objectContaining({ sellerSku: failedSku }),
+        expect.not.objectContaining({ sellerSku: failedSku }),
+      ],
+      validationFailures: [{
+        sellerSku: failedSku,
+        code: "VALIDATION_FAILED",
+        requestId: "REQ-INVALID-ISOLATED",
+        changedFields: ["title"],
+        issues: [validationIssue],
+        overrideAllowed: false,
       }],
       validationOverride: {
-        required: true,
-        sellerSkus: [sellerSku],
+        required: false,
+        sellerSkus: [],
       },
     });
-    expect(
-      (previewBody.changes as Array<Record<string, unknown>>)[0]!.issues,
-    ).toEqual([validationIssue, ...additionalValidationIssues]);
+    expect(stagePreview).toHaveBeenCalledOnce();
 
-    const blocked = await batch.handle({
-      operation: "commit",
-      request: commitRequest(String(previewBody.previewId), key),
-    });
-    expect(blocked.status).toBe(422);
-    expect(responseValue(blocked)).toMatchObject({
-      code: "VALIDATION_OVERRIDE_REQUIRED",
-      writeCount: 0,
-      sellerSkus: [sellerSku],
-    });
-    expect(execute).not.toHaveBeenCalled();
-    expect(attemptOne).not.toHaveBeenCalled();
-
-    const extraSku = await batch.handle({
+    const forced = await batch.handle({
       operation: "commit",
       request: forcedCommitRequest(
         String(previewBody.previewId),
         key,
-        [sellerSku, "EXTRA-SKU"],
+        [failedSku],
       ),
     });
-    expect(extraSku.status).toBe(422);
-    expect(responseValue(extraSku)).toMatchObject({
+    expect(forced.status).toBe(422);
+    expect(responseValue(forced)).toMatchObject({
       code: "VALIDATION_OVERRIDE_REQUIRED",
-      writeCount: 0,
-      sellerSkus: [sellerSku],
-    });
-
-    const duplicateSku = await batch.handle({
-      operation: "commit",
-      request: forcedCommitRequest(
-        String(previewBody.previewId),
-        key,
-        [sellerSku, sellerSku],
-      ),
-    });
-    expect(duplicateSku.status).toBe(422);
-    expect(responseValue(duplicateSku)).toMatchObject({
-      code: "VALIDATION_OVERRIDE_REQUIRED",
+      sellerSkus: [],
       writeCount: 0,
     });
     expect(execute).not.toHaveBeenCalled();
-
-    const committed = await batch.handle({
-      operation: "commit",
-      request: forcedCommitRequest(
-        String(previewBody.previewId),
-        key,
-        [sellerSku],
-      ),
-    });
-
-    expect(committed.status).toBe(200);
-    expect(responseValue(committed)).toMatchObject({
-      status: "COMPLETED",
-      rows: [{ sellerSku, state: "verified" }],
-    });
-    expect(previewOne).toHaveBeenCalledTimes(2);
-    expect(attemptOne).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      sellerSku,
-      {
-        validationOverrideAuthority:
-          LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
-        exactBulletReplacementAuthority:
-          LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
-      },
-    );
-    expect(execute).toHaveBeenCalledOnce();
-
-    const oversizedEdited = replaceEveryProposedTitle(
-      workbook(snapshot, 3),
-      "Override-only native summary overflow",
-    );
-    const oversizedStored = liveEvidenceForWorkbook(
-      snapshot,
-      oversizedEdited,
-    );
-    let oversizedApprovalReason = "";
-    const oversizedExecute = vi.fn(async (input) => {
-      await input.beforeApproval?.();
-      oversizedApprovalReason = typeof input.approvalReason === "function"
-        ? input.approvalReason("123456789012")
-        : input.approvalReason;
-      return {
-        previewId: input.binding.previewKey,
-        marketplaceId: MARKETPLACE_ID,
-        status: "COMPLETED" as const,
-        rows: [],
-        blockedChanges: [],
-        completedAt: new Date(0).toISOString(),
-        notice: "test",
-      };
-    });
-    const oversizedPreviewOne = vi.fn(previewOne);
-    const oversizedBatch = createListingContentBatchMutations({
-      evidence: {
-        getContentAuditSnapshotEvidence: vi.fn(async () => ({
-          status: "available" as const,
-          evidence: structuredClone(oversizedStored),
-        })),
-      },
-      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
-        marketplaceId,
-        mode: "live",
-        accountScope: ACCOUNT_SCOPE,
-      })),
-      writeGate: {
-        stagePreview: vi.fn(async () => undefined),
-        execute: oversizedExecute,
-        reconcile: vi.fn(async () => undefined),
-        clearEphemeral: vi.fn(),
-      } as unknown as MainWriteGatePort,
-      content: { previewOne: oversizedPreviewOne, attemptOne: vi.fn() },
-      randomUUID: () => "content-batch-override-summary-overflow",
-    });
-    const oversizedKey = "content-batch-override-summary-overflow-001";
-    const oversizedPreview = await oversizedBatch.handle({
-      operation: "preview",
-      request: importRequest(oversizedEdited, oversizedKey),
-    });
-    expect(oversizedPreview.status).toBe(200);
-    const oversizedPreviewBody = responseValue(oversizedPreview);
-    const oversizedOverrideSkus = (
-      oversizedPreviewBody.changes as Array<{ sellerSku: string }>
-    ).map((change) => change.sellerSku);
-    const oversizedCommit = await oversizedBatch.handle({
-      operation: "commit",
-      request: forcedCommitRequest(
-        String(oversizedPreviewBody.previewId),
-        oversizedKey,
-        oversizedOverrideSkus,
-      ),
-    });
-    expect(oversizedCommit.status).toBe(200);
-    expect(oversizedExecute).toHaveBeenCalledOnce();
-    expect(oversizedApprovalReason).toContain("3 SKU");
-    expect(oversizedApprovalReason).toContain("高風險 3 SKU");
-    expect(oversizedApprovalReason).toContain("刪除要點 0 項");
-    expect(oversizedApprovalReason).toContain("INVALID 3 SKU");
-    expect(oversizedApprovalReason).toContain("驗證碼 123456789012");
-    expect(oversizedApprovalReason.length).toBeLessThanOrEqual(120);
-
-    const undisplayableCode = "X".repeat(128);
-    let manualApprovalReason = "";
-    const manualExecute = vi.fn(async (input) => {
-      await input.beforeApproval?.();
-      manualApprovalReason = typeof input.approvalReason === "function"
-        ? input.approvalReason("123456789012")
-        : input.approvalReason;
-      return {
-        previewId: input.binding.previewKey,
-        marketplaceId: MARKETPLACE_ID,
-        status: "COMPLETED" as const,
-        rows: [],
-        blockedChanges: [],
-        completedAt: new Date(0).toISOString(),
-        notice: "test",
-      };
-    });
-    const manualBatch = createListingContentBatchMutations({
-      evidence: {
-        getContentAuditSnapshotEvidence: vi.fn(async () => ({
-          status: "available" as const,
-          evidence: structuredClone(stored),
-        })),
-      },
-      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
-        marketplaceId,
-        mode: "live",
-        accountScope: ACCOUNT_SCOPE,
-      })),
-      writeGate: {
-        stagePreview: vi.fn(async () => undefined),
-        execute: manualExecute,
-        reconcile: vi.fn(async () => undefined),
-        clearEphemeral: vi.fn(),
-      } as unknown as MainWriteGatePort,
-      content: {
-        previewOne: vi.fn(async (input) => preparedPreview(
-          input,
-          undefined,
-          {
-            mode: "live",
-            status: "INVALID",
-            issues: [{ ...validationIssue, code: undisplayableCode }],
-          },
-        )),
-        attemptOne: vi.fn(),
-      },
-      randomUUID: () => "content-batch-single-undisplayable-code",
-    });
-    const manualKey = "content-batch-single-undisplayable-code-001";
-    const manualPreview = await manualBatch.handle({
-      operation: "preview",
-      request: importRequest(edited, manualKey),
-    });
-    expect(manualPreview.status).toBe(200);
-    const manualPreviewBody = responseValue(manualPreview);
-    const manualCommit = await manualBatch.handle({
-      operation: "commit",
-      request: forcedCommitRequest(
-        String(manualPreviewBody.previewId),
-        manualKey,
-        [sellerSku],
-      ),
-    });
-    expect(manualCommit.status).toBe(200);
-    expect(manualExecute).toHaveBeenCalledOnce();
-    expect(manualApprovalReason).toContain("高風險 1 SKU");
-    expect(manualApprovalReason).toContain("刪除要點 0 項");
-    expect(manualApprovalReason).toContain("INVALID 1 SKU");
-    expect(manualApprovalReason).not.toContain(undisplayableCode);
-    expect(manualApprovalReason).toContain("驗證碼 123456789012");
-    expect(manualApprovalReason.length).toBeLessThanOrEqual(120);
   });
 
-  it("merges a maximum-length SKU's destructive and INVALID risks into one native entry", async () => {
+  it("keeps a maximum-length SKU's destructive bullet risk in one native entry", async () => {
     const snapshot = await audit();
     const sellerSku = "C".repeat(40);
     const sourceRow = {
@@ -2988,21 +3187,13 @@ describe("content audit Excel batch router", () => {
     const combinedSnapshot: AuditReply = { ...snapshot, rows: [sourceRow] };
     const edited = replaceEveryProposedTitle(
       workbook(combinedSnapshot),
-      "Combined destructive and invalid risk",
+      "Destructive bullet replacement risk",
     );
     const stored = liveEvidenceForWorkbook(snapshot, edited);
     preparedIdentityBySku.set(sellerSku, {
       asin: sourceRow.asin,
       productType: sourceRow.productType,
     });
-    const validationIssue = {
-      code: "8541",
-      severity: "ERROR",
-      message: "Amazon Validation Preview rejected the requested title.",
-      attributeNames: ["item_name"],
-      categories: [],
-      marketplaceIds: [],
-    };
     let approvalReason = "";
     const execute = vi.fn(async (input) => {
       await input.beforeApproval?.();
@@ -3043,8 +3234,8 @@ describe("content audit Excel batch router", () => {
           undefined,
           {
             mode: "live",
-            status: "INVALID",
-            issues: [validationIssue],
+            status: "VALID",
+            issues: [],
             exactBulletReplacement: {
               languageTag: "en_US",
               currentExactLanguageBulletPoints: [
@@ -3062,25 +3253,20 @@ describe("content audit Excel batch router", () => {
         )),
         attemptOne: vi.fn(),
       },
-      randomUUID: () => "content-batch-combined-native-risk",
+      randomUUID: () => "content-batch-destructive-native-risk",
     });
-    const key = "content-batch-combined-native-risk-001";
+    const key = "content-batch-destructive-native-risk-001";
     const preview = await batch.handle({
       operation: "preview",
       request: importRequest(edited, key),
     });
     expect(preview.status).toBe(200);
     const previewBody = responseValue(preview);
-    const request = forcedCommitRequest(
+    const request = exactBulletReplacementCommitRequest(
       String(previewBody.previewId),
       key,
       [sellerSku],
     );
-    if (request.body?.kind !== "json") throw new Error("Expected JSON body");
-    request.body.value.exactBulletReplacement = {
-      acknowledged: true,
-      sellerSkus: [sellerSku],
-    };
 
     const committed = await batch.handle({ operation: "commit", request });
 
@@ -3088,7 +3274,7 @@ describe("content audit Excel batch router", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(approvalReason.split(sellerSku)).toHaveLength(2);
     expect(approvalReason).toContain("要點 7→5／刪2");
-    expect(approvalReason).toContain("INVALID 8541");
+    expect(approvalReason).not.toContain("INVALID");
     expect(approvalReason).toContain("驗證碼 123456789012");
     expect(approvalReason.length).toBeLessThanOrEqual(120);
   });
@@ -3138,7 +3324,10 @@ describe("content audit Excel batch router", () => {
     expect(response.status).toBe(422);
     expect(responseValue(response)).toMatchObject({
       code: "CONTENT_BATCH_VALIDATION_FAILED",
-      rows: [expect.objectContaining({ code: "LISTING_IDENTITY_MISMATCH" })],
+      rows: [expect.objectContaining({
+        code: "LISTING_IDENTITY_MISMATCH",
+        message: expect.stringContaining("此 SKU 已隔離"),
+      })],
       writeCount: 0,
     });
     expect(stagePreview).not.toHaveBeenCalled();
@@ -3300,7 +3489,7 @@ describe("content audit Excel batch router", () => {
     expect(attemptOne).not.toHaveBeenCalled();
   });
 
-  it("stops after a known rejection and replays a detached terminal result", async () => {
+  it("isolates a known rejection, continues later SKUs, and replays a detached terminal result", async () => {
     const snapshot = await audit();
     const edited = replaceEveryProposedTitle(
       workbook(snapshot, 3),
@@ -3309,7 +3498,7 @@ describe("content audit Excel batch router", () => {
     const key = "content-batch-rejected-001";
     const preview = await router.handle(importRequest(edited, key));
     expect(preview.status).toBe(200);
-    const [firstSku, rejectedSku, untouchedSku] = (
+    const [firstSku, rejectedSku, continuedSku] = (
       responseValue(preview).changes as Array<{ sellerSku: string }>
     ).map((change) => change.sellerSku);
     const previewId = String(responseValue(preview).previewId);
@@ -3340,7 +3529,7 @@ describe("content audit Excel batch router", () => {
       }>;
     };
     expect(firstBody).toMatchObject({
-      status: "STOPPED_REJECTED",
+      status: "COMPLETED_WITH_ISSUES",
       rows: [
         { sellerSku: firstSku, state: "simulated", error: null },
         {
@@ -3354,16 +3543,15 @@ describe("content audit Excel batch router", () => {
           },
         },
         {
-          sellerSku: untouchedSku,
-          state: "not-started",
-          result: null,
+          sellerSku: continuedSku,
+          state: "simulated",
           error: null,
         },
       ],
     });
     expect(approveWrite).toHaveBeenCalledOnce();
     expect(assertIdempotentOperationsAvailable).toHaveBeenCalledOnce();
-    expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+    expect(runIdempotentOperation).toHaveBeenCalledTimes(3);
     const pristine = structuredClone(firstBody);
     const exposedError = firstBody.rows[1]!.error!;
     exposedError.message = "caller-poisoned rejection";
@@ -3376,10 +3564,81 @@ describe("content audit Excel batch router", () => {
     expect(replayBody.rows[1]!.error).not.toBe(exposedError);
     expect(approveWrite).toHaveBeenCalledOnce();
     expect(assertIdempotentOperationsAvailable).toHaveBeenCalledOnce();
+    expect(runIdempotentOperation).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops later SKUs when a pre-commit server failure is not safely row-scoped", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 3),
+      "Pre-commit server failure must stop",
+    );
+    const key = "content-batch-precommit-server-stop-001";
+    const preview = await router.handle(importRequest(edited, key));
+    expect(preview.status).toBe(200);
+    const previewId = String(responseValue(preview).previewId);
+    runIdempotentOperation
+      .mockImplementationOnce(runPreparedIdempotentOperation)
+      .mockRejectedValueOnce(new SpApiPreCommitError(new SpApiError(
+        "Amazon server unavailable before commit.",
+        { status: 503, code: "UPSTREAM_UNAVAILABLE" },
+      )));
+
+    const response = await router.handle(commitRequest(previewId, key));
+
+    expect(response.status).toBe(200);
+    expect(responseValue(response)).toMatchObject({
+      status: "STOPPED_REJECTED",
+      rows: [
+        expect.objectContaining({ state: "simulated" }),
+        expect.objectContaining({ state: "rejected" }),
+        expect.objectContaining({ state: "not-started" }),
+      ],
+    });
     expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
   });
 
-  it("stops later SKUs after an unknown result and does not blindly retry", async () => {
+  it.each([
+    { status: 401, code: "VALIDATION_FAILED" },
+    { status: 503, code: "UPDATE_REJECTED" },
+    { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+  ])(
+    "stops later SKUs for global $status commit failures even when the code looks row-scoped",
+    async ({ status, code }) => {
+      const snapshot = await audit();
+      const edited = replaceEveryProposedTitle(
+        workbook(snapshot, 3),
+        `Global ${status} ${code} commit must stop`,
+      );
+      const key =
+        `content-batch-global-commit-${status}-${code.toLowerCase().replaceAll("_", "-")}-001`;
+      const preview = await router.handle(importRequest(edited, key));
+      expect(preview.status).toBe(200);
+      expect(responseValue(preview).changes).toHaveLength(3);
+      const previewId = String(responseValue(preview).previewId);
+      runIdempotentOperation
+        .mockImplementationOnce(runPreparedIdempotentOperation)
+        .mockRejectedValueOnce(new SpApiError(
+          "Amazon global commit failure.",
+          { status, code },
+        ));
+
+      const response = await router.handle(commitRequest(previewId, key));
+
+      expect(response.status).toBe(200);
+      expect(responseValue(response)).toMatchObject({
+        status: "STOPPED_UNKNOWN",
+        rows: [
+          expect.objectContaining({ state: "simulated" }),
+          expect.objectContaining({ state: "unknown" }),
+          expect.objectContaining({ state: "not-started" }),
+        ],
+      });
+      expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("isolates an unknown result, continues later SKUs, and does not blindly retry", async () => {
     const snapshot = await audit();
     const edited = replaceEveryProposedTitle(workbook(snapshot, 3));
     const key = "content-batch-unknown-001";
@@ -3388,26 +3647,23 @@ describe("content audit Excel batch router", () => {
     const previewId = String(responseValue(preview).previewId);
     runIdempotentOperation
       .mockImplementationOnce(runPreparedIdempotentOperation)
-      .mockRejectedValueOnce(new SpApiError(
-        "Amazon 寫入結果尚未確認。",
-        { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
-      ));
+      .mockRejectedValueOnce(new ListingWriteAcceptedButPendingError());
 
     const response = await router.handle(commitRequest(previewId, key));
     expect(response.status).toBe(200);
     expect(responseValue(response)).toMatchObject({
-      status: "STOPPED_UNKNOWN",
+      status: "COMPLETED_WITH_ISSUES",
       rows: [
         expect.objectContaining({ state: "simulated" }),
         expect.objectContaining({ state: "unknown" }),
-        expect.objectContaining({ state: "not-started" }),
+        expect.objectContaining({ state: "simulated" }),
       ],
     });
-    expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+    expect(runIdempotentOperation).toHaveBeenCalledTimes(3);
 
     const repeated = await router.handle(commitRequest(previewId, key));
     expect(responseValue(repeated)).toEqual(responseValue(response));
-    expect(runIdempotentOperation).toHaveBeenCalledTimes(2);
+    expect(runIdempotentOperation).toHaveBeenCalledTimes(3);
   });
 
   it("stops after an unbound W06 result before attempting later SKUs", async () => {

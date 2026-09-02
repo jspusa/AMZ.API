@@ -715,6 +715,46 @@ body {
   font-size: 10px;
 }
 
+.content-audit-skipped-rows {
+  display: grid;
+  gap: 5px;
+  max-height: 320px;
+  margin: 7px 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.content-audit-skipped-rows > li,
+.content-audit-batch-result .content-audit-skipped-rows > li {
+  display: grid;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid #ead7a8;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.content-audit-skipped-rows > li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.content-audit-skipped-rows span {
+  color: #8a5b12;
+  font-weight: 750;
+  text-align: right;
+}
+
+.content-audit-skipped-rows small {
+  margin: 0;
+  color: #6c6048;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .content-audit-exact-bullet-removals {
   overflow-wrap: anywhere;
   white-space: pre-wrap;

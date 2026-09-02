@@ -21,7 +21,7 @@ const CSS03_ORDERED_PREFIX = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "22aad8e78a982efb6bfbed679b76f75f3e45167ca4168d8df0e756582b4067e3";
+  "2b0123666ff093e5729b838c003e661d772f5ff1f8a14f61a2d92accd938a78b";
 
 const CSS03_PAYLOAD_EVIDENCE = [
   {
@@ -46,8 +46,8 @@ const CSS03_PAYLOAD_EVIDENCE = [
   },
   {
     path: "styles/experience.css",
-    bytes: 15_951,
-    sha256: "be54ea2700359bc8e09bf1b6c731b53759388b330d6db36abaa9e518b2ae9b6e",
+    bytes: 16_689,
+    sha256: "c3eefc35c6137d7b6b30626cf7adeb111a4bde2cd1b1d1f87764b9217959ca23",
   },
 ] as const;
 

@@ -75,11 +75,21 @@ export type ContentWorkbookBlockedChange = {
   requested: ContentWorkbookValues;
 };
 
+export type ContentWorkbookSkippedRow = {
+  sellerSku: string | null;
+  sourceSheet: string | null;
+  rowNumber: number | null;
+  stage: "WORKBOOK" | "SOURCE_CHECK" | "LOCAL_VALIDATION" | "AMAZON_PREVIEW";
+  code: string;
+  fields: string[];
+  message: string;
+};
+
 export type ContentWorkbookBatchPreview = {
   previewId: string;
   marketplaceId: string;
   expiresAt: string;
-  status: "READY" | "REQUIRES_VALIDATION_OVERRIDE";
+  status: "READY";
   changes: Array<{
     sellerSku: string;
     changedFields: ContentAuditField[];
@@ -87,10 +97,12 @@ export type ContentWorkbookBatchPreview = {
     requested: ContentWorkbookValues;
     exactBulletReplacement: ContentWorkbookExactBulletReplacement | null;
     issues: ContentWorkbookBatchIssue[];
-    validationStatus: "VALID" | "INVALID" | "SIMULATED";
-    overrideAllowed: boolean;
+    validationStatus: "VALID" | "SIMULATED";
+    overrideAllowed: false;
   }>;
   blockedChanges: ContentWorkbookBlockedChange[];
+  skippedRows: ContentWorkbookSkippedRow[];
+  validationFailures: ContentWorkbookBatchFailure["rows"];
   validationOverride: {
     required: boolean;
     sellerSkus: string[];
@@ -114,12 +126,21 @@ export type ContentWorkbookBatchFailure = {
     overrideAllowed: boolean;
   }>;
   blockedChanges: ContentWorkbookBlockedChange[];
+  skippedRows: ContentWorkbookSkippedRow[];
 };
 
 export type ContentWorkbookBatchBlockedFailure = {
   code: "CONTENT_READ_INCOMPLETE";
   message: string;
   writeCount: 0;
+  blockedChanges: ContentWorkbookBlockedChange[];
+};
+
+export type ContentWorkbookBatchAllSkippedFailure = {
+  code: "CONTENT_BATCH_ALL_SKIPPED";
+  message: string;
+  writeCount: 0;
+  skippedRows: ContentWorkbookSkippedRow[];
   blockedChanges: ContentWorkbookBlockedChange[];
 };
 
@@ -136,13 +157,19 @@ const CONTENT_AUDIT_FIELDS = new Set<ContentAuditField>(CONTENT_WORKBOOK_FIELDS)
 export type ContentWorkbookBatchResult = {
   previewId: string;
   marketplaceId: string;
-  status: "COMPLETED" | "STOPPED_REJECTED" | "STOPPED_UNKNOWN";
+  status:
+    | "COMPLETED"
+    | "COMPLETED_WITH_ISSUES"
+    | "STOPPED_REJECTED"
+    | "STOPPED_UNKNOWN";
   rows: Array<{
     sellerSku: string;
     state: "verified" | "simulated" | "rejected" | "unknown" | "not-started";
     error: { message: string; requestId?: string | null } | null;
   }>;
   blockedChanges: ContentWorkbookBlockedChange[];
+  skippedRows: ContentWorkbookSkippedRow[];
+  validationFailures: ContentWorkbookBatchFailure["rows"];
   notice: string;
 };
 
@@ -492,6 +519,72 @@ function parseContentWorkbookBlockedChanges(
   return blockedChanges;
 }
 
+function parseContentWorkbookSkippedRows(
+  raw: unknown,
+  requireRows = false,
+): ContentWorkbookSkippedRow[] {
+  if (
+    !Array.isArray(raw) ||
+    raw.length > 500 ||
+    (requireRows && raw.length === 0)
+  ) {
+    throw new Error("Excel 略過問題清單格式無效。");
+  }
+  const rows = raw.map((rawCandidate) => {
+    if (!rawCandidate || typeof rawCandidate !== "object" ||
+      Array.isArray(rawCandidate)) {
+      throw new Error("Excel 略過問題清單含有無法核對的列。");
+    }
+    const candidate = rawCandidate as Record<string, unknown>;
+    if (
+      (candidate.sellerSku !== null &&
+        (typeof candidate.sellerSku !== "string" ||
+          !candidate.sellerSku || candidate.sellerSku.length > 100)) ||
+      (candidate.sourceSheet !== null &&
+        (typeof candidate.sourceSheet !== "string" ||
+          !candidate.sourceSheet || candidate.sourceSheet.length > 31)) ||
+      (candidate.rowNumber !== null &&
+        (typeof candidate.rowNumber !== "number" ||
+          !Number.isSafeInteger(candidate.rowNumber) ||
+          candidate.rowNumber < 2 || candidate.rowNumber > 1_048_576)) ||
+      !["WORKBOOK", "SOURCE_CHECK", "LOCAL_VALIDATION", "AMAZON_PREVIEW"]
+        .includes(String(candidate.stage)) ||
+      typeof candidate.code !== "string" || !candidate.code ||
+      candidate.code.length > 256 ||
+      !Array.isArray(candidate.fields) || !candidate.fields.length ||
+      candidate.fields.length > 20 ||
+      candidate.fields.some((field) =>
+        typeof field !== "string" || !field || field.length > 128
+      ) ||
+      new Set(candidate.fields).size !== candidate.fields.length ||
+      typeof candidate.message !== "string" || !candidate.message ||
+      candidate.message.length > 10_000
+    ) {
+      throw new Error("Excel 略過問題清單含有無法核對的欄位或原因。");
+    }
+    return {
+      sellerSku: candidate.sellerSku as string | null,
+      sourceSheet: candidate.sourceSheet as string | null,
+      rowNumber: candidate.rowNumber as number | null,
+      stage: candidate.stage as ContentWorkbookSkippedRow["stage"],
+      code: candidate.code as string,
+      fields: [...candidate.fields] as string[],
+      message: candidate.message as string,
+    };
+  });
+  const keys = rows.map((row) => JSON.stringify([
+    row.sellerSku,
+    row.sourceSheet,
+    row.rowNumber,
+    row.stage,
+    row.code,
+  ]));
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("Excel 略過問題清單含有重複列。");
+  }
+  return rows;
+}
+
 function parseContentWorkbookBatchIssue(
   raw: unknown,
   invalidMessage: string,
@@ -543,6 +636,9 @@ export function parseContentWorkbookBatchPreview(
 ): ContentWorkbookBatchPreview {
   if (!raw || typeof raw !== "object") throw new Error("Excel 預檢回應格式無效。");
   const value = raw as Partial<ContentWorkbookBatchPreview>;
+  if (value.status !== "READY") {
+    throw new Error("Excel 預檢狀態格式無效；INVALID SKU 必須隔離且不可強制送出。");
+  }
   if (
     typeof value.previewId !== "string" ||
     !value.previewId ||
@@ -550,8 +646,7 @@ export function parseContentWorkbookBatchPreview(
     value.marketplaceId !== marketplaceId ||
     typeof value.expiresAt !== "string" ||
     !value.expiresAt ||
-    (value.status !== "READY" &&
-      value.status !== "REQUIRES_VALIDATION_OVERRIDE") ||
+    value.status !== "READY" ||
     !Array.isArray(value.changes) ||
     !value.changes.length ||
     !value.validationOverride ||
@@ -573,9 +668,8 @@ export function parseContentWorkbookBatchPreview(
       !Array.isArray(candidate.issues) ||
       candidate.issues.length > 100 ||
       (candidate.validationStatus !== "VALID" &&
-        candidate.validationStatus !== "INVALID" &&
         candidate.validationStatus !== "SIMULATED") ||
-      typeof candidate.overrideAllowed !== "boolean"
+      candidate.overrideAllowed !== false
     ) {
       throw new Error("Excel 預檢含有無法核對的 SKU 變更。");
     }
@@ -596,20 +690,13 @@ export function parseContentWorkbookBatchPreview(
         diff.previous,
         diff.requested,
       );
-    const isInvalid = candidate.validationStatus === "INVALID";
-    if (
-      candidate.overrideAllowed !== isInvalid ||
-      (isInvalid && !issues.some((issue) => issue.severity === "ERROR"))
-    ) {
-      throw new Error("Excel 預檢的強制送出狀態不一致。");
-    }
     return {
       ...diff,
       exactBulletReplacement,
       issues,
       validationStatus: candidate.validationStatus as
         ContentWorkbookBatchPreview["changes"][number]["validationStatus"],
-      overrideAllowed: candidate.overrideAllowed as boolean,
+      overrideAllowed: false as const,
     };
   });
   if (new Set(changes.map((change) => change.sellerSku)).size !== changes.length) {
@@ -618,42 +705,53 @@ export function parseContentWorkbookBatchPreview(
   const blockedChanges = parseContentWorkbookBlockedChanges(
     value.blockedChanges ?? [],
   );
+  const skippedRows = parseContentWorkbookSkippedRows(
+    value.skippedRows ?? [],
+  );
+  const validationFailures = value.validationFailures === undefined ||
+      (Array.isArray(value.validationFailures) &&
+        value.validationFailures.length === 0)
+    ? []
+    : parseContentWorkbookBatchFailure({
+        code: "CONTENT_BATCH_VALIDATION_FAILED",
+        message: "Amazon 預檢失敗 SKU 已隔離。",
+        writeCount: 0,
+        rows: value.validationFailures,
+        blockedChanges: [],
+        skippedRows: [],
+      }).rows;
   const blockedSellerSkus = blockedChanges.map((change) => change.sellerSku);
+  const skippedSellerSkus = skippedRows.flatMap((row) =>
+    row.sellerSku ? [row.sellerSku] : []
+  );
   if (
     new Set(blockedSellerSkus).size !== blockedSellerSkus.length ||
     blockedSellerSkus.some((sellerSku) =>
       changes.some((change) => change.sellerSku === sellerSku)
     ) ||
-    changes.length + blockedChanges.length > 500
+    skippedSellerSkus.some((sellerSku) =>
+      changes.some((change) => change.sellerSku === sellerSku) ||
+      blockedSellerSkus.includes(sellerSku)
+    ) ||
+    validationFailures.some((failure) =>
+      changes.some((change) => change.sellerSku === failure.sellerSku) ||
+      blockedSellerSkus.includes(failure.sellerSku) ||
+      skippedSellerSkus.includes(failure.sellerSku)
+    ) ||
+    changes.length + blockedChanges.length + skippedRows.length +
+        validationFailures.length > 500
   ) {
     throw new Error("Excel 預檢的更新與略過 SKU 清單重複或超過安全上限。");
   }
   const declaredOverrideSellerSkus = value.validationOverride.sellerSkus;
   if (
+    value.validationOverride.required !== false ||
+    declaredOverrideSellerSkus.length !== 0 ||
     declaredOverrideSellerSkus.some((sellerSku) =>
       typeof sellerSku !== "string" || !sellerSku || sellerSku.length > 100
-    ) ||
-    new Set(declaredOverrideSellerSkus).size !== declaredOverrideSellerSkus.length
-  ) {
-    throw new Error("Excel 預檢的強制送出 SKU 清單格式無效。");
-  }
-  const actualOverrideSellerSkus = changes
-    .filter((change) => change.overrideAllowed)
-    .map((change) => change.sellerSku);
-  if (
-    declaredOverrideSellerSkus.length !== actualOverrideSellerSkus.length ||
-    declaredOverrideSellerSkus.some(
-      (sellerSku, index) => sellerSku !== actualOverrideSellerSkus[index],
     )
   ) {
-    throw new Error("Excel 預檢的強制送出 SKU 清單不一致。");
-  }
-  const overrideRequired = actualOverrideSellerSkus.length > 0;
-  if (
-    value.validationOverride.required !== overrideRequired ||
-    (value.status === "REQUIRES_VALIDATION_OVERRIDE") !== overrideRequired
-  ) {
-    throw new Error("Excel 預檢的強制送出狀態不一致。");
+    throw new Error("Excel 預檢不得提供強制送出 SKU。");
   }
   return {
     previewId: value.previewId,
@@ -662,9 +760,11 @@ export function parseContentWorkbookBatchPreview(
     status: value.status,
     changes,
     blockedChanges,
+    skippedRows,
+    validationFailures,
     validationOverride: {
-      required: overrideRequired,
-      sellerSkus: [...actualOverrideSellerSkus],
+      required: false,
+      sellerSkus: [],
     },
     notice: typeof value.notice === "string" ? value.notice : "Excel 預檢完成，尚未寫入 Amazon。",
   };
@@ -685,14 +785,6 @@ export function contentWorkbookBatchCommitBody(
     .map((change) => change.sellerSku);
   return {
     ...body,
-    ...(preview.validationOverride.required
-      ? {
-        validationOverride: {
-          acknowledged: true as const,
-          sellerSkus: [...preview.validationOverride.sellerSkus],
-        },
-      }
-      : {}),
     ...(exactBulletReplacementSellerSkus.length
       ? {
           exactBulletReplacement: {
@@ -764,15 +856,25 @@ export function parseContentWorkbookBatchFailure(
   const blockedChanges = parseContentWorkbookBlockedChanges(
     value.blockedChanges ?? [],
   );
+  const skippedRows = parseContentWorkbookSkippedRows(
+    value.skippedRows ?? [],
+  );
   const rowSellerSkus = rows.map((row) => row.sellerSku);
+  const skippedSellerSkus = skippedRows.flatMap((row) =>
+    row.sellerSku ? [row.sellerSku] : []
+  );
   if (
     new Set(rowSellerSkus).size !== rowSellerSkus.length ||
-    rows.length + blockedChanges.length > 500
+    rows.length + blockedChanges.length + skippedRows.length > 500
   ) {
     throw new Error("Excel 預檢失敗回應的 SKU 清單超過安全上限或含有重複。");
   }
   if (
-    blockedChanges.some((change) => rowSellerSkus.includes(change.sellerSku))
+    blockedChanges.some((change) => rowSellerSkus.includes(change.sellerSku)) ||
+    skippedSellerSkus.some((sellerSku) =>
+      rowSellerSkus.includes(sellerSku) ||
+      blockedChanges.some((change) => change.sellerSku === sellerSku)
+    )
   ) {
     throw new Error("Excel 預檢失敗與略過 SKU 清單重複。");
   }
@@ -782,6 +884,7 @@ export function parseContentWorkbookBatchFailure(
     writeCount: 0,
     rows,
     blockedChanges,
+    skippedRows,
   };
 }
 
@@ -812,6 +915,45 @@ export function parseContentWorkbookBatchBlockedFailure(
   };
 }
 
+export function parseContentWorkbookBatchAllSkippedFailure(
+  raw: unknown,
+): ContentWorkbookBatchAllSkippedFailure {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Excel 全部略過明細格式無效。");
+  }
+  const value = raw as Partial<ContentWorkbookBatchAllSkippedFailure>;
+  if (
+    value.code !== "CONTENT_BATCH_ALL_SKIPPED" ||
+    typeof value.message !== "string" || !value.message ||
+    value.message.length > 10_000 || value.writeCount !== 0
+  ) {
+    throw new Error("Excel 全部略過回應缺少可核對的 SKU 明細。");
+  }
+  const skippedRows = parseContentWorkbookSkippedRows(
+    value.skippedRows,
+    true,
+  );
+  const blockedChanges = parseContentWorkbookBlockedChanges(
+    value.blockedChanges ?? [],
+  );
+  if (
+    skippedRows.length + blockedChanges.length > 500 ||
+    skippedRows.some((row) =>
+      row.sellerSku !== null &&
+      blockedChanges.some((change) => change.sellerSku === row.sellerSku)
+    )
+  ) {
+    throw new Error("Excel 全部略過清單超過安全上限。");
+  }
+  return {
+    code: "CONTENT_BATCH_ALL_SKIPPED",
+    message: value.message,
+    writeCount: 0,
+    skippedRows,
+    blockedChanges,
+  };
+}
+
 export function parseContentWorkbookBatchResult(
   raw: unknown,
   marketplaceId: string,
@@ -822,6 +964,7 @@ export function parseContentWorkbookBatchResult(
     typeof value.previewId !== "string" ||
     value.marketplaceId !== marketplaceId ||
     (value.status !== "COMPLETED" &&
+      value.status !== "COMPLETED_WITH_ISSUES" &&
       value.status !== "STOPPED_REJECTED" &&
       value.status !== "STOPPED_UNKNOWN") ||
     !Array.isArray(value.rows)
@@ -853,11 +996,42 @@ export function parseContentWorkbookBatchResult(
   const blockedChanges = parseContentWorkbookBlockedChanges(
     value.blockedChanges ?? [],
   );
+  const skippedRows = parseContentWorkbookSkippedRows(
+    value.skippedRows ?? [],
+  );
+  const validationFailures = value.validationFailures === undefined ||
+      (Array.isArray(value.validationFailures) &&
+        value.validationFailures.length === 0)
+    ? []
+    : parseContentWorkbookBatchFailure({
+        code: "CONTENT_BATCH_VALIDATION_FAILED",
+        message: "Amazon 預檢失敗 SKU 已隔離。",
+        writeCount: 0,
+        rows: value.validationFailures,
+        blockedChanges: [],
+        skippedRows: [],
+      }).rows;
   const rowSellerSkus = rows.map((row) => row.sellerSku);
+  const skippedSellerSkus = skippedRows.flatMap((row) =>
+    row.sellerSku ? [row.sellerSku] : []
+  );
+  const validationFailureSellerSkus = validationFailures.map((failure) =>
+    failure.sellerSku
+  );
   if (
-    rows.length + blockedChanges.length > 500 ||
+    rows.length + blockedChanges.length + skippedRows.length +
+        validationFailures.length > 500 ||
     new Set(rowSellerSkus).size !== rowSellerSkus.length ||
-    blockedChanges.some((change) => rowSellerSkus.includes(change.sellerSku))
+    blockedChanges.some((change) => rowSellerSkus.includes(change.sellerSku)) ||
+    skippedSellerSkus.some((sellerSku) =>
+      rowSellerSkus.includes(sellerSku) ||
+      blockedChanges.some((change) => change.sellerSku === sellerSku)
+    ) ||
+    validationFailureSellerSkus.some((sellerSku) =>
+      rowSellerSkus.includes(sellerSku) ||
+      skippedSellerSkus.includes(sellerSku) ||
+      blockedChanges.some((change) => change.sellerSku === sellerSku)
+    )
   ) {
     throw new Error("Excel 更新回應的更新與略過 SKU 清單重複或超過安全上限。");
   }
@@ -867,6 +1041,8 @@ export function parseContentWorkbookBatchResult(
     status: value.status,
     rows,
     blockedChanges,
+    skippedRows,
+    validationFailures,
     notice: typeof value.notice === "string" ? value.notice : "批次處理完成。",
   };
 }
@@ -1294,6 +1470,18 @@ function workbookFieldLabel(field: ContentAuditField): string {
   return fieldLabel(field);
 }
 
+function amazonAttributeLabel(attributeName: string): string {
+  const normalized = attributeName.toLowerCase();
+  if (normalized === "item_name" || normalized === "title") return "產品名稱";
+  if (normalized.includes("bullet")) return "產品要點";
+  if (normalized.includes("product_description")) return "產品敘述";
+  if (normalized.includes("ingredient")) return "成分";
+  if (normalized.includes("highlight") || normalized.includes("benefit")) {
+    return "產品亮點";
+  }
+  return attributeName;
+}
+
 function issueFieldLabel(issue: ContentAuditIssue): string {
   if (issue.kind === "TITLE_BELOW_TARGET") return "產品名稱";
   if (
@@ -1369,6 +1557,60 @@ function ContentWorkbookBlockedChangeList({
   );
 }
 
+function ContentWorkbookSkippedRowList({
+  rows,
+}: {
+  rows: ContentWorkbookSkippedRow[];
+}) {
+  return (
+    <ul className="content-audit-skipped-rows">
+      {rows.map((row) => (
+        <li key={JSON.stringify([
+          row.sellerSku,
+          row.sourceSheet,
+          row.rowNumber,
+          row.stage,
+          row.code,
+        ])}>
+          <div>
+            <strong>{row.sellerSku ?? "無法安全辨識 Seller SKU"}</strong>
+            <span>{row.fields.join("、")}</span>
+          </div>
+          <small>
+            {row.sourceSheet && row.rowNumber
+              ? `${row.sourceSheet} · Excel 第 ${row.rowNumber} 列 · `
+              : ""}
+            {row.message}
+          </small>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function ContentWorkbookBatchAllSkippedFailureCard({
+  failure,
+}: {
+  failure: ContentWorkbookBatchAllSkippedFailure;
+}) {
+  return (
+    <div
+      className="content-audit-batch-preview content-audit-batch-failure"
+      role="alert"
+      aria-label="Excel 有問題 SKU 全部略過明細"
+    >
+      <strong>{failure.message}</strong>
+      <p>以下問題已在同一次上傳全部列出；這些 SKU 沒有送到 Amazon。</p>
+      <ContentWorkbookSkippedRowList rows={failure.skippedRows} />
+      {failure.blockedChanges.length > 0 && (
+        <ContentWorkbookBlockedChangeList
+          blockedChanges={failure.blockedChanges}
+        />
+      )}
+    </div>
+  );
+}
+
 export function ContentWorkbookBatchBlockedFailureCard({
   failure,
 }: {
@@ -1438,6 +1680,11 @@ export function ContentWorkbookBatchFailureCard({
                   <ul>
                     {row.issues.map((issue, index) => (
                       <li key={`${index}-${issue.code ?? "issue"}-${issue.message}`}>
+                        <strong>
+                          {issue.attributeNames.length
+                            ? `欄位：${issue.attributeNames.map(amazonAttributeLabel).join("、")}`
+                            : `欄位：Amazon 未提供（本列變更：${row.changedFields.map(workbookFieldLabel).join("、")}）`}
+                        </strong>{" "}
                         {issue.code ? `${issue.code} · ` : ""}{issue.message}
                       </li>
                     ))}
@@ -1463,6 +1710,14 @@ export function ContentWorkbookBatchFailureCard({
           />
         </>
       )}
+      {failure.skippedRows.length > 0 && (
+        <>
+          <p>
+            另有 {failure.skippedRows.length.toLocaleString()} 個 Excel／快照問題 SKU 已隔離且未送出。
+          </p>
+          <ContentWorkbookSkippedRowList rows={failure.skippedRows} />
+        </>
+      )}
     </div>
   );
 }
@@ -1471,21 +1726,15 @@ export function ContentWorkbookBatchPreviewCard({
   preview,
   busy,
   acknowledged,
-  overrideAcknowledged,
   onAcknowledgedChange,
-  onOverrideAcknowledgedChange,
   onCommit,
 }: {
   preview: ContentWorkbookBatchPreview;
   busy: boolean;
   acknowledged: boolean;
-  overrideAcknowledged: boolean;
   onAcknowledgedChange: (acknowledged: boolean) => void;
-  onOverrideAcknowledgedChange: (acknowledged: boolean) => void;
   onCommit: () => void;
 }) {
-  const overrideCount = preview.validationOverride.sellerSkus.length;
-  const requiresOverride = preview.validationOverride.required;
   const blockedCount = preview.blockedChanges.length;
   const removedOverflowBulletCount = preview.changes.reduce(
     (total, change) => total +
@@ -1499,11 +1748,29 @@ export function ContentWorkbookBatchPreviewCard({
       aria-label="Excel 批次更新逐欄預覽"
     >
       <strong>
-        {requiresOverride
-          ? `已完成 ${preview.changes.length.toLocaleString()} 個 SKU 的零寫入預檢；${overrideCount.toLocaleString()} 個未通過`
-          : `已通過 ${preview.changes.length.toLocaleString()} 個 SKU 的零寫入預檢`}
+        已通過 {preview.changes.length.toLocaleString()} 個安全 SKU 的零寫入預檢
       </strong>
       <p>{preview.notice}</p>
+      {preview.skippedRows.length > 0 && (
+        <div className="content-audit-validation-issues" role="alert">
+          <strong>
+            已隔離 {preview.skippedRows.length.toLocaleString()} 個有問題的 SKU；其餘安全 SKU 可繼續
+          </strong>
+          <p>下列項目沒有送到 Amazon；SKU、Excel 列、欄位與原因已一次列完。</p>
+          <ContentWorkbookSkippedRowList rows={preview.skippedRows} />
+        </div>
+      )}
+      {preview.validationFailures.length > 0 && (
+        <ContentWorkbookBatchFailureCard failure={{
+          code: "CONTENT_BATCH_VALIDATION_FAILED",
+          message:
+            `${preview.validationFailures.length.toLocaleString()} 個 Amazon 預檢失敗 SKU 已隔離；其餘安全 SKU 可繼續。`,
+          writeCount: 0,
+          rows: preview.validationFailures,
+          blockedChanges: [],
+          skippedRows: [],
+        }} />
+      )}
       {removedOverflowBulletCount > 0 && (
         <div className="content-audit-validation-issues" role="alert">
           <strong>
@@ -1534,22 +1801,13 @@ export function ContentWorkbookBatchPreviewCard({
         {preview.changes.map((change) => (
           <details
             key={change.sellerSku}
-            open={change.validationStatus === "INVALID" ||
-              change.exactBulletReplacement !== null}
+            open={change.exactBulletReplacement !== null}
           >
             <summary>
               <span>{change.sellerSku}</span>
               <small>{change.changedFields.map(workbookFieldLabel).join("、")}</small>
             </summary>
             <div className="content-audit-batch-fields">
-              {change.validationStatus === "INVALID" && (
-                <div className="content-audit-validation-issues" role="alert">
-                  <strong>Amazon Validation Preview：INVALID（未通過）</strong>
-                  <p>
-                    此 SKU 尚未寫入。強制送出不代表預檢通過，只代表允許它嘗試送出一次；Amazon 仍可能拒絕。
-                  </p>
-                </div>
-              )}
               {change.exactBulletReplacement && (
                 <div className="content-audit-validation-issues" role="alert">
                   <strong>
@@ -1597,18 +1855,16 @@ export function ContentWorkbookBatchPreviewCard({
               ))}
               {change.issues.length > 0 && (
                 <div className="content-audit-validation-issues">
-                  <strong>
-                    {change.validationStatus === "INVALID"
-                      ? "Amazon Validation Preview 未通過原因"
-                      : "Amazon Validation Preview 提醒"}
-                  </strong>
+                  <strong>Amazon Validation Preview 提醒</strong>
                   <ul>
                     {change.issues.map((issue, index) => (
                       <li key={`${index}-${issue.code ?? "issue"}-${issue.message}`}>
+                        <strong>
+                          {issue.attributeNames.length > 0
+                            ? `欄位：${issue.attributeNames.map(amazonAttributeLabel).join("、")}`
+                            : `欄位：Amazon 未提供（本列變更：${change.changedFields.map(workbookFieldLabel).join("、")}）`}
+                        </strong>{" "}
                         {issue.severity}{issue.code ? ` · ${issue.code}` : ""} · {issue.message}
-                        {issue.attributeNames.length > 0
-                          ? `（欄位：${issue.attributeNames.join("、")}）`
-                          : ""}
                       </li>
                     ))}
                   </ul>
@@ -1629,38 +1885,21 @@ export function ContentWorkbookBatchPreviewCard({
           我已核對上述每個將寫入 SKU 的完整原值、更新值、Amazon 提醒與會被刪除的第 6 項後產品要點；略過列不會寫入。
         </span>
       </label>
-      {requiresOverride && (
-        <label className="content-audit-batch-acknowledgement">
-          <input
-            type="checkbox"
-            checked={overrideAcknowledged}
-            disabled={busy}
-            onChange={(event) =>
-              onOverrideAcknowledgedChange(event.target.checked)}
-          />
-          <span>
-            我了解上列 {overrideCount.toLocaleString()} 個 SKU 的 Amazon Validation Preview 仍為 INVALID；我要讓它們各嘗試送出一次。
-          </span>
-        </label>
-      )}
       <button
         type="button"
         className="price-primary-button"
-        disabled={busy || !acknowledged ||
-          (requiresOverride && !overrideAcknowledged)}
+        disabled={busy || !acknowledged}
         onClick={onCommit}
       >
         {busy
           ? "等待 Touch ID／Windows Hello 並逐筆核對…"
-          : requiresOverride
-            ? "預檢未通過，仍要上傳更新"
-            : `一次確認並更新 ${preview.changes.length.toLocaleString()} 個 SKU`}
+          : `一次確認並更新 ${preview.changes.length.toLocaleString()} 個 SKU`}
       </button>
       <small>
-        會先重新預檢整批，再要求一次本機生物辨識；Amazon 沒有跨 SKU 交易，若任一筆遭拒或結果不明會停止後續且不盲目重送。
+        會先重新預檢整批，再要求一次本機生物辨識；單一 SKU 若遭拒或結果不明，會個別隔離並繼續後續安全 SKU，且結果不明絕不自動重送。只有帳號、站點或安全綁定失效才會停止整批。
       </small>
       <small>
-        大量批次時，Touch ID／Windows Hello 只顯示總 SKU 數、高風險數、刪除總數、INVALID 數與驗證碼；完整 SKU、原值與更新值以本畫面上方逐項核對清單為準。
+        大量批次時，Touch ID／Windows Hello 只顯示實際要寫入的 SKU 數、高風險數、刪除總數與驗證碼；完整 SKU、原值與更新值以本畫面上方逐項核對清單為準。
       </small>
     </div>
   );
@@ -1679,6 +1918,8 @@ export function ContentWorkbookBatchResultCard({
       <strong>
         {result.status === "COMPLETED"
           ? "批次處理完成"
+          : result.status === "COMPLETED_WITH_ISSUES"
+            ? "批次已完成；有問題 SKU 已個別隔離"
           : result.status === "STOPPED_UNKNOWN"
             ? "遇到結果不明，已停止後續 SKU"
             : "遇到拒絕，已停止後續 SKU"}
@@ -1702,6 +1943,25 @@ export function ContentWorkbookBatchResultCard({
           </li>
         ))}
       </ul>
+      {result.skippedRows.length > 0 && (
+        <div className="content-audit-validation-issues" role="alert">
+          <strong>
+            預檢時另有 {result.skippedRows.length.toLocaleString()} 個 SKU 已隔離且未送出
+          </strong>
+          <ContentWorkbookSkippedRowList rows={result.skippedRows} />
+        </div>
+      )}
+      {result.validationFailures.length > 0 && (
+        <ContentWorkbookBatchFailureCard failure={{
+          code: "CONTENT_BATCH_VALIDATION_FAILED",
+          message:
+            `預檢時已有 ${result.validationFailures.length.toLocaleString()} 個 SKU 被隔離且未送出。`,
+          writeCount: 0,
+          rows: result.validationFailures,
+          blockedChanges: [],
+          skippedRows: [],
+        }} />
+      )}
       {result.blockedChanges.length > 0 && (
         <div className="content-audit-validation-issues" role="alert">
           <strong>
@@ -1712,7 +1972,9 @@ export function ContentWorkbookBatchResultCard({
           />
         </div>
       )}
-      <small>請重新掃描全站文案取得最新快照，再製作下一批 Excel。</small>
+      <small>
+        結果不明的 SKU 不會自動重送；請先到 Amazon 回查。需要下一批時再重新掃描取得最新快照。
+      </small>
     </div>
   );
 }
@@ -1765,7 +2027,7 @@ export function ContentAuditWorkbookFilePicker({
       }}
     >
       <span aria-live="polite">
-        {fileName || "選擇原本匯出的 .xlsx"}
+        {fileName || "選擇完整或部分工作表 .xlsx"}
       </span>
       <small>拖放單一 .xlsx 到這裡，或點選檔案</small>
       {selectionError && <small className="content-audit-file-error" role="alert">{selectionError}</small>}
@@ -2477,14 +2739,14 @@ export default function ContentAuditPanel({
     useState<ContentWorkbookBatchFailure | null>(null);
   const [batchBlockedFailure, setBatchBlockedFailure] =
     useState<ContentWorkbookBatchBlockedFailure | null>(null);
+  const [batchAllSkippedFailure, setBatchAllSkippedFailure] =
+    useState<ContentWorkbookBatchAllSkippedFailure | null>(null);
   const [batchResult, setBatchResult] =
     useState<ContentWorkbookBatchResult | null>(null);
   const [batchBusy, setBatchBusy] = useState<"preview" | "commit" | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchIdempotencyKey, setBatchIdempotencyKey] = useState<string | null>(null);
   const [batchDiffAcknowledged, setBatchDiffAcknowledged] = useState(false);
-  const [batchValidationOverrideAcknowledged, setBatchValidationOverrideAcknowledged] =
-    useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const observerJobIdRef = useRef<string | null>(null);
   const resultHeadingRef = useRef<HTMLDivElement | null>(null);
@@ -2530,12 +2792,12 @@ export default function ContentAuditPanel({
     setBatchPreview(null);
     setBatchFailure(null);
     setBatchBlockedFailure(null);
+    setBatchAllSkippedFailure(null);
     setBatchResult(null);
     setBatchBusy(null);
     setBatchError(null);
     setBatchIdempotencyKey(null);
     setBatchDiffAcknowledged(false);
-    setBatchValidationOverrideAcknowledged(false);
   }, [marketplaceId, mode]);
 
   const attentionRows = useMemo(
@@ -2642,6 +2904,7 @@ export default function ContentAuditPanel({
     setBatchPreview(null);
     setBatchFailure(null);
     setBatchBlockedFailure(null);
+    setBatchAllSkippedFailure(null);
     setBatchResult(null);
     try {
       let current = await startStandaloneAuditJob({
@@ -2845,11 +3108,11 @@ export default function ContentAuditPanel({
     setBatchPreview(null);
     setBatchFailure(null);
     setBatchBlockedFailure(null);
+    setBatchAllSkippedFailure(null);
     setBatchResult(null);
     setBatchError(null);
     setBatchIdempotencyKey(null);
     setBatchDiffAcknowledged(false);
-    setBatchValidationOverrideAcknowledged(false);
   };
 
   const previewWorkbookImport = async () => {
@@ -2864,9 +3127,9 @@ export default function ContentAuditPanel({
     setBatchPreview(null);
     setBatchFailure(null);
     setBatchBlockedFailure(null);
+    setBatchAllSkippedFailure(null);
     setBatchResult(null);
     setBatchDiffAcknowledged(false);
-    setBatchValidationOverrideAcknowledged(false);
     try {
       const form = new FormData();
       form.set("marketplaceId", marketplaceId);
@@ -2891,13 +3154,18 @@ export default function ContentAuditPanel({
           );
           return;
         }
+        if (code === "CONTENT_BATCH_ALL_SKIPPED") {
+          setBatchAllSkippedFailure(
+            parseContentWorkbookBatchAllSkippedFailure(raw),
+          );
+          return;
+        }
         throw new Error(problemMessage(raw as ApiProblem, "Excel 預檢失敗。"));
       }
       const parsed = parseContentWorkbookBatchPreview(raw, marketplaceId);
       setBatchIdempotencyKey(nextKey);
       setBatchPreview(parsed);
       setBatchDiffAcknowledged(false);
-      setBatchValidationOverrideAcknowledged(false);
     } catch (requestError) {
       setBatchError(
         requestError instanceof Error
@@ -2914,9 +3182,7 @@ export default function ContentAuditPanel({
       !batchPreview ||
       !batchIdempotencyKey ||
       batchBusy ||
-      !batchDiffAcknowledged ||
-      (batchPreview.validationOverride.required &&
-        !batchValidationOverrideAcknowledged)
+      !batchDiffAcknowledged
     ) return;
     setBatchBusy("commit");
     setBatchError(null);
@@ -2937,7 +3203,6 @@ export default function ContentAuditPanel({
       setBatchResult(parseContentWorkbookBatchResult(raw, marketplaceId));
       setBatchPreview(null);
       setBatchDiffAcknowledged(false);
-      setBatchValidationOverrideAcknowledged(false);
     } catch (requestError) {
       setBatchError(
         requestError instanceof Error
@@ -2966,7 +3231,7 @@ export default function ContentAuditPanel({
         </div>
         <div className="content-export-note content-audit-batch-safety">
           <strong>Excel 批次更新安全流程</strong>
-          <p>「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺藍或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。預檢全部通過，或你明確核對符合條件的 INVALID SKU 後，才會要求一次 Touch ID／Windows Hello；這不代表 INVALID 已通過，若任一筆遭拒或結果不明會停止後續且不盲目重送。</p>
+            <p>「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺綠或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。只有通過 Amazon Validation Preview 且安全綁定一致的 SKU 才會進入 Touch ID／Windows Hello；INVALID 或其他單一 SKU 問題會隔離列出，其餘安全 SKU 繼續，結果不明的 SKU 絕不自動重送。</p>
         </div>
       </AuditDetailsDisclosure>
       {state === "done" && snapshot && summary && (
@@ -3006,7 +3271,7 @@ export default function ContentAuditPanel({
         <section className="content-audit-roundtrip" aria-label="回傳 Excel 批次更新文案">
           <div>
             <strong>回傳任一份 Excel 批次更新</strong>
-            <p>選擇剛才匯出的任一份 .xlsx，先預覽變更，不會立即寫入 Amazon。</p>
+            <p>可回傳完整檔，也可只保留 F007，或只保留 F007、F008；系統只讀取與預檢實際附上的工作表，其他商品完全不碰。請複製或保留整張工作表分頁，不要只複製儲存格。</p>
           </div>
           <ContentAuditWorkbookFilePicker
             fileName={workbookFile?.name ?? null}
@@ -3030,16 +3295,17 @@ export default function ContentAuditPanel({
               failure={batchBlockedFailure}
             />
           )}
+          {batchAllSkippedFailure && (
+            <ContentWorkbookBatchAllSkippedFailureCard
+              failure={batchAllSkippedFailure}
+            />
+          )}
           {batchPreview && (
             <ContentWorkbookBatchPreviewCard
               preview={batchPreview}
               busy={batchBusy === "commit"}
               acknowledged={batchDiffAcknowledged}
-              overrideAcknowledged={batchValidationOverrideAcknowledged}
               onAcknowledgedChange={setBatchDiffAcknowledged}
-              onOverrideAcknowledgedChange={
-                setBatchValidationOverrideAcknowledged
-              }
               onCommit={() => void commitWorkbookImport()}
             />
           )}

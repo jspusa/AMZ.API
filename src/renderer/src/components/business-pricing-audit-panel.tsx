@@ -11,8 +11,10 @@ import {
   applyBusinessPricingListingReadToAuditSnapshot,
   applyVerifiedBusinessPricingListingToAuditSnapshot,
   applyVerifiedBusinessPriceToAuditSnapshot,
+  businessPricingRowConfigurationState,
   businessPricingWorkflowProgress,
   businessPricingRowMatchesFilter,
+  isBusinessPricingRowCorrectlyConfigured,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
   retainBusinessPricingWorkflowActivities,
@@ -26,6 +28,8 @@ import {
   type BusinessQuantityDiscountPlan,
   type BusinessPricingWorkflowProgress,
 } from "../business-pricing-audit";
+import { RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS } from
+  "../../../shared/business-pricing-recommendations";
 import {
   pollStandaloneAuditJob,
   standaloneAuditSnapshotMatchesJob,
@@ -56,7 +60,7 @@ const FILTERS: readonly Readonly<{
   },
   { value: "above_standard", label: "高於一般售價" },
   { value: "missing", label: "未設定" },
-  { value: "configured", label: "已設定" },
+  { value: "configured", label: "正確設定" },
   { value: "incomplete", label: "資料未完成" },
 ];
 
@@ -73,11 +77,15 @@ function formatMoney(value: BusinessPricingMoney | null): string {
   }
 }
 
-function statusLabel(status: BusinessPricingAuditRow["status"]): string {
-  if (status === "configured") return "已設定";
-  if (status === "above_standard") return "B2B 高於一般售價";
-  if (status === "missing") return "未設定 B2B 價格";
-  if (status === "unsupported") return "請至 Amazon 後台確認";
+function statusLabel(row: BusinessPricingAuditRow): string {
+  if (row.status === "configured") {
+    return RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS[
+      businessPricingRowConfigurationState(row)
+    ];
+  }
+  if (row.status === "above_standard") return "B2B 高於一般售價";
+  if (row.status === "missing") return "未設定 B2B 價格";
+  if (row.status === "unsupported") return "請至 Amazon 後台確認";
   return "資料未完成";
 }
 
@@ -94,7 +102,14 @@ function rowStatusDetail(row: BusinessPricingAuditRow): string {
   if (row.status === "missing") {
     return "Amazon Business 可用，但尚未設定 B2B 價格。";
   }
-  return "已找到 Amazon Business 價格；需要調整時請前往 Amazon 後台。";
+  if (
+    row.recommendedPriceMismatch ||
+    row.recommendedQuantityDiscountMismatch
+  ) {
+    return "已找到 Amazon Business 價格，但仍有建議規則需要調整。";
+  }
+  if (!isBusinessPricingRowCorrectlyConfigured(row)) return row.reason;
+  return "Business Price 與建議數量折扣皆已正確設定。";
 }
 
 function recommendationFindings(row: BusinessPricingAuditRow): string[] {
@@ -377,10 +392,7 @@ export default function BusinessPricingAuditPanel({
       ]),
     );
     return visibleSnapshot.rows
-      .filter((row) =>
-        businessPricingRowMatchesFilter(row, filter) ||
-        (filter === "problem" && activityOrder.has(row.sellerSku))
-      )
+      .filter((row) => businessPricingRowMatchesFilter(row, filter))
       .map((row, index) => ({ row, index }))
       .sort((left, right) => {
         const leftActivity = activityOrder.get(left.row.sellerSku);
@@ -874,7 +886,7 @@ export default function BusinessPricingAuditPanel({
                   </div>
                 </dl>
                 <div className="business-pricing-row-status">
-                  <span>{statusLabel(row.status)}</span>
+                  <span>{statusLabel(row)}</span>
                   {recommendationFindings(row).length > 0 && (
                     <div className="business-pricing-findings" aria-label="建議規則問題">
                       {recommendationFindings(row).map((finding) => (

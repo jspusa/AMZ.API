@@ -64,6 +64,21 @@ function snapshot(): BusinessPricingAuditSnapshot {
       editable: false,
       reason: "尚未設定 B2B 價格與階梯折扣。",
     }, {
+      sellerSku: "CONFIGURED-UNKNOWN",
+      asin: "B000000005",
+      title: "Configured with unknown recommendation evidence",
+      productType: "PET_FOOD",
+      standardPrice: null,
+      businessPrice: { amount: 9.99, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      recommendedPriceMismatch: false,
+      recommendedQuantityDiscountMismatch: false,
+      status: "configured",
+      editable: false,
+      reason: "Business Price 已確認，但一般售價與數量折扣仍待核對。",
+    }, {
       sellerSku: "UNKNOWN-EVIDENCE",
       asin: "B000000004",
       title: "Unknown evidence",
@@ -80,8 +95,8 @@ function snapshot(): BusinessPricingAuditSnapshot {
       reason: "Amazon 未能確認 Business Price 與階梯折扣。",
     }],
     summary: {
-      totalFbaSkuCount: 4,
-      configured: 2,
+      totalFbaSkuCount: 5,
+      configured: 3,
       aboveStandard: 0,
       missing: 1,
       unsupported: 0,
@@ -115,6 +130,9 @@ describe("B2B pricing audit Excel", () => {
     expect(allRows).toContain("符合建議");
     expect(allRows).toContain("無法判定");
     expect(allRows).not.toContain("符合／無法判定");
+    expect(allRows).toContain("正確設定");
+    expect(allRows).toContain("已設定但需調整");
+    expect(allRows).toContain("已設定但待確認");
     expect(priceRows).toContain("BOTH-MISMATCH");
     expect(priceRows).not.toContain("MISSING-B2B");
     expect(tierRows).toContain("BOTH-MISMATCH");

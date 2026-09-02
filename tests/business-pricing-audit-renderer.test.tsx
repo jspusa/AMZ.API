@@ -1218,7 +1218,7 @@ describe("FBA business pricing audit renderer", () => {
     )).toEqual([]);
   });
 
-  it("keeps a completed adjusted SKU visible under the default problem filter", async () => {
+  it("keeps completed correct activity out of 需處理 and available under 正確設定", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     const original = parseBusinessPricingAuditSnapshot(payload());
@@ -1264,16 +1264,24 @@ describe("FBA business pricing audit renderer", () => {
         initialSnapshot: completed,
       }));
     });
-    const adjustedRow = renderer!.root.findAllByType("article").find(
+    const adjustedRow = () => renderer!.root.findAllByType("article").find(
       (article) => article.findAllByType("small").some((small) =>
         small.children.join("") === "FBA-CONFIGURED · B000000002"
       ),
     );
-    expect(adjustedRow).toBeDefined();
-    expect(adjustedRow!.findAllByType("button").some((button) =>
+    expect(adjustedRow()).toBeUndefined();
+    const summary = renderer!.root.findByProps({
+      "aria-label": "B2B 價格健檢摘要與篩選",
+    });
+    const correctlyConfigured = summary.findAllByType("button").find((button) =>
+      button.findByType("span").children.join("") === "正確設定"
+    )!;
+    await act(async () => correctlyConfigured.props.onClick());
+    expect(adjustedRow()).toBeDefined();
+    expect(adjustedRow()!.findAllByType("button").some((button) =>
       button.children.join("") === "查看完成結果"
     )).toBe(true);
-    expect(adjustedRow!.findAllByProps({
+    expect(adjustedRow()!.findAllByProps({
       "aria-label": "B2B 調整進度：B2B 價格已回查確認",
     })).toHaveLength(1);
     await act(async () => renderer!.unmount());
@@ -1539,10 +1547,11 @@ describe("FBA business pricing audit renderer", () => {
     const summary = root.findByProps({
       "aria-label": "B2B 價格健檢摘要與篩選",
     });
-    const configured = summary.findAllByType("button").find((button) =>
-      button.findByType("span").children.join("") === "已設定"
+    const correctlyConfigured = summary.findAllByType("button").find((button) =>
+      button.findByType("span").children.join("") === "正確設定"
     )!;
-    expect(configured.findByType("strong").children.join("")).toBe("3");
+    expect(correctlyConfigured.findByType("strong").children.join(""))
+      .toBe("0");
     await act(async () => renderer!.unmount());
   });
 
@@ -2172,12 +2181,12 @@ describe("FBA business pricing audit renderer", () => {
       .toBe(false);
   });
 
-  it("filters missing, configured and problem rows without hiding incomplete evidence", () => {
+  it("filters missing, correctly configured and actionable problem rows", () => {
     const rows = parseBusinessPricingAuditSnapshot(payload()).rows;
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "missing")))
       .toHaveLength(2);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "configured")))
-      .toHaveLength(2);
+      .toHaveLength(0);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "problem")))
       .toHaveLength(4);
     expect(rows.filter((row) =>
@@ -2191,6 +2200,45 @@ describe("FBA business pricing audit renderer", () => {
     )).toHaveLength(3);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "all")))
       .toHaveLength(4);
+  });
+
+  it("does not call configured rows correct when recommendation evidence is unknown", () => {
+    const parsed = parseBusinessPricingAuditSnapshot(payload());
+    const row = {
+      ...parsed.rows[1]!,
+      standardPrice: null,
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous" as const,
+      recommendedPriceMismatch: false,
+      recommendedQuantityDiscountMismatch: false,
+      status: "configured" as const,
+      reason: "Business Price 已確認，但一般售價與數量折扣仍待核對。",
+    };
+
+    expect(businessPricingRowMatchesFilter(row, "configured")).toBe(false);
+    expect(businessPricingRowMatchesFilter(row, "problem")).toBe(true);
+
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: {
+        ...parsed,
+        rows: [row],
+        summary: {
+          totalFbaSkuCount: 1,
+          configured: 1,
+          aboveStandard: 0,
+          missing: 0,
+          unsupported: 0,
+          incomplete: 0,
+          recommendedPriceMismatch: 0,
+          recommendedQuantityDiscountMismatch: 0,
+        },
+      },
+    }));
+    expect(markup).toContain("<span>需處理</span><strong>1</strong>");
+    expect(markup).toContain("<span>正確設定</span><strong>0</strong>");
+    expect(markup).toContain("已設定但待確認");
   });
 
   it("treats a B2B price above standard as a read-only problem", () => {
@@ -2417,7 +2465,9 @@ describe("FBA business pricing audit renderer", () => {
     expect(editorSource).toContain('method: "PATCH"');
   });
 
-  it("shows exact incomplete reasons for AFA135AM and TRPL03 without exposing PTD capability prose", () => {
+  it("shows exact incomplete reasons after selecting the separate incomplete filter", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
     const source = payload();
     const rows = source.rows as Array<Record<string, unknown>>;
     rows[0] = {
@@ -2453,11 +2503,22 @@ describe("FBA business pricing audit renderer", () => {
       recommendedQuantityDiscountMismatch: 1,
     });
 
-    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
-      marketplaceId: "ATVPDKIKX0DER",
-      marketplaceShort: "US",
-      initialSnapshot: parseBusinessPricingAuditSnapshot(source),
-    }));
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+      }));
+    });
+    const summary = renderer!.root.findByProps({
+      "aria-label": "B2B 價格健檢摘要與篩選",
+    });
+    const incomplete = summary.findAllByType("button").find((button) =>
+      button.findByType("span").children.join("") === "資料未完成"
+    )!;
+    await act(async () => incomplete.props.onClick());
+    const markup = JSON.stringify(renderer!.toJSON());
 
     expect(markup).toContain(
       "AFA135AM 的 Active Listings Business Price 與 Listings 身分證據不一致。",
@@ -2467,6 +2528,7 @@ describe("FBA business pricing audit renderer", () => {
     );
     expect(markup).not.toContain("seller-specific PTD");
     expect(markup).not.toContain("因此只提供唯讀");
+    await act(async () => renderer!.unmount());
   });
 
   it("uses one clickable B2B summary as the filter instead of repeating the counts", async () => {
@@ -2496,6 +2558,54 @@ describe("FBA business pricing audit renderer", () => {
     expect(css).toMatch(
       /\.business-pricing-summary\s*\{[^}]*minmax\(104px,\s*1fr\)/su,
     );
+  });
+
+  it("counts only actionable rows under 需處理 and fully compliant rows under 正確設定", () => {
+    const source = payload();
+    const rows = source.rows as Array<Record<string, unknown>>;
+    rows[1] = {
+      ...rows[1],
+      businessPrice: { amount: 23.99, currencyCode: "USD" },
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+      quantityDiscountPlanPresence: "canonical",
+      status: "configured",
+    };
+    rows[2] = {
+      ...rows[2],
+      businessPrice: null,
+      businessOfferPresence: "ambiguous",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous",
+      status: "incomplete",
+      reason: "Amazon 證據未完整，不能判定是否需要調整。",
+    };
+    Object.assign(source.summary as Record<string, unknown>, {
+      configured: 2,
+      missing: 1,
+      incomplete: 1,
+      recommendedPriceMismatch: 1,
+      recommendedQuantityDiscountMismatch: 2,
+    });
+
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+    }));
+
+    expect(markup).toContain("<span>全部</span><strong>4</strong>");
+    expect(markup).toContain("<span>需處理</span><strong>2</strong>");
+    expect(markup).toContain("<span>正確設定</span><strong>1</strong>");
+    expect(markup).toContain("<span>資料未完成</span><strong>1</strong>");
+    expect(markup).not.toContain("<span>已設定</span>");
   });
 
   it("lays out current quantity discounts as readable desktop tiers", async () => {

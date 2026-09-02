@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   commitWithCanonicalReadback,
+  ListingWriteAcceptedButPendingError,
 } from "../src/main/amazon/listing-write-readback";
 import type {
   ListingContentGateway,
@@ -250,7 +251,7 @@ describe("main-owned listing write readback", () => {
       read,
       decide: () => "pending",
       delaysMs: [0, 0, 0],
-    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+    })).rejects.toBeInstanceOf(ListingWriteAcceptedButPendingError);
     expect(commit).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(3);
   });

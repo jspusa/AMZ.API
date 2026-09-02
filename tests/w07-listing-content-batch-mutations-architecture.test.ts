@@ -142,7 +142,7 @@ describe("W07 Listing Content batch mutation architecture", () => {
     );
   });
 
-  it("keeps INVALID override authority opaque and exclusive to the W06/W07 seam", () => {
+  it("keeps INVALID override authority out of the W07 Excel batch owner", () => {
     const capability = "LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY";
     const consumers = sourceFilePaths(SRC_ROOT).flatMap((filename) => {
       const value = readFileSync(filename, "utf8");
@@ -151,13 +151,12 @@ describe("W07 Listing Content batch mutation architecture", () => {
         : [];
     }).sort();
 
-    expect(consumers).toEqual([
-      "main/listing-content-batch-mutations.ts",
-      "main/listing-content-mutations.ts",
-    ]);
+    expect(consumers).toEqual(["main/listing-content-mutations.ts"]);
     expect(source("../src/main/listing-content-mutations.ts")).toMatch(
       /export const LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY\s*=\s*Symbol\(/u,
     );
+    expect(source("../src/main/listing-content-batch-mutations.ts")).not
+      .toContain(capability);
   });
 
   it("shares evidence through a neutral reader and writer contract", () => {
