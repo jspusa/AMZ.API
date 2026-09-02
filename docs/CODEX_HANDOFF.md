@@ -1,8 +1,22 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-09-02
+最後更新：2026-09-03
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
+
+### 2026-09-03 v0.1.50 公布欄／文案部分 Excel／逐 SKU 隔離／B2B 摘要（已合併／Pages 上線／Mac 安裝／員工下載更新）
+
+PR #194 已將 GitHub 公布欄發布器、文案 Excel 部分工作表回傳、全部問題欄位一次回報、安全 SKU 繼續處理、後台產品敘述的四個刻意連字例外，以及 B2B「正確設定／需處理不含資料未完成」整合後 squash merge 到 `f32c5d006e1a4bdcf021dcc8894cac000afb0f44`。PR #195 只把 package、SP-API User-Agent 與 Windows 封裝斷言升為 0.1.50，最終 release-code exact main SHA 為 `0cbc2e77dad2373a15b41bf7fa4803d9b1079949`。本機完整 `npm run check` 通過 TypeScript、255 個測試檔／2,562 tests、production build 與 stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities，Ask Matt 路由的 Standards／Spec 最終複核均為 P0／P1／P2／P3 零 findings。下方四段「本機驗證完成；尚未發布／安裝」是發行前的歷史快照，已由本節的 exact-main 證據取代。
+
+exact-main Validate／Pages／macOS／Windows runs 為 `33651128514`／`33651128544`／`33651128540`／`33651128645`，成功 jobs 為 `100318106603`／`100318105884`／`100318106186`／`100318106631`，全為 attempt 1。live Pages HTML／JS／CSS／公布欄 JSON 分別為 917／1,930,416／329,650／95 bytes，SHA-256 為 `da170d8d85b60d363f0d59e0f3b648cd873b2f96fa77e44e80684ca8c3268330`／`5c194926e3cc59fc6429e80033a088699dae2cdb1156b45ecd5043644dc97971`／`b39bb996bd2abd80cc1c6f1bcbda77ba93fd1eecff79d388c7dfae8331f1d99d`／`5260a915492119927113c8c59d6cd3e45067c2ee45168e49eff6fa104e860d09`；live HTML 載入 `assets/index-LgjcAzzq.js` 與 `assets/index-xQSSr8zb.css`，JS 直接包含 `0.1.50`、「正確設定」、「Amazon 未提供」與產品敘述欄位規則，固定 `operations-board/v1.json` 亦可正常讀取。
+
+macOS artifact `9855105823` 名稱為 `AMZ.API-unsigned-0cbc2e77dad2373a15b41bf7fa4803d9b1079949`，metadata size 468,405,995 bytes、digest `sha256:c172076203c2a199ddd75eedf4719be744c3de4448889c9c983297c4a14a3bc6`。DMG `AMZ.API-0.1.50-universal.dmg` 為 246,510,956 bytes、SHA-256 `2e24cfe0a6a7938a6c2f4cd49d62d0b5b7ddef941ed70c3f757fdd0ee8848322`；universal ZIP 為 221,894,395 bytes、SHA-256 `1bdd97280dfd4e72d20b9c2a31254920dc4e558c293885085dc9861ccc04cd69`。Actions artifact digest、兩個 ZIP CRC、DMG integrity、version／build 0.1.50、bundle `com.jspusa.amz-api`、`x86_64`／`arm64`、deep strict ad-hoc codesign 與 DMG／ZIP `app.asar` byte-for-byte 均通過；`app.asar` SHA-256 為 `00be94c0b3d8e8f5da0f0db915a70c84aabbb1307a669d6045a70d2a29f78140`。
+
+Windows artifact `9855052365` 名稱為 `AMZ.API-Notebook-Key-Windows-x64-0cbc2e77dad2373a15b41bf7fa4803d9b1079949`，metadata size 244,941,521 bytes、digest `sha256:a49b968249df8ecbc7c159dd3c1ebdcee6712ee60be0658325f0711833eaf5cf`。NSIS installer `AMZ.API-Notebook-Key-Windows-x64-Setup.exe` 為 101,845,565 bytes、SHA-256 `88e05fbe0e710bc0eb22125961ab470f01639a912b0934b67044be8e7681c7d9`；portable ZIP 為 143,095,260 bytes、SHA-256 `6954c71bcdfb7e53c75966126a46f1cc306d221bc3efb826ade6d89540291630`。兩檔匹配內附 CRLF checksum manifest，ZIP CRC 通過；Windows runner 已完成 validation、unsigned x64 package、ASAR addon boundary 與 packaged Bridge smoke，但不能冒充真實 Windows 11 Hello／DPAPI 實機證據。
+
+受保護 Supply Boss 員工下載站已依 Mac→Windows 順序，以 Keychain-to-stdin 既有管理授權原子更新兩張卡為 v0.1.50；兩次 multipart complete 回應的 name／size／SHA-256 與上述 DMG／NSIS 完全相同，`/health` 回 `{"ok":true,"service":"supply-boss"}`，`/downloads` 回 HTTP 200。員工下載密碼沒有被讀取或代填，因此登入後卡片與短效連結的完整重新下載／byte-for-byte 核對仍待員工自行登入後完成。
+
+exact App 已從上述 DMG 可復原地安裝到 `/Applications/AMZ.API.app` 並成功從該路徑啟動 PID 59518；安裝後再次通過 version／build 0.1.50、bundle、雙架構、簽章及 `app.asar` byte-for-byte 核對。原 v0.1.49 完整保留為 `/Applications/AMZ.API-v0.1.49-backup.app`，其 `app.asar` SHA-256 仍為 `a012b17615037a5f9b66fc0e0f8ae8023ccc7a699f7698c4865814c21e925c13`；既有 userData、Amazon Keychain vault 與更舊備份未清除或重建。本次發布、安裝與單純啟動沒有操作 Amazon Validation Preview、原生確認、PATCH 或任何 mutation；App 啟動可能沿用既有唯讀自動載入，不得寫成完全沒有 Amazon read。
 
 ### 2026-09-02 文案欄位式拼字規則與 B2B 可處理摘要（本機驗證完成；尚未發布／安裝）
 
