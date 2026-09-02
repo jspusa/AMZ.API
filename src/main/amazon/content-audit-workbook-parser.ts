@@ -986,28 +986,48 @@ function excludeDuplicateSellerSkus(
   rows: ParsedContentAuditWorkbookRow[];
   issues: ContentAuditWorkbookRowIssue[];
 } {
-  const rowsBySku = new Map<string, ParsedContentAuditWorkbookRow[]>();
+  const occurrencesBySku = new Map<string, Map<string, Readonly<{
+    sourceSheet: string;
+    rowNumber: number;
+  }>>>();
+  const recordOccurrence = (
+    sellerSku: string,
+    sourceSheet: string,
+    rowNumber: number,
+  ) => {
+    const occurrences = occurrencesBySku.get(sellerSku) ?? new Map();
+    occurrences.set(JSON.stringify([sourceSheet, rowNumber]), {
+      sourceSheet,
+      rowNumber,
+    });
+    occurrencesBySku.set(sellerSku, occurrences);
+  };
   for (const row of rows) {
-    const matches = rowsBySku.get(row.sellerSku) ?? [];
-    matches.push(row);
-    rowsBySku.set(row.sellerSku, matches);
+    recordOccurrence(row.sellerSku, row.sourceSheet, row.sourceRowNumber);
+  }
+  for (const issue of existingIssues) {
+    if (issue.sellerSku !== null) {
+      recordOccurrence(issue.sellerSku, issue.sourceSheet, issue.rowNumber);
+    }
   }
   const duplicateSkus = new Set(
-    [...rowsBySku.entries()]
-      .filter(([, matches]) => matches.length > 1)
+    [...occurrencesBySku.entries()]
+      .filter(([, occurrences]) => occurrences.size > 1)
       .map(([sellerSku]) => sellerSku),
   );
-  const duplicateIssues = rows
-    .filter((row) => duplicateSkus.has(row.sellerSku))
-    .map((row): ContentAuditWorkbookRowIssue => ({
-      code: "SELLER_SKU_DUPLICATE",
-      sellerSku: row.sellerSku,
-      sourceSheet: row.sourceSheet,
-      rowNumber: row.sourceRowNumber,
-      field: "sellerSku",
-      fieldLabel: "Seller SKU",
-      message: "Seller SKU 在這份 Excel 中重複，所有同名列都已略過。",
-    }));
+  const duplicateIssues = [...duplicateSkus].flatMap((sellerSku) =>
+    [...occurrencesBySku.get(sellerSku)!.values()].map(
+      (occurrence): ContentAuditWorkbookRowIssue => ({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku,
+        sourceSheet: occurrence.sourceSheet,
+        rowNumber: occurrence.rowNumber,
+        field: "sellerSku",
+        fieldLabel: "Seller SKU",
+        message: "Seller SKU 在這份 Excel 中重複，所有同名列都已略過。",
+      }),
+    )
+  );
   return {
     rows: rows.filter((row) => !duplicateSkus.has(row.sellerSku)),
     issues: [...existingIssues, ...duplicateIssues].sort((left, right) =>

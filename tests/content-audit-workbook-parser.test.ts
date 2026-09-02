@@ -559,6 +559,39 @@ describe("content audit workbook parser", () => {
     ]);
   });
 
+  it("isolates every duplicate occurrence even when one duplicate row has another invalid field", () => {
+    const source = workbook([
+      auditRow("DUPLICATE-WITH-BAD-ASIN", { asin: "NOT-AN-ASIN" }),
+      auditRow("SECOND-SKU", { asin: "B000000002" }),
+    ]);
+    const duplicate = mutateArchive(source, (archive) => {
+      replacePart(archive, "xl/worksheets/sheet2.xml", (xml) =>
+        xml.replace("SECOND-SKU", "DUPLICATE-WITH-BAD-ASIN"));
+    });
+
+    const result = parse(duplicate);
+
+    expect(result.rows).toEqual([]);
+    expect(result.issues).toHaveLength(3);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "ASIN_INVALID",
+        sellerSku: "DUPLICATE-WITH-BAD-ASIN",
+        rowNumber: 2,
+      }),
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "DUPLICATE-WITH-BAD-ASIN",
+        rowNumber: 2,
+      }),
+      expect.objectContaining({
+        code: "SELLER_SKU_DUPLICATE",
+        sellerSku: "DUPLICATE-WITH-BAD-ASIN",
+        rowNumber: 3,
+      }),
+    ]));
+  });
+
   it("rejects non-xlsx uploads and oversized uncompressed XML", () => {
     const source = workbook([auditRow("CHILD-1")]);
     expectWorkbookError(

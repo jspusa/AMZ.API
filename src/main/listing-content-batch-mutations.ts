@@ -43,7 +43,6 @@ import {
   assertListingContentPreparedPreviewBinding,
   assertListingContentUpdateResultBinding,
   LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
-  LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
   type ListingContentMutationsPort,
   type ListingContentPreparedPreview,
   type ListingContentPreviewOptions,
@@ -89,7 +88,6 @@ type ContentBatchChange = {
   sourceIdentity: ContentBatchSourceIdentity;
   proposalFingerprint: string;
   validation: ListingContentPreparedPreview;
-  validationOverrideRequired: boolean;
 };
 
 type ContentBatchBlockedChange = Readonly<{
@@ -158,15 +156,6 @@ type ContentBatchCommitResult = {
   notice: string;
 };
 
-function isIsolatedBatchRowFailure(error: unknown): boolean {
-  if (error instanceof SpApiPreCommitError) return true;
-  return error instanceof SpApiError && [
-    "UPDATE_REJECTED",
-    "VALIDATION_FAILED",
-    "UPDATE_STATUS_UNKNOWN",
-  ].includes(error.code);
-}
-
 const ISOLATED_CONTENT_PREVIEW_CODES = new Set([
   "CONTENT_CHANGED",
   "CONTENT_FIELD_READ_ONLY",
@@ -178,6 +167,24 @@ const ISOLATED_CONTENT_PREVIEW_CODES = new Set([
   "PREVIEW_CHANGED",
   "VALIDATION_FAILED",
 ]);
+
+const ISOLATED_CONTENT_PRECOMMIT_CODES = new Set([
+  ...ISOLATED_CONTENT_PREVIEW_CODES,
+  "UPDATE_REJECTED",
+]);
+
+function isIsolatedBatchRowFailure(error: unknown): boolean {
+  if (error instanceof SpApiPreCommitError) {
+    return error.status < 500 &&
+      ![401, 403, 429].includes(error.status) &&
+      ISOLATED_CONTENT_PRECOMMIT_CODES.has(error.code);
+  }
+  return error instanceof SpApiError && [
+    "UPDATE_REJECTED",
+    "VALIDATION_FAILED",
+    "UPDATE_STATUS_UNKNOWN",
+  ].includes(error.code);
+}
 
 function isIsolatedContentPreviewFailure(error: unknown): error is SpApiError {
   return error instanceof SpApiError &&
@@ -357,7 +364,7 @@ function contentBatchValidationFailure(
   error: SpApiError,
 ): ContentBatchValidationFailure {
   const publicError = publicSpApiError(error, "Amazon 預檢失敗。");
-  const values = batchInputValues(input);
+  const values = literalBatchInputValues(input);
   return {
     sellerSku: input.sellerSku,
     code: publicError.code,
@@ -371,7 +378,7 @@ function contentBatchValidationFailure(
   };
 }
 
-function blockedBatchInputValues(input: UpdateListingContentInput): Readonly<{
+function literalBatchInputValues(input: UpdateListingContentInput): Readonly<{
   previous: ListingContentValues;
   requested: ListingContentValues;
   changedFields: ListingContentField[];
@@ -380,8 +387,8 @@ function blockedBatchInputValues(input: UpdateListingContentInput): Readonly<{
   return {
     ...values,
     // W07 intentionally grants every writable row exact bullet replacement
-    // authority, even when its bullets are unchanged. A blocked row can never
-    // write, so its public diff must describe only literal workbook edits.
+    // authority, even when its bullets are unchanged. Public problem details
+    // must still name only literal workbook edits.
     changedFields: values.changedFields.filter((field) =>
       field !== "bulletPoints" ||
       values.previous.bulletPoints.length !== values.requested.bulletPoints.length ||
@@ -418,16 +425,8 @@ function publicListingIssues(issues: readonly ListingIssue[]): ListingIssue[] {
   }));
 }
 
-function batchPreviewOptions(
-  required: boolean,
-): ListingContentPreviewOptions {
+function batchPreviewOptions(): ListingContentPreviewOptions {
   return {
-    ...(required
-      ? {
-          validationOverrideAuthority:
-            LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
-        }
-      : {}),
     exactBulletReplacementAuthority:
       LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
   };
@@ -805,17 +804,12 @@ export class ListingContentBatchMutations
   }
 
   private previewPayload(plan: ContentBatchPlan) {
-    const overrideSellerSkus = plan.changes
-      .filter((change) => change.validationOverrideRequired)
-      .map((change) => change.input.sellerSku);
     return {
       previewId: plan.previewId,
       exportId: plan.exportId,
       marketplaceId: plan.marketplaceId,
       expiresAt: new Date(plan.expiresAt).toISOString(),
-      status: overrideSellerSkus.length
-        ? "REQUIRES_VALIDATION_OVERRIDE"
-        : "READY",
+      status: "READY",
       changes: plan.changes.map((change) => ({
         sellerSku: change.input.sellerSku,
         changedFields: [...change.validation.changedFields],
@@ -826,7 +820,7 @@ export class ListingContentBatchMutations
         ),
         issues: publicListingIssues(change.validation.issues),
         validationStatus: change.validation.status,
-        overrideAllowed: change.validationOverrideRequired,
+        overrideAllowed: false,
       })),
       blockedChanges: plan.blockedChanges.map((change) => ({
         sellerSku: change.sellerSku,
@@ -839,14 +833,10 @@ export class ListingContentBatchMutations
       skippedRows: publicSkippedRows(plan.skippedRows),
       validationFailures: publicValidationFailures(plan.validationFailures),
       validationOverride: {
-        required: overrideSellerSkus.length > 0,
-        sellerSkus: overrideSellerSkus,
+        required: false,
+        sellerSkus: [],
       },
-      notice: `${
-        overrideSellerSkus.length
-          ? `${overrideSellerSkus.length.toLocaleString()} 個 SKU 的 Amazon Validation Preview 明確未通過；目前仍為零寫入。逐項核對原因後，可明確選擇強制送出一次。`
-          : `已逐 SKU 完成 Amazon Validation Preview；${plan.changes.length.toLocaleString()} 個 SKU 尚未寫入。`
-      }${
+      notice: `已逐 SKU 完成 Amazon Validation Preview；${plan.changes.length.toLocaleString()} 個安全 SKU 尚未寫入。${
         plan.blockedChanges.length
           ? ` 另有 ${plan.blockedChanges.length.toLocaleString()} 個 SKU 因原掃描未完整而未納入本次更新，且不會寫入 Amazon。`
           : ""
@@ -1119,7 +1109,7 @@ export class ListingContentBatchMutations
           expectedIngredients,
         };
         if (sourceReadStatus !== "complete") {
-          const values = blockedBatchInputValues(input);
+          const values = literalBatchInputValues(input);
           blockedChanges.push({
             sellerSku: row.sellerSku,
             code: "CONTENT_READ_INCOMPLETE",
@@ -1197,52 +1187,62 @@ export class ListingContentBatchMutations
       const changes: ContentBatchChange[] = [];
       const validationErrors: ContentBatchValidationFailure[] = [];
       for (const { input, sourceIdentity } of inputRows) {
+        await this.context.assertCurrent(context);
+        this.assertLifecycleCurrent(revision);
+        let validation: ListingContentPreparedPreview;
         try {
-          await this.context.assertCurrent(context);
-          this.assertLifecycleCurrent(revision);
-          const validation = await this.content.previewOne(
+          validation = await this.content.previewOne(
             input,
-            batchPreviewOptions(true),
+            batchPreviewOptions(),
           );
-          this.assertLifecycleCurrent(revision);
-          assertListingContentPreparedPreviewBinding(
-            validation,
-            input,
-            context,
-            undefined,
-            batchPreviewOptions(true),
-          );
-          if (
-            validation.status === "INVALID" &&
-            !publicListingIssues(validation.issues).some(
-              (issue) => issue.severity === "ERROR",
-            )
-          ) {
-            throw new SpApiError(
-              "Amazon Validation Preview 未通過，但沒有可安全顯示並供逐項核對的 ERROR；此 SKU 已隔離。",
-              {
-                status: 422,
-                code: "VALIDATION_FAILED",
-                issues: [...validation.issues],
-                operation: "patchListingsItemPreview",
-              },
-            );
-          }
-          assertContentBatchSourceIdentity(validation, sourceIdentity);
-          changes.push({
-            input,
-            sourceIdentity,
-            proposalFingerprint: validation.proposalFingerprint,
-            validation,
-            validationOverrideRequired: validation.status === "INVALID",
-          });
         } catch (error) {
           if (error instanceof SpExecutionContextError) throw error;
           if (!isIsolatedContentPreviewFailure(error)) throw error;
           validationErrors.push(
             contentBatchValidationFailure(input, error),
           );
+          continue;
         }
+        this.assertLifecycleCurrent(revision);
+        // Result binding is a global trust boundary. It deliberately lives
+        // outside the row-isolation catch, so a wrong SKU, marketplace, mode,
+        // content payload, or proposal stops the whole batch.
+        assertListingContentPreparedPreviewBinding(
+          validation,
+          input,
+          context,
+          undefined,
+          batchPreviewOptions(),
+        );
+        if (validation.status === "INVALID") {
+          throw new SpApiError(
+            "Amazon 回傳了未授權的 INVALID 預檢結果；整批已停止且沒有任何 SKU 會寫入。",
+            {
+              status: 502,
+              code: "VALIDATION_STATUS_UNKNOWN",
+              issues: [...validation.issues],
+              operation: "patchListingsItemPreview",
+            },
+          );
+        }
+        try {
+          assertContentBatchSourceIdentity(validation, sourceIdentity);
+        } catch (error) {
+          if (
+            !(error instanceof SpApiError) ||
+            error.code !== "LISTING_IDENTITY_MISMATCH"
+          ) {
+            throw error;
+          }
+          validationErrors.push(contentBatchValidationFailure(input, error));
+          continue;
+        }
+        changes.push({
+          input,
+          sourceIdentity,
+          proposalFingerprint: validation.proposalFingerprint,
+          validation,
+        });
       }
       await this.context.assertCurrent(context);
       this.assertLifecycleCurrent(revision);
@@ -1426,35 +1426,18 @@ export class ListingContentBatchMutations
       );
     }
 
-    const requiredOverrideChanges = plan.changes.filter(
-      (change) => change.validationOverrideRequired,
-    );
-    const requiredOverrideSellerSkus = requiredOverrideChanges.map(
-      (change) => change.input.sellerSku,
-    );
     const suppliedOverrideSellerSkus = body.validationOverride === undefined
       ? []
       : acknowledgedSellerSkus(body.validationOverride);
-    if (suppliedOverrideSellerSkus === null) {
-      return json({
-        code: "VALIDATION_OVERRIDE_REQUIRED",
-        message: "Amazon 預檢強制送出確認格式無效；Amazon 寫入數為 0。",
-        sellerSkus: requiredOverrideSellerSkus,
-        writeCount: 0,
-      }, 422);
-    }
     if (
-      requiredOverrideSellerSkus.length !== suppliedOverrideSellerSkus.length ||
-      requiredOverrideSellerSkus.some(
-        (sellerSku, index) => sellerSku !== suppliedOverrideSellerSkus[index],
-      )
+      suppliedOverrideSellerSkus === null ||
+      suppliedOverrideSellerSkus.length > 0
     ) {
       return json({
         code: "VALIDATION_OVERRIDE_REQUIRED",
-        message: requiredOverrideSellerSkus.length
-          ? "必須逐項核對並明確確認所有 Amazon Validation Preview 未通過的 SKU，才可繼續；Amazon 寫入數為 0。"
-          : "這份批次沒有需要強制通過的 Amazon 預檢失敗；Amazon 寫入數為 0。",
-        sellerSkus: requiredOverrideSellerSkus,
+        message:
+          "Amazon Validation Preview 未通過的 SKU 不允許強制送出；它們已隔離，Amazon 寫入數為 0。",
+        sellerSkus: [],
         writeCount: 0,
       }, 422);
     }
@@ -1505,8 +1488,7 @@ export class ListingContentBatchMutations
       const shownSkus = sellerSkus.slice(0, 5).join("、");
       const remaining = Math.max(0, sellerSkus.length - 5);
       const nativeRiskChanges = currentChanges.filter((change) =>
-        change.validation.exactBulletReplacement !== null ||
-        change.validationOverrideRequired
+        change.validation.exactBulletReplacement !== null
       );
       const nativeRiskSummary = nativeRiskChanges
         .map((change) => {
@@ -1516,14 +1498,6 @@ export class ListingContentBatchMutations
             risks.push(
               `要點 ${disclosure.currentExactLanguageBulletPoints.length}→${disclosure.requestedExactLanguageBulletPoints.length}／刪${disclosure.removedOverflowBulletPoints.length}`,
             );
-          }
-          if (change.validationOverrideRequired) {
-            const codes = [...new Set(
-              publicListingIssues(change.validation.issues)
-                .filter((issue) => issue.severity === "ERROR")
-                .map((issue) => issue.code ?? "無代碼"),
-            )].join("／");
-            risks.push(`INVALID ${codes}`);
           }
           return `${change.input.sellerSku}（${risks.join("；")}）`;
         })
@@ -1535,9 +1509,6 @@ export class ListingContentBatchMutations
             ?.removedOverflowBulletPoints.length ?? 0),
         0,
       );
-      const currentOverrideCount = currentChanges.filter(
-        (change) => change.validationOverrideRequired,
-      ).length;
       const detailed =
         `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU${
           nativeRiskChanges.length
@@ -1546,7 +1517,7 @@ export class ListingContentBatchMutations
         }｜驗證碼 ${verificationCode}`;
       return detailed.length <= NATIVE_CONFIRMATION_REASON_MAX_LENGTH
         ? detailed
-        : `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU｜高風險 ${nativeRiskChanges.length} SKU／刪除要點 ${removedOverflowBulletCount} 項／INVALID ${currentOverrideCount} SKU｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
+        : `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU｜高風險 ${nativeRiskChanges.length} SKU／刪除要點 ${removedOverflowBulletCount} 項｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
     };
     let preflightResponse: ApiResponse | null = null;
     plan.state = "committing";
@@ -1563,40 +1534,64 @@ export class ListingContentBatchMutations
             const revalidated: ContentBatchChange[] = [];
             const newlyIsolated: ContentBatchValidationFailure[] = [];
             for (const change of plan.changes) {
+              await this.context.assertCurrent(context);
+              this.assertLifecycleCurrent(revision);
+              let fresh: ListingContentPreparedPreview;
               try {
-                await this.context.assertCurrent(context);
-                this.assertLifecycleCurrent(revision);
-                const fresh = await this.content.previewOne(
+                fresh = await this.content.previewOne(
                   change.input,
-                  batchPreviewOptions(
-                    change.validationOverrideRequired,
-                  ),
+                  batchPreviewOptions(),
                 );
-                this.assertLifecycleCurrent(revision);
-                assertListingContentPreparedPreviewBinding(
-                  fresh,
-                  change.input,
-                  context,
-                  {
-                    evidence: change.validation.evidence,
-                    exactBulletReplacement:
-                      change.validation.exactBulletReplacement,
-                    proposalFingerprint: change.proposalFingerprint,
-                    status: change.validation.status,
-                  },
-                  batchPreviewOptions(
-                    change.validationOverrideRequired,
-                  ),
-                );
-                assertContentBatchSourceIdentity(fresh, change.sourceIdentity);
-                revalidated.push({ ...change, validation: fresh });
               } catch (error) {
                 if (error instanceof SpExecutionContextError) throw error;
                 if (!isIsolatedContentPreviewFailure(error)) throw error;
                 newlyIsolated.push(
                   contentBatchValidationFailure(change.input, error),
                 );
+                continue;
               }
+              this.assertLifecycleCurrent(revision);
+              // A mismatched returned preview is a global trust failure and
+              // must never be downgraded to one row's validation problem.
+              assertListingContentPreparedPreviewBinding(
+                fresh,
+                change.input,
+                context,
+                {
+                  evidence: change.validation.evidence,
+                  exactBulletReplacement:
+                    change.validation.exactBulletReplacement,
+                  proposalFingerprint: change.proposalFingerprint,
+                  status: change.validation.status,
+                },
+                batchPreviewOptions(),
+              );
+              if (fresh.status === "INVALID") {
+                throw new SpApiError(
+                  "Amazon 回傳了未授權的 INVALID 重新預檢結果；整批已停止且沒有任何 SKU 會寫入。",
+                  {
+                    status: 502,
+                    code: "VALIDATION_STATUS_UNKNOWN",
+                    issues: [...fresh.issues],
+                    operation: "patchListingsItemPreview",
+                  },
+                );
+              }
+              try {
+                assertContentBatchSourceIdentity(fresh, change.sourceIdentity);
+              } catch (error) {
+                if (
+                  !(error instanceof SpApiError) ||
+                  error.code !== "LISTING_IDENTITY_MISMATCH"
+                ) {
+                  throw error;
+                }
+                newlyIsolated.push(
+                  contentBatchValidationFailure(change.input, error),
+                );
+                continue;
+              }
+              revalidated.push({ ...change, validation: fresh });
             }
             await this.context.assertCurrent(context);
             this.assertLifecycleCurrent(revision);
@@ -1667,9 +1662,7 @@ export class ListingContentBatchMutations
                 change.validation.evidence,
                 session,
                 change.input.sellerSku,
-                batchPreviewOptions(
-                  change.validationOverrideRequired,
-                ),
+                batchPreviewOptions(),
               );
               returnedUnverifiedResult = true;
               this.assertLifecycleCurrent(revision);
@@ -1677,7 +1670,7 @@ export class ListingContentBatchMutations
                 rowResult,
                 change.input,
                 context,
-                batchPreviewOptions(change.validationOverrideRequired),
+                batchPreviewOptions(),
               );
               rows[index] = {
                 sellerSku: change.input.sellerSku,
