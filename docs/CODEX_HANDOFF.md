@@ -4,6 +4,10 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
+### 2026-09-03 v0.1.52 公布欄新增項目相容性修補（發行候選）
+
+使用者在已安裝 v0.1.51 的「重要公布欄管理」按「＋ 即期 SKU」或「＋ 促銷檔期」時，畫面顯示 `crypto.randomUUID is not a function`，因此尚未送到登入或發布階段。實際 Electron 差異測試確認同一份 packaged editor HTML 在 `data:` 頁面為 `isSecureContext:false`，`crypto.randomUUID` 不存在但 `crypto.getRandomValues` 可用；改用 `getRandomValues` 產生標準 UUID v4，沒有 fallback 到可預測亂數，也沒有改動 CSP、renderer／preload／main 邊界、登入 session 或 Supply Boss API。修補前 regression test red；修補後 exact `data:` runtime 分別點擊兩個新增按鈕，都新增 1 列且沒有 window error，公布欄相關 3 個測試檔／31 tests 全部通過。
+
 ### 2026-09-03 v0.1.51 B2B 篩選／Supply Boss 公布欄／文案工作表 `(可)`（已合併／Pages 與 Supply Boss 上線／Mac 安裝／員工下載更新）
 
 PR #197 已將功能 squash merge 到 `4b051ae16bea50272e4024e37d099730b43b098f`；PR #198 只升版 package、SP-API User-Agent 與 Windows 封裝斷言，v0.1.51 release-code exact main SHA 為 `980c7c4783171d2eeb976e977be05fb968e0af71`。本機 final `npm run check` 通過 TypeScript、256 個測試檔／2,579 tests、production build 與 stylesheet parity；Ask Matt 路由的 Standards／Spec 最終複核均為 P0／P1／P2／P3 零 findings。固定展示資料的 Playwright 操作已確認新增即期品與新增促銷逐欄輸入不再白屏，B2B 的「未設定」分類與含前後空白、大小寫不同的 SKU 搜尋會正確取交集，且沒有新增 console error。`npm audit --omit=dev` 仍回報既有 `@xmldom/xmldom <=0.8.14` 一個 moderate advisory；自動修復會跳出專案既定 dependency range，因此未執行 `--force`。
