@@ -4,9 +4,19 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-09-03 v0.1.52 公布欄新增項目相容性修補（發行候選）
+### 2026-09-03 文案健檢七項摘要簡化（本機驗證完成；合併後由 Pages 生效）
+
+文案健檢結果只保留「完成讀取／需修正／疑似錯字／缺成分／成分宣稱不一致／正確設定／讀取未完成」七張等寬摘要卡，且每張數字都能直接篩選 SKU。「需修正」合併名稱、亮點、缺賣點、要點過短／過長與產品敘述不足；若同一 SKU 另有疑似錯字、缺成分、成分宣稱不一致或成分未驗證，就不再重複列進「需修正」。成分未驗證併入「讀取未完成」，但已成功取得其餘 Amazon 文案的列仍保留在「完成讀取」；「正確設定」只含完整讀取且零 issue 的 SKU。初始總覽若含真正讀取未完成列，會直接顯示 exact read error，不再出現只有 SKU、沒有原因的卡片。
+
+TDD 先以「完成讀取不可點」與初始總覽漏掉 read error 重現失敗，再修到通過；mixed specialist＋length fixtures 也補上有效長度證據，證明互斥數字不是測試資料被 parser 丟棄造成。完整 `npm run check` 通過 TypeScript、256 個測試檔／2,582 tests、production build 與 stylesheet parity，`git diff --check` clean；`npm audit --omit=dev` 仍只有既有 `@xmldom/xmldom <=0.8.14` 一個 moderate advisory，修復需 `--force` 超出既定 dependency range，因此未強制升級。Ask Matt 路由的 Standards／Spec 最終複核均為 P0／P1／P2／P3 零 findings；本輪只用 fixture 與本機 build，沒有 Amazon Validation Preview、原生確認、PATCH 或其他 mutation。
+
+### 2026-09-03 v0.1.52 公布欄新增項目相容性修補（已合併／Pages 與 Supply Boss 上線／Mac 安裝／員工下載更新）
 
 使用者在已安裝 v0.1.51 的「重要公布欄管理」按「＋ 即期 SKU」或「＋ 促銷檔期」時，畫面顯示 `crypto.randomUUID is not a function`，因此尚未送到登入或發布階段。實際 Electron 差異測試確認同一份 packaged editor HTML 在 `data:` 頁面為 `isSecureContext:false`，`crypto.randomUUID` 不存在但 `crypto.getRandomValues` 可用；改用 `getRandomValues` 產生標準 UUID v4，沒有 fallback 到可預測亂數，也沒有改動 CSP、renderer／preload／main 邊界、登入 session 或 Supply Boss API。修補前 regression test red；修補後 exact `data:` runtime 分別點擊兩個新增按鈕，都新增 1 列且沒有 window error，公布欄相關 3 個測試檔／31 tests 全部通過。
+
+PR #200 已 squash merge 到 exact-main `4ea9de3dd2637ee110c1a44344a97d7945411514`。Validate／Pages／macOS／Windows runs `33727929575`／`33727929619`／`33727929587`／`33727929580` 全部成功。macOS artifact `9882875532` metadata／download SHA-256 同為 `6cf6af39b498bbc25a2b634b8bb2f803951af7b504ac110b79a937511e376deb`；DMG `AMZ.API-0.1.52-universal.dmg` 為 246,516,243 bytes、SHA-256 `da481467e707f54a6baa08cd8ebfefde67cbbdb4b0519ba74ea2e4c94ceb9286`。Windows artifact `9882879758` metadata／download SHA-256 同為 `8762a03bac0d9a47ad12da075e025deb955f89a1a3ddb9dfd186ad2bb52d09f8`；NSIS installer 為 101,845,350 bytes、SHA-256 `0d3959c31a4f82fc987afc972746e8ea00f46977fca6091ccbd8b5e354044089`。outer／inner ZIP CRC、DMG integrity、version／build 0.1.52、bundle `com.jspusa.amz-api`、macOS 雙架構／deep strict ad-hoc codesign、Windows x64 PE／Hello addon manifest 均通過；Windows CI 不能代替真實 Windows 11 Hello／DPAPI 實機驗證。
+
+受保護 Supply Boss 員工下載入口已依 Mac→Windows 順序原子更新兩張卡為 v0.1.52，complete 回應的 name／size／SHA-256 與上述 DMG／NSIS 完全相同，`/health` 正常且 `/downloads` 回 HTTP 200；員工密碼沒有被讀取或代填，所以登入後短效連結的完整重新下載仍待員工自行驗證。exact DMG App 已可復原地安裝到 `/Applications/AMZ.API.app`，版本、bundle、雙架構、簽章與 `app.asar` SHA-256 `dec5f864b47c0915561b602c9276063c5387f89e23b19e9e232fd883a366140c` 再次匹配；原 v0.1.51 保留為 `/Applications/AMZ.API-v0.1.51-backup.app`。安裝沒有清除或重建 Amazon Keychain vault；App 正常關閉曾更新一般 `fba-os-data.json`，所以不得把整個 userData 說成 byte-for-byte 未變。實際 App 首頁可開啟「新增即期品」表單，測試資料已關閉且沒有發布；exact packaged editor 的兩個新增按鈕則由 isolated Electron runtime 證明不再白屏。本次沒有發布測試公告或做 Amazon mutation；啟動 App 可能讀取既有唯讀儀表板資料。
 
 ### 2026-09-03 v0.1.51 B2B 篩選／Supply Boss 公布欄／文案工作表 `(可)`（已合併／Pages 與 Supply Boss 上線／Mac 安裝／員工下載更新）
 

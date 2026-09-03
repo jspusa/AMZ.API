@@ -1403,21 +1403,103 @@ describe("global FBA content audit panel", () => {
     )).toMatchObject({ status: "stale" });
   });
 
-  it("merges issue filters into clickable summary numbers", () => {
+  it("shows seven concise summary groups without repeating specialist issues under needs correction", () => {
     const snapshot = parseContentAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-06T08:00:00.000Z",
-      rows: [quickEditRow({
-        title: "Short title",
-        issues: [{
-          kind: "TITLE_BELOW_TARGET",
-          field: "title",
-          message: "產品名稱目前 11 個字元，低於 60 個字元。",
-          actualLength: 11,
-          minLength: 60,
-        }],
-      })],
-      summary: { total: 1 },
+      rows: [
+        quickEditRow({
+          sellerSku: "NEEDS-LENGTH",
+          title: "Short title",
+          issues: [{
+            kind: "TITLE_BELOW_TARGET",
+            field: "title",
+            message: "產品名稱不足。",
+            actualLength: 11,
+            minLength: 60,
+          }],
+        }),
+        quickEditRow({
+          sellerSku: "NEEDS-BULLETS",
+          issues: [{
+            kind: "MISSING_BULLETS",
+            field: "bulletPoints",
+            message: "賣點不足。",
+          }],
+        }),
+        quickEditRow({
+          sellerSku: "TYPO-WITH-LENGTH",
+          issues: [
+            {
+              kind: "SUSPECTED_TYPO",
+              field: "title",
+              token: "Naturall",
+              message: "疑似錯字。",
+            },
+            {
+              kind: "TITLE_BELOW_TARGET",
+              field: "title",
+              message: "產品名稱不足。",
+              actualLength: 11,
+              minLength: 60,
+            },
+          ],
+        }),
+        quickEditRow({
+          sellerSku: "MISSING-INGREDIENTS-WITH-LENGTH",
+          ingredients: "",
+          issues: [
+            {
+              kind: "MISSING_INGREDIENTS",
+              field: "ingredients",
+              message: "缺成分。",
+            },
+            {
+              kind: "DESCRIPTION_BELOW_TARGET",
+              field: "productDescription",
+              message: "產品敘述不足。",
+              actualLength: 0,
+              minLength: 1_800,
+            },
+          ],
+        }),
+        quickEditRow({
+          sellerSku: "INGREDIENT-MISMATCH-WITH-LENGTH",
+          title: "Turkey Tendon treats",
+          ingredients: "Turkey, Chicken",
+          issues: [
+            {
+              kind: "TITLE_BELOW_TARGET",
+              field: "title",
+              message: "產品名稱不足。",
+              actualLength: 20,
+              minLength: 60,
+            },
+          ],
+        }),
+        quickEditRow({
+          sellerSku: "INGREDIENTS-UNVERIFIED",
+          issues: [{
+            kind: "INGREDIENTS_UNVERIFIED",
+            field: "ingredients",
+            message: "缺少可靠商品類型證據。",
+          }],
+        }),
+        quickEditRow({
+          sellerSku: "READ-INCOMPLETE",
+          readStatus: "incomplete",
+          readErrors: [{
+            code: "LISTING_QUERY_FAILED",
+            message: "Listings Items API 尚未完整回傳。",
+          }],
+          issues: [],
+        }),
+        quickEditRow({
+          sellerSku: "CORRECT",
+          issues: [],
+        }),
+      ],
+      summary: { total: 8 },
     });
     const markup = renderToStaticMarkup(
       <ContentAuditPanel
@@ -1427,7 +1509,7 @@ describe("global FBA content audit panel", () => {
         initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
-          filter: "TITLE_BELOW_TARGET",
+          filter: "NEEDS_CORRECTION",
           query: "",
           spellcheckNote: null,
         }}
@@ -1435,28 +1517,84 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(markup).toContain('class="content-audit-summary" role="group" aria-label="文案健檢摘要與問題篩選"');
-    expect(markup).toContain('data-audit-filter="TITLE_BELOW_TARGET"');
+    expect(markup).toMatch(/data-audit-filter="COMPLETED"[^>]*>[\s\S]*?<span>完成讀取<\/span><strong>7<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="NEEDS_CORRECTION"[^>]*>[\s\S]*?<span>需修正<\/span><strong>2<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="SUSPECTED_TYPO"[^>]*>[\s\S]*?<span>疑似錯字<\/span><strong>1<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="MISSING_INGREDIENTS"[^>]*>[\s\S]*?<span>缺成分<\/span><strong>1<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="SINGLE_INGREDIENT_MISMATCH"[^>]*>[\s\S]*?<span>成分宣稱不一致<\/span><strong>1<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="CORRECT"[^>]*>[\s\S]*?<span>正確設定<\/span><strong>1<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="READ_INCOMPLETE"[^>]*>[\s\S]*?<span>讀取未完成<\/span><strong>2<\/strong>/u);
     expect(markup).toContain('aria-pressed="true"');
-    expect(markup).toContain('data-audit-filter="SINGLE_INGREDIENT_MISMATCH"');
-    expect(markup).toContain("成分宣稱不一致");
+    expect(markup).toContain("NEEDS-LENGTH");
+    expect(markup).toContain("NEEDS-BULLETS");
+    expect(markup).not.toContain("TYPO-WITH-LENGTH");
+    expect(markup).not.toContain("MISSING-INGREDIENTS-WITH-LENGTH");
+    expect(markup).not.toContain("INGREDIENT-MISMATCH-WITH-LENGTH");
+    for (const hiddenLabel of [
+      "產品名稱不足",
+      "產品亮點不足",
+      "產品要點過短",
+      "產品要點過長",
+      "產品敘述不足",
+      "賣點不足",
+      "成分未驗證",
+    ]) {
+      expect(markup).not.toMatch(new RegExp(`<span>${hiddenLabel}<\\/span><strong>`));
+    }
     expect(markup).not.toContain('role="tablist"');
     expect(markup).not.toContain("單一成分宣稱不一致");
   });
 
-  it("counts every row shown by the all-problems summary filter", () => {
+  it("lets the completed summary show every successfully read SKU", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [
+        quickEditRow({ sellerSku: "COMPLETE-WITH-ISSUE" }),
+        quickEditRow({ sellerSku: "COMPLETE-CORRECT", issues: [] }),
+        quickEditRow({
+          sellerSku: "READ-INCOMPLETE",
+          readStatus: "incomplete",
+          readErrors: [{
+            code: "LISTING_QUERY_FAILED",
+            message: "Listings Items API 尚未完整回傳。",
+          }],
+          issues: [],
+        }),
+      ],
+      summary: { total: 3 },
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
+        cachedResult={{
+          snapshot,
+          filter: "COMPLETED",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+
+    expect(markup).toContain("COMPLETE-WITH-ISSUE");
+    expect(markup).toContain("COMPLETE-CORRECT");
+    expect(markup).not.toContain("READ-INCOMPLETE");
+  });
+
+  it("shows ingredient verification uncertainty together with incomplete reads", () => {
     const snapshot = parseContentAuditSnapshot({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-06T08:00:00.000Z",
       rows: [
         quickEditRow({
-          sellerSku: "HAS-ISSUE",
-          title: "Short title",
+          sellerSku: "INGREDIENTS-UNVERIFIED",
           issues: [{
-            kind: "TITLE_BELOW_TARGET",
-            field: "title",
-            message: "產品名稱目前 11 個字元，低於 60 個字元。",
-            actualLength: 11,
-            minLength: 60,
+            kind: "INGREDIENTS_UNVERIFIED",
+            field: "ingredients",
+            message: "缺少可靠商品類型證據。",
           }],
         }),
         quickEditRow({
@@ -1480,7 +1618,7 @@ describe("global FBA content audit panel", () => {
         initialJob={completedContentJob(snapshot)}
         cachedResult={{
           snapshot,
-          filter: "all",
+          filter: "READ_INCOMPLETE",
           query: "",
           spellcheckNote: null,
         }}
@@ -1488,7 +1626,35 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(markup).toMatch(
-      /data-audit-filter="all"[^>]*>[\s\S]*?<span>有待確認<\/span><strong>2<\/strong>/u,
+      /data-audit-filter="READ_INCOMPLETE"[^>]*>[\s\S]*?<span>讀取未完成<\/span><strong>2<\/strong>/u,
+    );
+    expect(markup).toContain("INGREDIENTS-UNVERIFIED");
+    expect(markup).toContain("READ-INCOMPLETE");
+    expect(markup).toContain("成分未驗證");
+
+    const initialMarkup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
+        cachedResult={{
+          snapshot,
+          filter: "all",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+
+    expect(initialMarkup).toContain("Listings Items API 尚未完整回傳。");
+  });
+
+  it("keeps the seven summary groups in one even desktop row", async () => {
+    const stylesheet = await readRendererStylesheet();
+
+    expect(stylesheet).toMatch(
+      /\.content-audit-summary\s*\{[^}]*grid-template-columns:\s*repeat\(7,\s*minmax\(0,\s*1fr\)\)/u,
     );
   });
 

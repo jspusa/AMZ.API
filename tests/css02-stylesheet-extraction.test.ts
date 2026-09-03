@@ -16,7 +16,7 @@ const CSS02_ORDERED_PREFIX = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "2b0123666ff093e5729b838c003e661d772f5ff1f8a14f61a2d92accd938a78b";
+  "9e8573bd053bd6bd6d86a64ee1e325571bed963df0f900d042b0b2468cafdc70";
 
 const CSS02_PAYLOAD_EVIDENCE = [
   {
@@ -27,7 +27,7 @@ const CSS02_PAYLOAD_EVIDENCE = [
   {
     path: "styles/legacy-shell-drawers.css",
     bytes: 37_904,
-    sha256: "c0f45e2b59a254de9d334228581dccf2d28ee7cd839c673d84f0a250eb674b45",
+    sha256: "91130c6117784d7c2cc96dd12fcdaa9efd6632bf5540826e3643f27373d76842",
   },
   {
     path: "styles/subscription-accounting.css",
