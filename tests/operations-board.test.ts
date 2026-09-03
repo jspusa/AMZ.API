@@ -31,7 +31,7 @@ function vaultWith(input: {
 }
 
 const SNAPSHOT = {
-  schemaVersion: 1 as const,
+  schemaVersion: 2 as const,
   revision: 3,
   updatedAt: "2026-09-01T04:00:00.000Z",
   items: [
@@ -41,15 +41,41 @@ const SNAPSHOT = {
       marketplaceId: "ATVPDKIKX0DER",
       sellerSku: "ASCL01",
       expiryDate: "2026-12-31",
+      stopSaleDate: null,
       note: "Holiday stock",
     },
     {
       id: "eb7acbb8-a35b-4e52-9180-069153976f0e",
       type: "promotion" as const,
-      date: "2026-10-13",
+      startDate: "2026-10-13",
+      endDate: "2026-10-13",
       title: "Prime Big Deal Days",
       note: "Prepare coupons",
       countdown: true,
+    },
+  ],
+};
+
+const LEGACY_V1_SNAPSHOT = {
+  schemaVersion: 1 as const,
+  revision: SNAPSHOT.revision,
+  updatedAt: SNAPSHOT.updatedAt,
+  items: [
+    {
+      id: SNAPSHOT.items[0].id,
+      type: "expiry" as const,
+      marketplaceId: SNAPSHOT.items[0].marketplaceId,
+      sellerSku: SNAPSHOT.items[0].sellerSku,
+      expiryDate: SNAPSHOT.items[0].expiryDate,
+      note: SNAPSHOT.items[0].note,
+    },
+    {
+      id: SNAPSHOT.items[1].id,
+      type: "promotion" as const,
+      date: SNAPSHOT.items[1].startDate,
+      title: SNAPSHOT.items[1].title,
+      note: SNAPSHOT.items[1].note,
+      countdown: SNAPSHOT.items[1].countdown,
     },
   ],
 };
@@ -64,8 +90,9 @@ function remoteWith(
 }
 
 describe("shared operations bulletin board", () => {
-  it("accepts only the bounded exact v1 schema", () => {
+  it("accepts the bounded exact v2 schema and migrates an exact v1 snapshot", () => {
     expect(parseOperationsBoardSnapshot(SNAPSHOT)).toEqual(SNAPSHOT);
+    expect(parseOperationsBoardSnapshot(LEGACY_V1_SNAPSHOT)).toEqual(SNAPSHOT);
     expect(() => parseOperationsBoardSnapshot({ ...SNAPSHOT, secret: "no" }))
       .toThrow("不支援的欄位");
     expect(() => parseOperationsBoardSnapshot({
@@ -97,6 +124,38 @@ describe("shared operations bulletin board", () => {
       ...SNAPSHOT,
       items: [{ ...SNAPSHOT.items[1], title: "Prime\u061c大檔" }],
     })).toThrow("促銷名稱");
+  });
+
+  it("validates optional stop-sale dates and inclusive promotion ranges", () => {
+    const ranged = {
+      ...SNAPSHOT,
+      items: [
+        { ...SNAPSHOT.items[0], stopSaleDate: "2026-10-31" },
+        { ...SNAPSHOT.items[1], endDate: "2026-10-15" },
+      ],
+    };
+    expect(parseOperationsBoardSnapshot(ranged)).toEqual(ranged);
+    expect(parseOperationsBoardSnapshot({
+      ...SNAPSHOT,
+      items: [{ ...SNAPSHOT.items[0], stopSaleDate: "2026-12-31" }],
+    }).items[0]).toMatchObject({ stopSaleDate: "2026-12-31" });
+
+    expect(() => parseOperationsBoardSnapshot({
+      ...SNAPSHOT,
+      items: [{ ...SNAPSHOT.items[0], stopSaleDate: "2027-01-01" }],
+    })).toThrow(/停售日.*效期/u);
+    expect(() => parseOperationsBoardSnapshot({
+      ...SNAPSHOT,
+      items: [{ ...SNAPSHOT.items[1], endDate: "2026-10-12" }],
+    })).toThrow(/結束日.*開始日/u);
+    expect(() => parseOperationsBoardSnapshot({
+      ...SNAPSHOT,
+      items: [{ ...SNAPSHOT.items[0], stopSaleDate: "" }],
+    })).toThrow(/停售日/u);
+    expect(() => parseOperationsBoardSnapshot({
+      ...SNAPSHOT,
+      items: [{ ...SNAPSHOT.items[1], date: "2026-10-13" }],
+    })).toThrow("不支援的欄位");
   });
 
   it("streams the public document through the real byte limit and disables SDK retries", async () => {
@@ -241,7 +300,7 @@ describe("shared operations bulletin board", () => {
       vault: vaultWith({}),
       remote: remoteWith({
         snapshot: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           revision: 0,
           updatedAt: "1970-01-01T00:00:00.000Z",
           items: [],
@@ -344,6 +403,7 @@ describe("shared operations bulletin board", () => {
       marketplaceId: "ATVPDKIKX0DER",
       sellerSku: "品".repeat(40),
       expiryDate: "2026-12-31",
+      stopSaleDate: null,
       note: "備".repeat(500),
     }));
 

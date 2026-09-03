@@ -43,6 +43,11 @@ export const OPERATIONS_BOARD_EDITOR_HTML = String.raw`<!doctype html>
     .item-kind { font-size:12px; font-weight:900; letter-spacing:.07em; color:#347253; }
     .check { display:flex; grid-column:1/-1; align-items:center; gap:8px; font-weight:700; }
     .check input { width:auto; }
+    .date-picker { position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px; }
+    .date-picker-open { width:100%; border:1px solid #cbd8d0; background:#fff; color:#17231d; text-align:left; }
+    .date-picker-open::after { float:right; content:'▾'; color:#607069; }
+    .date-picker-clear { padding-inline:11px; border:1px solid #d8e0db; background:#f1f5f2; color:#53645b; }
+    .date-picker>input { position:absolute; width:1px; height:1px; padding:0; opacity:0; pointer-events:none; }
     .empty { padding:34px 16px; text-align:center; color:#6d7973; border:1px dashed #cdd8d1; border-radius:12px; }
     .hidden { display:none !important; }
     .spinner { opacity:.65; pointer-events:none; }
@@ -120,6 +125,56 @@ export const OPERATIONS_BOARD_EDITOR_HTML = String.raw`<!doctype html>
     if (maxLength) control.maxLength = maxLength;
     return control;
   }
+  function dateLimits() {
+    const parts = new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+    const part = (type) => parts.find((entry) => entry.type === type)?.value || '';
+    const today = part('year')+'-'+part('month')+'-'+part('day');
+    const start = today.slice(0,7)+'-01';
+    const [year,month] = start.slice(0,7).split('-').map(Number);
+    const end = new Date(Date.UTC(year, month + 11, 0)).toISOString().slice(0,10);
+    return { min:start, max:end };
+  }
+  function dateText(value, emptyText) {
+    if (!value) return emptyText;
+    const [year,month,day] = value.split('-').map(Number);
+    return year+' 年 '+month+' 月 '+day+' 日';
+  }
+  function datePicker(value, name, emptyText, optional = false) {
+    const wrap = document.createElement('div');
+    wrap.className = 'date-picker';
+    const control = input('date', value, name);
+    const limits = dateLimits();
+    control.min = limits.min;
+    control.max = limits.max;
+    control.tabIndex = -1;
+    control.setAttribute('aria-hidden','true');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'date-picker-open';
+    button.textContent = dateText(control.value, emptyText);
+    button.setAttribute('aria-label', emptyText);
+    button.addEventListener('click', () => {
+      try {
+        if (typeof control.showPicker === 'function') control.showPicker();
+        else control.click();
+      } catch (_) { control.click(); }
+    });
+    control.addEventListener('change', () => { button.textContent = dateText(control.value, emptyText); });
+    wrap.append(button, control);
+    if (optional) {
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'date-picker-clear';
+      clear.textContent = '清除';
+      clear.setAttribute('aria-label', '清除'+emptyText.replace('選擇',''));
+      clear.addEventListener('click', () => {
+        control.value = '';
+        button.textContent = dateText('', emptyText);
+      });
+      wrap.append(clear);
+    }
+    return wrap;
+  }
   function textarea(value, name) {
     const control = document.createElement('textarea');
     control.value = value || '';
@@ -158,12 +213,14 @@ export const OPERATIONS_BOARD_EDITOR_HTML = String.raw`<!doctype html>
       fields.append(
         field('Amazon 站點', marketplace),
         field('Seller SKU', input('text', item.sellerSku, 'sellerSku', 40)),
-        field('人工效期', input('date', item.expiryDate, 'expiryDate')),
+        field('產品效期', datePicker(item.expiryDate, 'expiryDate', '選擇產品效期')),
+        field('停售日（選填）', datePicker(item.stopSaleDate, 'stopSaleDate', '選擇停售日', true)),
         field('備註', textarea(item.note, 'note')),
       );
     } else {
       fields.append(
-        field('檔期日期', input('date', item.date, 'date')),
+        field('促銷開始日', datePicker(item.startDate, 'startDate', '選擇促銷開始日')),
+        field('促銷結束日（單日可不選）', datePicker(item.endDate === item.startDate ? '' : item.endDate, 'endDate', '選擇促銷結束日', true)),
         field('促銷名稱', input('text', item.title, 'title', 120)),
         field('備註', textarea(item.note, 'note')),
       );
@@ -197,21 +254,21 @@ export const OPERATIONS_BOARD_EDITOR_HTML = String.raw`<!doctype html>
   function draftItem(draft) { return Object.assign({ id:createItemId() }, draft); }
   function blank(type) {
     return type === 'expiry'
-      ? { id:createItemId(), type, marketplaceId:'ATVPDKIKX0DER', sellerSku:'', expiryDate:'', note:'' }
-      : { id:createItemId(), type, date:'', title:'', note:'', countdown:false };
+      ? { id:createItemId(), type, marketplaceId:'ATVPDKIKX0DER', sellerSku:'', expiryDate:'', stopSaleDate:null, note:'' }
+      : { id:createItemId(), type, startDate:'', endDate:'', title:'', note:'', countdown:false };
   }
   function add(type) {
     const empty = itemsRoot.querySelector('.empty'); if (empty) empty.remove();
     const card = createItem(blank(type), 'pending');
     itemsRoot.append(card);
-    card.querySelector('input,select')?.focus();
+    card.querySelector('.date-picker-open,input:not([type="date"]),select,textarea')?.focus();
     card.scrollIntoView({ behavior:'smooth', block:'center' });
   }
   function collectItems() {
     return Array.from(itemsRoot.querySelectorAll('.item')).map((card) => {
       const value = (name) => card.querySelector('[data-field="'+name+'"]')?.value || '';
-      if (card.dataset.type === 'expiry') return { id:card.dataset.id, type:'expiry', marketplaceId:value('marketplaceId'), sellerSku:value('sellerSku'), expiryDate:value('expiryDate'), note:value('note') };
-      return { id:card.dataset.id, type:'promotion', date:value('date'), title:value('title'), note:value('note'), countdown:Boolean(card.querySelector('[data-field="countdown"]')?.checked) };
+      if (card.dataset.type === 'expiry') return { id:card.dataset.id, type:'expiry', marketplaceId:value('marketplaceId'), sellerSku:value('sellerSku'), expiryDate:value('expiryDate'), stopSaleDate:value('stopSaleDate') || null, note:value('note') };
+      return { id:card.dataset.id, type:'promotion', startDate:value('startDate'), endDate:value('endDate') || value('startDate'), title:value('title'), note:value('note'), countdown:Boolean(card.querySelector('[data-field="countdown"]')?.checked) };
     });
   }
   function render(state) {
@@ -234,10 +291,10 @@ export const OPERATIONS_BOARD_EDITOR_HTML = String.raw`<!doctype html>
     renderItems(items);
     if (pendingId) {
       const card = Array.from(itemsRoot.querySelectorAll('.item')).find((item) => item.dataset.id === pendingId);
-      if (card) { card.classList.add('pending'); card.scrollIntoView({ behavior:'smooth', block:'center' }); card.querySelector('input,select')?.focus(); }
+      if (card) { card.classList.add('pending'); card.scrollIntoView({ behavior:'smooth', block:'center' }); card.querySelector('.date-picker-open,input:not([type="date"]),select,textarea')?.focus(); }
     } else if (state.focusItemId) {
       const card = Array.from(itemsRoot.querySelectorAll('.item')).find((item) => item.dataset.id === state.focusItemId);
-      if (card) { card.classList.add('focused'); card.scrollIntoView({ behavior:'smooth', block:'center' }); card.querySelector('input,select,textarea')?.focus(); }
+      if (card) { card.classList.add('focused'); card.scrollIntoView({ behavior:'smooth', block:'center' }); card.querySelector('.date-picker-open,input:not([type="date"]),select,textarea')?.focus(); }
       else showMessage('這筆公告已不存在；已顯示目前最新的公布欄。', true);
     }
     if (!state.focusItemId || items.some((item) => item.id === state.focusItemId)) {

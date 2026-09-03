@@ -74,13 +74,23 @@ export function parseOperationsBoardPublisherDraft(
 ): OperationsBoardPublisherDraft {
   if (!isRecord(input)) throw new TypeError("公布欄草稿格式無效。");
   if (input.type === "promotion") {
-    exactKeys(input, ["type", "date", "title", "note", "countdown"]);
+    const legacy = Object.prototype.hasOwnProperty.call(input, "date");
+    exactKeys(
+      input,
+      legacy
+        ? ["type", "date", "title", "note", "countdown"]
+        : ["type", "startDate", "endDate", "title", "note", "countdown"],
+    );
     if (typeof input.countdown !== "boolean") {
       throw new TypeError("首頁倒數格式無效。");
     }
+    const startDate = calendarDate(legacy ? input.date : input.startDate, "促銷開始日");
+    const endDate = calendarDate(legacy ? input.date : input.endDate, "促銷結束日");
+    if (endDate < startDate) throw new TypeError("促銷結束日不可早於開始日。");
     const draft: OperationsBoardPublisherDraft = {
       type: "promotion",
-      date: calendarDate(input.date, "檔期日期"),
+      startDate,
+      endDate,
       title: boundedText(input.title, 120, "促銷名稱", true),
       note: boundedNote(input.note, "備註"),
       countdown: input.countdown,
@@ -88,14 +98,28 @@ export function parseOperationsBoardPublisherDraft(
     return draft;
   }
   if (input.type !== "expiry") throw new TypeError("公布欄草稿類型無效。");
-  exactKeys(input, ["type", "marketplaceId", "sellerSku", "expiryDate", "note"]);
+  const hasStopSaleDate = Object.prototype.hasOwnProperty.call(input, "stopSaleDate");
+  exactKeys(
+    input,
+    hasStopSaleDate
+      ? ["type", "marketplaceId", "sellerSku", "expiryDate", "stopSaleDate", "note"]
+      : ["type", "marketplaceId", "sellerSku", "expiryDate", "note"],
+  );
   const marketplaceId = boundedText(input.marketplaceId, 32, "Amazon 站點", true);
   if (!marketplaceById(marketplaceId)) throw new TypeError("Amazon 站點無效。");
+  const expiryDate = calendarDate(input.expiryDate, "人工效期");
+  const stopSaleDate = hasStopSaleDate && input.stopSaleDate !== null
+    ? calendarDate(input.stopSaleDate, "停售日")
+    : null;
+  if (stopSaleDate && stopSaleDate > expiryDate) {
+    throw new TypeError("停售日不可晚於效期。");
+  }
   return {
     type: "expiry",
     marketplaceId,
     sellerSku: boundedText(input.sellerSku, 40, "Seller SKU", true),
-    expiryDate: calendarDate(input.expiryDate, "人工效期"),
+    expiryDate,
+    stopSaleDate,
     note: boundedNote(input.note, "備註"),
   };
 }

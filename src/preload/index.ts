@@ -57,6 +57,7 @@ const bridge: DesktopBridge = Object.freeze({
       ipcRenderer.invoke("fba:ads-credentials-test", marketplaceId) as Promise<AdvertisingConnectionTestResult>,
   }),
   operationsBoard: Object.freeze({
+    schemaVersion: 2 as const,
     publish: (draft: OperationsBoardPublisherDraft) =>
       ipcRenderer.invoke("fba:operations-board-publish", draft) as Promise<void>,
     manage: (itemId: string) =>

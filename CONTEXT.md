@@ -67,5 +67,13 @@ A content-audit family worksheet whose every row is complete and passes every ch
 _Avoid_: partially passing worksheet, editable worksheet, approved Amazon mutation
 
 **Manual Expiry Date**:
-An operator-entered SKU date used for the bulletin countdown and calendar marker; it is not Amazon FC lot-expiry evidence and remains separate from live inventory and price reads.
+An operator-entered SKU product-expiry date shown on the board and calendar; it is the countdown target only when no Manual Stop-Sale Date exists. It is not Amazon FC lot-expiry evidence and remains separate from live inventory and price reads.
 _Avoid_: Amazon expiry date, aged-inventory evidence
+
+**Manual Stop-Sale Date**:
+An optional operator-entered SKU date marking when sales should stop, on or before its Manual Expiry Date; when present, it takes priority as the countdown target.
+_Avoid_: Amazon deactivation date, replacement expiry date
+
+**Promotion Date Range**:
+The inclusive start and end dates of one operator-entered Amazon promotion announcement; a one-day promotion uses the same date for both endpoints.
+_Avoid_: single promotion date, one calendar marker per day

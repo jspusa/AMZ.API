@@ -349,7 +349,7 @@ describe("global FBA content audit panel", () => {
       />,
     );
 
-    expect(markup).toContain("完成讀取");
+    expect(markup).toContain("完整讀取");
     expect(markup).toContain("待確認清單 · 匯出 1 項 Excel");
     expect(markup).toContain("只含有問題或讀取未完成的商品");
     expect(markup).toContain("完整模板 · 匯出全部 2 個商品 Excel");
@@ -1517,13 +1517,32 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(markup).toContain('class="content-audit-summary" role="group" aria-label="文案健檢摘要與問題篩選"');
-    expect(markup).toMatch(/data-audit-filter="COMPLETED"[^>]*>[\s\S]*?<span>完成讀取<\/span><strong>7<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="COMPLETED"[^>]*>[\s\S]*?<span>完整讀取<\/span><strong>7<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="NEEDS_CORRECTION"[^>]*>[\s\S]*?<span>需修正<\/span><strong>2<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="SUSPECTED_TYPO"[^>]*>[\s\S]*?<span>疑似錯字<\/span><strong>1<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="MISSING_INGREDIENTS"[^>]*>[\s\S]*?<span>缺成分<\/span><strong>1<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="SINGLE_INGREDIENT_MISMATCH"[^>]*>[\s\S]*?<span>成分宣稱不一致<\/span><strong>1<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="CORRECT"[^>]*>[\s\S]*?<span>正確設定<\/span><strong>1<\/strong>/u);
-    expect(markup).toMatch(/data-audit-filter="READ_INCOMPLETE"[^>]*>[\s\S]*?<span>讀取未完成<\/span><strong>2<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="READ_INCOMPLETE"[^>]*>[\s\S]*?<span>未讀取完成<\/span><strong>2<\/strong>/u);
+    const summaryMarkup = markup.slice(
+      markup.indexOf('<div class="content-audit-summary"'),
+      markup.indexOf("</div>", markup.indexOf('<div class="content-audit-summary"')) +
+        "</div>".length,
+    );
+    expect(Array.from(summaryMarkup.matchAll(/data-audit-filter="([^"]+)"/gu),
+      (match) => match[1])).toEqual([
+        "NEEDS_CORRECTION",
+        "MISSING_INGREDIENTS",
+        "SINGLE_INGREDIENT_MISMATCH",
+        "SUSPECTED_TYPO",
+        "COMPLETED",
+        "CORRECT",
+        "READ_INCOMPLETE",
+      ]);
+    expect(summaryMarkup.match(/<button/gu)).toHaveLength(7);
+    expect(summaryMarkup).toMatch(
+      /<span(?=[^>]*class="content-audit-summary-spacer")(?=[^>]*aria-hidden="true")[^>]*><\/span>/u,
+    );
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("NEEDS-LENGTH");
     expect(markup).toContain("NEEDS-BULLETS");
@@ -1626,7 +1645,7 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(markup).toMatch(
-      /data-audit-filter="READ_INCOMPLETE"[^>]*>[\s\S]*?<span>讀取未完成<\/span><strong>2<\/strong>/u,
+      /data-audit-filter="READ_INCOMPLETE"[^>]*>[\s\S]*?<span>未讀取完成<\/span><strong>2<\/strong>/u,
     );
     expect(markup).toContain("INGREDIENTS-UNVERIFIED");
     expect(markup).toContain("READ-INCOMPLETE");
@@ -1650,11 +1669,17 @@ describe("global FBA content audit panel", () => {
     expect(initialMarkup).toContain("Listings Items API 尚未完整回傳。");
   });
 
-  it("keeps the seven summary groups in one even desktop row", async () => {
+  it("lays out seven summary filters plus one inert spacer as an even 4 by 2 grid", async () => {
     const stylesheet = await readRendererStylesheet();
 
     expect(stylesheet).toMatch(
+      /\.content-audit-summary\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/u,
+    );
+    expect(stylesheet).not.toMatch(
       /\.content-audit-summary\s*\{[^}]*grid-template-columns:\s*repeat\(7,\s*minmax\(0,\s*1fr\)\)/u,
+    );
+    expect(stylesheet).toMatch(
+      /\.content-audit-summary-spacer\s*\{[^}]*background:\s*#fff;/u,
     );
   });
 

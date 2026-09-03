@@ -4,13 +4,15 @@ export type OperationsBoardExpiryItem = Readonly<{
   marketplaceId: string;
   sellerSku: string;
   expiryDate: string;
+  stopSaleDate: string | null;
   note: string;
 }>;
 
 export type OperationsBoardPromotionItem = Readonly<{
   id: string;
   type: "promotion";
-  date: string;
+  startDate: string;
+  endDate: string;
   title: string;
   note: string;
   countdown: boolean;
@@ -26,18 +28,20 @@ export type OperationsBoardPublisherDraft =
       marketplaceId: string;
       sellerSku: string;
       expiryDate: string;
+      stopSaleDate: string | null;
       note: string;
     }>
   | Readonly<{
       type: "promotion";
-      date: string;
+      startDate: string;
+      endDate: string;
       title: string;
       note: string;
       countdown: boolean;
     }>;
 
 export type OperationsBoardSnapshot = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   revision: number;
   updatedAt: string;
   items: readonly OperationsBoardItem[];

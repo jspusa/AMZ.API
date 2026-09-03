@@ -5,6 +5,21 @@ import {
 } from "../src/main/supply-boss-operations-board";
 
 const SNAPSHOT = {
+  schemaVersion: 2 as const,
+  revision: 3,
+  updatedAt: "2026-09-03T04:00:00.000Z",
+  items: [{
+    id: "8a9f0a88-e3e1-4fe9-9056-6b06fb990105",
+    type: "expiry" as const,
+    marketplaceId: "ATVPDKIKX0DER",
+    sellerSku: "GSCL03",
+    expiryDate: "2027-04-30",
+    stopSaleDate: "2027-03-31",
+    note: "需出清",
+  }],
+};
+
+const LEGACY_SNAPSHOT = {
   schemaVersion: 1 as const,
   revision: 3,
   updatedAt: "2026-09-03T04:00:00.000Z",
@@ -42,14 +57,44 @@ describe("Supply Boss operations board", () => {
     });
     expect(request).toHaveBeenCalledWith(
       SUPPLY_BOSS_OPERATIONS_BOARD_URL,
-      expect.objectContaining({ method: "GET", redirect: "error" }),
+      expect.objectContaining({
+        method: "GET",
+        redirect: "error",
+        headers: expect.objectContaining({
+          "x-amz-api-operations-board-schema": "2",
+        }),
+      }),
     );
+  });
+
+  it("fails closed when a schema 2 GET returns a raw schema 1 snapshot", async () => {
+    const request = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(LEGACY_SNAPSHOT),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    const board = new SupplyBossOperationsBoard({ request });
+
+    await expect(board.read()).resolves.toEqual({
+      snapshot: {
+        schemaVersion: 2,
+        revision: 0,
+        updatedAt: "1970-01-01T00:00:00.000Z",
+        items: [],
+      },
+      source: "empty",
+      stale: true,
+      status: "unavailable",
+      message: "目前無法讀取共用公布欄。",
+    });
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the password and bearer token inside main while replacing by revision", async () => {
     const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/api/operations-board/login")) {
+        expect(new Headers(init?.headers).get("x-amz-api-operations-board-schema"))
+          .toBeNull();
         expect(init?.body).toBe(JSON.stringify({
           username: "API",
           password: "temporary-test-password",
@@ -61,6 +106,8 @@ describe("Supply Boss operations board", () => {
       }
       expect(new Headers(init?.headers).get("authorization"))
         .toBe(`Bearer ${"a".repeat(80)}`);
+      expect(new Headers(init?.headers).get("x-amz-api-operations-board-schema"))
+        .toBe("2");
       expect(init?.body).toBe(JSON.stringify({
         baseRevision: 3,
         items: SNAPSHOT.items,
@@ -89,6 +136,32 @@ describe("Supply Boss operations board", () => {
     expect(serializedCalls).toContain("temporary-test-password");
     expect(JSON.stringify(board.sessionSummary())).not.toContain("temporary-test-password");
     expect(JSON.stringify(board.sessionSummary())).not.toContain("a".repeat(80));
+  });
+
+  it("treats a raw schema 1 body from a successful schema 2 PUT as unknown", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        token: "e".repeat(80),
+        expiresAt: "2026-09-03T12:00:00.000Z",
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...LEGACY_SNAPSHOT,
+        revision: 4,
+        updatedAt: "2026-09-03T04:05:00.000Z",
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+    const board = new SupplyBossOperationsBoard({
+      request,
+      now: () => new Date("2026-09-03T04:00:00.000Z"),
+    });
+    await board.login({ username: "API", password: "temporary-test-password" });
+
+    await expect(board.replace({ baseRevision: 3, items: SNAPSHOT.items }))
+      .rejects.toMatchObject({
+        code: "OPERATIONS_BOARD_WRITE_UNKNOWN",
+        message: expect.stringContaining("不會自動重送"),
+      });
+    expect(board.sessionSummary().authenticated).toBe(true);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("clears an expired/rejected session and never retries an unknown write", async () => {

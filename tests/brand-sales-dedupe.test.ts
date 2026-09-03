@@ -1163,6 +1163,64 @@ describe("durable brand-sales report dedupe", () => {
     expect(shipmentStarts).toBe(1);
   });
 
+  it("rebinds an extended brand job when a same-identity DONE listing lease replaces the old DONE lease", async () => {
+    const localStore = await store();
+    let listingStarts = 0;
+    let shipmentStarts = 0;
+    const app = router(localStore, {
+      startListing: async () => {
+        listingStarts += 1;
+        return {
+          ...queuedListing(listingStarts),
+          ready: true,
+          documentId: `listing-document-${listingStarts}`,
+          status: "DONE",
+        };
+      },
+      startShipment: async () => queuedShipment(++shipmentStarts),
+    });
+
+    const started = await brandStart(app);
+    const jobId = String(body(started).jobId);
+    const initialJob = await localStore.getBrandSalesJobById(jobId);
+    if (!initialJob) throw new Error("Expected the initial Brand job");
+
+    vi.setSystemTime(new Date("2026-08-09T00:58:30.000Z"));
+    const extended = await brandStart(app);
+    const extendedJob = await localStore.getBrandSalesJobById(jobId);
+    if (!extendedJob) throw new Error("Expected the extended Brand job");
+    expect(extended.status).toBe(202);
+    expect(body(extended).jobId).toBe(jobId);
+    expect(extendedJob.expiresAt).toBeGreaterThan(initialJob.expiresAt);
+
+    const oldListingLease = await localStore.getSharedAllListingsReport({
+      accountScope: ACCOUNT_SCOPE,
+      marketplaceId: MARKETPLACE_ID,
+    });
+    if (!oldListingLease) throw new Error("Expected the old All Listings lease");
+    await localStore.deleteSharedAllListingsReport(oldListingLease.leaseId);
+
+    const replacement = await app.handle(request({
+      method: "POST",
+      path: "/api/sp-api/variation-audit",
+      body: { marketplaceId: MARKETPLACE_ID },
+    }));
+    expect(replacement.status).toBe(200);
+    expect(listingStarts).toBe(2);
+
+    const reopened = await brandStart(app);
+    const reboundJob = await localStore.getBrandSalesJobById(jobId);
+
+    expect(reopened.status).toBe(202);
+    expect(body(reopened).jobId).toBe(jobId);
+    expect(reboundJob?.listing).toMatchObject({
+      reportId: body(replacement).reportId,
+      documentId: body(replacement).documentId,
+      status: "DONE",
+    });
+    expect(shipmentStarts).toBe(1);
+  });
+
   it("preserves a returned report ID as CREATION_UNKNOWN after post-create validation mismatch", async () => {
     const localStore = await store();
     let shipmentStarts = 0;

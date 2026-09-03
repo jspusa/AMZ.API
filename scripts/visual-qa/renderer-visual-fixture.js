@@ -20,7 +20,7 @@
   const fixedTime = "2026-08-21T12:00:00.000Z";
   const operationsBoardSnapshot = {
     snapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 4,
       updatedAt: fixedTime,
       items: [
@@ -30,12 +30,14 @@
           marketplaceId,
           sellerSku: "VISUAL-EXPIRY-SKU",
           expiryDate: "2026-09-05",
+          stopSaleDate: "2026-08-31",
           note: "先安排舊批次出庫，並在促銷前重新核對庫存。",
         },
         {
           id: "8bf4791c-3c0b-4587-a47d-31454feb88c9",
           type: "promotion",
-          date: "2026-09-10",
+          startDate: "2026-09-10",
+          endDate: "2026-09-12",
           title: "Visual Prime 檔期",
           note: "確認 Coupon、廣告與安全庫存。",
           countdown: true,
@@ -43,7 +45,8 @@
         {
           id: "77bfa25f-929e-47dd-93f3-fc71862231a4",
           type: "promotion",
-          date: "2026-09-22",
+          startDate: "2026-09-22",
+          endDate: "2026-09-22",
           title: "秋季 Deal 提報截止",
           note: "不需首頁倒數，保留在月曆。",
           countdown: false,

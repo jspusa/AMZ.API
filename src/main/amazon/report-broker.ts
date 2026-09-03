@@ -301,6 +301,9 @@ export class FixedReportBroker {
     persisted: Readonly<{
       reportId: string | null;
       documentId: string | null;
+      status: DurableReportLeg["status"];
+      createdAt: number | null;
+      terminal: DurableReportLeg["terminal"];
       leaseBinding?: string | null;
       handleBinding?: string | null;
     }>,
@@ -315,16 +318,35 @@ export class FixedReportBroker {
       ? persisted.handleBinding
       : null;
     if (storedLeaseBinding || storedHandleBinding) {
-      return Boolean(
+      const storedHandleIsIntact = Boolean(
         storedLeaseBinding &&
         storedHandleBinding &&
         persisted.reportId &&
-        projected.leaseBinding === storedLeaseBinding &&
         storedHandleBinding === spHandleBinding({
           leaseBinding: storedLeaseBinding,
           reportId: persisted.reportId,
           documentId: persisted.documentId,
         }),
+      );
+      if (!storedHandleIsIntact) return false;
+      if (projected.leaseBinding === storedLeaseBinding) return true;
+
+      // A long-running Brand job can outlive a completed shared report lease.
+      // Rebind only to a newer, already-complete lease for the same broker-owned
+      // intent. No pending, terminal, incomplete, or tampered leg is accepted.
+      return Boolean(
+        persisted.status === "DONE" &&
+        persisted.terminal === null &&
+        persisted.documentId &&
+        persisted.createdAt !== null &&
+        projected.status === "DONE" &&
+        projected.terminal === null &&
+        projected.reportId &&
+        projected.documentId &&
+        projected.leaseBinding &&
+        projected.handleBinding &&
+        projected.createdAt !== null &&
+        projected.createdAt > persisted.createdAt
       );
     }
     if (!persisted.reportId || !projected.leaseBinding) return false;

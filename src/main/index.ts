@@ -894,7 +894,7 @@ function registerIpc(): void {
     }
     const raw = input as Readonly<{ baseRevision: number; items: readonly OperationsBoardItem[] }>;
     const validated = parseOperationsBoardSnapshot({
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: raw.baseRevision,
       updatedAt: new Date().toISOString(),
       items: raw.items,

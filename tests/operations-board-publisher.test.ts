@@ -18,11 +18,12 @@ describe("operations bulletin publisher", () => {
       marketplaceId: "ATVPDKIKX0DER",
       sellerSku: "ASCL01",
       expiryDate: "2026-12-31",
+      stopSaleDate: null,
       note: "先出舊批次",
     });
   });
 
-  it("normalizes a promotion draft including the optional countdown decision", () => {
+  it("migrates a legacy one-day promotion draft into one exact v2 date range", () => {
     expect(parseOperationsBoardPublisherDraft({
       type: "promotion",
       date: "2026-10-13",
@@ -31,10 +32,44 @@ describe("operations bulletin publisher", () => {
       countdown: false,
     })).toEqual({
       type: "promotion",
-      date: "2026-10-13",
+      startDate: "2026-10-13",
+      endDate: "2026-10-13",
       title: "Prime Big Deal Days",
       note: "提前確認折扣與備貨",
       countdown: false,
+    });
+  });
+
+  it("normalizes v2 stop-sale and multi-day promotion drafts", () => {
+    expect(parseOperationsBoardPublisherDraft({
+      type: "expiry",
+      marketplaceId: " ATVPDKIKX0DER ",
+      sellerSku: " ASCL01 ",
+      expiryDate: "2026-12-31",
+      stopSaleDate: "2026-10-31",
+      note: " 先停售 ",
+    })).toEqual({
+      type: "expiry",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "ASCL01",
+      expiryDate: "2026-12-31",
+      stopSaleDate: "2026-10-31",
+      note: "先停售",
+    });
+    expect(parseOperationsBoardPublisherDraft({
+      type: "promotion",
+      startDate: "2026-10-13",
+      endDate: "2026-10-15",
+      title: " Prime Big Deal Days ",
+      note: " 三日檔期 ",
+      countdown: true,
+    })).toEqual({
+      type: "promotion",
+      startDate: "2026-10-13",
+      endDate: "2026-10-15",
+      title: "Prime Big Deal Days",
+      note: "三日檔期",
+      countdown: true,
     });
   });
 
@@ -54,12 +89,37 @@ describe("operations bulletin publisher", () => {
       note: "",
     })).toThrow("Amazon 站點無效");
     expect(() => parseOperationsBoardPublisherDraft({
+      type: "expiry",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "ASCL01",
+      expiryDate: "2026-12-31",
+      stopSaleDate: "2027-01-01",
+      note: "",
+    })).toThrow(/停售日.*效期/u);
+    expect(() => parseOperationsBoardPublisherDraft({
+      type: "promotion",
+      startDate: "2026-10-15",
+      endDate: "2026-10-13",
+      title: "Prime Big Deal Days",
+      note: "",
+      countdown: true,
+    })).toThrow(/結束日.*開始日/u);
+    expect(() => parseOperationsBoardPublisherDraft({
       type: "promotion",
       date: "2026-10-13",
       title: "Prime Big Deal Days",
       note: "",
       countdown: false,
       hidden: "not allowed",
+    })).toThrow("格式無效");
+    expect(() => parseOperationsBoardPublisherDraft({
+      type: "promotion",
+      date: "2026-10-13",
+      startDate: "2026-10-13",
+      endDate: "2026-10-13",
+      title: "Prime Big Deal Days",
+      note: "",
+      countdown: false,
     })).toThrow("格式無效");
   });
 
@@ -79,6 +139,8 @@ describe("operations bulletin publisher", () => {
 
     expect(preload).toContain('ipcRenderer.invoke("fba:operations-board-publish"');
     expect(preload).toContain('ipcRenderer.invoke("fba:operations-board-manage"');
+    expect(preload).toContain("schemaVersion: 2 as const");
+    expect(contracts).toContain("readonly schemaVersion: 2");
     expect(contracts).toMatch(/operationsBoard:\s*\{[\s\S]*publish\([\s\S]*manage\(/u);
 
     const publishStart = main.indexOf('ipcMain.handle("fba:operations-board-publish"');

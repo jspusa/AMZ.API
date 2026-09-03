@@ -3072,20 +3072,20 @@ export default function ContentAuditPanel({
   }> = summary
     ? [
         {
-          filter: "COMPLETED",
-          label: "完成讀取",
-          count: summary.completed,
-          detail: `共 ${summary.total.toLocaleString()} 個可健檢 FBA SKU`,
-        },
-        {
           filter: "NEEDS_CORRECTION",
           label: "需修正",
           count: snapshot.rows.filter(contentAuditNeedsCorrection).length,
           detail: "名稱、亮點、要點或敘述",
         },
-        { filter: "SUSPECTED_TYPO", label: "疑似錯字", count: summary.suspectedTypos, detail: "SKU" },
         { filter: "MISSING_INGREDIENTS", label: "缺成分", count: summary.missingIngredients, detail: "已證明適用的 SKU" },
         { filter: "SINGLE_INGREDIENT_MISMATCH", label: "成分宣稱不一致", count: summary.singleIngredientMismatch, detail: "依 ingredients 明確證據核對" },
+        { filter: "SUSPECTED_TYPO", label: "疑似錯字", count: summary.suspectedTypos, detail: "SKU" },
+        {
+          filter: "COMPLETED",
+          label: "完整讀取",
+          count: summary.completed,
+          detail: `共 ${summary.total.toLocaleString()} 個可健檢 FBA SKU`,
+        },
         {
           filter: "CORRECT",
           label: "正確設定",
@@ -3095,7 +3095,7 @@ export default function ContentAuditPanel({
         },
         {
           filter: "READ_INCOMPLETE",
-          label: "讀取未完成",
+          label: "未讀取完成",
           count: snapshot.rows.filter(contentAuditReadIncomplete).length,
           detail: "含成分未驗證",
         },
@@ -3429,6 +3429,7 @@ export default function ContentAuditPanel({
                 <small>{item.detail}</small>
               </button>
             ))}
+            <span className="content-audit-summary-spacer" aria-hidden="true" />
           </div>
           {spellcheckNote && <p className="content-audit-note">{spellcheckNote}</p>}
           {invisibleLocations.length > 0 && (

@@ -454,7 +454,7 @@ describe("ApiRouter public contract", () => {
     const board = {
       read: vi.fn(async () => ({
         snapshot: {
-          schemaVersion: 1 as const,
+          schemaVersion: 2 as const,
           revision: 0,
           updatedAt: "1970-01-01T00:00:00.000Z",
           items: [],
