@@ -187,11 +187,18 @@ export const OPERATIONS_BOARD_EDITOR_HTML = String.raw`<!doctype html>
       itemsRoot.append(empty);
     }
   }
-  function draftItem(draft) { return Object.assign({ id:crypto.randomUUID() }, draft); }
+  function createItemId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
+  }
+  function draftItem(draft) { return Object.assign({ id:createItemId() }, draft); }
   function blank(type) {
     return type === 'expiry'
-      ? { id:crypto.randomUUID(), type, marketplaceId:'ATVPDKIKX0DER', sellerSku:'', expiryDate:'', note:'' }
-      : { id:crypto.randomUUID(), type, date:'', title:'', note:'', countdown:false };
+      ? { id:createItemId(), type, marketplaceId:'ATVPDKIKX0DER', sellerSku:'', expiryDate:'', note:'' }
+      : { id:createItemId(), type, date:'', title:'', note:'', countdown:false };
   }
   function add(type) {
     const empty = itemsRoot.querySelector('.empty'); if (empty) empty.remove();

@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
   OPERATIONS_BOARD_EDITOR_HTML,
@@ -43,6 +44,24 @@ describe("local-only operations board editor", () => {
     expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("確定要刪除這筆公布項目嗎？");
     expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("remove.textContent = '刪除'");
     expect(OPERATIONS_BOARD_EDITOR_HTML).toContain('id="save" class="primary" type="button">確認並發布</button>');
+  });
+
+  it("creates item IDs in the non-secure data URL without crypto.randomUUID", () => {
+    expect(OPERATIONS_BOARD_EDITOR_HTML).not.toContain("crypto.randomUUID");
+    const source = OPERATIONS_BOARD_EDITOR_HTML.match(
+      /function createItemId\(\) \{[\s\S]*?\n  \}/u,
+    )?.[0];
+    expect(source).toBeTruthy();
+    const createItemId = runInNewContext(`(${source})`, {
+      crypto: {
+        getRandomValues(bytes: Uint8Array) {
+          bytes.set(Uint8Array.from({ length: 16 }, (_, index) => index));
+          return bytes;
+        },
+      },
+      Uint8Array,
+    }) as () => string;
+    expect(createItemId()).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
   });
 
   it("uses a cool gray-white editor background without the old pale yellow", () => {
