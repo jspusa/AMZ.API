@@ -78,7 +78,7 @@ SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、�
 
 - Secret 經 Electron `safeStorage` 的作業系統金鑰保護後，才寫入 App 的 `userData/credentials.enc`；macOS 使用 Keychain，Windows 使用當前登入使用者的 DPAPI。
 - Amazon Ads 使用獨立 `ads-credentials.enc`；兩種憑證都只在 main process 的無網路本機 sheet 輸入，Pages 只能開啟 sheet、讀取遮罩狀態、測試或清除。
-- 公布欄帳密只送往固定 Supply Boss 登入端點；最長 8 小時的 board-scoped session token 只存在 main process 記憶體，密碼不保存，鎖屏、睡眠、App 結束或到期即登出。關閉管理視窗不會立刻登出，讓同一次 App 使用期間再次管理時不必重輸。Seller SKU、人工效期、促銷名稱與備註屬公開公告內容；Amazon 憑證、即時庫存與價格不會上傳。
+- 公布欄使用獨立於 Supply Boss 舊管理 API 的 board-editor 帳密，只送往固定登入端點；最長 8 小時的 board-scoped session token 只存在 main process 記憶體，不能操作舊 snapshot 管理 API。密碼不保存，鎖屏、睡眠、App 結束或到期即登出；關閉管理視窗不會立刻登出，讓同一次 App 使用期間再次管理時不必重輸。Seller SKU、人工效期、促銷名稱與備註屬公開公告內容；Amazon 憑證、即時庫存與價格不會上傳。
 - 完整 Secret 永不回傳 renderer、永不寫入 GitHub、`.env`、URL、localStorage 或日誌。
 - Amazon Access Token 只在主程序記憶體中短暫快取。
 - 作業系統安全儲存不可用時保存會直接失敗，沒有明文 fallback。Windows DPAPI 保護不同 Windows 使用者之間的存取，不等於隔離同一使用者權限下的其他程式。

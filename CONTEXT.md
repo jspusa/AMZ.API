@@ -55,7 +55,7 @@ One validated expiry notice or promotion item in the Operations Bulletin Board; 
 _Avoid_: GitHub Issue, Amazon event, inventory record
 
 **Board Session**:
-A board-scoped Supply Boss login token held only in Notebook Key main-process memory for at most eight hours; lock, sleep, App exit, or expiry clears it, while closing the editor does not.
+A board-scoped Supply Boss login token issued only from the separate board-editor credentials and held in Notebook Key main-process memory for at most eight hours; it cannot authorize the legacy Supply Boss admin API. Lock, sleep, App exit, or expiry clears it, while closing the editor does not.
 _Avoid_: GitHub login, saved password, renderer token, permanent session
 
 **B2B Audit Bucket**:

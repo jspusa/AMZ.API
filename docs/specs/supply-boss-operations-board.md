@@ -21,11 +21,11 @@ The public board is intentionally readable by every connected employee App. Only
 ## API and storage contract
 
 - `GET /api/operations-board` is public and returns one exact v1 snapshot.
-- `POST /api/operations-board/login` verifies the shared credentials and returns a board-scoped session with an eight-hour maximum lifetime.
+- `POST /api/operations-board/login` verifies separate board-editor credentials and returns a board-scoped session with an eight-hour maximum lifetime. The same credentials are rejected by the legacy `/api/login` snapshot-admin route.
 - `PUT /api/operations-board` requires that session and a base revision. It submits the full replacement after create／edit／delete operations.
-- Snapshot and write bodies are limited to 128 KiB and 100 unique UUID items. Marketplaces, date-only values, Seller SKU, titles, notes, and discriminated item shapes are validated exactly.
+- Login and write request streams are bounded before JSON parsing; a stream is cancelled immediately once it exceeds its limit. Snapshot and write bodies are limited to 128 KiB and 100 unique UUID items. Marketplaces, date-only values, Seller SKU, titles, notes, and discriminated item shapes are validated exactly.
 - Supply Boss owns the fixed R2 object `operations-board/v1.json`; AMZ.API never asks the operator for bucket, account, access key, secret, or public-base fields.
-- The server generates revision and update time and uses R2 ETag conditional writes. A competing edit returns `409`; the client reloads and requires an explicit human retry instead of overwriting.
+- The server generates revision and update time and uses the raw R2 object ETag for conditional writes; the quoted HTTP ETag is response metadata only. A competing edit returns `409`; the client reloads and requires an explicit human retry instead of overwriting.
 - Timeout, `429`, `5xx`, network failure, and unknown write result are never blindly retried.
 - A read failure may use only the current process's last-known-good snapshot and must display stale state; failure never means the board is empty.
 
