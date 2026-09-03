@@ -996,7 +996,7 @@
 
 .content-audit-summary {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 1px;
   margin-top: 17px;
   overflow: hidden;
@@ -2206,7 +2206,7 @@
   }
 
   .content-audit-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .content-audit-controls {

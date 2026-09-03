@@ -183,7 +183,74 @@ type ReportReply = {
 };
 
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
-export type AuditFilter = "all" | "READ_INCOMPLETE" | ContentAuditIssueKind;
+export type AuditFilter =
+  | "all"
+  | "NEEDS_CORRECTION"
+  | "CORRECT"
+  | "READ_INCOMPLETE"
+  | ContentAuditIssueKind;
+
+const CONTENT_AUDIT_NEEDS_CORRECTION_KINDS = new Set<ContentAuditIssueKind>([
+  "MISSING_BULLETS",
+  "TITLE_BELOW_TARGET",
+  "HIGHLIGHT_BELOW_TARGET",
+  "BULLET_BELOW_TARGET",
+  "BULLET_ABOVE_TARGET",
+  "DESCRIPTION_BELOW_TARGET",
+]);
+
+const CONTENT_AUDIT_SPECIALIST_KINDS = new Set<ContentAuditIssueKind>([
+  "SUSPECTED_TYPO",
+  "MISSING_INGREDIENTS",
+  "SINGLE_INGREDIENT_MISMATCH",
+  "INGREDIENTS_UNVERIFIED",
+]);
+
+function contentAuditNeedsCorrection(row: ContentAuditRow): boolean {
+  if (row.readStatus !== "complete") return false;
+  if (row.issues.some((issue) => CONTENT_AUDIT_SPECIALIST_KINDS.has(issue.kind))) {
+    return false;
+  }
+  return row.issues.some((issue) =>
+    CONTENT_AUDIT_NEEDS_CORRECTION_KINDS.has(issue.kind));
+}
+
+function contentAuditReadIncomplete(row: ContentAuditRow): boolean {
+  return row.readStatus === "incomplete" || row.issues.some(
+    (issue) => issue.kind === "INGREDIENTS_UNVERIFIED",
+  );
+}
+
+function contentAuditRowMatchesFilter(
+  row: ContentAuditRow,
+  filter: AuditFilter,
+): boolean {
+  if (filter === "all") {
+    return row.readStatus === "incomplete" || row.issues.length > 0;
+  }
+  if (filter === "NEEDS_CORRECTION") return contentAuditNeedsCorrection(row);
+  if (filter === "CORRECT") {
+    return row.readStatus === "complete" && row.issues.length === 0;
+  }
+  if (filter === "READ_INCOMPLETE") return contentAuditReadIncomplete(row);
+  return row.readStatus === "complete" && row.issues.some(
+    (issue) => issue.kind === filter,
+  );
+}
+
+function contentAuditIssueMatchesFilter(
+  issue: ContentAuditIssue,
+  filter: AuditFilter,
+): boolean {
+  if (filter === "all") return true;
+  if (filter === "NEEDS_CORRECTION") {
+    return CONTENT_AUDIT_NEEDS_CORRECTION_KINDS.has(issue.kind);
+  }
+  if (filter === "READ_INCOMPLETE") {
+    return issue.kind === "INGREDIENTS_UNVERIFIED";
+  }
+  return filter !== "CORRECT" && issue.kind === filter;
+}
 
 export type ContentAuditCache = {
   snapshot: ContentAuditSnapshot;
@@ -2807,15 +2874,8 @@ export default function ContentAuditPanel({
   );
   const visibleRows = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("en-US");
-    return attentionRows.filter((row) => {
-      if (filter === "READ_INCOMPLETE") {
-        if (row.readStatus !== "incomplete") return false;
-      } else if (
-        filter !== "all" &&
-        !row.issues.some((issue) => issue.kind === filter)
-      ) {
-        return false;
-      }
+    return (snapshot?.rows ?? []).filter((row) => {
+      if (!contentAuditRowMatchesFilter(row, filter)) return false;
       if (!normalizedQuery) return true;
       return [
         row.sellerSku,
@@ -2828,7 +2888,7 @@ export default function ContentAuditPanel({
         .toLocaleLowerCase("en-US")
         .includes(normalizedQuery);
     });
-  }, [attentionRows, filter, query]);
+  }, [snapshot, filter, query]);
   const invisibleLocations = useMemo(
     () =>
       filter === "all" || filter === "SUSPECTED_TYPO"
@@ -3008,18 +3068,28 @@ export default function ContentAuditPanel({
     detail: string;
   }> = summary
     ? [
-        { filter: "READ_INCOMPLETE", label: "讀取未完成", count: summary.incomplete, detail: "不列入缺值統計" },
-        { filter: "all", label: "有待確認", count: attentionRows.length, detail: "SKU" },
+        {
+          filter: "NEEDS_CORRECTION",
+          label: "需修正",
+          count: snapshot.rows.filter(contentAuditNeedsCorrection).length,
+          detail: "名稱、亮點、要點或敘述",
+        },
         { filter: "SUSPECTED_TYPO", label: "疑似錯字", count: summary.suspectedTypos, detail: "SKU" },
-        { filter: "TITLE_BELOW_TARGET", label: "產品名稱不足", count: summary.titleBelowTarget, detail: "少於 60 字元的 SKU" },
-        { filter: "HIGHLIGHT_BELOW_TARGET", label: "產品亮點不足", count: summary.highlightBelowTarget, detail: "少於 110 字元的 SKU" },
-        { filter: "BULLET_BELOW_TARGET", label: "產品要點過短", count: summary.bulletBelowTarget, detail: "至少一項少於 150 字元" },
-        { filter: "BULLET_ABOVE_TARGET", label: "產品要點過長", count: summary.bulletAboveTarget, detail: "至少一項超過 200 字元" },
-        { filter: "DESCRIPTION_BELOW_TARGET", label: "產品敘述不足", count: summary.descriptionBelowTarget, detail: "少於 1,800 字元的 SKU" },
-        { filter: "MISSING_BULLETS", label: "賣點不足", count: summary.missingBullets, detail: "SKU" },
         { filter: "MISSING_INGREDIENTS", label: "缺成分", count: summary.missingIngredients, detail: "已證明適用的 SKU" },
-        { filter: "INGREDIENTS_UNVERIFIED", label: "成分未驗證", count: summary.ingredientsUnverified, detail: "需人工確認 PTD" },
         { filter: "SINGLE_INGREDIENT_MISMATCH", label: "成分宣稱不一致", count: summary.singleIngredientMismatch, detail: "依 ingredients 明確證據核對" },
+        {
+          filter: "CORRECT",
+          label: "正確設定",
+          count: snapshot.rows.filter((row) =>
+            contentAuditRowMatchesFilter(row, "CORRECT")).length,
+          detail: "全部檢查通過",
+        },
+        {
+          filter: "READ_INCOMPLETE",
+          label: "讀取未完成",
+          count: snapshot.rows.filter(contentAuditReadIncomplete).length,
+          detail: "含成分未驗證",
+        },
       ]
     : [];
 
@@ -3492,7 +3562,7 @@ export default function ContentAuditPanel({
                     )}
                     <div className="content-audit-issues" aria-label="待修原因">
                       {row.readStatus === "incomplete" &&
-                        (filter === "all" || filter === "READ_INCOMPLETE") &&
+                        filter === "READ_INCOMPLETE" &&
                         row.readErrors.map((readError, index) => (
                           <div key={`${readError.code}-${index}`}>
                             <span className="kind-read_incomplete">讀取失敗／未完成</span>
@@ -3508,8 +3578,7 @@ export default function ContentAuditPanel({
                               issue,
                               invisibleLocations,
                             ) &&
-                            (filter === "all" ||
-                              (filter !== "READ_INCOMPLETE" && issue.kind === filter)),
+                            contentAuditIssueMatchesFilter(issue, filter),
                         )
                         .map((issue, index) => (
                           <div key={`${issue.kind}-${issue.field}-${issue.bulletIndex ?? issue.token ?? index}`}>
@@ -3525,7 +3594,7 @@ export default function ContentAuditPanel({
             </div>
           ) : (
             <div className="content-audit-empty">
-              <span>✓</span><strong>這個條件下沒有待確認項目</strong><p>可切換篩選或清除搜尋文字。</p>
+              <span>✓</span><strong>這個條件下沒有符合項目</strong><p>可切換篩選或清除搜尋文字。</p>
             </div>
           )}
         </>
