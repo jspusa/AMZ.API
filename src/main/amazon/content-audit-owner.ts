@@ -487,6 +487,7 @@ function workbookRow(row: ContentAuditRow): ContentAuditWorkbookV2Row {
       index,
     ));
   return {
+    readStatus: row.readStatus,
     sellerSku: row.sellerSku,
     asin: row.asin,
     productType: row.productType,

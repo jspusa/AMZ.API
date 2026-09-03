@@ -406,6 +406,12 @@ describe("operations bulletin home card", () => {
     await act(async () => {
       await addExpiry!.props.onClick();
     });
+    const expiryComposerMarkup = JSON.stringify(renderer!.toJSON());
+    expect(expiryComposerMarkup).toContain("登入並確認發布");
+    expect(expiryComposerMarkup).toContain(
+      "公告只會公開 SKU、日期與備註；Amazon 庫存、價格與憑證不會上傳。",
+    );
+    expect(expiryComposerMarkup).not.toContain("GitHub");
     const field = (name: string) => renderer!.root.findByProps({ name });
     await act(async () => {
       field("sellerSku").props.onChange({ currentTarget: { value: "NEW-SKU" } });
@@ -469,7 +475,7 @@ describe("operations bulletin home card", () => {
     await act(async () => renderer!.unmount());
   });
 
-  it("publishes promotions with one countdown choice and opens source management", async () => {
+  it("publishes promotions with one countdown choice and opens edit/delete", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     const publish = vi.fn(async () => undefined);
@@ -500,9 +506,12 @@ describe("operations bulletin home card", () => {
       button.children.join("").includes("新增促銷")
     );
     await act(async () => addPromotion!.props.onClick());
-    expect(JSON.stringify(renderer!.toJSON())).toContain(
-      "資料會公開到 GitHub",
+    const promotionComposerMarkup = JSON.stringify(renderer!.toJSON());
+    expect(promotionComposerMarkup).toContain("登入並確認發布");
+    expect(promotionComposerMarkup).toContain(
+      "公告只會公開促銷名稱、日期與備註；Amazon 庫存、價格與憑證不會上傳。",
     );
+    expect(promotionComposerMarkup).not.toContain("GitHub");
     const field = (name: string) => renderer!.root.findByProps({ name });
     await act(async () => {
       field("promotionDate").props.onChange({ currentTarget: { value: "2026-10-13" } });
@@ -523,10 +532,69 @@ describe("operations bulletin home card", () => {
     });
 
     const manageButton = renderer!.root.findAllByProps({ className: "bulletin-manage" })[0];
+    expect(manageButton.children.join("")).toBe("編輯／刪除");
     await act(async () => manageButton.props.onClick());
     expect(manage).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-000000000123",
     );
+    await act(async () => renderer!.unmount());
+  });
+
+  it("explains a failed publish without exposing the backing service", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const publish = vi.fn(async () => Promise.reject(null));
+    vi.stubGlobal("window", { fbaOS: { operationsBoard: { publish } } });
+    const emptyBoard: OperationsBoardResponse = {
+      ...BOARD,
+      snapshot: { ...BOARD.snapshot, items: [] },
+    };
+
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(
+        <OperationsBulletinCard initialResponse={emptyBoard} todayDateKey="2026-09-01" />,
+      );
+    });
+    const addExpiry = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("新增即期品")
+    );
+    await act(async () => addExpiry!.props.onClick());
+    await act(async () => {
+      renderer!.root.findByProps({ name: "sellerSku" }).props
+        .onChange({ currentTarget: { value: "NEW-SKU" } });
+      renderer!.root.findByProps({ name: "expiryDate" }).props
+        .onChange({ currentTarget: { value: "2026-12-31" } });
+    });
+    await act(async () => {
+      await renderer!.root.findByProps({ "aria-label": "新增即期品公告" })
+        .props.onSubmit({ preventDefault: vi.fn() });
+    });
+
+    const markup = JSON.stringify(renderer!.toJSON());
+    expect(markup).toContain("目前無法登入或開啟發布確認。");
+    expect(markup).not.toContain("GitHub");
+    await act(async () => renderer!.unmount());
+  });
+
+  it("uses direct edit and delete language when announcement management fails", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const manage = vi.fn(async () => Promise.reject(null));
+    vi.stubGlobal("window", { fbaOS: { operationsBoard: { manage } } });
+
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(
+        <OperationsBulletinCard initialResponse={BOARD} todayDateKey="2026-09-01" />,
+      );
+      await Promise.resolve();
+    });
+    const manageButton = renderer!.root.findAllByProps({ className: "bulletin-manage" })[0];
+    expect(manageButton.children.join("")).toBe("編輯／刪除");
+    await act(async () => manageButton.props.onClick());
+
+    expect(JSON.stringify(renderer!.toJSON())).toContain("目前無法開啟編輯／刪除。");
     await act(async () => renderer!.unmount());
   });
 

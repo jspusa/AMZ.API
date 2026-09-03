@@ -1,6 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import {
+  act,
+  create,
+  type ReactTestInstance,
+  type ReactTestRenderer,
+} from "react-test-renderer";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -117,6 +122,20 @@ function payload(): Record<string, unknown> {
     },
     notice: "只納入 Amazon 報表與 Listings Items API 共同確認的 FBA SKU。",
   };
+}
+
+async function selectBusinessPricingFilter(
+  root: ReactTestInstance,
+  label: string,
+): Promise<void> {
+  const summary = root.findByProps({
+    "aria-label": "B2B 價格健檢摘要與篩選",
+  });
+  const button = summary.findAllByType("button").find((candidate) =>
+    candidate.findByType("span").children.join("") === label
+  );
+  if (!button) throw new Error(`Missing B2B summary filter: ${label}`);
+  await act(async () => button.props.onClick());
 }
 
 const interactiveListing = {
@@ -294,6 +313,7 @@ async function previewBodyFromRowInteraction(
   const buttonNamed = (name: string) => root.findAllByType("button").find(
     (button) => button.children.join("") === name,
   );
+  await selectBusinessPricingFilter(root, "未設定");
   await act(async () => {
     buttonNamed("設定 B2B 價格")!.props.onClick();
   });
@@ -1313,6 +1333,7 @@ describe("FBA business pricing audit renderer", () => {
       "aria-label": "FBA B2B 價格商品",
     })).toHaveLength(1);
 
+    await selectBusinessPricingFilter(root, "未設定");
     await act(async () => {
       root.findAllByType("button").find(
         (button) => button.children.join("") === "設定 B2B 價格",
@@ -1375,6 +1396,7 @@ describe("FBA business pricing audit renderer", () => {
       });
     });
     const root = renderer!.root;
+    await selectBusinessPricingFilter(root, "未設定");
     await act(async () => {
       root.findAllByType("button").find(
         (button) => button.children.join("") === "設定 B2B 價格",
@@ -1437,6 +1459,7 @@ describe("FBA business pricing audit renderer", () => {
       });
     });
     const root = renderer!.root;
+    await selectBusinessPricingFilter(root, "未設定");
     await act(async () => {
       root.findAllByType("button").find(
         (button) => button.children.join("") === "設定 B2B 價格",
@@ -1511,6 +1534,7 @@ describe("FBA business pricing audit renderer", () => {
       }));
     });
     const root = renderer!.root;
+    await selectBusinessPricingFilter(root, "未設定");
     await act(async () => {
       root.findAllByType("button").find(
         (button) => button.children.join("") === "設定 B2B 價格",
@@ -1537,6 +1561,7 @@ describe("FBA business pricing audit renderer", () => {
         "aria-label": "返回全站 B2B 價格健檢",
       }).props.onClick();
     });
+    await selectBusinessPricingFilter(root, "需處理");
     const updatedRow = root.findAllByType("article").find((article) =>
       article.findAllByType("small").some((small) =>
         small.children.join("").includes("FBA-MISSING")
@@ -2188,18 +2213,71 @@ describe("FBA business pricing audit renderer", () => {
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "configured")))
       .toHaveLength(0);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "problem")))
-      .toHaveLength(4);
-    expect(rows.filter((row) =>
-      businessPricingRowMatchesFilter(row, "recommended_price_mismatch")
-    )).toHaveLength(2);
-    expect(rows.filter((row) =>
-      businessPricingRowMatchesFilter(
-        row,
-        "recommended_quantity_discount_mismatch",
-      )
-    )).toHaveLength(3);
+      .toHaveLength(2);
+    expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "incomplete")))
+      .toHaveLength(0);
     expect(rows.filter((row) => businessPricingRowMatchesFilter(row, "all")))
       .toHaveLength(4);
+  });
+
+  it("places every B2B row in exactly one mutually exclusive result bucket", () => {
+    const parsed = parseBusinessPricingAuditSnapshot(payload());
+    const configuredProblem = parsed.rows[1]!;
+    const missing = parsed.rows[0]!;
+    const correct = {
+      ...configuredProblem,
+      businessPrice: { amount: 23.99, currencyCode: "USD" },
+      quantityDiscountPlan: {
+        discountType: "percent" as const,
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+      quantityDiscountPlanPresence: "canonical" as const,
+      recommendedPriceMismatch: false,
+      recommendedQuantityDiscountMismatch: false,
+    };
+    const needsConfirmation = {
+      ...correct,
+      sellerSku: "CONFIGURED-UNKNOWN-TIERS",
+      quantityDiscountPlan: null,
+      quantityDiscountPlanPresence: "ambiguous" as const,
+    };
+    const unsupported = {
+      ...missing,
+      sellerSku: "LEGACY-UNSUPPORTED",
+      status: "unsupported" as const,
+    };
+    const missingStandardPrice = {
+      ...correct,
+      sellerSku: "CONFIGURED-NO-STANDARD",
+      standardPrice: null,
+    };
+    const aboveStandard = {
+      ...configuredProblem,
+      sellerSku: "ABOVE-STANDARD",
+      standardPrice: { amount: 20, currencyCode: "USD" },
+      businessPrice: { amount: 21, currencyCode: "USD" },
+      status: "above_standard" as const,
+    };
+    const buckets = ["problem", "missing", "configured", "incomplete"] as const;
+
+    for (const [row, expected] of [
+      [configuredProblem, "problem"],
+      [missing, "missing"],
+      [correct, "configured"],
+      [needsConfirmation, "incomplete"],
+      [unsupported, "incomplete"],
+      [missingStandardPrice, "incomplete"],
+      [aboveStandard, "problem"],
+    ] as const) {
+      expect(buckets.filter((bucket) =>
+        businessPricingRowMatchesFilter(row, bucket)
+      )).toEqual([expected]);
+    }
   });
 
   it("does not call configured rows correct when recommendation evidence is unknown", () => {
@@ -2216,7 +2294,8 @@ describe("FBA business pricing audit renderer", () => {
     };
 
     expect(businessPricingRowMatchesFilter(row, "configured")).toBe(false);
-    expect(businessPricingRowMatchesFilter(row, "problem")).toBe(true);
+    expect(businessPricingRowMatchesFilter(row, "problem")).toBe(false);
+    expect(businessPricingRowMatchesFilter(row, "incomplete")).toBe(true);
 
     const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
       marketplaceId: "ATVPDKIKX0DER",
@@ -2236,9 +2315,9 @@ describe("FBA business pricing audit renderer", () => {
         },
       },
     }));
-    expect(markup).toContain("<span>需處理</span><strong>1</strong>");
+    expect(markup).toContain("<span>需處理</span><strong>0</strong>");
     expect(markup).toContain("<span>正確設定</span><strong>0</strong>");
-    expect(markup).toContain("已設定但待確認");
+    expect(markup).toContain("<span>資料未完成</span><strong>1</strong>");
   });
 
   it("treats a B2B price above standard as a read-only problem", () => {
@@ -2415,11 +2494,9 @@ describe("FBA business pricing audit renderer", () => {
       marketplaceShort: "US",
       initialSnapshot: snapshot,
     }));
-    expect(markup).toContain("未設定 B2B 價格");
+    expect(markup).toContain("<span>未設定</span><strong>2</strong>");
     expect(markup).toContain("高於一般售價");
     expect(markup).toContain("百分比折扣");
-    expect(markup).toContain("Amazon Business 可用，但尚未設定 B2B 價格。");
-    expect(markup.match(/>設定 B2B 價格<\/button>/gu)).toHaveLength(2);
     expect(markup.match(/>調整 B2B 價格<\/button>/gu)).toHaveLength(2);
     expect(markup).not.toContain("唯讀／不支援");
     expect(markup).not.toContain("seller-specific PTD");
@@ -2440,10 +2517,9 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("省 5%");
     expect(markup).toContain("10 件以上");
     expect(markup).toContain("省 10%");
-    expect(markup).toContain("Amazon 未能確認，請到後台核對");
     expect(markup).toContain("Notebook Key 需更新後才能安全開啟指定 SKU");
     expect(markup).toContain("舊版不會改開 Seller Central 首頁");
-    expect(markup.match(/>前往 Amazon 後台 ↗<\/button>/g)).toHaveLength(4);
+    expect(markup.match(/>前往 Amazon 後台 ↗<\/button>/g)).toHaveLength(2);
     const panelSource = readFileSync(
       new URL("../src/renderer/src/components/business-pricing-audit-panel.tsx", import.meta.url),
       "utf8",
@@ -2543,10 +2619,14 @@ describe("FBA business pricing audit renderer", () => {
     )?.[0];
 
     expect(summary).toBeDefined();
-    expect(summary?.match(/<button\b/gu)).toHaveLength(8);
+    expect(summary?.match(/<button\b/gu)).toHaveLength(5);
     expect(summary).not.toContain("唯讀／不支援");
-    expect(summary).toContain("不符建議 B2B 價格");
-    expect(summary).toContain("未正確設定階梯折扣");
+    for (const label of ["全部", "需處理", "未設定", "正確設定", "資料未完成"]) {
+      expect(summary).toContain(`<span>${label}</span>`);
+    }
+    expect(summary).not.toContain("不符建議 B2B 價格");
+    expect(summary).not.toContain("未正確設定階梯折扣");
+    expect(summary).not.toContain("高於一般售價");
     expect(summary).toContain('aria-pressed="true"');
     expect(markup).not.toContain("business-pricing-filters");
     expect(markup.match(/B2B 價格健檢摘要與篩選/gu)).toHaveLength(1);
@@ -2602,10 +2682,60 @@ describe("FBA business pricing audit renderer", () => {
     }));
 
     expect(markup).toContain("<span>全部</span><strong>4</strong>");
-    expect(markup).toContain("<span>需處理</span><strong>2</strong>");
+    expect(markup).toContain("<span>需處理</span><strong>1</strong>");
+    expect(markup).toContain("<span>未設定</span><strong>1</strong>");
     expect(markup).toContain("<span>正確設定</span><strong>1</strong>");
     expect(markup).toContain("<span>資料未完成</span><strong>1</strong>");
     expect(markup).not.toContain("<span>已設定</span>");
+  });
+
+  it("intersects a trimmed case-insensitive SKU search with the selected result bucket", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+      }));
+    });
+    const root = renderer!.root;
+    const visibleProductRows = () => root.findAllByType("article").filter(
+      (node) => String(node.props.className ?? "").split(" ").includes(
+        "business-pricing-row",
+      ),
+    );
+    const search = root.findByProps({
+      "aria-label": "搜尋 B2B 價格健檢 SKU",
+    });
+
+    expect(visibleProductRows()).toHaveLength(2);
+    await act(async () => search.props.onChange({
+      target: { value: "  fba-configured-readonly  " },
+    }));
+    expect(visibleProductRows()).toHaveLength(1);
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "FBA-CONFIGURED-READONLY",
+    );
+
+    const summary = root.findByProps({
+      "aria-label": "B2B 價格健檢摘要與篩選",
+    });
+    const missing = summary.findAllByType("button").find((button) =>
+      button.findByType("span").children.join("") === "未設定"
+    )!;
+    await act(async () => missing.props.onClick());
+    expect(visibleProductRows()).toHaveLength(0);
+
+    await act(async () => search.props.onChange({
+      target: { value: " FBA-MISSING-READ " },
+    }));
+    expect(visibleProductRows()).toHaveLength(1);
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "FBA-MISSING-READONLY",
+    );
+    await act(async () => renderer!.unmount());
   });
 
   it("lays out current quantity discounts as readable desktop tiers", async () => {

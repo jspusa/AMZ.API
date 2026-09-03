@@ -3496,7 +3496,7 @@ describe("Amazon Business pricing SP-API contract", () => {
           businessOfferPresence: "present",
           quantityDiscountPlan: null,
           quantityDiscountPlanPresence: "ambiguous",
-          status: "configured",
+          status: "incomplete",
           editable: false,
         });
     }
@@ -3509,7 +3509,7 @@ describe("Amazon Business pricing SP-API contract", () => {
       quantityDiscountPlanPresence: "canonical",
       recommendedPriceMismatch: false,
       recommendedQuantityDiscountMismatch: false,
-      status: "configured",
+      status: "incomplete",
       editable: false,
       reason: expect.stringMatching(/Active Listings.*現行/u),
     });
@@ -3537,10 +3537,10 @@ describe("Amazon Business pricing SP-API contract", () => {
     }
     expect(snapshot.summary).toMatchObject({
       totalFbaSkuCount: 11,
-      configured: 3,
+      configured: 0,
       aboveStandard: 0,
       missing: 0,
-      incomplete: 8,
+      incomplete: 11,
     });
   });
 
@@ -3631,15 +3631,15 @@ describe("Amazon Business pricing SP-API contract", () => {
         businessOfferPresence: "present",
         quantityDiscountPlan: null,
         quantityDiscountPlanPresence: "ambiguous",
-        status: "configured",
+        status: "incomplete",
         editable: false,
         reason: expect.stringMatching(/Active Listings.*Listings.*未知/u),
       })]);
       expect(snapshot.summary).toMatchObject({
         totalFbaSkuCount: 1,
-        configured: 1,
+        configured: 0,
         missing: 0,
-        incomplete: 0,
+        incomplete: 1,
       });
     },
   );
@@ -3704,15 +3704,15 @@ describe("Amazon Business pricing SP-API contract", () => {
         businessOfferPresence: "present",
         quantityDiscountPlan: null,
         quantityDiscountPlanPresence: "ambiguous",
-        status: "configured",
+        status: "incomplete",
         editable: false,
         reason: expect.stringMatching(/全商品報表.*Listings.*未知/u),
       })]);
       expect(snapshot.summary).toMatchObject({
         totalFbaSkuCount: 1,
-        configured: 1,
+        configured: 0,
         missing: 0,
-        incomplete: 0,
+        incomplete: 1,
       });
     },
   );

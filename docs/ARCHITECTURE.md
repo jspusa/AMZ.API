@@ -18,7 +18,7 @@ macOS / Windows 11 Notebook Key Bridge
       ├─ Amazon Ads client → fixed token / profiles / query endpoints
       ├─ local store → product master + idempotency ledger + report leases
       ├─ optional R2 image client → user's own public image bucket
-      └─ operations board owner → fixed Pages JSON read + validated GitHub publisher URLs
+      └─ operations board owner → fixed Supply Boss API + main-memory board session
 ```
 
 ## 為什麼控制台在 App 視窗中解鎖
@@ -27,9 +27,9 @@ HTTPS GitHub 網頁直接呼叫 `http://127.0.0.1` 會受到 Local Network Acces
 
 GitHub renderer 是受信任的營運控制介面，但不是任何憑證的輸入邊界。SP-API／R2／Skill 與 Ads 的敏感欄位只能在 main process 建立的 modal child BrowserWindow 輸入；本機 sheet 載入 packaged static data HTML、使用獨立非持久 session，CSP 禁止所有 network，各 save IPC 只接受對應 sheet 的 exact main frame。Pages 只能開啟 sheet、讀取 redacted status、測試或清除，直接呼叫 save 會被 main 拒絕。保存後 input 立即清空並關閉 sheet；Secret、access token、Profile ID 與完整帳號識別碼永遠不回傳 Pages renderer。
 
-公布欄沿用 renderer／main trust split，但不屬於 Amazon Write Gate。首頁透過唯一 read-only `GET /api/operations-board` 取得 main 從固定 `https://jspusa.github.io/AMZ.API/operations-board/v1.json` 讀取、大小／content-type／schema 驗證後的 DTO；renderer 不能指定 host、path、credential 或任意 URL。新增即期品與促銷由 renderer 收集 bounded domain fields，再經窄 `publish` IPC 交給 main；main 只產生固定 `jspusa/AMZ.API` Issue Form URL，GitHub 以登入帳號做最後的 publisher identity confirmation。`manage` IPC 只接受 builder 編入 UUID 最後 12 位的 Issue number，不能開任意外部網址。公布欄不保存 R2 writer、GitHub token或額外管理密碼。
+公布欄沿用 renderer／main trust split，但不屬於 Amazon Write Gate。首頁透過唯一 read-only `GET /api/operations-board` 取得 main 從固定 Supply Boss `GET /api/operations-board` 讀取、大小／content-type／schema 驗證後的 DTO；renderer 不能指定 host、path、credential 或任意 URL。新增即期品與促銷由 renderer 收集 bounded domain fields，再經窄 `publish` IPC 要求 main 開啟 packaged、memory-only、無網路 CSP 的本機管理視窗；`manage` 只接受已驗證公告 UUID 並開啟同一視窗。帳號與密碼只從該 exact BrowserWindow main frame 傳到 main，再送往固定 Supply Boss `/api/operations-board/login`，不經 GitHub Pages state。
 
-`OperationsBoard` 是 published snapshot 的唯一 main reader。v1 snapshot 只接受 exact schema、最多 100 個 UUID 項目與合法 marketplace／Seller SKU／date-only 日期；即期 item 只保存人工效期與備註，促銷 item 保存日期、標題、備註及是否倒數。Issue event job 同時要求 board／approval label 與 `OWNER`／`MEMBER`／`COLLABORATOR`；opened／reopened approval step 會再要求 board label，才用短效 `GITHUB_TOKEN` 加上不在公開表單內的 `operations-board-approved` label，所以一般工程 Issue 不會被標記或觸發 Pages。builder 最多分頁讀取 20 頁同時帶 board／approval labels 的 open Issues，逐筆重驗 author association，再將最新 100 筆合法 Issue Form headings 轉成固定 JSON。編輯會更新，close／移除 label 會撤下；外部使用者不能自行取得 approval label，因此無法以大量假 Issue 消耗 builder 分頁，受信任資料異常超出分頁上限則 build fail closed、保留上一版 Pages。Amazon 價格、庫存與 token 不寫入 GitHub 或共享 JSON。`OperationsBoardFacts` 另以單一 POST 批次取得 exact SKU 的當下 price／FBA fulfillable quantity：最多 100 項、identity 去重、全 owner 共用最多三個 SP read permits、舊 batch 取消後完整 drain、capture／terminal context failure 同樣 abort；demo facts 永遠帶 `mode=demo`。read 失敗或固定 JSON 不存在時，只可顯示本次程序最後一次成功資料並明示 stale，不得解讀成公告已清空。
+`SupplyBossOperationsBoard` 是 shared snapshot 的唯一 main owner。v1 snapshot 只接受 exact schema、最多 100 個 UUID 項目與合法 marketplace／Seller SKU／date-only 日期；即期 item 只保存人工效期與備註，促銷 item 保存日期、標題、備註及是否倒數。Supply Boss 用獨立 board-editor username／PBKDF2 salt／hash 驗證 `/api/operations-board/login`；這組帳密不能在舊 `/api/login` 換取 snapshot-admin token。登入成功後最長 8 小時的 board-scoped token 只保存在 main 記憶體，renderer 只取得 authenticated／username／expiresAt 摘要；密碼不保存，鎖屏、睡眠、App 結束或到期即清除 session。關閉管理視窗保留同一 App session 的 token，避免短時間內重複輸入。已驗證 session 可以透過固定 `PUT /api/operations-board` 提交整份 replacement，因而在同一管理視窗完成 create／edit／delete；請求綁 base revision，Supply Boss server 對 request stream 執行 128 KiB 上限、驗證 exact schema／100 item 上限，並用 raw R2 object ETag 對固定 `operations-board/v1.json` 做 conditional write。`409` 要求重新讀取與人工合併，timeout、429、`5xx`、network 或 unknown result 禁止盲目重送。公開 GET 不要求登入；失敗只可顯示本次程序最後一次成功資料並明示 stale，不得解讀成公告已清空。Seller SKU、人工日期、促銷與備註屬公開公告內容；Amazon 價格、庫存、credential 與 session token 不進 shared JSON。`OperationsBoardFacts` 另以單一 POST 批次取得 exact SKU 的當下 price／FBA fulfillable quantity：最多 100 項、identity 去重、全 owner 共用最多三個 SP read permits、舊 batch 取消後完整 drain、capture／terminal context failure 同樣 abort；demo facts 永遠帶 `mode=demo`。
 
 ## API 相容層
 
@@ -132,11 +132,24 @@ Windows 的 native confirmation 不由 renderer 或遠端 Pages 執行。Windows
 
 會計中心不把 Finances JSON、Amazon-generated settlement、人工前置報表或不存在的發票／帳單 API 混為一談。Renderer 只取得 allowlisted capability 與安全工作狀態；一般站點發票、Seller Central 帳單及未完成 FBA 逐列過濾的 account-wide 文件保持停用，不使用私有接口。
 
+## B2B 篩選與文案工作表投影
+
+| 投影 | 唯一判定 | 顯示結果 |
+|---|---|---|
+| B2B 摘要 | 一般售價或其他必要證據缺失 | `資料未完成` |
+| B2B 摘要 | 資料完整且 Business Price 缺失 | `未設定` |
+| B2B 摘要 | 資料完整、已設定 B2B，且建議價格／階梯／高於一般售價任一問題成立 | `需處理` |
+| B2B 摘要 | 資料完整、已設定 B2B，且全部規則合格 | `正確設定` |
+
+上述四類互斥且加總必須等於「全部」；介面不再為列級原因另外建立摘要按鈕。Seller SKU 搜尋會先 trim、轉成大小寫無關的 substring 比對，再和目前分類篩選取交集；空白查詢等於不套搜尋條件。
+
+文案 Excel 的 family 工作表名稱只在該 family 所有列 `readStatus=complete` 且全部檢查通過時由 `F001` 改為 `F001(可)`。任一問題、incomplete 或 unknown 都維持原 family 名稱；完整工作簿與只含一張或數張 family 的部分工作簿共用同一判定。parser 會將可接受的 `(可)` suffix 正規化回嵌入的原始 family identity再核對；工作表名稱與淺綠色都只是人工辨識提示，不構成寫入授權。
+
 ## 儲存
 
 - `credentials.enc`：OS-backed `safeStorage` encrypted vault，只含密文；macOS key 在 Keychain，Windows key 由當前登入使用者的 DPAPI 保護。
 - `ads-credentials.enc`：獨立的 Ads OS-safeStorage-backed encrypted vault；不改寫 `credentials.enc`，也不改變既有 LocalStore 格式。
-- 公布欄不再建立 reader sidecar 或 admin vault；公告來源固定為 GitHub Pages JSON，發布者身分由 GitHub 登入與 repository 權限確認。舊版 sidecar 只作相容保留，新介面不讀取、不更新。
+- 公布欄不建立 reader sidecar 或本機 admin vault；固定 Supply Boss API 是 shared source，server-owned R2 保存 board object。帳密由 Supply Boss 驗證，App 只保留 8 小時 memory-only board session；使用者不需在 Notebook Key 輸入 R2 五個欄位。舊版 GitHub Issue／Pages snapshot 與 sidecar 只作相容或歷史保留，新介面不寫入。
 - `fba-os-data.json`：商品補貨主檔、idempotency ledger 與不含憑證的短效 report lease/tombstone；維持可由上一版忽略的相容格式。
 - Renderer session 使用非持久 partition；偏好資料不應承載秘密。
 

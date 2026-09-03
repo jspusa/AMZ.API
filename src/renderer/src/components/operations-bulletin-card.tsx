@@ -621,7 +621,7 @@ export default function OperationsBulletinCard({
       setError(
         publisherError instanceof Error
           ? publisherError.message
-          : "目前無法開啟 GitHub 發布確認。",
+          : "目前無法登入或開啟發布確認。",
       );
     } finally {
       setPublisherBusy(false);
@@ -636,14 +636,14 @@ export default function OperationsBulletinCard({
       const bridge = window.fbaOS as typeof window.fbaOS &
         OperationsBoardDesktopBridge;
       if (!bridge.operationsBoard?.manage) {
-        throw new Error("這台電腦上的 AMZ.API Notebook Key 尚未支援公告管理，請先更新 App。");
+        throw new Error("這台電腦上的 AMZ.API Notebook Key 尚未支援編輯／刪除，請先更新 App。");
       }
       await bridge.operationsBoard.manage(itemId);
     } catch (manageError) {
       setError(
         manageError instanceof Error
           ? manageError.message
-          : "目前無法開啟公告管理。",
+          : "目前無法開啟編輯／刪除。",
       );
     } finally {
       setPublisherBusy(false);
@@ -832,9 +832,9 @@ export default function OperationsBulletinCard({
               </label>
             </div>
             <footer>
-              <small>資料會公開到 GitHub；庫存、價格與 Amazon 憑證不會上傳。</small>
+              <small>公告只會公開 SKU、日期與備註；Amazon 庫存、價格與憑證不會上傳。</small>
               <button type="submit" disabled={publisherBusy}>
-                {publisherBusy ? "正在開啟…" : "前往 GitHub 確認發布"}
+                {publisherBusy ? "正在開啟…" : "登入並確認發布"}
               </button>
             </footer>
           </form>
@@ -914,9 +914,11 @@ export default function OperationsBulletinCard({
               </label>
             </div>
             <footer>
-              <small>資料會公開到 GitHub；月曆一定會顯示，勾選後才另外顯示倒數。</small>
+              <small>
+                公告只會公開促銷名稱、日期與備註；Amazon 庫存、價格與憑證不會上傳。月曆一定會顯示，勾選後才另外顯示倒數。
+              </small>
               <button type="submit" disabled={publisherBusy}>
-                {publisherBusy ? "正在開啟…" : "前往 GitHub 確認發布"}
+                {publisherBusy ? "正在開啟…" : "登入並確認發布"}
               </button>
             </footer>
           </form>
@@ -961,7 +963,7 @@ export default function OperationsBulletinCard({
                           className="bulletin-manage"
                           onClick={() => void manageAnnouncement(item.id)}
                           disabled={publisherBusy}
-                        >管理</button>
+                        >編輯／刪除</button>
                       </div>
                       <div className="bulletin-expiry-meta">
                         <time dateTime={item.expiryDate}>{absoluteDateLabel(item.expiryDate)}</time>
@@ -1074,7 +1076,7 @@ export default function OperationsBulletinCard({
                         className="bulletin-manage"
                         onClick={() => void manageAnnouncement(entry.id)}
                         disabled={publisherBusy}
-                      >管理</button>
+                      >編輯／刪除</button>
                     </article>
                   );
                 })}

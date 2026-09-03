@@ -1,6 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { unzipSync } from "fflate";
 import {
+  contentAuditV2NumberedSheetIdentity,
   CONTENT_AUDIT_V2_DATA_HEADERS,
   CONTENT_AUDIT_V2_INDEX_HEADER_ROW,
   CONTENT_AUDIT_V2_INDEX_HEADERS,
@@ -399,9 +400,11 @@ function parseWorkbookSheets(
 
   const sheets: WorkbookSheet[] = [];
   const seenNames = new Set<string>();
+  const seenNumberedSheetIds = new Set<string>();
   const seenPaths = new Set<string>();
   for (const sheet of descendants(workbook, "sheet")) {
     const name = sheet.getAttribute("name") ?? "";
+    const numberedSheetId = contentAuditV2NumberedSheetIdentity(name);
     const relationId =
       sheet.getAttribute("r:id") ??
       sheet.getAttributeNS(
@@ -419,12 +422,16 @@ function parseWorkbookSheets(
     ) {
       schemaError("Workbook 的工作表識別或關係無法安全辨識。");
     }
+    if (numberedSheetId && seenNumberedSheetIds.has(numberedSheetId)) {
+      schemaError("Workbook 含有工作表編號重複的文案資料工作表。");
+    }
     const path = resolveWorkbookTarget(relationship.target);
     if (seenPaths.has(path)) {
       schemaError("多個工作表指向同一個 OOXML part。");
     }
     requirePart(archive, path);
     seenNames.add(name);
+    if (numberedSheetId) seenNumberedSheetIds.add(numberedSheetId);
     seenPaths.add(path);
     sheets.push({ name, path });
   }
@@ -436,7 +443,7 @@ function parseWorkbookSheets(
       sheet.name !== CONTENT_AUDIT_V2_INDEX_SHEET_NAME &&
       sheet.name !== "未綁變體" &&
       sheet.name !== "資料未完成" &&
-      !/^F\d{3,6}$/u.test(sheet.name),
+      contentAuditV2NumberedSheetIdentity(sheet.name) === null,
   );
   if (unknownSheet) {
     schemaError(`含有未知工作表「${unknownSheet.name}」。`);
@@ -843,12 +850,14 @@ function parseIndexSheet(cells: WorksheetCells): {
   );
   const entries: IndexEntry[] = [];
   const seenSheets = new Set<string>();
+  const seenNumberedSheetIds = new Set<string>();
   const seenFamilies = new Set<string>();
   for (const rowNumber of [...cells.keys()].sort((a, b) => a - b)) {
     if (rowNumber <= CONTENT_AUDIT_V2_INDEX_HEADER_ROW) continue;
     const row = cells.get(rowNumber)!;
     if (![...row.values()].some(Boolean)) continue;
     const sheetName = row.get(1) ?? "";
+    const numberedSheetId = contentAuditV2NumberedSheetIdentity(sheetName);
     const variationFamilyKey = row.get(2) ?? "";
     const countText = row.get(6) ?? "";
     if (
@@ -860,14 +869,17 @@ function parseIndexSheet(cells: WorksheetCells): {
     ) {
       schemaError("索引含有缺值、重複 family 或無效問題列數。");
     }
+    if (numberedSheetId && seenNumberedSheetIds.has(numberedSheetId)) {
+      schemaError("索引含有工作表編號重複的文案資料工作表。");
+    }
     if (
       (sheetName === "未綁變體" && variationFamilyKey !== "STANDALONE") ||
       (sheetName === "資料未完成" && variationFamilyKey !== "DATA_INCOMPLETE") ||
-      (/^F\d{3,6}$/u.test(sheetName) &&
+      (numberedSheetId !== null &&
         ["STANDALONE", "DATA_INCOMPLETE"].includes(variationFamilyKey)) ||
       (sheetName !== "未綁變體" &&
         sheetName !== "資料未完成" &&
-        !/^F\d{3,6}$/u.test(sheetName))
+        numberedSheetId === null)
     ) {
       schemaError("索引的工作表名稱與變體分類不一致。");
     }
@@ -876,6 +888,7 @@ function parseIndexSheet(cells: WorksheetCells): {
       schemaError("索引問題列數無效。");
     }
     seenSheets.add(sheetName);
+    if (numberedSheetId) seenNumberedSheetIds.add(numberedSheetId);
     seenFamilies.add(variationFamilyKey);
     entries.push({ sheetName, variationFamilyKey, expectedRows });
   }

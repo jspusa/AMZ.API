@@ -846,13 +846,23 @@ type BusinessPricingAuditRowWithoutRecommendations = Omit<
 function withBusinessPricingRecommendations(
   row: BusinessPricingAuditRowWithoutRecommendations,
 ): BusinessPricingAuditRow {
+  const classifiedRow: BusinessPricingAuditRowWithoutRecommendations =
+    row.standardPrice === null && row.status !== "incomplete"
+      ? {
+          ...row,
+          status: "incomplete",
+          editable: false,
+          reason:
+            `${row.reason} Amazon 未完整回傳一般售價，因此列為資料未完成。`,
+        }
+      : row;
   return {
-    ...row,
+    ...classifiedRow,
     ...businessPricingRecommendationFlags({
-      standardPrice: row.standardPrice,
-      businessPrice: row.businessPrice,
-      quantityDiscountPlan: row.quantityDiscountPlan,
-      quantityDiscountPlanPresence: row.quantityDiscountPlanPresence,
+      standardPrice: classifiedRow.standardPrice,
+      businessPrice: classifiedRow.businessPrice,
+      quantityDiscountPlan: classifiedRow.quantityDiscountPlan,
+      quantityDiscountPlanPresence: classifiedRow.quantityDiscountPlanPresence,
     }),
   };
 }

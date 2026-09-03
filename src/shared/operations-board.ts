@@ -81,10 +81,11 @@ export type OperationsBoardAdminSummary = Readonly<{
 
 export type OperationsBoardEditorState = Readonly<{
   board: OperationsBoardReadResult;
-  admin: OperationsBoardAdminSummary;
-  storageConfigured: boolean;
-  unlocked: boolean;
-  nativeUnlockAvailable: boolean;
+  authenticated: boolean;
+  username: string | null;
+  expiresAt: string | null;
+  pendingDraft: OperationsBoardPublisherDraft | null;
+  focusItemId: string | null;
 }>;
 
 export type OperationsBoardAdminRotationInput = Readonly<{
@@ -96,10 +97,7 @@ export type OperationsBoardAdminRotationInput = Readonly<{
 
 export type OperationsBoardEditorBridge = Readonly<{
   state(): Promise<OperationsBoardEditorState>;
-  enroll(input: Readonly<{ username: string; password: string }>): Promise<OperationsBoardEditorState>;
-  unlockPassword(input: Readonly<{ username: string; password: string }>): Promise<OperationsBoardEditorState>;
-  unlockNative(): Promise<OperationsBoardEditorState>;
-  changeAdmin(input: OperationsBoardAdminRotationInput): Promise<OperationsBoardEditorState>;
+  login(input: Readonly<{ username: string; password: string }>): Promise<OperationsBoardEditorState>;
   save(input: Readonly<{
     baseRevision: number;
     items: readonly OperationsBoardItem[];

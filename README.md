@@ -16,9 +16,9 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 策劃 | FBA 銷售趨勢（7／14／30／90 天、自訂 1–365 天、去年同期、選配迷你滑板）、SB／SD 授權狀態、FBA 補貨計算 | 自動／人工授權 |
 | 策劃 | 依所選日期自動載入 FBA shipment report，以目前 Listing 標題前綴分類品牌營收與未分類列 | Amazon 報表唯讀 |
 | 策劃 | 全部 FBA 非重疊庫齡桶、Amazon 預估冗餘、下月倉儲成本與 AIS 預估附加費、Excel | Amazon 報表唯讀 |
-| 營運 | 首頁可收折重要公布欄：以緊湊單列顯示人工標記的即期 Seller SKU／效期／備註、一次倒數、站點、目前 FBA 可售庫存、有效售價與同步時間；七欄等寬促銷月曆同時標示促銷檔期與 SKU 到期日，促銷可另選首頁倒數 | AMZ.API 內直接按「新增即期品／新增促銷」填白話欄位，再到已完整預填的 GitHub 頁面做最後發布確認；編輯 Issue 即修改，關閉 Issue 即撤下。只發布 owner／member／collaborator 公告，不需 R2、管理密碼或 GitHub token |
+| 營運 | 首頁可收折重要公布欄：以緊湊單列顯示人工標記的即期 Seller SKU／效期／備註、一次倒數、站點、目前 FBA 可售庫存、有效售價與同步時間；七欄等寬促銷月曆同時標示促銷檔期與 SKU 到期日，促銷可另選首頁倒數 | AMZ.API 內直接按「新增即期品／新增促銷」填白話欄位；發布或管理時才在 main-owned 無網路小視窗輸入共用帳密，可直接新增、編輯、刪除。員工不需 GitHub，也不需設定 R2 五個欄位 |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID／Windows Hello／系統確認 |
-| 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值、成分宣稱核對與逐項原因） | Amazon 唯讀掃描；依明確 ingredients 證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic 宣稱；`airdried`、`grainfree`、`dogfood`、`airdry` 只在後台產品敘述免列錯字，出現在標題、亮點、要點或成分仍回報；摘要與常用操作優先顯示，門檻、辭典與安全範圍收在低調的「詳細說明 ›」；Excel 依已證明的變體 family 分頁，問題欄著色，未發現問題的可編輯欄使用淺綠色 |
+| 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值、成分宣稱核對與逐項原因） | Amazon 唯讀掃描；依明確 ingredients 證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic 宣稱；`airdried`、`grainfree`、`dogfood`、`airdry` 只在後台產品敘述免列錯字，出現在標題、亮點、要點或成分仍回報；摘要與常用操作優先顯示，門檻、辭典與安全範圍收在低調的「詳細說明 ›」；Excel 依已證明的變體 family 分頁，問題欄著色，未發現問題的可編輯欄使用淺綠色。只有 family 每一列資料完整且全部檢查通過時，工作表才由 `F001` 命名為 `F001(可)`；任一問題、incomplete 或 unknown 都維持原名 |
 | 產品 | 將文案健檢 Excel 以選檔或拖放回傳，逐欄核對 Amazon 原值／Excel 更新值後批次更新；新版可只回傳 F007，或只回傳 F007、F008 等實際要改的完整工作表 | 同檔 round trip 保留特殊換行與 main-owned 24 小時證據。匯入會一次列出所有問題 SKU、工作表、Excel 列號、實際欄位與原因；能安全歸屬單列的 parser／fresh-read／Validation 問題只隔離該 SKU，其餘獨立安全 SKU 繼續，Amazon `INVALID` 沒有強制送出入口。公式／巨集／外部連結、跨帳號／站點、auth／rate limit／server／network／timeout 或無法綁定結果仍整批 fail closed。每 SKU 只有一次 ledgered PATCH；exact known rejection 或「Amazon 已接受且所有 bounded GET 成功、但目標尚未出現」可按列隔離，其他結果不明停止後續且永不盲目重送 |
 | 產品 | 拖拉圖片、格式／像素檢查、排序、選配自有 R2 上傳、Amazon 回查 | 自動檢查＋一鍵 |
 | 產品 | 全站 FBA 圖片健檢（少於六張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
@@ -30,7 +30,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋本機身分確認 |
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋本機身分確認 |
 | 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel；具同次 current-FBA 證據的無效／重複 offer 或月度 SKU 獨立列為未完成，不拖垮其餘正常 SKU；未證明識別值只保留聚合計數 | 自動讀取；來源不完整時只顯示已核對範圍；SG／AU 顯示不支援邊界 |
-| 價格 | 全站 FBA Amazon Business 價格健檢，獨立且可重疊標示「不符建議 B2B 價格」與「未正確設定階梯折扣」，並提供五工作表 Excel；建議規則為 USD 一般價減 1.00，以及 5／10／15／20 件各 5%／10%／15%／20% | 摘要「正確設定」只計入 Business Price 與階梯折扣都合格的 SKU；「需處理」只放非 incomplete 且尚未完全合格的列，資料未完成另有獨立篩選。報表建立全程唯讀；首頁以寬版單層 workspace 在清單與單 SKU editor 間切換並保存返回位置。已調整 SKU 置頂並顯示「送出最低價→回查最低價→送出 B2B→回查 B2B」四階段；Amazon 接受後只保留 processing 證據，只有 exact canonical GET 相符才顯示已驗證。Active Listings exact Business Price／quantity fields 可補足尚未同步的 Listings attributes contribution；來源衝突或 malformed／duplicate／身分不符仍 fail closed，Excel 只由 main-owned 完成快照建立 |
+| 價格 | 全站 FBA Amazon Business 價格健檢，列級原因可同時標示「不符建議 B2B 價格」、「未正確設定階梯折扣」與「高於一般售價」，並提供五工作表 Excel；建議規則為 USD 一般價減 1.00，以及 5／10／15／20 件各 5%／10%／15%／20% | 摘要只顯示「全部／需處理／未設定／正確設定／資料未完成」；後四類互斥且相加等於全部。需處理只含資料完整、已設定 B2B 且任一建議價格／階梯／高於一般價問題的 SKU；未設定獨立；一般售價缺失歸資料未完成；正確設定只含完全合格列。Seller SKU 搜尋會先 trim、忽略大小寫並以 substring 比對，再與目前分類篩選取交集。報表建立全程唯讀；首頁以寬版單層 workspace 在清單與單 SKU editor 間切換並保存返回位置。Amazon 接受後只保留 processing 證據，只有 exact canonical GET 相符才顯示已驗證。Active Listings exact Business Price／quantity fields 可補足尚未同步的 Listings attributes contribution；來源衝突或 malformed／duplicate／身分不符仍 fail closed，Excel 只由 main-owned 完成快照建立 |
 | 促銷 | Coupon、S&S 管理與 Amazon Ads 集中於「Amazon 官方完成」 | 一鍵開啟、Amazon 內完成 |
 | 報表 | FBA 入庫貨件追蹤（近 30／90／180 天、貨件狀態、逐 SKU 預期／送出、Amazon 已接收、尚未接收／超收、每日貨件／箱件／商品瑕疵與中文 Excel）；入口只放在頂端「報表」，不佔首頁或「營運」工具列 | Fulfillment Inbound GET＋耐久化每日問題報表；部分資料不補 0 |
 | 營運 | Amazon Ads Profile 自動發現、Sponsored Products 活動唯讀查詢與全站 FBA 廣告覆蓋健檢；任何 Listing 身分缺口都整次停止 | 獨立 Ads LWA＋唯讀；無 Ads 寫入 route |
@@ -62,7 +62,7 @@ FBA 廣告策略表只會把 Sales & Traffic 的 exact Seller SKU＋ASIN 與目�
    - 各使用區域的 Refresh Token
    - 各區域 Seller ID / Merchant Token
 5. macOS 使用 Touch ID；Windows 11 使用 Windows Hello（指紋／臉部／PIN 由 Windows 決定）。Windows Hello 未設定、取消或失敗時會停止敏感操作，不會降級成一般按鈕放行。
-6. 公布欄不需要任何連線設定。按「新增即期品」或「新增促銷」，在 AMZ.API 填完後按「前往 GitHub 確認發布」；GitHub 會開啟已完整預填的表單，只需登入有權限的帳號並按最後的 Submit。每筆公告的「管理」會開啟原始 Issue：直接編輯就是修改，Close issue 就是撤下。GitHub Actions 會自動重新發布，多台 Notebook Key 讀取同一份結果。
+6. 公布欄不需要 Amazon 憑證或使用者自備 R2。按「新增即期品」或「新增促銷」填完白話欄位後，App 會開啟無網路的本機管理小視窗；輸入共用帳密即可確認發布，之後也能從同一處直接編輯或刪除。員工不需 GitHub 帳號，多台 Notebook Key 會讀取同一份 Supply Boss 公布欄。
 7. 在頂端輸入 Seller SKU，直接進入文案、圖片、定價、促銷或補貨。
 
 SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、歐洲（UK／DE）各自使用區域 Refresh Token 與 Seller ID；同一個 LWA Client 可共用。
@@ -78,7 +78,7 @@ SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、�
 
 - Secret 經 Electron `safeStorage` 的作業系統金鑰保護後，才寫入 App 的 `userData/credentials.enc`；macOS 使用 Keychain，Windows 使用當前登入使用者的 DPAPI。
 - Amazon Ads 使用獨立 `ads-credentials.enc`；兩種憑證都只在 main process 的無網路本機 sheet 輸入，Pages 只能開啟 sheet、讀取遮罩狀態、測試或清除。
-- 公布欄使用公開 GitHub Issue 欄位與 Pages JSON，不保存另一組管理帳密、R2 writer 或 GitHub token。Seller SKU、人工效期、促銷名稱與備註會成為公開 repository 資料；Amazon 憑證、即時庫存與價格不得填入公告。
+- 公布欄使用獨立於 Supply Boss 舊管理 API 的 board-editor 帳密，只送往固定登入端點；最長 8 小時的 board-scoped session token 只存在 main process 記憶體，不能操作舊 snapshot 管理 API。密碼不保存，鎖屏、睡眠、App 結束或到期即登出；關閉管理視窗不會立刻登出，讓同一次 App 使用期間再次管理時不必重輸。Seller SKU、人工效期、促銷名稱與備註屬公開公告內容；Amazon 憑證、即時庫存與價格不會上傳。
 - 完整 Secret 永不回傳 renderer、永不寫入 GitHub、`.env`、URL、localStorage 或日誌。
 - Amazon Access Token 只在主程序記憶體中短暫快取。
 - 作業系統安全儲存不可用時保存會直接失敗，沒有明文 fallback。Windows DPAPI 保護不同 Windows 使用者之間的存取，不等於隔離同一使用者權限下的其他程式。

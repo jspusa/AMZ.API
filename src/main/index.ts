@@ -22,9 +22,9 @@ import type {
   UpdateStatus,
 } from "../shared/contracts";
 import type {
-  OperationsBoardAdminRotationInput,
   OperationsBoardEditorState,
   OperationsBoardItem,
+  OperationsBoardPublisherDraft,
 } from "../shared/operations-board";
 import { ApiRouter } from "./api-router";
 import { AdvertisingApiClient } from "./amazon/ads-api";
@@ -45,19 +45,16 @@ import {
   isCredentialEditorFrame,
 } from "./credential-editor";
 import { CredentialVault } from "./credential-vault";
-import { OperationsBoardAdminVault } from "./operations-board-admin-vault";
 import {
   isOperationsBoardEditorFrame,
   operationsBoardEditorDataUrl,
 } from "./operations-board-editor";
+import { parseOperationsBoardSnapshot } from "./operations-board";
 import {
-  OperationsBoard,
-  parseOperationsBoardSnapshot,
-} from "./operations-board";
-import {
-  operationsBoardAnnouncementUrl,
-  operationsBoardPublisherUrl,
+  operationsBoardManagementItemId,
+  parseOperationsBoardPublisherDraft,
 } from "./operations-board-publisher";
+import { SupplyBossOperationsBoard } from "./supply-boss-operations-board";
 import { DesktopInstallGate, DesktopUpdater } from "./desktop-updater";
 import { LocalStore } from "./local-store";
 import { sellerCentralInventoryUrl } from "./seller-central-inventory";
@@ -122,17 +119,15 @@ let operationsBoardEditorWindow: BrowserWindow | null = null;
 let apiRouter: ApiRouter | null = null;
 let credentialVault: CredentialVault | null = null;
 let advertisingCredentialVault: AdvertisingCredentialVault | null = null;
-let operationsBoardAdminVault: OperationsBoardAdminVault | null = null;
-let operationsBoard: OperationsBoard | null = null;
+let operationsBoard: SupplyBossOperationsBoard | null = null;
 let advertisingApi: AdvertisingApiClient | null = null;
 let desktopUpdater: DesktopUpdater | null = null;
 let updateStatus: UpdateStatus = { state: "idle" };
 let apiRequestsInFlight = 0;
 let credentialsChangeInFlight = false;
 let operationsBoardChangeInFlight = false;
-let operationsBoardEditorUnlocked = false;
-let operationsBoardUnlockFailures = 0;
-let operationsBoardUnlockBlockedUntil = 0;
+let operationsBoardEditorPendingDraft: OperationsBoardPublisherDraft | null = null;
+let operationsBoardEditorFocusItemId: string | null = null;
 const nativeConfirmationGate = new NativeConfirmationGate();
 const desktopInstallGate = new DesktopInstallGate();
 let appInitialized = false;
@@ -262,48 +257,6 @@ async function confirmSensitiveAction(reason: string): Promise<void> {
             : await dialog.showMessageBox(options);
         return result.response === 1;
       },
-    });
-  });
-}
-
-function operationsBoardNativeUnlockAvailable(): boolean {
-  try {
-    return (process.platform === "darwin" && systemPreferences.canPromptTouchID()) ||
-      process.platform === "win32";
-  } catch {
-    return false;
-  }
-}
-
-async function confirmOperationsBoardNativeUnlock(): Promise<void> {
-  if (!operationsBoardNativeUnlockAvailable()) {
-    throw new Error("這台電腦目前沒有可用的原生身分驗證，請使用管理帳密登入。");
-  }
-  await nativeConfirmationGate.run(async () => {
-    const confirmationWindow = operationsBoardEditorWindow;
-    await requestNativeConfirmation("確認進入公布欄編輯模式", {
-      biometricMethod: () =>
-        process.platform === "darwin" ? "touch-id" : "windows-hello",
-      promptBiometric: async (method, prompt) => {
-        if (method === "touch-id") {
-          await systemPreferences.promptTouchID(prompt);
-          return "verified";
-        }
-        return requestWindowsHello(
-          prompt,
-          createWindowsHelloAdapter({
-            platform: process.platform,
-            appPath: app.getAppPath(),
-            resourcesPath: process.resourcesPath,
-            packaged: app.isPackaged,
-            nativeWindowHandle: () =>
-              confirmationWindow && !confirmationWindow.isDestroyed()
-                ? confirmationWindow.getNativeWindowHandle()
-                : null,
-          }),
-        );
-      },
-      showMessageFallback: async () => false,
     });
   });
 }
@@ -583,22 +536,23 @@ function closeAdvertisingCredentialEditor(): void {
 }
 
 async function operationsBoardState(): Promise<OperationsBoardEditorState> {
-  if (!operationsBoard || !operationsBoardAdminVault) throw new Error("APP_NOT_READY");
-  const [board, admin, storageConfigured] = await Promise.all([
-    operationsBoard.read(),
-    operationsBoardAdminVault.summary(),
-    operationsBoard.isStorageConfigured(),
-  ]);
+  if (!operationsBoard) throw new Error("APP_NOT_READY");
+  const board = await operationsBoard.read();
+  const currentSession = operationsBoard.sessionSummary();
   return {
     board,
-    admin,
-    storageConfigured,
-    unlocked: operationsBoardEditorUnlocked,
-    nativeUnlockAvailable: operationsBoardNativeUnlockAvailable(),
+    ...currentSession,
+    pendingDraft: operationsBoardEditorPendingDraft,
+    focusItemId: operationsBoardEditorFocusItemId,
   };
 }
 
-async function openOperationsBoardEditor(): Promise<void> {
+async function openOperationsBoardEditor(
+  input: Readonly<{
+    draft?: OperationsBoardPublisherDraft;
+    focusItemId?: string;
+  }> = {},
+): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed()) throw new Error("APP_NOT_READY");
   if (operationsBoardEditorWindow && !operationsBoardEditorWindow.isDestroyed()) {
     operationsBoardEditorWindow.show();
@@ -608,7 +562,8 @@ async function openOperationsBoardEditor(): Promise<void> {
     );
     return;
   }
-  operationsBoardEditorUnlocked = false;
+  operationsBoardEditorPendingDraft = input.draft ?? null;
+  operationsBoardEditorFocusItemId = input.focusItemId ?? null;
   const partition = `fba-operations-board-editor-${crypto.randomUUID()}`;
   const editorSession = session.fromPartition(partition);
   editorSession.setPermissionCheckHandler(() => false);
@@ -648,7 +603,8 @@ async function openOperationsBoardEditor(): Promise<void> {
   editor.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   editor.once("ready-to-show", () => editor.show());
   editor.on("closed", () => {
-    operationsBoardEditorUnlocked = false;
+    operationsBoardEditorPendingDraft = null;
+    operationsBoardEditorFocusItemId = null;
     if (operationsBoardEditorWindow === editor) operationsBoardEditorWindow = null;
   });
   try {
@@ -661,7 +617,8 @@ async function openOperationsBoardEditor(): Promise<void> {
 }
 
 function closeOperationsBoardEditor(): void {
-  operationsBoardEditorUnlocked = false;
+  operationsBoardEditorPendingDraft = null;
+  operationsBoardEditorFocusItemId = null;
   if (operationsBoardEditorWindow && !operationsBoardEditorWindow.isDestroyed()) {
     operationsBoardEditorWindow.destroy();
   }
@@ -679,16 +636,6 @@ function operationsBoardLoginInput(
     typeof (input as Record<string, unknown>).password === "string" &&
     Object.keys(input).every((key) => key === "username" || key === "password"),
   );
-}
-
-function operationsBoardAdminRotationInput(
-  input: unknown,
-): input is OperationsBoardAdminRotationInput {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
-  const value = input as Record<string, unknown>;
-  const keys = ["currentUsername", "currentPassword", "newUsername", "newPassword"];
-  return Object.keys(value).length === keys.length &&
-    keys.every((key) => typeof value[key] === "string");
 }
 
 function assertOperationsBoardEditorSession(
@@ -710,30 +657,9 @@ function assertOperationsBoardEditorStillAuthorized(
   editor: BrowserWindow | null,
 ): void {
   assertOperationsBoardEditorSession(event, editor);
-  if (!operationsBoardEditorUnlocked) {
-    throw new Error("公布欄編輯器已鎖定或關閉；系統拒絕繼續更新。");
+  if (!operationsBoard?.sessionSummary().authenticated) {
+    throw new Error("公布欄登入已過期，請重新輸入帳號密碼。");
   }
-}
-
-function assertOperationsBoardUnlockAllowed(): void {
-  const wait = operationsBoardUnlockBlockedUntil - Date.now();
-  if (wait > 0) {
-    throw new Error(`管理登入暫時鎖定，請在 ${Math.ceil(wait / 1_000)} 秒後重試。`);
-  }
-}
-
-function recordOperationsBoardUnlockFailure(): void {
-  operationsBoardUnlockFailures += 1;
-  if (operationsBoardUnlockFailures >= 3) {
-    const seconds = Math.min(30, 2 ** (operationsBoardUnlockFailures - 2));
-    operationsBoardUnlockBlockedUntil = Date.now() + seconds * 1_000;
-  }
-}
-
-function recordOperationsBoardUnlockSuccess(): void {
-  operationsBoardUnlockFailures = 0;
-  operationsBoardUnlockBlockedUntil = 0;
-  operationsBoardEditorUnlocked = true;
 }
 
 async function verifyRendererBridge(window: BrowserWindow): Promise<void> {
@@ -920,11 +846,13 @@ function registerIpc(): void {
   });
   ipcMain.handle("fba:operations-board-publish", async (event, draft: unknown) => {
     assertTrustedFrame(event);
-    await shell.openExternal(operationsBoardPublisherUrl(draft));
+    const validated = parseOperationsBoardPublisherDraft(draft);
+    await openOperationsBoardEditor({ draft: validated });
   });
   ipcMain.handle("fba:operations-board-manage", async (event, itemId: unknown) => {
     assertTrustedFrame(event);
-    await shell.openExternal(operationsBoardAnnouncementUrl(itemId));
+    const validated = operationsBoardManagementItemId(itemId);
+    await openOperationsBoardEditor({ focusItemId: validated });
   });
   ipcMain.handle("fba:operations-board-editor-state", async (event) => {
     if (!isOperationsBoardEditorFrame(event, operationsBoardEditorWindow)) {
@@ -933,91 +861,24 @@ function registerIpc(): void {
     desktopInstallGate.assertOperationAllowed();
     return operationsBoardState();
   });
-  ipcMain.handle("fba:operations-board-editor-enroll", async (event, input: unknown) => {
+  ipcMain.handle("fba:operations-board-editor-login", async (event, input: unknown) => {
     if (!isOperationsBoardEditorFrame(event, operationsBoardEditorWindow)) {
       throw new Error("UNTRUSTED_OPERATIONS_BOARD_EDITOR");
     }
     desktopInstallGate.assertOperationAllowed();
     const editor = operationsBoardEditorWindow;
-    if (!operationsBoard || !operationsBoardAdminVault) throw new Error("APP_NOT_READY");
+    if (!operationsBoard) throw new Error("APP_NOT_READY");
     if (!operationsBoardLoginInput(input)) throw new Error("管理帳密格式無效。");
-    if (!(await operationsBoard.isStorageConfigured())) {
-      throw new Error("請先完成共用 R2 五個寫入欄位，並確認公布欄唯讀網址與 R2 公開網址一致。");
-    }
     assertOperationsBoardEditorSession(event, editor);
-    await operationsBoardAdminVault.enroll(input);
+    await operationsBoard.login(input);
     assertOperationsBoardEditorSession(event, editor);
-    recordOperationsBoardUnlockSuccess();
     return operationsBoardState();
-  });
-  ipcMain.handle("fba:operations-board-editor-unlock-password", async (event, input: unknown) => {
-    if (!isOperationsBoardEditorFrame(event, operationsBoardEditorWindow)) {
-      throw new Error("UNTRUSTED_OPERATIONS_BOARD_EDITOR");
-    }
-    desktopInstallGate.assertOperationAllowed();
-    const editor = operationsBoardEditorWindow;
-    if (!operationsBoardAdminVault) throw new Error("APP_NOT_READY");
-    if (!operationsBoardLoginInput(input)) throw new Error("管理帳密格式無效。");
-    assertOperationsBoardUnlockAllowed();
-    if (!(await operationsBoardAdminVault.verify(input))) {
-      recordOperationsBoardUnlockFailure();
-      throw new Error("管理帳號或密碼不正確。");
-    }
-    assertOperationsBoardEditorSession(event, editor);
-    recordOperationsBoardUnlockSuccess();
-    return operationsBoardState();
-  });
-  ipcMain.handle("fba:operations-board-editor-unlock-native", async (event) => {
-    if (!isOperationsBoardEditorFrame(event, operationsBoardEditorWindow)) {
-      throw new Error("UNTRUSTED_OPERATIONS_BOARD_EDITOR");
-    }
-    desktopInstallGate.assertOperationAllowed();
-    const editor = operationsBoardEditorWindow;
-    if (!operationsBoardAdminVault) throw new Error("APP_NOT_READY");
-    if (!(await operationsBoardAdminVault.summary()).configured) {
-      throw new Error("請先完成第一次管理帳密設定。");
-    }
-    await confirmOperationsBoardNativeUnlock();
-    assertOperationsBoardEditorSession(event, editor);
-    recordOperationsBoardUnlockSuccess();
-    return operationsBoardState();
-  });
-  ipcMain.handle("fba:operations-board-editor-change-admin", async (event, input: unknown) => {
-    if (!isOperationsBoardEditorFrame(event, operationsBoardEditorWindow)) {
-      throw new Error("UNTRUSTED_OPERATIONS_BOARD_EDITOR");
-    }
-    desktopInstallGate.assertOperationAllowed();
-    if (!operationsBoardEditorUnlocked) throw new Error("請先通過公布欄管理者驗證。");
-    if (!operationsBoardAdminVault) throw new Error("APP_NOT_READY");
-    if (!operationsBoardAdminRotationInput(input)) throw new Error("管理帳密更新格式無效。");
-    if (credentialsChangeInFlight || operationsBoardChangeInFlight) {
-      throw new Error("本機安全設定或公布欄正在更新。");
-    }
-    assertOperationsBoardUnlockAllowed();
-    if (!(await operationsBoardAdminVault.verify({
-      username: input.currentUsername,
-      password: input.currentPassword,
-    }))) {
-      recordOperationsBoardUnlockFailure();
-      throw new Error("目前的管理帳號或密碼不正確。");
-    }
-    const editor = operationsBoardEditorWindow;
-    operationsBoardChangeInFlight = true;
-    try {
-      assertOperationsBoardEditorStillAuthorized(event, editor);
-      await operationsBoardAdminVault.rotate(input);
-      recordOperationsBoardUnlockSuccess();
-      return operationsBoardState();
-    } finally {
-      operationsBoardChangeInFlight = false;
-    }
   });
   ipcMain.handle("fba:operations-board-editor-save", async (event, input: unknown) => {
     if (!isOperationsBoardEditorFrame(event, operationsBoardEditorWindow)) {
       throw new Error("UNTRUSTED_OPERATIONS_BOARD_EDITOR");
     }
     desktopInstallGate.assertOperationAllowed();
-    if (!operationsBoardEditorUnlocked) throw new Error("請先通過公布欄管理者驗證。");
     if (!operationsBoard) throw new Error("APP_NOT_READY");
     if (
       !input ||
@@ -1245,10 +1106,7 @@ if (!hasSingleInstanceLock) {
     advertisingCredentialVault = new AdvertisingCredentialVault(
       resolve(userData, "ads-credentials.enc"),
     );
-    operationsBoardAdminVault = new OperationsBoardAdminVault(
-      resolve(userData, "operations-board-admin.enc"),
-    );
-    operationsBoard = new OperationsBoard({ vault: credentialVault });
+    operationsBoard = new SupplyBossOperationsBoard();
     advertisingApi = new AdvertisingApiClient(
       advertisingCredentialVault,
       fetch,
@@ -1275,12 +1133,14 @@ if (!hasSingleInstanceLock) {
       closeCredentialEditor();
       closeAdvertisingCredentialEditor();
       closeOperationsBoardEditor();
+      operationsBoard?.logout();
       invalidateAmazonSecurityContext("lock-screen");
     });
     powerMonitor.on("suspend", () => {
       closeCredentialEditor();
       closeAdvertisingCredentialEditor();
       closeOperationsBoardEditor();
+      operationsBoard?.logout();
       invalidateAmazonSecurityContext("suspend");
     });
     await createWindow();

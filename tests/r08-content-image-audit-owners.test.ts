@@ -171,12 +171,12 @@ describe("R08 content audit owner", () => {
         ...source.grouping,
         rows: [...source.grouping.rows, {
           ...clean,
-          role: "standalone",
-          parentSku: null,
+          role: "child",
+          parentSku: "CLEAN-PARENT",
           familyKey: "CLEAN",
           theme: null,
           status: "complete",
-          message: "Verified standalone.",
+          message: "Verified child.",
         }],
       }),
       createId: () => CONTENT_EXPORT_ID,
@@ -220,9 +220,10 @@ describe("R08 content audit owner", () => {
     expect(attentionWorkbook.rows.map((row) => row.sellerSku))
       .toEqual(["CHILD", "SOLO"]);
     expect(allWorkbook.rows.map((row) => row.sellerSku))
-      .toEqual(["CHILD", "CLEAN", "SOLO"]);
+      .toEqual(["CLEAN", "CHILD", "SOLO"]);
     expect(attentionWorkbook.metadata.exportId).toBe(CONTENT_EXPORT_ID);
     expect(allWorkbook.metadata.exportId).toBe(CONTENT_EXPORT_ID);
+    expect(workbookXml(all.body.value)).toContain('sheet name="F001(可)"');
     expect(attention.headers["x-content-audit-export-scope"])
       .toBe("attention");
     expect(all.headers["x-content-audit-export-scope"]).toBe("all");

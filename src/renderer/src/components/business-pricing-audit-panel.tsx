@@ -53,12 +53,6 @@ const FILTERS: readonly Readonly<{
 }>[] = [
   { value: "all", label: "全部" },
   { value: "problem", label: "需處理" },
-  { value: "recommended_price_mismatch", label: "不符建議 B2B 價格" },
-  {
-    value: "recommended_quantity_discount_mismatch",
-    label: "未正確設定階梯折扣",
-  },
-  { value: "above_standard", label: "高於一般售價" },
   { value: "missing", label: "未設定" },
   { value: "configured", label: "正確設定" },
   { value: "incomplete", label: "資料未完成" },
@@ -270,6 +264,7 @@ export default function BusinessPricingAuditPanel({
     initialSnapshot ?? cachedSnapshot,
   );
   const [filter, setFilter] = useState<BusinessPricingAuditFilter>("problem");
+  const [skuQuery, setSkuQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
@@ -385,6 +380,7 @@ export default function BusinessPricingAuditPanel({
 
   const visibleRows = useMemo(() => {
     if (!visibleSnapshot) return [];
+    const normalizedSkuQuery = skuQuery.trim().toLocaleLowerCase("en-US");
     const activityOrder = new Map(
       (visibleSnapshot.workflowActivities ?? []).map((activity, index) => [
         activity.sellerSku,
@@ -392,7 +388,13 @@ export default function BusinessPricingAuditPanel({
       ]),
     );
     return visibleSnapshot.rows
-      .filter((row) => businessPricingRowMatchesFilter(row, filter))
+      .filter((row) =>
+        businessPricingRowMatchesFilter(row, filter) &&
+        (!normalizedSkuQuery ||
+          row.sellerSku.toLocaleLowerCase("en-US").includes(
+            normalizedSkuQuery,
+          ))
+      )
       .map((row, index) => ({ row, index }))
       .sort((left, right) => {
         const leftActivity = activityOrder.get(left.row.sellerSku);
@@ -406,7 +408,7 @@ export default function BusinessPricingAuditPanel({
       })
       .map(({ row }) => row);
   },
-    [filter, visibleSnapshot],
+    [filter, skuQuery, visibleSnapshot],
   );
 
   const workflowActivities = visibleSnapshot?.workflowActivities ?? [];
@@ -815,8 +817,7 @@ export default function BusinessPricingAuditPanel({
                 key={option.value}
                 type="button"
                 className={`${filter === option.value ? "active" : ""}${
-                  option.value === "problem" || option.value === "missing" ||
-                    option.value === "above_standard"
+                  option.value === "problem" || option.value === "missing"
                     ? " problem"
                     : ""
                 }`}
@@ -826,6 +827,20 @@ export default function BusinessPricingAuditPanel({
                 <span>{option.label}</span><strong>{rowCount(visibleSnapshot, option.value)}</strong>
               </button>
             ))}
+          </div>
+          <div className="content-audit-controls business-pricing-controls">
+            <label>
+              <span aria-hidden="true">⌕</span>
+              <input
+                type="search"
+                value={skuQuery}
+                onChange={(event) => setSkuQuery(event.target.value)}
+                placeholder="搜尋 Seller SKU"
+                aria-label="搜尋 B2B 價格健檢 SKU"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
           </div>
           <p className="business-pricing-notice">
             本次已核對 {visibleSnapshot.summary.totalFbaSkuCount} 個 FBA SKU；需要手動處理時可從商品列開啟 Amazon 後台。
@@ -924,7 +939,7 @@ export default function BusinessPricingAuditPanel({
               </article>
               );
             })}
-            {visibleRows.length === 0 && <p className="business-pricing-empty">這個篩選沒有商品。</p>}
+            {visibleRows.length === 0 && <p className="business-pricing-empty">這個篩選或搜尋沒有商品。</p>}
           </div>
         </>
       )}

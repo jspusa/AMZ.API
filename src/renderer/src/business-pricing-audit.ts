@@ -14,12 +14,14 @@ export type BusinessPricingAuditStatus =
 export type BusinessPricingAuditFilter =
   | "all"
   | "problem"
-  | "recommended_price_mismatch"
-  | "recommended_quantity_discount_mismatch"
-  | "above_standard"
   | "missing"
   | "configured"
   | "incomplete";
+
+export type BusinessPricingAuditBucket = Exclude<
+  BusinessPricingAuditFilter,
+  "all"
+>;
 
 export type BusinessPricingMoney = Readonly<{
   amount: number;
@@ -782,18 +784,22 @@ export function businessPricingRowMatchesFilter(
   filter: BusinessPricingAuditFilter,
 ): boolean {
   if (filter === "all") return true;
-  const correctlyConfigured = isBusinessPricingRowCorrectlyConfigured(row);
-  if (filter === "problem") {
-    return row.status !== "incomplete" && !correctlyConfigured;
-  }
-  if (filter === "recommended_price_mismatch") {
-    return row.recommendedPriceMismatch;
-  }
-  if (filter === "recommended_quantity_discount_mismatch") {
-    return row.recommendedQuantityDiscountMismatch;
-  }
-  if (filter === "configured") return correctlyConfigured;
-  return row.status === filter;
+  return businessPricingRowBucket(row) === filter;
+}
+
+export function businessPricingRowBucket(
+  row: BusinessPricingAuditRow,
+): BusinessPricingAuditBucket {
+  if (
+    row.standardPrice === null ||
+    row.status === "incomplete" ||
+    row.status === "unsupported"
+  ) return "incomplete";
+  if (row.status === "missing") return "missing";
+  const configurationState = businessPricingRowConfigurationState(row);
+  if (configurationState === "needs_confirmation") return "incomplete";
+  if (configurationState === "correct") return "configured";
+  return "problem";
 }
 
 export function isBusinessPricingRowCorrectlyConfigured(
