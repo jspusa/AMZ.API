@@ -185,6 +185,7 @@ type ReportReply = {
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
 export type AuditFilter =
   | "all"
+  | "COMPLETED"
   | "NEEDS_CORRECTION"
   | "CORRECT"
   | "READ_INCOMPLETE"
@@ -228,6 +229,7 @@ function contentAuditRowMatchesFilter(
   if (filter === "all") {
     return row.readStatus === "incomplete" || row.issues.length > 0;
   }
+  if (filter === "COMPLETED") return row.readStatus === "complete";
   if (filter === "NEEDS_CORRECTION") return contentAuditNeedsCorrection(row);
   if (filter === "CORRECT") {
     return row.readStatus === "complete" && row.issues.length === 0;
@@ -243,6 +245,7 @@ function contentAuditIssueMatchesFilter(
   filter: AuditFilter,
 ): boolean {
   if (filter === "all") return true;
+  if (filter === "COMPLETED") return true;
   if (filter === "NEEDS_CORRECTION") {
     return CONTENT_AUDIT_NEEDS_CORRECTION_KINDS.has(issue.kind);
   }
@@ -2891,7 +2894,7 @@ export default function ContentAuditPanel({
   }, [snapshot, filter, query]);
   const invisibleLocations = useMemo(
     () =>
-      filter === "all" || filter === "SUSPECTED_TYPO"
+      filter === "all" || filter === "COMPLETED" || filter === "SUSPECTED_TYPO"
         ? locateInvisibleCharacters(visibleRows)
         : [],
     [filter, visibleRows],
@@ -3068,6 +3071,12 @@ export default function ContentAuditPanel({
     detail: string;
   }> = summary
     ? [
+        {
+          filter: "COMPLETED",
+          label: "完成讀取",
+          count: summary.completed,
+          detail: `共 ${summary.total.toLocaleString()} 個可健檢 FBA SKU`,
+        },
         {
           filter: "NEEDS_CORRECTION",
           label: "需修正",
@@ -3405,7 +3414,6 @@ export default function ContentAuditPanel({
       {state === "done" && snapshot && summary && (
         <>
           <div className="content-audit-summary" role="group" aria-label="文案健檢摘要與問題篩選">
-            <article><span>完成讀取</span><strong>{summary.completed.toLocaleString()}</strong><small>共 {summary.total.toLocaleString()} 個可健檢 FBA SKU</small></article>
             {summaryFilters.map((item) => (
               <button
                 key={item.filter}
@@ -3562,7 +3570,7 @@ export default function ContentAuditPanel({
                     )}
                     <div className="content-audit-issues" aria-label="待修原因">
                       {row.readStatus === "incomplete" &&
-                        filter === "READ_INCOMPLETE" &&
+                        (filter === "all" || filter === "READ_INCOMPLETE") &&
                         row.readErrors.map((readError, index) => (
                           <div key={`${readError.code}-${index}`}>
                             <span className="kind-read_incomplete">讀取失敗／未完成</span>

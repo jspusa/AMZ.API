@@ -1440,6 +1440,8 @@ describe("global FBA content audit panel", () => {
               kind: "TITLE_BELOW_TARGET",
               field: "title",
               message: "產品名稱不足。",
+              actualLength: 11,
+              minLength: 60,
             },
           ],
         }),
@@ -1456,6 +1458,8 @@ describe("global FBA content audit panel", () => {
               kind: "DESCRIPTION_BELOW_TARGET",
               field: "productDescription",
               message: "產品敘述不足。",
+              actualLength: 0,
+              minLength: 1_800,
             },
           ],
         }),
@@ -1463,11 +1467,15 @@ describe("global FBA content audit panel", () => {
           sellerSku: "INGREDIENT-MISMATCH-WITH-LENGTH",
           title: "Turkey Tendon treats",
           ingredients: "Turkey, Chicken",
-          issues: [{
-            kind: "BULLET_BELOW_TARGET",
-            field: "bulletPoints",
-            message: "產品要點過短。",
-          }],
+          issues: [
+            {
+              kind: "TITLE_BELOW_TARGET",
+              field: "title",
+              message: "產品名稱不足。",
+              actualLength: 20,
+              minLength: 60,
+            },
+          ],
         }),
         quickEditRow({
           sellerSku: "INGREDIENTS-UNVERIFIED",
@@ -1509,7 +1517,7 @@ describe("global FBA content audit panel", () => {
     );
 
     expect(markup).toContain('class="content-audit-summary" role="group" aria-label="文案健檢摘要與問題篩選"');
-    expect(markup).toMatch(/<span>完成讀取<\/span><strong>7<\/strong>/u);
+    expect(markup).toMatch(/data-audit-filter="COMPLETED"[^>]*>[\s\S]*?<span>完成讀取<\/span><strong>7<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="NEEDS_CORRECTION"[^>]*>[\s\S]*?<span>需修正<\/span><strong>2<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="SUSPECTED_TYPO"[^>]*>[\s\S]*?<span>疑似錯字<\/span><strong>1<\/strong>/u);
     expect(markup).toMatch(/data-audit-filter="MISSING_INGREDIENTS"[^>]*>[\s\S]*?<span>缺成分<\/span><strong>1<\/strong>/u);
@@ -1535,6 +1543,45 @@ describe("global FBA content audit panel", () => {
     }
     expect(markup).not.toContain('role="tablist"');
     expect(markup).not.toContain("單一成分宣稱不一致");
+  });
+
+  it("lets the completed summary show every successfully read SKU", () => {
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-08-06T08:00:00.000Z",
+      rows: [
+        quickEditRow({ sellerSku: "COMPLETE-WITH-ISSUE" }),
+        quickEditRow({ sellerSku: "COMPLETE-CORRECT", issues: [] }),
+        quickEditRow({
+          sellerSku: "READ-INCOMPLETE",
+          readStatus: "incomplete",
+          readErrors: [{
+            code: "LISTING_QUERY_FAILED",
+            message: "Listings Items API 尚未完整回傳。",
+          }],
+          issues: [],
+        }),
+      ],
+      summary: { total: 3 },
+    });
+    const markup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
+        cachedResult={{
+          snapshot,
+          filter: "COMPLETED",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+
+    expect(markup).toContain("COMPLETE-WITH-ISSUE");
+    expect(markup).toContain("COMPLETE-CORRECT");
+    expect(markup).not.toContain("READ-INCOMPLETE");
   });
 
   it("shows ingredient verification uncertainty together with incomplete reads", () => {
@@ -1584,6 +1631,23 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("INGREDIENTS-UNVERIFIED");
     expect(markup).toContain("READ-INCOMPLETE");
     expect(markup).toContain("成分未驗證");
+
+    const initialMarkup = renderToStaticMarkup(
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        initialJob={completedContentJob(snapshot)}
+        cachedResult={{
+          snapshot,
+          filter: "all",
+          query: "",
+          spellcheckNote: null,
+        }}
+      />,
+    );
+
+    expect(initialMarkup).toContain("Listings Items API 尚未完整回傳。");
   });
 
   it("keeps the seven summary groups in one even desktop row", async () => {
