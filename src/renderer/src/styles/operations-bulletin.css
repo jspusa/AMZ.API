@@ -58,7 +58,7 @@
 
 .operations-bulletin-summary-copy > small {
   color: #60758a;
-  font-size: 7px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.12em;
 }
@@ -73,7 +73,7 @@
 .operations-bulletin-summary-copy > span {
   margin-top: 4px;
   color: #77777d;
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -90,7 +90,7 @@
 
 .operations-bulletin-summary-count small {
   color: #8a8a90;
-  font-size: 7px;
+  font-size: 9px;
 }
 
 .operations-bulletin > summary > i {
@@ -133,13 +133,13 @@
 
 .operations-bulletin-toolbar > div:first-child strong {
   color: #46464b;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .operations-bulletin-toolbar > div:first-child small {
   margin-top: 3px;
   color: #8e8e94;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .operations-bulletin-actions {
@@ -156,7 +156,7 @@
   background: #fff;
   color: #55555a;
   cursor: pointer;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 750;
 }
 
@@ -194,7 +194,7 @@
   margin: 0 0 13px;
   padding: 10px 12px;
   border-radius: 12px;
-  font-size: 8px;
+  font-size: 10px;
   line-height: 1.5;
 }
 
@@ -237,7 +237,7 @@
 
 .bulletin-composer > header small {
   color: #5f806b;
-  font-size: 6px;
+  font-size: 9px;
   font-weight: 850;
   letter-spacing: .12em;
 }
@@ -245,7 +245,7 @@
 .bulletin-composer > header strong {
   margin-top: 2px;
   color: #2e3f34;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .bulletin-composer > header > button {
@@ -268,7 +268,7 @@
 .bulletin-composer label {
   min-width: 0;
   color: #506057;
-  font-size: 7px;
+  font-size: 10px;
   font-weight: 750;
 }
 
@@ -283,7 +283,7 @@
   background: #fff;
   color: #27332b;
   font: inherit;
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .bulletin-composer input,
@@ -329,7 +329,7 @@
 
 .bulletin-composer > footer small {
   color: #718078;
-  font-size: 7px;
+  font-size: 10px;
   line-height: 1.45;
 }
 
@@ -342,7 +342,7 @@
   background: #28613f;
   color: #fff;
   cursor: pointer;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
 }
 
@@ -376,7 +376,7 @@
 .bulletin-calendar-section > header small {
   display: block;
   color: #60758a;
-  font-size: 6px;
+  font-size: 9px;
   font-weight: 850;
   letter-spacing: 0.12em;
 }
@@ -385,7 +385,7 @@
 .bulletin-calendar-section h3 {
   margin: 3px 0 0;
   color: #29292d;
-  font-size: 13px;
+  font-size: 16px;
   letter-spacing: -0.025em;
 }
 
@@ -394,7 +394,7 @@
   border-radius: 999px;
   background: #f1f1f4;
   color: #67676c;
-  font-size: 7px;
+  font-size: 10px;
   font-weight: 750;
 }
 
@@ -405,7 +405,7 @@
   border-radius: 0 10px 10px 0;
   background: #f4f7fa;
   color: #607080;
-  font-size: 7px;
+  font-size: 10px;
   line-height: 1.55;
 }
 
@@ -413,7 +413,7 @@
   display: block;
   margin-bottom: 2px;
   color: #40586c;
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .bulletin-expiry-list {
@@ -448,21 +448,21 @@
 
 .bulletin-countdown small {
   color: #c9c9ce;
-  font-size: 6px;
+  font-size: 10px;
   font-weight: 750;
   letter-spacing: 0.08em;
 }
 
 .bulletin-countdown strong {
   margin: 3px 0 -1px;
-  font-size: 22px;
+  font-size: 28px;
   font-variant-numeric: tabular-nums;
   line-height: 1;
   letter-spacing: -0.06em;
 }
 
 .bulletin-countdown > span {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
 }
 
@@ -499,7 +499,7 @@
   background: #fff;
   color: #68747b;
   cursor: pointer;
-  font-size: 6px;
+  font-size: 10px;
   font-weight: 750;
 }
 
@@ -511,7 +511,7 @@
 .bulletin-expiry-title-row small {
   display: block;
   color: #99999f;
-  font-size: 6px;
+  font-size: 10px;
 }
 
 .bulletin-marketplace-code {
@@ -530,28 +530,44 @@
   margin: 2px 0 0;
   overflow: hidden;
   color: #2e2e32;
-  font-size: 11px;
+  font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .bulletin-expiry-meta {
-  display: flex;
+  display: grid;
   min-width: 0;
-  align-items: baseline;
-  gap: 4px;
-  margin-top: 3px;
-  font-size: 7px;
+  grid-template-columns: repeat(2, minmax(0, auto));
+  justify-content: start;
+  gap: 3px 12px;
+  margin-top: 5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
-.bulletin-expiry-meta time {
-  flex: 0 0 auto;
+.bulletin-expiry-date {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.bulletin-expiry-date small {
+  color: #8a8a90;
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.bulletin-expiry-date time {
   color: #566875;
+  font-size: 11px;
   font-weight: 750;
 }
 
-.bulletin-expiry-meta span {
+.bulletin-expiry-note {
+  grid-column: 1 / -1;
   min-width: 0;
   overflow: hidden;
   color: #77777c;
@@ -579,13 +595,13 @@
 
 .bulletin-expiry-facts dt {
   color: #8c8c92;
-  font-size: 6px;
+  font-size: 10px;
 }
 
 .bulletin-expiry-facts dd {
   margin: 0;
   color: #3f3f44;
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 750;
   overflow-wrap: anywhere;
 }
@@ -594,28 +610,46 @@
   display: block;
   margin-top: 2px;
   color: #8a959d;
-  font-size: 6px;
+  font-size: 10px;
   line-height: 1.2;
   text-align: right;
 }
 
 .bulletin-calendar-navigation {
-  display: grid;
-  grid-template-columns: 30px minmax(98px, auto) 30px;
+  position: relative;
+  display: block;
   align-items: center;
-  gap: 5px;
 }
 
 .bulletin-calendar-navigation button {
-  min-height: 30px;
-  padding: 0;
-  font-size: 15px;
+  display: inline-flex;
+  min-width: 148px;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
 }
 
-.bulletin-calendar-navigation strong {
+.bulletin-calendar-navigation button strong {
   color: #48484d;
-  font-size: 8px;
+  font-size: 12px;
   text-align: center;
+}
+
+.bulletin-calendar-navigation button span {
+  color: #74747a;
+  font-size: 11px;
+}
+
+.bulletin-calendar-date-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  opacity: 0;
+  pointer-events: none;
 }
 
 .bulletin-calendar-scroll {
@@ -638,7 +672,7 @@
 .bulletin-calendar th {
   height: 20px;
   color: #929298;
-  font-size: 6px;
+  font-size: 10px;
   font-weight: 750;
   text-align: center;
 }
@@ -653,7 +687,7 @@
 }
 
 .bulletin-calendar td {
-  height: 55px;
+  height: 64px;
   padding: 5px;
   vertical-align: top;
   border: 1px solid #ededf0;
@@ -677,14 +711,20 @@
   background: #f8f0f3;
 }
 
-.bulletin-calendar td.has-promotion.has-expiry {
+.bulletin-calendar td.has-stop-sale:not(.has-promotion):not(.has-expiry) {
+  background: #f4eff8;
+}
+
+.bulletin-calendar td.has-promotion.has-expiry,
+.bulletin-calendar td.has-promotion.has-stop-sale,
+.bulletin-calendar td.has-expiry.has-stop-sale {
   background: #f0f2f7;
 }
 
 .bulletin-calendar td > time {
   display: block;
   color: #77777d;
-  font-size: 7px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   font-weight: 750;
 }
@@ -693,7 +733,7 @@
   margin-left: 3px;
   content: "今天";
   color: #45454a;
-  font-size: 5px;
+  font-size: 8px;
 }
 
 .bulletin-calendar ul {
@@ -710,7 +750,7 @@
   border-radius: 4px;
   background: #376b8a;
   color: #fff;
-  font-size: 5px;
+  font-size: 8px;
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -718,6 +758,10 @@
 
 .bulletin-calendar li.is-expiry {
   background: #985264;
+}
+
+.bulletin-calendar li.is-stop-sale {
+  background: #76508b;
 }
 
 .bulletin-calendar li.is-more {
@@ -730,7 +774,7 @@
   gap: 10px;
   margin-top: 7px;
   color: #6f7981;
-  font-size: 6px;
+  font-size: 10px;
 }
 
 .bulletin-calendar-legend span {
@@ -750,6 +794,10 @@
   background: #985264;
 }
 
+.bulletin-calendar-legend i.is-stop-sale {
+  background: #76508b;
+}
+
 .bulletin-calendar-agenda {
   display: grid;
   max-height: 360px;
@@ -767,7 +815,7 @@
 
 .bulletin-calendar-agenda article {
   display: grid;
-  grid-template-columns: 106px minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(112px, 142px) minmax(120px, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   padding: 9px 10px;
@@ -778,7 +826,7 @@
 
 .bulletin-calendar-agenda time {
   color: #77777d;
-  font-size: 7px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -789,14 +837,14 @@
 .bulletin-calendar-agenda strong {
   display: block;
   color: #38383d;
-  font-size: 8px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
 .bulletin-calendar-agenda p {
   margin: 2px 0 0;
   color: #87878d;
-  font-size: 6px;
+  font-size: 10px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -806,7 +854,7 @@
   border-radius: 999px;
   background: #2e2e33;
   color: #fff;
-  font-size: 6px;
+  font-size: 9px;
   font-weight: 750;
   white-space: nowrap;
 }
@@ -817,6 +865,10 @@
 
 .bulletin-calendar-agenda article > span.is-expiry {
   background: #985264;
+}
+
+.bulletin-calendar-agenda article > span.is-stop-sale {
+  background: #76508b;
 }
 
 .bulletin-empty {
@@ -834,20 +886,20 @@
 
 .bulletin-empty strong {
   color: #606066;
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .bulletin-empty p {
   margin: 4px 0 0;
   color: #919197;
-  font-size: 7px;
+  font-size: 10px;
   line-height: 1.45;
 }
 
 .operations-bulletin-empty-summary {
   margin: 13px 0 0;
   color: #87878c;
-  font-size: 7px;
+  font-size: 10px;
   text-align: center;
 }
 
@@ -918,6 +970,10 @@
 
   .bulletin-countdown {
     min-height: 76px;
+  }
+
+  .bulletin-expiry-meta {
+    grid-template-columns: 1fr;
   }
 
   .bulletin-calendar-agenda article {

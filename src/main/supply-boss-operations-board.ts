@@ -16,6 +16,7 @@ export const SUPPLY_BOSS_OPERATIONS_BOARD_URL =
   `${SUPPLY_BOSS_BASE_URL}/api/operations-board`;
 const SUPPLY_BOSS_LOGIN_URL =
   `${SUPPLY_BOSS_BASE_URL}/api/operations-board/login`;
+const OPERATIONS_BOARD_SCHEMA_HEADER = "x-amz-api-operations-board-schema";
 const MAX_RESPONSE_BYTES = 128 * 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
 const KNOWN_PRE_WRITE_REJECTION_STATUSES = new Set([
@@ -42,6 +43,13 @@ export type OperationsBoardSessionSummary = Readonly<{
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function parseSupplyBossSchema2Snapshot(value: unknown): OperationsBoardSnapshot {
+  if (!isRecord(value) || value.schemaVersion !== 2) {
+    throw new Error("Supply Boss 公布欄回應版本不符。");
+  }
+  return parseOperationsBoardSnapshot(value);
 }
 
 async function boundedJson(response: Response): Promise<unknown> {
@@ -234,14 +242,17 @@ export class SupplyBossOperationsBoard implements OperationsBoardPort {
     try {
       const response = await this.request(SUPPLY_BOSS_OPERATIONS_BOARD_URL, {
         method: "GET",
-        headers: { accept: "application/json" },
+        headers: {
+          accept: "application/json",
+          [OPERATIONS_BOARD_SCHEMA_HEADER]: "2",
+        },
         cache: "no-store",
         credentials: "omit",
         redirect: "error",
         signal: abort.signal,
       });
       if (!response.ok) throw new Error("board unavailable");
-      const snapshot = parseOperationsBoardSnapshot(await boundedJson(response));
+      const snapshot = parseSupplyBossSchema2Snapshot(await boundedJson(response));
       this.lastKnownGood = snapshot;
       return { snapshot, source: "shared", stale: false, status: "ready" };
     } catch {
@@ -271,7 +282,7 @@ export class SupplyBossOperationsBoard implements OperationsBoardPort {
       );
     }
     const candidate = parseOperationsBoardSnapshot({
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: input.baseRevision,
       updatedAt: this.now().toISOString(),
       items: input.items,
@@ -286,6 +297,7 @@ export class SupplyBossOperationsBoard implements OperationsBoardPort {
           accept: "application/json",
           authorization: `Bearer ${session.token}`,
           "content-type": "application/json",
+          [OPERATIONS_BOARD_SCHEMA_HEADER]: "2",
         },
         body: JSON.stringify({
           baseRevision: candidate.revision,
@@ -343,7 +355,7 @@ export class SupplyBossOperationsBoard implements OperationsBoardPort {
       }
 
       try {
-        const snapshot = parseOperationsBoardSnapshot(await boundedJson(response));
+        const snapshot = parseSupplyBossSchema2Snapshot(await boundedJson(response));
         if (snapshot.revision !== input.baseRevision + 1) throw new Error("revision mismatch");
         this.lastKnownGood = snapshot;
         return snapshot;

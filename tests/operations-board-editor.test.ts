@@ -46,6 +46,19 @@ describe("local-only operations board editor", () => {
     expect(OPERATIONS_BOARD_EDITOR_HTML).toContain('id="save" class="primary" type="button">確認並發布</button>');
   });
 
+  it("edits a stop-sale date and an inclusive promotion date range", () => {
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("停售日（選填）");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("'stopSaleDate'");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("促銷開始日");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("'startDate'");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("促銷結束日");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("'endDate'");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("date-picker-clear");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("clear.textContent = '清除'");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("control.value = ''");
+    expect(OPERATIONS_BOARD_EDITOR_HTML).toContain("month + 11");
+  });
+
   it("creates item IDs in the non-secure data URL without crypto.randomUUID", () => {
     expect(OPERATIONS_BOARD_EDITOR_HTML).not.toContain("crypto.randomUUID");
     const source = OPERATIONS_BOARD_EDITOR_HTML.match(

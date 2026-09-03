@@ -16,7 +16,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 策劃 | FBA 銷售趨勢（7／14／30／90 天、自訂 1–365 天、去年同期、選配迷你滑板）、SB／SD 授權狀態、FBA 補貨計算 | 自動／人工授權 |
 | 策劃 | 依所選日期自動載入 FBA shipment report，以目前 Listing 標題前綴分類品牌營收與未分類列 | Amazon 報表唯讀 |
 | 策劃 | 全部 FBA 非重疊庫齡桶、Amazon 預估冗餘、下月倉儲成本與 AIS 預估附加費、Excel | Amazon 報表唯讀 |
-| 營運 | 首頁可收折重要公布欄：以緊湊單列顯示人工標記的即期 Seller SKU／效期／備註、一次倒數、站點、目前 FBA 可售庫存、有效售價與同步時間；七欄等寬促銷月曆同時標示促銷檔期與 SKU 到期日，促銷可另選首頁倒數 | AMZ.API 內直接按「新增即期品／新增促銷」填白話欄位；發布或管理時才在 main-owned 無網路小視窗輸入共用帳密，可直接新增、編輯、刪除。員工不需 GitHub，也不需設定 R2 五個欄位 |
+| 營運 | 首頁可收折重要公布欄：以緊湊單列顯示人工標記的即期 Seller SKU／產品效期／選填停售日／備註、一次倒數、站點、目前 FBA 可售庫存、有效售價與同步時間；有停售日時優先倒數停售日，沒有才倒數產品效期。七欄等寬促銷月曆同時標示促銷檔期、SKU 停售日與到期日；促銷可設定含首尾日的多日檔期，並可另選首頁倒數 | AMZ.API 內直接按「新增即期品／新增促銷」填白話欄位；發布或管理時才在 main-owned 無網路小視窗輸入共用帳密，可直接新增、編輯、刪除。員工不需 GitHub，也不需設定 R2 五個欄位 |
 | 產品 | SKU 查詢、標題、五大賣點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID／Windows Hello／系統確認 |
 | 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值、成分宣稱核對與逐項原因） | Amazon 唯讀掃描；依明確 ingredients 證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic 宣稱；`airdried`、`grainfree`、`dogfood`、`airdry` 只在後台產品敘述免列錯字，出現在標題、亮點、要點或成分仍回報；摘要與常用操作優先顯示，門檻、辭典與安全範圍收在低調的「詳細說明 ›」；Excel 依已證明的變體 family 分頁，問題欄著色，未發現問題的可編輯欄使用淺綠色。只有 family 每一列資料完整且全部檢查通過時，工作表才由 `F001` 命名為 `F001(可)`；任一問題、incomplete 或 unknown 都維持原名 |
 | 產品 | 將文案健檢 Excel 以選檔或拖放回傳，逐欄核對 Amazon 原值／Excel 更新值後批次更新；新版可只回傳 F007，或只回傳 F007、F008 等實際要改的完整工作表 | 同檔 round trip 保留特殊換行與 main-owned 24 小時證據。匯入會一次列出所有問題 SKU、工作表、Excel 列號、實際欄位與原因；能安全歸屬單列的 parser／fresh-read／Validation 問題只隔離該 SKU，其餘獨立安全 SKU 繼續，Amazon `INVALID` 沒有強制送出入口。公式／巨集／外部連結、跨帳號／站點、auth／rate limit／server／network／timeout 或無法綁定結果仍整批 fail closed。每 SKU 只有一次 ledgered PATCH；exact known rejection 或「Amazon 已接受且所有 bounded GET 成功、但目標尚未出現」可按列隔離，其他結果不明停止後續且永不盲目重送 |
@@ -43,7 +43,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 
 能力邊界：目前 Amazon SP-API 寫入流程涵蓋 Listing 一般價格、Sale Price、文案、圖片、符合 seller-specific PTD 的單 SKU B2B 價格／percent 數量折扣，以及既有 FBA child 的 variation 關係；全站 B2B 健檢 owner 本身固定唯讀，商品列的編輯按鈕只會另行啟動既有單 SKU 安全流程。一般 B2B 寫入只更新 exact `audience=B2B` contribution，其他 audiences 原樣保留；唯一窄例外是使用者明確送出 percent 階梯、US／USD 的最低階單價低於一份可唯一辨識且既已設定的 `ALL.minimum_seller_allowed_price` 時，App 可把該護欄降到最低階單價再少 US$1.00。這個例外不會建立缺少的最低價、不接受 ambiguous `ALL` offer，也不改 `our_price` 或其他 `ALL` 欄位。若需要先調低最低價，第一次 Validation Preview 與原生確認只授權最低價 single PATCH；Amazon 一回 `ACCEPTED`，App 立刻保存不可重送的 durable evidence、回 HTTP `202` 並停在最低價階段，B2B 完全尚未送出，同一次送出不做 canonical GET。使用者稍後手動重新讀取，只有 exact canonical GET 與最低價目標相符才轉成已驗證；之後必須以最新 Listing 重新預檢並再次完成原生確認，才會另行送出 B2B 價格與階梯。只調價格時既有數量折扣與最低價都保持原樣。Amazon 對已接受的 Listing 更新可能延遲數分鐘，實際曾觀察到接近 10 分鐘；這不是保證時限。一般 B2B PATCH 也在 `ACCEPTED` 後立即回 `202`，只有後續明確 GET 能轉成已驗證。變體改掛不是原子操作，固定拆成「解除舊 parent」與「加入新 parent」兩階段；所有寫入都維持重新讀取、Amazon Validation Preview、本機身分確認、持久化防重送、單次 PATCH 與後續唯讀回查，任何不確定狀態都禁止直接重送。S&S 啟用／折扣、Coupon 建立及 SB／SD 正式開啟仍需要獨立資格、Ads API 或 Seller Central 人工確認。
 
-Amazon 公開 API 目前不提供現有 FBA FC 庫存的逐 SKU／批次效期，因此 App 不會拿庫齡冒充近效期或已過期清單。首頁即期品倒數的效期與備註明確標示為人工維護；目前 FBA 可售庫存與價格才由各台 Notebook Key 以單次 bounded `POST /api/sp-api/operations-board-facts` 唯讀批次另行取得，兩種證據不互相冒充。一般 US／CA／JP／SG／AU／UK／DE 發票與 Seller Central 帳單也沒有通用公開下載 API；會計中心只啟用可證明為 FBA 的公開報表，Finances JSON、結算報表、人工前置與不可用能力會分開標示，不使用 Seller Central 私有接口。
+Amazon 公開 API 目前不提供現有 FBA FC 庫存的逐 SKU／批次效期，因此 App 不會拿庫齡冒充近效期或已過期清單。首頁即期品的產品效期、選填停售日與備註明確標示為人工維護；有停售日時倒數以停售日為準，沒有才使用產品效期。目前 FBA 可售庫存與價格才由各台 Notebook Key 以單次 bounded `POST /api/sp-api/operations-board-facts` 唯讀批次另行取得，兩種證據不互相冒充。公布欄發布也不是 Amazon 寫入，不會呼叫 Amazon Validation Preview 或 PATCH。一般 US／CA／JP／SG／AU／UK／DE 發票與 Seller Central 帳單也沒有通用公開下載 API；會計中心只啟用可證明為 FBA 的公開報表，Finances JSON、結算報表、人工前置與不可用能力會分開標示，不使用 Seller Central 私有接口。
 
 FBA 入庫貨件的「Amazon 已接收」取自 Fulfillment Inbound v0 `QuantityReceived`，不是 Seller Central 私有畫面的逐次掃描或調查結論。接收中貨件的正差額只稱為「尚未接收／暫時差異」；超收會獨立保留，只有已關閉貨件仍有差異時才提示回 Seller Central 核對。逐票商品第一頁若回傳 `NextToken`，Notebook Key 只會以官方 `getShipmentItems` 的固定 `NEXT_TOKEN` GET 讀完後續頁，並核對同一票識別、重複 token／SKU 與安全頁數上限。若 Amazon 拒絕舊版日期範圍清單，Notebook Key 會依序嘗試 v0 活動中狀態清單與 2024 新版入庫計畫清單；兩種備援都固定標為部分範圍，不能冒充所選日期內的完整貨件清單。每日 inbound noncompliance report 只包含 Amazon 回傳的問題列且可能落後即時畫面，沒有問題列不等於可證明三個層級即時零瑕疵。
 
@@ -62,7 +62,7 @@ FBA 廣告策略表只會把 Sales & Traffic 的 exact Seller SKU＋ASIN 與目�
    - 各使用區域的 Refresh Token
    - 各區域 Seller ID / Merchant Token
 5. macOS 使用 Touch ID；Windows 11 使用 Windows Hello（指紋／臉部／PIN 由 Windows 決定）。Windows Hello 未設定、取消或失敗時會停止敏感操作，不會降級成一般按鈕放行。
-6. 公布欄不需要 Amazon 憑證或使用者自備 R2。按「新增即期品」或「新增促銷」填完白話欄位後，App 會開啟無網路的本機管理小視窗；輸入共用帳密即可確認發布，之後也能從同一處直接編輯或刪除。員工不需 GitHub 帳號，多台 Notebook Key 會讀取同一份 Supply Boss 公布欄。
+6. 公布欄不需要 Amazon 憑證或使用者自備 R2。按「新增即期品」可填產品效期與選填停售日；按「新增促銷」可選開始日與結束日，單日活動把兩日設成同一天。填完白話欄位後，App 會開啟無網路的本機管理小視窗；輸入共用帳密即可確認發布，之後也能從同一處直接編輯或刪除。員工不需 GitHub 帳號，多台 Notebook Key 會讀取同一份 Supply Boss 公布欄。
 7. 在頂端輸入 Seller SKU，直接進入文案、圖片、定價、促銷或補貨。
 
 SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、歐洲（UK／DE）各自使用區域 Refresh Token 與 Seller ID；同一個 LWA Client 可共用。
@@ -78,7 +78,9 @@ SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、�
 
 - Secret 經 Electron `safeStorage` 的作業系統金鑰保護後，才寫入 App 的 `userData/credentials.enc`；macOS 使用 Keychain，Windows 使用當前登入使用者的 DPAPI。
 - Amazon Ads 使用獨立 `ads-credentials.enc`；兩種憑證都只在 main process 的無網路本機 sheet 輸入，Pages 只能開啟 sheet、讀取遮罩狀態、測試或清除。
-- 公布欄使用獨立於 Supply Boss 舊管理 API 的 board-editor 帳密，只送往固定登入端點；最長 8 小時的 board-scoped session token 只存在 main process 記憶體，不能操作舊 snapshot 管理 API。密碼不保存，鎖屏、睡眠、App 結束或到期即登出；關閉管理視窗不會立刻登出，讓同一次 App 使用期間再次管理時不必重輸。Seller SKU、人工效期、促銷名稱與備註屬公開公告內容；Amazon 憑證、即時庫存與價格不會上傳。
+- 公布欄使用獨立於 Supply Boss 舊管理 API 的 board-editor 帳密，只送往固定登入端點；最長 8 小時的 board-scoped session token 只存在 main process 記憶體，不能操作舊 snapshot 管理 API。密碼不保存，鎖屏、睡眠、App 結束或到期即登出；關閉管理視窗不會立刻登出，讓同一次 App 使用期間再次管理時不必重輸。Seller SKU、人工產品效期／停售日、促銷開始日／結束日、促銷名稱與備註屬公開公告內容；Amazon 憑證、即時庫存與價格不會上傳。
+
+- 公布欄目前以 canonical schema v2 運作。新版 Notebook Key 對讀寫都固定送出 `x-amz-api-operations-board-schema: 2`；Supply Boss 可讀既有 v1 或 v2 儲存內容並正規化為 v2。為讓舊版 App 安全讀取，沒有這個 header 的 public GET 仍只回傳 exact v1 projection；帶 header 的 GET 才回完整 v2。canonical 資料升為 v2 後，舊版無 header 的 PUT 會回 `409` 並要求升級，避免無聲覆蓋停售日或多日促銷的結束日。
 - 完整 Secret 永不回傳 renderer、永不寫入 GitHub、`.env`、URL、localStorage 或日誌。
 - Amazon Access Token 只在主程序記憶體中短暫快取。
 - 作業系統安全儲存不可用時保存會直接失敗，沒有明文 fallback。Windows DPAPI 保護不同 Windows 使用者之間的存取，不等於隔離同一使用者權限下的其他程式。

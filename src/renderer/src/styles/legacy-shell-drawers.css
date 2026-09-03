@@ -996,13 +996,18 @@
 
 .content-audit-summary {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   margin-top: 17px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--line);
+}
+
+.content-audit-summary-spacer {
+  min-width: 0;
+  background: #fff;
 }
 
 .content-audit-summary > article,

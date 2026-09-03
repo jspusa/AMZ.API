@@ -47,6 +47,11 @@ describe("CSS04 visual baseline scenario", () => {
     expect(source).toContain('case "css04":');
     expect(source).toContain("count + 11 + (profile.reduced ? 1 : 0)");
     expect(source).toContain("hasExpiryInCalendar");
+    expect(source).toContain('locator(".bulletin-calendar-date-input")');
+    expect(source).toContain('fill("2026-09-01", { force: true })');
+    expect(source).not.toContain('getByRole("button", { name: "下個月" })');
+    expect(source).toContain("promotionDates");
+    expect(source).toContain("agendaTitleWidths");
     expect(source).toContain('scopeSelector: ".health-audit-home-grid"');
     expect(source).toContain('requiredScrollers: compact ? [".report-library-toolbar nav"] : []');
     expect(source).toContain("expectedReportCategoryLabels");
@@ -73,6 +78,9 @@ describe("CSS04 visual baseline scenario", () => {
     expect(source).toContain("const css04ReviewSnapshot =");
     expect(source).toContain("const css04ContentJob =");
     expect(source).toContain('expiryDate: "2026-09-05"');
+    expect(source).toContain('stopSaleDate: "2026-08-31"');
+    expect(source).toContain('startDate: "2026-09-10"');
+    expect(source).toContain('endDate: "2026-09-12"');
     expect(source).toContain('request.path === "/api/amazon-ads/status"');
     expect(source).toContain('request.path === "/api/amazon-ads/strategy"');
     expect(source).toContain('request.path === "/api/sp-api/review-audit"');

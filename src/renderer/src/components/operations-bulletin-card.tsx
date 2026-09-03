@@ -44,7 +44,7 @@ type SkuFact =
 type CalendarEntry =
   | Readonly<{
       id: string;
-      kind: "expiry";
+      kind: "expiry" | "stop-sale";
       date: string;
       label: string;
       item: OperationsBoardExpiryItem;
@@ -59,6 +59,7 @@ type CalendarEntry =
 
 type OperationsBoardDesktopBridge = Readonly<{
   operationsBoard?: Readonly<{
+    schemaVersion?: number;
     publish(draft: OperationsBoardPublisherDraft): Promise<void>;
     manage(itemId: string): Promise<void>;
     onUpdated?(listener: () => void): () => void;
@@ -156,6 +157,17 @@ function monthParts(monthKey: string): { year: number; month: number } | null {
   return { year, month };
 }
 
+function calendarPickerBounds(todayDateKey: string): { min: string; max: string } {
+  const currentMonth = todayDateKey.slice(0, 7);
+  const parsed = monthParts(currentMonth);
+  if (!parsed) return { min: todayDateKey, max: todayDateKey };
+  const maximum = new Date(Date.UTC(parsed.year, parsed.month + 11, 0));
+  return {
+    min: `${currentMonth}-01`,
+    max: dateKeyFromUtc(maximum),
+  };
+}
+
 function dateKeyFromUtc(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -166,18 +178,13 @@ export function calendarMonthCells(monthKey: string): readonly string[] {
   const first = new Date(Date.UTC(parsed.year, parsed.month - 1, 1));
   const firstCell = new Date(first);
   firstCell.setUTCDate(first.getUTCDate() - first.getUTCDay());
-  return Array.from({ length: 42 }, (_, index) => {
+  const daysInMonth = new Date(Date.UTC(parsed.year, parsed.month, 0)).getUTCDate();
+  const weekCount = Math.max(5, Math.ceil((first.getUTCDay() + daysInMonth) / 7));
+  return Array.from({ length: weekCount * 7 }, (_, index) => {
     const date = new Date(firstCell);
     date.setUTCDate(firstCell.getUTCDate() + index);
     return dateKeyFromUtc(date);
   });
-}
-
-function shiftMonth(monthKey: string, delta: number): string {
-  const parsed = monthParts(monthKey);
-  if (!parsed) return monthKey;
-  const date = new Date(Date.UTC(parsed.year, parsed.month - 1 + delta, 1));
-  return date.toISOString().slice(0, 7);
 }
 
 function monthLabel(monthKey: string): string {
@@ -190,6 +197,50 @@ function absoluteDateLabel(dateKey: string): string {
   if (epoch === null) return dateKey;
   const date = new Date(epoch);
   return `${date.getUTCFullYear()} 年 ${date.getUTCMonth() + 1} 月 ${date.getUTCDate()} 日（週${WEEKDAY_LABELS[date.getUTCDay()]}）`;
+}
+
+function promotionDateLabel(item: OperationsBoardPromotionItem): string {
+  return item.startDate === item.endDate
+    ? absoluteDateLabel(item.startDate)
+    : `${absoluteDateLabel(item.startDate)}－${absoluteDateLabel(item.endDate)}`;
+}
+
+function promotionDatesInMonth(
+  item: OperationsBoardPromotionItem,
+  monthKey: string,
+): readonly string[] {
+  const parsed = monthParts(monthKey);
+  if (!parsed) return [];
+  const monthStart = `${monthKey}-01`;
+  const monthEnd = dateKeyFromUtc(new Date(Date.UTC(parsed.year, parsed.month, 0)));
+  const start = item.startDate > monthStart ? item.startDate : monthStart;
+  const end = item.endDate < monthEnd ? item.endDate : monthEnd;
+  const startEpoch = dateKeyEpoch(start);
+  const endEpoch = dateKeyEpoch(end);
+  if (startEpoch === null || endEpoch === null || startEpoch > endEpoch) return [];
+  return Array.from(
+    { length: Math.floor((endEpoch - startEpoch) / 86_400_000) + 1 },
+    (_, index) => dateKeyFromUtc(new Date(startEpoch + index * 86_400_000)),
+  );
+}
+
+function promotionCountdownPresentation(
+  item: OperationsBoardPromotionItem,
+  todayDateKey: string,
+): CountdownPresentation | null {
+  if (todayDateKey < item.startDate) {
+    return countdownPresentation(item.startDate, todayDateKey);
+  }
+  if (todayDateKey <= item.endDate) {
+    if (item.startDate === item.endDate) {
+      return countdownPresentation(item.startDate, todayDateKey);
+    }
+    return { days: 0, label: "進行中", state: "today" };
+  }
+  const ended = countdownPresentation(item.endDate, todayDateKey);
+  return ended
+    ? { ...ended, label: `已結束 ${Math.abs(ended.days)} 天`, state: "past" }
+    : null;
 }
 
 function updatedAtLabel(value: string): string {
@@ -237,7 +288,7 @@ function parseMoney(value: unknown): Money | null {
   return { amount: value.amount, currencyCode: value.currencyCode };
 }
 
-function parseBoardItem(value: unknown): OperationsBoardItem | null {
+function parseBoardItem(value: unknown, schemaVersion: 1 | 2): OperationsBoardItem | null {
   if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) {
     return null;
   }
@@ -252,18 +303,33 @@ function parseBoardItem(value: unknown): OperationsBoardItem | null {
     ) {
       return null;
     }
+    const stopSaleDate = schemaVersion === 2
+      ? value.stopSaleDate === null
+        ? null
+        : isDateKey(value.stopSaleDate)
+          ? value.stopSaleDate
+          : undefined
+      : null;
+    if (stopSaleDate === undefined || (stopSaleDate && stopSaleDate > value.expiryDate)) {
+      return null;
+    }
     return {
       id: value.id,
       type: "expiry",
       marketplaceId: value.marketplaceId,
       sellerSku: value.sellerSku,
       expiryDate: value.expiryDate,
+      stopSaleDate,
       note: value.note,
     };
   }
+  const startDate = schemaVersion === 1 ? value.date : value.startDate;
+  const endDate = schemaVersion === 1 ? value.date : value.endDate;
   if (
     value.type === "promotion" &&
-    isDateKey(value.date) &&
+    isDateKey(startDate) &&
+    isDateKey(endDate) &&
+    endDate >= startDate &&
     typeof value.title === "string" &&
     value.title.trim() &&
     typeof value.note === "string" &&
@@ -272,7 +338,8 @@ function parseBoardItem(value: unknown): OperationsBoardItem | null {
     return {
       id: value.id,
       type: "promotion",
-      date: value.date,
+      startDate,
+      endDate,
       title: value.title,
       note: value.note,
       countdown: value.countdown,
@@ -285,7 +352,7 @@ function parseBoardResponse(value: unknown): OperationsBoardResponse | null {
   if (
     !isRecord(value) ||
     !isRecord(value.snapshot) ||
-    value.snapshot.schemaVersion !== 1 ||
+    (value.snapshot.schemaVersion !== 1 && value.snapshot.schemaVersion !== 2) ||
     typeof value.snapshot.revision !== "number" ||
     !Number.isSafeInteger(value.snapshot.revision) ||
     value.snapshot.revision < 0 ||
@@ -299,11 +366,12 @@ function parseBoardResponse(value: unknown): OperationsBoardResponse | null {
   ) {
     return null;
   }
-  const items = value.snapshot.items.map(parseBoardItem);
+  const schemaVersion = value.snapshot.schemaVersion as 1 | 2;
+  const items = value.snapshot.items.map((item) => parseBoardItem(item, schemaVersion));
   if (items.some((item) => item === null)) return null;
   return {
     snapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: value.snapshot.revision,
       updatedAt: value.snapshot.updatedAt,
       items: items as OperationsBoardItem[],
@@ -434,15 +502,20 @@ function ExpiryCountdown({
   item: OperationsBoardExpiryItem;
   todayDateKey: string;
 }) {
-  const countdown = countdownPresentation(item.expiryDate, todayDateKey);
+  const isStopSale = Boolean(item.stopSaleDate);
+  const countdown = countdownPresentation(item.stopSaleDate ?? item.expiryDate, todayDateKey);
   const magnitude = Math.abs(countdown?.days ?? 0);
   return (
     <div
       className="bulletin-countdown"
       data-countdown-state={countdown?.state ?? "unknown"}
-      aria-label={countdown?.label ?? "效期倒數無法計算"}
+      aria-label={countdown?.label ?? `${isStopSale ? "停售" : "效期"}倒數無法計算`}
     >
-      <small>{countdown?.state === "past" ? "已過效期" : "距離效期"}</small>
+      <small>
+        {countdown?.state === "past"
+          ? `已過${isStopSale ? "停售" : "效期"}`
+          : `距離${isStopSale ? "停售" : "效期"}`}
+      </small>
       {countdown?.state === "today" ? (
         <strong>今天</strong>
       ) : (
@@ -475,10 +548,12 @@ export default function OperationsBulletinCard({
     marketplaceId: "ATVPDKIKX0DER",
     sellerSku: "",
     expiryDate: "",
+    stopSaleDate: "",
     note: "",
   });
   const [promotionDraft, setPromotionDraft] = useState({
-    date: "",
+    startDate: "",
+    endDate: "",
     title: "",
     note: "",
     countdown: false,
@@ -487,7 +562,9 @@ export default function OperationsBulletinCard({
   const skuFactCache = useRef(new Map<string, SkuFact>());
   const [factRefresh, setFactRefresh] = useState(0);
   const boardLoadGeneration = useRef(0);
+  const calendarPickerRef = useRef<HTMLInputElement>(null);
   const [calendarMonth, setCalendarMonth] = useState(todayDateKey.slice(0, 7));
+  const calendarBounds = calendarPickerBounds(todayDateKey);
 
   useEffect(() => {
     setCalendarMonth(todayDateKey.slice(0, 7));
@@ -550,7 +627,9 @@ export default function OperationsBulletinCard({
     () => response?.snapshot.items
       .filter((item): item is OperationsBoardExpiryItem => item.type === "expiry")
       .sort((left, right) =>
-        left.expiryDate.localeCompare(right.expiryDate) ||
+        (left.stopSaleDate ?? left.expiryDate).localeCompare(
+          right.stopSaleDate ?? right.expiryDate,
+        ) ||
         left.sellerSku.localeCompare(right.sellerSku)
       ) ?? [],
     [response],
@@ -559,7 +638,7 @@ export default function OperationsBulletinCard({
     () => response?.snapshot.items
       .filter((item): item is OperationsBoardPromotionItem => item.type === "promotion")
       .sort((left, right) =>
-        left.date.localeCompare(right.date) || left.title.localeCompare(right.title)
+        left.startDate.localeCompare(right.startDate) || left.title.localeCompare(right.title)
       ) ?? [],
     [response],
   );
@@ -598,6 +677,35 @@ export default function OperationsBulletinCard({
     void loadBoard();
   };
 
+  const openCalendarPicker = () => {
+    const picker = calendarPickerRef.current;
+    if (!picker) return;
+    try {
+      if (typeof picker.showPicker === "function") {
+        picker.showPicker();
+        return;
+      }
+    } catch {
+      // Older WebViews can expose showPicker without allowing it. The click
+      // fallback opens the same native year/month/day chooser.
+    }
+    picker.click();
+  };
+
+  const openComposer = (nextComposer: "expiry" | "promotion") => {
+    const bridge = window.fbaOS as typeof window.fbaOS &
+      OperationsBoardDesktopBridge;
+    if (bridge.operationsBoard?.schemaVersion !== 2) {
+      setComposer(null);
+      setError(
+        "新增停售日與多日促銷需要 AMZ.API App 0.1.53；請更新一次後再發布。",
+      );
+      return;
+    }
+    setError(null);
+    setComposer(nextComposer);
+  };
+
   const publishDraft = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!composer || publisherBusy) return;
@@ -606,15 +714,26 @@ export default function OperationsBulletinCard({
     try {
       const bridge = window.fbaOS as typeof window.fbaOS &
         OperationsBoardDesktopBridge;
-      if (!bridge.operationsBoard?.publish) {
+      if (
+        bridge.operationsBoard?.schemaVersion !== 2 ||
+        !bridge.operationsBoard.publish
+      ) {
         throw new Error(
-          "這台電腦上的 AMZ.API Notebook Key 尚未支援簡易發布，請先更新 App。",
+          "新增停售日與多日促銷需要 AMZ.API App 0.1.53；請更新一次後再發布。",
         );
       }
       await bridge.operationsBoard.publish(
         composer === "expiry"
-          ? { type: "expiry", ...expiryDraft }
-          : { type: "promotion", ...promotionDraft },
+          ? {
+              type: "expiry",
+              ...expiryDraft,
+              stopSaleDate: expiryDraft.stopSaleDate || null,
+            }
+          : {
+              type: "promotion",
+              ...promotionDraft,
+              endDate: promotionDraft.endDate || promotionDraft.startDate,
+            },
       );
       setComposer(null);
     } catch (publisherError) {
@@ -635,8 +754,13 @@ export default function OperationsBulletinCard({
     try {
       const bridge = window.fbaOS as typeof window.fbaOS &
         OperationsBoardDesktopBridge;
-      if (!bridge.operationsBoard?.manage) {
-        throw new Error("這台電腦上的 AMZ.API Notebook Key 尚未支援編輯／刪除，請先更新 App。");
+      if (
+        bridge.operationsBoard?.schemaVersion !== 2 ||
+        !bridge.operationsBoard.manage
+      ) {
+        throw new Error(
+          "編輯或刪除新版公布欄需要 AMZ.API App 0.1.53；請更新一次後再操作。",
+        );
       }
       await bridge.operationsBoard.manage(itemId);
     } catch (manageError) {
@@ -650,21 +774,55 @@ export default function OperationsBulletinCard({
     }
   };
 
-  const currentMonthEntries: CalendarEntry[] = [
-    ...expiryItems.map((item): CalendarEntry => ({
-      id: item.id,
-      kind: "expiry",
+  const expiryCalendarEntries: CalendarEntry[] = expiryItems.flatMap((item) => [
+    {
+      id: `${item.id}:expiry`,
+      kind: "expiry" as const,
       date: item.expiryDate,
       label: `${marketplaceShortLabel(item.marketplaceId)} · ${item.sellerSku} 到期`,
       item,
-    })),
-    ...promotionItems.map((item): CalendarEntry => ({
-      id: item.id,
-      kind: "promotion",
-      date: item.date,
-      label: item.title,
-      item,
-    })),
+    },
+    ...(item.stopSaleDate
+      ? [{
+          id: `${item.id}:stop-sale`,
+          kind: "stop-sale" as const,
+          date: item.stopSaleDate,
+          label: `${marketplaceShortLabel(item.marketplaceId)} · ${item.sellerSku} 停售`,
+          item,
+        }]
+      : []),
+  ]);
+  const currentMonthEntries: CalendarEntry[] = [
+    ...expiryCalendarEntries,
+    ...promotionItems
+      .filter((item) => promotionDatesInMonth(item, calendarMonth).length > 0)
+      .map((item): CalendarEntry => ({
+        id: item.id,
+        kind: "promotion",
+        date: item.startDate,
+        label: item.title,
+        item,
+      })),
+  ]
+    .filter((entry) =>
+      entry.kind === "promotion" || entry.date.startsWith(`${calendarMonth}-`)
+    )
+    .sort((left, right) =>
+      left.date.localeCompare(right.date) ||
+      left.kind.localeCompare(right.kind) ||
+      left.label.localeCompare(right.label)
+    );
+  const calendarCellEntries: CalendarEntry[] = [
+    ...expiryCalendarEntries,
+    ...promotionItems.flatMap((item) =>
+      promotionDatesInMonth(item, calendarMonth).map((date) => ({
+        id: `${item.id}:${date}`,
+        kind: "promotion" as const,
+        date,
+        label: item.title,
+        item,
+      }))
+    ),
   ]
     .filter((entry) => entry.date.startsWith(`${calendarMonth}-`))
     .sort((left, right) =>
@@ -673,7 +831,7 @@ export default function OperationsBulletinCard({
       left.label.localeCompare(right.label)
     );
   const entriesByDate = new Map<string, CalendarEntry[]>();
-  for (const entry of currentMonthEntries) {
+  for (const entry of calendarCellEntries) {
     entriesByDate.set(entry.date, [...(entriesByDate.get(entry.date) ?? []), entry]);
   }
   const calendarCells = calendarMonthCells(calendarMonth);
@@ -728,7 +886,7 @@ export default function OperationsBulletinCard({
             <button
               type="button"
               className="bulletin-edit"
-              onClick={() => setComposer("expiry")}
+              onClick={() => openComposer("expiry")}
               disabled={publisherBusy}
             >
               新增即期品
@@ -736,7 +894,7 @@ export default function OperationsBulletinCard({
             <button
               type="button"
               className="bulletin-add-promotion"
-              onClick={() => setComposer("promotion")}
+              onClick={() => openComposer("promotion")}
               disabled={publisherBusy}
             >
               新增促銷
@@ -804,6 +962,8 @@ export default function OperationsBulletinCard({
                 <input
                   name="expiryDate"
                   type="date"
+                  min={calendarBounds.min}
+                  max={calendarBounds.max}
                   value={expiryDraft.expiryDate}
                   required
                   onChange={(event) => {
@@ -811,6 +971,22 @@ export default function OperationsBulletinCard({
                     setExpiryDraft((current) => ({
                       ...current,
                       expiryDate,
+                    }));
+                  }}
+                />
+              </label>
+              <label>停售日（選填）
+                <input
+                  name="stopSaleDate"
+                  type="date"
+                  min={calendarBounds.min}
+                  max={expiryDraft.expiryDate || calendarBounds.max}
+                  value={expiryDraft.stopSaleDate}
+                  onChange={(event) => {
+                    const stopSaleDate = event.currentTarget.value;
+                    setExpiryDraft((current) => ({
+                      ...current,
+                      stopSaleDate,
                     }));
                   }}
                 />
@@ -851,17 +1027,35 @@ export default function OperationsBulletinCard({
               <button type="button" onClick={() => setComposer(null)} aria-label="關閉新增促銷表單">×</button>
             </header>
             <div className="bulletin-composer-grid">
-              <label>促銷日期
+              <label>促銷開始日
                 <input
-                  name="promotionDate"
+                  name="promotionStartDate"
                   type="date"
-                  value={promotionDraft.date}
+                  min={calendarBounds.min}
+                  max={calendarBounds.max}
+                  value={promotionDraft.startDate}
                   required
                   onChange={(event) => {
-                    const date = event.currentTarget.value;
+                    const startDate = event.currentTarget.value;
                     setPromotionDraft((current) => ({
                       ...current,
-                      date,
+                      startDate,
+                    }));
+                  }}
+                />
+              </label>
+              <label>促銷結束日（選填）
+                <input
+                  name="promotionEndDate"
+                  type="date"
+                  min={promotionDraft.startDate || calendarBounds.min}
+                  max={calendarBounds.max}
+                  value={promotionDraft.endDate}
+                  onChange={(event) => {
+                    const endDate = event.currentTarget.value;
+                    setPromotionDraft((current) => ({
+                      ...current,
+                      endDate,
                     }));
                   }}
                 />
@@ -935,7 +1129,7 @@ export default function OperationsBulletinCard({
             </header>
             <p className="bulletin-manual-boundary">
               <strong>人工維護效期</strong>
-              Amazon 公開 API 不提供目前 FBA 批次效期；日期與備註以公布欄人工紀錄為準，庫存與價格則另外唯讀同步。
+              Amazon 公開 API 不提供目前 FBA 批次效期；產品效期、停售日與備註由公布欄人工維護，庫存與價格則另外唯讀同步。
             </p>
             {expiryItems.length === 0 ? (
               <div className="bulletin-empty">
@@ -966,8 +1160,25 @@ export default function OperationsBulletinCard({
                         >編輯／刪除</button>
                       </div>
                       <div className="bulletin-expiry-meta">
-                        <time dateTime={item.expiryDate}>{absoluteDateLabel(item.expiryDate)}</time>
-                        {item.note && <span title={item.note}>· {item.note}</span>}
+                        {item.stopSaleDate && (
+                          <span className="bulletin-expiry-date">
+                            <small>停售日</small>
+                            <time dateTime={item.stopSaleDate}>
+                              {absoluteDateLabel(item.stopSaleDate)}
+                            </time>
+                          </span>
+                        )}
+                        <span className="bulletin-expiry-date">
+                          <small>產品效期</small>
+                          <time dateTime={item.expiryDate}>
+                            {absoluteDateLabel(item.expiryDate)}
+                          </time>
+                        </span>
+                        {item.note && (
+                          <span className="bulletin-expiry-note" title={item.note}>
+                            {item.note}
+                          </span>
+                        )}
                       </div>
                       <SkuFactFields fact={skuFacts[item.id]} />
                     </div>
@@ -984,29 +1195,41 @@ export default function OperationsBulletinCard({
                 <h3 id="bulletin-calendar-title">促銷月曆</h3>
               </div>
               <div className="bulletin-calendar-navigation">
+                <input
+                  ref={calendarPickerRef}
+                  className="bulletin-calendar-date-input"
+                  type="date"
+                  min={calendarBounds.min}
+                  max={calendarBounds.max}
+                  value={`${calendarMonth}-01`}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onChange={(event) => {
+                    if (isDateKey(event.currentTarget.value)) {
+                      setCalendarMonth(event.currentTarget.value.slice(0, 7));
+                    }
+                  }}
+                />
                 <button
                   type="button"
-                  aria-label="查看上個月"
-                  onClick={() => setCalendarMonth((current) => shiftMonth(current, -1))}
-                >‹</button>
-                <strong aria-live="polite">{monthLabel(calendarMonth)}</strong>
-                <button
-                  type="button"
-                  aria-label="查看下個月"
-                  onClick={() => setCalendarMonth((current) => shiftMonth(current, 1))}
-                >›</button>
+                  aria-label="選擇月曆日期"
+                  onClick={openCalendarPicker}
+                >
+                  <strong aria-live="polite">{monthLabel(calendarMonth)}</strong>
+                  <span aria-hidden="true">▾</span>
+                </button>
               </div>
             </header>
 
             <div className="bulletin-calendar-scroll">
               <table className="bulletin-calendar">
                 <caption className="visually-hidden">
-                  {monthLabel(calendarMonth)} Amazon 促銷檔期與 SKU 到期日
+                  {monthLabel(calendarMonth)} Amazon 促銷檔期與 SKU 停售、到期日
                 </caption>
                 <colgroup>{WEEKDAY_LABELS.map((day) => <col key={day} />)}</colgroup>
                 <thead><tr>{WEEKDAY_LABELS.map((day) => <th key={day} scope="col">{day}</th>)}</tr></thead>
                 <tbody>
-                  {Array.from({ length: 6 }, (_, week) => (
+                  {Array.from({ length: calendarCells.length / 7 }, (_, week) => (
                     <tr key={week}>
                       {calendarCells.slice(week * 7, week * 7 + 7).map((dateKey) => {
                         const entries = entriesByDate.get(dateKey) ?? [];
@@ -1014,7 +1237,7 @@ export default function OperationsBulletinCard({
                         return (
                           <td
                             key={dateKey}
-                            className={`${dateKey.startsWith(`${calendarMonth}-`) ? "" : "is-other-month"}${dateKey === todayDateKey ? " is-today" : ""}${kinds.has("promotion") ? " has-promotion" : ""}${kinds.has("expiry") ? " has-expiry" : ""}`.trim()}
+                            className={`${dateKey.startsWith(`${calendarMonth}-`) ? "" : "is-other-month"}${dateKey === todayDateKey ? " is-today" : ""}${kinds.has("promotion") ? " has-promotion" : ""}${kinds.has("expiry") ? " has-expiry" : ""}${kinds.has("stop-sale") ? " has-stop-sale" : ""}`.trim()}
                           >
                             <time dateTime={dateKey}>{Number(dateKey.slice(-2))}</time>
                             {entries.length > 0 && (
@@ -1040,13 +1263,14 @@ export default function OperationsBulletinCard({
 
             <div className="bulletin-calendar-legend" aria-label="月曆標記圖例">
               <span><i className="is-promotion" aria-hidden="true" />促銷檔期</span>
+              <span><i className="is-stop-sale" aria-hidden="true" />SKU 停售</span>
               <span><i className="is-expiry" aria-hidden="true" />SKU 到期</span>
             </div>
 
             {currentMonthEntries.length === 0 ? (
               <div className="bulletin-empty compact">
-                <strong>{monthLabel(calendarMonth)}尚未安排促銷或 SKU 到期日</strong>
-                <p>可切換月份查看其他公告。</p>
+                <strong>{monthLabel(calendarMonth)}尚未安排促銷或 SKU 重要日期</strong>
+                <p>按上方日期按鈕即可選擇其他月份。</p>
               </div>
             ) : (
               <div
@@ -1057,24 +1281,30 @@ export default function OperationsBulletinCard({
               >
                 {currentMonthEntries.map((entry) => {
                   const countdown = entry.kind === "promotion" && entry.item.countdown
-                    ? countdownPresentation(entry.date, todayDateKey)
+                    ? promotionCountdownPresentation(entry.item, todayDateKey)
                     : null;
                   return (
                     <article data-entry-kind={entry.kind} key={entry.id}>
-                      <time dateTime={entry.date}>{absoluteDateLabel(entry.date)}</time>
+                      <time dateTime={entry.date}>
+                        {entry.kind === "promotion"
+                          ? promotionDateLabel(entry.item)
+                          : absoluteDateLabel(entry.date)}
+                      </time>
                       <div>
                         <strong>{entry.label}</strong>
                         {entry.item.note && <p>{entry.item.note}</p>}
                       </div>
                       {entry.kind === "expiry" ? (
                         <span className="is-expiry">效期</span>
+                      ) : entry.kind === "stop-sale" ? (
+                        <span className="is-stop-sale">停售</span>
                       ) : countdown ? (
                         <span data-countdown-state={countdown.state}>{countdown.label}</span>
                       ) : null}
                       <button
                         type="button"
                         className="bulletin-manage"
-                        onClick={() => void manageAnnouncement(entry.id)}
+                        onClick={() => void manageAnnouncement(entry.item.id)}
                         disabled={publisherBusy}
                       >編輯／刪除</button>
                     </article>

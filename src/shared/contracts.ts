@@ -153,6 +153,7 @@ export type DesktopBridge = {
     test(marketplaceId: string): Promise<AdvertisingConnectionTestResult>;
   };
   operationsBoard: {
+    readonly schemaVersion: 2;
     publish(draft: OperationsBoardPublisherDraft): Promise<void>;
     manage(itemId: string): Promise<void>;
     onUpdated(listener: () => void): () => void;

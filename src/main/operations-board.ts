@@ -137,40 +137,62 @@ function calendarDate(value: unknown, label: string): string {
   return clean;
 }
 
-function parseItem(value: unknown): OperationsBoardItem {
+function parseItem(value: unknown, schemaVersion: 1 | 2): OperationsBoardItem {
   if (!isRecord(value)) throw new Error("公布欄項目格式無效。");
   if (value.type === "expiry") {
     exactKeys(
       value,
-      ["id", "type", "marketplaceId", "sellerSku", "expiryDate", "note"],
+      schemaVersion === 1
+        ? ["id", "type", "marketplaceId", "sellerSku", "expiryDate", "note"]
+        : ["id", "type", "marketplaceId", "sellerSku", "expiryDate", "stopSaleDate", "note"],
       "即期品項目",
     );
     const id = boundedText(value.id, 36, "項目 ID", true);
     if (!UUID_PATTERN.test(id)) throw new Error("公布欄項目 ID 格式無效。");
     const marketplaceId = boundedText(value.marketplaceId, 32, "Amazon 站點", true);
     if (!MARKETPLACE_IDS.has(marketplaceId)) throw new Error("Amazon 站點無效。");
+    const expiryDate = calendarDate(value.expiryDate, "效期");
+    const stopSaleDate = schemaVersion === 2 && value.stopSaleDate !== null
+      ? calendarDate(value.stopSaleDate, "停售日")
+      : null;
+    if (stopSaleDate && stopSaleDate > expiryDate) {
+      throw new Error("停售日不可晚於效期。");
+    }
     return {
       id,
       type: "expiry",
       marketplaceId,
       sellerSku: boundedText(value.sellerSku, 40, "Seller SKU", true),
-      expiryDate: calendarDate(value.expiryDate, "效期"),
+      expiryDate,
+      stopSaleDate,
       note: boundedNote(value.note, "即期品備註"),
     };
   }
   if (value.type === "promotion") {
     exactKeys(
       value,
-      ["id", "type", "date", "title", "note", "countdown"],
+      schemaVersion === 1
+        ? ["id", "type", "date", "title", "note", "countdown"]
+        : ["id", "type", "startDate", "endDate", "title", "note", "countdown"],
       "促銷檔期項目",
     );
     const id = boundedText(value.id, 36, "項目 ID", true);
     if (!UUID_PATTERN.test(id)) throw new Error("公布欄項目 ID 格式無效。");
     if (typeof value.countdown !== "boolean") throw new Error("倒數設定格式無效。");
+    const startDate = calendarDate(
+      schemaVersion === 1 ? value.date : value.startDate,
+      "促銷開始日",
+    );
+    const endDate = calendarDate(
+      schemaVersion === 1 ? value.date : value.endDate,
+      "促銷結束日",
+    );
+    if (endDate < startDate) throw new Error("促銷結束日不可早於開始日。");
     return {
       id,
       type: "promotion",
-      date: calendarDate(value.date, "促銷檔期"),
+      startDate,
+      endDate,
       title: boundedText(value.title, 120, "促銷名稱", true),
       note: boundedNote(value.note, "促銷備註"),
       countdown: value.countdown,
@@ -182,7 +204,9 @@ function parseItem(value: unknown): OperationsBoardItem {
 export function parseOperationsBoardSnapshot(value: unknown): OperationsBoardSnapshot {
   if (!isRecord(value)) throw new Error("公布欄資料格式無效。");
   exactKeys(value, ["schemaVersion", "revision", "updatedAt", "items"], "公布欄資料");
-  if (value.schemaVersion !== 1) throw new Error("公布欄資料版本不支援。");
+  if (value.schemaVersion !== 1 && value.schemaVersion !== 2) {
+    throw new Error("公布欄資料版本不支援。");
+  }
   if (!Number.isSafeInteger(value.revision) || Number(value.revision) < 0) {
     throw new Error("公布欄版本格式無效。");
   }
@@ -192,12 +216,12 @@ export function parseOperationsBoardSnapshot(value: unknown): OperationsBoardSna
   }
   if (!Array.isArray(value.items)) throw new Error("公布欄項目格式無效。");
   if (value.items.length > MAX_ITEMS) throw new Error("公布欄最多只能有 100 個項目。");
-  const items = value.items.map(parseItem);
+  const items = value.items.map((item) => parseItem(item, value.schemaVersion as 1 | 2));
   if (new Set(items.map((item) => item.id)).size !== items.length) {
     throw new Error("公布欄項目 ID 不可重複。");
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: Number(value.revision),
     updatedAt,
     items,
@@ -205,7 +229,7 @@ export function parseOperationsBoardSnapshot(value: unknown): OperationsBoardSna
 }
 
 export function emptyOperationsBoardSnapshot(): OperationsBoardSnapshot {
-  return { schemaVersion: 1, revision: 0, updatedAt: EMPTY_UPDATED_AT, items: [] };
+  return { schemaVersion: 2, revision: 0, updatedAt: EMPTY_UPDATED_AT, items: [] };
 }
 
 function readTargetFromPublicBaseUrl(publicBaseUrl: string): BoardReadTarget {
@@ -407,7 +431,7 @@ export function createR2OperationsBoardRemoteStore(
           CacheControl: "no-store, max-age=0",
           IfMatch: input.ifMatch,
           IfNoneMatch: input.ifNoneMatch,
-          Metadata: { schema: "operations-board-v1" },
+          Metadata: { schema: "operations-board-v2" },
         }), { abortSignal: abort.signal });
       } catch (error) {
         throw operationsBoardPutFailure(error, abort.signal.aborted);
@@ -531,7 +555,7 @@ export class OperationsBoard implements OperationsBoardPort {
       );
     }
     const next = parseOperationsBoardSnapshot({
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: currentSnapshot.revision + 1,
       updatedAt: this.now().toISOString(),
       items: input.items,

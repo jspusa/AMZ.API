@@ -903,7 +903,13 @@ async (page) => {
 
           currentState = `${phase.name}/${profile.name}/operations-bulletin`;
           await page.locator(".operations-bulletin").scrollIntoViewIfNeeded();
-          await page.getByRole("button", { name: "下個月" }).click();
+          const calendarDateInput = page.locator(".bulletin-calendar-date-input");
+          await calendarDateInput.fill("2026-09-01", { force: true });
+          await page.waitForFunction(() =>
+            document
+              .querySelector(".bulletin-calendar-navigation strong")
+              ?.textContent?.includes("2026 年 9 月"),
+          );
           const bulletinLayout = await page.evaluate(() => {
             const bulletin = document.querySelector(".operations-bulletin");
             const widths = [...document.querySelectorAll(".bulletin-calendar thead th")]
@@ -911,6 +917,16 @@ async (page) => {
             const calendarScroll = document.querySelector(".bulletin-calendar-scroll");
             const expiry = document.querySelector(".bulletin-expiry-item");
             const icon = document.querySelector(".operations-bulletin-icon");
+            const promotionDates = [
+              ...document.querySelectorAll(".bulletin-calendar li.is-promotion"),
+            ]
+              .filter((entry) => entry.textContent?.includes("Visual Prime 檔期"))
+              .map((entry) => entry.closest("td")?.querySelector("time")?.textContent?.trim());
+            const agendaTitleWidths = [
+              ...document.querySelectorAll(
+                '.bulletin-calendar-agenda article[data-entry-kind="promotion"] > div > strong',
+              ),
+            ].map((entry) => entry.getBoundingClientRect().width);
             return {
               exists: Boolean(bulletin),
               weekdayCount: widths.length,
@@ -925,6 +941,8 @@ async (page) => {
               hasSvgIcon: Boolean(icon?.querySelector("svg")),
               hasExpiryInCalendar: [...document.querySelectorAll(".bulletin-calendar li.is-expiry")]
                 .some((entry) => entry.textContent?.includes("US · VISUAL-EXPIRY-SKU 到期")),
+              promotionDates,
+              agendaTitleWidths,
             };
           });
           ensure(bulletinLayout.exists, `${currentState}: bulletin missing`);
@@ -947,6 +965,15 @@ async (page) => {
           ensure(
             bulletinLayout.hasExpiryInCalendar,
             `${currentState}: expiry date missing from calendar ${JSON.stringify(bulletinLayout)}`,
+          );
+          ensure(
+            JSON.stringify(bulletinLayout.promotionDates) === JSON.stringify(["10", "11", "12"]),
+            `${currentState}: multi-day promotion missing dates ${JSON.stringify(bulletinLayout)}`,
+          );
+          ensure(
+            bulletinLayout.agendaTitleWidths.length >= 2 &&
+              bulletinLayout.agendaTitleWidths.every((width) => width >= (compact ? 70 : 110)),
+            `${currentState}: agenda title column collapsed ${JSON.stringify(bulletinLayout)}`,
           );
           await capture({
             phase,

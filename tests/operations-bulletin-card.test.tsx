@@ -12,7 +12,7 @@ import { readRendererStylesheet } from "./renderer-stylesheet";
 
 const BOARD: OperationsBoardResponse = {
   snapshot: {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: 7,
     updatedAt: "2026-09-01T02:30:00.000Z",
     items: [
@@ -22,12 +22,14 @@ const BOARD: OperationsBoardResponse = {
         marketplaceId: "ATVPDKIKX0DER",
         sellerSku: "ASCL01",
         expiryDate: "2026-09-11",
+        stopSaleDate: null,
         note: "先出舊批次",
       },
       {
         id: "promo-prime",
         type: "promotion",
-        date: "2026-09-08",
+        startDate: "2026-09-08",
+        endDate: "2026-09-08",
         title: "Prime 大檔",
         note: "確認折扣與庫存",
         countdown: true,
@@ -35,7 +37,8 @@ const BOARD: OperationsBoardResponse = {
       {
         id: "promo-coupon",
         type: "promotion",
-        date: "2026-09-21",
+        startDate: "2026-09-21",
+        endDate: "2026-09-21",
         title: "Coupon 更新",
         note: "例行維護",
         countdown: false,
@@ -73,12 +76,72 @@ describe("operations bulletin home card", () => {
     });
   });
 
-  it("builds a complete Sunday-first month grid without timezone drift", () => {
-    const cells = calendarMonthCells("2026-09");
-    expect(cells).toHaveLength(42);
-    expect(cells[0]).toBe("2026-08-30");
-    expect(cells[2]).toBe("2026-09-01");
-    expect(cells.at(-1)).toBe("2026-10-10");
+  it("uses five Sunday-first calendar weeks when they fit and six only when needed", () => {
+    const fiveWeekMonth = calendarMonthCells("2026-09");
+    expect(fiveWeekMonth).toHaveLength(35);
+    expect(fiveWeekMonth[0]).toBe("2026-08-30");
+    expect(fiveWeekMonth[2]).toBe("2026-09-01");
+    expect(fiveWeekMonth.at(-1)).toBe("2026-10-03");
+
+    const shortMonth = calendarMonthCells("2026-02");
+    expect(shortMonth).toHaveLength(35);
+    expect(shortMonth[0]).toBe("2026-02-01");
+    expect(shortMonth.at(-1)).toBe("2026-03-07");
+
+    const sixWeekMonth = calendarMonthCells("2026-08");
+    expect(sixWeekMonth).toHaveLength(42);
+    expect(sixWeekMonth[0]).toBe("2026-07-26");
+    expect(sixWeekMonth.at(-1)).toBe("2026-09-05");
+  });
+
+  it("migrates a fetched v1 board into the canonical one-day promotion view", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      snapshot: {
+        schemaVersion: 1,
+        revision: 3,
+        updatedAt: "2026-09-01T00:00:00.000Z",
+        items: [{
+          id: "00000000-0000-4000-8000-000000000099",
+          type: "promotion",
+          date: "2026-09-08",
+          title: "舊版單日促銷",
+          note: "相容顯示",
+          countdown: true,
+        }],
+      },
+      source: "shared",
+      stale: false,
+      status: "ready",
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("window", { fbaOS: { operationsBoard: {} } });
+
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(<OperationsBulletinCard todayDateKey="2026-09-01" />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const markup = JSON.stringify(renderer!.toJSON());
+    expect(markup).toContain("舊版單日促銷");
+    expect(markup).toContain("倒數 7 天");
+    await act(async () => renderer!.unmount());
+  });
+
+  it("renders only the calendar week rows needed by the selected month", () => {
+    const markup = renderToStaticMarkup(
+      <OperationsBulletinCard
+        initialResponse={BOARD}
+        todayDateKey="2026-09-01"
+      />,
+    );
+    const calendarBody = markup.slice(
+      markup.indexOf("<tbody>"),
+      markup.indexOf("</tbody>") + "</tbody>".length,
+    );
+
+    expect(calendarBody.match(/<tr>/gu)).toHaveLength(5);
   });
 
   it("rolls the live board over at Taipei midnight but keeps an injected date fixed", async () => {
@@ -96,7 +159,12 @@ describe("operations bulletin home card", () => {
       ...BOARD,
       snapshot: {
         ...BOARD.snapshot,
-        items: [{ ...promotion, date: "2026-09-02", countdown: true }],
+        items: [{
+          ...promotion,
+          startDate: "2026-09-02",
+          endDate: "2026-09-02",
+          countdown: true,
+        }],
       },
     };
 
@@ -187,6 +255,44 @@ describe("operations bulletin home card", () => {
     );
   });
 
+  it("keeps dense expiry cards readable without tiny operational text", async () => {
+    const bulletinCss = await readFile(
+      new URL("../src/renderer/src/styles/operations-bulletin.css", import.meta.url),
+      "utf8",
+    );
+
+    expect(bulletinCss).toMatch(
+      /\.bulletin-countdown small\s*\{[^}]*font-size:\s*10px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-countdown strong\s*\{[^}]*font-size:\s*28px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-countdown\s*>\s*span\s*\{[^}]*font-size:\s*11px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-manage\s*\{[^}]*font-size:\s*10px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-expiry-title-row small\s*\{[^}]*font-size:\s*10px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-expiry-title-row h4\s*\{[^}]*font-size:\s*14px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-expiry-meta\s*\{[^}]*font-size:\s*11px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-expiry-facts dt\s*\{[^}]*font-size:\s*10px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-expiry-facts dd\s*\{[^}]*font-size:\s*12px;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-fact-sync\s*\{[^}]*font-size:\s*10px;/u,
+    );
+  });
+
   it("keeps a 100-entry monthly agenda inside a labelled scroll region", async () => {
     const promotion = BOARD.snapshot.items.find((item) => item.type === "promotion");
     if (!promotion || promotion.type !== "promotion") {
@@ -199,7 +305,8 @@ describe("operations bulletin home card", () => {
         items: Array.from({ length: 100 }, (_, index) => ({
           ...promotion,
           id: `promotion-${index}`,
-          date: `2026-09-${String((index % 28) + 1).padStart(2, "0")}`,
+          startDate: `2026-09-${String((index % 28) + 1).padStart(2, "0")}`,
+          endDate: `2026-09-${String((index % 28) + 1).padStart(2, "0")}`,
           title: `PROMOTION-${String(index + 1).padStart(3, "0")}`,
         })),
       },
@@ -300,6 +407,90 @@ describe("operations bulletin home card", () => {
     expect(nonCountdownPromotion).not.toContain("倒數");
   });
 
+  it("prioritizes stop-sale countdowns and paints every day of a promotion range", () => {
+    const v2Board = {
+      ...BOARD,
+      snapshot: {
+        ...BOARD.snapshot,
+        schemaVersion: 2,
+        items: [
+          {
+            id: "expiry-stop-sale",
+            type: "expiry",
+            marketplaceId: "ATVPDKIKX0DER",
+            sellerSku: "ASCL01",
+            expiryDate: "2026-09-11",
+            stopSaleDate: "2026-09-04",
+            note: "先停售再出清",
+          },
+          {
+            id: "promotion-range",
+            type: "promotion",
+            startDate: "2026-09-08",
+            endDate: "2026-09-10",
+            title: "Prime 三日檔",
+            note: "連續三天",
+            countdown: true,
+          },
+        ],
+      },
+    } as unknown as OperationsBoardResponse;
+    const markup = renderToStaticMarkup(
+      <OperationsBulletinCard initialResponse={v2Board} todayDateKey="2026-09-01" />,
+    );
+    const expiryCard = markup.slice(
+      markup.indexOf('class="bulletin-expiry-item"'),
+      markup.indexOf("</article>", markup.indexOf('class="bulletin-expiry-item"')),
+    );
+
+    expect(expiryCard).toContain("距離停售");
+    expect(expiryCard).toContain("倒數 3 天");
+    expect(expiryCard).toMatch(/停售日[\s\S]*2026 年 9 月 4 日/u);
+    expect(expiryCard).toMatch(/效期[\s\S]*2026 年 9 月 11 日/u);
+    expect(markup).toContain("US · ASCL01 停售");
+    expect(markup).toContain("US · ASCL01 到期");
+    expect(markup).toContain("倒數 7 天");
+
+    const calendarBody = markup.slice(
+      markup.indexOf("<tbody>"),
+      markup.indexOf("</tbody>") + "</tbody>".length,
+    );
+    for (const date of ["2026-09-08", "2026-09-09", "2026-09-10"]) {
+      const marker = `<time dateTime="${date}">`;
+      const markerIndex = calendarBody.indexOf(marker);
+      const cellEnd = calendarBody.indexOf("</td>", markerIndex);
+      expect(markerIndex, date).toBeGreaterThan(-1);
+      expect(calendarBody.slice(markerIndex, cellEnd), date).toContain("Prime 三日檔");
+    }
+
+    const activeMarkup = renderToStaticMarkup(
+      <OperationsBulletinCard initialResponse={v2Board} todayDateKey="2026-09-09" />,
+    );
+    expect(activeMarkup).toContain("進行中");
+    const endedMarkup = renderToStaticMarkup(
+      <OperationsBulletinCard initialResponse={v2Board} todayDateKey="2026-09-11" />,
+    );
+    expect(endedMarkup).toContain("已結束 1 天");
+  });
+
+  it("uses one bounded date-picker button instead of previous and next month arrows", () => {
+    const markup = renderToStaticMarkup(
+      <OperationsBulletinCard initialResponse={BOARD} todayDateKey="2026-09-15" />,
+    );
+    const navigation = markup.slice(
+      markup.indexOf('class="bulletin-calendar-navigation"'),
+      markup.indexOf("</div>", markup.indexOf('class="bulletin-calendar-navigation"')),
+    );
+
+    expect(navigation).not.toContain("查看上個月");
+    expect(navigation).not.toContain("查看下個月");
+    expect(navigation).toContain('aria-label="選擇月曆日期"');
+    expect(navigation).toContain('type="date"');
+    expect(navigation).toContain('min="2026-09-01"');
+    expect(navigation).toContain('max="2027-08-31"');
+    expect(navigation.match(/<button/gu)).toHaveLength(1);
+  });
+
   it("renders stale and unavailable states as text rather than color-only signals", () => {
     const staleMarkup = renderToStaticMarkup(
       <OperationsBulletinCard
@@ -313,7 +504,7 @@ describe("operations bulletin home card", () => {
       <OperationsBulletinCard
         initialResponse={{
           snapshot: {
-            schemaVersion: 1,
+            schemaVersion: 2,
             revision: 0,
             updatedAt: "2026-09-01T00:00:00.000Z",
             items: [],
@@ -372,7 +563,7 @@ describe("operations bulletin home card", () => {
     });
     vi.stubGlobal("fetch", request);
     vi.stubGlobal("window", {
-      fbaOS: { operationsBoard: { publish, manage, onUpdated } },
+      fbaOS: { operationsBoard: { schemaVersion: 2, publish, manage, onUpdated } },
     });
 
     let renderer: ReactTestRenderer | null = null;
@@ -416,6 +607,7 @@ describe("operations bulletin home card", () => {
     await act(async () => {
       field("sellerSku").props.onChange({ currentTarget: { value: "NEW-SKU" } });
       field("expiryDate").props.onChange({ currentTarget: { value: "2026-12-31" } });
+      field("stopSaleDate").props.onChange({ currentTarget: { value: "2026-11-30" } });
       field("note").props.onChange({ currentTarget: { value: "先出舊批次" } });
     });
     const form = renderer!.root.findByProps({ "aria-label": "新增即期品公告" });
@@ -427,6 +619,7 @@ describe("operations bulletin home card", () => {
       marketplaceId: "ATVPDKIKX0DER",
       sellerSku: "NEW-SKU",
       expiryDate: "2026-12-31",
+      stopSaleDate: "2026-11-30",
       note: "先出舊批次",
     });
     expect(request.mock.calls.filter(([url]) => url === "/api/operations-board"))
@@ -480,7 +673,9 @@ describe("operations bulletin home card", () => {
       .IS_REACT_ACT_ENVIRONMENT = true;
     const publish = vi.fn(async () => undefined);
     const manage = vi.fn(async () => undefined);
-    vi.stubGlobal("window", { fbaOS: { operationsBoard: { publish, manage } } });
+    vi.stubGlobal("window", {
+      fbaOS: { operationsBoard: { schemaVersion: 2, publish, manage } },
+    });
     const promotion = BOARD.snapshot.items.find((item) => item.type === "promotion");
     if (!promotion || promotion.type !== "promotion") {
       throw new Error("promotion fixture missing");
@@ -514,7 +709,8 @@ describe("operations bulletin home card", () => {
     expect(promotionComposerMarkup).not.toContain("GitHub");
     const field = (name: string) => renderer!.root.findByProps({ name });
     await act(async () => {
-      field("promotionDate").props.onChange({ currentTarget: { value: "2026-10-13" } });
+      field("promotionStartDate").props.onChange({ currentTarget: { value: "2026-10-13" } });
+      field("promotionEndDate").props.onChange({ currentTarget: { value: "2026-10-15" } });
       field("promotionTitle").props.onChange({ currentTarget: { value: "Prime 大檔" } });
       field("promotionNote").props.onChange({ currentTarget: { value: "確認折扣" } });
       field("countdown").props.onChange({ currentTarget: { checked: true } });
@@ -525,7 +721,8 @@ describe("operations bulletin home card", () => {
     });
     expect(publish).toHaveBeenCalledWith({
       type: "promotion",
-      date: "2026-10-13",
+      startDate: "2026-10-13",
+      endDate: "2026-10-15",
       title: "Prime 大檔",
       note: "確認折扣",
       countdown: true,
@@ -540,11 +737,50 @@ describe("operations bulletin home card", () => {
     await act(async () => renderer!.unmount());
   });
 
+  it("keeps legacy Notebook Keys read-only and explains the one-time update", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const publish = vi.fn(async () => undefined);
+    const manage = vi.fn(async () => undefined);
+    vi.stubGlobal("window", {
+      fbaOS: { operationsBoard: { publish, manage } },
+    });
+
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(
+        <OperationsBulletinCard initialResponse={BOARD} todayDateKey="2026-09-01" />,
+      );
+    });
+
+    const addExpiry = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("新增即期品")
+    );
+    await act(async () => addExpiry!.props.onClick());
+    expect(renderer!.root.findAllByProps({ "aria-label": "新增即期品公告" }))
+      .toHaveLength(0);
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "新增停售日與多日促銷需要 AMZ.API App 0.1.53；請更新一次後再發布。",
+    );
+    expect(publish).not.toHaveBeenCalled();
+
+    const manageButton = renderer!.root.findAllByProps({ className: "bulletin-manage" })[0];
+    await act(async () => manageButton.props.onClick());
+    expect(manage).not.toHaveBeenCalled();
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "編輯或刪除新版公布欄需要 AMZ.API App 0.1.53；請更新一次後再操作。",
+    );
+
+    await act(async () => renderer!.unmount());
+  });
+
   it("explains a failed publish without exposing the backing service", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     const publish = vi.fn(async () => Promise.reject(null));
-    vi.stubGlobal("window", { fbaOS: { operationsBoard: { publish } } });
+    vi.stubGlobal("window", {
+      fbaOS: { operationsBoard: { schemaVersion: 2, publish } },
+    });
     const emptyBoard: OperationsBoardResponse = {
       ...BOARD,
       snapshot: { ...BOARD.snapshot, items: [] },
@@ -581,7 +817,9 @@ describe("operations bulletin home card", () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     const manage = vi.fn(async () => Promise.reject(null));
-    vi.stubGlobal("window", { fbaOS: { operationsBoard: { manage } } });
+    vi.stubGlobal("window", {
+      fbaOS: { operationsBoard: { schemaVersion: 2, manage } },
+    });
 
     let renderer: ReactTestRenderer | null = null;
     await act(async () => {
@@ -604,6 +842,7 @@ describe("operations bulletin home card", () => {
     vi.stubGlobal("window", {
       fbaOS: {
         operationsBoard: {
+          schemaVersion: 2,
           publish: vi.fn(async () => undefined),
           manage: vi.fn(async () => undefined),
         },
@@ -650,7 +889,8 @@ describe("operations bulletin home card", () => {
         .props.onClick();
       buttonWithText("新增促銷")!.props.onClick();
     });
-    await changeValue("promotionDate", "2026-10-13");
+    await changeValue("promotionStartDate", "2026-10-13");
+    await changeValue("promotionEndDate", "2026-10-15");
     await changeValue("promotionTitle", "Prime 大檔");
     await changeValue("promotionNote", "確認折扣");
     const promotionEvent: { currentTarget: { checked: boolean } | null } = {
