@@ -45,12 +45,26 @@ The one manually installed publisher-signed Notebook Key that establishes the st
 _Avoid_: Every update, web reinstall
 
 **Operations Bulletin Board**:
-The shared collection of authorized GitHub announcements that contains manually maintained expiry notices and Amazon promotion dates; AMZ.API provides the operator-friendly form while GitHub provides the final publisher identity check.
-_Avoid_: Amazon expiry report, R2 editor, public anonymous editor
+The shared collection of manually maintained expiry notices and Amazon promotion dates read from the fixed Supply Boss API; AMZ.API provides the operator-friendly form and a main-owned authenticated editor, while Supply Boss owns the shared R2 object.
+_Avoid_: Amazon expiry report, GitHub Issue board, user-configured R2 editor, public anonymous editor
+
+Related decision: [ADR 0003](docs/adr/0003-use-supply-boss-for-operations-board.md).
 
 **Board Announcement**:
-One authorized GitHub Issue that becomes either an expiry notice or a promotion date on the Operations Bulletin Board; editing changes the announcement and closing it withdraws the announcement.
-_Avoid_: R2 record, Amazon event, inventory record
+One validated expiry notice or promotion item in the Operations Bulletin Board; authenticated create, edit, or delete republishes the revisioned shared board.
+_Avoid_: GitHub Issue, Amazon event, inventory record
+
+**Board Session**:
+A board-scoped Supply Boss login token held only in Notebook Key main-process memory for at most eight hours; lock, sleep, App exit, or expiry clears it, while closing the editor does not.
+_Avoid_: GitHub login, saved password, renderer token, permanent session
+
+**B2B Audit Bucket**:
+One of four mutually exclusive row classifications—Needs Action, Missing, Correctly Configured, or Incomplete—whose counts sum to All; row-level mismatch reasons may overlap without becoming extra summary buckets.
+_Avoid_: overlapping summary count, issue counter, configured count
+
+**Approved Family Worksheet**:
+A content-audit family worksheet whose every row is complete and passes every check, displayed with the `(可)` suffix such as `F001(可)`; the suffix is a human cue, not write authorization.
+_Avoid_: partially passing worksheet, editable worksheet, approved Amazon mutation
 
 **Manual Expiry Date**:
 An operator-entered SKU date used for the bulletin countdown and calendar marker; it is not Amazon FC lot-expiry evidence and remains separate from live inventory and price reads.

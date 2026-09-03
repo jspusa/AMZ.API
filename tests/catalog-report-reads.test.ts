@@ -671,6 +671,76 @@ describe("FBA catalog report reads", () => {
     });
   });
 
+  it("keeps a known B2B price but classifies missing standard-price evidence as incomplete", async () => {
+    const adapter = createScriptedListingsReadAdapter([
+      {
+        operation: "search",
+        result: {
+          status: 200,
+          envelope: {
+            numberOfResults: 1,
+            items: [{
+              sku: "B2B-NO-STANDARD",
+              summaries: [{
+                marketplaceId: US,
+                asin: "B0NOSTD001",
+                productType: "PET_SUPPLIES",
+                itemName: "Known B2B without standard price",
+              }],
+              attributes: {
+                purchasable_offer: [{
+                  audience: "B2B",
+                  marketplace_id: US,
+                  currency: "USD",
+                  our_price: [{ schedule: [{ value_with_tax: 17 }] }],
+                }],
+              },
+              offers: [],
+              issues: [],
+              fulfillmentAvailability: [
+                { fulfillmentChannelCode: "AMAZON_NA", quantity: 3 },
+              ],
+            }],
+          },
+          requestId: "request-b2b-no-standard",
+          rateLimit: null,
+          retryAfter: null,
+          profile: "listing",
+        },
+      },
+    ]);
+
+    const snapshot = await readFbaBusinessPricingAudit(adapter, {
+      marketplaceId: US,
+      mode: "live",
+      allListingsDocument: [
+        "seller-sku\tasin\titem-name\tfulfillment-channel\tbusiness-price",
+        "B2B-NO-STANDARD\tB0NOSTD001\tReport title\tAFN\t17",
+      ].join("\n"),
+      activeListingsDocument: [
+        "seller-sku\tasin1\tfulfillment-channel\tbusiness-price",
+        "B2B-NO-STANDARD\tB0NOSTD001\tAFN\t17",
+      ].join("\n"),
+      pace: async () => undefined,
+      now: () => new Date("2026-09-03T02:00:00.000Z"),
+    });
+
+    expect(snapshot.rows).toEqual([expect.objectContaining({
+      sellerSku: "B2B-NO-STANDARD",
+      standardPrice: null,
+      businessPrice: { amount: 17, currencyCode: "USD" },
+      businessOfferPresence: "present",
+      status: "incomplete",
+      editable: false,
+      reason: expect.stringMatching(/一般售價/u),
+    })]);
+    expect(snapshot.summary).toMatchObject({
+      totalFbaSkuCount: 1,
+      configured: 0,
+      incomplete: 1,
+    });
+  });
+
   it("never copies hostile Amazon error text into successful catalog or B2B DTOs", async () => {
     const hostileEnvelope = {
       errors: [{

@@ -1,5 +1,9 @@
 # Human-friendly GitHub Operations Bulletin Board
 
+Status: Superseded by [Supply Boss Operations Bulletin Board](./supply-boss-operations-board.md).
+
+This specification describes the historical GitHub Issue Form workflow. The next unreleased implementation uses the fixed Supply Boss API and does not require employees to have GitHub access.
+
 ## Operator flow
 
 - The Operations Bulletin Board remains the first important home card and can be collapsed.

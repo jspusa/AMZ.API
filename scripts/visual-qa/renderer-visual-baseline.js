@@ -1741,9 +1741,10 @@ async (page) => {
           await b2bDialog
             .getByRole("button", { name: "開始全站 B2B 價格健檢" })
             .click();
-          await b2bDialog
-            .getByRole("group", { name: "B2B 價格健檢摘要與篩選" })
-            .waitFor();
+          const b2bSummary = b2bDialog
+            .getByRole("group", { name: "B2B 價格健檢摘要與篩選" });
+          await b2bSummary.waitFor();
+          await b2bSummary.getByRole("button", { name: /未設定/u }).click();
           await b2bDialog
             .getByRole("listitem")
             .filter({ hasText: "B2B-DEMO-01" })

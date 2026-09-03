@@ -291,6 +291,101 @@ describe("content audit workbook parser", () => {
     ]);
   });
 
+  it("marks only fully clear family worksheets as ready and accepts a copied ready sheet", () => {
+    const clean = {
+      readStatus: "complete",
+      auditType: "",
+      auditDescription: "",
+      issueFields: {},
+    } satisfies Partial<ContentAuditWorkbookV2Row>;
+    const source = workbook([
+      auditRow("CLEAN-A-1", clean),
+      auditRow("CLEAN-A-2", {
+        ...clean,
+        asin: "B000000002",
+      }),
+      auditRow("CLEAN-B-1", {
+        ...clean,
+        asin: "B000000003",
+        variationParentSku: "PARENT-B",
+        variationFamilyKey: "PARENT-B",
+      }),
+      auditRow("ISSUE-B-1", {
+        asin: "B000000004",
+        variationParentSku: "PARENT-B",
+        variationFamilyKey: "PARENT-B",
+      }),
+      auditRow("INCOMPLETE-C-1", {
+        ...clean,
+        readStatus: "incomplete",
+        asin: "B000000005",
+        variationParentSku: "PARENT-C",
+        variationFamilyKey: "PARENT-C",
+      }),
+      auditRow("UNVERIFIED-D-1", {
+        ...clean,
+        asin: "B000000006",
+        variationParentSku: "PARENT-D",
+        variationFamilyKey: "PARENT-D",
+        auditType: "成分未驗證",
+        auditDescription: "Amazon 未提供可安全判定的成分證據。",
+      }),
+    ]);
+    const archive = unzipSync(source);
+    const workbookXml = strFromU8(archive["xl/workbook.xml"]!);
+    const sheetNames = [...workbookXml.matchAll(/<sheet name="([^"]+)"/gu)]
+      .map((match) => match[1]!);
+
+    expect(sheetNames).toEqual([
+      "說明與索引",
+      "F001(可)",
+      "F002",
+      "F003",
+      "F004",
+    ]);
+    expect(sheetNames.every((name) => name.length <= 31)).toBe(true);
+    expect(new Set(sheetNames).size).toBe(sheetNames.length);
+    expect(strFromU8(archive["xl/worksheets/sheet2.xml"]!))
+      .toContain("&quot;sheetName&quot;:&quot;F001(可)&quot;");
+
+    const full = parse(source);
+    expect(full.rows.find((row) => row.sellerSku === "CLEAN-A-1")?.sourceSheet)
+      .toBe("F001(可)");
+    expect(full.rows.find((row) => row.sellerSku === "ISSUE-B-1")?.sourceSheet)
+      .toBe("F002");
+    expect(full.rows.find((row) => row.sellerSku === "INCOMPLETE-C-1")?.sourceSheet)
+      .toBe("F003");
+    expect(full.rows.find((row) => row.sellerSku === "UNVERIFIED-D-1")?.sourceSheet)
+      .toBe("F004");
+
+    const partial = parse(keepWorkbookSheets(source, ["F001(可)"]));
+    expect(partial.rows.map((row) => row.sellerSku))
+      .toEqual(["CLEAN-A-1", "CLEAN-A-2"]);
+    expect(partial.rows.every((row) => row.sourceSheet === "F001(可)"))
+      .toBe(true);
+  });
+
+  it("rejects ready suffix aliases that reuse another family worksheet number", () => {
+    const source = workbook([
+      auditRow("FAMILY-A-1"),
+      auditRow("FAMILY-B-1", {
+        asin: "B000000002",
+        variationParentSku: "PARENT-B",
+        variationFamilyKey: "PARENT-B",
+      }),
+    ]);
+    const duplicateNumber = mutateArchive(source, (archive) => {
+      replacePart(archive, "xl/workbook.xml", (xml) =>
+        xml.replace('sheet name="F002"', 'sheet name="F001(可)"'));
+      replacePart(archive, "xl/worksheets/sheet1.xml", (xml) =>
+        xml.replaceAll("F002", "F001(可)"));
+      replacePart(archive, "xl/worksheets/sheet3.xml", (xml) =>
+        xml.replaceAll("F002", "F001(可)"));
+    });
+
+    expect(() => parse(duplicateNumber)).toThrow(/工作表編號重複/u);
+  });
+
   it("accepts the index sheet left beside one selected family worksheet", () => {
     const source = workbook([
       auditRow("FAMILY-A-1"),

@@ -45,6 +45,12 @@ export const CONTENT_AUDIT_V2_SCHEMA_VERSION = 2 as const;
 export const CONTENT_AUDIT_V2_INDEX_SHEET_NAME = "說明與索引";
 export const CONTENT_AUDIT_PARTIAL_SHEET_MARKER =
   "AMZ.API 文案部分工作表 v1";
+
+export function contentAuditV2NumberedSheetIdentity(
+  value: string,
+): string | null {
+  return /^(F\d{3,6})(?:\(可\))?$/u.exec(value)?.[1] ?? null;
+}
 export const CONTENT_AUDIT_V2_INDEX_HEADER_ROW = 9;
 export const CONTENT_AUDIT_V2_INDEX_HEADERS = [
   "工作表",
@@ -244,6 +250,7 @@ export type ContentAuditWorkbookIssueFields = {
 
 export interface ContentAuditWorkbookV2Row
   extends ContentAuditWorkbookContentValues {
+  readStatus?: "complete" | "incomplete";
   sellerSku: string;
   asin: string;
   productType: string;
@@ -479,13 +486,17 @@ export function createContentAuditWorkbookV2({
   }
   let numberedFamilyIndex = 0;
   const familySheets = familyKeys.map((familyKey) => {
-    const sheetName = familyKey === CONTENT_AUDIT_V2_STANDALONE_KEY
+    const familyRows = [...(groups.get(familyKey) ?? [])].sort((left, right) =>
+      compareExactText(left.sellerSku, right.sellerSku));
+    const baseSheetName = familyKey === CONTENT_AUDIT_V2_STANDALONE_KEY
       ? "未綁變體"
       : familyKey === CONTENT_AUDIT_V2_INCOMPLETE_KEY
         ? "資料未完成"
         : `F${String(++numberedFamilyIndex).padStart(3, "0")}`;
-    const familyRows = [...(groups.get(familyKey) ?? [])].sort((left, right) =>
-      compareExactText(left.sellerSku, right.sellerSku));
+    const sheetName = contentAuditV2NumberedSheetIdentity(baseSheetName) &&
+        familyRows.every(contentAuditWorkbookRowIsFullyClear)
+      ? `${baseSheetName}(可)`
+      : baseSheetName;
     return {
       sheetName,
       familyKey,
@@ -499,6 +510,20 @@ export function createContentAuditWorkbookV2({
       roles: uniqueSortedText(familyRows.map((row) => row.variationRole)),
     };
   });
+  const worksheetNames = [
+    CONTENT_AUDIT_V2_INDEX_SHEET_NAME,
+    ...familySheets.map((family) => family.sheetName),
+  ];
+  const numberedWorksheetIds = worksheetNames
+    .map(contentAuditV2NumberedSheetIdentity)
+    .filter((value): value is string => value !== null);
+  if (
+    worksheetNames.some((name) => name.length > 31) ||
+    new Set(worksheetNames).size !== worksheetNames.length ||
+    new Set(numberedWorksheetIds).size !== numberedWorksheetIds.length
+  ) {
+    throw new Error("Content audit workbook sheet names are not Excel-safe.");
+  }
 
   const indexRows: readonly (readonly Cell[])[] = [
     [textCell("Schema Version"), textCell(CONTENT_AUDIT_V2_SCHEMA_VERSION), ...emptyCells(4)],
@@ -604,6 +629,33 @@ export function createContentAuditWorkbookV2({
     archive[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(sheet.xml);
   });
   return zipSync(archive, { level: 6 });
+}
+
+function contentAuditWorkbookRowIsFullyClear(
+  row: ContentAuditWorkbookV2Row,
+): boolean {
+  const issueFields = row.issueFields;
+  const hasIssueField = Boolean(
+    issueFields?.title ||
+      issueFields?.itemHighlight ||
+      issueFields?.bulletPoints?.some(Boolean) ||
+      issueFields?.productDescription ||
+      issueFields?.ingredients,
+  );
+  const richTextRuns = [
+    row.auditTitleRuns,
+    row.auditItemHighlightRuns,
+    ...(row.auditBulletPointRuns ?? []),
+    row.auditProductDescriptionRuns,
+    row.auditIngredientsRuns,
+  ];
+  const hasAlertRun = richTextRuns.some((runs) =>
+    runs?.some((run) => run.alert));
+  return row.readStatus === "complete" &&
+    row.auditType === "" &&
+    row.auditDescription === "" &&
+    !hasIssueField &&
+    !hasAlertRun;
 }
 
 function assertContentAuditRoundTripText(value: string, label: string): void {

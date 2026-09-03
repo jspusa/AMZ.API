@@ -66,9 +66,25 @@ describe("release and desktop platform contracts", () => {
     );
 
     expect(main).toContain("desktopInstallGate.begin()");
-    expect(
-      main.match(/desktopInstallGate\.assertOperationAllowed\(\);/gu),
-    ).toHaveLength(10);
+    const trustedFrame = main.slice(
+      main.indexOf("function assertTrustedFrame"),
+      main.indexOf("async function confirmSensitiveAction"),
+    );
+    expect(trustedFrame).toContain("desktopInstallGate.assertOperationAllowed();");
+    for (const channel of [
+      "fba:credentials-save",
+      "fba:ads-credentials-save",
+      "fba:operations-board-editor-state",
+      "fba:operations-board-editor-login",
+      "fba:operations-board-editor-save",
+      "fba:operations-board-editor-close",
+    ]) {
+      const start = main.indexOf(`\"${channel}\"`);
+      const next = main.indexOf("ipcMain.handle(", start + channel.length + 2);
+      expect(start, channel).toBeGreaterThan(-1);
+      expect(main.slice(start, next < 0 ? undefined : next), channel)
+        .toContain("desktopInstallGate.assertOperationAllowed();");
+    }
   });
 
   it("does not expose the retired operating-system spellchecker bridge", async () => {
