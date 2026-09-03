@@ -4,11 +4,11 @@
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-09-03 下一版 B2B 篩選／Supply Boss 公布欄／文案工作表 `(可)`（本機驗證完成；未發布／未部署／未安裝）
+### 2026-09-03 v0.1.51 B2B 篩選／Supply Boss 公布欄／文案工作表 `(可)`（已合併／Pages 與 Supply Boss 上線／Mac 安裝／員工下載更新）
 
-這一輪在 v0.1.50 之上的未發布工作樹同時收斂三個操作痛點。此節描述下一版契約，不取代下方 v0.1.50 已發布證據。本機 final `npm run check` 已通過 TypeScript、256 個測試檔／2,579 tests、production build 與 stylesheet parity；Ask Matt 路由的 Standards／Spec 最終複核均為 P0／P1／P2／P3 零 findings。固定展示資料的 Playwright 實際操作已確認新增即期品與新增促銷逐欄輸入不再白屏，B2B 的「未設定」分類與含前後空白、大小寫不同的 SKU 搜尋會正確取交集，且沒有新增 console error。Supply Boss worker 的 test／build／artifact validation 亦已通過。`npm audit --omit=dev` 目前仍回報既有 `@xmldom/xmldom <=0.8.14` 一個 moderate advisory；自動修復會跳出專案既定 dependency range，因此本輪未執行 `--force`。production deployment、Mac／Windows artifact、員工下載替換、本機安裝與 live Amazon 驗證都尚未進行。
+PR #197 已將功能 squash merge 到 `4b051ae16bea50272e4024e37d099730b43b098f`；PR #198 只升版 package、SP-API User-Agent 與 Windows 封裝斷言，v0.1.51 release-code exact main SHA 為 `980c7c4783171d2eeb976e977be05fb968e0af71`。本機 final `npm run check` 通過 TypeScript、256 個測試檔／2,579 tests、production build 與 stylesheet parity；Ask Matt 路由的 Standards／Spec 最終複核均為 P0／P1／P2／P3 零 findings。固定展示資料的 Playwright 操作已確認新增即期品與新增促銷逐欄輸入不再白屏，B2B 的「未設定」分類與含前後空白、大小寫不同的 SKU 搜尋會正確取交集，且沒有新增 console error。`npm audit --omit=dev` 仍回報既有 `@xmldom/xmldom <=0.8.14` 一個 moderate advisory；自動修復會跳出專案既定 dependency range，因此未執行 `--force`。
 
-| 區域 | 下一版行為 | 操作難度 |
+| 區域 | v0.1.51 行為 | 操作難度 |
 |---|---|---:|
 | B2B 摘要 | 只顯示「全部／需處理／未設定／正確設定／資料未完成」；後四類互斥且加總等於全部 | ★☆☆☆☆ |
 | B2B 判定 | 一般售價或其他必要證據缺失歸資料未完成；資料完整但沒有 Business Price 歸未設定；資料完整、已設定 B2B 且任一建議價格／階梯／高於一般價問題成立才歸需處理；完全合格才歸正確設定 | ★☆☆☆☆ |
@@ -16,9 +16,19 @@ GitHub Pages：`https://jspusa.github.io/AMZ.API/`
 | 公布欄管理 | 首頁白話表單後開啟 main-owned、packaged、無網路管理視窗；使用共用帳密即可 create／edit／delete，員工不需 GitHub，也不需自行設定 R2 五個欄位 | ★★☆☆☆ |
 | 文案 Excel | family 每一列資料完整且全部檢查通過才命名為 `F001(可)`；任一問題、incomplete 或 unknown 維持 `F001`，完整與部分工作簿一致 | ★☆☆☆☆ |
 
+exact-main Validate／Pages／macOS／Windows runs 為 `33723039398`／`33723039424`／`33723039329`／`33723039356`，成功 jobs 為 `100546011183`／`100546011318`／`100546010903`／`100546011159`。live Pages HTML／JS／CSS 分別為 917／1,931,290／329,650 bytes，SHA-256 為 `a79aac73c0e4913647cf009c8522adf3d10d22fdfc4f1be41fcab42fef7f8c90`／`4da93333d59f1654eb8ee552d64d7e8fa975fbab332315f335a222c7a48e5ccb`／`b39bb996bd2abd80cc1c6f1bcbda77ba93fd1eecff79d388c7dfae8331f1d99d`；live JS／CSS 與 exact-main production output byte-for-byte 相同。
+
+macOS artifact `9881040973` 名稱為 `AMZ.API-unsigned-980c7c4783171d2eeb976e977be05fb968e0af71`，metadata size 468,411,534 bytes、digest `sha256:d7a74264bfa4fac1cee7f8d83af084c2d64cf2a38addfb1323f44a1b7524b2aa`。DMG `AMZ.API-0.1.51-universal.dmg` 為 246,516,125 bytes、SHA-256 `0b011b5ff1f14b8dd134d37c9e3923ed5ddc42461d6dee1787b7f12d81659e35`；universal ZIP 為 221,894,765 bytes、SHA-256 `4ee19eaa81210d88599f7ea0104115b3ec636368149b2c0aef0352088f96236b`。outer／inner ZIP、DMG integrity、version／build 0.1.51、bundle `com.jspusa.amz-api`、`x86_64`／`arm64`、deep strict ad-hoc codesign 與 DMG／ZIP `app.asar` byte-for-byte 均通過；`app.asar` SHA-256 為 `2084e2f48a65b95a1e0066a0b4bd0b0b9dcedd7418c911d53c909f6c00b3aba3`。
+
+Windows artifact `9881095691` 名稱為 `AMZ.API-Notebook-Key-Windows-x64-980c7c4783171d2eeb976e977be05fb968e0af71`，metadata size 244,941,334 bytes、digest `sha256:129397aadef85a148686a565ce2a46fb27cb8732f359358698f3f0e643f136b6`。NSIS installer 為 101,845,266 bytes、SHA-256 `ca61964fc72c3cf24bd64a631d2d0829bd17e5bc1a540c66ef900519215f1f34`；portable ZIP 為 143,095,372 bytes、SHA-256 `9dc94f4a5dbeb94fa01aabe511224b0b25607751d1867ec8a619fab8735fa16d`。outer／inner ZIP CRC、package version 0.1.51、x64 PE 與 Windows Hello addon manifest/hash 均匹配；Windows runner 的 packaged Bridge smoke 通過，但不能冒充真實 Windows 11 Hello／DPAPI 實機證據。
+
 公布欄 public read 固定為 Supply Boss `GET /api/operations-board`，登入固定為 `POST /api/operations-board/login`，寫入固定為 authenticated `PUT /api/operations-board`。登入使用獨立 `BOARD_*` verifier 與 rate-limit namespace；公布欄帳密不能在舊 `/api/login` 換取 snapshot-admin token。最長 8 小時的 board-scoped token 只留在 Notebook Key main process 記憶體，密碼不保存；鎖屏、睡眠、App 結束或到期會清除 session，單純關閉管理視窗則保留同一 App session，避免重複輸入。server 對無 `Content-Length` 的 request 亦逐段限制 128 KiB，並用 raw R2 object ETag 對固定 `operations-board/v1.json` 執行 conditional revision write；`409` 必須重新讀取與人工處理，timeout、429、`5xx`、network 或 unknown result 不得 blind retry。共享 JSON 只包含 Seller SKU、人工效期、促銷日期／標題、倒數選項、備註與必要 revision/schema 欄位；Amazon credential、即時庫存與價格不上傳。庫存與價格仍由每台 Notebook Key 的既有唯讀 facts route 補上。
 
-舊 GitHub Issue Form 決策已由 `docs/adr/0003-use-supply-boss-for-operations-board.md` 明確取代；`docs/adr/0002-use-github-announcements-for-operations-board.md` 與 `docs/specs/github-operations-board.md` 只保留歷史。下一步必須先完成本機全量 gate 與獨立 Standards／Spec review，再由使用者另行核准 production deployment／release／employee download／install；不得把本節冒充 live 已生效。
+Supply Boss API v5 source commit `00c20028f2e2e8da81954d2e0ad496d9eab70f14` 已保存為 Sites version 5 並以 environment revision 11 部署成功；production deployment 為 `appgdep_6a99101cc22481918844513cd005ed73`。公布欄獨立帳號只以 server-side salt／verifier 設定；線上 health、public read、board login 與連續兩次保持 items 不變的 revision write 均為 HTTP 200，items 未改、revision 由 0 到 2。帳密未輸出或寫入 source、GitHub、檔案、log 或 browser storage。舊 GitHub Issue Form 決策已由 `docs/adr/0003-use-supply-boss-for-operations-board.md` 明確取代；`docs/adr/0002-use-github-announcements-for-operations-board.md` 與 `docs/specs/github-operations-board.md` 只保留歷史。
+
+受保護 Supply Boss 員工下載站已依 Mac→Windows 順序，以 Keychain-to-stdin 既有管理授權原子更新兩張卡為 v0.1.51；兩次 complete 回應的 name／size／SHA-256 與上述 DMG／NSIS 完全相同，`/health` 正常、`/downloads` 回 HTTP 200。員工下載密碼沒有被讀取或代填，因此登入後卡片與短效連結的完整重新下載／byte-for-byte 核對仍待員工自行登入後完成。
+
+exact App 已可復原地安裝到 `/Applications/AMZ.API.app` 並成功從該路徑啟動 PID 96511；安裝後再次通過 version／build 0.1.51、bundle、雙架構、簽章及 `app.asar` byte-for-byte 核對。原 v0.1.50 完整保留為 `/Applications/AMZ.API-v0.1.50-backup.app`，其 `app.asar` SHA-256 仍為 `00be94c0b3d8e8f5da0f0db915a70c84aabbb1307a669d6045a70d2a29f78140`；既有 encrypted userData 安裝前後 hash 未變，Amazon Keychain vault 與更舊備份未清除或重建。本次發布、安裝與單純啟動沒有操作 Amazon Validation Preview、原生確認、PATCH 或任何 mutation；App 啟動可能沿用既有唯讀自動載入，不得寫成完全沒有 Amazon read。
 
 ### 2026-09-03 v0.1.50 公布欄／文案部分 Excel／逐 SKU 隔離／B2B 摘要（已合併／Pages 上線／Mac 安裝／員工下載更新）
 
