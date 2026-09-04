@@ -1,10 +1,35 @@
 # AMZ.API — Codex 專案交接入口
 
-最後更新：2026-09-03
+最後更新：2026-09-04
 Repository：`https://github.com/jspusa/AMZ.API`  
 GitHub Pages：`https://jspusa.github.io/AMZ.API/`  
 
-### 2026-09-03 文案健檢七項摘要簡化（本機驗證完成；合併後由 Pages 生效）
+### 2026-09-04 v0.1.53 停售倒數／多日促銷／營運版面與品牌營收修補（已合併／Pages 與 Supply Boss 上線／Mac 安裝／員工下載更新）
+
+PR #202 已 squash merge 到 exact-main `89d74f4f3ab21552da2f5532ea76757d2a13d34a`。即期品公告新增可選 Manual Stop-Sale Date；有停售日就以停售日倒數，未設定才回退到產品效期，兩個日期會同時保留並各自出現在月曆。促銷改為含首尾日的 start／end range，可跨月並在涵蓋的每天著色；單日檔期以相同起訖日表示。首頁只保留一個原生日期按鈕，範圍固定為本月加後續 11 個月；即期列、促銷 agenda 與七欄月曆已壓縮空白並提高可讀字級。文案健檢摘要改成指定的 4×2 排列；品牌營收則只在 broker handle 與新 lease 都有完整、同身分、較新的 DONE 證據時安全改綁，不重建 Shipment。舊 v0.1.52 Notebook Key 仍可讀 v1 projection；若嘗試新增、編輯或刪除，新 Pages 會直接說明需一次性更新到 v0.1.53，不再送出不相容草稿。
+
+| 使用情境 | v0.1.53 結果 | 操作難度 |
+|---|---|---:|
+| 即期品有停售日 | 顯示並倒數停售日，同時保留產品效期 | ★☆☆☆☆ |
+| 即期品無停售日 | 自動倒數產品效期 | ★☆☆☆☆ |
+| 多日促銷 | 選開始日與結束日，月曆自動標滿整段日期 | ★☆☆☆☆ |
+| 既有 v0.1.52 | 可繼續唯讀；管理時明示只需更新一次 | ★☆☆☆☆ |
+
+本機 final `npm run check` 通過 TypeScript、256 個測試檔／2,594 tests、production build 與 stylesheet parity，`git diff --check` clean。`npm audit --omit=dev` 只回報既有 `@xmldom/xmldom <=0.8.14` 一個 moderate advisory；自動修復需 `--force` 跳出既定 dependency range，因此未強制升級。Ask Matt Standards／Spec 修正舊 Bridge capability 提示、v2 response 防降級與 canonical domain glossary 後，最終 P0／P1／P2／P3 findings 均為 0。固定 clock 的桌面／390 px／320 px 視覺檢查確認七個 weekday 等寬、公告卡與 agenda 不溢位、停售倒數優先、多日促銷逐日顯示，以及文案摘要為 4×2。
+
+Supply Boss schema v2 source commit `d582d63948e9b97d7b001c4568ffe07c30e7742c` 已先發布為 Sites version 6 `appgprj_6a7719308ad8819186b46adcafcc87a6~appgver_d853a667c6d48191b2df96c752a300b9`，production deployment `appgdep_6a993ac154d88191a3c5702430bd5209` 成功。線上帶 schema header 的 read 回 v2，無 header 的舊 client 回 v1 projection；兩者 revision 均為 8、items 均為 3。v2 response 保留 `stopSaleDate` 與 promotion start／end，舊 projection 保留單日 `date`；本次只讀核對，沒有新增、修改或刪除任何公告。
+
+exact-main Validate／Pages／macOS／Windows runs 為 `33741424818`／`33741424724`／`33741424655`／`33741424529`，全部成功。live Pages HTML／JS／CSS 分別為 917／1,940,516／330,842 bytes，SHA-256 為 `f9729a5234371641fc341a2ef437399d2dcf6287075acd06faf5470104c08cdc`／`c6108dada381d9abf396fa636e388311d8a83d0aced74678dcbfa8bfbacd1b48`／`411ebe3360acb0aeb025a47745a104f67c0be6a97cd24a03d4bded65226791a8`；三者與 exact-main production output byte-for-byte 相同。
+
+macOS artifact `9888067760` 名稱 `AMZ.API-unsigned-89d74f4f3ab21552da2f5532ea76757d2a13d34a`，metadata size 468,186,471 bytes、digest `sha256:ff501e1748e4e40f617ae2af6e76a5cec09f437ad56992a70852f52b1f4fc319`。DMG `AMZ.API-0.1.53-universal.dmg` 為 246,287,691 bytes、SHA-256 `18214bf50406b72ff34083d6e07422567d41b716abfc06fe08d80dd145bc5f27`；universal ZIP 為 221,898,136 bytes、SHA-256 `27e265ec9ddb6b948a1755f56d882febba55eb1a2c4ab3f14a21dac8dea62234`。DMG integrity、version／build 0.1.53、bundle `com.jspusa.amz-api`、`x86_64`／`arm64`、deep strict ad-hoc codesign 與 packaged preload `schemaVersion:2` 均通過；`app.asar` SHA-256 為 `b3a4aec699f0f9734e628b6a5c5749967b3989beb8af18cbbf753a732f1e552b`。
+
+Windows artifact `9888115599` 名稱 `AMZ.API-Notebook-Key-Windows-x64-89d74f4f3ab21552da2f5532ea76757d2a13d34a`，metadata size 244,949,567 bytes、digest `sha256:2f21eb60a4b4fe53a80f66c755252d66adadb0f76f1240587badd6c0a17480fd`。NSIS installer 為 101,850,215 bytes、SHA-256 `a7416edf82b4005769737bdda648c724b4ad094936b43891231adb54d32eff81`；portable ZIP 為 143,098,656 bytes、SHA-256 `c07326452ac60792098a8158b1634d0f8a3cb59bbcd2888c937e17e8bace3b18`。checksum manifest、x64 PE、Windows Hello addon boundary 與 packaged Bridge smoke 均通過；Windows CI 不能冒充真實 Windows 11 Hello／DPAPI 硬體驗證。
+
+受保護 Supply Boss 員工下載入口已依 Mac→Windows 順序，以 Keychain-to-stdin 管理授權原子更新兩張卡為 v0.1.53；兩次 complete 回應的 name／size／SHA-256 與上述 DMG／NSIS 完全相同，`/health` 正常、`/downloads` 回 HTTP 200。員工下載密碼沒有被讀取或代填，因此登入後短效連結的完整重新下載／byte-for-byte 核對仍待員工自行登入後完成。
+
+exact DMG App 已可復原地安裝到 `/Applications/AMZ.API.app` 並從該路徑成功啟動 PID 29238；安裝後再次通過 version／build 0.1.53、bundle、雙架構、deep strict signature 與 `app.asar` byte-for-byte 核對。原 v0.1.52 保留為 `/Applications/AMZ.API-v0.1.52-backup.app`；既有 encrypted `credentials.enc` 安裝前後 SHA-256 同為 `3eb69ba8de2177e9d9d09a9e611fef75cf722c815b0f9e2cd7f4885d5a84c1f1`，沒有清除或重建 Amazon vault。本次發布與安裝沒有操作 Amazon Validation Preview、原生確認、PATCH 或 mutation；App 啟動可能沿用既有唯讀儀表板讀取。
+
+### 2026-09-03 文案健檢七項摘要簡化（已隨 v0.1.53 上線）
 
 文案健檢結果只保留「完成讀取／需修正／疑似錯字／缺成分／成分宣稱不一致／正確設定／讀取未完成」七張等寬摘要卡，且每張數字都能直接篩選 SKU。「需修正」合併名稱、亮點、缺賣點、要點過短／過長與產品敘述不足；若同一 SKU 另有疑似錯字、缺成分、成分宣稱不一致或成分未驗證，就不再重複列進「需修正」。成分未驗證併入「讀取未完成」，但已成功取得其餘 Amazon 文案的列仍保留在「完成讀取」；「正確設定」只含完整讀取且零 issue 的 SKU。初始總覽若含真正讀取未完成列，會直接顯示 exact read error，不再出現只有 SKU、沒有原因的卡片。
 
