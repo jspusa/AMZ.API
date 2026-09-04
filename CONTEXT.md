@@ -32,6 +32,18 @@ _Avoid_: Commit token, write receipt
 A durable outcome meaning Amazon may have received a mutation but canonical evidence cannot yet prove success or rejection, so resend remains forbidden.
 _Avoid_: Failed write, retryable error
 
+**Accepted Write**:
+A durable outcome meaning Amazon returned an exact accepted receipt for one mutation, while canonical readback has not yet verified the target; resend remains forbidden.
+_Avoid_: Successful write, failed write, retryable write
+
+**Readback Reconciliation**:
+A GET-only comparison of an Accepted Write's exact target with canonical Amazon state that may promote it to verified without sending another mutation.
+_Avoid_: Retry, background write, receipt verification
+
+**Exact Bullet Replacement**:
+A content proposal whose one to five requested bullets are the complete set for one marketplace language; same-language overflow is included only when fully disclosed and explicitly acknowledged.
+_Avoid_: Five-bullet edit, title cleanup, silent truncation
+
 **Control Console Release**:
 A GitHub Pages publication that changes the operator interface without changing the Notebook Key's local Amazon or security capabilities.
 _Avoid_: App update, desktop release

@@ -65,6 +65,10 @@ import UnboundVariationAuditPanel, {
   type UnboundVariationAuditCache,
 } from "./unbound-variation-audit-panel";
 import VariationPlannerDrawer from "./variation-planner-drawer";
+import {
+  focusTopmostModalDialog,
+  restoreModalTriggerFocus,
+} from "./modal-focus";
 import { isSubscriptionAuditMarketplaceSupported } from "../subscription-audit";
 import {
   businessPricingRowMatchesFilter,
@@ -782,6 +786,8 @@ export default function Dashboard({
   const connectionAbortRef = useRef<AbortController | null>(null);
   const primaryNavRef = useRef<HTMLElement | null>(null);
   const menuTriggerRefs = useRef<Partial<Record<NavigationGroup, HTMLButtonElement>>>({});
+  const modalReturnFocusRef = useRef<HTMLElement | null>(null);
+  const modalWasOpenRef = useRef(false);
   const auditWorkspaceReturnRef = useRef<{
     sectionId: AuditSuiteSectionId;
     scrollY: number;
@@ -1098,6 +1104,7 @@ export default function Dashboard({
   }, []);
 
   const launch = (tool: Tool) => {
+    if (openTool !== null) return;
     setOpenToolMenu(null);
     setCommandOpen(false);
     setActiveAuditWorkspace(null);
@@ -1106,12 +1113,41 @@ export default function Dashboard({
       onOpenConnection?.();
       return;
     }
+    if (!commandOpen) {
+      modalReturnFocusRef.current = menuTriggerRefs.current[TOOL_META[tool].group] ?? null;
+    }
     if (tool === "copy") setContentWorkspaceTab("single");
     if (tool === "images") setImageWorkspaceTab("single");
     if (tool === "variations") setReturnToUnboundVariationAudit(false);
     if (tool === "subscriptions") setAuditPreference("subscriptions");
     setOpenTool(tool);
   };
+
+  const openCommandCenter = () => {
+    const activeElement = document.activeElement;
+    modalReturnFocusRef.current = activeElement instanceof HTMLElement
+      ? activeElement
+      : null;
+    setCommandOpen(true);
+  };
+
+  useEffect(() => {
+    const modalOpen = openTool !== null || commandOpen;
+    const modalWasOpen = modalWasOpenRef.current;
+    modalWasOpenRef.current = modalOpen;
+
+    if (!modalOpen && !modalWasOpen) return;
+    const returnTarget = modalReturnFocusRef.current;
+    if (!modalOpen) modalReturnFocusRef.current = null;
+    const frameId = window.requestAnimationFrame(() => {
+      if (modalOpen) {
+        focusTopmostModalDialog(document);
+        return;
+      }
+      restoreModalTriggerFocus(document, returnTarget);
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [commandOpen, openTool]);
 
   const openMenu = (group: NavigationGroup, focus: "first" | "last" = "first") => {
     setOpenToolMenu(group);
@@ -1906,9 +1942,18 @@ export default function Dashboard({
 
   return (
     <div className="commerce-os">
-      <a className="workspace-skip-link" href="#workspace-top">跳到主要內容</a>
+      <a
+        className="workspace-skip-link"
+        href="#workspace-top"
+        aria-hidden={openTool !== null ? true : undefined}
+        tabIndex={openTool !== null ? -1 : undefined}
+      >跳到主要內容</a>
 
-      <div className="workspace-surface">
+      <div
+        className="workspace-surface"
+        inert={openTool !== null ? true : undefined}
+        aria-hidden={openTool !== null ? true : undefined}
+      >
         <header className="workspace-header">
           <div className="workspace-header-main">
             <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁">
@@ -2048,9 +2093,9 @@ export default function Dashboard({
 
           <div className="workspace-context-shell">
             <div className="workspace-contextbar">
-              <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setCommandOpen(true); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace)} /></label>
-              <button className="command-topbar-button" type="button" onClick={() => setCommandOpen(true)} disabled={Boolean(activeAuditWorkspace)}><span aria-hidden="true">✦</span>SKU 總覽</button>
-              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace)} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
+              <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); openCommandCenter(); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace)} /></label>
+              <button className="command-topbar-button" type="button" onClick={openCommandCenter} disabled={Boolean(activeAuditWorkspace)}><span aria-hidden="true">✦</span>SKU 總覽</button>
+              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
               <SystemHealthControl
                 marketplaceId={marketplaceId}
                 autoSync={autoSync}

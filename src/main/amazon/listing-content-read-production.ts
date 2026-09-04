@@ -16,6 +16,7 @@ export type ListingContentReadProductionInput = Readonly<{
   sellerSku: string;
   allowReadOnlySchema?: boolean;
   forceCapabilityRefresh?: boolean;
+  capabilityRefreshScope?: object;
 }>;
 
 export type ListingContentReadProductionResult = Readonly<{
@@ -49,6 +50,9 @@ export function createListingContentReadProduction(
         productType,
         allowGenericFallback: input.allowReadOnlySchema ?? false,
         forceRefresh: input.forceCapabilityRefresh ?? false,
+        ...(input.capabilityRefreshScope
+          ? { refreshScope: input.capabilityRefreshScope }
+          : {}),
       });
       const notice = capabilityResult.degradedReason
         ? `${capabilityResult.degradedReason} 內容仍取自 Amazon Listing attributes。`

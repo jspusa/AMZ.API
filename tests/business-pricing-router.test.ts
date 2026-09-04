@@ -134,6 +134,26 @@ describe("Amazon Business pricing routes", () => {
     });
   });
 
+  it("rejects arbitrary renderer batch rows without an exact completed audit binding", async () => {
+    const item = {
+      ...await writeBody(),
+      idempotencyKey: "business-pricing-batch-router-001",
+    };
+    const preview = await router.handle({
+      ...request("POST"),
+      path: "/api/sp-api/business-pricing/batch",
+      body: { kind: "json", value: { items: [item] } },
+    });
+    expect(preview.status).toBe(400);
+    expect(preview.body.kind).toBe("json");
+    if (preview.body.kind !== "json") throw new Error("Expected JSON response");
+    expect(preview.body.value).toMatchObject({
+      code: "INVALID_INPUT",
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
   it("accepts only an explicit complete tier plan and shows it in native approval", async () => {
     const body = {
       ...await writeBody(),

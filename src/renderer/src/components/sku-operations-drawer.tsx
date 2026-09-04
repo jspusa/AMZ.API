@@ -125,6 +125,15 @@ type MutationReply = {
   validatedAt?: string;
   acceptedAt?: string;
   submissionId?: string | null;
+  exactBulletReplacement?: ExactBulletReplacement | null;
+  exactBulletReplacementAcknowledgement?: string | null;
+};
+
+type ExactBulletReplacement = {
+  languageTag: string;
+  currentExactLanguageBulletPoints: string[];
+  requestedExactLanguageBulletPoints: string[];
+  removedOverflowBulletPoints: string[];
 };
 
 type ExportReply = {
@@ -370,7 +379,81 @@ export function normalizeListingContentSnapshot(
   };
 }
 
+const EXACT_BULLET_UNSAFE_DISPLAY_TEXT =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u0084\u0086-\u009f\u00ad\u034f\u061c\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/u;
+
+function exactStringList(value: unknown, maximumItems: number): string[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length > maximumItems ||
+    value.some((entry) =>
+      typeof entry !== "string" ||
+      !entry.trim() ||
+      entry !== entry.trim() ||
+      entry.length > 5_000 ||
+      EXACT_BULLET_UNSAFE_DISPLAY_TEXT.test(entry)
+    )
+  ) {
+    return null;
+  }
+  return [...value] as string[];
+}
+
+function normalizeExactBulletReplacement(
+  raw: Partial<MutationReply>,
+): Readonly<{
+  replacement: ExactBulletReplacement | null;
+  acknowledgement: string | null;
+}> {
+  const value = raw.exactBulletReplacement;
+  const acknowledgement = raw.exactBulletReplacementAcknowledgement;
+  if (value === undefined && acknowledgement === undefined) {
+    return { replacement: null, acknowledgement: null };
+  }
+  if (
+    !value ||
+    typeof value !== "object" ||
+    typeof value.languageTag !== "string" ||
+    !value.languageTag ||
+    value.languageTag.length > 64 ||
+    value.languageTag !== value.languageTag.trim() ||
+    typeof acknowledgement !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(acknowledgement)
+  ) {
+    throw new Error("產品要點刪除揭露格式無效，請重新預檢。");
+  }
+  const current = exactStringList(
+    value.currentExactLanguageBulletPoints,
+    100,
+  );
+  const requested = exactStringList(
+    value.requestedExactLanguageBulletPoints,
+    5,
+  );
+  const removed = exactStringList(value.removedOverflowBulletPoints, 95);
+  if (
+    !current ||
+    current.length <= 5 ||
+    !requested ||
+    requested.length < 1 ||
+    !removed ||
+    JSON.stringify(removed) !== JSON.stringify(current.slice(5))
+  ) {
+    throw new Error("產品要點刪除揭露格式無效，請重新預檢。");
+  }
+  return {
+    replacement: {
+      languageTag: value.languageTag,
+      currentExactLanguageBulletPoints: current,
+      requestedExactLanguageBulletPoints: requested,
+      removedOverflowBulletPoints: removed,
+    },
+    acknowledgement,
+  };
+}
+
 function normalizeMutationReply(raw: Partial<MutationReply>): MutationReply {
+  const exactBullet = normalizeExactBulletReplacement(raw);
   return {
     mode: raw.mode === "live" ? "live" : "demo",
     status:
@@ -383,6 +466,8 @@ function normalizeMutationReply(raw: Partial<MutationReply>): MutationReply {
     validatedAt: raw.validatedAt,
     acceptedAt: raw.acceptedAt,
     submissionId: raw.submissionId ?? null,
+    exactBulletReplacement: exactBullet.replacement,
+    exactBulletReplacementAcknowledgement: exactBullet.acknowledgement,
   };
 }
 
@@ -450,12 +535,14 @@ export function createListingContentMutationBody({
   expected,
   requested,
   idempotencyKey,
+  exactBulletReplacementAcknowledgement,
 }: {
   marketplaceId: string;
   sellerSku: string;
   expected: ListingContent;
   requested: SubmittedContent;
   idempotencyKey: string;
+  exactBulletReplacementAcknowledgement?: string | null;
 }) {
   return {
     marketplaceId,
@@ -474,6 +561,9 @@ export function createListingContentMutationBody({
     // the current bridge no longer treats this legacy field as an approval.
     confirmationSku: sellerSku,
     idempotencyKey,
+    ...(exactBulletReplacementAcknowledgement
+      ? { exactBulletReplacementAcknowledgement }
+      : {}),
   };
 }
 
@@ -586,6 +676,8 @@ export default function SkuOperationsDrawer({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [phase, setPhase] = useState<"edit" | "confirm" | "result">("edit");
   const [validation, setValidation] = useState<MutationReply | null>(null);
+  const [exactBulletReplacementAcknowledged, setExactBulletReplacementAcknowledged] =
+    useState(false);
   const [result, setResult] = useState<MutationReply | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [resultConfirmed, setResultConfirmed] = useState(false);
@@ -600,6 +692,7 @@ export default function SkuOperationsDrawer({
   >("idle");
   const [exportReply, setExportReply] = useState<ExportReply | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [contentBatchBusy, setContentBatchBusy] = useState(false);
   const lookupAbortRef = useRef<AbortController | null>(null);
   const exportAbortRef = useRef<AbortController | null>(null);
   const autoLookupRef = useRef(false);
@@ -870,9 +963,11 @@ export default function SkuOperationsDrawer({
   }, [draft, listing]);
 
   const busy = lookupLoading || actionLoading || exportState === "starting" ||
-    exportState === "polling" || exportState === "downloading";
+    exportState === "polling" || exportState === "downloading" ||
+    contentBatchBusy;
 
   const closeDrawer = useCallback(() => {
+    if (busy) return;
     if (
       phase !== "result" &&
       hasChanges &&
@@ -883,22 +978,23 @@ export default function SkuOperationsDrawer({
     lookupAbortRef.current?.abort();
     exportAbortRef.current?.abort();
     onClose();
-  }, [hasChanges, onClose, phase]);
+  }, [busy, hasChanges, onClose, phase]);
 
   useEffect(() => {
     if (presentation !== "dialog") return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || actionLoading) return;
+      if (event.key !== "Escape" || busy) return;
       if (phase === "confirm") {
         setPhase("edit");
         setValidation(null);
+        setExactBulletReplacementAcknowledged(false);
         return;
       }
       closeDrawer();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [actionLoading, closeDrawer, phase, presentation]);
+  }, [busy, closeDrawer, phase, presentation]);
 
   useEffect(
     () => () => {
@@ -915,6 +1011,7 @@ export default function SkuOperationsDrawer({
     setDraft(null);
     setPhase("edit");
     setValidation(null);
+    setExactBulletReplacementAcknowledged(false);
     setResult(null);
     setIdempotencyKey("");
     setResultConfirmed(false);
@@ -931,6 +1028,7 @@ export default function SkuOperationsDrawer({
   }, []);
 
   const changeMarketplace = (value: string) => {
+    if (busy) return;
     if (
       (listing || exportReply) &&
       !window.confirm("切換站點會清除目前內容與匯出進度，確定繼續嗎？")
@@ -944,6 +1042,7 @@ export default function SkuOperationsDrawer({
   };
 
   const changeTab = (nextTab: ContentWorkspaceTab): boolean => {
+    if (busy) return false;
     if (nextTab === tab) return true;
     if (
       tab === "single" &&
@@ -1000,6 +1099,7 @@ export default function SkuOperationsDrawer({
     setDraft(null);
     setPhase("edit");
     setValidation(null);
+    setExactBulletReplacementAcknowledged(false);
     setResult(null);
     setIdempotencyKey("");
     setResultConfirmed(false);
@@ -1043,6 +1143,7 @@ export default function SkuOperationsDrawer({
   const mutationBody = (
     key = idempotencyKey,
     content: SubmittedContent | null = requestedContent,
+    exactBulletAcknowledgement: string | null = null,
   ) => createListingContentMutationBody({
     marketplaceId,
     sellerSku: listing?.sellerSku ?? "",
@@ -1061,6 +1162,7 @@ export default function SkuOperationsDrawer({
       ingredients: "",
     },
     idempotencyKey: key,
+    exactBulletReplacementAcknowledgement: exactBulletAcknowledgement,
   });
 
   const previewContent = async () => {
@@ -1069,6 +1171,7 @@ export default function SkuOperationsDrawer({
     setActionLoading(true);
     setError(null);
     setSubmittedContent(null);
+    setExactBulletReplacementAcknowledged(false);
     try {
       const response = await fetch("/api/sp-api/listing-content", {
         method: "POST",
@@ -1081,7 +1184,21 @@ export default function SkuOperationsDrawer({
           problemMessage(payload as ApiProblem, "Amazon 商品內容預檢未通過。"),
         );
       }
-      setValidation(normalizeMutationReply(payload as Partial<MutationReply>));
+      const normalized = normalizeMutationReply(payload as Partial<MutationReply>);
+      if (
+        normalized.exactBulletReplacement &&
+        (JSON.stringify(
+          normalized.exactBulletReplacement
+            .currentExactLanguageBulletPoints.slice(0, 5),
+        ) !== JSON.stringify(listing.content.bulletPoints) ||
+          JSON.stringify(
+            normalized.exactBulletReplacement
+              .requestedExactLanguageBulletPoints,
+          ) !== JSON.stringify(requestedContent.bulletPoints))
+      ) {
+        throw new Error("產品要點刪除揭露與這次更新值不一致，請重新預檢。");
+      }
+      setValidation(normalized);
       setIdempotencyKey(key);
       setPhase("confirm");
     } catch (requestError) {
@@ -1100,7 +1217,9 @@ export default function SkuOperationsDrawer({
       !listing ||
       !requestedContent ||
       !validation ||
-      !idempotencyKey
+      !idempotencyKey ||
+      (Boolean(validation.exactBulletReplacement) &&
+        !exactBulletReplacementAcknowledged)
     ) {
       return;
     }
@@ -1112,7 +1231,13 @@ export default function SkuOperationsDrawer({
       const response = await fetch("/api/sp-api/listing-content", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(mutationBody(idempotencyKey, submitted)),
+        body: JSON.stringify(mutationBody(
+          idempotencyKey,
+          submitted,
+          exactBulletReplacementAcknowledged
+            ? validation.exactBulletReplacementAcknowledgement ?? null
+            : null,
+        )),
       });
       const payload = (await response.json()) as Partial<MutationReply> | ApiProblem;
       if (!response.ok) {
@@ -1189,6 +1314,7 @@ export default function SkuOperationsDrawer({
   const updateDraft = (nextDraft: Draft) => {
     setDraft(nextDraft);
     setValidation(null);
+    setExactBulletReplacementAcknowledged(false);
     setResult(null);
     setIdempotencyKey("");
     setResultConfirmed(false);
@@ -1336,6 +1462,7 @@ export default function SkuOperationsDrawer({
             aria-controls="content-single-panel"
             className={tab === "single" ? "active" : ""}
             onClick={() => changeTab("single")}
+            disabled={busy}
           >
             單一 SKU 編輯
           </button>
@@ -1347,6 +1474,7 @@ export default function SkuOperationsDrawer({
             aria-controls="content-audit-panel"
             className={tab === "audit" ? "active" : ""}
             onClick={() => changeTab("audit")}
+            disabled={busy}
           >
             全站文案健檢
           </button>
@@ -1358,6 +1486,7 @@ export default function SkuOperationsDrawer({
             aria-controls="content-export-panel"
             className={tab === "export" ? "active" : ""}
             onClick={() => changeTab("export")}
+            disabled={busy}
           >
             全部匯出 Excel
           </button>
@@ -1543,7 +1672,7 @@ export default function SkuOperationsDrawer({
                       <>
                       <div className="ops-section-heading" style={{ marginTop: 22 }}>
                         <div><span>BULLET POINTS</span><h3>五大賣點</h3></div>
-                        <small>{activeQuickEditFocus ? "只顯示需處理項目" : `最多 ${bulletMaxItems} 項`}</small>
+                        <small>{activeQuickEditFocus ? "只顯示需處理項目" : `可保留 1–${bulletMaxItems} 項`}</small>
                       </div>
                       {draft.bulletPoints.map((bullet, index) => {
                         if (
@@ -1593,6 +1722,11 @@ export default function SkuOperationsDrawer({
                           </label>
                         );
                       })}
+                      {!activeQuickEditFocus && (
+                        <p className="batch-footnote">
+                          若 Amazon 實際保存超過 5 項同語系產品要點，修改任一賣點後的預檢會完整列出原值、更新值與刪除範圍，再讓你逐項確認。
+                        </p>
+                      )}
                       </>
                       )}
 
@@ -1697,6 +1831,7 @@ export default function SkuOperationsDrawer({
                   onClick={() => {
                     setPhase("edit");
                     setValidation(null);
+                    setExactBulletReplacementAcknowledged(false);
                     setError(null);
                   }}
                   disabled={actionLoading}
@@ -1728,9 +1863,71 @@ export default function SkuOperationsDrawer({
                     ))}
                   </div>
                 )}
+                {validation.exactBulletReplacement && (
+                  <div
+                    className="price-warning compact content-exact-bullet-replacement"
+                    role="alert"
+                  >
+                    <strong>本次會完整取代 Amazon 目前同語系產品要點</strong>
+                    <p>
+                      語系 {validation.exactBulletReplacement.languageTag}；Amazon 原本 {
+                        validation.exactBulletReplacement
+                          .currentExactLanguageBulletPoints.length
+                      } 項，更新後 {
+                        validation.exactBulletReplacement
+                          .requestedExactLanguageBulletPoints.length
+                      } 項。其他語系不會更動。
+                    </p>
+                    <p><strong>Amazon 完整原值</strong></p>
+                    <ol className="content-audit-exact-bullet-removals">
+                      {validation.exactBulletReplacement
+                        .currentExactLanguageBulletPoints.map((bullet, index) => (
+                          <li key={`current-${index}-${bullet}`}>{bullet}</li>
+                        ))}
+                    </ol>
+                    <p><strong>更新後完整值（1–5 項）</strong></p>
+                    <ol className="content-audit-exact-bullet-removals">
+                      {validation.exactBulletReplacement
+                        .requestedExactLanguageBulletPoints.map((bullet, index) => (
+                          <li key={`requested-${index}-${bullet}`}>{bullet}</li>
+                        ))}
+                    </ol>
+                    <p>
+                      第 6 項後會刪除 {
+                        validation.exactBulletReplacement
+                          .removedOverflowBulletPoints.length
+                      } 項：
+                    </p>
+                    <ol
+                      className="content-audit-exact-bullet-removals"
+                      start={6}
+                    >
+                      {validation.exactBulletReplacement
+                        .removedOverflowBulletPoints.map((bullet, index) => (
+                          <li key={`removed-${index + 6}-${bullet}`}>{bullet}</li>
+                        ))}
+                    </ol>
+                    <label className="content-audit-batch-acknowledgement">
+                      <input
+                        type="checkbox"
+                        checked={exactBulletReplacementAcknowledged}
+                        onChange={(event) =>
+                          setExactBulletReplacementAcknowledged(
+                            event.target.checked,
+                          )}
+                        disabled={actionLoading}
+                      />
+                      <span>
+                        我已逐項核對上述 Amazon 原值、更新值與刪除範圍
+                      </span>
+                    </label>
+                  </div>
+                )}
                 <ContentConfirmationControls
                   sellerSku={listing.sellerSku}
                   actionLoading={actionLoading}
+                  disabled={Boolean(validation.exactBulletReplacement) &&
+                    !exactBulletReplacementAcknowledged}
                   error={error}
                   onCommit={commitContent}
                 />
@@ -1775,6 +1972,7 @@ export default function SkuOperationsDrawer({
                   onClick={() => {
                     setPhase("edit");
                     setValidation(null);
+                    setExactBulletReplacementAcknowledged(false);
                     setResult(null);
                     setIdempotencyKey("");
                     setResultConfirmed(false);
@@ -1805,6 +2003,7 @@ export default function SkuOperationsDrawer({
               onCachedResultChange={onAuditCacheChange}
               initialJob={auditJob}
               onJobChange={onAuditJobChange}
+              onBatchBusyChange={setContentBatchBusy}
             />
           </div>
         )}

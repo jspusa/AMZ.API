@@ -28,6 +28,8 @@ export type ListingContentCapabilitiesRead = Readonly<{
   productType: string;
   allowGenericFallback?: boolean;
   forceRefresh?: boolean;
+  /** Main-owned phase token used to reuse one exact seller PTD per product type. */
+  refreshScope?: object;
 }>;
 
 export interface ListingContentCapabilitiesPort {
@@ -278,6 +280,21 @@ export function createListingContentCapabilities(
     string,
     { expiresAt: number; capabilities: ContentCapabilities }
   >();
+  let scopedRefreshes = new WeakMap<
+    object,
+    Map<string, Promise<ContentCapabilityResult>>
+  >();
+
+  function scopedRefreshKey(input: ListingContentCapabilitiesRead): string {
+    const marketplace = marketplaceById(input.marketplaceId)!;
+    return [
+      dependencies.getCredentialGeneration(),
+      sellerScope(dependencies.getSellerId(marketplace.region) ?? null),
+      input.marketplaceId,
+      input.productType,
+      input.allowGenericFallback === true ? "read" : "write",
+    ].join(":");
+  }
 
   async function fetchCapabilities(
     input: ListingContentCapabilitiesRead,
@@ -366,6 +383,20 @@ export function createListingContentCapabilities(
   return {
     async read(input) {
       try {
+        if (input.forceRefresh && input.refreshScope) {
+          let refreshes = scopedRefreshes.get(input.refreshScope);
+          if (!refreshes) {
+            refreshes = new Map();
+            scopedRefreshes.set(input.refreshScope, refreshes);
+          }
+          const key = scopedRefreshKey(input);
+          let refresh = refreshes.get(key);
+          if (!refresh) {
+            refresh = fetchCapabilities(input);
+            refreshes.set(key, refresh);
+          }
+          return await refresh;
+        }
         return await fetchCapabilities(input);
       } catch (error) {
         if (!input.allowGenericFallback || !(error instanceof SpApiError)) {
@@ -381,6 +412,7 @@ export function createListingContentCapabilities(
     },
     clear() {
       cache.clear();
+      scopedRefreshes = new WeakMap();
     },
   };
 }

@@ -5,7 +5,7 @@ import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 type ListingContentBatchMutationCommand = Readonly<{
-  operation: "preview" | "commit";
+  operation: "preview" | "commit" | "observe";
   request: ApiRequest;
 }>;
 
@@ -13,6 +13,7 @@ describe("W07 Listing Content batch mutation public route seam", () => {
   it.each([
     ["POST", "preview"],
     ["PATCH", "commit"],
+    ["GET", "observe"],
   ] as const)(
     "delegates %s /api/sp-api/listing-content/import to the batch mutation owner",
     async (method, operation) => {

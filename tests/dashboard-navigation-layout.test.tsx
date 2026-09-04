@@ -258,6 +258,17 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("returnTarget.scrollY");
     expect(source).toContain("focus({ preventScroll: true })");
     expect(source).toContain("disabled={Boolean(activeAuditWorkspace)}");
+    expect(source).toContain(
+      "disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null}",
+    );
+    expect(source).toContain(
+      "inert={openTool !== null ? true : undefined}",
+    );
+    expect(source).toContain("if (openTool !== null) return;");
+    expect(source).toContain(
+      "modalReturnFocusRef.current = menuTriggerRefs.current[TOOL_META[tool].group] ?? null",
+    );
+    expect(source).toContain("restoreModalTriggerFocus(document, returnTarget)");
     expect(source).toContain("setAgedInventoryOpen(true)");
     expect(source).toContain("agedInventoryOpen && createPortal");
     expect(source).toContain("reportMenuEntries");

@@ -5,7 +5,13 @@ import type { LocalStore } from "../src/main/local-store";
 import type { ApiRequest, ApiResponse } from "../src/shared/contracts";
 
 type BusinessPricingMutationCommand = Readonly<{
-  operation: "read" | "preview" | "commit";
+  operation:
+    | "read"
+    | "preview"
+    | "commit"
+    | "batchRead"
+    | "batchPreview"
+    | "batchCommit";
   request: ApiRequest;
 }>;
 
@@ -104,4 +110,43 @@ describe("W05 Business Pricing mutation public route seam", () => {
     expect(handle.mock.calls[0]?.[0].request).toBe(request);
     expect(response).toBe(sentinel);
   });
+
+  it.each([
+    ["GET", "batchRead"],
+    ["POST", "batchPreview"],
+    ["PATCH", "batchCommit"],
+  ] as const)(
+    "delegates %s B2B batch work to %s",
+    async (method, operation) => {
+      const request: ApiRequest = {
+        requestId: `w05-business-pricing-${operation}-001`,
+        method,
+        path: "/api/sp-api/business-pricing/batch",
+        query: {},
+        headers: { "content-type": "application/json" },
+        body: { kind: "json", value: {} },
+      };
+      const sentinel: ApiResponse = {
+        status: 207,
+        headers: { "x-w05-owner": "business-pricing-mutations" },
+        body: { kind: "json", value: { delegated: true } },
+      };
+      const handle = vi.fn(
+        async (_command: BusinessPricingMutationCommand) => sentinel,
+      );
+      const router = new ApiRouter({
+        store: {} as LocalStore,
+        vault: {} as CredentialVault,
+        approveWrite: async () => undefined,
+        businessPricingMutations: { handle },
+      } as unknown as ConstructorParameters<typeof ApiRouter>[0]);
+
+      const response = await router.handle(request);
+
+      expect(handle).toHaveBeenCalledOnce();
+      expect(handle).toHaveBeenCalledWith({ operation, request });
+      expect(handle.mock.calls[0]?.[0].request).toBe(request);
+      expect(response).toBe(sentinel);
+    },
+  );
 });

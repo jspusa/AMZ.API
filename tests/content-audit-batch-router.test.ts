@@ -32,11 +32,15 @@ import { ApiRouter } from "../src/main/api-router";
 import { parseContentWorkbookBatchPreview } from
   "../src/renderer/src/components/content-audit-panel";
 import type { CredentialVault } from "../src/main/credential-vault";
-import { createListingContentBatchMutations } from
+import {
+  CONTENT_BATCH_READBACK_DELAYS_MS,
+  createListingContentBatchMutations,
+} from
   "../src/main/listing-content-batch-mutations";
 import {
   LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
   createListingContentMutations,
+  type ListingContentAttemptOptions,
   type ListingContentPreviewOptions,
   type ListingContentMutationsPort,
   type ListingContentPreparedPreview,
@@ -190,6 +194,16 @@ function commitRequest(previewId: string, idempotencyKey: string): ApiRequest {
       kind: "json",
       value: { marketplaceId: MARKETPLACE_ID, previewId, idempotencyKey },
     },
+  };
+}
+
+function observeRequest(previewId: string): ApiRequest {
+  return {
+    requestId: `content-batch-observe-${previewId}`,
+    method: "GET",
+    path: "/api/sp-api/listing-content/import",
+    query: { marketplaceId: MARKETPLACE_ID, previewId },
+    headers: {},
   };
 }
 
@@ -363,9 +377,68 @@ function simulatedUpdateResult(
   };
 }
 
+function acceptedUpdateResult(
+  input: UpdateListingContentInput,
+): ListingContentUpdateResult {
+  const preview = preparedPreview(input, undefined, {
+    mode: "live",
+    status: "VALID",
+  });
+  return {
+    mode: "live",
+    status: "ACCEPTED",
+    marketplaceId: input.marketplaceId,
+    sellerSku: input.sellerSku,
+    previous: structuredClone(preview.previous),
+    requested: structuredClone(preview.requested),
+    changedFields: [...preview.changedFields],
+    acceptedAt: new Date(0).toISOString(),
+    submissionId: `submission-${input.sellerSku}`,
+    requestId: `request-${input.sellerSku}`,
+    issues: [],
+    notice: "test-only Amazon accepted update",
+  };
+}
+
+function verifiedUpdateResult(
+  input: UpdateListingContentInput,
+): ListingContentUpdateResult & Readonly<{
+  writeLifecycle: Readonly<{
+    state: "verified";
+    verified: true;
+    authoritative: true;
+    acceptedAt: string;
+    verifiedAt: string;
+    attempts: number;
+  }>;
+}> {
+  const accepted = acceptedUpdateResult(input);
+  return {
+    ...accepted,
+    writeLifecycle: {
+      state: "verified",
+      verified: true,
+      authoritative: true,
+      acceptedAt: accepted.acceptedAt,
+      verifiedAt: new Date(1).toISOString(),
+      attempts: 1,
+    },
+  };
+}
+
 function responseValue(response: Awaited<ReturnType<ApiRouter["handle"]>>) {
   if (response.body.kind !== "json") throw new Error("Expected JSON response");
   return response.body.value as Record<string, unknown>;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function nestedObjectKeys(value: unknown): string[] {
@@ -1692,6 +1765,7 @@ describe("content audit Excel batch router", () => {
       attemptOne: vi.fn(async () => {
         throw new Error("Mock Write Gate does not enter the attempt phase.");
       }),
+      readbackOne: vi.fn(),
     } satisfies ListingContentMutationsPort;
     const gateRouter = new ApiRouter({
       store: {
@@ -1909,6 +1983,410 @@ describe("content audit Excel batch router", () => {
     gateRouter.dispose();
   });
 
+  it("previews at most three SKUs concurrently and preserves workbook order", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 4),
+      "Bounded initial preview title",
+    );
+    const pending = new Map<
+      string,
+      ReturnType<typeof deferred<ListingContentPreparedPreview>>
+    >();
+    const started: string[] = [];
+    const inputs = new Map<string, UpdateListingContentInput>();
+    let active = 0;
+    let maximumActive = 0;
+    const previewScopes: object[] = [];
+    const content = {
+      handle: vi.fn(),
+      readOne: vi.fn(),
+      previewOne: vi.fn((
+        input: UpdateListingContentInput,
+        options?: ListingContentPreviewOptions,
+      ) => {
+        started.push(input.sellerSku);
+        inputs.set(input.sellerSku, input);
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        if (options?.capabilityRefreshScope) {
+          previewScopes.push(options.capabilityRefreshScope);
+        }
+        const flight = deferred<ListingContentPreparedPreview>();
+        pending.set(input.sellerSku, flight);
+        return flight.promise.finally(() => {
+          active -= 1;
+        });
+      }),
+      attemptOne: vi.fn(),
+      readbackOne: vi.fn(),
+    } satisfies ListingContentMutationsPort;
+    const integrationRouter = new ApiRouter({
+      store: {
+        assertIdempotentOperationsAvailable,
+        runIdempotentOperation,
+        saveContentAuditSnapshotEvidence,
+        getContentAuditSnapshotEvidence,
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: {
+        getAccountScope: async () => ACCOUNT_SCOPE,
+      } as unknown as CredentialVault,
+      approveWrite,
+      listingContentMutations: content,
+    });
+    const request = integrationRouter.handle(importRequest(
+      edited,
+      "content-batch-bounded-initial-preview",
+    ));
+
+    await vi.waitFor(() => expect(started).toHaveLength(3));
+    expect(maximumActive).toBe(3);
+    expect(new Set(previewScopes).size).toBe(1);
+    const expectedOrder = parseContentAuditWorkbook({
+      bytes: edited,
+      fileName: "content-audit.xlsx",
+      mediaType: MEDIA_TYPE,
+    }).rows.map((row) => row.sellerSku);
+    pending.get(started[2]!)!.resolve(preparedPreview(inputs.get(started[2]!)!));
+    await vi.waitFor(() => expect(started).toHaveLength(4));
+    for (const sellerSku of [...started.slice(0, 2), ...expectedOrder.slice(3)]) {
+      const input = inputs.get(sellerSku);
+      if (input) pending.get(sellerSku)?.resolve(preparedPreview(input));
+      await Promise.resolve();
+    }
+    await vi.waitFor(() => expect(started).toHaveLength(4));
+    for (const sellerSku of started) {
+      const flight = pending.get(sellerSku);
+      const input = inputs.get(sellerSku);
+      if (flight && input) flight.resolve(preparedPreview(input));
+    }
+    const response = await request;
+    integrationRouter.dispose();
+
+    expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
+    expect((responseValue(response).changes as Array<{ sellerSku: string }>)
+      .map((change) => change.sellerSku)).toEqual(expectedOrder);
+    expect(maximumActive).toBe(3);
+  });
+
+  it("revalidates at most three SKUs before native approval and uses a fresh PTD scope for each phase", async () => {
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 4),
+      "Bounded native revalidation title",
+    );
+    const counts = new Map<string, number>();
+    const inputs = new Map<string, UpdateListingContentInput>();
+    const revalidationFlights = new Map<
+      string,
+      ReturnType<typeof deferred<ListingContentPreparedPreview>>
+    >();
+    const initialScopes: object[] = [];
+    const revalidationScopes: object[] = [];
+    const commitScopes: object[] = [];
+    const revalidationStarted: string[] = [];
+    let active = 0;
+    let maximumActive = 0;
+    const localApproveWrite = vi.fn(async () => undefined);
+    const content = {
+      handle: vi.fn(),
+      readOne: vi.fn(),
+      previewOne: vi.fn((
+        input: UpdateListingContentInput,
+        options?: ListingContentPreviewOptions,
+      ) => {
+        inputs.set(input.sellerSku, input);
+        const count = (counts.get(input.sellerSku) ?? 0) + 1;
+        counts.set(input.sellerSku, count);
+        if (count === 1) {
+          if (options?.capabilityRefreshScope) {
+            initialScopes.push(options.capabilityRefreshScope);
+          }
+          return Promise.resolve(preparedPreview(input));
+        }
+        if (options?.capabilityRefreshScope) {
+          revalidationScopes.push(options.capabilityRefreshScope);
+        }
+        revalidationStarted.push(input.sellerSku);
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        const flight = deferred<ListingContentPreparedPreview>();
+        revalidationFlights.set(input.sellerSku, flight);
+        return flight.promise.finally(() => {
+          active -= 1;
+        });
+      }),
+      attemptOne: vi.fn(async (
+        input: UpdateListingContentInput,
+        _evidence: ListingContentPreparedPreview["evidence"],
+        session: Parameters<ListingContentMutationsPort["attemptOne"]>[2],
+        intentId: string,
+        options?: ListingContentPreviewOptions,
+      ) => {
+        if (options?.capabilityRefreshScope) {
+          commitScopes.push(options.capabilityRefreshScope);
+        }
+        return session.attempt<ListingContentUpdateResult>({
+          intentId,
+          execute: async ({ recordAccepted }) => {
+            const result = simulatedUpdateResult(input);
+            await recordAccepted(result);
+            return result;
+          },
+        });
+      }),
+      readbackOne: vi.fn(),
+    } satisfies ListingContentMutationsPort;
+    const integrationRouter = new ApiRouter({
+      store: {
+        assertIdempotentOperationsAvailable,
+        runIdempotentOperation,
+        saveContentAuditSnapshotEvidence,
+        getContentAuditSnapshotEvidence,
+        getSharedReport: vi.fn(async () => completedAllListingsLease()),
+      } as unknown as LocalStore,
+      vault: {
+        getAccountScope: async () => ACCOUNT_SCOPE,
+      } as unknown as CredentialVault,
+      approveWrite: localApproveWrite,
+      listingContentMutations: content,
+    });
+    const key = "content-batch-bounded-revalidation";
+    const preview = await integrationRouter.handle(importRequest(edited, key));
+    expect(preview.status).toBe(200);
+    const commit = integrationRouter.handle(commitRequest(
+      String(responseValue(preview).previewId),
+      key,
+    ));
+
+    await vi.waitFor(() => expect(revalidationStarted).toHaveLength(3));
+    expect(localApproveWrite).not.toHaveBeenCalled();
+    expect(maximumActive).toBe(3);
+    revalidationFlights.get(revalidationStarted[2]!)!.resolve(
+      preparedPreview(inputs.get(revalidationStarted[2]!)!),
+    );
+    await vi.waitFor(() => expect(revalidationStarted).toHaveLength(4));
+    for (const sellerSku of revalidationStarted) {
+      revalidationFlights.get(sellerSku)?.resolve(
+        preparedPreview(inputs.get(sellerSku)!),
+      );
+    }
+    const response = await commit;
+    integrationRouter.dispose();
+
+    expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
+    expect(localApproveWrite).toHaveBeenCalledOnce();
+    expect(maximumActive).toBe(3);
+    expect(new Set(initialScopes).size).toBe(1);
+    expect(new Set(revalidationScopes).size).toBe(1);
+    expect(new Set(commitScopes).size).toBe(1);
+    expect(revalidationScopes[0]).not.toBe(initialScopes[0]);
+    expect(commitScopes[0]).not.toBe(revalidationScopes[0]);
+  });
+
+  it("submits PATCHes serially, advances after ACCEPTED, and readbacks at most two with observable progress", async () => {
+    expect(CONTENT_BATCH_READBACK_DELAYS_MS.reduce<number>(
+      (total, milliseconds) => total + milliseconds,
+      0,
+    )).toBe(10 * 60_000);
+    const snapshot = await audit();
+    const edited = replaceEveryProposedTitle(
+      workbook(snapshot, 4),
+      "Accepted then bounded readback title",
+    );
+    const stored = liveEvidenceForWorkbook(snapshot, edited);
+    const approvalEntered = deferred<void>();
+    const approvalRelease = deferred<void>();
+    const firstAcceptanceRelease = deferred<void>();
+    const inputs = new Map<string, UpdateListingContentInput>();
+    const attemptOrder: string[] = [];
+    const attemptOptions: ListingContentAttemptOptions[] = [];
+    let activePatch = 0;
+    let maximumActivePatch = 0;
+    const readbackStarted: string[] = [];
+    const readbackFlights = new Map<
+      string,
+      ReturnType<typeof deferred<ListingContentUpdateResult | null>>
+    >();
+    let activeReadback = 0;
+    let maximumActiveReadback = 0;
+    const writeGate = {
+      stagePreview: vi.fn(async () => undefined),
+      execute: vi.fn(async (
+        input: Parameters<MainWriteGatePort["execute"]>[0],
+      ) => {
+        await input.beforeApproval?.();
+        approvalEntered.resolve();
+        await approvalRelease.promise;
+        return input.run({
+          attempt: async ({ execute }) => execute({
+            assertCurrent: async () => undefined,
+            recordAccepted: async () => undefined,
+            recordDurableEvidence: async () => undefined,
+          }),
+        });
+      }),
+      inspect: vi.fn(),
+      reconcile: vi.fn(async () => undefined),
+      clearEphemeral: vi.fn(),
+    } as unknown as MainWriteGatePort;
+    const batch = createListingContentBatchMutations({
+      evidence: {
+        getContentAuditSnapshotEvidence: vi.fn(async () => ({
+          status: "available" as const,
+          evidence: structuredClone(stored),
+        })),
+      },
+      context: createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+        marketplaceId,
+        mode: "live",
+        accountScope: ACCOUNT_SCOPE,
+      })),
+      writeGate,
+      content: {
+        previewOne: vi.fn(async (input: UpdateListingContentInput) => {
+          inputs.set(input.sellerSku, input);
+          return preparedPreview(input, undefined, {
+            mode: "live",
+            status: "VALID",
+          });
+        }),
+        attemptOne: vi.fn(async (
+          input: UpdateListingContentInput,
+          _evidence,
+          _session,
+          _intentId,
+          options,
+        ) => {
+          attemptOptions.push(options ?? {});
+          attemptOrder.push(input.sellerSku);
+          activePatch += 1;
+          maximumActivePatch = Math.max(maximumActivePatch, activePatch);
+          await options?.onDispatched?.();
+          if (attemptOrder.length === 1) {
+            await firstAcceptanceRelease.promise;
+          }
+          await options?.onAccepted?.();
+          activePatch -= 1;
+          return acceptedUpdateResult(input);
+        }),
+        readbackOne: vi.fn(async (input: UpdateListingContentInput) => {
+          readbackStarted.push(input.sellerSku);
+          activeReadback += 1;
+          maximumActiveReadback = Math.max(
+            maximumActiveReadback,
+            activeReadback,
+          );
+          const flight = deferred<ListingContentUpdateResult | null>();
+          readbackFlights.set(input.sellerSku, flight);
+          return flight.promise.finally(() => {
+            activeReadback -= 1;
+          });
+        }),
+      },
+      readbackDelaysMs: [0],
+      delay: async () => undefined,
+      randomUUID: () => "content-batch-accepted-readback",
+    });
+    const key = "content-batch-accepted-readback";
+    const preview = await batch.handle({
+      operation: "preview",
+      request: importRequest(edited, key),
+    });
+    const previewId = String(responseValue(preview).previewId);
+    const commit = batch.handle({
+      operation: "commit",
+      request: commitRequest(previewId, key),
+    });
+
+    await approvalEntered.promise;
+    const waiting = await batch.handle({
+      operation: "observe",
+      request: observeRequest(previewId),
+    });
+    expect(waiting.status).toBe(200);
+    expect(responseValue(waiting)).toMatchObject({
+      status: "PROCESSING",
+      progress: {
+        phase: "awaiting-approval",
+        total: 4,
+        revalidated: 4,
+        submitted: 0,
+        accepted: 0,
+        verified: 0,
+      },
+    });
+
+    approvalRelease.resolve();
+    await vi.waitFor(() => expect(attemptOrder).toHaveLength(1));
+    const dispatched = await batch.handle({
+      operation: "observe",
+      request: observeRequest(previewId),
+    });
+    expect(responseValue(dispatched)).toMatchObject({
+      status: "PROCESSING",
+      progress: {
+        phase: "submitting",
+        submitted: 1,
+        accepted: 0,
+        verified: 0,
+      },
+    });
+    firstAcceptanceRelease.resolve();
+    await vi.waitFor(() => expect(readbackStarted).toHaveLength(2));
+    expect(attemptOrder).toHaveLength(4);
+    expect(maximumActivePatch).toBe(1);
+    expect(maximumActiveReadback).toBe(2);
+    expect(attemptOptions.every((options) =>
+      options.deferReadback === true
+    )).toBe(true);
+    const reading = await batch.handle({
+      operation: "observe",
+      request: observeRequest(previewId),
+    });
+    expect(responseValue(reading)).toMatchObject({
+      status: "PROCESSING",
+      progress: {
+        phase: "readback",
+        submitted: 4,
+        accepted: 4,
+        verified: 0,
+      },
+    });
+
+    const firstTwo = [...readbackStarted];
+    readbackFlights.get(firstTwo[0]!)!.resolve(
+      verifiedUpdateResult(inputs.get(firstTwo[0]!)!),
+    );
+    await vi.waitFor(() => expect(readbackStarted).toHaveLength(3));
+    readbackFlights.get(firstTwo[1]!)!.resolve(
+      verifiedUpdateResult(inputs.get(firstTwo[1]!)!),
+    );
+    await vi.waitFor(() => expect(readbackStarted).toHaveLength(4));
+    for (const sellerSku of readbackStarted.slice(2)) {
+      readbackFlights.get(sellerSku)!.resolve(
+        verifiedUpdateResult(inputs.get(sellerSku)!),
+      );
+    }
+    const response = await commit;
+
+    expect(response.status, JSON.stringify(responseValue(response))).toBe(200);
+    expect(responseValue(response)).toMatchObject({
+      status: "COMPLETED",
+      rows: Array.from({ length: 4 }, () =>
+        expect.objectContaining({ state: "verified" })),
+    });
+    expect(maximumActiveReadback).toBe(2);
+    expect(attemptOrder).toEqual(
+      parseContentAuditWorkbook({
+        bytes: edited,
+        fileName: "content-audit.xlsx",
+        mediaType: MEDIA_TYPE,
+      }).rows.map((row) => row.sellerSku),
+    );
+  });
+
   it("fresh-previews every SKU before one approval and the first attempt", async () => {
     const snapshot = await audit();
     const edited = replaceEveryProposedTitle(
@@ -1946,6 +2424,7 @@ describe("content audit Excel batch router", () => {
           },
         });
       }),
+      readbackOne: vi.fn(),
     } satisfies ListingContentMutationsPort;
     const integrationRouter = new ApiRouter({
       store: {
@@ -2032,6 +2511,7 @@ describe("content audit Excel batch router", () => {
           },
         });
       }),
+      readbackOne: vi.fn(),
     } satisfies ListingContentMutationsPort;
     const integrationRouter = new ApiRouter({
       store: {
@@ -2704,7 +3184,7 @@ describe("content audit Excel batch router", () => {
     expect(responseValue(response)).toMatchObject({
       code: "PREVIEW_CHANGED",
     });
-    expect(previewOne).toHaveBeenCalledOnce();
+    expect(previewOne).toHaveBeenCalledTimes(3);
     expect(stagePreview).not.toHaveBeenCalled();
   });
 
@@ -2988,7 +3468,7 @@ describe("content audit Excel batch router", () => {
       });
 
       expect(response.status).toBe(status);
-      expect(previewOne).toHaveBeenCalledTimes(2);
+      expect(previewOne).toHaveBeenCalledTimes(3);
       expect(stagePreview).not.toHaveBeenCalled();
     },
   );
@@ -3091,9 +3571,10 @@ describe("content audit Excel batch router", () => {
       input: UpdateListingContentInput,
       options?: ListingContentPreviewOptions,
     ) => {
-      expect(options).toEqual({
+      expect(options).toMatchObject({
         exactBulletReplacementAuthority:
           LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+        capabilityRefreshScope: expect.any(Object),
       });
       if (input.sellerSku === failedSku) {
         throw new SpApiError(validationIssue.message, {

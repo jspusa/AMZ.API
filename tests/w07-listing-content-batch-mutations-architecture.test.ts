@@ -45,10 +45,11 @@ function portablePath(value: string): string {
 const SRC_ROOT = fileURLToPath(new URL("../src/", import.meta.url));
 
 describe("W07 Listing Content batch mutation architecture", () => {
-  it("delegates the two exact import routes directly to one batch owner", () => {
+  it("delegates the three exact import routes directly to one batch owner", () => {
     const router = source("../src/main/api-router.ts");
     for (const [key, operation] of [
       ["POST /api/sp-api/listing-content/import", "preview"],
+      ["GET /api/sp-api/listing-content/import", "observe"],
       ["PATCH /api/sp-api/listing-content/import", "commit"],
     ] as const) {
       expect(switchCaseBody(router, key)).toMatch(
@@ -113,7 +114,7 @@ describe("W07 Listing Content batch mutation architecture", () => {
     expect(owner).toMatch(/publicBatchCommitResult/u);
   });
 
-  it("uses only W06 preview and attempt primitives behind the central gate", () => {
+  it("uses only W06 preview, single-attempt, and readback primitives behind the central gate", () => {
     const owner = source("../src/main/listing-content-batch-mutations.ts");
     const ownerCalls = [...new Set([...owner.matchAll(
       /this\.content\.([A-Za-z][A-Za-z0-9]*)\s*\(/gmu,
@@ -129,7 +130,7 @@ describe("W07 Listing Content batch mutation architecture", () => {
       "patchListingsItem",
     ].filter((symbol) => new RegExp(`\\b${symbol}\\b`, "u").test(owner));
 
-    expect(ownerCalls).toEqual(["previewOne", "attemptOne"]);
+    expect(ownerCalls).toEqual(["previewOne", "attemptOne", "readbackOne"]);
     expect(forbidden).toEqual([]);
     expect(importSpecifiers(owner)).not.toContain(
       "./amazon/listing-content-gateway-production",

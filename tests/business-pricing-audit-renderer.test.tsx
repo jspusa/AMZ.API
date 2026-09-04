@@ -175,6 +175,107 @@ const interactiveListing = {
   notice: null,
 } as const;
 
+function businessPricingBatchValidation(input: Readonly<{
+  sellerSku: string;
+  asin: string;
+  productType?: string;
+  standardPrice: number;
+  previousBusinessPrice: number;
+  requestedBusinessPrice: number;
+  previousMinimumPrice: number;
+  requestedMinimumPrice: number;
+  lowestTierUnitPrice?: number;
+  previousQuantityDiscountPlan: Readonly<{
+    discountType: "percent";
+    levels: readonly Readonly<{ lowerBound: number; value: number }>[];
+  }>;
+  requestedQuantityDiscountPlan: Readonly<{
+    discountType: "percent";
+    levels: readonly Readonly<{ lowerBound: number; value: number }>[];
+  }>;
+  quantityDiscountPlanPresence?: "canonical" | "duplicate";
+  minimumPriceChange?: "preserve" | "lower";
+}>) {
+  const minimumPriceChange = input.minimumPriceChange ?? "preserve";
+  return {
+    mode: "live",
+    status: "VALID",
+    marketplaceId: "ATVPDKIKX0DER",
+    sellerSku: input.sellerSku,
+    asin: input.asin,
+    productType: input.productType ?? "PET_FOOD",
+    standardPrice: { amount: input.standardPrice, currencyCode: "USD" },
+    previousBusinessPrice: {
+      amount: input.previousBusinessPrice,
+      currencyCode: "USD",
+    },
+    requestedBusinessPrice: {
+      amount: input.requestedBusinessPrice,
+      currencyCode: "USD",
+    },
+    previousMinimumPrice: {
+      amount: input.previousMinimumPrice,
+      currencyCode: "USD",
+    },
+    requestedMinimumPrice: {
+      amount: input.requestedMinimumPrice,
+      currencyCode: "USD",
+    },
+    lowestTierUnitPrice: input.lowestTierUnitPrice === undefined
+      ? null
+      : { amount: input.lowestTierUnitPrice, currencyCode: "USD" },
+    minimumPriceChange,
+    minimumPriceProtectedHash: minimumPriceChange === "lower"
+      ? "7".repeat(64)
+      : null,
+    minimumPriceCanonicalPatchHash: minimumPriceChange === "lower"
+      ? "8".repeat(64)
+      : null,
+    businessPriceValidation: minimumPriceChange === "lower"
+      ? "final-state-validated"
+      : "validated",
+    previousQuantityDiscountPlan: input.previousQuantityDiscountPlan,
+    previousQuantityDiscountPlanHash: "f".repeat(64),
+    requestedQuantityDiscountPlan: input.requestedQuantityDiscountPlan,
+    quantityDiscountPlanPresence:
+      input.quantityDiscountPlanPresence ?? "canonical",
+    quantityDiscountPlanChange: "replace",
+    businessOfferGuardHash: "a".repeat(64),
+    businessOfferProtectedHash: "e".repeat(64),
+    schemaChecksum: "seller-schema-checksum",
+    fbaEvidenceHash: "b".repeat(64),
+    canonicalPatchHash: "c".repeat(64),
+    validationIssuesHash: "d".repeat(64),
+    validatedAt: "2026-09-04T06:00:00.000Z",
+    issues: [],
+    notice: "Amazon Validation Preview 已通過。",
+  };
+}
+
+function completedBusinessPricingJob(snapshot: Record<string, unknown>) {
+  return parseStandaloneAuditJob({
+    jobId: "b4ec9cda-e878-4e87-984e-65c8c5652cee",
+    contextId: "c4ec9cda-e878-4e87-984e-65c8c5652cef",
+    kind: "businessPricing",
+    marketplaceId: "ATVPDKIKX0DER",
+    mode: snapshot.mode,
+    options: {},
+    ready: true,
+    status: "completed",
+    progress: {
+      stage: "complete",
+      message: "B2B 價格健檢完成",
+      completedUnits: (snapshot.rows as unknown[]).length,
+      totalUnits: (snapshot.rows as unknown[]).length,
+    },
+    snapshot,
+  }, {
+    kind: "businessPricing",
+    marketplaceId: "ATVPDKIKX0DER",
+    mode: snapshot.mode as "live" | "demo",
+  });
+}
+
 function workflowWriteStatus(
   overrides: Partial<BusinessPriceWriteStatus> = {},
 ): BusinessPriceWriteStatus {
@@ -418,7 +519,7 @@ describe("FBA business pricing audit renderer", () => {
     await act(async () => renderer!.unmount());
   });
 
-  it("keeps an accepted B2B write visible and manually reconciles it without another PATCH", async () => {
+  it("keeps an accepted B2B write visible and allows an immediate GET check without another PATCH", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     const processingStatus = {
@@ -668,7 +769,7 @@ describe("FBA business pricing audit renderer", () => {
     expect(markup).toContain("disabled");
   });
 
-  it("unlocks the same editor after a manual GET verifies the minimum price", async () => {
+  it("unlocks the same editor after GET verifies the minimum price", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     const fixedPlan = {
@@ -1350,6 +1451,14 @@ describe("FBA business pricing audit renderer", () => {
     expect(root.findByProps({
       "aria-label": "返回全站 B2B 價格健檢",
     }).children.join("")).toBe("← 返回健檢結果");
+    const editorForm = root.findByType("form");
+    const editorBottomAction = editorForm.children.at(-1) as ReactTestInstance;
+    expect(editorBottomAction.props["aria-label"]).toBe(
+      "返回全站 B2B 價格健檢",
+    );
+    expect(root.findAllByProps({
+      "aria-label": "關閉 B2B 價格編輯",
+    })).toHaveLength(0);
     expect(onEditorOpenChange).toHaveBeenLastCalledWith(true);
 
     await act(async () => {
@@ -1483,7 +1592,7 @@ describe("FBA business pricing audit renderer", () => {
     await act(async () => renderer!.unmount());
   });
 
-  it("keeps a manually verified canonical value in the audit row after returning", async () => {
+  it("keeps a verified canonical value in the audit row after returning", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () =>
@@ -1867,7 +1976,8 @@ describe("FBA business pricing audit renderer", () => {
     expect(rendered).toContain("ALL audience");
     expect(rendered).toContain("一般售價／自動定價");
     expect(rendered).toContain("本次只送出最低價");
-    expect(rendered).toContain("手動重新確認 Amazon 狀態");
+    expect(rendered).toContain("主程序會自動只用 GET 受控回查");
+    expect(rendered).toContain("絕不重送 PATCH");
     expect(rendered).toContain("第二次使用 Touch ID／Windows Hello");
     expect(rendered).not.toContain("先寫入並回查最低價");
     await act(async () => {
@@ -2403,7 +2513,7 @@ describe("FBA business pricing audit renderer", () => {
     });
   });
 
-  it("applies a manually verified canonical listing to the audit row and summary", () => {
+  it("applies a verified canonical listing to the audit row and summary", () => {
     const snapshot = parseBusinessPricingAuditSnapshot(payload());
     const requestedPlan = {
       discountType: "percent" as const,
@@ -2738,6 +2848,688 @@ describe("FBA business pricing audit renderer", () => {
     await act(async () => renderer!.unmount());
   });
 
+  it("selects only visible eligible needs-action rows and excludes a processing SKU", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const parsed = parseBusinessPricingAuditSnapshot(payload());
+    const snapshot = {
+      ...parsed,
+      workflowActivities: [{
+        sellerSku: "FBA-CONFIGURED",
+        writeStatus: workflowWriteStatus({
+          stage: "business_price",
+          businessPriceSubmitted: true,
+        }),
+        minimumPriceProgress: "not_required" as const,
+        observedMinimumPrice: null,
+        observedBusinessPrice: null,
+      }],
+    };
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: snapshot,
+      }));
+    });
+    const root = renderer!.root;
+    const rowCheckboxes = () => root.findAllByType("input").filter(
+      (input) => input.props.type === "checkbox" &&
+        String(input.props["aria-label"] ?? "").startsWith("選取 Seller SKU "),
+    );
+    const selectAll = () => root.findByProps({
+      "aria-label": "全選目前可見且可批次處理的 B2B SKU",
+    });
+    const selectedCount = () => root.findByProps({
+      "aria-label": "B2B 批次已選數量",
+    }).children.join("");
+
+    expect(rowCheckboxes()).toHaveLength(1);
+    expect(rowCheckboxes()[0]!.props["aria-label"]).toContain(
+      "FBA-CONFIGURED-READONLY",
+    );
+    expect(root.findByProps({
+      className: "business-pricing-row-selection-note",
+    }).children.join("")).toBe(
+      "FBA-CONFIGURED 已有 Amazon 處理中的更新，不能加入本次批次",
+    );
+    expect(selectedCount()).toBe("已選 0 個 SKU");
+
+    await act(async () => selectAll().props.onChange({
+      target: { checked: true },
+    }));
+    expect(rowCheckboxes()[0]!.props.checked).toBe(true);
+    expect(selectedCount()).toBe("已選 1 個 SKU");
+    expect(root.findByProps({
+      "aria-label": "批次預檢已選 B2B SKU",
+    }).props.disabled).toBe(true);
+
+    await selectBusinessPricingFilter(root, "未設定");
+    expect(rowCheckboxes()).toHaveLength(0);
+    expect(selectAll().props.disabled).toBe(true);
+    expect(selectedCount()).toBe("已選 0 個 SKU");
+    expect(root.findByProps({
+      "aria-label": "批次預檢已選 B2B SKU",
+    }).props.disabled).toBe(true);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("binds a batch preview to the completed audit and shows every validated old-to-new value before commit", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const source = payload();
+    const completedJob = completedBusinessPricingJob(source);
+    const validation = {
+      ...businessPricingBatchValidation({
+        sellerSku: "FBA-CONFIGURED",
+        asin: "B000000002",
+        standardPrice: 24.99,
+        previousBusinessPrice: 22.49,
+        requestedBusinessPrice: 23.99,
+        previousMinimumPrice: 18,
+        requestedMinimumPrice: 18,
+        previousQuantityDiscountPlan: {
+          discountType: "percent",
+          levels: [
+            { lowerBound: 5, value: 5 },
+            { lowerBound: 10, value: 10 },
+          ],
+        },
+        requestedQuantityDiscountPlan: {
+          discountType: "percent",
+          levels: [
+            { lowerBound: 5, value: 5 },
+            { lowerBound: 10, value: 10 },
+            { lowerBound: 15, value: 15 },
+            { lowerBound: 20, value: 20 },
+          ],
+        },
+      }),
+      issues: [{
+        severity: "WARNING",
+        message: "Amazon 提醒：請再次核對企業價格。",
+      }],
+    };
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method !== "POST") {
+        throw new Error(`Unexpected B2B batch request: ${init?.method}`);
+      }
+      return new Response(JSON.stringify({
+        previewId: `business-pricing-batch-${"1".repeat(40)}`,
+        marketplaceId: "ATVPDKIKX0DER",
+        status: "READY",
+        expiresAt: "2026-09-04T06:02:00.000Z",
+        rows: [{
+          sellerSku: "FBA-CONFIGURED",
+          stage: "business_price",
+          validation,
+        }],
+        approvalStages: ["business_price"],
+        notice: "1 個勾選 SKU 尚未寫入。",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+        initialJob: completedJob,
+      }));
+    });
+    const root = renderer!.root;
+    const rowCheckbox = root.findByProps({
+      "aria-label": "選取 Seller SKU FBA-CONFIGURED 進行 B2B 批次預檢",
+    });
+    await act(async () => rowCheckbox.props.onChange({
+      target: { checked: true },
+    }));
+    await act(async () => root.findByProps({
+      "aria-label": "批次預檢已選 B2B SKU",
+    }).props.onClick());
+
+    const submitted = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      jobId?: unknown;
+      contextId?: unknown;
+    };
+    expect(submitted.jobId).toBe(completedJob.jobId);
+    expect(submitted.contextId).toBe(completedJob.contextId);
+    const preview = root.findByProps({
+      "aria-label": "B2B 批次預檢結果",
+    });
+    const rendered = JSON.stringify(renderer!.toJSON());
+    expect(rendered).toContain("送出前一般售價");
+    expect(rendered).toContain("目前 B2B 價格");
+    expect(rendered).toContain("建議 B2B 價格");
+    expect(rendered).toContain("目前數量折扣");
+    expect(rendered).toContain("更新後數量折扣");
+    expect(rendered).toContain("最低允許售價");
+    expect(rendered).toContain("保留");
+    expect(rendered).toContain("24.99");
+    expect(rendered).toContain("22.49");
+    expect(rendered).toContain("23.99");
+    expect(preview.findAllByType("strong").map((node) =>
+      node.children.join("")
+    )).toContain("15 件以上");
+    expect(rendered).toContain("省 20%");
+    expect(rendered).toContain("Amazon 提醒：請再次核對企業價格。");
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"))
+      .toBe(false);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("fails closed when a batch row carries a mismatched Validation Preview identity", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const source = payload();
+    const completedJob = completedBusinessPricingJob(source);
+    const validation = businessPricingBatchValidation({
+      sellerSku: "FBA-CONFIGURED",
+      asin: "B999999999",
+      standardPrice: 24.99,
+      previousBusinessPrice: 22.49,
+      requestedBusinessPrice: 23.99,
+      previousMinimumPrice: 18,
+      requestedMinimumPrice: 18,
+      previousQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+        ],
+      },
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({
+        previewId: `business-pricing-batch-${"2".repeat(40)}`,
+        marketplaceId: "ATVPDKIKX0DER",
+        status: "READY",
+        rows: [{
+          sellerSku: "FBA-CONFIGURED",
+          stage: "business_price",
+          validation,
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })));
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+        initialJob: completedJob,
+      }));
+    });
+    const root = renderer!.root;
+    await act(async () => root.findByProps({
+      "aria-label": "選取 Seller SKU FBA-CONFIGURED 進行 B2B 批次預檢",
+    }).props.onChange({ target: { checked: true } }));
+    await act(async () => root.findByProps({
+      "aria-label": "批次預檢已選 B2B SKU",
+    }).props.onClick());
+
+    expect(root.findByProps({ role: "alert" }).children.join(""))
+      .toContain("綁定不一致");
+    expect(root.findAllByProps({ "aria-label": "B2B 批次預檢結果" }))
+      .toHaveLength(0);
+    expect(root.findAllByProps({ "aria-label": "確認送出勾選 B2B SKU" }))
+      .toHaveLength(0);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("fails closed when a batch row carries a malformed Validation Preview", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const source = payload();
+    const completedJob = completedBusinessPricingJob(source);
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({
+        previewId: `business-pricing-batch-${"5".repeat(40)}`,
+        marketplaceId: "ATVPDKIKX0DER",
+        status: "READY",
+        rows: [{
+          sellerSku: "FBA-CONFIGURED",
+          stage: "business_price",
+          validation: { status: "VALID" },
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+        initialJob: completedJob,
+      }));
+    });
+    const root = renderer!.root;
+    await act(async () => root.findByProps({
+      "aria-label": "選取 Seller SKU FBA-CONFIGURED 進行 B2B 批次預檢",
+    }).props.onChange({ target: { checked: true } }));
+    await act(async () => root.findByProps({
+      "aria-label": "批次預檢已選 B2B SKU",
+    }).props.onClick());
+
+    expect(root.findByProps({ role: "alert" }).children.join(""))
+      .toContain("預檢狀態無效");
+    expect(root.findAllByProps({ "aria-label": "B2B 批次預檢結果" }))
+      .toHaveLength(0);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"))
+      .toBe(false);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("keeps accepted batch evidence visible and updates it through GET-only observation", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const source = payload();
+    const completedJob = completedBusinessPricingJob(source);
+    const previousPlan = {
+      discountType: "percent" as const,
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+      ],
+    };
+    const requestedPlan = {
+      discountType: "percent" as const,
+      levels: [
+        { lowerBound: 5, value: 5 },
+        { lowerBound: 10, value: 10 },
+        { lowerBound: 15, value: 15 },
+        { lowerBound: 20, value: 20 },
+      ],
+    };
+    const validation = businessPricingBatchValidation({
+      sellerSku: "FBA-CONFIGURED",
+      asin: "B000000002",
+      standardPrice: 24.99,
+      previousBusinessPrice: 22.49,
+      requestedBusinessPrice: 23.99,
+      previousMinimumPrice: 18,
+      requestedMinimumPrice: 18,
+      previousQuantityDiscountPlan: previousPlan,
+      requestedQuantityDiscountPlan: requestedPlan,
+    });
+    const acceptedAt = "2026-09-04T06:01:02.000Z";
+    const processing = workflowWriteStatus({
+      status: "PROCESSING",
+      stage: "business_price",
+      sellerSku: "FBA-CONFIGURED",
+      asin: "B000000002",
+      acceptedAt,
+      verifiedAt: null,
+      requestId: "request-batch-fba-configured",
+      submissionId: "submission-batch-fba-configured",
+      verified: false,
+      authoritative: false,
+      businessPriceSubmitted: true,
+      previousBusinessPrice: { amount: 22.49, currencyCode: "USD" },
+      requestedBusinessPrice: { amount: 23.99, currencyCode: "USD" },
+      previousMinimumPrice: { amount: 18, currencyCode: "USD" },
+      requestedMinimumPrice: { amount: 18, currencyCode: "USD" },
+      lowestTierUnitPrice: null,
+      previousQuantityDiscountPlan: previousPlan,
+      requestedQuantityDiscountPlan: requestedPlan,
+      quantityDiscountPlanChange: "replace",
+      notice: "Amazon 已接受，正在同步。",
+    });
+    const verified = workflowWriteStatus({
+      ...processing,
+      status: "VERIFIED",
+      verifiedAt: "2026-09-04T06:03:04.000Z",
+      verified: true,
+      authoritative: true,
+      notice: "Amazon 已由 GET 唯讀回查確認。",
+    });
+    const previewId = `business-pricing-batch-${"3".repeat(40)}`;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({
+          previewId,
+          marketplaceId: "ATVPDKIKX0DER",
+          status: "READY",
+          rows: [{
+            sellerSku: "FBA-CONFIGURED",
+            stage: "business_price",
+            validation,
+          }],
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (init?.method === "PATCH") {
+        return new Response(JSON.stringify({
+          previewId,
+          marketplaceId: "ATVPDKIKX0DER",
+          status: "PROCESSING",
+          rows: [{
+            sellerSku: "FBA-CONFIGURED",
+            stage: "business_price",
+            state: "processing",
+            result: processing,
+            error: null,
+          }],
+          acceptedCount: 1,
+          verifiedCount: 0,
+          issueCount: 0,
+          verified: false,
+          canResend: false,
+          notice: "Amazon 已接受 1 個 SKU。",
+        }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if ((init?.method ?? "GET") === "GET") {
+        expect(String(input)).toContain("/api/sp-api/business-pricing/batch?");
+        expect(String(input)).toContain(`jobId=${completedJob.jobId}`);
+        expect(String(input)).toContain(`contextId=${completedJob.contextId}`);
+        expect(String(input)).toContain(`previewId=${previewId}`);
+        return new Response(JSON.stringify({
+          previewId,
+          marketplaceId: "ATVPDKIKX0DER",
+          status: "COMPLETED",
+          rows: [{
+            sellerSku: "FBA-CONFIGURED",
+            stage: "business_price",
+            state: "verified",
+            result: verified,
+            error: null,
+          }],
+          acceptedCount: 1,
+          verifiedCount: 1,
+          issueCount: 0,
+          verified: true,
+          canResend: false,
+          notice: "Amazon 已回查完成 1 個 SKU。",
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected B2B batch request: ${init?.method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+        initialJob: completedJob,
+      }));
+    });
+    const root = renderer!.root;
+    await act(async () => root.findByProps({
+      "aria-label": "選取 Seller SKU FBA-CONFIGURED 進行 B2B 批次預檢",
+    }).props.onChange({ target: { checked: true } }));
+    await act(async () => root.findByProps({
+      "aria-label": "批次預檢已選 B2B SKU",
+    }).props.onClick());
+    await act(async () => root.findByProps({
+      "aria-label": "確認送出勾選 B2B SKU",
+    }).props.onClick());
+    await act(async () => Promise.resolve());
+
+    expect(fetchMock.mock.calls.map(([, init]) => init?.method ?? "GET"))
+      .toEqual(["POST", "PATCH", "GET"]);
+    const rendered = JSON.stringify(renderer!.toJSON());
+    expect(rendered).toContain("Amazon 回查完成");
+    expect(rendered).toContain("Amazon 接受時間");
+    expect(rendered).toContain(acceptedAt);
+    expect(rendered).toContain("Request ID");
+    expect(rendered).toContain("request-batch-fba-configured");
+    expect(rendered).toContain("canResend: false");
+    expect(rendered).toContain("23.99");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH"))
+      .toHaveLength(1);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("previews the selected recommendation batch before a separate explicit commit", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const source = payload();
+    const sourceRows = source.rows as Array<Record<string, unknown>>;
+    sourceRows[3] = {
+      ...sourceRows[3],
+      quantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 4 },
+          { lowerBound: 10, value: 7 },
+        ],
+      },
+      quantityDiscountPlanPresence: "duplicate",
+    };
+    const completedJob = completedBusinessPricingJob(source);
+    const previewId = `business-pricing-batch-${"4".repeat(40)}`;
+    const firstValidation = businessPricingBatchValidation({
+      sellerSku: "FBA-CONFIGURED",
+      asin: "B000000002",
+      standardPrice: 24.99,
+      previousBusinessPrice: 22.49,
+      requestedBusinessPrice: 23.99,
+      previousMinimumPrice: 18,
+      requestedMinimumPrice: 18,
+      previousQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+        ],
+      },
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 5 },
+          { lowerBound: 10, value: 10 },
+          { lowerBound: 15, value: 15 },
+          { lowerBound: 20, value: 20 },
+        ],
+      },
+    });
+    const secondValidation = businessPricingBatchValidation({
+      sellerSku: "FBA-CONFIGURED-READONLY",
+      asin: "B000000004",
+      productType: "OTHER",
+      standardPrice: 29.99,
+      previousBusinessPrice: 27.99,
+      requestedBusinessPrice: 28.99,
+      previousMinimumPrice: 28,
+      requestedMinimumPrice: 25.95,
+      lowestTierUnitPrice: 26.95,
+      minimumPriceChange: "lower",
+      previousQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 4 },
+          { lowerBound: 10, value: 7 },
+        ],
+      },
+      requestedQuantityDiscountPlan: {
+        discountType: "percent",
+        levels: [
+          { lowerBound: 5, value: 4 },
+          { lowerBound: 10, value: 7 },
+        ],
+      },
+      quantityDiscountPlanPresence: "duplicate",
+    });
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({
+          previewId,
+          marketplaceId: "ATVPDKIKX0DER",
+          status: "READY",
+          rows: [
+            {
+              sellerSku: "FBA-CONFIGURED",
+              stage: "business_price",
+              validation: firstValidation,
+            },
+            {
+              sellerSku: "FBA-CONFIGURED-READONLY",
+              stage: "minimum_price",
+              validation: secondValidation,
+            },
+          ],
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (init?.method === "PATCH") {
+        return new Response(JSON.stringify({
+          previewId,
+          marketplaceId: "ATVPDKIKX0DER",
+          status: "COMPLETED_WITH_ISSUES",
+          rows: [
+            {
+              sellerSku: "FBA-CONFIGURED",
+              stage: "business_price",
+              state: "rejected",
+              result: null,
+              error: {
+                code: "VALIDATION_STOPPED",
+                message: "第一個 SKU 未送出。",
+                requestId: null,
+              },
+            },
+            {
+              sellerSku: "FBA-CONFIGURED-READONLY",
+              stage: "minimum_price",
+              state: "rejected",
+              result: null,
+              error: {
+                code: "VALIDATION_STOPPED",
+                message: "第二個 SKU 未送出。",
+                requestId: null,
+              },
+            },
+          ],
+          acceptedCount: 0,
+          verifiedCount: 0,
+          issueCount: 2,
+          verified: false,
+          canResend: false,
+          notice: "2 個 SKU 未送出；沒有自動重送。",
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected B2B batch request: ${init?.method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(source),
+        initialJob: completedJob,
+      }));
+    });
+    const root = renderer!.root;
+    await act(async () => root.findByProps({
+      "aria-label": "全選目前可見且可批次處理的 B2B SKU",
+    }).props.onChange({ target: { checked: true } }));
+    expect(root.findByProps({
+      "aria-label": "B2B 批次已選數量",
+    }).children.join("")).toBe("已選 2 個 SKU");
+
+    await act(async () => root.findByProps({
+      "aria-label": "批次預檢已選 B2B SKU",
+    }).props.onClick());
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [previewUrl, previewInit] = fetchMock.mock.calls[0]!;
+    expect(previewUrl).toBe("/api/sp-api/business-pricing/batch");
+    expect(previewInit?.method).toBe("POST");
+    const previewBody = JSON.parse(String(previewInit?.body)) as {
+      jobId: string;
+      contextId: string;
+      items: Array<Record<string, unknown>>;
+    };
+    expect(previewBody.jobId).toBe(completedJob.jobId);
+    expect(previewBody.contextId).toBe(completedJob.contextId);
+    expect(previewBody.items).toEqual([
+      expect.objectContaining({
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "FBA-CONFIGURED",
+        expectedStandardPrice: 24.99,
+        expectedBusinessPrice: 22.49,
+        newBusinessPrice: 23.99,
+        quantityDiscountTiers: [
+          { lowerBound: 5, percent: 5 },
+          { lowerBound: 10, percent: 10 },
+          { lowerBound: 15, percent: 15 },
+          { lowerBound: 20, percent: 20 },
+        ],
+      }),
+      expect.objectContaining({
+        marketplaceId: "ATVPDKIKX0DER",
+        sellerSku: "FBA-CONFIGURED-READONLY",
+        expectedStandardPrice: 29.99,
+        expectedBusinessPrice: 27.99,
+        newBusinessPrice: 28.99,
+        quantityDiscountTiers: [
+          { lowerBound: 5, percent: 4 },
+          { lowerBound: 10, percent: 7 },
+        ],
+      }),
+    ]);
+    expect(previewBody.items.every((item) =>
+      typeof item.idempotencyKey === "string" &&
+      item.idempotencyKey.length >= 8
+    )).toBe(true);
+    expect(root.findByProps({
+      "aria-label": "B2B 批次預檢結果",
+    }).findAllByProps({
+      className: "business-pricing-batch-validation",
+    })).toHaveLength(2);
+    expect(JSON.stringify(renderer!.toJSON())).toContain("需先調整最低價");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("25.95");
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"))
+      .toBe(false);
+
+    await act(async () => root.findByProps({
+      "aria-label": "確認送出勾選 B2B SKU",
+    }).props.onClick());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("PATCH");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      previewId,
+    });
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "2 個 SKU 未送出；沒有自動重送。",
+    );
+    await act(async () => renderer!.unmount());
+  });
+
   it("lays out current quantity discounts as readable desktop tiers", async () => {
     const css = await readRendererStylesheet();
 
@@ -2878,6 +3670,42 @@ describe("FBA business pricing audit renderer", () => {
     expect(onClose).not.toHaveBeenCalled();
 
     await act(async () => panel.props.onEditorBusyChange(false));
+    root.findByProps({ className: "audit-workspace-back" }).props.onClick();
+    expect(onClose).toHaveBeenCalledOnce();
+    await act(async () => renderer!.unmount());
+  });
+
+  it("keeps the outer B2B surface locked while a batch preview or commit is busy", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const onClose = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditDrawer, {
+        presentation: "workspace",
+        marketplaceId: "ATVPDKIKX0DER",
+        marketplaceShort: "US",
+        cachedSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+        onClose,
+      }));
+    });
+    const root = renderer!.root;
+    const panel = root.findByType(BusinessPricingAuditPanel);
+    expect(typeof panel.props.onBatchBusyChange).toBe("function");
+
+    await act(async () => panel.props.onBatchBusyChange(true));
+    expect(root.findByProps({
+      "data-audit-workspace": "true",
+    }).props["aria-busy"]).toBe(true);
+    const back = root.findByProps({ className: "audit-workspace-back" });
+    expect(back.props.disabled).toBe(true);
+    back.props.onClick();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => panel.props.onBatchBusyChange(false));
+    expect(root.findByProps({
+      "data-audit-workspace": "true",
+    }).props["aria-busy"]).toBeUndefined();
     root.findByProps({ className: "audit-workspace-back" }).props.onClick();
     expect(onClose).toHaveBeenCalledOnce();
     await act(async () => renderer!.unmount());

@@ -1,12 +1,18 @@
 import { readFile } from "node:fs/promises";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import {
+  act,
+  create,
+  type ReactTestRenderer,
+} from "react-test-renderer";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import ContentAuditPanel, {
   ContentAuditWorkbookFilePicker,
   ContentWorkbookBatchAllSkippedFailureCard,
   ContentWorkbookBatchBlockedFailureCard,
   ContentWorkbookBatchFailureCard,
   ContentWorkbookBatchPreviewCard,
+  ContentWorkbookBatchProgressCard,
   ContentWorkbookBatchResultCard,
   contentWorkbookBatchCommitBody,
   consumeContentAuditWorkbookInput,
@@ -18,6 +24,7 @@ import ContentAuditPanel, {
   parseContentWorkbookBatchFailure,
   parseContentWorkbookBatchPreview,
   parseContentWorkbookBatchResult,
+  parseContentWorkbookBatchStatus,
   parseContentAuditSnapshot,
   quickEditAvailabilityForRow,
   quickEditFocusForRow,
@@ -121,7 +128,190 @@ function occurrenceCount(value: string, search: string): number {
   return value.split(search).length - 1;
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+  delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT;
+});
+
 describe("global FBA content audit panel", () => {
+  it("starts the audit on the first click and collapses an immediate double click into the same flight", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const fetchMock = vi.fn<typeof fetch>((_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+
+    await act(async () => {
+      renderer = create(
+        <ContentAuditPanel
+          marketplaceId="ATVPDKIKX0DER"
+          marketplaceShort="US"
+          onOpenSku={vi.fn()}
+        />,
+      );
+    });
+    const start = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("掃描 US 全部 FBA 文案")
+    );
+    if (!start) throw new Error("Missing content audit start action");
+
+    act(() => {
+      start.props.onClick();
+      start.props.onClick();
+    });
+    await act(async () => Promise.resolve());
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const busy = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("文案健檢進行中")
+    );
+    expect(busy?.props.disabled).toBe(true);
+    expect(busy?.props["aria-busy"]).toBe(true);
+
+    await act(async () => renderer!.unmount());
+  });
+
+  it("keeps the first-click flight alive when the parent echoes its pending job", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const pendingJob = parseStandaloneAuditJob({
+      jobId: "84ec9cda-e878-4e87-984e-65c8c5652cee",
+      contextId: "94ec9cda-e878-4e87-984e-65c8c5652cef",
+      kind: "content",
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+      options: {},
+      ready: false,
+      status: "running",
+      progress: {
+        stage: "content",
+        message: "正在讀取 Amazon 文案…",
+        completedUnits: 0,
+        totalUnits: 1,
+      },
+    }, {
+      kind: "content",
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "live",
+    });
+    let pollSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(pendingJob), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockImplementationOnce((_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          pollSignal = init?.signal ?? undefined;
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        }));
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    let initialJob = null as typeof pendingJob | null;
+    const renderPanel = () => (
+      <ContentAuditPanel
+        marketplaceId="ATVPDKIKX0DER"
+        marketplaceShort="US"
+        onOpenSku={vi.fn()}
+        initialJob={initialJob}
+        onJobChange={(next) => {
+          initialJob = next;
+          renderer!.update(renderPanel());
+        }}
+      />
+    );
+
+    await act(async () => {
+      renderer = create(renderPanel());
+    });
+    const start = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("掃描 US 全部 FBA 文案")
+    );
+    if (!start) throw new Error("Missing content audit start action");
+    await act(async () => {
+      start.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(pollSignal?.aborted).toBe(false);
+    const busy = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("文案健檢進行中")
+    );
+    expect(busy?.props.disabled).toBe(true);
+
+    await act(async () => renderer!.unmount());
+  });
+
+  it("does not let an aborted old marketplace scan unlock the new scan flight", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const pending: Array<{ reject: (error: unknown) => void }> = [];
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      new Promise<Response>((_resolve, reject) => {
+        pending.push({ reject });
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onOpenSku = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+
+    await act(async () => {
+      renderer = create(
+        <ContentAuditPanel
+          marketplaceId="ATVPDKIKX0DER"
+          marketplaceShort="US"
+          onOpenSku={onOpenSku}
+        />,
+      );
+    });
+    const usStart = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("掃描 US 全部 FBA 文案")
+    );
+    if (!usStart) throw new Error("Missing US content audit start action");
+    act(() => usStart.props.onClick());
+    await act(async () => Promise.resolve());
+
+    await act(async () => {
+      renderer!.update(
+        <ContentAuditPanel
+          marketplaceId="A2EUQ1WTGCTBG2"
+          marketplaceShort="CA"
+          onOpenSku={onOpenSku}
+        />,
+      );
+    });
+    const caStart = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("掃描 CA 全部 FBA 文案")
+    );
+    if (!caStart) throw new Error("Missing CA content audit start action");
+    act(() => caStart.props.onClick());
+    await act(async () => Promise.resolve());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      pending[0]!.reject(new DOMException("Aborted", "AbortError"));
+      await Promise.resolve();
+    });
+    const caBusy = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("文案健檢進行中")
+    );
+    if (!caBusy) throw new Error("Missing active CA content audit action");
+    act(() => caBusy.props.onClick());
+    await act(async () => Promise.resolve());
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => renderer!.unmount());
+  });
+
   it("shows a selected workbook filename once while keeping the file input accessible", async () => {
     const fileName = "FBA-文案健檢-US-2026-01-02.xlsx";
     const markup = renderToStaticMarkup(
@@ -966,15 +1156,47 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("Terminal skipped request");
   });
 
+  it("renders the five independently observed Excel batch progress stages", () => {
+    const status = parseContentWorkbookBatchStatus({
+      previewId: "preview-progress-001",
+      marketplaceId: "ATVPDKIKX0DER",
+      status: "PROCESSING",
+      progress: {
+        phase: "awaiting-approval",
+        total: 12,
+        revalidated: 12,
+        submitted: 7,
+        accepted: 6,
+        verified: 4,
+        currentSellerSku: "AWD011",
+        updatedAt: "2026-09-04T06:00:00.000Z",
+      },
+      result: null,
+    }, "ATVPDKIKX0DER", "preview-progress-001");
+
+    const markup = renderToStaticMarkup(
+      <ContentWorkbookBatchProgressCard progress={status.progress} />,
+    );
+
+    expect(markup).toContain("重新預檢 12/12");
+    expect(markup).toContain("等待 Touch ID／Windows Hello");
+    expect(markup).toContain("送出 7/12");
+    expect(markup).toContain("Amazon 已接受 6/12");
+    expect(markup).toContain("回查完成 4/12");
+    expect(() => parseContentWorkbookBatchStatus({
+      ...status,
+      progress: { ...status.progress, verified: 7 },
+    }, "ATVPDKIKX0DER", "preview-progress-001"))
+      .toThrow("批次進度計數無效");
+  });
+
   it("shows an unknown SKU without hiding the later successful SKU", () => {
     const result = parseContentWorkbookBatchResult({
       previewId: "preview-continued-after-unknown-001",
       marketplaceId: "ATVPDKIKX0DER",
       status: "COMPLETED_WITH_ISSUES",
       rows: [
-        { sellerSku: "KTB05AM", state: "unknown", error: {
-          message: "Amazon 已接受寫入，但安全回查期限內尚未取得相符結果。",
-        } },
+        { sellerSku: "KTB05AM", state: "accepted", error: null },
         { sellerSku: "KTB05AM-1", state: "verified", error: null },
       ],
       blockedChanges: [],
@@ -989,7 +1211,7 @@ describe("global FBA content audit panel", () => {
 
     expect(markup).toContain("批次已完成；有問題 SKU 已個別隔離");
     expect(markup).toContain("KTB05AM");
-    expect(markup).toContain("結果不明");
+    expect(markup).toContain("Amazon 已接受，等待回查完成");
     expect(markup).toContain("KTB05AM-1");
     expect(markup).toContain("已由 Amazon 回讀驗證");
     expect(markup).toContain("不會自動重送");
