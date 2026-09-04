@@ -271,7 +271,10 @@ describe("Listing Content production gateway runtime", () => {
       write,
     });
 
-    const observation = await runtime.gateway.read(IDENTITY, "mutation");
+    const capabilityRefreshScope = {};
+    const observation = await runtime.gateway.read(IDENTITY, "mutation", {
+      capabilityRefreshScope,
+    });
     const previewPatch = patchFor(observation);
     const preview = await runtime.gateway.validationPreview(previewPatch);
     const commitPatch = {
@@ -288,6 +291,7 @@ describe("Listing Content production gateway runtime", () => {
       ...IDENTITY,
       allowReadOnlySchema: false,
       forceCapabilityRefresh: true,
+      capabilityRefreshScope,
     });
     const exactBody = {
       productType: PRODUCT_TYPE,

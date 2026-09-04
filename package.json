@@ -1,6 +1,6 @@
 {
   "name": "amz-api",
-  "version": "0.1.53",
+  "version": "0.1.54",
   "amzApiUpdateChannel": "disabled",
   "description": "A private, local-first Amazon FBA operations console for macOS and Windows 11 Notebook Key.",
   "private": true,
@@ -31,10 +31,10 @@
     "dist:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {
-    "@xmldom/xmldom": "0.8.13",
+    "@xmldom/xmldom": "0.8.15",
     "@aws-sdk/client-s3": "3.1103.0",
     "electron-updater": "6.8.9",
-    "fflate": "0.8.2",
+    "fflate": "0.8.3",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },

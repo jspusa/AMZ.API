@@ -34,18 +34,20 @@ export default function BusinessPricingAuditDrawer({
 }) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorBusy, setEditorBusy] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const busy = editorBusy || batchBusy;
   const requestClose = () => {
-    if (!editorBusy) onClose();
+    if (!busy) onClose();
   };
 
   useEffect(() => {
     if (presentation !== "dialog") return;
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !editorBusy) onClose();
+      if (event.key === "Escape" && !busy) onClose();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [editorBusy, onClose, presentation]);
+  }, [busy, onClose, presentation]);
 
   return (
     <AuditWorkspaceShell
@@ -56,13 +58,15 @@ export default function BusinessPricingAuditDrawer({
       title={editorOpen ? "單一 SKU B2B 價格編輯" : "全站 B2B 價格健檢"}
       closeLabel="關閉全站 B2B 價格健檢"
       surfaceClassName="business-pricing-audit-drawer"
-      busy={editorBusy}
-      busyStatus={editorBusy ? (
+      busy={busy}
+      busyStatus={busy ? (
         <p
           className="business-pricing-drawer-status"
           role="status"
           aria-live="polite"
-        >Notebook Key 正在處理這次要求，請勿關閉或重複送出。</p>
+        >{batchBusy
+          ? "Notebook Key 正在處理這次批次要求，請勿關閉、返回或重複送出。"
+          : "Notebook Key 正在處理這次要求，請勿關閉或重複送出。"}</p>
       ) : null}
       onBack={requestClose}
       autoFocusClose
@@ -78,6 +82,7 @@ export default function BusinessPricingAuditDrawer({
         onJobChange={onJobChange}
         onEditorOpenChange={setEditorOpen}
         onEditorBusyChange={setEditorBusy}
+        onBatchBusyChange={setBatchBusy}
       />
     </AuditWorkspaceShell>
   );

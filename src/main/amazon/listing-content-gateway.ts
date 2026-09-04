@@ -30,6 +30,11 @@ export type ListingContentIdentity = Readonly<{
   sellerSku: string;
 }>;
 
+export type ListingContentGatewayReadOptions = Readonly<{
+  /** Main-owned phase token; never serialized or exposed to the renderer. */
+  capabilityRefreshScope?: object;
+}>;
+
 export type ListingContentGatewayRead = Readonly<{
   snapshot: ListingContentSnapshot;
   fulfillment: "FBA";
@@ -56,7 +61,7 @@ export type ListingContentPatchDescriptor = ListingContentIdentity & Readonly<{
   previous: ListingContentValues;
   requested: ListingContentValues;
   changedFields: readonly ListingContentField[];
-  /** Main-only Excel batch authority: replace the exact locale bullet set. */
+  /** Main-only authority: replace the exact locale bullet set after disclosure. */
   exactLanguageBulletReplacementAuthority?:
     typeof LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
   sourceEvidence: ListingContentSourceEvidence;
@@ -68,10 +73,10 @@ export type ListingContentValidationReceipt = Readonly<{
   /** Hash of the exact fixed Listings body built inside the adapter. */
   canonicalPatchHash: string;
   /**
-   * Main-safe disclosure for the Excel-only exact-locale bullet replacement.
-   * The ordinary editor never receives this authority. When legacy same-locale
-   * bullets 6+ would be removed, the adapter returns every removed value so the
-   * user can see the destructive scope before native approval.
+   * Main-safe disclosure for an exact-locale bullet replacement. When legacy
+   * same-locale bullets 6+ would be removed, the adapter returns every current,
+   * requested, and removed value so the UI can obtain an explicit acknowledgement
+   * before native approval.
    */
   exactBulletReplacement: ListingContentExactBulletReplacement | null;
   requestId: string | null;
@@ -102,6 +107,7 @@ export interface ListingContentGateway {
   read(
     identity: ListingContentIdentity,
     purpose: "read-only" | "mutation",
+    options?: ListingContentGatewayReadOptions,
   ): Promise<ListingContentGatewayRead>;
   validationPreview(
     patch: ListingContentPatchDescriptor,

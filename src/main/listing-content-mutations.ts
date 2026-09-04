@@ -36,6 +36,7 @@ import {
 } from "./amazon/sp-api-error";
 import {
   commitWithCanonicalReadback,
+  ListingWriteAcceptedButPendingError,
 } from "./amazon/listing-write-readback";
 import type {
   SpExecutionContext,
@@ -95,7 +96,19 @@ export type ListingContentPreviewOptions = Readonly<{
     typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
   exactBulletReplacementAuthority?:
     typeof LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
+  /** Main-only phase identity for seller PTD reuse; never serialized. */
+  capabilityRefreshScope?: object;
 }>;
+
+export type ListingContentAttemptOptions = ListingContentPreviewOptions &
+  Readonly<{
+    /** Return after durable ACCEPTED evidence; follow with readbackOne GETs. */
+    deferReadback?: boolean;
+    /** Main-only progress hook after durable pre-send evidence is stored. */
+    onDispatched?: () => void | Promise<void>;
+    /** Main-only progress hook after durable ACCEPTED evidence is stored. */
+    onAccepted?: () => void | Promise<void>;
+  }>;
 
 export interface ListingContentMutationsPort {
   handle(command: ListingContentMutationCommand): Promise<ApiResponse>;
@@ -112,12 +125,18 @@ export interface ListingContentMutationsPort {
     expectedEvidence: ListingContentPrecommitEvidence,
     session: MainWriteGateSession,
     intentId: string,
-    options?: ListingContentPreviewOptions,
+    options?: ListingContentAttemptOptions,
   ): Promise<ListingContentUpdateResult>;
+  readbackOne(
+    input: UpdateListingContentInput,
+    expectedEvidence: ListingContentPrecommitEvidence,
+    context: SpExecutionContext,
+  ): Promise<ListingContentUpdateResult | null>;
 }
 
 type ListingContentRouteInput = UpdateListingContentInput & Readonly<{
   idempotencyKey: string;
+  exactBulletReplacementAcknowledgement: string;
 }>;
 
 type VerifiedContentChange = Readonly<{
@@ -169,6 +188,7 @@ interface ListingContentMutationOperations {
         typeof LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY;
       exactBulletReplacementAuthority?:
         typeof LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
+      capabilityRefreshScope?: object;
       fence: ListingWriteExecutionFence;
       recordDurableEvidence(
         result: ListingContentDurableResult,
@@ -497,6 +517,25 @@ function exactLanguageBulletReplacement(
 ): boolean {
   return options.exactBulletReplacementAuthority ===
     LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY;
+}
+
+function singleSkuExactBulletReplacementOptions(
+  input: UpdateListingContentInput,
+): ListingContentPreviewOptions {
+  const expected = normalizeContentValues({
+    title: input.expectedTitle,
+    itemHighlight: input.expectedItemHighlight,
+    bulletPoints: input.expectedBulletPoints,
+    productDescription: input.expectedProductDescription,
+    ingredients: input.expectedIngredients,
+  });
+  const requested = normalizeContentValues(input);
+  return sameTextArray(expected.bulletPoints, requested.bulletPoints)
+    ? {}
+    : {
+        exactBulletReplacementAuthority:
+          LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+      };
 }
 
 function mutationChangedFields(
@@ -925,7 +964,11 @@ async function prepareContentMutation(
   expectedEvidence?: ListingContentPrecommitEvidence,
   options: ListingContentPreviewOptions = {},
 ): Promise<PreparedContentMutation> {
-  const observation = await gateway.read(input, "mutation");
+  const observation = await gateway.read(input, "mutation", {
+    ...(options.capabilityRefreshScope
+      ? { capabilityRefreshScope: options.capabilityRefreshScope }
+      : {}),
+  });
   assertCanonicalObservation(gateway, observation, input);
   const snapshot = observation.snapshot;
   if (!snapshot.capabilities.schemaChecksum) {
@@ -1171,6 +1214,7 @@ function createListingContentMutationOperations(
               control.validationOverrideAuthority,
             exactBulletReplacementAuthority:
               control.exactBulletReplacementAuthority,
+            capabilityRefreshScope: control.capabilityRefreshScope,
           },
         )
       );
@@ -1533,6 +1577,63 @@ function assertDurableContentResultBinding(
   }
 }
 
+function assertAcceptedContentResultBinding(
+  value: unknown,
+  input: UpdateListingContentInput,
+  expectedEvidence: ListingContentPrecommitEvidence,
+): asserts value is DurableListingContentResult {
+  if (!isRecord(value) ||
+      !hasExactKeys(value, DURABLE_RESULT_KEYS) ||
+      value.mode !== "live" ||
+      value.status !== "ACCEPTED" ||
+      !validDurableStatusMetadata(value)) {
+    throw new SpApiError(
+      "Amazon 商品內容接受結果無法安全綁定這次要求；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+  try {
+    assertListingContentUpdateResultBinding(
+      publicUpdateResult(value),
+      input,
+      undefined,
+      exactChangedFields(
+          expectedEvidence.changedFields,
+          normalizeContentValues({
+            title: input.expectedTitle,
+            itemHighlight: input.expectedItemHighlight,
+            bulletPoints: input.expectedBulletPoints,
+            productDescription: input.expectedProductDescription,
+            ingredients: input.expectedIngredients,
+          }),
+          normalizeContentValues(input),
+          true,
+        )
+        ? {
+            exactBulletReplacementAuthority:
+              LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+          }
+        : {},
+    );
+  } catch {
+    throw new SpApiError(
+      "Amazon 商品內容接受結果與這次要求不一致；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+  const durableEvidence = value._writeEvidence;
+  if (!exactWriteEvidence(durableEvidence) ||
+      canonicalSha256(Object.fromEntries(
+        PRECOMMIT_EVIDENCE_KEYS.map((key) => [key, durableEvidence[key]]),
+      )) !== canonicalSha256(expectedEvidence) ||
+      !durableEnvelopeMatchesEvidence(value, durableEvidence)) {
+    throw new SpApiError(
+      "Amazon 商品內容接受證據與這次要求不一致；請先回查 Amazon，勿重送。",
+      { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+    );
+  }
+}
+
 function exactWriteEvidence(
   value: unknown,
 ): value is ListingContentWriteEvidence {
@@ -1745,16 +1846,36 @@ export function reconcileContentWrite(
   };
 }
 
-function publicPreviewResult(
+function exactBulletReplacementAcknowledgement(
   value: ListingContentPreparedPreview,
-): ListingContentValidationResult {
+): string | null {
+  return value.exactBulletReplacement
+    ? canonicalSha256({
+        version: 1,
+        proposalFingerprint: value.proposalFingerprint,
+        exactBulletReplacement: value.exactBulletReplacement,
+      })
+    : null;
+}
+
+function publicPreviewResult(value: ListingContentPreparedPreview): unknown {
   const {
     evidence: _internalEvidence,
-    exactBulletReplacement: _batchOnlyExactBulletReplacement,
     proposalFingerprint: _internalFingerprint,
     ...publicValue
   } = value;
-  return publicValue;
+  const acknowledgement = exactBulletReplacementAcknowledgement(value);
+  if (!acknowledgement) {
+    const {
+      exactBulletReplacement: _emptyExactBulletReplacement,
+      ...ordinaryPreview
+    } = publicValue;
+    return ordinaryPreview;
+  }
+  return {
+    ...publicValue,
+    exactBulletReplacementAcknowledgement: acknowledgement,
+  };
 }
 
 function publicUpdateResult<T>(value: T): T {
@@ -1833,31 +1954,61 @@ export class ListingContentMutations implements ListingContentMutationsPort {
     expectedEvidence: ListingContentPrecommitEvidence,
     session: MainWriteGateSession,
     intentId: string,
-    options: ListingContentPreviewOptions = {},
+    options: ListingContentAttemptOptions = {},
   ): Promise<ListingContentUpdateResult> {
-    const result = await session.attempt<ListingContentDurableResult>({
-      intentId,
-      execute: (control) =>
-        commitWithCanonicalReadback({
-          commit: () => this.operations.commitOne(input, {
-            expectedEvidence,
-            validationOverrideAuthority:
-              options.validationOverrideAuthority,
-            exactBulletReplacementAuthority:
-              options.exactBulletReplacementAuthority,
-            fence: { assertCurrent: control.assertCurrent },
-            recordDurableEvidence:
-              control.recordDurableEvidence ?? control.recordAccepted,
+    let accepted: DurableListingContentResult | null = null;
+    let result: ListingContentDurableResult;
+    try {
+      result = await session.attempt<ListingContentDurableResult>({
+        intentId,
+        execute: (control) =>
+          commitWithCanonicalReadback({
+            commit: () => {
+              const recordDurableEvidence =
+                control.recordDurableEvidence ?? control.recordAccepted;
+              return this.operations.commitOne(input, {
+                expectedEvidence,
+                validationOverrideAuthority:
+                  options.validationOverrideAuthority,
+                exactBulletReplacementAuthority:
+                  options.exactBulletReplacementAuthority,
+                capabilityRefreshScope: options.capabilityRefreshScope,
+                fence: { assertCurrent: control.assertCurrent },
+                recordDurableEvidence: async (value) => {
+                  await recordDurableEvidence(value);
+                  if (value.status === "DISPATCHED") {
+                    await options.onDispatched?.();
+                  }
+                },
+              });
+            },
+            onAccepted: async (value) => {
+              await control.recordAccepted(value);
+              if (value.mode === "live" && value.status === "ACCEPTED") {
+                accepted = value;
+                await options.onAccepted?.();
+              }
+            },
+            assertCurrent: control.assertCurrent,
+            read: () => this.operations.read({
+              marketplaceId: input.marketplaceId,
+              sellerSku: input.sellerSku,
+            }),
+            decide: contentReadbackDecision,
+            ...(options.deferReadback ? { delaysMs: [] } : {}),
           }),
-          onAccepted: control.recordAccepted,
-          assertCurrent: control.assertCurrent,
-          read: () => this.operations.read({
-            marketplaceId: input.marketplaceId,
-            sellerSku: input.sellerSku,
-          }),
-          decide: contentReadbackDecision,
-        }),
-    });
+      });
+    } catch (error) {
+      if (
+        options.deferReadback &&
+        error instanceof ListingWriteAcceptedButPendingError &&
+        accepted
+      ) {
+        assertAcceptedContentResultBinding(accepted, input, expectedEvidence);
+        return publicUpdateResult(accepted);
+      }
+      throw error;
+    }
     if (result.status === "DISPATCHED") {
       throw new SpApiError(
         "Amazon 商品內容寫入只留下已送出證據，無法證明正式結果；請重新查詢確認，勿盲目重送。",
@@ -1866,6 +2017,55 @@ export class ListingContentMutations implements ListingContentMutationsPort {
     }
     assertDurableContentResultBinding(result, input, expectedEvidence);
     return publicUpdateResult(result);
+  }
+
+  async readbackOne(
+    input: UpdateListingContentInput,
+    expectedEvidence: ListingContentPrecommitEvidence,
+    context: SpExecutionContext,
+  ): Promise<ListingContentUpdateResult | null> {
+    if (
+      context.marketplaceId !== input.marketplaceId ||
+      context.mode !== "live"
+    ) {
+      return null;
+    }
+    await this.context.assertCurrent(context);
+    const observation = await this.operations.read({
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+    });
+    await this.context.assertCurrent(context);
+    await this.writeGate.reconcile({
+      context,
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+      operations: ["content"],
+      snapshot: observation,
+      project: (response, _operation, canonical) =>
+        reconcileContentWrite(response, canonical),
+    });
+    if (!this.writeGate.inspect) return null;
+    const verified = await this.writeGate.inspect({
+      context,
+      marketplaceId: input.marketplaceId,
+      sellerSku: input.sellerSku,
+      operations: ["content"],
+      project: (inspection) => {
+        if (inspection.state !== "completed" || inspection.response === null) {
+          return null;
+        }
+        const response = inspection.response;
+        assertDurableContentResultBinding(
+          response,
+          input,
+          expectedEvidence,
+        );
+        if (response.status === "DISPATCHED") return null;
+        return publicUpdateResult(response);
+      },
+    });
+    return verified[0] ?? null;
   }
 
   private async readRoute(request: ApiRequest): Promise<ApiResponse> {
@@ -1946,6 +2146,10 @@ export class ListingContentMutations implements ListingContentMutationsPort {
       idempotencyKey: typeof body.idempotencyKey === "string"
         ? body.idempotencyKey
         : "",
+      exactBulletReplacementAcknowledgement:
+        typeof body.exactBulletReplacementAcknowledgement === "string"
+          ? body.exactBulletReplacementAcknowledgement
+          : "",
     };
   }
 
@@ -1974,7 +2178,10 @@ export class ListingContentMutations implements ListingContentMutationsPort {
     if ("status" in input) return input;
     try {
       const context = await this.context.capture(input.marketplaceId);
-      const result = await this.previewOne(input);
+      const result = await this.previewOne(
+        input,
+        singleSkuExactBulletReplacementOptions(input),
+      );
       if (
         result.mode !== context.mode ||
         result.marketplaceId !== input.marketplaceId ||
@@ -2003,14 +2210,29 @@ export class ListingContentMutations implements ListingContentMutationsPort {
     }
     let context: SpExecutionContext;
     let prepared: ListingContentPreparedPreview;
+    const previewOptions = singleSkuExactBulletReplacementOptions(input);
     try {
       context = await this.context.capture(input.marketplaceId);
-      prepared = await this.previewOne(input);
+      prepared = await this.previewOne(input, previewOptions);
       await this.context.assertCurrent(context);
     } catch (error) {
       return routeError(
         error,
         "正式確認前重新執行 Amazon 商品內容預檢時發生未預期的錯誤。",
+      );
+    }
+    const expectedBulletAcknowledgement =
+      exactBulletReplacementAcknowledgement(prepared);
+    if (
+      input.exactBulletReplacementAcknowledgement !==
+        (expectedBulletAcknowledgement ?? "")
+    ) {
+      return invalid(
+        expectedBulletAcknowledgement
+          ? "請先逐項核對 Amazon 目前同語系產品要點、更新後 1–5 項與完整刪除範圍，再勾選確認。"
+          : "產品要點刪除範圍已改變，請重新預檢。",
+        409,
+        "BULLET_REMOVAL_ACK_REQUIRED",
       );
     }
     const labels: Record<ListingContentField, string> = {
@@ -2023,16 +2245,25 @@ export class ListingContentMutations implements ListingContentMutationsPort {
     const changedFields = prepared.changedFields
       .map((field) => labels[field])
       .join("、");
+    const bulletReplacement = prepared.exactBulletReplacement;
+    const bulletReplacementReason = bulletReplacement
+      ? `｜產品要點 ${bulletReplacement.currentExactLanguageBulletPoints.length}→${bulletReplacement.requestedExactLanguageBulletPoints.length}（刪除 ${Math.max(
+          0,
+          bulletReplacement.currentExactLanguageBulletPoints.length -
+            bulletReplacement.requestedExactLanguageBulletPoints.length,
+        )} 項）`
+      : "";
     try {
       const result = await this.writeGate.execute({
         binding: this.binding(input, prepared, context),
         approvalReason: (verificationCode) =>
-          `確認文案｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜${changedFields}｜驗證碼 ${verificationCode}`,
+          `確認文案｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜${changedFields}${bulletReplacementReason}｜驗證碼 ${verificationCode}`,
         run: (session) => this.attemptOne(
           input,
           prepared.evidence,
           session,
           "primary",
+          previewOptions,
         ),
       });
       return json(publicUpdateResult(result));

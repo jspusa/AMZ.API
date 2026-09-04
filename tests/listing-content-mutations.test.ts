@@ -21,6 +21,7 @@ import {
 } from "../src/main/amazon/sp-execution-context";
 import {
   createListingContentMutations,
+  LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
   LISTING_CONTENT_BATCH_VALIDATION_OVERRIDE_AUTHORITY,
 } from "../src/main/listing-content-mutations";
 import { LocalStore } from "../src/main/local-store";
@@ -156,6 +157,124 @@ function bodyValue(response: ApiResponse): Record<string, unknown> {
 }
 
 describe("W06 Listing Content mutation owner", () => {
+  it("discloses exact same-language bullet replacement and requires the preview-bound acknowledgement before native approval", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "w06-content-single-editor-overflow-account",
+    }));
+    const firstFive = Array.from(
+      { length: 5 },
+      (_, index) => `Legacy English bullet ${index + 1}`,
+    );
+    const requestedBullets = ["Updated bullet one", "Updated bullet two"];
+    const exactReplacement = {
+      languageTag: "en_US",
+      currentExactLanguageBulletPoints: [
+        ...firstFive,
+        "Hidden legacy English bullet 6",
+      ],
+      requestedExactLanguageBulletPoints: requestedBullets,
+      removedOverflowBulletPoints: ["Hidden legacy English bullet 6"],
+    } as const;
+    const previewAuthorities: unknown[] = [];
+    const gateway: ListingContentGateway = {
+      mode: () => "live",
+      read: async () => gatewayRead({
+        ...contentSnapshot(),
+        bulletPoints: firstFive,
+      }),
+      validationPreview: async (patch) => {
+        previewAuthorities.push(
+          patch.exactLanguageBulletReplacementAuthority,
+        );
+        return {
+          status: "VALID",
+          canonicalPatchHash: sha256Fixture("d"),
+          exactBulletReplacement: exactReplacement,
+          requestId: "REQ-W06-SINGLE-OVERFLOW-PREVIEW",
+          issues: [],
+        };
+      },
+      commitOnce: vi.fn(),
+      replaceDemoContent: vi.fn(async () => undefined),
+    };
+    let approvalReason = "";
+    const stagePreview = vi.fn(async () => undefined);
+    const execute = vi.fn(async (input: Parameters<MainWriteGatePort["execute"]>[0]) => {
+      approvalReason = typeof input.approvalReason === "function"
+        ? input.approvalReason("123456")
+        : input.approvalReason;
+      return {
+        status: "ACCEPTED",
+        notice: "accepted by route test",
+      } as never;
+    });
+    const writeGate = {
+      stagePreview,
+      execute,
+      reconcile: vi.fn(async () => undefined),
+      clearEphemeral: vi.fn(),
+    } as unknown as MainWriteGatePort;
+    const owner = createListingContentMutations({ context, writeGate, gateway });
+    const key = "w06-content-single-overflow";
+    const requestFor = (
+      method: "POST" | "PATCH",
+      acknowledgement?: string,
+    ): ApiRequest => {
+      const request = mutationRequest(method, key);
+      if (request.body?.kind !== "json") {
+        throw new Error("Expected JSON route body");
+      }
+      Object.assign(request.body.value, {
+        title: "Original title",
+        expectedBulletPoints: firstFive,
+        bulletPoints: requestedBullets,
+        ...(acknowledgement
+          ? { exactBulletReplacementAcknowledgement: acknowledgement }
+          : {}),
+      });
+      return request;
+    };
+
+    const preview = await owner.handle({
+      operation: "preview",
+      request: requestFor("POST"),
+    });
+    expect(preview.status).toBe(200);
+    expect(bodyValue(preview)).toMatchObject({
+      exactBulletReplacement: exactReplacement,
+      exactBulletReplacementAcknowledgement: expect.stringMatching(
+        /^[a-f0-9]{64}$/u,
+      ),
+    });
+    expect(previewAuthorities).toEqual([
+      LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+    ]);
+
+    const blocked = await owner.handle({
+      operation: "commit",
+      request: requestFor("PATCH"),
+    });
+    expect(blocked.status).toBe(409);
+    expect(bodyValue(blocked)).toMatchObject({
+      code: "BULLET_REMOVAL_ACK_REQUIRED",
+    });
+    expect(execute).not.toHaveBeenCalled();
+
+    const acknowledgement = String(
+      bodyValue(preview).exactBulletReplacementAcknowledgement,
+    );
+    const accepted = await owner.handle({
+      operation: "commit",
+      request: requestFor("PATCH", acknowledgement),
+    });
+    expect(accepted.status).toBe(200);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(approvalReason).toContain("產品要點 6→2（刪除 4 項）");
+    expect(approvalReason).toContain("驗證碼 123456");
+  });
+
   it("exposes an INVALID Amazon preview only to an explicit batch override caller", async () => {
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: MARKETPLACE_ID,
@@ -540,6 +659,192 @@ describe("W06 Listing Content mutation owner", () => {
       code: "UPDATE_STATUS_UNKNOWN",
     });
     expect(session.attempt).toHaveBeenCalledOnce();
+  });
+
+  it("returns an exact ACCEPTED acknowledgement without readback and later reconciles by GET without another PATCH", async () => {
+    const storePath = join(
+      await mkdtemp(join(tmpdir(), "amz-api-w06-content-deferred-readback-")),
+      "store.json",
+    );
+    const store = new LocalStore(storePath);
+    await store.initialize();
+    const accountScope = "w06-content-deferred-readback-account";
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope,
+    }));
+    let snapshot = contentSnapshot();
+    const commitOnce = vi.fn(async (
+      _patch: ListingContentPatchDescriptor,
+      fence: ListingWriteExecutionFence,
+      recordDispatch: () => Promise<void>,
+    ) => {
+      await fence.assertCurrent();
+      await recordDispatch();
+      return {
+        status: "ACCEPTED" as const,
+        submissionId: "W06-DEFERRED-SUBMISSION",
+        requestId: "REQ-W06-DEFERRED-COMMIT",
+        issues: [],
+      };
+    });
+    const gateway: ListingContentGateway = {
+      mode: () => "live",
+      read: async () => gatewayRead(snapshot),
+      validationPreview: async () => ({
+        status: "VALID",
+        canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
+        requestId: "REQ-W06-DEFERRED-PREVIEW",
+        issues: [],
+      }),
+      commitOnce,
+      replaceDemoContent: async () => undefined,
+    };
+    const gate = new MainWriteGate({
+      store,
+      context,
+      approveWrite: async () => undefined,
+    });
+    const owner = createListingContentMutations({ context, writeGate: gate, gateway });
+    const input = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      title: "Updated title",
+      expectedTitle: "Original title",
+      itemHighlight: "Original highlight",
+      expectedItemHighlight: "Original highlight",
+      bulletPoints: ["Original bullet"],
+      expectedBulletPoints: ["Original bullet"],
+      productDescription: "Original description",
+      expectedProductDescription: "Original description",
+      ingredients: "Turkey",
+      expectedIngredients: "Turkey",
+    } satisfies UpdateListingContentInput;
+    const prepared = await owner.previewOne(input);
+    const captured = await context.capture(MARKETPLACE_ID);
+    const idempotencyKey = "w06-content-deferred-readback";
+    const binding = {
+      family: "content" as const,
+      previewKey: idempotencyKey,
+      context: captured,
+      intents: [{
+        intentId: "primary",
+        operation: "content" as const,
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SELLER_SKU,
+        idempotencyKey,
+        proposalFingerprint: prepared.proposalFingerprint,
+      }] as const,
+    };
+    await gate.stagePreview(binding);
+
+    const accepted = await gate.execute({
+      binding,
+      approvalReason: "deferred content readback test",
+      run: (session) => owner.attemptOne(
+        input,
+        prepared.evidence,
+        session,
+        "primary",
+        { deferReadback: true },
+      ),
+    });
+
+    expect(accepted).toMatchObject({
+      mode: "live",
+      status: "ACCEPTED",
+      sellerSku: SELLER_SKU,
+      submissionId: "W06-DEFERRED-SUBMISSION",
+    });
+    expect(accepted).not.toHaveProperty("writeLifecycle");
+    expect(commitOnce).toHaveBeenCalledOnce();
+    expect(JSON.parse(await readFile(storePath, "utf8"))).toMatchObject({
+      ledger: {
+        [idempotencyKey]: {
+          state: "unknown",
+          response: {
+            status: "ACCEPTED",
+            sellerSku: SELLER_SKU,
+          },
+        },
+      },
+    });
+
+    snapshot = { ...snapshot, title: "Updated title" };
+    const verified = await owner.readbackOne(
+      input,
+      prepared.evidence,
+      captured,
+    );
+
+    expect(verified).toMatchObject({
+      status: "ACCEPTED",
+      sellerSku: SELLER_SKU,
+      writeLifecycle: {
+        state: "verified",
+        verified: true,
+        authoritative: true,
+      },
+    });
+    expect(commitOnce).toHaveBeenCalledOnce();
+    expect(JSON.parse(await readFile(storePath, "utf8"))).toMatchObject({
+      ledger: { [idempotencyKey]: { state: "completed" } },
+    });
+  });
+
+  it("rejects a stale readback context before issuing any canonical GET", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "w06-content-stale-readback-account",
+    }));
+    const read = vi.fn(async () => gatewayRead());
+    const gateway: ListingContentGateway = {
+      mode: () => "live",
+      read,
+      validationPreview: async () => ({
+        status: "VALID",
+        canonicalPatchHash: sha256Fixture("d"),
+        exactBulletReplacement: null,
+        requestId: "REQ-W06-STALE-READBACK-PREVIEW",
+        issues: [],
+      }),
+      commitOnce: vi.fn(),
+      replaceDemoContent: vi.fn(),
+    };
+    const writeGate = {
+      reconcile: vi.fn(),
+      inspect: vi.fn(),
+    } as unknown as MainWriteGatePort;
+    const owner = createListingContentMutations({ context, writeGate, gateway });
+    const input = {
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+      title: "Updated title",
+      expectedTitle: "Original title",
+      itemHighlight: "Original highlight",
+      expectedItemHighlight: "Original highlight",
+      bulletPoints: ["Original bullet"],
+      expectedBulletPoints: ["Original bullet"],
+      productDescription: "Original description",
+      expectedProductDescription: "Original description",
+      ingredients: "Turkey",
+      expectedIngredients: "Turkey",
+    } satisfies UpdateListingContentInput;
+    const prepared = await owner.previewOne(input);
+    const captured = await context.capture(MARKETPLACE_ID);
+    read.mockClear();
+    context.invalidate("account-changed");
+
+    await expect(owner.readbackOne(
+      input,
+      prepared.evidence,
+      captured,
+    )).rejects.toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+    expect(read).not.toHaveBeenCalled();
+    expect(writeGate.reconcile).not.toHaveBeenCalled();
   });
 
   it("tolerates legacy confirmationSku and stops before dispatch when native approval is cancelled", async () => {

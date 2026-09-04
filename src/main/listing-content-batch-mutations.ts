@@ -3,6 +3,7 @@ import {
   randomUUID as nodeRandomUUID,
 } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
+import { abortableDelay } from "./abort-utils";
 import { NATIVE_CONFIRMATION_REASON_MAX_LENGTH } from "../shared/native-confirmation-limits";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
@@ -64,7 +65,7 @@ import {
 } from "./write-gate";
 
 export type ListingContentBatchMutationCommand = Readonly<{
-  operation: "preview" | "commit";
+  operation: "preview" | "commit" | "observe";
   request: ApiRequest;
 }>;
 
@@ -80,9 +81,11 @@ export type ListingContentBatchMutationsDependencies = Readonly<{
   content: Pick<
     ListingContentMutationsPort,
     "previewOne" | "attemptOne"
-  >;
+  > & Partial<Pick<ListingContentMutationsPort, "readbackOne">>;
   now?: () => number;
   randomUUID?: () => string;
+  readbackDelaysMs?: readonly number[];
+  delay?: (milliseconds: number) => Promise<void>;
 }>;
 
 type ContentBatchChange = {
@@ -137,10 +140,34 @@ type ContentBatchSourceIdentity = Readonly<{
 
 type ContentBatchRowResult = {
   sellerSku: string;
-  state: "verified" | "simulated" | "rejected" | "unknown" | "not-started";
+  state:
+    | "accepted"
+    | "verified"
+    | "simulated"
+    | "rejected"
+    | "unknown"
+    | "not-started";
   result: ListingContentUpdateResult | null;
   error: { code: string; message: string; requestId: string | null } | null;
 };
+
+type ContentBatchProgress = Readonly<{
+  phase:
+    | "ready"
+    | "revalidating"
+    | "awaiting-approval"
+    | "submitting"
+    | "readback"
+    | "completed"
+    | "stopped";
+  total: number;
+  revalidated: number;
+  submitted: number;
+  accepted: number;
+  verified: number;
+  currentSellerSku: string | null;
+  updatedAt: string;
+}>;
 
 type ContentBatchCommitResult = {
   previewId: string;
@@ -211,8 +238,26 @@ type ContentBatchPlan = {
   expiresAt: number;
   completedExpiresAt: number | null;
   state: "ready" | "committing" | "completed";
+  progress: ContentBatchProgress;
   result: ContentBatchCommitResult | null;
 };
+
+export const CONTENT_BATCH_READBACK_DELAYS_MS = [
+  0,
+  1_000,
+  2_000,
+  4_000,
+  8_000,
+  15_000,
+  30_000,
+  60_000,
+  90_000,
+  120_000,
+  150_000,
+  120_000,
+] as const;
+
+const CONTENT_BATCH_READBACK_CONCURRENCY = 2;
 
 function publicSkippedRows(
   rows: readonly ContentBatchSkippedRow[],
@@ -429,10 +474,45 @@ function publicListingIssues(issues: readonly ListingIssue[]): ListingIssue[] {
   }));
 }
 
-function batchPreviewOptions(): ListingContentPreviewOptions {
+const CONTENT_BATCH_PREVIEW_CONCURRENCY = 3;
+
+async function mapConcurrentOrdered<TInput, TOutput>(
+  values: readonly TInput[],
+  concurrency: number,
+  project: (value: TInput, index: number) => Promise<TOutput>,
+): Promise<TOutput[]> {
+  const output = new Array<TOutput>(values.length);
+  let nextIndex = 0;
+  let stopped = false;
+  let firstError: unknown = null;
+  const workers = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (!stopped) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= values.length) return;
+        try {
+          output[index] = await project(values[index]!, index);
+        } catch (error) {
+          if (!stopped) firstError = error;
+          stopped = true;
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  if (firstError !== null) throw firstError;
+  return output;
+}
+
+function batchPreviewOptions(
+  capabilityRefreshScope?: object,
+): ListingContentPreviewOptions {
   return {
     exactBulletReplacementAuthority:
       LISTING_CONTENT_BATCH_EXACT_BULLET_REPLACEMENT_AUTHORITY,
+    ...(capabilityRefreshScope ? { capabilityRefreshScope } : {}),
   };
 }
 
@@ -453,6 +533,22 @@ function publicUpdateResult(
     issues: publicListingIssues(result.issues),
     notice: result.notice,
   };
+}
+
+function hasVerifiedReadback(
+  result: ListingContentUpdateResult,
+): boolean {
+  if (!("writeLifecycle" in result)) return false;
+  const lifecycle = result.writeLifecycle;
+  return isPlainRecord(lifecycle) &&
+    lifecycle.state === "verified" &&
+    lifecycle.verified === true &&
+    lifecycle.authoritative === true &&
+    lifecycle.acceptedAt === result.acceptedAt &&
+    typeof lifecycle.verifiedAt === "string" &&
+    Number.isFinite(Date.parse(lifecycle.verifiedAt)) &&
+    Number.isSafeInteger(lifecycle.attempts) &&
+    Number(lifecycle.attempts) >= 0;
 }
 
 function publicBatchCommitResult(
@@ -759,9 +855,11 @@ export class ListingContentBatchMutations
   private readonly content: Pick<
     ListingContentMutationsPort,
     "previewOne" | "attemptOne"
-  >;
+  > & Partial<Pick<ListingContentMutationsPort, "readbackOne">>;
   private readonly now: () => number;
   private readonly randomUUID: () => string;
+  private readonly readbackDelaysMs: readonly number[];
+  private readonly delay: (milliseconds: number) => Promise<void>;
   private readonly plans = new Map<string, ContentBatchPlan>();
   private readonly buildClaims = new Map<string, object>();
   private lifecycleRevision = 0;
@@ -773,12 +871,77 @@ export class ListingContentBatchMutations
     this.content = input.content;
     this.now = input.now ?? Date.now;
     this.randomUUID = input.randomUUID ?? nodeRandomUUID;
+    this.readbackDelaysMs = input.readbackDelaysMs ??
+      CONTENT_BATCH_READBACK_DELAYS_MS;
+    this.delay = input.delay ?? ((milliseconds) => abortableDelay(milliseconds));
   }
 
   handle(command: ListingContentBatchMutationCommand): Promise<ApiResponse> {
-    return command.operation === "preview"
-      ? this.preview(command.request)
-      : this.commit(command.request);
+    if (command.operation === "preview") return this.preview(command.request);
+    if (command.operation === "observe") return this.observe(command.request);
+    return this.commit(command.request);
+  }
+
+  private async observe(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const previewId = reportIdentifier(request.query.previewId);
+    if (!marketplaceId || !previewId) {
+      return invalid("批次進度查詢缺少有效的站點或 previewId。");
+    }
+    this.prunePlans();
+    const plan = this.plans.get(previewId);
+    if (!plan) {
+      return invalid(
+        "找不到這份 Excel 批次進度；請重新上傳並預檢。",
+        404,
+        "PREVIEW_NOT_FOUND",
+      );
+    }
+    if (plan.marketplaceId !== marketplaceId) {
+      return invalid(
+        "Excel 批次進度與目前站點不一致。",
+        409,
+        "PREVIEW_CHANGED",
+      );
+    }
+    try {
+      const context = await this.context.capture(marketplaceId);
+      await this.context.assertCurrent(plan.context);
+      if (context.accountScope !== plan.accountScope) {
+        throw new SpExecutionContextError(
+          "ACCOUNT_SCOPE_CHANGED",
+          "Amazon 帳號範圍已改變；本次操作已停止。",
+        );
+      }
+      return json({
+        previewId: plan.previewId,
+        marketplaceId: plan.marketplaceId,
+        status: plan.state === "ready"
+          ? "READY"
+          : plan.state === "committing"
+            ? "PROCESSING"
+            : plan.result?.status ?? "COMPLETED_WITH_ISSUES",
+        progress: {
+          ...plan.progress,
+        },
+        result: plan.state === "completed" && plan.result
+          ? publicBatchCommitResult(plan.result)
+          : null,
+      });
+    } catch (error) {
+      return apiError(error, "查詢 Excel 批次進度時發生未預期的錯誤。");
+    }
+  }
+
+  private updateProgress(
+    plan: ContentBatchPlan,
+    patch: Partial<Omit<ContentBatchProgress, "updatedAt">>,
+  ): void {
+    plan.progress = {
+      ...plan.progress,
+      ...patch,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
   }
 
   clear(): void {
@@ -1207,66 +1370,78 @@ export class ListingContentBatchMutations
       this.buildClaims.set(buildClaimKey, buildClaimToken);
       this.assertLifecycleCurrent(revision);
 
-      const changes: ContentBatchChange[] = [];
-      const validationErrors: ContentBatchValidationFailure[] = [];
-      for (const { input, sourceIdentity } of inputRows) {
-        await this.context.assertCurrent(context);
-        this.assertLifecycleCurrent(revision);
-        let validation: ListingContentPreparedPreview;
-        try {
-          validation = await this.content.previewOne(
-            input,
-            batchPreviewOptions(),
-          );
-        } catch (error) {
-          if (error instanceof SpExecutionContextError) throw error;
-          if (!isIsolatedContentPreviewFailure(error)) throw error;
-          validationErrors.push(
-            contentBatchValidationFailure(input, error),
-          );
-          continue;
-        }
-        this.assertLifecycleCurrent(revision);
-        // Result binding is a global trust boundary. It deliberately lives
-        // outside the row-isolation catch, so a wrong SKU, marketplace, mode,
-        // content payload, or proposal stops the whole batch.
-        assertListingContentPreparedPreviewBinding(
-          validation,
-          input,
-          context,
-          undefined,
-          batchPreviewOptions(),
-        );
-        if (validation.status === "INVALID") {
-          throw new SpApiError(
-            "Amazon 回傳了未授權的 INVALID 預檢結果；整批已停止且沒有任何 SKU 會寫入。",
-            {
-              status: 502,
-              code: "VALIDATION_STATUS_UNKNOWN",
-              issues: [...validation.issues],
-              operation: "patchListingsItemPreview",
-            },
-          );
-        }
-        try {
-          assertContentBatchSourceIdentity(validation, sourceIdentity);
-        } catch (error) {
-          if (
-            !(error instanceof SpApiError) ||
-            error.code !== "LISTING_IDENTITY_MISMATCH"
-          ) {
-            throw error;
+      const initialRefreshScope = {};
+      const previewOptions = batchPreviewOptions(initialRefreshScope);
+      const previewed = await mapConcurrentOrdered(
+        inputRows,
+        CONTENT_BATCH_PREVIEW_CONCURRENCY,
+        async ({ input, sourceIdentity }) => {
+          await this.context.assertCurrent(context);
+          this.assertLifecycleCurrent(revision);
+          let validation: ListingContentPreparedPreview;
+          try {
+            validation = await this.content.previewOne(input, previewOptions);
+          } catch (error) {
+            if (error instanceof SpExecutionContextError) throw error;
+            if (!isIsolatedContentPreviewFailure(error)) throw error;
+            return {
+              kind: "validation" as const,
+              failure: contentBatchValidationFailure(input, error),
+            };
           }
-          validationErrors.push(contentBatchValidationFailure(input, error));
-          continue;
-        }
-        changes.push({
-          input,
-          sourceIdentity,
-          proposalFingerprint: validation.proposalFingerprint,
-          validation,
-        });
-      }
+          this.assertLifecycleCurrent(revision);
+          // Result binding is a global trust boundary. It deliberately lives
+          // outside the row-isolation catch, so a wrong SKU, marketplace, mode,
+          // content payload, or proposal stops the whole batch.
+          assertListingContentPreparedPreviewBinding(
+            validation,
+            input,
+            context,
+            undefined,
+            previewOptions,
+          );
+          if (validation.status === "INVALID") {
+            throw new SpApiError(
+              "Amazon 回傳了未授權的 INVALID 預檢結果；整批已停止且沒有任何 SKU 會寫入。",
+              {
+                status: 502,
+                code: "VALIDATION_STATUS_UNKNOWN",
+                issues: [...validation.issues],
+                operation: "patchListingsItemPreview",
+              },
+            );
+          }
+          try {
+            assertContentBatchSourceIdentity(validation, sourceIdentity);
+          } catch (error) {
+            if (
+              !(error instanceof SpApiError) ||
+              error.code !== "LISTING_IDENTITY_MISMATCH"
+            ) {
+              throw error;
+            }
+            return {
+              kind: "validation" as const,
+              failure: contentBatchValidationFailure(input, error),
+            };
+          }
+          return {
+            kind: "change" as const,
+            change: {
+              input,
+              sourceIdentity,
+              proposalFingerprint: validation.proposalFingerprint,
+              validation,
+            },
+          };
+        },
+      );
+      const changes = previewed
+        .filter((result) => result.kind === "change")
+        .map((result) => result.change);
+      const validationErrors = previewed
+        .filter((result) => result.kind === "validation")
+        .map((result) => result.failure);
       await this.context.assertCurrent(context);
       this.assertLifecycleCurrent(revision);
       if (validationErrors.length && !changes.length) {
@@ -1348,6 +1523,16 @@ export class ListingContentBatchMutations
         ),
         completedExpiresAt: null,
         state: "ready",
+        progress: {
+          phase: "ready",
+          total: changes.length,
+          revalidated: 0,
+          submitted: 0,
+          accepted: 0,
+          verified: 0,
+          currentSellerSku: null,
+          updatedAt: new Date(this.now()).toISOString(),
+        },
         result: null,
       };
       this.assertLifecycleCurrent(revision);
@@ -1543,6 +1728,8 @@ export class ListingContentBatchMutations
         : `確認 Excel 批次文案｜${MARKETPLACE_CODES[marketplaceId]}｜${sellerSkus.length} SKU｜高風險 ${nativeRiskChanges.length} SKU／刪除要點 ${removedOverflowBulletCount} 項｜已在 App 逐項核對｜驗證碼 ${verificationCode}`;
     };
     let preflightResponse: ApiResponse | null = null;
+    const revalidationOptions = batchPreviewOptions({});
+    const commitOptions = batchPreviewOptions({});
     plan.state = "committing";
     try {
       this.assertLifecycleCurrent(revision);
@@ -1554,68 +1741,106 @@ export class ListingContentBatchMutations
           try {
             this.assertLifecycleCurrent(revision);
             this.assertPlanLive(plan);
-            const revalidated: ContentBatchChange[] = [];
-            const newlyIsolated: ContentBatchValidationFailure[] = [];
-            for (const change of plan.changes) {
-              await this.context.assertCurrent(context);
-              this.assertLifecycleCurrent(revision);
-              let fresh: ListingContentPreparedPreview;
-              try {
-                fresh = await this.content.previewOne(
-                  change.input,
-                  batchPreviewOptions(),
-                );
-              } catch (error) {
-                if (error instanceof SpExecutionContextError) throw error;
-                if (!isIsolatedContentPreviewFailure(error)) throw error;
-                newlyIsolated.push(
-                  contentBatchValidationFailure(change.input, error),
-                );
-                continue;
-              }
-              this.assertLifecycleCurrent(revision);
-              // A mismatched returned preview is a global trust failure and
-              // must never be downgraded to one row's validation problem.
-              assertListingContentPreparedPreviewBinding(
-                fresh,
-                change.input,
-                context,
-                {
-                  evidence: change.validation.evidence,
-                  exactBulletReplacement:
-                    change.validation.exactBulletReplacement,
-                  proposalFingerprint: change.proposalFingerprint,
-                  status: change.validation.status,
-                },
-                batchPreviewOptions(),
-              );
-              if (fresh.status === "INVALID") {
-                throw new SpApiError(
-                  "Amazon 回傳了未授權的 INVALID 重新預檢結果；整批已停止且沒有任何 SKU 會寫入。",
-                  {
-                    status: 502,
-                    code: "VALIDATION_STATUS_UNKNOWN",
-                    issues: [...fresh.issues],
-                    operation: "patchListingsItemPreview",
-                  },
-                );
-              }
-              try {
-                assertContentBatchSourceIdentity(fresh, change.sourceIdentity);
-              } catch (error) {
-                if (
-                  !(error instanceof SpApiError) ||
-                  error.code !== "LISTING_IDENTITY_MISMATCH"
-                ) {
-                  throw error;
+            this.updateProgress(plan, {
+              phase: "revalidating",
+              total: plan.changes.length,
+              revalidated: 0,
+              submitted: 0,
+              accepted: 0,
+              verified: 0,
+              currentSellerSku: null,
+            });
+            const refreshed = await mapConcurrentOrdered(
+              plan.changes,
+              CONTENT_BATCH_PREVIEW_CONCURRENCY,
+              async (change) => {
+                try {
+                  await this.context.assertCurrent(context);
+                  this.assertLifecycleCurrent(revision);
+                  let fresh: ListingContentPreparedPreview;
+                  try {
+                    fresh = await this.content.previewOne(
+                      change.input,
+                      revalidationOptions,
+                    );
+                  } catch (error) {
+                    if (error instanceof SpExecutionContextError) throw error;
+                    if (!isIsolatedContentPreviewFailure(error)) throw error;
+                    return {
+                      kind: "validation" as const,
+                      failure: contentBatchValidationFailure(
+                        change.input,
+                        error,
+                      ),
+                    };
+                  }
+                  this.assertLifecycleCurrent(revision);
+                  // A mismatched returned preview is a global trust failure and
+                  // must never be downgraded to one row's validation problem.
+                  assertListingContentPreparedPreviewBinding(
+                    fresh,
+                    change.input,
+                    context,
+                    {
+                      evidence: change.validation.evidence,
+                      exactBulletReplacement:
+                        change.validation.exactBulletReplacement,
+                      proposalFingerprint: change.proposalFingerprint,
+                      status: change.validation.status,
+                    },
+                    revalidationOptions,
+                  );
+                  if (fresh.status === "INVALID") {
+                    throw new SpApiError(
+                      "Amazon 回傳了未授權的 INVALID 重新預檢結果；整批已停止且沒有任何 SKU 會寫入。",
+                      {
+                        status: 502,
+                        code: "VALIDATION_STATUS_UNKNOWN",
+                        issues: [...fresh.issues],
+                        operation: "patchListingsItemPreview",
+                      },
+                    );
+                  }
+                  try {
+                    assertContentBatchSourceIdentity(
+                      fresh,
+                      change.sourceIdentity,
+                    );
+                  } catch (error) {
+                    if (
+                      !(error instanceof SpApiError) ||
+                      error.code !== "LISTING_IDENTITY_MISMATCH"
+                    ) {
+                      throw error;
+                    }
+                    return {
+                      kind: "validation" as const,
+                      failure: contentBatchValidationFailure(
+                        change.input,
+                        error,
+                      ),
+                    };
+                  }
+                  return {
+                    kind: "change" as const,
+                    change: { ...change, validation: fresh },
+                  };
+                } finally {
+                  this.updateProgress(plan, {
+                    revalidated: Math.min(
+                      plan.progress.total,
+                      plan.progress.revalidated + 1,
+                    ),
+                  });
                 }
-                newlyIsolated.push(
-                  contentBatchValidationFailure(change.input, error),
-                );
-                continue;
-              }
-              revalidated.push({ ...change, validation: fresh });
-            }
+              },
+            );
+            const revalidated = refreshed
+              .filter((result) => result.kind === "change")
+              .map((result) => result.change);
+            const newlyIsolated = refreshed
+              .filter((result) => result.kind === "validation")
+              .map((result) => result.failure);
             await this.context.assertCurrent(context);
             this.assertLifecycleCurrent(revision);
             this.assertPlanLive(plan);
@@ -1640,6 +1865,12 @@ export class ListingContentBatchMutations
               });
             }
             plan.changes = revalidated;
+            this.updateProgress(plan, {
+              phase: "awaiting-approval",
+              total: revalidated.length,
+              revalidated: revalidated.length,
+              currentSellerSku: null,
+            });
           } catch (error) {
             this.plans.delete(previewId);
             if (!preflightResponse) {
@@ -1663,6 +1894,13 @@ export class ListingContentBatchMutations
         run: async (session) => {
           this.assertLifecycleCurrent(revision);
           this.assertPlanLive(plan);
+          this.updateProgress(plan, {
+            phase: "submitting",
+            submitted: 0,
+            accepted: 0,
+            verified: 0,
+            currentSellerSku: null,
+          });
           const rows: ContentBatchRowResult[] = plan.changes.map((change) => ({
             sellerSku: change.input.sellerSku,
             state: "not-started",
@@ -1678,14 +1916,44 @@ export class ListingContentBatchMutations
             const change = plan.changes[index]!;
             await this.context.assertCurrent(context);
             this.assertLifecycleCurrent(revision);
+            this.updateProgress(plan, {
+              currentSellerSku: change.input.sellerSku,
+            });
             let returnedUnverifiedResult = false;
+            let dispatchedReported = false;
+            let acceptedReported = false;
+            const reportDispatched = () => {
+              if (dispatchedReported) return;
+              dispatchedReported = true;
+              this.updateProgress(plan, {
+                submitted: Math.min(
+                  plan.progress.total,
+                  plan.progress.submitted + 1,
+                ),
+              });
+            };
+            const reportAccepted = () => {
+              if (acceptedReported) return;
+              acceptedReported = true;
+              this.updateProgress(plan, {
+                accepted: Math.min(
+                  plan.progress.total,
+                  plan.progress.accepted + 1,
+                ),
+              });
+            };
             try {
               const rowResult = await this.content.attemptOne(
                 change.input,
                 change.validation.evidence,
                 session,
                 change.input.sellerSku,
-                batchPreviewOptions(),
+                {
+                  ...commitOptions,
+                  deferReadback: true,
+                  onDispatched: reportDispatched,
+                  onAccepted: reportAccepted,
+                },
               );
               returnedUnverifiedResult = true;
               this.assertLifecycleCurrent(revision);
@@ -1693,14 +1961,16 @@ export class ListingContentBatchMutations
                 rowResult,
                 change.input,
                 context,
-                batchPreviewOptions(),
+                commitOptions,
               );
               rows[index] = {
                 sellerSku: change.input.sellerSku,
-                state: rowResult.mode === "demo" ? "simulated" : "verified",
+                state: rowResult.mode === "demo" ? "simulated" : "accepted",
                 result: rowResult,
                 error: null,
               };
+              reportDispatched();
+              if (rowResult.mode === "live") reportAccepted();
             } catch (error) {
               const unknown =
                 !(error instanceof SpApiPreCommitError) &&
@@ -1727,6 +1997,12 @@ export class ListingContentBatchMutations
                 },
               };
               if (
+                !(error instanceof SpApiPreCommitError) &&
+                !dispatchedReported
+              ) {
+                reportDispatched();
+              }
+              if (
                 !returnedUnverifiedResult &&
                 isIsolatedBatchRowFailure(error)
               ) {
@@ -1737,12 +2013,114 @@ export class ListingContentBatchMutations
               break;
             }
           }
+          const acceptedIndexes = rows
+            .map((row, index) => row.state === "accepted" ? index : -1)
+            .filter((index) => index >= 0);
+          if (acceptedIndexes.length) {
+            this.updateProgress(plan, {
+              phase: "readback",
+              currentSellerSku: null,
+            });
+            let pendingIndexes = acceptedIndexes;
+            const lastErrors = new Map<number, unknown>();
+            const readbackOne = this.content.readbackOne;
+            if (readbackOne) {
+              for (const milliseconds of this.readbackDelaysMs) {
+                this.assertLifecycleCurrent(revision);
+                await this.context.assertCurrent(context);
+                if (milliseconds > 0) await this.delay(milliseconds);
+                this.assertLifecycleCurrent(revision);
+                const outcomes = await mapConcurrentOrdered(
+                  pendingIndexes,
+                  CONTENT_BATCH_READBACK_CONCURRENCY,
+                  async (rowIndex) => {
+                    const change = plan.changes[rowIndex]!;
+                    try {
+                      if (!this.content.readbackOne) {
+                        return { rowIndex, verified: false as const };
+                      }
+                      const readback = await this.content.readbackOne(
+                        change.input,
+                        change.validation.evidence,
+                        context,
+                      );
+                      if (!readback) {
+                        return { rowIndex, verified: false as const };
+                      }
+                      assertListingContentUpdateResultBinding(
+                        readback,
+                        change.input,
+                        context,
+                        commitOptions,
+                      );
+                      if (!hasVerifiedReadback(readback)) {
+                        throw new SpApiError(
+                          "Amazon 商品內容回查缺少正式驗證證據；系統不會重送 PATCH。",
+                          { status: 503, code: "UPDATE_STATUS_UNKNOWN" },
+                        );
+                      }
+                      rows[rowIndex] = {
+                        sellerSku: change.input.sellerSku,
+                        state: "verified",
+                        result: readback,
+                        error: null,
+                      };
+                      this.updateProgress(plan, {
+                        verified: plan.progress.verified + 1,
+                        currentSellerSku: change.input.sellerSku,
+                      });
+                      lastErrors.delete(rowIndex);
+                      return { rowIndex, verified: true as const };
+                    } catch (error) {
+                      lastErrors.set(rowIndex, error);
+                      return { rowIndex, verified: false as const };
+                    }
+                  },
+                );
+                pendingIndexes = outcomes
+                  .filter((outcome) => !outcome.verified)
+                  .map((outcome) => outcome.rowIndex);
+                if (!pendingIndexes.length) break;
+              }
+            }
+            for (const rowIndex of pendingIndexes) {
+              const lastError = lastErrors.get(rowIndex);
+              if (lastError) {
+                const publicError = lastError instanceof SpApiError
+                  ? publicSpApiError(
+                      lastError,
+                      "Amazon 已接受寫入，但回查尚未完成。",
+                    )
+                  : null;
+                rows[rowIndex] = {
+                  ...rows[rowIndex]!,
+                  error: {
+                    code: publicError?.code ?? "UPDATE_STATUS_UNKNOWN",
+                    message: publicError?.message ??
+                      "Amazon 已接受寫入，但回查尚未完成。",
+                    requestId: publicError?.requestId ?? null,
+                  },
+                };
+              }
+            }
+          }
+          const acceptedCount = rows.filter((row) =>
+            row.state === "accepted").length;
+          if (acceptedCount && status === "COMPLETED") {
+            status = "COMPLETED_WITH_ISSUES";
+          }
           const completedCount = rows.filter((row) =>
             row.state === "verified" || row.state === "simulated").length;
           const rejectedCount = rows.filter((row) =>
             row.state === "rejected").length;
           const unknownCount = rows.filter((row) =>
             row.state === "unknown").length;
+          this.updateProgress(plan, {
+            phase: status === "STOPPED_REJECTED" || status === "STOPPED_UNKNOWN"
+              ? "stopped"
+              : "completed",
+            currentSellerSku: null,
+          });
           return {
             previewId,
             marketplaceId,
@@ -1768,7 +2146,7 @@ export class ListingContentBatchMutations
                   : ""
               }`
               : status === "COMPLETED_WITH_ISSUES"
-                ? `已完成處理 ${(completedCount + rejectedCount + unknownCount).toLocaleString()} 個 SKU：${completedCount.toLocaleString()} 個成功、${rejectedCount.toLocaleString()} 個未送出或遭拒、${unknownCount.toLocaleString()} 個結果不明；其餘安全 SKU 均已繼續。結果不明的 SKU 請先回查 Amazon，系統不會自動重送。${
+                ? `已完成處理 ${(completedCount + acceptedCount + rejectedCount + unknownCount).toLocaleString()} 個 SKU：${completedCount.toLocaleString()} 個回查完成、${acceptedCount.toLocaleString()} 個 Amazon 已接受但約 10 分鐘內尚未回查完成、${rejectedCount.toLocaleString()} 個未送出或遭拒、${unknownCount.toLocaleString()} 個結果不明；其餘安全 SKU 均已繼續。未完成回查的 SKU 請先重新讀取 Amazon，系統不會自動重送 PATCH。${
                   plan.validationFailures.length
                     ? ` 另有 ${plan.validationFailures.length.toLocaleString()} 個 SKU 在 Amazon 預檢時已隔離且未送出。`
                     : ""

@@ -112,11 +112,13 @@ describe("Listing Content production read context", () => {
       degradedReason: "Amazon 目前只提供通用商品欄位規格；內容可唯讀。",
     });
 
+    const refreshScope = {};
     const result = await dependencies.reader.read({
       marketplaceId: MARKETPLACE_ID,
       sellerSku: SELLER_SKU,
       allowReadOnlySchema: true,
       forceCapabilityRefresh: true,
+      capabilityRefreshScope: refreshScope,
     });
 
     expect(dependencies.fetchLiveListingItem).toHaveBeenCalledOnce();
@@ -129,6 +131,7 @@ describe("Listing Content production read context", () => {
       productType: "PET_FOOD",
       allowGenericFallback: true,
       forceRefresh: true,
+      refreshScope,
     });
     expect(result.payload).toBe(dependencies.payload);
     expect(result.listing).toMatchObject({

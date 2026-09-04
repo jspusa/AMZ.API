@@ -267,6 +267,257 @@
   font-size: 22px;
 }
 
+.business-pricing-batch-controls {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #d9d9df;
+  border-radius: 14px;
+  background: #f8f8fa;
+}
+
+.business-pricing-select-all {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 9px;
+  cursor: pointer;
+}
+
+.business-pricing-select-all input,
+.business-pricing-row-checkbox {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #17643b;
+  cursor: pointer;
+}
+
+.business-pricing-select-all input {
+  grid-row: 1 / 3;
+}
+
+.business-pricing-select-all input:disabled,
+.business-pricing-row-checkbox:disabled { cursor: wait; opacity: .55; }
+.business-pricing-select-all span { font-size: 12px; font-weight: 850; }
+.business-pricing-select-all small { color: #777780; font-size: 10px; }
+
+.business-pricing-selected-count {
+  color: #28583d;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.business-pricing-batch-preview-button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 10px;
+  background: #17643b;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.business-pricing-batch-preview-button:disabled {
+  cursor: default;
+  opacity: .48;
+}
+
+.business-pricing-batch-preview,
+.business-pricing-batch-result {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid #d7c27f;
+  border-radius: 14px;
+  background: #fffaf0;
+}
+
+.business-pricing-batch-preview > div > p,
+.business-pricing-batch-result > p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; }
+.business-pricing-batch-preview > ul,
+.business-pricing-batch-result > ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.business-pricing-batch-preview > ul > li,
+.business-pricing-batch-result > ul > li {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(150px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: #fff;
+  font-size: 11px;
+}
+.business-pricing-batch-preview > .business-pricing-batch-preview-list > li {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+}
+.business-pricing-batch-preview-list > li > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+.business-pricing-batch-preview-list > li > header > span {
+  color: #765719;
+  font-weight: 850;
+}
+.business-pricing-batch-validation { display: grid; gap: 10px; }
+.business-pricing-batch-diff-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.business-pricing-batch-diff-grid > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e7e3d9;
+  border-radius: 9px;
+  background: #fffdf8;
+}
+.business-pricing-batch-diff-grid dt,
+.business-pricing-batch-diff-grid dd { margin: 0; }
+.business-pricing-batch-diff-grid dt {
+  margin-bottom: 5px;
+  color: #6c665b;
+  font-size: 10px;
+  font-weight: 800;
+}
+.business-pricing-batch-diff-grid dd {
+  color: #35332e;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.5;
+}
+.business-pricing-batch-old-value { color: #a63640; }
+.business-pricing-batch-new-value { color: #187244; }
+.business-pricing-batch-quantity-diff { grid-column: 1 / -1; }
+.business-pricing-batch-preserved {
+  display: inline-block;
+  margin-bottom: 6px;
+  color: #28583d;
+  font-size: 10px;
+}
+.business-pricing-batch-issues {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: #f7f7f8;
+}
+.business-pricing-batch-issues > p,
+.business-pricing-batch-issues li > p { margin: 0; line-height: 1.45; }
+.business-pricing-batch-issues ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.business-pricing-batch-issues li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+}
+.business-pricing-batch-issues li > span {
+  color: #9c661b;
+  font-size: 9px;
+  font-weight: 900;
+}
+.business-pricing-batch-result > ul > li small { grid-column: 1 / -1; color: #9c3540; }
+.business-pricing-batch-result > ul > li em { color: #28583d; font-style: normal; font-weight: 850; }
+.business-pricing-batch-result > .business-pricing-batch-result-list > li {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
+  padding: 12px;
+}
+.business-pricing-batch-result-list > li > header {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(150px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.business-pricing-batch-result-evidence { display: grid; gap: 10px; }
+.business-pricing-batch-result-evidence > p,
+.business-pricing-batch-result-summary,
+.business-pricing-batch-observation {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.business-pricing-batch-observation {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgb(255 255 255 / 70%);
+  color: #5f522f;
+  font-weight: 750;
+}
+.business-pricing-batch-evidence-grid,
+.business-pricing-batch-error-evidence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+.business-pricing-batch-evidence-grid > div,
+.business-pricing-batch-error-evidence > div {
+  min-width: 0;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: #f7f7f8;
+}
+.business-pricing-batch-evidence-grid dt,
+.business-pricing-batch-evidence-grid dd,
+.business-pricing-batch-error-evidence dt,
+.business-pricing-batch-error-evidence dd { margin: 0; }
+.business-pricing-batch-evidence-grid dt,
+.business-pricing-batch-error-evidence dt {
+  margin-bottom: 4px;
+  color: #6c6872;
+  font-size: 9px;
+  font-weight: 850;
+}
+.business-pricing-batch-evidence-grid dd,
+.business-pricing-batch-error-evidence dd {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+.business-pricing-batch-error-evidence { color: #9c3540; }
+.business-pricing-batch-result-issues {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.business-pricing-batch-result-issues > li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  font-size: 10px;
+}
+.business-pricing-batch-result.is-processing { border-color: #e7c47e; background: #fff8e8; }
+.business-pricing-batch-result.is-completed { border-color: #a8d8bc; background: #edf8f1; }
+.business-pricing-batch-result.is-completed-with-issues { border-color: #e7c18d; background: #fff8f1; }
+
 .business-pricing-list {
   display: grid;
   gap: 8px;
@@ -375,6 +626,14 @@
 .business-pricing-row.is-tier-mismatch {
   border-color: #e7c18d;
 }
+
+.business-pricing-row.is-batch-selected {
+  border-color: #75bd94;
+  box-shadow: inset 0 0 0 1px #75bd94;
+}
+
+.business-pricing-row-checkbox { margin-bottom: 7px; }
+.business-pricing-row-selection-note { color: #8a5a16 !important; font-weight: 750; }
 
 .business-pricing-row.has-workflow-progress {
   border-color: #9fc3e4;
@@ -701,6 +960,26 @@
   cursor: pointer;
 }
 
+.business-pricing-editor-return {
+  width: 100%;
+  min-height: 42px;
+  margin-top: 8px;
+  padding: 0 15px;
+  border: 1px solid #d7d7dd;
+  border-radius: 11px;
+  background: #fff;
+  color: #35353b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.business-pricing-editor-return:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
 .business-pricing-editor label > span { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 800; }
 .business-pricing-editor input {
   width: 100%;
@@ -957,6 +1236,8 @@
   .business-pricing-row-actions button,
   .business-pricing-readonly { width: 100%; }
   .business-pricing-activity-summary { align-items: stretch; flex-direction: column; }
+  .business-pricing-batch-controls { grid-template-columns: 1fr; }
+  .business-pricing-batch-preview-button { width: 100%; }
 }
 
 @media (max-width: 430px) {
@@ -971,6 +1252,12 @@
   .business-pricing-workflow ol { grid-template-columns: 1fr; }
   .business-pricing-row dl,
   .business-pricing-editor dl { grid-template-columns: 1fr; }
+  .business-pricing-batch-preview > ul > li,
+  .business-pricing-batch-result > ul > li,
+  .business-pricing-batch-diff-grid { grid-template-columns: 1fr; }
+  .business-pricing-batch-result-list > li > header,
+  .business-pricing-batch-evidence-grid,
+  .business-pricing-batch-error-evidence { grid-template-columns: 1fr; }
   .business-pricing-editor { padding: 0 1px 14px; }
   .business-pricing-detail-toolbar {
     align-items: flex-start;

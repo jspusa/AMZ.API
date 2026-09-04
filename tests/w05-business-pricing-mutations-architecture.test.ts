@@ -53,6 +53,9 @@ const ROUTES = [
   ["GET /api/sp-api/business-pricing", "read"],
   ["POST /api/sp-api/business-pricing", "preview"],
   ["PATCH /api/sp-api/business-pricing", "commit"],
+  ["GET /api/sp-api/business-pricing/batch", "batchRead"],
+  ["POST /api/sp-api/business-pricing/batch", "batchPreview"],
+  ["PATCH /api/sp-api/business-pricing/batch", "batchCommit"],
 ] as const;
 
 const LEGACY_ROUTER_OWNERS = [
@@ -79,7 +82,7 @@ const LEGACY_SP_POLICY = [
 ] as const;
 
 describe("W05 Business Pricing mutation architecture", () => {
-  it("delegates the three exact public routes directly to one closed owner", () => {
+  it("delegates the exact public routes directly to one closed owner", () => {
     const router = source("../src/main/api-router.ts");
 
     for (const [key, operation] of ROUTES) {
@@ -107,7 +110,7 @@ describe("W05 Business Pricing mutation architecture", () => {
     expect(legacyOwners).toEqual([]);
     expect(directOperations).toEqual([]);
     expect(router).toMatch(
-      /createBusinessPricingMutations\(\{\s*context:\s*this\.spExecutionContext,\s*writeGate:\s*this\.writeGate,\s*priceObserver:\s*this\.priceMutations,\s*gateway:\s*businessPricingGatewayProduction,\s*\}\)/su,
+      /createBusinessPricingMutations\(\{\s*context:\s*this\.spExecutionContext,\s*writeGate:\s*this\.writeGate,\s*priceObserver:\s*this\.priceMutations,\s*gateway:\s*businessPricingGatewayProduction,\s*getBatchAuditJob:\s*\(request\)\s*=>\s*this\.standaloneAuditCoordinator\.getJob\(request\),\s*\}\)/su,
     );
     expect(router).not.toMatch(
       /businessPricingGatewayProduction\.(?:read|validationPreview|commitOnce|replaceDemoContribution)/u,

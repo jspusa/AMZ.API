@@ -1,6 +1,7 @@
 type ContentConfirmationControlsProps = {
   sellerSku: string;
   actionLoading: boolean;
+  disabled?: boolean;
   error: string | null;
   onCommit: () => void;
 };
@@ -8,6 +9,7 @@ type ContentConfirmationControlsProps = {
 export function ContentConfirmationControls({
   sellerSku,
   actionLoading,
+  disabled = false,
   error,
   onCommit,
 }: ContentConfirmationControlsProps) {
@@ -22,7 +24,7 @@ export function ContentConfirmationControls({
         className="price-primary-button danger-button confirmation-submit"
         type="button"
         onClick={onCommit}
-        disabled={actionLoading}
+        disabled={actionLoading || disabled}
         data-loading={actionLoading ? "true" : "false"}
       >
         {buttonLabel}

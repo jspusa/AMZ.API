@@ -445,7 +445,9 @@ export class ApiRouter {
         writeGate: this.writeGate,
         priceObserver: this.priceMutations,
         gateway: businessPricingGatewayProduction,
-    });
+        getBatchAuditJob: (request) =>
+          this.standaloneAuditCoordinator.getJob(request),
+      });
     const advertising = input.advertising ?? null;
     const demoReportsAdapter = input.demoReportsAdapter ??
       createDemoReportsAdapter();
@@ -756,6 +758,7 @@ export class ApiRouter {
     this.advertisingCoordinator.clear();
     this.brandSalesCoordinator.clear();
     this.businessPricingAuditOwner.clear();
+    this.businessPricingMutations.clear?.();
     this.subscriptionAuditOwner.clear();
     this.unboundVariationAuditOwner.clear();
     this.agedInventoryAuditOwner.clear();
@@ -967,6 +970,21 @@ export class ApiRouter {
           operation: "commit",
           request,
         });
+      case "POST /api/sp-api/business-pricing/batch":
+        return this.businessPricingMutations.handle({
+          operation: "batchPreview",
+          request,
+        });
+      case "GET /api/sp-api/business-pricing/batch":
+        return this.businessPricingMutations.handle({
+          operation: "batchRead",
+          request,
+        });
+      case "PATCH /api/sp-api/business-pricing/batch":
+        return this.businessPricingMutations.handle({
+          operation: "batchCommit",
+          request,
+        });
       case "POST /api/sp-api/listings/batch":
         return this.statelessCapabilities.batchListings(request);
       case "GET /api/sp-api/listing-content":
@@ -987,6 +1005,11 @@ export class ApiRouter {
       case "POST /api/sp-api/listing-content/import":
         return this.listingContentBatchMutations.handle({
           operation: "preview",
+          request,
+        });
+      case "GET /api/sp-api/listing-content/import":
+        return this.listingContentBatchMutations.handle({
+          operation: "observe",
           request,
         });
       case "PATCH /api/sp-api/listing-content/import":

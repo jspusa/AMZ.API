@@ -485,15 +485,6 @@ export default function BusinessPricingEditor({
           <span>安全調整 B2B PRICE</span>
           <strong>{listing.sellerSku}</strong>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            revisionRef.current += 1;
-            onClose();
-          }}
-          disabled={loading}
-          aria-label="關閉 B2B 價格編輯"
-        >×</button>
       </div>
       <dl>
         <div><dt>目前一般售價</dt><dd>{formatMoney(listing.standardPrice)}</dd></div>
@@ -839,7 +830,7 @@ export default function BusinessPricingEditor({
               >
                 <strong>會先調低 Amazon 最低價限制</strong>
                 <p>
-                  最低價是 ALL audience 的價格護欄，也可能影響一般售價／自動定價；本次只送出最低價。稍後請手動重新確認 Amazon 狀態，確認完成後重新預檢，並第二次使用 Touch ID／Windows Hello 才會送出 B2B 價格與階梯。
+                  最低價是 ALL audience 的價格護欄，也可能影響一般售價／自動定價；本次只送出最低價。主程序會自動只用 GET 受控回查，絕不重送 PATCH；確認完成後仍須重新預檢，並第二次使用 Touch ID／Windows Hello 才會送出 B2B 價格與階梯。
                 </p>
               </div>
             </>
@@ -941,6 +932,16 @@ export default function BusinessPricingEditor({
           ? "先預檢 B2B 價格與階梯折扣（不寫入）"
           : "先預檢 B2B 價格並保留原數量折扣（不寫入）"}</button>
       )}
+      <button
+        type="button"
+        className="business-pricing-editor-return"
+        onClick={() => {
+          revisionRef.current += 1;
+          onClose();
+        }}
+        disabled={loading}
+        aria-label="返回全站 B2B 價格健檢"
+      >← 返回健檢結果</button>
     </form>
   );
 }

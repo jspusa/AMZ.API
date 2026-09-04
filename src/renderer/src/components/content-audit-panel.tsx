@@ -164,13 +164,48 @@ export type ContentWorkbookBatchResult = {
     | "STOPPED_UNKNOWN";
   rows: Array<{
     sellerSku: string;
-    state: "verified" | "simulated" | "rejected" | "unknown" | "not-started";
+    state:
+      | "accepted"
+      | "verified"
+      | "simulated"
+      | "rejected"
+      | "unknown"
+      | "not-started";
     error: { message: string; requestId?: string | null } | null;
   }>;
   blockedChanges: ContentWorkbookBlockedChange[];
   skippedRows: ContentWorkbookSkippedRow[];
   validationFailures: ContentWorkbookBatchFailure["rows"];
   notice: string;
+};
+
+export type ContentWorkbookBatchProgress = {
+  phase:
+    | "ready"
+    | "revalidating"
+    | "awaiting-approval"
+    | "submitting"
+    | "readback"
+    | "completed"
+    | "stopped";
+  total: number;
+  revalidated: number;
+  submitted: number;
+  accepted: number;
+  verified: number;
+  currentSellerSku: string | null;
+  updatedAt: string;
+};
+
+export type ContentWorkbookBatchStatus = {
+  previewId: string;
+  marketplaceId: string;
+  status:
+    | "READY"
+    | "PROCESSING"
+    | ContentWorkbookBatchResult["status"];
+  progress: ContentWorkbookBatchProgress;
+  result: ContentWorkbookBatchResult | null;
 };
 
 type ReportReply = {
@@ -1048,7 +1083,14 @@ export function parseContentWorkbookBatchResult(
       typeof candidate.sellerSku !== "string" ||
       !candidate.sellerSku ||
       candidate.sellerSku.length > 100 ||
-      !["verified", "simulated", "rejected", "unknown", "not-started"].includes(
+      ![
+        "accepted",
+        "verified",
+        "simulated",
+        "rejected",
+        "unknown",
+        "not-started",
+      ].includes(
         candidate.state,
       )
     ) {
@@ -1114,6 +1156,98 @@ export function parseContentWorkbookBatchResult(
     skippedRows,
     validationFailures,
     notice: typeof value.notice === "string" ? value.notice : "批次處理完成。",
+  };
+}
+
+export function parseContentWorkbookBatchStatus(
+  raw: unknown,
+  marketplaceId: string,
+  previewId: string,
+): ContentWorkbookBatchStatus {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Excel 批次進度回應格式無效。");
+  }
+  const value = raw as Record<string, unknown>;
+  const statuses = [
+    "READY",
+    "PROCESSING",
+    "COMPLETED",
+    "COMPLETED_WITH_ISSUES",
+    "STOPPED_REJECTED",
+    "STOPPED_UNKNOWN",
+  ] as const;
+  if (
+    value.previewId !== previewId ||
+    value.marketplaceId !== marketplaceId ||
+    typeof value.status !== "string" ||
+    !statuses.includes(value.status as typeof statuses[number]) ||
+    !value.progress ||
+    typeof value.progress !== "object" ||
+    Array.isArray(value.progress)
+  ) {
+    throw new Error("Excel 批次進度缺少可核對的批次身分。");
+  }
+  const progress = value.progress as Record<string, unknown>;
+  const phases = [
+    "ready",
+    "revalidating",
+    "awaiting-approval",
+    "submitting",
+    "readback",
+    "completed",
+    "stopped",
+  ] as const;
+  const counts = [
+    progress.total,
+    progress.revalidated,
+    progress.submitted,
+    progress.accepted,
+    progress.verified,
+  ];
+  if (
+    typeof progress.phase !== "string" ||
+    !phases.includes(progress.phase as typeof phases[number]) ||
+    counts.some((count) =>
+      !Number.isSafeInteger(count) || Number(count) < 0 || Number(count) > 500
+    ) ||
+    Number(progress.total) < 1 ||
+    Number(progress.revalidated) > Number(progress.total) ||
+    Number(progress.submitted) > Number(progress.total) ||
+    Number(progress.accepted) > Number(progress.submitted) ||
+    Number(progress.verified) > Number(progress.accepted) ||
+    !(
+      progress.currentSellerSku === null ||
+      (typeof progress.currentSellerSku === "string" &&
+        progress.currentSellerSku.length > 0 &&
+        progress.currentSellerSku.length <= 100)
+    ) ||
+    typeof progress.updatedAt !== "string" ||
+    !Number.isFinite(Date.parse(progress.updatedAt))
+  ) {
+    throw new Error("Excel 批次進度計數無效。");
+  }
+  const terminal = value.status !== "READY" && value.status !== "PROCESSING";
+  const result = value.result === null || value.result === undefined
+    ? null
+    : parseContentWorkbookBatchResult(value.result, marketplaceId);
+  if (result && result.previewId !== previewId) {
+    throw new Error("Excel 批次進度與完成結果不一致。");
+  }
+  return {
+    previewId,
+    marketplaceId,
+    status: value.status as ContentWorkbookBatchStatus["status"],
+    progress: {
+      phase: progress.phase as ContentWorkbookBatchProgress["phase"],
+      total: Number(progress.total),
+      revalidated: Number(progress.revalidated),
+      submitted: Number(progress.submitted),
+      accepted: Number(progress.accepted),
+      verified: Number(progress.verified),
+      currentSellerSku: progress.currentSellerSku as string | null,
+      updatedAt: progress.updatedAt,
+    },
+    result: terminal ? result : null,
   };
 }
 
@@ -1792,15 +1926,44 @@ export function ContentWorkbookBatchFailureCard({
   );
 }
 
+export function ContentWorkbookBatchProgressCard({
+  progress,
+}: {
+  progress: ContentWorkbookBatchProgress;
+}) {
+  const count = (value: number) => value.toLocaleString();
+  return (
+    <div
+      className="content-audit-batch-progress"
+      role="status"
+      aria-live="polite"
+    >
+      <strong>Excel 批次更新進度</strong>
+      <p>重新預檢 {count(progress.revalidated)}/{count(progress.total)}</p>
+      {progress.phase === "awaiting-approval" && (
+        <p>等待 Touch ID／Windows Hello</p>
+      )}
+      <p>送出 {count(progress.submitted)}/{count(progress.total)}</p>
+      <p>Amazon 已接受 {count(progress.accepted)}/{count(progress.total)}</p>
+      <p>回查完成 {count(progress.verified)}/{count(progress.total)}</p>
+      {progress.currentSellerSku && (
+        <small>目前 SKU：{progress.currentSellerSku}</small>
+      )}
+    </div>
+  );
+}
+
 export function ContentWorkbookBatchPreviewCard({
   preview,
   busy,
+  progress = null,
   acknowledged,
   onAcknowledgedChange,
   onCommit,
 }: {
   preview: ContentWorkbookBatchPreview;
   busy: boolean;
+  progress?: ContentWorkbookBatchProgress | null;
   acknowledged: boolean;
   onAcknowledgedChange: (acknowledged: boolean) => void;
   onCommit: () => void;
@@ -1955,6 +2118,9 @@ export function ContentWorkbookBatchPreviewCard({
           我已核對上述每個將寫入 SKU 的完整原值、更新值、Amazon 提醒與會被刪除的第 6 項後產品要點；略過列不會寫入。
         </span>
       </label>
+      {busy && progress && (
+        <ContentWorkbookBatchProgressCard progress={progress} />
+      )}
       <button
         type="button"
         className="price-primary-button"
@@ -1966,7 +2132,7 @@ export function ContentWorkbookBatchPreviewCard({
           : `一次確認並更新 ${preview.changes.length.toLocaleString()} 個 SKU`}
       </button>
       <small>
-        會先重新預檢整批，再要求一次本機生物辨識；單一 SKU 若遭拒或結果不明，會個別隔離並繼續後續安全 SKU，且結果不明絕不自動重送。只有帳號、站點或安全綁定失效才會停止整批。
+        會先重新預檢整批，再要求一次本機生物辨識；可安全歸屬的列級拒絕會個別隔離並繼續後續 SKU。若正式結果不明則停止尚未送出的 SKU，且絕不自動重送；帳號、站點或安全綁定失效也會停止整批。
       </small>
       <small>
         大量批次時，Touch ID／Windows Hello 只顯示實際要寫入的 SKU 數、高風險數、刪除總數與驗證碼；完整 SKU、原值與更新值以本畫面上方逐項核對清單為準。
@@ -2002,6 +2168,8 @@ export function ContentWorkbookBatchResultCard({
             <small>
               {row.state === "verified"
                 ? "已由 Amazon 回讀驗證"
+                : row.state === "accepted"
+                  ? "Amazon 已接受，等待回查完成；不會自動重送"
                 : row.state === "simulated"
                   ? "展示模式已模擬"
                   : row.state === "rejected"
@@ -2757,6 +2925,7 @@ export default function ContentAuditPanel({
   onCachedResultChange,
   initialJob = null,
   onJobChange,
+  onBatchBusyChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
@@ -2769,6 +2938,7 @@ export default function ContentAuditPanel({
   onCachedResultChange?: (cache: ContentAuditCache) => void;
   initialJob?: StandaloneAuditJob | null;
   onJobChange?: (job: StandaloneAuditJob) => void;
+  onBatchBusyChange?: (busy: boolean) => void;
 }) {
   const matchingInitialJob = initialJob?.kind === "content" &&
       initialJob.marketplaceId === marketplaceId &&
@@ -2813,29 +2983,49 @@ export default function ContentAuditPanel({
     useState<ContentWorkbookBatchAllSkippedFailure | null>(null);
   const [batchResult, setBatchResult] =
     useState<ContentWorkbookBatchResult | null>(null);
+  const [batchProgress, setBatchProgress] =
+    useState<ContentWorkbookBatchProgress | null>(null);
   const [batchBusy, setBatchBusy] = useState<"preview" | "commit" | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchIdempotencyKey, setBatchIdempotencyKey] = useState<string | null>(null);
   const [batchDiffAcknowledged, setBatchDiffAcknowledged] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const batchCommitAbortRef = useRef<AbortController | null>(null);
+  const scanFlightRef = useRef(false);
   const observerJobIdRef = useRef<string | null>(null);
   const resultHeadingRef = useRef<HTMLDivElement | null>(null);
   const marketplaceIdRef = useRef(marketplaceId);
   marketplaceIdRef.current = marketplaceId;
   const initialJobReconnectRevision = standaloneAuditReconnectRevision(initialJob);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    onBatchBusyChange?.(Boolean(batchBusy));
+  }, [batchBusy, onBatchBusyChange]);
+
+  useEffect(() => () => {
+    onBatchBusyChange?.(false);
+  }, [onBatchBusyChange]);
+
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    batchCommitAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
-    abortRef.current?.abort();
-    setReply(null);
-    setJob(null);
-    setExporting(null);
     const matchingJob = initialJob?.kind === "content" &&
         initialJob.marketplaceId === marketplaceId &&
         initialJob.mode === mode
       ? initialJob
       : null;
+    if (
+      matchingJob &&
+      observerJobIdRef.current === matchingJob.jobId
+    ) return;
+    abortRef.current?.abort();
+    scanFlightRef.current = false;
+    setReply(null);
+    setJob(null);
+    setExporting(null);
     setError(matchingJob?.ready && matchingJob.status !== "completed"
       ? matchingJob.error.message
       : null);
@@ -2858,12 +3048,15 @@ export default function ContentAuditPanel({
   }, [cachedResult, initialJobReconnectRevision, marketplaceId, mode]);
 
   useEffect(() => {
+    batchCommitAbortRef.current?.abort();
+    batchCommitAbortRef.current = null;
     setWorkbookFile(null);
     setBatchPreview(null);
     setBatchFailure(null);
     setBatchBlockedFailure(null);
     setBatchAllSkippedFailure(null);
     setBatchResult(null);
+    setBatchProgress(null);
     setBatchBusy(null);
     setBatchError(null);
     setBatchIdempotencyKey(null);
@@ -2953,6 +3146,8 @@ export default function ContentAuditPanel({
   };
 
   const startAudit = async () => {
+    if (scanFlightRef.current) return;
+    scanFlightRef.current = true;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -3000,6 +3195,7 @@ export default function ContentAuditPanel({
       );
     } finally {
       if (abortRef.current === controller) {
+        scanFlightRef.current = false;
         abortRef.current = null;
         observerJobIdRef.current = null;
       }
@@ -3189,6 +3385,7 @@ export default function ContentAuditPanel({
     setBatchBlockedFailure(null);
     setBatchAllSkippedFailure(null);
     setBatchResult(null);
+    setBatchProgress(null);
     setBatchError(null);
     setBatchIdempotencyKey(null);
     setBatchDiffAcknowledged(false);
@@ -3208,6 +3405,7 @@ export default function ContentAuditPanel({
     setBatchBlockedFailure(null);
     setBatchAllSkippedFailure(null);
     setBatchResult(null);
+    setBatchProgress(null);
     setBatchDiffAcknowledged(false);
     try {
       const form = new FormData();
@@ -3263,22 +3461,81 @@ export default function ContentAuditPanel({
       batchBusy ||
       !batchDiffAcknowledged
     ) return;
+    const preview = batchPreview;
+    const controller = new AbortController();
+    batchCommitAbortRef.current?.abort();
+    batchCommitAbortRef.current = controller;
     setBatchBusy("commit");
     setBatchError(null);
+    setBatchProgress({
+      phase: "revalidating",
+      total: preview.changes.length,
+      revalidated: 0,
+      submitted: 0,
+      accepted: 0,
+      verified: 0,
+      currentSellerSku: null,
+      updatedAt: new Date().toISOString(),
+    });
+    const observe = (async (): Promise<void> => {
+      const deadline = Date.now() + 11 * 60_000;
+      while (!controller.signal.aborted && Date.now() < deadline) {
+        const query = new URLSearchParams({
+          marketplaceId,
+          previewId: preview.previewId,
+        });
+        const response = await fetch(
+          `/api/sp-api/listing-content/import?${query.toString()}`,
+          { method: "GET", signal: controller.signal },
+        );
+        const raw = (await response.json()) as unknown;
+        if (!response.ok) {
+          throw new Error(problemMessage(
+            raw as ApiProblem,
+            "無法讀取 Excel 批次進度。",
+          ));
+        }
+        const status = parseContentWorkbookBatchStatus(
+          raw,
+          marketplaceId,
+          preview.previewId,
+        );
+        if (status.status !== "READY") setBatchProgress(status.progress);
+        if (status.result) {
+          setBatchResult(status.result);
+          return;
+        }
+        await delay(1_000, controller.signal);
+      }
+    })().catch((observerError) => {
+      if (
+        !(observerError instanceof DOMException &&
+          observerError.name === "AbortError") &&
+        !controller.signal.aborted
+      ) {
+        setBatchError(
+          observerError instanceof Error
+            ? observerError.message
+            : "無法讀取 Excel 批次進度。",
+        );
+      }
+    });
     try {
       const response = await fetch("/api/sp-api/listing-content/import", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(contentWorkbookBatchCommitBody(
-          batchPreview,
+          preview,
           marketplaceId,
           batchIdempotencyKey,
         )),
+        signal: controller.signal,
       });
       const raw = (await response.json()) as unknown;
       if (!response.ok) {
         throw new Error(problemMessage(raw as ApiProblem, "Excel 批次更新失敗。"));
       }
+      setBatchError(null);
       setBatchResult(parseContentWorkbookBatchResult(raw, marketplaceId));
       setBatchPreview(null);
       setBatchDiffAcknowledged(false);
@@ -3289,6 +3546,11 @@ export default function ContentAuditPanel({
           : "目前無法完成 Excel 批次更新。",
       );
     } finally {
+      controller.abort();
+      await observe;
+      if (batchCommitAbortRef.current === controller) {
+        batchCommitAbortRef.current = null;
+      }
       setBatchBusy(null);
     }
   };
@@ -3383,6 +3645,7 @@ export default function ContentAuditPanel({
             <ContentWorkbookBatchPreviewCard
               preview={batchPreview}
               busy={batchBusy === "commit"}
+              progress={batchProgress}
               acknowledged={batchDiffAcknowledged}
               onAcknowledgedChange={setBatchDiffAcknowledged}
               onCommit={() => void commitWorkbookImport()}
@@ -3406,6 +3669,7 @@ export default function ContentAuditPanel({
           type="button"
           onClick={() => void startAudit()}
           disabled={state !== "idle"}
+          aria-busy={state !== "idle"}
         >
           {state === "idle" ? `掃描 ${marketplaceShort} 全部 FBA 文案` : "文案健檢進行中…"}
         </button>

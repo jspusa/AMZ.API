@@ -15,6 +15,9 @@ import {
   businessPricingWorkflowProgress,
   businessPricingRowMatchesFilter,
   isBusinessPricingRowCorrectlyConfigured,
+  parseBusinessPriceUpdate,
+  parseBusinessPriceValidation,
+  parseBusinessPriceWriteStatus,
   parseBusinessPricingAuditSnapshot,
   parseBusinessPricingListingSnapshot,
   retainBusinessPricingWorkflowActivities,
@@ -27,6 +30,7 @@ import {
   type BusinessPriceWriteStatus,
   type BusinessQuantityDiscountPlan,
   type BusinessPricingWorkflowProgress,
+  type BusinessPriceValidation,
 } from "../business-pricing-audit";
 import { RECOMMENDED_BUSINESS_PRICING_CONFIGURATION_LABELS } from
   "../../../shared/business-pricing-recommendations";
@@ -42,7 +46,10 @@ import {
   supportsFixedSellerCentralHandoffs,
 } from "../seller-central-handoff";
 import { auditExportFilename } from "../audit-export-filename";
-import { publicProblemMessage } from "../write-request";
+import {
+  createRendererIdempotencyKey,
+  publicProblemMessage,
+} from "../write-request";
 import AuditDetailsDisclosure from "./audit-details-disclosure";
 import type { AuditSurfacePresentation } from "./audit-workspace-shell";
 import BusinessPricingEditor from "./business-pricing-editor";
@@ -57,6 +64,609 @@ const FILTERS: readonly Readonly<{
   { value: "configured", label: "正確設定" },
   { value: "incomplete", label: "資料未完成" },
 ];
+
+const RECOMMENDED_QUANTITY_DISCOUNT_TIERS = Object.freeze([
+  Object.freeze({ lowerBound: 5, percent: 5 }),
+  Object.freeze({ lowerBound: 10, percent: 10 }),
+  Object.freeze({ lowerBound: 15, percent: 15 }),
+  Object.freeze({ lowerBound: 20, percent: 20 }),
+]);
+
+const BUSINESS_PRICING_BATCH_OBSERVATION_DELAYS_MS = Object.freeze([
+  0,
+  1_000,
+  4_000,
+  10_000,
+  20_000,
+  30_000,
+  45_000,
+  60_000,
+  90_000,
+  100_000,
+  120_000,
+  120_000,
+]);
+
+type BusinessPricingBatchPreviewRow = Readonly<{
+  sellerSku: string;
+  stage: "minimum_price" | "business_price";
+  validation: BusinessPriceValidation;
+}>;
+
+type BusinessPricingBatchPreview = Readonly<{
+  previewId: string;
+  rows: readonly BusinessPricingBatchPreviewRow[];
+}>;
+
+type BusinessPricingBatchResultRow = Readonly<{
+  sellerSku: string;
+  stage: "minimum_price" | "business_price";
+  state:
+    | "processing"
+    | "verified"
+    | "simulated"
+    | "rejected"
+    | "unknown"
+    | "not-started";
+  validation: BusinessPriceValidation;
+  evidence:
+    | Readonly<{
+        kind: "write-status";
+        value: BusinessPriceWriteStatus;
+      }>
+    | Readonly<{
+        kind: "simulation";
+        acceptedAt: string;
+        requestId: string | null;
+        submissionId: string | null;
+        issues: readonly Readonly<{ severity: string; message: string }>[];
+        notice: string;
+      }>
+    | null;
+  error: Readonly<{
+    code: string;
+    message: string;
+    requestId: string | null;
+  }> | null;
+}>;
+
+type BusinessPricingBatchResult = Readonly<{
+  status: "PROCESSING" | "COMPLETED" | "COMPLETED_WITH_ISSUES";
+  rows: readonly BusinessPricingBatchResultRow[];
+  acceptedCount: number;
+  verifiedCount: number;
+  issueCount: number;
+  verified: boolean;
+  canResend: false;
+  notice: string;
+}>;
+
+function batchRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("B2B 批次回應無法安全辨識。");
+  }
+  return value as Record<string, unknown>;
+}
+
+function batchText(value: unknown, label: string, maximum: number): string {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > maximum ||
+    value !== value.trim() ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new Error(`B2B 批次的${label}無法安全辨識。`);
+  }
+  return value;
+}
+
+function batchStage(value: unknown): BusinessPricingBatchPreviewRow["stage"] {
+  if (value !== "minimum_price" && value !== "business_price") {
+    throw new Error("B2B 批次的處理階段無法安全辨識。");
+  }
+  return value;
+}
+
+function assertExactBatchSellerSkus(
+  rows: readonly Readonly<{ sellerSku: string }>[],
+  expectedSellerSkus: readonly string[],
+): void {
+  const actual = rows.map((row) => row.sellerSku);
+  if (
+    actual.length !== expectedSellerSkus.length ||
+    new Set(actual).size !== actual.length ||
+    actual.some((sellerSku, index) => sellerSku !== expectedSellerSkus[index])
+  ) {
+    throw new Error("B2B 批次回應與目前勾選的 Seller SKU 不一致。");
+  }
+}
+
+function sameBatchMoney(
+  left: BusinessPricingMoney | null,
+  right: BusinessPricingMoney | null,
+): boolean {
+  return left === null
+    ? right === null
+    : right !== null &&
+      left.amount === right.amount &&
+      left.currencyCode === right.currencyCode;
+}
+
+function sameBatchQuantityDiscountPlan(
+  left: BusinessQuantityDiscountPlan | null,
+  right: BusinessQuantityDiscountPlan | null,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function expectedBatchQuantityDiscountPlan(
+  row: BusinessPricingAuditRow,
+): BusinessQuantityDiscountPlan {
+  if (
+    row.quantityDiscountPlanPresence === "duplicate" &&
+    row.quantityDiscountPlan?.discountType === "percent"
+  ) return row.quantityDiscountPlan;
+  return {
+    discountType: "percent",
+    levels: RECOMMENDED_QUANTITY_DISCOUNT_TIERS.map((tier) => ({
+      lowerBound: tier.lowerBound,
+      value: tier.percent,
+    })),
+  };
+}
+
+function parseBusinessPricingBatchPreview(
+  value: unknown,
+  expectedRows: readonly BusinessPricingAuditRow[],
+  expectedMode: StandaloneAuditMode,
+  expectedMarketplaceId: string,
+): BusinessPricingBatchPreview {
+  const source = batchRecord(value);
+  if (
+    source.status !== "READY" ||
+    source.marketplaceId !== expectedMarketplaceId ||
+    !Array.isArray(source.rows)
+  ) {
+    throw new Error("B2B 批次預檢尚未準備完成。");
+  }
+  const rows = source.rows.map((value) => {
+    const row = batchRecord(value);
+    const sellerSku = batchText(row.sellerSku, "Seller SKU", 40);
+    const stage = batchStage(row.stage);
+    const validation = parseBusinessPriceValidation(row.validation);
+    const expected = expectedRows.find((candidate) =>
+      candidate.sellerSku === sellerSku
+    );
+    const requestedBusinessPrice = expected
+      ? recommendedBusinessPrice(expected.standardPrice)
+      : null;
+    if (
+      !expected ||
+      !requestedBusinessPrice ||
+      validation.mode !== expectedMode ||
+      validation.marketplaceId !== expectedMarketplaceId ||
+      validation.sellerSku !== sellerSku ||
+      validation.asin !== expected.asin ||
+      validation.productType !== expected.productType ||
+      !sameBatchMoney(validation.standardPrice, expected.standardPrice) ||
+      !sameBatchMoney(
+        validation.previousBusinessPrice,
+        expected.businessPrice,
+      ) ||
+      !sameBatchMoney(
+        validation.requestedBusinessPrice,
+        requestedBusinessPrice,
+      ) ||
+      validation.quantityDiscountPlanPresence !==
+        expected.quantityDiscountPlanPresence ||
+      !sameBatchQuantityDiscountPlan(
+        validation.previousQuantityDiscountPlan,
+        expected.quantityDiscountPlan,
+      ) ||
+      !sameBatchQuantityDiscountPlan(
+        validation.requestedQuantityDiscountPlan,
+        expectedBatchQuantityDiscountPlan(expected),
+      ) ||
+      stage !== (validation.minimumPriceChange === "lower"
+        ? "minimum_price"
+        : "business_price")
+    ) {
+      throw new Error(
+        `B2B 批次 SKU ${sellerSku} 的 Validation Preview 綁定不一致。`,
+      );
+    }
+    return {
+      sellerSku,
+      stage,
+      validation,
+    };
+  });
+  assertExactBatchSellerSkus(
+    rows,
+    expectedRows.map((row) => row.sellerSku),
+  );
+  return {
+    previewId: batchText(source.previewId, "previewId", 256),
+    rows,
+  };
+}
+
+function batchOptionalText(
+  value: unknown,
+  label: string,
+  maximum: number,
+): string | null {
+  return value === null || value === undefined
+    ? null
+    : batchText(value, label, maximum);
+}
+
+function batchTimestamp(value: unknown, label: string): string {
+  const parsed = batchText(value, label, 40);
+  if (!Number.isFinite(Date.parse(parsed))) {
+    throw new Error(`B2B 批次的${label}無法安全辨識。`);
+  }
+  return parsed;
+}
+
+function batchCount(value: unknown, label: string, maximum: number): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    Number(value) < 0 ||
+    Number(value) > maximum
+  ) {
+    throw new Error(`B2B 批次的${label}無法安全辨識。`);
+  }
+  return Number(value);
+}
+
+function waitForBatchObservation(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException("Aborted", "AbortError"));
+  }
+  if (delayMs === 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    const abort = () => {
+      globalThis.clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function parseBatchIssues(
+  value: unknown,
+): readonly Readonly<{ severity: string; message: string }>[] {
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new Error("B2B 批次的 Amazon issues 無法安全辨識。");
+  }
+  return value.map((entry) => {
+    const issue = batchRecord(entry);
+    return {
+      severity: batchText(issue.severity, "issue severity", 40),
+      message: batchText(issue.message, "issue message", 4_000),
+    };
+  });
+}
+
+function submittedBatchPreview(validation: BusinessPriceValidation) {
+  return {
+    validation,
+    body: {
+      marketplaceId: validation.marketplaceId,
+      sellerSku: validation.sellerSku,
+      expectedStandardPrice: validation.standardPrice.amount,
+      expectedBusinessPrice: validation.previousBusinessPrice?.amount ?? null,
+      newBusinessPrice: validation.requestedBusinessPrice.amount,
+      idempotencyKey: "batch-result-evidence",
+    },
+  } as const;
+}
+
+function parseMinimumPriceSimulation(
+  value: unknown,
+  validation: BusinessPriceValidation,
+): BusinessPricingBatchResultRow["evidence"] {
+  const source = batchRecord(value);
+  const sameExactValue = (actual: unknown, expected: unknown): boolean =>
+    JSON.stringify(actual) === JSON.stringify(expected);
+  if (
+    validation.mode !== "demo" ||
+    validation.minimumPriceChange !== "lower" ||
+    source.mode !== "demo" ||
+    source.status !== "SIMULATED" ||
+    source.marketplaceId !== validation.marketplaceId ||
+    source.sellerSku !== validation.sellerSku ||
+    source.asin !== validation.asin ||
+    source.productType !== validation.productType ||
+    !sameExactValue(source.standardPrice, validation.standardPrice) ||
+    !sameExactValue(
+      source.previousBusinessPrice,
+      validation.previousBusinessPrice,
+    ) ||
+    !sameExactValue(
+      source.previousMinimumPrice,
+      validation.previousMinimumPrice,
+    ) ||
+    !sameExactValue(
+      source.requestedMinimumPrice,
+      validation.requestedMinimumPrice,
+    ) ||
+    !sameExactValue(
+      source.lowestTierUnitPrice,
+      validation.lowestTierUnitPrice,
+    ) ||
+    !sameExactValue(
+      source.previousQuantityDiscountPlan,
+      validation.previousQuantityDiscountPlan,
+    ) ||
+    source.previousQuantityDiscountPlanHash !==
+      validation.previousQuantityDiscountPlanHash ||
+    source.minimumPriceProtectedHash !==
+      validation.minimumPriceProtectedHash ||
+    source.minimumPriceCanonicalPatchHash !==
+      validation.minimumPriceCanonicalPatchHash
+  ) {
+    throw new Error(
+      `B2B 批次 SKU ${validation.sellerSku} 的模擬結果與預檢不一致。`,
+    );
+  }
+  return {
+    kind: "simulation",
+    acceptedAt: batchTimestamp(source.acceptedAt, "模擬完成時間"),
+    requestId: batchOptionalText(source.requestId, "Request ID", 512),
+    submissionId: batchOptionalText(
+      source.submissionId,
+      "Submission ID",
+      512,
+    ),
+    issues: parseBatchIssues(source.issues),
+    notice: batchText(source.notice, "模擬結果說明", 4_000),
+  };
+}
+
+function assertBatchWriteStatusBinding(
+  status: BusinessPriceWriteStatus,
+  preview: BusinessPricingBatchPreviewRow,
+  expectedMode: StandaloneAuditMode,
+  expectedMarketplaceId: string,
+): void {
+  const validation = preview.validation;
+  if (
+    expectedMode !== "live" ||
+    status.marketplaceId !== expectedMarketplaceId ||
+    status.sellerSku !== preview.sellerSku ||
+    status.asin !== validation.asin ||
+    status.productType !== validation.productType ||
+    status.stage !== preview.stage ||
+    !sameBatchMoney(
+      status.previousBusinessPrice,
+      validation.previousBusinessPrice,
+    ) ||
+    !sameBatchMoney(
+      status.requestedBusinessPrice,
+      validation.requestedBusinessPrice,
+    ) ||
+    !sameBatchMoney(
+      status.previousMinimumPrice,
+      validation.previousMinimumPrice,
+    ) ||
+    !sameBatchMoney(
+      status.requestedMinimumPrice,
+      validation.requestedMinimumPrice,
+    ) ||
+    !sameBatchMoney(
+      status.lowestTierUnitPrice,
+      validation.lowestTierUnitPrice,
+    ) ||
+    !sameBatchQuantityDiscountPlan(
+      status.previousQuantityDiscountPlan,
+      validation.previousQuantityDiscountPlan,
+    ) ||
+    !sameBatchQuantityDiscountPlan(
+      status.requestedQuantityDiscountPlan,
+      validation.requestedQuantityDiscountPlan,
+    ) ||
+    status.quantityDiscountPlanChange !==
+      validation.quantityDiscountPlanChange
+  ) {
+    throw new Error(
+      `B2B 批次 SKU ${preview.sellerSku} 的正式結果與預檢不一致。`,
+    );
+  }
+}
+
+function parseBatchError(value: unknown): BusinessPricingBatchResultRow["error"] {
+  if (value === null) return null;
+  const source = batchRecord(value);
+  return {
+    code: batchText(source.code, "錯誤代碼", 120),
+    message: batchText(source.message, "錯誤說明", 4_000),
+    requestId: batchOptionalText(source.requestId, "錯誤 Request ID", 512),
+  };
+}
+
+function parseBusinessPricingBatchResult(
+  value: unknown,
+  preview: BusinessPricingBatchPreview,
+  expectedMode: StandaloneAuditMode,
+  expectedMarketplaceId: string,
+): BusinessPricingBatchResult {
+  const source = batchRecord(value);
+  if (
+    source.status !== "PROCESSING" &&
+    source.status !== "COMPLETED" &&
+    source.status !== "COMPLETED_WITH_ISSUES"
+  ) {
+    throw new Error("B2B 批次送出狀態無法安全辨識。");
+  }
+  if (!Array.isArray(source.rows)) {
+    throw new Error("B2B 批次送出結果無法安全辨識。");
+  }
+  const rows = source.rows.map((value) => {
+    const row = batchRecord(value);
+    if (
+      row.state !== "processing" &&
+      row.state !== "verified" &&
+      row.state !== "simulated" &&
+      row.state !== "rejected" &&
+      row.state !== "unknown" &&
+      row.state !== "not-started"
+    ) {
+      throw new Error("B2B 批次的商品狀態無法安全辨識。");
+    }
+    const state = row.state as BusinessPricingBatchResultRow["state"];
+    const sellerSku = batchText(row.sellerSku, "Seller SKU", 40);
+    const stage = batchStage(row.stage);
+    const previewRow = preview.rows.find((candidate) =>
+      candidate.sellerSku === sellerSku
+    );
+    if (!previewRow || previewRow.stage !== stage) {
+      throw new Error("B2B 批次正式結果與 Validation Preview 不一致。");
+    }
+    const error = parseBatchError(row.error);
+    let evidence: BusinessPricingBatchResultRow["evidence"] = null;
+    if (state === "processing" || state === "verified") {
+      if (error !== null) {
+        throw new Error("B2B 批次正式結果同時包含成功與錯誤證據。");
+      }
+      const status = parseBusinessPriceWriteStatus(row.result);
+      if (
+        status.status !== (state === "verified" ? "VERIFIED" : "PROCESSING")
+      ) {
+        throw new Error("B2B 批次正式結果與回查狀態不一致。");
+      }
+      assertBatchWriteStatusBinding(
+        status,
+        previewRow,
+        expectedMode,
+        expectedMarketplaceId,
+      );
+      evidence = { kind: "write-status", value: status };
+    } else if (state === "simulated") {
+      if (error !== null) {
+        throw new Error("B2B 批次模擬結果同時包含錯誤證據。");
+      }
+      if (previewRow.stage === "business_price") {
+        const result: BusinessPriceUpdate = parseBusinessPriceUpdate(
+          row.result,
+          submittedBatchPreview(previewRow.validation),
+        );
+        if (result.mode !== "demo" || result.status !== "SIMULATED") {
+          throw new Error("B2B 批次模擬結果無法安全辨識。");
+        }
+        evidence = {
+          kind: "simulation",
+          acceptedAt: result.acceptedAt,
+          requestId: null,
+          submissionId: null,
+          issues: result.issues,
+          notice: result.notice,
+        };
+      } else {
+        evidence = parseMinimumPriceSimulation(
+          row.result,
+          previewRow.validation,
+        );
+      }
+    } else if (row.result !== null || error === null) {
+      throw new Error("B2B 批次未送出列缺少可安全辨識的錯誤證據。");
+    }
+    return {
+      sellerSku,
+      stage,
+      state,
+      validation: previewRow.validation,
+      evidence,
+      error,
+    };
+  });
+  assertExactBatchSellerSkus(
+    rows,
+    preview.rows.map((row) => row.sellerSku),
+  );
+  const acceptedCount = batchCount(
+    source.acceptedCount,
+    "Amazon 接受數",
+    rows.length,
+  );
+  const verifiedCount = batchCount(
+    source.verifiedCount,
+    "Amazon 回查完成數",
+    rows.length,
+  );
+  const issueCount = batchCount(source.issueCount, "問題數", rows.length);
+  const actualAcceptedCount = rows.filter((row) =>
+    row.state === "processing" || row.state === "verified"
+  ).length;
+  const actualVerifiedCount = rows.filter((row) =>
+    row.state === "verified"
+  ).length;
+  const actualIssueCount = rows.filter((row) =>
+    row.state === "rejected" ||
+    row.state === "unknown" ||
+    row.state === "not-started"
+  ).length;
+  const actualVerified = rows.length > 0 && rows.every((row) =>
+    row.state === "verified" || row.state === "simulated"
+  );
+  const expectedStatus = actualIssueCount > 0
+    ? "COMPLETED_WITH_ISSUES"
+    : rows.some((row) => row.state === "processing")
+      ? "PROCESSING"
+      : "COMPLETED";
+  if (
+    source.previewId !== preview.previewId ||
+    source.marketplaceId !== expectedMarketplaceId ||
+    source.canResend !== false ||
+    typeof source.verified !== "boolean" ||
+    acceptedCount !== actualAcceptedCount ||
+    verifiedCount !== actualVerifiedCount ||
+    issueCount !== actualIssueCount ||
+    source.verified !== actualVerified ||
+    source.status !== expectedStatus
+  ) {
+    throw new Error("B2B 批次正式結果綁定無法安全辨識。");
+  }
+  return {
+    status: source.status,
+    rows,
+    acceptedCount,
+    verifiedCount,
+    issueCount,
+    verified: source.verified,
+    canResend: false,
+    notice: batchText(source.notice, "結果說明", 4_000),
+  };
+}
+
+function batchStageLabel(
+  stage: BusinessPricingBatchPreviewRow["stage"],
+): string {
+  return stage === "minimum_price"
+    ? "需先調整最低價"
+    : "B2B 價格與階梯折扣";
+}
+
+function batchResultStateLabel(
+  state: BusinessPricingBatchResultRow["state"],
+): string {
+  if (state === "processing") return "Amazon 處理中";
+  if (state === "verified") return "Amazon 回查完成";
+  if (state === "simulated") return "模擬完成";
+  if (state === "rejected") return "未送出";
+  if (state === "not-started") return "前筆結果不明，本列未送出";
+  return "結果待確認，禁止重送";
+}
 
 function formatMoney(value: BusinessPricingMoney | null): string {
   if (!value) return "—";
@@ -154,6 +764,177 @@ function QuantityDiscountPlan({
   );
 }
 
+function BatchValidationDiff({
+  validation,
+}: Readonly<{ validation: BusinessPriceValidation }>) {
+  const minimumPricePreserved = validation.minimumPriceChange === "preserve";
+  const quantityDiscountsPreserved =
+    validation.quantityDiscountPlanChange === "preserve";
+  return (
+    <div
+      className="business-pricing-batch-validation"
+      aria-label={`${validation.sellerSku} Amazon Validation Preview 完整差異`}
+    >
+      <dl className="business-pricing-batch-diff-grid">
+        <div>
+          <dt>送出前一般售價</dt>
+          <dd>{formatMoney(validation.standardPrice)}</dd>
+        </div>
+        <div>
+          <dt>目前 B2B 價格</dt>
+          <dd className="business-pricing-batch-old-value">
+            {formatMoney(validation.previousBusinessPrice)}
+          </dd>
+        </div>
+        <div>
+          <dt>建議 B2B 價格</dt>
+          <dd className="business-pricing-batch-new-value">
+            {formatMoney(validation.requestedBusinessPrice)}
+          </dd>
+        </div>
+        <div>
+          <dt>最低允許售價</dt>
+          <dd>
+            {minimumPricePreserved
+              ? <>保留 {formatMoney(validation.previousMinimumPrice)}</>
+              : <>
+                  <span className="business-pricing-batch-old-value">
+                    {formatMoney(validation.previousMinimumPrice)}
+                  </span>
+                  <span aria-hidden="true"> → </span>
+                  <span className="business-pricing-batch-new-value">
+                    {formatMoney(validation.requestedMinimumPrice)}
+                  </span>
+                </>}
+          </dd>
+        </div>
+        <div className="business-pricing-batch-quantity-diff">
+          <dt>目前數量折扣</dt>
+          <dd>
+            <QuantityDiscountPlan
+              plan={validation.previousQuantityDiscountPlan}
+              ambiguous={validation.quantityDiscountPlanPresence === "ambiguous"}
+            />
+          </dd>
+        </div>
+        <div className="business-pricing-batch-quantity-diff">
+          <dt>更新後數量折扣</dt>
+          <dd>
+            {quantityDiscountsPreserved && (
+              <span className="business-pricing-batch-preserved">完整保留</span>
+            )}
+            <QuantityDiscountPlan
+              plan={validation.requestedQuantityDiscountPlan}
+            />
+          </dd>
+        </div>
+      </dl>
+      <div className="business-pricing-batch-issues">
+        <strong>Amazon Validation Preview 提醒</strong>
+        {validation.issues.length > 0
+          ? (
+              <ul>
+                {validation.issues.map((issue, index) => (
+                  <li key={`${issue.severity}-${index}`}>
+                    <span>{issue.severity}</span>
+                    <p>{issue.message}</p>
+                  </li>
+                ))}
+              </ul>
+            )
+          : <p>沒有 Amazon 提醒。</p>}
+      </div>
+    </div>
+  );
+}
+
+function BatchResultEvidence({
+  row,
+}: Readonly<{ row: BusinessPricingBatchResultRow }>) {
+  const evidence = row.evidence;
+  return (
+    <div className="business-pricing-batch-result-evidence">
+      <BatchValidationDiff validation={row.validation} />
+      {evidence?.kind === "write-status" && (
+        <>
+          <dl className="business-pricing-batch-evidence-grid">
+            <div>
+              <dt>Amazon 接受時間</dt>
+              <dd>{evidence.value.acceptedAt}</dd>
+            </div>
+            <div>
+              <dt>Request ID</dt>
+              <dd>{evidence.value.requestId ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Submission ID</dt>
+              <dd>{evidence.value.submissionId ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Amazon 回查完成時間</dt>
+              <dd>{evidence.value.verifiedAt ?? "尚未完成"}</dd>
+            </div>
+            <div>
+              <dt>重送狀態</dt>
+              <dd>canResend: false（禁止重送）</dd>
+            </div>
+          </dl>
+          <p>{evidence.value.notice}</p>
+        </>
+      )}
+      {evidence?.kind === "simulation" && (
+        <>
+          <dl className="business-pricing-batch-evidence-grid">
+            <div>
+              <dt>模擬完成時間</dt>
+              <dd>{evidence.acceptedAt}</dd>
+            </div>
+            <div>
+              <dt>Request ID</dt>
+              <dd>{evidence.requestId ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Submission ID</dt>
+              <dd>{evidence.submissionId ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>重送狀態</dt>
+              <dd>canResend: false（禁止重送）</dd>
+            </div>
+          </dl>
+          <p>{evidence.notice}</p>
+          {evidence.issues.length > 0 && (
+            <ul className="business-pricing-batch-result-issues">
+              {evidence.issues.map((issue, index) => (
+                <li key={`${issue.severity}-${index}`}>
+                  <strong>{issue.severity}</strong>
+                  <span>{issue.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+      {row.error && (
+        <dl className="business-pricing-batch-error-evidence">
+          <div>
+            <dt>錯誤代碼</dt>
+            <dd>{row.error.code}</dd>
+          </div>
+          <div>
+            <dt>錯誤說明</dt>
+            <dd>{row.error.message}</dd>
+          </div>
+          <div>
+            <dt>Request ID</dt>
+            <dd>{row.error.requestId ?? "—"}</dd>
+          </div>
+        </dl>
+      )}
+    </div>
+  );
+}
+
 function WorkflowProgress({
   progress,
 }: Readonly<{ progress: BusinessPricingWorkflowProgress }>) {
@@ -247,6 +1028,7 @@ export default function BusinessPricingAuditPanel({
   onJobChange,
   onEditorOpenChange,
   onEditorBusyChange,
+  onBatchBusyChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
@@ -259,6 +1041,7 @@ export default function BusinessPricingAuditPanel({
   onJobChange?: (job: StandaloneAuditJob) => void;
   onEditorOpenChange?: (open: boolean) => void;
   onEditorBusyChange?: (busy: boolean) => void;
+  onBatchBusyChange?: (busy: boolean) => void;
 }) {
   const [snapshot, setSnapshot] = useState<BusinessPricingAuditSnapshot | null>(
     initialSnapshot ?? cachedSnapshot,
@@ -272,6 +1055,19 @@ export default function BusinessPricingAuditPanel({
   const [progress, setProgress] = useState<string | null>(null);
   const [selected, setSelected] =
     useState<BusinessPricingListingSnapshot | null>(null);
+  const [batchSelectedSellerSkus, setBatchSelectedSellerSkus] =
+    useState<ReadonlySet<string>>(() => new Set());
+  const [batchPreview, setBatchPreview] =
+    useState<BusinessPricingBatchPreview | null>(null);
+  const [batchResult, setBatchResult] =
+    useState<BusinessPricingBatchResult | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchObservationMessage, setBatchObservationMessage] =
+    useState<string | null>(null);
+  const [batchPreviewing, setBatchPreviewing] = useState(false);
+  const [batchCommitting, setBatchCommitting] = useState(false);
+  const [batchLockedSellerSkus, setBatchLockedSellerSkus] =
+    useState<ReadonlySet<string>>(() => new Set());
   const [editLoading, setEditLoading] = useState(false);
   const [openingSellerSku, setOpeningSellerSku] = useState<string | null>(null);
   const [job, setJob] = useState<StandaloneAuditJob | null>(
@@ -282,10 +1078,12 @@ export default function BusinessPricingAuditPanel({
       : null,
   );
   const abortRef = useRef<AbortController | null>(null);
+  const batchObservationAbortRef = useRef<AbortController | null>(null);
   const observerJobIdRef = useRef<string | null>(null);
   const editorRevisionRef = useRef(0);
   const panelRef = useRef<HTMLElement | null>(null);
   const auditScrollTopRef = useRef(0);
+  const batchSelectAllRef = useRef<HTMLInputElement | null>(null);
   const editorOpenRef = useRef(false);
   const snapshotRef = useRef<BusinessPricingAuditSnapshot | null>(snapshot);
 
@@ -302,6 +1100,26 @@ export default function BusinessPricingAuditPanel({
       current,
       writeStatus,
     ));
+  };
+
+  const publishBatchResult = (next: BusinessPricingBatchResult) => {
+    for (const row of next.rows) {
+      if (row.evidence?.kind === "write-status") {
+        rememberWriteStatus(row.evidence.value);
+      }
+    }
+    setBatchResult(next);
+    setBatchLockedSellerSkus((current) => {
+      const locked = new Set(current);
+      for (const row of next.rows) {
+        if (row.state === "processing" || row.state === "unknown") {
+          locked.add(row.sellerSku);
+        } else {
+          locked.delete(row.sellerSku);
+        }
+      }
+      return locked;
+    });
   };
 
   const rememberListingRead = (listing: BusinessPricingListingSnapshot) => {
@@ -327,12 +1145,28 @@ export default function BusinessPricingAuditPanel({
   const terminalJobError = job?.ready && job.status !== "completed"
     ? job.error.message
     : null;
+  const batchAuditBinding = useMemo(() => {
+    if (
+      !job ||
+      !visibleSnapshot ||
+      job.kind !== "businessPricing" ||
+      job.marketplaceId !== marketplaceId ||
+      job.mode !== mode ||
+      !job.ready ||
+      job.status !== "completed" ||
+      !standaloneAuditSnapshotMatchesJob(visibleSnapshot, job)
+    ) return null;
+    return { jobId: job.jobId, contextId: job.contextId } as const;
+  }, [job, marketplaceId, mode, visibleSnapshot]);
 
   const fixedSellerCentralHandoffs = supportsFixedSellerCentralHandoffs(
     typeof window === "undefined" ? null : window.fbaOS?.app,
   );
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    batchObservationAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     onEditorOpenChange?.(selected !== null);
@@ -412,6 +1246,56 @@ export default function BusinessPricingAuditPanel({
   );
 
   const workflowActivities = visibleSnapshot?.workflowActivities ?? [];
+  const processingSellerSkus = useMemo(() => new Set([
+    ...workflowActivities
+      .filter((activity) => activity.writeStatus.status === "PROCESSING")
+      .map((activity) => activity.sellerSku),
+    ...batchLockedSellerSkus,
+  ]), [batchLockedSellerSkus, workflowActivities]);
+  const eligibleVisibleRows = useMemo(() => visibleRows.filter((row) =>
+    businessPricingRowMatchesFilter(row, "problem") &&
+    !processingSellerSkus.has(row.sellerSku) &&
+    recommendedBusinessPrice(row.standardPrice) !== null
+  ), [processingSellerSkus, visibleRows]);
+  const eligibleVisibleSellerSkuKey = eligibleVisibleRows
+    .map((row) => row.sellerSku)
+    .join("\u001f");
+  const batchSelectedRows = eligibleVisibleRows.filter((row) =>
+    batchSelectedSellerSkus.has(row.sellerSku)
+  );
+  const allEligibleVisibleSelected = eligibleVisibleRows.length > 0 &&
+    batchSelectedRows.length === eligibleVisibleRows.length;
+  const someEligibleVisibleSelected = batchSelectedRows.length > 0 &&
+    !allEligibleVisibleSelected;
+  const batchBusy = batchPreviewing || batchCommitting;
+
+  useEffect(() => {
+    onBatchBusyChange?.(batchBusy);
+  }, [batchBusy, onBatchBusyChange]);
+
+  useEffect(() => () => {
+    onBatchBusyChange?.(false);
+  }, [onBatchBusyChange]);
+
+  useEffect(() => {
+    const allowed = new Set(eligibleVisibleRows.map((row) => row.sellerSku));
+    setBatchSelectedSellerSkus((current) => {
+      const retained = [...current].filter((sellerSku) => allowed.has(sellerSku));
+      if (retained.length === current.size) return current;
+      return new Set(retained);
+    });
+    setBatchPreview(null);
+    setBatchError(null);
+  // The ordered key is the stable public selection surface for this effect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eligibleVisibleSellerSkuKey]);
+
+  useEffect(() => {
+    if (batchSelectAllRef.current) {
+      batchSelectAllRef.current.indeterminate = someEligibleVisibleSelected;
+    }
+  }, [someEligibleVisibleSelected]);
+
   const workflowCounts = workflowActivities.reduce((counts, activity) => {
     const state = businessPricingWorkflowProgress(activity).state;
     counts[state] += 1;
@@ -448,11 +1332,19 @@ export default function BusinessPricingAuditPanel({
 
   const runAudit = async () => {
     abortRef.current?.abort();
+    batchObservationAbortRef.current?.abort();
+    batchObservationAbortRef.current = null;
     const controller = new AbortController();
     abortRef.current = controller;
     setLoading(true);
     setError(null);
     setSnapshot(null);
+    setBatchSelectedSellerSkus(new Set());
+    setBatchPreview(null);
+    setBatchResult(null);
+    setBatchError(null);
+    setBatchObservationMessage(null);
+    setBatchLockedSellerSkus(new Set());
     setProgress("正在建立 Amazon FBA 全商品清單…");
     editorRevisionRef.current += 1;
     setSelected(null);
@@ -663,6 +1555,223 @@ export default function BusinessPricingAuditPanel({
     publishSnapshot(nextSnapshot);
   };
 
+  const updateBatchSelection = (sellerSku: string, checked: boolean) => {
+    if (batchBusy) return;
+    batchObservationAbortRef.current?.abort();
+    batchObservationAbortRef.current = null;
+    setBatchSelectedSellerSkus((current) => {
+      const next = new Set(current);
+      if (checked) next.add(sellerSku);
+      else next.delete(sellerSku);
+      return next;
+    });
+    setBatchPreview(null);
+    setBatchResult(null);
+    setBatchError(null);
+    setBatchObservationMessage(null);
+  };
+
+  const updateVisibleBatchSelection = (checked: boolean) => {
+    if (batchBusy) return;
+    batchObservationAbortRef.current?.abort();
+    batchObservationAbortRef.current = null;
+    setBatchSelectedSellerSkus(checked
+      ? new Set(eligibleVisibleRows.map((row) => row.sellerSku))
+      : new Set());
+    setBatchPreview(null);
+    setBatchResult(null);
+    setBatchError(null);
+    setBatchObservationMessage(null);
+  };
+
+  const previewBusinessPricingBatch = async () => {
+    if (batchBusy || batchSelectedRows.length === 0) return;
+    if (!batchAuditBinding) {
+      setBatchError("請先完成目前這次 B2B 全站健檢，再批次預檢勾選商品。");
+      return;
+    }
+    const rows = [...batchSelectedRows];
+    batchObservationAbortRef.current?.abort();
+    batchObservationAbortRef.current = null;
+    setBatchPreviewing(true);
+    setBatchPreview(null);
+    setBatchResult(null);
+    setBatchError(null);
+    setBatchObservationMessage(null);
+    try {
+      const items = rows.map((row) => {
+        const recommendation = recommendedBusinessPrice(row.standardPrice);
+        if (!row.standardPrice || !recommendation) {
+          throw new Error(
+            `${row.sellerSku} 無法建立可安全辨識的 B2B 建議。`,
+          );
+        }
+        const quantityDiscountTiers =
+          row.quantityDiscountPlanPresence === "duplicate" &&
+            row.quantityDiscountPlan?.discountType === "percent"
+            ? row.quantityDiscountPlan.levels.map((level) => ({
+                lowerBound: level.lowerBound,
+                percent: level.value,
+              }))
+            : RECOMMENDED_QUANTITY_DISCOUNT_TIERS;
+        return {
+          marketplaceId,
+          sellerSku: row.sellerSku,
+          expectedStandardPrice: row.standardPrice.amount,
+          expectedBusinessPrice: row.businessPrice?.amount ?? null,
+          newBusinessPrice: recommendation.amount,
+          quantityDiscountTiers,
+          idempotencyKey: createRendererIdempotencyKey(
+            "business-price-batch",
+          ),
+        };
+      });
+      const response = await fetch("/api/sp-api/business-pricing/batch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jobId: batchAuditBinding.jobId,
+          contextId: batchAuditBinding.contextId,
+          items,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(publicProblemMessage(
+          payload,
+          "B2B 批次預檢未完成。",
+        ));
+      }
+      setBatchPreview(parseBusinessPricingBatchPreview(
+        payload,
+        rows,
+        mode,
+        marketplaceId,
+      ));
+    } catch (requestError) {
+      setBatchError(requestError instanceof Error
+        ? requestError.message
+        : "B2B 批次預檢未完成。");
+    } finally {
+      setBatchPreviewing(false);
+    }
+  };
+
+  const observeBusinessPricingBatch = async (
+    preview: BusinessPricingBatchPreview,
+    binding: Readonly<{ jobId: string; contextId: string }>,
+    controller: AbortController,
+  ) => {
+    try {
+      for (const delayMs of BUSINESS_PRICING_BATCH_OBSERVATION_DELAYS_MS) {
+        await waitForBatchObservation(delayMs, controller.signal);
+        const params = new URLSearchParams({
+          marketplaceId,
+          jobId: binding.jobId,
+          contextId: binding.contextId,
+          previewId: preview.previewId,
+        });
+        const response = await fetch(
+          `/api/sp-api/business-pricing/batch?${params}`,
+          {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal,
+          },
+        );
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(publicProblemMessage(
+            payload,
+            "目前無法唯讀回查 B2B 批次狀態。",
+          ));
+        }
+        const result = parseBusinessPricingBatchResult(
+          payload,
+          preview,
+          mode,
+          marketplaceId,
+        );
+        if (batchObservationAbortRef.current !== controller) return;
+        publishBatchResult(result);
+        if (!result.rows.some((row) => row.state === "processing")) {
+          setBatchObservationMessage(result.verified
+            ? "已用 GET 唯讀回查完成；沒有重新送出 PATCH。"
+            : "唯讀回查已結束；問題列未重送，請依列內證據處理。");
+          return;
+        }
+      }
+      if (batchObservationAbortRef.current === controller) {
+        setBatchObservationMessage(
+          "唯讀回查已達 10 分鐘上限；Amazon 已接受的 SKU 仍保持鎖定，禁止重送。請重新執行全站健檢確認最新狀態。",
+        );
+      }
+    } catch (requestError) {
+      if (requestError instanceof Error && requestError.name === "AbortError") {
+        return;
+      }
+      if (batchObservationAbortRef.current === controller) {
+        setBatchObservationMessage(
+          `${requestError instanceof Error
+            ? requestError.message
+            : "目前無法唯讀回查 B2B 批次狀態。"} Amazon 已接受的 SKU 仍保持鎖定，禁止重送。`,
+        );
+      }
+    } finally {
+      if (batchObservationAbortRef.current === controller) {
+        batchObservationAbortRef.current = null;
+      }
+    }
+  };
+
+  const commitBusinessPricingBatch = async () => {
+    if (batchBusy || !batchPreview) return;
+    if (!batchAuditBinding) {
+      setBatchError("目前健檢工作已變更；請重新完成 B2B 全站健檢與批次預檢。");
+      return;
+    }
+    const preview = batchPreview;
+    const binding = batchAuditBinding;
+    batchObservationAbortRef.current?.abort();
+    batchObservationAbortRef.current = null;
+    setBatchCommitting(true);
+    setBatchError(null);
+    setBatchObservationMessage(null);
+    try {
+      const response = await fetch("/api/sp-api/business-pricing/batch", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ previewId: preview.previewId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(publicProblemMessage(
+          payload,
+          "B2B 批次送出未完成。",
+        ));
+      }
+      const result = parseBusinessPricingBatchResult(
+        payload,
+        preview,
+        mode,
+        marketplaceId,
+      );
+      publishBatchResult(result);
+      setBatchSelectedSellerSkus(new Set());
+      if (result.rows.some((row) => row.state === "processing")) {
+        const controller = new AbortController();
+        batchObservationAbortRef.current = controller;
+        void observeBusinessPricingBatch(preview, binding, controller);
+      }
+    } catch (requestError) {
+      setBatchError(requestError instanceof Error
+        ? requestError.message
+        : "B2B 批次送出未完成。");
+    } finally {
+      setBatchCommitting(false);
+    }
+  };
+
   const exportExcel = async () => {
     if (
       !visibleSnapshot ||
@@ -729,13 +1838,6 @@ export default function BusinessPricingAuditPanel({
       {selected ? (
         <div className="business-pricing-detail-view">
           <div className="business-pricing-detail-toolbar">
-            <button
-              type="button"
-              onClick={closeEditor}
-              disabled={editLoading}
-              aria-label="返回全站 B2B 價格健檢"
-              autoFocus
-            >← 返回健檢結果</button>
             <div>
               <span>安全調整 B2B 價格</span>
               <strong>{selected.sellerSku}</strong>
@@ -764,7 +1866,7 @@ export default function BusinessPricingAuditPanel({
           <h3>找出未設定或高於一般售價的企業價格</h3>
           <p>同時核對 Business Price 與數量折扣；商品列可直接安全預檢，或前往 Amazon 後台。</p>
         </div>
-        <button type="button" className="price-primary-button" onClick={() => void runAudit()} disabled={loading || editLoading}>
+        <button type="button" className="price-primary-button" onClick={() => void runAudit()} disabled={loading || editLoading || batchBusy}>
           {loading ? "健檢中…" : snapshot ? "重新健檢" : "開始全站 B2B 價格健檢"}
         </button>
       </div>
@@ -822,6 +1924,7 @@ export default function BusinessPricingAuditPanel({
                     : ""
                 }`}
                 aria-pressed={filter === option.value}
+                disabled={batchBusy}
                 onClick={() => setFilter(option.value)}
               >
                 <span>{option.label}</span><strong>{rowCount(visibleSnapshot, option.value)}</strong>
@@ -839,9 +1942,118 @@ export default function BusinessPricingAuditPanel({
                 aria-label="搜尋 B2B 價格健檢 SKU"
                 autoComplete="off"
                 spellCheck={false}
+                disabled={batchBusy}
               />
             </label>
           </div>
+          <div
+            className="business-pricing-batch-controls"
+            aria-label="B2B 批次選取與操作"
+          >
+            <label className="business-pricing-select-all">
+              <input
+                ref={batchSelectAllRef}
+                type="checkbox"
+                checked={allEligibleVisibleSelected}
+                aria-checked={someEligibleVisibleSelected
+                  ? "mixed"
+                  : allEligibleVisibleSelected}
+                aria-label="全選目前可見且可批次處理的 B2B SKU"
+                disabled={eligibleVisibleRows.length === 0 || batchBusy}
+                onChange={(event) => updateVisibleBatchSelection(
+                  event.target.checked,
+                )}
+              />
+              <span>全選目前可處理商品</span>
+              <small>{eligibleVisibleRows.length} 個可選</small>
+            </label>
+            <strong
+              className="business-pricing-selected-count"
+              role="status"
+              aria-live="polite"
+              aria-label="B2B 批次已選數量"
+            >已選 {batchSelectedRows.length} 個 SKU</strong>
+            <button
+              type="button"
+              className="business-pricing-batch-preview-button"
+              aria-label="批次預檢已選 B2B SKU"
+              disabled={
+                batchSelectedRows.length === 0 ||
+                batchBusy ||
+                !batchAuditBinding
+              }
+              onClick={() => void previewBusinessPricingBatch()}
+            >{batchPreviewing
+                ? "批次預檢中…"
+                : `批次預檢 ${batchSelectedRows.length} 個建議（零寫入）`}</button>
+          </div>
+          {batchError && (
+            <div className="price-error business-pricing-batch-error" role="alert">
+              {batchError}
+            </div>
+          )}
+          {batchPreview && !batchResult && (
+            <section
+              className="business-pricing-batch-preview"
+              aria-label="B2B 批次預檢結果"
+            >
+              <div>
+                <strong>批次預檢已完成 · {batchPreview.rows.length} 個 SKU</strong>
+                <p>目前仍是零寫入；請核對每列階段後，再明確確認送出。</p>
+              </div>
+              <ul className="business-pricing-batch-preview-list">
+                {batchPreview.rows.map((row) => (
+                  <li key={row.sellerSku}>
+                    <header>
+                      <strong>{row.sellerSku}</strong>
+                      <span>{batchStageLabel(row.stage)}</span>
+                    </header>
+                    <BatchValidationDiff validation={row.validation} />
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="price-primary-button"
+                aria-label="確認送出勾選 B2B SKU"
+                disabled={batchBusy}
+                onClick={() => void commitBusinessPricingBatch()}
+              >{batchCommitting
+                  ? "正在等待 Notebook Key 確認…"
+                  : `確認送出勾選的 ${batchPreview.rows.length} 個 SKU`}</button>
+            </section>
+          )}
+          {batchResult && (
+            <section
+              className={`business-pricing-batch-result is-${
+                batchResult.status.toLocaleLowerCase("en-US").replaceAll("_", "-")
+              }`}
+              aria-label="B2B 批次送出結果"
+              role="status"
+            >
+              <strong>{batchResult.notice}</strong>
+              <p className="business-pricing-batch-result-summary">
+                Amazon 接受 {batchResult.acceptedCount} 個 · 回查完成 {batchResult.verifiedCount} 個 · 問題 {batchResult.issueCount} 個
+              </p>
+              {batchObservationMessage && (
+                <p className="business-pricing-batch-observation">
+                  {batchObservationMessage}
+                </p>
+              )}
+              <ul className="business-pricing-batch-result-list">
+                {batchResult.rows.map((row) => (
+                  <li key={row.sellerSku}>
+                    <header>
+                      <strong>{row.sellerSku}</strong>
+                      <span>{batchStageLabel(row.stage)}</span>
+                      <em>{batchResultStateLabel(row.state)}</em>
+                    </header>
+                    <BatchResultEvidence row={row} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <p className="business-pricing-notice">
             本次已核對 {visibleSnapshot.summary.totalFbaSkuCount} 個 FBA SKU；需要手動處理時可從商品列開啟 Amazon 後台。
           </p>
@@ -879,12 +2091,37 @@ export default function BusinessPricingAuditPanel({
                   row.recommendedQuantityDiscountMismatch
                     ? " is-tier-mismatch"
                     : ""
-                }${rowWorkflow ? " has-workflow-progress" : ""}`}
+                }${rowWorkflow ? " has-workflow-progress" : ""}${
+                  batchSelectedSellerSkus.has(row.sellerSku)
+                    ? " is-batch-selected"
+                    : ""
+                }`}
                 role="listitem"
               >
                 <div>
+                  {eligibleVisibleRows.some((candidate) =>
+                    candidate.sellerSku === row.sellerSku
+                  ) && (
+                    <input
+                      type="checkbox"
+                      className="business-pricing-row-checkbox"
+                      checked={batchSelectedSellerSkus.has(row.sellerSku)}
+                      aria-label={`選取 Seller SKU ${row.sellerSku} 進行 B2B 批次預檢`}
+                      disabled={batchBusy}
+                      onChange={(event) => updateBatchSelection(
+                        row.sellerSku,
+                        event.target.checked,
+                      )}
+                    />
+                  )}
                   <strong>{row.title || row.sellerSku}</strong>
                   <small>{row.sellerSku} · {row.asin || "無 ASIN"}</small>
+                  {businessPricingRowMatchesFilter(row, "problem") &&
+                    processingSellerSkus.has(row.sellerSku) && (
+                    <small className="business-pricing-row-selection-note">
+                      {row.sellerSku} 已有 Amazon 處理中的更新，不能加入本次批次
+                    </small>
+                  )}
                 </div>
                 <dl>
                   <div><dt>一般售價</dt><dd>{formatMoney(row.standardPrice)}</dd></div>
@@ -915,7 +2152,7 @@ export default function BusinessPricingAuditPanel({
                   <button
                     type="button"
                     onClick={() => void openEditor(row)}
-                    disabled={editLoading || loading}
+                    disabled={editLoading || loading || batchBusy}
                     aria-busy={openingSellerSku === row.sellerSku}
                   >{openingSellerSku === row.sellerSku
                       ? "正在讀取 Amazon…"
@@ -932,7 +2169,7 @@ export default function BusinessPricingAuditPanel({
                     type="button"
                     className="business-pricing-seller-central"
                     onClick={() => void openSellerCentralInventory(row.sellerSku)}
-                    disabled={!fixedSellerCentralHandoffs}
+                    disabled={!fixedSellerCentralHandoffs || batchBusy}
                   >前往 Amazon 後台 ↗</button>
                 </div>
                 {rowWorkflow && <WorkflowProgress progress={rowWorkflow} />}

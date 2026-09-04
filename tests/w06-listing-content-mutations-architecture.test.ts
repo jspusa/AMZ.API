@@ -148,7 +148,7 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
     );
   });
 
-  it("keeps the owner public port limited to four semantic operations", () => {
+  it("keeps the owner public port limited to five semantic operations", () => {
     const owner = optionalSource("../src/main/listing-content-mutations.ts");
     const port = section(
       owner,
@@ -165,6 +165,7 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
       "readOne",
       "previewOne",
       "attemptOne",
+      "readbackOne",
     ]);
     expect(port).not.toMatch(/\bcommitOne\b/u);
     expect(port).not.toMatch(/\bfence\b/u);
@@ -363,7 +364,7 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
     expect(forbiddenConsumers).toEqual([]);
   });
 
-  it("keeps the W07 batch bridge on owner preview and attempt operations only", () => {
+  it("keeps the W07 batch bridge on owner preview, attempt, and readback operations only", () => {
     const router = source("../src/main/api-router.ts");
     const batch = source("../src/main/listing-content-batch-mutations.ts");
     const ownerCalls = [...new Set([...batch.matchAll(
@@ -380,7 +381,7 @@ describe("W06 single-SKU Listing Content mutation architecture", () => {
     expect(router).not.toContain("private contentBatchPreviewPayload");
     expect(router).not.toContain("private previewContentWorkbookImport");
     expect(router).not.toContain("private commitContentWorkbookImport");
-    expect(ownerCalls).toEqual(["previewOne", "attemptOne"]);
+    expect(ownerCalls).toEqual(["previewOne", "attemptOne", "readbackOne"]);
     expect(forbidden).toEqual([]);
   });
 

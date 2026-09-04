@@ -39,11 +39,15 @@ const REVIEWED_ROUTES = [
   { method: "GET", path: "/api/sp-api/business-pricing" },
   { method: "POST", path: "/api/sp-api/business-pricing" },
   { method: "PATCH", path: "/api/sp-api/business-pricing" },
+  { method: "GET", path: "/api/sp-api/business-pricing/batch" },
+  { method: "POST", path: "/api/sp-api/business-pricing/batch" },
+  { method: "PATCH", path: "/api/sp-api/business-pricing/batch" },
   { method: "POST", path: "/api/sp-api/listings/batch" },
   { method: "GET", path: "/api/sp-api/listing-content" },
   { method: "POST", path: "/api/sp-api/listing-content" },
   { method: "PATCH", path: "/api/sp-api/listing-content" },
   { method: "POST", path: "/api/sp-api/listing-content/import" },
+  { method: "GET", path: "/api/sp-api/listing-content/import" },
   { method: "PATCH", path: "/api/sp-api/listing-content/import" },
   { method: "GET", path: "/api/sp-api/listing-images" },
   { method: "POST", path: "/api/sp-api/listing-images" },
@@ -433,11 +437,11 @@ function contractRouter(
 }
 
 describe("ApiRouter public contract", () => {
-  it("matches one reviewed 65-pair matrix to the raw central switch inventory", () => {
+  it("matches one reviewed 69-pair matrix to the raw central switch inventory", () => {
     const reviewed = REVIEWED_ROUTES.map(routeKey);
     const production = productionRouteInventory();
 
-    expect(REVIEWED_ROUTES).toHaveLength(65);
+    expect(REVIEWED_ROUTES).toHaveLength(69);
     expect(new Set(reviewed).size).toBe(reviewed.length);
     expect(production.statementCount).toBe(2);
     expect(production.keyDeclarationIsExact).toBe(true);
@@ -445,7 +449,7 @@ describe("ApiRouter public contract", () => {
     expect(production.switchExpressionIsKey).toBe(true);
     expect(production.defaultCount).toBe(1);
     expect(production.defaultIsExactNotFound).toBe(true);
-    expect(production.cases).toHaveLength(65);
+    expect(production.cases).toHaveLength(69);
     expect(new Set(production.cases).size).toBe(production.cases.length);
     expect([...production.cases].sort()).toEqual([...reviewed].sort());
   });

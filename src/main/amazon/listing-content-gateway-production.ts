@@ -361,7 +361,7 @@ function listingContentGatewayPatchBody(
       selectedLanguageValues.length > 5
     ) {
       throw new SpApiError(
-        "此語系目前有超過 5 個賣點，簡易編輯器不會猜測要刪除哪些舊內容；請使用全站文案 Excel 批次更新，或先到 Seller Central 整理。",
+        "此語系目前有超過 5 個產品要點；必須先完整揭露 Amazon 原值與刪除範圍並取得確認，才能安全取代。",
         { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
       );
     }
@@ -411,7 +411,7 @@ function listingContentExactBulletReplacement(
     )
   ) {
     throw new SpApiError(
-      "此語系第 6 項後的產品要點無法完整安全顯示，為避免未揭露刪除，已停止 Excel 預檢。請先到 Seller Central 整理產品要點。",
+      "此語系第 6 項後的產品要點無法完整安全顯示，為避免未揭露刪除，已停止預檢。請先到 Seller Central 整理產品要點。",
       { status: 422, code: "CONTENT_SELECTOR_UNSAFE" },
     );
   }
@@ -426,7 +426,7 @@ function listingContentExactBulletReplacement(
     )
   ) {
     throw new SpApiError(
-      "Excel 預檢顯示的前五項產品要點與 Amazon 完整同語系原值不一致，已停止送出。",
+      "預檢顯示的前五項產品要點與 Amazon 完整同語系原值不一致，已停止送出。",
       { status: 409, code: "CONTENT_CHANGED" },
     );
   }
@@ -806,7 +806,7 @@ export function createListingContentGatewayProduction(
 
   const gateway: ListingContentGateway = {
     mode: dependencies.resolveMode,
-    read: async (identity, purpose) => {
+    read: async (identity, purpose, options) => {
       if (dependencies.resolveMode(identity.marketplaceId) === "demo") {
         const snapshot = readDemo(identity);
         return listingContentGatewayObservation(
@@ -820,6 +820,9 @@ export function createListingContentGatewayProduction(
         sellerSku: identity.sellerSku,
         allowReadOnlySchema: purpose === "read-only",
         forceCapabilityRefresh: purpose === "mutation",
+        ...(options?.capabilityRefreshScope
+          ? { capabilityRefreshScope: options.capabilityRefreshScope }
+          : {}),
       });
       return listingContentGatewayObservation(
         context.listing,
