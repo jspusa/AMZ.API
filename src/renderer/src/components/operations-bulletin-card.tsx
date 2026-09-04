@@ -161,10 +161,9 @@ function calendarPickerBounds(todayDateKey: string): { min: string; max: string 
   const currentMonth = todayDateKey.slice(0, 7);
   const parsed = monthParts(currentMonth);
   if (!parsed) return { min: todayDateKey, max: todayDateKey };
-  const maximum = new Date(Date.UTC(parsed.year, parsed.month + 11, 0));
   return {
-    min: `${currentMonth}-01`,
-    max: dateKeyFromUtc(maximum),
+    min: `${parsed.year - 1}-01-01`,
+    max: `${parsed.year + 1}-12-31`,
   };
 }
 
@@ -197,6 +196,212 @@ function absoluteDateLabel(dateKey: string): string {
   if (epoch === null) return dateKey;
   const date = new Date(epoch);
   return `${date.getUTCFullYear()} 年 ${date.getUTCMonth() + 1} 月 ${date.getUTCDate()} 日（週${WEEKDAY_LABELS[date.getUTCDay()]}）`;
+}
+
+function CalendarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="3.5" y="5.5" width="17" height="15" rx="2.5" />
+      <path d="M8 3.5v4M16 3.5v4M3.5 10h17" />
+      <path d="M8 14h2M14 14h2M8 17h2M14 17h2" />
+    </svg>
+  );
+}
+
+function BulletinDatePicker({
+  ariaLabel,
+  name,
+  value,
+  min,
+  max,
+  todayDateKey,
+  displayValue,
+  onSelect,
+  onClear,
+}: Readonly<{
+  ariaLabel: string;
+  name?: string;
+  value: string;
+  min: string;
+  max: string;
+  todayDateKey: string;
+  displayValue?: (dateKey: string) => string;
+  onSelect: (dateKey: string) => void;
+  onClear?: () => void;
+}>) {
+  const currentYear = Number(todayDateKey.slice(0, 4));
+  const years = [currentYear - 1, currentYear, currentYear + 1];
+  const [open, setOpen] = useState(false);
+  const [step, setStep] = useState<"month" | "day">("month");
+  const [year, setYear] = useState(currentYear);
+  const [monthKey, setMonthKey] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (open) closeRef.current?.focus();
+  }, [open]);
+
+  const closePicker = () => {
+    setOpen(false);
+    queueMicrotask(() => triggerRef.current?.focus());
+  };
+
+  const openPicker = () => {
+    const minimumYear = isDateKey(min) ? Number(min.slice(0, 4)) : currentYear;
+    const valueYear = isDateKey(value)
+      ? Number(value.slice(0, 4))
+      : Math.max(currentYear, minimumYear);
+    setYear(years.includes(valueYear) ? valueYear : currentYear);
+    setMonthKey(null);
+    setStep("month");
+    setOpen(true);
+  };
+
+  const chooseMonth = (month: number) => {
+    setMonthKey(`${year}-${String(month).padStart(2, "0")}`);
+    setStep("day");
+  };
+
+  const monthIsAvailable = (candidate: string) => {
+    const first = `${candidate}-01`;
+    const parsed = monthParts(candidate);
+    if (!parsed) return false;
+    const last = dateKeyFromUtc(new Date(Date.UTC(parsed.year, parsed.month, 0)));
+    return last >= min && first <= max;
+  };
+
+  const selectedMonth = monthKey ? monthParts(monthKey) : null;
+  const daysInMonth = selectedMonth
+    ? new Date(Date.UTC(selectedMonth.year, selectedMonth.month, 0)).getUTCDate()
+    : 0;
+  const firstWeekday = selectedMonth
+    ? new Date(Date.UTC(selectedMonth.year, selectedMonth.month - 1, 1)).getUTCDay()
+    : 0;
+
+  return (
+    <span className="bulletin-date-picker-shell">
+      <button
+        ref={triggerRef}
+        type="button"
+        name={name}
+        className="bulletin-date-trigger"
+        aria-label={ariaLabel}
+        onClick={openPicker}
+      >
+        <CalendarIcon />
+        <strong aria-live="polite">
+          {value ? (displayValue?.(value) ?? absoluteDateLabel(value)) : "選擇日期"}
+        </strong>
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <span
+          className="bulletin-date-picker-backdrop"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") closePicker();
+          }}
+        >
+          <span
+            className="bulletin-date-picker"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${ariaLabel}：${step === "month" ? "先選月份" : "再選日期"}`}
+          >
+            <span className="bulletin-date-picker-heading">
+              <span>
+                <small>{step === "month" ? "STEP 1 / 2" : "STEP 2 / 2"}</small>
+                <strong>{step === "month" ? "先選月份" : `${monthLabel(monthKey ?? "")}`}</strong>
+              </span>
+              <button ref={closeRef} type="button" onClick={closePicker} aria-label="關閉日期選擇器">×</button>
+            </span>
+            {step === "month" ? (
+              <>
+                <span className="bulletin-date-picker-years" aria-label="可選年份">
+                  {years.map((candidateYear) => (
+                    <button
+                      type="button"
+                      key={candidateYear}
+                      aria-label={`選擇 ${candidateYear} 年`}
+                      aria-pressed={year === candidateYear}
+                      onClick={() => setYear(candidateYear)}
+                    >
+                      {candidateYear} 年
+                    </button>
+                  ))}
+                </span>
+                <span className="bulletin-date-picker-months">
+                  {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => {
+                    const candidate = `${year}-${String(month).padStart(2, "0")}`;
+                    return (
+                      <button
+                        type="button"
+                        key={candidate}
+                        aria-label={`選擇 ${year} 年 ${month} 月`}
+                        disabled={!monthIsAvailable(candidate)}
+                        onClick={() => chooseMonth(month)}
+                      >
+                        {month} 月
+                      </button>
+                    );
+                  })}
+                </span>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="bulletin-date-picker-back"
+                  onClick={() => setStep("month")}
+                >
+                  ‹ 重新選月份
+                </button>
+                <span className="bulletin-date-picker-weekdays" aria-hidden="true">
+                  {WEEKDAY_LABELS.map((weekday) => <span key={weekday}>{weekday}</span>)}
+                </span>
+                <span className="bulletin-date-picker-days">
+                  {Array.from({ length: firstWeekday }, (_, index) => (
+                    <span key={`blank-${index}`} aria-hidden="true" />
+                  ))}
+                  {Array.from({ length: daysInMonth }, (_, index) => index + 1).map((day) => {
+                    const candidate = `${monthKey}-${String(day).padStart(2, "0")}`;
+                    return (
+                      <button
+                        type="button"
+                        key={candidate}
+                        aria-label={`選擇 ${selectedMonth?.year} 年 ${selectedMonth?.month} 月 ${day} 日`}
+                        aria-pressed={value === candidate}
+                        disabled={candidate < min || candidate > max}
+                        onClick={() => {
+                          onSelect(candidate);
+                          closePicker();
+                        }}
+                      >
+                        {day}
+                      </button>
+                    );
+                  })}
+                </span>
+              </>
+            )}
+            {value && onClear && (
+              <button
+                type="button"
+                className="bulletin-date-picker-clear"
+                aria-label={`清除${ariaLabel.replace(/^選擇/u, "")}`}
+                onClick={() => {
+                  onClear();
+                  closePicker();
+                }}
+              >
+                清除這個日期
+              </button>
+            )}
+          </span>
+        </span>
+      )}
+    </span>
+  );
 }
 
 function promotionDateLabel(item: OperationsBoardPromotionItem): string {
@@ -562,12 +767,13 @@ export default function OperationsBulletinCard({
   const skuFactCache = useRef(new Map<string, SkuFact>());
   const [factRefresh, setFactRefresh] = useState(0);
   const boardLoadGeneration = useRef(0);
-  const calendarPickerRef = useRef<HTMLInputElement>(null);
   const [calendarMonth, setCalendarMonth] = useState(todayDateKey.slice(0, 7));
+  const [calendarDate, setCalendarDate] = useState(todayDateKey);
   const calendarBounds = calendarPickerBounds(todayDateKey);
 
   useEffect(() => {
     setCalendarMonth(todayDateKey.slice(0, 7));
+    setCalendarDate(todayDateKey);
   }, [todayDateKey]);
 
   const loadBoard = useCallback(async (signal?: AbortSignal) => {
@@ -677,21 +883,6 @@ export default function OperationsBulletinCard({
     void loadBoard();
   };
 
-  const openCalendarPicker = () => {
-    const picker = calendarPickerRef.current;
-    if (!picker) return;
-    try {
-      if (typeof picker.showPicker === "function") {
-        picker.showPicker();
-        return;
-      }
-    } catch {
-      // Older WebViews can expose showPicker without allowing it. The click
-      // fallback opens the same native year/month/day chooser.
-    }
-    picker.click();
-  };
-
   const openComposer = (nextComposer: "expiry" | "promotion") => {
     const bridge = window.fbaOS as typeof window.fbaOS &
       OperationsBoardDesktopBridge;
@@ -703,12 +894,25 @@ export default function OperationsBulletinCard({
       return;
     }
     setError(null);
+    if (nextComposer === "promotion") {
+      setPromotionDraft({
+        startDate: "",
+        endDate: "",
+        title: "",
+        note: "",
+        countdown: false,
+      });
+    }
     setComposer(nextComposer);
   };
 
   const publishDraft = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!composer || publisherBusy) return;
+    if (composer === "promotion" && !promotionDraft.startDate) {
+      setError("請先選擇促銷開始日。");
+      return;
+    }
     setPublisherBusy(true);
     setError(null);
     try {
@@ -1028,34 +1232,42 @@ export default function OperationsBulletinCard({
             </header>
             <div className="bulletin-composer-grid">
               <label>促銷開始日
-                <input
+                <BulletinDatePicker
                   name="promotionStartDate"
-                  type="date"
+                  ariaLabel="選擇促銷開始日"
+                  value={promotionDraft.startDate}
                   min={calendarBounds.min}
                   max={calendarBounds.max}
-                  value={promotionDraft.startDate}
-                  required
-                  onChange={(event) => {
-                    const startDate = event.currentTarget.value;
+                  todayDateKey={todayDateKey}
+                  onSelect={(startDate) => {
                     setPromotionDraft((current) => ({
                       ...current,
                       startDate,
+                      endDate: current.endDate && current.endDate < startDate
+                        ? ""
+                        : current.endDate,
                     }));
                   }}
                 />
               </label>
               <label>促銷結束日（選填）
-                <input
+                <BulletinDatePicker
                   name="promotionEndDate"
-                  type="date"
+                  ariaLabel="選擇促銷結束日"
+                  value={promotionDraft.endDate}
                   min={promotionDraft.startDate || calendarBounds.min}
                   max={calendarBounds.max}
-                  value={promotionDraft.endDate}
-                  onChange={(event) => {
-                    const endDate = event.currentTarget.value;
+                  todayDateKey={todayDateKey}
+                  onSelect={(endDate) => {
                     setPromotionDraft((current) => ({
                       ...current,
                       endDate,
+                    }));
+                  }}
+                  onClear={() => {
+                    setPromotionDraft((current) => ({
+                      ...current,
+                      endDate: "",
                     }));
                   }}
                 />
@@ -1127,10 +1339,6 @@ export default function OperationsBulletinCard({
               </div>
               <span>{expiryItems.length.toLocaleString("zh-TW")} 個 SKU</span>
             </header>
-            <p className="bulletin-manual-boundary">
-              <strong>人工維護效期</strong>
-              Amazon 公開 API 不提供目前 FBA 批次效期；產品效期、停售日與備註由公布欄人工維護，庫存與價格則另外唯讀同步。
-            </p>
             {expiryItems.length === 0 ? (
               <div className="bulletin-empty">
                 <strong>目前沒有即期品公告</strong>
@@ -1195,29 +1403,18 @@ export default function OperationsBulletinCard({
                 <h3 id="bulletin-calendar-title">促銷月曆</h3>
               </div>
               <div className="bulletin-calendar-navigation">
-                <input
-                  ref={calendarPickerRef}
-                  className="bulletin-calendar-date-input"
-                  type="date"
+                <BulletinDatePicker
+                  ariaLabel="選擇月曆日期"
+                  value={calendarDate}
                   min={calendarBounds.min}
                   max={calendarBounds.max}
-                  value={`${calendarMonth}-01`}
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  onChange={(event) => {
-                    if (isDateKey(event.currentTarget.value)) {
-                      setCalendarMonth(event.currentTarget.value.slice(0, 7));
-                    }
+                  todayDateKey={todayDateKey}
+                  displayValue={(dateKey) => monthLabel(dateKey.slice(0, 7))}
+                  onSelect={(dateKey) => {
+                    setCalendarDate(dateKey);
+                    setCalendarMonth(dateKey.slice(0, 7));
                   }}
                 />
-                <button
-                  type="button"
-                  aria-label="選擇月曆日期"
-                  onClick={openCalendarPicker}
-                >
-                  <strong aria-live="polite">{monthLabel(calendarMonth)}</strong>
-                  <span aria-hidden="true">▾</span>
-                </button>
               </div>
             </header>
 
@@ -1237,7 +1434,7 @@ export default function OperationsBulletinCard({
                         return (
                           <td
                             key={dateKey}
-                            className={`${dateKey.startsWith(`${calendarMonth}-`) ? "" : "is-other-month"}${dateKey === todayDateKey ? " is-today" : ""}${kinds.has("promotion") ? " has-promotion" : ""}${kinds.has("expiry") ? " has-expiry" : ""}${kinds.has("stop-sale") ? " has-stop-sale" : ""}`.trim()}
+                            className={`${dateKey.startsWith(`${calendarMonth}-`) ? "" : "is-other-month"}${dateKey === todayDateKey ? " is-today" : ""}${dateKey === calendarDate ? " is-selected" : ""}${kinds.has("promotion") ? " has-promotion" : ""}${kinds.has("expiry") ? " has-expiry" : ""}${kinds.has("stop-sale") ? " has-stop-sale" : ""}`.trim()}
                           >
                             <time dateTime={dateKey}>{Number(dateKey.slice(-2))}</time>
                             {entries.length > 0 && (

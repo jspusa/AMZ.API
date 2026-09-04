@@ -246,12 +246,19 @@ describe("operations bulletin home card", () => {
     );
 
     expect(markup.match(/class="bulletin-expiry-item"/gu)).toHaveLength(25);
-    expect(markup.match(/人工維護效期/gu)).toHaveLength(1);
+    expect(markup).not.toContain("人工維護效期");
+    expect(markup).not.toContain("Amazon 公開 API 不提供目前 FBA 批次效期");
     expect(bulletinCss).toMatch(
       /\.bulletin-expiry-list\s*\{[\s\S]*?max-height:\s*520px;[\s\S]*?overflow-y:\s*auto;/u,
     );
     expect(bulletinCss).toMatch(
       /\.bulletin-countdown\s*\{[\s\S]*?min-height:\s*7\dpx;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-countdown\s*\{[\s\S]*?align-self:\s*stretch;/u,
+    );
+    expect(bulletinCss).toMatch(
+      /\.bulletin-expiry-item\s*\{[\s\S]*?grid-template-columns:\s*76px\s+minmax\(0,\s*1fr\);/u,
     );
   });
 
@@ -376,7 +383,7 @@ describe("operations bulletin home card", () => {
     expect(markup).toContain("<svg");
     expect(markup).not.toContain('class="operations-bulletin-mark"');
     expect(markup).toContain("即期品倒數");
-    expect(markup).toContain("人工維護效期");
+    expect(markup).not.toContain("人工維護效期");
     expect(markup).toContain("ASCL01");
     expect(markup).toContain("2026 年 9 月 11 日");
     expect(markup).toContain("倒數 10 天");
@@ -473,7 +480,7 @@ describe("operations bulletin home card", () => {
     expect(endedMarkup).toContain("已結束 1 天");
   });
 
-  it("uses one bounded date-picker button instead of previous and next month arrows", () => {
+  it("uses one custom date-picker button instead of a native editable date input", () => {
     const markup = renderToStaticMarkup(
       <OperationsBulletinCard initialResponse={BOARD} todayDateKey="2026-09-15" />,
     );
@@ -485,10 +492,56 @@ describe("operations bulletin home card", () => {
     expect(navigation).not.toContain("查看上個月");
     expect(navigation).not.toContain("查看下個月");
     expect(navigation).toContain('aria-label="選擇月曆日期"');
-    expect(navigation).toContain('type="date"');
-    expect(navigation).toContain('min="2026-09-01"');
-    expect(navigation).toContain('max="2027-08-31"');
+    expect(navigation).not.toContain('type="date"');
+    expect(navigation).not.toContain("2023");
     expect(navigation.match(/<button/gu)).toHaveLength(1);
+  });
+
+  it("opens on month selection, offers only the surrounding three years, then selects a day", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("window", { fbaOS: { operationsBoard: { schemaVersion: 2 } } });
+
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(
+        <OperationsBulletinCard initialResponse={BOARD} todayDateKey="2026-09-15" />,
+      );
+    });
+    const calendarButton = renderer!.root.findByProps({
+      "aria-label": "選擇月曆日期",
+    });
+    await act(async () => calendarButton.props.onClick());
+
+    const monthDialog = renderer!.root.findByProps({
+      "aria-label": "選擇月曆日期：先選月份",
+    });
+    const monthMarkup = JSON.stringify(renderer!.toJSON());
+    expect(monthMarkup).toContain("2025");
+    expect(monthMarkup).toContain("2026");
+    expect(monthMarkup).toContain("2027");
+    expect(monthMarkup).not.toContain("2023");
+    expect(monthMarkup).toContain("先選月份");
+    expect(monthDialog.findAllByProps({
+      "aria-label": "選擇 2026 年 9 月 15 日",
+    })).toHaveLength(0);
+
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2027 年",
+    }).props.onClick());
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2027 年 4 月",
+    }).props.onClick());
+    expect(renderer!.root.findByProps({
+      "aria-label": "選擇月曆日期：再選日期",
+    })).toBeTruthy();
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2027 年 4 月 30 日",
+    }).props.onClick());
+    expect(JSON.stringify(renderer!.toJSON())).toContain("2027 年 4 月");
+    const selectedDay = renderer!.root.findByProps({ dateTime: "2027-04-30" });
+    expect(selectedDay.parent?.props.className).toContain("is-selected");
+    await act(async () => renderer!.unmount());
   });
 
   it("renders stale and unavailable states as text rather than color-only signals", () => {
@@ -703,14 +756,60 @@ describe("operations bulletin home card", () => {
     await act(async () => addPromotion!.props.onClick());
     const promotionComposerMarkup = JSON.stringify(renderer!.toJSON());
     expect(promotionComposerMarkup).toContain("登入並確認發布");
+    expect(promotionComposerMarkup).not.toContain('"type":"date"');
+    expect(promotionComposerMarkup).toContain("選擇促銷開始日");
+    expect(promotionComposerMarkup).toContain("選擇促銷結束日");
     expect(promotionComposerMarkup).toContain(
       "公告只會公開促銷名稱、日期與備註；Amazon 庫存、價格與憑證不會上傳。",
     );
     expect(promotionComposerMarkup).not.toContain("GitHub");
     const field = (name: string) => renderer!.root.findByProps({ name });
+    const dateButton = (name: string) => renderer!.root
+      .findAllByProps({ name })
+      .find((node) => node.type === "button")!;
     await act(async () => {
-      field("promotionStartDate").props.onChange({ currentTarget: { value: "2026-10-13" } });
-      field("promotionEndDate").props.onChange({ currentTarget: { value: "2026-10-15" } });
+      field("promotionTitle").props.onChange({ currentTarget: { value: "尚未選日期" } });
+      await renderer!.root.findByProps({ "aria-label": "新增促銷公告" })
+        .props.onSubmit({ preventDefault: vi.fn() });
+    });
+    expect(publish).not.toHaveBeenCalled();
+    expect(JSON.stringify(renderer!.toJSON())).toContain("請先選擇促銷開始日。");
+    await act(async () => {
+      dateButton("promotionStartDate").props.onClick();
+    });
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2026 年 10 月",
+    }).props.onClick());
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2026 年 10 月 13 日",
+    }).props.onClick());
+    await act(async () => {
+      dateButton("promotionEndDate").props.onClick();
+    });
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2026 年 10 月",
+    }).props.onClick());
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2026 年 10 月 15 日",
+    }).props.onClick());
+    await act(async () => {
+      dateButton("promotionEndDate").props.onClick();
+    });
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "清除促銷結束日",
+    }).props.onClick());
+    expect(dateButton("promotionEndDate").findByType("strong").children.join(""))
+      .toBe("選擇日期");
+    await act(async () => {
+      dateButton("promotionEndDate").props.onClick();
+    });
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2026 年 10 月",
+    }).props.onClick());
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "選擇 2026 年 10 月 15 日",
+    }).props.onClick());
+    await act(async () => {
       field("promotionTitle").props.onChange({ currentTarget: { value: "Prime 大檔" } });
       field("promotionNote").props.onChange({ currentTarget: { value: "確認折扣" } });
       field("countdown").props.onChange({ currentTarget: { checked: true } });
@@ -727,6 +826,18 @@ describe("operations bulletin home card", () => {
       note: "確認折扣",
       countdown: true,
     });
+
+    const addPromotionAgain = renderer!.root.findAllByType("button").find((button) =>
+      button.children.join("").includes("新增促銷")
+    );
+    await act(async () => addPromotionAgain!.props.onClick());
+    expect(dateButton("promotionStartDate").findByType("strong").children.join(""))
+      .toBe("選擇日期");
+    expect(dateButton("promotionEndDate").findByType("strong").children.join(""))
+      .toBe("選擇日期");
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "關閉新增促銷表單",
+    }).props.onClick());
 
     const manageButton = renderer!.root.findAllByProps({ className: "bulletin-manage" })[0];
     expect(manageButton.children.join("")).toBe("編輯／刪除");
@@ -878,6 +989,20 @@ describe("operations bulletin home card", () => {
       });
       expect(renderer!.root.findByProps({ name }).props.value).toBe(value);
     };
+    const pickDate = async (name: string, year: number, month: number, day: number) => {
+      const button = renderer!.root.findAllByProps({ name })
+        .find((node) => node.type === "button")!;
+      await act(async () => button.props.onClick());
+      await act(async () => renderer!.root.findByProps({
+        "aria-label": `選擇 ${year} 年 ${month} 月`,
+      }).props.onClick());
+      await act(async () => renderer!.root.findByProps({
+        "aria-label": `選擇 ${year} 年 ${month} 月 ${day} 日`,
+      }).props.onClick());
+      expect(JSON.stringify(renderer!.toJSON())).toContain(
+        `${year} 年 ${month} 月 ${day} 日`,
+      );
+    };
     await act(async () => buttonWithText("新增即期品")!.props.onClick());
     await changeValue("marketplaceId", "A1F83G8C2ARO7P");
     await changeValue("sellerSku", "NEW-SKU");
@@ -889,8 +1014,8 @@ describe("operations bulletin home card", () => {
         .props.onClick();
       buttonWithText("新增促銷")!.props.onClick();
     });
-    await changeValue("promotionStartDate", "2026-10-13");
-    await changeValue("promotionEndDate", "2026-10-15");
+    await pickDate("promotionStartDate", 2026, 10, 13);
+    await pickDate("promotionEndDate", 2026, 10, 15);
     await changeValue("promotionTitle", "Prime 大檔");
     await changeValue("promotionNote", "確認折扣");
     const promotionEvent: { currentTarget: { checked: boolean } | null } = {

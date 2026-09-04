@@ -47,8 +47,9 @@ describe("CSS04 visual baseline scenario", () => {
     expect(source).toContain('case "css04":');
     expect(source).toContain("count + 11 + (profile.reduced ? 1 : 0)");
     expect(source).toContain("hasExpiryInCalendar");
-    expect(source).toContain('locator(".bulletin-calendar-date-input")');
-    expect(source).toContain('fill("2026-09-01", { force: true })');
+    expect(source).toContain('name: "選擇月曆日期"');
+    expect(source).toContain('name: "選擇 2026 年 9 月"');
+    expect(source).toContain('name: "選擇 2026 年 9 月 1 日"');
     expect(source).not.toContain('getByRole("button", { name: "下個月" })');
     expect(source).toContain("promotionDates");
     expect(source).toContain("agendaTitleWidths");
