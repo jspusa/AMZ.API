@@ -149,7 +149,7 @@
 }
 
 .operations-bulletin-actions button,
-.bulletin-calendar-navigation button {
+.bulletin-calendar-navigation > .bulletin-date-picker-shell > .bulletin-date-trigger {
   min-height: 36px;
   border: 1px solid #dedee3;
   border-radius: 10px;
@@ -161,7 +161,7 @@
 }
 
 .operations-bulletin-actions button:focus-visible,
-.bulletin-calendar-navigation button:focus-visible {
+.bulletin-calendar-navigation > .bulletin-date-picker-shell > .bulletin-date-trigger:focus-visible {
   outline: 3px solid rgba(42, 104, 159, 0.3);
   outline-offset: 2px;
 }
@@ -297,6 +297,210 @@
   resize: vertical;
 }
 
+.bulletin-date-picker-shell {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.bulletin-date-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 0 9px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #cad9cf;
+  border-radius: 9px;
+  background: #fff;
+  color: #27332b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+
+.bulletin-date-trigger svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.bulletin-date-trigger strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulletin-date-picker-backdrop {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  padding: 18px;
+  place-items: center;
+  background: rgba(22, 28, 24, 0.38);
+}
+
+.bulletin-date-picker {
+  display: block;
+  width: min(430px, 100%);
+  max-height: min(650px, calc(100vh - 36px));
+  padding: 16px;
+  overflow-y: auto;
+  border: 1px solid #dce6df;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(25, 37, 29, 0.22);
+  color: #28372d;
+}
+
+.bulletin-date-picker-heading {
+  display: flex;
+  margin-bottom: 13px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bulletin-date-picker-heading small,
+.bulletin-date-picker-heading strong {
+  display: block;
+}
+
+.bulletin-date-picker-heading small {
+  color: #63806d;
+  font-size: 9px;
+  letter-spacing: .12em;
+}
+
+.bulletin-date-picker-heading strong {
+  margin-top: 2px;
+  font-size: 17px;
+}
+
+.bulletin-date-picker-heading > button {
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: #eef4f0;
+  color: #506158;
+  cursor: pointer;
+  font-size: 19px;
+}
+
+.bulletin-date-picker-years {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.bulletin-date-picker-years button,
+.bulletin-date-picker-months button,
+.bulletin-date-picker-days button,
+.bulletin-date-picker-back {
+  min-height: 42px;
+  border: 1px solid #dce4de;
+  border-radius: 10px;
+  background: #f8faf8;
+  color: #3d4c42;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.bulletin-date-picker-clear {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 10px;
+  border: 1px solid #c8d2d9;
+  border-radius: 10px;
+  color: #5b6870;
+  background: #f6f8f9;
+  font-weight: 700;
+}
+
+.bulletin-date-picker-clear:hover {
+  border-color: #9eabb3;
+  background: #eef2f4;
+}
+
+.bulletin-date-picker-years button[aria-pressed="true"] {
+  border-color: #4f7b60;
+  background: #eaf4ed;
+  color: #28523a;
+}
+
+.bulletin-date-picker-months {
+  display: grid;
+  margin-top: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.bulletin-date-picker-months button:hover,
+.bulletin-date-picker-days button:hover,
+.bulletin-date-picker-years button:hover {
+  border-color: #6e9b7d;
+  background: #edf6ef;
+}
+
+.bulletin-date-picker button:disabled {
+  cursor: not-allowed;
+  opacity: .38;
+}
+
+.bulletin-date-picker-back {
+  width: 100%;
+  margin-bottom: 10px;
+  border-color: transparent;
+  background: #f2f6f3;
+}
+
+.bulletin-date-picker-weekdays,
+.bulletin-date-picker-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.bulletin-date-picker-weekdays {
+  margin-bottom: 6px;
+  color: #7b8880;
+  font-size: 10px;
+  text-align: center;
+}
+
+.bulletin-date-picker-days button {
+  min-height: 38px;
+  padding: 0;
+}
+
+.bulletin-date-picker-days button[aria-pressed="true"] {
+  border-color: #315d42;
+  background: #315d42;
+  color: #fff;
+}
+
+.bulletin-calendar-navigation .bulletin-date-trigger {
+  min-width: 154px;
+  margin-top: 0;
+  border-color: #dedee3;
+  border-radius: 10px;
+  color: #55555a;
+}
+
 .bulletin-composer input:focus,
 .bulletin-composer select:focus,
 .bulletin-composer textarea:focus,
@@ -398,24 +602,6 @@
   font-weight: 750;
 }
 
-.bulletin-manual-boundary {
-  margin: 0 0 12px;
-  padding: 9px 10px;
-  border-left: 3px solid #8da4b7;
-  border-radius: 0 10px 10px 0;
-  background: #f4f7fa;
-  color: #607080;
-  font-size: 10px;
-  line-height: 1.55;
-}
-
-.bulletin-manual-boundary strong {
-  display: block;
-  margin-bottom: 2px;
-  color: #40586c;
-  font-size: 11px;
-}
-
 .bulletin-expiry-list {
   display: grid;
   max-height: 520px;
@@ -428,7 +614,7 @@
 .bulletin-expiry-item {
   display: grid;
   min-width: 0;
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: 76px minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid #e1e7ec;
   border-radius: 13px;
@@ -438,6 +624,7 @@
 .bulletin-countdown {
   display: grid;
   min-height: 76px;
+  align-self: stretch;
   align-content: center;
   justify-items: center;
   padding: 6px 4px;
@@ -451,6 +638,7 @@
   font-size: 10px;
   font-weight: 750;
   letter-spacing: 0.08em;
+  white-space: nowrap;
 }
 
 .bulletin-countdown strong {
@@ -621,7 +809,7 @@
   align-items: center;
 }
 
-.bulletin-calendar-navigation button {
+.bulletin-calendar-navigation > .bulletin-date-picker-shell > .bulletin-date-trigger {
   display: inline-flex;
   min-width: 148px;
   min-height: 36px;
@@ -631,25 +819,15 @@
   padding: 0 12px;
 }
 
-.bulletin-calendar-navigation button strong {
+.bulletin-calendar-navigation > .bulletin-date-picker-shell > .bulletin-date-trigger strong {
   color: #48484d;
   font-size: 12px;
   text-align: center;
 }
 
-.bulletin-calendar-navigation button span {
+.bulletin-calendar-navigation > .bulletin-date-picker-shell > .bulletin-date-trigger > span {
   color: #74747a;
   font-size: 11px;
-}
-
-.bulletin-calendar-date-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  opacity: 0;
-  pointer-events: none;
 }
 
 .bulletin-calendar-scroll {
@@ -701,6 +879,11 @@
 
 .bulletin-calendar td.is-today {
   border: 2px solid #515158;
+}
+
+.bulletin-calendar td.is-selected:not(.is-today) {
+  border-color: #5c896a;
+  box-shadow: inset 0 0 0 1px #5c896a;
 }
 
 .bulletin-calendar td.has-promotion:not(.has-expiry) {
@@ -965,7 +1148,7 @@
   }
 
   .bulletin-expiry-item {
-    grid-template-columns: 58px minmax(0, 1fr);
+    grid-template-columns: 76px minmax(0, 1fr);
   }
 
   .bulletin-countdown {

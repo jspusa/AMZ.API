@@ -903,8 +903,9 @@ async (page) => {
 
           currentState = `${phase.name}/${profile.name}/operations-bulletin`;
           await page.locator(".operations-bulletin").scrollIntoViewIfNeeded();
-          const calendarDateInput = page.locator(".bulletin-calendar-date-input");
-          await calendarDateInput.fill("2026-09-01", { force: true });
+          await page.getByRole("button", { name: "選擇月曆日期" }).click();
+          await page.getByRole("button", { name: "選擇 2026 年 9 月" }).click();
+          await page.getByRole("button", { name: "選擇 2026 年 9 月 1 日" }).click();
           await page.waitForFunction(() =>
             document
               .querySelector(".bulletin-calendar-navigation strong")
