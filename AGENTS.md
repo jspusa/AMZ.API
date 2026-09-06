@@ -22,6 +22,25 @@ Non-negotiable project rules:
 - CI cannot prove live Amazon behavior or real Windows Hello hardware. State
   clearly what still requires the user's Notebook Key and Amazon account.
 
+## Agent orchestration
+
+- Use subagents proactively when a task can be meaningfully decomposed into
+  independent workstreams and parallel execution improves speed, coverage,
+  or quality.
+- Do not use subagents unnecessarily for small, localized, or highly coupled
+  changes. Prefer the primary agent when parallelism would add coordination
+  overhead without meaningful benefit.
+- For large repository-level investigations or changes, consider parallel
+  workstreams for frontend/renderer, main/API, Amazon integrations, security,
+  and tests when those workstreams are sufficiently independent.
+- The primary agent remains responsible for understanding the overall task,
+  integrating subagent findings, resolving conflicts, and validating the final
+  repository-wide result.
+- Avoid having multiple agents modify the same files concurrently unless there
+  is a clear reason to do so.
+- Subagents must follow the same `AGENTS.md`, `docs/CODEX_HANDOFF.md`, security,
+  Amazon-write, testing, and repository rules as the primary agent.
+
 ## Agent skills
 
 ### Issue tracker
