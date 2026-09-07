@@ -24,7 +24,7 @@ Replace `Pending` only after the named evidence exists. Preserve failed attempts
 
 | Layer | Status / evidence needed |
 |---|---|
-| Source and PR | Pending: final candidate SHA, PR, merge SHA |
+| Source and PR | [PR #206](https://github.com/jspusa/AMZ.API/pull/206), initial remote head `69818c58ae073d62e6dc0b808c82d01940be26eb` exactly matched locally validated tree `b490c404472e6afeb33eccad2e34dfdc1cca58c3`; final merge evidence pending |
 | Local checks | Passed 2026-09-07: `npm run check` (265 files / 2709 tests, typecheck, build and stylesheet parity), `npm audit --omit=dev` (0 vulnerabilities), `git diff --check` |
 | Exact-main CI | Pending: Validate, Pages, macOS and Windows runs for final source |
 | Pages bytes | Pending: deployed asset names/hash matched with exact source build |
@@ -69,3 +69,5 @@ Final local integration: **265 test files / 2709 tests passed**; typecheck, prod
 Final initial script: `assets/index-BzG71_Wh.js`, **1,868,976 bytes**, SHA-256 `ee032ae3dec84410c1992f5bc976ba27392685e695f059af878d43766b8ead71`; **7.11% smaller** than baseline. CSS ordered rule-stream fingerprint: `e5233b94b5fe1a24ca189ec44c3ca42606e1336d3610e517c12a36dad2f65a10`.
 
 Independent Standards and Spec reviews found and resolved three substantive regressions before submission: zero-order lead-time risk, lazy variation return/focus, and initialization disk-flush failure incorrectly entering destructive corruption recovery. The final reviews reported no open findings within the approved scope.
+
+PR CI first attempt: Linux [Validate 34086478685](https://github.com/jspusa/AMZ.API/actions/runs/34086478685) passed at `69818c58ae073d62e6dc0b808c82d01940be26eb`. Windows [34086478642](https://github.com/jspusa/AMZ.API/actions/runs/34086478642) found one timing-dependent assertion in the brand/listing dedupe test (2,704 passed, 1 failed, 4 existing platform/tool skips). The test now waits for both actual gateway-start signals instead of assuming file durability work completes after one fake millisecond; it still asserts exactly one POST at start and completion. Production source is unchanged by this correction; all 36 dedupe tests pass locally. Windows CI must pass on the correction before merge.
