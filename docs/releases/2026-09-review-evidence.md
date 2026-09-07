@@ -1,6 +1,6 @@
 # September review — version evidence
 
-Recorded 2026-09-07. This ledger separates observable layers; an entry is evidence for its exact version and time only. Work in progress is 0.1.55; do not call it released until the relevant rows have new evidence.
+Recorded 2026-09-07. This ledger separates observable layers; an entry is evidence for its exact version and time only. 0.1.55 source is merged and the control console is deployed. Desktop packaging and physical acceptance remain distinct layers below.
 
 ## Baseline checked by GitHub read-only review
 
@@ -18,18 +18,18 @@ Recorded 2026-09-07. This ledger separates observable layers; an entry is eviden
 | Main protection | Rulesets GET returned `[]`; branch protection GET returned 403 | Rulesets response only | Legacy branch protection is unknown, not absent |
 | Live Amazon / native biometrics | No new live run in this review | Nothing further | Historical accepted writes are not 0.1.54/0.1.55 verified writes |
 
-## Candidate 0.1.55 completion ledger
+## 0.1.55 completion ledger
 
 Replace `Pending` only after the named evidence exists. Preserve failed attempts and the exact SHA when adding success.
 
 | Layer | Status / evidence needed |
 |---|---|
-| Source and PR | [PR #206](https://github.com/jspusa/AMZ.API/pull/206), initial remote head `69818c58ae073d62e6dc0b808c82d01940be26eb` exactly matched locally validated tree `b490c404472e6afeb33eccad2e34dfdc1cca58c3`; final merge evidence pending |
+| Source and PR | [PR #206](https://github.com/jspusa/AMZ.API/pull/206) merged as `bf2ec996e5ee0445c8aa1de8139dc26360dd3ca2` after final head `058e4ca6f0ae098b4fc56eca96622b4881531d6a` passed Linux and Windows CI; source tree `800be01b53a2d18f49d386f1630dd2bd90382ba5` |
 | Local checks | Passed 2026-09-07: `npm run check` (265 files / 2709 tests, typecheck, build and stylesheet parity), `npm audit --omit=dev` (0 vulnerabilities), `git diff --check` |
-| Exact-main CI | Pending: Validate, Pages, macOS and Windows runs for final source |
-| Pages bytes | Pending: deployed asset names/hash matched with exact source build |
-| Desktop payload | Pending: artifact IDs, checksum manifest, exact files/version/bundle/architectures |
-| Protected installer cards | Pending: authorized publication, card version and authenticated payload hash |
+| Exact-main CI | All passed at the feature merge SHA: [Validate 34087231279](https://github.com/jspusa/AMZ.API/actions/runs/34087231279), [Pages 34087231372](https://github.com/jspusa/AMZ.API/actions/runs/34087231372), [Mac 34087231335](https://github.com/jspusa/AMZ.API/actions/runs/34087231335), [Windows 34087231387](https://github.com/jspusa/AMZ.API/actions/runs/34087231387) |
+| Pages publication / bytes | Deployment succeeded for the exact feature merge SHA. Source-build asset names/hash appear below; a separate direct byte comparison of the live URL was not performed |
+| Desktop payload | CI created and checked 0.1.55 macOS universal test DMG/ZIP and Windows x64 unsigned NSIS/ZIP; metadata below. Artifact contents were not independently downloaded in this session |
+| Protected installer cards | Not updated or authenticated in this session; the new artifacts are available through GitHub Actions below. Current portal card version/bytes remain unverified |
 | Mac installation | Pending: actual device, exact app version/signature/hash, preserved vault and backup |
 | Windows installation | Pending: Windows 11 Pro x64, NSIS version, addon boundary, safeStorage and Hello |
 | Signed bootstrap / update | Blocked pending signing identity, protected environment and separately approved feed; see preflight |
@@ -70,4 +70,17 @@ Final initial script: `assets/index-BzG71_Wh.js`, **1,868,976 bytes**, SHA-256 `
 
 Independent Standards and Spec reviews found and resolved three substantive regressions before submission: zero-order lead-time risk, lazy variation return/focus, and initialization disk-flush failure incorrectly entering destructive corruption recovery. The final reviews reported no open findings within the approved scope.
 
-PR CI first attempt: Linux [Validate 34086478685](https://github.com/jspusa/AMZ.API/actions/runs/34086478685) passed at `69818c58ae073d62e6dc0b808c82d01940be26eb`. Windows [34086478642](https://github.com/jspusa/AMZ.API/actions/runs/34086478642) found one timing-dependent assertion in the brand/listing dedupe test (2,704 passed, 1 failed, 4 existing platform/tool skips). The test now waits for both actual gateway-start signals instead of assuming file durability work completes after one fake millisecond; it still asserts exactly one POST at start and completion. Production source is unchanged by this correction; all 36 dedupe tests pass locally. Windows CI must pass on the correction before merge.
+PR CI first attempt: Linux [Validate 34086478685](https://github.com/jspusa/AMZ.API/actions/runs/34086478685) passed at `69818c58ae073d62e6dc0b808c82d01940be26eb`. Windows [34086478642](https://github.com/jspusa/AMZ.API/actions/runs/34086478642) found one timing-dependent assertion in the brand/listing dedupe test (2,704 passed, 1 failed, 4 existing platform/tool skips). The test now waits for both actual gateway-start signals instead of assuming file durability work completes after one fake millisecond; it still asserts exactly one POST at start and completion. Production source is unchanged by this correction; all 36 dedupe tests pass locally. The corrected head then passed [Linux 34086764885](https://github.com/jspusa/AMZ.API/actions/runs/34086764885) and [Windows packaging / Bridge smoke 34086764883](https://github.com/jspusa/AMZ.API/actions/runs/34086764883) before merge.
+
+The main Pages job recorded `assets/index-BzG71_Wh.js` and `assets/index-Doik7abF.css`, with the same stylesheet fingerprint as the local build. It reported deployment status `succeed` and publication of `https://jspusa.github.io/AMZ.API/` at **2026-09-07 05:34:25 UTC**. This verifies source-build/deployment correspondence; it is not a direct CDN-byte or visual comparison.
+
+## Main desktop artifact evidence
+
+Both runs used feature merge bf2ec996e5ee0445c8aa1de8139dc26360dd3ca2, package 0.1.55. Mac completed universal packaging, ad-hoc signing/verification and packaged smoke before producing the DMG/ZIP. Windows completed installed NSIS, portable ZIP and unpacked Bridge/addon smoke without Amazon credentials; the AMD64 N-API export and packed checksum manifest passed. These are test packages, not publisher-signed releases.
+
+| Platform | Run / artifact | Uploaded bytes | GitHub archive digest | Expiry (UTC) |
+|---|---|---:|---|---|
+| macOS universal | [Run 34087231335](https://github.com/jspusa/AMZ.API/actions/runs/34087231335), artifact [10005712794](https://github.com/jspusa/AMZ.API/actions/runs/34087231335/artifacts/10005712794) | 469,019,912 | sha256:c0c3143b3e7e70301e4ecfd811a5e3c3bdab14feb794b6b5cf5075e310d36226 | 2026-09-21T05:37:55Z |
+| Windows x64 | [Run 34087231387](https://github.com/jspusa/AMZ.API/actions/runs/34087231387), artifact [10005723971](https://github.com/jspusa/AMZ.API/actions/runs/34087231387/artifacts/10005723971) | 245,025,954 | sha256:90ceff9b30353d0f57f86e9b5a26dd56c388d0e8af0b86db3e5cc79ae461270c | 2026-09-21T05:38:38Z |
+
+The digest above identifies GitHub’s uploaded artifact archive, not an individual EXE, DMG or installed app. Local Linux verification passed all 2,709 tests including the real LibreOffice round-trip. Main Mac CI passed 2,708 with the unavailable LibreOffice check skipped; Windows passed 2,705 with the same LibreOffice check and three existing POSIX-only artifact harness tests skipped. Both ran all 265 test files and completed their production builds and packaging gates. No additional test was disabled to make this release pass.
