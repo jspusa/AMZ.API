@@ -1,17 +1,17 @@
 /* Bulletin presentation only. Keep manual dates separate from Amazon facts. */
 .operations-bulletin {
-  --bulletin-paper: #f5f5f0;
-  --bulletin-forest: #254f46;
-  --bulletin-ink: #243c35;
-  --bulletin-muted: #62746b;
-  --bulletin-line: #dce3db;
+  --bulletin-paper: #f4f6f9;
+  --bulletin-brand: #2b3a53;
+  --bulletin-ink: #1e293b;
+  --bulletin-muted: #65748a;
+  --bulletin-line: #dde3ec;
   --bulletin-manual: #fff4ce;
   --bulletin-manual-ink: #735918;
   border-color: var(--bulletin-line);
   border-radius: 20px;
   background: #fff;
   color: var(--bulletin-ink);
-  box-shadow: 0 4px 20px rgb(36 60 53 / 4%);
+  box-shadow: 0 4px 20px rgb(16 24 39 / 4%);
 }
 
 .operations-bulletin > summary {
@@ -27,7 +27,7 @@
 
 .operations-bulletin-icon {
   border-radius: 14px;
-  background: var(--bulletin-forest);
+  background: var(--bulletin-brand);
 }
 
 .operations-bulletin-summary-copy > small,
@@ -49,7 +49,7 @@
 }
 
 .operations-bulletin-summary-count strong {
-  color: var(--bulletin-forest);
+  color: var(--bulletin-brand);
   font-size: 25px;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.04em;
@@ -59,7 +59,7 @@
   border: 1px solid var(--bulletin-line);
   border-radius: 50%;
   background: #fff;
-  color: var(--bulletin-forest);
+  color: var(--bulletin-brand);
   transition: transform 220ms cubic-bezier(0.2, 0.7, 0.2, 1),
     background-color 180ms ease;
 }
@@ -182,7 +182,7 @@
 .bulletin-expiry-list,
 .bulletin-calendar-agenda {
   scrollbar-width: thin;
-  scrollbar-color: #bdcbbf transparent;
+  scrollbar-color: #bcc7d5 transparent;
 }
 
 .bulletin-expiry-item {
@@ -194,7 +194,7 @@
 .bulletin-countdown {
   min-height: 76px;
   background: var(--bulletin-paper);
-  color: var(--bulletin-forest);
+  color: var(--bulletin-brand);
 }
 
 .bulletin-countdown small {
@@ -238,8 +238,8 @@
 
 .bulletin-marketplace-code {
   padding: 2px 5px;
-  background: #edf2ec;
-  color: var(--bulletin-forest);
+  background: #eef2f7;
+  color: var(--bulletin-brand);
 }
 
 .bulletin-expiry-title-row h4 {
@@ -264,7 +264,7 @@
 }
 
 .bulletin-expiry-date time {
-  color: #52655a;
+  color: #526781;
   font-weight: 600;
 }
 
@@ -276,7 +276,7 @@
   gap: 8px;
   margin-top: 7px;
   padding-top: 6px;
-  border-top: 1px solid #edf0e9;
+  border-top: 1px solid #edf1f6;
 }
 
 .bulletin-expiry-facts > div {
@@ -318,7 +318,7 @@
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
-  scrollbar-color: #bdcbbf transparent;
+  scrollbar-color: #bcc7d5 transparent;
 }
 
 .operations-bulletin .bulletin-calendar {
@@ -342,28 +342,28 @@
 .bulletin-calendar td {
   height: 72px;
   padding: 6px;
-  border-color: #e8ece4;
+  border-color: #e8ecf2;
   border-radius: 6px;
-  background: #f8f9f5;
+  background: #f8fafc;
 }
 
 .bulletin-calendar td.is-other-month {
   opacity: 1;
-  background: #fcfcfa;
+  background: #fbfcfe;
 }
 
 .bulletin-calendar td.is-other-month > time {
-  color: #7b867c;
+  color: #7b8799;
   font-weight: 400;
 }
 
 .bulletin-calendar td.is-today {
-  border: 2px solid var(--bulletin-forest);
+  border: 2px solid var(--bulletin-brand);
 }
 
 .bulletin-calendar td.is-selected:not(.is-today) {
-  border-color: #90a699;
-  box-shadow: inset 0 0 0 1px #90a699;
+  border-color: #8fa7c2;
+  box-shadow: inset 0 0 0 1px #8fa7c2;
 }
 
 .bulletin-calendar td > time,
@@ -384,7 +384,7 @@
 .bulletin-calendar-legend {
   gap: 8px 14px;
   margin-top: 10px;
-  color: #52655a;
+  color: #526781;
   font-size: 11px;
 }
 
@@ -399,7 +399,7 @@
   gap: 8px;
   padding: 11px 2px;
   border: 0;
-  border-bottom: 1px solid #e8ece4;
+  border-bottom: 1px solid #e8ecf2;
   border-radius: 0;
 }
 
@@ -418,11 +418,11 @@
 
 .bulletin-calendar-agenda article > span {
   border-radius: 5px;
-  background: var(--bulletin-forest);
+  background: var(--bulletin-brand);
   font-size: 10px;
 }
 
-/* Keep event types and overdue state distinct from the forest brand color. */
+/* Keep event types and overdue state distinct from the brand navy. */
 .bulletin-calendar-agenda article > span.is-expiry {
   background: #985264;
 }
@@ -476,7 +476,7 @@
 }
 
 .bulletin-composer label {
-  color: #52655a;
+  color: #526781;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -486,7 +486,7 @@
 .bulletin-composer textarea {
   min-height: 42px;
   margin-top: 6px;
-  border-color: #ced9cd;
+  border-color: #cdd8e4;
   border-radius: 8px;
   color: var(--bulletin-ink);
   font-size: 13px;
@@ -494,7 +494,7 @@
 
 .bulletin-composer input::placeholder,
 .bulletin-composer textarea::placeholder {
-  color: #758177;
+  color: #758197;
 }
 
 .bulletin-composer textarea {
@@ -510,7 +510,7 @@
   width: 17px;
   min-height: 17px;
   margin: 0;
-  accent-color: var(--bulletin-forest);
+  accent-color: var(--bulletin-brand);
 }
 
 .bulletin-composer > footer {
@@ -535,7 +535,7 @@
 }
 
 .bulletin-date-picker-backdrop {
-  background: rgb(25 45 37 / 38%);
+  background: rgb(16 24 39 / 38%);
 }
 
 .bulletin-date-picker {
@@ -543,7 +543,7 @@
   border-color: var(--bulletin-line);
   border-radius: 18px;
   color: var(--bulletin-ink);
-  box-shadow: 0 24px 80px rgb(25 45 37 / 20%);
+  box-shadow: 0 24px 80px rgb(16 24 39 / 20%);
 }
 
 .bulletin-date-picker-heading small,
@@ -571,8 +571,8 @@
 
 .bulletin-date-picker-years button[aria-pressed="true"],
 .bulletin-date-picker-days button[aria-pressed="true"] {
-  border-color: var(--bulletin-forest);
-  background: var(--bulletin-forest);
+  border-color: var(--bulletin-brand);
+  background: var(--bulletin-brand);
   color: #fff;
 }
 
@@ -591,7 +591,7 @@
 .operations-bulletin select:focus,
 .operations-bulletin textarea:focus,
 .operations-bulletin .bulletin-calendar-agenda:focus-visible {
-  outline: 3px solid #4b7b65;
+  outline: 3px solid #4d719c;
   outline-offset: 3px;
 }
 
@@ -601,12 +601,12 @@
 
 @media (hover: hover) and (pointer: fine) {
   .operations-bulletin > summary:hover {
-    background: #eff2e9;
+    background: #eff3f8;
   }
 
   .operations-bulletin button:not(:disabled):hover {
-    border-color: #94ad9a;
-    box-shadow: 0 2px 5px rgb(36 60 53 / 7%);
+    border-color: #94aac4;
+    box-shadow: 0 2px 5px rgb(16 24 39 / 7%);
     transform: translateY(-1px);
   }
 }

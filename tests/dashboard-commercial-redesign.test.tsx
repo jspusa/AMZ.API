@@ -82,6 +82,31 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
 });
 
 describe("commercial dashboard final-layer accessibility guards", () => {
+  it("derives the workspace palette from the shipped application icon", async () => {
+    const [icon, workspace, sales, audit, bulletin] = await Promise.all([
+      readFile(new URL("../build/icon.svg", import.meta.url), "utf8"),
+      readFile(new URL("../src/renderer/src/styles/workspace-redesign.css", import.meta.url), "utf8"),
+      readFile(new URL("../src/renderer/src/styles/sales-redesign.css", import.meta.url), "utf8"),
+      readFile(new URL("../src/renderer/src/styles/audit-suite-redesign.css", import.meta.url), "utf8"),
+      readFile(new URL("../src/renderer/src/styles/bulletin-redesign.css", import.meta.url), "utf8"),
+    ]);
+
+    for (const color of ["#2b3a53", "#101827", "#e32636"]) {
+      expect(icon.toLowerCase()).toContain(color);
+      expect(workspace.toLowerCase()).toContain(color);
+    }
+    expect(workspace).toContain("linear-gradient(112deg, #2b3a53 0%, #101827 78%)");
+    expect(sales).toContain("--sales-primary: #2b3a53");
+    expect(bulletin).toContain("--bulletin-brand: #2b3a53");
+    expect(audit).toContain(".automation-badge.automatic");
+    expect(audit).toContain("background: #e5eee3");
+    expect(audit).toContain(".automation-badge.one_click");
+    expect(bulletin).toContain("--bulletin-manual: #fff4ce");
+
+    const combinedTheme = `${workspace}\n${sales}\n${audit}\n${bulletin}`;
+    expect(combinedTheme).not.toMatch(/#254f46|#243c35|#f5f5f0/iu);
+  });
+
   it("allows narrow header tracks to shrink and avoids a second sticky header on small screens", async () => {
     const css = await redesignStyles();
     const smallRules: Rule[] = [];

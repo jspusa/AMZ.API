@@ -30,5 +30,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/bulletin-redesign.css",
   ]),
   fingerprint:
-    "842dc3f9f482c421ff587537ce4d081ff4cea7bfb22c6b2deb341cfdd493da5b",
+    "fe88f7b8df94e5cd0369cc4acf1bb15483dea60fee9cc9fe3b1621e3dc6353a0",
 });
