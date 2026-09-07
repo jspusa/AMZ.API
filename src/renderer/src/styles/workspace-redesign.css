@@ -299,14 +299,6 @@
   --canvas: #f4f0e9;
   --navy: #2b3a53;
   --navy-soft: #40536e;
-  --signal: #e32636;
-  --signal-soft: #f9dcdd;
-  --sky: #4b7ca3;
-  --sky-soft: #e6f0f7;
-  --mint: #4f7f6a;
-  --mint-soft: #e8f1eb;
-  --amber: #b97825;
-  --amber-soft: #fbefd8;
   --shadow: 0 2px 4px rgb(43 58 83 / 4%), 0 22px 54px rgb(43 58 83 / 9%);
   --workspace-ease: cubic-bezier(.16, 1, .3, 1);
 }
@@ -546,8 +538,8 @@
 }
 
 .workspace-section-nav a:hover {
-  background: linear-gradient(125deg, #f9dfdf, #edf3f8);
-  color: #8f3340;
+  background: #eef2f6;
+  color: #334e6b;
   box-shadow: none;
   transform: translateY(-1px);
 }
@@ -628,13 +620,13 @@
 }
 
 .health-audit-home-grid .content-audit-home-card {
-  --audit-accent: #c14d59;
-  --audit-tint: #fae9e8;
+  --audit-accent: #4b6f8f;
+  --audit-tint: #edf3f7;
   overflow: hidden;
   padding: 24px;
   border: 1px solid rgb(255 255 255 / 82%);
   border-radius: 22px 14px 22px 14px;
-  background: linear-gradient(145deg, #fffdf9 54%, var(--audit-tint));
+  background: linear-gradient(145deg, #fffdf9 78%, var(--audit-tint));
   box-shadow: 0 4px 12px rgb(43 58 83 / 4%), 0 20px 44px rgb(43 58 83 / 6%);
   transition: transform 360ms var(--workspace-ease), box-shadow 300ms ease, border-color 300ms ease;
   animation: audit-card-arrive 560ms var(--workspace-ease) both;
@@ -652,12 +644,13 @@
   opacity: .78;
 }
 
-.health-audit-home-grid .content-audit-home-card:nth-child(2) { --audit-accent: #4b7ca3; --audit-tint: #e8f2f8; animation-delay: 45ms; }
-.health-audit-home-grid .content-audit-home-card:nth-child(3) { --audit-accent: #76648e; --audit-tint: #f0eaf5; animation-delay: 90ms; }
-.health-audit-home-grid .content-audit-home-card:nth-child(4) { --audit-accent: #b97825; --audit-tint: #fbefd8; animation-delay: 135ms; }
-.health-audit-home-grid .content-audit-home-card:nth-child(5) { --audit-accent: #4f7f6a; --audit-tint: #e8f1eb; animation-delay: 180ms; }
-.health-audit-home-grid .content-audit-home-card:nth-child(6) { --audit-accent: #aa654c; --audit-tint: #f8eae4; animation-delay: 225ms; }
-.health-audit-home-grid .content-audit-home-card:nth-child(7) { --audit-accent: #526e9c; --audit-tint: #e9edf6; animation-delay: 270ms; }
+.health-audit-home-grid .content-audit-home-card:nth-child(2) { animation-delay: 45ms; }
+.health-audit-home-grid .content-audit-home-card:nth-child(3) { animation-delay: 90ms; }
+.health-audit-home-grid .content-audit-home-card:nth-child(4) { animation-delay: 135ms; }
+.health-audit-home-grid .content-audit-home-card:nth-child(n + 5):nth-child(-n + 6) { --audit-accent: #855a25; --audit-tint: #f8f0e2; }
+.health-audit-home-grid .content-audit-home-card:nth-child(5) { animation-delay: 180ms; }
+.health-audit-home-grid .content-audit-home-card:nth-child(6) { animation-delay: 225ms; }
+.health-audit-home-grid .content-audit-home-card:nth-child(7) { --audit-accent: #9a4f5a; --audit-tint: #f6ebec; animation-delay: 270ms; }
 
 .health-audit-home-grid .content-audit-home-card .content-audit-home-icon {
   border-color: rgb(255 255 255 / 74%);

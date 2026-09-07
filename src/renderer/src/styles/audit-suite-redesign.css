@@ -271,9 +271,7 @@
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 84%);
   border-radius: 28px 18px 28px 18px;
-  background:
-    radial-gradient(circle at 0 100%, rgb(227 38 54 / 9%), transparent 20rem),
-    linear-gradient(128deg, #fffdf9 0 64%, #edf3f7 64% 100%);
+  background: linear-gradient(128deg, #fffdf9 0 64%, #edf3f7 64% 100%);
   box-shadow: 0 6px 16px rgb(43 58 83 / 5%), 0 26px 62px rgb(43 58 83 / 9%);
 }
 
@@ -283,7 +281,7 @@
   bottom: 0;
   left: 0;
   width: 5px;
-  background: linear-gradient(180deg, #e32636, #d9942a 48%, #4b7ca3);
+  background: #e78700;
   content: "";
 }
 
@@ -293,7 +291,7 @@
 }
 
 .audit-suite-home-card .audit-suite-home-kicker {
-  color: #9a3845;
+  color: #52637a;
   font-weight: 650;
   letter-spacing: .06em;
 }
@@ -339,7 +337,7 @@
   color: #52637a;
 }
 
-.audit-suite-scope-list li::before { background: #e32636; }
+.audit-suite-scope-list li::before { background: #e78700; }
 
 .audit-suite-home-card .audit-suite-home-actions {
   position: relative;
@@ -350,10 +348,10 @@
 }
 
 .audit-suite-launch-count {
-  color: #e32636;
+  color: #2b3a53;
   font-size: clamp(3rem, 5vw, 4.25rem);
   font-weight: 520;
-  text-shadow: 0 8px 24px rgb(227 38 54 / 12%);
+  text-shadow: 0 8px 24px rgb(43 58 83 / 12%);
 }
 
 .audit-suite-launch-summary strong { color: #283a52; }

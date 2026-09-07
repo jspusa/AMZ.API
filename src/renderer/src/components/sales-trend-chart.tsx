@@ -944,14 +944,14 @@ export default function SalesTrendChart({
             <desc id={descriptionId}>
               本期總銷售 {formatMoney(snapshot.totals.totalSales)}，共 {snapshot.totals.orderCount} 筆訂單與 {snapshot.totals.unitCount} 件商品。
               {snapshot.comparison
-                ? `去年同期總銷售 ${formatMoney(snapshot.comparison.totals.totalSales)}。品牌紅實線為本期，灰藍虛線為去年同期。`
+                ? `去年同期總銷售 ${formatMoney(snapshot.comparison.totals.totalSales)}。黃金橘實線為本期，灰藍虛線為去年同期。`
                 : "目前沒有去年同期比較資料。"}
               可用左右方向鍵逐日查看。
             </desc>
             <defs>
               <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#e32636" stopOpacity="0.2" />
-                <stop offset="100%" stopColor="#e32636" stopOpacity="0.012" />
+                <stop offset="0%" stopColor="#ff9900" stopOpacity="0.24" />
+                <stop offset="100%" stopColor="#ff9900" stopOpacity="0.015" />
               </linearGradient>
             </defs>
             {yTicks.map((tick) => {
