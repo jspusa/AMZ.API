@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
+import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 import type { OperationsBoardPort } from "../src/main/operations-board";
@@ -42,6 +43,7 @@ const REVIEWED_ROUTES = [
   { method: "GET", path: "/api/sp-api/business-pricing/batch" },
   { method: "POST", path: "/api/sp-api/business-pricing/batch" },
   { method: "PATCH", path: "/api/sp-api/business-pricing/batch" },
+  { method: "GET", path: "/api/sp-api/business-pricing/recent-work" },
   { method: "POST", path: "/api/sp-api/listings/batch" },
   { method: "GET", path: "/api/sp-api/listing-content" },
   { method: "POST", path: "/api/sp-api/listing-content" },
@@ -316,6 +318,19 @@ const DIRECT_HANDLE_CASES: readonly DirectHandleCase[] = [
     expected: invalidResponse("INVALID_INPUT", "不支援這個 Amazon 站點。"),
   },
   {
+    label: "Recent B2B work requires a marketplace",
+    method: "GET",
+    path: "/api/sp-api/business-pricing/recent-work",
+    expected: invalidResponse("INVALID_REQUEST", "最近 B2B 工作只接受目前站點的唯讀查詢。"),
+  },
+  {
+    label: "Recent B2B work rejects caller-selected account scope",
+    method: "GET",
+    path: "/api/sp-api/business-pricing/recent-work",
+    query: { marketplaceId: "ATVPDKIKX0DER", accountScope: "untrusted-account" },
+    expected: invalidResponse("INVALID_REQUEST", "最近 B2B 工作只接受目前站點的唯讀查詢。"),
+  },
+  {
     label: "Listings read",
     method: "GET",
     path: "/api/sp-api/listings",
@@ -437,11 +452,11 @@ function contractRouter(
 }
 
 describe("ApiRouter public contract", () => {
-  it("matches one reviewed 69-pair matrix to the raw central switch inventory", () => {
+  it("matches one reviewed 70-pair matrix to the raw central switch inventory", () => {
     const reviewed = REVIEWED_ROUTES.map(routeKey);
     const production = productionRouteInventory();
 
-    expect(REVIEWED_ROUTES).toHaveLength(69);
+    expect(REVIEWED_ROUTES).toHaveLength(70);
     expect(new Set(reviewed).size).toBe(reviewed.length);
     expect(production.statementCount).toBe(2);
     expect(production.keyDeclarationIsExact).toBe(true);
@@ -449,9 +464,71 @@ describe("ApiRouter public contract", () => {
     expect(production.switchExpressionIsKey).toBe(true);
     expect(production.defaultCount).toBe(1);
     expect(production.defaultIsExactNotFound).toBe(true);
-    expect(production.cases).toHaveLength(69);
+    expect(production.cases).toHaveLength(70);
     expect(new Set(production.cases).size).toBe(production.cases.length);
     expect([...production.cases].sort()).toEqual([...reviewed].sort());
+  });
+
+  it("classifies recent B2B work as local observation with an exact sanitized public DTO", async () => {
+    const marketplaceId = "ATVPDKIKX0DER";
+    const accountScope = "private-contract-account";
+    const updatedAt = "2026-09-07T12:00:00.000Z";
+    const inspectRecentBusinessPricingOperations = vi.fn(async () => [{
+      operationType: "business_price", state: "unknown", executionMode: "live",
+      sellerSku: "RECENT-CONTRACT-SKU", marketplaceId,
+      createdAt: Date.parse(updatedAt), updatedAt: Date.parse(updatedAt),
+      expiresAt: Date.parse(updatedAt) + 86_400_000,
+      response: { privateReceipt: "private-contract-receipt" },
+      ownerToken: "private-contract-owner", fingerprint: "private-contract-fingerprint",
+    }]);
+    const runIdempotentOperation = vi.fn();
+    const approveWrite = vi.fn(async () => undefined);
+    const mutateBusinessPricing = vi.fn();
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("Public contract harness forbids network access"),
+    );
+    try {
+      const router = new ApiRouter({
+        store: { inspectRecentBusinessPricingOperations, runIdempotentOperation } as unknown as LocalStore,
+        vault: {} as CredentialVault,
+        approveWrite,
+        businessPricingMutations: { handle: mutateBusinessPricing },
+        spExecutionContext: createScriptedSpExecutionContextAdapter((selectedMarketplace) => ({
+          marketplaceId: selectedMarketplace, accountScope, mode: "live",
+        })),
+      });
+      const request: ApiRequest = {
+        requestId: "recent-b2b-contract-001", method: "GET",
+        path: "/api/sp-api/business-pricing/recent-work",
+        query: { marketplaceId }, headers: {},
+      };
+      expect(await router.handle(request)).toEqual({
+        status: 200, headers: JSON_HEADERS,
+        body: { kind: "json", value: {
+          schemaVersion: 1, marketplaceId, mode: "live", checkedAt: expect.any(String), limit: 30,
+          items: [{
+            sellerSku: "RECENT-CONTRACT-SKU", stage: "business_price", status: "UNKNOWN",
+            acceptedAt: null, verifiedAt: null, updatedAt, canResend: false, nextAction: "readback",
+            notice: "送出結果尚未確認；先唯讀回查，沒有可沿用的寫入授權，禁止重送。",
+          }],
+        } },
+      });
+      expect(inspectRecentBusinessPricingOperations).toHaveBeenCalledExactlyOnceWith({
+        accountScope, marketplaceId,
+      });
+      for (const method of API_METHODS.filter((candidate) => candidate !== "GET")) {
+        expect(await router.handle({ ...request, method })).toEqual(
+          invalidResponse("NOT_FOUND", "此 App 版本不支援這個操作。", 404),
+        );
+      }
+      expect(inspectRecentBusinessPricingOperations).toHaveBeenCalledOnce();
+      expect(runIdempotentOperation).not.toHaveBeenCalled();
+      expect(approveWrite).not.toHaveBeenCalled();
+      expect(mutateBusinessPricing).not.toHaveBeenCalled();
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      network.mockRestore();
+    }
   });
 
   it("serves the read-only shared operations board through its injected main owner", async () => {

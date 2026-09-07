@@ -276,7 +276,7 @@ describe("durable content-audit snapshot lifecycle", () => {
     });
   });
 
-  it("rejects the same Excel after the fixed 24-hour TTL on a new LocalStore", async () => {
+  it("reports missing evidence after a new LocalStore prunes the fixed 24-hour source", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2030-08-22T00:00:00.000Z"));
     const directory = await mkdtemp(join(tmpdir(), "content-audit-expired-"));
@@ -292,10 +292,23 @@ describe("durable content-audit snapshot lifecycle", () => {
     vi.advanceTimersByTime(CONTENT_AUDIT_SNAPSHOT_TTL_MS);
     const restartedStore = new LocalStore(filePath);
     await restartedStore.initialize();
+    expect(await restartedStore.getContentAuditSnapshotEvidence({
+      exportId: snapshot.exportId,
+      accountScope: ACCOUNT_SCOPE_A,
+      marketplaceId: MARKETPLACE_ID,
+      mode: "demo",
+    })).toEqual({ status: "not-found", evidence: null });
     const response = await createRouter(restartedStore).handle(
       importRequest(edited, "durable-expired-001"),
     );
-    expect(response.status).toBe(410);
-    expect(responseValue(response)).toMatchObject({ code: "SNAPSHOT_EXPIRED" });
+    expect(response.status).toBe(404);
+    const value = responseValue(response);
+    expect(value).toMatchObject({
+      code: "SNAPSHOT_NOT_FOUND",
+      message: expect.stringContaining("原匯出電腦"),
+    });
+    expect(value.message).toContain("可能已超過 24 小時");
+    expect(value.message).toContain("保留上限清除");
+    expect(value.message).not.toContain("快照已過期");
   });
 });

@@ -27,6 +27,7 @@ import type {
   OperationsBoardPublisherDraft,
 } from "../shared/operations-board";
 import { ApiRouter } from "./api-router";
+import { createNotebookCapabilitySnapshot } from "../shared/notebook-capabilities";
 import { AdvertisingApiClient } from "./amazon/ads-api";
 import {
   invalidateSpApiCredentialCaches,
@@ -56,7 +57,7 @@ import {
 } from "./operations-board-publisher";
 import { SupplyBossOperationsBoard } from "./supply-boss-operations-board";
 import { DesktopInstallGate, DesktopUpdater } from "./desktop-updater";
-import { LocalStore } from "./local-store";
+import { LocalStore, LocalStoreCorruptionError } from "./local-store";
 import { sellerCentralInventoryUrl } from "./seller-central-inventory";
 import { NativeConfirmationGate, requestNativeConfirmation } from "./native-confirmation";
 import {
@@ -927,6 +928,10 @@ function registerIpc(): void {
     assertTrustedFrame(event);
     return app.getVersion();
   });
+  ipcMain.handle("fba:app-capabilities", (event) => {
+    assertTrustedFrame(event);
+    return createNotebookCapabilitySnapshot(app.getVersion());
+  });
   ipcMain.handle("fba:app-platform", (event) => {
     assertTrustedFrame(event);
     return process.platform;
@@ -1031,19 +1036,27 @@ async function initializeStoreWithRecovery(store: LocalStore): Promise<void> {
     try {
       await store.initialize();
       return;
-    } catch {
+    } catch (error) {
+      const confirmedCorruption = error instanceof LocalStoreCorruptionError;
+      const restartRequired = error instanceof Error && "code" in error &&
+        (error.code === "LOCAL_STORE_PERSISTENCE_UNCERTAIN" ||
+          error.code === "LOCAL_STORE_VERSION_UNSUPPORTED");
       const result = await dialog.showMessageBox({
         type: "error",
-        title: "本機操作資料需要修復",
-        message: "商品主檔或防重送帳本無法讀取。",
-        detail: "選擇修復會保留一份損壞檔備份，再建立乾淨的本機資料；不會修改 Amazon。",
-        buttons: ["退出 App", "重試", "隔離備份並修復"],
-        defaultId: 1,
+        title: confirmedCorruption ? "本機操作資料需要修復" : "本機安全資料暫時無法使用",
+        message: confirmedCorruption ? "商品主檔或防重送帳本格式損壞。" : "磁碟或資料版本尚未通過安全檢查；原防重送帳本會保留。",
+        detail: confirmedCorruption
+          ? "選擇修復會保留一份損壞檔備份，再建立乾淨的本機資料；不會修改 Amazon。"
+          : "這不是已確認的資料損壞，不會隔離或清空帳本。請先處理磁碟或使用相容 App，再重新開啟並唯讀回查。",
+        buttons: confirmedCorruption ? ["退出 App", "重試", "隔離備份並修復"]
+          : restartRequired ? ["退出 App"] : ["退出 App", "重試"],
+        defaultId: restartRequired ? 0 : 1,
         cancelId: 0,
         noLink: true,
       });
       if (result.response === 0) throw new Error("LOCAL_STORE_UNAVAILABLE");
-      if (result.response === 1) continue;
+      if (result.response === 1 && !restartRequired) continue;
+      if (!confirmedCorruption) throw new Error("LOCAL_STORE_UNAVAILABLE");
       await store.isolateCorruptedFile();
       return;
     }

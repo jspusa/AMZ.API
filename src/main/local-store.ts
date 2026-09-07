@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import type {
@@ -72,6 +72,33 @@ export type IdempotentOperationInspection = Readonly<{
   expiresAt: number;
 }>;
 
+export type RecentBusinessPricingInspection = IdempotentOperationInspection & Readonly<{
+  sellerSku: string;
+  marketplaceId: string;
+  executionMode: "live" | "demo" | null;
+}>;
+
+/** Main-only persistence seam; never exposed through the Notebook Key Bridge. */
+export type LocalStoreFileSystem = {
+  open: typeof open;
+  mkdir: typeof mkdir;
+  rename: typeof rename;
+  unlink: typeof unlink;
+  platform: NodeJS.Platform;
+};
+
+const LOCAL_STORE_FILESYSTEM: LocalStoreFileSystem = {
+  open, mkdir, rename, unlink, platform: process.platform,
+};
+
+export class LocalStoreCorruptionError extends Error {
+  readonly code = "LOCAL_STORE_CORRUPTED";
+  constructor() {
+    super("本機操作資料格式損壞，無法安全讀取。");
+    this.name = "LocalStoreCorruptionError";
+  }
+}
+
 type LedgerEntry = {
   operationType: LedgerOperationType;
   marketplaceId: string;
@@ -84,6 +111,8 @@ type LedgerEntry = {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+  /** Optional v2 extension. Older App builds safely ignore this marker. */
+  executionMode?: "live" | "demo";
   /** Optional v0.1.42 marker; older Apps still see operationType=business_price. */
   businessPriceDuplicateRepair?: true;
 };
@@ -241,6 +270,7 @@ type OperationInput<T> = {
   accountScope: string;
   fingerprint: string;
   businessPriceDuplicateRepair?: boolean;
+  executionMode?: "live" | "demo";
   execute: (control: Readonly<{
     recordAccepted(response: T): Promise<void>;
   }>) => Promise<T>;
@@ -895,8 +925,9 @@ export class LocalStore {
   readonly filePath: string;
   private data: StoreData | null = null;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private persistenceUncertain = false;
 
-  constructor(filePath: string) {
+  constructor(filePath: string, private readonly filesystem = LOCAL_STORE_FILESYSTEM) {
     this.filePath = filePath;
   }
 
@@ -922,18 +953,32 @@ export class LocalStore {
   }
 
   async isolateCorruptedFile(): Promise<string | null> {
-    this.data = null;
-    this.mutationQueue = Promise.resolve();
     const backupPath = `${this.filePath}.corrupt-${new Date()
       .toISOString()
       .replace(/[:.]/g, "-")}.bak`;
-    try {
-      await rename(this.filePath, backupPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      await this.initialize();
-      return null;
-    }
+    const task = this.mutationQueue.then(async () => {
+      if (this.persistenceUncertain) throw this.persistenceUncertainError();
+      // Re-read immediately before quarantine. A previous startup I/O error,
+      // a valid pending ledger, or an unsupported newer schema is never repair
+      // authority. Do not reset/bypass queued persistence work.
+      this.data = null;
+      let corrupt = false;
+      try {
+        await this.read();
+      } catch (error) {
+        if (!(error instanceof LocalStoreCorruptionError)) throw error;
+        corrupt = true;
+      }
+      if (!corrupt) {
+        throw new SpApiError("本機操作資料未確認損壞，已停止隔離以保留防重送帳本。", {
+          status: 409, code: "LOCAL_STORE_REPAIR_NOT_ALLOWED",
+        });
+      }
+      await this.filesystem.rename(this.filePath, backupPath);
+      this.data = null;
+    });
+    this.mutationQueue = task.catch(() => undefined);
+    await task;
     await this.initialize();
     return backupPath;
   }
@@ -1519,6 +1564,7 @@ export class LocalStore {
         ...(input.businessPriceDuplicateRepair
           ? { businessPriceDuplicateRepair: true as const }
           : {}),
+        ...(input.executionMode ? { executionMode: input.executionMode } : {}),
       };
       if (repairTombstoneKey) {
         data.ledger[repairTombstoneKey] = {
@@ -1758,7 +1804,66 @@ export class LocalStore {
     return structuredClone(inspected);
   }
 
+  /** Fixed main-only B2B observation, not a general ledger enumeration API. */
+  async inspectRecentBusinessPricingOperations(input: Readonly<{
+    accountScope: string;
+    marketplaceId: string;
+  }>): Promise<readonly RecentBusinessPricingInspection[]> {
+    let inspected: RecentBusinessPricingInspection[] = [];
+    const task = this.mutationQueue.then(async () => {
+      const data = await this.read();
+      const latest = new Map<string, LedgerEntry>();
+      const now = Date.now();
+      for (const entry of Object.values(data.ledger)) {
+        if (!entry || entry.accountScope !== input.accountScope ||
+            entry.marketplaceId !== input.marketplaceId ||
+            entry.executionMode === "demo" ||
+            (entry.executionMode !== "live" &&
+              (!entry.response || typeof entry.response !== "object" ||
+                !("mode" in entry.response) || entry.response.mode !== "live")) ||
+            (entry.response && typeof entry.response === "object" &&
+              "mode" in entry.response && entry.response.mode === "demo") ||
+            (entry.operationType !== "business_price" && entry.operationType !== "price") ||
+            !["pending", "unknown", "completed"].includes(entry.state) ||
+            typeof entry.sellerSku !== "string" || !entry.sellerSku ||
+            !Number.isSafeInteger(entry.createdAt) || entry.createdAt <= 0 ||
+            !Number.isSafeInteger(entry.updatedAt) || entry.updatedAt <= 0 ||
+            !Number.isSafeInteger(entry.expiresAt) ||
+            (entry.state === "completed" &&
+              (entry.expiresAt <= now || entry.createdAt < now - OPERATION_TTL_MS)) ||
+            (entry.response && typeof entry.response === "object" &&
+              "businessPriceDuplicateRepairTombstone" in entry.response)) continue;
+        const key = JSON.stringify([entry.sellerSku, entry.operationType]);
+        if ((latest.get(key)?.createdAt ?? -1) < entry.createdAt) latest.set(key, entry);
+      }
+      const ordered = [...latest.values()]
+        .sort((a, b) => Number(a.state === "completed") - Number(b.state === "completed") ||
+          Math.max(b.createdAt, b.updatedAt) - Math.max(a.createdAt, a.updatedAt) ||
+          a.sellerSku.localeCompare(b.sellerSku));
+      // Keep both latest stages for every selected SKU. Dropping the newer
+      // Business intent while retaining its minimum-price predecessor could
+      // falsely advertise that the next stage has never been attempted.
+      const selectedSkus = new Set<string>();
+      for (const entry of ordered) {
+        if (selectedSkus.size < 64) selectedSkus.add(entry.sellerSku);
+      }
+      inspected = ordered.filter((entry) => selectedSkus.has(entry.sellerSku))
+        .map((entry) => structuredClone({
+          operationType: entry.operationType, state: entry.state,
+          sellerSku: entry.sellerSku, marketplaceId: entry.marketplaceId,
+          executionMode: entry.executionMode === "live" || entry.executionMode === "demo"
+            ? entry.executionMode : null,
+          response: entry.response, createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt, expiresAt: entry.expiresAt,
+        }));
+    });
+    this.mutationQueue = task.catch(() => undefined);
+    await task;
+    return inspected;
+  }
+
   private async read(): Promise<StoreData> {
+    if (this.persistenceUncertain) throw this.persistenceUncertainError();
     if (this.data) return this.data;
     try {
       const raw = JSON.parse(await readFile(this.filePath, "utf8")) as {
@@ -1773,13 +1878,19 @@ export class LocalStore {
         contentAuditSnapshots?: Record<string, unknown>;
       };
       if (
-        (raw.version !== 1 && raw.version !== 2) ||
+        !raw || typeof raw !== "object" || Array.isArray(raw) ||
         !raw.profiles ||
         !raw.ledger ||
         typeof raw.profiles !== "object" ||
-        typeof raw.ledger !== "object"
+        Array.isArray(raw.profiles) ||
+        typeof raw.ledger !== "object" || Array.isArray(raw.ledger)
       ) {
-        throw new Error("Unsupported local store version");
+        throw new LocalStoreCorruptionError();
+      }
+      if (raw.version !== 1 && raw.version !== 2) {
+        throw new SpApiError("本機操作資料來自不支援的版本；請使用相容 App，保留原防重送帳本。", {
+          status: 503, code: "LOCAL_STORE_VERSION_UNSUPPORTED",
+        });
       }
       this.data = {
         version: 2,
@@ -1828,6 +1939,7 @@ export class LocalStore {
         ),
       };
     } catch (error) {
+      if (error instanceof SyntaxError) throw new LocalStoreCorruptionError();
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       this.data = emptyStore();
     }
@@ -1853,21 +1965,69 @@ export class LocalStore {
 
   private async mutate(mutator: (data: StoreData) => void): Promise<void> {
     const task = this.mutationQueue.then(async () => {
-      const data = await this.read();
-      mutator(data);
-      await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
+      // A rejected write must not publish a claim/result through this.data.
+      const draft = structuredClone(await this.read());
+      mutator(draft);
+      await this.filesystem.mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
       const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
-      const serialized = persistedStore(data);
-      await writeFile(temporaryPath, `${JSON.stringify(serialized, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-        flag: "wx",
-      });
-      await chmod(temporaryPath, 0o600);
-      await rename(temporaryPath, this.filePath);
-      await chmod(this.filePath, 0o600);
+      let replaced = false;
+      try {
+        const handle = await this.filesystem.open(temporaryPath, "wx", 0o600);
+        try {
+          await handle.writeFile(`${JSON.stringify(persistedStore(draft), null, 2)}\n`, "utf8");
+          // All fallible permission work belongs before replacement, so a
+          // chmod error cannot turn an already committed file into a rollback.
+          await handle.chmod(0o600);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await this.filesystem.rename(temporaryPath, this.filePath);
+        replaced = true;
+        await this.syncParentDirectory();
+        this.data = draft;
+      } catch (error) {
+        if (replaced) {
+          // Rename succeeded but durability was not acknowledged. Do not keep
+          // operating on either old memory or an unconfirmed replacement.
+          this.persistenceUncertain = true;
+          this.data = null;
+          throw this.persistenceUncertainError();
+        }
+        throw error;
+      } finally {
+        if (!replaced) await this.filesystem.unlink(temporaryPath).catch(() => undefined);
+      }
     });
     this.mutationQueue = task.catch(() => undefined);
     return task;
+  }
+
+  private persistenceUncertainError(): SpApiError {
+    return new SpApiError(
+      "本機防重送資料已替換，但磁碟尚未確認保存；請關閉並重新開啟 App 後先回查，勿重送 Amazon 操作。",
+      { status: 503, code: "LOCAL_STORE_PERSISTENCE_UNCERTAIN" },
+    );
+  }
+
+  private async syncParentDirectory(): Promise<void> {
+    try {
+      const directory = await this.filesystem.open(dirname(this.filePath), "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } catch (error) {
+      // Node/libuv cannot open/flush directory handles on every Windows file
+      // system. The file itself was flushed before atomic replacement. This
+      // explicit platform limitation is not a claim of POSIX directory-fsync
+      // durability; real I/O errors (including EIO/ENOSPC) still fail closed.
+      if (this.filesystem.platform === "win32" &&
+          ["EPERM", "EISDIR", "EINVAL", "ENOTSUP", "EBADF"].includes(
+            (error as NodeJS.ErrnoException).code ?? "",
+          )) return;
+      throw error;
+    }
   }
 }

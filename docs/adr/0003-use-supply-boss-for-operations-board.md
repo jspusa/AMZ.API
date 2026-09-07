@@ -1,6 +1,6 @@
 # Use Supply Boss for the Operations Bulletin Board
 
-Status: Accepted for the next unreleased version. Supersedes [ADR 0002](./0002-use-github-announcements-for-operations-board.md).
+Status: Accepted; released in v0.1.51, with schema v2 released in v0.1.53. Supersedes [ADR 0002](./0002-use-github-announcements-for-operations-board.md).
 
 The shared Operations Bulletin Board uses a fixed Supply Boss API. Anyone with the AMZ.API Notebook Key can read the public board snapshot, while create, edit, and delete require a shared internal account and password entered only in a main-owned, packaged, no-network management window. Employees do not need GitHub accounts and do not configure Cloudflare R2 credentials in AMZ.API.
 
@@ -26,4 +26,4 @@ The shared Operations Bulletin Board uses a fixed Supply Boss API. Anyone with t
 
 ## Verification boundary
 
-This ADR records the intended next-version architecture. It does not prove that Supply Boss has been deployed, that a desktop release has been built or installed, or that the live endpoint has been verified.
+Supply Boss deployment and desktop v0.1.51/v0.1.53 evidence are recorded in the immutable release history linked by `docs/CODEX_HANDOFF.md`. This ADR records the accepted architecture; each newer candidate still needs its own exact-source, deployment, installation and live evidence.

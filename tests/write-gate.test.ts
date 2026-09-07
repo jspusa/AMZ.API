@@ -85,6 +85,25 @@ function runOne<T>(
 }
 
 describe("main-owned Amazon write gate", () => {
+  it.each(["live", "demo"] as const)("persists the %s mode before any dispatch so recent work cannot cross modes", async (mode) => {
+    const store = await testStore();
+    const contextAdapter = createScriptedSpExecutionContextAdapter((marketplaceId) => ({
+      marketplaceId, mode, accountScope: "opaque-write-gate-account",
+    }));
+    const context = await contextAdapter.capture(US);
+    const gate = new MainWriteGate({ store, context: contextAdapter, approveWrite: async () => undefined });
+    const binding = writeBinding(context, { family: "business-price", operation: "business_price" });
+    await gate.stagePreview(binding);
+    await expect(runOne(gate, binding, async () => {
+      const entries = await store.inspectRecentBusinessPricingOperations({
+        accountScope: context.accountScope, marketplaceId: US,
+      });
+      if (mode === "live") expect(entries[0]?.executionMode).toBe("live");
+      else expect(entries).toEqual([]);
+      throw new SpApiError("fixture dispatched timeout", { status: 503, code: "UPDATE_STATUS_UNKNOWN" });
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+  });
+
   it("accepts the narrowly-scoped Business Price duplicate repair operation", async () => {
     const store = await testStore();
     const contextAdapter = scriptedContext();

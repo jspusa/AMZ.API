@@ -149,6 +149,55 @@ function auditSuiteControl(
 }
 
 describe("R08 content audit owner", () => {
+  it("discloses the persisted source deadline in the snapshot and workbook independently of fetchedAt", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: ACCOUNT_SCOPE,
+    }));
+    const source = catalogFixture();
+    const owner = new ContentAuditOwner({
+      context,
+      evidence: {
+        saveContentAuditSnapshotEvidence: async () => ({
+          createdAt: Date.parse("2030-01-02T04:15:00.000Z"),
+          expiresAt: Date.parse("2030-01-03T04:15:00.000Z"),
+        }),
+      },
+      readGrouping: async () => source.grouping,
+      createId: () => CONTENT_EXPORT_ID,
+      now: () => Date.parse(FETCHED_AT),
+    });
+
+    const snapshot = await owner.captureFromListings({
+      context: await context.capture(US),
+      marketplaceId: US,
+      listings: source.listings,
+    });
+    expect(snapshot).toMatchObject({
+      fetchedAt: FETCHED_AT,
+      sourceCreatedAt: "2030-01-02T04:15:00.000Z",
+      sourceExpiresAt: "2030-01-03T04:15:00.000Z",
+    });
+    const response = await owner.download({
+      marketplaceId: US,
+      exportId: snapshot.exportId,
+      scope: "all",
+    });
+    if (response.body.kind !== "bytes") throw new Error("Expected workbook bytes.");
+    const xml = workbookXml(response.body.value);
+    expect(xml).toContain("原匯出電腦");
+    expect(xml).toContain("2030-01-03T04:15:00.000Z");
+    expect(xml).not.toContain("2030-01-03T03:04:05.000Z");
+    const parsed = parseContentAuditWorkbook({
+      bytes: response.body.value,
+      fileName: "content-audit.xlsx",
+      mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    expect(parsed.metadata.fetchedAt).toBe(FETCHED_AT);
+    expect(parsed.rows).toHaveLength(2);
+  });
+
   it("exports either attention rows or every editable SKU from one importable snapshot", async () => {
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: US,
@@ -166,7 +215,10 @@ describe("R08 content audit owner", () => {
     });
     const owner = new ContentAuditOwner({
       context,
-      evidence: { saveContentAuditSnapshotEvidence: async () => undefined },
+      evidence: { saveContentAuditSnapshotEvidence: async () => ({
+        createdAt: Date.parse(FETCHED_AT),
+        expiresAt: Date.parse("2030-01-03T03:04:05.000Z"),
+      }) },
       readGrouping: async () => ({
         ...source.grouping,
         rows: [...source.grouping.rows, {
@@ -236,7 +288,10 @@ describe("R08 content audit owner", () => {
       accountScope: ACCOUNT_SCOPE,
     }));
     const readGrouping = vi.fn();
-    const saveContentAuditSnapshotEvidence = vi.fn(async () => undefined);
+    const saveContentAuditSnapshotEvidence = vi.fn(async () => ({
+        createdAt: Date.parse(FETCHED_AT),
+        expiresAt: Date.parse("2030-01-03T03:04:05.000Z"),
+      }));
     const createId = vi.fn(() => CONTENT_EXPORT_ID);
     const owner = new ContentAuditOwner({
       context: contextAdapter,
@@ -315,7 +370,10 @@ describe("R08 content audit owner", () => {
       }
       return source.grouping;
     });
-    const saveContentAuditSnapshotEvidence = vi.fn(async () => undefined);
+    const saveContentAuditSnapshotEvidence = vi.fn(async () => ({
+        createdAt: Date.parse(FETCHED_AT),
+        expiresAt: Date.parse("2030-01-03T03:04:05.000Z"),
+      }));
     const createId = vi.fn(() => CONTENT_EXPORT_ID);
     const owner = new ContentAuditOwner({
       context,
@@ -387,7 +445,10 @@ describe("R08 content audit owner", () => {
     };
     const owner = new ContentAuditOwner({
       context,
-      evidence: { saveContentAuditSnapshotEvidence: async () => undefined },
+      evidence: { saveContentAuditSnapshotEvidence: async () => ({
+        createdAt: Date.parse(FETCHED_AT),
+        expiresAt: Date.parse("2030-01-03T03:04:05.000Z"),
+      }) },
       readGrouping: async () => grouping,
       createId: () => CONTENT_EXPORT_ID,
     });
@@ -433,7 +494,10 @@ describe("R08 content audit owner", () => {
     }));
     const saveContentAuditSnapshotEvidence = vi.fn<
       ContentAuditEvidencePort["saveContentAuditSnapshotEvidence"]
-    >(async () => undefined);
+    >(async () => ({
+        createdAt: Date.parse(FETCHED_AT),
+        expiresAt: Date.parse("2030-01-03T03:04:05.000Z"),
+      }));
     const source = catalogFixture();
     const owner = new ContentAuditOwner({
       context,
@@ -537,7 +601,10 @@ describe("R08 content audit owner", () => {
     }));
     const saveContentAuditSnapshotEvidence = vi.fn<
       ContentAuditEvidencePort["saveContentAuditSnapshotEvidence"]
-    >(async () => undefined);
+    >(async () => ({
+        createdAt: Date.parse(FETCHED_AT),
+        expiresAt: Date.parse("2030-01-03T03:04:05.000Z"),
+      }));
     const source = catalogFixture();
     const owner = new ContentAuditOwner({
       context,

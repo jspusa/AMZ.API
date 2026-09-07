@@ -65,7 +65,7 @@ export type RestockPlanSnapshot = {
   reorderPoint: number;
   recommendedUnits: number;
   forecastStockoutAt: string | null;
-  action: "RESTOCK_NOW" | "WATCH" | "HEALTHY" | "NO_DEMAND";
+  action: "RESTOCK_NOW" | "WATCH" | "TRACK_INBOUND" | "REVIEW_PLAN" | "HEALTHY" | "NO_DEMAND";
   fetchedAt: string;
   requestId: string | null;
   rateLimit: string | null;

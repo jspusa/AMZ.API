@@ -250,7 +250,28 @@ function commandTasks(input: {
   }
   if (input.restock.data) {
     const restock = input.restock.data;
-    if (restock.action === "RESTOCK_NOW" || restock.action === "WATCH") {
+    if (restock.action === "REVIEW_PLAN") {
+      add({
+        id: "restock-review-plan",
+        title: "檢查補貨目標與交期",
+        detail: `目標庫存 ${restock.targetDays} 天；目前可售約 ${restock.daysOfCover?.toFixed(1) ?? "—"} 天，已進入交期＋安全庫存 ${restock.leadTimeDays + restock.safetyDays} 天範圍，且沒有在途庫存。請複核目標與交期並確認補貨安排；本次計算量為 0 不代表沒有缺貨風險。`,
+        automation: "manual",
+        severity: "critical",
+        tool: "restock",
+      });
+    } else if (restock.action === "TRACK_INBOUND") {
+      add({
+        id: "restock-track-inbound",
+        title: "請追蹤在途入庫，避免缺貨",
+        detail: `目前可售約 ${restock.daysOfCover?.toFixed(1) ?? "—"} 天；含在途庫存已涵蓋目標，暫不追加補貨，但仍需確認到貨與接收時間。`,
+        automation: "manual",
+        severity: (restock.daysOfCover ?? 0) <=
+            restock.leadTimeDays + restock.safetyDays
+          ? "critical"
+          : "warning",
+        tool: "restock",
+      });
+    } else if (restock.action === "RESTOCK_NOW" || restock.action === "WATCH") {
       add({
         id: restock.action === "RESTOCK_NOW" ? "restock-now" : "restock-watch",
         title: restock.action === "RESTOCK_NOW"

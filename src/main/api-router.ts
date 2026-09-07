@@ -7,6 +7,7 @@ import type { MarketplaceId } from "../shared/marketplaces";
 import type { AdvertisingGateway } from "./amazon/ads-api";
 import { CredentialVault } from "./credential-vault";
 import { LocalStore } from "./local-store";
+import { BusinessPricingRecentWork } from "./business-pricing-recent-work";
 import {
   MainWriteGate,
   type MainWriteGatePort,
@@ -297,6 +298,7 @@ export class ApiRouter {
     ListingContentBatchMutationsPort;
   private readonly variationMoveMutations: VariationMoveMutationsPort;
   private readonly businessPricingMutations: BusinessPricingMutationsPort;
+  private readonly businessPricingRecentWork: BusinessPricingRecentWork;
   private readonly ordersReads: OrdersReadsPort;
   private readonly statelessCapabilities: StatelessCapabilityRoutesPort;
   private readonly imageUpload: LocalImageUploadPort;
@@ -402,6 +404,9 @@ export class ApiRouter {
       store,
       context: this.spExecutionContext,
       approveWrite: input.approveWrite,
+    });
+    this.businessPricingRecentWork = new BusinessPricingRecentWork({
+      store, context: this.spExecutionContext,
     });
     this.priceMutations = input.priceMutations ?? createListingPriceMutations({
       context: this.spExecutionContext,
@@ -951,6 +956,8 @@ export class ApiRouter {
         });
       case "POST /api/sp-api/business-pricing-audit":
         return this.businessPricingAuditOwner.start(request);
+      case "GET /api/sp-api/business-pricing/recent-work":
+        return this.businessPricingRecentWork.read(request);
       case "GET /api/sp-api/business-pricing-audit":
         return this.businessPricingAuditOwner.statusOrData(request);
       case "GET /api/sp-api/business-pricing-audit/export":

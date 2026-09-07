@@ -1,3 +1,17 @@
+import type {
+  BusinessMinimumPricePresenceWire,
+  BusinessPriceIssueWire,
+  BusinessPriceUpdateWire,
+  BusinessPriceValidationWire,
+  BusinessPriceWriteBodyWire,
+  BusinessPriceWriteStatusWire,
+  BusinessPricingCapabilityWire,
+  BusinessPricingListingWire,
+  BusinessPricingMoneyWire,
+  BusinessQuantityDiscountPlanWire,
+  BusinessQuantityDiscountTierWire,
+} from "../../shared/business-pricing-wire";
+
 import {
   businessPricingRecommendationFlags,
   recommendedBusinessPricingConfigurationState,
@@ -23,15 +37,9 @@ export type BusinessPricingAuditBucket = Exclude<
   "all"
 >;
 
-export type BusinessPricingMoney = Readonly<{
-  amount: number;
-  currencyCode: string;
-}>;
+export type BusinessPricingMoney = BusinessPricingMoneyWire;
 
-export type BusinessMinimumPricePresence =
-  | "absent"
-  | "canonical"
-  | "ambiguous";
+export type BusinessMinimumPricePresence = BusinessMinimumPricePresenceWire;
 
 export type BusinessPricingAuditRow = Readonly<{
   sellerSku: string;
@@ -75,174 +83,28 @@ export type BusinessPricingAuditSnapshot = Readonly<{
   workflowActivities?: readonly BusinessPricingWorkflowActivity[];
 }>;
 
-export type BusinessPricingCapability = Readonly<{
-  supported: boolean;
-  editable: boolean;
-  reason: string | null;
-  schemaChecksum: string | null;
-  quantityDiscountsSupported: boolean;
-  quantityDiscountsEditable: boolean;
-  quantityDiscountsReason: string | null;
-}>;
+export type BusinessPricingCapability = BusinessPricingCapabilityWire;
 
-export type BusinessQuantityDiscountTier = Readonly<{
-  lowerBound: number;
-  percent: number;
-}>;
+export type BusinessQuantityDiscountTier = BusinessQuantityDiscountTierWire;
 
-export type BusinessQuantityDiscountPlan = Readonly<{
-  discountType: "percent" | "fixed";
-  levels: readonly Readonly<{
-    lowerBound: number;
-    value: number;
-  }>[];
-}>;
+export type BusinessQuantityDiscountPlan = BusinessQuantityDiscountPlanWire;
 
-export type BusinessPricingListingSnapshot = Readonly<{
-  mode: "live" | "demo";
-  marketplaceId: string;
-  sellerSku: string;
-  asin: string | null;
-  title: string;
-  productType: string;
-  standardPrice: BusinessPricingMoney | null;
-  minimumPrice: BusinessPricingMoney | null;
-  minimumPricePresence: BusinessMinimumPricePresence;
-  businessPrice: BusinessPricingMoney | null;
-  businessOfferPresence: "absent" | "present" | "ambiguous";
-  businessPricingManagedByAutomation: boolean;
-  quantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence:
-    | "absent"
-    | "canonical"
-    | "duplicate"
-    | "ambiguous";
-  quantityDiscountPlanHash: string | null;
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  businessPricingCapability: BusinessPricingCapability;
-  fetchedAt: string;
-  notice: string | null;
-  writeStatus: BusinessPriceWriteStatus | null;
-}>;
+export type BusinessPricingListingSnapshot = BusinessPricingListingWire;
 
-export type BusinessPriceWriteBody = Readonly<{
-  marketplaceId: string;
-  sellerSku: string;
-  expectedStandardPrice: number;
-  expectedBusinessPrice: number | null;
-  newBusinessPrice: number;
-  expectedMinimumPrice?: number | null;
-  expectedQuantityDiscountPlanHash?: string | null;
-  quantityDiscountTiers?: readonly BusinessQuantityDiscountTier[];
-  idempotencyKey: string;
-}>;
+export type BusinessPriceWriteBody = BusinessPriceWriteBodyWire;
 
-export type BusinessPriceIssue = Readonly<{
-  severity: string;
-  message: string;
-}>;
+export type BusinessPriceIssue = BusinessPriceIssueWire;
 
-export type BusinessPriceValidation = Readonly<{
-  mode: "live" | "demo";
-  status: "VALID" | "SIMULATED";
-  marketplaceId: string;
-  sellerSku: string;
-  asin: string;
-  productType: string;
-  standardPrice: BusinessPricingMoney;
-  previousBusinessPrice: BusinessPricingMoney | null;
-  requestedBusinessPrice: BusinessPricingMoney;
-  previousMinimumPrice: BusinessPricingMoney | null;
-  requestedMinimumPrice: BusinessPricingMoney | null;
-  lowestTierUnitPrice: BusinessPricingMoney | null;
-  minimumPriceChange: "preserve" | "lower";
-  minimumPriceProtectedHash: string | null;
-  minimumPriceCanonicalPatchHash: string | null;
-  businessPriceValidation:
-    | "validated"
-    | "final-state-validated"
-    | "deferred-until-minimum-price";
-  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  previousQuantityDiscountPlanHash: string | null;
-  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanPresence:
-    | "absent"
-    | "canonical"
-    | "duplicate"
-    | "ambiguous";
-  quantityDiscountPlanChange: "preserve" | "replace";
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  schemaChecksum: string;
-  fbaEvidenceHash: string;
-  canonicalPatchHash: string;
-  validationIssuesHash: string;
-  validatedAt: string;
-  issues: readonly BusinessPriceIssue[];
-  notice: string;
-}>;
+export type BusinessPriceValidation = BusinessPriceValidationWire;
 
 export type SubmittedBusinessPricePreview = Readonly<{
   body: BusinessPriceWriteBody;
   validation: BusinessPriceValidation;
 }>;
 
-export type BusinessPriceUpdate = Readonly<{
-  mode: "live" | "demo";
-  status: "ACCEPTED" | "SIMULATED";
-  marketplaceId: string;
-  sellerSku: string;
-  asin: string;
-  productType: string;
-  standardPrice: BusinessPricingMoney;
-  previousBusinessPrice: BusinessPricingMoney | null;
-  requestedBusinessPrice: BusinessPricingMoney;
-  previousMinimumPrice: BusinessPricingMoney | null;
-  requestedMinimumPrice: BusinessPricingMoney | null;
-  lowestTierUnitPrice: BusinessPricingMoney | null;
-  minimumPriceChange: "preserve" | "lower";
-  minimumPriceProtectedHash: string | null;
-  minimumPriceCanonicalPatchHash: string | null;
-  businessPriceValidation: "validated";
-  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  previousQuantityDiscountPlanHash: string | null;
-  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanChange: "preserve" | "replace";
-  businessOfferGuardHash: string;
-  businessOfferProtectedHash: string;
-  schemaChecksum: string;
-  acceptedAt: string;
-  issues: readonly BusinessPriceIssue[];
-  notice: string;
-}>;
+export type BusinessPriceUpdate = Omit<BusinessPriceUpdateWire, "submissionId" | "requestId">;
 
-export type BusinessPriceWriteStatus = Readonly<{
-  mode: "live";
-  status: "PROCESSING" | "VERIFIED";
-  stage: "minimum_price" | "business_price";
-  marketplaceId: string;
-  sellerSku: string;
-  asin: string;
-  productType: string;
-  acceptedAt: string;
-  verifiedAt: string | null;
-  requestId: string | null;
-  submissionId: string | null;
-  verified: boolean;
-  authoritative: boolean;
-  canResend: false;
-  businessPriceSubmitted: boolean;
-  previousBusinessPrice: BusinessPricingMoney | null;
-  requestedBusinessPrice: BusinessPricingMoney | null;
-  previousMinimumPrice: BusinessPricingMoney | null;
-  requestedMinimumPrice: BusinessPricingMoney | null;
-  lowestTierUnitPrice: BusinessPricingMoney | null;
-  previousQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  requestedQuantityDiscountPlan: BusinessQuantityDiscountPlan | null;
-  quantityDiscountPlanChange: "preserve" | "replace" | null;
-  notice: string;
-}>;
+export type BusinessPriceWriteStatus = BusinessPriceWriteStatusWire;
 
 export type BusinessPricingWorkflowActivity = Readonly<{
   sellerSku: string;

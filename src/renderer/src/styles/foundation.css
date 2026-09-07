@@ -1,4 +1,6 @@
 :root {
+  --font-geist-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", "Segoe UI", sans-serif;
+  --font-geist-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --ink: #111827;
   --muted: #697386;
   --line: #e7e9ee;
@@ -930,4 +932,16 @@ footer {
   padding: 22px 0 28px;
   color: #8e96a4;
   font-size: 9px;
+}
+
+/* Deferred tools keep their loading/error state visible without blocking home. */
+.deferred-workspace-status {
+  position: relative;
+  z-index: 25;
+  margin: 24px;
+  padding: 20px 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
 }

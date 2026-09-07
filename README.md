@@ -123,13 +123,15 @@ npm run dist:mac
 npm run dist:win
 ```
 
-Windows build 會用鎖定的 `node-gyp` 與 Electron 43.3.0 x64 headers 編譯第一方 C++ WinRT desktop interop N-API addon，再把 `windows-hello.node` 放在 `app.asar.unpacked` 的固定路徑；`app.asar` 內保存其固定檔名與 SHA-256 manifest，main 載入前會重算 SHA-256。這可偵測打包錯配，但 Windows 未簽章版沒有 macOS 的 embedded ASAR integrity，也不能抵抗同一使用者修改 App 檔案；下載後仍需核對 GitHub `SHA256SUMS.txt`。GitHub-hosted Windows CI 會驗證 addon 編譯、ASAR packed／unpacked 邊界、x64 package、NSIS／ZIP、SHA-256 與無憑證 Bridge smoke；CI runner 不是 Windows 11 Pro 使用者實機，不能冒充 Windows Hello 實際彈窗或生物辨識已通過。
+Windows build 會用鎖定的 `node-gyp` 與 Electron 43.3.0 x64 headers 編譯第一方 C++ WinRT desktop interop N-API addon，再把 `windows-hello.node` 放在 `app.asar.unpacked` 的固定路徑；`app.asar` 內保存其固定檔名與 SHA-256 manifest，main 載入前會重算 SHA-256。這可偵測打包錯配，但 Windows 未簽章版沒有 macOS 的 embedded ASAR integrity，也不能抵抗同一使用者修改 App 檔案；員工下載後仍需核對安全下載頁的 SHA-256；內部 artifact 驗證另核對對應 Actions 的 checksum manifest。GitHub-hosted Windows CI 會驗證 addon 編譯、ASAR packed／unpacked 邊界、x64 package、NSIS／ZIP、SHA-256 與無憑證 Bridge smoke；CI runner 不是 Windows 11 Pro 使用者實機，不能冒充 Windows Hello 實際彈窗或生物辨識已通過。
 
 Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`.dmg`、簽章、Touch ID、公證必須由 macOS runner 驗證，Windows Hello 必須由 Windows 11 Pro x64 實機驗證。
 
 ## 發布與更新
 
-- 一般 renderer 變更推送到 `main` 後由 GitHub Pages 自動發布 Control Console Release，不需要提高桌機版本，也不需要員工重新下載 Notebook Key。
+目前 source、Pages、artifact、員工下載卡、實機與 live 狀態分開記錄於 [版本證據](docs/releases/2026-09-review-evidence.md)。安裝檔版本以安全下載頁為準，不由控制台的 source 版本推定。簽章環境與實機步驟見 [preflight](docs/releases/signed-update-preflight.md)，功能實測見 [live 驗收矩陣](docs/releases/2026-09-live-acceptance.md)。
+
+- 一般 renderer 變更推送到 `main` 後，GitHub Pages 會先對同一個固定 commit 完成 `npm run check`（型別、測試、建置），成功才發布 Control Console Release，不需要提高桌機版本，也不需要員工重新下載 Notebook Key。
 - 新增本機 Amazon 寫入、憑證、安全確認或其他 main／preload 能力時，提高一次 `package.json` 版本並建立完全相同的 tag。單一 `desktop-release.yml` 會先驗證共用程式碼，再分別建立 Developer ID＋公證的 Mac universal DMG／ZIP／`latest-mac.yml`，以及 Authenticode 的 Windows x64 NSIS／ZIP／`latest.yml`；兩邊全部通過才可發布同一個 Notebook Key Release。
 - 正式簽章包會被工作流注入 `publisher-signed-v1`；未簽章測試包固定保留 `disabled`，因此不能檢查、下載或安裝正式更新，也不能冒充正式發布。
 - 正式 Notebook Key 啟動後約 15 秒背景檢查，之後每 6 小時重查；有新版會在背景下載並顯示小滑板人進度。下載完成後不會自行關閉程式，只顯示一次「更新並重啟」。Amazon／憑證安全操作尚未結束時會拒絕重啟；按下後立即關閉憑證編輯器、停止接受新的 Amazon／憑證操作，再以 Windows 靜默 NSIS 或 macOS updater 安裝並重開。若 installer 當場拋錯或稍後發出 error，操作 gate 與按鈕狀態都會回復，不會把 App 永久鎖住。
@@ -138,24 +140,11 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 - 員工可見的 [Notebook Key 安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads) 仍只顯示 Mac DMG 與 Windows NSIS installer 兩張卡。自動更新若採 GitHub provider，Release 資產技術上是公開下載來源；發布 job 因此要求 `desktop-release` environment 的 `PUBLIC_DESKTOP_UPDATE_FEED=approved`，未取得明確核准不得發布。
 - 未簽章測試版只供內部測試。CI 不能冒充 Gatekeeper／SmartScreen reputation、Touch ID、Windows Hello 或真實裝置更新已通過。
 
-正式 Release 需要 GitHub `mac-release` protected environment 與：
-
-- `MAC_CSC_LINK`
-- `MAC_CSC_KEY_PASSWORD`
-- `APPLE_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
-- `APPLE_TEAM_ID`
-
-GitHub `windows-release` protected environment 另需要同一個穩定 Windows publisher identity 的：
-
-- `WIN_CSC_LINK`
-- `WIN_CSC_KEY_PASSWORD`
-
-兩平台簽章檔驗證完成後，`desktop-release` protected environment 才能核准公開更新來源。Release tag 必須精確對應 workflow SHA，且該 commit 必須已進入 `origin/main`；Mac 與 Windows runner 各自在自己的環境重新安裝依賴與建置，不能沿用另一台 runner 的輸出。台灣公司目前不一定符合 Microsoft Artifact Signing Public Trust 的申請地區；若所選憑證由 cloud HSM／hardware token 保管，需把 Windows job 改接該發行商的 CI signer，不能把不可匯出的 private key 假裝成 `WIN_CSC_LINK`。
+正式 Release 的 `mac-release`、`windows-release`、`desktop-release` 環境、憑證種類、保護欄位與逐項驗證由 [簽章 preflight](docs/releases/signed-update-preflight.md) 統一維護。兩平台同 source 驗證及公開 feed 核准都完成後才可發布。
 
 ## GitHub Pages
 
-第一次到 `Settings → Pages`，將 Source 選為 **GitHub Actions**。之後 `src/renderer/` 的更新會自動建置與部署，不需要重新下載 Notebook 鑰匙。
+第一次到 `Settings → Pages`，將 Source 選為 **GitHub Actions**。之後介面更新在同一份 source 驗證成功後自動建置與部署，不需要重新下載 Notebook 鑰匙。手動與既有授權公告觸發亦先跑完整 check；公告 author／label 邊界保持不變。
 
 ## Repository
 

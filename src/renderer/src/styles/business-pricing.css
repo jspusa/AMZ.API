@@ -523,6 +523,71 @@
   gap: 8px;
 }
 
+.business-pricing-audit-intro .business-pricing-snapshot-time {
+  margin-top: 10px;
+  color: #62626b;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.business-pricing-results-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.business-pricing-results-toolbar h4 { margin: 0; font-size: 12px; }
+.business-pricing-results-toolbar nav,
+.business-pricing-results-toolbar [role="group"] { display: flex; gap: 6px; }
+.business-pricing-results-toolbar button,
+.business-pricing-row-detail-toggle {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #d7d7df;
+  border-radius: 8px;
+  background: #fff;
+  color: #42424b;
+  font-size: 11px;
+  cursor: pointer;
+}
+.business-pricing-results-toolbar button[aria-pressed="true"] {
+  border-color: #aac3de;
+  background: #edf5ff;
+  color: #235a86;
+}
+.business-pricing-results-toolbar button:disabled,
+.business-pricing-row-detail-toggle:disabled { cursor: default; opacity: .5; }
+.business-pricing-row-details { grid-column: 1 / -1; padding-top: 10px; border-top: 1px solid #e7e7ec; }
+.business-pricing-row-details[hidden] { display: none; }
+.business-pricing-row-details > p { margin: 8px 0 0; color: #64646e; font-size: 11px; line-height: 1.5; }
+.business-pricing-row-details > dl { margin-bottom: 8px; }
+
+.business-pricing-recent-work {
+  padding: 14px;
+  border: 1px solid #dce4ed;
+  border-radius: 14px;
+  background: #f7faff;
+}
+.business-pricing-recent-work header,
+.business-pricing-recent-work li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.business-pricing-recent-work h4 { margin: 0; font-size: 13px; }
+.business-pricing-recent-work p { margin: 6px 0; color: #616977; font-size: 11px; line-height: 1.5; }
+.business-pricing-recent-work ul { display: grid; gap: 8px; padding: 0; margin: 12px 0 0; list-style: none; }
+.business-pricing-recent-work li { padding-top: 10px; border-top: 1px solid #dce4ed; }
+.business-pricing-recent-work li > div { min-width: 0; overflow-wrap: anywhere; }
+.business-pricing-recent-work li strong { display: block; font-size: 12px; }
+.business-pricing-recent-work li span { color: #4b5b70; font-size: 11px; font-weight: 750; }
+.business-pricing-recent-work small { display: block; margin-top: 4px; color: #616977; font-size: 10px; }
+.business-pricing-recent-work time { font-variant-numeric: tabular-nums; }
+.business-pricing-recent-work button { flex-shrink: 0; min-height: 34px; padding: 6px 10px; border: 1px solid #cbd8e8; border-radius: 8px; background: #fff; color: #315c86; font-size: 11px; cursor: pointer; }
+.business-pricing-recent-work button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 600px) {
+  .business-pricing-recent-work header,
+  .business-pricing-recent-work li { flex-direction: column; }
+}
+
 .business-pricing-row {
   display: grid;
   grid-template-columns: minmax(180px, 1.2fr) minmax(300px, 1.7fr) minmax(140px, .9fr) auto;

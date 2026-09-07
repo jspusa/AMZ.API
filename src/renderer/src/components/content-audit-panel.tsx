@@ -295,7 +295,29 @@ export type ContentAuditCache = {
   filter: AuditFilter;
   query: string;
   spellcheckNote: string | null;
+  viewMode?: "compact" | "full";
+  pageIndex?: number;
 };
+
+const CONTENT_AUDIT_PAGE_SIZE = 50;
+
+function contentAuditPageIndex(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : 0;
+}
+
+function contentAuditDeadlineLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleString("zh-TW", { timeZoneName: "short", hour12: false })
+    : "期限資料無效，請重新預檢";
+}
+
+function isContentAuditSourceTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value;
+}
 
 export type ContentAuditQuickEditEvidence = {
   issueKind: ContentAuditIssueKind;
@@ -751,6 +773,7 @@ export function parseContentWorkbookBatchPreview(
     value.marketplaceId !== marketplaceId ||
     typeof value.expiresAt !== "string" ||
     !value.expiresAt ||
+    !Number.isFinite(Date.parse(value.expiresAt)) ||
     value.status !== "READY" ||
     !Array.isArray(value.changes) ||
     !value.changes.length ||
@@ -1434,6 +1457,15 @@ export function parseContentAuditSnapshot(
   ) {
     throw new Error("文案健檢回應與目前選擇的站點不一致；已停止顯示與快取。");
   }
+  const hasSourceDeadline = value.sourceCreatedAt !== undefined ||
+    value.sourceExpiresAt !== undefined;
+  if (hasSourceDeadline && (
+    !isContentAuditSourceTimestamp(value.sourceCreatedAt) ||
+    !isContentAuditSourceTimestamp(value.sourceExpiresAt) ||
+    Date.parse(value.sourceExpiresAt) <= Date.parse(value.sourceCreatedAt)
+  )) {
+    throw new Error("文案 Excel 來源期限缺少完整可核對的建立與到期時間；請重新掃描。");
+  }
   const rows = value.rows.map((candidate, index): ContentAuditRow => {
     if (!candidate || typeof candidate !== "object") {
       throw new Error(`文案健檢第 ${index + 1} 筆商品資料格式無效；已停止顯示不完整結果。`);
@@ -1534,6 +1566,10 @@ export function parseContentAuditSnapshot(
   return {
     marketplaceId: value.marketplaceId,
     fetchedAt: value.fetchedAt,
+    ...(hasSourceDeadline ? {
+      sourceCreatedAt: value.sourceCreatedAt,
+      sourceExpiresAt: value.sourceExpiresAt,
+    } : {}),
     exportId:
       typeof value.exportId === "string" &&
       /^[A-Za-z0-9._-]{1,200}$/u.test(value.exportId)
@@ -1984,6 +2020,10 @@ export function ContentWorkbookBatchPreviewCard({
         已通過 {preview.changes.length.toLocaleString()} 個安全 SKU 的零寫入預檢
       </strong>
       <p>{preview.notice}</p>
+      <p className="content-audit-deadline">
+        本次預檢有效至 <time dateTime={preview.expiresAt}>{contentAuditDeadlineLabel(preview.expiresAt)}</time>（最長 15 分鐘）。
+        這是本次確認的期限，與 Excel 來源的 24 小時期限分開；逾期請重新預檢。
+      </p>
       {preview.skippedRows.length > 0 && (
         <div className="content-audit-validation-issues" role="alert">
           <strong>
@@ -2966,6 +3006,12 @@ export default function ContentAuditPanel({
   );
   const [filter, setFilter] = useState<AuditFilter>(initialCache?.filter ?? "all");
   const [query, setQuery] = useState(initialCache?.query ?? "");
+  const [viewMode, setViewMode] = useState<"compact" | "full">(
+    initialCache?.viewMode === "full" ? "full" : "compact",
+  );
+  const [pageIndex, setPageIndex] = useState(
+    contentAuditPageIndex(initialCache?.pageIndex),
+  );
   const [error, setError] = useState<string | null>(initialJobError);
   const [exporting, setExporting] =
     useState<"attention" | "all" | null>(null);
@@ -3037,6 +3083,8 @@ export default function ContentAuditPanel({
       setSnapshot(cachedResult.snapshot);
       setFilter(cachedResult.filter);
       setQuery(cachedResult.query);
+      setViewMode(cachedResult.viewMode === "full" ? "full" : "compact");
+      setPageIndex(contentAuditPageIndex(cachedResult.pageIndex));
       setSpellcheckNote(cachedResult.spellcheckNote);
       return;
     }
@@ -3044,6 +3092,8 @@ export default function ContentAuditPanel({
     setSnapshot(null);
     setFilter("all");
     setQuery("");
+    setViewMode("compact");
+    setPageIndex(0);
     setSpellcheckNote(null);
   }, [cachedResult, initialJobReconnectRevision, marketplaceId, mode]);
 
@@ -3079,18 +3129,27 @@ export default function ContentAuditPanel({
         row.title,
         row.itemHighlight ?? "",
         row.productDescription ?? "",
+        ...row.bulletPoints,
+        row.ingredients,
       ]
         .join(" ")
         .toLocaleLowerCase("en-US")
         .includes(normalizedQuery);
     });
   }, [snapshot, filter, query]);
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / CONTENT_AUDIT_PAGE_SIZE));
+  const currentPage = Math.min(pageIndex, pageCount - 1);
+  const pageStart = currentPage * CONTENT_AUDIT_PAGE_SIZE;
+  const pageRows = useMemo(
+    () => visibleRows.slice(pageStart, pageStart + CONTENT_AUDIT_PAGE_SIZE),
+    [visibleRows, pageStart],
+  );
   const invisibleLocations = useMemo(
     () =>
       filter === "all" || filter === "COMPLETED" || filter === "SUSPECTED_TYPO"
-        ? locateInvisibleCharacters(visibleRows)
+        ? locateInvisibleCharacters(pageRows)
         : [],
-    [filter, visibleRows],
+    [filter, pageRows],
   );
 
   const loadAudit = async (
@@ -3133,6 +3192,7 @@ export default function ContentAuditPanel({
       summary: summarizeContentAudit(rows),
     };
     setSnapshot(completed);
+    setPageIndex(0);
     setFilter("all");
     setQuery("");
     setSpellcheckNote(nextSpellcheckNote);
@@ -3142,6 +3202,8 @@ export default function ContentAuditPanel({
       filter: "all",
       query: "",
       spellcheckNote: nextSpellcheckNote,
+      viewMode,
+      pageIndex: 0,
     });
   };
 
@@ -3155,6 +3217,7 @@ export default function ContentAuditPanel({
     setReply(null);
     setError(null);
     setSnapshot(null);
+    setPageIndex(0);
     setFilter("all");
     setQuery("");
     setSpellcheckNote(null);
@@ -3203,6 +3266,9 @@ export default function ContentAuditPanel({
   };
 
   useEffect(() => {
+    if (standaloneAuditSnapshotMatchesJob(cachedResult?.snapshot ?? null, initialJob)) {
+      return;
+    }
     if (!shouldResumeStandaloneAuditJob({
       initialJob,
       expectedKind: "content",
@@ -3300,12 +3366,15 @@ export default function ContentAuditPanel({
 
   const changeFilter = (nextFilter: AuditFilter, scrollToResults = false) => {
     setFilter(nextFilter);
+    setPageIndex(0);
     if (snapshot) {
       onCachedResultChange?.({
         snapshot,
         filter: nextFilter,
         query,
         spellcheckNote,
+        viewMode,
+        pageIndex: 0,
       });
     }
     if (scrollToResults) {
@@ -3320,13 +3389,30 @@ export default function ContentAuditPanel({
 
   const changeQuery = (nextQuery: string) => {
     setQuery(nextQuery);
+    setPageIndex(0);
     if (snapshot) {
       onCachedResultChange?.({
         snapshot,
         filter,
         query: nextQuery,
         spellcheckNote,
+        viewMode,
+        pageIndex: 0,
       });
+    }
+  };
+
+  const changeResultView = (nextMode: "compact" | "full", nextPage = currentPage) => {
+    const boundedPage = Math.max(0, Math.min(nextPage, pageCount - 1));
+    setViewMode(nextMode);
+    setPageIndex(boundedPage);
+    if (snapshot) onCachedResultChange?.({
+      snapshot, filter, query, spellcheckNote,
+      viewMode: nextMode, pageIndex: boundedPage,
+    });
+    if (boundedPage !== currentPage) {
+      resultHeadingRef.current?.focus({ preventScroll: true });
+      resultHeadingRef.current?.scrollIntoView({ block: "start" });
     }
   };
 
@@ -3606,6 +3692,14 @@ export default function ContentAuditPanel({
             </button>
           </div>
           <p className="content-audit-export-local-note">兩份都只在這台電腦建立；任一份都可回傳更新。</p>
+          <div className="content-audit-source-deadline" aria-label="Excel 來源期限與原機限制">
+            <p>請回到原本匯出的電腦，使用相同 Notebook Key、帳號與站點回傳。來源有效期為建立後 24 小時；重新下載同份快照不會延長。</p>
+            {snapshot.sourceExpiresAt ? (
+              <p>本份來源有效至 <time dateTime={snapshot.sourceExpiresAt}>{contentAuditDeadlineLabel(snapshot.sourceExpiresAt)}</time>；來源過期需重新掃描並匯出。若原機找不到來源，請先確認電腦、帳號與站點。</p>
+            ) : (
+              <p>目前 Notebook Key 未提供精確來源期限；更新 App 後重新掃描可顯示。找不到來源與來源過期會在預檢時分別說明。</p>
+            )}
+          </div>
         </>
       )}
       {state === "done" && snapshot && summary && (
@@ -3702,6 +3796,7 @@ export default function ContentAuditPanel({
               aria-label="不可見字元統一說明與位置"
             >
               <strong>不可見字元統一說明</strong>
+              {pageCount > 1 && <p>以下只列本頁位置；搜尋與篩選仍涵蓋全部結果。</p>}
               <p>
                 代碼會完整寫成 U+200B；U+200B 是「零寬空格」，不是 U+200。
                 下方紅色括號只是定位標記，不會修改原文；請手動修改標示段落。
@@ -3758,15 +3853,26 @@ export default function ContentAuditPanel({
               />
             </label>
           </div>
-          <div className="content-audit-result-heading" ref={resultHeadingRef}>
+          <div className="content-audit-result-heading" ref={resultHeadingRef} tabIndex={-1}>
             <strong>{visibleRows.length.toLocaleString()} 個符合條件的 SKU</strong>
             <div>
+              <div className="content-audit-view-options" role="group" aria-label="文案結果顯示方式">
+                <button type="button" aria-label="緊湊顯示文案健檢結果" aria-pressed={viewMode === "compact"} onClick={() => changeResultView("compact")}>緊湊</button>
+                <button type="button" aria-label="完整顯示文案健檢結果" aria-pressed={viewMode === "full"} onClick={() => changeResultView("full")}>完整</button>
+              </div>
               <button type="button" onClick={() => void startAudit()}>重新掃描</button>
             </div>
           </div>
+          {visibleRows.length > 0 && (
+            <nav className="content-audit-pagination" aria-label="文案結果分頁">
+              <span role="status" aria-live="polite">第 {pageStart + 1}–{pageStart + pageRows.length} 項，共 {visibleRows.length.toLocaleString()} 項 · 第 {currentPage + 1}／{pageCount} 頁</span>
+              <button type="button" aria-label="文案結果上一頁" disabled={currentPage === 0} onClick={() => changeResultView(viewMode, currentPage - 1)}>上一頁</button>
+              <button type="button" aria-label="文案結果下一頁" disabled={currentPage + 1 >= pageCount} onClick={() => changeResultView(viewMode, currentPage + 1)}>下一頁</button>
+            </nav>
+          )}
           {visibleRows.length ? (
-            <div className="content-audit-list">
-              {visibleRows.map((row) => {
+            <div className="content-audit-list" data-view-mode={viewMode}>
+              {pageRows.map((row) => {
                 const titleIssues = typoIssuesForField(row, "title");
                 const bulletIssues = typoIssuesForField(row, "bulletPoints");
                 const ingredientsIssues = typoIssuesForField(row, "ingredients");
@@ -3777,8 +3883,13 @@ export default function ContentAuditPanel({
                 const quickEditFocus = quickEditAvailability.status === "ready"
                   ? quickEditAvailability.focus
                   : null;
+                const matchingIssues = row.issues.filter((issue) =>
+                  contentAuditIssueMatchesFilter(issue, filter));
+                const matchingIssueLabels = Array.from(new Set(
+                  matchingIssues.map((issue) => issueLabel(issue.kind)),
+                ));
                 return (
-                  <article key={row.sellerSku}>
+                  <article key={row.sellerSku} data-seller-sku={row.sellerSku}>
                     <div className="content-audit-product">
                       <span>{(row.title || row.sellerSku).slice(0, 1)}</span>
                       <div>
@@ -3813,6 +3924,14 @@ export default function ContentAuditPanel({
                         立刻修改目前不可用：{quickEditAvailability.unavailableReason}
                       </p>
                     )}
+                    <details className="content-audit-row-details" open={viewMode === "full"}>
+                      <summary>
+                        {row.readStatus === "incomplete"
+                          ? "讀取未完成：查看原因"
+                          : row.issues.length
+                            ? `${matchingIssueLabels.join("、")}：查看原因與原文`
+                            : "檢查通過"}
+                      </summary>
                     {(affectedBullets.length > 0 ||
                       hasHighlightedContent(row.ingredients, ingredientsIssues)) && (
                       <div
@@ -3843,15 +3962,14 @@ export default function ContentAuditPanel({
                             <small>本列未計入字數、缺賣點、缺成分或共用拼字統計</small>
                           </div>
                         ))}
-                      {row.issues
+                      {matchingIssues
                         .filter(
                           (issue) =>
                             !invisibleIssueIsExplained(
                               row,
                               issue,
                               invisibleLocations,
-                            ) &&
-                            contentAuditIssueMatchesFilter(issue, filter),
+                            ),
                         )
                         .map((issue, index) => (
                           <div key={`${issue.kind}-${issue.field}-${issue.bulletIndex ?? issue.token ?? index}`}>
@@ -3861,6 +3979,7 @@ export default function ContentAuditPanel({
                           </div>
                         ))}
                     </div>
+                    </details>
                   </article>
                 );
               })}

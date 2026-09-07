@@ -1,3 +1,5 @@
+import { NOTEBOOK_INSTALLATION_GUIDANCE } from "../shared/notebook-key-installation";
+
 export type DesktopUpdatePolicy = Readonly<{
   enabled: boolean;
   message: string | null;
@@ -37,13 +39,13 @@ export function desktopUpdatePolicy(input: {
     return {
       enabled: false,
       message:
-        "Windows Notebook 鑰匙目前是內部未簽章版；App 內更新已停用。請只從 jspusa/AMZ.API 的 notebook-key-windows 固定下載頁重新下載並核對 SHA-256。",
+        `Windows Notebook 鑰匙目前是內部未簽章版；App 內更新已停用。${NOTEBOOK_INSTALLATION_GUIDANCE}`,
     };
   }
   if (input.platform === "darwin") {
     return {
       enabled: false,
-      message: "這份 Mac Notebook 鑰匙不是正式簽章更新版；請先完成最後一次安全安裝。",
+      message: `這份 Mac Notebook 鑰匙不是正式簽章更新版；App 內更新已停用。${NOTEBOOK_INSTALLATION_GUIDANCE}`,
     };
   }
   return {

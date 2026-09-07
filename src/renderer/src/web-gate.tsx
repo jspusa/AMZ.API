@@ -1,10 +1,8 @@
 import { useState } from "react";
-import packageJson from "../../../package.json";
+import { PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL } from "../../shared/notebook-key-installation";
 import BrandGlyph from "./components/brand-glyph";
 
-export const PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL =
-  "https://supply-boss.brave-prawn-0848.chatgpt.site/downloads";
-export const APP_DOWNLOAD_VERSION = packageJson.version;
+export { PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL };
 
 export function safeNotebookDownloadHref(href: string | null): string | null {
   if (!href) return null;
@@ -72,7 +70,8 @@ export default function WebGate({
           <div className="web-gate-install-heading">
             <div>
               <p>NOTEBOOK KEY DOWNLOAD</p>
-              <h2 id="notebook-key-download-title">下載 AMZ.API App {APP_DOWNLOAD_VERSION}</h2>
+              <h2 id="notebook-key-download-title">下載 AMZ.API App</h2>
+              <small>安裝檔版本以安全下載頁為準</small>
             </div>
             {safeDownloadHref ? (
               <a

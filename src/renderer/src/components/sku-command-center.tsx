@@ -99,7 +99,7 @@ type CommandSnapshot = {
     subscriptions: number | null;
   }>;
   restock: Source<{
-    action: "RESTOCK_NOW" | "WATCH" | "HEALTHY" | "NO_DEMAND";
+  action: "RESTOCK_NOW" | "WATCH" | "TRACK_INBOUND" | "REVIEW_PLAN" | "HEALTHY" | "NO_DEMAND";
     daysOfCover: number | null;
     recommendedUnits: number;
     casePack: number;
@@ -505,7 +505,11 @@ export default function SkuCommandCenter({
             <section className="command-kpis" aria-label="SKU 核心狀態">
               <article><span>標準售價</span><strong>{formatMoney(snapshot.price.data?.standardPrice ?? null)}</strong><small>{snapshot.price.data?.hasAutomatedPricing ? "已連結自動定價" : snapshot.price.data?.discountedPrice ? `促銷 ${formatMoney(snapshot.price.data.discountedPrice.price)}` : "無促銷覆蓋"}</small></article>
               <article><span>FBA 可售天數</span><strong>{snapshot.restock.data?.daysOfCover === null || snapshot.restock.data?.daysOfCover === undefined ? "—" : snapshot.restock.data.daysOfCover.toFixed(1)}</strong><small>可售 {snapshot.restock.data?.inventory.fulfillable ?? "—"} 件</small></article>
-              <article className={snapshot.restock.data?.recommendedUnits ? "attention" : ""}><span>建議補貨</span><strong>{snapshot.restock.data?.recommendedUnits.toLocaleString() ?? "—"}</strong><small>{snapshot.restock.data?.forecastStockoutAt ? `預估缺貨 ${formatDate(snapshot.restock.data.forecastStockoutAt)}` : "尚無缺貨日"}</small></article>
+              <article className={snapshot.restock.data?.recommendedUnits || snapshot.restock.data?.action === "REVIEW_PLAN" || snapshot.restock.data?.action === "TRACK_INBOUND" ? "attention" : ""}>
+                <span>{snapshot.restock.data?.action === "REVIEW_PLAN" ? "補貨目標與交期" : snapshot.restock.data?.action === "TRACK_INBOUND" ? "在途入庫" : "建議補貨"}</span>
+                <strong>{snapshot.restock.data?.action === "REVIEW_PLAN" ? "需檢查" : snapshot.restock.data?.action === "TRACK_INBOUND" ? "需追蹤" : snapshot.restock.data?.recommendedUnits.toLocaleString() ?? "—"}</strong>
+                <small>{snapshot.restock.data?.forecastStockoutAt ? `預估缺貨 ${formatDate(snapshot.restock.data.forecastStockoutAt)}` : "尚無缺貨日"}</small>
+              </article>
               <article><span>內容完整度</span><strong>{bulletCount === null ? "—" : `${bulletCount}/5`}</strong><small>{snapshot.content.data?.ingredients ? "成分已填" : "成分待確認"} · 圖片 {imageCount ?? "—"} 張</small></article>
               <article title="「目前有效訂閱」是 Amazon listOffers 的查詢快照，不是期間新增、歷史累計、配送次數或唯一顧客數。"><span>Subscribe &amp; Save</span><strong>{snapshot.subscribeSave.data?.found ? `${snapshot.subscribeSave.data.sellerFundedBaseDiscount ?? 0}%` : "—"}</strong><small>{snapshot.subscribeSave.data?.found ? `Tiered ${snapshot.subscribeSave.data.sellerFundedTieredDiscount ?? 0}% · 目前有效訂閱 ${formatCount(snapshot.subscribeSave.data.subscriptions)}` : "Amazon 未回傳 offer"}</small></article>
             </section>

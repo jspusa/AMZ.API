@@ -46,7 +46,8 @@ describe("desktop updater platform policy", () => {
     expect(policy.enabled).toBe(false);
     expect(policy.message).toContain("內部未簽章版");
     expect(policy.message).toContain("App 內更新已停用");
-    expect(policy.message).toContain("notebook-key-windows");
+    expect(policy.message).toContain("https://supply-boss.brave-prawn-0848.chatgpt.site/downloads");
+    expect(policy.message).not.toContain("notebook-key-windows");
     expect(policy.message).toContain("SHA-256");
   });
 

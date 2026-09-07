@@ -16,13 +16,13 @@ const CSS02_ORDERED_PREFIX = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "c1f74141c75166f6f0af6e598f5401dceadc9ee501a23a18ebb512fc43135301";
+  "fe13366129d0d9c865b68558d669e95e7511ba645160dd58483aa36bf00a5785";
 
 const CSS02_PAYLOAD_EVIDENCE = [
   {
     path: "styles/foundation.css",
-    bytes: 16_544,
-    sha256: "94d757af80a20d64e204ab2661360b5ae5e91e7120679e2c12067ee1f24a4ce9",
+    bytes: 17068,
+    sha256: "2a5878bdead450ea43ace815738f988d5f16df09f915e859c9c13a36167addb1",
   },
   {
     path: "styles/legacy-shell-drawers.css",
@@ -36,13 +36,13 @@ const CSS02_PAYLOAD_EVIDENCE = [
   },
   {
     path: "styles/content.css",
-    bytes: 4_847,
-    sha256: "bfce82381b3bfa34e4960ca858a3ffee914e32188498d2edb433a079420ae18d",
+    bytes: 7355,
+    sha256: "e80e4fd38e16dd2fc75bc267c53f02b19f4afea59ba966bc722fc10712b8954a",
   },
   {
     path: "styles/business-pricing.css",
-    bytes: 28_280,
-    sha256: "49e1685422783050e554aa20fb73c9fcce3a10ec66a5d5bd3d54318360c50842",
+    bytes: 31117,
+    sha256: "704ec17f48d414d94b47f2283bb3c19923c5a2cc767c13bc7b4986a67dea0e29",
   },
 ] as const;
 

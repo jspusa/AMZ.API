@@ -1,5 +1,5 @@
 /**
- * Current accepted main after the intentional WebGate redesign. The original
+ * Current accepted rule stream after the September 0.1.55 typography and audit layout changes. The original
  * CSS01 issue value (81240465714fb009ffa1d49506f640bfaf8f57db103e81333466685677400878)
  * remains historical provenance and is not the current renderer rule stream.
  */
@@ -26,5 +26,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/fba-inbound.css",
   ]),
   fingerprint:
-    "5ea187272653ba8612ba93565dcef8ba4c408fdb3e09ca893892be7b9eac6731",
+    "e5233b94b5fe1a24ca189ec44c3ca42606e1336d3610e517c12a36dad2f65a10",
 });

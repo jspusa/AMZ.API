@@ -41,7 +41,7 @@ type RestockPlan = {
   reorderPoint: number;
   recommendedUnits: number;
   forecastStockoutAt: string | null;
-  action: "RESTOCK_NOW" | "WATCH" | "HEALTHY" | "NO_DEMAND";
+  action: "RESTOCK_NOW" | "WATCH" | "TRACK_INBOUND" | "REVIEW_PLAN" | "HEALTHY" | "NO_DEMAND";
   fetchedAt: string;
   notice: string;
   skillConnected: boolean;
@@ -100,7 +100,9 @@ const US_MARKETPLACE_ID = marketplaceByCode("US").id;
 const ACTION_COPY: Record<RestockPlan["action"], { label: string; tone: string; detail: string }> = {
   RESTOCK_NOW: { label: "建議現在補貨", tone: "danger", detail: "現有可售天數已進入交期＋安全庫存範圍。" },
   WATCH: { label: "準備補貨", tone: "warning", detail: "尚未立即缺貨，但已低於目標庫存天數。" },
-  HEALTHY: { label: "庫存健康", tone: "success", detail: "目前庫存覆蓋高於設定目標。" },
+  TRACK_INBOUND: { label: "請追蹤在途入庫", tone: "warning", detail: "含在途的庫存已涵蓋目標，暫不追加補貨；在途尚未成為可售庫存，仍需確認到貨與接收時間，避免缺貨。" },
+  REVIEW_PLAN: { label: "檢查補貨目標與交期", tone: "danger", detail: "目前可售天數已進入交期＋安全庫存範圍，且沒有在途庫存。請複核目標與交期並確認補貨安排；本次計算量為 0 不代表沒有缺貨風險。" },
+  HEALTHY: { label: "庫存健康", tone: "success", detail: "目前可售庫存已達到設定目標。" },
   NO_DEMAND: { label: "資料不足", tone: "neutral", detail: "近 30 天沒有抓到有效銷量，暫不自動建議數量。" },
 };
 
@@ -394,7 +396,7 @@ export default function ReplenishmentDrawer({
             <section className="restock-hero">
               <div><p>{plan.title}</p><small>{plan.sellerSku} · {plan.asin ?? "無 ASIN"}</small></div>
               <span className={`listing-mode ${plan.mode}`}>{plan.mode === "live" ? "Live" : "Demo"}</span>
-              <div className="restock-answer"><span>建議補貨</span><strong>{plan.recommendedUnits.toLocaleString()}</strong><b>件 · {recommendedCartons.toLocaleString()} 箱 · 約 {recommendedPallets.toLocaleString()} 板</b></div>
+              <div className="restock-answer"><span>{plan.action === "REVIEW_PLAN" || plan.action === "TRACK_INBOUND" ? "本次計算量" : "建議補貨"}</span><strong>{plan.recommendedUnits.toLocaleString()}</strong><b>件 · {recommendedCartons.toLocaleString()} 箱 · 約 {recommendedPallets.toLocaleString()} 板</b></div>
               <div className={`restock-status ${action.tone}`}><strong>{action.label}</strong><p>{action.detail}</p></div>
             </section>
 
@@ -427,7 +429,7 @@ export default function ReplenishmentDrawer({
             <div className={`skill-connection ${plan.skillConnected ? "connected" : ""}`}><span>{plan.skillConnected ? "✓" : "↗"}</span><div><strong>{plan.skillConnected ? "補貨 Skill 接點已設定，尚未驗證" : "使用內建 FBA 補貨引擎"}</strong><p>{plan.notice}</p></div></div>
 
             <div className="restock-actions"><button type="button" onClick={copyPlan}>{copied ? "已複製" : "複製建議"}</button><a href={marketplace.inbound} target="_blank" rel="noreferrer">前往 Send to Amazon 建立入庫 ↗</a></div>
-            {supplyRoute === "AWD_TO_FBA" && <div className="price-warning compact"><strong>AWD 可自動建立草稿，但最終確認仍保留給你</strong><p>Amazon AWD API 已能建立並輪詢 replenishment order；真正 confirm 會啟動實體庫存移動，因此本版不會無人值守確認。</p></div>}
+            {supplyRoute === "AWD_TO_FBA" && <div className="price-warning compact"><strong>AWD 路徑目前僅納入交期試算</strong><p>本版會把 AWD 轉倉緩衝加入補貨交期；建立與確認補貨請至 Amazon 官方後台完成。</p></div>}
             <div className="price-warning compact"><strong>不會自動送出實體入庫</strong><p>目前先停在「建議 → 人工審核」。Fulfillment Inbound API 可再接成入庫草稿，但確認 placement、箱規與運輸前不應自動執行。</p></div>
           </>
         )}

@@ -401,6 +401,7 @@ export class MainWriteGate implements MainWriteGatePort {
           marketplaceId: durable.intent.marketplaceId,
           sellerSku: durable.intent.sellerSku,
           accountScope: input.binding.context.accountScope,
+          executionMode: input.binding.context.mode,
           fingerprint: durable.fingerprint,
           businessPriceDuplicateRepair:
             durable.businessPriceDuplicateRepair,

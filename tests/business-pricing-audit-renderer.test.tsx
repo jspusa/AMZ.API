@@ -7,7 +7,7 @@ import {
   type ReactTestRenderer,
 } from "react-test-renderer";
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyBusinessPriceWriteStatusToAuditSnapshot,
   applyBusinessPricingListingReadToAuditSnapshot,
@@ -431,6 +431,15 @@ async function previewBodyFromRowInteraction(
   return submittedBody;
 }
 
+beforeEach(() => {
+  vi.stubGlobal("window", { fbaOS: { app: {
+    capabilities: async () => ({
+      schemaVersion: 1, appVersion: "0.1.55",
+      features: { businessPricingBatch: 1, recentBusinessPricingWork: 0 },
+    }),
+  } } });
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -469,6 +478,214 @@ describe("Seller Central SKU Pages-first handoff", () => {
 });
 
 describe("FBA business pricing audit renderer", () => {
+  it("recovers recent work without an audit and keeps unresolved unknown writes observation-only", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("window", { fbaOS: { app: { capabilities: async () => ({
+      schemaVersion: 1, appVersion: "0.1.55",
+      features: { businessPricingBatch: 1, recentBusinessPricingWork: 1 },
+    }) } } });
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      expect(init?.method ?? "GET").toBe("GET");
+      if (String(input).includes("/recent-work?")) {
+        expect(String(input)).toBe("/api/sp-api/business-pricing/recent-work?marketplaceId=ATVPDKIKX0DER");
+        return new Response(JSON.stringify({
+          schemaVersion: 1, marketplaceId: "ATVPDKIKX0DER", mode: "live",
+          checkedAt: "2026-09-07T12:00:00.000Z", limit: 30,
+          items: [{ sellerSku: "FBA-MISSING", stage: "business_price", status: "UNKNOWN",
+            acceptedAt: null, verifiedAt: null, updatedAt: "2026-09-07T11:00:00.000Z",
+            canResend: false, nextAction: "readback", notice: "沒有可信接受回條，請唯讀確認。" }],
+        }));
+      }
+      expect(String(input)).toContain("/api/sp-api/business-pricing?");
+      return new Response(JSON.stringify(interactiveListing));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US",
+      }));
+    });
+    expect(JSON.stringify(renderer!.toJSON())).toContain("近期 B2B 工作");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("送出結果不明");
+    await act(async () => renderer!.root.findByProps({
+      "aria-label": "唯讀查看 SKU FBA-MISSING",
+    }).props.onClick());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(renderer!.root.findAllByType("form")).toHaveLength(0);
+    expect(JSON.stringify(renderer!.toJSON())).toContain("送出結果仍不明");
+    await act(async () => renderer!.unmount());
+  });
+
+  it("opens a recovered verified minimum only after a fresh bound GET and requires a new preview", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("window", { fbaOS: { app: { capabilities: async () => ({
+      schemaVersion: 1, appVersion: "0.1.55",
+      features: { businessPricingBatch: 1, recentBusinessPricingWork: 1 },
+    }) } } });
+    const writeStatus = workflowWriteStatus({
+      sellerSku: interactiveListing.sellerSku, asin: interactiveListing.asin,
+      status: "VERIFIED", verifiedAt: "2026-09-01T03:15:00.000Z",
+      verified: true, authoritative: true,
+    });
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      expect(init?.method ?? "GET").toBe("GET");
+      return new Response(JSON.stringify(String(input).includes("/recent-work?") ? {
+        schemaVersion: 1, marketplaceId: "ATVPDKIKX0DER", mode: "live",
+        checkedAt: "2026-09-07T12:00:00.000Z", limit: 30,
+        items: [{ sellerSku: "FBA-MISSING", stage: "minimum_price", status: "MINIMUM_VERIFIED",
+          acceptedAt: writeStatus.acceptedAt, verifiedAt: writeStatus.verifiedAt,
+          updatedAt: "2026-09-01T03:15:00.000Z", canResend: false,
+          nextAction: "fresh_preview", notice: "最低價已確認；B2B 須重新預檢。" }],
+      } : { ...interactiveListing, minimumPrice: writeStatus.requestedMinimumPrice, writeStatus }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US",
+      }));
+    });
+    expect(renderer!.root.findAllByType("form")).toHaveLength(0);
+    await act(async () => renderer!.root.findByProps({ "aria-label": "唯讀查看 SKU FBA-MISSING" }).props.onClick());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(renderer!.root.findAllByType("form")).toHaveLength(1);
+    expect(JSON.stringify(renderer!.toJSON())).toContain("預檢");
+    expect(renderer!.root.findAllByProps({ className: "business-pricing-batch-preview" })).toHaveLength(0);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("rejects a recent-work response for another marketplace without offering recovered actions", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("window", { fbaOS: { app: { capabilities: async () => ({
+      schemaVersion: 1, appVersion: "0.1.55",
+      features: { businessPricingBatch: 1, recentBusinessPricingWork: 1 },
+    }) } } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      schemaVersion: 1, marketplaceId: "A1F83G8C2ARO7P", mode: "live",
+      checkedAt: "2026-09-07T12:00:00.000Z", limit: 30, items: [],
+    }))));
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US",
+      }));
+    });
+    expect(JSON.stringify(renderer!.toJSON())).toContain("資料不完整或不屬於目前站點");
+    expect(renderer!.root.findAllByType("button").some((button) =>
+      String(button.props["aria-label"] ?? "").startsWith("唯讀查看 SKU ")
+    )).toBe(false);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("requires advertised batch capability while keeping a supported single-SKU edit available", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("window", { fbaOS: { app: { version: async () => "0.1.53" } } });
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+      }));
+    });
+    const root = renderer!.root;
+    const selectPage = root.findByProps({ "aria-label": "全選本頁可批次處理的 B2B SKU" });
+    expect(selectPage.props.disabled).toBe(true);
+    await act(async () => selectPage.props.onChange({ target: { checked: true } }));
+    await act(async () => root.findByProps({ "aria-label": "批次預檢已選 B2B SKU" }).props.onClick());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(root.findByProps({ "aria-label": "B2B 批次已選數量" }).children.join("")).toBe("已選 0 個 SKU");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("AMZ.API App 0.1.55");
+    expect(root.findAllByType("button").find((button) => button.children.join("") === "調整 B2B 價格")?.props.disabled).toBe(false);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("labels the audit snapshot time separately from write acceptance and readback", () => {
+    const markup = renderToStaticMarkup(createElement(BusinessPricingAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER",
+      marketplaceShort: "US",
+      initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+    }));
+    expect(markup).toContain("健檢快照時間");
+    expect(markup).toContain('dateTime="2026-08-22T12:00:00.000Z"');
+    expect(markup).toContain("此時間不代表商品更新已完成");
+  });
+
+  it("bounds audit rows to one page and preserves selected SKUs across pages", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    const source = parseBusinessPricingAuditSnapshot(payload());
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      ...source.rows[1]!, sellerSku: `PAGE-SKU-${index + 1}`,
+    }));
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US",
+        initialSnapshot: { ...source, rows },
+      }));
+    });
+    const root = renderer!.root;
+    const productRows = () => root.findAllByType("article").filter((node) =>
+      String(node.props.className).split(" ").includes("business-pricing-row")
+    );
+    const selectPage = () => root.findByProps({
+      "aria-label": "全選本頁可批次處理的 B2B SKU",
+    });
+    const selectedCount = () => root.findByProps({
+      "aria-label": "B2B 批次已選數量",
+    }).children.join("");
+    expect(productRows()).toHaveLength(25);
+    await act(async () => selectPage().props.onChange({ target: { checked: true } }));
+    expect(selectedCount()).toBe("已選 25 個 SKU");
+    await act(async () => root.findByProps({ "aria-label": "B2B 下一頁" }).props.onClick());
+    expect(productRows()).toHaveLength(5);
+    expect(selectedCount()).toBe("已選 25 個 SKU");
+    expect(selectPage().props.checked).toBe(false);
+    await act(async () => selectPage().props.onChange({ target: { checked: true } }));
+    expect(selectedCount()).toBe("已選 30 個 SKU");
+    await act(async () => selectPage().props.onChange({ target: { checked: false } }));
+    expect(selectedCount()).toBe("已選 25 個 SKU");
+    await act(async () => root.findByProps({ "aria-label": "搜尋 B2B 價格健檢 SKU" })
+      .props.onChange({ target: { value: "PAGE-SKU-30" } }));
+    expect(productRows()).toHaveLength(1);
+    expect(selectedCount()).toBe("已選 0 個 SKU");
+    expect(root.findByProps({ "aria-label": "B2B 下一頁" }).props.disabled).toBe(true);
+    await act(async () => renderer!.unmount());
+  });
+
+  it("offers compact rows with explicit per-SKU detail and a complete view", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT = true;
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(createElement(BusinessPricingAuditPanel, {
+        marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US",
+        initialSnapshot: parseBusinessPricingAuditSnapshot(payload()),
+      }));
+    });
+    const root = renderer!.root;
+    const compact = root.findByProps({ "aria-label": "B2B 緊湊列" });
+    expect(compact.props["aria-pressed"]).toBe(true);
+    const rowDetails = () => root.findByProps({
+      "aria-label": "Seller SKU FBA-CONFIGURED 的完整健檢資料",
+    });
+    expect(rowDetails().props["aria-expanded"]).toBe(false);
+    await act(async () => rowDetails().props.onClick());
+    expect(rowDetails().props["aria-expanded"]).toBe(true);
+    await act(async () => root.findByProps({ "aria-label": "B2B 完整列" }).props.onClick());
+    expect(root.findByProps({ "aria-label": "B2B 完整列" }).props["aria-pressed"]).toBe(true);
+    expect(root.findAllByProps({ "aria-label": "Seller SKU FBA-CONFIGURED 的完整健檢資料" })).toHaveLength(0);
+    expect(JSON.stringify(renderer!.toJSON())).toContain("目前數量折扣");
+    await act(async () => renderer!.unmount());
+  });
+
   it("defaults to the combined suggested tiers and hides them entirely in price-only mode", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
@@ -1068,11 +1285,9 @@ describe("FBA business pricing audit renderer", () => {
       }));
     });
 
-    const findAction = () => renderer!.root.findAllByType("article").find(
-      (article) => article.findAllByType("small").some((small) =>
-        small.children.join("") === "FBA-CONFIGURED · B000000002"
-      ),
-    )!.findAllByType("button")[0]!;
+    const findAction = () => renderer!.root.findByProps({
+      "aria-label": "查看 Seller SKU FBA-CONFIGURED 的最新 B2B 價格",
+    });
     expect(findAction().children.join("")).toBe("查看／重新確認");
     act(() => findAction().props.onClick());
     expect(findAction().children.join("")).toBe("正在讀取 Amazon…");
@@ -1676,7 +1891,7 @@ describe("FBA business pricing audit renderer", () => {
         small.children.join("").includes("FBA-MISSING")
       )
     )!;
-    expect(updatedRow.findByType("dl").findAllByType("dd")[1]
+    expect(updatedRow.findByProps({ "aria-label": "B2B 價格比較" }).findAllByType("dd")[1]
       ?.children.join("")).toContain("18.99");
     const summary = root.findByProps({
       "aria-label": "B2B 價格健檢摘要與篩選",
@@ -2879,7 +3094,7 @@ describe("FBA business pricing audit renderer", () => {
         String(input.props["aria-label"] ?? "").startsWith("選取 Seller SKU "),
     );
     const selectAll = () => root.findByProps({
-      "aria-label": "全選目前可見且可批次處理的 B2B SKU",
+      "aria-label": "全選本頁可批次處理的 B2B SKU",
     });
     const selectedCount = () => root.findByProps({
       "aria-label": "B2B 批次已選數量",
@@ -3455,7 +3670,7 @@ describe("FBA business pricing audit renderer", () => {
     });
     const root = renderer!.root;
     await act(async () => root.findByProps({
-      "aria-label": "全選目前可見且可批次處理的 B2B SKU",
+      "aria-label": "全選本頁可批次處理的 B2B SKU",
     }).props.onChange({ target: { checked: true } }));
     expect(root.findByProps({
       "aria-label": "B2B 批次已選數量",

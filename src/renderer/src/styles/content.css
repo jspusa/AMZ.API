@@ -1,5 +1,109 @@
 
 /* Content-audit additions stay readable inside the centered content workspace. */
+.content-audit-panel .content-audit-view-options,
+.content-audit-panel .content-audit-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.content-audit-panel .content-audit-view-options {
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-muted, #f1f3f5);
+}
+
+.content-audit-panel .content-audit-view-options button,
+.content-audit-panel .content-audit-pagination button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--line, #d9dfe7);
+  border-radius: 8px;
+  background: #fff;
+  color: #344054;
+  cursor: pointer;
+  font: inherit;
+}
+
+.content-audit-panel .content-audit-view-options button[aria-pressed="true"] {
+  border-color: #344054;
+  background: #344054;
+  color: #fff;
+}
+
+.content-audit-panel .content-audit-pagination {
+  margin: 8px 0 12px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.content-audit-panel .content-audit-pagination > span {
+  flex: 1 1 230px;
+  color: #475467;
+}
+
+.content-audit-panel .content-audit-pagination button:disabled {
+  color: #667085;
+  background: #f2f4f7;
+  cursor: not-allowed;
+}
+
+.content-audit-panel .content-audit-view-options button:focus-visible,
+.content-audit-panel .content-audit-pagination button:focus-visible,
+.content-audit-panel .content-audit-row-details > summary:focus-visible,
+.content-audit-panel .content-audit-result-heading:focus-visible {
+  outline: 2px solid #246bce;
+  outline-offset: 3px;
+}
+
+.content-audit-panel .content-audit-row-details > summary {
+  padding: 9px 13px;
+  color: #475467;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.content-audit-panel .content-audit-row-details[open] > summary {
+  border-bottom: 1px solid var(--line, #d9dfe7);
+  margin-bottom: 10px;
+}
+
+.content-audit-panel .content-audit-list[data-view-mode="compact"] {
+  gap: 8px;
+}
+
+.content-audit-panel .content-audit-list[data-view-mode="compact"] .content-audit-product {
+  padding-top: 10px;
+  padding-bottom: 8px;
+}
+
+.content-audit-panel .content-audit-source-deadline,
+.content-audit-panel .content-audit-deadline {
+  padding: 10px 13px;
+  border-left: 3px solid #667085;
+  border-radius: 6px;
+  background: #f8f9fb;
+  color: #475467;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.content-audit-panel .content-audit-source-deadline p {
+  margin: 0;
+}
+
+.content-audit-panel .content-audit-source-deadline p + p {
+  margin-top: 5px;
+}
+
+.content-audit-panel time {
+  font-variant-numeric: tabular-nums;
+}
+
 .content-audit-invisible-guide {
   margin-top: 12px;
   border-color: #f0d1a6;

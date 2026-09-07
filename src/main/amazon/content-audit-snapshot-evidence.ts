@@ -53,7 +53,7 @@ export interface ContentAuditSnapshotEvidenceReader {
 export interface ContentAuditSnapshotEvidenceWriter {
   saveContentAuditSnapshotEvidence(
     input: ContentAuditSnapshotEvidenceInput,
-  ): Promise<unknown>;
+  ): Promise<Pick<ContentAuditSnapshotEvidence, "createdAt" | "expiresAt">>;
 }
 
 /**

@@ -170,6 +170,63 @@ function harness(input: {
 }
 
 describe("R04 SKU command semantic owner", () => {
+  it("requires a manual plan review when a short target hides stockout risk without inbound", async () => {
+    const subject = harness({
+      restock: async () => ({
+        ...restockPlan(),
+        action: "REVIEW_PLAN",
+        daysOfCover: 20,
+        targetDays: 14,
+        leadTimeDays: 30,
+        safetyDays: 7,
+        recommendedUnits: 0,
+      }),
+    });
+
+    const result = await subject.command.read({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+
+    expect(result.tasks).toContainEqual(expect.objectContaining({
+      id: "restock-review-plan",
+      title: "檢查補貨目標與交期",
+      detail: expect.stringContaining("14 天"),
+      automation: "manual",
+      severity: "critical",
+      tool: "restock",
+    }));
+    expect(result.tasks.some((task) => ["all-clear", "restock-track-inbound"].includes(task.id))).toBe(false);
+    expect(result.tasks.some((task) => /補貨 0 件/u.test(task.title))).toBe(false);
+  });
+
+  it("keeps a visible stockout warning when inbound coverage makes a new order unnecessary", async () => {
+    const subject = harness({
+      restock: async () => ({
+        ...restockPlan(),
+        action: "TRACK_INBOUND",
+        daysOfCover: 5.5,
+        leadTimeDays: 35,
+        safetyDays: 10,
+        recommendedUnits: 0,
+      }),
+    });
+
+    const result = await subject.command.read({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SELLER_SKU,
+    });
+
+    expect(result.tasks).toContainEqual(expect.objectContaining({
+      id: "restock-track-inbound",
+      title: "請追蹤在途入庫，避免缺貨",
+      detail: expect.stringContaining("暫不追加補貨"),
+      severity: "critical",
+      tool: "restock",
+    }));
+    expect(result.tasks.some((task) => /補貨 0 件/u.test(task.title))).toBe(false);
+  });
+
   it("fans out the five exact reads, syncs identity, and returns the stable DTO", async () => {
     const subject = harness();
 

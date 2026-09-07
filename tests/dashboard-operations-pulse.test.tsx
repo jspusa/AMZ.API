@@ -608,7 +608,7 @@ describe("dashboard operations pulse data flow", () => {
     expect(source).not.toContain("pagination-row");
     expect(source).toContain("銷售趨勢自動同步");
     expect(source).toContain("銷售趨勢最後同步");
-    expect(appSource).toContain("abortRef.current?.abort()");
+    expect(appSource).toContain("loadOnMount");
     expect(dashboardSource).toContain("salesTrendAbortRef.current?.abort()");
   });
 });

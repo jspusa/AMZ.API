@@ -1,4 +1,5 @@
 import type { OperationsBoardPublisherDraft } from "./operations-board";
+import type { NotebookCapabilitySnapshot } from "./notebook-capabilities";
 
 export type ApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -160,6 +161,7 @@ export type DesktopBridge = {
   };
   app: {
     version(): Promise<string>;
+    capabilities?(): Promise<NotebookCapabilitySnapshot>;
     platform(): Promise<string>;
     openExternal(destination: ExternalDestination): Promise<void>;
     openSellerCentralInventory?(sellerSku: string): Promise<void>;

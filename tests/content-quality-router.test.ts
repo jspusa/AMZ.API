@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import type { CredentialVault } from "../src/main/credential-vault";
-import { LocalStore } from "../src/main/local-store";
+import {
+  CONTENT_AUDIT_SNAPSHOT_TTL_MS,
+  LocalStore,
+} from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const SP_ENV_KEYS = Object.keys(process.env).filter((key) =>
@@ -51,13 +54,14 @@ async function startReadyReport(router: ApiRouter): Promise<{
 
 describe("listing content quality audit route", () => {
   let router: ApiRouter;
+  let store: LocalStore;
 
   beforeEach(async () => {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith("SP_API_")) delete process.env[key];
     }
     const directory = await mkdtemp(join(tmpdir(), "amz-content-quality-router-"));
-    const store = new LocalStore(join(directory, "data.json"));
+    store = new LocalStore(join(directory, "data.json"));
     await store.initialize();
     router = new ApiRouter({
       store,
@@ -95,9 +99,20 @@ describe("listing content quality audit route", () => {
     if (response.body.kind !== "json") throw new Error("Expected JSON response");
     const value = response.body.value as Record<string, unknown>;
     expect(Object.keys(value).sort()).toEqual(
-      ["marketplaceId", "fetchedAt", "exportId", "rows", "readErrors", "summary"].sort(),
+      ["marketplaceId", "fetchedAt", "exportId", "sourceCreatedAt", "sourceExpiresAt", "rows", "readErrors", "summary"].sort(),
     );
     expect(value.marketplaceId).toBe("ATVPDKIKX0DER");
+    const source = await store.getContentAuditSnapshotEvidence({
+      exportId: String(value.exportId),
+      accountScope: "a".repeat(64),
+      marketplaceId: "ATVPDKIKX0DER",
+      mode: "demo",
+    });
+    expect(source.status).toBe("available");
+    if (source.status !== "available") throw new Error("Expected saved source evidence");
+    expect(value.sourceCreatedAt).toBe(new Date(source.evidence.createdAt).toISOString());
+    expect(value.sourceExpiresAt).toBe(new Date(source.evidence.expiresAt).toISOString());
+    expect(source.evidence.expiresAt - source.evidence.createdAt).toBe(CONTENT_AUDIT_SNAPSHOT_TTL_MS);
     expect(Array.isArray(value.rows)).toBe(true);
     const rows = value.rows as Array<Record<string, unknown>>;
     expect(rows.length).toBeGreaterThan(0);

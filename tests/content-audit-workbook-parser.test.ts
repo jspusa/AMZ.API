@@ -36,6 +36,16 @@ function availableSoffice(): string | null {
 
 const soffice = availableSoffice();
 const libreOfficeTest = soffice ? it : it.skip;
+const libreOfficeTimeoutMs = Number(
+  process.env.AMZ_API_LIBREOFFICE_TIMEOUT_MS ?? 90_000,
+);
+if (
+  !Number.isSafeInteger(libreOfficeTimeoutMs) ||
+  libreOfficeTimeoutMs < 1_000 ||
+  libreOfficeTimeoutMs > 300_000
+) {
+  throw new Error("AMZ_API_LIBREOFFICE_TIMEOUT_MS must be an integer from 1000 to 300000.");
+}
 
 function auditRow(
   sellerSku: string,
@@ -736,6 +746,7 @@ describe("content audit workbook parser", () => {
             }),
           ]),
         );
+        const conversionStartedAt = Date.now();
         const result = spawnSync(
           soffice!,
           [
@@ -747,9 +758,23 @@ describe("content audit workbook parser", () => {
             outputDirectory,
             inputPath,
           ],
-          { encoding: "utf8", timeout: 30_000 },
+          { encoding: "utf8", timeout: libreOfficeTimeoutMs },
         );
-        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+        const diagnostics = JSON.stringify({
+          command: soffice,
+          timeoutMs: libreOfficeTimeoutMs,
+          elapsedMs: Date.now() - conversionStartedAt,
+          status: result.status,
+          signal: result.signal,
+          error: result.error ? {
+            name: result.error.name,
+            message: result.error.message,
+            code: (result.error as NodeJS.ErrnoException).code,
+          } : null,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        });
+        expect(result.status, diagnostics).toBe(0);
         const saved = new Uint8Array(readFileSync(outputPath));
         const savedArchive = unzipSync(saved);
         const workbookXml = strFromU8(savedArchive["xl/workbook.xml"]!);
@@ -765,6 +790,6 @@ describe("content audit workbook parser", () => {
         rmSync(temporaryDirectory, { recursive: true, force: true });
       }
     },
-    45_000,
+    libreOfficeTimeoutMs + 15_000,
   );
 });
