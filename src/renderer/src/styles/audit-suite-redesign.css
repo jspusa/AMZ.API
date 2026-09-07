@@ -263,3 +263,136 @@
   .audit-suite-home-card .audit-suite-home-actions .audit-suite-start:active:not(:disabled),
   .audit-suite-start:hover:not(:disabled) .audit-suite-start-arrow { transform: none; }
 }
+
+/* Taste Redesign — the all-audits launcher is the editorial anchor of the
+   catalog section, with one-click blue kept as its operation semantic. */
+.audit-suite-home-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 84%);
+  border-radius: 28px 18px 28px 18px;
+  background:
+    radial-gradient(circle at 0 100%, rgb(227 38 54 / 9%), transparent 20rem),
+    linear-gradient(128deg, #fffdf9 0 64%, #edf3f7 64% 100%);
+  box-shadow: 0 6px 16px rgb(43 58 83 / 5%), 0 26px 62px rgb(43 58 83 / 9%);
+}
+
+.audit-suite-home-card::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 5px;
+  background: linear-gradient(180deg, #e32636, #d9942a 48%, #4b7ca3);
+  content: "";
+}
+
+.audit-suite-home-overview {
+  position: relative;
+  padding: clamp(1.5rem, 3vw, 2.5rem);
+}
+
+.audit-suite-home-card .audit-suite-home-kicker {
+  color: #9a3845;
+  font-weight: 650;
+  letter-spacing: .06em;
+}
+
+.audit-suite-home-card .automation-badge.one_click {
+  border: 1px solid #c7dce9;
+  background: #e6f0f5;
+  color: #315c70;
+  box-shadow: inset 0 1px 0 #fff;
+}
+
+.audit-suite-home-card .automation-badge.automatic {
+  border: 1px solid #cee1d4;
+  background: #e5eee3;
+  color: #346246;
+  box-shadow: inset 0 1px 0 #fff;
+}
+
+.audit-suite-home-card .audit-suite-home-heading h2 {
+  max-width: 16em;
+  color: #182335;
+  font-size: clamp(1.7rem, 3vw, 2.4rem);
+  font-weight: 710;
+  line-height: 1.14;
+  letter-spacing: -.055em;
+}
+
+.audit-suite-home-card .audit-suite-home-description {
+  max-width: 50em;
+  color: #656d7c;
+  font-size: .825rem;
+}
+
+.audit-suite-scope-list {
+  gap: .55rem .7rem;
+  border-top-color: rgb(43 58 83 / 8%);
+}
+
+.audit-suite-scope-list li {
+  padding: .36rem .55rem;
+  border-radius: .5rem;
+  background: rgb(255 255 255 / 56%);
+  color: #52637a;
+}
+
+.audit-suite-scope-list li::before { background: #e32636; }
+
+.audit-suite-home-card .audit-suite-home-actions {
+  position: relative;
+  border-left: 1px solid rgb(43 58 83 / 8%);
+  background:
+    radial-gradient(circle at 100% 0, rgb(75 124 163 / 18%), transparent 12rem),
+    rgb(237 243 247 / 78%);
+}
+
+.audit-suite-launch-count {
+  color: #e32636;
+  font-size: clamp(3rem, 5vw, 4.25rem);
+  font-weight: 520;
+  text-shadow: 0 8px 24px rgb(227 38 54 / 12%);
+}
+
+.audit-suite-launch-summary strong { color: #283a52; }
+
+.audit-suite-home-card .audit-suite-home-actions .audit-suite-start {
+  min-height: 3.5rem;
+  border-color: #b9d2e3;
+  border-radius: .85rem .6rem .85rem .6rem;
+  background: linear-gradient(135deg, #dfeef7, #edf5f9);
+  color: #285876;
+  box-shadow: inset 0 1px 0 #fff, 0 9px 22px rgb(49 92 112 / 10%);
+  transition: transform 280ms cubic-bezier(.16, 1, .3, 1), box-shadow 240ms ease, background 240ms ease;
+}
+
+@media (hover: hover) {
+  .audit-suite-home-card .audit-suite-home-actions .audit-suite-start:hover:not(:disabled) {
+    border-color: #9dbfd5;
+    background: linear-gradient(135deg, #d1e7f4, #e7f2f8);
+    box-shadow: inset 0 1px 0 #fff, 0 14px 30px rgb(49 92 112 / 16%);
+    transform: translateY(-3px);
+  }
+}
+
+.audit-suite-home-card .audit-suite-home-actions .audit-suite-start:active:not(:disabled) {
+  transform: scale(.985) translateY(0);
+}
+
+@media (max-width: 760px) {
+  .audit-suite-home-card {
+    border-radius: 24px 14px 24px 14px;
+    background: linear-gradient(160deg, #fffdf9 0 66%, #edf3f7 66% 100%);
+  }
+  .audit-suite-home-card .audit-suite-home-actions { border-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .audit-suite-home-card .audit-suite-home-actions .audit-suite-start,
+  .audit-suite-start-arrow { transition: none; }
+  .audit-suite-home-card .audit-suite-home-actions .audit-suite-start:hover:not(:disabled),
+  .audit-suite-home-card .audit-suite-home-actions .audit-suite-start:active:not(:disabled),
+  .audit-suite-start:hover:not(:disabled) .audit-suite-start-arrow { transform: none; }
+}

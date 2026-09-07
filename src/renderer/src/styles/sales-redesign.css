@@ -244,3 +244,164 @@
   .sales-trend *,
   .brand-sales-card * { animation: none !important; transition: none !important; }
 }
+
+/* Taste Redesign — warm chart paper and a red signal line make the operating
+   pulse memorable while the icon navy continues to carry controls and type. */
+.sales-trend,
+.brand-sales-card {
+  --sales-ink: #1b2434;
+  --sales-muted: #6b7180;
+  --sales-primary: #2b3a53;
+  --sales-signal: #e32636;
+  --sales-border: #dedfdc;
+  --sales-canvas: #f4f0e9;
+}
+
+.operations-pulse .sales-trend {
+  border-color: rgb(43 58 83 / 7%);
+  background:
+    radial-gradient(circle at 100% 0, rgb(75 124 163 / 9%), transparent 18rem),
+    linear-gradient(145deg, rgb(255 255 255 / 86%), rgb(252 247 240 / 88%));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 82%);
+}
+
+.sales-trend .sales-trend-total > strong {
+  color: #182335;
+  font-size: clamp(34px, 4vw, 50px);
+  font-weight: 690;
+  letter-spacing: -.06em;
+}
+
+.sales-trend .sales-trend-range,
+.brand-sales-card .sales-trend-range {
+  border-color: #ded9d1;
+  background: #eee9e1;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%);
+}
+
+.sales-trend .sales-trend-range button:hover:not(:disabled),
+.brand-sales-card .sales-trend-range button:hover:not(:disabled) {
+  background: #f9f3eb;
+  color: #8f3340;
+}
+
+.sales-trend .sales-trend-range button[aria-pressed="true"],
+.brand-sales-card .sales-trend-range button[aria-pressed="true"] {
+  background: linear-gradient(135deg, #2b3a53, #40536e);
+  box-shadow: 0 7px 15px rgb(43 58 83 / 18%);
+}
+
+.sales-trend-metrics {
+  gap: 8px;
+  padding: 12px 0;
+  border-top-color: rgb(43 58 83 / 8%);
+}
+
+.sales-trend-metrics > div {
+  min-width: 92px;
+  padding: 11px 13px;
+  border-radius: 12px 8px 12px 8px;
+  background: rgb(255 255 255 / 55%);
+}
+
+.sales-trend-metrics > div:nth-child(2) { background: #edf4f8; }
+.sales-trend-metrics > div:nth-child(3) { background: #f9e9e8; }
+.sales-trend-metrics .sales-trend-prior-total { margin-left: 0; background: #edeae5; }
+.sales-trend-metrics dd { color: #27364c; }
+
+.sales-trend .sales-trend-toolbar .sales-trend-legend { color: #58677b; }
+.sales-trend .sales-trend-legend i,
+.sales-trend .sales-trend-tooltip i,
+.sales-trend .sales-trend-detail-period i { border-top-color: var(--sales-signal); }
+.sales-trend i.is-comparison { border-top-color: #71839a; }
+
+.sales-trend .sales-skater-toggle,
+.sales-trend .sales-skater-controls button {
+  border-color: #d8d4cd;
+  background: #f6f1ea;
+  color: #53647b;
+}
+
+.sales-trend .sales-skater-toggle[aria-pressed="true"] {
+  border-color: #e3afb4;
+  background: #f9e2e2;
+  color: #9a3845;
+}
+
+.sales-trend figure {
+  border-top-color: rgb(43 58 83 / 7%);
+  border-radius: 14px;
+  background:
+    linear-gradient(rgb(255 255 255 / 46%), rgb(255 255 255 / 46%)),
+    repeating-linear-gradient(90deg, transparent 0 47px, rgb(43 58 83 / 2%) 48px);
+}
+
+.sales-trend-gridline line { stroke: #dededb; }
+.sales-trend-gridline text,
+.sales-trend-x-label { fill: #646b7b; }
+.sales-trend-line.is-current { stroke: #e32636; stroke-width: 3.2; filter: drop-shadow(0 4px 5px rgb(227 38 54 / 16%)); }
+.sales-trend-line.is-comparison { stroke: #71839a; }
+.sales-trend-point.is-current { stroke: #e32636; fill: #fffdf9; }
+.sales-trend-point.is-comparison { stroke: #71839a; fill: #fffdf9; }
+.sales-trend-point.partial { fill: #e32636; stroke: #fffdf9; filter: drop-shadow(0 0 5px rgb(227 38 54 / 26%)); }
+.sales-trend-crosshair { stroke: #b15e66; }
+
+.sales-trend .sales-trend-tooltip {
+  border-color: rgb(227 38 54 / 18%);
+  border-radius: 14px 9px 14px 9px;
+  background: rgb(255 253 249 / 96%);
+  box-shadow: 0 18px 40px rgb(43 58 83 / 16%);
+  backdrop-filter: blur(12px);
+}
+
+.sales-trend .sales-trend-detail-strip {
+  border-color: #d8dce0;
+  background: linear-gradient(120deg, #edf3f7, #f8ece8);
+}
+
+.sales-trend .sales-trend-custom-range {
+  border-color: #dfd9d0;
+  background: linear-gradient(120deg, #eee9e1, #edf3f7);
+}
+
+.sales-trend .sales-trend-custom-range > button {
+  background: linear-gradient(135deg, #2b3a53, #40536e);
+  box-shadow: 0 8px 18px rgb(43 58 83 / 16%);
+}
+
+.sales-trend .sales-trend-loading > span {
+  width: min(230px, 70%);
+  height: 10px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e5dfd7 0 32%, #f8eeee 47%, #dfe9f0 62%, #e5dfd7 100%);
+  background-size: 220% 100%;
+  animation: sales-shimmer 1.35s ease-in-out infinite;
+}
+
+.brand-sales-card {
+  border-color: rgb(255 255 255 / 78%);
+  background:
+    radial-gradient(circle at 100% 0, rgb(227 38 54 / 8%), transparent 13rem),
+    linear-gradient(150deg, #fffdf9, #f1ece5);
+}
+
+.brand-sales-card .brand-sales-heading .brand-sales-source,
+.brand-sales-card .brand-sales-auto-status i { color: #9a3845; }
+.brand-sales-card .brand-sales-pie-track { fill: #e8e1d8; }
+.brand-sales-card .brand-sales-legend > div:nth-child(odd) > button { background: rgb(255 255 255 / 45%); }
+.brand-sales-card .brand-sales-legend > div > button:hover,
+.brand-sales-card .brand-sales-legend > div > button.is-active {
+  border-color: #d9c0bd;
+  background: linear-gradient(110deg, #f9e7e6, #edf3f7);
+}
+
+@keyframes sales-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -120% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sales-trend *,
+  .brand-sales-card * { animation: none !important; transition: none !important; }
+}

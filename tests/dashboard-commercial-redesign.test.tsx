@@ -82,13 +82,14 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
 });
 
 describe("commercial dashboard final-layer accessibility guards", () => {
-  it("derives the workspace palette from the shipped application icon", async () => {
-    const [icon, workspace, sales, audit, bulletin] = await Promise.all([
+  it("uses the application icon as an anchor while giving work zones distinct restrained tints", async () => {
+    const [icon, workspace, sales, audit, bulletin, salesChart] = await Promise.all([
       readFile(new URL("../build/icon.svg", import.meta.url), "utf8"),
       readFile(new URL("../src/renderer/src/styles/workspace-redesign.css", import.meta.url), "utf8"),
       readFile(new URL("../src/renderer/src/styles/sales-redesign.css", import.meta.url), "utf8"),
       readFile(new URL("../src/renderer/src/styles/audit-suite-redesign.css", import.meta.url), "utf8"),
       readFile(new URL("../src/renderer/src/styles/bulletin-redesign.css", import.meta.url), "utf8"),
+      readFile(new URL("../src/renderer/src/components/sales-trend-chart.tsx", import.meta.url), "utf8"),
     ]);
 
     for (const color of ["#2b3a53", "#101827", "#e32636"]) {
@@ -102,6 +103,18 @@ describe("commercial dashboard final-layer accessibility guards", () => {
     expect(audit).toContain("background: #e5eee3");
     expect(audit).toContain(".automation-badge.one_click");
     expect(bulletin).toContain("--bulletin-manual: #fff4ce");
+
+    for (const color of ["#f4f0e9", "#f9dcdd", "#e6f0f7", "#e8f1eb", "#fbefd8"]) {
+      expect(workspace.toLowerCase()).toContain(color);
+    }
+    expect(workspace).toContain("--audit-accent: #4b7ca3");
+    expect(workspace).toContain("--audit-accent: #76648e");
+    expect(workspace).toContain("--audit-accent: #b97825");
+    expect(workspace).toContain("--audit-accent: #4f7f6a");
+    expect(sales).toContain(".sales-trend-line.is-current { stroke: #e32636");
+    expect(salesChart).toContain('stopColor="#e32636"');
+    expect(bulletin).toContain("linear-gradient(90deg, #d9942a, #e32636 50%, #4b7ca3)");
+    expect(audit).toContain("linear-gradient(180deg, #e32636, #d9942a 48%, #4b7ca3)");
 
     const combinedTheme = `${workspace}\n${sales}\n${audit}\n${bulletin}`;
     expect(combinedTheme).not.toMatch(/#254f46|#243c35|#f5f5f0/iu);
