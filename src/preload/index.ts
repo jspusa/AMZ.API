@@ -11,6 +11,7 @@ import type {
   UpdateStatus,
 } from "../shared/contracts";
 import type { OperationsBoardPublisherDraft } from "../shared/operations-board";
+import type { NotebookCapabilitySnapshot } from "../shared/notebook-capabilities";
 
 const MAX_MULTIPART_BYTES = 15 * 1024 * 1024;
 
@@ -70,6 +71,7 @@ const bridge: DesktopBridge = Object.freeze({
   }),
   app: Object.freeze({
     version: () => ipcRenderer.invoke("fba:app-version") as Promise<string>,
+    capabilities: () => ipcRenderer.invoke("fba:app-capabilities") as Promise<NotebookCapabilitySnapshot>,
     platform: () => ipcRenderer.invoke("fba:app-platform") as Promise<string>,
     openExternal: (destination: ExternalDestination) =>
       ipcRenderer.invoke("fba:open-external", destination) as Promise<void>,

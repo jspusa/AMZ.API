@@ -2347,6 +2347,49 @@ function writeStatusFromInspection(
     : minimumPriceWriteStatusFromInspection(inspection);
 }
 
+/** Main-only projection reuses the exact durable receipt validators. */
+export function businessPricingWriteInspectionEvidence(
+  inspection: MainWriteGateInspection,
+): Readonly<{
+  stage: "minimum_price" | "business_price";
+  status: "PROCESSING" | "VERIFIED" | "UNKNOWN";
+  sellerSku: string;
+  marketplaceId: string;
+  acceptedAt: string | null;
+  verifiedAt: string | null;
+}> | null {
+  try {
+    const status = writeStatusFromInspection(inspection);
+    if (status) return {
+      stage: status.stage, status: status.status,
+      sellerSku: status.sellerSku, marketplaceId: status.marketplaceId,
+      acceptedAt: status.acceptedAt, verifiedAt: status.verifiedAt,
+    };
+    const response = inspection.response;
+    if (inspection.state === "completed" || !isRecord(response) ||
+        response.mode !== "live" || response.status !== "DISPATCHED" ||
+        !validIsoTimestamp(response.acceptedAt) || !safeNotice(response.notice) ||
+        !validDurableStatusMetadata(response)) return null;
+    const minimum = inspection.operationType === "price" &&
+      hasExactKeys(response, MINIMUM_PRICE_DURABLE_RESULT_KEYS) &&
+      exactMinimumPriceWriteEvidence(response._minimumWriteEvidence) &&
+      durableMinimumEnvelopeMatchesEvidence(response, response._minimumWriteEvidence);
+    const business = inspection.operationType === "business_price" &&
+      hasExactKeys(response, BUSINESS_PRICE_DURABLE_RESULT_KEYS) &&
+      exactWriteEvidence(response._writeEvidence) &&
+      durableEnvelopeMatchesWriteEvidence(response, response._writeEvidence);
+    if (!minimum && !business) return null;
+    return {
+      stage: minimum ? "minimum_price" : "business_price", status: "UNKNOWN",
+      sellerSku: response.sellerSku as string, marketplaceId: response.marketplaceId as string,
+      // DISPATCHED records when transport started, not an Amazon acceptance.
+      acceptedAt: null, verifiedAt: null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function latestWriteStatusProjection(
   inspection: MainWriteGateInspection,
 ): Readonly<{ writeStatus: BusinessPriceWriteStatus | null }> | null {

@@ -1,7 +1,9 @@
 # AMZ.API agent entrypoint
 
 Before planning, editing, debugging, or publishing this repository, read
-`docs/CODEX_HANDOFF.md` completely and follow its required file-reading order.
+`docs/CODEX_HANDOFF.md` completely, then follow the task-specific required reading
+in `docs/agents/required-reading.md`. Historical release logs are linked for
+on-demand evidence lookup.
 
 Non-negotiable project rules:
 

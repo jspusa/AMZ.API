@@ -74,6 +74,8 @@ export type ContentAuditRow = ContentQualityRow & ContentAuditRelationship;
 export type ContentAuditSnapshot = Readonly<{
   marketplaceId: MarketplaceId;
   fetchedAt: string;
+  sourceCreatedAt: string;
+  sourceExpiresAt: string;
   exportId: string;
   rows: ContentAuditRow[];
   readErrors: Array<{
@@ -723,7 +725,10 @@ export class ContentAuditOwner implements ContentAuditOwnerPort {
     if (!OPAQUE_EXPORT_ID.test(exportId)) {
       throw new Error("Content audit export capability is invalid.");
     }
-    const baseSnapshot: ContentAuditSnapshot = {
+    const baseSnapshot: Omit<
+      ContentAuditSnapshot,
+      "sourceCreatedAt" | "sourceExpiresAt"
+    > = {
       ...audit,
       marketplaceId: input.marketplaceId,
       exportId,
@@ -744,18 +749,18 @@ export class ContentAuditOwner implements ContentAuditOwnerPort {
     const rows = addPagesDictionarySpellingIssues(
       baseSnapshot.rows,
     );
-    const snapshot: ContentAuditSnapshot = {
+    const auditedSnapshot = {
       ...baseSnapshot,
       rows,
       summary: summarizeContentQualityRows(rows),
     };
-    const rowDigests = snapshot.rows.map((row) =>
+    const rowDigests = auditedSnapshot.rows.map((row) =>
       contentAuditEvidenceRowDigest({
         accountScope: input.context.accountScope,
         marketplaceId: input.marketplaceId,
         mode: input.context.mode,
         exportId,
-        fetchedAt: snapshot.fetchedAt,
+        fetchedAt: auditedSnapshot.fetchedAt,
         sellerSku: row.sellerSku,
         asin: row.asin,
         productType: row.productType,
@@ -773,14 +778,27 @@ export class ContentAuditOwner implements ContentAuditOwnerPort {
         readStatus: row.readStatus,
       }));
 
-    await this.evidence.saveContentAuditSnapshotEvidence({
+    const sourceEvidence = await this.evidence.saveContentAuditSnapshotEvidence({
       exportId,
       marketplaceId: input.marketplaceId,
       accountScope: input.context.accountScope,
       mode: input.context.mode,
-      fetchedAt: snapshot.fetchedAt,
+      fetchedAt: auditedSnapshot.fetchedAt,
       rowDigests,
     });
+    if (
+      !Number.isSafeInteger(sourceEvidence.createdAt) ||
+      !Number.isSafeInteger(sourceEvidence.expiresAt) ||
+      sourceEvidence.createdAt <= 0 ||
+      sourceEvidence.expiresAt <= sourceEvidence.createdAt
+    ) {
+      throw new Error("Content audit source validity is invalid.");
+    }
+    const snapshot: ContentAuditSnapshot = {
+      ...auditedSnapshot,
+      sourceCreatedAt: new Date(sourceEvidence.createdAt).toISOString(),
+      sourceExpiresAt: new Date(sourceEvidence.expiresAt).toISOString(),
+    };
     throwIfAborted(input.signal);
     await this.context.assertCurrent(input.context);
     this.assertLifecycleCurrent(revision);
@@ -821,6 +839,8 @@ export class ContentAuditOwner implements ContentAuditOwnerPort {
       marketplaceLabel: `${marketplace.shortLabel} · ${marketplace.name}`,
       exportId: snapshot.exportId,
       fetchedAt: snapshot.fetchedAt,
+      sourceCreatedAt: snapshot.sourceCreatedAt,
+      sourceExpiresAt: snapshot.sourceExpiresAt,
       rows: exportRows.map(workbookRow),
     });
     const date = snapshotDate(snapshot.fetchedAt);

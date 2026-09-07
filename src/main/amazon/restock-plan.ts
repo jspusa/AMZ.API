@@ -90,14 +90,19 @@ function createRestockPlan(
     rawRecommended > 0
       ? Math.ceil(rawRecommended / input.casePack) * input.casePack
       : 0;
-  const action: RestockPlanSnapshot["action"] =
-    daily <= 0
-      ? "NO_DEMAND"
-      : (daysOfCover ?? 0) <= input.leadTimeDays + input.safetyDays
-        ? "RESTOCK_NOW"
-        : (daysOfCover ?? 0) <= input.targetDays
-          ? "WATCH"
-          : "HEALTHY";
+  const withinLeadTime =
+    (daysOfCover ?? 0) <= input.leadTimeDays + input.safetyDays;
+  const hasInbound = inventoryPosition > context.inventory.fulfillable;
+  let action: RestockPlanSnapshot["action"] = "NO_DEMAND";
+  if (daily > 0) {
+    if (recommendedUnits > 0) {
+      action = withinLeadTime ? "RESTOCK_NOW" : "WATCH";
+    } else if (hasInbound && (withinLeadTime || (daysOfCover ?? 0) < input.targetDays)) {
+      action = "TRACK_INBOUND";
+    } else {
+      action = withinLeadTime ? "REVIEW_PLAN" : "HEALTHY";
+    }
+  }
   return {
     mode: context.mode,
     marketplaceId: input.marketplaceId,

@@ -135,6 +135,100 @@ afterEach(() => {
 });
 
 describe("global FBA content audit panel", () => {
+  it("pages all matching content results and restores the chosen page and detail mode", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const snapshot = parseContentAuditSnapshot({
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-09-07T08:00:00.000Z",
+      rows: Array.from({ length: 105 }, (_, index) => quickEditRow({
+        sellerSku: `PAGED-${String(index + 1).padStart(3, "0")}`,
+        ingredients: index === 104 ? "Unique searchable ingredient" : "Turkey",
+      })),
+    });
+    const initialJob = completedContentJob(snapshot);
+    const onCachedResultChange = vi.fn();
+    const focusResults = vi.fn();
+    const scrollResults = vi.fn();
+    vi.stubGlobal("window", { requestAnimationFrame: (callback: FrameRequestCallback) => callback(0) });
+    let renderer: ReactTestRenderer;
+    const props = {
+      marketplaceId: snapshot.marketplaceId,
+      marketplaceShort: "US",
+      onOpenSku: vi.fn(),
+      initialJob,
+      onCachedResultChange,
+      cachedResult: { snapshot, filter: "all" as const, query: "", spellcheckNote: null },
+    };
+    const nodeOptions = {
+      createNodeMock: (element: { props: { className?: string } }) =>
+        element.props.className === "content-audit-result-heading"
+          ? { focus: focusResults, scrollIntoView: scrollResults }
+          : null,
+    };
+    await act(async () => { renderer = create(<ContentAuditPanel {...props} />, nodeOptions); });
+    const rows = () => renderer.root.findAllByType("article");
+    const button = (label: string) => renderer.root.findAllByType("button")
+      .find((candidate) => candidate.props["aria-label"] === label)!;
+    expect(rows()).toHaveLength(50);
+    expect(rows()[0].props["data-seller-sku"]).toBe("PAGED-001");
+    expect(renderer.root.findAllByProps({ className: "content-audit-row-details" })[0].props.open).toBe(false);
+    await act(async () => { button("文案結果下一頁").props.onClick(); });
+    expect(rows()).toHaveLength(50);
+    expect(rows()[0].props["data-seller-sku"]).toBe("PAGED-051");
+    expect(focusResults).toHaveBeenCalledWith({ preventScroll: true });
+    expect(scrollResults).toHaveBeenCalledWith({ block: "start" });
+    await act(async () => { button("完整顯示文案健檢結果").props.onClick(); });
+    expect(renderer.root.findAllByProps({ className: "content-audit-row-details" })[0].props.open).toBe(true);
+    const restoredCache = onCachedResultChange.mock.calls.at(-1)![0];
+    await act(async () => { renderer.unmount(); });
+    await act(async () => {
+      renderer = create(<ContentAuditPanel {...props} cachedResult={restoredCache} />, nodeOptions);
+    });
+    expect(rows()[0].props["data-seller-sku"]).toBe("PAGED-051");
+    expect(renderer.root.findAllByProps({ className: "content-audit-row-details" })[0].props.open).toBe(true);
+    await act(async () => {
+      renderer.root.findByProps({ "data-audit-filter": "SUSPECTED_TYPO" }).props.onClick();
+    });
+    expect(rows()).toHaveLength(50);
+    expect(rows()[0].props["data-seller-sku"]).toBe("PAGED-001");
+    await act(async () => {
+      renderer.root.findByProps({ "aria-label": "搜尋文案健檢結果" }).props.onChange({
+        target: { value: "Unique searchable ingredient" },
+      });
+    });
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0].props["data-seller-sku"]).toBe("PAGED-105");
+    expect(onCachedResultChange.mock.calls.at(-1)![0].pageIndex).toBe(0);
+    await act(async () => { renderer.unmount(); });
+  });
+
+  it("displays the exact source expiry separately from the preview expiry and preserves legacy snapshots", () => {
+    const raw = {
+      marketplaceId: "ATVPDKIKX0DER",
+      fetchedAt: "2026-09-07T07:00:00.000Z",
+      sourceCreatedAt: "2026-09-07T08:00:00.000Z",
+      sourceExpiresAt: "2026-09-08T08:00:00.000Z",
+      rows: [quickEditRow()],
+    };
+    const snapshot = parseContentAuditSnapshot(raw);
+    const markup = renderToStaticMarkup(<ContentAuditPanel
+      marketplaceId={snapshot.marketplaceId}
+      marketplaceShort="US"
+      onOpenSku={vi.fn()}
+      initialJob={completedContentJob(snapshot)}
+      cachedResult={{ snapshot, filter: "all", query: "", spellcheckNote: null }}
+    />);
+    expect(markup).toContain('dateTime="2026-09-08T08:00:00.000Z"');
+    expect(markup).toContain("原本匯出的電腦");
+    expect(markup).toContain("來源有效期為建立後 24 小時");
+    expect(() => parseContentAuditSnapshot({ ...raw, sourceExpiresAt: undefined })).toThrow("來源期限");
+    expect(() => parseContentAuditSnapshot({ ...raw, sourceExpiresAt: "not-a-date" })).toThrow("來源期限");
+    expect(() => parseContentAuditSnapshot({ ...raw, sourceCreatedAt: "2026" })).toThrow("來源期限");
+    expect(() => parseContentAuditSnapshot({ ...raw, sourceExpiresAt: raw.fetchedAt })).toThrow("來源期限");
+    const { sourceCreatedAt: _created, sourceExpiresAt: _expires, ...legacy } = raw;
+    expect(() => parseContentAuditSnapshot(legacy)).not.toThrow();
+  });
+
   it("starts the audit on the first click and collapses an immediate double click into the same flight", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
       .IS_REACT_ACT_ENVIRONMENT = true;
@@ -653,6 +747,8 @@ describe("global FBA content audit panel", () => {
     expect(locked).toContain("Original bullet two");
     expect(locked).toContain("Requested full description");
     expect(locked).toContain("Amazon Validation Preview 提醒");
+    expect(locked).toContain('dateTime="2026-08-22T10:00:00.000Z"');
+    expect(locked).toContain("與 Excel 來源的 24 小時期限分開");
     expect(locked).toContain(
       "我已核對上述每個將寫入 SKU 的完整原值、更新值、Amazon 提醒與會被刪除的第 6 項後產品要點",
     );

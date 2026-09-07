@@ -1463,6 +1463,33 @@ describe("content audit Excel batch router", () => {
     expect(runIdempotentOperation).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["not-found", 404, "SNAPSHOT_NOT_FOUND", "原匯出電腦"],
+    ["expired", 410, "SNAPSHOT_EXPIRED", "已過期"],
+  ] as const)("distinguishes %s source evidence before any preview or write", async (
+    status,
+    httpStatus,
+    code,
+    message,
+  ) => {
+    const snapshot = await audit();
+    const edited = replaceCell(workbook(snapshot), "E2", "An updated title");
+    getContentAuditSnapshotEvidence.mockResolvedValueOnce({ status, evidence: null });
+
+    const response = await router.handle(
+      importRequest(edited, `content-batch-${status}-source-001`),
+    );
+
+    expect(response.status).toBe(httpStatus);
+    expect(responseValue(response)).toMatchObject({
+      code,
+      message: expect.stringContaining(message),
+    });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(assertIdempotentOperationsAvailable).not.toHaveBeenCalled();
+    expect(runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
   it("isolates original-cell tampering before Amazon validation", async () => {
     const snapshot = await audit();
     const tampered = replaceCell(workbook(snapshot), "D2", "Tampered source");

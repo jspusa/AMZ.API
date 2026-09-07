@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -46,6 +47,8 @@ import {
   supportsFixedSellerCentralHandoffs,
 } from "../seller-central-handoff";
 import { auditExportFilename } from "../audit-export-filename";
+import { useNotebookCapabilities } from "../notebook-capabilities";
+import type { B2bRecentWorkItem } from "../../../shared/b2b-recent-work";
 import {
   createRendererIdempotencyKey,
   publicProblemMessage,
@@ -53,6 +56,7 @@ import {
 import AuditDetailsDisclosure from "./audit-details-disclosure";
 import type { AuditSurfacePresentation } from "./audit-workspace-shell";
 import BusinessPricingEditor from "./business-pricing-editor";
+import BusinessPricingRecentWork from "./business-pricing-recent-work";
 
 const FILTERS: readonly Readonly<{
   value: BusinessPricingAuditFilter;
@@ -64,6 +68,8 @@ const FILTERS: readonly Readonly<{
   { value: "configured", label: "正確設定" },
   { value: "incomplete", label: "資料未完成" },
 ];
+
+const AUDIT_PAGE_SIZE = 25;
 
 const RECOMMENDED_QUANTITY_DISCOUNT_TIERS = Object.freeze([
   Object.freeze({ lowerBound: 5, percent: 5 }),
@@ -1043,11 +1049,18 @@ export default function BusinessPricingAuditPanel({
   onEditorBusyChange?: (busy: boolean) => void;
   onBatchBusyChange?: (busy: boolean) => void;
 }) {
+  const notebookCapabilities = useNotebookCapabilities();
+  const batchSupported = notebookCapabilities.ready && notebookCapabilities.businessPricingBatch;
   const [snapshot, setSnapshot] = useState<BusinessPricingAuditSnapshot | null>(
     initialSnapshot ?? cachedSnapshot,
   );
   const [filter, setFilter] = useState<BusinessPricingAuditFilter>("problem");
   const [skuQuery, setSkuQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [rowView, setRowView] = useState<"compact" | "complete">("compact");
+  const [expandedSellerSkus, setExpandedSellerSkus] =
+    useState<ReadonlySet<string>>(() => new Set());
+  const rowDetailsId = useId().replaceAll(":", "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
@@ -1082,6 +1095,8 @@ export default function BusinessPricingAuditPanel({
   const observerJobIdRef = useRef<string | null>(null);
   const editorRevisionRef = useRef(0);
   const panelRef = useRef<HTMLElement | null>(null);
+  const resultHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const focusPageHeadingRef = useRef(false);
   const auditScrollTopRef = useRef(0);
   const batchSelectAllRef = useRef<HTMLInputElement | null>(null);
   const editorOpenRef = useRef(false);
@@ -1257,17 +1272,40 @@ export default function BusinessPricingAuditPanel({
     !processingSellerSkus.has(row.sellerSku) &&
     recommendedBusinessPrice(row.standardPrice) !== null
   ), [processingSellerSkus, visibleRows]);
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / AUDIT_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageRows = visibleRows.slice(
+    (currentPage - 1) * AUDIT_PAGE_SIZE, currentPage * AUDIT_PAGE_SIZE,
+  );
+  const eligiblePageRows = pageRows.filter((row) =>
+    eligibleVisibleRows.some((candidate) => candidate.sellerSku === row.sellerSku)
+  );
   const eligibleVisibleSellerSkuKey = eligibleVisibleRows
     .map((row) => row.sellerSku)
     .join("\u001f");
   const batchSelectedRows = eligibleVisibleRows.filter((row) =>
     batchSelectedSellerSkus.has(row.sellerSku)
   );
-  const allEligibleVisibleSelected = eligibleVisibleRows.length > 0 &&
-    batchSelectedRows.length === eligibleVisibleRows.length;
-  const someEligibleVisibleSelected = batchSelectedRows.length > 0 &&
+  const selectedPageCount = eligiblePageRows.filter((row) =>
+    batchSelectedSellerSkus.has(row.sellerSku)
+  ).length;
+  const allEligibleVisibleSelected = eligiblePageRows.length > 0 &&
+    selectedPageCount === eligiblePageRows.length;
+  const someEligibleVisibleSelected = selectedPageCount > 0 &&
     !allEligibleVisibleSelected;
   const batchBusy = batchPreviewing || batchCommitting;
+
+  useEffect(() => {
+    if (!focusPageHeadingRef.current) return;
+    focusPageHeadingRef.current = false;
+    resultHeadingRef.current?.focus();
+  }, [currentPage]);
+
+  const changePage = (next: number) => {
+    if (batchBusy || editLoading) return;
+    focusPageHeadingRef.current = true;
+    setPage(Math.max(1, Math.min(next, pageCount)));
+  };
 
   useEffect(() => {
     onBatchBusyChange?.(batchBusy);
@@ -1466,7 +1504,9 @@ export default function BusinessPricingAuditPanel({
     }
   };
 
-  const openEditor = async (row: BusinessPricingAuditRow) => {
+  const openEditor = async (row: BusinessPricingAuditRow | B2bRecentWorkItem) => {
+    if (editLoading || batchBusy) return;
+    if ("nextAction" in row && (!notebookCapabilities.ready || !notebookCapabilities.recentBusinessPricingWork)) return;
     auditScrollTopRef.current = presentation === "workspace"
       ? window.scrollY
       : panelRef.current?.scrollTop ?? 0;
@@ -1493,15 +1533,26 @@ export default function BusinessPricingAuditPanel({
       const fresh = parseBusinessPricingListingSnapshot(payload);
       if (
         fresh.marketplaceId !== marketplaceId ||
+        fresh.mode !== mode ||
         fresh.sellerSku !== row.sellerSku ||
-        fresh.asin !== row.asin ||
-        fresh.productType !== row.productType
+        ("asin" in row && fresh.asin !== row.asin) ||
+        ("productType" in row && fresh.productType !== row.productType)
       ) {
         throw new Error(
           "Amazon 商品身分已變更，請重新健檢後再開啟 B2B 價格編輯。",
         );
       }
       if (editorRevisionRef.current !== revision) return;
+      if ("nextAction" in row) {
+        const status = fresh.writeStatus;
+        if (!status || status.stage !== row.stage ||
+          (row.acceptedAt !== null && status.acceptedAt !== row.acceptedAt) ||
+          (row.status === "UNKNOWN" && status.status !== "VERIFIED")) {
+          throw new Error(row.status === "UNKNOWN"
+            ? "已唯讀查看最新商品資料；原送出結果仍不明，不能從這筆工作重新送出。"
+            : "已唯讀查看最新商品資料；工作證據已變更，請重新讀取近期工作再確認。");
+        }
+      }
       if (fresh.writeStatus) rememberListingRead(fresh);
       setSelected(fresh);
     } catch (requestError) {
@@ -1556,7 +1607,7 @@ export default function BusinessPricingAuditPanel({
   };
 
   const updateBatchSelection = (sellerSku: string, checked: boolean) => {
-    if (batchBusy) return;
+    if (batchBusy || !batchSupported) return;
     batchObservationAbortRef.current?.abort();
     batchObservationAbortRef.current = null;
     setBatchSelectedSellerSkus((current) => {
@@ -1572,12 +1623,17 @@ export default function BusinessPricingAuditPanel({
   };
 
   const updateVisibleBatchSelection = (checked: boolean) => {
-    if (batchBusy) return;
+    if (batchBusy || !batchSupported) return;
     batchObservationAbortRef.current?.abort();
     batchObservationAbortRef.current = null;
-    setBatchSelectedSellerSkus(checked
-      ? new Set(eligibleVisibleRows.map((row) => row.sellerSku))
-      : new Set());
+    setBatchSelectedSellerSkus((current) => {
+      const next = new Set(current);
+      for (const row of eligiblePageRows) {
+        if (checked) next.add(row.sellerSku);
+        else next.delete(row.sellerSku);
+      }
+      return next;
+    });
     setBatchPreview(null);
     setBatchResult(null);
     setBatchError(null);
@@ -1585,7 +1641,7 @@ export default function BusinessPricingAuditPanel({
   };
 
   const previewBusinessPricingBatch = async () => {
-    if (batchBusy || batchSelectedRows.length === 0) return;
+    if (batchBusy || !batchSupported || batchSelectedRows.length === 0) return;
     if (!batchAuditBinding) {
       setBatchError("請先完成目前這次 B2B 全站健檢，再批次預檢勾選商品。");
       return;
@@ -1725,7 +1781,7 @@ export default function BusinessPricingAuditPanel({
   };
 
   const commitBusinessPricingBatch = async () => {
-    if (batchBusy || !batchPreview) return;
+    if (batchBusy || !batchSupported || !batchPreview) return;
     if (!batchAuditBinding) {
       setBatchError("目前健檢工作已變更；請重新完成 B2B 全站健檢與批次預檢。");
       return;
@@ -1865,6 +1921,15 @@ export default function BusinessPricingAuditPanel({
           <span>{marketplaceShort} · FBA ONLY</span>
           <h3>找出未設定或高於一般售價的企業價格</h3>
           <p>同時核對 Business Price 與數量折扣；商品列可直接安全預檢，或前往 Amazon 後台。</p>
+          {visibleSnapshot && (
+            <p className="business-pricing-snapshot-time">
+              健檢快照時間 · <time dateTime={visibleSnapshot.fetchedAt}>
+                {new Date(visibleSnapshot.fetchedAt).toLocaleString("zh-TW", {
+                  dateStyle: "short", timeStyle: "short", hour12: false,
+                })}
+              </time>（此電腦時區）；此時間不代表商品更新已完成。
+            </p>
+          )}
         </div>
         <button type="button" className="price-primary-button" onClick={() => void runAudit()} disabled={loading || editLoading || batchBusy}>
           {loading ? "健檢中…" : snapshot ? "重新健檢" : "開始全站 B2B 價格健檢"}
@@ -1887,6 +1952,17 @@ export default function BusinessPricingAuditPanel({
         <div className="price-error" role="alert">{error ?? terminalJobError}</div>
       )}
       {handoffError && <div className="price-error" role="alert">{handoffError}</div>}
+      {notebookCapabilities.message && (
+        <p className="business-pricing-notice" role="status">
+          {notebookCapabilities.message}
+        </p>
+      )}
+      <BusinessPricingRecentWork
+        enabled={notebookCapabilities.ready && notebookCapabilities.recentBusinessPricingWork}
+        marketplaceId={marketplaceId} marketplaceShort={marketplaceShort} mode={mode}
+        busy={editLoading || batchBusy || loading} openingSellerSku={openingSellerSku}
+        onOpen={(item) => { void openEditor(item); }}
+      />
       {!fixedSellerCentralHandoffs && (
         <p className="business-pricing-notice" role="status">
           目前 Notebook Key 需更新後才能安全開啟指定 SKU；為避免開錯商品，舊版不會改開 Seller Central 首頁。
@@ -1925,7 +2001,7 @@ export default function BusinessPricingAuditPanel({
                 }`}
                 aria-pressed={filter === option.value}
                 disabled={batchBusy}
-                onClick={() => setFilter(option.value)}
+                onClick={() => { setFilter(option.value); setPage(1); }}
               >
                 <span>{option.label}</span><strong>{rowCount(visibleSnapshot, option.value)}</strong>
               </button>
@@ -1937,7 +2013,7 @@ export default function BusinessPricingAuditPanel({
               <input
                 type="search"
                 value={skuQuery}
-                onChange={(event) => setSkuQuery(event.target.value)}
+                onChange={(event) => { setSkuQuery(event.target.value); setPage(1); }}
                 placeholder="搜尋 Seller SKU"
                 aria-label="搜尋 B2B 價格健檢 SKU"
                 autoComplete="off"
@@ -1958,14 +2034,14 @@ export default function BusinessPricingAuditPanel({
                 aria-checked={someEligibleVisibleSelected
                   ? "mixed"
                   : allEligibleVisibleSelected}
-                aria-label="全選目前可見且可批次處理的 B2B SKU"
-                disabled={eligibleVisibleRows.length === 0 || batchBusy}
+                aria-label="全選本頁可批次處理的 B2B SKU"
+                disabled={!batchSupported || eligiblePageRows.length === 0 || batchBusy}
                 onChange={(event) => updateVisibleBatchSelection(
                   event.target.checked,
                 )}
               />
-              <span>全選目前可處理商品</span>
-              <small>{eligibleVisibleRows.length} 個可選</small>
+              <span>全選本頁可處理商品</span>
+              <small>本頁 {eligiblePageRows.length} 個可選；跨頁保留已選</small>
             </label>
             <strong
               className="business-pricing-selected-count"
@@ -1979,6 +2055,7 @@ export default function BusinessPricingAuditPanel({
               aria-label="批次預檢已選 B2B SKU"
               disabled={
                 batchSelectedRows.length === 0 ||
+                !batchSupported ||
                 batchBusy ||
                 !batchAuditBinding
               }
@@ -2016,7 +2093,7 @@ export default function BusinessPricingAuditPanel({
                 type="button"
                 className="price-primary-button"
                 aria-label="確認送出勾選 B2B SKU"
-                disabled={batchBusy}
+                disabled={batchBusy || !batchSupported}
                 onClick={() => void commitBusinessPricingBatch()}
               >{batchCommitting
                   ? "正在等待 Notebook Key 確認…"
@@ -2074,8 +2151,31 @@ export default function BusinessPricingAuditPanel({
               <small>請先完成本次背景健檢；Excel 只會使用主程序保存的原始快照。</small>
             )}
           </div>
+          <div className="business-pricing-results-toolbar">
+            <h4 ref={resultHeadingRef} tabIndex={-1}>
+              {visibleRows.length} 個符合條件的 SKU · 第 {currentPage} / {pageCount} 頁
+            </h4>
+            <div role="group" aria-label="B2B 商品資料密度">
+              <button type="button" aria-label="B2B 緊湊列"
+                aria-pressed={rowView === "compact"} disabled={batchBusy || editLoading}
+                onClick={() => setRowView("compact")}>緊湊列</button>
+              <button type="button" aria-label="B2B 完整列"
+                aria-pressed={rowView === "complete"} disabled={batchBusy || editLoading}
+                onClick={() => setRowView("complete")}>完整列</button>
+            </div>
+            <nav aria-label="B2B 商品分頁">
+              <button type="button" aria-label="B2B 上一頁"
+                disabled={currentPage === 1 || batchBusy || editLoading}
+                onClick={() => changePage(currentPage - 1)}>上一頁</button>
+              <button type="button" aria-label="B2B 下一頁"
+                disabled={currentPage === pageCount || batchBusy || editLoading}
+                onClick={() => changePage(currentPage + 1)}>下一頁</button>
+            </nav>
+          </div>
           <div className="business-pricing-list" role="list" aria-label="FBA B2B 價格商品">
-            {visibleRows.map((row) => {
+            {pageRows.map((row, index) => {
+              const detailsExpanded = rowView === "complete" || expandedSellerSkus.has(row.sellerSku);
+              const detailsId = `${rowDetailsId}-details-${index}`;
               const activity = workflowActivities.find((candidate) =>
                 candidate.sellerSku === row.sellerSku
               );
@@ -2107,7 +2207,7 @@ export default function BusinessPricingAuditPanel({
                       className="business-pricing-row-checkbox"
                       checked={batchSelectedSellerSkus.has(row.sellerSku)}
                       aria-label={`選取 Seller SKU ${row.sellerSku} 進行 B2B 批次預檢`}
-                      disabled={batchBusy}
+                      disabled={batchBusy || !batchSupported}
                       onChange={(event) => updateBatchSelection(
                         row.sellerSku,
                         event.target.checked,
@@ -2123,34 +2223,31 @@ export default function BusinessPricingAuditPanel({
                     </small>
                   )}
                 </div>
-                <dl>
+                <dl aria-label="B2B 價格比較">
                   <div><dt>一般售價</dt><dd>{formatMoney(row.standardPrice)}</dd></div>
                   <div><dt>B2B 價格</dt><dd>{formatMoney(row.businessPrice)}</dd></div>
                   <div><dt>建議 B2B 價格</dt><dd>{formatMoney(recommendedBusinessPrice(row.standardPrice))}</dd></div>
-                  <div className="business-pricing-quantity-cell">
-                    <dt>目前數量折扣</dt>
-                    <dd>
-                      <QuantityDiscountPlan
-                        plan={row.quantityDiscountPlan}
-                        ambiguous={row.quantityDiscountPlanPresence === "ambiguous"}
-                      />
-                    </dd>
-                  </div>
                 </dl>
                 <div className="business-pricing-row-status">
                   <span>{statusLabel(row)}</span>
-                  {recommendationFindings(row).length > 0 && (
-                    <div className="business-pricing-findings" aria-label="建議規則問題">
-                      {recommendationFindings(row).map((finding) => (
-                        <strong key={finding}>{finding}</strong>
-                      ))}
-                    </div>
+                  {rowView === "compact" && (
+                    <button type="button"
+                      className="business-pricing-row-detail-toggle"
+                      aria-label={`Seller SKU ${row.sellerSku} 的完整健檢資料`}
+                      aria-expanded={detailsExpanded} aria-controls={detailsId}
+                      disabled={batchBusy || editLoading}
+                      onClick={() => setExpandedSellerSkus((current) => {
+                        const next = new Set(current);
+                        if (next.has(row.sellerSku)) next.delete(row.sellerSku);
+                        else next.add(row.sellerSku);
+                        return next;
+                      })}>{detailsExpanded ? "收合詳細資料" : "顯示完整資料"}</button>
                   )}
-                  <small>{rowStatusDetail(row)}</small>
                 </div>
                 <div className="business-pricing-row-actions">
                   <button
                     type="button"
+                    aria-label={`查看 Seller SKU ${row.sellerSku} 的最新 B2B 價格`}
                     onClick={() => void openEditor(row)}
                     disabled={editLoading || loading || batchBusy}
                     aria-busy={openingSellerSku === row.sellerSku}
@@ -2171,6 +2268,19 @@ export default function BusinessPricingAuditPanel({
                     onClick={() => void openSellerCentralInventory(row.sellerSku)}
                     disabled={!fixedSellerCentralHandoffs || batchBusy}
                   >前往 Amazon 後台 ↗</button>
+                </div>
+                <div id={detailsId} className="business-pricing-row-details" hidden={!detailsExpanded}>
+                  <dl><div className="business-pricing-quantity-cell">
+                    <dt>目前數量折扣</dt>
+                    <dd><QuantityDiscountPlan plan={row.quantityDiscountPlan}
+                      ambiguous={row.quantityDiscountPlanPresence === "ambiguous"} /></dd>
+                  </div></dl>
+                  {recommendationFindings(row).length > 0 && (
+                    <div className="business-pricing-findings" aria-label="建議規則問題">
+                      {recommendationFindings(row).map((finding) => <strong key={finding}>{finding}</strong>)}
+                    </div>
+                  )}
+                  <p>{rowStatusDetail(row)}</p>
                 </div>
                 {rowWorkflow && <WorkflowProgress progress={rowWorkflow} />}
               </article>

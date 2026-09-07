@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import ConnectionPanel from "../src/renderer/src/connection-panel";
 import WebGate, {
-  APP_DOWNLOAD_VERSION,
   PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL,
   safeNotebookDownloadHref,
 } from "../src/renderer/src/web-gate";
@@ -11,7 +10,7 @@ import packageJson from "../package.json";
 import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("Notebook Key WebGate", () => {
-  it("shows one concise protected App 0.1.41 download action", () => {
+  it("shows the protected installer destination without claiming the source version is available", () => {
     const markup = renderToStaticMarkup(<WebGate />);
 
     expect(markup).toContain("LOCAL KEY REQUIRED");
@@ -23,8 +22,9 @@ describe("Notebook Key WebGate", () => {
     expect(markup).toContain("憑證只留在本機");
     expect(markup).not.toContain("開啟 Mac 鑰匙");
 
-    expect(APP_DOWNLOAD_VERSION).toBe(packageJson.version);
-    expect(markup).toContain(`下載 AMZ.API App ${packageJson.version}`);
+    expect(markup).toContain("下載 AMZ.API App");
+    expect(markup).not.toContain(`下載 AMZ.API App ${packageJson.version}`);
+    expect(markup).toContain("安裝檔版本以安全下載頁為準");
     expect(markup.match(new RegExp(PROTECTED_NOTEBOOK_DOWNLOAD_PORTAL, "g"))).toHaveLength(1);
     expect(markup).not.toContain("github.com/jspusa/AMZ.API/releases/download");
     expect(markup).not.toContain("AMZ.API-Notebook-Key-Windows-x64-Setup.exe");

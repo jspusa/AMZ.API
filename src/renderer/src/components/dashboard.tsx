@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  lazy,
   useCallback,
   useEffect,
   useRef,
@@ -19,9 +20,8 @@ import {
   AUDIT_SUITE_SECTION_LABELS,
   type AuditSuiteSectionId,
 } from "../../../shared/audit-suite";
-import { AccountingCenterDrawer } from "./accounting-center-panel";
+import DeferredWorkspace from "./deferred-workspace";
 import AdsDrawer from "./ads-drawer";
-import AgedInventoryPanel from "./aged-inventory-panel";
 import AuditSuiteHomeCard from "./audit-suite-home-card";
 import AuditWorkspaceShell from "./audit-workspace-shell";
 import AplusAuditDrawer from "./a-plus-audit-drawer";
@@ -40,10 +40,7 @@ import OperationsBulletinCard from "./operations-bulletin-card";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
-import ReportLibraryPanel from "./report-library-panel";
-import ReviewAuditPanel, {
-  type ReviewAuditCache,
-} from "./review-audit-panel";
+import type { ReviewAuditCache } from "./review-audit-panel";
 import SalesTrendChart, {
   MAX_CUSTOM_SALES_TREND_DAYS,
   previousYearDateKey,
@@ -64,7 +61,6 @@ import SubscriptionAuditDrawer from "./subscription-audit-drawer";
 import UnboundVariationAuditPanel, {
   type UnboundVariationAuditCache,
 } from "./unbound-variation-audit-panel";
-import VariationPlannerDrawer from "./variation-planner-drawer";
 import {
   focusTopmostModalDialog,
   restoreModalTriggerFocus,
@@ -96,6 +92,14 @@ import {
   type StandaloneAuditKind,
 } from "../standalone-audit";
 
+const AccountingCenterDrawer = lazy(() => import("./accounting-center-panel").then(
+  (module) => ({ default: module.AccountingCenterDrawer }),
+));
+const AgedInventoryPanel = lazy(() => import("./aged-inventory-panel"));
+const ReportLibraryPanel = lazy(() => import("./report-library-panel"));
+const ReviewAuditPanel = lazy(() => import("./review-audit-panel"));
+const VariationPlannerDrawer = lazy(() => import("./variation-planner-drawer"));
+
 export { standaloneAuditSnapshotMatchesJob };
 
 export type DashboardReportMenuEntry = {
@@ -112,6 +116,7 @@ type DashboardProps = {
   initialMarketplaceId: string;
   viewerName?: string | null;
   initialError?: string | null;
+  loadOnMount?: boolean;
   onOpenConnection?: () => void;
   additionalAuditCards?: ReactNode;
   performanceCompanion?: ReactNode;
@@ -685,6 +690,7 @@ export default function Dashboard({
   initialMarketplaceId,
   viewerName,
   initialError = null,
+  loadOnMount = false,
   onOpenConnection,
   additionalAuditCards = null,
   performanceCompanion = null,
@@ -753,11 +759,18 @@ export default function Dashboard({
   >({});
   const [auditPreference, setAuditPreference] = useState<AuditPreference>(null);
   const [returnToUnboundVariationAudit, setReturnToUnboundVariationAudit] = useState(false);
+  const closeVariationPlanner = () => {
+    setOpenTool(null);
+    if (returnToUnboundVariationAudit) {
+      setReturnToUnboundVariationAudit(false);
+      setActiveAuditWorkspace("variation");
+    }
+  };
   const [commandOpen, setCommandOpen] = useState(false);
   const [autoSync, setAutoSync] = useState(true);
   const [salesTrend, setSalesTrend] =
     useState<SalesTrendSnapshot | null>(initialSalesTrend);
-  const [salesTrendLoading, setSalesTrendLoading] = useState(false);
+  const [salesTrendLoading, setSalesTrendLoading] = useState(loadOnMount && !initialSalesTrend);
   const [salesTrendError, setSalesTrendError] = useState<string | null>(initialError);
   const [connectionEvidence, setConnectionEvidence] = useState<
     Record<string, DashboardConnectionEvidence>
@@ -792,8 +805,10 @@ export default function Dashboard({
     sectionId: AuditSuiteSectionId;
     scrollY: number;
   } | null>(null);
-  const lastAutomaticRequestKey = useRef(
-    salesTrendRequestKey(startingMarketplaceId, startingSelection),
+  const lastAutomaticRequestKey = useRef<string | null>(
+    loadOnMount && !initialSalesTrend
+      ? null
+      : salesTrendRequestKey(startingMarketplaceId, startingSelection),
   );
 
   const verifyMarketplaceConnection = useCallback(
@@ -983,9 +998,14 @@ export default function Dashboard({
   useEffect(() => {
     const requestKey = salesTrendRequestKey(marketplaceId, trendSelection);
     if (lastAutomaticRequestKey.current === requestKey) return;
-    lastAutomaticRequestKey.current = requestKey;
-    void loadSalesTrend();
-    return () => salesTrendAbortRef.current?.abort();
+    const timeout = window.setTimeout(() => {
+      lastAutomaticRequestKey.current = requestKey;
+      void loadSalesTrend();
+    }, 0);
+    return () => {
+      window.clearTimeout(timeout);
+      salesTrendAbortRef.current?.abort();
+    };
   }, [loadSalesTrend, marketplaceId, trendSelection]);
 
   useEffect(() => {
@@ -2532,13 +2552,7 @@ export default function Dashboard({
           onClose={() => setOpenTool(null)}
         />
       )}
-      {openTool === "variations" && <VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => {
-        setOpenTool(null);
-        if (returnToUnboundVariationAudit) {
-          setReturnToUnboundVariationAudit(false);
-          setActiveAuditWorkspace("variation");
-        }
-      }} />}
+      {openTool === "variations" && <DeferredWorkspace overlay onClose={closeVariationPlanner}><VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={closeVariationPlanner} /></DeferredWorkspace>}
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "promotion" && <PromotionCenterDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "subscriptions" && <SubscriptionAuditDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} mode={currentStandaloneMode} initialJob={currentSubscriptionDrawerJob} onJobChange={cacheStandaloneAuditJob} onClose={() => setOpenTool(null)} />}
@@ -2557,7 +2571,7 @@ export default function Dashboard({
           onClose={() => setOpenTool(null)}
         />
       )}
-      {openTool === "accounting" && <AccountingCenterDrawer marketplaceId={marketplaceId} onClose={() => setOpenTool(null)} />}
+      {openTool === "accounting" && <DeferredWorkspace overlay onClose={() => setOpenTool(null)}><AccountingCenterDrawer marketplaceId={marketplaceId} onClose={() => setOpenTool(null)} /></DeferredWorkspace>}
       {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}
       {agedInventoryOpen && createPortal(
         <div
@@ -2577,6 +2591,7 @@ export default function Dashboard({
               <div><p className="eyebrow">FBA · 180+ DAYS · ESTIMATED EXCESS</p><h2 id="aged-inventory-audit-title">FBA 庫齡與預估冗餘健檢</h2></div>
               <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 庫齡與預估冗餘健檢">×</button>
             </div>
+            <DeferredWorkspace onClose={() => setAgedInventoryOpen(false)}>
             <AgedInventoryPanel
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.shortLabel}
@@ -2584,6 +2599,7 @@ export default function Dashboard({
               initialJob={currentAgedInventoryJob}
               onJobChange={cacheStandaloneAuditJob}
             />
+            </DeferredWorkspace>
           </aside>
         </div>,
         document.body,
@@ -2606,10 +2622,12 @@ export default function Dashboard({
               <div><p className="eyebrow">AMAZON PUBLIC API · FBA BOUNDARY</p><h2 id="report-library-drawer-title">報表區</h2></div>
               <button type="button" onClick={() => setReportLibraryOpen(false)} autoFocus aria-label="關閉 Amazon API 文件庫">×</button>
             </div>
+            <DeferredWorkspace onClose={() => setReportLibraryOpen(false)}>
             <ReportLibraryPanel
               marketplaceId={marketplaceId}
               onOpenExport={openReportExport}
             />
+            </DeferredWorkspace>
           </aside>
         </div>,
         document.body,
@@ -2632,12 +2650,14 @@ export default function Dashboard({
               <div><p className="eyebrow">FBA · NON-PARENT ASIN · READ ONLY</p><h2 id="review-audit-drawer-title">評論健檢</h2></div>
               <button type="button" onClick={() => setReviewAuditOpen(false)} autoFocus aria-label="關閉 FBA 評論健檢">×</button>
             </div>
+            <DeferredWorkspace onClose={() => setReviewAuditOpen(false)}>
             <ReviewAuditPanel
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.shortLabel}
               cachedResult={currentReviewAudit}
               onCachedResultChange={cacheReviewAudit}
             />
+            </DeferredWorkspace>
           </aside>
         </div>,
         document.body,

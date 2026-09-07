@@ -277,6 +277,8 @@ export interface CreateContentAuditWorkbookV2Input {
   marketplaceLabel: string;
   exportId: string;
   fetchedAt: string | Date;
+  sourceCreatedAt?: string;
+  sourceExpiresAt?: string;
   rows: readonly ContentAuditWorkbookV2Row[];
 }
 
@@ -296,6 +298,7 @@ interface WorksheetOptions {
   rows: readonly (readonly Cell[])[];
   widths: readonly number[];
   dataRowHeight: number;
+  rowHeights?: Readonly<Record<number, number>>;
   freezeRows?: number;
   autoFilter?: string | false;
   hiddenMetadata?: readonly [marker: string, payload: string];
@@ -423,9 +426,24 @@ export function createContentAuditWorkbookV2({
   marketplaceLabel,
   exportId,
   fetchedAt,
+  sourceCreatedAt,
+  sourceExpiresAt,
   rows,
 }: CreateContentAuditWorkbookV2Input): Uint8Array {
   const generatedAt = requireValidDate(fetchedAt, "fetchedAt");
+  if ((sourceCreatedAt === undefined) !== (sourceExpiresAt === undefined)) {
+    throw new Error("Content audit workbook source validity is incomplete.");
+  }
+  let sourceInstructions =
+    "回傳必須使用原匯出電腦的 Notebook Key；來源有效期限請以 App 的本機快照為準。";
+  if (sourceCreatedAt !== undefined && sourceExpiresAt !== undefined) {
+    const sourceStart = requireValidDate(sourceCreatedAt, "sourceCreatedAt");
+    const sourceEnd = requireValidDate(sourceExpiresAt, "sourceExpiresAt");
+    if (sourceEnd.getTime() <= sourceStart.getTime()) {
+      throw new Error("Content audit workbook source validity is invalid.");
+    }
+    sourceInstructions = `請回到原匯出電腦的 Notebook Key 回傳。來源快照建立：${sourceStart.toISOString()}；回傳截止：${sourceEnd.toISOString()}（UTC）。來源證據保留 24 小時，以此截止時間為準；Amazon 預檢的確認期限另外計算。`;
+  }
   if (!/^[A-Z0-9]{1,32}$/u.test(marketplaceId)) {
     throw new Error("Content audit workbook marketplace metadata is invalid.");
   }
@@ -533,7 +551,7 @@ export function createContentAuditWorkbookV2({
     [
       textCell("使用說明"),
       textCell(
-        "只能編輯「更新...」欄位。灰色「原始...」欄位是匯出快照，回傳時會重新向 Amazon 核對；請勿修改 SKU、ASIN、Product Type 或工作表結構。",
+        `只能編輯「更新...」欄位。灰色「原始...」欄位是匯出快照，回傳時會重新向 Amazon 核對；請勿修改 SKU、ASIN、Product Type 或工作表結構。${sourceInstructions}`,
       ),
       ...emptyCells(4),
     ],
@@ -564,6 +582,7 @@ export function createContentAuditWorkbookV2({
         rows: indexRows,
         widths: [22, 72, 34, 34, 24, 14],
         dataRowHeight: 36,
+        rowHeights: { 6: 144 },
         freezeRows: CONTENT_AUDIT_V2_INDEX_HEADER_ROW,
         // Excel and LibreOffice persist AutoFilter ranges as hidden
         // _xlnm._FilterDatabase Defined Names. The importer deliberately
@@ -1385,6 +1404,7 @@ function buildWorksheet({
   rows,
   widths,
   dataRowHeight,
+  rowHeights = {},
   freezeRows = 1,
   autoFilter,
   hiddenMetadata,
@@ -1428,7 +1448,7 @@ function buildWorksheet({
         )
         .join("");
 
-      return `<row r="${excelRow}" ht="${dataRowHeight}" customHeight="1">${cells}</row>`;
+      return `<row r="${excelRow}" ht="${rowHeights[excelRow] ?? dataRowHeight}" customHeight="1">${cells}</row>`;
     })
     .join("");
 

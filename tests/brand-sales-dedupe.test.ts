@@ -909,15 +909,24 @@ describe("durable brand-sales report dedupe", () => {
     const localStore = await store();
     let listingStarts = 0;
     let shipmentStarts = 0;
+    let signalListingStarted!: () => void;
+    let signalShipmentStarted!: () => void;
+    const listingStarted = new Promise<void>((resolve) => { signalListingStarted = resolve; });
+    const shipmentStarted = new Promise<void>((resolve) => { signalShipmentStarted = resolve; });
     let releaseListing!: () => void;
     const listingGate = new Promise<void>((resolve) => { releaseListing = resolve; });
     const app = router(localStore, {
       startListing: async () => {
         listingStarts += 1;
+        signalListingStarted();
         await listingGate;
         return queuedListing(listingStarts);
       },
-      startShipment: async () => queuedShipment(++shipmentStarts),
+      startShipment: async () => {
+        shipmentStarts += 1;
+        signalShipmentStarted();
+        return queuedShipment(shipmentStarts);
+      },
     });
 
     const automatic = brandStart(app);
@@ -926,8 +935,9 @@ describe("durable brand-sales report dedupe", () => {
       path: "/api/sp-api/variation-audit",
       body: { marketplaceId: MARKETPLACE_ID },
     }));
-    await vi.waitFor(() => expect(listingStarts).toBeGreaterThan(0));
-    await vi.advanceTimersByTimeAsync(1);
+    // Report starts follow real durable I/O; advancing fake time cannot prove
+    // that either platform has finished persisting its report claims.
+    await Promise.all([listingStarted, shipmentStarted]);
     expect(listingStarts).toBe(1);
     expect(shipmentStarts).toBe(1);
 
@@ -937,6 +947,8 @@ describe("durable brand-sales report dedupe", () => {
     expect(audit.status).toBe(202);
     expect(body(audit).reportId).toMatch(/^report-lease\./u);
     expect(body(audit).reportId).not.toBe("listing-report-1");
+    expect(listingStarts).toBe(1);
+    expect(shipmentStarts).toBe(1);
   });
 
   it("reuses active report IDs after an ApiRouter/App-main restart", async () => {

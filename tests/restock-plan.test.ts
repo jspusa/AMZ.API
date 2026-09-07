@@ -10,6 +10,8 @@ import {
   createRestockPlanPort,
   type RestockPlanDependencies,
 } from "../src/main/amazon/restock-plan";
+import { planCompletedFbaSalesVelocity } from
+  "../src/main/amazon/fba-sales-calendar";
 
 const US_MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
 const NOW = new Date("2026-03-10T12:00:00.000Z");
@@ -84,6 +86,10 @@ function dependencies(
 
 function inventoryAdapter(input: {
   sellerSku: string;
+  fulfillable?: number;
+  inboundWorking?: number;
+  inboundShipped?: number;
+  inboundReceiving?: number;
   beforeRead?: () => Promise<void>;
 }): FbaInventoryReplenishmentAdapter {
   return {
@@ -99,10 +105,10 @@ function inventoryAdapter(input: {
                 fnSku: "X000000001",
                 sellerSku: input.sellerSku,
                 inventoryDetails: {
-                  fulfillableQuantity: 7,
-                  inboundWorkingQuantity: 2,
-                  inboundShippedQuantity: 3,
-                  inboundReceivingQuantity: 4,
+                  fulfillableQuantity: input.fulfillable ?? 7,
+                  inboundWorkingQuantity: input.inboundWorking ?? 2,
+                  inboundShippedQuantity: input.inboundShipped ?? 3,
+                  inboundReceivingQuantity: input.inboundReceiving ?? 4,
                   reservedQuantity: { totalReservedQuantity: 1 },
                   unfulfillableQuantity: { totalUnfulfillableQuantity: 0 },
                   researchingQuantity: { totalResearchingQuantity: 0 },
@@ -134,6 +140,77 @@ afterEach(() => {
 });
 
 describe("restock plan semantic port", () => {
+  it.each([
+    { fulfillable: 20, inbound: 0, action: "REVIEW_PLAN" },
+    { fulfillable: 37, inbound: 0, action: "REVIEW_PLAN" },
+    { fulfillable: 20, inbound: 10, action: "TRACK_INBOUND" },
+    { fulfillable: 37, inbound: 10, action: "TRACK_INBOUND" },
+    { fulfillable: 38, inbound: 0, action: "HEALTHY" },
+  ])("reports $action when $fulfillable days cover meets a short target with $inbound inbound units", async ({ fulfillable, inbound, action }) => {
+    const sellerSku = "SHORT-TARGET-SKU";
+    const sales = planCompletedFbaSalesVelocity({
+      marketplaceId: US_MARKETPLACE_ID,
+      sellerSku,
+    }, NOW);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      payload: sales.window.intervals.map((interval) => ({
+        interval,
+        unitCount: 1,
+        orderItemCount: 1,
+        orderCount: 1,
+        totalSales: { amount: "19.99", currencyCode: "USD" },
+      })),
+    }), { status: 200 })));
+    const port = createRestockPlanPort(dependencies({
+      resolveMode: () => "live",
+      inventoryAdapter: inventoryAdapter({
+        sellerSku,
+        fulfillable,
+        inboundWorking: 0,
+        inboundShipped: inbound,
+        inboundReceiving: 0,
+      }),
+    }));
+
+    const snapshot = await port.get({
+      marketplaceId: US_MARKETPLACE_ID,
+      sellerSku,
+      targetDays: 14,
+      leadTimeDays: 30,
+      safetyDays: 7,
+      casePack: 8,
+    });
+
+    expect(snapshot).toMatchObject({
+      action,
+      recommendedUnits: 0,
+      daysOfCover: fulfillable,
+      reorderPoint: 37,
+      demand: { averageDailyUnits: 1, units: 30 },
+      inventory: { fulfillable, inventoryPosition: fulfillable + inbound },
+    });
+  });
+
+  it("tracks inbound stock without recommending a zero-unit order when available stock is low", async () => {
+    const port = createRestockPlanPort(dependencies());
+
+    const snapshot = await port.get({
+      marketplaceId: US_MARKETPLACE_ID,
+      sellerSku: "INBOUND-COVERED-SKU",
+      targetDays: 14,
+      leadTimeDays: 4,
+      safetyDays: 2,
+      casePack: 8,
+    });
+
+    expect(snapshot).toMatchObject({
+      action: "TRACK_INBOUND",
+      recommendedUnits: 0,
+      inventory: { fulfillable: 10, inventoryPosition: 46 },
+      forecastStockoutAt: "2026-03-16T01:20:00.000Z",
+    });
+  });
+
   it("preserves FBA inventory-position math, case-pack rounding, and action", async () => {
     const port = createRestockPlanPort(dependencies());
 

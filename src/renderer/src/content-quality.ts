@@ -73,6 +73,8 @@ export type ContentAuditSummary = {
 };
 
 export type ContentAuditSnapshot = {
+  sourceCreatedAt?: string;
+  sourceExpiresAt?: string;
   marketplaceId: string;
   fetchedAt: string;
   exportId?: string;

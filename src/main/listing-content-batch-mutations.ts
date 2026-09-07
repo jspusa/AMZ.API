@@ -1081,6 +1081,13 @@ export class ListingContentBatchMutations
           "REPORT_MODE_CHANGED",
         );
       }
+      if (lookup.status === "not-found") {
+        return invalid(
+          "這台 Notebook Key 找不到這份文案 Excel 的來源快照。請回到原匯出電腦回傳；來源也可能已超過 24 小時或因本機保留上限清除。若原機也找不到，請重新執行全站健檢並將修改帶入新檔。",
+          404,
+          "SNAPSHOT_NOT_FOUND",
+        );
+      }
       if (lookup.status !== "available") {
         return invalid(
           "這份文案 Excel 的掃描快照已過期，請重新執行全站健檢。",

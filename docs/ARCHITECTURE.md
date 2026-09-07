@@ -21,6 +21,10 @@ macOS / Windows 11 Notebook Key Bridge
       └─ operations board owner → fixed Supply Boss API + main-memory board session
 ```
 
+## 發布信任邊界
+
+Pages 的 push、workflow_dispatch 與既有授權 issue 路徑都在同一 checkout 固定 `github.sha`，先完成 `npm run check` 才建立公告、重新 build、上傳與部署該 source。公告資料仍經既有 author／label 與內容驗證，不會執行 issue body。source／Pages／desktop artifact／受保護下載／裝置安裝／live Amazon 是不同證據層，記錄方式見 [版本證據](releases/2026-09-review-evidence.md)。桌面 updater 的 publisher-bound channel、明確重啟與 protected feed 決策仍遵守 ADR 0001；[preflight](releases/signed-update-preflight.md) 只準備既有流程，不能替代實機簽章更新驗收。
+
 ## 為什麼控制台在 App 視窗中解鎖
 
 HTTPS GitHub 網頁直接呼叫 `http://127.0.0.1` 會受到 Local Network Access、mixed-content 與 CORS 的瀏覽器差異影響，因此一般 Safari／Chrome／Edge 分頁不連 localhost，也不會取得 Bridge。Desktop App 自己載入精確的 GitHub Pages 文件，再透過 preload 提供最小 IPC。GitHub 改版會自動生效，但 Amazon API Secret、LWA token 交換與所有 upstream request 仍只存在 main process。
@@ -37,7 +41,7 @@ Supply Boss 用獨立 board-editor username／PBKDF2 salt／hash 驗證 `/api/op
 
 控制台的 client components 仍呼叫相對 `/api/**`。只有在 Notebook 鑰匙 App 視窗中，Renderer 才會安裝 fetch adapter，將允許的 JSON／單檔 multipart request 序列化到 preload；一般瀏覽器只渲染鎖定頁。main process router 重建 HTTP-like status、headers、JSON 或 bytes response，全程不啟動 localhost server。
 
-`ApiRouter.handle()` 是唯一公開 dispatch seam：它在執行任何 route 前以 runtime shape 核對 request ID、固定 method、`/api/` path、純字串 query／headers，以及 plain-object JSON 或單檔 multipart body；畸形 envelope 一律回傳 no-store JSON `400 INVALID_REQUEST`。`route()` 固定只有 exact method＋path key 與單一中央 switch；一份 test-owned、人工審閱的 69 組矩陣以 TypeScript AST 獨立盤點 production case，並鎖定 key 宣告、switch 與 exact `404 NOT_FOUND` default，新增、遺漏、重複或在 switch 前加入旁路 dispatch 都會使契約測試失敗。production 不另建第二份 route registry，也不改既有 handler／DTO。SP、pre-commit、coordinator、report、replenishment 與 Ads 的已知錯誤在跨 main／renderer 邊界前共用 canonical sanitizer；不安全的 status、code、message、Request ID 或 Retry-After 會 fail closed，unknown error 只回固定 `500 INTERNAL_ERROR`。
+`ApiRouter.handle()` 是唯一公開 dispatch seam：它在執行任何 route 前以 runtime shape 核對 request ID、固定 method、`/api/` path、純字串 query／headers，以及 plain-object JSON 或單檔 multipart body；畸形 envelope 一律回傳 no-store JSON `400 INVALID_REQUEST`。`route()` 固定只有 exact method＋path key 與單一中央 switch；一份 test-owned、人工審閱的 70 組矩陣以 TypeScript AST 獨立盤點 production case，並鎖定 key 宣告、switch 與 exact `404 NOT_FOUND` default，新增、遺漏、重複或在 switch 前加入旁路 dispatch 都會使契約測試失敗。production 不另建第二份 route registry，也不改既有 handler／DTO。SP、pre-commit、coordinator、report、replenishment 與 Ads 的已知錯誤在跨 main／renderer 邊界前共用 canonical sanitizer；不安全的 status、code、message、Request ID 或 Retry-After 會 fail closed，unknown error 只回固定 `500 INTERNAL_ERROR`。
 
 C01 完成 contract facade convergence 後，`ApiRouter` 只擁有 production composition、上述 envelope／exact switch、公開錯誤翻譯、connection tests與context invalidation wiring；domain job map、timer、snapshot、preview、Amazon payload／schema規則及workbook實作只能存在於注入的main-only semantic owner。Listings export兩條route也只委派`ListingsExportRoutes`，由既有export／Content Audit／Image Audit owners繼續擁有report、snapshot與download。`sp-api.ts`同樣只是一個窄化composition root：每個credential、Listings read／write、price、B2B、content、image、variation、catalog／report demo、subscription、restock與sales-trend runtime只能在此建構一次，且只能收到人工allowlist的semantic ports。facade不得宣告或重匯出domain DTO，不得持有Map／timer／demo資料，不得讀env、解析raw Amazon payload／schema、產生workbook、接受任意transport callback或使用dynamic dispatch；renderer／preload／shared不得匯入main-private module，domain也不得反向匯入Router或facade。AST architecture gate同時鎖定唯一`ReportsRuntime`／`FixedReportBroker` lifecycle，避免新舊架構並存。
 
@@ -153,6 +157,9 @@ Windows 的 native confirmation 不由 renderer 或遠端 Pages 執行。Windows
 - `ads-credentials.enc`：獨立的 Ads OS-safeStorage-backed encrypted vault；不改寫 `credentials.enc`，也不改變既有 LocalStore 格式。
 - 公布欄不建立 reader sidecar 或本機 admin vault；固定 Supply Boss API 是 shared source，server-owned R2 以既有 `operations-board/v1.json` key 保存 canonical v2 board object。帳密由 Supply Boss 驗證，App 只保留 8 小時 memory-only board session；使用者不需在 Notebook Key 輸入 R2 五個欄位。舊版 GitHub Issue／Pages snapshot 與 sidecar 只作相容或歷史保留，新介面不寫入。
 - `fba-os-data.json`：商品補貨主檔、idempotency ledger 與不含憑證的短效 report lease/tombstone；維持可由上一版忽略的相容格式。
+- `LocalStore` 每次先複製目前 snapshot，在 private temporary file 完成寫入、權限設定與 file `fsync`，再 atomic rename、parent-directory `fsync`，全部成功後才發布新記憶體 snapshot。temp write／chmod／file sync／rename 失敗不發布 draft，也不開始尚未送出的 Amazon operation；已送出的 operation 仍由先前 durable pending／unknown claim 阻止重送。rename 已成功但 directory flush 回真正 I/O 錯誤時，該 store 會停止讀寫直到重新啟動，不能把未確認的 replacement 當成成功。Windows 的 Node/libuv 若不能開啟／flush directory handle，只容忍 `EPERM`／`EISDIR`／`EINVAL`／`ENOTSUP`／`EBADF`；file sync 仍必要，`EIO`／`ENOSPC` 不得吞掉。這項平台限制不代表 Windows 已具備 POSIX directory-fsync 的斷電保證，也不能取代真機檔案系統驗收。
+- 啟動時只有明確 JSON／結構損壞才提供隔離修復；磁碟 I/O、保存結果不明或不支援的較新 store 版本都保留原檔，只能重試或退出。`isolateCorruptedFile()` 自身也會等待既有 persistence queue、拒絕 uncertain latch，並重新驗證檔案真的損壞才移動備份；不會因 cache 過期清理失敗而移走仍含有效 pending／unknown 的帳本。
+- 最近 B2B 工作只透過 `GET /api/sp-api/business-pricing/recent-work?marketplaceId=…` 投影目前帳號／站點；固定最多 30 個公開項目，不接受 caller 指定帳號、limit、operation 或 body。main 從每個 SKU 的兩種最新 stage（整體最多 128 個 private candidate）取回 accepted-pending／unknown，以及 24 小時內的 verified history／最低價後續步驟；保留同 SKU 的較新 B2B attempt，避免把舊最低價錯當成尚未送出的下一階段。DTO 只含 exact Seller SKU、stage、status、安全時間與操作說明，不含原始 ledger、account scope、fingerprint、approval、ASIN 或 Amazon submission ID。新 claim 用 optional `executionMode` 保存模式而不改 store v2；歷史模式不明且沒有可信 live receipt 的 null evidence 不會假裝成 live 工作。GET 只讀本機，不 reconcile、不發 Amazon request、不產生 Preview 或 PATCH；點開 SKU 才沿用既有 fresh GET／reconcile。任何下一次寫入仍需 fresh Preview 與新的原生確認，沒有重送入口。
 - Renderer session 使用非持久 partition；偏好資料不應承載秘密。
 
 ## 圖片

@@ -563,7 +563,7 @@ export default function VariationPlannerDrawer({
             <p className="eyebrow">SAFE VARIATION FAMILY MOVE</p>
             <h2 id="variation-planner-title">變體規劃與改掛</h2>
           </div>
-          <button type="button" onClick={closeDrawer} disabled={busy} aria-label="關閉變體規劃">×</button>
+          <button type="button" onClick={closeDrawer} disabled={busy} autoFocus aria-label="關閉變體規劃">×</button>
         </div>
 
         <div className="variation-readonly-banner writable">
