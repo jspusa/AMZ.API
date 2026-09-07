@@ -6,11 +6,11 @@
   grid-template-columns: minmax(0, 1fr) minmax(17.5rem, 0.48fr);
   gap: 0;
   overflow: hidden;
-  border: 1px solid #dce3db;
+  border: 1px solid #dde3ec;
   border-radius: 1.25rem;
-  color: #243c35;
+  color: #1e293b;
   background: #fff;
-  box-shadow: 0 4px 18px rgb(36 60 53 / 3%);
+  box-shadow: 0 4px 18px rgb(16 24 39 / 3%);
   animation: audit-suite-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -29,7 +29,7 @@
   align-items: center;
   gap: 0.625rem;
   margin: 0 0 0.875rem;
-  color: #60746b;
+  color: #65748a;
   font-size: 0.75rem;
   font-weight: 550;
   line-height: 1.5;
@@ -58,7 +58,7 @@
 
 .audit-suite-home-card .audit-suite-home-heading h2 {
   margin: 0;
-  color: #243c35;
+  color: #1e293b;
   font-size: clamp(1.375rem, 2vw, 1.75rem);
   font-weight: 650;
   line-height: 1.35;
@@ -69,7 +69,7 @@
 .audit-suite-home-card .audit-suite-home-description {
   max-width: 44em;
   margin: 0.625rem 0 0;
-  color: #64766c;
+  color: #66758a;
   font-size: 0.8125rem;
   font-weight: 400;
   line-height: 1.75;
@@ -82,7 +82,7 @@
   gap: 0.5rem 1.125rem;
   margin: 1.25rem 0 0;
   padding: 1rem 0 0;
-  border-top: 1px solid #e9ede6;
+  border-top: 1px solid #e9edf3;
   list-style: none;
 }
 
@@ -90,7 +90,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.4375rem;
-  color: #4f6559;
+  color: #50647e;
   font-size: 0.75rem;
   font-weight: 500;
   line-height: 1.6;
@@ -101,7 +101,7 @@
   height: 0.25rem;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: #a1b3a5;
+  background: #9cabc0;
   content: "";
 }
 
@@ -112,8 +112,8 @@
   flex-direction: column;
   justify-content: center;
   gap: 1.125rem;
-  border-left: 1px solid #e3e8df;
-  background: #f5f5f0;
+  border-left: 1px solid #e3e8ef;
+  background: #f4f6f9;
 }
 
 .audit-suite-launch-summary {
@@ -123,7 +123,7 @@
 }
 
 .audit-suite-launch-count {
-  color: #254f46;
+  color: #2b3a53;
   font-size: 2.75rem;
   font-weight: 500;
   line-height: 1;
@@ -137,13 +137,13 @@
 }
 
 .audit-suite-launch-summary strong {
-  color: #324c40;
+  color: #344b69;
   font-size: 0.875rem;
   font-weight: 600;
 }
 
 .audit-suite-launch-summary > div > span {
-  color: #64766c;
+  color: #66758a;
   font-size: 0.75rem;
   line-height: 1.5;
 }
@@ -157,11 +157,11 @@
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.8125rem 1rem;
-  border: 1px solid #c8dce5;
+  border: 1px solid #c7d8e8;
   border-radius: 0.625rem;
-  color: #254f63;
-  background: #e0eef4;
-  box-shadow: 0 1px 2px rgb(36 60 53 / 4%);
+  color: #2d5d88;
+  background: #e5f0fa;
+  box-shadow: 0 1px 2px rgb(16 24 39 / 4%);
   font-size: 0.8125rem;
   font-weight: 650;
   line-height: 1.6;
@@ -179,10 +179,10 @@
 
 @media (hover: hover) {
   .audit-suite-home-card .audit-suite-home-actions .audit-suite-start:hover:not(:disabled) {
-    color: #254f63;
-    background: #d4e7f0;
-    border-color: #b4cedc;
-    box-shadow: 0 4px 10px rgb(42 76 85 / 7%);
+    color: #2d5d88;
+    background: #d7e9f7;
+    border-color: #aec9df;
+    box-shadow: 0 4px 10px rgb(43 58 83 / 7%);
     transform: translateY(-1px);
   }
 
@@ -197,14 +197,14 @@
 }
 
 .audit-suite-home-card .audit-suite-start:focus-visible {
-  outline: 3px solid #254f46;
+  outline: 3px solid #2b3a53;
   outline-offset: 3px;
 }
 
 .audit-suite-home-card .audit-suite-home-actions .audit-suite-start:disabled {
-  color: #667b81;
-  background: #e8eef0;
-  border-color: #d3dfe2;
+  color: #687a8e;
+  background: #e9eef4;
+  border-color: #d5dfe9;
   box-shadow: none;
   cursor: wait;
 }
@@ -214,7 +214,7 @@
   align-items: flex-start;
   gap: 0.4375rem;
   margin: 0;
-  color: #64766c;
+  color: #66758a;
   font-size: 0.6875rem;
   line-height: 1.75;
 }
@@ -224,10 +224,10 @@
   margin: 0;
   padding: 1rem 1.5rem;
   border: 0;
-  border-top: 1px solid #e9cfc5;
+  border-top: 1px solid #ebcbd0;
   border-radius: 0;
-  color: #864833;
-  background: #fff3eb;
+  color: #a12d3a;
+  background: #fff2f3;
   font-size: 0.8125rem;
   line-height: 1.7;
 }
@@ -247,7 +247,7 @@
   }
 
   .audit-suite-home-card .audit-suite-home-actions {
-    border-top: 1px solid #e3e8df;
+    border-top: 1px solid #e3e8ef;
     border-left: 0;
   }
 
