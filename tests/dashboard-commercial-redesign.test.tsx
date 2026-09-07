@@ -17,6 +17,12 @@ async function redesignStyles() {
   ), "utf8"));
 }
 
+async function salesRedesignStyles() {
+  return postcss.parse(await readFile(new URL(
+    "../src/renderer/src/styles/sales-redesign.css", import.meta.url,
+  ), "utf8"));
+}
+
 function declarations(rules: readonly Rule[], selector: string) {
   const result = new Map<string, Declaration>();
   for (const rule of rules) {
@@ -104,20 +110,39 @@ describe("commercial dashboard final-layer accessibility guards", () => {
     expect(audit).toContain(".automation-badge.one_click");
     expect(bulletin).toContain("--bulletin-manual: #fff4ce");
 
-    for (const color of ["#f4f0e9", "#f9dcdd", "#e6f0f7", "#e8f1eb", "#fbefd8"]) {
+    for (const color of ["#f4f0e9", "#edf3f7", "#f8f0e2", "#f6ebec"]) {
       expect(workspace.toLowerCase()).toContain(color);
     }
-    expect(workspace).toContain("--audit-accent: #4b7ca3");
-    expect(workspace).toContain("--audit-accent: #76648e");
-    expect(workspace).toContain("--audit-accent: #b97825");
-    expect(workspace).toContain("--audit-accent: #4f7f6a");
-    expect(sales).toContain(".sales-trend-line.is-current { stroke: #e32636");
-    expect(salesChart).toContain('stopColor="#e32636"');
+    expect(workspace).toContain("--audit-accent: #4b6f8f");
+    expect(workspace).toContain("--audit-accent: #855a25");
+    expect(workspace).toContain("--audit-accent: #9a4f5a");
+    expect(new Set(Array.from(workspace.matchAll(/--audit-accent:\s*(#[0-9a-f]{6})/giu))
+      .map((match) => match[1]?.toLowerCase()))).toEqual(new Set([
+        "#4b6f8f", "#855a25", "#9a4f5a",
+      ]));
+    expect(sales).toContain(".sales-trend-line.is-current { stroke: #e78700");
+    expect(salesChart).toContain('stopColor="#ff9900"');
     expect(bulletin).toContain("linear-gradient(90deg, #d9942a, #e32636 50%, #4b7ca3)");
-    expect(audit).toContain("linear-gradient(180deg, #e32636, #d9942a 48%, #4b7ca3)");
+    expect(audit).toContain("background: #e78700");
 
     const combinedTheme = `${workspace}\n${sales}\n${audit}\n${bulletin}`;
     expect(combinedTheme).not.toMatch(/#254f46|#243c35|#f5f5f0/iu);
+  });
+
+  it("keeps long sales totals on one responsive line and restores the golden data series", async () => {
+    const css = await salesRedesignStyles();
+    const rules: Rule[] = [];
+    css.walkRules((rule) => { rules.push(rule); });
+
+    const total = declarations(rules, ".sales-trend .sales-trend-total > strong");
+    expect(total.get("white-space")?.value).toBe("nowrap");
+    expect(total.get("overflow-wrap")?.value).toBe("normal");
+    expect(total.get("word-break")?.value).toBe("keep-all");
+    expect(total.get("font-size")?.value).toBe("clamp(28px, 3.35vw, 46px)");
+    expect(declarations(rules, ".sales-trend .sales-trend-summary > .sales-trend-total")
+      .get("min-width")?.value).toBe("min(100%, 19.5rem)");
+    expect(declarations(rules, ".sales-trend-line.is-current").get("stroke")?.value)
+      .toBe("#e78700");
   });
 
   it("allows narrow header tracks to shrink and avoids a second sticky header on small screens", async () => {
