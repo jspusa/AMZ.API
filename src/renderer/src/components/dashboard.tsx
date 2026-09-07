@@ -31,6 +31,7 @@ import {
 } from "./a-plus-audit-panel";
 import BrandSalesCard from "./brand-sales-card";
 import BrandGlyph from "./brand-glyph";
+import WorkspaceGlyph from "./workspace-glyph";
 import ImageWorkspaceDrawer, {
   type ImageWorkspaceTab,
 } from "./image-workspace-drawer";
@@ -1958,13 +1959,27 @@ export default function Dashboard({
     setTrendSelection(selection);
   };
 
-  const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const activeAuditGroup: NavigationGroup | null = activeAuditWorkspace
+    ? activeAuditWorkspace === "subscription" || activeAuditWorkspace === "businessPricing"
+      ? "pricing"
+      : activeAuditWorkspace === "advertising" ? "operations" : "product"
+    : null;
+
+  const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({
+    behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    block: "start",
+  });
 
   return (
     <div className="commerce-os">
       <a
         className="workspace-skip-link"
         href="#workspace-top"
+        onClick={(event) => {
+          event.preventDefault();
+          scrollTo("workspace-top");
+          document.getElementById("workspace-top")?.focus({ preventScroll: true });
+        }}
         aria-hidden={openTool !== null ? true : undefined}
         tabIndex={openTool !== null ? -1 : undefined}
       >跳到主要內容</a>
@@ -1978,7 +1993,7 @@ export default function Dashboard({
           <div className="workspace-header-main">
             <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁">
               <BrandGlyph className="os-brand-mark" />
-              <span className="os-brand-copy"><strong>AMZ.API</strong><small>FBA only</small></span>
+              <span className="os-brand-copy"><strong>AMZ.API</strong><small>Jasper · FBA only</small></span>
             </a>
 
             <nav ref={primaryNavRef} className="workspace-primary-nav" aria-label="主要功能">
@@ -1995,6 +2010,7 @@ export default function Dashboard({
                     type="button"
                     className={
                       openToolMenu === section.group ||
+                      activeAuditGroup === section.group ||
                       (openTool && TOOL_META[openTool].group === section.group)
                         ? "workspace-primary-menu-trigger active"
                         : "workspace-primary-menu-trigger"
@@ -2002,6 +2018,7 @@ export default function Dashboard({
                     aria-haspopup="menu"
                     aria-expanded={openToolMenu === section.group}
                     aria-label={section.label}
+                    aria-current={activeAuditGroup === section.group ? "location" : undefined}
                     disabled={Boolean(activeAuditWorkspace)}
                     onClick={() => setOpenToolMenu((current) =>
                       current === section.group ? null : section.group,
@@ -2016,7 +2033,7 @@ export default function Dashboard({
                       }
                     }}
                   >
-                    <span aria-hidden="true">{section.symbol}</span>
+                    <span aria-hidden="true"><WorkspaceGlyph name={section.group} /></span>
                     <strong>{section.label}</strong>
                     <i className="workspace-primary-menu-chevron" aria-hidden="true" />
                   </button>
@@ -2113,7 +2130,7 @@ export default function Dashboard({
 
           <div className="workspace-context-shell">
             <div className="workspace-contextbar">
-              <label className="global-sku"><span aria-hidden="true">⌕</span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); openCommandCenter(); } }} placeholder="輸入 SKU，所有工具共用" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace)} /></label>
+              <label className="global-sku"><span aria-hidden="true"><WorkspaceGlyph name="search" /></span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); openCommandCenter(); } }} placeholder="搜尋 Seller SKU，開始商品作業" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace)} /></label>
               <button className="command-topbar-button" type="button" onClick={openCommandCenter} disabled={Boolean(activeAuditWorkspace)}><span aria-hidden="true">✦</span>SKU 總覽</button>
               <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
               <SystemHealthControl
@@ -2134,11 +2151,26 @@ export default function Dashboard({
           tabIndex={-1}
         >
           {activeAuditWorkspace ? auditWorkspaceView : <>
-          <h1 className="visually-hidden">AMZ.API FBA 營運首頁</h1>
+          <section className="workspace-intro" aria-labelledby="workspace-title">
+            <div className="workspace-intro-copy">
+              <p className="workspace-kicker">JASPER / FBA WORKSPACE</p>
+              <h1 id="workspace-title">營運工作台<span className="visually-hidden"> · AMZ.API FBA 營運首頁</span></h1>
+              <p>銷售表現、重要日程與商品健檢，在同一處掌握。</p>
+            </div>
+            <div className="workspace-intro-context">
+              <span className="workspace-market-context"><i aria-hidden="true" />{marketplace.name}</span>
+              <span>{viewerName?.trim() || "Jasper"} 的工作區</span>
+            </div>
+          </section>
+          <nav className="workspace-section-nav" aria-label="首頁區段">
+            <a href="#home-performance" onClick={(event) => { event.preventDefault(); scrollTo("home-performance"); document.getElementById("home-performance")?.focus({ preventScroll: true }); }}><span>01</span>營運概況</a>
+            <a href="#home-bulletin" onClick={(event) => { event.preventDefault(); scrollTo("home-bulletin"); document.getElementById("home-bulletin")?.focus({ preventScroll: true }); }}><span>02</span>公告日曆</a>
+            <a href="#home-audits" onClick={(event) => { event.preventDefault(); scrollTo("home-audits"); document.getElementById("home-audits")?.focus({ preventScroll: true }); }}><span>03</span>商品健檢</a>
+          </nav>
 
           {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
 
-          <div className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
+          <div id="home-performance" tabIndex={-1} className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
             <section className="operations-pulse">
               <div className="pulse-heading">
                 <div className="pulse-title-compact">
@@ -2156,8 +2188,13 @@ export default function Dashboard({
             )}
           </div>
 
-          <OperationsBulletinCard />
+          <div id="home-bulletin" tabIndex={-1}><OperationsBulletinCard /></div>
 
+          <section id="home-audits" tabIndex={-1} aria-labelledby="home-audits-title">
+          <div className="home-section-heading">
+            <div><p className="eyebrow">CATALOG HEALTH</p><h2 id="home-audits-title">商品健檢</h2></div>
+            <p>選擇單項，或一次完成 {AUDIT_SUITE_SECTION_COUNT} 項一鍵健檢。</p>
+          </div>
           <AuditSuiteHomeCard
             marketplaceId={marketplaceId}
             mode={currentStandaloneMode}
@@ -2172,19 +2209,20 @@ export default function Dashboard({
             }}
           />
 
-          <div className="home-section-heading">
-            <div><p className="eyebrow">ONE-CLICK CHECKS</p><h2>一鍵健檢</h2></div>
-            <p>只在需要時掃描；同次 App 使用期間會保留結果。</p>
+          <div className="audit-catalog-heading">
+            <h3>按項目查看</h3>
+            <p>同次 App 使用期間保留結果，可隨時接回進度。</p>
           </div>
 
           <div className="health-audit-home-grid">
             <section className="content-audit-home-card" aria-label="全站文案健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">Aa✓</span>
+              <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="content" /></span>
               <div>
                 <p className="eyebrow">FBA CONTENT HEALTH</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.content}</h2>
                 <p>找出需要你確認的 FBA 商品文案。</p>
               </div>
+              {!currentContentLaunchFailure && !currentContentAuditJob && !currentContentAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
               {currentContentLaunchFailure
                 ? auditLaunchFailureStatus(currentContentLaunchFailure)
                 : standaloneProgressStatus(
@@ -2217,12 +2255,13 @@ export default function Dashboard({
             </section>
 
             <section className="content-audit-home-card image-audit-home-card" aria-label="全站圖片健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">▧6</span>
+              <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="image" /></span>
               <div>
                 <p className="eyebrow">FBA IMAGE HEALTH</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.image}</h2>
                 <p>找出少於 6 張圖片或讀取未完成的商品。</p>
               </div>
+              {!currentImageLaunchFailure && !currentImageAuditJob && !currentImageAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
               {currentImageLaunchFailure
                 ? auditLaunchFailureStatus(currentImageLaunchFailure)
                 : standaloneProgressStatus(
@@ -2254,12 +2293,13 @@ export default function Dashboard({
               </button>
             </section>
             <section className="content-audit-home-card" aria-label="全站 A+ 健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">A+</span>
+              <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="aplus" /></span>
               <div>
                 <p className="eyebrow">FBA A+ CONTENT</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.aplus}</h2>
                 <p>核對每個 FBA ASIN 是否已有官方 A+。</p>
               </div>
+              {!currentAplusLaunchFailure && !currentAplusJob && !currentAplusAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
               {currentAplusLaunchFailure &&
                 auditLaunchFailureStatus(currentAplusLaunchFailure)}
               {!currentAplusLaunchFailure && currentAplusJob && !currentAplusJob.ready && (
@@ -2319,12 +2359,13 @@ export default function Dashboard({
               </button>
             </section>
             <section className="content-audit-home-card" aria-label="未綁變體健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">◇?</span>
+              <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="variation" /></span>
               <div>
                 <p className="eyebrow">VARIATION RELATIONSHIPS</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.variation}</h2>
                 <p>找出已確認沒有 parent 的 FBA SKU。</p>
               </div>
+              {!currentVariationLaunchFailure && !currentVariationAuditJob && !currentUnboundVariationAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
               {currentVariationLaunchFailure
                 ? auditLaunchFailureStatus(currentVariationLaunchFailure)
                 : standaloneProgressStatus(
@@ -2357,7 +2398,7 @@ export default function Dashboard({
               </button>
             </section>
             <section className="content-audit-home-card" aria-label="全站訂閱價格健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">S&amp;S</span>
+              <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="subscription" /></span>
               <div>
                 <p className="eyebrow">FBA SUBSCRIBE &amp; SAVE</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.subscription}</h2>
@@ -2365,6 +2406,7 @@ export default function Dashboard({
                   ? "查看訂閱折扣、有效訂閱與價格趨勢。"
                   : `${marketplace.shortLabel} 目前先顯示能力邊界；不會用其他站點資料代替。`}</p>
               </div>
+              {!currentSubscriptionLaunchFailure && !currentSubscriptionAuditJob && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
               {currentSubscriptionLaunchFailure
                 ? auditLaunchFailureStatus(currentSubscriptionLaunchFailure)
                 : standaloneProgressStatus(currentSubscriptionAuditJob)}
@@ -2389,12 +2431,13 @@ export default function Dashboard({
               </button>
             </section>
             <section className="content-audit-home-card business-pricing-audit-home-card" aria-label="全站 B2B 價格健檢捷徑">
-              <span className="content-audit-home-icon" aria-hidden="true">B2B</span>
+              <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="businessPricing" /></span>
               <div>
                 <p className="eyebrow">FBA AMAZON BUSINESS</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.businessPricing}</h2>
                 <p>找出未設定或不符建議的企業價格。</p>
               </div>
+              {!currentBusinessPricingLaunchFailure && !currentBusinessPricingAuditJob && !currentBusinessPricingAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
               {currentBusinessPricingLaunchFailure
                 ? auditLaunchFailureStatus(currentBusinessPricingLaunchFailure)
                 : standaloneProgressStatus(
@@ -2426,12 +2469,13 @@ export default function Dashboard({
               </button>
             </section>
             <section className="content-audit-home-card audit-card-pending" aria-label="廣告覆蓋健檢與 Ads API 連線">
-              <span className="content-audit-home-icon" aria-hidden="true">◎</span>
+              <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="advertising" /></span>
               <div>
                 <p className="eyebrow">ADS COVERAGE</p>
                 <h2>{AUDIT_SUITE_SECTION_LABELS.advertising}</h2>
                 <p>核對哪些 FBA SKU 已有 ENABLED SP 覆蓋。</p>
               </div>
+              {!currentAdvertisingLaunchFailure && !currentAdvertisingAuditJob && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
               {currentAdvertisingLaunchFailure
                 ? auditLaunchFailureStatus(currentAdvertisingLaunchFailure)
                 : standaloneProgressStatus(currentAdvertisingAuditJob)}
@@ -2521,9 +2565,10 @@ export default function Dashboard({
               </section>
             </div>
           </details>
+          </section>
           </>}
         </main>
-        <footer className="os-footer"><span>AMZ.API · GitHub UI / Local Key</span><span>FBA only · No FBM · No buyer PII</span></footer>
+        <footer className="os-footer"><span>AMZ.API <b>·</b> Jasper 營運工作區</span><span>專注 FBA，安心處理每一天的營運。</span></footer>
       </div>
 
       {openTool === "ads" && <AdsDrawer
