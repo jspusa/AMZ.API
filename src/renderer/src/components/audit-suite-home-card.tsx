@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   AUDIT_SUITE_SECTION_COUNT,
   AUDIT_SUITE_SECTIONS,
@@ -127,6 +127,8 @@ export default function AuditSuiteHomeCard({
 }>) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const headingId = useId();
+  const descriptionId = useId();
 
   const start = async () => {
     if (starting) return;
@@ -154,30 +156,57 @@ export default function AuditSuiteHomeCard({
   };
 
   return (
-    <section className="audit-suite-home-card" aria-busy={starting}>
-      <div className="audit-suite-home-heading">
-        <span className="audit-suite-home-icon" aria-hidden="true">✓✓</span>
-        <div>
-          <p className="eyebrow">ONE CLICK · {AUDIT_SUITE_SECTION_COUNT} FBA AUDITS</p>
-          <h2>一鍵執行全部 FBA 健檢</h2>
-          <p>按一次會直接啟動下方 {AUDIT_SUITE_SECTION_COUNT} 張單項卡片；進度與結果只顯示在各卡片，點進各卡片查看完整結果。</p>
+    <section
+      className="audit-suite-home-card"
+      aria-labelledby={headingId}
+      aria-busy={starting}
+    >
+      <div className="audit-suite-home-overview">
+        <div className="audit-suite-home-heading">
+          <p className="audit-suite-home-kicker">
+            <span className="automation-badge one_click">一鍵</span>
+            <span>全站 FBA · {AUDIT_SUITE_SECTION_COUNT} 項健檢</span>
+          </p>
+          <h2 id={headingId}>一鍵執行全部 FBA 健檢</h2>
+          <p id={descriptionId} className="audit-suite-home-description">
+            直接啟動下方 {AUDIT_SUITE_SECTION_COUNT} 張單項卡片，點進各卡片查看完整結果。
+          </p>
         </div>
+        <ul className="audit-suite-scope-list" aria-label="本次健檢範圍">
+          {AUDIT_SUITE_SECTIONS.map((section) => (
+            <li key={section.id}>{section.label}</li>
+          ))}
+        </ul>
       </div>
-      {error && <div className="price-error" role="alert">{error}</div>}
       <div className="audit-suite-home-actions">
+        <div className="audit-suite-launch-summary">
+          <span className="audit-suite-launch-count">{AUDIT_SUITE_SECTION_COUNT}</span>
+          <div><strong>項目一次啟動</strong><span>只讀取資料，分項查看結果</span></div>
+        </div>
         <button
           type="button"
           className="audit-suite-start"
           onClick={() => void start()}
           disabled={starting}
+          aria-describedby={descriptionId}
         >
-          {starting
-            ? "正在啟動 7 張單項卡片…"
-            : hasRunningJobs
-              ? "啟動其餘健檢（執行中項目沿用）"
-              : "立即啟動下方 7 項健檢"}
+          <span aria-live="polite">
+            {starting
+              ? `正在啟動 ${AUDIT_SUITE_SECTION_COUNT} 張單項卡片…`
+              : hasRunningJobs
+                ? "啟動其餘健檢（執行中項目沿用）"
+                : `立即啟動下方 ${AUDIT_SUITE_SECTION_COUNT} 項健檢`}
+          </span>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="audit-suite-start-arrow">
+            <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
+        <p className="audit-suite-launch-note">
+          <span className="automation-badge automatic">自動</span>
+          <span>{hasRunningJobs ? "執行中項目會沿用目前工作。" : "啟動後由 Notebook Key 背景執行。"}</span>
+        </p>
       </div>
+      {error && <div className="price-error audit-suite-launch-error" role="alert">{error}</div>}
     </section>
   );
 }

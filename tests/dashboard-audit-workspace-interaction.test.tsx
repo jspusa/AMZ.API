@@ -108,6 +108,9 @@ describe("dashboard audit workspace interactions", () => {
       style: { scrollBehavior: "smooth" },
       setAttribute: vi.fn(),
     };
+    const sectionTargets = new Map([
+      "home-performance", "home-bulletin", "home-audits", "workspace-top",
+    ].map((id) => [id, { focus: vi.fn(), scrollIntoView: vi.fn() }]));
     const windowMock = {
       get scrollY() {
         return currentScrollY;
@@ -130,6 +133,7 @@ describe("dashboard audit workspace interactions", () => {
           })),
         },
       },
+      location: { hash: "" },
       localStorage: {
         getItem: vi.fn(() => null),
         setItem: vi.fn(),
@@ -150,10 +154,12 @@ describe("dashboard audit workspace interactions", () => {
       documentElement,
       visibilityState: "visible",
       querySelector,
+      getElementById: vi.fn((id: string) => sectionTargets.get(id) ?? null),
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     });
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+    vi.stubGlobal("fetch", fetchMock);
 
     const flushAnimationFrames = async () => {
       await act(async () => {
@@ -201,6 +207,33 @@ describe("dashboard audit workspace interactions", () => {
     await flushTimeouts();
     const root = renderer!.root;
 
+    const sectionLinks = root.findByProps({ "aria-label": "首頁區段" }).findAllByType("a");
+    expect(sectionLinks.map((link) => link.props.href)).toEqual([
+      "#home-performance", "#home-bulletin", "#home-audits",
+    ]);
+    const requestsBeforeSectionNavigation = fetchMock.mock.calls.length;
+    for (const link of [...sectionLinks, root.findByProps({ className: "workspace-skip-link" })]) {
+      const id = link.props.href.slice(1);
+      const target = root.findByProps({ id });
+      expect(target.props.tabIndex).toBe(-1);
+      const preventDefault = vi.fn();
+      await act(async () => link.props.onClick({ preventDefault }));
+      // Preventing the default preserves the exact trusted Notebook Key URL;
+      // these links move focus and scroll without dispatching any API action.
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(sectionTargets.get(id)!.scrollIntoView).toHaveBeenCalledWith(
+        expect.objectContaining({ block: "start" }),
+      );
+      expect(sectionTargets.get(id)!.focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(windowMock.location.hash).toBe("");
+      expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeSectionNavigation);
+    }
+
+    const expectedNavigationGroup: Record<AuditSuiteSectionId, string> = {
+      content: "產品區", image: "產品區", aplus: "產品區", variation: "產品區",
+      subscription: "價格區", businessPricing: "價格區", advertising: "營運區",
+    };
+
     for (const [index, section] of AUDIT_SUITE_SECTIONS.entries()) {
       const savedScrollY = 1_200 + index * 137;
       windowMock.scrollY = savedScrollY;
@@ -217,6 +250,9 @@ describe("dashboard audit workspace interactions", () => {
         "data-audit-workspace-section": section.id,
       }).props.id).toBe("workspace-top");
       expect(workspace.findByType("h1").children.join("")).toBe(section.label);
+      const currentLocation = root.findByProps({ "aria-current": "location" });
+      expect(currentLocation.props["aria-label"]).toBe(expectedNavigationGroup[section.id]);
+      expect(currentLocation.props.disabled).toBe(true);
       expect(headingFocus[section.label]).toHaveBeenCalledOnce();
       expect(root.findAll((node) => node.props.role === "dialog")).toHaveLength(0);
       expect(root.findAll((node) => node.props["aria-modal"] === true)).toHaveLength(0);
@@ -247,6 +283,7 @@ describe("dashboard audit workspace interactions", () => {
       });
       expect(scrollTo).toHaveBeenLastCalledWith(0, savedScrollY);
       expect(windowMock.scrollY).toBe(savedScrollY);
+      expect(root.findAllByProps({ "aria-current": "location" })).toHaveLength(0);
     }
 
     await act(async () => renderer!.unmount());
