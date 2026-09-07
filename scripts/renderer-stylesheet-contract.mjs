@@ -1,5 +1,5 @@
 /**
- * Current accepted rule stream after the September commercial workspace redesign. The original
+ * Current accepted rule stream after the Taste Redesign pass on the commercial workspace. The original
  * CSS01 issue value (81240465714fb009ffa1d49506f640bfaf8f57db103e81333466685677400878)
  * remains historical provenance and is not the current renderer rule stream.
  */
@@ -30,5 +30,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/bulletin-redesign.css",
   ]),
   fingerprint:
-    "fe88f7b8df94e5cd0369cc4acf1bb15483dea60fee9cc9fe3b1621e3dc6353a0",
+    "8631e3a43845e2064c4a9790a6336d14c47fa85d970fc174d4e47ffef31ea019",
 });

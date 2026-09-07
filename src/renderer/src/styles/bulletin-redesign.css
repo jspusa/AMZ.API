@@ -684,3 +684,176 @@
     transform: none;
   }
 }
+
+/* Taste Redesign — the bulletin uses warm calendar paper and cool planning
+   blue; manual dates remain yellow and are never presented as Amazon facts. */
+.operations-bulletin {
+  --bulletin-paper: #f4f0e9;
+  --bulletin-brand: #2b3a53;
+  --bulletin-signal: #e32636;
+  --bulletin-sky: #4b7ca3;
+  --bulletin-ink: #1b2434;
+  --bulletin-muted: #6b7180;
+  --bulletin-line: #dedfdc;
+  --bulletin-manual: #fff4ce;
+  --bulletin-manual-ink: #735918;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 78%);
+  border-radius: 26px 18px 26px 18px;
+  background: #fffdf9;
+  box-shadow: 0 5px 15px rgb(43 58 83 / 5%), 0 24px 56px rgb(43 58 83 / 8%);
+}
+
+.operations-bulletin > summary {
+  position: relative;
+  padding: 24px 28px;
+  background:
+    radial-gradient(circle at 90% 0, rgb(217 148 42 / 20%), transparent 16rem),
+    linear-gradient(110deg, #fbefd8, #f8e7df 54%, #edf3f7);
+  transition: filter 220ms ease, padding 260ms cubic-bezier(.16, 1, .3, 1);
+}
+
+.operations-bulletin > summary::after {
+  position: absolute;
+  right: 28px;
+  bottom: 0;
+  left: 28px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #d9942a, #e32636 50%, #4b7ca3);
+  content: "";
+  opacity: .68;
+}
+
+.operations-bulletin > summary:hover { filter: saturate(108%) brightness(1.01); }
+.operations-bulletin[open] > summary { border-bottom-color: transparent; }
+
+.operations-bulletin-icon {
+  border-radius: 15px 10px 15px 10px;
+  background: linear-gradient(145deg, #e32636, #a93242);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 30%), 0 10px 22px rgb(166 50 65 / 18%);
+}
+
+.operations-bulletin-summary-copy > small { color: #975f2d; }
+.operations-bulletin-summary-copy > strong {
+  color: #202d40;
+  font-size: 24px;
+  font-weight: 700;
+}
+.operations-bulletin-summary-copy > span { color: #626b79; }
+.operations-bulletin-summary-count strong { color: #a53b48; }
+
+.operations-bulletin > summary > i {
+  border-color: rgb(255 255 255 / 76%);
+  background: rgb(255 255 255 / 70%);
+  color: #963745;
+  box-shadow: 0 7px 16px rgb(43 58 83 / 8%);
+}
+
+.operations-bulletin-body {
+  padding: 26px 28px 30px;
+  background:
+    linear-gradient(90deg, rgb(227 38 54 / 2%), transparent 22%, transparent 78%, rgb(75 124 163 / 3%)),
+    #fffdf9;
+}
+
+.operations-bulletin .operations-bulletin-actions button,
+.operations-bulletin .bulletin-date-trigger,
+.operations-bulletin .bulletin-calendar-navigation > .bulletin-date-picker-shell > .bulletin-date-trigger {
+  border-radius: 11px 8px 11px 8px;
+  background: rgb(255 255 255 / 70%);
+  transition: transform 240ms cubic-bezier(.16, 1, .3, 1), box-shadow 220ms ease, background 220ms ease;
+}
+
+.operations-bulletin .operations-bulletin-actions button:hover:not(:disabled),
+.operations-bulletin .bulletin-date-trigger:hover:not(:disabled) {
+  box-shadow: 0 9px 20px rgb(43 58 83 / 9%);
+  transform: translateY(-2px);
+}
+
+.operations-bulletin .operations-bulletin-actions .bulletin-refresh {
+  border-color: #c8dce8;
+  background: #e9f3f8;
+  color: #315f7a;
+}
+
+.operations-bulletin .operations-bulletin-actions .bulletin-edit,
+.operations-bulletin .operations-bulletin-actions .bulletin-add-promotion {
+  border-color: #e5d7a7;
+  background: var(--bulletin-manual);
+  color: var(--bulletin-manual-ink);
+}
+
+.bulletin-expiry-section,
+.bulletin-calendar-section {
+  padding: 18px;
+  border: 1px solid rgb(255 255 255 / 74%);
+  border-radius: 20px 13px 20px 13px;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 78%);
+}
+
+.bulletin-expiry-section { background: linear-gradient(150deg, #fcf1dc, #faf7ef 64%); }
+.bulletin-calendar-section { background: linear-gradient(150deg, #e8f2f8, #f8f5ef 66%); }
+
+.bulletin-expiry-section > header,
+.bulletin-calendar-section > header { border-bottom-color: rgb(43 58 83 / 9%); }
+.bulletin-expiry-section > header small { color: #956020; }
+.bulletin-calendar-section > header small { color: #456c8a; }
+
+.bulletin-expiry-item {
+  overflow: hidden;
+  border-color: rgb(43 58 83 / 8%);
+  border-radius: 13px 9px 13px 9px;
+  background: rgb(255 255 255 / 72%);
+  box-shadow: 0 7px 17px rgb(43 58 83 / 5%);
+  transition: transform 240ms cubic-bezier(.16, 1, .3, 1), box-shadow 220ms ease;
+}
+
+.bulletin-expiry-item:hover {
+  box-shadow: 0 12px 25px rgb(43 58 83 / 9%);
+  transform: translateY(-2px);
+}
+
+.bulletin-countdown {
+  background: linear-gradient(145deg, #f7e8c9, #f5eee2);
+  color: #9a6428;
+}
+
+.bulletin-calendar td.is-today { box-shadow: inset 0 0 0 2px #e32636; }
+.bulletin-calendar td.is-selected:not(.is-today) { box-shadow: inset 0 0 0 2px #4b7ca3; }
+
+.bulletin-calendar-agenda article {
+  border-color: rgb(43 58 83 / 8%);
+  border-radius: 11px 8px 11px 8px;
+  background: rgb(255 255 255 / 72%);
+}
+
+.bulletin-composer {
+  border-color: #e1d7c8;
+  border-radius: 18px 12px 18px 12px;
+  background: linear-gradient(140deg, #fffaf2, #edf3f7);
+}
+
+.bulletin-date-picker {
+  border-color: rgb(255 255 255 / 78%);
+  border-radius: 18px 12px 18px 12px;
+  background: rgb(255 253 249 / 98%);
+  box-shadow: 0 24px 62px rgb(43 58 83 / 20%);
+}
+
+@media (max-width: 680px) {
+  .operations-bulletin { border-radius: 22px 14px 22px 14px; }
+  .operations-bulletin > summary { padding: 20px; }
+  .operations-bulletin-body { padding: 20px; }
+  .bulletin-expiry-section,
+  .bulletin-calendar-section { padding: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operations-bulletin *,
+  .operations-bulletin *::before,
+  .operations-bulletin *::after { animation: none !important; transition: none !important; }
+  .bulletin-expiry-item:hover,
+  .operations-bulletin .operations-bulletin-actions button:hover:not(:disabled),
+  .operations-bulletin .bulletin-date-trigger:hover:not(:disabled) { transform: none; }
+}
