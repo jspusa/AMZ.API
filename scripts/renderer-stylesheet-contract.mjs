@@ -33,7 +33,9 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/home-layout.css",
     "styles/variation-workspace.css",
     "styles/price-list.css",
+    "styles/appearance.css",
+    "styles/dark-palette.generated.css",
   ]),
   fingerprint:
-    "390e962c2c6cfdd888ee172dcfb4de6c389a7c4bc5863290056eaef5ed993510",
+    "6e463cfd35d0abbac392fc27a9d56ad3512f6288c60853c9cab53bbeba44cce0",
 });
