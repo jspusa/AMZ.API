@@ -903,3 +903,136 @@
   }
   .health-audit-home-grid .content-audit-home-card > button { min-width: 62px; }
 }
+
+/* Seven primary audits fill two deliberate rows. The card itself is the single
+   action target; state color carries the scan signal without another label. */
+#home-audits > .health-audit-home-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card {
+  --audit-state-color: #778293;
+  --audit-state-tint: #f2f4f6;
+  position: relative;
+  min-height: 68px;
+  grid-column: span 3;
+  grid-template-columns: 36px minmax(0, 1fr) 20px;
+  grid-template-rows: auto auto;
+  border-color: color-mix(in srgb, var(--audit-state-color) 28%, white);
+  border-left: 4px solid var(--audit-state-color);
+  background: linear-gradient(135deg, #fffdf9 68%, var(--audit-state-tint));
+  cursor: pointer;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card:nth-child(n + 5):nth-child(-n + 7) {
+  grid-column: span 4;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card[data-audit-state="running"] {
+  --audit-state-color: #3f6f98;
+  --audit-state-tint: #e8f1f8;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card[data-audit-state="success"] {
+  --audit-state-color: #3f7654;
+  --audit-state-tint: #e7f2ea;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card[data-audit-state="partial"] {
+  --audit-state-color: #9a691d;
+  --audit-state-tint: #fbf0d7;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card[data-audit-state="failed"] {
+  --audit-state-color: #a04450;
+  --audit-state-tint: #fae8eb;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card .content-audit-home-icon {
+  grid-row: 1 / -1;
+  border-color: color-mix(in srgb, var(--audit-state-color) 24%, white);
+  background: var(--audit-state-tint);
+  color: var(--audit-state-color);
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card > div {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card .content-audit-home-status {
+  grid-column: 2;
+  grid-row: 2;
+  gap: 2px 7px;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card .content-audit-home-status strong {
+  color: var(--audit-state-color);
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card > button.audit-card-hit-area {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  grid-column: auto;
+  grid-row: auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  box-shadow: none;
+  color: transparent;
+  cursor: pointer;
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card > button.audit-card-hit-area::after {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  color: var(--audit-state-color);
+  font-size: 20px;
+  line-height: 1;
+  content: "›";
+  transform: translateY(-50%);
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card:has(> button.audit-card-hit-area:hover) {
+  border-color: color-mix(in srgb, var(--audit-state-color) 46%, white);
+  box-shadow: 0 10px 24px rgb(43 58 83 / 9%);
+  transform: translateY(-2px);
+}
+
+#home-audits > .health-audit-home-grid > .content-audit-home-card > button.audit-card-hit-area:focus-visible {
+  outline: 2px solid var(--audit-state-color);
+  outline-offset: 3px;
+}
+
+@media (max-width: 1100px) {
+  #home-audits > .health-audit-home-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #home-audits > .health-audit-home-grid > .content-audit-home-card,
+  #home-audits > .health-audit-home-grid > .content-audit-home-card:nth-child(n + 5):nth-child(-n + 7) {
+    grid-column: auto;
+  }
+  #home-audits > .health-audit-home-grid > .content-audit-home-card:nth-child(7):last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 680px) {
+  #home-audits > .health-audit-home-grid { grid-template-columns: minmax(0, 1fr); }
+  #home-audits > .health-audit-home-grid > .content-audit-home-card,
+  #home-audits > .health-audit-home-grid > .content-audit-home-card:nth-child(n + 5):nth-child(-n + 7),
+  #home-audits > .health-audit-home-grid > .content-audit-home-card:nth-child(7):last-child {
+    min-height: 64px;
+    grid-column: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #home-audits > .health-audit-home-grid > .content-audit-home-card:has(> button.audit-card-hit-area:hover) {
+    transform: none;
+  }
+}

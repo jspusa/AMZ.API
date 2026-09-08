@@ -263,6 +263,80 @@
   .brand-sales-card * { animation: none !important; transition: none !important; }
 }
 
+/* Compact daily view: controls share one row and the fixed eight-category view
+   uses two columns, so neither side forces an artificial empty card height. */
+.sales-trend .sales-trend-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 0 22px 12px;
+}
+
+.sales-trend .sales-trend-toolbar .sales-trend-secondary {
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+.sales-trend .sales-trend-toolbar .sales-trend-secondary > summary {
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: rgb(255 255 255 / 56%);
+}
+
+.sales-trend .sales-trend-toolbar .sales-trend-secondary[open] {
+  order: 4;
+  flex-basis: 100%;
+}
+
+.sales-trend .sales-trend-toolbar .sales-trend-legend {
+  flex: 1 1 220px;
+}
+
+.sales-trend .sales-trend-toolbar .sales-skater-mode {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+@media (min-width: 901px) {
+  .operations-overview-grid.has-companion {
+    grid-template-columns: minmax(0, 1.48fr) minmax(380px, 0.92fr);
+    align-items: start;
+  }
+
+  .operations-overview-grid .operations-pulse,
+  .operations-overview-grid .operations-companion,
+  .operations-companion .brand-sales-card {
+    min-height: 0;
+    align-self: start;
+  }
+
+  .brand-sales-card .brand-sales-legend {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .brand-sales-card .brand-sales-legend > div > button {
+    min-height: 46px;
+    gap: 7px;
+    padding: 7px 8px;
+  }
+
+  .brand-sales-card .brand-sales-legend strong { font-size: 10px; }
+  .brand-sales-card .brand-sales-legend small { margin-top: 2px; font-size: 8px; line-height: 1.35; }
+  .brand-sales-card .brand-sales-legend b { font-size: 11px; }
+  .brand-sales-card .brand-sales-legend-heading { display: none; }
+}
+
+@media (max-width: 680px) {
+  .sales-trend .sales-trend-toolbar { gap: 8px 10px; padding: 0 16px 10px; }
+  .sales-trend .sales-trend-toolbar .sales-trend-legend {
+    order: 3;
+    flex-basis: 100%;
+  }
+}
+
 /* Secondary totals stay available without competing with the sales number. */
 .sales-trend .sales-trend-secondary {
   margin: 0;

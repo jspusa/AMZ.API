@@ -225,6 +225,25 @@ export type AuditSuiteLaunchFailure = Readonly<{
   blockedJobIdentity: string | null;
 }>;
 
+export type AuditCardVisualState =
+  | "idle"
+  | "running"
+  | "success"
+  | "partial"
+  | "failed";
+
+export function auditCardVisualState(input: Readonly<{
+  hasFailure: boolean;
+  isRunning: boolean;
+  terminalOutcome: "success" | "partial" | "failed" | null;
+  cachedOutcome?: "success" | "partial" | null;
+}>): AuditCardVisualState {
+  if (input.hasFailure) return "failed";
+  if (input.isRunning) return "running";
+  if (input.terminalOutcome) return input.terminalOutcome;
+  return input.cachedOutcome ?? "idle";
+}
+
 type AuditObservableIdentity = Readonly<{
   jobId: string;
   contextId: string;
@@ -1761,6 +1780,64 @@ export default function Dashboard({
     currentBusinessPricingAudit,
     currentBusinessPricingAuditJob,
   );
+  const standaloneAuditCardState = (
+    failure: AuditSuiteLaunchFailure | null,
+    job: StandaloneAuditJob | null,
+    cachedOutcome: "success" | "partial" | null = null,
+  ) => auditCardVisualState({
+    hasFailure: Boolean(failure),
+    isRunning: Boolean(job && !job.ready),
+    terminalOutcome: job?.ready ? standaloneAuditTerminalOutcome(job) : null,
+    cachedOutcome,
+  });
+  const contentAuditCardState = standaloneAuditCardState(
+    currentContentLaunchFailure,
+    currentContentAuditJob,
+    contentAuditCacheMatchesJob && currentContentAudit
+      ? currentContentAuditOutcome === "部分完成" ? "partial" : "success"
+      : null,
+  );
+  const imageAuditCardState = standaloneAuditCardState(
+    currentImageLaunchFailure,
+    currentImageAuditJob,
+    imageAuditCacheMatchesJob && currentImageAudit
+      ? currentImageAuditOutcome === "部分完成" ? "partial" : "success"
+      : null,
+  );
+  const aplusAuditCardState = auditCardVisualState({
+    hasFailure: Boolean(currentAplusLaunchFailure),
+    isRunning: Boolean(currentAplusJob && !currentAplusJob.ready),
+    terminalOutcome: currentAplusJob?.ready
+      ? currentAplusJob.status === "completed"
+        ? currentAplusAuditOutcome === "部分完成" ? "partial" : "success"
+        : "failed"
+      : null,
+    cachedOutcome: currentAplusAudit
+      ? currentAplusAuditOutcome === "部分完成" ? "partial" : "success"
+      : null,
+  });
+  const variationAuditCardState = standaloneAuditCardState(
+    currentVariationLaunchFailure,
+    currentVariationAuditJob,
+    variationAuditCacheMatchesJob && currentUnboundVariationAudit
+      ? currentUnboundVariationAudit.snapshot.summary.incomplete > 0 ? "partial" : "success"
+      : null,
+  );
+  const subscriptionAuditCardState = standaloneAuditCardState(
+    currentSubscriptionLaunchFailure,
+    currentSubscriptionAuditJob,
+  );
+  const businessPricingAuditCardState = standaloneAuditCardState(
+    currentBusinessPricingLaunchFailure,
+    currentBusinessPricingAuditJob,
+    businessPricingCacheMatchesJob && currentBusinessPricingAudit
+      ? currentBusinessPricingAuditOutcome === "部分完成" ? "partial" : "success"
+      : null,
+  );
+  const advertisingAuditCardState = standaloneAuditCardState(
+    currentAdvertisingLaunchFailure,
+    currentAdvertisingAuditJob,
+  );
   const contentAuditForDrawer = auditSnapshotMatchesCurrentAttempt(
     currentContentAudit?.snapshot ?? null,
     currentContentAuditJob,
@@ -2289,7 +2366,7 @@ export default function Dashboard({
           </div>
 
           <div className="health-audit-home-grid">
-            <section className="content-audit-home-card" aria-label="全站文案健檢捷徑">
+            <section className="content-audit-home-card" data-audit-state={contentAuditCardState} aria-label="全站文案健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="content" /></span>
               <div><h2>文案</h2></div>
               {currentContentLaunchFailure
@@ -2307,17 +2384,16 @@ export default function Dashboard({
               )}
               <button
                 type="button"
+                className="audit-card-hit-area"
                 data-audit-workspace-launch="content"
                 onClick={launchContentAudit}
-              >
-                {currentContentLaunchFailure
+                aria-label={`${currentContentLaunchFailure
                   ? "重試"
-                  : currentContentAuditJob || currentContentAudit ? "查看" : "執行"}
-                <i aria-hidden="true">›</i>
-              </button>
+                  : currentContentAuditJob || currentContentAudit ? "查看" : "執行"}文案健檢`}
+              />
             </section>
 
-            <section className="content-audit-home-card image-audit-home-card" aria-label="全站圖片健檢捷徑">
+            <section className="content-audit-home-card image-audit-home-card" data-audit-state={imageAuditCardState} aria-label="全站圖片健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="image" /></span>
               <div><h2>圖片</h2></div>
               {currentImageLaunchFailure
@@ -2335,16 +2411,15 @@ export default function Dashboard({
               )}
               <button
                 type="button"
+                className="audit-card-hit-area"
                 data-audit-workspace-launch="image"
                 onClick={launchImageAudit}
-              >
-                {currentImageLaunchFailure
+                aria-label={`${currentImageLaunchFailure
                   ? "重試"
-                  : currentImageAuditJob || currentImageAudit ? "查看" : "執行"}
-                <i aria-hidden="true">›</i>
-              </button>
+                  : currentImageAuditJob || currentImageAudit ? "查看" : "執行"}圖片健檢`}
+              />
             </section>
-            <section className="content-audit-home-card" aria-label="全站 A+ 健檢捷徑">
+            <section className="content-audit-home-card" data-audit-state={aplusAuditCardState} aria-label="全站 A+ 健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="aplus" /></span>
               <div><h2>A+</h2></div>
               {currentAplusLaunchFailure &&
@@ -2384,6 +2459,7 @@ export default function Dashboard({
               )}
               <button
                 type="button"
+                className="audit-card-hit-area"
                 data-audit-workspace-launch="aplus"
                 onClick={() => {
                   if (!connectionEvidence[marketplaceId]) {
@@ -2392,14 +2468,12 @@ export default function Dashboard({
                   }
                   openAuditWorkspace("aplus");
                 }}
-              >
-                {currentAplusLaunchFailure
+                aria-label={`${currentAplusLaunchFailure
                   ? "重試"
-                  : currentAplusJob || currentAplusAudit ? "查看" : "執行"}
-                <i aria-hidden="true">›</i>
-              </button>
+                  : currentAplusJob || currentAplusAudit ? "查看" : "執行"} A+ 健檢`}
+              />
             </section>
-            <section className="content-audit-home-card" aria-label="未綁變體健檢捷徑">
+            <section className="content-audit-home-card" data-audit-state={variationAuditCardState} aria-label="未綁變體健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="variation" /></span>
               <div><h2>變體</h2></div>
               {currentVariationLaunchFailure
@@ -2417,17 +2491,14 @@ export default function Dashboard({
                   <small>{currentUnboundVariationAudit.snapshot.summary.unbound.toLocaleString()} 個確定未綁</small>
                 </span>
               )}
-              <button type="button" data-audit-workspace-launch="variation" onClick={() => {
+              <button type="button" className="audit-card-hit-area" data-audit-workspace-launch="variation" onClick={() => {
                 setAuditPreference("variations");
                 openAuditWorkspace("variation");
-              }}>
-                {currentVariationLaunchFailure
+              }} aria-label={`${currentVariationLaunchFailure
                   ? "重試"
-                  : currentVariationAuditJob || currentUnboundVariationAudit ? "查看" : "執行"}
-                <i aria-hidden="true">›</i>
-              </button>
+                  : currentVariationAuditJob || currentUnboundVariationAudit ? "查看" : "執行"}變體健檢`} />
             </section>
-            <section className="content-audit-home-card" aria-label="全站訂閱價格健檢捷徑">
+            <section className="content-audit-home-card" data-audit-state={subscriptionAuditCardState} aria-label="全站訂閱價格健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="subscription" /></span>
               <div><h2>訂閱價格</h2></div>
               {currentSubscriptionLaunchFailure
@@ -2435,21 +2506,20 @@ export default function Dashboard({
                 : standaloneProgressStatus(currentSubscriptionAuditJob)}
               <button
                 type="button"
+                className="audit-card-hit-area"
                 data-audit-workspace-launch="subscription"
                 onClick={() => {
                   setAuditPreference("subscriptions");
                   openAuditWorkspace("subscription");
                 }}
-              >
-                {currentSubscriptionLaunchFailure
+                aria-label={`${currentSubscriptionLaunchFailure
                   ? "重試"
                   : currentSubscriptionAuditJob
                     ? "查看"
-                    : subscriptionAuditSupported ? "執行" : "說明"}
-                <i aria-hidden="true">›</i>
-              </button>
+                    : subscriptionAuditSupported ? "執行" : "查看說明"}訂閱價格健檢`}
+              />
             </section>
-            <section className="content-audit-home-card business-pricing-audit-home-card" aria-label="全站 B2B 價格健檢捷徑">
+            <section className="content-audit-home-card business-pricing-audit-home-card" data-audit-state={businessPricingAuditCardState} aria-label="全站 B2B 價格健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="businessPricing" /></span>
               <div><h2>B2B 價格</h2></div>
               {currentBusinessPricingLaunchFailure
@@ -2467,16 +2537,15 @@ export default function Dashboard({
               )}
               <button
                 type="button"
+                className="audit-card-hit-area"
                 data-audit-workspace-launch="businessPricing"
                 onClick={() => openAuditWorkspace("businessPricing")}
-              >
-                {currentBusinessPricingLaunchFailure
+                aria-label={`${currentBusinessPricingLaunchFailure
                   ? "重試"
-                  : currentBusinessPricingAuditJob || currentBusinessPricingAudit ? "查看" : "執行"}
-                <i aria-hidden="true">›</i>
-              </button>
+                  : currentBusinessPricingAuditJob || currentBusinessPricingAudit ? "查看" : "執行"} B2B 價格健檢`}
+              />
             </section>
-            <section className="content-audit-home-card audit-card-pending" aria-label="廣告覆蓋健檢與 Ads API 連線">
+            <section className="content-audit-home-card audit-card-pending" data-audit-state={advertisingAuditCardState} aria-label="廣告覆蓋健檢與 Ads API 連線">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="advertising" /></span>
               <div><h2>廣告覆蓋</h2></div>
               {currentAdvertisingLaunchFailure
@@ -2484,14 +2553,13 @@ export default function Dashboard({
                 : standaloneProgressStatus(currentAdvertisingAuditJob)}
               <button
                 type="button"
+                className="audit-card-hit-area"
                 data-audit-workspace-launch="advertising"
                 onClick={() => openAuditWorkspace("advertising")}
-              >
-                {currentAdvertisingLaunchFailure
+                aria-label={`${currentAdvertisingLaunchFailure
                   ? "重試"
-                  : currentAdvertisingAuditJob ? "查看" : "開啟"}
-                <i aria-hidden="true">›</i>
-              </button>
+                  : currentAdvertisingAuditJob ? "查看" : "開啟"}廣告覆蓋健檢`}
+              />
             </section>
             {additionalAuditCards}
           </div>

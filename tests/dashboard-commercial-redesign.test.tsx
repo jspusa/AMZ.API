@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
   WORKSPACE_SHORTCUTS,
+  auditCardVisualState,
 } from "../src/renderer/src/components/dashboard";
 
 function initialHome() {
@@ -67,7 +68,7 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
     ]);
   });
 
-  it("labels all seven unrun audits without fabricating completed counts or progress", () => {
+  it("makes all seven unrun audit cards the action without visible action labels", () => {
     const document = initialHome();
     const auditCards = Array.from(document.getElementsByTagName("section")).filter((section) =>
       Array.from(section.getElementsByTagName("button")).some((button) =>
@@ -82,6 +83,7 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
     ]);
     const expectedActions = ["執行", "執行", "執行", "執行", "執行", "執行", "開啟"];
     auditCards.forEach((card, index) => {
+      expect(card.getAttribute("data-audit-state")).toBe("idle");
       const statuses = Array.from(card.getElementsByTagName("span")).filter((span) =>
         (span.getAttribute("class") ?? "").split(/\s+/u).includes("content-audit-home-status")
       );
@@ -89,9 +91,63 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
       expect(card.getElementsByTagName("progress").length).toBe(0);
       const launch = Array.from(card.getElementsByTagName("button"))
         .find((button) => button.hasAttribute("data-audit-workspace-launch"))!;
-      expect(launch.textContent).toContain(expectedActions[index]);
+      expect(launch.getAttribute("class")).toContain("audit-card-hit-area");
+      expect(launch.getAttribute("aria-label")).toContain(expectedActions[index]);
+      expect(launch.textContent).toBe("");
       expect(launch.textContent).not.toMatch(/[\d%]|已完成|成功|正常/u);
     });
+  });
+
+  it("maps honest audit outcomes to one visual state", () => {
+    expect(auditCardVisualState({
+      hasFailure: false,
+      isRunning: false,
+      terminalOutcome: null,
+    })).toBe("idle");
+    expect(auditCardVisualState({
+      hasFailure: false,
+      isRunning: true,
+      terminalOutcome: null,
+    })).toBe("running");
+    expect(auditCardVisualState({
+      hasFailure: false,
+      isRunning: false,
+      terminalOutcome: "partial",
+    })).toBe("partial");
+    expect(auditCardVisualState({
+      hasFailure: true,
+      isRunning: false,
+      terminalOutcome: "success",
+    })).toBe("failed");
+  });
+
+  it("covers each audit card with one responsive state-colored action", async () => {
+    const css = await redesignStyles();
+    const rules: Rule[] = [];
+    const mobileRules: Rule[] = [];
+    css.walkRules((rule) => { rules.push(rule); });
+    css.walkAtRules("media", (media) => {
+      if (/max-width:\s*680px/u.test(media.params)) {
+        media.walkRules((rule) => { mobileRules.push(rule); });
+      }
+    });
+
+    const hitArea = declarations(
+      rules,
+      "#home-audits > .health-audit-home-grid > .content-audit-home-card > button.audit-card-hit-area",
+    );
+    expect(hitArea.get("position")?.value).toBe("absolute");
+    expect(hitArea.get("inset")?.value).toBe("0");
+    expect(hitArea.get("grid-column")?.value).toBe("auto");
+    expect(hitArea.get("width")?.value).toBe("100%");
+    expect(declarations(
+      rules,
+      '#home-audits > .health-audit-home-grid > .content-audit-home-card[data-audit-state="partial"]',
+    ).get("--audit-state-color")?.value).toBe("#9a691d");
+    expect(declarations(
+      mobileRules,
+      "#home-audits > .health-audit-home-grid > .content-audit-home-card:nth-child(n + 5):nth-child(-n + 7)",
+    ).get("grid-column")?.value).toBe("auto");
   });
 });
 
@@ -153,6 +209,10 @@ describe("commercial dashboard final-layer accessibility guards", () => {
       .toBe("#e78700");
     expect(declarations(rules, ".sales-trend .sales-trend-range button")
       .get("white-space")?.value).toBe("nowrap");
+    expect(declarations(rules, ".sales-trend .sales-trend-toolbar").get("display")?.value)
+      .toBe("flex");
+    expect(declarations(rules, ".brand-sales-card .brand-sales-legend")
+      .get("grid-template-columns")?.value).toBe("repeat(2, minmax(0, 1fr))");
   });
 
   it("allows narrow header tracks to shrink and avoids a second sticky header on small screens", async () => {

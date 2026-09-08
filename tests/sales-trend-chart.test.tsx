@@ -174,6 +174,12 @@ describe("sales trend comparison chart", () => {
 
     expect(markup).toContain('<details class="sales-trend-secondary">');
     expect(markup).not.toContain('<details class="sales-trend-secondary" open="">');
+    const toolbarStart = markup.indexOf('class="sales-trend-toolbar"');
+    const detailsStart = markup.indexOf('<details class="sales-trend-secondary">');
+    const toolbarEnd = markup.indexOf("</div>", detailsStart);
+    expect(toolbarStart).toBeGreaterThan(-1);
+    expect(detailsStart).toBeGreaterThan(toolbarStart);
+    expect(toolbarEnd).toBeGreaterThan(detailsStart);
     expect(markup).toContain("訂單");
     expect(markup).toContain("銷售件數");
     expect(markup).toContain("去年同期銷售");
