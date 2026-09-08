@@ -18,9 +18,27 @@
 | 完整 check／audit | ★ 已通過 | 289 files／2,981 tests、typecheck、build、stylesheet parity；production audit 0 vulnerabilities，diff check 通過 |
 | 固定基準兩軸 review | ★ 已完成 | Standards／Spec 獨立審查；公開錯誤清理、main 零價格匯出、重開焦點 finding 已修正並回歸 |
 | 合成瀏覽器操作 | ★ 已通過 | 1440／390px 無整頁橫溢；價目表七欄可讀、返回保留同一 job；未綁選擇 fresh-read，Preview 1 次、PATCH 0 次 |
-| main／Pages／Mac／Windows artifact | ☆ 尚未發布 | 不以本機 build 推定 |
-| 受保護下載與 Mac 安裝 | ☆ 尚未更換 | 保留既有 vault 和 0.1.57 備份後進行 |
-| 新版 live 唯讀 | ☆ 待安裝後核對 | 價格、未綁建議與 immutable preparation 分開確認 |
+| main／Pages | ★ 已發布並核對 | PR #219，source `9ce9bebba2dabcce82604a1d7a423c68608ad962`；push Pages `34197661166`、Validate `34197661083` 成功；Pages artifact `10044559944` 的 HTML 與全部 9 個 JS／CSS 符合線上 bytes |
+| Mac artifact | ★ 已核對 | run `34197661044` attempt 2／artifact `10044895335`，GitHub archive digest、SHA256SUMS、universal 架構與 deep strict ad-hoc codesign 均通過；Mac CI 289 files／2,980 tests passed、1 skipped |
+| Windows artifact | ★ 已核對 | run `34197661019` attempt 2／artifact `10044877536`，GitHub archive digest、SHA256SUMS、AMD64 N-API addon、ASAR manifest 與 0.1.58／disabled 均通過；Windows CI 289 files／2,977 tests passed、4 skipped |
+| Mac 安裝 | ★ 已更換 | `/Applications/AMZ.API.app` 已為 0.1.58，ASAR 與可信 DMG 相符、universal、codesign／disabled channel 通過；0.1.57 備份及 encrypted vault 保留且原 bytes 未變 |
+| 受保護下載 | ☆ 已上傳，登入後回驗待完成 | Mac→Windows 依序 upload complete 成功；頁面重新整理後要求員工登入，尚未把新版卡片或實際下載算作已驗 |
+| 新版 live 唯讀 | ☆ 待系統驗證 | 0.1.58 process 已啟動，但 macOS Keychain SecItemCopyMatching 正等待系統授權，尚未進入主畫面；已請使用者親自完成，不代操作 SecurityAgent 或接收密碼 |
 | live mutation／native biometrics | ☆ 本次未執行 | 需要另行 exact operation 授權；CI 不代表真人 Touch ID／Windows Hello |
 
 正式簽章、public update feed 與 Windows 使用者實機驗收保持原有獨立邊界。內部 artifact 更新通道維持 `disabled`。
+
+## 可信安裝檔
+
+| 檔案 | bytes | SHA-256 |
+|---|---:|---|
+| `AMZ.API-0.1.58-universal.dmg` | 246,691,338 | `ff00afafb76dd3b1ac69a4b8c0cdabda76c00291fae18f807b10291f038e404b` |
+| `AMZ.API-0.1.58-universal.zip` | 222,043,403 | `c761c1a6ecc09a427642c58549645bf18c0b05eb754091f599b68fe2f525a1fe` |
+| Windows x64 Setup | 101,954,385 | `171cc7e6c15721bd9af4f753467bba22dded2824d1af8e1fc5edca4117ca70e9` |
+| Windows x64 ZIP | 143,236,131 | `b20199445df23e3ff7460a6972d9a6cb07c5e42d613bd02bc99942617ea96458` |
+
+installed ASAR SHA-256：`961c3a1286b58ceee8b390c92c006c834d96147d81c8d19751440e46c4316860`。0.1.57 備份在 `/Applications/AMZ.API-v0.1.57-backup-20260908.app`；userData 私密備份目錄權限 0700。未取得或輸出任何憑證明文。
+
+## CI 時序診斷
+
+PR head `02d339489270b463b2f6e75f70aa3a51aff99491` 的 Validate 與 Windows 檢查均成功；合併後 main 與 PR tree 同為 `b2382cde5380f5eebac23718e091632efbd4f72a`。main 首次 Mac 檢查在既有 Orders 靜態依賴掃描超過 5 秒；Windows 在既有 disposed poll flight 測試的 1 秒 waitFor 視窗失敗。兩個測試與其 production owner 本輪未修改。聚焦重跑 113 tests 全部通過，保留失敗 log 後各執行一次 failed-job rerun，未放寬測試或跳過檢查。第二次兩平台均成功；最終 artifact 核對見上表。
