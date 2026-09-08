@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import AppearancePreference from "./appearance-preference";
 import {
   applyUiFontSize,
   readUiFontSize,
@@ -292,6 +293,8 @@ export default function SystemHealthControl({
                 ))}
               </div>
             </section>
+
+            <AppearancePreference />
 
             <details className="health-advanced-details system-preferences-details">
               <summary>

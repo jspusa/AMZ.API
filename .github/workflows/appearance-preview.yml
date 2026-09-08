@@ -7,6 +7,7 @@ permissions:
 jobs:
   preview:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -27,6 +28,12 @@ jobs:
         run: npm audit --omit=dev --json > audit-production.json || true
       - name: Validate source and production build
         run: npm run check
+      - name: Install isolated browser harness
+        run: npm install --prefix "$RUNNER_TEMP/appearance-browser" --no-save --package-lock=false playwright@1.56.1
+      - name: Verify production UI with synthetic local data
+        env:
+          APPEARANCE_PLAYWRIGHT: ${{ runner.temp }}/appearance-browser/node_modules/playwright/index.mjs
+        run: node scripts/visual-qa/appearance-check.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -34,4 +41,5 @@ jobs:
           path: |
             out/renderer
             audit-production.json
+            appearance-evidence
           retention-days: 1

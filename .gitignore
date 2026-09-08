@@ -13,3 +13,6 @@ output/
 credentials.enc
 product-master.json
 operation-ledger.json
+
+# Deterministic paint-only palette generated before check, test and build.
+src/renderer/src/styles/dark-palette.generated.css

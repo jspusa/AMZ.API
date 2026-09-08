@@ -4,11 +4,13 @@ import App from "./App";
 import { installApiBridge } from "./api-bridge";
 import WebGate from "./web-gate";
 import { applyUiFontSize, readUiFontSize } from "./ui-font-size";
+import { applyUiAppearance, readUiAppearance } from "./ui-appearance";
 import "./styles/index.css";
 
 const hasMacBridge = Boolean(window.fbaOS?.api && window.fbaOS?.credentials);
 if (hasMacBridge) installApiBridge();
 applyUiFontSize(readUiFontSize());
+applyUiAppearance(readUiAppearance());
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
