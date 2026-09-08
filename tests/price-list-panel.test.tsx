@@ -105,6 +105,85 @@ afterEach(async () => {
 });
 
 describe("price-list workflow", () => {
+  it.each([
+    { standard: "12.00", minimum: "8.00", expected: "same" },
+    { standard: "10.99", minimum: "8.00", expected: "different" },
+    { standard: "12.00", minimum: "7.00", expected: "different" },
+  ])(
+    "compares decimal-text prices against Amazon ($standard/$minimum)",
+    ({ standard, minimum, expected }) => {
+      expect(
+        priceListAmazonDifference(
+          {
+            ...product,
+            cells: {
+              ...product.cells,
+              standardPrice: cell("C2", 3, standard),
+              minimumPrice: cell("D2", 4, minimum),
+            },
+          },
+          amazon,
+        ),
+      ).toBe(expected);
+    },
+  );
+  it.each<PriceListCell["value"]>([
+    "",
+    " ",
+    "12.00\n",
+    "$12.00",
+    "12 USD",
+    "1,200",
+    "12,00",
+    "0x0c",
+    "1e2",
+    "=12",
+    "NaN",
+    "Infinity",
+    "9007199254740990.9",
+    "17.99000000000000001",
+    true,
+    false,
+    null,
+    NaN,
+    Infinity,
+    -1,
+  ])(
+    "keeps invalid or unavailable source value %j out of successful comparison",
+    (value) => {
+      expect(
+        priceListAmazonDifference(
+          {
+            ...product,
+            cells: {
+              ...product.cells,
+              standardPrice: { ...product.cells.standardPrice!, value },
+              minimumPrice: { ...product.cells.minimumPrice!, value },
+            },
+          },
+          amazon,
+        ),
+      ).toBe("unknown");
+    },
+  );
+  it.each([0, "0", "000.00"])(
+    "preserves an explicit zero price %j as comparable",
+    (value) => {
+      expect(
+        priceListAmazonDifference(
+          {
+            ...product,
+            cells: {
+              ...product.cells,
+              standardPrice: { ...product.cells.standardPrice!, value },
+              minimumPrice: { ...product.cells.minimumPrice!, value },
+            },
+          },
+          { ...amazon, standardPrice: 0, minimumPrice: 0 },
+        ),
+      ).toBe("same");
+    },
+  );
   it("guides an imported workbook to one next action and explains that prices have not been read yet", async () => {
     vi.stubGlobal(
       "fetch",
@@ -139,72 +218,92 @@ describe("price-list workflow", () => {
     });
     expect(JSON.stringify(renderer!.toJSON())).toContain("尚未開始讀取");
   });
-  it("opens with local import and moves to comparison only after a deliberate Amazon read", async () => {
-    const fetch = vi.fn(
-      async (path: string) =>
-        new Response(
-          JSON.stringify(
-            path.endsWith("/import")
-              ? workbook
-              : {
-                  workbookId: workbook.id,
-                  state: "complete",
-                  rows: [amazon],
-                  completed: 1,
-                  total: 1,
-                  fetchedAt: amazon.fetchedAt,
-                  message: "核對完成",
-                },
+  it.each([false, true])(
+    "displays prices and original-sheet deltas after a deliberate Amazon read (decimal text=%s)",
+    async (decimalText) => {
+      const imported = structuredClone(workbook);
+      if (decimalText) {
+        for (const key of ["standardPrice", "minimumPrice"]) {
+          imported.products[0]!.cells[key]!.value = String(
+            imported.products[0]!.cells[key]!.value,
+          );
+        }
+      }
+      const fetch = vi.fn(
+        async (path: string) =>
+          new Response(
+            JSON.stringify(
+              path.endsWith("/import")
+                ? imported
+                : {
+                    workbookId: workbook.id,
+                    state: "complete",
+                    rows: [amazon],
+                    completed: 1,
+                    total: 1,
+                    fetchedAt: amazon.fetchedAt,
+                    message: "核對完成",
+                  },
+            ),
+            { status: 200 },
           ),
-          { status: 200 },
-        ),
-    );
-    vi.stubGlobal("fetch", fetch);
-    await act(async () => {
-      renderer = create(<PriceListPanel onClose={() => undefined} />);
-    });
-    expect(fetch).not.toHaveBeenCalled();
-    const fileInput = renderer!.root.findByProps({
-      "aria-label": "選取原始價目表",
-    });
-    await act(async () => {
-      fileInput.props.onChange({
-        target: { files: [new File(["fake"], "test.xlsx")] },
-        currentTarget: { value: "" },
+      );
+      vi.stubGlobal("fetch", fetch);
+      await act(async () => {
+        renderer = create(<PriceListPanel onClose={() => undefined} />);
       });
-    });
-    const originalTab = renderer!.root
-      .findAllByType("button")
-      .find((button) => button.children.includes("原表檢視"))!;
-    expect(originalTab.props["aria-pressed"]).toBe(true);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const checkbox = renderer!.root
-      .findAllByType("input")
-      .find(
-        (input) =>
-          input.props.type === "checkbox" &&
-          input.parent?.children.some(
-            (child) =>
-              typeof child === "string" && child.includes("Amazon 首圖"),
-          ),
-      )!;
-    expect(checkbox.props.checked).toBe(false);
-    const read = renderer!.root
-      .findAllByType("button")
-      .find((button) => button.children.includes("2. 讀取 Amazon 價格與首圖"))!;
-    await act(async () => {
-      read.props.onClick();
-    });
-    expect(fetch.mock.calls[1]?.[0]).toBe("/api/price-list/amazon-refresh");
-    expect(originalTab.props["aria-pressed"]).toBe(false);
-    const text = JSON.stringify(renderer!.toJSON());
-    expect(text).toContain("Amazon 設定售價");
-    expect(text).toContain("US$ 12.00");
-    expect(text).toContain("US$ 8.00");
-    expect(text).toContain("★ 有差異");
-    expect(text).toContain("10");
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
+      expect(fetch).not.toHaveBeenCalled();
+      const fileInput = renderer!.root.findByProps({
+        "aria-label": "選取原始價目表",
+      });
+      await act(async () => {
+        fileInput.props.onChange({
+          target: { files: [new File(["fake"], "test.xlsx")] },
+          currentTarget: { value: "" },
+        });
+      });
+      const originalTab = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.children.includes("原表檢視"))!;
+      expect(originalTab.props["aria-pressed"]).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const checkbox = renderer!.root
+        .findAllByType("input")
+        .find(
+          (input) =>
+            input.props.type === "checkbox" &&
+            input.parent?.children.some(
+              (child) =>
+                typeof child === "string" && child.includes("Amazon 首圖"),
+            ),
+        )!;
+      expect(checkbox.props.checked).toBe(false);
+      const read = renderer!.root
+        .findAllByType("button")
+        .find((button) =>
+          button.children.includes("2. 讀取 Amazon 價格與首圖"),
+        )!;
+      await act(async () => {
+        read.props.onClick();
+      });
+      expect(fetch.mock.calls[1]?.[0]).toBe("/api/price-list/amazon-refresh");
+      expect(originalTab.props["aria-pressed"]).toBe(false);
+      const text = JSON.stringify(renderer!.toJSON());
+      expect(text).toContain("Amazon 設定售價");
+      expect(text).toContain("US$ 12.00");
+      expect(text).toContain("US$ 8.00");
+      expect(text).toContain("★ 有差異");
+      expect(text).toContain("US$ 10.00");
+      expect(text).toContain("US$ 7.00");
+      await act(async () => {
+        originalTab.props.onClick();
+      });
+      const originalText = JSON.stringify(renderer!.toJSON());
+      expect(originalText).toContain("+2.00");
+      expect(originalText).toContain("+1.00");
+      expect(fetch).toHaveBeenCalledTimes(2);
+    },
+  );
   it("does not call import for files larger than the actual workbook limit", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
