@@ -14,7 +14,11 @@
 - 已先在 production variation public wire 重現「缺少 product_contains_liquid，preparation 沒有輸入欄位」。修補測試涵蓋 explicit false、部分屬性、條件必填、preview binding、unknown 與回查。
 - 價目表聚焦驗證：原檔 exact bytes、欄位／公式／圖片保留、兩檔差異、唯一 FBA 對應、歧義不查 Listing、缺少最低價不補零、single-flight、context 失效、image host 及 preload 匯入上限。
 - Dashboard 實際 renderer interaction 驗證七張健檢與兩個新寬版工作區，無 modal、選單鎖定及返回焦點／捲動恢復。
-- 最终全套檢查、UI、exact commit Actions、Pages、artifact、安裝與受保護下載頁待下方補記；此段不代表已發布。
+- 整合 main `bde207f5f6d038ad195bcd47594599970daf0933` 的首頁日期控制修正後，`npm run check` 通過：287 test files／2,942 tests、TypeScript、production build、stylesheet parity；`npm audit --omit=dev` 為 0 vulnerabilities；`git diff --check` 通過。
+- 真實本機原價目表解析成功：10 sheets、232 images、417 product rows、235 formulas。原檔 export 與輸入 exact bytes／hash 相符；比對輸出重讀保留原商品價格及公式。檔案沒有加入 repository。實際 browser 匯入另揭露 renderer 的舊 15 MiB 上限，已和 preload 同步為僅 exact price-list import 25 MiB，並以真實檔案大小的合成內容回歸。
+- Standards 與 Spec review 均無剩餘阻擋。Review 發現的 image pixel bound、重複圖片輸出放大、部分必填 fact 保留、native fact disclosure 及 preview recovery 已修正並回歸。圖片共用 media part，匯出單一工作且有整體時間上限。
+- 變體 production browser fixture：1440px／390px 無整頁水平溢出，來源清單固定 438px 可捲动，長名稱不阻擋下方表單，boolean 初始空白、false 明確選擇、預覽與確認分開。此 fixture 拒絕 mutation。完整樣式 fingerprint：`99e1e84896887d7cfa06383874cd2bb53bc36a4ce5fa67833d74df3978bf0170`；歷史 CSS payload pins 原樣保留。
+- exact commit Actions、Pages、artifact、安裝與受保護下載頁待下方補記；以上本機驗證不代表已發布。
 
 ## 驗證界線
 

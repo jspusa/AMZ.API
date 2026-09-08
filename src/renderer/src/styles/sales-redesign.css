@@ -22,15 +22,22 @@
 }
 
 .sales-trend .sales-trend-summary {
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 18px;
-  padding: 22px 22px 16px;
+  display: block;
+  padding: 22px 22px 12px;
 }
 
 .sales-trend .sales-trend-summary > .sales-trend-total {
   display: block;
-  flex: 1 1 220px;
+}
+
+.sales-trend .sales-trend-range-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 22px 16px;
+}
+
+.sales-trend .sales-trend-range-row > .sales-trend-range {
+  max-width: 100%;
 }
 
 .sales-trend-total > span {
@@ -229,8 +236,10 @@
 
 @media (max-width: 680px) {
   .operations-pulse .sales-trend { margin: 0 10px 12px; }
-  .sales-trend .sales-trend-summary { gap: 16px; padding: 18px 16px 14px; }
-  .sales-trend .sales-trend-summary > .sales-trend-total { flex-basis: 100%; }
+  .sales-trend .sales-trend-summary { padding: 18px 16px 12px; }
+  .sales-trend .sales-trend-range-row { padding: 0 16px 14px; }
+  .sales-trend .sales-trend-range-row > .sales-trend-range { width: 100%; }
+  .sales-trend .sales-trend-range-row .sales-trend-range button { flex: 1 1 43px; }
   .sales-trend-context { padding: 0 16px 14px; }
   .sales-trend-metrics { gap: 14px 20px; }
   .sales-trend-metrics .sales-trend-prior-total { margin-left: 0; }
