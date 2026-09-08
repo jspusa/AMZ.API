@@ -7,6 +7,7 @@
 - 必填事實、維度與 parent 變更共同出現在 canonical diff 與 native prompt，綁 exact context、身分、schema 與 preview。編輯即作廢原 Preview；兩階段各自 fresh Preview、native approval、durable claim、single PATCH、canonical GET。結果不明只允許回查，不恢復重送按鈕。
 - PTD 唯讀維度有唯一且完整的 exact 原值時可以保留並 attach，production payload 必須省略該欄位；原值／selectors 改動、缺值或歧義仍停止。保留值與 schema 納入預檢 binding，持久化僅存 digest，回查必須核對 exact selectors。
 - 變體規劃可沿用同次未綁健檢工作與快照，列出已證明 standalone FBA SKU 及建議 family。建議僅依相容類型、主題及同系列 verified children 計數，星等與相似 SKU 可見；同分／不足不假裝唯一結論，選擇後一律 fresh-read 來源及目標再走原寫入流程。
+- 完整回傳的空 relationships 必須保留讀取證據，不得與未回傳資料混淆。獨立商品若只保留唯一且精確符合目標的既有 theme，可以原樣保留並省略 theme PATCH；main 仍須獨立證明無 parentage／parent 關係，保留完整值及 selectors 的預檢綁定，歧義與漂移拒絕。解除後的三個關係欄位清空規則不變。
 - US 價目表允許 25 MiB 以下 `.xlsx`，上限只套用精確匯入 route，不擴大既有文案或圖片上傳。原檔只留 main memory，保留工作表順序、圖片、公式及合併；原檔下載必須 exact bytes。匯入不執行公式或存取外部連線，危險 XML、巨集與超限壓縮檔拒絕。
 - 原表檢視及輸出保留原欄位，Amazon 售價、最低價格設定與差額在旁比對。★ 有差異／☆ 相同／待確認保持不同；未設定與未取得不是零。表上最低活動價與平台最低價格設定分別說明用途，不自動改價。替換 Amazon 首圖需明確勾選，沒有取得首圖保留原圖。
 - 公司貨號不得自動當 Seller SKU；只採 exact Seller SKU 或同次 current FBA 唯一 ASIN 對應。歧義、重複、未配對與 incomplete 列可見但不冒充相符。價格使用 exact US Listing 的 ALL／USD contribution，不混用 B2B、Buy Box 或促銷顯示價。

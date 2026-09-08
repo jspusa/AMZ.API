@@ -1,3 +1,5 @@
+import { classifyUnboundVariationEvidence } from "./unbound-variation-audit";
+
 export type VariationRole = "parent" | "child" | "standalone";
 
 export type VariationDimension = {
@@ -338,7 +340,16 @@ export function normalizeVariationMember(
     ...inferredThemeAttributes(payload, variationTheme),
   ]);
   const relationshipSources: VariationFamilyMember["relationshipSources"] = [];
-  if (relations.length) relationshipSources.push("relationships");
+  // An explicitly returned empty dataset proves standalone just as it does in
+  // the audit; no relationship entries is different from no read evidence.
+  const confirmedStandalone = classifyUnboundVariationEvidence({
+    marketplaceId,
+    profile: relationshipSource === "relationships" ? "relationships" : "attributes",
+    relationships: payload.relationships,
+    role,
+    listingFulfillmentEvidence: variationPayloadHasFba(payload) ? "FBA" : "OTHER",
+  }).kind === "unbound";
+  if (relations.length || confirmedStandalone) relationshipSources.push("relationships");
   if (attributeParents.length || parentage || attributeVariationTheme(payload, marketplaceId)) {
     relationshipSources.push("attributes");
   }

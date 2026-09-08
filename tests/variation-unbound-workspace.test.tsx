@@ -3,6 +3,8 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import VariationPlannerDrawer from "../src/renderer/src/components/variation-planner-drawer";
 import type { UnboundVariationAuditCache } from "../src/renderer/src/components/unbound-variation-audit-panel";
+import { createScriptedListingsReadAdapter } from "../src/main/amazon/listings-reads";
+import { readVariationFamily } from "../src/main/amazon/variation-family-reads";
 
 const marketplaceId = "ATVPDKIKX0DER";
 const targetSku = "SYNTHETIC-PARENT";
@@ -132,7 +134,12 @@ async function click(label: string) {
   });
 }
 async function mount(
-  options: { legacy?: boolean; mismatchedMode?: boolean } = {},
+  options: {
+    legacy?: boolean;
+    mismatchedMode?: boolean;
+    sourceRelationships?: unknown;
+    sourceProfile?: "relationships" | "attributes";
+  } = {},
 ) {
   const currentCache = structuredClone(cache);
   if (options.legacy) delete currentCache.snapshot.recommendations;
@@ -144,8 +151,37 @@ async function mount(
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string) => {
-      if (input.includes("variation-family"))
-        return Response.json(family(input.includes(targetSku)));
+      if (input.includes("variation-family")) {
+        if (input.includes(targetSku)) return Response.json(family(true));
+        const adapter = createScriptedListingsReadAdapter([{
+          operation: "item",
+          result: {
+            status: 200,
+            envelope: {
+              sku: "GCBL06",
+              summaries: [{
+                marketplaceId,
+                asin: "B000000001",
+                productType: "PET_FOOD",
+                itemName: "Synthetic standalone",
+                status: ["BUYABLE"],
+              }],
+              fulfillmentAvailability: [{ fulfillmentChannelCode: "AMAZON_NA" }],
+              relationships: "sourceRelationships" in options
+                ? options.sourceRelationships
+                : [],
+            },
+            profile: options.sourceProfile ?? "relationships",
+            requestId: null,
+            rateLimit: null,
+            retryAfter: null,
+          },
+        }]);
+        return Response.json(await readVariationFamily(adapter, {
+          marketplaceId,
+          sellerSku: "GCBL06",
+        }));
+      }
       return Response.json({
         mode: "live",
         marketplaceId,
@@ -232,8 +268,11 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("reuses the audit list, excludes incomplete rows, and prepares a proven standalone directly for attach", async () => {
-  await mount();
+it.each([
+  { sourceRelationships: [] },
+  { sourceRelationships: [{ marketplaceId, relationships: [] }] },
+])("prepares a standalone from the production family parser's complete empty relationships %#", async ({ sourceRelationships }) => {
+  await mount({ sourceRelationships });
   expect(fetch).not.toHaveBeenCalled();
   expect(
     renderer!.root.findAllByProps({ "aria-label": "準備綁定 GCBL99" }),
@@ -296,6 +335,36 @@ it("stops automatic staging if fresh Amazon evidence no longer proves standalone
   expect(
     vi.mocked(fetch).mock.calls.every(([, options]) => !options?.method),
   ).toBe(true);
+});
+
+it.each([
+  { name: "missing dataset", sourceRelationships: undefined },
+  { name: "null dataset", sourceRelationships: null },
+  { name: "malformed dataset", sourceRelationships: {} },
+  { name: "missing group entries", sourceRelationships: [{ marketplaceId }] },
+  { name: "malformed entries", sourceRelationships: [{ marketplaceId, relationships: [null] }] },
+  { name: "foreign marketplace", sourceRelationships: [{ marketplaceId: "A2EUQ1WTGCTBG2", relationships: [] }] },
+  { name: "duplicate marketplace", sourceRelationships: [{ marketplaceId, relationships: [] }, { marketplaceId, relationships: [] }] },
+  { name: "attributes fallback", sourceRelationships: [], sourceProfile: "attributes" as const },
+])("keeps $name evidence out of the attach workflow through the production family parser", async (options) => {
+  await mount(options);
+  await click("準備綁定 GCBL06");
+  expect(renderer!.root.findAllByProps({ role: "alert" }).length).toBeGreaterThan(0);
+  expect(renderer!.root.findAllByProps({ "aria-label": "檢查綁定內容" })).toHaveLength(0);
+  expect(vi.mocked(fetch).mock.calls).toHaveLength(1);
+  expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain("variation-family");
+  expect(vi.mocked(fetch).mock.calls[0]?.[1]?.method).toBeUndefined();
+});
+
+it("keeps an incomplete fresh family out even when its standalone member has complete relationship evidence", async () => {
+  await mount();
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({
+    ...family(),
+    familyComplete: false,
+  }));
+  await click("準備綁定 GCBL06");
+  expect(renderer!.root.findAllByProps({ "aria-label": "檢查綁定內容" })).toHaveLength(0);
+  expect(vi.mocked(fetch).mock.calls).toHaveLength(1);
 });
 
 it("preserves the complete immutable attribute array in the explicit attach preview without a PATCH", async () => {

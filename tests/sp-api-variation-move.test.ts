@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,7 @@ import type {
   MainWriteGatePort,
   MainWriteGateSession,
 } from "../src/main/write-gate";
+import { MainWriteGate } from "../src/main/write-gate";
 import type { ApiRequest } from "../src/shared/contracts";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER" as const;
@@ -262,6 +263,7 @@ function input(action: "detach" | "attach"): VariationMoveInput {
 }
 
 type SafetyWireOptions = {
+  sourceAttributes?: Record<string, unknown>;
   immutableSize?: "readOnly" | "editable" | "invalid";
   sourceSizeValues?: unknown;
   attachedSizeValues?: unknown;
@@ -447,7 +449,10 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
       return jsonResponse(200, {
         items: parentSku === OLD_PARENT
           ? (state === "old" ? [childPayload(SOURCE_SKU, OLD_PARENT, "4 oz")] : [])
-          : [childPayload(TARGET_CHILD, TARGET_PARENT, "10 oz")],
+          : [
+              childPayload(TARGET_CHILD, TARGET_PARENT, "10 oz"),
+              ...(state === "new" ? [childPayload(SOURCE_SKU, TARGET_PARENT, "4 oz")] : []),
+            ],
         pagination: {},
       }, `SEARCH-${parentSku}`);
     }
@@ -477,7 +482,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
         state === "old" ? OLD_PARENT : state === "new" ? TARGET_PARENT : null,
         "4 oz",
       );
-      Object.assign(payload.attributes, factValues);
+      Object.assign(payload.attributes, factValues, options.sourceAttributes);
       if (options.sourceSizeValues !== undefined) Object.assign(payload.attributes, { size_name: options.sourceSizeValues });
       if (state === "new" && options.attachedSizeValues !== undefined) Object.assign(payload.attributes, { size_name: options.attachedSizeValues });
       if (options.mixedMarketplaceDimensions) {
@@ -528,7 +533,9 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
       return jsonResponse(200, parentPayload(OLD_PARENT, state === "old" ? [SOURCE_SKU] : []), "OLD-PARENT");
     }
     if (decodedPath.endsWith(`/${TARGET_PARENT}`)) {
-      return jsonResponse(200, parentPayload(TARGET_PARENT, [TARGET_CHILD]), "TARGET-PARENT");
+      return jsonResponse(200, parentPayload(TARGET_PARENT, [
+        TARGET_CHILD, ...(state === "new" ? [SOURCE_SKU] : []),
+      ]), "TARGET-PARENT");
     }
     throw new Error(`Unexpected request: ${method} ${url}`);
   });
@@ -537,6 +544,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
     fetchMock,
     patchBodies,
     setSchemaChecksum: (value: string) => { schemaChecksum = value; },
+    setSourceAttributes: (value: Record<string, unknown>) => { options.sourceAttributes = value; },
     setSourceSizeValues: (value: unknown) => { options.sourceSizeValues = value; },
     commitPatchCount: () => commitPatches,
     previewPatchCount: () => previewPatches,
@@ -571,6 +579,29 @@ async function durableVariationRouter(approveWrite: (reason: string) => Promise<
     } as unknown as CredentialVault,
     approveWrite,
   });
+}
+
+async function durableWireOwner() {
+  const directory = await mkdtemp(join(tmpdir(), "amz-api-variation-readback-"));
+  const storePath = join(directory, "store.json");
+  const store = new LocalStore(storePath);
+  await store.initialize();
+  const context = createScriptedSpExecutionContextAdapter(() => ({
+    marketplaceId: MARKETPLACE_ID,
+    mode: "live",
+    accountScope: "variation-wire-account",
+  }));
+  const owner = createVariationMoveMutations({
+    context,
+    writeGate: new MainWriteGate({
+      store,
+      context,
+      approveWrite: async () => undefined,
+    }),
+    gateway: variationMoveGatewayProduction,
+    readbackDelay: async () => undefined,
+  });
+  return { owner, storePath };
 }
 
 describe("live variation detach and attach wire safety", () => {
@@ -703,7 +734,7 @@ describe("live variation detach and attach wire safety", () => {
     expect(wire.commitPatchCount()).toBe(1);
   });
 
-  it("attaches a standalone PET_FOOD ITEM_SHAPE/SIZE item while preserving its readonly Pretzel shape", async () => {
+  it.each([false, true])("attaches a standalone PET_FOOD ITEM_SHAPE/SIZE item while preserving its readonly Pretzel shape (retained theme=%s)", async (retainedTheme) => {
     const wire = installDetachSafetyWire({ initialState: "detached", commitResultState: "new" });
     const theme = "ITEM_SHAPE/SIZE";
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
@@ -723,7 +754,7 @@ describe("live variation detach and attach wire safety", () => {
         if (!attributes) return;
         attributes.item_shape = [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
         if (row.sku === SOURCE_SKU) attributes.size_name = [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
-        if (attributes.variation_theme) attributes.variation_theme = [{ name: theme, marketplace_id: MARKETPLACE_ID }];
+        if (attributes.variation_theme || retainedTheme && row.sku === SOURCE_SKU) attributes.variation_theme = [{ name: theme, marketplace_id: MARKETPLACE_ID }];
         for (const group of row.relationships as Array<{ relationships: Array<{ variationTheme: unknown }> }> ?? []) {
           for (const relationship of group.relationships) relationship.variationTheme = { theme, attributes: ["item_shape", "size_name"] };
         }
@@ -740,10 +771,81 @@ describe("live variation detach and attach wire safety", () => {
       item_shape: [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }],
       size_name: [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }],
     } };
-    await expect(previewVariationMove(proposal)).resolves.toMatchObject({ status: "VALID" });
+    await expect(previewVariationMove(proposal)).resolves.toMatchObject({
+      status: "VALID",
+      changes: expect.arrayContaining([{ name: "variation_theme", label: "變體主題", before: retainedTheme ? theme : null, after: theme }]),
+    });
     await expect(updateVariationMove(proposal)).resolves.toMatchObject({ verified: true });
     expect(wire.commitPatchCount()).toBe(1);
     expect(wire.patchBodies.flatMap((body) => body.patches).some((patch) => patch.path === "/attributes/item_shape")).toBe(false);
+    expect(wire.patchBodies.every((body) => body.patches.some((patch) => patch.path === "/attributes/variation_theme") === !retainedTheme)).toBe(true);
+  });
+
+  it.each([
+    { variation_theme: [{ name: "OTHER_THEME", marketplace_id: MARKETPLACE_ID }] },
+    { variation_theme: [{ name: "SIZE_NAME" }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: "A1VC38T7YXB528" }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }, { name: "SIZE_NAME", marketplace_id: "A1VC38T7YXB528" }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }, { name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }, null] },
+    { variation_theme: { name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID } },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }], parentage_level: [{ value: "unknown", marketplace_id: MARKETPLACE_ID }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }], child_parent_sku_relationship: [{}] },
+  ])("blocks unsafe retained theme or residual relationship attributes consistently before preview %#", async (sourceAttributes) => {
+    const wire = installDetachSafetyWire({ initialState: "detached", sourceAttributes });
+    await expect(getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT })).rejects.toMatchObject({ code: "VARIATION_NOT_DETACHED" });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code: "VARIATION_NOT_DETACHED" });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each(["before-approval", "during-approval"] as const)("invalidates retained theme selector drift %s before any commit PATCH", async (stage) => {
+    const sourceAttributes = { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID, language_tag: "en_US" }] };
+    const wire = installDetachSafetyWire({ initialState: "detached", sourceAttributes });
+    const drift = () => wire.setSourceAttributes({ variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID, language_tag: "fr_CA" }] });
+    const approve = vi.fn(async () => { if (stage === "during-approval") drift(); });
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: `retained-theme-selector-drift-${stage}` };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    if (stage === "before-approval") drift();
+    const result = await router.handle(variationRouteRequest("PATCH", body));
+    expect(result.body).toMatchObject({ kind: "json", value: { code: "PREVIEW_CHANGED" } });
+    expect(approve).toHaveBeenCalledTimes(stage === "before-approval" ? 0 : 1);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([undefined, "fr_CA"])("keeps retained theme selector readback drift (%s) unknown and never resends", async (readbackLanguage) => {
+    const sourceAttributes = { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID, language_tag: "en_US" }] };
+    const wire = installDetachSafetyWire({ initialState: "detached", commitResultState: "new", sourceAttributes });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await wire.fetchMock(rawInput, init);
+      if ((init?.method ?? "GET") === "PATCH" && !new URL(String(rawInput)).searchParams.has("mode")) {
+        wire.setSourceAttributes({ variation_theme: [{
+          name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID,
+          ...(readbackLanguage ? { language_tag: readbackLanguage } : {}),
+        }] });
+      }
+      return reply;
+    }));
+    const { owner, storePath } = await durableWireOwner();
+    const body = { ...input("attach"), idempotencyKey: "retained-theme-unknown-readback" };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", body) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", body) })).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    await owner.handle({
+      operation: "prepare",
+      request: {
+        requestId: "retained-theme-reconcile", method: "GET", path: "/api/sp-api/variation-move",
+        query: { marketplaceId: MARKETPLACE_ID, sku: SOURCE_SKU, targetSku: TARGET_PARENT }, headers: {},
+      },
+    });
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", body) })).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
+    const stored = JSON.parse(await readFile(storePath, "utf8"));
+    expect(stored.ledger[body.idempotencyKey]).toMatchObject({
+      state: "unknown",
+      response: { verified: false, _writeEvidence: { retainedVariationThemeSignature: expect.stringMatching(/^[a-f0-9]{64}$/u) } },
+    });
+    expect(wire.commitPatchCount()).toBe(1);
+    expect(wire.patchBodies.every((body) => !body.patches.some((patch) => patch.path === "/attributes/variation_theme"))).toBe(true);
   });
 
   it("turns Amazon conditional missing-attribute preview feedback into a PTD-proven fillable fact", async () => {
@@ -1007,6 +1109,40 @@ describe("live variation detach and attach wire safety", () => {
       status: 409,
       code: "VARIATION_TARGET_CHANGED",
     });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("independently rejects a bound relationship at the gateway despite attachable attributes", async () => {
+    const wire = installDetachSafetyWire();
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await wire.fetchMock(rawInput, init);
+      if ((init?.method ?? "GET") !== "GET" ||
+          !decodeURIComponent(new URL(String(rawInput)).pathname).endsWith(`/${SOURCE_SKU}`)) return reply;
+      const payload = await reply.json();
+      delete payload.attributes.parentage_level;
+      delete payload.attributes.child_parent_sku_relationship;
+      return jsonResponse(reply.status, payload, "SOURCE-RELATIONSHIP-STILL-BOUND");
+    }));
+    const prepared = await variationMoveGatewayProduction.prepare({
+      action: "attach", marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU,
+      targetParentSku: TARGET_PARENT, purpose: "mutation",
+    });
+    if (prepared.action !== "attach" || !prepared.source.asin ||
+        !prepared.source.productType || !prepared.target.childSchemaChecksum) {
+      throw new Error("Expected attach schema evidence without standalone authority.");
+    }
+    expect(prepared.source.explicitStandalone).toBe(false);
+    await expect(variationMoveGatewayProduction.validationPreview({
+      ...input("attach"),
+      asin: prepared.source.asin,
+      productType: prepared.source.productType,
+      sourceEvidence: prepared.source.sourceEvidence,
+      targetAsin: prepared.target.asin,
+      targetEvidence: prepared.target.targetEvidence,
+      childSchemaChecksum: prepared.target.childSchemaChecksum,
+      ptdEvidence: prepared.target.ptdEvidence,
+    })).rejects.toMatchObject({ code: "VARIATION_NOT_DETACHED" });
     expect(wire.previewPatchCount()).toBe(0);
     expect(wire.commitPatchCount()).toBe(0);
   });

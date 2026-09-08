@@ -43,6 +43,7 @@ export type VariationMovePrepareRequest =
     }>);
 
 export type VariationMoveSourceObservation = VariationMoveIdentity & Readonly<{
+  retainedVariationThemeSignature?: string;
   requiredFields?: readonly VariationFieldDescriptor[];
   requiredSchemaChecksum?: string | null;
   asin: string | null;
