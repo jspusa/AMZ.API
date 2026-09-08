@@ -1,3 +1,4 @@
+import type { ListingItemReadScope } from "./listing-item-read-scope";
 import {
   throwIfAborted as assertNotAborted,
 } from "../abort-utils";
@@ -31,6 +32,7 @@ export type VariationItemReadResult = {
   member: VariationFamilyMember;
   requestId: string | null;
   profile: VariationReadProfile;
+  singleMarketplaceScope?: ListingItemReadScope;
 };
 
 export type VariationFamilyReadInput = Readonly<{
@@ -289,6 +291,7 @@ export async function readVariationItem(
     ),
     requestId,
     profile,
+    singleMarketplaceScope: result.singleMarketplaceScope,
   };
 }
 

@@ -1,3 +1,4 @@
+import { captureListingItemReadScope } from "./listing-item-read-scope";
 import {
   marketplaceById,
   type MarketplaceRegion,
@@ -301,6 +302,11 @@ export function createListingsReadProductionAdapter(
     }
   }
 
+  const itemRequestScopes = new WeakMap<Response, Readonly<{
+    marketplaceIds: readonly string[];
+    sellerSku: string;
+  }>>();
+
   async function callItem(
     plan: ListingItemReadPlan,
     forceTokenRefresh: boolean,
@@ -308,6 +314,7 @@ export function createListingsReadProductionAdapter(
   ): Promise<Response> {
     const { sellerId, region, issueLocale } = sellerIdFor(plan);
     const query = new URLSearchParams({ marketplaceIds: plan.marketplaceId });
+    const sellerSku = plan.sellerSku;
     if (profile === "full") {
       query.set("issueLocale", issueLocale);
       query.set("includedData", LISTING_ITEM_INCLUDED_DATA);
@@ -325,10 +332,10 @@ export function createListingsReadProductionAdapter(
           : "summaries,attributes,issues,fulfillmentAvailability",
       );
     }
-    return fixedFetch({
+    const response = await fixedFetch({
       url: `${REGION_ENDPOINTS[region]}/listings/2021-08-01/items/${encodeURIComponent(
         sellerId,
-      )}/${encodeURIComponent(plan.sellerSku)}?${query}`,
+      )}/${encodeURIComponent(sellerSku)}?${query}`,
       region,
       forceTokenRefresh,
       signal: plan.signal,
@@ -339,6 +346,17 @@ export function createListingsReadProductionAdapter(
           : "Amazon 變體關係查詢逾時，請稍後再試。",
       connectionMessage: "目前無法連線至 Amazon Listings API。",
     });
+    if (
+      response.ok &&
+      plan.intent === "variation-evidence" &&
+      profile === "relationships"
+    ) {
+      itemRequestScopes.set(response, {
+        marketplaceIds: query.getAll("marketplaceIds"),
+        sellerSku,
+      });
+    }
+    return response;
   }
 
   function searchQuery(
@@ -570,11 +588,20 @@ export function createListingsReadProductionAdapter(
         response = await callItem(plan, false, profile);
         throwIfAborted(plan.signal);
       }
+      const envelope = await parseJson(response);
+      const requestScope = itemRequestScopes.get(response);
       return {
         identity,
         ...resultMetadata(response),
-        envelope: await parseJson(response),
+        envelope,
         profile,
+        ...(requestScope ? {
+          singleMarketplaceScope: captureListingItemReadScope({
+            ...requestScope,
+            marketplaceId: identity.marketplaceId,
+            envelope,
+          }),
+        } : {}),
       };
     },
 

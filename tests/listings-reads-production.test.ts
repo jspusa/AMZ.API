@@ -1,3 +1,4 @@
+import { buildVariationAttachBody } from "../src/main/amazon/variation-update";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readListingsItem,
@@ -114,6 +115,54 @@ describe("Listings reads production adapter", () => {
       rateLimit: "5",
       profile: "full",
     });
+  });
+
+  it.each(["relationships", "attributes", "full"] as const)("preserves a selector-free theme only with the original production relationships read (%s)", async (profile) => {
+    let reads = 0;
+    const urls: URL[] = [];
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      urls.push(requestUrl(input));
+      reads += 1;
+      if (profile === "attributes" && reads === 1) return jsonResponse(400, {});
+      return jsonResponse(200, {
+        ...listingEnvelope("SOURCE-SKU", "B000000001"),
+        attributes: { variation_theme: [{ name: "SIZE_NAME" }] },
+        relationships: [],
+      });
+    }));
+    const plan = {
+      intent: (profile === "full" ? "listing" : "variation-evidence") as "listing" | "variation-evidence",
+      marketplaceId: US, sellerSku: "SOURCE-SKU",
+      marketplaceIds: [US, "A1VC38T7YXB528"],
+      query: { marketplaceIds: `${US},A1VC38T7YXB528` },
+    };
+    const result = await readListingsItem(createAdapter(), plan);
+    expect(result.profile).toBe(profile);
+    expect(urls.every((url) => JSON.stringify(url.searchParams.getAll("marketplaceIds")) === JSON.stringify([US]))).toBe(true);
+    const attributes = (result.envelope as { attributes: Record<string, unknown> }).attributes;
+    const proposal = {
+      productType: "PET_FOOD", marketplaceId: US,
+      targetParentSku: "TARGET-PARENT", variationTheme: "SIZE_NAME",
+      dimensionNames: ["size_name"], dimensionValues: { size_name: [{ value: "4 oz" }] },
+      existingAttributes: attributes, sourceSellerSku: "SOURCE-SKU",
+      singleMarketplaceScope: result.singleMarketplaceScope,
+    };
+    if (profile !== "relationships") {
+      expect(() => buildVariationAttachBody(proposal)).toThrow(expect.objectContaining({ code: "VARIATION_NOT_DETACHED" }));
+      return;
+    }
+    const body = buildVariationAttachBody(proposal);
+    expect(body.patches.some((patch) => patch.path === "/attributes/variation_theme")).toBe(false);
+    expect(attributes).toEqual({ variation_theme: [{ name: "SIZE_NAME" }] });
+    for (const untrusted of [
+      { ...proposal, singleMarketplaceScope: undefined },
+      { ...proposal, singleMarketplaceScope: structuredClone(result.singleMarketplaceScope) },
+      { ...proposal, sourceSellerSku: "OTHER-SKU" },
+      { ...proposal, marketplaceId: "A1VC38T7YXB528" },
+      { ...proposal, existingAttributes: structuredClone(attributes) },
+    ]) {
+      expect(() => buildVariationAttachBody(untrusted)).toThrow(expect.objectContaining({ code: "VARIATION_NOT_DETACHED" }));
+    }
   });
 
   it("keeps the item 400 fallback bounded and fails when only minimal fields work", async () => {
