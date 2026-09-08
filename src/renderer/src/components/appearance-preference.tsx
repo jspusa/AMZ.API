@@ -15,7 +15,7 @@ export default function AppearancePreference() {
   return (
     <section className="appearance-preference" aria-labelledby={`${id}-title`}>
       <div className="appearance-heading">
-        <p className="eyebrow">LOCAL APPEARANCE</p>
+        <p className="eyebrow">個人化</p>
         <h3 id={`${id}-title`}>介面顏色</h3>
         <p>立即套用，只保存這個介面的顯示偏好。</p>
       </div>

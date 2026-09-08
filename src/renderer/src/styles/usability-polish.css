@@ -1,0 +1,57 @@
+/* Frontend usability pass. Keep operational state colors and the seven-card rails. */
+.workspace-contextbar .global-sku-search { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.workspace-contextbar .global-sku-search input { flex: 1 1 auto; min-width: 0; width: 0; }
+.workspace-contextbar .sku-search-clear { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; min-height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
+.workspace-contextbar .sku-search-clear:hover { background: var(--appearance-tint); color: var(--appearance-accent); }
+.sku-search-hint { flex: 0 0 auto; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-family: inherit; font-size: 10px; white-space: nowrap; }
+.settings-gear { display: block; flex: 0 0 18px; width: 18px; height: 18px; }
+.system-health-drawer > .font-size-preference { margin-top: 6px; padding: 18px 0; border: 0; border-radius: 0; background: transparent; }
+.system-health-drawer > .appearance-preference { padding: 18px 0; margin-top: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+.system-health-drawer :is(.font-size-preference, .appearance-preference) h3 { font-size: 15px; line-height: 1.5; }
+.system-health-drawer :is(.font-size-preference, .appearance-preference) .eyebrow { color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: .05em; }
+.system-health-drawer :is(.font-size-preference small, .appearance-heading > p:last-child, .appearance-mode small) { font-size: 12px; line-height: 1.6; }
+.system-health-drawer .appearance-option-copy > strong { font-size: 13px; }
+.system-health-drawer .appearance-option-copy > small { font-size: 11px; }
+.system-health-drawer .appearance-colors > legend { font-size: 12px; }
+.system-health-drawer .settings-sync-preference { margin: 0 0 18px; padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.system-health-drawer .settings-sync-preference .system-auto-sync-switch { margin: 0; padding: 0; border: 0; background: transparent; }
+.system-health-drawer .health-advanced-details { border-radius: 12px; box-shadow: none; }
+.system-health-drawer .health-advanced-details > summary strong { font-size: 13px; line-height: 1.6; }
+.system-health-drawer .health-advanced-details > summary small { font-size: 11px; line-height: 1.6; }
+.system-health-drawer .settings-sync-preference strong { font-size: 13px; line-height: 1.6; }
+.system-health-drawer .settings-sync-preference small { font-size: 11px; line-height: 1.6; }
+.system-health-drawer .settings-about .system-recommendation-grid { margin: 0; padding: 0 14px 14px; grid-template-columns: minmax(0, 1fr); }
+.system-health-drawer .settings-about :is(.api-version-recommendation, .feature-idea-recommendation) { border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: 12px 0; }
+.system-health-drawer .settings-about > summary > i { transform: none; }
+.system-health-drawer .settings-about[open] > summary > i { transform: rotate(90deg); }
+#home-audits .home-audit-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -4px 0 16px; padding: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+#home-audits .home-audit-summary.is-empty > span { font-size: 11px; }
+#home-audits .home-audit-summary > button { display: inline-flex; align-items: baseline; gap: 6px; min-height: 32px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 12px; cursor: pointer; }
+#home-audits .home-audit-summary > button:disabled { cursor: default; opacity: .5; }
+#home-audits .home-audit-summary > button:not(:disabled):hover { border-color: var(--appearance-accent); }
+#home-audits .home-audit-summary > button[data-summary-state="attention"]:not(:disabled) { color: #86591e; background: #fff6e5; border-color: #ead6b3; }
+#home-audits .home-audit-summary > button[data-summary-state="running"]:not(:disabled) { color: #346591; background: #edf4fc; border-color: #cfddeb; }
+#home-audits .home-audit-summary > button > strong { font-variant-numeric: tabular-nums; font-size: 13px; }
+#home-audits > .health-audit-home-grid > .content-audit-home-card { box-shadow: 0 1px 3px rgb(25 35 50 / 4%); }
+#home-audits > .health-audit-home-grid > .content-audit-home-card:hover { transform: none; box-shadow: 0 3px 10px rgb(25 35 50 / 7%); }
+#home-audits > .health-audit-home-grid .audit-idle-status { color: var(--muted); }
+#home-audits > .health-audit-home-grid .content-audit-home-status strong { font-size: 12px; line-height: 1.6; font-weight: 600; }
+#home-audits > .health-audit-home-grid .content-audit-home-status small { font-size: 11px; line-height: 1.6; }
+#home-audits > .health-audit-home-grid .content-audit-home-status[data-needs-review="true"] strong { color: #86591e; }
+.sales-trend-total > strong, .sales-trend-metrics dd, .audit-workspace td { font-variant-numeric: tabular-nums; }
+.sales-trend .sales-chart-options { position: relative; display: block; flex: 0 0 auto; margin-left: auto; }
+.sales-trend .sales-chart-options > summary { padding: 7px 9px; border-radius: 7px; cursor: pointer; color: var(--muted); font-size: 11px; list-style: none; }
+.sales-trend .sales-chart-options > summary::-webkit-details-marker { display: none; }
+.sales-trend .sales-chart-options > summary::after { content: "⌄"; margin-left: 8px; }
+.sales-trend .sales-chart-options[open] > summary::after { content: "⌃"; }
+.sales-trend .sales-chart-options-panel { position: absolute; z-index: 12; right: 0; top: calc(100% + 6px); display: grid; gap: 10px; width: 190px; max-width: calc(100vw - 48px); padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 6px 22px rgb(20 30 45 / 12%); }
+.sales-trend .sales-period-note { display: flex; align-items: baseline; gap: 8px; margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.sales-trend .sales-period-note > strong { flex: 0 0 auto; color: #86591e; font-weight: 600; }
+.sales-trend .sales-period-note > span { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 680px) {
+  .sku-search-hint { display: none; }
+  #home-audits .home-audit-summary { gap: 6px 8px; }
+  #home-audits .home-audit-summary > span { flex-basis: 100%; }
+  #home-audits .home-audit-summary > button { padding: 5px 8px; }
+  .sales-trend .sales-period-note { flex-direction: column; gap: 2px; }
+}

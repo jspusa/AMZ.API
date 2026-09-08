@@ -8,6 +8,8 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve, extname, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { verifyUsability } from "./usability-check.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const renderer = resolve(root, "out/renderer");
 const evidence = resolve(root, "appearance-evidence");
@@ -27,6 +29,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ headless: true, executablePath: process.env.APPEARANCE_CHROME || "/usr/bin/google-chrome", args: ["--no-sandbox"] });
 const results = [];
 try {
+  await verifyUsability({ browser, origin, root, evidence });
   for (const width of [320, 375, 768, 1024, 1440]) {
     const context = await browser.newContext({ viewport: { width, height: 1000 }, reducedMotion: "reduce" });
     await context.route("**/*", (route) => route.request().url().startsWith(origin + "/") ? route.continue() : route.abort());

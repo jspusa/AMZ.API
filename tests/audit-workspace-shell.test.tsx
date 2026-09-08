@@ -18,7 +18,7 @@ describe("audit workspace shell", () => {
     );
 
     expect(markup).toContain('data-audit-workspace="true"');
-    expect(markup).toContain("回到一鍵健檢");
+    expect(markup).toContain("返回商品健檢");
     expect(markup).toContain("全站文案健檢");
     expect(markup).not.toContain('role="dialog"');
     expect(markup).not.toContain('aria-modal="true"');
