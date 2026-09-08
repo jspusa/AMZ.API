@@ -1,4 +1,7 @@
 import { MARKETPLACES } from "./sp-marketplaces";
+import { createPromotionsReadProductionAdapter } from "./promotions-reads-production";
+import { createAwdInventoryReadProductionAdapter } from "./awd-inventory-reads-production";
+import { createPriceHealthReadProductionAdapter } from "./price-health-reads-production";
 import {
   createFbaSalesTrend,
 } from "./fba-sales-trend";
@@ -57,6 +60,20 @@ import { createCatalogReportsDemoSource } from
   "./catalog-reports-demo-source";
 
 const credentialRuntime = createSpCredentialRuntime();
+
+export const promotionsReadAdapterProduction = createPromotionsReadProductionAdapter({
+  getAccessToken: credentialRuntime.requestAccessToken,
+  invalidateAccessToken: credentialRuntime.invalidateAccessToken,
+});
+export const awdInventoryReadAdapterProduction = createAwdInventoryReadProductionAdapter({
+  getAccessToken: credentialRuntime.requestAccessToken,
+  invalidateAccessToken: credentialRuntime.invalidateAccessToken,
+});
+export const priceHealthReadAdapterProduction = createPriceHealthReadProductionAdapter({
+  getAccessToken: credentialRuntime.requestAccessToken,
+  invalidateAccessToken: credentialRuntime.invalidateAccessToken,
+  getSellerId: (region) => credentialRuntime.getSellerId(region) ?? null,
+});
 
 export const getSalesTrend = createFbaSalesTrend({
   usesDemoMode: credentialRuntime.usesDemoMode,

@@ -34,7 +34,7 @@ function declarations(rules: readonly Rule[], selector: string) {
 }
 
 describe("commercial dashboard navigation and empty-state honesty", () => {
-  it("provides a visible page heading and three focusable same-page section destinations", () => {
+  it("provides a visible page heading and four focusable same-page section destinations", () => {
     const document = initialHome();
     const headings = Array.from(document.getElementsByTagName("h1"));
     expect(headings).toHaveLength(1);
@@ -50,7 +50,7 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
     expect(sectionNavigation).toBeDefined();
     const links = Array.from(sectionNavigation.getElementsByTagName("a"));
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
-      "#home-performance", "#home-bulletin", "#home-audits",
+      "#home-performance", "#home-bulletin", "#home-audits", "#home-intelligence",
     ]);
     for (const link of links) {
       const id = link.getAttribute("href")!.slice(1);

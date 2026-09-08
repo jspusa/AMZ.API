@@ -109,7 +109,7 @@ describe("dashboard audit workspace interactions", () => {
       setAttribute: vi.fn(),
     };
     const sectionTargets = new Map([
-      "home-performance", "home-bulletin", "home-audits", "workspace-top",
+      "home-performance", "home-bulletin", "home-audits", "home-intelligence", "workspace-top",
     ].map((id) => [id, { focus: vi.fn(), scrollIntoView: vi.fn() }]));
     const windowMock = {
       get scrollY() {
@@ -209,7 +209,7 @@ describe("dashboard audit workspace interactions", () => {
 
     const sectionLinks = root.findByProps({ "aria-label": "首頁區段" }).findAllByType("a");
     expect(sectionLinks.map((link) => link.props.href)).toEqual([
-      "#home-performance", "#home-bulletin", "#home-audits",
+      "#home-performance", "#home-bulletin", "#home-audits", "#home-intelligence",
     ]);
     const requestsBeforeSectionNavigation = fetchMock.mock.calls.length;
     for (const link of [...sectionLinks, root.findByProps({ className: "workspace-skip-link" })]) {

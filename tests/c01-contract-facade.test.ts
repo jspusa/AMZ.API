@@ -493,6 +493,19 @@ describe("C01 contract facade", () => {
       .toBe(expectedOwner);
     const expectedComposition = {
       createSpCredentialRuntime: null,
+      createPromotionsReadProductionAdapter: [
+        "getAccessToken",
+        "invalidateAccessToken",
+      ],
+      createAwdInventoryReadProductionAdapter: [
+        "getAccessToken",
+        "invalidateAccessToken",
+      ],
+      createPriceHealthReadProductionAdapter: [
+        "getAccessToken",
+        "getSellerId",
+        "invalidateAccessToken",
+      ],
       createFbaSalesTrend: [
         "getAccessToken",
         "invalidateAccessToken",

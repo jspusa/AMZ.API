@@ -32,3 +32,16 @@
 - 寫入前顯示 canonical diff 與 exact Amazon Validation Preview 結果；只有通過 Preview 且重新綁定完全一致的 SKU 才可進入一次本機確認／Touch ID／Windows Hello。Excel batch 的 `INVALID` SKU 一律隔離、零寫入，不能靠 acknowledgment 或任何 override 進入確認。
 - 寫入後回查；Amazon accepted 與 exact canonical verified 必須分開顯示。B2B `202 PROCESSING` 不是失敗也不是 live 成功，可能維持數分鐘；main-owned 自動 bounded observer 與使用者重新確認都只做 GET／reconcile／inspect，結果不確定時持續阻止盲目重送；accepted 後回查不阻塞同批下一個 serial PATCH。
 - Secret 仍只存在各 Notebook Key 的本機加密 vault：macOS Keychain 或目前 Windows 使用者的 DPAPI，不進 Pages、renderer、GitHub、日誌或回覆。
+
+## 12. 營運情報與本機事件
+
+本輪核准 spec 與 source／發布證據分別見 [五項能力 spec](specs/2026-09-08-operations-intelligence.md) 與 [營運情報記錄](releases/2026-09-operations-intelligence.md)。以下是驗收條件，不代表已在真實 Amazon 或員工裝置通過。
+
+- 五項功能都必須從首頁可達：Coupon／促銷、AWD 庫存與在途、Buy Box／價格健康、廣告成效、事件通知中心。既有七張健檢卡的名稱、順序與 run-all 行為不變。尚未同步、running、complete、partial、failed 與舊結果可能過期分開呈現；舊 Notebook Key 的新 route `404` 必須顯示升級提示。
+- 促銷實際讀回資料與人工計畫保持獨立；已發布版本和最新修訂不得互相覆蓋。搜尋、selection 的空非終頁、重複 token、總數缺口、缺 issues、未知狀態與頁數上限都須驗證。商品只接受同次 exact FBA SKU＋ASIN；ASIN-only／SKU-only／CATALOG 保持 partial 或聚合提示，不猜參與商品、不宣稱已能建券。
+- AWD 本版 US-only；在庫、賣家→AWD、共享可分配／保留與 AWD→FBA 在途分欄，不能重複加總或全數宣稱 FBA-owned。件／箱／板保留原單位，同單位才可計算差額；缺數量／效期保持未知，DELIVERED 不等於完成接收，差額不等於遺失。AWD 效期與人工日期、FBA FC 效期不可混用。
+- 價格健康須逐項核對 batch status、ASIN、marketplace 及分段；同 seller 的 MFN offer 不是 FBA 得標證據，ASIN 分段也不能證明 exact SKU 或全體顧客的 Buy Box 資格。CPT、CompetitivePrice、WasPrice 各自保留，缺 exact 自售價為 null，整體資格保持 unknown，不推定 Chewy 因果、不自動跟價。
+- 廣告成效只擴充既有 SP advertised-product／策略報表 owner，日期固定站點最近 30 個完整日，14 日歸因與報表期間分開說明。ACoS／ROAS、零分母、missing、身分未歸屬與歸因回補須誠實呈現；策略建議不是利潤或損益兩平保證。不發 Ads mutation、不捏造搜尋詞／CTR／CPC／SB／SD 資料，也不建立第二套報表生命周期。
+- 本機事件須驗證同 source 去重、首次／最後觀察時間、亂序／重複時間、已知悉／恢復待處理，以及只有較新完整來源才能解除。partial／失敗不得解除未知問題；事件數與投影上限應揭露，鎖定、suspend、安全脈絡失效或 App 結束會清除。不能稱 Amazon push、全天通知或耐久稽核記錄。
+- 自動同步預設關閉，使用者開啟後只排已完成來源；未執行、執行中或失敗不排下一次。停止後續排程與取消已啟動工作分開；離開面板只停止 observer，context 失效才清除 main 工作及事件。權限、分頁、日期／身分、abort、account／mode／marketplace／generation 切換及 late completion 都由 public seam 測試覆蓋，transport quota 不因清除 context 而重置。
+- 三條新增 route 只接受 spec 的固定 intent；renderer 不取得憑證、原始 Amazon ID 或任意 transport。所有 Amazon 商品／價格／貨件／廣告寫入仍維持既有獨立授權；本輪沒有增加此類 mutation、雲端通知訂閱、額外憑證或共享商業資料外送。

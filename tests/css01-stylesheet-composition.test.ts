@@ -90,6 +90,7 @@ describe("CSS01 renderer stylesheet composition", () => {
         '@import "./reports-reviews.css";',
         '@import "./final-overrides.css";',
         '@import "./fba-inbound.css";',
+        '@import "./operations-intelligence.css";',
         '@import "./workspace-redesign.css";',
         '@import "./audit-suite-redesign.css";',
         '@import "./sales-redesign.css";',
@@ -154,8 +155,8 @@ describe("CSS01 renderer stylesheet composition", () => {
         relative(rootDirectory, file).split(sep).join("/"),
       ),
     ).toEqual(RENDERER_STYLESHEET_CONTRACT.expectedFiles);
-    expect(composition.canonicalJson).toHaveLength(630_244);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(430_140);
+    expect(composition.canonicalJson).toHaveLength(639_532);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(436_355);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
@@ -184,8 +185,8 @@ describe("CSS01 renderer stylesheet composition", () => {
     });
 
     expect(composition.css).toContain("\r\n");
-    expect(Buffer.byteLength(composition.css)).toBe(448_506);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(430_140);
+    expect(Buffer.byteLength(composition.css)).toBe(454_813);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(436_355);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );

@@ -38,6 +38,7 @@ import ImageWorkspaceDrawer, {
 import type { ImageAuditCache } from "./image-audit-panel";
 import InboundShipmentsDrawer from "./inbound-shipments-drawer";
 import OperationsBulletinCard from "./operations-bulletin-card";
+import OperationsIntelligencePanel from "./operations-intelligence-panel";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
@@ -2166,6 +2167,7 @@ export default function Dashboard({
             <a href="#home-performance" onClick={(event) => { event.preventDefault(); scrollTo("home-performance"); document.getElementById("home-performance")?.focus({ preventScroll: true }); }}><span>01</span>營運概況</a>
             <a href="#home-bulletin" onClick={(event) => { event.preventDefault(); scrollTo("home-bulletin"); document.getElementById("home-bulletin")?.focus({ preventScroll: true }); }}><span>02</span>公告日曆</a>
             <a href="#home-audits" onClick={(event) => { event.preventDefault(); scrollTo("home-audits"); document.getElementById("home-audits")?.focus({ preventScroll: true }); }}><span>03</span>商品健檢</a>
+            <a href="#home-intelligence" onClick={(event) => { event.preventDefault(); scrollTo("home-intelligence"); document.getElementById("home-intelligence")?.focus({ preventScroll: true }); }}><span>04</span>營運情報</a>
           </nav>
 
           {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
@@ -2566,6 +2568,7 @@ export default function Dashboard({
             </div>
           </details>
           </section>
+          <OperationsIntelligencePanel key={`${marketplaceId}:${currentStandaloneMode}`} marketplaceId={marketplaceId} />
           </>}
         </main>
         <footer className="os-footer"><span>AMZ.API <b>·</b> Jasper 營運工作區</span><span>專注 FBA，安心處理每一天的營運。</span></footer>

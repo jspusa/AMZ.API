@@ -30,6 +30,7 @@ const CSS04_ORDERED_FILES = [
   "styles/reports-reviews.css",
   "styles/final-overrides.css",
   "styles/fba-inbound.css",
+  "styles/operations-intelligence.css",
   "styles/workspace-redesign.css",
   "styles/audit-suite-redesign.css",
   "styles/sales-redesign.css",
@@ -37,7 +38,7 @@ const CSS04_ORDERED_FILES = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "135eb5acd1e1407b43914a36ef3ce1a5487ea6a2f243299ab854cfd9dcd3756e";
+  "d8f81dc846587c1783bfd65538f39a5089d91d860f36d1e83dad84d0059fb8d5";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
   "7963e2e9bd917df3d454dbbae5612203e3008679e674f46cfe8b172dcbd3ef86";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
@@ -124,8 +125,8 @@ describe("CSS04 final stylesheet extraction", () => {
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(18366);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(430140);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(18458);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(436355);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);
