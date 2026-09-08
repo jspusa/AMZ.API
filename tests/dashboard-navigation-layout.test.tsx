@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
+  WORKSPACE_SHORTCUTS,
   businessPricingAttentionCount,
   scheduleAuditWorkspaceTopScroll,
 } from "../src/renderer/src/components/dashboard";
@@ -143,51 +144,52 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain("workspace-sidebar");
     expect(markup).not.toContain("mobile-core-nav");
     expect(markup).not.toContain("<aside");
-    expect(markup).toContain("近期營運");
-    expect(markup).toContain("一鍵健檢");
+    expect(markup).toContain("<h2>銷售</h2>");
+    expect(markup).toContain(">全部執行<");
     expect(markup).not.toContain('class="inbound-home-card"');
     expect(markup).not.toContain("FBA 入庫貨件追蹤捷徑");
     expect(markup).toContain('class="content-audit-home-card"');
-    expect(markup).toContain("全站文案健檢");
-    expect(markup).toContain("開始全站文案健檢");
     expect(markup).toContain('class="health-audit-home-grid"');
     expect(markup).toContain('class="content-audit-home-card image-audit-home-card"');
-    expect(markup).toContain("全站圖片健檢");
-    expect(markup).toContain("開始全站圖片健檢");
-    expect(markup).toContain("全站 A+ 健檢");
-    expect(markup).toContain("開始全站 A+ 健檢");
-    expect(markup).toContain("找出需要你確認的 FBA 商品文案");
-    expect(markup).toContain("找出少於 6 張圖片或讀取未完成的商品");
-    expect(markup).toContain("核對每個 FBA ASIN 是否已有官方 A+");
-    expect(markup).toContain("找出已確認沒有 parent 的 FBA SKU");
-    expect(markup).toContain("查看訂閱折扣、有效訂閱與價格趨勢");
-    expect(markup).toContain("找出未設定或不符建議的企業價格");
-    expect(markup).toContain("核對哪些 FBA SKU 已有 ENABLED SP 覆蓋");
+    for (const label of ["文案", "圖片", "A+", "變體", "訂閱價格", "B2B 價格", "廣告覆蓋"]) {
+      expect(markup).toContain(`<h2>${label}</h2>`);
+    }
+    for (const removedCopy of [
+      "開始全站文案健檢",
+      "開始全站圖片健檢",
+      "開始全站 A+ 健檢",
+      "找出需要你確認的 FBA 商品文案",
+      "找出少於 6 張圖片或讀取未完成的商品",
+      "核對每個 FBA ASIN 是否已有官方 A+",
+      "找出已確認沒有 parent 的 FBA SKU",
+      "查看訂閱折扣、有效訂閱與價格趨勢",
+      "找出未設定或不符建議的企業價格",
+      "核對哪些 FBA SKU 已有 ENABLED SP 覆蓋",
+    ]) {
+      expect(markup).not.toContain(removedCopy);
+    }
     expect(markup).not.toContain("逐一核對全部 FBA ASIN 是否有官方 A+ 發布紀錄");
     expect(markup).not.toContain("From the brand");
     expect(markup).not.toContain("Brand Story");
     expect(markup).toContain('<details class="low-frequency-audits">');
     expect(markup).not.toContain('<details class="low-frequency-audits" open=""');
     expect(markup).toContain("低頻健檢");
-    expect(markup).toContain("庫齡與評論不會跟著 7 項一鍵健檢自動執行");
-    expect(markup).not.toContain("庫齡與評論不會跟著五項一鍵健檢自動執行");
-    expect(markup).toContain("FBA 180 天以上庫齡健檢");
-    expect(markup).toContain("主清單只列已經超過 180 天的 FBA 庫存");
-    expect(markup).toContain("estimated excess 預估與費用放在獨立分頁");
+    expect(markup).not.toContain("庫齡與評論不會跟著 7 項一鍵健檢自動執行");
+    expect(markup).toContain("庫齡 180+ 天");
+    expect(markup).not.toContain("主清單只列已經超過 180 天的 FBA 庫存");
+    expect(markup).not.toContain("estimated excess 預估與費用放在獨立分頁");
     expect(markup).not.toContain("FBA 庫齡、冗餘與官方預估費用");
-    expect(markup).toContain("廣告覆蓋健檢");
-    expect(markup).toContain("未綁變體健檢");
-    expect(markup).toContain("開始未綁變體健檢");
-    expect(markup).toContain("查看健檢能力與連線");
+    expect(markup).toContain("廣告覆蓋");
+    expect(markup).toContain("變體");
+    expect(markup).not.toContain("開始未綁變體健檢");
+    expect(markup).not.toContain("查看健檢能力與連線");
     expect(markup).not.toContain("Amazon Ads API 尚未連線前不顯示推測結果");
-    expect(markup).toContain("全站訂閱價格健檢");
-    expect(markup).toContain("開始全站訂閱價格健檢");
-    expect(markup).toContain("全站 B2B 價格健檢");
-    expect(markup).toContain("開始全站 B2B 價格健檢");
+    expect(markup).not.toContain("開始全站訂閱價格健檢");
+    expect(markup).not.toContain("開始全站 B2B 價格健檢");
     expect(markup.match(/data-audit-workspace-launch=/g)).toHaveLength(7);
-    expect(markup).toContain("評論健檢");
-    expect(markup).toContain("Listings relationships 已證明的 child 與 standalone ASIN");
-    expect(markup).toContain("開始全站評論健檢");
+    expect(markup).toContain("<h2>評論</h2>");
+    expect(markup).not.toContain("Listings relationships 已證明的 child 與 standalone ASIN");
+    expect(markup).not.toContain("開始全站評論健檢");
     expect(markup).not.toContain("全站內容健檢");
     expect(markup).not.toContain('id="product-zone"');
     expect(markup).not.toContain('id="pricing-zone"');
@@ -197,8 +199,8 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain('class="automation-overview"');
     expect(markup).not.toContain('class="command-strip"');
     expect(markup).not.toContain("進階功能與系統說明");
-    expect(markup).not.toContain("Amazon 已連線");
-    expect(markup).toContain("本機安全連線");
+    expect(markup).toContain("<strong>連線</strong>");
+    expect(markup).not.toContain(">本機安全連線<");
 
     const lowFrequencyStart = markup.indexOf('class="low-frequency-audits"');
     const auditGrid = markup.slice(
@@ -206,42 +208,41 @@ describe("dashboard top navigation layout", () => {
       lowFrequencyStart,
     );
     const orderedAuditCards = [
-      "全站文案健檢",
-      "全站圖片健檢",
-      "全站 A+ 健檢",
-      "未綁變體健檢",
-      "全站訂閱價格健檢",
-      "全站 B2B 價格健檢",
-      "廣告覆蓋健檢",
+      ">文案<",
+      ">圖片<",
+      ">A+<",
+      ">變體<",
+      ">訂閱價格<",
+      ">B2B 價格<",
+      ">廣告覆蓋<",
     ];
     for (let index = 1; index < orderedAuditCards.length; index += 1) {
       expect(auditGrid.indexOf(orderedAuditCards[index - 1])).toBeLessThan(
         auditGrid.indexOf(orderedAuditCards[index]),
       );
     }
-    expect(auditGrid).not.toContain("FBA 180 天以上庫齡健檢");
-    expect(auditGrid).not.toContain("評論健檢");
+    expect(auditGrid).not.toContain("庫齡 180+ 天");
+    expect(auditGrid).not.toContain(">評論<");
     const lowFrequency = markup.slice(lowFrequencyStart, markup.indexOf("</details>", lowFrequencyStart));
-    expect(lowFrequency.indexOf("FBA 180 天以上庫齡健檢")).toBeLessThan(
-      lowFrequency.indexOf("評論健檢"),
+    expect(lowFrequency.indexOf("庫齡 180+ 天")).toBeLessThan(
+      lowFrequency.indexOf(">評論<"),
     );
 
     const source = await readFile(
       new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
       "utf8",
     );
-    expect(source).toContain("AUDIT_SUITE_SECTION_LABELS");
-    for (const id of [
-      "content",
-      "image",
-      "aplus",
-      "variation",
-      "subscription",
-      "businessPricing",
-      "advertising",
-    ]) {
-      expect(source).toContain(`<h2>{AUDIT_SUITE_SECTION_LABELS.${id}}</h2>`);
-    }
+    expect(source).not.toContain("AUDIT_SUITE_SECTION_LABELS");
+    expect(WORKSPACE_SHORTCUTS.map(({ label }) => label)).toEqual([
+      "商品健檢",
+      "Coupon／促銷",
+      "Buy Box／價格",
+      "公告日曆",
+      "AWD 庫存",
+      "廣告成效",
+      "事件",
+      "銷售表現",
+    ]);
     for (const label of ["文案", "圖片", "變體", "價目表", "定價", "促銷", "訂閱價格健檢", "B2B 價格健檢", "補貨", "廣告", "帳務"]) {
       expect(source).toContain(`label: "${label}"`);
     }
@@ -283,8 +284,8 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain('tools: ["inbound"]');
     expect(source).toContain("section.tools.length + index");
     expect(source).toContain('.filter((entry) => entry.id !== "review-audit")');
-    expect(source).toContain("查看進行中的評論健檢");
-    expect(source).toContain("查看上次評論健檢");
+    expect(source).not.toContain("查看進行中的評論健檢");
+    expect(source).not.toContain("查看上次評論健檢");
     expect(source).toContain("<BusinessPricingAuditDrawer");
     expect(source).toContain("businessPricingAuditCache");
     expect(source).toContain("<AplusAuditDrawer");

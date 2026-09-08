@@ -462,8 +462,9 @@ describe("dashboard operations pulse data flow", () => {
       />,
     );
 
-    expect(markup).toContain("連線狀態待確認");
-    expect(markup).toContain("狀態未知");
+    expect(markup).toContain("<strong>連線</strong>");
+    expect(markup).not.toContain(">連線狀態待確認<");
+    expect(markup).not.toContain(">狀態未知<");
     expect(markup).toContain("Sales API 暫時無法同步");
     expect(markup).not.toContain('mode-badge live');
     expect(markup).not.toContain('mode-badge demo');
@@ -473,7 +474,7 @@ describe("dashboard operations pulse data flow", () => {
     const configured = connectionEvidenceFromHealth(null, "live");
     expect(configured).toBe("configured-live");
     expect(dashboardConnectionBadgeCopy(configured, false)).toEqual({
-      title: "Live 憑證已設定",
+      title: "需驗證",
       detail: "尚未驗證 · 本機安全連線",
       ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
       className: "configured",
@@ -483,7 +484,7 @@ describe("dashboard operations pulse data flow", () => {
     expect(verified).toBe("verified-live");
     expect(connectionEvidenceFromHealth(verified, "live")).toBe("verified-live");
     expect(dashboardConnectionBadgeCopy(verified, false).title).toBe(
-      "Amazon 已連線",
+      "已連線",
     );
 
     expect(connectionEvidenceFromSales("demo")).toBe("demo");
@@ -561,8 +562,8 @@ describe("dashboard operations pulse data flow", () => {
     );
 
     expect(markup).toContain("品牌營收占比");
-    expect(markup).toContain("2026-08-01 – 2026-08-07");
-    expect(markup).toContain("等待自動更新");
+    expect(markup).not.toContain("FBA 已出貨營收");
+    expect(markup).not.toContain("等待自動更新");
     expect(markup).not.toContain("同步品牌");
     expect(markup).toContain('class="operations-overview-grid has-companion"');
     expect(markup).toContain('aria-label="近期營運延伸資訊"');
@@ -577,8 +578,8 @@ describe("dashboard operations pulse data flow", () => {
       />,
     );
 
-    expect(markup).toContain("Amazon 已連線");
-    expect(markup).toContain("Live · 本機安全連線");
+    expect(markup).toContain("<strong>已連線</strong>");
+    expect(markup).not.toContain(">Live · 本機安全連線<");
     expect(markup).toContain("Sales API 重新同步失敗");
     expect(markup).toContain('mode-badge workspace-connection-status live');
     expect(markup).not.toContain('mode-badge demo');
@@ -607,7 +608,7 @@ describe("dashboard operations pulse data flow", () => {
     expect(source).not.toContain("ORDER DETAIL");
     expect(source).not.toContain("pagination-row");
     expect(source).toContain("銷售趨勢自動同步");
-    expect(source).toContain("銷售趨勢最後同步");
+    expect(source).not.toContain("銷售趨勢最後同步");
     expect(appSource).toContain("loadOnMount");
     expect(dashboardSource).toContain("salesTrendAbortRef.current?.abort()");
   });

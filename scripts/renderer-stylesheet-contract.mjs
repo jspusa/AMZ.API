@@ -1,5 +1,6 @@
 /**
- * Current accepted rule stream including variation and price-list workspaces. The original
+ * Current accepted rule stream after the compact FBA workspace pass, including the variation
+ * and price-list workspaces. The original
  * CSS01 issue value (81240465714fb009ffa1d49506f640bfaf8f57db103e81333466685677400878)
  * remains historical provenance and is not the current renderer rule stream.
  */

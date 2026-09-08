@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OperationsIntelligencePanel from "../src/renderer/src/components/operations-intelligence-panel";
-import Dashboard from "../src/renderer/src/components/dashboard";
+import Dashboard, {
+  WORKSPACE_SHORTCUTS,
+} from "../src/renderer/src/components/dashboard";
 import type { OperationsIntelligenceSnapshot, OperationsSourceState } from "../src/shared/operations-intelligence";
 
 const MARKETPLACE = "ATVPDKIKX0DER";
@@ -25,19 +27,56 @@ async function mount(snapshot: OperationsIntelligenceSnapshot) {
   return renderer!;
 }
 function output() { return JSON.stringify(renderer?.toJSON()); }
-async function tab(label: string) { await act(async () => { renderer!.root.findAllByProps({ role: "tab" }).find((node) => node.children.includes(label))!.props.onClick(); }); }
+async function tab(label: string) {
+  const values: Record<string, string> = {
+    "Coupon／促銷同步": "promotions",
+    "AWD 庫存與在途": "awd",
+    "Buy Box／價格健康": "price-health",
+    "廣告成效診斷": "advertising",
+    "事件通知中心": "events",
+  };
+  await act(async () => {
+    renderer!.root.findByType("select").props.onChange({
+      target: { value: values[label] ?? label },
+    });
+  });
+}
 async function button(label: string) { await act(async () => { renderer!.root.findAllByType("button").find((node) => node.props["aria-label"] === label || node.children.includes(label))!.props.onClick(); }); }
 
 afterEach(async () => { if (renderer) await act(async () => renderer?.unmount()); renderer = null; vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("operating intelligence rendered interactions", () => {
-  it("offers five reachable inline views and explains the local-only notification boundary", () => {
+  it("uses one compact picker and routes each source through the primary navigation", () => {
+    const markup = renderToStaticMarkup(createElement(OperationsIntelligencePanel, { marketplaceId: MARKETPLACE }));
+
+    expect(markup).toContain('class="oi-view-picker"');
+    expect(markup.match(/<option/g)).toHaveLength(5);
+    expect(markup).not.toContain('role="tablist"');
+    expect(markup).not.toContain("OPERATING SIGNALS");
+    expect(markup).not.toContain("僅在 Notebook Key 開啟時同步");
+    expect(markup).not.toContain("尚未同步；不代表沒有活動、庫存或問題。");
+    expect(markup).toContain(">同步全部<");
+    expect(markup).toContain(">設定<");
+
+    expect(WORKSPACE_SHORTCUTS.map(({ label }) => label)).toEqual([
+      "商品健檢",
+      "Coupon／促銷",
+      "Buy Box／價格",
+      "公告日曆",
+      "AWD 庫存",
+      "廣告成效",
+      "事件",
+      "銷售表現",
+    ]);
+  });
+
+  it("offers five reachable views without repeating local connection guidance", () => {
     const markup = renderToStaticMarkup(createElement(OperationsIntelligencePanel, { marketplaceId: "ATVPDKIKX0DER" }));
-    for (const label of ["Coupon／促銷同步", "AWD 庫存與在途", "Buy Box／價格健康", "廣告成效診斷", "事件通知中心"]) {
+    for (const label of ["Coupon／促銷", "AWD 庫存", "Buy Box／價格", "廣告成效", "事件"]) {
       expect(markup).toContain(label);
     }
-    expect(markup).toContain("Notebook Key 開啟");
-    expect(markup).toContain("不是 Amazon 即時推播");
+    expect(markup).not.toContain("Notebook Key 開啟");
+    expect(markup).not.toContain("不是 Amazon 即時推播");
     expect(markup).not.toContain('role="dialog"');
   });
   it("reads Amazon published and latest revisions separately without changing manual plans or inventing totals", async () => {
@@ -94,11 +133,11 @@ describe("operating intelligence rendered interactions", () => {
     await tab("事件通知中心");
     expect(output()).toContain("促銷資料需核對");
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ ...snapshot, events: snapshot.events.map((event) => ({ ...event, status: "acknowledged" })) }), { status: 200 }));
-    await button("標記已知悉");
+    await button("已知悉");
     expect(output()).toContain("已知悉");
     expect(vi.mocked(fetch).mock.calls.at(-1)?.[0]).toBe("/api/operations-intelligence/events");
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body))).toEqual({ marketplaceId: MARKETPLACE, eventId: "event.test", status: "acknowledged" });
-    await button("查看來源：Coupon／促銷同步");
+    await button("查看來源：Coupon／促銷");
     expect(output()).toContain("September Coupon");
   });
   it("starts only an explicitly chosen sync and observes running work without reposting", async () => {
@@ -112,7 +151,7 @@ describe("operating intelligence rendered interactions", () => {
     vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify(running), { status: 202 }));
     await button("同步此來源");
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body))).toEqual({ marketplaceId: MARKETPLACE, source: "promotions" });
-    expect(output()).toContain("上次結果／可能過期");
+    expect(output()).toContain("可能過期");
     await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "GET").length).toBeGreaterThan(1);
@@ -125,7 +164,7 @@ describe("operating intelligence rendered interactions", () => {
     await tab("事件通知中心");
     let settle: (response: Response) => void = () => undefined;
     vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => { settle = resolve; }));
-    await act(async () => { renderer!.root.findAllByType("button").find((node) => node.children.includes("標記已知悉"))!.props.onClick(); });
+    await act(async () => { renderer!.root.findAllByType("button").find((node) => node.children.includes("已知悉"))!.props.onClick(); });
     const next = { ...fixture(), marketplaceId: "A1VC38T7YXB528", contextId: "new-marketplace" };
     vi.mocked(fetch).mockImplementationOnce(async () => new Response(JSON.stringify(next), { status: 200 }));
     await act(async () => renderer!.update(createElement(OperationsIntelligencePanel, { marketplaceId: next.marketplaceId })));
@@ -152,24 +191,24 @@ describe("operating intelligence rendered interactions", () => {
     expect(output()).toContain("格式或安全脈絡不符");
     expect(output()).not.toContain("已核對本次範圍");
   });
-  it("makes the new section reachable on the dashboard while preserving the existing seven-item launcher", () => {
+  it("keeps the intelligence section and seven-item launcher reachable without a second page nav", () => {
     const markup = renderToStaticMarkup(createElement(Dashboard, { initialSalesTrend: null, initialMarketplaceId: MARKETPLACE }));
-    expect(markup).toContain("營運情報與事件");
-    expect(markup).toContain('href="#home-intelligence"');
-    expect(markup).toContain("一鍵執行全部 FBA 健檢");
-    expect(markup).toContain("7 項");
+    expect(markup).toContain('id="home-intelligence"');
+    expect(markup).not.toContain('class="workspace-section-nav"');
+    expect(markup).toContain(">全部執行<");
+    expect(markup.match(/data-audit-workspace-launch=/g)).toHaveLength(7);
   });
   it("marks a formerly completed source stale when its source timestamp ages beyond the refresh interval", async () => {
     const snapshot = withPromotion();
     await mount({ ...snapshot, observedAt: "2026-09-08T10:31:00.000Z" });
-    expect(output()).toContain("上次結果／可能過期");
+    expect(output()).toContain("可能過期");
     expect(output()).toContain("31 分鐘前");
     expect(output()).toContain(NOW);
   });
   it("never renders private transport error material and clears prior source rows after read failure", async () => {
     await mount(withPromotion());
     vi.mocked(fetch).mockRejectedValueOnce(new Error("private transport context canary-value"));
-    await button("重新讀取本機狀態");
+    await button("重新整理");
     expect(output()).not.toContain("canary-value");
     expect(output()).not.toContain("September Coupon");
     expect(output()).toContain("暫時無法讀取");
@@ -211,23 +250,17 @@ describe("operating intelligence rendered interactions", () => {
     await button({ awd: "顯示更多AWD 庫存", advertising: "顯示更多廣告資料", events: "顯示更多事件" }[source]);
     expect(output()).toContain("SKU-MANY-101");
   });
-  it("supports roving focus and Arrow/Home/End navigation across all five tabs", async () => {
+  it("uses the native picker to change among all five views", async () => {
     await mount(fixture());
-    const tabs = () => renderer!.root.findAllByProps({ role: "tab" });
-    expect(tabs().filter((tab) => tab.props.tabIndex === 0)).toHaveLength(1);
-    const preventDefault = vi.fn();
-    await act(async () => tabs()[0]!.props.onKeyDown({ key: "ArrowRight", preventDefault }));
-    expect(tabs()[1]!.props["aria-selected"]).toBe(true);
-    await act(async () => tabs()[1]!.props.onKeyDown({ key: "End", preventDefault }));
-    expect(tabs()[4]!.props["aria-selected"]).toBe(true);
-    await act(async () => tabs()[4]!.props.onKeyDown({ key: "Home", preventDefault }));
-    expect(tabs()[0]!.props["aria-selected"]).toBe(true);
-    expect(preventDefault).toHaveBeenCalledTimes(3);
+    expect(renderer!.root.findByType("select").props.value).toBe("promotions");
+    await tab("事件通知中心");
+    expect(renderer!.root.findByType("select").props.value).toBe("events");
+    expect(renderer!.root.findAllByProps({ role: "tab" })).toHaveLength(0);
   });
   it("discloses local event retention and clearing boundaries even before any event is recorded", async () => {
     await mount({ ...fixture(), notice: "事件只保存在本機記憶體，最多保留 5,000 筆，每次投影最多 500 筆。App 關閉、鎖定、睡眠或安全脈絡變更時清除，不是永久事件歷史。" });
     await tab("事件通知中心");
-    expect(output()).toContain("本機尚無已記錄事件");
+    expect(output()).toContain("尚無事件");
     expect(output()).toContain("本機記憶體");
     expect(output()).toContain("5,000 筆");
     expect(output()).toContain("500 筆");

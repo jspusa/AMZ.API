@@ -10,13 +10,14 @@ import BrandGlyph from "../src/renderer/src/components/brand-glyph";
 import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("dashboard experience refinement", () => {
-  it("presents system health as neutral advanced information", () => {
+  it("presents system health as one neutral settings entry", () => {
     const markup = renderToStaticMarkup(
       <SystemHealthControl marketplaceId="ATVPDKIKX0DER" />,
     );
 
-    expect(markup).toContain("系統資訊");
-    expect(markup).toContain("進階");
+    expect(markup).toContain(">設定<");
+    expect(markup).not.toContain("系統資訊");
+    expect(markup).not.toContain(">進階<");
     expect(markup).not.toContain("有待處理");
     expect(markup).not.toContain("系統自檢與除錯");
     expect(markup).not.toContain("自動分析私密資料");
@@ -91,7 +92,7 @@ describe("dashboard experience refinement", () => {
     expect(auditShellSource).toContain('className="drawer-header"');
     expect(auditShellSource).toContain("aria-label={closeLabel}");
     expect(healthSource).toContain('className="drawer-header"');
-    expect(healthSource).toContain('aria-label="關閉進階與系統資訊"');
+    expect(healthSource).toContain('aria-label="關閉設定"');
     expect(connectionSource).toContain('className="connection-panel"');
     expect(css).toMatch(
       /\.drawer-header > button,\s*\.connection-panel > header > button\s*\{[^}]*width:\s*36px;[^}]*min-width:\s*36px;[^}]*height:\s*36px;[^}]*min-height:\s*36px;[^}]*flex:\s*0 0 36px;[^}]*align-self:\s*flex-start;[^}]*place-items:\s*center;[^}]*padding:\s*0;[^}]*border-radius:\s*11px;[^}]*line-height:\s*1;/s,

@@ -6,7 +6,7 @@ import Dashboard, {
 } from "../src/renderer/src/components/dashboard";
 
 describe("operations bulletin dashboard placement", () => {
-  it("places the important bulletin above the one-click FBA audit launcher", () => {
+  it("keeps the bulletin collapsed above the compact batch audit launcher", () => {
     const markup = renderToStaticMarkup(
       <Dashboard
         initialSalesTrend={null}
@@ -16,10 +16,12 @@ describe("operations bulletin dashboard placement", () => {
     );
 
     const bulletin = markup.indexOf("營運公布欄");
-    const runAll = markup.indexOf("一鍵執行全部 FBA 健檢");
+    const runAll = markup.indexOf("全部執行");
     expect(bulletin).toBeGreaterThan(-1);
     expect(runAll).toBeGreaterThan(-1);
     expect(bulletin).toBeLessThan(runAll);
+    expect(markup).toContain('<details class="operations-bulletin">');
+    expect(markup).not.toContain('<details class="operations-bulletin" open="">');
   });
 
   it("keeps the local visual harness deterministic for the board and SKU enrichment", async () => {

@@ -217,12 +217,9 @@ describe("dashboard audit workspace interactions", () => {
     await flushTimeouts();
     const root = renderer!.root;
 
-    const sectionLinks = root.findByProps({ "aria-label": "首頁區段" }).findAllByType("a");
-    expect(sectionLinks.map((link) => link.props.href)).toEqual([
-      "#home-performance", "#home-bulletin", "#home-audits", "#home-intelligence",
-    ]);
+    expect(root.findAllByProps({ "aria-label": "首頁區段" })).toHaveLength(0);
     const requestsBeforeSectionNavigation = fetchMock.mock.calls.length;
-    for (const link of [...sectionLinks, root.findByProps({ className: "workspace-skip-link" })]) {
+    for (const link of [root.findByProps({ className: "workspace-skip-link" })]) {
       const id = link.props.href.slice(1);
       const target = root.findByProps({ id });
       expect(target.props.tabIndex).toBe(-1);

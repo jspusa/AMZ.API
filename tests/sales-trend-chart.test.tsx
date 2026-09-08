@@ -167,6 +167,22 @@ describe("sales trend comparison chart", () => {
     expect(rangeStart).toBeGreaterThan(rangeRowStart);
   });
 
+  it("keeps secondary sales metrics collapsed and removes redundant visible metadata", () => {
+    const markup = render({
+      data: snapshot({ amounts: [10, 20, 15, 30, 25, 35, 18], presetDays: 7 }),
+    });
+
+    expect(markup).toContain('<details class="sales-trend-secondary">');
+    expect(markup).not.toContain('<details class="sales-trend-secondary" open="">');
+    expect(markup).toContain("訂單");
+    expect(markup).toContain("銷售件數");
+    expect(markup).toContain("去年同期銷售");
+    expect(markup).not.toContain('class="sales-trend-window"');
+    expect(markup).not.toContain("USD · 含今日即時資料");
+    expect(markup).not.toContain("Amazon Sales API · 站點當地日界");
+    expect(markup).not.toContain("<figcaption>");
+  });
+
   it("clamps the optional skater to valid chart points", () => {
     expect(nextSkaterIndex(0, -1, 7)).toBe(0);
     expect(nextSkaterIndex(0, 1, 7)).toBe(1);

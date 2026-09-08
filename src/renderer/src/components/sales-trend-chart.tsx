@@ -697,11 +697,6 @@ export default function SalesTrendChart({
           <strong>
             {snapshot ? formatMoney(snapshot.totals.totalSales) : "—"}
           </strong>
-          <small>
-            {snapshot
-              ? `${snapshot.totals.totalSales.currencyCode} · ${snapshot.points.some((point) => point.partial) ? "含今日即時資料，數字仍會變動" : "依站點當地日界彙整"}`
-              : "Amazon Sales API · 站點當地日界"}
-          </small>
         </div>
       </header>
       <div className="sales-trend-range-row">
@@ -743,17 +738,14 @@ export default function SalesTrendChart({
       </div>
 
       {snapshot && (
-        <div className="sales-trend-context">
+        <details className="sales-trend-secondary">
+          <summary>明細</summary>
           <dl className="sales-trend-metrics">
             <div><dt>訂單</dt><dd>{snapshot.totals.orderCount.toLocaleString()}<small>筆</small></dd></div>
             <div><dt>銷售件數</dt><dd>{snapshot.totals.unitCount.toLocaleString()}<small>件</small></dd></div>
             <div className="sales-trend-prior-total"><dt>去年同期銷售</dt><dd>{snapshot.comparison ? formatMoney(snapshot.comparison.totals.totalSales) : "無比較資料"}</dd></div>
           </dl>
-          <p className="sales-trend-window">
-            <span><time dateTime={snapshot.range.startDate}>{snapshot.range.startDate}</time> 至 <time dateTime={snapshot.range.endDate}>{snapshot.range.endDate}</time></span>
-            <span>{snapshot.timeZone}</span>
-          </p>
-        </div>
+        </details>
       )}
 
       {customOpen && (
@@ -913,7 +905,6 @@ export default function SalesTrendChart({
         <div className="sales-trend-loading" aria-live="polite">
           {loading && <span aria-hidden="true" />}
           <strong>{loading ? "正在彙整每日 FBA 銷售…" : "等待銷售趨勢資料"}</strong>
-          <p>完成後將顯示每日金額與去年同期比較；你可以先使用其他工作區。</p>
         </div>
       ) : (
         <figure className={[allZero ? "is-zero" : "", points.length > 30 ? "is-dense" : ""].filter(Boolean).join(" ")}>
@@ -1076,9 +1067,6 @@ export default function SalesTrendChart({
               </div>
             </div>
           )}
-          <figcaption>
-            {snapshot.notice}
-          </figcaption>
           <table className="sales-trend-a11y-table">
             <caption>{snapshot.range.startDate} 至 {snapshot.range.endDate} 每日 FBA 銷售與去年同期資料</caption>
             <thead>

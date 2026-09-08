@@ -760,3 +760,145 @@
   }
   .health-audit-home-grid .content-audit-home-card > button:active:not(:disabled) { transform: none; }
 }
+
+/* Minimal workspace: reserve the home surface for data, state, and action. */
+.workspace-header-main {
+  grid-template-columns: minmax(168px, 1fr) auto minmax(84px, 1fr);
+}
+
+.workspace-primary-menu {
+  width: min(250px, calc(100vw - 32px));
+  border-radius: 12px;
+}
+
+.workspace-primary-nav .workspace-primary-menu > button {
+  min-height: 44px;
+  padding: 8px 10px;
+}
+
+.workspace-header-status { gap: 0; }
+
+.workspace-header .workspace-connection-status.mode-badge {
+  width: auto;
+  min-width: 0;
+  min-height: 36px;
+  gap: 7px;
+  padding: 0 11px;
+}
+
+.workspace-header .workspace-connection-status strong { font-size: 11px; }
+
+.workspace-contextbar .system-health-trigger {
+  min-height: 38px;
+  gap: 7px;
+  padding-inline: 10px;
+}
+
+.workspace-contextbar .system-health-trigger > strong {
+  color: #4f6078;
+  font-size: 11px;
+}
+
+.workspace-content { padding-top: 20px; }
+
+.operations-pulse .pulse-heading {
+  align-items: center;
+  padding: 14px 18px 8px;
+}
+
+.operations-pulse .pulse-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.operations-pulse .sales-trend { margin: 0 18px 18px; }
+
+.home-section-heading {
+  align-items: center;
+  margin: 24px 2px 12px;
+}
+
+.home-section-heading h2 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.health-audit-home-grid {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.health-audit-home-grid .content-audit-home-card {
+  min-height: 0;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  animation: none;
+}
+
+.health-audit-home-grid .content-audit-home-card .content-audit-home-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+
+.health-audit-home-grid .content-audit-home-card .workspace-glyph {
+  width: 20px;
+  height: 20px;
+}
+
+.health-audit-home-grid .content-audit-home-card h2 { font-size: 14px; }
+
+.health-audit-home-grid .content-audit-home-status {
+  min-height: 0;
+  grid-column: 2;
+  padding: 0;
+  border: 0;
+}
+
+.health-audit-home-grid .content-audit-home-card > button {
+  width: auto;
+  min-width: 70px;
+  min-height: 36px;
+  grid-column: 3;
+  padding: 7px 10px;
+  justify-content: center;
+  text-align: center;
+}
+
+.health-audit-home-grid .content-audit-home-card > button > i { display: none; }
+
+.low-frequency-audits {
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.low-frequency-audits > summary {
+  min-height: 48px;
+  padding: 10px 14px;
+}
+
+.low-frequency-audits > summary strong { font-size: 12px; }
+.low-frequency-audits > summary i { width: 28px; height: 28px; }
+
+@media (max-width: 680px) {
+  .workspace-content { padding-top: 14px; }
+  .workspace-header .workspace-connection-status.mode-badge {
+    width: auto;
+    min-width: 0;
+    max-width: 108px;
+    padding-inline: 9px;
+  }
+  .health-audit-home-grid .content-audit-home-card {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    padding: 10px;
+  }
+  .health-audit-home-grid .content-audit-home-card .content-audit-home-icon {
+    width: 34px;
+    height: 34px;
+  }
+  .health-audit-home-grid .content-audit-home-card > button { min-width: 62px; }
+}

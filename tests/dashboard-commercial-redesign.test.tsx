@@ -3,7 +3,10 @@ import { DOMParser } from "@xmldom/xmldom";
 import { renderToStaticMarkup } from "react-dom/server";
 import postcss, { type Declaration, type Rule } from "postcss";
 import { describe, expect, it } from "vitest";
-import Dashboard, { DEFAULT_MARKETPLACE_ID } from "../src/renderer/src/components/dashboard";
+import Dashboard, {
+  DEFAULT_MARKETPLACE_ID,
+  WORKSPACE_SHORTCUTS,
+} from "../src/renderer/src/components/dashboard";
 
 function initialHome() {
   return new DOMParser().parseFromString(renderToStaticMarkup(
@@ -34,32 +37,34 @@ function declarations(rules: readonly Rule[], selector: string) {
 }
 
 describe("commercial dashboard navigation and empty-state honesty", () => {
-  it("provides a visible page heading and four focusable same-page section destinations", () => {
+  it("keeps one accessible page heading and four focusable menu destinations without a duplicate section nav", () => {
     const document = initialHome();
     const headings = Array.from(document.getElementsByTagName("h1"));
     expect(headings).toHaveLength(1);
     const heading = headings[0]!;
-    expect(heading.getAttribute("class") ?? "").not.toContain("visually-hidden");
+    expect(heading.getAttribute("class") ?? "").toContain("visually-hidden");
     expect(heading.hasAttribute("hidden")).toBe(false);
-    const visibleHeadingText = Array.from(heading.childNodes)
-      .filter((node) => node.nodeType === 3).map((node) => node.textContent).join("").trim();
-    expect(visibleHeadingText.length).toBeGreaterThan(0);
+    expect(heading.textContent?.trim()).toBe("AMZ.API FBA 營運首頁");
 
     const sectionNavigation = Array.from(document.getElementsByTagName("nav"))
-      .find((element) => element.getAttribute("aria-label") === "首頁區段")!;
-    expect(sectionNavigation).toBeDefined();
-    const links = Array.from(sectionNavigation.getElementsByTagName("a"));
-    expect(links.map((link) => link.getAttribute("href"))).toEqual([
-      "#home-performance", "#home-bulletin", "#home-audits", "#home-intelligence",
-    ]);
-    for (const link of links) {
-      const id = link.getAttribute("href")!.slice(1);
+      .find((element) => element.getAttribute("aria-label") === "首頁區段");
+    expect(sectionNavigation).toBeUndefined();
+    for (const id of ["home-performance", "home-bulletin", "home-audits", "home-intelligence"]) {
       const destinations = Array.from(document.getElementsByTagName("*"))
         .filter((element) => element.getAttribute("id") === id);
       expect(destinations).toHaveLength(1);
       expect(destinations[0]!.getAttribute("tabindex")).toBe("-1");
-      expect(link.textContent?.trim().length).toBeGreaterThan(0);
     }
+    expect(WORKSPACE_SHORTCUTS.map(({ targetId }) => targetId)).toEqual([
+      "home-audits",
+      "home-intelligence",
+      "home-intelligence",
+      "home-bulletin",
+      "home-intelligence",
+      "home-intelligence",
+      "home-intelligence",
+      "home-performance",
+    ]);
   });
 
   it("labels all seven unrun audits without fabricating completed counts or progress", () => {
@@ -75,15 +80,18 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
       .getAttribute("data-audit-workspace-launch"))).toEqual([
       "content", "image", "aplus", "variation", "subscription", "businessPricing", "advertising",
     ]);
-    for (const card of auditCards) {
+    const expectedActions = ["執行", "執行", "執行", "執行", "執行", "執行", "開啟"];
+    auditCards.forEach((card, index) => {
       const statuses = Array.from(card.getElementsByTagName("span")).filter((span) =>
         (span.getAttribute("class") ?? "").split(/\s+/u).includes("content-audit-home-status")
       );
-      expect(statuses).toHaveLength(1);
-      expect(statuses[0]!.textContent).toContain("尚未執行");
-      expect(statuses[0]!.textContent).not.toMatch(/[\d%]|已完成|成功|正常/u);
+      expect(statuses).toHaveLength(0);
       expect(card.getElementsByTagName("progress").length).toBe(0);
-    }
+      const launch = Array.from(card.getElementsByTagName("button"))
+        .find((button) => button.hasAttribute("data-audit-workspace-launch"))!;
+      expect(launch.textContent).toContain(expectedActions[index]);
+      expect(launch.textContent).not.toMatch(/[\d%]|已完成|成功|正常/u);
+    });
   });
 });
 
@@ -143,6 +151,8 @@ describe("commercial dashboard final-layer accessibility guards", () => {
       .get("min-width")?.value).toBe("min(100%, 19.5rem)");
     expect(declarations(rules, ".sales-trend-line.is-current").get("stroke")?.value)
       .toBe("#e78700");
+    expect(declarations(rules, ".sales-trend .sales-trend-range button")
+      .get("white-space")?.value).toBe("nowrap");
   });
 
   it("allows narrow header tracks to shrink and avoids a second sticky header on small screens", async () => {
@@ -162,6 +172,12 @@ describe("commercial dashboard final-layer accessibility guards", () => {
     expect(declarations(smallRules, ".workspace-primary-group").get("min-width")?.value).toBe("0");
     expect(declarations(smallRules, ".workspace-contextbar .global-marketplace select").get("max-width")?.value)
       .toMatch(/^(none|100%)$/u);
+    const compactConnection = declarations(
+      smallRules,
+      ".workspace-header .workspace-connection-status.mode-badge",
+    );
+    expect(compactConnection.get("width")?.value).toBe("auto");
+    expect(compactConnection.get("min-width")?.value).toBe("0");
     expect(declarations(tabletRules, ".audit-workspace-header").get("position")?.value).toBe("static");
   });
 

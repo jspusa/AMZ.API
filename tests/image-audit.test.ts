@@ -278,6 +278,7 @@ describe("FBA image audit parsing", () => {
     expect(dashboardSource).toContain(
       "auditCacheByMarketplace={imageAuditCacheForDrawer}",
     );
-    expect(dashboardSource).toContain("繼續上次圖片健檢");
+    expect(dashboardSource).not.toContain("繼續上次圖片健檢");
+    expect(dashboardSource).toContain('data-audit-workspace-launch="image"');
   });
 });

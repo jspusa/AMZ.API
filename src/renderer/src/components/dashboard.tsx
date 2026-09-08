@@ -16,8 +16,6 @@ import {
   marketplaceById,
 } from "../../../shared/marketplaces";
 import {
-  AUDIT_SUITE_SECTION_COUNT,
-  AUDIT_SUITE_SECTION_LABELS,
   type AuditSuiteSectionId,
 } from "../../../shared/audit-suite";
 import DeferredWorkspace from "./deferred-workspace";
@@ -38,7 +36,9 @@ import ImageWorkspaceDrawer, {
 import type { ImageAuditCache } from "./image-audit-panel";
 import InboundShipmentsDrawer from "./inbound-shipments-drawer";
 import OperationsBulletinCard from "./operations-bulletin-card";
-import OperationsIntelligencePanel from "./operations-intelligence-panel";
+import OperationsIntelligencePanel, {
+  type OperationsIntelligenceView,
+} from "./operations-intelligence-panel";
 import PriceDrawer from "./price-drawer";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
@@ -309,7 +309,7 @@ export function dashboardConnectionBadgeCopy(
 } {
   if (evidence === "verified-live") {
     return {
-      title: "Amazon 已連線",
+      title: "已連線",
       detail: "Live · 本機安全連線",
       ariaLabel: "Amazon 已連線",
       className: "live",
@@ -317,7 +317,7 @@ export function dashboardConnectionBadgeCopy(
   }
   if (evidence === "configured-live") {
     return {
-      title: "Live 憑證已設定",
+      title: "需驗證",
       detail: "尚未驗證 · 本機安全連線",
       ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
       className: "configured",
@@ -332,7 +332,7 @@ export function dashboardConnectionBadgeCopy(
     };
   }
   return {
-    title: checking ? "檢查連線中" : "連線狀態待確認",
+    title: checking ? "檢查中" : "連線",
     detail: "狀態未知 · 本機安全連線",
     ariaLabel: checking ? "正在檢查 Amazon 連線" : "Amazon 連線狀態尚未確認",
     className: "unavailable",
@@ -675,25 +675,29 @@ const TOOL_SECTIONS: ReadonlyArray<{
   },
 ];
 
-function formatDateTime(value: string | null, compact = false) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  // Taiwan has no daylight-saving time. Formatting from UTC parts keeps the
-  // server-rendered text byte-for-byte identical during browser hydration.
-  const taipei = new Date(date.getTime() + 8 * 60 * 60 * 1_000);
-  const pad = (part: number) => String(part).padStart(2, "0");
-  const monthDay = `${pad(taipei.getUTCMonth() + 1)}/${pad(taipei.getUTCDate())}`;
-  const time = `${pad(taipei.getUTCHours())}:${pad(taipei.getUTCMinutes())}`;
-  return compact
-    ? `${monthDay} ${time}`
-    : `${taipei.getUTCFullYear()}/${monthDay} ${time}`;
-}
+export type WorkspaceShortcut = Readonly<{
+  id: string;
+  label: string;
+  symbol: string;
+  group: NavigationGroup;
+  targetId: "home-performance" | "home-bulletin" | "home-audits" | "home-intelligence";
+  intelligenceView?: OperationsIntelligenceView;
+}>;
+
+export const WORKSPACE_SHORTCUTS: readonly WorkspaceShortcut[] = [
+  { id: "audits", label: "商品健檢", symbol: "✓", group: "product", targetId: "home-audits" },
+  { id: "promotions-intelligence", label: "Coupon／促銷", symbol: "%", group: "pricing", targetId: "home-intelligence", intelligenceView: "promotions" },
+  { id: "price-intelligence", label: "Buy Box／價格", symbol: "$", group: "pricing", targetId: "home-intelligence", intelligenceView: "price-health" },
+  { id: "bulletin", label: "公告日曆", symbol: "□", group: "operations", targetId: "home-bulletin" },
+  { id: "awd-intelligence", label: "AWD 庫存", symbol: "A", group: "operations", targetId: "home-intelligence", intelligenceView: "awd" },
+  { id: "ads-intelligence", label: "廣告成效", symbol: "◎", group: "operations", targetId: "home-intelligence", intelligenceView: "advertising" },
+  { id: "events", label: "事件", symbol: "!", group: "operations", targetId: "home-intelligence", intelligenceView: "events" },
+  { id: "sales", label: "銷售表現", symbol: "↗", group: "reports", targetId: "home-performance" },
+];
 
 export default function Dashboard({
   initialSalesTrend,
   initialMarketplaceId,
-  viewerName,
   initialError = null,
   loadOnMount = false,
   onOpenConnection,
@@ -722,6 +726,8 @@ export default function Dashboard({
   const inlineTool = openTool === "variations" || openTool === "price-list";
   const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup } | null>(null);
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
+  const [operationsIntelligenceView, setOperationsIntelligenceView] =
+    useState<OperationsIntelligenceView>("promotions");
   const [contentWorkspaceTab, setContentWorkspaceTab] =
     useState<ContentWorkspaceTab>("single");
   const [contentAuditCache, setContentAuditCache] = useState<
@@ -1997,6 +2003,16 @@ export default function Dashboard({
     behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
     block: "start",
   });
+  const openWorkspaceShortcut = (shortcut: WorkspaceShortcut) => {
+    setOpenToolMenu(null);
+    if (shortcut.intelligenceView) {
+      setOperationsIntelligenceView(shortcut.intelligenceView);
+    }
+    window.requestAnimationFrame(() => {
+      scrollTo(shortcut.targetId);
+      document.getElementById(shortcut.targetId)?.focus({ preventScroll: true });
+    });
+  };
 
   return (
     <div className="commerce-os">
@@ -2081,33 +2097,31 @@ export default function Dashboard({
                             <strong>{tool === "subscriptions" && !subscriptionAuditSupported
                               ? "S&S 能力說明"
                               : TOOL_META[tool].label}</strong>
-                            <small>{tool === "copy"
-                              ? "文案編輯與全站健檢"
-                              : tool === "images"
-                                ? "圖片工作台與全站健檢"
-                                : tool === "variations"
-                                  ? "未綁商品與 family 建議、解除與加入變體"
-                                  : tool === "price-list"
-                                    ? "原表檢視、Amazon 價格與最低價比對"
-                                  : tool === "price"
-                                    ? "標準價與訂閱資訊"
-                                    : tool === "promotion"
-                                      ? "Sale Price 限時售價"
-                                      : tool === "subscriptions"
-                                        ? "FBA S&S 價格與趨勢"
-                                        : tool === "business-pricing"
-                                          ? "FBA B2B offer 健檢與安全調整"
-                                        : tool === "restock"
-                                          ? "FBA 庫存與補貨規劃"
-                                          : tool === "inbound"
-                                            ? "貨件、SKU 接收數量與三層瑕疵"
-                                          : tool === "ads"
-                                            ? "廣告授權與官方入口"
-                                            : "公開 FBA 報表規劃"}</small>
                           </span>
                           <i aria-hidden="true">›</i>
                         </button>
                       ))}
+                      {WORKSPACE_SHORTCUTS
+                        .filter((shortcut) => shortcut.group === section.group)
+                        .map((shortcut, index) => (
+                          <button
+                            key={shortcut.id}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => openWorkspaceShortcut(shortcut)}
+                            onKeyDown={(event) => handleMenuItemKeyDown(
+                              event,
+                              section,
+                              section.tools.length + index,
+                            )}
+                          >
+                            <span aria-hidden="true">{shortcut.symbol}</span>
+                            <span className="workspace-primary-menu-copy">
+                              <strong>{shortcut.label}</strong>
+                            </span>
+                            <i aria-hidden="true">›</i>
+                          </button>
+                        ))}
                       {section.group === "reports" && effectiveReportMenuEntries
                         .filter((entry) => entry.id !== "review-audit")
                         .map((entry, index) => (
@@ -2124,13 +2138,15 @@ export default function Dashboard({
                           onKeyDown={(event) => handleMenuItemKeyDown(
                             event,
                             section,
-                            section.tools.length + index,
+                            section.tools.length +
+                              WORKSPACE_SHORTCUTS.filter(
+                                (shortcut) => shortcut.group === section.group,
+                              ).length + index,
                           )}
                         >
                           <span aria-hidden="true">{entry.symbol ?? "▤"}</span>
                           <span className="workspace-primary-menu-copy">
                             <strong>{entry.label}</strong>
-                            <small>{entry.detail}</small>
                           </span>
                           <i aria-hidden="true">{entry.disabled ? "…" : "›"}</i>
                         </button>
@@ -2151,10 +2167,8 @@ export default function Dashboard({
                 aria-haspopup="dialog"
               >
                 <i />
-                <span><strong>{connectionBadge.title}</strong><small>{connectionBadge.detail}</small></span>
-                <b aria-hidden="true" />
+                <strong>{connectionBadge.title}</strong>
               </button>
-              <span className="workspace-avatar" role="img" aria-label={`${viewerName ?? "Jasper"} 的私人工作區`}>{(viewerName?.trim()?.[0] ?? "J").toUpperCase()}</span>
             </div>
           </div>
 
@@ -2201,33 +2215,14 @@ export default function Dashboard({
               onClose={closeVariationPlanner}
             />
           </DeferredWorkspace> : openTool === "price-list" ? null : activeAuditWorkspace ? auditWorkspaceView : <>
-          <section className="workspace-intro" aria-labelledby="workspace-title">
-            <div className="workspace-intro-copy">
-              <p className="workspace-kicker">JASPER / FBA WORKSPACE</p>
-              <h1 id="workspace-title">營運工作台<span className="visually-hidden"> · AMZ.API FBA 營運首頁</span></h1>
-              <p>銷售表現、重要日程與商品健檢，在同一處掌握。</p>
-            </div>
-            <div className="workspace-intro-context">
-              <span className="workspace-market-context"><i aria-hidden="true" />{marketplace.name}</span>
-              <span>{viewerName?.trim() || "Jasper"} 的工作區</span>
-            </div>
-          </section>
-          <nav className="workspace-section-nav" aria-label="首頁區段">
-            <a href="#home-performance" onClick={(event) => { event.preventDefault(); scrollTo("home-performance"); document.getElementById("home-performance")?.focus({ preventScroll: true }); }}><span>01</span>營運概況</a>
-            <a href="#home-bulletin" onClick={(event) => { event.preventDefault(); scrollTo("home-bulletin"); document.getElementById("home-bulletin")?.focus({ preventScroll: true }); }}><span>02</span>公告日曆</a>
-            <a href="#home-audits" onClick={(event) => { event.preventDefault(); scrollTo("home-audits"); document.getElementById("home-audits")?.focus({ preventScroll: true }); }}><span>03</span>商品健檢</a>
-            <a href="#home-intelligence" onClick={(event) => { event.preventDefault(); scrollTo("home-intelligence"); document.getElementById("home-intelligence")?.focus({ preventScroll: true }); }}><span>04</span>營運情報</a>
-          </nav>
+          <h1 id="workspace-title" className="visually-hidden">AMZ.API FBA 營運首頁</h1>
 
           {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
 
           <div id="home-performance" tabIndex={-1} className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
             <section className="operations-pulse">
               <div className="pulse-heading">
-                <div className="pulse-title-compact">
-                  <div><p className="eyebrow">OPERATIONS PULSE</p><h2>近期營運</h2></div>
-                  <small className="operations-last-sync">銷售趨勢最後同步 {formatDateTime(visibleSalesTrend?.fetchedAt ?? null, true)} · {marketplace.name}</small>
-                </div>
+                <h2>銷售</h2>
                 <button type="button" className="pulse-refresh" onClick={() => void loadSalesTrend()} disabled={salesTrendLoading}><span className={salesTrendLoading ? "spin" : ""}>↻</span>{salesTrendLoading ? "同步中" : "同步"}</button>
               </div>
               <SalesTrendChart snapshot={visibleSalesTrend} selection={trendSelection} loading={salesTrendLoading} error={salesTrendError} onSelectionChange={changeTrendSelection} onRetry={() => void loadSalesTrend()} />
@@ -2243,37 +2238,26 @@ export default function Dashboard({
 
           <section id="home-audits" tabIndex={-1} aria-labelledby="home-audits-title">
           <div className="home-section-heading">
-            <div><p className="eyebrow">CATALOG HEALTH</p><h2 id="home-audits-title">商品健檢</h2></div>
-            <p>選擇單項，或一次完成 {AUDIT_SUITE_SECTION_COUNT} 項一鍵健檢。</p>
-          </div>
-          <AuditSuiteHomeCard
-            marketplaceId={marketplaceId}
-            mode={currentStandaloneMode}
-            hasRunningJobs={primaryAuditJobsRunning}
-            onStandaloneJobChange={cacheStandaloneAuditJob}
-            onAplusJobChange={cacheAplusAuditJob}
-            onStartSuccess={(sectionId) => {
-              setCurrentAuditLaunchFailure(sectionId, null);
-            }}
-            onStartFailure={(sectionId, message) => {
-              setCurrentAuditLaunchFailure(sectionId, message);
-            }}
-          />
-
-          <div className="audit-catalog-heading">
-            <h3>按項目查看</h3>
-            <p>同次 App 使用期間保留結果，可隨時接回進度。</p>
+            <h2 id="home-audits-title">商品健檢</h2>
+            <AuditSuiteHomeCard
+              marketplaceId={marketplaceId}
+              mode={currentStandaloneMode}
+              hasRunningJobs={primaryAuditJobsRunning}
+              onStandaloneJobChange={cacheStandaloneAuditJob}
+              onAplusJobChange={cacheAplusAuditJob}
+              onStartSuccess={(sectionId) => {
+                setCurrentAuditLaunchFailure(sectionId, null);
+              }}
+              onStartFailure={(sectionId, message) => {
+                setCurrentAuditLaunchFailure(sectionId, message);
+              }}
+            />
           </div>
 
           <div className="health-audit-home-grid">
             <section className="content-audit-home-card" aria-label="全站文案健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="content" /></span>
-              <div>
-                <p className="eyebrow">FBA CONTENT HEALTH</p>
-                <h2>{AUDIT_SUITE_SECTION_LABELS.content}</h2>
-                <p>找出需要你確認的 FBA 商品文案。</p>
-              </div>
-              {!currentContentLaunchFailure && !currentContentAuditJob && !currentContentAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
+              <div><h2>文案</h2></div>
               {currentContentLaunchFailure
                 ? auditLaunchFailureStatus(currentContentLaunchFailure)
                 : standaloneProgressStatus(
@@ -2293,26 +2277,15 @@ export default function Dashboard({
                 onClick={launchContentAudit}
               >
                 {currentContentLaunchFailure
-                  ? "重新開啟文案健檢"
-                  : currentContentAuditJob
-                  ? currentContentAuditJob.ready
-                    ? currentContentAuditJob.status === "completed"
-                      ? "查看已完成的文案健檢"
-                      : "查看未完成的文案健檢"
-                    : "查看進行中的文案健檢"
-                  : currentContentAudit ? "繼續上次文案健檢" : "開始全站文案健檢"}
+                  ? "重試"
+                  : currentContentAuditJob || currentContentAudit ? "查看" : "執行"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
 
             <section className="content-audit-home-card image-audit-home-card" aria-label="全站圖片健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="image" /></span>
-              <div>
-                <p className="eyebrow">FBA IMAGE HEALTH</p>
-                <h2>{AUDIT_SUITE_SECTION_LABELS.image}</h2>
-                <p>找出少於 6 張圖片或讀取未完成的商品。</p>
-              </div>
-              {!currentImageLaunchFailure && !currentImageAuditJob && !currentImageAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
+              <div><h2>圖片</h2></div>
               {currentImageLaunchFailure
                 ? auditLaunchFailureStatus(currentImageLaunchFailure)
                 : standaloneProgressStatus(
@@ -2332,25 +2305,14 @@ export default function Dashboard({
                 onClick={launchImageAudit}
               >
                 {currentImageLaunchFailure
-                  ? "重新開啟圖片健檢"
-                  : currentImageAuditJob
-                  ? currentImageAuditJob.ready
-                    ? currentImageAuditJob.status === "completed"
-                      ? "查看已完成的圖片健檢"
-                      : "查看未完成的圖片健檢"
-                    : "查看進行中的圖片健檢"
-                  : currentImageAudit ? "繼續上次圖片健檢" : "開始全站圖片健檢"}
+                  ? "重試"
+                  : currentImageAuditJob || currentImageAudit ? "查看" : "執行"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
             <section className="content-audit-home-card" aria-label="全站 A+ 健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="aplus" /></span>
-              <div>
-                <p className="eyebrow">FBA A+ CONTENT</p>
-                <h2>{AUDIT_SUITE_SECTION_LABELS.aplus}</h2>
-                <p>核對每個 FBA ASIN 是否已有官方 A+。</p>
-              </div>
-              {!currentAplusLaunchFailure && !currentAplusJob && !currentAplusAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
+              <div><h2>A+</h2></div>
               {currentAplusLaunchFailure &&
                 auditLaunchFailureStatus(currentAplusLaunchFailure)}
               {!currentAplusLaunchFailure && currentAplusJob && !currentAplusJob.ready && (
@@ -2398,25 +2360,14 @@ export default function Dashboard({
                 }}
               >
                 {currentAplusLaunchFailure
-                  ? "重新開啟 A+ 健檢"
-                  : currentAplusJob
-                  ? !currentAplusJob.ready
-                    ? "查看進行中的 A+ 健檢"
-                    : currentAplusJob.status === "completed"
-                      ? "查看已完成的 A+ 健檢"
-                      : "查看未完成的 A+ 健檢"
-                  : currentAplusAudit ? "繼續上次 A+ 健檢" : "開始全站 A+ 健檢"}
+                  ? "重試"
+                  : currentAplusJob || currentAplusAudit ? "查看" : "執行"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
             <section className="content-audit-home-card" aria-label="未綁變體健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="variation" /></span>
-              <div>
-                <p className="eyebrow">VARIATION RELATIONSHIPS</p>
-                <h2>{AUDIT_SUITE_SECTION_LABELS.variation}</h2>
-                <p>找出已確認沒有 parent 的 FBA SKU。</p>
-              </div>
-              {!currentVariationLaunchFailure && !currentVariationAuditJob && !currentUnboundVariationAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
+              <div><h2>變體</h2></div>
               {currentVariationLaunchFailure
                 ? auditLaunchFailureStatus(currentVariationLaunchFailure)
                 : standaloneProgressStatus(
@@ -2437,27 +2388,14 @@ export default function Dashboard({
                 openAuditWorkspace("variation");
               }}>
                 {currentVariationLaunchFailure
-                  ? "重新開啟未綁變體健檢"
-                  : currentVariationAuditJob
-                  ? currentVariationAuditJob.ready
-                    ? currentVariationAuditJob.status === "completed"
-                      ? "查看已完成的未綁變體健檢"
-                      : "查看未完成的未綁變體健檢"
-                    : "查看進行中的未綁變體健檢"
-                  : currentUnboundVariationAudit ? "繼續上次未綁變體健檢" : "開始未綁變體健檢"}
+                  ? "重試"
+                  : currentVariationAuditJob || currentUnboundVariationAudit ? "查看" : "執行"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
             <section className="content-audit-home-card" aria-label="全站訂閱價格健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="subscription" /></span>
-              <div>
-                <p className="eyebrow">FBA SUBSCRIBE &amp; SAVE</p>
-                <h2>{AUDIT_SUITE_SECTION_LABELS.subscription}</h2>
-                <p>{subscriptionAuditSupported
-                  ? "查看訂閱折扣、有效訂閱與價格趨勢。"
-                  : `${marketplace.shortLabel} 目前先顯示能力邊界；不會用其他站點資料代替。`}</p>
-              </div>
-              {!currentSubscriptionLaunchFailure && !currentSubscriptionAuditJob && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
+              <div><h2>訂閱價格</h2></div>
               {currentSubscriptionLaunchFailure
                 ? auditLaunchFailureStatus(currentSubscriptionLaunchFailure)
                 : standaloneProgressStatus(currentSubscriptionAuditJob)}
@@ -2470,25 +2408,16 @@ export default function Dashboard({
                 }}
               >
                 {currentSubscriptionLaunchFailure
-                  ? "重新開啟訂閱價格健檢"
+                  ? "重試"
                   : currentSubscriptionAuditJob
-                  ? currentSubscriptionAuditJob.ready
-                    ? currentSubscriptionAuditJob.status === "completed"
-                      ? "查看已完成的訂閱價格健檢"
-                      : "查看未完成的訂閱價格健檢"
-                    : "查看進行中的訂閱價格健檢"
-                  : subscriptionAuditSupported ? "開始全站訂閱價格健檢" : "查看 S&S 能力說明"}
+                    ? "查看"
+                    : subscriptionAuditSupported ? "執行" : "說明"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
             <section className="content-audit-home-card business-pricing-audit-home-card" aria-label="全站 B2B 價格健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="businessPricing" /></span>
-              <div>
-                <p className="eyebrow">FBA AMAZON BUSINESS</p>
-                <h2>{AUDIT_SUITE_SECTION_LABELS.businessPricing}</h2>
-                <p>找出未設定或不符建議的企業價格。</p>
-              </div>
-              {!currentBusinessPricingLaunchFailure && !currentBusinessPricingAuditJob && !currentBusinessPricingAudit && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
+              <div><h2>B2B 價格</h2></div>
               {currentBusinessPricingLaunchFailure
                 ? auditLaunchFailureStatus(currentBusinessPricingLaunchFailure)
                 : standaloneProgressStatus(
@@ -2508,25 +2437,14 @@ export default function Dashboard({
                 onClick={() => openAuditWorkspace("businessPricing")}
               >
                 {currentBusinessPricingLaunchFailure
-                  ? "重新開啟 B2B 價格健檢"
-                  : currentBusinessPricingAuditJob
-                  ? currentBusinessPricingAuditJob.ready
-                    ? currentBusinessPricingAuditJob.status === "completed"
-                      ? "查看已完成的 B2B 價格健檢"
-                      : "查看未完成的 B2B 價格健檢"
-                    : "查看進行中的 B2B 價格健檢"
-                  : currentBusinessPricingAudit ? "繼續上次 B2B 價格健檢" : "開始全站 B2B 價格健檢"}
+                  ? "重試"
+                  : currentBusinessPricingAuditJob || currentBusinessPricingAudit ? "查看" : "執行"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
             <section className="content-audit-home-card audit-card-pending" aria-label="廣告覆蓋健檢與 Ads API 連線">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="advertising" /></span>
-              <div>
-                <p className="eyebrow">ADS COVERAGE</p>
-                <h2>{AUDIT_SUITE_SECTION_LABELS.advertising}</h2>
-                <p>核對哪些 FBA SKU 已有 ENABLED SP 覆蓋。</p>
-              </div>
-              {!currentAdvertisingLaunchFailure && !currentAdvertisingAuditJob && <span className="content-audit-home-status audit-idle-status"><strong>尚未執行</strong><small>按需啟動 · 唯讀健檢</small></span>}
+              <div><h2>廣告覆蓋</h2></div>
               {currentAdvertisingLaunchFailure
                 ? auditLaunchFailureStatus(currentAdvertisingLaunchFailure)
                 : standaloneProgressStatus(currentAdvertisingAuditJob)}
@@ -2536,14 +2454,8 @@ export default function Dashboard({
                 onClick={() => openAuditWorkspace("advertising")}
               >
                 {currentAdvertisingLaunchFailure
-                  ? "重新開啟廣告覆蓋健檢"
-                  : currentAdvertisingAuditJob
-                  ? currentAdvertisingAuditJob.ready
-                    ? currentAdvertisingAuditJob.status === "completed"
-                      ? "查看已完成的廣告覆蓋健檢"
-                      : "查看未完成的廣告覆蓋健檢"
-                    : "查看進行中的廣告覆蓋健檢"
-                  : "查看健檢能力與連線"}
+                  ? "重試"
+                  : currentAdvertisingAuditJob ? "查看" : "開啟"}
                 <i aria-hidden="true">›</i>
               </button>
             </section>
@@ -2554,40 +2466,25 @@ export default function Dashboard({
             <summary>
               <span>
                 <strong>低頻健檢</strong>
-                <small>庫齡與評論不會跟著 {AUDIT_SUITE_SECTION_COUNT} 項一鍵健檢自動執行，需要時再展開。</small>
               </span>
               <i aria-hidden="true">＋</i>
             </summary>
             <div className="health-audit-home-grid">
               <section className="content-audit-home-card" aria-label="FBA 180 天以上庫齡健檢捷徑">
                 <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
-                <div>
-                  <p className="eyebrow">FBA AGED INVENTORY · 180+ DAYS</p>
-                  <h2>FBA 180 天以上庫齡健檢</h2>
-                  <p>主清單只列已經超過 180 天的 FBA 庫存；Amazon estimated excess 預估與費用放在獨立分頁。</p>
-                </div>
+                <div><h2>庫齡 180+ 天</h2></div>
                 {standaloneProgressStatus(currentAgedInventoryJob)}
                 <button type="button" onClick={() => {
                   setAuditPreference("inventory");
                   setAgedInventoryOpen(true);
                 }}>
-                  {currentAgedInventoryJob
-                    ? currentAgedInventoryJob.ready
-                      ? currentAgedInventoryJob.status === "completed"
-                        ? "查看已完成的 FBA 庫齡健檢"
-                        : "查看未完成的 FBA 庫齡健檢"
-                      : "查看進行中的 FBA 庫齡健檢"
-                    : "開始 FBA 180 天以上庫齡健檢"}
+                  {currentAgedInventoryJob ? "查看" : "執行"}
                   <i aria-hidden="true">›</i>
                 </button>
               </section>
               <section className="content-audit-home-card review-audit-home-card" aria-label="FBA 評論主題健檢捷徑">
                 <span className="content-audit-home-icon" aria-hidden="true">☆5</span>
-                <div>
-                  <p className="eyebrow">CUSTOMER FEEDBACK · NON-PARENT ASIN</p>
-                  <h2>評論健檢</h2>
-                  <p>依 Listings relationships 已證明的 child 與 standalone ASIN 列出評論主題前五與後五；排除 parent，也不冒充商品總星等。</p>
-                </div>
+                <div><h2>評論</h2></div>
                 {currentReviewAuditProgress && (
                   <span
                     className="content-audit-home-status"
@@ -2606,21 +2503,21 @@ export default function Dashboard({
                   </span>
                 )}
                 <button type="button" onClick={() => setReviewAuditOpen(true)}>
-                  {currentReviewAudit?.snapshot
-                    ? "查看上次評論健檢"
-                    : currentReviewAudit?.job
-                      ? "查看進行中的評論健檢"
-                      : "開始全站評論健檢"}
+                  {currentReviewAudit ? "查看" : "執行"}
                   <i aria-hidden="true">›</i>
                 </button>
               </section>
             </div>
           </details>
           </section>
-          <OperationsIntelligencePanel key={`${marketplaceId}:${currentStandaloneMode}`} marketplaceId={marketplaceId} />
+          <OperationsIntelligencePanel
+            key={`${marketplaceId}:${currentStandaloneMode}`}
+            marketplaceId={marketplaceId}
+            selectedView={operationsIntelligenceView}
+            onViewChange={setOperationsIntelligenceView}
+          />
           </>}
         </main>
-        <footer className="os-footer"><span>AMZ.API <b>·</b> Jasper 營運工作區</span><span>專注 FBA，安心處理每一天的營運。</span></footer>
       </div>
 
       {openTool === "ads" && <AdsDrawer

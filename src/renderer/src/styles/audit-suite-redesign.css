@@ -264,6 +264,56 @@
   .audit-suite-start:hover:not(:disabled) .audit-suite-start-arrow { transform: none; }
 }
 
+/* The batch action belongs beside the section title, not in a second hero. */
+.home-section-heading .audit-suite-home-card {
+  display: block;
+  width: auto;
+  margin: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+
+.home-section-heading .audit-suite-home-card::before { content: none; }
+
+.home-section-heading .audit-suite-home-card .audit-suite-home-actions {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.home-section-heading .audit-suite-home-card .audit-suite-home-actions .audit-suite-start {
+  width: auto;
+  min-width: 112px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  box-shadow: none;
+}
+
+.home-section-heading .audit-suite-start-arrow {
+  width: 16px;
+  height: 16px;
+}
+
+.home-section-heading .audit-suite-launch-error {
+  max-width: 32rem;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #ebcbd0;
+  border-radius: 8px;
+}
+
+@media (max-width: 520px) {
+  .home-section-heading .audit-suite-home-card .audit-suite-home-actions .audit-suite-start {
+    min-width: 96px;
+  }
+}
+
 /* Taste Redesign — the all-audits launcher is the editorial anchor of the
    catalog section, with one-click blue kept as its operation semantic. */
 .audit-suite-home-card {

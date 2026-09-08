@@ -36,9 +36,10 @@ describe("one-click individual audit launcher", () => {
       />,
     );
 
-    expect(markup).toContain("一鍵執行全部 FBA 健檢");
-    expect(markup).toContain("直接啟動下方 7 張單項卡片");
-    expect(markup).toContain("點進各卡片查看完整結果");
+    expect(markup).toContain(">全部執行<");
+    expect(markup).not.toContain("一鍵執行全部 FBA 健檢");
+    expect(markup).not.toContain("直接啟動下方 7 張單項卡片");
+    expect(markup).not.toContain("點進各卡片查看完整結果");
     expect(markup.match(/<button\b/gu)).toHaveLength(1);
     expect(markup).not.toContain("audit-suite-section-grid");
     expect(markup).not.toContain("audit-suite-home-status");
@@ -58,7 +59,7 @@ describe("one-click individual audit launcher", () => {
       />,
     );
 
-    expect(markup).toContain("啟動其餘健檢（執行中項目沿用）");
+    expect(markup).toContain(">執行其餘<");
     expect(markup).not.toContain("disabled=\"\"");
     expect(markup).toContain("aria-busy=\"false\"");
   });

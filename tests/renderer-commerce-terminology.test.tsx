@@ -80,7 +80,7 @@ describe("renderer commerce terminology", () => {
 
     expect(dashboardSource).toContain('label: "價格區"');
     expect(dashboardSource).toContain('promotion: { label: "促銷"');
-    expect(dashboardSource).toContain("Sale Price 限時售價");
+    expect(dashboardSource).not.toContain("Sale Price 限時售價");
     expect(dashboardSource).not.toContain("<h3>Sale Price</h3>");
     expect(dashboardSource).not.toContain('className="tool-tile"');
     expect(promotionSource).toContain("目前 API 無法完成的功能");

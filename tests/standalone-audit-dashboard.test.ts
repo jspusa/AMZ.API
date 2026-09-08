@@ -302,7 +302,8 @@ describe("dashboard audit background observation", () => {
     expect(source).toContain("onAuditJobChange={cacheStandaloneAuditJob}");
     expect(source).toContain("onJobChange={cacheStandaloneAuditJob}");
     expect(source).toContain("onCoverageAuditJobChange={cacheStandaloneAuditJob}");
-    expect(source).toContain("已完成");
+    expect(source).toContain('outcome === "success"');
+    expect(source).toContain('outcome === "partial"');
     expect(source).toContain("點開查看並載入本次結果");
     expect(source).not.toContain("點開完成本機字典檢查並查看已核對結果");
 
@@ -332,7 +333,8 @@ describe("dashboard audit background observation", () => {
     expect(launcherSource).toContain("startAplusAuditJob");
     expect(launcherSource).not.toContain('fetch("/api/sp-api/audit-suite"');
     expect(launcherSource).not.toContain("audit-suite-section-grid");
-    expect(dashboardSource).toContain("查看未完成的 A+ 健檢");
+    expect(dashboardSource).not.toContain("查看未完成的 A+ 健檢");
+    expect(dashboardSource).toContain('currentAplusJob || currentAplusAudit ? "查看" : "執行"');
   });
 
   it("wires every standalone panel to the pending-to-terminal reconnect revision", () => {

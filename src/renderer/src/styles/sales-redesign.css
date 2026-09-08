@@ -84,6 +84,7 @@
   color: #526781;
   font-size: 11px;
   font-weight: 650;
+  white-space: nowrap;
   transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
 }
 
@@ -252,6 +253,30 @@
 @media (prefers-reduced-motion: reduce) {
   .sales-trend *,
   .brand-sales-card * { animation: none !important; transition: none !important; }
+}
+
+/* Secondary totals stay available without competing with the sales number. */
+.sales-trend .sales-trend-secondary {
+  margin: 0;
+  padding: 0 22px 10px;
+  color: var(--sales-muted);
+}
+
+.sales-trend .sales-trend-secondary > summary {
+  width: max-content;
+  margin-left: auto;
+  padding: 4px 0;
+  color: #526781;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sales-trend .sales-trend-secondary[open] > summary { margin-bottom: 4px; }
+.sales-trend .sales-trend-secondary .sales-trend-metrics { padding-bottom: 4px; }
+
+@media (max-width: 680px) {
+  .sales-trend .sales-trend-secondary { padding: 0 16px 10px; }
 }
 
 /* Taste Redesign — warm chart paper and the original golden performance line

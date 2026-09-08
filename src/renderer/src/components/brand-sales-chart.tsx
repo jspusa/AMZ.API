@@ -71,7 +71,6 @@ export default function BrandSalesChart({
   snapshot,
   loading,
   error,
-  rangeLabel,
   onRetry,
   initialView = "brand",
 }: {
@@ -98,11 +97,7 @@ export default function BrandSalesChart({
   return (
     <section className="brand-sales-card" aria-busy={loading} aria-labelledby={titleId}>
       <header className="brand-sales-heading">
-        <div>
-          <p className="brand-sales-source">FBA 已出貨營收</p>
-          <h3 id={titleId}>{view === "brand" ? "品牌營收占比" : "品類營收占比"}</h3>
-          <p>{rangeLabel}</p>
-        </div>
+        <h3 id={titleId}>{view === "brand" ? "品牌營收占比" : "品類營收占比"}</h3>
         <div className="sales-trend-range" role="group" aria-label="營收占比分類方式">
           {(["brand", "category"] as const).map((option) => (
             <button
@@ -119,20 +114,6 @@ export default function BrandSalesChart({
           ))}
         </div>
       </header>
-      <div className="brand-sales-state">
-        <span className="brand-sales-auto-status" data-state={error ? "error" : loading ? "loading" : snapshot ? "ready" : "waiting"} aria-live="polite">
-          <i className={loading ? "spin" : ""} aria-hidden="true">↻</i>
-          {error
-            ? "這個區間尚未完成"
-            : loading
-              ? "隨區間整理中"
-              : snapshot
-                ? snapshot.rangeFreshness === "includes-current-day"
-                  ? "已隨區間自動更新 · 含今天快照"
-                  : "已隨區間自動更新"
-                : "等待自動更新"}
-        </span>
-      </div>
 
       {error && (
         <div className="brand-sales-error" role="alert">
@@ -152,7 +133,6 @@ export default function BrandSalesChart({
         <div className="brand-sales-empty">
           {loading && <div className="brand-sales-pending" aria-hidden="true"><span /><span /><span /></div>}
           <strong>{loading ? "Amazon 正在準備 FBA 出貨報表…" : "等待銷售區間"}</strong>
-          <p>品牌與品類共用同一份 FBA Customer Shipment Sales report；不會為切換品類另外建立報表。</p>
         </div>
       )}
 
@@ -161,7 +141,7 @@ export default function BrandSalesChart({
           <div className="brand-sales-visual">
             <div className="brand-sales-pie-stage">
               <div className="brand-sales-pie-wrap">
-                <svg className="brand-sales-pie" viewBox="0 0 120 120" role="img" aria-label={`FBA 已出貨商品${view === "brand" ? "品牌" : "品類"}占比 ${formatMoney(total, snapshot.currencyCode)}`}>
+                <svg className="brand-sales-pie" viewBox="0 0 120 120" role="img" aria-label={`${view === "brand" ? "品牌" : "品類"}營收占比 ${formatMoney(total, snapshot.currencyCode)}`}>
                   <circle className="brand-sales-pie-track" cx="60" cy="60" r="52" />
                 {positive.map((segment) => {
                   const share = total > 0 ? segment.amount / total : 0;
@@ -189,7 +169,7 @@ export default function BrandSalesChart({
                 </svg>
               </div>
               <div className="brand-sales-selection" aria-live="polite">
-                <small>{active ? active.label : "FBA 已出貨"}</small>
+                <small>{active ? active.label : "總計"}</small>
                 <strong>{formatMoney(active?.amount ?? total, snapshot.currencyCode)}</strong>
                 <span>{active
                   ? `${active.percentage}% · ${active.unitCount.toLocaleString()} 件`
@@ -197,10 +177,10 @@ export default function BrandSalesChart({
               </div>
             </div>
             {total === 0 && (
-              <p className="brand-sales-zero" role="status">這個區間尚無 FBA 已出貨營收；報表已完成，並非載入失敗。</p>
+              <p className="brand-sales-zero" role="status">這個區間尚無營收。</p>
             )}
             <div className="brand-sales-legend-heading" aria-hidden="true">
-              <span>{view === "brand" ? "品牌" : "品類"}／已出貨營收</span>
+              <span>{view === "brand" ? "品牌" : "品類"}／營收</span>
               <span>占比</span>
             </div>
             <div className="brand-sales-legend" role="list" aria-label={`${view === "brand" ? "品牌" : "品類"}營收明細`}>
@@ -222,12 +202,6 @@ export default function BrandSalesChart({
               ))}
             </div>
           </div>
-          <p className="brand-sales-basis">以已出貨商品計算，與銷售趨勢的訂單口徑不同。</p>
-          <details className="brand-sales-notice">
-            <summary>資料怎麼算</summary>
-            <p>{snapshot.notice}</p>
-            <p>App 讀取時間：{snapshot.fetchedAt}；Amazon 報表資料截至：{snapshot.dataThrough}。</p>
-          </details>
         </>
       )}
     </section>
