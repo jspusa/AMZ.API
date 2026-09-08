@@ -703,6 +703,8 @@ export default function SalesTrendChart({
               : "Amazon Sales API · 站點當地日界"}
           </small>
         </div>
+      </header>
+      <div className="sales-trend-range-row">
         <div className="sales-trend-range" role="group" aria-label="銷售趨勢日期範圍">
           {RANGE_OPTIONS.map((option) => (
             <button
@@ -738,7 +740,7 @@ export default function SalesTrendChart({
             自訂
           </button>
         </div>
-      </header>
+      </div>
 
       {snapshot && (
         <div className="sales-trend-context">

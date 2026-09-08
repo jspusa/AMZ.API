@@ -150,6 +150,23 @@ describe("sales trend comparison chart", () => {
     expect(markup).not.toMatch(/NaN|Infinity/);
   });
 
+  it("keeps range controls in a dedicated row below long sales totals", () => {
+    const markup = render({
+      data: snapshot({
+        amounts: [611_151.42, 0, 0, 0, 0, 0, 0],
+        presetDays: 7,
+      }),
+    });
+    const summaryEnd = markup.indexOf("</header>");
+    const rangeRowStart = markup.indexOf('class="sales-trend-range-row"');
+    const rangeStart = markup.indexOf('class="sales-trend-range"');
+
+    expect(markup).toContain("US$611,151.42");
+    expect(summaryEnd).toBeGreaterThan(-1);
+    expect(rangeRowStart).toBeGreaterThan(summaryEnd);
+    expect(rangeStart).toBeGreaterThan(rangeRowStart);
+  });
+
   it("clamps the optional skater to valid chart points", () => {
     expect(nextSkaterIndex(0, -1, 7)).toBe(0);
     expect(nextSkaterIndex(0, 1, 7)).toBe(1);
