@@ -1,5 +1,5 @@
 /**
- * Current accepted rule stream after the Taste Redesign pass on the commercial workspace. The original
+ * Current accepted rule stream including variation and price-list workspaces. The original
  * CSS01 issue value (81240465714fb009ffa1d49506f640bfaf8f57db103e81333466685677400878)
  * remains historical provenance and is not the current renderer rule stream.
  */
@@ -29,7 +29,9 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/audit-suite-redesign.css",
     "styles/sales-redesign.css",
     "styles/bulletin-redesign.css",
+    "styles/variation-workspace.css",
+    "styles/price-list.css",
   ]),
   fingerprint:
-    "f2f9c8b41a77e446d2e8b6be26f961157c974a7bca2671a2185d31cd67db4da0",
+    "8a54477821ae807a58343b2b3198f54916c82c8bccf39051f2cc2e290de9e16b",
 });

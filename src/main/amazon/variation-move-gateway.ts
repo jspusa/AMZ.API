@@ -2,6 +2,7 @@ import type { MarketplaceId } from "../../shared/marketplaces";
 import type { ListingWriteExecutionFence } from
   "./listing-write-execution-fence";
 import type { ListingIssue } from "./sp-api-error";
+import type { VariationFieldDescriptor } from "./variation-update";
 
 declare const variationMoveSourceEvidenceBrand: unique symbol;
 declare const variationMoveTargetEvidenceBrand: unique symbol;
@@ -29,16 +30,21 @@ export type VariationMoveIdentity = Readonly<{
 
 export type VariationMovePrepareRequest =
   | (VariationMoveIdentity & Readonly<{
+      requiredValues?: Readonly<Record<string, unknown>>;
       action: "detach";
       expectedSourceParentSku: string;
     }>)
   | (VariationMoveIdentity & Readonly<{
+      requiredValues?: Readonly<Record<string, unknown>>;
+      dimensionValues?: Readonly<Record<string, unknown>>;
       action: "attach";
       targetParentSku: string;
       purpose: "preparation" | "mutation";
     }>);
 
 export type VariationMoveSourceObservation = VariationMoveIdentity & Readonly<{
+  requiredFields?: readonly VariationFieldDescriptor[];
+  requiredSchemaChecksum?: string | null;
   asin: string | null;
   productType: string | null;
   fulfillment: "FBA" | "OTHER";
@@ -88,6 +94,8 @@ export type VariationMoveGatewayPreparation =
     }>;
 
 type VariationMoveDescriptorBase = VariationMoveIdentity & Readonly<{
+  requiredValues?: Readonly<Record<string, unknown>>;
+  requiredSchemaChecksum?: string | null;
   asin: string;
   productType: string;
   sourceEvidence: VariationMoveSourceEvidence;
@@ -123,6 +131,7 @@ export type VariationMoveDescriptor =
 
 /** Canonical relationship projection used for bounded post-write readback. */
 export type VariationMoveObservation = VariationMoveIdentity & Readonly<{
+  attributeSignatures?: Readonly<Record<string, string>>;
   asin: string | null;
   productType: string | null;
   fulfillment: "FBA" | "OTHER";
@@ -150,6 +159,7 @@ export type VariationMoveCanonicalObservation = VariationMoveObservation &
   }>;
 
 export type VariationMoveValidationReceipt = Readonly<{
+  requiredFields?: readonly VariationFieldDescriptor[];
   status: "VALID" | "INVALID" | "UNKNOWN";
   requestId: string | null;
   issues: readonly ListingIssue[];

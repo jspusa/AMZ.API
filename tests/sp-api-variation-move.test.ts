@@ -112,7 +112,7 @@ async function getVariationMovePreparation(input: {
 
 async function previewVariationMove(value: VariationMoveInput) {
   const owner = wireOwner();
-  return responseValue<{ status: string }>(await owner.handle({
+  return responseValue<{ status: string; changes: Array<{name: string; before: unknown; after: unknown}> }>(await owner.handle({
     operation: "preview",
     request: variationRouteRequest("POST", {
       ...value,
@@ -262,6 +262,10 @@ function input(action: "detach" | "attach"): VariationMoveInput {
 }
 
 type SafetyWireOptions = {
+  requiredLiquid?: boolean;
+  amazonRequiredLiquid?: boolean;
+  existingLiquid?: boolean;
+  omitRequiredReadback?: boolean;
   commitStatus?: 200 | 401 | 403 | 429;
   commitPayload?: unknown;
   readbackFailure?: "forbidden" | "rate_limited" | "transport";
@@ -284,12 +288,15 @@ type SafetyWireOptions = {
 function installDetachSafetyWire(options: SafetyWireOptions = {}) {
   let state: RelationshipState = options.initialState ?? "old";
   let commitPatches = 0;
+  let factValues: Record<string, unknown> = options.existingLiquid === undefined ? {} : { contains_liquid: [{ value: options.existingLiquid, marketplace_id: MARKETPLACE_ID }] };
+  const patchBodies: Array<{ patches: Array<{ path: string; value?: unknown }> }> = [];
   let previewPatches = 0;
   let detachedReads = 0;
   let sourceItemReads = 0;
   let targetChildSearchReads = 0;
   let commitRedirectMode: RequestRedirect | null = null;
   let commitTokenFailed = false;
+  let schemaChecksum = "child-schema-checksum";
   const fetchMock = vi.fn<typeof fetch>(async (rawInput, init) => {
     const url = new URL(rawInput instanceof Request ? rawInput.url : String(rawInput));
     const method = init?.method ?? "GET";
@@ -315,7 +322,19 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
     if (url.origin === "https://schema.example") {
       const childSchema = {
         type: "object",
+        ...(options.requiredLiquid ? { required: ["size_name", "contains_liquid"] } : {}),
+        ...(options.amazonRequiredLiquid ? { allOf: [{ if: { amazonConstraint: true }, then: { required: ["contains_liquid"] } }] } : {}),
         properties: {
+          ...(options.requiredLiquid || options.amazonRequiredLiquid ? {
+            contains_liquid: {
+              title: "Contains Liquid",
+              type: "array",
+              items: {
+                type: "object", required: ["value"],
+                properties: { value: { type: "boolean" }, marketplace_id: { type: "string" } },
+              },
+            },
+          } : {}),
           size_name: {
             type: "array",
             items: {
@@ -340,7 +359,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
     if (url.pathname.includes("/definitions/2020-09-01/productTypes/")) {
       return jsonResponse(200, {
         schema: {
-          checksum: "child-schema-checksum",
+          checksum: schemaChecksum,
           link: { resource: "https://schema.example/child.json" },
         },
         productType: "PET_FOOD",
@@ -348,9 +367,14 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
       }, "PTD");
     }
     if (method === "PATCH") {
+      const body = JSON.parse(String(init?.body));
+      patchBodies.push(body);
       const preview = url.searchParams.get("mode") === "VALIDATION_PREVIEW";
       if (preview) {
         previewPatches += 1;
+        if (options.amazonRequiredLiquid && !body.patches.some((patch: { path: string }) => patch.path === "/attributes/contains_liquid")) {
+          return jsonResponse(200, { status: "INVALID", issues: [{ code: "90220", severity: "ERROR", message: "contains_liquid is required but not supplied", attributeNames: ["contains_liquid"] }] }, "PATCH-MISSING-LIQUID");
+        }
         if (
           options.preCommitPreviewFailureStatus &&
           previewPatches >= 2 &&
@@ -372,7 +396,10 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
         throw new TypeError("redirect mode is error");
       }
       const status = options.commitStatus ?? 200;
-      if (status === 200) state = options.commitResultState ?? "detached";
+      if (status === 200) {
+        state = options.commitResultState ?? "detached";
+        if (!options.omitRequiredReadback) for (const patch of body.patches) if (patch.path === "/attributes/contains_liquid") factValues.contains_liquid = patch.value;
+      }
       if (status === 200 && options.stallCommitBody) {
         return new Response(new ReadableStream<Uint8Array>({
           start: () => undefined,
@@ -444,6 +471,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
         state === "old" ? OLD_PARENT : state === "new" ? TARGET_PARENT : null,
         "4 oz",
       );
+      Object.assign(payload.attributes, factValues);
       if (options.mixedMarketplaceDimensions) {
         (payload.attributes.size_name as Array<{
           value: string;
@@ -499,6 +527,8 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
   vi.stubGlobal("fetch", fetchMock);
   return {
     fetchMock,
+    patchBodies,
+    setSchemaChecksum: (value: string) => { schemaChecksum = value; },
     commitPatchCount: () => commitPatches,
     previewPatchCount: () => previewPatches,
     sourceItemReadCount: () => sourceItemReads,
@@ -521,7 +551,7 @@ function variationRouteRequest(
   };
 }
 
-async function durableVariationRouter(): Promise<ApiRouter> {
+async function durableVariationRouter(approveWrite: (reason: string) => Promise<void> = async () => undefined): Promise<ApiRouter> {
   const directory = await mkdtemp(join(tmpdir(), "amz-api-variation-precommit-"));
   const store = new LocalStore(join(directory, "store.json"));
   await store.initialize();
@@ -530,7 +560,7 @@ async function durableVariationRouter(): Promise<ApiRouter> {
     vault: {
       getAccountScope: async () => "variation-precommit-test-scope",
     } as unknown as CredentialVault,
-    approveWrite: async () => undefined,
+    approveWrite,
   });
 }
 
@@ -556,6 +586,98 @@ describe("live variation detach and attach wire safety", () => {
     for (const [key, value] of savedEnvironment) {
       if (value !== undefined) process.env[key] = value;
     }
+  });
+
+  it("turns Amazon conditional missing-attribute preview feedback into a PTD-proven fillable fact", async () => {
+    const wire = installDetachSafetyWire({ amazonRequiredLiquid: true, initialState: "detached" });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_FIELD_REQUIRED", requiredFields: [expect.objectContaining({ name: "contains_liquid", editable: true })],
+    });
+    const proposal = { ...input("attach"), requiredValues: { contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] } };
+    await expect(previewVariationMove(proposal)).resolves.toMatchObject({ status: "VALID" });
+    expect(wire.previewPatchCount()).toBe(2);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("exposes a missing CHILD PTD liquid fact as an unanswered boolean before Amazon preview", async () => {
+    const wire = installDetachSafetyWire({ requiredLiquid: true, initialState: "detached" });
+    const preparation = await getVariationMovePreparation({
+      marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT,
+    });
+    expect(preparation).toMatchObject({
+      action: "attach",
+      requiredFields: [expect.objectContaining({
+        name: "contains_liquid", values: [],
+        leaves: [expect.objectContaining({ path: ["value"], type: "boolean", currentValue: null })],
+      })],
+    });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("allows an explicitly answered false liquid fact in preview and one commit with canonical readback", async () => {
+    const wire = installDetachSafetyWire({ requiredLiquid: true, initialState: "detached", commitResultState: "new" });
+    const proposal = { ...input("attach"), requiredValues: { contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] } };
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code: "VARIATION_FIELD_REQUIRED" });
+    const preview = await previewVariationMove(proposal);
+    expect(preview.changes).toContainEqual({ name: "contains_liquid", label: "產品是否含液體", before: [], after: [{ value: false, marketplace_id: MARKETPLACE_ID }] });
+    await expect(updateVariationMove(proposal)).resolves.toMatchObject({ verified: true });
+    expect(wire.commitPatchCount()).toBe(1);
+    for (const body of wire.patchBodies) expect(body.patches.map((patch) => patch.path)).toEqual([
+      "/attributes/parentage_level", "/attributes/child_parent_sku_relationship", "/attributes/variation_theme", "/attributes/size_name", "/attributes/contains_liquid",
+    ]);
+  });
+
+  it("binds a supplementary-fact preview to the fresh PTD before native approval", async () => {
+    const wire = installDetachSafetyWire({ requiredLiquid: true });
+    const approve = vi.fn(async () => undefined);
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("detach"), requiredValues: { contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] }, idempotencyKey: "variation-required-schema-drift" };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    wire.setSchemaChecksum("child-schema-checksum-v2");
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_CHANGED" } });
+    expect(approve).not.toHaveBeenCalled();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("discloses supplemented facts in the native main-generated confirmation", async () => {
+    const wire = installDetachSafetyWire({ requiredLiquid: true });
+    const approve = vi.fn(async (_reason: string) => undefined);
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("detach"), requiredValues: { contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] }, idempotencyKey: "variation-required-native-review" };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).status).toBe(200);
+    expect(approve).toHaveBeenCalledWith(expect.stringContaining("產品是否含液體"));
+    expect(approve).toHaveBeenCalledWith(expect.stringContaining("false"));
+    expect(wire.commitPatchCount()).toBe(1);
+  });
+
+  it("reads detach required fields without requiring a target and leaves an existing false fact untouched", async () => {
+    const wire = installDetachSafetyWire({ requiredLiquid: true, existingLiquid: false });
+    const owner = wireOwner();
+    const prepared = responseValue(await owner.handle({ operation: "prepare", request: { requestId: "detach-facts", method: "GET", path: "/api/sp-api/variation-move", query: { marketplaceId: MARKETPLACE_ID, sku: SOURCE_SKU, action: "detach" }, headers: {} } }));
+    expect(prepared).toMatchObject({ action: "detach", targetParentSku: null, fields: [], requiredFields: [] });
+    await expect(previewVariationMove(input("detach"))).resolves.toMatchObject({ status: "VALID" });
+    expect(wire.patchBodies[0].patches.some((patch) => patch.path === "/attributes/contains_liquid")).toBe(false);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("keeps a supplementary-fact PATCH unknown and blocks same-key replay after transport rejection", async () => {
+    const wire = installDetachSafetyWire({ requiredLiquid: true, commitStatus: 403 });
+    const router = await durableVariationRouter();
+    const body = { ...input("detach"), requiredValues: { contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] }, idempotencyKey: "variation-required-unknown" };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect(wire.commitPatchCount()).toBe(1);
+  });
+
+  it("does not call a relationship complete until supplemented facts also appear in canonical readback", async () => {
+    const wire = installDetachSafetyWire({ requiredLiquid: true, omitRequiredReadback: true });
+    const proposal = { ...input("detach"), requiredValues: { contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] } };
+    await expect(updateVariationMove(proposal)).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+    expect(wire.commitPatchCount()).toBe(1);
   });
 
   it("uses CHILD PTD, exact delete/add patches and one commit per stage with verified readback", async () => {

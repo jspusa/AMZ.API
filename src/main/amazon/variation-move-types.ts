@@ -7,6 +7,7 @@ import type { VariationFieldDescriptor } from "./variation-update";
 export type VariationMoveAction = "detach" | "attach";
 
 export type VariationDetachInput = {
+  requiredValues?: Record<string, unknown>;
   action: "detach";
   marketplaceId: MarketplaceId;
   sellerSku: string;
@@ -18,6 +19,7 @@ export type VariationDetachInput = {
 };
 
 export type VariationAttachInput = {
+  requiredValues?: Record<string, unknown>;
   action: "attach";
   marketplaceId: MarketplaceId;
   sellerSku: string;
@@ -31,15 +33,17 @@ export type VariationAttachInput = {
 export type VariationMoveInput = VariationDetachInput | VariationAttachInput;
 
 export type VariationMovePreparation = {
+  action: VariationMoveAction;
   mode: "live" | "demo";
   marketplaceId: MarketplaceId;
   sellerSku: string;
   sourceParentSku: string | null;
-  targetParentSku: string;
+  targetParentSku: string | null;
   productType: string;
-  variationTheme: string;
+  variationTheme: string | null;
   dimensionNames: string[];
   fields: VariationFieldDescriptor[];
+  requiredFields: VariationFieldDescriptor[];
   preparedAt: string;
   requestIds: string[];
   writable: boolean;
@@ -49,6 +53,7 @@ export type VariationMovePreparation = {
 };
 
 export type VariationMovePreview = {
+  changes: Array<{ name: string; label: string; before: unknown; after: unknown }>;
   mode: "live" | "demo";
   action: VariationMoveAction;
   status: "VALID" | "SIMULATED";

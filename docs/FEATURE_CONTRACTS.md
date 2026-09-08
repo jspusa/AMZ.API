@@ -1,5 +1,15 @@
 # 功能驗收契約
 
+## 2026-09-08 變體工作台與價目表
+
+- 變體主入口使用單層寬版 workspace。來源／目標查詢、Seller SKU、目標 children 參考值、待辦與目前階段必須可見；點選及按鈕可完成所有步驟，不依賴拖曳。返回恢復原選單焦點與捲動，寫入忙碌期間禁止離開。
+- 解除與加入都讀 seller-specific CHILD PTD。缺少的必填商品事實提供相符輸入；布林沒有預設答案。既有 exact child 事實保持唯讀，部分缺漏只補缺少的 leaf，不能藉此覆寫已知值。無法安全編輯的結構明示原因，不能偽裝可送出。
+- 必填事實、維度與 parent 變更共同出現在 canonical diff 與 native prompt，綁 exact context、身分、schema 與 preview。編輯即作廢原 Preview；兩階段各自 fresh Preview、native approval、durable claim、single PATCH、canonical GET。結果不明只允許回查，不恢復重送按鈕。
+- US 價目表允許 25 MiB 以下 `.xlsx`，上限只套用精確匯入 route，不擴大既有文案或圖片上傳。原檔只留 main memory，保留工作表順序、圖片、公式及合併；原檔下載必須 exact bytes。匯入不執行公式或存取外部連線，危險 XML、巨集與超限壓縮檔拒絕。
+- 原表檢視及輸出保留原欄位，Amazon 售價、最低價格設定與差額在旁比對。★ 有差異／☆ 相同／待確認保持不同；未設定與未取得不是零。表上最低活動價與平台最低價格設定分別說明用途，不自動改價。替換 Amazon 首圖需明確勾選，沒有取得首圖保留原圖。
+- 公司貨號不得自動當 Seller SKU；只採 exact Seller SKU 或同次 current FBA 唯一 ASIN 對應。歧義、重複、未配對與 incomplete 列可見但不冒充相符。價格使用 exact US Listing 的 ALL／USD contribution，不混用 B2B、Buy Box 或促銷顯示價。
+- Amazon 讀取由 main 以 account／mode／marketplace／generation 綁定單一工作；GET 只觀察，鎖定／睡眠／安全 context 失效清除，遲到結果不能復活。首圖下載固定 Amazon image host、HTTPS、禁止 redirect、有大小與時間上限；renderer 不指定 arbitrary URL 或匯出價格。第二份 Excel 比對列出新增、移除、重複及欄位變更。
+
 從 2026-09-04 交接入口逐字保留的功能契約。這些是驗收條件，並非本版已在真實裝置或 Amazon 通過的聲稱。修改相關功能前讀取對應條款；目前實測狀態以 [版本證據](releases/2026-09-review-evidence.md) 與 [live 驗收矩陣](releases/2026-09-live-acceptance.md) 為準。
 
 ## 11. 完成定義

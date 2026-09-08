@@ -242,7 +242,7 @@ describe("dashboard top navigation layout", () => {
     ]) {
       expect(source).toContain(`<h2>{AUDIT_SUITE_SECTION_LABELS.${id}}</h2>`);
     }
-    for (const label of ["文案", "圖片", "變體", "定價", "促銷", "訂閱價格健檢", "B2B 價格健檢", "補貨", "廣告", "帳務"]) {
+    for (const label of ["文案", "圖片", "變體", "價目表", "定價", "促銷", "訂閱價格健檢", "B2B 價格健檢", "補貨", "廣告", "帳務"]) {
       expect(source).toContain(`label: "${label}"`);
     }
     expect(source).toContain('role="menuitem"');
@@ -257,12 +257,12 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("data-audit-workspace-launch");
     expect(source).toContain("returnTarget.scrollY");
     expect(source).toContain("focus({ preventScroll: true })");
-    expect(source).toContain("disabled={Boolean(activeAuditWorkspace)}");
+    expect(source).toContain("disabled={Boolean(activeAuditWorkspace) || inlineTool}");
     expect(source).toContain(
       "disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null}",
     );
     expect(source).toContain(
-      "inert={openTool !== null ? true : undefined}",
+      "inert={openTool !== null && !inlineTool ? true : undefined}",
     );
     expect(source).toContain("if (openTool !== null) return;");
     expect(source).toContain(
@@ -278,7 +278,7 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("<ReviewAuditPanel");
     expect(source).toContain("openReportExport");
     expect(source).toContain('label: "報表區"');
-    expect(source).toContain('tools: ["price", "promotion", "subscriptions", "business-pricing"]');
+    expect(source).toContain('tools: ["price-list", "price", "promotion", "subscriptions", "business-pricing"]');
     expect(source).toContain('tools: ["restock", "ads", "accounting"]');
     expect(source).toContain('tools: ["inbound"]');
     expect(source).toContain("section.tools.length + index");

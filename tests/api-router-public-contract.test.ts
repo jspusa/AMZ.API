@@ -25,6 +25,14 @@ type RoutePair = Readonly<{
 }>;
 
 const REVIEWED_ROUTES = [
+  { method: "POST", path: "/api/price-list/import" },
+  { method: "POST", path: "/api/price-list/compare" },
+  { method: "GET", path: "/api/price-list/export" },
+  { method: "GET", path: "/api/price-list/image" },
+  { method: "POST", path: "/api/price-list/clear" },
+  { method: "POST", path: "/api/price-list/amazon-refresh" },
+  { method: "GET", path: "/api/price-list/amazon-refresh" },
+  { method: "POST", path: "/api/price-list/amazon-export" },
   { method: "GET", path: "/api/sp-api/orders" },
   { method: "GET", path: "/api/sp-api/sales-trend" },
   { method: "POST", path: "/api/sp-api/brand-sales" },
@@ -459,7 +467,7 @@ describe("ApiRouter public contract", () => {
     const reviewed = REVIEWED_ROUTES.map(routeKey);
     const production = productionRouteInventory();
 
-    expect(REVIEWED_ROUTES).toHaveLength(73);
+    expect(REVIEWED_ROUTES).toHaveLength(81);
     expect(new Set(reviewed).size).toBe(reviewed.length);
     expect(production.statementCount).toBe(2);
     expect(production.keyDeclarationIsExact).toBe(true);
@@ -467,7 +475,7 @@ describe("ApiRouter public contract", () => {
     expect(production.switchExpressionIsKey).toBe(true);
     expect(production.defaultCount).toBe(1);
     expect(production.defaultIsExactNotFound).toBe(true);
-    expect(production.cases).toHaveLength(73);
+    expect(production.cases).toHaveLength(81);
     expect(new Set(production.cases).size).toBe(production.cases.length);
     expect([...production.cases].sort()).toEqual([...reviewed].sort());
   });

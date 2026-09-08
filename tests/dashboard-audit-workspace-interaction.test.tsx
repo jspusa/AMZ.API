@@ -92,6 +92,7 @@ describe("dashboard audit workspace interactions", () => {
     const headingFocus = Object.fromEntries(
       AUDIT_SUITE_SECTIONS.map(({ label }) => [label, vi.fn()]),
     ) as Record<string, ReturnType<typeof vi.fn>>;
+    const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn() };
     let renderer: ReactTestRenderer | null = null;
     const querySelector = vi.fn((selector: string) => {
       const sectionId = selector.match(
@@ -200,6 +201,10 @@ describe("dashboard audit workspace interactions", () => {
           if (element.type === "nav") {
             return { contains: () => false, querySelectorAll: () => [] };
           }
+          if (element.type === "button" && element.props["aria-label"] in menuFocus) {
+            return { focus: menuFocus[element.props["aria-label"] as keyof typeof menuFocus] };
+          }
+          if (element.type === "h2") return { focus: vi.fn() };
           return {};
         },
       });
@@ -284,6 +289,30 @@ describe("dashboard audit workspace interactions", () => {
       expect(scrollTo).toHaveBeenLastCalledWith(0, savedScrollY);
       expect(windowMock.scrollY).toBe(savedScrollY);
       expect(root.findAllByProps({ "aria-current": "location" })).toHaveLength(0);
+    }
+
+    for (const [group, label, className] of [
+      ["產品區", "變體", "variation-workspace"],
+      ["價格區", "價目表", "price-list-workspace"],
+    ] as const) {
+      windowMock.scrollY = 900;
+      await act(async () => root.findAllByType("button").find((button) => button.props["aria-label"] === group)!.props.onClick());
+      const item = root.findAllByProps({ role: "menuitem" }).find((button) => button.findByType("strong").children.join("") === label)!;
+      await act(async () => { item.props.onClick(); });
+      await act(async () => { await vi.dynamicImportSettled(); });
+      await flushAnimationFrames();
+      expect(root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+      expect(root.findByProps({ className: "workspace-surface" }).props.inert).toBeUndefined();
+      expect(root.findAllByType("button").find((button) => button.props["aria-label"] === group)!.props.disabled).toBe(true);
+      const workspace = root.findAll((node) => typeof node.type === "string" && String(node.props.className ?? "").split(/\s+/u).includes(className))[0];
+      expect(workspace).toBeDefined();
+      const back = workspace.findAllByType("button").find((button) => button.props["aria-label"] === "關閉變體規劃" || button.children.join("") === "← 返回首頁")!;
+      expect(back).toBeDefined();
+      await act(async () => back.props.onClick());
+      await flushAnimationFrames();
+      expect(menuFocus[group]).toHaveBeenCalledWith({ preventScroll: true });
+      expect(scrollTo).toHaveBeenLastCalledWith({ top: 900, behavior: "instant" });
+      expect(root.findAllByProps({ "data-audit-workspace-launch": "content" })).toHaveLength(1);
     }
 
     await act(async () => renderer!.unmount());
