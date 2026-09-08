@@ -737,17 +737,6 @@ export default function SalesTrendChart({
         </div>
       </div>
 
-      {snapshot && (
-        <details className="sales-trend-secondary">
-          <summary>明細</summary>
-          <dl className="sales-trend-metrics">
-            <div><dt>訂單</dt><dd>{snapshot.totals.orderCount.toLocaleString()}<small>筆</small></dd></div>
-            <div><dt>銷售件數</dt><dd>{snapshot.totals.unitCount.toLocaleString()}<small>件</small></dd></div>
-            <div className="sales-trend-prior-total"><dt>去年同期銷售</dt><dd>{snapshot.comparison ? formatMoney(snapshot.comparison.totals.totalSales) : "無比較資料"}</dd></div>
-          </dl>
-        </details>
-      )}
-
       {customOpen && (
         <div id={customPanelId} className="sales-trend-custom-range">
           <label className="sales-trend-day-count">
@@ -838,6 +827,14 @@ export default function SalesTrendChart({
 
       {snapshot && (
         <div className="sales-trend-toolbar">
+          <details className="sales-trend-secondary">
+            <summary>明細</summary>
+            <dl className="sales-trend-metrics">
+              <div><dt>訂單</dt><dd>{snapshot.totals.orderCount.toLocaleString()}<small>筆</small></dd></div>
+              <div><dt>銷售件數</dt><dd>{snapshot.totals.unitCount.toLocaleString()}<small>件</small></dd></div>
+              <div className="sales-trend-prior-total"><dt>去年同期銷售</dt><dd>{snapshot.comparison ? formatMoney(snapshot.comparison.totals.totalSales) : "無比較資料"}</dd></div>
+            </dl>
+          </details>
           <div className="sales-trend-legend" aria-label="折線圖圖例">
             <span><i className="is-current" aria-hidden="true" />本期 {currentYears}</span>
             {snapshot.comparison && (
