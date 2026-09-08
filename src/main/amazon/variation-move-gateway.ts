@@ -45,6 +45,7 @@ export type VariationMovePrepareRequest =
 export type VariationMoveSourceObservation = VariationMoveIdentity & Readonly<{
   retainedVariationThemeSignature?: string;
   requiredFields?: readonly VariationFieldDescriptor[];
+  requiredFieldChoices?: readonly VariationFieldDescriptor[];
   requiredSchemaChecksum?: string | null;
   asin: string | null;
   productType: string | null;
@@ -164,6 +165,7 @@ export type VariationMoveCanonicalObservation = VariationMoveObservation &
 
 export type VariationMoveValidationReceipt = Readonly<{
   requiredFields?: readonly VariationFieldDescriptor[];
+  requiredFieldChoices?: readonly VariationFieldDescriptor[];
   status: "VALID" | "INVALID" | "UNKNOWN";
   requestId: string | null;
   issues: readonly ListingIssue[];

@@ -37,6 +37,7 @@ export type VariationMovePreparation = {
   dimensionNames: string[];
   fields: VariationFieldView[];
   requiredFields: VariationFieldView[];
+  requiredFieldChoices?: VariationFieldView[];
   preparedAt: string;
   requestIds: string[];
   writable: boolean;
@@ -202,6 +203,8 @@ export function parseVariationMovePreparation(
     typeof raw.writable !== "boolean" ||
     !isStrings(raw.blockers) ||
     !isStrings(raw.warnings) ||
+    (raw.requiredFieldChoices !== undefined &&
+      parseVariationRequiredFields(raw.requiredFieldChoices) === null) ||
     typeof raw.notice !== "string"
   ) {
     throw new Error(
@@ -250,6 +253,9 @@ export function parseVariationMovePreview(
     typeof raw.notice !== "string"
   ) {
     throw new Error("Amazon 變體預檢回應不完整，已停止送出。");
+  }
+  if (raw.issues.some((issue) => issue.severity.toUpperCase() === "ERROR")) {
+    throw new Error("Amazon 變體預檢尚未通過，已停止送出。");
   }
   return raw as VariationMovePreview;
 }

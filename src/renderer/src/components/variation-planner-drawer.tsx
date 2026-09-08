@@ -133,6 +133,7 @@ class VariationRequestError extends Error {
       sellerSku?: unknown;
       targetParentSku?: unknown;
     },
+    readonly requiredFieldChoices: VariationFieldView[] | null = null,
   ) {
     super(message);
   }
@@ -146,6 +147,7 @@ async function responseError(
     message?: string;
     requestId?: string | null;
     requiredFields?: unknown;
+    requiredFieldChoices?: unknown;
     action?: unknown;
     marketplaceId?: unknown;
     sellerSku?: unknown;
@@ -171,6 +173,9 @@ async function responseError(
       ? parseVariationRequiredFields(problem.requiredFields)
       : null,
     problem,
+    problem.code === "VARIATION_FIELD_REQUIRED"
+      ? parseVariationRequiredFields(problem.requiredFieldChoices)
+      : null,
   );
 }
 
@@ -218,6 +223,9 @@ export default function VariationPlannerDrawer({
   );
   const [stagedState, setStagedState] = useState<StagedState>("planned");
   const [preparations, setPreparations] = useState<PreparedStages>({});
+  const [selectedFieldChoices, setSelectedFieldChoices] = useState<
+    Partial<Record<VariationMoveAction, VariationFieldView[]>>
+  >({});
   const [values, setValues] = useState<Values>({});
   const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -237,10 +245,14 @@ export default function VariationPlannerDrawer({
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [failedPreviewAction, setFailedPreviewAction] =
+    useState<VariationMoveAction | null>(null);
   const [sourceFilter, setSourceFilter] = useState("");
   const [uncertain, setUncertain] = useState(false);
   const sourceAbortRef = useRef<AbortController | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const requiredFieldsHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const focusRequiredFieldsRef = useRef(false);
   const targetAbortRef = useRef<AbortController | null>(null);
   const preparationAbortRef = useRef<AbortController | null>(null);
   const autoLookupRef = useRef(false);
@@ -279,17 +291,24 @@ export default function VariationPlannerDrawer({
     () => [
       ...new Map(
         [
+          ...(selectedFieldChoices.detach ?? []),
+          ...(selectedFieldChoices.attach ?? []),
           ...(preparations.detach?.requiredFields ?? []),
           ...(preparations.attach?.requiredFields ?? []),
         ].map((field) => [field.name, field]),
       ).values(),
     ],
-    [preparations],
+    [preparations, selectedFieldChoices],
   );
 
   useEffect(() => {
     if (presentation === "workspace") headingRef.current?.focus();
   }, [presentation]);
+  useEffect(() => {
+    if (!focusRequiredFieldsRef.current) return;
+    focusRequiredFieldsRef.current = false;
+    requiredFieldsHeadingRef.current?.focus();
+  }, [requiredFields]);
 
   useEffect(() => {
     onBusyChange?.(busy);
@@ -321,12 +340,14 @@ export default function VariationPlannerDrawer({
   const clearPlan = useCallback(() => {
     preparationAbortRef.current?.abort();
     setPreparations({});
+    setSelectedFieldChoices({});
     setValues({});
     setJsonDrafts({});
     setFieldErrors({});
     setPreview(null);
     setLastResult(null);
     setWorkflowError(null);
+    setFailedPreviewAction(null);
   }, []);
   const fetchFamily = useCallback(
     async (
@@ -424,8 +445,10 @@ export default function VariationPlannerDrawer({
       setTargetError(null);
       setTargetFamily(null);
       setPreparations({});
+      setSelectedFieldChoices({});
       setPreview(null);
       setWorkflowError(null);
+      setFailedPreviewAction(null);
       try {
         const family = await fetchFamily(identifier, kind, controller.signal);
         if (controller.signal.aborted || targetAbortRef.current !== controller)
@@ -494,8 +517,10 @@ export default function VariationPlannerDrawer({
       preparationAbortRef.current = controller;
       setPreparing(true);
       setPreparations({});
+      setSelectedFieldChoices({});
       setPreview(null);
       setWorkflowError(null);
+      setFailedPreviewAction(null);
       const actions: VariationMoveAction[] = [
         ...(member.parentSku ? ["detach" as const] : []),
         ...(target ? ["attach" as const] : []),
@@ -708,15 +733,37 @@ export default function VariationPlannerDrawer({
     setTargetError(null);
     setUncertain(false);
   };
-  const missingFor = (action: VariationMoveAction) =>
-    preparations[action]
-      ? missingVariationFields(preparations[action]!, values)
-      : ["等待讀取必填資料"];
+  const preparationFor = (action: VariationMoveAction) => {
+    const prepared = preparations[action];
+    if (!prepared) return null;
+    return {
+      ...prepared,
+      requiredFields: [
+        ...prepared.requiredFields,
+        ...(selectedFieldChoices[action] ?? []).filter(
+          (choice) => !prepared.requiredFields.some((field) => field.name === choice.name),
+        ),
+      ],
+    };
+  };
+  const missingFor = (action: VariationMoveAction) => {
+    const prepared = preparationFor(action);
+    if (!prepared) return ["等待讀取必填資料"];
+    const needsChoice = prepared.requiredFieldChoices?.some(
+      (choice) => choice.editable && !choice.jsonFallback &&
+        !prepared.requiredFields.some((field) => field.name === choice.name),
+    ) &&
+      !selectedFieldChoices[action]?.length;
+    return [
+      ...missingVariationFields(prepared, values),
+      ...(needsChoice ? ["選擇要補充的商品欄位"] : []),
+    ];
+  };
   const canPreview = (action: VariationMoveAction) =>
     Boolean(
       stagedMember &&
       preparations[action]?.writable &&
-        !preparations[action]?.requiredFields.some(
+        !preparationFor(action)?.requiredFields.some(
           (field) => !field.editable,
         ) &&
       sourceFamily?.mode === "live" &&
@@ -734,7 +781,7 @@ export default function VariationPlannerDrawer({
     Object.fromEntries(names.map((name) => [name, values[name] ?? []]));
   const runPreview = async (action: VariationMoveAction) => {
     if (operationRef.current || !canPreview(action) || !stagedMember) return;
-    const prepared = preparations[action]!;
+    const prepared = preparationFor(action)!;
     const body: WriteBody = {
       action,
       marketplaceId,
@@ -754,6 +801,7 @@ export default function VariationPlannerDrawer({
     setWriteAction(action);
     setPreview(null);
     setWorkflowError(null);
+    setFailedPreviewAction(null);
     try {
       const response = await fetch("/api/sp-api/variation-move", {
         method: "POST",
@@ -769,28 +817,39 @@ export default function VariationPlannerDrawer({
       });
       setPreview({ body, result });
     } catch (error) {
+      setFailedPreviewAction(action);
       if (
         error instanceof VariationRequestError &&
-        error.requiredFields?.length &&
+        (error.requiredFields?.length || error.requiredFieldChoices?.length) &&
         error.binding?.action === body.action &&
         error.binding.marketplaceId === body.marketplaceId &&
         error.binding.sellerSku === body.sellerSku &&
         error.binding.targetParentSku === body.targetParentSku
       ) {
-        const additional = error.requiredFields;
+        const additional = error.requiredFields ?? [];
+        const choices = error.requiredFieldChoices;
+        const previousPreparation = preparations[action]!;
+        focusRequiredFieldsRef.current = true;
         setPreparations((current) => ({
           ...current,
           [action]: {
-            ...prepared,
+            ...previousPreparation,
             requiredFields: [
               ...new Map(
-                [...prepared.requiredFields, ...additional].map((field) => [
-                  field.name,
-                  field,
-                ]),
+                [...previousPreparation.requiredFields, ...additional].map(
+                  (field) => [field.name, field],
+                ),
               ).values(),
             ],
+            requiredFieldChoices: choices ?? previousPreparation.requiredFieldChoices,
           },
+        }));
+        setSelectedFieldChoices((current) => ({
+          ...current,
+          [action]: (current[action] ?? []).filter(
+            (choice) => !additional.some((field) => field.name === choice.name) &&
+              (!choices || choices.some((field) => field.name === choice.name)),
+          ),
         }));
         const defaults = initialVariationDimensionValues({
           ...prepared,
@@ -808,7 +867,9 @@ export default function VariationPlannerDrawer({
           ...current,
         }));
         setWorkflowError(
-          `Amazon 需要補充資料，已在上方加入欄位：${additional.map(fieldLabel).join("、")}。填完後可重新檢查；尚未送出修改。`,
+          additional.length
+            ? `Amazon 需要補充資料，已在上方加入欄位：${additional.map(fieldLabel).join("、")}。填完後可重新檢查；尚未送出修改。`
+            : "Amazon 預檢未通過，無法確認要補的欄位。請在上方選擇要補充的商品資料，再重新檢查；尚未送出修改。",
         );
       } else
         setWorkflowError(
@@ -918,6 +979,38 @@ export default function VariationPlannerDrawer({
     );
     setFieldErrors((current) => ({ ...current, [field.name]: "" }));
   };
+  const chooseField = (action: VariationMoveAction, name: string) => {
+    if (busy || uncertain || stagedState === "attached") return;
+    const prepared = preparations[action];
+    const choice = prepared?.requiredFieldChoices?.find(
+      (field) => field.name === name && field.editable && !field.jsonFallback &&
+        !prepared.requiredFields.some((required) => required.name === name) &&
+        !selectedFieldChoices[action]?.some((selected) => selected.name === name),
+    );
+    if (!prepared || !choice) return;
+    setPreview(null);
+    focusRequiredFieldsRef.current = true;
+    setSelectedFieldChoices((current) => ({
+      ...current,
+      [action]: [...(current[action] ?? []), choice],
+    }));
+    const defaults = initialVariationDimensionValues({
+      ...prepared,
+      fields: [],
+      requiredFields: [choice],
+    });
+    setValues((current) => ({ ...defaults, ...current }));
+  };
+  const removeSelectedField = (name: string) => {
+    if (busy || uncertain || stagedState === "attached") return;
+    setPreview(null);
+    setSelectedFieldChoices((current) =>
+      Object.fromEntries(Object.entries(current).map(([action, fields]) => [
+        action,
+        fields.filter((field) => field.name !== name),
+      ])),
+    );
+  };
   const renderEditor = (field: VariationFieldView, fillOnly = false) => (
     <VariationFieldEditor
       fillOnly={fillOnly}
@@ -930,6 +1023,16 @@ export default function VariationPlannerDrawer({
         busy || stagedState === "attached" || uncertain || !field.editable
       }
       onLeafChange={(leaf, value) => updateLeaf(field, leaf, value)}
+      onRemove={
+        Object.values(selectedFieldChoices).some((fields) =>
+          fields.some((choice) => choice.name === field.name),
+        ) &&
+        !Object.values(preparations).some((prepared) =>
+          prepared?.requiredFields.some((required) => required.name === field.name),
+        )
+          ? () => removeSelectedField(field.name)
+          : undefined
+      }
       onJsonDraftChange={(text) => {
         setPreview(null);
         setJsonDrafts((current) => ({ ...current, [field.name]: text }));
@@ -1431,16 +1534,48 @@ export default function VariationPlannerDrawer({
             </div>
           </>
         )}
-        {requiredFields.length > 0 && (
+        {(requiredFields.length > 0 || Object.values(preparations).some(
+          (prepared) => prepared?.requiredFieldChoices?.length,
+        )) && (
           <>
-            <h4 className="variation-form-heading">
-              Amazon 必填商品資料{" "}
+            <h4
+              className="variation-form-heading"
+              id="variation-required-fields-title"
+              ref={requiredFieldsHeadingRef}
+              tabIndex={-1}
+            >
+              Amazon 必填商品資料／自選補充{" "}
               <span className="variation-required-badge">需要確認</span>
             </h4>
             <p className="variation-form-note">
-              這些欄位由這個商品的 Amazon
-              定義要求。請依商品事實填寫；「否」也必須由你選擇。
+              必填欄位與可選項目來自這個商品的 Amazon 定義。
+              請依商品事實填寫；「否」也必須由你選擇。
             </p>
+            {Object.entries(preparations).map(([action, prepared]) =>
+              prepared?.requiredFieldChoices?.length ? (
+                <label className="variation-field-card" key={action}>
+                  <span>{action === "detach" ? "解除" : "綁定"}要補充的商品欄位</span>
+                  <small>只加入你確認需要補充的欄位；候選項目不代表全部必填。</small>
+                  <select
+                    aria-label={`${action === "detach" ? "解除" : "綁定"}要補充的商品欄位`}
+                    value=""
+                    disabled={busy || uncertain || stagedState === "attached"}
+                    onChange={(event) => chooseField(action as VariationMoveAction, event.target.value)}
+                  >
+                    <option value="">請選擇要補充的欄位</option>
+                    {prepared.requiredFieldChoices.filter((choice) =>
+                      choice.editable && !choice.jsonFallback &&
+                      !prepared.requiredFields.some((field) => field.name === choice.name) &&
+                      !selectedFieldChoices[action as VariationMoveAction]?.some((field) => field.name === choice.name),
+                    ).map((choice) => (
+                      <option key={choice.name} value={choice.name}>
+                        {choice.label}（{choice.name}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null,
+            )}
             <div className="variation-field-grid">
               {requiredFields.map((field) => renderEditor(field, true))}
             </div>
@@ -1534,6 +1669,9 @@ export default function VariationPlannerDrawer({
                 {stagedMember && missingFor("detach").length > 0 && (
                   <small>待填：{missingFor("detach").join("、")}</small>
                 )}
+                {failedPreviewAction === "detach" && !missingFor("detach").length && (
+                  <small>預檢未通過，請依上方提示處理後重新檢查。</small>
+                )}
               </>
             )}
           </div>
@@ -1569,7 +1707,9 @@ export default function VariationPlannerDrawer({
                       ? "請先讀取目標 family"
                       : missingFor("attach").length
                         ? `待填：${missingFor("attach").join("、")}`
-                        : "資料已齊，請檢查修改內容"}
+                        : failedPreviewAction === "attach"
+                          ? "預檢未通過，請依上方提示處理後重新檢查。"
+                          : "目前欄位已填，仍須 Amazon 預檢確認"}
                 </small>
               </>
             )}
@@ -1918,6 +2058,7 @@ function VariationFieldEditor({
   fillOnly,
   onLeafChange,
   onJsonDraftChange,
+  onRemove,
 }: {
   fillOnly: boolean;
   field: VariationFieldView;
@@ -1930,6 +2071,7 @@ function VariationFieldEditor({
     value: string | number | boolean | null,
   ) => void;
   onJsonDraftChange: (value: string) => void;
+  onRemove?: () => void;
 }) {
   const label = fieldLabel(field);
   const preserveExisting =
@@ -1955,6 +2097,16 @@ function VariationFieldEditor({
         <span aria-label="必填"> *</span>
       </legend>
       <small className="variation-field-name">{field.name}</small>
+      {onRemove && (
+        <button
+          type="button"
+          className="variation-secondary-button"
+          onClick={onRemove}
+          aria-label={`移除自選欄位 ${field.name}`}
+        >
+          移除自選欄位
+        </button>
+      )}
       {!field.editable && (
         <p className="variation-warning">
           {field.jsonFallback || field.values.length > 1

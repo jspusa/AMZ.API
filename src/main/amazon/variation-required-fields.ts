@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { publicSpApiListingIssues } from "./sp-api-error";
 import {
   variationFieldDescriptors,
   VariationUpdateValidationError,
@@ -102,22 +103,41 @@ function requiredNames(root: RecordValue, value: unknown): string[] {
   return [...names];
 }
 
-/** An Amazon issue can select a conditional requirement only if this exact PTD declares it. */
-export function ptdDeclaredRequiredNames(schema: unknown): Set<string> {
-  const names = new Set<string>();
-  if (!record(schema)) return names;
+/** Attribute identities from the current CHILD PTD, never from renderer text. */
+export function ptdAttributeDefinitions(
+  schema: unknown,
+): Map<string, readonly string[]> {
+  const definitions = new Map<string, Set<string>>();
+  if (!record(schema)) return new Map();
   let budget = 2_000;
   const visit = (candidate: unknown, depth = 0) => {
-    if (--budget < 0 || depth > 12) return;
+    if (--budget < 0 || depth > 12)
+      fail("Amazon PTD 欄位規格超過安全上限，請重新讀取。");
     const node = resolved(schema, candidate);
-    if (Array.isArray(node.required)) for (const name of node.required) {
-      if (typeof name === "string" && /^[a-z][a-z0-9_]{0,79}$/u.test(name)) names.add(name);
+    if (record(node.properties))
+      for (const [name, property] of Object.entries(node.properties)) {
+        if (!/^[a-z][a-z0-9_]{0,79}$/u.test(name) || !record(property))
+          continue;
+        const titles = definitions.get(name) ?? new Set<string>();
+        const title = resolved(schema, property).title;
+        if (
+          typeof title === "string" &&
+          title.length > 0 &&
+          title.length <= 200 &&
+          title === title.trim() &&
+          publicSpApiListingIssues([
+            { code: "PTD_FIELD_TITLE", severity: "ERROR", message: title },
+          ])[0]?.message === title
+        )
+          titles.add(title);
+        definitions.set(name, titles);
+      }
+    for (const key of ["allOf", "anyOf", "oneOf"]) {
+      if (Array.isArray(node[key])) node[key].forEach((child) => visit(child, depth + 1));
     }
-    for (const key of ["allOf", "anyOf", "oneOf"]) if (Array.isArray(node[key])) node[key].forEach((child) => visit(child, depth + 1));
-    for (const key of ["then", "else"]) if (node[key]) visit(node[key], depth + 1);
   };
   visit(schema);
-  return names;
+  return new Map([...definitions].map(([name, titles]) => [name, [...titles]]));
 }
 
 function leafValue(value: unknown, path: readonly string[]): unknown {
@@ -139,14 +159,18 @@ function currentValues(attributes: RecordValue | undefined, name: string, market
   return values.filter(record).filter((entry) => entry.marketplace_id === marketplaceId || entry.marketplace_id === undefined);
 }
 
-export function variationRequiredFieldDescriptors(input: {
+type RequiredFieldContext = {
   schema: unknown; attributes?: RecordValue; marketplaceId: string;
   dimensionNames: readonly string[]; action: "detach" | "attach";
   targetParentSku?: string | null; variationTheme?: string | null;
   proposedValues?: Readonly<RecordValue>;
   dimensionValues?: Readonly<RecordValue>;
   issueRequiredNames?: readonly string[];
-}): VariationFieldDescriptor[] {
+};
+
+export function variationRequiredFieldDescriptors(
+  input: RequiredFieldContext,
+): VariationFieldDescriptor[] {
   if (!record(input.schema)) return [];
   const scopedAttributes = Object.fromEntries(Object.keys(input.attributes ?? {}).flatMap((name) => {
     const values = currentValues(input.attributes, name, input.marketplaceId);
@@ -161,7 +185,12 @@ export function variationRequiredFieldDescriptors(input: {
     for (const name of input.dimensionNames) if (input.dimensionValues?.[name] !== undefined) projected[name] = input.dimensionValues[name];
   }
   // Only answers to already required facts may select a further conditional branch.
-  const issueNames = (input.issueRequiredNames ?? []).filter((name) => ptdDeclaredRequiredNames(input.schema).has(name));
+  // These names come only from main's exact Preview evidence. Amazon may
+  // require a declared optional field for this particular relationship update.
+  const definitions = ptdAttributeDefinitions(input.schema);
+  const issueNames = (input.issueRequiredNames ?? []).filter((name) =>
+    definitions.has(name),
+  );
   const projectedRequiredNames = () => [...new Set([...requiredNames(input.schema as RecordValue, projected), ...issueNames])];
   const applied = new Set<string>();
   for (let step = 0; step < 30; step += 1) {
@@ -177,13 +206,37 @@ export function variationRequiredFieldDescriptors(input: {
     attributes: scopedAttributes, marketplaceId: input.marketplaceId }).filter((field) =>
       !field.values.some(meaningful) || field.values.some((value) => field.leaves.some((leaf) =>
         leaf.required && !meaningful(leafValue(value, leaf.path))))).map((field) => ({
-      ...field, label: labels[field.name] ?? field.label,
+      ...field,
+      label:
+        labels[field.name] ?? definitions.get(field.name)?.[0] ?? field.label,
       editable: field.editable && !field.jsonFallback && field.values.length <= 1 &&
         (input.attributes?.[field.name] === undefined || Array.isArray(input.attributes[field.name]) &&
           (input.attributes[field.name] as unknown[]).every((value) => record(value) && (value.marketplace_id === undefined || typeof value.marketplace_id === "string" && value.marketplace_id.length > 0 && value.marketplace_id === value.marketplace_id.trim()))) && !protectedNames.has(field.name) && !/(?:price|offer|shipping|fulfillment|inventory|availability|image_locator)/u.test(field.name),
     }));
   if (fields.length > 30) fail("缺少的 Amazon 必填產品資料超過 30 欄，請先在商品編輯補齊基本資料。");
   return fields;
+}
+
+/** Candidate identities require private Preview evidence; only explicit selections become required. */
+export function variationRequiredFieldChoices(
+  input: RequiredFieldContext,
+  names: readonly string[],
+): VariationFieldDescriptor[] {
+  const choices: VariationFieldDescriptor[] = [];
+  for (const name of [...new Set(names)].slice(0, 200)) {
+    try {
+      const field = variationRequiredFieldDescriptors({
+        ...input,
+        issueRequiredNames: [name],
+      }).find((candidate) => candidate.name === name);
+      if (field?.editable) choices.push(field);
+    } catch (error) {
+      if (!(error instanceof VariationUpdateValidationError)) throw error;
+      // Unsupported candidate structure grants no editable field.
+    }
+    if (choices.length === 30) break;
+  }
+  return choices;
 }
 
 /** Product facts are fill-only: existing answers and unrelated attributes cannot be overwritten. */
