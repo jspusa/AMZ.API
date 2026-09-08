@@ -1,3 +1,7 @@
+import {
+  listingItemReadScopeMatches,
+  type ListingItemReadScope,
+} from "./listing-item-read-scope";
 export type VariationPatchOperation = {
   op: "add" | "replace" | "delete";
   path: string;
@@ -571,6 +575,8 @@ export function preservedStandaloneVariationTheme(input: {
   marketplaceId: string;
   variationTheme: string;
   attributes?: Record<string, unknown>;
+  sourceSellerSku?: string;
+  singleMarketplaceScope?: ListingItemReadScope;
 }): JsonRecord[] {
   const fail = (detail: string): never => {
     throw new VariationUpdateValidationError(
@@ -586,10 +592,23 @@ export function preservedStandaloneVariationTheme(input: {
     for (const row of raw) {
       if (!isRecord(row)) return fail(`${name} 含有無法辨識的值`);
       const marketplace = row.marketplace_id;
+      if (name === "variation_theme" && !Object.hasOwn(row, "marketplace_id")) {
+        if (!listingItemReadScopeMatches({
+          scope: input.singleMarketplaceScope,
+          marketplaceId: input.marketplaceId,
+          sellerSku: input.sourceSellerSku,
+          attributes: input.attributes,
+        })) {
+          return fail("variation_theme 未帶站點欄位，且缺少完整單站讀取證據");
+        }
+        // Preserve this exact raw row only; omission is never a selector default.
+        rows.push(row);
+        continue;
+      }
       if (
         typeof marketplace !== "string" || !marketplace ||
         marketplace !== marketplace.trim() || /[\u0000-\u001f\u007f]/u.test(marketplace)
-      ) return fail(`${name} 的站點條件不明`);
+      ) return fail(`${name} 的站點欄位不是有效站點值`);
       if (name === "variation_theme" && marketplace !== input.marketplaceId) {
         return fail("variation_theme 含有其他站點值，無法唯一保留本站主題");
       }
@@ -626,6 +645,8 @@ export function buildVariationAttachBody(input: {
   dimensionValues: Record<string, unknown>;
   existingAttributes?: Record<string, unknown>;
   preservedDimensionNames?: readonly string[];
+  sourceSellerSku?: string;
+  singleMarketplaceScope?: ListingItemReadScope;
 }): VariationPatchBody {
   const productType = input.productType.trim();
   const targetParentSku = input.targetParentSku.trim();
@@ -639,6 +660,8 @@ export function buildVariationAttachBody(input: {
     marketplaceId: input.marketplaceId,
     variationTheme,
     attributes: input.existingAttributes,
+    sourceSellerSku: input.sourceSellerSku,
+    singleMarketplaceScope: input.singleMarketplaceScope,
   });
   const dimensionNames = unique(
     input.dimensionNames.map((name) => name.trim()),

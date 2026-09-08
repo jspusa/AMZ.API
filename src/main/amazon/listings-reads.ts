@@ -1,3 +1,4 @@
+import type { ListingItemReadScope } from "./listing-item-read-scope";
 import {
   marketplaceById,
   type MarketplaceId,
@@ -104,6 +105,7 @@ type RawReadResult = Readonly<{
 export type ListingItemReadResult = RawReadResult &
   Readonly<{
     identity: ListingItemReadIdentity;
+    singleMarketplaceScope?: ListingItemReadScope;
     profile: "full" | "essential" | "minimal" | "relationships" | "attributes";
   }>;
 

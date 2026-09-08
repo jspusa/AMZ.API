@@ -734,7 +734,7 @@ describe("live variation detach and attach wire safety", () => {
     expect(wire.commitPatchCount()).toBe(1);
   });
 
-  it.each([false, true])("attaches a standalone PET_FOOD ITEM_SHAPE/SIZE item while preserving its readonly Pretzel shape (retained theme=%s)", async (retainedTheme) => {
+  it.each([false, true, "omitted-selector"] as const)("attaches a standalone PET_FOOD ITEM_SHAPE/SIZE item while preserving its readonly Pretzel shape (retained theme=%s)", async (retainedTheme) => {
     const wire = installDetachSafetyWire({ initialState: "detached", commitResultState: "new" });
     const theme = "ITEM_SHAPE/SIZE";
     vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
@@ -754,7 +754,14 @@ describe("live variation detach and attach wire safety", () => {
         if (!attributes) return;
         attributes.item_shape = [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
         if (row.sku === SOURCE_SKU) attributes.size_name = [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
-        if (attributes.variation_theme || retainedTheme && row.sku === SOURCE_SKU) attributes.variation_theme = [{ name: theme, marketplace_id: MARKETPLACE_ID }];
+        if (attributes.variation_theme || retainedTheme && row.sku === SOURCE_SKU) {
+          attributes.variation_theme = [{
+            name: theme,
+            ...(retainedTheme === "omitted-selector" && row.sku === SOURCE_SKU
+              ? {}
+              : { marketplace_id: MARKETPLACE_ID }),
+          }];
+        }
         for (const group of row.relationships as Array<{ relationships: Array<{ variationTheme: unknown }> }> ?? []) {
           for (const relationship of group.relationships) relationship.variationTheme = { theme, attributes: ["item_shape", "size_name"] };
         }
@@ -779,11 +786,28 @@ describe("live variation detach and attach wire safety", () => {
     expect(wire.commitPatchCount()).toBe(1);
     expect(wire.patchBodies.flatMap((body) => body.patches).some((patch) => patch.path === "/attributes/item_shape")).toBe(false);
     expect(wire.patchBodies.every((body) => body.patches.some((patch) => patch.path === "/attributes/variation_theme") === !retainedTheme)).toBe(true);
+    const sourceReads = wire.fetchMock.mock.calls.filter(([rawInput, init]) =>
+      (init?.method ?? "GET") === "GET" && decodeURIComponent(new URL(String(rawInput)).pathname).endsWith(`/${SOURCE_SKU}`));
+    expect(sourceReads.length).toBeGreaterThan(0);
+    expect(sourceReads.every(([rawInput]) => {
+      const query = new URL(String(rawInput)).searchParams;
+      return JSON.stringify(query.getAll("marketplaceIds")) === JSON.stringify([MARKETPLACE_ID]) &&
+        query.get("includedData")?.split(",").includes("relationships");
+    })).toBe(true);
   });
 
   it.each([
     { variation_theme: [{ name: "OTHER_THEME", marketplace_id: MARKETPLACE_ID }] },
-    { variation_theme: [{ name: "SIZE_NAME" }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: null }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: "" }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: ` ${MARKETPLACE_ID}` }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: `${MARKETPLACE_ID}\u0000` }] },
+    { variation_theme: [{ name: "SIZE_NAME", marketplace_id: 1 }] },
+    { variation_theme: [{ name: "SIZE_NAME" }, { name: "SIZE_NAME" }] },
+    { variation_theme: [{ name: "SIZE_NAME" }, { name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }] },
+    { variation_theme: [{ name: "SIZE_NAME" }, { name: "SIZE_NAME", marketplace_id: "A1VC38T7YXB528" }] },
+    { variation_theme: [{ name: "OTHER_THEME" }] },
+    { variation_theme: [{ name: "SIZE_NAME" }], child_parent_sku_relationship: [{}] },
     { variation_theme: [{ name: "SIZE_NAME", marketplace_id: "A1VC38T7YXB528" }] },
     { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }, { name: "SIZE_NAME", marketplace_id: "A1VC38T7YXB528" }] },
     { variation_theme: [{ name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }, { name: "SIZE_NAME", marketplace_id: MARKETPLACE_ID }] },
@@ -797,6 +821,81 @@ describe("live variation detach and attach wire safety", () => {
     await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code: "VARIATION_NOT_DETACHED" });
     expect(wire.previewPatchCount()).toBe(0);
     expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("still rejects a residual child parentage with a selector-free theme before preview", async () => {
+    const wire = installDetachSafetyWire({ initialState: "detached", sourceAttributes: {
+      variation_theme: [{ name: "SIZE_NAME" }], parentage_level: [{ value: "child" }],
+    } });
+    await expect(getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT })).rejects.toMatchObject({ code: "VARIATION_RELATIONSHIP_CONFLICT" });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code: "VARIATION_RELATIONSHIP_CONFLICT" });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("rejects an explicitly undefined selector without treating it as a missing property", async () => {
+    const wire = installDetachSafetyWire({ initialState: "detached" });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await wire.fetchMock(rawInput, init);
+      if ((init?.method ?? "GET") === "GET" && decodeURIComponent(new URL(String(rawInput)).pathname).endsWith(`/${SOURCE_SKU}`)) {
+        const payload = await reply.json();
+        payload.attributes.variation_theme = [{ name: "SIZE_NAME", marketplace_id: undefined }];
+        // JSON cannot carry undefined; preserve this deliberately malformed
+        // adapter value to prove that own-property absence is the only exception.
+        reply.json = async () => payload;
+      }
+      return reply;
+    }));
+    await expect(getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT })).rejects.toMatchObject({
+      code: "VARIATION_NOT_DETACHED",
+      message: expect.stringContaining("站點欄位不是有效站點值"),
+    });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { stage: "before-approval", initiallyOmitted: true },
+    { stage: "during-approval", initiallyOmitted: true },
+    { stage: "before-approval", initiallyOmitted: false },
+    { stage: "during-approval", initiallyOmitted: false },
+  ])("invalidates an absent versus explicit theme selector drift before dispatch %#", async ({ stage, initiallyOmitted }) => {
+    const themeRow = (omitted: boolean) => ({ name: "SIZE_NAME", ...(omitted ? {} : { marketplace_id: MARKETPLACE_ID }) });
+    const wire = installDetachSafetyWire({ initialState: "detached", sourceAttributes: { variation_theme: [themeRow(initiallyOmitted)] } });
+    const drift = () => wire.setSourceAttributes({ variation_theme: [themeRow(!initiallyOmitted)] });
+    const approve = vi.fn(async () => { if (stage === "during-approval") drift(); });
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: `theme-scope-drift-${stage}-${initiallyOmitted}` };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    if (stage === "before-approval") drift();
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_CHANGED" } });
+    expect(approve).toHaveBeenCalledTimes(stage === "before-approval" ? 0 : 1);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([true, false])("keeps selector presence readback drift unknown without resending (initially omitted=%s)", async (initiallyOmitted) => {
+    const themeRow = (omitted: boolean) => ({ name: "SIZE_NAME", ...(omitted ? {} : { marketplace_id: MARKETPLACE_ID }) });
+    const wire = installDetachSafetyWire({ initialState: "detached", commitResultState: "new", sourceAttributes: { variation_theme: [themeRow(initiallyOmitted)] } });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await wire.fetchMock(rawInput, init);
+      if ((init?.method ?? "GET") === "PATCH" && !new URL(String(rawInput)).searchParams.has("mode")) {
+        wire.setSourceAttributes({ variation_theme: [themeRow(!initiallyOmitted)] });
+      }
+      return reply;
+    }));
+    const { owner, storePath } = await durableWireOwner();
+    const body = { ...input("attach"), idempotencyKey: `theme-scope-readback-${initiallyOmitted}` };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", body) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", body) })).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    await owner.handle({ operation: "prepare", request: {
+      requestId: "theme-scope-reconcile", method: "GET", path: "/api/sp-api/variation-move",
+      query: { marketplaceId: MARKETPLACE_ID, sku: SOURCE_SKU, targetSku: TARGET_PARENT }, headers: {},
+    } });
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", body) })).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
+    const stored = JSON.parse(await readFile(storePath, "utf8"));
+    expect(stored.ledger[body.idempotencyKey]).toMatchObject({ state: "unknown", response: { verified: false } });
+    expect(wire.commitPatchCount()).toBe(1);
+    expect(wire.patchBodies.every((body) => !body.patches.some((patch) => patch.path === "/attributes/variation_theme"))).toBe(true);
   });
 
   it.each(["before-approval", "during-approval"] as const)("invalidates retained theme selector drift %s before any commit PATCH", async (stage) => {

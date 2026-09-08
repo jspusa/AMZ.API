@@ -1,3 +1,4 @@
+import type { ListingItemReadScope } from "./listing-item-read-scope";
 import { createHash, randomUUID } from "node:crypto";
 import type { MarketplaceId } from "../../shared/marketplaces";
 import type {
@@ -112,6 +113,7 @@ type SourceEvidenceRecord = EvidenceBase & Readonly<{
   asin: string | null;
   productType: string | null;
   attributes: Record<string, unknown> | undefined;
+  singleMarketplaceScope?: ListingItemReadScope;
 }>;
 
 type TargetEvidenceRecord = EvidenceBase & Readonly<{
@@ -666,6 +668,8 @@ export function createVariationMoveGatewayProduction(
         dimensionValues: { ...descriptor.dimensionValues },
         existingAttributes: source.attributes,
         preservedDimensionNames: Object.keys(preserved),
+        sourceSellerSku: source.sellerSku,
+        singleMarketplaceScope: source.singleMarketplaceScope,
       });
       return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId)] };
     } catch (error) {
@@ -867,6 +871,7 @@ export function createVariationMoveGatewayProduction(
       productType: sourceResult.member.productType || null,
       attributes: sourceResult.payload.attributes,
       standalone: standaloneSourceEvidence(sourceResult),
+      singleMarketplaceScope: sourceResult.singleMarketplaceScope,
       requiredSchema: schema.schema, requiredSchemaChecksum: requirementsChecksum(schema.schema, schema.checksum), requiredIssueKey, requiredIssueNames,
     });
     const targetCapability = mintTarget({
@@ -892,6 +897,8 @@ export function createVariationMoveGatewayProduction(
           marketplaceId: input.marketplaceId,
           variationTheme: targetFamily.variationTheme,
           attributes: sourceResult.payload.attributes,
+          sourceSellerSku: sourceResult.member.sellerSku,
+          singleMarketplaceScope: sourceResult.singleMarketplaceScope,
         });
         if (retainedTheme.length) {
           retainedVariationThemeSignature = variationAttributeSignatures(
