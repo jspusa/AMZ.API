@@ -47,6 +47,11 @@ import {
   type ProductMasterRoutesPort,
 } from "./product-master-routes";
 import { SkuCommand } from "./amazon/sku-command";
+import { PromotionsReads } from "./amazon/promotions-reads";
+import { AwdInventoryReads } from "./amazon/awd-inventory-reads";
+import { PriceHealthReads } from "./amazon/price-health-reads";
+import { OperationsIntelligenceCoordinator, type OperationsIntelligencePort } from "./operations-intelligence-coordinator";
+import { createOperationsSourceReaders } from "./operations-source-readers";
 import {
   SkuCommandRoute,
   type SkuCommandRoutePort,
@@ -87,6 +92,9 @@ import {
   type BrandSalesDemoSource,
 } from "./brand-sales-coordinator";
 import {
+  promotionsReadAdapterProduction,
+  awdInventoryReadAdapterProduction,
+  priceHealthReadAdapterProduction,
   catalogListingsReadAdapterProduction,
   catalogReportsDemoSource,
   getFbaVariationGroupingData,
@@ -322,6 +330,7 @@ export class ApiRouter {
   private readonly listingsExportRoutes: ListingsExportRoutesPort;
   private readonly reviewAuditCoordinator: ReviewAuditCoordinatorPort;
   private readonly advertisingCoordinator: AdvertisingCoordinatorPort;
+  private readonly operationsIntelligence: OperationsIntelligencePort;
   private readonly legacyAuditSuiteCompatibility:
     AuditSuiteCompatibilityCoordinatorPort;
   private readonly aPlusAuditCoordinator: AplusAuditCoordinatorPort;
@@ -337,6 +346,7 @@ export class ApiRouter {
     salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
     advertisingCoordinator?: AdvertisingCoordinatorPort;
+    operationsIntelligence?: OperationsIntelligencePort;
     reviewAuditCoordinator?: ReviewAuditCoordinatorPort;
     reviewAuditCandidates?: ReviewAuditCandidateSource;
     customerFeedbackReads?: CustomerFeedbackReadsPort;
@@ -632,6 +642,18 @@ export class ApiRouter {
         },
         wait: input.advertisingStrategyWait,
       });
+    this.operationsIntelligence = input.operationsIntelligence ??
+      new OperationsIntelligenceCoordinator({
+        context: this.spExecutionContext,
+        readers: createOperationsSourceReaders({
+          context: this.spExecutionContext,
+          catalog: fbaCatalogReports,
+          promotions: new PromotionsReads({ adapter: promotionsReadAdapterProduction, context: this.spExecutionContext }),
+          awd: new AwdInventoryReads({ adapter: awdInventoryReadAdapterProduction, context: this.spExecutionContext }),
+          priceHealth: new PriceHealthReads({ adapter: priceHealthReadAdapterProduction, context: this.spExecutionContext }),
+          advertising: this.advertisingCoordinator,
+        }),
+      });
     const reviewAuditCandidates = input.reviewAuditCandidates ?? (async (request) =>
       request.mode === "demo"
         ? getDemoFbaReviewAuditCandidates({
@@ -760,6 +782,7 @@ export class ApiRouter {
   private clearContextBoundState(): void {
     this.contextStateRevision += 1;
     this.reportBroker.clear();
+    this.operationsIntelligence.clear();
     this.advertisingCoordinator.clear();
     this.brandSalesCoordinator.clear();
     this.businessPricingAuditOwner.clear();
@@ -1118,6 +1141,12 @@ export class ApiRouter {
         return this.health.systemHealth(request);
       case "GET /api/amazon-ads/status":
         return this.advertisingCoordinator.status(request);
+      case "GET /api/operations-intelligence":
+        return this.operationsIntelligence.observe(request);
+      case "POST /api/operations-intelligence/sync":
+        return this.operationsIntelligence.start(request);
+      case "POST /api/operations-intelligence/events":
+        return this.operationsIntelligence.acknowledge(request);
       case "GET /api/amazon-ads/coverage":
         return this.advertisingCoordinator.coverage(request);
       case "POST /api/amazon-ads/strategy":

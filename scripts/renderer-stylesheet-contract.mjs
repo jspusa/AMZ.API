@@ -24,11 +24,12 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/reports-reviews.css",
     "styles/final-overrides.css",
     "styles/fba-inbound.css",
+    "styles/operations-intelligence.css",
     "styles/workspace-redesign.css",
     "styles/audit-suite-redesign.css",
     "styles/sales-redesign.css",
     "styles/bulletin-redesign.css",
   ]),
   fingerprint:
-    "f871d3a765448a6b97fd55c7c592d6eef4c8ea6ac3ce3be4c518898472a580cd",
+    "f2f9c8b41a77e446d2e8b6be26f961157c974a7bca2671a2185d31cd67db4da0",
 });

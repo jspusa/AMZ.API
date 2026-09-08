@@ -11,6 +11,8 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 
 ## 已整合功能
 
+本輪另加入首頁「營運情報與事件」：Coupon／促銷、US AWD 庫存與在途、Buy Box／價格健康、SP 廣告成效及本機事件中心；包含 main 能力，需要支援的新 Notebook Key。功能範圍、已知限制及尚待完成的檢查／發布證據見 [2026-09 營運情報記錄](docs/releases/2026-09-operations-intelligence.md)，不代表已在使用者帳號 live 通過。
+
 | 區域 | 功能 | 自動化程度 |
 |---|---|---|
 | 策劃 | FBA 銷售趨勢（7／14／30／90 天、自訂 1–365 天、去年同期、選配迷你滑板）、SB／SD 授權狀態、FBA 補貨計算 | 自動／人工授權 |

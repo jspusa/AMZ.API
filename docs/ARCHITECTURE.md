@@ -41,7 +41,7 @@ Supply Boss 用獨立 board-editor username／PBKDF2 salt／hash 驗證 `/api/op
 
 控制台的 client components 仍呼叫相對 `/api/**`。只有在 Notebook 鑰匙 App 視窗中，Renderer 才會安裝 fetch adapter，將允許的 JSON／單檔 multipart request 序列化到 preload；一般瀏覽器只渲染鎖定頁。main process router 重建 HTTP-like status、headers、JSON 或 bytes response，全程不啟動 localhost server。
 
-`ApiRouter.handle()` 是唯一公開 dispatch seam：它在執行任何 route 前以 runtime shape 核對 request ID、固定 method、`/api/` path、純字串 query／headers，以及 plain-object JSON 或單檔 multipart body；畸形 envelope 一律回傳 no-store JSON `400 INVALID_REQUEST`。`route()` 固定只有 exact method＋path key 與單一中央 switch；一份 test-owned、人工審閱的 70 組矩陣以 TypeScript AST 獨立盤點 production case，並鎖定 key 宣告、switch 與 exact `404 NOT_FOUND` default，新增、遺漏、重複或在 switch 前加入旁路 dispatch 都會使契約測試失敗。production 不另建第二份 route registry，也不改既有 handler／DTO。SP、pre-commit、coordinator、report、replenishment 與 Ads 的已知錯誤在跨 main／renderer 邊界前共用 canonical sanitizer；不安全的 status、code、message、Request ID 或 Retry-After 會 fail closed，unknown error 只回固定 `500 INTERNAL_ERROR`。
+`ApiRouter.handle()` 是唯一公開 dispatch seam：它在執行任何 route 前以 runtime shape 核對 request ID、固定 method、`/api/` path、純字串 query／headers，以及 plain-object JSON 或單檔 multipart body；畸形 envelope 一律回傳 no-store JSON `400 INVALID_REQUEST`。`route()` 固定只有 exact method＋path key 與單一中央 switch；一份 test-owned、人工審閱的完整矩陣以 TypeScript AST 獨立盤點 production case，並鎖定 key 宣告、switch 與 exact `404 NOT_FOUND` default，新增、遺漏、重複或在 switch 前加入旁路 dispatch 都會使契約測試失敗。production 不另建第二份 route registry，也不改既有 handler／DTO。SP、pre-commit、coordinator、report、replenishment 與 Ads 的已知錯誤在跨 main／renderer 邊界前共用 canonical sanitizer；不安全的 status、code、message、Request ID 或 Retry-After 會 fail closed，unknown error 只回固定 `500 INTERNAL_ERROR`。
 
 C01 完成 contract facade convergence 後，`ApiRouter` 只擁有 production composition、上述 envelope／exact switch、公開錯誤翻譯、connection tests與context invalidation wiring；domain job map、timer、snapshot、preview、Amazon payload／schema規則及workbook實作只能存在於注入的main-only semantic owner。Listings export兩條route也只委派`ListingsExportRoutes`，由既有export／Content Audit／Image Audit owners繼續擁有report、snapshot與download。`sp-api.ts`同樣只是一個窄化composition root：每個credential、Listings read／write、price、B2B、content、image、variation、catalog／report demo、subscription、restock與sales-trend runtime只能在此建構一次，且只能收到人工allowlist的semantic ports。facade不得宣告或重匯出domain DTO，不得持有Map／timer／demo資料，不得讀env、解析raw Amazon payload／schema、產生workbook、接受任意transport callback或使用dynamic dispatch；renderer／preload／shared不得匯入main-private module，domain也不得反向匯入Router或facade。AST architecture gate同時鎖定唯一`ReportsRuntime`／`FixedReportBroker` lifecycle，避免新舊架構並存。
 
@@ -137,6 +137,16 @@ Variation family 本身仍是唯讀查詢。唯一 mutation 是固定的 `/api/s
 Windows 的 native confirmation 不由 renderer 或遠端 Pages 執行。Windows x64 workflow 以鎖定的 `node-gyp` 和 Electron 43.3.0 x64 headers，將 repository 內的第一方 C++ WinRT desktop interop source 編譯成 N-API addon。electron-builder 只把 `windows-hello.node` 放在 `app.asar.unpacked/out/main/native/` 的固定路徑；`app.asar` 內的 manifest 記錄固定檔名與 SHA-256，不使用 `extraResources`。main 限制 addon 檔案型態／大小、重算 manifest SHA-256 後才載入，並只接受固定結果 token。這可偵測打包錯配，但 Electron 的 embedded ASAR integrity 只在 macOS 生效；Windows 未簽章版不能抵抗同一使用者修改 App 檔案。Hello 未設定、取消、裝置忙碌、重試耗盡或 addon 異常都 fail closed，Windows 不會降級成一般確認按鈕放行敏感操作。
 
 會計中心不把 Finances JSON、Amazon-generated settlement、人工前置報表或不存在的發票／帳單 API 混為一談。Renderer 只取得 allowlisted capability 與安全工作狀態；一般站點發票、Seller Central 帳單及未完成 FBA 逐列過濾的 account-wide 文件保持停用，不使用私有接口。
+
+## 營運情報與本機事件
+
+首頁新增的五個營運分頁由 `OperationsIntelligenceCoordinator` 單一協調：它只擁有 exact context session、來源 single-flight 工作、明確 opt-in 的本機排程與事件 ledger。`ApiRouter` 的新三條 exact route 只委派 `observe`／`start`／`acknowledge`；完整 route 輸入、排程間隔及本次 source／驗收界線見 [營運情報記錄](releases/2026-09-operations-intelligence.md)。本機 observe GET 不啟動上游查詢；來源同步才經明確 POST intent 啟動，事件 acknowledgement 也只是本機狀態變更。
+
+`createOperationsSourceReaders` 是來源組合入口：促銷、AWD 與價格共用同次 `FbaCatalogReports` 的 current-FBA 身分 flight，再分別委派 `PromotionsReads`、`AwdInventoryReads`、`PriceHealthReads`。各 domain owner 解析自己的 Amazon 規格、完整度與診斷，production adapter 只接封閉的 typed plan，固定 host／path／method／query、bounded body／deadline、abort 與 app-session pacing。Pricing 的外層 POST 是固定 Competitive Summary 唯讀 batch，不取得 Listings 寫入權限。Ads 只接回既有 `ReadOnlyAdvertisingCoordinator` 策略工作，`buildAdvertisingDiagnostics` 純投影已核對快照；`FixedReportBroker` 仍是唯一 create／poll／download 與耐久 no-blind-retry owner。沒有第二套報表生命周期、通用 transport、renderer SDK 或外部 secret 輸入。
+
+`OperationsEvents` 只接收同帳號 context 內四個來源的安全 findings；source＋stable key 去重，較新的完整證據才解除舊事件，partial／失敗保持未解除，已知悉可回復待處理。事件、排程與來源快照均為有界 main-memory session state；不是耐久寫入帳本，也不是 Amazon Notifications push。context 清除會先停止工作、排程並丟棄事件；上游 quota pacing 與既有 durable report／mutation evidence 維持原生命週期。此功能不建立通知訂閱或雲端 receiver，不寫入 Supply Boss 人工公布欄。
+
+`operations-intelligence.ts` renderer adapter 只接收 narrow、schema-validated public DTO；private account scope／generation、raw Seller／promotion／selection／shipment／report ID 與 token 仍留在 main。隨機本機 context handle 讓前端拒絕舊 generation 的 late completion；main 在 dispatch 與 publication 邊界重驗 actual context，不能由前端 handle 授權上游操作。舊 Bridge 的 `404` 顯示 Notebook Key 升級提示，不 fallback 成零資料或展示資料。既有七項 run-all、人工公布欄、preload trust 與 Write Gate 安全界線保持不變。
 
 ## B2B 篩選與文案工作表投影
 
