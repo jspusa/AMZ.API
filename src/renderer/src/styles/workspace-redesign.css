@@ -61,6 +61,7 @@
 .workspace-header .os-brand-copy { display: flex; }
 .workspace-header .os-brand-copy strong { font-size: 17px; font-weight: 720; letter-spacing: -.04em; }
 .workspace-header .os-brand-copy small { margin-top: 5px; color: #b9c5d5; font-size: 10px; }
+.workspace-header .os-brand[aria-disabled="true"] { cursor: not-allowed; opacity: .55; }
 .workspace-primary-nav { gap: 4px; }
 .workspace-primary-nav .workspace-primary-menu-trigger {
   min-height: 44px;

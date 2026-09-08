@@ -57,6 +57,7 @@ type Props = {
   initialMarketplaceId: string;
   initialSellerSku?: string;
   presentation?: "drawer" | "workspace";
+  workspaceBackLabel?: string;
   onBusyChange?: (busy: boolean) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
@@ -177,6 +178,7 @@ export default function VariationPlannerDrawer({
   initialMarketplaceId,
   initialSellerSku = "",
   presentation = "drawer",
+  workspaceBackLabel = "回首頁",
   onBusyChange,
   onContextResolved,
   onClose,
@@ -949,6 +951,19 @@ export default function VariationPlannerDrawer({
   const content = (
     <>
       <div className="drawer-header variation-workspace-header">
+        {presentation === "workspace" && (
+          <button
+            type="button"
+            className="variation-workspace-back"
+            onClick={closeDrawer}
+            disabled={busy}
+            aria-label={workspaceBackLabel === "回首頁"
+              ? "返回 AMZ.API 首頁"
+              : workspaceBackLabel}
+          >
+            ← {workspaceBackLabel}
+          </button>
+        )}
         <div>
           <p className="eyebrow">VARIATION WORKSPACE</p>
           <h2 id="variation-planner-title" ref={headingRef} tabIndex={-1}>
@@ -956,15 +971,17 @@ export default function VariationPlannerDrawer({
           </h2>
           <p>選商品、補齊資料，再分別確認解除與綁定。</p>
         </div>
-        <button
-          type="button"
-          onClick={closeDrawer}
-          disabled={busy}
-          autoFocus={presentation === "drawer"}
-          aria-label="關閉變體規劃"
-        >
-          {presentation === "workspace" ? "返回" : "×"}
-        </button>
+        {presentation === "drawer" && (
+          <button
+            type="button"
+            onClick={closeDrawer}
+            disabled={busy}
+            autoFocus
+            aria-label="關閉變體規劃"
+          >
+            ×
+          </button>
+        )}
       </div>
       <ol className="variation-stepper" aria-label="變體操作步驟">
         <li className={sourceFamily ? "done" : "current"}>

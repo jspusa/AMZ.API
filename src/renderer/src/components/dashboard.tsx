@@ -716,6 +716,7 @@ export default function Dashboard({
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
   const [priceListOpened, setPriceListOpened] = useState(false);
+  const [variationWorkspaceBusy, setVariationWorkspaceBusy] = useState(false);
   const inlineTool = openTool === "variations" || openTool === "price-list";
   const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup } | null>(null);
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
@@ -745,6 +746,7 @@ export default function Dashboard({
   const [activeAuditWorkspace, setActiveAuditWorkspace] = useState<
     AuditSuiteSectionId | null
   >(null);
+  const [auditWorkspaceBusy, setAuditWorkspaceBusy] = useState(false);
   const [agedInventoryOpen, setAgedInventoryOpen] = useState(false);
   const [reportLibraryOpen, setReportLibraryOpen] = useState(false);
   const [reviewAuditOpen, setReviewAuditOpen] = useState(false);
@@ -770,8 +772,10 @@ export default function Dashboard({
   const [returnToUnboundVariationAudit, setReturnToUnboundVariationAudit] = useState(false);
   const closeVariationPlanner = () => {
     setOpenTool(null);
+    setVariationWorkspaceBusy(false);
     if (returnToUnboundVariationAudit) {
       setReturnToUnboundVariationAudit(false);
+      setAuditWorkspaceBusy(false);
       setActiveAuditWorkspace("variation");
     } else {
       restoreInlineTool();
@@ -1107,6 +1111,7 @@ export default function Dashboard({
     setOpenToolMenu(null);
     setCommandOpen(false);
     setOpenTool(null);
+    setAuditWorkspaceBusy(false);
     setActiveAuditWorkspace(sectionId);
   }, []);
 
@@ -1122,6 +1127,7 @@ export default function Dashboard({
 
   const closeAuditWorkspace = useCallback(() => {
     const returnTarget = auditWorkspaceReturnRef.current;
+    setAuditWorkspaceBusy(false);
     setActiveAuditWorkspace(null);
     window.setTimeout(() => {
       if (!returnTarget) return;
@@ -1153,6 +1159,7 @@ export default function Dashboard({
     if (openTool !== null) return;
     setOpenToolMenu(null);
     setCommandOpen(false);
+    setAuditWorkspaceBusy(false);
     setActiveAuditWorkspace(null);
     auditWorkspaceReturnRef.current = null;
     if (tool === "a-plus" && !connectionEvidence[marketplaceId]) {
@@ -1524,6 +1531,7 @@ export default function Dashboard({
 
   const openUnboundVariationSku = (sellerSku: string) => {
     setGlobalSku(sellerSku);
+    setAuditWorkspaceBusy(false);
     setActiveAuditWorkspace(null);
     setReturnToUnboundVariationAudit(true);
     setOpenTool("variations");
@@ -1869,6 +1877,7 @@ export default function Dashboard({
             auditJob={currentContentDrawerJob}
             onAuditJobChange={cacheStandaloneAuditJob}
             onContextResolved={resolveGlobalContext}
+            onBusyChange={setAuditWorkspaceBusy}
             onClose={closeAuditWorkspace}
           />
         );
@@ -1885,6 +1894,7 @@ export default function Dashboard({
             auditJob={currentImageDrawerJob}
             onAuditJobChange={cacheStandaloneAuditJob}
             onContextResolved={resolveGlobalContext}
+            onBusyChange={setAuditWorkspaceBusy}
             onClose={closeAuditWorkspace}
           />
         );
@@ -1953,6 +1963,7 @@ export default function Dashboard({
               ...current,
               [snapshot.marketplaceId]: snapshot,
             }))}
+            onBusyChange={setAuditWorkspaceBusy}
             onClose={closeAuditWorkspace}
           />
         );
@@ -1991,11 +2002,29 @@ export default function Dashboard({
       ? "pricing"
       : activeAuditWorkspace === "advertising" ? "operations" : "product"
     : null;
+  const homeReturnLocked = (openTool === "variations" && variationWorkspaceBusy) ||
+    (Boolean(activeAuditWorkspace) && auditWorkspaceBusy);
 
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({
     behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
     block: "start",
   });
+  const returnToHome = () => {
+    if (homeReturnLocked) return;
+    setOpenToolMenu(null);
+    setCommandOpen(false);
+    setOpenTool(null);
+    setVariationWorkspaceBusy(false);
+    setAuditWorkspaceBusy(false);
+    setReturnToUnboundVariationAudit(false);
+    setActiveAuditWorkspace(null);
+    inlineReturnRef.current = null;
+    auditWorkspaceReturnRef.current = null;
+    window.requestAnimationFrame(() => {
+      scrollTo("workspace-top");
+      document.getElementById("workspace-top")?.focus({ preventScroll: true });
+    });
+  };
   const openWorkspaceShortcut = (shortcut: WorkspaceShortcut) => {
     setOpenToolMenu(null);
     if (shortcut.intelligenceView) {
@@ -2029,7 +2058,16 @@ export default function Dashboard({
       >
         <header className="workspace-header">
           <div className="workspace-header-main">
-            <a className="os-brand" href="#workspace-top" onClick={(event) => { event.preventDefault(); scrollTo("workspace-top"); }} aria-label="AMZ.API 首頁">
+            <a
+              className="os-brand"
+              href="#workspace-top"
+              aria-label="回到 AMZ.API 首頁"
+              aria-disabled={homeReturnLocked ? true : undefined}
+              onClick={(event) => {
+                event.preventDefault();
+                returnToHome();
+              }}
+            >
               <BrandGlyph className="os-brand-mark" />
               <span className="os-brand-copy"><strong>AMZ.API</strong><small>Jasper · FBA only</small></span>
             </a>
@@ -2198,6 +2236,7 @@ export default function Dashboard({
           {openTool === "variations" ? <DeferredWorkspace onClose={closeVariationPlanner}>
             <VariationPlannerDrawer
               presentation="workspace"
+              workspaceBackLabel={returnToUnboundVariationAudit ? "回到未綁變體健檢" : "回首頁"}
               initialMarketplaceId={marketplaceId}
               initialSellerSku={globalSku}
               auditMode={currentStandaloneMode}
@@ -2205,6 +2244,7 @@ export default function Dashboard({
               auditJob={currentVariationDrawerJob}
               onAuditCacheChange={cacheUnboundVariationAudit}
               onAuditJobChange={cacheStandaloneAuditJob}
+              onBusyChange={setVariationWorkspaceBusy}
               onContextResolved={resolveGlobalContext}
               onClose={closeVariationPlanner}
             />

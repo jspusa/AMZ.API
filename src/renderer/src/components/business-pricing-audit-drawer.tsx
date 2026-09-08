@@ -19,6 +19,7 @@ export default function BusinessPricingAuditDrawer({
   initialJob = null,
   onSnapshotChange,
   onJobChange,
+  onBusyChange,
   presentation = "dialog",
   onClose,
 }: {
@@ -29,6 +30,7 @@ export default function BusinessPricingAuditDrawer({
   initialJob?: StandaloneAuditJob | null;
   onSnapshotChange?: (snapshot: BusinessPricingAuditSnapshot) => void;
   onJobChange?: (job: StandaloneAuditJob) => void;
+  onBusyChange?: (busy: boolean) => void;
   presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
@@ -36,6 +38,12 @@ export default function BusinessPricingAuditDrawer({
   const [editorBusy, setEditorBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   const busy = editorBusy || batchBusy;
+
+  useEffect(() => {
+    onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
+
   const requestClose = () => {
     if (!busy) onClose();
   };
