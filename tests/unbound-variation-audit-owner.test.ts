@@ -99,6 +99,56 @@ function readyReceipt() {
 }
 
 describe("UnboundVariationAuditOwner", () => {
+  it("publishes ranked family guidance from the same standalone snapshot without another report or read", async () => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: US,
+      mode: "demo",
+      accountScope: "guidance-test-account",
+    }));
+    const data = snapshot();
+    data.rows[0].sellerSku = "GCBL06";
+    data.allVariationRows.push(
+      ...["GCBL01", "GCBL02", "GCBL03"].map((sellerSku) => ({
+        familySku: "PARENT-OWNER-SKU",
+        role: "child" as const,
+        sellerSku,
+        title: "Synthetic sibling",
+        productType: "PET_FOOD",
+        variationTheme: "SIZE",
+        evidence: "verified-child" as const,
+      })),
+    );
+    const source = {
+      begin: vi.fn(async () => readyReceipt()),
+      status: vi.fn(async () => readyReceipt()),
+      read: vi.fn(async () => data),
+    } satisfies UnboundVariationAuditSource;
+    const owner = new UnboundVariationAuditOwner({
+      context,
+      source,
+      createId: () => STANDALONE_EXPORT_ID,
+    });
+    const result = await owner.runStandalone({
+      marketplaceId: US,
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({
+      exportId: STANDALONE_EXPORT_ID,
+      recommendations: [
+        {
+          sellerSku: "GCBL06",
+          status: "ranked",
+          candidates: [
+            { parentSku: "PARENT-OWNER-SKU", matchingChildCount: 3, stars: 3 },
+          ],
+        },
+      ],
+    });
+    expect(source.begin).toHaveBeenCalledOnce();
+    expect(source.read).toHaveBeenCalledOnce();
+    expect(source.status).not.toHaveBeenCalled();
+  });
+
   it("projects the supplied Audit Suite grouping without report or snapshot work", async () => {
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: US,

@@ -34,6 +34,7 @@ import {
 import {
   variationDimensionSignature,
   variationFieldDescriptors,
+  preservedVariationDimensions,
   VariationUpdateValidationError,
   type VariationFieldDescriptor,
 } from "./amazon/variation-update";
@@ -80,6 +81,7 @@ type VariationMoveWriteEvidence = Readonly<{
   dimensionSignature: string | null;
   childSchemaChecksumHash: string | null;
   requiredFieldSignatures?: Readonly<Record<string, string>>;
+  preservedDimensionSignatures?: Readonly<Record<string, string>>;
 }>;
 
 const VARIATION_WRITE_EVIDENCE_KEYS = [
@@ -555,12 +557,10 @@ function fieldsForTarget(
   } catch (error) {
     return throwVariationValidation(error);
   }
-  const readOnlyField = fields.find((field) => !field.editable);
-  if (readOnlyField) {
-    throw new SpApiError(
-      `Amazon CHILD PTD 將 ${readOnlyField.name} 標示為唯讀，不能安全改掛此 SKU。`,
-      { status: 422, code: "VARIATION_FIELD_READ_ONLY" },
-    );
+  try {
+    preservedVariationDimensions({ fields, marketplaceId });
+  } catch (error) {
+    return throwVariationValidation(error);
   }
   return fields;
 }
@@ -723,6 +723,16 @@ async function prepareDescriptor(
     );
   }
   const dimensionSignature = requestedDimensionSignature(input);
+  let preservedDimensionValues: Record<string, unknown>;
+  try {
+    preservedDimensionValues = preservedVariationDimensions({
+      fields: prepared.fields,
+      marketplaceId: input.marketplaceId,
+      dimensionValues: input.dimensionValues,
+    });
+  } catch (error) {
+    return throwVariationValidation(error);
+  }
   assertNoDuplicateTargetDimensions(input, prepared.target, dimensionSignature);
   const requiredValues = validateRequiredFields(prepared.source, input);
   const descriptor: VariationMoveAttachDescriptor = {
@@ -738,6 +748,7 @@ async function prepareDescriptor(
     variationTheme: input.variationTheme,
     dimensionNames: [...input.dimensionNames],
     dimensionValues: structuredClone(input.dimensionValues),
+    preservedDimensionValues,
     childSchemaChecksum: prepared.target.childSchemaChecksum,
     targetEvidence: prepared.target.targetEvidence,
     ptdEvidence: prepared.target.ptdEvidence,
@@ -766,10 +777,19 @@ function requiredChanges(fields: readonly VariationFieldDescriptor[], values: Re
 }
 
 function requiredProposalFingerprint(input: VariationMoveInput, prepared: PreparedDescriptor): string {
-  if (!Object.keys(input.requiredValues ?? {}).length) return proposalFingerprint(input);
-  return createHash("sha256").update(JSON.stringify([proposalFingerprint(input), prepared.descriptor.asin,
-    prepared.descriptor.productType, prepared.descriptor.requiredSchemaChecksum, prepared.childSchemaChecksumHash,
-    prepared.changes])).digest("hex");
+  const hasPreservedDimensions = prepared.descriptor.action === "attach" &&
+    Object.keys(prepared.descriptor.preservedDimensionValues ?? {}).length > 0;
+  if (!Object.keys(input.requiredValues ?? {}).length && !hasPreservedDimensions) {
+    return proposalFingerprint(input);
+  }
+  return createHash("sha256").update(JSON.stringify([
+    proposalFingerprint(input),
+    prepared.descriptor.asin,
+    prepared.descriptor.productType,
+    prepared.descriptor.requiredSchemaChecksum,
+    prepared.childSchemaChecksumHash,
+    prepared.changes,
+  ])).digest("hex");
 }
 
 function validationResult(
@@ -891,6 +911,14 @@ function writeEvidence(prepared: PreparedDescriptor): VariationMoveWriteEvidence
     ...(Object.keys(prepared.descriptor.requiredValues ?? {}).length ? {
       requiredFieldSignatures: variationAttributeSignatures({ ...prepared.descriptor.requiredValues }, prepared.descriptor.marketplaceId),
     } : {}),
+    ...(prepared.descriptor.action === "attach" &&
+      Object.keys(prepared.descriptor.preservedDimensionValues ?? {}).length ? {
+      preservedDimensionSignatures: variationAttributeSignatures(
+        { ...prepared.descriptor.preservedDimensionValues },
+        prepared.descriptor.marketplaceId,
+        true,
+      ),
+    } : {}),
   };
 }
 
@@ -926,6 +954,14 @@ function observationMatches(
     observation.fulfillment !== "FBA"
   ) return false;
   if (!requiredSignaturesMatch(variationAttributeSignatures({ ...descriptor.requiredValues }, descriptor.marketplaceId), observation.attributeSignatures)) return false;
+  if (descriptor.action === "attach" && !requiredSignaturesMatch(
+    variationAttributeSignatures(
+      { ...descriptor.preservedDimensionValues },
+      descriptor.marketplaceId,
+      true,
+    ),
+    observation.exactAttributeSignatures,
+  )) return false;
   if (descriptor.action === "detach") {
     return observation.role === "standalone" &&
       observation.parentSku === null &&
@@ -1063,9 +1099,16 @@ function publicVariationMoveResult(
     (result.mode === "demo" && result.status === "SIMULATED")
   );
   const evidenceIsRecord = isPlainRecord(evidence) &&
-    hasExactKeys(evidence, [...VARIATION_WRITE_EVIDENCE_KEYS, ...(evidence.requiredFieldSignatures === undefined ? [] : ["requiredFieldSignatures"])]) &&
-    (evidence.requiredFieldSignatures === undefined || isPlainRecord(evidence.requiredFieldSignatures) &&
-      Object.entries(evidence.requiredFieldSignatures).every(([name, value]) => /^[a-z][a-z0-9_]{0,79}$/u.test(name) && typeof value === "string" && /^[a-f0-9]{64}$/u.test(value)));
+    hasExactKeys(evidence, [
+      ...VARIATION_WRITE_EVIDENCE_KEYS,
+      ...(evidence.requiredFieldSignatures === undefined ? [] : ["requiredFieldSignatures"]),
+      ...(evidence.preservedDimensionSignatures === undefined ? [] : ["preservedDimensionSignatures"]),
+    ]) &&
+    [evidence.requiredFieldSignatures, evidence.preservedDimensionSignatures].every((signatures) =>
+      signatures === undefined || isPlainRecord(signatures) &&
+      Object.entries(signatures).every(([name, value]) =>
+        /^[a-z][a-z0-9_]{0,79}$/u.test(name) &&
+        typeof value === "string" && /^[a-f0-9]{64}$/u.test(value)));
   const validActionEvidence = evidenceIsRecord && result.action === "detach"
     ? typeof result.sourceParentSku === "string" &&
       parseSellerSku(result.sourceParentSku) === result.sourceParentSku &&
@@ -1193,6 +1236,7 @@ function canonicalMatchesEvidence(
     !canonical.familyComplete
   ) return false;
   if (!requiredSignaturesMatch(evidence.requiredFieldSignatures, canonical.attributeSignatures)) return false;
+  if (!requiredSignaturesMatch(evidence.preservedDimensionSignatures, canonical.exactAttributeSignatures)) return false;
   if (evidence.action === "detach") {
     return canonical.role === "standalone" &&
       canonical.parentSku === null &&
@@ -1707,8 +1751,22 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       ? `確認解除變體｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜原 parent ${input.expectedSourceParentSku}`
       : `確認加入變體｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku} → ${input.targetParentSku}｜${input.variationTheme}`;
     try {
-      const approval = Object.keys(input.requiredValues ?? {}).length
-        ? await this.operations.prepareForApproval(input) : { fingerprint: proposalFingerprint(input), requiredSummary: "" };
+      let approval = { fingerprint: proposalFingerprint(input), requiredSummary: "" };
+      if (input.action === "attach" || Object.keys(input.requiredValues ?? {}).length) {
+        try {
+          approval = await this.operations.prepareForApproval(input);
+        } catch (error) {
+          // An already-attached legacy completion still needs the gate's exact
+          // cached-result projection. A new attempt remains blocked by revalidation;
+          // immutable previews cannot match this legacy proposal fingerprint.
+          const mayProjectLegacyCompletion = input.action === "attach" &&
+            !Object.keys(input.requiredValues ?? {}).length &&
+            error instanceof SpApiError && error.code === "VARIATION_UNCHANGED";
+          if (!mayProjectLegacyCompletion) {
+            throw error;
+          }
+        }
+      }
       const fingerprint = approval.fingerprint;
       const result = await this.writeGate.execute({
         binding: this.binding(input, context, key, fingerprint),

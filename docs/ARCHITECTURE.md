@@ -1,5 +1,7 @@
 # Architecture
 
+變體工作台的未綁建議由 `UnboundVariationAuditOwner.publicSnapshot` 在既有快照上以純函式產生，不新增報表、job 或寫入權限。候選只用相容 Product Type／theme 與 verified child 的系列 SKU 計數；renderer 選擇後仍重新讀 family。CHILD PTD 的 immutable 維度只在唯一完整原值可精確保留時允許 attach，gateway 獨立重驗並省略此 PATCH；完整 selectors 與 schema 綁入票證，恢復與回查核對 digest。價目表工作回傳明確 stage 與逐列原因，Dashboard 在同次生命週期保留隱藏面板，返回只接回既有工作；main context fence 與輸出來源不變。
+
 ```text
 GitHub Pages control console
   ├─ ordinary browser: locked gate only

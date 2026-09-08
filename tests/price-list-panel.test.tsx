@@ -3,9 +3,11 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PriceListPanel, {
   priceListAmazonDifference,
+  priceListAmazonValue,
 } from "../src/renderer/src/components/price-list-panel";
 import type {
   PriceListAmazonRow,
+  PriceListAmazonSnapshot,
   PriceListCell,
   PriceListProductRow,
   PriceListWorkbook,
@@ -99,10 +101,45 @@ afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
   renderer = null;
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("price-list workflow", () => {
-  it("opens with local import and preserves original view; comparison is a deliberate read", async () => {
+  it("guides an imported workbook to one next action and explains that prices have not been read yet", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify(workbook), { status: 200 }),
+      ),
+    );
+    await act(async () => {
+      renderer = create(<PriceListPanel onClose={() => undefined} />);
+    });
+    await act(async () => {
+      renderer!.root
+        .findByProps({ "aria-label": "選取原始價目表" })
+        .props.onChange({
+          target: { files: [new File(["fake"], "test.xlsx")] },
+          currentTarget: { value: "" },
+        });
+    });
+    expect(
+      renderer!.root
+        .findByProps({ className: "price-list-actions" })
+        .findAllByType("button"),
+    ).toHaveLength(1);
+    expect(
+      renderer!.root.findAllByProps({ className: "price-list-primary" }),
+    ).toHaveLength(1);
+    const comparisonTab = renderer!.root
+      .findAllByType("button")
+      .find((button) => button.children.includes("Amazon 價格比對"))!;
+    await act(async () => {
+      comparisonTab.props.onClick();
+    });
+    expect(JSON.stringify(renderer!.toJSON())).toContain("尚未開始讀取");
+  });
+  it("opens with local import and moves to comparison only after a deliberate Amazon read", async () => {
     const fetch = vi.fn(
       async (path: string) =>
         new Response(
@@ -154,12 +191,12 @@ describe("price-list workflow", () => {
     expect(checkbox.props.checked).toBe(false);
     const read = renderer!.root
       .findAllByType("button")
-      .find((button) => button.children.includes("讀取 Amazon 價格與首圖"))!;
+      .find((button) => button.children.includes("2. 讀取 Amazon 價格與首圖"))!;
     await act(async () => {
       read.props.onClick();
     });
     expect(fetch.mock.calls[1]?.[0]).toBe("/api/price-list/amazon-refresh");
-    expect(originalTab.props["aria-pressed"]).toBe(true);
+    expect(originalTab.props["aria-pressed"]).toBe(false);
     const text = JSON.stringify(renderer!.toJSON());
     expect(text).toContain("Amazon 設定售價");
     expect(text).toContain("US$ 12.00");
@@ -184,6 +221,193 @@ describe("price-list workflow", () => {
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(JSON.stringify(renderer!.toJSON())).toContain("25 MB");
+  });
+  it("distinguishes not-started, queued, unmatched, interrupted and unset price states", () => {
+    const snapshot: PriceListAmazonSnapshot = {
+      workbookId: workbook.id,
+      state: "running",
+      stage: "reading",
+      rows: [],
+      completed: 0,
+      total: 1,
+      fetchedAt: null,
+      message: "讀取中",
+    };
+    expect(priceListAmazonValue("standardPrice", undefined, null)).toBe(
+      "尚未開始讀取",
+    );
+    expect(priceListAmazonValue("standardPrice", undefined, snapshot)).toBe(
+      "等候這筆讀取",
+    );
+    expect(
+      priceListAmazonValue("standardPrice", undefined, {
+        ...snapshot,
+        stage: "identifying",
+      }),
+    ).toBe("確認 FBA 商品中");
+    expect(
+      priceListAmazonValue(
+        "standardPrice",
+        { ...amazon, status: "unmatched", standardPrice: null },
+        snapshot,
+      ),
+    ).toBe("沒有對應的 FBA 商品");
+    expect(
+      priceListAmazonValue("standardPrice", undefined, {
+        ...snapshot,
+        state: "failed",
+      }),
+    ).toBe("本次讀取中斷");
+    expect(
+      priceListAmazonValue(
+        "minimumPrice",
+        { ...amazon, minimumPrice: null, minimumPriceStatus: "not-set" },
+        snapshot,
+      ),
+    ).toBe("Amazon 未設定下限");
+    expect(priceListAmazonValue("standardPrice", amazon, snapshot)).toBe(
+      "US$ 12.00",
+    );
+  });
+  it("resumes an interrupted status read with GET and only offers download after confirmed completion", async () => {
+    vi.useFakeTimers();
+    let observations = 0;
+    const snapshot: PriceListAmazonSnapshot = {
+      workbookId: workbook.id,
+      state: "running",
+      stage: "reading",
+      rows: [],
+      completed: 0,
+      total: 1,
+      fetchedAt: null,
+      message: "讀取中",
+    };
+    const fetch = vi.fn(async (path: string) => {
+      if (path.includes("?id=")) {
+        observations++;
+        if (observations === 1) throw new Error("Notebook 暫時沒有回應");
+        return new Response(
+          JSON.stringify({
+            ...snapshot,
+            state: "complete",
+            rows: [amazon],
+            completed: 1,
+          }),
+        );
+      }
+      return new Response(
+        JSON.stringify(path.endsWith("/import") ? workbook : snapshot),
+      );
+    });
+    vi.stubGlobal("fetch", fetch);
+    await act(async () => {
+      renderer = create(<PriceListPanel onClose={() => undefined} />);
+    });
+    await act(async () => {
+      renderer!.root
+        .findByProps({ "aria-label": "選取原始價目表" })
+        .props.onChange({
+          target: { files: [new File(["fake"], "test.xlsx")] },
+          currentTarget: { value: "" },
+        });
+    });
+    await act(async () => {
+      renderer!.root
+        .findAllByType("button")
+        .find((button) =>
+          button.children.includes("2. 讀取 Amazon 價格與首圖"),
+        )!
+        .props.onClick();
+    });
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "下載比對結果" }),
+    ).toHaveLength(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "Notebook 暫時沒有回應",
+    );
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "下載比對結果" }),
+    ).toHaveLength(0);
+    await act(async () => {
+      renderer!.root
+        .findAllByType("button")
+        .find((button) => button.children.includes("接回讀取進度"))!
+        .props.onClick();
+    });
+    expect(
+      fetch.mock.calls.filter(
+        ([path]) => path === "/api/price-list/amazon-refresh",
+      ),
+    ).toHaveLength(1);
+    expect(observations).toBe(2);
+    expect(
+      renderer!.root
+        .findByProps({ "aria-label": "下載比對結果" })
+        .findByType("button").props.disabled,
+    ).toBe(false);
+  });
+  it("offers a fresh explicit read after the local Amazon job expires", async () => {
+    vi.useFakeTimers();
+    const snapshot: PriceListAmazonSnapshot = {
+      workbookId: workbook.id,
+      state: "running",
+      rows: [],
+      completed: 0,
+      total: 1,
+      fetchedAt: null,
+      message: "讀取中",
+    };
+    const fetch = vi.fn(async (path: string) =>
+      path.includes("?id=")
+        ? new Response(
+            JSON.stringify({
+              code: "PRICE_LIST_AMAZON_EXPIRED",
+              message: "Amazon 比對已過期，請重新讀取。",
+            }),
+            { status: 404 },
+          )
+        : new Response(
+            JSON.stringify(path.endsWith("/import") ? workbook : snapshot),
+          ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await act(async () => {
+      renderer = create(<PriceListPanel onClose={() => undefined} />);
+    });
+    await act(async () => {
+      renderer!.root
+        .findByProps({ "aria-label": "選取原始價目表" })
+        .props.onChange({
+          target: { files: [new File(["fake"], "test.xlsx")] },
+          currentTarget: { value: "" },
+        });
+    });
+    await act(async () => {
+      renderer!.root
+        .findAllByType("button")
+        .find((button) =>
+          button.children.includes("2. 讀取 Amazon 價格與首圖"),
+        )!
+        .props.onClick();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    const fresh = renderer!.root
+      .findAllByType("button")
+      .find((button) => button.children.includes("重新讀取 Amazon"));
+    expect(fresh).toBeDefined();
+    await act(async () => {
+      fresh!.props.onClick();
+    });
+    expect(
+      fetch.mock.calls.filter(
+        ([path]) => path === "/api/price-list/amazon-refresh",
+      ),
+    ).toHaveLength(2);
   });
   it("keeps missing prices and a not-set minimum out of the same bucket", () => {
     expect(priceListAmazonDifference(product, undefined)).toBe("unknown");

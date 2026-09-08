@@ -718,6 +718,7 @@ export default function Dashboard({
   const [trendSelection, setTrendSelection] =
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
+  const [priceListOpened, setPriceListOpened] = useState(false);
   const inlineTool = openTool === "variations" || openTool === "price-list";
   const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup } | null>(null);
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
@@ -1163,6 +1164,7 @@ export default function Dashboard({
     if (tool === "copy") setContentWorkspaceTab("single");
     if (tool === "images") setImageWorkspaceTab("single");
     if (tool === "variations") setReturnToUnboundVariationAudit(false);
+    if (tool === "price-list") setPriceListOpened(true);
     if (tool === "variations" || tool === "price-list") {
       inlineReturnRef.current = { scrollY: window.scrollY, group: TOOL_META[tool].group };
     }
@@ -2084,7 +2086,7 @@ export default function Dashboard({
                               : tool === "images"
                                 ? "圖片工作台與全站健檢"
                                 : tool === "variations"
-                                  ? "查詢、補填資料、解除與加入變體"
+                                  ? "未綁商品與 family 建議、解除與加入變體"
                                   : tool === "price-list"
                                     ? "原表檢視、Amazon 價格與最低價比對"
                                   : tool === "price"
@@ -2178,11 +2180,27 @@ export default function Dashboard({
           data-audit-workspace-section={activeAuditWorkspace ?? undefined}
           tabIndex={-1}
         >
+          {priceListOpened && (
+            <div data-price-list-session hidden={openTool !== "price-list"} inert={openTool !== "price-list" ? true : undefined}>
+              <DeferredWorkspace onClose={closePriceList}>
+                <PriceListPanel onClose={closePriceList} active={openTool === "price-list"} />
+              </DeferredWorkspace>
+            </div>
+          )}
           {openTool === "variations" ? <DeferredWorkspace onClose={closeVariationPlanner}>
-            <VariationPlannerDrawer presentation="workspace" initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={closeVariationPlanner} />
-          </DeferredWorkspace> : openTool === "price-list" ? <DeferredWorkspace onClose={closePriceList}>
-            <PriceListPanel onClose={closePriceList} />
-          </DeferredWorkspace> : activeAuditWorkspace ? auditWorkspaceView : <>
+            <VariationPlannerDrawer
+              presentation="workspace"
+              initialMarketplaceId={marketplaceId}
+              initialSellerSku={globalSku}
+              auditMode={currentStandaloneMode}
+              auditCache={variationAuditForDrawer}
+              auditJob={currentVariationDrawerJob}
+              onAuditCacheChange={cacheUnboundVariationAudit}
+              onAuditJobChange={cacheStandaloneAuditJob}
+              onContextResolved={resolveGlobalContext}
+              onClose={closeVariationPlanner}
+            />
+          </DeferredWorkspace> : openTool === "price-list" ? null : activeAuditWorkspace ? auditWorkspaceView : <>
           <section className="workspace-intro" aria-labelledby="workspace-title">
             <div className="workspace-intro-copy">
               <p className="workspace-kicker">JASPER / FBA WORKSPACE</p>

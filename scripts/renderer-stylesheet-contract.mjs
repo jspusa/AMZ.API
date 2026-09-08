@@ -33,5 +33,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/price-list.css",
   ]),
   fingerprint:
-    "99e1e84896887d7cfa06383874cd2bb53bc36a4ce5fa67833d74df3978bf0170",
+    "0ad7ecba563150a1bcfde75aa411e307fded0faabdd95f6272737099860efe9f",
 });

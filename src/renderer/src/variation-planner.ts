@@ -305,7 +305,7 @@ export function buildVariationMovePlan(
     );
     warnings.push("移除與重建至少是兩個非原子步驟，中途可能暫時沒有 family 關係。");
   } else {
-    warnings.push("此 SKU 目前沒有 parent；正式建立關係仍需另外設計安全寫入流程。");
+    warnings.push("此 SKU 已確認沒有 parent，可直接填寫目標維度並檢查綁定內容；仍需 Notebook 鑰匙確認與唯讀回查。");
   }
   warnings.push(
     "只有 Amazon Validation Preview、Notebook 鑰匙（Touch ID／Windows Hello）確認與送出後唯讀回查全部完成，介面才會標示該階段成功。",

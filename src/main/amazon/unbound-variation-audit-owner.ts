@@ -1,4 +1,6 @@
 import type { ApiRequest, ApiResponse } from "../../shared/contracts";
+import type { UnboundFamilyRecommendation } from "../../shared/unbound-family-recommendations";
+import { buildUnboundFamilyRecommendations } from "./unbound-family-recommendations";
 import {
   marketplaceById,
   type MarketplaceId,
@@ -80,7 +82,10 @@ export type UnboundVariationAuditStandaloneInput = Readonly<{
 }>;
 
 export type UnboundVariationAuditPublicSnapshot =
-  UnboundVariationAuditSnapshot & Readonly<{ exportId: string }>;
+  UnboundVariationAuditSnapshot & Readonly<{
+    exportId: string;
+    recommendations: UnboundFamilyRecommendation[];
+  }>;
 
 export interface UnboundVariationAuditOwnerPort {
   start(request: ApiRequest): Promise<ApiResponse>;
@@ -138,7 +143,11 @@ function publicSnapshot(
   snapshot: UnboundVariationAuditSnapshot,
   exportId: string,
 ): UnboundVariationAuditPublicSnapshot {
-  return { ...structuredClone(snapshot), exportId };
+  return {
+    ...structuredClone(snapshot),
+    exportId,
+    recommendations: buildUnboundFamilyRecommendations(snapshot),
+  };
 }
 
 /**

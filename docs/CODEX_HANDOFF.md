@@ -11,6 +11,7 @@
 
 ## 目前狀態
 
+- 使用者回報的 immutable `item_shape` 改掛阻擋、價目表操作與未綁 FBA 建議已完成 `0.1.58` 實作與本機驗證；發布／下載／安裝狀態以 [本輪證據](releases/2026-09-variation-guidance-price-fix.md) 為準。需求與邊界見 [spec](specs/2026-09-08-variation-guidance-price-fix.md)。不可將下列 `0.1.57` 成功推定為新版已交付。
 - 使用者核准的「變體工作台與 US 價目表」已由 PR #214 合併並發布 `0.1.57`，release-code SHA `495ee23f11924777cac93ce43c9d487bfdd7ad2d`。四條 main Actions 成功、Pages bytes 相符、Mac／Windows artifact hash 已驗；員工下載頁兩張卡已更新，登入後兩份實際下載也符合可信 artifact。`/Applications/AMZ.API.app` 已換為 `0.1.57` 並成功開啟，encrypted vault 未變，`0.1.56` 備份保留。功能範圍與分層證據見 [spec](specs/2026-09-08-variation-price-workbench.md) 及 [本輪帳本](releases/2026-09-variation-price-workbench.md)；live Amazon mutation、真人 Touch ID／Windows Hello 與正式簽章仍不得由本次安裝推定。
 - 本輪進行「營運情報與事件」五項能力：促銷、AWD、價格健康、廣告成效與本機通知。修改／驗收這些能力或判斷本輪發布狀態時，先讀 [核准 spec](specs/2026-09-08-operations-intelligence.md) 與 [本輪證據與限制](releases/2026-09-operations-intelligence.md)；source baseline 為 `69a395096b1fdbf23be94c804a0aea1a4d523a24`，分支 `feature/operations-intelligence`。檢查、review、final commit 與發布狀態以該日期化記錄為準，不能由既有版本的成功推定新能力已安裝或 live 通過。
 - 新一輪使用者核准的商用首頁依 Taste Redesign 完成「Jasper Signal Desk」，並在第四輪依真實長營收數字與健檢區回饋收斂：深藍 J／紅箭頭 App Icon 為品牌骨架，銷售折線恢復黃金橘，七張健檢卡只分產品霧藍、價格暖金與廣告淡珊瑚三組；詳見 [介面改版紀錄](releases/2026-09-commercial-frontend.md)。頁內導覽必須阻止預設 hash navigation，否則違反 exact renderer document trust。四個主題樣式原順序保留，後接 `variation-workspace.css` 與 `price-list.css`；仍須保持 fingerprint 與 build rule stream 一致。

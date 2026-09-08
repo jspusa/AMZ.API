@@ -8,6 +8,7 @@ import {
 import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
 } from "../src/renderer/src/components/dashboard";
+import PriceListPanel from "../src/renderer/src/components/price-list-panel";
 import type {
   SalesTrendPoint,
   SalesTrendSnapshot,
@@ -93,6 +94,7 @@ describe("dashboard audit workspace interactions", () => {
       AUDIT_SUITE_SECTIONS.map(({ label }) => [label, vi.fn()]),
     ) as Record<string, ReturnType<typeof vi.fn>>;
     const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn() };
+    const priceHeadingFocus = vi.fn();
     let renderer: ReactTestRenderer | null = null;
     const querySelector = vi.fn((selector: string) => {
       const sectionId = selector.match(
@@ -191,6 +193,9 @@ describe("dashboard audit workspace interactions", () => {
         initialMarketplaceId: DEFAULT_MARKETPLACE_ID,
       }), {
         createNodeMock: (element) => {
+          if (element.type === "h2" && element.props.id === "price-list-title") {
+            return { focus: priceHeadingFocus };
+          }
           if (
             element.type === "h1" &&
             typeof element.props.children === "string" &&
@@ -306,6 +311,7 @@ describe("dashboard audit workspace interactions", () => {
       expect(root.findAllByType("button").find((button) => button.props["aria-label"] === group)!.props.disabled).toBe(true);
       const workspace = root.findAll((node) => typeof node.type === "string" && String(node.props.className ?? "").split(/\s+/u).includes(className))[0];
       expect(workspace).toBeDefined();
+      const pricePanel = label === "價目表" ? root.findByType(PriceListPanel) : null;
       const back = workspace.findAllByType("button").find((button) => button.props["aria-label"] === "關閉變體規劃" || button.children.join("") === "← 返回首頁")!;
       expect(back).toBeDefined();
       await act(async () => back.props.onClick());
@@ -313,6 +319,20 @@ describe("dashboard audit workspace interactions", () => {
       expect(menuFocus[group]).toHaveBeenCalledWith({ preventScroll: true });
       expect(scrollTo).toHaveBeenLastCalledWith({ top: 900, behavior: "instant" });
       expect(root.findAllByProps({ "data-audit-workspace-launch": "content" })).toHaveLength(1);
+      if (pricePanel) {
+        expect(priceHeadingFocus).toHaveBeenCalledTimes(1);
+        // Returning home must retain the imported workbook and active read in
+        // the same component instance; reopening must not create a new job.
+        expect(root.findByType(PriceListPanel)).toBe(pricePanel);
+        expect(root.findByProps({ "data-price-list-session": true }).props.hidden).toBe(true);
+        await act(async () => root.findAllByType("button").find((button) => button.props["aria-label"] === group)!.props.onClick());
+        const reopen = root.findAllByProps({ role: "menuitem" }).find((button) => button.findByType("strong").children.join("") === label)!;
+        await act(async () => reopen.props.onClick());
+        expect(root.findByType(PriceListPanel)).toBe(pricePanel);
+        expect(root.findByProps({ "data-price-list-session": true }).props.hidden).toBe(false);
+        expect(priceHeadingFocus).toHaveBeenCalledTimes(2);
+        await act(async () => back.props.onClick());
+      }
     }
 
     await act(async () => renderer!.unmount());

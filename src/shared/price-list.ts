@@ -101,6 +101,7 @@ export type PriceListAmazonRow = {
   imageUrl: string | null;
   currency: "USD";
   fetchedAt: string;
+  issueCode?: string | null;
 };
 
 export type PriceListAmazonSnapshot = {
@@ -111,6 +112,8 @@ export type PriceListAmazonSnapshot = {
   completed: number;
   total: number;
   message: string;
+  stage?: "identifying" | "reading" | "finished";
+  errorCode?: string | null;
 };
 
 export const PRICE_LIST_FIELD_LABELS: Record<string, string> = {

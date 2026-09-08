@@ -75,6 +75,7 @@ describe("variation planner", () => {
     const markup = renderToStaticMarkup(
       <VariationPlannerDrawer
         initialMarketplaceId={MARKETPLACE_ID}
+        initialSellerSku="CHILD-4OZ"
         onClose={vi.fn()}
       />,
     );

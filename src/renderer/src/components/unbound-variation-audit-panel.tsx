@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   parseUnboundVariationAuditSnapshot,
   type UnboundVariationAuditSnapshot,
+  type UnboundVariationAuditRow,
 } from "../unbound-variation-audit";
 import { auditExportFilename } from "../audit-export-filename";
 import {
@@ -16,6 +17,7 @@ import {
   type StandaloneAuditMode,
 } from "../standalone-audit";
 import AuditDetailsDisclosure from "./audit-details-disclosure";
+import type { UnboundFamilyRecommendation } from "../../../shared/unbound-family-recommendations";
 
 type ApiProblem = { message?: string; requestId?: string | null };
 type AuditState = "idle" | "starting" | "polling" | "scanning" | "done";
@@ -76,6 +78,9 @@ export default function UnboundVariationAuditPanel({
   onCachedResultChange,
   initialJob = null,
   onJobChange,
+  presentation = "audit",
+  disabled = false,
+  onSelectUnbound,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
@@ -85,13 +90,20 @@ export default function UnboundVariationAuditPanel({
   onCachedResultChange?: (cache: UnboundVariationAuditCache) => void;
   initialJob?: StandaloneAuditJob | null;
   onJobChange?: (job: StandaloneAuditJob) => void;
+  presentation?: "audit" | "picker";
+  disabled?: boolean;
+  onSelectUnbound?: (
+    row: UnboundVariationAuditRow,
+    recommendation: UnboundFamilyRecommendation | null,
+  ) => void;
 }) {
   const matchingInitialJob = initialJob?.kind === "variation" &&
       initialJob.marketplaceId === marketplaceId &&
       initialJob.mode === mode
     ? initialJob
     : null;
-  const candidateInitialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
+  const candidateInitialCache = cachedResult?.snapshot.marketplaceId === marketplaceId &&
+      cachedResult.snapshot.mode === mode
     ? cachedResult
     : null;
   const initialCache = candidateInitialCache && standaloneAuditSnapshotMatchesJob(
@@ -134,6 +146,7 @@ export default function UnboundVariationAuditPanel({
       : null);
     if (
       cachedResult?.snapshot.marketplaceId === marketplaceId &&
+      cachedResult.snapshot.mode === mode &&
       standaloneAuditSnapshotMatchesJob(cachedResult.snapshot, matchingJob)
     ) {
       setState("done");
@@ -190,6 +203,7 @@ export default function UnboundVariationAuditPanel({
   };
 
   const startAudit = async () => {
+    if (disabled) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -363,7 +377,7 @@ export default function UnboundVariationAuditPanel({
           className="price-primary-button"
           type="button"
           onClick={() => void startAudit()}
-          disabled={state !== "idle"}
+          disabled={disabled || state !== "idle"}
         >
           {state === "idle" ? `掃描 ${marketplaceShort} 全部 FBA 變體關係` : "未綁變體健檢進行中…"}
         </button>
@@ -375,7 +389,7 @@ export default function UnboundVariationAuditPanel({
             <article><span>確定未綁</span><strong>{snapshot.summary.unbound.toLocaleString()}</strong></article>
             <article><span>讀取未完成</span><strong>{snapshot.summary.incomplete.toLocaleString()}</strong></article>
           </div>
-          <button
+          {presentation === "audit" && <button
             type="button"
             className="content-audit-export-primary"
             onClick={() => void exportExcel()}
@@ -384,7 +398,7 @@ export default function UnboundVariationAuditPanel({
             <span aria-hidden="true">↧</span>
             <strong>{exporting ? "正在建立 Excel…" : "匯出未綁變體＋讀取未完成＋所有變體 Excel"}</strong>
             <small>4 張工作表（含「所有變體」與「父變體橫排」）；只含本次 Amazon FBA 唯讀快照</small>
-          </button>
+          </button>}
           <div className="audit-toolbar">
             <input
               type="search"
@@ -397,8 +411,111 @@ export default function UnboundVariationAuditPanel({
               placeholder="搜尋 SKU、ASIN、商品名稱或狀態"
               aria-label="搜尋未綁變體健檢結果"
             />
-            <button type="button" onClick={() => void startAudit()}>重新掃描</button>
+            <button type="button" disabled={disabled} onClick={() => void startAudit()}>重新掃描</button>
           </div>
+          {presentation === "picker" ? (
+            <>
+              <p className="variation-form-note">
+                已確認未綁的 FBA 商品可直接準備綁定。資料時間：
+                {new Date(snapshot.fetchedAt).toLocaleString("zh-TW")}
+              </p>
+              <div
+                className="variation-table-scroll variation-source-table"
+                tabIndex={0}
+              >
+                <table
+                  className="variation-unbound-table"
+                  aria-label="可直接綁定的未綁 FBA 商品"
+                >
+                  <colgroup>
+                    <col style={{ width: 120 }} />
+                    <col style={{ width: 180 }} />
+                    <col />
+                    <col style={{ width: 260 }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>操作</th>
+                      <th>Seller SKU／ASIN</th>
+                      <th>商品名稱</th>
+                      <th>Family 建議</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleRows.map((row) => {
+                      const recommendation =
+                        snapshot.recommendations?.find(
+                          (item) => item.sellerSku === row.sellerSku,
+                        ) ?? null;
+                      const first = recommendation?.candidates[0];
+                      return (
+                        <tr key={row.sellerSku}>
+                          <td>
+                            <button
+                              type="button"
+                              disabled={disabled}
+                              aria-label={`準備綁定 ${row.sellerSku}`}
+                              onClick={() =>
+                                onSelectUnbound?.(row, recommendation)
+                              }
+                            >
+                              準備綁定
+                            </button>
+                          </td>
+                          <td>
+                            <strong>{row.sellerSku}</strong>
+                            <small>{row.asin}</small>
+                          </td>
+                          <td>
+                            <span
+                              className="variation-cell-clamp"
+                              title={row.title}
+                            >
+                              {row.title}
+                            </span>
+                            <small>{row.productType}</small>
+                          </td>
+                          <td>
+                            {first ? (
+                              <>
+                                <strong>
+                                  {"★".repeat(first.stars)}
+                                  {"☆".repeat(3 - first.stars)}{" "}
+                                  {recommendation?.status === "tied"
+                                    ? "同分候選"
+                                    : "參考建議"}
+                                </strong>
+                                <span>{first.parentSku}</span>
+                                <small>
+                                  {first.matchingChildCount} 個同系列 SKU
+                                  {recommendation?.status === "tied"
+                                    ? " · 請比較候選"
+                                    : ""}
+                                </small>
+                              </>
+                            ) : (
+                              <span>☆ 無足夠建議 · 可手動選目標</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!visibleRows.length && (
+                      <tr>
+                        <td colSpan={4}>沒有符合搜尋條件的確定未綁 SKU。</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {snapshot.summary.incomplete > 0 && (
+                <p className="variation-warning">
+                  {snapshot.summary.incomplete} 個 SKU
+                  讀取未完成，不列入可綁清單；可回「未綁變體健檢」查看原因。
+                </p>
+              )}
+            </>
+          ) : (
           <div className="image-audit-results">
             <h3>確定沒有 parent relationship</h3>
             {visibleRows.map((row) => (
@@ -426,8 +543,8 @@ export default function UnboundVariationAuditPanel({
               </article>
             ))}
             {!visibleIncompleteRows.length && <p className="variation-empty">沒有符合搜尋條件的未完成項目。</p>}
-          </div>
-          <p className="variation-warning">{snapshot.notice}</p>
+          </div>)}
+          {presentation === "audit" && <p className="variation-warning">{snapshot.notice}</p>}
         </>
       )}
     </section>
