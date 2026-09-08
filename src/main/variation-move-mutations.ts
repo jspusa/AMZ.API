@@ -82,6 +82,7 @@ type VariationMoveWriteEvidence = Readonly<{
   childSchemaChecksumHash: string | null;
   requiredFieldSignatures?: Readonly<Record<string, string>>;
   preservedDimensionSignatures?: Readonly<Record<string, string>>;
+  retainedVariationThemeSignature?: string;
 }>;
 
 const VARIATION_WRITE_EVIDENCE_KEYS = [
@@ -164,6 +165,7 @@ interface VariationMoveMutationOperations {
 }
 
 type PreparedDescriptor = Readonly<{
+  retainedVariationThemeSignature?: string;
   changes: VariationMovePreview["changes"];
   mode: "live" | "demo";
   descriptor: VariationMoveDescriptor;
@@ -455,16 +457,19 @@ function assertStandaloneSource(
     asin: string;
     productType: string;
   }>,
+  targetTheme: string,
 ): void {
   if (
     source.role !== "standalone" ||
     source.parentSku !== null ||
     source.relationshipType !== null ||
-    source.variationTheme !== null ||
+    (source.variationTheme !== null && (
+      source.variationTheme !== targetTheme || !source.retainedVariationThemeSignature
+    )) ||
     !source.explicitStandalone
   ) {
     throw new SpApiError(
-      "Amazon relationships 尚未同時證明來源 SKU 為 standalone 且變體關係欄位為空；已停止加入新 parent。",
+      "Amazon 尚未證明來源為沒有 parent 的 standalone，或既有主題無法原樣保留；已停止加入新 parent。",
       { status: 409, code: "VARIATION_NOT_DETACHED" },
     );
   }
@@ -710,7 +715,7 @@ async function prepareDescriptor(
   }
 
   const prepared = await prepareAttachContext(gateway, input, "mutation");
-  assertStandaloneSource(prepared.source);
+  assertStandaloneSource(prepared.source, prepared.target.variationTheme);
   assertSourceFamilyComplete(prepared.source);
   if (
     prepared.target.sellerSku !== input.targetParentSku ||
@@ -757,11 +762,12 @@ async function prepareDescriptor(
   };
   return {
     changes: [{ name: "parent_sku", label: "Parent SKU", before: null, after: input.targetParentSku },
-      { name: "variation_theme", label: "變體主題", before: null, after: input.variationTheme },
+      { name: "variation_theme", label: "變體主題", before: prepared.source.variationTheme, after: input.variationTheme },
       ...prepared.fields.map((field) => ({ name: field.name, label: field.label, before: field.values, after: input.dimensionValues[field.name] })),
       ...requiredChanges(prepared.source.requiredFields ?? [], requiredValues)],
     mode: prepared.mode,
     descriptor,
+    retainedVariationThemeSignature: prepared.source.retainedVariationThemeSignature,
     sourceParentSku: null,
     targetParentSku: input.targetParentSku,
     variationTheme: input.variationTheme,
@@ -776,10 +782,17 @@ function requiredChanges(fields: readonly VariationFieldDescriptor[], values: Re
   return fields.map((field) => ({ name: field.name, label: field.label, before: field.values, after: values[field.name] }));
 }
 
-function requiredProposalFingerprint(input: VariationMoveInput, prepared: PreparedDescriptor): string {
+function requiredProposalFingerprint(
+  input: VariationMoveInput,
+  prepared: PreparedDescriptor,
+): string {
   const hasPreservedDimensions = prepared.descriptor.action === "attach" &&
     Object.keys(prepared.descriptor.preservedDimensionValues ?? {}).length > 0;
-  if (!Object.keys(input.requiredValues ?? {}).length && !hasPreservedDimensions) {
+  if (
+    !Object.keys(input.requiredValues ?? {}).length &&
+    !hasPreservedDimensions &&
+    !prepared.retainedVariationThemeSignature
+  ) {
     return proposalFingerprint(input);
   }
   return createHash("sha256").update(JSON.stringify([
@@ -789,6 +802,9 @@ function requiredProposalFingerprint(input: VariationMoveInput, prepared: Prepar
     prepared.descriptor.requiredSchemaChecksum,
     prepared.childSchemaChecksumHash,
     prepared.changes,
+    ...(prepared.retainedVariationThemeSignature
+      ? [prepared.retainedVariationThemeSignature]
+      : []),
   ])).digest("hex");
 }
 
@@ -911,6 +927,9 @@ function writeEvidence(prepared: PreparedDescriptor): VariationMoveWriteEvidence
     ...(Object.keys(prepared.descriptor.requiredValues ?? {}).length ? {
       requiredFieldSignatures: variationAttributeSignatures({ ...prepared.descriptor.requiredValues }, prepared.descriptor.marketplaceId),
     } : {}),
+    ...(prepared.retainedVariationThemeSignature ? {
+      retainedVariationThemeSignature: prepared.retainedVariationThemeSignature,
+    } : {}),
     ...(prepared.descriptor.action === "attach" &&
       Object.keys(prepared.descriptor.preservedDimensionValues ?? {}).length ? {
       preservedDimensionSignatures: variationAttributeSignatures(
@@ -954,6 +973,10 @@ function observationMatches(
     observation.fulfillment !== "FBA"
   ) return false;
   if (!requiredSignaturesMatch(variationAttributeSignatures({ ...descriptor.requiredValues }, descriptor.marketplaceId), observation.attributeSignatures)) return false;
+  if (
+    prepared.retainedVariationThemeSignature &&
+    observation.exactAttributeSignatures?.variation_theme !== prepared.retainedVariationThemeSignature
+  ) return false;
   if (descriptor.action === "attach" && !requiredSignaturesMatch(
     variationAttributeSignatures(
       { ...descriptor.preservedDimensionValues },
@@ -1103,7 +1126,11 @@ function publicVariationMoveResult(
       ...VARIATION_WRITE_EVIDENCE_KEYS,
       ...(evidence.requiredFieldSignatures === undefined ? [] : ["requiredFieldSignatures"]),
       ...(evidence.preservedDimensionSignatures === undefined ? [] : ["preservedDimensionSignatures"]),
+      ...(evidence.retainedVariationThemeSignature === undefined ? [] : ["retainedVariationThemeSignature"]),
     ]) &&
+    (evidence.retainedVariationThemeSignature === undefined ||
+      typeof evidence.retainedVariationThemeSignature === "string" &&
+      /^[a-f0-9]{64}$/u.test(evidence.retainedVariationThemeSignature)) &&
     [evidence.requiredFieldSignatures, evidence.preservedDimensionSignatures].every((signatures) =>
       signatures === undefined || isPlainRecord(signatures) &&
       Object.entries(signatures).every(([name, value]) =>
@@ -1237,6 +1264,10 @@ function canonicalMatchesEvidence(
   ) return false;
   if (!requiredSignaturesMatch(evidence.requiredFieldSignatures, canonical.attributeSignatures)) return false;
   if (!requiredSignaturesMatch(evidence.preservedDimensionSignatures, canonical.exactAttributeSignatures)) return false;
+  if (
+    evidence.retainedVariationThemeSignature &&
+    canonical.exactAttributeSignatures?.variation_theme !== evidence.retainedVariationThemeSignature
+  ) return false;
   if (evidence.action === "detach") {
     return canonical.role === "standalone" &&
       canonical.parentSku === null &&
@@ -1396,6 +1427,9 @@ function createVariationMoveMutationOperations(
         "preparation",
       );
       assertSourceFamilyComplete(prepared.source);
+      if (prepared.source.role === "standalone") {
+        assertStandaloneSource(prepared.source, prepared.target.variationTheme);
+      }
       return {
         action: "attach",
         mode: prepared.mode,

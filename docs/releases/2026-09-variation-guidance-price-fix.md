@@ -22,11 +22,13 @@
 | Mac artifact | ★ 已核對 | run `34197661044` attempt 2／artifact `10044895335`，GitHub archive digest、SHA256SUMS、universal 架構與 deep strict ad-hoc codesign 均通過；Mac CI 289 files／2,980 tests passed、1 skipped |
 | Windows artifact | ★ 已核對 | run `34197661019` attempt 2／artifact `10044877536`，GitHub archive digest、SHA256SUMS、AMD64 N-API addon、ASAR manifest 與 0.1.58／disabled 均通過；Windows CI 289 files／2,977 tests passed、4 skipped |
 | Mac 安裝 | ★ 已更換 | `/Applications/AMZ.API.app` 已為 0.1.58，ASAR 與可信 DMG 相符、universal、codesign／disabled channel 通過；0.1.57 備份及 encrypted vault 保留且原 bytes 未變 |
-| 受保護下載 | ☆ 已上傳，登入後回驗待完成 | Mac→Windows 依序 upload complete 成功；頁面重新整理後要求員工登入，尚未把新版卡片或實際下載算作已驗 |
-| 新版 live 唯讀 | ☆ 待系統驗證 | 0.1.58 process 已啟動，但 macOS Keychain SecItemCopyMatching 正等待系統授權，尚未進入主畫面；已請使用者親自完成，不代操作 SecurityAgent 或接收密碼 |
+| 受保護下載 | ★ 登入後回驗完成 | 使用者完成登入；Mac／Windows 卡片均為 0.1.58，兩份實際下載 bytes 與 SHA-256 符合上表可信 artifact。證據在本機 `portal-authenticated-download-verification.json` |
+| 新版 live 唯讀 | ☆ 部分通過，發現後續修正 | 使用者完成 Keychain 驗證後 App 已連線；原 immutable shape／size preparation 成功。未綁 picker 遺失合法空 relationships 證據、attach preview 又誤擋既有 theme，已以 production seam 重現並列入 Issue #221。新版原表查價已取得指定三個商品，整表匯出另待完成 |
 | live mutation／native biometrics | ☆ 本次未執行 | 需要另行 exact operation 授權；CI 不代表真人 Touch ID／Windows Hello |
 
 正式簽章、public update feed 與 Windows 使用者實機驗收保持原有獨立邊界。內部 artifact 更新通道維持 `disabled`。
+
+本次 App 開啟期間 PR #217 更新 Pages，舊入口首次載入尚未快取的價目表 chunk 時遇到 404；完整重新載入後價目表恢復。新舊價目表 chunk 除入口 import 檔名外逐字相同，不能把此部署時序誤報為價格 transport 失敗。後續修正見 [standalone live spec](../specs/2026-09-08-standalone-live-preparation.md)。
 
 ## 可信安裝檔
 

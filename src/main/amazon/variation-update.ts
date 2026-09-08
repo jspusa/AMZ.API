@@ -566,6 +566,57 @@ export function preservedVariationDimensions(input: {
   return preserved;
 }
 
+/** Attribute evidence for attaching an independently proven standalone SKU. */
+export function preservedStandaloneVariationTheme(input: {
+  marketplaceId: string;
+  variationTheme: string;
+  attributes?: Record<string, unknown>;
+}): JsonRecord[] {
+  const fail = (detail: string): never => {
+    throw new VariationUpdateValidationError(
+      `來源 SKU ${detail}；已停止加入新 parent，請重新讀取核對。`,
+      "VARIATION_NOT_DETACHED",
+    );
+  };
+  const currentRows = (name: string): JsonRecord[] => {
+    const raw = input.attributes?.[name];
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) return fail(`${name} 格式不完整`);
+    const rows: JsonRecord[] = [];
+    for (const row of raw) {
+      if (!isRecord(row)) return fail(`${name} 含有無法辨識的值`);
+      const marketplace = row.marketplace_id;
+      if (
+        typeof marketplace !== "string" || !marketplace ||
+        marketplace !== marketplace.trim() || /[\u0000-\u001f\u007f]/u.test(marketplace)
+      ) return fail(`${name} 的站點條件不明`);
+      if (name === "variation_theme" && marketplace !== input.marketplaceId) {
+        return fail("variation_theme 含有其他站點值，無法唯一保留本站主題");
+      }
+      if (marketplace === input.marketplaceId) rows.push(row);
+    }
+    return rows;
+  };
+  for (const name of ["parentage_level", "child_parent_sku_relationship"]) {
+    if (currentRows(name).length) return fail(`仍有 ${name} 關係欄位`);
+  }
+  const themes = currentRows("variation_theme");
+  if (!themes.length) return [];
+  if (themes.length !== 1) return fail("既有 variation_theme 不唯一");
+  const theme = themes[0]!;
+  if (
+    theme.name !== input.variationTheme ||
+    Object.keys(theme).some((key) => !["name", "marketplace_id", "language_tag"].includes(key)) ||
+    (theme.language_tag !== undefined && (
+      typeof theme.language_tag !== "string" || !theme.language_tag ||
+      theme.language_tag !== theme.language_tag.trim() ||
+      /[\u0000-\u001f\u007f]/u.test(theme.language_tag)
+    ))
+  ) return fail("既有 variation_theme 與目標不同或條件無法精確保留");
+  assertSafeJson(themes);
+  return themes.map(cloneRecord);
+}
+
 export function buildVariationAttachBody(input: {
   productType: string;
   marketplaceId: string;
@@ -584,17 +635,11 @@ export function buildVariationAttachBody(input: {
       "加入變體前必須確認 product type、目標 parent 與 variation theme。",
     );
   }
-  const remainingRelationshipAttributes = RELATIONSHIP_ATTRIBUTES.filter(
-    (name) =>
-      attributeObjects(input.existingAttributes, name, input.marketplaceId)
-        .length > 0,
-  );
-  if (remainingRelationshipAttributes.length) {
-    throw new VariationUpdateValidationError(
-      `此 SKU 仍有變體關係欄位（${remainingRelationshipAttributes.join("、")}）；請先完成解除並回讀確認。`,
-      "VARIATION_NOT_DETACHED",
-    );
-  }
+  const retainedTheme = preservedStandaloneVariationTheme({
+    marketplaceId: input.marketplaceId,
+    variationTheme,
+    attributes: input.existingAttributes,
+  });
   const dimensionNames = unique(
     input.dimensionNames.map((name) => name.trim()),
   );
@@ -630,11 +675,11 @@ export function buildVariationAttachBody(input: {
         },
       ],
     },
-    {
+    ...(retainedTheme.length ? [] : [{
       op: "add",
       path: "/attributes/variation_theme",
       value: [{ marketplace_id: input.marketplaceId, name: variationTheme }],
-    },
+    } as VariationPatchOperation]),
   ];
   for (const name of dimensionNames) {
     if (input.preservedDimensionNames?.includes(name)) continue;

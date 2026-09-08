@@ -38,6 +38,7 @@ import { classifyUnboundVariationEvidence } from
 import {
   assertVariationDetached,
   buildVariationAttachBody,
+  preservedStandaloneVariationTheme,
   buildVariationDetachBody,
   variationDimensionSignature,
   variationFieldDescriptors,
@@ -94,7 +95,16 @@ type EvidenceBase = Readonly<{
   targetParentSku: string | null;
 }>;
 
+type StandaloneSourceEvidence = Readonly<{
+  profile: VariationItemReadResult["profile"];
+  relationships: unknown;
+  role: VariationFamilyMember["role"];
+  parentSku: string | null;
+  listingFulfillmentEvidence: "FBA" | "OTHER";
+}>;
+
 type SourceEvidenceRecord = EvidenceBase & Readonly<{
+  standalone?: StandaloneSourceEvidence;
   requiredSchema?: unknown;
   requiredSchemaChecksum?: string | null;
   requiredIssueKey?: string;
@@ -259,20 +269,33 @@ async function readChildSchema(
   };
 }
 
+function standaloneSourceEvidence(
+  result: VariationItemReadResult,
+): StandaloneSourceEvidence {
+  return {
+    profile: result.profile,
+    relationships: structuredClone(result.payload.relationships),
+    role: result.member.role,
+    parentSku: result.member.parentSku,
+    listingFulfillmentEvidence: result.member.fba ? "FBA" : "OTHER",
+  };
+}
+
+function provesStandalone(
+  source: StandaloneSourceEvidence | undefined,
+  marketplaceId: MarketplaceId,
+): boolean {
+  if (!source) return false;
+  return classifyUnboundVariationEvidence({ ...source, marketplaceId }).kind === "unbound" &&
+    source.role === "standalone" &&
+    source.parentSku === null;
+}
+
 function explicitStandalone(
   result: VariationItemReadResult,
   marketplaceId: MarketplaceId,
 ): boolean {
-  const evidence = classifyUnboundVariationEvidence({
-    marketplaceId,
-    profile: result.profile,
-    relationships: result.payload.relationships,
-    role: result.member.role,
-    listingFulfillmentEvidence: result.member.fba ? "FBA" : "OTHER",
-  });
-  return evidence.kind === "unbound" &&
-    result.member.role === "standalone" &&
-    result.member.parentSku === null;
+  return provesStandalone(standaloneSourceEvidence(result), marketplaceId);
 }
 
 function liveSourceObservation(
@@ -607,6 +630,12 @@ export function createVariationMoveGatewayProduction(
         });
         return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId)] };
       }
+      if (!provesStandalone(source.standalone, descriptor.marketplaceId)) {
+        throw new VariationUpdateValidationError(
+          "來源 relationships 尚未完整證明沒有 parent，已停止加入新 parent。",
+          "VARIATION_NOT_DETACHED",
+        );
+      }
       const records = attachRecordsFor(descriptor, source);
       if (descriptor.requiredSchemaChecksum !== source.requiredSchemaChecksum) throw new VariationUpdateValidationError("產品必填欄位的 PTD 已變更，請重新預檢。", "VARIATION_TARGET_CHANGED");
       const dimensionFields = variationFieldDescriptors({
@@ -672,6 +701,13 @@ export function createVariationMoveGatewayProduction(
       asin: sourceMember.asin,
       productType: sourceMember.productType || null,
       attributes: sourceAttributes,
+      standalone: {
+        profile: "relationships",
+        relationships: role === "standalone" ? [] : undefined,
+        role,
+        parentSku,
+        listingFulfillmentEvidence: sourceMember.fba ? "FBA" : "OTHER",
+      },
     });
     const source: VariationMoveSourceObservation = {
       marketplaceId: input.marketplaceId,
@@ -830,6 +866,7 @@ export function createVariationMoveGatewayProduction(
       asin: sourceResult.member.asin,
       productType: sourceResult.member.productType || null,
       attributes: sourceResult.payload.attributes,
+      standalone: standaloneSourceEvidence(sourceResult),
       requiredSchema: schema.schema, requiredSchemaChecksum: requirementsChecksum(schema.schema, schema.checksum), requiredIssueKey, requiredIssueNames,
     });
     const targetCapability = mintTarget({
@@ -845,12 +882,34 @@ export function createVariationMoveGatewayProduction(
       checksum: schema.checksum,
       schema: schema.schema,
     });
+    let retainedVariationThemeSignature: string | undefined;
+    if (
+      explicitStandalone(sourceResult, input.marketplaceId) &&
+      targetFamily.variationTheme
+    ) {
+      try {
+        const retainedTheme = preservedStandaloneVariationTheme({
+          marketplaceId: input.marketplaceId,
+          variationTheme: targetFamily.variationTheme,
+          attributes: sourceResult.payload.attributes,
+        });
+        if (retainedTheme.length) {
+          retainedVariationThemeSignature = variationAttributeSignatures(
+            { variation_theme: retainedTheme },
+            input.marketplaceId,
+            true,
+          ).variation_theme;
+        }
+      } catch (error) {
+        return relationshipValidationError(error);
+      }
+    }
     const source = { ...liveSourceObservation({
       marketplaceId: input.marketplaceId,
       result: sourceResult,
       familyComplete: sourceFamily.familyComplete,
       sourceEvidence: capability,
-    }), requiredFields: variationRequiredFieldDescriptors({
+    }), retainedVariationThemeSignature, requiredFields: variationRequiredFieldDescriptors({
       schema: schema.schema, attributes: sourceResult.payload.attributes,
       marketplaceId: input.marketplaceId, dimensionNames: targetFamily.dimensionNames,
       action: "attach", targetParentSku: input.targetParentSku, variationTheme: targetFamily.variationTheme,
