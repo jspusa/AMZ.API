@@ -18,6 +18,7 @@
 - 真實本機原價目表解析成功：10 sheets、232 images、417 product rows、235 formulas。原檔 export 與輸入 exact bytes／hash 相符；比對輸出重讀保留原商品價格及公式。檔案沒有加入 repository。實際 browser 匯入另揭露 renderer 的舊 15 MiB 上限，已和 preload 同步為僅 exact price-list import 25 MiB，並以真實檔案大小的合成內容回歸。
 - Standards 與 Spec review 均無剩餘阻擋。Review 發現的 image pixel bound、重複圖片輸出放大、部分必填 fact 保留、native fact disclosure 及 preview recovery 已修正並回歸。圖片共用 media part，匯出單一工作且有整體時間上限。
 - 變體 production browser fixture：1440px／390px 無整頁水平溢出，來源清單固定 438px 可捲动，長名稱不阻擋下方表單，boolean 初始空白、false 明確選擇、預覽與確認分開。此 fixture 拒絕 mutation。完整樣式 fingerprint：`99e1e84896887d7cfa06383874cd2bb53bc36a4ce5fa67833d74df3978bf0170`；歷史 CSS payload pins 原樣保留。
+- 價目表 production browser 以使用者本機原檔匯入成功，1440px／390px 無整頁水平溢出，圖片可載入、85% 預覽的欄寬與原欄寬比例相符。右側 Amazon 比對欄已檢查；這次畫面驗證的 Amazon 回傳是 unavailable fixture，不能當成 live 價格證據。臨時檔已清理，截圖只在 ignored 本機 output。
 - exact commit Actions、Pages、artifact、安裝與受保護下載頁待下方補記；以上本機驗證不代表已發布。
 
 ## 驗證界線
