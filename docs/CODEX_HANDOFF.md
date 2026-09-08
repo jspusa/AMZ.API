@@ -11,12 +11,12 @@
 
 ## 目前狀態
 
-- 本輪使用者核准「變體工作台與 US 價目表」：變體改為寬版表格並可補填 CHILD PTD 缺少商品事實；本機價目表保留原檔，並排比對 Amazon 售價／最低價格與選配首圖。詳見 [spec](specs/2026-09-08-variation-price-workbench.md) 及 [本輪證據](releases/2026-09-variation-price-workbench.md)。目標 Notebook Key `0.1.57`；發布、安裝與 live 狀態依日期化帳本，不由 source 版本推定。
+- 使用者核准的「變體工作台與 US 價目表」已由 PR #214 合併並發布 `0.1.57`，release-code SHA `495ee23f11924777cac93ce43c9d487bfdd7ad2d`。四條 main Actions 成功、Pages bytes 相符、Mac／Windows artifact hash 已驗，員工下載檔已上傳。Mac 新版已暫存，因裝置鎖定尚未替換現有 `0.1.56`；登入後的受保護下載 hash 與 live Amazon 仍待驗。功能範圍與分層證據見 [spec](specs/2026-09-08-variation-price-workbench.md) 及 [本輪帳本](releases/2026-09-variation-price-workbench.md)，不可把發布推定為實機或 Amazon 成功。
 - 本輪進行「營運情報與事件」五項能力：促銷、AWD、價格健康、廣告成效與本機通知。修改／驗收這些能力或判斷本輪發布狀態時，先讀 [核准 spec](specs/2026-09-08-operations-intelligence.md) 與 [本輪證據與限制](releases/2026-09-operations-intelligence.md)；source baseline 為 `69a395096b1fdbf23be94c804a0aea1a4d523a24`，分支 `feature/operations-intelligence`。檢查、review、final commit 與發布狀態以該日期化記錄為準，不能由既有版本的成功推定新能力已安裝或 live 通過。
-- 新一輪使用者核准的商用首頁依 Taste Redesign 完成「Jasper Signal Desk」，並在第四輪依真實長營收數字與健檢區回饋收斂：深藍 J／紅箭頭 App Icon 為品牌骨架，銷售折線恢復黃金橘，七張健檢卡只分產品霧藍、價格暖金與廣告淡珊瑚三組；詳見 [介面改版紀錄](releases/2026-09-commercial-frontend.md)。頁內導覽必須阻止預設 hash navigation，否則違反 exact renderer document trust。四個主題樣式位於 composition 最後；仍須保持 fingerprint 與 build rule stream 一致。
+- 新一輪使用者核准的商用首頁依 Taste Redesign 完成「Jasper Signal Desk」，並在第四輪依真實長營收數字與健檢區回饋收斂：深藍 J／紅箭頭 App Icon 為品牌骨架，銷售折線恢復黃金橘，七張健檢卡只分產品霧藍、價格暖金與廣告淡珊瑚三組；詳見 [介面改版紀錄](releases/2026-09-commercial-frontend.md)。頁內導覽必須阻止預設 hash navigation，否則違反 exact renderer document trust。四個主題樣式原順序保留，後接 `variation-workspace.css` 與 `price-list.css`；仍須保持 fingerprint 與 build rule stream 一致。
 - 上輪核准範圍：[September review improvements](specs/2026-09-review-improvements.md)。開工 source 為 `efdf76fd701b76997e64b74a4f30d3d3d96da360`，版本 0.1.54；0.1.55 已經 [PR #206](https://github.com/jspusa/AMZ.API/pull/206) 合併至 `bf2ec996e5ee0445c8aa1de8139dc26360dd3ca2`；該 SHA 的 Validate、Pages、Mac universal 測試包與 Windows x64 未簽章測試包流程均成功。artifact 下載與實機未驗項目分列於版本帳本。
 - 0.1.54 已於 PR #204 合併到 `36f4afcdbeaf6167a822d99bf41624005ae706b6`，該 SHA 的 Validate／Pages／Mac unsigned／Windows unsigned 四條 Actions 成功。舊交接「尚未 PR／發布」是歷史快照，已被這份 GET 證據取代。
-- 最後有證據的 Mac 安裝與受保護員工下載卡是 2026-09-04 的 0.1.53。這是歷史觀察，**不是現在裝置或下載站仍為 0.1.53 的推定**；0.1.54 artifact 成功不代表已安裝或已換卡。
+- 2026-09-04 的 `0.1.53` 安裝／下載卡記錄是歷史快照；2026-09-08 的 `0.1.57` 發布、實機版本實查及尚未完成的交付項目以 [本輪帳本](releases/2026-09-variation-price-workbench.md) 為準。
 - 正式 Developer ID／公證、Authenticode、簽章 bootstrap 和真實裝置 N→N+1 更新仍無完成證據。package 預設 `amzApiUpdateChannel: disabled`，只有正式工作流可注入 `publisher-signed-v1`。
 - 各層 exact SHA、Actions、artifact 與驗證界線見 [版本證據](releases/2026-09-review-evidence.md)。實機／Amazon 下一步見 [live 驗收矩陣](releases/2026-09-live-acceptance.md)，簽章準備見 [發布 preflight](releases/signed-update-preflight.md)。
 
