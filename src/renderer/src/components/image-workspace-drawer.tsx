@@ -119,6 +119,7 @@ export default function ImageWorkspaceDrawer({
   auditJob = null,
   onAuditJobChange,
   onContextResolved,
+  onBusyChange,
   presentation = "dialog",
   onClose,
 }: {
@@ -131,6 +132,7 @@ export default function ImageWorkspaceDrawer({
   auditJob?: StandaloneAuditJob | null;
   onAuditJobChange?: (job: StandaloneAuditJob) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
+  onBusyChange?: (busy: boolean) => void;
   presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
@@ -156,6 +158,11 @@ export default function ImageWorkspaceDrawer({
   const fileTargetRef = useRef<number | undefined>(undefined);
   const autoLookupRef = useRef(false);
   const autoRecheckRef = useRef("");
+
+  useEffect(() => {
+    onBusyChange?.(actionLoading);
+    return () => onBusyChange?.(false);
+  }, [actionLoading, onBusyChange]);
 
   const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const supportedIndexes = useMemo(

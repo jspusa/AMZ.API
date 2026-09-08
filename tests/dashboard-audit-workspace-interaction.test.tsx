@@ -217,12 +217,9 @@ describe("dashboard audit workspace interactions", () => {
     await flushTimeouts();
     const root = renderer!.root;
 
-    const sectionLinks = root.findByProps({ "aria-label": "首頁區段" }).findAllByType("a");
-    expect(sectionLinks.map((link) => link.props.href)).toEqual([
-      "#home-performance", "#home-bulletin", "#home-audits", "#home-intelligence",
-    ]);
+    expect(root.findAllByProps({ "aria-label": "首頁區段" })).toHaveLength(0);
     const requestsBeforeSectionNavigation = fetchMock.mock.calls.length;
-    for (const link of [...sectionLinks, root.findByProps({ className: "workspace-skip-link" })]) {
+    for (const link of [root.findByProps({ className: "workspace-skip-link" })]) {
       const id = link.props.href.slice(1);
       const target = root.findByProps({ id });
       expect(target.props.tabIndex).toBe(-1);
@@ -237,6 +234,39 @@ describe("dashboard audit workspace interactions", () => {
       expect(sectionTargets.get(id)!.focus).toHaveBeenCalledWith({ preventScroll: true });
       expect(windowMock.location.hash).toBe("");
       expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeSectionNavigation);
+    }
+
+    const shortcutCases = [
+      ["產品區", "商品健檢", "home-audits", null],
+      ["價格區", "Coupon／促銷", "home-intelligence", "promotions"],
+      ["價格區", "Buy Box／價格", "home-intelligence", "price-health"],
+      ["營運區", "公告日曆", "home-bulletin", null],
+      ["營運區", "AWD 庫存", "home-intelligence", "awd"],
+      ["營運區", "廣告成效", "home-intelligence", "advertising"],
+      ["營運區", "事件", "home-intelligence", "events"],
+      ["報表區", "銷售表現", "home-performance", null],
+    ] as const;
+    for (const [group, label, targetId, intelligenceView] of shortcutCases) {
+      sectionTargets.get(targetId)!.focus.mockClear();
+      sectionTargets.get(targetId)!.scrollIntoView.mockClear();
+      await act(async () => root.findAllByType("button")
+        .find((button) => button.props["aria-label"] === group)!.props.onClick());
+      const item = root.findAllByProps({ role: "menuitem" })
+        .find((button) => button.findByType("strong").children.join("") === label)!;
+      const requestsBeforeShortcut = fetchMock.mock.calls.length;
+      await act(async () => item.props.onClick());
+      await flushAnimationFrames();
+      expect(sectionTargets.get(targetId)!.scrollIntoView).toHaveBeenCalledWith(
+        expect.objectContaining({ block: "start" }),
+      );
+      expect(sectionTargets.get(targetId)!.focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(windowMock.location.hash).toBe("");
+      expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeShortcut);
+      if (intelligenceView) {
+        expect(root.findByProps({ className: "operations-intelligence-disclosure" }).props.open).toBe(true);
+        expect(root.findByProps({ className: "oi-view-picker" }).findByType("select").props.value)
+          .toBe(intelligenceView);
+      }
     }
 
     const expectedNavigationGroup: Record<AuditSuiteSectionId, string> = {
@@ -296,6 +326,27 @@ describe("dashboard audit workspace interactions", () => {
       expect(root.findAllByProps({ "aria-current": "location" })).toHaveLength(0);
     }
 
+    await act(async () => root.findByProps({
+      "data-audit-workspace-launch": "businessPricing",
+    }).props.onClick());
+    await flushAnimationFrames();
+    const businessPricingPanel = root.findAll((node) =>
+      typeof node.props.onEditorBusyChange === "function")[0];
+    expect(businessPricingPanel).toBeDefined();
+    await act(async () => businessPricingPanel.props.onEditorBusyChange(true));
+    const homeBrand = root.findByProps({ "aria-label": "回到 AMZ.API 首頁" });
+    expect(homeBrand.props["aria-disabled"]).toBe(true);
+    await act(async () => homeBrand.props.onClick({ preventDefault: vi.fn() }));
+    await flushAnimationFrames();
+    expect(root.findByProps({
+      "data-audit-workspace-section": "businessPricing",
+    })).toBeDefined();
+    await act(async () => businessPricingPanel.props.onEditorBusyChange(false));
+    await act(async () => root.findByProps({ className: "audit-workspace-back" })
+      .props.onClick());
+    await flushTimeouts();
+    await flushAnimationFrames();
+
     for (const [group, label, className] of [
       ["產品區", "變體", "variation-workspace"],
       ["價格區", "價目表", "price-list-workspace"],
@@ -312,7 +363,9 @@ describe("dashboard audit workspace interactions", () => {
       const workspace = root.findAll((node) => typeof node.type === "string" && String(node.props.className ?? "").split(/\s+/u).includes(className))[0];
       expect(workspace).toBeDefined();
       const pricePanel = label === "價目表" ? root.findByType(PriceListPanel) : null;
-      const back = workspace.findAllByType("button").find((button) => button.props["aria-label"] === "關閉變體規劃" || button.children.join("") === "← 返回首頁")!;
+      const back = workspace.findAllByType("button").find((button) =>
+        button.props.className === "variation-workspace-back" ||
+        button.children.join("") === "← 返回首頁")!;
       expect(back).toBeDefined();
       await act(async () => back.props.onClick());
       await flushAnimationFrames();
@@ -334,6 +387,31 @@ describe("dashboard audit workspace interactions", () => {
         await act(async () => back.props.onClick());
       }
     }
+
+    windowMock.scrollY = 640;
+    await act(async () => root.findAllByType("button")
+      .find((button) => button.props["aria-label"] === "產品區")!.props.onClick());
+    const variationItem = root.findAllByProps({ role: "menuitem" })
+      .find((button) => button.findByType("strong").children.join("") === "變體")!;
+    await act(async () => variationItem.props.onClick());
+    await act(async () => { await vi.dynamicImportSettled(); });
+    await flushAnimationFrames();
+    expect(root.findAll((node) => String(node.props.className ?? "")
+      .split(/\s+/u).includes("variation-workspace"))).not.toHaveLength(0);
+
+    const preventDefault = vi.fn();
+    await act(async () => root.findByProps({ "aria-label": "回到 AMZ.API 首頁" })
+      .props.onClick({ preventDefault }));
+    await flushAnimationFrames();
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(root.findAll((node) => String(node.props.className ?? "")
+      .split(/\s+/u).includes("variation-workspace"))).toHaveLength(0);
+    expect(sectionTargets.get("workspace-top")!.scrollIntoView)
+      .toHaveBeenLastCalledWith(expect.objectContaining({ block: "start" }));
+    expect(sectionTargets.get("workspace-top")!.focus)
+      .toHaveBeenLastCalledWith({ preventScroll: true });
+    expect(windowMock.location.hash).toBe("");
 
     await act(async () => renderer!.unmount());
   });

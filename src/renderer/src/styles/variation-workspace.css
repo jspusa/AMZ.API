@@ -27,6 +27,9 @@
 .variation-planner-drawer .variation-workspace-header .eyebrow { color: var(--muted, #667085); font-size: 10px; letter-spacing: .12em; }
 .variation-planner-drawer .variation-workspace-header p:last-child { margin: 6px 0 0; color: var(--muted, #667085); font-size: 13px; }
 .variation-planner-drawer .variation-workspace-header > button { width: auto; min-width: 64px; min-height: 40px; white-space: nowrap; padding: 8px 16px; border: 1px solid var(--line, #dde3ec); border-radius: 8px; background: #fff; font-size: 13px; }
+.variation-planner-drawer.variation-workspace .variation-workspace-header { display: grid; grid-template-columns: 1fr; justify-items: start; gap: 12px; }
+.variation-planner-drawer.variation-workspace .variation-workspace-header .variation-workspace-back { display: inline-flex; width: auto; min-width: 0; max-width: none; height: auto; min-height: 44px; max-height: none; flex: none; align-self: auto; place-items: normal; align-items: center; margin: 0; padding: 8px 0; border: 0; border-radius: 0; background: transparent; color: #3b516f; font-size: 13px; font-weight: 700; }
+.variation-planner-drawer.variation-workspace .variation-workspace-header .variation-workspace-back:hover { color: #1f3855; }
 .variation-stepper { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line, #dde3ec); border-radius: 10px; background: #fff; }
 .variation-stepper li { display: flex; gap: 10px; align-items: center; padding: 15px 18px; color: var(--muted, #667085); font-size: 13px; }
 .variation-stepper li + li { border-left: 1px solid var(--line, #dde3ec); }

@@ -369,7 +369,7 @@ describe("operations bulletin home card", () => {
     expect(markup).toContain("CA · SHARED-SKU 到期");
   });
 
-  it("is expanded by default and distinguishes manual expiry from promotion dates", () => {
+  it("is collapsed by default and distinguishes manual expiry from promotion dates", () => {
     const markup = renderToStaticMarkup(
       <OperationsBulletinCard
         initialResponse={BOARD}
@@ -377,7 +377,8 @@ describe("operations bulletin home card", () => {
       />,
     );
 
-    expect(markup).toContain('<details class="operations-bulletin" open=""');
+    expect(markup).toContain('<details class="operations-bulletin">');
+    expect(markup).not.toContain('<details class="operations-bulletin" open=""');
     expect(markup).toContain("營運公布欄");
     expect(markup).toContain('class="operations-bulletin-icon"');
     expect(markup).toContain("<svg");

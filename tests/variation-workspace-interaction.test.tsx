@@ -160,6 +160,31 @@ afterEach(async () => {
 });
 
 describe("variation workspace interactions", () => {
+  it("places a clear home action before the workspace title", async () => {
+    await mount();
+    const header = renderer!.root.findByProps({
+      className: "drawer-header variation-workspace-header",
+    });
+    const back = header.findByProps({ className: "variation-workspace-back" });
+
+    expect(back.children.join("")).toBe("← 回首頁");
+    expect(header.children[0]).toBe(back);
+
+    await act(async () => renderer!.update(
+      <VariationPlannerDrawer
+        presentation="workspace"
+        workspaceBackLabel="回到未綁變體健檢"
+        initialMarketplaceId={marketplaceId}
+        onClose={vi.fn()}
+      />,
+    ));
+    const contextualBack = renderer!.root.findByProps({
+      className: "variation-workspace-back",
+    });
+    expect(contextualBack.children.join("")).toBe("← 回到未綁變體健檢");
+    expect(contextualBack.props["aria-label"]).toBe("回到未綁變體健檢");
+  });
+
   it("shows family reference tables and editable required facts before any detach, without guessing a liquid answer", async () => {
     await mount();
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);

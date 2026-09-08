@@ -69,7 +69,7 @@ describe("brand sales renderer", () => {
   it("renders a keyboard-accessible solid pie with no inner cover", () => {
     const parsed = parseBrandSalesSnapshot(snapshot(), expected);
     const html = renderToStaticMarkup(
-      <BrandSalesChart snapshot={parsed} loading={false} error={null} rangeLabel="08/01–08/07" onRetry={() => undefined} />,
+      <BrandSalesChart snapshot={parsed} loading={false} error={null} onRetry={() => undefined} />,
     );
     expect(html).toContain("品牌營收占比");
     expect(html).toContain("營收占比分類方式");
@@ -88,13 +88,29 @@ describe("brand sales renderer", () => {
     expect(html).not.toContain("brand-sales-center");
     expect(html).not.toContain("brand-sales-donut");
     expect(html).toContain("50%");
-    expect(html).toContain("已隨區間自動更新");
-    expect(html).toContain("<details class=\"brand-sales-notice\">");
-    expect(html).toContain("<summary>資料怎麼算</summary>");
-    expect(html).toContain("只含 FBA 已出貨商品。");
-    expect(html).toContain("Amazon 報表資料截至：2026-08-08T00:00:00-07:00");
+    expect(html).toContain(">總計<");
+    expect(html).not.toContain("已隨區間自動更新");
+    expect(html).not.toContain("brand-sales-notice");
+    expect(html).not.toContain("資料怎麼算");
+    expect(html).not.toContain("只含 FBA 已出貨商品。");
+    expect(html).not.toContain("Amazon 報表資料截至");
     expect(html).not.toContain("同步品牌");
     expect(html).not.toContain("重新同步");
+  });
+
+  it("keeps the brand card focused on the chart instead of report metadata", () => {
+    const parsed = parseBrandSalesSnapshot(snapshot(), expected);
+    const html = renderToStaticMarkup(
+      <BrandSalesChart snapshot={parsed} loading={false} error={null} onRetry={() => undefined} />,
+    );
+
+    expect(html).toContain("品牌營收占比");
+    expect(html).toContain(">總計<");
+    expect(html).not.toContain("FBA 已出貨營收");
+    expect(html).not.toContain("08/01–08/07");
+    expect(html).not.toContain("已隨區間自動更新");
+    expect(html).not.toContain("以已出貨商品計算");
+    expect(html).not.toContain("資料怎麼算");
   });
 
   it("renders all eight Supply categories with amount and percentage from the same snapshot", () => {
@@ -104,7 +120,6 @@ describe("brand sales renderer", () => {
         snapshot={parsed}
         loading={false}
         error={null}
-        rangeLabel="08/01–08/07"
         onRetry={() => undefined}
         initialView="category"
       />,
@@ -127,7 +142,7 @@ describe("brand sales renderer", () => {
     expect(html).toContain("品類營收占比");
   });
 
-  it("labels a range containing the marketplace current day as a cutoff snapshot", () => {
+  it("shows only the current-day cutoff required to interpret an incomplete day", () => {
     const currentDay = {
       ...snapshot(),
       rangeFreshness: "includes-current-day",
@@ -139,13 +154,14 @@ describe("brand sales renderer", () => {
         snapshot={parseBrandSalesSnapshot(currentDay, expected)}
         loading={false}
         error={null}
-        rangeLabel="08/01–08/07"
         onRetry={() => undefined}
       />,
     );
-    expect(html).toContain("含今天快照");
-    expect(html).toContain("不是完整日");
-    expect(html).toContain("Amazon 報表資料截至：2026-08-07T15:45:00-07:00");
+    expect(html).toContain('<time class="brand-sales-cutoff" dateTime="2026-08-07T15:45:00-07:00">資料至 15:45</time>');
+    expect(html).not.toContain("含今天快照");
+    expect(html).not.toContain("不是完整日");
+    expect(html).not.toContain("Amazon 報表資料截至");
+    expect(html).not.toContain("America/Los_Angeles");
   });
 
   it("builds wedges from the center and closes a full solid circle", () => {
@@ -213,7 +229,6 @@ describe("brand sales renderer", () => {
         snapshot={parseBrandSalesSnapshot(validUnsorted, expected)}
         loading={false}
         error={null}
-        rangeLabel="08/01–08/07"
         onRetry={() => undefined}
       />,
     );
@@ -234,7 +249,6 @@ describe("brand sales renderer", () => {
           message: "Amazon 已取消這次 FBA 出貨報表；沒有資料被修改。",
           requestId: "request-brand-1234",
         }}
-        rangeLabel="08/01–08/07"
         onRetry={() => undefined}
       />,
     );

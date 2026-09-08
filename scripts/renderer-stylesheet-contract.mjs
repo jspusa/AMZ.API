@@ -1,5 +1,6 @@
 /**
- * Current accepted rule stream including variation and price-list workspaces. The original
+ * Current accepted rule stream after the compact FBA workspace pass, including the variation
+ * and price-list workspaces. The original
  * CSS01 issue value (81240465714fb009ffa1d49506f640bfaf8f57db103e81333466685677400878)
  * remains historical provenance and is not the current renderer rule stream.
  */
@@ -33,5 +34,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/price-list.css",
   ]),
   fingerprint:
-    "0ad7ecba563150a1bcfde75aa411e307fded0faabdd95f6272737099860efe9f",
+    "edacb3d8ba206aa85cd327b389ac22187b3950bed2edf4eee2753fd547505355",
 });

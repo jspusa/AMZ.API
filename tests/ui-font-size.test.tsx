@@ -11,7 +11,7 @@ import {
 import { readRendererStylesheet } from "./renderer-stylesheet";
 
 describe("local UI font-size preference", () => {
-  it("is SSR safe and exposes the preference inside system information", async () => {
+  it("is SSR safe and exposes the preference inside settings", async () => {
     expect(readUiFontSize(null)).toBe("standard");
     expect(() => applyUiFontSize("standard", null)).not.toThrow();
     expect(() => saveUiFontSize("large", null)).not.toThrow();
@@ -19,7 +19,8 @@ describe("local UI font-size preference", () => {
     const markup = renderToStaticMarkup(
       <SystemHealthControl marketplaceId="ATVPDKIKX0DER" />,
     );
-    expect(markup).toContain("系統資訊");
+    expect(markup).toContain(">設定<");
+    expect(markup).not.toContain("系統資訊");
 
     const source = await readFile(
       new URL(

@@ -221,10 +221,10 @@ export default function SystemHealthControl({
         onClick={() => setOpen(true)}
         disabled={disabled}
         aria-haspopup="dialog"
-        aria-label="開啟系統資訊"
+        aria-label="開啟設定"
       >
         <span className="health-orb" aria-hidden="true">{loading ? "↻" : "•••"}</span>
-        <span><strong>系統資訊</strong><small>進階</small></span>
+        <strong>設定</strong>
       </button>
 
       {open && createPortal(
@@ -242,15 +242,9 @@ export default function SystemHealthControl({
             aria-labelledby="system-health-title"
           >
             <div className="drawer-header">
-              <div><p className="eyebrow">ADVANCED · READ ONLY</p><h2 id="system-health-title">進階與系統資訊</h2></div>
-              <button type="button" onClick={() => setOpen(false)} disabled={loading} autoFocus aria-label="關閉進階與系統資訊">×</button>
+              <h2 id="system-health-title">設定</h2>
+              <button type="button" onClick={() => setOpen(false)} disabled={loading} autoFocus aria-label="關閉設定">×</button>
             </div>
-            <p className="price-intro">一般工作不需要處理這裡。連線、授權與防呆細節集中收在下方，需要除錯時再展開。</p>
-
-            <section className="health-quiet-summary" aria-live="polite">
-              <span aria-hidden="true">✓</span>
-              <div><strong>安全守門在背景運作</strong><p>系統會在真正需要決策的功能內直接提示，不把工程設定當成員工待辦。</p></div>
-            </section>
 
             <div className="system-recommendation-grid">
               <section className="api-version-recommendation" aria-labelledby="api-version-recommendation-title">

@@ -646,6 +646,7 @@ export default function SkuOperationsDrawer({
   auditJob = null,
   onAuditJobChange,
   onContextResolved,
+  onBusyChange,
   presentation = "dialog",
   onClose,
 }: {
@@ -658,6 +659,7 @@ export default function SkuOperationsDrawer({
   auditJob?: StandaloneAuditJob | null;
   onAuditJobChange?: (job: StandaloneAuditJob) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
+  onBusyChange?: (busy: boolean) => void;
   presentation?: AuditSurfacePresentation;
   onClose: () => void;
 }) {
@@ -965,6 +967,11 @@ export default function SkuOperationsDrawer({
   const busy = lookupLoading || actionLoading || exportState === "starting" ||
     exportState === "polling" || exportState === "downloading" ||
     contentBatchBusy;
+
+  useEffect(() => {
+    onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
 
   const closeDrawer = useCallback(() => {
     if (busy) return;

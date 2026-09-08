@@ -741,7 +741,7 @@ export default function OperationsBulletinCard({
   todayDateKey?: string;
 }>) {
   const todayDateKey = useTaipeiDateKey(injectedTodayDateKey);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [response, setResponse] = useState<OperationsBoardResponse | null>(
     initialResponse ?? null,
   );
@@ -1055,9 +1055,7 @@ export default function OperationsBulletinCard({
           </svg>
         </span>
         <span className="operations-bulletin-summary-copy">
-          <small>EXPIRY COUNTDOWN · PROMOTION CALENDAR</small>
           <strong>營運公布欄</strong>
-          <span>即期品倒數與 Amazon 促銷檔期，重要日期集中查看。</span>
         </span>
         <span className="operations-bulletin-summary-count">
           <strong>{loading && !response ? "…" : itemCount.toLocaleString("zh-TW")}</strong>
