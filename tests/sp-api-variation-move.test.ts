@@ -113,13 +113,18 @@ async function getVariationMovePreparation(input: {
 
 async function previewVariationMove(value: VariationMoveInput) {
   const owner = wireOwner();
-  return responseValue<{ status: string; changes: Array<{name: string; before: unknown; after: unknown}> }>(await owner.handle({
+  return responseValue<{
+    status: string;
+    changes: Array<{ name: string; before: unknown; after: unknown }>;
+  }>(
+    await owner.handle({
     operation: "preview",
     request: variationRouteRequest("POST", {
       ...value,
       idempotencyKey: `wire-preview-${++operationSequence}`,
     }),
-  }));
+  }),
+  );
 }
 
 async function updateVariationMove(
@@ -294,7 +299,9 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
   let state: RelationshipState = options.initialState ?? "old";
   let commitPatches = 0;
   let factValues: Record<string, unknown> = options.existingLiquid === undefined ? {} : { contains_liquid: [{ value: options.existingLiquid, marketplace_id: MARKETPLACE_ID }] };
-  const patchBodies: Array<{ patches: Array<{ path: string; value?: unknown }> }> = [];
+  const patchBodies: Array<{
+    patches: Array<{ path: string; value?: unknown }>;
+  }> = [];
   let previewPatches = 0;
   let detachedReads = 0;
   let sourceItemReads = 0;
@@ -380,8 +387,18 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
       const preview = url.searchParams.get("mode") === "VALIDATION_PREVIEW";
       if (preview) {
         previewPatches += 1;
-        if (options.amazonRequiredLiquid && !body.patches.some((patch: { path: string }) => patch.path === "/attributes/contains_liquid")) {
-          return jsonResponse(200, { status: "INVALID", issues: [{ code: "90220", severity: "ERROR", message: "contains_liquid is required but not supplied", attributeNames: ["contains_liquid"] }] }, "PATCH-MISSING-LIQUID");
+        if (
+          options.amazonRequiredLiquid && !body.patches.some((patch: { path: string }) => patch.path === "/attributes/contains_liquid")
+        ) {
+          return jsonResponse(
+            200,
+            {
+              sku: SOURCE_SKU,
+              status: "INVALID",
+              issues: [{ code: "90220", severity: "ERROR", message: "contains_liquid is required but not supplied", attributeNames: ["contains_liquid"] }],
+            },
+            "PATCH-MISSING-LIQUID",
+          );
         }
         if (
           options.preCommitPreviewFailureStatus &&
@@ -396,7 +413,11 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
             { "retry-after": "0" },
           );
         }
-        return jsonResponse(200, { status: "VALID", issues: [] }, "PATCH-PREVIEW");
+        return jsonResponse(
+          200,
+          { sku: SOURCE_SKU, status: "VALID", issues: [] },
+          "PATCH-PREVIEW",
+        );
       }
       commitPatches += 1;
       commitRedirectMode = init?.redirect ?? null;
@@ -530,12 +551,20 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
       return jsonResponse(200, payload, `SOURCE-${state}`);
     }
     if (decodedPath.endsWith(`/${OLD_PARENT}`)) {
-      return jsonResponse(200, parentPayload(OLD_PARENT, state === "old" ? [SOURCE_SKU] : []), "OLD-PARENT");
+      return jsonResponse(
+        200,
+        parentPayload(OLD_PARENT, state === "old" ? [SOURCE_SKU] : []),
+        "OLD-PARENT",
+      );
     }
     if (decodedPath.endsWith(`/${TARGET_PARENT}`)) {
-      return jsonResponse(200, parentPayload(TARGET_PARENT, [
+      return jsonResponse(
+        200,
+        parentPayload(TARGET_PARENT, [
         TARGET_CHILD, ...(state === "new" ? [SOURCE_SKU] : []),
-      ]), "TARGET-PARENT");
+      ]),
+        "TARGET-PARENT",
+      );
     }
     throw new Error(`Unexpected request: ${method} ${url}`);
   });
@@ -552,6 +581,73 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
     targetChildSearchReadCount: () => targetChildSearchReads,
     lastCommitRedirectMode: () => commitRedirectMode,
   };
+}
+
+type PreviewFactSchema = {
+  allOf?: unknown;
+  properties: Record<string, Record<string, unknown>>;
+};
+const missingFactIssue = {
+  code: "90220",
+  severity: "ERROR",
+  categories: ["MISSING_ATTRIBUTE"],
+  message: "'Contains Liquid Contents?' is required but missing.",
+};
+
+function installPreviewFactWire(
+  options: {
+    status?: number;
+    payload?: unknown;
+    wire?: SafetyWireOptions;
+    schema?: (schema: PreviewFactSchema) => void;
+    afterMissingPreview?: () => void;
+  } = {},
+) {
+  const wire = installDetachSafetyWire({
+    amazonRequiredLiquid: true,
+    initialState: "detached",
+    ...options.wire,
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await wire.fetchMock(rawInput, init);
+      const url = new URL(String(rawInput));
+      if (url.origin === "https://schema.example") {
+        const schema = (await reply.json()) as PreviewFactSchema;
+        delete schema.allOf;
+        schema.properties.contains_liquid!.title = "Contains Liquid Contents?";
+        options.schema?.(schema);
+        return jsonResponse(reply.status, schema, "SCHEMA-PREVIEW-FACT");
+      }
+      if (
+        (init?.method ?? "GET") === "PATCH" &&
+        url.searchParams.get("mode") === "VALIDATION_PREVIEW"
+      ) {
+        const payload = (await reply.json()) as { status: string };
+        if (payload.status === "INVALID") {
+          options.afterMissingPreview?.();
+          const result = options.payload ?? {
+            status: "INVALID",
+            issues: [missingFactIssue],
+          };
+          return jsonResponse(
+            options.status ?? 200,
+            (options.status ?? 200) === 200 &&
+              result &&
+              typeof result === "object" &&
+              !Array.isArray(result)
+              ? { sku: SOURCE_SKU, ...result }
+              : result,
+            "PREVIEW-FACT-RECOVERY",
+          );
+        }
+        return jsonResponse(reply.status, payload, "PREVIEW-FACT-ANSWERED");
+      }
+      return reply;
+    }),
+  );
+  return wire;
 }
 
 function variationRouteRequest(
@@ -734,27 +830,31 @@ describe("live variation detach and attach wire safety", () => {
     expect(wire.commitPatchCount()).toBe(1);
   });
 
-  it.each([false, true, "omitted-selector"] as const)("attaches a standalone PET_FOOD ITEM_SHAPE/SIZE item while preserving its readonly Pretzel shape (retained theme=%s)", async (retainedTheme) => {
-    const wire = installDetachSafetyWire({ initialState: "detached", commitResultState: "new" });
-    const theme = "ITEM_SHAPE/SIZE";
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
-      const reply = await wire.fetchMock(rawInput, init);
-      if ((init?.method ?? "GET") !== "GET") return reply;
-      const payload = await reply.json() as Record<string, unknown>;
-      const url = new URL(String(rawInput));
-      if (url.origin === "https://schema.example") {
+  it.each([false, true, "omitted-selector"] as const)(
+    "attaches a standalone PET_FOOD ITEM_SHAPE/SIZE item while preserving its readonly Pretzel shape (retained theme=%s)",
+    async (retainedTheme) => {
+      const wire = installDetachSafetyWire({ initialState: "detached", commitResultState: "new" });
+      const theme = "ITEM_SHAPE/SIZE";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async (rawInput, init) => {
+          const reply = await wire.fetchMock(rawInput, init);
+          if ((init?.method ?? "GET") !== "GET") return reply;
+          const payload = await reply.json() as Record<string, unknown>;
+          const url = new URL(String(rawInput));
+          if (url.origin === "https://schema.example") {
         Object.assign(payload.properties as Record<string, unknown>, {
           item_shape: { type: "array", items: { type: "object", required: ["value"], properties: {
             value: { type: "string", editable: false }, language_tag: { type: "string" }, marketplace_id: { type: "string" },
           } } },
         });
       }
-      const rewrite = (row: Record<string, unknown>) => {
-        const attributes = row.attributes as Record<string, unknown>;
-        if (!attributes) return;
-        attributes.item_shape = [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
-        if (row.sku === SOURCE_SKU) attributes.size_name = [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
-        if (attributes.variation_theme || retainedTheme && row.sku === SOURCE_SKU) {
+          const rewrite = (row: Record<string, unknown>) => {
+            const attributes = row.attributes as Record<string, unknown>;
+            if (!attributes) return;
+            attributes.item_shape = [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
+            if (row.sku === SOURCE_SKU) attributes.size_name = [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
+            if (attributes.variation_theme || retainedTheme && row.sku === SOURCE_SKU) {
           attributes.variation_theme = [{
             name: theme,
             ...(retainedTheme === "omitted-selector" && row.sku === SOURCE_SKU
@@ -762,39 +862,47 @@ describe("live variation detach and attach wire safety", () => {
               : { marketplace_id: MARKETPLACE_ID }),
           }];
         }
-        for (const group of row.relationships as Array<{ relationships: Array<{ variationTheme: unknown }> }> ?? []) {
+            for (const group of (row.relationships as Array<{
+              relationships: Array<{ variationTheme: unknown }>;
+            }>) ?? []) {
           for (const relationship of group.relationships) relationship.variationTheme = { theme, attributes: ["item_shape", "size_name"] };
         }
-      };
-      rewrite(payload);
-      for (const row of payload.items as Array<Record<string, unknown>> ?? []) rewrite(row);
-      return new Response(JSON.stringify(payload), { status: reply.status, headers: reply.headers });
-    }));
-    const preparation = await getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT });
-    expect(preparation).toMatchObject({ writable: true, variationTheme: theme, fields: expect.arrayContaining([
+          };
+          rewrite(payload);
+          for (const row of payload.items as Array<Record<string, unknown>> ?? []) rewrite(row);
+          return new Response(JSON.stringify(payload), { status: reply.status, headers: reply.headers });
+        }),
+      );
+      const preparation = await getVariationMovePreparation({
+        marketplaceId: MARKETPLACE_ID,
+        sellerSku: SOURCE_SKU,
+        targetParentSku: TARGET_PARENT,
+      });
+      expect(preparation).toMatchObject({ writable: true, variationTheme: theme, fields: expect.arrayContaining([
       expect.objectContaining({ name: "item_shape", editable: false, values: [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }] }),
     ]) });
-    const proposal = { ...input("attach"), variationTheme: theme, dimensionNames: ["item_shape", "size_name"], dimensionValues: {
+      const proposal = { ...input("attach"), variationTheme: theme, dimensionNames: ["item_shape", "size_name"], dimensionValues: {
       item_shape: [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }],
       size_name: [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }],
     } };
-    await expect(previewVariationMove(proposal)).resolves.toMatchObject({
+      await expect(previewVariationMove(proposal)).resolves.toMatchObject({
       status: "VALID",
       changes: expect.arrayContaining([{ name: "variation_theme", label: "變體主題", before: retainedTheme ? theme : null, after: theme }]),
     });
-    await expect(updateVariationMove(proposal)).resolves.toMatchObject({ verified: true });
-    expect(wire.commitPatchCount()).toBe(1);
-    expect(wire.patchBodies.flatMap((body) => body.patches).some((patch) => patch.path === "/attributes/item_shape")).toBe(false);
-    expect(wire.patchBodies.every((body) => body.patches.some((patch) => patch.path === "/attributes/variation_theme") === !retainedTheme)).toBe(true);
-    const sourceReads = wire.fetchMock.mock.calls.filter(([rawInput, init]) =>
+      await expect(updateVariationMove(proposal)).resolves.toMatchObject({ verified: true });
+      expect(wire.commitPatchCount()).toBe(1);
+      expect(wire.patchBodies.flatMap((body) => body.patches).some((patch) => patch.path === "/attributes/item_shape")).toBe(false);
+      expect(wire.patchBodies.every((body) => body.patches.some((patch) => patch.path === "/attributes/variation_theme") === !retainedTheme)).toBe(true);
+      const sourceReads = wire.fetchMock.mock.calls.filter(([rawInput, init]) =>
       (init?.method ?? "GET") === "GET" && decodeURIComponent(new URL(String(rawInput)).pathname).endsWith(`/${SOURCE_SKU}`));
-    expect(sourceReads.length).toBeGreaterThan(0);
-    expect(sourceReads.every(([rawInput]) => {
+      expect(sourceReads.length).toBeGreaterThan(0);
+      expect(sourceReads.every(([rawInput]) => {
       const query = new URL(String(rawInput)).searchParams;
       return JSON.stringify(query.getAll("marketplaceIds")) === JSON.stringify([MARKETPLACE_ID]) &&
         query.get("includedData")?.split(",").includes("relationships");
     })).toBe(true);
-  });
+    },
+  );
 
   it.each([
     { variation_theme: [{ name: "OTHER_THEME", marketplace_id: MARKETPLACE_ID }] },
@@ -947,6 +1055,789 @@ describe("live variation detach and attach wire safety", () => {
     expect(wire.patchBodies.every((body) => !body.patches.some((patch) => patch.path === "/attributes/variation_theme"))).toBe(true);
   });
 
+  it("recovers an optional CHILD PTD fact from a missing-title Preview and requires an explicit answer", async () => {
+    const wire = installDetachSafetyWire({
+      amazonRequiredLiquid: true,
+      immutableSize: "readOnly",
+      initialState: "detached",
+      commitResultState: "new",
+      sourceAttributes: { variation_theme: [{ name: "SIZE_NAME" }] },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (rawInput, init) => {
+        const reply = await wire.fetchMock(rawInput, init);
+        const url = new URL(String(rawInput));
+        if (url.origin === "https://schema.example") {
+          const schema = await reply.json();
+          delete schema.allOf;
+          schema.properties.contains_liquid.title = "Contains Liquid Contents?";
+          return jsonResponse(reply.status, schema, "SCHEMA-OPTIONAL-FACT");
+        }
+        if (
+          (init?.method ?? "GET") === "PATCH" &&
+          url.searchParams.has("mode")
+        ) {
+          const payload = await reply.json();
+          if (payload.status === "INVALID")
+            return jsonResponse(
+              200,
+              {
+                sku: SOURCE_SKU,
+                status: "INVALID",
+                issues: [
+                  {
+                    code: "4000002",
+                    severity: "ERROR",
+                    categories: ["MISSING_ATTRIBUTE"],
+                    message:
+                      "'Contains Liquid Contents?' is required but missing.",
+                  },
+                ],
+              },
+              "PREVIEW-MISSING-TITLE",
+            );
+          return jsonResponse(reply.status, payload, "PREVIEW-AFTER-ANSWER");
+        }
+        return reply;
+      }),
+    );
+    const preparation = await getVariationMovePreparation({
+      marketplaceId: MARKETPLACE_ID,
+      sellerSku: SOURCE_SKU,
+      targetParentSku: TARGET_PARENT,
+    });
+    expect(preparation).toMatchObject({
+      requiredFields: [],
+      fields: [expect.objectContaining({ name: "size_name", editable: false })],
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_FIELD_REQUIRED",
+      requiredFields: [
+        expect.objectContaining({
+          name: "contains_liquid",
+          editable: true,
+          values: [],
+          leaves: [
+            expect.objectContaining({ type: "boolean", currentValue: null }),
+          ],
+        }),
+      ],
+    });
+    expect(wire.commitPatchCount()).toBe(0);
+    const proposal = { ...input("attach"), requiredValues: { contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] } };
+    await expect(previewVariationMove(proposal)).resolves.toMatchObject({ status: "VALID" });
+    await expect(updateVariationMove(proposal)).resolves.toMatchObject({ verified: true });
+    expect(wire.commitPatchCount()).toBe(1);
+    expect(
+      wire.patchBodies.every(
+        (body) =>
+          !body.patches.some((patch) =>
+            ["/attributes/variation_theme", "/attributes/size_name"].includes(
+              patch.path,
+            ),
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    { ...missingFactIssue, attributeNames: ["contains_liquid"] },
+    { ...missingFactIssue, attributeNames: [] },
+    {
+      ...missingFactIssue,
+      code: "4000002",
+      message: "A value for `contains_liquid` is required.",
+    },
+    {
+      ...missingFactIssue,
+      code: "999991",
+      attributeNames: ["contains_liquid"],
+    },
+  ])(
+    "recovers optional PTD facts from supported raw missing metadata %#",
+    async (issue) => {
+      const wire = installPreviewFactWire({
+        payload: { status: "INVALID", issues: [issue] },
+      });
+      await expect(previewVariationMove(input("attach"))).rejects.toMatchObject(
+        {
+          code: "VARIATION_FIELD_REQUIRED",
+          requestId: "PREVIEW-FACT-RECOVERY",
+          requiredFields: [
+            expect.objectContaining({
+              name: "contains_liquid",
+              editable: true,
+              values: [],
+            }),
+          ],
+          requiredFieldChoices: [],
+        },
+      );
+      await expect(
+        previewVariationMove({
+          ...input("attach"),
+          requiredValues: { contains_liquid: [{ value: false }] },
+        }),
+      ).resolves.toMatchObject({ status: "VALID" });
+      expect(wire.previewPatchCount()).toBe(2);
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it.each([400, 422])(
+    "recovers explicit missing ErrorList in HTTP %s without treating it as successful Preview",
+    async (status) => {
+      const wire = installPreviewFactWire({
+        status,
+        payload: {
+          errors: [{ code: "4000002", message: missingFactIssue.message }],
+        },
+      });
+      const approve = vi.fn(async () => undefined);
+      const router = await durableVariationRouter(approve);
+      const body = {
+        ...input("attach"),
+        idempotencyKey: `required-http-${status}-no-ticket`,
+      };
+      expect(
+        (await router.handle(variationRouteRequest("POST", body))).body,
+      ).toMatchObject({
+        kind: "json",
+        value: {
+          code: "VARIATION_FIELD_REQUIRED",
+          requiredFields: [
+            expect.objectContaining({ name: "contains_liquid" }),
+          ],
+        },
+      });
+      expect(
+        (
+          await router.handle(
+            variationRouteRequest("PATCH", {
+              ...body,
+              requiredValues: { contains_liquid: [{ value: false }] },
+            }),
+          )
+        ).body,
+      ).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
+      expect(approve).not.toHaveBeenCalled();
+      await expect(
+        previewVariationMove({
+          ...input("attach"),
+          requiredValues: { contains_liquid: [{ value: false }] },
+        }),
+      ).resolves.toMatchObject({ status: "VALID" });
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it.each([400, 422])(
+    "requires intentional field selection for generic HTTP %s missing text",
+    async (status) => {
+      const wire = installPreviewFactWire({
+        status,
+        payload: {
+          errors: [{ code: "InvalidInput", message: missingFactIssue.message }],
+        },
+      });
+      await expect(previewVariationMove(input("attach"))).rejects.toMatchObject(
+        {
+          code: "VARIATION_FIELD_REQUIRED",
+          requiredFields: [],
+          requiredFieldChoices: [
+            expect.objectContaining({
+              name: "contains_liquid",
+              editable: true,
+              values: [],
+            }),
+          ],
+        },
+      );
+      await expect(
+        previewVariationMove({
+          ...input("attach"),
+          requiredValues: { contains_liquid: [{ value: false }] },
+        }),
+      ).resolves.toMatchObject({ status: "VALID" });
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it("keeps ambiguous titles optional until one supported fact is explicitly selected", async () => {
+    const wire = installPreviewFactWire({
+      schema: (schema) => {
+        schema.properties.batteries_required = structuredClone(
+          schema.properties.contains_liquid!,
+        );
+        schema.properties.unrelated_fact = {
+          ...structuredClone(schema.properties.contains_liquid!),
+          title: "Another Product Fact",
+        };
+        schema.properties.purchasable_offer = structuredClone(
+          schema.properties.contains_liquid!,
+        );
+        schema.properties.immutable_fact = {
+          ...structuredClone(schema.properties.contains_liquid!),
+          readOnly: true,
+        };
+        schema.properties.complex_fact = {
+          title: "Contains Liquid Contents?",
+          type: "array",
+          items: { type: "array", items: { type: "boolean" } },
+        };
+      },
+    });
+    await expect(
+      previewVariationMove({
+        ...input("attach"),
+        requiredValues: { contains_liquid: [{ value: false }] },
+      }),
+    ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    expect(wire.previewPatchCount()).toBe(0);
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_FIELD_REQUIRED",
+      requiredFields: [],
+      requiredFieldChoices: [
+        expect.objectContaining({ name: "contains_liquid", values: [] }),
+        expect.objectContaining({ name: "batteries_required", values: [] }),
+      ],
+    });
+    await expect(
+      previewVariationMove({
+        ...input("attach"),
+        requiredValues: { unrelated_fact: [{ value: false }] },
+      }),
+    ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    const chosen = {
+      ...input("attach"),
+      requiredValues: { contains_liquid: [{ value: false }] },
+    };
+    await expect(previewVariationMove(chosen)).resolves.toMatchObject({
+      status: "VALID",
+      changes: expect.arrayContaining([
+        expect.objectContaining({
+          name: "contains_liquid",
+          before: [],
+          after: [{ value: false, marketplace_id: MARKETPLACE_ID }],
+        }),
+      ]),
+    });
+    expect(
+      wire.patchBodies.at(-1)!.patches.map((patch) => patch.path),
+    ).not.toContain("/attributes/batteries_required");
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { ...missingFactIssue, attributeNames: ["unrecognized_name"] },
+    { ...missingFactIssue, message: "Please supply the missing product fact." },
+  ])(
+    "offers deliberate choices without guessing from unresolved missing metadata %#",
+    async (issue) => {
+      const wire = installPreviewFactWire({
+        payload: { status: "INVALID", issues: [issue] },
+      });
+      await expect(previewVariationMove(input("attach"))).rejects.toMatchObject(
+        {
+          code: "VARIATION_FIELD_REQUIRED",
+          requiredFields: [],
+          requiredFieldChoices: [
+            expect.objectContaining({ name: "contains_liquid" }),
+          ],
+        },
+      );
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it("does not favor a property key over another property's matching title", async () => {
+    const wire = installPreviewFactWire({
+      schema: (schema) => {
+        schema.properties.batteries_required = {
+          ...structuredClone(schema.properties.contains_liquid!),
+          title: "contains_liquid",
+        };
+      },
+      payload: {
+        status: "INVALID",
+        issues: [
+          {
+            ...missingFactIssue,
+            message: "'contains_liquid' is required but missing.",
+          },
+        ],
+      },
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_FIELD_REQUIRED",
+      requiredFields: [],
+      requiredFieldChoices: [
+        expect.objectContaining({ name: "contains_liquid" }),
+        expect.objectContaining({ name: "batteries_required" }),
+      ],
+    });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("allows changing an intentional selection after another unresolved Preview", async () => {
+    const wire = installPreviewFactWire({
+      schema: (schema) => {
+        schema.properties.batteries_required = structuredClone(
+          schema.properties.contains_liquid!,
+        );
+      },
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_FIELD_REQUIRED",
+      requiredFields: [],
+    });
+    const wrongChoice = {
+      ...input("attach"),
+      requiredValues: { batteries_required: [{ value: false }] },
+    };
+    await expect(previewVariationMove(wrongChoice)).rejects.toMatchObject({
+      code: "VARIATION_FIELD_REQUIRED",
+      requiredFields: [],
+      requiredFieldChoices: [
+        expect.objectContaining({ name: "contains_liquid" }),
+        expect.objectContaining({ name: "batteries_required" }),
+      ],
+    });
+    await expect(
+      previewVariationMove({
+        ...input("attach"),
+        requiredValues: { contains_liquid: [{ value: false }] },
+      }),
+    ).resolves.toMatchObject({ status: "VALID" });
+    expect(
+      wire.patchBodies.at(-1)!.patches.map((patch) => patch.path),
+    ).not.toContain("/attributes/batteries_required");
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([{ status: ["INVALID"] }, { status: { status: "INVALID" } }, { status: null }])(
+    "rejects malformed Preview status %# without coercion or candidate authority",
+    async ({ status }) => {
+      const wire = installPreviewFactWire({
+        payload: { status, issues: [missingFactIssue] },
+      });
+      const response = await wireOwner().handle({
+        operation: "preview",
+        request: variationRouteRequest("POST", input("attach")),
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.body).not.toMatchObject({
+        kind: "json",
+        value: { code: "VARIATION_FIELD_REQUIRED" },
+      });
+      await expect(
+        previewVariationMove({
+          ...input("attach"),
+          requiredValues: { contains_liquid: [{ value: false }] },
+        }),
+      ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+      expect(wire.previewPatchCount()).toBe(1);
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it.each([undefined, null, "", `${SOURCE_SKU} `, "FOREIGN-SKU", [SOURCE_SKU]])(
+    "rejects missing or mismatched Preview identity (%s) without granting facts",
+    async (sku) => {
+      const wire = installPreviewFactWire({
+        payload: { sku, status: "INVALID", issues: [missingFactIssue] },
+      });
+      await expect(previewVariationMove(input("attach"))).rejects.toMatchObject(
+        { code: "LISTING_IDENTITY_MISMATCH" },
+      );
+      await expect(
+        previewVariationMove({
+          ...input("attach"),
+          requiredValues: { contains_liquid: [{ value: false }] },
+        }),
+      ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+      expect(wire.previewPatchCount()).toBe(1);
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it.each([undefined, null, "FOREIGN-SKU"])(
+    "cannot stage a valid Preview after answering when the echoed SKU is invalid (%s)",
+    async (sku) => {
+      const wire = installPreviewFactWire();
+      await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code: "VARIATION_FIELD_REQUIRED" });
+      const fetchWithRecovery = globalThis.fetch;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async (rawInput, init) => {
+          const reply = await fetchWithRecovery(rawInput, init);
+          const url = new URL(String(rawInput));
+          if (
+            (init?.method ?? "GET") === "PATCH" &&
+            url.searchParams.has("mode")
+          ) {
+            const payload = await reply.json();
+            return jsonResponse(200, { ...payload, sku }, "PREVIEW-WRONG-SKU");
+          }
+          return reply;
+        }),
+      );
+      const approve = vi.fn(async () => undefined);
+      const router = await durableVariationRouter(approve);
+      const body = {
+        ...input("attach"),
+        requiredValues: { contains_liquid: [{ value: false }] },
+        idempotencyKey: "invalid-preview-sku",
+      };
+      expect(
+        (await router.handle(variationRouteRequest("POST", body))).body,
+      ).toMatchObject({
+        kind: "json",
+        value: { code: "LISTING_IDENTITY_MISMATCH" },
+      });
+      expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
+      expect(approve).not.toHaveBeenCalled();
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it.each([
+    "refresh_token=synthetic-private",
+    "A1234567890123",
+    "data:text/plain,private",
+    "Contains\u034f Liquid",
+  ])(
+    "keeps private or altered PTD titles out of required field responses %#",
+    async (title) => {
+      const wire = installPreviewFactWire({
+        schema: (schema) => {
+          schema.properties.custom_product_fact = {
+            ...schema.properties.contains_liquid!,
+            title,
+          };
+        },
+        payload: {
+          status: "INVALID",
+          issues: [
+            { ...missingFactIssue, attributeNames: ["custom_product_fact"] },
+          ],
+        },
+      });
+      const response = await wireOwner().handle({
+        operation: "preview",
+        request: variationRouteRequest("POST", input("attach")),
+      });
+      expect(response.body).toMatchObject({
+        kind: "json",
+        value: {
+          code: "VARIATION_FIELD_REQUIRED",
+          requiredFields: [
+            expect.objectContaining({
+              name: "custom_product_fact",
+              label: "Custom Product Fact",
+            }),
+          ],
+        },
+      });
+      expect(JSON.stringify(response)).not.toContain(title);
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it.each([
+    { ...missingFactIssue, attributeNames: null },
+    { ...missingFactIssue, attributeNames: "contains_liquid" },
+    {
+      ...missingFactIssue,
+      attributeNames: ["contains_liquid", "contains_liquid"],
+    },
+    {
+      ...missingFactIssue,
+      attributeNames: [],
+      attributeName: "contains_liquid",
+    },
+    { ...missingFactIssue, attributeNames: ["contains_liquid/other"] },
+    { ...missingFactIssue, marketplaceIds: ["A1VC38T7YXB528"] },
+    { ...missingFactIssue, marketplaceIds: [MARKETPLACE_ID, "A1VC38T7YXB528"] },
+    { ...missingFactIssue, code: "4000001" },
+    { ...missingFactIssue, categories: ["INVALID_ATTRIBUTE"] },
+    { ...missingFactIssue, severity: "WARNING" },
+    {
+      ...missingFactIssue,
+      message: "'Contains Liquid Contents?' is required but missing.\u0000",
+    },
+    {
+      ...missingFactIssue,
+      message: "https://untrusted.example/ is required but missing.",
+    },
+    {
+      ...missingFactIssue,
+      message: `'<script>Contains Liquid Contents?</script>' is required but missing.`,
+    },
+    { ...missingFactIssue, message: "x".repeat(501) },
+    {
+      ...missingFactIssue,
+      message: "'Contains\u034f Liquid Contents?' is required but missing.",
+    },
+    {
+      ...missingFactIssue,
+      message: "'refresh_token=synthetic-private' is required but missing.",
+    },
+  ])(
+    "never grants fields from malformed, foreign or contradictory Preview metadata %#",
+    async (issue) => {
+      const wire = installPreviewFactWire({
+        payload: { status: "INVALID", issues: [issue] },
+      });
+      const response = await wireOwner().handle({
+        operation: "preview",
+        request: variationRouteRequest("POST", input("attach")),
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.body).not.toMatchObject({
+        kind: "json",
+        value: { code: "VARIATION_FIELD_REQUIRED" },
+      });
+      await expect(
+        previewVariationMove({
+          ...input("attach"),
+          requiredValues: { contains_liquid: [{ value: false }] },
+        }),
+      ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+      expect(wire.previewPatchCount()).toBe(1);
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it.each([
+    {
+      status: 401,
+      payload: {
+        errors: [{ code: "90220", message: missingFactIssue.message }],
+      },
+    },
+    {
+      status: 403,
+      payload: {
+        errors: [{ code: "90220", message: missingFactIssue.message }],
+      },
+    },
+    {
+      status: 429,
+      payload: {
+        errors: [{ code: "90220", message: missingFactIssue.message }],
+      },
+    },
+    {
+      status: 500,
+      payload: {
+        errors: [{ code: "90220", message: missingFactIssue.message }],
+      },
+    },
+    {
+      status: 400,
+      payload: {
+        errors: [
+          { code: "90220", message: missingFactIssue.message },
+          { code: "Unauthorized", message: "Access denied" },
+        ],
+      },
+    },
+    {
+      status: 422,
+      payload: {
+        errors: [
+          { code: "90220", message: missingFactIssue.message },
+          { code: "InternalFailure", message: "Service failed" },
+        ],
+      },
+    },
+    {
+      status: 400,
+      payload: {
+        errors: [
+          {
+            code: "90220",
+            message: missingFactIssue.message,
+            attributeNames: ["contains_liquid"],
+          },
+        ],
+      },
+    },
+    {
+      status: 400,
+      payload: {
+        errors: [
+          { code: "90220", message: missingFactIssue.message, details: {} },
+        ],
+      },
+    },
+    {
+      status: 400,
+      payload: { errors: { code: "90220", message: missingFactIssue.message } },
+    },
+    {
+      status: 400,
+      payload: {
+        sku: "FOREIGN-SKU",
+        errors: [{ code: "90220", message: missingFactIssue.message }],
+      },
+    },
+    {
+      status: 422,
+      payload: {
+        sku: null,
+        errors: [{ code: "90220", message: missingFactIssue.message }],
+      },
+    },
+    {
+      status: 422,
+      payload: {
+        errors: [
+          {
+            code: "InvalidInput",
+            message: "Check whether product contains liquid.",
+          },
+        ],
+      },
+    },
+    {
+      status: 400,
+      payload: {
+        errors: [{ code: "AccessDenied", message: missingFactIssue.message }],
+      },
+    },
+    {
+      status: 200,
+      payload: {
+        status: "INVALID",
+        issues: [missingFactIssue],
+        errors: [{ code: "Unauthorized", message: "Denied" }],
+      },
+    },
+    {
+      status: 200,
+      payload: {
+        status: "VALID",
+        issues: [],
+        errors: [{ code: "Unauthorized", message: "Denied" }],
+      },
+    },
+  ])(
+    "preserves transport rejection instead of granting fields for unsafe envelopes %#",
+    async ({ status, payload }) => {
+      const wire = installPreviewFactWire({ status, payload });
+      const response = await wireOwner().handle({
+        operation: "preview",
+        request: variationRouteRequest("POST", input("attach")),
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.body).not.toMatchObject({
+        kind: "json",
+        value: { code: "VARIATION_FIELD_REQUIRED" },
+      });
+      expect(wire.commitPatchCount()).toBe(0);
+      // Read-only Preview may follow existing bounded read retry policy on 429/5xx.
+      await expect(
+        previewVariationMove({
+          ...input("attach"),
+          requiredValues: { contains_liquid: [{ value: false }] },
+        }),
+      ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    },
+  );
+
+  it.each(["schema", "generation", "source", "target", "dimensions"])(
+    "invalidates selected Preview candidates after %s drift",
+    async (drift) => {
+      const wire = installPreviewFactWire({
+        payload: {
+          status: "INVALID",
+          issues: [{ ...missingFactIssue, message: "Missing product fact." }],
+        },
+      });
+      await expect(previewVariationMove(input("attach"))).rejects.toMatchObject(
+        { code: "VARIATION_FIELD_REQUIRED", requiredFields: [] },
+      );
+      const selected = {
+        ...input("attach"),
+        requiredValues: { contains_liquid: [{ value: false }] },
+      };
+      if (drift === "schema") wire.setSchemaChecksum("changed-fact-schema");
+      if (drift === "generation") invalidateSpApiCredentialCaches();
+      if (drift === "source")
+        wire.setSourceAttributes({
+          unrelated_existing_fact: [{ value: "changed" }],
+        });
+      if (drift === "target") selected.targetParentSku = OLD_PARENT;
+      if (drift === "dimensions")
+        selected.dimensionValues = {
+          size_name: [{ value: "6 oz", marketplace_id: MARKETPLACE_ID }],
+        };
+      await expect(previewVariationMove(selected)).rejects.toMatchObject({
+        code: "VARIATION_REQUIRED_FIELDS_INVALID",
+      });
+      expect(wire.previewPatchCount()).toBe(1);
+      expect(wire.commitPatchCount()).toBe(0);
+    },
+  );
+
+  it("does not recover a field from a Preview completed after account generation changed", async () => {
+    const wire = installPreviewFactWire({
+      afterMissingPreview: () => invalidateSpApiCredentialCaches(),
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "LISTING_IDENTITY_MISMATCH",
+    });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("never overwrites an existing false fact even when Amazon reports it missing", async () => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false } });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+    });
+    await expect(
+      previewVariationMove({
+        ...input("attach"),
+        requiredValues: { contains_liquid: [{ value: true }] },
+      }),
+    ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("keeps a selected-field sent failure unknown across another Preview and candidate changes", async () => {
+    const wire = installPreviewFactWire({
+      wire: { commitStatus: 403 },
+      payload: {
+        status: "INVALID",
+        issues: [{ ...missingFactIssue, message: "Missing product fact." }],
+      },
+    });
+    const router = await durableVariationRouter();
+    const initial = {
+      ...input("attach"),
+      idempotencyKey: "variation-choice-unknown",
+    };
+    expect(
+      (await router.handle(variationRouteRequest("POST", initial))).status,
+    ).toBe(422);
+    const body = {
+      ...initial,
+      requiredValues: { contains_liquid: [{ value: false }] },
+    };
+    expect(
+      (await router.handle(variationRouteRequest("POST", body))).status,
+    ).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect(
+      (await router.handle(variationRouteRequest("POST", body))).status,
+    ).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect(wire.commitPatchCount()).toBe(1);
+  });
+
   it("turns Amazon conditional missing-attribute preview feedback into a PTD-proven fillable fact", async () => {
     const wire = installDetachSafetyWire({ amazonRequiredLiquid: true, initialState: "detached" });
     await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
@@ -1087,7 +1978,12 @@ describe("live variation detach and attach wire safety", () => {
         if (!preview) state = state === "old" ? "detached" : "new";
         return jsonResponse(
           200,
-          { status: preview ? "VALID" : "ACCEPTED", submissionId: `SUB-${patches.length}`, issues: [] },
+          {
+            sku: SOURCE_SKU,
+            status: preview ? "VALID" : "ACCEPTED",
+            submissionId: `SUB-${patches.length}`,
+            issues: [],
+          },
           preview ? "PATCH-PREVIEW" : "PATCH-COMMIT",
         );
       }
@@ -1116,10 +2012,9 @@ describe("live variation detach and attach wire safety", () => {
       if (decodedPath.endsWith(`/${TARGET_PARENT}`)) {
         return jsonResponse(
           200,
-          parentPayload(
-            TARGET_PARENT,
-            [TARGET_CHILD, ...(state === "new" ? [SOURCE_SKU] : [])],
-          ),
+          parentPayload(TARGET_PARENT, [
+        TARGET_CHILD, ...(state === "new" ? [SOURCE_SKU] : []),
+      ]),
           "TARGET-PARENT",
         );
       }

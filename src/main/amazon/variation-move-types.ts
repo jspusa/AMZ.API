@@ -44,6 +44,7 @@ export type VariationMovePreparation = {
   dimensionNames: string[];
   fields: VariationFieldDescriptor[];
   requiredFields: VariationFieldDescriptor[];
+  requiredFieldChoices?: VariationFieldDescriptor[];
   preparedAt: string;
   requestIds: string[];
   writable: boolean;

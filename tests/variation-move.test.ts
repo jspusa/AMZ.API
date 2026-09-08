@@ -4,6 +4,7 @@ import {
   missingVariationFields,
   parseVariationJsonValues,
   parseVariationMovePreparation,
+  parseVariationMovePreview,
   parseVariationMoveResult,
   updateVariationLeaf,
 } from "../src/renderer/src/variation-move";
@@ -108,6 +109,29 @@ describe("variation move renderer contract", () => {
     });
     expect(missingVariationFields(preparation, next)).toEqual([]);
   });
+  it("keeps supported field choices separate from required answers and rejects malformed choices", () => {
+    const expected = {
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-OLD",
+      targetParentSku: "PARENT-NEW",
+    };
+    const choice = {
+      ...preparationPayload.fields[0],
+      name: "product_liquid_flag",
+      label: "Liquid Information",
+    };
+    const preparation = parseVariationMovePreparation({
+      ...preparationPayload,
+      requiredFieldChoices: [choice],
+    }, expected);
+    expect(preparation.requiredFieldChoices).toEqual([choice]);
+    expect(initialVariationDimensionValues(preparation)).not.toHaveProperty("product_liquid_flag");
+    expect(preparation.requiredFields).toEqual([]);
+    expect(() => parseVariationMovePreparation({
+      ...preparationPayload,
+      requiredFieldChoices: [{ name: "product_liquid_flag" }],
+    }, expected)).toThrow(/準備資料不完整/);
+  });
 
   it("requires the new Bridge capability and supports standalone detach preparation with explicit product facts", () => {
     const expected = {
@@ -192,6 +216,25 @@ describe("variation move renderer contract", () => {
         },
       ),
     ).toThrow(/尚未證明完成/);
+  });
+  it("does not treat a preview containing an Amazon ERROR as permission to show confirmation", () => {
+    expect(() => parseVariationMovePreview({
+      mode: "live",
+      action: "attach",
+      status: "VALID",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-OLD",
+      sourceParentSku: null,
+      targetParentSku: "PARENT-NEW",
+      variationTheme: "SIZE_NAME",
+      validatedAt: "2026-09-08T10:00:00Z",
+      issues: [{ code: "90220", severity: "ERROR", message: "Missing product fact.", attributeNames: [] }],
+      notice: "preview",
+    }, {
+      action: "attach",
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-OLD",
+    })).toThrow(/尚未通過/);
   });
 
   it("accepts JSON fallback only as a marketplace-scoped object array", () => {

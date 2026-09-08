@@ -45,10 +45,21 @@ describe("PTD required product facts", () => {
     expect(variationRequiredFieldDescriptors({ schema: nestedArray, marketplaceId: market, action: "detach", dimensionNames: [] })).toMatchObject([{ editable: false, jsonFallback: true }]);
   });
 
-  it("accepts only PTD-declared required issue attributes and never arbitrary optional fields", () => {
+  it("accepts main-proven Preview requirements only for declared PTD properties", () => {
     const issueSchema = { properties: { contains_liquid: booleanAttribute, batteries_required: booleanAttribute }, allOf: [{ if: { serverOnlyPredicate: true }, then: { required: ["contains_liquid"] } }] };
     const fields = variationRequiredFieldDescriptors({ schema: issueSchema, marketplaceId: market, action: "detach", dimensionNames: [], issueRequiredNames: ["contains_liquid", "batteries_required", "unknown"] });
-    expect(fields.map((field) => field.name)).toEqual(["contains_liquid"]);
+    expect(fields.map((field) => field.name)).toEqual([
+      "contains_liquid",
+      "batteries_required",
+    ]);
+    expect(
+      variationRequiredFieldDescriptors({
+        schema: issueSchema,
+        marketplaceId: market,
+        action: "detach",
+        dimensionNames: [],
+      }),
+    ).toEqual([]);
   });
 
   it("never selects a conditional fact from another marketplace or malformed scope", () => {

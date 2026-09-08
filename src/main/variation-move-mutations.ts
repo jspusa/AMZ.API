@@ -192,15 +192,33 @@ type PreparedAttachContext = Readonly<{
 }>;
 
 class RequiredVariationFieldsError extends SpApiError {
-  constructor(error: VariationUpdateValidationError, readonly requiredFields: readonly VariationFieldDescriptor[]) {
-    super(error.message, { status: 422, code: error.code });
+  constructor(
+    error: VariationUpdateValidationError,
+    readonly requiredFields: readonly VariationFieldDescriptor[],
+    readonly requiredFieldChoices: readonly VariationFieldDescriptor[] = [],
+    requestId: string | null = null,
+  ) {
+    super(error.message, { status: 422, code: error.code, requestId });
   }
 }
 
-function validateRequiredFields(source: VariationMoveSourceObservation, input: VariationMoveInput): Record<string, unknown> {
-  try { return validateVariationRequiredValues({ fields: source.requiredFields ?? [], values: input.requiredValues ?? {}, marketplaceId: input.marketplaceId }); }
-  catch (error) {
-    if (error instanceof VariationUpdateValidationError && error.code === "VARIATION_FIELD_REQUIRED") throw new RequiredVariationFieldsError(error, source.requiredFields ?? []);
+function validateRequiredFields(
+  source: VariationMoveSourceObservation,
+  input: VariationMoveInput,
+): Record<string, unknown> {
+  try {
+    return validateVariationRequiredValues({
+      fields: source.requiredFields ?? [], values: input.requiredValues ?? {}, marketplaceId: input.marketplaceId,
+    });
+  } catch (error) {
+    if (
+      error instanceof VariationUpdateValidationError && error.code === "VARIATION_FIELD_REQUIRED"
+    )
+      throw new RequiredVariationFieldsError(
+        error,
+        source.requiredFields ?? [],
+        source.requiredFieldChoices ?? [],
+      );
     return throwVariationValidation(error);
   }
 }
@@ -837,8 +855,19 @@ async function validateDescriptor(
   const receipt = await gateway.validationPreview(prepared.descriptor);
   const requestId = publicSpApiRequestId(receipt.requestId);
   const issues = publicIssues(receipt.issues);
-  if (receipt.requiredFields?.length && (receipt.status === "INVALID" || issues.some((issue) => issue.severity === "ERROR"))) {
-    throw new RequiredVariationFieldsError(new VariationUpdateValidationError("Amazon 要求補填產品資料，請完成下方必填欄位後重新預檢。", "VARIATION_FIELD_REQUIRED"), receipt.requiredFields);
+  if (
+    (receipt.requiredFields?.length || receipt.requiredFieldChoices?.length) &&
+    (receipt.status === "INVALID" || issues.some((issue) => issue.severity === "ERROR"))
+  ) {
+    const message = receipt.requiredFieldChoices?.length
+      ? "Amazon 預檢指出有產品資料缺漏，但回覆無法唯一確認欄位。請從下方 Amazon 產品欄位選擇要補充的資料，填寫後重新預檢。"
+      : "Amazon 要求補填產品資料，請完成下方必填欄位後重新預檢。";
+    throw new RequiredVariationFieldsError(
+      new VariationUpdateValidationError(message, "VARIATION_FIELD_REQUIRED"),
+      receipt.requiredFields ?? [],
+      receipt.requiredFieldChoices ?? [],
+      requestId,
+    );
   }
   if (
     receipt.status === "INVALID" ||
@@ -1413,11 +1442,26 @@ function createVariationMoveMutationOperations(
         assertSourceFamilyComplete(prepared.source);
         assertDetachSource(prepared.source, canonical.parentSku);
         return {
-          action: "detach", mode: prepared.mode, marketplaceId: input.marketplaceId, sellerSku: input.sellerSku,
-          sourceParentSku: canonical.parentSku, targetParentSku: null, productType: prepared.source.productType,
-          variationTheme: null, dimensionNames: [], fields: [], requiredFields: [...(prepared.source.requiredFields ?? [])],
-          preparedAt: new Date().toISOString(), requestIds: publicRequestIds(prepared.requestIds), writable: prepared.mode === "live",
-          blockers: [], warnings: [], notice: "已核對來源關係與 Amazon 必填產品資料；尚未解除。",
+          action: "detach",
+          mode: prepared.mode,
+          marketplaceId: input.marketplaceId,
+          sellerSku: input.sellerSku,
+          sourceParentSku: canonical.parentSku,
+          targetParentSku: null,
+          productType: prepared.source.productType,
+          variationTheme: null,
+          dimensionNames: [],
+          fields: [],
+          requiredFields: [...(prepared.source.requiredFields ?? [])],
+          requiredFieldChoices: [
+            ...(prepared.source.requiredFieldChoices ?? []),
+          ],
+          preparedAt: new Date().toISOString(),
+          requestIds: publicRequestIds(prepared.requestIds),
+          writable: prepared.mode === "live",
+          blockers: [],
+          warnings: [],
+          notice: "已核對來源關係與 Amazon 必填產品資料；尚未解除。",
         };
       }
       if (!input.targetParentSku) throw new SpApiError("請先讀取目標 parent。", { status: 422, code: "VARIATION_TARGET_NOT_PARENT" });
@@ -1442,6 +1486,7 @@ function createVariationMoveMutationOperations(
         dimensionNames: [...prepared.target.dimensionNames],
         fields: prepared.fields,
         requiredFields: [...(prepared.source.requiredFields ?? [])],
+        requiredFieldChoices: [...(prepared.source.requiredFieldChoices ?? [])],
         preparedAt: new Date().toISOString(),
         requestIds: prepared.requestIds,
         writable: prepared.mode === "live",
@@ -1751,8 +1796,9 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
   private async previewRoute(request: ApiRequest): Promise<ApiResponse> {
     const input = this.mutationInput(request);
     if ("status" in input) return input;
+    let context: SpExecutionContext | undefined;
     try {
-      const context = await this.context.capture(input.marketplaceId);
+      context = await this.context.capture(input.marketplaceId);
       await this.reconcileIdentity(input, context);
       const result = await this.operations.preview(input);
       await this.context.assertCurrent(context);
@@ -1763,9 +1809,30 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       return json(result.value);
     } catch (error) {
       if (error instanceof RequiredVariationFieldsError) {
-        return json({ code: error.code, message: error.message, requiredFields: error.requiredFields,
-          action: input.action, marketplaceId: input.marketplaceId, sellerSku: input.sellerSku,
-          targetParentSku: input.targetParentSku }, 422);
+        if (context) {
+          try {
+            await this.context.assertCurrent(context);
+          } catch (contextError) {
+            return routeError(
+              contextError,
+              "帳號或站點已變更，請重新讀取後預檢。",
+            );
+          }
+        }
+        return json(
+          {
+            code: error.code,
+            message: error.message,
+            requiredFields: error.requiredFields,
+            requiredFieldChoices: error.requiredFieldChoices,
+            requestId: publicSpApiRequestId(error.requestId),
+            action: input.action,
+            marketplaceId: input.marketplaceId,
+            sellerSku: input.sellerSku,
+            targetParentSku: input.targetParentSku,
+          },
+          422,
+        );
       }
       return error instanceof MainWriteGateError
         ? invalid(error.message, error.status, error.code)
