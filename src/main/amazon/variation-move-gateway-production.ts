@@ -41,6 +41,7 @@ import {
   buildVariationDetachBody,
   variationDimensionSignature,
   variationFieldDescriptors,
+  preservedVariationDimensions,
   variationRelationshipSnapshot,
   VariationUpdateValidationError,
   type VariationPatchBody,
@@ -188,18 +189,27 @@ function valuesForDimensions(
   dimensionNames: readonly string[],
 ): Record<string, unknown> {
   return Object.fromEntries(
-    dimensionNames.map((name) => [
-      name,
-      (Array.isArray(attributes?.[name]) ? attributes[name] : [])
-        .filter(isRecord)
+    dimensionNames.map((name) => {
+      const raw = attributes?.[name];
+      const invalidValues = raw !== undefined && (!Array.isArray(raw) || raw.some((value) =>
+        !isRecord(value) || (value.marketplace_id !== undefined && (
+          typeof value.marketplace_id !== "string" || !value.marketplace_id ||
+          value.marketplace_id !== value.marketplace_id.trim()
+        ))));
+      if (invalidValues) {
+        throw new SpApiError(
+          `${name} 的 Amazon 舊值或站點條件無法完整核對，請重新讀取。`,
+          { status: 409, code: "VARIATION_TARGET_DIMENSIONS_INCOMPLETE" },
+        );
+      }
+      const values = (Array.isArray(raw) ? raw : [])
         .filter((value) => {
-          const itemMarketplace = typeof value.marketplace_id === "string"
-            ? value.marketplace_id.trim()
-            : "";
+          const itemMarketplace = value.marketplace_id;
           return !itemMarketplace || itemMarketplace === marketplaceId;
         })
-        .map((value) => structuredClone(value)),
-    ]),
+        .map((value) => structuredClone(value));
+      return [name, values];
+    }),
   );
 }
 
@@ -599,11 +609,16 @@ export function createVariationMoveGatewayProduction(
       }
       const records = attachRecordsFor(descriptor, source);
       if (descriptor.requiredSchemaChecksum !== source.requiredSchemaChecksum) throw new VariationUpdateValidationError("產品必填欄位的 PTD 已變更，請重新預檢。", "VARIATION_TARGET_CHANGED");
-      variationFieldDescriptors({
+      const dimensionFields = variationFieldDescriptors({
         productTypeDefinition: records.ptd.schema,
         dimensionNames: [...descriptor.dimensionNames],
         attributes: source.attributes,
         marketplaceId: descriptor.marketplaceId,
+      });
+      const preserved = preservedVariationDimensions({
+        fields: dimensionFields,
+        marketplaceId: descriptor.marketplaceId,
+        dimensionValues: descriptor.dimensionValues,
       });
       const requiredValues = validateVariationRequiredValues({
         fields: variationRequiredFieldDescriptors({ schema: records.ptd.schema,
@@ -621,6 +636,7 @@ export function createVariationMoveGatewayProduction(
         dimensionNames: [...descriptor.dimensionNames],
         dimensionValues: { ...descriptor.dimensionValues },
         existingAttributes: source.attributes,
+        preservedDimensionNames: Object.keys(preserved),
       });
       return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId)] };
     } catch (error) {
@@ -910,6 +926,7 @@ export function createVariationMoveGatewayProduction(
     return {
       marketplaceId: descriptor.marketplaceId,
       attributeSignatures: variationAttributeSignatures(result.payload.attributes, descriptor.marketplaceId),
+      exactAttributeSignatures: variationAttributeSignatures(result.payload.attributes, descriptor.marketplaceId, true),
       sellerSku: result.member.sellerSku,
       asin: result.member.asin,
       productType: result.member.productType || null,
@@ -1013,6 +1030,7 @@ export function createVariationMoveGatewayProduction(
     return {
       mode: "live",
       attributeSignatures: variationAttributeSignatures(result.payload.attributes, identity.marketplaceId),
+      exactAttributeSignatures: variationAttributeSignatures(result.payload.attributes, identity.marketplaceId, true),
       marketplaceId: identity.marketplaceId,
       sellerSku: result.member.sellerSku,
       asin: result.member.asin,

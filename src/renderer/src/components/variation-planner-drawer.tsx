@@ -38,7 +38,22 @@ import {
   marketplaceSelectLabel,
 } from "../../../shared/marketplaces";
 
+import UnboundVariationAuditPanel, {
+  type UnboundVariationAuditCache,
+} from "./unbound-variation-audit-panel";
+import type { UnboundVariationAuditRow } from "../unbound-variation-audit";
+import type {
+  StandaloneAuditJob,
+  StandaloneAuditMode,
+} from "../standalone-audit";
+import type { UnboundFamilyRecommendation } from "../../../shared/unbound-family-recommendations";
+
 type Props = {
+  auditMode?: StandaloneAuditMode;
+  auditCache?: UnboundVariationAuditCache | null;
+  auditJob?: StandaloneAuditJob | null;
+  onAuditCacheChange?: (cache: UnboundVariationAuditCache) => void;
+  onAuditJobChange?: (job: StandaloneAuditJob) => void;
   initialMarketplaceId: string;
   initialSellerSku?: string;
   presentation?: "drawer" | "workspace";
@@ -165,12 +180,22 @@ export default function VariationPlannerDrawer({
   onBusyChange,
   onContextResolved,
   onClose,
+  auditMode = "live",
+  auditCache = null,
+  auditJob = null,
+  onAuditCacheChange,
+  onAuditJobChange,
 }: Props) {
   const [marketplaceId, setMarketplaceId] = useState(
     MARKETPLACES.some((item) => item.id === initialMarketplaceId)
       ? initialMarketplaceId
       : MARKETPLACES[0].id,
   );
+  const [showUnbound, setShowUnbound] = useState(!initialSellerSku);
+  const [unboundSelection, setUnboundSelection] = useState<{
+    row: UnboundVariationAuditRow;
+    recommendation: UnboundFamilyRecommendation | null;
+  } | null>(null);
   const [sourceInput, setSourceInput] = useState(initialSellerSku);
   const [targetInput, setTargetInput] = useState("");
   const [sourceIdentifierType, setSourceIdentifierType] =
@@ -347,6 +372,7 @@ export default function VariationPlannerDrawer({
       const controller = new AbortController();
       sourceAbortRef.current = controller;
       clearPlan();
+      setUnboundSelection(null);
       setSourceLoading(true);
       setSourceError(null);
       setSourceFamily(null);
@@ -533,7 +559,13 @@ export default function VariationPlannerDrawer({
           Object.fromEntries(
             Object.entries(defaults).map(([name, defaultsForField]) => [
               name,
-              current[name] ?? defaultsForField,
+              results.some(([, preparation]) =>
+                preparation.fields.some(
+                  (field) => field.name === name && !field.editable,
+                ),
+              )
+                ? defaultsForField
+                : (current[name] ?? defaultsForField),
             ]),
           ),
         );
@@ -560,6 +592,93 @@ export default function VariationPlannerDrawer({
   useEffect(() => {
     if (stagedMember) void prepareSelected(stagedMember, targetFamily);
   }, [stagedMember, targetFamily, prepareSelected]);
+  const selectUnbound = async (
+    row: UnboundVariationAuditRow,
+    recommendation: UnboundFamilyRecommendation | null,
+    targetSku?: string,
+  ) => {
+    if (busy || operationRef.current) return;
+    sourceAbortRef.current?.abort();
+    targetAbortRef.current?.abort();
+    const controller = new AbortController();
+    sourceAbortRef.current = controller;
+    targetAbortRef.current = controller;
+    clearPlan();
+    setSourceLoading(true);
+    setTargetLoading(Boolean(targetSku));
+    setSourceError(null);
+    setTargetError(null);
+    setSourceFamily(null);
+    setTargetFamily(null);
+    setTargetInput("");
+    setStagedMember(null);
+    setUnboundSelection(null);
+    try {
+      const [source, target] = await Promise.all([
+        fetchFamily(row.sellerSku, "sku", controller.signal),
+        targetSku
+          ? fetchFamily(targetSku, "sku", controller.signal)
+          : Promise.resolve(null),
+      ]);
+      if (controller.signal.aborted || sourceAbortRef.current !== controller)
+        return;
+      if (
+        !source.familyComplete ||
+        source.mode !== auditMode ||
+        source.queried.role !== "standalone" ||
+        source.queried.parentSku !== null ||
+        !source.queried.fba ||
+        !source.queried.relationshipSources.includes("relationships") ||
+        source.queried.asin !== row.asin ||
+        source.queried.productType !== row.productType
+      ) {
+        throw new Error(
+          `${row.sellerSku} 目前已不是可確認的獨立 FBA 商品，或商品資料已變更。請重新掃描；本次未準備寫入。`,
+        );
+      }
+      if (
+        target &&
+        (!target.familyComplete ||
+          target.mode !== source.mode ||
+          parentOf(target)?.sellerSku !== targetSku ||
+          parentOf(target)?.productType !== row.productType)
+      ) {
+        throw new Error(
+          "建議 family 的最新資料與來源商品不相容或尚未完整；請重新選擇目標。",
+        );
+      }
+      setSourceInput(row.sellerSku);
+      setSourceIdentifierType("sku");
+      setSourceFamily(source);
+      setSourceFilter("");
+      setStagedMember(source.queried);
+      setOriginalParentSku(null);
+      setStagedState("detached");
+      setUncertain(
+        unresolvedSkusRef.current.has(`${marketplaceId}:${row.sellerSku}`),
+      );
+      setUnboundSelection({ row, recommendation });
+      setShowUnbound(false);
+      if (target) {
+        setTargetFamily(target);
+        setTargetInput(targetSku!);
+        setTargetIdentifierType("sku");
+      }
+      autoLookupRef.current = true;
+      onContextResolved?.(marketplaceId, row.sellerSku);
+    } catch (error) {
+      if (!controller.signal.aborted)
+        setSourceError(
+          error instanceof Error
+            ? error.message
+            : "未能重新核對商品，請重新掃描。",
+        );
+      controller.abort();
+    } finally {
+      if (sourceAbortRef.current === controller) setSourceLoading(false);
+      if (targetAbortRef.current === controller) setTargetLoading(false);
+    }
+  };
   const stageMember = (member: VariationMemberView) => {
     if (busy || operationRef.current) return;
     clearPlan();
@@ -576,6 +695,8 @@ export default function VariationPlannerDrawer({
     targetAbortRef.current?.abort();
     clearPlan();
     setMarketplaceId(next);
+    setUnboundSelection(null);
+    setShowUnbound(true);
     setSourceInput("");
     setTargetInput("");
     setSourceFamily(null);
@@ -593,7 +714,9 @@ export default function VariationPlannerDrawer({
     Boolean(
       stagedMember &&
       preparations[action]?.writable &&
-      !preparations[action]?.requiredFields.some((field) => !field.editable) &&
+        !preparations[action]?.requiredFields.some(
+          (field) => !field.editable,
+        ) &&
       sourceFamily?.mode === "live" &&
       sourceFamily.familyComplete &&
       !preparations[action]?.blockers.length &&
@@ -879,6 +1002,179 @@ export default function VariationPlannerDrawer({
         </select>
         <small>FBA 商品限定 · 每次處理一個 Seller SKU</small>
       </label>
+      <div className="variation-entry-options" aria-label="選擇商品來源">
+        <button
+          type="button"
+          aria-pressed={showUnbound}
+          disabled={busy}
+          onClick={() => setShowUnbound(true)}
+        >
+          從未綁清單開始
+        </button>
+        <button
+          type="button"
+          aria-pressed={!showUnbound}
+          disabled={busy}
+          onClick={() => setShowUnbound(false)}
+        >
+          輸入 SKU 拆／綁
+        </button>
+      </div>
+      {showUnbound && (
+        <section
+          className="variation-workspace-section"
+          aria-labelledby="variation-unbound-title"
+        >
+          <SectionTitle
+            step="01"
+            id="variation-unbound-title"
+            title="未綁 FBA 商品"
+            detail="沿用未綁變體健檢；選一個商品，直接準備綁定。"
+          />
+          <UnboundVariationAuditPanel
+            marketplaceId={marketplaceId}
+            marketplaceShort={marketplace.shortLabel}
+            mode={auditMode}
+            presentation="picker"
+            disabled={busy}
+            cachedResult={auditCache}
+            initialJob={auditJob}
+            onCachedResultChange={onAuditCacheChange}
+            onJobChange={onAuditJobChange}
+            onOpenSku={(sku) => void lookupSource(sku, "sku")}
+            onSelectUnbound={(row, recommendation) =>
+              void selectUnbound(row, recommendation)
+            }
+          />
+          {sourceLoading && (
+            <p role="status">正在重新核對來源與目標的 Amazon 資料…</p>
+          )}
+          {sourceError && (
+            <p className="price-error" role="alert">
+              {sourceError}
+            </p>
+          )}
+        </section>
+      )}
+      {!showUnbound && (
+        <>
+          {unboundSelection && (
+            <section
+              className="variation-workspace-section"
+              aria-labelledby="variation-recommendations-title"
+            >
+              <SectionTitle
+                step="選"
+                id="variation-recommendations-title"
+                title={`${unboundSelection.row.sellerSku} 的 family 建議`}
+                detail="比較同系列已綁商品；選擇後重新讀取兩邊最新資料。"
+              />
+              {unboundSelection.recommendation?.status === "tied" && (
+                <p className="variation-warning">
+                  最高同系列數量相同，沒有唯一首選；請比較商品及維度後自行選擇。
+                </p>
+              )}
+              {unboundSelection.recommendation?.candidates.length ? (
+                <div className="variation-table-scroll">
+                  <table
+                    className="variation-recommendations-table"
+                    aria-label="建議目標 family 比較"
+                  >
+                    <colgroup>
+                      <col style={{ width: 140 }} />
+                      <col style={{ width: 220 }} />
+                      <col />
+                      <col style={{ width: 130 }} />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>證據星等</th>
+                        <th>Parent SKU／主題</th>
+                        <th>相似成員與原因</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {unboundSelection.recommendation.candidates.map(
+                        (candidate) => (
+                          <tr key={candidate.parentSku}>
+                            <td>
+                              <strong>
+                                {"★".repeat(candidate.stars)}
+                                {"☆".repeat(3 - candidate.stars)}
+                              </strong>
+                              <small>
+                                {candidate.tied ? "並列候選" : "同系列證據"}
+                              </small>
+                              <small>
+                                相似 {candidate.matchingChildCount}／已讀取{" "}
+                                {candidate.familyChildCount} 個
+                              </small>
+                            </td>
+                            <td>
+                              <strong>{candidate.parentSku}</strong>
+                              <small>{candidate.variationTheme}</small>
+                              {candidate.parentTitle && (
+                                <span
+                                  className="variation-cell-clamp"
+                                  title={candidate.parentTitle}
+                                >
+                                  {candidate.parentTitle}
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <strong>
+                                {candidate.matchingChildSkus.join(" · ")}
+                                {candidate.matchingChildCount >
+                                candidate.matchingChildSkus.length
+                                  ? " …"
+                                  : ""}
+                              </strong>
+                              {candidate.reasons.map((reason) => (
+                                <small key={reason}>{reason}</small>
+                              ))}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                disabled={
+                                  busy ||
+                                  uncertain ||
+                                  stagedState === "attached"
+                                }
+                                aria-label={`選擇建議 family ${candidate.parentSku}`}
+                                onClick={() =>
+                                  void selectUnbound(
+                                    unboundSelection.row,
+                                    unboundSelection.recommendation,
+                                    candidate.parentSku,
+                                  )
+                                }
+                              >
+                                選擇此 family
+                              </button>
+                            </td>
+                          </tr>
+                        ),
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="variation-form-note">
+                  ☆{" "}
+                  {unboundSelection.recommendation
+                    ? "沒有足夠且一致的同系列證據，請在下方輸入目標 family。"
+                    : "這份健檢快照尚未提供 family 建議。可重新掃描，或在下方輸入目標；新版建議需要更新 Notebook Key。"}
+                </p>
+              )}
+              <p className="variation-form-note">
+                {unboundSelection.recommendation?.notice ??
+                  "相似 SKU 不代表一定可合併，仍須檢查商品事實、主題與維度。"}
+              </p>
+            </section>
+          )}
       <section
         className="variation-workspace-section"
         aria-labelledby="variation-lookup-title"
@@ -898,7 +1194,9 @@ export default function VariationPlannerDrawer({
                 value={sourceIdentifierType}
                 disabled={busy}
                 onChange={(event) => {
-                  setSourceIdentifierType(event.target.value as IdentifierType);
+                      setSourceIdentifierType(
+                        event.target.value as IdentifierType,
+                      );
                   setSourceInput("");
                 }}
               >
@@ -949,7 +1247,9 @@ export default function VariationPlannerDrawer({
                 value={targetIdentifierType}
                 disabled={busy}
                 onChange={(event) => {
-                  setTargetIdentifierType(event.target.value as IdentifierType);
+                      setTargetIdentifierType(
+                        event.target.value as IdentifierType,
+                      );
                   setTargetInput("");
                 }}
               >
@@ -1076,7 +1376,9 @@ export default function VariationPlannerDrawer({
           <>
             <div className="variation-table-heading">
               <h4>目標現有變體參考</h4>
-              <span>參考實際命名，請為所選商品填入正確且不重複的組合。</span>
+                  <span>
+                    參考實際命名，請為所選商品填入正確且不重複的組合。
+                  </span>
             </div>
             <MemberTable
               members={targetFamily.children}
@@ -1106,7 +1408,9 @@ export default function VariationPlannerDrawer({
               新變體內容 <small>{preparations.attach.variationTheme}</small>
             </h4>
             <div className="variation-field-grid">
-              {preparations.attach.fields.map((field) => renderEditor(field))}
+                  {preparations.attach.fields.map((field) =>
+                    renderEditor(field),
+                  )}
             </div>
           </>
         )}
@@ -1133,7 +1437,9 @@ export default function VariationPlannerDrawer({
               className="variation-secondary-button"
               type="button"
               disabled={busy}
-              onClick={() => void prepareSelected(stagedMember, targetFamily)}
+                  onClick={() =>
+                    void prepareSelected(stagedMember, targetFamily)
+                  }
             >
               重新讀取必填欄位
             </button>
@@ -1268,7 +1574,9 @@ export default function VariationPlannerDrawer({
             </h4>
             <div className="variation-table-scroll">
               <table>
-                <caption>★ 已通過這次 Amazon 預檢；尚未送出正式修改</caption>
+                    <caption>
+                      ★ 已通過這次 Amazon 預檢；尚未送出正式修改
+                    </caption>
                 <thead>
                   <tr>
                     <th>欄位</th>
@@ -1283,7 +1591,8 @@ export default function VariationPlannerDrawer({
                     <tr>
                       <th>Parent SKU</th>
                       <td>
-                        {preview.body.expectedSourceParentSku ?? "無 parent"}
+                            {preview.body.expectedSourceParentSku ??
+                              "無 parent"}
                       </td>
                       <td>{preview.body.targetParentSku ?? "無 parent"}</td>
                     </tr>
@@ -1292,12 +1601,14 @@ export default function VariationPlannerDrawer({
                     <tr key={change.name}>
                       <th>{change.label}</th>
                       <td>
-                        {change.name === "parent_sku" && change.before === null
+                            {change.name === "parent_sku" &&
+                            change.before === null
                           ? "無 parent"
                           : readableValue(change.before)}
                       </td>
                       <td>
-                        {change.name === "parent_sku" && change.after === null
+                            {change.name === "parent_sku" &&
+                            change.after === null
                           ? "無 parent"
                           : readableValue(change.after)}
                       </td>
@@ -1307,7 +1618,8 @@ export default function VariationPlannerDrawer({
               </table>
             </div>
             <p>
-              確認後將顯示 Touch ID／Windows Hello。若修改任何欄位，需重新檢查。
+                  確認後將顯示 Touch ID／Windows
+                  Hello。若修改任何欄位，需重新檢查。
             </p>
             <button
               className="price-primary-button"
@@ -1346,8 +1658,8 @@ export default function VariationPlannerDrawer({
           parent；綁定未完成時仍保留目前商品供後續處理。
         </p>
         <p>
-          Listings Items v2021-08-01 · CHILD Product Type Definition · FBA child
-          only · 持久 Idempotency · 不使用 Seller Central 私有接口
+              Listings Items v2021-08-01 · CHILD Product Type Definition · FBA
+              child only · 持久 Idempotency · 不使用 Seller Central 私有接口
         </p>
         {plan?.warnings.map((warning) => (
           <p key={warning}>{warning}</p>
@@ -1360,6 +1672,8 @@ export default function VariationPlannerDrawer({
         )}
         <p>No blind retry · No FBM</p>
       </details>
+        </>
+      )}
     </>
   );
   if (presentation === "workspace")
@@ -1431,7 +1745,17 @@ function FamilyComparison({
     ["商品名稱", (family) => parentOf(family)?.title ?? family.queried.title],
     ["商品類型", (family) => family.queried.productType ?? "未回報"],
     ["變體主題", (family) => family.variationTheme ?? "未回報"],
-    ["FBA 商品數", (family) => String(family.children.length)],
+    [
+      "FBA 商品數",
+      (family) =>
+        String(
+          family.children.length
+            ? family.children.filter((member) => member.fba).length
+            : family.queried.role !== "parent" && family.queried.fba
+              ? 1
+              : 0,
+        ),
+    ],
   ];
   return (
     <div className="variation-table-scroll">
@@ -1591,6 +1915,22 @@ function VariationFieldEditor({
   onJsonDraftChange: (value: string) => void;
 }) {
   const label = fieldLabel(field);
+  const preserveExisting =
+    !fillOnly && !field.editable && field.values.length > 0;
+  if (preserveExisting)
+    return (
+      <fieldset className="variation-field-card variation-field-preserved">
+        <legend>{label} · 保留 Amazon 現有值</legend>
+        <small className="variation-field-name">{field.name}</small>
+        <output aria-label={`${label} · Amazon 現有值`}>
+          {readableValue(field.values)}
+        </output>
+        <p className="variation-form-note">
+          此變體欄位由 Amazon
+          限制修改，本次綁定會原樣保留，不會送出此欄位的變更。
+        </p>
+      </fieldset>
+    );
   return (
     <fieldset className="variation-field-card" disabled={disabled}>
       <legend>

@@ -1,3 +1,5 @@
+import type { UnboundFamilyRecommendation } from "../../shared/unbound-family-recommendations";
+import { parseUnboundFamilyRecommendations } from "./unbound-family-recommendations";
 export type UnboundVariationAuditRow = {
   sellerSku: string;
   asin: string;
@@ -46,6 +48,7 @@ export type UnboundVariationAuditSnapshot = {
     incomplete: number;
   };
   notice: string;
+  recommendations?: UnboundFamilyRecommendation[];
 };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -237,6 +240,7 @@ export function parseUnboundVariationAuditSnapshot(
     rows,
     incompleteRows,
     allVariationRows,
+    recommendations: parseUnboundFamilyRecommendations(raw.recommendations, rows, allVariationRows),
     summary,
     notice: text(raw.notice, "健檢說明"),
   };

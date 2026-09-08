@@ -6,6 +6,7 @@ import {
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import type { ApiRequest } from "../src/shared/contracts";
 import type { PriceListProductRow } from "../src/shared/price-list";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 const US = "ATVPDKIKX0DER" as const;
 const row = (
   key: string,
@@ -96,6 +97,52 @@ async function complete(owner: PriceListAmazon) {
   throw new Error("fixture did not complete");
 }
 describe("price list Amazon observation", () => {
+  it("reports the failed read stage and keeps a reason for each unprocessed workbook row", async () => {
+    const app = fixture();
+    app.fba.mockRejectedValue(
+      new SpApiError("FBA 商品身分報表仍在準備中。", {
+        status: 504,
+        code: "REPORT_PENDING",
+      }),
+    );
+    await app.owner.start(req("POST"));
+    const result = await complete(app.owner);
+    expect(result).toMatchObject({
+      state: "failed",
+      stage: "identifying",
+      errorCode: "REPORT_PENDING",
+      rows: [
+        {
+          status: "incomplete",
+          standardPrice: null,
+          minimumPrice: null,
+          issueCode: "REPORT_PENDING",
+          message: expect.stringContaining("報表"),
+        },
+      ],
+    });
+    expect(app.listing).not.toHaveBeenCalled();
+  });
+  it.each(["fba", "listing"] as const)(
+    "sanitizes unsafe %s error codes before they cross into the observed workbook DTO",
+    async (stage) => {
+      const app = fixture();
+      const privateFixture = "Bearer price-list-fixture-secret";
+      const error = new SpApiError("此商品讀取未完成。", {
+        status: stage === "fba" ? 504 : 422,
+        code: privateFixture,
+      });
+      app[stage].mockRejectedValue(error);
+      await app.owner.start(req("POST"));
+      const result = await complete(app.owner);
+      expect(JSON.stringify(result)).not.toContain(privateFixture);
+      expect(result.rows[0]).toMatchObject({
+        issueCode: "UPSTREAM_UNAVAILABLE",
+      });
+      if (stage === "fba")
+        expect(result).toMatchObject({ errorCode: "UPSTREAM_UNAVAILABLE" });
+    },
+  );
   it("matches an internal code only by unique current FBA ASIN and reuses same SKU reads", async () => {
     const app = fixture([
       row("code-a", "B000000001"),
@@ -136,7 +183,29 @@ describe("price list Amazon observation", () => {
       "ambiguous",
       "ambiguous",
     ]);
+    expect(result.rows[0]).toMatchObject({
+      issueCode: "WORKBOOK_ASIN_MISSING",
+      message: expect.stringContaining("補上 ASIN"),
+    });
+    expect(result.rows[2]).toMatchObject({
+      issueCode: "FBA_MATCH_AMBIGUOUS",
+      message: expect.stringContaining("多個 Seller SKU"),
+    });
     expect(app.listing).not.toHaveBeenCalled();
+  });
+  it("does not export a completed comparison when no Amazon price was obtained", async () => {
+    const app = fixture([row("internal-only", null)]);
+    await app.owner.start(req("POST"));
+    expect((await complete(app.owner)).state).toBe("complete");
+    const result = await app.owner.export(
+      req("POST", { id: "fixture", replaceImages: true }),
+    );
+    expect(result.status).toBe(409);
+    expect(result.body).toMatchObject({
+      kind: "json",
+      value: { code: "PRICE_LIST_NO_PRICES" },
+    });
+    expect(app.exportWorkbook).not.toHaveBeenCalled();
   });
   it("overlapping starts use one job and observe never starts another read", async () => {
     const app = fixture();

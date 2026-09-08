@@ -33,17 +33,68 @@ const comparisonLabels = {
 const formatMoney = (value: number | null) =>
   value === null ? "未取得" : `US$ ${value.toFixed(2)}`;
 
+export function priceListAmazonValue(
+  field: "standardPrice" | "minimumPrice",
+  row: PriceListAmazonRow | undefined,
+  snapshot: PriceListAmazonSnapshot | null,
+): string {
+  const amount = row?.[field];
+  if (amount !== null && amount !== undefined) return formatMoney(amount);
+  if (field === "minimumPrice" && row?.minimumPriceStatus === "not-set")
+    return "Amazon 未設定下限";
+  if (!snapshot) return "尚未開始讀取";
+  if (row?.status === "unmatched") return "沒有對應的 FBA 商品";
+  if (row?.status === "ambiguous") return "Seller SKU 對應不唯一";
+  if (snapshot.state === "failed" && !row?.sellerSku) return "本次讀取中斷";
+  if (!row && snapshot.state === "running")
+    return snapshot.stage === "identifying"
+      ? "確認 FBA 商品中"
+      : "等候這筆讀取";
+  return field === "standardPrice"
+    ? "Amazon 未回傳一般售價"
+    : "Amazon 未回傳下限設定";
+}
+
+function recoveryMessage(snapshot: PriceListAmazonSnapshot): string {
+  if (snapshot.errorCode === "PRICE_LIST_OBSERVATION_INTERRUPTED")
+    return "本機進度暫時中斷；請按「接回讀取進度」，這只查詢目前結果。";
+  if (snapshot.errorCode === "PRICE_LIST_AMAZON_EXPIRED")
+    return "本機保留的 Amazon 結果已過期，請按「重新讀取 Amazon」取得新的設定價格。";
+  if (snapshot.errorCode === "REPORT_PENDING")
+    return "FBA 商品清單仍由 Amazon 準備中。稍後按「重新讀取 Amazon」會接回同一份報表，再查價格。";
+  if (
+    /AUTH|ACCESS|CREDENTIAL|LWA|TOKEN|UNAUTHORIZED/u.test(
+      snapshot.errorCode ?? "",
+    )
+  )
+    return "請返回首頁，在本機安全連線確認 US 帳號及 Listings 讀取權限，再重新讀取 Amazon。";
+  if (/THROTTL|RATE_LIMIT/u.test(snapshot.errorCode ?? ""))
+    return "Amazon 暫時限制讀取頻率；稍後按「重新讀取 Amazon」，不會修改價格。";
+  return "請先查看每筆商品下方的原因，再按「重新讀取 Amazon」。已取得的價格仍保留，未完成項目不會補 0。";
+}
+
+class PriceListRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+  ) {
+    super(message);
+  }
+}
+
 async function response(path: string, init?: RequestInit): Promise<Response> {
   const result = await fetch(path, init);
   if (!result.ok) {
     const body = (await result.json().catch(() => ({}))) as {
       message?: string;
       error?: string;
+      code?: string;
     };
-    throw new Error(
+    throw new PriceListRequestError(
       result.status === 404 && !body.message
         ? "請先更新 AMZ.API Notebook Key，才能使用價目表。"
         : (body.message ?? body.error ?? "價目表處理未完成。"),
+      typeof body.code === "string" ? body.code : null,
     );
   }
   return result;
@@ -163,12 +214,14 @@ function OriginalSheet({
   zoom,
   amazonRows,
   replaceImages,
+  snapshot,
 }: {
   workbook: PriceListWorkbook;
   sheet: PriceListSheet;
   zoom: number;
   amazonRows: Map<string, PriceListAmazonRow>;
   replaceImages: boolean;
+  snapshot: PriceListAmazonSnapshot | null;
 }) {
   const cells = useMemo(
     () => new Map(sheet.cells.map((cell) => [cell.reference, cell])),
@@ -194,7 +247,7 @@ function OriginalSheet({
     "最低價格差額",
     "比對結果",
   ];
-  const showAmazon = amazonRows.size > 0;
+  const showAmazon = snapshot !== null;
   return (
     <div
       className="price-list-sheet-scroll"
@@ -340,12 +393,14 @@ function OriginalSheet({
                   (product ? (
                     <>
                       <td className="price-list-sheet-amazon">
-                        {formatMoney(amazon?.standardPrice ?? null)}
+                        {priceListAmazonValue(
+                          "standardPrice",
+                          amazon,
+                          snapshot,
+                        )}
                       </td>
                       <td className="price-list-sheet-amazon">
-                        {amazon?.minimumPriceStatus === "not-set"
-                          ? "未設定"
-                          : formatMoney(amazon?.minimumPrice ?? null)}
+                        {priceListAmazonValue("minimumPrice", amazon, snapshot)}
                       </td>
                       <td className="price-list-sheet-amazon">
                         {delta(
@@ -388,7 +443,7 @@ function sourcePrice(cell: PriceListCell | undefined): string {
       : cell.display;
 }
 
-export default function PriceListPanel({ onClose }: { onClose: () => void }) {
+export default function PriceListPanel({ onClose, active = true }: { onClose: () => void; active?: boolean }) {
   const [base, setBase] = useState<PriceListWorkbook | null>(null);
   const [candidate, setCandidate] = useState<PriceListWorkbook | null>(null);
   const [amazon, setAmazon] = useState<PriceListAmazonSnapshot | null>(null);
@@ -412,12 +467,33 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
   const importing = useRef(false);
   useEffect(() => {
     mounted.current = true;
-    heading.current?.focus();
     return () => {
       mounted.current = false;
       generation.current++;
     };
   }, []);
+  useEffect(() => {
+    if (active) heading.current?.focus();
+  }, [active]);
+  function resetInvalidSource(reason: unknown): boolean {
+    if (
+      !(reason instanceof PriceListRequestError) ||
+      ![
+        "PRICE_LIST_EXPIRED",
+        "ACCOUNT_SCOPE_CHANGED",
+        "REPORT_MODE_CHANGED",
+        "SP_CONTEXT_INVALIDATED",
+      ].includes(reason.code ?? "")
+    )
+      return false;
+    generation.current++;
+    setBase(null);
+    setCandidate(null);
+    setAmazon(null);
+    setComparison(null);
+    setView("original");
+    return true;
+  }
   const running = amazon?.state === "running";
   const locked = busy || running;
   useEffect(() => {
@@ -435,6 +511,8 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
         ).json()) as PriceListAmazonSnapshot;
         if (!mounted.current || revision !== generation.current) return;
         setAmazon(next);
+        if (next.state === "complete" || next.state === "failed")
+          setView("amazon");
         if (next.state === "running")
           timeout = setTimeout(() => void poll(), 2_500);
       } catch (reason) {
@@ -444,16 +522,25 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
           revision !== generation.current
         )
           return;
-        setAmazon((old) =>
-          old
-            ? {
-                ...old,
-                state: "failed",
-                message:
-                  "狀態讀取中斷；請重新讀取本機進度，這不會重送 Amazon 請求。",
-              }
-            : old,
-        );
+        if (!resetInvalidSource(reason)) {
+          setAmazon((old) =>
+            old
+              ? {
+                  ...old,
+                  state: "failed",
+                  errorCode:
+                    reason instanceof PriceListRequestError
+                      ? (reason.code ?? "PRICE_LIST_OBSERVATION_INTERRUPTED")
+                      : "PRICE_LIST_OBSERVATION_INTERRUPTED",
+                  message:
+                    reason instanceof PriceListRequestError
+                      ? reason.message
+                      : "狀態讀取中斷；已取得的資料保留，尚未確認全部完成。",
+                }
+              : old,
+          );
+          setView("amazon");
+        }
         setError(reason instanceof Error ? reason.message : "讀取未完成。");
       }
     };
@@ -472,8 +559,25 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
     try {
       await action();
     } catch (reason) {
-      if (mounted.current)
+      if (mounted.current) {
+        if (
+          !resetInvalidSource(reason) &&
+          reason instanceof PriceListRequestError &&
+          reason.code === "PRICE_LIST_AMAZON_EXPIRED"
+        ) {
+          setAmazon((old) =>
+            old
+              ? {
+                  ...old,
+                  state: "failed",
+                  errorCode: reason.code,
+                  message: reason.message,
+                }
+              : old,
+          );
+        }
         setError(reason instanceof Error ? reason.message : "處理未完成。");
+      }
     } finally {
       importing.current = false;
       if (mounted.current) setBusy(false);
@@ -565,6 +669,11 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
     },
     { different: 0, same: 0, unknown: 0 },
   );
+  const priceCount =
+    amazon?.rows.filter(
+      (row) => row.standardPrice !== null || row.minimumPrice !== null,
+    ).length ?? 0;
+  const readFinished = amazon?.state === "complete";
   return (
     <section
       className="price-list-workspace"
@@ -622,7 +731,7 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
         </div>
         <button
           type="button"
-          className="price-list-primary"
+          className={base ? undefined : "price-list-primary"}
           disabled={locked}
           onClick={() => input.current?.click()}
         >
@@ -636,29 +745,83 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
       )}
       {base && (
         <>
+          <ol className="price-list-steps" aria-label="價目表操作進度">
+            <li className="done">
+              <b>1</b>
+              <span>
+                放入原表<small>已保留原檔</small>
+              </span>
+            </li>
+            <li className={readFinished ? "done" : "current"}>
+              <b>2</b>
+              <span>
+                讀取 Amazon
+                <small>
+                  {running
+                    ? amazon.stage === "identifying"
+                      ? "確認 FBA 商品中"
+                      : `${amazon.completed} / ${amazon.total} 列`
+                    : readFinished
+                      ? `${priceCount} 列有價格`
+                      : amazon?.state === "failed"
+                        ? "讀取中斷，請處理原因"
+                        : "下一步"}
+                </small>
+              </span>
+            </li>
+            <li className={readFinished ? "current" : ""}>
+              <b>3</b>
+              <span>
+                核對差異<small>表上與 Amazon 並排</small>
+              </span>
+            </li>
+            <li>
+              <b>4</b>
+              <span>
+                下載比對表<small>確認後才下載</small>
+              </span>
+            </li>
+          </ol>
           <div className="price-list-actions">
             <button
               type="button"
-              className="price-list-primary"
+              className={readFinished ? undefined : "price-list-primary"}
               disabled={locked}
               onClick={() =>
                 void run(async () => {
                   generation.current++;
                   setAmazon(
                     await json<PriceListAmazonSnapshot>(
-                      "/api/price-list/amazon-refresh",
-                      { id: base.id },
+                      amazon?.errorCode === "PRICE_LIST_OBSERVATION_INTERRUPTED"
+                        ? `/api/price-list/amazon-refresh?id=${encodeURIComponent(base.id)}`
+                        : "/api/price-list/amazon-refresh",
+                      amazon?.errorCode === "PRICE_LIST_OBSERVATION_INTERRUPTED"
+                        ? undefined
+                        : { id: base.id },
                     ),
                   );
+                  setView("amazon");
                 })
               }
             >
               {running
                 ? `Amazon 讀取 ${amazon.completed} / ${amazon.total}`
-                : amazon
-                  ? "重新讀取 Amazon 價格"
-                  : "讀取 Amazon 價格與首圖"}
+                : amazon?.errorCode === "PRICE_LIST_OBSERVATION_INTERRUPTED"
+                  ? "接回讀取進度"
+                  : amazon
+                    ? "重新讀取 Amazon"
+                    : "2. 讀取 Amazon 價格與首圖"}
             </button>
+            <p>
+              {!amazon
+                ? "選完原表還沒有查 Amazon；請先按「讀取 Amazon」按鈕。"
+                : running
+                  ? "正在背景讀取，可以先查看原表。"
+                  : `全部工作表 ${amazon.completed} / ${amazon.total} 列已處理，${priceCount} 列取得價格，${amazon.total - priceCount} 列沒有價格。`}
+            </p>
+          </div>
+          <details className="price-list-secondary-actions">
+            <summary>原檔備份與其他檔案比對</summary>
             <button
               type="button"
               disabled={busy}
@@ -673,36 +836,19 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                 )
               }
             >
-              下載一模一樣的原表
+              下載原檔備份（沒有 Amazon 資料）
             </button>
             <button
               type="button"
-              disabled={locked || amazon?.state !== "complete"}
-              onClick={() =>
-                void run(async () =>
-                  downloadApiWorkbookResponse(
-                    await response("/api/price-list/amazon-export", {
-                      method: "POST",
-                      headers: { "content-type": "application/json" },
-                      body: JSON.stringify({ id: base.id, replaceImages }),
-                    }),
-                    "AMZ_US_Amazon_Comparison.xlsx",
-                  ),
-                )
-              }
+              disabled={locked}
+              onClick={() => {
+                setView("files");
+                candidateInput.current?.click();
+              }}
             >
-              下載 Amazon 比對價目表
+              選另一份 Excel 比較檔案差異
             </button>
-            <label>
-              <input
-                type="checkbox"
-                checked={replaceImages}
-                onChange={(event) => setReplaceImages(event.target.checked)}
-                disabled={busy}
-              />
-              比對表改用 Amazon 首圖
-            </label>
-          </div>
+          </details>
           {amazon && (
             <div
               className={`price-list-progress ${amazon.state}`}
@@ -716,27 +862,19 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                     : `讀取完成 ${amazon.completed} / ${amazon.total}`}
               </strong>
               <span>{amazon.message}</span>
+              {amazon.state === "failed" && (
+                <p className="price-list-recovery">{recoveryMessage(amazon)}</p>
+              )}
               {amazon.fetchedAt && (
                 <small>
                   {new Date(amazon.fetchedAt).toLocaleString("zh-TW")}
                 </small>
               )}
-              {amazon.state === "failed" && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      setAmazon(
-                        await json<PriceListAmazonSnapshot>(
-                          `/api/price-list/amazon-refresh?id=${encodeURIComponent(base.id)}`,
-                        ),
-                      );
-                    })
-                  }
-                >
-                  重新讀取本機進度
-                </button>
+              {amazon.state === "complete" && priceCount === 0 && (
+                <p className="price-list-recovery">
+                  本次沒有取得任何 Amazon 價格。請到「Amazon
+                  價格比對」查看商品名稱下方的原因；此時尚不能下載價格比對結果。
+                </p>
               )}
             </div>
           )}
@@ -758,6 +896,15 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
               </button>
             ))}
           </nav>
+          <label className="price-list-image-choice">
+            <input
+              type="checkbox"
+              checked={replaceImages}
+              onChange={(event) => setReplaceImages(event.target.checked)}
+              disabled={busy}
+            />
+            比對表改用 Amazon 首圖<small>未取得首圖的商品保留原圖</small>
+          </label>
           {view !== "original" && (
             <div className="price-list-filters">
               <input
@@ -831,6 +978,7 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                   zoom={zoom}
                   amazonRows={amazonRows}
                   replaceImages={replaceImages}
+                  snapshot={amazon}
                 />
               )}
               <p className="price-list-note">
@@ -849,7 +997,12 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                   ☆ 相同 <strong>{counts.same}</strong>
                 </span>
                 <span>
-                  待確認 <strong>{counts.unknown}</strong>
+                  {amazon
+                    ? running
+                      ? "等候讀取／待確認"
+                      : "待確認"
+                    : "尚未讀取"}{" "}
+                  <strong>{counts.unknown}</strong>
                 </span>
                 <span>
                   顯示 <strong>{visibleProducts.length}</strong> 列
@@ -899,6 +1052,18 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                             {item?.sellerSku && (
                               <small>Seller SKU：{item.sellerSku}</small>
                             )}
+                            {item?.status !== "matched" && (
+                              <small className="price-list-row-reason">
+                                {item?.message ??
+                                  (!amazon
+                                    ? "尚未開始讀取；請先完成第 2 步。"
+                                    : running
+                                      ? amazon.stage === "identifying"
+                                        ? "正在取得 FBA 商品清單，尚未開始逐 SKU 查價。"
+                                        : "等候這筆商品讀取。"
+                                      : amazon.message)}
+                              </small>
+                            )}
                           </th>
                           <td>
                             {replaceImages && item?.imageUrl ? (
@@ -929,7 +1094,11 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                             </small>
                           </td>
                           <td className="price-list-amazon-value">
-                            {formatMoney(item?.standardPrice ?? null)}
+                            {priceListAmazonValue(
+                              "standardPrice",
+                              item,
+                              amazon,
+                            )}
                           </td>
                           <td>
                             {sourcePrice(product.cells.minimumPrice)}
@@ -938,13 +1107,18 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                             </small>
                           </td>
                           <td className="price-list-amazon-value">
-                            {item?.minimumPriceStatus === "not-set"
-                              ? "未設定"
-                              : formatMoney(item?.minimumPrice ?? null)}
+                            {priceListAmazonValue("minimumPrice", item, amazon)}
                           </td>
                           <td>
                             <strong>{statusLabels[status]}</strong>
-                            <small>{item?.message ?? "尚未讀取 Amazon"}</small>
+                            <small>
+                              {item?.message ??
+                                (!amazon
+                                  ? "尚未開始讀取"
+                                  : running
+                                    ? "等候這筆商品讀取"
+                                    : amazon.message)}
+                            </small>
                           </td>
                         </tr>
                       );
@@ -1058,6 +1232,35 @@ export default function PriceListPanel({ onClose }: { onClose: () => void }) {
                 </>
               )}
             </>
+          )}
+          {readFinished && view !== "files" && (
+            <section className="price-list-download" aria-label="下載比對結果">
+              <div>
+                <h3>4. 下載你剛核對的比對表</h3>
+                <p>
+                  原表價格保留，右側附上 Amazon 價格、下限、差額及讀取結果。
+                </p>
+              </div>
+              <button
+                type="button"
+                className="price-list-primary"
+                disabled={locked || priceCount === 0}
+                onClick={() =>
+                  void run(async () =>
+                    downloadApiWorkbookResponse(
+                      await response("/api/price-list/amazon-export", {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({ id: base.id, replaceImages }),
+                      }),
+                      "AMZ_US_Amazon_Comparison.xlsx",
+                    ),
+                  )
+                }
+              >
+                下載已核對的 Amazon 比對表
+              </button>
+            </section>
           )}
           <details className="price-list-details">
             <summary>檔案保留與比對說明</summary>

@@ -168,6 +168,8 @@ export class PriceListAmazon {
         completed: 0,
         total: products.length,
         message: "正在核對 US FBA 商品與 Amazon 設定價格。",
+        stage: "identifying",
+        errorCode: null,
       },
     };
     this.jobs.set(id, job);
@@ -208,6 +210,9 @@ export class PriceListAmazon {
           code: "PRICE_LIST_FBA_INVALID",
         });
       const cache = new Map<string, PriceListListingFacts>();
+      job.snapshot.stage = "reading";
+      job.snapshot.message =
+        "FBA 商品身分已取得，正在逐一讀取 Amazon 售價與最低價格設定。";
       for (const product of products) {
         await this.checkpoint(id, job);
         const match = matchProduct(product, identities);
@@ -219,14 +224,26 @@ export class PriceListAmazon {
           status: match.status,
           message:
             match.status === "ambiguous"
-              ? "無法唯一對應 FBA SKU，請核對 ASIN／貨號。"
-              : "找不到相符的 US FBA 商品。",
+              ? product.keyKind === "seller-sku"
+                ? "原表的 Seller SKU 與 ASIN 對不上；請核對兩欄後重新匯入。"
+                : "同一 ASIN 對應多個 Seller SKU；請核對要查的 FBA Seller SKU，並用含 Seller SKU 的價目表重新匯入。"
+              : !product.asin && product.keyKind !== "seller-sku"
+                ? "原表只有公司貨號，請補上 ASIN 後重新匯入；公司貨號不會當成 Seller SKU 查詢。"
+                : "目前 US FBA 清單找不到這筆商品；請核對原表 ASIN／Seller SKU 與 US FBA 狀態。",
           standardPrice: null,
           minimumPrice: null,
           minimumPriceStatus: "unavailable",
           imageUrl: null,
           currency: "USD",
           fetchedAt: new Date(this.now()).toISOString(),
+          issueCode:
+            match.status === "ambiguous"
+              ? "FBA_MATCH_AMBIGUOUS"
+              : match.status === "unmatched"
+                ? product.asin || product.keyKind === "seller-sku"
+                  ? "FBA_MATCH_NOT_FOUND"
+                  : "WORKBOOK_ASIN_MISSING"
+                : null,
         };
         if (match.identity) {
           row.asin = match.identity.asin;
@@ -254,6 +271,8 @@ export class PriceListAmazon {
               row.status === "matched"
                 ? "已核對 Amazon 設定；最低活動價與平台下限的用途不同。"
                 : "部分 Amazon 設定未取得，缺值不代表 0。";
+            row.issueCode =
+              row.status === "matched" ? null : "LISTING_PRICE_INCOMPLETE";
           } catch (error) {
             await this.checkpoint(id, job);
             if (
@@ -261,8 +280,10 @@ export class PriceListAmazon {
               ![400, 404, 413, 415, 422].includes(error.status)
             )
               throw error;
+            const publicError = publicSpApiError(error, "此商品讀取未完成。");
             row.status = "incomplete";
-            row.message = publicSpApiError(error, "此商品讀取未完成。").message;
+            row.message = publicError.message;
+            row.issueCode = publicError.code;
           }
         }
         await this.checkpoint(id, job);
@@ -271,6 +292,7 @@ export class PriceListAmazon {
       }
       await this.checkpoint(id, job);
       job.snapshot.state = "complete";
+      job.snapshot.stage = "finished";
       job.snapshot.fetchedAt = new Date(this.now()).toISOString();
       job.snapshot.message =
         "比對讀取完成。原表價格保留；缺值與無法唯一對應的商品另行標示。";
@@ -282,11 +304,41 @@ export class PriceListAmazon {
         this.clear();
         return;
       }
-      job.snapshot.state = "failed";
-      job.snapshot.message =
+      const publicError =
         error instanceof SpApiError
-          ? publicSpApiError(error, "Amazon 比對未完成。").message
-          : "Amazon 比對未完成或逾時；已讀取部分不能當成完整結果。";
+          ? publicSpApiError(error, "Amazon 比對未完成。")
+          : null;
+      job.snapshot.state = "failed";
+      job.snapshot.errorCode =
+        publicError?.code ??
+        (job.controller.signal.aborted
+          ? "PRICE_LIST_READ_TIMEOUT"
+          : "PRICE_LIST_READ_FAILED");
+      job.snapshot.message =
+        publicError?.message ??
+        "Amazon 比對未完成或逾時；已讀取部分不能當成完整結果。";
+      const observed = new Set(
+        job.snapshot.rows.map((row) => `${row.sheetName}\0${row.rowNumber}`),
+      );
+      for (const product of products) {
+        if (observed.has(`${product.sheetName}\0${product.rowNumber}`))
+          continue;
+        job.snapshot.rows.push({
+          sheetName: product.sheetName,
+          rowNumber: product.rowNumber,
+          sellerSku: null,
+          asin: product.asin,
+          status: "incomplete",
+          message: job.snapshot.message,
+          issueCode: job.snapshot.errorCode,
+          standardPrice: null,
+          minimumPrice: null,
+          minimumPriceStatus: "unavailable",
+          imageUrl: null,
+          currency: "USD",
+          fetchedAt: new Date(this.now()).toISOString(),
+        });
+      }
     } finally {
       clearTimeout(job.timer);
     }
@@ -334,6 +386,16 @@ export class PriceListAmazon {
       await this.checkpoint(id, job);
       if (job.snapshot.state !== "complete")
         return invalid("請先完成 Amazon 價格讀取，再下載比對表。", 409);
+      if (
+        !job.snapshot.rows.some(
+          (row) => row.standardPrice !== null || row.minimumPrice !== null,
+        )
+      )
+        return invalid(
+          "本次沒有取得任何 Amazon 價格；請先處理商品對應或讀取原因，再重新讀取。",
+          409,
+          "PRICE_LIST_NO_PRICES",
+        );
       const images: ImageReplacement[] = [];
       if (body.replaceImages) {
         let total = 0;

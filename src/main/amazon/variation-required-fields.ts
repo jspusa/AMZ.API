@@ -255,14 +255,23 @@ export function requiredValuePatches(values: Readonly<RecordValue>, attributes: 
 }
 
 /** Main-only digests enable GET recovery without persisting raw product facts. */
-export function variationAttributeSignatures(attributes: RecordValue | undefined, marketplaceId: string): Record<string, string> {
+export function variationAttributeSignatures(
+  attributes: RecordValue | undefined,
+  marketplaceId: string,
+  preserveSelectors = false,
+): Record<string, string> {
   const result: Record<string, string> = {};
   for (const name of Object.keys(attributes ?? {})) {
     if (!/^[a-z][a-z0-9_]{0,79}$/u.test(name)) continue;
     try {
       const canonical = (value: unknown): unknown => {
         if (Array.isArray(value)) return value.map(canonical).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-        if (record(value)) return Object.fromEntries(Object.keys(value).filter((key) => key !== "marketplace_id").sort().map((key) => [key, canonical(value[key])]));
+        if (record(value)) {
+          return Object.fromEntries(Object.keys(value)
+            .filter((key) => preserveSelectors || key !== "marketplace_id")
+            .sort()
+            .map((key) => [key, canonical(value[key])]));
+        }
         return value;
       };
       const values = currentValues(attributes, name, marketplaceId);

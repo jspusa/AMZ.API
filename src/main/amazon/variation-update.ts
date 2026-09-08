@@ -412,13 +412,32 @@ export function variationFieldDescriptors(input: {
       "items",
     );
     const hasReadOnlySchema = (node: unknown, depth = 0): boolean => {
-      if (depth > 12) return true;
-      return schemaCandidates(input.productTypeDefinition as JsonRecord, node).some((candidate) =>
-        candidate.editable === false || candidate.readOnly === true ||
-        (candidate.editable !== undefined && typeof candidate.editable !== "boolean") ||
-        (candidate.readOnly !== undefined && typeof candidate.readOnly !== "boolean") ||
-        (isRecord(candidate.properties) && Object.values(candidate.properties).some((child) => hasReadOnlySchema(child, depth + 1))) ||
-        (candidate.items !== undefined && hasReadOnlySchema(candidate.items, depth + 1)));
+      if (depth > 12) {
+        throw new VariationUpdateValidationError(
+          `Amazon CHILD PTD 的 ${name} 編輯條件層級無法確認。`,
+          "VARIATION_SCHEMA_MISMATCH",
+        );
+      }
+      let readOnly = false;
+      for (const candidate of schemaCandidates(input.productTypeDefinition as JsonRecord, node)) {
+        if (
+          (candidate.editable !== undefined && typeof candidate.editable !== "boolean") ||
+          (candidate.readOnly !== undefined && typeof candidate.readOnly !== "boolean")
+        ) {
+          throw new VariationUpdateValidationError(
+            `Amazon CHILD PTD 的 ${name} 編輯條件格式無法確認。`,
+            "VARIATION_SCHEMA_MISMATCH",
+          );
+        }
+        if (candidate.editable === false || candidate.readOnly === true) readOnly = true;
+        if (isRecord(candidate.properties)) {
+          for (const child of Object.values(candidate.properties)) {
+            if (hasReadOnlySchema(child, depth + 1)) readOnly = true;
+          }
+        }
+        if (candidate.items !== undefined && hasReadOnlySchema(candidate.items, depth + 1)) readOnly = true;
+      }
+      return readOnly;
     };
     const editable = !hasReadOnlySchema(attributeSchema);
     const values = attributeObjects(
@@ -489,6 +508,64 @@ export function buildVariationDetachBody(input: {
   return { productType, patches };
 }
 
+/** Immutable PTD dimensions may participate in a relationship only as exact existing facts. */
+export function preservedVariationDimensions(input: {
+  fields: readonly VariationFieldDescriptor[];
+  marketplaceId: string;
+  dimensionValues?: Readonly<Record<string, unknown>>;
+}): Record<string, unknown> {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (isRecord(value)) {
+      return Object.fromEntries(
+        Object.keys(value).sort().map((key) => [key, canonical(value[key])]),
+      );
+    }
+    return value;
+  };
+  const preserved: Record<string, unknown> = {};
+  for (const field of input.fields) {
+    if (field.editable) continue;
+    const fail = (detail: string): never => {
+      throw new VariationUpdateValidationError(
+        `Amazon 將 ${field.name} 設為唯讀；${detail}。`,
+        "VARIATION_FIELD_READ_ONLY",
+      );
+    };
+    if (field.values.length !== 1) {
+      fail(field.values.length
+        ? "既有值不唯一，無法安全保留並綁定"
+        : "目前缺少既有值，無法由這裡補填並綁定");
+    }
+    const existing = field.values[0];
+    const marketplaceUnknown = existing.marketplace_id !== undefined &&
+      existing.marketplace_id !== input.marketplaceId;
+    const languageUnknown = existing.language_tag !== undefined && (
+      typeof existing.language_tag !== "string" ||
+      !existing.language_tag ||
+      existing.language_tag !== existing.language_tag.trim()
+    );
+    if (marketplaceUnknown || languageUnknown) {
+      fail("既有值的站點或語言條件不明，請重新讀取");
+    }
+    const missingRequiredValue = field.leaves.some((leaf) =>
+      leaf.required && (leaf.currentValue === null || leaf.currentValue === ""));
+    if (field.jsonFallback || !hasMeaningfulValue(existing) || missingRequiredValue) {
+      fail("既有資料不完整或格式無法確認，無法安全保留並綁定");
+    }
+    assertSafeJson(field.values);
+    if (
+      input.dimensionValues !== undefined &&
+      JSON.stringify(canonical(input.dimensionValues[field.name])) !==
+        JSON.stringify(canonical(field.values))
+    ) {
+      fail("只能保留 Amazon 的完整原值，不能改值、清空或變更選擇條件");
+    }
+    preserved[field.name] = structuredClone(field.values);
+  }
+  return preserved;
+}
+
 export function buildVariationAttachBody(input: {
   productType: string;
   marketplaceId: string;
@@ -497,6 +574,7 @@ export function buildVariationAttachBody(input: {
   dimensionNames: string[];
   dimensionValues: Record<string, unknown>;
   existingAttributes?: Record<string, unknown>;
+  preservedDimensionNames?: readonly string[];
 }): VariationPatchBody {
   const productType = input.productType.trim();
   const targetParentSku = input.targetParentSku.trim();
@@ -559,6 +637,7 @@ export function buildVariationAttachBody(input: {
     },
   ];
   for (const name of dimensionNames) {
+    if (input.preservedDimensionNames?.includes(name)) continue;
     const values = normalizeAttributeValues({
       name,
       values: input.dimensionValues[name],

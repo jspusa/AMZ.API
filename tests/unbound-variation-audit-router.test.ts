@@ -8,6 +8,7 @@ import { invalidateSpApiCredentialCaches } from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
 import { LocalStore } from "../src/main/local-store";
 import type { ApiRequest } from "../src/shared/contracts";
+import { parseUnboundVariationAuditSnapshot } from "../src/renderer/src/unbound-variation-audit";
 
 const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const savedMode = process.env.SP_API_MODE;
@@ -49,6 +50,64 @@ describe("unbound variation audit router", () => {
     if (savedMode === undefined) delete process.env.SP_API_MODE;
     else process.env.SP_API_MODE = savedMode;
     invalidateSpApiCredentialCaches();
+  });
+
+  it("retains main-derived family suggestions through the normal standalone job response and renderer parser", async () => {
+    const start = await router.handle({
+      ...request({
+        method: "POST",
+        body: {
+          marketplaceId: MARKETPLACE_ID,
+          mode: "demo",
+          kind: "variation",
+        },
+      }),
+      path: "/api/sp-api/standalone-audit",
+    });
+    expect(start.status).toBe(202);
+    if (start.body.kind !== "json") throw new Error("Expected job receipt");
+    const receipt = start.body.value as { jobId: string; contextId: string };
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const response = await router.handle({
+        ...request({
+          method: "GET",
+          query: {
+            marketplaceId: MARKETPLACE_ID,
+            mode: "demo",
+            kind: "variation",
+            jobId: receipt.jobId,
+            contextId: receipt.contextId,
+          },
+        }),
+        path: "/api/sp-api/standalone-audit",
+      });
+      if (response.status === 202) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      expect(response.status).toBe(200);
+      if (response.body.kind !== "json")
+        throw new Error("Expected job snapshot");
+      const completed = response.body.value as {
+        snapshot: unknown;
+        status: string;
+      };
+      expect(completed.status).toBe("completed");
+      const parsed = parseUnboundVariationAuditSnapshot(
+        completed.snapshot,
+        MARKETPLACE_ID,
+      );
+      expect(parsed.recommendations?.map((row) => row.sellerSku)).toEqual(
+        parsed.rows.map((row) => row.sellerSku),
+      );
+      expect(
+        parsed.recommendations?.every(
+          (row) => row.status === "insufficient" || row.candidates.length > 0,
+        ),
+      ).toBe(true);
+      return;
+    }
+    throw new Error("Job did not complete");
   });
 
   it("starts, scans and exports one account-scoped FBA-only snapshot", async () => {

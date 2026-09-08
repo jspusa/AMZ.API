@@ -113,6 +113,8 @@ export type VariationMoveDetachDescriptor = VariationMoveDescriptorBase &
 
 export type VariationMoveAttachDescriptor = VariationMoveDescriptorBase &
   Readonly<{
+    /** Main-proven immutable dimensions; reviewed and read back, never patched. */
+    preservedDimensionValues?: Readonly<Record<string, unknown>>;
     action: "attach";
     expectedSourceParentSku: null;
     targetParentSku: string;
@@ -131,6 +133,7 @@ export type VariationMoveDescriptor =
 
 /** Canonical relationship projection used for bounded post-write readback. */
 export type VariationMoveObservation = VariationMoveIdentity & Readonly<{
+  exactAttributeSignatures?: Readonly<Record<string, string>>;
   attributeSignatures?: Readonly<Record<string, string>>;
   asin: string | null;
   productType: string | null;

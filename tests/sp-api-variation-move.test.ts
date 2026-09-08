@@ -262,6 +262,9 @@ function input(action: "detach" | "attach"): VariationMoveInput {
 }
 
 type SafetyWireOptions = {
+  immutableSize?: "readOnly" | "editable" | "invalid";
+  sourceSizeValues?: unknown;
+  attachedSizeValues?: unknown;
   requiredLiquid?: boolean;
   amazonRequiredLiquid?: boolean;
   existingLiquid?: boolean;
@@ -337,6 +340,9 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
           } : {}),
           size_name: {
             type: "array",
+            ...(options.immutableSize === "readOnly" ? { readOnly: true } : {}),
+            ...(options.immutableSize === "editable" ? { editable: false } : {}),
+            ...(options.immutableSize === "invalid" ? { readOnly: "yes" } : {}),
             items: {
               type: "object",
               required: ["value"],
@@ -472,6 +478,8 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
         "4 oz",
       );
       Object.assign(payload.attributes, factValues);
+      if (options.sourceSizeValues !== undefined) Object.assign(payload.attributes, { size_name: options.sourceSizeValues });
+      if (state === "new" && options.attachedSizeValues !== undefined) Object.assign(payload.attributes, { size_name: options.attachedSizeValues });
       if (options.mixedMarketplaceDimensions) {
         (payload.attributes.size_name as Array<{
           value: string;
@@ -529,6 +537,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
     fetchMock,
     patchBodies,
     setSchemaChecksum: (value: string) => { schemaChecksum = value; },
+    setSourceSizeValues: (value: unknown) => { options.sourceSizeValues = value; },
     commitPatchCount: () => commitPatches,
     previewPatchCount: () => previewPatches,
     sourceItemReadCount: () => sourceItemReads,
@@ -586,6 +595,155 @@ describe("live variation detach and attach wire safety", () => {
     for (const [key, value] of savedEnvironment) {
       if (value !== undefined) process.env[key] = value;
     }
+  });
+
+  it.each(["readOnly", "editable"] as const)("preserves an unchanged immutable variation dimension (%s) while attaching the relationship", async (immutableSize) => {
+    const wire = installDetachSafetyWire({ immutableSize, initialState: "detached", commitResultState: "new" });
+    const prepared = await getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT });
+    expect(prepared).toMatchObject({ writable: true, fields: [expect.objectContaining({ name: "size_name", editable: false })] });
+    await expect(previewVariationMove(input("attach"))).resolves.toMatchObject({ status: "VALID" });
+    await expect(updateVariationMove(input("attach"))).resolves.toMatchObject({ verified: true });
+    expect(wire.commitPatchCount()).toBe(1);
+    for (const body of wire.patchBodies) expect(body.patches.map((patch) => patch.path)).toEqual([
+      "/attributes/parentage_level", "/attributes/child_parent_sku_relationship", "/attributes/variation_theme",
+    ]);
+  });
+
+  it.each([
+    [{ value: "8 oz", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }],
+    [{ value: "4 oz", language_tag: "fr_CA", marketplace_id: MARKETPLACE_ID }],
+    [],
+  ].map((value) => ({ value })))("rejects an altered or missing immutable dimension proposal before preview %#", async ({ value }) => {
+    const wire = installDetachSafetyWire({ immutableSize: "readOnly", initialState: "detached" });
+    await expect(previewVariationMove({ ...input("attach"), dimensionValues: { size_name: value } })).rejects.toMatchObject({ code: value.length ? "VARIATION_FIELD_READ_ONLY" : "VARIATION_FIELD_REQUIRED" });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    [],
+    [{ marketplace_id: MARKETPLACE_ID }],
+    [{ value: "4 oz", marketplace_id: MARKETPLACE_ID }, { value: "8 oz", marketplace_id: MARKETPLACE_ID }],
+  ].map((sourceSizeValues) => ({ sourceSizeValues })))("blocks missing, partial or ambiguous immutable source facts before preparation %#", async ({ sourceSizeValues }) => {
+    const wire = installDetachSafetyWire({ immutableSize: "editable", initialState: "detached", sourceSizeValues });
+    await expect(getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT })).rejects.toMatchObject({ code: "VARIATION_FIELD_READ_ONLY" });
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("blocks immutable old-value drift before native approval", async () => {
+    const wire = installDetachSafetyWire({ immutableSize: "readOnly", initialState: "detached" });
+    const approve = vi.fn(async () => undefined);
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: "immutable-dimension-value-drift" };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    wire.setSourceSizeValues([{ value: "8 oz", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }]);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "VARIATION_FIELD_READ_ONLY" } });
+    expect(approve).not.toHaveBeenCalled();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("does not treat malformed PTD editability as permission to preserve an immutable dimension", async () => {
+    const wire = installDetachSafetyWire({ immutableSize: "invalid", initialState: "detached" });
+    await expect(getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT })).rejects.toMatchObject({ code: "VARIATION_SCHEMA_MISMATCH" });
+    expect(wire.previewPatchCount()).toBe(0);
+  });
+
+  it("does not discard malformed source values to make an immutable dimension look unambiguous", async () => {
+    const wire = installDetachSafetyWire({ immutableSize: "readOnly", initialState: "detached", sourceSizeValues: [
+      { value: "4 oz", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }, null,
+    ] });
+    await expect(getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT })).rejects.toMatchObject({ code: "VARIATION_TARGET_DIMENSIONS_INCOMPLETE" });
+    expect(wire.previewPatchCount()).toBe(0);
+  });
+
+  it("invalidates an immutable-dimension preview when the CHILD PTD changes before native approval", async () => {
+    const wire = installDetachSafetyWire({ immutableSize: "editable", initialState: "detached", commitResultState: "new" });
+    const approve = vi.fn(async () => undefined);
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: "immutable-dimension-schema-drift" };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    wire.setSchemaChecksum("changed-immutable-dimension-schema");
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_CHANGED" } });
+    expect(approve).not.toHaveBeenCalled();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { attachedSizeValues: [{ value: "4 oz", language_tag: "fr_CA", marketplace_id: MARKETPLACE_ID }] },
+    { attachedSizeValues: [{ value: "4 oz", language_tag: "en_US" }] },
+  ])("requires immutable dimension selectors to remain exact in canonical readback %#", async ({ attachedSizeValues }) => {
+    const wire = installDetachSafetyWire({ immutableSize: "readOnly", initialState: "detached", commitResultState: "new",
+      attachedSizeValues,
+    });
+    await expect(updateVariationMove(input("attach"))).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+    expect(wire.commitPatchCount()).toBe(1);
+    expect(wire.patchBodies.flatMap((body) => body.patches).some((patch) => patch.path === "/attributes/size_name")).toBe(false);
+  });
+
+  it("revalidates immutable PTD evidence again after native approval and before dispatch", async () => {
+    const wire = installDetachSafetyWire({ immutableSize: "readOnly", initialState: "detached" });
+    const approve = vi.fn(async () => { wire.setSchemaChecksum("schema-changed-during-native-approval"); });
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: "immutable-dimension-post-approval-drift" };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_CHANGED" } });
+    expect(approve).toHaveBeenCalledOnce();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("keeps a sent immutable relationship attach unknown and never resends it", async () => {
+    const wire = installDetachSafetyWire({ immutableSize: "readOnly", initialState: "detached", commitStatus: 403 });
+    const router = await durableVariationRouter();
+    const body = { ...input("attach"), idempotencyKey: "immutable-dimension-unknown-replay" };
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect((await router.handle(variationRouteRequest("POST", body))).status).toBe(200);
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect(wire.commitPatchCount()).toBe(1);
+  });
+
+  it("attaches a standalone PET_FOOD ITEM_SHAPE/SIZE item while preserving its readonly Pretzel shape", async () => {
+    const wire = installDetachSafetyWire({ initialState: "detached", commitResultState: "new" });
+    const theme = "ITEM_SHAPE/SIZE";
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await wire.fetchMock(rawInput, init);
+      if ((init?.method ?? "GET") !== "GET") return reply;
+      const payload = await reply.json() as Record<string, unknown>;
+      const url = new URL(String(rawInput));
+      if (url.origin === "https://schema.example") {
+        Object.assign(payload.properties as Record<string, unknown>, {
+          item_shape: { type: "array", items: { type: "object", required: ["value"], properties: {
+            value: { type: "string", editable: false }, language_tag: { type: "string" }, marketplace_id: { type: "string" },
+          } } },
+        });
+      }
+      const rewrite = (row: Record<string, unknown>) => {
+        const attributes = row.attributes as Record<string, unknown>;
+        if (!attributes) return;
+        attributes.item_shape = [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
+        if (row.sku === SOURCE_SKU) attributes.size_name = [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
+        if (attributes.variation_theme) attributes.variation_theme = [{ name: theme, marketplace_id: MARKETPLACE_ID }];
+        for (const group of row.relationships as Array<{ relationships: Array<{ variationTheme: unknown }> }> ?? []) {
+          for (const relationship of group.relationships) relationship.variationTheme = { theme, attributes: ["item_shape", "size_name"] };
+        }
+      };
+      rewrite(payload);
+      for (const row of payload.items as Array<Record<string, unknown>> ?? []) rewrite(row);
+      return new Response(JSON.stringify(payload), { status: reply.status, headers: reply.headers });
+    }));
+    const preparation = await getVariationMovePreparation({ marketplaceId: MARKETPLACE_ID, sellerSku: SOURCE_SKU, targetParentSku: TARGET_PARENT });
+    expect(preparation).toMatchObject({ writable: true, variationTheme: theme, fields: expect.arrayContaining([
+      expect.objectContaining({ name: "item_shape", editable: false, values: [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }] }),
+    ]) });
+    const proposal = { ...input("attach"), variationTheme: theme, dimensionNames: ["item_shape", "size_name"], dimensionValues: {
+      item_shape: [{ value: "Pretzel", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }],
+      size_name: [{ value: "4 Count (Pack of 1)", language_tag: "en_US", marketplace_id: MARKETPLACE_ID }],
+    } };
+    await expect(previewVariationMove(proposal)).resolves.toMatchObject({ status: "VALID" });
+    await expect(updateVariationMove(proposal)).resolves.toMatchObject({ verified: true });
+    expect(wire.commitPatchCount()).toBe(1);
+    expect(wire.patchBodies.flatMap((body) => body.patches).some((patch) => patch.path === "/attributes/item_shape")).toBe(false);
   });
 
   it("turns Amazon conditional missing-attribute preview feedback into a PTD-proven fillable fact", async () => {

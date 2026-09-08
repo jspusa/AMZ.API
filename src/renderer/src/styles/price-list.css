@@ -164,11 +164,13 @@
 }
 .price-list-comparison {
   border-collapse: collapse;
+  table-layout: auto;
   width: 100%;
   min-width: 1080px;
   font-size: 13px;
 }
 .price-list-comparison thead th {
+  width: auto;
   position: sticky;
   top: 0;
   background: #eaf0f7;
@@ -181,6 +183,8 @@
 }
 .price-list-comparison td,
 .price-list-comparison tbody th {
+  white-space: normal;
+  overflow-wrap: anywhere;
   border-bottom: 1px solid #e1e7ef;
   padding: 12px;
   vertical-align: middle;
@@ -189,6 +193,10 @@
   line-height: 1.5;
 }
 .price-list-comparison tbody th {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 13px;
+  color: #243750;
   width: 28%;
   min-width: 260px;
 }
@@ -203,6 +211,7 @@
 }
 .price-list-comparison small {
   display: block;
+  max-width: 240px;
   font-size: 11px;
   color: #748196;
   margin-top: 5px;
@@ -361,6 +370,124 @@
   font-size: 11px;
   margin-top: 6px;
 }
+.price-list-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  list-style: none;
+  margin: 24px 0 18px;
+  padding: 0;
+  gap: 12px;
+}
+.price-list-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 10px;
+  border-top: 2px solid #dce3eb;
+  color: #6d7c90;
+  font-size: 14px;
+}
+.price-list-steps b {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  border-radius: 50%;
+  background: #edf1f6;
+  font-size: 12px;
+}
+.price-list-steps small {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  font-weight: 400;
+}
+.price-list-steps .done {
+  border-top-color: #849e96;
+  color: #4d7265;
+}
+.price-list-steps .current {
+  border-top-color: #244870;
+  background: #f3f7fc;
+  color: #244870;
+  font-weight: 700;
+}
+.price-list-steps .current b {
+  color: #fff;
+  background: #244870;
+}
+.price-list-actions p {
+  margin: 0;
+  flex: 1 1 240px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #586d86;
+}
+.price-list-secondary-actions {
+  margin: 12px 0 20px;
+  font-size: 12px;
+  color: #64748b;
+}
+.price-list-secondary-actions summary {
+  cursor: pointer;
+  padding: 5px 0;
+}
+.price-list-secondary-actions button {
+  margin: 8px 10px 0 0;
+  font-size: 12px;
+}
+.price-list-progress .price-list-recovery {
+  flex-basis: 100%;
+  margin: 0;
+  line-height: 1.7;
+}
+.price-list-image-choice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin: 18px 0 12px;
+  font-size: 13px;
+}
+.price-list-image-choice small {
+  color: #708198;
+  font-size: 12px;
+}
+.price-list-comparison small.price-list-row-reason {
+  color: #906125;
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 340px;
+  margin-top: 10px;
+}
+.price-list-comparison .price-list-amazon-value {
+  white-space: normal;
+  min-width: 140px;
+  max-width: 220px;
+}
+.price-list-download {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 24px;
+  margin-top: 28px;
+  background: #f0f5fa;
+  border: 1px solid #d8e3ef;
+  border-radius: 9px;
+}
+.price-list-download h3 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+.price-list-download p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
 @media (max-width: 800px) {
   .price-list-heading,
   .price-list-import,
@@ -370,6 +497,16 @@
   }
   .price-list-actions {
     align-items: stretch;
+  }
+  .price-list-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .price-list-download {
+    padding: 18px;
+  }
+  .price-list-download > button {
+    width: 100%;
   }
   .price-list-actions > button {
     flex: 1 1 220px;
