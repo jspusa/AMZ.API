@@ -10,6 +10,7 @@ import type {
   PriceListStyle,
   PriceListWorkbook,
 } from "../shared/price-list";
+import { priceListPriceValue } from "../shared/price-list-price";
 
 export const PRICE_LIST_MAX_BYTES = 25 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 100 * 1024 * 1024;
@@ -945,10 +946,12 @@ export function overlayPriceListWorkbook(
       const delta = (
         a: number | null | undefined,
         b: PriceListCell | undefined,
-      ) =>
-        a !== null && a !== undefined && typeof b?.value === "number"
-          ? Number((a - b.value).toFixed(8))
+      ) => {
+        const source = priceListPriceValue(b?.value);
+        return a !== null && a !== undefined && source !== null
+          ? Number((a - source).toFixed(8))
           : null;
+      };
       const min: string | number =
         amazon?.minimumPriceStatus === "set" && amazon.minimumPrice !== null
           ? amazon.minimumPrice
@@ -1185,7 +1188,7 @@ function imageDimensions(bytes: Uint8Array): { width: number; height: number } {
       return { width, height };
   }
   if (bytes[0] === 255 && bytes[1] === 216) {
-    for (let offset = 2; offset + 8 < bytes.byteLength;) {
+    for (let offset = 2; offset + 8 < bytes.byteLength; ) {
       if (bytes[offset] !== 255) break;
       const marker = bytes[offset + 1]!;
       const length = view.getUint16(offset + 2);

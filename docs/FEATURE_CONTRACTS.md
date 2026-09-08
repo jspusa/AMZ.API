@@ -10,6 +10,7 @@
 - 完整回傳的空 relationships 必須保留讀取證據，不得與未回傳資料混淆。獨立商品若只保留唯一且精確符合目標的既有 theme，可以原樣保留並省略 theme PATCH；main 仍須獨立證明無 parentage／parent 關係，保留完整值及 selectors 的預檢綁定，歧義與漂移拒絕。解除後的三個關係欄位清空規則不變。
 - US 價目表允許 25 MiB 以下 `.xlsx`，上限只套用精確匯入 route，不擴大既有文案或圖片上傳。原檔只留 main memory，保留工作表順序、圖片、公式及合併；原檔下載必須 exact bytes。匯入不執行公式或存取外部連線，危險 XML、巨集與超限壓縮檔拒絕。
 - 原表檢視及輸出保留原欄位，Amazon 售價、最低價格設定與差額在旁比對。★ 有差異／☆ 相同／待確認保持不同；未設定與未取得不是零。表上最低活動價與平台最低價格設定分別說明用途，不自動改價。替換 Amazon 首圖需明確勾選，沒有取得首圖保留原圖。
+- 原表價格若存為明確十進位文字，畫面狀態、原表差額與 export 使用同一比較用解析規則；空白、含糊格式及非有限／不安全數值不補零。解析不改寫原儲存格型別、值、公式或原檔；兩份 Excel 比對仍保留型別差異。
 - 公司貨號不得自動當 Seller SKU；只採 exact Seller SKU 或同次 current FBA 唯一 ASIN 對應。歧義、重複、未配對與 incomplete 列可見但不冒充相符。價格使用 exact US Listing 的 ALL／USD contribution，不混用 B2B、Buy Box 或促銷顯示價。
 - Amazon 讀取由 main 以 account／mode／marketplace／generation 綁定單一工作；GET 只觀察，鎖定／睡眠／安全 context 失效清除，遲到結果不能復活。首圖下載固定 Amazon image host、HTTPS、禁止 redirect、有大小與時間上限；renderer 不指定 arbitrary URL 或匯出價格。第二份 Excel 比對列出新增、移除、重複及欄位變更。
 - 價目表以選表、讀取、比較、下載引導下一步；原檔下載與另一份 Excel 比對為次要操作。未開始／FBA 確認中／逐列等待／失敗／未設定／無唯一對應不得統稱未取得。讀取開始即顯示比對，完成摘要揭露未完成範圍；回首頁再進入保留同次面板與工作，不新建讀取或持久保存商業資料。

@@ -31,6 +31,21 @@ function fixture(extra = "", price = "10.99") {
 }
 const parse = (bytes: Uint8Array = fixture()) =>
   parsePriceListWorkbook({ bytes, fileName: "test.xlsx" });
+function fixtureWithPriceCells(standardCell: string, minimumCell?: string) {
+  const archive = unzipSync(fixture());
+  let sheet = strFromU8(archive["xl/worksheets/sheet1.xml"]!).replace(
+    '<c r="F4"><v>10.99</v></c>',
+    standardCell,
+  );
+  if (minimumCell !== undefined) {
+    sheet = sheet.replace(
+      '<c r="E4"><f>F4*0.7</f><v>7.693</v></c>',
+      minimumCell,
+    );
+  }
+  archive["xl/worksheets/sheet1.xml"] = strToU8(sheet);
+  return zipSync(archive);
+}
 const request = (
   path: string,
   body: ApiRequest["body"],
@@ -151,6 +166,158 @@ describe("local price-list public seams", () => {
       output.view.sheets[0]!.cells.find((cell) => cell.reference === "J4")!
         .value,
     ).toBeNull();
+  });
+  it("exports a delta for a shared-string price without changing its source type or formula", () => {
+    const archive = unzipSync(fixture());
+    archive["xl/sharedStrings.xml"] = strToU8(
+      `<sst ${ns}><si><t>10.99</t></si></sst>`,
+    );
+    archive["xl/worksheets/sheet1.xml"] = strToU8(
+      strFromU8(archive["xl/worksheets/sheet1.xml"]!).replace(
+        '<c r="F4"><v>10.99</v></c>',
+        '<c r="F4" t="s"><v>0</v></c>',
+      ),
+    );
+    const bytes = zipSync(archive);
+    const book = parse(bytes);
+    const output = parse(overlayPriceListWorkbook(book, [amazon]));
+    expect(
+      output.view.sheets[0]!.cells.find((entry) => entry.reference === "I4")!
+        .value,
+    ).toBe(1.01);
+    expect(output.view.products[0]!.cells.standardPrice!.value).toBe("10.99");
+    expect(output.view.products[0]!.cells.minimumPrice).toMatchObject({
+      formula: "F4*0.7",
+      value: 7.693,
+    });
+    expect(exportPriceListWorkbook(book)).toEqual(bytes);
+    expect(
+      comparePriceListWorkbooks(book.view, parse().view).counts.changed,
+    ).toBe(1);
+  });
+  it.each([
+    "9007199254740990.9",
+    "9007199254740991.01",
+    "17.99000000000000001",
+  ])(
+    "keeps precision-losing decimal text %s out of exported deltas",
+    (price) => {
+      const archive = unzipSync(fixture());
+      archive["xl/worksheets/sheet1.xml"] = strToU8(
+        strFromU8(archive["xl/worksheets/sheet1.xml"]!).replace(
+          '<c r="F4"><v>10.99</v></c>',
+          inline("F4", price),
+        ),
+      );
+      const output = parse(
+        overlayPriceListWorkbook(parse(zipSync(archive)), [amazon]),
+      );
+      expect(
+        output.view.sheets[0]!.cells.find((entry) => entry.reference === "I4")!
+          .value,
+      ).toBeNull();
+      expect(output.view.products[0]!.cells.standardPrice!.value).toBe(price);
+    },
+  );
+  it.each(["0", "000.00", "10.99000", "00010.990000"])(
+    "uses decimal text %s for both price deltas without rewriting it",
+    (price) => {
+      const bytes = fixtureWithPriceCells(
+        inline("F4", price),
+        inline("E4", "7.693"),
+      );
+      const book = parse(bytes);
+      const output = parse(overlayPriceListWorkbook(book, [amazon]));
+      expect(
+        output.view.sheets[0]!.cells.find((entry) => entry.reference === "I4")!
+          .value,
+      ).toBe(price === "0" || price === "000.00" ? 12 : 1.01);
+      expect(
+        output.view.sheets[0]!.cells.find((entry) => entry.reference === "J4")!
+          .value,
+      ).toBe(0.307);
+      expect(output.view.products[0]!.cells.standardPrice!.value).toBe(price);
+      expect(output.view.products[0]!.cells.minimumPrice!.value).toBe("7.693");
+      expect(exportPriceListWorkbook(book)).toEqual(bytes);
+    },
+  );
+  it.each([
+    "",
+    " ",
+    "10.99\n",
+    "10.99\r\n",
+    "17\n99",
+    "$10.99",
+    "10.99 USD",
+    "1,099",
+    "10,99",
+    "0x11",
+    "1e2",
+    "NaN",
+    "Infinity",
+    "-1",
+    "=1+2",
+    "9007199254740993",
+  ])("keeps ambiguous or invalid price text %j out of both deltas", (price) => {
+    const bytes = fixtureWithPriceCells(
+      inline("F4", price),
+      inline("E4", price),
+    );
+    const book = parse(bytes);
+    const output = parse(overlayPriceListWorkbook(book, [amazon]));
+    for (const reference of ["I4", "J4"]) {
+      expect(
+        output.view.sheets[0]!.cells.find(
+          (entry) => entry.reference === reference,
+        )!.value,
+      ).toBeNull();
+    }
+    expect(exportPriceListWorkbook(book)).toEqual(bytes);
+  });
+  it.each([
+    '<c r="F4" t="b"><v>1</v></c>',
+    '<c r="F4"><f>UNSUPPORTED(1)</f></c>',
+  ])(
+    "does not infer a price from a boolean or an uncached formula",
+    (standard) => {
+      const bytes = fixtureWithPriceCells(standard);
+      const book = parse(bytes);
+      const output = parse(overlayPriceListWorkbook(book, [amazon]));
+      expect(
+        output.view.sheets[0]!.cells.find((entry) => entry.reference === "I4")!
+          .value,
+      ).toBeNull();
+      expect(exportPriceListWorkbook(book)).toEqual(bytes);
+    },
+  );
+  it("exports numeric zero deltas when decimal-text prices equal Amazon", () => {
+    const book = parse(
+      fixtureWithPriceCells(inline("F4", "12.00"), inline("E4", "8.00")),
+    );
+    const output = parse(overlayPriceListWorkbook(book, [amazon]));
+    for (const reference of ["I4", "J4"]) {
+      expect(
+        output.view.sheets[0]!.cells.find(
+          (entry) => entry.reference === reference,
+        )!.value,
+      ).toBe(0);
+    }
+  });
+  it("compares a formula's cached decimal text without evaluating or changing the formula", () => {
+    const bytes = fixtureWithPriceCells(
+      '<c r="F4" t="str"><f>UNSUPPORTED(1)</f><v>10.99</v></c>',
+    );
+    const book = parse(bytes);
+    const output = parse(overlayPriceListWorkbook(book, [amazon]));
+    expect(
+      output.view.sheets[0]!.cells.find((entry) => entry.reference === "I4")!
+        .value,
+    ).toBe(1.01);
+    expect(output.view.products[0]!.cells.standardPrice).toMatchObject({
+      value: "10.99",
+      formula: "UNSUPPORTED(1)",
+    });
+    expect(exportPriceListWorkbook(book)).toEqual(bytes);
   });
   it("adds Amazon image anchors without requiring rich data or changing product text", () => {
     const output = overlayPriceListWorkbook(parse(), [amazon], {

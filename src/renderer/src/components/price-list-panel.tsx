@@ -14,6 +14,7 @@ import type {
   PriceListSheet,
   PriceListWorkbook,
 } from "../../../shared/price-list";
+import { priceListPriceValue } from "../../../shared/price-list-price";
 import { downloadApiWorkbookResponse } from "../api-workbook-download";
 
 type View = "amazon" | "original" | "files";
@@ -122,12 +123,11 @@ export function priceListAmazonDifference(
   amazon: PriceListAmazonRow | undefined,
 ): DifferenceStatus {
   if (!amazon || amazon.status !== "matched") return "unknown";
-  const original = product.cells.standardPrice?.value;
-  const minimum = product.cells.minimumPrice?.value;
-  const comparableStandard =
-    typeof original === "number" && amazon.standardPrice !== null;
+  const original = priceListPriceValue(product.cells.standardPrice?.value);
+  const minimum = priceListPriceValue(product.cells.minimumPrice?.value);
+  const comparableStandard = original !== null && amazon.standardPrice !== null;
   const comparableMinimum =
-    typeof minimum === "number" &&
+    minimum !== null &&
     amazon.minimumPriceStatus === "set" &&
     amazon.minimumPrice !== null;
   if (
@@ -307,12 +307,14 @@ function OriginalSheet({
             const delta = (
               source: PriceListCell | undefined,
               amount: number | null | undefined,
-            ) =>
-              typeof source?.value === "number" &&
-              amount !== null &&
-              amount !== undefined
-                ? `${amount - source.value >= 0 ? "+" : ""}${(amount - source.value).toFixed(2)}`
+            ) => {
+              const original = priceListPriceValue(source?.value);
+              return original !== null &&
+                amount !== null &&
+                amount !== undefined
+                ? `${amount - original >= 0 ? "+" : ""}${(amount - original).toFixed(2)}`
                 : "—";
+            };
             return (
               <tr key={row} style={{ height: sheet.rowHeights[row] ?? 28 }}>
                 <th scope="row" className="price-list-row-number">
@@ -436,14 +438,20 @@ function OriginalSheet({
 }
 
 function sourcePrice(cell: PriceListCell | undefined): string {
+  const value = priceListPriceValue(cell?.value);
+  if (value !== null) return formatMoney(value);
   return !cell || cell.value === null || cell.display === ""
     ? "表上空白"
-    : typeof cell.value === "number"
-      ? formatMoney(cell.value)
-      : cell.display;
+    : cell.display;
 }
 
-export default function PriceListPanel({ onClose, active = true }: { onClose: () => void; active?: boolean }) {
+export default function PriceListPanel({
+  onClose,
+  active = true,
+}: {
+  onClose: () => void;
+  active?: boolean;
+}) {
   const [base, setBase] = useState<PriceListWorkbook | null>(null);
   const [candidate, setCandidate] = useState<PriceListWorkbook | null>(null);
   const [amazon, setAmazon] = useState<PriceListAmazonSnapshot | null>(null);
