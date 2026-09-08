@@ -31,8 +31,8 @@
 | Pages | ★ 上線且 bytes 相符 | [34190431135](https://github.com/jspusa/AMZ.API/actions/runs/34190431135)，live HTML 與全部 9 個 JS/CSS 同時符合該 run artifact 及本機 production build |
 | Mac universal | ★ artifact 已核對 | [34190431167](https://github.com/jspusa/AMZ.API/actions/runs/34190431167)，artifact `10042097324`，DMG／ZIP 均符合 manifest |
 | Windows x64 | ★ artifact 已核對 | [34190431141](https://github.com/jspusa/AMZ.API/actions/runs/34190431141)，artifact `10042089087`，Setup／ZIP 均符合 manifest；CI packaging／installed smoke 通過 |
-| Mac 安裝與開啟 | ☆ 等待解鎖 | 新版已安全暫存；現有 App 尚未替換，不能宣稱實機已為 0.1.57 |
-| 員工下載頁 | ★ 上傳完成／☆ 下載待驗 | Mac → Windows 依序 complete 成功，health 正常；使用者登入後的實際下載 hash 尚待驗證 |
+| Mac 安裝與開啟 | ★ 完成 | `/Applications/AMZ.API.app` 為 `0.1.57` 且已開啟；`0.1.56` 備份保留，ASAR、架構、codesign 與 encrypted vault 均驗證 |
+| 員工下載頁 | ★ 上傳與下載均驗證 | Mac → Windows 依序上傳；使用者登入後，兩張卡均顯示 `0.1.57`，兩份實際下載與可信 artifact bytes／大小／SHA-256 相符 |
 
 主要上線資產為 `index-DNLcTccn.js`、`index-DzDi_5xx.css`、`variation-planner-drawer-Bdczs0fy.js` 與 `price-list-panel-DW9x4LLi.js`。本機 Pages 核對記錄在 `/tmp/amz-api-v0157-verified/pages/pages-byte-verification.json`，不含帳號或商業資料。
 
@@ -43,11 +43,11 @@
 | `AMZ.API-Notebook-Key-Windows-x64-Setup.exe` | 101,946,913 | `7645bf0ae1132b9300e24d01e44e5c3902db866ff6987ff398eb5076e3ee1d7f` |
 | `AMZ.API-Notebook-Key-Windows-x64.zip` | 143,226,919 | `7368458acfeb3897a05285a49796d1eca2dadf23e4aaec0f5869b36857a3a637` |
 
-Mac DMG 唯讀掛載後確認版本 `0.1.57`、bundle `com.jspusa.amz-api`、`x86_64 arm64` 及 deep strict ad-hoc codesign。`/Applications/AMZ.API-v0.1.57-staged.app` 通過相同驗證，ASAR SHA-256 `4ebafea6f03012b9782f5007bb135bb2e0790ed4403ea8e8f3368b49acc92553` 與 mounted artifact 相同。現有 `/Applications/AMZ.API.app` 實查仍為 `0.1.56`；userData 的 encrypted vault 與 FBA 設定已作本機私密備份，未讀出或輸出憑證內容。CUA 明確回報 Mac 鎖定，已要求使用者解鎖，因此尚未關閉舊 App、替換或啟動新版。
+Mac DMG 唯讀掛載後確認版本 `0.1.57`、bundle `com.jspusa.amz-api`、`x86_64 arm64` 及 deep strict ad-hoc codesign。解鎖後已將通過相同檢查的 staged App 換至 `/Applications/AMZ.API.app`，ASAR SHA-256 `4ebafea6f03012b9782f5007bb135bb2e0790ed4403ea8e8f3368b49acc92553` 與 mounted artifact 相同；舊版保留為 `/Applications/AMZ.API-v0.1.56-backup-20260908.app`。新版已成功開啟，UI 顯示 Amazon 已連線，價格區可見「價目表｜原表檢視、Amazon 價格與最低價比對」入口。安裝前的 userData 私密備份保留；`credentials.enc` 安裝前後 bytes 與 SHA-256 相同，未讀出或輸出憑證內容。
 
 Windows packed version 為 `0.1.57`，恰有一份 unpacked AMD64 Windows Hello addon，具有 N-API export 且符合 packed manifest。此證據不代表 Windows 實機安裝或真人 Hello 已測。
 
-受保護下載頁的 `macos-dmg` 與 `windows-installer` 已依序上傳 `0.1.57`，各 upload complete HTTP 成功；隨後 `/health` 回傳正常。上傳器列出的 hash 是本機可信 artifact hash，不能當成已重新下載的 server bytes 證據。員工登入仍由使用者本人完成，沒有要求、讀取或輸出員工密碼；登入後須再核對兩張卡、實際下載大小及 SHA-256。公開 feed、正式簽章與 release tag 未啟用。
+受保護下載頁的 `macos-dmg` 與 `windows-installer` 已依序上傳 `0.1.57`，各 upload complete HTTP 成功；隨後 `/health` 回傳正常。使用者本人登入後，Mac 與 Windows 卡片顯示的版本、檔名與 SHA-256 正確；再從兩張卡實際下載 246,668,196-byte DMG 與 101,946,913-byte Setup，兩者 `cmp`、大小與 SHA-256 均符合 exact-main 可信 artifact。沒有要求、讀取或輸出員工密碼。公開 feed、正式簽章與 release tag 未啟用。
 
 ## 驗證界線
 
