@@ -87,7 +87,8 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
       const statuses = Array.from(card.getElementsByTagName("span")).filter((span) =>
         (span.getAttribute("class") ?? "").split(/\s+/u).includes("content-audit-home-status")
       );
-      expect(statuses).toHaveLength(0);
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]!.textContent).toBe("本次未檢查");
       expect(card.getElementsByTagName("progress").length).toBe(0);
       const launch = Array.from(card.getElementsByTagName("button"))
         .find((button) => button.hasAttribute("data-audit-workspace-launch"))!;

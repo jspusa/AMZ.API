@@ -57,7 +57,7 @@ export default function AuditWorkspaceShell({
             disabled={busy}
           >
             <span aria-hidden="true">←</span>
-            回到一鍵健檢
+            返回商品健檢
           </button>
           <div className="audit-workspace-heading">
             <p className="eyebrow">{eyebrow}</p>
