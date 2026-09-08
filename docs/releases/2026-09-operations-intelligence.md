@@ -76,7 +76,7 @@ Featured Offer 是 ASIN 的顧客分段證據；把它放在目前 FBA SKU 列�
 - 修正後再次驗證：PASS；新增取消競態、純數字身分、已知問題與未知欄位、purchase-selection 識別遮蔽及空事件容量揭露回歸。Price Health 同步補上 token／fetch 前取消檢查。
 - 首輪本機 source commit：`d830b8729733c80ff89aa55fb4a14103f3748be5`；後續審查與證據提交另列於 git history。
 - 修正與已驗證 source commit：`b1f0fcc4c1c2eff9226d7bc191519ee9a73b0faa`。兩種 SKU（`FBA-ONE` 與合成數字 SKU）皆通过四來源、五事件、renderer 與本機已知悉的完整 fixture 路徑；測試資料不是使用者 Amazon 資料。
-- Push／PR／同 SHA Actions：BLOCKED。推送新分支被環境安全審核拒絕，要求使用者明確批准將新增原始碼發布至 `jspusa/AMZ.API`。沒有改用其他傳輸途徑繞過，也未建立 PR、合併、觸發發布或取得 Actions 證據。
+- GitHub 發布：使用者已明確批准將變更發布至 `jspusa/AMZ.API`。遠端功能分支為 `feature/operations-intelligence`，PR [#212](https://github.com/jspusa/AMZ.API/pull/212) 已建立；初始 source commit 為 `f19a248f2e673dc57d029f07b7bf6299b097f4f1`，其 tree `5f8817d1fe9cf131fd0e198fb350d83af1d98d49` 與本機已驗證 source tree 完全相同。Validate 與 Windows x64 unsigned Actions 已觸發且在本紀錄更新時仍執行中；尚未合併 PR、發布桌面新版或完成實機安裝驗收。
 
 本輪沒有使用真實 Amazon 帳號呼叫或 mutation，沒有部署雲端通知，也沒有發布簽章桌面版。Source 驗證、Actions、Mac／Windows artifact、安裝與 Amazon live 是不同證據層；本文件不把任何一層推定為下一層完成。正式 Notebook Key 版本、簽章及更新 channel 仍依 [ADR 0001](../adr/0001-separate-console-and-notebook-key-releases.md) 與 [signed-update preflight](signed-update-preflight.md) 處理。
 
