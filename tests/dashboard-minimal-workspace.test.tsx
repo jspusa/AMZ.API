@@ -41,5 +41,8 @@ describe("minimal FBA workspace", () => {
     expect(markup).toContain(">設定<");
     expect(markup).not.toContain("workspace-avatar");
     expect(markup).toContain('<h1 id="workspace-title" class="visually-hidden">');
+    expect(markup).toContain('class="operations-intelligence-disclosure"');
+    expect(markup).not.toContain('class="operations-intelligence-disclosure" open=""');
+    expect(markup).toContain(">營運情報<");
   });
 });

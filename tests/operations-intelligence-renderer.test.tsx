@@ -79,6 +79,12 @@ describe("operating intelligence rendered interactions", () => {
     expect(markup).not.toContain("不是 Amazon 即時推播");
     expect(markup).not.toContain('role="dialog"');
   });
+  it("distinguishes an unsynced source without claiming that it has no data", async () => {
+    await mount(fixture());
+    expect(output()).toContain("未同步");
+    expect(output()).not.toContain("尚無資料");
+    expect(output()).not.toContain("尚無事件");
+  });
   it("reads Amazon published and latest revisions separately without changing manual plans or inventing totals", async () => {
     await mount(withPromotion());
     expect(output()).toContain("September Coupon");
@@ -260,7 +266,7 @@ describe("operating intelligence rendered interactions", () => {
   it("discloses local event retention and clearing boundaries even before any event is recorded", async () => {
     await mount({ ...fixture(), notice: "事件只保存在本機記憶體，最多保留 5,000 筆，每次投影最多 500 筆。App 關閉、鎖定、睡眠或安全脈絡變更時清除，不是永久事件歷史。" });
     await tab("事件通知中心");
-    expect(output()).toContain("尚無事件");
+    expect(output()).not.toContain("尚無事件");
     expect(output()).toContain("本機記憶體");
     expect(output()).toContain("5,000 筆");
     expect(output()).toContain("500 筆");

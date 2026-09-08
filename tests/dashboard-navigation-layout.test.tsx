@@ -243,7 +243,7 @@ describe("dashboard top navigation layout", () => {
       "事件",
       "銷售表現",
     ]);
-    for (const label of ["文案", "圖片", "變體", "價目表", "定價", "促銷", "訂閱價格健檢", "B2B 價格健檢", "補貨", "廣告", "帳務"]) {
+    for (const label of ["文案", "圖片", "變體", "價目表", "定價", "限時售價", "訂閱價格", "B2B 價格", "補貨", "廣告管理", "帳務"]) {
       expect(source).toContain(`label: "${label}"`);
     }
     expect(source).toContain('role="menuitem"');
@@ -305,7 +305,6 @@ describe("dashboard top navigation layout", () => {
         reportMenuEntries={[{
           id: "report-library",
           label: "營運報表庫",
-          detail: "依站點開啟唯讀報表",
           symbol: "R",
           onSelect: () => undefined,
         }]}

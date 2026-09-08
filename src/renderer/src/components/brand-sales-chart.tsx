@@ -67,6 +67,10 @@ function formatMoney(amount: number, currencyCode: string): string {
   }
 }
 
+function currentDayCutoff(dataThrough: string): string {
+  return `資料至 ${/T(\d{2}:\d{2})/u.exec(dataThrough)?.[1] ?? dataThrough}`;
+}
+
 export default function BrandSalesChart({
   snapshot,
   loading,
@@ -77,7 +81,6 @@ export default function BrandSalesChart({
   snapshot: BrandSalesSnapshot | null;
   loading: boolean;
   error: BrandSalesFailure | null;
-  rangeLabel: string;
   onRetry: () => void;
   initialView?: "brand" | "category";
 }) {
@@ -114,6 +117,11 @@ export default function BrandSalesChart({
           ))}
         </div>
       </header>
+      {snapshot?.rangeFreshness === "includes-current-day" && (
+        <time className="brand-sales-cutoff" dateTime={snapshot.dataThrough}>
+          {currentDayCutoff(snapshot.dataThrough)}
+        </time>
+      )}
 
       {error && (
         <div className="brand-sales-error" role="alert">

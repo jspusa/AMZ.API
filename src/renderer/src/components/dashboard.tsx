@@ -108,7 +108,6 @@ export { standaloneAuditSnapshotMatchesJob };
 export type DashboardReportMenuEntry = {
   id: string;
   label: string;
-  detail: string;
   symbol?: string;
   disabled?: boolean;
   onSelect?: () => void;
@@ -117,7 +116,6 @@ export type DashboardReportMenuEntry = {
 type DashboardProps = {
   initialSalesTrend: SalesTrendSnapshot | null;
   initialMarketplaceId: string;
-  viewerName?: string | null;
   initialError?: string | null;
   loadOnMount?: boolean;
   onOpenConnection?: () => void;
@@ -303,14 +301,12 @@ export function dashboardConnectionBadgeCopy(
   checking: boolean,
 ): {
   title: string;
-  detail: string;
   ariaLabel: string;
   className: "live" | "configured" | "demo" | "unavailable";
 } {
   if (evidence === "verified-live") {
     return {
       title: "已連線",
-      detail: "Live · 本機安全連線",
       ariaLabel: "Amazon 已連線",
       className: "live",
     };
@@ -318,7 +314,6 @@ export function dashboardConnectionBadgeCopy(
   if (evidence === "configured-live") {
     return {
       title: "需驗證",
-      detail: "尚未驗證 · 本機安全連線",
       ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
       className: "configured",
     };
@@ -326,14 +321,12 @@ export function dashboardConnectionBadgeCopy(
   if (evidence === "demo") {
     return {
       title: "展示資料",
-      detail: "Demo · 本機安全連線",
       ariaLabel: "展示資料",
       className: "demo",
     };
   }
   return {
     title: checking ? "檢查中" : "連線",
-    detail: "狀態未知 · 本機安全連線",
     ariaLabel: checking ? "正在檢查 Amazon 連線" : "Amazon 連線狀態尚未確認",
     className: "unavailable",
   };
@@ -628,7 +621,7 @@ function salesTrendRequestKey(
 }
 
 const TOOL_META: Record<Tool, { label: string; symbol: string; group: NavigationGroup }> = {
-  ads: { label: "廣告", symbol: "◎", group: "operations" },
+  ads: { label: "廣告管理", symbol: "◎", group: "operations" },
   inbound: { label: "入庫貨件", symbol: "⇣", group: "reports" },
   restock: { label: "補貨", symbol: "↗", group: "operations" },
   copy: { label: "文案", symbol: "Aa", group: "product" },
@@ -637,9 +630,9 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: Navigation
   variations: { label: "變體", symbol: "◇", group: "product" },
   price: { label: "定價", symbol: "$", group: "pricing" },
   "price-list": { label: "價目表", symbol: "▤", group: "pricing" },
-  promotion: { label: "促銷", symbol: "%", group: "pricing" },
-  subscriptions: { label: "訂閱價格健檢", symbol: "S", group: "pricing" },
-  "business-pricing": { label: "B2B 價格健檢", symbol: "B2B", group: "pricing" },
+  promotion: { label: "限時售價", symbol: "%", group: "pricing" },
+  subscriptions: { label: "訂閱價格", symbol: "S", group: "pricing" },
+  "business-pricing": { label: "B2B 價格", symbol: "B2B", group: "pricing" },
   accounting: { label: "帳務", symbol: "▤", group: "operations" },
 };
 
@@ -728,6 +721,8 @@ export default function Dashboard({
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
   const [operationsIntelligenceView, setOperationsIntelligenceView] =
     useState<OperationsIntelligenceView>("promotions");
+  const [operationsIntelligenceOpen, setOperationsIntelligenceOpen] =
+    useState(false);
   const [contentWorkspaceTab, setContentWorkspaceTab] =
     useState<ContentWorkspaceTab>("single");
   const [contentAuditCache, setContentAuditCache] = useState<
@@ -1699,14 +1694,12 @@ export default function Dashboard({
       {
         id: "report-library",
         label: "Amazon API 文件庫",
-        detail: "Seller 公開 report types、篩選與接線條件",
         symbol: "▤",
         onSelect: () => setReportLibraryOpen(true),
       },
       {
         id: "review-audit",
         label: "FBA 評論健檢",
-        detail: "非父變體 ASIN 主題前五／後五與 Excel",
         symbol: "☆",
         onSelect: () => setReviewAuditOpen(true),
       },
@@ -2007,6 +2000,7 @@ export default function Dashboard({
     setOpenToolMenu(null);
     if (shortcut.intelligenceView) {
       setOperationsIntelligenceView(shortcut.intelligenceView);
+      setOperationsIntelligenceOpen(true);
     }
     window.requestAnimationFrame(() => {
       scrollTo(shortcut.targetId);
@@ -2510,12 +2504,21 @@ export default function Dashboard({
             </div>
           </details>
           </section>
-          <OperationsIntelligencePanel
-            key={`${marketplaceId}:${currentStandaloneMode}`}
-            marketplaceId={marketplaceId}
-            selectedView={operationsIntelligenceView}
-            onViewChange={setOperationsIntelligenceView}
-          />
+          <details
+            id="home-intelligence"
+            className="operations-intelligence-disclosure"
+            open={operationsIntelligenceOpen}
+            onToggle={(event) => setOperationsIntelligenceOpen(event.currentTarget.open)}
+            tabIndex={-1}
+          >
+            <summary><strong>營運情報</strong><i aria-hidden="true">＋</i></summary>
+            <OperationsIntelligencePanel
+              key={`${marketplaceId}:${currentStandaloneMode}`}
+              marketplaceId={marketplaceId}
+              selectedView={operationsIntelligenceView}
+              onViewChange={setOperationsIntelligenceView}
+            />
+          </details>
           </>}
         </main>
       </div>

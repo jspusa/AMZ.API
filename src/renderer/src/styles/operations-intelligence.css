@@ -1,11 +1,33 @@
 /* Compact, read-only operating sources. */
+.operations-intelligence-disclosure {
+  margin-block: 12px 0;
+  border: 1px solid var(--line, #dde3ec);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  scroll-margin-top: 112px;
+}
+
+.operations-intelligence-disclosure > summary {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  color: #41546e;
+  font-size: 12px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.operations-intelligence-disclosure > summary::-webkit-details-marker { display: none; }
+.operations-intelligence-disclosure > summary i { font-style: normal; }
+.operations-intelligence-disclosure[open] > summary i { transform: rotate(45deg); }
+
 .operations-intelligence {
   min-width: 0;
-  margin-block: 24px 0;
+  margin: 0;
   padding: 18px;
-  border: 1px solid var(--line, #dde3ec);
-  border-radius: 14px;
-  background: var(--surface, #fff);
+  border-top: 1px solid var(--line, #dde3ec);
   color: var(--ink, #1e293b);
   font-size: 13px;
   line-height: 1.6;

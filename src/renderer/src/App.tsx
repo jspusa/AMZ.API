@@ -12,7 +12,6 @@ export default function App() {
         key={reloadKey}
         initialSalesTrend={null}
         initialMarketplaceId={DEFAULT_MARKETPLACE_ID}
-        viewerName="Jayden"
         loadOnMount
         onOpenConnection={() => setConnectionOpen(true)}
       />

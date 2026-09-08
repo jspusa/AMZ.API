@@ -475,7 +475,6 @@ describe("dashboard operations pulse data flow", () => {
     expect(configured).toBe("configured-live");
     expect(dashboardConnectionBadgeCopy(configured, false)).toEqual({
       title: "需驗證",
-      detail: "尚未驗證 · 本機安全連線",
       ariaLabel: "Live 憑證已設定，Amazon 尚未驗證",
       className: "configured",
     });

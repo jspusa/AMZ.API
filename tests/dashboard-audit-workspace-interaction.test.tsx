@@ -236,6 +236,39 @@ describe("dashboard audit workspace interactions", () => {
       expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeSectionNavigation);
     }
 
+    const shortcutCases = [
+      ["產品區", "商品健檢", "home-audits", null],
+      ["價格區", "Coupon／促銷", "home-intelligence", "promotions"],
+      ["價格區", "Buy Box／價格", "home-intelligence", "price-health"],
+      ["營運區", "公告日曆", "home-bulletin", null],
+      ["營運區", "AWD 庫存", "home-intelligence", "awd"],
+      ["營運區", "廣告成效", "home-intelligence", "advertising"],
+      ["營運區", "事件", "home-intelligence", "events"],
+      ["報表區", "銷售表現", "home-performance", null],
+    ] as const;
+    for (const [group, label, targetId, intelligenceView] of shortcutCases) {
+      sectionTargets.get(targetId)!.focus.mockClear();
+      sectionTargets.get(targetId)!.scrollIntoView.mockClear();
+      await act(async () => root.findAllByType("button")
+        .find((button) => button.props["aria-label"] === group)!.props.onClick());
+      const item = root.findAllByProps({ role: "menuitem" })
+        .find((button) => button.findByType("strong").children.join("") === label)!;
+      const requestsBeforeShortcut = fetchMock.mock.calls.length;
+      await act(async () => item.props.onClick());
+      await flushAnimationFrames();
+      expect(sectionTargets.get(targetId)!.scrollIntoView).toHaveBeenCalledWith(
+        expect.objectContaining({ block: "start" }),
+      );
+      expect(sectionTargets.get(targetId)!.focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(windowMock.location.hash).toBe("");
+      expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeShortcut);
+      if (intelligenceView) {
+        expect(root.findByProps({ className: "operations-intelligence-disclosure" }).props.open).toBe(true);
+        expect(root.findByProps({ className: "oi-view-picker" }).findByType("select").props.value)
+          .toBe(intelligenceView);
+      }
+    }
+
     const expectedNavigationGroup: Record<AuditSuiteSectionId, string> = {
       content: "產品區", image: "產品區", aplus: "產品區", variation: "產品區",
       subscription: "價格區", businessPricing: "價格區", advertising: "營運區",

@@ -298,7 +298,6 @@ export default function BrandSalesCard({
       snapshot={snapshot}
       loading={loading}
       error={error}
-      rangeLabel={`${startDate} – ${endDate}`}
       onRetry={() => void sync(true)}
     />
   );
