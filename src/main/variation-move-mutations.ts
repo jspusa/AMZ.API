@@ -37,6 +37,7 @@ import {
   VariationUpdateValidationError,
   type VariationFieldDescriptor,
 } from "./amazon/variation-update";
+import { validateVariationRequiredValues, variationAttributeSignatures } from "./amazon/variation-required-fields";
 import type {
   SpExecutionContext,
   SpExecutionContextAdapter,
@@ -78,6 +79,7 @@ type VariationMoveWriteEvidence = Readonly<{
   dimensionNames: readonly string[];
   dimensionSignature: string | null;
   childSchemaChecksumHash: string | null;
+  requiredFieldSignatures?: Readonly<Record<string, string>>;
 }>;
 
 const VARIATION_WRITE_EVIDENCE_KEYS = [
@@ -140,23 +142,27 @@ type VariationMoveCommitControl = Readonly<{
 }>;
 
 interface VariationMoveMutationOperations {
+  prepareForApproval(input: VariationMoveInput): Promise<{ fingerprint: string; requiredSummary: string }>;
   readCanonical(input: Readonly<{
     marketplaceId: MarketplaceId;
     sellerSku: string;
   }>): Promise<VariationMoveCanonicalObservation>;
   prepare(input: Readonly<{
+    action: "attach" | "detach";
     marketplaceId: MarketplaceId;
     sellerSku: string;
-    targetParentSku: string;
+    targetParentSku: string | null;
   }>): Promise<VariationMovePreparation>;
-  preview(input: VariationMoveInput): Promise<VariationMovePreview>;
+  preview(input: VariationMoveInput): Promise<{ value: VariationMovePreview; fingerprint: string }>;
   commit(
     input: VariationMoveInput,
     control: VariationMoveCommitControl,
+    expectedFingerprint?: string,
   ): Promise<VariationMoveDurableResult>;
 }
 
 type PreparedDescriptor = Readonly<{
+  changes: VariationMovePreview["changes"];
   mode: "live" | "demo";
   descriptor: VariationMoveDescriptor;
   sourceParentSku: string | null;
@@ -180,6 +186,20 @@ type PreparedAttachContext = Readonly<{
   fields: VariationFieldDescriptor[];
   requestIds: string[];
 }>;
+
+class RequiredVariationFieldsError extends SpApiError {
+  constructor(error: VariationUpdateValidationError, readonly requiredFields: readonly VariationFieldDescriptor[]) {
+    super(error.message, { status: 422, code: error.code });
+  }
+}
+
+function validateRequiredFields(source: VariationMoveSourceObservation, input: VariationMoveInput): Record<string, unknown> {
+  try { return validateVariationRequiredValues({ fields: source.requiredFields ?? [], values: input.requiredValues ?? {}, marketplaceId: input.marketplaceId }); }
+  catch (error) {
+    if (error instanceof VariationUpdateValidationError && error.code === "VARIATION_FIELD_REQUIRED") throw new RequiredVariationFieldsError(error, source.requiredFields ?? []);
+    return throwVariationValidation(error);
+  }
+}
 
 function validIdempotencyKey(value: unknown): string | null {
   return typeof value === "string" && /^[A-Za-z0-9-]{8,80}$/u.test(value)
@@ -258,6 +278,7 @@ function proposalFingerprint(input: VariationMoveInput): string {
     input.variationTheme,
     [...input.dimensionNames].sort(),
     input.dimensionValues,
+    ...(Object.keys(input.requiredValues ?? {}).length ? [input.requiredValues] : []),
   ])).digest("hex");
 }
 
@@ -550,6 +571,8 @@ async function prepareAttachContext(
     marketplaceId: MarketplaceId;
     sellerSku: string;
     targetParentSku: string;
+    requiredValues?: Readonly<Record<string, unknown>>;
+    dimensionValues?: Readonly<Record<string, unknown>>;
   }>,
   purpose: "preparation" | "mutation",
 ): Promise<PreparedAttachContext> {
@@ -559,6 +582,8 @@ async function prepareAttachContext(
     sellerSku: input.sellerSku,
     targetParentSku: input.targetParentSku,
     purpose,
+    requiredValues: input.requiredValues,
+    dimensionValues: input.dimensionValues,
   });
   assertGatewayPreparation(gateway, prepared, {
     action: "attach",
@@ -643,6 +668,7 @@ async function prepareDescriptor(
       marketplaceId: input.marketplaceId,
       sellerSku: input.sellerSku,
       expectedSourceParentSku: input.expectedSourceParentSku,
+      requiredValues: input.requiredValues,
     });
     assertGatewayPreparation(gateway, prepared, input);
     if (prepared.action !== "detach") {
@@ -655,7 +681,10 @@ async function prepareDescriptor(
     assertCanonicalSource(source);
     assertDetachSource(source, input.expectedSourceParentSku);
     assertSourceFamilyComplete(source);
+    const requiredValues = validateRequiredFields(source, input);
     return {
+      changes: [{ name: "parent_sku", label: "Parent SKU", before: input.expectedSourceParentSku, after: null },
+        ...requiredChanges(source.requiredFields ?? [], requiredValues)],
       mode: prepared.mode,
       descriptor: {
         action: "detach",
@@ -669,6 +698,8 @@ async function prepareDescriptor(
         variationTheme: null,
         dimensionNames: [],
         dimensionValues: {},
+        requiredValues,
+        requiredSchemaChecksum: source.requiredSchemaChecksum,
       },
       sourceParentSku: input.expectedSourceParentSku,
       targetParentSku: null,
@@ -693,6 +724,7 @@ async function prepareDescriptor(
   }
   const dimensionSignature = requestedDimensionSignature(input);
   assertNoDuplicateTargetDimensions(input, prepared.target, dimensionSignature);
+  const requiredValues = validateRequiredFields(prepared.source, input);
   const descriptor: VariationMoveAttachDescriptor = {
     action: "attach",
     marketplaceId: input.marketplaceId,
@@ -709,8 +741,14 @@ async function prepareDescriptor(
     childSchemaChecksum: prepared.target.childSchemaChecksum,
     targetEvidence: prepared.target.targetEvidence,
     ptdEvidence: prepared.target.ptdEvidence,
+    requiredValues,
+    requiredSchemaChecksum: prepared.source.requiredSchemaChecksum,
   };
   return {
+    changes: [{ name: "parent_sku", label: "Parent SKU", before: null, after: input.targetParentSku },
+      { name: "variation_theme", label: "變體主題", before: null, after: input.variationTheme },
+      ...prepared.fields.map((field) => ({ name: field.name, label: field.label, before: field.values, after: input.dimensionValues[field.name] })),
+      ...requiredChanges(prepared.source.requiredFields ?? [], requiredValues)],
     mode: prepared.mode,
     descriptor,
     sourceParentSku: null,
@@ -723,11 +761,23 @@ async function prepareDescriptor(
   };
 }
 
+function requiredChanges(fields: readonly VariationFieldDescriptor[], values: Record<string, unknown>): VariationMovePreview["changes"] {
+  return fields.map((field) => ({ name: field.name, label: field.label, before: field.values, after: values[field.name] }));
+}
+
+function requiredProposalFingerprint(input: VariationMoveInput, prepared: PreparedDescriptor): string {
+  if (!Object.keys(input.requiredValues ?? {}).length) return proposalFingerprint(input);
+  return createHash("sha256").update(JSON.stringify([proposalFingerprint(input), prepared.descriptor.asin,
+    prepared.descriptor.productType, prepared.descriptor.requiredSchemaChecksum, prepared.childSchemaChecksumHash,
+    prepared.changes])).digest("hex");
+}
+
 function validationResult(
   prepared: PreparedDescriptor,
   issues: ListingIssue[],
 ): VariationMovePreview {
   return {
+    changes: structuredClone(prepared.changes),
     mode: prepared.mode,
     action: prepared.descriptor.action,
     status: prepared.mode === "demo" ? "SIMULATED" : "VALID",
@@ -751,6 +801,9 @@ async function validateDescriptor(
   const receipt = await gateway.validationPreview(prepared.descriptor);
   const requestId = publicSpApiRequestId(receipt.requestId);
   const issues = publicIssues(receipt.issues);
+  if (receipt.requiredFields?.length && (receipt.status === "INVALID" || issues.some((issue) => issue.severity === "ERROR"))) {
+    throw new RequiredVariationFieldsError(new VariationUpdateValidationError("Amazon 要求補填產品資料，請完成下方必填欄位後重新預檢。", "VARIATION_FIELD_REQUIRED"), receipt.requiredFields);
+  }
   if (
     receipt.status === "INVALID" ||
     issues.some((issue) => issue.severity === "ERROR")
@@ -801,10 +854,14 @@ async function prepareCommit(
   gateway: VariationMoveGateway,
   input: VariationMoveInput,
   fence: ListingWriteExecutionFence,
+  expectedFingerprint?: string,
 ): Promise<PreparedDescriptor> {
   try {
     await fence.assertCurrent();
     const prepared = await prepareDescriptor(gateway, input);
+    if (expectedFingerprint && requiredProposalFingerprint(input, prepared) !== expectedFingerprint) {
+      throw new SpApiError("Amazon 必填欄位、產品身分或預覽差異已變更，請重新預檢。", { status: 409, code: "PREVIEW_CHANGED" });
+    }
     if (prepared.mode === "live") await validateDescriptor(gateway, prepared);
     await fence.assertCurrent();
     return prepared;
@@ -831,6 +888,9 @@ function writeEvidence(prepared: PreparedDescriptor): VariationMoveWriteEvidence
     dimensionNames: [...prepared.descriptor.dimensionNames],
     dimensionSignature: prepared.dimensionSignature,
     childSchemaChecksumHash: prepared.childSchemaChecksumHash,
+    ...(Object.keys(prepared.descriptor.requiredValues ?? {}).length ? {
+      requiredFieldSignatures: variationAttributeSignatures({ ...prepared.descriptor.requiredValues }, prepared.descriptor.marketplaceId),
+    } : {}),
   };
 }
 
@@ -865,6 +925,7 @@ function observationMatches(
     observation.productType !== descriptor.productType ||
     observation.fulfillment !== "FBA"
   ) return false;
+  if (!requiredSignaturesMatch(variationAttributeSignatures({ ...descriptor.requiredValues }, descriptor.marketplaceId), observation.attributeSignatures)) return false;
   if (descriptor.action === "detach") {
     return observation.role === "standalone" &&
       observation.parentSku === null &&
@@ -883,6 +944,10 @@ function observationMatches(
     observation.variationTheme === descriptor.variationTheme &&
     !observation.relationshipAttributesAbsent &&
     observation.dimensionSignature === prepared.dimensionSignature;
+}
+
+function requiredSignaturesMatch(expected: Readonly<Record<string, string>> | undefined, actual: Readonly<Record<string, string>> | undefined): boolean {
+  return Object.entries(expected ?? {}).every(([name, signature]) => /^[a-z][a-z0-9_]{0,79}$/u.test(name) && /^[a-f0-9]{64}$/u.test(signature) && actual?.[name] === signature);
 }
 
 const VARIATION_READBACK_DELAYS_MS = [
@@ -998,7 +1063,9 @@ function publicVariationMoveResult(
     (result.mode === "demo" && result.status === "SIMULATED")
   );
   const evidenceIsRecord = isPlainRecord(evidence) &&
-    hasExactKeys(evidence, VARIATION_WRITE_EVIDENCE_KEYS);
+    hasExactKeys(evidence, [...VARIATION_WRITE_EVIDENCE_KEYS, ...(evidence.requiredFieldSignatures === undefined ? [] : ["requiredFieldSignatures"])]) &&
+    (evidence.requiredFieldSignatures === undefined || isPlainRecord(evidence.requiredFieldSignatures) &&
+      Object.entries(evidence.requiredFieldSignatures).every(([name, value]) => /^[a-z][a-z0-9_]{0,79}$/u.test(name) && typeof value === "string" && /^[a-f0-9]{64}$/u.test(value)));
   const validActionEvidence = evidenceIsRecord && result.action === "detach"
     ? typeof result.sourceParentSku === "string" &&
       parseSellerSku(result.sourceParentSku) === result.sourceParentSku &&
@@ -1086,6 +1153,7 @@ function canonicalMatchesInput(
     !exactAsin(canonical.asin) ||
     !exactProductType(canonical.productType)
   ) return false;
+  if (!requiredSignaturesMatch(variationAttributeSignatures({ ...input.requiredValues }, input.marketplaceId), canonical.attributeSignatures)) return false;
   if (input.action === "detach") {
     return canonical.role === "standalone" &&
       canonical.parentSku === null &&
@@ -1124,6 +1192,7 @@ function canonicalMatchesEvidence(
     canonical.fulfillment !== "FBA" ||
     !canonical.familyComplete
   ) return false;
+  if (!requiredSignaturesMatch(evidence.requiredFieldSignatures, canonical.attributeSignatures)) return false;
   if (evidence.action === "detach") {
     return canonical.role === "standalone" &&
       canonical.parentSku === null &&
@@ -1251,15 +1320,40 @@ function createVariationMoveMutationOperations(
   readbackDelay: (milliseconds: number) => Promise<void> = wait,
 ): VariationMoveMutationOperations {
   return {
+    prepareForApproval: async (input) => {
+      const prepared = await prepareDescriptor(gateway, input);
+      const requiredNames = new Set(Object.keys(prepared.descriptor.requiredValues ?? {}));
+      const requiredSummary = prepared.changes.filter((change) => requiredNames.has(change.name)).map((change) =>
+        `${change.label}：${JSON.stringify(change.after).slice(0, 240)}`).join("；");
+      return { fingerprint: requiredProposalFingerprint(input, prepared), requiredSummary };
+    },
     readCanonical: (input) => gateway.readCanonical(input),
     prepare: async (input) => {
+      if (input.action === "detach") {
+        const canonical = await gateway.readCanonical(input);
+        if (!canonical.parentSku) throw new SpApiError("目前來源已無 parent，請改用綁定或重新讀取。", { status: 409, code: "VARIATION_UNCHANGED" });
+        const prepared = await gateway.prepare({ action: "detach", marketplaceId: input.marketplaceId, sellerSku: input.sellerSku, expectedSourceParentSku: canonical.parentSku });
+        assertGatewayPreparation(gateway, prepared, { ...input, action: "detach" });
+        assertCanonicalSource(prepared.source);
+        assertSourceFamilyComplete(prepared.source);
+        assertDetachSource(prepared.source, canonical.parentSku);
+        return {
+          action: "detach", mode: prepared.mode, marketplaceId: input.marketplaceId, sellerSku: input.sellerSku,
+          sourceParentSku: canonical.parentSku, targetParentSku: null, productType: prepared.source.productType,
+          variationTheme: null, dimensionNames: [], fields: [], requiredFields: [...(prepared.source.requiredFields ?? [])],
+          preparedAt: new Date().toISOString(), requestIds: publicRequestIds(prepared.requestIds), writable: prepared.mode === "live",
+          blockers: [], warnings: [], notice: "已核對來源關係與 Amazon 必填產品資料；尚未解除。",
+        };
+      }
+      if (!input.targetParentSku) throw new SpApiError("請先讀取目標 parent。", { status: 422, code: "VARIATION_TARGET_NOT_PARENT" });
       const prepared = await prepareAttachContext(
         gateway,
-        input,
+        { ...input, targetParentSku: input.targetParentSku },
         "preparation",
       );
       assertSourceFamilyComplete(prepared.source);
       return {
+        action: "attach",
         mode: prepared.mode,
         marketplaceId: input.marketplaceId,
         sellerSku: input.sellerSku,
@@ -1269,6 +1363,7 @@ function createVariationMoveMutationOperations(
         variationTheme: prepared.target.variationTheme,
         dimensionNames: [...prepared.target.dimensionNames],
         fields: prepared.fields,
+        requiredFields: [...(prepared.source.requiredFields ?? [])],
         preparedAt: new Date().toISOString(),
         requestIds: prepared.requestIds,
         writable: prepared.mode === "live",
@@ -1291,10 +1386,10 @@ function createVariationMoveMutationOperations(
       const issues = prepared.mode === "live"
         ? await validateDescriptor(gateway, prepared)
         : [];
-      return validationResult(prepared, issues);
+      return { value: validationResult(prepared, issues), fingerprint: requiredProposalFingerprint(input, prepared) };
     },
-    commit: async (input, control) => {
-      const prepared = await prepareCommit(gateway, input, control.fence);
+    commit: async (input, control, expectedFingerprint) => {
+      const prepared = await prepareCommit(gateway, input, control.fence, expectedFingerprint);
       if (prepared.mode === "demo") {
         await control.fence.assertCurrent();
         await gateway.replaceDemoRelationship(
@@ -1435,7 +1530,8 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     const sellerSku = parseSellerSku(request.query.sku);
     const targetParentSku = parseSellerSku(request.query.targetSku);
-    if (!marketplaceId || !sellerSku || !targetParentSku) {
+    const action = request.query.action === "detach" ? "detach" : request.query.action === undefined || request.query.action === "attach" ? "attach" : null;
+    if (!marketplaceId || !sellerSku || !action || action === "attach" && !targetParentSku) {
       return invalid("請選擇站點並提供來源 SKU 與目標 parent SKU。");
     }
     if (sellerSku === targetParentSku) {
@@ -1445,6 +1541,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       const context = await this.context.capture(marketplaceId);
       await this.reconcileIdentity({ marketplaceId, sellerSku }, context);
       const result = await this.operations.prepare({
+        action,
         marketplaceId,
         sellerSku,
         targetParentSku,
@@ -1478,6 +1575,10 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
     const idempotencyKey = typeof body.idempotencyKey === "string"
       ? body.idempotencyKey
       : "";
+    const requiredValues = body.requiredValues === undefined ? {} : body.requiredValues;
+    if (!isPlainRecord(requiredValues) || Object.keys(requiredValues).length > 30 || !variationJsonSafe(requiredValues) || JSON.stringify(requiredValues).length > 64_000) {
+      return invalid("Amazon 必填產品資料格式無效或超過安全上限。");
+    }
     if (action === "detach") {
       const expectedSourceParentSku = parseSellerSku(
         body.expectedSourceParentSku,
@@ -1506,6 +1607,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
         dimensionNames: [],
         dimensionValues: {},
         idempotencyKey,
+        requiredValues: structuredClone(requiredValues),
       };
     }
     const targetParentSku = parseSellerSku(body.targetParentSku);
@@ -1541,6 +1643,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       dimensionNames,
       dimensionValues,
       idempotencyKey,
+      requiredValues: structuredClone(requiredValues),
     };
   }
 
@@ -1548,6 +1651,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
     input: VariationMoveInput,
     context: SpExecutionContext,
     key: string,
+    fingerprint = proposalFingerprint(input),
   ): WriteBinding {
     return {
       family: "variation-move",
@@ -1561,7 +1665,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
         marketplaceId: input.marketplaceId,
         sellerSku: input.sellerSku,
         idempotencyKey: key,
-        proposalFingerprint: proposalFingerprint(input),
+        proposalFingerprint: fingerprint,
       }],
     };
   }
@@ -1576,10 +1680,15 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       await this.context.assertCurrent(context);
       const key = validIdempotencyKey(input.idempotencyKey);
       if (key) {
-        await this.writeGate.stagePreview(this.binding(input, context, key));
+        await this.writeGate.stagePreview(this.binding(input, context, key, result.fingerprint));
       }
-      return json(result);
+      return json(result.value);
     } catch (error) {
+      if (error instanceof RequiredVariationFieldsError) {
+        return json({ code: error.code, message: error.message, requiredFields: error.requiredFields,
+          action: input.action, marketplaceId: input.marketplaceId, sellerSku: input.sellerSku,
+          targetParentSku: input.targetParentSku }, 422);
+      }
       return error instanceof MainWriteGateError
         ? invalid(error.message, error.status, error.code)
         : routeError(error, "Amazon 變體預檢時發生未預期的錯誤。");
@@ -1598,16 +1707,19 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       ? `確認解除變體｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜原 parent ${input.expectedSourceParentSku}`
       : `確認加入變體｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku} → ${input.targetParentSku}｜${input.variationTheme}`;
     try {
+      const approval = Object.keys(input.requiredValues ?? {}).length
+        ? await this.operations.prepareForApproval(input) : { fingerprint: proposalFingerprint(input), requiredSummary: "" };
+      const fingerprint = approval.fingerprint;
       const result = await this.writeGate.execute({
-        binding: this.binding(input, context, key),
-        approvalReason,
+        binding: this.binding(input, context, key, fingerprint),
+        approvalReason: approval.requiredSummary ? `${approvalReason}｜補填產品資料：${approval.requiredSummary}` : approvalReason,
         run: (session) => session.attempt<VariationMoveDurableResult>({
           intentId: "primary",
           execute: (control) => this.operations.commit(input, {
             fence: { assertCurrent: control.assertCurrent },
             recordDurableEvidence:
               control.recordDurableEvidence ?? control.recordAccepted,
-          }),
+          }, fingerprint),
           }),
       });
       await this.context.assertCurrent(context);
@@ -1618,6 +1730,10 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       await this.context.assertCurrent(context);
       return json(publicLegacyVariationMoveResult(result, input, canonical));
     } catch (error) {
+      if (error instanceof RequiredVariationFieldsError ||
+        error instanceof SpApiPreCommitError && error.code === "VARIATION_FIELD_REQUIRED") {
+        return invalid("Amazon 必填資料已更新；正式修改尚未送出。請重新檢查並補填欄位。", 422, "VARIATION_REQUIREMENTS_CHANGED");
+      }
       return error instanceof MainWriteGateError
         ? invalid(error.message, error.status, error.code)
         : routeError(

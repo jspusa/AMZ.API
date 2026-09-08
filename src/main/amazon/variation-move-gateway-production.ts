@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { MarketplaceId } from "../../shared/marketplaces";
 import type {
   VariationFamilyMember,
@@ -61,6 +61,13 @@ import type {
   VariationMoveTargetObservation,
   VariationMoveValidationReceipt,
 } from "./variation-move-gateway";
+import {
+  variationRequiredFieldDescriptors, validateVariationRequiredValues,
+  requiredValuePatches, variationAttributeSignatures, ptdDeclaredRequiredNames,
+} from "./variation-required-fields";
+
+const requirementsChecksum = (schema: unknown, checksum: string | null): string | null =>
+  schema && checksum ? createHash("sha256").update(JSON.stringify([checksum, schema])).digest("hex") : null;
 
 type VariationMoveTransportReply = ListingsWriteReceipt;
 
@@ -87,6 +94,10 @@ type EvidenceBase = Readonly<{
 }>;
 
 type SourceEvidenceRecord = EvidenceBase & Readonly<{
+  requiredSchema?: unknown;
+  requiredSchemaChecksum?: string | null;
+  requiredIssueKey?: string;
+  requiredIssueNames?: readonly string[];
   asin: string | null;
   productType: string | null;
   attributes: Record<string, unknown> | undefined;
@@ -447,6 +458,15 @@ export function createVariationMoveGatewayProduction(
   let targetEvidence = new WeakMap<object, TargetEvidenceRecord>();
   let ptdEvidence = new WeakMap<object, PtdEvidenceRecord>();
   const demoOverrides = new Map<string, DemoRelationshipOverride>();
+  const requiredIssueHints = new Map<string, { names: string[]; expiresAt: number }>();
+  const requirementsKey = (base: EvidenceBase, asin: string | null, productType: string | null, schema: unknown, attributes: unknown, target: unknown) =>
+    createHash("sha256").update(JSON.stringify([base.generation, base.mode, base.action, base.marketplaceId, base.sellerSku,
+      base.expectedSourceParentSku, base.targetParentSku, asin, productType, schema, attributes, target])).digest("hex");
+  const issueHintsFor = (key: string) => {
+    const entry = requiredIssueHints.get(key);
+    if (!entry || entry.expiresAt < Date.now()) { requiredIssueHints.delete(key); return []; }
+    return [...entry.names];
+  };
   let observedGeneration = dependencies.credentialGeneration();
 
   const demoKey = (marketplaceId: MarketplaceId, sellerSku: string) =>
@@ -459,6 +479,7 @@ export function createVariationMoveGatewayProduction(
       targetEvidence = new WeakMap();
       ptdEvidence = new WeakMap();
       demoOverrides.clear();
+      requiredIssueHints.clear();
       observedGeneration = generation;
     }
     return generation;
@@ -559,21 +580,40 @@ export function createVariationMoveGatewayProduction(
     const source = sourceRecordFor(descriptor);
     try {
       if (descriptor.action === "detach") {
-        return buildVariationDetachBody({
+        if (descriptor.requiredSchemaChecksum !== source.requiredSchemaChecksum) {
+          throw new VariationUpdateValidationError("產品必填欄位的 PTD 已變更，請重新預檢。", "VARIATION_TARGET_CHANGED");
+        }
+        const requiredValues = validateVariationRequiredValues({
+          fields: variationRequiredFieldDescriptors({ schema: source.requiredSchema,
+            attributes: source.attributes, marketplaceId: descriptor.marketplaceId,
+            dimensionNames: [], action: "detach", proposedValues: descriptor.requiredValues, issueRequiredNames: source.requiredIssueNames }),
+          values: descriptor.requiredValues ?? {}, marketplaceId: descriptor.marketplaceId,
+        });
+        const body = buildVariationDetachBody({
           productType: descriptor.productType,
           marketplaceId: descriptor.marketplaceId,
           expectedParentSku: descriptor.expectedSourceParentSku,
           attributes: source.attributes,
         });
+        return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId)] };
       }
       const records = attachRecordsFor(descriptor, source);
+      if (descriptor.requiredSchemaChecksum !== source.requiredSchemaChecksum) throw new VariationUpdateValidationError("產品必填欄位的 PTD 已變更，請重新預檢。", "VARIATION_TARGET_CHANGED");
       variationFieldDescriptors({
         productTypeDefinition: records.ptd.schema,
         dimensionNames: [...descriptor.dimensionNames],
         attributes: source.attributes,
         marketplaceId: descriptor.marketplaceId,
       });
-      return buildVariationAttachBody({
+      const requiredValues = validateVariationRequiredValues({
+        fields: variationRequiredFieldDescriptors({ schema: records.ptd.schema,
+          attributes: source.attributes, marketplaceId: descriptor.marketplaceId,
+          dimensionNames: descriptor.dimensionNames, action: "attach",
+          targetParentSku: descriptor.targetParentSku, variationTheme: descriptor.variationTheme,
+          proposedValues: descriptor.requiredValues, dimensionValues: descriptor.dimensionValues, issueRequiredNames: source.requiredIssueNames }),
+        values: descriptor.requiredValues ?? {}, marketplaceId: descriptor.marketplaceId,
+      });
+      const body = buildVariationAttachBody({
         productType: descriptor.productType,
         marketplaceId: descriptor.marketplaceId,
         targetParentSku: descriptor.targetParentSku,
@@ -582,6 +622,7 @@ export function createVariationMoveGatewayProduction(
         dimensionValues: { ...descriptor.dimensionValues },
         existingAttributes: source.attributes,
       });
+      return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId)] };
     } catch (error) {
       return relationshipValidationError(error);
     }
@@ -701,23 +742,36 @@ export function createVariationMoveGatewayProduction(
         item: sourceResult,
         family: sourceFamily,
       } = await readVariationItemAndFamily(dependencies.listings, input);
+      const requiredSchema = exactProductType(sourceResult.member.productType)
+        ? await readChildSchema(dependencies.listings, input.marketplaceId, sourceResult.member.productType)
+        : { schema: null, checksum: null, requestId: null };
+      const requiredIssueKey = requirementsKey(base, sourceResult.member.asin, sourceResult.member.productType, [requiredSchema.schema, requiredSchema.checksum],
+        sourceResult.payload.attributes, null);
+      const requiredIssueNames = issueHintsFor(requiredIssueKey);
       const capability = mintSource({
         ...base,
         asin: sourceResult.member.asin,
         productType: sourceResult.member.productType || null,
         attributes: sourceResult.payload.attributes,
+        requiredSchema: requiredSchema.schema,
+        requiredSchemaChecksum: requirementsChecksum(requiredSchema.schema, requiredSchema.checksum), requiredIssueKey, requiredIssueNames,
       });
       return {
         action: "detach",
         mode: "live",
-        source: liveSourceObservation({
+        source: { ...liveSourceObservation({
           marketplaceId: input.marketplaceId,
           result: sourceResult,
           familyComplete: sourceFamily.familyComplete,
           sourceEvidence: capability,
-        }),
+        }), requiredFields: variationRequiredFieldDescriptors({
+          schema: requiredSchema.schema, attributes: sourceResult.payload.attributes,
+          marketplaceId: input.marketplaceId, dimensionNames: [], action: "detach",
+          proposedValues: input.requiredValues, issueRequiredNames: requiredIssueNames,
+        }), requiredSchemaChecksum: requirementsChecksum(requiredSchema.schema, requiredSchema.checksum) },
         requestIds: [
           sourceResult.requestId,
+          requiredSchema.requestId,
           ...sourceFamily.requestIds,
         ].map(publicSpApiRequestId).filter(
           (value): value is string => value !== null,
@@ -752,11 +806,15 @@ export function createVariationMoveGatewayProduction(
         targetMember.role === "parent"
       ? targetSnapshot.childRows
       : [];
+    const requiredIssueKey = requirementsKey(base, sourceResult.member.asin, sourceResult.member.productType, [schema.schema, schema.checksum],
+      sourceResult.payload.attributes, [targetFamily.variationTheme, targetFamily.dimensionNames, input.dimensionValues]);
+    const requiredIssueNames = issueHintsFor(requiredIssueKey);
     const capability = mintSource({
       ...base,
       asin: sourceResult.member.asin,
       productType: sourceResult.member.productType || null,
       attributes: sourceResult.payload.attributes,
+      requiredSchema: schema.schema, requiredSchemaChecksum: requirementsChecksum(schema.schema, schema.checksum), requiredIssueKey, requiredIssueNames,
     });
     const targetCapability = mintTarget({
       ...base,
@@ -771,12 +829,17 @@ export function createVariationMoveGatewayProduction(
       checksum: schema.checksum,
       schema: schema.schema,
     });
-    const source = liveSourceObservation({
+    const source = { ...liveSourceObservation({
       marketplaceId: input.marketplaceId,
       result: sourceResult,
       familyComplete: sourceFamily.familyComplete,
       sourceEvidence: capability,
-    });
+    }), requiredFields: variationRequiredFieldDescriptors({
+      schema: schema.schema, attributes: sourceResult.payload.attributes,
+      marketplaceId: input.marketplaceId, dimensionNames: targetFamily.dimensionNames,
+      action: "attach", targetParentSku: input.targetParentSku, variationTheme: targetFamily.variationTheme,
+      proposedValues: input.requiredValues, dimensionValues: input.dimensionValues, issueRequiredNames: requiredIssueNames,
+    }), requiredSchemaChecksum: requirementsChecksum(schema.schema, schema.checksum) };
     const target: VariationMoveTargetObservation = {
       marketplaceId: input.marketplaceId,
       sellerSku: targetMember.sellerSku,
@@ -846,6 +909,7 @@ export function createVariationMoveGatewayProduction(
     }
     return {
       marketplaceId: descriptor.marketplaceId,
+      attributeSignatures: variationAttributeSignatures(result.payload.attributes, descriptor.marketplaceId),
       sellerSku: result.member.sellerSku,
       asin: result.member.asin,
       productType: result.member.productType || null,
@@ -948,6 +1012,7 @@ export function createVariationMoveGatewayProduction(
     }
     return {
       mode: "live",
+      attributeSignatures: variationAttributeSignatures(result.payload.attributes, identity.marketplaceId),
       marketplaceId: identity.marketplaceId,
       sellerSku: result.member.sellerSku,
       asin: result.member.asin,
@@ -1064,7 +1129,23 @@ export function createVariationMoveGatewayProduction(
         patchBody: patchBody(descriptor),
       });
       if (!reply.ok) return throwTransportError(reply, "read");
-      return validationReceipt(reply);
+      const receipt = validationReceipt(reply);
+      const source = sourceRecordFor(descriptor);
+      const declared = ptdDeclaredRequiredNames(source.requiredSchema);
+      const names = receipt.issues.filter((issue) => issue.severity === "ERROR" && issue.code === "90220" &&
+        (!issue.marketplaceIds?.length || issue.marketplaceIds.includes(descriptor.marketplaceId)))
+        .flatMap((issue) => issue.attributeNames).filter((name) => declared.has(name));
+      if (names.length && source.requiredIssueKey) {
+        const combined = [...new Set([...(source.requiredIssueNames ?? []), ...names])].slice(0, 30);
+        if (requiredIssueHints.size >= 50) requiredIssueHints.delete(requiredIssueHints.keys().next().value!);
+        requiredIssueHints.set(source.requiredIssueKey, { names: combined, expiresAt: Date.now() + 10 * 60_000 });
+        const requiredFields = variationRequiredFieldDescriptors({ schema: source.requiredSchema, attributes: source.attributes,
+          marketplaceId: descriptor.marketplaceId, action: descriptor.action, dimensionNames: descriptor.dimensionNames,
+          targetParentSku: descriptor.targetParentSku, variationTheme: descriptor.variationTheme,
+          proposedValues: descriptor.requiredValues, dimensionValues: descriptor.dimensionValues, issueRequiredNames: combined });
+        if (requiredFields.some((field) => names.includes(field.name))) return { ...receipt, requiredFields };
+      }
+      return receipt;
     },
     commitOnce: async (descriptor, fence, recordDispatch) => {
       let reply: VariationMoveTransportReply;

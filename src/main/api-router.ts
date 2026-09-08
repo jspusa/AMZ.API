@@ -52,6 +52,10 @@ import { AwdInventoryReads } from "./amazon/awd-inventory-reads";
 import { PriceHealthReads } from "./amazon/price-health-reads";
 import { OperationsIntelligenceCoordinator, type OperationsIntelligencePort } from "./operations-intelligence-coordinator";
 import { createOperationsSourceReaders } from "./operations-source-readers";
+import { PriceListWorkbooks } from "./price-list-workbooks";
+import { PriceListAmazon } from "./price-list-amazon";
+import { PriceListError, overlayPriceListWorkbook } from "./price-list-workbook";
+import { readPriceListListing } from "./amazon/price-list-reads";
 import {
   SkuCommandRoute,
   type SkuCommandRoutePort,
@@ -251,6 +255,7 @@ function publicRouterError(
 }
 
 function apiError(error: unknown, fallback: string): ApiResponse {
+  if (error instanceof PriceListError) return invalid(error.message, error.status, error.code);
   if (error instanceof SpApiError) {
     return routeError(error, fallback);
   }
@@ -296,6 +301,8 @@ function validApiBody(value: unknown): boolean {
 }
 
 export class ApiRouter {
+  private readonly priceListWorkbooks = new PriceListWorkbooks();
+  private readonly priceListAmazon: PriceListAmazon;
   private readonly vault: CredentialVault;
   private readonly spExecutionContext: RouterRequestContextAdapter;
   private readonly writeGate: MainWriteGatePort;
@@ -642,18 +649,26 @@ export class ApiRouter {
         },
         wait: input.advertisingStrategyWait,
       });
-    this.operationsIntelligence = input.operationsIntelligence ??
-      new OperationsIntelligenceCoordinator({
-        context: this.spExecutionContext,
-        readers: createOperationsSourceReaders({
+    const operationsSourceReaders = createOperationsSourceReaders({
           context: this.spExecutionContext,
           catalog: fbaCatalogReports,
           promotions: new PromotionsReads({ adapter: promotionsReadAdapterProduction, context: this.spExecutionContext }),
           awd: new AwdInventoryReads({ adapter: awdInventoryReadAdapterProduction, context: this.spExecutionContext }),
           priceHealth: new PriceHealthReads({ adapter: priceHealthReadAdapterProduction, context: this.spExecutionContext }),
           advertising: this.advertisingCoordinator,
-        }),
+        });
+    this.operationsIntelligence = input.operationsIntelligence ??
+      new OperationsIntelligenceCoordinator({
+        context: this.spExecutionContext,
+        readers: operationsSourceReaders,
       });
+    this.priceListAmazon = new PriceListAmazon({
+      context: this.spExecutionContext,
+      products: (id) => this.priceListWorkbooks.get(id).view.products,
+      fba: (context, signal) => operationsSourceReaders.fba(context, signal),
+      listing: (request) => readPriceListListing(catalogListings, request),
+      export: (id, rows, images) => overlayPriceListWorkbook(this.priceListWorkbooks.get(id), rows, { imageReplacements: images }),
+    });
     const reviewAuditCandidates = input.reviewAuditCandidates ?? (async (request) =>
       request.mode === "demo"
         ? getDemoFbaReviewAuditCandidates({
@@ -781,6 +796,8 @@ export class ApiRouter {
 
   private clearContextBoundState(): void {
     this.contextStateRevision += 1;
+    this.priceListAmazon.clear();
+    this.priceListWorkbooks.clear();
     this.reportBroker.clear();
     this.operationsIntelligence.clear();
     this.advertisingCoordinator.clear();
@@ -947,6 +964,22 @@ export class ApiRouter {
   private async route(request: ApiRequest): Promise<ApiResponse> {
     const key = `${request.method} ${request.path}`;
     switch (key) {
+      case "POST /api/price-list/import":
+      case "POST /api/price-list/compare":
+      case "GET /api/price-list/export":
+      case "GET /api/price-list/image":
+        return this.priceListWorkbooks.route(request)!;
+      case "POST /api/price-list/clear": {
+        const response = this.priceListWorkbooks.route(request)!;
+        if (response.status === 200) this.priceListAmazon.clear();
+        return response;
+      }
+      case "POST /api/price-list/amazon-refresh":
+        return this.priceListAmazon.start(request);
+      case "GET /api/price-list/amazon-refresh":
+        return this.priceListAmazon.observe(request);
+      case "POST /api/price-list/amazon-export":
+        return this.priceListAmazon.export(request);
       case "GET /api/sp-api/orders":
         return this.statelessCapabilities.orders(request);
       case "GET /api/sp-api/sales-trend":

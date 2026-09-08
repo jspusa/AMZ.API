@@ -184,12 +184,13 @@ function collectLeaves(input: {
   parentPath: string[];
   required: boolean;
   depth?: number;
+  includeLanguageSelector?: boolean;
 }): VariationFieldLeaf[] {
   const depth = input.depth ?? 0;
   if (depth > 4) return [];
   const properties = schemaProperties(input.root, input.node);
   const propertyEntries = Object.entries(properties).filter(
-    ([name]) => !HIDDEN_CONTEXT_KEYS.has(name),
+    ([name]) => !HIDDEN_CONTEXT_KEYS.has(name) || name === "language_tag" && input.includeLanguageSelector,
   );
   if (!propertyEntries.length) {
     const enumValues = schemaCandidates(input.root, input.node)
@@ -220,6 +221,7 @@ function collectLeaves(input: {
       current: isRecord(input.current) ? input.current[name] : undefined,
       parentPath: [...input.parentPath, name],
       required: input.required || requiredNames.has(name),
+      includeLanguageSelector: input.includeLanguageSelector,
       depth: depth + 1,
     }),
   );
@@ -373,6 +375,7 @@ function normalizeAttributeValues(input: {
 }
 
 export function variationFieldDescriptors(input: {
+  includeLanguageSelector?: boolean;
   productTypeDefinition: unknown;
   dimensionNames: string[];
   attributes?: Record<string, unknown>;
@@ -408,9 +411,16 @@ export function variationFieldDescriptors(input: {
       attributeSchema,
       "items",
     );
-    const editable = ![attributeSchema, itemSchema]
-      .flatMap((node) => schemaCandidates(input.productTypeDefinition as JsonRecord, node))
-      .some((candidate) => candidate.editable === false);
+    const hasReadOnlySchema = (node: unknown, depth = 0): boolean => {
+      if (depth > 12) return true;
+      return schemaCandidates(input.productTypeDefinition as JsonRecord, node).some((candidate) =>
+        candidate.editable === false || candidate.readOnly === true ||
+        (candidate.editable !== undefined && typeof candidate.editable !== "boolean") ||
+        (candidate.readOnly !== undefined && typeof candidate.readOnly !== "boolean") ||
+        (isRecord(candidate.properties) && Object.values(candidate.properties).some((child) => hasReadOnlySchema(child, depth + 1))) ||
+        (candidate.items !== undefined && hasReadOnlySchema(candidate.items, depth + 1)));
+    };
+    const editable = !hasReadOnlySchema(attributeSchema);
     const values = attributeObjects(
       input.attributes,
       name,
@@ -422,6 +432,7 @@ export function variationFieldDescriptors(input: {
       current: values[0],
       parentPath: [],
       required: false,
+      includeLanguageSelector: input.includeLanguageSelector,
     }).filter((leaf) => leaf.path.length > 0);
     return {
       name,

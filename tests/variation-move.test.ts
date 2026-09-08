@@ -9,6 +9,7 @@ import {
 } from "../src/renderer/src/variation-move";
 
 const preparationPayload = {
+  action: "attach",
   mode: "live" as const,
   marketplaceId: "ATVPDKIKX0DER",
   sellerSku: "CHILD-OLD",
@@ -61,6 +62,7 @@ const preparationPayload = {
       jsonFallback: false,
     },
   ],
+  requiredFields: [],
   preparedAt: "2026-08-08T08:00:00.000Z",
   requestIds: [],
   writable: true,
@@ -78,11 +80,11 @@ describe("variation move renderer contract", () => {
     });
     const values = initialVariationDimensionValues(preparation);
 
-    expect(values.flavor_name).toEqual([
-      { marketplace_id: "ATVPDKIKX0DER" },
-    ]);
+    expect(values.flavor_name).toEqual([{ marketplace_id: "ATVPDKIKX0DER" }]);
     expect(values.item_weight[0]).toMatchObject({ value: 3.5, unit: "ounces" });
-    expect(missingVariationFields(preparation, values)).toEqual(["Flavor Name"]);
+    expect(missingVariationFields(preparation, values)).toEqual([
+      "Flavor Name",
+    ]);
   });
 
   it("updates nested values without mutating the prior form state", () => {
@@ -105,6 +107,63 @@ describe("variation move renderer contract", () => {
       marketplace_id: "ATVPDKIKX0DER",
     });
     expect(missingVariationFields(preparation, next)).toEqual([]);
+  });
+
+  it("requires the new Bridge capability and supports standalone detach preparation with explicit product facts", () => {
+    const expected = {
+      marketplaceId: "ATVPDKIKX0DER",
+      sellerSku: "CHILD-OLD",
+      targetParentSku: null,
+      action: "detach" as const,
+    };
+    const detached = {
+      ...preparationPayload,
+      action: "detach",
+      targetParentSku: null,
+      variationTheme: null,
+      dimensionNames: [],
+      fields: [],
+      requiredFields: [
+        {
+          ...preparationPayload.fields[0],
+          name: "contains_liquid_contents",
+          label: "Liquid",
+          leaves: [
+            {
+              path: ["value"],
+              label: "Value",
+              type: "boolean",
+              required: true,
+              enumValues: [],
+              currentValue: null,
+            },
+          ],
+        },
+      ],
+    };
+    const preparation = parseVariationMovePreparation(detached, expected);
+    const blank = initialVariationDimensionValues(preparation);
+    expect(missingVariationFields(preparation, blank)).toEqual(["Liquid"]);
+    const explicitNo = updateVariationLeaf({
+      values: blank,
+      fieldName: "contains_liquid_contents",
+      path: ["value"],
+      value: false,
+    });
+    expect(missingVariationFields(preparation, explicitNo)).toEqual([]);
+    const cleared = updateVariationLeaf({
+      values: explicitNo,
+      fieldName: "contains_liquid_contents",
+      path: ["value"],
+      value: null,
+    });
+    expect(missingVariationFields(preparation, cleared)).toEqual(["Liquid"]);
+    expect(() =>
+      parseVariationMovePreparation(
+        { ...detached, requiredFields: undefined },
+        expected,
+      ),
+    ).toThrow(/更新 AMZ.API Notebook Key/);
   });
 
   it("fails closed when a result is accepted but not verified by readback", () => {

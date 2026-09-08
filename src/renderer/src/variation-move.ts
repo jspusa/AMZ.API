@@ -26,15 +26,17 @@ export type VariationFieldView = {
 };
 
 export type VariationMovePreparation = {
+  action?: VariationMoveAction;
   mode: "live" | "demo";
   marketplaceId: string;
   sellerSku: string;
   sourceParentSku: string | null;
-  targetParentSku: string;
+  targetParentSku: string | null;
   productType: string;
-  variationTheme: string;
+  variationTheme: string | null;
   dimensionNames: string[];
   fields: VariationFieldView[];
+  requiredFields: VariationFieldView[];
   preparedAt: string;
   requestIds: string[];
   writable: boolean;
@@ -55,6 +57,12 @@ export type VariationMovePreview = {
   validatedAt: string;
   issues: VariationMoveIssue[];
   notice: string;
+  changes?: Array<{
+    name: string;
+    label: string;
+    before: unknown;
+    after: unknown;
+  }>;
 };
 
 export type VariationMoveResult = {
@@ -81,7 +89,9 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 function isStrings(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
 }
 
 function isIssue(value: unknown): value is VariationMoveIssue {
@@ -100,11 +110,16 @@ function isLeaf(value: unknown): value is VariationFieldLeafView {
     isStrings(value.path) &&
     value.path.length > 0 &&
     typeof value.label === "string" &&
-    ["string", "number", "integer", "boolean", "json"].includes(String(value.type)) &&
+    ["string", "number", "integer", "boolean", "json"].includes(
+      String(value.type),
+    ) &&
     typeof value.required === "boolean" &&
     Array.isArray(value.enumValues) &&
-    value.enumValues.every((item) =>
-      typeof item === "string" || typeof item === "number" || typeof item === "boolean"
+    value.enumValues.every(
+      (item) =>
+        typeof item === "string" ||
+        typeof item === "number" ||
+        typeof item === "boolean",
     ) &&
     (value.currentValue === null ||
       typeof value.currentValue === "string" ||
@@ -128,29 +143,60 @@ function isField(value: unknown): value is VariationFieldView {
   );
 }
 
+export function parseVariationRequiredFields(
+  raw: unknown,
+): VariationFieldView[] | null {
+  return Array.isArray(raw) && raw.length <= 100 && raw.every(isField)
+    ? raw
+    : null;
+}
+
 export function parseVariationMovePreparation(
   raw: unknown,
-  expected: { marketplaceId: string; sellerSku: string; targetParentSku: string },
+  expected: {
+    marketplaceId: string;
+    sellerSku: string;
+    targetParentSku: string | null;
+    action?: VariationMoveAction;
+  },
 ): VariationMovePreparation {
-  if (!isRecord(raw)) throw new Error("本機 AMZ.API Bridge 回傳的變體準備資料格式不正確。");
-  const dimensionNames = isStrings(raw.dimensionNames) ? raw.dimensionNames : null;
-  const fields = Array.isArray(raw.fields) && raw.fields.every(isField)
-    ? raw.fields
+  if (!isRecord(raw))
+    throw new Error("本機 AMZ.API Bridge 回傳的變體準備資料格式不正確。");
+  if (raw.requiredFields === undefined || raw.action === undefined) {
+    throw new Error(
+      "請更新 AMZ.API Notebook Key；目前版本尚未提供 Amazon 必填商品資料編輯，已停止寫入。",
+    );
+  }
+  const dimensionNames = isStrings(raw.dimensionNames)
+    ? raw.dimensionNames
     : null;
+  const fields =
+    Array.isArray(raw.fields) && raw.fields.every(isField) ? raw.fields : null;
+  const requiredFields =
+    Array.isArray(raw.requiredFields) && raw.requiredFields.every(isField)
+      ? raw.requiredFields
+      : null;
+  const action = expected.action ?? "attach";
   if (
     (raw.mode !== "live" && raw.mode !== "demo") ||
     raw.marketplaceId !== expected.marketplaceId ||
     raw.sellerSku !== expected.sellerSku ||
+    raw.action !== action ||
     (raw.sourceParentSku !== null && typeof raw.sourceParentSku !== "string") ||
     raw.targetParentSku !== expected.targetParentSku ||
     typeof raw.productType !== "string" ||
     !raw.productType.trim() ||
-    typeof raw.variationTheme !== "string" ||
-    !raw.variationTheme.trim() ||
+    (action === "attach"
+      ? typeof raw.variationTheme !== "string" || !raw.variationTheme.trim()
+      : raw.variationTheme !== null) ||
     !dimensionNames ||
-    !dimensionNames.length ||
+    (action === "attach"
+      ? !dimensionNames.length
+      : dimensionNames.length !== 0) ||
     !fields ||
-    !dimensionNames.every((name) => fields.some((field) => field.name === name)) ||
+    !dimensionNames.every((name) =>
+      fields.some((field) => field.name === name),
+    ) ||
     typeof raw.preparedAt !== "string" ||
     !isStrings(raw.requestIds) ||
     typeof raw.writable !== "boolean" ||
@@ -158,14 +204,25 @@ export function parseVariationMovePreparation(
     !isStrings(raw.warnings) ||
     typeof raw.notice !== "string"
   ) {
-    throw new Error("本機 AMZ.API Bridge 回傳的變體準備資料不完整，已停止寫入。");
+    throw new Error(
+      "本機 AMZ.API Bridge 回傳的變體準備資料不完整，已停止寫入。",
+    );
+  }
+  if (!requiredFields) {
+    throw new Error(
+      "請更新 AMZ.API Notebook Key；目前版本尚未提供 Amazon 必填商品資料編輯，已停止寫入。",
+    );
   }
   return raw as VariationMovePreparation;
 }
 
 export function parseVariationMovePreview(
   raw: unknown,
-  expected: { action: VariationMoveAction; marketplaceId: string; sellerSku: string },
+  expected: {
+    action: VariationMoveAction;
+    marketplaceId: string;
+    sellerSku: string;
+  },
 ): VariationMovePreview {
   if (
     !isRecord(raw) ||
@@ -180,6 +237,16 @@ export function parseVariationMovePreview(
     typeof raw.validatedAt !== "string" ||
     !Array.isArray(raw.issues) ||
     !raw.issues.every(isIssue) ||
+    (raw.changes !== undefined &&
+      (!Array.isArray(raw.changes) ||
+        !raw.changes.every(
+          (change) =>
+            isRecord(change) &&
+            typeof change.name === "string" &&
+            typeof change.label === "string" &&
+            "before" in change &&
+            "after" in change,
+        ))) ||
     typeof raw.notice !== "string"
   ) {
     throw new Error("Amazon 變體預檢回應不完整，已停止送出。");
@@ -189,7 +256,11 @@ export function parseVariationMovePreview(
 
 export function parseVariationMoveResult(
   raw: unknown,
-  expected: { action: VariationMoveAction; marketplaceId: string; sellerSku: string },
+  expected: {
+    action: VariationMoveAction;
+    marketplaceId: string;
+    sellerSku: string;
+  },
 ): VariationMoveResult {
   if (
     !isRecord(raw) ||
@@ -218,7 +289,7 @@ export function initialVariationDimensionValues(
   preparation: VariationMovePreparation,
 ): Record<string, Array<Record<string, unknown>>> {
   return Object.fromEntries(
-    preparation.fields.map((field) => [
+    [...preparation.fields, ...preparation.requiredFields].map((field) => [
       field.name,
       field.values.length
         ? structuredClone(field.values)
@@ -247,7 +318,7 @@ export function updateVariationLeaf(input: {
   values: Record<string, Array<Record<string, unknown>>>;
   fieldName: string;
   path: string[];
-  value: string | number | boolean;
+  value: string | number | boolean | null;
 }): Record<string, Array<Record<string, unknown>>> {
   const next = structuredClone(input.values);
   const row = next[input.fieldName]?.[0] ?? {};
@@ -258,7 +329,7 @@ export function updateVariationLeaf(input: {
 
 function nestedValue(root: unknown, path: string[]): unknown {
   return path.reduce<unknown>(
-    (current, key) => isRecord(current) ? current[key] : undefined,
+    (current, key) => (isRecord(current) ? current[key] : undefined),
     root,
   );
 }
@@ -270,7 +341,8 @@ function valuePresent(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(valuePresent);
   if (!isRecord(value)) return false;
   return Object.entries(value).some(
-    ([key, child]) => !["marketplace_id", "language_tag"].includes(key) && valuePresent(child),
+    ([key, child]) =>
+      !["marketplace_id", "language_tag"].includes(key) && valuePresent(child),
   );
 }
 
@@ -278,14 +350,18 @@ export function missingVariationFields(
   preparation: VariationMovePreparation,
   values: Record<string, Array<Record<string, unknown>>>,
 ): string[] {
-  return preparation.fields.flatMap((field) => {
-    const row = values[field.name]?.[0];
-    if (!row || !valuePresent(row)) return [field.label];
-    const missingLeaves = field.leaves
-      .filter((leaf) => leaf.required && !valuePresent(nestedValue(row, leaf.path)))
-      .map((leaf) => `${field.label} · ${leaf.label}`);
-    return missingLeaves;
-  });
+  return [...preparation.fields, ...preparation.requiredFields].flatMap(
+    (field) => {
+      const row = values[field.name]?.[0];
+      if (!row || !valuePresent(row)) return [field.label];
+      const missingLeaves = field.leaves
+        .filter(
+          (leaf) => leaf.required && !valuePresent(nestedValue(row, leaf.path)),
+        )
+        .map((leaf) => `${field.label} · ${leaf.label}`);
+      return missingLeaves;
+    },
+  );
 }
 
 export function parseVariationJsonValues(input: {

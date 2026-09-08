@@ -71,7 +71,7 @@ function family(
 }
 
 describe("variation planner", () => {
-  it("renders the staged FBA-only two-step safety boundary before any lookup", () => {
+  it("renders a readable table workspace with the FBA-only two-stage safety detail", () => {
     const markup = renderToStaticMarkup(
       <VariationPlannerDrawer
         initialMarketplaceId={MARKETPLACE_ID}
@@ -81,7 +81,12 @@ describe("variation planner", () => {
 
     expect(markup).toContain("變體規劃");
     expect(markup).toContain("兩階段安全寫入 · 不會盲目重送");
-    expect(markup).toContain("解除變體存放區");
+    expect(markup).toContain("查詢與選擇");
+    expect(markup).toContain("Family 對照");
+    expect(markup).toContain("參考與填寫");
+    expect(markup).toContain("檢查解除內容");
+    expect(markup).toContain("檢查綁定內容");
+    expect(markup).not.toContain("draggable=");
     expect(markup).toContain("SKU 或 ASIN 查詢");
     expect(markup).toContain('value="asin"');
     expect(markup).toContain("Validation Preview、Notebook 鑰匙（Touch ID／Windows Hello）、送出與唯讀回查");
@@ -313,14 +318,12 @@ describe("variation planner", () => {
     expect(source).toContain("No blind retry · No FBM");
     expect(source).toContain("確認解除變體");
     expect(source).toContain("確認綁定變體");
-    expect(source.indexOf("解除變體存放區")).toBeLessThan(
-      source.indexOf("可解除的 FBA child"),
-    );
-    expect(source).toContain('className="variation-family-panel source source-children"');
-    expect(source).toContain("紅色解除區會固定在上方");
+    expect(source).toContain("目標現有變體參考");
+    expect(source).toContain("Amazon 必填商品資料");
+    expect(source).toContain("requiredValues");
+    expect(source).toContain('presentation === "workspace"');
     const css = await readRendererStylesheet();
-    expect(css).toMatch(/\.variation-child-list\s*\{[^}]*max-height:\s*clamp\(/s);
-    expect(css).toMatch(/\.variation-detach-stage\s*\{[^}]*position:\s*sticky/s);
+    expect(css).toContain(".variation-workspace");
     expect(css).toContain("#fff7f7");
     expect(css).toContain("#f5fbf7");
     expect(source).not.toContain("localStorage");

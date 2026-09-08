@@ -26,10 +26,11 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 產品 | 全站 FBA 圖片健檢（少於六張與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
 | 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；任一 exact 文件／ASIN 關聯只要含 schema-valid `CONTENT_PUBLISHED` 就保留已發布正向證據，不會被同 ASIN 另一文件的 negative／malformed 關聯抹除；未使用的 optional `contentReferenceKeySet` 畸形只把完整度降為 partial；沒有任何 published positive 的 malformed／negative 關聯仍 fail closed；文件存在或 APPROVED 本身不會被猜成已發布 |
 | 產品 | 文案健檢同一快照可分別匯出「待確認清單」與「全部商品完整模板」；兩個入口使用不同名稱與視覺層級，任一份都可選回同一批次更新流程 | 一鍵；兩份 Excel 都只在本機建立，不上傳商品文案 |
-| 產品 | 雙 Family 並排、FBA child 拖拉改掛、CHILD PTD 動態欄位 | 兩階段預檢＋本機身分確認＋回查 |
+| 產品 | 寬版變體工作台：查詢 family、點選 FBA child、參考目標變體值；缺少的 CHILD PTD 商品資料可直接補填，包含「是否含液體」等明確選擇 | 解除與加入各自預覽差異、完成本機身分確認、單次送出及唯讀回查；已知資料不覆寫，結果不明不重送 |
 | 產品 | 全站未綁變體健檢（Listings relationships 每批最多 20 SKU、缺值／歧義 fail closed；Excel 含淺色 family 分組的「所有變體」與「父變體橫排」） | Amazon 唯讀；「父變體橫排」第一列直接橫排所有已驗證 Parent SKU，每一欄從第二列起只接續該 Parent 的 Child SKU；standalone／資料未完成留在各自工作表，不用 ASIN 猜 family |
 | 產品 | 非 parent FBA ASIN 評論主題健檢（child＋standalone、排除 parent、前五／後五與全量 Excel） | Amazon Customer Feedback 唯讀 |
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋本機身分確認 |
+| 價格 | US 價目表：匯入自己的 Excel、檢視原版面與圖片；以 ★ 有差異／☆ 相同並排比對原售價與 Amazon 售價、最低活動價與 Amazon 最低價格設定，也可比對兩份 Excel | 原檔下載保持相同位元組；比對版在原表右側增加 Amazon 欄位，可選擇替換首圖。檔案只留本機，Amazon 價格固定唯讀，未知不補零 |
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋本機身分確認 |
 | 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel；具同次 current-FBA 證據的無效／重複 offer 或月度 SKU 獨立列為未完成，不拖垮其餘正常 SKU；未證明識別值只保留聚合計數 | 自動讀取；來源不完整時只顯示已核對範圍；SG／AU 顯示不支援邊界 |
 | 價格 | 全站 FBA Amazon Business 價格健檢，列級原因可同時標示「不符建議 B2B 價格」、「未正確設定階梯折扣」與「高於一般售價」，並提供五工作表 Excel；建議規則為 USD 一般價減 1.00，以及 5／10／15／20 件各 5%／10%／15%／20% | 摘要只顯示「全部／需處理／未設定／正確設定／資料未完成」；後四類互斥且相加等於全部。需處理只含資料完整、已設定 B2B 且任一建議價格／階梯／高於一般價問題的 SKU；未設定獨立；一般售價缺失歸資料未完成；正確設定只含完全合格列。Seller SKU 搜尋會先 trim、忽略大小寫並以 substring 比對，再與目前分類篩選取交集。報表與 snapshot owner 維持唯讀；清單可逐列勾選、全選目前可處理列並一次啟動批次，每列仍 fresh Preview，正式 PATCH 逐筆單線送出，最低價與 B2B intent 分開取得原生確認；批次預檢、原生確認或送出期間會鎖住外層返回／關閉。Amazon 接受後由 main 自動做 bounded GET-only reconcile，只有 exact canonical GET 相符才顯示已驗證，且永不重送 PATCH。首頁以寬版單層 workspace 在清單與單 SKU editor 間切換並保存返回位置，editor 底部提供「← 返回健檢結果」。Active Listings exact Business Price／quantity fields 可補足尚未同步的 Listings attributes contribution；來源衝突或 malformed／duplicate／身分不符仍 fail closed，Excel 只由 main-owned 完成快照建立 |

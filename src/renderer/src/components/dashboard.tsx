@@ -101,6 +101,7 @@ const AgedInventoryPanel = lazy(() => import("./aged-inventory-panel"));
 const ReportLibraryPanel = lazy(() => import("./report-library-panel"));
 const ReviewAuditPanel = lazy(() => import("./review-audit-panel"));
 const VariationPlannerDrawer = lazy(() => import("./variation-planner-drawer"));
+const PriceListPanel = lazy(() => import("./price-list-panel"));
 
 export { standaloneAuditSnapshotMatchesJob };
 
@@ -134,6 +135,7 @@ type Tool =
   | "a-plus"
   | "variations"
   | "price"
+  | "price-list"
   | "promotion"
   | "subscriptions"
   | "business-pricing"
@@ -634,6 +636,7 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: Navigation
   "a-plus": { label: "A+ 健檢", symbol: "A+", group: "product" },
   variations: { label: "變體", symbol: "◇", group: "product" },
   price: { label: "定價", symbol: "$", group: "pricing" },
+  "price-list": { label: "價目表", symbol: "▤", group: "pricing" },
   promotion: { label: "促銷", symbol: "%", group: "pricing" },
   subscriptions: { label: "訂閱價格健檢", symbol: "S", group: "pricing" },
   "business-pricing": { label: "B2B 價格健檢", symbol: "B2B", group: "pricing" },
@@ -656,7 +659,7 @@ const TOOL_SECTIONS: ReadonlyArray<{
     label: "價格區",
     symbol: "$",
     group: "pricing",
-    tools: ["price", "promotion", "subscriptions", "business-pricing"],
+    tools: ["price-list", "price", "promotion", "subscriptions", "business-pricing"],
   },
   {
     label: "營運區",
@@ -715,6 +718,8 @@ export default function Dashboard({
   const [trendSelection, setTrendSelection] =
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
+  const inlineTool = openTool === "variations" || openTool === "price-list";
+  const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup } | null>(null);
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
   const [contentWorkspaceTab, setContentWorkspaceTab] =
     useState<ContentWorkspaceTab>("single");
@@ -766,6 +771,8 @@ export default function Dashboard({
     if (returnToUnboundVariationAudit) {
       setReturnToUnboundVariationAudit(false);
       setActiveAuditWorkspace("variation");
+    } else {
+      restoreInlineTool();
     }
   };
   const [commandOpen, setCommandOpen] = useState(false);
@@ -802,6 +809,16 @@ export default function Dashboard({
   const primaryNavRef = useRef<HTMLElement | null>(null);
   const menuTriggerRefs = useRef<Partial<Record<NavigationGroup, HTMLButtonElement>>>({});
   const modalReturnFocusRef = useRef<HTMLElement | null>(null);
+  const restoreInlineTool = () => {
+    const target = inlineReturnRef.current;
+    inlineReturnRef.current = null;
+    window.requestAnimationFrame(() => {
+      if (!target) return;
+      menuTriggerRefs.current[target.group]?.focus({ preventScroll: true });
+      window.scrollTo({ top: target.scrollY, behavior: "instant" });
+    });
+  };
+  const closePriceList = () => { setOpenTool(null); restoreInlineTool(); };
   const modalWasOpenRef = useRef(false);
   const auditWorkspaceReturnRef = useRef<{
     sectionId: AuditSuiteSectionId;
@@ -1096,6 +1113,11 @@ export default function Dashboard({
     return scheduleAuditWorkspaceTopScroll();
   }, [activeAuditWorkspace]);
 
+  useEffect(() => {
+    if (!inlineTool) return;
+    return scheduleAuditWorkspaceTopScroll();
+  }, [inlineTool]);
+
   const closeAuditWorkspace = useCallback(() => {
     const returnTarget = auditWorkspaceReturnRef.current;
     setActiveAuditWorkspace(null);
@@ -1141,6 +1163,9 @@ export default function Dashboard({
     if (tool === "copy") setContentWorkspaceTab("single");
     if (tool === "images") setImageWorkspaceTab("single");
     if (tool === "variations") setReturnToUnboundVariationAudit(false);
+    if (tool === "variations" || tool === "price-list") {
+      inlineReturnRef.current = { scrollY: window.scrollY, group: TOOL_META[tool].group };
+    }
     if (tool === "subscriptions") setAuditPreference("subscriptions");
     setOpenTool(tool);
   };
@@ -1154,7 +1179,7 @@ export default function Dashboard({
   };
 
   useEffect(() => {
-    const modalOpen = openTool !== null || commandOpen;
+    const modalOpen = (openTool !== null && !inlineTool) || commandOpen;
     const modalWasOpen = modalWasOpenRef.current;
     modalWasOpenRef.current = modalOpen;
 
@@ -1169,7 +1194,7 @@ export default function Dashboard({
       restoreModalTriggerFocus(document, returnTarget);
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [commandOpen, openTool]);
+  }, [commandOpen, openTool, inlineTool]);
 
   const openMenu = (group: NavigationGroup, focus: "first" | "last" = "first") => {
     setOpenToolMenu(group);
@@ -1981,14 +2006,14 @@ export default function Dashboard({
           scrollTo("workspace-top");
           document.getElementById("workspace-top")?.focus({ preventScroll: true });
         }}
-        aria-hidden={openTool !== null ? true : undefined}
-        tabIndex={openTool !== null ? -1 : undefined}
+        aria-hidden={openTool !== null && !inlineTool ? true : undefined}
+        tabIndex={openTool !== null && !inlineTool ? -1 : undefined}
       >跳到主要內容</a>
 
       <div
         className="workspace-surface"
-        inert={openTool !== null ? true : undefined}
-        aria-hidden={openTool !== null ? true : undefined}
+        inert={openTool !== null && !inlineTool ? true : undefined}
+        aria-hidden={openTool !== null && !inlineTool ? true : undefined}
       >
         <header className="workspace-header">
           <div className="workspace-header-main">
@@ -2020,7 +2045,7 @@ export default function Dashboard({
                     aria-expanded={openToolMenu === section.group}
                     aria-label={section.label}
                     aria-current={activeAuditGroup === section.group ? "location" : undefined}
-                    disabled={Boolean(activeAuditWorkspace)}
+                    disabled={Boolean(activeAuditWorkspace) || inlineTool}
                     onClick={() => setOpenToolMenu((current) =>
                       current === section.group ? null : section.group,
                     )}
@@ -2059,7 +2084,9 @@ export default function Dashboard({
                               : tool === "images"
                                 ? "圖片工作台與全站健檢"
                                 : tool === "variations"
-                                  ? "Family 查詢與安全改掛"
+                                  ? "查詢、補填資料、解除與加入變體"
+                                  : tool === "price-list"
+                                    ? "原表檢視、Amazon 價格與最低價比對"
                                   : tool === "price"
                                     ? "標準價與訂閱資訊"
                                     : tool === "promotion"
@@ -2117,7 +2144,7 @@ export default function Dashboard({
                 type="button"
                 className={`mode-badge workspace-connection-status ${connectionBadge.className}`}
                 onClick={onOpenConnection}
-                disabled={Boolean(activeAuditWorkspace)}
+                disabled={Boolean(activeAuditWorkspace) || inlineTool}
                 aria-label={`${connectionBadge.ariaLabel}；開啟本機安全連線設定`}
                 aria-haspopup="dialog"
               >
@@ -2131,14 +2158,14 @@ export default function Dashboard({
 
           <div className="workspace-context-shell">
             <div className="workspace-contextbar">
-              <label className="global-sku"><span aria-hidden="true"><WorkspaceGlyph name="search" /></span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); openCommandCenter(); } }} placeholder="搜尋 Seller SKU，開始商品作業" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace)} /></label>
-              <button className="command-topbar-button" type="button" onClick={openCommandCenter} disabled={Boolean(activeAuditWorkspace)}><span aria-hidden="true">✦</span>SKU 總覽</button>
+              <label className="global-sku"><span aria-hidden="true"><WorkspaceGlyph name="search" /></span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); openCommandCenter(); } }} placeholder="搜尋 Seller SKU，開始商品作業" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace) || inlineTool} /></label>
+              <button className="command-topbar-button" type="button" onClick={openCommandCenter} disabled={Boolean(activeAuditWorkspace) || inlineTool}><span aria-hidden="true">✦</span>SKU 總覽</button>
               <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
               <SystemHealthControl
                 marketplaceId={marketplaceId}
                 autoSync={autoSync}
                 auditPreference={auditPreference}
-                disabled={Boolean(activeAuditWorkspace)}
+                disabled={Boolean(activeAuditWorkspace) || inlineTool}
                 onAutoSyncChange={setAutoSyncPreference}
               />
             </div>
@@ -2147,11 +2174,15 @@ export default function Dashboard({
 
         <main
           id="workspace-top"
-          className={`workspace-content ${activeAuditWorkspace ? "workspace-content-audit" : ""}`}
+          className={`workspace-content ${activeAuditWorkspace || inlineTool ? "workspace-content-audit" : ""}`}
           data-audit-workspace-section={activeAuditWorkspace ?? undefined}
           tabIndex={-1}
         >
-          {activeAuditWorkspace ? auditWorkspaceView : <>
+          {openTool === "variations" ? <DeferredWorkspace onClose={closeVariationPlanner}>
+            <VariationPlannerDrawer presentation="workspace" initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={closeVariationPlanner} />
+          </DeferredWorkspace> : openTool === "price-list" ? <DeferredWorkspace onClose={closePriceList}>
+            <PriceListPanel onClose={closePriceList} />
+          </DeferredWorkspace> : activeAuditWorkspace ? auditWorkspaceView : <>
           <section className="workspace-intro" aria-labelledby="workspace-title">
             <div className="workspace-intro-copy">
               <p className="workspace-kicker">JASPER / FBA WORKSPACE</p>
@@ -2600,7 +2631,6 @@ export default function Dashboard({
           onClose={() => setOpenTool(null)}
         />
       )}
-      {openTool === "variations" && <DeferredWorkspace overlay onClose={closeVariationPlanner}><VariationPlannerDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={closeVariationPlanner} /></DeferredWorkspace>}
       {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "promotion" && <PromotionCenterDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "subscriptions" && <SubscriptionAuditDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} mode={currentStandaloneMode} initialJob={currentSubscriptionDrawerJob} onJobChange={cacheStandaloneAuditJob} onClose={() => setOpenTool(null)} />}

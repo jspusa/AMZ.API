@@ -401,6 +401,17 @@ async function commit(
 }
 
 describe("complete W04 Variation Move mutation domain", () => {
+  it("returns a recoverable zero-dispatch code when new required facts appear after preview", async () => {
+    const gateway = new ScriptedVariationMoveGateway();
+    const { owner } = await harness(gateway);
+    expect((await preview(owner, detachInput(), "w04-required-after-preview")).status).toBe(200);
+    gateway.sourcePatch.requiredFields = [{ name: "contains_liquid", label: "產品是否含液體", editable: true, values: [], jsonFallback: false,
+      leaves: [{ path: ["value"], label: "Value", type: "boolean", required: true, enumValues: [], currentValue: null }] }];
+    expect(bodyValue(await commit(owner, detachInput(), "w04-required-after-preview"))).toMatchObject({ code: "VARIATION_REQUIREMENTS_CHANGED" });
+    expect(gateway.commitDescriptors).toHaveLength(0);
+    expect(bodyValue(await preview(owner, detachInput(), "w04-new-required-fields"))).toMatchObject({ code: "VARIATION_FIELD_REQUIRED", requiredFields: [{ name: "contains_liquid" }] });
+  });
+
   it("executes detach and attach as two independent approvals and durable operations", async () => {
     const gateway = new ScriptedVariationMoveGateway();
     const { owner, approveWrite } = await harness(gateway);

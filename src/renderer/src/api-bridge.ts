@@ -3,7 +3,7 @@ import type { ApiBody, ApiRequest, ApiResponse } from "../../shared/contracts";
 const nativeFetch = globalThis.fetch.bind(globalThis);
 const MAX_MULTIPART_BYTES = 15 * 1024 * 1024;
 
-async function serializeBody(body: BodyInit | null | undefined): Promise<ApiBody | undefined> {
+async function serializeBody(body: BodyInit | null | undefined, maxMultipartBytes = MAX_MULTIPART_BYTES): Promise<ApiBody | undefined> {
   if (body === null || body === undefined) return undefined;
   if (body instanceof FormData) {
     const fields: Record<string, string> = {};
@@ -12,8 +12,8 @@ async function serializeBody(body: BodyInit | null | undefined): Promise<ApiBody
       if (typeof value === "string") {
         fields[key] = value;
       } else if (!serializedFile) {
-        if (value.size > MAX_MULTIPART_BYTES) {
-          throw new TypeError("上傳檔案不可超過 15 MB。");
+        if (value.size > maxMultipartBytes) {
+          throw new TypeError(`上傳檔案不可超過 ${maxMultipartBytes / 1024 / 1024} MB。`);
         }
         serializedFile = {
           name: value.name.slice(0, 255),
@@ -73,7 +73,7 @@ async function bridgedFetch(
   url.searchParams.forEach((value, key) => {
     query[key] = value;
   });
-  const body = await serializeBody(init.body);
+  const body = await serializeBody(init.body, method === "POST" && url.pathname === "/api/price-list/import" ? 25 * 1024 * 1024 : MAX_MULTIPART_BYTES);
   const request: ApiRequest = {
     requestId,
     method: method as ApiRequest["method"],

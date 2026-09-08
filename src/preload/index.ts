@@ -14,6 +14,7 @@ import type { OperationsBoardPublisherDraft } from "../shared/operations-board";
 import type { NotebookCapabilitySnapshot } from "../shared/notebook-capabilities";
 
 const MAX_MULTIPART_BYTES = 15 * 1024 * 1024;
+const MAX_PRICE_LIST_BYTES = 25 * 1024 * 1024;
 
 function invokeApi(input: ApiRequest): Promise<ApiResponse> {
   if (
@@ -25,11 +26,13 @@ function invokeApi(input: ApiRequest): Promise<ApiResponse> {
   ) {
     return Promise.reject(new TypeError("App 內部請求格式無效。"));
   }
+  const multipartLimit = input.method === "POST" && input.path === "/api/price-list/import"
+    ? MAX_PRICE_LIST_BYTES : MAX_MULTIPART_BYTES;
   if (
     input.body?.kind === "multipart" &&
-    input.body.file.bytes.byteLength > MAX_MULTIPART_BYTES
+    input.body.file.bytes.byteLength > multipartLimit
   ) {
-    return Promise.reject(new TypeError("上傳檔案不可超過 15 MB。"));
+    return Promise.reject(new TypeError(`上傳檔案不可超過 ${multipartLimit / (1024 * 1024)} MB。`));
   }
   return ipcRenderer.invoke("fba:api-request", input) as Promise<ApiResponse>;
 }
