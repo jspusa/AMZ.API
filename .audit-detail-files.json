@@ -2,7 +2,7 @@
   "docs/releases/2026-09-09-audit-detail-reading.md": "40af3ca943a504a161e1442cb376c86677950af2",
   "scripts/renderer-stylesheet-contract.mjs": "798a90452b2a5e81bc812fc31650d56e4abeffc1",
   "scripts/visual-qa/appearance-check.mjs": "f4dfef41f4eaed46af11e0e32e257bc92283b2f5",
-  "scripts/visual-qa/audit-detail-check.mjs": "48cf4213afb590669a6499fac24f67976fea7883",
+  "scripts/visual-qa/audit-detail-check.mjs": "c0c9f5276b5a67474109b70ee9cceb01de18b5f2",
   "scripts/visual-qa/audit-detail-fixture.js": "fd3079293c4ee965a5112e7a9aed23fd37269316",
   "src/renderer/src/components/audit-workspace-shell.tsx": "d6e8bb6bf15408f545637cb0358d96953c0da87a",
   "src/renderer/src/components/dashboard.tsx": "431dd05cc992b1cbda27f67c3dd9c3606a4781f7",

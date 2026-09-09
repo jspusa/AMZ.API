@@ -32,6 +32,8 @@ export async function verifyAuditDetails({browser,origin,root,evidence}) {
       const surface=page.locator('[data-audit-reading="true"]').last();
       await surface.waitFor();
       const startButton=surface.getByRole("button",{name:start,exact:kind!=="agedInventory"});
+      // Lazy low-frequency panels may mount after their dialog shell.
+      await surface.locator(summaries[kind]).or(startButton).first().waitFor({timeout:15000});
       if(await startButton.count())await startButton.click();
       await surface.locator(summaries[kind]).waitFor({timeout:15000});
       for(const width of [1440,375]) {
