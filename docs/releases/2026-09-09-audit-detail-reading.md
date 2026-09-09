@@ -20,14 +20,37 @@ published usability implementation blobs before editing.
   write confirmations, task lifecycle, focus behavior and actions are preserved.
 - No main/preload/API/credential/storage/installer/dependency/version changes.
 
-## Verification
-Local production build and exact CSS stream verification passed. All 32 focused
-composition/surface tests passed. Nine synthetic result surfaces were inspected
-at 1440/375 in all four appearances (72 combinations), with no whole-page overflow.
-Local navigation is restricted, so those screenshots load unchanged bundles into
-about:blank with synthetic storage/URL adaptation and a local CJK font fallback.
-The committed browser harness verifies real loopback navigation on CI separately.
-The full check and production dependency audit must pass on the exact published
-source. Pages deployment is a separate step and will be recorded in the PR.
+## Exact verification
+- Preview run 34300812793 / job 102307121433 passed on source
+  `6d1c0f4876e19ce39b6dd9dae1fbc6a4201163ee` with the reviewed patches applied.
+- npm run check: 295 files passed, 3,198 tests passed; one existing optional test
+  was skipped. Production build and exact CSS stream verification passed.
+- Real-loopback Chromium checked 72 audit result cases: nine audits x two widths
+  (1440/375) x four appearances. No page overflow, no tiny body/table text,
+  no uncaught renderer errors, and no PUT/PATCH/DELETE calls. The harness waits
+  for lazy content rather than mistaking its dialog shell for a ready panel.
+- Existing usability checks and 20 homepage appearance cases also passed.
+- Artifact 10084900052 SHA-256:
+  `5ff8e7422506862b42a8cdcdf1794b27d1ad04244ada4e88a1535513cc8062f5`.
+  All 14 implementation blobs matched the reviewed local files; this evidence
+  document is refreshed afterwards, while the other 13 remain byte-identical.
+- Local CJK rendering was inspected separately because CI fonts omit Chinese
+  glyphs. Local screenshots use about:blank with synthetic storage/URL adaptation;
+  actual-origin assertions come from the CI loopback harness.
+- CSS canonical fingerprint:
+  `48fd44a196d50be1e645c0eef60486db8d5058d53d26dd733d5474255ddf3143`.
+  Current stream snapshots updated; historical payload guards retained.
 
+## Existing dependency warning, not fixed by this UI release
+npm audit --omit=dev returned exit code 1 with one high js-yaml advisory,
+GHSA-2883-xcg3-v3hh. package.json and package-lock.json remain byte-identical
+to the deployed baseline. The temporary verifier records the JSON and status,
+checks the exact package hashes, and permits only that specifically identified
+baseline advisory; unknown issues and audit service errors still fail. No clean
+dependency audit is claimed. No dependency update or device install is included.
+The temporary verifier, patch payloads and hash manifest do not remain in the
+final branch diff; normal PR/Pages validation is unchanged.
+
+Final PR validation, merge and Pages deployment are distinct steps; publication
+and released-byte checks will be recorded in the PR after their actual success.
 No live Amazon, Touch ID, Windows Hello or installed-device verification is claimed.

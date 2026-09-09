@@ -2689,6 +2689,7 @@ export default function Dashboard({
         >
           <aside
             className="order-drawer aged-inventory-audit-drawer"
+            data-audit-reading="true"
             role="dialog"
             aria-modal="true"
             aria-labelledby="aged-inventory-audit-title"
@@ -2748,6 +2749,7 @@ export default function Dashboard({
         >
           <aside
             className="order-drawer review-audit-drawer"
+            data-audit-reading="true"
             role="dialog"
             aria-modal="true"
             aria-labelledby="review-audit-drawer-title"

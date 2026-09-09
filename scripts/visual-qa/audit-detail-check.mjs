@@ -42,7 +42,7 @@ export async function verifyAuditDetails({browser,origin,root,evidence}) {
           await page.evaluate(([a,m])=>{document.documentElement.dataset.uiAccent=a;document.documentElement.dataset.uiMode=m},[accent,mode]);
           await page.waitForTimeout(60);
           assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1), `${kind} ${width} ${mode}: page overflow`);
-          const tiny=await surface.locator("p,td").evaluateAll(els=>els.filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=="hidden"&&parseFloat(getComputedStyle(e).fontSize)<12).map(e=>e.className));
+          const tiny=await surface.locator("p:not(.eyebrow),td").evaluateAll(els=>els.filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=="hidden"&&parseFloat(getComputedStyle(e).fontSize)<12).map(e=>e.className));
           assert.deepEqual(tiny,[],`${kind}: readable text size`);
           if(width===1440&&accent==="default"&&mode==="light"||width===375&&accent==="pink"&&mode==="dark")await page.screenshot({path:resolve(evidence,`audit-detail-${kind}-${width}-${mode}.png`),fullPage:true});
           cases.push({kind,width,accent,mode,resultsVisible:true,noPageOverflow:true});

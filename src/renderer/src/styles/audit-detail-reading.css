@@ -119,3 +119,6 @@
 [data-audit-reading="true"] .subscription-audit-filters button { min-height: 42px; flex: 1 1 76px; }
 [data-audit-reading="true"] .subscription-audit-filters button :is(span, strong, small) { font-size: 12px; line-height: 1.5; }
 [data-audit-reading="true"] .subscription-audit-summary > div:last-child strong { font-size: 18px; text-wrap: balance; }
+
+/* Win over legacy nested microcopy rules without affecting decorative eyebrows. */
+:root [data-audit-reading="true"] :is(p:not(.eyebrow), td) { font-size: 14px; line-height: 1.65; }
