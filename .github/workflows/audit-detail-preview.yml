@@ -2,7 +2,7 @@ name: Audit detail preview verification
 on:
   push:
     branches: [feat/audit-detail-reading-system]
-    paths: [.audit-detail.patch, .audit-detail-files.json, .github/workflows/audit-detail-preview.yml]
+    paths: [.audit-detail.patch, .audit-detail-files.json, .audit-detail-fix.patch, .github/workflows/audit-detail-preview.yml]
 permissions:
   contents: write
 concurrency:
@@ -26,6 +26,7 @@ jobs:
           echo 'e438b045fb7a4a295c5760ad71417d675885861b8f1d6fcbf5dee3a654541bc9  .audit-detail.patch' | sha256sum -c
           git apply --check .audit-detail.patch
           git apply --index .audit-detail.patch
+          git apply --index .audit-detail-fix.patch
           git diff --cached --check
           python3 - <<'PY'
           import hashlib, json, pathlib
