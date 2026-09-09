@@ -1,0 +1,121 @@
+/* Audit detail reading system. Shared by the seven primary audit surfaces and
+   the two low-frequency audits. No task, state, visibility or write-gate changes. */
+.audit-workspace-header {
+  position: static;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 4px 0 18px;
+  border-bottom: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+.audit-workspace-back { width: max-content; max-width: 100%; min-height: 40px; font-size: 13px; line-height: 1.5; }
+.audit-workspace-heading .eyebrow { font-size: 11px; line-height: 1.5; letter-spacing: .07em; }
+.audit-workspace-heading h1 { font-size: clamp(26px, 2.5vw, 32px); line-height: 1.3; letter-spacing: -.025em; }
+.audit-workspace-body[data-audit-reading="true"] { margin-top: 0; padding: 24px; border-radius: 18px; box-shadow: 0 2px 12px rgba(23, 35, 51, .04); }
+[data-audit-reading="true"] { min-width: 0; font-size: 14px; line-height: 1.65; }
+[data-audit-reading="true"] :is(p, li, td, label) { font-size: 14px; line-height: 1.65; }
+[data-audit-reading="true"] :is(small, .content-export-note, .variation-form-note, .batch-footnote) { font-size: 12px; line-height: 1.65; }
+[data-audit-reading="true"] :is(h2, h3, h4) { line-height: 1.4; letter-spacing: -.015em; }
+[data-audit-reading="true"] h2 { font-size: 22px; }
+[data-audit-reading="true"] h3 { font-size: 17px; }
+[data-audit-reading="true"] h4 { font-size: 14px; }
+[data-audit-reading="true"] .eyebrow { font-size: 11px; letter-spacing: .07em; }
+[data-audit-reading="true"] :is(button, input, select, textarea) { font-family: inherit; font-size: 14px; line-height: 1.5; }
+[data-audit-reading="true"] button { min-height: 38px; }
+[data-audit-reading="true"] :is(button strong, button small, button span) { line-height: 1.5; }
+[data-audit-reading="true"] :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea) { max-width: 100%; min-width: 0; }
+[data-audit-reading="true"] :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select) { min-height: 40px; }
+[data-audit-reading="true"] :is(.sku-ops-tabs, .image-workspace-tabs, .ads-tabs) { gap: 4px; margin-bottom: 18px; padding: 4px; border-radius: 12px; }
+[data-audit-reading="true"] :is(.sku-ops-tabs, .image-workspace-tabs, .ads-tabs) button { min-height: 42px; padding: 9px 14px; font-size: 14px; }
+[data-audit-reading="true"] :is(.content-audit-panel, .image-audit-panel, .business-pricing-audit-panel, .subscription-audit-panel, .ads-coverage-panel, .aged-inventory-panel, .review-audit-panel) { min-width: 0; }
+[data-audit-reading="true"] .audit-details-disclosure { margin: 6px 0 16px; }
+[data-audit-reading="true"] .audit-details-disclosure > summary { min-height: 38px; }
+[data-audit-reading="true"] .audit-details-disclosure > summary strong { font-size: 13px; }
+[data-audit-reading="true"] .audit-details-body { padding: 16px; border-radius: 12px; }
+[data-audit-reading="true"] .audit-details-body p { max-width: 95ch; }
+
+/* Shared summary tiles: equal rhythm, readable labels, no clipped numbers. */
+[data-audit-reading="true"] :is(.content-audit-summary, .image-audit-summary, .business-pricing-summary, .subscription-audit-summary, .ads-coverage-summary, .aged-inventory-summary, .review-audit-summary) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  align-items: stretch;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+[data-audit-reading="true"] :is(.content-audit-summary, .image-audit-summary, .business-pricing-summary, .subscription-audit-summary, .ads-coverage-summary, .aged-inventory-summary, .review-audit-summary) > :is(div, button, article) {
+  min-width: 0;
+  min-height: 94px;
+  padding: 14px 16px;
+  border: 1px solid #e1e5ea;
+  border-radius: 12px;
+  text-align: left;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+[data-audit-reading="true"] :is(.content-audit-summary, .image-audit-summary, .business-pricing-summary, .subscription-audit-summary, .ads-coverage-summary, .aged-inventory-summary, .review-audit-summary) :is(span, small) { font-size: 12px; line-height: 1.5; }
+[data-audit-reading="true"] :is(.content-audit-summary, .image-audit-summary, .business-pricing-summary, .subscription-audit-summary, .ads-coverage-summary, .aged-inventory-summary, .review-audit-summary) strong { font-size: 23px; line-height: 1.3; font-variant-numeric: tabular-nums; }
+[data-audit-reading="true"] :is(.business-pricing-summary, .image-audit-summary, .content-audit-summary) > button[aria-pressed="true"] { border-color: var(--appearance-accent, #2b3a53); box-shadow: inset 0 0 0 1px var(--appearance-accent, #2b3a53); }
+[data-audit-reading="true"] .content-audit-summary-spacer:empty { display: none; }
+
+/* Toolbars wrap locally rather than creating page-level horizontal scrolling. */
+[data-audit-reading="true"] :is(.audit-toolbar, .content-audit-controls, .content-audit-view-options, .content-audit-pagination, .business-pricing-results-toolbar, .business-pricing-batch-controls, .subscription-audit-controls, .subscription-audit-filters, .review-audit-actions, .aged-inventory-actions) {
+  min-width: 0;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+[data-audit-reading="true"] :is(.content-audit-controls, .business-pricing-results-toolbar, .content-audit-pagination) { margin-top: 16px; margin-bottom: 16px; }
+[data-audit-reading="true"] :is(.content-audit-controls, .business-pricing-results-toolbar, .audit-toolbar) > * { min-width: 0; max-width: 100%; }
+[data-audit-reading="true"] :is(.content-audit-export-primary, .business-pricing-export-button, .review-audit-export) { padding: 14px 16px; border-radius: 12px; }
+[data-audit-reading="true"] .content-audit-export-primary strong { font-size: 15px; }
+[data-audit-reading="true"] .content-audit-export-primary small { font-size: 12px; }
+[data-audit-reading="true"] .content-audit-roundtrip { padding: 16px; border-radius: 14px; }
+[data-audit-reading="true"] :is(.content-audit-source-deadline, .content-audit-note, .business-pricing-notice, .subscription-capability-notice, .ads-coverage-notice, .aged-inventory-notice, .review-audit-notice, .review-audit-boundary, .variation-warning, .price-error) { font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+[data-audit-reading="true"] :is(.content-audit-list, .image-audit-results, .business-pricing-list, .subscription-offer-list, .aged-inventory-list) { gap: 12px; }
+[data-audit-reading="true"] :is(.content-audit-row, .image-audit-row, .business-pricing-row, .subscription-offer-card, .aplus-document-card) { min-width: 0; border-radius: 14px; }
+[data-audit-reading="true"] :is(.content-audit-product, .image-audit-row, .business-pricing-product, .subscription-offer-card, .aged-inventory-product, .aplus-document-card) strong { font-size: 14px; line-height: 1.55; }
+[data-audit-reading="true"] :is(.content-audit-product, .business-pricing-product, .aged-inventory-product) :is(span, small) { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+[data-audit-reading="true"] :is(.content-audit-row-details > summary, .business-pricing-row-detail-toggle, .content-audit-issues, .business-pricing-findings, .subscription-offer-problem) { font-size: 13px; line-height: 1.65; }
+[data-audit-reading="true"] :is(.content-audit-original-copy, .content-audit-before-after) { font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+[data-audit-reading="true"] :is(.content-audit-original-copy, .content-audit-before-after) p { max-width: 95ch; white-space: pre-wrap; }
+[data-audit-reading="true"] :is(.content-audit-edit-actions, .business-pricing-row-actions) { gap: 8px; }
+[data-audit-reading="true"] :is(.business-pricing-row-status, .business-pricing-readonly, .aplus-document-badges, .aplus-document-evidence) { font-size: 12px; line-height: 1.6; }
+[data-audit-reading="true"] :is(table, th, td) { font-variant-numeric: tabular-nums; }
+[data-audit-reading="true"] th { padding: 12px 14px; font-size: 12px; line-height: 1.5; }
+[data-audit-reading="true"] td { padding: 14px; vertical-align: top; }
+[data-audit-reading="true"] :is(.variation-table-scroll, .subscription-chart-scroll) { max-width: 100%; min-width: 0; overflow-x: auto; }
+[data-audit-reading="true"] .variation-cell-clamp { font-size: 13px; line-height: 1.65; }
+[data-audit-reading="true"] :is(.subscription-chart-heading, .review-audit-hero) { gap: 12px; flex-wrap: wrap; }
+[data-audit-reading="true"] :is(.subscription-chart-axis, .subscription-chart-label) { font-size: 12px; }
+[data-audit-reading="true"] .aged-inventory-tier-grid { gap: 10px; }
+[data-audit-reading="true"] .drawer-header h2 { font-size: 24px; line-height: 1.35; }
+[data-audit-reading="true"] .drawer-header { margin-bottom: 20px; }
+
+/* Keep optional rose appearance on neutral selection chrome only. */
+:root[data-ui-accent="pink"] [data-audit-reading="true"] :is(.sku-ops-tabs, .image-workspace-tabs, .ads-tabs) button.active { background: #fbeaf2; color: #963361; }
+:root[data-ui-accent="pink"] .audit-workspace-back { border-color: #ead5df; color: #963361; background: #fff8fb; }
+
+@media (max-width: 900px) {
+  .audit-workspace-body[data-audit-reading="true"] { padding: 18px; }
+  [data-audit-reading="true"] :is(.content-audit-export-grid, .review-audit-rankings) { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .audit-workspace-body[data-audit-reading="true"] { padding: 14px; border-radius: 14px; }
+  [data-audit-reading="true"] :is(.content-audit-summary, .image-audit-summary, .business-pricing-summary, .subscription-audit-summary, .ads-coverage-summary, .aged-inventory-summary, .review-audit-summary) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  [data-audit-reading="true"] :is(.content-audit-summary, .image-audit-summary, .business-pricing-summary, .subscription-audit-summary, .ads-coverage-summary, .aged-inventory-summary, .review-audit-summary) > :is(div, button, article) { padding: 12px; }
+  [data-audit-reading="true"] :is(.sku-ops-tabs, .image-workspace-tabs, .ads-tabs) { display: flex; flex-wrap: wrap; }
+  [data-audit-reading="true"] :is(.sku-ops-tabs, .image-workspace-tabs, .ads-tabs) button { flex: 1 1 130px; white-space: normal; }
+  [data-audit-reading="true"] .content-audit-export-primary { grid-template-columns: auto minmax(0, 1fr); }
+  [data-audit-reading="true"] :is(.content-audit-controls, .subscription-audit-controls, .subscription-audit-filters) { display: flex; flex-wrap: wrap; }
+  [data-audit-reading="true"] :is(.content-audit-controls, .subscription-audit-controls, .subscription-audit-filters) > label { flex: 1 1 100%; }
+  [data-audit-reading="true"] :is(.content-audit-product, .business-pricing-product, .aged-inventory-product) { min-width: 0; }
+  [data-audit-reading="true"] .drawer-header h2 { font-size: 21px; }
+}
+[data-audit-reading="true"] .subscription-audit-filters button { min-height: 42px; flex: 1 1 76px; }
+[data-audit-reading="true"] .subscription-audit-filters button :is(span, strong, small) { font-size: 12px; line-height: 1.5; }
+[data-audit-reading="true"] .subscription-audit-summary > div:last-child strong { font-size: 18px; text-wrap: balance; }
