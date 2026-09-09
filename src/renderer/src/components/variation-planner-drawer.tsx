@@ -37,6 +37,11 @@ import {
   marketplaceById,
   marketplaceSelectLabel,
 } from "../../../shared/marketplaces";
+import {
+  parseVariationPreviewDiagnostics,
+  safeVariationDiagnosticText,
+  type VariationPreviewDiagnostics,
+} from "../variation-preview-diagnostics";
 
 import UnboundVariationAuditPanel, {
   type UnboundVariationAuditCache,
@@ -134,6 +139,7 @@ class VariationRequestError extends Error {
       targetParentSku?: unknown;
     },
     readonly requiredFieldChoices: VariationFieldView[] | null = null,
+    readonly diagnostics: VariationPreviewDiagnostics | null = null,
   ) {
     super(message);
   }
@@ -142,19 +148,11 @@ async function responseError(
   response: Response,
   fallback: string,
 ): Promise<Error> {
-  let problem: {
-    code?: string;
-    message?: string;
-    requestId?: string | null;
-    requiredFields?: unknown;
-    requiredFieldChoices?: unknown;
-    action?: unknown;
-    marketplaceId?: unknown;
-    sellerSku?: unknown;
-    targetParentSku?: unknown;
-  } = {};
+  let problem: Record<string, unknown> = {};
   try {
-    problem = await response.json();
+    const raw: unknown = await response.json();
+    if (raw && typeof raw === "object" && !Array.isArray(raw))
+      problem = raw as Record<string, unknown>;
   } catch {
     /* Keep the local safe fallback. */
   }
@@ -162,20 +160,32 @@ async function responseError(
     return new Error(
       "請更新 AMZ.API Notebook Key，以使用變體必填資料編輯與安全預檢。",
     );
+  const diagnostics = parseVariationPreviewDiagnostics(
+    problem,
+    response.status,
+  );
   const message =
-    problem.message ||
-    variationFamilyErrorMessage(response.status, problem) ||
+    safeVariationDiagnosticText(problem.message) ||
+    variationFamilyErrorMessage(response.status, {
+      code: diagnostics?.code ?? undefined,
+    }) ||
     fallback;
   return new VariationRequestError(
-    `${message}${problem.requestId ? `（Request ID: ${problem.requestId}）` : ""}`,
-    problem.code,
+    `${message}${diagnostics?.requestId ? `（Request ID: ${diagnostics.requestId}）` : ""}`,
+    diagnostics?.code ?? undefined,
     problem.code === "VARIATION_FIELD_REQUIRED"
       ? parseVariationRequiredFields(problem.requiredFields)
       : null,
-    problem,
+    {
+      action: problem.action,
+      marketplaceId: problem.marketplaceId,
+      sellerSku: problem.sellerSku,
+      targetParentSku: problem.targetParentSku,
+    },
     problem.code === "VARIATION_FIELD_REQUIRED"
       ? parseVariationRequiredFields(problem.requiredFieldChoices)
       : null,
+    diagnostics,
   );
 }
 
@@ -245,6 +255,8 @@ export default function VariationPlannerDrawer({
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [previewDiagnostics, setPreviewDiagnostics] =
+    useState<VariationPreviewDiagnostics | null>(null);
   const [failedPreviewAction, setFailedPreviewAction] =
     useState<VariationMoveAction | null>(null);
   const [sourceFilter, setSourceFilter] = useState("");
@@ -319,6 +331,7 @@ export default function VariationPlannerDrawer({
     sourceAbortRef.current?.abort();
     targetAbortRef.current?.abort();
     preparationAbortRef.current?.abort();
+    setPreviewDiagnostics(null);
     onClose();
   }, [onClose]);
   useEffect(() => {
@@ -345,6 +358,7 @@ export default function VariationPlannerDrawer({
     setJsonDrafts({});
     setFieldErrors({});
     setPreview(null);
+    setPreviewDiagnostics(null);
     setLastResult(null);
     setWorkflowError(null);
     setFailedPreviewAction(null);
@@ -447,6 +461,7 @@ export default function VariationPlannerDrawer({
       setPreparations({});
       setSelectedFieldChoices({});
       setPreview(null);
+      setPreviewDiagnostics(null);
       setWorkflowError(null);
       setFailedPreviewAction(null);
       try {
@@ -519,6 +534,7 @@ export default function VariationPlannerDrawer({
       setPreparations({});
       setSelectedFieldChoices({});
       setPreview(null);
+      setPreviewDiagnostics(null);
       setWorkflowError(null);
       setFailedPreviewAction(null);
       const actions: VariationMoveAction[] = [
@@ -800,6 +816,7 @@ export default function VariationPlannerDrawer({
     operationRef.current = true;
     setWriteAction(action);
     setPreview(null);
+    setPreviewDiagnostics(null);
     setWorkflowError(null);
     setFailedPreviewAction(null);
     try {
@@ -818,6 +835,9 @@ export default function VariationPlannerDrawer({
       setPreview({ body, result });
     } catch (error) {
       setFailedPreviewAction(action);
+      setPreviewDiagnostics(
+        error instanceof VariationRequestError ? error.diagnostics : null,
+      );
       if (
         error instanceof VariationRequestError &&
         (error.requiredFields?.length || error.requiredFieldChoices?.length) &&
@@ -894,6 +914,7 @@ export default function VariationPlannerDrawer({
     operationRef.current = true;
     sentKeysRef.current.add(body.idempotencyKey);
     setWriteAction(body.action);
+    setPreviewDiagnostics(null);
     setWorkflowError(null);
     setLastResult(null);
     try {
@@ -912,6 +933,7 @@ export default function VariationPlannerDrawer({
       });
       setLastResult(result);
       setPreview(null);
+      setPreviewDiagnostics(null);
       setStagedState(body.action === "detach" ? "detached" : "attached");
       if (body.action === "detach")
         setStagedMember((current) =>
@@ -921,6 +943,7 @@ export default function VariationPlannerDrawer({
         );
     } catch (error) {
       setPreview(null);
+      setPreviewDiagnostics(null);
       if (
         error instanceof VariationRequestError &&
         [
@@ -969,6 +992,7 @@ export default function VariationPlannerDrawer({
     value: string | number | boolean | null,
   ) => {
     setPreview(null);
+    setPreviewDiagnostics(null);
     setValues((current) =>
       updateVariationLeaf({
         values: current,
@@ -989,6 +1013,7 @@ export default function VariationPlannerDrawer({
     );
     if (!prepared || !choice) return;
     setPreview(null);
+    setPreviewDiagnostics(null);
     focusRequiredFieldsRef.current = true;
     setSelectedFieldChoices((current) => ({
       ...current,
@@ -1004,6 +1029,7 @@ export default function VariationPlannerDrawer({
   const removeSelectedField = (name: string) => {
     if (busy || uncertain || stagedState === "attached") return;
     setPreview(null);
+    setPreviewDiagnostics(null);
     setSelectedFieldChoices((current) =>
       Object.fromEntries(Object.entries(current).map(([action, fields]) => [
         action,
@@ -1035,6 +1061,7 @@ export default function VariationPlannerDrawer({
       }
       onJsonDraftChange={(text) => {
         setPreview(null);
+        setPreviewDiagnostics(null);
         setJsonDrafts((current) => ({ ...current, [field.name]: text }));
         try {
           const rows = parseVariationJsonValues({ text, marketplaceId });
@@ -1408,6 +1435,7 @@ export default function VariationPlannerDrawer({
                   setTargetFamily(null);
                   setTargetInput("");
                   setPreview(null);
+                  setPreviewDiagnostics(null);
                 }}
               >
                 移除目標，僅解除
@@ -1610,6 +1638,7 @@ export default function VariationPlannerDrawer({
           {workflowError}
         </p>
       )}
+      {previewDiagnostics && <PreviewDiagnostics details={previewDiagnostics} />}
       {uncertain && (
         <div className="variation-unknown" role="status">
           <strong>結果待確認 · 已停止後續寫入</strong>
@@ -1859,6 +1888,92 @@ export default function VariationPlannerDrawer({
         {content}
       </aside>
     </div>
+  );
+}
+
+function PreviewDiagnostics({
+  details,
+}: {
+  details: VariationPreviewDiagnostics;
+}) {
+  const unavailable = "未提供或無法安全顯示";
+  const list = (items: string[] | null) =>
+    items === null ? "格式不符或已隱藏" : items.join("、") || "公開回覆未列出";
+  return (
+    <details
+      className="variation-workspace-section"
+      aria-label="Amazon 檢查詳情"
+    >
+      <summary>查看 Amazon 檢查詳情</summary>
+      <p className="variation-form-note">
+        這是本次檢查的公開資訊；本機回覆狀態不代表 Amazon HTTP
+        狀態，也不表示可以送出修改。
+      </p>
+      <div className="variation-table-scroll">
+        <table aria-label="檢查回覆資訊">
+          <tbody>
+            <tr>
+              <th scope="row">本機回覆 HTTP 狀態</th>
+              <td>{details.localStatus}</td>
+            </tr>
+            <tr>
+              <th scope="row">本機錯誤代碼</th>
+              <td>{details.code ?? unavailable}</td>
+            </tr>
+            <tr>
+              <th scope="row">Amazon 上游代碼</th>
+              <td>{details.upstreamCode ?? unavailable}</td>
+            </tr>
+            <tr>
+              <th scope="row">檢查作業</th>
+              <td>{details.operation ?? unavailable}</td>
+            </tr>
+            <tr>
+              <th scope="row">Request ID</th>
+              <td>{details.requestId ?? unavailable}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {details.issues.length > 0 ? (
+        <div className="variation-table-scroll">
+          <table aria-label="Amazon 公開問題欄位">
+            <thead>
+              <tr>
+                <th scope="col">問題代碼</th>
+                <th scope="col">程度</th>
+                <th scope="col">欄位名稱</th>
+                <th scope="col">分類</th>
+                <th scope="col">站點 ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {details.issues.map((issue, index) => (
+                <tr key={index}>
+                  <td>{issue.code ?? unavailable}</td>
+                  <td>{issue.severity}</td>
+                  <td>{list(issue.attributeNames)}</td>
+                  <td>{list(issue.categories)}</td>
+                  <td>{list(issue.marketplaceIds)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p>
+          {details.issuesUnavailable
+            ? "問題清單未提供或格式不完整。"
+            : "公開回覆未列出可顯示的問題欄位，部分資訊可能已隱藏。"}
+        </p>
+      )}
+      {details.omittedIssues > 0 && (
+        <p>
+          未全部列出：另有 {details.omittedIssues}{" "}
+          則問題超過顯示上限或格式不完整。
+        </p>
+      )}
+    </details>
   );
 }
 

@@ -20,7 +20,7 @@ describe("publisher-signed desktop release workflow", () => {
     };
 
     expect(packageJson.amzApiUpdateChannel).toBe("disabled");
-    expect(packageJson.devDependencies?.["js-yaml"]).toBe("4.3.1");
+    expect(packageJson.devDependencies?.["js-yaml"]).toBe("4.3.2");
     expect(workflow).toContain('tags: ["v*.*.*"]');
     expect(workflow).toContain("fetch-depth: 0");
     expect(workflow).toContain(

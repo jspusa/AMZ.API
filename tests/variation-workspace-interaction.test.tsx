@@ -363,6 +363,239 @@ describe("variation workspace interactions", () => {
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
   });
+  it("shows bounded public Preview diagnostics without treating the local response status as Amazon status", async () => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        {
+          code: "INVALID_LISTING_REQUEST",
+          upstreamCode: "4000002",
+          operation: "patchListingsItemPreview",
+          requestId: "PREVIEW-DIAGNOSTIC-1",
+          message: "'Contains Liquid Contents?' is required but missing.",
+          issues: [
+            {
+              code: "4000002",
+              severity: "ERROR",
+              message: "Do not expose raw issue message.",
+              attributeNames: ["contains_liquid_contents"],
+              categories: ["MISSING_ATTRIBUTE"],
+              marketplaceIds: [marketplaceId],
+            },
+          ],
+        },
+        { status: 422 },
+      ),
+    );
+    await click("檢查綁定內容");
+    const details = renderer!.root.findByProps({
+      "aria-label": "Amazon 檢查詳情",
+    });
+    expect(details.type).toBe("details");
+    expect(details.props.open).not.toBe(true);
+    expect(output()).toContain("查看 Amazon 檢查詳情");
+    expect(output()).toContain("本機回覆 HTTP 狀態");
+    expect(output()).toContain("不代表 Amazon HTTP 狀態");
+    expect(output()).toContain("INVALID_LISTING_REQUEST");
+    expect(output()).toContain("4000002");
+    expect(output()).toContain("patchListingsItemPreview");
+    expect(output()).toContain("PREVIEW-DIAGNOSTIC-1");
+    expect(output()).toContain("contains_liquid_contents");
+    expect(output()).toContain("MISSING_ATTRIBUTE");
+    expect(output()).not.toContain("Do not expose raw issue message.");
+    expect(output()).toContain(
+      "'Contains Liquid Contents?' is required but missing.",
+    );
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" }),
+    ).toHaveLength(0);
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH"),
+    ).toHaveLength(0);
+  });
+  it("clears the previous diagnostics as soon as a fresh Preview starts", async () => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        {
+          code: "VALIDATION_FAILED",
+          message: "商品資料缺漏。",
+          requestId: "OLD-PREVIEW",
+          issues: [],
+        },
+        { status: 422 },
+      ),
+    );
+    await click("檢查綁定內容");
+    expect(output()).toContain("OLD-PREVIEW");
+    let finish!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await click("檢查綁定內容");
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Amazon 檢查詳情" }),
+    ).toHaveLength(0);
+    expect(output()).not.toContain("OLD-PREVIEW");
+    await act(async () =>
+      finish(
+        Response.json(
+          {
+            code: "UPSTREAM_UNAVAILABLE",
+            message: "請稍後再檢查。",
+            requestId: "NEW-PREVIEW",
+            issues: [],
+          },
+          { status: 502 },
+        ),
+      ),
+    );
+    expect(output()).toContain("NEW-PREVIEW");
+    expect(output()).not.toContain("OLD-PREVIEW");
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(2);
+    await click("檢查綁定內容");
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Amazon 檢查詳情" }),
+    ).toHaveLength(0);
+    expect(output()).not.toContain("NEW-PREVIEW");
+    expect(
+      renderer!.root.findByProps({ "aria-label": "確認綁定變體" }).props.disabled,
+    ).toBe(false);
+  });
+  it("clears diagnostics when leaving the variation workspace", async () => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        {
+          code: "VALIDATION_FAILED",
+          message: "商品資料缺漏。",
+          requestId: "CLOSED-PREVIEW",
+          issues: [],
+        },
+        { status: 422 },
+      ),
+    );
+    await click("檢查綁定內容");
+    expect(output()).toContain("CLOSED-PREVIEW");
+    await click("返回 AMZ.API 首頁");
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Amazon 檢查詳情" }),
+    ).toHaveLength(0);
+  });
+  it("hides malformed and private diagnostic values without creating inputs or retrying", async () => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        {
+          code: "INVALID_LISTING_REQUEST",
+          message: "request ?authorization=SYNTHETIC_PRIVATE",
+          requestId: "https://example.invalid/SYNTHETIC_PRIVATE",
+          upstreamCode: "A1234567890123",
+          sellerId: "SYNTHETIC_PRIVATE",
+          operation: "unknownOperation",
+          issues: [
+            {
+              code: "4000002",
+              severity: "ERROR",
+              message: "SYNTHETIC_PRIVATE",
+              attributeNames: ["https://example.invalid/SYNTHETIC_PRIVATE"],
+              categories: {},
+              marketplaceIds: ["A1234567890123"],
+            },
+            { severity: ["ERROR"], message: "SYNTHETIC_PRIVATE" },
+          ],
+        },
+        { status: 422 },
+      ),
+    );
+    await click("檢查綁定內容");
+    expect(output()).not.toContain("SYNTHETIC_PRIVATE");
+    expect(output()).not.toContain("A1234567890123");
+    expect(output()).not.toContain("unknownOperation");
+    expect(output()).toContain("格式不符或已隱藏");
+    expect(output()).toContain("未全部列出");
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "是否含液體 · Value" }),
+    ).toHaveLength(0);
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH"),
+    ).toHaveLength(0);
+  });
+  it("shows the diagnostic issue cap and omitted count without implying the public response is complete", async () => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        {
+          code: "VALIDATION_FAILED",
+          message: "商品資料缺漏。",
+          issues: Array.from({ length: 25 }, (_, index) => ({
+            code: `ISSUE_${index}`,
+            severity: "ERROR",
+          })),
+        },
+        { status: 422 },
+      ),
+    );
+    await click("檢查綁定內容");
+    const table = renderer!.root.findByProps({
+      "aria-label": "Amazon 公開問題欄位",
+    });
+    expect(table.findByType("tbody").findAllByType("tr")).toHaveLength(20);
+    expect(output()).toContain("ISSUE_19");
+    expect(output()).not.toContain("ISSUE_20");
+    expect(output()).toContain("公開回覆未列出");
+    const omission = renderer!.root
+      .findAllByType("p")
+      .find((node) => node.children.includes("未全部列出：另有 "));
+    expect(omission?.children.join("")).toContain("另有 5 則問題");
+  });
+  it("clears stale diagnostics when editing the form or replacing the target context", async () => {
+    await mount();
+    await change("是否含液體 · Value", "false");
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        { code: "VALIDATION_FAILED", message: "商品資料缺漏。", issues: [] },
+        { status: 422 },
+      ),
+    );
+    await click("檢查解除內容");
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Amazon 檢查詳情" }),
+    ).toHaveLength(1);
+    await change("是否含液體 · Value", "true");
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Amazon 檢查詳情" }),
+    ).toHaveLength(0);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        { code: "VALIDATION_FAILED", message: "商品資料缺漏。", issues: [] },
+        { status: 422 },
+      ),
+    );
+    await click("檢查解除內容");
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Amazon 檢查詳情" }),
+    ).toHaveLength(1);
+    await act(async () =>
+      renderer!.root
+        .findByProps({ "data-variation-lookup": "target" })
+        .props.onClick(),
+    );
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Amazon 檢查詳情" }),
+    ).toHaveLength(0);
+  });
   it("focuses a newly required liquid field, preserves immutable dimensions, and requires explicit input plus a fresh attach preview", async () => {
     const focus = vi.fn();
     await mountStandalone(focus);
