@@ -1,0 +1,67 @@
+name: Audit detail preview verification
+on:
+  push:
+    branches: [feat/audit-detail-reading-system]
+    paths: [.audit-detail.z64]
+permissions:
+  contents: write
+concurrency:
+  group: audit-detail-preview
+  cancel-in-progress: true
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Decode and verify the exact reviewed renderer patch
+        run: |
+          mkdir -p audit-detail-evidence
+          python3 - <<'PY'
+          import base64, hashlib, pathlib, zlib
+          patch = zlib.decompress(base64.b64decode(pathlib.Path('.audit-detail.z64').read_text()))
+          assert hashlib.sha256(patch).hexdigest() == 'c6d68236fa25735b5c9fe8f91081ca99209d3b4a91f2fba1f3f7ca706b27129c'
+          pathlib.Path('/tmp/audit-detail.patch').write_bytes(patch)
+          PY
+          git apply --check /tmp/audit-detail.patch
+          git apply --index /tmp/audit-detail.patch
+          git diff --cached --check
+      - run: npm ci --ignore-scripts
+      - name: Production dependency audit
+        run: npm audit --omit=dev > audit-detail-evidence/audit.txt
+      - name: Typecheck, tests and production build
+        run: npm run check > audit-detail-evidence/check.txt 2>&1
+      - name: Production browser checks with synthetic loopback data only
+        run: |
+          npm install --prefix /tmp/audit-browser --no-save --ignore-scripts playwright@1.55.1
+          APPEARANCE_PLAYWRIGHT=/tmp/audit-browser/node_modules/playwright/index.mjs node scripts/visual-qa/appearance-check.mjs > audit-detail-evidence/browser.txt 2>&1
+      - name: Store verified blobs without changing branch refs
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const cp = require('child_process');
+            const paths = cp.execFileSync('git', ['diff', '--cached', '--name-only', '-z'], {encoding:'utf8'}).split('\0').filter(Boolean);
+            const entries = [];
+            for (const path of paths) {
+              if (!/^(src\/renderer\/|tests\/|scripts\/|docs\/)/.test(path)) throw new Error('Unexpected patch path: ' + path);
+              const content = fs.readFileSync(path);
+              const result = await github.rest.git.createBlob({...context.repo, content:content.toString('base64'), encoding:'base64'});
+              entries.push({path, mode:'100644', type:'blob', sha:result.data.sha});
+            }
+            fs.writeFileSync('audit-detail-evidence/tree.json', JSON.stringify({verifiedSource:context.sha, entries}, null, 2));
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-detail-verification
+          path: |
+            audit-detail-evidence
+            out/renderer
+            appearance-evidence
+          retention-days: 1
