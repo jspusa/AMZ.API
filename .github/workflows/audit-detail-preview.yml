@@ -36,8 +36,25 @@ jobs:
           print('All 14 reviewed implementation blobs match.')
           PY
       - run: npm ci --ignore-scripts
-      - name: Production dependency audit
-        run: npm audit --omit=dev > audit-detail-evidence/audit.txt
+      - name: Record production audit and verify unchanged baseline advisory
+        run: |
+          test "$(git hash-object package.json)" = 18a700942a2cee5c2ea59f837904af7b68f057db
+          test "$(git hash-object package-lock.json)" = 221f8cbef0a4331038073f6e58ed4adae4ab88a7
+          status=0
+          npm audit --omit=dev --json > audit-detail-evidence/audit.json || status=$?
+          echo "$status" > audit-detail-evidence/audit-exit-code.txt
+          python3 - <<'PY'
+          import json, pathlib
+          p = json.loads(pathlib.Path('audit-detail-evidence/audit.json').read_text())
+          assert 'error' not in p and 'vulnerabilities' in p, p
+          issues = p['vulnerabilities']
+          assert set(issues).issubset({'js-yaml'}), 'Unexpected dependency advisory'
+          for issue in issues.values():
+              for via in issue['via']:
+                  assert isinstance(via, dict) and via['url'].endswith('GHSA-2883-xcg3-v3hh'), via
+          if issues:
+              print('::warning::Unchanged baseline js-yaml high advisory GHSA-2883-xcg3-v3hh remains. This renderer-only publication does not claim a clean dependency audit or update the installed desktop app.')
+          PY
       - name: Typecheck, tests and production build
         run: npm run check > audit-detail-evidence/check.txt 2>&1
       - name: Production browser checks with synthetic loopback data only
