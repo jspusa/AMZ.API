@@ -21,6 +21,8 @@ import {
 import DeferredWorkspace from "./deferred-workspace";
 import AdsDrawer from "./ads-drawer";
 import AuditSuiteHomeCard from "./audit-suite-home-card";
+import GlobalSkuSearch from "./global-sku-search";
+import HomeAuditSummary, { AuditIdleStatus, AuditResultStatus } from "./home-audit-summary";
 import AuditWorkspaceShell from "./audit-workspace-shell";
 import AplusAuditDrawer from "./a-plus-audit-drawer";
 import {
@@ -1907,7 +1909,7 @@ export default function Dashboard({
       return (
         <span className="content-audit-home-status" aria-live="polite">
           <strong>{outcome === "success"
-            ? "成功"
+            ? "檢查完成"
             : outcome === "partial" ? "部分完成" : "未完成"}</strong>
           <small>{outcome === "success"
             ? "點開查看並載入本次結果"
@@ -2283,14 +2285,14 @@ export default function Dashboard({
 
           <div className="workspace-context-shell">
             <div className="workspace-contextbar">
-              <label className="global-sku"><span aria-hidden="true"><WorkspaceGlyph name="search" /></span><input value={globalSku} onChange={(event) => setGlobalSku(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); openCommandCenter(); } }} placeholder="搜尋 Seller SKU，開始商品作業" aria-label="全域 Seller SKU" disabled={Boolean(activeAuditWorkspace) || inlineTool} /></label>
+              <GlobalSkuSearch value={globalSku} onChange={setGlobalSku} onSubmit={openCommandCenter} disabled={Boolean(activeAuditWorkspace) || inlineTool} />
               <button className="command-topbar-button" type="button" onClick={openCommandCenter} disabled={Boolean(activeAuditWorkspace) || inlineTool}><span aria-hidden="true">✦</span>SKU 總覽</button>
               <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
               <SystemHealthControl
                 marketplaceId={marketplaceId}
                 autoSync={autoSync}
                 auditPreference={auditPreference}
-                disabled={Boolean(activeAuditWorkspace) || inlineTool}
+                disabled={homeReturnLocked}
                 onAutoSyncChange={setAutoSyncPreference}
               />
             </div>
@@ -2365,10 +2367,21 @@ export default function Dashboard({
             />
           </div>
 
+          <HomeAuditSummary entries={[
+            { id: "content", state: contentAuditCardState, attention: contentAuditCacheMatchesJob && contentAuditForDrawer ? currentAuditAttentionCount : null },
+            { id: "image", state: imageAuditCardState, attention: imageAuditCacheMatchesJob && imageAuditForDrawer ? currentImageAuditAttentionCount : null },
+            { id: "aplus", state: aplusAuditCardState, attention: aplusAuditForDrawer ? currentAplusAuditAttentionCount : null },
+            { id: "variation", state: variationAuditCardState, attention: variationAuditCacheMatchesJob && variationAuditForDrawer ? currentUnboundVariationAudit!.snapshot.summary.unbound : null },
+            { id: "subscription", state: subscriptionAuditCardState, attention: null },
+            { id: "businessPricing", state: businessPricingAuditCardState, attention: businessPricingCacheMatchesJob && businessPricingAuditForDrawer ? currentBusinessPricingAttentionCount : null },
+            { id: "advertising", state: advertisingAuditCardState, attention: null },
+          ]} />
+
           <div className="health-audit-home-grid">
             <section className="content-audit-home-card" data-audit-state={contentAuditCardState} aria-label="全站文案健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="content" /></span>
               <div><h2>文案</h2></div>
+              {contentAuditCardState === "idle" && <AuditIdleStatus />}
               {currentContentLaunchFailure
                 ? auditLaunchFailureStatus(currentContentLaunchFailure)
                 : standaloneProgressStatus(
@@ -2377,10 +2390,7 @@ export default function Dashboard({
                       : null,
                   )}
               {!currentContentLaunchFailure && contentAuditCacheMatchesJob && currentContentAudit && (
-                <span className="content-audit-home-status">
-                  <strong>{currentContentAuditOutcome}</strong>
-                  <small>{currentAuditAttentionCount.toLocaleString()} 個待確認項目</small>
-                </span>
+                <AuditResultStatus count={currentAuditAttentionCount} label="項待確認" complete={currentContentAuditOutcome === "成功"} />
               )}
               <button
                 type="button"
@@ -2396,6 +2406,7 @@ export default function Dashboard({
             <section className="content-audit-home-card image-audit-home-card" data-audit-state={imageAuditCardState} aria-label="全站圖片健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="image" /></span>
               <div><h2>圖片</h2></div>
+              {imageAuditCardState === "idle" && <AuditIdleStatus />}
               {currentImageLaunchFailure
                 ? auditLaunchFailureStatus(currentImageLaunchFailure)
                 : standaloneProgressStatus(
@@ -2404,10 +2415,7 @@ export default function Dashboard({
                       : null,
                   )}
               {!currentImageLaunchFailure && imageAuditCacheMatchesJob && currentImageAudit && (
-                <span className="content-audit-home-status">
-                  <strong>{currentImageAuditOutcome}</strong>
-                  <small>{currentImageAuditAttentionCount.toLocaleString()} 個需補圖／確認</small>
-                </span>
+                <AuditResultStatus count={currentImageAuditAttentionCount} label="項待確認" complete={currentImageAuditOutcome === "成功"} />
               )}
               <button
                 type="button"
@@ -2422,6 +2430,7 @@ export default function Dashboard({
             <section className="content-audit-home-card" data-audit-state={aplusAuditCardState} aria-label="全站 A+ 健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="aplus" /></span>
               <div><h2>A+</h2></div>
+              {aplusAuditCardState === "idle" && <AuditIdleStatus />}
               {currentAplusLaunchFailure &&
                 auditLaunchFailureStatus(currentAplusLaunchFailure)}
               {!currentAplusLaunchFailure && currentAplusJob && !currentAplusJob.ready && (
@@ -2452,10 +2461,7 @@ export default function Dashboard({
                 (currentAplusJob.ready && currentAplusJob.status === "completed")
                 )
               ) && currentAplusAudit && (
-                <span className="content-audit-home-status">
-                  <strong>{currentAplusAuditOutcome}</strong>
-                  <small>{currentAplusAuditAttentionCount.toLocaleString()} 個缺 A+／待確認</small>
-                </span>
+                <AuditResultStatus count={currentAplusAuditAttentionCount} label="個缺 A+／待確認" complete={currentAplusAuditOutcome === "成功"} />
               )}
               <button
                 type="button"
@@ -2476,6 +2482,7 @@ export default function Dashboard({
             <section className="content-audit-home-card" data-audit-state={variationAuditCardState} aria-label="未綁變體健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="variation" /></span>
               <div><h2>變體</h2></div>
+              {variationAuditCardState === "idle" && <AuditIdleStatus />}
               {currentVariationLaunchFailure
                 ? auditLaunchFailureStatus(currentVariationLaunchFailure)
                 : standaloneProgressStatus(
@@ -2484,12 +2491,7 @@ export default function Dashboard({
                       : null,
                   )}
               {!currentVariationLaunchFailure && variationAuditCacheMatchesJob && currentUnboundVariationAudit && (
-                <span className="content-audit-home-status">
-                  <strong>{currentUnboundVariationAudit.snapshot.summary.incomplete > 0
-                    ? "部分完成"
-                    : "成功"}</strong>
-                  <small>{currentUnboundVariationAudit.snapshot.summary.unbound.toLocaleString()} 個確定未綁</small>
-                </span>
+                <AuditResultStatus count={currentUnboundVariationAudit.snapshot.summary.unbound} label="個確定未綁" complete={currentUnboundVariationAudit.snapshot.summary.incomplete === 0} />
               )}
               <button type="button" className="audit-card-hit-area" data-audit-workspace-launch="variation" onClick={() => {
                 setAuditPreference("variations");
@@ -2501,6 +2503,7 @@ export default function Dashboard({
             <section className="content-audit-home-card" data-audit-state={subscriptionAuditCardState} aria-label="全站訂閱價格健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="subscription" /></span>
               <div><h2>訂閱價格</h2></div>
+              {subscriptionAuditCardState === "idle" && <AuditIdleStatus />}
               {currentSubscriptionLaunchFailure
                 ? auditLaunchFailureStatus(currentSubscriptionLaunchFailure)
                 : standaloneProgressStatus(currentSubscriptionAuditJob)}
@@ -2522,6 +2525,7 @@ export default function Dashboard({
             <section className="content-audit-home-card business-pricing-audit-home-card" data-audit-state={businessPricingAuditCardState} aria-label="全站 B2B 價格健檢捷徑">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="businessPricing" /></span>
               <div><h2>B2B 價格</h2></div>
+              {businessPricingAuditCardState === "idle" && <AuditIdleStatus />}
               {currentBusinessPricingLaunchFailure
                 ? auditLaunchFailureStatus(currentBusinessPricingLaunchFailure)
                 : standaloneProgressStatus(
@@ -2530,10 +2534,7 @@ export default function Dashboard({
                       : null,
                   )}
               {!currentBusinessPricingLaunchFailure && businessPricingCacheMatchesJob && currentBusinessPricingAudit && (
-                <span className="content-audit-home-status">
-                  <strong>{currentBusinessPricingAuditOutcome}</strong>
-                  <small>{currentBusinessPricingAttentionCount.toLocaleString()} 個需調整／確認</small>
-                </span>
+                <AuditResultStatus count={currentBusinessPricingAttentionCount} label="個需調整／確認" complete={currentBusinessPricingAuditOutcome === "成功"} />
               )}
               <button
                 type="button"
@@ -2548,6 +2549,7 @@ export default function Dashboard({
             <section className="content-audit-home-card audit-card-pending" data-audit-state={advertisingAuditCardState} aria-label="廣告覆蓋健檢與 Ads API 連線">
               <span className="content-audit-home-icon" aria-hidden="true"><WorkspaceGlyph name="advertising" /></span>
               <div><h2>廣告覆蓋</h2></div>
+              {advertisingAuditCardState === "idle" && <AuditIdleStatus />}
               {currentAdvertisingLaunchFailure
                 ? auditLaunchFailureStatus(currentAdvertisingLaunchFailure)
                 : standaloneProgressStatus(currentAdvertisingAuditJob)}

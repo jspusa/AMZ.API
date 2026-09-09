@@ -1,5 +1,7 @@
 "use client";
 
+import { salesLineSegments } from "../sales-line-segments";
+
 import {
   type KeyboardEvent,
   type PointerEvent,
@@ -466,6 +468,8 @@ export default function SalesTrendChart({
     };
   });
   const currentLinePath = linePath(coordinates.map(({ x, y }) => ({ x, y })));
+  const currentSegments = salesLineSegments(coordinates.map(({ x, y, point }) => ({ x, y, partial: point.partial })));
+  const incompleteDates = points.filter((point) => point.partial).map((point) => point.date);
   const comparisonLinePath = linePath(
     coordinates.map(({ x, comparisonY }) => ({ x, y: comparisonY })),
   );
@@ -841,7 +845,9 @@ export default function SalesTrendChart({
               <span><i className="is-comparison" aria-hidden="true" />去年同期 {comparisonYears}</span>
             )}
           </div>
-          <div className="sales-skater-mode">
+          <details className="sales-skater-mode sales-chart-options">
+            <summary>圖表選項{skaterEnabled ? " · 滑板已開啟" : ""}</summary>
+            <div className="sales-chart-options-panel">
             <button
               type="button"
               className="sales-skater-toggle"
@@ -884,8 +890,13 @@ export default function SalesTrendChart({
                 <button type="button" onClick={() => moveSkater(1)} disabled={skaterIndex >= points.length - 1} aria-label="滑板向右（D）">D</button>
               </div>
             )}
-          </div>
+            </div>
+          </details>
         </div>
+      )}
+
+      {snapshot && !error && incompleteDates.length > 0 && (
+        <p className="sales-period-note"><strong>含未完整日</strong><span>{incompleteDates.join("、")} 資料尚未完整；虛線段不宜與去年整日直接比較。日期依 {snapshot.timeZone}。</span></p>
       )}
 
       {error ? (
@@ -959,7 +970,8 @@ export default function SalesTrendChart({
             {comparisonLinePath && (
               <path className="sales-trend-line is-comparison" d={comparisonLinePath} />
             )}
-            {currentLinePath && <path className="sales-trend-line is-current" d={currentLinePath} />}
+            {currentSegments.complete && <path className="sales-trend-line is-current" d={currentSegments.complete} />}
+            {currentSegments.partial && <path className="sales-trend-line is-current is-partial" d={currentSegments.partial} strokeDasharray="5 5" />}
             {active && (
               <line
                 className="sales-trend-crosshair"

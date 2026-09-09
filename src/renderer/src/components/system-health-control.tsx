@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import AppearancePreference from "./appearance-preference";
 import {
   applyUiFontSize,
   readUiFontSize,
@@ -106,6 +107,8 @@ export default function SystemHealthControl({
   const [fontSize, setFontSize] = useState<UiFontSize>(() => readUiFontSize());
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     applyUiFontSize(fontSize);
@@ -190,12 +193,34 @@ export default function SystemHealthControl({
 
   useEffect(() => {
     if (!open) return;
+    const appRoot = document.getElementById?.("root");
+    const wasInert = appRoot?.inert ?? false;
+    if (appRoot) appRoot.inert = true;
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !loading) setOpen(false);
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      if (dialogs.item(dialogs.length - 1) !== dialog) return;
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation(); setOpen(false);
+      }
+      if (event.key === "Tab") {
+        const targets = Array.from(dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary, [tabindex="0"]',
+        )).filter((item) => item.tabIndex >= 0 && (typeof item.checkVisibility === "function"
+          ? item.checkVisibility() : item.getClientRects().length > 0));
+        const first = targets[0], last = targets.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
     };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [loading, open]);
+    window.addEventListener("keydown", close, true);
+    return () => {
+      window.removeEventListener("keydown", close, true);
+      if (appRoot) appRoot.inert = wasInert;
+      triggerRef.current?.focus({ preventScroll: true });
+    };
+  }, [open]);
 
   const orderedChecks = useMemo(
     () =>
@@ -216,6 +241,7 @@ export default function SystemHealthControl({
   return (
     <>
       <button
+        ref={triggerRef}
         className="system-health-trigger neutral"
         type="button"
         onClick={() => setOpen(true)}
@@ -223,7 +249,7 @@ export default function SystemHealthControl({
         aria-haspopup="dialog"
         aria-label="開啟設定"
       >
-        <span className="health-orb" aria-hidden="true">{loading ? "↻" : "•••"}</span>
+        <svg className="settings-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9.61 5.42 10.54 5.15 10.75 3.09 13.25 3.09 13.46 5.15 14.39 5.42 14.96 5.66 15.81 6.13 17.42 4.81 19.19 6.58 17.87 8.19 18.34 9.04 18.58 9.61 18.85 10.54 20.91 10.75 20.91 13.25 18.85 13.46 18.58 14.39 18.34 14.96 17.87 15.81 19.19 17.42 17.42 19.19 15.81 17.87 14.96 18.34 14.39 18.58 13.46 18.85 13.25 20.91 10.75 20.91 10.54 18.85 9.61 18.58 9.04 18.34 8.19 17.87 6.58 19.19 4.81 17.42 6.13 15.81 5.66 14.96 5.42 14.39 5.15 13.46 3.09 13.25 3.09 10.75 5.15 10.54 5.42 9.61 5.66 9.04 6.13 8.19 4.81 6.58 6.58 4.81 8.19 6.13 9.04 5.66Z"/><circle cx="12" cy="12" r="3"/></svg>
         <strong>設定</strong>
       </button>
 
@@ -232,10 +258,11 @@ export default function SystemHealthControl({
           className="drawer-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !loading) setOpen(false);
+            if (event.target === event.currentTarget) setOpen(false);
           }}
         >
           <aside
+            ref={dialogRef}
             className="order-drawer system-health-drawer"
             role="dialog"
             aria-modal="true"
@@ -243,35 +270,12 @@ export default function SystemHealthControl({
           >
             <div className="drawer-header">
               <h2 id="system-health-title">設定</h2>
-              <button type="button" onClick={() => setOpen(false)} disabled={loading} autoFocus aria-label="關閉設定">×</button>
-            </div>
-
-            <div className="system-recommendation-grid">
-              <section className="api-version-recommendation" aria-labelledby="api-version-recommendation-title">
-                <span aria-hidden="true">API</span>
-                <div>
-                  <p className="eyebrow">VERSION GUIDANCE</p>
-                  <h3 id="api-version-recommendation-title">API 版本更新建議</h3>
-                  <strong>{appVersion ? `目前本機 App ${appVersion}` : "正在確認本機 App 版本"}</strong>
-                  <p>GitHub Release 出現新版時，先更新本機 App／Bridge，再重跑唯讀健檢；網頁不會自行替換 Amazon API 能力。</p>
-                </div>
-              </section>
-
-              <section className="feature-idea-recommendation" aria-labelledby="feature-idea-title">
-                <span aria-hidden="true">✦</span>
-                <div>
-                  <p className="eyebrow">NEXT IDEA</p>
-                  <h3 id="feature-idea-title">下次功能靈感</h3>
-                  <strong>{featureIdea ? `依本次開啟的${featureIdea.label}` : "先從常用健檢開始"}</strong>
-                  <p>{featureIdea?.idea ?? "開啟任一首頁健檢後，這裡會提供對應的下一步功能靈感。"}</p>
-                  <small>只依本次 App 內你開啟的健檢入口顯示；不會讀取或分析 SKU、銷售、憑證等私密資料。</small>
-                </div>
-              </section>
+              <button type="button" onClick={() => setOpen(false)} autoFocus aria-label="關閉設定">×</button>
             </div>
 
             <section className="font-size-preference" aria-labelledby="font-size-preference-title">
               <div>
-                <p className="eyebrow">LOCAL DISPLAY</p>
+                <p className="eyebrow">外觀與顯示</p>
                 <h3 id="font-size-preference-title">介面字級</h3>
                 <small>只在這台電腦保存顯示偏好，不保存商品、銷售或其他營運資料。</small>
               </div>
@@ -282,6 +286,18 @@ export default function SystemHealthControl({
                     type="button"
                     role="radio"
                     aria-checked={fontSize === option.value}
+                    tabIndex={fontSize === option.value ? 0 : -1}
+                    onKeyDown={(event) => {
+                      const index = UI_FONT_SIZE_OPTIONS.findIndex((item) => item.value === fontSize);
+                      const nextIndex = event.key === "ArrowRight" || event.key === "ArrowDown" ? (index + 1) % UI_FONT_SIZE_OPTIONS.length
+                        : event.key === "ArrowLeft" || event.key === "ArrowUp" ? (index + UI_FONT_SIZE_OPTIONS.length - 1) % UI_FONT_SIZE_OPTIONS.length
+                        : event.key === "Home" ? 0 : event.key === "End" ? UI_FONT_SIZE_OPTIONS.length - 1 : null;
+                      if (nextIndex === null) return;
+                      event.preventDefault();
+                      const next = UI_FONT_SIZE_OPTIONS[nextIndex]!;
+                      setFontSize(next.value); saveUiFontSize(next.value);
+                      event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]').item(nextIndex)?.focus();
+                    }}
                     onClick={() => {
                       setFontSize(option.value);
                       saveUiFontSize(option.value);
@@ -293,12 +309,9 @@ export default function SystemHealthControl({
               </div>
             </section>
 
-            <details className="health-advanced-details system-preferences-details">
-              <summary>
-                <span><strong>操作偏好與系統說明</strong><small>自動同步、能力邊界與連線架構</small></span>
-                <i>＋</i>
-              </summary>
-              <div className="health-advanced-body">
+            <AppearancePreference />
+
+            <section className="settings-sync-preference" aria-label="自動同步">
                 <label className="auto-sync-switch system-auto-sync-switch">
                   <input
                     type="checkbox"
@@ -308,6 +321,40 @@ export default function SystemHealthControl({
                   <span aria-hidden="true" />
                   <div><strong>銷售趨勢自動同步</strong><small>{autoSync ? "每 5 分鐘 · 已開啟" : "已暫停"}</small></div>
                 </label>
+            </section>
+            <details className="health-advanced-details settings-about">
+              <summary><span><strong>關於與功能建議</strong><small>App 版本、能力說明與下次功能靈感</small></span><i aria-hidden="true">›</i></summary>
+            <div className="system-recommendation-grid">
+              <section className="api-version-recommendation" aria-labelledby="api-version-recommendation-title">
+                <span aria-hidden="true">API</span>
+                <div>
+                  <p className="eyebrow">版本與能力</p>
+                  <h3 id="api-version-recommendation-title">API 版本更新建議</h3>
+                  <strong>{appVersion ? `目前本機 App ${appVersion}` : "正在確認本機 App 版本"}</strong>
+                  <p>GitHub Release 出現新版時，先更新本機 App／Bridge，再重跑唯讀健檢；網頁不會自行替換 Amazon API 能力。</p>
+                </div>
+              </section>
+
+              <section className="feature-idea-recommendation" aria-labelledby="feature-idea-title">
+                <span aria-hidden="true">✦</span>
+                <div>
+                  <p className="eyebrow">功能建議</p>
+                  <h3 id="feature-idea-title">下次功能靈感</h3>
+                  <strong>{featureIdea ? `依本次開啟的${featureIdea.label}` : "先從常用健檢開始"}</strong>
+                  <p>{featureIdea?.idea ?? "開啟任一首頁健檢後，這裡會提供對應的下一步功能靈感。"}</p>
+                  <small>只依本次 App 內你開啟的健檢入口顯示；不會讀取或分析 SKU、銷售、憑證等私密資料。</small>
+                </div>
+              </section>
+            </div>
+
+            </details>
+
+            <details className="health-advanced-details system-preferences-details">
+              <summary>
+                <span><strong>操作偏好與系統說明</strong><small>能力邊界、狀態色彩與連線架構</small></span>
+                <i>＋</i>
+              </summary>
+              <div className="health-advanced-body">
                 <div className="automation-legend" aria-label="自動化顏色說明">
                   <span className="automation-badge automatic"><i />自動</span>
                   <span className="automation-badge one_click"><i />一鍵</span>
