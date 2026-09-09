@@ -1796,7 +1796,11 @@ describe("live variation detach and attach wire safety", () => {
   it("never overwrites an existing false fact even when Amazon reports it missing", async () => {
     const wire = installPreviewFactWire({ wire: { existingLiquid: false } });
     await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
-      code: "VALIDATION_FAILED",
+      code: "VARIATION_REQUIREMENTS_VALUE_CONFLICT",
+      message: expect.stringContaining("已有非空資料"),
+      operation: "patchListingsItemPreview",
+      requestId: "PREVIEW-FACT-RECOVERY",
+      issues: [expect.objectContaining({ code: "90220", severity: "ERROR" })],
     });
     await expect(
       previewVariationMove({
@@ -1804,6 +1808,194 @@ describe("live variation detach and attach wire safety", () => {
         requiredValues: { contains_liquid: [{ value: true }] },
       }),
     ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("explains an unconfirmed CHILD PTD field without granting unrelated product facts", async () => {
+    const wire = installPreviewFactWire({
+      schema: (schema) => { delete schema.properties.contains_liquid; },
+      payload: { status: "INVALID", issues: [{ ...missingFactIssue, attributeNames: ["contains_liquid"] }] },
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_REQUIREMENTS_PTD_UNDECLARED",
+      message: expect.stringContaining("CHILD PTD 沒有可確認的欄位定義"),
+      operation: "patchListingsItemPreview",
+      issues: [expect.objectContaining({ attributeNames: ["contains_liquid"] })],
+    });
+    await expect(previewVariationMove({
+      ...input("attach"), requiredValues: { contains_liquid: [{ value: false }] },
+    })).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    expect(wire.previewPatchCount()).toBe(1);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("explains the actual missing-metadata rejection without creating a field", async () => {
+    const wire = installPreviewFactWire({
+      payload: { status: "INVALID", issues: [{ ...missingFactIssue, attributeNames: null }] },
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_REQUIREMENTS_METADATA_REJECTED",
+      message: expect.stringContaining("回覆的欄位識別或格式未通過安全核對"),
+      issues: [expect.objectContaining({ code: "90220" })],
+    });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { issue: { ...missingFactIssue, attributeNames: null }, detail: "ATTRIBUTE_IDENTITY" },
+    { issue: { ...missingFactIssue, severity: "error" }, detail: "ISSUE_SEVERITY" },
+    { issue: { ...missingFactIssue, message: `${missingFactIssue.message}\u0000` }, detail: "ISSUE_TEXT" },
+    { issue: { ...missingFactIssue, marketplaceIds: ["A1VC38T7YXB528"] }, detail: "MARKETPLACE_LIST" },
+    { issue: { ...missingFactIssue, categories: null }, detail: "CATEGORY_LIST" },
+    { issue: { ...missingFactIssue, categories: ["INVALID_ATTRIBUTE"] }, detail: "ISSUE_CLASSIFICATION" },
+  ])("identifies the actual rejected metadata guard $detail without widening field authority", async ({ issue, detail }) => {
+    const wire = installPreviewFactWire({ payload: { status: "INVALID", issues: [issue] } });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_REQUIREMENTS_METADATA_REJECTED",
+      message: expect.stringContaining(detail),
+    });
+    await expect(previewVariationMove({ ...input("attach"), requiredValues: { contains_liquid: [{ value: false }] } }))
+      .rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    expect(wire.previewPatchCount()).toBe(1);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("explains unsupported upstream HTTP while retaining the transport rejection code", async () => {
+    const wire = installPreviewFactWire({ status: 403, payload: {
+      errors: [{ code: "90220", message: missingFactIssue.message }],
+    } });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      status: 403,
+      code: "UNAUTHORIZED",
+      message: expect.stringContaining("VARIATION_REQUIREMENTS_HTTP_UNSUPPORTED"),
+      upstreamCode: "90220",
+      operation: "patchListingsItemPreview",
+    });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { name: "contains_liquid", reason: "READONLY", property: { readOnly: true } },
+    { name: "purchasable_offer", reason: "PROTECTED", property: {} },
+    { name: "contains_liquid", reason: "UNSUPPORTED", property: { items: { type: "object", properties: { value: { type: "array", items: { type: "string" } } } } } },
+  ])("explains why every matched $reason candidate was excluded without offering a writable form", async ({ name, reason, property }) => {
+    const wire = installPreviewFactWire({
+      schema: (schema) => {
+        const candidate = { ...schema.properties.contains_liquid, ...property };
+        delete schema.properties.contains_liquid;
+        schema.properties[name] = candidate;
+        schema.properties[reason === "PROTECTED" ? "inventory_status" : "other_fact"] = structuredClone(candidate);
+      },
+    });
+    const response = await wireOwner().handle({ operation: "preview", request: variationRouteRequest("POST", input("attach")) });
+    expect(response.body).toMatchObject({ kind: "json", value: {
+      code: `VARIATION_REQUIREMENTS_${reason}`,
+      operation: "patchListingsItemPreview",
+      issues: [expect.objectContaining({ code: "90220" })],
+    } });
+    expect(response.body).not.toMatchObject({ kind: "json", value: { requiredFields: expect.anything() } });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("retains an existing disabled descriptor and a usable field alongside a complete-value conflict", async () => {
+    const wire = installPreviewFactWire({
+      wire: { existingLiquid: false },
+      schema: (schema) => {
+        schema.properties.batteries_required = structuredClone(schema.properties.contains_liquid!);
+        schema.properties.other_fact = { ...structuredClone(schema.properties.contains_liquid!), readOnly: true };
+      },
+      payload: { status: "INVALID", issues: [{ ...missingFactIssue, attributeNames: ["contains_liquid", "batteries_required", "other_fact"] }] },
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_FIELD_REQUIRED",
+      requiredFields: [expect.objectContaining({ name: "batteries_required", editable: true }), expect.objectContaining({ name: "other_fact", editable: false })],
+    });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([201, 202])("explains missing issues on unsupported upstream HTTP %s without granting fields", async (status) => {
+    const wire = installPreviewFactWire({ status, payload: { sku: SOURCE_SKU, status: "INVALID", issues: [missingFactIssue] } });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
+      code: "VARIATION_REQUIREMENTS_HTTP_UNSUPPORTED",
+      message: expect.stringContaining(`Amazon HTTP ${status}`),
+      issues: [expect.objectContaining({ code: "90220" })],
+    });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("keeps the observed public missing-field shape diagnostic-only with no ticket or source-value disclosure", async () => {
+    const wire = installPreviewFactWire({
+      wire: { sourceAttributes: { contains_liquid_contents: [{ value: false }], private_fact: [{ value: "SYNTHETIC_SOURCE_VALUE" }] } },
+      schema: (schema) => {
+        schema.properties.contains_liquid_contents = schema.properties.contains_liquid!;
+        delete schema.properties.contains_liquid;
+      },
+      payload: { status: "INVALID", issues: [{ ...missingFactIssue, attributeNames: ["contains_liquid_contents"] }] },
+    });
+    const approve = vi.fn(async () => undefined);
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: "missing-value-conflict-no-ticket" };
+    const response = await router.handle(variationRouteRequest("POST", body));
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({ kind: "json", value: {
+      code: "VARIATION_REQUIREMENTS_VALUE_CONFLICT",
+      message: expect.stringContaining("Amazon HTTP 200"),
+      operation: "patchListingsItemPreview",
+      issues: [{ code: "90220", severity: "ERROR", attributeNames: ["contains_liquid_contents"], categories: ["MISSING_ATTRIBUTE"], marketplaceIds: [] }],
+    } });
+    expect(JSON.stringify(response)).not.toContain("SYNTHETIC_SOURCE_VALUE");
+    expect(JSON.stringify(response)).not.toContain('"value":false');
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
+    expect(approve).not.toHaveBeenCalled();
+    expect(wire.previewPatchCount()).toBe(1);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { payload: { status: "INVALID", issues: [{ ...missingFactIssue, code: "4000001" }] }, code: "VALIDATION_FAILED" },
+    { payload: { status: "INVALID", issues: [{ ...missingFactIssue, severity: "WARNING" }] }, code: "VALIDATION_FAILED" },
+    { payload: { status: "UNKNOWN", issues: [] }, code: "VALIDATION_STATUS_UNKNOWN" },
+  ])("preserves nonmissing and unknown receipt semantics %#", async ({ payload, code }) => {
+    const wire = installPreviewFactWire({ payload });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("leaves a VALID receipt unchanged without adding diagnostic errors", async () => {
+    const wire = installPreviewFactWire({ payload: { status: "VALID", issues: [] } });
+    await expect(previewVariationMove(input("attach"))).resolves.toMatchObject({ status: "VALID" });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each(["VALID", "UNKNOWN"])("blocks %s with a private raw missing ERROR without granting a ticket", async (status) => {
+    const wire = installPreviewFactWire({ payload: { status, issues: [{ ...missingFactIssue, message: "refresh_token=SYNTHETIC_PRIVATE" }] } });
+    const approve = vi.fn(async () => undefined);
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: `private-raw-error-${status}` };
+    const response = await router.handle(variationRouteRequest("POST", body));
+    expect(response.status).toBe(status === "VALID" ? 422 : 502);
+    expect(response.body).toMatchObject({ kind: "json", value: {
+      code: status === "VALID" ? "VARIATION_REQUIREMENTS_METADATA_REJECTED" : "VALIDATION_STATUS_UNKNOWN",
+    } });
+    expect(JSON.stringify(response)).not.toContain("SYNTHETIC_PRIVATE");
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
+    expect(approve).not.toHaveBeenCalled();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("does not grant a ticket for VALID with a well-formed nonmissing ERROR whose message is private", async () => {
+    const wire = installPreviewFactWire({ payload: {
+      status: "VALID", issues: [{ ...missingFactIssue, code: "90225", categories: ["INVALID_ATTRIBUTE"], message: "refresh_token=SYNTHETIC_PRIVATE" }],
+    } });
+    const approve = vi.fn(async () => undefined);
+    const router = await durableVariationRouter(approve);
+    const body = { ...input("attach"), idempotencyKey: "private-nonmissing-error" };
+    const response = await router.handle(variationRouteRequest("POST", body));
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({ kind: "json", value: { code: "VALIDATION_FAILED" } });
+    expect(JSON.stringify(response)).not.toContain("SYNTHETIC_PRIVATE");
+    expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
+    expect(approve).not.toHaveBeenCalled();
     expect(wire.commitPatchCount()).toBe(0);
   });
 

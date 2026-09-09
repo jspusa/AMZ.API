@@ -1,4 +1,7 @@
-import { resolveVariationPreviewRequirements } from "./variation-preview-requirements";
+import {
+  resolveVariationPreviewRequirements,
+  type VariationPreviewRejectionDetail,
+} from "./variation-preview-requirements";
 import type { ListingItemReadScope } from "./listing-item-read-scope";
 import { createHash, randomUUID } from "node:crypto";
 import type { MarketplaceId } from "../../shared/marketplaces";
@@ -71,6 +74,9 @@ import {
   requiredValuePatches,
   variationAttributeSignatures,
   variationRequiredFieldChoices,
+  resolveVariationRequiredFields,
+  resolveVariationRequiredFieldChoices,
+  type VariationRequiredFieldBlock,
 } from "./variation-required-fields";
 
 const requirementsChecksum = (schema: unknown, checksum: string | null): string | null =>
@@ -431,14 +437,65 @@ function receiptIssues(payload: unknown): ListingIssue[] {
     : []);
 }
 
+function throwRequiredFieldExplanation(
+  reply: VariationMoveTransportReply,
+  reason: VariationRequiredFieldBlock | "PTD_UNDECLARED" |
+    "METADATA_REJECTED" | "HTTP_UNSUPPORTED",
+  detail?: VariationPreviewRejectionDetail,
+): never {
+  const explanations = {
+    VALUE_CONFLICT: "Amazon 預檢要求補填的欄位，在本次商品讀取中已有非空資料，不能直接視為空白欄位補填；為避免覆寫既有答案，已停止。請先在商品資料頁核對後重新讀取。",
+    PTD_UNDECLARED: "Amazon 預檢要求的資料，在本次讀取的 CHILD PTD 沒有可確認的欄位定義；無法安全建立輸入欄，請先在商品資料頁核對後重新讀取。",
+    METADATA_REJECTED: "Amazon 預檢含資料缺漏訊息，但回覆的欄位識別或格式未通過安全核對；無法安全建立輸入欄，請重新讀取商品後核對檢查詳情。",
+    HTTP_UNSUPPORTED: "Amazon 此次回覆的 HTTP 狀態不支援補欄恢復；原請求仍被拒絕，請先處理檢查詳情中的連線、權限或服務問題。",
+    PROTECTED: "Amazon 預檢要求的欄位屬於其他受管制的商品或變體資料，這個工作台不能代為修改；請在對應商品功能核對後重新讀取。",
+    READONLY: "Amazon CHILD PTD 將預檢要求的欄位標為唯讀，這個工作台不能補填；請先在商品資料頁核對後重新讀取。",
+    UNSUPPORTED: "Amazon 預檢要求的欄位結構或既有選擇條件，目前無法安全以表單補填；請先在商品資料頁核對後重新讀取。",
+  };
+  const http = Number.isInteger(reply.status) &&
+      reply.status >= 100 && reply.status <= 599
+    ? `（Amazon HTTP ${reply.status}）`
+    : "";
+  const diagnostic = detail ? `（診斷 ${detail}）` : "";
+  const code = `VARIATION_REQUIREMENTS_${reason}`;
+  if (!reply.ok) {
+    try {
+      throwTransportError(reply, "read");
+    } catch (error) {
+      if (!(error instanceof SpApiError)) throw error;
+      // The original transport status/code/retry classification remains authoritative.
+      throw new SpApiError(`${explanations[reason]}${http}${diagnostic}（${code}）`, {
+        status: error.status,
+        code: error.code,
+        requestId: error.requestId,
+        retryAfter: error.retryAfter,
+        issues: error.issues,
+        operation: error.operation,
+        upstreamCode: error.upstreamCode,
+      });
+    }
+  }
+  throw new SpApiError(`${explanations[reason]}${http}${diagnostic}`, {
+    status: 422,
+    code,
+    requestId: publicSpApiRequestId(reply.requestId),
+    issues: receiptIssues(reply.payload),
+    operation: "patchListingsItemPreview",
+  });
+}
+
 function validationReceipt(
   reply: VariationMoveTransportReply,
 ): VariationMoveValidationReceipt {
   const wellFormed = isRecord(reply.payload) &&
     listingSubmissionIssuesAreWellFormed(reply.payload.issues);
+  // Display sanitization must not erase a real ERROR and grant a Preview ticket.
+  const rawError = wellFormed && Array.isArray(reply.payload.issues) &&
+    reply.payload.issues.some((issue) => isRecord(issue) &&
+      typeof issue.severity === "string" && issue.severity.toUpperCase() === "ERROR");
   const status = wellFormed &&
       (reply.payload.status === "VALID" || reply.payload.status === "INVALID")
-    ? reply.payload.status
+    ? rawError ? "INVALID" : reply.payload.status
     : "UNKNOWN";
   return {
     status,
@@ -1318,6 +1375,12 @@ export function createVariationMoveGatewayProduction(
       // Recheck the opaque source after the network await; stale account evidence
       // cannot mint either automatic requirements or selectable field candidates.
       const source = sourceRecordFor(descriptor);
+      const existingReceipt = reply.ok ? validationReceipt(reply) : null;
+      if (existingReceipt?.status === "UNKNOWN" &&
+        !existingReceipt.issues.some((issue) => issue.severity === "ERROR")) {
+        // A filtered issue cannot turn an unknown receipt into a diagnosed rejection.
+        return existingReceipt;
+      }
       const hints = resolveVariationPreviewRequirements({
         schema: source.requiredSchema,
         marketplaceId: descriptor.marketplaceId,
@@ -1325,6 +1388,8 @@ export function createVariationMoveGatewayProduction(
         httpStatus: reply.status,
         payload: reply.payload,
       });
+      if (hints.rejectionReason)
+        throwRequiredFieldExplanation(reply, hints.rejectionReason, hints.rejectionDetail);
       if (
         (hints.requiredNames.length || hints.choiceNames.length) &&
         source.requiredIssueKey
@@ -1349,15 +1414,16 @@ export function createVariationMoveGatewayProduction(
           proposedValues: descriptor.requiredValues,
           dimensionValues: descriptor.dimensionValues,
         };
-        const requiredFields = variationRequiredFieldDescriptors({
+        const fieldResolution = resolveVariationRequiredFields({
           ...context,
           issueRequiredNames: activeNames,
-        }).filter(
+        });
+        const requiredFields = fieldResolution.fields.filter(
           (field) =>
             !source.requiredIssueChoices?.includes(field.name) ||
             combined.includes(field.name),
         );
-        const requiredFieldChoices = variationRequiredFieldChoices(
+        const choiceResolution = resolveVariationRequiredFieldChoices(
           context,
           [
             ...new Set([
@@ -1370,6 +1436,7 @@ export function createVariationMoveGatewayProduction(
               !requiredFields.some((field) => field.name === name),
           ),
         );
+        const requiredFieldChoices = choiceResolution.fields;
         if (
           requiredFields.some((field) =>
             hints.requiredNames.includes(field.name),
@@ -1394,7 +1461,19 @@ export function createVariationMoveGatewayProduction(
             requiredFieldChoices,
           };
         }
+        const blockedReason = hints.requiredNames
+          .map((name) => fieldResolution.blocked.get(name)).find(Boolean);
+        if (blockedReason) throwRequiredFieldExplanation(reply, blockedReason);
+        if (!hints.unresolvedReason) {
+          const choiceBlock = hints.choiceNames
+            .map((name) => choiceResolution.blocked.get(name)).find(Boolean);
+          if (choiceBlock) throwRequiredFieldExplanation(reply, choiceBlock);
+        }
       }
+      if (hints.unresolvedReason)
+        throwRequiredFieldExplanation(reply, hints.unresolvedReason);
+      if (hints.requiredNames.length || hints.choiceNames.length)
+        throwRequiredFieldExplanation(reply, "UNSUPPORTED");
       if (!reply.ok) return throwTransportError(reply, "read");
       return validationReceipt(reply);
     },
