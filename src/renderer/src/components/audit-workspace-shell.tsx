@@ -65,7 +65,7 @@ export default function AuditWorkspaceShell({
             {busyStatus}
           </div>
         </header>
-        <div className={`audit-workspace-body ${surfaceClassName}`}>
+        <div className={`audit-workspace-body ${surfaceClassName}`} data-audit-reading="true">
           {children}
         </div>
       </section>
@@ -81,7 +81,7 @@ export default function AuditWorkspaceShell({
       }}
     >
       <aside
-        className={`order-drawer ${surfaceClassName}`}
+        className={`order-drawer ${surfaceClassName}`} data-audit-reading="true"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
