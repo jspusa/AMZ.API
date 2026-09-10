@@ -44,7 +44,7 @@ const CSS04_ORDERED_FILES = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "cb4ce4efeac8e6b29874934e8ecff99eb55edcb379399ecba29e857088ce48f3";
+  "9de8504724f885817b7f90d69afdaf91801e7ef98fafeb380d233bb98a6dd4ea";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
   "7963e2e9bd917df3d454dbbae5612203e3008679e674f46cfe8b172dcbd3ef86";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
@@ -131,8 +131,8 @@ describe("CSS04 final stylesheet extraction", () => {
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(28272);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(778131);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(28274);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(778409);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);

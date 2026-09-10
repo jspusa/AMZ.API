@@ -159,7 +159,7 @@ const GATE_ERRORS: Readonly<
 
 type MainWriteGateMessageOverride =
   | MainWriteGateCancellationMessage
-  | "同一 SKU 的商品內容、圖片或價格正在處理，系統已阻止重疊送出。";
+  | "同一 SKU 的商品內容、圖片、價格或變體正在處理，系統已阻止重疊送出。";
 
 export class MainWriteGateError extends Error {
   readonly status: number;
@@ -273,7 +273,8 @@ function listingAttributeReservationKey(intent: WriteIntent): string {
 }
 
 function usesListingAttributeReservations(family: WritePreviewFamily): boolean {
-  return family === "business-price" ||
+  return family === "variation-move" ||
+    family === "business-price" ||
     family === "standard-price" ||
     family === "sale-price" ||
     family === "content" ||
@@ -635,7 +636,7 @@ export class MainWriteGate implements MainWriteGatePort {
       this.releaseTicket(previewTicketKey(binding), ownerToken);
       throw new MainWriteGateError(
         "OPERATION_IN_PROGRESS",
-        "同一 SKU 的商品內容、圖片或價格正在處理，系統已阻止重疊送出。",
+        "同一 SKU 的商品內容、圖片、價格或變體正在處理，系統已阻止重疊送出。",
       );
     }
     for (const key of keys) {

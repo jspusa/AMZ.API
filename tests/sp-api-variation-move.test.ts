@@ -269,6 +269,7 @@ function input(action: "detach" | "attach"): VariationMoveInput {
 
 type SafetyWireOptions = {
   sourceAttributes?: Record<string, unknown>;
+  postCommitSourceAttributes?: Record<string, unknown>;
   immutableSize?: "readOnly" | "editable" | "invalid";
   sourceSizeValues?: unknown;
   attachedSizeValues?: unknown;
@@ -504,6 +505,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
         "4 oz",
       );
       Object.assign(payload.attributes, factValues, options.sourceAttributes);
+      if (commitPatches > 0) Object.assign(payload.attributes, options.postCommitSourceAttributes);
       if (options.sourceSizeValues !== undefined) Object.assign(payload.attributes, { size_name: options.sourceSizeValues });
       if (state === "new" && options.attachedSizeValues !== undefined) Object.assign(payload.attributes, { size_name: options.attachedSizeValues });
       if (options.mixedMarketplaceDimensions) {
@@ -574,6 +576,7 @@ function installDetachSafetyWire(options: SafetyWireOptions = {}) {
     patchBodies,
     setSchemaChecksum: (value: string) => { schemaChecksum = value; },
     setSourceAttributes: (value: Record<string, unknown>) => { options.sourceAttributes = value; },
+    setPostCommitSourceAttributes: (value: Record<string, unknown>) => { options.postCommitSourceAttributes = value; },
     setSourceSizeValues: (value: unknown) => { options.sourceSizeValues = value; },
     commitPatchCount: () => commitPatches,
     previewPatchCount: () => previewPatches,
@@ -601,6 +604,7 @@ function installPreviewFactWire(
     wire?: SafetyWireOptions;
     schema?: (schema: PreviewFactSchema) => void;
     afterMissingPreview?: () => void;
+    afterValidPreview?: () => void;
   } = {},
 ) {
   const wire = installDetachSafetyWire({
@@ -642,6 +646,7 @@ function installPreviewFactWire(
             "PREVIEW-FACT-RECOVERY",
           );
         }
+        options.afterValidPreview?.();
         return jsonResponse(reply.status, payload, "PREVIEW-FACT-ANSWERED");
       }
       return reply;
@@ -677,7 +682,7 @@ async function durableVariationRouter(approveWrite: (reason: string) => Promise<
   });
 }
 
-async function durableWireOwner() {
+async function durableWireOwner(approveWrite: (reason: string) => Promise<void> = async () => undefined) {
   const directory = await mkdtemp(join(tmpdir(), "amz-api-variation-readback-"));
   const storePath = join(directory, "store.json");
   const store = new LocalStore(storePath);
@@ -692,7 +697,7 @@ async function durableWireOwner() {
     writeGate: new MainWriteGate({
       store,
       context,
-      approveWrite: async () => undefined,
+      approveWrite,
     }),
     gateway: variationMoveGatewayProduction,
     readbackDelay: async () => undefined,
@@ -1793,14 +1798,13 @@ describe("live variation detach and attach wire safety", () => {
     expect(wire.commitPatchCount()).toBe(0);
   });
 
-  it("never overwrites an existing false fact even when Amazon reports it missing", async () => {
+  it("offers an explicit unchanged false fact after a missing Preview without permitting replacement", async () => {
     const wire = installPreviewFactWire({ wire: { existingLiquid: false } });
     await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({
-      code: "VARIATION_REQUIREMENTS_VALUE_CONFLICT",
-      message: expect.stringContaining("已有非空資料"),
-      operation: "patchListingsItemPreview",
+      code: "VARIATION_FIELD_REQUIRED",
       requestId: "PREVIEW-FACT-RECOVERY",
-      issues: [expect.objectContaining({ code: "90220", severity: "ERROR" })],
+      preservedRequiredFields: [expect.objectContaining({ name: "contains_liquid", editable: false,
+        values: [{ value: false, marketplace_id: MARKETPLACE_ID }] })],
     });
     await expect(
       previewVariationMove({
@@ -1808,6 +1812,13 @@ describe("live variation detach and attach wire safety", () => {
         requiredValues: { contains_liquid: [{ value: true }] },
       }),
     ).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    await expect(previewVariationMove({ ...input("attach"), preserveRequiredFields: ["contains_liquid"],
+      requiredValues: { contains_liquid: [{ value: false }] } })).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
+    const result = await previewVariationMove({ ...input("attach"), preserveRequiredFields: ["contains_liquid"] } as VariationMoveInput);
+    expect(result).toMatchObject({ status: "VALID", changes: expect.arrayContaining([
+      expect.objectContaining({ name: "contains_liquid", before: [{ value: false, marketplace_id: MARKETPLACE_ID }], after: [{ value: false, marketplace_id: MARKETPLACE_ID }] }),
+    ]) });
+    expect(wire.patchBodies.at(-1)?.patches).toContainEqual({ op: "replace", path: "/attributes/contains_liquid", value: [{ value: false, marketplace_id: MARKETPLACE_ID }] });
     expect(wire.commitPatchCount()).toBe(0);
   });
 
@@ -1827,6 +1838,280 @@ describe("live variation detach and attach wire safety", () => {
     })).rejects.toMatchObject({ code: "VARIATION_REQUIRED_FIELDS_INVALID" });
     expect(wire.previewPatchCount()).toBe(1);
     expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { value: false, type: "boolean", readOnly: true },
+    { value: 0, type: "number", editable: false },
+    { value: "Solid", type: "string", editable: true },
+  ])("preserves a complete scalar fact including $value with explicit singleton selectors", async ({ value, type, ...editability }) => {
+    const original = [{ value, language_tag: "en_US", marketplace_id: MARKETPLACE_ID }];
+    const wire = installPreviewFactWire({
+      wire: { sourceAttributes: { contains_liquid: original } },
+      schema: (schema) => {
+        Object.assign(schema.properties.contains_liquid!, editability, { items: { type: "object", required: ["value", "language_tag"],
+          properties: { value: { type, enum: [value] }, language_tag: { type: "string", enum: ["en_US"] }, marketplace_id: { type: "string" } } } });
+      },
+    });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code: "VARIATION_FIELD_REQUIRED",
+      preservedRequiredFields: [expect.objectContaining({ editable: false, values: original })] });
+    await expect(previewVariationMove({ ...input("attach"), preserveRequiredFields: ["contains_liquid"] })).resolves.toMatchObject({ status: "VALID" });
+    expect(wire.patchBodies.at(-1)?.patches).toContainEqual({ op: "replace", path: "/attributes/contains_liquid", value: original });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    [{ value: false, marketplace_id: "A1VC38T7YXB528" }],
+    [{ value: false, marketplace_id: null }],
+    [{ value: false, language_tag: " en_US" }],
+    [{ value: false }, { value: false }],
+    [{ value: false }, { value: true, marketplace_id: "A1VC38T7YXB528" }],
+    [{ value: false, unit: "unknown" }],
+    [{ value: "false" }],
+    [{ value: null }],
+    [{ language_tag: "en_US" }],
+    [false],
+  ].map((rows) => ({ rows })))("never offers an ambiguous or unsupported existing fact %#", async ({ rows }) => {
+    const wire = installPreviewFactWire({ wire: { sourceAttributes: { contains_liquid: rows } } });
+    const response = await wireOwner().handle({ operation: "preview", request: variationRouteRequest("POST", input("attach")) });
+    expect(response.status).toBe(422);
+    expect(response.body.kind === "json" && (response.body.value as Record<string, unknown>).preservedRequiredFields || []).toEqual([]);
+    await expect(previewVariationMove({ ...input("attach"), preserveRequiredFields: ["contains_liquid"] })).rejects.toBeDefined();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each(["size_name", "purchasable_offer", "item_name", "unrelated_fact"])("never grants preserved authority to %s outside exact eligible missing evidence", async (name) => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false, sourceAttributes: { [name]: [{ value: false }] } },
+      schema: (schema) => { if (name !== "size_name") schema.properties[name] = structuredClone(schema.properties.contains_liquid!); } });
+    await expect(previewVariationMove({ ...input("attach"), preserveRequiredFields: ["contains_liquid"] })).rejects.toMatchObject({ code: "VARIATION_REQUIREMENTS_CHANGED" });
+    expect(wire.previewPatchCount()).toBe(0);
+    await expect(previewVariationMove(input("attach"))).rejects.toBeDefined();
+    await expect(previewVariationMove({ ...input("attach"), preserveRequiredFields: [name] })).rejects.toBeDefined();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("does not grant existing-fact preservation from ambiguous title choices", async () => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false },
+      schema: (schema) => { schema.properties.other_liquid_fact = structuredClone(schema.properties.contains_liquid!); } });
+    await expect(previewVariationMove(input("attach"))).rejects.toMatchObject({ code: "VARIATION_FIELD_REQUIRED", preservedRequiredFields: [] });
+    await expect(previewVariationMove({ ...input("attach"), preserveRequiredFields: ["contains_liquid"] })).rejects.toMatchObject({ code: "VARIATION_REQUIREMENTS_CHANGED" });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([null, "contains_liquid", ["contains_liquid", "contains_liquid"], [{ name: "contains_liquid", value: false }], ["contains_liquid "]])("rejects forged preserve selections before transport %#", async (preserveRequiredFields) => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false } });
+    const response = await wireOwner().handle({ operation: "preview", request: variationRouteRequest("POST", { ...input("attach"), preserveRequiredFields }) });
+    expect(response.status).toBe(400);
+    expect(wire.previewPatchCount()).toBe(0);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each(["value", "selector", "schema", "generation"])("revokes existing-fact selection before native approval after %s drift", async (drift) => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false } });
+    const approve = vi.fn(async () => undefined);
+    const router = await durableVariationRouter(approve);
+    const base = { ...input("attach"), idempotencyKey: `preserve-before-approval-${drift}` };
+    expect((await router.handle(variationRouteRequest("POST", base))).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await router.handle(variationRouteRequest("POST", selected))).status).toBe(200);
+    if (drift === "schema") wire.setSchemaChecksum("changed-child-schema");
+    else if (drift === "generation") invalidateSpApiCredentialCaches();
+    else wire.setSourceAttributes({ contains_liquid: [{ value: drift === "value", ...(drift === "value" ? { marketplace_id: MARKETPLACE_ID } : {}) }] });
+    expect((await router.handle(variationRouteRequest("PATCH", selected))).status).toBeGreaterThanOrEqual(400);
+    expect(approve).not.toHaveBeenCalled();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("revokes a preserved fact that changes during native approval", async () => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false } });
+    const approve = vi.fn(async () => { wire.setSourceAttributes({ contains_liquid: [{ value: true, marketplace_id: MARKETPLACE_ID }] }); });
+    const { owner } = await durableWireOwner(approve);
+    const base = { ...input("attach"), idempotencyKey: "preserve-during-approval" };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).status).toBeGreaterThanOrEqual(400);
+    expect(approve).toHaveBeenCalledOnce();
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each(["before-approval", "after-final-preview"] as const)("revokes target ASIN drift %s for an explicitly preserved fact", async (phase) => {
+    let changed = false;
+    let validPreviews = 0;
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false, commitResultState: "new" }, afterValidPreview: () => {
+      if (++validPreviews === 2 && phase === "after-final-preview") changed = true;
+    } });
+    const baseFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await baseFetch(rawInput, init);
+      const url = new URL(String(rawInput));
+      if (changed && decodeURIComponent(url.pathname).endsWith(`/${TARGET_PARENT}`)) {
+        const payload = await reply.json();
+        payload.summaries[0].asin = "B000000001";
+        return jsonResponse(reply.status, payload, "TARGET-IDENTITY-CHANGED");
+      }
+      return reply;
+    }));
+    const approve = vi.fn(async () => undefined);
+    const { owner } = await durableWireOwner(approve);
+    const base = { ...input("attach"), idempotencyKey: `preserve-target-identity-${phase}` };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    if (phase === "before-approval") changed = true;
+    const result = await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) });
+    expect(result.status).toBeGreaterThanOrEqual(400);
+    expect(wire.commitPatchCount()).toBe(0);
+    expect(approve).toHaveBeenCalledTimes(phase === "before-approval" ? 0 : 1);
+    if (phase === "before-approval") {
+      expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(422);
+      expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).body).toMatchObject({
+        kind: "json", value: { code: "VARIATION_FIELD_REQUIRED", preservedRequiredFields: [expect.objectContaining({ name: "contains_liquid" })] },
+      });
+      expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+      expect(approve).not.toHaveBeenCalled();
+      expect(wire.commitPatchCount()).toBe(0);
+    }
+  });
+
+  it.each(["ingredients", "title_differentiation"])("does not offer content-owned %s even when exact missing metadata names its existing value", async (name) => {
+    const wire = installPreviewFactWire({
+      wire: { sourceAttributes: { [name]: [{ value: "Synthetic content", marketplace_id: MARKETPLACE_ID }] } },
+      schema: (schema) => { schema.properties[name] = { type: "array", items: { type: "object", required: ["value"],
+        properties: { value: { type: "string" }, marketplace_id: { type: "string" } } } }; },
+      payload: { status: "INVALID", issues: [{ ...missingFactIssue, attributeNames: [name] }] },
+    });
+    const response = await wireOwner().handle({ operation: "preview", request: variationRouteRequest("POST", input("attach")) });
+    expect(response.status).toBe(422);
+    expect(response.body.kind === "json" && (response.body.value as Record<string, unknown>).preservedRequiredFields || []).toEqual([]);
+    await expect(previewVariationMove({ ...input("attach"), preserveRequiredFields: [name] })).rejects.toMatchObject({ code: "VARIATION_REQUIREMENTS_CHANGED" });
+    expect(wire.previewPatchCount()).toBe(1);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each([
+    { change: "theme", phase: "after-final-preview" },
+    { change: "sibling-dimensions", phase: "after-final-preview" },
+    { change: "membership", phase: "after-final-preview" },
+    { change: "sibling-dimensions", phase: "before-approval" },
+  ] as const)("rechecks target $change at $phase", async ({ change, phase }) => {
+    let changed = false;
+    let validPreviews = 0;
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false, commitResultState: "new" }, afterValidPreview: () => {
+      if (++validPreviews === 2 && phase === "after-final-preview") changed = true;
+    } });
+    const baseFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (rawInput, init) => {
+      const reply = await baseFetch(rawInput, init);
+      const url = new URL(String(rawInput));
+      if (changed && change === "theme" && decodeURIComponent(url.pathname).endsWith(`/${TARGET_PARENT}`)) {
+        const payload = await reply.json();
+        payload.attributes.variation_theme[0].name = "ITEM_SHAPE";
+        payload.relationships[0].relationships[0].variationTheme = { theme: "ITEM_SHAPE", attributes: ["item_shape"] };
+        return jsonResponse(reply.status, payload, "TARGET-THEME-CHANGED");
+      }
+      if (changed && (change === "sibling-dimensions" || change === "membership") && url.searchParams.get("variationParentSku") === TARGET_PARENT) {
+        const payload = await reply.json();
+        if (change === "sibling-dimensions") payload.items.find((item: { sku: string }) => item.sku === TARGET_CHILD).attributes.size_name[0].value = "4 oz";
+        else payload.items.push(childPayload("TARGET-20OZ", TARGET_PARENT, "20 oz"));
+        return jsonResponse(reply.status, payload, "TARGET-DIMENSIONS-CHANGED");
+      }
+      return reply;
+    }));
+    const approve = vi.fn(async () => undefined);
+    const { owner } = await durableWireOwner(approve);
+    const base = { ...input("attach"), idempotencyKey: `preserve-target-final-${change}` };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    if (phase === "before-approval") changed = true;
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).status).toBeGreaterThanOrEqual(400);
+    expect(approve).toHaveBeenCalledTimes(phase === "before-approval" ? 0 : 1);
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it("rechecks the exact preserved row after the final Preview and before dispatch", async () => {
+    let validPreviews = 0;
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false }, afterValidPreview: () => {
+      if (++validPreviews === 2) wire.setSourceAttributes({ contains_liquid: [{ value: true, marketplace_id: MARKETPLACE_ID }] });
+    } });
+    const { owner } = await durableWireOwner();
+    const base = { ...input("attach"), idempotencyKey: "preserve-pre-dispatch-drift" };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_CHANGED" } });
+    expect(wire.commitPatchCount()).toBe(0);
+  });
+
+  it.each(["attach", "detach"] as const)("submits one explicitly preserved %s fact with main-generated review and exact readback", async (action) => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false, initialState: action === "attach" ? "detached" : "old", commitResultState: action === "attach" ? "new" : "detached" } });
+    const approve = vi.fn(async (_reason: string) => undefined);
+    const { owner, storePath } = await durableWireOwner(approve);
+    const base = { ...(action === "attach" ? input("attach") : input("detach")), idempotencyKey: `preserve-approved-${action}` };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).status).toBe(200);
+    expect(approve).toHaveBeenCalledWith(expect.stringContaining("保留原值"));
+    expect(wire.commitPatchCount()).toBe(1);
+    const ledger = await readFile(storePath, "utf8");
+    expect(ledger).toContain("preservedRequiredFieldSignatures");
+    expect(ledger).not.toContain('"value":false');
+    expect(JSON.stringify(wire.patchBodies.at(-1))).toContain('"value":false');
+  });
+
+  it.each([
+    [{ value: true, marketplace_id: MARKETPLACE_ID }],
+    [{ value: false }],
+    [{ value: false, marketplace_id: MARKETPLACE_ID }, { value: false, marketplace_id: "A1VC38T7YXB528" }],
+  ].map((changed) => ({ changed })))("keeps preserved-fact readback drift unknown and GET recovery cannot promote it %#", async ({ changed }) => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false, initialState: "old", postCommitSourceAttributes: { contains_liquid: changed } } });
+    const { owner, storePath } = await durableWireOwner();
+    const base = { ...input("detach"), idempotencyKey: "preserve-readback-drift" };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    const canonicalRead = { requestId: "preserved-fact-readback-only", method: "GET" as const, path: "/api/sp-api/variation-move", query: { marketplaceId: MARKETPLACE_ID, sku: SOURCE_SKU, action: "detach" }, headers: {} };
+    await owner.handle({ operation: "prepare", request: canonicalRead });
+    expect(await readFile(storePath, "utf8")).not.toContain('"verified": true');
+    wire.setPostCommitSourceAttributes({ contains_liquid: [{ value: false, marketplace_id: MARKETPLACE_ID }] });
+    await owner.handle({ operation: "prepare", request: canonicalRead });
+    expect(await readFile(storePath, "utf8")).toContain('"verified": true');
+    expect(wire.commitPatchCount()).toBe(1);
+  });
+
+  it("does not resend an unknown preserved-fact write after another explicit Preview", async () => {
+    const wire = installPreviewFactWire({ wire: { existingLiquid: false, commitStatus: 403 } });
+    const { owner } = await durableWireOwner();
+    const base = { ...input("attach"), idempotencyKey: "preserve-unknown-no-resend" };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).body).toMatchObject({ kind: "json", value: { code: "UPDATE_STATUS_UNKNOWN" } });
+    expect(wire.commitPatchCount()).toBe(1);
+  });
+
+  it("keeps a long preserved-fact native review within the hardware limit with exact binding verification", async () => {
+    const original = "Synthetic product fact ".repeat(18).trim();
+    const wire = installPreviewFactWire({ wire: { sourceAttributes: { contains_liquid: [{ value: original }] }, commitResultState: "new" },
+      schema: (schema) => { schema.properties.contains_liquid!.items = { type: "object", required: ["value"], properties: { value: { type: "string" } } }; } });
+    const approve = vi.fn(async (_reason: string) => undefined);
+    const { owner } = await durableWireOwner(approve);
+    const base = { ...input("attach"), idempotencyKey: "preserve-long-native-reason" };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", base) })).status).toBe(422);
+    const selected = { ...base, preserveRequiredFields: ["contains_liquid"] };
+    expect((await owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).status).toBe(200);
+    const reason = approve.mock.calls[0]![0];
+    expect(reason.length).toBeLessThanOrEqual(120);
+    expect(reason).toContain("保留原值 1 欄");
+    expect(reason).toContain("已在 App 核對");
+    expect(reason).toMatch(/驗證碼 [a-f0-9]{12}$/u);
+    expect(wire.commitPatchCount()).toBe(1);
   });
 
   it("explains the actual missing-metadata rejection without creating a field", async () => {
@@ -1923,7 +2208,7 @@ describe("live variation detach and attach wire safety", () => {
     expect(wire.commitPatchCount()).toBe(0);
   });
 
-  it("keeps the observed public missing-field shape diagnostic-only with no ticket or source-value disclosure", async () => {
+  it("offers only the exact reported existing fact and no unrelated source values or preview ticket", async () => {
     const wire = installPreviewFactWire({
       wire: { sourceAttributes: { contains_liquid_contents: [{ value: false }], private_fact: [{ value: "SYNTHETIC_SOURCE_VALUE" }] } },
       schema: (schema) => {
@@ -1938,13 +2223,10 @@ describe("live variation detach and attach wire safety", () => {
     const response = await router.handle(variationRouteRequest("POST", body));
     expect(response.status).toBe(422);
     expect(response.body).toMatchObject({ kind: "json", value: {
-      code: "VARIATION_REQUIREMENTS_VALUE_CONFLICT",
-      message: expect.stringContaining("Amazon HTTP 200"),
-      operation: "patchListingsItemPreview",
-      issues: [{ code: "90220", severity: "ERROR", attributeNames: ["contains_liquid_contents"], categories: ["MISSING_ATTRIBUTE"], marketplaceIds: [] }],
+      code: "VARIATION_FIELD_REQUIRED",
+      preservedRequiredFields: [expect.objectContaining({ name: "contains_liquid_contents", label: "產品是否含液體", editable: false, values: [{ value: false }] })],
     } });
     expect(JSON.stringify(response)).not.toContain("SYNTHETIC_SOURCE_VALUE");
-    expect(JSON.stringify(response)).not.toContain('"value":false');
     expect((await router.handle(variationRouteRequest("PATCH", body))).body).toMatchObject({ kind: "json", value: { code: "PREVIEW_EXPIRED" } });
     expect(approve).not.toHaveBeenCalled();
     expect(wire.previewPatchCount()).toBe(1);

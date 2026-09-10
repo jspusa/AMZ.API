@@ -13,18 +13,25 @@ const contextKeys = new Set(["marketplace_id", "language_tag"]);
 const protectedNames = new Set([
   "parentage_level", "child_parent_sku_relationship", "variation_theme",
   "purchasable_offer", "fulfillment_availability", "merchant_shipping_group",
-  "item_name", "bullet_point", "product_description", "generic_keyword",
+  "item_name", "bullet_point", "product_description", "generic_keyword", "ingredients", "title_differentiation",
   "list_price", "standard_price", "sale_price", "minimum_advertised_price", "business_price", "condition_note",
   "main_product_image_locator", "externally_assigned_product_identifier",
   "merchant_suggested_asin", "supplier_declared_has_product_identifier_exemption",
 ]);
 const labels: Record<string, string> = {
+  contains_liquid_contents: "產品是否含液體",
   contains_liquid: "產品是否含液體", product_contains_liquid: "產品是否含液體",
   is_liquid_double_sealed: "液體是否採雙重密封", batteries_required: "是否需要電池",
   batteries_included: "是否含電池", is_expiration_dated_product: "是否有產品效期",
   item_form: "產品形態", unit_count: "商品數量", country_of_origin: "原產地",
   supplier_declared_dg_hz_regulation: "危險品規範聲明",
 };
+
+/** Relationship, commercial and other separately managed fields never become product facts. */
+export function managedVariationAttribute(name: string): boolean {
+  return protectedNames.has(name) ||
+    /(?:price|offer|shipping|fulfillment|inventory|availability|image_locator)/u.test(name);
+}
 
 function fail(message: string): never {
   throw new VariationUpdateValidationError(message, "VARIATION_REQUIRED_FIELDS_INVALID");
@@ -247,8 +254,7 @@ export function resolveVariationRequiredFields(
               value.marketplace_id.length > 0 &&
               value.marketplace_id === value.marketplace_id.trim()),
           ));
-      const protectedField = protectedNames.has(field.name) ||
-        /(?:price|offer|shipping|fulfillment|inventory|availability|image_locator)/u.test(field.name);
+      const protectedField = managedVariationAttribute(field.name);
       const editable = field.editable && supported && !protectedField;
       if (!editable) blocked.set(
         field.name,

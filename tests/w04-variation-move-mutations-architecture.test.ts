@@ -108,8 +108,9 @@ describe("W04 Variation Move mutation architecture", () => {
       /dependencies\.write\.validationPreview\(\{[\s\S]*patchBody:\s*patchBody\(descriptor\)/u,
     );
     expect(production).toMatch(
-      /dependencies\.write\.commitOnce\(\{[\s\S]*patchBody:\s*body,[\s\S]*assertBeforeSend:\s*\(\)\s*=>\s*fence\.assertCurrent\(\),[\s\S]*recordBeforeSend:/u,
+      /dependencies\.write\.commitOnce\(\{[\s\S]*patchBody:\s*body,[\s\S]*assertBeforeSend:\s*assertPreservedFactsCurrent,[\s\S]*recordBeforeSend:/u,
     );
+    expect(production).toMatch(/const assertPreservedFactsCurrent = async \(\) => \{\s*await fence\.assertCurrent\(\)/u);
     expect(production).toContain("error.code === \"UPDATE_STATUS_UNKNOWN\"");
     expect(production).toContain("new SpApiPreCommitError(cause)");
     expect(production).not.toMatch(/\bfetch\s*\(/u);

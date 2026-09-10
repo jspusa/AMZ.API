@@ -342,6 +342,37 @@ describe("main-owned Amazon write gate", () => {
     expect(approveWrite).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ["variation-move", "variation_attach", "content", "content"],
+    ["content", "content", "variation-move", "variation_attach"],
+    ["variation-move", "variation_attach", "variation-move", "variation_detach"],
+  ] as const)("reserves the same SKU across %s and %s while preserving ticket release", async (firstFamily, firstOperation, secondFamily, secondOperation) => {
+    const store = await testStore();
+    const contextAdapter = scriptedContext();
+    const context = await contextAdapter.capture(US);
+    const approveWrite = vi.fn(async () => undefined);
+    const gate = new MainWriteGate({ store, context: contextAdapter, approveWrite });
+    const firstBinding = writeBinding(context, { family: firstFamily, operation: firstOperation, previewKey: "first-family", idempotencyKey: "first-family-key" });
+    const secondBinding = writeBinding(context, { family: secondFamily, operation: secondOperation, previewKey: "second-family", idempotencyKey: "second-family-key" });
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const reserved = new Promise<void>((resolve) => { entered = resolve; });
+    await gate.stagePreview(firstBinding);
+    await gate.stagePreview(secondBinding);
+    const first = runOne(gate, firstBinding, async () => "first", { beforeApproval: async () => { entered(); await paused; } });
+    await reserved;
+    const secondSend = vi.fn(async () => "second");
+    try {
+      await expect(runOne(gate, secondBinding, secondSend)).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS" });
+      expect(approveWrite).not.toHaveBeenCalled();
+      expect(secondSend).not.toHaveBeenCalled();
+    } finally { release(); }
+    await first;
+    await expect(runOne(gate, secondBinding, secondSend)).resolves.toBe("second");
+    expect(secondSend).toHaveBeenCalledOnce();
+  });
+
   it("reserves one SKU across the complete two-stage B2B offer workflow", async () => {
     const store = await testStore();
     const contextAdapter = scriptedContext();

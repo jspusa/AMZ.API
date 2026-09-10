@@ -38,5 +38,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/dark-palette.generated.css",
   ]),
   fingerprint:
-    "cc580b3c53dc13769227c45bfbb9918514f13c8349c9b826fa1c7c4456b5f183",
+    "6a02e1324b17d7be13db31e1551d8b7fd2af9d9ac55fe706efa3459a5f337fca",
 });

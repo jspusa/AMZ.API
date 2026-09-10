@@ -43,6 +43,7 @@ export type VariationMovePrepareRequest =
     }>);
 
 export type VariationMoveSourceObservation = VariationMoveIdentity & Readonly<{
+  preservedRequiredFields?: readonly VariationFieldDescriptor[];
   retainedVariationThemeSignature?: string;
   requiredFields?: readonly VariationFieldDescriptor[];
   requiredFieldChoices?: readonly VariationFieldDescriptor[];
@@ -60,6 +61,8 @@ export type VariationMoveSourceObservation = VariationMoveIdentity & Readonly<{
 }>;
 
 export type VariationMoveTargetObservation = Readonly<{
+  /** Main-private stable identity, theme and sibling-dimension proof. */
+  targetFamilySignature?: string;
   marketplaceId: MarketplaceId;
   sellerSku: string;
   asin: string | null;
@@ -96,6 +99,8 @@ export type VariationMoveGatewayPreparation =
     }>;
 
 type VariationMoveDescriptorBase = VariationMoveIdentity & Readonly<{
+  /** Main-only exact original arrays, explicitly selected by name. */
+  preservedRequiredValues?: Readonly<Record<string, unknown>>;
   requiredValues?: Readonly<Record<string, unknown>>;
   requiredSchemaChecksum?: string | null;
   asin: string;
@@ -115,6 +120,7 @@ export type VariationMoveDetachDescriptor = VariationMoveDescriptorBase &
 
 export type VariationMoveAttachDescriptor = VariationMoveDescriptorBase &
   Readonly<{
+    targetFamilySignature?: string;
     /** Main-proven immutable dimensions; reviewed and read back, never patched. */
     preservedDimensionValues?: Readonly<Record<string, unknown>>;
     action: "attach";
@@ -135,6 +141,7 @@ export type VariationMoveDescriptor =
 
 /** Canonical relationship projection used for bounded post-write readback. */
 export type VariationMoveObservation = VariationMoveIdentity & Readonly<{
+  wholeAttributeSignatures?: Readonly<Record<string, string>>;
   exactAttributeSignatures?: Readonly<Record<string, string>>;
   attributeSignatures?: Readonly<Record<string, string>>;
   asin: string | null;
@@ -164,6 +171,7 @@ export type VariationMoveCanonicalObservation = VariationMoveObservation &
   }>;
 
 export type VariationMoveValidationReceipt = Readonly<{
+  preservedRequiredFields?: readonly VariationFieldDescriptor[];
   requiredFields?: readonly VariationFieldDescriptor[];
   requiredFieldChoices?: readonly VariationFieldDescriptor[];
   status: "VALID" | "INVALID" | "UNKNOWN";

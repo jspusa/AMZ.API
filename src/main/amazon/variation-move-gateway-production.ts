@@ -78,6 +78,8 @@ import {
   resolveVariationRequiredFieldChoices,
   type VariationRequiredFieldBlock,
 } from "./variation-required-fields";
+import { preservedRequiredFieldDescriptors, preservedRequiredValuePatches,
+  selectPreservedRequiredValues, wholeVariationAttributeSignatures } from "./variation-preserved-required-fields";
 
 const requirementsChecksum = (schema: unknown, checksum: string | null): string | null =>
   schema && checksum ? createHash("sha256").update(JSON.stringify([checksum, schema])).digest("hex") : null;
@@ -130,6 +132,7 @@ type SourceEvidenceRecord = EvidenceBase &
   }>;
 
 type TargetEvidenceRecord = EvidenceBase & Readonly<{
+  targetFamilySignature?: string;
   asin: string | null;
   productType: string | null;
   variationTheme: string | null;
@@ -244,6 +247,23 @@ function variationTargetParent(
   return family.queried.role === "parent"
     ? family.queried
     : family.parent ?? family.queried;
+}
+
+/** Stable target facts only; request IDs, retrieval times and unrelated content are excluded. */
+function targetFamilySignature(snapshot: Awaited<ReturnType<typeof readVariationItemAndFamily>>): string {
+  const family = snapshot.family;
+  const parent = variationTargetParent(family);
+  const children = snapshot.childRows.map((row) => [
+    row.member.sellerSku, row.member.asin, row.member.productType, row.member.role,
+    row.member.parentSku, row.member.fba, row.member.variationTheme,
+    wholeVariationAttributeSignatures(Object.fromEntries(family.dimensionNames.map((name) =>
+      [name, row.payload.attributes?.[name]]))),
+  ]).sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  return createHash("sha256").update(JSON.stringify([
+    parent.sellerSku, parent.asin, parent.productType, parent.role, parent.parentSku,
+    parent.variationTheme, [...parent.childSkus].sort(), family.familyComplete,
+    family.variationTheme, [...family.dimensionNames].sort(), children,
+  ])).digest("hex");
 }
 
 function ptdChecksum(envelope: unknown): string | null {
@@ -671,7 +691,9 @@ export function createVariationMoveGatewayProduction(
       ptd.productType !== descriptor.productType ||
       target.variationTheme !== descriptor.variationTheme ||
       !sameDimensionNames(target.dimensionNames, descriptor.dimensionNames) ||
-      ptd.checksum !== descriptor.childSchemaChecksum
+      ptd.checksum !== descriptor.childSchemaChecksum ||
+      Object.keys(descriptor.preservedRequiredValues ?? {}).length > 0 &&
+        (!descriptor.targetFamilySignature || descriptor.targetFamilySignature !== target.targetFamilySignature)
     ) {
       throw new SpApiError(
         "變體目標 family 或 CHILD PTD 證據已失效，已停止送出。",
@@ -684,6 +706,17 @@ export function createVariationMoveGatewayProduction(
   const patchBody = (descriptor: VariationMoveDescriptor): VariationPatchBody => {
     const source = sourceRecordFor(descriptor);
     try {
+      const preservedValues = selectPreservedRequiredValues(preservedRequiredFieldDescriptors({
+        schema: source.requiredSchema, attributes: source.attributes,
+        marketplaceId: descriptor.marketplaceId, sellerSku: descriptor.sellerSku,
+        singleMarketplaceScope: source.singleMarketplaceScope,
+        dimensionNames: descriptor.dimensionNames, issueRequiredNames: source.requiredAutomaticNames ?? [],
+      }), Object.keys(descriptor.preservedRequiredValues ?? {}));
+      if (JSON.stringify(wholeVariationAttributeSignatures(preservedValues)) !==
+        JSON.stringify(wholeVariationAttributeSignatures(descriptor.preservedRequiredValues))) {
+        throw new VariationUpdateValidationError("保留的產品資料與本次來源原值不一致，請重新預檢。", "VARIATION_REQUIREMENTS_CHANGED");
+      }
+      const preservedPatches = preservedRequiredValuePatches(preservedValues);
       if (descriptor.action === "detach") {
         if (descriptor.requiredSchemaChecksum !== source.requiredSchemaChecksum) {
           throw new VariationUpdateValidationError("產品必填欄位的 PTD 已變更，請重新預檢。", "VARIATION_TARGET_CHANGED");
@@ -700,7 +733,7 @@ export function createVariationMoveGatewayProduction(
           expectedParentSku: descriptor.expectedSourceParentSku,
           attributes: source.attributes,
         });
-        return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId)] };
+        return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId), ...preservedPatches] };
       }
       if (!provesStandalone(source.standalone, descriptor.marketplaceId)) {
         throw new VariationUpdateValidationError(
@@ -741,7 +774,7 @@ export function createVariationMoveGatewayProduction(
         sourceSellerSku: source.sellerSku,
         singleMarketplaceScope: source.singleMarketplaceScope,
       });
-      return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId)] };
+      return { ...body, patches: [...body.patches, ...requiredValuePatches(requiredValues, source.attributes, descriptor.marketplaceId), ...preservedPatches] };
     } catch (error) {
       return relationshipValidationError(error);
     }
@@ -888,6 +921,7 @@ export function createVariationMoveGatewayProduction(
         asin: sourceResult.member.asin,
         productType: sourceResult.member.productType || null,
         attributes: sourceResult.payload.attributes,
+        singleMarketplaceScope: sourceResult.singleMarketplaceScope,
         requiredSchema: requiredSchema.schema,
         requiredSchemaChecksum: requirementsChecksum(requiredSchema.schema, requiredSchema.checksum),
         requiredIssueKey,
@@ -922,6 +956,12 @@ export function createVariationMoveGatewayProduction(
             requiredIssueChoices,
           ),
           requiredSchemaChecksum: requirementsChecksum(requiredSchema.schema, requiredSchema.checksum),
+          preservedRequiredFields: preservedRequiredFieldDescriptors({
+            schema: requiredSchema.schema, attributes: sourceResult.payload.attributes,
+            marketplaceId: input.marketplaceId, sellerSku: input.sellerSku,
+            singleMarketplaceScope: sourceResult.singleMarketplaceScope,
+            dimensionNames: [], issueRequiredNames: hints.names,
+          }),
         },
         requestIds: [
           sourceResult.requestId,
@@ -960,8 +1000,10 @@ export function createVariationMoveGatewayProduction(
         targetMember.role === "parent"
       ? targetSnapshot.childRows
       : [];
+    const targetSignature = targetFamilySignature(targetSnapshot);
     const requiredIssueKey = requirementsKey(base, sourceResult.member.asin, sourceResult.member.productType, [schema.schema, schema.checksum],
-      sourceResult.payload.attributes, [targetFamily.variationTheme, targetFamily.dimensionNames, input.dimensionValues]);
+      sourceResult.payload.attributes, [targetMember.asin, targetMember.productType, targetMember.role,
+        targetFamily.variationTheme, targetFamily.dimensionNames, input.dimensionValues, targetSignature]);
     const hints = issueHintsFor(requiredIssueKey);
     const requiredIssueNames = [
       ...new Set([
@@ -988,6 +1030,7 @@ export function createVariationMoveGatewayProduction(
     });
     const targetCapability = mintTarget({
       ...base,
+      targetFamilySignature: targetSignature,
       asin: targetMember.asin,
       productType: targetMember.productType || null,
       variationTheme: targetFamily.variationTheme,
@@ -1031,6 +1074,12 @@ export function createVariationMoveGatewayProduction(
         sourceEvidence: capability,
       }),
       retainedVariationThemeSignature,
+      preservedRequiredFields: preservedRequiredFieldDescriptors({
+        schema: schema.schema, attributes: sourceResult.payload.attributes,
+        marketplaceId: input.marketplaceId, sellerSku: input.sellerSku,
+        singleMarketplaceScope: sourceResult.singleMarketplaceScope,
+        dimensionNames: targetFamily.dimensionNames, issueRequiredNames: hints.names,
+      }),
       requiredFields: variationRequiredFieldDescriptors({
       schema: schema.schema, attributes: sourceResult.payload.attributes,
       marketplaceId: input.marketplaceId, dimensionNames: targetFamily.dimensionNames,
@@ -1054,6 +1103,7 @@ export function createVariationMoveGatewayProduction(
       requiredSchemaChecksum: requirementsChecksum(schema.schema, schema.checksum),
     };
     const target: VariationMoveTargetObservation = {
+      targetFamilySignature: targetSignature,
       marketplaceId: input.marketplaceId,
       sellerSku: targetMember.sellerSku,
       asin: targetMember.asin,
@@ -1124,6 +1174,7 @@ export function createVariationMoveGatewayProduction(
       marketplaceId: descriptor.marketplaceId,
       attributeSignatures: variationAttributeSignatures(result.payload.attributes, descriptor.marketplaceId),
       exactAttributeSignatures: variationAttributeSignatures(result.payload.attributes, descriptor.marketplaceId, true),
+      wholeAttributeSignatures: wholeVariationAttributeSignatures(result.payload.attributes),
       sellerSku: result.member.sellerSku,
       asin: result.member.asin,
       productType: result.member.productType || null,
@@ -1228,6 +1279,7 @@ export function createVariationMoveGatewayProduction(
       mode: "live",
       attributeSignatures: variationAttributeSignatures(result.payload.attributes, identity.marketplaceId),
       exactAttributeSignatures: variationAttributeSignatures(result.payload.attributes, identity.marketplaceId, true),
+      wholeAttributeSignatures: wholeVariationAttributeSignatures(result.payload.attributes),
       marketplaceId: identity.marketplaceId,
       sellerSku: result.member.sellerSku,
       asin: result.member.asin,
@@ -1437,11 +1489,15 @@ export function createVariationMoveGatewayProduction(
           ),
         );
         const requiredFieldChoices = choiceResolution.fields;
+        const preservedRequiredFields = preservedRequiredFieldDescriptors({
+          ...context, sellerSku: descriptor.sellerSku,
+          singleMarketplaceScope: source.singleMarketplaceScope, issueRequiredNames: combined,
+        });
         if (
           requiredFields.some((field) =>
             hints.requiredNames.includes(field.name),
           ) ||
-          requiredFieldChoices.length
+          requiredFieldChoices.length || preservedRequiredFields.some((field) => hints.requiredNames.includes(field.name))
         ) {
           if (requiredIssueHints.size >= 50) requiredIssueHints.delete(requiredIssueHints.keys().next().value!);
           requiredIssueHints.set(source.requiredIssueKey, {
@@ -1459,6 +1515,7 @@ export function createVariationMoveGatewayProduction(
                 }),
             requiredFields,
             requiredFieldChoices,
+            preservedRequiredFields,
           };
         }
         const blockedReason = hints.requiredNames
@@ -1482,12 +1539,47 @@ export function createVariationMoveGatewayProduction(
       let dispatchEvidenceSaved = false;
       try {
         const body = patchBody(descriptor);
+        const assertPreservedFactsCurrent = async () => {
+          await fence.assertCurrent();
+          if (!Object.keys(descriptor.preservedRequiredValues ?? {}).length) return;
+          const source = sourceRecordFor(descriptor);
+          const [current, schema, currentTarget] = await Promise.all([
+            readVariationItem(dependencies.listings, descriptor),
+            readChildSchema(dependencies.listings, descriptor.marketplaceId, descriptor.productType),
+            descriptor.action === "attach" ? readVariationItemAndFamily(dependencies.listings, {
+              marketplaceId: descriptor.marketplaceId, sellerSku: descriptor.targetParentSku,
+            }) : Promise.resolve(null),
+          ]);
+          await fence.assertCurrent();
+          sourceRecordFor(descriptor);
+          if (currentTarget && !currentTarget.family.familyComplete) {
+            throw new SpApiError("送出前重新讀取的目標 family 不完整，尚未送出修改；請重新讀取。", {
+              status: 409, code: "VARIATION_FAMILY_INCOMPLETE",
+            });
+          }
+          if (descriptor.action === "attach" && (!currentTarget ||
+              currentTarget.item.member.sellerSku !== descriptor.targetParentSku ||
+              currentTarget.item.member.asin !== descriptor.targetAsin ||
+              currentTarget.item.member.productType !== descriptor.productType || currentTarget.item.member.role !== "parent" ||
+              targetFamilySignature(currentTarget) !== descriptor.targetFamilySignature) ||
+            current.member.asin !== descriptor.asin || current.member.productType !== descriptor.productType ||
+            !current.member.fba || current.member.parentSku !== descriptor.expectedSourceParentSku ||
+            current.member.role !== (descriptor.action === "detach" ? "child" : "standalone") ||
+            descriptor.action === "attach" && !explicitStandalone(current, descriptor.marketplaceId) ||
+            JSON.stringify(wholeVariationAttributeSignatures(current.payload.attributes)) !==
+              JSON.stringify(wholeVariationAttributeSignatures(source.attributes)) ||
+            requirementsChecksum(schema.schema, schema.checksum) !== source.requiredSchemaChecksum) {
+            throw new SpApiError("保留的產品原值、商品身分或 PTD 在送出前已變更，尚未送出修改；請重新檢查。", {
+              status: 409, code: "PREVIEW_CHANGED",
+            });
+          }
+        };
         try {
           reply = await dependencies.write.commitOnce({
             marketplaceId: descriptor.marketplaceId,
             sellerSku: descriptor.sellerSku,
             patchBody: body,
-            assertBeforeSend: () => fence.assertCurrent(),
+            assertBeforeSend: assertPreservedFactsCurrent,
             recordBeforeSend: async () => {
               await recordDispatch();
               dispatchEvidenceSaved = true;

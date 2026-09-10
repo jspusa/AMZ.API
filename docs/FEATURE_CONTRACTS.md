@@ -4,6 +4,7 @@
 
 - 變體主入口使用單層寬版 workspace。來源／目標查詢、Seller SKU、目標 children 參考值、待辦與目前階段必須可見；點選及按鈕可完成所有步驟，不依賴拖曳。返回恢復原選單焦點與捲動，寫入忙碌期間禁止離開。
 - 解除與加入都讀 seller-specific CHILD PTD。缺少的必填商品事實提供相符輸入；布林沒有預設答案。既有 exact child 事實保持唯讀，部分缺漏只補缺少的 leaf，不能藉此覆寫已知值。無法安全編輯的結構明示原因，不能偽裝可送出。
+- 若 fresh Amazon Preview 明確要求一個已有完整值的商品事實，提供預設未勾選的「保留既有答案並加入本次檢查」。只接受 main 證明的單筆純量欄位，renderer 只選名稱；完整原值及 selector 由 main 原樣帶入，前後相同仍揭露於檢查內容。此意圖另綁 fingerprint、重新讀取與持久回查；既有值不可藉此編輯，也不放寬其他受管制欄位。
 - 必填事實、維度與 parent 變更共同出現在 canonical diff 與 native prompt，綁 exact context、身分、schema 與 preview。編輯即作廢原 Preview；兩階段各自 fresh Preview、native approval、durable claim、single PATCH、canonical GET。結果不明只允許回查，不恢復重送按鈕。
 - PTD 唯讀維度有唯一且完整的 exact 原值時可以保留並 attach，production payload 必須省略該欄位；原值／selectors 改動、缺值或歧義仍停止。保留值與 schema 納入預檢 binding，持久化僅存 digest，回查必須核對 exact selectors。
 - 變體規劃可沿用同次未綁健檢工作與快照，列出已證明 standalone FBA SKU 及建議 family。建議僅依相容類型、主題及同系列 verified children 計數，星等與相似 SKU 可見；同分／不足不假裝唯一結論，選擇後一律 fresh-read 來源及目標再走原寫入流程。

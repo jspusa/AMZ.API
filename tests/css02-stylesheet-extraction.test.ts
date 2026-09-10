@@ -16,7 +16,7 @@ const CSS02_ORDERED_PREFIX = [
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "cb4ce4efeac8e6b29874934e8ecff99eb55edcb379399ecba29e857088ce48f3";
+  "9de8504724f885817b7f90d69afdaf91801e7ef98fafeb380d233bb98a6dd4ea";
 
 const CSS02_PAYLOAD_EVIDENCE = [
   {

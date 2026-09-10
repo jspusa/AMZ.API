@@ -38,6 +38,7 @@ export type VariationMovePreparation = {
   fields: VariationFieldView[];
   requiredFields: VariationFieldView[];
   requiredFieldChoices?: VariationFieldView[];
+  preservedRequiredFields?: VariationFieldView[];
   preparedAt: string;
   requestIds: string[];
   writable: boolean;
@@ -152,6 +153,30 @@ export function parseVariationRequiredFields(
     : null;
 }
 
+export function parseVariationPreservedRequiredFields(
+  raw: unknown,
+): VariationFieldView[] | null {
+  const fields = parseVariationRequiredFields(raw);
+  return fields && fields.length <= 30 &&
+    new Set(fields.map((field) => field.name)).size === fields.length &&
+    fields.every((field) => {
+      const leaf = field.leaves[0];
+      const value = field.values[0]?.value;
+      return /^[a-z][a-z0-9_]{0,79}$/u.test(field.name) &&
+        !field.editable && !field.jsonFallback &&
+        field.values.length === 1 && field.leaves.length === 1 &&
+        Object.keys(field.values[0]).every((key) => ["value", "marketplace_id", "language_tag"].includes(key)) &&
+        leaf.path.length === 1 && leaf.path[0] === "value" &&
+        leaf.currentValue !== null && leaf.currentValue === value &&
+        (leaf.type === "integer" ? Number.isInteger(value) : typeof value === leaf.type) &&
+        ((typeof value === "string" && Boolean(value.trim())) ||
+          (typeof value === "number" && Number.isFinite(value)) ||
+          typeof value === "boolean");
+    })
+    ? fields
+    : null;
+}
+
 export function parseVariationMovePreparation(
   raw: unknown,
   expected: {
@@ -205,6 +230,8 @@ export function parseVariationMovePreparation(
     !isStrings(raw.warnings) ||
     (raw.requiredFieldChoices !== undefined &&
       parseVariationRequiredFields(raw.requiredFieldChoices) === null) ||
+    (raw.preservedRequiredFields !== undefined &&
+      parseVariationPreservedRequiredFields(raw.preservedRequiredFields) === null) ||
     typeof raw.notice !== "string"
   ) {
     throw new Error(
@@ -225,6 +252,7 @@ export function parseVariationMovePreview(
     action: VariationMoveAction;
     marketplaceId: string;
     sellerSku: string;
+    preservedRequiredFields?: VariationFieldView[];
   },
 ): VariationMovePreview {
   if (
@@ -256,6 +284,20 @@ export function parseVariationMovePreview(
   }
   if (raw.issues.some((issue) => issue.severity.toUpperCase() === "ERROR")) {
     throw new Error("Amazon 變體預檢尚未通過，已停止送出。");
+  }
+  const changes = (raw as VariationMovePreview).changes ?? [];
+  for (const field of expected.preservedRequiredFields ?? []) {
+    const matching = changes.filter((change) => change.name === field.name);
+    const exactAnswer = (value: unknown) => {
+      if (!Array.isArray(value) || value.length !== 1 || !isRecord(value[0])) return false;
+      const row = value[0];
+      const original = field.values[0];
+      return Object.keys(row).length === Object.keys(original).length &&
+        Object.entries(original).every(([key, item]) => row[key] === item);
+    };
+    if (matching.length !== 1 || !exactAnswer(matching[0].before) || !exactAnswer(matching[0].after)) {
+      throw new Error("本次預檢未完整核對要保留的既有答案，已停止送出。");
+    }
   }
   return raw as VariationMovePreview;
 }

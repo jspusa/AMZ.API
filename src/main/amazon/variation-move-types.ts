@@ -7,6 +7,7 @@ import type { VariationFieldDescriptor } from "./variation-update";
 export type VariationMoveAction = "detach" | "attach";
 
 export type VariationDetachInput = {
+  preserveRequiredFields?: string[];
   requiredValues?: Record<string, unknown>;
   action: "detach";
   marketplaceId: MarketplaceId;
@@ -19,6 +20,7 @@ export type VariationDetachInput = {
 };
 
 export type VariationAttachInput = {
+  preserveRequiredFields?: string[];
   requiredValues?: Record<string, unknown>;
   action: "attach";
   marketplaceId: MarketplaceId;
@@ -45,6 +47,7 @@ export type VariationMovePreparation = {
   fields: VariationFieldDescriptor[];
   requiredFields: VariationFieldDescriptor[];
   requiredFieldChoices?: VariationFieldDescriptor[];
+  preservedRequiredFields?: VariationFieldDescriptor[];
   preparedAt: string;
   requestIds: string[];
   writable: boolean;

@@ -1,5 +1,7 @@
 # Architecture
 
+變體預檢若明確要求來源已有的商品事實，`variation-preserved-required-fields.ts` 在 main 私有缺欄證據與 CHILD PTD 上投影可保留的單筆純量欄位。renderer 的 `preserveRequiredFields` 只傳勾選名稱；完整原值、selector 與 PATCH 由 main 複製，前後相同也納入確認內容。完整 attribute digest 保留陣列順序，與 fill-only／維度使用的 digest 分開，綁定 Preview 與持久回查；原生確認前及送出前的重新讀取必須相符；目標的身分、theme、維度、完整性與同群商品組合另以 main 私有摘要綁定，任何相關漂移都需重新檢查。未指定保留意圖時保留原 fingerprint 相容性，不能以舊完成收據證明新意圖。變體寫入使用既有同站點／SKU reservation，避免其他 Listing 寫入在檢查及送出間交錯。
+
 變體工作台的未綁建議由 `UnboundVariationAuditOwner.publicSnapshot` 在既有快照上以純函式產生，不新增報表、job 或寫入權限。候選只用相容 Product Type／theme 與 verified child 的系列 SKU 計數；renderer 選擇後仍重新讀 family。CHILD PTD 的 immutable 維度只在唯一完整原值可精確保留時允許 attach，gateway 獨立重驗並省略此 PATCH；完整 selectors 與 schema 綁入票證，恢復與回查核對 digest。完整空 relationships 的 provenance 與未綁健檢使用相同 classifier；既有 matching theme 只在 gateway 私有原始證據確認 standalone、無 parentage／parent attribute 時保留並省略 PATCH，完整 selector digest 納入預覽與持久回查。價目表工作回傳明確 stage 與逐列原因，Dashboard 在同次生命週期保留隱藏面板，返回只接回既有工作；main context fence 與輸出來源不變。
 
 ```text
