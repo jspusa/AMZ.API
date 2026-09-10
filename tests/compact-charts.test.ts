@@ -42,7 +42,7 @@ describe("compact charts and authored dark surfaces", () => {
     const css = postcss.parse(await file("src/renderer/src/styles/chart-compact.css"));
     const rail = new Map<string, string>();
     css.walkRules(rule => { if (rule.selector === '#home-performance .brand-sales-context-line') rule.walkDecls(d => { rail.set(d.prop, d.value); }); });
-    expect(rail.get("min-height")).toBe("28px");
+    expect(rail.get("min-height")).toBe("42px");
     expect(rail.get("overflow")).toBe("hidden");
     expect(css.toString()).toContain('clamp(154px, 38cqi, 196px)');
     expect(css.toString()).toContain('.brand-sales-legend-meter');
