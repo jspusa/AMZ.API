@@ -2,6 +2,8 @@
 
 Issue #228; [scope and acceptance](../specs/2026-09-10-variation-preserved-required-facts.md). The previous 0.1.61 release record remains authoritative for its artifact and delivery evidence.
 
+This is the historical 0.1.62 record. Its accepted-operation recovery was subsequently completed on official 0.1.63; current installation and protected-download delivery are tracked in the [0.1.63 recovery ledger](2026-09-variation-readback-recovery.md).
+
 ## Confirmed cause
 
 On 2026-09-10, the reviewed local diagnostic candidate `af191f4d0da1cb3d90447c5318f83f3df5138356` completed one Preview for the original standalone source and target. Amazon HTTP 200 returned ERROR 90220 / `contains_liquid_contents` / `MISSING_ATTRIBUTE`; the main diagnostic was `VARIATION_REQUIREMENTS_VALUE_CONFLICT`. The current listing already contained nonempty data, so the fill-only form excluded it. This proves the conflicting read/Preview branch, not the precise fact value or validity of an arbitrary replacement.
@@ -43,3 +45,7 @@ Local review evidence: the first review identified missing target identity bindi
 Main integration preserved PR #234 audit layout and the new preservation checkbox styles. The five fixture conflicts contained only rule-stream hashes and measured lengths; regenerated appearance and the combined stylesheet measured fingerprint `32696117161a0b08f398c6e4f9c6c0df52187f2313850eac292fec2accb39c86`. Evidence: `/tmp/amz-api-v0162-verified/integrated-check.log`, `integrated-audit.log`, `styles-after-main-integration.json`.
 
 PR #235 initial head `e71089cb63fd9b79041dc23c1d872513d9477758` passed Validate `34430706277`; Windows `34430706435` failed before packaging because the merged audit source-text test expected LF on a CRLF checkout. The test reader now normalizes line endings while keeping all semantic assertions. Both independent review axes report 0 findings for this test-only correction; the subsequent full local check passed 297 files / 3,321 tests and build/stylesheet parity (`windows-portability-check.log`). This failed Windows run is not packaging evidence; replacement exact-head CI is required.
+
+## Subsequent 0.1.63 closure
+
+On 2026-09-10, [PR #237](https://github.com/jspusa/AMZ.API/pull/237) / main `6086d8dbbf85226540c333adc7d3e717cb59a8ac` was released and its official Mac artifact installed with the active vault and entire ledger preserved during the swap. The existing `TPZ01AM-4` attach then displayed “★ 先前操作已由 Amazon 唯讀回查確認” through the new GET recovery path, from no parent to `AF Turkey Tedon_Small`, with 19 FBA family members. The agent invoked zero 0.1.63 Preview, native approval or PATCH; it recovered the accepted operation observed above after external user interaction. The historical .62 observations and artifacts remain unchanged in this record. Exact .63 source/artifact/install/live receipts and the separate uploaded-versus-authenticated-download status are in the [0.1.63 ledger](2026-09-variation-readback-recovery.md).
