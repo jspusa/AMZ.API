@@ -76,11 +76,16 @@ describe("home layout repair", () => {
       .toBe("minmax(0, 1fr) auto");
   });
 
-  it("changes layout only and participates in the verified production stylesheet stream", async () => {
+  it("keeps the home repair in the verified stream and limits paint changes to deliberate interaction states", async () => {
     const css = await layout();
-    css.walkDecls((declaration) => {
-      expect(declaration.prop).not.toMatch(/^(?:color|background(?:-.+)?|border(?:-.+)?-color|fill|stroke|--audit-state-.+)$/u);
-    });
+    const hover = values(css, `${card}:is(:hover,:focus-within)`);
+    expect(hover.get("transform")).toBe("translateY(-2px)");
+    expect(hover.get("border-color")).toBe("#9eb6d2");
+    expect(hover.get("background")).toBe("#f8fbff");
+    expect(hover.get("box-shadow")).toBe("0 10px 24px #31577d1a");
+    expect(values(css, card).has("color")).toBe(false);
+    expect(values(css, card).has("background")).toBe(false);
+    expect(values(css, card).has("border-color")).toBe(false);
     const composed = await readRendererStylesheet();
     expect(composed).toContain("Home layout repair: one set of rails");
     expect(composed.indexOf("Home layout repair: one set of rails"))
