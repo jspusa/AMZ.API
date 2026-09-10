@@ -4,7 +4,8 @@ import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 import AuditWorkspaceShell from "../src/renderer/src/components/audit-workspace-shell";
 
-const source = (path: string) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
+const source = async (path: string) =>
+  (await readFile(new URL(`../${path}`, import.meta.url), "utf8")).replace(/\r\n?/gu, "\n");
 describe("shared audit detail reading surface", () => {
   it.each(["workspace", "dialog"] as const)("shares type/layout without changing %s safety or semantics", (presentation) => {
     const html = renderToStaticMarkup(<AuditWorkspaceShell presentation={presentation} eyebrow="FBA" title="Test audit" closeLabel="Close audit" surfaceClassName="test-audit" busy onBack={() => undefined}><p role="alert">Incomplete evidence remains visible</p></AuditWorkspaceShell>);
