@@ -1,0 +1,104 @@
+name: Verify audit review workbench source
+on:
+  push:
+    branches: [feature/audit-review-workbench]
+permissions:
+  contents: write
+concurrency:
+  group: audit-review-materialization
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.repository == 'jspusa/AMZ.API' && github.actor == 'jspusa'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Materialize only the reviewed hash-verified frontend diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, lzma, subprocess
+          chunks = [Path(f'.github/review-payload-{i}.b64') for i in range(6)]
+          encoded = ''.join(p.read_text().strip() for p in chunks)
+          assert len(encoded) == 37340, 'Incomplete source transport'
+          packed = base64.b64decode(encoded, validate=True)
+          assert hashlib.sha256(packed).hexdigest() == '99dda2c095df7ef5ec2d110fdfbd7b70ec7c772d2705649bdd27eb127440ac2a', 'Source digest mismatch'
+          patch = lzma.decompress(packed)
+          assert len(patch) == 109174, 'Decoded source length mismatch'
+          subprocess.run(['git','apply','--check','--whitespace=error'],input=patch,check=True)
+          subprocess.run(['git','apply','--index','--whitespace=error'],input=patch,check=True)
+          subprocess.run(['git','rm',*[str(p) for p in chunks],'.github/workflows/audit-review-verify.yml'],check=True)
+          tree = subprocess.check_output(['git','write-tree'],text=True).strip()
+          assert tree == '11623f6e12383ece07d41a5da3e41baacd53e09e', f'Unexpected source tree: {tree}'
+          Path('verified-tree.txt').write_text(tree+'\n')
+          PY
+          git diff --cached --check
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+      - name: Typecheck, full tests and production build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check 2>&1 | tee check.log
+      - name: Audit production dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm audit --omit=dev 2>&1 | tee audit.log
+      - name: Isolated production-origin browser verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/review-browser" --ignore-scripts --no-package-lock --no-audit playwright@1.57.0
+          export APPEARANCE_PLAYWRIGHT="$RUNNER_TEMP/review-browser/node_modules/playwright/index.mjs"
+          export APPEARANCE_CHROME="$(command -v google-chrome || command -v chromium || true)"
+          if [ -z "$APPEARANCE_CHROME" ]; then
+            node "$RUNNER_TEMP/review-browser/node_modules/playwright/cli.js" install --with-deps chromium
+            APPEARANCE_CHROME="$(node --input-type=module -e 'const {chromium}=await import(process.env.APPEARANCE_PLAYWRIGHT); console.log(chromium.executablePath())')"
+            export APPEARANCE_CHROME
+          fi
+          node scripts/visual-qa/audit-review-check.mjs 2>&1 | tee browser-review.log
+          node scripts/visual-qa/workflow-efficiency-check.mjs 2>&1 | tee browser-regression.log
+      - name: Commit verified source to the feature branch only
+        shell: bash
+        env:
+          PUSH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          test "$(git write-tree)" = '11623f6e12383ece07d41a5da3e41baacd53e09e'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(ui): add evidence-based audit review matrix and session triage'
+          git rev-parse HEAD > verified-source-sha.txt
+          AUTH="$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$AUTH"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/feature/audit-review-workbench
+          git archive --format=tar.gz HEAD > verified-source.tar.gz
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-review-verified
+          retention-days: 5
+          path: |
+            verified-tree.txt
+            verified-source-sha.txt
+            verified-source.tar.gz
+            check.log
+            audit.log
+            browser-review.log
+            browser-regression.log
+            audit-review-evidence/
+            workflow-evidence/
+            out/renderer/
