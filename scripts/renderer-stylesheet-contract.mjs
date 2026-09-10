@@ -42,5 +42,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/dark-surfaces.css",
   ]),
   fingerprint:
-    "a2c93d590d36c5c73b2bc10a7ecb36a0217da059e94969cf873de6f8a048e9f5",
+    "2ab8088585e4100067e30a548fdd52733d25edd95c8d95fce99bec98a9070bb8",
 });
