@@ -193,6 +193,9 @@ describe("dashboard audit workspace interactions", () => {
         initialMarketplaceId: DEFAULT_MARKETPLACE_ID,
       }), {
         createNodeMock: (element) => {
+          if (element.type === "div" && element.props.className === "sales-trend-plot") {
+            return { getBoundingClientRect: () => ({ width: 760 }) };
+          }
           if (element.type === "h2" && element.props.id === "price-list-title") {
             return { focus: priceHeadingFocus };
           }
