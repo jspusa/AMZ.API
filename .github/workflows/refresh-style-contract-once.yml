@@ -6,11 +6,10 @@ on:
       - fix/share-readability-audit-hover
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   refresh:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,29 +32,38 @@ jobs:
           OUTPUT=$(npx vitest run tests/css01-stylesheet-composition.test.ts 2>&1)
           STATUS=$?
           set -e
-          printf '%s\n' "$OUTPUT"
+          printf '%s\n' "$OUTPUT" | tee css01-output.txt
           if [ "$STATUS" -ne 0 ]; then
             HASH=$(printf '%s\n' "$OUTPUT" | grep -Eo 'received [a-f0-9]{64}' | head -n 1 | awk '{print $2}')
             if ! printf '%s' "$HASH" | grep -Eq '^[a-f0-9]{64}$'; then
               echo "Could not derive stylesheet fingerprint from focused contract failure." >&2
               exit 1
             fi
-            HASH="$HASH" node -e 'const fs=require("node:fs"); const p="scripts/renderer-stylesheet-contract.mjs"; let s=fs.readFileSync(p,"utf8"); const h=process.env.HASH; s=s.replace(/fingerprint:\s*\n\s*"[a-f0-9]{64}"/u, `fingerprint:\n    "${h}"`); fs.writeFileSync(p,s); console.log(`Pinned ${h}`);'
+            printf '%s\n' "$HASH" > derived-fingerprint.txt
+            HASH="$HASH" node -e 'const fs=require("node:fs"); const p="scripts/renderer-stylesheet-contract.mjs"; let s=fs.readFileSync(p,"utf8"); const h=process.env.HASH; s=s.replace(/fingerprint:\s*\n\s*"[a-f0-9]{64}"/u, `fingerprint:\n    "${h}"`); fs.writeFileSync(p,s);'
           fi
       - name: Validate and capture diagnostics
+        id: validate
         shell: bash
         run: |
           set +e
-          npm run check > /tmp/amz-check.log 2>&1
+          npm run check > amz-check.log 2>&1
           STATUS=$?
           set -e
-          tail -n 240 /tmp/amz-check.log > ci-style-debug.txt
+          printf '%s\n' "$STATUS" > check-status.txt
+          tail -n 400 amz-check.log > ci-style-debug.txt
           cat ci-style-debug.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/renderer/src/styles/dark-palette.generated.css scripts/renderer-stylesheet-contract.mjs ci-style-debug.txt
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: capture stylesheet validation state"
-            git push origin HEAD:fix/share-readability-audit-hover
-          fi
-          exit "$STATUS"
+      - name: Export diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stylesheet-diagnostics
+          path: |
+            amz-check.log
+            ci-style-debug.txt
+            check-status.txt
+            css01-output.txt
+            derived-fingerprint.txt
+            scripts/renderer-stylesheet-contract.mjs
+            src/renderer/src/styles/dark-palette.generated.css
+          if-no-files-found: warn
