@@ -1,0 +1,127 @@
+diff --git a/tests/content-audit-panel.test.tsx b/tests/content-audit-panel.test.tsx
+index ba14448..8c6deba 100644
+--- a/tests/content-audit-panel.test.tsx
++++ b/tests/content-audit-panel.test.tsx
+@@ -137,2 +137,41 @@ afterEach(() => {
+ describe("global FBA content audit panel", () => {
++  it("keeps Excel tools collapsed, preserves the selected file, and blocks recheck during preview", async () => {
++    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
++    const snapshot = parseContentAuditSnapshot({ marketplaceId: "ATVPDKIKX0DER", fetchedAt: "2026-09-10T08:00:00.000Z", rows: [quickEditRow()], summary: { total: 1 } });
++    const job = completedContentJob(snapshot);
++    let finish!: (response: Response) => void;
++    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
++    vi.stubGlobal("fetch", fetchMock);
++    let renderer!: ReactTestRenderer;
++    await act(async () => { renderer = create(<ContentAuditPanel marketplaceId={snapshot.marketplaceId} marketplaceShort="US" onOpenSku={vi.fn()} initialJob={job} cachedResult={{ snapshot, filter: "all", query: "", spellcheckNote: null }} />); });
++    const exportPanel = () => renderer.root.findByProps({ className: "content-audit-excel-panel" });
++    const importPanel = () => renderer.root.findByProps({ className: "content-audit-roundtrip" });
++    const actions = () => renderer.root.findByProps({ className: "content-audit-command-actions" }).findAllByType("button");
++    expect(exportPanel().props.hidden).toBe(true);
++    expect(importPanel().props.hidden).toBe(true);
++    await act(async () => { actions()[0].props.onClick(); });
++    expect(exportPanel().props.hidden).toBe(false);
++    expect(importPanel().props.hidden).toBe(true);
++    expect(renderer.root.findByProps({ className: "content-audit-excel-evidence" }).props.hidden).toBe(false);
++    await act(async () => { actions()[1].props.onClick(); });
++    expect(exportPanel().props.hidden).toBe(true);
++    expect(importPanel().props.hidden).toBe(false);
++    const file = new File(["synthetic workbook"], "selected.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
++    await act(async () => { renderer.root.findByType(ContentAuditWorkbookFilePicker).props.onSelect(file); });
++    await act(async () => { actions()[0].props.onClick(); });
++    await act(async () => { actions()[1].props.onClick(); });
++    expect(renderer.root.findByType(ContentAuditWorkbookFilePicker).props.fileName).toBe("selected.xlsx");
++    expect(fetchMock).not.toHaveBeenCalled();
++    await act(async () => { renderer.root.findByProps({ className: "content-audit-roundtrip-preview" }).props.onClick(); });
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    expect(actions().every((button) => button.props.disabled)).toBe(true);
++    await act(async () => { actions()[2].props.onClick(); });
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    expect(renderer.root.findAllByProps({ className: "content-audit-summary" })).toHaveLength(1);
++    await act(async () => { finish(new Response(JSON.stringify({message:"Synthetic preview rejection"}), {status:400, headers:{"content-type":"application/json"}})); });
++    expect(actions()[2].props.disabled).toBe(false);
++    expect(importPanel().props.hidden).toBe(false);
++    await act(async () => { renderer.unmount(); });
++  });
++
+   it("pages all matching content results and restores the chosen page and detail mode", async () => {
+@@ -644,3 +683,4 @@ describe("global FBA content audit panel", () => {
+     expect(occurrenceCount(markup, "<strong>詳細說明</strong>")).toBe(1);
+-    expect(markup).toContain("重新掃描");
++    expect(markup).toContain("重新健檢");
++    expect(markup).not.toContain(">重新掃描</button>");
+     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
+@@ -678,5 +718,9 @@ describe("global FBA content audit panel", () => {
+     expect(markup).toContain("結果不明的 SKU 絕不自動重送");
+-    expect(markup.indexOf("Amazon 唯讀＋AMZ.API 共用英文辭典")).toBeLessThan(
+-      markup.indexOf("content-audit-export-primary"),
++    expect(markup.indexOf("Amazon 唯讀＋AMZ.API 共用英文辭典")).toBeGreaterThan(
++      markup.indexOf("content-audit-summary"),
+     );
++    expect(markup).toMatch(/class="content-audit-excel-panel" hidden=""/u);
++    expect(markup).toMatch(/class="content-audit-roundtrip"[^>]*hidden=""/u);
++    expect(markup.indexOf("content-audit-recheck")).toBeLessThan(markup.indexOf("content-audit-summary"));
++    expect(markup).toMatch(/data-audit-filter="all"[^>]*><span>全部待確認<\/span><strong>1<\/strong>/u);
+     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
+@@ -1851,2 +1895,3 @@ describe("global FBA content audit panel", () => {
+       (match) => match[1])).toEqual([
++        "all",
+         "NEEDS_CORRECTION",
+@@ -1859,6 +1904,4 @@ describe("global FBA content audit panel", () => {
+       ]);
+-    expect(summaryMarkup.match(/<button/gu)).toHaveLength(7);
+-    expect(summaryMarkup).toMatch(
+-      /<span(?=[^>]*class="content-audit-summary-spacer")(?=[^>]*aria-hidden="true")[^>]*><\/span>/u,
+-    );
++    expect(summaryMarkup.match(/<button/gu)).toHaveLength(8);
++    expect(summaryMarkup).not.toContain("content-audit-summary-spacer");
+     expect(markup).toContain('aria-pressed="true"');
+@@ -1989,3 +2032,3 @@ describe("global FBA content audit panel", () => {
+ 
+-  it("lays out seven summary filters plus one inert spacer as an even 4 by 2 grid", async () => {
++  it("lays out the attention reset and seven compact summary filters as a 4 by 2 grid", async () => {
+     const stylesheet = await readRendererStylesheet();
+@@ -1998,5 +2041,4 @@ describe("global FBA content audit panel", () => {
+     );
+-    expect(stylesheet).toMatch(
+-      /\.content-audit-summary-spacer\s*\{[^}]*background:\s*#fff;/u,
+-    );
++    expect(stylesheet).toContain(".content-audit-panel .content-audit-summary > button");
++    expect(stylesheet).toContain("min-height: 54px");
+   });
+diff --git a/tests/sweet-pink-theme.test.ts b/tests/sweet-pink-theme.test.ts
+new file mode 100644
+index 0000000..03fb671
+--- /dev/null
++++ b/tests/sweet-pink-theme.test.ts
+@@ -0,0 +1,31 @@
++import { readFile } from "node:fs/promises";
++import postcss from "postcss";
++import { describe, expect, it } from "vitest";
++
++const path = new URL("../src/renderer/src/styles/appearance.css", import.meta.url);
++function luminance(hex: string): number {
++  const rgb = hex.match(/[a-f\d]{2}/giu)!.map((part) => parseInt(part, 16) / 255)
++    .map((value) => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
++  return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
++}
++function contrast(a: string, b: string): number {
++  const values = [luminance(a), luminance(b)].sort((x,y) => y-x);
++  return (values[0] + .05) / (values[1] + .05);
++}
++describe("sweet pink appearance", () => {
++  it("uses solid blush surfaces rather than purple gradients", async () => {
++    const css = postcss.parse(await readFile(path, "utf8"));
++    let pinkRules = 0;
++    css.walkRules((rule) => {
++      if (!rule.selector.includes('data-ui-accent="pink"') && !rule.selector.includes(".appearance-swatch.is-pink")) return;
++      pinkRules++;
++      rule.walkDecls((decl) => { expect(decl.value).not.toContain("gradient("); });
++    });
++    expect(pinkRules).toBeGreaterThan(20);
++  });
++  it("retains readable foregrounds for the blush navigation and primary action", () => {
++    for (const pair of [["88324d","ffe5ed"],["5b3443","fff7fa"],["ffffff","c92f63"],["b22f58","ffe5ed"]]) {
++      expect(contrast(pair[0],pair[1])).toBeGreaterThanOrEqual(4.5);
++    }
++  });
++});
