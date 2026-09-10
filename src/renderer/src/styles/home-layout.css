@@ -123,6 +123,40 @@
   border-left-width: 1px;
   border-radius: 14px;
   overflow: visible;
+  transition: transform 150ms ease, border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
+}
+
+/* Hover/focus mirrors the share-chart highlight: identify the active tile
+   instantly without changing its truthful audit state. */
+#home-audits > .health-audit-home-grid > .content-audit-home-card:is(:hover,:focus-within) {
+  z-index: 1;
+  transform: translateY(-2px);
+  border-color: #9eb6d2;
+  background: #f8fbff;
+  box-shadow: 0 10px 24px #31577d1a;
+}
+#home-audits > .health-audit-home-grid > .content-audit-home-card:is(:hover,:focus-within) > .content-audit-home-icon {
+  transform: scale(1.06);
+  box-shadow: 0 0 0 3px #dbe9f7;
+}
+#home-audits > .health-audit-home-grid > .content-audit-home-card > .content-audit-home-icon {
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+:root[data-ui-accent="pink"] #home-audits > .health-audit-home-grid > .content-audit-home-card:is(:hover,:focus-within) {
+  border-color: #ee9fba;
+  background: #fff7fa;
+  box-shadow: 0 10px 24px #c3476c1a;
+}
+:root[data-ui-accent="pink"] #home-audits > .health-audit-home-grid > .content-audit-home-card:is(:hover,:focus-within) > .content-audit-home-icon {
+  box-shadow: 0 0 0 3px #fbdbe5;
+}
+:root[data-ui-mode="dark"] #home-audits > .health-audit-home-grid > .content-audit-home-card:is(:hover,:focus-within) {
+  border-color: var(--night-accent);
+  background: var(--night-raised);
+  box-shadow: 0 10px 24px #00000040;
+}
+:root[data-ui-mode="dark"] #home-audits > .health-audit-home-grid > .content-audit-home-card:is(:hover,:focus-within) > .content-audit-home-icon {
+  box-shadow: 0 0 0 3px var(--night-tint);
 }
 
 /* Do not leave the icon spanning the obsolete two-row horizontal layout. */
@@ -277,4 +311,12 @@
   #home-bulletin .operations-bulletin-summary-count > small { font-size: 9px; }
   #home-audits > .home-section-heading { margin-top: 24px; }
   #home-audits .home-section-heading > h2 { font-size: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #home-audits > .health-audit-home-grid > .content-audit-home-card,
+  #home-audits > .health-audit-home-grid > .content-audit-home-card > .content-audit-home-icon {
+    transition: none;
+    transform: none;
+  }
 }
