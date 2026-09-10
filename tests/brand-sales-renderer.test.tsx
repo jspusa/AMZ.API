@@ -265,33 +265,33 @@ describe("brand sales renderer", () => {
 
 
 describe("share details on demand", () => {
-  it.each(["brand", "category"] as const)("preserves exact %s money and volume on hover/focus without permanent metadata", async initialView => {
+  it.each(["brand", "category"] as const)("preserves exact %s money and volume in the fixed detail rail on hover/focus", async initialView => {
     let renderer!: ReactTestRenderer;
     const parsed = parseBrandSalesSnapshot(snapshot(), expected);
     await act(async () => { renderer = create(<BrandSalesChart snapshot={parsed} loading={false} error={null} onRetry={() => undefined} initialView={initialView} />); });
     const root = renderer.root;
     const segment = initialView === "brand" ? parsed.segments[0]! : parsed.categorySegments[0]!;
     const row = () => root.findAllByType("button").find(button => button.findAllByType("strong").some(strong => strong.children.includes(segment.label)))!;
-    const tooltip = () => root.findAllByProps({ role: "tooltip" });
-    expect(tooltip()).toHaveLength(0);
+    const detail = () => root.findByProps({ className: "brand-sales-context-line" });
+    expect(detail().findAllByType("strong")).toHaveLength(0);
     expect(row().findAllByType("small")).toHaveLength(0);
     await act(async () => row().props.onPointerEnter({ pointerType: "mouse" }));
-    expect(tooltip()).toHaveLength(1);
-    expect(root.findByProps({ className: "brand-sales-tooltip-amount" }).children.join("")).toBe(initialView === "brand" ? "US$50.00" : "US$40.00");
-    expect(root.findByProps({ className: "brand-sales-tooltip-volume" }).children.join("")).toBe(`${segment.skuCount} SKU · ${segment.unitCount} 件`);
-    expect(row().props["aria-describedby"]).toBe(tooltip()[0]!.props.id);
+    expect(detail().findByType("strong").children.join("")).toBe(segment.label);
+    expect(detail().findByType("span").children.join("")).toBe(initialView === "brand" ? "US$50.00" : "US$40.00");
+    expect(detail().findByType("small").children.join("")).toBe(`${segment.skuCount} SKU · ${segment.unitCount} 件`);
+    expect(row().props["aria-describedby"]).toBe(detail().props.id);
     await act(async () => root.findByProps({ className: "brand-sales-visual" }).props.onPointerLeave());
-    expect(tooltip()).toHaveLength(0);
+    expect(detail().findAllByType("strong")).toHaveLength(0);
     await act(async () => row().props.onFocus());
-    expect(tooltip()).toHaveLength(1);
+    expect(detail().findByType("strong").children.join("")).toBe(segment.label);
     await act(async () => row().props.onClick());
     await act(async () => row().props.onBlur());
-    expect(tooltip()).toHaveLength(1);
+    expect(detail().findByType("strong").children.join("")).toBe(segment.label);
     await act(async () => row().props.onClick());
-    expect(tooltip()).toHaveLength(0);
+    expect(detail().findAllByType("strong")).toHaveLength(0);
     await act(async () => row().props.onFocus());
     await act(async () => renderer.update(<BrandSalesChart snapshot={null} loading={true} error={null} onRetry={() => undefined} initialView={initialView} />));
-    expect(tooltip()).toHaveLength(0);
+    expect(root.findAllByProps({ className: "brand-sales-context-line" })).toHaveLength(0);
     await act(async () => renderer.unmount());
   });
 });
