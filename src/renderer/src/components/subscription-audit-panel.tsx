@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition, useAuditMemoryState } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   isSubscriptionAuditMarketplaceSupported,
@@ -467,8 +470,11 @@ export default function SubscriptionAuditPanel({
       : 6,
   );
   const [snapshot, setSnapshot] = useState<SubscriptionAuditSnapshot | null>(null);
-  const [selectedSku, setSelectedSku] = useState<string | null>(null);
-  const [filter, setFilter] = useState<SubscriptionAuditFilter>("all");
+  const viewScope = auditViewScope("subscription", marketplaceId, mode, snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const positionRef = useAuditPosition(viewScope, Boolean(snapshot));
+  const [selectedSku, setSelectedSku] = useAuditMemoryState<string | null>(viewScope, "selected-sku", null);
+  const [filter, setFilter] = useAuditMemoryState<SubscriptionAuditFilter>(viewScope, "filter", "all");
   const [busy, setBusy] = useState<"load" | "export" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -496,8 +502,8 @@ export default function SubscriptionAuditPanel({
     [snapshot],
   );
   const filteredRows = useMemo(
-    () => displayRows.filter((row) => subscriptionAuditRowMatchesFilter(row, filter)),
-    [displayRows, filter],
+    () => displayRows.filter((row) => subscriptionAuditRowMatchesFilter(row, filter) && skuBatch.matches(row.sellerSku)),
+    [displayRows, filter, skuBatch.skus],
   );
   const revenueSummary = snapshot ? subscriptionRevenueSummary(snapshot) : null;
 
@@ -652,7 +658,7 @@ export default function SubscriptionAuditPanel({
   };
 
   return (
-    <section className="subscription-audit-panel" aria-label="全站 FBA Subscribe & Save 健檢">
+    <section ref={positionRef} className="subscription-audit-panel" aria-label="全站 FBA Subscribe & Save 健檢">
       {!marketplaceSupported && (
         <div className="content-export-note" role="status">
           <strong>Amazon 官方 API 目前不支援 {marketplaceShort}</strong>
@@ -689,6 +695,8 @@ export default function SubscriptionAuditPanel({
       {error && <div className="price-error" role="alert">{error}</div>}
       {snapshot && (
         <>
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={displayRows.map(row => row.sellerSku)}
+            disabled={Boolean(busy)} onChange={skuBatch.setSkus} />
           <SubscriptionInventoryCoverageNotice
             evidence={snapshot.inventoryEvidence}
           />

@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition, useAuditMemoryState } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   aplusAuditRowMatchesFilter,
@@ -377,7 +380,9 @@ export default function AplusAuditPanel({
       candidate?.marketplaceId === marketplaceId && candidate.mode === mode,
   ) ?? null;
   const [snapshot, setSnapshot] = useState<AplusAuditSnapshot | null>(matchingInitial);
-  const [filter, setFilter] = useState<AplusAuditFilter>("problem");
+  const viewScope = auditViewScope("aplus", marketplaceId, mode, snapshot?.fetchedAt);
+  const [filter, setFilter] = useAuditMemoryState<AplusAuditFilter>(viewScope, "filter", "problem");
+  const skuBatch = useAuditSkuBatch(viewScope);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
@@ -390,6 +395,8 @@ export default function AplusAuditPanel({
     if (!job.ready || job.status !== "completed") return null;
     return job.snapshot.fetchedAt === snapshot.fetchedAt ? snapshot : null;
   }, [job, snapshot]);
+
+  const viewRef = useAuditPosition(viewScope, Boolean(visibleSnapshot));
 
   useEffect(() => {
     mountedRef.current = true;
@@ -405,16 +412,15 @@ export default function AplusAuditPanel({
         candidate?.marketplaceId === marketplaceId && candidate.mode === mode,
     ) ?? null;
     setSnapshot(matching);
-    setFilter("problem");
     setError(null);
     setHandoffError(null);
   }, [cachedSnapshot, initialSnapshot, marketplaceId, mode]);
 
   const visibleRows = useMemo(
     () => visibleSnapshot?.rows.filter((row) =>
-      aplusAuditRowMatchesFilter(row, filter)
+      aplusAuditRowMatchesFilter(row, filter) && skuBatch.matches(row.sellerSku)
     ) ?? [],
-    [filter, visibleSnapshot],
+    [filter, visibleSnapshot, skuBatch.skus],
   );
 
   const runAudit = async () => {
@@ -475,7 +481,7 @@ export default function AplusAuditPanel({
   };
 
   return (
-    <section className="business-pricing-audit-panel" aria-label="全站 FBA A+ 健檢">
+    <section ref={viewRef} className="business-pricing-audit-panel" aria-label="全站 FBA A+ 健檢">
       <div className="business-pricing-audit-intro">
         <div>
           <span>{marketplaceShort} · A+ CONTENT · FBA ONLY</span>
@@ -516,6 +522,7 @@ export default function AplusAuditPanel({
 
       {visibleSnapshot && (
         <>
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={visibleSnapshot.rows.map(row => row.sellerSku)} onChange={skuBatch.setSkus} />
           <div className="business-pricing-summary is-interactive" role="group" aria-label="A+ 健檢摘要與篩選">
             {FILTERS.map((option) => (
               <button

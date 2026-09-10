@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import { useEffect, useRef, useState } from "react";
 import {
   parseAdvertisingCoverageSnapshot,
@@ -31,6 +34,10 @@ export default function AdvertisingCoveragePanel({
   onJobChange?: (job: StandaloneAuditJob) => void;
 }) {
   const [snapshot, setSnapshot] = useState<AdvertisingCoverageSnapshot | null>(null);
+  const viewScope = auditViewScope("advertising", marketplaceId, mode, snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const viewRef = useAuditPosition(viewScope, Boolean(snapshot));
+  const visibleRows = (skuBatch.skus.length ? snapshot?.rows : snapshot?.uncovered)?.filter(row => skuBatch.matches(row.sellerSku)) ?? [];
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -144,7 +151,7 @@ export default function AdvertisingCoveragePanel({
   }, [initialJobReconnectRevision, marketplaceId, mode]);
 
   return (
-    <section className="ads-coverage-panel">
+    <section ref={viewRef} className="ads-coverage-panel">
       <header>
         <div>
           <p className="eyebrow">FBA AD COVERAGE</p>
@@ -176,13 +183,15 @@ export default function AdvertisingCoveragePanel({
             <div className={snapshot.summary.uncoveredSkuCount ? "needs-attention" : ""}><strong>{snapshot.summary.uncoveredSkuCount}</strong><span>無符合命名的 ENABLED SP 覆蓋</span></div>
           </div>
           <p className="ads-coverage-notice">{snapshot.rule}</p>
-          {snapshot.uncovered.length ? (
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={snapshot.rows.map(row => row.sellerSku)} onChange={skuBatch.setSkus} />
+          {snapshot.uncovered.length || skuBatch.skus.length ? (
             <div className="ads-coverage-results">
-              <h4>尚無符合命名的 ENABLED SP campaign 覆蓋</h4>
-              {snapshot.uncovered.map((row) => (
+              <h4>{skuBatch.skus.length ? "指定 SKU 的廣告覆蓋結果" : "尚無符合命名的 ENABLED SP campaign 覆蓋"}</h4>
+              {visibleRows.map((row) => (
                 <article key={row.sellerSku}>
                   <div><strong>{row.sellerSku}</strong><span>{row.asin}</span></div>
                   <p>{row.title || "Amazon 未回傳商品名稱"}</p>
+                  {skuBatch.skus.length > 0 && <small>{row.covered ? "已有 ENABLED SP 覆蓋證據" : "尚無符合規則的覆蓋證據"}</small>}
                 </article>
               ))}
             </div>

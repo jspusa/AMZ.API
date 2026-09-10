@@ -1,0 +1,73 @@
+/* Workflow controls share the existing theme and do not resize homepage cards. */
+.audit-sku-filter {
+  margin: 12px 0; padding: 0; min-width: 0; color: var(--ink);
+}
+.audit-sku-filter-heading, .audit-sku-filter-actions, .audit-item-navigation {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+}
+.audit-sku-filter-heading > small, .audit-sku-filter-actions > small {
+  font-size: 12px; line-height: 1.6; color: var(--muted);
+}
+.audit-sku-filter button, .audit-item-navigation button, .ui-build-information > button {
+  min-height: 36px; padding: 7px 12px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--surface); color: var(--ink);
+  font-size: 13px; font-weight: 600; line-height: 1.5; cursor: pointer;
+}
+.audit-sku-filter button:hover:not(:disabled), .audit-item-navigation button:hover:not(:disabled),
+.ui-build-information > button:hover:not(:disabled) { border-color: #829fc0; background: #f0f6fc; }
+.audit-sku-filter button:focus-visible, .audit-item-navigation button:focus-visible,
+.ui-build-information > button:focus-visible, .audit-sku-filter textarea:focus-visible {
+  outline: 2px solid #557ba4; outline-offset: 3px;
+}
+.audit-sku-filter button:disabled, .audit-item-navigation button:disabled,
+.ui-build-information > button:disabled { opacity: .55; cursor: not-allowed; }
+.audit-sku-filter .audit-sku-clear { background: transparent; border-color: transparent; }
+.audit-sku-filter-body {
+  margin-top: 10px; padding: 14px; display: grid; gap: 10px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+}
+.audit-sku-filter-body > label { font-size: 13px; font-weight: 600; line-height: 1.5; }
+.audit-sku-filter textarea {
+  box-sizing: border-box; width: 100%; min-height: 100px; max-height: 260px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--canvas); color: var(--ink); font: inherit; font-size: 13px;
+  line-height: 1.6; resize: vertical; tab-size: 4;
+}
+.audit-sku-filter-actions { justify-content: space-between; }
+.audit-sku-missing { margin: 8px 0 0; font-size: 12px; line-height: 1.6; }
+.audit-sku-missing > summary { cursor: pointer; color: var(--muted); }
+.audit-sku-missing > p { margin: 8px 0; }
+.audit-sku-missing > div { max-height: 160px; overflow: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.audit-sku-missing code { padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-sku-error { margin: 0; font-size: 13px; color: #b42336; }
+.audit-item-navigation { justify-content: space-between; margin: 10px 0 16px; padding: 10px 0; border-block: 1px solid var(--line); }
+.audit-item-navigation > span { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.ui-build-information {
+  display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center;
+  gap: 10px 14px; margin: 14px 0; padding: 14px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--surface); color: var(--ink);
+}
+.ui-build-information h3 { margin: 0 0 5px; font-size: 14px; line-height: 1.5; }
+.ui-build-information strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+.ui-build-information time { display: block; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.ui-build-information > small { grid-column: 1 / -1; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.review-audit-batch-rows { display: grid; gap: 12px; margin-top: 16px; }
+.review-audit-batch-rows > article { padding: 14px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.review-audit-batch-rows h4 { margin: 0 0 5px; font-size: 15px; }
+.review-audit-batch-rows small { color: var(--muted); overflow-wrap: anywhere; }
+.review-audit-batch-rows details { margin-top: 10px; }
+.review-audit-batch-rows summary { cursor: pointer; }
+:root[data-ui-accent="pink"] :is(.audit-sku-filter,.audit-item-navigation,.ui-build-information) button:not(:disabled):is(:hover,[aria-expanded="true"]) {
+  color: #9c3456; border-color: #efb2c5; background: #fff0f5;
+}
+:root[data-ui-mode="dark"] :is(.audit-sku-filter,.audit-item-navigation,.ui-build-information) button:not(:disabled):is(:hover,[aria-expanded="true"]) {
+  color: var(--night-accent); border-color: var(--night-accent); background: var(--night-tint);
+}
+@media (max-width: 480px) {
+  .ui-build-information { grid-template-columns: minmax(0,1fr); }
+  .ui-build-information > button { justify-self: start; }
+  .audit-sku-filter-actions { align-items: stretch; }
+  .audit-sku-filter-actions > button { width: 100%; }
+  .audit-item-navigation { gap: 7px; }
+  .audit-item-navigation button { padding-inline: 9px; font-size: 12px; }
+}

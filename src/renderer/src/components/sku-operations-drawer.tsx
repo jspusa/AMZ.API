@@ -1,5 +1,7 @@
 "use client";
 
+import AuditItemNavigation from "./audit-item-navigation";
+
 import {
   FormEvent,
   useCallback,
@@ -665,6 +667,7 @@ export default function SkuOperationsDrawer({
 }) {
   const [tab, setTab] = useState<ContentWorkspaceTab>(initialTab);
   const [returnToAudit, setReturnToAudit] = useState(false);
+  const [editorQueue, setEditorQueue] = useState<readonly string[]>([]);
   const [quickEditFocus, setQuickEditFocus] = useState<
     ContentAuditQuickEditFocus | null
   >(null);
@@ -1045,6 +1048,7 @@ export default function SkuOperationsDrawer({
     resetSingle();
     resetExport();
     setReturnToAudit(false);
+    setEditorQueue([]);
     setMarketplaceId(value);
   };
 
@@ -1091,7 +1095,7 @@ export default function SkuOperationsDrawer({
   ) => {
     event?.preventDefault();
     if (event) setQuickEditFocus(null);
-    const sellerSku = (sellerSkuOverride ?? skuInput).trim();
+    const sellerSku = sellerSkuOverride ?? skuInput.trim();
     if (!sellerSku) {
       setError("請輸入完整 Seller SKU。");
       return;
@@ -1113,6 +1117,9 @@ export default function SkuOperationsDrawer({
     setSubmittedContent(null);
     try {
       const snapshot = await fetchListing(sellerSku, controller.signal);
+      if (sellerSkuOverride !== undefined && (snapshot.sellerSku !== sellerSku || snapshot.marketplaceId !== marketplaceId)) {
+        throw new Error("商品識別與目前選取不一致，請返回健檢後重新開啟。");
+      }
       setListing(snapshot);
       setDraft(toDraft(snapshot.content));
       onContextResolved?.(marketplaceId, snapshot.sellerSku);
@@ -1130,7 +1137,9 @@ export default function SkuOperationsDrawer({
   const openAuditSku = useCallback((
     sellerSku: string,
     focus?: ContentAuditQuickEditFocus,
+    navigationSkus: readonly string[] = [],
   ) => {
+    setEditorQueue([...new Set(navigationSkus)]);
     setQuickEditFocus(focus ?? null);
     setReturnToAudit(true);
     setTab("single");
@@ -1533,6 +1542,13 @@ export default function SkuOperationsDrawer({
                 ← 返回全站文案健檢結果
               </button>
             )}
+            {returnToAudit && <AuditItemNavigation skus={editorQueue} currentSku={listing?.sellerSku ?? skuInput} disabled={busy}
+              onSelect={sku => {
+                if (busy || !editorQueue.includes(sku)) return;
+                if (phase !== "result" && hasChanges && !window.confirm("尚有未送出的商品內容變更，確定捨棄並查看下一個商品嗎？")) return;
+                setQuickEditFocus(null);
+                void lookupSingle(undefined, sku);
+              }} />}
             {phase === "edit" && (
               <>
                 <form className="ops-single-search" onSubmit={lookupSingle}>

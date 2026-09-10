@@ -271,7 +271,7 @@ describe("FBA image audit parsing", () => {
 
     expect(source).toContain("setReturnToAudit(true)");
     expect(source).toContain("← 返回全站圖片健檢結果");
-    expect(source).toContain("void loadSku(sellerSku)");
+    expect(source).toContain("void loadSku(sellerSku, true)");
     expect(source).toContain("auditCacheByMarketplace[marketplaceId]");
     expect(source).toContain("onCachedResultChange={onAuditCacheChange}");
     expect(dashboardSource).toContain("[cache.snapshot.marketplaceId]: cache");

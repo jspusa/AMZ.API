@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition, useAuditMemoryState } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import {
   useEffect,
   useId,
@@ -1054,12 +1057,15 @@ export default function BusinessPricingAuditPanel({
   const [snapshot, setSnapshot] = useState<BusinessPricingAuditSnapshot | null>(
     initialSnapshot ?? cachedSnapshot,
   );
-  const [filter, setFilter] = useState<BusinessPricingAuditFilter>("problem");
-  const [skuQuery, setSkuQuery] = useState("");
-  const [page, setPage] = useState(1);
-  const [rowView, setRowView] = useState<"compact" | "complete">("compact");
+  const viewScope = auditViewScope("businessPricing", marketplaceId, mode, snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const [editorQueue, setEditorQueue] = useState<readonly string[]>([]);
+  const [filter, setFilter] = useAuditMemoryState<BusinessPricingAuditFilter>(viewScope, "filter", "problem");
+  const [skuQuery, setSkuQuery] = useAuditMemoryState(viewScope, "query", "");
+  const [page, setPage] = useAuditMemoryState(viewScope, "page", 1);
+  const [rowView, setRowView] = useAuditMemoryState<"compact" | "complete">(viewScope, "row-view", "compact");
   const [expandedSellerSkus, setExpandedSellerSkus] =
-    useState<ReadonlySet<string>>(() => new Set());
+    useAuditMemoryState<ReadonlySet<string>>(viewScope, "expanded", new Set());
   const rowDetailsId = useId().replaceAll(":", "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1157,6 +1163,7 @@ export default function BusinessPricingAuditPanel({
       ? snapshot
       : null;
   }, [job, loading, snapshot]);
+  useAuditPosition(viewScope, Boolean(visibleSnapshot) && !selected && !editLoading, panelRef);
   const terminalJobError = job?.ready && job.status !== "completed"
     ? job.error.message
     : null;
@@ -1238,7 +1245,7 @@ export default function BusinessPricingAuditPanel({
     );
     return visibleSnapshot.rows
       .filter((row) =>
-        businessPricingRowMatchesFilter(row, filter) &&
+        businessPricingRowMatchesFilter(row, filter) && skuBatch.matches(row.sellerSku) &&
         (!normalizedSkuQuery ||
           row.sellerSku.toLocaleLowerCase("en-US").includes(
             normalizedSkuQuery,
@@ -1257,7 +1264,7 @@ export default function BusinessPricingAuditPanel({
       })
       .map(({ row }) => row);
   },
-    [filter, skuQuery, visibleSnapshot],
+    [filter, skuQuery, visibleSnapshot, skuBatch.skus],
   );
 
   const workflowActivities = visibleSnapshot?.workflowActivities ?? [];
@@ -1504,12 +1511,13 @@ export default function BusinessPricingAuditPanel({
     }
   };
 
-  const openEditor = async (row: BusinessPricingAuditRow | B2bRecentWorkItem) => {
+  const openEditor = async (row: BusinessPricingAuditRow | B2bRecentWorkItem, keepQueue = false) => {
     if (editLoading || batchBusy) return;
     if ("nextAction" in row && (!notebookCapabilities.ready || !notebookCapabilities.recentBusinessPricingWork)) return;
-    auditScrollTopRef.current = presentation === "workspace"
-      ? window.scrollY
-      : panelRef.current?.scrollTop ?? 0;
+    if (!keepQueue) {
+      setEditorQueue(visibleRows.map(item => item.sellerSku));
+      auditScrollTopRef.current = presentation === "workspace" ? window.scrollY : panelRef.current?.scrollTop ?? 0;
+    }
     const revision = ++editorRevisionRef.current;
     setEditLoading(true);
     setOpeningSellerSku(row.sellerSku);
@@ -1902,6 +1910,11 @@ export default function BusinessPricingAuditPanel({
           <BusinessPricingEditor
             key={`${selected.sellerSku}-${selected.fetchedAt}`}
             listing={selected}
+            navigationSkus={editorQueue}
+            onNavigate={sku => {
+              const row = visibleSnapshot?.rows.find(item => item.sellerSku === sku);
+              if (row && editorQueue.includes(sku)) void openEditor(row, true);
+            }}
             onClose={closeEditor}
             onVerified={applyVerifiedPrice}
             onCanonicalListingVerified={applyVerifiedListing}
@@ -1989,6 +2002,8 @@ export default function BusinessPricingAuditPanel({
               </dl>
             </section>
           )}
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={visibleSnapshot.rows.map(row => row.sellerSku)}
+            disabled={loading || editLoading || batchBusy} onChange={skus => { skuBatch.setSkus(skus); setPage(1); }} />
           <div className="business-pricing-summary is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">
             {FILTERS.map((option) => (
               <button

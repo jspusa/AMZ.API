@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 /* eslint-disable @next/next/no-img-element -- Amazon listing URLs are dynamic */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -111,7 +114,7 @@ export default function ImageAuditPanel({
   marketplaceId: string;
   marketplaceShort: string;
   mode?: StandaloneAuditMode;
-  onOpenSku: (sellerSku: string) => void;
+  onOpenSku: (sellerSku: string, navigationSkus?: readonly string[]) => void;
   cachedResult?: ImageAuditCache | null;
   onCachedResultChange?: (cache: ImageAuditCache) => void;
   initialJob?: StandaloneAuditJob | null;
@@ -157,6 +160,9 @@ export default function ImageAuditPanel({
         }
       : null,
   );
+  const viewScope = auditViewScope("image", marketplaceId, mode, snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const positionRef = useAuditPosition(viewScope, Boolean(snapshot) && state === "done");
   const [query, setQuery] = useState(initialCache?.query ?? "");
   const [error, setError] = useState<string | null>(initialJobError);
   const [exporting, setExporting] = useState(false);
@@ -208,14 +214,15 @@ export default function ImageAuditPanel({
   );
   const visibleRows = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("en-US");
-    if (!normalized) return attentionRows;
-    return attentionRows.filter((row) =>
+    const rows = (skuBatch.skus.length ? snapshot?.rows ?? [] : attentionRows).filter(row => skuBatch.matches(row.sellerSku));
+    if (!normalized) return rows;
+    return rows.filter((row) =>
       [row.sellerSku, row.asin, row.title]
         .join(" ")
         .toLocaleLowerCase("en-US")
         .includes(normalized),
     );
-  }, [attentionRows, query]);
+  }, [attentionRows, query, snapshot, skuBatch.skus]);
 
   const loadAudit = async (
     completedJob: StandaloneAuditJob,
@@ -399,7 +406,7 @@ export default function ImageAuditPanel({
         : "";
 
   return (
-    <section className="image-audit-panel" aria-label="全站 FBA 圖片健檢">
+    <section ref={positionRef} className="image-audit-panel" aria-label="全站 FBA 圖片健檢">
       <AuditDetailsDisclosure summary="圖片門檻、資料來源與人工判斷範圍">
         <div className="automation-summary compact">
           <span className="automation-badge automatic">自動</span><p>全站圖片健檢會找出少於六張圖片與讀取未完成的 FBA SKU；單一 SKU 的格式、像素、PTD 與回查由系統處理。</p>
@@ -467,6 +474,7 @@ export default function ImageAuditPanel({
             </button>
             <button type="button" onClick={() => void startAudit()}>重新掃描</button>
           </div>
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={snapshot.rows.map(row => row.sellerSku)} disabled={exporting} onChange={skuBatch.setSkus} />
           <div className="image-audit-results">
             {visibleRows.map((row) => (
               <article className="image-audit-row" key={row.sellerSku}>
@@ -482,7 +490,7 @@ export default function ImageAuditPanel({
                     ? <small className="image-audit-count">目前 {row.imageCount} 張 · 還差 {Math.max(0, snapshot.minimumImages - row.imageCount)} 張達到 {snapshot.minimumImages} 張</small>
                     : <small className="variation-warning">讀取未完成：{row.readErrors.map((item) => item.message).join("；")}</small>}
                 </div>
-                <button type="button" onClick={() => onOpenSku(row.sellerSku)}>開啟圖片工作台</button>
+                <button type="button" onClick={() => onOpenSku(row.sellerSku, visibleRows.map(item => item.sellerSku))}>開啟圖片工作台</button>
               </article>
             ))}
             {!visibleRows.length && (

@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CONTENT_AUDIT_LENGTH_TARGETS,
@@ -2973,6 +2976,7 @@ export default function ContentAuditPanel({
   onOpenSku: (
     sellerSku: string,
     quickEditFocus?: ContentAuditQuickEditFocus,
+    navigationSkus?: readonly string[],
   ) => void;
   cachedResult?: ContentAuditCache | null;
   onCachedResultChange?: (cache: ContentAuditCache) => void;
@@ -3004,6 +3008,9 @@ export default function ContentAuditPanel({
   const [snapshot, setSnapshot] = useState<ContentAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
   );
+  const viewScope = auditViewScope("content", marketplaceId, mode, snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const positionRef = useAuditPosition(viewScope, Boolean(snapshot) && state === "done");
   const [filter, setFilter] = useState<AuditFilter>(initialCache?.filter ?? "all");
   const [query, setQuery] = useState(initialCache?.query ?? "");
   const [viewMode, setViewMode] = useState<"compact" | "full">(
@@ -3124,7 +3131,7 @@ export default function ContentAuditPanel({
   const visibleRows = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("en-US");
     return (snapshot?.rows ?? []).filter((row) => {
-      if (!contentAuditRowMatchesFilter(row, filter)) return false;
+      if (!contentAuditRowMatchesFilter(row, filter) || !skuBatch.matches(row.sellerSku)) return false;
       if (!normalizedQuery) return true;
       return [
         row.sellerSku,
@@ -3139,7 +3146,7 @@ export default function ContentAuditPanel({
         .toLocaleLowerCase("en-US")
         .includes(normalizedQuery);
     });
-  }, [snapshot, filter, query]);
+  }, [snapshot, filter, query, skuBatch.skus]);
   const pageCount = Math.max(1, Math.ceil(visibleRows.length / CONTENT_AUDIT_PAGE_SIZE));
   const currentPage = Math.min(pageIndex, pageCount - 1);
   const pageStart = currentPage * CONTENT_AUDIT_PAGE_SIZE;
@@ -3647,7 +3654,7 @@ export default function ContentAuditPanel({
   };
 
   return (
-    <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
+    <section ref={positionRef} className="content-audit-panel" aria-label="全站 FBA 文案健檢">
 
       {state === "done" && snapshot && summary && (
         <header className="content-audit-commandbar">
@@ -3850,6 +3857,7 @@ export default function ContentAuditPanel({
               )}
             </aside>
           )}
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={snapshot.rows.map(row => row.sellerSku)} disabled={Boolean(batchBusy) || Boolean(exporting)} onChange={skus => { skuBatch.setSkus(skus); setPageIndex(0); }} />
           <div className="content-audit-list-tools">
           <div className="content-audit-controls">
             <label>
@@ -3914,7 +3922,7 @@ export default function ContentAuditPanel({
                           type="button"
                           className="content-audit-fix-now"
                           onClick={() => {
-                            if (quickEditFocus) onOpenSku(row.sellerSku, quickEditFocus);
+                            if (quickEditFocus) onOpenSku(row.sellerSku, quickEditFocus, visibleRows.map(item => item.sellerSku));
                           }}
                           disabled={!quickEditFocus}
                           title={quickEditAvailability.status === "unavailable"
@@ -3923,7 +3931,7 @@ export default function ContentAuditPanel({
                         >
                           立刻修改
                         </button>
-                        <button type="button" onClick={() => onOpenSku(row.sellerSku)}>
+                        <button type="button" onClick={() => onOpenSku(row.sellerSku, undefined, visibleRows.map(item => item.sellerSku))}>
                           完整編輯
                         </button>
                       </div>
