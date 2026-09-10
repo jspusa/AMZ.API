@@ -156,5 +156,7 @@
 :is(.variation-unbound-table, .variation-recommendations-table) button { padding: 8px 11px; border: 1px solid #c8d8eb; border-radius: 6px; background: #edf4fc; color: #2d587e; font-size: 12px; white-space: nowrap; }
 .variation-field-preserved { background: #f4f8fc; }
 .variation-field-preserved output { display: block; margin: 12px 0; font-size: 15px; color: #354e6b; overflow-wrap: anywhere; }
+.variation-preserved-choice { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; cursor: pointer; }
+.variation-planner-drawer .variation-preserved-choice input[type="checkbox"] { flex: none; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; }
 .variation-planner-drawer .image-audit-panel { min-width: 0; }
 .variation-planner-drawer .image-audit-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }

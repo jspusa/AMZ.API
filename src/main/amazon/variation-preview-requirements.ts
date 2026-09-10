@@ -23,7 +23,20 @@ const GENERIC_REQUEST_CODES = new Set([
 type RequirementHints = Readonly<{
   requiredNames: string[];
   choiceNames: string[];
+  unresolvedReason?: "PTD_UNDECLARED";
+  rejectionReason?: "METADATA_REJECTED" | "HTTP_UNSUPPORTED";
+  rejectionDetail?: VariationPreviewRejectionDetail;
 }>;
+export type VariationPreviewRejectionDetail =
+  | "ENVELOPE"
+  | "RECEIPT_STATUS"
+  | "ISSUE_LIST"
+  | "ISSUE_TEXT"
+  | "ISSUE_SEVERITY"
+  | "MARKETPLACE_LIST"
+  | "CATEGORY_LIST"
+  | "ISSUE_CLASSIFICATION"
+  | "ATTRIBUTE_IDENTITY";
 const emptyHints = (): RequirementHints => ({
   requiredNames: [],
   choiceNames: [],
@@ -65,6 +78,25 @@ function missingToken(message: string): string | undefined {
   );
 }
 
+/** Diagnostic signal only. It never proves a field identity or grants a candidate. */
+function hasMissingSignal(payload: unknown, httpStatus: number): boolean {
+  if (!record(payload)) return false;
+  const successfulTransport = httpStatus >= 200 && httpStatus < 300;
+  const issues = successfulTransport ? payload.issues : payload.errors;
+  if (!Array.isArray(issues) || issues.length > 50) return false;
+  const active = issues.filter((issue) =>
+    !successfulTransport || !record(issue) || issue.severity !== "WARNING",
+  );
+  return active.length > 0 && active.every((issue) =>
+    record(issue) &&
+    (!successfulTransport || typeof issue.severity === "string" &&
+      issue.severity.toUpperCase() === "ERROR") &&
+    typeof issue.code === "string" && !NON_MISSING_CODES.has(issue.code) &&
+    (MISSING_CODES.has(issue.code) || successfulTransport &&
+      Array.isArray(issue.categories) && issue.categories.includes("MISSING_ATTRIBUTE")),
+  );
+}
+
 /** Bounded raw metadata from the fixed Validation Preview call, never cleaned UI text. */
 export function resolveVariationPreviewRequirements(
   input: Readonly<{
@@ -75,10 +107,20 @@ export function resolveVariationPreviewRequirements(
     payload: unknown;
   }>,
 ): RequirementHints {
+  const reject = (
+    detail: VariationPreviewRejectionDetail,
+    reason: NonNullable<RequirementHints["rejectionReason"]> = "METADATA_REJECTED",
+  ): RequirementHints => ({
+    ...emptyHints(),
+    ...(hasMissingSignal(input.payload, input.httpStatus)
+      ? { rejectionReason: reason, rejectionDetail: detail }
+      : {}),
+  });
   const required = new Set<string>();
   const choices = new Set<string>();
+  let unresolvedReason: RequirementHints["unresolvedReason"];
   const definitions = ptdAttributeDefinitions(input.schema);
-  if (!record(input.payload)) return emptyHints();
+  if (!record(input.payload)) return reject("ENVELOPE");
   const rejectedRequest = input.httpStatus === 400 || input.httpStatus === 422;
   // 400 ErrorList is documented. 422 is a narrow App compatibility policy,
   // with identical checks; neither response is represented as a valid receipt.
@@ -87,19 +129,22 @@ export function resolveVariationPreviewRequirements(
     (input.httpStatus !== 200 ||
       (input.payload.status !== "VALID" && input.payload.status !== "INVALID"))
   )
-    return emptyHints();
+    return reject(
+      "RECEIPT_STATUS",
+      input.httpStatus === 200 ? "METADATA_REJECTED" : "HTTP_UNSUPPORTED",
+    );
   if (
     rejectedRequest &&
     Object.keys(input.payload).some((key) => key !== "errors")
   )
-    return emptyHints();
+    return reject("ENVELOPE");
   if (!rejectedRequest && input.payload.sku !== input.sellerSku)
-    return emptyHints();
+    return reject("ENVELOPE");
   if (!rejectedRequest && Object.hasOwn(input.payload, "errors"))
-    return emptyHints();
+    return reject("ENVELOPE");
   const issues = rejectedRequest ? input.payload.errors : input.payload.issues;
   if (!Array.isArray(issues) || !issues.length || issues.length > 50)
-    return emptyHints();
+    return reject("ISSUE_LIST");
   for (const issue of issues) {
     if (
       !record(issue) ||
@@ -114,9 +159,9 @@ export function resolveVariationPreviewRequirements(
         },
       ])[0]?.message !== issue.message
     )
-      return emptyHints();
+      return reject("ISSUE_TEXT");
     if (!rejectedRequest && issue.severity === "WARNING") continue;
-    if (!rejectedRequest && issue.severity !== "ERROR") return emptyHints();
+    if (!rejectedRequest && issue.severity !== "ERROR") return reject("ISSUE_SEVERITY");
     if (
       rejectedRequest &&
       (Object.keys(issue).some(
@@ -127,7 +172,7 @@ export function resolveVariationPreviewRequirements(
             issue.details.length > 2_000 ||
             BAD_TEXT.test(issue.details))))
     )
-      return emptyHints();
+      return reject("ENVELOPE");
     if (
       Object.hasOwn(issue, "marketplaceIds") &&
       (!exactList(issue.marketplaceIds) ||
@@ -135,9 +180,9 @@ export function resolveVariationPreviewRequirements(
         (issue.marketplaceIds.length === 1 &&
           issue.marketplaceIds[0] !== input.marketplaceId))
     )
-      return emptyHints();
+      return reject("MARKETPLACE_LIST");
     if (Object.hasOwn(issue, "categories") && !exactList(issue.categories))
-      return emptyHints();
+      return reject("CATEGORY_LIST");
     const categories = Array.isArray(issue.categories) ? issue.categories : [];
     const typedMissing =
       MISSING_CODES.has(issue.code) ||
@@ -147,7 +192,7 @@ export function resolveVariationPreviewRequirements(
       NON_MISSING_CODES.has(issue.code) ||
       categories.some((category) => category !== "MISSING_ATTRIBUTE")
     )
-      return emptyHints();
+      return reject("ISSUE_CLASSIFICATION");
     if (
       !typedMissing &&
       !(
@@ -157,7 +202,7 @@ export function resolveVariationPreviewRequirements(
           /^[0-9]{1,10}$/u.test(issue.code))
       )
     )
-      return emptyHints();
+      return reject("ISSUE_CLASSIFICATION");
 
     const plural = Object.hasOwn(issue, "attributeNames");
     const singular = Object.hasOwn(issue, "attributeName");
@@ -168,18 +213,21 @@ export function resolveVariationPreviewRequirements(
         (!exactText(issue.attributeName, 80) ||
           !ATTRIBUTE_NAME.test(issue.attributeName)))
     )
-      return emptyHints();
+      return reject("ATTRIBUTE_IDENTITY");
     const names = plural
       ? (issue.attributeNames as string[])
       : singular
         ? [issue.attributeName as string]
         : [];
-    if (names.some((name) => !ATTRIBUTE_NAME.test(name))) return emptyHints();
+    if (names.some((name) => !ATTRIBUTE_NAME.test(name))) return reject("ATTRIBUTE_IDENTITY");
     if (names.length) {
       // Explicit structured identity cannot be overridden by a display message.
       if (names.every((name) => definitions.has(name)))
         names.forEach((name) => required.add(name));
-      else definitions.forEach((_titles, name) => choices.add(name));
+      else {
+        unresolvedReason = "PTD_UNDECLARED";
+        definitions.forEach((_titles, name) => choices.add(name));
+      }
       continue;
     }
     // Exact full-token title matching is our conservative lookup strategy,
@@ -190,13 +238,17 @@ export function resolveVariationPreviewRequirements(
           .map(([name]) => name)
       : [];
     if (typedMissing && matches.length === 1) required.add(matches[0]!);
-    else
+    else {
+      if (!matches.length && (token || !definitions.size))
+        unresolvedReason = "PTD_UNDECLARED";
       (matches.length ? matches : [...definitions.keys()]).forEach((name) =>
         choices.add(name),
       );
+    }
   }
   return {
     requiredNames: [...required],
     choiceNames: [...choices].filter((name) => !required.has(name)),
+    ...(unresolvedReason ? { unresolvedReason } : {}),
   };
 }

@@ -24,6 +24,7 @@ import {
   parseVariationMovePreview,
   parseVariationMoveResult,
   parseVariationRequiredFields,
+  parseVariationPreservedRequiredFields,
   updateVariationLeaf,
   type VariationFieldLeafView,
   type VariationFieldView,
@@ -83,6 +84,7 @@ type WriteBody = {
   dimensionNames: string[];
   dimensionValues: Values;
   requiredValues: Values;
+  preserveRequiredFields?: string[];
   idempotencyKey: string;
 };
 
@@ -140,6 +142,7 @@ class VariationRequestError extends Error {
     },
     readonly requiredFieldChoices: VariationFieldView[] | null = null,
     readonly diagnostics: VariationPreviewDiagnostics | null = null,
+    readonly preservedRequiredFields: VariationFieldView[] | null = null,
   ) {
     super(message);
   }
@@ -186,6 +189,9 @@ async function responseError(
       ? parseVariationRequiredFields(problem.requiredFieldChoices)
       : null,
     diagnostics,
+    problem.code === "VARIATION_FIELD_REQUIRED"
+      ? parseVariationPreservedRequiredFields(problem.preservedRequiredFields)
+      : null,
   );
 }
 
@@ -236,6 +242,9 @@ export default function VariationPlannerDrawer({
   const [selectedFieldChoices, setSelectedFieldChoices] = useState<
     Partial<Record<VariationMoveAction, VariationFieldView[]>>
   >({});
+  const [preservedSelections, setPreservedSelections] = useState<
+    Partial<Record<VariationMoveAction, string[]>>
+  >({});
   const [values, setValues] = useState<Values>({});
   const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -264,6 +273,8 @@ export default function VariationPlannerDrawer({
   const sourceAbortRef = useRef<AbortController | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const requiredFieldsHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const preservedFieldsHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const focusPreservedFieldsRef = useRef(false);
   const focusRequiredFieldsRef = useRef(false);
   const targetAbortRef = useRef<AbortController | null>(null);
   const preparationAbortRef = useRef<AbortController | null>(null);
@@ -321,6 +332,11 @@ export default function VariationPlannerDrawer({
     focusRequiredFieldsRef.current = false;
     requiredFieldsHeadingRef.current?.focus();
   }, [requiredFields]);
+  useEffect(() => {
+    if (!focusPreservedFieldsRef.current) return;
+    focusPreservedFieldsRef.current = false;
+    preservedFieldsHeadingRef.current?.focus();
+  }, [preparations]);
 
   useEffect(() => {
     onBusyChange?.(busy);
@@ -332,6 +348,9 @@ export default function VariationPlannerDrawer({
     targetAbortRef.current?.abort();
     preparationAbortRef.current?.abort();
     setPreviewDiagnostics(null);
+    setPreservedSelections({});
+    setPreparations({});
+    setPreview(null);
     onClose();
   }, [onClose]);
   useEffect(() => {
@@ -354,6 +373,7 @@ export default function VariationPlannerDrawer({
     preparationAbortRef.current?.abort();
     setPreparations({});
     setSelectedFieldChoices({});
+    setPreservedSelections({});
     setValues({});
     setJsonDrafts({});
     setFieldErrors({});
@@ -460,6 +480,7 @@ export default function VariationPlannerDrawer({
       setTargetFamily(null);
       setPreparations({});
       setSelectedFieldChoices({});
+      setPreservedSelections({});
       setPreview(null);
       setPreviewDiagnostics(null);
       setWorkflowError(null);
@@ -533,6 +554,7 @@ export default function VariationPlannerDrawer({
       setPreparing(true);
       setPreparations({});
       setSelectedFieldChoices({});
+      setPreservedSelections({});
       setPreview(null);
       setPreviewDiagnostics(null);
       setWorkflowError(null);
@@ -749,6 +771,12 @@ export default function VariationPlannerDrawer({
     setTargetError(null);
     setUncertain(false);
   };
+  const discardPreparedEvidence = () => {
+    setPreparations({});
+    setSelectedFieldChoices({});
+    setPreservedSelections({});
+    setPreview(null);
+  };
   const preparationFor = (action: VariationMoveAction) => {
     const prepared = preparations[action];
     if (!prepared) return null;
@@ -773,6 +801,9 @@ export default function VariationPlannerDrawer({
     return [
       ...missingVariationFields(prepared, values),
       ...(needsChoice ? ["選擇要補充的商品欄位"] : []),
+      ...(prepared.preservedRequiredFields ?? [])
+        .filter((field) => !preservedSelections[action]?.includes(field.name))
+        .map((field) => `確認保留既有答案：${fieldLabel(field)}`),
     ];
   };
   const canPreview = (action: VariationMoveAction) =>
@@ -811,6 +842,9 @@ export default function VariationPlannerDrawer({
       requiredValues: pickValues(
         prepared.requiredFields.map((field) => field.name),
       ),
+      ...(preservedSelections[action]?.length
+        ? { preserveRequiredFields: preservedSelections[action] }
+        : {}),
       idempotencyKey: crypto.randomUUID(),
     };
     operationRef.current = true;
@@ -831,6 +865,9 @@ export default function VariationPlannerDrawer({
         action,
         marketplaceId,
         sellerSku: stagedMember.sellerSku,
+        preservedRequiredFields: prepared.preservedRequiredFields?.filter((field) =>
+          body.preserveRequiredFields?.includes(field.name),
+        ),
       });
       setPreview({ body, result });
     } catch (error) {
@@ -840,7 +877,8 @@ export default function VariationPlannerDrawer({
       );
       if (
         error instanceof VariationRequestError &&
-        (error.requiredFields?.length || error.requiredFieldChoices?.length) &&
+        (error.requiredFields?.length || error.requiredFieldChoices?.length ||
+          error.preservedRequiredFields?.length) &&
         error.binding?.action === body.action &&
         error.binding.marketplaceId === body.marketplaceId &&
         error.binding.sellerSku === body.sellerSku &&
@@ -848,8 +886,10 @@ export default function VariationPlannerDrawer({
       ) {
         const additional = error.requiredFields ?? [];
         const choices = error.requiredFieldChoices;
+        const preserved = error.preservedRequiredFields;
         const previousPreparation = preparations[action]!;
-        focusRequiredFieldsRef.current = true;
+        focusRequiredFieldsRef.current = !preserved?.length;
+        focusPreservedFieldsRef.current = Boolean(preserved?.length);
         setPreparations((current) => ({
           ...current,
           [action]: {
@@ -862,8 +902,10 @@ export default function VariationPlannerDrawer({
               ).values(),
             ],
             requiredFieldChoices: choices ?? previousPreparation.requiredFieldChoices,
+            preservedRequiredFields: preserved ?? previousPreparation.preservedRequiredFields,
           },
         }));
+        if (preserved) setPreservedSelections((current) => ({ ...current, [action]: [] }));
         setSelectedFieldChoices((current) => ({
           ...current,
           [action]: (current[action] ?? []).filter(
@@ -887,14 +929,21 @@ export default function VariationPlannerDrawer({
           ...current,
         }));
         setWorkflowError(
-          additional.length
+          preserved?.length
+            ? "Amazon 要求再次提供現有商品資料。請在上方確認保留既有答案，再檢查綁定或解除內容。"
+            : additional.length
             ? `Amazon 需要補充資料，已在上方加入欄位：${additional.map(fieldLabel).join("、")}。填完後可重新檢查；尚未送出修改。`
             : "Amazon 預檢未通過，無法確認要補的欄位。請在上方選擇要補充的商品資料，再重新檢查；尚未送出修改。",
         );
-      } else
+      } else {
+        if (error instanceof VariationRequestError &&
+          ["PREVIEW_CHANGED", "VARIATION_REQUIREMENTS_CHANGED"].includes(error.code ?? "")) {
+          discardPreparedEvidence();
+        }
         setWorkflowError(
           error instanceof Error ? error.message : "預檢未完成。",
         );
+      }
     } finally {
       operationRef.current = false;
       setWriteAction(null);
@@ -953,7 +1002,9 @@ export default function VariationPlannerDrawer({
           "VARIATION_REQUIREMENTS_CHANGED",
         ].includes(error.code ?? "")
       ) {
-        setWorkflowError(`${error.message} 尚未送出修改，可重新檢查後再確認。`);
+        const changed = ["PREVIEW_CHANGED", "VARIATION_REQUIREMENTS_CHANGED"].includes(error.code ?? "");
+        if (changed) discardPreparedEvidence();
+        setWorkflowError(`${error.message} 尚未送出修改，${changed ? "請重新讀取必填欄位後再檢查。" : "可重新檢查後再確認。"}`);
       } else {
         unresolvedSkusRef.current.add(`${marketplaceId}:${body.sellerSku}`);
         setUncertain(true);
@@ -1036,6 +1087,18 @@ export default function VariationPlannerDrawer({
         fields.filter((field) => field.name !== name),
       ])),
     );
+  };
+  const choosePreservedField = (action: VariationMoveAction, name: string, checked: boolean) => {
+    if (busy || operationRef.current || uncertain || stagedState === "attached" ||
+      !preparations[action]?.preservedRequiredFields?.some((field) => field.name === name)) return;
+    setPreview(null);
+    setPreviewDiagnostics(null);
+    setPreservedSelections((current) => ({
+      ...current,
+      [action]: checked
+        ? [...new Set([...(current[action] ?? []), name])]
+        : (current[action] ?? []).filter((fieldName) => fieldName !== name),
+    }));
   };
   const renderEditor = (field: VariationFieldView, fillOnly = false) => (
     <VariationFieldEditor
@@ -1562,6 +1625,64 @@ export default function VariationPlannerDrawer({
             </div>
           </>
         )}
+        {Object.values(preparations).some((prepared) => prepared?.preservedRequiredFields?.length) && (
+          <>
+            <h4
+              className="variation-form-heading"
+              id="variation-preserved-fields-title"
+              ref={preservedFieldsHeadingRef}
+              tabIndex={-1}
+            >
+              保留現有商品資料
+            </h4>
+            <p className="variation-form-note">
+              Amazon 要求再次提供此資料，答案保持不變。勾選後按下方「檢查」繼續。
+            </p>
+            {Object.entries(preparations).map(([stage, prepared]) => {
+              const action = stage as VariationMoveAction;
+              const stageLabel = action === "detach" ? "解除" : "綁定";
+              return prepared?.preservedRequiredFields?.length ? (
+                <div className="variation-table-scroll" key={action}>
+                  <table className="variation-preserved-requirements" aria-label={`${stageLabel} · 保留現有商品資料`}>
+                    <caption>{stageLabel} · ★ 已選擇保留　☆ 待確認</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">商品資料</th>
+                        <th scope="col">Amazon 現有答案</th>
+                        <th scope="col">本次提供的答案</th>
+                        <th scope="col">確認</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prepared.preservedRequiredFields.map((field) => {
+                        const selected = preservedSelections[action]?.includes(field.name) ?? false;
+                        return (
+                          <tr key={field.name}>
+                            <th scope="row">{fieldLabel(field)}</th>
+                            <td>{readableValue(field.values)}</td>
+                            <td>{readableValue(field.values)}</td>
+                            <td>
+                              <label className="variation-preserved-choice">
+                                <input
+                                  type="checkbox"
+                                  aria-label={`${stageLabel} · ${fieldLabel(field)} · 保留既有答案並加入本次檢查`}
+                                  checked={selected}
+                                  disabled={busy || uncertain || stagedState === "attached"}
+                                  onChange={(event) => choosePreservedField(action, field.name, event.target.checked)}
+                                />
+                                {selected ? "★ " : "☆ "}保留既有答案並加入本次檢查
+                              </label>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null;
+            })}
+          </>
+        )}
         {(requiredFields.length > 0 || Object.values(preparations).some(
           (prepared) => prepared?.requiredFieldChoices?.length,
         )) && (
@@ -1785,7 +1906,12 @@ export default function VariationPlannerDrawer({
                   )}
                   {(preview.result.changes ?? []).map((change) => (
                     <tr key={change.name}>
-                      <th>{change.label}</th>
+                      <th>
+                        {change.label}
+                        {preview.body.preserveRequiredFields?.includes(change.name) && (
+                          <small>保留既有答案；Amazon 要求再次提供</small>
+                        )}
+                      </th>
                       <td>
                             {change.name === "parent_sku" &&
                             change.before === null

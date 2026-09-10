@@ -6,6 +6,7 @@ import {
   parseVariationMovePreparation,
   parseVariationMovePreview,
   parseVariationMoveResult,
+  parseVariationPreservedRequiredFields,
   updateVariationLeaf,
 } from "../src/renderer/src/variation-move";
 
@@ -73,6 +74,39 @@ const preparationPayload = {
 };
 
 describe("variation move renderer contract", () => {
+  it("keeps an exact existing answer out of editable form values and only accepts scalar preservation descriptors", () => {
+    const existing = {
+      name: "contains_liquid_contents", label: "Liquid", editable: false,
+      values: [{ value: false, marketplace_id: "ATVPDKIKX0DER" }],
+      leaves: [{ path: ["value"], label: "Value", type: "boolean", required: true,
+        enumValues: [], currentValue: false }],
+      jsonFallback: false,
+    };
+    const expected = {
+      marketplaceId: "ATVPDKIKX0DER", sellerSku: "CHILD-OLD", targetParentSku: "PARENT-NEW",
+    };
+    const preparation = parseVariationMovePreparation({
+      ...preparationPayload, preservedRequiredFields: [existing],
+    }, expected);
+    expect(preparation.preservedRequiredFields).toEqual([existing]);
+    expect(initialVariationDimensionValues(preparation)).not.toHaveProperty("contains_liquid_contents");
+    expect(parseVariationPreservedRequiredFields([existing])).toEqual([existing]);
+    for (const altered of [
+      { ...existing, editable: true },
+      { ...existing, jsonFallback: true },
+      { ...existing, values: [] },
+      { ...existing, values: [...existing.values, ...existing.values] },
+      { ...existing, leaves: [] },
+      { ...existing, leaves: [{ ...existing.leaves[0], currentValue: null }] },
+      { ...existing, values: [{ value: true }] },
+    ]) {
+      expect(parseVariationPreservedRequiredFields([altered])).toBeNull();
+      expect(() => parseVariationMovePreparation({
+        ...preparationPayload, preservedRequiredFields: [altered],
+      }, expected)).toThrow(/準備資料不完整/);
+    }
+    expect(parseVariationPreservedRequiredFields([existing, existing])).toBeNull();
+  });
   it("parses dynamic PTD fields and initializes marketplace-scoped values", () => {
     const preparation = parseVariationMovePreparation(preparationPayload, {
       marketplaceId: "ATVPDKIKX0DER",

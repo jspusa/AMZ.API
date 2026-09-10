@@ -39,6 +39,7 @@ import {
   type VariationFieldDescriptor,
 } from "./amazon/variation-update";
 import { validateVariationRequiredValues, variationAttributeSignatures } from "./amazon/variation-required-fields";
+import { selectPreservedRequiredValues, wholeVariationAttributeSignatures } from "./amazon/variation-preserved-required-fields";
 import type {
   SpExecutionContext,
   SpExecutionContextAdapter,
@@ -81,6 +82,7 @@ type VariationMoveWriteEvidence = Readonly<{
   dimensionSignature: string | null;
   childSchemaChecksumHash: string | null;
   requiredFieldSignatures?: Readonly<Record<string, string>>;
+  preservedRequiredFieldSignatures?: Readonly<Record<string, string>>;
   preservedDimensionSignatures?: Readonly<Record<string, string>>;
   retainedVariationThemeSignature?: string;
 }>;
@@ -197,6 +199,7 @@ class RequiredVariationFieldsError extends SpApiError {
     readonly requiredFields: readonly VariationFieldDescriptor[],
     readonly requiredFieldChoices: readonly VariationFieldDescriptor[] = [],
     requestId: string | null = null,
+    readonly preservedRequiredFields: readonly VariationFieldDescriptor[] = [],
   ) {
     super(error.message, { status: 422, code: error.code, requestId });
   }
@@ -218,9 +221,20 @@ function validateRequiredFields(
         error,
         source.requiredFields ?? [],
         source.requiredFieldChoices ?? [],
+        null,
+        source.preservedRequiredFields ?? [],
       );
     return throwVariationValidation(error);
   }
+}
+
+function preservedValuesFor(source: VariationMoveSourceObservation, input: VariationMoveInput): Record<string, unknown> {
+  try {
+    if (input.preserveRequiredFields?.some((name) => Object.hasOwn(input.requiredValues ?? {}, name))) {
+      throw new VariationUpdateValidationError("同一產品欄位不能同時補填與保留原值。", "VARIATION_REQUIRED_FIELDS_INVALID");
+    }
+    return selectPreservedRequiredValues(source.preservedRequiredFields ?? [], input.preserveRequiredFields);
+  } catch (error) { return throwVariationValidation(error); }
 }
 
 function validIdempotencyKey(value: unknown): string | null {
@@ -301,6 +315,7 @@ function proposalFingerprint(input: VariationMoveInput): string {
     [...input.dimensionNames].sort(),
     input.dimensionValues,
     ...(Object.keys(input.requiredValues ?? {}).length ? [input.requiredValues] : []),
+    ...(input.preserveRequiredFields?.length ? [["preserveRequiredFields", [...input.preserveRequiredFields].sort()]] : []),
   ])).digest("hex");
 }
 
@@ -705,9 +720,11 @@ async function prepareDescriptor(
     assertDetachSource(source, input.expectedSourceParentSku);
     assertSourceFamilyComplete(source);
     const requiredValues = validateRequiredFields(source, input);
+    const preservedRequiredValues = preservedValuesFor(source, input);
     return {
       changes: [{ name: "parent_sku", label: "Parent SKU", before: input.expectedSourceParentSku, after: null },
-        ...requiredChanges(source.requiredFields ?? [], requiredValues)],
+        ...requiredChanges(source.requiredFields ?? [], requiredValues),
+        ...preservedRequiredChanges(source.preservedRequiredFields ?? [], preservedRequiredValues)],
       mode: prepared.mode,
       descriptor: {
         action: "detach",
@@ -722,6 +739,7 @@ async function prepareDescriptor(
         dimensionNames: [],
         dimensionValues: {},
         requiredValues,
+        preservedRequiredValues,
         requiredSchemaChecksum: source.requiredSchemaChecksum,
       },
       sourceParentSku: input.expectedSourceParentSku,
@@ -758,6 +776,7 @@ async function prepareDescriptor(
   }
   assertNoDuplicateTargetDimensions(input, prepared.target, dimensionSignature);
   const requiredValues = validateRequiredFields(prepared.source, input);
+  const preservedRequiredValues = preservedValuesFor(prepared.source, input);
   const descriptor: VariationMoveAttachDescriptor = {
     action: "attach",
     marketplaceId: input.marketplaceId,
@@ -776,13 +795,16 @@ async function prepareDescriptor(
     targetEvidence: prepared.target.targetEvidence,
     ptdEvidence: prepared.target.ptdEvidence,
     requiredValues,
+    preservedRequiredValues,
+    ...(Object.keys(preservedRequiredValues).length ? { targetFamilySignature: prepared.target.targetFamilySignature } : {}),
     requiredSchemaChecksum: prepared.source.requiredSchemaChecksum,
   };
   return {
     changes: [{ name: "parent_sku", label: "Parent SKU", before: null, after: input.targetParentSku },
       { name: "variation_theme", label: "變體主題", before: prepared.source.variationTheme, after: input.variationTheme },
       ...prepared.fields.map((field) => ({ name: field.name, label: field.label, before: field.values, after: input.dimensionValues[field.name] })),
-      ...requiredChanges(prepared.source.requiredFields ?? [], requiredValues)],
+      ...requiredChanges(prepared.source.requiredFields ?? [], requiredValues),
+      ...preservedRequiredChanges(prepared.source.preservedRequiredFields ?? [], preservedRequiredValues)],
     mode: prepared.mode,
     descriptor,
     retainedVariationThemeSignature: prepared.source.retainedVariationThemeSignature,
@@ -800,6 +822,12 @@ function requiredChanges(fields: readonly VariationFieldDescriptor[], values: Re
   return fields.map((field) => ({ name: field.name, label: field.label, before: field.values, after: values[field.name] }));
 }
 
+function preservedRequiredChanges(fields: readonly VariationFieldDescriptor[], values: Record<string, unknown>): VariationMovePreview["changes"] {
+  return fields.filter((field) => Object.hasOwn(values, field.name)).map((field) => ({
+    name: field.name, label: `${field.label}（保留原值）`, before: values[field.name], after: values[field.name],
+  }));
+}
+
 function requiredProposalFingerprint(
   input: VariationMoveInput,
   prepared: PreparedDescriptor,
@@ -808,6 +836,7 @@ function requiredProposalFingerprint(
     Object.keys(prepared.descriptor.preservedDimensionValues ?? {}).length > 0;
   if (
     !Object.keys(input.requiredValues ?? {}).length &&
+    !input.preserveRequiredFields?.length &&
     !hasPreservedDimensions &&
     !prepared.retainedVariationThemeSignature
   ) {
@@ -823,6 +852,10 @@ function requiredProposalFingerprint(
     ...(prepared.retainedVariationThemeSignature
       ? [prepared.retainedVariationThemeSignature]
       : []),
+    ...(input.preserveRequiredFields?.length
+      ? [wholeVariationAttributeSignatures(prepared.descriptor.preservedRequiredValues),
+        prepared.descriptor.action === "attach" ? prepared.descriptor.targetAsin : null,
+        prepared.descriptor.action === "attach" ? prepared.descriptor.targetFamilySignature : null] : []),
   ])).digest("hex");
 }
 
@@ -856,10 +889,12 @@ async function validateDescriptor(
   const requestId = publicSpApiRequestId(receipt.requestId);
   const issues = publicIssues(receipt.issues);
   if (
-    (receipt.requiredFields?.length || receipt.requiredFieldChoices?.length) &&
+    (receipt.requiredFields?.length || receipt.requiredFieldChoices?.length || receipt.preservedRequiredFields?.length) &&
     (receipt.status === "INVALID" || issues.some((issue) => issue.severity === "ERROR"))
   ) {
-    const message = receipt.requiredFieldChoices?.length
+    const message = receipt.preservedRequiredFields?.length
+      ? "Amazon 要求的產品資料已有原值。請核對下方資料，明確勾選保留原值並附上本次檢查，再重新預檢。"
+      : receipt.requiredFieldChoices?.length
       ? "Amazon 預檢指出有產品資料缺漏，但回覆無法唯一確認欄位。請從下方 Amazon 產品欄位選擇要補充的資料，填寫後重新預檢。"
       : "Amazon 要求補填產品資料，請完成下方必填欄位後重新預檢。";
     throw new RequiredVariationFieldsError(
@@ -867,6 +902,7 @@ async function validateDescriptor(
       receipt.requiredFields ?? [],
       receipt.requiredFieldChoices ?? [],
       requestId,
+      receipt.preservedRequiredFields ?? [],
     );
   }
   if (
@@ -956,6 +992,9 @@ function writeEvidence(prepared: PreparedDescriptor): VariationMoveWriteEvidence
     ...(Object.keys(prepared.descriptor.requiredValues ?? {}).length ? {
       requiredFieldSignatures: variationAttributeSignatures({ ...prepared.descriptor.requiredValues }, prepared.descriptor.marketplaceId),
     } : {}),
+    ...(Object.keys(prepared.descriptor.preservedRequiredValues ?? {}).length ? {
+      preservedRequiredFieldSignatures: wholeVariationAttributeSignatures(prepared.descriptor.preservedRequiredValues),
+    } : {}),
     ...(prepared.retainedVariationThemeSignature ? {
       retainedVariationThemeSignature: prepared.retainedVariationThemeSignature,
     } : {}),
@@ -1002,6 +1041,7 @@ function observationMatches(
     observation.fulfillment !== "FBA"
   ) return false;
   if (!requiredSignaturesMatch(variationAttributeSignatures({ ...descriptor.requiredValues }, descriptor.marketplaceId), observation.attributeSignatures)) return false;
+  if (!requiredSignaturesMatch(wholeVariationAttributeSignatures(descriptor.preservedRequiredValues), observation.wholeAttributeSignatures)) return false;
   if (
     prepared.retainedVariationThemeSignature &&
     observation.exactAttributeSignatures?.variation_theme !== prepared.retainedVariationThemeSignature
@@ -1154,13 +1194,14 @@ function publicVariationMoveResult(
     hasExactKeys(evidence, [
       ...VARIATION_WRITE_EVIDENCE_KEYS,
       ...(evidence.requiredFieldSignatures === undefined ? [] : ["requiredFieldSignatures"]),
+      ...(evidence.preservedRequiredFieldSignatures === undefined ? [] : ["preservedRequiredFieldSignatures"]),
       ...(evidence.preservedDimensionSignatures === undefined ? [] : ["preservedDimensionSignatures"]),
       ...(evidence.retainedVariationThemeSignature === undefined ? [] : ["retainedVariationThemeSignature"]),
     ]) &&
     (evidence.retainedVariationThemeSignature === undefined ||
       typeof evidence.retainedVariationThemeSignature === "string" &&
       /^[a-f0-9]{64}$/u.test(evidence.retainedVariationThemeSignature)) &&
-    [evidence.requiredFieldSignatures, evidence.preservedDimensionSignatures].every((signatures) =>
+    [evidence.requiredFieldSignatures, evidence.preservedDimensionSignatures, evidence.preservedRequiredFieldSignatures].every((signatures) =>
       signatures === undefined || isPlainRecord(signatures) &&
       Object.entries(signatures).every(([name, value]) =>
         /^[a-z][a-z0-9_]{0,79}$/u.test(name) &&
@@ -1244,6 +1285,8 @@ function canonicalMatchesInput(
   input: VariationMoveInput,
   canonical: VariationMoveCanonicalObservation,
 ): boolean {
+  // Legacy receipts contain no exact preserved-fact proof and cannot satisfy this new intent.
+  if (input.preserveRequiredFields?.length) return false;
   if (
     canonical.marketplaceId !== input.marketplaceId ||
     canonical.sellerSku !== input.sellerSku ||
@@ -1292,6 +1335,7 @@ function canonicalMatchesEvidence(
     !canonical.familyComplete
   ) return false;
   if (!requiredSignaturesMatch(evidence.requiredFieldSignatures, canonical.attributeSignatures)) return false;
+  if (!requiredSignaturesMatch(evidence.preservedRequiredFieldSignatures, canonical.wholeAttributeSignatures)) return false;
   if (!requiredSignaturesMatch(evidence.preservedDimensionSignatures, canonical.exactAttributeSignatures)) return false;
   if (
     evidence.retainedVariationThemeSignature &&
@@ -1427,8 +1471,15 @@ function createVariationMoveMutationOperations(
     prepareForApproval: async (input) => {
       const prepared = await prepareDescriptor(gateway, input);
       const requiredNames = new Set(Object.keys(prepared.descriptor.requiredValues ?? {}));
-      const requiredSummary = prepared.changes.filter((change) => requiredNames.has(change.name)).map((change) =>
-        `${change.label}：${JSON.stringify(change.after).slice(0, 240)}`).join("；");
+      Object.keys(prepared.descriptor.preservedRequiredValues ?? {}).forEach((name) => requiredNames.add(name));
+      const requiredSummary = prepared.changes.filter((change) => requiredNames.has(change.name)).map((change) => {
+        if (Object.hasOwn(prepared.descriptor.preservedRequiredValues ?? {}, change.name)) {
+          const value = (change.after as Array<{ value: unknown }>)[0]!.value;
+          const display = value === false ? "否" : value === true ? "是" : JSON.stringify(value);
+          return `${change.label}：${display} → ${display}`;
+        }
+        return `${change.label}：${JSON.stringify(change.after).slice(0, 240)}`;
+      }).join("；");
       return { fingerprint: requiredProposalFingerprint(input, prepared), requiredSummary };
     },
     readCanonical: (input) => gateway.readCanonical(input),
@@ -1453,6 +1504,7 @@ function createVariationMoveMutationOperations(
           dimensionNames: [],
           fields: [],
           requiredFields: [...(prepared.source.requiredFields ?? [])],
+          preservedRequiredFields: [...(prepared.source.preservedRequiredFields ?? [])],
           requiredFieldChoices: [
             ...(prepared.source.requiredFieldChoices ?? []),
           ],
@@ -1486,6 +1538,7 @@ function createVariationMoveMutationOperations(
         dimensionNames: [...prepared.target.dimensionNames],
         fields: prepared.fields,
         requiredFields: [...(prepared.source.requiredFields ?? [])],
+        preservedRequiredFields: [...(prepared.source.preservedRequiredFields ?? [])],
         requiredFieldChoices: [...(prepared.source.requiredFieldChoices ?? [])],
         preparedAt: new Date().toISOString(),
         requestIds: prepared.requestIds,
@@ -1699,6 +1752,12 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       ? body.idempotencyKey
       : "";
     const requiredValues = body.requiredValues === undefined ? {} : body.requiredValues;
+    const preserveRequiredFields = body.preserveRequiredFields === undefined ? [] : body.preserveRequiredFields;
+    if (!Array.isArray(preserveRequiredFields) || preserveRequiredFields.length > 30 ||
+      preserveRequiredFields.some((name) => typeof name !== "string" || !/^[a-z][a-z0-9_]{0,79}$/u.test(name)) ||
+      new Set(preserveRequiredFields).size !== preserveRequiredFields.length) {
+      return invalid("保留原值只接受本次欄位名稱清單，不能提供或更改商品值。");
+    }
     if (!isPlainRecord(requiredValues) || Object.keys(requiredValues).length > 30 || !variationJsonSafe(requiredValues) || JSON.stringify(requiredValues).length > 64_000) {
       return invalid("Amazon 必填產品資料格式無效或超過安全上限。");
     }
@@ -1731,6 +1790,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
         dimensionValues: {},
         idempotencyKey,
         requiredValues: structuredClone(requiredValues),
+        preserveRequiredFields: [...preserveRequiredFields],
       };
     }
     const targetParentSku = parseSellerSku(body.targetParentSku);
@@ -1767,6 +1827,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       dimensionValues,
       idempotencyKey,
       requiredValues: structuredClone(requiredValues),
+      preserveRequiredFields: [...preserveRequiredFields],
     };
   }
 
@@ -1825,6 +1886,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
             message: error.message,
             requiredFields: error.requiredFields,
             requiredFieldChoices: error.requiredFieldChoices,
+            preservedRequiredFields: error.preservedRequiredFields,
             requestId: publicSpApiRequestId(error.requestId),
             action: input.action,
             marketplaceId: input.marketplaceId,
@@ -1853,7 +1915,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
       : `確認加入變體｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku} → ${input.targetParentSku}｜${input.variationTheme}`;
     try {
       let approval = { fingerprint: proposalFingerprint(input), requiredSummary: "" };
-      if (input.action === "attach" || Object.keys(input.requiredValues ?? {}).length) {
+      if (input.action === "attach" || Object.keys(input.requiredValues ?? {}).length || input.preserveRequiredFields?.length) {
         try {
           approval = await this.operations.prepareForApproval(input);
         } catch (error) {
@@ -1862,6 +1924,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
           // immutable previews cannot match this legacy proposal fingerprint.
           const mayProjectLegacyCompletion = input.action === "attach" &&
             !Object.keys(input.requiredValues ?? {}).length &&
+            !input.preserveRequiredFields?.length &&
             error instanceof SpApiError && error.code === "VARIATION_UNCHANGED";
           if (!mayProjectLegacyCompletion) {
             throw error;
@@ -1869,9 +1932,14 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
         }
       }
       const fingerprint = approval.fingerprint;
+      const preservedCount = input.preserveRequiredFields?.length ?? 0;
       const result = await this.writeGate.execute({
         binding: this.binding(input, context, key, fingerprint),
-        approvalReason: approval.requiredSummary ? `${approvalReason}｜補填產品資料：${approval.requiredSummary}` : approvalReason,
+        approvalReason: preservedCount ? (verificationCode: string) => {
+          const detailed = `${approvalReason}｜${approval.requiredSummary}｜驗證碼 ${verificationCode}`;
+          return detailed.length <= 120 ? detailed
+            : `確認${input.action === "attach" ? "加入" : "解除"}變體｜${marketplaceCode(input.marketplaceId)}｜1 SKU｜保留原值 ${preservedCount} 欄／補填 ${Object.keys(input.requiredValues ?? {}).length} 欄｜已在 App 核對來源、目標與完整原值｜驗證碼 ${verificationCode}`;
+        } : approval.requiredSummary ? `${approvalReason}｜補填產品資料：${approval.requiredSummary}` : approvalReason,
         run: (session) => session.attempt<VariationMoveDurableResult>({
           intentId: "primary",
           execute: (control) => this.operations.commit(input, {

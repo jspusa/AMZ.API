@@ -13,18 +13,25 @@ const contextKeys = new Set(["marketplace_id", "language_tag"]);
 const protectedNames = new Set([
   "parentage_level", "child_parent_sku_relationship", "variation_theme",
   "purchasable_offer", "fulfillment_availability", "merchant_shipping_group",
-  "item_name", "bullet_point", "product_description", "generic_keyword",
+  "item_name", "bullet_point", "product_description", "generic_keyword", "ingredients", "title_differentiation",
   "list_price", "standard_price", "sale_price", "minimum_advertised_price", "business_price", "condition_note",
   "main_product_image_locator", "externally_assigned_product_identifier",
   "merchant_suggested_asin", "supplier_declared_has_product_identifier_exemption",
 ]);
 const labels: Record<string, string> = {
+  contains_liquid_contents: "產品是否含液體",
   contains_liquid: "產品是否含液體", product_contains_liquid: "產品是否含液體",
   is_liquid_double_sealed: "液體是否採雙重密封", batteries_required: "是否需要電池",
   batteries_included: "是否含電池", is_expiration_dated_product: "是否有產品效期",
   item_form: "產品形態", unit_count: "商品數量", country_of_origin: "原產地",
   supplier_declared_dg_hz_regulation: "危險品規範聲明",
 };
+
+/** Relationship, commercial and other separately managed fields never become product facts. */
+export function managedVariationAttribute(name: string): boolean {
+  return protectedNames.has(name) ||
+    /(?:price|offer|shipping|fulfillment|inventory|availability|image_locator)/u.test(name);
+}
 
 function fail(message: string): never {
   throw new VariationUpdateValidationError(message, "VARIATION_REQUIRED_FIELDS_INVALID");
@@ -171,7 +178,26 @@ type RequiredFieldContext = {
 export function variationRequiredFieldDescriptors(
   input: RequiredFieldContext,
 ): VariationFieldDescriptor[] {
-  if (!record(input.schema)) return [];
+  return resolveVariationRequiredFields(input).fields;
+}
+
+export type VariationRequiredFieldBlock =
+  | "VALUE_CONFLICT"
+  | "PROTECTED"
+  | "READONLY"
+  | "UNSUPPORTED";
+
+type RequiredFieldResolution = {
+  fields: VariationFieldDescriptor[];
+  blocked: ReadonlyMap<string, VariationRequiredFieldBlock>;
+};
+
+/** Private reasons from the same descriptor decisions; they never grant fields. */
+export function resolveVariationRequiredFields(
+  input: RequiredFieldContext,
+): RequiredFieldResolution {
+  const blocked = new Map<string, VariationRequiredFieldBlock>();
+  if (!record(input.schema)) return { fields: [], blocked };
   const scopedAttributes = Object.fromEntries(Object.keys(input.attributes ?? {}).flatMap((name) => {
     const values = currentValues(input.attributes, name, input.marketplaceId);
     return values.length ? [[name, values]] : [];
@@ -201,20 +227,47 @@ export function variationRequiredFieldDescriptors(
   }
   const names = projectedRequiredNames().filter((name) =>
     !input.dimensionNames.includes(name) && !["parentage_level", "child_parent_sku_relationship", "variation_theme"].includes(name));
-  if (!names.length) return [];
-  const fields = variationFieldDescriptors({ includeLanguageSelector: true, productTypeDefinition: input.schema, dimensionNames: names,
-    attributes: scopedAttributes, marketplaceId: input.marketplaceId }).filter((field) =>
-      !field.values.some(meaningful) || field.values.some((value) => field.leaves.some((leaf) =>
-        leaf.required && !meaningful(leafValue(value, leaf.path))))).map((field) => ({
-      ...field,
-      label:
-        labels[field.name] ?? definitions.get(field.name)?.[0] ?? field.label,
-      editable: field.editable && !field.jsonFallback && field.values.length <= 1 &&
-        (input.attributes?.[field.name] === undefined || Array.isArray(input.attributes[field.name]) &&
-          (input.attributes[field.name] as unknown[]).every((value) => record(value) && (value.marketplace_id === undefined || typeof value.marketplace_id === "string" && value.marketplace_id.length > 0 && value.marketplace_id === value.marketplace_id.trim()))) && !protectedNames.has(field.name) && !/(?:price|offer|shipping|fulfillment|inventory|availability|image_locator)/u.test(field.name),
-    }));
+  for (const name of issueNames) {
+    if (!names.includes(name)) blocked.set(name, "PROTECTED");
+  }
+  if (!names.length) return { fields: [], blocked };
+  const fields = variationFieldDescriptors({
+    includeLanguageSelector: true,
+    productTypeDefinition: input.schema,
+    dimensionNames: names,
+    attributes: scopedAttributes,
+    marketplaceId: input.marketplaceId,
+  }).filter((field) => {
+      const incomplete = !field.values.some(meaningful) ||
+        field.values.some((value) => field.leaves.some((leaf) =>
+          leaf.required && !meaningful(leafValue(value, leaf.path)),
+        ));
+      if (!incomplete) blocked.set(field.name, "VALUE_CONFLICT");
+      return incomplete;
+    }).map((field) => {
+      const supported = !field.jsonFallback && field.values.length <= 1 &&
+        (input.attributes?.[field.name] === undefined ||
+          Array.isArray(input.attributes[field.name]) &&
+          (input.attributes[field.name] as unknown[]).every((value) =>
+            record(value) && (value.marketplace_id === undefined ||
+              typeof value.marketplace_id === "string" &&
+              value.marketplace_id.length > 0 &&
+              value.marketplace_id === value.marketplace_id.trim()),
+          ));
+      const protectedField = managedVariationAttribute(field.name);
+      const editable = field.editable && supported && !protectedField;
+      if (!editable) blocked.set(
+        field.name,
+        protectedField ? "PROTECTED" : !field.editable ? "READONLY" : "UNSUPPORTED",
+      );
+      return {
+        ...field,
+        label: labels[field.name] ?? definitions.get(field.name)?.[0] ?? field.label,
+        editable,
+      };
+    });
   if (fields.length > 30) fail("缺少的 Amazon 必填產品資料超過 30 欄，請先在商品編輯補齊基本資料。");
-  return fields;
+  return { fields, blocked };
 }
 
 /** Candidate identities require private Preview evidence; only explicit selections become required. */
@@ -222,21 +275,33 @@ export function variationRequiredFieldChoices(
   input: RequiredFieldContext,
   names: readonly string[],
 ): VariationFieldDescriptor[] {
+  return resolveVariationRequiredFieldChoices(input, names).fields;
+}
+
+export function resolveVariationRequiredFieldChoices(
+  input: RequiredFieldContext,
+  names: readonly string[],
+): RequiredFieldResolution {
   const choices: VariationFieldDescriptor[] = [];
+  const blocked = new Map<string, VariationRequiredFieldBlock>();
   for (const name of [...new Set(names)].slice(0, 200)) {
     try {
-      const field = variationRequiredFieldDescriptors({
+      const resolution = resolveVariationRequiredFields({
         ...input,
         issueRequiredNames: [name],
-      }).find((candidate) => candidate.name === name);
+      });
+      const field = resolution.fields.find((candidate) => candidate.name === name);
       if (field?.editable) choices.push(field);
+      const reason = resolution.blocked.get(name);
+      if (reason) blocked.set(name, reason);
     } catch (error) {
       if (!(error instanceof VariationUpdateValidationError)) throw error;
       // Unsupported candidate structure grants no editable field.
+      blocked.set(name, "UNSUPPORTED");
     }
     if (choices.length === 30) break;
   }
-  return choices;
+  return { fields: choices, blocked };
 }
 
 /** Product facts are fill-only: existing answers and unrelated attributes cannot be overwritten. */

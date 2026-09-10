@@ -99,6 +99,33 @@ async function change(name: string, value: string) {
       .props.onChange({ target: { value } });
   });
 }
+const preservedLiquid = (value = false) => ({
+  ...field("contains_liquid_contents", "Contains Liquid Contents?", "boolean"),
+  editable: false,
+  values: [{ marketplace_id: marketplaceId, value }],
+  leaves: [{
+    path: ["value"], label: "Value", type: "boolean", required: true,
+    enumValues: [], currentValue: value,
+  }],
+});
+const preservedFieldError = (override: Record<string, unknown> = {}) => Response.json({
+  code: "VARIATION_FIELD_REQUIRED",
+  action: "attach",
+  marketplaceId,
+  sellerSku: "CHILD",
+  targetParentSku: "TARGET",
+  message: "Amazon 要求再次提供現有商品資料。",
+  requiredFields: [],
+  preservedRequiredFields: [preservedLiquid()],
+  ...override,
+}, { status: 422 });
+async function preserveLiquid(checked: boolean) {
+  await act(async () => {
+    renderer!.root.findByProps({
+      "aria-label": "綁定 · 是否含液體 · 保留既有答案並加入本次檢查",
+    }).props.onChange({ target: { checked } });
+  });
+}
 async function mount(options: {
   source?: VariationFamilyView;
   target?: VariationFamilyView;
@@ -127,9 +154,15 @@ async function mount(options: {
             {
               name: "contains_liquid_contents",
               label: "是否含液體",
-              before: null,
-              after: [{ value: false }],
+              before: body.preserveRequiredFields?.includes("contains_liquid_contents")
+                ? [{ marketplace_id: marketplaceId, value: false }]
+                : null,
+              after: [{ marketplace_id: marketplaceId, value: false }],
             },
+            ...(body.preserveRequiredFields ?? []).filter((name: string) => name !== "contains_liquid_contents").map((name: string) => ({
+              name, label: name, before: [{ marketplace_id: marketplaceId, value: false }],
+              after: [{ marketplace_id: marketplaceId, value: false }],
+            })),
           ],
         });
       }
@@ -151,7 +184,7 @@ async function mount(options: {
         onClose={vi.fn()}
       />,
       {
-        createNodeMock: (element) => element.props.id === "variation-required-fields-title"
+        createNodeMock: (element) => ["variation-required-fields-title", "variation-preserved-fields-title"].includes(element.props.id)
           ? { focus: options.onRequiredFieldsFocus ?? vi.fn() }
           : null,
       },
@@ -168,6 +201,7 @@ async function mount(options: {
 async function mountStandalone(
   onRequiredFieldsFocus?: () => void,
   requiredFieldChoices?: ReturnType<typeof field>[],
+  preservedRequiredFields?: ReturnType<typeof preservedLiquid>[],
 ) {
   const source = family(false);
   source.queried = { ...source.queried, role: "standalone", parentSku: null };
@@ -213,6 +247,7 @@ async function mountStandalone(
       ],
       requiredFields: [],
       requiredFieldChoices,
+      preservedRequiredFields,
     },
   });
 }
@@ -223,6 +258,199 @@ afterEach(async () => {
 });
 
 describe("variation workspace interactions", () => {
+  it("offers an unchecked exact existing answer after missing-fact Preview and sends only its name after explicit selection", async () => {
+    const focus = vi.fn();
+    await mountStandalone(focus);
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError());
+    await click("檢查綁定內容");
+
+    const checkbox = renderer!.root.findByProps({
+      "aria-label": "綁定 · 是否含液體 · 保留既有答案並加入本次檢查",
+    });
+    expect(checkbox.props.type).toBe("checkbox");
+    expect(checkbox.props.checked).toBe(false);
+    expect(focus).toHaveBeenCalledOnce();
+    const comparison = renderer!.root.findByProps({ "aria-label": "綁定 · 保留現有商品資料" });
+    expect(comparison.findByType("tbody").findAllByType("td").slice(0, 2).map((cell) => cell.children.join(""))).toEqual(["否", "否"]);
+    expect(output()).toContain("Amazon 要求再次提供此資料，答案保持不變");
+    expect(output()).toContain("☆ 待確認");
+    expect(renderer!.root.findAllByProps({ "aria-label": "是否含液體 · Value" })).toHaveLength(0);
+    expect(renderer!.root.findByProps({ "aria-label": "Shape · Amazon 現有值" }).children).toEqual(["Pretzel"]);
+    expect(renderer!.root.findByProps({ "aria-label": "檢查綁定內容" }).props.disabled).toBe(true);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+
+    await preserveLiquid(true);
+    expect(renderer!.root.findByProps({ "aria-label": "檢查綁定內容" }).props.disabled).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    await click("檢查綁定內容");
+    const previews = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => JSON.parse(String(init?.body)));
+    expect(previews).toHaveLength(2);
+    expect(previews[0]).not.toHaveProperty("preserveRequiredFields");
+    expect(previews[1].preserveRequiredFields).toEqual(["contains_liquid_contents"]);
+    expect(previews[1].requiredValues).toEqual({});
+    expect(previews[1].idempotencyKey).not.toBe(previews[0].idempotencyKey);
+    expect(renderer!.root.findByProps({ "aria-label": "確認綁定變體" }).props.disabled).toBe(false);
+    const confirmation = renderer!.root.findByProps({ "aria-labelledby": "variation-preview-title" });
+    const preservedRow = confirmation.findByType("tbody").findAllByType("tr").find((row) =>
+      row.findByType("th").children.includes("是否含液體"),
+    );
+    expect(preservedRow?.findAllByType("td").map((cell) => cell.children.join(""))).toEqual(["否", "否"]);
+    expect(output()).toContain("保留既有答案；Amazon 要求再次提供");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+
+    const staleConfirm = renderer!.root.findByProps({ "aria-label": "確認綁定變體" }).props.onClick;
+    await preserveLiquid(false);
+    expect(renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" })).toHaveLength(0);
+    await act(async () => staleConfirm());
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+  });
+  it("keeps the selected preservation name through confirmation and native cancellation without sending an answer", async () => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError());
+    await click("檢查綁定內容");
+    await preserveLiquid(true);
+    await click("檢查綁定內容");
+    const previewBody = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body));
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({
+      code: "ACTION_CANCELLED", message: "已取消確認",
+    }, { status: 403 }));
+    await click("確認綁定變體");
+    const writes = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH");
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(String(writes[0][1]?.body))).toEqual(previewBody);
+    expect(previewBody.preserveRequiredFields).toEqual(["contains_liquid_contents"]);
+    expect(previewBody.requiredValues).toEqual({});
+    expect(output()).toContain("尚未送出修改");
+    expect(renderer!.root.findByProps({
+      "aria-label": "綁定 · 是否含液體 · 保留既有答案並加入本次檢查",
+    }).props.checked).toBe(true);
+    expect(renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" })).toHaveLength(0);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
+  });
+  it.each(["missing", "answer", "selector"])("refuses confirmation if a VALID Preview omits or changes the preserved %s", async (change) => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError());
+    await click("檢查綁定內容");
+    await preserveLiquid(true);
+    const fixture = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementationOnce(async (input, init) => {
+      const response = await fixture(input, init);
+      const preview = await response.json();
+      if (change === "missing") preview.changes = [];
+      else if (change === "answer") preview.changes[0].after[0].value = true;
+      else delete preview.changes[0].after[0].marketplace_id;
+      return Response.json(preview);
+    });
+    await click("檢查綁定內容");
+    expect(renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" })).toHaveLength(0);
+    expect(output()).toContain("未完整核對要保留的既有答案");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+  });
+  it("requires confirmation again when new missing-fact evidence changes the displayed current answer", async () => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError());
+    await click("檢查綁定內容");
+    await preserveLiquid(true);
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError({
+      preservedRequiredFields: [preservedLiquid(true)],
+    }));
+    await click("檢查綁定內容");
+    const comparison = renderer!.root.findByProps({ "aria-label": "綁定 · 保留現有商品資料" });
+    expect(comparison.findByType("tbody").findAllByType("td").slice(0, 2).map((cell) => cell.children.join(""))).toEqual(["是", "是"]);
+    expect(renderer!.root.findByProps({
+      "aria-label": "綁定 · 是否含液體 · 保留既有答案並加入本次檢查",
+    }).props.checked).toBe(false);
+    expect(renderer!.root.findByProps({ "aria-label": "檢查綁定內容" }).props.disabled).toBe(true);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
+  });
+  it("keeps drafted blank facts when a Preview discovers a separately preserved fact", async () => {
+    await mount();
+    await change("是否含液體 · Value", "false");
+    const preserved = {
+      ...preservedLiquid(), name: "is_fragile", label: "Fragile",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError({
+      action: "detach", targetParentSku: null, preservedRequiredFields: [preserved],
+    }));
+    await click("檢查解除內容");
+    expect(renderer!.root.findByProps({ "aria-label": "是否含液體 · Value" }).props.value).toBe("false");
+    const checkbox = renderer!.root.findByProps({
+      "aria-label": "解除 · Fragile · 保留既有答案並加入本次檢查",
+    });
+    expect(checkbox.props.checked).toBe(false);
+    await act(async () => checkbox.props.onChange({ target: { checked: true } }));
+    await click("檢查解除內容");
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body));
+    expect(body.requiredValues).toEqual({
+      contains_liquid_contents: [{ marketplace_id: marketplaceId, value: false }],
+    });
+    expect(body.preserveRequiredFields).toEqual(["is_fragile"]);
+  });
+  it("shows preservation returned by fresh preparation without preselecting it or creating answer inputs", async () => {
+    await mountStandalone(undefined, undefined, [preservedLiquid()]);
+    expect(renderer!.root.findByProps({
+      "aria-label": "綁定 · 是否含液體 · 保留既有答案並加入本次檢查",
+    }).props.checked).toBe(false);
+    expect(renderer!.root.findAllByProps({ "aria-label": "是否含液體 · Value" })).toHaveLength(0);
+    expect(renderer!.root.findByProps({ "aria-label": "檢查綁定內容" }).props.disabled).toBe(true);
+    expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method)).toBe(true);
+  });
+  it.each(["preview", "confirmation"])("discards stale preservation evidence after %s drift and offers an explicit reread", async (stage) => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError());
+    await click("檢查綁定內容");
+    await preserveLiquid(true);
+    if (stage === "confirmation") await click("檢查綁定內容");
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({
+      code: stage === "preview" ? "VARIATION_REQUIREMENTS_CHANGED" : "PREVIEW_CHANGED",
+      message: "商品資料已變更，請重新讀取。",
+    }, { status: 409 }));
+    await click(stage === "preview" ? "檢查綁定內容" : "確認綁定變體");
+    expect(renderer!.root.findAllByProps({ "aria-label": "綁定 · 保留現有商品資料" })).toHaveLength(0);
+    expect(renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" })).toHaveLength(0);
+    const reload = renderer!.root.findAllByType("button").find((button) => button.children.includes("重新讀取必填欄位"));
+    expect(reload).toBeDefined();
+    expect(reload!.props.disabled).toBe(false);
+    expect(output()).not.toContain("結果待確認 · 已停止後續寫入");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(stage === "preview" ? 0 : 1);
+  });
+  it.each([
+    ["different stage", { action: "detach" }],
+    ["different marketplace", { marketplaceId: "A2EUQ1WTGCTBG2" }],
+    ["different source", { sellerSku: "OTHER" }],
+    ["different target", { targetParentSku: "OTHER" }],
+    ["missing binding", { targetParentSku: undefined }],
+    ["wrong error code", { code: "PREVIEW_CHANGED" }],
+    ["editable preservation", { preservedRequiredFields: [{ ...preservedLiquid(), editable: true }] }],
+    ["missing answer", { preservedRequiredFields: [{ ...preservedLiquid(), values: [] }] }],
+  ])("does not expose a preservation action from %s metadata", async (_name, override) => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError(override));
+    await click("檢查綁定內容");
+    expect(renderer!.root.findAllByProps({ "aria-label": "綁定 · 保留現有商品資料" })).toHaveLength(0);
+    expect(renderer!.root.findAllByProps({ "aria-label": "是否含液體 · Value" })).toHaveLength(0);
+    expect(renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" })).toHaveLength(0);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
+  });
+  it.each(["target", "source", "marketplace", "close"])("clears preserved evidence and selections on %s context change", async (context) => {
+    await mountStandalone();
+    vi.mocked(fetch).mockResolvedValueOnce(preservedFieldError());
+    await click("檢查綁定內容");
+    await preserveLiquid(true);
+    if (context === "marketplace") await change("Amazon 站點", "A2EUQ1WTGCTBG2");
+    else if (context === "close") await click("返回 AMZ.API 首頁");
+    else await act(async () => renderer!.root.findByProps({ "data-variation-lookup": context }).props.onClick());
+    expect(renderer!.root.findAllByProps({ "aria-label": "綁定 · 保留現有商品資料" })).toHaveLength(0);
+    expect(renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" })).toHaveLength(0);
+    if (context === "target") {
+      await click("檢查綁定內容");
+      const body = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.body));
+      expect(body).not.toHaveProperty("preserveRequiredFields");
+    }
+  });
   it("places a clear home action before the workspace title", async () => {
     await mount();
     const header = renderer!.root.findByProps({
@@ -720,7 +948,7 @@ describe("variation workspace interactions", () => {
     expect(renderer!.root.findAllByProps({ "aria-label": "綁定要補充的商品欄位" })).toHaveLength(0);
     expect(renderer!.root.findAllByProps({ "aria-label": "Liquid Information · Value" })).toHaveLength(0);
     expect(renderer!.root.findAllByProps({ "aria-label": "確認綁定變體" })).toHaveLength(0);
-    expect(output()).toContain("預檢未通過");
+    expect(output()).toContain(override.code === "PREVIEW_CHANGED" ? "重新讀取必填欄位" : "預檢未通過");
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(0);
   });
   it("clears chosen supplemental fields when a fresh target preparation replaces the context", async () => {
