@@ -1,0 +1,19 @@
+{
+  "docs/releases/2026-09-10-sweet-pink-content-audit.md": "197c5e9c65732fb376785276bdffcb177954448a",
+  "docs/specs/2026-09-10-sweet-pink-content-audit.md": "d6239af9c6f3933dfe2b16ac98732a6294af7003",
+  "scripts/renderer-stylesheet-contract.mjs": "eef5992c2bc93fff4269520e9e200e3ff7c9f876",
+  "scripts/visual-qa/appearance-check.mjs": "328819b88310daf562bb8915195546b87afb6186",
+  "scripts/visual-qa/sweet-ui-check.mjs": "da9daa99061f1e7dedc00d8c28d56f51dcd8b93e",
+  "src/renderer/src/components/content-audit-panel.tsx": "4088168a541c97135fd485d5fbb6ca1d6437045a",
+  "src/renderer/src/components/sku-operations-drawer.tsx": "4526706b3ceb154465a1180bd21ad8889cc1bede",
+  "src/renderer/src/styles/appearance.css": "4623d203a51b34d73d9b555b5f2cdd9264a79c28",
+  "src/renderer/src/styles/content-audit-focus.css": "31e808d90559a88b73d414e4d9c43e597a79281d",
+  "src/renderer/src/styles/index.css": "48e7a81c976f4c69ca00f881bafde29639c9df8b",
+  "src/renderer/src/ui-appearance.ts": "ee15bf7161ff02b4cd3dbd135008acacf1278228",
+  "tests/content-audit-panel.test.tsx": "8c6deba5fa639700db4e94ca3d10cd244c0a3a1a",
+  "tests/css01-stylesheet-composition.test.ts": "4fbbf791e2215e71ff7f241f66cba2b490c988d8",
+  "tests/css02-stylesheet-extraction.test.ts": "d619f8333949d2ee6811c7852af88dbcf7fc5752",
+  "tests/css03-stylesheet-extraction.test.ts": "0005a8ade568a62b50ff637757e12863598b140a",
+  "tests/css04-stylesheet-extraction.test.ts": "3018f8ca8d5d966a98fedf02c173bf357fb8e8e8",
+  "tests/sweet-pink-theme.test.ts": "6a553d2d85705f7648f1d67cf3cb414570f9fdd3"
+}
