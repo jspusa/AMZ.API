@@ -1,6 +1,6 @@
 /**
  * Current accepted rule stream includes the compact FBA workspace and the
- * layout-only home repair: equal audit tiles, explicit baselines, shared rails.
+ * home repair plus deliberate audit hover/focus affordances.
  * Feature-specific variation and price-list styles retain final precedence.
  * The original CSS01 fingerprint remains historical provenance, not this stream.
  */
@@ -42,5 +42,5 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/dark-surfaces.css",
   ]),
   fingerprint:
-    "2ab8088585e4100067e30a548fdd52733d25edd95c8d95fce99bec98a9070bb8",
+    "2b452343ce79d97b33f50a7ef2481bfabac72c7a823036d295ea0925d82baa3e",
 });
