@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   MARKETPLACES,
@@ -216,16 +217,21 @@ function parseInteger(value: string, minimum: number, maximum: number) {
 export default function SkuCommandCenter({
   initialMarketplaceId,
   initialSellerSku = "",
+  initialView = "single",
+  auditReview = null,
   onContextResolved,
   onLaunch,
   onClose,
 }: {
   initialMarketplaceId: string;
   initialSellerSku?: string;
+  initialView?: "single" | "audits";
+  auditReview?: ReactNode;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onLaunch: (tool: Tool) => void;
   onClose: () => void;
 }) {
+  const [commandView, setCommandView] = useState(initialView);
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
   const [skuInput, setSkuInput] = useState(initialSellerSku);
   const [snapshot, setSnapshot] = useState<CommandSnapshot | null>(null);
@@ -299,14 +305,14 @@ export default function SkuCommandCenter({
   }, [loadRecent, marketplaceId, onContextResolved, skuInput]);
 
   useEffect(() => {
-    if (autoLookupRef.current) return;
-    autoLookupRef.current = true;
+    if (commandView !== "single" || autoLookupRef.current) return;
     const initialLoad = window.setTimeout(() => {
+      autoLookupRef.current = true;
       if (initialSellerSku.trim()) void lookup(undefined, initialSellerSku);
       else void loadRecent();
     }, 0);
     return () => window.clearTimeout(initialLoad);
-  }, [initialSellerSku, loadRecent, lookup]);
+  }, [initialSellerSku, loadRecent, lookup, commandView]);
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
@@ -436,11 +442,16 @@ export default function SkuCommandCenter({
       >
         <div className="drawer-header command-header">
           <div>
-            <p className="eyebrow">ONE SKU · ONE SOURCE OF TRUTH</p>
-            <h2 id="command-center-title">SKU 指揮中心</h2>
+            <p className="eyebrow">{commandView === "audits" ? "FBA · 本次健檢" : "ONE SKU · ONE SOURCE OF TRUTH"}</p>
+            <h2 id="command-center-title">{commandView === "audits" ? "SKU 總覽" : "SKU 指揮中心"}</h2>
           </div>
           <button type="button" onClick={onClose} disabled={loading || saving} aria-label="關閉 SKU 指揮中心">×</button>
         </div>
+        {auditReview && <nav className="command-view-tabs" aria-label="SKU 總覽頁籤">
+          <button type="button" aria-pressed={commandView === "audits"} disabled={loading || saving} onClick={() => setCommandView("audits")}>商品健檢總表</button>
+          <button type="button" aria-pressed={commandView === "single"} disabled={loading || saving} onClick={() => setCommandView("single")}>單一 SKU</button>
+        </nav>}
+        {commandView === "audits" && auditReview ? auditReview : <>
         <p className="price-intro">一次整合 FBA 庫存、補貨、文案、圖片、價格、促銷與訂閱；各區不必重複查詢。</p>
 
         <form className="command-search" onSubmit={lookup}>
@@ -537,6 +548,7 @@ export default function SkuCommandCenter({
             <p className="command-footnote">最後掃描 {formatDate(snapshot.fetchedAt)} · {snapshot.notice}</p>
           </>
         )}
+        </>}
       </aside>
     </div>
   );

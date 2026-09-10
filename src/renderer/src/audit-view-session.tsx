@@ -13,6 +13,7 @@ export class AuditViewMemory {
   }
 }
 const MemoryContext = createContext<AuditViewMemory | null>(null);
+export function useAuditViewMemory(): AuditViewMemory | null { return useContext(MemoryContext); }
 export function AuditViewSessionProvider({ sessionKey, children }: { sessionKey: string; children: ReactNode }) {
   // A connection change remounts Dashboard; a marketplace/mode change discards this map.
   const memory = useMemo(() => new AuditViewMemory(), [sessionKey]);

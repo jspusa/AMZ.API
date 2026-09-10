@@ -1,11 +1,16 @@
 "use client";
 
 import { AuditViewSessionProvider } from "../audit-view-session";
+import { AuditReviewProvider } from "../audit-review-session";
+import { ReviewSourceProjector } from "../audit-review-sources";
+import { REVIEW_KINDS, type ReviewKind } from "../audit-review-model";
+import AuditReviewWorkbench from "./audit-review-workbench";
 
 import {
   lazy,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -805,6 +810,8 @@ export default function Dashboard({
     }
   };
   const [commandOpen, setCommandOpen] = useState(false);
+  const [commandInitialView, setCommandInitialView] = useState<"single" | "audits">("single");
+  const reviewReturnRef = useRef(false);
   const [autoSync, setAutoSync] = useState(true);
   const [salesTrend, setSalesTrend] =
     useState<SalesTrendSnapshot | null>(initialSalesTrend);
@@ -1127,6 +1134,7 @@ export default function Dashboard({
   }, [reportLibraryOpen, reviewAuditOpen]);
 
   const openAuditWorkspace = useCallback((sectionId: AuditSuiteSectionId) => {
+    reviewReturnRef.current = false;
     auditWorkspaceReturnRef.current = {
       sectionId,
       scrollY: window.scrollY,
@@ -1152,6 +1160,12 @@ export default function Dashboard({
     const returnTarget = auditWorkspaceReturnRef.current;
     setAuditWorkspaceBusy(false);
     setActiveAuditWorkspace(null);
+    if (reviewReturnRef.current) {
+      reviewReturnRef.current = false;
+      setCommandInitialView("audits");
+      setCommandOpen(true);
+      return;
+    }
     window.setTimeout(() => {
       if (!returnTarget) return;
       window.requestAnimationFrame(() => {
@@ -1204,6 +1218,7 @@ export default function Dashboard({
   };
 
   const openCommandCenter = () => {
+    setCommandInitialView("single");
     const activeElement = document.activeElement;
     modalReturnFocusRef.current = activeElement instanceof HTMLElement
       ? activeElement
@@ -2064,6 +2079,27 @@ export default function Dashboard({
     }
   })();
 
+  const reviewProjector = useMemo(() => new ReviewSourceProjector(), [marketplaceId, currentStandaloneMode]);
+  const reviewSources = useMemo(() => reviewProjector.read({
+    marketplaceId, mode: currentStandaloneMode, jobs: standaloneAuditJobs, aplusJob: currentAplusJob,
+    blockedKinds: REVIEW_KINDS.filter(kind => Boolean(auditSuiteLaunchFailures[auditSuiteLaunchFailureKey(marketplaceId, currentStandaloneMode, kind)])),
+  }), [reviewProjector, marketplaceId, currentStandaloneMode, standaloneAuditJobs, currentAplusJob, auditSuiteLaunchFailures]);
+  const openReviewSource = (kind: ReviewKind, sellerSku: string) => {
+    const source = reviewSources.find(item => item.kind === kind);
+    if (source?.state !== "ready" || !source.snapshot?.cells.some(cell => cell.sellerSku === sellerSku)) return;
+    // Explicit navigation only. Keep write gates in the original workspace.
+    setGlobalSku(sellerSku);
+    if (kind === "content" && currentContentAudit) cacheContentAudit({ ...currentContentAudit, filter: "all", query: "", pageIndex: 0 });
+    if (kind === "image" && currentImageAudit) cacheImageAudit({ ...currentImageAudit, query: "" });
+    if (kind === "variation" && currentUnboundVariationAudit) cacheUnboundVariationAudit({ ...currentUnboundVariationAudit, query: "" });
+    openAuditWorkspace(kind);
+    reviewReturnRef.current = true;
+  };
+  const openReviewOverview = () => {
+    openCommandCenter();
+    setCommandInitialView("audits");
+  };
+
   const changeMarketplace = (nextMarketplaceId: string) => {
     if (!marketplaceById(nextMarketplaceId) || salesTrendLoading) return;
     setSalesTrend(null);
@@ -2120,6 +2156,7 @@ export default function Dashboard({
 
   return (
     <AuditViewSessionProvider sessionKey={JSON.stringify([marketplaceId, currentStandaloneMode])}>
+    <AuditReviewProvider sessionKey={JSON.stringify([marketplaceId, currentStandaloneMode])} sources={reviewSources}>
     <div className="commerce-os">
       <a
         className="workspace-skip-link"
@@ -2356,6 +2393,7 @@ export default function Dashboard({
           <section id="home-audits" tabIndex={-1} aria-labelledby="home-audits-title">
           <div className="home-section-heading">
             <h2 id="home-audits-title">商品健檢</h2>
+            <button type="button" className="audit-review-home-button" onClick={openReviewOverview}>健檢總表</button>
             <AuditSuiteHomeCard
               marketplaceId={marketplaceId}
               mode={currentStandaloneMode}
@@ -2682,7 +2720,9 @@ export default function Dashboard({
         />
       )}
       {openTool === "accounting" && <DeferredWorkspace overlay onClose={() => setOpenTool(null)}><AccountingCenterDrawer marketplaceId={marketplaceId} onClose={() => setOpenTool(null)} /></DeferredWorkspace>}
-      {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}
+      {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialView={commandInitialView}
+        auditReview={<AuditReviewWorkbench marketplaceId={marketplaceId} marketplaceLabel={marketplace.shortLabel} mode={currentStandaloneMode} onOpen={openReviewSource} />}
+        onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}
       {agedInventoryOpen && createPortal(
         <div
           className="drawer-backdrop"
@@ -2775,6 +2815,7 @@ export default function Dashboard({
         document.body,
       )}
     </div>
+    </AuditReviewProvider>
     </AuditViewSessionProvider>
   );
 }

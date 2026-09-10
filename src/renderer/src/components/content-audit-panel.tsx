@@ -1,6 +1,8 @@
 "use client";
 
-import { auditViewScope, useAuditPosition } from "../audit-view-session";
+import { auditViewScope, useAuditPosition, useAuditMemoryState } from "../audit-view-session";
+import ContentOriginFilter from "./content-origin-filter";
+import { contentIssueOrigin, contentRowOrigins, AUDIT_ISSUE_ORIGIN_LABELS, type AuditIssueOrigin } from "../audit-issue-origin";
 import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -3010,6 +3012,7 @@ export default function ContentAuditPanel({
   );
   const viewScope = auditViewScope("content", marketplaceId, mode, snapshot?.fetchedAt);
   const skuBatch = useAuditSkuBatch(viewScope);
+  const [originFilter, setOriginFilter] = useAuditMemoryState<AuditIssueOrigin | "all">(viewScope, "origin-filter", "all");
   const positionRef = useAuditPosition(viewScope, Boolean(snapshot) && state === "done");
   const [filter, setFilter] = useState<AuditFilter>(initialCache?.filter ?? "all");
   const [query, setQuery] = useState(initialCache?.query ?? "");
@@ -3132,6 +3135,7 @@ export default function ContentAuditPanel({
     const normalizedQuery = query.trim().toLocaleLowerCase("en-US");
     return (snapshot?.rows ?? []).filter((row) => {
       if (!contentAuditRowMatchesFilter(row, filter) || !skuBatch.matches(row.sellerSku)) return false;
+      if (originFilter !== "all" && !contentRowOrigins(row).includes(originFilter)) return false;
       if (!normalizedQuery) return true;
       return [
         row.sellerSku,
@@ -3146,7 +3150,7 @@ export default function ContentAuditPanel({
         .toLocaleLowerCase("en-US")
         .includes(normalizedQuery);
     });
-  }, [snapshot, filter, query, skuBatch.skus]);
+  }, [snapshot, filter, query, skuBatch.skus, originFilter]);
   const pageCount = Math.max(1, Math.ceil(visibleRows.length / CONTENT_AUDIT_PAGE_SIZE));
   const currentPage = Math.min(pageIndex, pageCount - 1);
   const pageStart = currentPage * CONTENT_AUDIT_PAGE_SIZE;
@@ -3857,6 +3861,7 @@ export default function ContentAuditPanel({
               )}
             </aside>
           )}
+          <ContentOriginFilter rows={snapshot.rows} value={originFilter} onChange={value => { setOriginFilter(value); setPageIndex(0); }} />
           <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={snapshot.rows.map(row => row.sellerSku)} disabled={Boolean(batchBusy) || Boolean(exporting)} onChange={skus => { skuBatch.setSkus(skus); setPageIndex(0); }} />
           <div className="content-audit-list-tools">
           <div className="content-audit-controls">
@@ -3916,6 +3921,7 @@ export default function ContentAuditPanel({
                             : "尚無商品標題"}
                         </strong>
                         <small>{row.sellerSku}{row.asin ? ` · ${row.asin}` : ""}</small>
+                        <small>{contentRowOrigins(row).map(value => AUDIT_ISSUE_ORIGIN_LABELS[value]).join(" · ")}</small>
                       </div>
                       <div className="content-audit-edit-actions">
                         <button
@@ -3991,6 +3997,7 @@ export default function ContentAuditPanel({
                         .map((issue, index) => (
                           <div key={`${issue.kind}-${issue.field}-${issue.bulletIndex ?? issue.token ?? index}`}>
                             <span className={`kind-${issue.kind.toLocaleLowerCase()}`}>{issueLabel(issue.kind)}</span>
+                            <span className={`audit-origin-badge origin-${contentIssueOrigin(issue)}`}>{AUDIT_ISSUE_ORIGIN_LABELS[contentIssueOrigin(issue)]}</span>
                             <p>{issue.message}</p>
                             {issue.suggestion && <small>建議檢查：{issue.suggestion}</small>}
                           </div>

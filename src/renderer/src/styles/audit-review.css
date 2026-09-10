@@ -1,0 +1,91 @@
+/* Review workbench: readable data-first layout, scoped to existing SKU overview. */
+.audit-review-workbench { color: var(--ink); min-width: 0; }
+.command-drawer:has(.audit-review-workbench) { width: min(1240px, 96vw); max-width: 96vw; }
+.command-view-tabs, .audit-review-tabs, .audit-origin-filter, .audit-review-marks, .audit-review-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.command-view-tabs { margin: 0 0 18px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.command-view-tabs button, .audit-review-workbench button, .audit-origin-filter button, .audit-review-home-button {
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; min-height: 36px;
+  background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; font-weight: 550; line-height: 1.5; cursor: pointer;
+}
+.command-view-tabs button[aria-pressed="true"], .audit-review-workbench button[aria-pressed="true"], .audit-origin-filter button[aria-pressed="true"] {
+  background: var(--appearance-tint); color: var(--appearance-accent); border-color: var(--appearance-accent);
+}
+.command-view-tabs button:focus-visible, .audit-review-workbench :is(button,input,select,[tabindex="0"]):focus-visible,
+.audit-origin-filter button:focus-visible, .audit-review-home-button:focus-visible { outline: 2px solid var(--appearance-accent); outline-offset: 3px; }
+.audit-review-workbench button:hover:not(:disabled), .command-view-tabs button:hover:not(:disabled), .audit-review-home-button:hover { border-color: var(--appearance-accent); }
+.audit-review-workbench button:disabled, .command-view-tabs button:disabled { opacity: .5; cursor: not-allowed; }
+.audit-review-heading { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin: 0 0 16px; }
+.audit-review-heading h3 { font-size: 21px; line-height: 1.4; margin: 0 0 4px; }
+.audit-review-heading p, .audit-review-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.audit-review-sources { margin: 0 0 16px; padding: 10px 0; border-block: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.7; }
+.audit-review-sources summary { cursor: pointer; }
+.audit-review-sources > div { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 10px; }
+.audit-review-sources small { display: block; }
+.audit-origin-filter { margin: 10px 0 14px; }
+.audit-origin-filter > span { color: var(--muted); font-size: 12px; }
+.audit-origin-filter small { font-variant-numeric: tabular-nums; margin-left: 4px; }
+.audit-review-toolbar { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+.audit-review-toolbar > label:first-child { flex: 1 1 220px; }
+.audit-review-toolbar input, .audit-review-toolbar select { background: var(--surface); border: 1px solid var(--line); border-radius: 9px; min-height: 40px; padding: 9px 12px; color: var(--ink); font: inherit; font-size: 14px; box-sizing: border-box; }
+.audit-review-toolbar input { width: 100%; }
+.audit-review-toolbar > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.audit-review-table-scroll { overflow: auto; width: 100%; border: 1px solid var(--line); border-radius: 12px; }
+.audit-review-workbench table { width: 100%; min-width: 960px; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.audit-review-workbench th, .audit-review-workbench td { padding: 12px 8px; border-bottom: 1px solid var(--line); text-align: center; vertical-align: middle; }
+.audit-review-workbench thead th { background: var(--surface); font-size: 12px; color: var(--muted); font-weight: 600; }
+.audit-review-workbench th:first-child { position: sticky; left: 0; z-index: 1; width: 210px; min-width: 185px; max-width: 235px; text-align: left; background: var(--surface); padding-left: 14px; border-right: 1px solid var(--line); }
+.audit-review-workbench th code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; color: var(--ink); }
+.audit-review-workbench th small { display: block; max-width: 205px; margin-top: 4px; font-weight: 400; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.audit-review-workbench tbody tr:hover > td:not([colspan]) { background: var(--appearance-tint); }
+.audit-review-cell { width: 100%; white-space: nowrap; min-width: 88px; }
+.audit-review-cell small { display: block; font-size: 10px; font-weight: 400; }
+.audit-review-cell.is-clear { color: var(--muted); border-color: transparent; background: transparent; }
+.audit-review-cell.has-findings { color: var(--appearance-accent); background: var(--appearance-tint); }
+.audit-review-cell.is-incomplete { border-style: dashed; }
+.audit-review-unknown { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.audit-review-detail-row > td { text-align: left; padding: 0; }
+.audit-review-detail { padding: 18px; background: var(--surface); }
+.audit-review-detail > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.audit-review-finding { display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+.audit-review-finding > div:first-child { flex: 1; min-width: 0; }
+.audit-review-finding p, .audit-review-change p { margin: 6px 0 0; line-height: 1.75; font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.audit-review-finding small { margin-left: 8px; color: var(--muted); }
+.audit-origin-badge { font-size: 11px; font-weight: 600; line-height: 1.5; padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; display: inline-block; }
+.audit-origin-badge.origin-amazon { border-style: double; }
+.audit-origin-badge.origin-unread { border-style: dashed; }
+.audit-review-marks { flex-shrink: 0; }
+.audit-review-changes { display: grid; gap: 10px; }
+.audit-review-change { display: grid; grid-template-columns: 118px minmax(0,1fr); gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+.audit-review-delta { font-size: 12px; line-height: 1.7; color: var(--muted); }
+.audit-review-delta.delta-new { font-weight: 650; color: var(--appearance-accent); }
+.audit-review-empty { text-align: center; padding: 40px 20px; border: 1px dashed var(--line); border-radius: 12px; }
+.audit-review-empty p { font-size: 13px; line-height: 1.7; color: var(--muted); }
+.audit-review-pagination { margin-top: 14px; justify-content: flex-end; }
+.audit-review-pagination span { margin-right: auto; color: var(--muted); font-size: 12px; }
+#home-audits .audit-review-home-button { margin-left: auto; background: transparent; }
+#home-audits:has(.audit-review-home-button) .home-section-heading .audit-suite-home-card { margin-left: 0; }
+:root[data-ui-mode="dark"] .audit-review-workbench, :root[data-ui-mode="dark"] .command-view-tabs,
+:root[data-ui-mode="dark"] .audit-origin-filter { --appearance-accent: var(--night-accent); --appearance-tint: var(--night-tint); }
+@media (max-width: 680px) {
+  .command-drawer:has(.audit-review-workbench) { width: 100%; max-width: 100%; }
+  .audit-review-heading { align-items: flex-start; }
+  .audit-review-heading h3 { font-size: 19px; }
+  .audit-review-toolbar > div { width: 100%; }
+  .audit-review-toolbar > div button { flex: 1; padding-inline: 8px; }
+  .audit-origin-filter { gap: 6px; }
+  .audit-origin-filter button { font-size: 12px; padding-inline: 8px; }
+  .audit-review-change { grid-template-columns: 1fr; gap: 4px; }
+}
+
+.audit-review-detail > header > div > small { display: block; margin-top: 5px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.audit-review-workbench th .audit-review-identity-warning { color: var(--appearance-accent); font-weight: 600; }
+@media (max-width: 680px) {
+  .audit-review-detail { width: calc(100vw - 58px); max-width: 100%; position: sticky; left: 0; box-sizing: border-box; padding: 14px; }
+  .audit-review-detail > header, .audit-review-finding { flex-wrap: wrap; }
+  .audit-review-finding > div:first-child { flex-basis: 100%; }
+}
+/* Isolate the eight-column matrix from the legacy five-column order table. */
+.audit-review-workbench thead th:not(:first-child) { width: calc((100% - 210px) / 7); }
+.audit-review-workbench th { text-transform: none; letter-spacing: normal; }
+.audit-review-workbench th small { font-size: 12px; }
+.audit-review-workbench .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
