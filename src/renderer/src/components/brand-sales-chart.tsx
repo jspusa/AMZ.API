@@ -98,7 +98,7 @@ export default function BrandSalesChart({
   let offset = 0;
 
   return (
-    <section className="brand-sales-card" aria-busy={loading} aria-labelledby={titleId}>
+    <section className="brand-sales-card" data-share-view={view} aria-busy={loading} aria-labelledby={titleId}>
       <header className="brand-sales-heading">
         <h3 id={titleId}>{view === "brand" ? "品牌營收占比" : "品類營收占比"}</h3>
         <div className="sales-trend-range" role="group" aria-label="營收占比分類方式">
@@ -147,6 +147,13 @@ export default function BrandSalesChart({
       {snapshot && (
         <>
           <div className="brand-sales-visual">
+              <div className="brand-sales-selection" aria-live="polite">
+                <small>{active ? active.label : "總計"}</small>
+                <strong>{formatMoney(active?.amount ?? total, snapshot.currencyCode)}</strong>
+                <span>{active
+                  ? `${active.percentage}% · ${active.unitCount.toLocaleString()} 件`
+                  : `${snapshot.summary.unitCount.toLocaleString()} 件`}</span>
+              </div>
             <div className="brand-sales-pie-stage">
               <div className="brand-sales-pie-wrap">
                 <svg className="brand-sales-pie" viewBox="0 0 120 120" role="img" aria-label={`${view === "brand" ? "品牌" : "品類"}營收占比 ${formatMoney(total, snapshot.currencyCode)}`}>
@@ -176,13 +183,7 @@ export default function BrandSalesChart({
                 })}
                 </svg>
               </div>
-              <div className="brand-sales-selection" aria-live="polite">
-                <small>{active ? active.label : "總計"}</small>
-                <strong>{formatMoney(active?.amount ?? total, snapshot.currencyCode)}</strong>
-                <span>{active
-                  ? `${active.percentage}% · ${active.unitCount.toLocaleString()} 件`
-                  : `${snapshot.summary.unitCount.toLocaleString()} 件`}</span>
-              </div>
+
             </div>
             {total === 0 && (
               <p className="brand-sales-zero" role="status">這個區間尚無營收。</p>
@@ -203,7 +204,7 @@ export default function BrandSalesChart({
                     onBlur={() => setActiveKey(null)}
                   >
                     <i style={{ backgroundColor: segment.color }} aria-hidden="true" />
-                    <span><strong>{segment.label}</strong><small><span className="brand-sales-row-amount">{formatMoney(segment.amount, snapshot.currencyCode)}</span> · {segment.skuCount} SKU · {segment.unitCount.toLocaleString()} 件</small></span>
+                    <span><strong>{segment.label}</strong><small><span className="brand-sales-row-amount">{formatMoney(segment.amount, snapshot.currencyCode)}</span><span className="brand-sales-row-volume">{segment.skuCount} SKU · {segment.unitCount.toLocaleString()} 件</span></small></span>
                     <b>{segment.percentage}%</b>
                   </button>
                 </div>

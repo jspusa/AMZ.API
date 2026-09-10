@@ -119,7 +119,7 @@ export function createDarkPalette(css) {
       const children = copy(node.nodes ?? []);
       return children.length ? [postcss.atRule({ name: node.name, params: node.params, nodes: children })] : [];
     }
-    if (node.type !== "rule" || node.selector.includes('data-ui-mode="light"')) return [];
+    if (node.type !== "rule" || (/data-ui-mode="(?:light|dark)"/u.test(node.selector))) return [];
     const declarations = [];
     for (const decl of node.nodes ?? []) {
       if (decl.type !== "decl") continue;

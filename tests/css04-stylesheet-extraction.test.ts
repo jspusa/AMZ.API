@@ -41,12 +41,14 @@ const CSS04_ORDERED_FILES = [
   "styles/usability-polish.css",
   "styles/audit-detail-reading.css",
   "styles/content-audit-focus.css",
-    "styles/appearance.css",
+  "styles/chart-compact.css",
+  "styles/appearance.css",
   "styles/dark-palette.generated.css",
+  "styles/dark-surfaces.css",
 ] as const;
 
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "fcc0e016c1fe1db6544888d86fca76eadc670eef82bc579e62ddfa50e9cfaa12";
+  "d9480ec92d373b12a391d03fa370bef724acba517fab97808a37b344a6b902e2";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
   "7963e2e9bd917df3d454dbbae5612203e3008679e674f46cfe8b172dcbd3ef86";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
@@ -133,8 +135,8 @@ describe("CSS04 final stylesheet extraction", () => {
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(28633);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(806115);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(28808);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(824697);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);

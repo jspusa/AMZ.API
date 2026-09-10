@@ -106,11 +106,10 @@ function formatMoney(money: Money): string {
   }
 }
 
-function formatAxisAmount(amount: number, currencyCode: string): string {
+function formatAxisAmount(amount: number): string {
   try {
     return new Intl.NumberFormat("zh-TW", {
-      style: "currency",
-      currency: currencyCode,
+      style: "decimal",
       notation: "compact",
       maximumFractionDigits: 1,
     }).format(amount);
@@ -282,14 +281,16 @@ export function nearestTrendPointIndex(
   boundsLeft: number,
   boundsWidth: number,
   pointCount: number,
+  viewWidth = WIDTH,
+  viewLeft = PLOT.left,
 ): number | null {
-  if (!Number.isFinite(clientX) || !Number.isFinite(boundsLeft) || boundsWidth <= 0 || pointCount <= 0) {
+  if (!Number.isFinite(clientX) || !Number.isFinite(boundsLeft) || !Number.isFinite(boundsWidth) || boundsWidth <= 0 || !Number.isFinite(pointCount) || pointCount <= 0 || !Number.isFinite(viewWidth) || !Number.isFinite(viewLeft) || viewLeft < 0 || viewWidth <= viewLeft + PLOT.right) {
     return null;
   }
   if (pointCount === 1) return 0;
-  const viewX = ((clientX - boundsLeft) / boundsWidth) * WIDTH;
-  const plotWidth = WIDTH - PLOT.left - PLOT.right;
-  const ratio = Math.min(1, Math.max(0, (viewX - PLOT.left) / plotWidth));
+  const viewX = ((clientX - boundsLeft) / boundsWidth) * viewWidth;
+  const plotWidth = viewWidth - viewLeft - PLOT.right;
+  const ratio = Math.min(1, Math.max(0, (viewX - viewLeft) / plotWidth));
   return Math.round(ratio * (pointCount - 1));
 }
 
@@ -362,6 +363,26 @@ export default function SalesTrendChart({
   const rollTimeoutRef = useRef<number | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [skaterEnabled, setSkaterEnabled] = useState(false);
+  // Measure the plot itself: compact height must not shrink labels or break
+  // pointer/keyboard coordinates when the desktop window is narrow.
+  const [chartWidth, setChartWidth] = useState(WIDTH);
+  const plotLeft = 88;
+  const chartHeight = skaterEnabled ? HEIGHT : 170;
+  const plotTop = skaterEnabled ? PLOT.top : 38;
+  useEffect(() => {
+    const plot = plotRef.current;
+    if (!plot) return;
+    const update = () => {
+      const width = plot.getBoundingClientRect().width;
+      if (width > 0) setChartWidth(Math.max(220, Math.round(width)));
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(plot);
+    return () => observer.disconnect();
+  }, [Boolean(snapshot), Boolean(error)]);
+
   const [skaterIndex, setSkaterIndex] = useState(0);
   const [skaterJumping, setSkaterJumping] = useState(false);
   const [skaterCrouching, setSkaterCrouching] = useState(false);
@@ -450,20 +471,20 @@ export default function SalesTrendChart({
     ...alignedComparison.map((point) => point?.totalSales.amount ?? 0),
   );
   const scaleMax = maxAmount > 0 ? maxAmount : 1;
-  const plotWidth = WIDTH - PLOT.left - PLOT.right;
-  const plotHeight = HEIGHT - PLOT.top - PLOT.bottom;
-  const baseline = PLOT.top + plotHeight;
+  const plotWidth = chartWidth - plotLeft - PLOT.right;
+  const plotHeight = chartHeight - plotTop - PLOT.bottom;
+  const baseline = plotTop + plotHeight;
   const coordinates: Coordinate[] = points.map((point, index) => {
     const comparisonPoint = alignedComparison[index];
     return {
       point,
       comparisonPoint,
       x:
-        PLOT.left +
+        plotLeft +
         (points.length <= 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth),
-      y: PLOT.top + plotHeight - (point.totalSales.amount / scaleMax) * plotHeight,
+      y: plotTop + plotHeight - (point.totalSales.amount / scaleMax) * plotHeight,
       comparisonY: comparisonPoint
-        ? PLOT.top + plotHeight - (comparisonPoint.totalSales.amount / scaleMax) * plotHeight
+        ? plotTop + plotHeight - (comparisonPoint.totalSales.amount / scaleMax) * plotHeight
         : null,
     };
   });
@@ -478,7 +499,7 @@ export default function SalesTrendChart({
         2,
       )} L${coordinates[0].x.toFixed(2)},${baseline.toFixed(2)} Z`
     : "";
-  const labelEvery = Math.max(1, Math.ceil(Math.max(1, points.length - 1) / 7));
+  const labelEvery = Math.max(1, Math.ceil(Math.max(1, points.length - 1) / Math.max(2, Math.min(7, Math.floor(plotWidth / 64)))));
   const yTicks = [0, 0.25, 0.5, 0.75, 1];
   const allZero = Boolean(points.length) && maxAmount === 0;
   const active = activeIndex === null ? null : coordinates[activeIndex] ?? null;
@@ -510,7 +531,7 @@ export default function SalesTrendChart({
     keyboardNavigationRef.current = false;
     const bounds = svgRef.current?.getBoundingClientRect();
     if (!bounds) return;
-    setActiveIndex(nearestTrendPointIndex(event.clientX, bounds.left, bounds.width, points.length));
+    setActiveIndex(nearestTrendPointIndex(event.clientX, bounds.left, bounds.width, points.length, chartWidth, plotLeft));
   };
 
   const handleChartKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
@@ -637,12 +658,12 @@ export default function SalesTrendChart({
     const plotWidth = plot.clientWidth;
     if (plotWidth <= 0 || scrollContainer.clientWidth <= 0) return;
     const pointViewX =
-      PLOT.left +
+      plotLeft +
       (points.length <= 1
-        ? (WIDTH - PLOT.left - PLOT.right) / 2
+        ? (chartWidth - plotLeft - PLOT.right) / 2
         : (activeIndex / (points.length - 1)) *
-          (WIDTH - PLOT.left - PLOT.right));
-    const pointLeft = (pointViewX / WIDTH) * plotWidth;
+          (chartWidth - plotLeft - PLOT.right));
+    const pointLeft = (pointViewX / chartWidth) * plotWidth;
     const inset = Math.min(48, scrollContainer.clientWidth / 4);
     const visibleLeft = scrollContainer.scrollLeft;
     const visibleRight = visibleLeft + scrollContainer.clientWidth;
@@ -658,7 +679,7 @@ export default function SalesTrendChart({
     if (Math.abs(nextLeft - visibleLeft) > 1) {
       scrollContainer.scrollTo({ left: nextLeft, behavior: "auto" });
     }
-  }, [activeIndex, points.length]);
+  }, [activeIndex, points.length, chartWidth]);
 
   const applyCustomRange = () => {
     setCustomTouched(true);
@@ -675,18 +696,18 @@ export default function SalesTrendChart({
 
   const tooltipPlacement = active
     ? {
-        left: `${(active.x / WIDTH) * 100}%`,
+        left: `${(active.x / chartWidth) * 100}%`,
         top: `${((Math.min(active.y, active.comparisonY ?? active.y) < 88
           ? Math.max(active.y, active.comparisonY ?? active.y) + 12
           : Math.min(active.y, active.comparisonY ?? active.y) - 10) /
-          HEIGHT) *
+          chartHeight) *
           100}%`,
       }
     : undefined;
   const tooltipClasses = active
     ? [
         "sales-trend-tooltip",
-        active.x < WIDTH * 0.22 ? "is-left" : active.x > WIDTH * 0.78 ? "is-right" : "",
+        active.x < chartWidth * 0.22 ? "is-left" : active.x > chartWidth * 0.78 ? "is-right" : "",
         Math.min(active.y, active.comparisonY ?? active.y) < 88 ? "is-below" : "",
       ]
         .filter(Boolean)
@@ -920,7 +941,7 @@ export default function SalesTrendChart({
             <div ref={plotRef} className="sales-trend-plot">
               <svg
                 ref={svgRef}
-                viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+                viewBox={`0 0 ${chartWidth} ${chartHeight}`}
                 role="img"
                 tabIndex={0}
                 aria-labelledby={titleId}
@@ -955,13 +976,14 @@ export default function SalesTrendChart({
                 <stop offset="100%" stopColor="#ff9900" stopOpacity="0.015" />
               </linearGradient>
             </defs>
+            <text className="sales-trend-axis-currency" x={plotLeft - 10} y={12} textAnchor="end">{currencyCode}</text>
             {yTicks.map((tick) => {
-              const y = PLOT.top + plotHeight - tick * plotHeight;
+              const y = plotTop + plotHeight - tick * plotHeight;
               return (
                 <g key={tick} className="sales-trend-gridline">
-                  <line x1={PLOT.left} x2={WIDTH - PLOT.right} y1={y} y2={y} />
-                  <text x={PLOT.left - 10} y={y + 3} textAnchor="end">
-                    {formatAxisAmount(scaleMax * tick, currencyCode)}
+                  <line x1={plotLeft} x2={chartWidth - PLOT.right} y1={y} y2={y} />
+                  <text x={plotLeft - 10} y={y + 3} textAnchor="end">
+                    {formatAxisAmount(scaleMax * tick)}
                   </text>
                 </g>
               );
@@ -977,7 +999,7 @@ export default function SalesTrendChart({
                 className="sales-trend-crosshair"
                 x1={active.x}
                 x2={active.x}
-                y1={PLOT.top}
+                y1={plotTop}
                 y2={baseline}
               />
             )}
@@ -998,7 +1020,7 @@ export default function SalesTrendChart({
                   />
                 )}
                 {(index % labelEvery === 0 || index === coordinates.length - 1) && (
-                  <text className="sales-trend-x-label" x={x} y={HEIGHT - 15} textAnchor="middle">
+                  <text className="sales-trend-x-label" x={x} y={chartHeight - 15} textAnchor={index === 0 ? "start" : index === coordinates.length - 1 ? "end" : "middle"}>
                     {shortDate(point.date)}
                   </text>
                 )}
@@ -1006,8 +1028,8 @@ export default function SalesTrendChart({
             ))}
                 <rect
                   className="sales-trend-hit-overlay"
-                  x={PLOT.left}
-                  y={PLOT.top}
+                  x={plotLeft}
+                  y={plotTop}
                   width={plotWidth}
                   height={plotHeight}
                 />
@@ -1030,8 +1052,8 @@ export default function SalesTrendChart({
                 <span
                   className={`sales-skater ${skaterJumping ? "is-jumping" : ""} ${skaterCrouching ? "is-crouching" : ""} ${skaterMotion !== "idle" ? `is-rolling is-${skaterMotion}` : ""}`}
                   style={{
-                    left: `${(skaterCoordinate.x / WIDTH) * 100}%`,
-                    top: `${(skaterCoordinate.y / HEIGHT) * 100}%`,
+                    left: `${(skaterCoordinate.x / chartWidth) * 100}%`,
+                    top: `${(skaterCoordinate.y / chartHeight) * 100}%`,
                   }}
                   aria-hidden="true"
                 >
