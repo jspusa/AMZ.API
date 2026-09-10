@@ -1,0 +1,75 @@
+name: Sweet pink and content UI verification
+on:
+  push:
+    branches: [fix/sweet-pink-content-audit]
+    paths: [.sweet-ui.patch, .github/workflows/sweet-ui-preview.yml]
+permissions:
+  contents: write
+concurrency:
+  group: sweet-ui-preview
+  cancel-in-progress: true
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Apply reviewed UI patch
+        if: hashFiles('.sweet-ui.patch') != ''
+        run: git apply --check .sweet-ui.patch && git apply --index .sweet-ui.patch && git diff --cached --check
+      - run: npm ci --ignore-scripts
+      - name: Archive exact source and locked review dependencies
+        run: |
+          mkdir -p ui-evidence
+          git archive HEAD | gzip > ui-evidence/source.tar.gz
+          tar -czf ui-evidence/deps.tar.gz node_modules
+          cp "$(command -v node)" ui-evidence/node
+          git rev-parse HEAD > ui-evidence/source-sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweet-ui-workbench
+          path: ui-evidence
+          retention-days: 1
+      - name: Production dependency audit
+        if: hashFiles('.sweet-ui.patch') != ''
+        run: npm audit --omit=dev > ui-evidence/audit.txt
+      - name: Typecheck, tests and production build
+        if: hashFiles('.sweet-ui.patch') != ''
+        run: npm run check > ui-evidence/check.txt 2>&1
+      - name: Isolated production browser verification
+        if: hashFiles('.sweet-ui.patch') != ''
+        run: |
+          npm install --prefix /tmp/ui-browser --no-save --ignore-scripts playwright@1.55.1
+          APPEARANCE_PLAYWRIGHT=/tmp/ui-browser/node_modules/playwright/index.mjs node scripts/visual-qa/appearance-check.mjs > ui-evidence/browser.txt 2>&1
+      - name: Store verified blobs without changing branch refs
+        if: hashFiles('.sweet-ui.patch') != ''
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const cp = require('child_process');
+            const paths = cp.execFileSync('git', ['diff','--cached','--name-only','-z'], {encoding:'utf8'}).split('\0').filter(Boolean);
+            const entries = [];
+            for (const path of paths) {
+              if (!/^(src\/renderer\/|tests\/|scripts\/|docs\/)/.test(path)) throw new Error('Unexpected patch path: '+path);
+              const content = fs.readFileSync(path);
+              const result = await github.rest.git.createBlob({...context.repo, content:content.toString('base64'), encoding:'base64'});
+              entries.push({path,mode:'100644',type:'blob',sha:result.data.sha});
+            }
+            fs.writeFileSync('ui-evidence/tree.json', JSON.stringify({verifiedSource:context.sha, entries},null,2));
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('.sweet-ui.patch') != ''
+        with:
+          name: sweet-ui-verification
+          path: |
+            ui-evidence/*.txt
+            ui-evidence/tree.json
+            out/renderer
+            appearance-evidence
+          retention-days: 1
