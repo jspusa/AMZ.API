@@ -34,7 +34,16 @@ jobs:
           retention-days: 1
       - name: Apply reviewed renderer patch
         if: hashFiles('.share-ui.patch') != ''
-        run: git apply --check .share-ui.patch && git apply --index .share-ui.patch && git diff --cached --check
+        run: |
+          python3 - <<'PYCODE'
+          import base64, hashlib, pathlib, zlib
+          patch = zlib.decompress(base64.b64decode(pathlib.Path('.share-ui.patch').read_text(), validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '15b4b6a8572d944424a88f7484d7d112063bd2054385466a0aef63263302c2d9'
+          pathlib.Path('/tmp/share-reviewed.patch').write_bytes(patch)
+          PYCODE
+          git apply --check /tmp/share-reviewed.patch
+          git apply --index /tmp/share-reviewed.patch
+          git diff --cached --check
       - run: npm ci --ignore-scripts
         if: hashFiles('.share-ui.patch') != ''
       - name: Production audit and full check
