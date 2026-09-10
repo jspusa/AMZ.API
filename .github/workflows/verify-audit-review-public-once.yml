@@ -1,0 +1,79 @@
+name: Verify published audit review bytes
+on:
+  push:
+    branches: [verify/audit-review-public-c70c1314]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify-public:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check exact successful Pages source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          url = 'https://api.github.com/repos/jspusa/AMZ.API/actions/runs/34506002613'
+          request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'User-Agent': 'AMZ.API-release-verifier'})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              run = json.load(response)
+          assert run['head_sha'] == 'c70c1314850f42d6d1eee6649a7411abb9d7186c'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert run['path'] == '.github/workflows/pages.yml'
+          print('Exact authorized Pages deployment is successful.')
+          PY
+      - name: Download the exact published artifact without rebuilding
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          path: published
+          run-id: 34506002613
+          github-token: ${{ github.token }}
+      - name: Compare ordinary public URL and all JavaScript and CSS bytes
+        run: |
+          python3 - <<'PY'
+          import datetime, hashlib, json, pathlib, tarfile, urllib.request
+          base = 'https://jspusa.github.io/AMZ.API/'
+          sha = 'c70c1314850f42d6d1eee6649a7411abb9d7186c'
+          expected = {}
+          with tarfile.open('published/artifact.tar', 'r:') as archive:
+              for member in archive.getmembers():
+                  name = member.name
+                  while name.startswith('./'):
+                      name = name[2:]
+                  if not member.isfile():
+                      continue
+                  if name == 'index.html' or (name.startswith('assets/') and name.endswith(('.js', '.css'))):
+                      assert '..' not in pathlib.PurePosixPath(name).parts
+                      expected[name] = archive.extractfile(member).read()
+          assert 'index.html' in expected
+          assert len([name for name in expected if name.startswith('assets/')]) == 9
+          entry = [name for name, data in expected.items() if name.endswith('.js') and sha.encode() in data]
+          assert len(entry) == 1, 'Published bundle lacks exact release identity'
+          results = []
+          for name, data in sorted(expected.items()):
+              url = base if name == 'index.html' else base + name
+              request = urllib.request.Request(url, headers={'User-Agent': 'AMZ.API-release-verifier'})
+              with urllib.request.urlopen(request, timeout=45) as response:
+                  actual = response.read(10000000)
+                  assert response.status == 200
+                  assert response.geturl() == url
+                  record = {'path': name, 'url': url, 'bytes': len(actual), 'expectedSha256': hashlib.sha256(data).hexdigest(), 'publicSha256': hashlib.sha256(actual).hexdigest(), 'age': response.headers.get('Age'), 'etag': response.headers.get('ETag'), 'matched': actual == data}
+              results.append(record)
+              print(name + ': ' + ('MATCH' if record['matched'] else 'MISMATCH'))
+          proof = {'verified': all(item['matched'] for item in results), 'releaseSha': sha, 'webVersion': sha[:8], 'pagesRunId': 34506002613, 'pagesArtifactId': 10163893800, 'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'ordinaryUrlWithoutQueryOverride': True, 'entry': entry[0], 'assets': results, 'limits': 'Read-only public files only; no Amazon account, credentials, native approval or installed App tested.'}
+          pathlib.Path('public-verification.json').write_text(json.dumps(proof, ensure_ascii=False, indent=2))
+          assert proof['verified'], 'Public bytes differ from the exact released artifact'
+          print('VERIFIED web version ' + sha[:8] + ': index and all 9 JS/CSS assets match.')
+          PY
+      - name: Preserve public-byte evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-review-public-proof-c70c1314
+          path: public-verification.json
+          if-no-files-found: error
+          retention-days: 5
