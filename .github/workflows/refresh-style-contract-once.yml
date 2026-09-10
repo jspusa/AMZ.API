@@ -1,0 +1,60 @@
+name: Refresh stylesheet contract once
+
+on:
+  push:
+    branches:
+      - fix/share-readability-audit-hover
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix/share-readability-audit-hover
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Regenerate authored dark palette
+        run: npm run generate:appearance
+      - name: Derive current stylesheet fingerprint
+        shell: bash
+        run: |
+          set +e
+          OUTPUT=$(npx vitest run tests/css01-stylesheet-composition.test.ts 2>&1)
+          STATUS=$?
+          set -e
+          printf '%s\n' "$OUTPUT"
+          if [ "$STATUS" -eq 0 ]; then
+            echo "Focused stylesheet contract is already current."
+            exit 0
+          fi
+          HASH=$(printf '%s\n' "$OUTPUT" | grep -Eo 'received [a-f0-9]{64}' | head -n 1 | awk '{print $2}')
+          if ! printf '%s' "$HASH" | grep -Eq '^[a-f0-9]{64}$'; then
+            echo "Could not derive stylesheet fingerprint from focused contract failure." >&2
+            exit 1
+          fi
+          HASH="$HASH" node -e 'const fs=require("node:fs"); const p="scripts/renderer-stylesheet-contract.mjs"; let s=fs.readFileSync(p,"utf8"); const h=process.env.HASH; s=s.replace(/fingerprint:\s*\n\s*"[a-f0-9]{64}"/u, `fingerprint:\n    "${h}"`); fs.writeFileSync(p,s); console.log(`Pinned ${h}`);'
+      - name: Validate refreshed contract
+        run: npm run check
+      - name: Commit generated contract
+        shell: bash
+        run: |
+          if git diff --quiet -- src/renderer/src/styles/dark-palette.generated.css scripts/renderer-stylesheet-contract.mjs; then
+            echo "No generated contract changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/renderer/src/styles/dark-palette.generated.css scripts/renderer-stylesheet-contract.mjs
+          git commit -m "chore: refresh generated stylesheet contract"
+          git push origin HEAD:fix/share-readability-audit-hover
