@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   parseUnboundVariationAuditSnapshot,
@@ -122,6 +125,9 @@ export default function UnboundVariationAuditPanel({
   const [snapshot, setSnapshot] = useState<UnboundVariationAuditSnapshot | null>(
     initialCache?.snapshot ?? null,
   );
+  const viewScope = auditViewScope("variation", marketplaceId, mode, snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const positionRef = useAuditPosition(viewScope, Boolean(snapshot) && state === "done");
   const [query, setQuery] = useState(initialCache?.query ?? "");
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(initialJobError);
@@ -162,21 +168,21 @@ export default function UnboundVariationAuditPanel({
   const normalizedQuery = query.trim().toLocaleLowerCase("en-US");
   const visibleRows = useMemo(
     () => snapshot?.rows.filter((row) =>
-      !normalizedQuery || [row.sellerSku, row.asin, row.title, row.productType]
+      skuBatch.matches(row.sellerSku) && (!normalizedQuery || [row.sellerSku, row.asin, row.title, row.productType]
         .join(" ")
         .toLocaleLowerCase("en-US")
-        .includes(normalizedQuery),
+        .includes(normalizedQuery)),
     ) ?? [],
-    [normalizedQuery, snapshot],
+    [normalizedQuery, snapshot, skuBatch.skus],
   );
   const visibleIncompleteRows = useMemo(
     () => snapshot?.incompleteRows.filter((row) =>
-      !normalizedQuery || [row.sellerSku, row.asin, row.title, row.code, row.message]
+      skuBatch.matches(row.sellerSku) && (!normalizedQuery || [row.sellerSku, row.asin, row.title, row.code, row.message]
         .join(" ")
         .toLocaleLowerCase("en-US")
-        .includes(normalizedQuery),
+        .includes(normalizedQuery)),
     ) ?? [],
-    [normalizedQuery, snapshot],
+    [normalizedQuery, snapshot, skuBatch.skus],
   );
 
   const loadAudit = async (
@@ -353,7 +359,7 @@ export default function UnboundVariationAuditPanel({
         : "";
 
   return (
-    <section className="image-audit-panel" aria-label="全站 FBA 未綁變體健檢">
+    <section ref={positionRef} className="image-audit-panel" aria-label="全站 FBA 未綁變體健檢">
       <AuditDetailsDisclosure summary="relationship 判定、未完成隔離與唯讀範圍">
         <p className="price-intro">
           一次掃描所選站點全部可由報表證明為 FBA 的 SKU；只有 Amazon relationships 明確完整且沒有 parent，才列為未綁變體。
@@ -384,6 +390,9 @@ export default function UnboundVariationAuditPanel({
       )}
       {state === "done" && snapshot && (
         <>
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus}
+            availableSkus={[...snapshot.rows, ...snapshot.incompleteRows].map(row => row.sellerSku)}
+            disabled={exporting} onChange={skuBatch.setSkus} />
           <div className="image-audit-summary" aria-label="未綁變體健檢摘要">
             <article><span>全部 FBA SKU</span><strong>{snapshot.summary.totalFbaListings.toLocaleString()}</strong></article>
             <article><span>確定未綁</span><strong>{snapshot.summary.unbound.toLocaleString()}</strong></article>

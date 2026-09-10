@@ -1,5 +1,7 @@
 "use client";
 
+import AuditItemNavigation from "./audit-item-navigation";
+
 import { useRef, useState, type FormEvent } from "react";
 import {
   businessPricingEditorProposal,
@@ -192,9 +194,13 @@ export default function BusinessPricingEditor({
   onWriteStatusChange,
   onError,
   onBusyChange,
+  navigationSkus = [],
+  onNavigate,
 }: Readonly<{
   listing: BusinessPricingListingSnapshot;
   onClose: () => void;
+  navigationSkus?: readonly string[];
+  onNavigate?: (sku: string) => void;
   onVerified: (result: BusinessPriceUpdate) => void;
   onCanonicalListingVerified?: (
     listing: BusinessPricingListingSnapshot,
@@ -240,6 +246,9 @@ export default function BusinessPricingEditor({
       percent: String(tier.percent),
     })) ?? [],
   );
+  const initialDraftRef = useRef({ newPrice, editorMode, tiers: JSON.stringify(tierDrafts) });
+  const dirtyNavigationDraft = newPrice !== initialDraftRef.current.newPrice || editorMode !== initialDraftRef.current.editorMode ||
+    JSON.stringify(tierDrafts) !== initialDraftRef.current.tiers;
   const [submittedPreview, setSubmittedPreview] =
     useState<SubmittedBusinessPricePreview | null>(null);
   const [result, setResult] = useState<BusinessPriceUpdate | null>(null);
@@ -480,6 +489,14 @@ export default function BusinessPricingEditor({
       className="business-pricing-editor"
       onSubmit={(event) => void previewPrice(event)}
     >
+      {onNavigate && <AuditItemNavigation skus={navigationSkus} currentSku={listing.sellerSku}
+        disabled={loading || refreshingStatus || writeInFlight}
+        onSelect={sku => {
+          if (loading || refreshingStatus || writeInFlight || !navigationSkus.includes(sku)) return;
+          if (!result && dirtyNavigationDraft && !window.confirm("尚有未送出的 B2B 價格或階梯變更，確定捨棄並查看下一個商品嗎？")) return;
+          revisionRef.current += 1;
+          onNavigate(sku);
+        }} />}
       <div className="business-pricing-editor-heading">
         <div>
           <span>安全調整 B2B PRICE</span>

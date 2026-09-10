@@ -1,5 +1,7 @@
 "use client";
 
+import UiBuildInformation from "./ui-build-information";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import AppearancePreference from "./appearance-preference";
@@ -92,12 +94,14 @@ export default function SystemHealthControl({
   autoSync = true,
   auditPreference = null,
   disabled = false,
+  reloadBlockedReason = null,
   onAutoSyncChange,
 }: {
   marketplaceId: string;
   autoSync?: boolean;
   auditPreference?: AuditPreference;
   disabled?: boolean;
+  reloadBlockedReason?: string | null;
   onAutoSyncChange?: (enabled: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -324,6 +328,7 @@ export default function SystemHealthControl({
             </section>
             <details className="health-advanced-details settings-about">
               <summary><span><strong>關於與功能建議</strong><small>App 版本、能力說明與下次功能靈感</small></span><i aria-hidden="true">›</i></summary>
+            <UiBuildInformation blockedReason={disabled ? "目前工作進行中，完成後才能重新載入。" : reloadBlockedReason} />
             <div className="system-recommendation-grid">
               <section className="api-version-recommendation" aria-labelledby="api-version-recommendation-title">
                 <span aria-hidden="true">API</span>

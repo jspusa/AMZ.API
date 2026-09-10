@@ -102,6 +102,7 @@ describe("CSS01 renderer stylesheet composition", () => {
         '@import "./audit-detail-reading.css";',
         '@import "./content-audit-focus.css";',
         '@import "./chart-compact.css";',
+        '@import "./workflow-efficiency.css";',
         '@import "./appearance.css";',
         '@import "./dark-palette.generated.css";',
         '@import "./dark-surfaces.css";',
@@ -165,8 +166,8 @@ describe("CSS01 renderer stylesheet composition", () => {
         relative(rootDirectory, file).split(sep).join("/"),
       ),
     ).toEqual(RENDERER_STYLESHEET_CONTRACT.expectedFiles);
-    expect(composition.canonicalJson).toHaveLength(1146406);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(832560);
+    expect(composition.canonicalJson).toHaveLength(1157132);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(840363);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
@@ -195,8 +196,8 @@ describe("CSS01 renderer stylesheet composition", () => {
     });
 
     expect(composition.css).toContain("\r\n");
-    expect(Buffer.byteLength(composition.css)).toBe(861482);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(832560);
+    expect(Buffer.byteLength(composition.css)).toBe(869434);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(840363);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );

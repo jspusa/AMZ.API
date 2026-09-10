@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition, useAuditMemoryState } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import { useEffect, useRef, useState } from "react";
 import { downloadApiWorkbookResponse } from "../api-workbook-download";
 import { auditExportFilename } from "../audit-export-filename";
@@ -901,7 +904,10 @@ export default function AgedInventoryPanel({
   const [status, setStatus] = useState("尚未同步");
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [view, setView] = useState<"aged" | "excess" | "all">("aged");
+  const viewScope = auditViewScope("agedInventory", marketplaceId, mode, snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const viewRef = useAuditPosition(viewScope, Boolean(snapshot));
+  const [view, setView] = useAuditMemoryState<"aged" | "excess" | "all">(viewScope, "view", "aged");
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const observerJobIdRef = useRef<string | null>(null);
@@ -1082,7 +1088,7 @@ export default function AgedInventoryPanel({
   const agedOver180Rows = snapshot?.rows.filter(
     (row) => row.agedOver180 > 0,
   ) ?? [];
-  const visibleRows = snapshot
+  const viewRows = snapshot
     ? view === "aged"
       ? agedOver180Rows
       : view === "excess"
@@ -1090,8 +1096,10 @@ export default function AgedInventoryPanel({
         : snapshot.rows
     : [];
 
+  const visibleRows = viewRows.filter(row => skuBatch.matches(row.sellerSku));
+
   return (
-    <section className="aged-inventory-panel" aria-busy={loading}>
+    <section ref={viewRef} className="aged-inventory-panel" aria-busy={loading}>
       <header>
         <div>
           <p className="eyebrow">FBA INVENTORY HEALTH</p>
@@ -1139,6 +1147,7 @@ export default function AgedInventoryPanel({
             currencyCode={snapshot.summary.currencyCode}
             moneyPrecision={snapshot.moneyPrecision}
           />
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={snapshot.rows.map(row => row.sellerSku)} disabled={loading || exporting} onChange={skuBatch.setSkus} />
           <div className="aged-inventory-view-switch" role="group" aria-label="FBA 庫存健檢顯示範圍">
             <button type="button" className={view === "aged" ? "active" : ""} onClick={() => setView("aged")}>
               已逾 180 天

@@ -1,5 +1,8 @@
 "use client";
 
+import { auditViewScope, useAuditPosition } from "../audit-view-session";
+import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
+
 import { useEffect, useRef, useState } from "react";
 import {
   marketplaceById,
@@ -70,6 +73,9 @@ export default function ReviewAuditPanel({
     : null;
   const [snapshot, setSnapshot] = useState<ReviewAuditSnapshotView | null>(initial);
   const [job, setJob] = useState<ReviewAuditJobView | null>(initialJob);
+  const viewScope = auditViewScope("review", marketplaceId, snapshot?.mode ?? "unavailable", snapshot?.fetchedAt);
+  const skuBatch = useAuditSkuBatch(viewScope);
+  const positionRef = useAuditPosition(viewScope, Boolean(snapshot));
   const [busy, setBusy] = useState<"scan" | "export" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -194,7 +200,7 @@ export default function ReviewAuditPanel({
     marketplace && SUPPORTED_MARKETPLACE_CODES.has(marketplace.code),
   );
   return (
-    <section className="review-audit-panel" aria-label="FBA 評論主題健檢">
+    <section ref={positionRef} className="review-audit-panel" aria-label="FBA 評論主題健檢">
       <header className="review-audit-hero">
         <div><p className="eyebrow">CUSTOMER FEEDBACK · NON-PARENT FBA ASIN</p><h3>評論健檢</h3></div>
         <span>{marketplaceShort}</span>
@@ -230,6 +236,9 @@ export default function ReviewAuditPanel({
       </div>
       {snapshot && (
         <>
+          <AuditSkuFilter scope={viewScope} skus={skuBatch.skus}
+            availableSkus={[...snapshot.rows.flatMap(row => row.sellerSkus), ...snapshot.relationshipIncompleteRows.map(row => row.sellerSku)]}
+            disabled={Boolean(busy)} onChange={skuBatch.setSkus} />
           <div className="review-audit-summary">
             <span><strong>{snapshot.summary.uniqueFbaNonParentAsins}</strong> 非 parent ASIN</span>
             <span><strong>{snapshot.summary.verifiedChildListings}</strong> child SKU</span>
@@ -242,18 +251,29 @@ export default function ReviewAuditPanel({
           {snapshot.relationshipIncompleteRows.length > 0 && (
             <div className="review-audit-progress" role="note">
               <strong>{snapshot.relationshipIncompleteRows.length} 個 SKU 關係證據未完成，未查詢評論主題</strong>
-              {snapshot.relationshipIncompleteRows.slice(0, 5).map((row) => (
+              {(skuBatch.skus.length ? snapshot.relationshipIncompleteRows.filter(row => skuBatch.matches(row.sellerSku)) : snapshot.relationshipIncompleteRows.slice(0, 5)).map((row) => (
                 <small key={row.sellerSku}>{row.sellerSku}{row.asin ? ` · ${row.asin}` : ""}：{row.message}</small>
               ))}
-              {snapshot.relationshipIncompleteRows.length > 5 && (
+              {!skuBatch.skus.length && snapshot.relationshipIncompleteRows.length > 5 && (
                 <small>其餘 {snapshot.relationshipIncompleteRows.length - 5} 列請匯出 Excel 查看。</small>
               )}
             </div>
           )}
-          <div className="review-audit-rankings">
+          {skuBatch.skus.length > 0 ? <div className="review-audit-batch-rows">
+            {snapshot.rows.filter(row => skuBatch.matches(row.sellerSkus)).map(row => <article key={row.asin}>
+              <h4>{row.title || row.asin}</h4><small>{row.sellerSkus.join(" · ")} · {row.asin}</small>
+              {row.status === "INCOMPLETE" && <p role="status">{row.incompleteReason?.message ?? "本次讀取未完成。"}</p>}
+              {row.status === "NO_TOPICS" && <p>Amazon 本次未提供評論主題。</p>}
+              {[["正向主題", row.positiveTopics], ["負向主題", row.negativeTopics]].map(([label, topics]) =>
+                <details key={String(label)}><summary>{String(label)}</summary>
+                  {(topics as typeof row.positiveTopics).map((topic, index) => <p key={index}><strong>{topic.topic}</strong> · 影響值 {topic.starRatingImpact}</p>)}
+                </details>)}
+            </article>)}
+          </div> : <div className="review-audit-rankings">
             <section aria-labelledby="review-positive-title"><h4 id="review-positive-title">前五：正向主題影響值</h4>{snapshot.topFivePositive.map((item, index) => <article key={item.asin}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.sellerSkus.join(" · ")} · {item.asin}</small><p>{item.topic}</p></div><b>{impactLabel(item.starRatingImpact, "positive")}</b></article>)}</section>
             <section aria-labelledby="review-negative-title"><h4 id="review-negative-title">後五：負向主題影響值</h4>{snapshot.bottomFiveNegative.map((item, index) => <article key={item.asin}><span>{index + 1}</span><div><strong>{item.title}</strong><small>{item.sellerSkus.join(" · ")} · {item.asin}</small><p>{item.topic}</p></div><b>{impactLabel(item.starRatingImpact, "negative")}</b></article>)}</section>
           </div>
+          }
           <p className="review-audit-notice">{snapshot.notice}</p>
         </>
       )}

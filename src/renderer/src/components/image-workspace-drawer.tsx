@@ -1,5 +1,7 @@
 "use client";
 
+import AuditItemNavigation from "./audit-item-navigation";
+
 /* eslint-disable @next/next/no-img-element -- arbitrary authenticated R2/CDN previews cannot use a fixed Next image host */
 
 import {
@@ -140,6 +142,7 @@ export default function ImageWorkspaceDrawer({
   const [skuInput, setSkuInput] = useState(initialSellerSku);
   const [tab, setTab] = useState<ImageWorkspaceTab>(initialTab);
   const [returnToAudit, setReturnToAudit] = useState(initialTab === "audit");
+  const [editorQueue, setEditorQueue] = useState<readonly string[]>([]);
   const [snapshot, setSnapshot] = useState<ImageSnapshot | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -211,6 +214,7 @@ export default function ImageWorkspaceDrawer({
   }, [actionLoading, closeDrawer, presentation]);
 
   const reset = (nextMarketplaceId: string) => {
+    setEditorQueue([]);
     setMarketplaceId(nextMarketplaceId);
     setSkuInput("");
     setSnapshot(null);
@@ -221,8 +225,8 @@ export default function ImageWorkspaceDrawer({
     setResult(null);
   };
 
-  const loadSku = useCallback(async (requestedSku: string) => {
-    const sellerSku = requestedSku.trim();
+  const loadSku = useCallback(async (requestedSku: string, exact = false) => {
+    const sellerSku = exact ? requestedSku : requestedSku.trim();
     if (!sellerSku) return setError("請輸入完整 Seller SKU。");
     setSkuInput(sellerSku);
     setLoading(true);
@@ -237,6 +241,9 @@ export default function ImageWorkspaceDrawer({
         throw new Error(problemMessage(payload as ApiProblem, "目前無法查詢商品圖片。"));
       }
       const next = payload as ImageSnapshot;
+      if (exact && (next.sellerSku !== sellerSku || next.marketplaceId !== marketplaceId)) {
+        throw new Error("商品識別與目前選取不一致，請返回健檢後重新開啟。");
+      }
       setSnapshot(next);
       setAssets(next.images.map((item) => emptyAsset(item.url)));
       setSelectedIndex(Math.max(0, next.images.findIndex((item) => item.capability.supported)));
@@ -273,11 +280,12 @@ export default function ImageWorkspaceDrawer({
     return true;
   };
 
-  const openAuditSku = (sellerSku: string) => {
+  const openAuditSku = (sellerSku: string, navigationSkus: readonly string[] = []) => {
+    setEditorQueue([...new Set(navigationSkus)]);
     setReturnToAudit(true);
     setTab("single");
     setPhase("edit");
-    void loadSku(sellerSku);
+    void loadSku(sellerSku, true);
   };
 
   useEffect(() => {
@@ -571,6 +579,17 @@ export default function ImageWorkspaceDrawer({
           </>
         )}
 
+        {tab === "single" && returnToAudit && <AuditItemNavigation skus={editorQueue} currentSku={snapshot?.sellerSku ?? skuInput}
+          disabled={loading || actionLoading || assets.some(asset => asset.uploading)}
+          onSelect={sku => {
+            if (loading || actionLoading || assets.some(asset => asset.uploading) || !editorQueue.includes(sku)) return;
+            if (phase !== "result" && (hasChanges || hasPrivateDraft || manualUrl.length > 0) &&
+              !window.confirm("尚有未送出的圖片變更，確定捨棄並查看下一個商品嗎？")) return;
+            setManualUrl("");
+            setSnapshot(null);
+            setAssets([]);
+            void loadSku(sku, true);
+          }} />}
         {phase === "edit" && tab === "single" && (
           <>
             {returnToAudit && (

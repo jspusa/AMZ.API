@@ -1,5 +1,7 @@
 "use client";
 
+import { AuditViewSessionProvider } from "../audit-view-session";
+
 import {
   lazy,
   useCallback,
@@ -2117,6 +2119,7 @@ export default function Dashboard({
   };
 
   return (
+    <AuditViewSessionProvider sessionKey={JSON.stringify([marketplaceId, currentStandaloneMode])}>
     <div className="commerce-os">
       <a
         className="workspace-skip-link"
@@ -2293,6 +2296,7 @@ export default function Dashboard({
                 autoSync={autoSync}
                 auditPreference={auditPreference}
                 disabled={homeReturnLocked}
+                reloadBlockedReason={homeReturnLocked || openTool !== null || Boolean(activeAuditWorkspace) || commandOpen || agedInventoryOpen || reportLibraryOpen || reviewAuditOpen ? "請先完成或取消編輯，返回首頁後再重新載入。" : null}
                 onAutoSyncChange={setAutoSyncPreference}
               />
             </div>
@@ -2771,5 +2775,6 @@ export default function Dashboard({
         document.body,
       )}
     </div>
+    </AuditViewSessionProvider>
   );
 }
