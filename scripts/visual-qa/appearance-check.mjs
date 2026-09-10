@@ -8,6 +8,8 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve, extname, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { verifySweetUi } from "./sweet-ui-check.mjs";
+
 import { verifyAuditDetails } from "./audit-detail-check.mjs";
 
 import { verifyUsability } from "./usability-check.mjs";
@@ -31,6 +33,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ headless: true, executablePath: process.env.APPEARANCE_CHROME || "/usr/bin/google-chrome", args: ["--no-sandbox"] });
 const results = [];
 try {
+  await verifySweetUi({ browser, origin, root, evidence });
   await verifyAuditDetails({ browser, origin, root, evidence });
   await verifyUsability({ browser, origin, root, evidence });
   for (const width of [320, 375, 768, 1024, 1440]) {

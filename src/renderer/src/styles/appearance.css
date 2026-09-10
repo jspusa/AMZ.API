@@ -2,8 +2,8 @@
 :root { --appearance-accent: #2b3a53; --appearance-tint: #edf3f7; }
 :root[data-ui-mode="light"] { color-scheme: only light; }
 :root[data-ui-accent="pink"] {
-  --appearance-accent: #a93468;
-  --appearance-tint: #fbeaf2;
+  --appearance-accent: #c92f63;
+  --appearance-tint: #fff0f5;
 }
 .appearance-preference {
   min-width: 0;
@@ -23,7 +23,7 @@
 .appearance-option-surface { display: flex; align-items: center; gap: 10px; min-height: 72px; padding: 12px; border: 1px solid #dce0e7; border-radius: 12px; background: #fff; }
 .appearance-swatch { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%); }
 .appearance-swatch.is-default { background: linear-gradient(135deg, #2b3a53 50%, #e7a342 50%); }
-.appearance-swatch.is-pink { background: linear-gradient(135deg, #b84679 50%, #f3b7d1 50%); }
+.appearance-swatch.is-pink { background: #ff9fbe; }
 .appearance-option-copy { min-width: 0; display: grid; gap: 4px; }
 .appearance-option-copy > strong { color: #2b3343; font-size: 12px; }
 .appearance-option-copy > small { color: #6d7584; font-size: 10px; line-height: 1.4; }
@@ -50,33 +50,49 @@
 }
 @media (prefers-reduced-motion: reduce) { .appearance-mode > input::before { transition: none; } }
 
-/* Rose is a brand accent, never a replacement for success/warning/error. */
+/* Cherry-blossom pink: solid blush surfaces, never purple gradients.
+   Evidence colors and the golden sales series retain their meanings. */
 :root[data-ui-accent="pink"] .commerce-os {
-  --canvas: #faf1f5; --surface: #fffbfd; --line: #ead5df;
-  background: radial-gradient(circle at 8% 0, #f6dce9, transparent 30rem), linear-gradient(180deg, #fffbfd, #faf1f5);
+  --canvas: #fff8fa; --surface: #ffffff; --line: #f3dce4;
+  background: #fff8fa;
 }
-:root[data-ui-accent="pink"] .workspace-header {
-  background: linear-gradient(112deg, #381d30, #6f304f 75%, #884364);
-  border-bottom-color: #9b5376;
-}
-:root[data-ui-accent="pink"] .workspace-header::after { background: linear-gradient(90deg, transparent, #e5a1c1, transparent); }
-:root[data-ui-accent="pink"] .workspace-context-shell { background: #fff9fc; border-color: #ead5df; }
-:root[data-ui-accent="pink"] .workspace-contextbar :is(.command-topbar-button, .global-marketplace select, .system-health-trigger) { border-color: #ead5df; color: #8c315b; background: #fff8fb; }
-:root[data-ui-accent="pink"] .workspace-contextbar .global-sku { border-color: #ead5df; background: #fffafd; }
-:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu-trigger.active { box-shadow: inset 0 -2px #efaaca; }
-:root[data-ui-accent="pink"] .workspace-primary-menu { border-color: #ead5df; }
-:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu > button:is(:hover, :focus-visible, .active) { background: #fbeaf2; }
-:root[data-ui-accent="pink"] .sales-trend .sales-trend-range button[aria-pressed="true"] { background: #fbeaf2; border-color: #dda1bc; color: #963361; }
-:root[data-ui-accent="pink"] .sales-trend-total > strong { color: #98335f; }
-:root[data-ui-accent="pink"] .operations-pulse { border-color: #e7cbd8; }
-:root[data-ui-accent="pink"] #home-audits > .health-audit-home-grid > .content-audit-home-card[data-audit-state="idle"] {
-  --audit-state-color: #a64b74; --audit-state-tint: #fceef4;
-}
-:root[data-ui-accent="pink"] #home-audits > .health-audit-home-grid > .content-audit-home-card::before { background: linear-gradient(90deg, transparent, #cf87a7, transparent); }
-:root[data-ui-accent="pink"] #home-audits .home-section-heading h2 { color: #703049; }
-:root[data-ui-accent="pink"] .low-frequency-audits { border-color: #e7cbd8; background: #f8eaf1; }
-:root[data-ui-accent="pink"] .operations-intelligence-disclosure { border-color: #e7cbd8; background: #f8eaf1; }
-:root[data-ui-accent="pink"] .operations-bulletin { --bulletin-brand: #98335f; border-color: #e7cbd8; background: #fff9fc; }
-:root[data-ui-accent="pink"] :is(.appearance-preference, .font-size-preference) { border-color: #ead5df; background: #fff9fc; }
-:root[data-ui-accent="pink"] .font-size-preference button[aria-checked="true"] { color: #963361; background: #fff7fb; }
-:root[data-ui-accent="pink"] .operations-bulletin > summary { background: linear-gradient(120deg, #fae5ee, #fff6fa); }
+:root[data-ui-accent="pink"] .workspace-header { background: #ffe5ed; border-bottom-color: #f3c8d6; box-shadow: 0 3px 18px #bd3c6210; }
+:root[data-ui-accent="pink"] .workspace-header::after { background: #ffc2d5; }
+:root[data-ui-accent="pink"] .workspace-header .os-brand { color: #8b2949; }
+:root[data-ui-accent="pink"] .workspace-header .os-brand-mark { color: #9d284f; background: #ffb9cf; border-color: #f99dbb; box-shadow: none; }
+:root[data-ui-accent="pink"] .workspace-header .os-brand-copy small { color: #98516a; }
+:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu-trigger { color: #88324d; }
+:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu-trigger > :is(span,i) { color: #a34262; }
+:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu-trigger:is(:hover,.active) { color: #942344; background: #ffd0df; }
+:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu-trigger.active { box-shadow: inset 0 -2px #ec608e; }
+:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu-trigger.active > span { color: #942344; }
+:root[data-ui-accent="pink"] .workspace-context-shell { background: #fffafb; border-color: #f3dce4; }
+:root[data-ui-accent="pink"] .workspace-contextbar :is(.command-topbar-button,.global-marketplace select,.system-health-trigger) { border-color: #f3dce4; color: #a12d53; background: #fff6f9; }
+:root[data-ui-accent="pink"] .workspace-contextbar .global-sku { border-color: #f3dce4; background: #fff; }
+:root[data-ui-accent="pink"] .workspace-contextbar .health-orb { color: #a12d53; background: #ffe5ed; }
+:root[data-ui-accent="pink"] .workspace-primary-menu { border-color: #f3dce4; }
+:root[data-ui-accent="pink"] .workspace-primary-nav .workspace-primary-menu > button:is(:hover,:focus-visible,.active) { background: #fff0f5; }
+:root[data-ui-accent="pink"] .sales-trend .sales-trend-range button[aria-pressed="true"] { background: #ffe5ed; border-color: #f3a5be; color: #b22f58; }
+:root[data-ui-accent="pink"] .sales-trend-total > strong { color: #b22f58; }
+:root[data-ui-accent="pink"] .operations-pulse { border-color: #f3dce4; }
+:root[data-ui-accent="pink"] #home-audits > .health-audit-home-grid > .content-audit-home-card[data-audit-state="idle"] { --audit-state-color: #bf3e67; --audit-state-tint: #fff0f5; }
+:root[data-ui-accent="pink"] #home-audits > .health-audit-home-grid > .content-audit-home-card::before { background: #ffbbd0; }
+:root[data-ui-accent="pink"] #home-audits .home-section-heading h2 { color: #88324d; }
+:root[data-ui-accent="pink"] :is(.low-frequency-audits,.operations-intelligence-disclosure) { border-color: #f3dce4; background: #fff0f5; }
+:root[data-ui-accent="pink"] .operations-bulletin { --bulletin-brand: #b22f58; border-color: #f3dce4; background: #fffafb; }
+:root[data-ui-accent="pink"] .operations-bulletin > summary { background: #fff0f5; }
+:root[data-ui-accent="pink"] :is(.appearance-preference,.font-size-preference) { border-color: #f3dce4; background: #fffafb; }
+:root[data-ui-accent="pink"] .font-size-preference button[aria-checked="true"] { color: #b22f58; background: #ffe5ed; }
+:root[data-ui-accent="pink"] [data-audit-reading="true"] :is(.sku-ops-tabs,.image-workspace-tabs,.ads-tabs) button.active { color: #b22f58; background: #ffe5ed; }
+:root[data-ui-accent="pink"] .audit-workspace-back { color: #b22f58; background: #fff0f5; border-color: #f3c8d6; }
+:root[data-ui-accent="pink"] .audit-workspace-header { background: #fff8fa; }
+:root[data-ui-accent="pink"] #home-audits .audit-suite-start { color: #a12d53; background: #ffe5ed; border-color: #f3a5be; }
+:root[data-ui-accent="pink"] .commerce-os :is(button,a,input,select,summary):focus-visible { outline-color: #c92f63; }
+
+/* Keep the pink header legible and remove inherited slate surface gradients. */
+:root[data-ui-accent="pink"] .workspace-header .workspace-connection-status.mode-badge { color: #5b3443; background: #fff7fa; border-color: #f1bace; }
+:root[data-ui-accent="pink"] .workspace-header .workspace-connection-status strong { color: #5b3443; }
+:root[data-ui-accent="pink"] .workspace-header .workspace-connection-status.live strong { color: #166534; }
+:root[data-ui-accent="pink"] :is(.operations-pulse,.operations-companion,.brand-sales-card,.operations-pulse .sales-trend) { background: #fff; }
+:root[data-ui-accent="pink"] :is(.operations-pulse,.operations-companion) { box-shadow: 0 8px 28px #b9436510; }
+:root[data-ui-accent="pink"] .brand-sales-card .sales-trend-range button[aria-pressed="true"] { color: #b22f58; background: #ffe5ed; border-color: #f3a5be; }

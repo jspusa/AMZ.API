@@ -1,0 +1,48 @@
+/* Result-first content audit. Display changes never unmount workbook state. */
+.content-workspace-context[data-content-tab="audit"] { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px; }
+:root [data-audit-reading="true"] .content-workspace-context[data-content-tab="audit"] .sku-ops-tabs { margin: 0; flex: 1 1 430px; max-width: 620px; background: #f6f7f9; box-shadow: none; }
+:root [data-audit-reading="true"] .content-workspace-context[data-content-tab="audit"] .ops-marketplace { display: flex; align-items: center; gap: 10px; margin: 0; flex: 0 1 auto; }
+.content-workspace-context[data-content-tab="audit"] .ops-marketplace > span { font-size: 12px; white-space: nowrap; }
+.content-workspace-context[data-content-tab="audit"] .ops-marketplace select { width: auto; max-width: 100%; }
+:root .content-audit-panel :is(.content-audit-excel-panel, .content-audit-roundtrip, .content-audit-excel-evidence)[hidden] { display: none; }
+.content-audit-commandbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 18px; }
+.content-audit-context { display: grid; min-width: 0; gap: 5px; }
+.content-audit-context > strong { font-size: 16px; font-weight: 650; color: #263246; }
+.content-audit-context > small { font-size: 12px; line-height: 1.6; color: #667085; overflow-wrap: anywhere; }
+.content-audit-command-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+:root [data-audit-reading="true"] .content-audit-command-actions > button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid #dfe3e9; border-radius: 10px; color: #43516a; background: #fff; font-size: 14px; font-weight: 600; box-shadow: none; }
+:root [data-audit-reading="true"] .content-audit-command-actions > button[aria-expanded="true"] { border-color: var(--appearance-accent); color: var(--appearance-accent); background: var(--appearance-tint); }
+:root [data-audit-reading="true"] .content-audit-command-actions > .content-audit-recheck { border-color: var(--appearance-accent); color: #fff; background: var(--appearance-accent); min-width: 136px; }
+.content-audit-recheck > span { font-size: 20px; line-height: 1; }
+.content-audit-command-actions > button:hover:not(:disabled) { filter: brightness(.97); }
+.content-audit-command-actions > button:disabled { opacity: .55; cursor: not-allowed; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 0 18px; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-summary > button { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 54px; padding: 12px 14px; border: 1px solid #e5e7eb; border-radius: 10px; background: #f9fafb; color: #526078; box-shadow: none; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-summary > button > span { font-size: 13px; line-height: 1.5; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-summary > button > strong { margin: 0; font-size: 20px; line-height: 1.3; font-weight: 650; color: inherit; font-variant-numeric: tabular-nums; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-summary > button[aria-pressed="true"] { background: var(--appearance-tint); border-color: var(--appearance-accent); color: var(--appearance-accent); box-shadow: inset 0 0 0 1px var(--appearance-accent); }
+.content-audit-list-tools { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; }
+:root [data-audit-reading="true"] .content-audit-list-tools .content-audit-controls { flex: 1 1 330px; margin: 0; }
+:root [data-audit-reading="true"] .content-audit-list-tools .content-audit-controls > label { width: 100%; }
+:root [data-audit-reading="true"] .content-audit-list-tools .content-audit-result-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0; padding: 0; }
+.content-audit-result-heading > strong { font-size: 13px; color: #667085; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-pagination { margin: 12px 0; }
+:root [data-audit-reading="true"] .content-audit-panel > .audit-details-disclosure { margin: 20px 0 0; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+.content-audit-excel-panel { padding: 16px; border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb; margin-bottom: 12px; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-export-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; gap: 12px; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-export-primary { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 6px; min-height: 80px; padding: 14px; margin: 0; background: #fff; color: #334155; border: 1px solid #dfe3e9; box-shadow: none; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-export-attention { background: var(--appearance-tint); border-color: var(--appearance-accent); }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-export-primary > :is(strong,small) { grid-column: auto; color: inherit; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-roundtrip { margin: 0 0 12px; background: #f9fafb; border: 1px solid #e5e7eb; box-shadow: none; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-source-deadline { padding: 12px 14px; margin: 0 0 18px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; color: #596579; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-source-deadline p { margin: 0; font-size: 13px; }
+:root [data-audit-reading="true"] .content-audit-panel .content-audit-source-deadline p + p { margin-top: 6px; }
+@media (max-width: 680px) {
+  :root [data-audit-reading="true"] .content-audit-panel .content-audit-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .content-audit-command-actions { width: 100%; }
+  :root [data-audit-reading="true"] .content-audit-command-actions > button { flex: 1 1 auto; padding: 10px 12px; }
+  :root [data-audit-reading="true"] .content-audit-command-actions > .content-audit-recheck { flex-basis: 100%; order: -1; }
+  :root [data-audit-reading="true"] .content-audit-panel .content-audit-export-grid { grid-template-columns: minmax(0, 1fr); }
+  :root [data-audit-reading="true"] .content-workspace-context[data-content-tab="audit"] .ops-marketplace { flex-basis: 100%; justify-content: space-between; }
+  :root [data-audit-reading="true"] .content-audit-list-tools .content-audit-result-heading { width: 100%; justify-content: space-between; }
+}

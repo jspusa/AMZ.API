@@ -1460,6 +1460,7 @@ export default function SkuOperationsDrawer({
       busy={busy}
       onBack={closeDrawer}
     >
+        <div className="content-workspace-context" data-content-tab={tab}>
         <div className="sku-ops-tabs" role="tablist" aria-label="商品內容工具">
           <button
             id="content-single-tab"
@@ -1483,7 +1484,7 @@ export default function SkuOperationsDrawer({
             onClick={() => changeTab("audit")}
             disabled={busy}
           >
-            全站文案健檢
+            文案健檢
           </button>
           <button
             id="content-export-tab"
@@ -1515,6 +1516,7 @@ export default function SkuOperationsDrawer({
           </select>
         </label>
 
+        </div>
         {tab === "single" && (
           <div
             id="content-single-panel"
