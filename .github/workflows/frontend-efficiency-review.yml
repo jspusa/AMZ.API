@@ -1,0 +1,25 @@
+name: Frontend efficiency isolated review
+on:
+  push:
+    branches: [feature/frontend-workflow-efficiency]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4a3d08d829ffd2c1988492b6efc6bd60e86169f8
+          persist-credentials: false
+      - name: Archive exact source
+        run: |
+          git rev-parse HEAD > source-sha.txt
+          git archive --format=tar.gz HEAD > source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-efficiency-baseline
+          path: |
+            source-sha.txt
+            source.tar.gz
+          retention-days: 3
