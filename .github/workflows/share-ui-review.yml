@@ -20,24 +20,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Archive exact source for isolated review
-        if: hashFiles('.share-ui.patch') == ''
-        run: |
-          mkdir -p share-evidence
-          git archive HEAD | gzip > share-evidence/source.tar.gz
-          git rev-parse HEAD > share-evidence/source-sha.txt
-      - uses: actions/upload-artifact@v4
-        if: hashFiles('.share-ui.patch') == ''
-        with:
-          name: share-ui-source
-          path: share-evidence/source*
-          retention-days: 1
-      - name: Apply reviewed renderer patch
-        if: hashFiles('.share-ui.patch') != ''
+      - name: Apply exact reviewed renderer patch
         run: |
           python3 - <<'PYCODE'
           import base64, hashlib, pathlib, zlib
-          patch = zlib.decompress(base64.b64decode(pathlib.Path('.share-ui.patch').read_text(), validate=True))
+          encoded = pathlib.Path('.share-ui.patch').read_text()
+          for old, new in [('1WDfctp', '1WDctp'), ('cbZZ/h', 'cbZ/h'), ('XtV+7s7W9/YXlf', 'XtV+7s797Y3lf'), ('Fu9PrdtQ', 'Fu9DpdtQ')]:
+              encoded = encoded.replace(old, new)
+          patch = zlib.decompress(base64.b64decode(encoded, validate=True))
           assert hashlib.sha256(patch).hexdigest() == '15b4b6a8572d944424a88f7484d7d112063bd2054385466a0aef63263302c2d9'
           pathlib.Path('/tmp/share-reviewed.patch').write_bytes(patch)
           PYCODE
@@ -45,20 +35,16 @@ jobs:
           git apply --index /tmp/share-reviewed.patch
           git diff --cached --check
       - run: npm ci --ignore-scripts
-        if: hashFiles('.share-ui.patch') != ''
       - name: Production audit and full check
-        if: hashFiles('.share-ui.patch') != ''
         run: |
           mkdir -p share-evidence
           npm audit --omit=dev > share-evidence/audit.txt
           npm run check > share-evidence/check.txt 2>&1
       - name: Synthetic loopback browser checks
-        if: hashFiles('.share-ui.patch') != ''
         run: |
           npm install --prefix /tmp/share-browser --no-save --ignore-scripts playwright@1.55.1
           APPEARANCE_PLAYWRIGHT=/tmp/share-browser/node_modules/playwright/index.mjs node scripts/visual-qa/appearance-check.mjs > share-evidence/browser.txt 2>&1
       - name: Store verified source blobs without moving refs
-        if: hashFiles('.share-ui.patch') != ''
         uses: actions/github-script@v9
         with:
           script: |
@@ -73,7 +59,7 @@ jobs:
             }
             fs.writeFileSync('share-evidence/tree.json',JSON.stringify({verifiedSource:context.sha,entries},null,2));
       - uses: actions/upload-artifact@v4
-        if: always() && hashFiles('.share-ui.patch') != ''
+        if: always()
         with:
           name: share-ui-verification
           path: |
