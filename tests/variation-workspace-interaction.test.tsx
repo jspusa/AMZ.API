@@ -85,6 +85,21 @@ const prepared = (action: "detach" | "attach") => ({
   warnings: [],
   notice: "必填資料",
 });
+const recovery = (action: "detach" | "attach" = "detach", overrides: Record<string, unknown> = {}) => {
+  const sourceParentSku = action === "detach" ? "SOURCE" : null;
+  const targetParentSku = action === "attach" ? "TARGET" : null;
+  return {
+    mode: "live", marketplaceId, sellerSku: "CHILD", status: "verified", action,
+    sourceParentSku, targetParentSku, observedParentSku: targetParentSku,
+    result: {
+      mode: "live", marketplaceId, sellerSku: "CHILD", status: "ACCEPTED", action,
+      sourceParentSku, targetParentSku, variationTheme: action === "attach" ? "SIZE_NAME" : null,
+      verified: true, completedAt: "2026-09-10T10:00:00Z", submissionId: null,
+      requestId: null, issues: [], notice: "已完成唯讀回查",
+    },
+    notice: "已完成唯讀回查", ...overrides,
+  };
+};
 let renderer: ReactTestRenderer | null = null;
 const output = () => JSON.stringify(renderer?.toJSON());
 async function click(name: string) {
@@ -130,6 +145,7 @@ async function mount(options: {
   source?: VariationFamilyView;
   target?: VariationFamilyView;
   preparation?: unknown;
+  recovery?: unknown;
   onRequiredFieldsFocus?: () => void;
 } = {}) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -140,6 +156,10 @@ async function mount(options: {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.includes("variation-move/recovery?"))
+        return options.recovery instanceof Response ? options.recovery.clone()
+          : options.recovery ? Response.json(options.recovery)
+          : Response.json({ code: "NOT_FOUND" }, { status: 404 });
       if (init?.method === "POST") {
         const body = JSON.parse(String(init.body));
         return Response.json({
@@ -258,6 +278,150 @@ afterEach(async () => {
 });
 
 describe("variation workspace interactions", () => {
+  it.each(["source", "target"])("retains a failed-discovery block when recovered %s conflicts with the displayed plan", async (conflict) => {
+    await mount({ recovery: Response.json({ message: "暫時無法核對" }, { status: 503 }) });
+    const receipt = recovery(conflict === "source" ? "detach" : "attach");
+    if (conflict === "source") {
+      receipt.sourceParentSku = "OTHER";
+      receipt.result.sourceParentSku = "OTHER";
+    } else {
+      receipt.targetParentSku = "OTHER";
+      receipt.observedParentSku = "OTHER";
+      receipt.result.targetParentSku = "OTHER";
+    }
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json(receipt));
+    await click("重新讀取 Amazon 狀態");
+    expect(output()).toContain("結果待確認 · 已停止後續寫入");
+    expect(renderer!.root.findAllByProps({ "aria-label": "先前操作回查結果" })).toHaveLength(0);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => ["POST", "PATCH"].includes(String(init?.method)))).toHaveLength(0);
+  });
+  it("recovers exact main evidence after discovery failed before any local intent was sent", async () => {
+    await mount({ recovery: Response.json({ message: "暫時無法核對" }, { status: 503 }) });
+    expect(output()).toContain("結果待確認 · 已停止後續寫入");
+    const existing = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input).includes("variation-move/recovery?")
+      ? Promise.resolve(Response.json(recovery())) : existing(input, init));
+    await click("重新讀取 Amazon 狀態");
+    expect(output()).toContain("解除已完成唯讀回查");
+    expect(output()).not.toContain("結果待確認 · 已停止後續寫入");
+    expect(renderer!.root.findByProps({ "aria-label": "先前操作回查結果" })
+      .findAllByType("td").map((cell) => cell.children.join(""))).toEqual(["CHILD", "解除", "SOURCE", "無 parent"]);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => ["POST", "PATCH"].includes(String(init?.method)))).toHaveLength(0);
+  });
+  it("shows verified attach recovery as complete while leaving its spent confirmation unusable", async () => {
+    await mountStandalone();
+    await click("檢查綁定內容");
+    const sentConfirm = renderer!.root.findByProps({ "aria-label": "確認綁定變體" }).props.onClick;
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ message: "結果待確認" }, { status: 409 }));
+    await click("確認綁定變體");
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json(recovery("attach")));
+    await click("重新讀取 Amazon 狀態");
+    expect(output()).toContain("綁定已完成唯讀回查");
+    expect(output()).not.toContain("結果待確認 · 已停止後續寫入");
+    expect(renderer!.root.findByProps({ "aria-label": "Shape · Amazon 現有值" }).children).toEqual(["Pretzel"]);
+    await act(async () => sentConfirm());
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
+  it("recovers a pending detach discovered after reopening, then permits only fresh attach preparation", async () => {
+    await mount({ recovery: recovery("detach", { status: "pending", result: null, observedParentSku: "SOURCE" }) });
+    const existing = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input).includes("variation-move/recovery?")
+      ? Promise.resolve(Response.json(recovery())) : existing(input, init));
+    await click("重新讀取 Amazon 狀態");
+    expect(output()).toContain("解除已完成唯讀回查");
+    expect(output()).not.toContain("結果待確認 · 已停止後續寫入");
+    expect(renderer!.root.findByProps({ "aria-label": "選擇 CHILD" }).props["aria-pressed"]).toBe(true);
+    expect(renderer!.root.findByProps({ "aria-label": "檢查綁定內容" }).props.disabled).toBe(true);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => ["POST", "PATCH"].includes(String(init?.method)))).toHaveLength(0);
+  });
+  it("keeps historical verified attach receipts separate from a newly selected detach plan", async () => {
+    const source = family(false);
+    source.queried.parentSku = "TARGET";
+    source.parent = member("TARGET", null);
+    await mount({ source, recovery: recovery("attach"), preparation: { ...prepared("detach"), sourceParentSku: "TARGET" } });
+    await change("是否含液體 · Value", "false");
+    expect(output()).not.toContain("結果待確認 · 已停止後續寫入");
+    expect(output()).not.toContain("綁定已完成唯讀回查");
+    const receipt = renderer!.root.findByProps({ "aria-label": "先前操作回查結果" });
+    expect(receipt.findAllByType("td").map((cell) => cell.children.join(""))).toEqual(["CHILD", "綁定", "無 parent", "TARGET"]);
+    expect(renderer!.root.findByProps({ "aria-label": "檢查解除內容" }).props.disabled).toBe(false);
+  });
+  it.each([
+    ["pending", () => Response.json(recovery("detach", { status: "pending", result: null }))],
+    ["unknown", () => Response.json(recovery("detach", { status: "unknown", result: null }))],
+    ["none", () => Response.json(recovery("detach", { status: "none", action: null, sourceParentSku: null, result: null }))],
+    ["malformed", () => Response.json({ verified: true })],
+    ["different SKU", () => Response.json(recovery("detach", { sellerSku: "OTHER" }))],
+    ["different action", () => Response.json(recovery("attach"))],
+    ["different source", () => Response.json(recovery("detach", { sourceParentSku: "OTHER" }))],
+    ["different target", () => Response.json(recovery("detach", { targetParentSku: "OTHER" }))],
+    ["different mode", () => Response.json(recovery("detach", { mode: "demo" }))],
+    ["different marketplace", () => Response.json(recovery("detach", { marketplaceId: "A2EUQ1WTGCTBG2" }))],
+    ["failed", () => Response.json({ message: "目前無法核對" }, { status: 503 })],
+    ["older Bridge", () => Response.json({ code: "NOT_FOUND" }, { status: 404 })],
+  ])("retains the current uncertain intent after %s recovery without any resubmission", async (_name, response) => {
+    await mount();
+    await change("是否含液體 · Value", "false");
+    await click("檢查解除內容");
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ message: "結果待確認" }, { status: 409 }));
+    await click("確認解除變體");
+    vi.mocked(fetch).mockResolvedValueOnce(response());
+    await click("重新讀取 Amazon 狀態");
+    expect(output()).toContain("結果待確認 · 已停止後續寫入");
+    expect(output()).not.toContain("解除已完成唯讀回查");
+    expect(renderer!.root.findByProps({ "aria-label": "檢查解除內容" }).props.disabled).toBe(true);
+    if (_name === "older Bridge") expect(output()).toContain("更新 AMZ.API Notebook Key 至 0.1.63");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
+  it.each(["target", "marketplace", "mode", "source", "close"])("ignores a verified recovery arriving after %s changes", async (context) => {
+    await mount();
+    await change("是否含液體 · Value", "false");
+    await click("檢查解除內容");
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ message: "結果待確認" }, { status: 409 }));
+    await click("確認解除變體");
+    let finish!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    await click("重新讀取 Amazon 狀態");
+    if (context === "target") await change("目標 Parent SKU", "OTHER");
+    if (context === "source") await change("來源 Seller SKU", "OTHER");
+    if (context === "marketplace") await change("Amazon 站點", "A2EUQ1WTGCTBG2");
+    if (context === "mode") await act(async () => renderer!.update(<VariationPlannerDrawer
+      initialMarketplaceId={marketplaceId} initialSellerSku="CHILD" auditMode="demo"
+      presentation="workspace" onClose={vi.fn()} />));
+    if (context === "close") await click("返回 AMZ.API 首頁");
+    await act(async () => finish(Response.json(recovery())));
+    expect(output()).not.toContain("解除已完成唯讀回查");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
+  it("discovers durable pending work after reopening before preparing a replacement operation", async () => {
+    await mount({ recovery: recovery("detach", { status: "pending", result: null, observedParentSku: "SOURCE" }) });
+    expect(output()).toContain("結果待確認 · 已停止後續寫入");
+    expect(renderer!.root.findByProps({ "aria-label": "選擇 CHILD" }).props["aria-pressed"]).toBe(true);
+    expect(renderer!.root.findByProps({ "aria-label": "檢查解除內容" }).props.disabled).toBe(true);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("variation-move?"))).toHaveLength(0);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => ["POST", "PATCH"].includes(String(init?.method)))).toHaveLength(0);
+  });
+  it("completes an uncertain detach through read-only recovery while retaining the target draft and spent intent", async () => {
+    await mount();
+    await change("是否含液體 · Value", "false");
+    await change("Size · Value", "8 oz");
+    await click("檢查解除內容");
+    const sentConfirm = renderer!.root.findByProps({ "aria-label": "確認解除變體" }).props.onClick;
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ message: "結果待確認" }, { status: 409 }));
+    await click("確認解除變體");
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json(recovery()));
+    await click("重新讀取 Amazon 狀態");
+    expect(output()).toContain("解除已完成唯讀回查");
+    expect(output()).not.toContain("結果待確認 · 已停止後續寫入");
+    expect(renderer!.root.findByProps({ "aria-label": "Size · Value" }).props.value).toBe("8 oz");
+    const recoveryCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("variation-move/recovery?"));
+    expect(recoveryCalls.at(-1)?.[1]?.method ?? "GET").toBe("GET");
+    await act(async () => sentConfirm());
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
   it("offers an unchecked exact existing answer after missing-fact Preview and sends only its name after explicit selection", async () => {
     const focus = vi.fn();
     await mountStandalone(focus);

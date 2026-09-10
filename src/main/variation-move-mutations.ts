@@ -10,6 +10,7 @@ import type {
   VariationMovePreparation,
   VariationMovePreview,
   VariationMoveResult,
+  VariationMoveRecovery,
 } from "./amazon/variation-move-types";
 import type {
   VariationMoveAttachDescriptor,
@@ -54,11 +55,12 @@ import { invalid, json, routeError } from "./route-response";
 import {
   MainWriteGateError,
   type MainWriteGatePort,
+  type MainWriteGateInspection,
   type WriteBinding,
 } from "./write-gate";
 
 export type VariationMoveMutationCommand = Readonly<{
-  operation: "prepare" | "preview" | "commit";
+  operation: "prepare" | "preview" | "commit" | "recover";
   request: ApiRequest;
 }>;
 
@@ -1645,6 +1647,30 @@ function createVariationMoveMutationOperations(
   };
 }
 
+function relevantRecoveryInspection(entries: readonly MainWriteGateInspection[]): MainWriteGateInspection | null {
+  if (entries.some((entry) => !Number.isFinite(entry.createdAt) || !Number.isFinite(entry.updatedAt))) return null;
+  const ordered = [...entries].sort((left, right) => right.createdAt - left.createdAt);
+  const latest = ordered[0];
+  // An updated older receipt cannot outrank a newer attempt. Ties and other
+  // unresolved intents have no unique safe interpretation, so retain the block.
+  if (!latest || ordered.slice(1).some((entry) =>
+    entry.createdAt === latest.createdAt || entry.state !== "completed")) return null;
+  return latest;
+}
+
+function recoveryIntentIdentity(entry: MainWriteGateInspection, marketplaceId: MarketplaceId, sellerSku: string, mode: "live" | "demo") {
+  if (!isPlainRecord(entry.response) || !isPlainRecord(entry.response._writeEvidence)) return {};
+  try {
+    const result = publicVariationMoveResult({ ...entry.response,
+      status: entry.response.status === "DISPATCHED" ? "ACCEPTED" : entry.response.status,
+      verified: true,
+    } as VariationMoveDurableResult, mode);
+    if (result.marketplaceId !== marketplaceId || result.sellerSku !== sellerSku ||
+      entry.operationType !== `variation_${result.action}`) return {};
+    return { action: result.action, sourceParentSku: result.sourceParentSku, targetParentSku: result.targetParentSku };
+  } catch { return {}; }
+}
+
 class VariationMoveMutations implements VariationMoveMutationsPort {
   private readonly context: SpExecutionContextAdapter;
   private readonly writeGate: MainWriteGatePort;
@@ -1661,6 +1687,7 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
   }
 
   async handle(command: VariationMoveMutationCommand): Promise<ApiResponse> {
+    if (command.operation === "recover") return this.recoveryRoute(command.request);
     if (command.operation === "prepare") {
       return this.prepareRoute(command.request);
     }
@@ -1700,6 +1727,76 @@ class VariationMoveMutations implements VariationMoveMutationsPort {
     });
     await this.context.assertCurrent(context);
     return canonical;
+  }
+
+  private async recoveryRoute(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    const sellerSku = parseSellerSku(request.query.sku);
+    if (request.method !== "GET" || request.body !== undefined || !marketplaceId ||
+      !sellerSku || sellerSku !== request.query.sku ||
+      Object.keys(request.query).some((name) => name !== "marketplaceId" && name !== "sku")) {
+      return invalid("唯讀回查只接受站點與完整 Seller SKU。");
+    }
+    try {
+      const context = await this.context.capture(marketplaceId);
+      if (!this.writeGate.inspect) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
+      const inspect = () => this.writeGate.inspect!({
+        context, marketplaceId, sellerSku,
+        operations: ["variation_detach", "variation_attach"],
+        requireComplete: true,
+        project: (entry) => entry,
+      });
+      const before = await inspect();
+      await this.context.assertCurrent(context);
+      const canonical = await this.operations.readCanonical({ marketplaceId, sellerSku });
+      await this.context.assertCurrent(context);
+      if (canonical.marketplaceId !== marketplaceId || canonical.sellerSku !== sellerSku || canonical.mode !== context.mode) {
+        throw new SpApiError("變體回查不屬於目前商品與執行環境。", { status: 409, code: "SP_CONTEXT_INVALIDATED" });
+      }
+      const current = await inspect();
+      await this.context.assertCurrent(context);
+      const base: VariationMoveRecovery = {
+        mode: context.mode, marketplaceId, sellerSku, status: "unknown", action: null,
+        sourceParentSku: null, targetParentSku: null, observedParentSku: canonical.parentSku,
+        result: null, notice: "尚未完整確認先前變體操作；請保留目前商品，勿重新送出。",
+      };
+      if (JSON.stringify(before) !== JSON.stringify(current)) return json(base);
+      if (!current.length) return json({ ...base, status: "none", notice: "沒有找到此商品在目前帳號的變體操作記錄。" });
+      const selected = relevantRecoveryInspection(current);
+      if (!selected) return json(base);
+      const response = selected.response;
+      const identity = recoveryIntentIdentity(selected, marketplaceId, sellerSku, context.mode);
+      if (!identity.action) return json(base);
+      const pending = { ...base, ...identity,
+        status: selected.state === "pending" ? "pending" as const : "unknown" as const };
+      const matched = reconcileVariationMoveWrite(response, selected.operationType, canonical);
+      if (!matched) return json(pending);
+      if (selected.state !== "completed") {
+        const expectedResponse = JSON.stringify(response);
+        await this.writeGate.reconcile({
+          context, marketplaceId, sellerSku, operations: [selected.operationType],
+          requireCurrent: true, snapshot: canonical,
+          project: (value, operation, snapshot) => JSON.stringify(value) === expectedResponse
+            ? reconcileVariationMoveWrite(value, operation, snapshot) : null,
+        });
+        await this.context.assertCurrent(context);
+      }
+      const finalEntries = await inspect();
+      await this.context.assertCurrent(context);
+      const final = relevantRecoveryInspection(finalEntries);
+      if (!final || final.createdAt !== selected.createdAt || final.operationType !== selected.operationType ||
+        final.state !== "completed" || !isPlainRecord(final.response) || final.response.verified !== true ||
+        JSON.stringify(final.response._writeEvidence) !== JSON.stringify(matched._writeEvidence) ||
+        !reconcileVariationMoveWrite(final.response, final.operationType, canonical)) return json(pending);
+      const result = publicVariationMoveResult(final.response as VariationMoveDurableResult, context.mode);
+      return json({ ...base, status: "verified", action: result.action,
+        sourceParentSku: result.sourceParentSku, targetParentSku: result.targetParentSku,
+        result, notice: result.notice });
+    } catch (error) {
+      return error instanceof MainWriteGateError
+        ? invalid(error.message, error.status, error.code)
+        : routeError(error, "唯讀回查尚未完成；請保留目前商品，勿重新送出。");
+    }
   }
 
   private async prepareRoute(request: ApiRequest): Promise<ApiResponse> {

@@ -151,6 +151,11 @@ async function mount(
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string) => {
+      if (input.includes("variation-move/recovery?")) return Response.json({
+        mode: "live", marketplaceId, sellerSku: "GCBL06", status: "none",
+        action: null, sourceParentSku: null, targetParentSku: null,
+        observedParentSku: null, result: null, notice: "沒有既有操作",
+      });
       if (input.includes("variation-family")) {
         if (input.includes(targetSku)) return Response.json(family(true));
         const adapter = createScriptedListingsReadAdapter([{

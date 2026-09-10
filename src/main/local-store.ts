@@ -289,7 +289,7 @@ export type IdempotentOperationAvailabilityInput = Pick<
 
 const OPERATION_TTL_MS = 24 * 60 * 60 * 1_000;
 const PERMANENT_OPERATION_EXPIRY = Number.MAX_SAFE_INTEGER;
-const MAX_IDEMPOTENT_OPERATION_INSPECTIONS = 32;
+export const MAX_IDEMPOTENT_OPERATION_INSPECTIONS = 32;
 export const CONTENT_AUDIT_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1_000;
 const MAX_CONTENT_AUDIT_SNAPSHOT_ROWS = 25_000;
 const MAX_CONTENT_AUDIT_SNAPSHOT_BYTES = 4 * 1024 * 1024;
@@ -1730,6 +1730,7 @@ export class LocalStore {
     sellerSku: string;
     accountScope: string;
     reconcile(response: unknown, operationType: LedgerOperationType): unknown | null;
+    assertCurrent?(): Promise<void>;
   }): Promise<number> {
     let reconciled = 0;
     await this.mutate((data) => {
@@ -1763,7 +1764,7 @@ export class LocalStore {
           : now + OPERATION_TTL_MS;
         reconciled += 1;
       }
-    });
+    }, input.assertCurrent);
     return reconciled;
   }
 
@@ -1963,10 +1964,11 @@ export class LocalStore {
     });
   }
 
-  private async mutate(mutator: (data: StoreData) => void): Promise<void> {
+  private async mutate(mutator: (data: StoreData) => void, assertCurrent?: () => Promise<void>): Promise<void> {
     const task = this.mutationQueue.then(async () => {
       // A rejected write must not publish a claim/result through this.data.
       const draft = structuredClone(await this.read());
+      if (assertCurrent) await assertCurrent();
       mutator(draft);
       await this.filesystem.mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
       const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
@@ -1982,6 +1984,7 @@ export class LocalStore {
         } finally {
           await handle.close();
         }
+        if (assertCurrent) await assertCurrent();
         await this.filesystem.rename(temporaryPath, this.filePath);
         replaced = true;
         await this.syncParentDirectory();

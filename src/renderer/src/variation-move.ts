@@ -84,6 +84,22 @@ export type VariationMoveResult = {
   notice: string;
 };
 
+export type VariationRecoveryIntent = Pick<VariationMoveResult,
+  "action" | "sourceParentSku" | "targetParentSku">;
+
+export type VariationMoveRecovery = {
+  mode: "live" | "demo";
+  marketplaceId: string;
+  sellerSku: string;
+  status: "none" | "pending" | "unknown" | "verified";
+  action: VariationMoveAction | null;
+  sourceParentSku: string | null;
+  targetParentSku: string | null;
+  observedParentSku: string | null;
+  result: VariationMoveResult | null;
+  notice: string;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -331,6 +347,48 @@ export function parseVariationMoveResult(
     throw new Error("Amazon 變體回查尚未證明完成；請勿直接重送。");
   }
   return raw as VariationMoveResult;
+}
+
+export function parseVariationMoveRecovery(raw: unknown, expected: {
+  mode: "live" | "demo";
+  marketplaceId: string;
+  sellerSku: string;
+  intent?: VariationRecoveryIntent;
+}): VariationMoveRecovery {
+  const fail = () => new Error("Amazon 變體回查資料不完整或與目前操作不符；請勿重送。");
+  const nullableSku = (value: unknown) => value === null ||
+    (typeof value === "string" && value.length > 0 && value.length <= 40 &&
+      value.trim() === value && !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
+  const keys = ["mode", "marketplaceId", "sellerSku", "status", "action", "sourceParentSku", "targetParentSku", "observedParentSku", "result", "notice"];
+  if (!isRecord(raw) || Object.keys(raw).length !== keys.length ||
+    !keys.every((key) => Object.hasOwn(raw, key)) ||
+    raw.mode !== expected.mode || raw.marketplaceId !== expected.marketplaceId ||
+    raw.sellerSku !== expected.sellerSku ||
+    !["none", "pending", "unknown", "verified"].includes(String(raw.status)) ||
+    ![null, "attach", "detach"].includes(raw.action as null | string) ||
+    !nullableSku(raw.sourceParentSku) || !nullableSku(raw.targetParentSku) ||
+    !nullableSku(raw.observedParentSku) || typeof raw.notice !== "string" || raw.notice.length > 1200 ||
+    (raw.action === "attach" && (raw.sourceParentSku !== null || raw.targetParentSku === null)) ||
+    (raw.action === "detach" && (raw.sourceParentSku === null || raw.targetParentSku !== null)) ||
+    (raw.action === null && (raw.sourceParentSku !== null || raw.targetParentSku !== null))) throw fail();
+  if (raw.status !== "verified") {
+    if (raw.result !== null || (raw.status === "none" && raw.action !== null)) throw fail();
+    return raw as VariationMoveRecovery;
+  }
+  if (raw.action === null || !isRecord(raw.result)) throw fail();
+  const resultKeys = ["mode", "action", "status", "marketplaceId", "sellerSku", "sourceParentSku", "targetParentSku", "variationTheme", "verified", "completedAt", "submissionId", "requestId", "issues", "notice"];
+  if (Object.keys(raw.result).length !== resultKeys.length || !resultKeys.every((key) => Object.hasOwn(raw.result as JsonRecord, key))) throw fail();
+  const result = parseVariationMoveResult(raw.result, {
+    action: raw.action as VariationMoveAction, marketplaceId: expected.marketplaceId, sellerSku: expected.sellerSku,
+  });
+  if (result.mode !== expected.mode || result.status !== (expected.mode === "live" ? "ACCEPTED" : "SIMULATED") ||
+    result.sourceParentSku !== raw.sourceParentSku || result.targetParentSku !== raw.targetParentSku ||
+    raw.observedParentSku !== raw.targetParentSku || !Number.isFinite(Date.parse(result.completedAt)) ||
+    (raw.action === "detach" ? result.variationTheme !== null : !result.variationTheme?.trim()) ||
+    result.issues.some((issue) => issue.severity.toUpperCase() === "ERROR") ||
+    (expected.intent && (raw.action !== expected.intent.action ||
+      raw.sourceParentSku !== expected.intent.sourceParentSku || raw.targetParentSku !== expected.intent.targetParentSku))) throw fail();
+  return raw as VariationMoveRecovery;
 }
 
 export function initialVariationDimensionValues(

@@ -6,6 +6,7 @@ import {
   parseVariationMovePreparation,
   parseVariationMovePreview,
   parseVariationMoveResult,
+  parseVariationMoveRecovery,
   parseVariationPreservedRequiredFields,
   updateVariationLeaf,
 } from "../src/renderer/src/variation-move";
@@ -74,6 +75,29 @@ const preparationPayload = {
 };
 
 describe("variation move renderer contract", () => {
+  it("accepts only a complete exact recovery receipt and refuses contradictory or private result shapes", () => {
+    const expected = { mode: "live" as const, marketplaceId: "ATVPDKIKX0DER", sellerSku: "CHILD", intent: {
+      action: "attach" as const, sourceParentSku: null, targetParentSku: "TARGET",
+    } };
+    const result = {
+      ...expected.intent, mode: "live", marketplaceId: expected.marketplaceId, sellerSku: "CHILD",
+      status: "ACCEPTED", variationTheme: "SIZE_NAME", verified: true,
+      completedAt: "2026-09-10T10:00:00Z", submissionId: null, requestId: null, issues: [], notice: "已核對",
+    };
+    const receipt = { ...expected.intent, mode: "live", marketplaceId: expected.marketplaceId, sellerSku: "CHILD",
+      status: "verified", observedParentSku: "TARGET", result, notice: "已核對" };
+    expect(parseVariationMoveRecovery(receipt, expected).result).toEqual(result);
+    for (const altered of [
+      { observedParentSku: "OTHER" }, { result: { ...result, verified: false } },
+      { result: { ...result, targetParentSku: "OTHER" } }, { result: { ...result, sellerSku: "OTHER" } },
+      { result: { ...result, status: "SIMULATED" } }, { result: { ...result, action: "detach" } },
+      { result: { ...result, sourceParentSku: "OTHER" } }, { result: { ...result, completedAt: "not-a-date" } },
+      { result: { ...result, issues: [{ code: null, severity: "ERROR", message: "問題", attributeNames: [] }] } },
+      { result: { ...result, _writeEvidence: {} } }, { result: null }, { ledgerKey: "private" },
+      { status: "pending" }, { action: null }, { targetParentSku: " TARGET" },
+    ]) expect(() => parseVariationMoveRecovery({ ...receipt, ...altered }, expected)).toThrow();
+    expect(() => parseVariationMoveRecovery(receipt, { ...expected, intent: { ...expected.intent, targetParentSku: "NEW" } })).toThrow();
+  });
   it("keeps an exact existing answer out of editable form values and only accepts scalar preservation descriptors", () => {
     const existing = {
       name: "contains_liquid_contents", label: "Liquid", editable: false,

@@ -23,6 +23,7 @@ import {
   parseVariationMovePreparation,
   parseVariationMovePreview,
   parseVariationMoveResult,
+  parseVariationMoveRecovery,
   parseVariationRequiredFields,
   parseVariationPreservedRequiredFields,
   updateVariationLeaf,
@@ -32,6 +33,7 @@ import {
   type VariationMovePreparation,
   type VariationMovePreview,
   type VariationMoveResult,
+  type VariationRecoveryIntent,
 } from "../variation-move";
 import {
   MARKETPLACES,
@@ -255,9 +257,11 @@ export default function VariationPlannerDrawer({
   const [lastResult, setLastResult] = useState<VariationMoveResult | null>(
     null,
   );
+  const [recoveredReceipt, setRecoveredReceipt] = useState<VariationMoveResult | null>(null);
   const [sourceLoading, setSourceLoading] = useState(false);
   const [targetLoading, setTargetLoading] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [writeAction, setWriteAction] = useState<VariationMoveAction | null>(
     null,
   );
@@ -278,14 +282,26 @@ export default function VariationPlannerDrawer({
   const focusRequiredFieldsRef = useRef(false);
   const targetAbortRef = useRef<AbortController | null>(null);
   const preparationAbortRef = useRef<AbortController | null>(null);
+  const recoveryAbortRef = useRef<AbortController | null>(null);
   const autoLookupRef = useRef(false);
   const operationRef = useRef(false);
   const previewKeyRef = useRef<string | null>(null);
   previewKeyRef.current = preview?.body.idempotencyKey ?? null;
   const sentKeysRef = useRef(new Set<string>());
   const unresolvedSkusRef = useRef(new Set<string>());
+  const unresolvedIntentsRef = useRef(new Map<string, VariationRecoveryIntent>());
+  const recoveryScope = JSON.stringify([
+    auditMode, initialMarketplaceId, marketplaceId, sourceInput, targetInput,
+    sourceIdentifierType, targetIdentifierType, stagedMember?.sellerSku,
+    targetFamily && parentOf(targetFamily)?.sellerSku,
+  ]);
+  const recoveryScopeRef = useRef(recoveryScope);
+  recoveryScopeRef.current = recoveryScope;
+  const pendingIntent = stagedMember
+    ? unresolvedIntentsRef.current.get(`${marketplaceId}:${stagedMember.sellerSku}`)
+    : undefined;
   const busy =
-    sourceLoading || targetLoading || preparing || Boolean(writeAction);
+    sourceLoading || targetLoading || preparing || recovering || Boolean(writeAction);
   const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const sourceMembers = useMemo(
     () =>
@@ -347,6 +363,7 @@ export default function VariationPlannerDrawer({
     sourceAbortRef.current?.abort();
     targetAbortRef.current?.abort();
     preparationAbortRef.current?.abort();
+    recoveryAbortRef.current?.abort();
     setPreviewDiagnostics(null);
     setPreservedSelections({});
     setPreparations({});
@@ -365,12 +382,14 @@ export default function VariationPlannerDrawer({
       sourceAbortRef.current?.abort();
       targetAbortRef.current?.abort();
       preparationAbortRef.current?.abort();
+      recoveryAbortRef.current?.abort();
     },
     [],
   );
 
   const clearPlan = useCallback(() => {
     preparationAbortRef.current?.abort();
+    recoveryAbortRef.current?.abort();
     setPreparations({});
     setSelectedFieldChoices({});
     setPreservedSelections({});
@@ -380,6 +399,7 @@ export default function VariationPlannerDrawer({
     setPreview(null);
     setPreviewDiagnostics(null);
     setLastResult(null);
+    setRecoveredReceipt(null);
     setWorkflowError(null);
     setFailedPreviewAction(null);
   }, []);
@@ -408,6 +428,20 @@ export default function VariationPlannerDrawer({
     },
     [marketplaceId],
   );
+  const fetchRecovery = useCallback(async (
+    sellerSku: string,
+    mode: "live" | "demo",
+    signal: AbortSignal,
+    intent?: VariationRecoveryIntent,
+  ) => {
+    const params = new URLSearchParams({ marketplaceId, sku: sellerSku });
+    const response = await fetch(`/api/sp-api/variation-move/recovery?${params}`, {
+      cache: "no-store", signal,
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw await responseError(response, "狀態讀取未完成。");
+    return parseVariationMoveRecovery(await response.json(), { mode, marketplaceId, sellerSku, intent });
+  }, [marketplaceId]);
 
   const lookupSource = useCallback(
     async (input: string, kind: IdentifierType) => {
@@ -472,6 +506,7 @@ export default function VariationPlannerDrawer({
         return;
       }
       targetAbortRef.current?.abort();
+      recoveryAbortRef.current?.abort();
       const controller = new AbortController();
       targetAbortRef.current = controller;
       preparationAbortRef.current?.abort();
@@ -564,6 +599,32 @@ export default function VariationPlannerDrawer({
         ...(target ? ["attach" as const] : []),
       ];
       try {
+        const key = `${marketplaceId}:${member.sellerSku}`;
+        let recovered;
+        try {
+          recovered = await fetchRecovery(member.sellerSku, sourceFamily?.mode ?? auditMode, controller.signal);
+        } catch (error) {
+          if (controller.signal.aborted || preparationAbortRef.current !== controller) return;
+          unresolvedSkusRef.current.add(key);
+          setUncertain(true);
+          throw error;
+        }
+        if (controller.signal.aborted || preparationAbortRef.current !== controller) return;
+        if (unresolvedSkusRef.current.has(key) || recovered?.status === "pending" || recovered?.status === "unknown") {
+          unresolvedSkusRef.current.add(key);
+          if (recovered?.action && !unresolvedIntentsRef.current.has(key)) {
+            unresolvedIntentsRef.current.set(key, {
+              action: recovered.action, sourceParentSku: recovered.sourceParentSku, targetParentSku: recovered.targetParentSku,
+            });
+          }
+          setUncertain(true);
+          setWorkflowError(recovered === null
+            ? "請更新 AMZ.API Notebook Key 至 0.1.63 或更新版本，以完成唯讀回查；目前操作仍禁止重送。"
+            : "找到尚待確認的變體操作，請先重新讀取 Amazon 狀態。");
+          return;
+        }
+        // A durable receipt is visible history, never a Preview for this new plan.
+        setRecoveredReceipt(recovered?.status === "verified" ? recovered.result : null);
         const next: PreparedStages = {};
         const outcomes = await Promise.allSettled(
           actions.map(async (action) => {
@@ -652,7 +713,7 @@ export default function VariationPlannerDrawer({
         if (preparationAbortRef.current === controller) setPreparing(false);
       }
     },
-    [marketplaceId],
+    [marketplaceId, fetchRecovery, sourceFamily?.mode, auditMode],
   );
   useEffect(() => {
     if (stagedMember) void prepareSelected(stagedMember, targetFamily);
@@ -1007,6 +1068,9 @@ export default function VariationPlannerDrawer({
         setWorkflowError(`${error.message} 尚未送出修改，${changed ? "請重新讀取必填欄位後再檢查。" : "可重新檢查後再確認。"}`);
       } else {
         unresolvedSkusRef.current.add(`${marketplaceId}:${body.sellerSku}`);
+        unresolvedIntentsRef.current.set(`${marketplaceId}:${body.sellerSku}`, {
+          action: body.action, sourceParentSku: body.expectedSourceParentSku, targetParentSku: body.targetParentSku,
+        });
         setUncertain(true);
         setWorkflowError(
           error instanceof Error ? error.message : "結果待確認；請勿重送。",
@@ -1018,23 +1082,41 @@ export default function VariationPlannerDrawer({
     }
   };
   const readCurrentState = async () => {
-    if (!stagedMember || operationRef.current) return;
-    setSourceLoading(true);
+    if (!stagedMember || operationRef.current || busy) return;
+    recoveryAbortRef.current?.abort();
+    const controller = new AbortController();
+    recoveryAbortRef.current = controller;
+    const key = `${marketplaceId}:${stagedMember.sellerSku}`;
+    const intent = unresolvedIntentsRef.current.get(key);
+    const scope = recoveryScopeRef.current;
+    const isCurrent = () => !controller.signal.aborted && recoveryAbortRef.current === controller && recoveryScopeRef.current === scope;
+    setRecovering(true);
     try {
-      const family = await fetchFamily(
-        stagedMember.sellerSku,
-        "sku",
-        new AbortController().signal,
-      );
-      setWorkflowError(
-        `目前 Amazon 回傳 Parent：${family.queried.parentSku ?? "無 parent"}。這次只讀取狀態；結果待確認的操作仍維持禁止重送。`,
-      );
+      const recovered = await fetchRecovery(stagedMember.sellerSku, sourceFamily?.mode ?? auditMode, controller.signal, intent);
+      if (!isCurrent()) return;
+      if (recovered === null) throw new Error("請更新 AMZ.API Notebook Key 至 0.1.63 或更新版本，以完成唯讀回查；目前操作仍禁止重送。");
+      if (recovered.status !== "verified" || !recovered.result ||
+        (!intent && stagedMember.parentSku !== recovered.sourceParentSku && stagedMember.parentSku !== recovered.targetParentSku) ||
+        (recovered.action === "attach" && targetFamily && parentOf(targetFamily)?.sellerSku !== recovered.targetParentSku)) {
+        setWorkflowError(`目前 Amazon 回傳 Parent：${recovered.observedParentSku ?? "無 parent"}。尚未證明本次操作完成，仍禁止重送。`);
+        return;
+      }
+      unresolvedSkusRef.current.delete(key);
+      unresolvedIntentsRef.current.delete(key);
+      setUncertain(false);
+      setWorkflowError(null);
+      setPreview(null);
+      setLastResult(recovered.result);
+      setRecoveredReceipt(recovered.result);
+      setStagedState(recovered.action === "detach" ? "detached" : "attached");
+      if (recovered.action === "detach") setStagedMember((current) => current
+        ? { ...current, role: "standalone", parentSku: null } : current);
     } catch (error) {
-      setWorkflowError(
+      if (isCurrent()) setWorkflowError(
         error instanceof Error ? error.message : "狀態讀取未完成。",
       );
     } finally {
-      setSourceLoading(false);
+      if (recoveryAbortRef.current === controller) setRecovering(false);
     }
   };
   const updateLeaf = (
@@ -1577,7 +1659,7 @@ export default function VariationPlannerDrawer({
                 ? `目前 Parent：${originalParentSku}`
                 : stagedState === "detached"
                   ? "已確認為獨立 SKU，可綁定目標"
-                  : `已綁定：${preparations.attach?.targetParentSku ?? targetFamily?.queriedSku}`}
+                  : `已綁定：${lastResult?.targetParentSku ?? preparations.attach?.targetParentSku ?? targetFamily?.queriedSku}`}
             </small>
           </div>
         ) : (
@@ -1759,6 +1841,21 @@ export default function VariationPlannerDrawer({
           {workflowError}
         </p>
       )}
+      {recoveredReceipt && (
+        <div className="variation-table-scroll" role="status">
+          <table aria-label="先前操作回查結果">
+            <caption>★ 先前操作已由 Amazon 唯讀回查確認</caption>
+            <thead><tr><th>Seller SKU</th><th>操作</th><th>原 Parent</th><th>完成後 Parent</th></tr></thead>
+            <tbody><tr>
+              <td>{recoveredReceipt.sellerSku}</td>
+              <td>{recoveredReceipt.action === "detach" ? "解除" : "綁定"}</td>
+              <td>{recoveredReceipt.sourceParentSku ?? "無 parent"}</td>
+              <td>{recoveredReceipt.targetParentSku ?? "無 parent"}</td>
+            </tr></tbody>
+          </table>
+          <p>新的修改仍須重新檢查內容並確認身分。</p>
+        </div>
+      )}
       {previewDiagnostics && <PreviewDiagnostics details={previewDiagnostics} />}
       {uncertain && (
         <div className="variation-unknown" role="status">
@@ -1767,6 +1864,13 @@ export default function VariationPlannerDrawer({
             Notebook Key 可能已送出操作。請先讀取 Amazon
             現況；不會自動重送，也不會把尚未確認的解除當成完成。
           </p>
+          {pendingIntent && (
+            <p>
+              待核對操作：{pendingIntent.action === "detach" ? "解除" : "綁定"}
+              {" · "}{pendingIntent.sourceParentSku ?? "無 parent"}
+              {" → "}{pendingIntent.targetParentSku ?? "無 parent"}
+            </p>
+          )}
           <button
             type="button"
             aria-label="重新讀取 Amazon 狀態"

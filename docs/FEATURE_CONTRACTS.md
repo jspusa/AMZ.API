@@ -6,6 +6,7 @@
 - 解除與加入都讀 seller-specific CHILD PTD。缺少的必填商品事實提供相符輸入；布林沒有預設答案。既有 exact child 事實保持唯讀，部分缺漏只補缺少的 leaf，不能藉此覆寫已知值。無法安全編輯的結構明示原因，不能偽裝可送出。
 - 若 fresh Amazon Preview 明確要求一個已有完整值的商品事實，提供預設未勾選的「保留既有答案並加入本次檢查」。只接受 main 證明的單筆純量欄位，renderer 只選名稱；完整原值及 selector 由 main 原樣帶入，前後相同仍揭露於檢查內容。此意圖另綁 fingerprint、重新讀取與持久回查；既有值不可藉此編輯，也不放寬其他受管制欄位。
 - 必填事實、維度與 parent 變更共同出現在 canonical diff 與 native prompt，綁 exact context、身分、schema 與 preview。編輯即作廢原 Preview；兩階段各自 fresh Preview、native approval、durable claim、single PATCH、canonical GET。結果不明只允許回查，不恢復重送按鈕。
+- 已受理／結果不明的變體操作可由目前帳號、站點及 exact SKU 唯讀恢復；重新開啟工作台仍要先辨識未結案紀錄。只有 main 將最新無歧義的 durable intent 與完整 canonical 身分、關係、family membership、維度及保留事實核對後才顯示完成。parent 單獨相符、舊收據、讀取失敗或切換後遲到回覆都不能解除待確認。回查不產生 Preview／原生確認／PATCH；完成舊操作不妨礙另建需要全新授權的後續計畫。
 - PTD 唯讀維度有唯一且完整的 exact 原值時可以保留並 attach，production payload 必須省略該欄位；原值／selectors 改動、缺值或歧義仍停止。保留值與 schema 納入預檢 binding，持久化僅存 digest，回查必須核對 exact selectors。
 - 變體規劃可沿用同次未綁健檢工作與快照，列出已證明 standalone FBA SKU 及建議 family。建議僅依相容類型、主題及同系列 verified children 計數，星等與相似 SKU 可見；同分／不足不假裝唯一結論，選擇後一律 fresh-read 來源及目標再走原寫入流程。
 - 完整回傳的空 relationships 必須保留讀取證據，不得與未回傳資料混淆。獨立商品若只保留唯一且精確符合目標的既有 theme，可以原樣保留並省略 theme PATCH；main 仍須獨立證明無 parentage／parent 關係，保留完整值及 selectors 的預檢綁定，歧義與漂移拒絕。解除後的三個關係欄位清空規則不變。

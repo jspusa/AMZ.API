@@ -355,6 +355,8 @@ async function harness(
   approveWrite: ReturnType<typeof vi.fn>;
   context: SpExecutionContextAdapter;
   storePath: string;
+  store: LocalStore;
+  writeGate: MainWriteGate;
 }>> {
   const storePath = existingStorePath ?? join(
     await mkdtemp(join(tmpdir(), "amz-api-w04-domain-")),
@@ -381,7 +383,7 @@ async function harness(
       gateway.readbackDelays.push(milliseconds);
     },
   });
-  return { owner, approveWrite, context, storePath };
+  return { owner, approveWrite, context, storePath, store, writeGate };
 }
 
 async function preview(
@@ -1060,5 +1062,211 @@ describe("complete W04 Variation Move mutation domain", () => {
     expect(rejected.status).toBe(503);
     expect(bodyValue(rejected)).toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
     expect(replayGateway.commitDescriptors).toHaveLength(0);
+  });
+});
+
+function recover(owner: VariationMoveMutationsPort, query: Record<string, string> = {}) {
+  return owner.handle({ operation: "recover", request: {
+    requestId: "recover-read-only", method: "GET", path: "/api/sp-api/variation-move/recovery",
+    query: { marketplaceId: MARKETPLACE_ID, sku: SOURCE_SKU, ...query }, headers: {},
+  } });
+}
+
+describe("read-only durable variation recovery", () => {
+  it("recovers accepted attach after restart without Preview, approval or PATCH", async () => {
+    const gateway = new ScriptedVariationMoveGateway();
+    gateway.state = "standalone";
+    gateway.autoApply = false;
+    const first = await harness(gateway);
+    await preview(first.owner, attachInput(), "recovery-accepted");
+    expect((await commit(first.owner, attachInput(), "recovery-accepted")).status).toBe(409);
+    const restarted = new ScriptedVariationMoveGateway();
+    restarted.state = "new";
+    const next = await harness(restarted, first.storePath);
+    const response = await recover(next.owner);
+    expect(response.status).toBe(200);
+    expect(bodyValue(response)).toMatchObject({ status: "verified", action: "attach", sellerSku: SOURCE_SKU,
+      targetParentSku: TARGET_PARENT, observedParentSku: TARGET_PARENT, result: { verified: true, action: "attach" } });
+    expect(restarted.validationDescriptors).toHaveLength(0);
+    expect(restarted.commitDescriptors).toHaveLength(0);
+    expect(next.approveWrite).not.toHaveBeenCalled();
+    expect(JSON.stringify(bodyValue(response))).not.toMatch(/_writeEvidence|fingerprint|accountScope|recovery-accepted/);
+    const stored = JSON.parse(await readFile(first.storePath, "utf8"));
+    expect(stored.ledger["recovery-accepted"].state).toBe("completed");
+  });
+  it("shows none from an available empty ledger and rejects extra recovery authority", async () => {
+    const { owner } = await harness(new ScriptedVariationMoveGateway());
+    expect(bodyValue(await recover(owner))).toMatchObject({ status: "none", action: null, result: null, sourceParentSku: null, targetParentSku: null });
+    expect((await recover(owner, { targetSku: TARGET_PARENT })).status).toBe(400);
+    expect((await recover(owner, { sku: ` ${SOURCE_SKU}` })).status).toBe(400);
+  });
+});
+
+async function pendingRecoveryHarness() {
+  const gateway = new ScriptedVariationMoveGateway();
+  gateway.state = "standalone";
+  gateway.autoApply = false;
+  const initial = await harness(gateway);
+  await preview(initial.owner, attachInput(), "recovery-pending");
+  expect((await commit(initial.owner, attachInput(), "recovery-pending")).status).toBe(409);
+  const data = JSON.parse(await readFile(initial.storePath, "utf8"));
+  return { ...initial, data, entry: data.ledger["recovery-pending"] };
+}
+
+describe("canonical recovery refusal boundaries", () => {
+  it.each([
+    ["source ASIN", { asin: "B000000099" }],
+    ["product type", { productType: "OTHER_PRODUCT" }],
+    ["FBA", { fulfillment: "OTHER" }],
+    ["membership", { familyComplete: false }],
+    ["target ASIN", { parentAsin: "B000000099" }],
+    ["target product type", { parentProductType: "OTHER_PRODUCT" }],
+    ["dimensions", { dimensionSignature: "different" }],
+    ["theme", { variationTheme: "ITEM_SHAPE" }],
+    ["relationship selector", { attributeParentSku: null }],
+  ] as const)("does not complete a pending attach when %s differs", async (_name, patch) => {
+    const initial = await pendingRecoveryHarness();
+    const gateway = new ScriptedVariationMoveGateway();
+    gateway.state = "new";
+    gateway.observePatch = { ...patch };
+    const restarted = await harness(gateway, initial.storePath);
+    const reply = await recover(restarted.owner);
+    expect(bodyValue(reply)).toMatchObject({ status: "unknown", action: "attach", result: null });
+    expect(JSON.parse(await readFile(initial.storePath, "utf8")).ledger["recovery-pending"].state).toBe("unknown");
+    expect(gateway.validationDescriptors).toHaveLength(0);
+    expect(gateway.commitDescriptors).toHaveLength(0);
+    expect(restarted.approveWrite).not.toHaveBeenCalled();
+  });
+
+  it.each(["requiredFieldSignatures", "preservedRequiredFieldSignatures", "preservedDimensionSignatures", "retainedVariationThemeSignature"])(
+    "requires exact %s proof and preserves the record on mismatch", async (field) => {
+      const initial = await pendingRecoveryHarness();
+      const signature = "a".repeat(64);
+      initial.entry.response._writeEvidence[field] = field === "retainedVariationThemeSignature"
+        ? signature : { contains_liquid_contents: signature };
+      await writeFile(initial.storePath, JSON.stringify(initial.data));
+      const gateway = new ScriptedVariationMoveGateway(); gateway.state = "new";
+      const restarted = await harness(gateway, initial.storePath);
+      expect(bodyValue(await recover(restarted.owner))).toMatchObject({ status: "unknown", result: null });
+      gateway.observePatch = field === "retainedVariationThemeSignature"
+        ? { exactAttributeSignatures: { variation_theme: signature } }
+        : { [field === "requiredFieldSignatures" ? "attributeSignatures" : field === "preservedDimensionSignatures" ? "exactAttributeSignatures" : "wholeAttributeSignatures"]: { contains_liquid_contents: signature } };
+      expect(bodyValue(await recover(restarted.owner))).toMatchObject({ status: "verified", result: { verified: true } });
+      expect(gateway.validationDescriptors).toHaveLength(0);
+      expect(gateway.commitDescriptors).toHaveLength(0);
+      expect(restarted.approveWrite).not.toHaveBeenCalled();
+    });
+
+  it.each(["newer-null", "same-time", "older-unresolved", "legacy"])("does not hide %s behind an older success", async (scenario) => {
+    const initial = await pendingRecoveryHarness();
+    const original = initial.entry;
+    original.state = "completed"; original.response.verified = true;
+    const newer = structuredClone(original);
+    newer.createdAt = original.createdAt + 10;
+    newer.updatedAt = newer.createdAt;
+    newer.state = "unknown";
+    if (scenario === "newer-null") newer.response = null;
+    if (scenario === "same-time") newer.createdAt = original.createdAt;
+    if (scenario === "older-unresolved") { newer.state = "completed"; original.state = "unknown"; }
+    if (scenario === "legacy") delete newer.response._writeEvidence;
+    initial.data.ledger["recovery-other"] = newer;
+    // A recently updated older success must not take precedence over createdAt.
+    original.updatedAt = newer.createdAt + 50;
+    await writeFile(initial.storePath, JSON.stringify(initial.data));
+    const gateway = new ScriptedVariationMoveGateway(); gateway.state = "new";
+    const restarted = await harness(gateway, initial.storePath);
+    expect(bodyValue(await recover(restarted.owner))).toMatchObject({ status: "unknown", result: null });
+    expect(restarted.approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitDescriptors).toHaveLength(0);
+  });
+
+  it("keeps a completed receipt unverified if its canonical facts changed", async () => {
+    const initial = await pendingRecoveryHarness();
+    initial.entry.state = "completed"; initial.entry.response.verified = true;
+    await writeFile(initial.storePath, JSON.stringify(initial.data));
+    const gateway = new ScriptedVariationMoveGateway(); gateway.state = "standalone";
+    const restarted = await harness(gateway, initial.storePath);
+    expect(bodyValue(await recover(restarted.owner))).toMatchObject({ status: "unknown", result: null });
+  });
+
+  it("fails closed when inspection is unavailable", async () => {
+    const gateway = new ScriptedVariationMoveGateway();
+    const initial = await harness(gateway);
+    const owner = createVariationMoveMutations({ gateway, context: initial.context, writeGate: {
+      stagePreview: vi.fn(), execute: vi.fn(), reconcile: vi.fn(), clearEphemeral: vi.fn(),
+    } });
+    expect(bodyValue(await recover(owner))).toMatchObject({ code: "WRITE_INSPECTION_UNAVAILABLE" });
+  });
+
+  it("rejects context drift after the canonical read without reconciling", async () => {
+    const initial = await pendingRecoveryHarness();
+    const gateway = new ScriptedVariationMoveGateway(); gateway.state = "new";
+    const restarted = await harness(gateway, initial.storePath);
+    const read = gateway.readCanonical.bind(gateway);
+    gateway.readCanonical = async () => { const value = await read(); restarted.context.invalidate("account-changed"); return value; };
+    const reply = await recover(restarted.owner);
+    expect(reply.status).toBe(409);
+    expect(bodyValue(reply)).toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+    expect(JSON.parse(await readFile(initial.storePath, "utf8")).ledger["recovery-pending"].state).toBe("unknown");
+  });
+
+  it("recovers a DISPATCHED detach from a real unknown record", async () => {
+    const gateway = new ScriptedVariationMoveGateway(); gateway.autoApply = false;
+    gateway.commitReceipts.push({ status: "UNKNOWN", submissionId: null, requestId: "RECOVERY-UNKNOWN", issues: [] });
+    const first = await harness(gateway);
+    await preview(first.owner, detachInput(), "recovery-detach");
+    expect((await commit(first.owner, detachInput(), "recovery-detach")).status).toBe(503);
+    gateway.state = "standalone";
+    const counts = [gateway.validationDescriptors.length, gateway.commitDescriptors.length, first.approveWrite.mock.calls.length];
+    expect(bodyValue(await recover(first.owner))).toMatchObject({ status: "verified", action: "detach", sourceParentSku: OLD_PARENT, targetParentSku: null });
+    expect([gateway.validationDescriptors.length, gateway.commitDescriptors.length, first.approveWrite.mock.calls.length]).toEqual(counts);
+  });
+});
+
+describe("recovery terminal context and exact receipt", () => {
+  it("never reports none when the installed gate cannot read its store", async () => {
+    const initial = await harness(new ScriptedVariationMoveGateway());
+    vi.spyOn(initial.store, "inspectIdempotentOperations").mockRejectedValue(new Error("disk unavailable"));
+    const response = await recover(initial.owner);
+    expect(response.status).toBe(503);
+    expect(bodyValue(response)).toMatchObject({ code: "WRITE_INSPECTION_UNAVAILABLE" });
+  });
+  it("returns pending for an unchanged durable pending claim", async () => {
+    const initial = await pendingRecoveryHarness();
+    initial.entry.state = "pending";
+    await writeFile(initial.storePath, JSON.stringify(initial.data));
+    const gateway = new ScriptedVariationMoveGateway(); gateway.state = "standalone";
+    const reopened = await harness(gateway, initial.storePath);
+    expect(bodyValue(await recover(reopened.owner))).toMatchObject({ status: "pending", action: "attach", targetParentSku: TARGET_PARENT, result: null });
+  });
+  it("does not recover a malformed outer identity from otherwise matching private evidence", async () => {
+    const initial = await pendingRecoveryHarness();
+    initial.entry.response.sellerSku = "OTHER-SKU";
+    await writeFile(initial.storePath, JSON.stringify(initial.data));
+    const gateway = new ScriptedVariationMoveGateway(); gateway.state = "new";
+    const reopened = await harness(gateway, initial.storePath);
+    expect(bodyValue(await recover(reopened.owner))).toMatchObject({ status: "unknown", result: null });
+    expect(JSON.parse(await readFile(initial.storePath, "utf8")).ledger["recovery-pending"].state).toBe("unknown");
+  });
+  it("does not publish verified proof if context changes after reconciliation", async () => {
+    const initial = await pendingRecoveryHarness();
+    const gateway = new ScriptedVariationMoveGateway(); gateway.state = "new";
+    const reopened = await harness(gateway, initial.storePath);
+    const original = reopened.writeGate.reconcile.bind(reopened.writeGate);
+    vi.spyOn(reopened.writeGate, "reconcile").mockImplementation(async (input) => {
+      await original(input); reopened.context.invalidate("lock-screen");
+    });
+    expect(await recover(reopened.owner)).toMatchObject({ status: 409, body: { kind: "json", value: { code: "SP_CONTEXT_INVALIDATED" } } });
+    expect(reopened.approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitDescriptors).toHaveLength(0);
+  });
+  it("does not promote old-account evidence after restart", async () => {
+    const initial = await pendingRecoveryHarness();
+    initial.entry.accountScope = "other-account";
+    await writeFile(initial.storePath, JSON.stringify(initial.data));
+    const gateway = new ScriptedVariationMoveGateway(); gateway.state = "new";
+    const reopened = await harness(gateway, initial.storePath);
+    expect(bodyValue(await recover(reopened.owner))).toMatchObject({ status: "none", result: null });
+    expect(JSON.parse(await readFile(initial.storePath, "utf8")).ledger["recovery-pending"].state).toBe("unknown");
   });
 });
