@@ -96,3 +96,16 @@
 :root[data-ui-accent="pink"] :is(.operations-pulse,.operations-companion,.brand-sales-card,.operations-pulse .sales-trend) { background: #fff; }
 :root[data-ui-accent="pink"] :is(.operations-pulse,.operations-companion) { box-shadow: 0 8px 28px #b9436510; }
 :root[data-ui-accent="pink"] .brand-sales-card .sales-trend-range button[aria-pressed="true"] { color: #b22f58; background: #ffe5ed; border-color: #f3a5be; }
+
+/* One coherent pink control treatment for sync, date range and share tabs.
+   Explicit modes prevent generated legacy colors from repainting these controls. */
+:root[data-ui-accent="pink"][data-ui-mode="light"] #home-performance { --share-control-bg: #fff0f5; --share-control-line: #f3c8d6; --share-control-ink: #92354f; --share-control-selected: #ffdeea; --share-control-active-ink: #9b254d; --share-control-active-line: #ed99b5; }
+:root[data-ui-accent="pink"][data-ui-mode="dark"] #home-performance { --share-control-bg: #2d242a; --share-control-line: #704254; --share-control-ink: #ffc0d4; --share-control-selected: #563144; --share-control-active-ink: #ffd4e2; --share-control-active-line: #c16b8c; }
+:root[data-ui-accent="pink"]:is([data-ui-mode="light"],[data-ui-mode="dark"]) #home-performance :is(.sales-trend-range,.pulse-refresh) { color: var(--share-control-ink); background: var(--share-control-bg); border-color: var(--share-control-line); box-shadow: none; }
+:root[data-ui-accent="pink"]:is([data-ui-mode="light"],[data-ui-mode="dark"]) #home-performance .sales-trend-range button { color: var(--share-control-ink); background: transparent; border-color: transparent; box-shadow: none; }
+:root[data-ui-accent="pink"]:is([data-ui-mode="light"],[data-ui-mode="dark"]) #home-performance .sales-trend-range button:is([aria-pressed="true"],:hover:not(:disabled)),
+:root[data-ui-accent="pink"]:is([data-ui-mode="light"],[data-ui-mode="dark"]) #home-performance .pulse-refresh:hover:not(:disabled) { color: var(--share-control-active-ink); background: var(--share-control-selected); border-color: var(--share-control-active-line); box-shadow: none; }
+:root[data-ui-accent="pink"]:is([data-ui-mode="light"],[data-ui-mode="dark"]) #home-performance :is(.sales-trend-range button,.pulse-refresh):focus-visible { outline: 2px solid var(--share-control-active-ink); outline-offset: 3px; }
+:root[data-ui-accent="pink"]:is([data-ui-mode="light"],[data-ui-mode="dark"]) #home-performance :is(.sales-trend-range button,.pulse-refresh):disabled { color: var(--share-control-ink); opacity: .55; }
+:root[data-ui-accent="pink"][data-ui-mode="light"] #home-performance .brand-sales-tooltip { background: #fff8fb; border-color: #f3c8d6; color: #852c49; }
+:root[data-ui-accent="pink"][data-ui-mode="light"] #home-performance .brand-sales-tooltip-volume { color: #92354f; }

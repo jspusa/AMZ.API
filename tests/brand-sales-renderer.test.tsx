@@ -1,3 +1,4 @@
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { parseBrandSalesSnapshot } from "../src/renderer/src/brand-sales";
@@ -84,11 +85,12 @@ describe("brand sales renderer", () => {
     expect(html).toContain("tabindex=\"0\"");
     expect(html.match(/class="brand-sales-pie-slice/g)).toHaveLength(6);
     expect(html.match(/d="M 60 60 L/g)).toHaveLength(6);
-    expect(html).toContain("<title>Afreschi");
+    expect(html).toContain('aria-label="Afreschi 50%"');
     expect(html).not.toContain("brand-sales-center");
     expect(html).not.toContain("brand-sales-donut");
     expect(html).toContain("50%");
-    expect(html).toContain(">總計<");
+    expect(html).toContain("總計 US$100.00");
+    expect(html).not.toContain('class="brand-sales-selection"');
     expect(html).not.toContain("已隨區間自動更新");
     expect(html).not.toContain("brand-sales-notice");
     expect(html).not.toContain("資料怎麼算");
@@ -105,7 +107,8 @@ describe("brand sales renderer", () => {
     );
 
     expect(html).toContain("品牌營收占比");
-    expect(html).toContain(">總計<");
+    expect(html).toContain("總計 US$100.00");
+    expect(html).not.toContain('class="brand-sales-selection"');
     expect(html).not.toContain("FBA 已出貨營收");
     expect(html).not.toContain("08/01–08/07");
     expect(html).not.toContain("已隨區間自動更新");
@@ -113,7 +116,7 @@ describe("brand sales renderer", () => {
     expect(html).not.toContain("資料怎麼算");
   });
 
-  it("renders all eight Supply categories with amount and percentage from the same snapshot", () => {
+  it("renders all eight Supply categories with only names and percentages at rest", () => {
     const parsed = parseBrandSalesSnapshot(snapshot(), expected);
     const html = renderToStaticMarkup(
       <BrandSalesChart
@@ -136,7 +139,8 @@ describe("brand sales renderer", () => {
     ]) {
       expect(html).toContain(label);
     }
-    expect(html).toContain("US$40.00");
+    expect(html).not.toContain("US$40.00");
+    expect(html).not.toContain('role="tooltip"');
     expect(html).toContain("40%");
     expect(html).toContain('aria-label="品類營收明細"');
     expect(html).toContain("品類營收占比");
@@ -256,5 +260,38 @@ describe("brand sales renderer", () => {
     expect(html).toContain("沒有資料被修改");
     expect(html).toContain("Request ID: request-brand-1234");
     expect(html).toContain(">再試一次</button>");
+  });
+});
+
+
+describe("share details on demand", () => {
+  it.each(["brand", "category"] as const)("preserves exact %s money and volume on hover/focus without permanent metadata", async initialView => {
+    let renderer!: ReactTestRenderer;
+    const parsed = parseBrandSalesSnapshot(snapshot(), expected);
+    await act(async () => { renderer = create(<BrandSalesChart snapshot={parsed} loading={false} error={null} onRetry={() => undefined} initialView={initialView} />); });
+    const root = renderer.root;
+    const segment = initialView === "brand" ? parsed.segments[0]! : parsed.categorySegments[0]!;
+    const row = () => root.findAllByType("button").find(button => button.findAllByType("strong").some(strong => strong.children.includes(segment.label)))!;
+    const tooltip = () => root.findAllByProps({ role: "tooltip" });
+    expect(tooltip()).toHaveLength(0);
+    expect(row().findAllByType("small")).toHaveLength(0);
+    await act(async () => row().props.onPointerEnter({ pointerType: "mouse" }));
+    expect(tooltip()).toHaveLength(1);
+    expect(root.findByProps({ className: "brand-sales-tooltip-amount" }).children.join("")).toBe(initialView === "brand" ? "US$50.00" : "US$40.00");
+    expect(root.findByProps({ className: "brand-sales-tooltip-volume" }).children.join("")).toBe(`${segment.skuCount} SKU · ${segment.unitCount} 件`);
+    expect(row().props["aria-describedby"]).toBe(tooltip()[0]!.props.id);
+    await act(async () => root.findByProps({ className: "brand-sales-visual" }).props.onPointerLeave());
+    expect(tooltip()).toHaveLength(0);
+    await act(async () => row().props.onFocus());
+    expect(tooltip()).toHaveLength(1);
+    await act(async () => row().props.onClick());
+    await act(async () => row().props.onBlur());
+    expect(tooltip()).toHaveLength(1);
+    await act(async () => row().props.onClick());
+    expect(tooltip()).toHaveLength(0);
+    await act(async () => row().props.onFocus());
+    await act(async () => renderer.update(<BrandSalesChart snapshot={null} loading={true} error={null} onRetry={() => undefined} initialView={initialView} />));
+    expect(tooltip()).toHaveLength(0);
+    await act(async () => renderer.unmount());
   });
 });

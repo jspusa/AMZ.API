@@ -916,10 +916,6 @@ export default function SalesTrendChart({
         </div>
       )}
 
-      {snapshot && !error && incompleteDates.length > 0 && (
-        <p className="sales-period-note"><strong>含未完整日</strong><span>{incompleteDates.join("、")} 資料尚未完整；虛線段不宜與去年整日直接比較。日期依 {snapshot.timeZone}。</span></p>
-      )}
-
       {error ? (
         <div className="sales-trend-error" role="alert">
           <div>
@@ -968,6 +964,7 @@ export default function SalesTrendChart({
               {snapshot.comparison
                 ? `去年同期總銷售 ${formatMoney(snapshot.comparison.totals.totalSales)}。黃金橘實線為本期，灰藍虛線為去年同期。`
                 : "目前沒有去年同期比較資料。"}
+              {incompleteDates.length > 0 ? `${incompleteDates.join("、")} 為未完整日；日期依 ${snapshot.timeZone}。` : ""}
               可用左右方向鍵逐日查看。
             </desc>
             <defs>

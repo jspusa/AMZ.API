@@ -32,28 +32,37 @@ describe("compact charts and authored dark surfaces", () => {
     expect(nearestTrendPointIndex(50, 0, 320, NaN)).toBeNull();
   });
 
-  it("puts the full total before the small pie and keeps amounts unbroken", async () => {
+  it("keeps complete money on demand beside a recognisable pie without expanding the sales plot", async () => {
     const source = await file("src/renderer/src/components/brand-sales-chart.tsx");
-    expect(source.indexOf('className="brand-sales-selection"')).toBeLessThan(source.indexOf('className="brand-sales-pie-stage"'));
-    expect(source).toContain('formatMoney(active?.amount ?? total, snapshot.currencyCode)');
-    expect(source).toContain('className="brand-sales-row-volume"');
+    expect(source).not.toContain('className="brand-sales-selection"');
+    expect(source).toContain('formatMoney(active.amount, snapshot.currencyCode)');
+    expect(source).toContain('className="brand-sales-tooltip-volume"');
+    expect(source).toContain('role="tooltip"');
     const css = postcss.parse(await file("src/renderer/src/styles/chart-compact.css"));
     const values = new Map<string, string>();
-    css.walkRules(rule => { if (rule.selector.endsWith('.brand-sales-selection > strong')) rule.walkDecls(d => { values.set(d.prop, d.value); }); });
+    css.walkRules(rule => { if (rule.selector.endsWith('.brand-sales-tooltip-amount')) rule.walkDecls(d => { values.set(d.prop, d.value); }); });
     expect(values.get("white-space")).toBe("nowrap");
-    expect(values.get("grid-column")).toBe("1 / -1");
     expect(values.has("text-overflow")).toBe(false);
+    expect(css.toString()).toContain('clamp(136px, 36cqi, 192px)');
+    const stage = new Map<string, string>();
+    css.walkRules(rule => { if (rule.selector.endsWith('.brand-sales-pie-stage')) rule.walkDecls(d => { stage.set(d.prop, d.value); }); });
+    expect(stage.get('grid-template-columns')).toBe('minmax(0, 1fr)');
+    expect(stage.get('gap')).toBe('0');
     const chart = await file("src/renderer/src/components/sales-trend-chart.tsx");
     expect(chart).toContain('const chartHeight = skaterEnabled ? HEIGHT : 170');
     expect(chart).toContain('observer.disconnect()');
     expect(chart).toContain('viewBox={`0 0 ${chartWidth} ${chartHeight}`}');
+    expect(chart).not.toContain('<p className="sales-period-note"');
+    expect(chart).toContain('strokeDasharray="5 5"');
+    expect(chart).toContain('active.point.partial ? "（即時）"');
   });
 
-  it("does not re-convert intentional light or dark theme paint", () => {
+  it("does not re-convert intentional light or dark theme paint", async () => {
     const generated = createDarkPalette('.legacy { color:#123456; } :root[data-ui-mode="dark"] .manual { color:#ffb0ca; } :root[data-ui-mode="light"] .day {color:#000000;}');
     expect(generated).toContain('.legacy');
     expect(generated).not.toContain('.manual');
     expect(generated).not.toContain('.day');
+    expect(createDarkPalette(await file('src/renderer/src/styles/appearance.css'))).not.toContain('--ui-dark-bg-share-control');
   });
 
   it("keeps text and selected controls readable on the authored neutral dark surfaces", async () => {
