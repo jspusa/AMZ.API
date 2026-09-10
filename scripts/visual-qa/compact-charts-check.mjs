@@ -56,6 +56,12 @@ export async function verifyCompactCharts({ browser, origin, root, evidence }) {
       assert.ok(Math.abs(geometry.width-geometry.viewport)<2,"Actual-width viewBox must keep axis text readable");
       assert.ok(geometry.axis>=11,"Do not shrink the entire SVG to shrink the card");
       assert.equal(await page.locator(".sales-trend-plot svg").evaluate(svg=>{const box=svg.getBoundingClientRect();return [...svg.querySelectorAll("text")].every(t=>{const r=t.getBoundingClientRect();return r.left>=box.left-1&&r.right<=box.right+1;});}),true,"All axis labels must fit without clipping");
+      const captionGap=await page.locator(".sales-trend-plot svg").evaluate(svg=>{
+        const currency=svg.querySelector(".sales-trend-axis-currency").getBoundingClientRect();
+        const ticks=[...svg.querySelectorAll(".sales-trend-gridline text")].map(t=>t.getBoundingClientRect());
+        return Math.min(...ticks.map(t=>t.top))-currency.bottom;
+      });
+      assert.ok(captionGap>=2,`Currency caption must not touch the top axis tick: ${width} ${font} ${captionGap}`);
       const pie=await page.locator('.brand-sales-pie-wrap').boundingBox();assert.ok(pie.width<=72);
       if(width===1440&&font==="standard"){
         const pulse=await page.locator('.operations-pulse').boundingBox();assert.ok(pulse.height<475,`Sales card height ${pulse.height}`);

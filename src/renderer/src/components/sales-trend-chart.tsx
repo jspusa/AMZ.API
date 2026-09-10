@@ -368,7 +368,7 @@ export default function SalesTrendChart({
   const [chartWidth, setChartWidth] = useState(WIDTH);
   const plotLeft = 88;
   const chartHeight = skaterEnabled ? HEIGHT : 170;
-  const plotTop = skaterEnabled ? PLOT.top : 20;
+  const plotTop = skaterEnabled ? PLOT.top : 38;
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot) return;
