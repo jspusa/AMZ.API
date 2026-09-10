@@ -142,6 +142,8 @@ Windows 的 native confirmation 不由 renderer 或遠端 Pages 執行。Windows
 
 會計中心不把 Finances JSON、Amazon-generated settlement、人工前置報表或不存在的發票／帳單 API 混為一談。Renderer 只取得 allowlisted capability 與安全工作狀態；一般站點發票、Seller Central 帳單及未完成 FBA 逐列過濾的 account-wide 文件保持停用，不使用私有接口。
 
+變體恢復使用固定 `GET /api/sp-api/variation-move/recovery`，只接受 marketplace 與 exact Seller SKU；main 以目前 context 讀取完整 canonical evidence，透過既有 Write Gate reconciliation／inspection 投影 `none`、`pending`、`unknown` 或 `verified`。較舊已更新的收據不能蓋過新操作，歧義、未完成檢查或 persistence context 漂移保持阻擋。結果不公開 ledger key、account scope、fingerprint 或原始 evidence；GET 不建立預檢票證、不取得原生批准、不重送 mutation。Renderer 以精確操作及來源／目標核對收據，並在帳號、模式、站點或商品切換後拒絕遲到回覆。
+
 ## 營運情報與本機事件
 
 首頁新增的五個營運分頁由 `OperationsIntelligenceCoordinator` 單一協調：它只擁有 exact context session、來源 single-flight 工作、明確 opt-in 的本機排程與事件 ledger。`ApiRouter` 的新三條 exact route 只委派 `observe`／`start`／`acknowledge`；完整 route 輸入、排程間隔及本次 source／驗收界線見 [營運情報記錄](releases/2026-09-operations-intelligence.md)。本機 observe GET 不啟動上游查詢；來源同步才經明確 POST intent 啟動，事件 acknowledgement 也只是本機狀態變更。

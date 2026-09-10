@@ -1248,7 +1248,7 @@ export function createVariationMoveGatewayProduction(
     marketplaceId: MarketplaceId;
     sellerSku: string;
   }>): Promise<VariationMoveCanonicalObservation> => {
-    const { item: result, family } = await readVariationItemAndFamily(
+    const { item: result, family, childRows } = await readVariationItemAndFamily(
       dependencies.listings,
       identity,
     );
@@ -1275,11 +1275,32 @@ export function createVariationMoveGatewayProduction(
         dimensionSignature = null;
       }
     }
+    // The family projection retains the earlier item read for display. Its
+    // same-SKU search row must independently agree before it proves membership.
+    const searchedChild = childRows.find((row) => row.member.sellerSku === identity.sellerSku);
+    const sourceSignatures = wholeVariationAttributeSignatures(result.payload.attributes);
+    const searchedSignatures = wholeVariationAttributeSignatures(searchedChild?.payload.attributes);
+    // An omitted search attribute is not contrary evidence. A supplied but
+    // different/malformed value cannot prove an authorized fact or selector.
+    const conflictingAttributes = new Set(Object.keys(searchedChild?.payload.attributes ?? {})
+      .filter((name) => !sourceSignatures[name] || sourceSignatures[name] !== searchedSignatures[name]));
+    const consistentSignatures = (signatures: Record<string, string>) => Object.fromEntries(
+      Object.entries(signatures).filter(([name]) => !conflictingAttributes.has(name)),
+    );
+    const searchConfirmsChild = result.member.role !== "child" || Boolean(searchedChild &&
+      searchedChild.member.asin === result.member.asin &&
+      searchedChild.member.productType === result.member.productType &&
+      searchedChild.member.fba === result.member.fba &&
+      searchedChild.member.role === result.member.role &&
+      searchedChild.member.parentSku === result.member.parentSku &&
+      searchedChild.member.variationTheme === result.member.variationTheme &&
+      family.dimensionNames.every((name) => Boolean(sourceSignatures[name]) &&
+        sourceSignatures[name] === searchedSignatures[name]));
     return {
       mode: "live",
-      attributeSignatures: variationAttributeSignatures(result.payload.attributes, identity.marketplaceId),
-      exactAttributeSignatures: variationAttributeSignatures(result.payload.attributes, identity.marketplaceId, true),
-      wholeAttributeSignatures: wholeVariationAttributeSignatures(result.payload.attributes),
+      attributeSignatures: consistentSignatures(variationAttributeSignatures(result.payload.attributes, identity.marketplaceId)),
+      exactAttributeSignatures: consistentSignatures(variationAttributeSignatures(result.payload.attributes, identity.marketplaceId, true)),
+      wholeAttributeSignatures: consistentSignatures(sourceSignatures),
       marketplaceId: identity.marketplaceId,
       sellerSku: result.member.sellerSku,
       asin: result.member.asin,
@@ -1298,7 +1319,7 @@ export function createVariationMoveGatewayProduction(
       dimensionNames: [...family.dimensionNames],
       dimensionSignature,
       explicitStandalone: explicitStandalone(result, identity.marketplaceId),
-      familyComplete: family.familyComplete,
+      familyComplete: family.familyComplete && searchConfirmsChild,
       parentAsin: canonicalParent?.asin ?? null,
       parentProductType: canonicalParent?.productType || null,
     };

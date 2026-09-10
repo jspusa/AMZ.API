@@ -80,6 +80,7 @@ const REVIEWED_ROUTES = [
   { method: "GET", path: "/api/sp-api/variation-family" },
   { method: "POST", path: "/api/sp-api/variation-audit" },
   { method: "GET", path: "/api/sp-api/variation-audit" },
+  { method: "GET", path: "/api/sp-api/variation-move/recovery" },
   { method: "GET", path: "/api/sp-api/variation-move" },
   { method: "POST", path: "/api/sp-api/variation-move" },
   { method: "PATCH", path: "/api/sp-api/variation-move" },
@@ -463,11 +464,11 @@ function contractRouter(
 }
 
 describe("ApiRouter public contract", () => {
-  it("matches one reviewed 73-pair matrix to the raw central switch inventory", () => {
+  it("matches the reviewed route matrix to the raw central switch inventory", () => {
     const reviewed = REVIEWED_ROUTES.map(routeKey);
     const production = productionRouteInventory();
 
-    expect(REVIEWED_ROUTES).toHaveLength(81);
+    expect(REVIEWED_ROUTES).toHaveLength(82);
     expect(new Set(reviewed).size).toBe(reviewed.length);
     expect(production.statementCount).toBe(2);
     expect(production.keyDeclarationIsExact).toBe(true);
@@ -475,7 +476,7 @@ describe("ApiRouter public contract", () => {
     expect(production.switchExpressionIsKey).toBe(true);
     expect(production.defaultCount).toBe(1);
     expect(production.defaultIsExactNotFound).toBe(true);
-    expect(production.cases).toHaveLength(81);
+    expect(production.cases).toHaveLength(82);
     expect(new Set(production.cases).size).toBe(production.cases.length);
     expect([...production.cases].sort()).toEqual([...reviewed].sort());
   });

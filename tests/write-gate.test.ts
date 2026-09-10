@@ -806,3 +806,37 @@ describe("main-owned Amazon write gate", () => {
     })).resolves.toEqual([]);
   });
 });
+
+describe("strict recovery inspection", () => {
+  it.each(["unavailable", "capped", "projection"])("does not turn %s inspection into an empty ledger", async (kind) => {
+    const store = await testStore();
+    const contextAdapter = scriptedContext(); const context = await contextAdapter.capture(US);
+    const entry = { operationType: "variation_attach" as const, state: "unknown" as const, response: null, createdAt: 1, updatedAt: 1, expiresAt: 2 };
+    const inspection = vi.spyOn(store, "inspectIdempotentOperations");
+    if (kind === "unavailable") inspection.mockRejectedValue(new Error("unavailable"));
+    else inspection.mockResolvedValue(Array.from({ length: kind === "capped" ? 32 : 1 }, () => entry));
+    const gate = new MainWriteGate({ store, context: contextAdapter, approveWrite: vi.fn() });
+    await expect(gate.inspect({ context, marketplaceId: US, sellerSku: "SAFE-SKU", operations: ["variation_attach"], requireComplete: true,
+      project: (value) => { if (kind === "projection") throw new Error("bad projection"); return value; },
+    })).rejects.toMatchObject({ code: "WRITE_INSPECTION_UNAVAILABLE" });
+  });
+});
+
+describe("strict recovery context propagation", () => {
+  it("carries the context fence into the store queue and refuses persistence after drift", async () => {
+    const store = await testStore(); const contextAdapter = scriptedContext();
+    const context = await contextAdapter.capture(US);
+    const persist = vi.fn();
+    vi.spyOn(store, "reconcileIdempotentOperations").mockImplementation(async (input) => {
+      contextAdapter.invalidate("account-changed");
+      expect(input.assertCurrent).toBeTypeOf("function");
+      await input.assertCurrent!();
+      persist(); return 1;
+    });
+    const gate = new MainWriteGate({ store, context: contextAdapter, approveWrite: vi.fn() });
+    await expect(gate.reconcile({ context, marketplaceId: US, sellerSku: "SAFE-SKU", operations: ["variation_attach"],
+      requireCurrent: true, snapshot: {}, project: () => ({ verified: true }),
+    })).rejects.toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+    expect(persist).not.toHaveBeenCalled();
+  });
+});

@@ -15,13 +15,28 @@ The candidate was restored to the trusted CI 0.1.61 bundle after diagnosis. Both
 | ★ Root-cause diagnosis | Original account/source/target reached the exact existing-value conflict. |
 | ★ Trusted app restored | CI 0.1.61 ASAR `b92c6ccd4bc93341c88a3c99b14dedd3cadf1bd6ac96cf81cf8be2878c5e1dea`; vault unchanged. |
 | ★ 0.1.62 implementation | Explicit name-only preservation, exact unchanged-fact proof and current target-family proof are implemented. |
-| ★ Feature source checks | 296 test files / 3,316 tests, typecheck, build and stylesheet verification passed; production audit found 0 vulnerabilities. Integrated main `19cc03fe` check also passed: 297 files / 3,321 tests, build/stylesheet parity and production audit 0. Exact-source CI remains pending. |
+| ★ Feature source checks | 296 test files / 3,316 tests, typecheck, build and stylesheet verification passed; production audit found 0 vulnerabilities. Integrated main `19cc03fe` check also passed: 297 files / 3,321 tests, build/stylesheet parity and production audit 0. Final exact-source CI is recorded below. |
 | ★ Independent reviews | Final Standards and Spec re-reviews each report 0 remaining findings; independent production-seam drift regressions passed. The subsequent main integration also passed both independent axes with 0 findings. |
-| ☆ Pages and desktop CI artifacts | Not yet published or verified for this change. |
-| ☆ Installed 0.1.62 live recovery | Pending new UI and verified application; do not claim the original liquid blocker fixed. |
+| ★ Pages and desktop CI artifacts | PR #235 merged as `9a71d8bd848266936cd387d729ec0b6fdd473eac`; exact main Validate, Pages, Mac and Windows succeeded. All live Pages HTML/JS/CSS bytes and both official desktop artifacts verified. |
+| ★ Installed 0.1.62 / live Preview | Official Mac 0.1.62 installed with vault unchanged and launched connected. The same ASAR previously passed the original liquid-required Preview after explicit unchanged-fact acknowledgement. |
+| ☆ Accepted bind recovery | After external user interaction the app displayed an accepted request awaiting verification. Subsequent GET showed the intended parent, but this is not full canonical proof. The existing button cannot reconcile; follow-up is Issue #236 / 0.1.63. |
 | ☆ Protected downloads | Pending this version's upload and authenticated byte/hash retrieval. |
 
-Source version 0.1.62 does not mean the user's app or protected downloads have been updated. Formal mutation, real Touch ID/Windows Hello approval, Windows device behavior and publisher signing are separate from Preview and CI acceptance.
+Installed version, protected downloads, actual Amazon result, real Touch ID/Windows Hello approval, Windows device behavior and publisher signing are separate evidence claims; their verified and pending states are recorded below.
+
+## Verified release and live boundaries
+
+PR #235 final reviewed head `6a981a013aa39a3696d3c8f6ed6d7e779a6884fa` passed Validate `34431102625` and Windows `34431102670`; the merged main has the same source tree. Main Validate `34431681374`, Pages `34431681365`, Windows `34431681362` and Mac `34431681367` attempt 2 succeeded. The first Mac attempt failed only the existing five-second architecture source-scan timeout; its exact-source focused check passed within the original timeout, and one justified failed-job rerun passed. No failed run is used as artifact evidence.
+
+| Artifact | Exact evidence |
+|---|---|
+| ★ Pages | Artifact `10134741272`; index plus all nine JS/CSS assets match public HTTP bytes. Local evidence: `/tmp/amz-api-v0162-verified/pages/pages-byte-verification.json`. |
+| ★ Mac | Artifact `10134996998`; DMG 247,072,192 bytes, SHA-256 `10ec9a61ff211da82e4d9b4bae991e337ed159d4f6437947cbe6f45e8501102b`. Installed universal ASAR `350232d07df4bfbf1e9354b817938edde729c0d19ce477ef6cb8144dcb2be788`, deep strict ad-hoc verification, update channel disabled. |
+| ★ Windows | Artifact `10134841508`; installer 101,994,182 bytes, SHA-256 `dd953eb29eafba91ecd54d859de7c18223acaafec56695e7f07a71e85831d711`. Packaging, ASAR, AMD64 and native boundary checks passed; no real Windows device or Hello claim. |
+| ★ Installation | `/tmp/amz-api-v0162-verified/installation-verification.json`; old app backed up, current userData retained, encrypted vault unchanged. Official app reopened with Amazon connected. |
+| ☆ Protected portal | 0.1.62 has not been uploaded; employee authentication remains pending. Final 0.1.63 delivery will supersede both cards after exact artifact verification. |
+
+The original source `TPZ01AM-4` and target `AF Turkey Tedon_Small` displayed the existing liquid answer as No. The operator explicitly acknowledged preserving that answer, and one fresh Preview passed with No → No and the formal confirmation button available. The agent did not click formal confirmation or native approval. During external user interaction, a later fresh UI observation reported accepted/pending with Request ID `74c40126-c7b1-491a-83ca-163813a77205`. Read-only followups first showed no parent, then the intended parent. The existing button reads family state without reconciling the durable intent, so the unchanged pending UI is not proof that the full canonical predicate failed. No resubmission was performed. Evidence: `/tmp/amz-api-variation-preserved-facts-canary/9a71d8bd848266936cd387d729ec0b6fdd473eac/`. Recovery of this existing record is the bounded [0.1.63 task](../specs/2026-09-10-variation-readback-recovery.md).
 
 Local review evidence: the first review identified missing target identity binding and content-owned fields in the managed denylist; a follow-up production-seam reproduction exposed target-theme drift after the last Preview. These were fixed with before-approval/dispatch regressions, including changed sibling combinations and membership. The final feature check is `/tmp/amz-api-v0162-verified/feature-final-check.log`. No test result here is a live Amazon write or new installed-version claim.
 

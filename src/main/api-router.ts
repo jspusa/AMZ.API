@@ -1139,6 +1139,8 @@ export class ApiRouter {
         return this.unboundVariationAuditOwner.start(request);
       case "GET /api/sp-api/variation-audit":
         return this.unboundVariationAuditOwner.statusDataOrDownload(request);
+      case "GET /api/sp-api/variation-move/recovery":
+        return this.variationMoveMutations.handle({ operation: "recover", request });
       case "GET /api/sp-api/variation-move":
         return this.variationMoveMutations.handle({
           operation: "prepare",

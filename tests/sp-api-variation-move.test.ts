@@ -682,9 +682,9 @@ async function durableVariationRouter(approveWrite: (reason: string) => Promise<
   });
 }
 
-async function durableWireOwner(approveWrite: (reason: string) => Promise<void> = async () => undefined) {
+async function durableWireOwner(approveWrite: (reason: string) => Promise<void> = async () => undefined, existingStorePath?: string) {
   const directory = await mkdtemp(join(tmpdir(), "amz-api-variation-readback-"));
-  const storePath = join(directory, "store.json");
+  const storePath = existingStorePath ?? join(directory, "store.json");
   const store = new LocalStore(storePath);
   await store.initialize();
   const context = createScriptedSpExecutionContextAdapter(() => ({
@@ -702,7 +702,7 @@ async function durableWireOwner(approveWrite: (reason: string) => Promise<void> 
     gateway: variationMoveGatewayProduction,
     readbackDelay: async () => undefined,
   });
-  return { owner, storePath };
+  return { owner, storePath, store };
 }
 
 describe("live variation detach and attach wire safety", () => {
@@ -3087,4 +3087,61 @@ describe("live variation detach and attach wire safety", () => {
     });
     expect(wire.commitPatchCount()).toBe(0);
   });
+  it.each(["complete", "preserved-fact", "target-identity", "membership", "target-theme", "source-search-asin", "source-search-fba", "source-search-product-type", "source-search-dimension", "source-search-selector", "source-search-key-order", "source-search-fact", "source-search-fact-selector", "source-search-unrelated"])("recovers through GET and durable production proof: %s", async (scenario) => {
+    const original = [{ value: false, marketplace_id: MARKETPLACE_ID }];
+    const wire = installPreviewFactWire({ wire: {
+      sourceAttributes: { contains_liquid: original }, commitResultState: "new",
+      postCommitSourceAttributes: { contains_liquid: [{ value: true, marketplace_id: MARKETPLACE_ID }] },
+    } });
+    const approval = vi.fn(async () => undefined);
+    const first = await durableWireOwner(approval);
+    const selected = { ...input("attach"), preserveRequiredFields: ["contains_liquid"], idempotencyKey: "production-recovery" };
+    expect((await first.owner.handle({ operation: "preview", request: variationRouteRequest("POST", input("attach")) })).status).toBe(422);
+    expect((await first.owner.handle({ operation: "preview", request: variationRouteRequest("POST", selected) })).status).toBe(200);
+    expect((await first.owner.handle({ operation: "commit", request: variationRouteRequest("PATCH", selected) })).status).toBe(409);
+    if (scenario !== "preserved-fact") wire.setPostCommitSourceAttributes({ contains_liquid: original });
+    const wrapped = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (request, init) => {
+      const response = await wrapped(request, init);
+      const url = new URL(String(request));
+      if ((init?.method ?? "GET") !== "GET" || !url.pathname.includes("/listings/")) return response;
+      const value = await response.json();
+      if (scenario.startsWith("source-search-") && url.searchParams.get("variationParentSku") === TARGET_PARENT) {
+        const sourceRow = value.items.find((item: { sku: string }) => item.sku === SOURCE_SKU);
+        if (scenario === "source-search-asin") sourceRow.summaries[0].asin = "B000000099";
+        if (scenario === "source-search-fba") sourceRow.fulfillmentAvailability = [{ fulfillmentChannelCode: "DEFAULT", quantity: 7 }];
+        if (scenario === "source-search-product-type") sourceRow.summaries[0].productType = "OTHER_PRODUCT";
+        if (scenario === "source-search-dimension") sourceRow.attributes.size_name[0].value = "different-size";
+        if (scenario === "source-search-selector") sourceRow.attributes.size_name[0].language_tag = "ja_JP";
+        if (scenario === "source-search-key-order") sourceRow.attributes.size_name[0] = Object.fromEntries(Object.entries(sourceRow.attributes.size_name[0]).reverse());
+        if (scenario === "source-search-fact") sourceRow.attributes.contains_liquid = [{ value: true, marketplace_id: MARKETPLACE_ID }];
+        if (scenario === "source-search-fact-selector") sourceRow.attributes.contains_liquid = [{ value: false, marketplace_id: MARKETPLACE_ID, language_tag: "ja_JP" }];
+        if (scenario === "source-search-unrelated") sourceRow.attributes.item_name = [{ value: "A different unrelated title", marketplace_id: MARKETPLACE_ID }];
+      }
+      if (scenario === "target-identity" && decodeURIComponent(url.pathname).endsWith(`/${TARGET_PARENT}`)) value.summaries[0].asin = "B000000099";
+      if (scenario === "membership" && url.searchParams.get("variationParentSku") === TARGET_PARENT) value.items = value.items.filter((item: { sku: string }) => item.sku !== SOURCE_SKU);
+      if (scenario === "target-theme" && decodeURIComponent(url.pathname).endsWith(`/${TARGET_PARENT}`)) {
+        value.attributes.variation_theme[0].name = "ITEM_SHAPE";
+        value.relationships[0].relationships[0].variationTheme = { theme: "ITEM_SHAPE", attributes: ["item_shape"] };
+      }
+      return jsonResponse(response.status, value, "RECOVERY-CANONICAL");
+    }));
+    const restartedApproval = vi.fn(async () => undefined);
+    const restarted = await durableWireOwner(restartedApproval, first.storePath);
+    const router = new ApiRouter({ store: restarted.store, variationMoveMutations: restarted.owner,
+      vault: { getAccountScope: async () => "variation-wire-account" } as unknown as CredentialVault,
+      approveWrite: restartedApproval });
+    const before = [wire.previewPatchCount(), wire.commitPatchCount()];
+    const recovered = await router.handle({ requestId: "production-recovery-get", method: "GET",
+      path: "/api/sp-api/variation-move/recovery", query: { marketplaceId: MARKETPLACE_ID, sku: SOURCE_SKU }, headers: {} });
+    if (scenario === "complete" || scenario === "source-search-key-order" || scenario === "source-search-unrelated") {
+      expect(recovered).toMatchObject({ status: 200, body: { kind: "json", value: { status: "verified", action: "attach", result: { verified: true, targetParentSku: TARGET_PARENT } } } });
+    } else {
+      expect(recovered.body).not.toMatchObject({ kind: "json", value: { status: "verified" } });
+      expect(JSON.parse(await readFile(first.storePath, "utf8")).ledger["production-recovery"].state).toBe("unknown");
+    }
+    expect([wire.previewPatchCount(), wire.commitPatchCount()]).toEqual(before);
+    expect(restartedApproval).not.toHaveBeenCalled();
+  });
+
 });

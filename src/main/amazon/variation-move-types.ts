@@ -89,3 +89,17 @@ export type VariationMoveResult = {
 };
 
 export type VariationMoveExecutionFence = ListingWriteExecutionFence;
+
+/** A fresh canonical GET observation joined to existing durable work only. */
+export type VariationMoveRecovery = {
+  mode: "live" | "demo";
+  marketplaceId: MarketplaceId;
+  sellerSku: string;
+  status: "none" | "pending" | "unknown" | "verified";
+  action: VariationMoveAction | null;
+  sourceParentSku: string | null;
+  targetParentSku: string | null;
+  observedParentSku: string | null;
+  result: VariationMoveResult | null;
+  notice: string;
+};

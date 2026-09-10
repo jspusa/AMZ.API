@@ -1,5 +1,6 @@
 import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
 import type { MarketplaceId } from "../shared/marketplaces";
+import { MAX_IDEMPOTENT_OPERATION_INSPECTIONS } from "./local-store";
 import type {
   IdempotentOperationAvailabilityInput,
   LedgerOperationType,
@@ -69,6 +70,8 @@ export type MainWriteGateExecuteInput<T> = Readonly<{
 }>;
 
 export type MainWriteGateReconcileInput<TSnapshot> = Readonly<{
+  /** Recovery must surface a failed fence instead of treating it as no work. */
+  requireCurrent?: true;
   context: SpExecutionContext;
   marketplaceId: MarketplaceId;
   sellerSku: string;
@@ -91,6 +94,8 @@ export type MainWriteGateInspection = Readonly<{
 }>;
 
 export type MainWriteGateInspectInput<TResult> = Readonly<{
+  /** Distinguish an unavailable/capped inspection from an empty ledger. */
+  requireComplete?: true;
   context: SpExecutionContext;
   marketplaceId: MarketplaceId;
   sellerSku: string;
@@ -111,6 +116,7 @@ export interface MainWriteGatePort {
 }
 
 export type MainWriteGateErrorCode =
+  | "WRITE_INSPECTION_UNAVAILABLE"
   | "PREVIEW_EXPIRED"
   | "PREVIEW_CHANGED"
   | "OPERATION_IN_PROGRESS"
@@ -123,6 +129,7 @@ export type MainWriteGateErrorCode =
 const GATE_ERRORS: Readonly<
   Record<MainWriteGateErrorCode, Readonly<{ status: number; message: string }>>
 > = {
+  WRITE_INSPECTION_UNAVAILABLE: { status: 503, message: "無法完整讀取先前操作記錄；請保留目前商品，勿重新送出。" },
   PREVIEW_EXPIRED: {
     status: 409,
     message: "這次 Amazon 預檢已過期，請重新預檢後再送出。",
@@ -465,6 +472,7 @@ export class MainWriteGate implements MainWriteGatePort {
         input.context.marketplaceId !== input.marketplaceId ||
         !this.store.inspectIdempotentOperations
       ) {
+        if (input.requireComplete) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
         return [];
       }
       await this.context.assertCurrent(input.context);
@@ -474,18 +482,24 @@ export class MainWriteGate implements MainWriteGatePort {
         sellerSku: input.sellerSku,
         accountScope: input.context.accountScope,
       });
+      if (input.requireComplete && inspected.length >= MAX_IDEMPOTENT_OPERATION_INSPECTIONS) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
       const projected: TResult[] = [];
       for (const entry of inspected) {
         try {
           const result = input.project(structuredClone(entry));
           if (result !== null) projected.push(structuredClone(result));
-        } catch {
+        } catch (error) {
+          if (input.requireComplete) throw error;
           // A malformed or uncloneable domain projection is not evidence.
         }
       }
       await this.context.assertCurrent(input.context);
       return projected;
-    } catch {
+    } catch (error) {
+      if (input.requireComplete) {
+        if (error instanceof SpExecutionContextError) throw error;
+        throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
+      }
       // Fail closed: never reveal evidence for a stale or unverified account.
       return [];
     }
@@ -495,13 +509,22 @@ export class MainWriteGate implements MainWriteGatePort {
     input: MainWriteGateReconcileInput<TSnapshot>,
   ): Promise<void> {
     try {
-      if (input.context.marketplaceId !== input.marketplaceId) return;
+      if (input.context.marketplaceId !== input.marketplaceId) {
+        if (input.requireCurrent) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
+        return;
+      }
       await this.context.assertCurrent(input.context);
       await this.store.reconcileIdempotentOperations({
         operationTypes: input.operations,
         marketplaceId: input.marketplaceId,
         sellerSku: input.sellerSku,
         accountScope: input.context.accountScope,
+        ...(input.requireCurrent ? { assertCurrent: async () => {
+          await this.context.assertCurrent(input.context);
+          if (this.listingAttributeReservations.has(`${input.marketplaceId}\u0000${input.sellerSku}`)) {
+            throw new MainWriteGateError("OPERATION_IN_PROGRESS");
+          }
+        } } : {}),
         reconcile: (response, operation) => {
           try {
             return input.project(response, operation, input.snapshot);
@@ -510,7 +533,9 @@ export class MainWriteGate implements MainWriteGatePort {
           }
         },
       });
-    } catch {
+      if (input.requireCurrent) await this.context.assertCurrent(input.context);
+    } catch (error) {
+      if (input.requireCurrent) throw error;
       // Fail closed: an unresolved durable entry remains pending or unknown.
     }
   }

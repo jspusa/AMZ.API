@@ -191,3 +191,33 @@ describe("LocalStore persistence commit boundary", () => {
     }
   });
 });
+
+describe("recovery persistence context fence", () => {
+  it.each(["queued-draft", "before-rename"])("preserves unknown durable bytes after context drift at %s", async (phase) => {
+    const fs = filesystem(); const { store, path } = await fixture(fs);
+    await expect(store.runIdempotentOperation({ ...operation, operationType: "variation_attach", execute: async ({ recordAccepted }) => {
+      await recordAccepted({ status: "ACCEPTED", verified: false });
+      throw new SpApiError("awaiting recovery", { status: 503, code: "UPDATE_STATUS_UNKNOWN" });
+    } })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+    const original = await readFile(path);
+    let changed = phase === "queued-draft";
+    const assertion = vi.fn(async () => { if (changed) throw new SpApiError("context changed", { status: 409, code: "SP_CONTEXT_INVALIDATED" }); });
+    fs.open = async (...args) => {
+      const handle = await open(...args);
+      if (args[1] === "wx") {
+        const sync = handle.sync.bind(handle);
+        handle.sync = async () => { await sync(); changed = true; };
+      }
+      return handle;
+    };
+    const projection = vi.fn(() => ({ status: "ACCEPTED", verified: true }));
+    await expect(store.reconcileIdempotentOperations({ ...operation, operationTypes: ["variation_attach"],
+      assertCurrent: assertion, reconcile: projection,
+    })).rejects.toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+    expect(await readFile(path)).toEqual(original);
+    if (phase === "queued-draft") expect(projection).not.toHaveBeenCalled();
+    else expect(assertion).toHaveBeenCalledTimes(2);
+    const reopened = new LocalStore(path); await reopened.initialize();
+    expect(await reopened.inspectIdempotentOperations({ ...operation, operationTypes: ["variation_attach"] })).toMatchObject([{ state: "unknown", response: { verified: false } }]);
+  });
+});
