@@ -13,7 +13,7 @@ index f4dfef4..328819b 100644
    await verifyAuditDetails({ browser, origin, root, evidence });
 diff --git a/scripts/visual-qa/sweet-ui-check.mjs b/scripts/visual-qa/sweet-ui-check.mjs
 new file mode 100644
-index 0000000..2f875c6
+index 0000000..da9daa9
 --- /dev/null
 +++ b/scripts/visual-qa/sweet-ui-check.mjs
 @@ -0,0 +1,74 @@
@@ -69,7 +69,7 @@ index 0000000..2f875c6
 +    await importToggle.click();
 +    await page.locator('.content-audit-roundtrip input[type="file"]').setInputFiles({name:"selected.xlsx",mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",buffer:Buffer.from("synthetic preview only")});
 +    await exportToggle.click();await importToggle.click();
-+    assert.equal(await page.locator('.content-audit-roundtrip input[type="file"]').evaluate(input=>input.files[0]?.name),"selected.xlsx","View changes preserve file selection");
++    assert.equal(await page.locator('.content-audit-file-picker > span').textContent(),"selected.xlsx","View changes preserve file selection");
 +    await page.evaluate(()=>{
 +      const request=window.fbaOS.api.request;
 +      window.fbaOS.api.request=(input)=>input.path==="/api/sp-api/listing-content/import"&&input.method==="POST"
