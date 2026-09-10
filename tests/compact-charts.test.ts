@@ -32,18 +32,20 @@ describe("compact charts and authored dark surfaces", () => {
     expect(nearestTrendPointIndex(50, 0, 320, NaN)).toBeNull();
   });
 
-  it("keeps complete money on demand beside a recognisable pie without expanding the sales plot", async () => {
+  it("keeps complete money on demand in a fixed detail rail without covering the share chart", async () => {
     const source = await file("src/renderer/src/components/brand-sales-chart.tsx");
     expect(source).not.toContain('className="brand-sales-selection"');
     expect(source).toContain('formatMoney(active.amount, snapshot.currencyCode)');
-    expect(source).toContain('className="brand-sales-tooltip-volume"');
-    expect(source).toContain('role="tooltip"');
+    expect(source).toContain('className="brand-sales-context-line"');
+    expect(source).toContain('<small>{active.skuCount} SKU · {active.unitCount.toLocaleString()} 件</small>');
+    expect(source).not.toContain('role="tooltip"');
     const css = postcss.parse(await file("src/renderer/src/styles/chart-compact.css"));
-    const values = new Map<string, string>();
-    css.walkRules(rule => { if (rule.selector.endsWith('.brand-sales-tooltip-amount')) rule.walkDecls(d => { values.set(d.prop, d.value); }); });
-    expect(values.get("white-space")).toBe("nowrap");
-    expect(values.has("text-overflow")).toBe(false);
-    expect(css.toString()).toContain('clamp(136px, 36cqi, 192px)');
+    const rail = new Map<string, string>();
+    css.walkRules(rule => { if (rule.selector === '#home-performance .brand-sales-context-line') rule.walkDecls(d => { rail.set(d.prop, d.value); }); });
+    expect(rail.get("min-height")).toBe("28px");
+    expect(rail.get("overflow")).toBe("hidden");
+    expect(css.toString()).toContain('clamp(154px, 38cqi, 196px)');
+    expect(css.toString()).toContain('.brand-sales-legend-meter');
     const stage = new Map<string, string>();
     css.walkRules(rule => { if (rule.selector.endsWith('.brand-sales-pie-stage')) rule.walkDecls(d => { stage.set(d.prop, d.value); }); });
     expect(stage.get('grid-template-columns')).toBe('minmax(0, 1fr)');
