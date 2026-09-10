@@ -80,7 +80,7 @@ export async function verifyUsability({ browser, origin, root, evidence }) {
     await dialog.screenshot({path:resolve(evidence, `usability-settings-dark-${width}.png`)});
     await close.click();
     assert.equal(await requests(), initialRequests, "Local display changes must not call the Bridge");
-    assert.equal(await page.locator(".sales-period-note").isVisible(), true);
+    assert.equal(await page.locator(".sales-period-note").count(), 0);
     assert.equal(await page.locator(".sales-trend-line.is-current.is-partial").getAttribute("stroke-dasharray"), "5 5");
     assert.equal(await page.locator(".sales-chart-options").getAttribute("open"), null);
     assert.equal(await page.getByRole("button", {name:"迷你滑板", exact:false}).isVisible(), false);

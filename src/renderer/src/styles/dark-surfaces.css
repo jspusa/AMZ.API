@@ -86,3 +86,6 @@
 :root[data-ui-mode="dark"] [data-audit-reading="true"] th { background: var(--night-raised); color: var(--night-muted); }
 :root[data-ui-mode="dark"] :is(.commerce-os,.order-drawer) :is(button,input,select,textarea):disabled { color: #929dad; opacity: 1; cursor: not-allowed; }
 :root[data-ui-mode="dark"] :is(.commerce-os,.order-drawer) :is(button,a,input,select,textarea,summary):focus-visible { outline: 2px solid var(--night-accent); outline-offset: 3px; }
+
+:root[data-ui-mode="dark"] #home-performance .brand-sales-card .brand-sales-tooltip { color: var(--night-ink); background: var(--night-raised); border-color: var(--night-line); box-shadow: 0 8px 24px #00000055; }
+:root[data-ui-mode="dark"] #home-performance .brand-sales-card .brand-sales-tooltip-volume { color: var(--night-muted); }

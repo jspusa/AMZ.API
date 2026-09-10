@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type {
   BrandSalesSnapshot,
   RevenueShareSegment,
@@ -86,7 +86,41 @@ export default function BrandSalesChart({
 }) {
   const titleId = useId();
   const [view, setView] = useState<"brand" | "category">(initialView);
-  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const detailId = useId();
+  const summaryId = useId();
+  const cardRef = useRef<HTMLElement>(null);
+  const [pointerKey, setPointerKey] = useState<string | null>(null);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [pinnedKey, setPinnedKey] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const activeKey = dismissed ? null : pointerKey ?? focusKey ?? pinnedKey;
+
+  // Display-only state. A new snapshot or classification never retains old details.
+  useEffect(() => {
+    setPointerKey(null); setFocusKey(null); setPinnedKey(null); setDismissed(false);
+  }, [snapshot, view]);
+  useEffect(() => {
+    if (!activeKey || typeof document === "undefined") return;
+    const dismiss = () => { setDismissed(true); setPinnedKey(null); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") dismiss(); };
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !cardRef.current?.contains(event.target)) dismiss();
+    };
+    document.addEventListener("keydown", escape);
+    document.addEventListener("pointerdown", outside);
+    return () => {
+      document.removeEventListener("keydown", escape);
+      document.removeEventListener("pointerdown", outside);
+    };
+  }, [activeKey]);
+  const pin = (key: string) => {
+    setDismissed(pinnedKey === key);
+    setPinnedKey(pinnedKey === key ? null : key);
+  };
+  const focus = (key: string) => { setDismissed(false); setFocusKey(key); };
+  const hover = (key: string, pointerType: string) => {
+    if (pointerType !== "touch") { setDismissed(false); setPointerKey(key); }
+  };
   const sortedSegments = snapshot
     ? sortBrandSalesSegments<RevenueShareSegment>(
         view === "brand" ? snapshot.segments : snapshot.categorySegments,
@@ -98,7 +132,7 @@ export default function BrandSalesChart({
   let offset = 0;
 
   return (
-    <section className="brand-sales-card" data-share-view={view} aria-busy={loading} aria-labelledby={titleId}>
+    <section ref={cardRef} className="brand-sales-card" data-share-view={view} aria-busy={loading} aria-labelledby={titleId}>
       <header className="brand-sales-heading">
         <h3 id={titleId}>{view === "brand" ? "品牌營收占比" : "品類營收占比"}</h3>
         <div className="sales-trend-range" role="group" aria-label="營收占比分類方式">
@@ -109,7 +143,7 @@ export default function BrandSalesChart({
               aria-pressed={view === option}
               onClick={() => {
                 setView(option);
-                setActiveKey(null);
+                setPointerKey(null); setFocusKey(null); setPinnedKey(null);
               }}
             >
               {option === "brand" ? "品牌" : "品類"}
@@ -146,23 +180,17 @@ export default function BrandSalesChart({
 
       {snapshot && (
         <>
-          <div className="brand-sales-visual">
-              <div className="brand-sales-selection" aria-live="polite">
-                <small>{active ? active.label : "總計"}</small>
-                <strong>{formatMoney(active?.amount ?? total, snapshot.currencyCode)}</strong>
-                <span>{active
-                  ? `${active.percentage}% · ${active.unitCount.toLocaleString()} 件`
-                  : `${snapshot.summary.unitCount.toLocaleString()} 件`}</span>
-              </div>
+          <div className="brand-sales-visual" onPointerLeave={() => setPointerKey(null)}>
             <div className="brand-sales-pie-stage">
               <div className="brand-sales-pie-wrap">
-                <svg className="brand-sales-pie" viewBox="0 0 120 120" role="img" aria-label={`${view === "brand" ? "品牌" : "品類"}營收占比 ${formatMoney(total, snapshot.currencyCode)}`}>
+                <svg className="brand-sales-pie" viewBox="0 0 120 120" role="group" aria-label={`${view === "brand" ? "品牌" : "品類"}營收占比`} aria-describedby={summaryId}>
+                  <desc id={summaryId}>{`總計 ${formatMoney(total, snapshot.currencyCode)}；${snapshot.summary.soldFbaSkuCount} SKU；${snapshot.summary.unitCount.toLocaleString()} 件`}</desc>
                   <circle className="brand-sales-pie-track" cx="60" cy="60" r="52" />
                 {positive.map((segment) => {
                   const share = total > 0 ? segment.amount / total : 0;
                   const currentOffset = offset;
                   offset += share;
-                  const label = `${segment.label} ${formatMoney(segment.amount, snapshot.currencyCode)}，${segment.percentage}%`;
+                  const label = `${segment.label} ${segment.percentage}%`;
                   return (
                     <path
                       key={segment.key}
@@ -172,13 +200,17 @@ export default function BrandSalesChart({
                       tabIndex={0}
                       role="button"
                       aria-label={label}
-                      onPointerEnter={() => setActiveKey(segment.key)}
-                      onPointerLeave={() => setActiveKey(null)}
-                      onFocus={() => setActiveKey(segment.key)}
-                      onBlur={() => setActiveKey(null)}
-                    >
-                      <title>{label}</title>
-                    </path>
+                      aria-describedby={activeKey === segment.key ? detailId : undefined}
+                      onPointerEnter={(event) => hover(segment.key, event.pointerType)}
+                      onFocus={() => focus(segment.key)}
+                      onBlur={() => setFocusKey(null)}
+                      onClick={() => pin(segment.key)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault(); pin(segment.key);
+                        }
+                      }}
+                    />
                   );
                 })}
                 </svg>
@@ -188,28 +220,33 @@ export default function BrandSalesChart({
             {total === 0 && (
               <p className="brand-sales-zero" role="status">這個區間尚無營收。</p>
             )}
-            <div className="brand-sales-legend-heading" aria-hidden="true">
-              <span>{view === "brand" ? "品牌" : "品類"}／營收</span>
-              <span>占比</span>
-            </div>
             <div className="brand-sales-legend" role="list" aria-label={`${view === "brand" ? "品牌" : "品類"}營收明細`}>
               {sortedSegments.map((segment) => (
                 <div key={segment.key} role="listitem">
                   <button
                     type="button"
                     className={activeKey === segment.key ? "is-active" : undefined}
-                    onPointerEnter={() => setActiveKey(segment.key)}
-                    onPointerLeave={() => setActiveKey(null)}
-                    onFocus={() => setActiveKey(segment.key)}
-                    onBlur={() => setActiveKey(null)}
+                    aria-describedby={activeKey === segment.key ? detailId : undefined}
+                    aria-pressed={pinnedKey === segment.key && !dismissed}
+                    onPointerEnter={(event) => hover(segment.key, event.pointerType)}
+                    onFocus={() => focus(segment.key)}
+                    onBlur={() => setFocusKey(null)}
+                    onClick={() => pin(segment.key)}
                   >
                     <i style={{ backgroundColor: segment.color }} aria-hidden="true" />
-                    <span><strong>{segment.label}</strong><small><span className="brand-sales-row-amount">{formatMoney(segment.amount, snapshot.currencyCode)}</span><span className="brand-sales-row-volume">{segment.skuCount} SKU · {segment.unitCount.toLocaleString()} 件</span></small></span>
+                    <span><strong>{segment.label}</strong></span>
                     <b>{segment.percentage}%</b>
                   </button>
                 </div>
               ))}
             </div>
+            {active && (
+              <div id={detailId} className="brand-sales-tooltip" role="tooltip">
+                <strong>{active.label}</strong>
+                <span className="brand-sales-tooltip-amount">{formatMoney(active.amount, snapshot.currencyCode)}</span>
+                <span className="brand-sales-tooltip-volume">{active.skuCount} SKU · {active.unitCount.toLocaleString()} 件</span>
+              </div>
+            )}
           </div>
         </>
       )}
