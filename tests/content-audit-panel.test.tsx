@@ -135,6 +135,45 @@ afterEach(() => {
 });
 
 describe("global FBA content audit panel", () => {
+  it("keeps Excel tools collapsed, preserves the selected file, and blocks recheck during preview", async () => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const snapshot = parseContentAuditSnapshot({ marketplaceId: "ATVPDKIKX0DER", fetchedAt: "2026-09-10T08:00:00.000Z", rows: [quickEditRow()], summary: { total: 1 } });
+    const job = completedContentJob(snapshot);
+    let finish!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(<ContentAuditPanel marketplaceId={snapshot.marketplaceId} marketplaceShort="US" onOpenSku={vi.fn()} initialJob={job} cachedResult={{ snapshot, filter: "all", query: "", spellcheckNote: null }} />); });
+    const exportPanel = () => renderer.root.findByProps({ className: "content-audit-excel-panel" });
+    const importPanel = () => renderer.root.findByProps({ className: "content-audit-roundtrip" });
+    const actions = () => renderer.root.findByProps({ className: "content-audit-command-actions" }).findAllByType("button");
+    expect(exportPanel().props.hidden).toBe(true);
+    expect(importPanel().props.hidden).toBe(true);
+    await act(async () => { actions()[0].props.onClick(); });
+    expect(exportPanel().props.hidden).toBe(false);
+    expect(importPanel().props.hidden).toBe(true);
+    expect(renderer.root.findByProps({ className: "content-audit-excel-evidence" }).props.hidden).toBe(false);
+    await act(async () => { actions()[1].props.onClick(); });
+    expect(exportPanel().props.hidden).toBe(true);
+    expect(importPanel().props.hidden).toBe(false);
+    const file = new File(["synthetic workbook"], "selected.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    await act(async () => { renderer.root.findByType(ContentAuditWorkbookFilePicker).props.onSelect(file); });
+    await act(async () => { actions()[0].props.onClick(); });
+    await act(async () => { actions()[1].props.onClick(); });
+    expect(renderer.root.findByType(ContentAuditWorkbookFilePicker).props.fileName).toBe("selected.xlsx");
+    expect(fetchMock).not.toHaveBeenCalled();
+    await act(async () => { renderer.root.findByProps({ className: "content-audit-roundtrip-preview" }).props.onClick(); });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(actions().every((button) => button.props.disabled)).toBe(true);
+    await act(async () => { actions()[2].props.onClick(); });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(renderer.root.findAllByProps({ className: "content-audit-summary" })).toHaveLength(1);
+    await act(async () => { finish(new Response(JSON.stringify({message:"Synthetic preview rejection"}), {status:400, headers:{"content-type":"application/json"}})); });
+    expect(actions()[2].props.disabled).toBe(false);
+    expect(importPanel().props.hidden).toBe(false);
+    await act(async () => { renderer.unmount(); });
+  });
+
   it("pages all matching content results and restores the chosen page and detail mode", async () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const snapshot = parseContentAuditSnapshot({
@@ -642,7 +681,8 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain('data-export-scope="attention"');
     expect(markup).toContain('data-export-scope="all"');
     expect(occurrenceCount(markup, "<strong>詳細說明</strong>")).toBe(1);
-    expect(markup).toContain("重新掃描");
+    expect(markup).toContain("重新健檢");
+    expect(markup).not.toContain(">重新掃描</button>");
     expect(markup).not.toContain("掃描 US 全部 FBA 文案");
     expect(markup).toContain("content-audit-export-primary");
     expect(markup).toContain("立刻修改");
@@ -676,9 +716,13 @@ describe("global FBA content audit panel", () => {
     expect(markup).toContain("INVALID 或其他單一 SKU 問題會隔離列出");
     expect(markup).not.toContain("預檢通過後才會要求一次 Touch ID／Windows Hello");
     expect(markup).toContain("結果不明的 SKU 絕不自動重送");
-    expect(markup.indexOf("Amazon 唯讀＋AMZ.API 共用英文辭典")).toBeLessThan(
-      markup.indexOf("content-audit-export-primary"),
+    expect(markup.indexOf("Amazon 唯讀＋AMZ.API 共用英文辭典")).toBeGreaterThan(
+      markup.indexOf("content-audit-summary"),
     );
+    expect(markup).toMatch(/class="content-audit-excel-panel" hidden=""/u);
+    expect(markup).toMatch(/class="content-audit-roundtrip"[^>]*hidden=""/u);
+    expect(markup.indexOf("content-audit-recheck")).toBeLessThan(markup.indexOf("content-audit-summary"));
+    expect(markup).toMatch(/data-audit-filter="all"[^>]*><span>全部待確認<\/span><strong>1<\/strong>/u);
     expect(markup.indexOf("content-audit-export-primary")).toBeLessThan(
       markup.indexOf("content-audit-summary"),
     );
@@ -1849,6 +1893,7 @@ describe("global FBA content audit panel", () => {
     );
     expect(Array.from(summaryMarkup.matchAll(/data-audit-filter="([^"]+)"/gu),
       (match) => match[1])).toEqual([
+        "all",
         "NEEDS_CORRECTION",
         "MISSING_INGREDIENTS",
         "SINGLE_INGREDIENT_MISMATCH",
@@ -1857,10 +1902,8 @@ describe("global FBA content audit panel", () => {
         "CORRECT",
         "READ_INCOMPLETE",
       ]);
-    expect(summaryMarkup.match(/<button/gu)).toHaveLength(7);
-    expect(summaryMarkup).toMatch(
-      /<span(?=[^>]*class="content-audit-summary-spacer")(?=[^>]*aria-hidden="true")[^>]*><\/span>/u,
-    );
+    expect(summaryMarkup.match(/<button/gu)).toHaveLength(8);
+    expect(summaryMarkup).not.toContain("content-audit-summary-spacer");
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("NEEDS-LENGTH");
     expect(markup).toContain("NEEDS-BULLETS");
@@ -1987,7 +2030,7 @@ describe("global FBA content audit panel", () => {
     expect(initialMarkup).toContain("Listings Items API 尚未完整回傳。");
   });
 
-  it("lays out seven summary filters plus one inert spacer as an even 4 by 2 grid", async () => {
+  it("lays out the attention reset and seven compact summary filters as a 4 by 2 grid", async () => {
     const stylesheet = await readRendererStylesheet();
 
     expect(stylesheet).toMatch(
@@ -1996,9 +2039,8 @@ describe("global FBA content audit panel", () => {
     expect(stylesheet).not.toMatch(
       /\.content-audit-summary\s*\{[^}]*grid-template-columns:\s*repeat\(7,\s*minmax\(0,\s*1fr\)\)/u,
     );
-    expect(stylesheet).toMatch(
-      /\.content-audit-summary-spacer\s*\{[^}]*background:\s*#fff;/u,
-    );
+    expect(stylesheet).toContain(".content-audit-panel .content-audit-summary > button");
+    expect(stylesheet).toContain("min-height: 54px");
   });
 
   it("keeps an unavailable quick-edit action visible and explains why it is disabled", () => {

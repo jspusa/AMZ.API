@@ -1,0 +1,74 @@
+/** Production renderer; synthetic local Bridge. Never uses real Amazon data. */
+import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+export async function verifySweetUi({ browser, origin, root, evidence }) {
+  const context = await browser.newContext({ viewport: {width:1440,height:1000}, reducedMotion:"reduce" });
+  await context.route("**/*", route => route.request().url().startsWith(origin + "/") ? route.continue() : route.abort());
+  await context.addInitScript({content:await readFile(resolve(root,"scripts/visual-qa/renderer-visual-fixture.js"),"utf8")});
+  const page = await context.newPage(); const errors = []; const cases = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const requests = () => page.evaluate(() => window.__rendererVisualRequests.length);
+  try {
+    await page.goto(origin + "/?css04=1");
+    await page.locator("#home-audits").waitFor();
+    await page.evaluate(() => { document.documentElement.dataset.uiAccent="pink"; document.documentElement.dataset.uiMode="light"; });
+    const headerPaint = await page.locator(".workspace-header").evaluate(e => ({background:getComputedStyle(e).backgroundColor,image:getComputedStyle(e).backgroundImage}));
+    assert.equal(headerPaint.background,"rgb(255, 229, 237)");
+    assert.equal(headerPaint.image,"none");
+    await page.screenshot({path:resolve(evidence,"sweet-pink-home.png"),fullPage:true});
+    await page.locator('[data-audit-workspace-launch="content"]').click();
+    await page.locator(".content-audit-panel").waitFor();
+    const start=page.getByRole("button",{name:"掃描 US 全部 FBA 文案",exact:true});
+    if(await start.count())await start.click();
+    await page.locator(".content-audit-summary").waitFor();
+    const recheck=page.getByRole("button",{name:"重新健檢",exact:true});
+    assert.equal(await recheck.count(),1);
+    assert.equal(await page.getByRole("button",{name:"重新掃描",exact:true}).count(),0);
+    const exportToggle=page.getByRole("button",{name:"匯出 Excel",exact:true});
+    const importToggle=page.getByRole("button",{name:/^回傳 Excel/});
+    for(const width of [1440,375])for(const accent of ["default","pink"])for(const mode of ["light","dark"]){
+      await page.setViewportSize({width,height:1000});
+      await page.evaluate(([a,m])=>{document.documentElement.dataset.uiAccent=a;document.documentElement.dataset.uiMode=m;window.scrollTo(0,0);},[accent,mode]);
+      assert.equal(await page.locator(".content-audit-excel-panel").isVisible(),false);
+      assert.equal(await page.locator(".content-audit-roundtrip").isVisible(),false);
+      const box=await recheck.boundingBox();const summary=await page.locator(".content-audit-summary").boundingBox();
+      assert.ok(box.y+box.height<1000&&box.y<summary.y,"Recheck must be above the result filters in the first screen");
+      const count=await requests();
+      for(const toggle of [exportToggle,importToggle]){
+        await toggle.click();
+        assert.equal(await page.locator(".content-audit-source-deadline").isVisible(),true,"Source and original-machine limits remain visible in both Excel tools");
+        assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),"Expanded tools must not overflow");
+        await toggle.click();
+      }
+      assert.equal(await requests(),count,"Opening tools must not issue API calls");
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+      await page.screenshot({path:resolve(evidence,`sweet-content-${width}-${accent}-${mode}.png`),fullPage:true});
+      cases.push({width,accent,mode,collapsed:true,recheckVisible:true,noOverflow:true});
+    }
+    await importToggle.click();
+    await page.locator('.content-audit-roundtrip input[type="file"]').setInputFiles({name:"selected.xlsx",mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",buffer:Buffer.from("synthetic preview only")});
+    await exportToggle.click();await importToggle.click();
+    assert.equal(await page.locator('.content-audit-file-picker > span').textContent(),"selected.xlsx","View changes preserve file selection");
+    await page.evaluate(()=>{
+      const request=window.fbaOS.api.request;
+      window.fbaOS.api.request=(input)=>input.path==="/api/sp-api/listing-content/import"&&input.method==="POST"
+        ?new Promise(resolve=>{window.__sweetFinish=()=>resolve({status:400,headers:{"content-type":"application/json"},body:{kind:"json",value:{message:"Synthetic preview rejected; no writes"}}});}):request(input);
+    });
+    await page.getByRole("button",{name:"先預覽 Excel 變更（不寫入）",exact:true}).click();
+    await page.waitForFunction(()=>typeof window.__sweetFinish==="function");
+    assert.equal(await recheck.isDisabled(),true);assert.equal(await exportToggle.isDisabled(),true);assert.equal(await importToggle.isDisabled(),true);
+    await page.evaluate(()=>window.__sweetFinish());
+    await page.getByRole("alert").filter({hasText:"Synthetic preview rejected"}).waitFor();
+    assert.equal(await recheck.isEnabled(),true);
+    await importToggle.click();
+    const scans=()=>page.evaluate(()=>window.__rendererVisualRequests.filter(r=>r.path==="/api/sp-api/standalone-audit"&&r.method==="POST"&&r.body?.kind==="content").length);
+    const before=await scans();await recheck.click();await page.locator(".content-audit-summary").waitFor();
+    assert.equal(await scans(),before+1,"Recheck triggers exactly one existing content job");
+    assert.equal(await page.evaluate(()=>window.__rendererVisualRequests.some(r=>["PUT","PATCH","DELETE"].includes(r.method))),false);
+    assert.deepEqual(errors,[]);
+    await writeFile(resolve(evidence,"sweet-ui-results.json"),JSON.stringify({syntheticOnly:true,cases,filePersistence:true,previewGuard:true,singleRecheck:true},null,2));
+    console.log(`Sweet pink/content UI checks passed: ${cases.length} themes/viewports, collapsed tools, preserved file, busy guard, single recheck.`);
+  } finally { await context.close(); }
+}

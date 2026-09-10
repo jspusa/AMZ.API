@@ -9,7 +9,7 @@ type PreferenceRoot = Pick<HTMLElement, "setAttribute">;
 
 export const UI_ACCENT_OPTIONS = [
   { value: "default", label: "原色", description: "經典金色與深藍" },
-  { value: "pink", label: "粉紅色", description: "柔和玫瑰粉" },
+  { value: "pink", label: "粉紅色", description: "櫻花粉與奶油白" },
 ] as const;
 
 function browserStorage(): PreferenceStorage | null {

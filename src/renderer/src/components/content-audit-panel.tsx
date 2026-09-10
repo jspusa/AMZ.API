@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CONTENT_AUDIT_LENGTH_TARGETS,
   contentHighlightSegments,
@@ -1464,7 +1464,7 @@ export function parseContentAuditSnapshot(
     !isContentAuditSourceTimestamp(value.sourceExpiresAt) ||
     Date.parse(value.sourceExpiresAt) <= Date.parse(value.sourceCreatedAt)
   )) {
-    throw new Error("文案 Excel 來源期限缺少完整可核對的建立與到期時間；請重新掃描。");
+    throw new Error("文案 Excel 來源期限缺少完整可核對的建立與到期時間；請重新健檢。");
   }
   const rows = value.rows.map((candidate, index): ContentAuditRow => {
     if (!candidate || typeof candidate !== "object") {
@@ -1864,7 +1864,7 @@ export function ContentWorkbookBatchBlockedFailureCard({
     >
       <strong>{failure.message}</strong>
       <p>
-        下列 {failure.blockedChanges.length.toLocaleString()} 個 SKU 全部略過且沒有寫入 Amazon；請先用「完整編輯」確認，或重新掃描後再回傳 Excel。
+        下列 {failure.blockedChanges.length.toLocaleString()} 個 SKU 全部略過且沒有寫入 Amazon；請先用「完整編輯」確認，或重新健檢後再回傳 Excel。
       </p>
       <ContentWorkbookBlockedChangeList
         blockedChanges={failure.blockedChanges}
@@ -1933,7 +1933,7 @@ export function ContentWorkbookBatchFailureCard({
               )}
               {!row.overrideAllowed && (
                 <small>
-                  此失敗不可強制略過；請依原因修正 Excel，或重新掃描後再預檢。
+                  此失敗不可強制略過；請依原因修正 Excel，或重新健檢後再預檢。
                 </small>
               )}
             </div>
@@ -2060,7 +2060,7 @@ export function ContentWorkbookBatchPreviewCard({
             已略過 {blockedCount.toLocaleString()} 個原掃描未完整的 SKU；它們不會寫入 Amazon
           </strong>
           <p>
-            其餘已納入預檢的 SKU 可依上方結果繼續核對。請先用「完整編輯」確認略過列，或重新掃描後再回傳 Excel。
+            其餘已納入預檢的 SKU 可依上方結果繼續核對。請先用「完整編輯」確認略過列，或重新健檢後再回傳 Excel。
           </p>
           <ContentWorkbookBlockedChangeList
             blockedChanges={preview.blockedChanges}
@@ -2251,7 +2251,7 @@ export function ContentWorkbookBatchResultCard({
         </div>
       )}
       <small>
-        結果不明的 SKU 不會自動重送；請先到 Amazon 回查。需要下一批時再重新掃描取得最新快照。
+        結果不明的 SKU 不會自動重送；請先到 Amazon 回查。需要下一批時再重新健檢取得最新快照。
       </small>
     </div>
   );
@@ -3018,6 +3018,8 @@ export default function ContentAuditPanel({
   const [spellcheckNote, setSpellcheckNote] = useState<string | null>(
     initialCache?.spellcheckNote ?? null,
   );
+  const excelId = useId();
+  const [excelView, setExcelView] = useState<"export" | "import" | null>(null);
   const [workbookFile, setWorkbookFile] = useState<File | null>(null);
   const [batchPreview, setBatchPreview] =
     useState<ContentWorkbookBatchPreview | null>(null);
@@ -3100,6 +3102,7 @@ export default function ContentAuditPanel({
   useEffect(() => {
     batchCommitAbortRef.current?.abort();
     batchCommitAbortRef.current = null;
+    setExcelView(null);
     setWorkbookFile(null);
     setBatchPreview(null);
     setBatchFailure(null);
@@ -3208,7 +3211,7 @@ export default function ContentAuditPanel({
   };
 
   const startAudit = async () => {
-    if (scanFlightRef.current) return;
+    if (scanFlightRef.current || batchBusy || exporting) return;
     scanFlightRef.current = true;
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -3221,6 +3224,7 @@ export default function ContentAuditPanel({
     setFilter("all");
     setQuery("");
     setSpellcheckNote(null);
+    setExcelView(null);
     setWorkbookFile(null);
     setBatchPreview(null);
     setBatchFailure(null);
@@ -3433,7 +3437,7 @@ export default function ContentAuditPanel({
         { cache: "no-store" },
       );
       if (!response.ok) {
-        let message = "文案健檢 Excel 下載失敗，請重新掃描。";
+        let message = "文案健檢 Excel 下載失敗，請重新健檢。";
         try {
           message = problemMessage(
             (await response.json()) as ApiProblem,
@@ -3457,7 +3461,7 @@ export default function ContentAuditPanel({
       setError(
         downloadError instanceof Error
           ? downloadError.message
-          : "文案健檢 Excel 下載失敗，請重新掃描。",
+          : "文案健檢 Excel 下載失敗，請重新健檢。",
       );
     } finally {
       setExporting(null);
@@ -3465,6 +3469,7 @@ export default function ContentAuditPanel({
   };
 
   const selectWorkbook = (file: File | null) => {
+    setExcelView("import");
     setWorkbookFile(file);
     setBatchPreview(null);
     setBatchFailure(null);
@@ -3643,26 +3648,25 @@ export default function ContentAuditPanel({
 
   return (
     <section className="content-audit-panel" aria-label="全站 FBA 文案健檢">
-      <AuditDetailsDisclosure summary="文案門檻、英文辭典與 Excel 更新防呆">
-        <div className="automation-summary compact">
-          <span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p>
-          <span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Notebook 鑰匙（Touch ID／Windows Hello）。</p>
-          <span className="automation-badge manual">需人工</span><p>疑似錯字、產品名稱、產品亮點、五大賣點、產品敘述與成分內容由你決定。</p>
-        </div>
-        <p className="price-intro">
-          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic，資料未完成時不推測。
-        </p>
-        <div className="content-export-note content-audit-privacy">
-          <strong>Amazon 唯讀＋AMZ.API 共用英文辭典</strong>
-          <p>美式英文辭典由 Mac／Windows Notebook Key Bridge 在本機套用，顯示與 Excel 共用同一份快照；文案不會送到第三方，疑似錯字仍由你判斷。</p>
-        </div>
-        <div className="content-export-note content-audit-batch-safety">
-          <strong>Excel 批次更新安全流程</strong>
-            <p>「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺綠或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。只有通過 Amazon Validation Preview 且安全綁定一致的 SKU 才會進入 Touch ID／Windows Hello；INVALID 或其他單一 SKU 問題會隔離列出，其餘安全 SKU 繼續，結果不明的 SKU 絕不自動重送。</p>
-        </div>
-      </AuditDetailsDisclosure>
+
       {state === "done" && snapshot && summary && (
-        <>
+        <header className="content-audit-commandbar">
+          <div className="content-audit-context">
+            <strong>本次結果 · {snapshot.rows.length.toLocaleString()} 個商品</strong>
+            <small>資料時間 <time dateTime={snapshot.fetchedAt}>{contentAuditDeadlineLabel(snapshot.fetchedAt)}</time></small>
+          </div>
+          <div className="content-audit-command-actions">
+            <button type="button" aria-expanded={excelView === "export"} aria-controls={`${excelId}-export`}
+              disabled={Boolean(batchBusy)} onClick={() => setExcelView(excelView === "export" ? null : "export")}>匯出 Excel</button>
+            <button type="button" aria-expanded={excelView === "import"} aria-controls={`${excelId}-import`}
+              disabled={Boolean(batchBusy)} onClick={() => setExcelView(excelView === "import" ? null : "import")}>回傳 Excel{workbookFile ? " · 已選檔" : ""}</button>
+            <button type="button" className="content-audit-recheck" onClick={() => void startAudit()}
+              disabled={Boolean(batchBusy) || Boolean(exporting)}><span aria-hidden="true">↻</span>重新健檢</button>
+          </div>
+        </header>
+      )}
+      {state === "done" && snapshot && summary && (
+        <div id={`${excelId}-export`} className="content-audit-excel-panel" hidden={excelView !== "export"}>
           <div className="content-audit-export-grid" aria-label="選擇文案 Excel 匯出範圍">
             <button
               className="content-audit-export-primary content-audit-export-attention"
@@ -3671,7 +3675,6 @@ export default function ContentAuditPanel({
               onClick={() => void exportWorkbook("attention")}
               disabled={attentionRows.length === 0 || !snapshot.exportId || Boolean(exporting)}
             >
-              <span aria-hidden="true">待</span>
               <strong>{exporting === "attention"
                 ? "正在匯出待確認清單…"
                 : `待確認清單 · 匯出 ${attentionRows.length.toLocaleString()} 項 Excel`}</strong>
@@ -3684,7 +3687,6 @@ export default function ContentAuditPanel({
               onClick={() => void exportWorkbook("all")}
               disabled={snapshot.rows.length === 0 || !snapshot.exportId || Boolean(exporting)}
             >
-              <span aria-hidden="true">全</span>
               <strong>{exporting === "all"
                 ? "正在匯出完整模板…"
                 : `完整模板 · 匯出全部 ${snapshot.rows.length.toLocaleString()} 個商品 Excel`}</strong>
@@ -3692,18 +3694,22 @@ export default function ContentAuditPanel({
             </button>
           </div>
           <p className="content-audit-export-local-note">兩份都只在這台電腦建立；任一份都可回傳更新。</p>
+        </div>
+      )}
+      {state === "done" && snapshot && summary && (
+        <div hidden={excelView === null} className="content-audit-excel-evidence">
           <div className="content-audit-source-deadline" aria-label="Excel 來源期限與原機限制">
             <p>請回到原本匯出的電腦，使用相同 Notebook Key、帳號與站點回傳。來源有效期為建立後 24 小時；重新下載同份快照不會延長。</p>
             {snapshot.sourceExpiresAt ? (
-              <p>本份來源有效至 <time dateTime={snapshot.sourceExpiresAt}>{contentAuditDeadlineLabel(snapshot.sourceExpiresAt)}</time>；來源過期需重新掃描並匯出。若原機找不到來源，請先確認電腦、帳號與站點。</p>
+              <p>本份來源有效至 <time dateTime={snapshot.sourceExpiresAt}>{contentAuditDeadlineLabel(snapshot.sourceExpiresAt)}</time>；來源過期需重新健檢並匯出。若原機找不到來源，請先確認電腦、帳號與站點。</p>
             ) : (
-              <p>目前 Notebook Key 未提供精確來源期限；更新 App 後重新掃描可顯示。找不到來源與來源過期會在預檢時分別說明。</p>
+              <p>目前 Notebook Key 未提供精確來源期限；更新 App 後重新健檢可顯示。找不到來源與來源過期會在預檢時分別說明。</p>
             )}
           </div>
-        </>
+        </div>
       )}
       {state === "done" && snapshot && summary && (
-        <section className="content-audit-roundtrip" aria-label="回傳 Excel 批次更新文案">
+        <section id={`${excelId}-import`} className="content-audit-roundtrip" aria-label="回傳 Excel 批次更新文案" hidden={excelView !== "import"}>
           <div>
             <strong>回傳任一份 Excel 批次更新</strong>
             <p>可回傳完整檔，也可只保留 F007，或只保留 F007、F008；系統只讀取與預檢實際附上的工作表，其他商品完全不碰。請複製或保留整張工作表分頁，不要只複製儲存格。</p>
@@ -3772,6 +3778,10 @@ export default function ContentAuditPanel({
       {state === "done" && snapshot && summary && (
         <>
           <div className="content-audit-summary" role="group" aria-label="文案健檢摘要與問題篩選">
+            <button type="button" data-audit-filter="all" aria-pressed={filter === "all"}
+              className={filter === "all" ? "active" : ""} onClick={() => changeFilter("all", true)}>
+              <span>全部待確認</span><strong>{attentionRows.length.toLocaleString()}</strong>
+            </button>
             {summaryFilters.map((item) => (
               <button
                 key={item.filter}
@@ -3779,17 +3789,15 @@ export default function ContentAuditPanel({
                 data-audit-filter={item.filter}
                 className={filter === item.filter ? "active" : ""}
                 aria-pressed={filter === item.filter}
-                aria-label={`${item.label} ${item.count.toLocaleString()}，顯示對應商品`}
+                aria-label={`${item.label} ${item.count.toLocaleString()}，${item.detail}，顯示對應商品`}
+                title={item.detail}
                 onClick={() => changeFilter(item.filter, true)}
               >
                 <span>{item.label}</span>
                 <strong>{item.count.toLocaleString()}</strong>
-                <small>{item.detail}</small>
               </button>
             ))}
-            <span className="content-audit-summary-spacer" aria-hidden="true" />
           </div>
-          {spellcheckNote && <p className="content-audit-note">{spellcheckNote}</p>}
           {invisibleLocations.length > 0 && (
             <aside
               className="content-export-note content-audit-invisible-guide"
@@ -3842,6 +3850,7 @@ export default function ContentAuditPanel({
               )}
             </aside>
           )}
+          <div className="content-audit-list-tools">
           <div className="content-audit-controls">
             <label>
               <span>⌕</span>
@@ -3860,8 +3869,8 @@ export default function ContentAuditPanel({
                 <button type="button" aria-label="緊湊顯示文案健檢結果" aria-pressed={viewMode === "compact"} onClick={() => changeResultView("compact")}>緊湊</button>
                 <button type="button" aria-label="完整顯示文案健檢結果" aria-pressed={viewMode === "full"} onClick={() => changeResultView("full")}>完整</button>
               </div>
-              <button type="button" onClick={() => void startAudit()}>重新掃描</button>
             </div>
+          </div>
           </div>
           {visibleRows.length > 0 && (
             <nav className="content-audit-pagination" aria-label="文案結果分頁">
@@ -3991,6 +4000,25 @@ export default function ContentAuditPanel({
           )}
         </>
       )}
+      <AuditDetailsDisclosure summary="文案門檻、英文辭典與 Excel 更新防呆">
+        <div className="automation-summary compact">
+          <span className="automation-badge automatic">自動</span><p>全站文案健檢會找出疑似錯字、賣點不足與缺成分；單一 SKU 會處理 PTD、舊值衝突與送出後回查。</p>
+          <span className="automation-badge one_click">一鍵</span><p>文案健檢與 Excel 都會自動建立、輪詢；內容更新通過預檢後直接使用 Notebook 鑰匙（Touch ID／Windows Hello）。</p>
+          <span className="automation-badge manual">需人工</span><p>疑似錯字、產品名稱、產品亮點、五大賣點、產品敘述與成分內容由你決定。</p>
+        </div>
+        <p className="price-intro">
+          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic，資料未完成時不推測。
+        </p>
+        <div className="content-export-note content-audit-privacy">
+          <strong>Amazon 唯讀＋AMZ.API 共用英文辭典</strong>
+          <p>美式英文辭典由 Mac／Windows Notebook Key Bridge 在本機套用，顯示與 Excel 共用同一份快照；文案不會送到第三方，疑似錯字仍由你判斷。</p>
+        </div>
+        <div className="content-export-note content-audit-batch-safety">
+          <strong>Excel 批次更新安全流程</strong>
+            <p>「待確認項目 Excel」或「全部商品文案完整模板」都可以選回來；只編輯淺綠或黃色的「更新…」欄位。第一步只做原值、站點、PTD 與 Amazon Validation Preview 核對，零寫入。只有通過 Amazon Validation Preview 且安全綁定一致的 SKU 才會進入 Touch ID／Windows Hello；INVALID 或其他單一 SKU 問題會隔離列出，其餘安全 SKU 繼續，結果不明的 SKU 絕不自動重送。</p>
+        </div>
+        {spellcheckNote && <p className="content-audit-note">{spellcheckNote}</p>}
+      </AuditDetailsDisclosure>
       <p className="batch-footnote">每次健檢只處理所選站點可證明為 Amazon 配送的 FBA SKU；FBM 不會加入。</p>
     </section>
   );
