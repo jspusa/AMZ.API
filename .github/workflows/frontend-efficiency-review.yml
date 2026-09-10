@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 4a3d08d829ffd2c1988492b6efc6bd60e86169f8
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Archive exact source
         run: |
@@ -18,7 +18,7 @@ jobs:
           git archive --format=tar.gz HEAD > source.tar.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: frontend-efficiency-baseline
+          name: frontend-efficiency-recovered
           path: |
             source-sha.txt
             source.tar.gz
