@@ -2,7 +2,7 @@
 
 Issue [#254](https://github.com/jspusa/AMZ.API/issues/254)。規格見 [圖片登入與送出操作簡化](../specs/2026-09-image-biometric-confirmation.md)。
 
-Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex/image-touch-id-confirmation-20260912`。版本 0.1.66 的實作、review、CI、artifact、安裝與原生驗收分開記錄；目前尚未發布。
+Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex/image-touch-id-confirmation-20260912`。版本 0.1.66 已由 [PR #255](https://github.com/jspusa/AMZ.API/pull/255) 合併至 main `afbffdd85a2685992dc2c3341f79dbdd3a86c2fc`；同來源網站與兩平台產物已發布驗證，Mac／Windows 下載卡上傳完成。這台 Mac 仍安裝 0.1.65，換版與實機驗收尚待完成。
 
 ## 行為
 
@@ -17,9 +17,27 @@ Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex
 | ★ Source | 已完成圖片登入 OS 加密保存、Touch ID／Windows Hello 解鎖，以及免重打 SKU 確認；保留原 main Write Gate、idempotency 與 native confirmation |
 | ★ Check／audit | 最終 `VITEST_MAX_WORKERS=4 npm run check`：323 files／3,754 tests、型別與 build 通過；`npm audit --omit=dev`：0 vulnerabilities；`git diff --check` 通過。降低本機同時測試數以避免既有 durable I/O 測試受磁碟競爭而逾時，原 5 秒門檻未改。Windows CI 首輪指出 POSIX mode 不適用，僅對 Windows 略過該斷言，仍執行加密與重新開啟檢查 |
 | ★ 兩軸 review | Standards／Spec 均核對 `147a14a…33af1149acf050a7770cdacf1a5254d5a7027c1b`，各 0 open。Spec 所見 ASIN／Product Type 漂移與 Standards 所見 context cache 清除缺口已修復；main 查詢憑據綁定、失效清除與遲到結果拒絕均有 public seam 測試 |
-| ☆ 同 source CI／Pages／兩平台 artifact | 尚未發布 |
-| ☆ 0.1.66 Mac 安裝與圖片登入 | 尚未安裝；不以 0.1.65 的登入成功替代 |
-| ☆ 員工下載實體檔 | 必須核對新完成檔案大小與 hash，下載開始訊息不代表完成 |
+| ★ 同 source CI／Pages／兩平台 artifact | main/push Validate `34703293096`、Pages `34703293147`、Mac `34703293079`、Windows `34703293060` 均 success，attempt 1。Pages artifact `10300676804` 的 HTML 與全部 11 個 JS／CSS 與線上 bytes 一致；Mac artifact `10300986368`、Windows artifact `10301635948` 的 archive／manifest／payload hashes 均相符 |
+| ☆ 0.1.66 Mac 安裝與圖片登入 | 可信 DMG 已唯讀掛載，App 與可信 ZIP 的 ASAR 一致、universal 與 deep/strict adhoc codesign 通過。原生工具兩次回報 Mac locked、自動解鎖失敗；尚未退出或替換既有 App，實查仍為 0.1.65。初次加密保存、重開後 Touch ID 及新版確認頁原生驗收待完成 |
+| ★ 下載卡上傳 | Mac→Windows 兩次 uploader exit 0、complete 回覆成功，保留既有卡片 ID、平台與名稱，改為 0.1.66 及可信檔案 bytes／hash |
+| ☆ 員工下載實體檔 | 現有下載頁顯示登入畫面；尚未建立本版員工下載，登入後需核對兩卡及新完成檔案大小／hash。上傳完成不等於員工成功下載 |
+
+## 2026-09-13 交付證據
+
+PR head `6b43d91c292ad956eda93b73e783104f679aa119` 的 Validate `34702887230` 與 Windows `34702887228` 成功後合併；reviewed tree 與 main tree 都是 `e5d756fe3ddbbea1e606d382eb68bd56224aab47`。
+
+| 可信產物 | 大小（bytes） | SHA-256 |
+| --- | ---: | --- |
+| ★ Mac 0.1.66 universal DMG | 247359322 | `aaa954316ce6c3cd0b82a5e27e79aee872b1e153e1d7edad3ff0ef0940534861` |
+| ★ Mac universal ZIP | 222186853 | `f67c79cac54d13c0b53a20e6416a7e4663542fd67f04791cdd2ef9b2e7037c8a` |
+| ★ Windows x64 Setup.exe | 102059351 | `5434c14a5115b92f7327889ce1518071cb08d49d09f3a32a52cfea362e685ada` |
+| ★ Windows x64 ZIP | 143372011 | `e8d0ad5031af5c7ac797b0f21bc288fb7d4a34e90d72ff93aa47d473979b79f3` |
+
+Mac ASAR `a06cd5ecf4e803fadbbbca0a964e5a701ef4347e89bd17b93b41179b0c2e4ccd`；Windows ASAR `2d1453e877df7d8cf6fc108295ceed4bdf6411adf6c084dd7b24ae1efceb0a64`，後者的 AMD64 N-API addon、唯一 unpacked 路徑、packed manifest hash 與 8 項 fuses 均核對。兩平台 package 為 0.1.66／update channel disabled；CI 不代表真人生物辨識或 live Amazon。
+
+新證據及可接續 helper 在 `/tmp/amz-api-v0166-verified/`；目前 DMG 唯讀掛載於其 `mounted/`。安裝需先以原生 UI 核對現有操作、正常退出 App，再執行新 userData 備份及已驗證 swap；不能在畫面不可見時強制結束可能尚有操作的 App。現有 0.1.65 ASAR 仍是 `1820bfa0d35298ed37ee3159531023d3da94dc216b058c49f71be3ece56b1638`；本輪未更換 App 或改寫其憑證／ledger。
+
+使用者已提供「鎖定使用」開啟的畫面。本輪未查到自動解鎖失敗的確切原因，不能歸咎為使用者沒有啟用設定。解鎖方式依 macOS 提供的 Touch ID／登入選項；App 圖片服務的一次初始設定與 Codex 的 Mac 自動解鎖是不同項目。
 
 ## 保留的 0.1.65 原生證據及未完成範圍
 
