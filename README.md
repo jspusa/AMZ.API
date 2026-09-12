@@ -31,7 +31,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 產品 | 全站未綁變體健檢（Listings relationships 每批最多 20 SKU、缺值／歧義 fail closed；Excel 含淺色 family 分組的「所有變體」與「父變體橫排」） | Amazon 唯讀；「父變體橫排」第一列直接橫排所有已驗證 Parent SKU，每一欄從第二列起只接續該 Parent 的 Child SKU；standalone／資料未完成留在各自工作表，不用 ASIN 猜 family |
 | 產品 | 非 parent FBA ASIN 評論主題健檢（child＋standalone、排除 parent、前五／後五與全量 Excel） | Amazon Customer Feedback 唯讀 |
 | 價格 | 查價、上下限、舊值衝突、20% 大幅變動防呆、調價 | 一鍵＋本機身分確認 |
-| 價格 | US 價目表：匯入自己的 Excel、檢視原版面與圖片；以 ★ 有差異／☆ 相同並排比對原售價與 Amazon 售價、最低活動價與 Amazon 最低價格設定，也可比對兩份 Excel | 原檔下載保持相同位元組；比對版在原表右側增加 Amazon 欄位，可選擇替換首圖。檔案只留本機，Amazon 價格固定唯讀，未知不補零 |
+| 價格 | US 價目表：可直接從 Amazon FBA 商品產生新 Excel，或匯入自己的 Excel、檢視原版面與圖片；以 ★ 有差異／☆ 相同並排比對原售價與 Amazon 售價、最低活動價與 Amazon 最低價格設定，也可比對兩份 Excel | 原檔下載保持相同位元組；比對版在原表右側增加 Amazon 欄位，可選擇替換首圖。檔案只留本機，Amazon 價格固定唯讀，未知不補零 |
 | 價格 | 價目表依選表、讀取、看差異、下載引導；顯示實際讀取階段及每列待確認原因，回首頁後可接回同次結果 | 尚未讀取、未設定與讀取失敗分開；無已確認售價時不提供完成版下載 |
 | 價格 | Listing Sale Price（SKU 限時售價）建立／取消 | 一鍵＋本機身分確認 |
 | 價格 | 官方支援站點的全站 FBA Subscribe & Save 價格、折扣、目前有效訂閱、最多 23 個完整月趨勢與五分頁 Excel；具同次 current-FBA 證據的無效／重複 offer 或月度 SKU 獨立列為未完成，不拖垮其餘正常 SKU；未證明識別值只保留聚合計數 | 自動讀取；來源不完整時只顯示已核對範圍；SG／AU 顯示不支援邊界 |

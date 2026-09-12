@@ -2,7 +2,7 @@ import { unzipSync } from "fflate";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRouter } from "../src/main/api-router";
 import { invalidateSpApiCredentialCaches } from "../src/main/amazon/sp-api";
 import type { CredentialVault } from "../src/main/credential-vault";
@@ -67,7 +67,7 @@ describe("unbound variation audit router", () => {
     expect(start.status).toBe(202);
     if (start.body.kind !== "json") throw new Error("Expected job receipt");
     const receipt = start.body.value as { jobId: string; contextId: string };
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await vi.waitFor(async () => {
       const response = await router.handle({
         ...request({
           method: "GET",
@@ -81,33 +81,29 @@ describe("unbound variation audit router", () => {
         }),
         path: "/api/sp-api/standalone-audit",
       });
-      if (response.status === 202) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        continue;
-      }
-      expect(response.status).toBe(200);
-      if (response.body.kind !== "json")
-        throw new Error("Expected job snapshot");
-      const completed = response.body.value as {
-        snapshot: unknown;
-        status: string;
-      };
-      expect(completed.status).toBe("completed");
-      const parsed = parseUnboundVariationAuditSnapshot(
-        completed.snapshot,
-        MARKETPLACE_ID,
-      );
-      expect(parsed.recommendations?.map((row) => row.sellerSku)).toEqual(
-        parsed.rows.map((row) => row.sellerSku),
-      );
-      expect(
-        parsed.recommendations?.every(
-          (row) => row.status === "insufficient" || row.candidates.length > 0,
-        ),
-      ).toBe(true);
-      return;
-    }
-    throw new Error("Job did not complete");
+      expect(response.status, "Variation job is still pending").not.toBe(202);
+      return response;
+    }, { timeout: 3_000, interval: 10 });
+    expect(response.status).toBe(200);
+    if (response.body.kind !== "json")
+      throw new Error("Expected job snapshot");
+    const completed = response.body.value as {
+      snapshot: unknown;
+      status: string;
+    };
+    expect(completed.status).toBe("completed");
+    const parsed = parseUnboundVariationAuditSnapshot(
+      completed.snapshot,
+      MARKETPLACE_ID,
+    );
+    expect(parsed.recommendations?.map((row) => row.sellerSku)).toEqual(
+      parsed.rows.map((row) => row.sellerSku),
+    );
+    expect(
+      parsed.recommendations?.every(
+        (row) => row.status === "insufficient" || row.candidates.length > 0,
+      ),
+    ).toBe(true);
   });
 
   it("starts, scans and exports one account-scoped FBA-only snapshot", async () => {

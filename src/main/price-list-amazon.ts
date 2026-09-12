@@ -318,7 +318,10 @@ export class PriceListAmazon {
             await this.checkpoint(id, job);
             if (
               !(error instanceof SpApiError) ||
-              ![400, 404, 413, 415, 422].includes(error.status)
+              !(
+                [400, 404, 413, 415, 422].includes(error.status) ||
+                (error.status === 409 && error.code === "LISTING_IDENTITY_MISMATCH")
+              )
             )
               throw error;
             const publicError = publicSpApiError(error, "此商品讀取未完成。");
