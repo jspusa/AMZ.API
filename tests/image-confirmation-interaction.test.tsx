@@ -5,6 +5,7 @@ import ImageWorkspaceDrawer from "../src/renderer/src/components/image-workspace
 const marketplaceId = "ATVPDKIKX0DER";
 const sellerSku = "IMAGE-CONFIRM-1";
 const asin = "B000000001";
+const snapshotToken = "image-snapshot.11111111-1111-4111-8111-111111111111";
 const oldUrls = ["https://images.example/main.jpg", "https://images.example/side.jpg", ...Array.from({ length: 8 }, () => null)];
 let renderer: ReactTestRenderer | null = null;
 let invalidateContext = () => undefined;
@@ -12,7 +13,7 @@ const requests: Array<{ method: string; body: Record<string, unknown> }> = [];
 const text = () => JSON.stringify(renderer?.toJSON());
 const button = (label: string) => renderer!.root.findAllByType("button").find(node => node.children.join("") === label)!;
 
-async function mount(confirmationMode: "native" | null = "native", commitResponse?: () => Promise<Response>) {
+async function mount(confirmationMode: "native" | null = "native", commitResponse?: () => Promise<Response>, token: string | null = snapshotToken) {
   requests.length = 0;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", {
@@ -29,7 +30,7 @@ async function mount(confirmationMode: "native" | null = "native", commitRespons
       return Response.json({ mode: "live", status: init.method === "POST" ? "VALID" : "ACCEPTED",
         changedSlots: [0, 1], issues: [], completedAt: "2026-09-12T12:00:00Z", notice: "Amazon 已接受" });
     }
-    return Response.json({ ...(confirmationMode ? { confirmationMode } : {}), mode: "live", marketplaceId, sellerSku, asin,
+    return Response.json({ ...(confirmationMode ? { confirmationMode } : {}), ...(token ? { snapshotToken: token } : {}), mode: "live", marketplaceId, sellerSku, asin,
       productType: "PET_FOOD", title: "Fixture image product", notice: "",
       images: oldUrls.map((url, index) => ({ attributeName: `image-${index}`, label: `位置 ${index + 1}`, url,
         capability: { attributeName: `image-${index}`, label: `位置 ${index + 1}`, supported: true, editable: true, required: index === 0, reason: null } })),
@@ -60,6 +61,15 @@ describe("image final confirmation", () => {
     expect(renderer!.root.findAllByProps({ className: "image-confirmation" })).toHaveLength(0);
   });
 
+  it("also gates a native-capable Notebook Key that cannot bind the displayed image identity", async () => {
+    await mount("native", undefined, null);
+    await reorder();
+    expect(text()).toContain("請更新 AMZ.API Notebook Key");
+    expect(button("安全預檢圖片").props.disabled).toBe(true);
+    await act(async () => { await button("安全預檢圖片").props.onClick(); });
+    expect(requests).toEqual([]);
+  });
+
   it("shows exact SKU, ASIN and changed positions and submits without a typed-SKU field", async () => {
     await mount();
     await reorder();
@@ -77,7 +87,7 @@ describe("image final confirmation", () => {
     expect(requests.map(request => request.method)).toEqual(["POST", "PATCH"]);
     for (const request of requests) {
       expect(request.body).not.toHaveProperty("confirmationSku");
-      expect(request.body).toMatchObject({ marketplaceId, sellerSku, expectedUrls: oldUrls,
+      expect(request.body).toMatchObject({ marketplaceId, sellerSku, snapshotToken, expectedUrls: oldUrls,
         urls: [oldUrls[1], oldUrls[0], ...Array.from({ length: 8 }, () => null)] });
     }
     expect(requests[1].body.idempotencyKey).toBe(requests[0].body.idempotencyKey);

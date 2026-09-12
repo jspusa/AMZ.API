@@ -33,7 +33,7 @@ async function mount(upload?: (file: File) => Promise<Response>, unavailableSlot
       return Response.json({ mode: "live", status: "VALID", changedSlots: [0, 1, 8], issues: [] });
     }
     return Response.json({
-      confirmationMode: "native", mode: "live", marketplaceId, sellerSku, asin: "B000000001", productType: "PET_FOOD", title: "Fixture product", notice: "",
+      confirmationMode: "native", snapshotToken: "image-snapshot.11111111-1111-4111-8111-111111111111", mode: "live", marketplaceId, sellerSku, asin: "B000000001", productType: "PET_FOOD", title: "Fixture product", notice: "",
       images: oldUrls.map((url, index) => ({ attributeName: `image${index}`, label: index ? `副圖 ${index}` : "主圖", url,
         capability: { attributeName: `image${index}`, label: `圖片 ${index + 1}`, supported: !unavailableSlots.includes(index), editable: !unavailableSlots.includes(index), required: index === 0, reason: unavailableSlots.includes(index) ? `Amazon 商品規格未提供第 ${index + 1} 張` : null } })),
     });

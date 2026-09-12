@@ -41,6 +41,7 @@ type ImageCapability = {
 
 type ImageSnapshot = {
   confirmationMode?: "native";
+  snapshotToken?: string;
   mode: "live" | "demo";
   marketplaceId: string;
   sellerSku: string;
@@ -223,7 +224,7 @@ export default function ImageWorkspaceDrawer({
   }), [assets, batchFiles, batchPositions, snapshot]);
 
   const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
-  const nativeConfirmationAvailable = snapshot?.confirmationMode === "native";
+  const nativeConfirmationAvailable = snapshot?.confirmationMode === "native" && Boolean(snapshot.snapshotToken);
   const supportedIndexes = useMemo(
     () =>
       snapshot?.images.flatMap((item, index) =>
@@ -541,6 +542,7 @@ export default function ImageWorkspaceDrawer({
     sellerSku: snapshot?.sellerSku,
     expectedUrls,
     urls: requestedUrls,
+    snapshotToken: snapshot?.snapshotToken,
     idempotencyKey,
   });
 

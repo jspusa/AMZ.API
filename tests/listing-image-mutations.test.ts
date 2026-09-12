@@ -83,6 +83,17 @@ function mutationRequest(
   };
 }
 
+async function lookupToken(owner: Pick<ListingImageMutations, "handle">, marketplaceId = MARKETPLACE_ID, sellerSku = SELLER_SKU): Promise<string> {
+  const read = await owner.handle({ operation: "read", request: {
+    requestId: "image-snapshot-lookup", method: "GET", path: "/api/sp-api/listing-images",
+    query: { marketplaceId, sku: sellerSku }, headers: {},
+  } });
+  expect(read.status).toBe(200);
+  const value = read.body.kind === "json" ? read.body.value as Record<string, unknown> : {};
+  expect(value.snapshotToken).toEqual(expect.stringMatching(/^image-snapshot\./u));
+  return value.snapshotToken as string;
+}
+
 describe("listing image mutations", () => {
   it("commits a previewed image change without retyping SKU and verifies its canonical readback after one native approval", async () => {
     const store = await testStore();
@@ -116,7 +127,7 @@ describe("listing image mutations", () => {
       replaceDemoImages: vi.fn(),
     };
     const owner = createListingImageMutations({ context, writeGate, gateway });
-    const body = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU,
+    const body = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU, snapshotToken: await lookupToken(owner),
       expectedUrls: [...PREVIOUS_URLS], urls, idempotencyKey: "image-native-confirmation-001" };
     expect((await owner.handle({ operation: "preview", request: mutationRequest("POST", "native-preview", body) })).status).toBe(200);
     expect(approveWrite).not.toHaveBeenCalled();
@@ -175,7 +186,8 @@ describe("listing image mutations", () => {
       context,
       writeGate: writeGate as never,
       operations: {
-        read: vi.fn(),
+        read: vi.fn(async () => ({ snapshot: { ...imageSnapshot(PREVIOUS_URLS), mode: "demo" as const, marketplaceId: ukMarketplaceId },
+          sourceEvidence: {} as ListingImageSourceEvidence, fulfillment: "FBA" as const })),
         preview: vi.fn(),
         commit: vi.fn(),
       },
@@ -191,6 +203,7 @@ describe("listing image mutations", () => {
         expectedUrls: [...PREVIOUS_URLS],
         urls: requestedUrls,
         confirmationSku: SELLER_SKU,
+        snapshotToken: await lookupToken(owner, ukMarketplaceId),
         idempotencyKey: "w03-image-uk-001",
       }),
     });
@@ -269,6 +282,7 @@ describe("listing image mutations", () => {
       expectedUrls: [...PREVIOUS_URLS],
       urls: requestedUrls,
       confirmationSku: SELLER_SKU,
+      snapshotToken: "",
       idempotencyKey: "w03-image-public-sanitize-001",
     };
 
@@ -282,6 +296,7 @@ describe("listing image mutations", () => {
         headers: {},
       },
     });
+    body.snapshotToken = (read.body.value as { snapshotToken: string }).snapshotToken;
     const preview = await owner.handle({
       operation: "preview",
       request: mutationRequest("POST", "w03-image-public-preview", body),
@@ -393,6 +408,7 @@ describe("listing image mutations", () => {
         sellerSku: SELLER_SKU,
         expectedUrls: previousUrls,
         urls: requestedUrls,
+        snapshotToken: await lookupToken(mutations),
         idempotencyKey: "w03-image-native-cancel-001",
       },
     };
@@ -439,19 +455,30 @@ describe("listing image mutations", () => {
     ["missing preview", "PREVIEW_EXPIRED", 0],
     ["expired preview", "PREVIEW_EXPIRED", 0],
     ["changed proposal", "PREVIEW_CHANGED", 0],
-    ["changed context", "PREVIEW_EXPIRED", 0],
+    ["changed context", "SP_CONTEXT_INVALIDATED", 0],
     ["changed context during approval", "SP_CONTEXT_INVALIDATED", 1],
+    ["new lookup after preview", "IMAGE_SNAPSHOT_CHANGED", 0],
+    ["replacement token without preview", "PREVIEW_CHANGED", 0],
+    ["new lookup during approval", "IMAGE_SNAPSHOT_CHANGED", 1],
     ["stale images", "STALE_LISTING", 1],
     ["wrong canonical SKU", "LISTING_IDENTITY_MISMATCH", 1],
+    ["changed canonical ASIN", "LISTING_IDENTITY_MISMATCH", 1],
+    ["changed product type", "LISTING_IDENTITY_MISMATCH", 1],
+    ["ASIN changed during approval", "LISTING_IDENTITY_MISMATCH", 1],
+    ["product type changed during approval", "LISTING_IDENTITY_MISMATCH", 1],
     ["read-only PTD position", "IMAGE_FIELD_READ_ONLY", 1],
   ] as const)("blocks %s without typed SKU and sends no image write", async (failure, code, approvalCount) => {
     const store = await testStore();
+    const claim = vi.spyOn(store, "runIdempotentOperation");
     let now = 0;
     const context = createScriptedSpExecutionContextAdapter(() => ({
       marketplaceId: MARKETPLACE_ID, mode: "live", accountScope: "image-native-safety-account",
     }));
     const approveWrite = vi.fn(async () => {
       if (failure === "changed context during approval") context.invalidate("lock-screen");
+      if (failure === "new lookup during approval") await lookupToken(owner);
+      if (failure === "ASIN changed during approval") canonical = { ...canonical, asin: "B000000002" };
+      if (failure === "product type changed during approval") canonical = { ...canonical, productType: "PET_SUPPLIES" };
     });
     const writeGate = new MainWriteGate({ store, context, approveWrite, now: () => now });
     let canonical = imageSnapshot(PREVIOUS_URLS);
@@ -466,7 +493,7 @@ describe("listing image mutations", () => {
     const owner = createListingImageMutations({ context, writeGate, gateway });
     const urls = [...PREVIOUS_URLS];
     urls[1] = "https://images.example.com/safety-new.jpg";
-    const body = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU,
+    const body = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU, snapshotToken: await lookupToken(owner),
       expectedUrls: [...PREVIOUS_URLS], urls, idempotencyKey: "image-native-safety-001" };
     if (failure !== "missing preview") {
       expect((await owner.handle({ operation: "preview", request: mutationRequest("POST", "safety-preview", body) })).status).toBe(200);
@@ -474,8 +501,12 @@ describe("listing image mutations", () => {
     if (failure === "expired preview") now = 120001;
     if (failure === "changed proposal") body.urls = [urls[0], "https://images.example.com/different-proposal.jpg", ...urls.slice(2)];
     if (failure === "changed context") context.invalidate("lock-screen");
+    if (failure === "new lookup after preview") await lookupToken(owner);
+    if (failure === "replacement token without preview") body.snapshotToken = await lookupToken(owner);
     if (failure === "stale images") canonical = imageSnapshot([PREVIOUS_URLS[0], "https://images.example.com/changed-elsewhere.jpg", ...PREVIOUS_URLS.slice(2)]);
     if (failure === "wrong canonical SKU") canonical = { ...canonical, sellerSku: "OTHER-SKU" };
+    if (failure === "changed canonical ASIN") canonical = { ...canonical, asin: "B000000002" };
+    if (failure === "changed product type") canonical = { ...canonical, productType: "PET_SUPPLIES" };
     if (failure === "read-only PTD position") canonical.images[1].capability.editable = false;
     const response = await owner.handle({ operation: "commit", request: mutationRequest("PATCH", "safety-commit", body) });
     expect(response.status).toBeGreaterThanOrEqual(400);
@@ -483,6 +514,63 @@ describe("listing image mutations", () => {
     expect(approveWrite).toHaveBeenCalledTimes(approvalCount);
     expect(gateway.commitOnce).not.toHaveBeenCalled();
     expect(gateway.replaceDemoImages).not.toHaveBeenCalled();
+    if (failure === "new lookup during approval") expect(claim).not.toHaveBeenCalled();
+  });
+
+  it.each(["ASIN", "product type"])("rejects %s drift between lookup and preview even when renderer supplies a replacement identity", async field => {
+    const store = await testStore();
+    const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId: MARKETPLACE_ID, mode: "live", accountScope: "image-read-preview-identity" }));
+    const approveWrite = vi.fn(async () => undefined);
+    const writeGate = new MainWriteGate({ store, context, approveWrite });
+    let canonical = imageSnapshot(PREVIOUS_URLS);
+    const gateway: ListingImageGateway = {
+      mode: () => "live",
+      read: vi.fn(async () => ({ snapshot: canonical, sourceEvidence: {} as ListingImageSourceEvidence, fulfillment: "FBA" as const })),
+      validationPreview: vi.fn(), commitOnce: vi.fn(), replaceDemoImages: vi.fn(),
+    };
+    const owner = createListingImageMutations({ context, writeGate, gateway });
+    const snapshotToken = await lookupToken(owner);
+    canonical = field === "ASIN" ? { ...canonical, asin: "B000000002" } : { ...canonical, productType: "PET_SUPPLIES" };
+    const response = await owner.handle({ operation: "preview", request: mutationRequest("POST", "drifted-image-preview", {
+      marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU, snapshotToken,
+      expectedUrls: [...PREVIOUS_URLS], urls: [PREVIOUS_URLS[0], "https://images.example.com/new.jpg", ...PREVIOUS_URLS.slice(2)],
+      idempotencyKey: "image-drifted-preview-001",
+      expectedImageIdentity: { asin: canonical.asin, productType: canonical.productType },
+    }) });
+    expect(response.status).toBe(409);
+    expect(response.body.value).toMatchObject({ code: "LISTING_IDENTITY_MISMATCH" });
+    expect(gateway.validationPreview).not.toHaveBeenCalled();
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", "IMAGE_SNAPSHOT_REQUIRED"],
+    ["forged", "IMAGE_SNAPSHOT_CHANGED"],
+    ["another SKU", "LISTING_IDENTITY_MISMATCH"],
+    ["different old images", "STALE_LISTING"],
+  ] as const)("rejects a %s lookup binding before Amazon preview or native approval", async (failure, code) => {
+    const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId: MARKETPLACE_ID, mode: "live", accountScope: "image-token-validation" }));
+    const approveWrite = vi.fn(async () => undefined);
+    const writeGate = new MainWriteGate({ store: await testStore(), context, approveWrite });
+    const gateway: ListingImageGateway = {
+      mode: () => "live", read: vi.fn(async () => ({ snapshot: imageSnapshot(PREVIOUS_URLS), sourceEvidence: {} as ListingImageSourceEvidence, fulfillment: "FBA" as const })),
+      validationPreview: vi.fn(), commitOnce: vi.fn(), replaceDemoImages: vi.fn(),
+    };
+    const owner = createListingImageMutations({ context, writeGate, gateway });
+    const body: Record<string, unknown> = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU,
+      snapshotToken: await lookupToken(owner), expectedUrls: [...PREVIOUS_URLS],
+      urls: [PREVIOUS_URLS[0], "https://images.example.com/new.jpg", ...PREVIOUS_URLS.slice(2)], idempotencyKey: "image-token-validation-001" };
+    if (failure === "missing") delete body.snapshotToken;
+    if (failure === "forged") body.snapshotToken = "image-snapshot.00000000-0000-4000-8000-000000000000";
+    if (failure === "another SKU") body.sellerSku = "OTHER-SKU";
+    if (failure === "different old images") body.expectedUrls = ["https://images.example.com/forged-old.jpg", ...PREVIOUS_URLS.slice(1)];
+    const response = await owner.handle({ operation: "preview", request: mutationRequest("POST", "image-token-validation", body) });
+    expect(response.status).toBe(409);
+    expect(response.body.value).toMatchObject({ code });
+    expect(gateway.validationPreview).not.toHaveBeenCalled();
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
   });
 
   it("keeps a contradictory PATCH receipt unknown and never sends it twice", async () => {
@@ -533,6 +621,7 @@ describe("listing image mutations", () => {
       sellerSku: SELLER_SKU,
       expectedUrls: [...PREVIOUS_URLS],
       urls: requestedUrls,
+      snapshotToken: await lookupToken(owner),
       idempotencyKey: "w03-image-unknown-001",
     };
 
@@ -612,6 +701,7 @@ describe("listing image mutations", () => {
       sellerSku: SELLER_SKU,
       expectedUrls: [...PREVIOUS_URLS],
       urls: requestedUrls,
+      snapshotToken: await lookupToken(owner),
       idempotencyKey,
     };
 
@@ -648,6 +738,9 @@ describe("listing image mutations", () => {
         SELLER_SKU,
         PREVIOUS_URLS,
         requestedUrls,
+        value.snapshotToken,
+        "B09S5VY2JS",
+        "PET_FOOD",
       ]))
       .digest("hex");
     const binding = {

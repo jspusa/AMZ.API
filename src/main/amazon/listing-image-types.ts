@@ -18,6 +18,8 @@ export type ListingImageFieldCapability = {
 export type ListingImageSnapshot = {
   /** Main-owned protocol capability; absent on Notebook Keys requiring typed SKU confirmation. */
   confirmationMode?: "native";
+  /** Opaque, main-owned lookup binding; required by the native confirmation protocol. */
+  snapshotToken?: string;
   mode: "live" | "demo";
   marketplaceId: MarketplaceId;
   sellerSku: string;
