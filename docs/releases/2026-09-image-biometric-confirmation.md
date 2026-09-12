@@ -2,7 +2,7 @@
 
 Issue [#254](https://github.com/jspusa/AMZ.API/issues/254)。規格見 [圖片登入與送出操作簡化](../specs/2026-09-image-biometric-confirmation.md)。
 
-Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex/image-touch-id-confirmation-20260912`。版本 0.1.66 已由 [PR #255](https://github.com/jspusa/AMZ.API/pull/255) 合併至 main `afbffdd85a2685992dc2c3341f79dbdd3a86c2fc`；同來源網站與兩平台產物已發布驗證，Mac／Windows 下載卡上傳完成。這台 Mac 已安裝可信 0.1.66，保留舊 App 與 userData 備份；新版程序已啟動，系統授權與原生功能驗收尚待完成。
+Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex/image-touch-id-confirmation-20260912`。版本 0.1.66 已由 [PR #255](https://github.com/jspusa/AMZ.API/pull/255) 合併至 main `afbffdd85a2685992dc2c3341f79dbdd3a86c2fc`；同來源網站與兩平台產物已發布驗證，Mac／Windows 下載卡上傳完成。這台 Mac 已安裝可信 0.1.66，保留舊 App 與 userData 備份；啟動授權已由後續原生首頁確認解除，圖片登入及完整原生功能驗收尚待完成。
 
 ## 行為
 
@@ -19,7 +19,8 @@ Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex
 | ★ 兩軸 review | Standards／Spec 均核對 `147a14a…33af1149acf050a7770cdacf1a5254d5a7027c1b`，各 0 open。Spec 所見 ASIN／Product Type 漂移與 Standards 所見 context cache 清除缺口已修復；main 查詢憑據綁定、失效清除與遲到結果拒絕均有 public seam 測試 |
 | ★ 同 source CI／Pages／兩平台 artifact | main/push Validate `34703293096`、Pages `34703293147`、Mac `34703293079`、Windows `34703293060` 均 success，attempt 1。Pages artifact `10300676804` 的 HTML 與全部 11 個 JS／CSS 與線上 bytes 一致；Mac artifact `10300986368`、Windows artifact `10301635948` 的 archive／manifest／payload hashes 均相符 |
 | ★ 0.1.66 Mac 安裝 | 舊版正常 Command-Q 並確認退出後，完成 0700 userData 備份，再由可信 DMG 換版。已安裝 App 的 ASAR 與可信 artifact 一致，universal 與 deep/strict adhoc codesign 通過；0.1.65 App 保留，換版期間 vault／ledger bytes 一致 |
-| ☆ 0.1.66 原生畫面與圖片登入 | 新版程序已啟動，但 CUA 取得 App／讀取畫面逾時，同時觀察到 SecurityAgent 執行中；工具基於安全禁止操作系統授權程序。已請使用者完成 macOS 授權，尚未看見新版 UI。初次加密保存、重開後 Touch ID 及新版確認頁原生驗收待完成 |
+| ★ 0.1.66 啟動與首頁 | 初次系統授權等待後，已觀察到新版原生首頁、Amazon 已連線、US 與圖片門檻 8；取代先前尚未看見 UI 的狀態 |
+| ☆ 0.1.66 圖片登入 | 初次加密保存、重開後 Touch ID 及新版確認頁原生驗收待完成；首頁成功不代表這些流程已驗 |
 | ★ 下載卡上傳 | Mac→Windows 兩次 uploader exit 0、complete 回覆成功，保留既有卡片 ID、平台與名稱，改為 0.1.66 及可信檔案 bytes／hash |
 | ☆ 員工下載實體檔 | 現有下載頁顯示登入畫面；尚未建立本版員工下載，登入後需核對兩卡及新完成檔案大小／hash。上傳完成不等於員工成功下載 |
 
@@ -40,9 +41,9 @@ Mac ASAR `a06cd5ecf4e803fadbbbca0a964e5a701ef4347e89bd17b93b41179b0c2e4ccd`；Wi
 
 `user-data-backup-verification.json` 記錄換版前正常停止 0.1.65、建立權限 0700 的 `20260912-before-0166` userData 備份，vault／ledger bytes 均保留；安裝證據另核對 swap 全程 App 已停止、換版期間 vault／ledger bytes 一致。這些是備份與安裝證據，不代表新版已成功解密憑證或完成原生驗收。
 
-`native-acceptance-20260913.json` 記錄安裝前 Mac 已可操作，舊版首頁沒有寫入確認或 active image workspace，正常 Command-Q 後確認程序退出。安裝後觀察到新版 PID `77466` 與系統授權 PID `77471`；CUA 取得 App／讀取畫面逾時，且明確禁止操作 `com.apple.SecurityAgent`。已請使用者完成當前 macOS 系統授權；若系統提供 Touch ID 可由使用者使用。尚未看見 0.1.66 UI，不能把程序存在當成授權成功、圖片加密登入、Amazon 連線或功能通過；本輪 agent 未送 Amazon Preview、原生寫入批准或 mutation。
+`native-acceptance-20260913.json` 記錄安裝前 Mac 已可操作，舊版首頁沒有寫入確認或 active image workspace，正常 Command-Q 後確認程序退出。安裝後觀察到新版 PID `77466` 與系統授權 PID `77471`；CUA 取得 App／讀取畫面逾時，且明確禁止操作 `com.apple.SecurityAgent`。當時請使用者完成 macOS 系統授權；若系統提供 Touch ID 可由使用者使用。後續已實際看見 0.1.66 原生首頁、Amazon 已連線、US 與圖片門檻 8，啟動等待已解除。兩項首次唯讀工作則分別遇到單列 Listing 身分錯誤與報表欄位衝突，未重試；修正與新版驗收見 [0.1.67 帳本](2026-09-health-price-live-compat.md)。圖片加密登入、後續 Touch ID 與確認頁仍未驗；本輪 agent 未送 Amazon Preview、原生寫入批准或 mutation。
 
-先前安裝暫停期間，原生工具曾回報 Mac locked／自動解鎖失敗；使用者已提供「鎖定使用」開啟的畫面，當時未查到確切原因，不能歸咎為使用者沒有啟用設定。這是已由上述安裝進度接續的歷史卡點；目前待完成的是新版啟動授權與 UI 觀察。App 圖片服務的一次初始設定、macOS 系統授權與 Codex 的 Mac 自動解鎖是不同項目。
+先前安裝暫停期間，原生工具曾回報 Mac locked／自動解鎖失敗；使用者已提供「鎖定使用」開啟的畫面，當時未查到確切原因，不能歸咎為使用者沒有啟用設定。啟動授權已由上述首頁觀察解除；後續驗收期間工具再次回報 Mac locked／自動解鎖失敗，最新版安裝與完整原生驗收狀態以 0.1.67 帳本為準。App 圖片服務的一次初始設定、macOS 系統授權與 Codex 的 Mac 自動解鎖是不同項目。
 
 ## 保留的 0.1.65 原生證據及未完成範圍
 
