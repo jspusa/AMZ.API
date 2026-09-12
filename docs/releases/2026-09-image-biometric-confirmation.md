@@ -14,8 +14,8 @@ Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex
 
 | 範圍 | 證據／狀態 |
 | --- | --- |
-| ☆ Source | 開發中；保留原 main Write Gate、idempotency 與 native confirmation |
-| ☆ Check／audit | 待最終同一 source 驗證 |
+| ★ Source | 已完成圖片登入 OS 加密保存、Touch ID／Windows Hello 解鎖，以及免重打 SKU 確認；保留原 main Write Gate、idempotency 與 native confirmation |
+| ★ Check／audit | `npm run check`：323 files／3,738 tests、型別與 build 通過；`npm audit --omit=dev`：0 vulnerabilities；`git diff --check` 通過。首輪兩個版號斷言已更新；三個既有大量 durable I/O 測試曾逾時，完整重跑原 5 秒門檻已通過 |
 | ☆ 兩軸 review | 待最終 diff 審查 |
 | ☆ 同 source CI／Pages／兩平台 artifact | 尚未發布 |
 | ☆ 0.1.66 Mac 安裝與圖片登入 | 尚未安裝；不以 0.1.65 的登入成功替代 |
