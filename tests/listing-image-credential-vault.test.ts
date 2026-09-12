@@ -36,7 +36,9 @@ describe("dedicated listing image credential vault", () => {
     expect(await f.vault.hasCredentials()).toBe(false);
     await f.vault.save("fixture employee password", current);
     expect((await readFile(f.path)).includes(Buffer.from("fixture employee password"))).toBe(false);
-    expect((await stat(f.path)).mode & 0o777).toBe(0o600);
+    // POSIX mode bits are not Windows ACLs. The encrypted-byte and reopened
+    // owner checks below still run on Windows; live DPAPI is a separate gate.
+    if (process.platform !== "win32") expect((await stat(f.path)).mode & 0o777).toBe(0o600);
     expect(await f.vault.hasCredentials()).toBe(true);
     expect(f.codec.decrypt).not.toHaveBeenCalled();
     const restored = new ListingImageCredentialVault({ path: f.path, codec: f.codec });
