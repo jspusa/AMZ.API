@@ -84,6 +84,59 @@ function mutationRequest(
 }
 
 describe("listing image mutations", () => {
+  it("commits a previewed image change without retyping SKU and verifies its canonical readback after one native approval", async () => {
+    const store = await testStore();
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID,
+      mode: "live",
+      accountScope: "image-native-confirmation-account",
+    }));
+    const approveWrite = vi.fn(async (_reason: string) => undefined);
+    const writeGate = new MainWriteGate({ store, context, approveWrite });
+    const urls = [...PREVIOUS_URLS];
+    urls[1] = "https://images.example.com/native-confirmed.jpg";
+    urls[9] = "https://images.example.com/native-confirmed-tenth.jpg";
+    let canonicalUrls = [...PREVIOUS_URLS];
+    const gateway: ListingImageGateway = {
+      mode: () => "live",
+      read: vi.fn(async () => ({
+        snapshot: imageSnapshot(canonicalUrls),
+        sourceEvidence: {} as ListingImageSourceEvidence,
+        fulfillment: "FBA" as const,
+      })),
+      validationPreview: vi.fn(async () => ({
+        ok: true, status: 200, requestId: "native-image-preview", retryAfter: null,
+        payload: { status: "VALID", issues: [] },
+      })),
+      commitOnce: vi.fn(async () => {
+        canonicalUrls = [...urls];
+        return { ok: true, status: 200, requestId: "native-image-commit", retryAfter: null,
+          payload: { status: "ACCEPTED", submissionId: "native-image-submission", issues: [] } };
+      }),
+      replaceDemoImages: vi.fn(),
+    };
+    const owner = createListingImageMutations({ context, writeGate, gateway });
+    const body = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU,
+      expectedUrls: [...PREVIOUS_URLS], urls, idempotencyKey: "image-native-confirmation-001" };
+    expect((await owner.handle({ operation: "preview", request: mutationRequest("POST", "native-preview", body) })).status).toBe(200);
+    expect(approveWrite).not.toHaveBeenCalled();
+    const committed = await owner.handle({ operation: "commit", request: mutationRequest("PATCH", "native-commit", body) });
+    expect(committed.status).toBe(200);
+    expect(committed.body.kind === "json" ? committed.body.value : null).toMatchObject({
+      status: "ACCEPTED", sellerSku: SELLER_SKU, changedSlots: [1, 9],
+      writeLifecycle: { state: "verified", verified: true, authoritative: true },
+    });
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(approveWrite.mock.calls[0]?.[0]).toContain(`${SELLER_SKU}｜位置 2、10`);
+    expect(gateway.validationPreview).toHaveBeenCalledTimes(2);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    const read = await owner.handle({ operation: "read", request: {
+      requestId: "native-read", method: "GET", path: "/api/sp-api/listing-images",
+      query: { marketplaceId: MARKETPLACE_ID, sku: SELLER_SKU }, headers: {},
+    } });
+    expect(read.body.kind === "json" ? read.body.value : null).toMatchObject({ confirmationMode: "native" });
+  });
+
   it("preserves GB in the UK native approval reason", async () => {
     const ukMarketplaceId = "A1F83G8C2ARO7P" as const;
     let approvalReason = "";
@@ -251,7 +304,7 @@ describe("listing image mutations", () => {
       .toMatchObject({ submissionId: null });
   });
 
-  it("returns ACTION_CANCELLED without committing when native approval is cancelled", async () => {
+  it.each([undefined, "WRONG-LEGACY-SKU"])("returns ACTION_CANCELLED before dispatch without relying on legacy confirmationSku (%s)", async legacyConfirmation => {
     const previousUrls = [
       "https://images.example.com/main.jpg",
       ...Array.from({ length: 9 }, () => null),
@@ -320,12 +373,13 @@ describe("listing image mutations", () => {
       assertIdempotentOperationsAvailable: vi.fn(async () => undefined),
       reconcileIdempotentOperations: vi.fn(async () => undefined),
     };
+    const approveWrite = vi.fn(async () => {
+      throw new Error("native approval cancelled");
+    });
     const writeGate = new MainWriteGate({
       store: ledger as never,
       context,
-      approveWrite: vi.fn(async () => {
-        throw new Error("native approval cancelled");
-      }),
+      approveWrite,
     });
     const mutations = createListingImageMutations({
       context,
@@ -339,7 +393,6 @@ describe("listing image mutations", () => {
         sellerSku: SELLER_SKU,
         expectedUrls: previousUrls,
         urls: requestedUrls,
-        confirmationSku: "",
         idempotencyKey: "w03-image-native-cancel-001",
       },
     };
@@ -367,7 +420,7 @@ describe("listing image mutations", () => {
         headers: {},
         body: {
           ...body,
-          value: { ...body.value, confirmationSku: SELLER_SKU },
+          value: { ...body.value, ...(legacyConfirmation === undefined ? {} : { confirmationSku: legacyConfirmation }) },
         },
       },
     });
@@ -378,6 +431,58 @@ describe("listing image mutations", () => {
       value: expect.objectContaining({ code: "ACTION_CANCELLED" }),
     });
     expect(commitOnce).not.toHaveBeenCalled();
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(ledger.runIdempotentOperation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing preview", "PREVIEW_EXPIRED", 0],
+    ["expired preview", "PREVIEW_EXPIRED", 0],
+    ["changed proposal", "PREVIEW_CHANGED", 0],
+    ["changed context", "PREVIEW_EXPIRED", 0],
+    ["changed context during approval", "SP_CONTEXT_INVALIDATED", 1],
+    ["stale images", "STALE_LISTING", 1],
+    ["wrong canonical SKU", "LISTING_IDENTITY_MISMATCH", 1],
+    ["read-only PTD position", "IMAGE_FIELD_READ_ONLY", 1],
+  ] as const)("blocks %s without typed SKU and sends no image write", async (failure, code, approvalCount) => {
+    const store = await testStore();
+    let now = 0;
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID, mode: "live", accountScope: "image-native-safety-account",
+    }));
+    const approveWrite = vi.fn(async () => {
+      if (failure === "changed context during approval") context.invalidate("lock-screen");
+    });
+    const writeGate = new MainWriteGate({ store, context, approveWrite, now: () => now });
+    let canonical = imageSnapshot(PREVIOUS_URLS);
+    const gateway: ListingImageGateway = {
+      mode: () => "live",
+      read: vi.fn(async () => ({ snapshot: canonical, sourceEvidence: {} as ListingImageSourceEvidence, fulfillment: "FBA" as const })),
+      validationPreview: vi.fn(async () => ({ ok: true, status: 200, requestId: "image-safety-preview", retryAfter: null,
+        payload: { status: "VALID", issues: [] } })),
+      commitOnce: vi.fn(async () => { throw new Error("unsafe image write must not dispatch"); }),
+      replaceDemoImages: vi.fn(),
+    };
+    const owner = createListingImageMutations({ context, writeGate, gateway });
+    const urls = [...PREVIOUS_URLS];
+    urls[1] = "https://images.example.com/safety-new.jpg";
+    const body = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU,
+      expectedUrls: [...PREVIOUS_URLS], urls, idempotencyKey: "image-native-safety-001" };
+    if (failure !== "missing preview") {
+      expect((await owner.handle({ operation: "preview", request: mutationRequest("POST", "safety-preview", body) })).status).toBe(200);
+    }
+    if (failure === "expired preview") now = 120001;
+    if (failure === "changed proposal") body.urls = [urls[0], "https://images.example.com/different-proposal.jpg", ...urls.slice(2)];
+    if (failure === "changed context") context.invalidate("lock-screen");
+    if (failure === "stale images") canonical = imageSnapshot([PREVIOUS_URLS[0], "https://images.example.com/changed-elsewhere.jpg", ...PREVIOUS_URLS.slice(2)]);
+    if (failure === "wrong canonical SKU") canonical = { ...canonical, sellerSku: "OTHER-SKU" };
+    if (failure === "read-only PTD position") canonical.images[1].capability.editable = false;
+    const response = await owner.handle({ operation: "commit", request: mutationRequest("PATCH", "safety-commit", body) });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.body.kind === "json" ? response.body.value : null).toMatchObject({ code });
+    expect(approveWrite).toHaveBeenCalledTimes(approvalCount);
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+    expect(gateway.replaceDemoImages).not.toHaveBeenCalled();
   });
 
   it("keeps a contradictory PATCH receipt unknown and never sends it twice", async () => {
@@ -428,7 +533,6 @@ describe("listing image mutations", () => {
       sellerSku: SELLER_SKU,
       expectedUrls: [...PREVIOUS_URLS],
       urls: requestedUrls,
-      confirmationSku: SELLER_SKU,
       idempotencyKey: "w03-image-unknown-001",
     };
 
@@ -508,7 +612,6 @@ describe("listing image mutations", () => {
       sellerSku: SELLER_SKU,
       expectedUrls: [...PREVIOUS_URLS],
       urls: requestedUrls,
-      confirmationSku: SELLER_SKU,
       idempotencyKey,
     };
 

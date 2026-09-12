@@ -682,7 +682,6 @@ export function createListingImageMutationOperations(
 }
 
 type ListingImageRouteInput = UpdateListingImagesInput & Readonly<{
-  confirmationSku: string;
   idempotencyKey: string;
 }>;
 
@@ -786,7 +785,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       project: (response, _operation, canonical) =>
         reconcileImageWrite(response, canonical),
     });
-    return publicImageResult(observation.snapshot);
+    return publicImageResult({ ...observation.snapshot, confirmationMode: "native" });
   }
 
   private async readRoute(request: ApiRequest): Promise<ApiResponse> {
@@ -832,9 +831,8 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       sellerSku,
       expectedUrls,
       urls,
-      confirmationSku: typeof body.confirmationSku === "string"
-        ? body.confirmationSku
-        : "",
+      // Legacy confirmationSku is intentionally ignored; exact identity and
+      // native authorization remain owned by the preview binding and Write Gate.
       idempotencyKey: typeof body.idempotencyKey === "string"
         ? body.idempotencyKey
         : "",
@@ -885,13 +883,6 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     if ("status" in input) return input;
     const key = validIdempotencyKey(input.idempotencyKey);
     if (!key) return invalid("這次預檢已失效，請重新預檢。");
-    if (input.confirmationSku !== input.sellerSku) {
-      return invalid(
-        "送出圖片前，請重新輸入完整 SKU。",
-        400,
-        "CONFIRMATION_REQUIRED",
-      );
-    }
     const context = await this.context.capture(input.marketplaceId);
     const changedSlots = normalizeImageUrls(input.urls).flatMap((value, index) =>
       value === normalizeImageUrls(input.expectedUrls)[index] ? [] : [index + 1]

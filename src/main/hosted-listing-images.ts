@@ -1,8 +1,51 @@
 import { createHash, randomUUID } from "node:crypto";
+import { validListingImagePassword, LISTING_IMAGE_VAULT_ERROR, LISTING_IMAGE_VAULT_UNAVAILABLE } from "./listing-image-credential-vault";
+import { NATIVE_BIOMETRIC_REQUIRED_MESSAGE, NATIVE_CONFIRMATION_BUSY_MESSAGE, NATIVE_CONFIRMATION_CANCELLED_MESSAGE, WINDOWS_HELLO_REQUIRED_MESSAGE } from "./native-confirmation";
+
+export const LISTING_IMAGE_PREPARATION_MESSAGES = Object.freeze({
+  IMAGE_PASSWORD_REJECTED: "圖片服務密碼已失效或不正確，請更新下載頁密碼。",
+  IMAGE_LOGIN_UNAVAILABLE: "圖片服務目前無法連線或忙碌；已保留登入設定，請稍後重新準備圖片。",
+  IMAGE_LOGIN_INVALID_RESPONSE: "圖片服務登入回覆無效；已保留登入設定，請稍後再試。",
+  IMAGE_LOGIN_CANCELLED: "圖片服務身分驗證已取消或未通過；檔案仍保留在工作台。",
+  IMAGE_BIOMETRIC_REQUIRED: "圖片服務需要可用的 Touch ID／Windows Hello；登入設定尚未解鎖，檔案仍保留在工作台。",
+  IMAGE_WINDOWS_HELLO_REQUIRED: "請先在 Windows 設定中啟用 Windows Hello（指紋、臉部或 PIN）；圖片服務登入設定尚未解鎖。",
+  IMAGE_LOGIN_BUSY: "另一個本機身分驗證正在進行；請完成後重新準備圖片。",
+  IMAGE_VAULT_UNAVAILABLE: LISTING_IMAGE_VAULT_UNAVAILABLE,
+  IMAGE_VAULT_ERROR: LISTING_IMAGE_VAULT_ERROR,
+  IMAGE_PREPARATION_INCOMPLETE: "圖片準備尚未完成，檔案仍保留在工作台。請稍後重新準備圖片。",
+});
 
 export const LISTING_IMAGE_SERVICE_ORIGIN = "https://supply-boss.brave-prawn-0848.chatgpt.site";
 const MAX_BYTES = 10 * 1024 * 1024;
 type ImageType = "image/png" | "image/jpeg";
+export class ListingImageLoginError extends Error {
+  constructor(readonly code: "invalid-password" | "unavailable" | "invalid-response") {
+    super(code === "invalid-password" ? LISTING_IMAGE_PREPARATION_MESSAGES.IMAGE_PASSWORD_REJECTED
+      : code === "unavailable" ? LISTING_IMAGE_PREPARATION_MESSAGES.IMAGE_LOGIN_UNAVAILABLE
+      : LISTING_IMAGE_PREPARATION_MESSAGES.IMAGE_LOGIN_INVALID_RESPONSE);
+  }
+}
+
+/** Fixed public vocabulary only; upstream/OS messages are never returned verbatim. */
+export function publicListingImagePreparationError(error: unknown): Readonly<{ code: string; message: string; status: number }> {
+  let code: keyof typeof LISTING_IMAGE_PREPARATION_MESSAGES = "IMAGE_PREPARATION_INCOMPLETE";
+  if (error instanceof ListingImageLoginError) {
+    code = error.code === "invalid-password" ? "IMAGE_PASSWORD_REJECTED" : error.code === "unavailable" ? "IMAGE_LOGIN_UNAVAILABLE" : "IMAGE_LOGIN_INVALID_RESPONSE";
+  } else if (error instanceof Error) {
+    const known = new Map<string, keyof typeof LISTING_IMAGE_PREPARATION_MESSAGES>([
+      [NATIVE_CONFIRMATION_CANCELLED_MESSAGE, "IMAGE_LOGIN_CANCELLED"],
+      ["圖片登入已取消或工作環境已切換，請重新準備圖片。", "IMAGE_LOGIN_CANCELLED"],
+      [NATIVE_BIOMETRIC_REQUIRED_MESSAGE, "IMAGE_BIOMETRIC_REQUIRED"],
+      [WINDOWS_HELLO_REQUIRED_MESSAGE, "IMAGE_WINDOWS_HELLO_REQUIRED"],
+      [NATIVE_CONFIRMATION_BUSY_MESSAGE, "IMAGE_LOGIN_BUSY"],
+      [LISTING_IMAGE_VAULT_ERROR, "IMAGE_VAULT_ERROR"],
+      [LISTING_IMAGE_VAULT_UNAVAILABLE, "IMAGE_VAULT_UNAVAILABLE"],
+    ]);
+    code = known.get(error.message) ?? code;
+  }
+  return { code, message: LISTING_IMAGE_PREPARATION_MESSAGES[code], status: code === "IMAGE_LOGIN_CANCELLED" || code === "IMAGE_LOGIN_BUSY" ? 409 : 503 };
+}
+
 class ImageServiceResponseError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -22,7 +65,7 @@ export class HostedListingImages implements HostedListingImagePort {
   private operations = new Map<string, { id: string; verified: boolean; rejected: boolean }>();
 
   constructor(private readonly input: Readonly<{
-    requestLogin(): Promise<void>;
+    requestLogin(assertCurrent: () => Promise<void>): Promise<void>;
     fetch?: typeof fetch;
     uuid?: () => string;
     now?: () => number;
@@ -33,6 +76,7 @@ export class HostedListingImages implements HostedListingImagePort {
   clear(): void {
     this.generation += 1;
     this.session = null;
+    this.loginFlight = null;
     for (const controller of this.controllers) controller.abort();
   }
 
@@ -82,21 +126,40 @@ export class HostedListingImages implements HostedListingImagePort {
     return value as Record<string, unknown>;
   }
 
-  async login(password: unknown): Promise<void> {
-    if (typeof password !== "string" || !password || password.length > 256) throw new Error("請輸入下載頁使用的密碼。");
+  async login(password: unknown, assertCurrent: () => Promise<void> = async () => {}, onVerified?: () => Promise<void>): Promise<void> {
+    if (!validListingImagePassword(password)) throw new Error("請輸入有效的下載頁密碼。");
     const generation = this.generation;
+    const startedAt = this.now();
+    const fence = async (): Promise<void> => {
+      await assertCurrent();
+      if (generation !== this.generation) throw new Error("圖片登入已取消或工作環境已切換，請重新準備圖片。");
+    };
+    await fence();
     let result: Record<string, unknown>;
     try {
       result = await this.request("/api/listing-images/login", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }),
       }, async (response) => {
-        if (response.status === 401) throw new Error("密碼不正確。");
-        return this.receipt(response);
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new ListingImageLoginError(response.status === 401 ? "invalid-password" : "unavailable");
+        }
+        try { return await this.receipt(response); }
+        catch { throw new ListingImageLoginError("invalid-response"); }
       }) as Record<string, unknown>;
-    } catch { throw new Error("圖片服務登入未完成，請確認下載頁密碼或稍後再試。"); }
+    } catch (error) {
+      await fence();
+      if (error instanceof ListingImageLoginError) throw error;
+      throw new ListingImageLoginError("unavailable");
+    }
+    await fence();
     const expires = typeof result.expiresAt === "string" ? Date.parse(result.expiresAt) : NaN;
-    if (generation !== this.generation || typeof result.token !== "string" || result.token.length < 32 || result.token.length > 4096 || /[\r\n]/u.test(result.token) || !Number.isFinite(expires) || expires <= this.now() || expires > this.now() + 8 * 60 * 60_000 + 60_000) throw new Error("圖片服務登入已失效，請重新登入。");
-    this.session = { token: result.token, expires };
+    if (typeof result.token !== "string" || result.token.length < 32 || result.token.length > 4096 || /[\r\n]/u.test(result.token) || !Number.isFinite(expires) || expires <= this.now() || expires > startedAt + 8 * 60 * 60_000 + 60_000) throw new ListingImageLoginError("invalid-response");
+    // Initial setup persists only the verified password; the session is not
+    // published until persistence and the final context fence both succeed.
+    await onVerified?.();
+    await fence();
+    this.session = { token: result.token, expires: Math.min(expires, startedAt + 8 * 60 * 60_000) };
   }
 
   async prepare(input: Parameters<HostedListingImagePort["prepare"]>[0]): Promise<Readonly<{ url: string; key: string }>> {
@@ -107,7 +170,10 @@ export class HostedListingImages implements HostedListingImagePort {
     };
     await fence();
     if (!this.authenticated()) {
-      if (!this.loginFlight) this.loginFlight = this.input.requestLogin().finally(() => { this.loginFlight = null; });
+      if (!this.loginFlight) {
+        const flight = this.input.requestLogin(fence).finally(() => { if (this.loginFlight === flight) this.loginFlight = null; });
+        this.loginFlight = flight;
+      }
       await this.loginFlight;
     }
     await fence();
