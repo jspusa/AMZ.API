@@ -61,6 +61,7 @@ type Asset = {
   key: string | null;
   readyForAmazon: boolean;
   uploading: boolean;
+  sourceFile: File | null;
 };
 
 type UpdateResult = {
@@ -89,6 +90,7 @@ function emptyAsset(url: string | null = null): Asset {
     key: null,
     readyForAmazon: Boolean(url),
     uploading: false,
+    sourceFile: null,
   };
 }
 
@@ -150,6 +152,8 @@ export default function ImageWorkspaceDrawer({
   const [editorQueue, setEditorQueue] = useState<readonly string[]>([]);
   const [snapshot, setSnapshot] = useState<ImageSnapshot | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [snapshotRevision, setSnapshotRevision] = useState(-1);
+  const [isolatedBatches, setIsolatedBatches] = useState<Array<{ marketplaceId: string; sellerSku: string; files: File[] }>>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [manualUrl, setManualUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -167,6 +171,7 @@ export default function ImageWorkspaceDrawer({
   const [batchProcessing, setBatchProcessing] = useState(false);
   const uploadContextRef = useRef(0);
   const uploadBusyRef = useRef(false);
+  const activeUploadRef = useRef<{ file: File; controller: AbortController } | null>(null);
   const busy = actionLoading || batchProcessing || assets.some(asset => asset.uploading);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileTargetRef = useRef<number | undefined>(undefined);
@@ -178,7 +183,40 @@ export default function ImageWorkspaceDrawer({
     return () => onBusyChange?.(false);
   }, [busy, onBusyChange]);
 
-  useEffect(() => () => { uploadContextRef.current += 1; }, []);
+  useEffect(() => () => {
+    uploadContextRef.current += 1;
+    activeUploadRef.current?.controller.abort();
+  }, []);
+
+  useEffect(() => window.fbaOS?.app.onContextInvalidated?.(() => {
+    uploadContextRef.current += 1;
+    const activeFile = activeUploadRef.current?.file;
+    if (snapshot) {
+      const files = [...new Set([...batchFiles, ...assets.flatMap(asset => asset.sourceFile ? [asset.sourceFile] : []), ...(activeFile ? [activeFile] : [])])];
+      if (files.length) setIsolatedBatches(previous => {
+        const matching = previous.find(batch => batch.marketplaceId === snapshot.marketplaceId && batch.sellerSku === snapshot.sellerSku);
+        return [...previous.filter(batch => batch !== matching), { marketplaceId: snapshot.marketplaceId, sellerSku: snapshot.sellerSku, files: [...new Set([...(matching?.files ?? []), ...files])] }];
+      });
+    }
+    activeUploadRef.current?.controller.abort();
+    activeUploadRef.current = null;
+    uploadBusyRef.current = false;
+    setBatchProcessing(false);
+    setActionLoading(false);
+    setLoading(false);
+    setSnapshot(null);
+    setAssets([]);
+    setBatchFiles([]);
+    setManualUrl("");
+    setDraggingIndex(null);
+    setPreview(null);
+    setResult(null);
+    setVerified(false);
+    setIdempotencyKey("");
+    setConfirmationSku("");
+    setPhase("edit");
+    setError("帳號或安全環境已更新，圖片草稿已停止；請重新查詢商品後再準備保留圖片。");
+  }), [assets, batchFiles, snapshot]);
 
   const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const supportedIndexes = useMemo(
@@ -264,10 +302,11 @@ export default function ImageWorkspaceDrawer({
       }
       if (loadContext !== uploadContextRef.current) return;
       const next = payload as ImageSnapshot;
-      if (exact && (next.sellerSku !== sellerSku || next.marketplaceId !== marketplaceId)) {
+      if (next.sellerSku !== sellerSku || next.marketplaceId !== marketplaceId) {
         throw new Error("商品識別與目前選取不一致，請返回健檢後重新開啟。");
       }
       setSnapshot(next);
+      setSnapshotRevision(loadContext);
       setAssets(next.images.map((item) => emptyAsset(item.url)));
       setSelectedIndex(Math.max(0, next.images.findIndex((item) => item.capability.supported)));
       setPhase("edit");
@@ -324,11 +363,13 @@ export default function ImageWorkspaceDrawer({
   }, [initialSellerSku, initialTab, loadSku]);
 
   const uploadFile = async (file: File, index: number): Promise<ImageUploadOutcome> => {
-    if (uploadBusyRef.current || !snapshot || !snapshot.images[index]?.capability.editable) {
+    if (uploadBusyRef.current || snapshotRevision !== uploadContextRef.current || !snapshot || !snapshot.images[index]?.capability.editable) {
       return { ok: false, message: "目前商品的圖片位置不可編輯。", stopBatch: true };
     }
     const context = uploadContextRef.current;
     uploadBusyRef.current = true;
+    const controller = new AbortController();
+    activeUploadRef.current = { file, controller };
     let stopBatch = true;
     setAssets((items) =>
       items.map((item, itemIndex) =>
@@ -344,6 +385,7 @@ export default function ImageWorkspaceDrawer({
       const response = await fetch("/api/uploads/listing-images", {
         method: "POST",
         body: form,
+        signal: controller.signal,
       });
       const payload = (await response.json()) as {
         key?: string;
@@ -375,10 +417,12 @@ export default function ImageWorkspaceDrawer({
                 readyForAmazon:
                   Boolean(payload.readyForAmazon) || snapshot.mode === "demo",
                 uploading: false,
+                sourceFile: file,
               }
             : item,
         ),
       );
+      setSelectedIndex(index);
       return { ok: true, readyForAmazon: Boolean(payload.readyForAmazon) || snapshot.mode === "demo" };
     } catch (requestError) {
       if (context !== uploadContextRef.current) return { ok: false, message: "商品已切換，已停止套用圖片。", stopBatch: true };
@@ -391,17 +435,20 @@ export default function ImageWorkspaceDrawer({
       setError(message);
       return { ok: false, message, stopBatch };
     } finally {
-      uploadBusyRef.current = false;
+      if (activeUploadRef.current?.controller === controller) {
+        activeUploadRef.current = null;
+        uploadBusyRef.current = false;
+      }
     }
   };
 
   const uploadFiles = async (files: File[], preferredIndex?: number) => {
     if (!snapshot || !files.length || busy || uploadBusyRef.current) return;
-    if (preferredIndex !== undefined && files.length === 1 && !/_\d{1,2}_/u.test(files[0].name)) {
+    if (preferredIndex !== undefined && files.length === 1 && !/_\d+_/u.test(files[0].name)) {
       await uploadFile(files[0], preferredIndex);
       return;
     }
-    if (files.length > 100) { setError("一次最多選擇 100 個檔案；一個商品最多對應 9 個圖片位置。"); return; }
+    if (files.length > 100) { setError("一次最多選擇 100 個檔案；一個商品最多對應 10 個圖片位置。"); return; }
     setError(null);
     setBatchFiles(files);
     setBatchId(value => value + 1);
@@ -446,25 +493,28 @@ export default function ImageWorkspaceDrawer({
     ) {
       return setError("圖片網址必須是沒有登入資訊或錨點的公開 HTTPS URL。");
     }
+    const context = uploadContextRef.current;
     setActionLoading(true);
     setError(null);
     try {
       const dimensions = await inspectRemoteImage(value);
+      if (context !== uploadContextRef.current) return;
       if (dimensions.width < 500 || dimensions.height < 500) {
         throw new Error("圖片寬高都必須至少 500px；建議 1000px 以上。");
       }
       setAssets((items) =>
         items.map((item, index) =>
           index === selectedIndex
-            ? { url: value, previewUrl: value, key: null, readyForAmazon: true, uploading: false }
+            ? { url: value, previewUrl: value, key: null, readyForAmazon: true, uploading: false, sourceFile: item.sourceFile }
             : item,
         ),
       );
       setManualUrl("");
     } catch (requestError) {
+      if (context !== uploadContextRef.current) return;
       setError(requestError instanceof Error ? requestError.message : "圖片網址檢查失敗。");
     } finally {
-      setActionLoading(false);
+      if (context === uploadContextRef.current) setActionLoading(false);
     }
   };
 
@@ -479,6 +529,7 @@ export default function ImageWorkspaceDrawer({
 
   const previewChange = async () => {
     if (busy || uploadBusyRef.current || !snapshot || !hasChanges || hasPrivateDraft) return;
+    const context = uploadContextRef.current;
     setActionLoading(true);
     setError(null);
     const key = createIdempotencyKey();
@@ -489,6 +540,7 @@ export default function ImageWorkspaceDrawer({
         body: JSON.stringify({ ...updateBody(), idempotencyKey: key }),
       });
       const payload = (await response.json()) as UpdateResult | ApiProblem;
+      if (context !== uploadContextRef.current) return;
       if (!response.ok) {
         throw new Error(problemMessage(payload as ApiProblem, "Amazon 圖片預檢未通過。"));
       }
@@ -497,14 +549,16 @@ export default function ImageWorkspaceDrawer({
       setConfirmationSku("");
       setPhase("confirm");
     } catch (requestError) {
+      if (context !== uploadContextRef.current) return;
       setError(requestError instanceof Error ? requestError.message : "Amazon 圖片預檢未通過。");
     } finally {
-      setActionLoading(false);
+      if (context === uploadContextRef.current) setActionLoading(false);
     }
   };
 
   const submit = async () => {
     if (!snapshot || !preview || confirmationSku !== snapshot.sellerSku) return;
+    const context = uploadContextRef.current;
     setActionLoading(true);
     setError(null);
     try {
@@ -514,6 +568,7 @@ export default function ImageWorkspaceDrawer({
         body: JSON.stringify(updateBody()),
       });
       const payload = (await response.json()) as UpdateResult | ApiProblem;
+      if (context !== uploadContextRef.current) return;
       if (!response.ok) {
         throw new Error(problemMessage(payload as ApiProblem, "Amazon 未接受圖片更新。"));
       }
@@ -522,14 +577,16 @@ export default function ImageWorkspaceDrawer({
       setVerified(nextResult.mode === "demo");
       setPhase("result");
     } catch (requestError) {
+      if (context !== uploadContextRef.current) return;
       setError(requestError instanceof Error ? requestError.message : "Amazon 未接受圖片更新。");
     } finally {
-      setActionLoading(false);
+      if (context === uploadContextRef.current) setActionLoading(false);
     }
   };
 
   const recheckImages = useCallback(async () => {
     if (!snapshot || !result) return;
+    const context = uploadContextRef.current;
     setActionLoading(true);
     setError(null);
     try {
@@ -541,6 +598,7 @@ export default function ImageWorkspaceDrawer({
         cache: "no-store",
       });
       const payload = (await response.json()) as ImageSnapshot | ApiProblem;
+      if (context !== uploadContextRef.current) return;
       if (!response.ok) {
         throw new Error(problemMessage(payload as ApiProblem, "目前無法確認 Amazon 圖片。"));
       }
@@ -557,9 +615,10 @@ export default function ImageWorkspaceDrawer({
         setError("Amazon 仍在下載或審核圖片；系統不會重送，請稍後再查。");
       }
     } catch (requestError) {
+      if (context !== uploadContextRef.current) return;
       setError(requestError instanceof Error ? requestError.message : "目前無法確認 Amazon 圖片。");
     } finally {
-      setActionLoading(false);
+      if (context === uploadContextRef.current) setActionLoading(false);
     }
   }, [assets, marketplaceId, result, snapshot]);
 
@@ -644,7 +703,7 @@ export default function ImageWorkspaceDrawer({
                 ← 返回全站圖片健檢結果
               </button>
             )}
-            <p className="price-intro">拖進來、排好順序、預檢後送出。主圖放第一格，最多八張副圖。</p>
+            <p className="price-intro">拖進來、排好順序、預檢後送出。主圖放第一格，最多九張副圖，依此商品允許的位置準備。</p>
             <div
               id="image-single-panel"
               role="tabpanel"
@@ -667,6 +726,15 @@ export default function ImageWorkspaceDrawer({
             </form>
 
             {error && <div className="price-error" role="alert">{error}</div>}
+            {isolatedBatches.map(batch => <div className="price-warning compact" key={`${batch.marketplaceId}:${batch.sellerSku}`}>
+              <strong>{batch.sellerSku} · 已保留 {batch.files.length} 個原檔</strong>
+              <p>先重新查詢相同站點與 Seller SKU，再核對檔名位置；保留檔案不會自動上傳。</p>
+              <button type="button" disabled={busy || loading || snapshot?.marketplaceId !== batch.marketplaceId || snapshot?.sellerSku !== batch.sellerSku} onClick={() => {
+                setBatchFiles(batch.files);
+                setBatchId(value => value + 1);
+                setIsolatedBatches(current => current.filter(item => item !== batch));
+              }}>重新準備保留圖片</button>
+            </div>)}
 
             {snapshot && (
               <>
@@ -687,13 +755,13 @@ export default function ImageWorkspaceDrawer({
                     event.target.value = "";
                   }} />
                   <span className="image-drop-icon">＋</span>
-                  <div><strong>把整組 JPEG／PNG 拉到這裡</strong><small>依「品號_01–09_說明」對應第 1–9 張 · 每張 10 MB · 至少 500 × 500px</small></div>
+                  <div><strong>把整組 JPEG／PNG 拉到這裡</strong><small>依「品號_01–10_說明」依數字排序 · 最多第 1–10 張 · 每張 10 MB · 至少 500 × 500px</small></div>
                 </section>
 
                 {batchFiles.length > 0 && <ImageBatchImport key={`${snapshot.marketplaceId}:${snapshot.sellerSku}:${batchId}`}
                   files={batchFiles} sellerSku={snapshot.sellerSku}
-                  slots={snapshot.images.map((slot, index) => ({ label: slot.label, editable: slot.capability.supported && slot.capability.editable, occupied: Boolean(assets[index]?.previewUrl) }))}
-                  disabled={busy || loading} upload={uploadFile} onBusyChange={setBatchProcessing} onDismiss={() => setBatchFiles([])} />}
+                  slots={snapshot.images.map((slot, index) => ({ label: slot.label, editable: slot.capability.supported && slot.capability.editable, reason: slot.capability.reason, occupied: Boolean(assets[index]?.previewUrl), sourceFile: assets[index]?.sourceFile ?? null, readyForAmazon: assets[index]?.readyForAmazon ?? false }))}
+                  disabled={busy || loading} upload={uploadFile} onBusyChange={value => { if (snapshotRevision === uploadContextRef.current) setBatchProcessing(value); }} onDismiss={() => setBatchFiles([])} onSelectSlot={setSelectedIndex} />}
 
                 <section className="image-slot-grid" aria-label="商品圖片排序">
                   {supportedIndexes.map((index) => {
@@ -732,11 +800,14 @@ export default function ImageWorkspaceDrawer({
                   <div className="sku-search-row"><input disabled={busy} value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} placeholder="https://cdn.example.com/product.jpg" inputMode="url" /><button type="button" onClick={() => void applyManualUrl()} disabled={busy || !snapshot.images[selectedIndex]?.capability.editable}>{actionLoading ? "檢查中" : "檢查並套用"}</button></div>
                 </section>
 
-                {hasPrivateDraft && <div className="price-warning compact"><strong>圖片已暫存，但尚無 Amazon 可用網址</strong><p>請設定公開 R2／CDN 網域，或為這些格子貼上公開 HTTPS URL；私人網站網址不能交給 Amazon 抓圖。</p></div>}
+                {hasPrivateDraft && <div className="price-warning compact"><strong>圖片已暫存，但尚無 Amazon 可用網址</strong><p>原圖保留在目前草稿；圖片服務可用後，按下方按鈕繼續準備。若未出現圖片服務登入，請先更新 AMZ.API Notebook Key；已有公開 HTTPS 圖片網址也可直接套用到對應位置。</p><button type="button" disabled={busy} onClick={() => {
+                  setBatchFiles(assets.flatMap(asset => !asset.readyForAmazon && asset.sourceFile ? [asset.sourceFile] : []));
+                  setBatchId(value => value + 1);
+                }}>繼續準備暫存圖片</button></div>}
                 {hasDuplicateUrls && <div className="price-warning compact"><strong>發現重複圖片網址</strong><p>同一個 URL 不可同時放在兩個圖片位置；系統已停止預檢，請移除重複項目。</p></div>}
 
                 <div className="image-submit-row">
-                  <span>{assets.filter((asset) => asset.previewUrl).length} / {supportedIndexes.length} 張</span>
+                  <span>{supportedIndexes.filter(index => assets[index]?.previewUrl).length} / {supportedIndexes.length} 張</span>
                   <button className="price-primary-button" type="button" onClick={previewChange} disabled={!hasChanges || hasPrivateDraft || hasDuplicateUrls || actionLoading || assets.some((asset) => asset.uploading)}>{actionLoading ? "Amazon 預檢中…" : "安全預檢圖片"}</button>
                 </div>
               </>

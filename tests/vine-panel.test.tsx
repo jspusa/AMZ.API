@@ -2,26 +2,41 @@ import React from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import VinePanel from "../src/renderer/src/components/vine-panel";
+import { vinePage, vinePageRow } from "./fixtures/vine-page";
 import type { VineSnapshot } from "../src/shared/vine";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let renderer: ReactTestRenderer | null = null;
 afterEach(async () => { if (renderer) await act(async () => renderer!.unmount()); renderer = null; vi.unstubAllGlobals(); });
-const snapshot: VineSnapshot = { schemaVersion: 1, marketplaceId: "ATVPDKIKX0DER", source: "seller-central-manual", storage: "encrypted-local", storageNotice: "本機加密", window: { startDate: "2026-07-14", endDate: "2026-09-11" }, updatedAt: "2026-09-12T01:00:00.000Z", rows: [{ sellerSku: "SKU-ONE", asin: "B000000001", enrollmentDate: "2026-09-10", enrolled: 30, claimed: 15, reviews: 7, importedAt: "2026-09-12T01:00:00.000Z" }, { sellerSku: "SKU-TWO", asin: "B000000002", enrollmentDate: "2026-09-11", enrolled: 2, claimed: null, reviews: 0, importedAt: "2026-09-12T01:00:00.000Z" }] };
+const snapshot: VineSnapshot = { schemaVersion: 2, marketplaceId: "ATVPDKIKX0DER", source: "seller-central-manual", storage: "encrypted-local", storageNotice: "本機加密", asOfDate: "2026-09-11", unconfirmedCount: 0, updatedAt: "2026-09-12T01:00:00.000Z", rows: [{ sellerSku: null, title: "Sample ongoing product", status: "active", statusText: "正在等待評論", asin: "B000000001", enrollmentDate: "2026-06-16", enrolled: 30, claimed: 15, reviews: 7, importedAt: "2026-09-12T01:00:00.000Z" }, { sellerSku: "SKU-TWO", title: null, status: "active", statusText: "等待處理", asin: "B000000002", enrollmentDate: "2026-09-11", enrolled: 2, claimed: 1, reviews: null, importedAt: "2026-09-12T01:00:00.000Z" }] };
 describe("Vine progress panel", () => {
-  it("shows manual-source progress for 60 days without inventing missing counts or calling sync", async () => {
+  it("shows only review/enrolled progress and keeps older active enrollments without calling sync", async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify(snapshot)));
     vi.stubGlobal("fetch", fetch);
     await act(async () => { renderer = create(<VinePanel onClose={() => undefined} />); });
     expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/vine", { signal: expect.any(AbortSignal) });
     const text = JSON.stringify(renderer!.toJSON());
     expect(text).toContain("手動匯入");
-    expect(text).toContain("近 60 天");
+    expect(text).not.toContain("近 60 天");
+    expect(text).toContain("2026-06-16");
     expect(text).toContain("未回報");
     const bars = renderer!.root.findAllByType("progress");
-    expect(bars.some((bar) => bar.props.max === 30 && bar.props.value === 15)).toBe(true);
-    expect(bars.some((bar) => bar.props.max === 15 && bar.props.value === 7)).toBe(true);
-    expect(bars.some((bar) => bar.props.max === 2 && bar.props.value === 0)).toBe(true);
+    expect(bars).toHaveLength(1);
+    expect(bars[0].props).toMatchObject({ max: 30, value: 7 });
+    expect(text).not.toContain("已領取 /");
+
   });
+  it("shows unknown-status preview without sending a save or replacing the existing progress", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify(snapshot)));
+    vi.stubGlobal("fetch", fetch);
+    await act(async () => { renderer = create(<VinePanel onClose={() => undefined} />); });
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Vine 進度資料" }).props.onChange({ target: { value: vinePage(vinePageRow({ status: "未知狀態" })) } }); });
+    expect(JSON.stringify(renderer!.toJSON())).toContain("需核對 1 筆");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Sample ongoing product");
+    const save = renderer!.root.findAllByType("button").find((button) => button.children.join("") === "核對並保存")!;
+    expect(save.props.disabled).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("clears private progress and ignores pending replies when the account context changes", async () => {
     let invalidate!: () => void;
     const unsubscribe = vi.fn();
@@ -30,32 +45,34 @@ describe("Vine progress panel", () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify(snapshot)));
     vi.stubGlobal("fetch", fetch);
     await act(async () => { renderer = create(<VinePanel onClose={() => undefined} />); });
-    expect(JSON.stringify(renderer!.toJSON())).toContain("SKU-ONE");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Sample ongoing product");
     fetch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
     const refresh = () => renderer!.root.findAllByType("button").find((button) => button.children.join("") === "重新讀取")!;
     await act(async () => { refresh().props.onClick(); });
     const pendingSignal = (fetch.mock.calls[1] as unknown as [string, { signal: AbortSignal }])[1].signal;
     await act(async () => { invalidate(); });
     expect(pendingSignal.aborted).toBe(true);
-    expect(JSON.stringify(renderer!.toJSON())).not.toContain("SKU-ONE");
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Sample ongoing product");
     expect(fetch).toHaveBeenCalledTimes(2);
     await act(async () => { release(new Response(JSON.stringify(snapshot))); });
-    expect(JSON.stringify(renderer!.toJSON())).not.toContain("SKU-ONE");
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Sample ongoing product");
     expect(JSON.stringify(renderer!.toJSON())).toContain("帳號或安全連線已變更");
     await act(async () => { renderer!.unmount(); });
     renderer = null;
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
   it("imports only after a user action and retains rejected rows for correction", async () => {
-    const text = "enrollmentDate,sellerSku,asin,enrolled,claimed,reviews\n2026-09-11,SKU-ONE,B000000001,30,15,7";
+    const text = vinePage(vinePageRow({ reviews: "7" }), vinePageRow({ asin: "B000000002", status: "已結束" }));
     const fetch = vi.fn(async () => new Response(JSON.stringify(snapshot)));
     vi.stubGlobal("fetch", fetch);
     await act(async () => { renderer = create(<VinePanel onClose={() => undefined} />); });
     const input = renderer!.root.findByProps({ "aria-label": "Vine 進度資料" });
     await act(async () => { input.props.onChange({ target: { value: text } }); });
     expect(fetch).toHaveBeenCalledTimes(1);
+    const preview = renderer!.root.findByProps({ "aria-label": "Vine 貼上預覽" });
+    expect(preview.findAllByType("p")[0].children.join("")).toContain("辨識 2 筆：進行中 1 筆、已結束 1 筆、需核對 0 筆");
     fetch.mockResolvedValueOnce(new Response(JSON.stringify({ ...snapshot, storage: "session-only", storageNotice: "此工作階段", importResult: { accepted: 0, rejected: [{ line: 2, message: "未找到 FBA 身分" }] } })));
-    await act(async () => { renderer!.root.findAllByType("button").find((button) => button.children.join("") === "核對並匯入")!.props.onClick(); });
+    await act(async () => { renderer!.root.findAllByType("button").find((button) => button.children.join("") === "核對並保存")!.props.onClick(); });
     expect(fetch).toHaveBeenLastCalledWith("/api/vine/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }), signal: expect.any(AbortSignal) });
     expect(input.props.value).toBe(text);
     expect(JSON.stringify(renderer!.toJSON())).toContain("未找到 FBA 身分");

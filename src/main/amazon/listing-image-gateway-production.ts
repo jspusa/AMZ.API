@@ -130,6 +130,7 @@ function imageUrlVector(
     normalized[6] ?? null,
     normalized[7] ?? null,
     normalized[8] ?? null,
+    normalized[9] ?? null,
   ];
 }
 

@@ -12,7 +12,7 @@ import { isDateOnly, marketplaceCalendar } from "./amazon/marketplace-calendar";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
 
 type Profile = InventoryHealthEvidence & { expiryCheckpoint?: FbaExpiryCheckpoint | null };
-type HealthRefreshInput = { context: SpExecutionContext; snapshot: AgedInventorySnapshot; signal: AbortSignal; onProgress?: (records: number) => void };
+type HealthRefreshInput = { context: SpExecutionContext; snapshot: AgedInventorySnapshot; signal: AbortSignal; onProgress?: (records: number) => void; onSourceError?: (error: unknown) => void };
 type Saved = { schemaVersion: 1; profiles: Record<string, Profile> };
 const scopeKey = (context: SpExecutionContext) => createHash("sha256").update(JSON.stringify([context.accountScope, context.mode, context.marketplaceId])).digest("hex");
 const count = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 && n <= 100000000;
@@ -50,6 +50,7 @@ export class InventoryHealthCoordinator {
   private revision = 0;
   private readonly failedScopes = new Set<string>();
   private readonly verifiedScopes = new Set<string>();
+  private readonly verifiedStockScopes = new Set<string>();
   private readonly refreshOrder = new Map<string, number>();
   constructor(private readonly input: Readonly<{
     context: SpExecutionContextAdapter;
@@ -62,6 +63,7 @@ export class InventoryHealthCoordinator {
     this.saved = null;
     this.refreshOrder.clear();
     this.verifiedScopes.clear();
+    this.verifiedStockScopes.clear();
     // A security-context reset is not recovery from a failed health save.
     // Keep its scope marker until a new capture is safely saved.
   }
@@ -89,6 +91,7 @@ export class InventoryHealthCoordinator {
       // Discard the old cache and re-read disk during the next full capture.
       const key = scopeKey(context);
       this.verifiedScopes.delete(key);
+      this.verifiedStockScopes.delete(key);
       this.failedScopes.add(key);
       this.saved = null;
       throw error;
@@ -98,13 +101,13 @@ export class InventoryHealthCoordinator {
   }
   private project(profile: Profile, key: string): InventoryHealthSnapshot {
     const snapshot = assessInventoryHealth({ ...profile, now: this.input.now?.() ?? new Date() });
-    if (this.verifiedScopes.has(key)) return snapshot;
-    const notice = "本次開啟尚未完整核對庫存與入庫效期，請重新執行庫齡健檢；原批次資料與確認仍保留，核對完成前暫停清售預估。";
+    if (this.verifiedStockScopes.has(key)) return snapshot;
+    const notice = "本次開啟尚未核對目前庫存，請同步全部 FBA 效期與銷速；原批次資料與確認仍保留，核對完成前暫停清售預估。";
     return {
       ...snapshot, stale: true, notice,
       rows: snapshot.rows.map(row => ({ ...row, status: "needs-review", reason: notice,
         calendarEligible: false, projectedShortfall: null, quantityDueByDate: null,
-        minimumDailyUnits: null, wholeSkuClearanceDays: null })),
+        minimumDailyUnits: null, wholeSkuClearanceDays: null, estimatedDailyUnits: null, stockRisk: "unknown" })),
     };
   }
   async refresh(input: HealthRefreshInput): Promise<void> {
@@ -126,6 +129,7 @@ export class InventoryHealthCoordinator {
     const refreshOrder = (this.refreshOrder.get(refreshKey) ?? 0) + 1;
     this.refreshOrder.set(refreshKey, refreshOrder);
     this.verifiedScopes.delete(refreshKey);
+    this.verifiedStockScopes.delete(refreshKey);
     await this.fence(input.context, revision);
     if (input.snapshot.marketplaceId !== input.context.marketplaceId || input.snapshot.mode !== input.context.mode) throw new Error("INVENTORY_HEALTH_CONTEXT");
     let checkpoint = await this.serial(async () => {
@@ -148,6 +152,7 @@ export class InventoryHealthCoordinator {
         throwIfAborted(input.signal);
         if (error instanceof SpExecutionContextError) throw error;
         failed = true;
+        input.onSourceError?.(error);
         // Previously saved slices remain usable evidence, but failure suspends calendar forecasts.
       } finally { clearTimeout(timer); }
       checkpoint = incoming.checkpoint ?? checkpoint;
@@ -180,6 +185,7 @@ export class InventoryHealthCoordinator {
       // Another refresh can begin while the encrypted write is awaiting I/O.
       if (this.revision !== revision || this.refreshOrder.get(refreshKey) !== refreshOrder) return;
       this.failedScopes.delete(key);
+      this.verifiedStockScopes.add(key);
       if (incoming.complete) this.verifiedScopes.add(key);
       });
       input.onProgress?.(incoming.records.length);
@@ -211,7 +217,7 @@ export class InventoryHealthCoordinator {
       return await this.serial(async () => {
         await this.fence(context, revision);
         if (this.failedScopes.has(scopeKey(context))) return invalid("本機庫存健康資料未能安全保存，請重新執行健檢。", 503, "INVENTORY_HEALTH_UNAVAILABLE");
-        if (!this.verifiedScopes.has(scopeKey(context))) return invalid("請先重新執行庫齡健檢，核對目前庫存與入庫效期後再確認批次。", 409, "INVENTORY_HEALTH_REVALIDATION_REQUIRED");
+        if (!this.verifiedScopes.has(scopeKey(context))) return invalid("請先同步全部 FBA 效期與銷速，核對目前庫存與入庫效期後再確認批次。", 409, "INVENTORY_HEALTH_REVALIDATION_REQUIRED");
         const saved = structuredClone(await this.load()), key = scopeKey(context), profile = saved.profiles[key];
         await this.fence(context, revision);
         if (!profile || profile.fetchedAt !== body.snapshotFetchedAt) return invalid("資料已更新，請重新開啟這筆確認。", 409, "INVENTORY_HEALTH_STALE");

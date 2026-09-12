@@ -23,13 +23,13 @@ const MARKETPLACE_ID = "ATVPDKIKX0DER";
 const SELLER_SKU = "AFA-TRKY-4OZ";
 const IMAGE_ATTRIBUTES = [
   "main_product_image_locator",
-  ...Array.from({ length: 8 }, (_, index) => `other_product_image_locator_${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `other_product_image_locator_${index + 1}`),
 ];
 
 const PREVIOUS_URLS = [
   "https://images.example.com/main.jpg",
   "https://images.example.com/side-1.jpg",
-  ...Array.from({ length: 7 }, () => null),
+  ...Array.from({ length: 8 }, () => null),
 ];
 
 async function testStore(): Promise<LocalStore> {
@@ -254,12 +254,12 @@ describe("listing image mutations", () => {
   it("returns ACTION_CANCELLED without committing when native approval is cancelled", async () => {
     const previousUrls = [
       "https://images.example.com/main.jpg",
-      ...Array.from({ length: 8 }, () => null),
+      ...Array.from({ length: 9 }, () => null),
     ];
     const requestedUrls = [
       previousUrls[0],
       "https://images.example.com/side-1.jpg",
-      ...Array.from({ length: 7 }, () => null),
+      ...Array.from({ length: 8 }, () => null),
     ];
     const commitOnce = vi.fn(async () => {
       throw new Error("gateway commit must not run after approval cancellation");

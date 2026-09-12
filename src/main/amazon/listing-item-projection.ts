@@ -134,6 +134,7 @@ export const IMAGE_ATTRIBUTE_NAMES = [
   "other_product_image_locator_6",
   "other_product_image_locator_7",
   "other_product_image_locator_8",
+  "other_product_image_locator_9",
 ] as const;
 
 export const CONTENT_TEXT_ATTRIBUTE_NAMES = [

@@ -12,10 +12,9 @@
 .vine-storage-warning, .vine-error { color: #a45a13; }
 .vine-import { margin: 20px 0; padding: 18px; border: 1px solid var(--border, #d4deeb); border-radius: 10px; }
 .vine-import summary { cursor: pointer; font-weight: 650; }
-.vine-import p, .vine-field-guide { font-size: 13px; line-height: 1.7; }
+.vine-import p { font-size: 13px; line-height: 1.7; }
 .vine-import textarea, .vine-search { box-sizing: border-box; border: 1px solid var(--border, #cbd5e2); padding: 10px 12px; border-radius: 7px; background: var(--surface, #fff); color: inherit; font: inherit; }
 .vine-import textarea { width: 100%; resize: vertical; font-size: 13px; }
-.vine-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
 .vine-search { width: min(100%, 480px); margin: 10px 0 18px; }
 .vine-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
 .vine-card { border: 1px solid var(--border, #d4deeb); border-radius: 10px; padding: 20px; min-width: 0; }
@@ -29,3 +28,9 @@
 .vine-empty { padding: 24px 0; color: var(--muted, #64748b); }
 .vine-import-result { margin: 14px 0; font-size: 13px; line-height: 1.7; }
 .vine-workspace :is(button, input, textarea, summary):focus-visible { outline: 3px solid #509ddc; outline-offset: 3px; }
+.vine-preview { margin-top: 14px; padding: 12px 16px; border: 1px solid var(--border, #d4deeb); border-radius: 8px; background: var(--surface-soft, #f6f8fb); }
+.vine-preview > p:first-child { font-weight: 650; }
+.vine-preview-rows { padding-left: 18px; max-height: 320px; overflow: auto; }
+.vine-preview-rows li { margin: 12px 0; }
+.vine-preview-rows :is(strong, span) { display: block; overflow-wrap: anywhere; }
+.vine-preview-rows span { margin-top: 4px; color: var(--muted, #64748b); font-size: 12px; }

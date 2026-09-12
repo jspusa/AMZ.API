@@ -34,6 +34,7 @@ import {
   LocalImageUpload,
   type LocalImageUploadPort,
 } from "./local-image-upload";
+import type { HostedListingImagePort } from "./hosted-listing-images";
 import {
   SystemHealthRoute,
   type SystemHealthRoutePort,
@@ -56,6 +57,7 @@ import { PriceListWorkbooks } from "./price-list-workbooks";
 import { PriceListAmazon } from "./price-list-amazon";
 import { VineProgressOwner } from "./vine-progress";
 import { InventoryHealthCoordinator } from "./inventory-health-coordinator";
+import { InventoryHealthSync } from "./inventory-health-sync";
 import type { PrivateLocalJsonPort } from "./private-local-json";
 import { FbaExpiryReads } from "./amazon/fba-expiry-reads";
 import { PriceListError, overlayPriceListWorkbook } from "./price-list-workbook";
@@ -308,6 +310,7 @@ export class ApiRouter {
   private readonly priceListWorkbooks = new PriceListWorkbooks();
   private readonly priceListAmazon: PriceListAmazon;
   private readonly inventoryHealth: InventoryHealthCoordinator;
+  private readonly inventoryHealthSync: InventoryHealthSync;
   private readonly vine: VineProgressOwner;
   private readonly vault: CredentialVault;
   private readonly spExecutionContext: RouterRequestContextAdapter;
@@ -370,6 +373,7 @@ export class ApiRouter {
     ordersReads?: OrdersReadsPort;
     statelessCapabilities?: StatelessCapabilityRoutesPort;
     imageUpload?: LocalImageUploadPort;
+    hostedImages?: HostedListingImagePort;
     health?: SystemHealthRoutePort;
     planningCapabilities?: PlanningCapabilityRoutesPort;
     productMasterRoutes?: ProductMasterRoutesPort;
@@ -595,13 +599,13 @@ export class ApiRouter {
       expiry: new FbaExpiryReads({ context: this.spExecutionContext, adapter: fbaInboundExternalReadAdapterProduction }),
       store: input.inventoryHealthStore,
     });
+    this.inventoryHealthSync = new InventoryHealthSync({ context: this.spExecutionContext, reads: agedInventoryReads, health: this.inventoryHealth });
     this.agedInventoryAuditOwner = input.agedInventoryAudit ??
       new AgedInventoryAudit({
         context: this.spExecutionContext,
         beginReport: (request) => agedInventoryReads.begin(request),
         statusReport: (request) => agedInventoryReads.status(request),
         readReport: (request) => agedInventoryReads.read(request),
-        afterCapture: (request) => this.inventoryHealth.refresh(request),
       });
     this.listingsExportOwner = input.listingsExport ?? new ListingsExport({
       context: this.spExecutionContext,
@@ -732,6 +736,7 @@ export class ApiRouter {
     this.imageUpload = input.imageUpload ?? new LocalImageUpload({
       context: this.spExecutionContext,
       vault: this.vault,
+      hostedImages: input.hostedImages,
     });
     this.health = input.health ?? new SystemHealthRoute({
       getCredentialSummary: () => this.vault.getSummary(),
@@ -816,6 +821,7 @@ export class ApiRouter {
     this.contextStateRevision += 1;
     this.onContextInvalidated?.();
     this.inventoryHealth.clear();
+    this.inventoryHealthSync.clear();
     this.vine.clear();
     this.priceListAmazon.clear();
     this.priceListWorkbooks.clear();
@@ -1001,6 +1007,10 @@ export class ApiRouter {
         return this.vine.import(request);
       case "GET /api/inventory-health":
         return this.inventoryHealth.read(request);
+      case "GET /api/inventory-health/sync":
+        return this.inventoryHealthSync.observe(request);
+      case "POST /api/inventory-health/sync":
+        return this.inventoryHealthSync.start(request);
       case "POST /api/inventory-health/confirmation":
         return this.inventoryHealth.confirm(request);
       case "POST /api/price-list/amazon-generate":

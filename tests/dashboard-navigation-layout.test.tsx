@@ -175,7 +175,7 @@ describe("dashboard top navigation layout", () => {
     expect(markup).not.toContain('<details class="low-frequency-audits" open=""');
     expect(markup).toContain("低頻健檢");
     expect(markup).not.toContain("庫齡與評論不會跟著 7 項一鍵健檢自動執行");
-    expect(markup).toContain("庫齡 180+ 天");
+    expect(markup).toContain("效期與銷速");
     expect(markup).not.toContain("主清單只列已經超過 180 天的 FBA 庫存");
     expect(markup).not.toContain("estimated excess 預估與費用放在獨立分頁");
     expect(markup).not.toContain("FBA 庫齡、冗餘與官方預估費用");
@@ -221,10 +221,10 @@ describe("dashboard top navigation layout", () => {
         auditGrid.indexOf(orderedAuditCards[index]),
       );
     }
-    expect(auditGrid).not.toContain("庫齡 180+ 天");
+    expect(auditGrid).not.toContain("效期與銷速");
     expect(auditGrid).not.toContain(">評論<");
     const lowFrequency = markup.slice(lowFrequencyStart, markup.indexOf("</details>", lowFrequencyStart));
-    expect(lowFrequency.indexOf("庫齡 180+ 天")).toBeLessThan(
+    expect(lowFrequency.indexOf("效期與銷速")).toBeLessThan(
       lowFrequency.indexOf(">評論<"),
     );
 

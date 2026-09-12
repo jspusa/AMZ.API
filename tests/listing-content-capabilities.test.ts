@@ -39,6 +39,22 @@ function definition(
 }
 
 describe("Listing Content capability refresh scope", () => {
+  it.each(["editable", "readonly", "absent"] as const)("uses the exact tenth-image PTD capability: %s", async availability => {
+    const owner = createListingContentCapabilities({
+      listingsReadAdapter: { readDefinition: async plan => ({
+        ...definition(plan),
+        schemaEnvelope: { type: "object", properties: availability === "absent" ? {} : {
+          other_product_image_locator_9: { type: "array", items: { type: "object", properties: { media_location: { type: "string", editable: availability === "editable" } } } },
+        } },
+      }) },
+      getCredentialGeneration: () => 7,
+      getSellerId: () => "SELLER-ONE",
+    });
+    const result = await owner.read({ marketplaceId: MARKETPLACE_ID, productType: "PET_FOOD", forceRefresh: true });
+    expect(result.capabilities.images).toHaveLength(10);
+    expect(result.capabilities.images[9]).toMatchObject({ attributeName: "other_product_image_locator_9", supported: availability !== "absent", editable: availability === "editable" });
+  });
+
   it("single-flights one product type inside a phase and refreshes again for the next phase", async () => {
     const readDefinition = vi.fn<ListingsReadAdapter["readDefinition"]>(
       async (plan) => {

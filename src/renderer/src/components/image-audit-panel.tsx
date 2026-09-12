@@ -444,7 +444,7 @@ export default function ImageAuditPanel({
             setLocalMinimumImages(value);
             onMinimumImagesChange?.(value);
           }}>
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(value => <option key={value} value={value}>{value} 張</option>)}
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option key={value} value={value}>{value} 張</option>)}
         </select>
       </label>
       {error && <div className="price-error" role="alert">{error}</div>}

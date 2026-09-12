@@ -1,6 +1,7 @@
 import { IMAGE_AUDIT_MINIMUM_IMAGES, isImageAuditMinimum } from "../../shared/image-audit-options";
 import { randomUUID } from "node:crypto";
 import { SpExecutionContextError } from "./sp-execution-context";
+import { publicSpApiError, SpApiError } from "./sp-api-error";
 
 const DEFAULT_TTL_MS = 30 * 60 * 1_000;
 
@@ -71,7 +72,7 @@ export type StandaloneAuditJobCompletedReceipt = ReceiptBase & Readonly<{
 export type StandaloneAuditJobFailedReceipt = ReceiptBase & Readonly<{
   ready: true;
   status: "failed" | "aborted";
-  error: Readonly<{ code: string; message: string }>;
+  error: Readonly<{ code: string; message: string; status?: number }>;
 }>;
 
 export type StandaloneAuditJobReceipt =
@@ -90,7 +91,7 @@ type RuntimeJob = {
   controller: AbortController;
   expiresAt: number;
   snapshot?: unknown;
-  error?: Readonly<{ code: string; message: string }>;
+  error?: Readonly<{ code: string; message: string; status?: number }>;
 };
 
 function isAuditKind(value: string): value is StandaloneAuditKind {
@@ -119,7 +120,7 @@ function canonicalOptions(
   if (kind === "image") {
     const minimumImages = source.minimumImages === undefined ? IMAGE_AUDIT_MINIMUM_IMAGES : source.minimumImages;
     if (keys.some(key => key !== "minimumImages") || !isImageAuditMinimum(minimumImages)) {
-      throw new Error("圖片健檢最低張數只能選 1–9 張。");
+      throw new Error("圖片健檢最低張數只能選 1–10 張。");
     }
     return { minimumImages };
   }
@@ -374,10 +375,11 @@ export class StandaloneAuditJobCoordinator {
         };
       }
       this.retainTerminal(job);
-    } catch {
+    } catch (error) {
       if (this.jobs.get(job.jobId) !== job || job.controller.signal.aborted) return;
       job.status = "failed";
-      job.error = {
+      const failure = error instanceof SpApiError ? publicSpApiError(error, "單項健檢未完成，請重新核對來源。") : null;
+      job.error = failure ? { code: failure.code, message: failure.message, status: failure.status } : {
         code: "STANDALONE_AUDIT_FAILED",
         message: "單項健檢未完成，未產生可核對的結果。",
       };

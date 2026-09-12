@@ -22,7 +22,7 @@ it("rejects arbitrary keys and invalid values without changing existing preferen
   directory = await mkdtemp(join(tmpdir(), "amz-display-preferences-"));
   const store = new DisplayPreferencesStore(join(directory, "display-preferences.json"));
   await store.update({ mode: "dark" });
-  for (const patch of [{ sellerId: "forbidden" }, { fontSize: "url(x)" }, { imageAuditMinimumImages: 0 }, { imageAuditMinimumImages: 10 }, { imageAuditMinimumImages: 1.5 }, {}, { mode: undefined }]) {
+  for (const patch of [{ sellerId: "forbidden" }, { fontSize: "url(x)" }, { imageAuditMinimumImages: 0 }, { imageAuditMinimumImages: 11 }, { imageAuditMinimumImages: 1.5 }, {}, { mode: undefined }]) {
     expect(() => store.update(patch)).toThrow("INVALID_DISPLAY_PREFERENCES");
   }
   expect((await store.read()).mode).toBe("dark");
@@ -33,4 +33,15 @@ it("reports an unwritable location instead of claiming persistence and keeps fut
   const store = new DisplayPreferencesStore(join(directory, "missing", "display-preferences.json"));
   await expect(store.update({ mode: "dark" })).rejects.toThrow("DISPLAY_PREFERENCES_SAVE_FAILED");
   expect((await store.read()).mode).toBe("light");
+});
+
+it("keeps a previously saved threshold and persists the new tenth-image choice", async () => {
+  directory = await mkdtemp(join(tmpdir(), "amz-display-preferences-"));
+  const path = join(directory, "display-preferences.json");
+  const first = new DisplayPreferencesStore(path);
+  await first.update({ imageAuditMinimumImages: 6 });
+  const restarted = new DisplayPreferencesStore(path);
+  expect((await restarted.read()).imageAuditMinimumImages).toBe(6);
+  await restarted.update({ imageAuditMinimumImages: 10 });
+  expect((await new DisplayPreferencesStore(path).read()).imageAuditMinimumImages).toBe(10);
 });

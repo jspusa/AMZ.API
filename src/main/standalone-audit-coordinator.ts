@@ -173,7 +173,7 @@ export class StandaloneAuditCoordinator
       }
       if (kind === "image") {
         if (source.minimumImages !== undefined && !isImageAuditMinimum(source.minimumImages)) {
-          return invalid("圖片健檢最低張數只能選 1–9 張。");
+          return invalid("圖片健檢最低張數只能選 1–10 張。");
         }
         options = source.minimumImages === undefined ? {} : { minimumImages: source.minimumImages };
       } else if (source.months !== undefined) {

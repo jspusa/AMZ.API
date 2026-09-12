@@ -26,6 +26,22 @@ describe("inventory health evidence and calendar eligibility", () => {
     const result = assessInventoryHealth({ ...input, lots: [{ ...lot, confirmedRemaining: null, confirmedForSnapshot: null }] });
     expect(result.rows[0]).toMatchObject({ status: "needs-review", projectedShortfall: null, calendarEligible: false });
   });
+  it("shows low-age full-stock clearance estimates and earliest declared date without inventing a lot shortfall", () => {
+    const result = assessInventoryHealth({ ...input, sourceComplete: false,
+      rows: [{ ...row, agedOver180: 0, unitsShipped: { t7: null, t30: 300, t60: null, t90: null } }],
+      lots: [{ ...lot, confirmedRemaining: null, confirmedForSnapshot: null }] });
+    expect(result.rows[0]).toMatchObject({ agedOver180: 0, wholeSkuClearanceDays: 100,
+      estimatedDailyUnits: 10, earliestDeclaredExpiryDate: "2026-08-30", stockRisk: "may-outlast-expiry",
+      status: "needs-review", projectedShortfall: null, calendarEligible: false });
+  });
+  it("distinguishes reported zero sales, contradictory sales and stale estimates without infinity or invented zero", () => {
+    const result = assessInventoryHealth({ ...input, rows: [{ ...row, agedOver180: 0, unitsShipped: { t7: 0, t30: 0, t60: 0, t90: 0 } }], lots: [] });
+    expect(result.rows[0]).toMatchObject({ stockRisk: "no-sales", estimatedDailyUnits: 0, wholeSkuClearanceDays: null, earliestDeclaredExpiryDate: null, calendarEligible: false });
+    const contradictory = assessInventoryHealth({ ...input, rows: [{ ...row, unitsShipped: { t7: 500, t30: 300, t60: null, t90: null } }] });
+    expect(contradictory.rows[0]).toMatchObject({ stockRisk: "unknown", estimatedDailyUnits: null, wholeSkuClearanceDays: null, calendarEligible: false });
+    const stale = assessInventoryHealth({ ...input, now: new Date("2026-07-06T12:00:00Z") });
+    expect(stale.rows[0]).toMatchObject({ stockRisk: "unknown", estimatedDailyUnits: null, wholeSkuClearanceDays: null, calendarEligible: false });
+  });
   it("retains multiple dates, but never allocates the entire SKU sales pace to each lot", () => {
     const result = assessInventoryHealth({ ...input, lots: [
       { ...lot, confirmedRemaining: 600 },

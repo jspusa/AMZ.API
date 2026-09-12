@@ -25,6 +25,9 @@ export type InventoryHealthRow = Readonly<{
   projectedShortfall: number | null;
   minimumDailyUnits: number | null;
   wholeSkuClearanceDays: number | null;
+  estimatedDailyUnits?: number | null;
+  earliestDeclaredExpiryDate?: string | null;
+  stockRisk?: "may-outlast-expiry" | "slow-selling" | "no-sales" | "none" | "unknown";
   status: InventoryHealthStatus;
   reason: string;
   calendarEligible: boolean;
@@ -68,6 +71,9 @@ export function isInventoryHealthSnapshot(value: unknown): value is InventoryHea
       !(r.daysRemaining === null || (typeof r.daysRemaining === "number" && Number.isSafeInteger(r.daysRemaining))) ||
       !count(r.agedOver180) || !["clearance-risk", "on-track", "needs-review"].includes(String(r.status)) || typeof r.calendarEligible !== "boolean") return false;
     if (r.sourceLabel !== undefined && (typeof r.sourceLabel !== "string" || r.sourceLabel.length > 512 || /[\p{Cc}\p{Cf}]/u.test(r.sourceLabel))) return false;
+    if (r.estimatedDailyUnits !== undefined && r.estimatedDailyUnits !== null && !nonnegative(r.estimatedDailyUnits)) return false;
+    if (r.earliestDeclaredExpiryDate !== undefined && r.earliestDeclaredExpiryDate !== null && !dateOnly(r.earliestDeclaredExpiryDate)) return false;
+    if (r.stockRisk !== undefined && !["may-outlast-expiry", "slow-selling", "no-sales", "none", "unknown"].includes(String(r.stockRisk))) return false;
     ids.add(String(r.id));
     if (r.status === "needs-review") return !r.calendarEligible && r.projectedShortfall === null;
     const evidence = v.sourceComplete && !v.stale && dateOnly(r.expiryDate) && dateOnly(r.snapshotDate) &&

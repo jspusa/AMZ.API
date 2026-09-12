@@ -13,9 +13,10 @@ export type ListingImageSourceEvidence = Readonly<{
   [listingImageSourceEvidenceBrand]: "listing-image-source-evidence";
 }>;
 
-export type ListingImageSlot = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type ListingImageSlot = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 export type ListingImageUrlVector = readonly [
+  string | null,
   string | null,
   string | null,
   string | null,

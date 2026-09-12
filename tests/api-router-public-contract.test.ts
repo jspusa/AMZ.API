@@ -28,6 +28,8 @@ const REVIEWED_ROUTES = [
   { method: "GET", path: "/api/vine" },
   { method: "POST", path: "/api/vine/import" },
   { method: "GET", path: "/api/inventory-health" },
+  { method: "GET", path: "/api/inventory-health/sync" },
+  { method: "POST", path: "/api/inventory-health/sync" },
   { method: "POST", path: "/api/inventory-health/confirmation" },
   { method: "POST", path: "/api/price-list/amazon-generate" },
   { method: "POST", path: "/api/price-list/import" },
@@ -378,7 +380,7 @@ const DIRECT_HANDLE_CASES: readonly DirectHandleCase[] = [
     method,
     path: "/api/sp-api/listing-images",
     body: { kind: "json", value: { marketplaceId: "invalid" } },
-    expected: invalidResponse("INVALID_INPUT", "請提供有效的站點、SKU 與最多九個圖片 URL。"),
+    expected: invalidResponse("INVALID_INPUT", "請提供有效的站點、SKU 與最多十個圖片 URL。"),
   })),
   ...(["POST", "PATCH"] as const).map((method): DirectHandleCase => ({
     label: `Sale Price ${method}`,
@@ -473,7 +475,7 @@ describe("ApiRouter public contract", () => {
     const reviewed = REVIEWED_ROUTES.map(routeKey);
     const production = productionRouteInventory();
 
-    expect(REVIEWED_ROUTES).toHaveLength(87);
+    expect(REVIEWED_ROUTES).toHaveLength(89);
     expect(new Set(reviewed).size).toBe(reviewed.length);
     expect(production.statementCount).toBe(2);
     expect(production.keyDeclarationIsExact).toBe(true);
@@ -481,7 +483,7 @@ describe("ApiRouter public contract", () => {
     expect(production.switchExpressionIsKey).toBe(true);
     expect(production.defaultCount).toBe(1);
     expect(production.defaultIsExactNotFound).toBe(true);
-    expect(production.cases).toHaveLength(87);
+    expect(production.cases).toHaveLength(89);
     expect(new Set(production.cases).size).toBe(production.cases.length);
     expect([...production.cases].sort()).toEqual([...reviewed].sort());
   });

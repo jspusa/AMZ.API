@@ -37,6 +37,19 @@ function twentySkuCatalogDocument(sellerSkus: readonly string[]): string {
 }
 
 describe("FBA catalog report reads", () => {
+  it("preserves main plus nine secondary locators in the live FBA audit source", async () => {
+    const sellerSku = "TEN-IMAGE-SKU";
+    const listing = completeCatalogListing(sellerSku, 0);
+    const imageUrls = Array.from({ length: 10 }, (_, index) => `https://images.example/${index + 1}.jpg`);
+    const adapter = createScriptedListingsReadAdapter([{ operation: "search", result: {
+      status: 200, envelope: { numberOfResults: 1, items: [{ ...listing, attributes: { ...listing.attributes, ...Object.fromEntries(imageUrls.map((url, index) => [index ? `other_product_image_locator_${index}` : "main_product_image_locator", [{ marketplace_id: US, media_location: url }]])) } }] }, requestId: "ten-image-read", rateLimit: null, retryAfter: null, profile: "listing",
+    } }]);
+    const result = await readFbaCatalogExport(adapter, { marketplaceId: US, mode: "live", document: twentySkuCatalogDocument([sellerSku]), pace: async () => undefined });
+    expect(result.rows[0].readStatus).toBe("complete");
+    expect(result.rows[0].imageUrls).toEqual(imageUrls);
+    expect(adapter.requests).toHaveLength(1);
+  });
+
   it("recovers a poisoned 20-SKU search batch through bounded exact item reads", async () => {
     const sellerSkus = Array.from(
       { length: 20 },

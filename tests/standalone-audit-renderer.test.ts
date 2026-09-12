@@ -31,6 +31,19 @@ function runningPayload(): Record<string, unknown> {
 }
 
 describe("standalone audit renderer observer", () => {
+  it.each([undefined, 400, 403, 500, 599])("accepts the optional safe HTTP failure status %s", (status) => {
+    const error = { code: "REPORT_FAILED", message: "Amazon 報表目前無法讀取。", ...(status === undefined ? {} : { status }) };
+    const parsed = parseStandaloneAuditJob({ ...runningPayload(), ready: true, status: "failed", error }, { kind: "content", marketplaceId: MARKETPLACE_ID, mode: "live" });
+    expect(parsed).toMatchObject({ ready: true, status: "failed", error });
+  });
+  it.each([null, "403", 99, 200, 399, 600, 403.5])("rejects an invalid HTTP failure status %s", status => {
+    expect(() => parseStandaloneAuditJob({ ...runningPayload(), ready: true, status: "failed", error: { code: "REPORT_FAILED", message: "報表未完成。", status } }, { kind: "content", marketplaceId: MARKETPLACE_ID, mode: "live" })).toThrow();
+  });
+  it("retains a detailed canonical safe failure message within the public error bounds", () => {
+    const error = { code: "REPORT_" + "X".repeat(121), message: "報表來源欄位需要核對。".repeat(100), status: 422 };
+    const parsed = parseStandaloneAuditJob({ ...runningPayload(), ready: true, status: "failed", error }, { kind: "content", marketplaceId: MARKETPLACE_ID, mode: "live" });
+    expect(parsed).toMatchObject({ error });
+  });
   it("explains the transient Pages/new-app rollout boundary", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
@@ -49,6 +62,17 @@ describe("standalone audit renderer observer", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("asks for an app upgrade when an older main rejects ten images without retry or fallback", async () => {
+    const originalFetch = globalThis.fetch;
+    const request = vi.fn<typeof fetch>(async () => Response.json({ code: "INVALID_REQUEST", message: "圖片健檢最低張數只能選 1–9 張。" }, { status: 400 }));
+    globalThis.fetch = request;
+    try {
+      await expect(startStandaloneAuditJob({ kind: "image", marketplaceId: MARKETPLACE_ID, mode: "live", options: { minimumImages: 10 } })).rejects.toThrow(/更新 AMZ\.API App.*10 張/u);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(request.mock.calls[0][1]!.body as string).options).toEqual({ minimumImages: 10 });
+    } finally { globalThis.fetch = originalFetch; }
   });
 
   it("strictly parses a fenced job and exposes home progress", () => {

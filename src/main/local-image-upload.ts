@@ -8,6 +8,7 @@ import type {
 import type { RouterRequestContextAdapter } from "./router-request-context";
 import { parseMarketplace, parseSellerSku } from "./route-input";
 import { invalid, json } from "./route-response";
+import type { HostedListingImagePort } from "./hosted-listing-images";
 
 type ImageContentType = "image/png" | "image/jpeg";
 
@@ -34,6 +35,7 @@ export type LocalImageUploadDependencies = Readonly<{
   context: RouterRequestContextAdapter;
   vault: Pick<CredentialVault, "getImageStorage">;
   objectStore?: ImageObjectStorePort;
+  hostedImages?: HostedListingImagePort;
   uuid?: () => string;
 }>;
 
@@ -181,12 +183,14 @@ export class LocalImageUpload implements LocalImageUploadPort {
   private readonly vault: Pick<CredentialVault, "getImageStorage">;
   private readonly objectStore: ImageObjectStorePort;
   private readonly uuid: () => string;
+  private readonly hostedImages?: HostedListingImagePort;
 
   constructor(input: LocalImageUploadDependencies) {
     this.context = input.context;
     this.vault = input.vault;
     this.objectStore = input.objectStore ?? createR2ImageObjectStore();
     this.uuid = input.uuid ?? randomUUID;
+    this.hostedImages = input.hostedImages;
   }
 
   async uploadImage(request: ApiRequest): Promise<ApiResponse> {
@@ -269,6 +273,20 @@ export class LocalImageUpload implements LocalImageUploadPort {
       });
       await this.context.assertCurrent(context);
       amazonUrl = `${policy.publicBaseUrl}/${key}`;
+    } else if (this.hostedImages) {
+      let hosted: Awaited<ReturnType<HostedListingImagePort["prepare"]>>;
+      try {
+        hosted = await this.hostedImages.prepare({
+          bytes: file.bytes, contentType, ...dimensions,
+          contextKey: JSON.stringify([context, sellerSku]),
+          assertCurrent: () => this.context.assertCurrent(context),
+        });
+      } catch {
+        await this.context.assertCurrent(context);
+        return invalid("圖片準備尚未完成，檔案仍保留在工作台。請重新準備圖片，並完成圖片服務登入。", 503, "IMAGE_PREPARATION_INCOMPLETE");
+      }
+      await this.context.assertCurrent(context);
+      amazonUrl = hosted.url;
     }
     return json({
       key,
@@ -279,7 +297,7 @@ export class LocalImageUpload implements LocalImageUploadPort {
       contentType,
       readyForAmazon: Boolean(amazonUrl),
       notice: amazonUrl
-        ? "圖片已上傳到你自己的 R2，送出後仍需等待 Amazon 下載與驗證。"
+        ? "圖片已準備完成，可安全預檢；確認送出後仍需等待 Amazon 下載與驗證。"
         : "圖片已在這台電腦完成格式與像素檢查；設定自己的 R2 公開網域後即可一鍵送交 Amazon。",
     });
   }

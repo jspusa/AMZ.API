@@ -39,7 +39,7 @@ describe("inventory health local evidence lifecycle", () => {
     const stored = payload(await reopened.read(h.get)).snapshot!;
     expect(stored.stale).toBe(true);
     expect(isInventoryHealthSnapshot(stored)).toBe(true);
-    expect(stored.notice).toContain("重新執行庫齡健檢");
+    expect(stored.notice).toContain("同步全部 FBA 效期與銷速");
     expect(stored.rows[0]).toMatchObject({ expiryDate: lot.expiryDate, confirmedRemaining: 1000, status: "needs-review", calendarEligible: false, projectedShortfall: null });
     expect((await reopened.confirm(h.confirm())).status).toBe(409);
     expect(h.expiry.read).toHaveBeenCalledOnce();
@@ -60,6 +60,14 @@ describe("inventory health local evidence lifecycle", () => {
     h.expiry.read.mockRejectedValueOnce(new Error("read failed")); await h.refresh();
     const result = payload(await h.owner.read(h.get)).snapshot!;
     expect(result.sourceComplete).toBe(false); expect(result.rows).toHaveLength(1); expect(result.rows[0].calendarEligible).toBe(false);
+  });
+  it("keeps current full-stock estimates useful when expiry is incomplete, but never revives them from disk alone", async () => {
+    const h = harness(); await h.refresh();
+    h.expiry.read.mockRejectedValueOnce(new Error("read failed"));
+    await h.refresh(h.owner, { ...snapshot, rows: [{ ...snapshot.rows[0]!, agedOver180: 0 }] });
+    expect(payload(await h.owner.read(h.get)).snapshot).toMatchObject({ sourceComplete: false, stale: false,
+      rows: [{ agedOver180: 0, wholeSkuClearanceDays: 100, estimatedDailyUnits: 10, expiryDate: lot.expiryDate, calendarEligible: false }] });
+    expect(payload(await h.create().read(h.get)).snapshot).toMatchObject({ stale: true, rows: [{ wholeSkuClearanceDays: null, estimatedDailyUnits: null, stockRisk: "unknown" }] });
   });
   it("keeps the age audit usable after persistence failure while health GET fails closed", async () => {
     const h = harness(); await h.refresh(); await h.owner.confirm(h.confirm());

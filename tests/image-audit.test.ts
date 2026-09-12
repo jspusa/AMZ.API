@@ -40,14 +40,22 @@ function completedImageJob(
 }
 
 describe("FBA image audit parsing", () => {
-  it("offers a one-to-nine image threshold with eight selected before scanning", () => {
+  it("offers a one-to-ten image threshold with eight selected before scanning", () => {
     const markup = renderToStaticMarkup(createElement(ImageAuditPanel, {
       marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US", onOpenSku: () => undefined,
     }));
     expect(markup).toContain('aria-label="圖片健檢最低張數"');
     expect(markup).toContain('<option value="8" selected="">8 張</option>');
     expect(markup).toContain('<option value="1">1 張</option>');
-    expect(markup).toContain('<option value="9">9 張</option>');
+    expect(markup).toContain('<option value="10">10 張</option>');
+  });
+
+  it("preserves all ten canonical URLs and never substitutes a nine-image snapshot", () => {
+    const source = { marketplaceId: "ATVPDKIKX0DER", fetchedAt: "2026-09-12T12:00:00.000Z", minimumImages: 10, rows: [{ sellerSku: "TEN-IMAGES", imageUrls: Array.from({ length: 10 }, (_, index) => `https://images.example/${index + 1}.jpg`), imageCount: 10, readStatus: "complete", readErrors: [] }] };
+    const snapshot = parseImageAuditSnapshot(source, "ATVPDKIKX0DER", 10);
+    expect(snapshot.rows[0].imageUrls).toHaveLength(10);
+    expect(imageAuditAttentionRows(snapshot)).toEqual([]);
+    expect(() => parseImageAuditSnapshot({ ...source, minimumImages: 9 }, "ATVPDKIKX0DER", 10)).toThrow(/更新 AMZ\.API/u);
   });
 
   it("requires the short-lived main-process export snapshot id", () => {

@@ -47,6 +47,21 @@ export function assessInventoryHealth(input: InventoryHealthEvidence & { now: Da
     const confirmedTotal = lots.reduce((sum, lot) => sum + (lot.confirmedRemaining ?? 0), 0);
     const stockCurrent = stock.snapshotDate !== null && isDateOnly(stock.snapshotDate) &&
       calendar.inclusiveDayCount(stock.snapshotDate, today) >= 1 && calendar.inclusiveDayCount(stock.snapshotDate, today) <= 3;
+    const reportedPaces = ([7, 30, 60, 90] as const).flatMap(days => {
+      const units = shipped?.[`t${days}`];
+      return validCount(units) ? [{ days, units }] : [];
+    });
+    const reportedConsistent = reportedPaces.every((pace, index) => index === 0 || reportedPaces[index - 1]!.units <= pace.units);
+    const estimatedDailyUnits = !stale && stockCurrent && reportedPaces.length > 0 && reportedConsistent
+      ? Math.max(...reportedPaces.map(pace => pace.units / pace.days)) : null;
+    const wholeSkuClearanceDays = validCount(stock.available) && estimatedDailyUnits !== null
+      ? stock.available === 0 ? 0 : estimatedDailyUnits > 0 ? stock.available / estimatedDailyUnits : null : null;
+    const earliestDeclaredExpiryDate = records.map(record => record.expiryDate).filter((value): value is string => value !== null && isDateOnly(value)).sort()[0] ?? null;
+    const daysToEarliestExpiry = earliestDeclaredExpiryDate ? calendar.inclusiveDayCount(today, earliestDeclaredExpiryDate) - 1 : null;
+    const stockRisk: InventoryHealthRow["stockRisk"] = estimatedDailyUnits === null || !validCount(stock.available) ? "unknown"
+      : stock.available === 0 ? "none" : estimatedDailyUnits === 0 ? "no-sales"
+      : daysToEarliestExpiry !== null && wholeSkuClearanceDays! > daysToEarliestExpiry ? "may-outlast-expiry"
+      : wholeSkuClearanceDays! > 180 ? "slow-selling" : "none";
     const lotTarget = (l: InventoryExpiryRecord) => l.stopSaleDate ?? l.manualExpiryDate ?? l.expiryDate;
     for (const lot of lots) {
       const expiryDate = lot.manualExpiryDate ?? lot.expiryDate;
@@ -75,7 +90,7 @@ export function assessInventoryHealth(input: InventoryHealthEvidence & { now: Da
         estimatedStorageCostNextMonth: stock.estimatedStorageCostNextMonth, estimatedAgedSurcharge: stock.estimatedAgedSurcharge,
         dailyUnits, daysRemaining: days, quantityDueByDate, projectedShortfall: shortfall,
         minimumDailyUnits: shortfall !== null && days !== null && days > 0 ? quantityDueByDate! / days : null,
-        wholeSkuClearanceDays: stock.available !== null && dailyUnits !== null && dailyUnits > 0 ? stock.available / dailyUnits : null,
+        wholeSkuClearanceDays, estimatedDailyUnits, earliestDeclaredExpiryDate, stockRisk,
         status, reason, calendarEligible: status === "clearance-risk", snapshotDate: stock.snapshotDate,
       });
     }

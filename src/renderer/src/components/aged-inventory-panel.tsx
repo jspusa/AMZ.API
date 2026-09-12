@@ -1,7 +1,6 @@
 "use client";
 
 import { auditViewScope, useAuditPosition, useAuditMemoryState } from "../audit-view-session";
-import InventoryHealthPanel from "./inventory-health-panel";
 import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
 
 import { useEffect, useRef, useState } from "react";
@@ -1101,7 +1100,6 @@ export default function AgedInventoryPanel({
 
   return (
     <section ref={viewRef} className="aged-inventory-panel" aria-busy={loading}>
-      <InventoryHealthPanel marketplaceId={marketplaceId} mode={mode} sourceFetchedAt={snapshot?.fetchedAt ?? null} syncing={loading} />
       <header>
         <div>
           <p className="eyebrow">FBA INVENTORY HEALTH</p>

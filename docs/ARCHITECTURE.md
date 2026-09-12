@@ -21,7 +21,7 @@ macOS / Windows 11 Notebook Key Bridge
       ├─ Amazon SP-API client → fixed regional endpoints
       ├─ Amazon Ads client → fixed token / profiles / query endpoints
       ├─ local store → product master + idempotency ledger + report leases
-      ├─ optional R2 image client → user's own public image bucket
+      ├─ listing image owner → fixed Supply Boss image service / optional own R2
       └─ operations board owner → fixed Supply Boss API + main-memory board session
 ```
 
@@ -57,7 +57,7 @@ Write Gate 唯一負責把 raw proposal fingerprint 轉成 `SHA-256(JSON([accoun
 
 W01 把上述 mechanics 集中到 Write Gate；`ApiRouter` 保留既有 public route／DTO validation、content-batch business plan 與 error projection，但不再持有 Write Gate ticket map、native approval sequencing、collision map 或 ledger orchestration。W02 再將 Standard Price 與 Sale Price 的五條 exact route 收旂到 main-only `ListingPriceMutations`：domain 擁有 input parsing、幣別／日期／幅度規則、expected-old guard、proposal fingerprint、FBA／ASIN／Product Type／identity 重驗、Validation Preview、commit sequencing 與 Standard／Sale canonical reconciliation；`listing-price-types.ts` 僅保留中立 DTO，`listing-price-gateway.ts` 只接受 `standard-price` 或 `sale-price` 的封閉 patch descriptor，caller 不能提供 URL、method、headers、token、retry 或 raw body。production adapter 唯一負責投影 exact `purchasable_offer` body，正式 commit 必須收到 pre-send execution fence；不明 2xx 回應與 ambiguous readback 固定留下 durable `unknown` 並禁止重送，只有後續 exact canonical read 可以調和。SKU Command 與 Business Pricing 必須把同一份已捕捉的 `SpExecutionContext` 交給此 domain，不可再捕捉第二份 context。
 
-W03 將 `GET／POST／PATCH /api/sp-api/listing-images` 收斂到 main-only `ListingImageMutations`。domain 固定 MAIN 加八個副圖的九格模型，擁有 exact identity／FBA／ASIN／Product Type、expected-old hash、URL／duplicate／capability／required-field 驗證、proposal fingerprint、Validation Preview、commit 與 canonical reconciliation。中立 `listing-image-types.ts` 維持 public DTO；`listing-image-gateway.ts` 只接受 adapter-minted opaque evidence 與固定九格 closed patch descriptor，production adapter 唯一持有 raw Amazon locator objects並投影 add／replace／delete body；多個或無法確認站點的 current-market locator 不得降成單一 authoritative URL。正式 live commit 與 demo replacement 都依賴中立 `listing-write-execution-fence.ts` 的必填 final fence，不與 Price domain耦合；明確 `INVALID` 才是 receipt rejection，矛盾／不明 response或 ambiguous readback留下 durable `unknown`，只有 exact 九格 target與完整 identity evidence 的後續 canonical GET才可調和。成功 DTO 的 issue、request ID與submission ID在 durable ledger／renderer前經 canonical public sanitizer。SKU Command 必須把同一份已捕捉的 `SpExecutionContext` 交給此 domain。圖片健檢、catalog export、Excel 與 local upload 仍是獨立 read／utility seam，不得併入 mutation owner。Business Price、Variation Move、content 與 content batch 的 family-specific semantics 仍依 W04–W07 分階段遷移；不能把 W01–W03 描述成已完成所有 write-family 抽離。
+W03 將 `GET／POST／PATCH /api/sp-api/listing-images` 收斂到 main-only `ListingImageMutations`。domain 固定 MAIN 加九個副圖的十格模型（每格仍須 seller PTD 證明），擁有 exact identity／FBA／ASIN／Product Type、expected-old hash、URL／duplicate／capability／required-field 驗證、proposal fingerprint、Validation Preview、commit 與 canonical reconciliation。中立 `listing-image-types.ts` 維持 public DTO；`listing-image-gateway.ts` 只接受 adapter-minted opaque evidence 與固定十格 closed patch descriptor，production adapter 唯一持有 raw Amazon locator objects並投影 add／replace／delete body；多個或無法確認站點的 current-market locator 不得降成單一 authoritative URL。正式 live commit 與 demo replacement 都依賴中立 `listing-write-execution-fence.ts` 的必填 final fence，不與 Price domain耦合；明確 `INVALID` 才是 receipt rejection，矛盾／不明 response或 ambiguous readback留下 durable `unknown`，只有 exact target 與完整 identity evidence 的後續 canonical GET 才可調和；新十格 receipt 為 version 2，舊 version 1 保持原九格 hash 與 target 核對，不能因升級使既有已接受操作失去恢復能力。成功 DTO 的 issue、request ID與submission ID在 durable ledger／renderer前經 canonical public sanitizer。SKU Command 必須把同一份已捕捉的 `SpExecutionContext` 交給此 domain。圖片健檢、catalog export、Excel 與 local upload 仍是獨立 read／utility seam，不得併入 mutation owner。Business Price、Variation Move、content 與 content batch 的 family-specific semantics 仍依 W04–W07 分階段遷移；不能把 W01–W03 描述成已完成所有 write-family 抽離。
 
 main process 已為新抽離的 SP domain module 與 main-owned audit／report coordinator 建立不可變 execution context：marketplace、由 marketplace 推導的 region、demo／live mode、不透明的 account scope 與單調 generation；既有尚未抽離的 legacy facade route 維持原相容路徑，不冒充已全面遷移。production 與 scripted test adapter 共用同一契約，renderer 不能提供 region、帳號識別值或 generation。憑證儲存／清除、鎖屏、系統 suspend，以及偵測到帳號或 mode 改變時，main 會先讓舊 generation 失效，再清除 token、capability、demo override 與 router runtime cache；耐久的 LocalStore 證據與 app-session 級 A+／FBA inbound／Customer Feedback rate-limit pacing 不會被誤當成短效 context cache 清除。canonical SP errors 定義在獨立 leaf module，legacy facade 只 re-export；所有已接入的 SP error public seam 與連線測試都在跨 main／renderer 邊界前轉成 frozen、allowlisted descriptor，保留安全的 status、code、Request ID 與 rate-limit 資訊，同時移除 token、Seller ID、account scope、report／document ID、URL 與控制字元。pre-commit 錯誤的 `commitPatchSent=false` 仍只供 main 內部 no-blind-retry 判斷，不暴露給 renderer。
 
@@ -180,7 +180,7 @@ Windows 的 native confirmation 不由 renderer 或遠端 Pages 執行。Windows
 
 ## 圖片
 
-本機圖片無法被 Amazon 抓取。App 先驗 magic bytes、10 MB、JPEG／PNG、寬高至少 500px；若使用者設定自己的 R2，main 會在讀取 storage 設定後、`PutObject` 前後核對同一 SP execution context，通過才以上鎖憑證上傳並產生公開 HTTPS URL。沒有 R2 時仍可拖拉預覽，也可貼既有 CDN URL，但不會把本機檔案假裝成 Amazon 可讀來源。
+本機圖片無法被 Amazon 抓取。App 先驗 magic bytes、10 MB、JPEG／PNG、寬高至少 500px；若使用者設定自己的 R2，main 會在讀取 storage 設定後、`PutObject` 前後核對同一 SP execution context，通過才以上鎖憑證上傳並產生公開 HTTPS URL。沒有 R2 時改由固定 Supply Boss 圖片服務準備公開圖片，首次透過本機登入視窗完成圖片專用授權，再匿名讀回核對原檔。既有 CDN URL 仍可選用；純本機預覽不可冒充 Amazon 可讀來源。
 
 ## 更新
 
@@ -188,8 +188,12 @@ Control Console Release 與 Notebook Key Release 分流：renderer 變更推送�
 
 ### 庫存健康與本機 Vine 證據
 
-`InventoryHealthCoordinator` 接在 `AgedInventoryAudit` 已取得庫齡報表後，透過固定 Fulfillment Inbound GET adapter 讀取申報效期。`inventory-health.ts` 是不含 I/O 的批次與清售推估 owner；瀏覽器 DTO 與行事曆選擇位於 `shared/inventory-health.ts`。`GET /api/inventory-health` 只讀本機快照；`POST /api/inventory-health/confirmation` 只修改目前 scope、精確快照與批次的人工確認。舊同步結果不能覆蓋較新的報表。
+`InventoryHealthSync` 以獨立使用者同步入口接既有 `AgedInventoryReads`／ReportsRuntime，取得全部 FBA 庫存與銷量報表後，委派 `InventoryHealthCoordinator` 透過固定 Fulfillment Inbound GET adapter 讀取申報效期。180 天庫齡健檢只作獨立補充資料，不再等待效期掃描。`POST /api/inventory-health/sync` 啟動或接回同一 main 工作，`GET` 只觀察，不建立報表。`inventory-health.ts` 是不含 I/O 的批次與清售推估 owner；瀏覽器 DTO 與行事曆選擇位於 `shared/inventory-health.ts`。`GET /api/inventory-health` 只讀本機快照；`POST /api/inventory-health/confirmation` 只修改目前 scope、精確快照與批次的人工確認。舊同步結果不能覆蓋較新的報表。
 
-`VineProgressOwner` 的 GET 只觀察本機資料；明確 POST 匯入才透過現有 FBA catalog owner 核對商品。Vine 進度來自使用者的 Seller Central 資料，沒有新增不公開 endpoint 或 Amazon mutation。`PrivateLocalJsonStore` 對兩個獨立 operational store 提供加密、大小上限、原子替換及 context fence；不與 credential vault 或 idempotency ledger 共檔。preload 的固定無 payload context-invalidated 事件讓健康／Vine／價目表立即清掉先前 scope 畫面。
+`VineProgressOwner` 的 GET 只觀察本機資料；明確 POST 匯入整頁 Seller Central Vine 文字才透過現有 FBA catalog owner 核對 ASIN（舊 CSV 有 SKU 時另須相符）。新 schema 2 以 ASIN＋登記日去重，保存明確狀態，主清單只投影進行中項目，不受 60 天限制；原 schema 1 保留但狀態待確認。終態更新可撤下先前已核對的登記，不因單頁缺席移除資料。Vine 進度來自使用者的 Seller Central 資料，沒有新增不公開 endpoint 或 Amazon mutation。`PrivateLocalJsonStore` 對兩個獨立 operational store 提供加密、大小上限、原子替換及 context fence；不與 credential vault 或 idempotency ledger 共檔。preload 的固定無 payload context-invalidated 事件讓健康／Vine／價目表立即清掉先前 scope 畫面。
 
 免原表 US 價目表沿用 `PriceListAmazon` 的 context、single-flight、GET 觀察與匯出 owner，以 `source: "amazon"` 區分原表比對；只有新的產生 POST 路由可以啟動工作。顯示偏好則由獨立 `DisplayPreferencesStore` 保存固定 enum，小檔不含商業資料或憑證。
+
+### 預設圖片服務
+
+`HostedListingImages` 只連固定 Supply Boss 圖片路徑。`ListingImageLogin` 的 packaged、network-disabled 本機 sheet 使用新 image audience 登入，session 只存在 main memory，context invalidation／鎖定／睡眠會清除；不能從 board 或 download session 取 token。圖片 body 不包含 SKU、帳號或 Amazon 憑證。每個 operation conditional PUT 一次，unknown 只 GET 恢復；明確未寫入拒絕且已確認不存在，才允許之後使用者重新準備建立新 operation。成功 receipt 固定 URL／hash／尺寸／型別／大小均須符合原檔，再匿名 bounded GET 核對 bytes，才投影 readyForAmazon。Amazon 寫入仍歸既有 Write Gate。

@@ -816,7 +816,7 @@ export function createImageAuditWorkbook({
     !marketplaceId ||
     !Number.isInteger(minimumImages) ||
     minimumImages < 1 ||
-    minimumImages > 9
+    minimumImages > 10
   ) {
     throw new Error("Image audit workbook snapshot metadata is invalid.");
   }
@@ -827,7 +827,7 @@ export function createImageAuditWorkbook({
     }
     seen.add(row.sellerSku);
     if (
-      row.imageUrls.length > 9 ||
+      row.imageUrls.length > 10 ||
       (row.readStatus === "complete" && row.imageCount !== row.imageUrls.length) ||
       (row.readStatus === "incomplete" && row.imageCount !== 0)
     ) {
@@ -848,7 +848,7 @@ export function createImageAuditWorkbook({
     "圖片張數",
     `距離 ${minimumImages} 張門檻`,
     "讀取錯誤",
-    ...Array.from({ length: 9 }, (_, index) => `圖片 URL ${index + 1}`),
+    ...Array.from({ length: 10 }, (_, index) => `圖片 URL ${index + 1}`),
   ];
   const workbookRows = rows.map((row): readonly Cell[] => {
     const completed = row.readStatus === "complete";
@@ -874,7 +874,7 @@ export function createImageAuditWorkbook({
               .map((error) => `${error.code}: ${error.message}`)
               .join("；"),
       ),
-      ...Array.from({ length: 9 }, (_, index) =>
+      ...Array.from({ length: 10 }, (_, index) =>
         textCell(row.imageUrls[index] ?? ""),
       ),
     ];

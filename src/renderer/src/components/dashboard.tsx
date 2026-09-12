@@ -110,6 +110,7 @@ const AccountingCenterDrawer = lazy(() => import("./accounting-center-panel").th
   (module) => ({ default: module.AccountingCenterDrawer }),
 ));
 const AgedInventoryPanel = lazy(() => import("./aged-inventory-panel"));
+const InventoryHealthPanel = lazy(() => import("./inventory-health-panel"));
 const ReportLibraryPanel = lazy(() => import("./report-library-panel"));
 const ReviewAuditPanel = lazy(() => import("./review-audit-panel"));
 const variationWorkspaceLoader = createWorkspaceLoader(() => import("./variation-planner-drawer"));
@@ -758,7 +759,7 @@ export default function Dashboard({
   const VariationPlannerDrawer = useMemo(() => lazy(variationWorkspaceLoader.load), [variationLoadAttempt]);
   const [imageAuditMinimumImages, setImageAuditMinimumImages] = useState(() => nativeDisplayPreferences()?.imageAuditMinimumImages ?? 8);
   const changeImageAuditMinimumImages = (value: number) => {
-    if (!Number.isInteger(value) || value < 1 || value > 9) return;
+    if (!Number.isInteger(value) || value < 1 || value > 10) return;
     setImageAuditMinimumImages(value);
     void persistDisplayPreferences({ imageAuditMinimumImages: value });
   };
@@ -2430,7 +2431,7 @@ export default function Dashboard({
             <label className="home-image-minimum"><span>圖片至少</span>
               <select aria-label="首頁圖片健檢最低張數" value={imageAuditMinimumImages} disabled={primaryAuditJobsRunning}
                 onChange={event => changeImageAuditMinimumImages(Number(event.currentTarget.value))}>
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(value => <option key={value} value={value}>{value} 張</option>)}
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option key={value} value={value}>{value} 張</option>)}
               </select>
             </label>
             <button type="button" className="audit-review-home-button" onClick={openReviewOverview}>健檢總表</button>
@@ -2657,15 +2658,14 @@ export default function Dashboard({
               <i aria-hidden="true">＋</i>
             </summary>
             <div className="health-audit-home-grid">
-              <section className="content-audit-home-card" aria-label="FBA 180 天以上庫齡健檢捷徑">
+              <section className="content-audit-home-card" aria-label="FBA 效期與銷速健檢捷徑">
                 <span className="content-audit-home-icon" aria-hidden="true">FBA</span>
-                <div><h2>庫齡 180+ 天</h2></div>
-                {standaloneProgressStatus(currentAgedInventoryJob)}
+                <div><h2>效期與銷速</h2></div>
                 <button type="button" onClick={() => {
                   setAuditPreference("inventory");
                   setAgedInventoryOpen(true);
                 }}>
-                  {currentAgedInventoryJob ? "查看" : "執行"}
+                  開啟
                   <i aria-hidden="true">›</i>
                 </button>
               </section>
@@ -2780,10 +2780,13 @@ export default function Dashboard({
             aria-labelledby="aged-inventory-audit-title"
           >
             <div className="drawer-header">
-              <div><p className="eyebrow">FBA · 180+ DAYS · ESTIMATED EXCESS</p><h2 id="aged-inventory-audit-title">FBA 庫齡與預估冗餘健檢</h2></div>
-              <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 庫齡與預估冗餘健檢">×</button>
+              <div><p className="eyebrow">FBA · EXPIRY · SELL-THROUGH</p><h2 id="aged-inventory-audit-title">FBA 效期與清售風險</h2></div>
+              <button type="button" onClick={() => setAgedInventoryOpen(false)} autoFocus aria-label="關閉 FBA 效期與清售風險">×</button>
             </div>
             <DeferredWorkspace onClose={() => setAgedInventoryOpen(false)}>
+            <InventoryHealthPanel marketplaceId={marketplaceId} mode={currentStandaloneMode} />
+            <details className="inventory-health-supporting-data">
+            <summary>庫齡與官方預估費用（補充資料）</summary>
             <AgedInventoryPanel
               marketplaceId={marketplaceId}
               marketplaceShort={marketplace.shortLabel}
@@ -2791,6 +2794,7 @@ export default function Dashboard({
               initialJob={currentAgedInventoryJob}
               onJobChange={cacheStandaloneAuditJob}
             />
+            </details>
             </DeferredWorkspace>
           </aside>
         </div>,

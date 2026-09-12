@@ -78,6 +78,7 @@ const IMAGE_ATTRIBUTE_NAMES = [
   "other_product_image_locator_6",
   "other_product_image_locator_7",
   "other_product_image_locator_8",
+  "other_product_image_locator_9",
 ] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -126,7 +127,7 @@ function normalizeImageUrls(
   }) as unknown as ListingImageUrlVector;
 }
 
-function expectedOldHash(values: ListingImageUrlVector): string {
+function expectedOldHash(values: readonly (string | null)[]): string {
   return createHash("sha256").update(JSON.stringify(values)).digest("hex");
 }
 
@@ -413,13 +414,13 @@ function updateResult(
 }
 
 type ListingImageWriteEvidence = Readonly<{
-  version: 1;
+  version: 1 | 2;
   asin: string;
   productType: string;
   fulfillment: "FBA";
   expectedOldHash: string;
-  previousUrls: ListingImageUrlVector;
-  requestedUrls: ListingImageUrlVector;
+  previousUrls: readonly (string | null)[];
+  requestedUrls: readonly (string | null)[];
   changedSlots: readonly ListingImageSlot[];
 }>;
 
@@ -434,7 +435,7 @@ function durableUpdateResult(
   return {
     ...result,
     imageWriteEvidence: {
-      version: 1,
+      version: 2,
       asin: patch.asin,
       productType: patch.productType,
       fulfillment: "FBA",
@@ -455,20 +456,20 @@ function canonicalImageUrl(value: string | null): string | null {
   }
 }
 
-function exactUrlVector(value: unknown): value is ListingImageUrlVector {
+function exactUrlVector(value: unknown, length: number): value is readonly (string | null)[] {
   return Array.isArray(value) &&
-    value.length === IMAGE_ATTRIBUTE_NAMES.length &&
+    value.length === length &&
     value.every((url) => url === null || typeof url === "string");
 }
 
 function exactChangedSlots(
   value: unknown,
-  previousUrls: ListingImageUrlVector,
-  requestedUrls: ListingImageUrlVector,
+  previousUrls: readonly (string | null)[],
+  requestedUrls: readonly (string | null)[],
 ): value is readonly ListingImageSlot[] {
   if (!Array.isArray(value) || value.length === 0 ||
       !value.every((slot) =>
-        Number.isSafeInteger(slot) && slot >= 0 && slot < IMAGE_ATTRIBUTE_NAMES.length
+        Number.isSafeInteger(slot) && slot >= 0 && slot < requestedUrls.length
       )) return false;
   const expected = requestedUrls.flatMap((url, index) =>
     url === previousUrls[index] ? [] : [index]
@@ -483,8 +484,11 @@ function imageWriteEvidence(
   const raw = (result as ListingImageUpdateResult & {
     imageWriteEvidence?: unknown;
   }).imageWriteEvidence;
+  // Version 1 receipts retain their original nine-slot bytes and hash. New
+  // writes bind all ten slots; a later GET never invents a tenth legacy target.
+  const length = isRecord(raw) && raw.version === 1 ? 9 : IMAGE_ATTRIBUTE_NAMES.length;
   if (!isRecord(raw) ||
-      raw.version !== 1 ||
+      (raw.version !== 1 && raw.version !== 2) ||
       typeof raw.asin !== "string" ||
       !/^[A-Z0-9]{10}$/u.test(raw.asin) ||
       typeof raw.productType !== "string" ||
@@ -492,15 +496,15 @@ function imageWriteEvidence(
       raw.fulfillment !== "FBA" ||
       typeof raw.expectedOldHash !== "string" ||
       !/^[a-f0-9]{64}$/u.test(raw.expectedOldHash) ||
-      !exactUrlVector(raw.previousUrls) ||
-      !exactUrlVector(raw.requestedUrls) ||
+      !exactUrlVector(raw.previousUrls, length) ||
+      !exactUrlVector(raw.requestedUrls, length) ||
       !exactChangedSlots(raw.changedSlots, raw.previousUrls, raw.requestedUrls) ||
       raw.expectedOldHash !== expectedOldHash(raw.previousUrls) ||
       !raw.requestedUrls[0]) {
     return null;
   }
-  if (!exactUrlVector(result.previousUrls) ||
-      !exactUrlVector(result.requestedUrls) ||
+  if (!exactUrlVector(result.previousUrls, length) ||
+      !exactUrlVector(result.requestedUrls, length) ||
       JSON.stringify(result.previousUrls) !== JSON.stringify(raw.previousUrls) ||
       JSON.stringify(result.requestedUrls) !== JSON.stringify(raw.requestedUrls) ||
       !exactChangedSlots(
@@ -683,7 +687,7 @@ type ListingImageRouteInput = UpdateListingImagesInput & Readonly<{
 }>;
 
 function parseUrls(value: unknown): Array<string | null> | null {
-  if (!Array.isArray(value) || value.length > 9) return null;
+  if (!Array.isArray(value) || value.length > 10) return null;
   const urls: Array<string | null> = [];
   for (const item of value) {
     if (item === null || item === "") {
@@ -813,7 +817,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     const expectedUrls = parseUrls(body.expectedUrls);
     const urls = parseUrls(body.urls);
     if (!marketplaceId || !sellerSku || !expectedUrls || !urls) {
-      return invalid("請提供有效的站點、SKU 與最多九個圖片 URL。");
+      return invalid("請提供有效的站點、SKU 與最多十個圖片 URL。");
     }
     const populated = urls.filter((value): value is string => Boolean(value));
     if (new Set(populated).size !== populated.length) {

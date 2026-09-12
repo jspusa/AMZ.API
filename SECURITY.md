@@ -79,3 +79,7 @@
 ## 回報問題
 
 請不要在 public issue 貼 API credentials、Amazon response body、訂單或商品敏感資料。以私下管道提供最小化重現步驟與 Amazon Request ID。
+
+## 預設圖片代管
+
+Supply Boss 圖片服務只接 main-owned 固定 origin/path 的受限 JPEG／PNG 上傳，不接 renderer 指定路徑、bucket 或第三方 URL。員工以下載頁密碼 verifier 在獨立圖片登入端點取得 `amz-api-listing-images` audience；下載、board、snapshot-admin token 不能互換權限。密碼只在 packaged 本機無網路 sheet 輸入，token 只留 main 記憶體，安全環境失效時清除。伺服器只保留 opaque operation ID、圖片 bytes 與型別／尺寸／hash；公開 GET 嚴格限制在圖片 namespace，不能讀取下載檔、公告或安全紀錄。main 匿名讀回精確 bytes 後才開放 Amazon 預檢，保存結果不明禁止自動重傳。既有自有 R2 設定仍可使用；新功能不把其 credentials 搬到 Site。

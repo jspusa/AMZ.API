@@ -400,6 +400,7 @@ describe("SP-API live wire contracts", () => {
       string | null,
       string | null,
       string | null,
+      string | null,
     ];
     const requestedUrls = [...previousUrls] as typeof previousUrls;
     requestedUrls[1] = null;
@@ -519,6 +520,7 @@ describe("SP-API live wire contracts", () => {
       "mutation",
     );
     const previousUrls = observation.snapshot.images.map((image) => image.url) as [
+      string | null,
       string | null,
       string | null,
       string | null,
