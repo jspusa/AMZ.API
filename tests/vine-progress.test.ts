@@ -21,6 +21,46 @@ function fixture() {
   return { owner: new VineProgressOwner(dependencies), dependencies, fba, store, changeAccount: () => { scope = "fixture-vine-account-b"; }, saved: () => persisted };
 }
 describe("Vine progress local ownership", () => {
+  it.each(["observe", "import"] as const)("reloads a committed-but-failed save before the next %s and preserves its rows", async (nextOperation) => {
+    const app = fixture();
+    await app.owner.import(req(`${header}\n2026-09-10,SKU-ONE,B000000001,30,15,7`));
+    const write = app.store.write.getMockImplementation()!;
+    app.store.write.mockImplementationOnce(async (value, checkpoint) => {
+      await write(value, checkpoint);
+      throw new Error("directory sync failed after atomic replacement");
+    });
+    await expect(app.owner.import(req(`${header}\n2026-09-10,SKU TWO,B000000002,2,1,0`))).rejects.toMatchObject({ code: "VINE_STORAGE_WRITE_FAILED" });
+    expect(app.store.write).toHaveBeenCalledTimes(2);
+    if (nextOperation === "observe") {
+      expect(body(await app.owner.observe(req())).rows).toHaveLength(2);
+      expect(app.store.write).toHaveBeenCalledTimes(2);
+    }
+    const next = body(await app.owner.import(req(`${header}\n2026-09-11,SKU-ONE,B000000001,30,0,0`)));
+    expect(next.rows).toHaveLength(3);
+    expect(next.rows.find(row => row.sellerSku === "SKU TWO")).toMatchObject({ enrolled: 2, claimed: 1, reviews: 0 });
+    expect(body(await new VineProgressOwner(app.dependencies).observe(req())).rows).toHaveLength(3);
+    expect(app.store.write).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["PRIVATE_LOCAL_READ_FAILED", "PRIVATE_LOCAL_UNAVAILABLE"])("blocks reread and further imports when an uncertain save cannot be reconciled: %s", async (failure) => {
+    const app = fixture();
+    await app.owner.import(req(`${header}\n2026-09-10,SKU-ONE,B000000001,30,15,7`));
+    const write = app.store.write.getMockImplementation()!;
+    const read = app.store.read.getMockImplementation()!;
+    app.store.write.mockImplementationOnce(async (value, checkpoint) => {
+      await write(value, checkpoint);
+      throw new Error("directory sync failed after atomic replacement");
+    });
+    await expect(app.owner.import(req(`${header}\n2026-09-10,SKU TWO,B000000002,2,1,0`))).rejects.toMatchObject({ code: "VINE_STORAGE_WRITE_FAILED" });
+    app.store.read.mockRejectedValue(new Error(failure));
+    await expect(app.owner.observe(req())).rejects.toMatchObject({ code: "VINE_STORAGE_UNREADABLE" });
+    await expect(app.owner.import(req(`${header}\n2026-09-11,SKU-ONE,B000000001,30,0,0`))).rejects.toMatchObject({ code: "VINE_STORAGE_UNREADABLE" });
+    expect(app.store.write).toHaveBeenCalledTimes(2);
+    app.store.read.mockImplementation(read);
+    expect(body(await app.owner.observe(req())).rows).toHaveLength(2);
+    expect(app.store.write).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps exact Vine counts, scopes encrypted data and filters 60 US Marketplace Days", async () => {
     const app = fixture();
     const imported = await app.owner.import(req(`${header}\n2026-07-14,SKU-ONE,B000000001,30,15,7\n2026-07-13,SKU-ONE,B000000001,30,30,30\n2026-09-11,SKU TWO,B000000002,2,,0`));

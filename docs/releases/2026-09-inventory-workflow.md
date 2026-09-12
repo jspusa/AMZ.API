@@ -8,8 +8,8 @@ This release integrates inbound declared expiry, inventory age, sales pace and e
 |---|---|
 | ★ Local implementation | Functional seams cover source/workbook preservation, exact SKU images, threshold selection/cache/export, preference restart, failed lazy loading, encrypted local evidence and context isolation. |
 | ★ Visual preview | Local synthetic browser preview confirmed homepage default 8, choice 6 carried into individual image audit, Vine source/date labels with claimed/review progress bars, the generated price-list entry beside source-workbook comparison, and health risk/source/confirmation details. This is not live Amazon evidence. |
-| ★ Local validation | `npm run check` passed 316 files / 3,577 tests, typecheck, build and stylesheet parity; `npm audit --omit=dev` reported 0; diff check passed. |
-| ★ Independent review | Standards reported no documented violations; Spec-driven source traceability, age-report failure isolation, restart revalidation and asynchronous save races were corrected and regression tested. A final focused safety pass is recorded with the release evidence. |
+| ★ Local validation | `npm run check` passed 316 files / 3,583 tests, typecheck, build and stylesheet parity; `npm audit --omit=dev` reported 0; diff check passed. |
+| ★ Independent review | Standards reported no documented violations; Spec-driven source traceability, age-report failure isolation, restart revalidation and asynchronous save races were corrected and regression tested. The final focused safety pass also fixed post-replacement save failures: Vine reloads disk before merging another import; health suspends forecasts and reloads disk on a fresh scan. No remaining actionable findings were reported. |
 | ☆ Exact-source CI and Pages | Not yet published. |
 | ☆ Mac / Windows artifacts and Mac installation | Not yet built or installed. |
 | ☆ Protected employee downloads | Not yet updated or downloaded. |

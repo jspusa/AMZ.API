@@ -24,7 +24,7 @@ function harness() {
   const refresh = (ownerToUse = owner, value = snapshot) => context.capture(US).then(captured => ownerToUse.refresh({ context: captured, snapshot: value, signal: new AbortController().signal }));
   const get: ApiRequest = { requestId: "read", method: "GET", path: "/api/inventory-health", query: { marketplaceId: US }, headers: {} };
   const confirm = (changes = {}): ApiRequest => ({ ...get, method: "POST", path: "/api/inventory-health/confirmation", body: { kind: "json", value: { marketplaceId: US, id: lot.id, snapshotFetchedAt: snapshot.fetchedAt, confirmedRemaining: 1000, expiryDate: lot.expiryDate, stopSaleDate: null, ...changes } } });
-  return { owner, create, context, expiry, store, refresh, get, confirm, switchAccount: () => { account = "second"; context.invalidate("account-changed"); owner.clear(); }, switchMode: () => { mode = "demo"; context.invalidate("mode-changed"); owner.clear(); } };
+  return { owner, create, context, expiry, store, refresh, get, confirm, switchAccount: (next = "second") => { account = next; context.invalidate("account-changed"); owner.clear(); }, switchMode: () => { mode = "demo"; context.invalidate("mode-changed"); owner.clear(); } };
 }
 function payload(response: { body: { value: unknown } }) { return response.body.value as { snapshot: InventoryHealthSnapshot | null }; }
 
@@ -69,6 +69,39 @@ describe("inventory health local evidence lifecycle", () => {
     expect((await h.owner.confirm(h.confirm())).status).toBe(503);
     await h.refresh();
     expect((await h.owner.read(h.get)).status).toBe(200);
+  });
+  it("invalidates cached forecasts after a confirmation commits but persistence acknowledgement fails", async () => {
+    const h = harness(); await h.refresh(); await h.owner.confirm(h.confirm({ confirmedRemaining: 0 }));
+    const originalWrite = h.store.write.getMockImplementation()!;
+    h.store.write.mockImplementationOnce(async (value, fence) => {
+      await originalWrite(value, fence);
+      throw new Error("PRIVATE_LOCAL_WRITE_FAILED");
+    });
+    expect((await h.owner.confirm(h.confirm())).status).toBe(500);
+    expect((await h.owner.read(h.get)).status).toBe(503);
+    expect((await h.owner.confirm(h.confirm({ confirmedRemaining: 0 }))).status).toBe(503);
+    expect(h.store.write).toHaveBeenCalledTimes(3);
+    const reopened = h.create();
+    expect(payload(await reopened.read(h.get)).snapshot).toMatchObject({ stale: true, rows: [{ confirmedRemaining: 1000, calendarEligible: false }] });
+    await h.refresh();
+    expect(payload(await h.owner.read(h.get)).snapshot).toMatchObject({ stale: false, rows: [{ confirmedRemaining: 1000, calendarEligible: true, projectedShortfall: 400 }] });
+  });
+  it("does not mark a context-cancelled confirmation as a persistence failure", async () => {
+    const h = harness(); await h.refresh(); await h.owner.confirm(h.confirm({ confirmedRemaining: 0 }));
+    let release!: () => void, started!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const writing = new Promise<void>(resolve => { started = resolve; });
+    const originalWrite = h.store.write.getMockImplementation()!;
+    h.store.write.mockImplementationOnce(async (value, fence) => {
+      started(); await pending; await originalWrite(value, fence);
+    });
+    const confirming = h.owner.confirm(h.confirm());
+    await writing;
+    h.switchAccount(); release();
+    expect((await confirming).status).toBeGreaterThanOrEqual(400);
+    expect(payload(await h.owner.read(h.get)).snapshot).toBeNull();
+    h.switchAccount("first");
+    expect(payload(await h.owner.read(h.get)).snapshot).toMatchObject({ stale: true, rows: [{ confirmedRemaining: 0, calendarEligible: false }] });
   });
   it("cannot revive failed-refresh calendar claims through clear or a new owner", async () => {
     const h = harness(); await h.refresh(); await h.owner.confirm(h.confirm());

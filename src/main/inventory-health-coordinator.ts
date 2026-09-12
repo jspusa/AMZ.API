@@ -80,7 +80,19 @@ export class InventoryHealthCoordinator {
     // Validate both source adapters and disk data at the same bounded persistence seam.
     const validated = parseSaved(saved);
     await this.fence(context, revision);
-    await this.input.store?.write(validated, () => this.fence(context, revision));
+    try {
+      await this.input.store?.write(validated, () => this.fence(context, revision));
+    } catch (error) {
+      await this.fence(context, revision);
+      if (error instanceof SpExecutionContextError) throw error;
+      // The file may already have been renamed before acknowledgement failed.
+      // Discard the old cache and re-read disk during the next full capture.
+      const key = scopeKey(context);
+      this.verifiedScopes.delete(key);
+      this.failedScopes.add(key);
+      this.saved = null;
+      throw error;
+    }
     await this.fence(context, revision);
     this.saved = validated;
   }

@@ -17,6 +17,7 @@ const keyOf = (row: VineRecord) => JSON.stringify([row.sellerSku, row.asin, row.
 /** Local manual Vine evidence only. FBA validation reuses the catalog owner; no Vine/Orders write or private endpoint. */
 export class VineProgressOwner {
   private data: Persisted | null = null;
+  private storageUncertain = false;
   private revision = 0;
   private busy = false;
   private controller = new AbortController();
@@ -39,13 +40,14 @@ export class VineProgressOwner {
     try { value = this.dependencies.store ? await this.dependencies.store.read() : null; }
     catch (error) {
       await this.checkpoint(context, revision);
-      if (!isUnavailable(error)) throw new SpApiError("本機 Vine 加密資料無法讀取，原檔已保留；請先處理儲存問題。", { status: 409, code: "VINE_STORAGE_UNREADABLE" });
+      if (!isUnavailable(error) || this.storageUncertain) throw new SpApiError("本機 Vine 加密資料無法讀取，原檔已保留；請先處理儲存問題。", { status: 409, code: "VINE_STORAGE_UNREADABLE" });
       this.storage = "session-only";
     }
     await this.checkpoint(context, revision);
     const today = marketplaceCalendar(US).dayAt(new Date(this.now()));
     if (value !== null && !this.validPersisted(value, today)) throw new SpApiError("本機 Vine 資料格式無法確認，原檔已保留。", { status: 409, code: "VINE_STORAGE_INVALID" });
     if (!this.data) this.data = value as Persisted | null ?? { schemaVersion: 1, profiles: {} };
+    this.storageUncertain = false;
   }
   private validPersisted(value: unknown, today: string): value is Persisted {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -118,16 +120,23 @@ export class VineProgressOwner {
         next.profiles[scope] = [...rows.values()];
         await this.checkpoint(context, revision);
         if (this.storage === "encrypted-local" && this.dependencies.store) {
+          // A failed fsync or later context fence can occur after replacement.
+          // Only a fresh validated disk read may reconcile that outcome; never
+          // let a subsequent import merge against the pre-write cache.
+          this.data = null;
+          this.storageUncertain = true;
           try { await this.dependencies.store.write(next, () => this.checkpoint(context, revision)); }
           catch (error) {
             await this.checkpoint(context, revision);
-            if (!isUnavailable(error)) throw new SpApiError("Vine 加密保存未完成，既有資料保留；請重新讀取確認。", { status: 409, code: "VINE_STORAGE_WRITE_FAILED" });
+            if (!isUnavailable(error)) throw new SpApiError("Vine 加密保存結果尚未確認；請重新讀取本機資料後再匯入。", { status: 409, code: "VINE_STORAGE_WRITE_FAILED" });
             this.storage = "session-only";
+            this.storageUncertain = false;
           }
         }
         await this.checkpoint(context, revision);
         throwIfAborted(signal);
         this.data = next;
+        this.storageUncertain = false;
       }
       return json({ ...this.snapshot(context), importResult: { accepted: accepted.length, rejected: parsed.rejected.sort((a, b) => a.line - b.line) } });
     } catch (error) {
