@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- Issue #254 正在準備 0.1.66：圖片服務首次設定後改用 Touch ID／Windows Hello 解鎖系統加密登入，圖片最終確認移除重打 SKU，保留主程序預檢、原生確認與防重送。尚未發布或安裝；本輪需求與分層驗收見 [spec](specs/2026-09-image-biometric-confirmation.md) 及 [0.1.66 帳本](releases/2026-09-image-biometric-confirmation.md)。0.1.65 已新增原生證據：偏好重啟保存且已還原，Vine 實際整頁匯入只顯示 11 筆進行中，九張 AFA12AM 圖片直接準備至草稿；全部 FBA 效期同步受 lock/context 中斷，完整結果與其餘原始驗收仍待完成。
+- Issue #254 已由 PR #255／main `afbffdd85a2685992dc2c3341f79dbdd3a86c2fc` 合併 0.1.66：圖片服務首次設定後以 Touch ID／Windows Hello 解鎖 OS 加密登入，圖片最終確認移除重打 SKU，並綁定 exact 查詢身分，鎖定清除短效憑據。3,754 tests、production audit 0、Standards／Spec 各 0 open、四條 exact main CI、Pages HTML／11 個 JS／CSS、Mac／Windows 可信產物均通過。兩張下載卡已依 Mac→Windows 更新至 0.1.66；員工登入後實際下載 bytes 尚待驗。新 DMG 已唯讀掛載且 App bytes 已驗，但原生工具仍回報 Mac locked／自動解鎖失敗，現有 App 保持 0.1.65，沒有強制退出或換版。需求及每層證據見 [spec](specs/2026-09-image-biometric-confirmation.md) 與 [0.1.66 帳本](releases/2026-09-image-biometric-confirmation.md)。0.1.65 的偏好重開、Vine 11 筆進行中及九張直接圖片準備已驗；全部 FBA 效期／銷速、免原表價目表、健檢→變體、圖片門檻結果及完整原始實機範圍仍須接續。
 
 - Issue #250 已由 PR #251／main `3584b3bb775ceb0e645fa2e4a403314016bac037` 合併 0.1.65：圖片改用專用代管並支援 01–10 排序、效期／銷速有全部 FBA 的獨立同步入口、Vine 直接貼整頁且只顯示未結束登記。3,690 tests、兩軸 final review、四條 exact main CI、Pages HTML 與全部 11 個 JS／CSS、Mac／Windows 可信 artifact 均通過；Supply Boss 圖片服務 version 7 已成功發布。Mac 已安裝 0.1.65 universal，ASAR 與可信 artifact 相符，0.1.64 App 與 0700 userData 備份保留，換版期間 vault／ledger bytes 一致。Keychain 授權已完成；原生 UI 已核對偏好重啟保存並還原、Vine 全頁匯入與九張圖片直接代管準備。完整 FBA 效期／銷速結果、免原表價目表、健檢→變體及圖片門檻結果仍待完成。Mac→Windows 下載卡上傳完成；使用者重新登入後已核對兩卡版本／hash 並先後啟動下載，但本機驗證仍缺本次 Mac 新檔，實際下載 bytes 尚未驗收。新需求、待恢復的驗收用外觀設定及各層證據見 [補充 spec](specs/2026-09-direct-images-expiry-vine.md) 及 [0.1.65 帳本](releases/2026-09-direct-images-expiry-vine.md)。
 
