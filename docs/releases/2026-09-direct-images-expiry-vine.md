@@ -41,9 +41,9 @@ Spec: [direct images, expiry and Vine](../specs/2026-09-direct-images-expiry-vin
   Existing public audience, R2 binding and protected download/board APIs remain.
   Server contract tests and artifact validation passed; this does not prove a
   real employee image-login/upload from the installed Notebook Key.
-- Installed Mac remains 0.1.64. The current user-selected image draft has not been
-  discarded by an agent restart or navigation. A later read-only UI check found
-  the Mac locked; an unlock request is pending while source work continues.
+- Mac installation is now 0.1.65. The prior App and a 0700 userData backup are
+  retained; installed ASAR, vault and ledger preservation passed the separate
+  checks below. New native UI and live feature acceptance remain pending.
 - No Amazon Preview, native Amazon approval or mutation was sent for this work.
   Real Windows Hello, formal signing and automatic update feeds remain unproved.
 - Prior 0.1.64 employee download files still lack final local byte/hash evidence;
@@ -61,9 +61,10 @@ for that row only, not live Amazon acceptance.
 | Pages | [34694902265](https://github.com/jspusa/AMZ.API/actions/runs/34694902265), artifact `10297733167`; live HTML and all 11 JS/CSS assets byte-equal to the artifact | ★★★★★ delivered bytes |
 | macOS | [34694902258](https://github.com/jspusa/AMZ.API/actions/runs/34694902258), artifact `10298244661`, attempt 1; archive and full DMG/ZIP checksums verified | ★★★★★ artifact |
 | Windows | [34694902259](https://github.com/jspusa/AMZ.API/actions/runs/34694902259), artifact `10298274516`, attempt 1; archive, full EXE/ZIP and ASAR addon boundary verified | ★★★★★ artifact |
-| Installed Mac / native UI | Current App is still 0.1.64; Mac remains locked and its pending image draft is preserved | ☆☆☆☆☆ pending |
+| Installed Mac | 0.1.65 universal; installed ASAR matches the verified artifact, deep strict codesign passed, vault/ledger bytes preserved | ★★★★★ installation |
+| Native UI / preferences | New process is alive, but no new UI observed yet; user handling of system Keychain/save windows remains pending | ☆☆☆☆☆ pending |
 | Protected upload | Mac then Windows upload completed successfully; both payload lengths and hashes match the trusted artifacts | ★★★★★ upload only |
-| Employee download bytes | Fresh page reload requires employee login again; no new 0.1.65 browser download has been initiated | ☆☆☆☆☆ pending |
+| Employee download bytes | After user login, both 0.1.65 cards and hashes were observed and Mac then Windows downloads initiated; the filesystem verifier still lacks a fresh Mac file | ☆☆☆☆☆ pending |
 
 | Trusted payload | Bytes | SHA-256 | Coverage |
 |---|---:|---|---|
@@ -78,20 +79,45 @@ The verified Mac DMG was mounted read-only without launching its App. Bundle
 `com.jspusa.amz-api` is 0.1.65, arm64 + x86_64, with passing deep strict ad-hoc
 signature verification. Its ASAR is
 `1820bfa0d35298ed37ee3159531023d3da94dc216b058c49f71be3ece56b1638`,
-package 0.1.65 and update channel disabled. This is artifact inspection, not an
-installation, Developer ID or notarization claim.
+package 0.1.65 and update channel disabled. This inspection is separate from the
+installation evidence below; it does not prove Developer ID or notarization.
 Windows packaged ASAR is `da1daec0310c0de954361dbfde13c9b9b2eebc55e3fb3956c5af13f7a70f1721`,
 package 0.1.65 with update channel disabled. Its unpacked Hello addon matches
 the packed manifest; this is not evidence from physical Windows Hello hardware.
 
+## Installed device and pending acceptance
+
+`/Applications/AMZ.API.app` is now 0.1.65 from the same merged source, Mac run
+`34694902258` and artifact `10298244661`. `installation-verification.json`
+confirms universal architecture, deep strict codesign, disabled updates and
+installed ASAR `1820bfa0d35298ed37ee3159531023d3da94dc216b058c49f71be3ece56b1638`.
+The App was stopped during the swap; vault and all ledger bytes remained equal.
+`user-data-backup-verification.json` confirms the stopped-App backup and both
+byte-preservation checks. Preserved destinations are:
+
+- Previous App: `/Applications/AMZ.API-v0.1.64-backup-before-0165-20260912.app`.
+- User data: `/Users/jasper/Library/Application Support/amz-api-backups/20260912-before-0165/userData`, mode 0700.
+
+Before normal quit, root observed the old App homepage with no active image
+workspace or draft. For restart acceptance, the original standard text size,
+original palette and light mode were recorded, then temporarily changed to
+large text, pink palette and dark mode. Their persistence in the new App is
+still unverified; restore the recorded original settings after that check.
+Native UI inspection timed out, while a process check showed the App and system
+SecurityAgent alive. No new native UI has been observed yet. Keychain and save
+windows await user handling; process existence does not prove launch/UI,
+preference persistence, image upload, inventory sync or Vine acceptance.
+
 Local evidence is under `/tmp/amz-api-v0165-verified/`: `local-verification.json`,
-the separate `pages/`, `macos/` and `windows/` verification records, and
-`site-image-service.json`. Sequential protected upload completion is recorded in
-`portal-upload-verification.json`; the existing `macos-dmg` and
-`windows-installer` cards retain their labels and protected audience. The browser
-session expired before post-upload card/download verification, and the Mac is
-locked. User unlock and employee login are requested; current image draft,
-App installation and user data have not been changed during this release.
+the separate `pages/`, `macos/` and `windows/` verification records,
+`site-image-service.json`, `installation-verification.json` and
+`user-data-backup-verification.json`. `portal-upload-verification.json` records
+successful Mac then Windows uploads to the existing protected cards. Its
+expired-login observation describes the earlier post-upload state. Root later
+observed the user's fresh employee login, both 0.1.65 cards with matching hashes,
+and sequential Mac/Windows download starts. The filesystem verifier still
+reports no fresh Mac download; physical download bytes remain unverified.
+
+Keep authenticated browser observation and physical file verification separate.
+The new UI and requested live behavior require their own acceptance evidence.
 No secret or operational account data is included here.
-Update installation and authenticated download evidence only after those steps
-complete; version numbers and upload/start messages do not establish them.
