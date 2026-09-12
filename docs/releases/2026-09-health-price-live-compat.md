@@ -14,8 +14,8 @@ Public seam 已重現單筆 `409 LISTING_IDENTITY_MISMATCH` 中斷價格工作�
 
 | 範圍 | 狀態 |
 | --- | --- |
-| ☆ Source／聚焦驗證 | 修正進行中 |
-| ☆ 全案 check／audit／兩軸 review | 待完成 |
+| ★ Source／聚焦驗證 | 已完成兩個 owner 的窄修正，新增 40 個 public 回歸；健康 56 tests、價格相關 116 tests 通過 |
+| ★ 全案 check／audit／兩軸 review | `9925c4f58e620401ce2c68f5bc6e48a0c2595679` 的本機 check 通過 323 files／3,794 tests、型別與 build；production audit 0、diff check 通過。Standards／Spec 自 base 至該 head 均 0 open；後續 CI 等待修正另行核對 |
 | ☆ 同來源 CI／Pages／Mac／Windows artifact | 待發布及核對 |
 | ☆ 0.1.67 Mac 安裝 | 待可信產物；目前實際安裝為 0.1.66 |
 | ☆ 修正後原生結果 | 待新版完整效期／銷速與免原表 XLSX |
@@ -26,3 +26,5 @@ Public seam 已重現單筆 `409 LISTING_IDENTITY_MISMATCH` 中斷價格工作�
 全 FBA 效期與銷速結果、低庫齡商品、人工效期／促銷保留、只納入已確認正清售缺口的行事曆；免原表價目表實際 XLSX；健檢至變體並返回；圖片門檻選取／結果／匯出；0.1.66 新圖片加密登入及後續生物辨識、免重打 SKU 的原生確認頁；員工登入後兩平台下載 bytes。
 
 0.1.65 的外觀偏好重開保存、Vine 11 筆進行中及九張圖片直接準備證據繼續有效，詳見前版帳本。Mac 最新曾鎖定，但 source 修正仍可進行，不能以此將完整目標縮小結案。
+
+PR [#259](https://github.com/jspusa/AMZ.API/pull/259) 首次 Validate `34708136725` 在既有 A+／變體 demo job 測試遇到固定輪詢次數耗盡；本次 40 個新增回歸皆通過。同 source 本機全案及 Windows validation 已通過；兩個原測試 public suites 再次單獨執行 7 tests 通過，並核對 demo 工作排程及本機非同步 I/O。只將兩處固定輪詢改為最多 3 秒的終態等待，收到非 202 即交原斷言核對，不重試錯誤終態；production timeout／retry 未改。

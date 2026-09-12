@@ -49,12 +49,11 @@ async function terminal(
     jobId: String(receipt.jobId),
     contextId: String(receipt.contextId),
   };
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  return vi.waitFor(async () => {
     const response = await router.handle(request("GET", identity));
-    if (response.status !== 202) return response;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  throw new Error("A+ job did not finish");
+    expect(response.status, "A+ job is still pending").not.toBe(202);
+    return response;
+  }, { timeout: 3_000, interval: 10 });
 }
 
 describe("main-owned A+ audit routes", () => {

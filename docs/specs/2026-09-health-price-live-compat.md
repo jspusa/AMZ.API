@@ -60,3 +60,15 @@ Preserve the complete original goal and pending native acceptance. Record source
 CI, Pages, desktop artifacts, installation and employee downloads separately.
 No Amazon mutation or new diagnostic credential/transport access is authorized
 by this fix. Public fixtures do not prove the next native job succeeds.
+
+## CI acceptance continuation
+
+PR #259 first Validate run failed two pre-existing demo-job tests after their
+fixed polling counts were exhausted (A+ 100 × 1 ms; standalone variation
+100 × 5 ms). The same exact source passed the complete local check and the
+Windows validation step. Stabilize only these test waits with a bounded
+observable terminal-state wait within the existing test timeout. Keep final
+status and payload assertions outside the wait so a wrong terminal result fails
+immediately, and retain no-network assertions. Do not change production job
+behavior, retry policy, workflow limits or application timeouts. Recheck the two
+public seams, full check and the resulting commit before release.
