@@ -13,9 +13,10 @@ This release integrates inbound declared expiry, inventory age, sales pace and e
 | ★ Exact-source Validate / Pages | PR #246 merged as `074c78a41276ee013c832fc9ad88de3a59c8d9c8`; Validate [34689198070](https://github.com/jspusa/AMZ.API/actions/runs/34689198070) and Pages [34689198019](https://github.com/jspusa/AMZ.API/actions/runs/34689198019) succeeded. Pages artifact `10297200804`, public HTML and all 10 JS/CSS assets match byte-for-byte. |
 | ★ Mac / Windows artifacts | Exact-source main/push runs [34689198016](https://github.com/jspusa/AMZ.API/actions/runs/34689198016) (Mac) and [34689198059](https://github.com/jspusa/AMZ.API/actions/runs/34689198059) (Windows) succeeded on attempt 1. Both GitHub archives, payload manifests and required package checks passed. |
 | ★ Protected download uploads | Both 0.1.64 cards uploaded sequentially Mac then Windows; successful receipts match the trusted payload bytes and SHA-256 values below. |
-| ☆ Mac installation | The installed Mac remains 0.1.63 and running. The locked desktop prevents checking active work and normal quit; no App or userData replacement has been attempted. |
-| ☆ Authenticated employee downloads | The download page was observed at its employee login form. Actual authenticated downloads and local file/hash verification remain pending user login. Upload success is not download proof. |
-| ☆ Live account acceptance | No new Amazon mutation is authorized for acceptance. Native UI access currently requires the user to unlock the Mac. |
+| ★ Mac installation | `/Applications/AMZ.API.app` is now 0.1.64 universal; strict ad-hoc signature, expected ASAR and disabled-update-channel checks passed. The App was stopped during replacement. The 0.1.63 App and a mode `0700` userData backup are retained; vault and ledger bytes were unchanged during the swap. |
+| ☆ Native App acceptance | The user unlocked the Mac. A launch process was observed waiting in Keychain `SecItemCopyMatching`; the user must complete the macOS prompt directly. Successful UI launch, preference persistence and variation navigation remain unverified. |
+| ☆ Authenticated employee downloads | Employee login completed; both cards displayed 0.1.64 and the expected hashes. Sequential download actions displayed start messages, but about four minutes of Downloads observation found no new matching files. Actual saved payload bytes and hashes remain unverified. |
+| ☆ Live account acceptance | No new Amazon mutation is authorized for acceptance. Installation and an observed launch process do not establish live Amazon behavior; account acceptance remains pending. |
 
 ## Evidence boundaries
 
@@ -29,7 +30,7 @@ The variation audit → workspace path passes interaction regressions, and faile
 
 The unsigned/ad-hoc distribution channel stays disabled for automatic publisher updates. Local/CI/fixture checks do not prove real Windows Hello, new native approvals, signing, or live Amazon behavior.
 
-Local and release evidence is retained under `/tmp/amz-api-v0164-verified/`. `local-validation.json`, `final-check.log` and `final-audit.log` describe the tested implementation. `pages/pages-byte-verification.json` binds actual public bytes to the exact main/push artifact. Helper simulation receipts are preparation evidence only.
+Local and release evidence is retained under `/tmp/amz-api-v0164-verified/`. `local-validation.json`, `final-check.log` and `final-audit.log` describe the tested implementation. `pages/pages-byte-verification.json` binds actual public bytes to the exact main/push artifact. `installation-verification.json` and `user-data-backup-verification.json` record the completed installation and preserved data; `release-identity.json` and `device-handoff-pending.json` distinguish installation from pending native UI and physical-download acceptance. Helper simulation receipts are preparation evidence only.
 
 ## Verified distribution payloads
 
@@ -46,4 +47,8 @@ The mounted Mac ASAR is `5b9721eecfc17fbf0c3de54f49f2910e5c3d481e651238911c60e8b
 
 ## Remaining device handoff
 
-The verified DMG is mounted read-only at `/tmp/amz-api-v0164-verified/mounted`. After user unlock, inspect the running App and let active work finish, quit normally, then run the reviewed backup and installation helpers from `/tmp/amz-api-v0164-verified/` (see its `USAGE.md`), outside the read-only mount. Preserve the 0.1.63 App and current userData/vault/ledger; do not restore older ledger data or resend an existing operation. Verify display/threshold persistence and the variation audit → workspace path with read-only actions. Employee downloads must occur through the authenticated page and match the trusted files. `portal-upload-receipts.json` explicitly records `authenticatedDownloadVerified: false`.
+Installation is complete from the verified 0.1.64 DMG. The installed ASAR matches `5b9721eecfc17fbf0c3de54f49f2910e5c3d481e651238911c60e8b79fb4748e`; the previous App is preserved at `/Applications/AMZ.API-v0.1.63-backup-before-0164-20260912.app`, and the private userData backup is retained with mode `0700`. The swap preserved existing vault and ledger bytes. Keep these backups and current userData; do not restore an older ledger or resend an existing operation.
+
+The former locked-desktop and employee-login blockers are resolved. Native startup now awaits the user's macOS Keychain prompt. The computer-use tool explicitly prohibits operating SecurityAgent and the Codex system/save dialog surfaces; leave those prompts to the user. After the user completes the prompt, verify that the installed App reaches its UI, then check display/threshold persistence across restart and the variation audit → workspace path using read-only actions. Those checks and live Amazon acceptance remain pending.
+
+The authenticated page showed both expected version/hash cards and download-start messages, but no new matching Mac or Windows file was found in Downloads during the observation window. Confirm the actual saved location or let the user complete any save prompt before hashing the resulting files against the trusted payloads above. `portal-authenticated-download-verification.json` does not yet exist; `portal-upload-receipts.json` and `release-identity.json` still mark authenticated file verification false. Do not infer completed downloads from the visible cards or start messages.
