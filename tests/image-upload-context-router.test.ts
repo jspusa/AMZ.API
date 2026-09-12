@@ -41,6 +41,7 @@ describe("listing image upload execution context", () => {
     const transport = vi.fn<typeof fetch>(async () => { throw new Error("No network is expected after cancelling the login sheet"); });
     const mutation = vi.fn(async () => { throw new Error("Image preparation must not enter Amazon mutations"); });
     const read = vi.fn(async () => { throw new Error("Image preparation must not read Amazon listings"); });
+    const clear = vi.fn();
     const approveWrite = vi.fn(async () => undefined);
     let router!: ApiRouter;
     const requestLogin = vi.fn(async () => {
@@ -54,7 +55,7 @@ describe("listing image upload execution context", () => {
       vault: { getImageStorage: async () => null } as unknown as CredentialVault,
       approveWrite,
       hostedImages: service,
-      listingImageMutations: { handle: mutation, read },
+      listingImageMutations: { handle: mutation, read, clear },
       spExecutionContext: createScriptedSpExecutionContextAdapter(marketplaceId => ({
         marketplaceId, mode: "live", accountScope: "opaque-image-upload-account",
       })),
@@ -80,7 +81,9 @@ describe("listing image upload execution context", () => {
       expect(read).not.toHaveBeenCalled();
       expect(approveWrite).not.toHaveBeenCalled();
       expect(s3Spies.send).not.toHaveBeenCalled();
+      expect(clear).toHaveBeenCalledTimes(drift ? 1 : 0);
     } finally { router.dispose(); }
+    expect(clear).toHaveBeenCalledTimes(drift ? 2 : 1);
   });
 
   it("does not write to object storage after lock invalidates a pending storage lookup", async () => {

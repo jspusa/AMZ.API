@@ -52,6 +52,7 @@ export type ListingImageMutationCommand = Readonly<{
 }>;
 
 export interface ListingImageMutationsPort {
+  clear(): void;
   handle(command: ListingImageMutationCommand): Promise<ApiResponse>;
   read(
     input: ListingImageIdentity,
@@ -773,6 +774,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
   private readonly writeGate: MainWriteGatePort;
   private readonly operations: ListingImageMutationOperations;
   private readonly snapshots = new Map<string, ImageSnapshotBinding>();
+  private snapshotRevision = 0;
 
   constructor(input: Readonly<{
     context: SpExecutionContextAdapter;
@@ -782,6 +784,18 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     this.context = input.context;
     this.writeGate = input.writeGate;
     this.operations = input.operations;
+  }
+
+  clear(): void {
+    this.snapshotRevision += 1;
+    this.snapshots.clear();
+  }
+
+  private assertSnapshotRevision(expected: number): void {
+    if (expected === this.snapshotRevision) return;
+    throw new SpApiError("Amazon 執行環境已更新；請重新查詢商品圖片。", {
+      status: 409, code: "SP_CONTEXT_INVALIDATED",
+    });
   }
 
   async handle(command: ListingImageMutationCommand): Promise<ApiResponse> {
@@ -796,6 +810,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     input: ListingImageIdentity,
     context: SpExecutionContext,
   ): Promise<ListingImageSnapshot> {
+    const snapshotRevision = this.snapshotRevision;
     const observation = await this.operations.read(input);
     if (observation.snapshot.mode !== context.mode ||
         observation.snapshot.marketplaceId !== context.marketplaceId) {
@@ -805,6 +820,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       );
     }
     await this.context.assertCurrent(context);
+    this.assertSnapshotRevision(snapshotRevision);
     await this.writeGate.reconcile({
       context,
       marketplaceId: input.marketplaceId,
@@ -815,6 +831,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
         reconcileImageWrite(response, canonical),
     });
     await this.context.assertCurrent(context);
+    this.assertSnapshotRevision(snapshotRevision);
     const snapshot = assertCanonicalObservation(observation, input, context.mode);
     // A new lookup supersedes earlier views of the same target. Keep the
     // registry bounded; an evicted view must perform another explicit lookup.

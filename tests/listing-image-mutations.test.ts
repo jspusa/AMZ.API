@@ -95,6 +95,90 @@ async function lookupToken(owner: Pick<ListingImageMutations, "handle">, marketp
 }
 
 describe("listing image mutations", () => {
+  it("revokes a previewed lookup on clear and permits a fresh lookup and native-confirmed change", async () => {
+    const store = await testStore();
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID, mode: "live", accountScope: "image-cleared-lookup-account",
+    }));
+    const approveWrite = vi.fn(async () => undefined);
+    const writeGate = new MainWriteGate({ store, context, approveWrite });
+    const urls = [...PREVIOUS_URLS];
+    urls[1] = "https://images.example.com/after-clear.jpg";
+    let canonicalUrls = [...PREVIOUS_URLS];
+    const gateway: ListingImageGateway = {
+      mode: () => "live",
+      read: vi.fn(async () => ({ snapshot: imageSnapshot(canonicalUrls),
+        sourceEvidence: {} as ListingImageSourceEvidence, fulfillment: "FBA" as const })),
+      validationPreview: vi.fn(async () => ({ ok: true, status: 200, requestId: "clear-preview", retryAfter: null,
+        payload: { status: "VALID", issues: [] } })),
+      commitOnce: vi.fn(async () => {
+        canonicalUrls = [...urls];
+        return { ok: true, status: 200, requestId: "clear-commit", retryAfter: null,
+          payload: { status: "ACCEPTED", submissionId: "clear-submission", issues: [] } };
+      }),
+      replaceDemoImages: vi.fn(),
+    };
+    const owner = createListingImageMutations({ context, writeGate, gateway });
+    const body = { marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU, snapshotToken: await lookupToken(owner),
+      expectedUrls: [...PREVIOUS_URLS], urls, idempotencyKey: "image-cleared-lookup-001" };
+    expect((await owner.handle({ operation: "preview", request: mutationRequest("POST", "before-clear-preview", body) })).status).toBe(200);
+    owner.clear();
+    const rejected = await owner.handle({ operation: "commit", request: mutationRequest("PATCH", "after-clear-stale", body) });
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.kind === "json" ? rejected.body.value : null).toMatchObject({ code: "IMAGE_SNAPSHOT_CHANGED" });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+
+    const fresh = { ...body, snapshotToken: await lookupToken(owner) };
+    expect(fresh.snapshotToken).not.toBe(body.snapshotToken);
+    expect((await owner.handle({ operation: "preview", request: mutationRequest("POST", "after-clear-preview", fresh) })).status).toBe(200);
+    const committed = await owner.handle({ operation: "commit", request: mutationRequest("PATCH", "after-clear-commit", fresh) });
+    expect(committed.status).toBe(200);
+    expect(committed.body.kind === "json" ? committed.body.value : null).toMatchObject({
+      writeLifecycle: { state: "verified", verified: true, authoritative: true },
+    });
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+  });
+
+  it("does not publish a snapshot token when clear occurs during its canonical read", async () => {
+    const store = await testStore();
+    const context = createScriptedSpExecutionContextAdapter(() => ({
+      marketplaceId: MARKETPLACE_ID, mode: "live", accountScope: "image-cleared-inflight-account",
+    }));
+    const approveWrite = vi.fn(async () => undefined);
+    const writeGate = new MainWriteGate({ store, context, approveWrite });
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const gateway: ListingImageGateway = {
+      mode: () => "live",
+      read: vi.fn(async () => {
+        entered();
+        await released;
+        return { snapshot: imageSnapshot(PREVIOUS_URLS),
+          sourceEvidence: {} as ListingImageSourceEvidence, fulfillment: "FBA" as const };
+      }),
+      validationPreview: vi.fn(), commitOnce: vi.fn(), replaceDemoImages: vi.fn(),
+    };
+    const owner = createListingImageMutations({ context, writeGate, gateway });
+    const pending = owner.handle({ operation: "read", request: {
+      requestId: "image-inflight-lookup", method: "GET", path: "/api/sp-api/listing-images",
+      query: { marketplaceId: MARKETPLACE_ID, sku: SELLER_SKU }, headers: {},
+    } });
+    await started;
+    owner.clear();
+    release();
+    const rejected = await pending;
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.kind === "json" ? rejected.body.value : null).toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+    expect(rejected.body.kind === "json" ? rejected.body.value : null).not.toHaveProperty("snapshotToken");
+    await lookupToken(owner);
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
   it("commits a previewed image change without retyping SKU and verifies its canonical readback after one native approval", async () => {
     const store = await testStore();
     const context = createScriptedSpExecutionContextAdapter(() => ({
