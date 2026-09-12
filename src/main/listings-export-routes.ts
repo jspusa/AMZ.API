@@ -70,6 +70,11 @@ export class ListingsExportRoutes implements ListingsExportRoutesPort {
     const marketplaceId = parseMarketplace(request.query.marketplaceId);
     const auditRequested = request.query.audit === "1";
     const imageAuditRequested = request.query.imageAudit === "1";
+    const minimumImages = request.query.minimumImages === undefined ? undefined
+      : /^[1-9]$/u.test(request.query.minimumImages) ? Number(request.query.minimumImages) : null;
+    if (minimumImages === null || (minimumImages !== undefined && !imageAuditRequested)) {
+      return invalid("圖片健檢最低張數只能選 1–9 張。");
+    }
     if (!marketplaceId) return invalid("報表站點資訊無效，請重新匯出。");
     if (auditRequested && imageAuditRequested) {
       return invalid("一次只能執行一種全站健檢。");
@@ -131,6 +136,7 @@ export class ListingsExportRoutes implements ListingsExportRoutesPort {
           }));
         }
         return json(await this.imageAudit.captureFromListings({
+          minimumImages,
           context,
           marketplaceId,
           listings: data,

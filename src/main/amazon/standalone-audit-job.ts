@@ -1,3 +1,4 @@
+import { IMAGE_AUDIT_MINIMUM_IMAGES, isImageAuditMinimum } from "../../shared/image-audit-options";
 import { randomUUID } from "node:crypto";
 import { SpExecutionContextError } from "./sp-execution-context";
 
@@ -15,7 +16,7 @@ export const STANDALONE_AUDIT_KINDS = [
 
 export type StandaloneAuditKind = typeof STANDALONE_AUDIT_KINDS[number];
 export type StandaloneAuditJobMode = "live" | "demo";
-export type StandaloneAuditJobOptions = Readonly<{ months?: 6 | 12 | 23 }>;
+export type StandaloneAuditJobOptions = Readonly<{ months?: 6 | 12 | 23; minimumImages?: number }>;
 
 export type StandaloneAuditJobBoundContext = Readonly<{
   accountScope: string;
@@ -115,6 +116,13 @@ function canonicalOptions(
 ): StandaloneAuditJobOptions {
   const source = value ?? {};
   const keys = Object.keys(source);
+  if (kind === "image") {
+    const minimumImages = source.minimumImages === undefined ? IMAGE_AUDIT_MINIMUM_IMAGES : source.minimumImages;
+    if (keys.some(key => key !== "minimumImages") || !isImageAuditMinimum(minimumImages)) {
+      throw new Error("圖片健檢最低張數只能選 1–9 張。");
+    }
+    return { minimumImages };
+  }
   if (kind === "subscription") {
     if (
       keys.some((key) => key !== "months") ||
@@ -142,7 +150,8 @@ function selectionKey(input: Readonly<{
     input.context.marketplaceId,
     input.context.mode,
     input.kind,
-    input.kind === "subscription" ? input.options.months ?? 6 : null,
+    input.kind === "subscription" ? input.options.months ?? 6
+      : input.kind === "image" ? input.options.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES : null,
   ]);
 }
 

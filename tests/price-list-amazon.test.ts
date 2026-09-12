@@ -6,7 +6,9 @@ import {
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import type { ApiRequest } from "../src/shared/contracts";
 import type { PriceListProductRow } from "../src/shared/price-list";
+import type { PriceListListingFacts } from "../src/main/amazon/price-list-reads";
 import { SpApiError } from "../src/main/amazon/sp-api-error";
+import { parsePriceListWorkbook } from "../src/main/price-list-workbook";
 const US = "ATVPDKIKX0DER" as const;
 const row = (
   key: string,
@@ -50,7 +52,7 @@ function fixture(
     accountScope,
   }));
   const fba = vi.fn(async () => [{ sellerSku: "SKU-ONE", asin: "B000000001" }]);
-  const listing = vi.fn(async () => ({
+  const listing = vi.fn(async (): Promise<PriceListListingFacts> => ({
     standardPrice: 19.99,
     minimumPrice: 12.99,
     minimumPriceStatus: "set" as const,
@@ -77,9 +79,9 @@ function fixture(
     },
   };
 }
-async function complete(owner: PriceListAmazon) {
+async function complete(owner: PriceListAmazon, id = "fixture") {
   for (let attempt = 0; attempt < 50; attempt++) {
-    const response = await owner.observe(req("GET"));
+    const response = await owner.observe({ ...req("GET"), query: { id } });
     if (
       response.body.kind === "json" &&
       (response.body.value as { state: string }).state !== "running"
@@ -97,6 +99,111 @@ async function complete(owner: PriceListAmazon) {
   throw new Error("fixture did not complete");
 }
 describe("price list Amazon observation", () => {
+  it("generates a populated US price list from current FBA identities without an imported workbook", async () => {
+    const app = fixture([]);
+    app.fba.mockResolvedValue([
+      { sellerSku: "SKU-ONE", asin: "B000000001" },
+      { sellerSku: "SKU TWO", asin: "B000000002" },
+    ]);
+    app.listing.mockResolvedValueOnce({
+      standardPrice: 19.99, minimumPrice: null, minimumPriceStatus: "unavailable", imageUrl: null,
+    }).mockResolvedValueOnce({
+      standardPrice: null, minimumPrice: null, minimumPriceStatus: "not-set", imageUrl: null,
+    });
+    const started = await app.owner.generate(req("POST", {}));
+    expect(started.status).toBe(202);
+    const { workbookId } = started.body.kind === "json"
+      ? started.body.value as { workbookId: string } : { workbookId: "missing" };
+    const result = await complete(app.owner, workbookId);
+    expect(result).toMatchObject({ state: "complete", source: "amazon", total: 2 });
+    expect(result.rows).toEqual([
+      expect.objectContaining({ sellerSku: "SKU-ONE", standardPrice: 19.99 }),
+      expect.objectContaining({ sellerSku: "SKU TWO", standardPrice: null }),
+    ]);
+    const exported = await app.owner.export(req("POST", { id: workbookId, replaceImages: false }));
+    expect(exported.status).toBe(200);
+    expect(exported.headers["Content-Disposition"]).toContain("AMZ_US_Price_List.xlsx");
+    if (exported.body.kind !== "bytes") throw new Error("Expected generated workbook bytes");
+    const book = parsePriceListWorkbook({ bytes: exported.body.value, fileName: "generated.xlsx" });
+    const cells = book.view.sheets[0]!.cells;
+    expect(cells.find((cell) => cell.reference === "A2")?.value).toBe("SKU-ONE");
+    expect(cells.find((cell) => cell.reference === "A3")?.value).toBe("SKU TWO");
+    expect(cells.find((cell) => cell.reference === "E2")?.value).toBe(19.99);
+    expect(cells.find((cell) => cell.reference === "E3")?.value).toBe("未回報");
+    expect(cells.find((cell) => cell.reference === "F2")?.value).toBe("未回報");
+    expect(cells.find((cell) => cell.reference === "F3")?.value).toBe("未設定");
+    expect(app.exportWorkbook).not.toHaveBeenCalled();
+    expect(JSON.stringify(started)).not.toContain("fixture-account");
+  });
+  it.each(["network", "invalid dimensions"])("embeds available generated main images and keeps the price list on %s failure", async (failure) => {
+    const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=", "base64"));
+    const image = vi.fn(async (url: string) => {
+      if (url.endsWith("broken.png")) {
+        if (failure === "network") throw new Error("image unavailable");
+        return { bytes: new Uint8Array([255, 216, 255, 217]), mediaType: "image/png" as const };
+      }
+      return { bytes: png, mediaType: "image/png" as const };
+    });
+    const app = fixture([], image);
+    app.fba.mockResolvedValue([
+      { sellerSku: "=SKU ONE", asin: "B000000001" },
+      { sellerSku: "SKU-TWO", asin: "B000000002" },
+    ]);
+    app.listing.mockResolvedValueOnce({ title: "First product", standardPrice: 19.99, minimumPrice: null, minimumPriceStatus: "not-set", imageUrl: "https://m.media-amazon.com/images/I/good.png" })
+      .mockResolvedValueOnce({ title: "Second product", standardPrice: 9.99, minimumPrice: null, minimumPriceStatus: "not-set", imageUrl: "https://m.media-amazon.com/images/I/broken.png" });
+    const start = await app.owner.generate(req("POST", {}));
+    const id = (start.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    await complete(app.owner, id);
+    const result = await app.owner.export(req("POST", { id, replaceImages: true }));
+    if (result.body.kind !== "bytes") throw new Error("Expected workbook");
+    const book = parsePriceListWorkbook({ bytes: result.body.value, fileName: "generated.xlsx" });
+    expect(book.view.imageCount).toBe(1);
+    expect(book.view.formulaCount).toBe(0);
+    expect(book.view.sheets[0]!.columnCount).toBe(9);
+    expect(book.view.sheets[0]!.cells.find((cell) => cell.reference === "A2")?.value).toBe("=SKU ONE");
+    expect(book.view.sheets[0]!.cells.find((cell) => cell.reference === "B2")?.imageId).toBeDefined();
+    expect(book.view.sheets[0]!.cells.find((cell) => cell.reference === "B3")?.value).toBe("首圖未下載");
+    expect(book.view.sheets[0]!.cells.find((cell) => cell.reference === "C2")?.value).toBe("First product");
+  });
+  it("uses one generated read and invalidates its observed/exported result after account drift", async () => {
+    const app = fixture([]);
+    let release!: () => void;
+    app.fba.mockImplementation(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return [{ sellerSku: "SKU-ONE", asin: "B000000001" }];
+    });
+    const starts = await Promise.all([
+      app.owner.generate(req("POST", {})), app.owner.generate(req("POST", {})),
+    ]);
+    const id = (starts[0]!.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    expect(starts[1]!.body).toMatchObject({ kind: "json", value: { workbookId: id } });
+    expect(app.fba).toHaveBeenCalledOnce();
+    await app.owner.observe({ ...req("GET"), query: { id } });
+    expect(app.fba).toHaveBeenCalledOnce();
+    release();
+    await complete(app.owner, id);
+    app.changeAccount();
+    await expect(app.owner.observe({ ...req("GET"), query: { id } })).rejects.toThrow();
+    await expect(app.owner.export(req("POST", { id, replaceImages: false }))).rejects.toThrow();
+  });
+  it("does not accept renderer-provided generated rows and does not revive generation after clear", async () => {
+    const app = fixture([]);
+    expect((await app.owner.generate(req("POST", { rows: [{ sellerSku: "FAKE" }] }))).status).toBe(400);
+    expect(app.fba).not.toHaveBeenCalled();
+    let release!: () => void;
+    app.fba.mockImplementation(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return [{ sellerSku: "SKU-ONE", asin: "B000000001" }];
+    });
+    const started = await app.owner.generate(req("POST", {}));
+    const id = (started.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    for (let i = 0; i < 10 && !release; i++) await Promise.resolve();
+    expect(app.fba).toHaveBeenCalledOnce();
+    app.owner.clear();
+    release();
+    await expect(app.owner.observe({ ...req("GET"), query: { id } })).rejects.toThrow();
+    expect(app.listing).not.toHaveBeenCalled();
+  });
   it("reports the failed read stage and keeps a reason for each unprocessed workbook row", async () => {
     const app = fixture();
     app.fba.mockRejectedValue(

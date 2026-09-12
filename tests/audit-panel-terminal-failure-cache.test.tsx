@@ -92,7 +92,7 @@ describe("standalone audit panels keep terminal failures newer than cached resul
     const cachedSnapshot = parseImageAuditSnapshot({
       marketplaceId: MARKETPLACE_ID,
       fetchedAt: "2026-08-22T08:00:00.000Z",
-      minimumImages: 6,
+      minimumImages: 8,
       rows: [{
         sellerSku: "STALE-IMAGE-SKU",
         asin: "B000000002",

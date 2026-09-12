@@ -98,11 +98,13 @@ describe("CSS01 renderer stylesheet composition", () => {
         '@import "./home-layout.css";',
         '@import "./variation-workspace.css";',
         '@import "./price-list.css";',
+        '@import "./vine.css";',
         '@import "./usability-polish.css";',
         '@import "./audit-detail-reading.css";',
         '@import "./content-audit-focus.css";',
         '@import "./chart-compact.css";',
         '@import "./workflow-efficiency.css";',
+        '@import "./inventory-health.css";',
         '@import "./audit-review.css";',
         '@import "./appearance.css";',
         '@import "./dark-palette.generated.css";',
@@ -167,8 +169,8 @@ describe("CSS01 renderer stylesheet composition", () => {
         relative(rootDirectory, file).split(sep).join("/"),
       ),
     ).toEqual(RENDERER_STYLESHEET_CONTRACT.expectedFiles);
-    expect(composition.canonicalJson).toHaveLength(1176194);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(854094);
+    expect(composition.canonicalJson).toHaveLength(1198298);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(869273);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
@@ -197,8 +199,8 @@ describe("CSS01 renderer stylesheet composition", () => {
     });
 
     expect(composition.css).toContain("\r\n");
-    expect(Buffer.byteLength(composition.css)).toBe(883380);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(854094);
+    expect(Buffer.byteLength(composition.css)).toBe(898846);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(869273);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );

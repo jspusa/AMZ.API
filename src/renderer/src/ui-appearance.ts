@@ -1,3 +1,4 @@
+import { nativeDisplayPreferences } from "./display-preferences-client";
 /** Display preferences only. Never store account or operational data here. */
 export const UI_ACCENT_STORAGE_KEY = "amz-api:ui-accent";
 export const UI_MODE_STORAGE_KEY = "amz-api:ui-mode";
@@ -24,7 +25,10 @@ export function normalizeUiAppearance(value: { accent?: unknown; mode?: unknown 
   };
 }
 
-export function readUiAppearance(storage: PreferenceStorage | null = browserStorage()): UiAppearance {
+export function readUiAppearance(storage?: PreferenceStorage | null): UiAppearance {
+  const native = storage === undefined ? nativeDisplayPreferences() : null;
+  if (native) return { accent: native.accent, mode: native.mode };
+  if (storage === undefined) storage = browserStorage();
   try {
     return normalizeUiAppearance({
       accent: storage?.getItem(UI_ACCENT_STORAGE_KEY),

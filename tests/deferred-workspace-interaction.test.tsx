@@ -105,3 +105,45 @@ describe("deferred workspace interaction", () => {
     await act(async () => renderer!.unmount());
   });
 });
+
+it("retries only a failed module in place while preserving the surrounding console state", async () => {
+  const { useMemo, useState } = await import("react");
+  const { createWorkspaceLoader } = await import("../src/renderer/src/workspace-loader");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const reload = vi.fn();
+  Object.assign(window, { location: { reload } });
+  const load = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch dynamically imported module: https://example.invalid/workspace.js"))
+    .mockResolvedValue({ default: () => createElement("p", { "data-loaded-workspace": true }, "Workspace") });
+  const loader = createWorkspaceLoader(load);
+  function Console() {
+    const [attempt, setAttempt] = useState(0);
+    const [draft, setDraft] = useState("keep draft");
+    const View = useMemo(() => lazy(loader.load), [attempt]);
+    return createElement("section", null,
+      createElement("input", { value: draft, onChange: () => setDraft("edited draft") }),
+      createElement(DeferredWorkspace, { key: attempt, onClose: vi.fn(), onRetry: () => setAttempt(value => value + 1), children: createElement(View) }));
+  }
+  let renderer!: ReactTestRenderer;
+  await act(async () => { renderer = create(createElement(Console)); });
+  await act(async () => renderer.root.findByType("input").props.onChange());
+  const retry = renderer.root.findAllByType("button").find(node => node.children.join("") === "重新載入工作區");
+  expect(retry).toBeDefined();
+  await act(async () => retry!.props.onClick());
+  expect(renderer.root.findByProps({ "data-loaded-workspace": true })).toBeTruthy();
+  expect(renderer.root.findByType("input").props.value).toBe("edited draft");
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(reload).not.toHaveBeenCalled();
+  await act(async () => renderer.unmount());
+});
+
+it("never offers module retry for a render failure after a workspace has mounted", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const retry = vi.fn();
+  function BrokenView(): never { throw new Error("render state failure"); }
+  let renderer!: ReactTestRenderer;
+  await act(async () => { renderer = create(createElement(DeferredWorkspace, { onClose: vi.fn(), onRetry: retry, children: createElement(BrokenView) })); });
+  expect(renderer.root.findAllByType("button").map(node => node.children.join(""))).toEqual(["關閉"]);
+  expect(JSON.stringify(renderer.toJSON())).not.toContain("確認連線");
+  expect(retry).not.toHaveBeenCalled();
+  await act(async () => renderer.unmount());
+});

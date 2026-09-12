@@ -15,6 +15,9 @@ import type {
   OperationsBoardPublisherDraft,
   OperationsBoardReadResult,
 } from "../../../shared/operations-board";
+import { useInventoryHealthCalendar } from "../use-inventory-health-calendar";
+import type { InventoryHealthRow } from "../../../shared/inventory-health";
+import type { MarketplaceId } from "../../../shared/marketplaces";
 import { MARKETPLACES, marketplaceById } from "../../../shared/marketplaces";
 
 type Money = Readonly<{
@@ -42,6 +45,7 @@ type SkuFact =
     }>;
 
 type CalendarEntry =
+  | Readonly<{ id: string; kind: "clearance"; date: string; label: string; item: InventoryHealthRow }>
   | Readonly<{
       id: string;
       kind: "expiry" | "stop-sale";
@@ -735,12 +739,17 @@ function ExpiryCountdown({
 
 export default function OperationsBulletinCard({
   initialResponse,
+  marketplaceId, mode, onOpenHealth,
   todayDateKey: injectedTodayDateKey,
 }: Readonly<{
   initialResponse?: OperationsBoardResponse;
+  marketplaceId?: MarketplaceId;
+  mode?: "live" | "demo";
+  onOpenHealth?: () => void;
   todayDateKey?: string;
 }>) {
   const todayDateKey = useTaipeiDateKey(injectedTodayDateKey);
+  const health = useInventoryHealthCalendar(marketplaceId, mode);
   const [expanded, setExpanded] = useState(false);
   const [response, setResponse] = useState<OperationsBoardResponse | null>(
     initialResponse ?? null,
@@ -996,7 +1005,9 @@ export default function OperationsBulletinCard({
         }]
       : []),
   ]);
+  const healthEntries: CalendarEntry[] = health.rows.map(item => ({ id: `health:${item.id}`, kind: "clearance", date: item.stopSaleDate ?? item.expiryDate!, label: `${marketplaceShortLabel(marketplaceId!)} · ${item.sellerSku} 清售缺口 ${item.projectedShortfall} 件`, item }));
   const currentMonthEntries: CalendarEntry[] = [
+    ...healthEntries,
     ...expiryCalendarEntries,
     ...promotionItems
       .filter((item) => promotionDatesInMonth(item, calendarMonth).length > 0)
@@ -1017,6 +1028,7 @@ export default function OperationsBulletinCard({
       left.label.localeCompare(right.label)
     );
   const calendarCellEntries: CalendarEntry[] = [
+    ...healthEntries,
     ...expiryCalendarEntries,
     ...promotionItems.flatMap((item) =>
       promotionDatesInMonth(item, calendarMonth).map((date) => ({
@@ -1039,7 +1051,7 @@ export default function OperationsBulletinCard({
     entriesByDate.set(entry.date, [...(entriesByDate.get(entry.date) ?? []), entry]);
   }
   const calendarCells = calendarMonthCells(calendarMonth);
-  const itemCount = response?.snapshot.items.length ?? 0;
+  const itemCount = (response?.snapshot.items.length ?? 0) + health.rows.length;
 
   return (
     <details
@@ -1328,6 +1340,11 @@ export default function OperationsBulletinCard({
           </form>
         )}
 
+        {marketplaceId && <section className="bulletin-health-summary" aria-label="自動清售提醒">
+          <div><strong>自動清售提醒 · {health.rows.length} 個 SKU</strong><p>{health.notice}</p>{health.fetchedAt && <small>庫存快照 {updatedAtLabel(health.fetchedAt)}</small>}</div>
+          {onOpenHealth && <button type="button" onClick={onOpenHealth}>查看庫存健康</button>}
+          {health.rows.length > 0 && <ul>{health.rows.map(row => <li key={row.id}><strong>{row.sellerSku}</strong> · {row.stopSaleDate ?? row.expiryDate} 前預估尚缺 {row.projectedShortfall?.toLocaleString("zh-TW")} 件；目前 {row.dailyUnits?.toLocaleString("zh-TW", { maximumFractionDigits: 1 })} 件／日</li>)}</ul>}
+        </section>}
         <div className="operations-bulletin-layout">
           <section className="bulletin-expiry-section" aria-labelledby="bulletin-expiry-title">
             <header>
@@ -1432,7 +1449,7 @@ export default function OperationsBulletinCard({
                         return (
                           <td
                             key={dateKey}
-                            className={`${dateKey.startsWith(`${calendarMonth}-`) ? "" : "is-other-month"}${dateKey === todayDateKey ? " is-today" : ""}${dateKey === calendarDate ? " is-selected" : ""}${kinds.has("promotion") ? " has-promotion" : ""}${kinds.has("expiry") ? " has-expiry" : ""}${kinds.has("stop-sale") ? " has-stop-sale" : ""}`.trim()}
+                            className={`${dateKey.startsWith(`${calendarMonth}-`) ? "" : "is-other-month"}${dateKey === todayDateKey ? " is-today" : ""}${dateKey === calendarDate ? " is-selected" : ""}${kinds.has("promotion") ? " has-promotion" : ""}${kinds.has("expiry") ? " has-expiry" : ""}${kinds.has("stop-sale") ? " has-stop-sale" : ""}${kinds.has("clearance") ? " has-clearance" : ""}`.trim()}
                           >
                             <time dateTime={dateKey}>{Number(dateKey.slice(-2))}</time>
                             {entries.length > 0 && (
@@ -1457,6 +1474,7 @@ export default function OperationsBulletinCard({
             </div>
 
             <div className="bulletin-calendar-legend" aria-label="月曆標記圖例">
+              <span><i className="is-clearance" aria-hidden="true" />預估清售缺口</span>
               <span><i className="is-promotion" aria-hidden="true" />促銷檔期</span>
               <span><i className="is-stop-sale" aria-hidden="true" />SKU 停售</span>
               <span><i className="is-expiry" aria-hidden="true" />SKU 到期</span>
@@ -1487,21 +1505,21 @@ export default function OperationsBulletinCard({
                       </time>
                       <div>
                         <strong>{entry.label}</strong>
-                        {entry.item.note && <p>{entry.item.note}</p>}
+                        {entry.kind === "clearance" ? <p>已確認批次 · 依目前銷速推估 · {entry.item.sourceLabel ?? entry.item.sourceRef}</p> : entry.item.note && <p>{entry.item.note}</p>}
                       </div>
-                      {entry.kind === "expiry" ? (
+                      {entry.kind === "clearance" ? <span className="is-clearance">清售</span> : entry.kind === "expiry" ? (
                         <span className="is-expiry">效期</span>
                       ) : entry.kind === "stop-sale" ? (
                         <span className="is-stop-sale">停售</span>
                       ) : countdown ? (
                         <span data-countdown-state={countdown.state}>{countdown.label}</span>
                       ) : null}
-                      <button
+                      {entry.kind !== "clearance" && <button
                         type="button"
                         className="bulletin-manage"
                         onClick={() => void manageAnnouncement(entry.item.id)}
                         disabled={publisherBusy}
-                      >編輯／刪除</button>
+                      >編輯／刪除</button>}
                     </article>
                   );
                 })}

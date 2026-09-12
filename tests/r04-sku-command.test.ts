@@ -86,7 +86,7 @@ function listingContent(): ListingContentSnapshot {
 
 function listingImages(): ListingImageSnapshot {
   return {
-    images: Array.from({ length: 6 }, (_, index) => ({
+    images: Array.from({ length: 8 }, (_, index) => ({
       url: `https://images.example.test/${index + 1}.jpg`,
     })),
   } as ListingImageSnapshot;
@@ -225,6 +225,13 @@ describe("R04 SKU command semantic owner", () => {
       tool: "restock",
     }));
     expect(result.tasks.some((task) => /補貨 0 件/u.test(task.title))).toBe(false);
+  });
+
+  it("uses the shared default eight-image recommendation for the quick command", async () => {
+    const subject = harness();
+    subject.images.mockResolvedValue({ ...listingImages(), images: listingImages().images.slice(0, 7) });
+    const result = await subject.command.read({ marketplaceId: MARKETPLACE_ID, sellerSku: SELLER_SKU });
+    expect(result.tasks).toContainEqual(expect.objectContaining({ id: "images-incomplete", detail: expect.stringContaining("預設建議的 8 張以上") }));
   });
 
   it("fans out the five exact reads, syncs identity, and returns the stable DTO", async () => {

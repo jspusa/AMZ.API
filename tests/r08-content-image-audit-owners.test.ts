@@ -687,7 +687,7 @@ describe("R08 image audit owner", () => {
           title: "IMAGE-LOW title",
           asin: "B0IMAGE-LOW",
           imageCount: 1,
-          finding: "少於 6 張",
+          finding: "少於 8 張",
           notice: "已核對圖片 1 張。",
         },
       ],
@@ -774,7 +774,7 @@ describe("R08 image audit owner", () => {
 
     expect(snapshot).toMatchObject({
       exportId: IMAGE_EXPORT_ID,
-      minimumImages: 6,
+      minimumImages: 8,
       summary: { total: 2, completed: 1, incomplete: 1, underMinimum: 1 },
     });
     expect(snapshot.rows.map((row) => row.sellerSku)).toEqual(["CHILD", "SOLO"]);

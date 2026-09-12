@@ -100,7 +100,7 @@ describe("one-click individual audit launcher", () => {
 
     expect(starts).toEqual([
       { kind: "content", options: undefined },
-      { kind: "image", options: undefined },
+      { kind: "image", options: { minimumImages: 8 } },
       { kind: "variation", options: undefined },
       { kind: "subscription", options: { months: 6 } },
       { kind: "businessPricing", options: undefined },
@@ -232,4 +232,17 @@ describe("one-click individual audit launcher", () => {
       failedLabels: ["全站圖片健檢"],
     });
   });
+});
+
+
+it("passes the selected image minimum to run-all without changing other audit options", async () => {
+  const startStandalone = vi.fn(async (input) => standaloneJob(input.kind, 1));
+  await startIndividualAuditJobs({
+    marketplaceId: MARKETPLACE_ID, mode: "live", imageMinimumImages: 9, startStandalone,
+    startAplus: async () => { throw Error("synthetic unavailable"); },
+    onStandaloneJobChange: vi.fn(), onAplusJobChange: vi.fn(),
+  });
+  expect(startStandalone.mock.calls.find(([input]) => input.kind === "image")?.[0].options).toEqual({ minimumImages: 9 });
+  expect(startStandalone.mock.calls.find(([input]) => input.kind === "subscription")?.[0].options).toEqual({ months: 6 });
+  expect(startStandalone.mock.calls.find(([input]) => input.kind === "variation")?.[0].options).toBeUndefined();
 });

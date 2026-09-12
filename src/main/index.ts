@@ -5,6 +5,7 @@ import {
   ipcMain,
   powerMonitor,
   session,
+  safeStorage,
   shell,
   systemPreferences,
   type IpcMainEvent,
@@ -27,6 +28,8 @@ import type {
   OperationsBoardPublisherDraft,
 } from "../shared/operations-board";
 import { ApiRouter } from "./api-router";
+import { DisplayPreferencesStore } from "./display-preferences";
+import { PrivateLocalJsonStore } from "./private-local-json";
 import { createNotebookCapabilitySnapshot } from "../shared/notebook-capabilities";
 import { AdvertisingApiClient } from "./amazon/ads-api";
 import {
@@ -81,6 +84,7 @@ app.enableSandbox();
 
 const EXTERNAL_DESTINATIONS: Record<ExternalDestination, string> = {
   "seller-central": "https://sellercentral.amazon.com/",
+  "amazon-vine": "https://sellercentral.amazon.com/vine",
   "a-plus-content": "https://sellercentral.amazon.com/enhanced-content/content-manager",
   coupons: "https://sellercentral.amazon.com/",
   "subscribe-save": "https://sellercentral.amazon.com/sns/manage",
@@ -118,6 +122,7 @@ let credentialEditorWindow: BrowserWindow | null = null;
 let advertisingCredentialEditorWindow: BrowserWindow | null = null;
 let operationsBoardEditorWindow: BrowserWindow | null = null;
 let apiRouter: ApiRouter | null = null;
+let displayPreferences: DisplayPreferencesStore | null = null;
 let credentialVault: CredentialVault | null = null;
 let advertisingCredentialVault: AdvertisingCredentialVault | null = null;
 let operationsBoard: SupplyBossOperationsBoard | null = null;
@@ -924,6 +929,21 @@ function registerIpc(): void {
     desktopInstallGate.assertOperationAllowed();
     closeOperationsBoardEditor();
   });
+  ipcMain.handle("fba:display-preferences-read", async (event) => {
+    assertTrustedFrame(event);
+    if (!displayPreferences) throw new Error("APP_NOT_READY");
+    return displayPreferences.read();
+  });
+  ipcMain.handle("fba:display-preferences-update", async (event, patch: unknown) => {
+    assertTrustedFrame(event);
+    if (!displayPreferences) throw new Error("APP_NOT_READY");
+    apiRequestsInFlight += 1;
+    try {
+      return await displayPreferences.update(patch);
+    } finally {
+      apiRequestsInFlight -= 1;
+    }
+  });
   ipcMain.handle("fba:app-version", (event) => {
     assertTrustedFrame(event);
     return app.getVersion();
@@ -1115,6 +1135,7 @@ if (!hasSingleInstanceLock) {
       console.info("AMZ_API_WINDOWS_HELLO_ADDON_READY");
     }
     const userData = app.getPath("userData");
+    displayPreferences = new DisplayPreferencesStore(resolve(userData, "display-preferences.json"));
     credentialVault = new CredentialVault(resolve(userData, "credentials.enc"));
     advertisingCredentialVault = new AdvertisingCredentialVault(
       resolve(userData, "ads-credentials.enc"),
@@ -1134,6 +1155,15 @@ if (!hasSingleInstanceLock) {
     await initializeStoreWithRecovery(localStore);
     apiRouter = new ApiRouter({
       store: localStore,
+      onContextInvalidated: () => mainWindow?.webContents.send("fba:context-invalidated"),
+      vineStore: new PrivateLocalJsonStore({
+        path: resolve(userData, "vine-progress.encrypted"),
+        codec: { isAvailable: () => safeStorage.isAsyncEncryptionAvailable(), encrypt: value => safeStorage.encryptStringAsync(value), decrypt: async bytes => (await safeStorage.decryptStringAsync(bytes)).result },
+      }),
+      inventoryHealthStore: new PrivateLocalJsonStore({
+        path: resolve(userData, "inventory-health.encrypted"),
+        codec: { isAvailable: () => safeStorage.isAsyncEncryptionAvailable(), encrypt: value => safeStorage.encryptStringAsync(value), decrypt: async bytes => (await safeStorage.decryptStringAsync(bytes)).result },
+      }),
       vault: credentialVault,
       approveWrite: confirmSensitiveAction,
       advertising: advertisingApi,

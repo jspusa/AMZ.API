@@ -33,16 +33,17 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/home-layout.css",
     "styles/variation-workspace.css",
     "styles/price-list.css",
+    "styles/vine.css",
     "styles/usability-polish.css",
     "styles/audit-detail-reading.css",
     "styles/content-audit-focus.css",
     "styles/chart-compact.css",
     "styles/workflow-efficiency.css",
+    "styles/inventory-health.css",
     "styles/audit-review.css",
     "styles/appearance.css",
     "styles/dark-palette.generated.css",
-    "styles/dark-surfaces.css",
-  ]),
-  fingerprint:
-    "66a12b5812461fcdc20bcb107f5d33704fe9e397968ec540e48fe272f190d286",
+    "styles/dark-surfaces.css"
+]),
+  fingerprint: "9a169fae449975ebbf547f473b2fc86265005eede9671c88e90950f8bfe768cb",
 });

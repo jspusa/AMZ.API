@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { createGeneratedPriceListWorkbook } from "./price-list-generated-workbook";
+import { validatePriceListImageReplacement } from "./price-list-workbook";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import type {
   PriceListAmazonRow,
@@ -108,7 +111,7 @@ export class PriceListAmazon {
         "SP_CONTEXT_INVALIDATED",
         "這次價目表比對已失效。",
       );
-    this.dependencies.products(id);
+    if (job.snapshot.source !== "amazon") this.dependencies.products(id);
   }
   async start(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
@@ -123,6 +126,20 @@ export class PriceListAmazon {
     const products = this.dependencies.products(id);
     if (!products.length || products.length > 2_000)
       return invalid("價目表需有 1 至 2,000 列可辨識商品。", 422);
+    return this.startJob(id, products, "workbook");
+  }
+  /** Explicitly builds a new price list from the current FBA set; no source file. */
+  async generate(request: ApiRequest): Promise<ApiResponse> {
+    const body = bodyRecord(request);
+    if (!body || Object.keys(body).length || Object.keys(request.query).length)
+      return invalid("產生 Amazon 價目表不接受商品列或來源檔案。");
+    return this.startJob(`price-list-generated.${randomUUID()}`, [], "amazon");
+  }
+  private async startJob(
+    requestedId: string,
+    products: readonly PriceListProductRow[],
+    source: "workbook" | "amazon",
+  ): Promise<ApiResponse> {
     const revision = this.revision;
     const context = await this.dependencies.context.capture(US);
     await this.dependencies.context.assertCurrent(context);
@@ -137,6 +154,10 @@ export class PriceListAmazon {
         422,
         "PRICE_LIST_LIVE_REQUIRED",
       );
+    const runningGenerated = source === "amazon"
+      ? [...this.jobs.entries()].find(([, job]) => job.snapshot.source === "amazon" && job.snapshot.state === "running")
+      : undefined;
+    const id = runningGenerated?.[0] ?? requestedId;
     const previous = this.jobs.get(id);
     if (previous?.snapshot.state === "running") {
       await this.checkpoint(id, previous);
@@ -152,6 +173,14 @@ export class PriceListAmazon {
       clearTimeout(previous.timer);
       previous.controller.abort();
     }
+    if (source === "amazon") {
+      for (const [key, prior] of this.jobs) {
+        if (prior.snapshot.source !== "amazon") continue;
+        clearTimeout(prior.timer);
+        prior.controller.abort();
+        this.jobs.delete(key);
+      }
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15 * 60_000);
     timer.unref?.();
@@ -161,6 +190,7 @@ export class PriceListAmazon {
       timer,
       expiresAt: this.now() + 30 * 60_000,
       snapshot: {
+        source,
         workbookId: id,
         state: "running",
         rows: [],
@@ -209,6 +239,17 @@ export class PriceListAmazon {
           status: 422,
           code: "PRICE_LIST_FBA_INVALID",
         });
+      if (job.snapshot.source === "amazon") {
+        if (!identities.length || identities.length > 2_000)
+          throw new SpApiError("產生價目表需要 1 至 2,000 筆可確認的 US FBA 商品。", {
+            status: 422, code: "PRICE_LIST_FBA_COUNT_INVALID",
+          });
+        products = identities.map((item, index) => ({
+          key: item.sellerSku, keyKind: "seller-sku", asin: item.asin,
+          sheetName: "US 價目表", rowNumber: index + 2, cells: {},
+        }));
+        job.snapshot.total = products.length;
+      }
       const cache = new Map<string, PriceListListingFacts>();
       job.snapshot.stage = "reading";
       job.snapshot.message =
@@ -294,8 +335,9 @@ export class PriceListAmazon {
       job.snapshot.state = "complete";
       job.snapshot.stage = "finished";
       job.snapshot.fetchedAt = new Date(this.now()).toISOString();
-      job.snapshot.message =
-        "比對讀取完成。原表價格保留；缺值與無法唯一對應的商品另行標示。";
+      job.snapshot.message = job.snapshot.source === "amazon"
+        ? "Amazon 價目表已整理完成；未回報價格與缺圖逐列標示。"
+        : "比對讀取完成。原表價格保留；缺值與無法唯一對應的商品另行標示。";
     } catch (error) {
       if (this.jobs.get(id) !== job) return;
       try {
@@ -357,7 +399,7 @@ export class PriceListAmazon {
         "SP_CONTEXT_INVALIDATED",
         "這次價目表比對已失效。",
       );
-    this.dependencies.products(request.query.id);
+    if (job.snapshot.source !== "amazon") this.dependencies.products(request.query.id);
     return json(
       structuredClone(job.snapshot),
       job.snapshot.state === "running" ? 202 : 200,
@@ -403,19 +445,26 @@ export class PriceListAmazon {
           string,
           Awaited<ReturnType<typeof downloadPriceListImage>>
         >();
+        const unavailableImages = new Set<string>();
         for (const row of job.snapshot.rows) {
-          if (!row.imageUrl) continue;
+          if (!row.imageUrl || unavailableImages.has(row.imageUrl)) continue;
           await this.checkpoint(id, job);
           throwIfAborted(exportSignal);
           let image = cache.get(row.imageUrl);
           if (!image) {
-            image = await waitForPromiseWithSignal(
-              (this.dependencies.image ?? downloadPriceListImage)(
-                row.imageUrl,
+            try {
+              image = await waitForPromiseWithSignal(
+                (this.dependencies.image ?? downloadPriceListImage)(row.imageUrl, exportSignal),
                 exportSignal,
-              ),
-              exportSignal,
-            );
+              );
+              if (job.snapshot.source === "amazon") validatePriceListImageReplacement(image);
+            } catch (error) {
+              await this.checkpoint(id, job);
+              throwIfAborted(exportSignal);
+              if (job.snapshot.source !== "amazon") throw error;
+              unavailableImages.add(row.imageUrl);
+              continue;
+            }
             total += image.bytes.byteLength;
             if (total > 25 * 1024 * 1024)
               throw new SpApiError(
@@ -433,19 +482,18 @@ export class PriceListAmazon {
       }
       await this.checkpoint(id, job);
       throwIfAborted(exportSignal);
-      const bytes = this.dependencies.export(
-        id,
-        structuredClone(job.snapshot.rows),
-        images,
-      );
+      const bytes = job.snapshot.source === "amazon"
+        ? createGeneratedPriceListWorkbook(job.snapshot.rows, images)
+        : this.dependencies.export(id, structuredClone(job.snapshot.rows), images);
       await this.checkpoint(id, job);
       return {
         status: 200,
         headers: {
           "Content-Type":
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          "Content-Disposition":
-            'attachment; filename="AMZ_US_Amazon_Comparison.xlsx"',
+          "Content-Disposition": job.snapshot.source === "amazon"
+            ? 'attachment; filename="AMZ_US_Price_List.xlsx"'
+            : 'attachment; filename="AMZ_US_Amazon_Comparison.xlsx"',
         },
         body: { kind: "bytes", value: bytes },
       };

@@ -1,4 +1,4 @@
-const IMAGE_AUDIT_MINIMUM_IMAGES = 6 as const;
+import { isImageAuditMinimum } from "../../shared/image-audit-options";
 
 export type ImageAuditReadError = {
   code: "LISTING_QUERY_FAILED" | "LISTING_CONTENT_NOT_RETURNED";
@@ -72,21 +72,16 @@ export function summarizeImageAudit(
 export function parseImageAuditSnapshot(
   raw: unknown,
   expectedMarketplaceId?: string,
+  expectedMinimumImages?: number,
 ): ImageAuditSnapshot {
   if (!isRecord(raw)) throw new Error("圖片健檢回應格式無效。");
   if (
     typeof raw.marketplaceId !== "string" ||
     typeof raw.fetchedAt !== "string" ||
     typeof raw.minimumImages !== "number" ||
-    !Number.isInteger(raw.minimumImages) ||
-    raw.minimumImages !== IMAGE_AUDIT_MINIMUM_IMAGES ||
+    !isImageAuditMinimum(raw.minimumImages) ||
     !Array.isArray(raw.rows)
   ) {
-    if (raw.minimumImages !== IMAGE_AUDIT_MINIMUM_IMAGES) {
-      throw new Error(
-        "圖片健檢固定門檻為 6 張；目前橋接程式回傳不同標準，請更新 AMZ.API Notebook Key Bridge。",
-      );
-    }
     throw new Error("圖片健檢缺少可核對的站點或商品資料。");
   }
   if (
@@ -94,6 +89,9 @@ export function parseImageAuditSnapshot(
     raw.marketplaceId !== expectedMarketplaceId
   ) {
     throw new Error("圖片健檢回應與目前選擇的站點不一致；已停止顯示與快取。");
+  }
+  if (expectedMinimumImages !== undefined && raw.minimumImages !== expectedMinimumImages) {
+    throw new Error("圖片健檢門檻與本次選擇不一致，請更新 AMZ.API Notebook Key Bridge 後重新掃描。");
   }
   const minimumImages = Number(raw.minimumImages);
   const rows = raw.rows.map((candidate, index): ImageAuditRow => {

@@ -159,7 +159,7 @@ describe("dashboard top navigation layout", () => {
       "開始全站圖片健檢",
       "開始全站 A+ 健檢",
       "找出需要你確認的 FBA 商品文案",
-      "找出少於 6 張圖片或讀取未完成的商品",
+      "找出低於所選張數或讀取未完成的商品",
       "核對每個 FBA ASIN 是否已有官方 A+",
       "找出已確認沒有 parent 的 FBA SKU",
       "查看訂閱折扣、有效訂閱與價格趨勢",
@@ -280,7 +280,7 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("openReportExport");
     expect(source).toContain('label: "報表區"');
     expect(source).toContain('tools: ["price-list", "price", "promotion", "subscriptions", "business-pricing"]');
-    expect(source).toContain('tools: ["restock", "ads", "accounting"]');
+    expect(source).toContain('tools: ["restock", "ads", "vine", "accounting"]');
     expect(source).toContain('tools: ["inbound"]');
     expect(source).toContain("section.tools.length + index");
     expect(source).toContain('.filter((entry) => entry.id !== "review-audit")');

@@ -1,5 +1,6 @@
 "use client";
 
+import ImageBatchImport, { type ImageUploadOutcome } from "./image-batch-import";
 import AuditItemNavigation from "./audit-item-navigation";
 
 /* eslint-disable @next/next/no-img-element -- arbitrary authenticated R2/CDN previews cannot use a fixed Next image host */
@@ -120,6 +121,8 @@ export default function ImageWorkspaceDrawer({
   auditMode = "live",
   auditJob = null,
   onAuditJobChange,
+  minimumImages,
+  onMinimumImagesChange,
   onContextResolved,
   onBusyChange,
   presentation = "dialog",
@@ -133,6 +136,8 @@ export default function ImageWorkspaceDrawer({
   auditMode?: StandaloneAuditMode;
   auditJob?: StandaloneAuditJob | null;
   onAuditJobChange?: (job: StandaloneAuditJob) => void;
+  minimumImages?: number;
+  onMinimumImagesChange?: (value: number) => void;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onBusyChange?: (busy: boolean) => void;
   presentation?: AuditSurfacePresentation;
@@ -157,15 +162,23 @@ export default function ImageWorkspaceDrawer({
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [batchFiles, setBatchFiles] = useState<File[]>([]);
+  const [batchId, setBatchId] = useState(0);
+  const [batchProcessing, setBatchProcessing] = useState(false);
+  const uploadContextRef = useRef(0);
+  const uploadBusyRef = useRef(false);
+  const busy = actionLoading || batchProcessing || assets.some(asset => asset.uploading);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileTargetRef = useRef<number | undefined>(undefined);
   const autoLookupRef = useRef(false);
   const autoRecheckRef = useRef("");
 
   useEffect(() => {
-    onBusyChange?.(actionLoading);
+    onBusyChange?.(busy);
     return () => onBusyChange?.(false);
-  }, [actionLoading, onBusyChange]);
+  }, [busy, onBusyChange]);
+
+  useEffect(() => () => { uploadContextRef.current += 1; }, []);
 
   const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const supportedIndexes = useMemo(
@@ -198,22 +211,26 @@ export default function ImageWorkspaceDrawer({
   }, [requestedUrls]);
 
   const closeDrawer = useCallback(() => {
-    if (hasChanges && phase !== "result" && !window.confirm("圖片排序尚未送出，確定要離開嗎？")) {
+    if (busy) return;
+    if ((hasChanges || hasPrivateDraft) && phase !== "result" && !window.confirm("圖片排序尚未送出，確定要離開嗎？")) {
       return;
     }
     onClose();
-  }, [hasChanges, onClose, phase]);
+  }, [busy, hasChanges, hasPrivateDraft, onClose, phase]);
 
   useEffect(() => {
     if (presentation !== "dialog") return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !actionLoading) closeDrawer();
+      if (event.key === "Escape" && !busy) closeDrawer();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [actionLoading, closeDrawer, presentation]);
+  }, [busy, closeDrawer, presentation]);
 
   const reset = (nextMarketplaceId: string) => {
+    if (busy) return;
+    uploadContextRef.current += 1;
+    setBatchFiles([]);
     setEditorQueue([]);
     setMarketplaceId(nextMarketplaceId);
     setSkuInput("");
@@ -226,6 +243,11 @@ export default function ImageWorkspaceDrawer({
   };
 
   const loadSku = useCallback(async (requestedSku: string, exact = false) => {
+    if (uploadBusyRef.current) return;
+    const loadContext = ++uploadContextRef.current;
+    setBatchFiles([]);
+    setSnapshot(null);
+    setAssets([]);
     const sellerSku = exact ? requestedSku : requestedSku.trim();
     if (!sellerSku) return setError("請輸入完整 Seller SKU。");
     setSkuInput(sellerSku);
@@ -240,6 +262,7 @@ export default function ImageWorkspaceDrawer({
       if (!response.ok) {
         throw new Error(problemMessage(payload as ApiProblem, "目前無法查詢商品圖片。"));
       }
+      if (loadContext !== uploadContextRef.current) return;
       const next = payload as ImageSnapshot;
       if (exact && (next.sellerSku !== sellerSku || next.marketplaceId !== marketplaceId)) {
         throw new Error("商品識別與目前選取不一致，請返回健檢後重新開啟。");
@@ -254,9 +277,10 @@ export default function ImageWorkspaceDrawer({
       setSkuInput(next.sellerSku);
       onContextResolved?.(marketplaceId, next.sellerSku);
     } catch (requestError) {
+      if (loadContext !== uploadContextRef.current) return;
       setError(requestError instanceof Error ? requestError.message : "目前無法查詢商品圖片。");
     } finally {
-      setLoading(false);
+      if (loadContext === uploadContextRef.current) setLoading(false);
     }
   }, [marketplaceId, onContextResolved]);
 
@@ -266,6 +290,7 @@ export default function ImageWorkspaceDrawer({
   }, [loadSku, skuInput]);
 
   const changeTab = (nextTab: ImageWorkspaceTab): boolean => {
+    if (busy) return false;
     if (nextTab === tab) return true;
     if (
       nextTab === "audit" &&
@@ -298,8 +323,13 @@ export default function ImageWorkspaceDrawer({
     void loadSku(initialSellerSku);
   }, [initialSellerSku, initialTab, loadSku]);
 
-  const uploadFile = async (file: File, index: number) => {
-    if (!snapshot || !snapshot.images[index]?.capability.editable) return;
+  const uploadFile = async (file: File, index: number): Promise<ImageUploadOutcome> => {
+    if (uploadBusyRef.current || !snapshot || !snapshot.images[index]?.capability.editable) {
+      return { ok: false, message: "目前商品的圖片位置不可編輯。", stopBatch: true };
+    }
+    const context = uploadContextRef.current;
+    uploadBusyRef.current = true;
+    let stopBatch = true;
     setAssets((items) =>
       items.map((item, itemIndex) =>
         itemIndex === index ? { ...item, uploading: true } : item,
@@ -322,7 +352,12 @@ export default function ImageWorkspaceDrawer({
         readyForAmazon?: boolean;
         notice?: string;
         message?: string;
+        code?: string;
       };
+      if (context !== uploadContextRef.current) {
+        return { ok: false, message: "商品已切換，已停止套用圖片。", stopBatch: true };
+      }
+      stopBatch = !([413, 415, 422].includes(response.status) && ["IMAGE_TOO_LARGE", "INVALID_IMAGE", "IMAGE_TOO_SMALL"].includes(payload.code ?? ""));
       if (!response.ok || !payload.previewUrl) {
         throw new Error(payload.message || "圖片上傳失敗。");
       }
@@ -344,31 +379,36 @@ export default function ImageWorkspaceDrawer({
             : item,
         ),
       );
+      return { ok: true, readyForAmazon: Boolean(payload.readyForAmazon) || snapshot.mode === "demo" };
     } catch (requestError) {
+      if (context !== uploadContextRef.current) return { ok: false, message: "商品已切換，已停止套用圖片。", stopBatch: true };
       setAssets((items) =>
         items.map((item, itemIndex) =>
           itemIndex === index ? { ...item, uploading: false } : item,
         ),
       );
-      setError(requestError instanceof Error ? requestError.message : "圖片上傳失敗。");
+      const message = requestError instanceof Error ? requestError.message : "圖片上傳失敗。";
+      setError(message);
+      return { ok: false, message, stopBatch };
+    } finally {
+      uploadBusyRef.current = false;
     }
   };
 
   const uploadFiles = async (files: File[], preferredIndex?: number) => {
-    if (!snapshot || !files.length) return;
-    const open = supportedIndexes.filter(
-      (index) => snapshot.images[index].capability.editable && !assets[index]?.previewUrl,
-    );
-    const targets = preferredIndex === undefined
-      ? open
-      : [preferredIndex, ...open.filter((index) => index !== preferredIndex)];
-    for (let index = 0; index < Math.min(files.length, targets.length); index += 1) {
-      await uploadFile(files[index], targets[index]);
+    if (!snapshot || !files.length || busy || uploadBusyRef.current) return;
+    if (preferredIndex !== undefined && files.length === 1 && !/_\d{1,2}_/u.test(files[0].name)) {
+      await uploadFile(files[0], preferredIndex);
+      return;
     }
+    if (files.length > 100) { setError("一次最多選擇 100 個檔案；一個商品最多對應 9 個圖片位置。"); return; }
+    setError(null);
+    setBatchFiles(files);
+    setBatchId(value => value + 1);
   };
 
   const swapAssets = (left: number, right: number) => {
-    if (left === right || left < 0 || right < 0) return;
+    if (busy || left === right || left < 0 || right < 0 || !snapshot?.images[left]?.capability.editable || !snapshot.images[right]?.capability.editable) return;
     setAssets((items) => {
       const next = [...items];
       [next[left], next[right]] = [next[right], next[left]];
@@ -379,18 +419,18 @@ export default function ImageWorkspaceDrawer({
 
   const onDrop = (event: ReactDragEvent, index?: number) => {
     event.preventDefault();
+    if (busy) return;
     if (draggingIndex !== null && index !== undefined) {
       swapAssets(draggingIndex, index);
       setDraggingIndex(null);
       return;
     }
-    const files = Array.from(event.dataTransfer.files).filter((file) =>
-      ["image/jpeg", "image/png"].includes(file.type),
-    );
+    const files = Array.from(event.dataTransfer.files);
     void uploadFiles(files, index);
   };
 
   const applyManualUrl = async () => {
+    if (busy || !snapshot?.images[selectedIndex]?.capability.editable) return;
     const value = manualUrl.trim();
     let parsed: URL;
     try {
@@ -438,7 +478,7 @@ export default function ImageWorkspaceDrawer({
   });
 
   const previewChange = async () => {
-    if (!snapshot || !hasChanges || hasPrivateDraft) return;
+    if (busy || uploadBusyRef.current || !snapshot || !hasChanges || hasPrivateDraft) return;
     setActionLoading(true);
     setError(null);
     const key = createIdempotencyKey();
@@ -546,7 +586,7 @@ export default function ImageWorkspaceDrawer({
       title={tab === "audit" ? "全站圖片健檢" : "商品圖片"}
       closeLabel="關閉圖片工作區"
       surfaceClassName="image-workspace-drawer"
-      busy={actionLoading}
+      busy={busy}
       onBack={closeDrawer}
     >
 
@@ -561,6 +601,7 @@ export default function ImageWorkspaceDrawer({
                 aria-controls="image-single-panel"
                 className={tab === "single" ? "active" : ""}
                 onClick={() => changeTab("single")}
+                disabled={busy}
               >
                 單一 SKU 圖片工作台
               </button>
@@ -572,6 +613,7 @@ export default function ImageWorkspaceDrawer({
                 aria-controls="image-audit-panel"
                 className={tab === "audit" ? "active" : ""}
                 onClick={() => changeTab("audit")}
+                disabled={busy}
               >
                 全站圖片健檢
               </button>
@@ -597,7 +639,7 @@ export default function ImageWorkspaceDrawer({
                 className="back-link image-audit-return-button"
                 type="button"
                 onClick={() => changeTab("audit")}
-                disabled={loading || actionLoading}
+                disabled={loading || busy}
               >
                 ← 返回全站圖片健檢結果
               </button>
@@ -611,15 +653,15 @@ export default function ImageWorkspaceDrawer({
             <form className="price-search image-search" onSubmit={lookup}>
               <label>
                 <span>Amazon 站點</span>
-                <select value={marketplaceId} onChange={(event) => reset(event.target.value)} disabled={loading || actionLoading}>
+                <select value={marketplaceId} onChange={(event) => reset(event.target.value)} disabled={loading || busy}>
                   {MARKETPLACES.map((item) => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}
                 </select>
               </label>
               <label>
                 <span>Seller SKU</span>
                 <div className="sku-search-row">
-                  <input value={skuInput} onChange={(event) => setSkuInput(event.target.value)} placeholder={`例如 ${marketplace.sampleSku}`} autoFocus autoComplete="off" spellCheck={false} />
-                  <button type="submit" disabled={loading || !skuInput.trim()}>{loading ? "查詢中" : "查詢"}</button>
+                  <input disabled={loading || busy} value={skuInput} onChange={(event) => setSkuInput(event.target.value)} placeholder={`例如 ${marketplace.sampleSku}`} autoFocus autoComplete="off" spellCheck={false} />
+                  <button type="submit" disabled={loading || busy || !skuInput.trim()}>{loading ? "查詢中" : "查詢"}</button>
                 </div>
               </label>
             </form>
@@ -636,15 +678,22 @@ export default function ImageWorkspaceDrawer({
                   <span className={`listing-mode ${snapshot.mode}`}>{snapshot.mode === "live" ? "Live" : "Demo"}</span>
                 </section>
 
-                <section className="image-drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDrop(event)} onClick={() => { fileTargetRef.current = undefined; inputRef.current?.click(); }}>
-                  <input ref={inputRef} type="file" accept="image/jpeg,image/png" multiple hidden onChange={(event) => {
+                <section className="image-drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDrop(event)} role="button" tabIndex={busy ? -1 : 0} aria-disabled={busy}
+                  onKeyDown={event => { if (!busy && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); fileTargetRef.current = undefined; inputRef.current?.click(); } }}
+                  onClick={(event) => { if (busy || event.target === inputRef.current) return; fileTargetRef.current = undefined; inputRef.current?.click(); }}>
+                  <input ref={inputRef} type="file" accept="image/jpeg,image/png" multiple hidden disabled={busy} onChange={(event) => {
                     void uploadFiles(Array.from(event.target.files ?? []), fileTargetRef.current);
                     fileTargetRef.current = undefined;
                     event.target.value = "";
                   }} />
                   <span className="image-drop-icon">＋</span>
-                  <div><strong>把 JPEG／PNG 拉到這裡</strong><small>或點一下選檔 · 每張 10 MB · 至少 500 × 500px</small></div>
+                  <div><strong>把整組 JPEG／PNG 拉到這裡</strong><small>依「品號_01–09_說明」對應第 1–9 張 · 每張 10 MB · 至少 500 × 500px</small></div>
                 </section>
+
+                {batchFiles.length > 0 && <ImageBatchImport key={`${snapshot.marketplaceId}:${snapshot.sellerSku}:${batchId}`}
+                  files={batchFiles} sellerSku={snapshot.sellerSku}
+                  slots={snapshot.images.map((slot, index) => ({ label: slot.label, editable: slot.capability.supported && slot.capability.editable, occupied: Boolean(assets[index]?.previewUrl) }))}
+                  disabled={busy || loading} upload={uploadFile} onBusyChange={setBatchProcessing} onDismiss={() => setBatchFiles([])} />}
 
                 <section className="image-slot-grid" aria-label="商品圖片排序">
                   {supportedIndexes.map((index) => {
@@ -654,7 +703,7 @@ export default function ImageWorkspaceDrawer({
                       <article
                         key={slot.attributeName}
                         className={`image-slot ${selectedIndex === index ? "selected" : ""} ${index === 0 ? "main" : ""}`}
-                        draggable={Boolean(asset.previewUrl) && !asset.uploading}
+                        draggable={Boolean(asset.previewUrl) && !busy && slot.capability.editable}
                         onDragStart={() => setDraggingIndex(index)}
                         onDragEnd={() => setDraggingIndex(null)}
                         onDragOver={(event) => event.preventDefault()}
@@ -663,14 +712,14 @@ export default function ImageWorkspaceDrawer({
                       >
                         <div className="image-slot-label"><span>{slot.label}</span>{index === 0 && <b>MAIN</b>}</div>
                         <div className="image-preview">
-                          {asset.uploading ? <span className="image-loading">上傳中…</span> : asset.previewUrl ? <img src={asset.previewUrl} alt={`${snapshot.title} ${slot.label}`} /> : <button type="button" onClick={(event) => { event.stopPropagation(); setSelectedIndex(index); fileTargetRef.current = index; inputRef.current?.click(); }}>＋</button>}
+                          {asset.uploading ? <span className="image-loading">上傳中…</span> : asset.previewUrl ? <img src={asset.previewUrl} alt={`${snapshot.title} ${slot.label}`} /> : <button type="button" disabled={busy || !slot.capability.editable} onClick={(event) => { event.stopPropagation(); setSelectedIndex(index); fileTargetRef.current = index; inputRef.current?.click(); }}>＋</button>}
                         </div>
                         {asset.previewUrl && (
                           <div className="image-slot-actions">
-                            {index > 0 && <button type="button" onClick={(event) => { event.stopPropagation(); swapAssets(index, 0); }}>設主圖</button>}
-                            <button type="button" disabled={index === supportedIndexes[0]} onClick={(event) => { event.stopPropagation(); const position = supportedIndexes.indexOf(index); swapAssets(index, supportedIndexes[position - 1]); }}>←</button>
-                            <button type="button" disabled={index === supportedIndexes.at(-1)} onClick={(event) => { event.stopPropagation(); const position = supportedIndexes.indexOf(index); swapAssets(index, supportedIndexes[position + 1]); }}>→</button>
-                            <button type="button" className="danger" onClick={(event) => { event.stopPropagation(); setAssets((items) => items.map((item, itemIndex) => itemIndex === index ? emptyAsset() : item)); }}>移除</button>
+                            {index > 0 && <button type="button" disabled={busy || !slot.capability.editable} onClick={(event) => { event.stopPropagation(); swapAssets(index, 0); }}>設主圖</button>}
+                            <button type="button" disabled={busy || !slot.capability.editable || index === supportedIndexes[0]} onClick={(event) => { event.stopPropagation(); const position = supportedIndexes.indexOf(index); swapAssets(index, supportedIndexes[position - 1]); }}>←</button>
+                            <button type="button" disabled={busy || !slot.capability.editable || index === supportedIndexes.at(-1)} onClick={(event) => { event.stopPropagation(); const position = supportedIndexes.indexOf(index); swapAssets(index, supportedIndexes[position + 1]); }}>→</button>
+                            <button type="button" className="danger" disabled={busy || !slot.capability.editable} onClick={(event) => { event.stopPropagation(); setAssets((items) => items.map((item, itemIndex) => itemIndex === index ? emptyAsset() : item)); }}>移除</button>
                           </div>
                         )}
                       </article>
@@ -680,7 +729,7 @@ export default function ImageWorkspaceDrawer({
 
                 <section className="image-url-panel">
                   <div><strong>{snapshot.images[selectedIndex]?.label ?? "圖片"}公開網址</strong><small>已經有 CDN 圖片時，可直接貼上 HTTPS URL。</small></div>
-                  <div className="sku-search-row"><input value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} placeholder="https://cdn.example.com/product.jpg" inputMode="url" /><button type="button" onClick={() => void applyManualUrl()} disabled={actionLoading}>{actionLoading ? "檢查中" : "檢查並套用"}</button></div>
+                  <div className="sku-search-row"><input disabled={busy} value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} placeholder="https://cdn.example.com/product.jpg" inputMode="url" /><button type="button" onClick={() => void applyManualUrl()} disabled={busy || !snapshot.images[selectedIndex]?.capability.editable}>{actionLoading ? "檢查中" : "檢查並套用"}</button></div>
                 </section>
 
                 {hasPrivateDraft && <div className="price-warning compact"><strong>圖片已暫存，但尚無 Amazon 可用網址</strong><p>請設定公開 R2／CDN 網域，或為這些格子貼上公開 HTTPS URL；私人網站網址不能交給 Amazon 抓圖。</p></div>}
@@ -708,7 +757,7 @@ export default function ImageWorkspaceDrawer({
                 id="image-audit-marketplace"
                 value={marketplaceId}
                 onChange={(event) => reset(event.target.value)}
-                disabled={loading || actionLoading}
+                disabled={loading || busy}
               >
                 {MARKETPLACES.map((item) => (
                   <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>
@@ -724,6 +773,8 @@ export default function ImageWorkspaceDrawer({
               onCachedResultChange={onAuditCacheChange}
               initialJob={auditJob}
               onJobChange={onAuditJobChange}
+              minimumImages={minimumImages}
+              onMinimumImagesChange={onMinimumImagesChange}
             />
           </div>
         )}

@@ -55,6 +55,7 @@ type ImageAuditProjectionInput = Readonly<{
   marketplaceId: MarketplaceId;
   listings: FbaCatalogExport;
   grouping: FbaVariationGroupingData<CatalogExportRow>;
+  minimumImages?: number;
   signal?: AbortSignal;
 }>;
 
@@ -62,6 +63,7 @@ export type ImageAuditListingsInput = Readonly<{
   context: SpExecutionContext;
   marketplaceId: MarketplaceId;
   listings: FbaCatalogExport;
+  minimumImages?: number;
   signal?: AbortSignal;
   onGroupingProgress?: (progress: Readonly<{
     completedBatches: number;
@@ -276,6 +278,7 @@ export class ImageAuditOwner implements ImageAuditOwnerPort {
         marketplaceId: input.marketplaceId,
         listings: input.listings,
         grouping,
+        minimumImages: input.minimumImages,
         signal: control.signal,
       }, retentionMs, revision);
     } catch (error) {
@@ -321,7 +324,7 @@ export class ImageAuditOwner implements ImageAuditOwnerPort {
           readStatus: row.readStatus,
           readErrors: row.readErrors,
         })),
-      minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES,
+      minimumImages: input.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES,
     });
     const exportId = this.createId();
     const snapshot: ImageAuditSnapshot = {

@@ -1,3 +1,4 @@
+import { persistDisplayPreferences } from "../display-preferences-client";
 import { useId, useState } from "react";
 import {
   readUiAppearance, saveUiAppearance, UI_ACCENT_OPTIONS, type UiAppearance,
@@ -9,7 +10,9 @@ export default function AppearancePreference() {
   const [persisted, setPersisted] = useState(true);
   const choose = (next: UiAppearance) => {
     setAppearance(next);
-    setPersisted(saveUiAppearance(next));
+    const local = saveUiAppearance(next);
+    setPersisted(local);
+    void persistDisplayPreferences(next).then(saved => setPersisted(saved ?? local));
   };
 
   return (

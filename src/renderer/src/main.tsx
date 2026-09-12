@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { installApiBridge } from "./api-bridge";
 import WebGate from "./web-gate";
+import { initializeDisplayPreferences } from "./display-preferences-client";
 import { applyUiFontSize, readUiFontSize } from "./ui-font-size";
 import { applyUiAppearance, readUiAppearance } from "./ui-appearance";
 import "./styles/index.css";
@@ -12,8 +13,10 @@ if (hasMacBridge) installApiBridge();
 applyUiFontSize(readUiFontSize());
 applyUiAppearance(readUiAppearance());
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    {hasMacBridge ? <App /> : <WebGate />}
-  </StrictMode>,
-);
+void initializeDisplayPreferences().finally(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      {hasMacBridge ? <App /> : <WebGate />}
+    </StrictMode>,
+  );
+});
